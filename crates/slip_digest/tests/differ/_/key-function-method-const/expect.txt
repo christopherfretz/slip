@@ -1,2 +1,3 @@
 removed C::m()
 added C::m() const
+changed C
