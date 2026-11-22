@@ -447,7 +447,10 @@ A constant is written by structure, never by Kiln's interned id:
   temporary by the `Ref` of the declaration that extends it and the
   temporary's index among that declaration's, since a temporary can hold
   a pointer to itself and its value is written where it is materialised;
-  `typeid` by the type), its offset and designated type;
+  `typeid` by the type; another constant of Kiln's store by its content,
+  `H("slip.value.v1", stream)` of the stream that writing that constant
+  here would give, computed apart from the unit as a key is), its offset
+  and designated type;
 - a pointer to member by the member's `Ref` and its path;
 - an aggregate by its type and its target-layout image with padding bytes
   zeroed, the ranges of the image that hold no value (padding and
