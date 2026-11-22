@@ -1,2 +1,3 @@
 present S::<key_function>
 added h()
+resolved S::S()::<exception_spec>

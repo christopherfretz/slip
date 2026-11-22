@@ -57,7 +57,7 @@
 //! | `templ::template_head_unit(w, s, l)` | `record TemplateParamList` as a unit writes it: each parameter's whole stream, defaults included |
 //! | `templ::template_parm_info(w, s, d)`, `templ::template_info(w, s, d)` | `record TemplateParmInfo`, `record TemplateInfo` (the pattern written whole) |
 //! | `local::ordinal(w, d)` | the ordinal of a local entity of the unit (digest §4.3), first met first |
-//! | `demand::deferrable(w, f)` | whether a function is of the deferrable class (§11.2); `None` where the demand area decides |
+//! | `demand::deferrable(w, f)` | whether a function is of the deferrable class (§11.2) |
 //! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::requires_clause` (`expr.rs`) | `child`: one expression, its common rows, its kind's, `ColdExprData`'s and `templ::expr_maps` (§7); a kind not yet filled is pending (`Area::Expr`) |
 //! | `expr::child_keep_paren(w, s, e)` | `child`, an outermost `ParenExpr` written with its rows: for a `DependentDecltype` profile (§7 "Parentheses") |
 //! | `expr_dep::profile(w, s, p)`, `expr_dep::profile_expr(w, s, e)` | pending (`Area::Expr`) |

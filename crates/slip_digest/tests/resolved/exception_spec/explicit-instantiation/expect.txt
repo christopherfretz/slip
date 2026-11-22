@@ -1,0 +1,2 @@
+resolved A<int>::f()::<exception_spec>
+added h()

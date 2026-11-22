@@ -74,6 +74,9 @@ pub(crate) struct ExprState {
     /// expression walk is writing, itself included
     /// (`expr_core::this`).
     pub dependent: u32,
+    /// Where the walk records the `default_imm` values it meets, when a
+    /// `default_immediates` unit asks (`demand::immediates`).
+    pub imms: Option<Vec<slip_kiln::kiln::ast::ConstValueId>>,
 }
 
 impl ExprState {
@@ -133,6 +136,9 @@ pub(crate) struct Walk<'a> {
     pub aborts: u64,
     /// `digest.bytes` (`spec/digest.md` §12).
     pub bytes: u64,
+    /// The temporaries each variable extends, by its first declaration,
+    /// built when a `value` unit first needs it (`demand.rs`).
+    pub lets: Option<HashMap<DeclId, Vec<(u32, DeclId)>>>,
 }
 
 impl std::fmt::Debug for Walk<'_> {
@@ -166,6 +172,7 @@ impl<'a> Walk<'a> {
             node_depth: 0,
             aborts: 0,
             bytes: 0,
+            lets: None,
         }
     }
 

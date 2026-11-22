@@ -460,13 +460,17 @@ fn cause_of(o: &Output, name: &str) -> Option<Cause> {
 }
 
 /// digest-kinds §5.3 `ty-exception-spec`, digest §11.2: a function of the
-/// deferrable class writes no specification, and the absence is
-/// `Pending(Demand)` until resolved units exist (WP-024 review B).
+/// deferrable class writes no specification, and is not indeterminate for
+/// it: the resolved unit `exception_spec` holds it (WP-046).
 #[test]
-fn deferrable_absence_is_pending() {
+fn deferrable_absence_is_resolved() {
     let o = walk(&[("main.cpp", "struct S { ~S() noexcept(false); };\n")]);
-    let name = o.names.iter().map(|(_, n)| n.clone()).find(|n| n.contains("~S")).expect("~S");
-    assert_eq!(cause_of(&o, &name), Some(Cause::Pending(crate::Area::Demand)));
+    let names: Vec<String> = o.names.iter().map(|(_, n)| n.clone()).collect();
+    let name = names.iter().find(|n| n.contains("~S") && !n.contains("::<")).expect("~S");
+    assert_eq!(cause_of(&o, name), None);
+    let resolved = format!("{name}::<exception_spec>");
+    assert!(names.contains(&resolved), "{names:?}");
+    assert_eq!(cause_of(&o, &resolved), None);
 }
 
 /// digest §3.4, digest-kinds §3: the cause of a key is that of every key it

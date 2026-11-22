@@ -1,0 +1,3 @@
+changed X::v
+derived-changed X::v::<value>
+derived-changed A<X>::f()::<exception_spec>

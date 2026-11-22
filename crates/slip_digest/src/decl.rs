@@ -8,7 +8,7 @@ use crate::keys::info;
 use crate::stream::{FlagWord, Hashed, Stream, UNIT_TAG};
 use crate::tables::{Decision, access, decl_kind, friend_kind, module_ownership};
 use crate::walk::{TOO_DEEP, Walk};
-use crate::{Area, Cause};
+use crate::Cause;
 
 /// A content-keyed entity whose key needs its own digest
 /// (`spec/digest.md` §3.3).
@@ -165,30 +165,21 @@ impl Walk<'_> {
 
     /// `DeclNode` `ty-exception-spec` (§5.3, §11.2): `enum ExcSpec?`,
     /// absent for a function of the deferrable class, whose specification
-    /// is the resolved unit `exception_spec`. Until resolved units are
-    /// written, the absence carries `Pending(Demand)`: what the unit leaves
-    /// out is not yet anywhere.
+    /// is the resolved unit `exception_spec` (`demand.rs`).
     fn own_exception_spec(&mut self, s: &mut Stream, d: DeclId) {
         let ast = self.ast;
-        match crate::demand::deferrable(self, d) {
-            Some(true) => {
-                s.opt(false).pending(Area::Demand);
-            }
-            Some(false) => {
-                let proto = ast.decls.get(d).ty().and_then(|q| ast.types.proto(q)).copied();
-                match proto {
-                    Some(p) => {
-                        s.opt(true);
-                        let e = ast.types.exc_spec(&p);
-                        self.write_exc_spec(s, e, true);
-                    }
-                    None => {
-                        s.opt(false);
-                    }
-                }
+        if crate::demand::deferrable(self, d) {
+            s.opt(false);
+            return;
+        }
+        match ast.decls.get(d).ty().and_then(|q| ast.types.proto(q)).copied() {
+            Some(p) => {
+                s.opt(true);
+                let e = ast.types.exc_spec(&p);
+                self.write_exc_spec(s, e, true);
             }
             None => {
-                s.opt(true).pending(Area::Demand);
+                s.opt(false);
             }
         }
     }

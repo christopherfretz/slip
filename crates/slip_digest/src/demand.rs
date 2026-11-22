@@ -29,9 +29,11 @@
 //! first unit of an entity indeterminate, which is the owner (the walk
 //! appends resolved units after it).
 
-use slip_kiln::kiln::ast::DeclId;
-use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, Defaulted};
-use slip_kiln::kiln::ast::templates::SpecKind;
+use std::collections::HashMap;
+
+use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, Defaulted, VarEvalState};
+use slip_kiln::kiln::ast::types::{ExcSpec, NoexceptValue};
+use slip_kiln::kiln::ast::{ConstValueId, DeclId, ExprId};
 use slip_model::digests::GroupClass;
 use slip_model::keys::{DISC_TAG, Key, KeyKind, Name, Parent};
 
@@ -116,16 +118,16 @@ pub(crate) fn resolved_units(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: 
     }
     for p in Property::ALL {
         match p {
+            Property::ExceptionSpec => exception_spec(w, e, owner, out),
+            Property::Value => value(w, e, owner, out),
             Property::KeyFunction => key_function(w, e, owner, out),
-            // WP-046.
-            Property::ExceptionSpec
-            | Property::Value
-            | Property::DtorDelete
-            | Property::InheritedConstructor
-            | Property::DefaultImmediates => {}
+            Property::DtorDelete => dtor_delete(w, e, owner, out),
+            Property::InheritedConstructor => inherited_constructor(w, e, owner, out),
+            Property::DefaultImmediates => default_immediates(w, e, owner, out),
             Property::Definition => {}
         }
     }
+    default_arguments(w, e, owner, out);
 }
 
 /// Writes one resolved unit of `owner` (the unit of entity `e`): the
@@ -151,7 +153,6 @@ pub(crate) fn write_resolved(
 /// key kind `default_argument`, parent the owner's key, name
 /// `parameter(index)`, no discriminator; otherwise as a resolved unit
 /// (derived, the owner's origin file, the owner's key cause merged in).
-#[allow(dead_code, reason = "its caller, the `default_argument` arm, lands in the next commit")]
 pub(crate) fn write_default_argument(
     w: &mut Walk<'_>,
     e: DeclId,
@@ -238,47 +239,399 @@ fn key_function(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Writ
     out.push(u);
 }
 
-/// Whether function `f` is of the deferrable class (§11.2); `None` where
-/// the rule needs what the demand area decides (an explicitly defaulted
-/// function, whose own specification may or may not have been written;
-/// an implicit instantiation, whose pattern's specification is an
-/// expression), so the caller writes a pending row.
-pub(crate) fn deferrable(w: &Walk<'_>, f: DeclId) -> Option<bool> {
+/// The declaration the unit of entity `e` was read from (`units::write`):
+/// a resolved arm reads its facts where the owner's stream did.
+fn read_of(w: &Walk<'_>, e: DeclId, owner: &Written) -> DeclId {
+    if crate::units::outside_only(w, e) {
+        owner.read.unwrap_or(e)
+    } else {
+        crate::units::read_decl(w, e)
+    }
+}
+
+/// The function, variable or field whose facts the unit read from `d`
+/// holds: `d` itself, or for a template its pattern, read from its
+/// defining declaration as `templ::template_info` writes it.
+fn subject(w: &Walk<'_>, d: DeclId) -> DeclId {
+    match w.ast.template_info(d).and_then(|i| i.pattern) {
+        Some(p) => crate::units::defining_decl(w, p).unwrap_or(p),
+        None => d,
+    }
+}
+
+/// Property 1, `exception_spec` (§11.2): the specification of a function
+/// of the deferrable class, `enum ExcSpec` in normal form, present when
+/// its type no longer holds `Deferred`.
+fn exception_spec(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
     let ast = w.ast;
-    let n = ast.decls.get(f);
-    // Rule 4: every destructor.
-    if n.kind() == DeclKind::CXXDestructor {
-        return Some(true);
+    let f = subject(w, read_of(w, e, owner));
+    if ast.decls.function(f).is_none() || !deferrable(w, f) {
+        return;
     }
-    // Rules 1 and 2: implicitly declared special members, comparison
-    // operators and inheriting constructors.
-    if w.redecls(f).iter().all(|&d| ast.decls.get(d).has(DeclFlags::IMPLICIT)) {
-        return Some(true);
+    let Some(p) = ast.decls.get(f).ty().and_then(|q| ast.types.proto(q)).copied() else { return };
+    let spec = ast.types.exc_spec(&p);
+    if matches!(spec, ExcSpec::Deferred(_)) {
+        return;
     }
-    let first = ast.first(f);
-    if let Some(data) = ast.decls.function(first) {
-        match data.spec.defaulted() {
-            Defaulted::Implicit => return Some(true),
-            Defaulted::Explicit => return None,
-            Defaulted::No => {}
+    let u = write_resolved(w, e, owner, Property::ExceptionSpec, None, |w, s| {
+        w.write_exc_spec(s, spec, true);
+    });
+    out.push(u);
+}
+
+/// Property 2, `value` (§11.3): what the Oven found for a variable
+/// (`VarData` `eval`, as `decl_func::var_eval` reads it), present when it
+/// evaluated it; then one `value?` per temporary the variable extends, in
+/// `mangling_index` order (`LetData` `value`).
+fn value(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
+    let ast = w.ast;
+    let v = read_of(w, e, owner);
+    if ast.decls.var(v).is_none() {
+        return;
+    }
+    let own = match crate::decl_func::var_eval(w, v).state() {
+        VarEvalState::Value(c) => Some(c),
+        VarEvalState::NotConstant => None,
+        VarEvalState::NotEvaluated | VarEvalState::Evaluating => return,
+    };
+    let lets = extended_temporaries(w, ast.first(v));
+    let u = write_resolved(w, e, owner, Property::Value, None, |w, s| {
+        s.opt(own.is_some());
+        if let Some(c) = own {
+            crate::value::value(w, s, c);
+        }
+        for t in lets {
+            let value = w.ast.decls.lifetime_extended(t).and_then(|l| l.value);
+            s.opt(value.is_some());
+            if let Some(c) = value {
+                crate::value::value(w, s, c);
+            }
+        }
+    });
+    out.push(u);
+}
+
+/// The temporaries whose lifetime the variable whose first declaration is
+/// `first` extends (`LetData` `extending`, any declaration of it), in
+/// `mangling_index` order, then by declaration (two with one index are
+/// not met in a valid parse). The index of all of them is built once.
+fn extended_temporaries(w: &mut Walk<'_>, first: DeclId) -> Vec<DeclId> {
+    let ast = w.ast;
+    let index = w.lets.get_or_insert_with(|| {
+        let mut m: HashMap<DeclId, Vec<(u32, DeclId)>> = HashMap::new();
+        for d in ast.decls.ids() {
+            if let Some(l) = ast.decls.lifetime_extended(d) {
+                m.entry(ast.first(l.extending)).or_default().push((l.mangling_index, d));
+            }
+        }
+        for v in m.values_mut() {
+            v.sort_unstable();
+        }
+        m
+    });
+    index.get(&first).map(|v| v.iter().map(|&(_, d)| d).collect()).unwrap_or_default()
+}
+
+/// Property 5, `dtor_delete` (§11.1): a virtual destructor's deallocation
+/// function and the `this` argument of a destroying one. Kiln keys both by
+/// the destructor's first declaration
+/// (`kiln_sema/src/new_delete.rs:2666-2721`).
+fn dtor_delete(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
+    let ast = w.ast;
+    if ast.decls.get(e).kind() != DeclKind::CXXDestructor {
+        return;
+    }
+    let first = ast.first(e);
+    let Some(&op) = ast.decls.cold.dtor_delete.get(first) else {
+        if ast.decls.cold.dtor_delete_this.contains(first) {
+            let u = write_resolved(w, e, owner, Property::DtorDelete, None, |_, s| {
+                s.indeterminate(Cause::Unaccounted("ColdDeclData/dtor_delete_this"));
+            });
+            out.push(u);
+        }
+        return;
+    };
+    let this = ast.decls.cold.dtor_delete_this.get(first).copied();
+    let u = write_resolved(w, e, owner, Property::DtorDelete, None, |w, s| {
+        w.write_ref(s, op);
+        crate::expr::child_opt(w, s, this);
+    });
+    out.push(u);
+}
+
+/// Property 6, `inherited_constructor` (§11.1): an inheriting
+/// constructor's using-shadow and the base constructor, which Kiln sets
+/// together when it declares it (`kiln_sema/src/class/inhctor.rs:78-79`).
+fn inherited_constructor(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
+    let ast = w.ast;
+    let first = ast.first(e);
+    let inheriting = ast.decls.cold.inheriting_ctor.get(first).copied();
+    let inherited = ast.decls.cold.inherited_ctor.get(first).copied();
+    if inheriting.is_none() && inherited.is_none() {
+        return;
+    }
+    let u = write_resolved(w, e, owner, Property::InheritedConstructor, None, |w, s| {
+        for d in [inheriting, inherited] {
+            match d {
+                Some(d) => w.write_ref(s, d),
+                None => {
+                    s.uv(0).indeterminate(Cause::Unaccounted("ColdDeclData/inherited_ctor"));
+                }
+            }
+        }
+    });
+    out.push(u);
+}
+
+/// Property 7, `default_immediates` (§11.4), of the default arguments
+/// and default member initialiser the owner's own stream writes (written
+/// in source): one unit per argument with at least one value, its
+/// discriminator the parameter's index (none for a field).
+fn default_immediates(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
+    let ast = w.ast;
+    if ast.exprs.cold.default_imm.is_empty() {
+        return;
+    }
+    let d = subject(w, read_of(w, e, owner));
+    let mut found: Vec<(Option<u64>, Vec<ConstValueId>)> = Vec::new();
+    if let Some(f) = ast.decls.function(d) {
+        let params: Vec<DeclId> = ast.lists.iter::<DeclId>(f.params).collect();
+        for (i, p) in params.into_iter().enumerate() {
+            let (_, default) = crate::decl_func::written_default(w, p);
+            if let Some(x) = default {
+                found.push((Some(i as u64), immediates(w, x)));
+            }
+        }
+    } else if let Some(f) = ast.decls.field(d)
+        && let Some(x) = f.init
+        && !crate::decl_class::instantiated_field(w, d)
+    {
+        found.push((None, immediates(w, x)));
+    }
+    for (disc, values) in found {
+        if let Some(u) = immediates_unit(w, e, owner, disc, values) {
+            out.push(u);
         }
     }
-    // Rule 3: implicit instantiations.
-    let implicit_instantiation = ast
-        .spec_info(f)
-        .map(|(_, i)| i.kind)
-        .or_else(|| ast.member_spec_info(f).map(|(_, i)| i.kind))
-        .is_some_and(|k| match k {
-            SpecKind::ImplicitInstantiation => true,
-            SpecKind::Undeclared
-            | SpecKind::ExplicitSpecialization
-            | SpecKind::ExplicitInstantiationDeclaration
-            | SpecKind::ExplicitInstantiationDefinition => false,
-        });
-    if implicit_instantiation {
+}
+
+/// The resolved unit `default_immediates` with discriminator `disc` under
+/// `owner`, holding `values`; none when there is no value.
+fn immediates_unit(
+    w: &mut Walk<'_>,
+    e: DeclId,
+    owner: &Written,
+    disc: Option<u64>,
+    values: Vec<ConstValueId>,
+) -> Option<Written> {
+    if values.is_empty() {
         return None;
     }
-    Some(false)
+    Some(write_resolved(w, e, owner, Property::DefaultImmediates, disc, |w, s| {
+        s.count(values.len());
+        for v in values {
+            crate::value::value(w, s, v);
+        }
+    }))
+}
+
+/// The `default_imm` values of the immediate invocations in `x`, in the
+/// order the expression walk meets them: `x` walked again, with a unit
+/// state of its own, into a stream that is dropped.
+fn immediates(w: &mut Walk<'_>, x: ExprId) -> Vec<ConstValueId> {
+    let saved = w.take_unit();
+    w.unit.expr.imms = Some(Vec::new());
+    let mut scratch = Stream::new();
+    crate::expr::child(w, &mut scratch, x);
+    let values = w.unit.expr.imms.take().unwrap_or_default();
+    w.unit = saved;
+    values
+}
+
+/// Records the `default_imm` value of `e` for [`immediates`]
+/// (`ColdExprData` `default_imm` writes nothing in a stream, §11.4).
+pub(crate) fn record_immediate(w: &mut Walk<'_>, _: &mut Stream, e: ExprId) {
+    let v = w.ast.exprs.cold.default_imm.get(e).copied();
+    if let (Some(imms), Some(v)) = (w.unit.expr.imms.as_mut(), v) {
+        imms.push(v);
+    }
+}
+
+/// The `default_argument` units (§11.4) of `owner`, the unit of entity `e`,
+/// and their `default_immediates`: for each parameter of an instantiated
+/// declaration of a function whose default argument Kiln instantiated
+/// (the parameter holds it: `default_arg` is set at instantiation,
+/// `kiln_sema/src/templ/default_args.rs:36-52`, and
+/// `flags-default-arg-pending` stays set), and for a field instantiated
+/// from a pattern whose initialiser Kiln instantiated. Written whenever
+/// the owner is: they do not wait for a `Ref`.
+fn default_arguments(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
+    let ast = w.ast;
+    let d = read_of(w, e, owner);
+    if ast.decls.function(d).is_some() {
+        let mut chain = w.redecls(ast.first(e));
+        chain.reverse();
+        let decls: Vec<DeclId> =
+            chain.into_iter().filter(|&x| crate::decl_func::instantiated_decl(w, x)).collect();
+        // Parameter i of every declaration of the chain, by its index.
+        let mut params: Vec<Vec<DeclId>> = Vec::new();
+        for x in w.redecls(ast.first(e)) {
+            let Some(f) = ast.decls.function(x) else { continue };
+            for (i, p) in ast.lists.iter::<DeclId>(f.params).enumerate() {
+                if params.len() <= i {
+                    params.resize_with(i + 1, Vec::new);
+                }
+                params[i].push(ast.first(p));
+            }
+        }
+        for i in 0..params.len() {
+            let default = decls.iter().find_map(|&x| {
+                let f = ast.decls.function(x)?;
+                let p = ast.lists.iter::<DeclId>(f.params).nth(i)?;
+                ast.decls.param(p)?.default_arg
+            });
+            if let Some(x) = default {
+                default_argument(w, e, owner, i as u64, &params, x, Some(i as u64), out);
+            }
+        }
+    } else if let Some(f) = ast.decls.field(d)
+        && let Some(x) = f.init
+        && crate::decl_class::instantiated_field(w, d)
+    {
+        default_argument(w, e, owner, 0, &[], x, None, out);
+    }
+}
+
+/// One `default_argument` unit: the expression `x`, walked as an
+/// initialiser is, with parameter j of the function (each declaration's
+/// parameter j, `params[j]`) the local entity of ordinal j, as the
+/// function's own stream numbers them, and later locals numbered from
+/// there; then its `default_immediates` (discriminator `disc`).
+#[allow(clippy::too_many_arguments, reason = "one unit and its resolved one")]
+fn default_argument(
+    w: &mut Walk<'_>,
+    e: DeclId,
+    owner: &Written,
+    index: u64,
+    params: &[Vec<DeclId>],
+    x: ExprId,
+    disc: Option<u64>,
+    out: &mut Vec<Written>,
+) {
+    let mut values = Vec::new();
+    let u = write_default_argument(w, e, owner, index, |w, s| {
+        for (j, ps) in params.iter().enumerate() {
+            for &p in ps {
+                w.unit.locals.entry(p).or_insert(j as u64);
+            }
+        }
+        w.unit.next_local = params.len() as u64;
+        w.unit.expr.imms = Some(Vec::new());
+        crate::expr::child(w, s, x);
+        values = w.unit.expr.imms.take().unwrap_or_default();
+    });
+    let imms = immediates_unit(w, e, &u, disc, values);
+    out.push(u);
+    out.extend(imms);
+}
+
+/// Whether function `f` is of the deferrable class (§11.2). It reads the
+/// entity's representative declaration and facts resolution leaves alone:
+///
+/// - a destructor (rule 4);
+/// - a function every declaration of which is implicit: an implicitly
+///   declared special member, comparison operator or inheriting
+///   constructor (rules 1 and 2), and an inheriting constructor by its
+///   `inheriting_ctor` entry (rule 2);
+/// - a function explicitly defaulted on its representative declaration
+///   (rule 1): once resolved, its type does not say whether a
+///   specification was written (`kiln_sema/src/class/special/excspec.rs:53-118`
+///   re-points every declaration), so every one is of the class;
+/// - an instantiated declaration (`instantiated`) whose pattern's
+///   specification Kiln defers (rule 3), or whose pattern is of the class.
+pub(crate) fn deferrable(w: &Walk<'_>, f: DeclId) -> bool {
+    deferrable_at(w, f, 0)
+}
+
+/// Patterns deeper than this are not followed: the function is of the
+/// class (over-inclusion is safe, §11.2).
+const PATTERN_LIMIT: u32 = 64;
+
+fn deferrable_at(w: &Walk<'_>, f: DeclId, depth: u32) -> bool {
+    let ast = w.ast;
+    // Rule 4: every destructor.
+    if ast.decls.get(f).kind() == DeclKind::CXXDestructor {
+        return true;
+    }
+    let first = ast.first(f);
+    // Rules 1 and 2: implicitly declared members and inheriting constructors.
+    if w.redecls(first).iter().all(|&d| ast.decls.get(d).has(DeclFlags::IMPLICIT))
+        || ast.decls.cold.inheriting_ctor.contains(first)
+    {
+        return true;
+    }
+    let rep = w.representative(first);
+    match ast.decls.function(rep).map(|d| d.spec.defaulted()) {
+        Some(Defaulted::Explicit | Defaulted::Implicit) => return true,
+        Some(Defaulted::No) | None => {}
+    }
+    // Rule 3.
+    if !instantiated(w, rep) {
+        return false;
+    }
+    if depth >= PATTERN_LIMIT {
+        return true;
+    }
+    let Some(pattern) = pattern_of(w, rep) else { return true };
+    w.redecls(ast.first(pattern)).into_iter().any(|d| defers(w, d))
+        || deferrable_at(w, pattern, depth + 1)
+}
+
+/// Whether the declaration `x` was made by instantiation, of any form: the
+/// one call to switch to WP-045's effective kind when it lands. Kiln
+/// defers the specification under every form
+/// (`kiln_sema/src/templ/subst/decls.rs:766-770`, `:1170-1195`) and
+/// resolves it when it defines the function
+/// (`kiln_sema/src/decl.rs:9670-9676`), so an explicit instantiation
+/// definition resolves it only for the members it defines.
+fn instantiated(w: &Walk<'_>, x: DeclId) -> bool {
+    crate::decl_func::instantiated_decl(w, x)
+}
+
+/// The pattern the instantiated declaration `x` was made from: for a
+/// function template's specialisation, the primary template's pattern
+/// (`SpecInfo` `from` names the template until the definition is
+/// instantiated, so it is not read); else `MemberSpecInfo`
+/// `instantiated_from` or Kiln's map (`Ast::instantiated_from`).
+fn pattern_of(w: &Walk<'_>, x: DeclId) -> Option<DeclId> {
+    let ast = w.ast;
+    if let Some((_, i)) = ast.spec_info(x) {
+        return ast.template_info(i.template).and_then(|t| t.pattern);
+    }
+    ast.instantiated_from(x).or_else(|| ast.instantiated_from(w.entity(x)))
+}
+
+/// Whether the declaration `d`'s specification is one Kiln defers in an
+/// instantiation (`kiln_sema/src/except.rs:729-754`): a value-dependent
+/// `noexcept` operand, a dynamic specification naming a dependent type, or
+/// one already deferred.
+fn defers(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let Some(p) = ast.decls.get(d).ty().and_then(|q| ast.types.proto(q)) else { return false };
+    match ast.types.exc_spec(p) {
+        ExcSpec::NoexceptExpr { value: NoexceptValue::Dependent(_), .. }
+        | ExcSpec::DependentNoexcept(_)
+        | ExcSpec::Deferred(_) => true,
+        ExcSpec::Dynamic(l) => {
+            ast.types.type_list_types(l).iter().any(|&t| ast.types.is_dependent(t))
+        }
+        ExcSpec::None
+        | ExcSpec::Nothrow
+        | ExcSpec::DynamicNone
+        | ExcSpec::NothrowAttr
+        | ExcSpec::BasicNoexcept
+        | ExcSpec::NoexceptExpr { .. } => false,
+    }
 }
 
 #[cfg(test)]

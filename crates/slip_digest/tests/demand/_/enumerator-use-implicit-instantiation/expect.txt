@@ -1,4 +1,0 @@
-# pending
-# needs: demand
-# the derived unit A<int>::F changes on use (probably DeclMisc
-# 0-definition)
