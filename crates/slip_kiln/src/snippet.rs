@@ -455,7 +455,8 @@ impl Language {
             let mut bare = head.clone();
             bare.push(arg.to_owned());
             let bare = Args::parse_as("kiln", &bare);
-            if bare.errors.iter().any(|e| matches!(e, kiln_driver::args::ArgError::MissingValue(_))) {
+            if bare.errors.iter().any(|e| matches!(e, kiln_driver::args::ArgError::MissingValue(_)))
+            {
                 return Err(format!(
                     "argument `{arg}` is refused: it takes the next argument as its value \
                      (write the value joined, where the driver allows it)"
@@ -611,9 +612,14 @@ impl Language {
             .argv
             .iter()
             .filter(|s| {
-                !["-fsanitize=", "-fno-sanitize=", "-fsanitize-coverage=", "-fno-sanitize-coverage="]
-                    .iter()
-                    .any(|p| s.starts_with(p))
+                ![
+                    "-fsanitize=",
+                    "-fno-sanitize=",
+                    "-fsanitize-coverage=",
+                    "-fno-sanitize-coverage=",
+                ]
+                .iter()
+                .any(|p| s.starts_with(p))
             })
             .cloned()
             .collect();
@@ -667,7 +673,10 @@ fn refused_spelling(arg: &str) -> Option<&'static str> {
     if arg == "-target" || arg == "--target" || arg.starts_with("--target=") {
         return Some("the target is `Extra::target`");
     }
-    if ["-march=", "-mcpu=", "-mtune="].iter().any(|o| value(o).is_some_and(|v| v.starts_with("native"))) {
+    if ["-march=", "-mcpu=", "-mtune="]
+        .iter()
+        .any(|o| value(o).is_some_and(|v| v.starts_with("native")))
+    {
         return Some("`native` reads the host's processor: the result would depend on the host");
     }
     if arg == "-fsyntax-only" {
@@ -696,16 +705,12 @@ fn driver_errors(a: &Args, target: &DriverTarget) -> Vec<String> {
     out.extend(
         a.sanitize.coverage_errors(sanitize.opts.kinds, clang22).iter().map(|e| format!("{e:?}")),
     );
-    out.extend(
-        sanitize.hardware_errors(!x86, features.memtag_hw).iter().map(|e| format!("{e:?}")),
-    );
+    out.extend(sanitize.hardware_errors(!x86, features.memtag_hw).iter().map(|e| format!("{e:?}")));
     if a.codegen.large_data_threshold.is_some() && !x86 && !clang22 {
         out.push("UnsupportedForTarget(\"-mlarge-data-threshold=\")".to_owned());
     }
     out.extend(a.codegen.xray_errors().iter().map(|e| format!("{e:?}")));
-    out.extend(
-        a.codegen.invocation_errors(x86, target.triple).iter().map(|e| format!("{e:?}")),
-    );
+    out.extend(a.codegen.invocation_errors(x86, target.triple).iter().map(|e| format!("{e:?}")));
     out
 }
 
@@ -1085,7 +1090,8 @@ mod tests {
         let files = [("deep.cpp", text.as_str())];
         let s = Snippet { files: &files, main: "deep.cpp", include: &[], std: "c++20" };
         let (errors, diags) =
-            parse_on(&s, &Extra::default(), Some(8 << 20), |p| (p.errors, p.diagnostics.clone())).unwrap();
+            parse_on(&s, &Extra::default(), Some(8 << 20), |p| (p.errors, p.diagnostics.clone()))
+                .unwrap();
         assert!(errors >= 1);
         assert!(
             diags.starts_with("deep.cpp:2:")
@@ -1108,7 +1114,9 @@ mod tests {
         target: Option<&str>,
     ) -> Result<(u32, String), String> {
         let files = [("main.cpp", text)];
-        parse_with(&one(&files, std), &Extra { args, target }, |p| (p.errors, p.diagnostics.clone()))
+        parse_with(&one(&files, std), &Extra { args, target }, |p| {
+            (p.errors, p.diagnostics.clone())
+        })
     }
 
     /// `kiln -std=<std> [--target=] <args> -fsyntax-only -x c++ -` on
@@ -1122,7 +1130,8 @@ mod tests {
             stdin: Box::new(std::io::Cursor::new(text.as_bytes().to_vec())),
         };
         // The host is not the default target: `kiln` is told it.
-        let mut line = vec![format!("-std={std}"), format!("--target={}", target.unwrap_or(TRIPLE))];
+        let mut line =
+            vec![format!("-std={std}"), format!("--target={}", target.unwrap_or(TRIPLE))];
         line.extend(args.iter().map(|a| (*a).to_owned()));
         line.extend(["-fsyntax-only", "-x", "c++", "-"].map(str::to_owned));
         kiln_driver::run_as("kiln", &line, io);
@@ -1370,13 +1379,28 @@ mod tests {
         let cases: [(&str, &[&str], Option<&str>, &str); 10] = [
             ("c++20", &["-fno-rtti"], None, "struct V { virtual ~V(); };\nauto &t = typeid(V);\n"),
             ("c++20", &["-fno-exceptions"], None, "void g() { try { throw 1; } catch (int) {} }\n"),
-            ("c++20", &["-Werror"], None, "int h() { int u; return u; }\nint k(int a) { return a; return 1; }\n"),
+            (
+                "c++20",
+                &["-Werror"],
+                None,
+                "int h() { int u; return u; }\nint k(int a) { return a; return 1; }\n",
+            ),
             ("c++20", &[], Some("aarch64-unknown-linux-gnu"), "__SVInt8_t v;\n__SVInt8_t *p;\n"),
             ("c++20", &[], None, "__SVInt8_t *p;\n"),
-            ("c++20", &["-msve-vector-bits=256"], Some("aarch64-linux-gnu"), "typedef __SVInt32_t f __attribute__((arm_sve_vector_bits(256)));\nstatic_assert(sizeof(f) == 32);\n"),
+            (
+                "c++20",
+                &["-msve-vector-bits=256"],
+                Some("aarch64-linux-gnu"),
+                "typedef __SVInt32_t f __attribute__((arm_sve_vector_bits(256)));\nstatic_assert(sizeof(f) == 32);\n",
+            ),
             ("c++23", &["-fcontracts"], None, "int f(int x) pre(x > 0) post(r: r > 0);\n"),
             ("c++26", &["-fno-reflection"], None, "constexpr auto r = ^^int;\n"),
-            ("c++26", &[], Some("aarch64"), "constexpr auto r = ^^int;\nstatic_assert(char(-1) < 0);\n"),
+            (
+                "c++26",
+                &[],
+                Some("aarch64"),
+                "constexpr auto r = ^^int;\nstatic_assert(char(-1) < 0);\n",
+            ),
             ("c++20", &["-funsigned-char"], None, "static_assert(char(-1) < 0);\n"),
         ];
         for (std, args, target, text) in cases {

@@ -148,8 +148,11 @@ const HEADER_KEYS: [&str; 4] = ["std", "errors", "args", "target"];
 fn looks_like_header(line: &str) -> bool {
     let Some(rest) = line.strip_prefix("//") else { return false };
     let rest = rest.trim_start();
-    let word = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_alphabetic() || c == '-').len();
-    word > 0 && rest[..word].starts_with(|c: char| c.is_ascii_alphabetic()) && rest[word..].trim_start().starts_with(':')
+    let word =
+        rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_alphabetic() || c == '-').len();
+    word > 0
+        && rest[..word].starts_with(|c: char| c.is_ascii_alphabetic())
+        && rest[word..].trim_start().starts_with(':')
 }
 
 /// The header lines of a main file: the lines from its top that are
@@ -192,7 +195,9 @@ pub fn header(main: &str) -> Result<Header, String> {
         match key {
             "std" => value.clone_into(&mut h.std),
             "errors" if value == "yes" => h.errors = true,
-            "args" => h.args = value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect(),
+            "args" => {
+                h.args = value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect()
+            }
             "target" if !value.contains(' ') => h.target = Some(value.to_owned()),
             _ => return Err(bad()),
         }
@@ -474,13 +479,15 @@ mod header_tests {
                    // args: -fno-rtti  -frounding-math\n// std: c++17\nint x;\n";
         assert_eq!(
             header(all),
-            Ok(h("c++17", true, &["-fno-rtti", "-frounding-math"], Some("aarch64-unknown-linux-gnu")))
+            Ok(h(
+                "c++17",
+                true,
+                &["-fno-rtti", "-frounding-math"],
+                Some("aarch64-unknown-linux-gnu")
+            ))
         );
         // A header line after the first line that is not one is not read.
-        assert_eq!(
-            header("// a comment\n// args: -fno-rtti\n"),
-            Ok(h("c++20", false, &[], None))
-        );
+        assert_eq!(header("// a comment\n// args: -fno-rtti\n"), Ok(h("c++20", false, &[], None)));
         assert_eq!(header("int x;\n// std: c++17\n"), Ok(h("c++20", false, &[], None)));
         // Comments that do not read as `word:` end the block quietly.
         assert_eq!(
