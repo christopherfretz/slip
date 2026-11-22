@@ -8,8 +8,8 @@
 //! ([`Admission::pick`]), tells it when a job ends ([`Admission::finished`])
 //! and feeds it the sampled resident sizes ([`Admission::on_samples`]),
 //! acting on the [`Decision`]s it returns. Everything is decided on sampled
-//! values only, so the tests drive it with numbers. The rules the spec
-//! leaves open are in `spec/landed/exec/WP-009.md`.
+//! values only, so the tests drive it with numbers. The rules in detail
+//! are `spec/exec.md` §6.1, the interface §6.2.
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::BuildHasher;

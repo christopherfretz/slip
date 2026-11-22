@@ -4,8 +4,8 @@
 //! and output: a `u32le` length, then one message in the encoding of
 //! `spec/model.md` §2 ([`write_frame`], [`read_frame`]). [`ToWorker`] and
 //! [`ToCoordinator`] are the messages of the §5.2 table; [`serve`] is the
-//! worker's main loop around a [`Task`]. The rules the spec leaves open are
-//! in `spec/landed/exec/WP-008.md`.
+//! worker's main loop around a [`Task`]. The worker's rules in detail are
+//! `spec/exec.md` §5.5, the interface §5.7.
 
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt as _;

@@ -1,7 +1,6 @@
 //! `spec/exec.md` §6 with numbers only: [`Admission`] is driven directly,
 //! with no process, no clock and no sleep. Each test names the sentence of
-//! §6 it covers; the rules beyond the spec are in
-//! `spec/landed/exec/WP-009.md`.
+//! §6 it covers, or of §6.1 for the rules in detail.
 
 use std::collections::HashMap;
 
@@ -72,7 +71,7 @@ fn s6_budget_smaller_of_cgroup_and_total_minus_reserve() {
     assert_eq!(budget_from_system(None, 20 * GIB), 18 * GIB);
 }
 
-/// §6 "Budget", the cases the formula leaves open (landed): a machine
+/// §6 "Budget", the cases the formula leaves open (§6.1): a machine
 /// smaller than the 2 GiB reserve keeps the one-tenth reserve; unknown
 /// memory is 0 (no admission); a cgroup limit with unknown total is used.
 #[test]

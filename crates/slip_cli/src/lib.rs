@@ -1,6 +1,6 @@
 //! The `slip` command-line tool (`spec/exec.md` §8): `plan`, `parse`,
 //! `dump`, `--version`, and the hidden worker. Work package WP-012; the
-//! behaviour §8 leaves open is `spec/landed/exec/WP-012.md`.
+//! interface is §8.6.
 //!
 //! The binary is a thin `main` over [`run`]; [`args`] is pure, so the
 //! command line is tested without starting a process.
