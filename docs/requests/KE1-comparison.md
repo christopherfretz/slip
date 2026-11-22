@@ -2,14 +2,16 @@
 
 - From: Slip
 - To: Kiln
-- Status: **sent** (specification; Kiln asked for "the comparison tool
-  or its spec", 2026-11-22, for its WP-2327 and WP-2328)
+- Status: **accepted** (2026-11-22). Kiln owns the script: its WP-2327
+  writes it in Kiln as `cargo xtask extents` from this file, so that it
+  gates Kiln's own CI. §1's line format and §3's matching without an
+  enclosing function are accepted as written
 - Belongs to: [KE1](KE1-expression-extents.md) §3
 
 | Part | Nature |
 |---|---|
 | §1 the dump Kiln writes | **Implementation against a settled specification** (this file) |
-| §2 to §5 the normalisation of clang's dump, the matching, the lists, the verdict | **Settled here**; implementation is a script either side can write. Slip writes it as `cargo xtask extents` (a package of Slip's M3) unless Kiln would rather own it: say which |
+| §2 to §5 the normalisation of clang's dump, the matching, the lists, the verdict | **Settled here**; implementation is a script, which Kiln writes (its `cargo xtask extents`) |
 | §6 macros | **Design that follows Kiln's rule**: it restates the rule of `kiln_sema/src/macro_fixit.rs` as KE1 §2.2 asked for it; if WP-2328 decides the rule differently, §6 follows WP-2328, not the reverse |
 
 The test answers one question: when `written_extent` says `Some`, is it
@@ -181,5 +183,5 @@ marked or both unmarked `isMacroArgExpansion`.
 The same run is Slip's check at every move of its Kiln revision
 (`spec/api.md` §5.4: a transform edits only ranges of tier 0 or 1, and
 a wrong extent is a wrong edit that verification catches late and at a
-cost). Slip will run stages 1 and 2 in its own gate once `written_extent`
-is on the revision it pins.
+cost). Slip runs Kiln's script over stage 2's inputs when it moves its
+revision, once `written_extent` is on the revision it pins.
