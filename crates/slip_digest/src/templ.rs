@@ -455,7 +455,10 @@ pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         .or_else(|| templates.member_like_friend.get(ast.first(d)))
         .copied();
     w.write_ref_opt(s, friend_of);
-    // instantiated_from: ref (a pattern).
-    let from = templates.instantiated_from_map(d);
+    // instantiated_from: ref (a pattern); absent when an instantiation
+    // set it on a written declaration (WP-032 rule 1).
+    let from = templates
+        .instantiated_from_map(d)
+        .filter(|&p| !crate::units::instantiated_friend_link(w, d, p));
     write_pattern_ref_opt(w, s, from);
 }

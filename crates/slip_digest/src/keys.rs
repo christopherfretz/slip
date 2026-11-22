@@ -3,7 +3,7 @@
 //! under the walk's rules.
 
 use slip_kiln::kiln::ast::decl::{
-    DeclKind, FnStorage, LinkageLang, NamespaceData, TemplLinkKind, VarStorage,
+    DeclKind, FnStorage, FriendKind, LinkageLang, NamespaceData, TemplLinkKind, VarStorage,
 };
 use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_kiln::kiln::ast::types::TypeView;
@@ -403,6 +403,9 @@ impl Walk<'_> {
         if ast.decls.record(e).is_some_and(|r| r.lambda.is_some()) {
             return Err(Some(Cause::Pending(crate::Area::Local)));
         }
+        if let Some(class) = self.friend_class(e) {
+            return self.unit_parent(class);
+        }
         let local_extern = self.is_local_extern(e);
         if info(n.kind()).c_linkage && self.in_c_linkage(e) {
             return Ok((Parent::CLinkage, None));
@@ -459,6 +462,74 @@ impl Walk<'_> {
         Err(Some(BAD_PARENT))
     }
 
+    /// The class a friend function or function template `e` is keyed in,
+    /// though its semantic context is a namespace (WP-032 rule 3):
+    ///
+    /// - one declared by an instantiation outside its class that is
+    ///   member-like ([temp.friend]/9): the class specialisation
+    ///   `TemplateTables` `member_like_friend` names, or, for a
+    ///   non-template friend with a requires-clause, the class
+    ///   specialisation that declares it (Kiln's mangler,
+    ///   `kiln_abi::mangle::constrained_friend_class`);
+    /// - one every declaration of which is in a templated class, where
+    ///   Kiln makes it an entity of its own that redeclares nothing
+    ///   (`kiln_sema/src/decl.rs:5465`): that class
+    ///   (`spec/landed/digest/WP-032.md`).
+    ///
+    /// `None` for any other declaration, which keeps its namespace.
+    fn friend_class(&self, e: DeclId) -> Option<DeclId> {
+        let ast = self.ast;
+        let n = ast.decls.get(e);
+        let kind = n.kind();
+        let function = info(kind).function;
+        if !(function || kind == DeclKind::FunctionTemplate) {
+            return None;
+        }
+        if n.misc().friend() == FriendKind::None {
+            return None;
+        }
+        let lex = ast.decls.lexical_ctx(e)?;
+        if n.ctx() == Some(lex) || ast.decls.record(lex).is_none() {
+            return None;
+        }
+        if crate::units::instantiated_outside_class(self, e) {
+            if let Some(&class) = ast.templates.member_like_friend.get(e) {
+                return Some(class);
+            }
+            let constrained = function
+                && ast.templates.trailing_requires.contains(e)
+                && crate::units::outside_only(self, e);
+            return constrained.then_some(lex);
+        }
+        let in_pattern = self.redecls(e).iter().all(|&d| {
+            ast.decls.get(d).ctx() != ast.decls.lexical_ctx(d)
+                && self.in_templated_class(ast.decls.lexical_ctx(d))
+        });
+        in_pattern.then_some(lex)
+    }
+
+    /// `c` or a context lexically around it is a templated class: a class
+    /// template's pattern or a partial specialisation (Kiln's
+    /// `Sema::in_templated_class`), searched up to the nearest namespace.
+    fn in_templated_class(&self, mut c: Option<DeclId>) -> bool {
+        let ast = self.ast;
+        for _ in 0..CTX_LIMIT {
+            let Some(x) = c else { return false };
+            let kind = ast.decls.get(x).kind();
+            if kind == DeclKind::ClassTemplatePartialSpecialization
+                || (kind == DeclKind::CXXRecord
+                    && (ast.described_template(x).is_some() || ast.partial_spec_info(x).is_some()))
+            {
+                return true;
+            }
+            if kind == DeclKind::TranslationUnit || kind == DeclKind::Namespace {
+                return false;
+            }
+            c = ast.decls.lexical_ctx(x);
+        }
+        false
+    }
+
     fn unit_parent(&mut self, x: DeclId) -> Result<(Parent, Option<Cause>), Option<Cause>> {
         match self.key(x) {
             KeyRes::Key { id, cause, .. } => Ok((Parent::Unit(id), cause)),
@@ -478,7 +549,7 @@ impl Walk<'_> {
         if !self.external_for_c(e) {
             return false;
         }
-        match self.linkage_spec(e, false) {
+        match self.linkage_spec(self.representative(e), false) {
             Some((_, Some(LinkageLang::C))) => true,
             Some((_, Some(LinkageLang::Cxx) | None)) | None => false,
         }
@@ -554,7 +625,7 @@ impl Walk<'_> {
                 return false;
             }
         }
-        let first = ast.first(e);
+        let first = self.representative(e);
         let n = ast.decls.get(first);
         if n.kind() == DeclKind::Var && !self.is_local_extern(first) {
             let explicit_extern = self.redecls(e).iter().any(|&d| {

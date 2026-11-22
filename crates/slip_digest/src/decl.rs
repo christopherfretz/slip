@@ -142,7 +142,9 @@ impl Walk<'_> {
             redecls.iter().all(|&x| ast.decls.get(x).misc().friend() == FriendKind::Undeclared);
         let friend = if undeclared { FriendKind::Undeclared } else { FriendKind::None };
         let local_extern = redecls.iter().all(|&x| self.is_local_extern(x));
-        let first = ast.decls.get(ast.first(e)).misc();
+        // The first declaration written, not one an instantiation added
+        // before it (WP-032 rule 1).
+        let first = ast.decls.get(self.representative(e)).misc();
         // In `definition` for the definition class (§11.9), whose
         // definition Kiln makes on use: its empty form here
         // (`spec/landed/digest-kinds/WP-026.md`).

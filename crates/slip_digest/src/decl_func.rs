@@ -504,9 +504,16 @@ fn on_use(kind: SpecKind) -> bool {
 /// implicit instantiation or an explicit instantiation declaration, or,
 /// with no kind of its own, that of the nearest enclosing context that
 /// has one.
+///
+/// An entity declared only by instantiations outside their class is
+/// (WP-032 rule 2); one with a written declaration is read from it, not
+/// from a declaration an instantiation added first.
 pub(crate) fn instantiated_on_use(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
-    let mut c = Some(e);
+    if crate::units::outside_only(w, e) {
+        return true;
+    }
+    let mut c = Some(w.representative(e));
     for _ in 0..64 {
         let Some(x) = c else { return false };
         let kind = ast
@@ -559,8 +566,9 @@ fn instantiated_decl(w: &Walk<'_>, x: DeclId) -> bool {
 /// on its first declaration, which Kiln defines on odr-use as it does an
 /// implicit member (`spec/landed/digest-kinds/WP-026.md`).
 fn function_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
+    let first = w.representative(e);
     let defaulted_first =
-        w.ast.decls.function(e).is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
+        w.ast.decls.function(first).is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
     instantiated_on_use(w, e) || all_implicit(w, e) || defaulted_first
 }
 
@@ -572,7 +580,9 @@ fn var_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
 /// Whether the entity `e` (a first declaration) is of the definition
 /// class of §11.9, whose definition, and with it `DeclMisc`
 /// `0-definition`, Kiln makes on use: a function or variable as above,
-/// and any other entity that is an implicit instantiation.
+/// and any other entity that is an implicit instantiation or declared
+/// only by instantiations outside their class (a friend's definition is
+/// instantiated on use; WP-032 rule 2).
 pub(crate) fn definition_class(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
     if ast.decls.function(e).is_some() {
@@ -580,7 +590,7 @@ pub(crate) fn definition_class(w: &Walk<'_>, e: DeclId) -> bool {
     } else if ast.decls.var(e).is_some() {
         var_definition_class(w, e)
     } else {
-        implicit_instantiation(w, e)
+        crate::units::outside_only(w, e) || implicit_instantiation(w, w.representative(e))
     }
 }
 
