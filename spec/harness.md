@@ -750,6 +750,22 @@ target they do not reach through `Makefile2`. One generated file,
 `obj.clangBasic` rather than the output of a target of its own, hence the
 entry `obj.clangBasic:tools/clang/lib/Basic/VCSVersion.inc`.
 
+What a parse of it finds, and why (`bench/baselines/llvm.json` holds the
+counts):
+
+- The database has 4069 entries and the plan 4061 observers, none
+  excluded: eight files (seven of `llvm/utils/TableGen`, and
+  `clang/tools/clang-fuzzer/DummyClangFuzzer.cpp`) are each compiled twice
+  with one command, and each pair is one observer (`spec/cdb.md` §7).
+- Two units are `diagnosed`, and clang 19 rejects them with the same
+  error at the same place: `clang/tools/clang-fuzzer/ClangFuzzer.cpp` and
+  `ClangObjectiveCFuzzer.cpp` name `uint8_t` without including a header
+  that declares it (no target of the configuration builds them).
+- With Kiln at `4bfd999da`, six units are `failed`: the front end panics
+  in two defects of Kiln's constant evaluator
+  (`docs/requests/KD1-oven-panics-llvm.md`). They become `ok` when Slip's
+  pin moves past the fixes, and the baseline is recorded again then.
+
 ## Tests
 
 - `xtask/tests/lint.rs` — §3: for each lint, a fixture tree that passes and
