@@ -13,7 +13,12 @@ commands:
   lint                                         the lints of spec/harness.md §3
   wp [--ready]                                 the work packages (§4)
   ci [--quick] [--step <name>]… [--keep-going] the gate (§2)
-  corpus list|fetch|configure|status|path      the corpora (§8)";
+  corpus list|fetch|configure|status|path      the corpora (§8)
+  jobserver status|refill [--fifo <p>] [--jobs <n>]
+                                               the jobserver pool (§5); refill only
+                                               while no client holds a token
+  perf summarize <run record>…                 performance records (§7)
+  perf record|check <corpus> <run record>      the corpus baseline (§7.3)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -24,6 +29,8 @@ fn main() -> ExitCode {
         Some("wp") => xtask::wp::main(&root, rest),
         Some("ci") => xtask::ci::main(&root, rest),
         Some("corpus") => xtask::corpus::main(&root, rest),
+        Some("jobserver") => xtask::jobserver::main(rest, &|name| std::env::var_os(name)),
+        Some("perf") => xtask::perf::main(&root, rest),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
             ExitCode::SUCCESS
