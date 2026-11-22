@@ -9,8 +9,11 @@
 //! (`ns::S<int>`); a content-keyed unit as its scope and `<kind>`
 //! (`ns::<static_assert>`); a resolved unit as its owner's name and
 //! `::<property>`, with its discriminator after a space
-//! (`S::<key_function>`, `f(int)::<default_immediates 0>`); the order
-//! unit as `<order>`.
+//! (`S::<key_function>`, `f(int)::<default_immediates 0>`); a
+//! `default_argument` unit as its function's or field's name and
+//! `::<default_argument n>` (`X<int>::f(int)::<default_argument 0>`),
+//! before the property of a resolved unit of it; the order unit as
+//! `<order>`.
 
 use slip_kiln::kiln::ast::Ast;
 use slip_kiln::kiln::ast::DeclId;
@@ -43,6 +46,11 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
                             }
                             None => name.push_str("(unnamed)"),
                         }
+                    }
+                    if let Some(n) = u.default_argument {
+                        name.push_str("::<default_argument ");
+                        name.push_str(&n.to_string());
+                        name.push('>');
                     }
                     if let Some(r) = u.resolved {
                         name.push_str("::<");

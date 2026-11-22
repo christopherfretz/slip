@@ -109,8 +109,9 @@ pub(crate) struct Resolved {
 /// of which writes its unit with [`write_resolved`] when the fact exists.
 pub(crate) fn resolved_units(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
     // Resolved units belong to entities' units only (not to the order
-    // unit, nor to another resolved unit).
-    if owner.entity != Some(e) || owner.resolved.is_some() {
+    // unit, nor to another resolved or `default_argument` unit: the arm
+    // that writes a `default_argument` unit writes its resolved units).
+    if owner.entity != Some(e) || owner.resolved.is_some() || owner.default_argument.is_some() {
         return;
     }
     for p in Property::ALL {
@@ -139,6 +140,44 @@ pub(crate) fn write_resolved(
     disc: Option<u64>,
     body: impl FnOnce(&mut Walk<'_>, &mut Stream),
 ) -> Written {
+    let name = Name::Property(u64::from(p.number()));
+    let mut u = write_part(w, e, owner, KeyKind::Resolved, name, disc, body);
+    u.resolved = Some(Resolved { property: p, disc });
+    u
+}
+
+/// Writes the `default_argument` unit (digest-kinds §11.4) of parameter
+/// `index` (0 for a field) of `owner`, the unit of function or field `e`:
+/// key kind `default_argument`, parent the owner's key, name
+/// `parameter(index)`, no discriminator; otherwise as a resolved unit
+/// (derived, the owner's origin file, the owner's key cause merged in).
+#[allow(dead_code, reason = "its caller, the `default_argument` arm, lands in the next commit")]
+pub(crate) fn write_default_argument(
+    w: &mut Walk<'_>,
+    e: DeclId,
+    owner: &Written,
+    index: u64,
+    body: impl FnOnce(&mut Walk<'_>, &mut Stream),
+) -> Written {
+    let name = Name::Parameter(index);
+    let mut u = write_part(w, e, owner, KeyKind::DefaultArgument, name, None, body);
+    u.default_argument = Some(index);
+    u
+}
+
+/// A derived unit keyed under `owner` (a resolved or `default_argument`
+/// unit): key `kind` / `Parent::Unit(owner.key)` / `name` / the `uv`
+/// discriminator `disc`, whose stream `body` writes with a fresh unit
+/// state.
+fn write_part(
+    w: &mut Walk<'_>,
+    e: DeclId,
+    owner: &Written,
+    kind: KeyKind,
+    name: Name,
+    disc: Option<u64>,
+    body: impl FnOnce(&mut Walk<'_>, &mut Stream),
+) -> Written {
     let saved = w.take_unit();
     let mut s = Stream::new();
     body(w, &mut s);
@@ -151,12 +190,7 @@ pub(crate) fn write_resolved(
         let h = d.finish(DISC_TAG);
         w.hashed(h).digest
     });
-    let key = Key {
-        kind: KeyKind::Resolved,
-        parent: Parent::Unit(owner.key),
-        name: Name::Property(u64::from(p.number())),
-        disc: disc_digest,
-    };
+    let key = Key { kind, parent: Parent::Unit(owner.key), name, disc: disc_digest };
     let key = w.rules.map(key);
     w.bytes += key.to_bytes().len() as u64;
     // The cause the owner's key carries, which its parent passes on.
@@ -179,12 +213,13 @@ pub(crate) fn write_resolved(
         entity: Some(e),
         read: owner.read,
         key: key.id(),
-        kind: KeyKind::Resolved,
+        kind,
         digest: h.digest,
         cause,
         class: GroupClass::Derived,
         file,
-        resolved: Some(Resolved { property: p, disc }),
+        resolved: None,
+        default_argument: owner.default_argument,
     }
 }
 

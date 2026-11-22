@@ -48,6 +48,10 @@ pub(crate) struct Written {
     /// For a resolved unit, its property (`demand.rs`); its `entity` is
     /// the owner's.
     pub resolved: Option<crate::demand::Resolved>,
+    /// For a `default_argument` unit (digest-kinds §11.4), and for a
+    /// resolved unit of one, the parameter's index (0 for a field); its
+    /// `entity` is the function's or field's.
+    pub default_argument: Option<u64>,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -509,6 +513,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         class,
         file,
         resolved: None,
+        default_argument: None,
     })
 }
 
@@ -599,6 +604,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         class: GroupClass::Tu,
         file: Vec::new(),
         resolved: None,
+        default_argument: None,
     }
 }
 
