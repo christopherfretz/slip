@@ -390,6 +390,12 @@ text. Nothing but protocol messages may be written to its standard output.
 - `parse` prints nothing while it runs. A progress line (observers done,
   running, memory reserved) belongs on standard error when it is a terminal;
   the pool needs a way to report it.
+- Removal of a worker's `tmp/` entries (§2 "Cleaning") is best effort in
+  three places: the signal path's own removal, for a run that misses its
+  wait, has no test that isolates it; a worker whose stream thread fails
+  to start is dropped without removal; a worker killed and not yet reaped
+  when the run is abandoned can write one more entry after the removal.
+  The next exclusive open removes what is left.
 - Store corner cases left as landed (`spec/landed/exec/WP-008.md`): two
   openers initialising one empty directory at the same moment (one can be
   refused as unrecognised); entries under `tmp/` that the store did not
