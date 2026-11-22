@@ -14,6 +14,7 @@
 //! `"AttrNode/b"`), and so does a value outside what a row's note allows
 //! (`Unaccounted("AttrNode/<row>")`).
 
+use slip_kiln::kiln::ast::StringLitId;
 use slip_kiln::kiln::ast::annot::Annotation;
 use slip_kiln::kiln::ast::attr::{
     AttrKind, AttrNode, CLANG_SECTION_KINDS, LoopHint, ZERO_CALL_USED_REGS_KINDS,
@@ -22,7 +23,6 @@ use slip_kiln::kiln::ast::ids::RawId;
 use slip_kiln::kiln::ast::sanitize::{NO_SANITIZE_SPELLINGS, SanitizerSet, no_sanitize_set};
 use slip_kiln::kiln::ast::types::ParamAbi;
 use slip_kiln::kiln::ast::{AnnId, AttrId, ConstValueId, DeclId, ExprId, ListId, QualType};
-use slip_kiln::kiln::ast::StringLitId;
 use slip_kiln::kiln::source::symbol::Symbol;
 
 use crate::Cause;
@@ -147,8 +147,10 @@ impl Enc {
     fn flag_mask(self) -> u8 {
         match self {
             Enc::Bit(m) | Enc::OutBit(m) => m,
-            Enc::TypeIfFlag(..) | Enc::UvUnlessFlag(..) | Enc::ChildIfFlag(..) => 0,
-            Enc::Out(_)
+            Enc::TypeIfFlag(..)
+            | Enc::UvUnlessFlag(..)
+            | Enc::ChildIfFlag(..)
+            | Enc::Out(_)
             | Enc::OutBits(..)
             | Enc::Unsupported(_)
             | Enc::Child(_)
@@ -593,12 +595,11 @@ pub(crate) fn decl_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     s.count(bases);
     let class = ast.first(d);
     for i in 0..bases {
-        let anns = match u32::try_from(i) {
-            Ok(i) => ann_ids(w, s, ast.annots.of_base(class, i)),
-            Err(_) => {
-                s.indeterminate(Cause::Unaccounted("AnnotArena/of_base"));
-                Vec::new()
-            }
+        let anns = if let Ok(i) = u32::try_from(i) {
+            ann_ids(w, s, ast.annots.of_base(class, i))
+        } else {
+            s.indeterminate(Cause::Unaccounted("AnnotArena/of_base"));
+            Vec::new()
         };
         annotations(w, s, &anns);
     }
@@ -693,18 +694,15 @@ fn attr_node(w: &mut Walk<'_>, s: &mut Stream, n: &AttrNode) {
     let AttrNode { kind, syntax, flags, loc: _, a, b } = *n;
     // kind: enum AttrKind (a `consts` table: a value with no row is
     // unaccounted for).
-    let ops: &[Operand] = match kind_row(kind) {
-        Some(r) => {
-            s.tag(r.row);
-            if r.row.decision == Decision::Unsupported {
-                s.indeterminate(Cause::Unsupported(r.name));
-            }
-            r.ops
+    let ops: &[Operand] = if let Some(r) = kind_row(kind) {
+        s.tag(r.row);
+        if r.row.decision == Decision::Unsupported {
+            s.indeterminate(Cause::Unsupported(r.name));
         }
-        None => {
-            s.uv(0).indeterminate(Cause::Unaccounted("AttrNode/kind"));
-            &[]
-        }
+        r.ops
+    } else {
+        s.uv(0).indeterminate(Cause::Unaccounted("AttrNode/kind"));
+        &[]
     };
     // syntax: enum AttrSyntax.
     s.tag(attr_syntax::row(&syntax));
@@ -741,6 +739,11 @@ fn attr_node(w: &mut Walk<'_>, s: &mut Stream, n: &AttrNode) {
 }
 
 /// One per-kind operand row of `AttrNode`.
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "one arm per operand encoding; a and b are the AttrNode word names"
+)]
 fn operand(w: &mut Walk<'_>, s: &mut Stream, o: Operand, flags: u8, a: u32, b: u32) {
     let word = |x: Word| match x {
         Word::A => a,
@@ -1042,11 +1045,8 @@ mod tests {
     // the rows without a kind are the ones `attr_node` writes itself.
     #[test]
     fn operands_are_the_generated_rows() {
-        let unprefixed: Vec<&str> = attr_node::ROWS
-            .iter()
-            .map(|(r, _)| *r)
-            .filter(|r| !r.contains('.'))
-            .collect();
+        let unprefixed: Vec<&str> =
+            attr_node::ROWS.iter().map(|(r, _)| *r).filter(|r| !r.contains('.')).collect();
         assert_eq!(
             unprefixed,
             ["kind", "syntax", "flags-implicit", "flags-inherited", "flags-gnu-scoped", "loc"]
@@ -1351,8 +1351,11 @@ mod tests {
         with_walk(src, "c++20", |w| {
             let ast = w.ast;
             let last = named(w, "f");
-            let copies: Vec<AttrNode> =
-                ast.lists.iter::<AttrId>(ast.attrs.of_decl(last)).map(|a| *ast.attrs.get(a)).collect();
+            let copies: Vec<AttrNode> = ast
+                .lists
+                .iter::<AttrId>(ast.attrs.of_decl(last))
+                .map(|a| *ast.attrs.get(a))
+                .collect();
             assert!(
                 copies.iter().all(|n| n.flags & INHERITED != 0),
                 "Kiln copies the label to the second declaration as inherited: {copies:?}"
@@ -1598,13 +1601,19 @@ mod tests {
         assert_eq!(node_cause(node(AttrKind::CALLBACK, 0, big, 0)), un("AttrNode/CALLBACK.a"));
         assert_eq!(node_cause(node(AttrKind::ASM_LABEL, 0, 0, 0)), un("AttrNode/ASM_LABEL.a"));
         assert_eq!(node_cause(node(AttrKind::SECTION, 0, big, 0)), un("AttrNode/SECTION.a"));
-        assert_eq!(node_cause(node(AttrKind::PREFERRED_NAME, 0, 0, 0)), un("AttrNode/PREFERRED_NAME.b"));
+        assert_eq!(
+            node_cause(node(AttrKind::PREFERRED_NAME, 0, 0, 0)),
+            un("AttrNode/PREFERRED_NAME.b")
+        );
         assert_eq!(node_cause(node(AttrKind::ABI_TAG, 0, big, 0)), un("AttrNode/ABI_TAG.a"));
         // `NO_SANITIZE`: a spelling Kiln does not have.
         let ns = AttrKind::NO_SANITIZE;
         let spellings = u32::try_from(NO_SANITIZE_SPELLINGS.len()).expect("few");
         assert_eq!(node_cause(node(ns, 0, 1, (spellings - 1) << 28)), None);
-        assert_eq!(node_cause(node(ns, 0, 1, spellings << 28)), un("AttrNode/NO_SANITIZE.b-spelling"));
+        assert_eq!(
+            node_cause(node(ns, 0, 1, spellings << 28)),
+            un("AttrNode/NO_SANITIZE.b-spelling")
+        );
         // `unsupported` rows.
         assert_eq!(
             node_cause(node(AttrKind::ANNOTATION, 0, 0, 0)),
@@ -1634,9 +1643,11 @@ mod tests {
         let high = SanitizerSet(all.0 & !0xffff_ffff);
         assert!(high.0 != 0, "Kiln has sanitizers in `b`");
         // Sorted by their encoded bytes (§1.3 `*sorted`): the length first.
-        let enc = |n: &str| bytes(|s| {
-            s.bytes(n.as_bytes());
-        });
+        let enc = |n: &str| {
+            bytes(|s| {
+                s.bytes(n.as_bytes());
+            })
+        };
         let mut names: Vec<&str> = all.names().collect();
         names.sort_unstable_by_key(|n| enc(n));
         assert_ne!(names.first(), all.names().min().as_ref(), "the order is not the names' order");
@@ -1653,7 +1664,8 @@ mod tests {
         // Two members, in the order of their names.
         let first = SanitizerSet(1);
         let second = SanitizerSet(2);
-        let (n1, n2) = (first.names().next().expect("a name"), second.names().next().expect("a name"));
+        let (n1, n2) =
+            (first.names().next().expect("a name"), second.names().next().expect("a name"));
         let (lo, hi) = if enc(n1) < enc(n2) { (n1, n2) } else { (n2, n1) };
         let want = bytes(|s| {
             head(s, attr_kind::NO_SANITIZE, GNU, &[false]);
