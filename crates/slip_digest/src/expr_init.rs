@@ -218,7 +218,7 @@ fn paren_list_init_rows(w: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: 
 /// `ArrayInitLoopExpr`: `a`, the common expression (an
 /// `OpaqueValueExpr`), then `b`, the element initialiser. `b` reaches the
 /// same `OpaqueValueExpr` again (`kiln_sema` class/special/define.rs:1059,
-/// struct_bind.rs:446): by the opaque-value rule its source is written
+/// `struct_bind.rs:446`): by the opaque-value rule its source is written
 /// the first time only (in `a`), so nested loops stay linear.
 pub(crate) fn array_init_loop_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     run(w, s, e, array_init_loop_rows);
@@ -347,17 +347,17 @@ const TEMPORARY_CAUSES: ConstructCauses = [
 ];
 
 fn construct_rows(w: &Walk<'_>, s: &mut Stream, n: &Node, out: &mut Vec<R>, c: ConstructCauses) {
-    let [bits, aux, a, b] = c;
-    check_bits(s, n, bit(ExprFlags::HAD_MULTIPLE_CANDIDATES), Cause::Unaccounted(bits));
-    check_aux(s, n, 0x3F, Cause::Unaccounted(aux));
+    let [on_bits, on_aux, on_a, on_b] = c;
+    check_bits(s, n, bit(ExprFlags::HAD_MULTIPLE_CANDIDATES), Cause::Unaccounted(on_bits));
+    check_aux(s, n, 0x3F, Cause::Unaccounted(on_aux));
     let ConstructInfo { kind, list, std_init_list, zeroing, immediate_escalating } =
         ConstructInfo::from_aux(n.aux & 0x3F);
     out.push(R::Tag(construction_kind::row(&kind)));
     out.push(R::Flags(
         FlagWord::new().bit(list).bit(std_init_list).bit(zeroing).bit(immediate_escalating),
     ));
-    entity(s, out, n.a, Cause::Unaccounted(a));
-    child_list(w, s, out, n.b, Cause::Unaccounted(b));
+    entity(s, out, n.a, Cause::Unaccounted(on_a));
+    child_list(w, s, out, n.b, Cause::Unaccounted(on_b));
 }
 
 /// `CXXInheritedCtorInitExpr`: `aux-kind`, `aux-virtual-base`, `a` the
@@ -477,7 +477,7 @@ fn new_rows(w: &Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec<R>)
 /// `bits-array-as-written`, `aux-sized`, `aux-aligned`), `a` the operand,
 /// `b` the deallocation function. Kiln looks the function up at the
 /// expression from the operand's static type (`kiln_sema`
-/// new_delete.rs:2333), so it is a fact of the expression; a virtual
+/// `new_delete.rs:2333`), so it is a fact of the expression; a virtual
 /// destructor's own deallocation function is the class's
 /// (`dtor_delete`), not this row.
 pub(crate) fn cxx_delete_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
@@ -647,12 +647,11 @@ mod tests {
 
     use super::{
         Node, R, REWRITTEN_LIMIT, REWRITTEN_TOO_DEEP, array_init_index_rows, array_init_loop_rows,
-        compound_literal_rows, construct_rows_complete, construct_rows_temporary,
-        default_arg_rows, default_init_rows, delete_rows, designated_init_rows,
-        designated_init_update_rows, designator_rows, implicit_value_init_rows, inherited_ctor_init_rows,
-        init_list_rows, new_rows, no_init_rows, paren_list_init_rows, paren_list_rows,
-        pseudo_destructor_rows, rewritten_rows, scalar_value_init_rows, std_initializer_list_rows,
-        throw_rows,
+        compound_literal_rows, construct_rows_complete, construct_rows_temporary, default_arg_rows,
+        default_init_rows, delete_rows, designated_init_rows, designated_init_update_rows,
+        designator_rows, implicit_value_init_rows, inherited_ctor_init_rows, init_list_rows,
+        new_rows, no_init_rows, paren_list_init_rows, paren_list_rows, pseudo_destructor_rows,
+        rewritten_rows, scalar_value_init_rows, std_initializer_list_rows, throw_rows,
     };
     use crate::Input;
     use crate::expr::{child, node};
@@ -705,11 +704,11 @@ mod tests {
     /// and the cause they found, if any.
     fn render(w: &Walk<'_>, e: ExprId) -> String {
         let n = node(w, e);
-        let mut s = Stream::new();
+        let mut stream = Stream::new();
         let mut out = Vec::new();
         for &(k, f) in KINDS {
             if k == n.kind {
-                f(w, &mut s, e, &n, &mut out);
+                f(w, &mut stream, e, &n, &mut out);
             }
         }
         let mut parts: Vec<String> = out
@@ -731,7 +730,7 @@ mod tests {
                 R::Sym(sym) => format!("sym {}", w.ast.symbols().as_str(sym)),
             })
             .collect();
-        if let Some(c) = s.cause() {
+        if let Some(c) = stream.cause() {
             parts.push(format!("cause {c}"));
         }
         parts.join("; ")
@@ -740,8 +739,7 @@ mod tests {
     /// Parses `src` (a `main.cpp` with the given extra files) and runs `f`
     /// on a walk over it.
     fn with_walk<T>(files: &[(&str, &str)], std: &str, f: impl FnOnce(&mut Walk<'_>) -> T) -> T {
-        let snippet =
-            slip_kiln::snippet::Snippet { files, main: "main.cpp", include: &[""], std };
+        let snippet = slip_kiln::snippet::Snippet { files, main: "main.cpp", include: &[""], std };
         slip_kiln::snippet::parse(&snippet, |p| {
             let path = |_| Vec::new();
             let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
@@ -794,7 +792,10 @@ mod tests {
         assert!(!on_b.iter().any(|r| r == a), "{dir}: side B has {kind:?} `{a}` too: {on_b:#?}");
         if let Some(b) = b {
             assert!(on_b.iter().any(|r| r == b), "{dir}: side B has no {kind:?} `{b}`: {on_b:#?}");
-            assert!(!on_a.iter().any(|r| r == b), "{dir}: side A has {kind:?} `{b}` too: {on_a:#?}");
+            assert!(
+                !on_a.iter().any(|r| r == b),
+                "{dir}: side A has {kind:?} `{b}` too: {on_a:#?}"
+            );
         }
     }
 
@@ -903,12 +904,19 @@ mod tests {
             "differ/ExprNode/CXXParenListInitExpr.b",
             K::CXXParenListInitExpr,
             "count 1; child IntegerLiteral; opt true; child ImplicitValueInitExpr",
-            Some("count 3; child IntegerLiteral; child IntegerLiteral; child IntegerLiteral; opt false"),
+            Some(
+                "count 3; child IntegerLiteral; child IntegerLiteral; child IntegerLiteral; opt false",
+            ),
         );
         // CXXNewExpr, NewInitStyle, NewExtra.
         let new = |flags: u32, rest: &str| format!("flags {flags}; {rest}");
         let plain = "tag 1; type int; opt false; opt false; opt false; ref operator new; ref operator delete";
-        check("differ/ExprNode/CXXNewExpr.bits-global", K::CXXNewExpr, &new(1, plain), Some(&new(0, plain)));
+        check(
+            "differ/ExprNode/CXXNewExpr.bits-global",
+            K::CXXNewExpr,
+            &new(1, plain),
+            Some(&new(0, plain)),
+        );
         check(
             "differ/ExprNode/CXXNewExpr.bits-array-form",
             K::CXXNewExpr,
@@ -1042,7 +1050,9 @@ mod tests {
         );
         // CXXRewrittenBinaryOperator.aux (`BinaryOp` 11 `<`, 12 `>`).
         let rewritten = |tag: u32| {
-            format!("tag {tag}; child CXXOperatorCallExpr; count 2; child DeclRefExpr; child DeclRefExpr")
+            format!(
+                "tag {tag}; child CXXOperatorCallExpr; count 2; child DeclRefExpr; child DeclRefExpr"
+            )
         };
         check(
             "differ/ExprNode/CXXRewrittenBinaryOperator.aux",
@@ -1061,8 +1071,18 @@ mod tests {
         let index = "child IntegerLiteral; count 1; tag 2; child ConstantExpr";
         let range = "child IntegerLiteral; count 1; tag 3; child ConstantExpr; child ConstantExpr";
         check("differ/Designator/Field", K::DesignatedInitExpr, &field("x"), Some(index));
-        check("differ/Designator/Field.name", K::DesignatedInitExpr, &field("x"), Some(&field("y")));
-        check("differ/ColdExprData/designators", K::DesignatedInitExpr, &field("x"), Some(&field("y")));
+        check(
+            "differ/Designator/Field.name",
+            K::DesignatedInitExpr,
+            &field("x"),
+            Some(&field("y")),
+        );
+        check(
+            "differ/ColdExprData/designators",
+            K::DesignatedInitExpr,
+            &field("x"),
+            Some(&field("y")),
+        );
         check("differ/Designator/Index", K::DesignatedInitExpr, index, Some(range));
         check("differ/Designator/Range", K::DesignatedInitExpr, range, Some(index));
         // ColdExprData syntactic_list: side A's list keeps its written form.
@@ -1074,9 +1094,18 @@ mod tests {
         );
         // CompoundLiteralExpr.aux, .b: unsupported when non-zero.
         let file_scope = "child InitListExpr; cause unsupported ExprNode/CompoundLiteralExpr.aux";
-        check_a("indeterminate/ExprNode/CompoundLiteralExpr.aux", K::CompoundLiteralExpr, file_scope);
+        check_a(
+            "indeterminate/ExprNode/CompoundLiteralExpr.aux",
+            K::CompoundLiteralExpr,
+            file_scope,
+        );
         check_a("indeterminate/ExprNode/CompoundLiteralExpr.b", K::CompoundLiteralExpr, file_scope);
-        check("differ/ExprKind/CompoundLiteralExpr", K::CompoundLiteralExpr, "child InitListExpr", None);
+        check(
+            "differ/ExprKind/CompoundLiteralExpr",
+            K::CompoundLiteralExpr,
+            "child InitListExpr",
+            None,
+        );
     }
 
     /// `ColdExprData` `default_arg_rewritten`: side A of its test has an
@@ -1157,9 +1186,8 @@ mod tests {
     /// dimension more adds the same bytes.
     #[test]
     fn nested_array_init_loops_are_linear() {
-        let decomposition = |dims: usize| {
-            format!("int a[2]{};\nauto [x, y] = a;\n", "[2]".repeat(dims - 1))
-        };
+        let decomposition =
+            |dims: usize| format!("int a[2]{};\nauto [x, y] = a;\n", "[2]".repeat(dims - 1));
         let bytes: Vec<usize> = (2..=8)
             .map(|d| {
                 let (b, c) = walk_last(decomposition(d), ExprKind::ArrayInitLoopExpr);
