@@ -593,6 +593,58 @@ fn s2_shared_neither_locks_nor_cleans() {
     assert_eq!(names(&s.join("tmp")), [format!("{dead}.0.tmp"), format!("{dead}.d")]);
 }
 
+/// §2 "Cleaning", WP-018: `remove_entries_of(pid)` removes exactly the
+/// `tmp/` entries named `<pid>.…`, directories with their contents
+/// included, in either access mode and without asking `/proc`; other
+/// processes' entries, names that only look alike, and this process's own
+/// entries stay. A store with no `tmp/` is not an error.
+#[test]
+fn s2_remove_entries_of_one_process() {
+    let s = scratch("remove-of");
+    let store = Store::open(&s, Access::Shared).unwrap();
+    let tmp = s.join("tmp");
+    let me = std::process::id();
+    // Alive or not does not matter: the caller vouches for it.
+    let pid = me + 1;
+    fs::write(tmp.join(format!("{pid}.0.tmp")), "partial").unwrap();
+    fs::write(tmp.join(format!("{pid}.fake.tmp")), "loose").unwrap();
+    fs::create_dir_all(tmp.join(format!("{pid}.d")).join("sub")).unwrap();
+    fs::write(tmp.join(format!("{pid}.d")).join("sub").join("f"), "x").unwrap();
+    let keep = [
+        format!("{}.0.tmp", pid + 1),
+        format!("0{pid}.0.tmp"),
+        format!("{pid}0.0.tmp"),
+        format!("{pid}"),
+        format!("x{pid}.0.tmp"),
+        format!("{me}.0.tmp"),
+    ];
+    for k in &keep {
+        fs::write(tmp.join(k), "keep").unwrap();
+    }
+    let own = store.scratch_dir().unwrap();
+    store.remove_entries_of(pid).unwrap();
+    let mut want: Vec<String> = keep.to_vec();
+    want.push(format!("{me}.d"));
+    want.sort();
+    assert_eq!(names(&tmp), want);
+    // Its own id: nothing is removed.
+    store.remove_entries_of(me).unwrap();
+    assert!(own.exists());
+    assert!(tmp.join(format!("{me}.0.tmp")).exists());
+    // An exclusive store too, and again (nothing left: not an error).
+    drop(store);
+    fs::remove_file(tmp.join(format!("{me}.0.tmp"))).unwrap();
+    let store = Store::open(&s, Access::Exclusive).unwrap();
+    fs::create_dir_all(tmp.join(format!("{pid}.d"))).unwrap();
+    store.remove_entries_of(pid).unwrap();
+    store.remove_entries_of(pid).unwrap();
+    assert!(!tmp.join(format!("{pid}.d")).exists());
+    drop(store);
+    fs::remove_dir_all(&tmp).unwrap();
+    let store = Store::open(&s, Access::Shared).unwrap();
+    store.remove_entries_of(pid).unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // Cleaning on Drop and on a signal (§2 "Cleaning", §7)
 

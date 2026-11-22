@@ -55,7 +55,12 @@ Ids are 64 hexadecimal digits (`spec/model.md` §3); `<phase>` is `map` or
   publishes, which is safe beside a running phase. The lock is removed on
   every exit path its owner controls (§7).
 - **Cleaning.** `tmp/` entries are removed by the process that made them, on
-  every exit path it controls. Stale entries (from a killed process),
+  every exit path it controls. The coordinator, which holds the store
+  exclusively, removes the entries of each of its workers, directories
+  included, when it reaps that worker (whatever ended it: an exit, a crash,
+  a kill for a memory cap, pressure or the time limit, §5.4, §6) and when
+  it gives up on it after killing it (§7); so a phase that returns leaves
+  no entry of its workers. Other stale entries (from a killed process),
   directories included, are removed when the store is opened exclusively.
 - **Scratch.** A process that needs temporary files of its own (a worker,
   for what the front end writes) keeps them in the directory
@@ -238,17 +243,18 @@ a test can drive the scheduler with a fake sampler.
 
 On `SIGINT` or `SIGTERM` the coordinator: kills every live child's process
 group (§4); waits for them to be reaped (at most 10 s); returns every pool
-token it holds (§3); removes its `tmp/` files and the store lock; writes the
-run record with the remaining jobs as `cancelled` (best effort); prints one
-line to standard error; and ends by the signal's default action, so its
-parent sees it killed by that signal. A second signal 0.5 s or more after the
+token it holds (§3); removes its `tmp/` files, its workers' `tmp/` entries
+(§2 "Cleaning") and the store lock; writes the run record with the
+remaining jobs as `cancelled` (best effort); prints one line to standard
+error; and ends by the signal's default action, so its parent sees it
+killed by that signal. A second signal 0.5 s or more after the
 first ends the process at once, after killing the children and returning the
 tokens. The process ends at the latest 15 s after the first signal. No write
 to standard error on these paths may panic or block the exit.
 
 `SIGKILL` cannot be handled: tokens held are lost (restore with
 `cargo xtask jobserver refill`) and the store keeps a stale lock and `tmp/`
-entries, which the next run clears (§2).
+entries (its own and its workers'), which the next run clears (§2).
 
 A worker does not handle signals; it dies with its process group.
 

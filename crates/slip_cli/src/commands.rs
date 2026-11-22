@@ -19,7 +19,7 @@ use slip_exec::process::ProcSampler;
 use slip_exec::signals;
 use slip_exec::store::{Access, Store, StoreError};
 use slip_kiln::KilnCheck;
-use slip_model::{Digest, End, Observer, Phase, Plan, Reason, Shard, Status, formats};
+use slip_model::{Digest, End, Observer, Phase, Plan, Reason, Status, formats};
 
 use crate::args::{self, Db, Invocation, ParseArgs, PlanArgs, PlanSource};
 use crate::status;
@@ -70,36 +70,6 @@ pub fn dispatch(invocation: Invocation, out: &mut dyn Write, err: &mut dyn Write
         // signal thread to end the process by the signal.
         Err(Failure::Interrupted) => ExitCode::FAILURE,
     }
-}
-
-// ----- names of the model's enumerations (spec/model.md §7–§9) ----------------
-
-const REASONS: [(Reason, &str); 6] = [
-    (Reason::NotACompile, "not_a_compile"),
-    (Reason::UnsupportedLanguage, "unsupported_language"),
-    (Reason::UnsupportedFlag, "unsupported_flag"),
-    (Reason::MissingFile, "missing_file"),
-    (Reason::MalformedEntry, "malformed_entry"),
-    (Reason::UnsupportedCompiler, "unsupported_compiler"),
-];
-
-const STATUSES: [(Status, &str); 4] = [
-    (Status::Ok, "ok"),
-    (Status::Diagnosed, "diagnosed"),
-    (Status::Rejected, "rejected"),
-    (Status::Failed, "failed"),
-];
-
-const ENDS: [(End, &str); 5] = [
-    (End::Completed, "completed"),
-    (End::Crashed, "crashed"),
-    (End::KilledMemory, "killed_memory"),
-    (End::KilledTime, "killed_time"),
-    (End::Cancelled, "cancelled"),
-];
-
-fn status_name(s: Status) -> &'static str {
-    STATUSES.iter().find(|(v, _)| *v == s).map_or("?", |(_, n)| n)
 }
 
 // ----- shared pieces -----------------------------------------------------------
@@ -159,9 +129,9 @@ fn build_and_publish(
     let _ = writeln!(out, "plan {id}");
     let _ = writeln!(out, "observers {}", plan.observers.len());
     let mut code = status::OK;
-    for (reason, name) in REASONS {
+    for reason in Reason::ALL {
         let n = plan.excluded.iter().filter(|x| x.reason == reason).count();
-        let _ = writeln!(out, "excluded {name} {n}");
+        let _ = writeln!(out, "excluded {} {n}", reason.name());
         if n > 0 && reason != Reason::NotACompile {
             code = status::FINDINGS;
         }
@@ -191,14 +161,9 @@ fn plan(a: &PlanArgs, out: &mut dyn Write, _err: &mut dyn Write) -> Result<u8> {
 fn parse(a: &ParseArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8> {
     let store = open_store(&a.store, Access::Exclusive)?;
     // From here an interruption kills the workers, returns the tokens,
-    // publishes the run record and removes the lock (§7). The killed
-    // workers' scratch directories go too, while the lock is still held.
-    let cleanup = pool::cleanup_on_signal(&store);
-    let root = store.root().to_owned();
-    signals::install(Box::new(move || {
-        remove_dead_entries(&root);
-        cleanup();
-    }));
+    // publishes the run record, removes the workers' `tmp/` entries and
+    // removes the lock (§7).
+    signals::install(Box::new(pool::cleanup_on_signal(&store)));
 
     let (plan, id, plan_code) = match &a.source {
         PlanSource::Db(dbs) => build_and_publish(dbs, a.jobs, &store, out)?,
@@ -225,9 +190,6 @@ fn parse(a: &ParseArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8> 
 
     let run =
         pool::run(&store, &id, &selected, Phase::Map, 0, &worker, &options, &tokens, &ProcSampler);
-    // A worker killed for a cap, a time limit or a crash left its scratch
-    // directory behind; the lock is still ours.
-    remove_dead_entries(store.root());
     let summary = match run {
         Ok(summary) => summary,
         Err(PoolError::Cancelled) => return Err(Failure::Interrupted),
@@ -237,45 +199,9 @@ fn parse(a: &ParseArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8> 
 
     print_summary(&summary, &selected, out);
 
-    let reported_ok = report_not_ok(&store, &id, &selected, err)?;
-    let all_ok = reported_ok && summary.statuses[Status::Ok as usize] == selected.len() as u64;
+    let all_ok = report_not_ok(&summary, &selected, err);
     let parse_code = if all_ok { status::OK } else { status::FINDINGS };
     Ok(plan_code.max(parse_code))
-}
-
-/// Removes the entries of `<root>/tmp/` named `<pid>.…` for a process that
-/// no longer exists, directories included, as an exclusive open does
-/// (§2 "Cleaning"): what the workers this process killed left behind.
-/// Only where `/proc` tells; errors are ignored.
-fn remove_dead_entries(root: &Path) {
-    if !Path::new("/proc/self").exists() {
-        return;
-    }
-    let tmp = root.join("tmp");
-    let Ok(entries) = std::fs::read_dir(&tmp) else { return };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(pid) = name
-            .to_str()
-            .and_then(|n| n.split_once('.'))
-            .map(|(pid, _)| pid)
-            .filter(|p| {
-                !p.is_empty() && !p.starts_with('0') && p.bytes().all(|b| b.is_ascii_digit())
-            })
-            .and_then(|p| p.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        if pid == std::process::id() || Path::new(&format!("/proc/{pid}")).exists() {
-            continue;
-        }
-        let path = entry.path();
-        let _ = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-    }
 }
 
 /// The pool's parameters from the options (§6, §8.2).
@@ -317,11 +243,11 @@ fn pool_options(a: &ParseArgs, jobs: usize, err: &mut dyn Write) -> Options {
 /// The lines of §8.2 after the phase, but `plan`.
 fn print_summary(summary: &Summary, selected: &[Observer], out: &mut dyn Write) {
     let _ = writeln!(out, "selected {}", selected.len());
-    for (s, name) in STATUSES {
-        let _ = writeln!(out, "shard {name} {}", summary.statuses[s as usize]);
+    for s in Status::ALL {
+        let _ = writeln!(out, "shard {} {}", s.name(), summary.statuses[s as usize]);
     }
-    for (e, name) in ENDS {
-        let _ = writeln!(out, "job {name} {}", summary.ends[e as usize]);
+    for e in End::ALL {
+        let _ = writeln!(out, "job {} {}", e.name(), summary.ends[e as usize]);
     }
     let ms = summary.run.run.wall_ns / 1_000_000;
     let _ = writeln!(out, "wall {}.{:03}", ms / 1000, ms % 1000);
@@ -345,37 +271,21 @@ fn print_summary(summary: &Summary, selected: &[Observer], out: &mut dyn Write) 
 }
 
 /// One line on standard error per observer whose shard is not `ok`, in
-/// plan order (§8.2). Returns whether every one is `ok`.
-fn report_not_ok(
-    store: &Store,
-    id: &Digest,
-    selected: &[Observer],
-    err: &mut dyn Write,
-) -> Result<bool> {
-    let mut all_ok = true;
-    for o in selected {
-        let shard = store
-            .read_shard(id, Phase::Map, 0, &o.id)
-            .map_err(|e| store_failure(store.root(), &e))?;
-        let Some(bytes) = shard else {
+/// plan order (§8.2), from the pool's outcomes. Returns whether every one
+/// is `ok`.
+fn report_not_ok(summary: &Summary, selected: &[Observer], err: &mut dyn Write) -> bool {
+    debug_assert_eq!(summary.outcomes.len(), selected.len(), "one outcome per observer run");
+    let mut all_ok = summary.outcomes.len() == selected.len();
+    for (o, outcome) in selected.iter().zip(&summary.outcomes) {
+        debug_assert_eq!(o.id, outcome.observer, "outcomes in the order given");
+        if outcome.status != Status::Ok {
             all_ok = false;
-            let _ = err.write_all(b"slip: failed: ");
+            let _ = write!(err, "slip: {}: ", outcome.status.name());
             let _ = err.write_all(&o.main.path);
-            let _ = writeln!(err, ": no shard in the store");
-            continue;
-        };
-        let shard = Shard::from_bytes(&bytes).map_err(|e| {
-            Failure::Input(format!("{}: {e}", store.shard_path(id, Phase::Map, 0, &o.id).display()))
-        })?;
-        if shard.outcome.status != Status::Ok {
-            all_ok = false;
-            let first = shard.outcome.message.lines().next().unwrap_or_default();
-            let _ = write!(err, "slip: {}: ", status_name(shard.outcome.status));
-            let _ = err.write_all(&o.main.path);
-            let _ = writeln!(err, ": {first}");
+            let _ = writeln!(err, ": {}", outcome.message);
         }
     }
-    Ok(all_ok)
+    all_ok
 }
 
 /// `--plan <x>` (§8.2): an id prefix of 4 to 64 hexadecimal digits, which

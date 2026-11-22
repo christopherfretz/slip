@@ -1402,3 +1402,71 @@ fn model_8_clip_message_cuts_at_a_character_boundary() {
     let fits = format!("{}\u{20ac}tail", "a".repeat(MESSAGE_MAX - 3));
     assert_eq!(clip_message(&fits).len(), MESSAGE_MAX);
 }
+
+// ---------------------------------------------------------------------------
+// The names of the enumerations (§7 `Reason`, §8 `Status`, §9 `End`):
+// `name()` and `ALL` (spec/landed/model/WP-018.md)
+
+/// §7–§9: `ALL` lists every value once, in code order, and `name()` is the
+/// spec's name, the one the JSON form uses.
+#[test]
+fn s7_s9_enumeration_names_and_all() {
+    let reasons: Vec<(u64, &str)> = Reason::ALL.iter().map(|r| (*r as u64, r.name())).collect();
+    assert_eq!(
+        reasons,
+        [
+            (1, "not_a_compile"),
+            (2, "unsupported_language"),
+            (3, "unsupported_flag"),
+            (4, "missing_file"),
+            (5, "malformed_entry"),
+            (6, "unsupported_compiler"),
+        ]
+    );
+    let statuses: Vec<(u64, &str)> = Status::ALL.iter().map(|s| (*s as u64, s.name())).collect();
+    assert_eq!(statuses, [(0, "ok"), (1, "diagnosed"), (2, "rejected"), (3, "failed")]);
+    let ends: Vec<(u64, &str)> = End::ALL.iter().map(|e| (*e as u64, e.name())).collect();
+    assert_eq!(
+        ends,
+        [
+            (0, "completed"),
+            (1, "crashed"),
+            (2, "killed_memory"),
+            (3, "killed_time"),
+            (4, "cancelled")
+        ]
+    );
+    // Exhaustive: a new value fails to compile here until it is listed.
+    for r in Reason::ALL {
+        match r {
+            Reason::NotACompile
+            | Reason::UnsupportedLanguage
+            | Reason::UnsupportedFlag
+            | Reason::MissingFile
+            | Reason::MalformedEntry
+            | Reason::UnsupportedCompiler => {}
+        }
+    }
+    for s in Status::ALL {
+        match s {
+            Status::Ok | Status::Diagnosed | Status::Rejected | Status::Failed => {}
+        }
+    }
+    for e in End::ALL {
+        match e {
+            End::Completed
+            | End::Crashed
+            | End::KilledMemory
+            | End::KilledTime
+            | End::Cancelled => {}
+        }
+    }
+    // The JSON form uses the same names.
+    let mut shard = failed_shard();
+    for s in Status::ALL {
+        shard.outcome.status = s;
+        let v = shard.to_json();
+        let got = v.get("sections").and_then(|x| x.get("outcome")).and_then(|x| x.get("status"));
+        assert_eq!(got.and_then(Value::as_str), Some(s.name()));
+    }
+}
