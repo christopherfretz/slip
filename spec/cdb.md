@@ -251,3 +251,8 @@ files, the front-end check, and the tool versions.
   database format.
 - A launcher written as `env VAR=value compiler …` is not recognised; the
   entry is excluded as `malformed_entry` (several inputs).
+- Options that make the front end write files even under `-fsyntax-only`
+  (`-ftime-trace`, `-fconstexpr-report=`): `KilnCheck` accepts them today,
+  so a parse can write into the subject's build tree. Refuse them in the
+  check, or have Kiln offer a mode without side outputs
+  (`docs/requests/KF1-front-end-entry.md` h).
