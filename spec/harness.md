@@ -337,9 +337,11 @@ lines, in any order, among its leading lines:
   and the units; `SLIP_DIGEST_ONLY=<text>` makes the four pair runners
   run only the directories whose path contains `<text>`, and they print
   `SLIP_DIGEST_ONLY=<text>: <n> of <m> directories`. Nothing else
-  narrows (the determinism and tables tests use every directory), and
-  `cargo xtask ci` removes the variable from the environment of what it
-  runs.
+  narrows (the determinism and tables tests use every directory). The
+  runners work on a pool (`SLIP_TEST_THREADS`, `SLIP_DIGEST_TIMES`,
+  `SLIP_DIGEST_DERIVED`: `spec/landed/harness/WP-047.md`), and
+  `cargo xtask ci` removes these variables and `SLIP_DIGEST_ONLY` from
+  the environment of what it runs.
 
 ## 7. Performance records
 

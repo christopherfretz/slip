@@ -11,48 +11,14 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use common::pairs;
 
 #[test]
 fn differ() {
-    let report = std::env::var_os("SLIP_DIGEST_DERIVED").is_some_and(|v| v == "report");
-    let outcome = common::run_collect("differ", |dir| {
-        common::pairs::differ(dir).map(|lines| {
-            if report {
-                lines.into_iter().map(|l| format!("unnamed {l}")).collect()
-            } else {
-                Vec::new()
-            }
-        })
-    });
+    let report = pairs::report_mode(std::env::var_os("SLIP_DIGEST_DERIVED").as_deref());
+    let outcome = common::run_collect("differ", |dir| pairs::differ_noted(dir, report));
     if report {
-        let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
-        let mut by_dir: BTreeMap<&str, usize> = BTreeMap::new();
-        for n in &outcome.notes {
-            let Some((dir, line)) = n.split_once(": unnamed ") else { continue };
-            let word = line.split(' ').next().unwrap_or_default();
-            let loose = if line.ends_with(" (written derived-changed)") {
-                " (written derived-changed)"
-            } else {
-                ""
-            };
-            *kinds.entry(format!("{word}{loose}")).or_default() += 1;
-            *by_dir.entry(dir).or_default() += 1;
-        }
-        let mut most: Vec<_> = by_dir.iter().collect();
-        most.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-        eprintln!(
-            "SLIP_DIGEST_DERIVED=report: {} unnamed derived differences in {} directories",
-            kinds.values().sum::<usize>(),
-            by_dir.len()
-        );
-        for (k, n) in &kinds {
-            eprintln!("  {n:>6}  {k}");
-        }
-        eprintln!("the directories with the most:");
-        for (d, n) in most.iter().take(20) {
-            eprintln!("  {n:>6}  {d}");
-        }
+        eprint!("{}", pairs::report_summary(&outcome));
     }
     outcome.finish();
 }

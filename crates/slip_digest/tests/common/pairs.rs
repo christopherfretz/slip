@@ -10,7 +10,15 @@ use std::path::Path;
 use slip_model::Digest;
 use slip_model::digests::GroupClass;
 
-use super::{Digested, Expect, Side, derived_differences, digest_side, exact_derived, expect};
+use slip_digest::Cause;
+
+use super::{
+    Digested, Expect, Outcome, Side, derived_differences, digest_side, exact_derived, expect,
+};
+
+/// The suffix of a report line a `derived-changed` line covers only
+/// loosely (an appearance or a disappearance).
+const LOOSE: &str = " (written derived-changed)";
 
 /// The units of `d` under `key` that are not derived.
 fn declared(d: &Digested, key: &Digest) -> Vec<(GroupClass, Digest, u64)> {
@@ -67,7 +75,11 @@ pub fn differ(dir: &Path) -> Result<Vec<String>, String> {
     let expect = expect(dir)?;
     let exact = exact_derived(dir)?;
     if expect.is_empty() {
-        return Err("a differ test needs at least one line in expect.txt".into());
+        return Err(if exact {
+            "a differ test needs at least one line in expect.txt besides `exact derived`".into()
+        } else {
+            "a differ test needs at least one line in expect.txt".into()
+        });
     }
     if let Some(Expect::Indeterminate(n)) =
         expect.iter().find(|e| matches!(e, Expect::Indeterminate(_)))
@@ -131,13 +143,7 @@ pub fn judge_differ(
     Ok(dd
         .iter()
         .filter(|e| !expect.contains(e))
-        .map(|e| {
-            if loose.contains(e.name()) {
-                format!("{} (written derived-changed)", e.line())
-            } else {
-                e.line()
-            }
-        })
+        .map(|e| if loose.contains(e.name()) { format!("{}{LOOSE}", e.line()) } else { e.line() })
         .collect())
 }
 
@@ -247,28 +253,128 @@ fn declared_files(d: &Digested) -> BTreeMap<Digest, Vec<u8>> {
     out
 }
 
-/// The error of an `equal` or `indeterminate` test whose `expect.txt`
-/// has a `derived-*` line or `exact derived`: every unit both sides of
-/// an equal test have is equal already, and a derived unit only one side
-/// has is a failure, not something to name (`spec/digest.md` §14).
-pub fn no_derived_lines(dir: &Path, what: &str) -> Result<(), String> {
+/// The lines of `expect.txt` for a runner that reads only the lines
+/// `reads` accepts and not the directive (`equal`, `indeterminate`): any
+/// other line, and `exact derived`, is an error of the test naming it.
+/// In an `equal` test every unit both sides have is equal already and a
+/// derived unit only one side has is a failure, not something to name
+/// (`spec/digest.md` §14).
+pub fn lines_read(
+    dir: &Path,
+    what: &str,
+    reads: impl Fn(&Expect) -> bool,
+) -> Result<BTreeSet<Expect>, String> {
     if exact_derived(dir)? {
-        return Err(format!("`exact derived`: {what} has no derived lines"));
+        return Err(format!("`exact derived`: not a line of {what}"));
     }
-    if let Some(e) = expect(dir)?.iter().find(|e| e.is_derived()) {
-        return Err(format!("`{}`: {what} has no derived lines", e.line()));
+    let lines = expect(dir)?;
+    if let Some(e) = lines.iter().find(|e| !reads(e)) {
+        return Err(format!("`{}`: not a line of {what}", e.line()));
     }
-    Ok(())
+    Ok(lines)
 }
 
 /// A must-equal test (`tests/equal.rs`, `spec/digest.md` §14): the two
 /// sides' `Digests` are equal with `Detail::All`. A unit, declared or
-/// derived, that only one side has makes them differ.
+/// derived, that only one side has makes them differ. `expect.txt` has
+/// no line (comments and `# pending` only).
 pub fn equal(dir: &Path) -> Result<(), String> {
-    no_derived_lines(dir, "an equal test")?;
+    lines_read(dir, "an equal test", |_| false)?;
     let a = digest_side(dir, Side::A)?;
     let b = digest_side(dir, Side::B)?;
     judge_equal(&a, &b)
+}
+
+/// An indeterminate test (`tests/indeterminate.rs`, `spec/digest.md` §10,
+/// §14): side A only; the units flagged for a cause other than `Pending`
+/// are exactly the `indeterminate` lines, and none of those has the cause
+/// `Pending`. A unit indeterminate only for `Pending` is ignored while
+/// `Area` exists. `expect.txt` has `indeterminate` lines only.
+pub fn indeterminate(dir: &Path) -> Result<(), String> {
+    let expect =
+        lines_read(dir, "an indeterminate test", |e| matches!(e, Expect::Indeterminate(_)))?;
+    let want: BTreeSet<String> = expect.iter().map(|e| e.name().to_owned()).collect();
+    if want.is_empty() {
+        return Err("an indeterminate test needs at least one `indeterminate` line".into());
+    }
+    let a = digest_side(dir, Side::A)?;
+    let mut got = BTreeSet::new();
+    let mut pending = BTreeSet::new();
+    for v in a.units.values() {
+        for u in v {
+            if u.flags & 1 == 0 {
+                continue;
+            }
+            match u.cause {
+                Some(Cause::Pending(_)) | None => {
+                    pending.insert(u.name.clone());
+                }
+                Some(_) => {
+                    got.insert(u.name.clone());
+                }
+            }
+        }
+    }
+    if got == want {
+        return Ok(());
+    }
+    let missing: Vec<_> = want.difference(&got).collect();
+    let extra: Vec<_> = got.difference(&want).collect();
+    let only_pending: Vec<_> = want.intersection(&pending).collect();
+    Err(format!(
+        "expected but not flagged: {missing:?} (of which only pending: {only_pending:?})\nflagged but not expected: {extra:?}"
+    ))
+}
+
+/// Whether the value of `SLIP_DIGEST_DERIVED` asks for the report of
+/// unnamed derived differences (`report`).
+pub fn report_mode(var: Option<&std::ffi::OsStr>) -> bool {
+    var.is_some_and(|v| v == "report")
+}
+
+/// The prefix of a note of the report.
+const UNNAMED: &str = "unnamed ";
+
+/// What the `differ` runner does with a directory: [`differ`], and in
+/// report mode its unnamed derived differences as notes
+/// `unnamed <line>`.
+pub fn differ_noted(dir: &Path, report: bool) -> Result<Vec<String>, String> {
+    differ(dir).map(|lines| {
+        if report {
+            lines.into_iter().map(|l| format!("{UNNAMED}{l}")).collect()
+        } else {
+            Vec::new()
+        }
+    })
+}
+
+/// The summary the `differ` runner prints in report mode after a run of
+/// [`differ_noted`]: the count of unnamed derived differences and of
+/// their directories, the count by kind, and the twenty directories with
+/// the most (ties by directory).
+pub fn report_summary(outcome: &Outcome) -> String {
+    let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+    let mut by_dir: BTreeMap<&str, usize> = BTreeMap::new();
+    for n in &outcome.notes {
+        let Some((dir, line)) = n.split_once(&format!(": {UNNAMED}")) else { continue };
+        let word = line.split(' ').next().unwrap_or_default();
+        let loose = if line.ends_with(LOOSE) { LOOSE } else { "" };
+        *kinds.entry(format!("{word}{loose}")).or_default() += 1;
+        *by_dir.entry(dir).or_default() += 1;
+    }
+    let mut most: Vec<_> = by_dir.iter().collect();
+    most.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    let mut lines = vec![format!(
+        "SLIP_DIGEST_DERIVED=report: {} unnamed derived differences in {} directories",
+        kinds.values().sum::<usize>(),
+        by_dir.len()
+    )];
+    lines.extend(kinds.iter().map(|(k, n)| format!("  {n:>6}  {k}")));
+    lines.push("the directories with the most:".to_owned());
+    lines.extend(most.iter().take(20).map(|(d, n)| format!("  {n:>6}  {d}")));
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
 }
 
 /// [`equal`] over two digested sides.

@@ -457,7 +457,7 @@ fn read_expect(dir: &Path) -> Result<(BTreeSet<Expect>, bool), String> {
         let (word, name) =
             line.split_once(' ').ok_or_else(|| format!("expect.txt:{}: no name", i + 1))?;
         let name = name.trim().to_owned();
-        out.insert(match word {
+        let e = match word {
             "changed" => Expect::Changed(name),
             "added" => Expect::Added(name),
             "removed" => Expect::Removed(name),
@@ -466,7 +466,11 @@ fn read_expect(dir: &Path) -> Result<(BTreeSet<Expect>, bool), String> {
             "derived-added" => Expect::DerivedAdded(name),
             "derived-removed" => Expect::DerivedRemoved(name),
             _ => return Err(format!("expect.txt:{}: unknown word `{word}`", i + 1)),
-        });
+        };
+        if out.contains(&e) {
+            return Err(format!("expect.txt:{}: `{}` a second time", i + 1, e.line()));
+        }
+        out.insert(e);
     }
     Ok((out, exact))
 }
@@ -567,9 +571,15 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "a panic whose payload is not text".to_owned())
 }
 
-/// The stack of a pool thread: the walk and the parse have threads of
-/// their own (`on_walk_stack`, `slip_kiln::snippet`); this is what the
-/// test harness's threads have, with room to spare.
+/// The stack of a pool thread, 8 MiB. The parse and the walk have threads
+/// of their own (`slip_kiln::snippet`, [`on_walk_stack`]); a pool thread
+/// runs the rest of a directory's work, which ran on libtest's test
+/// thread before WP-047: the comparison of the sides, `index`, and
+/// whatever a caller's closure does (`tests/resolved.rs`,
+/// `tests/records.rs` on open branches). libtest gives its threads
+/// 2 MiB, or `RUST_MIN_STACK`; 8 MiB, the main thread's usual limit on
+/// Linux, keeps that work from depending on either. It is address space,
+/// not memory, until it is touched.
 const POOL_STACK: usize = 8 << 20;
 
 /// `f` over every item on `threads` threads (at least one), the results
@@ -580,6 +590,16 @@ pub fn pool_map<T: Sync, R: Send>(
     threads: usize,
     f: impl Fn(&T) -> R + Sync,
 ) -> Vec<Result<R, String>> {
+    pool_map_timed(items, threads, f).into_iter().map(|(r, _)| r).collect()
+}
+
+/// [`pool_map`], each result beside the time its item took, a panicking
+/// one's included.
+pub fn pool_map_timed<T: Sync, R: Send>(
+    items: &[T],
+    threads: usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<(Result<R, String>, std::time::Duration)> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let next = AtomicUsize::new(0);
     let (tx, rx) = std::sync::mpsc::channel();
@@ -593,9 +613,10 @@ pub fn pool_map<T: Sync, R: Send>(
                     loop {
                         let n = next.fetch_add(1, Ordering::Relaxed);
                         let Some(item) = items.get(n) else { break };
+                        let start = std::time::Instant::now();
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(item)))
                             .map_err(|p| panic_text(&*p));
-                        if tx.send((n, r)).is_err() {
+                        if tx.send((n, (r, start.elapsed()))).is_err() {
                             break;
                         }
                     }
@@ -604,7 +625,8 @@ pub fn pool_map<T: Sync, R: Send>(
         }
     });
     drop(tx);
-    let mut out: Vec<Option<Result<R, String>>> = items.iter().map(|_| None).collect();
+    let mut out: Vec<Option<(Result<R, String>, std::time::Duration)>> =
+        items.iter().map(|_| None).collect();
     for (n, r) in rx {
         out[n] = Some(r);
     }
@@ -708,24 +730,15 @@ pub fn run_dirs(
         }
     }
     out.ran = work.len();
-    let results = pool_map(&work, threads, |dir| {
-        let start = std::time::Instant::now();
-        let r = f(dir);
-        (r, start.elapsed())
-    });
-    for (dir, r) in work.iter().zip(results) {
+    let results = pool_map_timed(&work, threads, |dir| f(dir));
+    for (dir, (r, t)) in work.iter().zip(results) {
         let rel = rel(dir);
         match r {
-            Ok((Ok(notes), t)) => {
-                out.notes.extend(notes.into_iter().map(|n| format!("{rel}: {n}")));
-                out.times.push((rel, t));
-            }
-            Ok((Err(e), t)) => {
-                out.failures.push(format!("{rel}: {e}"));
-                out.times.push((rel, t));
-            }
+            Ok(Ok(notes)) => out.notes.extend(notes.into_iter().map(|n| format!("{rel}: {n}"))),
+            Ok(Err(e)) => out.failures.push(format!("{rel}: {e}")),
             Err(panic) => out.failures.push(format!("{rel}: panicked: {panic}")),
         }
+        out.times.push((rel, t));
     }
     out
 }

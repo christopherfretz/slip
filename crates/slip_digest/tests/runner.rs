@@ -144,6 +144,12 @@ fn wp047_exact_derived_names_the_unnamed() {
     let (a, b) = sides("derived/appears");
     let e = err(judge_differ(&set(&[]), true, &a, &b));
     assert_eq!(e, "expected but not seen: []\nseen but not expected: [DerivedAdded(\"g<int>()\")]");
+    let (a, b) = sides("derived/disappears");
+    let e = err(judge_differ(&set(&[]), true, &a, &b));
+    assert_eq!(
+        e,
+        "expected but not seen: []\nseen but not expected: [DerivedRemoved(\"g<int>()\")]"
+    );
     let (a, b) = sides("derived/changes");
     let e = err(judge_differ(&set(&[changed("X::~X<T>()")]), true, &a, &b));
     assert!(e.contains("seen but not expected: [DerivedChanged(\"X<int>::~X()\")]"), "{e}");
@@ -224,16 +230,51 @@ fn wp047_equal_one_sided_derived() {
     assert!(e.lines().any(|l| l == "only in A: g<int>()"), "{e}");
 }
 
+/// `equal` reads no line and `indeterminate` only `indeterminate` lines:
+/// any other line, and the directive, is an error naming it. The
+/// functions are the ones the runners call.
 #[test]
-fn wp047_equal_and_indeterminate_refuse_derived_lines() {
+fn wp047_equal_and_indeterminate_refuse_other_lines() {
     let e = common::pairs::equal(&fixture("expect/equal-derived")).unwrap_err();
-    assert_eq!(e, "`derived-added x`: an equal test has no derived lines");
-    let e = common::pairs::no_derived_lines(
-        &fixture("expect/indeterminate-derived"),
-        "an indeterminate test",
-    )
-    .unwrap_err();
-    assert_eq!(e, "`exact derived`: an indeterminate test has no derived lines");
+    assert_eq!(e, "`derived-added x`: not a line of an equal test");
+    let e = common::pairs::equal(&fixture("expect/equal-line")).unwrap_err();
+    assert_eq!(e, "`changed x`: not a line of an equal test");
+    let e = common::pairs::indeterminate(&fixture("expect/indeterminate-derived")).unwrap_err();
+    assert_eq!(e, "`exact derived`: not a line of an indeterminate test");
+    let e = common::pairs::indeterminate(&fixture("expect/indeterminate-line")).unwrap_err();
+    assert_eq!(e, "`changed y`: not a line of an indeterminate test");
+}
+
+// --- the runners' functions over fixture directories --------------------------
+
+/// `pairs::differ` reads `exact derived` from the file: the same lines
+/// hold without it and fail with it.
+#[test]
+fn wp047_differ_reads_the_directive() {
+    let loose = common::pairs::differ(&fixture("file/differ-loose")).unwrap();
+    assert_eq!(loose, ["derived-added g<int>() (written derived-changed)"]);
+    let e = common::pairs::differ(&fixture("file/differ-exact")).unwrap_err();
+    assert!(e.contains("expected but not seen: [DerivedChanged(\"g<int>()\")]"), "{e}");
+    assert!(e.contains("seen but not expected: [DerivedAdded(\"g<int>()\")]"), "{e}");
+    assert!(common::pairs::differ(&fixture("file/differ-exact-ok")).unwrap().is_empty());
+    let e = common::pairs::differ(&fixture("file/differ-only-directive")).unwrap_err();
+    assert_eq!(e, "a differ test needs at least one line in expect.txt besides `exact derived`");
+}
+
+/// A `differ` test with only `derived-*` lines is still held to its
+/// declared differences.
+#[test]
+fn wp047_differ_derived_lines_only_still_declared() {
+    let e = common::pairs::differ(&fixture("file/differ-declared")).unwrap_err();
+    assert_eq!(e, "expected but not seen: []\nseen but not expected: [Added(\"f()\")]");
+}
+
+/// `pairs::demand` reads `exact derived` from the file.
+#[test]
+fn wp047_demand_reads_the_directive() {
+    common::pairs::demand(&fixture("file/demand-loose")).unwrap();
+    let e = common::pairs::demand(&fixture("file/demand-exact")).unwrap_err();
+    assert!(e.contains("seen but not expected: [DerivedAdded(\"g<int>()\")]"), "{e}");
 }
 
 // --- expect.txt --------------------------------------------------------------
@@ -253,6 +294,13 @@ fn wp047_expect_lines_and_directive() {
         "expect.txt:3: a second `exact derived`"
     );
     assert!(common::expect(&twice).is_err());
+    let e = common::expect(&fixture("expect/unknown")).unwrap_err();
+    assert_eq!(e, "expect.txt:1: unknown word `frobbed`");
+    // The directive is exactly `exact derived`.
+    let e = common::exact_derived(&fixture("expect/trailing")).unwrap_err();
+    assert_eq!(e, "expect.txt:1: unknown word `exact`");
+    let e = common::expect(&fixture("expect/twice-line")).unwrap_err();
+    assert_eq!(e, "expect.txt:3: `changed f` a second time");
     for e in [d_added("a b"), d_removed("b"), d_changed("c")] {
         let line = e.line();
         assert_eq!(e.name(), line.split_once(' ').unwrap().1);
@@ -302,6 +350,36 @@ fn wp047_pool_report_independent_of_threads() {
     assert_eq!(reports[2], reports[0]);
 }
 
+/// A panicking directory has its time too, and `slowest` breaks ties by
+/// directory.
+#[test]
+fn wp047_pool_times() {
+    let base = fixture("pool");
+    let dirs: Vec<PathBuf> = ["a", "b", "c", "d", "e", "f"].iter().map(|d| base.join(d)).collect();
+    let o = common::run_dirs("pool", &dirs, 3, pool_work);
+    let timed: Vec<&str> = o.times.iter().map(|(d, _)| d.as_str()).collect();
+    assert_eq!(
+        timed,
+        ["runner/pool/a", "runner/pool/b", "runner/pool/d", "runner/pool/e", "runner/pool/f"]
+    );
+    let ms = std::time::Duration::from_millis;
+    let o = common::Outcome {
+        root: "t".into(),
+        ran: 4,
+        skipped: Vec::new(),
+        failures: Vec::new(),
+        notes: Vec::new(),
+        times: vec![
+            ("d".into(), ms(5)),
+            ("b".into(), ms(9)),
+            ("c".into(), ms(5)),
+            ("a".into(), ms(5)),
+        ],
+    };
+    let names: Vec<String> = o.slowest(3).into_iter().map(|(d, _)| d).collect();
+    assert_eq!(names, ["b", "a", "c"]);
+}
+
 #[test]
 fn wp047_pool_size() {
     use std::ffi::OsStr;
@@ -337,25 +415,46 @@ fn wp047_pool_map() {
 
 // --- the report mode -------------------------------------------------------------
 
-/// What `SLIP_DIGEST_DERIVED=report` prints for a passing directory: its
-/// unnamed derived differences as the lines that would name them, and
-/// the directory passes.
+/// What `SLIP_DIGEST_DERIVED=report` prints: the `differ` runner's own
+/// functions (`report_mode`, `differ_noted`, `report_summary`) over
+/// fixture directories. A passing directory's unnamed derived differences
+/// are notes, the run passes, and the summary counts them by kind and by
+/// directory; a failing directory gives no notes.
 #[test]
-fn wp047_report_mode_lines() {
-    let dirs = [fixture("derived/appears"), fixture("derived/disappears")];
-    // These fixtures have no expect.txt: give `differ` the lines through a
-    // closure over the sides, as `pairs::differ` does from the file.
-    let outcome = common::run_dirs("report", &dirs, 2, |dir| {
-        let a = common::digest_side(dir, Side::A)?;
-        let b = common::digest_side(dir, Side::B)?;
-        judge_differ(&set(&[]), false, &a, &b)
-    });
+fn wp047_report_mode() {
+    use common::pairs::{differ_noted, report_mode, report_summary};
+    use std::ffi::OsStr;
+    assert!(report_mode(Some(OsStr::new("report"))));
+    assert!(!report_mode(None));
+    assert!(!report_mode(Some(OsStr::new("1"))));
+    let dirs = [
+        fixture("file/differ-loose"),
+        fixture("file/differ-report-changes"),
+        fixture("file/differ-exact-ok"),
+    ];
+    let outcome = common::run_dirs("report", &dirs, 2, |d| differ_noted(d, true));
     let (text, failure) = outcome.report();
     assert_eq!(failure, None);
     assert_eq!(
         text,
-        "runner/derived/appears: derived-added g<int>()\n\
-         runner/derived/disappears: derived-removed g<int>()\n\
-         report: 2 run, 0 skipped, 0 failed\n"
+        "runner/file/differ-loose: unnamed derived-added g<int>() (written derived-changed)\n\
+         runner/file/differ-report-changes: unnamed derived-changed X<int>::~X()\n\
+         report: 3 run, 0 skipped, 0 failed\n"
     );
+    assert_eq!(
+        report_summary(&outcome),
+        "SLIP_DIGEST_DERIVED=report: 2 unnamed derived differences in 2 directories\n\
+         \x20      1  derived-added (written derived-changed)\n\
+         \x20      1  derived-changed\n\
+         the directories with the most:\n\
+         \x20      1  runner/file/differ-loose\n\
+         \x20      1  runner/file/differ-report-changes\n"
+    );
+    // Without report mode there are no notes.
+    let quiet = common::run_dirs("report", &dirs, 2, |d| differ_noted(d, false));
+    assert!(quiet.notes.is_empty());
+    // A failing directory gives its failure and no notes.
+    let failing =
+        common::run_dirs("report", &[fixture("file/differ-exact")], 1, |d| differ_noted(d, true));
+    assert!(failing.notes.is_empty() && failing.failures.len() == 1);
 }

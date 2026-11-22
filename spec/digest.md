@@ -817,6 +817,46 @@ true by mechanism, not by review alone.
   encoding is rejected (`crates/slip_model/tests/`).
 - **Completeness**: obligations 4 and 5 of §13.
 
+### 14.1 What a pair test's `expect.txt` says
+
+A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
+`expect.txt`. Its lines, each trimmed; a blank line and a line beginning
+`#` are none (`# pending` marks a test the runner skips and lists):
+
+| Line | Holds when |
+|---|---|
+| `changed <name>` | a key of the name has declared or `tu` units on both sides, and they differ |
+| `added <name>` | side B has declared or `tu` units under a key of the name and side A has none |
+| `removed <name>` | the other way round |
+| `indeterminate <name>` | a unit of the name is flagged for a cause other than `Pending` (§10) |
+| `derived-added <name>` | side B has a derived unit (§2.2) under a key of the name and side A has none |
+| `derived-removed <name>` | the other way round |
+| `derived-changed <name>` | the derived units under a key of the name differ in any way, presence included; under `exact derived`, both sides have one and they differ |
+| `exact derived` | a directive, not a line: the derived keys that differ between the sides are exactly the keys the `derived-*` lines name, each in the way its line says |
+
+1. Any other line is an error of the test, as is a line written twice
+   and a second `exact derived`. The directive is exactly the text
+   `exact derived`.
+2. A name is the name of the key's first unit, from side A when A has
+   the key. Lines are compared by name: a line names every key of its
+   name, and two keys of one name that differ the same way are one line.
+3. **`differ`** reads every line but `indeterminate`, and needs one
+   besides the directive. Over declared and `tu` units, the keys that
+   differ are exactly the `changed`, `added` and `removed` lines, whatever
+   the `derived-*` lines are. A `derived-added` or `derived-removed` line
+   that does not hold fails the test, with or without the directive.
+   Without the directive a derived difference no line names is free.
+4. **`demand`** reads `added` and `derived-added` lines and the
+   directive. Every unit both sides have is equal; the declared keys only
+   B has are exactly the `added` lines and A has none B lacks; every
+   `derived-added` line holds, and under the directive the derived
+   differences are exactly those lines, so that an unnamed instantiation
+   only B has, or any derived unit only A has, fails.
+5. **`equal`** reads no line and no directive: every unit both sides have
+   is equal already, and a unit only one side has, declared or derived,
+   fails the test (the derived groups are part of the `Digests`
+   compared). **`indeterminate`** reads `indeterminate` lines only.
+
 ## Tests
 
 - `crates/slip_digest/tests/equal.rs`, `differ.rs` — §14 pairs, one
@@ -824,6 +864,8 @@ true by mechanism, not by review alone.
 - `crates/slip_digest/tests/determinism.rs`, `demand.rs`,
   `indeterminate.rs` — §14.
 - `crates/slip_digest/tests/tables.rs` — §13 obligations 4 and 5.
+- `crates/slip_digest/tests/runner.rs` — §14.1, the runners' reading of
+  `expect.txt`, over the fixtures of `tests/runner/`.
 - `crates/slip_digest/tests/records.rs`, `trace.rs` — §4.4.
 - `frames_fit_the_stack` in `crates/slip_digest/src/expr.rs` and the
   tests each area adds to it — §12.1.
