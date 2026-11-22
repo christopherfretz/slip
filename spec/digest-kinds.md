@@ -32,7 +32,7 @@ code span of `key=value` pairs separated by `; `.
 | Key | Values | Meaning |
 |---|---|---|
 | `kind` | `struct`, `enum`, `root` | the descriptor's kind |
-| | `view` | a decoded form Kiln's API returns; it may have no descriptor |
+| | `view` | a decoded form Kiln's API returns, whose rows are its variants; it may have no descriptor. A decoded form that is a record is `struct` with `pin=none` |
 | | `consts` | a newtype whose values are associated constants; the rows are the constants |
 | `pin` | `schema` | the type is reached from `kiln_ast::ast::Ast`'s descriptor |
 | | `extra` | the type derives `Snap` but is decoded from a packed word, so `Ast`'s descriptor does not reach it; the test registers it by name, and `slip_digest` pins its `SCHEMA_HASH` like any other |
@@ -40,8 +40,7 @@ code span of `key=value` pairs separated by `; `.
 | `selector` | a tabled enumeration's path | the record has per-kind words; rows may be prefixed by a variant of this enumeration |
 | `base` | a number | added to the row number to give the variant's tag (§1.4) |
 
-The values of `pin` were computed from the source by hand; the first run
-of the test corrects any `schema` that should be `extra` or the reverse.
+The test checks every value of `pin`.
 
 The first table after the property line is the type's table. Descriptors
 of kind `id` (every arena index and `QualType`) and of the container kinds
@@ -5652,8 +5651,11 @@ variant added to one of them is caught by obligation 2 (the walk does not
 compile) and by nothing else. `AttrKind` is a newtype: a new constant is
 caught only when a walk meets it.
 
-The `pin` values `schema` and `extra` were assigned by reading the
-source; the first run of `tables.rs` settles them.
+The `pin` values are checked by `tables.rs` against Kiln's descriptors.
+Twelve pinned types cannot be named from outside Kiln, so their hash is
+compared when the test runs and not when `slip_digest` compiles
+(`crates/slip_digest/tests/tables/pins.txt`); a request to Kiln to make
+them nameable is open.
 
 ### Questions for Kiln
 

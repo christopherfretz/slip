@@ -184,6 +184,20 @@ fn wp021_path_of_a_made_buffer() {
 
 // A missing include: an error with Kiln's message, and the callback is
 // still called.
+/// The clock is not an input: the date and time macros are the epoch's.
+#[test]
+fn wp021_fixed_time() {
+    let files = [(
+        "t.cpp",
+        "static_assert(sizeof(__DATE__) == 12 && __DATE__[0] == 'J' && __DATE__[10] == '0');\n\
+         static_assert(sizeof(__TIME__) == 9 && __TIME__[0] == '0' && __TIME__[7] == '0');\n\
+         static_assert(sizeof(__TIMESTAMP__) == 25 && __TIMESTAMP__[0] == 'T');\n",
+    )];
+    let (errors, diagnostics) =
+        parse(&snippet(&files, "t.cpp"), |p| (p.errors, p.diagnostics.clone())).unwrap();
+    assert_eq!(errors, 0, "{diagnostics}");
+}
+
 #[test]
 fn wp021_missing_include() {
     let files = [("main.cpp", "int before;\n#include \"absent.h\"\n")];

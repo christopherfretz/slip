@@ -56,3 +56,17 @@ Measured through this route (release build, one process, a translation unit
 including `<vector> <string> <map> <algorithm> <memory> <iostream>`,
 `-std=c++17`, 247 files, 3.26 MB): 0.26–0.28 s per parse including hashing,
 peak resident size 36–38 MB.
+
+## Found since (2026-11-22, `slip_kiln::snippet`, WP-021)
+
+A front end over files in memory, for tests, has to build the language
+options of `kiln -std=<std> -fsyntax-only` itself. Three things it could
+not take from Kiln and copies or leaves out:
+
+- `SyntaxJob::parse_options`, `Job::pp_options` and
+  `Job::configure_preprocessor` are private: the snippet front end
+  mirrors them field by field. Public forms would remove the copy.
+- `StagedFeatures` is private to `kiln_driver`, so `__has_builtin`
+  answers from the unstaged `ClangFeatures`.
+- `ParseOptions::complex_promoted` is computed by comparing a
+  `kiln_codegen` type; an accessor on `Args` would do.

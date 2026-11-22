@@ -54,9 +54,9 @@
 //!   feature queries are the driver's.
 //! - **The note after a missing `<meta>`** at C++26 (`PpOptions::meta_hint`)
 //!   is not given: it depends on the GCC installation on the host.
-//! - **`__DATE__` and `__TIME__`** are the wall clock: `kiln` takes them
-//!   from `SOURCE_DATE_EPOCH` or `KILN_REPRODUCIBLE_TIME` when set, and this
-//!   front end reads no environment.
+//! - **`__DATE__`, `__TIME__` and `__TIMESTAMP__`** are those of the Unix
+//!   epoch, as under `kiln -fkiln-reproducible-time`: a snippet parses to
+//!   the same translation unit whenever and wherever it is parsed.
 //! - **`ParseOptions::complex_promoted`** is `false`, the value with no
 //!   flag; the driver compares a `kiln_codegen` type to compute it, and this
 //!   crate does not link `kiln_codegen`.
@@ -405,6 +405,10 @@ impl Language {
         let a = &self.args;
         let std = &self.std;
         let mut o = PpOptions::new(std.lex);
+        // A test's input is its files and nothing else: never the clock.
+        let (date, time, timestamp) = kiln_driver::time::spellings(0);
+        o.reproducible_time = Some((date, time));
+        o.timestamp = Some(timestamp);
         o.c = std.c;
         o.gnu = std.gnu;
         // `!(gnu || C++17 or later)`: every snippet standard is C++17 or
