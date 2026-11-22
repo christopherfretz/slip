@@ -96,7 +96,10 @@ that contains them (§4.3) and are not units.
 An entity declared more than once is one unit. Its digest covers the
 entity as the declarations together define it (the definition; default
 arguments from every declaration; attributes from every declaration), not
-how many declarations there were or in what order.
+how many declarations there were or in what order. Attributes are the
+exception: they are one list over the declarations, first to last, with
+order and repetition kept (`digest-kinds.md` §10.1), because for some
+kinds the first one written decides and for others each one counts.
 
 One more unit exists per translation unit, the **order unit** (kind
 `order`, parent `root`): the keys of the variables with static or thread
@@ -690,6 +693,14 @@ true by mechanism, not by review alone.
 - The order unit lists no instantiated variable (§2.1). Kiln emits them
   at a fixed place, and a program that relies on unordered
   initialisation can observe it.
+- An entity's attributes are an ordered list over its declarations, so
+  moving a pure flag (`cold`, `noinline`) from one declaration to
+  another, or repeating it, is reported as a difference. Removing that
+  needs a table saying, per attribute kind, whether it is a flag,
+  whether the first one decides or whether each one counts. In the same
+  way `[[gnu::x]]` and `__attribute__((x))` differ (`AttrNode` `syntax`),
+  though Kiln reads the spelling only to check `noreturn` and
+  `nodiscard`.
 - Attributes that only affect diagnostics (`[[nodiscard]]`,
   `[[deprecated]]`) are included. A policy to exclude them would let a
   transform change them without declaring it.
