@@ -1,0 +1,165 @@
+{
+  "kind": "DECL",
+  "version": 1,
+  "sections": {
+    "declared": {
+      "rules": [
+        {
+          "parent": "root",
+          "kind": "namespace",
+          "name": {
+            "identifier": "legacy"
+          },
+          "disc": null,
+          "to_parent": "root",
+          "to_name": {
+            "identifier": "acme"
+          }
+        },
+        {
+          "parent": "c_linkage",
+          "kind": "function",
+          "name": {
+            "literal_operator": "_km"
+          },
+          "disc": null,
+          "to_parent": "builtin",
+          "to_name": "deduction_guide"
+        },
+        {
+          "parent": {
+            "unit": "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e"
+          },
+          "kind": "function",
+          "name": {
+            "identifier": "g"
+          },
+          "disc": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "to_parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "to_name": {
+            "identifier": "f"
+          }
+        },
+        {
+          "parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "kind": "namespace",
+          "name": "anonymous",
+          "disc": null,
+          "to_parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "to_name": "content"
+        },
+        {
+          "parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "kind": "class",
+          "name": {
+            "local": 3
+          },
+          "disc": null,
+          "to_parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "to_name": {
+            "unnamed_by": {
+              "identifier": "T"
+            }
+          }
+        },
+        {
+          "parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "kind": "class",
+          "name": {
+            "unnamed_ordinal": 2
+          },
+          "disc": null,
+          "to_parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "to_name": {
+            "property": 7
+          }
+        },
+        {
+          "parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "kind": "function",
+          "name": {
+            "operator": 5
+          },
+          "disc": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "to_parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "to_name": "constructor"
+        },
+        {
+          "parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "kind": "function",
+          "name": "destructor",
+          "disc": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "to_parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "to_name": {
+            "conversion": "7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e"
+          }
+        },
+        {
+          "parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "kind": "variable",
+          "name": {
+            "identifier": {
+              "hex": "ff00"
+            }
+          },
+          "disc": null,
+          "to_parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "to_name": {
+            "identifier": "ok"
+          }
+        },
+        {
+          "parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "kind": "order",
+          "name": "order",
+          "disc": null,
+          "to_parent": {
+            "unit": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+          },
+          "to_name": {
+            "parameter": 1
+          }
+        }
+      ],
+      "changed": [
+        "0101010101010101010101010101010101010101010101010101010101010101",
+        "0202020202020202020202020202020202020202020202020202020202020202"
+      ],
+      "created": [
+        "0202020202020202020202020202020202020202020202020202020202020202"
+      ],
+      "removed": [
+        "0303030303030303030303030303030303030303030303030303030303030303",
+        "0404040404040404040404040404040404040404040404040404040404040404"
+      ]
+    }
+  }
+}
