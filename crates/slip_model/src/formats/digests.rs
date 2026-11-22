@@ -1,6 +1,6 @@
 //! The `digests` section, id 19 of the shard (`spec/digest.md` §11).
-//! Work package WP-015; the rules the spec leaves open are recorded in
-//! `spec/landed/model/WP-015.md`.
+//! Work package WP-015; the binary form, invariants, offsets and paths are
+//! `spec/model.md` §8.2.
 
 use crate::digests::{Digests, Group, GroupClass, SCHEME, Unit, group_digest, tu_digest};
 use crate::json::Value;

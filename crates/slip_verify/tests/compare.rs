@@ -110,7 +110,7 @@ fn used(keys: &[u8]) -> Comparison {
 }
 
 /// The verdict is valid under `slip_model`'s invariants
-/// (`spec/landed/model/WP-015.md`), as the section of a verify shard; and,
+/// (`spec/model.md` §8.3), as the section of a verify shard; and,
 /// field by field, under the rules of §6 that this crate relies on.
 fn check_valid(v: &Verdict) {
     let shard = Shard {

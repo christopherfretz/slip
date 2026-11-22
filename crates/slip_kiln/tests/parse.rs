@@ -1,4 +1,4 @@
-//! `spec/model.md` §8 and `spec/landed/model/WP-010.md`: `parse_observer`,
+//! `spec/model.md` §8 and §8.4: `parse_observer`,
 //! one observer through Kiln to its shard.
 //!
 //! `parse_observer` changes the process's current directory, so every test

@@ -25,7 +25,11 @@ against the front end (§6) and building the plan (§7).
 
 The file must be JSON (`spec/model.md` §4) whose top-level value is an array.
 Anything else is the error `Database` (with the file and the reason) and no
-plan is produced.
+plan is produced. The reason is `not JSON: <error>` (the error of
+`spec/model.md` §4.1, with line, column and byte; invalid UTF-8 is one of
+these) or `the top level is <type>, not an array`. `<type>`, here and in the
+details below, is one of `null`, `a boolean`, `a number`, `a string`,
+`an array`, `an object`.
 
 Each element is an *entry*, numbered from zero. An entry is well formed when
 it is an object with:
@@ -43,9 +47,41 @@ it is an object with:
 An entry that is not well formed, or whose `command` cannot be split, is
 excluded with reason `malformed_entry` and a `detail` saying why.
 
+- **Order of checks** for one entry, the first failure decides: not an
+  object; `directory` missing or not a string; `directory` not absolute
+  (`Path::is_absolute`, so the empty string is relative); `file` missing or
+  not a string; then the command line.
+- **`arguments` wins strictly.** When `arguments` is present it alone is
+  used: if it is malformed (not an array, empty, a non-string element) the
+  entry is excluded even when `command` would split. When `arguments` is
+  absent, `command` must be a string and is split by §3.
+- `output` and every unknown key are ignored whatever their type.
+- The exclusion's `file` is the entry's `file` whenever that is a string,
+  whatever the defect (so a bad `directory` still reports the file); empty
+  otherwise.
+- Detail texts: `` the entry is <type>, not an object ``,
+  `` `<key>` is missing ``, `` `<key>` is <type>, not a string ``,
+  `` `directory` `<d>` is not an absolute path ``,
+  `` `arguments` is <type>, not an array ``, `` `arguments` is empty ``,
+  `` `arguments[<i>]` is <type>, not a string ``,
+  `` neither `arguments` nor `command` is present ``,
+  `` `command` cannot be split: <message> (byte <offset>) `` (§3).
+
 Readers for other formats implement the same interface (a sequence of
 entries, each well formed or carrying its defect) and share everything from
 §4 on.
+
+### 2.1 Interface
+
+```rust
+// slip_cdb::database
+pub fn read_json(bytes: &[u8]) -> Result<Vec<Result<Entry, Defect>>, DatabaseError>;
+pub struct Entry { pub directory: String, pub file: String, pub arguments: Vec<String> } // arguments never empty
+pub struct Defect { pub file: String, pub detail: String }   // file: the entry's `file`, or empty
+pub struct DatabaseError { pub detail: String }
+```
+
+One element per entry, in order; an entry's number is its index.
 
 ## 3. Splitting a command string
 
@@ -54,6 +90,7 @@ clang's JSON compilation database for the cases build systems produce, made
 strict.
 
 - Words are separated by one or more of space, tab, newline, carriage return.
+  Other whitespace is an ordinary character.
 - Outside quotes, a backslash makes the next character literal.
 - `"` starts a double-quoted part, which runs to the next unescaped `"`.
   Inside it a backslash makes the next character literal; every other
@@ -66,6 +103,19 @@ strict.
 Errors (the entry is `malformed_entry`): a quote that is never closed; a
 backslash as the last character; a string with no words.
 
+Each error carries a byte offset into the input and a message:
+
+| Error | Offset | Message |
+|---|---|---|
+| a double quote never closed (a backslash immediately before the end of a quoted part leaves it unclosed) | the opening quote | `double quote is never closed` |
+| a single quote never closed | the opening quote | `single quote is never closed` |
+| a trailing backslash | the backslash | `backslash is the last character` |
+| no words | 0 | `command has no words` |
+
+`slip_cdb::split` provides `split_command(&str)` (this section) and
+`split_response(&str)` (§4), each returning `Result<Vec<String>, SplitError>`
+with `SplitError { offset: usize, message: &'static str }`.
+
 ## 4. Response files
 
 An argument of the form `@path`, other than `argv[0]`, is replaced by the
@@ -73,6 +123,15 @@ words of the file `path` (relative paths are relative to the entry's
 `directory`). The file is split with the GNU response-file rules: as §3,
 except that inside double quotes a backslash is literal unless followed by
 `"` or `\`. Replacement is recursive to a depth of 16.
+
+- `@` alone names no file and is kept as an ordinary argument.
+- Relative paths at every depth are relative to the entry's `directory`, not
+  to the response file naming them (clang's default differs).
+- An empty response file (no words) is not an error: it contributes no
+  words. §3's "no words" error applies to a `command` string only.
+- Depth: a response file named on the command line is at depth 1; one named
+  inside it at depth 2. Depth 16 is accepted, 17 is `malformed_entry`. A
+  cycle therefore ends as "nested deeper than 16".
 
 Errors (`malformed_entry`): the file cannot be read; it is not valid UTF-8;
 its quoting is malformed; nesting exceeds 16.
@@ -86,7 +145,8 @@ exclusion.
 **Step 1: launchers.** While the base name of the first argument is one of
 `ccache`, `sccache`, `distcc`, `icecc`, `gomacc`, and at least one argument
 follows, remove the first argument. The first remaining argument is the
-compiler, `argv[0]`, kept as spelled.
+compiler, `argv[0]`, kept as spelled. An empty argument list (after §4) is
+`malformed_entry`.
 
 **Step 2: compiler kind.** If the base name of `argv[0]`, lower-cased and
 without a trailing `.exe`, is `cl` or `clang-cl`, the entry is excluded with
@@ -104,7 +164,7 @@ Removed (they say where output goes, or only shape diagnostics output):
 |---|---|
 | alone | `-c` `-S` `-emit-llvm` `-MD` `-MMD` `-MP` `-MG` `-MV` `-pipe` `-fcolor-diagnostics` `-fno-color-diagnostics` |
 | with a separate value, removed together | `-o` `-MF` `-MT` `-MQ` `-MJ` `--serialize-diagnostics` `-dependency-file` |
-| joined | `-o<x>` `-MF<x>` `-MT<x>` `-MQ<x>` `-MJ<x>` (any non-empty `<x>`), `--output=<x>`, `-fdiagnostics-color=<x>`, `-fdiagnostics-color` |
+| joined | `-o<x>` `-MF<x>` `-MT<x>` `-MQ<x>` `-MJ<x>` (any non-empty `<x>`), `--output=<x>`, `-fdiagnostics-color=<x>` (any `<x>`, empty included), `-fdiagnostics-color` |
 
 Kept, and known to take a separate value (so the value is not mistaken for an
 input or an option):
@@ -126,10 +186,16 @@ spelling.
 
 Every other argument beginning with `-` is kept as one argument.
 
+One argument is classified by the first of these that applies: it is exactly
+an option removed with a separate value; it is exactly a kept option with a
+separate value; it is removed alone or joined; it is an input; otherwise it
+is a kept option.
+
 **Step 4: the action.** If any of `-E`, `-M`, `-MM`, `--version`, `-v` alone
 with no input, `--help`, `-###`, `-print-…`/`--print-…` (any argument with
 either prefix) is present, the entry is excluded with `not_a_compile`. The
 kept arguments contain no action option; the front-end adapter adds its own.
+Only kept options are inspected, never values.
 
 **Step 5: inputs.** These checks run in this order; the first that fails
 decides.
@@ -141,10 +207,12 @@ decides.
    entry is `not_a_compile`. (Before the file is looked for: a link step is
    not a compile whether or not its object file has been built.)
 3. The input, resolved against `directory`, must exist (`missing_file`
-   otherwise).
+   otherwise). Any failure to resolve its real path is `missing_file`, with
+   a detail saying "does not exist" when the file is not found and giving
+   the OS error otherwise.
 4. Its real path must equal the real path of `file` resolved against
    `directory` (`malformed_entry`, "file does not match the command",
-   otherwise).
+   otherwise). A `file` whose real path cannot be resolved does not match.
 
 **Result.** `Command.directory` is the entry's `directory` as given;
 `Command.argv` is `argv[0]` followed by the kept arguments in their original
@@ -153,6 +221,17 @@ order (options, values and the input, each exactly as spelled);
 
 Normalisation is idempotent: normalising `Command.argv` again returns it
 unchanged.
+
+### 5.1 Interface
+
+```rust
+// slip_cdb::normalise: §4, then §5
+pub fn normalise(directory: &str, arguments: &[String], file: &str) -> Result<Normalised, Exclusion>;
+pub struct Normalised { pub command: Command, pub main: PathBuf }   // main: real path of the main file
+pub struct Exclusion { pub reason: Reason, pub detail: String }
+```
+
+The option tables of this section are constants of `slip_cdb::normalise`.
 
 ## 6. The front-end check
 
@@ -193,13 +272,97 @@ Any other value (including `none`) is `UnsupportedLanguage`. The extensions:
 
 and treats `.c` as `cxx` when the base name of `argv[0]`, after removing a
 trailing `-<digits and dots>`, ends in `++`. Any other extension is
-`UnsupportedLanguage`.
+`UnsupportedLanguage` (detail `.<ext>`, or `` input `<path>` has no
+extension ``).
+
+Further rules of `ByExtension`:
+
+- `main` is not read. The input is found with the §5 step 3 scan, and the
+  extension is that of the input as spelled in `argv`.
+- The language values are `-x <v>`, `-x<v>`, `--language <v>` and
+  `--language=<v>`; one that is the value of another option is not a
+  language.
+- A command with no input, or with several inputs, is `UnsupportedLanguage`
+  (`the command has no input`, `the command has several inputs`); one whose
+  scan fails (a separate-value option with no value) is
+  `UnsupportedFlag(<option>)`.
+
+### 6.1 `KilnCheck`: the command line checked
+
+`slip_kiln::KilnCheck` parses, with `kiln_driver::args::Args::parse_as`,
+exactly the command line the parse task gives Kiln (`spec/model.md` §8.4),
+with a stand-in dependency-file path:
+
+```
+argv[0]  -fsyntax-only -MD -MF <dep file> -MT slip.d  argv[1..]  -fdiagnostics-format=json
+```
+
+Slip's own options come first, where no argument of the command can take
+them as its value; the diagnostic format comes last, so that it wins over
+the command's own `-fdiagnostics-format=`.
+
+`argv[0]` is the program name, except that a name Kiln's driver would run as
+its dependency scanner (`kiln_driver::scan_deps::is_scanner_name` of its
+base name: `kiln-scan-deps`, `clang-scan-deps`, `clang-scan-deps-<v>`) is
+replaced by `kiln`, which has the driver mode such a name has (C mode).
+
+Response files are not expanded: §4 already did. `main` is not read and not
+compared with Kiln's input.
+
+### 6.2 `KilnCheck`: rejections
+
+In this order; the first that applies decides.
+
+1. An argument that is not UTF-8 (Kiln's command line is text):
+   `UnsupportedFlag`, detail the argument decoded lossily.
+2. The first `ArgError` Kiln reports as an error (every variant except
+   `DeprecatedArg`, which Kiln reports as a warning):
+   - `-x <v>` with a value Kiln does not compile (`language not recognized`,
+     including `objective-c`, `objective-c++`): `UnsupportedLanguage`,
+     detail `<v>`;
+   - any other: `UnsupportedFlag`, detail the argument of the command as
+     written: the first argument equal to the option Kiln names (option and
+     value joined when the option ends in `=`), else the first one that
+     starts with it, else that reconstructed spelling.
+3. The command's own arguments override what the parse relies on:
+   - the diagnostic format is not the JSON one Slip appended (only an option
+     taking a separate value, left without one at the end of the command,
+     can do that): `UnsupportedFlag`, detail the command's last argument;
+   - the action is not `-fsyntax-only`, or the dependency output is not
+     exactly every header (`-MD`), to Slip's file, under the one target
+     `slip.d`, without `-MP`, `-MG`, `-MJ` (for example `-Wp,-MMD,<f>`):
+     `UnsupportedFlag`, detail the first argument starting with `-Wp,`,
+     `-M` or `--`, else `an option that overrides -fsyntax-only or -MD`.
+4. Kiln finds no input, or more than one: `UnsupportedLanguage`
+   (`Kiln finds no input in the command`, `Kiln finds N inputs in the
+   command`).
+5. The input's language:
+   - an assembler input (`.s`, `.S`, `.sx`, `-x assembler`,
+     `-x assembler-with-cpp`): `UnsupportedLanguage`, detail `assembler` or
+     `assembler-with-cpp`;
+   - with no `-x` applying to it, an extension Kiln does not type as C or
+     C++ (`kiln/spec/driver.md` "Input languages": `.c` `.h` `.i` `.cc` `.cp`
+     `.cpp` `.CPP` `.cxx` `.c++` `.C` `.ii` `.cppm` `.ixx` `.hh` `.hpp` `.hxx`
+     `.H` `.inc`): `UnsupportedLanguage`, detail `objective-c` for `.m`,
+     `objective-c++` for `.mm` and `.M`, `` input `<path>` has no
+     extension ``, else `.<ext>`. Kiln itself compiles any other extension
+     as C++ under `-fsyntax-only`, where the build's compiler would compile
+     Objective-C or treat the file as a linker input; such a parse would not
+     observe the build.
+6. Otherwise the language is Kiln's (`Args::input_lang`: the last `-x`
+   before the input, else the extension and the driver mode): `c` or
+   `cxx`. The driver mode is Kiln's (`DriverMode::from_program_name`): the
+   base name without `.exe`, then without a trailing `-<digits and dots>`,
+   ending in `++` is C++ mode, where `.c`, `.h` and `.i` are C++; a
+   `--driver-mode=` overrides it.
 
 ## 7. Building the plan
 
 Input: an ordered list of (configuration name, database path), a
 `FrontEndCheck`, and the tool versions. Configuration names must be unique
-and non-empty (`Usage` error otherwise).
+and non-empty (`Usage` error otherwise). `Usage` is checked before any
+database is read: no database at all, an empty configuration name, or a name
+given twice.
 
 1. Read each database (§2). Record its `FileRef`.
 2. For each entry in order: §4, §5, then §6. A failure at any step excludes
@@ -214,6 +377,42 @@ and non-empty (`Usage` error otherwise).
 
 Reading and hashing the main files is the only part worth parallelising; it
 may use threads. The result must not depend on how many.
+
+- **Database errors.** A database file is read whole, then its real path is
+  resolved; failure of either is the error `Database` (`cannot be read:
+  <os error>`, `its real path cannot be resolved: <os error>`), as are the
+  two §2 errors (their detail unchanged). The error carries the database
+  path as given. The first failing database, in the order given, is
+  reported. The configuration's `FileRef` is the real path, the number of
+  bytes read and the content digest of those bytes.
+- **Merging.** Entries are keyed by `ObserverId`. The first entry's
+  normalised main path and language are kept for the observer.
+- **Hashing.** Each distinct real main path is read once, in pieces of
+  `READ_CHUNK` (64 KiB), and its size is the number of bytes read (not file
+  metadata). A main file that cannot be opened or read (a directory, say)
+  makes every origin of every observer naming it an exclusion with reason
+  `missing_file`, each keeping its own entry's `file` as spelled, with
+  detail `` main file `<real path>` cannot be read: <os error> ``.
+- **Threads.** `min(threads, distinct main files)` scoped threads claim files
+  by an atomic counter; results are stored by index, so the plan is the same for every
+  `threads`. 0 and 1 hash on the calling thread.
+- `Excluded.detail` is, for a rejection by the check, the rejection's text
+  unchanged (`-fbad`, `.f90`); for a normalisation exclusion, its detail.
+
+### 7.1 Interface
+
+```rust
+// slip_cdb::plan
+pub fn build(sources: &[Source], check: &dyn FrontEndCheck, tool: &Tool, threads: usize)
+    -> Result<Plan, PlanError>;
+pub struct Source { pub name: String, pub path: PathBuf }   // configuration name, database file
+pub struct Tool { pub slip: String, pub kiln: String }
+pub enum PlanError {
+    Usage(String),
+    Database { path: PathBuf, detail: String },   // path as given
+}
+pub const READ_CHUNK: usize = 64 * 1024;
+```
 
 The plan is a function of: the database files' contents, the contents of the
 response files they name, the existence, real paths and contents of the main
@@ -230,7 +429,13 @@ files, the front-end check, and the tool versions.
 - `crates/slip_cdb/tests/database.rs` — §2: well-formed entries, each defect.
 - `crates/slip_cdb/tests/plan.rs` — §7: the accounting invariant, merging of
   equal commands across configurations, order, determinism across thread
-  counts; golden JSON plans (`spec/model.md` §10).
+  counts; golden JSON plans (`spec/model.md` §10)
+  `crates/slip_cdb/tests/golden/plan_mixed.json` and `plan_merged.json`
+  (`SLIP_BLESS=1` rewrites them). The goldens replace observer ids by
+  `"<observer id>"` (after checking each against `Command::observer_id`),
+  each database's `size` and `content` by `"<size>"` and `"<digest>"`, and
+  the fixture root by `$ROOT`.
+- `crates/slip_kiln/tests/check.rs` — §6.1, §6.2: `KilnCheck`.
 
 ## Open questions
 

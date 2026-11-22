@@ -1,7 +1,7 @@
 //! The shard's `digests` section (`spec/digest.md` §11, section 19) and
 //! `verdict` section (`spec/verify.md` §6, section 21), in binary and JSON
 //! form (`spec/model.md` §2, §8, §10). Work package WP-015; the offsets and
-//! paths pinned here are those of `spec/landed/model/WP-015.md`. Each test
+//! paths pinned here are those of `spec/model.md` §8.2 and §8.3. Each test
 //! names the section it covers.
 
 use std::fs;
@@ -727,7 +727,7 @@ fn verdict_round_trip() {
 
 // ---------------------------------------------------------------------------
 // Invariants (docs/wp/WP-015.md; offsets and paths:
-// spec/landed/model/WP-015.md): each rejected by from_bytes (Malformed at
+// spec/model.md §8.2, §8.3): each rejected by from_bytes (Malformed at
 // the offset), by validate and by from_json (at the path).
 
 /// The offset at which `from_bytes` rejects `s`'s file, after checking

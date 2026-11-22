@@ -1,6 +1,6 @@
 //! The `verdict` section, id 21 of a verify shard (`spec/verify.md` §6).
-//! Work package WP-015; the rules the spec leaves open are recorded in
-//! `spec/landed/model/WP-015.md`.
+//! Work package WP-015; the binary form, invariants, offsets and paths are
+//! `spec/model.md` §8.3.
 
 use std::collections::BTreeSet;
 

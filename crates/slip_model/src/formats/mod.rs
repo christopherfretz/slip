@@ -10,9 +10,9 @@
 //! included; [`content_id`] validates a file and returns its trailer.
 //!
 //! Readers check every rule of the spec: the container (§5), every
-//! encoding (§2), every enumeration (§1 rule 6) and the invariants of each
-//! format. Rules the spec leaves open are recorded in
-//! `spec/landed/model/WP-006.md`.
+//! encoding (§2), every enumeration (§2) and the invariants of each
+//! format. The order of checks, offsets and JSON rules are `spec/model.md`
+//! §5.4, §7.1, §8.1–§8.3, §10.1 and §10.2.
 
 use std::fmt::{self, Write as _};
 
