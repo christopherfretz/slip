@@ -1,7 +1,9 @@
 #include "side.h"
-// WP-035, digest-kinds §7 `ExprNode` `CXXNewExpr.bits-array-form`.
+// WP-035, digest-kinds §7 `ExprNode` `CXXNewExpr.bits-array-form`: alone, in a pattern: `new int[]{…}` (no array size, no function yet) against `new int{…}`.
+template <class T> struct A {
 #ifdef B
-int *v = new int;
+  static inline int *w = new int{T()};
 #else
-int *v = new int[1];
+  static inline int *w = new int[]{T()};
 #endif
+};

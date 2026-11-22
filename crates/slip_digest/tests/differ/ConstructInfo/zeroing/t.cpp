@@ -1,9 +1,15 @@
 #include "side.h"
-// WP-035, digest-kinds §7 `ConstructInfo` `zeroing`: value-initialisation zeroes first when the default constructor is not user-provided.
-struct Z { int i; virtual void f(); };
-struct U { U(); int i; };
+// WP-035, digest-kinds §7 `ConstructInfo` `zeroing`: the same constructor; defaulted on its first declaration it is not user-provided, so value-initialisation zeroes first.
+struct Z {
 #ifdef B
-U v = U();
+  Z();
 #else
-Z v = Z();
+  Z() = default;
 #endif
+  int i;
+  virtual void f();
+};
+#ifdef B
+Z::Z() = default;
+#endif
+Z v = Z();

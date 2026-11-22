@@ -37,6 +37,7 @@ enum R {
     Flags(FlagWord),
     Count(usize),
     Opt(bool),
+    Bool(bool),
     Ref(DeclId),
     RefOpt(Option<DeclId>),
     Type(QualType),
@@ -62,6 +63,9 @@ fn emit(w: &mut Walk<'_>, s: &mut Stream, rows: &[R]) {
             }
             R::Opt(p) => {
                 s.opt(p);
+            }
+            R::Bool(b) => {
+                s.bool(b);
             }
             R::Ref(d) => w.write_ref(s, d),
             R::RefOpt(d) => w.write_ref_opt(s, d),
@@ -219,6 +223,9 @@ fn designated_init_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: 
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/DesignatedInitExpr.bits"));
     check_aux(s, n, 0, Cause::Unaccounted("ExprNode/DesignatedInitExpr.aux"));
     child_word(s, out, n.a, Cause::Unaccounted("ExprNode/DesignatedInitExpr.a"));
+    if n.b != 0 {
+        s.indeterminate(Cause::Unaccounted("ExprNode/DesignatedInitExpr.b"));
+    }
 }
 
 /// `CXXParenListInitExpr`: `a` (`child*`), `b` the array filler
@@ -268,6 +275,9 @@ fn std_initializer_list_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, 
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/CXXStdInitializerListExpr.bits"));
     check_aux(s, n, 0, Cause::Unaccounted("ExprNode/CXXStdInitializerListExpr.aux"));
     child_word(s, out, n.a, Cause::Unaccounted("ExprNode/CXXStdInitializerListExpr.a"));
+    if n.b != 0 {
+        s.indeterminate(Cause::Unaccounted("ExprNode/CXXStdInitializerListExpr.b"));
+    }
 }
 
 /// `CompoundLiteralExpr`: `a`. A non-zero `aux` is a file-scope compound
@@ -323,6 +333,9 @@ fn paren_list_rows(w: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut 
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/ParenListExpr.bits"));
     check_aux(s, n, 0, Cause::Unaccounted("ExprNode/ParenListExpr.aux"));
     child_list(w, s, out, n.a, Cause::Unaccounted("ExprNode/ParenListExpr.a"));
+    if n.b != 0 {
+        s.indeterminate(Cause::Unaccounted("ExprNode/ParenListExpr.b"));
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -522,14 +535,19 @@ fn delete_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<
 
 /// `CXXPseudoDestructorExpr`: the flag word (`aux-arrow`,
 /// `aux-qualified`), `a` the object, `b` the destroyed type.
+/// `aux-qualified` is written only inside an instantiation-dependent
+/// expression, as `CXXThisExpr.aux-implicit` is: only substitution
+/// (`kiln_sema` templ/subst/exprs.rs:834), the mangling of dependent
+/// expressions and their profiles read it.
 pub(crate) fn cxx_pseudo_destructor_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     run(w, s, e, pseudo_destructor_rows);
 }
 
-fn pseudo_destructor_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R>) {
+fn pseudo_destructor_rows(w: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/CXXPseudoDestructorExpr.bits"));
     check_aux(s, n, 3, Cause::Unaccounted("ExprNode/CXXPseudoDestructorExpr.aux"));
-    out.push(R::Flags(FlagWord::new().bit(n.aux & 1 != 0).bit(n.aux & 2 != 0)));
+    let dependent = w.unit.expr.dependent > 0;
+    out.push(R::Flags(FlagWord::new().bit(n.aux & 1 != 0).bit(dependent && n.aux & 2 != 0)));
     child_word(s, out, n.a, Cause::Unaccounted("ExprNode/CXXPseudoDestructorExpr.a"));
     if let Some(q) = QualType::from_raw(n.b) {
         out.push(R::Type(q));
@@ -557,16 +575,23 @@ fn throw_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R
 // Rewritten comparisons.
 
 /// `CXXRewrittenBinaryOperator`: `aux` the operator as written, `a` the
-/// semantic form. `b`, the two operands as written, is `out`: they are
-/// the very nodes the semantic form holds (`kiln_sema` overload/oper.rs:536
-/// and :1184; the unit test `rewritten_operands_are_in_the_semantic_form`
-/// pins it), written there. Writing them again would double the walk at
-/// every nested rewritten comparison.
+/// semantic form, then `b` as one `bool`: whether the two operands as
+/// written are in the reverse of their order in `a`.
+///
+/// The operands are the very nodes the semantic form holds (`kiln_sema`
+/// overload/oper.rs:468 and :1184; the unit test
+/// `rewritten_operands_are_in_the_semantic_form` pins it), written there,
+/// so writing them again would double the walk at every nested rewritten
+/// comparison. Their written order is still a fact: instantiation rebuilds
+/// the comparison from it (templ/subst/exprs.rs:717), and a reversed
+/// `x != y` against `y != x` can have the same semantic form. The order is
+/// found by [`written_reversed`]; an operand it does not find under `a`
+/// is `Unaccounted`.
 pub(crate) fn cxx_rewritten_binary_operator(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     run(w, s, e, rewritten_rows);
 }
 
-fn rewritten_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R>) {
+fn rewritten_rows(w: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/CXXRewrittenBinaryOperator.bits"));
     if let Some(op) = BinaryOp::from_u8(n.aux) {
         out.push(R::Tag(binary_op::row(&op)));
@@ -575,6 +600,56 @@ fn rewritten_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut V
         s.indeterminate(Cause::Unaccounted("ExprNode/CXXRewrittenBinaryOperator.aux"));
     }
     child_word(s, out, n.a, Cause::Unaccounted("ExprNode/CXXRewrittenBinaryOperator.a"));
+    let cause = Cause::Unaccounted("ExprNode/CXXRewrittenBinaryOperator.b");
+    let written = expr_list(w, s, n.b, cause);
+    let reversed = match (ExprId::try_new(n.a), &written[..]) {
+        (Some(semantic), &[left, right]) => written_reversed(w, semantic, [left, right]),
+        _ => None,
+    };
+    if reversed.is_none() {
+        s.indeterminate(cause);
+    }
+    out.push(R::Bool(reversed.unwrap_or(false)));
+}
+
+/// How many nodes of the semantic form, outside the two operands,
+/// [`written_reversed`] looks at before giving up. The nodes Kiln builds
+/// around the operands (the call, its callee, the conversions of its
+/// arguments, a `!` or a comparison with `0`) are a handful.
+const REWRITTEN_FRAME: usize = 256;
+
+/// Whether `written`, the operands as written, meet in the reverse order
+/// in a pre-order walk of `a` over Kiln's children
+/// (`ExprArena::children`, an opaque value's source included) that does
+/// not enter either operand. `None` when one is not found within
+/// [`REWRITTEN_FRAME`] nodes.
+fn written_reversed(w: &Walk<'_>, a: ExprId, written: [ExprId; 2]) -> Option<bool> {
+    let exprs = &w.ast.exprs;
+    let mut todo = vec![a];
+    let mut first = None;
+    let mut frame = 0;
+    let mut kids = Vec::new();
+    while let Some(e) = todo.pop() {
+        if written.contains(&e) {
+            match first {
+                None => first = Some(e),
+                Some(f) if f != e => return Some(f == written[1]),
+                Some(_) => {}
+            }
+            continue;
+        }
+        frame += 1;
+        if frame > REWRITTEN_FRAME {
+            return None;
+        }
+        kids.clear();
+        exprs.children_into(e, &w.ast.lists, &mut kids);
+        if exprs.get(e).kind() == slip_kiln::kiln::ast::expr::ExprKind::OpaqueValueExpr {
+            kids.extend(exprs.opaque_source(e));
+        }
+        todo.extend(kids.iter().rev());
+    }
+    None
 }
 
 // ---------------------------------------------------------------------
@@ -623,10 +698,11 @@ mod tests {
     use std::collections::HashSet;
     use std::path::Path;
 
+    use slip_kiln::kiln::ast::decl::DeclKind;
     use slip_kiln::kiln::ast::dump::AstNames;
     use slip_kiln::kiln::ast::expr::ExprKind;
     use slip_kiln::kiln::ast::types::{PrintOptions, print_type};
-    use slip_kiln::kiln::ast::{ExprId, QualType};
+    use slip_kiln::kiln::ast::{DeclId, ExprId, QualType};
     use slip_model::keys::RuleTable;
 
     use super::{
@@ -700,6 +776,7 @@ mod tests {
                 R::Flags(f) => format!("flags {}", f.value()),
                 R::Count(c) => format!("count {c}"),
                 R::Opt(p) => format!("opt {p}"),
+                R::Bool(b) => format!("bool {b}"),
                 R::Ref(d) | R::RefOpt(Some(d)) => {
                     let mut name = String::new();
                     AstNames::new(w.ast).write_qualified_name(d, &mut name);
@@ -787,6 +864,15 @@ mod tests {
         assert!(on_a.iter().any(|x| x == r), "{dir}: side A has no {kind:?} `{r}`: {on_a:#?}");
     }
 
+    /// The node of `kind` in the source of `dir` renders as `r` on both
+    /// sides: the pair differs elsewhere (a child's own rows).
+    #[track_caller]
+    fn check_both(dir: &str, kind: ExprKind, r: &str) {
+        let [on_a, on_b] = sides(dir, kind);
+        assert!(on_a.iter().any(|x| x == r), "{dir}: side A has no {kind:?} `{r}`: {on_a:#?}");
+        assert!(on_b.iter().any(|x| x == r), "{dir}: side B has no {kind:?} `{r}`: {on_b:#?}");
+    }
+
     /// Every `in` row of this file that is an enumeration, a flag or an
     /// optional: the pair test's node renders with the row's value on
     /// each side (module documentation).
@@ -795,13 +881,20 @@ mod tests {
     fn enumerations_flags_and_optionals() {
         use ExprKind as K;
         // InitListExpr.b, InitListExtra.
-        let filler = (
-            "count 1; uv 1; child IntegerLiteral; opt true; child ImplicitValueInitExpr; ref none",
-            "count 3; uv 1; child IntegerLiteral; uv 1; child IntegerLiteral; uv 1; child IntegerLiteral; \
-             opt false; ref none",
+        let filler =
+            "count 1; uv 1; child CXXConstructExpr; opt true; child CXXConstructExpr; ref none";
+        check_both("differ/ExprNode/InitListExpr.b", K::InitListExpr, filler);
+        check_both("differ/InitListExtra/array_filler", K::InitListExpr, filler);
+        let filler_ctor = (
+            "tag 1; flags 1; ref E::E; count 0",
+            "tag 1; flags 1; ref E::E; count 1; child CXXDefaultArgExpr",
         );
-        check("differ/ExprNode/InitListExpr.b", K::InitListExpr, filler.0, Some(filler.1));
-        check("differ/InitListExtra/array_filler", K::InitListExpr, filler.0, Some(filler.1));
+        check(
+            "differ/InitListExtra/array_filler",
+            K::CXXConstructExpr,
+            filler_ctor.0,
+            Some(filler_ctor.1),
+        );
         check(
             "differ/InitListExtra/union_field",
             K::InitListExpr,
@@ -812,8 +905,10 @@ mod tests {
         check(
             "differ/_/init-list-range-length",
             K::InitListExpr,
-            "count 1; uv 3; child IntegerLiteral; opt true; child ImplicitValueInitExpr; ref none",
-            Some("count 1; uv 4; child IntegerLiteral; opt false; ref none"),
+            "count 2; uv 2; child IntegerLiteral; uv 2; child IntegerLiteral; opt false; ref none",
+            Some(
+                "count 2; uv 3; child IntegerLiteral; uv 1; child IntegerLiteral; opt false; ref none",
+            ),
         );
         check(
             "differ/_/init-list-range-against-written-out",
@@ -842,7 +937,7 @@ mod tests {
             "differ/ConstructInfo/std_init_list",
             K::CXXConstructExpr,
             "tag 1; flags 3; ref L::L; count 1; child CXXStdInitializerListExpr",
-            Some("tag 1; flags 0; ref L::L; count 2; child IntegerLiteral; child IntegerLiteral"),
+            Some("tag 1; flags 1; ref L::L; count 1; child CXXStdInitializerListExpr"),
         );
         check(
             "differ/_/init-list-constructor-added",
@@ -854,7 +949,7 @@ mod tests {
             "differ/ConstructInfo/zeroing",
             K::CXXTemporaryObjectExpr,
             "tag 1; flags 4; ref Z::Z; count 0",
-            Some("tag 1; flags 0; ref U::U; count 0"),
+            Some("tag 1; flags 0; ref Z::Z; count 0"),
         );
         check(
             "differ/ConstructInfo/immediate_escalating",
@@ -897,13 +992,10 @@ mod tests {
         // second only.
         check("differ/ExprNode/CXXDefaultArgExpr.a", K::CXXDefaultArgExpr, "uv 0", None);
         // CXXParenListInitExpr.b.
-        check(
+        check_both(
             "differ/ExprNode/CXXParenListInitExpr.b",
             K::CXXParenListInitExpr,
-            "count 1; child IntegerLiteral; opt true; child ImplicitValueInitExpr",
-            Some(
-                "count 3; child IntegerLiteral; child IntegerLiteral; child IntegerLiteral; opt false",
-            ),
+            "count 1; child CXXConstructExpr; opt true; child CXXConstructExpr",
         );
         // CXXNewExpr, NewInitStyle, NewExtra.
         let new = |flags: u32, rest: &str| format!("flags {flags}; {rest}");
@@ -914,15 +1006,16 @@ mod tests {
             &new(1, plain),
             Some(&new(0, plain)),
         );
+        let deduced = |flags: u32| {
+            format!(
+                "flags {flags}; tag 3; type int; opt false; opt true; child InitListExpr; opt false; ref none; ref none"
+            )
+        };
         check(
             "differ/ExprNode/CXXNewExpr.bits-array-form",
             K::CXXNewExpr,
-            &new(
-                2,
-                "tag 1; type int; opt true; child ImplicitCastExpr; opt false; opt false; \
-                 ref operator new[]; ref operator delete[]",
-            ),
-            Some(&new(0, plain)),
+            &deduced(2),
+            Some(&deduced(0)),
         );
         check(
             "differ/ExprNode/CXXNewExpr.bits-pass-align",
@@ -936,7 +1029,12 @@ mod tests {
                       ref operator new; ref operator delete";
         let braces = "flags 0; tag 3; type int; opt false; opt true; child InitListExpr; opt false; \
                       ref operator new; ref operator delete";
-        check("differ/ExprNode/CXXNewExpr.aux", K::CXXNewExpr, parens, Some(braces));
+        let s_new = |tag: u32| {
+            format!(
+                "flags 0; tag {tag}; type S; opt false; opt true; child CXXConstructExpr; opt false; ref operator new; ref operator delete"
+            )
+        };
+        check("differ/ExprNode/CXXNewExpr.aux", K::CXXNewExpr, &s_new(2), Some(&s_new(1)));
         check("differ/NewInitStyle/Parens", K::CXXNewExpr, parens, Some(braces));
         check("differ/NewInitStyle/Braces", K::CXXNewExpr, braces, Some(parens));
         check(
@@ -948,12 +1046,10 @@ mod tests {
                  ref operator new; ref operator delete",
             ),
         );
-        check(
+        check_both(
             "differ/NewExtra/placement",
             K::CXXNewExpr,
-            "flags 0; tag 1; type int; opt false; opt false; opt true; count 1; child ImplicitCastExpr; \
-             ref operator new; ref none",
-            Some(&new(0, plain)),
+            "flags 0; tag 1; type int; opt false; opt false; opt true; count 1; child ImplicitCastExpr; ref operator new; ref none",
         );
         check(
             "differ/NewExtra/operator_new",
@@ -1026,12 +1122,8 @@ mod tests {
             "flags 1; child ImplicitCastExpr; type int",
             Some("flags 0; child ParenExpr; type int"),
         );
-        check(
-            "differ/ExprNode/CXXPseudoDestructorExpr.aux-qualified",
-            K::CXXPseudoDestructorExpr,
-            "flags 3; child ImplicitCastExpr; type int",
-            Some("flags 1; child ImplicitCastExpr; type int"),
-        );
+        // `aux-qualified` is written inside a dependent expression only: its
+        // pair test isolates it (the rendering has no enclosing node).
         check(
             "differ/ExprNode/CXXPseudoDestructorExpr.b",
             K::CXXPseudoDestructorExpr,
@@ -1046,7 +1138,7 @@ mod tests {
             Some("opt false"),
         );
         // CXXRewrittenBinaryOperator.aux (`BinaryOp` 11 `<`, 12 `>`).
-        let rewritten = |tag: u32| format!("tag {tag}; child CXXOperatorCallExpr");
+        let rewritten = |tag: u32| format!("tag {tag}; child CXXOperatorCallExpr; bool false");
         check(
             "differ/ExprNode/CXXRewrittenBinaryOperator.aux",
             K::CXXRewrittenBinaryOperator,
@@ -1058,6 +1150,18 @@ mod tests {
             K::CXXRewrittenBinaryOperator,
             &rewritten(11),
             None,
+        );
+        check(
+            "differ/_/rewritten-ne-reversed-same-semantic-form",
+            K::CXXRewrittenBinaryOperator,
+            "tag 16; child UnaryOperator; bool true",
+            Some("tag 16; child UnaryOperator; bool false"),
+        );
+        check(
+            "differ/_/rewritten-written-order-in-pattern",
+            K::CXXRewrittenBinaryOperator,
+            "tag 16; child UnaryOperator; bool true",
+            Some("tag 16; child UnaryOperator; bool false"),
         );
         // Designator.
         let field = |n: &str| format!("child IntegerLiteral; count 1; tag 1; sym {n}");
@@ -1115,6 +1219,86 @@ mod tests {
             });
             assert_eq!(got, want, "side {side:?}");
         }
+    }
+
+    /// `b` of `CXXStdInitializerListExpr`, `DesignatedInitExpr` and
+    /// `ParenListExpr` is no row's: a value other than 0 is
+    /// `Unaccounted` with the row's name (digest-kinds §2.1).
+    #[test]
+    fn unaccounted_b_words() {
+        let cases: [(&str, ExprKind, RowsFn, &str); 3] = [
+            (
+                "differ/ConstructInfo/std_init_list",
+                ExprKind::CXXStdInitializerListExpr,
+                std_initializer_list_rows,
+                "ExprNode/CXXStdInitializerListExpr.b",
+            ),
+            (
+                "differ/Designator/Field",
+                ExprKind::DesignatedInitExpr,
+                designated_init_rows,
+                "ExprNode/DesignatedInitExpr.b",
+            ),
+            (
+                "differ/ExprNode/ParenListExpr.a",
+                ExprKind::ParenListExpr,
+                paren_list_rows,
+                "ExprNode/ParenListExpr.b",
+            ),
+        ];
+        for (dir, kind, rows, row) in cases {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join(dir).join("t.cpp");
+            let main = std::fs::read_to_string(root).expect("the test");
+            let files = [("main.cpp", main.as_str()), ("side.h", "")];
+            with_walk(&files, "c++20", |w| {
+                let e = exprs(w)
+                    .into_iter()
+                    .find(|&e| w.ast.exprs.get(e).kind() == kind)
+                    .unwrap_or_else(|| panic!("{dir}: no {kind:?}"));
+                let mut n = node(w, e);
+                assert_eq!(n.b, 0, "{dir}: Kiln leaves `b` 0");
+                let mut s = Stream::new();
+                rows(w, &mut s, e, &n, &mut Vec::new());
+                assert_eq!(s.cause(), None, "{dir}");
+                n.b = 1;
+                let mut s = Stream::new();
+                rows(w, &mut s, e, &n, &mut Vec::new());
+                assert_eq!(s.cause(), Some(crate::Cause::Unaccounted(row)), "{dir}");
+            });
+        }
+    }
+
+    /// A block-scope redeclaration's own default arguments are written by
+    /// `local::write_decl` (WP-026): the declaration Kiln takes the
+    /// default from at a call in that block (`kiln_sema` expr.rs:6189).
+    #[test]
+    fn block_scope_redeclaration_writes_its_default() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/differ/_/default-arg-block-scope-redeclaration/t.cpp");
+        let main = std::fs::read_to_string(root).expect("the test");
+        let mut out = Vec::new();
+        for side in ["", "#define B 1\n"] {
+            let files = [("main.cpp", main.as_str()), ("side.h", side)];
+            out.push(with_walk(&files, "c++20", |w| {
+                let ast = w.ast;
+                let local = (1..=ast.decls.len())
+                    .filter_map(|i| DeclId::try_new(u32::try_from(i).ok()?))
+                    .find(|&d| {
+                        ast.decls.get(d).kind() == DeclKind::Function
+                            && ast
+                                .decls
+                                .get(d)
+                                .ctx()
+                                .is_some_and(|c| ast.decls.get(c).kind() == DeclKind::Function)
+                    })
+                    .expect("the block-scope redeclaration");
+                let mut s = Stream::new();
+                crate::local::write_decl(w, &mut s, local);
+                (s.as_bytes().to_vec(), s.cause())
+            }));
+        }
+        assert_eq!((out[0].1, out[1].1), (None, None), "no cause");
+        assert_ne!(out[0].0, out[1].0, "the default `= 2` against `= 3` is written");
     }
 
     /// The bytes and the cause of the walk of the last expression of

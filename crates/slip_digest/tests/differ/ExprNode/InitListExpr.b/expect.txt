@@ -1,1 +1,4 @@
+added E::E(int)
+changed E
 changed v
+removed E::E()

@@ -1,10 +1,11 @@
 #include "side.h"
-// WP-035, digest-kinds §7 `ExprNode` `CXXPseudoDestructorExpr.aux-qualified`.
-using I = int;
-using CI = const int;
-int *pi, *pj;
+// WP-035, digest-kinds §7 `ExprNode` `CXXPseudoDestructorExpr.aux-qualified`: the qualifier, written inside an instantiation-dependent expression, which substitution reads.
+typedef int I;
+I *p;
+template <class T> struct A {
 #ifdef B
-int v = (pi->~I(), 0);
+  static inline int v = (p->I::~I(), sizeof(T));
 #else
-int v = (pi->I::~I(), 0);
+  static inline int v = (p->~I(), sizeof(T));
 #endif
+};

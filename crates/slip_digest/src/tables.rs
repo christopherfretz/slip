@@ -2965,7 +2965,7 @@ pub(crate) mod expr_node {
         ("CXXOperatorCallExpr.b", Decision::In),
         ("CXXRewrittenBinaryOperator.aux", Decision::In),
         ("CXXRewrittenBinaryOperator.a", Decision::In),
-        ("CXXRewrittenBinaryOperator.b", Decision::Out),
+        ("CXXRewrittenBinaryOperator.b", Decision::In),
         ("ParenListExpr.a", Decision::In),
         ("ImplicitCastExpr.bits-part-of-explicit-cast", Decision::In),
         ("ImplicitCastExpr.aux", Decision::In),

@@ -1,7 +1,8 @@
 #include "side.h"
-// WP-035, digest-kinds §7 `ExprNode` `CXXNewExpr.aux`: NewInitStyle.
+// WP-035, digest-kinds §7 `ExprNode` `CXXNewExpr.aux`: NewInitStyle alone: `()` and none call the same user-provided default constructor.
+struct S { S(); };
 #ifdef B
-int *v = new int{1};
+S *v = new S;
 #else
-int *v = new int(1);
+S *v = new S();
 #endif

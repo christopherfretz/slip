@@ -1,5 +1,5 @@
 #include "side.h"
-// WP-035, digest-kinds §7 `ConstructInfo` `std_init_list`.
+// WP-035, digest-kinds §7 `ConstructInfo` `std_init_list`: the same constructor and argument; `{{1, 2}}` passes the inner list as the argument (no initializer-list initialisation).
 namespace std {
 using size_t = decltype(sizeof 0);
 enum class align_val_t : size_t {};
@@ -13,7 +13,7 @@ public:
 }
 struct L { L(std::initializer_list<int>); L(int, int); };
 #ifdef B
-L v(1, 2);
+L v{{1, 2}};
 #else
 L v{1, 2};
 #endif

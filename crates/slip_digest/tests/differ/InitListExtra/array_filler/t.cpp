@@ -1,7 +1,16 @@
 #include "side.h"
-// WP-035, digest-kinds §7 `InitListExtra` `array_filler`.
+// WP-035, digest-kinds §7 `InitListExtra` `array_filler`: the filler alone changes (the default constructor it calls); the element and the list are the same.
+struct E {
 #ifdef B
-int v[3] = {1, 0, 0};
+  E(int = 0);
 #else
-int v[3] = {1};
+  E();
+#endif
+  E(const E &);
+};
+extern E e0;
+#ifdef B
+E v[2] = {e0};
+#else
+E v[2] = {e0};
 #endif
