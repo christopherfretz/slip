@@ -1663,6 +1663,29 @@ mod tests {
         let (b, cb) = decl_bytes(two, "c++20", "x");
         assert_eq!((ca, cb), (None, None));
         assert_ne!(a, b);
+        // The word is written as the `ref` of the function it names, not of
+        // another declaration: `x`'s bytes hold the `ref` of `c` (or `d`)
+        // and not that of the other.
+        let refs = |src: &str| {
+            with_walk(src, "c++20", |w| {
+                let mut out = Vec::new();
+                for n in ["c", "d"] {
+                    let d = named(w, n);
+                    let mut s = Stream::new();
+                    w.write_ref(&mut s, d);
+                    out.push(s.as_bytes().to_vec());
+                }
+                out
+            })
+        };
+        let holds = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|x| x == needle);
+        let (rc, rd) = match refs(one).as_slice() {
+            [c, d] => (c.clone(), d.clone()),
+            _ => unreachable!("two names"),
+        };
+        assert_ne!(rc, rd);
+        assert!(holds(&a, &rc) && !holds(&a, &rd), "cleanup(c) writes the ref of c");
+        assert!(holds(&b, &rd) && !holds(&b, &rc), "cleanup(d) writes the ref of d");
     }
 
     // §10.1 (and §2.1): every word is accounted for. A flag bit, an `a` or

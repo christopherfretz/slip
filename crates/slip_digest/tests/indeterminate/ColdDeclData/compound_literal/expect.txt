@@ -1,4 +1,2 @@
-# pending
-# needs: expr
 # the implicit variable is reached through the compound literal expression that names it (CompoundLiteralExpr is pending)
 indeterminate p
