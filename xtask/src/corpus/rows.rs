@@ -1,5 +1,5 @@
 //! `bench/corpora.toml` and the Kiln row each corpus names
-//! (`spec/landed/harness/WP-011.md` "corpora.toml").
+//! (`spec/harness.md` §8.1).
 //!
 //! A corpus is one table of `bench/corpora.toml`. Its `kiln` key names a
 //! table of `kiln/scripts/oss/projects.toml`, from which the URL, the tag

@@ -1,4 +1,4 @@
-//! `cargo xtask corpus` (spec/harness.md §8, spec/landed/harness/WP-011.md).
+//! `cargo xtask corpus` (spec/harness.md §8).
 //!
 //! The stamp tests run against fake `cmake` and `make` (shell scripts that
 //! write a minimal build tree and log their calls). The end-to-end tests
@@ -70,7 +70,7 @@ fn parse_err(corpora: &str) -> String {
 
 // ---------------------------------------------------------- corpora.toml
 
-/// WP-011 "corpora.toml": a row with its pin taken from the Kiln table.
+/// §8.1: a row with its pin taken from the Kiln table.
 #[test]
 fn parses_a_row_and_its_kiln_pin() {
     let c = one(
@@ -93,7 +93,7 @@ fn parses_a_row_and_its_kiln_pin() {
     assert_eq!(s.source_subdir.as_deref(), Some("llvm"));
 }
 
-/// WP-011 "corpora.toml": every malformed row is an error naming it.
+/// §8.1: every malformed row is an error naming it.
 #[test]
 fn rejects_malformed_rows() {
     let good = row("tiny", "tiny", "", "\"gen\"", "cc", "c++");
@@ -131,7 +131,7 @@ fn rejects_malformed_rows() {
 }
 
 /// The committed `bench/corpora.toml` reads, and its `llvm` row takes
-/// llvm-project 19.1.7 from Kiln's `llvm_project` (WP-011 "Scope").
+/// llvm-project 19.1.7 from Kiln's `llvm_project` (§8.7).
 #[test]
 fn the_committed_llvm_row() {
     let repo = xtask::repo_root();
@@ -153,7 +153,7 @@ fn the_committed_llvm_row() {
 
 // ---------------------------------------------------------- layout
 
-/// WP-011 "Layout": the root is `$SLIP_CORPUS_DIR`, else `.corpus/`.
+/// §8.2: the root is `$SLIP_CORPUS_DIR`, else `.corpus/`.
 #[test]
 fn corpus_root_and_layout() {
     let repo = Path::new("/repo");
@@ -202,7 +202,7 @@ fn path_command_and_usage() {
 
 // ---------------------------------------------------------- missing tools
 
-/// WP-011 "Interface": a missing tool fails with one line naming it and
+/// §8.3: a missing tool fails with one line naming it and
 /// `scripts/provision.sh --full`.
 #[test]
 fn missing_tool_message() {
@@ -303,7 +303,7 @@ fn fake_corpus(configure: &str, generate: &str) -> Corpus {
     one(&row("tiny", "tiny", configure, generate, "fakecc", "fakecxx"), "https://example.org/t")
 }
 
-/// WP-011 "Stamps": an unchanged row is a no-op; a changed configuration
+/// §8.4: an unchanged row is a no-op; a changed configuration
 /// runs cmake and the generate step again; a changed target list runs
 /// only the generate step.
 #[test]
@@ -346,7 +346,7 @@ fn stamps_make_steps_idempotent() {
     assert!(!corpus::status(&changed, &l).generated);
 }
 
-/// WP-011 "The generated check": a promised file that is missing fails
+/// §8.6: a promised file that is missing fails
 /// configure and leaves no generate stamp; an unknown target is an error.
 #[test]
 fn generated_check() {
@@ -384,7 +384,7 @@ fn generated_check() {
     assert!(e.contains("target `nope` is not in the configured build"), "{e}");
 }
 
-/// WP-011 "Lock": a step fails while a live process holds the lock and
+/// §8.5: a step fails while a live process holds the lock and
 /// takes over a lock whose process is gone.
 #[test]
 fn lock() {
@@ -472,7 +472,7 @@ fn tiny_repo(dir: &Path) {
     git(&["commit", "-q", "-am", "after the tag"]);
 }
 
-/// WP-011 "Tests": fetch and configure against a local repository.
+/// §8.3: fetch and configure against a local repository.
 #[test]
 fn fetch_and_configure_a_local_project() {
     let (cc, cxx) = match real_tools() {
@@ -523,7 +523,7 @@ fn fetch_and_configure_a_local_project() {
     assert!(e.contains("has no tag `v9`") && e.contains("remove it to fetch again"), "{e}");
 }
 
-/// WP-011 "fetch": a tag the repository does not have fails and leaves no
+/// §8.3 fetch: a tag the repository does not have fails and leaves no
 /// `src`.
 #[test]
 fn fetch_of_a_missing_tag() {

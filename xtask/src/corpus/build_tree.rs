@@ -1,7 +1,7 @@
 //! What a configured cmake build tree ("Unix Makefiles" generator) says
 //! about itself: the number of entries of its compilation database, and
 //! the generated files a set of build targets promise
-//! (`spec/landed/harness/WP-011.md` "The generated check").
+//! (`spec/harness.md` §8.6).
 //!
 //! cmake writes one rule file per target, `<dir>/cmakeFiles/<t>.dir/build.make`,
 //! where `<t>: <file>` lines list what building the target makes, and

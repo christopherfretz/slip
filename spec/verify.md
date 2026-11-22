@@ -37,7 +37,8 @@ Declared := rules:   list<Rule>      digest.md §3.4; sorted by (parent, kind, n
             removed: list<KeyId>     units that may exist only in the pre-image
 ```
 
-Each list is sorted and has no duplicate. Every `KeyId` is in the key space
+Each list is sorted and has no duplicate; a key may be in more than one of
+the three exemption lists. Every `KeyId` is in the key space
 of the pre-image: for an entity a rule renames, the key it had before. The
 container form is kind `DECL`, version 1, one required section `declared`
 (id 1) holding this record; its JSON rendering follows `spec/model.md` §10.
@@ -123,7 +124,11 @@ shard is its shard of phase `verify`, round `r` (the `r`-th application of
 edits). Both must be `ok` and carry a `digests` section of the same
 `scheme`, the one this build of `slip_verify` implements; and the post
 shard's digests must have been computed with the rule table `rules_id`
-(§5 records it).
+(§5 records it). In each of the two `digests` sections the groups must be
+strictly ascending by `(class, file)` and `tu` must be `tu_digest(groups)`
+(`digest.md` §11): §4.1 step 1 trusts `tu` and does not recompute it. The
+scheme is checked for the pre then the post image, then the other two
+conditions per image, pre first.
 
 **Units as a multiset.** The units of an image are the triples `(key,
 digest, flags)` of all its groups; a triple that occurs in `n` groups has
@@ -137,8 +142,9 @@ multiset** `D`; derived units as the **derived multiset** `V`.
 Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
 
 1. **Indeterminate.** Every key that has a unit with the indeterminate
-   flag in `Dp` or in `Dq` is one finding `indeterminate`. The key takes no
-   further part, and no exemption applies to it.
+   flag in `Dp` or in `Dq` is one finding `indeterminate`, also when the
+   key has units on one side only. The key takes no further part, no
+   exemption applies to it, and it is never in `used` (§6).
 2. **By key.** For each other key `k`, let `P(k)` and `Q(k)` be the
    multisets of digests of that key in `Dp` and `Dq`, and let
    `R(k) = P(k) − Q(k)` and `A(k) = Q(k) − P(k)` be their differences as
@@ -148,6 +154,11 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    - both non-empty: finding `changed`, unless `k` is in `changed`.
    - only `R(k)` non-empty: finding `removed`, unless `k` is in `removed`.
    - only `A(k)` non-empty: finding `added`, unless `k` is in `created`.
+
+   Each exemption list prevents only its own kind: `changed` only
+   `changed`, `removed` only `removed`, `created` only `added`. A
+   prevented finding puts `k` in `used`; an exemption whose key had no
+   finding of its kind is not used.
 
    A key normally has one unit on each side, and then this is the obvious
    rule: equal, different, gone, new. Several units of one key arise only
@@ -163,13 +174,17 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    other key, with `R(k)` and `A(k)` as in step 2: if both are non-empty,
    finding `derived_changed`. If only one is, there is **no** finding; the
    key is counted (`verify.derived.only_pre` when it is `R(k)`,
-   `verify.derived.only_post` when it is `A(k)`). No exemption applies to
-   a derived key.
+   `verify.derived.only_post` when it is `A(k)`), once per key whatever
+   its multiplicity. No exemption applies to a derived key, so `changed`
+   on a key does not prevent `derived_changed`.
 
 Steps 1 and 2 are over `D` and step 3 over `V`, independently: a key set
 aside in one is not thereby set aside in the other. (A key is in both
 only if an entity is declared in one image and derived in the other, or
-by a collision.)
+by a collision.) A key declared in one image and derived in the other is
+in `D` on one side and in `V` on the other: step 2 gives `removed`
+(declared before) or `added` (declared after), which its exemption may
+prevent, and step 3 counts it in `only_post` or `only_pre`.
 
 The observer is **verified** when there is no finding.
 
@@ -212,6 +227,13 @@ group sums first (`digest.md` §11):
    indeterminate unit. The rules of §4 are applied to the units of the
    groups of `G` alone.
 
+A group's **sum** is `(count, indeterminate, digest)`. The sums of one
+`(class, file)` are compared as a multiset, so the computation of `G`
+needs the groups in no order: a `(class, file)` present twice in one image
+only is in `G`, and the comparison of units then rejects it (§4.2). With
+equal `tu` digests `G` is the groups with an indeterminate unit. `G` is
+ascending by `(class, file)`, no two equal.
+
 Restricting to `G` is exact, not an approximation: it gives the same
 findings, the same counts and the same used exemptions as applying §4 to
 all units.
@@ -233,6 +255,74 @@ each side, and compares equal.
 
 Step 2 needs the unit lists of the groups of `G` from both images. §5 says
 how the verify job obtains them.
+
+### 4.2 Preconditions
+
+Groups whose units are compared (§4.1 step 2, or all groups) are checked
+first, and inputs that break a precondition are rejected, never compared.
+Per image, the pre-image first:
+
+1. No `(class, file)` is given twice (`DuplicateGroup`).
+2. Then for each group in the order given:
+   - its unit list is present (`MissingUnits`);
+   - the units are strictly ascending by `(key, digest)` (`digest.md` §11)
+     (`UnitsNotAscending`; this covers duplicates, and two units of one key
+     and digest that differ only in flags);
+   - every unit's `flags` is 0 or 1 (`BadFlags`: an unknown flag bit
+     would otherwise be ignored by §4, which compares digests only);
+   - `count` is the number of units (`CountMismatch`);
+   - `indeterminate` is the number of units with the flag
+     (`IndeterminateMismatch`);
+   - `digest` is `group_digest(units)` (`DigestMismatch`).
+
+Groups need not be given in order. A group with an empty unit list
+(count 0) is accepted. Each error names the group's `(class, file)` and
+the image it came from. These checks are why a group's sums are checked
+against its units wherever there is a unit list (§8 "Sums are believed").
+
+### 4.3 Interface
+
+`slip_verify` (§3, §4, §4.1, §6), re-exported at the crate root from
+`slip_verify::compare`:
+
+```rust
+pub struct Exemptions { /* changed, created, removed: Vec<Digest> */ }
+impl Exemptions {
+    pub fn none() -> Exemptions;
+    pub fn new(changed: Vec<Digest>, created: Vec<Digest>, removed: Vec<Digest>)
+        -> Result<Exemptions, String>;          // Err: a list not strictly ascending
+    pub fn changed(&self) -> &[Digest]; // and created(), removed()
+}
+
+pub fn comparable(pre: &Digests, post: &Digests) -> Result<(), String>;   // §3
+
+pub enum AtSums { Equal, Differing(Vec<(GroupClass, Vec<u8>)>) }
+pub fn at_sums(pre: &Digests, post: &Digests) -> AtSums;                    // §4.1
+
+pub struct Comparison { pub findings: Vec<Finding>, pub only_pre: u64, pub only_post: u64,
+                        pub used: Vec<Digest> }
+pub enum CompareError {   // every variant: { class: GroupClass, file: Vec<u8>, post: bool }
+    MissingUnits, UnitsNotAscending, BadFlags, CountMismatch, IndeterminateMismatch,
+    DigestMismatch, DuplicateGroup,
+}
+pub fn compare_groups(pre: &[&Group], post: &[&Group], exemptions: &Exemptions)
+    -> Result<Comparison, CompareError>;                                   // §4, §4.2
+
+pub fn verdict(comparison: Comparison, pre_shard: Digest, rules: Digest, limit: usize) -> Verdict;
+pub fn verified(pre_shard: Digest, rules: Digest) -> Verdict;
+pub fn unverifiable(reason: &str, pre_shard: Digest, rules: Digest) -> Verdict;
+```
+
+and `compare::REASON_MAX` (4096) and `compare::NO_REASON` (§6).
+`CompareError` implements `Display` and `Error`; `post` says which image
+the group came from. `compare_groups` walks keys in order over the
+occurrences sorted by `(key, digest)`, so the work is linear after
+sorting; `R(k)` and `A(k)` are computed by merging the key's two runs,
+which are sorted by digest.
+
+The verify job (§5) uses them as: `comparable`; then `at_sums`; `Equal` is
+`verified(…)`; `Differing(G)` is `verdict(compare_groups(groups of G from
+each image, …), …)`. Every finding therefore has a key.
 
 ## 5. The verify job
 
@@ -318,15 +408,43 @@ are the same whether or not the comparison was restricted to `G`:
   groups for `D`, the derived groups for `V`) whose units, flags
   included, are not the same in both images, that holds a unit of the key
   in the pre-image; if there is none, in the post-image. (There is one: a
-  key with a difference has a unit in a group that differs.) The group
-  named need not be where the key itself changed: it can differ on
-  account of another unit.
+  key with a difference has a unit in a group that differs; were there
+  none, it would be a defect of `slip_verify`, which stops with
+  `unreachable!`.) A group that holds the key but does not differ is
+  skipped even when it comes first. The group named need not be where the
+  key itself changed: it can differ on account of another unit.
+- A group **differs** when the other image has no group of its
+  `(class, file)`, or has one whose unit list, flags included, is not the
+  same. Groups are paired across the images by `(class, file)`; so given
+  only the groups of `G` the comparison decides the same as given all
+  groups, since a group outside `G` has the same units in both.
 - For `indeterminate` and `derived_indeterminate`: `pre` is the digest of
   the key's indeterminate unit in the pre-image when there is exactly one
   such unit (counting multiplicity: one unit in two groups is two), else
   absent; `post` likewise. `file` is the file of the first
-  group that holds an indeterminate unit of the key, in the pre-image if
-  it has one, else in the post-image.
+  group, in the order of `(class, file)`, that holds an indeterminate unit
+  of the key, whether or not the group differs, in the pre-image if it has
+  one, else in the post-image.
+- Declared groups sort before the `tu` group (class order), so a key with
+  units in both reports the declared group's file.
+
+The comparison (§4.3) leaves `name` empty and `where` absent; they are for
+the report and are filled by localisation (§6.1).
+
+A verdict is made in one of three ways:
+
+- **From a comparison**: `mismatch` if there is a finding, else
+  `verified`; `total` is the number of findings, `findings` the first
+  `limit`; `only_pre`, `only_post` and `used` as the comparison gives
+  them, also for `verified`; `reason` empty.
+- **At the sums** (§4.1 step 1): `verified`, `total` 0, no finding,
+  `only_pre` and `only_post` 0, `used` empty, `reason` empty. It equals
+  the verdict of an empty comparison.
+- **`unverifiable`**: `reason` cut to at most 4096 bytes at the last
+  character boundary at or before byte 4096; an empty reason (also one
+  whose cut is empty) becomes `no reason given`, so that the verdict has
+  the non-empty reason `spec/model.md` §8 requires. `total` 0, no finding,
+  counts 0, `used` empty.
 
 ### 6.1 Localisation
 
@@ -407,13 +525,18 @@ Counters of a verify shard, added to those of `digest.md` §12:
 
 ## Tests
 
-- `crates/slip_verify/tests/compare.rs` — §4, over unit lists written by
-  hand: every rule of every step, each exemption preventing exactly its
-  finding and no other, multiplicities, two units of one key, derived keys
-  on one side, the order of findings.
+- `crates/slip_verify/tests/compare.rs` — §3, §4, §4.1, §4.2 and §6, over
+  unit lists written by hand: every rule of every step, each exemption
+  preventing exactly its finding and no other, multiplicities, two units
+  of one key, derived keys on one side, a key declared in one image and
+  derived in the other, `file`, `pre` and `post` of each kind, the order
+  of findings, the three ways of making a verdict, malformed groups,
+  `comparable`, and `at_sums` over unsorted and duplicate groups.
 - `crates/slip_verify/tests/groups.rs` — §4.1: for generated pairs of
   images (random units, groups, moves between groups, duplicates), the
-  outcome through groups equals the outcome over all units.
+  outcome through groups equals the outcome over all units; 12000 pairs
+  from the fixed seed `0x5eed0016c0def00d` (`SLIP_VERIFY_SEED` overrides),
+  the property asserted on every pair.
 - `crates/slip_verify/tests/declared.rs` — §2: the `DECL` container round
   trip; rejected forms (unsorted, duplicate, two rules with one match).
 - `crates/slip_digest/tests/rules.rs` — §2.1: mapped keys under rules, one
@@ -474,6 +597,11 @@ Counters of a verify shard, added to those of `digest.md` §12:
 - **`Finding.key` is optional in the format** and nothing produces a
   finding without one since §4.1 names every finding. Make it required at
   the next change of the section.
+- **The `file` of a `changed` finding** can name a group whose copy of the
+  key did not change, when that group differs for another key's sake
+  (§6). It is the same through groups; a rule that named the group where
+  the key's own units differ would need the per-group multiset of the key,
+  also exact, at some cost.
 - **The kind of a finding for a key with several units** follows the
   differences (§4 step 2): one of two equal copies removed is `removed`,
   and a second, different namespace merged onto a key is `added`. Whether

@@ -1,5 +1,5 @@
-//! `spec/verify.md` §3, §4, §4.1 and §6 over unit lists written by hand,
-//! plus the rules of `spec/landed/verify/WP-016.md`. Each test names the
+//! `spec/verify.md` §3, §4, §4.1, §4.2 and §6 over unit lists written by
+//! hand. Each test names the
 //! step or sentence it covers.
 
 use slip_model::digests::{Digests, Group, GroupClass, SCHEME, Unit, group_digest, tu_digest};
@@ -725,7 +725,7 @@ fn s2_exemptions_must_be_strictly_ascending() {
     }
 }
 
-// Landed: malformed groups are an error naming the group and the image.
+// §4.2: malformed groups are an error naming the group and the image.
 #[test]
 fn landed_malformed_groups_are_rejected() {
     let good = decl("/a.h", &[u(1, 1), u(2, 2)]);
@@ -766,7 +766,7 @@ fn landed_malformed_groups_are_rejected() {
         file,
         post,
     });
-    // WP-017: `indeterminate` is the number of flagged units; checked after
+    // §4.2: `indeterminate` is the number of flagged units; checked after
     // `count` and before `digest`.
     check(Group { indeterminate: 1, ..good.clone() }, |file, post| {
         CompareError::IndeterminateMismatch { class: Declared, file, post }
@@ -829,7 +829,7 @@ fn s3_comparable_schemes() {
     assert!(comparable(&other, &other).is_err());
 }
 
-// Landed: `comparable` also checks what §4.1 step 1 trusts.
+// §3: `comparable` also checks what §4.1 step 1 trusts.
 #[test]
 fn landed_comparable_checks_group_order_and_tu() {
     let groups = vec![decl("/b.h", &[u(1, 1)]), decl("/a.h", &[u(2, 2)])];
@@ -945,7 +945,7 @@ fn s4_1_at_sums_equal_tu_with_an_indeterminate_unit() {
     );
 }
 
-// Landed: at_sums does not rely on sorted groups, and reports an id given
+// §4.1: at_sums does not rely on sorted groups, and reports an id given
 // twice in one image only.
 #[test]
 fn landed_at_sums_unsorted_and_duplicate_groups() {

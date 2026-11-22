@@ -392,7 +392,7 @@ text. Nothing but protocol messages may be written to its standard output.
   one process share a scratch directory.
 - `jobserver::resolve_pool_size` accepts `0` and a padded number for
   `$SLIP_JOBS`; `cargo xtask jobserver` refuses both itself
-  (`spec/landed/harness/WP-013.md`). One rule, in `slip_exec`.
+  (`spec/harness.md` §5). One rule, in `slip_exec`.
 - Nothing is `fsync`ed. A crash of the machine can leave a published file
   empty; the container trailer makes that detectable, not impossible.
 - Whether the coordinator should lower its budget when other processes in

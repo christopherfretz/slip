@@ -1,5 +1,5 @@
-# The corpora of `cargo xtask corpus` (spec/harness.md §8,
-# spec/landed/harness/WP-011.md). One table per corpus, keyed by the name
+# The corpora of `cargo xtask corpus` (spec/harness.md §8.1).
+# One table per corpus, keyed by the name
 # the commands take; the corpus lives in $SLIP_CORPUS_DIR/<name>/ (else
 # .corpus/<name>/ in the repository).
 #

@@ -1,5 +1,4 @@
-//! `cargo xtask jobserver status|refill` (spec/harness.md §5,
-//! spec/landed/harness/WP-013.md "Jobserver").
+//! `cargo xtask jobserver status|refill` (spec/harness.md §5).
 //!
 //! Every fifo is made by the test (`mkfifo`) in its own temporary
 //! directory, and the test holds it open read+write for its whole life so

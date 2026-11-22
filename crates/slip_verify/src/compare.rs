@@ -3,8 +3,7 @@
 //!
 //! Pure functions over `slip_model::digests` and `slip_model::verdict`.
 //! This is trusted base: every rule below is a sentence of §4, and the
-//! behaviour on inputs the spec leaves open is the one written in
-//! `spec/landed/verify/WP-016.md`.
+//! preconditions on its inputs are those of §4.2.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -286,7 +285,7 @@ fn class_name(class: GroupClass) -> &'static str {
 }
 
 /// Checks the preconditions of `compare_groups` for the groups of one
-/// image, in the order of `spec/landed/verify/WP-016.md`.
+/// image, in the order of `spec/verify.md` §4.2.
 fn check_groups(groups: &[&Group], post: bool) -> Result<(), CompareError> {
     let mut ids: Vec<(GroupClass, &[u8])> = groups.iter().map(|g| group_id(g)).collect();
     ids.sort_unstable();

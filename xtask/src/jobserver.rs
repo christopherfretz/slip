@@ -1,5 +1,4 @@
-//! `cargo xtask jobserver status|refill` (`spec/harness.md` §5,
-//! `spec/landed/harness/WP-013.md`): look at, or top up, the host's make
+//! `cargo xtask jobserver status|refill` (`spec/harness.md` §5): look at, or top up, the host's make
 //! jobserver pool without blocking, through `slip_exec::jobserver`'s
 //! inspection functions (`spec/exec.md` §3 "Inspection").
 //!
