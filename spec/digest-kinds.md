@@ -247,8 +247,10 @@ says so in its note.
 
 `decl` applies digest §4.3 to a declaration met inside a unit:
 
-- a variable, parameter, binding or label gets the next ordinal, then (at
-  its declaration, not at a reference) its rows are written;
+- a variable, parameter, binding or label has the ordinal it got when the
+  walk first met it, by this declaration or by an earlier reference (a
+  `goto` before its label). At its declaration, and not at a reference, its
+  ordinal and then its rows are written;
 - a local class, enumeration or closure type is written whole, members
   included, under the key `local(n)`;
 - a local typedef or alias, a using-declaration, a using-directive and an
@@ -2290,6 +2292,388 @@ declares; what a lookup found is in the node that used it.
 | `using_dirs` | bookkeeping | out | - | restates the `UsingDirective` units |
 | `generation` | bookkeeping | out | - |  |
 | `journal` | bookkeeping | out | - |  |
+
+## 6. Statements
+
+A statement is written as the rows of `StmtNode`: its tag, then the rows
+of its kind, which are in walk order. A kind with no rows (`NullStmt`,
+`BreakStmt`, `ContinueStmt`) is its tag alone.
+
+### `kiln_ast::stmt::StmtKind`
+
+`kind=enum; pin=schema; base=512`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `CompoundStmt` | flag | in | tag 513 |  |
+| `DeclStmt` | flag | in | tag 514 |  |
+| `ExprStmt` | flag | in | tag 515 |  |
+| `NullStmt` | flag | in | tag 516 |  |
+| `IfStmt` | flag | in | tag 517 |  |
+| `SwitchStmt` | flag | in | tag 518 |  |
+| `CaseStmt` | flag | in | tag 519 |  |
+| `DefaultStmt` | flag | in | tag 520 |  |
+| `BreakStmt` | flag | in | tag 521 |  |
+| `ContinueStmt` | flag | in | tag 522 |  |
+| `WhileStmt` | flag | in | tag 523 |  |
+| `DoStmt` | flag | in | tag 524 |  |
+| `ForStmt` | flag | in | tag 525 |  |
+| `ReturnStmt` | flag | in | tag 526 |  |
+| `LabelStmt` | flag | in | tag 527 |  |
+| `GotoStmt` | flag | in | tag 528 |  |
+| `IndirectGotoStmt` | flag | in | tag 529 |  |
+| `AttributedStmt` | flag | in | tag 530 |  |
+| `CXXForRangeStmt` | flag | in | tag 531 |  |
+| `CXXExpansionStmt` | flag | in | tag 532 |  |
+| `CXXTryStmt` | flag | in | tag 533 |  |
+| `CXXCatchStmt` | flag | in | tag 534 |  |
+| `CoroutineBodyStmt` | flag | in | tag 535 |  |
+| `CoreturnStmt` | flag | in | tag 536 |  |
+| `GCCAsmStmt` | flag | in | tag 537 |  |
+| `ContractAssertStmt` | flag | in | tag 538 |  |
+
+### `kiln_ast::stmt::StmtNode`
+
+`kind=struct; pin=schema; selector=kiln_ast::stmt::StmtKind`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `kind` | flag | in | enum StmtKind | the node's tag |
+| `flags` | flag | unsupported | unbuilt | Kiln never sets it; a non-zero value would be a meaning this file does not know |
+| `loc` | location | out | - |  |
+| `CompoundStmt.aux` | flag | in | record FpOverride | index into `StmtArena` `fp_overrides`: the floating-point pragmas in effect in the block |
+| `CompoundStmt.a` | child | in | child* |  |
+| `CompoundStmt.b` | location | out | - | the closing brace |
+| `DeclStmt.a` | entity | in | decl* |  |
+| `ExprStmt.a` | child | in | child |  |
+| `IfStmt.aux` | flag | in | enum IfKind |  |
+| `IfStmt.a` | child | in | record IfData |  |
+| `SwitchStmt.a` | child | in | record SwitchData |  |
+| `CaseStmt.a` | child | in | record CaseData |  |
+| `DefaultStmt.a` | child | in | child |  |
+| `WhileStmt.a` | child | in | record LoopData |  |
+| `DoStmt.a` | child | in | record LoopData |  |
+| `DoStmt.b` | location | out | - | the closing parenthesis |
+| `ForStmt.a` | child | in | record LoopData |  |
+| `ReturnStmt.a` | child | in | child? |  |
+| `ReturnStmt.b` | entity | in | ref | the variable the return may elide the copy of |
+| `LabelStmt.a` | entity | in | decl | the label |
+| `LabelStmt.b` | child | in | child |  |
+| `GotoStmt.a` | entity | in | ref |  |
+| `IndirectGotoStmt.a` | child | in | child |  |
+| `IndirectGotoStmt.b` | location | out | - | the `*` |
+| `AttributedStmt.a` | flag | in | attrs |  |
+| `AttributedStmt.b` | child | in | child |  |
+| `CXXForRangeStmt.a` | child | in | record RangeForData |  |
+| `CXXExpansionStmt.aux-form` | flag | in | enum ExpansionForm | bits 0-1 |
+| `CXXExpansionStmt.aux-expanded` | flag | in | bit | bit 2 |
+| `CXXExpansionStmt.b` | value | in | uv | the depth of the statement's template level |
+| `CXXExpansionStmt.a` | child | in | record ExpansionData |  |
+| `CXXTryStmt.a` | child | in | child |  |
+| `CXXTryStmt.b` | child | in | child* | the handlers, in order |
+| `CXXCatchStmt.a` | entity | in | decl? | the exception variable; absent for `catch (...)` |
+| `CXXCatchStmt.b` | child | in | child |  |
+| `CoroutineBodyStmt.a` | child | in | record CoroutineBodyData |  |
+| `CoreturnStmt.aux-implicit` | flag | in | bit | bit 0 |
+| `CoreturnStmt.a` | child | in | child? |  |
+| `CoreturnStmt.b` | child | in | child? | the promise call |
+| `GCCAsmStmt.aux-volatile` | flag | in | bit |  |
+| `GCCAsmStmt.aux-goto` | flag | in | bit |  |
+| `GCCAsmStmt.aux-inline` | flag | in | bit |  |
+| `GCCAsmStmt.aux-basic` | flag | in | bit |  |
+| `GCCAsmStmt.a` | child | in | record AsmData |  |
+| `ContractAssertStmt.aux-kind` | flag | in | enum ContractKind | bits 0-1 |
+| `ContractAssertStmt.aux-semantic` | value | in | uv | bits 2-3: the evaluation-semantic slot |
+| `ContractAssertStmt.b` | entity | in | decl? | the result name of a postcondition |
+| `ContractAssertStmt.a` | child | in | child | the predicate |
+
+A `ContractAssertStmt` also writes the rows of its `ContractSite`
+(`Ast` `contract_sites`), which are all symbolic.
+
+### `kiln_ast::stmt::IfKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Ordinary` | flag | in | tag 1 |  |
+| `Constexpr` | flag | in | tag 2 |  |
+| `Consteval` | flag | in | tag 3 |  |
+| `NotConsteval` | flag | in | tag 4 |  |
+
+### `kiln_ast::stmt::IfData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `init` | child | in | child? |  |
+| `cond_var` | entity | in | decl? |  |
+| `cond` | child | in | child? |  |
+| `then` | child | in | child? | absent when discarded in an instantiation |
+| `els` | child | in | child? |  |
+
+### `kiln_ast::stmt::SwitchData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `init` | child | in | child? |  |
+| `cond_var` | entity | in | decl? |  |
+| `cond` | child | in | child |  |
+| `body` | child | in | child |  |
+| `cases` | bookkeeping | out | - | the case and default statements of the switch, which the walk meets in `body` |
+
+### `kiln_ast::stmt::CaseData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `lhs` | child | in | child |  |
+| `rhs` | child | in | child? |  |
+| `sub` | child | in | child |  |
+
+### `kiln_ast::stmt::LoopData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `init` | child | in | child? |  |
+| `cond_var` | entity | in | decl? |  |
+| `cond` | child | in | child? |  |
+| `inc` | child | in | child? |  |
+| `body` | child | in | child? |  |
+
+### `kiln_ast::stmt::RangeForData`
+
+`kind=struct; pin=schema`
+
+The implicit variables and the `cond` and `inc` expressions hold the
+`begin`, `end`, `!=` and `++` functions the loop selected (digest §6).
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `init` | child | in | child? |  |
+| `range` | entity | in | decl |  |
+| `begin` | entity | in | decl? |  |
+| `end` | entity | in | decl? |  |
+| `cond` | child | in | child? |  |
+| `inc` | child | in | child? |  |
+| `loop_var` | entity | in | decl |  |
+| `body` | child | in | child |  |
+| `colon` | location | out | - |  |
+
+### `kiln_ast::stmt::ExpansionForm`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Dependent` | flag | in | tag 1 |  |
+| `Enumerating` | flag | in | tag 2 |  |
+| `Iterating` | flag | in | tag 3 |  |
+| `Destructuring` | flag | in | tag 4 |  |
+
+### `kiln_ast::stmt::ExpansionData`
+
+`kind=struct; pin=schema`
+
+Both the pattern parts and, once expanded, the expansions are written.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `init` | child | in | child? |  |
+| `decl` | entity | in | decl |  |
+| `exprs` | child | in | child* |  |
+| `range_init` | child | in | child? |  |
+| `body` | child | in | child |  |
+| `prelude` | child | in | child* |  |
+| `expansions` | child | in | child* |  |
+| `colon` | location | out | - |  |
+
+### `kiln_ast::stmt::CoroutineBodyData`
+
+`kind=struct; pin=schema`
+
+Everything but `body` is built by Kiln and holds the promise functions the
+coroutine selected (digest §6).
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `body` | child | in | child |  |
+| `promise` | entity | in | decl |  |
+| `promise_stmt` | child | out | - | the statement declaring `promise`, which that row writes |
+| `init_suspend` | child | in | child |  |
+| `final_suspend` | child | in | child |  |
+| `on_exception` | child | in | child? |  |
+| `on_fallthrough` | child | in | child? |  |
+| `allocate` | child | in | child |  |
+| `deallocate` | child | in | child |  |
+| `return_value` | child | in | child |  |
+| `result_decl` | entity | in | decl? |  |
+| `return_stmt` | child | in | child? |  |
+| `return_on_alloc_failure` | child | in | child? |  |
+| `param_moves` | child | in | child* |  |
+
+### `kiln_ast::stmt::AsmOperand`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `name` | name | in | sym? | the template refers to the operand by it |
+| `constraint` | value | in | string |  |
+| `constraint_loc` | location | out | - |  |
+| `expr` | child | in | child |  |
+
+### `kiln_ast::stmt::AsmData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `string` | value | in | string |  |
+| `string_loc` | location | out | - |  |
+| `operands` | child | in | record AsmOperand* | outputs, then inputs |
+| `num_outputs` | value | in | uv |  |
+| `num_inputs` | bookkeeping | out | - | the rest of `operands` |
+| `clobbers` | value | in | string* |  |
+| `labels` | entity | in | ref* |  |
+| `rparen` | location | out | - |  |
+| `srclocs` | location | out | - | source positions of the template's lines, as clang's `!srcloc` encodes them |
+
+### `kiln_ast::stmt::ContractKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Assert` | flag | in | tag 1 |  |
+| `Pre` | flag | in | tag 2 |  |
+| `Post` | flag | in | tag 3 |  |
+
+### `kiln_ast::stmt::ContractSemantic`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Ignore` | flag | out | - | only in `Ast` `contract_semantic`: the command line's default, which is not written (§10.9) |
+| `Observe` | flag | out | - | only in `Ast` `contract_semantic`: the command line's default, which is not written (§10.9) |
+| `Enforce` | flag | out | - | only in `Ast` `contract_semantic`: the command line's default, which is not written (§10.9) |
+| `QuickEnforce` | flag | out | - | only in `Ast` `contract_semantic`: the command line's default, which is not written (§10.9) |
+
+### `kiln_ast::stmt::ContractSite`
+
+`kind=struct; pin=schema`
+
+What a `contract_violation` object reports about an assertion. Every field
+comes from the assertion's position or spelling.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `file` | location | symbolic | - | the presumed file name |
+| `function` | name | symbolic | - | the enclosing function's `__PRETTY_FUNCTION__` |
+| `comment` | written | symbolic | - | the predicate's source text |
+| `line` | location | symbolic | - | the presumed line of the keyword |
+| `column` | location | symbolic | - | the column of the keyword |
+
+### `kiln_ast::stmt::StmtArena`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `nodes` | bookkeeping | out | - | arena: reached through `StmtId` |
+| `ifs` | bookkeeping | out | - | arena |
+| `switches` | bookkeeping | out | - | arena |
+| `cases` | bookkeeping | out | - | arena |
+| `loops` | bookkeeping | out | - | arena |
+| `range_fors` | bookkeeping | out | - | arena |
+| `expansions` | bookkeeping | out | - | arena |
+| `asms` | bookkeeping | out | - | arena |
+| `asm_operands` | bookkeeping | out | - | arena |
+| `coros` | bookkeeping | out | - | arena |
+| `fp_overrides` | bookkeeping | out | - | arena: reached through `CompoundStmt.aux` |
+
+### 6.1 Floating-point state
+
+### `kiln_ast::fp::FpOverride`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `mask` | flag | in | uv | which fields of `vals` a pragma set; the bits are Kiln's `fp_bit` constants ("Open questions") |
+| `vals` | flag | in | record FpOptions |  |
+| `cx_limited` | flag | in | bool? |  |
+| `strict_fn` | flag | in | bool |  |
+
+### `kiln_ast::fp::FpOptions`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `contract` | flag | in | enum FpContract |  |
+| `reassoc` | flag | in | bool |  |
+| `arcp` | flag | in | bool |  |
+| `nnan` | flag | in | bool |  |
+| `ninf` | flag | in | bool |  |
+| `nsz` | flag | in | bool |  |
+| `afn` | flag | in | bool |  |
+| `math_errno` | flag | in | bool |  |
+| `round` | flag | in | enum FpRound |  |
+| `except` | flag | in | enum FpExcept? |  |
+| `fenv_access` | flag | in | bool |  |
+| `eval` | flag | in | enum FpEval |  |
+| `rounding_math` | flag | in | bool |  |
+
+### `kiln_ast::fp::FpContract`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Off` | flag | in | tag 1 |  |
+| `On` | flag | in | tag 2 |  |
+| `Fast` | flag | in | tag 3 |  |
+
+### `kiln_ast::fp::FpRound`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Dynamic` | flag | in | tag 1 |  |
+| `Nearest` | flag | in | tag 2 |  |
+| `Upward` | flag | in | tag 3 |  |
+| `Downward` | flag | in | tag 4 |  |
+| `TowardZero` | flag | in | tag 5 |  |
+| `NearestAway` | flag | in | tag 6 |  |
+
+### `kiln_ast::fp::FpEval`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Source` | flag | in | tag 1 |  |
+| `Double` | flag | in | tag 2 |  |
+| `Extended` | flag | in | tag 3 |  |
+
+### `kiln_ast::fp::FpExcept`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Ignore` | flag | in | tag 1 |  |
+| `MayTrap` | flag | in | tag 2 |  |
+| `Strict` | flag | in | tag 3 |  |
 
 ## Tests
 
