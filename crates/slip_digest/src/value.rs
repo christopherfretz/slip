@@ -2,26 +2,41 @@
 //! `spec/digest-kinds.md` §8, §8.1, §10.3).
 //!
 //! A constant is read only through `ConstStore::get` (the decoded
-//! `ConstValue`) and written in place by structure: the tag of its
-//! `ValueKind`, then the `in` rows of its `Scalar` variant or of its
-//! `ByteImage`. Nothing written depends on a `ConstValueId` or on the
-//! order Kiln interned the values in; the stored words of §8.1 (`Node`,
-//! `AggRec`, `Pools`, `ConstStore`) are all `out`.
+//! `ConstValue`) and written by structure: the tag of its `ValueKind`,
+//! then the `in` rows of its `Scalar` variant or of its `ByteImage`.
+//! Nothing written depends on a `ConstValueId` or on the order Kiln
+//! interned the values in; the stored words of §8.1 (`Node`, `AggRec`,
+//! `Pools`, `ConstStore`) are all `out`.
 //!
-//! A value can hold a pointer to another value of the store
-//! (`PtrBase::Const`, every `Reloc`), which is written in place by the
-//! same rule. What bounds that recursion: the store is append-only and a
+//! The value `value` is given, and each relocation of an image (a pointer
+//! scalar), are written in place. A pointer to another constant of the
+//! store (`PtrBase::Const`) is written by that constant's content (digest
+//! §7): the 32-byte digest `H("slip.value.v1", s)` of the stream `s` that
+//! writing it in place would give, its cause handed to the stream that
+//! uses it ([`const_digest`]). A constant shared by many pointers is so
+//! written once per walk, not once per path, and the work is linear in
+//! the constants reached (`spec/landed/digest-kinds/WP-028.md`).
+//!
+//! What bounds the work and the stack: the store is append-only and a
 //! value can only name values interned before it (`ConstStore::push_scalar`
 //! rejects a `PtrBase::Const` id not yet in the store, and `push_aggregate`
-//! a relocation to a value that is not pointer-like), so the nesting is a
-//! finite DAG; each level enters one level of `walk::DEPTH_LIMIT` (lib.rs
-//! "What bounds the stack"), and one top-level value writes at most
-//! [`VALUE_BUDGET`] units of work in place (a DAG that shares a subobject
-//! is written once per path; `spec/landed/digest-kinds/WP-028.md`).
+//! a relocation to a value that is not pointer-like), so the constants a
+//! value reaches form a finite DAG whose edges go to smaller ids. Their
+//! content digests are computed in increasing id order, each child before
+//! its parents, so computing one never recurses into another: the
+//! nesting is one level (lib.rs "What bounds the stack") however long the
+//! chain. One constant's stream (its image and its relocations in place)
+//! does at most [`VALUE_BUDGET`] units of work.
+//!
+//! A content digest is computed as a key is (`spec/landed/digest/WP-024.md`
+//! "A key does not depend on the unit that asks"): the unit's local state
+//! is put aside, so a local entity met below is
+//! `Unaccounted("key/local-ref")`, and the digest is memoised in the walk
+//! by `ConstValueId` unless a depth hit or a cycle was met below it.
 //!
 //! "Padding zeroed" (digest §7): Kiln's image already has it.
 //! `ConstStore::push_aggregate` (`kiln_ast/src/consts/mod.rs`, through
-//! `Pools::check_image`, lines 638 to 692 at the pinned Kiln) rejects an
+//! `Pools::check_image`, lines 632 to 692 at the pinned Kiln) rejects an
 //! image with a non-zero byte under a padding range ("non-zero padding
 //! byte") or under a relocation ("non-zero bytes under a relocation"), and
 //! a store restored from a snapshot is checked the same way
@@ -30,43 +45,77 @@
 //! it by the rows (`padding`, `relocs`); the shadow runs
 //! (`ConstStore::shadow`) are computed from those and are not read.
 
+use std::collections::{HashMap, HashSet};
+
 use slip_kiln::kiln::ast::consts::{
-    ByteImage, ByteRange, ConstValue, PtrBase, Reloc, Scalar, UnionMember,
+    ByteImage, ByteRange, ConstValue, FloatKind, MemberKind, NullKind, PtrBase, Reloc, Scalar,
+    UnionMember,
 };
 use slip_kiln::kiln::ast::decl::LetData;
 use slip_kiln::kiln::ast::expr::ExprKind;
 use slip_kiln::kiln::ast::{ConstValueId, DeclId, ExprId, StringLitId};
+use slip_model::Digest;
 
 use crate::Cause;
 use crate::refs::REF_NONE;
-use crate::stream::Stream;
+use crate::stream::{Hashed, Stream};
 use crate::tables::{
     Decision, Row, float_kind, member_kind, null_kind, ptr_base, string_encoding, value_kind,
 };
 use crate::walk::{TOO_DEEP, Walk};
 
-/// The work one top-level [`value`] may do in place: one unit per value
-/// written and one per image byte. Past it the stream is indeterminate
-/// with [`TOO_LARGE`]. 2^26 is far above any constant a program holds
-/// (a 64 MiB image), and it keeps the work of one value linear in a
-/// bound even when its pointers share a subobject many times.
+/// The work one constant's stream may do: one unit per value written in
+/// place and one per image byte. Past it the stream is indeterminate with
+/// [`TOO_LARGE`]. 2^26 is far above any constant a program holds (a
+/// 64 MiB image).
 const VALUE_BUDGET: u64 = 1 << 26;
 
 /// The cause of a value larger than [`VALUE_BUDGET`].
 const TOO_LARGE: Cause = Cause::Unaccounted("value/size");
 
+/// A constant whose content digest was not computed before a value that
+/// names it: the store's order (a value names only earlier values) makes
+/// this unreachable; it is a shape the walk does not account for.
+const OUT_OF_ORDER: Cause = Cause::Unaccounted("value/order");
+
+/// `H("slip.value.v1", stream)`: the content digest of a constant a
+/// pointer names (`spec/landed/digest-kinds/WP-028.md`).
+pub(crate) const VALUE_TAG: &str = "slip.value.v1";
+
 /// What a value that cannot be written puts in its place: `uv 0`, which
 /// no tag is (digest-kinds §1.4), as the other areas do.
 const PLACEHOLDER: u64 = 0;
 
+/// The state of writing one value.
+struct Ctx {
+    /// What is left of [`VALUE_BUDGET`] for the stream being written.
+    budget: u64,
+    /// Content digests computed in this call that are not memoised in the
+    /// walk (a depth hit or a cycle below them): their cause depends on
+    /// the path, so they serve this call only.
+    local: HashMap<u32, Hashed>,
+    /// A digest of `local` was used by the stream being written.
+    tainted: bool,
+    /// Content digests are being computed ([`compute`]).
+    computing: bool,
+}
+
+impl Ctx {
+    fn new() -> Ctx {
+        Ctx { budget: VALUE_BUDGET, local: HashMap::new(), tainted: false, computing: false }
+    }
+}
+
 /// `value`: the constant `v` by the rows of §8.
 pub(crate) fn value(w: &mut Walk<'_>, s: &mut Stream, v: ConstValueId) {
-    let mut budget = VALUE_BUDGET;
-    write_value(w, s, v, &mut budget);
+    let mut cx = Ctx::new();
+    write_value(w, s, v, &mut cx);
 }
 
 /// `string`: a string literal by content, the rows of its `Entry`
 /// (§10.3): `start` as the code-unit bytes Kiln stores, then `enc`.
+/// `StringPool::get` hands the entry over as a tuple, not as the record,
+/// so a field Kiln adds to `Entry` does not fail to compile here.
 pub(crate) fn string(w: &mut Walk<'_>, s: &mut Stream, l: StringLitId) {
     let (enc, bytes) = w.ast.strings.get(l);
     s.bytes(bytes).tag(string_encoding::row(&enc));
@@ -74,18 +123,18 @@ pub(crate) fn string(w: &mut Walk<'_>, s: &mut Stream, l: StringLitId) {
 
 /// Takes `n` units of the budget; `false` (and the stream is
 /// indeterminate) once it is spent.
-fn spend(s: &mut Stream, budget: &mut u64, n: u64) -> bool {
-    if *budget < n {
-        *budget = 0;
+fn spend(s: &mut Stream, cx: &mut Ctx, n: u64) -> bool {
+    if cx.budget < n {
+        cx.budget = 0;
         s.indeterminate(TOO_LARGE);
         return false;
     }
-    *budget -= n;
+    cx.budget -= n;
     true
 }
 
-/// The tag of a variant row, and the row's cause if it is `unsupported`
-/// (digest-kinds §1.2).
+/// The tag of a variant row, and the row's cause if it is not `in`
+/// (digest-kinds §1.2); `name` is `<short name>/<row>`.
 fn variant(s: &mut Stream, row: Row, name: &'static str) {
     s.tag(row);
     match row.decision {
@@ -101,8 +150,8 @@ fn variant(s: &mut Stream, row: Row, name: &'static str) {
 
 /// One value in place: `enum ValueKind`, then `record Scalar` or `record
 /// ByteImage` (`ConstValue` `Scalar.0`, `Aggregate.0`).
-fn write_value(w: &mut Walk<'_>, s: &mut Stream, v: ConstValueId, budget: &mut u64) {
-    if !spend(s, budget, 1) {
+fn write_value(w: &mut Walk<'_>, s: &mut Stream, v: ConstValueId, cx: &mut Ctx) {
+    if !spend(s, cx, 1) {
         s.uv(PLACEHOLDER);
         return;
     }
@@ -112,14 +161,14 @@ fn write_value(w: &mut Walk<'_>, s: &mut Stream, v: ConstValueId, budget: &mut u
     }
     let ast = w.ast;
     match ast.consts.get(v) {
-        ConstValue::Scalar(x) => write_scalar(w, s, x, budget),
-        ConstValue::Aggregate(img) => write_image(w, s, img, budget),
+        ConstValue::Scalar(x) => write_scalar(w, s, x, cx),
+        ConstValue::Aggregate(img) => write_image(w, s, img, cx),
     }
     w.leave();
 }
 
 /// The rows of the `Scalar` variant, after its `ValueKind` tag.
-fn write_scalar(w: &mut Walk<'_>, s: &mut Stream, x: Scalar<'_>, budget: &mut u64) {
+fn write_scalar(w: &mut Walk<'_>, s: &mut Stream, x: Scalar<'_>, cx: &mut Ctx) {
     match x {
         Scalar::Int { ty, signed, bits } => {
             variant(s, value_kind::INT, "ValueKind/Int");
@@ -141,19 +190,19 @@ fn write_scalar(w: &mut Walk<'_>, s: &mut Stream, x: Scalar<'_>, budget: &mut u6
         Scalar::Float { ty, kind, bits } => {
             variant(s, value_kind::FLOAT, "ValueKind/Float");
             w.write_type(s, ty);
-            variant(s, float_kind::row(&kind), "FloatKind");
+            variant(s, float_kind::row(&kind), float_name(kind));
             // `Float.bits`: the exact encoding, 16 bytes little-endian.
             s.bytes(&bits.to_le_bytes());
         }
         Scalar::Null { ty, kind } => {
             variant(s, value_kind::NULL, "ValueKind/Null");
             w.write_type(s, ty);
-            variant(s, null_kind::row(&kind), "NullKind");
+            variant(s, null_kind::row(&kind), null_name(kind));
         }
         Scalar::Pointer { ty, base, offset, designated, past } => {
             variant(s, value_kind::POINTER, "ValueKind/Pointer");
             w.write_type(s, ty);
-            write_base(w, s, base, budget);
+            write_base(w, s, base, cx);
             s.uv(offset);
             w.write_type_opt(s, designated);
             s.bool(past);
@@ -162,7 +211,7 @@ fn write_scalar(w: &mut Walk<'_>, s: &mut Stream, x: Scalar<'_>, budget: &mut u6
             variant(s, value_kind::MEMBER_PTR, "ValueKind/MemberPtr");
             w.write_type(s, ty);
             w.write_ref(s, member);
-            variant(s, member_kind::row(&kind), "MemberKind");
+            variant(s, member_kind::row(&kind), member_name(kind));
             s.bool(derived);
             w.write_refs(s, path);
         }
@@ -175,15 +224,61 @@ fn write_scalar(w: &mut Walk<'_>, s: &mut Stream, x: Scalar<'_>, budget: &mut u6
     }
 }
 
+/// The cause name of a `FloatKind` row.
+fn float_name(k: FloatKind) -> &'static str {
+    match k {
+        FloatKind::Half => "FloatKind/Half",
+        FloatKind::BFloat16 => "FloatKind/BFloat16",
+        FloatKind::Single => "FloatKind/Single",
+        FloatKind::Double => "FloatKind/Double",
+        FloatKind::X87Extended => "FloatKind/X87Extended",
+        FloatKind::Quad => "FloatKind/Quad",
+    }
+}
+
+/// The cause name of a `NullKind` row.
+fn null_name(k: NullKind) -> &'static str {
+    match k {
+        NullKind::Pointer => "NullKind/Pointer",
+        NullKind::MemberData => "NullKind/MemberData",
+        NullKind::MemberFunction => "NullKind/MemberFunction",
+    }
+}
+
+/// The cause name of a `MemberKind` row.
+fn member_name(k: MemberKind) -> &'static str {
+    match k {
+        MemberKind::Data => "MemberKind/Data",
+        MemberKind::Function => "MemberKind/Function",
+    }
+}
+
+/// The cause name of a `PtrBase` row.
+fn base_name(b: &PtrBase) -> &'static str {
+    match b {
+        PtrBase::Decl(_) => "PtrBase/Decl",
+        PtrBase::Function(_) => "PtrBase/Function",
+        PtrBase::Temporary(_) => "PtrBase/Temporary",
+        PtrBase::StringLit { lit: _, origin: _ } => "PtrBase/StringLit",
+        PtrBase::Const(_) => "PtrBase/Const",
+        PtrBase::TypeInfo(_) => "PtrBase/TypeInfo",
+        PtrBase::Label { label: _, origin: _ } => "PtrBase/Label",
+        PtrBase::Absolute => "PtrBase/Absolute",
+        PtrBase::LabelDiff { plus: _, minus: _, size: _ } => "PtrBase/LabelDiff",
+    }
+}
+
 /// `enum PtrBase`.
-fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, budget: &mut u64) {
-    let row = ptr_base::row(&base);
-    variant(s, row, "PtrBase");
+fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, cx: &mut Ctx) {
+    variant(s, ptr_base::row(&base), base_name(&base));
     match base {
         PtrBase::Decl(d) | PtrBase::Function(d) => w.write_ref(s, d),
         PtrBase::Temporary(d) => write_temporary(w, s, d),
         PtrBase::StringLit { lit, origin: _ } => string(w, s, lit),
-        PtrBase::Const(c) => write_value(w, s, c, budget),
+        PtrBase::Const(c) => {
+            let h = const_digest(w, cx, c);
+            s.digest(&h.digest).absorb(h.cause);
+        }
         PtrBase::TypeInfo(q) => w.write_type(s, q),
         PtrBase::Label { label, origin: _ } => w.write_ref(s, label),
         PtrBase::Absolute => {}
@@ -192,6 +287,125 @@ fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, budget: &mut u64)
             write_addr_label(w, s, minus, "PtrBase/LabelDiff.minus");
             s.uv(u64::from(size));
         }
+    }
+}
+
+/// The content digest of constant `c` (`PtrBase/Const.0`): from the
+/// walk's memo, from this call's, or computed with every constant it
+/// reaches ([`compute`]).
+fn const_digest(w: &mut Walk<'_>, cx: &mut Ctx, c: ConstValueId) -> Hashed {
+    let i = c.index();
+    if let Some(&h) = w.const_memo.get(&i) {
+        return h;
+    }
+    if let Some(&h) = cx.local.get(&i) {
+        cx.tainted = true;
+        return h;
+    }
+    if cx.computing {
+        // Unreachable with Kiln's store (a value names earlier values
+        // only, and those are computed first).
+        return Hashed { digest: Digest([0; 32]), cause: Some(OUT_OF_ORDER), bytes: 0 };
+    }
+    if !compute(w, cx, c) {
+        cx.tainted = true;
+        return Hashed { digest: Digest([0; 32]), cause: Some(TOO_DEEP), bytes: 0 };
+    }
+    if let Some(&h) = w.const_memo.get(&i) {
+        return h;
+    }
+    if let Some(&h) = cx.local.get(&i) {
+        cx.tainted = true;
+        return h;
+    }
+    Hashed { digest: Digest([0; 32]), cause: Some(OUT_OF_ORDER), bytes: 0 }
+}
+
+/// Computes the content digest of `root` and of every constant it reaches
+/// that has none yet, in increasing id order (children first), with the
+/// unit's local state put aside. `false` past the depth limit.
+fn compute(w: &mut Walk<'_>, cx: &mut Ctx, root: ConstValueId) -> bool {
+    if !w.enter() {
+        return false;
+    }
+    // The constants to compute: a walk over the DAG with an explicit
+    // stack, skipping those already known.
+    let mut todo: Vec<ConstValueId> = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(v) = stack.pop() {
+        let i = v.index();
+        if w.const_memo.contains_key(&i) || cx.local.contains_key(&i) || !seen.insert(i) {
+            continue;
+        }
+        todo.push(v);
+        children(w, v, &mut stack);
+    }
+    todo.sort_by_key(|v| v.index());
+    let saved_unit = std::mem::take(&mut w.unit);
+    w.in_key += 1;
+    let (budget, tainted) = (cx.budget, cx.tainted);
+    cx.computing = true;
+    for v in todo {
+        cx.budget = VALUE_BUDGET;
+        cx.tainted = false;
+        let aborts = w.aborts;
+        let mut s = Stream::new();
+        write_value(w, &mut s, v, cx);
+        let h = w.hashed(s.finish(VALUE_TAG));
+        if cx.tainted || w.aborts != aborts {
+            cx.local.insert(v.index(), h);
+        } else {
+            w.const_memo.insert(v.index(), h);
+        }
+    }
+    cx.computing = false;
+    (cx.budget, cx.tainted) = (budget, tainted);
+    w.in_key -= 1;
+    w.unit = saved_unit;
+    w.leave();
+    true
+}
+
+/// The constants whose content digest the stream of `v` writes: the
+/// `PtrBase::Const` of `v` if it is a pointer, of each relocation if it is
+/// an image (a relocation is written in place).
+fn children(w: &Walk<'_>, v: ConstValueId, out: &mut Vec<ConstValueId>) {
+    match w.ast.consts.get(v) {
+        ConstValue::Scalar(x) => scalar_child(&x, out),
+        ConstValue::Aggregate(ByteImage { ty: _, bytes: _, relocs, padding: _, unions: _ }) => {
+            for &Reloc { at: _, value } in relocs {
+                match w.ast.consts.get(value) {
+                    ConstValue::Scalar(x) => scalar_child(&x, out),
+                    // Not pointer-like: `push_aggregate` rejects it, and
+                    // its stream would write it in place.
+                    ConstValue::Aggregate(_) => out.push(value),
+                }
+            }
+        }
+    }
+}
+
+/// The constant a scalar's base names, if any.
+fn scalar_child(x: &Scalar<'_>, out: &mut Vec<ConstValueId>) {
+    match *x {
+        Scalar::Pointer { ty: _, base, offset: _, designated: _, past: _ } => match base {
+            PtrBase::Const(c) => out.push(c),
+            PtrBase::Decl(_)
+            | PtrBase::Function(_)
+            | PtrBase::Temporary(_)
+            | PtrBase::StringLit { lit: _, origin: _ }
+            | PtrBase::TypeInfo(_)
+            | PtrBase::Label { label: _, origin: _ }
+            | PtrBase::Absolute
+            | PtrBase::LabelDiff { plus: _, minus: _, size: _ } => {}
+        },
+        Scalar::Int { ty: _, signed: _, bits: _ }
+        | Scalar::Bool { ty: _, value: _ }
+        | Scalar::Float { ty: _, kind: _, bits: _ }
+        | Scalar::Null { ty: _, kind: _ }
+        | Scalar::MemberPtr { ty: _, member: _, kind: _, derived: _, path: _ }
+        | Scalar::Reflection { ty: _, id: _ } => {}
     }
 }
 
@@ -222,13 +436,13 @@ fn write_addr_label(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, row: &'static s
 }
 
 /// `record ByteImage`, after the `Aggregate` tag (digest §7 last rule).
-fn write_image(w: &mut Walk<'_>, s: &mut Stream, img: ByteImage<'_>, budget: &mut u64) {
+fn write_image(w: &mut Walk<'_>, s: &mut Stream, img: ByteImage<'_>, cx: &mut Ctx) {
     let ByteImage { ty, bytes, relocs, padding, unions } = img;
     variant(s, value_kind::AGGREGATE, "ValueKind/Aggregate");
     w.write_type(s, ty);
     // `bytes`: as stored; Kiln zeroes padding and relocated bytes (the
     // module documentation says where).
-    if spend(s, budget, bytes.len() as u64) {
+    if spend(s, cx, bytes.len() as u64) {
         s.bytes(bytes);
     } else {
         s.bytes(&[]);
@@ -236,7 +450,7 @@ fn write_image(w: &mut Walk<'_>, s: &mut Stream, img: ByteImage<'_>, budget: &mu
     s.count(relocs.len());
     for &Reloc { at, value } in relocs {
         s.uv(u64::from(at));
-        write_value(w, s, value, budget);
+        write_value(w, s, value, cx);
     }
     s.count(padding.len());
     for &ByteRange { start, len } in padding {
@@ -256,10 +470,11 @@ mod tests {
     //! snippet's store, or of a store built by hand, and its bytes are
     //! compared with the rows written one by one.
 
+    use std::fmt::Write as _;
     use std::sync::Arc;
 
     use slip_kiln::kiln::ast::consts::{
-        ConstValue, IntBits, MemberKind, NullKind, PtrBase, Scalar,
+        ConstValue, FloatKind, IntBits, MemberKind, NullKind, PtrBase, Scalar,
     };
     use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, DeclMisc, NewDecl, Payload};
     use slip_kiln::kiln::ast::names::DeclName;
@@ -271,13 +486,15 @@ mod tests {
     use slip_kiln::kiln::source::symbol::Interner;
     use slip_model::keys::RuleTable;
 
-    use super::{TOO_LARGE, value, write_value};
+    use slip_model::Digest;
+
+    use super::{Ctx, TOO_LARGE, VALUE_TAG, string, value, write_value};
     use crate::refs::REF_LOCAL;
     use crate::stream::Stream;
     use crate::tables::{
         float_kind, member_kind, null_kind, ptr_base, string_encoding, value_kind,
     };
-    use crate::walk::{TOO_DEEP, Walk};
+    use crate::walk::{DEPTH_LIMIT, TOO_DEEP, Walk};
     use crate::{Cause, Input};
 
     /// Runs `f` on a walk over the snippet `src` in language mode `std`.
@@ -674,39 +891,6 @@ mod tests {
         });
     }
 
-    // lib.rs "What bounds the stack": a chain of pointers to constants
-    // deeper than the walk's limit is `walk/depth`, not a stack overflow.
-    #[test]
-    fn nesting_is_bounded() {
-        let (mut ast, ty) = hand_built();
-        let mut chain = |n: usize| {
-            let mut v = ast.consts.push_scalar(Scalar::Int {
-                ty: QualType::INT,
-                signed: true,
-                bits: IntBits::from_i128(32, 7),
-            });
-            for _ in 0..n {
-                let base = PtrBase::Const(v.expect("a value"));
-                v = ast.consts.push_scalar(Scalar::Pointer {
-                    ty,
-                    base,
-                    offset: 0,
-                    designated: None,
-                    past: false,
-                });
-            }
-            v.expect("a value")
-        };
-        let (deep, deeper) = (chain(250), chain(300));
-        with_ast(&ast, |w| {
-            let got = written(w, deeper);
-            assert_eq!(got.cause(), Some(TOO_DEEP));
-            assert_eq!(w.depth, 0, "every level entered is left");
-            // Both chains are cut at the same depth, above their ends.
-            assert_eq!(got.as_bytes(), written(w, deep).as_bytes());
-        });
-    }
-
     // digest-kinds §8 `Scalar` `Null.kind` (`NullKind`) and `MemberPtr`
     // `kind` (`MemberKind`), `derived`: each by its row, with the type held.
     #[test]
@@ -750,26 +934,264 @@ mod tests {
         });
     }
 
-    // WP-028 (`spec/landed/digest-kinds/WP-028.md`): one value does at most
-    // its budget of work in place; past it, `value/size`.
+    // WP-028 (`spec/landed/digest-kinds/WP-028.md`): one constant's stream
+    // does at most its budget of work in place; past it, `value/size`.
     #[test]
     fn work_is_bounded() {
         let src = "template <auto V> struct A;\nint g;\nstruct P { const int* p; int a[8]; };\nA<P{&g}>* x;\n";
         with_walk(src, "c++20", |w| {
             let v = find(w, |c| matches!(c, ConstValue::Aggregate(_)))[0];
-            let mut s = Stream::new();
-            let mut budget = 1 + 40 + 1;
-            write_value(w, &mut s, v, &mut budget);
-            assert_eq!(s.cause(), None, "the image and its one pointer fit");
-            assert_eq!(budget, 0);
-            let mut s = Stream::new();
-            let mut budget = 1 + 40;
-            write_value(w, &mut s, v, &mut budget);
-            assert_eq!(s.cause(), Some(TOO_LARGE));
-            let mut s = Stream::new();
-            let mut budget = 1 + 39;
-            write_value(w, &mut s, v, &mut budget);
-            assert_eq!(s.cause(), Some(TOO_LARGE));
+            let with_budget = |w: &mut Walk<'_>, budget| {
+                let mut cx = Ctx::new();
+                cx.budget = budget;
+                let mut s = Stream::new();
+                write_value(w, &mut s, v, &mut cx);
+                (s.cause(), cx.budget)
+            };
+            assert_eq!(with_budget(w, 1 + 40 + 1), (None, 0), "the image and its pointer fit");
+            assert_eq!(with_budget(w, 1 + 40).0, Some(TOO_LARGE));
+            assert_eq!(with_budget(w, 1 + 39).0, Some(TOO_LARGE));
+        });
+    }
+
+    /// The bytes of the stream of `c` written in place, and their content
+    /// digest (`PtrBase/Const.0`).
+    fn content(w: &mut Walk<'_>, c: ConstValueId) -> Digest {
+        let mut s = Stream::new();
+        write_value(w, &mut s, c, &mut Ctx::new());
+        s.finish(VALUE_TAG).digest
+    }
+
+    // digest §7, `spec/landed/digest-kinds/WP-028.md`: a pointer to a
+    // constant writes that constant's content digest; a memoised digest
+    // gives the bytes a fresh walk gives.
+    #[test]
+    fn a_pointer_to_a_constant_is_its_content() {
+        let (mut ast, ty) = hand_built();
+        let int = ast
+            .consts
+            .push_scalar(Scalar::Int {
+                ty: QualType::INT,
+                signed: true,
+                bits: IntBits::from_i128(32, 7),
+            })
+            .expect("an int");
+        let ptr = |ast: &mut Ast, c| {
+            ast.consts
+                .push_scalar(Scalar::Pointer {
+                    ty,
+                    base: PtrBase::Const(c),
+                    offset: 0,
+                    designated: None,
+                    past: false,
+                })
+                .expect("a pointer")
+        };
+        let p1 = ptr(&mut ast, int);
+        let p2 = ptr(&mut ast, p1);
+        let fresh = with_ast(&ast, |w| written(w, p1).as_bytes().to_vec());
+        with_ast(&ast, |w| {
+            let top = written(w, p2);
+            assert_eq!(top.cause(), None);
+            assert!(w.const_memo.contains_key(&p1.index()), "memoised");
+            assert_eq!(written(w, p1).as_bytes(), fresh, "memoised as a fresh walk");
+            let mut want = Stream::new();
+            want.tag(value_kind::POINTER);
+            w.write_type(&mut want, ty);
+            want.tag(ptr_base::CONST).digest(&content(w, p1));
+            plain_tail(&mut want);
+            assert_eq!(top.as_bytes(), want.as_bytes());
+        });
+    }
+
+    // `spec/landed/digest-kinds/WP-028.md`: a content digest is computed as
+    // a key is, with the unit put aside: a local entity met below it is
+    // `key/local-ref`, and the unit's ordinals are untouched.
+    #[test]
+    fn a_content_digest_does_not_depend_on_the_unit() {
+        let (mut ast, ty) = hand_built();
+        let l = label(&mut ast);
+        let at = |ast: &mut Ast, base| {
+            ast.consts
+                .push_scalar(Scalar::Pointer { ty, base, offset: 0, designated: None, past: false })
+                .expect("a pointer")
+        };
+        let inner = at(&mut ast, PtrBase::Decl(l));
+        let outer = at(&mut ast, PtrBase::Const(inner));
+        with_ast(&ast, |w| {
+            assert_eq!(written(w, outer).cause(), Some(Cause::Unaccounted("key/local-ref")));
+            assert!(w.unit.locals.is_empty(), "no ordinal taken");
+            assert_eq!(w.in_key, 0);
+        });
+    }
+
+    // WP-028 review: constants whose pointers share a constant are written
+    // once each, not once per path: a 30-level chain whose levels each
+    // hold two pointers to the level below hashes a few kilobytes.
+    #[test]
+    fn shared_constants_are_written_once() {
+        let mut src = String::from(
+            "namespace std::meta { using info = decltype(^^int); template <class T> consteval T extract(info r);\n\
+             template <class R> consteval info __kiln_reflect_constant_array(R&& r); }\n\
+             template <auto V> struct A;\nconstexpr int a0[] = {1, 0};\n\
+             constexpr const int* p0 = std::meta::extract<const int*>(std::meta::__kiln_reflect_constant_array(a0));\n",
+        );
+        let n = 30;
+        for k in 1..=n {
+            writeln!(
+                src,
+                "constexpr const void* a{k}[] = {{p{j}, p{j}}};\n\
+                 constexpr const void* const* p{k} = std::meta::extract<const void* const*>(std::meta::__kiln_reflect_constant_array(a{k}));",
+                j = k - 1
+            )
+            .expect("a string");
+        }
+        writeln!(src, "A<p{n}>* x;").expect("a string");
+        with_walk(&src, "c++26", |w| {
+            let top = w.ast.consts.ids().last().expect("constants");
+            let got = written(w, top);
+            assert_eq!(got.cause(), None);
+            assert!(w.bytes < 100_000, "linear: {} bytes hashed", w.bytes);
+        });
+    }
+
+    // lib.rs "What bounds the stack": a chain of pointers to constants is
+    // computed children first, so its length is not stack depth; a value
+    // met past the walk's depth limit is `walk/depth`, and that digest is
+    // not memoised (its cause depends on the path).
+    #[test]
+    fn nesting_is_bounded() {
+        let (mut ast, ty) = hand_built();
+        let mut chain = |n: usize| {
+            let mut v = ast.consts.push_scalar(Scalar::Int {
+                ty: QualType::INT,
+                signed: true,
+                bits: IntBits::from_i128(32, 7),
+            });
+            for _ in 0..n {
+                let base = PtrBase::Const(v.expect("a value"));
+                v = ast.consts.push_scalar(Scalar::Pointer {
+                    ty,
+                    base,
+                    offset: 0,
+                    designated: None,
+                    past: false,
+                });
+            }
+            v.expect("a value")
+        };
+        let (deep, deeper) = (chain(250), chain(300));
+        with_ast(&ast, |w| {
+            // From two levels below the limit, the value enters one and the
+            // computation of its content digests the last: each constant's
+            // own stream is cut there.
+            w.depth = DEPTH_LIMIT - 2;
+            for v in [deep, deeper] {
+                assert_eq!(written(w, v).cause(), Some(TOO_DEEP));
+                assert_eq!(w.depth, DEPTH_LIMIT - 2, "every level entered is left");
+            }
+            assert!(w.const_memo.is_empty(), "nothing below a depth hit is memoised");
+            w.depth = 0;
+            let (a, b) = (written(w, deep), written(w, deeper));
+            assert_eq!((a.cause(), b.cause()), (None, None));
+            assert_ne!(a.as_bytes(), b.as_bytes());
+            assert_eq!(w.depth, 0);
+        });
+    }
+
+    // digest-kinds §8 `Scalar` `Float.kind`: the row of each `FloatKind`
+    // the target builds, with `Float.bits`.
+    #[test]
+    fn every_float_kind_by_its_row() {
+        let src = "template <auto V> struct A;\nA<1.0f>* a;\nA<1.0>* b;\nA<1.0L>* c;\n\
+                   A<(__float128)1.0>* d;\nA<(_Float16)1.0>* e;\nA<(__bf16)1.0>* f;\n";
+        with_walk(src, "c++20", |w| {
+            let floats = find(w, |c| matches!(c, ConstValue::Scalar(Scalar::Float { .. })));
+            let mut kinds = Vec::new();
+            for v in floats {
+                let ConstValue::Scalar(Scalar::Float { ty, kind, bits }) = w.ast.consts.get(v)
+                else {
+                    unreachable!("picked above")
+                };
+                let mut want = Stream::new();
+                want.tag(value_kind::FLOAT);
+                w.write_type(&mut want, ty);
+                want.tag(float_kind::row(&kind)).bytes(&bits.to_le_bytes());
+                assert_eq!(written(w, v).as_bytes(), want.as_bytes(), "{kind:?}");
+                kinds.push(kind);
+            }
+            assert_eq!(
+                kinds,
+                [
+                    FloatKind::Single,
+                    FloatKind::Double,
+                    FloatKind::X87Extended,
+                    FloatKind::Quad,
+                    FloatKind::Half,
+                    FloatKind::BFloat16
+                ]
+            );
+        });
+    }
+
+    // digest-kinds §8 `Scalar` `Int.ty`, `Pointer.ty`: the type is written
+    // when nothing else differs.
+    #[test]
+    fn the_type_of_a_scalar_by_its_row() {
+        let (mut ast, void_ptr) = hand_built();
+        let int_ptr = ast.types.pointer_to(QualType::INT);
+        let mut int = |ty| {
+            ast.consts
+                .push_scalar(Scalar::Int { ty, signed: true, bits: IntBits::from_i128(32, 1) })
+                .expect("an int")
+        };
+        let (i, u) = (int(QualType::INT), int(QualType::UINT));
+        let mut ptr = |ty| {
+            ast.consts
+                .push_scalar(Scalar::Pointer {
+                    ty,
+                    base: PtrBase::Absolute,
+                    offset: 8,
+                    designated: None,
+                    past: false,
+                })
+                .expect("a pointer")
+        };
+        let (p, q) = (ptr(void_ptr), ptr(int_ptr));
+        with_ast(&ast, |w| {
+            assert_ne!(written(w, i).as_bytes(), written(w, u).as_bytes(), "Int.ty");
+            assert_ne!(written(w, p).as_bytes(), written(w, q).as_bytes(), "Pointer.ty");
+        });
+    }
+
+    // digest-kinds §10.3 `Entry.enc`: the same code-unit bytes in two
+    // encodings differ by the tag, for every `StringEncoding` (`Wide16`,
+    // which this target's `wchar_t` is not, built by hand).
+    #[test]
+    fn an_encoding_by_its_row() {
+        let (mut ast, _) = hand_built();
+        let encs = [
+            StringEncoding::Ordinary,
+            StringEncoding::Utf8,
+            StringEncoding::Utf16,
+            StringEncoding::Utf32,
+            StringEncoding::Wide16,
+            StringEncoding::Wide32,
+        ];
+        let lits = encs.map(|e| ast.strings.intern(e, b"abcd"));
+        with_ast(&ast, |w| {
+            let mut all = Vec::new();
+            for (l, e) in lits.into_iter().zip(encs) {
+                let mut got = Stream::new();
+                string(w, &mut got, l);
+                let mut want = Stream::new();
+                want.bytes(b"abcd").tag(string_encoding::row(&e));
+                assert_eq!(got.as_bytes(), want.as_bytes(), "{e:?}");
+                all.push(got.as_bytes().to_vec());
+            }
+            all.sort();
+            all.dedup();
+            assert_eq!(all.len(), encs.len(), "ordinary is not UTF-8, nor Wide16 UTF-16");
         });
     }
 }

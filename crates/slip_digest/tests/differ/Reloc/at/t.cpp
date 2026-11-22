@@ -1,10 +1,10 @@
 #include "side.h"
-// §8 Reloc `at`: the pointer at byte 0 against at byte 8.
+// §8 Reloc `at`: the pointer to `g` at byte 0 against at byte 8 of a struct of two pointers (same type, bytes and padding).
 template <auto V> struct A;
-union PU { int* p; struct { long n; int* q; } s; };
+struct P2 { int* p; int* q; };
 int g;
 #ifdef B
-A<PU{.s = {0, &g}}>* x;
+A<P2{nullptr, &g}>* x;
 #else
-A<PU{.p = &g}>* x;
+A<P2{&g, nullptr}>* x;
 #endif

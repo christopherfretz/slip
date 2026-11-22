@@ -1,1 +1,2 @@
+# Not isolated: Kiln records every pointer slot as a relocation, a null one too (ConstValueId of a Null scalar), so the offsets follow from the type and the active union members, and moving the pointer changes which value is at each offset (Reloc.value); unit test value::tests::an_aggregate_by_its_rows isolates Reloc.at.
 changed x
