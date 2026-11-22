@@ -99,7 +99,11 @@ fn requires_parameters_are_numbered_in_the_profile() {
         super::profile_expr(w, &mut later, e);
         assert_eq!(fresh.as_bytes(), later.as_bytes());
         // A parameter's stream may be pending (another area's rows).
-        assert!(!matches!(fresh.cause(), Some(crate::Cause::Unaccounted(_))), "{:?}", fresh.cause());
+        assert!(
+            !matches!(fresh.cause(), Some(crate::Cause::Unaccounted(_))),
+            "{:?}",
+            fresh.cause()
+        );
         assert_eq!(w.unit.next_local, 5);
         assert!(of_kind(w, DeclKind::ParmVar).len() >= 3);
     });
@@ -170,17 +174,27 @@ fn stored_results() {
                bool a = C<int>;\nbool b = C<char>;\ntemplate<class T> bool d = C<T>;\n";
     let got =
         kind_bytes(src, ExprKind::ConceptSpecializationExpr, super::concept_specialization_expr);
-    starts(&got, &[0u64, 1, 2].map(|v| prefix(|s| {
-        s.uv(v);
-    })));
+    starts(
+        &got,
+        &[0u64, 1, 2].map(|v| {
+            prefix(|s| {
+                s.uv(v);
+            })
+        }),
+    );
     let src = "struct X {};\n\
                template<class T> constexpr bool r = requires(T t) { t + 1; };\n\
                template<class T> concept K = requires(T t) { t + 1; };\n\
                bool a = K<int>;\nbool b = K<X>;\nbool c = r<int>;\n";
     let got = kind_bytes(src, ExprKind::RequiresExpr, super::requires_expr);
-    starts(&got, &[0u64, 2].map(|v| prefix(|s| {
-        s.uv(v);
-    })));
+    starts(
+        &got,
+        &[0u64, 2].map(|v| {
+            prefix(|s| {
+                s.uv(v);
+            })
+        }),
+    );
 }
 
 /// `CXXExpansionSelectExpr.aux` and `.a`: the form of each expansion
@@ -196,10 +210,11 @@ fn expansion_select_form_and_depth() {
     let got = kind_bytes(src, ExprKind::CXXExpansionSelectExpr, super::cxx_expansion_select_expr);
     starts(
         &got,
-        &[expansion_form::DEPENDENT, expansion_form::ENUMERATING]
-            .map(|r| prefix(|s| {
+        &[expansion_form::DEPENDENT, expansion_form::ENUMERATING].map(|r| {
+            prefix(|s| {
                 s.tag(r);
-            })),
+            })
+        }),
     );
     // Kiln builds the node with `Dependent` or `Enumerating` only
     // (`kiln_sema` expansion.rs:248, :1142): the other two forms are the

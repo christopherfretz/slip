@@ -32,12 +32,12 @@ use slip_kiln::kiln::ast::templates::Requirement;
 use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, LambdaId, ListId, NnsId, ProfileId};
 use slip_model::keys::Name;
 
+use crate::Cause;
 use crate::expr::{self, Node, check_aux, check_bits};
 use crate::refs::{REF_LOCAL, REF_NONE, REF_PARAM};
 use crate::stream::{FlagWord, Stream};
 use crate::tables::{binary_op, expansion_form, overloaded_operator, requirement};
 use crate::walk::Walk;
-use crate::Cause;
 
 /// The numbering of a profile being walked (§4.4): the entities declared
 /// inside it, by first declaration, and whether a local entity declared
@@ -199,11 +199,7 @@ pub(crate) fn subst_non_type_template_parm_expr(w: &mut Walk<'_>, s: &mut Stream
 
 /// `SubstNonTypeTemplateParmPackExpr`: `a` the parameter pack, `b` its
 /// arguments.
-pub(crate) fn subst_non_type_template_parm_pack_expr(
-    w: &mut Walk<'_>,
-    s: &mut Stream,
-    e: ExprId,
-) {
+pub(crate) fn subst_non_type_template_parm_pack_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     let n = expr::node(w, e);
     check_bits(s, &n, 0, row("ExprNode/SubstNonTypeTemplateParmPackExpr.bits"));
     check_aux(s, &n, 0, row("ExprNode/SubstNonTypeTemplateParmPackExpr.aux"));
@@ -292,7 +288,11 @@ pub(crate) fn requires_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 }
 
 /// `record RequiresData` (§9.3).
-fn requires_data(w: &mut Walk<'_>, s: &mut Stream, data: &slip_kiln::kiln::ast::templates::RequiresData) {
+fn requires_data(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    data: &slip_kiln::kiln::ast::templates::RequiresData,
+) {
     let ast = w.ast;
     // `body` and `len` are `out`; `first` is read through `requirements`.
     let params = ast.lists.iter::<DeclId>(data.params).collect::<Vec<_>>();
