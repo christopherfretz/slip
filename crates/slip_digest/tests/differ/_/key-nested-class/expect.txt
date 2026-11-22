@@ -1,0 +1,2 @@
+removed A::B
+added A::C

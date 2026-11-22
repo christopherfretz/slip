@@ -1,0 +1,2 @@
+removed <deduction guide for S>
+added <deduction guide for S>

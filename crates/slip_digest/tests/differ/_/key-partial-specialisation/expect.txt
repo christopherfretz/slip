@@ -1,0 +1,2 @@
+removed S<type-parameter-0-0 *>
+added S<type-parameter-0-0 &>

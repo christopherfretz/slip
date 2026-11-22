@@ -1,0 +1,3 @@
+# digest §3: a renamed function is another key.
+removed ns::f(int)
+added ns::g(int)

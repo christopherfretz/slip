@@ -1,0 +1,2 @@
+removed S::a
+added S::b

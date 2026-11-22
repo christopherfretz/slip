@@ -1,0 +1,5 @@
+removed <using_enum>
+added <using_enum>
+# the shadows the using-enum-declaration introduces
+removed e
+added f

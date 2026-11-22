@@ -1,0 +1,2 @@
+removed operator==(C, C)
+added operator!=(C, C)

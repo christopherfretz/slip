@@ -1,0 +1,6 @@
+removed s
+added t
+removed (anonymous struct)
+added (anonymous struct)
+removed (anonymous struct)::a
+added (anonymous struct)::a
