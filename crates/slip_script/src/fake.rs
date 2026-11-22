@@ -50,7 +50,8 @@ pub struct FakeEntity {
     /// `Subject::entity_key`.
     pub key: Option<Digest>,
     /// `Subject::rename_rule`: the entity's `(parent, kind, disc)` as a
-    /// key; `None`: not a unit keyed by name, `unsupported`.
+    /// key, from which the fake builds the rule that undoes a rename;
+    /// `None`: not a unit keyed by name, `unsupported`.
     pub rule: Option<(Parent, KeyKind, Option<Digest>)>,
 }
 
@@ -551,13 +552,15 @@ impl Subject for FakeSubject {
     fn rename_rule(&self, e: Entity, new_identifier: &[u8]) -> Result<Rule, Errc> {
         let fe = self.ent(e);
         let Some((parent, kind, disc)) = fe.rule else { return Err(Errc::Unsupported) };
+        // The rule that undoes the rename (`spec/verify.md` §2.1): it
+        // matches the new name and gives back the old one.
         Ok(Rule {
             parent,
             kind,
-            name: Name::Identifier(fe.identifier.clone()),
+            name: Name::Identifier(new_identifier.to_vec()),
             disc,
             to_parent: parent,
-            to_name: Name::Identifier(new_identifier.to_vec()),
+            to_name: Name::Identifier(fe.identifier.clone()),
         })
     }
 

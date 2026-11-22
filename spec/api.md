@@ -309,7 +309,12 @@ a range: two integers, the file handle and `lo << 32 | hi`.
 | 84 | `expect_renamed` | entity | new identifier | V: 0 |
 
 For `report`, where-kind 0 is "no place" (a and b are 0), 1 is a value in
-`a`, 2 is a range in `a`, `b`.
+`a` (b is 0), 2 is a range in `a`, `b`. Any other where-kind, or a nonzero
+integer the where-kind does not take, is `invalid_argument`.
+
+The null handle is the empty code wherever a code is taken, and no group
+wherever a group is taken. An operation whose result is the empty code
+returns the null handle.
 
 Operation numbers 0, 1 and 3 to 15 are reserved to the layer itself.
 
@@ -921,7 +926,7 @@ recorded. Version 0 has two spellings.
    hold, then the recorded edit replaces `name_range_of(R)` with the
    identifier of `E`. The qualifier that was written is left as written.
    If several references have that extent (§5.4 rule 3), the conditions
-   must hold for each of them.
+   must hold for each of them, and their name ranges must be one range.
 2. **Fully qualified.** Otherwise the text is `::` followed by the
    identifiers of `E`'s enclosing scopes and of `E`, separated by `::`.
    Unnamed namespaces are skipped; inline namespaces are named.
@@ -960,8 +965,10 @@ consteval void replace(range, code, edit_options = {});
 1. `replace(r, c, o)` requests that the bytes of `r` be replaced by the
    text of `c`. `c` may be empty: that requests deletion.
 2. It throws `invalid_handle` for a null range, `invalid_argument` for an
-   empty range (insertion is not in version 0), and `not_editable` when
-   `is_editable(r)` is false.
+   empty range (insertion is not in version 0), `not_editable` when
+   `is_editable(r)` is false, and `unsupported` when the tier of `r`
+   (§5.4) is not known: when `r` lies within no range that
+   `name_range_of` or `extent_of` returns in the subject unit.
 3. The host does not check that requests are compatible with each other.
    Two requests of one run for overlapping ranges are both recorded.
 4. `new_group()` returns a group with no member. `o.atomic`, if not the
@@ -969,7 +976,7 @@ consteval void replace(range, code, edit_options = {});
    members of a group or none. A group is local to its run: version 0
    cannot make edits from different subject units atomic.
 5. `o.note` is shown beside the edit in reports. It does not affect
-   whether two requests are the same edit.
+   whether two requests are the same edit. An empty note is no note.
 6. `edit_options` gains members over time. A transform must initialise it
    with designated initialisers; other forms are outside the stability
    promise.
@@ -993,8 +1000,9 @@ consteval void report(range where, severity, std::string_view message);
    extent; for a declaration, its name; for an entity, the name of its
    first written declaration. If that is not a range of tier 0 or 1, the
    report is attached to the nearest place the host can name (the macro
-   invocation that produced it) and says so. An entity with no written
-   declaration has no place.
+   invocation that produced it) and says so; if the host can name none,
+   the report has no place. An entity with no written declaration has no
+   place.
 4. `severity` is open. A value the host does not know throws
    `invalid_argument`.
 
@@ -1130,19 +1138,25 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
 | Limit | Value |
 |---|---|
 | code values | 2^22 |
-| bytes in literal pieces, in total | 2^28 |
+| bytes of text in pieces, in total: literal bytes and the text of spelled pieces | 2^28 |
+| pieces, in total | 2^22 |
 | pieces in one code value | 2^16 |
 | edits requested | 2^20 |
 | groups | 2^20 |
 | reports | 2^16 |
+| declared changes, distinct (`changed` of §7.6) | 2^20 |
 | bytes in one note, reason or message | 2^12 |
+| bytes of text arguments held, in total: notes, messages, reasons and new identifiers | 2^26 |
 | bytes in one qualified name or identifier argument | 2^12 |
 | integers in one answer; bytes in one answer (§3.3) | 2^28 - 1 each |
 | failures whose text is kept (§3.5 rule 3) | the first 2^16, and the most recent |
 
 Exceeding one throws `limit_exceeded`, except the last row, which fails
-nothing (§3.5 rule 3). The limits are part of the API level and are the
-same on every machine.
+nothing (§3.5 rule 3); holding exactly a limit does not exceed it. The
+totals count what the run holds: a piece, its text, a note or a reason
+counts once in every code value, recorded edit or declared change that
+holds it, so `cat` and `replace` count again what they copy. The limits
+are part of the API level and are the same on every machine.
 
 ## 8. Stability
 

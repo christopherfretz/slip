@@ -7,7 +7,9 @@
 //! assigned. The encoding in a shard is `spec/edits.md`'s, not this
 //! module's.
 
-use slip_model::keys::Rule;
+use std::fmt;
+
+use slip_model::keys::{Name, Parent, Rule};
 use slip_model::{Counter, Digest, FileRef};
 
 /// A run of bytes of a file, named by the file's identity (§7.6
@@ -214,6 +216,139 @@ impl RunOutput {
     /// Whether the output is already in canonical form.
     pub fn is_canonical(&self) -> bool {
         self.clone().canonical() == *self
+    }
+
+    /// One line per item, places as `path:lo-hi`; the form the script
+    /// tests of WP-090 render and that `slip dump` will print.
+    ///
+    /// ```text
+    /// transform <digest>
+    /// edit <i> <place> tier <t> = <piece> ... [note "<text>"] ...
+    /// group <i> <i> ...
+    /// report <place | -> <note | review | error> "<message>" [attached]
+    /// changed <key> <place> "<reason>"
+    /// renamed <kind> <parent> <name> [disc <digest>] -> <parent> <name>
+    /// counter <name> <value>
+    /// ```
+    ///
+    /// A piece is `"<bytes>"`, `copy(<place>)` or `spell(<key> "<text>")`.
+    /// Text is quoted with `\\`, `\"`, `\n`, `\t` and `\xNN` for any
+    /// other byte outside printable ASCII; a path is written the same way
+    /// without the quotes. A digest is its 64 hexadecimal digits. Items come
+    /// in the order of the output, so the canonical output renders
+    /// canonically.
+    pub fn render(&self, f: &mut dyn fmt::Write) -> fmt::Result {
+        writeln!(f, "transform {}", self.transform)?;
+        for (i, e) in self.edits.iter().enumerate() {
+            write!(f, "edit {i} {} tier {} =", Rendered::Place(&e.place), e.tier)?;
+            for p in &e.pieces {
+                match p {
+                    Piece::Literal(b) => write!(f, " {}", Rendered::Quoted(b))?,
+                    Piece::Copy(at) => write!(f, " copy({})", Rendered::Place(at))?,
+                    Piece::Spelled { key, text } => {
+                        write!(f, " spell({key} {})", Rendered::Quoted(text))?;
+                    }
+                }
+            }
+            for n in &e.notes {
+                write!(f, " note {}", Rendered::Quoted(n))?;
+            }
+            writeln!(f)?;
+        }
+        for g in &self.groups {
+            write!(f, "group")?;
+            for i in g {
+                write!(f, " {i}")?;
+            }
+            writeln!(f)?;
+        }
+        for r in &self.reports {
+            match &r.place {
+                Some(p) => write!(f, "report {}", Rendered::Place(p))?,
+                None => write!(f, "report -")?,
+            }
+            let severity = match r.severity {
+                Severity::Note => "note",
+                Severity::Review => "review",
+                Severity::Error => "error",
+            };
+            write!(f, " {severity} {}", Rendered::Quoted(&r.message))?;
+            writeln!(f, "{}", if r.attached { " attached" } else { "" })?;
+        }
+        for c in &self.changed {
+            writeln!(
+                f,
+                "changed {} {} {}",
+                c.key,
+                Rendered::Place(&c.place),
+                Rendered::Quoted(&c.reason)
+            )?;
+        }
+        for r in &self.renamed {
+            write!(
+                f,
+                "renamed {} {} {}",
+                r.kind.name(),
+                Rendered::Parent(&r.parent),
+                Rendered::Name(&r.name)
+            )?;
+            if let Some(d) = &r.disc {
+                write!(f, " disc {d}")?;
+            }
+            writeln!(f, " -> {} {}", Rendered::Parent(&r.to_parent), Rendered::Name(&r.to_name))?;
+        }
+        for c in &self.counters {
+            writeln!(f, "counter {} {}", c.name, c.value)?;
+        }
+        Ok(())
+    }
+}
+
+/// The pieces of a rendered line.
+enum Rendered<'a> {
+    Quoted(&'a [u8]),
+    Place(&'a Place),
+    Parent(&'a Parent),
+    Name(&'a Name),
+}
+
+fn escaped(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    for &b in bytes {
+        match b {
+            b'\\' => f.write_str("\\\\")?,
+            b'"' => f.write_str("\\\"")?,
+            b'\n' => f.write_str("\\n")?,
+            b'\t' => f.write_str("\\t")?,
+            0x20..=0x7e => write!(f, "{}", b as char)?,
+            _ => write!(f, "\\x{b:02x}")?,
+        }
+    }
+    Ok(())
+}
+
+impl fmt::Display for Rendered<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Rendered::Quoted(b) => {
+                f.write_str("\"")?;
+                escaped(f, b)?;
+                f.write_str("\"")
+            }
+            Rendered::Place(p) => {
+                escaped(f, &p.file.path)?;
+                write!(f, ":{}-{}", p.lo, p.hi)
+            }
+            Rendered::Parent(p) => match p {
+                Parent::Root => f.write_str("root"),
+                Parent::CLinkage => f.write_str("c_linkage"),
+                Parent::Builtin => f.write_str("builtin"),
+                Parent::Unit(d) => write!(f, "{d}"),
+            },
+            Rendered::Name(n) => match n {
+                Name::Identifier(b) => write!(f, "{}", Rendered::Quoted(b)),
+                other => write!(f, "{other:?}"),
+            },
+        }
     }
 }
 

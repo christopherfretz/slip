@@ -163,10 +163,16 @@ pub trait Subject {
 
     // What the effects need (§7). WP-088 is their only caller.
     /// §5.4: 0 or 1 if `r` is a range the subject gave out or lies inside one; else None.
+    /// `None` makes `replace` refuse with `unsupported` (§7.3 rule 2); any
+    /// other number is a host failure.
     fn tier(&self, r: Range) -> Option<u8>;
     /// §7.2 rule 2: the identifiers from the outermost named scope to `e`; None: §7.1 rule 4.
+    /// `Some` must hold one identifier or more, none empty, the last
+    /// `identifier(e)`; anything else is a host failure.
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>>;
-    /// §7.2 rule 1: the references whose extent is exactly `r`.
+    /// §7.2 rule 1: the references whose extent is exactly `r`. Each must
+    /// be live, listed once, and have `extent` `Some(r)`, and a name range
+    /// that is not empty and lies in `r`; anything else is a host failure.
     fn references_at(&self, r: Range) -> Vec<Reference>;
     /// §7.2 rule 1, third condition.
     fn found_directly(&self, r: Reference) -> bool;
@@ -175,12 +181,16 @@ pub trait Subject {
     fn entity_key(&self, e: Entity) -> Option<slip_model::Digest>;
     /// §7.5 rule 1: the key of the unit that holds `v` (a reference or an expression;
     /// the host refuses the other sorts before asking), then the keys derived from it, sorted.
-    /// Allowed: `Err(Unsupported)` (§7.5 rule 2).
+    /// Allowed: `Err(Unsupported)` (§7.5 rule 2). `Ok` with no key, or
+    /// with a key twice, is a host failure.
     fn unit_keys(&self, v: Value) -> Result<Vec<slip_model::Digest>, Errc>;
     /// §7.5 rule 3. Allowed: `Err(Unsupported)` (not a unit keyed by name).
+    /// The rule is the one that undoes the rename (`spec/verify.md` §2.1):
+    /// its `name` must be `new_identifier`, or it is a host failure.
     fn rename_rule(&self, e: Entity, new_identifier: &[u8])
     -> Result<slip_model::keys::Rule, Errc>;
     /// §7.4 rule 3: the place, and whether it is the value's own (`false`: the nearest nameable place).
+    /// A range outside its file is a host failure when a report asks.
     fn place(&self, v: Value) -> Option<(Range, bool)>;
     fn file_ref(&self, f: File) -> slip_model::FileRef;
 }

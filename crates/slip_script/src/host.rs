@@ -18,6 +18,7 @@ use std::fmt;
 
 use slip_model::{Counter, Digest};
 
+use crate::effects::{Effect, Effects};
 use crate::output::{Changed, Edit, Report, RunOutput};
 use crate::subject::{Entity, File, Range, Subject, Value};
 use crate::wire::{self, Errc, Operation};
@@ -32,18 +33,31 @@ pub trait Out {
     fn write_bytes(&mut self, v: &[u8]);
 }
 
-/// The limits of a run (§7.7). `Default` is the table.
+/// The limits of a run (§7.7). `Default` is the table. Each is inclusive:
+/// a run may hold exactly the limit, and a request that would hold one
+/// more is refused with `limit_exceeded` before anything is recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub code_values: u64,
-    /// Bytes in literal pieces, in total.
+    /// Bytes of text in pieces, in total: literal bytes and the text of
+    /// spelled pieces, counted in every code value and every recorded edit
+    /// that holds them.
     pub literal_bytes: u64,
+    /// Pieces, in total, counted in every code value and every recorded
+    /// edit that holds them.
+    pub pieces: u64,
     pub pieces_per_code: u64,
     pub edits: u64,
     pub groups: u64,
     pub reports: u64,
+    /// Distinct declared changes (`changed` entries, §7.6).
+    pub changed: u64,
     /// Bytes in one note, reason or message.
     pub text_bytes: u64,
+    /// Bytes of text arguments held, in total: notes (once per recorded
+    /// edit), messages, reasons (once per declared change) and new
+    /// identifiers.
+    pub text_total: u64,
     /// Bytes in one qualified name or identifier argument.
     pub name_bytes: u64,
     /// Failures whose text and record are kept: the first this many, and
@@ -56,11 +70,14 @@ impl Default for Limits {
         Limits {
             code_values: 1 << 22,
             literal_bytes: 1 << 28,
+            pieces: 1 << 22,
             pieces_per_code: 1 << 16,
             edits: 1 << 20,
             groups: 1 << 20,
             reports: 1 << 16,
+            changed: 1 << 20,
             text_bytes: 1 << 12,
+            text_total: 1 << 26,
             name_bytes: 1 << 12,
             kept_failures: 1 << 16,
         }
@@ -101,21 +118,26 @@ pub(crate) const ALLOWED_CALLS_TO: &[Errc] = &[Errc::WrongKind];
 pub(crate) const ALLOWED_NAME_RANGE: &[Errc] = &[];
 /// `Subject::extent`: none; the host refuses the other sorts itself.
 pub(crate) const ALLOWED_EXTENT: &[Errc] = &[];
+/// `Subject::unit_keys`: §7.5 rule 2 (keyed by content, or no key).
+pub(crate) const ALLOWED_UNIT_KEYS: &[Errc] = &[Errc::Unsupported];
+/// `Subject::rename_rule`: §7.5 rule 3 (not a unit keyed by name).
+pub(crate) const ALLOWED_RENAME_RULE: &[Errc] = &[Errc::Unsupported];
 
-/// What the effects record (WP-088), raw: edits in request order, one list
-/// of raw edit indices per group made. The host alone makes the counters
-/// (§7.6 rule 6), in [`Host::finish`]: this has none, so no effect can
-/// emit a counter of a name the host owns.
+/// What the effects record, raw: edits in request order, one list of raw
+/// edit indices per group made; declared changes as a set (§7.5 rule 4,
+/// so that a repeated declaration holds nothing more). The host alone
+/// makes the counters (§7.6 rule 6), in [`Host::finish`]: this has none,
+/// so no effect can emit a counter of a name the host owns.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Record {
     pub(crate) edits: Vec<Edit>,
     pub(crate) groups: Vec<Vec<usize>>,
     pub(crate) reports: Vec<Report>,
-    pub(crate) changed: Vec<Changed>,
+    pub(crate) changed: BTreeSet<Changed>,
     pub(crate) renamed: Vec<slip_model::keys::Rule>,
 }
 
-fn refuse<T>(errc: Errc, message: impl Into<String>) -> Step<T> {
+pub(crate) fn refuse<T>(errc: Errc, message: impl Into<String>) -> Step<T> {
     Err(Stop::Refused { errc, message: message.into(), place: None })
 }
 
@@ -132,12 +154,14 @@ pub(crate) enum Answer {
     Range(Option<Range>),
     /// Convention B: bytes.
     Bytes(Vec<u8>),
+    /// Convention V: an effect, validated, to record (§7).
+    Effect(Effect),
 }
 
 /// The host of one run.
 pub struct Host<'s> {
-    subject: &'s dyn Subject,
-    limits: Limits,
+    pub(crate) subject: &'s dyn Subject,
+    pub(crate) limits: Limits,
     /// Per sort (tag - 1): the subject's number of each index issued.
     issued: [Vec<u32>; 4],
     /// Per sort: the index issued for a subject number.
@@ -157,8 +181,8 @@ pub struct Host<'s> {
     /// `references_to` or `calls_to` (§6.5 rule 6).
     spelled: BTreeSet<Vec<u8>>,
     transform: Digest,
-    /// What the effects recorded, raw (WP-088).
-    pub(crate) record: Record,
+    /// What the effects hold and recorded (§7).
+    pub(crate) effects: Effects,
 }
 
 impl fmt::Debug for Host<'_> {
@@ -187,7 +211,7 @@ impl<'s> Host<'s> {
             used: BTreeMap::new(),
             spelled: BTreeSet::new(),
             transform,
-            record: Record::default(),
+            effects: Effects::default(),
         }
     }
 
@@ -287,13 +311,13 @@ impl<'s> Host<'s> {
     /// `api.peak_bytes` are the evaluator's and are added by the driver.
     /// The host is the only writer of counters, so no name occurs twice.
     pub fn finish(self) -> RunOutput {
-        let Record { edits, groups, reports, changed, renamed } = self.record;
+        let Record { edits, groups, reports, changed, renamed } = self.effects.record;
         let mut out = RunOutput {
             transform: self.transform,
             edits,
             groups,
             reports,
-            changed,
+            changed: changed.into_iter().collect(),
             renamed,
             counters: Vec::new(),
         }
@@ -406,7 +430,7 @@ impl<'s> Host<'s> {
         Ok(r)
     }
 
-    fn range_is_valid(&self, r: Range) -> bool {
+    pub(crate) fn range_is_valid(&self, r: Range) -> bool {
         self.subject.file_len(r.file).is_some_and(|len| r.lo <= r.hi && r.hi <= len)
     }
 
@@ -616,12 +640,7 @@ impl<'s> Host<'s> {
                     None => return Err(self.wrong_kind(v, "a call")),
                 }
             }
-            _ if row.effect => {
-                return refuse(
-                    Errc::Unsupported,
-                    "effects are not served by this host yet (WP-088)",
-                );
-            }
+            _ if row.effect => self.effect(row, ints, bytes)?,
             _ => unreachable!("operation {} is in the table and not dispatched", row.op),
         })
     }
@@ -709,6 +728,8 @@ impl<'s> Host<'s> {
                 }
             }
             Answer::Bytes(b) => too_many(b.len())?,
+            // Validated where it was made (`effects.rs`).
+            Answer::Effect(_) => {}
         }
         Ok(answer)
     }
@@ -743,6 +764,10 @@ impl<'s> Host<'s> {
                 (vec![f, u64::from(r.lo) << 32 | u64::from(r.hi)], Vec::new())
             }
             Answer::Bytes(b) => (Vec::new(), b),
+            Answer::Effect(e) => {
+                debug_assert_eq!(row.convention, wire::Convention::V, "{}", row.name);
+                return Ok(wire::value_word(self.record(e)));
+            }
         };
         debug_assert_eq!(row.convention, wire::Convention::B, "{}", row.name);
         if ints.len() <= out.int_capacity() && bytes.len() <= out.byte_capacity() {

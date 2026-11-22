@@ -1148,32 +1148,6 @@ fn s3_2_arguments_as_written() {
     assert_eq!(status(&mut h, wire::OP_ARGUMENTS_AS_WRITTEN, &[foo], &[]), errc(Errc::WrongKind));
 }
 
-/// §3.2, operations 64 to 84: dispatched, shape-checked, and `unsupported`
-/// until the effects land (WP-088).
-#[test]
-fn s3_2_effects_are_unsupported_for_now() {
-    let w = world();
-    let mut h = host(&w.fake);
-    for o in wire::OPERATIONS.iter().filter(|o| o.effect) {
-        let n = match o.ints {
-            Arity::Exactly(n) => n,
-            Arity::Any => 3,
-        };
-        let text: &[u8] = if o.text { b"t" } else { b"" };
-        assert_eq!(status(&mut h, o.op, &vec![0; n], text), errc(Errc::Unsupported), "{}", o.name);
-        if o.text {
-            assert_eq!(
-                status(&mut h, o.op, &vec![0; n], &[]),
-                errc(Errc::Unsupported),
-                "{}",
-                o.name
-            );
-        }
-    }
-    let out = h.finish();
-    assert!(out.edits.is_empty() && out.reports.is_empty());
-}
-
 // ---------------------------------------------------------------------------
 // Rule 6: the canonical form (§7.6).
 
