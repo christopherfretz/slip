@@ -172,3 +172,45 @@ range. That is enough for tiers 0, 1 and X. Tier 2 voting, the audit, coverage
 of conditionals and all of §6 need the richer preprocessing record requested
 in [05](05-kiln-interface.md) (argument ranges, conditional structure, a
 stable identity per macro definition, paste and stringise provenance).
+
+## 8. Corrections from the study behind KR4 (2026-11-22)
+
+Writing [KR4](../requests/KR4-preprocessing-record.md) meant reading
+Kiln's preprocessor line by line. Where this document says otherwise,
+the request is right; the sections above are corrected when
+`spec/macros.md` is written.
+
+- §7 overclaims tier 1. Kiln's fix-it logic maps a range inside one
+  argument to its spelling and knows nothing of the parameter's other
+  substitutions, of a `#` use (raw tokens, no expansion entry) or of a
+  `##` use; argument boundaries are dropped; an entry names no
+  definition and only the final macro table is kept. Tier 1 as §2
+  defines it needs KR4 stage 1. Tiers 0 and X stand.
+- A paste operand does get a macro-argument entry. "Has an argument
+  entry" does not mean "used as code": the parameter's uses decide.
+- "Each conditional with its outcome" (§5): a condition after a taken
+  group is never evaluated and a directive inside a skipped group is
+  read to its name only. The outcomes are taken, not taken, not
+  evaluated, dead; the last two have no reads.
+- §4, renaming a macro: mentions in skipped groups and unevaluated
+  `#elif`s are never lexed, and a function-like macro's name without
+  `(` produces no event. Those sites are textual proposals, never
+  verified edits.
+- §2 tier X, "an invocation may be replaced as a unit", holds only
+  when the name token is in a file: an invocation's name can come from
+  a body while its `)` is in the file.
+- §2 and [02](02-pipeline.md) §2, a token-origin map "for every token
+  delivered to the parser": origin is derived on demand from the
+  source manager's expansion entries plus a small table of made tokens
+  (`##`, `#`, builtins), not stored per token.
+- [02](02-pipeline.md) §2 and [05](05-kiln-interface.md) §1 principle
+  3, "Slip's observer attached to the preprocessor": the record is
+  retained by the preprocessor and read in the front-end closure. The
+  callback slot is single and taken, and several events fire none.
+- [01](01-transform-api.md), `origin::command_line`: Kiln does not yet
+  tell `-D` lines from predefines (KR4 asks it to), and the
+  enumeration needs a `predefined` member.
+- §5's table of reasons lacks one: a header whose guard macro another
+  file defined is entered and wholly dead, and its `#ifndef` is not a
+  guard.
+
