@@ -5423,6 +5423,16 @@ parameter has a default argument at all is a fact of the pattern, which
 the instantiation names (`SpecInfo` `from`, `MemberSpecInfo`
 `instantiated_from`).
 
+For a field the same holds under every form of instantiation: a field's
+default member initialiser is absent for every field instantiated from a
+pattern, whether its class is an implicit instantiation, an explicit
+instantiation declaration or an explicit instantiation definition, or a
+member class of one. Kiln instantiates the initialiser at its first use
+in all three, so an explicit instantiation does not make it a fact of
+the class. A field written in source (in a primary template, a partial
+or explicit specialisation, a class that is not a template, or a local
+class of any function) is written with its initialiser.
+
 `ColdExprData` `default_imm` holds the value of an immediate invocation
 inside a default argument or default member initialiser, computed at the
 first use that has no source-location values. The resolved unit
