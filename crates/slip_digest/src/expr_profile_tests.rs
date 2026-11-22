@@ -372,7 +372,7 @@ fn a_chain_at_the_depth_limit_is_linear() {
             })
             .expect("a thread");
         let f = rx
-            .recv_timeout(std::time::Duration::from_secs(60))
+            .recv_timeout(std::time::Duration::from_mins(1))
             .unwrap_or_else(|_| panic!("n = {n}: not done in 60 s"));
         assert_eq!(f.len(), 1, "n = {n}");
         assert_eq!(f[0].1.contains(&crate::walk::TOO_DEEP), deep, "n = {n}: {:?}", f[0].1);
