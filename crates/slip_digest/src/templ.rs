@@ -151,15 +151,13 @@ pub(crate) fn template_info(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let (params, pattern, constraint) = (i.params, i.pattern, i.constraint);
     // A template's redeclarations are those of its pattern (Kiln's
     // `Ast::first`): their heads, latest first, without `d`'s own.
-    let others: Vec<TemplateParamListId> = pattern
-        .map(|p| {
-            ast.redecls_of(p)
-                .filter_map(|r| ast.described_template(r))
-                .filter(|&t| t != d)
-                .filter_map(|t| ast.template_info(t).map(|x| x.params))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Those an instantiation made outside its class left out (WP-032).
+    let others: Vec<TemplateParamListId> = w
+        .redecls(d)
+        .into_iter()
+        .filter(|&t| t != d)
+        .filter_map(|t| ast.template_info(t).map(|x| x.params))
+        .collect();
     head(w, s, params, Head::Unit(&others));
     s.opt(pattern.is_some());
     if let Some(p) = pattern {
@@ -455,7 +453,10 @@ pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         .or_else(|| templates.member_like_friend.get(ast.first(d)))
         .copied();
     w.write_ref_opt(s, friend_of);
-    // instantiated_from: ref (a pattern).
-    let from = templates.instantiated_from_map(d);
+    // instantiated_from: ref (a pattern); absent when an instantiation
+    // set it on a written declaration (WP-032 rule 1).
+    let from = templates
+        .instantiated_from_map(d)
+        .filter(|&p| !crate::units::instantiated_friend_link(w, d, p));
     write_pattern_ref_opt(w, s, from);
 }

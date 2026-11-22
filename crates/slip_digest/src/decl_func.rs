@@ -52,7 +52,7 @@ pub(crate) fn function_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
     };
-    let e = ast.first(d);
+    let e = w.representative(ast.first(d));
     let definition_class = function_definition_class(w, e);
     // params: decl*, in order. A default argument taken from another
     // declaration names that declaration's parameters: parameter i of
@@ -216,7 +216,7 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
     };
-    let e = ast.first(d);
+    let e = w.representative(ast.first(d));
     let definition_class = var_definition_class(w, e);
     // `init`, `0-init-style` and `eval` belong to the declaration that
     // holds the initialiser, which need not be the one read (an in-class
@@ -504,9 +504,15 @@ fn on_use(kind: SpecKind) -> bool {
 /// implicit instantiation or an explicit instantiation declaration, or,
 /// with no kind of its own, that of the nearest enclosing context that
 /// has one.
+///
+/// One with a written declaration is read from it, not from a
+/// declaration an instantiation added first. An entity declared only by
+/// instantiations outside their class is read from Kiln's first
+/// declaration, the friend function an instantiation made, whose own
+/// `MemberSpecInfo` is `ImplicitInstantiation` (WP-032 rule 2).
 pub(crate) fn instantiated_on_use(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
-    let mut c = Some(e);
+    let mut c = Some(w.representative(e));
     for _ in 0..64 {
         let Some(x) = c else { return false };
         let kind = ast
@@ -559,8 +565,9 @@ fn instantiated_decl(w: &Walk<'_>, x: DeclId) -> bool {
 /// on its first declaration, which Kiln defines on odr-use as it does an
 /// implicit member (`spec/landed/digest-kinds/WP-026.md`).
 fn function_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
+    let first = w.representative(e);
     let defaulted_first =
-        w.ast.decls.function(e).is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
+        w.ast.decls.function(first).is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
     instantiated_on_use(w, e) || all_implicit(w, e) || defaulted_first
 }
 
@@ -572,7 +579,9 @@ fn var_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
 /// Whether the entity `e` (a first declaration) is of the definition
 /// class of §11.9, whose definition, and with it `DeclMisc`
 /// `0-definition`, Kiln makes on use: a function or variable as above,
-/// and any other entity that is an implicit instantiation.
+/// and any other entity that is an implicit instantiation or declared
+/// only by instantiations outside their class (a friend's definition is
+/// instantiated on use; WP-032 rule 2).
 pub(crate) fn definition_class(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
     if ast.decls.function(e).is_some() {
@@ -580,7 +589,7 @@ pub(crate) fn definition_class(w: &Walk<'_>, e: DeclId) -> bool {
     } else if ast.decls.var(e).is_some() {
         var_definition_class(w, e)
     } else {
-        implicit_instantiation(w, e)
+        crate::units::outside_only(w, e) || implicit_instantiation(w, w.representative(e))
     }
 }
 
@@ -890,6 +899,24 @@ pub(crate) mod tests {
             let ss = named(w, "s", DeclKind::Var);
             let vs: Vec<bool> = ss.iter().map(|&v| super::var_definition_class(w, v)).collect();
             assert_eq!(vs.iter().filter(|&&b| b).count(), 1, "{vs:?}");
+        });
+    }
+
+    // WP-032 rule 1: a comparison an instantiation declares first, as a
+    // friend, and that is then defaulted at namespace scope is defaulted on
+    // its first written declaration, the representative, not on Kiln's
+    // first declaration: of the definition class.
+    #[test]
+    fn defaulted_after_friend_instantiation() {
+        let src = "template <class T> struct E { friend bool operator==(const E&, const E&); };\n\
+                   E<int> e;\n\
+                   bool operator==(const E<int>&, const E<int>&) = default;\n";
+        with_walk(src, |w| {
+            let written = *of_kind(w, DeclKind::Function).last().expect("the written ==");
+            let e = w.entity(written);
+            assert_ne!(e, written, "Kiln's first declaration is the instantiation's");
+            assert_eq!(w.representative(e), written);
+            assert!(super::function_definition_class(w, e));
         });
     }
 
