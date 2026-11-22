@@ -891,7 +891,7 @@ pub(crate) fn remove_entries_of(dir: &Path, pid: u32) -> Result<()> {
 }
 
 /// The ids of the `<64 hex>.<extension>` files of `dir` that start with
-/// `hex_prefix`, ascending (§2.1 "find_plan").
+/// `hex_prefix`, ascending (§2.1 `find_plan`).
 fn find_ids(dir: &Path, extension: &str, hex_prefix: &str) -> Result<Vec<Digest>> {
     if hex_prefix.len() > 64 || !hex_prefix.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
     {
