@@ -8,3 +8,20 @@
 //! re-implemented from the specification.
 
 #![forbid(unsafe_code)]
+
+pub mod container;
+mod digest;
+pub mod formats;
+pub mod hash;
+pub mod json;
+mod plan;
+mod run;
+mod shard;
+pub mod wire;
+
+pub use digest::Digest;
+pub use plan::{
+    Command, Configuration, EnvVar, Excluded, FileRef, Language, Observer, Origin, Plan, Reason,
+};
+pub use run::{End, Job, Run, RunRecord};
+pub use shard::{Counter, Outcome, Phase, Shard, Status};

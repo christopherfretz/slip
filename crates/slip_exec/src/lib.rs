@@ -6,3 +6,11 @@
 //! with fake work.
 
 #![forbid(unsafe_code)]
+
+pub mod admission;
+pub mod jobserver;
+pub mod pool;
+pub mod process;
+pub mod signals;
+pub mod store;
+pub mod worker;
