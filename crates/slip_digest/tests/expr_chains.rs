@@ -1,7 +1,8 @@
 //! Long chains (WP-031 "What bounds the stack", `lib.rs` "What bounds the
-//! stack"): an operator chain and a member-call chain 20 000 levels deep
-//! digest without a unit indeterminate for a cause of their own, in work
-//! linear in the length.
+//! stack"): an operator chain 20 000 levels deep and a member-call chain
+//! 4 000 deep digest without a unit indeterminate for a cause of their
+//! own, in work linear in the length. (The member-call chain was 20 000
+//! deep until WP-047: Kiln's parse of it is quadratic.)
 
 mod common;
 
@@ -94,39 +95,45 @@ fn determinate(o: &Output) {
     assert!(hard.is_empty(), "indeterminate: {hard:?}");
 }
 
-fn linear(make: fn(usize) -> String, small_n: usize) {
+/// The chain of `small_n` and of `small_n * factor` links: the bytes
+/// written grow by `factor` (within one either way), and the time by well
+/// under the `factor²` a quadratic walk would take (at most
+/// `2.5 * factor`, with 20 ms of slack). Kiln's own parse of the
+/// member-call chain is quadratic; only the walk is timed.
+fn linear(make: fn(usize) -> String, small_n: usize, factor: u64) {
+    let large_n = small_n * usize::try_from(factor).expect("a small factor");
     let (small, t_small, b_small) = digest(&make(small_n));
-    let (large, t_large, b_large) = digest(&make(small_n * 10));
+    let (large, t_large, b_large) = digest(&make(large_n));
     determinate(&small);
     determinate(&large);
-    // Ten times the length: the bytes written grow by about ten, and the
-    // time by well under the hundred a quadratic walk would take. (Kiln's
-    // own parse of the member-call chain is quadratic; only the walk is
-    // timed.)
     assert!(
-        b_large >= b_small * 9 && b_large <= b_small * 11,
+        b_large >= b_small * (factor - 1) && b_large <= b_small * (factor + 1),
         "digest.bytes {b_small} -> {b_large}"
     );
-    let limit = t_small * 25 + Duration::from_millis(20);
+    let limit = t_small * u32::try_from(factor * 5 / 2).expect("a small factor")
+        + Duration::from_millis(20);
     assert!(t_large <= limit, "time {t_small:?} -> {t_large:?}");
 }
 
 #[test]
 fn an_operator_chain_is_linear() {
-    linear(operators, 2_000);
+    linear(operators, 2_000, 10);
 }
 
 #[test]
 fn a_member_call_chain_is_linear() {
-    linear(member_calls, 2_000);
+    // 1 000 and 4 000 calls: Kiln's parse of the chain is quadratic (20 000
+    // took about 25 s of the suite), so the chain is four times, not ten,
+    // and shorter (WP-047).
+    linear(member_calls, 1_000, 4);
 }
 
 #[test]
 fn left_nested_conditionals_are_linear() {
-    linear(left_conditionals, 20);
+    linear(left_conditionals, 20, 10);
 }
 
 #[test]
 fn right_nested_conditionals_are_linear() {
-    linear(right_conditionals, 2_000);
+    linear(right_conditionals, 2_000, 10);
 }

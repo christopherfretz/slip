@@ -43,7 +43,7 @@
 //! [`check_bits`] and [`check_aux`] make a set bit no row accounts for
 //! `Unaccounted`. `lib.rs` "How to fill an expression kind" says the rest.
 
-use slip_kiln::kiln::ast::expr::{ExprDeps, ExprKind, ObjectKind, ValueCategory};
+use slip_kiln::kiln::ast::expr::{ExprDeps, ExprKind, ObjectKind, OverloadedMember, ValueCategory};
 use slip_kiln::kiln::ast::{
     ArgListId, ConstValueId, DeclId, ExprId, ListId, QualType, RawId, StringLitId,
 };
@@ -451,6 +451,7 @@ fn strip_parens(w: &Walk<'_>, s: &mut Stream, e: ExprId, keep: bool) -> Option<E
 fn cold_entry(w: &Walk<'_>, e: ExprId) -> bool {
     let c = &w.ast.exprs.cold;
     c.member_extra.contains(e)
+        || c.member_overload.contains(e)
         || c.designators.contains(e)
         || c.syntactic_list.contains(e)
         || c.array_trait.contains(e)
@@ -645,6 +646,28 @@ fn virtual_fn(w: &Walk<'_>, d: DeclId) -> bool {
     ast.redecls_of(first).any(|r| ast.decls.function(r).is_some_and(|f| f.spec.is_virtual()))
 }
 
+/// `ColdExprData` `member_overload` of `e`, present: `record
+/// OverloadedMember` (§7.3), the qualifier as `enum Nns?`, the explicit
+/// template arguments as `enum ArgView*?`, the naming class as `ref`.
+fn member_overload(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    let Some(&OverloadedMember { qualifier, template_args, naming_class }) =
+        w.ast.exprs.cold.member_overload.get(e)
+    else {
+        s.opt(false);
+        return;
+    };
+    s.opt(true);
+    s.opt(qualifier.is_some());
+    if let Some(q) = qualifier {
+        w.write_nns(s, q);
+    }
+    s.opt(template_args.is_some());
+    if let Some(l) = template_args {
+        w.write_args(s, l);
+    }
+    w.write_ref(s, naming_class);
+}
+
 /// The rows of `ColdExprData` (§7.4) for `e`, into `out`: written for
 /// every expression, the empty form when the map has no entry.
 fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
@@ -664,6 +687,17 @@ fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
         out.push(Item::Bool(false));
         let member = if tail == Tail::Member { DeclId::try_new(n.b) } else { None };
         crate::expr_core::decl_ref_extra(w, member, None, out);
+    }
+    // member_overload: record OverloadedMember?, on an overloaded
+    // `MemberExpr` only (Kiln's `ExprArena::set_member_overload` asserts
+    // the kind).
+    if maps.member_overload.contains(e) {
+        if tail != Tail::Member {
+            out.push(Item::Cause(Cause::Unaccounted("ColdExprData/member_overload")));
+        }
+        out.push(Item::Exec(member_overload, e));
+    } else {
+        out.push(Item::Opt(false));
     }
     // designators.
     if maps.designators.contains(e) {

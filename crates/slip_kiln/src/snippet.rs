@@ -1024,6 +1024,13 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         semantic_interposition: _,
         direct_access_external_data: _,
         no_builtin_names: _,
+        dump_written_refs,
+        decl_extents,
+        dump_decl_extents,
+        host_call_test_handler,
+        host_calls_visible,
+        env,
+        no_side_outputs,
     } = a;
     macro_rules! io {
         ($($field:ident),* $(,)?) => {
@@ -1100,6 +1107,16 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         link,
         asm,
         print_commands,
+        // A dump, a table recorded for a tooling client, Kiln's test
+        // host-call handler; the last three are no command-line option
+        // (`Args::parse_as` leaves them at their defaults).
+        dump_written_refs,
+        decl_extents,
+        dump_decl_extents,
+        host_call_test_handler,
+        host_calls_visible,
+        env,
+        no_side_outputs,
     );
     // The parts of three option groups that are files or reports; their
     // limits and the sanitizer set are the language's.

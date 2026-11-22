@@ -309,7 +309,12 @@ a range: two integers, the file handle and `lo << 32 | hi`.
 | 84 | `expect_renamed` | entity | new identifier | V: 0 |
 
 For `report`, where-kind 0 is "no place" (a and b are 0), 1 is a value in
-`a`, 2 is a range in `a`, `b`.
+`a` (b is 0), 2 is a range in `a`, `b`. Any other where-kind, or a nonzero
+integer the where-kind does not take, is `invalid_argument`.
+
+The null handle is the empty code wherever a code is taken, and no group
+wherever a group is taken. An operation whose result is the empty code
+returns the null handle.
 
 Operation numbers 0, 1 and 3 to 15 are reserved to the layer itself.
 
@@ -327,7 +332,9 @@ If `n_ints <= cap_out` and `n_bytes <= cap_bout` it writes the answer and
 returns the counts. Otherwise it writes nothing and returns the same
 counts; the caller calls again with room. Every operation with convention
 B is a query, and a query repeated in one run gives the same answer (§2.7),
-so the second call is the first one with more room.
+so the second call is the first one with more room. An answer that
+would have 2^28 integers or 2^28 bytes, or more, cannot be counted in
+the word: the operation fails with `limit_exceeded` (§7.7).
 
 ### 3.4 Handles and kind bits
 
@@ -349,7 +356,9 @@ A file handle is a nonzero 32-bit number; a range is a file handle and two
 The host validates every handle and range it is given: the tag, that the
 index is one it issued in this run, and for a range that the file handle
 is live and `lo <= hi <=` the file's length. It never trusts a value
-because the header made it.
+because the header made it. That is all `code_copy`, `report`,
+`source_text_of` and `is_editable` require of a range: only its bytes
+matter to them. `replace` requires more (§7.3 rule 2).
 
 Kind bits (the value of `kind`): bits 0 to 3 are the sort (entity,
 declaration, reference, expression); bits 8 to 13 are namespace, type,
@@ -365,7 +374,13 @@ call. Other bits are 0.
 2. A failed operation has no effect and writes nothing.
 3. The host numbers the failures of a run from 1. `error_message` returns
    the text for an ordinal of this run, and fails with `invalid_argument`
-   for any other number.
+   for any other number. The host keeps the text of the first 2^16
+   failures of a run and of the most recent one (§7.7); for any other
+   ordinal of the run `error_message` succeeds with the text
+   `the text of failure <n> was not kept: a run keeps the text of its
+   first 65536 failures and of its last`, `<n>` in decimal. What the host
+   holds for the failures of a run is so bounded whatever the transform
+   does (§2.5 rule 3); the ordinals and the statuses are not affected.
 4. The host returns Kiln's handler error (which ends the evaluation and
    cannot be caught) only for `host-failure` (§2.8). Nothing a transform
    does, through L1 or by calling the primitive directly, may produce it.
@@ -482,7 +497,8 @@ grow, and typed views can be built on top in L2).
    issue in this run is refused with `invalid_handle` wherever a live
    value is required. If the forged bits happen to equal a live value's,
    it is that value. Neither case reaches anything the API does not
-   already expose.
+   already expose. A range is live when §3.4 accepts it; for `replace` it
+   must also be one that a query returns (§7.3 rule 2).
 
 ### 5.3 Text and sequences
 
@@ -537,7 +553,9 @@ with token sequence `T(X)` after preprocessing:
    written this section is the definition for the API.
 
 Version 0 has no operation that builds a range from offsets, widens one
-or splits one.
+or splits one. A later operation that builds or splits a range computes
+the tier of the new range; it never inherits the tier of the range it
+came from.
 
 ### 5.5 As written and as resolved
 
@@ -575,6 +593,27 @@ order of their first declarations.
    separated by `::`. An identifier is a C++ identifier in the encoding of
    the source. Anything else throws `invalid_argument`: template
    arguments, operator names, whitespace.
+
+   **What version 0 takes for an identifier** (here and wherever an
+   operation takes one, §7.5 rule 3). The text must be UTF-8. A
+   component is *plain* when it is not empty, each of its bytes is an
+   ASCII letter, an ASCII digit or `_`, its first is not a digit, and it
+   is not a keyword or an alternative token of the C++26 working draft
+   (`class`, `operator`, `and`; the identifiers with special meaning,
+   `final`, `override`, `import`, `module`, are identifiers). The
+   checks, in order, over the whole text:
+   - text that is not UTF-8: `invalid_argument`;
+   - a component that no answer to the open question below could make
+     an identifier: one that is empty, or whose first byte is an ASCII
+     digit, or that is a keyword or an alternative token, or that has an
+     ASCII byte other than a letter, a digit, `_` and `$` (`a b`, `é b`,
+     `1é`): `invalid_argument`, whatever the other components are;
+   - otherwise, a component with `$` or with a code point outside
+     ASCII (`a$`, `é`): `unsupported`. Version 0 does not decide whether such a
+     component is an identifier (the front end accepts `$` as an
+     extension, and which code points an identifier may hold is a table
+     the host does not carry): it refuses rather than guess, whether or
+     not the source could spell it ("Open questions" 10).
 2. `::` alone names the global namespace.
 3. Matching is by declaration, not by C++ name lookup. The name is walked
    from the global namespace. A component names every entity declared
@@ -707,10 +746,17 @@ consteval info referent_of(info reference);
    and declares the change (§7.5) is checked by verification, which is
    what catches the references it was not given: the post-image no longer
    resolves, or resolves differently.
-6. The host counts, for each entity given to `references_to` or
-   `calls_to`, the unresolved names in the unit that are spelled like it,
-   and puts the count in the run output (§7.6), so that a report can say
-   how much was not examined.
+6. The host counts the unresolved names in the unit that are spelled
+   like an entity given to `references_to` or `calls_to`, and puts the
+   count in the run output (§7.6), so that a report can say how much was
+   not examined. Precisely: the identifiers (§6.3) of the entities given
+   to a call of either operation that succeeded form a set; the count is
+   the number of unresolved names of the unit whose identifier is in the
+   set. A name is counted once, however many entities of the set share
+   its identifier (the functions of an overload set) and however often
+   or in whatever order the operations were called. An entity whose
+   identifier is empty adds nothing. When the subject cannot tell which
+   names are unresolved (§6.8), the counter is absent, not zero.
 
 ### 6.6 Ranges and text
 
@@ -885,7 +931,7 @@ recorded. Version 0 has two spellings.
    hold, then the recorded edit replaces `name_range_of(R)` with the
    identifier of `E`. The qualifier that was written is left as written.
    If several references have that extent (§5.4 rule 3), the conditions
-   must hold for each of them.
+   must hold for each of them, and their name ranges must be one range.
 2. **Fully qualified.** Otherwise the text is `::` followed by the
    identifiers of `E`'s enclosing scopes and of `E`, separated by `::`.
    Unnamed namespaces are skipped; inline namespaces are named.
@@ -924,8 +970,10 @@ consteval void replace(range, code, edit_options = {});
 1. `replace(r, c, o)` requests that the bytes of `r` be replaced by the
    text of `c`. `c` may be empty: that requests deletion.
 2. It throws `invalid_handle` for a null range, `invalid_argument` for an
-   empty range (insertion is not in version 0), and `not_editable` when
-   `is_editable(r)` is false.
+   empty range (insertion is not in version 0), `not_editable` when
+   `is_editable(r)` is false, and `invalid_handle` when `r` is not a
+   range that `name_range_of` or `extent_of` returns in the subject unit
+   (§5.2 rule 2): only such a range has a known tier (§5.4).
 3. The host does not check that requests are compatible with each other.
    Two requests of one run for overlapping ranges are both recorded.
 4. `new_group()` returns a group with no member. `o.atomic`, if not the
@@ -933,7 +981,7 @@ consteval void replace(range, code, edit_options = {});
    members of a group or none. A group is local to its run: version 0
    cannot make edits from different subject units atomic.
 5. `o.note` is shown beside the edit in reports. It does not affect
-   whether two requests are the same edit.
+   whether two requests are the same edit. An empty note is no note.
 6. `edit_options` gains members over time. A transform must initialise it
    with designated initialisers; other forms are outside the stability
    promise.
@@ -957,8 +1005,10 @@ consteval void report(range where, severity, std::string_view message);
    extent; for a declaration, its name; for an entity, the name of its
    first written declaration. If that is not a range of tier 0 or 1, the
    report is attached to the nearest place the host can name (the macro
-   invocation that produced it) and says so. An entity with no written
-   declaration has no place.
+   invocation that produced it) and says so; if the host can name none,
+   the report has no place and says that its value's place could not be
+   named. An entity with no written declaration has no
+   place.
 4. `severity` is open. A value the host does not know throws
    `invalid_argument`.
 
@@ -988,8 +1038,10 @@ consteval void expect_renamed(info entity, std::string_view new_identifier);
    declared with identifier `n` and to be otherwise unchanged, in the same
    scope. The host records the rule of `spec/verify.md` §2.1 that undoes
    it. It throws `wrong_kind` if `e` is not an entity, `invalid_argument`
-   if `n` is not an identifier or if this run already declared a different
-   name for `e`, and `unsupported` if `e` is not a unit keyed by name.
+   if `n` is not an identifier, is `e`'s identifier, or if this run
+   already declared a different name for `e`, and `unsupported` if `e` is
+   not a unit keyed by name. Two entities declared renamed to one name in
+   one scope are both recorded: verification is what refuses that.
 4. Both are idempotent: declaring the same thing twice is declaring it
    once.
 5. **What a declaration does.** `expect_changed` becomes an entry of
@@ -1059,9 +1111,10 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
 
 1. **Identity is content.** Two requests with the same file, range and
    pieces are one edit, within a run and across subject units. A group's
-   identity is the set of its members. Nothing in the output depends on
-   the order in which the transform made its requests or on a number the
-   host assigned during the run.
+   identity is the set of its members. The output is a function of the
+   set of requests that succeeded, not of their order or of a number the
+   host assigned during the run; which requests succeed may depend on
+   their order only through §7.5 rule 3 and §7.7.
 2. An edit is in at most one group: groups of one run that share a member
    are one group (all or none is transitive). A group with one member is
    not a group and is dropped; the edit stays.
@@ -1083,23 +1136,42 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
 6. Counters (`spec/model.md`'s `Counter`): `api.host_calls`,
    `api.steps`, `api.peak_bytes`, `api.edits`, `api.reports`,
    `api.unresolved_spelling_matches` (§6.5 rule 6), and one
-   `api.op.<name>` per operation used.
+   `api.op.<name>` per operation that succeeded at least once, counting
+   its calls that succeeded. `api.host_calls` counts every call, failed
+   ones too: it is the evaluator's number, as `api.steps` and
+   `api.peak_bytes` are, and the three are added by whoever runs the
+   evaluation, not by the host that answers the operations.
 
 ### 7.7 Limits of a run
 
 | Limit | Value |
 |---|---|
 | code values | 2^22 |
-| bytes in literal pieces, in total | 2^28 |
+| bytes of text in pieces, in total: literal bytes and the text of spelled pieces | 2^28 |
+| pieces, in total | 2^22 |
 | pieces in one code value | 2^16 |
 | edits requested | 2^20 |
 | groups | 2^20 |
 | reports | 2^16 |
+| declared changes, distinct (`changed` of §7.6) | 2^20 |
 | bytes in one note, reason or message | 2^12 |
+| bytes of text arguments held, in total: notes, messages, reasons and new identifiers | 2^26 |
 | bytes in one qualified name or identifier argument | 2^12 |
+| integers in one answer; bytes in one answer (§3.3) | 2^28 - 1 each |
+| failures whose text is kept (§3.5 rule 3) | the first 2^16, and the most recent |
 
-Exceeding one throws `limit_exceeded`. The limits are part of the API
-level and are the same on every machine.
+Exceeding one throws `limit_exceeded`, except the last row, which fails
+nothing (§3.5 rule 3); holding exactly a limit does not exceed it. The
+totals count what the run holds: a piece, its text, a note or a reason
+counts once in every code value, recorded edit or declared change that
+holds it, so `cat` and `replace` count again what they copy. Pieces held
+by intermediate code values count in the same total as pieces in edits
+and are not released during a run, so "pieces, in total" binds before
+"code values": `replace(x, cat("g(", copy(y), ")"))` costs about 9
+pieces per edit. A place holds its file's identity, which the run holds
+once per file whatever number of places name it; paths are not counted.
+The limits
+are part of the API level and are the same on every machine.
 
 ## 8. Stability
 

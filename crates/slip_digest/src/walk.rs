@@ -265,6 +265,15 @@ pub(crate) fn stack_probe() {
 
 /// The walk: units, then collisions, groups, counters, causes and names.
 pub(crate) fn run(input: &Input<'_>, options: &Options<'_>) -> Output {
+    run_with(input, options, |_, _, o| o)
+}
+
+/// The walk, with its context and its written units still at hand.
+pub(crate) fn run_with<R>(
+    input: &Input<'_>,
+    options: &Options<'_>,
+    f: impl FnOnce(&mut Walk<'_>, &[Written], Output) -> R,
+) -> R {
     let mut w = Walk::new(input, options.rules);
     crate::units::collect(&mut w);
     let mut written: Vec<Written> = Vec::new();
@@ -287,7 +296,7 @@ pub(crate) fn run(input: &Input<'_>, options: &Options<'_>) -> Output {
     let (digests, totals) = crate::groups::build(&written, &options.detail);
     let causes = causes(&written);
     let counters = crate::groups::counters(&totals, collisions, w.bytes, &causes);
-    Output { digests, counters, causes, names }
+    f(&mut w, &written, Output { digests, counters, causes, names })
 }
 
 /// One cause per indeterminate key: of the unit first in `(key, digest)`

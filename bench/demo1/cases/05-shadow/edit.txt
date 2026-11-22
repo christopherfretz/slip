@@ -1,0 +1,6 @@
+file llvm/lib/Support/StringRef.cpp
+replace
+  for (size_t I = 0, E = std::min(Length, RHS.Length); I != E; ++I) {
+with
+  for (size_t I = 0, Length = RHS.Length, E = std::min(Length, RHS.Length); I != E; ++I) {
+end

@@ -191,12 +191,7 @@ fn templated(w: &Walk<'_>, m: DeclId) -> bool {
         return true;
     }
     match ast.templ_link(m).get() {
-        Some((
-            TemplLinkKind::Pattern
-            | TemplLinkKind::PartialSpecialization
-            | TemplLinkKind::DependentFriend,
-            _,
-        )) => true,
+        Some((TemplLinkKind::Pattern | TemplLinkKind::PartialSpecialization, _)) => true,
         Some((TemplLinkKind::Specialization | TemplLinkKind::MemberOfSpecialization, _)) | None => {
             false
         }

@@ -182,9 +182,10 @@ pub fn parse_observer_with<R: Send>(
         Err(e @ (FrontEndError::NotSyntaxOnly | FrontEndError::NotOneInput)) => {
             return Ok((shard(rejected(&e.to_string()), None), None));
         }
-        Err(e @ (FrontEndError::Panicked(_) | FrontEndError::Thread(_))) => {
-            return Err(e.to_string());
-        }
+        // `Panicked`, `Thread`, and any reason Kiln adds (`FrontEndError`
+        // is `#[non_exhaustive]` at Kiln `83566cc47`): a failure of the
+        // worker until it is classified here.
+        Err(e) => return Err(e.to_string()),
     };
     let parsed = report.value.transpose()?;
 

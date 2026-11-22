@@ -66,7 +66,10 @@ result independent of what was evaluated before it.
 
 ## 2. The state of Slip's Kiln revision
 
-Slip pins Kiln at `62d190007`, the head of Kiln's branch `slip/kf1`. That
+(Since WP-044 Slip pins Kiln's `main` at `83566cc47`, which has WP-2120;
+this section is the state when the note was written.)
+
+Slip pinned Kiln at `62d190007`, the head of Kiln's branch `slip/kf1`. That
 commit is not an ancestor of Kiln main. The front-end entry Slip uses
 (`run_front_end`, request KF1) exists only on that branch:
 `crates/kiln_driver/src/front_end.rs` is present at the pin and absent on

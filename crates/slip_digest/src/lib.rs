@@ -202,6 +202,7 @@ mod local;
 mod names;
 mod order;
 mod other;
+pub mod records;
 mod refs;
 mod stmt;
 mod stream;
