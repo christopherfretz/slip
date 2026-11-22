@@ -275,3 +275,18 @@ fn s8_standard_library_headers_are_inputs() {
         assert_eq!(std::fs::canonicalize(p).unwrap(), PathBuf::from(p), "real path");
     }
 }
+
+// spec/landed/exec/WP-012.md "Stack guard": Kiln's stack guard is installed
+// on the front end's thread, so nesting deeper than its stack ends in
+// Kiln's fatal diagnostic (`diagnosed`), not a stack overflow that would
+// abort this test process. A small `-fkiln-stack-size=` makes it quick.
+#[test]
+fn landed_deep_nesting_is_diagnosed_not_a_crash() {
+    let f = Fixture::new("deep");
+    let depth = 20_000;
+    let text = format!("int x = {}1{};\n", "(".repeat(depth), ")".repeat(depth));
+    f.write("main.cpp", &text);
+    let s = f.parse(".", &["c++", "-std=c++17", "-fkiln-stack-size=4194304", "main.cpp"]);
+    assert_eq!(s.outcome.status, Status::Diagnosed, "{:?}", s.outcome);
+    assert!(s.outcome.message.contains("stack"), "{:?}", s.outcome);
+}

@@ -1,18 +1,18 @@
-//! The `slip` command-line tool.
+//! The `slip` command-line tool: [`slip_cli::run`] over the process's
+//! arguments and standard streams, through `signals::finish`.
 
 #![forbid(unsafe_code)]
 
+use std::ffi::OsString;
 use std::process::ExitCode;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+use slip_exec::signals;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
-        println!("slip {VERSION} (kiln {})", slip_kiln::kiln_version());
-        ExitCode::SUCCESS
-    } else {
-        eprintln!("slip {VERSION}: no commands are implemented yet (see docs/design/)");
-        ExitCode::from(2)
-    }
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    // Standard error is not locked for the run: the signal path, the
+    // jobserver and the pool write warnings to it from other threads, and
+    // a lock held by this thread would block them.
+    let code = slip_cli::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr());
+    signals::finish(code)
 }

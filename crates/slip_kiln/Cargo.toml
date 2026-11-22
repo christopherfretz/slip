@@ -11,6 +11,7 @@ publish.workspace = true
 slip_model.workspace = true
 slip_cdb.workspace = true
 kiln_driver.workspace = true
+kiln_sema.workspace = true
 
 [lints]
 workspace = true

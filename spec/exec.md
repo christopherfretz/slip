@@ -263,7 +263,11 @@ slip parse (--plan <id or file> | --db [<name>=]<compile_commands.json>…)
            [--worker-jobs <n>] [--worker-stack <size>]
 slip dump  <file>
 slip --version
+slip --help
 ```
+
+`slip --help` (or `-h`) prints the usage text on standard output and
+exits with status 0.
 
 An option's value is the next argument, or follows `=` for a long option
 (`--store=x`) and directly for `-j` (`-j4`). An option given twice is a
