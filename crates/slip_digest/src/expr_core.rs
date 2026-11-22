@@ -326,7 +326,7 @@ pub(crate) fn conditional(w: &Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out
 
 /// `BinaryConditionalOperator.a`: `child*`, the common expression, the
 /// condition and the two arms. The common expression is the source of
-/// the opaque value the condition and the true arm name (kiln_sema
+/// the opaque value the condition and the true arm name (`kiln_sema`
 /// forms.rs:699, the only builder): it takes its opaque number before it
 /// is written, so that the opaque value writes the number alone and the
 /// common expression is written once (a left-nested `?:` stays linear).

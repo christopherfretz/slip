@@ -682,9 +682,16 @@ fn every_fp_round_is_written() {
     ];
     let mut src = String::from("double d;\n");
     for (i, (m, _)) in modes.iter().enumerate() {
-        src.push_str(&format!(
-            "double f{i}() {{\n#pragma STDC FENV_ROUND {m}\n  return d + d;\n}}\n"
-        ));
+        src.push_str(
+            &[
+                "double f",
+                &i.to_string(),
+                "() {\n#pragma STDC FENV_ROUND ",
+                m,
+                "\n  return d + d;\n}\n",
+            ]
+            .concat(),
+        );
     }
     let tags = tags_of(&src, "c++20", Some(ExprKind::BinaryOperator), true);
     let missing: Vec<_> = modes

@@ -1183,14 +1183,17 @@ mod tests {
         })
     }
 
+    /// What a test reads, and the bytes of each expression operand.
+    type WithOps = ((Vec<u8>, Option<Cause>), Vec<Vec<u8>>);
+
     /// `decl_bytes`, and the bytes of each expression operand (what
     /// `expr::child` wrote for it), in order.
-    fn decl_ops(src: &str, std: &str, name: &str) -> ((Vec<u8>, Option<Cause>), Vec<Vec<u8>>) {
+    fn decl_ops(src: &str, std: &str, name: &str) -> WithOps {
         crate::expr::capture::captured(|| decl_bytes(src, std, name))
     }
 
     /// `stmt_bytes`, and the bytes of each expression operand.
-    fn stmt_ops(src: &str, std: &str) -> ((Vec<u8>, Option<Cause>), Vec<Vec<u8>>) {
+    fn stmt_ops(src: &str, std: &str) -> WithOps {
         crate::expr::capture::captured(|| stmt_bytes(src, std))
     }
 

@@ -261,7 +261,7 @@ pub(crate) mod capture {
     pub(crate) fn captured<R>(f: impl FnOnce() -> R) -> (R, Vec<Vec<u8>>) {
         CAPTURE.with_borrow_mut(|c| *c = Some((0, Vec::new())));
         let r = f();
-        let walks = CAPTURE.with_borrow_mut(|c| c.take()).map(|(_, w)| w).unwrap_or_default();
+        let walks = CAPTURE.with_borrow_mut(Option::take).map(|(_, w)| w).unwrap_or_default();
         (r, walks)
     }
 }
@@ -634,7 +634,7 @@ fn dispatch(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec
 
 /// Whether `d` (through a using-shadow, its entity) is a virtual member
 /// function: `FnSpec::is_virtual` on any declaration of its chain. Kiln
-/// sets it for `virtual` written (kiln_sema class/virtual/mod.rs:119), a
+/// sets it for `virtual` written (`kiln_sema` class/virtual/mod.rs:119), a
 /// redeclaration of a virtual function (:127), an overrider written
 /// without `virtual`, a destructor overriding a virtual one included
 /// (:160), and an implicit destructor or assignment operator that
