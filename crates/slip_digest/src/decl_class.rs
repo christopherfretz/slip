@@ -574,7 +574,7 @@ mod tests {
     ";
 
     // §5.5 `CtorInitKind`, `CtorInit`: each kind is written with its own
-    // tag, then `init` (pending: expressions), then the kind's `target`.
+    // tag, then `init` (the expression walk's bytes), then the kind's `target`.
     #[test]
     fn ctor_init_writes_each_kind() {
         with_walk(CTORS, |w| {
@@ -591,21 +591,32 @@ mod tests {
             }
             let mut seen: Vec<Vec<u8>> = Vec::new();
             for i in &all {
-                let (b, cause) = bytes(w, i);
+                // `init` is the expression area's: its bytes are whatever
+                // that walk writes, taken from the walk itself.
+                let ((b, cause), walks) = crate::expr::capture::captured(|| bytes(w, i));
+                let init: usize = walks.iter().map(Vec::len).sum();
+                assert_eq!(walks.len(), 1, "{:?}: one expression, `init`", i.kind);
                 let tag = ctor_init_kind::row(&i.kind).tag;
                 assert_eq!(u32::from(b[0]), tag, "{:?} starts with its tag", i.kind);
-                // `init` is the expression area's: pending, and no other cause.
-                assert_eq!(cause, Some(Cause::Pending(Area::Expr)), "{:?}", i.kind);
+                // No cause of this record's own: at most a kind of
+                // expression that is still pending.
+                assert!(
+                    matches!(cause, None | Some(Cause::Pending(Area::Expr))),
+                    "{:?}: {cause:?}",
+                    i.kind
+                );
                 match i.kind {
-                    // tag, pending placeholder, then a type digest.
-                    CtorInitKind::Base | CtorInitKind::VirtualBase => assert_eq!(b.len(), 2 + 32),
-                    // tag, placeholder, Ref::unit and a key.
+                    // tag, `init`, then a type digest.
+                    CtorInitKind::Base | CtorInitKind::VirtualBase => {
+                        assert_eq!(b.len(), 1 + init + 32);
+                    }
+                    // tag, `init`, Ref::unit and a key.
                     CtorInitKind::Field | CtorInitKind::IndirectField => {
-                        assert_eq!(b[2], 1, "Ref::unit");
-                        assert_eq!(b.len(), 3 + 32);
+                        assert_eq!(b[1 + init], 1, "Ref::unit");
+                        assert_eq!(b.len(), 1 + init + 1 + 32);
                     }
                     // no target.
-                    CtorInitKind::Delegating => assert_eq!(b.len(), 2),
+                    CtorInitKind::Delegating => assert_eq!(b.len(), 1 + init),
                 }
                 seen.push(b);
             }
@@ -886,7 +897,7 @@ mod tests {
     }
 
     /// For every field named `m` with a default member initialiser: how
-    /// many write it (`Pending(Expr)`) and how many write it absent
+    /// many write it (no cause of the field's own) and how many write it absent
     /// (`Pending(Demand)`); Kiln holds it in each case it is counted.
     fn field_inits(w: &mut Walk<'_>) -> (usize, usize) {
         let ms: Vec<DeclId> = named(w, "m", DeclKind::Field)
@@ -900,7 +911,8 @@ mod tests {
             let mut s = Stream::new();
             field_data(w, &mut s, f);
             match s.cause() {
-                Some(Cause::Pending(Area::Expr)) => written += 1,
+                // Written: no cause, or a kind of expression still pending.
+                None | Some(Cause::Pending(Area::Expr)) => written += 1,
                 Some(Cause::Pending(Area::Demand)) => {
                     // bit_width absent, then init absent.
                     assert_eq!(&s.as_bytes()[..2], &[0, 0]);
