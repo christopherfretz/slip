@@ -1,5 +1,5 @@
 #include "side.h"
-// §6 CoroutineBodyData `return_on_alloc_failure`: the promise has `get_return_object_on_allocation_failure` (the promise type is the same class on both sides).
+// §6 CoroutineBodyData `return_on_alloc_failure`: `get_return_object_on_allocation_failure` returns a `const` object (both sides have one, so the allocation is the same) (the promise type is the same class on both sides).
 namespace std { struct nothrow_t { explicit nothrow_t() = default; }; extern const nothrow_t nothrow; }
 void *operator new(decltype(sizeof 0), const std::nothrow_t &) noexcept;
 namespace std {
@@ -27,7 +27,7 @@ struct ta { struct promise_type {
   std::suspend_never final_suspend() noexcept { return {}; }
   void return_void() {}
   void unhandled_exception() {}
-  static ta get_return_object_on_allocation_failure() { return {}; }
+  static const ta get_return_object_on_allocation_failure() { return {}; }
 }; };
 ta f() { co_return; }
 #else
@@ -37,6 +37,7 @@ struct ta { struct promise_type {
   std::suspend_never final_suspend() noexcept { return {}; }
   void return_void() {}
   void unhandled_exception() {}
+  static ta get_return_object_on_allocation_failure() { return {}; }
 }; };
 ta f() { co_return; }
 #endif
