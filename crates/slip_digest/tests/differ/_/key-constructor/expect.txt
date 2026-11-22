@@ -1,0 +1,2 @@
+removed C::C(int)
+added C::C(long)

@@ -84,7 +84,8 @@ fn unnameable() -> BTreeSet<String> {
     generate::pins_names(&pins_text()).unwrap_or_else(|e| panic!("{}", e.join("\n")))
 }
 
-/// Every `<root>/<short>/<row>` under `tests/` that holds a file (§1.5).
+/// Every `<root>/<short>/<row>` under `tests/` that holds a file (§1.5),
+/// but `<root>/_/`, which holds the tests no row names.
 fn test_dirs(base: &Path) -> BTreeSet<(String, String)> {
     fn has_file(p: &Path) -> bool {
         std::fs::read_dir(p).into_iter().flatten().flatten().any(|e| {
@@ -95,6 +96,10 @@ fn test_dirs(base: &Path) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     for root in check::ROOTS {
         for short in std::fs::read_dir(base.join(root)).into_iter().flatten().flatten() {
+            // `_/<slug>/`: a test no row names (WP-024).
+            if short.file_name() == "_" {
+                continue;
+            }
             for row in std::fs::read_dir(short.path()).into_iter().flatten().flatten() {
                 if row.path().is_dir() && has_file(&row.path()) {
                     let name = format!(

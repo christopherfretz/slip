@@ -65,6 +65,31 @@ pub struct Group {
     pub units: Option<Vec<Unit>>,
 }
 
+/// The sum of a group (`spec/digest.md` §11 `GroupSum`): everything of it
+/// but its unit list. Ordered by `(class, file, count, indeterminate,
+/// digest)`, so that a sorted list of sums can be searched.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GroupSum {
+    pub class: GroupClass,
+    pub file: Vec<u8>,
+    pub count: u64,
+    pub indeterminate: u64,
+    pub digest: Digest,
+}
+
+impl Group {
+    /// The group's sum: `(class, file, count, indeterminate, digest)`.
+    pub fn sum(&self) -> GroupSum {
+        GroupSum {
+            class: self.class,
+            file: self.file.clone(),
+            count: self.count,
+            indeterminate: self.indeterminate,
+            digest: self.digest,
+        }
+    }
+}
+
 /// The `digests` section. `groups` is sorted by `(class, file)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Digests {
@@ -139,5 +164,35 @@ mod tests {
         assert_ne!(tu, tu_digest(&[Group { indeterminate: 1, ..g.clone() }]));
         assert_ne!(tu, tu_digest(&[Group { digest: d(9), ..g.clone() }]));
         assert_ne!(tu, tu_digest(&[]));
+    }
+
+    // spec/digest.md §11 `GroupSum`: every field of the group but `units`.
+    #[test]
+    fn a_sum_is_the_group_without_its_units() {
+        let g = Group {
+            class: GroupClass::Derived,
+            file: b"/s/a.h".to_vec(),
+            count: 3,
+            indeterminate: 1,
+            digest: d(7),
+            units: Some(vec![Unit { key: d(1), digest: d(2), flags: 0 }]),
+        };
+        let s = g.sum();
+        assert_eq!(
+            s,
+            GroupSum {
+                class: GroupClass::Derived,
+                file: b"/s/a.h".to_vec(),
+                count: 3,
+                indeterminate: 1,
+                digest: d(7),
+            }
+        );
+        assert_eq!(s, Group { units: None, ..g.clone() }.sum());
+        assert_ne!(s, Group { count: 4, ..g.clone() }.sum());
+        assert_ne!(s, Group { indeterminate: 0, ..g.clone() }.sum());
+        assert_ne!(s, Group { digest: d(8), ..g.clone() }.sum());
+        assert_ne!(s, Group { file: Vec::new(), ..g.clone() }.sum());
+        assert_ne!(s, Group { class: GroupClass::Tu, ..g }.sum());
     }
 }

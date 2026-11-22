@@ -1,0 +1,1008 @@
+//! Keys (`spec/digest.md` §3, `spec/digest-kinds.md` §3, §5.2): which
+//! key each declaration has, its parent, name and discriminator, mapped
+//! under the walk's rules.
+
+use slip_kiln::kiln::ast::decl::{
+    DeclKind, FnStorage, LinkageLang, NamespaceData, TemplLinkKind, VarStorage,
+};
+use slip_kiln::kiln::ast::names::DeclNameView;
+use slip_kiln::kiln::ast::types::TypeView;
+use slip_kiln::kiln::ast::{DeclId, QualType};
+use slip_model::Digest;
+use slip_model::keys::{DISC_TAG, Key, KeyKind, Name, Parent};
+
+use crate::Cause;
+use crate::stream::{FlagWord, Stream};
+use crate::tables::{overloaded_operator, ref_qual};
+use crate::walk::{TOO_DEEP, Walk};
+
+/// What a declaration kind is in the walk (`spec/digest-kinds.md` §5.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Role {
+    /// Declares nothing the digest writes.
+    Nothing,
+    /// A scope whose declarations belong to the scope around it.
+    Transparent,
+    /// The translation unit: `Parent::root`.
+    Root,
+    /// A unit with a name: the key kind.
+    Entity(KeyKind),
+    /// A unit keyed by content (`spec/digest.md` §3.3).
+    Content(KeyKind),
+    /// Numbered inside the unit that holds it (`spec/digest.md` §4.3).
+    Local,
+    /// Written inside another declaration's stream.
+    InParent,
+    /// `unsupported`: no construction site in Kiln.
+    Unsupported(&'static str),
+}
+
+/// The facts of one `DeclKind` the walk dispatches on, in one place so
+/// that every predicate over declaration kinds is one exhaustive match.
+#[derive(Clone, Copy, Debug)]
+#[allow(clippy::struct_excessive_bools, reason = "independent facts of a kind, read one at a time")]
+pub(crate) struct KindInfo {
+    pub role: Role,
+    /// A unit only when some stream refers to it (digest-kinds §5.2).
+    pub on_demand: bool,
+    /// Has the function discriminator (digest-kinds §3.3).
+    pub function: bool,
+    /// A declaration whose scope makes what it holds local (a function
+    /// body, an initialiser, a requires-expression's parameters).
+    pub local_scope: bool,
+    /// May have `Parent::c_linkage` (digest-kinds §5.2).
+    pub c_linkage: bool,
+}
+
+const fn k(role: Role) -> KindInfo {
+    KindInfo { role, on_demand: false, function: false, local_scope: false, c_linkage: false }
+}
+
+const fn func(role: Role) -> KindInfo {
+    KindInfo { role, on_demand: false, function: true, local_scope: true, c_linkage: false }
+}
+
+/// The table of `spec/digest-kinds.md` §5.2 as a match.
+#[allow(clippy::too_many_lines, reason = "one arm per DeclKind")]
+pub(crate) const fn info(kind: DeclKind) -> KindInfo {
+    use KeyKind as K;
+    use Role::{Content, Entity, InParent, Local, Nothing, Transparent, Unsupported};
+    match kind {
+        DeclKind::TranslationUnit => k(Role::Root),
+        DeclKind::Namespace => k(Entity(K::Namespace)),
+        DeclKind::NamespaceAlias => k(Entity(K::NamespaceAlias)),
+        DeclKind::LinkageSpec | DeclKind::Export => k(Transparent),
+        DeclKind::Empty | DeclKind::AccessSpec => k(Nothing),
+        DeclKind::RequiresExprBody => KindInfo { local_scope: true, ..k(Nothing) },
+        DeclKind::FileScopeAsm => k(Content(K::FileScopeAsm)),
+        DeclKind::UsingDirective => k(Content(K::UsingDirective)),
+        DeclKind::UsingEnum => k(Content(K::UsingEnum)),
+        DeclKind::Friend => k(Content(K::Friend)),
+        DeclKind::StaticAssert => k(Content(K::StaticAssert)),
+        DeclKind::ConstevalBlock => k(Content(K::ConstevalBlock)),
+        DeclKind::TemplateParamObject => {
+            KindInfo { on_demand: true, ..k(Content(K::TemplateParamObject)) }
+        }
+        DeclKind::Using | DeclKind::UnresolvedUsingValue | DeclKind::UnresolvedUsingTypename => {
+            k(Entity(K::UsingDeclaration))
+        }
+        DeclKind::UsingShadow | DeclKind::ConstructorUsingShadow => k(Entity(K::UsingShadow)),
+        DeclKind::UnresolvedUsingIfExists => k(Entity(K::UnresolvedIfExists)),
+        DeclKind::Typedef | DeclKind::TypeAlias => k(Entity(K::Alias)),
+        DeclKind::Enum => k(Entity(K::Enumeration)),
+        DeclKind::EnumConstant => k(Entity(K::Enumerator)),
+        DeclKind::CXXRecord => k(Entity(K::Class)),
+        DeclKind::ClassTemplateSpecialization => k(Entity(K::Specialisation)),
+        DeclKind::VarTemplateSpecialization => {
+            KindInfo { local_scope: true, ..k(Entity(K::Specialisation)) }
+        }
+        DeclKind::ClassTemplatePartialSpecialization => k(Entity(K::PartialSpecialisation)),
+        DeclKind::VarTemplatePartialSpecialization => {
+            KindInfo { local_scope: true, ..k(Entity(K::PartialSpecialisation)) }
+        }
+        DeclKind::Field => KindInfo { local_scope: true, ..k(Entity(K::Field)) },
+        DeclKind::IndirectField => k(Entity(K::Field)),
+        DeclKind::Function => KindInfo { c_linkage: true, ..func(Entity(K::Function)) },
+        DeclKind::CXXMethod
+        | DeclKind::CXXConstructor
+        | DeclKind::CXXDestructor
+        | DeclKind::CXXConversion => func(Entity(K::Function)),
+        DeclKind::CXXDeductionGuide => {
+            KindInfo { function: false, ..func(Entity(K::DeductionGuide)) }
+        }
+        DeclKind::Var => KindInfo { local_scope: true, c_linkage: true, ..k(Entity(K::Variable)) },
+        DeclKind::Binding => k(Entity(K::Binding)),
+        DeclKind::ParmVar => KindInfo { local_scope: true, ..k(Local) },
+        DeclKind::Label | DeclKind::ContractResultName => k(Local),
+        DeclKind::ClassTemplate => k(Entity(K::ClassTemplate)),
+        DeclKind::FunctionTemplate => k(Entity(K::FunctionTemplate)),
+        DeclKind::VarTemplate => k(Entity(K::VariableTemplate)),
+        DeclKind::TypeAliasTemplate => k(Entity(K::AliasTemplate)),
+        DeclKind::Concept => KindInfo { local_scope: true, ..k(Entity(K::Concept)) },
+        DeclKind::BuiltinTemplate => KindInfo { on_demand: true, ..k(Entity(K::ClassTemplate)) },
+        DeclKind::TemplateTypeParm
+        | DeclKind::NonTypeTemplateParm
+        | DeclKind::TemplateTemplateParm
+        | DeclKind::LifetimeExtendedTemporary => k(InParent),
+        DeclKind::UsingPack => k(Unsupported("DeclKind/UsingPack")),
+        DeclKind::FriendTemplate => k(Unsupported("DeclKind/FriendTemplate")),
+        DeclKind::ImplicitParam => k(Unsupported("DeclKind/ImplicitParam")),
+        DeclKind::ImplicitConceptSpecialization => {
+            k(Unsupported("DeclKind/ImplicitConceptSpecialization"))
+        }
+    }
+}
+
+/// An entity's key as the walk computed it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyRes {
+    /// The mapped `KeyId`, its kind, and the cause its discriminator
+    /// carries (a pending area): a stream that refers to the entity
+    /// absorbs it.
+    Key { id: Digest, kind: KeyKind, cause: Option<Cause> },
+    /// No key: a local entity, a kind without one, or one that cannot be
+    /// computed (the cause).
+    None(Option<Cause>),
+}
+
+/// The cause of an entity that refers to itself through its own key.
+const KEY_CYCLE: Cause = Cause::Unaccounted("key/cycle");
+/// A scope no row of §5.2 says can hold an entity.
+const BAD_PARENT: Cause = Cause::Unaccounted("key/parent");
+/// A name form no rule of §3.2 or digest §3.3 gives.
+const BAD_NAME: Cause = Cause::Unaccounted("key/name");
+/// How far a chain of contexts is followed (an AST is far shallower).
+const CTX_LIMIT: u32 = 4096;
+
+impl Walk<'_> {
+    /// The entity a declaration is a declaration of: its first
+    /// declaration, and for the pattern of a template the template.
+    pub(crate) fn entity(&self, d: DeclId) -> DeclId {
+        let ast = self.ast;
+        if let Some((TemplLinkKind::Pattern, i)) = ast.templ_link(d).get()
+            && let Some(t) = ast.templates.info(i)
+        {
+            return ast.first(t.decl);
+        }
+        ast.first(d)
+    }
+
+    /// `d` is inside a function body, an initialiser or another scope
+    /// whose declarations are local (`spec/digest.md` §4.3), or is a
+    /// closure type.
+    pub(crate) fn is_local(&self, d: DeclId) -> bool {
+        let ast = self.ast;
+        if ast.decls.record(d).is_some_and(|r| r.lambda.is_some()) {
+            return true;
+        }
+        let mut c = ast.decls.get(d).ctx();
+        for _ in 0..CTX_LIMIT {
+            let Some(x) = c else { return false };
+            let i = info(ast.decls.get(x).kind());
+            if i.local_scope || ast.decls.record(x).is_some_and(|r| r.lambda.is_some()) {
+                return true;
+            }
+            if i.role == Role::Root {
+                return false;
+            }
+            c = ast.decls.get(x).ctx();
+        }
+        false
+    }
+
+    /// A block-scope declaration of a function or of a variable with
+    /// linkage (`DeclMisc` `0-local-extern`): it belongs to the
+    /// namespace (digest-kinds §2.4).
+    ///
+    /// Kiln does not set the bit yet, so the walk also reads it off the
+    /// declaration the way Kiln's mangler does (`kiln_abi::mangle::
+    /// local_extern_ns`): a function, or a variable declared `extern`,
+    /// whose semantic context is a function (`spec/landed/digest/WP-024.md`).
+    pub(crate) fn is_local_extern(&self, d: DeclId) -> bool {
+        let ast = self.ast;
+        let n = ast.decls.get(d);
+        if n.misc().local_extern() {
+            return true;
+        }
+        let kind = n.kind();
+        let candidate = kind == DeclKind::Function
+            || (kind == DeclKind::Var
+                && ast.decls.var(d).is_some_and(|v| v.spec.storage() == VarStorage::Extern));
+        candidate && n.ctx().is_some_and(|c| info(ast.decls.get(c).kind()).function)
+    }
+
+    /// The key of `d`'s entity, mapped (`spec/digest.md` §3.4).
+    pub(crate) fn key(&mut self, d: DeclId) -> KeyRes {
+        let e = self.entity(d);
+        if let Some(k) = self.keys.get(&e) {
+            return *k;
+        }
+        if self.keys_in_progress.contains(&e) {
+            // What is computed above this point depends on the path that
+            // reached the cycle: not memoised, as for a depth abort.
+            self.aborts += 1;
+            return KeyRes::None(Some(KEY_CYCLE));
+        }
+        if !self.enter() {
+            return KeyRes::None(Some(TOO_DEEP));
+        }
+        let aborts = self.aborts;
+        self.keys_in_progress.insert(e);
+        // A key does not depend on the unit that asks for it: the unit's
+        // local state is put aside (`Walk::in_key`).
+        let saved = std::mem::take(&mut self.unit);
+        self.in_key += 1;
+        let computed = self.compute_key(e);
+        self.in_key -= 1;
+        self.unit = saved;
+        let res = match computed {
+            Ok((key, cause)) => {
+                let kind = key.kind;
+                let key = self.rules.map(key);
+                self.bytes += key.to_bytes().len() as u64;
+                KeyRes::Key { id: key.id(), kind, cause }
+            }
+            Err(cause) => KeyRes::None(cause),
+        };
+        self.keys_in_progress.remove(&e);
+        self.leave();
+        if self.aborts == aborts {
+            self.keys.insert(e, res);
+        }
+        res
+    }
+
+    /// `key`: the mapped `KeyId` as a `digest` (digest-kinds §1.3).
+    #[allow(dead_code, reason = "the interface of an area that lands later (lib.rs)")]
+    pub(crate) fn write_key(&mut self, s: &mut Stream, d: DeclId) {
+        match self.key(d) {
+            KeyRes::Key { id, cause, .. } => {
+                s.digest(&id).absorb(cause);
+            }
+            KeyRes::None(cause) => {
+                s.digest(&Digest([0; 32]));
+                s.indeterminate(cause.unwrap_or(Cause::Unaccounted("key/none")));
+            }
+        }
+    }
+
+    /// `name`: a declaration's name as the `Name` of digest-kinds §3.2.
+    #[allow(dead_code, reason = "the interface of an area that lands later (lib.rs)")]
+    pub(crate) fn write_name(&mut self, s: &mut Stream, d: DeclId) {
+        match self.plain_name(d) {
+            Ok(Some((name, cause))) => {
+                s.name(&name).absorb(cause);
+            }
+            Ok(None) | Err(_) => {
+                s.name(&Name::Anonymous).indeterminate(BAD_NAME);
+            }
+        }
+    }
+
+    /// `sym`: a symbol's spelling.
+    pub(crate) fn write_sym(
+        &mut self,
+        s: &mut Stream,
+        sym: slip_kiln::kiln::source::symbol::Symbol,
+    ) {
+        s.bytes(self.ast.symbols().as_str(sym).as_bytes());
+    }
+
+    /// The key of entity `e` before mapping, with the cause its
+    /// discriminator carries; `Err` when it has none.
+    fn compute_key(&mut self, e: DeclId) -> Result<(Key, Option<Cause>), Option<Cause>> {
+        let ast = self.ast;
+        let n = ast.decls.get(e);
+        let kind_info = info(n.kind());
+        match ast.templ_link(e).get() {
+            Some((TemplLinkKind::Specialization, _)) => {
+                if let Some((_, si)) = ast.spec_info(e) {
+                    let (template, args) = (si.template, si.args);
+                    return self.spec_key(template, None, args);
+                }
+            }
+            Some((TemplLinkKind::PartialSpecialization, _)) => {
+                if let Some((_, pi)) = ast.partial_spec_info(e) {
+                    let (template, params, args) = (pi.template, pi.params, pi.canonical);
+                    return self.spec_key(template, Some(params), args);
+                }
+            }
+            Some((TemplLinkKind::DependentFriend, _)) => {
+                return Err(Some(Cause::Unsupported("TemplLinkKind/DependentFriend")));
+            }
+            Some((TemplLinkKind::Pattern | TemplLinkKind::MemberOfSpecialization, _)) | None => {}
+        }
+        let kind = match kind_info.role {
+            Role::Entity(kind) => kind,
+            Role::Content(kind) => {
+                let (parent, parent_cause) = self.parent_of(e)?;
+                let h = self.content_hash(e);
+                let key = Key { kind, parent, name: Name::Content, disc: Some(h.digest) };
+                return Ok((key, merge(parent_cause, h.cause)));
+            }
+            Role::Unsupported(what) => return Err(Some(Cause::Unsupported(what))),
+            Role::Nothing | Role::Transparent | Role::Root | Role::Local | Role::InParent => {
+                return Err(None);
+            }
+        };
+        let decomposition = kind == KeyKind::Variable && ast.decls.is_decomposition(e);
+        let kind = if decomposition { KeyKind::Decomposition } else { kind };
+        let (parent, parent_cause) = self.parent_of(e)?;
+        let mut cause;
+        let name = if decomposition {
+            let first =
+                ast.decls.decomp_bindings(e).and_then(|l| ast.lists.iter::<DeclId>(l).next());
+            match first.map(|b| self.plain_name(b)) {
+                Some(Ok(Some((name, c)))) => {
+                    cause = c;
+                    name
+                }
+                Some(Ok(None) | Err(_)) | None => return Err(Some(BAD_NAME)),
+            }
+        } else {
+            let (name, c) = self.entity_name(e)?;
+            cause = c;
+            name
+        };
+        if let Err(what) = name.validate() {
+            return Err(Some(Cause::Unaccounted(what)));
+        }
+        cause = merge(cause, parent_cause);
+        let disc = self.disc(e, kind, parent == Parent::CLinkage);
+        let disc = match disc {
+            Some(h) => {
+                cause = merge(cause, h.1);
+                Some(h.0)
+            }
+            None => None,
+        };
+        Ok((Key { kind, parent, name, disc }, cause))
+    }
+
+    /// The key of a specialisation (`params` absent) or of a partial
+    /// specialisation of `template`.
+    fn spec_key(
+        &mut self,
+        template: DeclId,
+        params: Option<slip_kiln::kiln::ast::TemplateParamListId>,
+        args: slip_kiln::kiln::ast::ArgListId,
+    ) -> Result<(Key, Option<Cause>), Option<Cause>> {
+        let (parent, template_cause) = match self.key(template) {
+            KeyRes::Key { id, cause, .. } => (Parent::Unit(id), cause),
+            KeyRes::None(c) => return Err(Some(c.unwrap_or(BAD_PARENT))),
+        };
+        let (name, mut cause) = self.entity_name(self.entity(template))?;
+        cause = merge(cause, template_cause);
+        let mut s = Stream::new();
+        let kind = if let Some(p) = params {
+            crate::templ::template_head(self, &mut s, p);
+            KeyKind::PartialSpecialisation
+        } else {
+            KeyKind::Specialisation
+        };
+        let canonical = self.ast.types.canonical_args(args);
+        self.write_args(&mut s, canonical);
+        let h = s.finish(DISC_TAG);
+        let h = self.hashed(h);
+        cause = merge(cause, h.cause);
+        Ok((Key { kind, parent, name, disc: Some(h.digest) }, cause))
+    }
+
+    /// The parent of entity `e` (`spec/digest.md` §3), with the cause its
+    /// key carries: `Err` for a local entity, whose key is `local(n)` and
+    /// needs the statement walk.
+    pub(crate) fn parent_of(
+        &mut self,
+        e: DeclId,
+    ) -> Result<(Parent, Option<Cause>), Option<Cause>> {
+        let ast = self.ast;
+        let n = ast.decls.get(e);
+        if ast.decls.builtin_id(e).is_some() || n.kind() == DeclKind::BuiltinTemplate {
+            return Ok((Parent::Builtin, None));
+        }
+        if ast.decls.record(e).is_some_and(|r| r.lambda.is_some()) {
+            return Err(Some(Cause::Pending(crate::Area::Local)));
+        }
+        let local_extern = self.is_local_extern(e);
+        if info(n.kind()).c_linkage && self.in_c_linkage(e) {
+            return Ok((Parent::CLinkage, None));
+        }
+        let mut c = n.ctx();
+        let mut to_namespace = false;
+        for _ in 0..CTX_LIMIT {
+            let Some(x) = c else { return Ok((Parent::Root, None)) };
+            let xn = ast.decls.get(x);
+            let xi = info(xn.kind());
+            if to_namespace {
+                match xi.role {
+                    Role::Root => return Ok((Parent::Root, None)),
+                    Role::Entity(KeyKind::Namespace) => return self.unit_parent(x),
+                    Role::Nothing
+                    | Role::Transparent
+                    | Role::Entity(_)
+                    | Role::Content(_)
+                    | Role::Local
+                    | Role::InParent
+                    | Role::Unsupported(_) => {
+                        c = xn.ctx();
+                        continue;
+                    }
+                }
+            }
+            if xi.local_scope || ast.decls.record(x).is_some_and(|r| r.lambda.is_some()) {
+                if local_extern {
+                    to_namespace = true;
+                    c = xn.ctx();
+                    continue;
+                }
+                return Err(Some(Cause::Pending(crate::Area::Local)));
+            }
+            match xi.role {
+                Role::Root => return Ok((Parent::Root, None)),
+                Role::Transparent => c = xn.ctx(),
+                Role::Entity(
+                    KeyKind::Namespace
+                    | KeyKind::Class
+                    | KeyKind::Enumeration
+                    | KeyKind::Specialisation
+                    | KeyKind::PartialSpecialisation
+                    | KeyKind::ClassTemplate,
+                ) => return self.unit_parent(x),
+                Role::Entity(_)
+                | Role::Nothing
+                | Role::Content(_)
+                | Role::Local
+                | Role::InParent
+                | Role::Unsupported(_) => return Err(Some(BAD_PARENT)),
+            }
+        }
+        Err(Some(BAD_PARENT))
+    }
+
+    fn unit_parent(&mut self, x: DeclId) -> Result<(Parent, Option<Cause>), Option<Cause>> {
+        match self.key(x) {
+            KeyRes::Key { id, cause, .. } => Ok((Parent::Unit(id), cause)),
+            KeyRes::None(c) => Err(Some(c.unwrap_or(BAD_PARENT))),
+        }
+    }
+
+    /// The first declaration is lexically inside `extern "C"`, the entity
+    /// is no class member, and its name has external linkage
+    /// (digest-kinds §5.2, [dcl.link]/1). A block-scope declaration looks
+    /// through the functions around it.
+    fn in_c_linkage(&self, e: DeclId) -> bool {
+        let ast = self.ast;
+        if ast.decls.get(e).ctx().is_some_and(|c| ast.decls.record(c).is_some()) {
+            return false;
+        }
+        if !self.external_for_c(e) {
+            return false;
+        }
+        let local_extern = self.is_local_extern(e);
+        let mut c = ast.decls.lexical_ctx(e);
+        for _ in 0..CTX_LIMIT {
+            let Some(x) = c else { return false };
+            let n = ast.decls.get(x);
+            if local_extern && info(n.kind()).local_scope {
+                c = ast.decls.lexical_ctx(x);
+                continue;
+            }
+            match info(n.kind()).role {
+                Role::Transparent | Role::Entity(KeyKind::Namespace) => {
+                    if let Some(lang) = ast
+                        .decls
+                        .scope(x)
+                        .and_then(slip_kiln::kiln::ast::decl::ScopeData::linkage_lang)
+                    {
+                        return match lang {
+                            LinkageLang::C => true,
+                            LinkageLang::Cxx => false,
+                        };
+                    }
+                }
+                Role::Root
+                | Role::Entity(_)
+                | Role::Nothing
+                | Role::Content(_)
+                | Role::Local
+                | Role::InParent
+                | Role::Unsupported(_) => return false,
+            }
+            c = ast.decls.lexical_ctx(x);
+        }
+        false
+    }
+
+    /// Whether the name of `e`, a function or variable, can have external
+    /// linkage, as far as [dcl.link]/1 needs it: not `static`, not in an
+    /// unnamed namespace, and not a namespace-scope `const` variable
+    /// declared neither `extern` nor in a one-declaration linkage
+    /// specification ([basic.link]/3). Kiln has no public linkage query
+    /// (its linkage bits in `DeclMisc` are a cache).
+    fn external_for_c(&self, e: DeclId) -> bool {
+        let ast = self.ast;
+        for d in self.redecls(e) {
+            let n = ast.decls.get(d);
+            let kind = n.kind();
+            if kind == DeclKind::Function
+                && ast.decls.function(d).is_some_and(|f| f.spec.storage() == FnStorage::Static)
+            {
+                return false;
+            }
+            if kind == DeclKind::Var
+                && ast.decls.var(d).is_some_and(|v| v.spec.storage() == VarStorage::Static)
+            {
+                return false;
+            }
+        }
+        let first = ast.first(e);
+        let n = ast.decls.get(first);
+        if n.kind() == DeclKind::Var && !self.is_local_extern(first) {
+            let explicit_extern = self.redecls(e).iter().any(|&d| {
+                ast.decls.var(d).is_some_and(|v| v.spec.storage() == VarStorage::Extern)
+                    || ast.decls.is_single_line_linkage(d)
+            });
+            let constant = n.ty().is_some_and(|q| ast.types.canonical(q).quals().is_const());
+            if constant && !explicit_extern {
+                return false;
+            }
+        }
+        let mut c = n.ctx();
+        for _ in 0..CTX_LIMIT {
+            let Some(x) = c else { return true };
+            let xn = ast.decls.get(x);
+            if xn.kind() == DeclKind::Namespace
+                && (xn.name().is_empty()
+                    || ast
+                        .decls
+                        .namespace(x)
+                        .is_some_and(|ns| ns.flags & NamespaceData::ANONYMOUS != 0))
+            {
+                return false;
+            }
+            c = xn.ctx();
+        }
+        true
+    }
+
+    /// A named entity's name, or for one without a name the forms of
+    /// digest §3.3 (`Err` when none applies).
+    fn entity_name(&mut self, e: DeclId) -> Result<(Name, Option<Cause>), Option<Cause>> {
+        if let Some(named) = self.plain_name(e).map_err(Some)? {
+            return Ok(named);
+        }
+        let ast = self.ast;
+        let kind = ast.decls.get(e).kind();
+        match info(kind).role {
+            Role::Entity(KeyKind::Namespace) => Ok((Name::Anonymous, None)),
+            Role::Entity(KeyKind::Class | KeyKind::Enumeration) => self.unnamed_tag(e),
+            Role::Entity(KeyKind::Field) => self.unnamed_field(e),
+            Role::Entity(KeyKind::Variable) => self.unnamed_variable(e),
+            Role::Entity(_)
+            | Role::Nothing
+            | Role::Transparent
+            | Role::Root
+            | Role::Content(_)
+            | Role::Local
+            | Role::InParent
+            | Role::Unsupported(_) => Err(Some(BAD_NAME)),
+        }
+    }
+
+    /// The `Name` a declaration's own name is (digest-kinds §3.2); `None`
+    /// for a declaration without one.
+    pub(crate) fn plain_name(&mut self, d: DeclId) -> Result<Option<(Name, Option<Cause>)>, Cause> {
+        let ast = self.ast;
+        let name = ast.decls.get(d).name();
+        Ok(Some(match ast.names.view(name) {
+            DeclNameView::Empty => return Ok(None),
+            DeclNameView::Identifier(sym) => {
+                let text = ast.symbols().as_str(sym);
+                if text.is_empty() {
+                    return Ok(None);
+                }
+                (Name::Identifier(text.as_bytes().to_vec()), None)
+            }
+            DeclNameView::Operator(op) => {
+                (Name::Operator(u64::from(overloaded_operator::row(&op).tag)), None)
+            }
+            DeclNameView::Constructor(_) => (Name::Constructor, None),
+            DeclNameView::Destructor(_) => (Name::Destructor, None),
+            DeclNameView::Conversion(q) => {
+                let t = self.type_digest(q, false);
+                (Name::Conversion(t.digest), t.cause)
+            }
+            DeclNameView::LiteralOperator(sym) => {
+                (Name::LiteralOperator(ast.symbols().as_str(sym).as_bytes().to_vec()), None)
+            }
+            DeclNameView::DeductionGuide(_) => (Name::DeductionGuide, None),
+        }))
+    }
+
+    /// An unnamed class or enumeration (digest §3.3): the typedef name
+    /// for linkage, else the first declarator, else the first enumerator
+    /// or member, else the ordinal among the scope's unnamed types.
+    fn unnamed_tag(&mut self, e: DeclId) -> Result<(Name, Option<Cause>), Option<Cause>> {
+        if let Some(by) = self.unnamed_tag_by(e) {
+            let (name, cause) = self.plain_name(by).map_err(Some)?.ok_or(Some(BAD_NAME))?;
+            return Ok((Name::UnnamedBy(Box::new(name)), cause));
+        }
+        let ordinal = self.ordinal_in_scope(e).ok_or(Some(BAD_NAME))?;
+        Ok((Name::UnnamedOrdinal(ordinal), None))
+    }
+
+    /// The declaration whose name names unnamed tag `e`, by the first
+    /// three rules of digest §3.3.
+    fn unnamed_tag_by(&self, e: DeclId) -> Option<DeclId> {
+        let ast = self.ast;
+        if let Some(td) = ast.decls.typedef_for_anon(e) {
+            return Some(td);
+        }
+        let named = |d: DeclId| !ast.decls.get(d).name().is_empty();
+        if let Some(next) = ast.decls.get(e).next()
+            && named(next)
+            && let Some(q) = ast.decls.get(next).ty()
+            && self.declarator_of(q) == Some(e)
+        {
+            return Some(next);
+        }
+        let holder = ast.definition(e).unwrap_or(e);
+        ast.members(holder).find(|&m| {
+            let kind = ast.decls.get(m).kind();
+            let member = match info(kind).role {
+                Role::Entity(_) | Role::Content(_) => true,
+                Role::Nothing
+                | Role::Transparent
+                | Role::Root
+                | Role::Local
+                | Role::InParent
+                | Role::Unsupported(_) => false,
+            };
+            member && named(m)
+        })
+    }
+
+    /// The tag a declarator's type declares an object of, through
+    /// pointers, references, arrays and member pointers.
+    fn declarator_of(&self, q: QualType) -> Option<DeclId> {
+        let types = &self.ast.types;
+        let mut q = types.canonical(q);
+        for _ in 0..CTX_LIMIT {
+            match types.view(q.ty()) {
+                TypeView::Record(d) | TypeView::Enum(d) => return Some(self.ast.first(d)),
+                TypeView::Pointer(x)
+                | TypeView::LValueRef(x)
+                | TypeView::RValueRef(x)
+                | TypeView::IncompleteArray(x)
+                | TypeView::MemberPointer { pointee: x, class: _ } => q = types.canonical(x),
+                TypeView::ConstantArray(a) => q = types.canonical(a.elem),
+                TypeView::ExtQual { base, word: _ } => q = types.canonical(base),
+                TypeView::Invalid
+                | TypeView::Builtin(_)
+                | TypeView::BitInt { .. }
+                | TypeView::DependentBitInt { .. }
+                | TypeView::VariableArray { .. }
+                | TypeView::DependentSizedArray { .. }
+                | TypeView::Function(_)
+                | TypeView::UnresolvedUsing(_)
+                | TypeView::Paren(_)
+                | TypeView::Complex(_)
+                | TypeView::Atomic(_)
+                | TypeView::Vector { .. }
+                | TypeView::DependentVector { .. }
+                | TypeView::DependentAddrSpace { .. }
+                | TypeView::Typedef { .. }
+                | TypeView::Using { .. }
+                | TypeView::Elaborated { .. }
+                | TypeView::QualifiedArray { .. }
+                | TypeView::TemplateTypeParm(_)
+                | TypeView::CanonTemplateTypeParm { .. }
+                | TypeView::SubstTemplateTypeParm { .. }
+                | TypeView::SubstTemplateTypeParmPack { .. }
+                | TypeView::TemplateSpecialization { .. }
+                | TypeView::InjectedClassName { .. }
+                | TypeView::DependentName { .. }
+                | TypeView::DependentTemplateSpecialization { .. }
+                | TypeView::PackExpansion { .. }
+                | TypeView::PackIndexing { .. }
+                | TypeView::Decltype { .. }
+                | TypeView::DependentDecltype(_)
+                | TypeView::TypeOf { .. }
+                | TypeView::UnaryTransform { .. }
+                | TypeView::Auto { .. }
+                | TypeView::DeducedTemplateSpecialization { .. }
+                | TypeView::Attributed { .. }
+                | TypeView::Splice { .. } => return None,
+            }
+        }
+        None
+    }
+
+    /// An unnamed field: named by its anonymous class, else by its
+    /// ordinal among the class's unnamed fields (digest-kinds §5.2).
+    fn unnamed_field(&mut self, e: DeclId) -> Result<(Name, Option<Cause>), Option<Cause>> {
+        let ast = self.ast;
+        if let Some(q) = ast.decls.get(e).ty()
+            && let TypeView::Record(r) = ast.types.view(ast.types.canonical(q).ty())
+        {
+            let r = ast.first(r);
+            if ast.decls.get(r).name().is_empty() {
+                let (name, cause) = self.entity_name(r)?;
+                return Ok((Name::UnnamedBy(Box::new(name)), cause));
+            }
+        }
+        let ordinal = self.ordinal_in_scope(e).ok_or(Some(BAD_NAME))?;
+        Ok((Name::UnnamedOrdinal(ordinal), None))
+    }
+
+    /// An unnamed variable: the object of an anonymous union at namespace
+    /// scope (`static union { int a; };`), named by its union as an
+    /// unnamed field is (digest-kinds §5.2).
+    fn unnamed_variable(&mut self, e: DeclId) -> Result<(Name, Option<Cause>), Option<Cause>> {
+        let ast = self.ast;
+        if let Some(q) = ast.decls.get(e).ty()
+            && let TypeView::Record(r) = ast.types.view(ast.types.canonical(q).ty())
+        {
+            let r = ast.first(r);
+            if ast.decls.get(r).name().is_empty() {
+                let (name, cause) = self.entity_name(r)?;
+                return Ok((Name::UnnamedBy(Box::new(name)), cause));
+            }
+        }
+        Err(Some(BAD_NAME))
+    }
+
+    /// The ordinal of `e` among the unnamed types (for a field, the
+    /// unnamed fields) of its scope that no other rule names, from 0, in
+    /// declaration order over every declaration of the scope.
+    fn ordinal_in_scope(&mut self, e: DeclId) -> Option<u64> {
+        let ast = self.ast;
+        let scope = ast.decls.get(e).ctx()?;
+        let scope = self.entity(scope);
+        if self.ordinal_scopes.insert(scope) {
+            let mut holders: Vec<DeclId> =
+                if ast.decls.redecl(scope).is_some() { self.redecls(scope) } else { vec![scope] };
+            holders.reverse();
+            let (mut types, mut nfields) = (0u64, 0u64);
+            let mut stack: Vec<DeclId> = Vec::new();
+            for h in holders {
+                stack.extend(ast.members(h));
+                stack.reverse();
+                while let Some(m) = stack.pop() {
+                    let mn = ast.decls.get(m);
+                    let role = info(mn.kind()).role;
+                    if role == Role::Transparent {
+                        let mut inner: Vec<DeclId> = ast.members(m).collect();
+                        inner.reverse();
+                        stack.extend(inner);
+                        continue;
+                    }
+                    if !mn.name().is_empty() {
+                        continue;
+                    }
+                    match role {
+                        Role::Entity(KeyKind::Class | KeyKind::Enumeration)
+                            if !self.is_local(m) && self.unnamed_tag_by(m).is_none() =>
+                        {
+                            self.ordinal_of.insert(m, types);
+                            types += 1;
+                        }
+                        Role::Entity(KeyKind::Field) if mn.kind() == DeclKind::Field => {
+                            let anon = mn.ty().is_some_and(|q| {
+                                if let TypeView::Record(r) =
+                                    ast.types.view(ast.types.canonical(q).ty())
+                                {
+                                    ast.decls.get(r).name().is_empty()
+                                } else {
+                                    false
+                                }
+                            });
+                            if !anon {
+                                self.ordinal_of.insert(m, nfields);
+                                nfields += 1;
+                            }
+                        }
+                        Role::Entity(_)
+                        | Role::Nothing
+                        | Role::Transparent
+                        | Role::Root
+                        | Role::Content(_)
+                        | Role::Local
+                        | Role::InParent
+                        | Role::Unsupported(_) => {}
+                    }
+                }
+            }
+        }
+        self.ordinal_of.get(&e).copied()
+    }
+
+    /// The discriminator of entity `e` of key kind `kind` (digest-kinds
+    /// §3.3), with the cause it carries; `None` when the kind has none.
+    fn disc(
+        &mut self,
+        e: DeclId,
+        kind: KeyKind,
+        c_linkage: bool,
+    ) -> Option<(Digest, Option<Cause>)> {
+        let ast = self.ast;
+        let mut s = Stream::new();
+        match kind {
+            KeyKind::Function => {
+                if c_linkage {
+                    return None;
+                }
+                self.function_disc(&mut s, e);
+            }
+            KeyKind::DeductionGuide => {
+                let template = match ast.names.view(ast.decls.get(e).name()) {
+                    DeclNameView::DeductionGuide(t) => Some(t),
+                    DeclNameView::Empty
+                    | DeclNameView::Identifier(_)
+                    | DeclNameView::Operator(_)
+                    | DeclNameView::Constructor(_)
+                    | DeclNameView::Destructor(_)
+                    | DeclNameView::Conversion(_)
+                    | DeclNameView::LiteralOperator(_) => None,
+                };
+                self.write_ref_opt(&mut s, template);
+                self.function_disc(&mut s, e);
+            }
+            KeyKind::FunctionTemplate => {
+                let info = ast.template_info(e).copied();
+                match info {
+                    Some(i) => {
+                        crate::templ::template_head(self, &mut s, i.params);
+                        match i.pattern {
+                            Some(p) => {
+                                self.function_disc(&mut s, p);
+                                let ret = ast.decls.get(p).ty().and_then(|q| {
+                                    ast.types
+                                        .proto(q)
+                                        .map(slip_kiln::kiln::ast::types::FuncProto::ret)
+                                });
+                                self.write_type_opt(&mut s, ret);
+                            }
+                            None => {
+                                s.indeterminate(Cause::Unaccounted("key/function-template"));
+                            }
+                        }
+                    }
+                    None => {
+                        s.indeterminate(Cause::Unaccounted("key/function-template"));
+                    }
+                }
+            }
+            KeyKind::ClassTemplate
+            | KeyKind::VariableTemplate
+            | KeyKind::AliasTemplate
+            | KeyKind::Concept => match ast.template_info(e).copied() {
+                Some(i) => crate::templ::template_head(self, &mut s, i.params),
+                None if ast.decls.get(e).kind() == DeclKind::BuiltinTemplate => return None,
+                None => {
+                    s.indeterminate(Cause::Unaccounted("key/template"));
+                }
+            },
+            KeyKind::UsingDeclaration => {
+                let q = ast.using_qualifier(e);
+                s.opt(q.is_some());
+                if let Some(q) = q {
+                    self.write_nns(&mut s, q);
+                }
+            }
+            KeyKind::UsingShadow => {
+                let target = ast.using_target(e);
+                self.write_ref_opt(&mut s, target);
+            }
+            KeyKind::Namespace
+            | KeyKind::Class
+            | KeyKind::Enumeration
+            | KeyKind::Enumerator
+            | KeyKind::Variable
+            | KeyKind::Field
+            | KeyKind::Alias
+            | KeyKind::Specialisation
+            | KeyKind::PartialSpecialisation
+            | KeyKind::UsingEnum
+            | KeyKind::NamespaceAlias
+            | KeyKind::Binding
+            | KeyKind::Decomposition
+            | KeyKind::UsingDirective
+            | KeyKind::StaticAssert
+            | KeyKind::ExplicitInstantiation
+            | KeyKind::Friend
+            | KeyKind::FileScopeAsm
+            | KeyKind::ConstevalBlock
+            | KeyKind::Resolved
+            | KeyKind::Order
+            | KeyKind::DefaultArgument
+            | KeyKind::TemplateParamObject
+            | KeyKind::UnresolvedIfExists => return None,
+        }
+        let h = s.finish(DISC_TAG);
+        let h = self.hashed(h);
+        Some((h.digest, h.cause))
+    }
+
+    /// The function discriminator of digest-kinds §3.3, written into `s`:
+    /// parameter types, variadic, the cv-qualifiers of `this` as a flag
+    /// word, the ref-qualifier, the explicit-object flag and the trailing
+    /// requires-clause.
+    pub(crate) fn function_disc(&mut self, s: &mut Stream, f: DeclId) {
+        let ast = self.ast;
+        let proto =
+            ast.decls.get(f).ty().and_then(|q| match ast.types.view(ast.types.canonical(q).ty()) {
+                TypeView::Function(p) => Some(p),
+                TypeView::Invalid
+                | TypeView::Builtin(_)
+                | TypeView::BitInt { .. }
+                | TypeView::DependentBitInt { .. }
+                | TypeView::Pointer(_)
+                | TypeView::LValueRef(_)
+                | TypeView::RValueRef(_)
+                | TypeView::MemberPointer { .. }
+                | TypeView::ConstantArray(_)
+                | TypeView::IncompleteArray(_)
+                | TypeView::VariableArray { .. }
+                | TypeView::DependentSizedArray { .. }
+                | TypeView::Record(_)
+                | TypeView::Enum(_)
+                | TypeView::UnresolvedUsing(_)
+                | TypeView::Paren(_)
+                | TypeView::Complex(_)
+                | TypeView::Atomic(_)
+                | TypeView::Vector { .. }
+                | TypeView::DependentVector { .. }
+                | TypeView::ExtQual { .. }
+                | TypeView::DependentAddrSpace { .. }
+                | TypeView::Typedef { .. }
+                | TypeView::Using { .. }
+                | TypeView::Elaborated { .. }
+                | TypeView::QualifiedArray { .. }
+                | TypeView::TemplateTypeParm(_)
+                | TypeView::CanonTemplateTypeParm { .. }
+                | TypeView::SubstTemplateTypeParm { .. }
+                | TypeView::SubstTemplateTypeParmPack { .. }
+                | TypeView::TemplateSpecialization { .. }
+                | TypeView::InjectedClassName { .. }
+                | TypeView::DependentName { .. }
+                | TypeView::DependentTemplateSpecialization { .. }
+                | TypeView::PackExpansion { .. }
+                | TypeView::PackIndexing { .. }
+                | TypeView::Decltype { .. }
+                | TypeView::DependentDecltype(_)
+                | TypeView::TypeOf { .. }
+                | TypeView::UnaryTransform { .. }
+                | TypeView::Auto { .. }
+                | TypeView::DeducedTemplateSpecialization { .. }
+                | TypeView::Attributed { .. }
+                | TypeView::Splice { .. } => None,
+            });
+        let Some(p) = proto else {
+            s.indeterminate(Cause::Unaccounted("key/function-type"));
+            return;
+        };
+        let params = ast.types.params(&p).to_vec();
+        self.write_types(s, &params);
+        let fi = p.info();
+        s.bool(fi.variadic());
+        let q = fi.this_quals();
+        s.flags(FlagWord::new().bit(q.is_const()).bit(q.is_volatile()).bit(q.is_restrict()));
+        s.tag(ref_qual::row(&fi.ref_qual()));
+        let explicit = ast.decls.function(f).is_some_and(|d| d.spec.has_explicit_object());
+        s.bool(explicit);
+        let requires = ast.templates.trailing_requires.get(f).copied();
+        s.opt(requires.is_some());
+        if let Some(r) = requires {
+            crate::expr::profile_expr(self, s, r);
+        }
+    }
+}
+
+/// `merge` of two optional causes, as `Stream::indeterminate` keeps them.
+fn merge(a: Option<Cause>, b: Option<Cause>) -> Option<Cause> {
+    match (a, b) {
+        (None, x) | (x, None) => x,
+        (Some(x), Some(y)) => Some(crate::units::merge(Some(x), y)),
+    }
+}

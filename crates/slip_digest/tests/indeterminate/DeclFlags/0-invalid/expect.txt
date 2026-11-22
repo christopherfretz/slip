@@ -1,0 +1,3 @@
+# the second `x` is invalid (digest §10): its unit, and the class that holds it
+indeterminate S
+indeterminate S::x

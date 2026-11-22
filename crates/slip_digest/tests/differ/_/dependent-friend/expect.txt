@@ -1,0 +1,2 @@
+removed f(A<type-parameter-0-0> *, int)
+added f(A<type-parameter-0-0> *, long)
