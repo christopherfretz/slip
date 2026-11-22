@@ -1,0 +1,2 @@
+removed X<type-parameter-0-0 *>
+added Y<type-parameter-0-0 *>

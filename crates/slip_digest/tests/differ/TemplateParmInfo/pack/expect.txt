@@ -1,0 +1,4 @@
+# a pack is also in the key's head (the parameter's `DeclNode` rows):
+# the row changes only together with the key (landed WP-029)
+removed X
+added X
