@@ -1,9 +1,7 @@
 #include "side.h"
-// §7.4 ColdExprData `offsetof_pattern-components`.
-// written by `expr_misc::offsetof_components`
-template<class T> struct A {
+// §7.4 ColdExprData: written by `expr_misc::offsetof_components`
 #ifdef B
-static inline unsigned long w = __builtin_offsetof(T, n); };
+template <class T> struct A { unsigned long w = __builtin_offsetof(T, m); };
 #else
-static inline unsigned long w = __builtin_offsetof(T, m); };
+template <class T> struct A { unsigned long w = __builtin_offsetof(T, n); };
 #endif
