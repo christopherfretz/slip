@@ -95,10 +95,11 @@ byte read after the scheduler stopped wanting it is written straight back.
 - **Own process group.** Every child is the leader of a new process group, so
   the whole tree under it can be signalled together.
 - **Address-space cap.** A child given a cap is started through
-  `sh -c 'ulimit -v <KiB>; exec "$@"' sh <program> <args…>`, which applies
-  `RLIMIT_AS` and disables core dumps (`ulimit -c 0`) before `exec`. If `sh`
-  is not available the child is started directly and a warning is printed
-  once.
+  `sh -c 'ulimit -v <KiB> || exit 125; ulimit -c 0; exec "$@"' slip-mem-limit <program> <args…>`,
+  which applies `RLIMIT_AS` and disables core dumps before `exec`. If the
+  cap cannot be applied the wrapper exits with status 125 rather than run
+  the program uncapped. If `sh` is not available the child is started
+  directly and a warning is printed once.
 - **Sampling.** While a child runs, its resident size is read from
   `/proc/<pid>/status` (`VmRSS`, `VmHWM`) at an interval (default 50 ms). The
   process sampled is the child itself (after the wrapper's `exec` that is the
@@ -289,6 +290,8 @@ names.
   `refill`.
 - `crates/slip_exec/tests/process.rs` — §4: process groups, caps, kill
   reasons, the table.
+- `crates/slip_exec/tests/signals.rs` — §7 at the level of `signals`:
+  children killed, tokens returned, the second signal, the bound.
 - `crates/slip_exec/tests/store.rs` — §2.
 - `crates/slip_exec/tests/pool.rs` — §5–§7 with a fake worker program whose
   behaviour is chosen per job (succeed, allocate, crash, hang, violate the
@@ -302,6 +305,10 @@ names.
   later a transform compilation per observer.
 - Cache keys for shards (command, input digests, transform, tool version)
   replace the plan-id directory in M5.
+- Dropping a `Child` that was not reaped waits for it without a bound after
+  `SIGKILL`; a child stuck in the kernel would hang its owner.
+- Killing a process group starts a `kill` process, since std has no safe
+  `kill(2)`. One process start per kill is acceptable at Slip's rates.
 - A stale lock whose process id has been reused by an unrelated process
   reads as busy until the file is removed by hand.
 - Whether the coordinator should lower its budget when other processes in

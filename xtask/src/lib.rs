@@ -19,9 +19,16 @@ pub mod wp;
 
 use std::path::PathBuf;
 
-/// The root of the Slip checkout this binary was built from (the parent of
-/// `xtask/`).
+/// The root of the Slip checkout (the parent of `xtask/`).
+///
+/// `cargo xtask` runs this binary through `cargo run`, which sets
+/// `CARGO_MANIFEST_DIR` to the package being run: that is the checkout the
+/// user is in. The directory compiled in is only the fallback (the binary
+/// started directly), because a target directory shared by two checkouts
+/// can hold a binary built from the other one.
 pub fn repo_root() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
     manifest.parent().map_or(manifest.clone(), PathBuf::from)
 }

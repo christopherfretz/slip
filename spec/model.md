@@ -402,6 +402,12 @@ To be listed as work packages land:
   M0 records none and Slip clears them when running the front end.
 - Whether a shard should name the plan it was produced under. Today the store
   layout carries that (`spec/exec.md`).
+- Rules that look like invariants and are not checked: `ok` with
+  `errors > 0`, `diagnosed` with `errors = 0`, `attempt = 0`, a shard digest
+  on a job that did not complete, a relative `path` or `directory`, an
+  observer's main file missing from its shard's `inputs`. They are writer
+  bugs rather than format errors; the M0 corpus run is where they would
+  show. Decide when M0 closes which become rules.
 - Property and fuzz tests for the decoders and the JSON reader (round trip,
   no panic on any input). Waiting for a fuzz step in the harness.
 - `Decoder::count` bounds a list's count by the bytes remaining, which is
