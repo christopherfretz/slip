@@ -173,9 +173,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
         StmtKind::DefaultStmt => required_stmt(s, a, Cause::Unaccounted("StmtNode/DefaultStmt.a")),
         StmtKind::WhileStmt | StmtKind::DoStmt | StmtKind::ForStmt => loop_data(w, s, st),
         StmtKind::ReturnStmt => {
-            // ReturnStmt.a: child?; ReturnStmt.b: ref (none when absent).
-            expr::child_opt(w, s, ExprId::try_new(a));
-            w.write_ref_opt(s, DeclId::try_new(b));
+            return_stmt(w, s, a, b);
             None
         }
         StmtKind::LabelStmt => {
@@ -235,13 +233,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
             None
         }
         StmtKind::CoreturnStmt => {
-            // aux-implicit: bit 0, the only `bit` row; a: child?; b: child?.
-            if aux & !1 != 0 {
-                s.indeterminate(Cause::Unaccounted("StmtNode/CoreturnStmt.aux"));
-            }
-            s.flags(FlagWord::new().bit(aux & 1 != 0));
-            expr::child_opt(w, s, ExprId::try_new(a));
-            expr::child_opt(w, s, ExprId::try_new(b));
+            coreturn(w, s, aux, a, b);
             None
         }
         StmtKind::GCCAsmStmt => {
@@ -261,6 +253,23 @@ fn compound(w: &mut Walk<'_>, s: &mut Stream, st: StmtId, a: u32) {
     crate::fp::fp_override(s, w.ast.stmts.compound_fp(st));
     let sts: Vec<StmtId> = list(w, s, a, Cause::Unaccounted("StmtNode/CompoundStmt.a"));
     children(w, s, &sts);
+}
+
+/// `ReturnStmt.a` (child?) and `ReturnStmt.b` (ref, none when absent).
+fn return_stmt(w: &mut Walk<'_>, s: &mut Stream, a: u32, b: u32) {
+    expr::child_opt(w, s, ExprId::try_new(a));
+    w.write_ref_opt(s, DeclId::try_new(b));
+}
+
+/// `CoreturnStmt`: `aux-implicit` (bit 0, the only `bit` row), `a`
+/// (child?), `b` (child?, the promise call).
+fn coreturn(w: &mut Walk<'_>, s: &mut Stream, aux: u16, a: u32, b: u32) {
+    if aux & !1 != 0 {
+        s.indeterminate(Cause::Unaccounted("StmtNode/CoreturnStmt.aux"));
+    }
+    s.flags(FlagWord::new().bit(aux & 1 != 0));
+    expr::child_opt(w, s, ExprId::try_new(a));
+    expr::child_opt(w, s, ExprId::try_new(b));
 }
 
 /// `IfStmt.aux` (enum IfKind) and `IfStmt.a` (record IfData); `els` is
@@ -320,8 +329,10 @@ fn expansion(w: &mut Walk<'_>, s: &mut Stream, st: StmtId, aux: u16, b: u32) {
     if aux & !(ExpansionForm::MASK | ExpansionForm::EXPANDED) != 0 {
         s.indeterminate(Cause::Unaccounted("StmtNode/CXXExpansionStmt.aux"));
     }
-    s.tag(expansion_form::row(&w.ast.stmts.expansion_form(st)));
-    s.flags(FlagWord::new().bit(w.ast.stmts.expansion_expanded(st)));
+    // Read from `aux` as `StmtArena::expansion_form` and
+    // `expansion_expanded` read it.
+    s.tag(expansion_form::row(&ExpansionForm::from_aux(aux)));
+    s.flags(FlagWord::new().bit(aux & ExpansionForm::EXPANDED != 0));
     s.uv(u64::from(b));
     let &ExpansionData { init, decl, exprs, range_init, body, prelude, expansions, colon: _ } =
         w.ast.stmts.expansion_data(st);
@@ -444,3 +455,242 @@ fn contract(w: &mut Walk<'_>, s: &mut Stream, aux: u16, a: u32, b: u32) {
     required_expr(w, s, a, Cause::Unaccounted("StmtNode/ContractAssertStmt.a"));
 }
 
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use slip_kiln::kiln::ast::stmt::{ContractKind, ExpansionForm, StmtKind, asm_bits};
+    use slip_kiln::kiln::ast::{Ast, StmtId};
+    use slip_model::keys::RuleTable;
+
+    use super::{ASM_BITS, child, node};
+    use crate::Input;
+    use crate::stream::Stream;
+    use crate::tables::stmt_kind;
+    use crate::walk::{NODE_LIMIT, STACK_LOW, STACK_SIZE, Walk};
+
+    fn parse<R>(src: &str, std: &str, f: impl FnOnce(&slip_kiln::snippet::Parsed<'_>) -> R) -> R {
+        let files = [("main.cpp", src)];
+        let snippet =
+            slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
+        slip_kiln::snippet::parse(&snippet, |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            f(p)
+        })
+        .expect("parses")
+    }
+
+    /// The statements of `ast` of kind `k`, in the order Kiln built them.
+    fn of_kind(ast: &Ast, k: StmtKind) -> Vec<StmtId> {
+        (1..=ast.stmts.len() as u32)
+            .filter_map(StmtId::try_new)
+            .filter(|&s| ast.stmts.get(s).kind() == k)
+            .collect()
+    }
+
+    /// The bytes `g` writes on a fresh walk of `p`.
+    fn bytes(p: &slip_kiln::snippet::Parsed<'_>, g: impl FnOnce(&mut Walk<'_>, &mut Stream)) -> Vec<u8> {
+        let path = |_| Vec::new();
+        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+        let rules = RuleTable::empty();
+        let mut w = Walk::new(&input, &rules);
+        let mut s = Stream::new();
+        g(&mut w, &mut s);
+        s.as_bytes().to_vec()
+    }
+
+    /// The one statement of kind `k` in `src`, and a check that
+    /// `node` writes its tag then what `rows` writes for the statement's
+    /// own `(aux, a, b)`; then that `rows` writes other bytes for each of
+    /// `changed` (a row skipped or written as a constant fails here).
+    fn holds(
+        src: &str,
+        std: &str,
+        k: StmtKind,
+        rows: fn(&mut Walk<'_>, &mut Stream, StmtId, u16, u32, u32),
+        changed: &[(&str, fn(u16, u32) -> (u16, u32))],
+    ) {
+        parse(src, std, |p| {
+            let st = *of_kind(p.ast, k).first().expect("the statement");
+            let n = *p.ast.stmts.get(st);
+            let (aux, a, b) = (n.aux(), n.a(), n.b());
+            let got = bytes(p, |w, s| {
+                node(w, s, st);
+            });
+            let want = bytes(p, |w, s| {
+                s.tag(stmt_kind::row(&k));
+                rows(w, s, st, aux, a, b);
+            });
+            assert_eq!(got, want, "{k:?}: node writes the rows");
+            for (what, change) in changed {
+                let (aux2, b2) = change(aux, b);
+                let other = bytes(p, |w, s| {
+                    s.tag(stmt_kind::row(&k));
+                    rows(w, s, st, aux2, a, b2);
+                });
+                assert_ne!(got, other, "{k:?}: {what} is written");
+            }
+        });
+    }
+
+    // GCCAsmStmt.aux-*: the constants are Kiln's `asm_bits`, in row order.
+    #[test]
+    fn asm_bits_are_kilns() {
+        assert_eq!(ASM_BITS, [asm_bits::VOLATILE, asm_bits::GOTO, asm_bits::INLINE, asm_bits::BASIC]);
+    }
+
+    // GCCAsmStmt.aux-volatile, -goto, -inline, -basic: each bit is
+    // written (the pair test of `aux-goto` changes the labels too).
+    #[test]
+    fn every_asm_bit_is_written() {
+        holds(
+            "void f() { asm goto(\"\" : : : : l); l: ; }\n",
+            "c++20",
+            StmtKind::GCCAsmStmt,
+            |w, s, st, aux, _, _| super::asm(w, s, st, aux),
+            &[
+                ("aux-volatile", |aux, b| (aux ^ asm_bits::VOLATILE, b)),
+                ("aux-goto", |aux, b| (aux ^ asm_bits::GOTO, b)),
+                ("aux-inline", |aux, b| (aux ^ asm_bits::INLINE, b)),
+                ("aux-basic", |aux, b| (aux ^ asm_bits::BASIC, b)),
+            ],
+        );
+    }
+
+    // ReturnStmt.b: the copy-elision candidate is written, alone (no
+    // pair of sources changes it without the operand).
+    #[test]
+    fn the_return_candidate_is_written() {
+        holds(
+            "struct S { S(); S(const S &); };\nS f() { S s; return s; }\n",
+            "c++20",
+            StmtKind::ReturnStmt,
+            |w, s, _, _, a, b| super::return_stmt(w, s, a, b),
+            &[("ReturnStmt.b", |aux, _| (aux, 0))],
+        );
+        parse("struct S { S(); S(const S &); };\nS f() { S s; return s; }\n", "c++20", |p| {
+            let st = of_kind(p.ast, StmtKind::ReturnStmt)[0];
+            assert!(p.ast.stmts.return_nrvo(st).is_some(), "Kiln records the candidate");
+        });
+    }
+
+    // CXXExpansionStmt.aux-expanded and .b: no pair of sources changes
+    // either alone (the landed file); each is written.
+    #[test]
+    fn the_expansion_bit_and_depth_are_written() {
+        holds(
+            "template <class T> void f() { template for (int e : {1, 2}) ; }\n",
+            "c++26",
+            StmtKind::CXXExpansionStmt,
+            |w, s, st, aux, _, b| super::expansion(w, s, st, aux, b),
+            &[
+                ("aux-expanded", |aux, b| (aux ^ ExpansionForm::EXPANDED, b)),
+                ("aux-form", |aux, b| (aux ^ 1, b)),
+                ("b", |aux, b| (aux, b + 1)),
+            ],
+        );
+    }
+
+    // ContractAssertStmt.aux-semantic: Kiln never fills the slot (the
+    // landed file), so no source reaches it; it is written.
+    #[test]
+    fn the_contract_semantic_slot_is_written() {
+        holds(
+            "void f(int x) { contract_assert(x > 0); }\n",
+            "c++26",
+            StmtKind::ContractAssertStmt,
+            |w, s, _, aux, a, b| super::contract(w, s, aux, a, b),
+            &[
+                ("aux-semantic 1", |aux, b| (aux | 1 << ContractKind::SEMANTIC_SHIFT, b)),
+                ("aux-semantic 2", |aux, b| (aux | 2 << ContractKind::SEMANTIC_SHIFT, b)),
+                ("aux-kind", |aux, b| ((aux & !ContractKind::MASK) | 1, b)),
+            ],
+        );
+    }
+
+    // CoreturnStmt.aux-implicit: written (the pair test changes the body
+    // too).
+    #[test]
+    fn the_implicit_coreturn_bit_is_written() {
+        let src = "namespace std {\n\
+            template <class R, class... A> struct coroutine_traits { using promise_type = typename R::promise_type; };\n\
+            template <class P = void> struct coroutine_handle { static coroutine_handle from_address(void *) noexcept; void *address() const noexcept; };\n\
+            struct suspend_never { bool await_ready() const noexcept { return true; } template <class P> void await_suspend(coroutine_handle<P>) const noexcept {} void await_resume() const noexcept {} };\n\
+            }\n\
+            struct task { struct promise_type { task get_return_object(); std::suspend_never initial_suspend() noexcept; std::suspend_never final_suspend() noexcept; void return_void(); void unhandled_exception(); }; };\n\
+            task f() { co_return; }\n";
+        holds(
+            src,
+            "c++20",
+            StmtKind::CoreturnStmt,
+            |w, s, _, aux, a, b| super::coreturn(w, s, aux, a, b),
+            &[("aux-implicit", |aux, b| (aux ^ 1, b))],
+        );
+    }
+
+    thread_local! {
+        static BASE: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn here() -> usize {
+        let x = 0u8;
+        std::hint::black_box(std::ptr::addr_of!(x) as usize)
+    }
+
+    /// The stack bytes the walk of the last statement of `src` (the body
+    /// of its last function) takes.
+    fn stack_of(src: &str) -> usize {
+        parse(src, "c++20", |p| {
+            let path = |_| Vec::new();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let rules = RuleTable::empty();
+            let mut w = Walk::new(&input, &rules);
+            let body = StmtId::try_new(p.ast.stmts.len() as u32).expect("a statement");
+            let mut s = Stream::new();
+            STACK_LOW.with(|l| l.set(usize::MAX));
+            let base = here();
+            child(&mut w, &mut s, body);
+            assert_eq!(w.node_depth, 0, "every level left");
+            base.saturating_sub(STACK_LOW.with(Cell::get))
+        })
+    }
+
+    /// `lib.rs` "What bounds the stack" for statements: measures the bytes
+    /// one level of [`NODE_LIMIT`] takes through each statement that
+    /// recurses (`child` → `node` → the kind's rows → `child`), and checks
+    /// that [`STACK_SIZE`] holds four times `NODE_LIMIT` levels of the
+    /// largest. Run in the test profile, whose frames are larger than the
+    /// release profile's.
+    #[test]
+    fn frames_fit_the_stack() {
+        const DEEP: usize = 120;
+        const FLAT: usize = 20;
+        // Each shape: an opening, a closing, and the levels of NODE_LIMIT
+        // one nesting takes.
+        let shapes: [(&str, &str, &str, usize); 6] = [
+            ("block", "{ ", "} ", 1),
+            ("if", "if (x) { ", "} ", 2),
+            ("else", "if (x) ; else { ", "} ", 1),
+            ("switch", "switch (x) { ", "} ", 2),
+            ("try", "try { ", "} catch (...) {} ", 2),
+            ("range-for", "for (int e : a) { ", "} ", 1),
+        ];
+        let mut worst = 0;
+        for (name, open, close, levels) in shapes {
+            let src = |n: usize| {
+                format!("void f(int x, int (&a)[2]) {{ {}{} }}\n", open.repeat(n), close.repeat(n))
+            };
+            let per_level = (stack_of(&src(DEEP)) - stack_of(&src(FLAT))) / ((DEEP - FLAT) * levels);
+            eprintln!("{name}: {per_level} bytes per level");
+            assert!(per_level > 0, "the probes saw the stack");
+            worst = worst.max(per_level);
+        }
+        let need = NODE_LIMIT as usize * worst;
+        eprintln!(
+            "statements: {worst} bytes per level at most; NODE_LIMIT {NODE_LIMIT} levels: {need} bytes; \
+             STACK_SIZE {STACK_SIZE}"
+        );
+        assert!(4 * need <= STACK_SIZE, "STACK_SIZE holds four times {need} bytes");
+    }
+}
