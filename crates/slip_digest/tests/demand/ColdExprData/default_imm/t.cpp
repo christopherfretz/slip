@@ -1,12 +1,10 @@
 #include "side.h"
-// §7.4 ColdExprData `default_imm`.
-// §11.4: the default argument's immediate invocations (expr_init.rs)
+// §7.4 ColdExprData `default_imm`: a use of the default argument records
+// its immediate invocations (§11.4); the use is on side B only, under a
+// new name, and changes nothing else.
 consteval int g() { return 1; }
 int fd(int x = g());
 int u = fd();
 #ifdef B
-int v = fd();
 int w = fd();
-#else
-int v = 0;
 #endif

@@ -23,6 +23,8 @@ use slip_kiln::kiln::ast::expr::{
     BinaryOp, CastKind, CharKind, ExprDeps, ExprKind, NonOdrUse, StorageDuration, StringKind,
     UnaryOp,
 };
+use slip_kiln::kiln::ast::fp::FpRound;
+use slip_kiln::kiln::ast::names::OverloadedOperator;
 use slip_kiln::kiln::ast::types::{PrintOptions, print_type};
 use slip_kiln::kiln::ast::{ExprId, QualType};
 use slip_model::keys::RuleTable;
@@ -475,13 +477,14 @@ fn every_other_row_is_written() {
         &|r| r == ["child", "ref"],
     ));
     // `CompoundAssignExtra`: `rhs`, `lhs_ty`, `result_ty` after `aux` and
-    // `a` (`sh += 1L`: both computation types are `long`).
+    // `a` (`b += p` for a `bool b`: the left computation type is `int`,
+    // the result one `int *`, so the two rows cannot be swapped unseen).
     let add = format!("tag {}", binary_op::ADD_ASSIGN.tag);
     f.extend(some_node(
         "CompoundAssignExtra/lhs_ty",
         &[ExprKind::CompoundAssignOperator],
         false,
-        &|r| r == [add.as_str(), "child", "child", "type long", "type long"],
+        &|r| r.len() == 5 && r[..4] == [add.as_str(), "child", "child", "type int"] && r[4] != r[3],
     ));
     // `CXXOperatorCallExpr`: `aux` the operator, `a` the callee, `b` two
     // arguments.
@@ -556,4 +559,126 @@ fn opaque_values_are_numbered() {
         assert!(stack.is_empty());
     })
     .expect("parses");
+}
+
+/// Parses `src` alone and runs `f` on a walk of it.
+fn with_source(src: &str, std: &str, f: impl FnOnce(&mut Walk<'_>)) {
+    let files = [("main.cpp", src)];
+    let snippet = slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
+    slip_kiln::snippet::parse(&snippet, |p| {
+        let path = |_| Vec::new();
+        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+        let rules = RuleTable::empty();
+        let mut w = Walk::new(&input, &rules);
+        f(&mut w);
+    })
+    .expect("parses");
+}
+
+/// The first `tag` each node of `kind` writes (kind rows when `!cold`,
+/// cold rows when `cold`), over a walk of `src`.
+fn tags_of(src: &str, std: &str, kind: Option<ExprKind>, cold: bool) -> Vec<String> {
+    let mut tags = Vec::new();
+    with_source(src, std, |w| {
+        for e in exprs(w) {
+            if kind.is_none_or(|k| w.ast.exprs.get(e).kind() == k) {
+                let rows = if cold { cold_rows(w, e) } else { kind_rows(w, e) };
+                tags.extend(rows.into_iter().filter(|r| r.starts_with("tag ")));
+            }
+        }
+    });
+    tags
+}
+
+// §7.2 `CXXOperatorCallExpr.aux` (`OverloadedOperator`, §10.2), every row an
+// operator call can carry: each operator of a class called in operator
+// form. `New`, `Delete`, `ArrayNew` and `ArrayDelete` are never an operator
+// call (a new or delete expression names its function); `Coawait` is the
+// call of a non-member `operator co_await` (kiln_sema coroutine.rs:534).
+#[test]
+fn every_overloaded_operator_of_a_call_is_written() {
+    let src = r"
+struct S {
+  int m;
+  S operator+(S) const; S operator-(S) const; S operator*(S) const;
+  S operator/(S) const; S operator%(S) const; S operator^(S) const;
+  S operator&(S) const; S operator|(S) const; S operator~() const;
+  S operator!() const; S &operator=(const S &); S operator<(S) const;
+  S operator>(S) const; S &operator+=(S); S &operator-=(S); S &operator*=(S);
+  S &operator/=(S); S &operator%=(S); S &operator^=(S); S &operator&=(S);
+  S &operator|=(S); S operator<<(S) const; S operator>>(S) const;
+  S &operator<<=(S); S &operator>>=(S); S operator==(S) const;
+  S operator!=(S) const; S operator<=(S) const; S operator>=(S) const;
+  int operator<=>(S) const; S operator&&(S) const; S operator||(S) const;
+  S &operator++(); S &operator--(); S operator,(S) const;
+  S operator->*(int) const; S *operator->(); S operator()() const;
+  S operator[](int) const;
+};
+S s, t;
+void f() {
+  s + t; s - t; s * t; s / t; s % t; s ^ t; s & t; s | t; ~s; !s; s = t;
+  s < t; s > t; s += t; s -= t; s *= t; s /= t; s %= t; s ^= t; s &= t;
+  s |= t; s << t; s >> t; s <<= t; s >>= t; s == t; s != t; s <= t;
+  s >= t; s <=> t; s && t; s || t; ++s; --s; s, t; s->*0; s->m; s(); s[0];
+}
+namespace std {
+template <class R, class...> struct coroutine_traits { using promise_type = typename R::promise_type; };
+template <class P = void> struct coroutine_handle {
+  static coroutine_handle from_address(void *);
+  operator coroutine_handle<>() const;
+};
+template <> struct coroutine_handle<void> { static coroutine_handle from_address(void *); };
+struct suspend_never {
+  bool await_ready() const noexcept; void await_suspend(coroutine_handle<>) const noexcept;
+  void await_resume() const noexcept;
+};
+}
+struct Aw {};
+std::suspend_never operator co_await(Aw);
+struct Task {
+  struct promise_type {
+    Task get_return_object(); std::suspend_never initial_suspend() noexcept;
+    std::suspend_never final_suspend() noexcept; void return_void(); void unhandled_exception();
+  };
+};
+Task g() { co_await Aw{}; }
+";
+    let tags = tags_of(src, "c++20", Some(ExprKind::CXXOperatorCallExpr), false);
+    let mut missing = Vec::new();
+    for op in (1..=u8::MAX).filter_map(OverloadedOperator::from_u8) {
+        use OverloadedOperator as O;
+        if matches!(op, O::New | O::Delete | O::ArrayNew | O::ArrayDelete) {
+            continue;
+        }
+        let want = format!("tag {}", overloaded_operator::row(&op).tag);
+        if !tags.contains(&want) {
+            missing.push(format!("{op:?}"));
+        }
+    }
+    assert!(missing.is_empty(), "not written: {missing:?}; seen {tags:?}");
+}
+
+// §6 `FpRound` of `ColdExprData` `fp_round` (§7.4): one function per
+// `#pragma STDC FENV_ROUND` mode. `Dynamic` and `Nearest` never enter the
+// map: Kiln records only a directed mode (kiln_sema stmt.rs:400,
+// `FpRound::is_directed`, kiln_ast fp.rs:50).
+#[test]
+fn every_fp_round_is_written() {
+    let modes = [
+        ("FE_UPWARD", FpRound::Upward),
+        ("FE_DOWNWARD", FpRound::Downward),
+        ("FE_TOWARDZERO", FpRound::TowardZero),
+        ("FE_TONEARESTFROMZERO", FpRound::NearestAway),
+    ];
+    let mut src = String::from("double d;\n");
+    for (i, (m, _)) in modes.iter().enumerate() {
+        src.push_str(&format!("double f{i}() {{\n#pragma STDC FENV_ROUND {m}\n  return d + d;\n}}\n"));
+    }
+    let tags = tags_of(&src, "c++20", Some(ExprKind::BinaryOperator), true);
+    let missing: Vec<_> = modes
+        .iter()
+        .filter(|(_, r)| !tags.contains(&format!("tag {}", fp_round::row(r).tag)))
+        .map(|(m, _)| *m)
+        .collect();
+    assert!(missing.is_empty(), "not written: {missing:?}; seen {tags:?}");
 }
