@@ -1,0 +1,175 @@
+{
+  "report": "slip.verify.v1",
+  "plan": "0101010101010101010101010101010101010101010101010101010101010101",
+  "round": 1,
+  "declared": "0202020202020202020202020202020202020202020202020202020202020202",
+  "rules": "0303030303030303030303030303030303030303030303030303030303030303",
+  "image": [
+    {
+      "subject": "/src/app",
+      "post": "/tmp/post/app"
+    },
+    {
+      "subject": {
+        "hex": "2f7372632fff6c6962"
+      },
+      "post": "/tmp/post/lib"
+    }
+  ],
+  "limit": 64,
+  "locate": 16,
+  "verdict": "not_verified",
+  "observers": {
+    "plan": 6,
+    "selected": 5,
+    "verified": 1,
+    "unchanged": 0,
+    "mismatch": 2,
+    "not_parsed": 1,
+    "unverifiable": 1,
+    "never_parsed": 0,
+    "failed": 0,
+    "indeterminate_only": 0
+  },
+  "findings": {
+    "total": 6,
+    "listed": 5,
+    "groups": [
+      {
+        "kind": "changed",
+        "key": "1001000000000000000000000000000000000000000000000000000000000000",
+        "name": "app::run()",
+        "observers": 2,
+        "first": "/src/app/main.cpp",
+        "file": "/src/app/main.cpp",
+        "pre": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "post": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+        "where": {
+          "pre": {
+            "file": "/src/app/main.cpp",
+            "line": 12,
+            "column": 5,
+            "node": "CallExpr",
+            "what": "refers to lib::f(long)"
+          },
+          "post": {
+            "file": "/src/app/main.cpp",
+            "line": 12,
+            "column": 5,
+            "node": "CallExpr",
+            "what": "refers to app::f(int)"
+          }
+        }
+      },
+      {
+        "kind": "added",
+        "key": "1002000000000000000000000000000000000000000000000000000000000000",
+        "name": "app::fresh",
+        "observers": 1,
+        "first": "/src/app/main.cpp",
+        "file": "/src/app/new.h",
+        "pre": null,
+        "post": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "where": {
+          "pre": {
+            "file": "",
+            "line": 0,
+            "column": 0,
+            "node": "",
+            "what": ""
+          },
+          "post": {
+            "file": "/src/app/main.cpp",
+            "line": 12,
+            "column": 5,
+            "node": "CallExpr",
+            "what": ""
+          }
+        }
+      },
+      {
+        "kind": "derived_changed",
+        "key": "1003000000000000000000000000000000000000000000000000000000000000",
+        "name": "app::S<int>",
+        "observers": 1,
+        "first": "/src/app/main.cpp",
+        "file": "/src/app/s.h",
+        "pre": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+        "post": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+        "where": null
+      },
+      {
+        "kind": "indeterminate",
+        "key": "1004000000000000000000000000000000000000000000000000000000000000",
+        "name": "app::g()",
+        "observers": 1,
+        "first": "/src/app/other.cpp",
+        "file": "/src/app/b.h",
+        "pre": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4",
+        "post": "b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4",
+        "where": null
+      }
+    ]
+  },
+  "not_verified": [
+    {
+      "observer": "0101010101010101010101010101010101010101010101010101010101010101",
+      "main": "/src/app/main.cpp",
+      "state": "mismatch",
+      "message": "",
+      "findings": 4,
+      "indeterminate": 1,
+      "listed": 3
+    },
+    {
+      "observer": "0202020202020202020202020202020202020202020202020202020202020202",
+      "main": "/src/app/other.cpp",
+      "state": "mismatch",
+      "message": "",
+      "findings": 2,
+      "indeterminate": 1,
+      "listed": 2
+    },
+    {
+      "observer": "0404040404040404040404040404040404040404040404040404040404040404",
+      "main": "/src/app/bad.cpp",
+      "state": "not_parsed",
+      "message": "bad.cpp:3:1: error: expected ';'",
+      "findings": 0,
+      "indeterminate": 0,
+      "listed": 0
+    },
+    {
+      "observer": "0505050505050505050505050505050505050505050505050505050505050505",
+      "main": "/src/app/odd.cpp",
+      "state": "unverifiable",
+      "message": "pre-image: no map shard",
+      "findings": 0,
+      "indeterminate": 0,
+      "listed": 0
+    }
+  ],
+  "exemptions": [
+    {
+      "list": "changed",
+      "key": "1021000000000000000000000000000000000000000000000000000000000000",
+      "observers": 2
+    },
+    {
+      "list": "created",
+      "key": "1022000000000000000000000000000000000000000000000000000000000000",
+      "observers": 1
+    },
+    {
+      "list": "removed",
+      "key": "1021000000000000000000000000000000000000000000000000000000000000",
+      "observers": 2
+    },
+    {
+      "list": "removed",
+      "key": "1023000000000000000000000000000000000000000000000000000000000000",
+      "observers": 0
+    }
+  ],
+  "run": "/store/runs/0001.run"
+}

@@ -7,14 +7,22 @@
 //! assigned. The encoding in a shard is `spec/edits.md`'s, not this
 //! module's.
 
-use slip_model::keys::Rule;
+use std::fmt;
+use std::sync::Arc;
+
+use slip_model::keys::{Name, Parent, Rule};
 use slip_model::{Counter, Digest, FileRef};
 
 /// A run of bytes of a file, named by the file's identity (§7.6
 /// `(file, lo, hi)`). Ordered by file, then `lo`, then `hi`.
+///
+/// The identity is shared: the host makes one `FileRef` per file of the
+/// run and every place in that file holds it, so a run holds each path
+/// once however many places name it (§7.7). Equality and order are the
+/// identity's, not the pointer's.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Place {
-    pub file: FileRef,
+    pub file: Arc<FileRef>,
     pub lo: u32,
     pub hi: u32,
 }
@@ -73,9 +81,10 @@ pub struct Report {
     pub place: Option<Place>,
     pub severity: Severity,
     pub message: Vec<u8>,
-    /// §7.4 rule 3: `true` when the report is attached to the nearest
-    /// place the host can name instead of the place of the value it was
-    /// given (`spec/landed/api/WP-081.md`).
+    /// §7.4 rule 3: `true` when the place is not the value's own: the
+    /// report is attached to the nearest place the host can name, or, with
+    /// no place, the host could name none (`spec/landed/api/WP-081.md`,
+    /// `WP-088.md`). `false` with no place: nothing to attach to.
     pub attached: bool,
 }
 
@@ -214,6 +223,156 @@ impl RunOutput {
     /// Whether the output is already in canonical form.
     pub fn is_canonical(&self) -> bool {
         self.clone().canonical() == *self
+    }
+
+    /// One line per item, places as `path:lo-hi`; the form the script
+    /// tests of WP-090 render and that `slip dump` will print.
+    ///
+    /// ```text
+    /// transform <digest>
+    /// edit <i> <place> tier <t> = <piece> ... [note "<text>"] ...
+    /// group <i> <i> ...
+    /// report <place | -> <note | review | error> "<message>" [attached]
+    /// changed <key> <place> "<reason>"
+    /// renamed <kind> <parent> <name> [disc <digest>] -> <parent> <name>
+    /// counter <name> <value>
+    /// ```
+    ///
+    /// A piece is `"<bytes>"`, `copy(<place>)` or `spell(<key> "<text>")`.
+    /// A name is its identifier quoted, or the form's name of
+    /// `spec/digest-kinds.md` §3.2 with its operand in parentheses
+    /// (`operator(3)`, `conversion(<digest>)`, `literal_operator("_km")`,
+    /// `unnamed_by(<name>)`, `constructor`).
+    /// Text is quoted with `\\`, `\"`, `\n`, `\t` and `\xNN` for any
+    /// other byte outside printable ASCII; a path is written the same way
+    /// without the quotes. A digest is its 64 hexadecimal digits. Items come
+    /// in the order of the output, so the canonical output renders
+    /// canonically.
+    pub fn render(&self, f: &mut dyn fmt::Write) -> fmt::Result {
+        writeln!(f, "transform {}", self.transform)?;
+        for (i, e) in self.edits.iter().enumerate() {
+            write!(f, "edit {i} {} tier {} =", Rendered::Place(&e.place), e.tier)?;
+            for p in &e.pieces {
+                match p {
+                    Piece::Literal(b) => write!(f, " {}", Rendered::Quoted(b))?,
+                    Piece::Copy(at) => write!(f, " copy({})", Rendered::Place(at))?,
+                    Piece::Spelled { key, text } => {
+                        write!(f, " spell({key} {})", Rendered::Quoted(text))?;
+                    }
+                }
+            }
+            for n in &e.notes {
+                write!(f, " note {}", Rendered::Quoted(n))?;
+            }
+            writeln!(f)?;
+        }
+        for g in &self.groups {
+            write!(f, "group")?;
+            for i in g {
+                write!(f, " {i}")?;
+            }
+            writeln!(f)?;
+        }
+        for r in &self.reports {
+            match &r.place {
+                Some(p) => write!(f, "report {}", Rendered::Place(p))?,
+                None => write!(f, "report -")?,
+            }
+            let severity = match r.severity {
+                Severity::Note => "note",
+                Severity::Review => "review",
+                Severity::Error => "error",
+            };
+            write!(f, " {severity} {}", Rendered::Quoted(&r.message))?;
+            writeln!(f, "{}", if r.attached { " attached" } else { "" })?;
+        }
+        for c in &self.changed {
+            writeln!(
+                f,
+                "changed {} {} {}",
+                c.key,
+                Rendered::Place(&c.place),
+                Rendered::Quoted(&c.reason)
+            )?;
+        }
+        for r in &self.renamed {
+            write!(
+                f,
+                "renamed {} {} {}",
+                r.kind.name(),
+                Rendered::Parent(&r.parent),
+                Rendered::Name(&r.name)
+            )?;
+            if let Some(d) = &r.disc {
+                write!(f, " disc {d}")?;
+            }
+            writeln!(f, " -> {} {}", Rendered::Parent(&r.to_parent), Rendered::Name(&r.to_name))?;
+        }
+        for c in &self.counters {
+            writeln!(f, "counter {} {}", c.name, c.value)?;
+        }
+        Ok(())
+    }
+}
+
+/// The pieces of a rendered line.
+enum Rendered<'a> {
+    Quoted(&'a [u8]),
+    Place(&'a Place),
+    Parent(&'a Parent),
+    Name(&'a Name),
+}
+
+fn escaped(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    for &b in bytes {
+        match b {
+            b'\\' => f.write_str("\\\\")?,
+            b'"' => f.write_str("\\\"")?,
+            b'\n' => f.write_str("\\n")?,
+            b'\t' => f.write_str("\\t")?,
+            0x20..=0x7e => write!(f, "{}", b as char)?,
+            _ => write!(f, "\\x{b:02x}")?,
+        }
+    }
+    Ok(())
+}
+
+impl fmt::Display for Rendered<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Rendered::Quoted(b) => {
+                f.write_str("\"")?;
+                escaped(f, b)?;
+                f.write_str("\"")
+            }
+            Rendered::Place(p) => {
+                escaped(f, &p.file.path)?;
+                write!(f, ":{}-{}", p.lo, p.hi)
+            }
+            Rendered::Parent(p) => match p {
+                Parent::Root => f.write_str("root"),
+                Parent::CLinkage => f.write_str("c_linkage"),
+                Parent::Builtin => f.write_str("builtin"),
+                Parent::Unit(d) => write!(f, "{d}"),
+            },
+            Rendered::Name(n) => match n {
+                Name::Identifier(b) => write!(f, "{}", Rendered::Quoted(b)),
+                Name::Operator(k) => write!(f, "operator({k})"),
+                Name::Constructor => f.write_str("constructor"),
+                Name::Destructor => f.write_str("destructor"),
+                Name::Conversion(d) => write!(f, "conversion({d})"),
+                Name::LiteralOperator(b) => write!(f, "literal_operator({})", Rendered::Quoted(b)),
+                Name::DeductionGuide => f.write_str("deduction_guide"),
+                Name::Anonymous => f.write_str("anonymous"),
+                Name::Content => f.write_str("content"),
+                Name::Local(k) => write!(f, "local({k})"),
+                Name::UnnamedBy(inner) => write!(f, "unnamed_by({})", Rendered::Name(inner)),
+                Name::UnnamedOrdinal(k) => write!(f, "unnamed_ordinal({k})"),
+                Name::Property(k) => write!(f, "property({k})"),
+                Name::Order => f.write_str("order"),
+                Name::Parameter(k) => write!(f, "parameter({k})"),
+            },
+        }
     }
 }
 

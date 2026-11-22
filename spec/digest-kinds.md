@@ -184,7 +184,14 @@ the names and fails for a missing directory or a directory no row names
 
 A test's files (`t.cpp`, or `a.cpp` and `b.cpp`), its header lines
 (`// std:`, `// errors:`, `// target:`, `// args:`) and the command line
-each side is parsed under are those of `spec/harness.md` §6.1.
+each side is parsed under are those of `spec/harness.md` §6.1. What its
+`expect.txt` says, and which lines each of the four directories reads,
+is digest §14.1: an `in` row's test names the unit that differs
+(`changed`, `added`, `removed`) and may name the derived units that move
+with it (`derived-added`, `derived-removed`, `derived-changed`, all of
+them under `exact derived`); a `demand` row's test may name the
+instantiations the use forces (`derived-added`); an `out`, `symbolic` or
+`unsupported` row's test names no derived unit.
 
 ### 1.6 What the test cannot see
 

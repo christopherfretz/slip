@@ -1,0 +1,2 @@
+derived-changed g<int>()
+exact derived

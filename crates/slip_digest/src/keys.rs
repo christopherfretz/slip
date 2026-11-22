@@ -315,7 +315,7 @@ impl Walk<'_> {
 
     /// The key of entity `e` before mapping, with the cause its
     /// discriminator carries; `Err` when it has none.
-    fn compute_key(&mut self, e: DeclId) -> Result<(Key, Option<Cause>), Option<Cause>> {
+    pub(crate) fn compute_key(&mut self, e: DeclId) -> Result<(Key, Option<Cause>), Option<Cause>> {
         let ast = self.ast;
         let n = ast.decls.get(e);
         let kind_info = info(n.kind());
