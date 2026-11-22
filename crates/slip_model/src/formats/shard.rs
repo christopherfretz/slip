@@ -349,9 +349,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             Loc::Agreement(l) => rule_use_at
                 .as_ref()
                 .map_or_else(|| unreachable!("a rule_use violation without rule_use"), |o| o.of(l)),
-            Loc::Spellings(l) => spellings_at
-                .as_ref()
-                .map_or_else(|| unreachable!("a spellings violation without spellings"), |o| o.of(l)),
+            Loc::Spellings(l) => spellings_at.as_ref().map_or_else(
+                || unreachable!("a spellings violation without spellings"),
+                |o| o.of(l),
+            ),
         };
         return Err(malformed(at, what));
     }

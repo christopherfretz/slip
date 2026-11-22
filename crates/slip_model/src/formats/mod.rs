@@ -22,8 +22,8 @@ use std::fmt::{self, Write as _};
 
 use crate::container::{FIRST_IGNORABLE, Reader, TRAILER_LEN, Writer};
 use crate::declared::Declared;
-use crate::transform::Transform;
 use crate::json::{self, Value};
+use crate::transform::Transform;
 use crate::wire::{Decoder, Encoder, Error, ErrorKind};
 use crate::{Digest, Observer, Phase, Plan, RunRecord, Shard};
 

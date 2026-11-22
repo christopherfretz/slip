@@ -11,10 +11,13 @@ use crate::wire::{Decoder, Encoder};
 
 use super::common::{
     Enumeration, JResult, Result, dec_enum, dec_list, dec_opt, enc_enum, json_bytes, json_digest,
-    json_enum, json_opt, json_uv, malformed, object, read_bool, read_bytes, read_digest,
-    read_enum, read_list, read_opt, read_record, read_uv,
+    json_enum, json_opt, json_uv, malformed, object, read_bool, read_bytes, read_digest, read_enum,
+    read_list, read_opt, read_record, read_uv,
 };
-use super::{At, Extra, JsonFormError, OwnedExtras, SectionName, open, read_container, render_container, seal};
+use super::{
+    At, Extra, JsonFormError, OwnedExtras, SectionName, open, read_container, render_container,
+    seal,
+};
 
 /// The section id (`spec/edits.md` §3).
 const TRANSFORM: u64 = 1;
@@ -235,13 +238,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Transform, Vec<Extra<'_>>, Digest)
         Ok(Script { id, file, options, steps: d.uv()?, bytes: d.uv()?, depth: d.uv()? })
     })?;
     d.finish()?;
-    let t = Transform {
-        kind,
-        ownership: Ownership { owned, readonly },
-        indivisible,
-        rename,
-        script,
-    };
+    let t =
+        Transform { kind, ownership: Ownership { owned, readonly }, indivisible, rename, script };
     if let Some((l, what)) = violation(&t) {
         return Err(malformed(o.of(l), what));
     }
@@ -251,8 +249,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Transform, Vec<Extra<'_>>, Digest)
 // ---------------------------------------------------------------------------
 // JSON
 
-const NAMES: [SectionName; 1] =
-    [SectionName { id: TRANSFORM, name: "transform", required: true }];
+const NAMES: [SectionName; 1] = [SectionName { id: TRANSFORM, name: "transform", required: true }];
 
 fn json_list(list: &[Vec<u8>]) -> Value {
     Value::Array(list.iter().map(|b| json_bytes(b)).collect())

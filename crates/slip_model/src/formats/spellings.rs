@@ -49,7 +49,11 @@ fn end(s: &Span) -> Option<u64> {
 /// 2^64; spans ascending and no two touching (so no index is in `held`
 /// twice); `failed` strictly ascending by `index`; no failed index in
 /// `held`; at most `seen` indices in the two lists.
-pub(super) fn violation(s: &Spellings, phase: Phase, status: Status) -> Option<(Loc, &'static str)> {
+pub(super) fn violation(
+    s: &Spellings,
+    phase: Phase,
+    status: Status,
+) -> Option<(Loc, &'static str)> {
     if phase != Phase::Verify {
         return Some((Loc::Section, "a spellings section in a shard whose phase is not verify"));
     }
@@ -79,8 +83,8 @@ pub(super) fn violation(s: &Spellings, phase: Phase, status: Status) -> Option<(
     if let Some(i) = s.failed.iter().position(|f| in_held(f.index)) {
         return Some((Loc::Failed(i), "an index is both held and failed"));
     }
-    let total: u128 = s.held.iter().map(|h| u128::from(h.count)).sum::<u128>()
-        + s.failed.len() as u128;
+    let total: u128 =
+        s.held.iter().map(|h| u128::from(h.count)).sum::<u128>() + s.failed.len() as u128;
     if total > u128::from(s.seen) {
         return Some((Loc::Seen, "more obligations held or failed than seen"));
     }

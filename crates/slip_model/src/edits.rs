@@ -446,9 +446,7 @@ impl Edits {
         for g in &groups {
             let members: Vec<u64> = g
                 .iter()
-                .map(|&m| {
-                    usize::try_from(m).ok().and_then(|i| moved.get(i)).copied().unwrap_or(m)
-                })
+                .map(|&m| usize::try_from(m).ok().and_then(|i| moved.get(i)).copied().unwrap_or(m))
                 .collect();
             for &m in &members {
                 parent.entry(m).or_insert(m);

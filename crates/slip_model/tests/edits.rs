@@ -295,7 +295,10 @@ fn raw(s: &Shard) -> Vec<u8> {
     e.digest(&s.observer).uv(s.phase as u64).uv(s.round);
     w.section(1, e.as_bytes());
     let mut e = Encoder::new();
-    e.uv(s.outcome.status as u64).uv(s.outcome.errors).uv(s.outcome.warnings).str(&s.outcome.message);
+    e.uv(s.outcome.status as u64)
+        .uv(s.outcome.errors)
+        .uv(s.outcome.warnings)
+        .str(&s.outcome.message);
     w.section(2, e.as_bytes());
     if let Some(inputs) = &s.inputs {
         let mut e = Encoder::new();
@@ -599,27 +602,27 @@ fn small_bytes() -> Vec<u8> {
         "00",                 //   no failure                     @97
         "01  02 2f 61  0a",   //   files: "/a", 10 bytes          @98
         &rep("55", 32),
-        "00  00", //   no subjects, no links          @135
-        "01",     //   claims: 1                      @137
+        "00  00",      //   no subjects, no links          @135
+        "01",          //   claims: 1                      @137
         "00 02 05 00", //     file 0, [2, 5), replace  @138
         "03",          //     pieces: 3                @142
         "00 02 78 79", //       literal "xy"           @143
         "01 00 00 01", //       copy (0, 0, 1)         @147
         "02",          //       spelled                @151
         &rep("66", 32),
-        "01 6e",     //         "n"
-        "00",        //     subjects []                @186
-        "00",        //     reason none                @187
-        "01",        //     tiers {0}                  @188
-        "00",        //     no macro
-        "01",        //     votes 1                    @190
-        "01 01 6b",  //     notes ["k"]                @191
-        "00",        //   groups []                    @194
-        "01",        //   reports: 1
+        "01 6e",          //         "n"
+        "00",             //     subjects []                @186
+        "00",             //     reason none                @187
+        "01",             //     tiers {0}                  @188
+        "00",             //     no macro
+        "01",             //     votes 1                    @190
+        "01 01 6b",       //     notes ["k"]                @191
+        "00",             //   groups []                    @194
+        "01",             //   reports: 1
         "00 00 01 6d 00", //  no place, note, "m", false   @196
-        "00 00",     //   changed [], renamed []       @201
-        "00",        // end                            @203
-        SMALL_TRAILER, // the BLAKE3 of the rest, written by reseal
+        "00 00",          //   changed [], renamed []       @201
+        "00",             // end                            @203
+        SMALL_TRAILER,    // the BLAKE3 of the rest, written by reseal
     ]))
 }
 
@@ -638,7 +641,10 @@ fn edits_bytes_exact() {
 // sample and of a failed run, pinned.
 #[test]
 fn golden_shard_with_edits() {
-    for (name, s) in [("shard-edits.json", map_shard(sample())), ("shard-edits-failure.json", map_shard(failed_run()))] {
+    for (name, s) in [
+        ("shard-edits.json", map_shard(sample())),
+        ("shard-edits-failure.json", map_shard(failed_run())),
+    ] {
         let bytes = s.to_bytes();
         let text = dump(&bytes).unwrap();
         golden(name, &text);
@@ -681,8 +687,9 @@ fn edits_round_trip() {
 #[test]
 fn piece_json() {
     let v = map_shard(sample()).to_json();
-    let pieces = v.get("sections").unwrap().get("edits").unwrap().get("claims").unwrap()
-        .as_array().unwrap()[0]
+    let pieces =
+        v.get("sections").unwrap().get("edits").unwrap().get("claims").unwrap().as_array().unwrap()
+            [0]
         .get("pieces")
         .unwrap()
         .clone();
@@ -697,11 +704,17 @@ fn piece_json() {
     for (new, path) in [
         (r#""g""#, "sections.edits.claims[0].pieces[0]"),
         (r#"{}"#, "sections.edits.claims[0].pieces[0]"),
-        (r#"{"literal": "g", "copy": {"file": 0, "lo": 0, "hi": 1}}"#, "sections.edits.claims[0].pieces[0]"),
+        (
+            r#"{"literal": "g", "copy": {"file": 0, "lo": 0, "hi": 1}}"#,
+            "sections.edits.claims[0].pieces[0]",
+        ),
         (r#"{"paste": "g"}"#, "sections.edits.claims[0].pieces[0].paste"),
         (r#"{"literal": 1}"#, "sections.edits.claims[0].pieces[0].literal"),
         (r#"{"copy": {"file": 0, "hi": 1}}"#, "sections.edits.claims[0].pieces[0].copy.lo"),
-        (r#"{"spelled": {"text": "g", "key": "00"}}"#, "sections.edits.claims[0].pieces[0].spelled.key"),
+        (
+            r#"{"spelled": {"text": "g", "key": "00"}}"#,
+            "sections.edits.claims[0].pieces[0].spelled.key",
+        ),
     ] {
         let mut v = map_shard(sample()).to_json();
         set(&mut v, &base, parse(new));
@@ -720,14 +733,27 @@ fn edits_json_members() {
     let e = v.get("sections").unwrap().get("edits").unwrap();
     assert_eq!(
         names(e),
-        ["scheme", "transform", "failure", "files", "subjects", "links", "claims", "groups",
-         "reports", "changed", "renamed"]
+        [
+            "scheme",
+            "transform",
+            "failure",
+            "files",
+            "subjects",
+            "links",
+            "claims",
+            "groups",
+            "reports",
+            "changed",
+            "renamed"
+        ]
     );
     let c = &e.get("claims").unwrap().as_array().unwrap()[1];
     assert_eq!(
         names(c),
-        ["file", "lo", "hi", "stance", "pieces", "subjects", "reason", "tiers", "macro", "votes",
-         "notes"]
+        [
+            "file", "lo", "hi", "stance", "pieces", "subjects", "reason", "tiers", "macro",
+            "votes", "notes"
+        ]
     );
     assert_eq!(c.get("stance").unwrap().as_str(), Some("replace"));
     let s = &e.get("subjects").unwrap().as_array().unwrap()[1];
@@ -740,16 +766,48 @@ fn edits_json_members() {
     assert_eq!(sections, ["header", "outcome", "inputs", "counters", "edits"]);
     // Wrong names and types are errors at their paths.
     for (path, new, at) in [
-        (&["sections", "edits", "claims", "3", "reason"][..], "\"MacroBody\"", "sections.edits.claims[3].reason"),
-        (&["sections", "edits", "claims", "0", "stance"][..], "\"edit\"", "sections.edits.claims[0].stance"),
-        (&["sections", "edits", "subjects", "0", "role"][..], "0", "sections.edits.subjects[0].role"),
-        (&["sections", "edits", "reports", "0", "severity"][..], "\"fatal\"", "sections.edits.reports[0].severity"),
-        (&["sections", "edits", "reports", "0", "attached"][..], "0", "sections.edits.reports[0].attached"),
+        (
+            &["sections", "edits", "claims", "3", "reason"][..],
+            "\"MacroBody\"",
+            "sections.edits.claims[3].reason",
+        ),
+        (
+            &["sections", "edits", "claims", "0", "stance"][..],
+            "\"edit\"",
+            "sections.edits.claims[0].stance",
+        ),
+        (
+            &["sections", "edits", "subjects", "0", "role"][..],
+            "0",
+            "sections.edits.subjects[0].role",
+        ),
+        (
+            &["sections", "edits", "reports", "0", "severity"][..],
+            "\"fatal\"",
+            "sections.edits.reports[0].severity",
+        ),
+        (
+            &["sections", "edits", "reports", "0", "attached"][..],
+            "0",
+            "sections.edits.reports[0].attached",
+        ),
         (&["sections", "edits", "groups", "0"][..], "{}", "sections.edits.groups[0]"),
         (&["sections", "edits", "groups", "0"][..], "[0, -1]", "sections.edits.groups[0][1]"),
-        (&["sections", "edits", "renamed", "0", "name"][..], "{\"operator\": 0}", "sections.edits.renamed[0].name.operator"),
-        (&["sections", "edits", "subjects", "0", "rule", "kind"][..], "\"fn\"", "sections.edits.subjects[0].rule.kind"),
-        (&["sections", "edits", "claims", "1", "macro"][..], "{\"name\": \"ID\"}", "sections.edits.claims[1].macro.name_start"),
+        (
+            &["sections", "edits", "renamed", "0", "name"][..],
+            "{\"operator\": 0}",
+            "sections.edits.renamed[0].name.operator",
+        ),
+        (
+            &["sections", "edits", "subjects", "0", "rule", "kind"][..],
+            "\"fn\"",
+            "sections.edits.subjects[0].rule.kind",
+        ),
+        (
+            &["sections", "edits", "claims", "1", "macro"][..],
+            "{\"name\": \"ID\"}",
+            "sections.edits.claims[1].macro.name_start",
+        ),
     ] {
         let mut v = map_shard(sample()).to_json();
         set(&mut v, path, parse(new));
@@ -776,7 +834,11 @@ fn edits_unlisted_values() {
         (197, 0, 3),  // severity
         (200, 0, 2),  // attached
     ] {
-        assert_eq!(error(Shard::from_bytes(&patch(&bytes, at, from, to))), (ErrorKind::Malformed, at), "{at}");
+        assert_eq!(
+            error(Shard::from_bytes(&patch(&bytes, at, from, to))),
+            (ErrorKind::Malformed, at),
+            "{at}"
+        );
     }
     // Truncated inside the section; a byte left over after it.
     let s = small();
@@ -786,7 +848,11 @@ fn edits_unlisted_values() {
         let full = raw(&s);
         for id in [1u64, 2, 4] {
             let at = payload_at(&full, id);
-            let len = match id { 1 => 34, 2 => 4, _ => 1 };
+            let len = match id {
+                1 => 34,
+                2 => 4,
+                _ => 1,
+            };
             w.section(id, &full[at..at + len]);
         }
         w.section(17, p);
@@ -801,7 +867,10 @@ fn edits_unlisted_values() {
     let mut s = map_shard(failed_run());
     let bytes = s.to_bytes();
     let base = payload_at(&bytes, 17);
-    assert_eq!(error(Shard::from_bytes(&patch(&bytes, base + 34, 0, 6))), (ErrorKind::Malformed, base + 34));
+    assert_eq!(
+        error(Shard::from_bytes(&patch(&bytes, base + 34, 0, 6))),
+        (ErrorKind::Malformed, base + 34)
+    );
     s.edits = Some(sample());
     let bytes = s.to_bytes();
     let role = at(&s, "sections.edits.subjects[1].of") - 1;
@@ -944,10 +1013,7 @@ fn edits_links() {
     broken(|x| x.links[0] = Link { a: d(0x12), b: d(0x10) }, "sections.edits.links[0]");
     broken(|x| x.links[0].b = d(0x10), "sections.edits.links[0]");
     broken(|x| x.links.push(x.links[0]), "sections.edits.links[1]");
-    broken(
-        |x| x.links.insert(0, Link { a: d(0x11), b: d(0x12) }),
-        "sections.edits.links[1]",
-    );
+    broken(|x| x.links.insert(0, Link { a: d(0x11), b: d(0x12) }), "sections.edits.links[1]");
 }
 
 // §4.7 row 8: a claim's file is an index of files; lo <= hi <= size;
@@ -979,9 +1045,18 @@ fn edits_claim_pieces() {
         "sections.edits.claims[0].pieces[2]",
     );
     broken(|x| x.claims[0].pieces.insert(1, literal(b"h")), "sections.edits.claims[0].pieces[1]");
-    broken(|x| x.claims[0].pieces[1] = Piece::Copy(place(1, 4, 4)), "sections.edits.claims[0].pieces[1]");
-    broken(|x| x.claims[0].pieces[1] = Piece::Copy(place(1, 0, 61)), "sections.edits.claims[0].pieces[1]");
-    broken(|x| x.claims[0].pieces[1] = Piece::Copy(place(3, 0, 1)), "sections.edits.claims[0].pieces[1]");
+    broken(
+        |x| x.claims[0].pieces[1] = Piece::Copy(place(1, 4, 4)),
+        "sections.edits.claims[0].pieces[1]",
+    );
+    broken(
+        |x| x.claims[0].pieces[1] = Piece::Copy(place(1, 0, 61)),
+        "sections.edits.claims[0].pieces[1]",
+    );
+    broken(
+        |x| x.claims[0].pieces[1] = Piece::Copy(place(3, 0, 1)),
+        "sections.edits.claims[0].pieces[1]",
+    );
     // A replace with no piece deletes; a literal after a copy is fine.
     let mut x = sample();
     x.claims[1].pieces.clear();
@@ -1003,7 +1078,10 @@ fn edits_claim_subjects_and_notes() {
     broken(|x| x.claims[1].subjects.reverse(), "sections.edits.claims[1].subjects");
     broken(|x| x.claims[0].subjects.push(d(0x10)), "sections.edits.claims[0].subjects");
     broken(|x| x.claims[0].notes.reverse(), "sections.edits.claims[0].notes");
-    broken(|x| x.claims[2].notes = vec![b"a".to_vec(), b"a".to_vec()], "sections.edits.claims[2].notes");
+    broken(
+        |x| x.claims[2].notes = vec![b"a".to_vec(), b"a".to_vec()],
+        "sections.edits.claims[2].notes",
+    );
 }
 
 // §4.7 row 12: tiers not 0, no bit above 4, bits 2 to 4 only for refuse;
@@ -1307,8 +1385,10 @@ fn normalise_joins_agreeing_derivations() {
     let x = normalised(with_claims(vec![m(9, b"A"), m(3, b"Z"), m(3, b"Y")], Vec::new()));
     assert_eq!(x.claims[0].macro_site, macro_site(3, b"Y"));
     // The least reason other than none.
-    let r = |reason: Reason| Claim { reason, subjects: vec![d(1)], ..claim(0, 1, 2, Stance::Refuse) };
-    let mut x = with_claims(vec![r(Reason::NotPlain), r(Reason::Pasted), r(Reason::NotOwned)], Vec::new());
+    let r =
+        |reason: Reason| Claim { reason, subjects: vec![d(1)], ..claim(0, 1, 2, Stance::Refuse) };
+    let mut x =
+        with_claims(vec![r(Reason::NotPlain), r(Reason::Pasted), r(Reason::NotOwned)], Vec::new());
     x.normalise();
     assert_eq!((x.claims.len(), x.claims[0].reason), (1, Reason::Pasted));
     let mut x = with_claims(vec![r(Reason::None), r(Reason::NotPlain)], Vec::new());
@@ -1370,7 +1450,10 @@ fn normalise_groups() {
     assert_eq!(x.groups, [vec![1, 2]]);
     // Two groups that share a member are one; others stay apart, sorted.
     let claims: Vec<Claim> = (0..6).map(|i| replace(10 * i + 1, 10 * i + 2, b"x")).collect();
-    let x = normalised(with_claims(claims.clone(), vec![vec![4, 5], vec![2, 3], vec![0, 1], vec![1, 2]]));
+    let x = normalised(with_claims(
+        claims.clone(),
+        vec![vec![4, 5], vec![2, 3], vec![0, 1], vec![1, 2]],
+    ));
     assert_eq!(x.groups, [vec![0, 1, 2, 3], vec![4, 5]]);
     // A group reduced to one member by the join of two claims.
     let x = normalised(with_claims(
@@ -1456,7 +1539,8 @@ fn piece_and_claim_order() {
             assert_eq!(a.cmp_key(b), i.cmp(&j), "{a:?} {b:?}");
         }
     }
-    let c = |file, lo, hi, stance, pieces: Vec<Piece>| Claim { pieces, ..claim(file, lo, hi, stance) };
+    let c =
+        |file, lo, hi, stance, pieces: Vec<Piece>| Claim { pieces, ..claim(file, lo, hi, stance) };
     let cs = [
         c(0, 9, 9, Stance::Unresolved, vec![]),
         c(0, 10, 11, Stance::Replace, vec![]),
@@ -1606,17 +1690,17 @@ const RENAME_TRAILER: &str = "00000000000000000000000000000000000000000000000000
 fn rename_bytes() -> Vec<u8> {
     reseal(hex(&[
         "53 4c 49 50 1a 0a 00 00  54 52 46 4d  01 00 00 00", // magic, TRFM, version 1
-        "01 18",                // transform, 24 bytes:
-        "01",                   //   rename                        @18
-        "01  02 2f 73",         //   owned ["/s"]                  @19
-        "01  06 2f 73 2f 67 65 6e", // readonly ["/s/gen"]         @23
-        "01",                   //   indivisible                   @31
-        "01",                   //   rename:                       @32
-        "02  01 6e  01 66",     //     target ["n", "f"]           @33
-        "01",                   //     function                    @38
-        "01 67",                //     new_name "g"                @39
-        "00",                   //   no script                     @41
-        "00",                   // end                             @42
+        "01 18",                                             // transform, 24 bytes:
+        "01",                                                //   rename                        @18
+        "01  02 2f 73",                                      //   owned ["/s"]                  @19
+        "01  06 2f 73 2f 67 65 6e",                          // readonly ["/s/gen"]         @23
+        "01",                                                //   indivisible                   @31
+        "01",                                                //   rename:                       @32
+        "02  01 6e  01 66",                                  //     target ["n", "f"]           @33
+        "01",                                                //     function                    @38
+        "01 67",                                             //     new_name "g"                @39
+        "00",                                                //   no script                     @41
+        "00",                                                // end                             @42
         RENAME_TRAILER, // the BLAKE3 of the rest, written by reseal
     ]))
 }
@@ -1684,7 +1768,10 @@ fn refused(t: &Transform, path: &str) -> &'static str {
 // entry in both.
 #[test]
 fn transform_ownership_rules() {
-    let with = |owned: &[&[u8]], readonly: &[&[u8]]| Transform { ownership: ownership(owned, readonly), ..rename_request() };
+    let with = |owned: &[&[u8]], readonly: &[&[u8]]| Transform {
+        ownership: ownership(owned, readonly),
+        ..rename_request()
+    };
     refused(&with(&[], &[]), "sections.transform.ownership.owned");
     refused(&with(&[b"/t", b"/s"], &[]), "sections.transform.ownership.owned[1]");
     refused(&with(&[b"/s", b"/s"], &[]), "sections.transform.ownership.owned[1]");
@@ -1698,13 +1785,19 @@ fn transform_ownership_rules() {
 // a script has a script and no rename.
 #[test]
 fn transform_kind_rules() {
-    refused(&Transform { indivisible: false, ..rename_request() }, "sections.transform.indivisible");
+    refused(
+        &Transform { indivisible: false, ..rename_request() },
+        "sections.transform.indivisible",
+    );
     refused(&Transform { rename: None, ..rename_request() }, "sections.transform.rename");
     refused(
         &Transform { script: script_request().script, ..rename_request() },
         "sections.transform.script",
     );
-    refused(&Transform { rename: rename_request().rename, ..script_request() }, "sections.transform.rename");
+    refused(
+        &Transform { rename: rename_request().rename, ..script_request() },
+        "sections.transform.rename",
+    );
     refused(&Transform { script: None, ..script_request() }, "sections.transform.script");
     // A rename's own rules before the script's presence.
     let mut t = Transform { script: script_request().script, ..rename_request() };
@@ -1729,7 +1822,17 @@ fn transform_rename_names() {
         assert!(what.contains("identifier"), "{what}");
         refused(&with(&[b"n", b"f"], bad), "sections.transform.rename.new_name");
     }
-    for kw in [&b"int"[..], b"export", b"nullptr", b"char8_t", b"co_await", b"contract_assert", b"and", b"xor_eq", b"register"] {
+    for kw in [
+        &b"int"[..],
+        b"export",
+        b"nullptr",
+        b"char8_t",
+        b"co_await",
+        b"contract_assert",
+        b"and",
+        b"xor_eq",
+        b"register",
+    ] {
         let what = refused(&with(&[kw, b"f"], b"g"), "sections.transform.rename.target[0]");
         assert!(what.contains("keyword"), "{what}");
         refused(&with(&[b"f"], kw), "sections.transform.rename.new_name");
@@ -1739,7 +1842,18 @@ fn transform_rename_names() {
     // Identifiers with special meaning are not keywords; names that only
     // look like keywords are identifiers; the new name may equal an outer
     // component.
-    for ok in [&b"final"[..], b"override", b"import", b"module", b"Int", b"int_", b"_", b"__x", b"pre", b"post"] {
+    for ok in [
+        &b"final"[..],
+        b"override",
+        b"import",
+        b"module",
+        b"Int",
+        b"int_",
+        b"_",
+        b"__x",
+        b"pre",
+        b"post",
+    ] {
         with(&[ok, b"f"], b"g").validate().unwrap();
         with(&[b"f"], ok).validate().unwrap();
     }
@@ -1754,7 +1868,11 @@ fn transform_rename_names() {
 fn transform_structural() {
     let bytes = rename_bytes();
     for (at, from, to) in [(18, 1, 3), (18, 1, 0), (31, 1, 2), (32, 1, 2), (38, 1, 3), (41, 0, 2)] {
-        assert_eq!(error(Transform::from_bytes(&patch(&bytes, at, from, to))), (ErrorKind::Malformed, at), "{at}");
+        assert_eq!(
+            error(Transform::from_bytes(&patch(&bytes, at, from, to))),
+            (ErrorKind::Malformed, at),
+            "{at}"
+        );
     }
     // No section: Malformed at the end byte.
     let w = Writer::new(*b"TRFM", 1).finish();
@@ -1778,8 +1896,16 @@ fn transform_structural() {
     for (path, new, at) in [
         (&["sections", "transform", "kind"][..], "\"Rename\"", "sections.transform.kind"),
         (&["sections", "transform", "indivisible"][..], "1", "sections.transform.indivisible"),
-        (&["sections", "transform", "rename", "kind"][..], "\"method\"", "sections.transform.rename.kind"),
-        (&["sections", "transform", "ownership", "owned", "0"][..], "{\"hex\": \"2f\"}", "sections.transform.ownership.owned[0].hex"),
+        (
+            &["sections", "transform", "rename", "kind"][..],
+            "\"method\"",
+            "sections.transform.rename.kind",
+        ),
+        (
+            &["sections", "transform", "ownership", "owned", "0"][..],
+            "{\"hex\": \"2f\"}",
+            "sections.transform.ownership.owned[0].hex",
+        ),
     ] {
         let mut v = rename_request().to_json();
         set(&mut v, path, parse(new));

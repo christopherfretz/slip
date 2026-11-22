@@ -26,8 +26,11 @@ use super::declared::{json_rule, read_rule};
 pub(super) const ID: u64 = 17;
 
 impl Enumeration for Role {
-    const TABLE: &'static [(Self, u64, &'static str)] =
-        &[(Role::Seed, 0, "seed"), (Role::Candidate, 1, "candidate"), (Role::Follower, 2, "follower")];
+    const TABLE: &'static [(Self, u64, &'static str)] = &[
+        (Role::Seed, 0, "seed"),
+        (Role::Candidate, 1, "candidate"),
+        (Role::Follower, 2, "follower"),
+    ];
     const UNLISTED: &'static str = "unlisted Role value";
     const EXPECTED: &'static str = "expected one of \"seed\", \"candidate\", \"follower\"";
 }
@@ -40,7 +43,8 @@ impl Enumeration for Stance {
         (Stance::Unresolved, 3, "unresolved"),
     ];
     const UNLISTED: &'static str = "unlisted Stance value";
-    const EXPECTED: &'static str = "expected one of \"replace\", \"keep\", \"refuse\", \"unresolved\"";
+    const EXPECTED: &'static str =
+        "expected one of \"replace\", \"keep\", \"refuse\", \"unresolved\"";
 }
 
 impl Enumeration for Reason {
@@ -63,8 +67,11 @@ impl Enumeration for Reason {
 }
 
 impl Enumeration for Severity {
-    const TABLE: &'static [(Self, u64, &'static str)] =
-        &[(Severity::Note, 0, "note"), (Severity::Review, 1, "review"), (Severity::Error, 2, "error")];
+    const TABLE: &'static [(Self, u64, &'static str)] = &[
+        (Severity::Note, 0, "note"),
+        (Severity::Review, 1, "review"),
+        (Severity::Error, 2, "error"),
+    ];
     const UNLISTED: &'static str = "unlisted Severity value";
     const EXPECTED: &'static str = "expected one of \"note\", \"review\", \"error\"";
 }
@@ -231,7 +238,10 @@ pub(super) fn violation(e: &Edits, cx: Context) -> Option<(Loc, &'static str)> {
     }
     for (i, s) in e.subjects.iter().enumerate() {
         if (s.role == Role::Follower) == s.of.is_empty() {
-            return Some((Loc::SubjectOf(i), "of is empty for a follower or not empty for another role"));
+            return Some((
+                Loc::SubjectOf(i),
+                "of is empty for a follower or not empty for another role",
+            ));
         }
         if ascending(&s.of).is_some() {
             return Some((Loc::SubjectOf(i), "of is not strictly ascending"));
@@ -291,7 +301,10 @@ pub(super) fn violation(e: &Edits, cx: Context) -> Option<(Loc, &'static str)> {
             return Some((Loc::Changed(i), "changed is not strictly ascending"));
         }
         if !within(&e.files, &c.place) || c.place.lo == c.place.hi {
-            return Some((Loc::Changed(i), "a changed entry's place is empty or not within its file"));
+            return Some((
+                Loc::Changed(i),
+                "a changed entry's place is empty or not within its file",
+            ));
         }
     }
     let mut last: Option<Vec<u8>> = None;
@@ -328,7 +341,9 @@ fn claim_violation(e: &Edits, i: usize, c: &Claim) -> Option<(Loc, &'static str)
             Piece::Literal(_) if j > 0 && matches!(c.pieces[j - 1], Piece::Literal(_)) => {
                 Some("two literal pieces are adjacent")
             }
-            Piece::Spelled { text, .. } if text.is_empty() => Some("a spelled piece's text is empty"),
+            Piece::Spelled { text, .. } if text.is_empty() => {
+                Some("a spelled piece's text is empty")
+            }
             Piece::Copy(place) if !within(&e.files, place) || place.lo == place.hi => {
                 Some("a copy piece's place is empty or not within its file")
             }
@@ -680,7 +695,8 @@ const PLACE: [&str; 3] = ["file", "lo", "hi"];
 const SUBJECT: [&str; 6] = ["id", "rule", "role", "of", "flags", "display"];
 const LINK: [&str; 2] = ["a", "b"];
 const CLAIM: [&str; 11] = [
-    "file", "lo", "hi", "stance", "pieces", "subjects", "reason", "tiers", "macro", "votes", "notes",
+    "file", "lo", "hi", "stance", "pieces", "subjects", "reason", "tiers", "macro", "votes",
+    "notes",
 ];
 const MACRO: [&str; 2] = ["name_start", "name"];
 const SPELLED: [&str; 2] = ["key", "text"];
@@ -777,11 +793,8 @@ pub(super) fn render(x: &Edits) -> Value {
             )
         })
         .collect();
-    let groups = x
-        .groups
-        .iter()
-        .map(|g| Value::Array(g.iter().map(|&m| json_uv(m)).collect()))
-        .collect();
+    let groups =
+        x.groups.iter().map(|g| Value::Array(g.iter().map(|&m| json_uv(m)).collect())).collect();
     let reports = x
         .reports
         .iter()
@@ -800,7 +813,9 @@ pub(super) fn render(x: &Edits) -> Value {
     let changed = x
         .changed
         .iter()
-        .map(|c| record(CHANGED, [json_digest(&c.key), json_place(&c.place), json_bytes(&c.reason)]))
+        .map(|c| {
+            record(CHANGED, [json_digest(&c.key), json_place(&c.place), json_bytes(&c.reason)])
+        })
         .collect();
     record(
         FIELDS,
@@ -856,8 +871,19 @@ fn read_piece(v: &Value, at: &At<'_>) -> JResult<Piece> {
 
 /// The section's JSON, without checking the invariants (`violation`).
 pub(super) fn read(v: &Value, at: &At<'_>) -> JResult<Edits> {
-    let [scheme, transform, failure, files, subjects, links, claims, groups, reports, changed, renamed] =
-        read_record(v, at, FIELDS)?;
+    let [
+        scheme,
+        transform,
+        failure,
+        files,
+        subjects,
+        links,
+        claims,
+        groups,
+        reports,
+        changed,
+        renamed,
+    ] = read_record(v, at, FIELDS)?;
     let scheme = read_uv(scheme, &at.key("scheme"))?;
     let transform = read_digest(transform, &at.key("transform"))?;
     let failure = read_opt(failure, &at.key("failure"), |v, at| {

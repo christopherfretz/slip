@@ -32,9 +32,8 @@ impl Ownership {
     /// entry covering it is in `owned`. A path no entry covers, and one
     /// whose longest covering entry is in `readonly`, is read-only.
     pub fn is_owned(&self, real_path: &[u8]) -> bool {
-        let longest = |list: &[Vec<u8>]| {
-            list.iter().filter(|e| covers(e, real_path)).map(Vec::len).max()
-        };
+        let longest =
+            |list: &[Vec<u8>]| list.iter().filter(|e| covers(e, real_path)).map(Vec::len).max();
         match (longest(&self.owned), longest(&self.readonly)) {
             (None, _) => false,
             (Some(_), None) => true,
