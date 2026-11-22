@@ -61,8 +61,10 @@
 //! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::profile(w, s, p)`, `expr::profile_expr(w, s, e)`, `expr::requires_clause` | pending (`Area::Expr`) |
 //! | `stmt::child(w, s, st)` | pending (`Area::Stmt`) |
 //! | `value::value(w, s, v)`, `value::string(w, s, l)` | pending (`Area::Value`) |
-//! | `local::write_decl(w, s, d)` | `decl` (§2.4): pending (`Area::Local`) |
-//! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each: pending (`Area::DeclData`) |
+//! | `local::write_decl(w, s, d)` | `decl` (§2.4): a local entity's ordinal and stream, a block-scope entity with linkage a `ref`; a local type pending (`Area::Local`) |
+//! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each; a function's and a variable's language linkage (§5.6 `ScopeData`) |
+//! | `decl_func::implicit_instantiation(w, e)` | nothing: whether the entity is an implicit instantiation (its own kind, else an enclosing one), the first rule of §11.9 |
+//! | `Walk::linkage_spec(d, all)` (`keys.rs`) | nothing: the innermost `LinkageSpec` around `d` and its language, through namespaces only unless `all` |
 //! | `decl_class::{typedef_data, enum_data, enumerator_data, record_data, field_data}(w, s, d)` | one `record T` of §5.5 each: pending (`Area::DeclData`) |
 //! | `decl_scope::{friend_target, namespace_data, static_assert_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.6 each, and the rows of `ColdDeclData` (§5.7): pending (`Area::DeclData`) |
 //! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1): pending (`Area::Templ`) |

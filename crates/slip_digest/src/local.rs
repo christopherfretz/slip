@@ -121,3 +121,90 @@ const NOT_IN_BLOCK: Cause = Cause::Unaccounted("decl/kind");
 pub(crate) fn lambda_data(_w: &mut Walk<'_>, s: &mut Stream, _l: slip_kiln::kiln::ast::LambdaId) {
     s.pending(Area::Local);
 }
+
+#[cfg(test)]
+mod tests {
+    use slip_kiln::kiln::ast::decl::DeclKind;
+
+    use crate::decl_func::tests::{named, of_kind, with_walk};
+    use crate::stream::Stream;
+    use crate::{Area, Cause};
+
+    fn write(w: &mut crate::walk::Walk<'_>, d: slip_kiln::kiln::ast::DeclId) -> Stream {
+        let mut s = Stream::new();
+        super::write_decl(w, &mut s, d);
+        s
+    }
+
+    // digest-kinds §2.4, digest §4.3: a parameter writes its ordinal, the
+    // next one, then its stream.
+    #[test]
+    fn a_parameter_writes_its_ordinal_first() {
+        with_walk("void f(int a, int b);", |w| {
+            let a = named(w, "a", DeclKind::ParmVar)[0];
+            let b = named(w, "b", DeclKind::ParmVar)[0];
+            let sa = write(w, a);
+            let sb = write(w, b);
+            assert_eq!(sa.as_bytes()[0], 0);
+            assert_eq!(sb.as_bytes()[0], 1);
+            assert_eq!(sa.as_bytes()[1..], sb.as_bytes()[1..]);
+            // Met again, the same ordinal.
+            assert_eq!(write(w, a).as_bytes(), sa.as_bytes());
+        });
+    }
+
+    // digest-kinds §2.4: a block-scope function, and a block-scope extern
+    // variable, write a `ref`.
+    #[test]
+    fn a_block_scope_entity_with_linkage_is_a_ref() {
+        with_walk("void h(); extern int v; void g() { void h(); extern int v; }", |w| {
+            for (name, kind) in [("h", DeclKind::Function), ("v", DeclKind::Var)] {
+                let d = *named(w, name, kind).last().expect("the block-scope declaration");
+                let mut want = Stream::new();
+                w.write_ref(&mut want, d);
+                assert_eq!(write(w, d).as_bytes(), want.as_bytes(), "{name}");
+            }
+            assert_eq!(w.unit.next_local, 0);
+        });
+    }
+
+    // digest-kinds §2.4: a typedef, alias, using-declaration or
+    // using-directive writes nothing.
+    #[test]
+    fn a_name_only_declaration_writes_nothing() {
+        let src = "namespace n { int i; } void g() { typedef int T; using U = int; using n::i; using namespace n; }";
+        with_walk(src, |w| {
+            for kind in [DeclKind::Typedef, DeclKind::TypeAlias, DeclKind::Using, DeclKind::UsingDirective] {
+                let d = of_kind(w, kind)[0];
+                let s = write(w, d);
+                assert!(s.as_bytes().is_empty(), "{kind:?}");
+                assert_eq!(s.cause(), None, "{kind:?}");
+            }
+        });
+    }
+
+    // digest-kinds §2.4: a local class is the local package's; a kind not
+    // declared in a block is unaccounted, never a panic.
+    #[test]
+    fn local_types_are_pending_and_strangers_unaccounted() {
+        with_walk("namespace n {} void g() { struct L {}; }", |w| {
+            let l = named(w, "L", DeclKind::CXXRecord)[0];
+            assert_eq!(write(w, l).cause(), Some(Cause::Pending(Area::Local)));
+            let n = named(w, "n", DeclKind::Namespace)[0];
+            assert_eq!(write(w, n).cause(), Some(super::NOT_IN_BLOCK));
+        });
+    }
+
+    // digest-kinds §2.4, §9: a static_assert in a block writes its stream
+    // with no ordinal.
+    #[test]
+    fn a_static_assert_has_no_ordinal() {
+        with_walk("void g() { static_assert(true); }", |w| {
+            let d = of_kind(w, DeclKind::StaticAssert)[0];
+            let mut want = Stream::new();
+            w.decl_stream(&mut want, d, d);
+            assert_eq!(write(w, d).as_bytes(), want.as_bytes());
+            assert_eq!(w.unit.next_local, 0);
+        });
+    }
+}

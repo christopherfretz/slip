@@ -400,3 +400,241 @@ fn function_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
 fn var_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
     implicit_instantiation(w, e)
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use slip_kiln::kiln::ast::DeclId;
+    use slip_kiln::kiln::ast::decl::{
+        ConstexprKind, DeclKind, Defaulted, FnSpec, FnStorage, InitStyle, TlsKind, VarSpec,
+        VarStorage,
+    };
+    use slip_kiln::kiln::ast::names::DeclNameView;
+    use slip_model::keys::RuleTable;
+
+    use crate::stream::Stream;
+    use crate::walk::Walk;
+    use crate::{Cause, Input};
+
+    /// Runs `f` on a walk over `src` (`main.cpp`, C++26).
+    pub(crate) fn with_walk<R>(src: &str, f: impl FnOnce(&mut Walk<'_>) -> R) -> R {
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++26",
+        };
+        let rules = RuleTable::empty();
+        slip_kiln::snippet::parse(&snippet, |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let mut w = Walk::new(&input, &rules);
+            f(&mut w)
+        })
+        .expect("the snippet parses")
+    }
+
+    /// Every declaration of `kind` named `name` (an identifier), in arena
+    /// order.
+    pub(crate) fn named(w: &Walk<'_>, name: &str, kind: DeclKind) -> Vec<DeclId> {
+        let ast = w.ast;
+        ast.decls
+            .ids()
+            .filter(|&d| {
+                let n = ast.decls.get(d);
+                let ident = match ast.names.view(n.name()) {
+                    DeclNameView::Identifier(s) => ast.symbols().as_str(s) == name,
+                    DeclNameView::Empty
+                    | DeclNameView::Operator(_)
+                    | DeclNameView::Constructor(_)
+                    | DeclNameView::Destructor(_)
+                    | DeclNameView::Conversion(_)
+                    | DeclNameView::LiteralOperator(_)
+                    | DeclNameView::DeductionGuide(_) => false,
+                };
+                n.kind() == kind && ident
+            })
+            .collect()
+    }
+
+    /// Every declaration of `kind`, in arena order.
+    pub(crate) fn of_kind(w: &Walk<'_>, kind: DeclKind) -> Vec<DeclId> {
+        w.ast.decls.ids().filter(|&d| w.ast.decls.get(d).kind() == kind).collect()
+    }
+
+    fn written(w: &mut Walk<'_>, f: impl FnOnce(&mut Walk<'_>, &mut Stream)) -> (Vec<u8>, Option<Cause>) {
+        let mut s = Stream::new();
+        f(w, &mut s);
+        (s.as_bytes().to_vec(), s.cause())
+    }
+
+    /// The bytes `linkage` writes for the first declaration named `name`.
+    fn linkage_bytes(src: &str, name: &str, kind: DeclKind) -> (Vec<u8>, Option<Cause>) {
+        with_walk(src, |w| {
+            let d = named(w, name, kind)[0];
+            written(w, |w, s| super::linkage(w, s, d))
+        })
+    }
+
+    // digest-kinds §5.4 FnSpec: every accessor's bit survives the rebuild,
+    // so the unaccounted check fails only for a bit no row reads.
+    #[test]
+    fn rebuild_keeps_every_accounted_bit() {
+        let f = FnSpec::new()
+            .with_storage(FnStorage::Extern)
+            .with_inline(true)
+            .with_implicit_inline(true)
+            .with_constexpr_kind(ConstexprKind::Consteval)
+            .with_virtual(true)
+            .with_pure(true)
+            .with_defaulted(Defaulted::Implicit)
+            .with_deleted(true)
+            .with_explicit(true)
+            .with_trivial(true)
+            .with_immediate_escalating(true)
+            .with_has_contracts(true)
+            .with_coroutine(true)
+            .with_escalated(true)
+            .with_variadic(true)
+            .with_override(true)
+            .with_final(true)
+            .with_explicit_object(true)
+            .with_virtual_written(true)
+            .with_storage_inherited(true)
+            .with_not_selected(true)
+            .with_return_deduced(true);
+        assert_eq!(super::rebuild_fn_spec(f).bits(), f.bits());
+        let v = VarSpec::new()
+            .with_storage(VarStorage::Register)
+            .with_tls(TlsKind::Dynamic)
+            .with_init_style(InitStyle::ParenList)
+            .with_constexpr(true)
+            .with_constinit(true)
+            .with_inline(true)
+            .with_nrvo(true)
+            .with_exception_var(true)
+            .with_cxx_for_range(true)
+            .with_inline_implied(true);
+        assert_eq!(super::rebuild_var_spec(v).bits(), v.bits());
+    }
+
+    // digest-kinds §5.6 ScopeData rule: `enum LinkageLang?`, then
+    // `aux-braceless` as `bool`; absent with no `LinkageSpec`.
+    #[test]
+    fn linkage_is_an_optional_language_then_braceless() {
+        let (none, c0) = linkage_bytes("void f();", "f", DeclKind::Function);
+        assert_eq!(c0, None);
+        let mut want = Stream::new();
+        want.opt(false);
+        assert_eq!(none, want.as_bytes());
+        let (braceless, c1) = linkage_bytes("extern \"C\" void f();", "f", DeclKind::Function);
+        assert_eq!(c1, None);
+        let mut want = Stream::new();
+        want.opt(true)
+            .tag(crate::tables::linkage_lang::row(&slip_kiln::kiln::ast::decl::LinkageLang::C))
+            .bool(true);
+        assert_eq!(braceless, want.as_bytes());
+        let (braced, _) = linkage_bytes("extern \"C\" { void f(); }", "f", DeclKind::Function);
+        assert_ne!(braced, braceless);
+        // Through an enclosing class and an enclosing function.
+        let (member, _) =
+            linkage_bytes("extern \"C\" { struct C { void m(); }; }", "m", DeclKind::CXXMethod);
+        assert_eq!(member, braced);
+        let (local, _) =
+            linkage_bytes("extern \"C\" { void g() { int x; } }", "x", DeclKind::Var);
+        let (top, _) = linkage_bytes("extern \"C\" { int x; }", "x", DeclKind::Var);
+        assert_eq!(local, top);
+    }
+
+    // digest-kinds §11.9: the definition class, and WP-026's addition of
+    // a function defaulted on its first declaration.
+    #[test]
+    fn definition_class() {
+        let src = "struct S { S() = default; };\n\
+                   struct T { T(); };\nT::T() = default;\n\
+                   template <class U> struct Q { void g() {} static inline int s = 1; };\n\
+                   Q<int> q;\n\
+                   template <> struct Q<char> { void g() {} };\n\
+                   void h() {}\n";
+        with_walk(src, |w| {
+            let ctors = of_kind(w, DeclKind::CXXConstructor);
+            let user: Vec<DeclId> = ctors
+                .iter()
+                .copied()
+                .filter(|&c| !w.ast.decls.get(c).has(slip_kiln::kiln::ast::decl::DeclFlags::IMPLICIT))
+                .collect();
+            // S::S() defaulted on its first declaration; T::T() not.
+            let s = w.ast.first(user[0]);
+            let t = w.ast.first(user[1]);
+            assert!(super::function_definition_class(w, s));
+            assert!(!super::function_definition_class(w, t));
+            // An implicitly declared member.
+            let implicit = ctors
+                .iter()
+                .copied()
+                .find(|&c| w.ast.decls.get(c).has(slip_kiln::kiln::ast::decl::DeclFlags::IMPLICIT))
+                .expect("an implicit constructor");
+            assert!(super::function_definition_class(w, w.ast.first(implicit)));
+            // Q<int>::g is an instantiation; Q::g (the pattern), Q<char>::g
+            // (a member of an explicit specialisation) and h are not.
+            let gs = named(w, "g", DeclKind::CXXMethod);
+            let classes: Vec<bool> =
+                gs.iter().map(|&g| super::implicit_instantiation(w, w.ast.first(g))).collect();
+            assert_eq!(classes.iter().filter(|&&b| b).count(), 1, "{classes:?}");
+            let h = named(w, "h", DeclKind::Function)[0];
+            assert!(!super::function_definition_class(w, h));
+            let ss = named(w, "s", DeclKind::Var);
+            let vs: Vec<bool> = ss.iter().map(|&v| super::var_definition_class(w, v)).collect();
+            assert_eq!(vs.iter().filter(|&&b| b).count(), 1, "{vs:?}");
+        });
+    }
+
+    // digest-kinds §11.9: for the definition class the body is absent and
+    // the unit `Pending(Demand)` until resolved units exist.
+    #[test]
+    fn definition_class_body_is_pending_demand() {
+        with_walk("template <class U> struct Q { void g() {} };\nQ<int> q;\nvoid h() { q.g(); }\n", |w| {
+            let gs = named(w, "g", DeclKind::CXXMethod);
+            let inst = gs
+                .iter()
+                .copied()
+                .find(|&g| super::implicit_instantiation(w, w.ast.first(g)))
+                .expect("Q<int>::g");
+            assert!(w.ast.decls.function(inst).is_some_and(|f| f.body.is_some()));
+            let (_, cause) = written(w, |w, s| super::function_data(w, s, inst));
+            assert_eq!(cause, Some(Cause::Pending(crate::Area::Demand)));
+        });
+    }
+
+    // A declaration of another kind than the record read has no payload:
+    // an unaccounted unit, not a panic.
+    #[test]
+    fn a_missing_payload_is_unaccounted() {
+        with_walk("int x; void f(int p);", |w| {
+            let x = named(w, "x", DeclKind::Var)[0];
+            let f = named(w, "f", DeclKind::Function)[0];
+            for (_, c) in [
+                written(w, |w, s| super::function_data(w, s, x)),
+                written(w, |w, s| super::param_data(w, s, x)),
+                written(w, |w, s| super::let_data(w, s, x)),
+                written(w, |w, s| super::var_data(w, s, f)),
+            ] {
+                assert_eq!(c, Some(super::NO_PAYLOAD));
+            }
+        });
+    }
+
+    // digest-kinds §2.3, §5.4 ParamData `default_arg`: a default from the
+    // declaration that gives it; none in an implicit instantiation (§11.4).
+    #[test]
+    fn param_default_merge() {
+        with_walk("void f(int a); void f(int a = 1); void f(int a);", |w| {
+            let ps = named(w, "a", DeclKind::ParmVar);
+            assert_eq!(ps.len(), 3);
+            let fs = named(w, "f", DeclKind::Function);
+            assert!(super::merged_default(w, fs[0], 0).is_some());
+            assert!(super::merged_default(w, fs[0], 1).is_none());
+        });
+    }
+}
