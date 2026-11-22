@@ -592,12 +592,14 @@ order of their first declarations.
    (`class`, `operator`, `and`; the identifiers with special meaning,
    `final`, `override`, `import`, `module`, are identifiers). The
    checks, in order, over the whole text:
-   - text that is not UTF-8, or a component that is not plain and has
-     no byte other than ASCII letters, digits, `_` and `$` and no code
-     point outside ASCII (so: empty, a digit first, a keyword, any other
-     ASCII byte anywhere): `invalid_argument`;
+   - text that is not UTF-8: `invalid_argument`;
+   - a component that no answer to the open question below could make
+     an identifier: one that is empty, or whose first byte is an ASCII
+     digit, or that is a keyword or an alternative token, or that has an
+     ASCII byte other than a letter, a digit, `_` and `$` (`a b`, `é b`,
+     `1é`): `invalid_argument`, whatever the other components are;
    - otherwise, a component with `$` or with a code point outside
-     ASCII: `unsupported`. Version 0 does not decide whether such a
+     ASCII (`a$`, `é`): `unsupported`. Version 0 does not decide whether such a
      component is an identifier (the front end accepts `$` as an
      extension, and which code points an identifier may hold is a table
      the host does not carry): it refuses rather than guess, whether or
