@@ -994,7 +994,7 @@ impl Walk<'_> {
         let requires = ast.templates.trailing_requires.get(f).copied();
         s.opt(requires.is_some());
         if let Some(r) = requires {
-            crate::expr::profile_expr(self, s, r);
+            crate::expr_dep::profile_expr(self, s, r);
         }
     }
 }

@@ -134,7 +134,7 @@ impl Walk<'_> {
             }
             TypeView::DependentBitInt { signed, width } => {
                 s.tag(type_view::DEPENDENT_BIT_INT).bool(signed);
-                crate::expr::profile(self, s, width);
+                crate::expr_dep::profile(self, s, width);
             }
             TypeView::Pointer(x) => {
                 s.tag(type_view::POINTER);
@@ -307,7 +307,7 @@ impl Walk<'_> {
             }
             TypeView::DependentDecltype(p) => {
                 s.tag(type_view::DEPENDENT_DECLTYPE);
-                crate::expr::profile(self, s, p);
+                crate::expr_dep::profile(self, s, p);
             }
             TypeView::TypeOf { operand, underlying, unqual } => {
                 s.tag(type_view::TYPE_OF);
@@ -359,7 +359,7 @@ impl Walk<'_> {
             ExprOperand::Expr(_) => {
                 s.indeterminate(sugar("ExprOperand/Expr"));
             }
-            ExprOperand::Profile(p) => crate::expr::profile(self, s, p),
+            ExprOperand::Profile(p) => crate::expr_dep::profile(self, s, p),
         }
     }
 
@@ -373,7 +373,7 @@ impl Walk<'_> {
             TypeOfOperand::Type(_) => {
                 s.indeterminate(sugar("TypeOfOperand/Type"));
             }
-            TypeOfOperand::Profile(p) => crate::expr::profile(self, s, p),
+            TypeOfOperand::Profile(p) => crate::expr_dep::profile(self, s, p),
         }
     }
 
@@ -454,7 +454,7 @@ impl Walk<'_> {
                 }
                 NoexceptValue::Dependent(p) => {
                     s.tag(exc_spec::DEPENDENT_NOEXCEPT);
-                    crate::expr::profile(self, s, p);
+                    crate::expr_dep::profile(self, s, p);
                 }
             },
             ExcSpec::Dynamic(list) => {
@@ -464,7 +464,7 @@ impl Walk<'_> {
             }
             ExcSpec::DependentNoexcept(p) => {
                 s.tag(exc_spec::DEPENDENT_NOEXCEPT);
-                crate::expr::profile(self, s, p);
+                crate::expr_dep::profile(self, s, p);
             }
             ExcSpec::Deferred(d) => {
                 s.tag(exc_spec::DEFERRED);
@@ -617,7 +617,7 @@ impl Walk<'_> {
             }
             ArgView::Profile(p) => {
                 s.tag(arg_view::PROFILE);
-                crate::expr::profile(self, s, p);
+                crate::expr_dep::profile(self, s, p);
             }
             ArgView::Pack(l) => {
                 s.tag(arg_view::PACK);

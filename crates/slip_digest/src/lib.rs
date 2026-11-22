@@ -130,6 +130,10 @@ mod decl_func;
 mod decl_scope;
 mod demand;
 mod expr;
+mod expr_core;
+mod expr_dep;
+mod expr_init;
+mod expr_misc;
 mod fp;
 mod groups;
 mod keys;
@@ -147,6 +151,8 @@ mod walk;
 
 #[cfg(test)]
 mod tests;
+
+pub use walk::STACK_SIZE;
 
 /// A finished translation unit (`spec/digest.md` §1 rule 4).
 pub struct Input<'a> {
