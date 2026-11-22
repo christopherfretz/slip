@@ -24,9 +24,11 @@ are outlined here and specified with M2.
 4. **Tight gates on deterministic numbers, loose on time.** Counters are
    compared exactly; time and memory are recorded and reviewed as trends
    (§7).
-5. **Shared machine.** Everything the harness starts goes through
-   `slip_exec::process` and holds a jobserver token while it runs
-   (`spec/exec.md` §3, §4).
+5. **Shared machine.** Every process the harness starts that is not itself
+   a jobserver client goes through `slip_exec::process` and holds a
+   jobserver token while it runs (`spec/exec.md` §3, §4). `cargo` and `slip`
+   are jobserver clients: they are started directly and take their own
+   tokens through `MAKEFLAGS`.
 
 ## 2. The gate
 
@@ -87,6 +89,9 @@ worktrees are never scanned.
 
 Kiln's own dependencies (reached through the `kiln` submodule's path
 dependencies) are allowed as Kiln's lock file lists them.
+
+The list above is repeated in `xtask/src/lint/crates.rs`; a change is made
+in both places.
 
 ## 4. Work packages
 
@@ -161,6 +166,9 @@ the same code: LLVM 19.1.7 as C++17 first.
 
 - Hosted CI (GitHub Actions) for the Slip repository: not set up; the gate
   runs on the development host for now.
+- `forbid-unsafe` looks for crate roots in the standard places only
+  (`src/lib.rs`, `src/main.rs`, `src/bin/`). No member sets a `[lib]` or
+  `[[bin]]` `path` elsewhere today; if one must, the lint has to follow it.
 - Whether Slip and Kiln should share harness code as one crate (request KM2
   in `docs/design/05-kiln-interface.md`). Until then Slip ports what it
   needs, with attribution.

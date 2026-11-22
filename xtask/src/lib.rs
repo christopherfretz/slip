@@ -1,0 +1,27 @@
+//! Developer tasks for Slip: the test, lint, benchmark and corpus harness
+//! (`spec/harness.md`). Run as `cargo xtask <command>`; `main.rs` only
+//! dispatches to one module per command:
+//!
+//! - [`lint`]: `cargo xtask lint` (§3),
+//! - [`wp`]: `cargo xtask wp [--ready]` (§4),
+//! - [`ci`]: `cargo xtask ci [--quick] [--step <name>]… [--keep-going]` (§2).
+//!
+//! Every command takes the repository root as a parameter so the tests can
+//! point it at fixture trees; [`repo_root`] is the root of the checkout this
+//! binary was built from. [`repo::Repo`] lists the files a command reads.
+
+#![forbid(unsafe_code)]
+
+pub mod ci;
+pub mod lint;
+pub mod repo;
+pub mod wp;
+
+use std::path::PathBuf;
+
+/// The root of the Slip checkout this binary was built from (the parent of
+/// `xtask/`).
+pub fn repo_root() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest.parent().map_or(manifest.clone(), PathBuf::from)
+}

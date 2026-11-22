@@ -402,3 +402,8 @@ To be listed as work packages land:
   M0 records none and Slip clears them when running the front end.
 - Whether a shard should name the plan it was produced under. Today the store
   layout carries that (`spec/exec.md`).
+- Property and fuzz tests for the decoders and the JSON reader (round trip,
+  no panic on any input). Waiting for a fuzz step in the harness.
+- `Decoder::count` bounds a list's count by the bytes remaining, which is
+  sound only while every element type encodes to at least one byte. A
+  zero-width element type would need its own bound.

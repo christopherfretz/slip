@@ -131,14 +131,20 @@ with no input, `--help`, `-###`, `-print-…`/`--print-…` (any argument with
 either prefix) is present, the entry is excluded with `not_a_compile`. The
 kept arguments contain no action option; the front-end adapter adds its own.
 
-**Step 5: inputs.** If there is no input, the entry is `not_a_compile`. If
-there is more than one, it is `malformed_entry` ("several inputs"). The one
-input, resolved against `directory`, must exist (`missing_file` otherwise),
-and its real path must equal the real path of `file` resolved against
-`directory` (`malformed_entry`, "file does not match the command",
-otherwise). If the input's extension, compared exactly, is one of `.o`
-`.obj` `.a` `.so` `.dylib` `.lib` `.s` `.S` `.asm` `.ll` `.bc` `.rc`, the
-entry is `not_a_compile`.
+**Step 5: inputs.** These checks run in this order; the first that fails
+decides.
+
+1. If there is no input, the entry is `not_a_compile`. If there is more than
+   one, it is `malformed_entry` ("several inputs").
+2. If the input's extension, as spelled and compared exactly, is one of `.o`
+   `.obj` `.a` `.so` `.dylib` `.lib` `.s` `.S` `.asm` `.ll` `.bc` `.rc`, the
+   entry is `not_a_compile`. (Before the file is looked for: a link step is
+   not a compile whether or not its object file has been built.)
+3. The input, resolved against `directory`, must exist (`missing_file`
+   otherwise).
+4. Its real path must equal the real path of `file` resolved against
+   `directory` (`malformed_entry`, "file does not match the command",
+   otherwise).
 
 **Result.** `Command.directory` is the entry's `directory` as given;
 `Command.argv` is `argv[0]` followed by the kept arguments in their original
@@ -153,6 +159,7 @@ unchanged.
 ```rust
 pub trait FrontEndCheck {
     /// Would the front end accept this command, and as what language?
+    /// `command` is normalised (§5); `main` is the real path of its main file.
     fn check(&self, command: &Command, main: &[u8]) -> Result<Language, Rejection>;
 }
 pub enum Rejection {
@@ -165,9 +172,17 @@ pub enum Rejection {
 authority on both questions. `slip_cdb` provides `ByExtension`, used when no
 front end is linked and in tests: it accepts every flag and determines the
 language from the last `-x`/`--language` value before the input if there is
-one (`c`, `c++`, `objective-c`, `objective-c++`, and the `-header` and
-`-cpp-output` variants of each map to the base language; anything else is
-`UnsupportedLanguage`), otherwise from the input's extension:
+one, otherwise from the input's extension. The values are those of the
+compiler driver:
+
+| Language | `-x` values |
+|---|---|
+| `c` | `c` `c-header` `cpp-output` |
+| `cxx` | `c++` `c++-header` `c++-cpp-output` |
+| `objc` | `objective-c` `objective-c-header` `objective-c-cpp-output` |
+| `objcxx` | `objective-c++` `objective-c++-header` `objective-c++-cpp-output` |
+
+Any other value (including `none`) is `UnsupportedLanguage`. The extensions:
 
 | Language | Extensions |
 |---|---|
@@ -208,8 +223,10 @@ files, the front-end check, and the tool versions.
 
 - `crates/slip_cdb/tests/split.rs` — §3 and the GNU variant of §4: one case
   per rule and per error.
-- `crates/slip_cdb/tests/normalise.rs` — §5: each table row, each step, each
-  exclusion, idempotence; commands taken from real CMake output for LLVM.
+- `crates/slip_cdb/tests/normalise.rs` — §4 expansion and §5: each table
+  row, each step, each exclusion, idempotence; commands taken from real
+  CMake output for LLVM.
+- `crates/slip_cdb/tests/check.rs` — §6: `ByExtension`, each table row.
 - `crates/slip_cdb/tests/database.rs` — §2: well-formed entries, each defect.
 - `crates/slip_cdb/tests/plan.rs` — §7: the accounting invariant, merging of
   equal commands across configurations, order, determinism across thread
@@ -225,3 +242,12 @@ files, the front-end check, and the tool versions.
   front-end adapter and is not specified yet.
 - Entries with several inputs, and `-x` appearing more than once.
 - Windows command lines (`cl`, and the Windows splitting rules).
+- The joined form `-o<x>` also matches clang's `-objcmt-…` migration options
+  and `-object`. Neither affects the meaning of a translation unit, so
+  removing them is harmless; a kept-options exception list is needed only if
+  a driver option beginning `-o` that matters turns up.
+- `ByExtension` reads `argv` as text, lossily for bytes that are not UTF-8.
+  Paths in a JSON database are always text, so this matters only to a future
+  database format.
+- A launcher written as `env VAR=value compiler …` is not recognised; the
+  entry is excluded as `malformed_entry` (several inputs).
