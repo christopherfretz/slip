@@ -2,3 +2,4 @@
 # the row changes only together with the key (landed WP-029)
 removed A::f()
 added A::f()
+changed A

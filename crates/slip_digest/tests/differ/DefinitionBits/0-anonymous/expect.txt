@@ -1,0 +1,7 @@
+changed S
+added S::(anonymous struct)
+added S::(anonymous struct)::a
+added S::a
+removed S::(anonymous struct)
+removed S::(anonymous struct)::a
+removed S::x

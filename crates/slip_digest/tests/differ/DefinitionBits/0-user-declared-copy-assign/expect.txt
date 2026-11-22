@@ -1,0 +1,2 @@
+changed C
+added C::operator=(const C &)

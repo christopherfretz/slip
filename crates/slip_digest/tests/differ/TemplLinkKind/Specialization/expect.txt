@@ -5,3 +5,4 @@
 removed A::f(int)
 added A::f(type-parameter-0-0)
 added A::f<int>(int)
+changed A

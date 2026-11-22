@@ -1,2 +1,3 @@
 removed C::operator int()
 added C::operator long()
+changed C

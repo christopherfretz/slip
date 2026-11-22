@@ -1,2 +1,4 @@
 changed M::M(const M &)
 changed C::C(const C &)
+changed C
+changed M

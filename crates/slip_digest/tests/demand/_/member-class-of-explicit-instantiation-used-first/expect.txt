@@ -1,0 +1,6 @@
+# pending
+# needs: units
+# In flips from declared to derived (Kiln keeps a member class already
+# defined implicit, kiln_sema/src/templ/spec.rs:1366-1394) and leaves
+# X<int>'s members-other; members of explicit instantiations need one rule
+added i0

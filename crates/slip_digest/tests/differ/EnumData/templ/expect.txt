@@ -1,0 +1,6 @@
+# what this pair shows is RecordData `templ` of X<int>: the member
+# enumeration's own record is the same on both sides (Kiln keeps its
+# MemberSpecInfo `ImplicitInstantiation` under an explicit instantiation,
+# kiln_ast/src/templates.rs:2031-2036). The row itself is checked by the
+# unit test decl_class::tests::templ_ends_the_typedef_and_enum_records.
+changed X<int>
