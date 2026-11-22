@@ -98,11 +98,9 @@ fn default_giver(w: &Walk<'_>, p: DeclId, i: usize, others: &[TemplateParamListI
 /// `inherited_defaults` names (§9.5).
 fn default_of(w: &Walk<'_>, p: DeclId) -> Option<TemplateArg> {
     let templates = &w.ast.templates;
-    templates
-        .defaults
-        .get(p)
-        .copied()
-        .or_else(|| templates.inherited_defaults.get(p).and_then(|&o| templates.defaults.get(o).copied()))
+    templates.defaults.get(p).copied().or_else(|| {
+        templates.inherited_defaults.get(p).and_then(|&o| templates.defaults.get(o).copied())
+    })
 }
 
 /// The `data` row of a template parameter: `record TemplateParmInfo`
