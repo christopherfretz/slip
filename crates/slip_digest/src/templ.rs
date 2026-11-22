@@ -151,15 +151,13 @@ pub(crate) fn template_info(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let (params, pattern, constraint) = (i.params, i.pattern, i.constraint);
     // A template's redeclarations are those of its pattern (Kiln's
     // `Ast::first`): their heads, latest first, without `d`'s own.
-    let others: Vec<TemplateParamListId> = pattern
-        .map(|p| {
-            ast.redecls_of(p)
-                .filter_map(|r| ast.described_template(r))
-                .filter(|&t| t != d)
-                .filter_map(|t| ast.template_info(t).map(|x| x.params))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Those an instantiation made outside its class left out (WP-032).
+    let others: Vec<TemplateParamListId> = w
+        .redecls(d)
+        .into_iter()
+        .filter(|&t| t != d)
+        .filter_map(|t| ast.template_info(t).map(|x| x.params))
+        .collect();
     head(w, s, params, Head::Unit(&others));
     s.opt(pattern.is_some());
     if let Some(p) = pattern {
@@ -427,7 +425,7 @@ pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
             // form: it is the canonical operand of that expression.
             ArgView::Expr { expr, profile: _ } => {
                 s.tag(arg_view::PROFILE);
-                crate::expr::profile_expr(w, s, expr);
+                crate::expr_dep::profile_expr(w, s, expr);
             }
             v @ (ArgView::Null
             | ArgView::Type(_)

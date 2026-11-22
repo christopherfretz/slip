@@ -1,0 +1,5 @@
+# pending
+# needs: decl_data
+# ColdDeclData `ctor_inits` is written by WP-033, which calls decl_class::ctor_init
+changed C
+changed C::C()

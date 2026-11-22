@@ -1,1 +1,2 @@
 changed C::x
+changed C

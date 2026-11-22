@@ -58,7 +58,9 @@
 //! | `templ::template_parm_info(w, s, d)`, `templ::template_info(w, s, d)` | `record TemplateParmInfo`, `record TemplateInfo` (the pattern written whole) |
 //! | `local::ordinal(w, d)` | the ordinal of a local entity of the unit (digest §4.3), first met first |
 //! | `demand::deferrable(w, f)` | whether a function is of the deferrable class (§11.2); `None` where the demand area decides |
-//! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::profile(w, s, p)`, `expr::profile_expr(w, s, e)`, `expr::requires_clause` | pending (`Area::Expr`) |
+//! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::requires_clause` (`expr.rs`) | `child`: one expression, its common rows, its kind's, `ColdExprData`'s and `templ::expr_maps` (§7); a kind not yet filled is pending (`Area::Expr`) |
+//! | `expr::child_keep_paren(w, s, e)` | `child`, an outermost `ParenExpr` written with its rows: for a `DependentDecltype` profile (§7 "Parentheses") |
+//! | `expr_dep::profile(w, s, p)`, `expr_dep::profile_expr(w, s, e)` | pending (`Area::Expr`) |
 //! | `stmt::child(w, s, st)` | pending (`Area::Stmt`) |
 //! | `value::value(w, s, v)`, `value::string(w, s, l)` (`value.rs`) | `value`: a constant in place by structure, a constant it points to by content digest (§8); `string`: a string literal by content (§10.3) |
 //! | `local::write_decl(w, s, d)` | `decl` (§2.4): a local entity's ordinal and stream, a block-scope variable with linkage a `ref`, a block-scope function a `ref` and its own default arguments; a local type pending (`Area::Local`) |
@@ -69,7 +71,8 @@
 //! | `decl_func::var_type(w, d, e)` | nothing: the type a variable's unit holds, an array of unknown bound completed by another declaration |
 //! | `units::defining_decl(w, e)` | nothing: the defining declaration of a variable ([basic.def]) or Kiln's `definition` of another entity |
 //! | `Walk::linkage_spec(d, all)` (`keys.rs`) | nothing: the innermost `LinkageSpec` around `d` and its language (`None` for an unknown byte), through namespaces only unless `all` |
-//! | `decl_class::{typedef_data, enum_data, enumerator_data, record_data, field_data}(w, s, d)` | one `record T` of §5.5 each: pending (`Area::DeclData`) |
+//! | `decl_class::{typedef_data, enum_data, enumerator_data, record_data, field_data}(w, s, d)` | one `record T` of §5.5 each |
+//! | `decl_class::ctor_init(w, s, i)` | `record CtorInit` (§5.5), for `ColdDeclData` `ctor_inits` |
 //! | `decl_scope::{friend_target, namespace_data, static_assert_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.6 each, and the rows of `ColdDeclData` (§5.7): pending (`Area::DeclData`) |
 //! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1), which brings in `SpecInfo`, `MemberSpecInfo` or `PartialSpecInfo` (§9.4) |
 //! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5), each in its empty form when absent |
@@ -98,6 +101,34 @@
 //! `Unaccounted("walk/depth")`. The memo of type digests and keys makes
 //! the depth reached that of one new nesting, not of the whole AST.
 //!
+//! Statements and expressions nest far deeper than 200 (LLVM has call and
+//! operator chains thousands of levels deep), so they have their own
+//! count: `Walk::enter_node`/`leave_node`, limit `walk::NODE_LIMIT`
+//! (10 000), past which the stream is indeterminate with the same cause.
+//! The expression walk does not recurse for the kinds `expr.rs` and
+//! `expr_core.rs` write (`expr.rs` "The walk"): their children are items
+//! of one heap stack, so an operator, call, member or cast chain of any
+//! length takes one level (`tests/expr_chains.rs`: 20 000 operators and
+//! 20 000 member calls, linear). A level is entered by each `expr::child`
+//! (a kind function of `expr_init.rs`, `expr_dep.rs`, `expr_misc.rs`
+//! calling it, a declaration or type reaching an expression) and is to be
+//! entered by each statement the statements package walks.
+//!
+//! `digest` therefore needs a stack of [`STACK_SIZE`] (64 MiB): it must
+//! run on a thread of at least that size (the tests' runner does,
+//! `tests/common/mod.rs` `on_walk_stack`). The figure comes from measured
+//! frames (`expr::tests::frames_fit_the_stack`): one node level is about
+//! 820 bytes (the path a kind of another file takes: `child`, `walk`,
+//! `walk_items`, the kind's function, `child` again), the walk at
+//! `DEPTH_LIMIT` levels of types and keys about 0.74 MB, so both limits
+//! need about 9.0 MB; `STACK_SIZE` is more than four times that, which
+//! the test asserts. A package whose recursion through `enter_node` has
+//! larger frames (a statement's walk) adds its path to that test.
+//!
+//! These are frames of the test profile only. The worker package must
+//! measure the release profile, on the corpus, before `STACK_SIZE` (and
+//! the scheme that runs `digest`) is fixed.
+//!
 //! # How to fill an area
 //!
 //! A pending function has its final signature and the body
@@ -114,6 +145,28 @@
 //! with `SLIP_BLESS=1 cargo test -p slip_digest --test tables`, and
 //! removes nothing else. The last area removes `Area` and
 //! `Cause::Pending`.
+//!
+//! # How to fill an expression kind
+//!
+//! `expr::dispatch` lists all 97 `ExprKind` variants. A kind of
+//! `expr_init.rs`, `expr_dep.rs` or `expr_misc.rs` is a function
+//! `pub(crate) fn <snake_kind>(w, s, e)` of that file, whose body is
+//! `s.pending(Area::Expr)` until its package fills it; `expr.rs` need not
+//! change. `child` has already written the common rows (`kind`, the value
+//! category, the object kind, `deps`, `ty`) and writes the `ColdExprData`
+//! rows and `templ::expr_maps` after the function returns, so the function
+//! writes the rows of its kind only, in table order. To read the node:
+//! `expr::node(w, e)` (kind, the per-kind bits 4-7 in place, `aux`, `a`,
+//! `b`, `ty`) and the `ExprArena` accessors (`w.ast.exprs`); to turn a
+//! word into an id, `expr::expr_id`, `expr::decl_id`, `expr::expr_list`
+//! (a word of 0 is the given `Unaccounted` cause, never a panic); to write
+//! children, `expr::child`, `expr::child_opt`, `expr::children`
+//! (`child*`); for bits and `aux` values no row accounts for,
+//! `expr::check_bits` and `expr::check_aux`. The rows of `ColdExprData`
+//! that a kind owns are functions of its file too
+//! (`expr_init::designators`, `expr_misc::array_trait_extra`,
+//! `expr_misc::offsetof_components`, `expr_misc::offsetof_layout`), called
+//! by `expr::cold` where their row stands.
 //!
 //! What a dispatch over a Kiln enumeration must look like: every variant
 //! listed, no `_` arm, no `..` over variants, a view destructured without
@@ -137,6 +190,10 @@ mod decl_func;
 mod decl_scope;
 mod demand;
 mod expr;
+mod expr_core;
+mod expr_dep;
+mod expr_init;
+mod expr_misc;
 mod fp;
 mod groups;
 mod keys;
@@ -154,6 +211,8 @@ mod walk;
 
 #[cfg(test)]
 mod tests;
+
+pub use walk::STACK_SIZE;
 
 /// A finished translation unit (`spec/digest.md` §1 rule 4).
 pub struct Input<'a> {

@@ -55,7 +55,7 @@ impl Walk<'_> {
         let read = crate::units::read_decl(self, e);
         // A unit digest of its own: a fresh unit state, and not inside the
         // key computation that may have asked for it.
-        let saved = std::mem::take(&mut self.unit);
+        let saved = self.take_unit();
         let in_key = std::mem::take(&mut self.in_key);
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);
@@ -138,8 +138,15 @@ impl Walk<'_> {
                 s.indeterminate(Cause::Unaccounted("DeclMisc/0-module-ownership"));
             }
         }
-        let undeclared =
-            redecls.iter().all(|&x| ast.decls.get(x).misc().friend() == FriendKind::Undeclared);
+        // Kiln gives a specialisation its template's first declaration's
+        // friend kind: that of the template's written declaration, when it
+        // has one, not of one an instantiation made first (WP-032).
+        let of_written_template = ast.spec_info(e).is_some_and(|(_, i)| {
+            let t = self.representative(self.entity(i.template));
+            ast.decls.get(t).misc().friend() != FriendKind::Undeclared
+        });
+        let undeclared = !of_written_template
+            && redecls.iter().all(|&x| ast.decls.get(x).misc().friend() == FriendKind::Undeclared);
         let friend = if undeclared { FriendKind::Undeclared } else { FriendKind::None };
         let local_extern = redecls.iter().all(|&x| self.is_local_extern(x));
         // The first declaration written, not one an instantiation added

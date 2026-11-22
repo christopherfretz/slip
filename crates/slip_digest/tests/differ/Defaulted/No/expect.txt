@@ -3,3 +3,4 @@
 # member is of the deferrable class). decl_func::tests::fn_spec_defaulted_tag
 # isolates the tag.
 changed C::C()
+changed C

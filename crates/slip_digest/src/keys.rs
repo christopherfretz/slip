@@ -230,9 +230,12 @@ impl Walk<'_> {
         self.keys_in_progress.insert(e);
         // A key does not depend on the unit that asks for it: the unit's
         // local state is put aside (`Walk::in_key`).
-        let saved = std::mem::take(&mut self.unit);
+        let saved = self.take_unit();
         self.in_key += 1;
-        let computed = self.compute_key(e);
+        // Read from the representative: Kiln's first declaration may be
+        // one an instantiation made outside its class, whose template head
+        // is the instantiation's (WP-032).
+        let computed = self.compute_key(self.representative(e));
         self.in_key -= 1;
         self.unit = saved;
         let res = match computed {
@@ -250,6 +253,28 @@ impl Walk<'_> {
             self.keys.insert(e, res);
         }
         res
+    }
+
+    /// The bytes of the mapped key of `d`'s entity, which `canonical_decl`
+    /// orders by (WP-032 rule 3); `None` when it has no key. Not memoised:
+    /// it is asked for once per declaration of an entity declared only by
+    /// instantiations.
+    pub(crate) fn key_bytes(&mut self, d: DeclId) -> Option<Vec<u8>> {
+        if !matches!(self.key(d), KeyRes::Key { .. }) {
+            return None;
+        }
+        let e = self.entity(d);
+        if !self.enter() {
+            return None;
+        }
+        let (saved, bytes) = (self.take_unit(), self.bytes);
+        self.in_key += 1;
+        let computed = self.compute_key(self.representative(e));
+        self.in_key -= 1;
+        self.unit = saved;
+        self.bytes = bytes;
+        self.leave();
+        computed.ok().map(|(key, _)| self.rules.map(key).to_bytes())
     }
 
     /// `key`: the mapped `KeyId` as a `digest` (digest-kinds §1.3).
@@ -922,7 +947,8 @@ impl Walk<'_> {
                 if c_linkage {
                     return None;
                 }
-                self.function_disc(&mut s, e);
+                let befriended = self.friend_class(e).is_some();
+                self.function_disc(&mut s, e, befriended);
             }
             KeyKind::DeductionGuide => {
                 let template = match ast.names.view(ast.decls.get(e).name()) {
@@ -936,7 +962,7 @@ impl Walk<'_> {
                     | DeclNameView::LiteralOperator(_) => None,
                 };
                 self.write_ref_opt(&mut s, template);
-                self.function_disc(&mut s, e);
+                self.function_disc(&mut s, e, false);
             }
             KeyKind::FunctionTemplate => {
                 let info = ast.template_info(e).copied();
@@ -945,7 +971,8 @@ impl Walk<'_> {
                         crate::templ::template_head(self, &mut s, i.params);
                         match i.pattern {
                             Some(p) => {
-                                self.function_disc(&mut s, p);
+                                let befriended = self.friend_class(e).is_some();
+                                self.function_disc(&mut s, p, befriended);
                                 let ret = ast.decls.get(p).ty().and_then(|q| {
                                     ast.types
                                         .proto(q)
@@ -1018,7 +1045,11 @@ impl Walk<'_> {
     /// parameter types, variadic, the cv-qualifiers of `this` as a flag
     /// word, the ref-qualifier, the explicit-object flag and the trailing
     /// requires-clause.
-    pub(crate) fn function_disc(&mut self, s: &mut Stream, f: DeclId) {
+    /// `befriended`: the function is a friend whose parent is the class
+    /// that befriends it (`friend_class`), which appends `uv` 1 after the
+    /// requires-clause (§3.3 `function`), so that it never has a member's
+    /// key.
+    pub(crate) fn function_disc(&mut self, s: &mut Stream, f: DeclId, befriended: bool) {
         let ast = self.ast;
         let proto =
             ast.decls.get(f).ty().and_then(|q| match ast.types.view(ast.types.canonical(q).ty()) {
@@ -1084,7 +1115,10 @@ impl Walk<'_> {
         let requires = ast.templates.trailing_requires.get(f).copied();
         s.opt(requires.is_some());
         if let Some(r) = requires {
-            crate::expr::profile_expr(self, s, r);
+            crate::expr_dep::profile_expr(self, s, r);
+        }
+        if befriended {
+            s.uv(1);
         }
     }
 }

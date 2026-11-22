@@ -1,3 +1,4 @@
 # an implicitly declared member is a derived unit, so only the removal of the
 # declared one is seen; decl_func::tests::fn_spec_defaulted_tag isolates the tag.
 removed C::C()
+changed C

@@ -35,6 +35,10 @@ pub(crate) enum UnitClass {
 pub(crate) struct Written {
     /// The entity (its first declaration); `None` for the order unit.
     pub entity: Option<DeclId>,
+    /// The declaration the unit's name is read from: the one its stream
+    /// is read from for an entity declared only by instantiations, else
+    /// the representative (WP-032).
+    pub read: Option<DeclId>,
     pub key: Digest,
     pub kind: KeyKind,
     pub digest: Digest,
@@ -103,6 +107,11 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
         return None;
     }
     if let Some((TemplLinkKind::Pattern, _)) = ast.templ_link(e).get() {
+        return None;
+    }
+    // Declared only in the bodies of templated functions and of their
+    // instantiations: no unit (`spec/digest.md` §2.2; WP-032, check 3).
+    if w.chain(e).iter().all(|&d| in_templated_body(w, d)) {
         return None;
     }
     // Declared only by instantiations, outside their classes: derived
@@ -223,6 +232,50 @@ pub(crate) fn instantiated_outside_class(w: &Walk<'_>, d: DeclId) -> bool {
     lexically && !in_implicit_instantiation(w, d)
 }
 
+/// Declaration `d` names an entity outside the function whose body holds
+/// it (a block-scope `extern` declaration, or a friend of a local
+/// class), and that function is templated or is in an implicit
+/// instantiation (`spec/digest.md` §2.2; WP-032, check 3). Kiln chains the
+/// pattern's declaration to no other ([temp.spec.general]/2,
+/// `Sema::note_local_extern`), and an instantiation's declaration
+/// repeats the pattern's: neither is a declaration a unit reads.
+pub(crate) fn in_templated_body(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let lex = ast.decls.lexical_ctx(d);
+    if !w.is_local_extern(d) && lex == ast.decls.get(d).ctx() {
+        return false;
+    }
+    let mut ctx = lex;
+    let mut in_body = false;
+    for _ in 0..4096 {
+        let Some(x) = ctx else { return false };
+        let kind = ast.decls.get(x).kind();
+        if kind == DeclKind::TranslationUnit || kind == DeclKind::Namespace {
+            return false;
+        }
+        in_body = in_body || info(kind).local_scope;
+        if in_body {
+            match own_spec_kind(w, x) {
+                Some(SpecKind::ImplicitInstantiation) => return true,
+                Some(
+                    SpecKind::ExplicitSpecialization
+                    | SpecKind::ExplicitInstantiationDeclaration
+                    | SpecKind::ExplicitInstantiationDefinition
+                    | SpecKind::Undeclared,
+                ) => return false,
+                None => {}
+            }
+            if ast.described_template(x).is_some()
+                || kind == DeclKind::ClassTemplatePartialSpecialization
+            {
+                return true;
+            }
+        }
+        ctx = ast.decls.lexical_ctx(x);
+    }
+    false
+}
+
 /// Every declaration of entity `e` is instantiated outside its class
 /// (WP-032 rule 2): the entity exists only through instantiations.
 pub(crate) fn outside_only(w: &Walk<'_>, e: DeclId) -> bool {
@@ -306,30 +359,51 @@ fn all_implicit(w: &Walk<'_>, e: DeclId) -> bool {
 pub(crate) fn read_decl(w: &Walk<'_>, e: DeclId) -> DeclId {
     let ast = w.ast;
     if let Some(pattern) = ast.template_info(e).and_then(|i| i.pattern) {
-        return defining_decl(w, pattern).and_then(|def| ast.described_template(def)).unwrap_or(e);
+        return defining_decl(w, pattern)
+            .and_then(|def| ast.described_template(def))
+            .unwrap_or_else(|| w.representative(e));
     }
     defining_decl(w, e).unwrap_or_else(|| w.representative(e))
 }
 
-/// The declarations a unit's stream may be read from (§2.3): that of
-/// `read_decl`, except for an entity declared only by instantiations
-/// with no definition, whose declarations are all candidates. The unit
-/// is read from the one whose stream digest is least, so that the order
-/// in which the instantiations came does not matter (WP-032 rule 3).
-fn read_candidates(w: &Walk<'_>, e: DeclId) -> Vec<DeclId> {
-    let read = read_decl(w, e);
-    if read != e || !outside_only(w, e) {
-        return vec![read];
+/// The declaration an entity declared only by instantiations outside
+/// their class is read from (digest §2.2, WP-032 rule 3): the one whose
+/// declaring class specialisation (its lexical context) has the least
+/// mapped key, by the key's bytes; among declarations of one class (a
+/// friend declared twice), the one whose own stream digest is least.
+/// Its unit's stream, origin file and name are read from it, once; a
+/// definition another of them holds is not part of the unit.
+pub(crate) fn canonical_decl(w: &mut Walk<'_>, e: DeclId) -> DeclId {
+    let ast = w.ast;
+    let mut best: Option<(Vec<u8>, Vec<DeclId>)> = None;
+    for d in w.chain(e) {
+        #[cfg(test)]
+        tests::count_candidate(false);
+        let class = ast.decls.lexical_ctx(d).and_then(|c| w.key_bytes(c)).unwrap_or_default();
+        match &mut best {
+            Some((b, tied)) if *b == class => tied.push(d),
+            Some((b, _)) if *b < class => {}
+            Some(_) | None => best = Some((class, vec![d])),
+        }
     }
-    if let Some(pattern) = w.ast.template_info(e).and_then(|i| i.pattern)
-        && defining_decl(w, pattern).is_some()
-    {
-        return vec![read];
+    let Some((_, tied)) = best else { return e };
+    if tied.len() == 1 {
+        return tied[0];
     }
-    if defining_decl(w, e).is_some() {
-        return vec![read];
+    let mut least: Option<(Digest, DeclId)> = None;
+    for d in tied {
+        #[cfg(test)]
+        tests::count_candidate(true);
+        let saved = w.take_unit();
+        let mut s = Stream::new();
+        w.decl_stream(&mut s, d, e);
+        w.unit = saved;
+        let h = s.finish(UNIT_TAG);
+        if least.is_none_or(|(l, _)| h.digest < l) {
+            least = Some((h.digest, d));
+        }
     }
-    w.redecls(e)
+    least.map_or(e, |(_, d)| d)
 }
 
 /// The defining declaration of entity `e` (§2.3), if it has one. Kiln
@@ -338,14 +412,18 @@ fn read_candidates(w: &Walk<'_>, e: DeclId) -> Vec<DeclId> {
 /// definition ([basic.def]/2), the search Kiln's own reading of a
 /// variable's initialiser makes over the chain (`kiln_oven/src/value.rs`).
 ///
-/// A definition an instantiation added outside its class is no definition
-/// of an entity that has a written declaration (WP-032 rule 1).
+/// A definition an instantiation added outside its class is none: of an
+/// entity that has a written declaration, nor of one declared only by
+/// instantiations, whose unit is read from one declaration and whose
+/// definition is its class specialisation's (WP-032 rules 1 and 3).
 pub(crate) fn defining_decl(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
     let ast = w.ast;
     if ast.decls.var(e).is_none() {
+        // Through the representative: Kiln's definition of a template is
+        // the template asked about (`Ast::definition`).
         return ast
-            .definition(e)
-            .filter(|&def| !instantiated_outside_class(w, def) || outside_only(w, e));
+            .definition(w.representative(e))
+            .filter(|&def| !instantiated_outside_class(w, def));
     }
     let mut chain = w.redecls(e);
     chain.reverse();
@@ -380,24 +458,20 @@ fn is_var_definition(w: &Walk<'_>, d: DeclId) -> bool {
 /// (`spec/landed/digest/WP-024.md`): nothing §2.1 makes a unit vanishes.
 pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Written> {
     let content = matches!(info(w.ast.decls.get(e).kind()).role, Role::Content(_));
+    let outside = !content && outside_only(w, e);
+    let read = if outside { canonical_decl(w, e) } else { w.representative(e) };
     let hashed = if content {
         w.content_hash(e)
     } else {
-        let mut least: Option<crate::stream::Hashed> = None;
-        for read in read_candidates(w, e) {
-            let saved = std::mem::take(&mut w.unit);
-            let mut s = Stream::new();
-            w.decl_stream(&mut s, read, e);
-            w.unit = saved;
-            let h = s.finish(UNIT_TAG);
-            if least.is_none_or(|l| h.digest < l.digest) {
-                least = Some(h);
-            }
-        }
-        match least {
-            Some(h) => w.hashed(h),
-            None => return None,
-        }
+        let from = if outside { read } else { read_decl(w, e) };
+        let saved = w.take_unit();
+        let mut s = Stream::new();
+        w.decl_stream(&mut s, from, e);
+        w.unit = saved;
+        #[cfg(test)]
+        tests::count_read(e);
+        let h = s.finish(UNIT_TAG);
+        w.hashed(h)
     };
     let (key, kind, key_cause) = match w.key(e) {
         KeyRes::Key { id, kind, cause } => (id, kind, cause),
@@ -415,11 +489,12 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         (GroupClass::Tu, Vec::new())
     } else {
         match class {
-            UnitClass::Declared => (GroupClass::Declared, w.file_of(e)),
-            UnitClass::Derived | UnitClass::OnDemand => (GroupClass::Derived, origin_file(w, e)),
+            UnitClass::Declared => (GroupClass::Declared, w.file_of(w.representative(e))),
+            UnitClass::Derived | UnitClass::OnDemand => (GroupClass::Derived, origin_file(w, read)),
         }
     };
-    Some(Written { entity: Some(e), key, kind, digest: hashed.digest, cause, class, file })
+    let entity = Some(e);
+    Some(Written { entity, read: Some(read), key, kind, digest: hashed.digest, cause, class, file })
 }
 
 /// The fallback key of a unit whose key cannot be formed: its own key
@@ -501,6 +576,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
     w.bytes += bytes.len() as u64;
     Written {
         entity: None,
+        read: None,
         key: key.id(),
         kind: KeyKind::Order,
         digest: h.digest,
@@ -605,6 +681,12 @@ impl Walk<'_> {
     /// left out unless every declaration is one (WP-032 rule 1).
     pub(crate) fn redecls(&self, e: DeclId) -> Vec<DeclId> {
         let chain = self.chain(e);
+        let read = |&d: &DeclId| !in_templated_body(self, d);
+        let chain: Vec<DeclId> = if chain.iter().any(read) && chain.len() <= REDECL_LIMIT {
+            chain.into_iter().filter(read).collect()
+        } else {
+            chain
+        };
         if chain.len() > REDECL_LIMIT || chain.iter().all(|&d| instantiated_outside_class(self, d))
         {
             return chain;
@@ -616,23 +698,38 @@ impl Walk<'_> {
     /// from: its earliest declaration that is not instantiated outside its
     /// class; `e` itself for an entity that has none.
     pub(crate) fn representative(&self, e: DeclId) -> DeclId {
-        let ast = self.ast;
-        if ast.decls.redecl(e).is_none() {
-            return e;
-        }
         let mut chain = self.chain(e);
         chain.reverse();
-        chain.into_iter().find(|&d| !instantiated_outside_class(self, d)).unwrap_or(e)
+        chain
+            .into_iter()
+            .find(|&d| !instantiated_outside_class(self, d) && !in_templated_body(self, d))
+            .unwrap_or(e)
     }
 
-    /// Every declaration of entity `e`, in Kiln's chain order.
-    fn chain(&self, e: DeclId) -> Vec<DeclId> {
+    /// Every declaration of entity `e`, in Kiln's chain order. A template
+    /// is not redeclarable itself: Kiln keeps its declarations as those
+    /// of its pattern (`Ast::first`, `template_redecl`), so its chain is
+    /// the templates its pattern's declarations describe.
+    pub(crate) fn chain(&self, e: DeclId) -> Vec<DeclId> {
         let ast = self.ast;
-        if ast.decls.redecl(e).is_none() {
+        let pattern = ast.template_info(e).and_then(|i| i.pattern);
+        let (start, template) = match pattern {
+            Some(p) if ast.decls.redecl(e).is_none() && ast.decls.redecl(p).is_some() => (p, true),
+            Some(_) | None => (e, false),
+        };
+        if ast.decls.redecl(start).is_none() {
             return vec![e];
         }
         let mut out: Vec<DeclId> = Vec::new();
-        for d in ast.redecls_of(e) {
+        for d in ast.redecls_of(start) {
+            let d = if template {
+                match ast.described_template(d) {
+                    Some(t) => t,
+                    None => continue,
+                }
+            } else {
+                d
+            };
             // Past the limit the list ends with one more element, which
             // `decl_node` makes `Unaccounted("redecls/limit")`.
             if out.len() > REDECL_LIMIT {
@@ -672,6 +769,71 @@ mod tests {
     use super::{UnitClass, instantiated_outside_class, outside_only, unit_class};
     use crate::decl_func::tests::{named, with_walk};
     use crate::walk::Walk;
+
+    thread_local! {
+        /// How many times `write` has read each entity's stream.
+        static READS: std::cell::RefCell<std::collections::BTreeMap<DeclId, u64>> =
+            const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    }
+
+    /// Counts one read of `e`'s stream by `write`.
+    pub(super) fn count_read(e: DeclId) {
+        READS.with(|r| *r.borrow_mut().entry(e).or_insert(0) += 1);
+    }
+
+    thread_local! {
+        /// The candidates `canonical_decl` has keyed, and those whose
+        /// stream it has read to break a tie.
+        static CANDIDATES: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+    }
+
+    /// Counts one candidate `canonical_decl` keys, or (`read`) reads.
+    pub(super) fn count_candidate(read: bool) {
+        CANDIDATES.with(|c| {
+            let (k, r) = c.get();
+            c.set(if read { (k, r + 1) } else { (k + 1, r) });
+        });
+    }
+
+    // WP-032 rule 3: an entity declared only by the instantiations of `n`
+    // class templates has its stream read once, from one candidate, after
+    // `n` candidates are keyed and none is read; the work grows linearly
+    // (2,000 declaring specialisations cost about ten times 200, not a
+    // hundred times).
+    #[test]
+    fn canonical_candidate_read_once() {
+        let src = |n: usize| -> String {
+            use std::fmt::Write as _;
+            let mut s = String::new();
+            for i in 0..n {
+                let _ = writeln!(
+                    s,
+                    "template <class T> struct A{i} {{ friend void j(long); }};\nA{i}<int> a{i};"
+                );
+            }
+            s
+        };
+        let run = |n: usize| -> std::time::Duration {
+            let text = src(n);
+            let j = with_walk(&text, |w| w.entity(named(w, "j", DeclKind::Function)[0]));
+            READS.with(|r| r.borrow_mut().clear());
+            CANDIDATES.with(|c| c.set((0, 0)));
+            let (all, took) = units_timed(&text);
+            let derived = all
+                .into_iter()
+                .filter(|(class, name, _, _)| *class == GroupClass::Derived && name == "j(long)")
+                .count();
+            assert_eq!(derived, 1, "one unit for j");
+            assert_eq!(READS.with(|r| r.borrow().get(&j).copied()), Some(1), "read once");
+            let (keyed, read) = CANDIDATES.with(std::cell::Cell::get);
+            assert_eq!(read, 0, "no tie, no candidate's stream read");
+            assert_eq!(keyed, n as u64, "each candidate keyed once");
+            took
+        };
+        let small = run(200);
+        let large = run(2000);
+        assert!(large < small * 30, "200: {small:?}, 2000: {large:?}");
+    }
 
     /// The kind of `d`'s lexical context's own `SpecInfo`, if any.
     fn lexical_spec(w: &Walk<'_>, d: DeclId) -> Option<SpecKind> {
@@ -719,6 +881,47 @@ mod tests {
         });
     }
 
+    // WP-032: a friend that redeclares a member of another implicit
+    // instantiation (`B<int>::m`, declared in `A<int>`) is in an
+    // instantiation semantically too, so not instantiated outside its
+    // class: it stays a declaration of `B<int>::m`'s unit.
+    #[test]
+    fn friend_member_of_instantiation_is_not_outside() {
+        let src = "template <class T> struct B { void m(); };\n\
+                   template <class T> struct A { friend void B<T>::m(); };\n\
+                   A<int> a;\n";
+        with_walk(src, |w| {
+            let ms = named(w, "m", DeclKind::CXXMethod);
+            let friend: Vec<DeclId> = ms
+                .iter()
+                .copied()
+                .filter(|&d| lexical_spec(w, d) == Some(SpecKind::ImplicitInstantiation))
+                .filter(|&d| w.ast.decls.lexical_ctx(d) != w.ast.decls.get(d).ctx())
+                .collect();
+            assert_eq!(friend.len(), 1, "A<int>'s declaration of B<int>::m");
+            let d = friend[0];
+            assert!(!instantiated_outside_class(w, d));
+            assert!(w.redecls(w.entity(d)).contains(&d));
+        });
+    }
+
+    // WP-032 rule 2: a friend function template declared only by an
+    // instantiation (not a function, so `definition_class` reaches its last
+    // branch) is of the definition class, as its specialisations are
+    // instantiated on use.
+    #[test]
+    fn friend_template_declared_by_instantiation_is_definition_class() {
+        let src = "template <class T> struct A { template <class U> friend void g(U) {} };\n\
+                   A<int> a;\n";
+        with_walk(src, |w| {
+            let gs = named(w, "g", DeclKind::FunctionTemplate);
+            let inst = *gs.last().expect("A<int>'s g");
+            let g = w.entity(inst);
+            assert!(outside_only(w, g));
+            assert!(crate::decl_func::definition_class(w, g));
+        });
+    }
+
     // WP-032 rules 1 and 2: `k` is declared first by an instantiation and
     // then in source: a declared unit, classified from the written
     // declaration. `j` exists only through the instantiations: derived, of
@@ -750,6 +953,11 @@ mod tests {
 
     /// The units of `src`: (class, name, key, digest).
     fn units(src: &str) -> Vec<(GroupClass, String, Digest, Digest)> {
+        units_timed(src).0
+    }
+
+    /// `units(src)`, and how long the digest took (not the parse).
+    fn units_timed(src: &str) -> (Vec<(GroupClass, String, Digest, Digest)>, std::time::Duration) {
         let files = [("main.cpp", src)];
         let snippet = slip_kiln::snippet::Snippet {
             files: &files,
@@ -763,7 +971,9 @@ mod tests {
             let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
             let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
             let options = crate::Options { rules: &rules, detail: crate::Detail::All, names: true };
+            let t = std::time::Instant::now();
             let o = crate::digest(&input, &options);
+            let took = t.elapsed();
             let names: std::collections::BTreeMap<Digest, String> =
                 o.names.iter().cloned().collect();
             let mut out = Vec::new();
@@ -773,7 +983,7 @@ mod tests {
                     out.push((g.class, name, u.key, u.digest));
                 }
             }
-            out
+            (out, took)
         })
         .expect("the snippet parses")
     }

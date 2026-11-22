@@ -336,7 +336,7 @@ parent key and nothing else.
 | KeyKind | `disc` is the digest of |
 |---|---|
 | `deduction_guide` | the `Ref` of the template deduced, then as `function` |
-| `function` | parameter types in order (`type*`), variadic, cv- and ref-qualifiers, explicit-object flag, trailing requires-clause (`profile?`); absent for a function with C language linkage |
+| `function` | parameter types in order (`type*`), variadic, cv- and ref-qualifiers, explicit-object flag, trailing requires-clause (`profile?`); then, only for a friend whose parent is the class that befriends it (a member-like friend, or a friend every declaration of which is in a templated class), `uv` 1, so that it never has the key of a member of that class with the same name and signature; absent for a function with C language linkage |
 | `function_template` | the template head (§9, `TemplateParamList`), then the function's discriminator, then its return type |
 | `class_template`, `variable_template`, `alias_template`, `concept` | the template head |
 | `specialisation` | the canonical template arguments (`enum ArgView*`) |
@@ -2882,7 +2882,7 @@ Rules the rows refer to:
 | `MemberExpr.aux` | flag | in | enum NonOdrUse |  |
 | `MemberExpr.a` | child | in | child | the object expression |
 | `MemberExpr.b` | entity | in | ref | the member; for an overloaded access the first candidate (rule above, and "Hazards accepted for now") |
-| `CXXThisExpr.aux-implicit` | flag | in | bit | bit 0: Kiln's evaluator and its template substitution read it |
+| `CXXThisExpr.aux-implicit` | flag | in | bit | bit 0, written only for an instantiation-dependent node: Kiln's template substitution, its mangling of dependent expressions and its profiles read it; elsewhere nothing but diagnostics does (pitfalls E07) |
 | `PredefinedExpr.aux` | flag | in | enum PredefinedKind |  |
 | `PredefinedExpr.a` | value | symbolic | - | the string literal holding the enclosing function's name; absent in a dependent context |
 | `SourceLocExpr.aux` | flag | in | enum SourceLocKind |  |
@@ -3697,7 +3697,7 @@ kind; an expression with no entry writes the encoding's empty form (§2.1).
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `end_loc` | location | out | - |  |
-| `member_extra-qualified` | flag | in | bool | a `MemberExpr` whose `DeclRefExtra` has a qualifier: a qualified member name suppresses virtual dispatch (digest §6) |
+| `member_extra-qualified` | flag | in | bool | a `MemberExpr` whose `DeclRefExtra` has a qualifier and whose member is a virtual function: a qualified name suppresses virtual dispatch (digest §6); a qualifier on any other member is not a fact |
 | `member_extra-record` | written | in | record DeclRefExtra | no entry is written as a record with nothing present |
 | `designators` | name | in | enum Designator* | outermost first |
 | `syntactic_list` | child | in | child? | the list as written, in a template pattern: instantiation rebuilds from it |
@@ -5435,6 +5435,16 @@ is `parameter` with the parameter's index (0 for a field). That the
 parameter has a default argument at all is a fact of the pattern, which
 the instantiation names (`SpecInfo` `from`, `MemberSpecInfo`
 `instantiated_from`).
+
+For a field the same holds under every form of instantiation: a field's
+default member initialiser is absent for every field instantiated from a
+pattern, whether its class is an implicit instantiation, an explicit
+instantiation declaration or an explicit instantiation definition, or a
+member class of one. Kiln instantiates the initialiser at its first use
+in all three, so an explicit instantiation does not make it a fact of
+the class. A field written in source (in a primary template, a partial
+or explicit specialisation, a class that is not a template, or a local
+class of any function) is written with its initialiser.
 
 `ColdExprData` `default_imm` holds the value of an immediate invocation
 inside a default argument or default member initialiser, computed at the

@@ -1,0 +1,3 @@
+# pending
+# needs: decl_data
+# ColdDeclData `ctor_inits` is written by WP-033; until then the pair passes trivially

@@ -18,12 +18,30 @@ use crate::{Cause, Input, Options, Output};
 /// the unit is indeterminate (`Cause::Unaccounted("walk/depth")`). The
 /// closure `slip_kiln::snippet` runs, and the worker's walk, run outside
 /// Kiln's stack guard: this bound is what keeps the walk's own stack
-/// finite (WP-024 "what bounds the stack"). Each level is a few frames of
-/// a few hundred bytes, so 200 levels stay far below a 2 MiB thread stack.
+/// finite (WP-024 "what bounds the stack"). The stack 200 levels take is
+/// measured with [`NODE_LIMIT`]'s (`lib.rs` "What bounds the stack").
 pub(crate) const DEPTH_LIMIT: u32 = 200;
 
-/// The cause of a walk deeper than [`DEPTH_LIMIT`].
+/// The cause of a walk deeper than [`DEPTH_LIMIT`] or [`NODE_LIMIT`].
 pub(crate) const TOO_DEEP: Cause = Cause::Unaccounted("walk/depth");
+
+/// How deep statements and expressions may nest through Rust recursion
+/// before the unit is indeterminate ([`TOO_DEEP`]): each
+/// [`Walk::enter_node`] is one level. The expression walk does not
+/// recurse for the children of the kinds it writes itself (`expr.rs`
+/// "The walk"), so an operator chain or a call chain of any length takes
+/// one level; what recurses is a kind function that calls
+/// `expr::child` itself, and the statements. The stack this needs is
+/// [`STACK_SIZE`] (`lib.rs` "What bounds the stack").
+pub(crate) const NODE_LIMIT: u32 = 10_000;
+
+/// The stack `crate::digest` needs, in bytes (`lib.rs` "What bounds the
+/// stack"): [`NODE_LIMIT`] levels of statement or expression recursion
+/// and [`DEPTH_LIMIT`] levels of types, keys and declarations at the
+/// frame sizes `expr::tests::frames_fit_the_stack` measures (about 9.0 MB
+/// in the test profile), with a margin of more than four, which that test
+/// checks.
+pub const STACK_SIZE: usize = 64 << 20;
 
 /// The state of the unit being written (`spec/digest.md` §4.3).
 #[derive(Debug, Default)]
@@ -37,6 +55,33 @@ pub(crate) struct UnitState {
     pub local_uses: u64,
     /// Type digests that hold a reference to a local entity of this unit.
     pub types: HashMap<u64, TypeRef>,
+    /// The expression walk's state.
+    pub expr: ExprState,
+}
+
+/// The state of the expression walk in a unit (`expr.rs`): put aside with
+/// the rest of [`UnitState`] for a key, a content digest or a unit
+/// ([`Walk::take_unit`]), and alone for a type digest
+/// ([`Walk::take_expr_state`]), whose bytes must not depend on the unit
+/// that asks first.
+#[derive(Debug, Default)]
+pub(crate) struct ExprState {
+    /// The number of each opaque value's source, in the order the walk
+    /// numbers it (digest-kinds §7, "Opaque values"), and the next number.
+    pub opaques: HashMap<slip_kiln::kiln::ast::ExprId, u64>,
+    pub next_opaque: u64,
+    /// How many instantiation-dependent expressions enclose the node the
+    /// expression walk is writing, itself included
+    /// (`expr_core::this`).
+    pub dependent: u32,
+}
+
+impl ExprState {
+    /// Nothing numbered and nothing around: the state a type digest
+    /// starts from.
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.opaques.is_empty() && self.next_opaque == 0 && self.dependent == 0
+    }
 }
 
 /// The context of one walk: the memo, the key table, the worklist and the
@@ -78,6 +123,9 @@ pub(crate) struct Walk<'a> {
     /// ordinal (`write_ref`).
     pub in_key: u32,
     pub depth: u32,
+    /// The levels of statement and expression recursion entered
+    /// ([`Walk::enter_node`]).
+    pub node_depth: u32,
     /// How many times the depth limit was hit or a cycle was met (a key or
     /// a content digest that needs itself): a memo entry is not kept for a
     /// result computed below such a hit (its cause depends on the path
@@ -115,6 +163,7 @@ impl<'a> Walk<'a> {
             unit: UnitState::default(),
             in_key: 0,
             depth: 0,
+            node_depth: 0,
             aborts: 0,
             bytes: 0,
         }
@@ -123,6 +172,7 @@ impl<'a> Walk<'a> {
     /// Enters one level of nesting; `false` (and the level is not
     /// entered) past [`DEPTH_LIMIT`].
     pub(crate) fn enter(&mut self) -> bool {
+        stack_probe();
         if self.depth >= DEPTH_LIMIT {
             self.aborts += 1;
             return false;
@@ -136,6 +186,39 @@ impl<'a> Walk<'a> {
         self.depth -= 1;
     }
 
+    /// Enters one level of statement or expression recursion; `false`
+    /// (and the level is not entered) past [`NODE_LIMIT`]. The caller then
+    /// writes a placeholder and makes the stream indeterminate with
+    /// [`TOO_DEEP`].
+    pub(crate) fn enter_node(&mut self) -> bool {
+        stack_probe();
+        if self.node_depth >= NODE_LIMIT {
+            self.aborts += 1;
+            return false;
+        }
+        self.node_depth += 1;
+        true
+    }
+
+    pub(crate) fn leave_node(&mut self) {
+        debug_assert!(self.node_depth > 0, "leave_node without enter_node");
+        self.node_depth -= 1;
+    }
+
+    /// The unit's state, put aside for a computation that must not depend
+    /// on the unit that asks for it (a key, a content digest, a unit),
+    /// leaving a fresh one; the caller puts it back.
+    pub(crate) fn take_unit(&mut self) -> UnitState {
+        std::mem::take(&mut self.unit)
+    }
+
+    /// The expression walk's state alone, put aside for a type digest
+    /// (memoised across units); the unit's locals stay, since a type may
+    /// name one (§4.2). The caller puts it back.
+    pub(crate) fn take_expr_state(&mut self) -> ExprState {
+        std::mem::take(&mut self.unit.expr)
+    }
+
     /// Counts the bytes of a hashed stream.
     pub(crate) fn hashed(&mut self, h: Hashed) -> Hashed {
         self.bytes += h.bytes;
@@ -147,6 +230,29 @@ impl<'a> Walk<'a> {
         if self.queued.insert(e) {
             self.queue.push((e, class));
         }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The lowest stack address [`stack_probe`] saw on this thread, and
+    /// the address of each depth of [`Walk::enter`] first seen: what the
+    /// frame-size test reads (`expr::tests`).
+    pub(crate) static STACK_LOW: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+/// Records how deep the stack is here (tests only; nothing otherwise).
+#[inline]
+pub(crate) fn stack_probe() {
+    #[cfg(test)]
+    {
+        let here = 0u8;
+        let at = std::ptr::addr_of!(here) as usize;
+        STACK_LOW.with(|low| {
+            if at < low.get() {
+                low.set(at);
+            }
+        });
     }
 }
 

@@ -1,1 +1,2 @@
 added C::~C()
+changed C

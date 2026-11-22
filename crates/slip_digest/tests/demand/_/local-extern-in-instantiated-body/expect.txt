@@ -1,6 +1,1 @@
-# pending
-# Kiln does not join a block-scope extern declared by an instantiated body
-# to the pattern's (WP-032 check 3): the instantiation's `ext` is a
-# derived entity whose key is that of the pattern's declared one, and the
-# two collide on side B only.
 added use()

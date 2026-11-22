@@ -52,7 +52,7 @@ pub(crate) fn function_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
     };
-    let e = ast.first(d);
+    let e = w.representative(ast.first(d));
     let definition_class = function_definition_class(w, e);
     // params: decl*, in order. A default argument taken from another
     // declaration names that declaration's parameters: parameter i of
@@ -216,7 +216,7 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
     };
-    let e = ast.first(d);
+    let e = w.representative(ast.first(d));
     let definition_class = var_definition_class(w, e);
     // `init`, `0-init-style` and `eval` belong to the declaration that
     // holds the initialiser, which need not be the one read (an in-class
@@ -903,6 +903,24 @@ pub(crate) mod tests {
         });
     }
 
+    // WP-032 rule 1: a comparison an instantiation declares first, as a
+    // friend, and that is then defaulted at namespace scope is defaulted on
+    // its first written declaration, the representative, not on Kiln's
+    // first declaration: of the definition class.
+    #[test]
+    fn defaulted_after_friend_instantiation() {
+        let src = "template <class T> struct E { friend bool operator==(const E&, const E&); };\n\
+                   E<int> e;\n\
+                   bool operator==(const E<int>&, const E<int>&) = default;\n";
+        with_walk(src, |w| {
+            let written = *of_kind(w, DeclKind::Function).last().expect("the written ==");
+            let e = w.entity(written);
+            assert_ne!(e, written, "Kiln's first declaration is the instantiation's");
+            assert_eq!(w.representative(e), written);
+            assert!(super::function_definition_class(w, e));
+        });
+    }
+
     // digest-kinds §11.9: for the definition class the body is absent and
     // the unit `Pending(Demand)` until resolved units exist.
     #[test]
@@ -971,7 +989,7 @@ pub(crate) mod tests {
         let (held, cause) =
             var_bytes("struct S { static const int x = 1; };\nconst int S::x;", "x");
         assert_eq!(held[0], 1);
-        assert_eq!(cause, Some(Cause::Pending(crate::Area::Expr)));
+        assert_eq!(cause, Some(Cause::Pending(crate::Area::Demand)));
         let (none, _) = var_bytes("struct S { static int x; };\nint S::x;", "x");
         assert_eq!(none[0], 0);
         let (out_of_line, _) =
