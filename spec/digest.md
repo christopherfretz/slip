@@ -499,6 +499,17 @@ this spec says:
 - it holds demand-driven state that `digest-kinds.md` could not assign to a
   derived unit.
 
+**No unit vanishes.** An entity that §2.1 makes a unit and whose key
+cannot be formed (an unexpected parent or name, a cycle, a kind whose key
+is not written yet) is still a unit: it is written under a fallback key
+(its own kind; parent the nearest enclosing entity that has a key, else
+`root`; name `content`; `disc` the unit's digest) and is indeterminate.
+A declaration of a kind that has no key kind at all makes the unit of
+the nearest enclosing entity indeterminate, the order unit at the top
+level. A key built from an indeterminate key (its parent's, its
+template's, one in its discriminator) is indeterminate for the same
+cause.
+
 Its digest is still computed and recorded, with the `indeterminate` flag.
 Verification treats an indeterminate unit as different from every unit.
 The number of indeterminate units is a counter (§12) that the corpus
