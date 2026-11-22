@@ -21,7 +21,8 @@
 //! Exit status: 0 if every step that ran passed, 1 if one failed, 2 for a
 //! usage error. Cargo is the `CARGO` environment variable (cargo sets it
 //! for `cargo run`), else `cargo` on `PATH`; each cargo command runs in
-//! the repository root, without `SLIP_DIGEST_ONLY` in its environment.
+//! the repository root, without `SLIP_DIGEST_ONLY`, `SLIP_TEST_THREADS`,
+//! `SLIP_DIGEST_DERIVED` or `SLIP_DIGEST_TIMES` in its environment.
 
 use crate::lint;
 use std::ffi::{OsStr, OsString};
@@ -164,11 +165,23 @@ fn run_step(name: &str, root: &Path, cargo: &OsStr, out: &mut dyn Write) -> bool
     }
 }
 
+/// The variables of the digest's pair tests the gate removes from the
+/// environment of what it runs.
+const PAIR_TEST_VARS: [&str; 4] =
+    ["SLIP_DIGEST_ONLY", "SLIP_TEST_THREADS", "SLIP_DIGEST_DERIVED", "SLIP_DIGEST_TIMES"];
+
 fn cargo_ok(cargo: &OsStr, root: &Path, args: &[&str], out: &mut dyn Write) -> bool {
     let _ = out.flush();
-    // A narrowed run of the digest's pair tests (`SLIP_DIGEST_ONLY`,
-    // spec/harness.md §6.1) left set in the shell is never the gate.
-    match Command::new(cargo).args(args).current_dir(root).env_remove("SLIP_DIGEST_ONLY").status() {
+    // A setting of the digest's pair tests left in the shell is never the
+    // gate's (spec/harness.md §6.1, spec/landed/harness/WP-047.md): a
+    // narrowed run, a pool size, the report of unnamed derived units, the
+    // times.
+    let mut cmd = Command::new(cargo);
+    cmd.args(args).current_dir(root);
+    for var in PAIR_TEST_VARS {
+        cmd.env_remove(var);
+    }
+    match cmd.status() {
         Ok(status) => status.success(),
         Err(e) => {
             let _ =
