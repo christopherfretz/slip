@@ -1,0 +1,1221 @@
+//! The shard's `digests` section (`spec/digest.md` §11, section 19) and
+//! `verdict` section (`spec/verify.md` §6, section 21), in binary and JSON
+//! form (`spec/model.md` §2, §8, §10). Work package WP-015; the offsets and
+//! paths pinned here are those of `spec/landed/model/WP-015.md`. Each test
+//! names the section it covers.
+
+use std::fs;
+use std::path::Path;
+
+use slip_model::container::{TRAILER_LEN, Writer};
+use slip_model::digests::{
+    Digests, GROUP_TAG, Group, GroupClass, SCHEME, TU_TAG, Unit, group_digest, tu_digest,
+};
+use slip_model::formats::{JsonFormError, content_id, dump, undump};
+use slip_model::hash::content_digest;
+use slip_model::json::{self, Value};
+use slip_model::verdict::{Finding, FindingKind, Site, Verdict, VerdictKind, Where};
+use slip_model::wire::{Encoder, Error, ErrorKind};
+use slip_model::{Counter, Digest, FileRef, Outcome, Phase, Shard, Status};
+
+// ---------------------------------------------------------------------------
+// Helpers
+
+fn d(n: u8) -> Digest {
+    Digest([n; 32])
+}
+
+fn unit(key: u8, digest: u8, flags: u64) -> Unit {
+    Unit { key: d(key), digest: d(digest), flags }
+}
+
+/// A group with its unit list, its count and digest computed from it.
+fn listed(class: GroupClass, file: &[u8], units: Vec<Unit>) -> Group {
+    Group {
+        class,
+        file: file.to_vec(),
+        count: units.len() as u64,
+        digest: group_digest(&units),
+        units: Some(units),
+    }
+}
+
+/// A group without its unit list.
+fn summed(class: GroupClass, file: &[u8], count: u64, digest: Digest) -> Group {
+    Group { class, file: file.to_vec(), count, digest, units: None }
+}
+
+fn digests_of(groups: Vec<Group>) -> Digests {
+    Digests { scheme: SCHEME, tu: tu_digest(&groups), groups }
+}
+
+/// Recomputes every listed group's digest and the `tu` digest, so that a
+/// test that breaks another rule breaks only that one.
+fn resum(s: &mut Shard) {
+    let ds = s.digests.as_mut().unwrap();
+    for g in &mut ds.groups {
+        if let Some(units) = &g.units {
+            g.digest = group_digest(units);
+        }
+    }
+    ds.tu = tu_digest(&ds.groups);
+}
+
+fn ok() -> Outcome {
+    Outcome { status: Status::Ok, errors: 0, warnings: 0, message: String::new() }
+}
+
+fn hex(parts: &[&str]) -> Vec<u8> {
+    let text: String = parts.concat().chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(text.len().is_multiple_of(2), "odd hex in test");
+    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap()).collect()
+}
+
+fn rep(byte: &str, n: usize) -> String {
+    byte.repeat(n)
+}
+
+fn reseal(mut bytes: Vec<u8>) -> Vec<u8> {
+    let body = bytes.len() - TRAILER_LEN;
+    let t = content_digest(&bytes[..body]);
+    bytes[body..].copy_from_slice(t.as_bytes());
+    bytes
+}
+
+fn patch(bytes: &[u8], at: usize, from: u8, to: u8) -> Vec<u8> {
+    let mut b = bytes.to_vec();
+    assert_eq!(b[at], from, "patch: byte {at} is not what the test expects");
+    b[at] = to;
+    reseal(b)
+}
+
+fn sealed(sections: &[(u64, Vec<u8>)]) -> Vec<u8> {
+    let mut w = Writer::new(*b"SHRD", 1);
+    for (id, p) in sections {
+        w.section(*id, p);
+    }
+    w.finish()
+}
+
+fn parse(text: &str) -> Value {
+    json::parse(text.as_bytes()).unwrap()
+}
+
+fn set(v: &mut Value, path: &[&str], new: Value) {
+    let mut cur = v;
+    for step in path {
+        cur = match cur {
+            Value::Object(m) => &mut m.iter_mut().find(|(k, _)| k == step).unwrap().1,
+            Value::Array(a) => &mut a[step.parse::<usize>().unwrap()],
+            _ => panic!("set: no {step}"),
+        };
+    }
+    *cur = new;
+}
+
+fn error(r: Result<impl std::fmt::Debug, Error>) -> (ErrorKind, usize) {
+    let e = r.expect_err("expected an error");
+    (e.kind, e.offset)
+}
+
+// ---------------------------------------------------------------------------
+// A second, independent encoder of the shard (spec/model.md §8,
+// spec/digest.md §11, spec/verify.md §6), used to build files that break an
+// invariant (`to_bytes` debug-asserts validity) and to cross-check `to_bytes`.
+
+fn raw_opt_digest(e: &mut Encoder, v: Option<Digest>) {
+    match v {
+        None => e.u8(0),
+        Some(x) => e.u8(1).digest(&x),
+    };
+}
+
+fn raw_site(e: &mut Encoder, s: &Site) {
+    e.bytes(&s.file).uv(s.line).uv(s.column).str(&s.node).str(&s.what);
+}
+
+fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
+    let mut s1 = Encoder::new();
+    s1.digest(&s.observer).uv(s.phase as u64).uv(s.round);
+    let mut s2 = Encoder::new();
+    s2.uv(s.outcome.status as u64)
+        .uv(s.outcome.errors)
+        .uv(s.outcome.warnings)
+        .str(&s.outcome.message);
+    let mut out = vec![(1, s1.into_bytes()), (2, s2.into_bytes())];
+    if let Some(inputs) = &s.inputs {
+        let mut s3 = Encoder::new();
+        s3.count(inputs.len());
+        for f in inputs {
+            s3.bytes(&f.path).uv(f.size).digest(&f.content);
+        }
+        out.push((3, s3.into_bytes()));
+    }
+    let mut s4 = Encoder::new();
+    s4.count(s.counters.len());
+    for c in &s.counters {
+        s4.str(&c.name).uv(c.value);
+    }
+    out.push((4, s4.into_bytes()));
+    if let Some(ds) = &s.digests {
+        let mut e = Encoder::new();
+        e.uv(ds.scheme).digest(&ds.tu).count(ds.groups.len());
+        for g in &ds.groups {
+            e.uv(g.class as u64).bytes(&g.file).uv(g.count).digest(&g.digest);
+            match &g.units {
+                None => {
+                    e.u8(0);
+                }
+                Some(units) => {
+                    e.u8(1).count(units.len());
+                    for u in units {
+                        e.digest(&u.key).digest(&u.digest).uv(u.flags);
+                    }
+                }
+            }
+        }
+        out.push((19, e.into_bytes()));
+    }
+    if let Some(v) = &s.verdict {
+        let mut e = Encoder::new();
+        e.uv(v.kind as u64)
+            .digest(&v.pre)
+            .digest(&v.rules)
+            .str(&v.reason)
+            .uv(v.only_pre)
+            .uv(v.only_post)
+            .count(v.used.len());
+        for k in &v.used {
+            e.digest(k);
+        }
+        e.uv(v.total).count(v.findings.len());
+        for f in &v.findings {
+            e.uv(f.kind as u64);
+            raw_opt_digest(&mut e, f.key);
+            e.bytes(&f.file);
+            raw_opt_digest(&mut e, f.pre);
+            raw_opt_digest(&mut e, f.post);
+            e.str(&f.name);
+            match &f.location {
+                None => {
+                    e.u8(0);
+                }
+                Some(w) => {
+                    e.u8(1);
+                    raw_site(&mut e, &w.pre);
+                    raw_site(&mut e, &w.post);
+                }
+            }
+        }
+        out.push((21, e.into_bytes()));
+    }
+    out
+}
+
+fn raw(s: &Shard) -> Vec<u8> {
+    sealed(&raw_sections(s))
+}
+
+// ---------------------------------------------------------------------------
+// Two shards whose bytes are written out by hand
+
+/// A map shard: observer 33…, round 0, ok; counters [digest.units = 3];
+/// digests with three groups: declared "/a" with units
+/// [(41…, 42…, 0), (43…, 44…, 1)], derived "" (builtins) count 1 sum 66…
+/// without units, tu "" count 1 sum 55… without units.
+fn map_shard() -> Shard {
+    Shard {
+        observer: d(0x33),
+        phase: Phase::Map,
+        round: 0,
+        outcome: ok(),
+        inputs: None,
+        counters: vec![Counter { name: "digest.units".to_owned(), value: 3 }],
+        digests: Some(digests_of(vec![
+            listed(GroupClass::Declared, b"/a", vec![unit(0x41, 0x42, 0), unit(0x43, 0x44, 1)]),
+            summed(GroupClass::Derived, b"", 1, d(0x66)),
+            summed(GroupClass::Tu, b"", 1, d(0x55)),
+        ])),
+        verdict: None,
+    }
+}
+
+/// `group_digest` of the declared group of `map_shard`.
+const MAP_GROUP: &str = "db3248c61386d5aa2e494aa55c9b780e301275eacc26c569cfd147b39300323d";
+/// `tu_digest` of `map_shard`'s groups.
+const MAP_TU: &str = "85867e7eb9a1593245f8bd4a20241f0b1ef688d8a9e7642c473518b7178ef685";
+const MAP_TRAILER: &str = "0c6264d4325c31b67154e002e5ffec00a638a6da021877ed0bfee19dd4b5a85c";
+
+fn map_shard_bytes() -> Vec<u8> {
+    hex(&[
+        "53 4c 49 50 1a 0a 00 00  53 48 52 44  01 00 00 00", // magic, SHRD, version 1
+        "01 22",
+        &rep("33", 32),
+        "01 00",              // header: observer, map, round 0
+        "02 04  00 00 00 00", // outcome: ok, 0, 0, ""
+        "04 0f  01  0c 64 69 67 65 73 74 2e 75 6e 69 74 73  03", // counters: digest.units = 3
+        "13 93 02",           // digests, 275 bytes:
+        "01",                 //   scheme 1      @78
+        MAP_TU,               //   tu            @79
+        "03",                 //   3 groups      @111
+        "00  02 2f 61  02",   //   declared "/a" count 2   @112
+        MAP_GROUP,            //     digest      @117
+        "01 02",              //     units: 2    @149
+        &rep("41", 32),
+        &rep("42", 32),
+        "00", //       (41…, 42…, 0)   @151
+        &rep("43", 32),
+        &rep("44", 32),
+        "01",           //       (43…, 44…, 1)   @216
+        "01  00  01",   //   derived "" count 1      @281
+        &rep("66", 32), //     digest
+        "00",           //     no units
+        "02  00  01",   //   tu "" count 1           @317
+        &rep("55", 32), //     digest
+        "00",           //     no units
+        "00",           // end                       @353
+        MAP_TRAILER,
+    ])
+}
+
+/// A verify shard: observer 33…, round 1, ok, no counters; digests with one
+/// group, declared "/a" with units [(41…, 42…, 0)]; a `mismatch` verdict
+/// against pre shard 77… under rules 88…, `only_post` 1, used [99…], total 3,
+/// and the first two findings: `changed` 41… in "/a", 42… → 45…, "f", at
+/// `/a:2:5` `call` "g" → `/a:2:5` `call` "h"; `removed` 46… in "/a", pre 47…,
+/// "x", no location.
+fn verify_shard() -> Shard {
+    let site = |what: &str| Site {
+        file: b"/a".to_vec(),
+        line: 2,
+        column: 5,
+        node: "call".to_owned(),
+        what: what.to_owned(),
+    };
+    Shard {
+        observer: d(0x33),
+        phase: Phase::Verify,
+        round: 1,
+        outcome: ok(),
+        inputs: None,
+        counters: Vec::new(),
+        digests: Some(digests_of(vec![listed(
+            GroupClass::Declared,
+            b"/a",
+            vec![unit(0x41, 0x42, 0)],
+        )])),
+        verdict: Some(Verdict {
+            kind: VerdictKind::Mismatch,
+            pre: d(0x77),
+            rules: d(0x88),
+            reason: String::new(),
+            only_pre: 0,
+            only_post: 1,
+            used: vec![d(0x99)],
+            total: 3,
+            findings: vec![
+                Finding {
+                    kind: FindingKind::Changed,
+                    key: Some(d(0x41)),
+                    file: b"/a".to_vec(),
+                    pre: Some(d(0x42)),
+                    post: Some(d(0x45)),
+                    name: "f".to_owned(),
+                    location: Some(Where { pre: site("g"), post: site("h") }),
+                },
+                Finding {
+                    kind: FindingKind::Removed,
+                    key: Some(d(0x46)),
+                    file: b"/a".to_vec(),
+                    pre: Some(d(0x47)),
+                    post: None,
+                    name: "x".to_owned(),
+                    location: None,
+                },
+            ],
+        }),
+    }
+}
+
+const VERIFY_GROUP: &str = "16616ca8c602bc6c8ebe3c4e0dcd9c1659ee02809421d7d815b05b0176c69cd6";
+const VERIFY_TU: &str = "a327fad2ef1fb81ae8fed18238d771a5f765e130b0d37fbc1fec978d375b7ef7";
+const VERIFY_TRAILER: &str = "0d60e022db1c43ef050fa7556cac2917941b984e9693ded59be234c4afab32f7";
+
+fn verify_shard_bytes() -> Vec<u8> {
+    hex(&[
+        "53 4c 49 50 1a 0a 00 00  53 48 52 44  01 00 00 00", // magic, SHRD, version 1
+        "01 22",
+        &rep("33", 32),
+        "02 01",              // header: observer, verify, round 1
+        "02 04  00 00 00 00", // outcome: ok, 0, 0, ""
+        "04 01  00",          // counters: []
+        "13 8a 01",           // digests, 138 bytes:
+        "01",                 //   scheme 1                 @64
+        VERIFY_TU,            //   tu                       @65
+        "01",                 //   1 group
+        "00  02 2f 61  01",   //   declared "/a" count 1    @98
+        VERIFY_GROUP,         //     digest                 @103
+        "01 01",              //     units: 1
+        &rep("41", 32),
+        &rep("42", 32),
+        "00",           //       (41…, 42…, 0)        @137
+        "15 b3 02",     // verdict, 307 bytes:
+        "01",           //   mismatch                 @205
+        &rep("77", 32), //   pre
+        &rep("88", 32), //   rules
+        "00",           //   reason ""                @270
+        "00 01",        //   only_pre 0, only_post 1
+        "01",           //   used: 1                  @273
+        &rep("99", 32), //     99…                    @274
+        "03",           //   total 3                  @306
+        "02",           //   findings: 2              @307
+        "00  01",       //   changed, key             @308
+        &rep("41", 32),
+        "02 2f 61  01", //     file "/a", pre         @342
+        &rep("42", 32),
+        "01", //     post                   @378
+        &rep("45", 32),
+        "01 66  01",                              //     name "f", where        @411
+        "02 2f 61  02 05  04 63 61 6c 6c  01 67", // pre: /a:2:5 call "g"   @414
+        "02 2f 61  02 05  04 63 61 6c 6c  01 68", // post: /a:2:5 call "h"  @426
+        "01  01",                                 //   removed, key             @438
+        &rep("46", 32),
+        "02 2f 61  01", //     file "/a", pre         @472
+        &rep("47", 32),
+        "00  01 78  00", //     no post, name "x", no where   @508
+        "00",            // end                        @512
+        VERIFY_TRAILER,
+    ])
+}
+
+// spec/digest.md §11, spec/model.md §2, §5, §8: a map shard with digests,
+// byte for byte.
+#[test]
+fn digests_bytes_exact() {
+    let bytes = map_shard_bytes();
+    assert_eq!(bytes.len(), 386);
+    assert_eq!(map_shard().to_bytes(), bytes);
+    assert_eq!(raw(&map_shard()), bytes);
+    assert_eq!(Shard::from_bytes(&bytes).unwrap(), map_shard());
+}
+
+// spec/verify.md §6, spec/model.md §2, §5, §8: a verify shard with a
+// mismatch verdict, byte for byte.
+#[test]
+fn verdict_bytes_exact() {
+    let bytes = verify_shard_bytes();
+    assert_eq!(bytes.len(), 545);
+    assert_eq!(verify_shard().to_bytes(), bytes);
+    assert_eq!(raw(&verify_shard()), bytes);
+    assert_eq!(Shard::from_bytes(&bytes).unwrap(), verify_shard());
+}
+
+// spec/model.md §3, spec/digest.md §11: the group and tu digests of the
+// hand-written shards are the tagged digests of their hand-written
+// preimages.
+#[test]
+fn group_and_tu_digest_preimages() {
+    let tagged = |tag: &str, body: Vec<u8>| {
+        let mut pre = tag.as_bytes().to_vec();
+        pre.push(0);
+        pre.extend(body);
+        content_digest(&pre)
+    };
+    let group = tagged(
+        GROUP_TAG,
+        hex(&["02", &rep("41", 32), &rep("42", 32), "00", &rep("43", 32), &rep("44", 32), "01"]),
+    );
+    assert_eq!(group.to_string(), MAP_GROUP);
+    let tu = tagged(
+        TU_TAG,
+        hex(&[
+            "03",
+            "00 02 2f 61 02",
+            MAP_GROUP,
+            "01 00 01",
+            &rep("66", 32),
+            "02 00 01",
+            &rep("55", 32),
+        ]),
+    );
+    assert_eq!(tu.to_string(), MAP_TU);
+    let group = tagged(GROUP_TAG, hex(&["01", &rep("41", 32), &rep("42", 32), "00"]));
+    assert_eq!(group.to_string(), VERIFY_GROUP);
+    let tu = tagged(TU_TAG, hex(&["01", "00 02 2f 61 01", VERIFY_GROUP]));
+    assert_eq!(tu.to_string(), VERIFY_TU);
+}
+
+// ---------------------------------------------------------------------------
+// Golden JSON (spec/model.md §10)
+
+fn golden(name: &str, actual: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden").join(name);
+    if std::env::var_os("SLIP_BLESS").is_some() {
+        fs::write(&path, actual).unwrap();
+        eprintln!("blessed {}", path.display());
+        return;
+    }
+    let expected = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}; run with SLIP_BLESS=1 to create", path.display()));
+    assert_eq!(actual, expected, "{name} differs from its golden; SLIP_BLESS=1 rewrites it");
+}
+
+// spec/digest.md §11, spec/model.md §10: the rendering of a map shard with
+// digests, pinned.
+#[test]
+fn golden_shard_with_digests() {
+    let bytes = map_shard_bytes();
+    let text = dump(&bytes).unwrap();
+    golden("shard-digests.json", &text);
+    assert_eq!(undump(&parse(&text)).unwrap(), bytes);
+    assert_eq!(Shard::from_json(&parse(&text)).unwrap(), map_shard());
+}
+
+// spec/verify.md §6, spec/model.md §10: the rendering of a verify shard with
+// a mismatch verdict, pinned.
+#[test]
+fn golden_shard_with_verdict() {
+    let bytes = verify_shard_bytes();
+    let text = dump(&bytes).unwrap();
+    golden("shard-verdict.json", &text);
+    assert_eq!(undump(&parse(&text)).unwrap(), bytes);
+    assert_eq!(Shard::from_json(&parse(&text)).unwrap(), verify_shard());
+}
+
+// spec/model.md §8, §10: WP-006's golden shard, which has neither section,
+// still reads and writes the same bytes.
+#[test]
+fn wp006_golden_shard_unchanged() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/shard.json");
+    let text = fs::read_to_string(path).unwrap();
+    let bytes = undump(&parse(&text)).unwrap();
+    assert_eq!(dump(&bytes).unwrap(), text);
+    let s = Shard::from_bytes(&bytes).unwrap();
+    assert_eq!((s.digests.as_ref(), s.verdict.as_ref()), (None, None));
+    assert!(!text.contains("\"digests\"") && !text.contains("\"verdict\""));
+    // Without its ignorable section, it is the typed value's bytes.
+    assert_eq!(Shard::from_json(&parse(&text)).unwrap().to_bytes(), s.to_bytes());
+}
+
+// ---------------------------------------------------------------------------
+// Round trips (spec/model.md §10: binary → JSON → binary reproduces the bytes)
+
+fn round_trip(s: &Shard) {
+    s.validate().unwrap();
+    let bytes = s.to_bytes();
+    assert_eq!(bytes, raw(s), "to_bytes agrees with the test's encoder");
+    let back = Shard::from_bytes(&bytes).unwrap();
+    assert_eq!(&back, s);
+    assert_eq!(back.to_bytes(), bytes);
+    let text = json::write_pretty(&s.to_json()).unwrap();
+    let from_text = Shard::from_json(&parse(&text)).unwrap();
+    assert_eq!(&from_text, s);
+    assert_eq!(from_text.to_bytes(), bytes, "binary → JSON → binary");
+    assert_eq!(dump(&bytes).unwrap(), text);
+    assert_eq!(undump(&parse(&text)).unwrap(), bytes);
+    assert_eq!(content_id(&bytes).unwrap().as_bytes()[..], bytes[bytes.len() - 32..]);
+}
+
+/// Groups of every class, with a non-UTF-8 file, a count at or above 2^53
+/// (unlisted), and the unit lists of the groups `listed_at` names.
+fn sample_digests(listed_at: &[usize]) -> Digests {
+    let groups: Vec<(GroupClass, &[u8], Vec<Unit>)> = vec![
+        (GroupClass::Declared, b"/s/a.h", vec![unit(1, 2, 0), unit(1, 3, 0), unit(5, 6, 1)]),
+        (GroupClass::Declared, b"/s/\xffb.h", vec![unit(7, 8, 0)]),
+        (GroupClass::Derived, b"", vec![unit(9, 10, 0), unit(11, 12, 0)]),
+        (GroupClass::Derived, b"/s/a.h", vec![unit(13, 14, 1)]),
+        (GroupClass::Tu, b"", vec![unit(15, 16, 0), unit(17, 18, 0)]),
+    ];
+    let mut groups: Vec<Group> = groups
+        .into_iter()
+        .enumerate()
+        .map(|(i, (class, file, units))| {
+            let mut g = listed(class, file, units);
+            if !listed_at.contains(&i) {
+                g.units = None;
+            }
+            g
+        })
+        .collect();
+    if listed_at.len() < 5 {
+        groups.insert(4, summed(GroupClass::Derived, b"/s/z.h", u64::MAX, d(0xee)));
+    }
+    digests_of(groups)
+}
+
+fn sample_map_shard(digests: Digests) -> Shard {
+    Shard {
+        observer: d(0x30),
+        phase: Phase::Map,
+        round: 2,
+        outcome: Outcome { status: Status::Ok, errors: 0, warnings: 4, message: String::new() },
+        inputs: Some(vec![FileRef { path: b"/s/a.cc".to_vec(), size: 9, content: d(1) }]),
+        counters: vec![Counter { name: "digest.groups".to_owned(), value: 5 }],
+        digests: Some(digests),
+        verdict: None,
+    }
+}
+
+fn site(file: &[u8], line: u64, column: u64, node: &str, what: &str) -> Site {
+    Site { file: file.to_vec(), line, column, node: node.to_owned(), what: what.to_owned() }
+}
+
+fn finding(kind: FindingKind, key: Option<u8>, file: &[u8]) -> Finding {
+    Finding {
+        kind,
+        key: key.map(d),
+        file: file.to_vec(),
+        pre: None,
+        post: None,
+        name: String::new(),
+        location: None,
+    }
+}
+
+/// A mismatch with a finding of every kind, with and without `where`,
+/// non-UTF-8 files, an unnamed indeterminate finding, values above 2^53.
+fn sample_mismatch() -> Verdict {
+    let both = |pre: Site, post: Site| Some(Where { pre, post });
+    let findings = vec![
+        Finding {
+            pre: Some(d(0xa1)),
+            post: Some(d(0xa2)),
+            name: "ns::f(int)".to_owned(),
+            location: both(
+                site(b"/s/a.h", 10, 3, "call", "ns::g"),
+                site(b"/s/a.h", 10, 3, "call", "ns::h"),
+            ),
+            ..finding(FindingKind::Changed, Some(0x10), b"/s/a.h")
+        },
+        Finding {
+            pre: Some(d(0xa3)),
+            post: Some(d(0xa4)),
+            location: both(site(b"/s/\xffb.h", 1, 1, "type", ""), site(b"", 0, 0, "", "")),
+            ..finding(FindingKind::Changed, Some(0x11), b"/s/\xffb.h")
+        },
+        Finding {
+            pre: Some(d(0xa5)),
+            name: "ns::old".to_owned(),
+            location: both(site(b"/s/a.h", 4, 1, "var", ""), Site::default()),
+            ..finding(FindingKind::Removed, Some(0x12), b"/s/a.h")
+        },
+        Finding { post: Some(d(0xa6)), ..finding(FindingKind::Added, Some(0x13), b"/s/a.h") },
+        finding(FindingKind::Indeterminate, None, b""),
+        finding(FindingKind::Indeterminate, None, b""),
+        finding(FindingKind::Indeterminate, Some(0x14), b""),
+        Finding {
+            pre: Some(d(0xa7)),
+            ..finding(FindingKind::Indeterminate, Some(0x17), b"/s/a.h")
+        },
+        Finding {
+            pre: Some(d(0xa8)),
+            post: Some(d(0xa9)),
+            ..finding(FindingKind::DerivedChanged, Some(0x15), b"")
+        },
+        finding(FindingKind::DerivedIndeterminate, Some(0x16), b"/s/a.h"),
+    ];
+    Verdict {
+        kind: VerdictKind::Mismatch,
+        pre: d(0x70),
+        rules: d(0x71),
+        reason: String::new(),
+        only_pre: 3,
+        only_post: 1 << 53,
+        used: vec![d(0x01), d(0x02)],
+        total: 1 << 60,
+        findings,
+    }
+}
+
+fn sample_verify_shard(verdict: Verdict) -> Shard {
+    Shard {
+        phase: Phase::Verify,
+        verdict: Some(verdict),
+        ..sample_map_shard(sample_digests(&[0, 3]))
+    }
+}
+
+fn verified() -> Verdict {
+    Verdict {
+        kind: VerdictKind::Verified,
+        pre: d(0x70),
+        rules: d(0x71),
+        reason: String::new(),
+        only_pre: 0,
+        only_post: 0,
+        used: vec![d(0x05)],
+        total: 0,
+        findings: Vec::new(),
+    }
+}
+
+fn unverifiable() -> Verdict {
+    Verdict {
+        kind: VerdictKind::Unverifiable,
+        pre: Digest([0; 32]),
+        reason: "the pre shard has no digests section".to_owned(),
+        used: Vec::new(),
+        ..verified()
+    }
+}
+
+// spec/digest.md §11, spec/model.md §10: digests without unit lists, with
+// some, with all; no groups; a non-UTF-8 file.
+#[test]
+fn digests_round_trip() {
+    for listed_at in [&[][..], &[0, 3], &[0, 1, 2, 3, 4]] {
+        round_trip(&sample_map_shard(sample_digests(listed_at)));
+    }
+    round_trip(&sample_map_shard(digests_of(Vec::new())));
+    round_trip(&map_shard());
+    // A verify shard may carry digests without a verdict.
+    round_trip(&Shard { phase: Phase::Verify, ..map_shard() });
+    let v = sample_map_shard(sample_digests(&[])).to_json();
+    let groups = v.get("sections").unwrap().get("digests").unwrap().get("groups").unwrap();
+    let groups = groups.as_array().unwrap();
+    assert_eq!(groups[1].get("file"), Some(&parse(r#"{"hex": "2f732fff622e68"}"#)));
+    assert_eq!(groups[4].get("count"), Some(&Value::Str("18446744073709551615".into())));
+    assert_eq!(groups[4].get("units"), Some(&Value::Null));
+    assert_eq!(groups[5].get("class"), Some(&Value::Str("tu".into())));
+}
+
+// spec/verify.md §6, spec/model.md §10: each verdict kind; findings of every
+// kind, with and without `where`; non-UTF-8 files; a reason and names at
+// the 4096-byte limit.
+#[test]
+fn verdict_round_trip() {
+    round_trip(&verify_shard());
+    for v in [verified(), unverifiable(), sample_mismatch()] {
+        round_trip(&sample_verify_shard(v));
+    }
+    let mut long = unverifiable();
+    long.reason = "é".repeat(2048);
+    round_trip(&sample_verify_shard(long));
+    let mut long = sample_mismatch();
+    long.findings[0].name = "n".repeat(4096);
+    let w = long.findings[0].location.as_mut().unwrap();
+    w.pre.node = "o".repeat(4096);
+    w.post.what = "w".repeat(4096);
+    round_trip(&sample_verify_shard(long));
+    // A mismatch may hold fewer findings than its total, even none.
+    let mut none = sample_mismatch();
+    none.findings.clear();
+    round_trip(&sample_verify_shard(none));
+
+    let v = sample_verify_shard(sample_mismatch()).to_json();
+    let verdict = v.get("sections").unwrap().get("verdict").unwrap();
+    assert_eq!(verdict.get("only_post"), Some(&Value::Str("9007199254740992".into())));
+    let f = verdict.get("findings").unwrap().as_array().unwrap();
+    assert_eq!(f[1].get("file"), Some(&parse(r#"{"hex": "2f732fff622e68"}"#)));
+    let w = f[1].get("where").unwrap();
+    assert_eq!(w.get("pre").unwrap().get("file"), Some(&parse(r#"{"hex": "2f732fff622e68"}"#)));
+    assert_eq!(f[3].get("where"), Some(&Value::Null));
+    assert_eq!(f[3].get("pre"), Some(&Value::Null));
+    assert_eq!(f[4].get("key"), Some(&Value::Null));
+    assert_eq!(f[8].get("kind"), Some(&Value::Str("derived_changed".into())));
+    assert_eq!(f[9].get("kind"), Some(&Value::Str("derived_indeterminate".into())));
+}
+
+// ---------------------------------------------------------------------------
+// Invariants (docs/wp/WP-015.md; offsets and paths:
+// spec/landed/model/WP-015.md): each rejected by from_bytes (Malformed at
+// the offset), by validate and by from_json (at the path).
+
+/// The offset at which `from_bytes` rejects `s`'s file, after checking
+/// that `validate`, `from_json` and `undump` reject it at `path` with the
+/// same message.
+fn rejected(s: &Shard, path: &str) -> usize {
+    let e = Shard::from_bytes(&raw(s)).expect_err("from_bytes accepted an invalid shard");
+    assert_eq!(e.kind, ErrorKind::Malformed, "{e}");
+    let v = s.validate().expect_err("validate accepted an invalid shard");
+    assert_eq!(v, format!("{path}: {}", e.what), "validate");
+    let j = Shard::from_json(&s.to_json()).expect_err("from_json accepted an invalid shard");
+    assert_eq!(j, JsonFormError { path: path.to_owned(), message: e.what.to_owned() });
+    assert_eq!(undump(&s.to_json()).unwrap_err(), j);
+    e.offset
+}
+
+fn groups(s: &mut Shard) -> &mut Vec<Group> {
+    &mut s.digests.as_mut().unwrap().groups
+}
+
+fn units(s: &mut Shard, i: usize) -> &mut Vec<Unit> {
+    groups(s)[i].units.as_mut().unwrap()
+}
+
+fn verdict(s: &mut Shard) -> &mut Verdict {
+    s.verdict.as_mut().unwrap()
+}
+
+// digests rule 1 (spec/digest.md §10): only in a shard whose status is ok.
+#[test]
+fn digests_1_only_for_status_ok() {
+    for status in [Status::Diagnosed, Status::Rejected] {
+        let mut s = map_shard();
+        s.outcome.status = status;
+        assert_eq!(rejected(&s, "sections.digests"), 78);
+    }
+    // A failed shard has no counters; the section moves up by 14 bytes.
+    let mut s = map_shard();
+    s.outcome.status = Status::Failed;
+    s.counters.clear();
+    assert_eq!(rejected(&s, "sections.digests"), 78 - 14);
+}
+
+// digests rule 2 (spec/digest.md §11): the scheme is SCHEME.
+#[test]
+fn digests_2_scheme() {
+    for scheme in [0, 2] {
+        let mut s = map_shard();
+        s.digests.as_mut().unwrap().scheme = scheme;
+        assert_eq!(rejected(&s, "sections.digests.scheme"), 78);
+    }
+}
+
+// digests rule 3 (spec/digest.md §11): groups strictly ascending by
+// (class, file).
+#[test]
+fn digests_3_groups_ascending() {
+    let mut s = map_shard();
+    groups(&mut s).swap(1, 2);
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[2]"), 317);
+    let mut s = map_shard();
+    groups(&mut s).swap(0, 1);
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[1]"), 148);
+    // Equal (class, file) twice.
+    let mut s = map_shard();
+    groups(&mut s)[2].class = GroupClass::Derived;
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[2]"), 317);
+    // By file within a class, a proper prefix first.
+    let mut s = sample_map_shard(sample_digests(&[]));
+    groups(&mut s)[0].file = b"/s/a.hh".to_vec();
+    groups(&mut s)[1].file = b"/s/a.h".to_vec();
+    resum(&mut s);
+    rejected(&s, "sections.digests.groups[1]");
+}
+
+// digests rule 4 (spec/digest.md §11): a tu group has an empty file, a
+// declared group a non-empty one.
+#[test]
+fn digests_4_group_files() {
+    let mut s = map_shard();
+    groups(&mut s)[2].file = b"/t".to_vec();
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[2].file"), 318);
+    let mut s = map_shard();
+    groups(&mut s)[0].file.clear();
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[0].file"), 113);
+    // A derived group may have either (builtins have the empty path).
+    let mut s = map_shard();
+    groups(&mut s)[1].file = b"/b".to_vec();
+    resum(&mut s);
+    round_trip(&s);
+}
+
+// digests rule 5 (spec/digest.md §11): count at least 1.
+#[test]
+fn digests_5_count_at_least_1() {
+    let mut s = map_shard();
+    groups(&mut s)[1].count = 0;
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[1].count"), 283);
+}
+
+// digests rule 6 (spec/digest.md §11): a unit list is strictly ascending by
+// (key, digest).
+#[test]
+fn digests_6_units_ascending() {
+    let mut s = map_shard();
+    units(&mut s, 0).swap(0, 1);
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[0].units[1]"), 216);
+    // The same key and digest twice is one unit (§11), whatever the flags.
+    let mut s = map_shard();
+    units(&mut s, 0)[1] = unit(0x41, 0x42, 1);
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[0].units[1]"), 216);
+    // Same key, different digests: ascending by digest.
+    let mut s = map_shard();
+    units(&mut s, 0)[1] = unit(0x41, 0x40, 0);
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[0].units[1]"), 216);
+}
+
+// digests rule 6 (spec/digest.md §11): the list's length is the count.
+#[test]
+fn digests_6_units_length_is_count() {
+    for count in [1, 3] {
+        let mut s = map_shard();
+        groups(&mut s)[0].count = count;
+        resum(&mut s);
+        assert_eq!(rejected(&s, "sections.digests.groups[0].units"), 150);
+    }
+    // An empty list against a count of 1 (rule 5 holds).
+    let mut s = map_shard();
+    groups(&mut s)[1].units = Some(Vec::new());
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[1].units"), 317);
+}
+
+// digests rule 6 (spec/digest.md §11): flags are 0 or 1.
+#[test]
+fn digests_6_unit_flags() {
+    for flags in [2, 3, u64::MAX] {
+        let mut s = map_shard();
+        units(&mut s, 0)[1].flags = flags;
+        resum(&mut s);
+        assert_eq!(rejected(&s, "sections.digests.groups[0].units[1].flags"), 280);
+    }
+}
+
+// digests rule 6 (spec/digest.md §11): a listed group's digest is
+// group_digest of its units, recomputed by the reader.
+#[test]
+fn digests_6_group_digest_recomputed() {
+    let mut s = map_shard();
+    groups(&mut s)[0].digest = d(0x01);
+    s.digests.as_mut().unwrap().tu = tu_digest(&s.digests.as_ref().unwrap().groups);
+    assert_eq!(rejected(&s, "sections.digests.groups[0].digest"), 117);
+    // The reader computes it: flipping a unit's digest byte in the file,
+    // with the trailer resealed, is detected.
+    let bytes = map_shard_bytes();
+    let bad = patch(&bytes, 183, 0x42, 0x43);
+    assert_eq!(error(Shard::from_bytes(&bad)), (ErrorKind::Malformed, 117));
+}
+
+// digests rule 7 (spec/digest.md §11): tu is tu_digest of the groups,
+// recomputed by the reader.
+#[test]
+fn digests_7_tu_recomputed() {
+    let mut s = map_shard();
+    s.digests.as_mut().unwrap().tu = d(0x01);
+    assert_eq!(rejected(&s, "sections.digests.tu"), 79);
+    // A group's sum changed in the file is detected through tu.
+    let bad = patch(&map_shard_bytes(), 283, 0x01, 0x02);
+    assert_eq!(error(Shard::from_bytes(&bad)), (ErrorKind::Malformed, 79));
+}
+
+// verdict rule 1 (spec/verify.md §6): only in a verify shard whose status is
+// ok and that has digests.
+#[test]
+fn verdict_1_where_it_may_be() {
+    let mut s = verify_shard();
+    s.phase = Phase::Map;
+    assert_eq!(rejected(&s, "sections.verdict"), 205);
+    let mut s = verify_shard();
+    s.digests = None;
+    // Without the 141 bytes of the digests section.
+    assert_eq!(rejected(&s, "sections.verdict"), 205 - 141);
+    let mut s = verify_shard();
+    s.digests = None;
+    s.outcome.status = Status::Rejected;
+    let offset = rejected(&s, "sections.verdict");
+    assert_eq!(
+        s.validate().unwrap_err(),
+        "sections.verdict: a verdict section in a shard whose status is not ok"
+    );
+    assert_eq!(offset, 205 - 141);
+}
+
+// verdict rule 2 (spec/verify.md §6, spec/model.md §8): reason, name, node
+// and what are at most 4096 bytes.
+#[test]
+fn verdict_2_strings_at_most_4096_bytes() {
+    let mut s = verify_shard();
+    *verdict(&mut s) = Verdict { reason: "r".repeat(4097), ..unverifiable() };
+    verdict(&mut s).pre = d(0x77);
+    assert_eq!(rejected(&s, "sections.verdict.reason"), 270);
+    let mut s = verify_shard();
+    verdict(&mut s).findings[1].name = "é".repeat(2049);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1].name"), 509);
+    for (side, field, offset) in
+        [("pre", "node", 419), ("pre", "what", 424), ("post", "node", 431), ("post", "what", 436)]
+    {
+        let mut s = verify_shard();
+        let w = verdict(&mut s).findings[0].location.as_mut().unwrap();
+        let site = if side == "pre" { &mut w.pre } else { &mut w.post };
+        let long = "x".repeat(4097);
+        if field == "node" {
+            site.node = long;
+        } else {
+            site.what = long;
+        }
+        let path = format!("sections.verdict.findings[0].where.{side}.{field}");
+        assert_eq!(rejected(&s, &path), offset, "{path}");
+    }
+}
+
+// verdict rule 3 (spec/verify.md §6): what each kind of verdict holds.
+#[test]
+fn verdict_3_kinds() {
+    let with = |v: Verdict| Shard { verdict: Some(v), ..verify_shard() };
+    // verified: empty reason, total 0, no finding.
+    let s = with(Verdict { reason: "x".into(), ..verified() });
+    rejected(&s, "sections.verdict.reason");
+    let s = with(Verdict { total: 1, ..verified() });
+    rejected(&s, "sections.verdict.total");
+    let s = with(Verdict { findings: verify_shard().verdict.unwrap().findings, ..verified() });
+    rejected(&s, "sections.verdict.findings");
+    // mismatch: empty reason, total at least 1.
+    let mut s = verify_shard();
+    verdict(&mut s).reason = "x".into();
+    assert_eq!(rejected(&s, "sections.verdict.reason"), 270);
+    let mut s = verify_shard();
+    verdict(&mut s).total = 0;
+    verdict(&mut s).findings.clear();
+    rejected(&s, "sections.verdict.total");
+    // unverifiable: a reason, total 0, no finding.
+    let s = with(Verdict { reason: String::new(), ..unverifiable() });
+    rejected(&s, "sections.verdict.reason");
+    let s = with(Verdict { total: 2, ..unverifiable() });
+    rejected(&s, "sections.verdict.total");
+    let s = with(Verdict { findings: verify_shard().verdict.unwrap().findings, ..unverifiable() });
+    rejected(&s, "sections.verdict.findings");
+    // Offsets in the hand-written file.
+    let mut s = verify_shard();
+    verdict(&mut s).kind = VerdictKind::Verified;
+    assert_eq!(rejected(&s, "sections.verdict.total"), 306);
+    let mut s = verify_shard();
+    verdict(&mut s).kind = VerdictKind::Verified;
+    verdict(&mut s).total = 0;
+    assert_eq!(rejected(&s, "sections.verdict.findings"), 307);
+    let mut s = verify_shard();
+    verdict(&mut s).kind = VerdictKind::Unverifiable;
+    verdict(&mut s).reason = "r".into();
+    verdict(&mut s).total = 0;
+    // The reason moves `total` and `findings` one byte up.
+    assert_eq!(rejected(&s, "sections.verdict.findings"), 308);
+}
+
+// verdict rule 4 (spec/verify.md §6): no more findings than total.
+#[test]
+fn verdict_4_findings_within_total() {
+    let mut s = verify_shard();
+    verdict(&mut s).total = 1;
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 438);
+    let mut s = verify_shard();
+    verdict(&mut s).total = 2;
+    round_trip(&s);
+}
+
+// verdict rule 4 (spec/verify.md §6): ascending by (kind, file, key), an
+// absent key first; at most one finding per (kind, key).
+#[test]
+fn verdict_4_findings_order_and_uniqueness() {
+    // By kind.
+    let mut s = verify_shard();
+    verdict(&mut s).findings.swap(0, 1);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 308 + 74);
+    // By file within a kind.
+    let mut s = verify_shard();
+    verdict(&mut s).findings[1].kind = FindingKind::Changed;
+    verdict(&mut s).findings[0].file = b"/b".to_vec();
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 438);
+    // By key within a kind and file, an absent key first.
+    let mut v = sample_mismatch();
+    v.findings.swap(5, 6);
+    rejected(&sample_verify_shard(v), "sections.verdict.findings[6]");
+    let mut v = sample_mismatch();
+    v.findings.swap(0, 1);
+    v.findings[0].file = b"/s/a.h".to_vec();
+    rejected(&sample_verify_shard(v), "sections.verdict.findings[1]");
+    // The same kind and key twice, in different files.
+    let mut s = verify_shard();
+    verdict(&mut s).findings[1].kind = FindingKind::Changed;
+    verdict(&mut s).findings[1].key = Some(d(0x41));
+    verdict(&mut s).findings[1].file = b"/b".to_vec();
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 438);
+    // The same kind and key in the same file, and in another file.
+    let mut v = sample_mismatch();
+    v.findings[7].key = Some(d(0x14));
+    rejected(&sample_verify_shard(v.clone()), "sections.verdict.findings[7]");
+    v.findings[7].file.clear();
+    rejected(&sample_verify_shard(v), "sections.verdict.findings[7]");
+    // Unnamed indeterminate findings may repeat; a key under two kinds is
+    // two findings.
+    let mut v = sample_mismatch();
+    v.findings[9].key = Some(d(0x15));
+    round_trip(&sample_verify_shard(v));
+}
+
+// verdict rule 5 (spec/verify.md §6): a key is absent only for
+// indeterminate; removed has no post, added no pre.
+#[test]
+fn verdict_5_finding_fields() {
+    for kind in [
+        FindingKind::Changed,
+        FindingKind::Removed,
+        FindingKind::Added,
+        FindingKind::DerivedChanged,
+        FindingKind::DerivedIndeterminate,
+    ] {
+        let mut s = verify_shard();
+        let f = &mut verdict(&mut s).findings[1];
+        f.kind = kind;
+        f.key = None;
+        f.pre = None;
+        // After finding 0 in every order.
+        f.file = b"/b".to_vec();
+        assert_eq!(rejected(&s, "sections.verdict.findings[1].key"), 439, "{kind:?}");
+    }
+    let mut s = verify_shard();
+    verdict(&mut s).findings[1].kind = FindingKind::Added;
+    assert_eq!(rejected(&s, "sections.verdict.findings[1].pre"), 475);
+    let mut s = verify_shard();
+    verdict(&mut s).findings[1].post = Some(d(0x48));
+    assert_eq!(rejected(&s, "sections.verdict.findings[1].post"), 508);
+}
+
+// verdict rule 6 (spec/verify.md §6): used strictly ascending.
+#[test]
+fn verdict_6_used_ascending() {
+    let mut s = verify_shard();
+    verdict(&mut s).used.push(d(0x99));
+    assert_eq!(rejected(&s, "sections.verdict.used[1]"), 306);
+    let mut s = verify_shard();
+    verdict(&mut s).used.push(d(0x98));
+    assert_eq!(rejected(&s, "sections.verdict.used[1]"), 306);
+}
+
+// verdict rule 7 (spec/verify.md §6.1): line is 0 exactly when column is 0.
+#[test]
+fn verdict_7_site_line_and_column() {
+    let mut s = verify_shard();
+    verdict(&mut s).findings[0].location.as_mut().unwrap().pre.line = 0;
+    assert_eq!(rejected(&s, "sections.verdict.findings[0].where.pre.line"), 417);
+    let mut s = verify_shard();
+    verdict(&mut s).findings[0].location.as_mut().unwrap().post.column = 0;
+    assert_eq!(rejected(&s, "sections.verdict.findings[0].where.post.line"), 429);
+}
+
+// ---------------------------------------------------------------------------
+// Structural rejections (spec/model.md §1 rule 6, §2, §5)
+
+// spec/model.md §5 rule 3, §2.1: a truncated section is Truncated at its
+// end; leftover bytes are Malformed at the first of them.
+#[test]
+fn truncated_sections_and_leftover_bytes() {
+    for (shard, id, leftover) in
+        [(map_shard(), 19, 353), (verify_shard(), 19, 202), (verify_shard(), 21, 512)]
+    {
+        let mut sections = raw_sections(&shard);
+        let at = sections.iter().position(|s| s.0 == id).unwrap();
+        for cut in [1, 33] {
+            let mut short = sections.clone();
+            let len = short[at].1.len();
+            short[at].1.truncate(len - cut);
+            let bytes = sealed(&short);
+            assert_eq!(error(Shard::from_bytes(&bytes)).0, ErrorKind::Truncated, "{id} -{cut}");
+            assert_eq!(error(dump(&bytes)).0, ErrorKind::Truncated);
+        }
+        sections[at].1.push(0);
+        let bytes = sealed(&sections);
+        assert_eq!(error(Shard::from_bytes(&bytes)), (ErrorKind::Malformed, leftover), "{id}");
+    }
+}
+
+// spec/model.md §1 rule 6, §2: unlisted GroupClass, VerdictKind and
+// FindingKind values, and opt tags other than 0 or 1, are Malformed at
+// their first byte.
+#[test]
+fn unlisted_values_and_opt_tags() {
+    let map = map_shard_bytes();
+    for (at, from, to) in [(112, 0, 3), (281, 1, 0x7f), (149, 1, 2), (316, 0, 0xff)] {
+        assert_eq!(
+            error(Shard::from_bytes(&patch(&map, at, from, to))),
+            (ErrorKind::Malformed, at)
+        );
+    }
+    let verify = verify_shard_bytes();
+    for (at, from, to) in [
+        (205, 1, 3),
+        (308, 0, 6),
+        (438, 1, 0x40),
+        (309, 1, 2),
+        (378, 1, 2),
+        (413, 1, 2),
+        (511, 0, 2),
+    ] {
+        assert_eq!(
+            error(Shard::from_bytes(&patch(&verify, at, from, to))),
+            (ErrorKind::Malformed, at),
+            "{at}"
+        );
+    }
+    // A count larger than the bytes remaining is TooLarge, never allocated:
+    // the groups count and the findings count replaced by 65535 with
+    // nothing after it (the section's length now takes one byte, not two).
+    for (shard, id, keep, at) in [(map_shard(), 19, 33, 110), (verify_shard(), 21, 102, 306)] {
+        let mut sections = raw_sections(&shard);
+        let s = sections.iter_mut().find(|s| s.0 == id).unwrap();
+        s.1.truncate(keep);
+        s.1.extend([0xff, 0xff, 0x03]);
+        assert_eq!(error(Shard::from_bytes(&sealed(&sections))), (ErrorKind::TooLarge, at));
+    }
+    // JSON: names other than the spec's.
+    for (path, at) in [
+        (&["sections", "digests", "groups", "0", "class"][..], "sections.digests.groups[0].class"),
+        (&["sections", "verdict", "kind"][..], "sections.verdict.kind"),
+        (
+            &["sections", "verdict", "findings", "1", "kind"][..],
+            "sections.verdict.findings[1].kind",
+        ),
+    ] {
+        let mut v = verify_shard().to_json();
+        set(&mut v, path, Value::Str("Changed".into()));
+        assert_eq!(Shard::from_json(&v).unwrap_err().path, at);
+    }
+}
+
+// spec/model.md §10: the JSON members are named and ordered as the spec's
+// fields (`Finding.location` is `where`); a missing, unknown or misplaced
+// member is an error at its path.
+#[test]
+fn json_members() {
+    let v = verify_shard().to_json();
+    let sections = v.get("sections").unwrap().as_object().unwrap();
+    let names: Vec<&str> = sections.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(names, ["header", "outcome", "counters", "digests", "verdict"]);
+    let f = v.get("sections").unwrap().get("verdict").unwrap().get("findings").unwrap();
+    let f0: Vec<&str> =
+        f.as_array().unwrap()[0].as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(f0, ["kind", "key", "file", "pre", "post", "name", "where"]);
+
+    let mut v = verify_shard().to_json();
+    set(&mut v, &["sections", "verdict", "findings", "0", "where"], parse(r#"{"pre": null}"#));
+    assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.verdict.findings[0].where.post");
+    let mut v = verify_shard().to_json();
+    set(&mut v, &["sections", "digests", "groups", "0", "units"], parse("{}"));
+    assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.digests.groups[0].units");
+    let mut v = verify_shard().to_json();
+    set(&mut v, &["sections", "verdict", "used", "0"], Value::Null);
+    assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.verdict.used[0]");
+    // Sections in id order: verdict before digests is out of order.
+    let mut v = verify_shard().to_json();
+    if let Value::Object(m) = &mut v
+        && let Some((_, Value::Object(s))) = m.iter_mut().find(|(k, _)| k == "sections")
+    {
+        s.swap(3, 4);
+    }
+    assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.digests");
+}
+
+// spec/model.md §5 rule 2, §8: sections 19 and 21 are known; 16, 17, 18 and
+// 20 stay reserved, UnknownSection.
+#[test]
+fn reserved_ids_still_unknown() {
+    for id in [16u64, 17, 18, 20] {
+        let mut sections = raw_sections(&map_shard());
+        sections.push((id, Vec::new()));
+        sections.sort_by_key(|s| s.0);
+        let bytes = sealed(&sections);
+        assert_eq!(error(Shard::from_bytes(&bytes)).0, ErrorKind::UnknownSection, "{id}");
+        assert_eq!(error(dump(&bytes)).0, ErrorKind::UnknownSection);
+    }
+    assert!(Shard::from_bytes(&map_shard_bytes()).unwrap().digests.is_some());
+    assert!(Shard::from_bytes(&verify_shard_bytes()).unwrap().verdict.is_some());
+}

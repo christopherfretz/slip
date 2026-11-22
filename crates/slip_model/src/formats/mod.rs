@@ -1,5 +1,7 @@
 //! Binary and JSON forms of the plan, shard and run record
-//! (`spec/model.md` §6–§10). Work package WP-006.
+//! (`spec/model.md` §6–§10), work package WP-006, and of the shard's `digests`
+//! and `verdict` sections (`spec/digest.md` §11, `spec/verify.md` §6), work
+//! package WP-015.
 //!
 //! Each of [`Plan`], [`Shard`] and [`RunRecord`] has `KIND`, `VERSION`,
 //! `to_bytes`, `from_bytes`, `to_json`, `from_json` and `validate`.
@@ -20,9 +22,11 @@ use crate::wire::{Decoder, Encoder, Error, ErrorKind};
 use crate::{Digest, Observer, Phase, Plan, RunRecord, Shard};
 
 mod common;
+mod digests;
 mod plan;
 mod run;
 mod shard;
+mod verdict;
 
 use common::{JResult, Result, read_hex, read_record, read_str, read_uv};
 

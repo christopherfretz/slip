@@ -16,9 +16,37 @@ should provide, with the workaround it retires.
 | c | Diagnostic totals and the first error, returned from the run. | `-fdiagnostics-format=json` appended; standard error is read as JSON lines (`diags.rs`). | A hand-written reader of another crate's output format; a command ending in an option that swallows the appended flag is refused. |
 | d | A deterministic preprocessor token count (`pp.tokens`). | Not produced. | The M0 baseline lacks its most useful size counter. |
 | e | A working directory per run (`-working-directory`, or a field of `Io`). | `std::env::set_current_dir`, never restored. | One parse per process at a time; any relative path elsewhere in the process is affected. |
-| f | A job's environment as a parameter. | The front end reads the worker's process environment (`KILN_STATS_LOG`, `KILN_BACKEND`, `CPATH`, …). | `Command.env` cannot be applied; the coordinator removes `KILN_*` from the worker's environment instead. |
+| f | A job's environment as a parameter. | The front end reads the worker's process environment (`KILN_BACKEND`, `KILN_LLVM_DIR`, `PATH`, `KILN_RESOURCE_DIR`, `SOURCE_DATE_EPOCH`, `KILN_REPRODUCIBLE_TIME`, `KILN_STATS_LOG`, `KILN_SNAP_TIMING`). | `Command.env` cannot be applied; the coordinator removes `KILN_*` from the worker's environment instead. |
 | g | "Which language would this input be compiled as, or none": `Lang` has only C and C++, and an Objective-C or unknown extension compiles as C++ under `-fsyntax-only`. | Slip keeps Kiln's extension table (`check.rs` `KILN_SOURCE_EXTENSIONS`). | The table can drift from Kiln's. |
 | h | A way to forbid side outputs under `-fsyntax-only` (`-ftime-trace`, `-fconstexpr-report=`, the statistics log). | None: such a command is accepted and Kiln writes where the command says. | Slip can write into the subject's build tree. Until this exists the options should be refused by the check (open question in `spec/cdb.md`). |
+
+A study of the driver at the pinned revision
+(`research/kiln-front-end-entry.md` in the context repository, with
+citations) adds, for the prototype:
+
+- After the parse returns, the source manager, the interner, the
+  diagnostics engine, the AST and Oven (`ParsedTu`), the preprocessor and
+  the target are all alive in `SyntaxJob::run`; a test-only hook already
+  observes them there. `Sema` has been consumed by then. A closure-based
+  `run_front_end(argv0, command_line, options, |&FrontEnd| …)` in
+  `kiln_driver` needs almost no visibility change; keeping `Sema`, a
+  working directory parameter, an overlay, and an environment parameter
+  are separate steps.
+- `StackGuard::install` is public: Slip can install it today (gap a, in
+  part).
+- The parser's token count exists and is dropped (gap d); a record of
+  failed include lookups exists and is switched on only for precompiled
+  headers; files of the source manager cannot be enumerated from outside
+  its crate (gap b); file text is kept decoded, so "the bytes the front
+  end saw" needs care.
+- `Toolchain::new` looks for LLVM and GCC (environment, file system, child
+  processes) even under `-fsyntax-only`, and the default resource
+  directory comes from `current_exe()`, which in a worker is Slip.
+- Kiln does not read `CPATH`, `C_INCLUDE_PATH` or `CPLUS_INCLUDE_PATH`: a
+  build that relies on them is parsed with other include paths than its
+  compiler used. A question for Kiln, not for this entry point.
+- Code generation mutates the AST (`&mut Ast`, cached constants): a digest
+  is only comparable between two syntax-only runs.
 
 Not gaps: driver-mode detection from `argv[0]`, `-x`, and command-line
 validation are all reachable (`Args::parse_as`) and are what `KilnCheck`

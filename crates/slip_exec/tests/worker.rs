@@ -276,6 +276,8 @@ fn ok_shard(job: &Job) -> Shard {
         outcome: Outcome { status: Status::Ok, errors: 0, warnings: 0, message: String::new() },
         inputs: None,
         counters: vec![],
+        digests: None,
+        verdict: None,
     }
 }
 

@@ -393,3 +393,15 @@ text. Nothing but protocol messages may be written to its standard output.
   empty; the container trailer makes that detectable, not impossible.
 - Whether the coordinator should lower its budget when other processes in
   the same cgroup use memory. Today the budget is static.
+- Coordinator corner cases left as landed (`spec/landed/exec/WP-009.md`):
+  a store or I/O error while a job is being started or finished leaves that
+  job out of the `cancelled` run record; a worker that has exited but whose
+  attempt is not finished still counts towards pressure with its last
+  sample, so a crash in that window can be recorded as a pressure requeue;
+  a `Done` not delivered within 1 s of the worker being reaped is a crash;
+  the estimate's rule 1 reads the most recent run record even when that run
+  was cancelled; idle workers kept for reuse hold memory that admission
+  does not count; while a worker is ending the loop polls every 5 ms.
+- A job that must run alone blocks the jobs behind it instead of letting
+  them start around it. Simple and never over budget; costs throughput when
+  a large job waits for the running ones to drain.

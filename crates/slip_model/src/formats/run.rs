@@ -5,7 +5,7 @@ use crate::wire::{Decoder, Encoder};
 use crate::{Digest, Job, Run, RunRecord};
 
 use super::common::{
-    JResult, Result, dec_enum, dec_list, enc_enum, json_digest, json_enum, json_uv, malformed,
+    JResult, Result, dec_enum, dec_list, dec_opt, enc_enum, json_digest, json_enum, json_uv,
     object, read_digest, read_enum, read_list, read_record, read_str, read_uv,
 };
 use super::{At, Extra, OwnedExtras, SectionName, open, read_container, render_container, seal};
@@ -54,12 +54,7 @@ pub(super) fn encode(r: &RunRecord, extras: &[Extra<'_>]) -> Vec<u8> {
 
 /// `opt<digest>` (§2): `Malformed` at the tag byte unless it is 0 or 1.
 fn dec_opt_digest(d: &mut Decoder<'_>) -> Result<Option<Digest>> {
-    let at = d.offset();
-    match d.u8()? {
-        0 => Ok(None),
-        1 => Ok(Some(d.digest()?)),
-        _ => Err(malformed(at, "opt tag is not 0 or 1")),
-    }
+    dec_opt(d, Decoder::digest)
 }
 
 /// The run record, its unknown ignorable sections and its content id.

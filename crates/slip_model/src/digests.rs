@@ -29,7 +29,8 @@ pub enum GroupClass {
 
 /// One unit: an entity's key and the digest of what it is.
 ///
-/// Ordered by `(key, digest, flags)`, which is the order of a group's list.
+/// Ordered by `(key, digest, flags)`. A group's list is strictly ascending
+/// by `(key, digest)`: no two of its units share both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unit {
     /// The entity's mapped `KeyId` (`spec/digest.md` §3.4).
@@ -58,7 +59,7 @@ pub struct Group {
     pub count: u64,
     /// `group_digest` of the group's units.
     pub digest: Digest,
-    /// Sorted, no two equal; present when detail was asked for.
+    /// Strictly ascending by `(key, digest)`; present when detail was asked for.
     pub units: Option<Vec<Unit>>,
 }
 
