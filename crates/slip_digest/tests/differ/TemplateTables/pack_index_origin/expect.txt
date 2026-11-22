@@ -1,5 +1,5 @@
 # pending
-# needs: expr
+# needs: stmt
 # needs: demand
 # expr_maps is called by the expression area (expr.rs); the instantiated body is the resolved unit `definition`
 changed f

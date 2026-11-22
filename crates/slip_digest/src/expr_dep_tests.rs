@@ -104,3 +104,108 @@ fn requires_parameters_are_numbered_in_the_profile() {
         assert!(of_kind(w, DeclKind::ParmVar).len() >= 3);
     });
 }
+
+/// The bytes kind function `f` writes for every node of kind `k` in
+/// `src` (C++26, no errors), in id order.
+fn kind_bytes(src: &str, k: ExprKind, f: crate::expr::KindFn) -> Vec<Vec<u8>> {
+    with_walk(src, |w| {
+        of_expr_kind(w, k)
+            .into_iter()
+            .map(|e| {
+                let mut s = Stream::new();
+                f(w, &mut s, e);
+                s.as_bytes().to_vec()
+            })
+            .collect()
+    })
+}
+
+fn prefix(f: impl FnOnce(&mut Stream)) -> Vec<u8> {
+    let mut s = Stream::new();
+    f(&mut s);
+    s.as_bytes().to_vec()
+}
+
+/// Whether some written stream starts with each of `want`.
+fn starts(got: &[Vec<u8>], want: &[Vec<u8>]) {
+    for p in want {
+        assert!(got.iter().any(|g| g.starts_with(p)), "no node writes {p:?}: {got:?}");
+    }
+}
+
+/// `SubstNonTypeTemplateParmExpr.bits-reference-parameter` (WP-034
+/// rule): a member template of an instantiation names each replacement;
+/// one parameter is a reference, one is not, and the flag word says so
+/// (a constant or a skipped row fails).
+#[test]
+fn subst_reference_parameter_bit() {
+    let src = "constexpr int c = 1;\n\
+               template<const int &N> struct AR { template<class U> static auto g(U u) -> decltype(u + N); };\n\
+               template<int N> struct A { template<class U> static auto g(U u) -> decltype(u + N); };\n\
+               auto p = &AR<c>::g<int>;\nauto q = &A<1>::g<int>;\n";
+    let got = kind_bytes(
+        src,
+        ExprKind::SubstNonTypeTemplateParmExpr,
+        super::subst_non_type_template_parm_expr,
+    );
+    use crate::stream::FlagWord;
+    starts(
+        &got,
+        &[
+            prefix(|s| {
+                s.flags(FlagWord::new().bit(true));
+            }),
+            prefix(|s| {
+                s.flags(FlagWord::new().bit(false));
+            }),
+        ],
+    );
+}
+
+/// `RequiresExpr.aux` and `ConceptSpecializationExpr.aux`: the stored
+/// result of each node, 0 in a pattern, 1 false, 2 true.
+#[test]
+fn stored_results() {
+    let src = "template<class T> concept C = sizeof(T) == 4;\n\
+               bool a = C<int>;\nbool b = C<char>;\ntemplate<class T> bool d = C<T>;\n";
+    let got =
+        kind_bytes(src, ExprKind::ConceptSpecializationExpr, super::concept_specialization_expr);
+    starts(&got, &[0u64, 1, 2].map(|v| prefix(|s| {
+        s.uv(v);
+    })));
+    let src = "struct X {};\n\
+               template<class T> constexpr bool r = requires(T t) { t + 1; };\n\
+               template<class T> concept K = requires(T t) { t + 1; };\n\
+               bool a = K<int>;\nbool b = K<X>;\nbool c = r<int>;\n";
+    let got = kind_bytes(src, ExprKind::RequiresExpr, super::requires_expr);
+    starts(&got, &[0u64, 2].map(|v| prefix(|s| {
+        s.uv(v);
+    })));
+}
+
+/// `CXXExpansionSelectExpr.aux` and `.a`: the form of each expansion
+/// statement's pattern and its template level's depth (in function
+/// bodies, which the statements' package writes: here directly).
+#[test]
+fn expansion_select_form_and_depth() {
+    use crate::tables::expansion_form;
+    let src = "struct P { int a, b; };\n\
+               template<class T> void f(T t) { template for (auto x : t) { (void)x; } }\n\
+               template<class T> void g() { template for (auto x : {1, 2}) { (void)x; } }\n\
+               void h() { P p{1, 2}; template for (auto x : p) { (void)x; } }\n";
+    let got = kind_bytes(src, ExprKind::CXXExpansionSelectExpr, super::cxx_expansion_select_expr);
+    starts(
+        &got,
+        &[expansion_form::DEPENDENT, expansion_form::ENUMERATING]
+            .map(|r| prefix(|s| {
+                s.tag(r);
+            })),
+    );
+    // Kiln builds the node with `Dependent` or `Enumerating` only
+    // (`kiln_sema` expansion.rs:248, :1142): the other two forms are the
+    // statement's. The depth: 0 in a function that is not a template, 1
+    // in a template's.
+    let depths: std::collections::BTreeSet<u8> =
+        got.iter().filter_map(|g| g.get(1).copied()).collect();
+    assert!(depths.len() >= 2, "depths {depths:?}");
+}
