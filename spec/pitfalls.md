@@ -11,64 +11,142 @@ hand; nothing here depends on how Slip would have produced them.
 
 ## 1. The form of a test
 
-One directory per row, `crates/slip_verify/tests/pitfalls/<id>-<slug>/`:
+One directory per row, `crates/slip_verify/tests/pitfalls/<id>-<slug>/`
+(`<id>` as in the tables below, in lower case; `<slug>` of `[a-z0-9-]`):
 
 ```
 pre/            the subject: sources and headers; main.cpp is the translation unit
 good/           the same tree after the correct edit           (optional, see below)
 bad/            the same tree after the wrong edit; bad-2/, bad-3/ … for more
+pre-2/          optional: the subject that good-2/ and bad-2/ are edits of (pre-3/ … likewise)
 declared.txt    the declared changes, shared by good and every bad
 expect.txt      what each tree must give
 ```
 
-- A directory under `pre/` named `dep/` is read-only code: `good/` and
-  `bad*/` must contain it unchanged, and the harness checks that.
+- A **tree** is any directory of the row but the `pre` ones: `good`,
+  `bad`, `good-<k>`, `bad-<k>`. The tree `<name>-<k>` is an edit of
+  `pre-<k>/` if the row has it, else of `pre/`; `good` and `bad` are edits
+  of `pre/`. A second subject is how a row shows the **silent** form of a
+  hazard: `pre-2/` is `pre/` with a worse-matching fallback added, so
+  that the wrong edit still compiles there, without changing what `bad/`
+  shows on `pre/`.
+- A directory under a subject named `dep/` is read-only code: every tree
+  of that subject must contain it unchanged, and the runner checks that.
 - Sources are self-contained: no system header. A row that needs a library
   facility declares the few lines of it that it uses.
-- Every tree is one observer, `main.cpp` compiled as C++20 unless
-  `expect.txt` says `std: c++17` (or another). `-I.` and `-Idep`.
-- `declared.txt` is the `Declared` of `verify.md` §2 written with names, one
-  line each:
+- Every tree is one observer: the command `clang++ -std=c++20 -I. -Idep
+  -c main.cpp` with the tree as its directory (`std: c++17` in
+  `expect.txt`, or another, changes the standard). All paths are
+  relative, so a subject and its trees are parsed with one command up to
+  the directory.
+- `declared.txt` is the text of `verify.md` §2.3. It is resolved once per
+  tree (`slip declare` with the subject as `--root` and the tree as
+  `--post`), since a `created` line and the new parent of a `relocate`
+  are resolved in the post-image. In a `good` tree every line must
+  resolve. In a `bad` tree, a line that fails with `NoUnit` is left out
+  for that tree and the runner says so: a wrong edit may well lack what
+  the correct one creates, and a missing rule or exemption can only add
+  findings.
+- `expect.txt` has one line per tree, and optional lines `std:` and
+  `xfail`; a line that is empty or starts with `#` is ignored:
 
   ```
-  relocate <entity> => <new parent> :: <new name>
-  changed  <entity>
-  created  <entity>
-  removed  <entity>
-  ```
-
-  An entity is written as the report renders it (`verify.md` §6, `name`):
-  a qualified name, with the parameter types for a function. The harness
-  resolves each name to a key through the unit names of the image that has
-  it (`pre/` for `relocate`, `changed` and `removed`; the tree under test
-  for `created`), and builds the rule that undoes each relocation. A name
-  that matches no unit or several is an error of the test.
-- `expect.txt` has one line per tree:
-
-  ```
+  std: c++17
   good:  verified
-  bad:   mismatch changed <entity>
-  bad-2: not_parsed
+  bad:   not_parsed
+  bad-2: mismatch changed app::caller() @ main.cpp:12
+  bad-3: mismatch
+  xfail bad-2: the walk does not write statements yet (WP-034)
   ```
 
-  `mismatch` is followed by one finding kind and entity that must be among
-  the findings; `mismatch` alone accepts any. A row without `good/` says so
-  with `good: none <reason>`.
+  - `verified`: the run's verdict is `verified`.
+  - `not_parsed`: the observer's state is `not_parsed`.
+  - `mismatch <kind> <entity>`: the state is `mismatch` and the report
+    has a finding of that kind whose `name` is `<entity>`. With
+    ` @ <file>:<line>` the finding's `where.post` (`where.pre` for
+    `removed`) must be that file, relative to the tree, and that line
+    ("Places" below).
+  - `mismatch` alone: the state is `mismatch` and at least one finding is
+    neither `indeterminate` nor `derived_indeterminate`. A tree whose
+    findings are all indeterminate has not shown the hazard caught; it
+    has shown that the walk gave up. Rows that expect that (N20, R11)
+    name it: `mismatch indeterminate <entity>`.
+  - A row without `good/` says so with `good: none <reason>`.
+  - `xfail <tree>: <reason>` says the tree's line is not met yet and
+    why, naming the defect or the package. It changes the outcome as
+    below. **It never excuses a `bad` tree that verifies.**
 
-The harness runs `pre/` through the map phase and each other tree through
-the verify job. A `bad` tree that verifies fails the test: that is a hole
-in the trusted base and blocks a release. A `good` tree that does not
-verify fails it too: a verifier that rejects correct edits is not usable.
-Every `good` tree and every `bad` tree is also compiled with the
-production compiler where one is installed (tier T2), so that the test's
-own C++ is known to be what its author thought; a `bad` tree marked
-`not_parsed` must be rejected there too.
+**The runner** (`crates/slip_cli/tests/pitfalls.rs`; the rows stay with
+the trusted base they test) drives the `slip` executable, as a user
+would: for each subject of a row it writes a one-entry compilation
+database into a directory of its own, runs `slip plan` and `slip parse`
+on it, and for each tree of that subject `slip declare` (if
+`declared.txt` has a line) and `slip verify --root <subject> --post
+<tree> --round <k> --findings 100000 --locate 100000 --report <file>`,
+then reads the report (`verify.md` §7.1).
+
+Per tree:
+
+| Outcome | When |
+|---|---|
+| `PASS` | the line of `expect.txt` is met, and there is no `xfail` for the tree |
+| `FAIL` | the line is not met and there is no `xfail`; **or** the tree is a `bad` one and the verdict is `verified`, with or without `xfail` |
+| `XFAIL` | the line is not met and there is an `xfail` (and the tree is not a `bad` one that verified) |
+| `XPASS` | the line is met and there is an `xfail` |
+| `ERROR` | the row is malformed, a `slip` command failed in a way that is no verdict (status 2, 3 or 70; an observer `failed`), or `dep/` differs |
+
+The test fails on any `FAIL`, `XPASS` or `ERROR`. A `bad` tree that
+verifies is a hole in the trusted base and blocks a release. A `good`
+tree that does not verify fails too: a verifier that rejects correct
+edits is not usable. An `unverifiable` verdict meets no line.
+
+**Places.** The runner has one switch, a constant `PLACES`, with two
+states:
+
+| State | A line with ` @ <file>:<line>` is met when |
+|---|---|
+| `advisory` | the finding is there, and either has no `where` or has it at that file and line |
+| `mandatory` | the finding is there with a `where` at that file and line |
+
+- A finding whose `where` is at another file or line does not meet the
+  line in either state: a place may be absent before localisation
+  exists, never wrong.
+- The switch is `advisory` until localisation (`verify.md` §6.1) is on
+  main and `mandatory` from then on; the package that merges second of
+  the runner and localisation sets it. In the `advisory` state the
+  summary counts the lines met without their place (`places skipped`).
+- M1's exit needs `mandatory`, with `places skipped` gone from the
+  summary.
+
+**The production compiler** (tier T2). Every subject and every tree is
+also compiled with `clang++-19`, else `clang++`, found on `PATH`:
+`<compiler> -std=<std> -fsyntax-only -I. -Idep main.cpp` in the tree. A
+subject and a `good` tree must be accepted; a `bad` tree must be accepted
+unless its line is `not_parsed`, and then it must be rejected. A
+disagreement is `ERROR`: the row's C++ is not what its author thought, or
+it is a Kiln report (then `expect.txt` says so in an `xfail` and
+"Open questions" lists it). Without a compiler the check is `SKIP`, and
+`ERROR` under `SLIP_REQUIRE_ALL=1` (`spec/harness.md` §1).
+
+**The catalogue against the directories.** Every row of §2 to §4 has
+exactly one directory and every directory a row; the runner reads the
+ids from this file's tables.
+
+The summary, printed whether or not the test passes:
+
+```
+pitfalls: <rows> rows, <trees> trees: PASS <n> XFAIL <n> FAIL <n> XPASS <n> ERROR <n> SKIP(T2) <n>
+pitfalls: places <advisory|mandatory>[, <n> skipped]
+pitfalls: <n> rows caught only by a failed parse
+  <outcome> <row>/<tree>: <what was expected> / <what was found>      every tree that is not PASS
+```
 
 Many wrong edits are caught by the parse failing. Those rows are kept: they
 document the hazard and pin the verdict. Where a hazard can also change
 meaning **silently**, the row has a second `bad` tree arranged so that the
-post-image still compiles (typically by adding a worse-matching fallback to
-`pre/`), because that is the case only the digest catches.
+post-image still compiles (a `bad-2/` on a `pre-2/` that adds a
+worse-matching fallback), because that is the case only the digest
+catches.
 
 ## 2. Relocating a namespace
 
@@ -133,7 +211,7 @@ layout only.
 | E01 | Qualifying a member call suppresses virtual dispatch | `this->f()` | `Base::f()` | `mismatch changed` the caller |
 | E02 | Qualifying a call disables argument-dependent lookup (`using std::swap; swap(a, b);` with a user `swap`) | left unqualified | `std::swap(a, b)` | `mismatch changed` the caller |
 | E03 | Parentheses that are not redundant: `decltype((x))`; `(f)(x)` | `((x) + 1)` | `decltype((x))`, `(f)(x)` | `mismatch changed`; the first `good` tree adds only redundant ones |
-| E04 | Reordering `#include`s changes what a non-dependent call inside a template sees at its definition | an order that keeps it | the other order | `mismatch changed` the template |
+| E04 | Reordering `#include`s changes what a non-dependent call inside a template sees at its definition, or which operator functions a dependent operator expression finds there ([temp.dep.candidate]; `digest-kinds.md` §9.5 `oper_lookups`) | an order that keeps it | the other order | `mismatch changed` the template |
 | E05 | Moving a function definition past a later, better overload (`h(long)`, caller, `h(int)`) | moved, call qualified by a cast that keeps `h(long)` — or not moved | moved | `mismatch changed` the caller |
 | E06 | Respelling through a namespace alias, a using-declaration, an injected class name, a typedef of the same type | any of them | a typedef that adds `const` | `mismatch changed` |
 | E07 | `struct` to `class` on a redeclaration; `override` added; a parameter renamed; a redundant `this->` | each | — | `good` only |
@@ -159,12 +237,31 @@ exercises the pipeline, not the digest.
 
 ## Tests
 
-- `crates/slip_verify/tests/pitfalls.rs` — runs every directory under
-  `tests/pitfalls/` as §1 says, and fails if a row of this file has no
-  directory or a directory has no row.
+- `crates/slip_cli/tests/pitfalls.rs` — runs every directory under
+  `crates/slip_verify/tests/pitfalls/` as §1 says, and fails if a row of
+  this file has no directory or a directory has no row. Its own cases, on
+  rows the test writes to a temporary directory: each outcome of the
+  table, a `bad` tree that verifies with an `xfail` (still `FAIL`),
+  `mismatch` alone against findings that are all indeterminate, the `@`
+  place one line off (not met in either state of `PLACES`), a place
+  absent (met in `advisory` and counted, not met in `mandatory`), a
+  `bad` tree whose `created` line does not
+  resolve, a changed `dep/`, a malformed `expect.txt`, `pre-2/`.
 
 ## Open questions
 
+- A row is resolved and verified through the executable, some ten
+  process starts per tree. If the suite's time matters, the runner can
+  call `slip_cli`'s functions in process; the executable is the form a
+  user's result has, which is why it is the first.
+- `xfail` lines are the list of what the trusted base does not catch
+  yet. M1's exit needs none (`docs/design/06-engineering-plan.md` §5);
+  the summary line is what is watched.
+- Whether every `mismatch` line should carry an `@` place, so that the
+  catalogue pins localisation for every row
+  (`docs/design/06-engineering-plan.md` §3 "caught with the right
+  location"). Today a row gives one where the hazard sits on one line;
+  where it is given it is checked as "Places" says.
 - R11 and the agreement between observers: the single-observer form is
   written above; the form with two observers (one sees the renamed
   declaration, the other only a stale one) needs the check that `verify.md`

@@ -120,6 +120,121 @@ reported for the run (§7).
 Exemptions are by key. A unit keyed by content (`digest.md` §3.3) cannot be
 `changed`: changing it removes one key and adds another.
 
+### 2.3 Declared changes by name
+
+A `Declared` holds keys, and nobody writes a key by hand. `slip declare`
+(`spec/exec.md` §8.8) makes a `Declared` from a text file by resolving
+names in the two images. It is outside the trusted base: what it produces
+is the data of §2, which the report prints, and a wrong rule cannot make
+two different programs compare equal (§2.1).
+
+**The text.** UTF-8. A line that is empty, or blank, or whose first
+character after blanks is `#`, is ignored. Every other line is one of
+
+```
+relocate <entity> => <parent> :: <name>
+changed  <entity>
+created  <entity>
+removed  <entity>
+```
+
+- The first word is the keyword; blanks (spaces and tabs) separate it from
+  the rest, and the rest is trimmed of blanks at both ends.
+- `<entity>` is `[<kind>] <text>` or `<text>`. `<text>` is taken literally:
+  it is a unit's name as §6 `name` renders it (`ns::f(int, char *)`). The
+  optional `[<kind>]` is the name of a key kind (`digest-kinds.md` §3.1:
+  `[function]`, `[using_declaration]`), for a name that units of two kinds
+  share.
+- For `relocate`, the rest is split at its first ` => `. The right side is
+  split at its last `::`; what follows, trimmed, is `<name>`: an identifier
+  (`[A-Za-z_][A-Za-z0-9_]*`), or `=` for "the name it has". What precedes,
+  trimmed, is `<parent>`: an `<entity>`, or empty for the global namespace.
+  So `:: acme`, `acme :: g` and `acme::g` are all read.
+
+**Records.** A **unit record** of an image is, for a unit of it, its
+`KeyId`, its `Key` (the record the id is the digest of, `digest.md` §3),
+its name and whether its key is a fallback key (`digest.md` §10). The
+records of an image are those of the observers the command selects, each
+digested once per table below. A name **resolves** in a set of records to
+the one `KeyId` that every unit of that name (and kind, if given) has.
+
+| Line | Resolved in | With rules |
+|---|---|---|
+| `relocate`, its `<entity>` | the pre-images | none |
+| `relocate`, a non-empty `<parent>` | the post-images | none |
+| `changed`, `removed` | the pre-images | none |
+| `created` | the post-images | the rules this file gives |
+
+**The rule of a `relocate` line.** Let `K = (parent, kind, name, disc)` be
+the `Key` of `<entity>`, and `P'` the new parent: `root` for an empty
+`<parent>`, else `unit(id)` of the entity it names. The line gives
+
+```
+Rule { parent: m(P'), kind, name: N', disc,  to_parent: parent, to_name: name }
+```
+
+with `N'` the identifier given (`name` itself for `=`), and `m` the mapping
+of §2.1 computed from the post-image's records: `m(root)`, `m(c_linkage)`
+and `m(builtin)` are themselves; `m(unit(id))` takes the `Key` `k` with that
+id, replaces its parent by `m(k.parent)`, applies the rules of the
+`relocate` lines **above this one** as `RuleTable::map` does, and is
+`unit` of the id of the result. A discriminator on the way is not mapped:
+a new parent whose own discriminator mentions a relocated entity gets a
+rule that does not match, which verification then reports as differences.
+So a line whose new parent another line relocates comes after that line.
+
+**Errors**, each naming the line number. One error is reported: the
+first `Syntax` error in file order if the text has one; else the first
+error in file order among the `relocate`, `changed` and `removed` lines;
+else the first among the `created` lines, which are resolved last because
+they need the rules the file gives:
+
+| Error | When |
+|---|---|
+| `Syntax` | an unknown keyword; a missing `<entity>`; a `relocate` without ` => `, without `::`, or with a `<name>` that is neither an identifier nor `=`; an unknown `[<kind>]` |
+| `NoUnit` | the name resolves to no unit; the message lists up to eight unit names of the set that contain the text's last component |
+| `Ambiguous` | units of that name have more than one `KeyId`; the message lists their kinds |
+| `Fallback` | the unit has a fallback key: there is no `Key` to make a rule from, and no stable key to exempt |
+| `NotRenamable` | `relocate` with an identifier for an entity whose `Name` is not an identifier |
+| `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)`; two lines of one exemption list give one key |
+
+A file with no line gives `Declared::none()`.
+
+**Interface.** The records come from the walk (`slip_digest::records`,
+which is trusted base only in that it must not disturb the walk); the
+text and its resolution are `slip_cli::declare`, pure functions over
+records, so that they are tested without a parse.
+
+```rust
+// slip_digest::records
+pub struct Record {
+    pub id: Digest,              // the unit's KeyId, as `digest` gives it under `rules`
+    pub key: Option<Key>,        // the Key whose id that is; None for a fallback key
+    pub kind: KeyKind,
+    pub class: GroupClass,
+    pub name: String,            // §6.1
+    pub indeterminate: bool,
+}
+/// One record per unit that `digest(input, …)` has under `rules`, sorted by
+/// `(id, name)`. `Err`, naming the unit, if a unit that has no fallback key
+/// gets a `Key` whose id is not the unit's `KeyId`: no record is guessed.
+pub fn records(input: &Input<'_>, rules: &RuleTable) -> Result<Vec<Record>, String>;
+
+// slip_cli::declare
+pub struct Entity { pub kind: Option<KeyKind>, pub text: String }
+pub enum Line { Relocate { entity: Entity, parent: Option<Entity>, name: Option<String> },   // None: the global namespace; `=`
+                Changed(Entity), Created(Entity), Removed(Entity) }
+pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate }
+pub struct LineError { pub line: u64, pub kind: ErrorKind, pub detail: String }
+pub fn read(text: &str) -> Result<Vec<(u64, Line)>, LineError>;            // line numbers from 1
+pub struct Needs { pub post: bool, pub post_mapped: bool }                 // which post-image parses the table asks for
+pub fn needs(lines: &[(u64, Line)]) -> Needs;
+pub struct Resolved { pub rules: RuleTable, pub changed: Vec<Digest>, pub removed: Vec<Digest> }
+pub fn resolve(lines: &[(u64, Line)], pre: &[Record], post: &[Record]) -> Result<Resolved, LineError>;
+/// `post_mapped`: the post-images' records under `resolved.rules`.
+pub fn finish(lines: &[(u64, Line)], resolved: Resolved, post_mapped: &[Record]) -> Result<Declared, LineError>;
+```
+
 ## 3. What is compared
 
 **Shards.** The pre shard is the observer's shard of phase `map`; the post
@@ -329,42 +444,178 @@ each image, …), …)`. Every finding therefore has a key.
 
 ## 5. The verify job
 
-One job per observer and round, run by a worker (`spec/exec.md` §5), given
-the observer, the round, the post-image and `Declared`:
+One job per observer and round, run by a worker (`spec/exec.md` §5, §8.4),
+given the observer, the round, the **image** (§5.1), `Declared`, and two
+numbers: `limit`, the findings a verdict keeps (default 64), and `locate`,
+the findings that are named and localised (default 16; §6.1).
 
-1. Parse the post-image and digest it with `Declared.rules`. If the parse
-   is not `ok`, the shard has that outcome and no verdict: the observer is
-   `not_parsed` (§6).
-2. Read the pre shard from the store. If it is absent, not `ok`, has no
-   `digests` section or has another `scheme`, the verdict is `unverifiable`
-   with the reason.
-3. Compare group sums (§4.1). If the verdict is reached there, write it.
-4. Otherwise parse the pre-image again and digest it with no rules and
-   with detail for the groups of `G` (the pre-image is the subject itself;
-   edits exist only in the overlay). Its group sums must equal the stored
-   pre shard's: if not, the subject changed under the run or the front end
-   is not deterministic, and the verdict is `unverifiable` saying so.
-5. Apply §4 to the units of `G`, then localise (§6.1) the first findings.
+### 5.1 The post-image
 
-The post shard carries the `digests` section of the post-image, with the
-unit lists of the groups of `G` (detail `differing`, `digest.md` §11), and
-the `verdict` section. Its content is a function of the post-image's
-inputs, the pre shard and `Declared`.
+In M1 a post-image is a set of directory trees beside the subject. (The
+overlay of [02](../docs/design/02-pipeline.md), which needs Kiln's request
+KF2, is a second form of image and is specified with M2; the steps of
+§5.2 do not change with it.)
 
-The second parse happens only for an observer that does not verify at the
-level of sums. In a run that verifies, every observer is parsed once.
+```
+Image   := list<RootMap>              sorted by `subject`
+RootMap := subject: path, post: path
+```
 
-**Unchanged observers.** An observer is **unchanged** in a round if the
-overlay modifies, deletes or creates no file at all, or if (a) no file in
-the `inputs` of its pre shard is modified or deleted and (b) the overlay
-creates no file. Its post-image is its pre-image byte for byte; it gets no
-job and the verdict `unchanged`, whatever the rules are: rules are a device
-for comparing, not a property of a program that did not change. Condition
-(b) is there because a created file can be found by an `#include` or a
-`__has_include` that found another file, or nothing, before; a shard does
-not record the lookups that failed ("Open questions"). A run may be asked
-to verify unchanged observers anyway (this is how invariants (a) and (b)
-are run); it must then be given no rules.
+- Each `subject` and each `post` is the real path of an existing directory
+  other than `/`. No root of an image, subject or post, equals another
+  root of it or lies under one (`/a/b` lies under `/a`; `/a/bc` does not).
+  Every root is UTF-8, since it becomes part of a command line Kiln
+  reads, and no `post` contains `=` (the post command below). An image
+  that breaks one of these is refused before any job runs
+  (`spec/exec.md` §8.7).
+- An image with no root map is the **identity**: the post-image is the
+  subject as it is on disk now.
+- The file whose real path is `s/x`, for a subject root `s` with post root
+  `p`, is in the post-image the file `p/x`. A post root holds the whole
+  tree: a file that is not in it is a file the edit deleted. A file under
+  no subject root is the same file in both images.
+- The **subject path** (`digest.md` §11) of a real path `p/x` is `s/x`; of
+  any other real path, the path itself.
+
+**The post command** is the observer's `Command` (`spec/model.md` §7)
+with:
+
+- `directory` (a path as the database gave it, compared as bytes) replaced
+  by its image if it is a subject root or starts with one followed by `/`,
+  else kept;
+- `argv[0]` kept;
+- in every other word of `argv`, each occurrence of a subject root that is
+  followed by `/` or by the end of the word replaced by its post root.
+  Occurrences are taken from the left and do not overlap; no two roots
+  match at one place, since none lies under another;
+- then, after the last word, one word `-fmacro-prefix-map=<post>/=<subject>/`
+  per root map, in the image's order;
+- `env` kept.
+
+With the identity image the post command is the observer's command.
+
+The added words make `__FILE__` and the other spellings of a file's path
+those the file will have once the edit is applied to the subject, which
+is the program the claim of §1 is about; without them a constant computed
+from such a path (`sizeof(__FILE__)`) would differ for every file of the
+tree. Kiln replaces the prefix of the first entry that matches, as a
+plain string prefix (`kiln_source/src/manager.rs:627`), so the command's
+own `-fmacro-prefix-map=` and `-ffile-prefix-map=` entries, which come
+first and were rewritten with the rest, keep their effect, and the
+trailing `/` keeps `/p` from matching `/pq`. The mapping cannot make two
+different files spell alike: it is one to one on the paths under the post
+roots, and G1 (§5.3) excludes a post-image parse that read the subject.
+
+The rule is textual because a command line is text: `-I/s/include`,
+`--sysroot=/s/x` and `-DROOT="/s"` are all rewritten. So is a subject root
+that happens to occur inside a longer path (`/mnt/s/x` for the root `/s`),
+which then names nothing, or something else; and a path that reaches the
+subject without spelling a root (a relative `-I../src` from a directory
+outside every root, a symbolic link) is not rewritten at all. Neither can
+give a wrong `verified`: guard G1 (§5.3) refuses a post-image parse that
+read any file of the subject, so what was compared is the post-image or
+nothing. They cost a failed parse, a difference or an `unverifiable`.
+
+### 5.2 Steps
+
+0. Read the **pre shard**: the observer's shard of phase `map`, round 0,
+   from the job's store. It is *usable* if it is there, is `ok` and has a
+   `digests` section.
+1. Parse the post-image: the parse of `spec/model.md` §8.4 with the post
+   command, digested as `spec/model.md` §8.5 says with `Declared.rules`,
+   the subject paths of §5.1, and detail `differing` from the pre shard's
+   group sums (`digest.md` §11; detail `none` if the pre shard is not
+   usable). If the parse is not `ok`, the shard has that outcome, no
+   `digests` and no `verdict`: the observer is `not_parsed` (§7), and the
+   job ends.
+2. Check, in this order: the pre shard is usable; guard G1; `comparable`
+   (§3). The first that fails makes the verdict `unverifiable` with the
+   reason of §5.3, and the job ends.
+3. Compare group sums (`at_sums`, §4.1). If they are equal and no group
+   has an indeterminate unit, the verdict is `verified` and the job ends.
+4. Otherwise, with `G` as §4.1 gives it, parse the **pre-image**: the
+   observer's own command, digested with no rules, real paths as subject
+   paths, and detail for the groups of `G`. Check, in this order: the
+   parse is `ok`; guard G2; its `digests`, unit lists apart, are the pre
+   shard's. The first that fails makes the verdict `unverifiable`.
+5. Apply §4 to the units of the groups of `G` from the two parses
+   (`compare_groups`, with the three lists of `Declared`), and make the
+   verdict from the comparison with `limit` (§6). A `CompareError` here
+   is a defect of the walk, not a fact about the subject: the job fails
+   (`spec/exec.md` §5.4), it gives no verdict.
+6. If there is a finding and `locate` is not 0, name and localise the
+   first `locate` findings (§6.1). This parses the post-image once more.
+
+The parses of a job run one after another; no two are in memory together.
+A job whose observer verifies at the sums parses once; one that does not
+parses twice, or three times when it localises.
+
+Steps 0 to 5 decide the verdict's `kind`, `total`, counts and `used`, and
+each finding's `kind`, `key`, `file`, `pre` and `post`. Step 6 fills
+`name` and `where` and can change nothing else, with one exception that
+only withdraws: guard G3.
+
+### 5.3 Guards and reasons
+
+| | Checked | `reason` of the `unverifiable` verdict |
+|---|---|---|
+| P1 | step 2: the pre shard is in the store | `pre-image: no map shard` |
+| P2 | step 2: it is `ok` | `pre-image: the map shard is <status>` |
+| P3 | step 2: it has a `digests` section | `pre-image: the map shard has no digests` |
+| G1 | step 2: no entry of the post-image parse's `inputs` is a subject root or lies under one | `post-image: read <path>, a file of the subject` (the first such entry) |
+| C | step 2: `comparable(pre, post)` | `digests: <its message>` |
+| R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
+| G2 | step 4: its `inputs` are the pre shard's `inputs`, entry for entry | `pre-image: <path> changed since the map phase` (the first path, in path order, whose entry is not the same in both lists or is in one only) |
+| R2 | step 4: its `digests`, unit lists apart, equal the pre shard's | `pre-image: its digests are not those of the map shard` |
+| G3 | step 6: the second parse of the post-image gives the `tu` digest of the first | `post-image: changed during the job` |
+
+`<status>` is the name of the status (`diagnosed`, `rejected`, `failed`);
+`<message>` the outcome's message; a path is written as its bytes where
+they are UTF-8, else with each other byte as `\xNN`. The reason is then
+cut as §6 says.
+
+- **G1** is what makes the textual rule of §5.1 safe. With the identity
+  image there is no subject root and it holds trivially.
+- **G2 and R2** say that the pre-image parsed in step 4 is the one the map
+  phase saw. A subject edited in place after the map phase (the identity
+  image used to compare "the tree now" with "the tree as planned") can
+  therefore be `verified` at the sums, and is `unverifiable`, never
+  `mismatch`, when it is not: there is no pre-image left to compare units
+  with.
+- **G3**: if the post-image is not the same at the second parse, the job
+  cannot say which image its verdict is about.
+
+### 5.4 The post shard
+
+The shard of phase `verify` and the job's round has the plan's observer
+id; the outcome, `inputs` (real paths, in the post-image) and counters of
+the step 1 parse; the counters of step 1's walk and those of §7; the
+`digests` section of step 1 **without unit lists**; and the `verdict`.
+Unit lists are not stored: while a corpus has indeterminate units every
+group is in `G`, the lists would be the whole translation unit for every
+observer, and nothing reads them.
+
+Its content is a function of the post-image's inputs, the pre shard,
+`Declared`, the image, `limit` and `locate` (and of the pre-image's
+inputs, which G2 ties to the pre shard).
+
+### 5.5 Unchanged observers
+
+An observer is **unchanged** in a round if the image changes no file at
+all, or if (a) no file in the `inputs` of its pre shard is modified or
+deleted and (b) the image creates no file. Its post-image is its pre-image
+byte for byte; it gets no job and the verdict `unchanged`, whatever the
+rules are: rules are a device for comparing, not a property of a program
+that did not change. Condition (b) is there because a created file can be
+found by an `#include` or a `__has_include` that found another file, or
+nothing, before; a shard does not record the lookups that failed ("Open
+questions").
+
+**Not in M1.** Deciding "unchanged" needs the set of files an image
+changes, which an overlay states and a tree does not. In M1 every selected
+observer gets a job and no observer is `unchanged`; the state exists in §7
+for M2. Invariants (a) and (b) are run with the identity image and no
+rules (`spec/harness.md` §9).
 
 ## 6. Verdicts and findings
 
@@ -396,9 +647,30 @@ FindingKind := changed = 0 | removed = 1 | added = 2 | indeterminate = 3
              | derived_changed = 4 | derived_indeterminate = 5
 ```
 
-Findings are ordered by `(kind, file, key)`: `kind` by its number, `file`
-and `key` by their bytes. No two findings are equal in all three, so the
-first `limit` are determined.
+Findings are ordered by `(rank, file, key)`: `file` and `key` by their
+bytes, and `rank` from the kind:
+
+| Kind | Number in the format | Rank |
+|---|---|---|
+| `changed` | 0 | 0 |
+| `removed` | 1 | 1 |
+| `added` | 2 | 2 |
+| `derived_changed` | 4 | 3 |
+| `indeterminate` | 3 | 4 |
+| `derived_indeterminate` | 5 | 5 |
+
+- The findings that say a unit differs come before those that say a unit
+  is unknown: a `derived_changed` finding is within the first `limit`
+  (and the first `locate`, §6.1) however many indeterminate units the
+  observer has.
+- The rank is not the kind's number and is not written: the numbers of
+  `FindingKind` in the format do not change. The decoder checks the order
+  by rank (`spec/model.md` §8.3 rule 4b). No verify shard was written
+  under the earlier order (by number): the verify job (§5) is the first
+  writer.
+- No two findings are equal in all three, so the first `limit` are
+  determined.
+- The report's groups (§7.1) use the same rank.
 
 `pre`, `post` and `file` are defined on what §4 looked at, so that they too
 are the same whether or not the comparison was restricted to `G`:
@@ -432,7 +704,7 @@ are the same whether or not the comparison was restricted to `G`:
   units in both reports the declared group's file.
 
 The comparison (§4.3) leaves `name` empty and `where` absent; they are for
-the report and are filled by localisation (§6.1).
+the report and are filled by step 6 of the job (§6.1).
 
 A verdict is made in one of three ways:
 
@@ -449,61 +721,334 @@ A verdict is made in one of three ways:
   the non-empty reason `spec/model.md` §8 requires. `total` 0, no finding,
   counts 0, `used` empty.
 
-### 6.1 Localisation
+### 6.1 Names and localisation
 
-A finding of kind `changed` or `derived_changed` says that two streams
-differ. To say where, the walk can produce, for a named unit, a **trace**:
-the unit's stream, and for each node of it (`digest.md` §4) the offset at
-which the node starts, its tag, and the source location of the syntax it
-was made from. The job takes the traces of the unit from both images (both
-parses are in memory at step 5), finds the first byte at which the streams
-differ, and in each trace the innermost node that contains that byte.
+Names and places are for people. They are outside the trusted base: no
+verdict depends on them (§5.2), and a `Where` that points at the wrong
+token is a defect of the report, not of the verification. They are made
+for the first `locate` findings of a verdict, in its order; the other
+findings keep an empty `name` and no `where`.
+
+**Names.** A unit's name is the entity as a person would write it:
+
+| Unit | Name |
+|---|---|
+| a namespace, class, enumeration, variable, alias, template, concept, member | its qualified name: `ns::C::m`, `(anonymous namespace)::x` |
+| a function | its qualified name and its parameter types as Kiln prints canonical types, then ` const`, ` volatile`, ` &` or ` &&` for a member's qualifiers: `ns::f(int, char *)`, `ns::C::m() const` |
+| a specialisation | the template's name and its arguments: `ns::S<int>` |
+| a content-keyed unit (`digest.md` §3.3) | its scope and `<kind>`: `ns::<static_assert>` |
+| the order unit | `<order>` |
+| an entity Kiln prints no name for | the name of its scope and `(unnamed N)`, `N` its ordinal (`digest.md` §3.3), or `(unnamed)` |
+
+A finding's `name` is the name of the key's unit in the pre-image when the
+pre-image has one, else in the post-image, where it is the name written
+there (the new name of a relocated entity; the key is the mapped one). If
+units of one key have different names (a collision, two namespaces merged
+by a rule), it is the first in the order of their bytes. It is cut to 4096
+bytes at a character boundary. `slip declare` (§2.3) resolves the same
+names.
+
+**Traces.** For a list of keys the walk can produce, for each unit that
+has one of them, a **trace**:
+
+```
+Trace := key: KeyId, digest: digest
+         stream: bytes                the unit's stream (digest.md §4), as hashed
+         marks:  list<Mark>           ascending by offset
+         refs:   list<RefAt>          ascending by offset, not overlapping
+Mark  := offset: uv                   the stream's length when the walk began to write the node
+         node:   str                  the node's kind: the variant's name in Kiln's `ExprKind` or
+                                      `StmtKind`; for a unit's first mark, the name of its key kind
+         file:   bytes, line: uv, column: uv      subject path and presumed line and column of the node's
+                                                  location; empty, 0, 0 if it has none
+RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) whose value is
+         key:   KeyId                 the key of a unit of this image: a reference to it
+```
+
+- A mark is made where the walk begins a unit (offset 0, the location of
+  the unit's first declaration) and where it begins a statement or an
+  expression inside one. A declaration's own rows (its type, its
+  specifiers, each redeclaration) have no mark: a difference there is at
+  the unit's mark or at the last expression before it. Types and constant
+  values are written as digests (`digest.md` §4.2) and have no mark of
+  their own: a difference inside one is at the mark of the node that
+  holds it. The same holds for any part of a unit the walk hashes apart
+  and writes as a digest.
+- A trace is made by writing the unit's stream **again**, after the walk,
+  with the marks recorded. It is a trace only if the bytes written the
+  second time hash to the unit's digest; otherwise the unit has no trace
+  and its finding no `where` (counted: `verify.traces.unstable`, §7.2),
+  which is also a defect of the walk to report: a unit's stream must not
+  depend on when it is written. The walk that produced the digests is not
+  touched by tracing.
+- A content-keyed unit and the order unit have the first mark only.
+- The location of a node inside a macro expansion is that of the outermost
+  expansion (as for a group's file, `digest.md` §11).
+- Tracing changes no byte of any stream: with and without it, `digests` are
+  the same, and every unit of every pair test's sources has a trace whose
+  stream hashes to its digest. `crates/slip_digest/tests/trace.rs` asserts
+  both.
+
+**The site of a difference.** For a `changed` or `derived_changed` finding
+whose `pre` and `post` are both present, take the trace of the unit with
+that digest in each image, and let `d` be the first offset at which the
+two streams differ (the length of the shorter if one is a prefix of the
+other). In each trace the site is the last mark whose offset is at most
+`d`:
 
 ```
 Where := pre:  Site, post: Site
-Site  := file: bytes, line: uv, column: uv      subject path; 0, 0 if the node has no location
-         node: str                               the node's kind, by name
-         what: str                               the differing field, rendered: for a reference, the entity's name
+Site  := file: bytes, line: uv, column: uv      of the mark; empty, 0, 0 if it has none
+         node: str                               the mark's `node`
+         what: str                               below
 ```
 
-Localisation is for people. It is outside the trusted base: no verdict
-depends on it, and a `Where` that points at the wrong token is a defect of
-the report, not of the verification. It is done for at most the first
-sixteen findings of an observer that can have one. `added`, `removed` and
-`indeterminate` findings carry the location of the entity's first
-declaration in the image that has it, in the corresponding `Site`, with the
-other one empty.
+`what` is `refers to <name>` when `d` lies inside a `RefAt` of that trace,
+with the name of the entity the reference is to in that image (its key in
+64 hexadecimal digits if it has no unit there); else empty. So a call that
+now reaches another function reads, on the two sides, `CallExpr … refers
+to lib::f(long)` and `CallExpr … refers to app::f(int)`.
+
+The last mark at or before `d` is the node the walk was writing, or one it
+had just finished: a difference in a count or a flag that the enclosing
+node writes after its children is reported at the last child. That is one
+node off and in the right line or the next; it is what a list of marks can
+say without recording where each node ends ("Open questions").
+
+**Other findings.**
+
+| Finding | `where` |
+|---|---|
+| `changed`, `derived_changed` with `pre` or `post` absent (several units of the key differ) | both sites from the units' first marks (below), `what` empty |
+| `removed` | `pre`: the unit's first mark; `post`: the empty site |
+| `added` | `post`: the unit's first mark; `pre`: the empty site |
+| `indeterminate`, `derived_indeterminate` | in each image that has an indeterminate unit of the key: the unit's first mark, with `what` the cause as the walk prints it (`unsupported ExprKind/CXXReflectExpr`, `collision`, `pending stmt`); the empty site in the other |
+
+The empty site is an empty `file`, line and column 0, an empty `node` and
+an empty `what`. A unit's first mark is the mark at offset 0. Where an
+image has several units of the key, the one with the smallest digest is
+taken.
+
+**When they are made.** The pre-image's names, traces and causes are taken
+while the parse of step 4 is in memory, after the comparison (which needs
+no syntax tree) has said which keys are wanted. The post-image's need its
+syntax tree again: step 6 parses the post-image a second time, digests it
+as step 1 did with detail `none`, checks guard G3 (§5.3), and takes its
+names, traces and causes. With `locate` 0 there is no second parse and no
+finding has a name.
+
+**Interface.**
+
+```rust
+// slip_digest::trace
+pub struct Mark  { pub offset: u64, pub node: &'static str, pub file: Vec<u8>, pub line: u64, pub column: u64 }
+pub struct RefAt { pub offset: u64, pub len: u64, pub key: Digest }
+pub struct Trace { pub key: Digest, pub digest: Digest, pub stream: Vec<u8>, pub marks: Vec<Mark>, pub refs: Vec<RefAt> }
+pub struct Traced { pub output: Output, pub traces: Vec<Trace> }           // traces sorted by (key, digest)
+/// `output` is `digest(input, options)`, byte for byte; `traces` has one
+/// entry per unit whose key is in `keys` (sorted, no duplicates).
+pub fn trace(input: &Input<'_>, options: &Options<'_>, keys: &[Digest]) -> Traced;
+
+// slip_cli::locate
+/// What localisation needs from one image, taken while its parse is in memory.
+pub struct Side { /* the `tu` digest; names, causes and traces of the wanted keys */ }
+impl Side { pub fn tu(&self) -> &Digest; }
+/// One walk of `input` under `rules` for the keys of the findings to localise.
+pub fn take(input: &Input<'_>, rules: &RuleTable, keys: &[Digest]) -> Side;
+/// The keys of the first `locate` findings, sorted, no duplicates.
+pub fn wanted(findings: &[Finding], locate: usize) -> Vec<Digest>;
+/// Fills `name` and `location` of the first `locate` findings; changes no other field.
+pub fn fill(findings: &mut [Finding], locate: usize, pre: Option<&Side>, post: &Side);
+```
+
+`pre` is `None` when step 4's parse was not reached with a finding to
+localise; it cannot be, for a verdict with findings, and `fill` then
+takes every name from the post-image.
 
 ## 7. The run
 
-A run of the verify phase over a plan and a round has the verdict:
+A run of the verify phase is over a plan, a round, an image, a `Declared`
+and a selection of the plan's observers (`spec/exec.md` §8.7). Each
+selected observer ends in one **state**:
 
-- **verified**: every observer is `verified` or `unchanged`;
+| State | When |
+|---|---|
+| `verified` | its shard of this run is `ok` and has the verdict `verified` |
+| `unchanged` | it got no job (§5.5); not in M1 |
+| `mismatch` | its shard is `ok` and has the verdict `mismatch` |
+| `not_parsed` | its shard is `diagnosed` or `rejected`, and its map shard is `ok`: the post-image does not parse where the pre-image did |
+| `unverifiable` | its shard is `ok` and has the verdict `unverifiable` |
+| `never_parsed` | its shard is `diagnosed` or `rejected`, and its map shard is absent or not `ok`: nothing is known to have changed |
+| `failed` | anything else: a shard of status `failed`, no shard, an `ok` shard without a verdict, a shard that is not this run's |
+
+**This run's shard.** The shard of an observer is read from the store and
+is this run's if its content id is the `shard` of the observer's last
+`Job` entry in the run's record (`spec/model.md` §9). A shard another run
+left, or put there since, is not read as a result of this one.
+
+The run has the verdict:
+
+- **verified**: at least one observer was selected, and every selected
+  observer is `verified` or `unchanged`;
 - **not verified**: some observer is `mismatch` or `not_parsed`;
-- **incomplete**: neither of those; some observer is `unverifiable`, or has
-  a shard of status `failed`, or the run was cancelled.
+- **incomplete**: neither of those. A run over no observer is incomplete:
+  nothing was checked.
 
-The run's report lists the count of observers per verdict, every finding
-grouped by `(kind, key)` with the observers that have it (a mismatch in a
-shared header is one line, not one per observer), every exemption with the
-number of observers that used it, and the exemptions no observer used.
+A run that was interrupted has no verdict and no report.
 
-Counters of a verify shard, added to those of `digest.md` §12:
+A `mismatch` whose findings are all `indeterminate` or
+`derived_indeterminate` says that Slip could not digest something, not
+that the edit changed it. The report counts those observers apart
+(`indeterminate_only`); the state, the run's verdict and the exit status
+are the same either way, because an indeterminate unit is different from
+every unit (`digest.md` §10).
+
+### 7.1 The report
+
+The report is a JSON document (`spec/model.md` §4), written where
+`--report` says; the text on standard output says the same in fewer words.
+
+```
+{
+  "report": "slip.verify.v1",
+  "plan": <id>, "round": <n>,
+  "declared": <id of the DECL container>, "rules": <rules_id>,
+  "image": [ { "subject": <path>, "post": <path> }, … ],
+  "limit": <n>, "locate": <n>,
+  "verdict": "verified" | "not_verified" | "incomplete",
+  "observers": { "plan": <n>, "selected": <n>,
+                 "verified": <n>, "unchanged": <n>, "mismatch": <n>, "not_parsed": <n>,
+                 "unverifiable": <n>, "never_parsed": <n>, "failed": <n>,
+                 "indeterminate_only": <n> },
+  "findings": { "total": <n>, "listed": <n>, "groups": [ <FindingGroup>, … ] },
+  "not_verified": [ { "observer": <id>, "main": <path>, "state": <state>, "message": <str>,
+                      "findings": <n>, "indeterminate": <n>, "listed": <n> }, … ],
+  "exemptions": [ { "list": "changed" | "created" | "removed", "key": <id>, "observers": <n> }, … ],
+  "run": <path of the run record>
+}
+
+FindingGroup := { "kind": <FindingKind by name>, "key": <id>, "name": <str>,
+                  "observers": <n>, "first": <main file of the first of them in plan order>,
+                  "file": <path>, "pre": <id or null>, "post": <id or null>,
+                  "where": <Where of spec/model.md §10, or null> }
+```
+
+- Ids are 64 hexadecimal digits; paths and names are rendered as
+  `spec/model.md` §10 renders bytes and strings.
+- `findings.total` is the sum of the verdicts' `total`; `listed` the
+  number of findings the verdicts hold. A **group** is the listed findings
+  of one `(kind, key)`; `observers` counts the observers that list it.
+  `file`, `pre`, `post`, `name` and `where` are those of the first
+  observer, in plan order, whose finding has a `name` that is not empty,
+  else of the first. Groups are sorted by `(rank, name, key)`, with the
+  rank of §6.
+- `not_verified` lists, in plan order, every selected observer that is
+  neither `verified` nor `unchanged`: its state; the verdict's `reason`
+  (`unverifiable`), the shard's message (`not_parsed`, `never_parsed`,
+  `failed`; empty if there is no shard) or the empty string (`mismatch`);
+  and for a `mismatch` the verdict's `total`, how many of them are
+  `indeterminate` or `derived_indeterminate` (from the counters of §7.2)
+  and how many the verdict lists; three zeros otherwise. An observer is
+  `indeterminate_only` when `findings` equals `indeterminate`.
+- `exemptions` has one entry for every key of every list of `Declared`,
+  in the order `changed`, `created`, `removed` and then by key, with the
+  number of observers whose verdict has the key in `used`. A verdict's
+  `used` does not say which list a key was used from, so a key in two
+  lists has the same number in both entries ("Open questions"). An entry
+  with 0 observers is an exemption no observer needed.
+
+The text, on standard output:
+
+```
+plan <plan id>
+round <n>
+declared <id> rules <rules_id>
+image identity                                   or one line `image <subject> => <post>` per root map
+selected <n> of <observers of the plan>
+observer <state> <n>                             one line per state in the order of the table, zeros included
+mismatch indeterminate_only <n>
+finding <kind> <key, first 16 digits> observers <n> <name>          at most 100 groups, in report order
+  first <main file>
+  pre  <file>:<line>:<column> <node> <what>      the two `where` lines only if it has one;
+  post <file>:<line>:<column> <node> <what>      a site with an empty file prints `-`
+findings <total> total, <listed> listed, <groups> group(s)
+exemption <list> <key, first 16 digits> observers <n>
+wall <seconds, three decimals>
+peak_rss <bytes> <main file>                     as `parse` prints it (spec/exec.md §8.2)
+run <path of the run record>
+report <path>                                    if --report was given
+verdict verified | not verified | incomplete
+```
+
+After it, on standard error, one line per entry of `not_verified`, at
+most 100 and then `slip: and <n> more (see the report)`:
+`slip: <state>: <main file>: <first line of the message>`, the message of
+a `mismatch` being `<findings> finding(s), <indeterminate> indeterminate`.
+
+### 7.2 Counters
+
+Counters of a verify shard, added to those of the parse and of
+`digest.md` §12 for step 1's walk:
 
 | Counter | Meaning |
 |---|---|
-| `verify.groups.differing` | groups of `G` (§4.1) |
+| `verify.groups.differing` | groups of `G` (§4.1); 0 when the sums were equal |
 | `verify.findings` | findings (`total`) |
+| `verify.findings.changed`, `.removed`, `.added`, `.indeterminate`, `.derived_changed`, `.derived_indeterminate` | findings of each kind, all six always present when there is a verdict |
 | `verify.derived.only_pre`, `verify.derived.only_post` | derived keys counted by §4 step 3 |
 | `verify.exemptions.used` | exemptions that prevented a finding |
-| `verify.reparsed` | 1 if the pre-image was parsed again |
+| `verify.reparsed` | parses after the first: 0, 1 (the pre-image) or 2 (and the post-image again) |
+| `verify.traces.unstable` | units wanted for localisation whose stream, written again, did not hash to their digest (§6.1); present only when not 0 |
+
+A shard without a verdict has none of them. The counters by kind are what
+`indeterminate_only` (§7) is computed from: a verdict lists only its first
+`limit` findings.
+
+### 7.3 Interface
+
+`slip_verify::run`, pure and part of the trusted base: the states, the
+run's verdict and the report are what a person reads as "verified".
+
+```rust
+pub enum State { Verified, Unchanged, Mismatch, NotParsed, Unverifiable, NeverParsed, Failed }
+impl State { pub const ALL: [State; 7]; pub fn name(self) -> &'static str; }
+
+/// §7: `verify` is this run's shard of the observer (None: there is none, or
+/// it is not this run's); `map` the status of its map shard (None: absent).
+pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State;
+
+pub enum RunVerdict { Verified, NotVerified, Incomplete }
+pub fn run_verdict(states: &[State]) -> RunVerdict;
+
+pub struct Header { pub plan: Digest, pub round: u64, pub declared: Digest, pub rules: Digest,
+                    pub image: Vec<(Vec<u8>, Vec<u8>)>, pub limit: u64, pub locate: u64,
+                    pub plan_observers: u64, pub run: Vec<u8> }
+pub struct Report { /* … */ }
+impl Report {
+    pub fn new(header: Header, declared: &Declared) -> Report;
+    /// One call per selected observer, in plan order.
+    pub fn add(&mut self, observer: &Digest, main: &[u8], verify: Option<&Shard>, map: Option<Status>);
+    pub fn verdict(&self) -> RunVerdict;
+    pub fn states(&self) -> [u64; 7];
+    pub fn to_json(&self) -> slip_model::json::Value;
+    /// §7.1 from `plan` to `exemption`: the caller adds `wall`, `peak_rss`,
+    /// `run`, `report` and prints `verdict_line()` last.
+    pub fn to_text(&self) -> String;
+    pub fn verdict_line(&self) -> &'static str;
+}
+```
+
+`add` keeps the findings of a shard and drops the shard; a report over
+4000 observers of 64 findings each holds a quarter of a million findings.
 
 ## 8. What this does not show
 
 - **Only analysed observers.** A configuration that is not in a database,
   a branch of `#if` no observer takes, and a template nothing instantiates
   are not verified. The coverage report says which
-  ([03](../docs/design/03-equivalence.md) §9).
+  ([03](../docs/design/03-equivalence.md) §9). A run over a selection
+  (`--only`, `--limit`) says `verified` of the selection; its report gives
+  the two numbers.
 - **One front end.** Both images are resolved by Kiln. An error Kiln makes
   the same way twice is invisible here; tiers T2 to T4 of
   [03](../docs/design/03-equivalence.md) §8 exist for that.
@@ -525,6 +1070,28 @@ Counters of a verify shard, added to those of `digest.md` §12:
   The walk that writes sums is as much trusted base as the comparison.
 - **Text.** Strings, comments and anything else that spells a name without
   referring to it ([03](../docs/design/03-equivalence.md) §7 rows 14, 15).
+- **Derived inputs.** A file the build generated from the subject (a
+  table, a configuration header, a module file) lies in the build tree,
+  outside every subject root, and is the same file in both images: the
+  edit's effect on it is not seen until it is generated again from the
+  post-image, which Slip does not do. A generated file that includes a
+  subject file by an absolute path trips G1 (§5.3) for every observer
+  that reads it.
+- **The command.** Both images are parsed with one command, up to the
+  roots (§5.1). An edit to the build (a flag, a definition, an include
+  path) is not an edit to the subject and is not verified.
+- **The environment and the clock.** `Command.env` is not applied
+  (`spec/model.md` §8.4), and `__DATE__`, `__TIME__` and `__TIMESTAMP__`
+  are those of one fixed instant in every parse. A program whose meaning
+  depends on either is verified for that environment and that instant.
+- **How a file is reached.** Under a tree image the path of a file is
+  mapped back to the subject's wherever the front end spells it (§5.1),
+  for the spelling the include directories give. A program that computes
+  with a path spelled another way (through a symbolic link, or relative
+  to a directory outside the roots that the two images reach
+  differently) can show a `changed` that the edit did not cause: a false
+  finding, never a false `verified`. The overlay image of M2 moves no
+  file.
 
 ## Tests
 
@@ -533,22 +1100,66 @@ Counters of a verify shard, added to those of `digest.md` §12:
   preventing exactly its finding and no other, multiplicities, two units
   of one key, derived keys on one side, a key declared in one image and
   derived in the other, `file`, `pre` and `post` of each kind, the order
-  of findings, the three ways of making a verdict, malformed groups,
+  of findings by rank (a `derived_changed` finding is within the first
+  `limit` when ten thousand indeterminate findings exist, and alone
+  with `limit` 1), the three ways of making a verdict, malformed groups,
   `comparable`, and `at_sums` over unsorted and duplicate groups.
 - `crates/slip_verify/tests/groups.rs` — §4.1: for generated pairs of
   images (random units, groups, moves between groups, duplicates), the
   outcome through groups equals the outcome over all units; 12000 pairs
   from the fixed seed `0x5eed0016c0def00d` (`SLIP_VERIFY_SEED` overrides),
   the property asserted on every pair.
+- `crates/slip_verify/tests/run.rs` — §7, §7.1, §7.3 over shards written
+  by hand: every row of the state table, each of them against each map
+  status; the run's verdict for every combination of two states and for
+  no observer; `indeterminate_only` from the counters, including a
+  verdict that lists fewer findings than it has; groups across observers
+  and their order; `not_verified`; exemptions used by some,
+  by none, and one key in two lists; golden JSON and text in
+  `crates/slip_verify/tests/golden/run/`.
 - `crates/slip_model/tests/declared.rs` — §2: the `DECL` container round
   trip; rejected forms (unsorted, duplicate, two rules with one match).
 - `crates/slip_digest/tests/rules.rs` — §2.1: mapped keys under rules, one
   directory per case: a relocated namespace, a merged namespace, a renamed
   member, a swap, a collision, a rule that captures a pre-existing entity.
-- `crates/slip_cli/tests/verify.rs` — §5, §6, §7 through the executable:
-  the identity (verified, one parse per observer), an edit that changes a
-  callee (mismatch, localised), an edit that breaks the parse, a pre-image
-  that did not parse, an unchanged observer, the report.
+- `crates/slip_digest/tests/records.rs` — §2.3 "Records": the records of
+  snippets, a fallback key, two entities of one name, and the id of every
+  record's `Key` being its `KeyId`.
+- `crates/slip_cli/tests/declare.rs` — §2.3 over records written by hand
+  and over snippets: every line form, every error with its line number,
+  the rule of a relocation into the global namespace, into an existing
+  namespace and into a namespace another line relocates, `=`, and each
+  rule checked by digesting the post-image with it and comparing.
+- `crates/slip_digest/tests/trace.rs` — §6.1: tracing changes no digest
+  (every pair test's sources, with and without) and every unit's second
+  writing hashes to its digest; marks ascending and inside the stream;
+  the site of a changed callee, a changed literal, a changed type of a
+  declaration, a changed default argument; `refs` are the digest fields
+  that are keys of units.
+- `crates/slip_cli/tests/image.rs` — §5.1: refused images; the post
+  command for roots at the start, in the middle and at the end of a word,
+  twice in one word, as a prefix of a longer name (`/s` in `/sx`: not
+  rewritten), `argv[0]` and `env` kept, `directory`, the added
+  `-fmacro-prefix-map=` words and `__FILE__` under them in a parse;
+  subject paths; the identity.
+- `crates/slip_cli/tests/verify_job.rs` — §5.2–§5.4, the task run in
+  process on trees the test writes: verified at the sums with one parse
+  (`verify.reparsed` 0); a changed callee (mismatch, two parses or
+  three); a post-image that does not parse; every row of the table of
+  §5.3, each with its reason, G1 by an absolute `-I` into the subject and
+  by a symbolic link, G2 by editing a header between the map phase and
+  the job; the post shard without unit lists; the counters; `limit` and
+  `locate`; a `CompareError` as a failed job.
+- `crates/slip_cli/tests/locate.rs` — §6.1 through the task: names from
+  each image, the site of each planted difference at its line, the
+  `what` of a reference and of an indeterminate unit, G3.
+- `crates/slip_cli/tests/verify.rs` — §5, §7 and `spec/exec.md` §8.7–§8.9
+  through the executable: the identity (verified, one parse per
+  observer), an edit that changes a callee (mismatch, localised), a
+  relocation with its declared file (verified), an edit that breaks the
+  parse, a pre-image that did not parse (`never_parsed`), no map run, an
+  empty selection, a stale shard of another run, the report and each exit
+  status.
 - `spec/pitfalls.md` and its tests — each catalogued hazard as a correct
   edit that verifies under its rules and a wrong edit that does not.
 
@@ -588,10 +1199,40 @@ Counters of a verify shard, added to those of `digest.md` §12:
 - **Warnings.** A new warning in the post-image is information about the
   edit but not a difference of the program. Whether a run may be asked to
   treat it as a finding.
-- **Memory.** Step 5 holds two parses of one translation unit. The
-  admission estimate of a verify job (`spec/exec.md` §6) should be that of
-  its map job for step 1 and twice that once step 4 starts; the protocol
-  has no way to raise an estimate in the middle of a job.
+- **Memory and the estimate.** The parses of a job run one after another
+  (§5.2), so its peak is that of one parse and the admission estimate of
+  the map job is the right one. `spec/exec.md` §6 takes rule 1 from the
+  latest record *of the same phase*, so the first verify round falls back
+  to rule 2. Proposed: a verify job's estimate is taken from the latest
+  map record when no verify record has the observer.
+- **Three parses.** An observer with a finding is parsed three times when
+  it is localised (post, pre, post). Parsing the pre-image inside the
+  closure of the second post-image parse would make it two, with both
+  syntax trees in memory; whether Kiln's front end can run inside its own
+  closure (thread-local caches, the crash scope of
+  `kiln_driver/src/crash.rs`) is not established. Keeping the first
+  post-image parse alive across the pre-image parse has the same
+  question.
+- **Where a node ends.** A trace has marks for where nodes begin (§6.1).
+  With an end offset per node the site would be the innermost node that
+  contains the first differing byte, which is exact; it costs a second
+  hook at every dispatch point of the walk.
+- **`used` by list.** A verdict's `used` is a list of keys; the report
+  cannot tell which exemption list prevented the finding when a key is in
+  two (§7.1). A `Verdict` field per list at the next change of the
+  section.
+- **A round's parameters are not recorded.** The run record names the
+  plan, phase and round; the image, the `Declared` and `limit` are in the
+  report only. A later run with the same round number replaces the
+  shards. Proposed: the record's `run` section gains the declared id and
+  the image, and rounds are allocated by the store, with M2's apply.
+- **The tree image rewrites text** (§5.1). G1 makes it safe; how often it
+  costs an `unverifiable` on real build trees is to be seen on the
+  corpus. The overlay (KF2) rewrites nothing.
+- **In place.** The identity image compares the tree as it is with the
+  map shards, and can only answer `verified` or, through G2,
+  `unverifiable`. A copy of the pre-image kept at map time (or the
+  overlay, inverted) would give findings.
 - **The pre-image is parsed again** for every observer that does not
   verify at the sums. Storing unit lists for owned files at map time
   (`digest.md` "Open questions") would remove most of those parses and cost
@@ -599,7 +1240,11 @@ Counters of a verify shard, added to those of `digest.md` §12:
 - **Mapping allocates.** `RuleTable::map` encodes each key's match to
   look it up; with a table that is not empty that is one allocation per
   key of the post-image. To be measured on the corpus with the verify job.
-- **`limit` and the sixteen** of §6 are guesses.
+- **`limit` (64) and `locate` (16)** are the defaults for M1; to be
+  looked at again with the counts of the first corpus run.
+- **Exit status of a `mismatch` that is only indeterminate** (§7): the
+  same as any other mismatch. While the walk has areas that are not
+  written, that is every observer with a function body.
 - **`Finding.key` is optional in the format** and nothing produces a
   finding without one since §4.1 names every finding. Make it required at
   the next change of the section.
