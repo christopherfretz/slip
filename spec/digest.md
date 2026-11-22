@@ -182,7 +182,13 @@ member).
 ### 2.3 Demand-driven state
 
 Kiln's account of what in the AST exists only because the translation unit
-used it (Kiln `62afe3289`), and where each goes:
+used it (Kiln `62afe3289`), and where each goes. At the pinned
+`83566cc47` (WP-044) it still holds: what Kiln added since (the
+definition-context operator sets, the names of an overloaded member
+access, the shadows of a using-declaration, the owner of a closure, the
+checked mark of an attribute) is recorded where the source is parsed,
+whatever the unit uses, and the written-reference and declaration-extent
+tables exist only when a client turns them on.
 
 | State | In the digest as |
 |---|---|
@@ -645,7 +651,7 @@ Digests are produced only for an observer whose shard is `ok`.
 Section 19 of the shard (`spec/model.md` §8).
 
 ```
-Digests := scheme: uv              1; changes whenever any stream, key or table of this spec changes
+Digests := scheme: uv              1; changes whenever any stream, key or table of this spec changes (rule below)
            tu:     digest          H("slip.tu.v1", list<GroupSum>), groups in the order below
            groups: list<Group>     sorted by (class, file)
 
@@ -661,6 +667,13 @@ GroupClass := declared = 0 | derived = 1 | tu = 2
 
 Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminate; other bits must be 0
 ```
+
+From the first release, `scheme` changes with every change to a stream,
+a key or a table of this spec, without exception. Before that release no
+shard outlives the build that wrote it (shards are stored by plan, and
+the cache keys of `spec/exec.md` that will replace the plan name the
+tool's version), so no shard of one scheme meets a reader of another, and
+`scheme` stays 1 until then.
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit. A derived unit belongs to the

@@ -1,0 +1,4 @@
+# pending
+# needs: stmt
+# a local variable is in a function body (WP-034)
+changed f

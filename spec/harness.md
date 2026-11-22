@@ -829,9 +829,12 @@ counts):
   `llvm/lib/DWARFLinker/Parallel`, two unit tests) include
   `llvm/ADT/ConcurrentHashtable.h`, whose parenthesised `std::min` call
   as a shift count panics a fast path Kiln added between Slip's two pins
-  (`docs/requests/KD2-oven-minmax-paren.md`). They become `ok` when
-  Slip's pin moves past the fixes, and the baseline is recorded again
-  then.
+  (`docs/requests/KD2-oven-minmax-paren.md`). Slip's pin is now
+  `83566cc47` (Kiln's `main`, WP-044), which has both fixes: the
+  reproducers of KD1 and KD2 parse `ok` (`crates/slip_kiln/tests/
+  parse.rs`). The counts in this section and in
+  `bench/baselines/llvm.json` are still those of `62d190007` until the
+  corpus is run again at the new pin.
 - The parse task on Kiln's front-end entry (WP-025) gives every unit
   that is not `failed` the shard the dependency-file flow of WP-010 gave
   it at `4bfd999da`: 4040 `ok` and 2 `diagnosed` shards with the same
