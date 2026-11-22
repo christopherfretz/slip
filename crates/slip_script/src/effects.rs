@@ -449,18 +449,18 @@ impl Host<'_> {
     /// `r` meets the four conditions with one name range. `None`: the
     /// rule does not apply.
     fn sibling(&self, r: Range, e: Entity) -> Step<Option<Range>> {
-        let s = self.subject;
-        let refs = s.references_at(r);
+        let subject = self.subject;
+        let refs = subject.references_at(r);
         if refs.is_empty() {
             return Ok(None);
         }
-        let parent = s.parent(e);
+        let parent = subject.parent(e);
         if let Some(p) = parent {
             self.subject_value("parent", Value::Entity(p))?;
         }
         // Condition 1. Always true of an entity `spell` accepted (§7.1 rule
         // 4), and checked so that the rule reads as written.
-        let mut holds = s.identifier(Value::Entity(e)).is_some_and(|id| !id.is_empty());
+        let mut holds = subject.identifier(Value::Entity(e)).is_some_and(|id| !id.is_empty());
         let mut name: Option<Range> = None;
         let mut seen = BTreeSet::new();
         for &x in &refs {
@@ -470,7 +470,7 @@ impl Host<'_> {
                     "Subject::references_at gave a reference twice".to_owned(),
                 ));
             }
-            match s.extent(v) {
+            match subject.extent(v) {
                 Ok(Some(extent)) if extent == r => {}
                 Ok(_) => {
                     return Err(Stop::Internal(
@@ -482,22 +482,22 @@ impl Host<'_> {
             }
             let origin = self.origin_of(x)?;
             // Condition 2: the same parent as the origin of the referent.
-            holds &= s.parent(origin) == parent;
+            holds &= subject.parent(origin) == parent;
             // Condition 3: found directly.
-            holds &= s.found_directly(x);
+            holds &= subject.found_directly(x);
             // Condition 4, and one name range for all (§7.2 rule 1).
-            match s.name_range(v) {
-                Ok(Some(n)) => {
-                    let n = self.subject_range("name_range", n)?;
-                    if n.lo >= n.hi || !within(n, r) {
+            match subject.name_range(v) {
+                Ok(Some(found)) => {
+                    let found = self.subject_range("name_range", found)?;
+                    if found.lo >= found.hi || !within(found, r) {
                         return Err(Stop::Internal(
                             "Subject::name_range gave a range that is empty or not inside the \
                              reference's extent"
                                 .to_owned(),
                         ));
                     }
-                    holds &= name.is_none_or(|m| m == n);
-                    name = Some(n);
+                    holds &= name.is_none_or(|m| m == found);
+                    name = Some(found);
                 }
                 Ok(None) => holds = false,
                 Err(errc) => {

@@ -88,6 +88,7 @@ fn name_in(e: Range) -> Range {
     Range { lo: e.hi - 3, ..e }
 }
 
+#[allow(clippy::too_many_lines, reason = "one literal description of the subject")]
 fn world() -> World {
     let mut f = FakeSubject::new();
     let g = FakeSubject::GLOBAL;
