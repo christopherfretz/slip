@@ -182,6 +182,10 @@ The convention needs no column: the tables test lists the rows, derives
 the names and fails for a missing directory or a directory no row names
 (digest §13 obligation 5, §14).
 
+A test's files (`t.cpp`, or `a.cpp` and `b.cpp`), its header lines
+(`// std:`, `// errors:`, `// target:`, `// args:`) and the command line
+each side is parsed under are those of `spec/harness.md` §6.1.
+
 ### 1.6 What the test cannot see
 
 The descriptors show fields and variants. They do not show the meaning of

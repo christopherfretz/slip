@@ -272,6 +272,25 @@ pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Dig
     Ok(Digested { output, units, errors, diagnostics })
 }
 
+/// The files of `tests/support/`, by name: files of every snippet whose
+/// directory has no file of that name (the `std::meta` declarations of
+/// `meta.h` for the reflection tests). A file no snippet includes is
+/// never read by the front end.
+fn support() -> &'static BTreeMap<String, String> {
+    static FILES: std::sync::OnceLock<BTreeMap<String, String>> = std::sync::OnceLock::new();
+    FILES.get_or_init(|| {
+        let dir = manifest().join("tests").join("support");
+        let mut out = BTreeMap::new();
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(e.path())
+                .unwrap_or_else(|err| panic!("{}: {err}", e.path().display()));
+            out.insert(name, text);
+        }
+        out
+    })
+}
+
 /// The snippet files of one side of a test whose files are `all`, and
 /// the header lines its main file says: a `t.cpp` is both sides' main
 /// file (with the side's `side.h`), so both read its lines; an
@@ -299,6 +318,11 @@ pub fn side_files(
     list.push(("main.cpp".to_owned(), main_text.clone()));
     for (name, text) in all {
         if !matches!(name.as_str(), "t.cpp" | "a.cpp" | "b.cpp" | "expect.txt") {
+            list.push((name.clone(), text.clone()));
+        }
+    }
+    for (name, text) in support() {
+        if !all.contains_key(name) {
             list.push((name.clone(), text.clone()));
         }
     }

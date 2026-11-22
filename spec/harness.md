@@ -281,6 +281,52 @@ names the spec section it covers.
 exact bytes of an output. `--bless` rewrites goldens and prints each path it
 changed; it never runs in the gate.
 
+### 6.1 The digest's pair tests
+
+The pair tests of `slip_digest` (`crates/slip_digest/tests/{differ,equal,demand,indeterminate}/`,
+the forms of `spec/digest-kinds.md` §1.5) parse each side with
+`slip_kiln::snippet`: Kiln's front end over the test's files held in
+memory, as `kiln -std=<std> [--target=<t>] <args> -fsyntax-only` would,
+with no predefined macro, no header search beyond the test's own files and
+no file system (`crates/slip_kiln/src/snippet.rs`, "Language options",
+lists what else differs from that command line). The default line is
+`-std=c++20` for `x86_64-unknown-linux-gnu`. A side's main file (`t.cpp`
+for both sides, or each side's `a.cpp` / `b.cpp`) changes it with header
+lines, in any order, among its leading lines:
+
+```
+// std: c++26
+// errors: yes
+// target: aarch64-unknown-linux-gnu
+// args: -fcf-protection=branch -frounding-math
+```
+
+- The header block is the main file's leading lines that are header lines
+  or `#include "side.h"`; it ends at the first line that is neither. A
+  header line is exactly `// <key>: <value>`, with the keys `std`,
+  `errors` (value `yes`), `target` (one word) and `args` (split at
+  spaces, no quoting). A line of the block that looks like one
+  (`//`, blanks, a word of letters and `-`, blanks, `:`) but is not one
+  (`// arg:`, `//target:`, `// std:c++26`, a key given twice) fails the
+  test; a comment that does not look like one ends the block.
+- `target` is a triple Kiln's driver knows (`aarch64` or `x86_64` Linux);
+  `args` are Kiln driver arguments that change the language, never what
+  is read or written. `slip_kiln::snippet::parse_with` refuses the others,
+  and the refusal fails the test (`spec/landed/harness/WP-038.md`).
+- In a `t.cpp` test both sides read the same lines. In an `a.cpp` /
+  `b.cpp` test each side reads its own, so a `differ` test may differ in
+  nothing but its `// args:` line: that shows a command-line fact is in
+  the digest.
+- A file of the test directory other than `t.cpp`, `a.cpp`, `b.cpp` and
+  `expect.txt` is a file of both sides' snippets, and so is each file of
+  `crates/slip_digest/tests/support/` the directory has none of the name
+  of: `meta.h` declares the `std::meta` intrinsics and class types the
+  reflection tests use, as Kiln's own test header
+  (`kiln/tests/support/kiln_meta.h`) declares them.
+- `SLIP_DIGEST_DUMP=1` prints, for each side, the command line in effect
+  and the units; `SLIP_DIGEST_ONLY=<text>` runs only the directories
+  whose path contains `<text>`.
+
 ## 7. Performance records
 
 A parallel phase writes a run record (`spec/model.md` §9) into its store
