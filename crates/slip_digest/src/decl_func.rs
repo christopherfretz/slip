@@ -503,10 +503,10 @@ pub(crate) fn function_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, d
     s.flags(FlagWord::new().bit(any(FnSpec::is_coroutine)).bit(any(FnSpec::escalated)));
     if crate::demand::pattern_holds_placeholder(w, e) {
         match ast.decls.get(def).ty() {
-            Some(q) => {
+            Some(ty) => {
                 s.opt(true);
-                let t = w.type_digest(q, true);
-                s.digest(&t.digest).absorb(t.cause);
+                let td = w.type_digest(ty, true);
+                s.digest(&td.digest).absorb(td.cause);
             }
             None => {
                 s.opt(false);
@@ -525,7 +525,7 @@ pub(crate) fn function_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, d
 /// `ty-type`.
 pub(crate) fn var_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: DeclId) {
     let ast = w.ast;
-    let Some(v) = ast.decls.var(def) else {
+    let Some(var) = ast.decls.var(def) else {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
     };
@@ -533,27 +533,27 @@ pub(crate) fn var_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: D
         Ok(Some(holder)) => ast
             .decls
             .var(holder)
-            .map_or((v.init, v.spec.init_style()), |h| (h.init, h.spec.init_style())),
-        Ok(None) => (v.init, v.spec.init_style()),
+            .map_or((var.init, var.spec.init_style()), |h| (h.init, h.spec.init_style())),
+        Ok(None) => (var.init, var.spec.init_style()),
         Err(()) => {
             s.indeterminate(TWO_INITS);
-            (v.init, v.spec.init_style())
+            (var.init, var.spec.init_style())
         }
     };
     crate::expr::child_opt(w, s, init);
     s.tag(init_style::row(&style));
     let mut specs: Vec<VarSpec> =
-        w.redecls(e).iter().filter_map(|&x| ast.decls.var(x).map(|v| v.spec)).collect();
-    specs.push(v.spec);
+        w.redecls(e).iter().filter_map(|&x| ast.decls.var(x).map(|xv| xv.spec)).collect();
+    specs.push(var.spec);
     let inline = specs.iter().any(|x| x.is_inline());
     let inline_implied = inline && specs.iter().all(|x| !x.is_inline() || x.is_inline_implied());
     s.flags(FlagWord::new().bit(inline).bit(inline_implied));
     if crate::demand::pattern_holds_placeholder(w, e) {
         match var_type(w, def, e) {
-            Some(q) => {
+            Some(ty) => {
                 s.opt(true);
-                let t = w.type_digest(q, false);
-                s.digest(&t.digest).absorb(t.cause);
+                let td = w.type_digest(ty, false);
+                s.digest(&td.digest).absorb(td.cause);
             }
             None => {
                 s.opt(false);

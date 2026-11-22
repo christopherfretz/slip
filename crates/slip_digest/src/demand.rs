@@ -144,13 +144,13 @@ pub(crate) fn write_resolved(
     let mut s = Stream::new();
     body(w, &mut s);
     w.unit = saved;
-    let h = s.finish(UNIT_TAG);
-    let h = w.hashed(h);
+    let head = s.finish(UNIT_TAG);
+    let head = w.hashed(head);
     let disc_digest = disc.map(|n| {
-        let mut d = Stream::new();
-        d.uv(n);
-        let h = d.finish(DISC_TAG);
-        w.hashed(h).digest
+        let mut ds = Stream::new();
+        ds.uv(n);
+        let dh = ds.finish(DISC_TAG);
+        w.hashed(dh).digest
     });
     let key = Key {
         kind: KeyKind::Resolved,
@@ -165,7 +165,7 @@ pub(crate) fn write_resolved(
         KeyRes::Key { cause, .. } => cause,
         KeyRes::None(cause) => Some(cause.unwrap_or(Cause::Unaccounted("key/none"))),
     };
-    let mut cause = h.cause;
+    let mut cause = head.cause;
     if let Some(c) = key_cause {
         cause = Some(merge(cause, c));
     }
@@ -181,7 +181,7 @@ pub(crate) fn write_resolved(
         read: owner.read,
         key: key.id(),
         kind: KeyKind::Resolved,
-        digest: h.digest,
+        digest: head.digest,
         cause,
         class: GroupClass::Derived,
         file,
@@ -251,9 +251,7 @@ pub(crate) fn defining_declaration(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
     let with_body =
         |d: DeclId| ast.decls.function(d).is_some_and(|f| f.body.is_some()).then_some(d);
     if !definition_class(w, e) {
-        if ast.decls.function(rep).is_none() {
-            return None;
-        }
+        ast.decls.function(rep)?;
         return ast
             .definition(rep)
             .filter(|&d| crate::units::instantiated_outside_class(w, d))
