@@ -189,6 +189,33 @@ pub fn cleanup_on_signal(store: &Store) -> impl FnOnce() + Send + 'static;
 
 Every `StoreError` is an `Input` error of the command (§8.5, status 3).
 
+For a transform's run (M2; the files are `spec/edits.md` §10.4):
+
+```rust
+pub enum Object { Transform, EditSet, Overlay, Result }      // transforms/*.trfm, edits/*.edts, overlays/*.ovly, results/*.rslt
+impl Store {
+    pub fn publish_object(&self, object: Object, bytes: &[u8]) -> Result<Digest, StoreError>;   // validated; named by content id
+    pub fn read_object(&self, object: Object, id: &Digest) -> Result<Option<Vec<u8>>, StoreError>;
+    pub fn find_object(&self, object: Object, hex_prefix: &str) -> Result<Vec<Digest>, StoreError>;   // as `find_plan`
+    pub fn object_path(&self, object: Object, id: &Digest) -> PathBuf;
+    pub fn publish_blob(&self, bytes: &[u8]) -> Result<Digest, StoreError>;                    // blobs/<content digest>
+    pub fn read_blob(&self, id: &Digest) -> Result<Option<Vec<u8>>, StoreError>;               // `Invalid` if the bytes do not hash to `id`
+    pub fn blob_path(&self, id: &Digest) -> PathBuf;
+    pub fn next_round(&self, plan: &Digest) -> Result<u64, StoreError>;                        // §2, "takes a round of its own"
+    pub fn is_transform_round(&self, plan: &Digest, round: u64) -> Result<bool, StoreError>;   // the round has a transform run record
+    pub fn publish_transform_run(&self, plan: &Digest, round: u64, started_unix_ns: u64, bytes: &[u8]) -> Result<PathBuf, StoreError>;
+    pub fn latest_run_of_round(&self, plan: &Digest, phase: Phase, round: u64) -> Result<Option<Vec<u8>>, StoreError>;
+    pub fn journal_path(&self) -> PathBuf;
+    pub fn open_for_recovery(dir: &Path) -> Result<Store, StoreError>;                         // the one opener that accepts a journal
+}
+// StoreError gains UnfinishedWrite(PathBuf): an exclusive `open` of a store that holds `write.journal`.
+```
+
+`latest_run_of_round` is `latest_run` over the names of one round: it is
+how `reduce` and `check`, run as stages, find the observers the round's
+map phase selected. Neither it nor `latest_run` reads a transform run
+record (`transform.<round>.<ns>.run`) as a phase's.
+
 ## 3. Jobserver
 
 `slip_exec::jobserver` is a GNU make jobserver client. Its behaviour is
