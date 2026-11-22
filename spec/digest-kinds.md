@@ -5233,10 +5233,403 @@ command; `digest.md` has no place for them ("Open questions").
 |---|---|---|---|---|
 | `0` | location | out | - |  |
 
+## 11. Demand-driven fields
+
+Kiln fills the fields decided `demand` only when the translation unit
+asks. This section gives, for each, the rule that makes the digest of
+every unit independent of what was asked. There are three rules:
+
+- the fact goes to a **resolved unit** (digest §2.2), which exists only
+  if Kiln computed it, so that a unit present on both sides of a
+  comparison holds it on both or lacks it on both (§11.1 to §11.5);
+- the fact is a property of a **derived unit** that exists only if
+  something referenced the entity (§11.4, §11.6);
+- the fact is **not written**, because it is computed from facts that
+  units hold, or records only that something was asked (§11.7, §11.8).
+
+### 11.1 Resolved properties
+
+A resolved unit has the key kind `resolved`, its parent is the unit the
+fact belongs to, and its name is `property` with one of these numbers.
+The numbers are Slip's own and are never reused.
+
+| Number | Property | Belongs to | Stream |
+|---|---|---|---|
+| 1 | `exception_spec` | a function of the deferrable class (§11.2) | `enum ExcSpec`, in normal form |
+| 2 | `value` | a variable | `value?` (§11.3) |
+| 3 | `overrides` | a virtual member function | `ref*sorted` |
+| 4 | `key_function` | a class | `ref` |
+| 5 | `dtor_delete` | a virtual destructor | `ref`: `ColdDeclData` `dtor_delete`; then `child?`: `dtor_delete_this` |
+| 6 | `inherited_constructor` | an inheriting constructor | `ref`: `inheriting_ctor`; then `ref`: `inherited_ctor` |
+| 7 | `default_immediates` | a function, a field or a `default_argument` unit | `value*` (§11.4) |
+
+A resolved unit `default_immediates` has a discriminator: the index of
+the parameter as `uv`, absent for a field.
+
+### 11.2 Deferred exception specifications
+
+Kiln stores `ExcSpec::Deferred(d)` in a function's type until something
+needs the specification, and then re-points the declaration's type. A
+function is of the **deferrable class** if Kiln can do that to it:
+
+1. it is an implicitly declared special member function or comparison
+   operator, or is explicitly defaulted on its first declaration without
+   an exception specification of its own;
+2. it is an inheriting constructor;
+3. it is an implicit instantiation (`SpecKind` `ImplicitInstantiation`
+   in its `SpecInfo` or `MemberSpecInfo`) whose pattern has a
+   value-dependent `noexcept` operand or a dynamic specification that
+   names a dependent type, or whose pattern is itself of the deferrable
+   class.
+
+The predicate reads only stored facts that do not change when the
+specification is resolved. For a function of the class:
+
+- its own unit never writes an exception specification
+  (`DeclNode` `ty-exception-spec` is absent);
+- if the specification is resolved (its type no longer holds `Deferred`),
+  the resolved unit `exception_spec` holds it; if not, there is no such
+  unit.
+
+A type digest that meets `Deferred(d)` writes the tag of `Deferred` and
+the `Ref` of `d`. A declaration outside the class whose type holds
+`Deferred` makes its unit indeterminate: the predicate above was derived
+from Kiln's deferral sites (`kiln_sema` `except.rs`, `templ/subst/decls.rs`,
+`class/special/implicit.rs`, `class/inhctor.rs`) and is not a Kiln
+interface ("Open questions"). A member function whose `noexcept` waits
+for the end of its class is deferred only while the class is being
+parsed and is never seen deferred by the walk.
+
+### 11.3 Evaluated values of variables
+
+`VarData` `eval` holds what the Oven found when something needed the
+variable's value. The resolved unit `value` exists if the state is
+`NotConstant` or `Value`, and its stream is `value?`: absent for
+`NotConstant`. A variable in state `NotEvaluated` has no such unit. The
+state `Evaluating` cannot be met after the translation unit ends; a walk
+that meets it makes the variable's unit indeterminate.
+
+### 11.4 Default arguments and default member initialisers
+
+A default argument of a function that is not an instantiation, and a
+default member initialiser of a class that is not one, is parsed with its
+declaration and is written in the function's or field's unit
+(`ParamData` `default_arg`, `FieldData` `init`).
+
+In an implicit instantiation Kiln instantiates each only when a call or
+an initialisation uses it (`ParamData` `flags-default-arg-pending`).
+There the rows `default_arg` and `init` write an absent child whatever
+Kiln holds, and an instantiated one is a derived unit of kind
+`default_argument` whose parent is the function or field and whose name
+is `parameter` with the parameter's index (0 for a field). That the
+parameter has a default argument at all is a fact of the pattern, which
+the instantiation names (`SpecInfo` `from`, `MemberSpecInfo`
+`instantiated_from`).
+
+`ColdExprData` `default_imm` holds the value of an immediate invocation
+inside a default argument or default member initialiser, computed at the
+first use that has no source-location values. The resolved unit
+`default_immediates` of the unit that holds the default argument lists
+the values of the argument's immediate invocations that have an entry, in
+walk order.
+
+### 11.5 Facts of classes and virtual functions
+
+`overrides`, `key_function`, `dtor_delete`, `dtor_delete_this`,
+`inheriting_ctor` and `inherited_ctor` of `ColdDeclData` are written in
+the resolved units of §11.1 and nowhere else. Kiln's source says that
+`overrides` is written once, when the class is completed, which would
+make it an ordinary fact (§13); it is kept in a resolved unit because
+digest §2.3 lists it as demand-driven. If it is in fact always filled,
+the unit exists on both sides whenever the function overrides and is
+compared like any other. What a resolved unit gives up is the finding for
+a unit present on one side only, and a function cannot start or stop
+overriding without a change to a declared unit: its own key holds its
+name and signature, and the units of the base class and of the base's
+function hold the base list and `virtual`.
+
+Kiln keeps "vtable used" marks in its semantic analysis and not in `Ast`;
+there is nothing to write for them.
+
+### 11.6 Builtins
+
+A builtin function Kiln declares on first use is a derived unit: its key
+is its name under `Parent::builtin`, and it exists if a stream holds a
+`Ref` to it. `ColdDeclData` `builtin_id` and the operand of its `BUILTIN`
+attribute are Kiln's numbering of the builtin and are not written; the
+name says the same. `lib_builtin` marks a function declared in source
+that Kiln recognises as a library builtin by its name and signature,
+both of which its unit holds; it is not written.
+
+### 11.7 Tables computed from facts that units hold
+
+Not written: record layouts (`LayoutCache`, `RecordLayout`), the
+subobject graphs and final overriders of polymorphic classes
+(`ClassVirtuals`), vtable layouts (`VTableLayout`), the validated
+comparison category classes (`CmpCategories`), and Kiln's caches of
+concept satisfaction and normal forms, which are not in `Ast`. Each is a
+function of declarations whose units are compared (digest §6, last
+rule); the result of a satisfaction check that an expression stores is
+written with the expression (§7).
+
+### 11.8 Marks, caches and orders
+
+Not written, because each records only that or when something was asked:
+`DeclFlags` `0-used` and `0-referenced`; `DeclMisc` `0-linkage-cache`
+and `0-visibility-cache`; `DefinitionBits`
+`0-complete-definition-required`; `DeclArena` `completed_records` and
+`fn_def_insts`; `TemplateTables` `end_of_tu_defs`, `ref_var_insts`,
+`specializations`, `spec_order` and `member_map`. Whether an implicit
+member or a builtin is a unit is decided from the streams the walk
+writes, never from the marks (§5.2).
+
+### 11.9 What remains
+
+Inside a derived unit some content is still there by demand, and this
+file does not remove it:
+
+- the body of an implicitly instantiated function, the initialiser of an
+  implicitly instantiated variable, and the definition of a member class
+  or enumeration of a specialisation are instantiated only when needed;
+  with them come a deduced return type and `SpecInfo` `from`;
+- the body of an implicit special member or defaulted comparison is
+  defined on odr-use.
+
+A specialisation or member that both sides declare and only one defines
+is therefore a changed derived unit. The use that asked for the
+definition is in the stream of the unit that made it, so the change is
+never the only finding; "Open questions" proposes a resolved property
+`definition` that would remove the secondary one.
+
+## 12. Unsupported
+
+A unit whose walk meets one of these is indeterminate (digest §10). An
+indeterminate derived unit is a finding on whichever side it appears
+(`verify.md` §4), so a construct listed here that an instantiation
+reaches is reported even when only one parse instantiates it.
+
+| What | Rows | Why |
+|---|---|---|
+| Error recovery | `TypeView` `Invalid`; `BuiltinType` `Error`; `TypeFlags` `0-contains-error`; `TypeNode` `flags-contains-error`; `DeclFlags` `0-invalid`; `ExprKind` `RecoveryExpr`; `ExprDeps` `0-error` | the translation unit did not compile; what Kiln built for the erroneous part is not a program (digest §10) |
+| Reflection and splices | `TypeView` `Splice`; `Nns` `Splice`; `TemplateName` `Splice`, `SpliceProfile`; `ExprKind` `CXXReflectExpr`, `CXXSpliceExpr`; `ExprNode` `MemberExpr.bits-spliced`; `ColdExprData` `splice_args`; `ValueKind` `Reflection`; `Reflectee`; `DmsDesc` | a reflection names an entity by an interning index, and the metafunctions read names, positions and declaration order, which the digest leaves out on purpose: what a reflection evaluates to is not bounded by the digests of the units it names. It needs a design of its own |
+| Variable length arrays | `TypeView` `VariableArray` | the bound is an expression evaluated at run time inside one function, and a type digest has no unit to number its locals in |
+| Functions without a prototype | `FuncInfo` `0-no-proto` | C only |
+| File-scope compound literals | `ExprNode` `CompoundLiteralExpr.aux`, `CompoundLiteralExpr.b`; `ColdDeclData` `compound_literal` | C only: the literal's object is a variable Kiln declares for it, whose key this file does not define |
+| A dependent operator template name | `TemplateName` `DependentOperator` | `op` is a token kind of `kiln_lex`, for which there is no table and no stable numbering |
+| `cleanup` | `AttrNode` `CLEANUP.a` | the word is a `DeclId` after the declaration is checked and an `ExprId` before, and the node does not say which |
+| Not built by Kiln | `DeclKind` `UsingPack`, `FriendTemplate`, `ImplicitParam`, `ImplicitConceptSpecialization`; `StmtNode` `flags`; `ExprKind` `UserDefinedLiteral`, `EmbedExpr`, `UnresolvedMemberExpr`; `TemplLinkKind` `DependentFriend`; fourteen rows of `AttrKind` | no construction site was found at the pinned revision; the walk treats one as indeterminate if it ever appears |
+
+## 13. Differences between the inventory and the source
+
+Where `research/kiln-ast-inventory.md` and the Kiln source at the pinned
+revision disagree, the tables follow the source.
+
+- `CastKind` has 47 variants, not 49.
+- `DeclFlags::INJECTED` marks a member injected by `define_aggregate`, not
+  an injected-class-name.
+- A `Friend` naming a type stores the owned tag's `DeclId` in `data`, or 0
+  with the type in `ty`.
+- `FuncProto` stores the raw words of `FuncInfo` and of the exception
+  specification, not decoded values; the accessors are `TypeContext::proto`
+  and `exc_spec`. There is no `Ast::exception_spec_of`.
+- `ColdDeclData` `overrides` is documented as written once at the end of
+  the class, while digest §2.3 lists it as demand-driven (§11.5).
+- `ColdDeclData` `instantiated_from` is never filled; the map in use is
+  `TemplateTables` `instantiated_from`.
+- Kiln has no declaration kind for an explicit instantiation: it is the
+  `SpecKind` of the specialisation it names.
+- `TemplLinkKind::DependentFriend` and `StmtNode` `flags` are never
+  written. `ExprKind::UnresolvedMemberExpr` is never built: an overloaded
+  member access is a `MemberExpr` and its candidate set is kept by
+  semantic analysis, outside `Ast`.
+- `CharKind`, `NonOdrUse` and the "part of an explicit cast" bit are
+  listed as bookkeeping; nothing shows that code generation ignores them
+  and they are `in`. `CXXThisExpr`'s implicit bit is listed as spelling;
+  the Oven and substitution read it.
+- `ExtVectorElementExpr` has the `ARROW` bit; `GenericSelectionExpr`
+  uses the `ARG_IS_TYPE` bit; `CXXUnresolvedConstructExpr` `aux` is the
+  list-initialisation form; `CXXDefaultInitExpr` `aux` is always 1.
+- "vtable used" marks are in `kiln_sema::Sema`, not in `Ast`.
+- The inventory describes attribute operands kind by kind from
+  `kiln_ast::attr`. The source has a complete table of them
+  (`kiln_sema::bmi_image::attrs::TABLE`), kept complete by a Kiln test,
+  which §10.1 follows.
+
 ## Tests
 
-To be completed with the last group of tables.
+- `crates/slip_digest/tests/tables.rs` — digest §13 obligation 4. It
+  parses this file by the grammar of §1 and compares it with
+  `kiln_snap::Schema::descriptors()` of `kiln_ast::ast::Ast` and of the
+  types whose `pin` is `extra`: every field and variant has a row, every
+  row's member exists, every `kind` prefix is a variant of the selector,
+  every `enum T` and `record T` names a tabled type, tags are unique
+  within a table and follow §1.4, and every `pin` value is right.
+- The same test, obligation 5: for every row, the directory §1.5 derives
+  from it exists under `tests/differ/`, `tests/equal/`, `tests/demand/` or
+  `tests/indeterminate/`, and every directory there is named by a row.
+- `crates/slip_digest/tests/differ.rs`, `equal.rs`, `demand.rs`,
+  `indeterminate.rs` — run the pairs in those directories as §1.5 says.
+- Digest §13 obligation 3 is not a test: `slip_digest` asserts at compile
+  time the `SCHEMA_HASH` of every tabled type whose `pin` is `schema` or
+  `extra`.
+- `crates/slip_digest/tests/resolved.rs` — §11: for each property of
+  §11.1, a source and the same source with a use that makes Kiln compute
+  the fact; the resolved unit appears and no other unit changes.
 
 ## Open questions
 
-To be completed with the last group of tables.
+### Words the pinned schemas cannot see
+
+Digest §13 obligation 6. For each word below the tables give rows per
+kind or per fact that no descriptor checks; until Kiln publishes a table
+of operand roles (`docs/design/05-kiln-interface.md` KR5), a change of
+meaning inside Kiln is caught only by the tests of §1.5.
+
+| Type | Words |
+|---|---|
+| `Quals`, `TypeFlags`, `FuncInfo`, `DeclFlags`, `DeclMisc`, `FnSpec`, `VarSpec`, `DefinitionBits`, `ExprDeps`, `TemplLink`, `DeclName`, `VarEval` | `0` |
+| `TypeNode` | `flags`, and the `aux` and `data` words behind `TypeView` |
+| `DeclNode` | `data`, `ty` |
+| `ParamData`, `FieldData`, `EnumData`, `NamespaceData` | `flags` |
+| `RecordData` | `members` |
+| `CtorInit` | `target` |
+| `ScopeData` | `aux` |
+| `StmtNode` | `a`, `b`, `aux` |
+| `ExprNode` | `a`, `b`, `aux`, `bits` |
+| `ColdExprData` | `cast_written`, `member_extra`, `offsetof_pattern` |
+| `AttrNode` | `a`, `b`, `flags`; and every value of `AttrKind` |
+| `TemplateTables` | `pseudo_dtor_first` |
+| `TemplateArg`, `KeyedEntry`, `consts::Node` | the words behind `ArgView`, the canonical keys and `ConstValue` |
+
+Some `in` rows write a word in Kiln's own numbering because Kiln has no
+enumeration for it: `FuncInfo` `0-sme`, `AddrSpace` `0`, `FpOverride`
+`mask`, `ExprNode` `AtomicExpr.aux`, and `AttrNode` `MODE.a`,
+`PRAGMA_CLANG_SECTION.b` and `ZERO_CALL_USED_REGS.a`. A renumbering in
+Kiln changes digests without changing the program. It is safe, since both
+sides of a comparison use one Kiln, but it breaks the rule that tags are
+Slip's.
+
+### Types nothing pins
+
+`TypeView`, `ArgView`, `ParamAbi`, `AddrSpace`, `ConstValue`, `Scalar` and
+`ByteImage` are decoded forms without a schema descriptor (`pin=none`),
+and `DeclNameView`, through which `DeclName` is read, is another. A
+variant added to one of them is caught by obligation 2 (the walk does not
+compile) and by nothing else. `AttrKind` is a newtype: a new constant is
+caught only when a walk meets it.
+
+The `pin` values `schema` and `extra` were assigned by reading the
+source; the first run of `tables.rs` settles them.
+
+### Questions for `digest.md`
+
+1. The tables test needs `tests/demand/` and `tests/indeterminate/`, and
+   a must-equal test for every `symbolic` row (§1.5). Digest §13
+   obligation 5 and §14 name only `equal/` and `differ/`.
+2. Obligation 1 asks for a row per field. A packed word has only fact
+   rows here, and decoded views and `consts` types have tables (§1.1).
+3. Key kinds this file adds (§3.1): `using_shadow`,
+   `unresolved_if_exists`, `default_argument`, `template_param_object`,
+   `decomposition`, `binding`, `consteval_block`; the name `closure` and
+   the discriminators of a closure and of `default_immediates`; the hash
+   tag `slip.disc.v1` of a discriminator.
+4. Explicit instantiations are not units (§9): Kiln has no declaration
+   for one. Digest §2.1 lists them among the declared units.
+5. A specialisation of kind `Undeclared` is not a unit (§9).
+6. Digest §2.3 does not mention `DefinitionBits`
+   `0-complete-definition-required`, `DeclArena` `completed_records` and
+   `fn_def_insts`, `ParamData` `flags-default-arg-pending`, or the
+   template tables of §11.8; and it does not say where `default_imm`
+   goes (§11.4) or what the deferrable class is (§11.2).
+7. Digest §7 writes a pointer to a lifetime-extended temporary "by the
+   digest of its value". §8 writes the extending declaration and the
+   temporary's index instead, because a temporary can point to itself.
+   Digest §7 also does not say that the padding of an aggregate image is
+   written.
+8. Digest §6 does not say that the qualifier, the found declaration and
+   the written template arguments of a resolved name are left out, that
+   "had several candidates" covers constructions, or that a use of a
+   default argument writes the parameter's position and not the
+   expression (§7).
+9. Digest §4.3 does not say how a local is numbered when a reference
+   precedes its declaration (§2.4), nor how the sources of opaque values
+   are numbered (§7).
+10. Digest §4.2 and §8 do not say how the expression of a canonical
+    profile is walked (§4.4), nor how locals inside a type stream are
+    numbered.
+11. A cold map with no entry for a node writes the empty form of its
+    row (§2.1). The cost is several bytes hashed for every declaration
+    and expression; the alternative, a presence word per node, would
+    make the stream depend on which maps Kiln happens to fill.
+12. The options of the compilation and the target (`TypeOptions`,
+    `TargetTypes`, `Ast` `contract_semantic`, `lang_c`, `freestanding`)
+    are in no unit (§4.7, §10.9). A header record of the `digests`
+    section would be the place, so that two parses made with different
+    commands cannot compare equal by accident.
+13. A resolved property `definition` (§11.9) would hold the body of an
+    implicit instantiation or implicit member, so that a specialisation
+    declared on both sides and defined on one is not a changed unit.
+14. The order unit lists no instantiated variable (§9.5), on the
+    ground that their initialisation is unordered. Kiln does emit them
+    in a fixed place (`ref_var_insts`, `explicit_member_insts`), and a
+    program can observe it.
+
+### Questions for Kiln
+
+1. KR5: a public table of operand roles for the words listed above.
+   For attributes one exists inside `kiln_sema`
+   (`bmi_image::attrs::TABLE`); could it move to `kiln_ast`?
+2. Can an attribute node say whether its declaration has been checked?
+   `VISIBILITY`, `TLS_MODEL`, `CLEANUP`, `CONSTRUCTOR`, `DESTRUCTOR`,
+   `NONNULL`, `WEAKREF` and `CALLBACK` hold their arguments as written
+   until then, and for `CLEANUP` the two forms cannot be told apart.
+3. `Snap` descriptors for the decoded views listed above, and for
+   `DeclNameView`.
+4. A public walk of a canonical expression profile (§4.4), and
+   `TemplateName::DependentOperator` `op` as an `OverloadedOperator`.
+5. Is the deferrable class of §11.2 right, and does naming a function
+   always resolve its exception specification before a type that holds
+   it is formed? Can a destructor's implicit specification be recovered
+   once resolved?
+6. Is `ColdDeclData` `overrides` filled when the class is completed, or
+   on demand? When are `DefinitionBits` `0-defaulted-*-deleted`, `LetData`
+   `value` and `gnu_lib_twin` set?
+7. Can a non-dependent `RequiresExpr` or `ConceptSpecializationExpr`
+   keep `aux` 0 (not computed) at the end of the translation unit? If it
+   can, that state is demand-driven and the row needs a rule.
+8. The candidate set of an overloaded member access is in semantic
+   analysis (`ovl.members`), not in `Ast`. Could `Ast` hold it?
+9. A query that says a literal came from `__LINE__` or a relative
+   (KF3), so that §7 can write such a literal symbolically.
+10. Are `LambdaData` `body` and the call operator's body always the same
+    statement, also for a generic lambda? What reads `explicit_params`,
+    `explicit_result` and a capture's `implicit`?
+11. Is the key of a closure type outside a function body (parent,
+    mangling context, mangling number) unique, and what names a closure
+    whose number is 0?
+12. The declaration kinds, the `TemplLinkKind` and the statement flag
+    word listed in §12 as not built: are they reserved or dead?
+13. `ColdDeclData` `instantiated_from` has no writer. Is it dead?
+14. Are declarations loaded from an imported module unit in `Ast` like
+    any other, and how does a walk tell them from the unit's own (§10.7)?
+15. A query from a `Using` declaration to its shadows, and a query for
+    an entity's language linkage, in `kiln_ast`.
+16. Stable names for the SME bits, the `fp_bit` constants, the
+    address-space words and the atomic builtin ids.
+
+### Hazards accepted for now
+
+- **First spellings** (§4.4). A transformation that changes which of two
+  equivalent dependent spellings Kiln meets first can change a profile's
+  digest. It errs towards a reported difference.
+- **Literals from builtin macros** (§7) are written by value: moving a
+  line that uses `__LINE__` as a value is a reported difference.
+- **Overloaded member access** (§7): only the first candidate is
+  written.
+- **Attribute order** (§10.1) is kept: reordering the attributes of one
+  declaration is a reported difference.
+- **Unchecked attribute nodes** (§10.1): a node Kiln has not checked is
+  read as if it had been. For the kinds with a value range the row
+  detects it; for the others the words are the same kind of thing in
+  both states.
+- **Modules** (§10.7) have rows and no experience behind them.
