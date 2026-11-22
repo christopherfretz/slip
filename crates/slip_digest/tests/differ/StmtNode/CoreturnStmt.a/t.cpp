@@ -1,5 +1,5 @@
 #include "side.h"
-// §6 StmtNode `CoreturnStmt.a`.
+// §6 StmtNode `CoreturnStmt.a`: in a pattern, where there is no promise call: elsewhere the promise call holds the operand too.
 namespace std {
 template <class R, class... A> struct coroutine_traits { using promise_type = typename R::promise_type; };
 template <class P = void> struct coroutine_handle {
@@ -27,7 +27,7 @@ struct vtask { struct promise_type {
   void unhandled_exception() {}
 }; };
 #ifdef B
-vtask f() { co_return 2; }
+template <class T> vtask f(T) { co_return 2; }
 #else
-vtask f() { co_return 1; }
+template <class T> vtask f(T) { co_return 1; }
 #endif

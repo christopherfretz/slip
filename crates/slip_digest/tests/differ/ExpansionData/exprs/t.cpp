@@ -1,8 +1,8 @@
 // std: c++26
 #include "side.h"
-// §6 ExpansionData `exprs`.
+// §6 ExpansionData `exprs`: in a pattern: once expanded, each expansion holds its expression too.
 #ifdef B
-void f() { template for (int e : {1, 2, 3}) ; }
+template <class T> void f(T) { template for (int e : {1, 3}) ; }
 #else
-void f() { template for (int e : {1, 2}) ; }
+template <class T> void f(T) { template for (int e : {1, 2}) ; }
 #endif

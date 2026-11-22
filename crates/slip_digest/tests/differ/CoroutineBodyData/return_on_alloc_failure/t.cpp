@@ -1,5 +1,5 @@
 #include "side.h"
-// §6 CoroutineBodyData `return_on_alloc_failure`: the promise has `get_return_object_on_allocation_failure`.
+// §6 CoroutineBodyData `return_on_alloc_failure`: the promise has `get_return_object_on_allocation_failure` (the promise type is the same class on both sides).
 namespace std { struct nothrow_t { explicit nothrow_t() = default; }; extern const nothrow_t nothrow; }
 void *operator new(decltype(sizeof 0), const std::nothrow_t &) noexcept;
 namespace std {
@@ -20,6 +20,17 @@ struct suspend_never {
   void await_resume() const noexcept {}
 };
 } // namespace std
+#ifdef B
+struct ta { struct promise_type {
+  ta get_return_object() { return {}; }
+  std::suspend_never initial_suspend() noexcept { return {}; }
+  std::suspend_never final_suspend() noexcept { return {}; }
+  void return_void() {}
+  void unhandled_exception() {}
+  static ta get_return_object_on_allocation_failure() { return {}; }
+}; };
+ta f() { co_return; }
+#else
 struct ta { struct promise_type {
   ta get_return_object() { return {}; }
   std::suspend_never initial_suspend() noexcept { return {}; }
@@ -27,16 +38,5 @@ struct ta { struct promise_type {
   void return_void() {}
   void unhandled_exception() {}
 }; };
-struct tb { struct promise_type {
-  tb get_return_object() { return {}; }
-  std::suspend_never initial_suspend() noexcept { return {}; }
-  std::suspend_never final_suspend() noexcept { return {}; }
-  void return_void() {}
-  void unhandled_exception() {}
-  static tb get_return_object_on_allocation_failure() { return {}; }
-}; };
-#ifdef B
-tb f() { co_return; }
-#else
 ta f() { co_return; }
 #endif

@@ -1,1 +1,6 @@
+# pending
+# needs: expr
+# a co_await (CoawaitExpr, expr_misc.rs:61) or a construction
+# (CXXConstructExpr, expr_init.rs:30) is a placeholder: the row is not reached
+changed ta::promise_type::initial_suspend()
 changed f()

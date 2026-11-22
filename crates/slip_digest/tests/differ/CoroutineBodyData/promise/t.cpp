@@ -1,5 +1,5 @@
 #include "side.h"
-// §6 CoroutineBodyData `promise`: two promise types alike but for their names.
+// §6 CoroutineBodyData `promise`: the promise is constructed from the parameter (the promise type is the same class on both sides).
 namespace std {
 template <class R, class... A> struct coroutine_traits { using promise_type = typename R::promise_type; };
 template <class P = void> struct coroutine_handle {
@@ -18,6 +18,18 @@ struct suspend_never {
   void await_resume() const noexcept {}
 };
 } // namespace std
+#ifdef B
+struct ta { struct promise_type {
+  ta get_return_object() { return {}; }
+  std::suspend_never initial_suspend() noexcept { return {}; }
+  std::suspend_never final_suspend() noexcept { return {}; }
+  void return_void() {}
+  void unhandled_exception() {}
+  promise_type() = default;
+  promise_type(int) {}
+}; };
+ta f(int x) { co_return; }
+#else
 struct ta { struct promise_type {
   ta get_return_object() { return {}; }
   std::suspend_never initial_suspend() noexcept { return {}; }
@@ -25,15 +37,5 @@ struct ta { struct promise_type {
   void return_void() {}
   void unhandled_exception() {}
 }; };
-struct tb { struct promise_type {
-  tb get_return_object() { return {}; }
-  std::suspend_never initial_suspend() noexcept { return {}; }
-  std::suspend_never final_suspend() noexcept { return {}; }
-  void return_void() {}
-  void unhandled_exception() {}
-}; };
-#ifdef B
-tb f() { co_return; }
-#else
-ta f() { co_return; }
+ta f(int x) { co_return; }
 #endif

@@ -1,5 +1,5 @@
 #include "side.h"
-// §6 CoroutineBodyData `result_decl`: a `get_return_object` of another type than the return type needs the result variable.
+// §6 CoroutineBodyData `result_decl`: a `get_return_object` of another type than the return type needs the result variable (the promise type is the same class on both sides).
 namespace std {
 template <class R, class... A> struct coroutine_traits { using promise_type = typename R::promise_type; };
 template <class P = void> struct coroutine_handle {
@@ -18,6 +18,16 @@ struct suspend_never {
   void await_resume() const noexcept {}
 };
 } // namespace std
+#ifdef B
+struct ta { ta() = default; ta(int) {} struct promise_type {
+  int get_return_object() { return 0; }
+  std::suspend_never initial_suspend() noexcept { return {}; }
+  std::suspend_never final_suspend() noexcept { return {}; }
+  void return_void() {}
+  void unhandled_exception() {}
+}; };
+ta f() { co_return; }
+#else
 struct ta { struct promise_type {
   ta get_return_object() { return {}; }
   std::suspend_never initial_suspend() noexcept { return {}; }
@@ -25,15 +35,5 @@ struct ta { struct promise_type {
   void return_void() {}
   void unhandled_exception() {}
 }; };
-struct tb { tb() = default; tb(int) {} struct promise_type {
-  int get_return_object() { return 0; }
-  std::suspend_never initial_suspend() noexcept { return {}; }
-  std::suspend_never final_suspend() noexcept { return {}; }
-  void return_void() {}
-  void unhandled_exception() {}
-}; };
-#ifdef B
-tb f() { co_return; }
-#else
 ta f() { co_return; }
 #endif

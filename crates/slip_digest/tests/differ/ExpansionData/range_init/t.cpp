@@ -4,7 +4,7 @@
 static constexpr int a[] = {1, 2};
 static constexpr int b[] = {1, 2};
 #ifdef B
-void f() { template for (constexpr int e : b) ; }
+template <class T> void f(T) { template for (constexpr int e : b) ; }
 #else
-void f() { template for (constexpr int e : a) ; }
+template <class T> void f(T) { template for (constexpr int e : a) ; }
 #endif

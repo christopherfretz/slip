@@ -1,7 +1,7 @@
 #include "side.h"
 // §6 AsmOperand `constraint`.
 #ifdef B
-void f(int x) { asm("" : : "m"(x)); }
+void f(int x) { asm("" : "=&r"(x)); }
 #else
-void f(int x) { asm("" : : "r"(x)); }
+void f(int x) { asm("" : "=r"(x)); }
 #endif

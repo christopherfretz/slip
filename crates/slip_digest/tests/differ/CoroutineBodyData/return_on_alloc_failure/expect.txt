@@ -1,1 +1,3 @@
+changed ta::promise_type
+added ta::promise_type::get_return_object_on_allocation_failure()
 changed f()

@@ -1,5 +1,5 @@
 #include "side.h"
-// §6 StmtNode `CoreturnStmt.b`: the promise call selects another `return_value`.
+// §6 StmtNode `CoreturnStmt.b`: the promise call selects another conversion; the operand is the same.
 namespace std {
 template <class R, class... A> struct coroutine_traits { using promise_type = typename R::promise_type; };
 template <class P = void> struct coroutine_handle {
@@ -27,7 +27,9 @@ struct vtask { struct promise_type {
   void unhandled_exception() {}
 }; };
 #ifdef B
-vtask f() { co_return 1L; }
+struct wt { operator long(); };
+vtask f() { co_return wt{}; }
 #else
-vtask f() { co_return 1; }
+struct wt { operator int(); };
+vtask f() { co_return wt{}; }
 #endif

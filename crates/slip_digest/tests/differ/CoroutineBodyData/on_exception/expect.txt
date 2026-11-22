@@ -1,1 +1,2 @@
+changed ta::promise_type::unhandled_exception()
 changed f()

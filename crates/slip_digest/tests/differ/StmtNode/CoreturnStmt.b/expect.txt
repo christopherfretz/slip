@@ -1,1 +1,4 @@
+changed wt
+added wt::operator long()
+removed wt::operator int()
 changed f()

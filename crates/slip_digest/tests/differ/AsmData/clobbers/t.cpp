@@ -3,5 +3,5 @@
 #ifdef B
 void f() { asm("" : : : "memory"); }
 #else
-void f() { asm("" : : : ); }
+void f() { asm("" : : : "cc"); }
 #endif

@@ -1,1 +1,5 @@
+changed ta
+changed ta::promise_type::get_return_object()
+added ta::ta()
+added ta::ta(int)
 changed f()

@@ -1,8 +1,8 @@
 // std: c++26
 #include "side.h"
-// §6 ExpansionData `decl`.
+// §6 ExpansionData `decl`: in a pattern: once expanded, each expansion holds the variable too.
 #ifdef B
-void f() { template for (long e : {1, 2}) ; }
+template <class T> void f(T) { template for (long e : {1, 2}) ; }
 #else
-void f() { template for (int e : {1, 2}) ; }
+template <class T> void f(T) { template for (int e : {1, 2}) ; }
 #endif

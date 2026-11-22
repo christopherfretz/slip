@@ -1,5 +1,5 @@
 #include "side.h"
-// §6 CoroutineBodyData `param_moves`: the copy of a `const` parameter.
+// §6 CoroutineBodyData `param_moves`: the parameter's copy uses another constructor.
 namespace std {
 template <class R, class... A> struct coroutine_traits { using promise_type = typename R::promise_type; };
 template <class P = void> struct coroutine_handle {
@@ -33,7 +33,9 @@ struct task2 { struct promise_type {
   void unhandled_exception() {}
 }; };
 #ifdef B
-task f(const int x) { co_return; }
+struct M { M(const M &); };
+task f(M m) { co_return; }
 #else
-task f(int x) { co_return; }
+struct M { M(M &&); };
+task f(M m) { co_return; }
 #endif
