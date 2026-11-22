@@ -8,15 +8,21 @@
 //! module's.
 
 use std::fmt;
+use std::sync::Arc;
 
 use slip_model::keys::{Name, Parent, Rule};
 use slip_model::{Counter, Digest, FileRef};
 
 /// A run of bytes of a file, named by the file's identity (§7.6
 /// `(file, lo, hi)`). Ordered by file, then `lo`, then `hi`.
+///
+/// The identity is shared: the host makes one `FileRef` per file of the
+/// run and every place in that file holds it, so a run holds each path
+/// once however many places name it (§7.7). Equality and order are the
+/// identity's, not the pointer's.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Place {
-    pub file: FileRef,
+    pub file: Arc<FileRef>,
     pub lo: u32,
     pub hi: u32,
 }
@@ -75,9 +81,10 @@ pub struct Report {
     pub place: Option<Place>,
     pub severity: Severity,
     pub message: Vec<u8>,
-    /// §7.4 rule 3: `true` when the report is attached to the nearest
-    /// place the host can name instead of the place of the value it was
-    /// given (`spec/landed/api/WP-081.md`).
+    /// §7.4 rule 3: `true` when the place is not the value's own: the
+    /// report is attached to the nearest place the host can name, or, with
+    /// no place, the host could name none (`spec/landed/api/WP-081.md`,
+    /// `WP-088.md`). `false` with no place: nothing to attach to.
     pub attached: bool,
 }
 
@@ -232,6 +239,10 @@ impl RunOutput {
     /// ```
     ///
     /// A piece is `"<bytes>"`, `copy(<place>)` or `spell(<key> "<text>")`.
+    /// A name is its identifier quoted, or the form's name of
+    /// `spec/digest-kinds.md` §3.2 with its operand in parentheses
+    /// (`operator(3)`, `conversion(<digest>)`, `literal_operator("_km")`,
+    /// `unnamed_by(<name>)`, `constructor`).
     /// Text is quoted with `\\`, `\"`, `\n`, `\t` and `\xNN` for any
     /// other byte outside printable ASCII; a path is written the same way
     /// without the quotes. A digest is its 64 hexadecimal digits. Items come
@@ -346,7 +357,20 @@ impl fmt::Display for Rendered<'_> {
             },
             Rendered::Name(n) => match n {
                 Name::Identifier(b) => write!(f, "{}", Rendered::Quoted(b)),
-                other => write!(f, "{other:?}"),
+                Name::Operator(k) => write!(f, "operator({k})"),
+                Name::Constructor => f.write_str("constructor"),
+                Name::Destructor => f.write_str("destructor"),
+                Name::Conversion(d) => write!(f, "conversion({d})"),
+                Name::LiteralOperator(b) => write!(f, "literal_operator({})", Rendered::Quoted(b)),
+                Name::DeductionGuide => f.write_str("deduction_guide"),
+                Name::Anonymous => f.write_str("anonymous"),
+                Name::Content => f.write_str("content"),
+                Name::Local(k) => write!(f, "local({k})"),
+                Name::UnnamedBy(inner) => write!(f, "unnamed_by({})", Rendered::Name(inner)),
+                Name::UnnamedOrdinal(k) => write!(f, "unnamed_ordinal({k})"),
+                Name::Property(k) => write!(f, "property({k})"),
+                Name::Order => f.write_str("order"),
+                Name::Parameter(k) => write!(f, "parameter({k})"),
             },
         }
     }

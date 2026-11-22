@@ -12,17 +12,19 @@
 //! another (§7.3 rule 3). Joining identical requests and merging groups
 //! is `RunOutput::canonical`'s, at `Host::finish`.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use slip_model::Digest;
 use slip_model::keys::{Name, Rule};
+use slip_model::{Digest, FileRef};
 
 use crate::host::{
     ALLOWED_EXTENT, ALLOWED_NAME_RANGE, ALLOWED_RENAME_RULE, ALLOWED_UNIT_KEYS, Answer, Host,
     Record, Step, Stop, check_identifier, refuse,
 };
 use crate::output::{Changed, Edit, Piece, Place, Report, Severity};
-use crate::subject::{Entity, Range, Reference, Value};
+use crate::subject::{Entity, File, PlaceOf, Range, Reference, Value};
 use crate::wire::{self, Errc, Operation};
 
 /// A piece of a code value as the host holds it (§7.1). A spelled piece
@@ -54,12 +56,37 @@ impl HeldPiece {
     }
 }
 
+/// A code value as the host holds it: its pieces and the bytes of text
+/// they hold, so that a request can be judged against the limits from
+/// two numbers before anything is copied.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Code {
+    pieces: Vec<HeldPiece>,
+    bytes: u64,
+}
+
+impl Code {
+    fn new(pieces: Vec<HeldPiece>) -> Code {
+        let bytes = pieces.iter().map(HeldPiece::text_len).sum();
+        Code { pieces, bytes }
+    }
+}
+
+/// The empty code: the null handle.
+static EMPTY: Code = Code { pieces: Vec::new(), bytes: 0 };
+
 /// What the host holds for the effects of a run, besides the record.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Effects {
     /// The code values made, by handle index (§3.4 tag 5). Each has at
     /// least one piece: a code with none is the null handle.
-    codes: Vec<Vec<HeldPiece>>,
+    codes: Vec<Code>,
+    /// The identity of each file a place names, made once per file so
+    /// that every place shares it (§7.7: a run holds each path once). A
+    /// memo of `Subject::file_ref`, which is a function of the file: it
+    /// does not change what a request records, so the validation stage may
+    /// fill it.
+    files: RefCell<BTreeMap<File, Arc<FileRef>>>,
     /// Pieces held in code values and recorded edits (§7.7).
     pieces: u64,
     /// Bytes of text held in pieces of code values and recorded edits.
@@ -76,7 +103,7 @@ pub(crate) struct Effects {
 #[derive(Debug)]
 pub(crate) enum Effect {
     /// A new code value (not empty).
-    Code(Vec<HeldPiece>),
+    Code(Code),
     Group,
     Edit {
         edit: Edit,
@@ -114,12 +141,13 @@ impl Host<'_> {
                 if bytes.is_empty() {
                     return Ok(Answer::Word(0));
                 }
-                self.new_code(vec![HeldPiece::Literal(bytes.to_vec())])?
+                self.code_fits(1, bytes.len() as u64)?;
+                Effect::Code(Code::new(vec![HeldPiece::Literal(bytes.to_vec())]))
             }
             wire::OP_CODE_SPELL => self.spell(ints[0])?,
             wire::OP_CODE_COPY => {
                 let r = self.range_arg(ints[0], ints[1])?;
-                self.new_code(vec![HeldPiece::Copy(r)])?
+                self.one_piece(HeldPiece::Copy(r))?
             }
             wire::OP_CODE_CAT => match self.cat(ints)? {
                 Some(e) => e,
@@ -145,10 +173,10 @@ impl Host<'_> {
     pub(crate) fn record(&mut self, effect: Effect) -> u64 {
         let fx = &mut self.effects;
         match effect {
-            Effect::Code(pieces) => {
-                fx.pieces += pieces.len() as u64;
-                fx.piece_bytes += pieces.iter().map(HeldPiece::text_len).sum::<u64>();
-                fx.codes.push(pieces);
+            Effect::Code(code) => {
+                fx.pieces += code.pieces.len() as u64;
+                fx.piece_bytes += code.bytes;
+                fx.codes.push(code);
                 wire::handle(wire::TAG_CODE, fx.codes.len() as u64 - 1)
             }
             Effect::Group => {
@@ -193,10 +221,10 @@ impl Host<'_> {
     // -----------------------------------------------------------------------
     // Arguments.
 
-    /// The pieces of code handle `h`; the null handle is the empty code.
-    fn code_arg(&self, h: u64) -> Step<&[HeldPiece]> {
+    /// The code of handle `h`; the null handle is the empty code.
+    fn code_arg(&self, h: u64) -> Step<&Code> {
         if h == 0 {
-            return Ok(&[]);
+            return Ok(&EMPTY);
         }
         if wire::handle_tag(h) != Some(wire::TAG_CODE) {
             return refuse(Errc::InvalidHandle, "not the handle of a code");
@@ -250,7 +278,14 @@ impl Host<'_> {
 
     /// The place of a range the host checked (§7.6 `(file, lo, hi)`).
     fn place_of(&self, r: Range) -> Place {
-        Place { file: self.subject.file_ref(r.file), lo: r.lo, hi: r.hi }
+        let file = Arc::clone(
+            self.effects
+                .files
+                .borrow_mut()
+                .entry(r.file)
+                .or_insert_with(|| Arc::new(self.subject.file_ref(r.file))),
+        );
+        Place { file, lo: r.lo, hi: r.hi }
     }
 
     /// A range the subject gave: a host failure unless it lies in its file.
@@ -274,8 +309,8 @@ impl Host<'_> {
         }
     }
 
-    /// `Subject::tier` of `r`: 0 or 1, `None` when the subject cannot tell;
-    /// any other answer is a host failure.
+    /// `Subject::tier` of `r`: 0 or 1, `None` when `r` is not exactly a
+    /// range a query gives out; any other answer is a host failure.
     fn tier(&self, r: Range) -> Step<Option<u8>> {
         match self.subject.tier(r) {
             t @ (None | Some(0 | 1)) => Ok(t),
@@ -286,18 +321,23 @@ impl Host<'_> {
     // -----------------------------------------------------------------------
     // Code values (§7.1).
 
-    /// A new code value of these (normalised, non-empty) pieces, if the
-    /// limits allow.
-    fn new_code(&self, pieces: Vec<HeldPiece>) -> Step<Effect> {
+    /// Whether a new code value of `count` pieces holding `bytes` bytes of
+    /// text fits the limits (§7.7). Asked before the code is built, so a
+    /// refused request copies nothing.
+    fn code_fits(&self, count: u64, bytes: u64) -> Step<()> {
         if self.effects.codes.len() as u64 >= self.limits.code_values {
             return limit("code values", self.limits.code_values);
         }
-        if pieces.len() as u64 > self.limits.pieces_per_code {
+        if count > self.limits.pieces_per_code {
             return limit("pieces in one code value", self.limits.pieces_per_code);
         }
-        let bytes = pieces.iter().map(HeldPiece::text_len).sum();
-        self.pieces_fit(pieces.len() as u64, bytes)?;
-        Ok(Effect::Code(pieces))
+        self.pieces_fit(count, bytes)
+    }
+
+    /// A code value of one piece.
+    fn one_piece(&self, p: HeldPiece) -> Step<Effect> {
+        self.code_fits(1, p.text_len())?;
+        Ok(Effect::Code(Code::new(vec![p])))
     }
 
     /// §7.1 rule 4: `spell(e)`. The key is asked here (decision 8 of
@@ -332,46 +372,53 @@ impl Host<'_> {
                     .to_owned(),
             ));
         };
-        let len: usize = names.iter().map(|n| n.len() + 2).sum();
-        if len as u64 > self.limits.literal_bytes {
-            return limit("bytes of text in pieces", self.limits.literal_bytes);
-        }
-        let mut qualified = Vec::with_capacity(len);
+        let len: u64 = names.iter().map(|n| n.len() as u64 + 2).sum();
+        self.code_fits(1, len)?;
+        let mut qualified = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
         let mut identifier_at = 0;
         for n in &names {
             qualified.extend_from_slice(b"::");
             identifier_at = qualified.len();
             qualified.extend_from_slice(n);
         }
-        self.new_code(vec![HeldPiece::Spelled { entity: e, key, qualified, identifier_at }])
+        let piece = HeldPiece::Spelled { entity: e, key, qualified, identifier_at };
+        Ok(Effect::Code(Code::new(vec![piece])))
     }
 
     /// §7.1 rule 5 at L0: the pieces of the codes in order, adjacent
-    /// literals joined. `None`: the result is the empty code.
+    /// literals joined. `None`: the result is the empty code. The size of
+    /// the result is computed from the codes' counts first, in time
+    /// proportional to the number of arguments, and checked; only then is
+    /// anything copied.
     fn cat(&self, handles: &[u64]) -> Step<Option<Effect>> {
         let mut codes = Vec::with_capacity(handles.len().min(1 << 16));
         for &h in handles {
             codes.push(self.code_arg(h)?);
         }
-        let max_pieces = self.limits.pieces_per_code;
-        let max_bytes = self.limits.literal_bytes.saturating_sub(self.effects.piece_bytes);
-        let mut out: Vec<HeldPiece> = Vec::new();
-        let mut bytes = 0u64;
-        for p in codes.into_iter().flatten() {
-            bytes = bytes.saturating_add(p.text_len());
-            if bytes > max_bytes {
-                return limit("bytes of text in pieces", self.limits.literal_bytes);
+        let is_literal = |p: Option<&HeldPiece>| matches!(p, Some(HeldPiece::Literal(_)));
+        let (mut count, mut bytes, mut last_literal) = (0u64, 0u64, false);
+        for c in &codes {
+            let Some(first) = c.pieces.first() else { continue };
+            count += c.pieces.len() as u64;
+            if last_literal && is_literal(Some(first)) {
+                count -= 1;
             }
+            last_literal = is_literal(c.pieces.last());
+            bytes = bytes.saturating_add(c.bytes);
+        }
+        if count == 0 {
+            return Ok(None);
+        }
+        self.code_fits(count, bytes)?;
+        let mut out: Vec<HeldPiece> = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
+        for p in codes.into_iter().flat_map(|c| &c.pieces) {
             if let (Some(HeldPiece::Literal(prev)), HeldPiece::Literal(b)) = (out.last_mut(), p) {
                 prev.extend_from_slice(b);
                 continue;
             }
-            if out.len() as u64 >= max_pieces {
-                return limit("pieces in one code value", max_pieces);
-            }
             out.push(p.clone());
         }
-        if out.is_empty() { Ok(None) } else { self.new_code(out).map(Some) }
+        Ok(Some(Effect::Code(Code { pieces: out, bytes })))
     }
 
     // -----------------------------------------------------------------------
@@ -393,43 +440,48 @@ impl Host<'_> {
         }
         let Some(tier) = self.tier(r)? else {
             return refuse(
-                Errc::Unsupported,
-                "a range that does not lie in a name range or an extent of the unit, so its \
-                 tier is not known (§7.3 rule 2)",
+                Errc::InvalidHandle,
+                "a range that is not one name_range_of or extent_of returns in the subject unit \
+                 (§7.3 rule 2, §5.2 rule 2)",
             );
         };
         if self.effects.record.edits.len() as u64 >= self.limits.edits {
             return limit("edits requested", self.limits.edits);
         }
         // §7.2: the sibling rule, or every spelled piece fully qualified.
-        let sibling = match code {
-            [HeldPiece::Spelled { entity, .. }] => self.sibling(r, *entity)?,
+        let narrowed = match code.pieces.as_slice() {
+            [HeldPiece::Spelled { entity, key, qualified, identifier_at }] => {
+                match self.sibling(r, *entity)? {
+                    Some(name) => {
+                        let Some(t) = self.tier(name)? else {
+                            return Err(Stop::Internal(
+                                "Subject::tier gave None for a name range it gave out".to_owned(),
+                            ));
+                        };
+                        let text = qualified.get(*identifier_at..).unwrap_or_default();
+                        Some((name, t, *key, text))
+                    }
+                    None => None,
+                }
+            }
             _ => None,
         };
-        let (range, tier, pieces) = match (sibling, code) {
-            (Some(name), [HeldPiece::Spelled { key, qualified, identifier_at, .. }]) => {
-                let Some(t) = self.tier(name)? else {
-                    return Err(Stop::Internal(
-                        "Subject::tier gave None for a name range it gave out".to_owned(),
-                    ));
-                };
-                let text = qualified.get(*identifier_at..).unwrap_or_default().to_vec();
-                (name, t, vec![Piece::Spelled { key: *key, text }])
-            }
-            _ => (r, tier, code.iter().map(|p| self.piece(p)).collect()),
+        // The limits, from the counts: nothing is copied before they pass.
+        let (count, bytes) = match narrowed {
+            Some((.., text)) => (1, text.len() as u64),
+            None => (code.pieces.len() as u64, code.bytes),
         };
-        let bytes = pieces
-            .iter()
-            .map(|p| match p {
-                Piece::Literal(b) | Piece::Spelled { text: b, .. } => b.len() as u64,
-                Piece::Copy(_) => 0,
-            })
-            .sum();
-        self.pieces_fit(pieces.len() as u64, bytes)?;
+        self.pieces_fit(count, bytes)?;
         self.text_fits(note.len() as u64)?;
+        let (range, tier, pieces) = match narrowed {
+            Some((name, t, key, text)) => {
+                (name, t, vec![Piece::Spelled { key, text: text.to_vec() }])
+            }
+            None => (r, tier, code.pieces.iter().map(|p| self.piece(p)).collect()),
+        };
         let notes = if note.is_empty() { Vec::new() } else { vec![note.to_vec()] };
         let edit = Edit { place: self.place_of(range), pieces, tier, notes };
-        Ok(Effect::Edit { pieces: edit.pieces.len() as u64, bytes, edit, group })
+        Ok(Effect::Edit { pieces: count, bytes, edit, group })
     }
 
     /// A held piece as recorded away from the sibling rule: a spelled
@@ -534,8 +586,14 @@ impl Host<'_> {
                 }
                 let v = self.value_arg(ints[1])?;
                 match self.subject.place(v) {
-                    Some((r, own)) => (Some(self.place_of(self.subject_range("place", r)?)), !own),
-                    None => (None, false),
+                    PlaceOf::Own(r) => {
+                        (Some(self.place_of(self.subject_range("place", r)?)), false)
+                    }
+                    PlaceOf::Nearest(r) => {
+                        (Some(self.place_of(self.subject_range("place", r)?)), true)
+                    }
+                    PlaceOf::Unnamed => (None, true),
+                    PlaceOf::Nowhere => (None, false),
                 }
             }
             2 => (Some(self.place_of(self.range_arg(ints[1], ints[2])?)), false),
@@ -628,6 +686,14 @@ impl Host<'_> {
                 );
             }
             Err(errc) => return refuse(errc, "not an identifier (§7.5 rule 3)"),
+        }
+        if self.subject.identifier(v).is_some_and(|own| own == name) {
+            return Err(self.refusal_at(
+                v,
+                Errc::InvalidArgument,
+                "the entity's identifier already: a rename to it is no rename (§7.5 rule 3)"
+                    .to_owned(),
+            ));
         }
         match self.effects.renamed.get(&e) {
             Some(n) if n == name => return Ok(Effect::Nothing),

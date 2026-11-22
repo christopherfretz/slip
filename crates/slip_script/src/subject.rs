@@ -47,6 +47,21 @@ pub struct Range {
     pub hi: u32,
 }
 
+/// Where a report about a value goes (§7.4 rule 3): `Subject::place`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PlaceOf {
+    /// The value's own place: a range of tier 0 or 1.
+    Own(Range),
+    /// The nearest place the host can name (the macro invocation that
+    /// produced the value), the value's own being of no tier 0 or 1.
+    Nearest(Range),
+    /// The value has a place, and the host can name neither it nor a
+    /// nearer one.
+    Unnamed,
+    /// Nothing to attach to: an entity with no written declaration.
+    Nowhere,
+}
+
 /// An `info` (§5.1): a value of one of the four sorts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Value {
@@ -162,9 +177,12 @@ pub trait Subject {
     fn unresolved_named(&self, identifier: &[u8]) -> Option<u64>;
 
     // What the effects need (§7). WP-088 is their only caller.
-    /// §5.4: 0 or 1 if `r` is a range the subject gave out or lies inside one; else None.
-    /// `None` makes `replace` refuse with `unsupported` (§7.3 rule 2); any
-    /// other number is a host failure.
+    /// §5.4: the tier, 0 or 1, of `r` when `r` is exactly a range that
+    /// `name_range` or `extent` gives for some value of the unit (the only
+    /// queries that return a range, §6.6); `None` for every other range,
+    /// including one that lies inside such a range. `None` makes `replace`
+    /// refuse with `invalid_handle` (§7.3 rule 2, §5.2 rule 2); any other
+    /// number is a host failure.
     fn tier(&self, r: Range) -> Option<u8>;
     /// §7.2 rule 2: the identifiers from the outermost named scope to `e`; None: §7.1 rule 4.
     /// `Some` must hold one identifier or more, none empty, the last
@@ -189,8 +207,8 @@ pub trait Subject {
     /// its `name` must be `new_identifier`, or it is a host failure.
     fn rename_rule(&self, e: Entity, new_identifier: &[u8])
     -> Result<slip_model::keys::Rule, Errc>;
-    /// §7.4 rule 3: the place, and whether it is the value's own (`false`: the nearest nameable place).
-    /// A range outside its file is a host failure when a report asks.
-    fn place(&self, v: Value) -> Option<(Range, bool)>;
+    /// §7.4 rule 3: the place of `v` for a report. A range outside its
+    /// file is a host failure when a report asks.
+    fn place(&self, v: Value) -> PlaceOf;
     fn file_ref(&self, f: File) -> slip_model::FileRef;
 }

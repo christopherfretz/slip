@@ -356,7 +356,9 @@ A file handle is a nonzero 32-bit number; a range is a file handle and two
 The host validates every handle and range it is given: the tag, that the
 index is one it issued in this run, and for a range that the file handle
 is live and `lo <= hi <=` the file's length. It never trusts a value
-because the header made it.
+because the header made it. That is all `code_copy`, `report`,
+`source_text_of` and `is_editable` require of a range: only its bytes
+matter to them. `replace` requires more (§7.3 rule 2).
 
 Kind bits (the value of `kind`): bits 0 to 3 are the sort (entity,
 declaration, reference, expression); bits 8 to 13 are namespace, type,
@@ -495,7 +497,8 @@ grow, and typed views can be built on top in L2).
    issue in this run is refused with `invalid_handle` wherever a live
    value is required. If the forged bits happen to equal a live value's,
    it is that value. Neither case reaches anything the API does not
-   already expose.
+   already expose. A range is live when §3.4 accepts it; for `replace` it
+   must also be one that a query returns (§7.3 rule 2).
 
 ### 5.3 Text and sequences
 
@@ -550,7 +553,9 @@ with token sequence `T(X)` after preprocessing:
    written this section is the definition for the API.
 
 Version 0 has no operation that builds a range from offsets, widens one
-or splits one.
+or splits one. A later operation that builds or splits a range computes
+the tier of the new range; it never inherits the tier of the range it
+came from.
 
 ### 5.5 As written and as resolved
 
@@ -966,9 +971,9 @@ consteval void replace(range, code, edit_options = {});
    text of `c`. `c` may be empty: that requests deletion.
 2. It throws `invalid_handle` for a null range, `invalid_argument` for an
    empty range (insertion is not in version 0), `not_editable` when
-   `is_editable(r)` is false, and `unsupported` when the tier of `r`
-   (§5.4) is not known: when `r` lies within no range that
-   `name_range_of` or `extent_of` returns in the subject unit.
+   `is_editable(r)` is false, and `invalid_handle` when `r` is not a
+   range that `name_range_of` or `extent_of` returns in the subject unit
+   (§5.2 rule 2): only such a range has a known tier (§5.4).
 3. The host does not check that requests are compatible with each other.
    Two requests of one run for overlapping ranges are both recorded.
 4. `new_group()` returns a group with no member. `o.atomic`, if not the
@@ -1001,7 +1006,8 @@ consteval void report(range where, severity, std::string_view message);
    first written declaration. If that is not a range of tier 0 or 1, the
    report is attached to the nearest place the host can name (the macro
    invocation that produced it) and says so; if the host can name none,
-   the report has no place. An entity with no written declaration has no
+   the report has no place and says that its value's place could not be
+   named. An entity with no written declaration has no
    place.
 4. `severity` is open. A value the host does not know throws
    `invalid_argument`.
@@ -1032,8 +1038,10 @@ consteval void expect_renamed(info entity, std::string_view new_identifier);
    declared with identifier `n` and to be otherwise unchanged, in the same
    scope. The host records the rule of `spec/verify.md` §2.1 that undoes
    it. It throws `wrong_kind` if `e` is not an entity, `invalid_argument`
-   if `n` is not an identifier or if this run already declared a different
-   name for `e`, and `unsupported` if `e` is not a unit keyed by name.
+   if `n` is not an identifier, is `e`'s identifier, or if this run
+   already declared a different name for `e`, and `unsupported` if `e` is
+   not a unit keyed by name. Two entities declared renamed to one name in
+   one scope are both recorded: verification is what refuses that.
 4. Both are idempotent: declaring the same thing twice is declaring it
    once.
 5. **What a declaration does.** `expect_changed` becomes an entry of
@@ -1103,9 +1111,10 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
 
 1. **Identity is content.** Two requests with the same file, range and
    pieces are one edit, within a run and across subject units. A group's
-   identity is the set of its members. Nothing in the output depends on
-   the order in which the transform made its requests or on a number the
-   host assigned during the run.
+   identity is the set of its members. The output is a function of the
+   set of requests that succeeded, not of their order or of a number the
+   host assigned during the run; which requests succeed may depend on
+   their order only through §7.5 rule 3 and §7.7.
 2. An edit is in at most one group: groups of one run that share a member
    are one group (all or none is transitive). A group with one member is
    not a group and is dropped; the edit stays.
@@ -1155,7 +1164,13 @@ Exceeding one throws `limit_exceeded`, except the last row, which fails
 nothing (§3.5 rule 3); holding exactly a limit does not exceed it. The
 totals count what the run holds: a piece, its text, a note or a reason
 counts once in every code value, recorded edit or declared change that
-holds it, so `cat` and `replace` count again what they copy. The limits
+holds it, so `cat` and `replace` count again what they copy. Pieces held
+by intermediate code values count in the same total as pieces in edits
+and are not released during a run, so "pieces, in total" binds before
+"code values": `replace(x, cat("g(", copy(y), ")"))` costs about 9
+pieces per edit. A place holds its file's identity, which the run holds
+once per file whatever number of places name it; paths are not counted.
+The limits
 are part of the API level and are the same on every machine.
 
 ## 8. Stability

@@ -20,7 +20,7 @@ use slip_model::{Counter, Digest};
 
 use crate::effects::{Effect, Effects};
 use crate::output::{Changed, Edit, Report, RunOutput};
-use crate::subject::{Entity, File, Range, Subject, Value};
+use crate::subject::{Entity, File, PlaceOf, Range, Subject, Value};
 use crate::wire::{self, Errc, Operation};
 
 /// Where a host call writes its answer (Kiln's `HostOut`, without its
@@ -373,7 +373,11 @@ impl<'s> Host<'s> {
 
     /// A refusal that concerns the live value `v`, with its place.
     pub(crate) fn refusal_at(&self, v: Value, errc: Errc, message: String) -> Stop {
-        Stop::Refused { errc, message, place: self.subject.place(v).map(|(r, _)| r) }
+        let place = match self.subject.place(v) {
+            PlaceOf::Own(r) | PlaceOf::Nearest(r) => Some(r),
+            PlaceOf::Unnamed | PlaceOf::Nowhere => None,
+        };
+        Stop::Refused { errc, message, place }
     }
 
     // -----------------------------------------------------------------------

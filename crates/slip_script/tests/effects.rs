@@ -9,6 +9,8 @@
 )]
 
 use slip_model::keys::{KeyKind, Name, Parent, Rule};
+use std::sync::Arc;
+
 use slip_model::{Digest, FileRef};
 use slip_script::fake::{
     FakeCall, FakeDeclaration, FakeEntity, FakeExpression, FakeOut, FakeReference, FakeSubject,
@@ -16,7 +18,7 @@ use slip_script::fake::{
 use slip_script::host::{Host, Limits};
 use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity};
 use slip_script::subject::{
-    Declaration, Entity, Expression, File, Range, Reference, Subject, Value,
+    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
 };
 use slip_script::wire::{self, Errc};
 
@@ -457,7 +459,7 @@ impl Is for FakeSubject {
 }
 
 fn place(f: &FakeSubject, r: Range) -> Place {
-    Place { file: f.file_ref(r.file), lo: r.lo, hi: r.hi }
+    Place { file: Arc::new(f.file_ref(r.file)), lo: r.lo, hi: r.hi }
 }
 
 fn lit(s: &str) -> Piece {
@@ -517,7 +519,7 @@ fn s7_1_each_piece_kind() {
         )]
     );
     assert_eq!(out.edits[0].tier, 0);
-    assert_eq!(out.edits[0].place.file, w.fake.file_ref(w.t));
+    assert_eq!(*out.edits[0].place.file, w.fake.file_ref(w.t));
     assert!(out.is_canonical());
 }
 
@@ -806,11 +808,67 @@ fn s7_3_each_throw() {
     let lo = sp >> 32;
     assert_eq!(replace([file, lo << 32 | lo, x, 0]), errc(Errc::InvalidArgument), "empty");
     assert_eq!(replace([in_h[0], in_h[1], x, 0]), errc(Errc::NotEditable));
-    // A range of the unit that lies in no range a query gives out: its
-    // tier is not known.
-    assert_eq!(replace([file, 1 << 32 | 2, x, 0]), errc(Errc::Unsupported));
+    // A range of the unit that no query returns: forged (§7.3 rule 2).
+    assert_eq!(replace([file, 1 << 32 | 2, x, 0]), ih, "a range no query returns");
     let out = run.finish();
     assert!(out.edits.is_empty());
+}
+
+/// §7.3 rule 2, §5.2 rule 2: `replace` takes only a range that
+/// `name_range_of` or `extent_of` returns. A range built inside one (part
+/// of a macro invocation, half a token) is forged and refused, and records
+/// nothing; a forged range equal to a real one is that one, with its tier.
+#[test]
+fn s7_3_rule_2_a_range_no_query_returns_is_forged() {
+    let mut f = FakeSubject::new();
+    let t = f.file("/src/m.cpp", "int k = M(foo) + foo;\n", true);
+    let foo = f.entity(FakeEntity {
+        identifier: b"foo".to_vec(),
+        kinds: wire::KIND_VARIABLE,
+        parent: Some(FakeSubject::GLOBAL),
+        ..FakeEntity::default()
+    });
+    let arg = f.range_nth(t, "foo", 0);
+    let plain = f.range_nth(t, "foo", 1);
+    let whole = f.range_nth(t, "M(foo) + foo", 0);
+    assert_eq!((span(arg), span(plain), span(whole)), ((10, 13), (17, 20), (8, 20)));
+    f.tier1.push(arg);
+    for r in [arg, plain] {
+        f.reference(FakeReference {
+            name: Some(r),
+            extent: Some(r),
+            ..FakeReference::to(foo, "foo")
+        });
+    }
+    f.expression(FakeExpression::at(Some(whole)));
+    f.declaration(FakeDeclaration { entity: foo, name: None, definition: false });
+    let mut h = Host::new(&f, Digest([1; 32]), Limits::default());
+    let ints = |h: &mut Host<'_>, op, args: &[u64], bytes: &[u8]| {
+        let (word, out) = call(h, op, args, bytes);
+        assert_eq!(wire::status(word), 0, "op {op}");
+        (wire::payload(word), out.ints)
+    };
+    let foo_h = ints(&mut h, wire::OP_LOOKUP, &[], b"foo").1[0];
+    let refs = ints(&mut h, wire::OP_REFERENCES_TO, &[foo_h], &[]).1;
+    let name = ints(&mut h, wire::OP_NAME_RANGE_OF, &[refs[0]], &[]).1;
+    let file = name[0];
+    let x = ints(&mut h, wire::OP_CODE_TEXT, &[], b"x").0;
+    let replace = |h: &mut Host<'_>, lo: u64, hi: u64| {
+        wire::status(call(h, wire::OP_REPLACE, &[file, lo << 32 | hi, x, 0], b"").0)
+    };
+    let ih = errc(Errc::InvalidHandle);
+    assert_eq!(replace(&mut h, 8, 11), ih, "`M(f`: inside the extent, not one");
+    assert_eq!(replace(&mut h, 18, 19), ih, "half a token");
+    assert_eq!(replace(&mut h, 8, 13), ih, "`M(foo`");
+    assert_eq!(replace(&mut h, 0, 22), ih, "the whole file");
+    assert_eq!(replace(&mut h, 8, 20), 0, "the extent, never asked for: it is that range");
+    assert_eq!(name[1], (10 << 32) + 13);
+    assert_eq!(replace(&mut h, 10, 13), 0, "the name range");
+    assert_eq!(replace(&mut h, 17, 20), 0, "the other name range");
+    let out = h.finish();
+    let got: Vec<_> = out.edits.iter().map(|e| (e.place.lo, e.place.hi, e.tier)).collect();
+    assert_eq!(got, vec![(8, 20, 0), (10, 13, 1), (17, 20, 0)]);
+    assert_eq!(counter(&out, "api.op.replace"), Some(3));
 }
 
 /// §7.3 rule 1: the empty code requests deletion; the default group and
@@ -871,6 +929,9 @@ fn s7_3_overlap_identity_and_groups() {
     );
     assert_eq!(out.edits[0].notes, vec![b"first".to_vec(), b"second".to_vec()]);
     assert_eq!(out.groups, vec![vec![0, 3]], "g1 and g2 merged; g3 and lonely of one dropped");
+    // §7.7: the run holds the file's identity once, whatever names it.
+    let first = &out.edits[0].place.file;
+    assert!(out.edits.iter().all(|e| Arc::ptr_eq(&e.place.file, first)));
 }
 
 // ---------------------------------------------------------------------------
@@ -881,8 +942,9 @@ fn report(run: &mut Run<'_, '_>, ints: [u64; 4], message: &str) -> u8 {
 }
 
 /// §7.4: each overload; an unknown severity; a place that is not the
-/// value's own; an entity with no place; a where-kind the host does not
-/// have.
+/// value's own; a value whose place the host cannot name (no place, and
+/// says so: `attached`); an entity with no written declaration (no place,
+/// nothing to attach to); a where-kind the host does not have.
 #[test]
 fn s7_4_reports() {
     let w = world();
@@ -893,6 +955,8 @@ fn s7_4_reports() {
     let other = run.entity(w.other_foo);
     let decl = run.handle(Value::Declaration(Declaration(0)));
     let tclass_member = run.entity(w.tmember);
+    // `inl` has no written declaration: reached as `foo`'s parent.
+    let inl = run.ok(wire::OP_PARENT_OF, &[foo], &[]);
     let [file, sp] = run.extent(Value::Expression(w.arg1));
     assert_eq!(report(&mut run, [0, 0, 0, 0], "unit"), 0);
     assert_eq!(report(&mut run, [1, r, 0, 1], "ref"), 0);
@@ -900,7 +964,8 @@ fn s7_4_reports() {
     assert_eq!(report(&mut run, [1, foo, 0, 0], "entity"), 0);
     assert_eq!(report(&mut run, [1, decl, 0, 0], "declaration"), 0);
     assert_eq!(report(&mut run, [1, other, 0, 1], "nearest"), 0);
-    assert_eq!(report(&mut run, [1, tclass_member, 0, 0], "nowhere"), 0);
+    assert_eq!(report(&mut run, [1, tclass_member, 0, 0], "unnamed"), 0);
+    assert_eq!(report(&mut run, [1, inl, 0, 0], "nowhere"), 0);
     assert_eq!(report(&mut run, [2, file, sp, 1], "range"), 0);
     let ia = errc(Errc::InvalidArgument);
     assert_eq!(report(&mut run, [0, 0, 0, 3], "x"), ia, "an unknown severity");
@@ -926,12 +991,13 @@ fn s7_4_reports() {
         rep(at("foo", 0), Severity::Note, "entity", false),
         rep(at("lib", 0), Severity::Note, "declaration", false),
         rep(at("other", 0), Severity::Review, "nearest", true),
+        rep(None, Severity::Note, "unnamed", true),
         rep(None, Severity::Note, "nowhere", false),
         rep(at("1", 0), Severity::Review, "range", false),
     ];
     expected.sort();
     assert_eq!(out.reports, expected);
-    assert_eq!(counter(&out, "api.reports"), Some(8));
+    assert_eq!(counter(&out, "api.reports"), Some(9));
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,7 +1081,9 @@ fn s7_5_expect_renamed() {
     assert_eq!(renamed(&mut run, bar, "b$"), errc(Errc::Unsupported), "undecided");
     assert_eq!(renamed(&mut run, bar, "é"), errc(Errc::Unsupported), "undecided");
     assert_eq!(renamed(&mut run, main, "main2"), errc(Errc::Unsupported), "not keyed by name");
-    assert_eq!(renamed(&mut run, bar, "baz"), 0, "a refused request did not take the entity");
+    assert_eq!(renamed(&mut run, bar, "bar"), ia, "its identifier already: no rename");
+    assert_eq!(renamed(&mut run, foo, "foo"), ia, "the old name, after a rename");
+    assert_eq!(renamed(&mut run, bar, "foo2"), 0, "a refused request did not take the entity");
     let out = run.finish();
     let rule = |from: &str, to: &str| Rule {
         parent: Parent::Unit(K_INL),
@@ -1025,7 +1093,30 @@ fn s7_5_expect_renamed() {
         to_parent: Parent::Unit(K_INL),
         to_name: Name::Identifier(to.as_bytes().to_vec()),
     };
-    assert_eq!(out.renamed, vec![rule("baz", "bar"), rule("foo2", "foo")]);
+    // Two entities to one name in one scope: both recorded; verification
+    // refuses it (§7.5 rule 3).
+    assert_eq!(out.renamed, vec![rule("foo2", "bar"), rule("foo2", "foo")]);
+}
+
+/// §7.5 rule 3, §7.6 rule 1: of two names for one entity the first
+/// succeeds and the second throws, in either order; the output is the
+/// output of the run without the second call.
+#[test]
+fn s7_5_rule_3_the_first_name_wins_in_either_order() {
+    let w = world();
+    for (first, second) in [("x1", "x2"), ("x2", "x1")] {
+        let mut both = Run::new(&w, &w.fake);
+        let foo = both.entity(w.foo);
+        assert_eq!(renamed(&mut both, foo, first), 0);
+        assert_eq!(renamed(&mut both, foo, second), errc(Errc::InvalidArgument));
+        let mut alone = Run::new(&w, &w.fake);
+        let foo = alone.entity(w.foo);
+        assert_eq!(renamed(&mut alone, foo, first), 0);
+        let (both, alone) = (both.finish(), alone.finish());
+        assert_eq!(both, alone, "{first} then {second}");
+        assert_eq!(both.renamed.len(), 1);
+        assert_eq!(both.renamed[0].name, Name::Identifier(first.as_bytes().to_vec()));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,7 +1130,7 @@ enum Lie {
     UnitKeys(Result<Vec<Digest>, Errc>),
     RenameRule(Result<Rule, Errc>),
     Tier(Option<u8>),
-    Place(Option<(Range, bool)>),
+    Place(PlaceOf),
     ReferencesAt(Vec<Reference>),
 }
 
@@ -1141,7 +1232,7 @@ impl Subject for Liar<'_> {
             self.fake.rename_rule(e, new_identifier)
         }
     }
-    fn place(&self, v: Value) -> Option<(Range, bool)> {
+    fn place(&self, v: Value) -> PlaceOf {
         if let Lie::Place(p) = self.lie { p } else { self.fake.place(v) }
     }
     fn file_ref(&self, f: File) -> FileRef {
@@ -1252,9 +1343,9 @@ fn s7_5_subject_rename_rule_statuses() {
 fn s7_subject_answers_the_effects_check() {
     let w = world();
     host_failure(under(&w, Lie::Tier(Some(2)), "replace"), &["Subject::tier"]);
-    assert_eq!(under(&w, Lie::Tier(None), "replace"), Ok(errc(Errc::Unsupported)));
+    assert_eq!(under(&w, Lie::Tier(None), "replace"), Ok(errc(Errc::InvalidHandle)));
     let outside = Range { file: w.t, lo: 0, hi: 1 << 20 };
-    host_failure(under(&w, Lie::Place(Some((outside, true))), "report"), &["Subject::place"]);
+    host_failure(under(&w, Lie::Place(PlaceOf::Own(outside)), "report"), &["Subject::place"]);
     host_failure(
         under(&w, Lie::ReferencesAt(vec![w.r_indirect]), "replace"),
         &["Subject::references_at"],
@@ -1559,7 +1650,9 @@ fn s7_7_each_limit_at_and_past() {
     let c = run.copy(e);
     run.cat(&[c, t]);
     run.cat(&[t, t, t, t]);
+    run.cat(&[t, 0, t, c]);
     assert_eq!(run.status(wire::OP_CODE_CAT, &[c, t, c], &[]), LE);
+    assert_eq!(run.status(wire::OP_CODE_CAT, &[t, c, t], &[]), LE);
 
     // Pieces in total, in code values and in recorded edits.
     let mut run = small(&w, |l| l.pieces = 5);
@@ -1748,7 +1841,7 @@ fn s4_a_failed_operation_leaves_the_output_as_without_it() {
 #[test]
 fn s7_6_render() {
     let file = FileRef { path: b"/src/a b.cpp".to_vec(), size: 9, content: Digest([3; 32]) };
-    let at = |lo, hi| Place { file: file.clone(), lo, hi };
+    let at = |lo, hi| Place { file: Arc::new(file.clone()), lo, hi };
     let mut out = RunOutput::empty(Digest([0xab; 32]));
     out.edits = vec![
         Edit {
@@ -1804,4 +1897,46 @@ fn s7_6_render() {
         d(0x33),
     );
     assert_eq!(text, expected);
+}
+
+/// The rendering of every form of `Name` (`spec/digest-kinds.md` §3.2):
+/// a written form for each, none of them `Debug`'s.
+#[test]
+fn s7_6_render_names() {
+    let d = Digest([0x44; 32]);
+    let forms = [
+        (Name::Identifier(b"f".to_vec()), "\"f\"".to_owned()),
+        (Name::Operator(3), "operator(3)".to_owned()),
+        (Name::Constructor, "constructor".to_owned()),
+        (Name::Destructor, "destructor".to_owned()),
+        (Name::Conversion(d), format!("conversion({d})")),
+        (Name::LiteralOperator(b"_km".to_vec()), "literal_operator(\"_km\")".to_owned()),
+        (Name::DeductionGuide, "deduction_guide".to_owned()),
+        (Name::Anonymous, "anonymous".to_owned()),
+        (Name::Content, "content".to_owned()),
+        (Name::Local(2), "local(2)".to_owned()),
+        (
+            Name::UnnamedBy(Box::new(Name::Identifier(b"t".to_vec()))),
+            "unnamed_by(\"t\")".to_owned(),
+        ),
+        (Name::UnnamedOrdinal(1), "unnamed_ordinal(1)".to_owned()),
+        (Name::Property(7), "property(7)".to_owned()),
+        (Name::Order, "order".to_owned()),
+        (Name::Parameter(0), "parameter(0)".to_owned()),
+    ];
+    for (name, written) in forms {
+        let mut out = RunOutput::empty(Digest([0; 32]));
+        out.renamed = vec![Rule {
+            parent: Parent::Builtin,
+            kind: KeyKind::Function,
+            name: Name::Identifier(b"g".to_vec()),
+            disc: None,
+            to_parent: Parent::CLinkage,
+            to_name: name,
+        }];
+        let mut text = String::new();
+        out.render(&mut text).expect("render");
+        let line = text.lines().nth(1).expect("the rule");
+        assert_eq!(line, format!("renamed function builtin \"g\" -> c_linkage {written}"));
+    }
 }

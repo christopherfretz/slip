@@ -1153,7 +1153,11 @@ fn s3_2_arguments_as_written() {
 
 fn place(path: &str, lo: u32, hi: u32) -> Place {
     Place {
-        file: FileRef { path: path.as_bytes().to_vec(), size: 100, content: Digest([3; 32]) },
+        file: std::sync::Arc::new(FileRef {
+            path: path.as_bytes().to_vec(),
+            size: 100,
+            content: Digest([3; 32]),
+        }),
         lo,
         hi,
     }
@@ -1612,7 +1616,7 @@ impl Subject for Liar<'_> {
     fn rename_rule(&self, e: Entity, new_identifier: &[u8]) -> Result<Rule, Errc> {
         self.fake.rename_rule(e, new_identifier)
     }
-    fn place(&self, v: Value) -> Option<(Range, bool)> {
+    fn place(&self, v: Value) -> slip_script::subject::PlaceOf {
         self.fake.place(v)
     }
     fn file_ref(&self, f: File) -> FileRef {

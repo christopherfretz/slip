@@ -13,7 +13,9 @@ use slip_model::keys::{KeyKind, Name, Parent, Rule};
 use slip_model::{Digest, FileRef};
 
 use crate::host::Out;
-use crate::subject::{Declaration, Entity, Expression, File, Range, Reference, Subject, Value};
+use crate::subject::{
+    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
+};
 use crate::wire::{self, Errc};
 
 /// A file of the fake subject.
@@ -178,7 +180,10 @@ pub struct FakeSubject {
     /// lies in one of these has tier 1.
     pub tier1: Vec<Range>,
     /// `Subject::place` for a value with no place of its own: the nearest
-    /// place the host can name (§7.4 rule 3).
+    /// place the host can name (§7.4 rule 3). A value with no place of its
+    /// own and none here is `PlaceOf::Unnamed`; an entity with no
+    /// declaration is `PlaceOf::Nowhere`. `Subject::tier` answers only for
+    /// a range exactly given out (`name` or `extent` of a value).
     pub nearest: Vec<(Value, Range)>,
     /// `Subject::unresolved_named` (§6.5 rule 6): the count of unresolved
     /// names for each identifier, 0 for one not listed; `None`: the subject
@@ -496,7 +501,7 @@ impl Subject for FakeSubject {
     }
 
     fn tier(&self, r: Range) -> Option<u8> {
-        if !self.given_out().any(|g| within(r, g)) {
+        if !self.given_out().any(|g| g == r) {
             return None;
         }
         Some(u8::from(self.tier1.iter().any(|&t| within(r, t))))
@@ -564,16 +569,22 @@ impl Subject for FakeSubject {
         })
     }
 
-    fn place(&self, v: Value) -> Option<(Range, bool)> {
+    fn place(&self, v: Value) -> PlaceOf {
         let own = match v {
-            Value::Entity(e) => self.first_declaration(e).and_then(|d| d.name),
+            Value::Entity(e) => match self.first_declaration(e) {
+                Some(d) => d.name,
+                None => return PlaceOf::Nowhere,
+            },
             Value::Declaration(d) => self.declarations[d.0 as usize].name,
             Value::Reference(r) => self.references[r.0 as usize].extent,
             Value::Expression(x) => self.expressions[x.0 as usize].extent,
         };
         match own {
-            Some(r) => Some((r, true)),
-            None => self.nearest.iter().find(|(w, _)| *w == v).map(|&(_, r)| (r, false)),
+            Some(r) => PlaceOf::Own(r),
+            None => match self.nearest.iter().find(|(w, _)| *w == v) {
+                Some(&(_, r)) => PlaceOf::Nearest(r),
+                None => PlaceOf::Unnamed,
+            },
         }
     }
 
