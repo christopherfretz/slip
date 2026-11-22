@@ -83,8 +83,14 @@ TransformId = H("slip.transform.v0",
 ```
 
 `H` is the hash of `spec/model.md` §3. A run of Slip has one `TransformId`.
-Every result of the map phase carries it, and reduce must refuse to combine
-results that carry different ones.
+It is held by the run's transform request (`spec/edits.md` §3), whose
+content id is the **request id**. Every result of the map phase carries
+the request id, and reduce refuses to combine results that carry
+different ones: the refusal is by request id, so results of one
+transform under two requests (other ownership, other options of the
+command) are not combined either. A worker whose own compilation of the
+transform unit gives another `TransformId` than the request holds fails
+its jobs.
 
 The host accepts a transform unit only if the two headers it read under
 `<resource>/include/slip/` are byte for byte the ones this Slip was built
@@ -249,8 +255,13 @@ A run **completes** or **fails**.
    offending value denotes, if it denotes one. The same failure in many
    subject units is shown once with a count and one example unit.
 4. A subject unit whose run failed has not been examined. Slip must not
-   apply the edits of a Slip run in which a run failed unless told to;
-   that policy is `spec/exec.md`'s and reduce's.
+   apply the edits of a Slip run in which a run failed unless told to.
+   Such a Slip run is at best `verified_with_residue`
+   (`spec/edits.md` §8.5), which is written to the tree or to a patch
+   only under `--allow-errors`; without the option nothing is applied.
+   An `error` report (§7.4 rule 2) has the same effect and the same
+   option. The exit status is `spec/edits.md` §10.5's: 1 in both cases,
+   written or not.
 
 ## 3. The intrinsic layer (L0)
 
@@ -613,7 +624,7 @@ order of their first declarations.
      component is an identifier (the front end accepts `$` as an
      extension, and which code points an identifier may hold is a table
      the host does not carry): it refuses rather than guess, whether or
-     not the source could spell it ("Open questions" 10).
+     not the source could spell it ("Open questions" 6).
 2. `::` alone names the global namespace.
 3. Matching is by declaration, not by C++ name lookup. The name is walked
    from the global namespace. A component names every entity declared
@@ -787,8 +798,9 @@ consteval bool is_editable(range);
 5. `source_text_of(r)`: the bytes of `r`. Throws `invalid_handle` for a
    null range.
 6. `is_editable(r)`: true exactly when `r` is not null and its file is one
-   the Slip run may edit (the run's ownership, defined by the pipeline). It
-   says nothing about whether an edit there would be accepted by reduce.
+   the Slip run may edit: an **owned** file of the request's ownership
+   (`spec/edits.md` §2.1, path prefixes given to the command). It says
+   nothing about whether an edit there would be accepted by reduce.
 
 ### 6.7 Calls
 
@@ -895,6 +907,19 @@ kinds of piece:
    directly or through a chain of edits each drawing on the next. Edits
    on such a cycle are a conflict and are rejected. The host records the
    requests (§7.3 rule 3); it is reduce that rejects.
+
+   (c) **A nested edit must be carried.** An accepted edit that lies
+   properly inside the range of another accepted edit reaches the result
+   only through a copy: the outer edit copies a range that the inner one
+   lies properly inside (or copies a range whose edits do, and so on;
+   the exact relation is `spec/edits.md` §5.5, "effective"). An inner
+   edit that the outer edit does not carry would be accepted and change
+   nothing, since its bytes are replaced by the edit around it. That is
+   a disagreement between two requests, not an order of application:
+   both edits are rejected (`buried`, `spec/edits.md` §5.5). So
+   `replace(extent_of(call), text("g()"))` conflicts with a rename of an
+   argument of that call, and `replace(extent_of(call), cat("g(",
+   copy(argument), ")"))` does not.
 4. `spell(e)` throws `wrong_kind` if `e` is not an entity, and
    `unsupported` if `e` cannot be named by a qualified name without
    template arguments: a specialisation or a member of one, a member of a
@@ -951,10 +976,16 @@ recorded. Version 0 has two spellings.
    the Slip run (§7.5). A name there that denotes anything else is a
    verification failure of that observer, whether or not the unit that
    holds the name is declared changed. A spelled piece that no observer
-   could check is a failure of the Slip run's verification. The check is
-   made by the trusted base from the record; nothing the transform does
-   after `spell` affects it. (The normative text of the check belongs to
-   `spec/verify.md` and moves there when the two are reconciled.)
+   could check is a failure of the Slip run's verification (`unseen`,
+   `spec/verify.md` §10.3): the text landed in a skipped conditional
+   group, in an unused macro argument, or in a name that is resolved
+   only at instantiation, and so was written on the transform's word
+   alone. That is the conservative reading and it is the rule; what
+   would let such a piece be counted residue instead is an open question
+   of `spec/verify.md`. The check is made by the trusted base from the
+   record; nothing the transform does after `spell` affects it. The
+   normative text of the check is `spec/verify.md` §10; this rule states
+   what a transform's author may rely on.
 
 ### 7.3 `replace` and groups
 
@@ -978,13 +1009,30 @@ consteval void replace(range, code, edit_options = {});
    Two requests of one run for overlapping ranges are both recorded.
 4. `new_group()` returns a group with no member. `o.atomic`, if not the
    default, makes the edit a member of that group. Slip applies all
-   members of a group or none. A group is local to its run: version 0
-   cannot make edits from different subject units atomic.
+   members of a group or none. A group is local to its run: no
+   operation of version 0 makes edits from different subject units
+   atomic. The person running Slip can: a request that is `indivisible`
+   (`spec/edits.md` §3; `slip map --transform … --indivisible`) makes
+   every edit of the Slip run one group, applied everywhere or nowhere.
+   A run cannot ask for it and cannot observe it.
 5. `o.note` is shown beside the edit in reports. It does not affect
    whether two requests are the same edit. An empty note is no note.
 6. `edit_options` gains members over time. A transform must initialise it
    with designated initialisers; other forms are outside the stability
    promise.
+7. **A run is silent about what it does not request.** A subject unit
+   that reads a range another subject unit edits, and requested no edit
+   there, says nothing: version 0 has no operation that says "these
+   bytes must stay" (`keep`), "these bytes would have to change and
+   cannot" (`refuse`) or "this subject unit cannot tell" (`unresolved`).
+   Those stances, and the subjects and links that tie entities together
+   across subject units, are claimed by native transforms only
+   (`spec/edits.md` §4.2, §4.8). Reduce therefore accepts an edit that
+   one subject unit requested and others were silent about, and a
+   disagreement between them is found by verification, later and less
+   precisely than reduce would find it. What the API would have to
+   offer for a transform to say more is listed in `spec/edits.md`
+   "Open questions"; version 0 offers none of it.
 
 ### 7.4 Reports
 
@@ -1000,7 +1048,8 @@ consteval void report(range where, severity, std::string_view message);
 2. `note` is information. `review` marks a place a person should look at;
    the Slip run is still usable. `error` says the transform could not do
    its job in this subject unit: Slip must not apply the edits of a Slip
-   run that has an `error` report unless told to.
+   run that has an `error` report unless told to (`--allow-errors`,
+   §2.8 rule 4).
 3. The place of an `info` is: for a reference or an expression, its
    extent; for a declaration, its name; for an entity, the name of its
    first written declaration. If that is not a range of tier 0 or 1, the
@@ -1067,8 +1116,10 @@ consteval void expect_renamed(info entity, std::string_view new_identifier);
 ### 7.6 The run output
 
 This is what a run hands to the rest of Slip: the output of a completed
-run, or the record of a failed one (§2.8). The encoding in a shard is
-`spec/edits.md`'s; this section fixes the content.
+run, or the record of a failed one (§2.8). This section fixes the
+content. The encoding in a shard is `spec/edits.md` §4, by the mapping
+of its §4.8: an `Edit` is a `replace` claim there, and nothing of a run
+output is lost.
 
 ```
 RunResult := completed(RunOutput) | failed(RunFailure)
@@ -1096,7 +1147,7 @@ Edit :=
   file:    the file's identity (spec/model.md §6): path and content digest
   lo, hi:  byte offsets, lo < hi
   pieces:  list<Piece>
-  tier:    0 | 1                  §5.4
+  tiers:   set of 0, 1; not empty §5.4: the tiers at which the requests that are this edit were made
   notes:   list<text>             sorted, distinct
 
 Piece :=
@@ -1114,10 +1165,18 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
    identity is the set of its members. The output is a function of the
    set of requests that succeeded, not of their order or of a number the
    host assigned during the run; which requests succeed may depend on
-   their order only through §7.5 rule 3 and §7.7.
+   their order only through §7.5 rule 3 and §7.7. `tiers` and `notes`
+   are no part of an edit's identity: requests that are one edit join
+   them by union. One range can be reached at both tiers in one run (a
+   header included twice, with a name that is a macro in one inclusion
+   and a function in the other), so `tiers` is a set and not a number.
 2. An edit is in at most one group: groups of one run that share a member
    are one group (all or none is transitive). A group with one member is
-   not a group and is dropped; the edit stays.
+   not a group and is dropped; the edit stays. Across subject units
+   reduce does the same: two subject units that see one edit in
+   different groups (a header call whose second argument is edited only
+   where a macro is defined) have made one larger group
+   (`spec/edits.md` §5.5).
 3. `KeyId` values are in the key space of the pre-image
    (`spec/verify.md` §2).
 4. **Where a spelled piece lands** (for §7.2 rule 5) is not recorded by
@@ -1126,11 +1185,13 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
    copy piece is known only once the edits inside the copied range are
    decided. Whoever composes the copies (apply) therefore derives, for
    each spelled piece of each accepted edit, its byte range in the
-   post-image, and hands it with the piece's `KeyId` to verification. An
-   encoding that flattens the pieces to text before reduce must record,
-   for each spelled piece, its offset and length in that text and its
-   `KeyId`; the offsets are then valid only while no edit lands inside a
-   copied range, which rule 3 of §7.1 already makes a conflict there.
+   post-image, and hands it with the piece's `KeyId` to verification:
+   these are the obligations of `spec/verify.md` §10.1, which travel in
+   the overlay (`spec/edits.md` §7.1). The encoding of `spec/edits.md`
+   §4 keeps the pieces as pieces. An encoding that flattened them to
+   text before reduce would have to record, for each spelled piece, its
+   offset and length in that text and its `KeyId`, and the offsets
+   would be valid only while no edit lands inside a copied range.
 5. A failed run hands over nothing else: no edit, report or declaration
    it requested (§2.8 rule 1).
 6. Counters (`spec/model.md`'s `Counter`): `api.host_calls`,
@@ -1251,9 +1312,12 @@ stable `v0` unchanged.
 The design names three granularities: A, a built-in transformation driven
 by data; B, native selection with C++ actions; C, C++ throughout.
 
-1. **A is not in this API.** A native rename is a command of Slip, not a
-   function a transform calls. Its results and those of a transform meet
-   in reduce.
+1. **A is not in this API.** A native rename is a command of Slip
+   (`slip rename`, `spec/edits.md` §9), not a function a transform
+   calls. It and a transform write the same claims (`spec/edits.md` §4)
+   and go through the same reduce, apply and verification; one Slip run
+   has one request (§2.2), so the claims of the two are not combined in
+   one run.
 2. **B, in version 0, is the selectors.** `calls_to` and `references_to`
    are evaluated natively over indexes the host builds; the transform
    loops over the result in the same run. There is no callback
@@ -1409,43 +1473,18 @@ To be created by the work packages named; none exists yet.
    it as it finds it, and a transform cannot declare it. Open: whether a
    later version lets a transform declare created and removed units, or
    has verification derive the exemption.
-4. **Spelled pieces nobody parses.** §7.2 rule 5 fails the Slip run when
-   no observer could check a spelled piece (the text landed in a skipped
-   conditional group, an unused macro argument, a name resolved only at
-   instantiation). That is the conservative reading. Whether such a piece
-   should instead be a counted residue needs the preprocessing record to
-   say why the bytes were not parsed.
-5. **Stringised arguments.** A tier 1 edit inside an argument that the
+4. **Stringised arguments.** A tier 1 edit inside an argument that the
    macro also stringises (`assert`) changes a string literal in a unit the
    transform did not declare. Verification reports it. Whether a rename
    should declare such units, and how the host would know, waits for the
    preprocessing record.
-6. **Atomicity across subject units.** A rename is all or nothing over
-   the whole program; version 0 relies on verification to refuse a
-   partial one. A run-wide group needs an identity that every subject
-   unit can compute independently.
-7. **`severity::error` and failed runs** both say "do not apply". The
-   override and the exit status are `spec/exec.md`'s to define.
-8. **Ownership** (`is_editable`) is defined by the pipeline. The draft of
-   `spec/edits.md` defines it as path prefixes; §6.6 rule 6 should cite
-   that section once it is accepted.
-9. **A second entry per unit, chosen on the command line**, would let one
+5. **A second entry per unit, chosen on the command line**, would let one
    file hold several transforms. Kiln's sessions support it; not needed
    yet.
-10. **Identifiers outside the basic character set** in `lookup` and
-    `expect_renamed`: the rule "as the source encodes them" is untested.
-11. **A declaration with no place.** Version 0 refuses `expect_changed`
-    for an entity or a declaration (§7.5 rule 2), because nothing could
-    tie such a declaration to an accepted edit. It is lifted when
-    declarations have ranges (request KR3): the place is then the
-    declaration's extent.
-12. **Groups seen by several subject units.** A group's identity is its
-    member set (§7.6 rule 1). Two subject units that see one edit in
-    different groups (a header call whose second argument is edited only
-    where a macro is defined) disagree; whether reduce merges the groups
-    or rejects the site is `spec/edits.md`'s.
-13. **Observers that read an edited range and did not ask for the edit.**
-    A native rename says `keep` there; a transform says nothing, and the
-    disagreement is found by verification, later and less precisely.
-    Whether the host should record, for each file, that a run examined
-    it, so that reduce can count silent observers at a site.
+6. **Identifiers outside the basic character set** in `lookup` and
+   `expect_renamed`: the rule "as the source encodes them" is untested.
+7. **A declaration with no place.** Version 0 refuses `expect_changed`
+   for an entity or a declaration (§7.5 rule 2), because nothing could
+   tie such a declaration to an accepted edit. It is lifted when
+   declarations have ranges (request KR3): the place is then the
+   declaration's extent.

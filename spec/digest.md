@@ -313,7 +313,9 @@ Verification digests the post-image with the rules that undo the declared
 relocations, so that a relocated entity, every member of it, every type
 that mentions it and every signature that contains it get the keys they had
 before, and the two digests are compared for plain equality. Where the
-rules come from, and why this is sound, is `verify.md`.
+rules come from, and why this is sound, is `verify.md`. A walk under
+rules also counts how each rule was used, so that a run can check that no
+observer still has a renamed entity under its old name (`verify.md` §9).
 
 Two different entities of one translation unit with the same mapped `KeyId`
 are a **key collision**: every unit with that key is indeterminate (§10).
