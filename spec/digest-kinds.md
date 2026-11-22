@@ -1365,8 +1365,8 @@ written as:
 2. the rows of `ColdDeclData`;
 3. the row `decl_attrs` of `AttrArena` (§10.1) and the rows of `AnnotArena`
    (§10.5);
-4. for a template, a template parameter or a specialisation, the rows §9
-   gives for it.
+4. the `in` rows of `TemplateTables` whose map is keyed by `DeclId`
+   (§9.5).
 
 For a unit the entity is read as §2.3 says. A row encoded `keyed` writes
 nothing here.
@@ -2184,7 +2184,7 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `asm_label` | name | in | string? |  |
 | `alignment` | child | in | child? |  |
 | `deprecation` | value | in | string? |  |
-| `instantiated_from` | entity | in | ref | written when the pattern has a key; the pattern of a local entity is a local of another unit and is not written |
+| `instantiated_from` | entity | in | ref | by the rule of §9 for a pattern; no site in Kiln fills this map (`TemplateTables` `instantiated_from` is the one in use) |
 | `injection_point` | location | out | - |  |
 | `declarator_end` | location | out | - |  |
 | `builtin_id` | flag | demand | - | §11.6: the builtin is a derived unit keyed by its name under `Parent::builtin`; the id is Kiln's numbering and is not written |
@@ -3953,6 +3953,303 @@ declaration. ("Open questions" proposes the matching change to
 |---|---|---|---|---|
 | `pools` | bookkeeping | out | - |  |
 | `table` | bookkeeping | out | - | the intern table; not stored (`snap(skip)`) |
+
+## 9. Templates and specialisations
+
+A template is one unit. Its stream is its declaration's rows (§5.1); the
+`data` row of its kind brings in `TemplateInfo`, which writes the template
+head and then the pattern in place. The pattern (`TemplLink` kind
+`Pattern`) is not a unit. If it is a class its members are units as the
+members of any class are, and their parent is the template's key.
+
+A template parameter is written by `decl` inside its head: its rows, with
+no ordinal. A reference to it is `Ref::template_param` with the depth and
+index its `TemplateParmInfo` gives; its name is not written (`DeclNode`
+`name` is `keyed`, and a parameter has no key).
+
+The **template head** of a discriminator (§3.3) is the rows of
+`TemplateParamList` with, for each parameter, the rows of `DeclNode` and
+`TemplateParmInfo` and nothing else: default template arguments are not
+part of a template's identity.
+
+Which specialisations are units follows from `SpecKind`, read from the
+`SpecInfo` or `MemberSpecInfo` the declaration's `TemplLink` indexes:
+
+| SpecKind | The specialisation or member is |
+|---|---|
+| `Undeclared` | not a unit: it was named and nothing else is known of it. A reference writes its key as for any entity |
+| `ImplicitInstantiation` | a derived unit (digest §2.2) |
+| `ExplicitSpecialization` | a declared unit |
+| `ExplicitInstantiationDeclaration`, `ExplicitInstantiationDefinition` | a declared unit: Kiln has no declaration for an explicit instantiation, only this kind on the specialisation it names |
+
+A member whose own kind is `ImplicitInstantiation` is derived even when
+its class was explicitly instantiated; that the class's explicit
+instantiation covers it is a fact of the class's unit (`SpecInfo` `kind`).
+
+A `ref` to a pattern that has no key (a local declaration of the
+template's unit) is written as `Ref::none`: such a pattern cannot be named
+from another unit, and the instantiated declaration's own rows say what it
+is.
+
+### 9.1 Links
+
+### `kiln_ast::decl::TemplLinkKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Pattern` | flag | in | tag 1 |  |
+| `Specialization` | flag | in | tag 2 |  |
+| `MemberOfSpecialization` | flag | in | tag 3 |  |
+| `DependentFriend` | flag | unsupported | unbuilt | no construction site found in Kiln |
+| `PartialSpecialization` | flag | in | tag 5 |  |
+
+### `kiln_ast::decl::TemplLink`
+
+`kind=struct; pin=schema; selector=kiln_ast::decl::TemplLinkKind`
+
+The word is 0 for a declaration that is neither templated nor a
+specialisation. Otherwise bits 29-31 are the kind and bits 0-28 an index.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0-kind` | flag | in | enum TemplLinkKind? | absent when the word is 0 |
+| `Pattern.0-index` | bookkeeping | out | - | index into `TemplateTables` `infos`: the template whose pattern this is, in whose unit the declaration is being written |
+| `Specialization.0-index` | entity | in | record SpecInfo | index into `TemplateTables` `specs` |
+| `MemberOfSpecialization.0-index` | entity | in | record MemberSpecInfo | index into `TemplateTables` `member_specs` |
+| `DependentFriend.0-index` | entity | unsupported | unbuilt | no construction site found in Kiln |
+| `PartialSpecialization.0-index` | entity | in | record PartialSpecInfo | index into `TemplateTables` `partials` |
+
+### 9.2 Templates and their parameters
+
+### `kiln_ast::templates::TemplateInfo`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `decl` | bookkeeping | out | - | the template itself |
+| `params` | entity | in | record TemplateParamList | the head; also in the key (§3.3) |
+| `pattern` | entity | in | decl? | the templated declaration, written whole |
+| `constraint` | child | in | child? | a concept's constraint-expression |
+
+### `kiln_ast::templates::TemplateParamList`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `template_loc` | location | out | - |  |
+| `l_angle` | location | out | - |  |
+| `r_angle` | location | out | - |  |
+| `depth` | value | in | uv |  |
+| `params` | entity | in | decl* | the parameters, in order |
+| `requires` | child | in | child? | the requires-clause after the head |
+
+### `kiln_ast::templates::TemplateParmInfo`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `depth` | value | in | uv |  |
+| `index` | value | in | uv |  |
+| `pack` | flag | in | bit |  |
+| `typename_kw` | written | out | - | `typename` or `class`: spelling |
+| `constraint` | child | in | child? | a type parameter's type-constraint |
+| `params` | entity | in | record TemplateParamList? | a template template parameter's own head |
+| `ttp_kind` | flag | in | enum TtpKind |  |
+
+### `kiln_ast::templates::TtpKind`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Type` | flag | in | tag 1 |  |
+| `Variable` | flag | in | tag 2 |  |
+| `Concept` | flag | in | tag 3 |  |
+
+### 9.3 Requires-expressions
+
+A `RequiresExpr` (§7) writes the rows of its `RequiresData`: the
+parameters by `decl`, each with the ordinal §2.4 gives a parameter, then
+the requirements.
+
+### `kiln_ast::templates::RequiresData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `body` | bookkeeping | out | - | the `RequiresExprBody` declaration: a scope and nothing else |
+| `params` | entity | in | decl* |  |
+| `first` | child | in | enum Requirement* | the `len` entries of `TemplateTables` `requirements` from this index |
+| `len` | bookkeeping | out | - | the count `first` writes |
+
+### `kiln_ast::templates::Requirement`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Simple` | child | in | tag 1 |  |
+| `Simple.0` | child | in | child |  |
+| `Type` | child | in | tag 2 |  |
+| `Type.0` | type | in | type |  |
+| `Type.1` | location | out | - |  |
+| `Compound` | child | in | tag 3 |  |
+| `Compound.expr` | child | in | child |  |
+| `Compound.noexcept-present` | flag | in | bool | `noexcept` was written |
+| `Compound.noexcept-position` | location | out | - |  |
+| `Compound.constraint` | child | in | child? | the return-type-requirement's constraint |
+| `Nested` | child | in | tag 4 |  |
+| `Nested.0` | child | in | child |  |
+
+### 9.4 Specialisations
+
+### `kiln_ast::templates::SpecKind`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Undeclared` | flag | out | - | a specialisation of this kind has no unit and so no stream (table above) |
+| `ImplicitInstantiation` | flag | in | tag 2 |  |
+| `ExplicitSpecialization` | flag | in | tag 3 |  |
+| `ExplicitInstantiationDeclaration` | flag | in | tag 4 |  |
+| `ExplicitInstantiationDefinition` | flag | in | tag 5 |  |
+
+### `kiln_ast::templates::SpecInfo`
+
+`kind=struct; pin=schema`
+
+`from` is the template itself until Kiln instantiates the definition, and
+then the pattern chosen: the primary template's pattern or a partial
+specialisation. It is written as the `Ref` of the template or of the
+partial specialisation, so a specialisation not yet instantiated and one
+instantiated from the primary template write the same.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `template` | entity | in | keyed | the primary template: the key's parent |
+| `args` | value | in | keyed | the discriminator, in canonical form (`TypeContext::canonical_args`); the sugar is not written |
+| `kind` | flag | in | enum SpecKind |  |
+| `from` | entity | in | ref | rule above (digest §8) |
+| `from_args` | value | in | enum ArgView*? | the arguments deduced for the partial specialisation `from` |
+| `point_of_instantiation` | location | out | - |  |
+| `print_args` | written | out | - | the arguments names print with: `args` without trailing defaults; read by printing only |
+| `defaulted` | flag | in | uv | bit i: argument i came from, or equals, its parameter's default; debug information reads it |
+
+### `kiln_ast::templates::MemberSpecInfo`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `instantiated_from` | entity | in | ref | the member of the pattern |
+| `kind` | flag | in | enum SpecKind |  |
+| `point_of_instantiation` | location | out | - |  |
+
+### `kiln_ast::templates::PartialSpecInfo`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `partial` | bookkeeping | out | - | the partial specialisation itself |
+| `template` | entity | in | keyed | the primary template: the key's parent |
+| `params` | entity | in | record TemplateParamList | the head; also in the key (§3.3) |
+| `args` | written | out | - | the argument pattern as written; `canonical` carries it |
+| `canonical` | value | in | keyed | the argument pattern: in the discriminator after the head |
+| `has_pack` | bookkeeping | out | - | computed from `params` |
+| `shapes` | bookkeeping | out | - | index into `TemplateTables` `shapes`: a prefilter computed from `canonical` |
+| `shapes_len` | bookkeeping | out | - |  |
+
+### `kiln_ast::templates::ArgShape`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Any` | bookkeeping | out | - | a prefilter for matching partial specialisations, computed from `PartialSpecInfo` `canonical` when the partial is declared |
+| `Type` | bookkeeping | out | - | a prefilter for matching partial specialisations, computed from `PartialSpecInfo` `canonical` when the partial is declared |
+| `Type.kind` | bookkeeping | out | - |  |
+| `Type.quals` | bookkeeping | out | - |  |
+| `Exact` | bookkeeping | out | - | a prefilter for matching partial specialisations, computed from `PartialSpecInfo` `canonical` when the partial is declared |
+| `Exact.0` | bookkeeping | out | - |  |
+
+### 9.5 The template tables
+
+The `in` rows whose map is keyed by `DeclId` close every declaration's
+stream (§5.1), and those keyed by `ExprId` close every expression's (§2.1
+step 3), each in the empty form when the map has no entry.
+
+A parameter's default template argument is the entry of `defaults` for the
+parameter itself, or for the parameter `inherited_defaults` names; over
+the template's redeclarations it is taken from the declaration that gives
+it (§2.3).
+
+The rows from `explicit_member_insts` to `late_explicit_set` say where
+among the translation unit's definitions code generation emits an
+instantiated definition. None is written: the position changes the order
+of the object file and of nothing the language defines, since the dynamic
+initialisation of an instantiated variable is unordered
+([basic.start.dynamic]/1), and the order unit (digest §2.1) therefore
+lists no instantiation. The rows that record what was instantiated, and in
+what order, are `demand`.
+
+### `kiln_ast::templates::TemplateTables`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `param_lists` | bookkeeping | out | - | arena: reached through `TemplateParamListId` |
+| `infos` | bookkeeping | out | - | arena |
+| `parms` | bookkeeping | out | - | arena |
+| `requirements` | bookkeeping | out | - | arena |
+| `requires` | bookkeeping | out | - | arena |
+| `defaults` | value | in | enum ArgView? | by parameter; rule above |
+| `inherited_defaults` | bookkeeping | out | - | which earlier parameter owns the default `defaults` writes |
+| `trailing_requires` | child | in | child? | by function; also in the key as a profile (§3.3) |
+| `expr_targs` | value | in | enum ArgView*? | the explicit template arguments of a dependent or unresolved name |
+| `expr_nns` | name | in | enum Nns? | the qualifier of a dependent or unresolved name |
+| `expr_begin` | location | out | - |  |
+| `size_of_pack_origin` | entity | in | ref | the pack a substituted `sizeof...` named: the literal still mangles by it |
+| `size_of_pack_partial` | value | in | enum ArgView*? | the partly substituted arguments of a `sizeof...`: mangled |
+| `pack_index_origin` | flag | in | bool | the expression is the selected element of a substituted `pack...[i]`; the pattern's expression it maps to belongs to the template's unit |
+| `member_op_loc` | location | out | - |  |
+| `pseudo_dtor_name` | name | in | sym? | the identifier after `~` that named no type at the definition |
+| `pseudo_dtor_first-type` | type | in | type? | the first type-name of `p->S::F::~Q()` |
+| `pseudo_dtor_first-position` | location | out | - |  |
+| `template_kw` | written | out | - | the `template` keyword after a qualifier: read by the printer only |
+| `ttp_owner` | entity | in | ref | by parameter: the template whose head declares a concept template parameter, its mangling parent |
+| `member_like_friend` | entity | in | ref | by friend function template: the class specialisation that is its mangling scope |
+| `pattern_next` | bookkeeping | out | - | state of the builder |
+| `dependent_depth` | bookkeeping | out | - | state of the builder |
+| `specs` | bookkeeping | out | - | arena: reached through `TemplLink` |
+| `member_specs` | bookkeeping | out | - | arena: reached through `TemplLink` |
+| `explicit_member_insts` | bookkeeping | out | - | where an explicitly instantiated member is emitted; that it is explicitly instantiated is its `MemberSpecInfo` `kind` or its class's `SpecInfo` `kind` |
+| `end_of_tu_defs` | bookkeeping | demand | - | §11: the definitions instantiated at the end of the translation unit, in instantiation order |
+| `ref_var_insts` | bookkeeping | demand | - | §11: the variables instantiated at a reference, with the declaration each is emitted beside |
+| `moved_class_insts` | bookkeeping | out | - | the classes whose members are emitted at an explicit instantiation definition that follows a declaration; both are `SpecInfo` `kind`, of which the last is written |
+| `written_args` | written | out | - | how many arguments were written before defaults filled the rest: read by GCC-style display names only |
+| `args_as_written` | written | out | - | the arguments of an explicit specialisation or instantiation as written: read by the type printer only; `SpecInfo` `args` is the fact |
+| `late_explicit_insts` | bookkeeping | out | - | functions explicitly instantiated before their template was defined: emitted at the end of the translation unit |
+| `late_explicit_set` | bookkeeping | out | - | the same functions as a set |
+| `preferred_named` | written | out | - | which specialisations print by their template's `preferred_name`: the attribute is written with the template, and names are not digested |
+| `specializations` | bookkeeping | demand | - | §11: the lookup table from template and canonical arguments to specialisation; each specialisation is a unit or nothing by the rule of this section |
+| `spec_order` | bookkeeping | demand | - | §11: each template's specialisations in creation order |
+| `instantiated_from` | entity | in | ref | by declaration: the pattern of an instantiated declaration that has no `TemplLink` |
+| `member_map` | bookkeeping | demand | - | §11: lookup table from specialisation and pattern member to instantiated member; `MemberSpecInfo` `instantiated_from` says the same from the member |
+| `partials` | bookkeeping | out | - | arena: reached through `TemplLink` |
+| `shapes` | bookkeeping | out | - | arena |
+| `partials_of` | bookkeeping | out | - | each template's partial specialisations: each is a unit whose key names the template |
+| `partial_map` | bookkeeping | out | - | lookup table for redeclarations of a partial specialisation |
+| `param_objects` | bookkeeping | out | - | the inverse of `param_object_values` |
+| `param_object_values` | value | in | value? | by `TemplateParamObject`: the object's value, which is its unit's whole stream |
 
 ## Tests
 
