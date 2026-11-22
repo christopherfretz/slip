@@ -1040,6 +1040,50 @@ mod tests {
         assert_eq!(kiln.len(), KINDS.len(), "a row names no Kiln constant");
     }
 
+    // §10.1 `AttrNode` `DIAGNOSE_IF.flags-*`: the bits are Kiln's private
+    // constants (`kiln_sema/src/diagnose_if.rs`), read here by text so a
+    // renumbering at the next pin fails this test.
+    #[test]
+    fn diagnose_if_bits_are_kilns_constants() {
+        let src = include_str!("../../../kiln/crates/kiln_sema/src/diagnose_if.rs");
+        let kiln = |name: &str| -> u8 {
+            let head = format!("pub(crate) const {name}: u8 = ");
+            let mut found = src.lines().filter_map(|l| l.trim().strip_prefix(head.as_str()));
+            let v = found.next().unwrap_or_else(|| panic!("{name} not found"));
+            assert!(found.next().is_none(), "{name} defined twice");
+            v.trim_end_matches(';').parse().expect("a u8")
+        };
+        assert_eq!(kiln("DIAGNOSE_IF_ERROR"), DIAGNOSE_IF_ERROR);
+        assert_eq!(kiln("DIAGNOSE_IF_ARG_DEPENDENT"), DIAGNOSE_IF_ARG_DEPENDENT);
+        assert_eq!(kiln("DIAGNOSE_IF_GROUP"), DIAGNOSE_IF_GROUP);
+    }
+
+    // §10.1 `AttrNode` `flags-inherited`: bit 1, as the doc comment of
+    // Kiln's `AttrNode::flags` says, and as its one setting site (the
+    // inherited asm label, `kiln_sema/src/decl.rs`) sets it.
+    #[test]
+    fn inherited_bit_is_kilns() {
+        let attr = include_str!("../../../kiln/crates/kiln_ast/src/attr.rs");
+        let doc = attr
+            .split_once("/// Per-kind flags (")
+            .and_then(|(_, rest)| rest.split_once("pub flags: u8"))
+            .map(|(doc, _)| doc.replace("///", " "))
+            .expect("the doc comment of AttrNode::flags");
+        let bit = doc
+            .split_once(": inherited")
+            .and_then(|(before, _)| before.rsplit_once("bit "))
+            .and_then(|(_, n)| n.trim().parse::<u32>().ok())
+            .expect("a `bit N: inherited` clause");
+        assert_eq!(1u8 << bit, INHERITED, "the doc comment");
+        let decl = include_str!("../../../kiln/crates/kiln_sema/src/decl.rs");
+        let sites: Vec<usize> = decl.match_indices("node.flags |= ").map(|(i, _)| i).collect();
+        let site = decl[..sites[0]].rfind("AttrKind::ASM_LABEL").map(|i| &decl[i..]);
+        assert_eq!(sites.len(), 1, "one setting site of an attribute's flags in decl.rs");
+        let set = site.and_then(|t| t.split_once("node.flags |= ")).map(|(_, r)| r);
+        let set = set.and_then(|r| r.split_once(';')).map(|(v, _)| v.trim());
+        assert_eq!(set, Some(INHERITED.to_string().as_str()), "the asm-label site");
+    }
+
     // §10.1 `AttrNode`: the per-kind rows written here are those of the
     // generated table, kind by kind in table order, with its decisions;
     // the rows without a kind are the ones `attr_node` writes itself.
