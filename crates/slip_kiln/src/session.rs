@@ -23,7 +23,9 @@ use kiln_driver::session::{SessionFrontEnd, SessionRefused, with_eval_session};
 use kiln_driver::{Io, SharedWriter};
 use kiln_oven::{HostCalls, HostError, HostOut};
 use kiln_sema::lookup::LookupKind;
-use kiln_sema::session::{CancelToken, EntryError as KilnEntryError, RunBudget, RunError, RunValue};
+use kiln_sema::session::{
+    CancelToken, EntryError as KilnEntryError, RunBudget, RunError, RunValue,
+};
 use kiln_sema::stack_guard::StackGuard;
 use kiln_source::{FileOrigin, SourceManager};
 use slip_model::Digest;
@@ -116,7 +118,8 @@ impl TransformCommand {
             }
             checked.push((opt, value));
         }
-        for (what, path) in [("the transform file", &file), ("the resource directory", &resource_include)]
+        for (what, path) in
+            [("the transform file", &file), ("the resource directory", &resource_include)]
         {
             let word = path.to_string_lossy().into_owned();
             let refused = |reason| OptionRefused { word: word.clone(), reason };
@@ -240,7 +243,13 @@ pub trait Handler: Send {
     ///
     /// Whatever the handler decides: the run then fails with
     /// [`RunFailure::Host`].
-    fn call(&mut self, op: u32, ints: &[u64], bytes: &[u8], out: &mut dyn Out) -> Result<u64, String>;
+    fn call(
+        &mut self,
+        op: u32,
+        ints: &[u64],
+        bytes: &[u8],
+        out: &mut dyn Out,
+    ) -> Result<u64, String>;
 }
 
 /// A function of the transform unit that may be run.
@@ -270,7 +279,9 @@ pub enum RunFailure {
     /// The handler's error, or Kiln's note on a host call whose arguments
     /// failed its checks.
     Host(String),
-    Uncaught { type_name: String },
+    Uncaught {
+        type_name: String,
+    },
 }
 
 /// What one run produced.
@@ -408,10 +419,8 @@ fn read_files(sm: &SourceManager) -> Vec<ReadFile> {
                 None => continue,
             },
         };
-        let file = ReadFile {
-            path: sm.file_name(id).as_bytes().to_vec(),
-            digest: content_digest(&bytes),
-        };
+        let file =
+            ReadFile { path: sm.file_name(id).as_bytes().to_vec(), digest: content_digest(&bytes) };
         if !files.contains(&file) {
             files.push(file);
         }
@@ -423,8 +432,13 @@ fn read_files(sm: &SourceManager) -> Vec<ReadFile> {
 trait Engine: Send {
     fn declares(&self, name: &str) -> bool;
     fn entry(&self, name: &str) -> Result<Entry, EntryError>;
-    fn run(&mut self, entry: Entry, handler: &mut dyn Handler, budget: Budget, cancel: &CancelToken)
-    -> RunReport;
+    fn run(
+        &mut self,
+        entry: Entry,
+        handler: &mut dyn Handler,
+        budget: Budget,
+        cancel: &CancelToken,
+    ) -> RunReport;
 }
 
 impl Engine for SessionFrontEnd<'_, '_> {
@@ -449,7 +463,6 @@ impl Engine for SessionFrontEnd<'_, '_> {
                 let mine = match e {
                     KilnEntryError::NotFound { .. } => EntryError::Missing,
                     KilnEntryError::Overloaded { .. } => EntryError::Overloaded,
-                    KilnEntryError::NotAFunction => EntryError::NotFunction,
                     KilnEntryError::NotConsteval => EntryError::NotConsteval,
                     KilnEntryError::HasParameters => EntryError::Parameters,
                     KilnEntryError::WrongReturnType => EntryError::Type,
@@ -459,7 +472,8 @@ impl Engine for SessionFrontEnd<'_, '_> {
                         Some(false) => EntryError::Type,
                         _ => EntryError::Undefined,
                     },
-                    // A reason Kiln adds (`#[non_exhaustive]`): not an entry.
+                    // `NotAFunction`, and any reason Kiln adds
+                    // (`#[non_exhaustive]`): not an entry.
                     _ => EntryError::NotFunction,
                 };
                 return Err(mine);
