@@ -18,7 +18,7 @@ normative. Where the two disagree, the spec wins and the design is corrected.
 | [exec.md](exec.md) | Phases, workers, jobserver, memory admission, the store, failure handling, exit codes | `slip_exec`, `slip_cli` | draft |
 | [harness.md](harness.md) | `cargo xtask`: lints, test kinds, golden files, gating tiers, performance records | `xtask` | draft |
 | [digest.md](digest.md) | The semantic digest: units, keys, streams, the `digests` section, completeness obligations | `slip_digest`, `slip_model` | draft |
-| digest-kinds.md | The digest's tables: every Kiln AST kind and field, its class and decision, its stream encoding | `slip_digest` | not written (M1) |
+| [digest-kinds.md](digest-kinds.md) | The digest's tables: every Kiln AST kind and field, its class and decision, its stream encoding | `slip_digest` | draft |
 | verify.md | Comparison under declared changes; localisation | `slip_verify` | not written (M1) |
 | pitfalls.md | The catalogue of semantic hazards; one test per row | tests | not written (M1) |
 | reduce.md | Reduce as a function from shards to an edit set and report | `slip_reduce` | not written (M2) |
