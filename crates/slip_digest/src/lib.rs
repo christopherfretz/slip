@@ -65,15 +65,15 @@
 //! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each: pending (`Area::DeclData`) |
 //! | `decl_class::{typedef_data, enum_data, enumerator_data, record_data, field_data}(w, s, d)` | one `record T` of §5.5 each: pending (`Area::DeclData`) |
 //! | `decl_scope::{friend_target, namespace_data, static_assert_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.6 each, and the rows of `ColdDeclData` (§5.7): pending (`Area::DeclData`) |
-//! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1): pending (`Area::Templ`) |
-//! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5): pending (`Area::Templ`) |
+//! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1), which brings in `SpecInfo`, `MemberSpecInfo` or `PartialSpecInfo` (§9.4) |
+//! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5), each in its empty form when absent |
 //! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4): pending (`Area::Local`) |
 //! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1): pending (`Area::Stmt`) |
 //! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
 //! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
 //! | `other::module_rows(w, s, d)` | pending (`Area::Other`) |
-//! | `templ::decl_maps(w, s, d)` | `TemplateTables.defaults` written; the other rows keyed by `DeclId` pending (`Area::Templ`) |
-//! | `templ::param_object(w, s, d)` | pending (`Area::Templ`) |
+//! | `templ::decl_maps(w, s, d)` | the `in` rows of `TemplateTables` keyed by `DeclId` (§9.5), each in its empty form when absent |
+//! | `templ::param_object(w, s, d)` | the value of a `TemplateParamObject` (`param_object_values`), at its `data` position |
 //!
 //! A key is computed with the unit's state put aside (`Walk::in_key`):
 //! an area must not write a local ordinal from inside one (`write_ref`
