@@ -23,7 +23,7 @@ use crate::host::{
     ALLOWED_EXTENT, ALLOWED_NAME_RANGE, ALLOWED_RENAME_RULE, ALLOWED_UNIT_KEYS, Answer, Host,
     Record, Step, Stop, check_identifier, refuse,
 };
-use crate::output::{Changed, Edit, Piece, Place, Report, Severity};
+use crate::output::{Changed, Edit, Piece, Place, Report, Severity, Tiers};
 use crate::subject::{Entity, File, PlaceOf, Range, Reference, Value};
 use crate::wire::{self, Errc, Operation};
 
@@ -147,6 +147,11 @@ impl Host<'_> {
             wire::OP_CODE_SPELL => self.spell(ints[0])?,
             wire::OP_CODE_COPY => {
                 let r = self.range_arg(ints[0], ints[1])?;
+                // §7.1 rule 2: the bytes of an empty range are none, so its
+                // copy is the empty code, as `text("")` is: no piece.
+                if r.lo == r.hi {
+                    return Ok(Answer::Word(0));
+                }
                 self.one_piece(HeldPiece::Copy(r))?
             }
             wire::OP_CODE_CAT => match self.cat(ints)? {
@@ -309,12 +314,17 @@ impl Host<'_> {
         }
     }
 
-    /// `Subject::tier` of `r`: 0 or 1, `None` when `r` is not exactly a
-    /// range a query gives out; any other answer is a host failure.
-    fn tier(&self, r: Range) -> Step<Option<u8>> {
-        match self.subject.tier(r) {
-            t @ (None | Some(0 | 1)) => Ok(t),
-            Some(t) => Err(Stop::Internal(format!("Subject::tier gave {t}; a tier is 0 or 1"))),
+    /// `Subject::tiers` of `r`: a set that is not empty, `None` when `r` is
+    /// not exactly a range a query gives out; the empty set is a host
+    /// failure.
+    fn tiers(&self, r: Range) -> Step<Option<Tiers>> {
+        match self.subject.tiers(r) {
+            None => Ok(None),
+            Some(reached) => Tiers::from_reached(reached).map(Some).ok_or_else(|| {
+                Stop::Internal(
+                    "Subject::tiers gave the empty set; a range given out has a tier".to_owned(),
+                )
+            }),
         }
     }
 
@@ -438,7 +448,7 @@ impl Host<'_> {
         if !self.subject.owned(r.file) {
             return refuse(Errc::NotEditable, "a range in a file this run may not edit");
         }
-        let Some(tier) = self.tier(r)? else {
+        let Some(tiers) = self.tiers(r)? else {
             return refuse(
                 Errc::InvalidHandle,
                 "a range that is not one name_range_of or extent_of returns in the subject unit \
@@ -453,9 +463,9 @@ impl Host<'_> {
             [HeldPiece::Spelled { entity, key, qualified, identifier_at }] => {
                 match self.sibling(r, *entity)? {
                     Some(name) => {
-                        let Some(t) = self.tier(name)? else {
+                        let Some(t) = self.tiers(name)? else {
                             return Err(Stop::Internal(
-                                "Subject::tier gave None for a name range it gave out".to_owned(),
+                                "Subject::tiers gave None for a name range it gave out".to_owned(),
                             ));
                         };
                         let text = qualified.get(*identifier_at..).unwrap_or_default();
@@ -473,14 +483,14 @@ impl Host<'_> {
         };
         self.pieces_fit(count, bytes)?;
         self.text_fits(note.len() as u64)?;
-        let (range, tier, pieces) = match narrowed {
+        let (range, tiers, pieces) = match narrowed {
             Some((name, t, key, text)) => {
                 (name, t, vec![Piece::Spelled { key, text: text.to_vec() }])
             }
-            None => (r, tier, code.pieces.iter().map(|p| self.piece(p)).collect()),
+            None => (r, tiers, code.pieces.iter().map(|p| self.piece(p)).collect()),
         };
         let notes = if note.is_empty() { Vec::new() } else { vec![note.to_vec()] };
-        let edit = Edit { place: self.place_of(range), pieces, tier, notes };
+        let edit = Edit { place: self.place_of(range), pieces, tiers, notes };
         Ok(Effect::Edit { pieces: count, bytes, edit, group })
     }
 

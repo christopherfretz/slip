@@ -41,15 +41,82 @@ pub enum Piece {
     },
 }
 
+/// The tiers at which the requests that are one edit were made (§7.6
+/// `Edit.tiers`, §5.4): a set of 0 and 1 that is never empty. One range
+/// can be reached at both tiers in one run (a header included twice,
+/// with a name that is a macro in one inclusion and a function in the
+/// other), so it is a set and not a number. Bit `t` of the private byte
+/// is tier `t`, as in a claim's `tiers` (`spec/edits.md` §4.2).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Tiers(u8);
+
+impl Tiers {
+    /// Tier 0 alone.
+    pub const ZERO: Tiers = Tiers(0b01);
+    /// Tier 1 alone.
+    pub const ONE: Tiers = Tiers(0b10);
+    /// Tiers 0 and 1.
+    pub const BOTH: Tiers = Tiers(0b11);
+
+    /// The set of the tiers `t` with `reached[t]`; `None` when it would
+    /// be empty.
+    pub const fn from_reached(reached: [bool; 2]) -> Option<Tiers> {
+        match reached {
+            [false, false] => None,
+            [true, false] => Some(Tiers::ZERO),
+            [false, true] => Some(Tiers::ONE),
+            [true, true] => Some(Tiers::BOTH),
+        }
+    }
+
+    /// Bit `t` set for tier `t`; never 0, never above 3.
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    pub const fn contains(self, tier: u8) -> bool {
+        tier < 2 && self.0 & (1 << tier) != 0
+    }
+
+    #[must_use]
+    pub const fn union(self, other: Tiers) -> Tiers {
+        Tiers(self.0 | other.0)
+    }
+
+    /// The tiers in ascending order.
+    pub fn iter(self) -> impl Iterator<Item = u8> {
+        (0..2u8).filter(move |&t| self.contains(t))
+    }
+}
+
+/// `0`, `1` or `0,1`, the form `RunOutput::render` writes.
+impl fmt::Display for Tiers {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, t) in self.iter().enumerate() {
+            if i > 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{t}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Tiers {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Tiers({self})")
+    }
+}
+
 /// One requested replacement (§7.6 `Edit`). Its identity is its place and
-/// its pieces; the notes and the tier are not part of it.
+/// its pieces; the notes and the tiers are not part of it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Edit {
     /// `lo < hi`.
     pub place: Place,
     pub pieces: Vec<Piece>,
-    /// 0 or 1 (§5.4).
-    pub tier: u8,
+    /// The tiers of the requests that are this edit (§7.6, §5.4).
+    pub tiers: Tiers,
     /// Sorted, distinct (§7.3 rule 5).
     pub notes: Vec<Vec<u8>>,
 }
@@ -129,8 +196,8 @@ impl RunOutput {
 
     /// The canonical form of §7.6: pieces normalised (adjacent literals
     /// joined, empty literals dropped, §7.1 rule 6); edits sorted by
-    /// (place, pieces) and identical ones joined (notes unioned, the
-    /// higher tier kept); groups rewritten to the joined indices, groups
+    /// (place, pieces) and identical ones joined (notes and tiers
+    /// unioned, §7.6 rule 1); groups rewritten to the joined indices, groups
     /// that share a member merged, groups of fewer than two members
     /// dropped; reports, declared changes and rules sorted and
     /// deduplicated; counters sorted by name.
@@ -160,7 +227,7 @@ impl RunOutput {
             match joined.last_mut() {
                 Some(last) if last.place == edit.place && last.pieces == edit.pieces => {
                     last.notes.extend(edit.notes);
-                    last.tier = last.tier.max(edit.tier);
+                    last.tiers = last.tiers.union(edit.tiers);
                 }
                 _ => joined.push(edit),
             }
@@ -230,7 +297,7 @@ impl RunOutput {
     ///
     /// ```text
     /// transform <digest>
-    /// edit <i> <place> tier <t> = <piece> ... [note "<text>"] ...
+    /// edit <i> <place> tiers <0 | 1 | 0,1> = <piece> ... [note "<text>"] ...
     /// group <i> <i> ...
     /// report <place | -> <note | review | error> "<message>" [attached]
     /// changed <key> <place> "<reason>"
@@ -251,7 +318,7 @@ impl RunOutput {
     pub fn render(&self, f: &mut dyn fmt::Write) -> fmt::Result {
         writeln!(f, "transform {}", self.transform)?;
         for (i, e) in self.edits.iter().enumerate() {
-            write!(f, "edit {i} {} tier {} =", Rendered::Place(&e.place), e.tier)?;
+            write!(f, "edit {i} {} tiers {} =", Rendered::Place(&e.place), e.tiers)?;
             for p in &e.pieces {
                 match p {
                     Piece::Literal(b) => write!(f, " {}", Rendered::Quoted(b))?,

@@ -17,7 +17,7 @@ use slip_script::fake::{
     FakeCall, FakeDeclaration, FakeEntity, FakeExpression, FakeOut, FakeReference, FakeSubject,
 };
 use slip_script::host::{Host, KEYWORDS, Limits, check_identifier, parse_qualified_name};
-use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity};
+use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity, Tiers};
 use slip_script::subject::{
     Declaration, Entity, Expression, File, Range, Reference, Subject, Value,
 };
@@ -1167,7 +1167,7 @@ fn edit(path: &str, lo: u32, hi: u32, pieces: Vec<Piece>, notes: &[&str]) -> Edi
     Edit {
         place: place(path, lo, hi),
         pieces,
-        tier: 0,
+        tiers: Tiers::ZERO,
         notes: notes.iter().map(|n| n.as_bytes().to_vec()).collect(),
     }
 }
@@ -1200,7 +1200,7 @@ fn raw() -> RunOutput {
         edit("a", 1, 3, vec![Piece::Spelled { key: Digest([1; 32]), text: b"::f".to_vec() }], &[]), // 6
         edit("c", 0, 1, vec![], &[]), // 7
     ];
-    out.edits[2].tier = 1;
+    out.edits[2].tiers = Tiers::ONE;
     out.groups = vec![
         vec![0, 2],    // one edit twice: a group of one
         vec![],        // a group never used
@@ -1274,7 +1274,7 @@ fn s7_6_canonical_form() {
     );
     assert_eq!(c.edits[0].notes, vec![b"z".to_vec()]);
     assert_eq!(c.edits[4].notes, vec![b"n1".to_vec(), b"n2".to_vec()]);
-    assert_eq!(c.edits[4].tier, 1, "joined edits keep the higher tier");
+    assert_eq!(c.edits[4].tiers, Tiers::BOTH, "joined edits union their tiers (§7.6 rule 1)");
     // raw 1 -> 3, raw 3/4 -> 0, raw 5 -> 1: one group {0, 1, 3}.
     assert_eq!(c.groups, vec![vec![0, 1, 3]]);
     assert_eq!(c.reports.len(), 4);
@@ -1595,8 +1595,8 @@ impl Subject for Liar<'_> {
     fn unresolved_named(&self, identifier: &[u8]) -> Option<u64> {
         self.fake.unresolved_named(identifier)
     }
-    fn tier(&self, r: Range) -> Option<u8> {
-        self.fake.tier(r)
+    fn tiers(&self, r: Range) -> Option<[bool; 2]> {
+        self.fake.tiers(r)
     }
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
         self.fake.qualified(e)
