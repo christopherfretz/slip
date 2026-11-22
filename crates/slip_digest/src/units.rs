@@ -13,6 +13,10 @@ use crate::stream::{Stream, UNIT_TAG};
 use crate::walk::Walk;
 use crate::{Area, Cause};
 
+/// How many declarations of one entity are read; a longer chain is
+/// `Unaccounted("redecls/limit")`.
+pub(crate) const REDECL_LIMIT: usize = 1 << 20;
+
 /// How an entity is a unit (`spec/digest.md` §2.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UnitClass {
@@ -43,9 +47,19 @@ pub(crate) struct Written {
 /// (`spec/digest-kinds.md` §5.2); `OnDemand` ones wait for a `Ref`.
 pub(crate) fn collect(w: &mut Walk<'_>) {
     let ast = w.ast;
+    // Entities already classified: each is classified once, not once per
+    // declaration.
+    let mut seen: std::collections::HashSet<DeclId> = std::collections::HashSet::new();
     for d in ast.decls.ids() {
+        if let Role::Unsupported(what) = info(ast.decls.get(d).kind()).role {
+            // No key kind at all: the nearest enclosing unit is made
+            // indeterminate instead (`spec/landed/digest/WP-024.md`).
+            let scope = enclosing_entity(w, d);
+            w.taints.push((scope, Cause::Unsupported(what)));
+            continue;
+        }
         let e = w.entity(d);
-        if e != d && w.queued.contains(&e) {
+        if !seen.insert(e) {
             continue;
         }
         match unit_class(w, e) {
@@ -117,22 +131,78 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
         return Some(UnitClass::OnDemand);
     }
     match link {
-        Some((TemplLinkKind::Specialization, _)) => match ast.spec_info(e) {
-            Some((_, info)) => spec_class(info.kind),
-            None => Some(UnitClass::Declared),
-        },
-        Some((TemplLinkKind::MemberOfSpecialization, _)) => match ast.member_spec_info(e) {
-            Some((_, info)) => spec_class(info.kind),
-            None => Some(UnitClass::Declared),
-        },
+        Some((TemplLinkKind::Specialization, _)) => {
+            if let Some((_, info)) = ast.spec_info(e) {
+                return spec_class(info.kind);
+            }
+        }
+        Some((TemplLinkKind::MemberOfSpecialization, _)) => {
+            if let Some((_, info)) = ast.member_spec_info(e) {
+                return spec_class(info.kind);
+            }
+        }
         Some((
             TemplLinkKind::Pattern
             | TemplLinkKind::PartialSpecialization
             | TemplLinkKind::DependentFriend,
             _,
         ))
-        | None => Some(UnitClass::Declared),
+        | None => {}
     }
+    // Every member of an implicit instantiation is derived (digest §2.2),
+    // whether or not Kiln gave it a `MemberSpecInfo`.
+    if in_implicit_instantiation(w, e) {
+        return Some(UnitClass::Derived);
+    }
+    Some(UnitClass::Declared)
+}
+
+/// An enclosing context of `e` is an implicitly instantiated
+/// specialisation, or a member of one, with no explicitly specialised
+/// context in between (whose members are written in source).
+fn in_implicit_instantiation(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    let mut c = ast.decls.get(e).ctx();
+    for _ in 0..64 {
+        let Some(x) = c else { return false };
+        let kind = if let Some((_, info)) = ast.spec_info(x) {
+            Some(info.kind)
+        } else {
+            ast.member_spec_info(x).map(|(_, info)| info.kind)
+        };
+        match kind {
+            Some(SpecKind::ImplicitInstantiation) => return true,
+            Some(
+                SpecKind::ExplicitSpecialization
+                | SpecKind::ExplicitInstantiationDeclaration
+                | SpecKind::ExplicitInstantiationDefinition
+                | SpecKind::Undeclared,
+            ) => return false,
+            None => {}
+        }
+        c = ast.decls.get(x).ctx();
+    }
+    false
+}
+
+/// The nearest entity around `d` that may be a unit (its first
+/// declaration), `None` at the top level.
+fn enclosing_entity(w: &Walk<'_>, d: DeclId) -> Option<DeclId> {
+    let ast = w.ast;
+    let mut c = ast.decls.get(d).ctx();
+    for _ in 0..4096 {
+        let x = c?;
+        match info(ast.decls.get(x).kind()).role {
+            Role::Entity(_) | Role::Content(_) => return Some(w.entity(x)),
+            Role::Root => return None,
+            Role::Nothing
+            | Role::Transparent
+            | Role::Local
+            | Role::InParent
+            | Role::Unsupported(_) => c = ast.decls.get(x).ctx(),
+        }
+    }
+    None
 }
 
 /// `spec/digest-kinds.md` §9: which specialisations are units.
@@ -185,9 +255,10 @@ pub(crate) fn read_decl(w: &Walk<'_>, e: DeclId) -> DeclId {
     ast.definition(e).unwrap_or(e)
 }
 
-/// Writes the unit of entity `e`; `None` if it has no key after all (an
-/// unexpected shape is then the cause of nothing, since no unit holds it:
-/// `collect` only queues entities with a role that has a key).
+/// Writes the unit of entity `e`; `None` only for a role without a key
+/// kind, which `collect` never queues. A unit whose key cannot be formed is
+/// written under a fallback key, indeterminate with the key's cause
+/// (`spec/landed/digest/WP-024.md`): nothing §2.1 makes a unit vanishes.
 pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Written> {
     let content = matches!(info(w.ast.decls.get(e).kind()).role, Role::Content(_));
     let hashed = if content {
@@ -203,7 +274,11 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
     };
     let (key, kind, key_cause) = match w.key(e) {
         KeyRes::Key { id, kind, cause } => (id, kind, cause),
-        KeyRes::None(_) => return None,
+        KeyRes::None(cause) => {
+            let cause = cause.unwrap_or(Cause::Unaccounted("key/none"));
+            let (id, kind, parent_cause) = fallback_key(w, e, hashed.digest)?;
+            (id, kind, Some(parent_cause.map_or(cause, |p| merge(Some(cause), p))))
+        }
     };
     let mut cause = hashed.cause;
     if let Some(c) = key_cause {
@@ -218,6 +293,64 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         }
     };
     Some(Written { entity: Some(e), key, kind, digest: hashed.digest, cause, class, file })
+}
+
+/// The fallback key of a unit whose key cannot be formed: its own key
+/// kind, parent the nearest enclosing entity with a key (else `root`),
+/// name `content`, discriminator the unit's digest.
+fn fallback_key(
+    w: &mut Walk<'_>,
+    e: DeclId,
+    digest: Digest,
+) -> Option<(Digest, KeyKind, Option<Cause>)> {
+    let ast = w.ast;
+    let kind = match info(ast.decls.get(e).kind()).role {
+        Role::Entity(k) | Role::Content(k) => k,
+        Role::Nothing
+        | Role::Transparent
+        | Role::Root
+        | Role::Local
+        | Role::InParent
+        | Role::Unsupported(_) => return None,
+    };
+    let mut parent = Parent::Root;
+    let mut parent_cause = None;
+    let mut c = ast.decls.get(e).ctx();
+    for _ in 0..4096 {
+        let Some(x) = c else { break };
+        match info(ast.decls.get(x).kind()).role {
+            Role::Root => break,
+            Role::Entity(_) | Role::Content(_) => {
+                if let KeyRes::Key { id, cause, .. } = w.key(x) {
+                    parent = Parent::Unit(id);
+                    parent_cause = cause;
+                    break;
+                }
+            }
+            Role::Nothing
+            | Role::Transparent
+            | Role::Local
+            | Role::InParent
+            | Role::Unsupported(_) => {}
+        }
+        c = ast.decls.get(x).ctx();
+    }
+    let key = w.rules.map(Key { kind, parent, name: Name::Content, disc: Some(digest) });
+    w.bytes += key.to_bytes().len() as u64;
+    Some((key.id(), kind, parent_cause))
+}
+
+/// Makes the unit around each declaration of a kind without a key kind
+/// indeterminate (`collect`); the order unit at the top level.
+pub(crate) fn apply_taints(w: &Walk<'_>, written: &mut [Written]) {
+    for &(scope, cause) in &w.taints {
+        let target = scope
+            .and_then(|s| written.iter().position(|u| u.entity == Some(s)))
+            .or_else(|| written.iter().position(|u| u.kind == KeyKind::Order));
+        if let Some(i) = target {
+            written[i].cause = Some(merge(written[i].cause, cause));
+        }
+    }
 }
 
 /// The cause kept when `c` meets `prev` (`Stream::indeterminate`).
@@ -348,7 +481,9 @@ impl Walk<'_> {
         }
         let mut out: Vec<DeclId> = Vec::new();
         for d in ast.redecls_of(e) {
-            if out.len() > 1 << 20 {
+            // Past the limit the list ends with one more element, which
+            // `decl_node` makes `Unaccounted("redecls/limit")`.
+            if out.len() > REDECL_LIMIT {
                 break;
             }
             out.push(d);
