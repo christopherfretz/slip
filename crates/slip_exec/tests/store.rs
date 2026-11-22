@@ -80,6 +80,8 @@ fn shard(observer: Digest, phase: Phase, round: u64) -> Shard {
         outcome: Outcome { status: Status::Ok, errors: 0, warnings: 0, message: String::new() },
         inputs: None,
         counters: vec![],
+        digests: None,
+        verdict: None,
     }
 }
 

@@ -59,7 +59,16 @@ pub fn parse_observer(
             ],
             None => Vec::new(),
         };
-        Shard { observer: observer.id, phase, round, outcome, inputs, counters }
+        Shard {
+            observer: observer.id,
+            phase,
+            round,
+            outcome,
+            inputs,
+            counters,
+            digests: None,
+            verdict: None,
+        }
     };
 
     let (argv0, rest) = match utf8_command(&observer.command) {

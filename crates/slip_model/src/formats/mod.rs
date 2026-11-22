@@ -20,9 +20,11 @@ use crate::wire::{Decoder, Encoder, Error, ErrorKind};
 use crate::{Digest, Observer, Phase, Plan, RunRecord, Shard};
 
 mod common;
+mod digests;
 mod plan;
 mod run;
 mod shard;
+mod verdict;
 
 use common::{JResult, Result, read_hex, read_record, read_str, read_uv};
 

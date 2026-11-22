@@ -156,6 +156,39 @@ pub(super) fn read_list<'v, T>(
 }
 
 // ---------------------------------------------------------------------------
+// opt<T> (§2)
+
+/// `opt<T>`: `Malformed` at the tag byte unless it is 0 or 1.
+pub(super) fn dec_opt<'a, T>(
+    d: &mut Decoder<'a>,
+    value: impl FnOnce(&mut Decoder<'a>) -> Result<T>,
+) -> Result<Option<T>> {
+    let at = d.offset();
+    match d.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(value(d)?)),
+        _ => Err(malformed(at, "opt tag is not 0 or 1")),
+    }
+}
+
+/// The JSON form of `opt<T>` (§10): `null` when absent.
+pub(super) fn json_opt<T>(v: Option<&T>, value: impl FnOnce(&T) -> Value) -> Value {
+    v.map_or(Value::Null, value)
+}
+
+/// Reads `opt<T>`: `null` is absent, anything else must be a `T`.
+pub(super) fn read_opt<'v, T>(
+    v: &'v Value,
+    at: &At<'_>,
+    value: impl FnOnce(&'v Value, &At<'_>) -> JResult<T>,
+) -> JResult<Option<T>> {
+    match v {
+        Value::Null => Ok(None),
+        v => value(v, at).map(Some),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FileRef (§6) and Command (§7)
 
 pub(super) fn enc_file_ref(e: &mut Encoder, f: &FileRef) {
