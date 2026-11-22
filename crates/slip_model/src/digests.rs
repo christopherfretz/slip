@@ -57,6 +57,8 @@ pub struct Group {
     pub file: Vec<u8>,
     /// Units in the group.
     pub count: u64,
+    /// Units in the group with the indeterminate flag (`spec/digest.md` §11).
+    pub indeterminate: u64,
     /// `group_digest` of the group's units.
     pub digest: Digest,
     /// Strictly ascending by `(key, digest)`; present when detail was asked for.
@@ -84,12 +86,17 @@ pub fn group_digest(units: &[Unit]) -> Digest {
 }
 
 /// `H("slip.tu.v1", list<GroupSum>)` over groups sorted by `(class, file)`,
-/// which the caller ensures. A group's unit list is not part of its sum.
+/// which the caller ensures. A group's sum is `(class, file, count,
+/// indeterminate, digest)`; its unit list is not part of it.
 pub fn tu_digest(groups: &[Group]) -> Digest {
     let mut e = Encoder::new();
     e.count(groups.len());
     for group in groups {
-        e.uv(group.class as u64).bytes(&group.file).uv(group.count).digest(&group.digest);
+        e.uv(group.class as u64)
+            .bytes(&group.file)
+            .uv(group.count)
+            .uv(group.indeterminate)
+            .digest(&group.digest);
     }
     tagged_digest(TU_TAG, e.as_bytes())
 }
@@ -120,6 +127,7 @@ mod tests {
             class: GroupClass::Declared,
             file: b"/s/a.h".to_vec(),
             count: 2,
+            indeterminate: 0,
             digest: base,
             units: None,
         };
@@ -128,6 +136,7 @@ mod tests {
         assert_ne!(tu, tu_digest(&[Group { class: GroupClass::Derived, ..g.clone() }]));
         assert_ne!(tu, tu_digest(&[Group { file: b"/s/b.h".to_vec(), ..g.clone() }]));
         assert_ne!(tu, tu_digest(&[Group { count: 3, ..g.clone() }]));
+        assert_ne!(tu, tu_digest(&[Group { indeterminate: 1, ..g.clone() }]));
         assert_ne!(tu, tu_digest(&[Group { digest: d(9), ..g.clone() }]));
         assert_ne!(tu, tu_digest(&[]));
     }

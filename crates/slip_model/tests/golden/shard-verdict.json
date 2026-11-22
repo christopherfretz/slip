@@ -16,12 +16,13 @@
     "counters": [],
     "digests": {
       "scheme": 1,
-      "tu": "a327fad2ef1fb81ae8fed18238d771a5f765e130b0d37fbc1fec978d375b7ef7",
+      "tu": "7caedd7cdd53009ed0e15c4fac970a603d974936dd94351078141828b4ecaadc",
       "groups": [
         {
           "class": "declared",
           "file": "/a",
           "count": 1,
+          "indeterminate": 0,
           "digest": "16616ca8c602bc6c8ebe3c4e0dcd9c1659ee02809421d7d815b05b0176c69cd6",
           "units": [
             {
