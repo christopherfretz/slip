@@ -182,6 +182,10 @@ The convention needs no column: the tables test lists the rows, derives
 the names and fails for a missing directory or a directory no row names
 (digest §13 obligation 5, §14).
 
+A test's files (`t.cpp`, or `a.cpp` and `b.cpp`), its header lines
+(`// std:`, `// errors:`, `// target:`, `// args:`) and the command line
+each side is parsed under are those of `spec/harness.md` §6.1.
+
 ### 1.6 What the test cannot see
 
 The descriptors show fields and variants. They do not show the meaning of
@@ -633,7 +637,7 @@ Derived from a node's operands by Kiln when the node is built.
 | `UnaryTransform.result` | written | out | - | sugar only |
 | `Auto` | type | in | tag 1066 |  |
 | `Auto.keyword` | flag | in | enum AutoKeyword | canonical only when undeduced |
-| `Auto.deduced` | written | out | - | sugar only: a deduced placeholder's canonical type is the deduced type |
+| `Auto.deduced` | flag | in | bool | true: the placeholder of a templated entity not yet deduced, whose `deduced` is the builtin dependent type; any other deduced type is sugar (the canonical type is the deduced type) and is not written |
 | `Auto.concept` | entity | in | ref |  |
 | `Auto.args` | value | in | enum ArgView*? |  |
 | `Auto.pack` | flag | in | bool |  |
