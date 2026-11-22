@@ -116,9 +116,10 @@ pub(super) struct Context {
     pub digests: bool,
 }
 
-/// The order of findings: by kind, then file, then key (absent first).
-fn order(f: &Finding) -> (FindingKind, &[u8], Option<crate::Digest>) {
-    (f.kind, &f.file, f.key)
+/// The order of findings: by the kind's rank (`spec/verify.md` §6), then
+/// file, then key (absent first).
+fn order(f: &Finding) -> (u8, &[u8], Option<crate::Digest>) {
+    (f.kind.rank(), &f.file, f.key)
 }
 
 fn sites(w: &Where) -> [(Side, &Site); 2] {
@@ -198,7 +199,7 @@ pub(super) fn violation(v: &Verdict, cx: Context) -> Option<(Loc, &'static str)>
     let mut seen = BTreeSet::new();
     for (i, f) in v.findings.iter().enumerate() {
         if i > 0 && order(&v.findings[i - 1]) > order(f) {
-            return Some((Loc::Finding(i), "findings are not ascending by (kind, file, key)"));
+            return Some((Loc::Finding(i), "findings are not ascending by (rank, file, key)"));
         }
         if let Some(key) = f.key
             && !seen.insert((f.kind, key))
