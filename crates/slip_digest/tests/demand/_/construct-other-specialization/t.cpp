@@ -3,7 +3,7 @@
 template <class T> struct W { W(int); };
 W<int> v(1);
 #ifdef B
-W<long> u(2);
+void u() { W<long> x(2); }
 #else
 
 #endif

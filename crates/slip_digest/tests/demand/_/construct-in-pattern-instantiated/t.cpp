@@ -3,7 +3,7 @@
 template <class T> struct W { W(int); };
 template <class T> struct H { static inline W<T> w = W<T>(1); };
 #ifdef B
-W<int> u(2);
+void u() { W<int> x(2); }
 #else
 
 #endif

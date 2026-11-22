@@ -1,0 +1,4 @@
+# pending
+# needs: stmt
+# function bodies are pending; the binding is reached through the declaration statement
+changed f(P)

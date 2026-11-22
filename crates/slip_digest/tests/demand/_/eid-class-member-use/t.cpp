@@ -4,7 +4,7 @@ template <class T> struct Q { void g() {} static inline int s = 1; };
 extern template struct Q<int>;
 #ifdef B
 void h() { Q<int>().g(); }
-int y = Q<int>::s;
+int y() { return Q<int>::s; }
 #else
 
 #endif

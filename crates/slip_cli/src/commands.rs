@@ -1,5 +1,5 @@
-//! `plan`, `parse` and `dump` (`spec/exec.md` §8.1–§8.3), each over its
-//! parsed options and the two output streams.
+//! `plan`, `parse`, `dump` and `resource` (`spec/exec.md` §8.1–§8.3,
+//! §8.10), each over its parsed options and the two output streams.
 //!
 //! Every write to standard output or standard error ignores its error
 //! (`let _ = …`): a closed pipe must not become a panic and status 70.
@@ -51,6 +51,7 @@ pub fn dispatch(invocation: Invocation, out: &mut dyn Write, err: &mut dyn Write
         Invocation::Plan(a) => plan(&a, out, err),
         Invocation::Parse(a) => parse(&a, out, err),
         Invocation::Dump { file } => dump(&file, out),
+        Invocation::Resource { write } => write_resource(&write),
         Invocation::Panic => panic!("slip __panic: a deliberate panic"),
         Invocation::Worker(_) => unreachable!("the worker is run by `run`, not dispatched"),
     };
@@ -382,5 +383,11 @@ fn dump(file: &Path, out: &mut dyn Write) -> Result<u8> {
     if !text.ends_with('\n') {
         let _ = writeln!(out);
     }
+    Ok(status::OK)
+}
+
+/// `slip resource --write <dir>` (§8.10): nothing on standard output.
+fn write_resource(dir: &Path) -> Result<u8> {
+    slip_script::resource::write_to(dir).map_err(|e| Failure::Input(e.to_string()))?;
     Ok(status::OK)
 }

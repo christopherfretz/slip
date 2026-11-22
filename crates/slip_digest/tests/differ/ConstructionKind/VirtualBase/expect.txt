@@ -1,4 +1,2 @@
-# pending
-# needs: decl_data
-# the node is in a constructor's initialisers (ColdDeclData `ctor_inits`, the cold-map package); expr_init.rs's row test reads it from the AST
 changed D
+changed D::D()
