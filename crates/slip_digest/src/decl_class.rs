@@ -665,7 +665,7 @@ mod tests {
     }
 
     /// The `DefinitionBits` of every complete class of one side of the
-    /// pair test in `dir`, for `bit`: how many have it set.
+    /// pair test in `dir`, for `bit`: how many have it set and written.
     fn classes_with(dir: &std::path::Path, side_b: bool, bit: DefinitionBits) -> usize {
         let main = std::fs::read_to_string(dir.join("t.cpp")).expect("t.cpp");
         let std = main
@@ -689,6 +689,15 @@ mod tests {
                 .ids()
                 .filter_map(|d| p.ast.decls.record(d))
                 .filter(|r| r.defn.contains(DefinitionBits::COMPLETE) && r.defn.contains(bit))
+                .filter(|r| {
+                    // The written word holds the bit: clearing it changes
+                    // the bytes.
+                    let cleared = DefinitionBits::from_bits(r.defn.bits() & !bit.bits());
+                    let (mut with, mut without) = (Stream::new(), Stream::new());
+                    definition_bits(&mut with, r.defn);
+                    definition_bits(&mut without, cleared);
+                    with.as_bytes() != without.as_bytes()
+                })
                 .count()
         })
         .expect("the pair test parses")
