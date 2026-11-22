@@ -8,19 +8,16 @@
 //!
 //! # Profiles (§4.4)
 //!
-//! A profile is the expression `ProfileEntry.first_expr`, walked with the
-//! expression state of the stream being written put aside
-//! ([`Walk::take_expr_state`]) and a [`Frame`] in its place, restored
-//! after. The frame numbers the entities declared inside the walked
-//! expression (a requires-expression's parameters) from 0; a function
-//! parameter declared outside is `Ref::param` (its function-scope depth
-//! and position, what Kiln's own profile words and the Itanium `fL<L>p`
-//! mangling read: `kiln_ast` `types/profile_expr.rs`); any other local
-//! entity takes the unit's ordinal ([`profile_local`]). The outermost
-//! parenthesis of a profile is kept (`expr::child_keep_paren`), since
-//! Kiln's profile keeps parentheses (`profile_expr.rs:27`) and a
-//! `decltype` operand's are part of its meaning
-//! (`spec/landed/digest-kinds/WP-036.md`).
+//! A profile is the expression `ProfileEntry.first_expr` walked in
+//! profile mode (`expr_profile.rs`: a row iff Kiln's profile
+//! distinguishes it), with the expression state of the stream being
+//! written put aside ([`Walk::take_expr_state`]) and a [`Frame`] in its
+//! place, restored after. The frame numbers the entities declared inside
+//! an expression walked in full under it (a requires-expression inside a
+//! kind profile mode does not follow) from 0; a function parameter
+//! declared outside is `Ref::param` (its function-scope depth and
+//! position); any other local entity takes the unit's ordinal
+//! ([`profile_local`]).
 
 use std::collections::HashMap;
 

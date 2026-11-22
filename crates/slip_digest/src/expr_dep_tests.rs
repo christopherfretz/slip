@@ -83,8 +83,9 @@ fn profile_parameters_are_positional() {
     });
 }
 
-/// A requires-expression's parameters are numbered by the profile's
-/// frame from 0, whatever the unit has numbered already.
+/// A requires-expression's parameters are written by position in a
+/// profile (profile mode, `expr_profile.rs`), whatever the unit has
+/// numbered already.
 #[test]
 fn requires_parameters_are_numbered_in_the_profile() {
     let src = "template<class T> void f(T) requires requires(T x, T y) { x + y; };\n";
@@ -253,4 +254,25 @@ fn function_parameter_pack_expansion() {
     let src = "template<class... Ts> struct R { template<class... Us> static auto g(Ts... ts) -> decltype(((ts + Us()) + ...)); };\n\
                auto p = &R<int, long>::g<int, int>;\nauto q = &R<int, long, short>::g<int, int, int>;\n";
     distinct(&kind_bytes(src, ExprKind::FunctionParmPackExpr, super::function_parm_pack_expr));
+}
+
+/// `Ref::param` writes a parameter's function-scope depth and position
+/// (the full walk's form, `param_ref`): `a` of `f` and `b` of the
+/// function type in its parameter are both at position 0, at depths 0
+/// and 1 (item 7, M28).
+#[test]
+fn param_ref_writes_depth_and_position() {
+    let src = "template<class T> auto f(T a, int (*g)(T b), T c) -> int;\n";
+    with_walk(src, |w| {
+        let bytes = |w: &mut Walk<'_>, which: &str| {
+            let d = crate::decl_func::tests::named(w, which, DeclKind::ParmVar)[0];
+            let mut s = Stream::new();
+            super::param_ref(w, &mut s, d, crate::Cause::Unaccounted("test"));
+            assert_eq!(s.cause(), None);
+            s.as_bytes().to_vec()
+        };
+        let (a, b, c) = (bytes(w, "a"), bytes(w, "b"), bytes(w, "c"));
+        assert_ne!(a, b, "depth");
+        assert_ne!(a, c, "position");
+    });
 }
