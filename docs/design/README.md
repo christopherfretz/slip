@@ -1,0 +1,176 @@
+# Slip — end-to-end design
+
+Status: **proposal, revision 1 (2026-11-21)**. Nothing here is implemented. This
+is the first deliverable: a design for composable, scalable, evolvable code
+transformation written in general-purpose constexpr C++.
+
+Evidence for the claims about Kiln, the C++ standard track and prior art is in
+the research notes that fed this design (kept in the agent workspace under
+`research/`, six files). Claims about Kiln are from reading Kiln at revision
+`4bfd999da`; they are to be confirmed by the Kiln agent before work is
+requisitioned (see [05](05-kiln-interface.md)).
+
+## Reading order
+
+| File | Contents |
+|---|---|
+| this file | Goals, the ten decisions, the picture, open questions |
+| [01-transform-api.md](01-transform-api.md) | The programming model: `<slip/meta.h>`, handles, queries, edits, guards, examples, stability |
+| [02-pipeline.md](02-pipeline.md) | Plan → map → reduce → apply → verify; compilation databases; shared headers; parallelism and memory |
+| [03-equivalence.md](03-equivalence.md) | Proving "everything resolves as before": entity keys, semantic digests, the namespace migration |
+| [04-macros-and-configurations.md](04-macros-and-configurations.md) | Macro tiers, conditional compilation, coverage accounting, research tracks |
+| [05-kiln-interface.md](05-kiln-interface.md) | The Slip/Kiln boundary and the extensions requested from Kiln |
+| [06-engineering-plan.md](06-engineering-plan.md) | Crates, specs, validation harness, performance tracking, milestones, work breakdown |
+
+## Goals, in priority order
+
+1. **Correct.** A transformation that claims to preserve meaning is checked, per
+   translation unit, against a semantic model of the code before and after. An
+   edit Slip cannot justify is not applied silently: it is rejected or reported.
+2. **Memory safe.** Safe Rust throughout (`#![forbid(unsafe_code)]`), as in Kiln.
+3. **Programmable.** Transformations are ordinary constexpr C++ programs over a
+   stable header API; they compose as libraries.
+4. **Fast and lean.** Tens of millions of lines, all cores used, wall clock and
+   memory tracked by the validation harness as part of correctness.
+
+## The ten decisions
+
+**D1. A Slip-owned header over intrinsics, with standard-track vocabulary.**
+Transformations are written against `<slip/meta.h>`, a versioned header built
+on private `__slip_*` intrinsics. It borrows the standard track's *value model*
+(one opaque handle type plus free functions, as `std::meta::info`; names mirror
+`std::meta` and the in-flight expression-reflection papers where the meaning is
+the same) and rejects its *effect model* (injection into the translation unit
+being compiled). Reason: every C++29 code-generation proposal adds tokens to
+the current TU; refactoring replaces byte ranges of existing files, including
+shared headers, and nothing on the standard track covers edits, use sites,
+lookup provenance, macros or source ranges. Detail: [01](01-transform-api.md).
+
+**D2. Two universes.** The code being transformed (the *subject*) and the
+transformation program (the *transform*) are separate compilations. The subject
+is parsed by Kiln exactly as its build compiles it (its own `-std=`, flags,
+standard library). The transform is a C++26 program compiled once, in its own
+Kiln instance, whose intrinsics query the subject through the Slip host. Reason:
+real subjects are C++17 or older (LLVM builds as C++17) and cannot host C++26
+reflection code; the subject's semantic model must not be perturbed by the
+tool; and the transform is compiled once instead of once per TU. Consequence:
+subject entities are named by lookup (`slip::lookup("a::b")`), not by `^^a::b`.
+
+**D3. Edits are untrusted; equivalence checking is the trusted base.** A
+transform emits edits. Slip applies them, re-parses every affected TU, and
+compares a *semantic digest* of each TU before and after, modulo the changes
+the transform declared (for a namespace migration: the relocation map). The
+digest is a hash over Kiln's resolved AST: every reference contributes the
+identity of the entity it resolved to, including implicit calls, conversions
+and template instantiations. A wrong edit, a gap in what Slip records, or a
+shared-header edit that is right for one TU and wrong for another all surface
+as a digest mismatch at a named site. Detail: [03](03-equivalence.md).
+
+**D4. Map/reduce over (TU, configuration) observers.** Each TU under each
+build configuration is an *observer*. Map: parse, extract the subject model,
+run the transform, write a shard of edits, facts and reports. Reduce: merge
+shards per file, deduplicate by semantic site key, require unanimity among
+observers of a site, resolve guards, form atomic groups. Then apply, then
+verify, then (if needed) repair and repeat to a fixed point. Detail:
+[02](02-pipeline.md).
+
+**D5. Shared headers: everyone observes, identical work is memoised.** All
+observers of a header vote on its edits; the reducer deduplicates. Redundant
+transform *execution* is removed by content-addressed memoisation: the
+transform runs once per distinct semantic context of a header, not once per
+TU. This is sound because a constexpr transform's only inputs are host calls,
+which Slip can record and re-check.
+
+**D6. Global decisions without a second parse.** A transform emits *facts*
+(folded across TUs by a declared monoid) and *guarded edits* (applied only if
+a predicate over folded facts holds). Decisions that need whole-program
+knowledge — "is every declaration of this entity in code we own?" — are
+settled in reduce, not by parsing everything twice.
+
+**D7. Three granularities.** Native coarse transformations configured by data
+(fastest); rules with a native selector and a constexpr action per match; and
+free-form traversal with fine-grained queries (most flexible).
+
+**D8. Macros by tiers, enforced by unanimity and verification.** Every edit is
+keyed by where its bytes are *spelled*. A token in a macro body has one
+spelling shared by every expansion in every TU; all of them must agree before
+the definition is edited. Pasted and stringised tokens are refused and
+reported. Bytes no configuration ever compiled are listed, not guessed at.
+Detail: [04](04-macros-and-configurations.md).
+
+**D9. One narrow, versioned boundary to Kiln.** Exactly one Slip crate depends
+on Kiln's crates. Slip asks Kiln for a small set of extensions (a written-
+reference recorder, a richer preprocessing record, a front-end library entry
+point, a host-call intrinsic) and a facade tested in Kiln's CI. A first
+prototype needs none of them. Detail: [05](05-kiln-interface.md).
+
+**D10. Kiln's engineering process, adapted.** Specs before code, tests tied to
+spec sections, single-session work packages, a specified harness, performance
+counters gated in CI, corpus runs on libc++ and LLVM. Detail:
+[06](06-engineering-plan.md).
+
+## The picture
+
+```
+ compile_commands.json (one per configuration)        transform.cpp + <slip/meta.h>
+            │                                                   │ compiled once (C++26)
+            ▼                                                   ▼
+   ┌─────────────────┐   per (TU, config), in parallel   ┌───────────────┐
+   │ plan            │──────────────────────────────────▶│ MAP worker    │
+   │ normalise, shard│                                   │ Kiln front end│ subject, as built
+   └─────────────────┘                                   │ subject model │ refs, macros, ranges
+                                                         │ pre-digest    │
+                                                         │ run transform │ host calls only
+                                                         └──────┬────────┘
+                                                                │ shard: edits, facts,
+                                                                ▼        reports, digests
+   ┌────────────────────────────────────────────────────────────────────┐
+   │ REDUCE (per file, parallel): dedup by site, unanimity, guards,     │
+   │ conflicts, atomic groups                                           │
+   └──────┬─────────────────────────────────────────────────────────────┘
+          ▼
+   ┌─────────────┐     ┌──────────────────────────────────────────────┐
+   │ APPLY       │────▶│ VERIFY (per observer, parallel): re-parse the │
+   │ byte-exact  │     │ post-image, digest, compare modulo declared   │
+   └─────────────┘     │ changes; mismatches → repair hook → repeat    │
+                       └──────────────────────────────────────────────┘
+          ▼
+   patch + report: applied / rejected (with cause) / uncovered bytes / residual manual work
+```
+
+## What Slip guarantees, stated exactly
+
+For a transformation declared semantics-preserving modulo a relocation map `M`:
+
+- For every observer (TU × configuration) that was analysed: the post-image
+  parses without new diagnostics, and every declaration's semantic digest
+  equals the pre-image digest mapped through `M`. "Semantic digest" is defined
+  in [03](03-equivalence.md); it is as strong as Kiln's AST is complete.
+- For bytes no observer compiled (inactive `#if` branches, macros never
+  expanded, templates never instantiated): no guarantee; they are enumerated
+  in the coverage report with the reason.
+- Kiln accepts some code clang rejects. A build of the result with the
+  production compiler remains a recommended final gate, and Slip's harness
+  runs one on its corpora.
+
+## Open questions for the operator
+
+1. **Two universes (D2).** This is the largest departure from a literal reading
+   of the brief: reflection on the subject is "foreign" (`slip::info` handles
+   obtained by lookup) rather than `^^entity` inside the subject TU. I believe
+   it is forced by C++17-era subjects and by the correctness model, and that
+   it is also the faster design. An "in-TU" convenience mode for C++26
+   subjects can be layered on later. Objection now is cheap; later it is not.
+2. **The transform's standard library.** Transforms should be able to use
+   `std::vector`, `<algorithm>`, `<ranges>`. Proposal: Slip pins and ships the
+   library headers the transform universe uses (libc++), so runs are hermetic
+   and reproducible. Alternative: use whatever the host has.
+3. **Formatting.** Slip edits bytes and leaves everything else untouched. It
+   will not reformat. Running a formatter over touched ranges is left to the
+   user's tooling unless you want it built in.
+4. **What "dependencies" means for the migration.** The design takes a list of
+   path globs for *owned* code; everything else is read-only. If ownership is
+   defined some other way in your codebase (build targets, a manifest), the
+   plan phase should read that instead.
+5. **Naming.** This design calls a user's program a *transform*, the code it
+   runs on the *subject*, and a (TU, configuration) pair an *observer*.
