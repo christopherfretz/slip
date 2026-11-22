@@ -209,3 +209,34 @@ fn expansion_select_form_and_depth() {
         got.iter().filter_map(|g| g.get(1).copied()).collect();
     assert!(depths.len() >= 2, "depths {depths:?}");
 }
+
+/// Whether at least two nodes were written and some two differ.
+fn distinct(got: &[Vec<u8>]) {
+    assert!(got.len() >= 2, "{} nodes", got.len());
+    assert!(got.iter().any(|g| g != &got[0]), "every node wrote the same bytes: {got:?}");
+}
+
+/// `SubstNonTypeTemplateParmPackExpr.b`: two instantiations with other
+/// arguments for the same pack write other bytes. A pair test cannot
+/// isolate the row: the arguments are those of the enclosing
+/// instantiation, in its key.
+#[test]
+fn subst_pack_arguments() {
+    let src = "template<int... Ns> struct S { template<int... Ms> static auto g() -> decltype(((Ns * Ms) + ...)); };\n\
+               auto p = &S<1, 2>::g<3, 4>;\nauto q = &S<1, 3>::g<3, 4>;\n";
+    distinct(&kind_bytes(
+        src,
+        ExprKind::SubstNonTypeTemplateParmPackExpr,
+        super::subst_non_type_template_parm_pack_expr,
+    ));
+}
+
+/// `FunctionParmPackExpr.b`: the expanded parameters of two
+/// instantiations are other declarations (the pair test cannot isolate
+/// the row, as above).
+#[test]
+fn function_parameter_pack_expansion() {
+    let src = "template<class... Ts> struct R { template<class... Us> static auto g(Ts... ts) -> decltype(((ts + Us()) + ...)); };\n\
+               auto p = &R<int, long>::g<int, int>;\nauto q = &R<int, long, short>::g<int, int, int>;\n";
+    distinct(&kind_bytes(src, ExprKind::FunctionParmPackExpr, super::function_parm_pack_expr));
+}
