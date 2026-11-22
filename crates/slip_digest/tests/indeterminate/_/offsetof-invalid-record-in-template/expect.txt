@@ -1,0 +1,3 @@
+indeterminate G::w
+indeterminate S
+indeterminate S::u

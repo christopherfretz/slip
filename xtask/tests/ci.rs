@@ -167,6 +167,10 @@ fn s2_full_gate_order() {
     );
     let wrap = f.path("bin/wrap");
     std::fs::set_permissions(&wrap, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The wrapper is a script just written, as the fake is: without this
+    // its first run can fail with `ETXTBSY` and the gate reports a failed
+    // step.
+    common::wait_executable(&wrap);
     let opts = ci::parse_args(&[]).unwrap();
     let mut out = Vec::new();
     assert!(ci::run(&opts, f.root(), wrap.as_os_str(), &mut out));

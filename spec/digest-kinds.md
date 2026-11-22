@@ -3046,7 +3046,7 @@ Rules the rows refer to:
 | `ExpressionTraitExpr.aux` | flag | in | enum TypeTrait |  |
 | `ExpressionTraitExpr.a` | child | in | child |  |
 | `ExpressionTraitExpr.b` | value | in | uv | the stored result |
-| `OffsetOfExpr.aux` | flag | in | bool | non-zero: the record is not standard-layout |
+| `OffsetOfExpr.aux` | flag | in | bool | non-zero: the designator passes through an invalid class (`invalid_record`); Kiln has reported an error, and the unit is indeterminate (`Cause::Error`) |
 | `OffsetOfExpr.a` | child | in | child* | the index expressions |
 | `OffsetOfExpr.b` | value | in | uv | the stored result |
 | `SizeOfPackExpr.a` | entity | in | ref | the pack |
@@ -3067,7 +3067,7 @@ Rules the rows refer to:
 | `CXXUnresolvedConstructExpr.a` | child | in | child* |  |
 | `CoawaitExpr.aux-implicit` | flag | in | bit | bit 0 |
 | `CoawaitExpr.aux-suspend` | flag | in | enum SuspendKind | bits 1-2 |
-| `CoawaitExpr.a` | child | in | child* | the first five elements of the list (`CoawaitParts`); the sixth, the placeholder for the awaiter, is reached from the calls |
+| `CoawaitExpr.a` | child | in | child* | elements two to five of the list (`CoawaitParts`): the first, the operand as written, is a node of `common`; the sixth, the placeholder for the awaiter, is reached from the calls |
 | `DependentCoawaitExpr.a` | child | in | child |  |
 | `CoyieldExpr.aux-implicit` | flag | in | bit | bit 0 |
 | `CoyieldExpr.aux-suspend` | flag | in | enum SuspendKind | bits 1-2 |
@@ -3549,7 +3549,7 @@ reads the list itself (`ExprNode`, `CoawaitExpr.a`).
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `operand` | child | out | - | first element of the list `CoawaitExpr.a` writes |
+| `operand` | child | out | - | first element: the operand as written, not written: `common` is built from it (for `co_yield {…}`, a placeholder `InitListExpr` of type `void` whose elements are nodes of `common`) |
 | `common` | child | out | - | second element: the awaiter |
 | `ready` | child | out | - | third element |
 | `suspend` | child | out | - | fourth element |
@@ -3632,7 +3632,7 @@ the row hold both cases.
 | `Field.start` | location | out | - |  |
 | `Field.end` | location | out | - |  |
 | `Index` | flag | in | tag 2 |  |
-| `Index.index` | child | in | child |  |
+| `Index.index` | child | in | uv | the position of the index in `OffsetOfExpr.a`, where it is written |
 | `Index.start` | location | out | - |  |
 | `Index.end` | location | out | - |  |
 
@@ -3645,7 +3645,7 @@ the row hold both cases.
 | `Offset` | flag | in | tag 1 |  |
 | `Offset.0` | value | in | uv | bytes |
 | `Index` | flag | in | tag 2 |  |
-| `Index.index` | child | in | child | also an element of `OffsetOfExpr.a`; written again here so that the step says which |
+| `Index.index` | child | in | uv | the position of the index in `OffsetOfExpr.a`, where it is written |
 | `Index.elem_size` | value | in | uv |  |
 
 ### `kiln_ast::expr::InitListExtra`
