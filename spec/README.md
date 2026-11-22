@@ -20,7 +20,7 @@ normative. Where the two disagree, the spec wins and the design is corrected.
 | [digest.md](digest.md) | The semantic digest: units, keys, streams, the `digests` section, completeness obligations | `slip_digest`, `slip_model` | draft |
 | digest-kinds.md | The digest's tables: every Kiln AST kind and field, its class and decision, its stream encoding | `slip_digest` | not written (M1) |
 | [verify.md](verify.md) | Comparison under declared changes; localisation | `slip_verify` | draft |
-| pitfalls.md | The catalogue of semantic hazards; one test per row | tests | not written (M1) |
+| [pitfalls.md](pitfalls.md) | The catalogue of semantic hazards; one test per row | tests | draft |
 | reduce.md | Reduce as a function from shards to an edit set and report | `slip_reduce` | not written (M2) |
 | api.md | `<slip/meta.h>` | `slip_script`, resource headers | not written (M3) |
 | macros.md | Token origin, tiers, coverage states | `slip_kiln`, `slip_reduce` | not written (M4) |
