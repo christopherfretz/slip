@@ -1,6 +1,7 @@
 # KR1 — the written-reference table
 
-A request from Slip to Kiln. Status: **sent 2026-11-21; not scheduled.**
+A request from Slip to Kiln. Status: **sent 2026-11-21; shape agreed with the
+Kiln agent (§6); scheduling is with the operator.**
 Context: [05-kiln-interface.md](../design/05-kiln-interface.md) §3 and §4.
 Kiln owns the design of everything inside Kiln; this states what Slip needs,
 proposes a shape, and gives acceptance tests. Names of types and flags below
@@ -171,11 +172,37 @@ Each stage is useful to Slip on its own, in this order:
 4. Per-specialization entries for dependent names.
 5. Carriage in PCH and module images; identifier accounting on the corpora.
 
-## 6. Open points for Kiln
+## 6. Resolved with Kiln (2026-11-21)
 
-- Whether `enclosing` is stored or derived from ranges once KR3 exists.
-- Whether per-specialization entries live in the same table or one keyed by
-  (pattern entry, specialization).
-- Names in default arguments and default member initialisers instantiated at
-  the point of use: Slip needs the entry at the written site once, like any
-  other name.
+Kiln agrees with the shape. Its design calls, and Slip's answer to the one
+question it asked:
+
+- **`enclosing` is stored**, one declaration id per entry; deriving it from
+  ranges fails for names that come from macros. It is the *lexical* one: the
+  innermost declaration (the specific redeclaration) whose source extent
+  contains the name's first token. For a name in a declarator, including the
+  qualifier of an out-of-line definition (`void [A]::[B]::f() {}`), that is
+  the declaration being declared (this definition of `f`), not the namespace
+  the definition sits in and not the class `B` it is a member of. Slip walks
+  outwards from there through lexical parents.
+- **Per-specialization entries are a separate table** keyed by (pattern entry,
+  specialization). The parse-time table stays append-only and is carried in a
+  PCH or module image unchanged; the consuming TU adds specialization entries
+  for the instantiations it performs, end-of-TU instantiations included.
+- **Default arguments and default member initialisers**: one entry at the
+  written site, made when Kiln parses them. Uses refer to the parsed
+  expression, so there are no per-call-site entries. Inside a template, the
+  dependent names get per-specialization entries keyed by the function's
+  specialization, not by the call.
+- **Rule 3 is real work**: tentative parses truncate the table on rollback,
+  and the entry for an overloaded `f(x)` is created at lookup and patched
+  with the selected function after overload resolution.
+- **Size**: about 28 bytes per entry (range 8, entity 4, found 4, enclosing 4,
+  qualifier 4, role 1, padding).
+- Kiln relays the request to the operator as size L in five stages; stage 1
+  is one Kiln work package.
+
+Prototypes Slip makes for Kiln (KF1 first) go on a branch named `slip/<id>`
+in the Kiln repository, based on that day's main; no pull request and never a
+push to main (Kiln's merge queue is stacked). Slip sends the branch head to
+the Kiln agent, who reviews it and lands it through a Kiln work package.
