@@ -1,3 +1,0 @@
-# pending
-# needs: demand
-# X<int>::f() changes on use

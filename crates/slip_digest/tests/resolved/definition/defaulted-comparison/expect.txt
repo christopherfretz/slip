@@ -1,0 +1,2 @@
+resolved S::operator==(const S &) const::<definition>
+added h(const S &)

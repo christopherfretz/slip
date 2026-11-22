@@ -1,0 +1,2 @@
+# The pattern's body is pending (statements); its type is `auto`.
+changed Q<int>::g()::<definition>

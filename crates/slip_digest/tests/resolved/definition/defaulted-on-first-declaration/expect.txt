@@ -1,0 +1,2 @@
+resolved S::S(const S &)::<definition>
+added h()

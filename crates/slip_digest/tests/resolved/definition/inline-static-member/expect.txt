@@ -1,0 +1,6 @@
+# A<int>::c: its `eval` is pending on use (VarData eval, WP-046).
+changed A<int>::c
+present A<int>::<definition>
+resolved A<int>::c::<definition>
+resolved A<int>::s::<definition>
+added h()

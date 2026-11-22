@@ -126,7 +126,6 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
     // from a declaration an instantiation added first (WP-032 rule 1).
     let e = w.representative(e);
     let n = ast.decls.get(e);
-    let link = ast.templ_link(e).get();
     let kind = n.kind();
     // A using-shadow is declared by its using-declaration, and an indirect
     // field by the anonymous member that holds it, which are written.
@@ -151,55 +150,34 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
     if info(n.kind()).on_demand {
         return Some(UnitClass::OnDemand);
     }
-    match link {
-        Some((TemplLinkKind::Specialization, _)) => {
-            if let Some((_, info)) = ast.spec_info(e) {
-                return spec_class(info.kind);
-            }
-        }
-        Some((TemplLinkKind::MemberOfSpecialization, _)) => {
-            if let Some((_, info)) = ast.member_spec_info(e) {
-                return spec_class(info.kind);
-            }
-        }
-        Some((
-            TemplLinkKind::Pattern
-            | TemplLinkKind::PartialSpecialization
-            | TemplLinkKind::DependentFriend,
-            _,
-        ))
-        | None => {}
-    }
-    // Every member of an implicit instantiation is derived (digest §2.2),
-    // whether or not Kiln gave it a `MemberSpecInfo`.
-    if in_implicit_instantiation(w, e) {
-        return Some(UnitClass::Derived);
+    // The effective kind (§11.10, `demand::effective_kind`): an
+    // implicit instantiation and its members are derived, an explicit
+    // instantiation (declaration or definition) or specialisation and
+    // their members declared, whatever Kiln instantiated first.
+    if let Some(k) = crate::demand::effective_kind(w, e) {
+        return spec_class(k);
     }
     Some(UnitClass::Declared)
 }
 
 /// An enclosing context of `e` is an implicitly instantiated
 /// specialisation, or a member of one, with no explicitly specialised
-/// context in between (whose members are written in source).
+/// context in between (whose members are written in source): the nearest
+/// context with an effective kind (`demand::effective_kind`, §11.10) has
+/// `ImplicitInstantiation`. A local class has none of its own, so the
+/// function that holds it answers.
 pub(crate) fn in_implicit_instantiation(w: &Walk<'_>, e: DeclId) -> bool {
+    implicit_from(w, w.ast.decls.get(e).ctx())
+}
+
+/// The first of `c` and its contexts with an effective kind has
+/// `ImplicitInstantiation`.
+fn implicit_from(w: &Walk<'_>, mut c: Option<DeclId>) -> bool {
     let ast = w.ast;
-    let mut c = ast.decls.get(e).ctx();
     for _ in 0..64 {
         let Some(x) = c else { return false };
-        let kind = if let Some((_, info)) = ast.spec_info(x) {
-            Some(info.kind)
-        } else {
-            ast.member_spec_info(x).map(|(_, info)| info.kind)
-        };
-        match kind {
-            Some(SpecKind::ImplicitInstantiation) => return true,
-            Some(
-                SpecKind::ExplicitSpecialization
-                | SpecKind::ExplicitInstantiationDeclaration
-                | SpecKind::ExplicitInstantiationDefinition
-                | SpecKind::Undeclared,
-            ) => return false,
-            None => {}
+        if let Some(k) = crate::demand::effective_kind(w, x) {
+            return k == SpecKind::ImplicitInstantiation;
         }
         c = ast.decls.get(x).ctx();
     }
@@ -214,7 +192,7 @@ fn own_spec_kind(w: &Walk<'_>, x: DeclId) -> Option<SpecKind> {
 
 /// Declaration `d` is *instantiated outside its class* (`spec/digest.md`
 /// §2.2, WP-032): its lexical context is an implicitly instantiated
-/// class specialisation or a member of one (`in_implicit_instantiation`
+/// class specialisation or a member of one (`implicit_from`
 /// applied to the lexical context), and its semantic context is not.
 pub(crate) fn instantiated_outside_class(w: &Walk<'_>, d: DeclId) -> bool {
     let ast = w.ast;
@@ -222,17 +200,28 @@ pub(crate) fn instantiated_outside_class(w: &Walk<'_>, d: DeclId) -> bool {
     if Some(lex) == ast.decls.get(d).ctx() {
         return false;
     }
-    let lexically = match own_spec_kind(w, lex) {
-        Some(SpecKind::ImplicitInstantiation) => true,
-        Some(
-            SpecKind::ExplicitSpecialization
-            | SpecKind::ExplicitInstantiationDeclaration
-            | SpecKind::ExplicitInstantiationDefinition
-            | SpecKind::Undeclared,
-        ) => false,
-        None => in_implicit_instantiation(w, lex),
-    };
+    let lexically = implicit_from(w, Some(lex));
     lexically && !in_implicit_instantiation(w, d)
+}
+
+/// Declaration `d` is one an instantiation made outside its class for a
+/// member of a class specialisation: its semantic context is a class, its
+/// lexical context another, and it was made by instantiation
+/// (`templ::instantiated_declaration`). Kiln makes one when a static data
+/// member of an instantiation is used (`instantiate_static_member_def`,
+/// `kiln_sema/src/templ/class.rs:1943`), in the namespace of the
+/// pattern's out-of-line definition.
+pub(crate) fn instantiated_out_of_line(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let Some(sem) = ast.decls.get(d).ctx() else { return false };
+    if ast.decls.record(sem).is_none() {
+        return false;
+    }
+    // A friend's lexical context is a class: only a namespace-scope
+    // declaration is out of line.
+    let lex = ast.decls.lexical_ctx(d);
+    lex.is_some_and(|l| l != sem && ast.decls.record(l).is_none())
+        && crate::templ::instantiated_declaration(w, d)
 }
 
 /// Declaration `d` names an entity outside the function whose body holds
@@ -359,8 +348,14 @@ fn all_implicit(w: &Walk<'_>, e: DeclId) -> bool {
 /// The declaration a unit's stream is read from (`spec/digest-kinds.md`
 /// §2.3): the definition if there is one, else the first declaration. A
 /// template is read from the template whose pattern is the definition.
+/// An entity of the definition class (§11.9) is read from its first
+/// written declaration (`Walk::representative`): its definition is the
+/// resolved unit `definition`'s, and Kiln may make it on use.
 pub(crate) fn read_decl(w: &Walk<'_>, e: DeclId) -> DeclId {
     let ast = w.ast;
+    if crate::demand::definition_class(w, e) {
+        return w.representative(e);
+    }
     if let Some(pattern) = ast.template_info(e).and_then(|i| i.pattern) {
         return defining_decl(w, pattern)
             .and_then(|def| ast.described_template(def))
@@ -707,7 +702,15 @@ impl Walk<'_> {
         {
             return chain;
         }
-        chain.into_iter().filter(|&d| !instantiated_outside_class(self, d)).collect()
+        // The out-of-line definition an instantiation makes for a static
+        // data member when it is used is the resolved unit `definition`'s
+        // (§11.9): the own unit does not read it.
+        let definition = self.unit.definition;
+        chain
+            .into_iter()
+            .filter(|&d| !instantiated_outside_class(self, d))
+            .filter(|&d| definition || !instantiated_out_of_line(self, d))
+            .collect()
     }
 
     /// The declaration an entity with a written declaration is classified
@@ -934,7 +937,7 @@ mod tests {
             let inst = *gs.last().expect("A<int>'s g");
             let g = w.entity(inst);
             assert!(outside_only(w, g));
-            assert!(crate::decl_func::definition_class(w, g));
+            assert!(crate::demand::definition_class(w, g));
         });
     }
 
@@ -1005,13 +1008,13 @@ mod tests {
             assert_eq!(w.representative(k), written);
             assert_eq!(w.redecls(k), vec![written]);
             assert_eq!(unit_class(w, k), Some(UnitClass::Declared));
-            assert!(!crate::decl_func::definition_class(w, k));
+            assert!(!crate::demand::definition_class(w, k));
             let js = named(w, "j", DeclKind::Function);
             let j = w.entity(js[1]);
             assert!(outside_only(w, j));
             assert_eq!(w.redecls(j).len(), 2, "both instantiations' declarations");
             assert_eq!(unit_class(w, j), Some(UnitClass::Derived));
-            assert!(crate::decl_func::definition_class(w, j));
+            assert!(crate::demand::definition_class(w, j));
         });
     }
 

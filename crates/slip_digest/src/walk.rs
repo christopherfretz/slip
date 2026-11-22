@@ -57,6 +57,10 @@ pub(crate) struct UnitState {
     pub types: HashMap<u64, TypeRef>,
     /// The expression walk's state.
     pub expr: ExprState,
+    /// The unit is a resolved unit `definition` (`demand.rs`), whose
+    /// stream reads every declaration of its entity, those an
+    /// instantiation made out of line included (`Walk::redecls`).
+    pub definition: bool,
 }
 
 /// The state of the expression walk in a unit (`expr.rs`): put aside with

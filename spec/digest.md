@@ -84,7 +84,10 @@ its content (§3.3).
 
 An explicit instantiation is not a unit of its own: it is a fact of the
 specialisation it names, whose unit is then declared (§2.2) and says
-whether it was explicitly instantiated, declared or defined. A
+whether it was explicitly instantiated, declared or defined. The members
+of a class so instantiated, by an explicit instantiation declaration
+(`extern template`) or definition, are declared units too, all of them,
+whatever Kiln instantiated before (`digest-kinds.md` §5.2, §11.10). A
 specialisation that was only named (a class template specialisation used
 as an incomplete type) is not a unit either: nothing is known of it but
 its key.
@@ -118,8 +121,11 @@ and **derived** otherwise. Derived units are:
 - an implicitly declared special member function, an implicitly declared
   comparison operator or an implicitly generated deduction guide, **if it is
   referenced or defined** in the translation unit;
-- an implicit instantiation: a class template specialisation's definition, a
-  function or variable specialisation, a member of a specialisation, an
+- an implicit instantiation: a class, function or variable template
+  specialisation whose kind is `ImplicitInstantiation`, a member of one
+  (a member's kind is its effective kind, `digest-kinds.md` §11.10: the
+  greater of its own and its class's, so a member of an explicit
+  instantiation is declared whatever Kiln instantiated first), an
   instantiated default argument or default member initialiser;
 - an entity every declaration of which an instantiation made outside its
   class (below), such as a friend declared only by a class template;
@@ -129,14 +135,20 @@ and **derived** otherwise. Derived units are:
 - a **resolved property** of a declared unit (kind `resolved`, parent the
   unit it belongs to, name the property): a fact Kiln computes for a
   declaration only when something needs it. Present only if computed.
-  The **definition** of an implicit instantiation or of an implicitly
-  defined member is one of these: such an entity is declared when it is
-  named and defined only when it is used, so its unit holds the
-  declaration and the resolved unit `definition` holds what the
-  definition added (the body, the initialiser, a deduced type, the
-  pattern a class was instantiated from). Otherwise a use added in one
+  The **definition** of an entity Kiln may define on use is one of these
+  (the *definition class*, `digest-kinds.md` §11.9: an implicit
+  instantiation, a specialisation named by an explicit instantiation
+  declaration, every member of an instantiated class, an implicitly
+  declared or first-declaration-defaulted function, a friend declared
+  only by instantiations): such an entity is declared when it is named
+  and defined only when it is used, so its unit holds the declaration
+  and the resolved unit `definition` holds what the definition added
+  (the body, the initialiser, a deduced type, the pattern a class was
+  instantiated from, a class's members). Otherwise a use added in one
   function would change the digest of every instantiation it is the
-  first to define, against rule 5 of §1.
+  first to define, against rule 5 of §1. Its unit is then derived or
+  declared as the entity is: `definition` of a member of an explicit
+  instantiation belongs to a declared unit.
 
 A declaration is **instantiated outside its class** when its lexical
 context is an implicitly instantiated class specialisation or a member of
@@ -188,12 +200,12 @@ used it (Kiln `62afe3289`), and where each goes:
 |---|---|
 | Implicit special members: declared by lookups, defined on odr-use | derived unit if referenced or defined; else nothing |
 | Implicit instantiations of every kind; the specialisation tables and their order | derived units; order not digested |
-| Bodies of a closure's conversion functions; definitions of defaulted comparisons; the implicit `==` of a defaulted `<=>` | derived units |
+| Bodies of a closure's conversion functions; definitions of defaulted comparisons; the implicit `==` of a defaulted `<=>` | `resolved` unit `definition` of their derived units |
 | The definition of an implicit instantiation or implicit member: body, initialiser, deduced type, the pattern chosen for a class | `resolved` unit `definition` (§2.2) |
 | An instantiated default argument or default member initialiser; whether one is still pending | derived unit; the pending mark is not digested |
 | The value of an immediate invocation inside a default argument, computed at its first use | `resolved` unit |
 | A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
-| A deduced return type of a template member | part of the instantiation's derived unit |
+| A deduced return type of a template member | `resolved` unit `definition` of the instantiation |
 | A variable's evaluated constant value (`eval`), default-argument immediate values | `resolved` unit |
 | A class's key function; `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
 | The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |

@@ -1453,6 +1453,15 @@ Further rules:
   not a namespace-scope `const` or `constexpr` variable without `extern`):
   only such names have a language linkage ([dcl.link]/1).
 - An injected-class-name is not a unit and a `Ref` never names one.
+- An entity with an effective kind (§11.10) is a declared unit when that
+  kind is an explicit instantiation (declaration or definition) or an
+  explicit specialisation, and a derived unit when it is
+  `ImplicitInstantiation`. So the members of `template struct X<int>;`
+  and of `extern template struct X<int>;` are declared units, all of
+  them (fields, functions, static data members, member classes and
+  enumerations, member templates), and are listed in their class, and a
+  member class used before the explicit instantiation of its class is
+  declared all the same.
 
 ### 5.3 Headers
 
@@ -4171,17 +4180,23 @@ the requirements.
 `from` is the template itself until Kiln instantiates the definition, and
 then the pattern chosen: the primary template's pattern or a partial
 specialisation. It is written as the `Ref` of the template or of the
-partial specialisation. For an implicit instantiation `from` and
-`from_args` are written in the resolved unit `definition` and not in the
-specialisation's own stream (§11.9), because they are known only once
-the definition exists.
+partial specialisation. For a specialisation of the definition class
+(kind `ImplicitInstantiation` or `ExplicitInstantiationDeclaration`)
+`from` and `from_args` are written in the resolved unit `definition` and
+not in the specialisation's own stream (§11.9), because they are known
+only once the definition exists; the own stream writes `Ref::none` and
+an absent list, without a cause.
+
+`MemberSpecInfo` `kind` is written as the member's effective kind
+(§11.10), not as Kiln holds it: Kiln's depends on what was instantiated
+first.
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `template` | entity | in | keyed | the primary template: the key's parent |
 | `args` | value | in | keyed | the discriminator, in canonical form (`TypeContext::canonical_args`); the sugar is not written |
 | `kind` | flag | in | enum SpecKind |  |
-| `from` | entity | in | ref | rule above (digest §8); in `definition` for an implicit instantiation (§11.9) |
+| `from` | entity | in | ref | rule above (digest §8); in `definition` for the definition class (§11.9) |
 | `from_args` | value | in | enum ArgView*? | the arguments deduced for the partial specialisation `from`; as `from` |
 | `point_of_instantiation` | location | out | - |  |
 | `print_args` | written | out | - | the arguments names print with: `args` without trailing defaults. It reaches the program only as text made from a name (digest §9) |
@@ -4194,7 +4209,7 @@ the definition exists.
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `instantiated_from` | entity | in | ref | the member of the pattern |
-| `kind` | flag | in | enum SpecKind |  |
+| `kind` | flag | in | enum SpecKind | the effective kind (§11.10) |
 | `point_of_instantiation` | location | out | - |  |
 
 ### `kiln_ast::templates::PartialSpecInfo`
@@ -5363,7 +5378,7 @@ The numbers are Slip's own and are never reused.
 | 5 | `dtor_delete` | a virtual destructor | `ref`: `ColdDeclData` `dtor_delete`; then `child?`: `dtor_delete_this` |
 | 6 | `inherited_constructor` | an inheriting constructor | `ref`: `inheriting_ctor`; then `ref`: `inherited_ctor` |
 | 7 | `default_immediates` | a function, a field or a `default_argument` unit | `value*` (§11.4) |
-| 8 | `definition` | an implicit instantiation or an implicitly declared member (§11.9) | the rows §11.9 lists, in table order |
+| 8 | `definition` | an entity of the definition class, or one whose definition an instantiation added outside its class (§11.9) | the rows §11.9 lists, in its order |
 
 A resolved unit `default_immediates` has a discriminator: the index of
 the parameter as `uv`, absent for a field.
@@ -5521,51 +5536,105 @@ and `0-visibility-cache`; `DefinitionBits`
 member or a builtin is a unit is decided from the streams the walk
 writes, never from the marks (§5.2).
 
-### 11.9 Definitions of implicit instantiations and implicit members
+### 11.9 Definitions made on use
 
 Kiln declares an implicit instantiation when something names it and
 defines it only when something uses it; it declares an implicit special
-member or comparison on lookup and defines it on odr-use. So that a
-unit's digest does not depend on which of the two happened (digest §1
-rule 5, §2.2), a unit of the **definition class** is written in two
-parts. The class is:
+member or comparison on lookup and defines it on odr-use; under an
+explicit instantiation it defines a member whose pattern is not yet
+defined at that point only on use. So that a unit's digest does not
+depend on which of these happened (digest §1 rule 5, §2.2), a unit of
+the **definition class** is written in two parts. The class is:
 
-1. a function, variable, member class or member enumeration whose
-   `SpecInfo` or `MemberSpecInfo` kind is `ImplicitInstantiation`;
-2. a class template specialisation of that kind;
-3. an implicitly declared special member function, comparison operator
-   or deduction guide, and the conversion functions of a closure type;
+1. a specialisation whose `SpecInfo` kind is `ImplicitInstantiation` or
+   `ExplicitInstantiationDeclaration`;
+2. a member whose effective kind (§11.10) is an instantiation
+   (`ImplicitInstantiation`, `ExplicitInstantiationDeclaration` or
+   `ExplicitInstantiationDefinition`), whatever its kind of entity:
+   under an explicit instantiation definition Kiln defines only the
+   members whose patterns are defined at that point ([temp.explicit]/10)
+   and the others on use, and a member class used before it stays as it
+   was;
+3. a function or deduction guide every declaration of which is implicit
+   (a special member function, a comparison operator, a deduction guide,
+   the conversion functions of a closure type), and a function
+   explicitly defaulted on its first written declaration;
 4. an entity all of whose declarations are instantiated outside their
    class (digest §2.2): a friend declared only by instantiations, whose
-   definition is instantiated on use. An entity with a declaration
-   written in source is classified from the earliest such declaration,
-   not from one an instantiation made before it.
+   definition is instantiated on use.
 
-The predicate reads only facts that do not change when the definition is
-made. For a unit of the class the rows below write their empty form in
-the unit's own stream, and are written, in the order given, in the
-resolved unit `definition` (§11.1), which exists if and only if the
-entity is defined:
+A specialisation whose `SpecInfo` kind is `ExplicitInstantiationDefinition`
+is not of the class: its definition is made at the explicit
+instantiation, used before it or not. An entity with a declaration
+written in source is classified from the earliest such declaration
+(`Walk::representative`), not from one an instantiation made before it.
+The predicate (`demand::definition_class`) reads only facts that do not
+change when the definition is made.
 
-| Entity | Rows moved to `definition` |
+A unit of the class is read from that earliest written declaration, not
+from the definition (§2.3 reads the definition otherwise), and its own
+stream reads none of the declarations an instantiation makes out of line
+for a member (`units::instantiated_out_of_line`: the definition Kiln
+makes at namespace scope when a static data member of an instantiation
+is used, `kiln_sema/src/templ/class.rs:1943`). For such a unit the rows
+below write their empty form in the unit's own stream, without a cause;
+`DeclMisc` `0-definition` is written clear and is in no stream: that
+`definition` exists says it. The rows are written, in the order given,
+in the resolved unit `definition` (§11.1):
+
+| Entity | Rows of `definition`, in order |
 |---|---|
-| a function | `FunctionData` `body`; `ColdDeclData` `ctor_inits`; the return type and `FnSpec` `0-return-deduced`, when the pattern's declared return type holds a placeholder |
-| a variable | `VarData` `init`; `VarSpec` `0-init-style`, `0-inline` and `0-inline-implied`; the type, when the pattern's declared type holds a placeholder |
-| a class | `SpecInfo` `from` and `from_args`; `RecordData` `members-fields`, `members-virtual`, `members-other`, `bases`, `defn`; `ColdDeclData` `friends`, `record_pack` |
-| an enumeration | `EnumData` `members`, `int_type`, `promotion_type`, `flags-fixed`, `flags-complete` |
+| every entity with a `SpecInfo` | `SpecInfo` `from`, `from_args` |
+| a function | its parameters (`FunctionData` `params`), as the own unit writes them, so that the body's local entities are numbered in this stream; `FunctionData` `body`; `ColdDeclData` `ctor_inits`; one flag word: `FnSpec` `0-is-coroutine`, `0-escalated`; and, when the pattern's declared return type holds a placeholder, `DeclNode` `ty-type` and one flag word: `FnSpec` `0-return-deduced` |
+| a variable | `VarData` `init`; `VarSpec` `0-init-style`; one flag word: `0-inline`, `0-inline-implied`; and, when the pattern's declared type holds a placeholder, `DeclNode` `ty-type` |
+| a class | `RecordData` `members-fields`, `members-virtual`, `members-other`, `bases`, `defn`; `ColdDeclData` `friends`, `record_pack` |
+| an enumeration | `EnumData` `members`, `int_type`, `promotion_type`; one flag word: `flags-fixed`, `flags-complete` |
 
-A function or variable of the class whose pattern's declared type holds a
-placeholder (`auto`, `decltype(auto)`, a constrained placeholder) writes,
-in its own stream, its type with the placeholder as the pattern declares
-it: the deduced type is known only once the definition exists and is in
-`definition`. The pattern is the declaration `SpecInfo` `template` or
-`MemberSpecInfo` `instantiated_from` names; whether its type holds a
-placeholder is a fact of the pattern. The placeholder is read from the
-pattern and never from the instantiation: Kiln re-points the
-instantiation's `DeclNode` `ty` when it deduces, and keeps the
-substituted placeholder only in its semantic analysis
-(`declared_returns`). `FnSpec` `0-return-deduced` is moved with the type
-because nothing says it is set before the deduction.
+Each row is written as the own unit would write it for an entity not of
+the class, read from the defining declaration with the same merging over
+the declarations: the flag bits are set if any declaration sets them,
+`init` and `0-init-style` are those of the declaration that holds the
+initialiser. Here the declarations an instantiation made out of line are
+read too. The empty forms in the own stream are: `ty-type` absent, an
+empty list for each list, `child?` and `uv?` absent, `0-init-style` `C`,
+each moved flag bit clear, `SpecInfo` `from` `Ref::none` and `from_args`
+absent.
+
+**When `definition` exists** (`demand::defining_declaration`): when Kiln
+holds the definition at the end of the translation unit.
+
+- A function: `Ast::definition` (`kiln_ast/src/ast.rs:678`, recorded by
+  `set_body`, `kiln_ast/src/builder.rs:907`), if that declaration has a
+  body. A function deleted on its first declaration is not defined by
+  that: `= delete` is a fact of the declaration.
+- A variable: the first declaration, over every declaration Kiln
+  chained, that is a definition (`units::is_var_definition`, Kiln's
+  `Sema::is_var_definition`), else the one that holds an initialiser (an
+  in-class `static const int x = 1;` of an instantiation, whose
+  initialiser Kiln substitutes on use, `subst_static_member_init`).
+- A class or an enumeration: `Ast::definition`, recorded when the
+  definition begins (`begin_record_definition`,
+  `begin_enum_definition`, `kiln_ast/src/builder.rs:585`, `:665`).
+- Any other entity of the class (a field, a typedef, an enumerator, a
+  member template) has none: nothing of it is made on use.
+- An entity with a written declaration whose definition an instantiation
+  added outside its class (WP-032 rule 4: a friend defined in a class
+  template and declared in its namespace too) is not of the class, but
+  that definition is not its own unit's (§2.2): it is its `definition`,
+  read from the declaration `Ast::definition` names, if it has a body.
+
+**The placeholder.** Whether the pattern's declared type holds a
+placeholder (`auto`, `decltype(auto)`, a constrained placeholder, a
+class template to deduce) is a fact of the pattern: the declaration
+`MemberSpecInfo` `instantiated_from` names, or the pattern of the
+template `SpecInfo` `template` names, on any of its declarations, walked
+through pointers, references, member pointers, a function's return type
+and arrays' elements, sugar included (`demand::pattern_holds_placeholder`,
+as Kiln's `Sema::contains_placeholder`,
+`kiln_sema/src/templ/auto.rs:588-619`). It is read from the pattern and
+never from the instantiation: Kiln re-points the instantiation's
+`DeclNode` `ty` when it deduces. `FnSpec` `0-return-deduced` is moved
+with the type because nothing says it is set before the deduction.
 
 The three `VarSpec` rows are the ones instantiating a static data
 member's initialiser sets (Kiln's `VarSpec::LATE`). The other late bits
@@ -5575,19 +5644,55 @@ declaration or with the instantiation of the initialiser; `0-nrvo` is
 set when the variable's scope ends, inside the body that holds it. The
 Oven sets no `VarSpec` bit.
 
-A class template specialisation whose kind is `ImplicitInstantiation`
-and that has no definition (the instantiation failed, or Kiln set the
-kind first) has a unit and no `definition`, like a function declared and
-not defined.
+A class template specialisation of the class that has no definition
+(the instantiation failed, or it was only named) has a unit and no
+`definition`, like a function declared and not defined.
 
 The split costs one more unit for each defined instantiation. Without it
 a use added to one function, which is the first to need the body of some
 `std::vector<int>::size`, would be reported as a change of that member
-as well.
+as well. Decisions and Kiln's evidence:
+`spec/landed/digest-kinds/WP-045.md`.
 
-The rows moved for a placeholder and the three `VarSpec` rows follow
-Kiln's answers to `docs/requests/KQ1-digest-fields.md` (C12, C13); the
-first implementation checks each with a `demand` test.
+### 11.10 The effective kind
+
+Kiln gives a member of an instantiated class a `MemberSpecInfo` whose
+kind depends on what was instantiated first: a member class already
+defined stays `ImplicitInstantiation` under a later explicit
+instantiation of its class (`kiln_sema/src/templ/spec.rs:1366-1398`),
+a member function keeps `ImplicitInstantiation` under one, and a field
+has none. The digest reads one kind for every entity, its **effective
+kind** (`demand::effective_kind`), computed from facts that do not move:
+
+- an entity with its own `SpecInfo` (a specialisation of a template)
+  has that kind, and nothing below applies to it;
+- a member whose `MemberSpecInfo` kind is `ExplicitSpecialization` has
+  that kind;
+- any other member of a class or enumeration that has the effective kind
+  of an instantiation has the greater of its own `MemberSpecInfo` kind
+  and the effective kind of its class, in the order
+  `ImplicitInstantiation` < `ExplicitInstantiationDeclaration` <
+  `ExplicitInstantiationDefinition` (`Undeclared` and no kind count as
+  least);
+- a member of an explicit specialisation, or of a class that is not
+  made by instantiation, has none (it is written in source);
+- a declaration that is no member (a friend an instantiation declared)
+  has none, whatever its `MemberSpecInfo` says: it may be written in
+  source too, and whether it exists only through instantiations is the
+  outside-only rule's (§2.2);
+- a local entity has none: it is written in full in the stream of what
+  holds it.
+
+`MemberSpecInfo` and `SpecInfo` are read from the entity's first
+declaration, which Kiln keys them by. What reads the effective kind:
+the unit class (§5.2, digest §2.2: an entity with an effective kind is a
+declared unit when the kind is an explicit instantiation or an explicit
+specialisation, derived when it is `ImplicitInstantiation`), the kind
+`MemberSpecInfo` writes (§9.4), the definition class (§11.9), and
+whether a field was instantiated from a pattern (§11.4). Whether a
+context is an implicit instantiation, for the declarations instantiated
+outside their class (digest §2.2), is the effective kind of the nearest
+context that has one (`units::in_implicit_instantiation`).
 
 ## 12. Unsupported
 
@@ -5741,6 +5846,16 @@ of a reported difference.
 
 ### Hazards accepted for now
 
+- **Member classes used before an explicit instantiation** (§11.10). A
+  member class defined, by a use, before the explicit instantiation of
+  its enclosing class stays implicitly instantiated in Kiln, as in clang
+  (its vtable is not required, `kiln_sema/src/templ/spec.rs:1366-1398`);
+  the digest writes the kind the explicit instantiation gives, so its
+  unit is declared and the same either way. What a use that moves across
+  the explicit instantiation therefore does not show: that the member
+  class's vtable and its virtual functions are no longer required at the
+  explicit instantiation (code generation, not the digest, sees it), and
+  that Kiln does not instantiate its members again there.
 - **First spellings** (§4.4). A transformation that changes which of two
   equivalent dependent spellings Kiln meets first can change a profile's
   digest. It errs towards a reported difference.

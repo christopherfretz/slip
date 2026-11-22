@@ -1,0 +1,3 @@
+resolved B0<int>::<definition>
+resolved X<int>::<definition>
+added h()
