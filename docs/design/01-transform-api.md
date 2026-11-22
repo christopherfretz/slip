@@ -333,6 +333,7 @@ consteval void relocate_namespace_impl(info old_ns, std::string_view to) {
   auto moves = [](info e) { return holds(fact_key{"owned", key_of(e)}); };
 
   // 1. Each owned `namespace legacy {` is renamed; each entity declared there is declared relocated.
+  //    (Simplified: a block that also holds members which must stay is split, not renamed. 03 §7.)
   for (info site : declarations_of(old_ns))
     if (is_owned(file_of(name_range_of(site))))
       replace(name_range_of(site), text(to));
