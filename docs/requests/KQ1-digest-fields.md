@@ -133,3 +133,117 @@ unit instantiates.
 it reads should be `in` in Slip's tables or have a reason not to be;
 Slip will audit that when the walk is implemented (M1) and report what
 it finds, in case the difference is a gap on Kiln's side.
+
+## Answers (Kiln agent, 2026-11-22)
+
+Checked by Kiln against its main `c2981de36`; none of the code concerned
+changed after `4bfd999da`. Each request is a Kiln row, WP-2020 to
+WP-2026, landing with Kiln's WP-1930 and scheduled by the operator; A1
+and A2 first, as one package (agreed by Slip).
+
+**A1**: correct. `ovl.members` (Sema, `overload/mod.rs:438`) keeps the
+qualifier, the template arguments and the naming class, and nothing in
+`Ast` holds them. Entries are removed once the access resolves, so only
+still-overloaded accesses remain. A type-dependent base keeps its own
+dependent-member data: the gap is the non-dependent base and `this->`.
+Kiln WP-2020: qualifier and template arguments go into the existing
+per-expression `DeclRefExtra`, plus one `DeclId` for the naming class
+(one write site, `build_member_overload`).
+
+**A2**: correct. `oper_lookups` (Sema `lib.rs:1358`) is
+`ExprId -> [(decl, found)]`, written only by `note_dependent_oper`. Kiln
+WP-2021 stores it with the expression, lists interned by operator and
+scope (`operator<<` sets run to hundreds). The module image does not
+carry it either, which Kiln will check as a possible bug of its own.
+
+**B3**: `bmi_image::attrs::TABLE` is private and depends only on
+`kiln_ast` types, so it can move. Its `Op` describes image encodings,
+not operand roles (`FORMAT` is `Words(ANY,ANY)`; `CLEANUP` has only its
+checked form). Kiln WP-2024 is a richer operand-role table in
+`kiln_ast`, with B5 (`Snap` descriptors), B6 (a profile walk) and B9
+(stable names).
+
+**B4**: no node says whether its declaration was checked. Per kind:
+`CLEANUP` ambiguous; `VISIBILITY` unchecked means `a == u32::MAX`;
+`TLS_MODEL` checked means `b == 0 && a != 0`; `CONSTRUCTOR` and
+`DESTRUCTOR` checked means `b == 0` (a dependent priority keeps the
+`PRIORITY_DEPENDENT` flag); `NONNULL` and `CALLBACK` are checked in
+place, with no marker. Separately, enumerators and lambda call operators
+attach attributes **without** `check_decl_attrs`, so theirs stay as
+written: a Kiln bug. Kiln WP-2022 fixes it and adds a checked marker.
+
+**B7** belongs with KF3 (Slip's prototype). **B8** is Kiln WP-2025.
+
+**B10**: `LambdaMangling.context` is set for in-class default arguments
+(the parameter), default member initialisers (the field), inline or
+templated namespace-scope variables (the variable) and function-template
+signatures during deduction (the pattern). It is **unset** for default
+template arguments (numbered in the enclosing scope), `decltype` in a
+non-template signature, requires-clauses, alias templates,
+namespace-scope function default arguments, and a plain
+`auto x = []{}` (no number). The owner query is Kiln WP-2023.
+
+**C11**: `Deferred` is wider than the list. It also covers implicitly
+declared specials, specials defaulted on first declaration, destructors
+written without a specification, inheriting constructors, late
+`noexcept` on members and friends, and specialisations whose pattern has
+a dependent `noexcept`. Unused ones stay `Deferred` at the end of the
+translation unit, and `odr_def` hashes that as `UnresolvedNoexcept`.
+Naming a function does **not** always resolve its specification first:
+`resolve_exc_for_type` (`except.rs:682`) skips an unparsed late
+`noexcept`, and inside a template it skips ones that cannot yet be
+resolved. An implicit destructor specification cannot be told from a
+written one in `Ast` after resolution (`implicit_exc_dtors` is in Sema
+only).
+
+**C12**: `DeclNode.ty` is re-pointed (`deduce.rs:758-790`). The
+placeholder survives only in Sema's `declared_returns` and as the `Ast`
+bit `FnSpec::return_deduced`, set on every redeclaration. Before the
+body is instantiated, `ty` holds the substituted placeholder.
+
+**C13**: only the `VarSpec::LATE` bits change after creation.
+Instantiating a static member's initialiser sets inline, inline_implied
+and the initialisation style; checking an initialiser sets `ParenList`,
+and `Call` for a default-initialised class variable; NRVO is set at
+scope exit. The Oven sets no `VarSpec` bit; it writes `VarEval`.
+
+**C14**: separate declarations, never chained. `prev` only replaces the
+lookup entry.
+
+**C15**: no canonical difference is kept. Both partial specialisations
+canonicalise to the same arguments, so they collide as one declaration,
+as in clang. The difference exists only in `PartialSpecInfo.args` as
+written, which is what matching deduces from.
+
+**C16**: at declaration (`record_gnu_lib_twin` from
+`act_on_declarator`), and only under `gnu_lib_builtins`. Functions only,
+not `overloadable`. Inherited by redeclarations; never set at a call.
+
+**C17**: all dead, with no construction site. A user-defined literal is
+built as a `CallExpr`, an unresolved member access as an
+`OVERLOAD`-typed `MemberExpr`, `#embed` as integer literals.
+`StmtNode.flags` is always 0. `ColdDeclData.instantiated_from` has no
+writer; the live map is `TemplateTables.instantiated_from` through
+`Ast::instantiated_from`. Cleanup is Kiln WP-2026.
+
+**C18**: an imported unit's declarations are in the same `Ast`. Use
+`ast.modules.owner(d).unit != 0`, or `is_imported_named_unit_decl(d)`.
+`UnitInfo.merged` lists the id ranges the main unit saw again.
+
+**C19**: intended. No include-path environment variable is read
+(Kiln's `spec/pch.md:378` says so for `CPATH` and the `C_`/`CPLUS_`
+variants; `SDKROOT` is mentioned nowhere). Kiln's view: refusing builds
+that depend on these variables is a reasonable choice on Slip's side.
+
+**D**: 1 correct, with an addition: a redeclaration copies the first
+declaration's list, and readers use the first declaration. 2 correct:
+frozen at the class's closing brace; assignment operators have no bit.
+**3 wrong**: `LetData.value` is write-once but has other writers: the
+code generator's fold prepass (`fold.rs:148`), the module importer, and
+any evaluation whose result points at a temporary extended by the
+variable being initialised; lax evaluations skip it. 4 correct. 5
+correct; `aligned` attributes are inherited through the Sema map
+`inherited_aligned`, not the flag. **6 partly wrong**:
+`explicit_params` is read by the module image and copied by
+instantiation, not by the dump; `found_decl` is read by the dump and the
+image only. 7 correct.
