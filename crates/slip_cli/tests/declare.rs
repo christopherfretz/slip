@@ -498,10 +498,11 @@ fn with_input<R: Send>(source: &str, f: impl FnOnce(&Input<'_>) -> R + Send) -> 
             std::thread::Builder::new()
                 .stack_size(slip_digest::STACK_SIZE)
                 .spawn_scoped(scope, || {
-                    let path = |f: slip_kiln::kiln::source::FileId| {
-                        paths.get(f.index()).cloned().unwrap_or_default()
-                    };
-                    f(&Input { ast, sm, subject_path: &path })
+                    f(&Input {
+                        ast,
+                        sm,
+                        subject_path: &|file| paths.get(file.index()).cloned().unwrap_or_default(),
+                    })
                 })
                 .expect("a thread for the walk")
                 .join()
