@@ -205,6 +205,7 @@ fn rules_merge_a_namespace() {
 fn written(key: u8, digest: u8, kind: KeyKind) -> Written {
     Written {
         entity: None,
+        read: None,
         key: Digest([key; 32]),
         kind,
         digest: Digest([digest; 32]),

@@ -4241,6 +4241,19 @@ initialisation of an instantiated variable is unordered
 lists no instantiation. The rows that record what was instantiated, and in
 what order, are `demand`.
 
+`member_like_friend` names the class specialisation in which a friend
+function template whose constraint depends on the class's parameters
+([temp.friend]/9) is mangled: such a friend is declared by each
+specialisation apart and exists only through instantiations, so it is a
+derived unit (digest §2.2) and that specialisation is its key's parent. A
+non-template friend with a requires-clause, which Kiln's mangler scopes
+the same way, has as parent the class specialisation that declares it.
+`instantiated_from` is written as it is for a declaration instantiated
+outside its class (digest §2.2) and for any other instantiated
+declaration; on a declaration written in source, an entry naming a
+friend's pattern (a declaration lexically in a class and semantically in
+a namespace), which an instantiation set there, is written absent.
+
 ### `kiln_ast::templates::TemplateTables`
 
 `kind=struct; pin=schema`
@@ -5511,7 +5524,12 @@ parts. The class is:
    `SpecInfo` or `MemberSpecInfo` kind is `ImplicitInstantiation`;
 2. a class template specialisation of that kind;
 3. an implicitly declared special member function, comparison operator
-   or deduction guide, and the conversion functions of a closure type.
+   or deduction guide, and the conversion functions of a closure type;
+4. an entity all of whose declarations are instantiated outside their
+   class (digest §2.2): a friend declared only by instantiations, whose
+   definition is instantiated on use. An entity with a declaration
+   written in source is classified from the earliest such declaration,
+   not from one an instantiation made before it.
 
 The predicate reads only facts that do not change when the definition is
 made. For a unit of the class the rows below write their empty form in
