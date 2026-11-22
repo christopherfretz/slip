@@ -972,7 +972,7 @@ fn sanitizers(s: &mut Stream, set: SanitizerSet) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tables::attr_node;
+    use crate::tables::{attr_node, string_encoding, value_kind};
 
     /// The constants of a module of `tables.rs`: `(name, tag, decision)`.
     fn generated_consts(module: &str) -> Vec<(String, u32, String)> {
@@ -1332,28 +1332,44 @@ mod tests {
     // `ALIAS.a`, `IFUNC.a`: string operands, written by `value::string`.
     #[test]
     fn s10_1_string_operands() {
-        let one = |src: &str, name: &str, kind: Row, syntax: Row, opt: bool| {
+        let one = |src: &str, name: &str, kind: Row, syntax: Row, opt: bool, text: &[u8]| {
             let want = bytes(|s| {
                 s.count(1);
                 head(s, kind, syntax, &[false]);
                 if opt {
                     s.opt(true);
                 }
-                s.pending(Area::Value);
+                // `string` (§10.3): the code units, then the encoding.
+                s.bytes(text).tag(string_encoding::ORDINARY);
                 no_annotations(s);
             });
-            assert_eq!(decl_bytes(src, "c++20", name), (want, Some(Cause::Pending(Area::Value))));
+            assert_eq!(decl_bytes(src, "c++20", name), (want, None));
         };
-        one(r#"void f() asm("g");"#, "f", attr_kind::ASM_LABEL, KEYWORD, false);
-        one(r#"int v __attribute__((section("s")));"#, "v", attr_kind::SECTION, GNU, true);
-        one(r#"__attribute__((target("avx"))) void f();"#, "f", attr_kind::TARGET, GNU, true);
-        one(r#"[[omp::assume("ompx_a")]] void f();"#, "f", attr_kind::OMP_ASSUME, CXX11, true);
+        one(r#"void f() asm("g");"#, "f", attr_kind::ASM_LABEL, KEYWORD, false, b"g");
+        one(r#"int v __attribute__((section("s")));"#, "v", attr_kind::SECTION, GNU, true, b"s");
+        one(
+            r#"__attribute__((target("avx"))) void f();"#,
+            "f",
+            attr_kind::TARGET,
+            GNU,
+            true,
+            b"avx",
+        );
+        one(
+            r#"[[omp::assume("ompx_a")]] void f();"#,
+            "f",
+            attr_kind::OMP_ASSUME,
+            CXX11,
+            true,
+            b"ompx_a",
+        );
         one(
             r#"extern "C" void h() {} extern "C" void g() __attribute__((alias("h")));"#,
             "g",
             attr_kind::ALIAS,
             GNU,
             false,
+            b"h",
         );
         one(
             r#"extern "C" void (*r())() { return 0; } extern "C" void g() __attribute__((ifunc("r")));"#,
@@ -1361,6 +1377,7 @@ mod tests {
             attr_kind::IFUNC,
             GNU,
             false,
+            b"r",
         );
     }
 
@@ -1372,7 +1389,7 @@ mod tests {
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::PRAGMA_CLANG_SECTION, GNU, &[true]);
-            s.opt(true).pending(Area::Value).uv(1);
+            s.opt(true).bytes(b"s").tag(string_encoding::ORDINARY).uv(1);
             no_annotations(s);
         });
         assert_eq!(CLANG_SECTION_KINDS[1], "data");
@@ -1481,16 +1498,16 @@ mod tests {
     }
 
     // §10.5 `AnnotArena` `of_decl`, `Annotation` `value`, `written_type`,
-    // `expr`: the value (`value`'s placeholder), the type, the expression
+    // `expr`: the value (`value`, here an `Int`), the type, the expression
     // (`expr`'s placeholder); `of_base` is a count of the bases.
     #[test]
     fn s10_5_annotations() {
         let (got, cause) = decl_bytes("[[=1]] void f();", "c++26", "f");
         let start = bytes(|s| {
-            s.count(0).count(1).opt(true).pending(Area::Value);
+            s.count(0).count(1).opt(true).tag(value_kind::INT);
         });
         assert!(got.starts_with(&start), "{got:?}");
-        assert_eq!(cause, Some(Cause::Pending(Area::Value)));
+        assert_eq!(cause, Some(Cause::Pending(Area::Expr)));
         let end = bytes(|s| {
             s.pending(Area::Expr).count(0);
         });
@@ -1500,7 +1517,7 @@ mod tests {
         let src = "struct Base {}; struct Base2 {}; struct D : Base, [[=1]] Base2 {};";
         let (got, _) = decl_bytes(src, "c++26", "D");
         let start = bytes(|s| {
-            s.count(0).count(0).count(2).count(0).count(1).opt(true).pending(Area::Value);
+            s.count(0).count(0).count(2).count(0).count(1).opt(true).tag(value_kind::INT);
         });
         assert!(got.starts_with(&start), "{got:?}");
     }
