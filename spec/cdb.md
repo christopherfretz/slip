@@ -290,16 +290,19 @@ Further rules of `ByExtension`:
 ### 6.1 `KilnCheck`: the command line checked
 
 `slip_kiln::KilnCheck` parses, with `kiln_driver::args::Args::parse_as`,
-exactly the command line the parse task gives Kiln (`spec/model.md` §8.4),
-with a stand-in dependency-file path:
+exactly the command line the parse task gives Kiln's front-end library
+entry (`spec/model.md` §8.4):
 
 ```
-argv[0]  -fsyntax-only -MD -MF <dep file> -MT slip.d  argv[1..]  -fdiagnostics-format=json
+argv[0]  -fsyntax-only  argv[1..]
 ```
 
-Slip's own options come first, where no argument of the command can take
-them as its value; the diagnostic format comes last, so that it wins over
-the command's own `-fdiagnostics-format=`.
+`-fsyntax-only` comes first, where no argument of the command can take it
+as its value. The entry writes nothing and renders nothing, so the
+command's own `-MD`, `-MF`, `-MT`, `-MP`, `-MJ`, `-o` and
+`-fdiagnostics-format=` do not matter to the parse and are not checked; a
+later phase option (`-c`, `-S`, `--precompile`) leaves the action
+`-fsyntax-only`, as in clang.
 
 `argv[0]` is the program name, except that a name Kiln's driver would run as
 its dependency scanner (`kiln_driver::scan_deps::is_scanner_name` of its
@@ -323,16 +326,33 @@ In this order; the first that applies decides.
    - any other: `UnsupportedFlag`, detail the argument of the command as
      written: the first argument equal to the option Kiln names (option and
      value joined when the option ends in `=`), else the first one that
-     starts with it, else that reconstructed spelling.
-3. The command's own arguments override what the parse relies on:
-   - the diagnostic format is not the JSON one Slip appended (only an option
-     taking a separate value, left without one at the end of the command,
-     can do that): `UnsupportedFlag`, detail the command's last argument;
-   - the action is not `-fsyntax-only`, or the dependency output is not
-     exactly every header (`-MD`), to Slip's file, under the one target
-     `slip.d`, without `-MP`, `-MG`, `-MJ` (for example `-Wp,-MMD,<f>`):
-     `UnsupportedFlag`, detail the first argument starting with `-Wp,`,
-     `-M` or `--`, else `an option that overrides -fsyntax-only or -MD`.
+     starts with it, else that reconstructed spelling. (An option taking a
+     separate value, left without one at the end of the command, is
+     `MissingValue` here.)
+3. The front-end library entry would refuse the command, decided from
+   Kiln's public `Args` fields as the entry's own checks read them:
+   - what it refuses without running (`NotSyntaxOnly`): the action is not
+     `-fsyntax-only` (`-E`, `-fsyntax-only` being overridden only by an
+     earlier phase), `--help`, `-###` (`print_commands`),
+     `-print-resource-dir`, a toolchain probe (`-dumpversion`,
+     `-dumpmachine`, `-print-*`: `ProbeArgs::any`), `-M`/`-MM`
+     (`deps.only`), or a `-fmodule-header` input that is not built
+     (`Args::module_header_job` other than `Build`);
+   - standard input as the one input (`-`; `NotOneInput`);
+   - what it refuses with `drv_front_end_unsupported` when written on the
+     command line: `-verify` (`Args::verify`), `-include-pch`
+     (`pch.include`).
+
+   `UnsupportedFlag`, detail the argument responsible: the last argument
+   of the shortest prefix `argv[1..=k]` of the command that is refused (in
+   a prefix with no single input yet, a `-fmodule-header` counts as
+   refused), or, when the prefix before it reports `MissingValue` for the
+   argument before it, that option (`-include-pch <f>` names
+   `-include-pch`). The check and the parse agree: a command `KilnCheck`
+   accepts is never `rejected` by the parse for one of these reasons. Not
+   covered, since the check reads no file: an `-include <h>` that Kiln's PCH
+   probe turns into `-include-pch <h>.pch` because that file exists
+   (`rejected` by the parse with `drv_front_end_unsupported`).
 4. Kiln finds no input, or more than one: `UnsupportedLanguage`
    (`Kiln finds no input in the command`, `Kiln finds N inputs in the
    command`).
@@ -462,11 +482,11 @@ files, the front-end check, and the tool versions.
   database format.
 - A launcher written as `env VAR=value compiler …` is not recognised; the
   entry is excluded as `malformed_entry` (several inputs).
-- Options that make the front end write files even under `-fsyntax-only`
-  (`-ftime-trace`, `-fconstexpr-report=`): `KilnCheck` accepts them today,
-  so a parse can write into the subject's build tree. Refuse them in the
-  check, or have Kiln offer a mode without side outputs
-  (`docs/requests/KF1-front-end-entry.md` h).
+- Kiln's front-end library entry writes no side output
+  (`-ftime-trace`, `-fconstexpr-report=`, `-MD`, …: `spec/model.md` §8.4),
+  except a module-cache build inside the job (`import std`), which can
+  still write to the user's cache (`docs/requests/KF1-front-end-entry.md`).
+  `KilnCheck` does not refuse `import std`; no corpus of M1 uses modules.
 - Entries with the same observer id whose main file or language differ can
   only arise if the file system changes while the plan is built. The first
   entry's are kept; the change is not detected.
