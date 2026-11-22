@@ -123,6 +123,7 @@ The primitives are those of `spec/model.md` §2.
 | `name` | a `Name` (§3.2) |
 | `ref` | a `Ref` (digest §4.1); an absent entity is `Ref::none` |
 | `key` | `digest`: the mapped `KeyId` of the entity (digest §3.4) |
+| `keyed` | nothing in the stream: the fact is part of the unit's key (§3) |
 | `type` | `digest`: the type digest of a `QualType` (§4.1) |
 | `value` | a constant by the rows of §8 |
 | `child` | the statement or expression node, walked here |
@@ -196,14 +197,17 @@ obligations 3 and 4 of digest §13, and the words concerned are listed in
 
 A node or record is written as:
 
-1. its tag, if it is a variant of a node enumeration;
-2. the `in` rows of its record's table that have no `kind` prefix, in
-   table order;
-3. the `in` rows prefixed with its kind, in table order. This is the
+1. the `in` rows of its record's table that have no `kind` prefix, in
+   table order. The row of the record's kind field comes first and writes
+   the node's tag;
+2. the `in` rows prefixed with its kind, in table order. This is the
    node's walk order (digest §4.3): the tables are ordered for it, not by
-   the position of the words in Kiln's record;
-4. for a node with cold-map entries, the `in` rows of the cold map's table
-   that apply to it, in table order, each as an optional value.
+   the position of the words in Kiln's record. A prefixed row replaces,
+   for its kind, an unprefixed row of the same member, at the unprefixed
+   row's position;
+3. for a declaration or expression, the `in` rows of its arena's cold-map
+   table (`ColdDeclData`, `ColdExprData`), in table order, each as an
+   optional value whether or not the map can hold an entry for the kind.
 
 The rows of one record that are encoded `bit` are gathered, in the order
 just given, into one flag word written as `uv` at the position of the first
@@ -234,7 +238,7 @@ from its first declaration, with these facts merged over every
 declaration of the chain: attributes (the union, as §10.1 orders it),
 default arguments and default template arguments (each from the
 declaration that gives it), the exception specification (from the
-declaration `Ast::exception_spec_of` answers for), `inline`, `constexpr`
+declaration the walk reads, §11.2), `inline`, `constexpr`
 and `constinit` (set if any declaration sets them), language linkage and
 module ownership (from the first declaration). A row merged in another way
 says so in its note.
@@ -281,13 +285,13 @@ parsed against Kiln. Which key kind each `DeclKind` has is in §5.2.
 | 15 | `partial_specialisation` | its parent is the template |
 | 16 | `deduction_guide` | |
 | 17 | `using_declaration` | a using-declaration, resolved or dependent |
-| 18 | `using_enum` | |
+| 18 | `using_enum` | keyed by content |
 | 19 | `namespace_alias` | |
 | 20 | `binding` | a structured binding at namespace scope |
 | 21 | `decomposition` | the variable of a structured binding declaration at namespace scope |
 | 22 | `using_directive` | keyed by content |
 | 23 | `static_assert` | keyed by content |
-| 24 | `explicit_instantiation` | keyed by content |
+| 24 | `explicit_instantiation` | not used: Kiln records an explicit instantiation as the kind of the specialisation (§9, `SpecKind`) |
 | 25 | `friend` | keyed by content |
 | 26 | `file_scope_asm` | keyed by content |
 | 27 | `consteval_block` | keyed by content |
@@ -295,6 +299,8 @@ parsed against Kiln. Which key kind each `DeclKind` has is in §5.2.
 | 29 | `order` | the order unit (digest §2.1) |
 | 30 | `default_argument` | an instantiated default argument or default member initialiser; its parent is the function or field |
 | 31 | `template_param_object` | a class-type constant used as a template argument; keyed by content |
+| 32 | `using_shadow` | one name a using-declaration brings into a scope |
+| 33 | `unresolved_if_exists` | the placeholder of a `using_if_exists` declaration whose name does not exist |
 
 ### 3.2 Name
 
@@ -325,13 +331,14 @@ parent key and nothing else.
 
 | KeyKind | `disc` is the digest of |
 |---|---|
-| `function`, `deduction_guide` | parameter types in order (`type*`), variadic, cv- and ref-qualifiers, explicit-object flag, trailing requires-clause (`profile?`); absent for a function with C language linkage |
+| `deduction_guide` | the `Ref` of the template deduced, then as `function` |
+| `function` | parameter types in order (`type*`), variadic, cv- and ref-qualifiers, explicit-object flag, trailing requires-clause (`profile?`); absent for a function with C language linkage |
 | `function_template` | the template head (§9, `TemplateParamList`), then the function's discriminator, then its return type |
 | `class_template`, `variable_template`, `alias_template`, `concept` | the template head |
 | `specialisation` | the canonical template arguments (`enum ArgView*`) |
 | `partial_specialisation` | the template head, then the argument pattern (`enum ArgView*`) |
 | `using_declaration` | the key of the scope its qualifier names; for a dependent one, the qualifier by structure (`enum Nns`) |
-| `using_enum` | the key of the enumeration |
+| `using_shadow` | the key of the entity the name stands for |
 | every content-keyed kind, `template_param_object` | the unit's own stream |
 | every other kind | absent |
 
@@ -377,9 +384,11 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    `ExcSpec::None` and `exc_protos` keeps the written specification of each
    non-canonical function node. A type digest is taken from the canonical
    type in every language mode. The exception specification of a
-   *function declaration* is a field of the function's unit (§5,
-   `FunctionData`), read through `Ast::exception_spec_of`, in every
-   language mode, so it is compared whether or not the type holds it.
+   *function declaration* is a field of the function's unit (§5.3,
+   `DeclNode`, `ty-exception-spec`), read from the declared type with
+   `TypeContext::proto` and `exc_spec`, which answer with the written
+   specification in every language mode, so it is compared whether or not
+   the type holds it.
 4. **Deferred exception specifications.** `ExcSpec::Deferred(d)` is
    canonical and distinct per declaration, and Kiln re-points the
    declaration's type when the specification is resolved. Whether it has
@@ -987,8 +996,8 @@ errs on the side of a reported difference ("Open questions").
 |---|---|---|---|---|
 | `None` | flag | in | tag 1 |  |
 | `Nothrow` | flag | in | tag 2 |  |
-| `DynamicNone` | written | out | as Nothrow | `throw()`: non-throwing, as Kiln's canonical form has it |
-| `NothrowAttr` | flag | in | tag 4 |  |
+| `DynamicNone` | written | out | as Nothrow | `throw()`: non-throwing, as `TypeContext::exc_identity` has it |
+| `NothrowAttr` | written | out | as Nothrow | `__attribute__((nothrow))`: non-throwing, as `TypeContext::exc_identity` has it |
 | `BasicNoexcept` | written | out | as Nothrow | `noexcept` without an operand |
 | `NoexceptExpr` | written | out | as Nothrow | written by its value: rule below |
 | `NoexceptExpr.expr` | written | out | - | the operand as written; `value` is the fact |
@@ -1001,11 +1010,12 @@ errs on the side of a reported difference ("Open questions").
 | `Deferred.0` | entity | demand | - | §11.2 |
 
 An exception specification is written in **normal form**: `None`;
-`Nothrow` (for `Nothrow`, `DynamicNone`, `BasicNoexcept` and a
-`NoexceptExpr` whose value is `True`); `None` for a `NoexceptExpr` whose
-value is `False`; `DependentNoexcept` with the profile for a `NoexceptExpr`
-whose value is `Dependent`; `NothrowAttr` (kept apart: the attribute is not
-part of the function type as `noexcept` is); `Dynamic` with its types.
+`Nothrow` (for `Nothrow`, `NothrowAttr`, `DynamicNone`, `BasicNoexcept`
+and a `NoexceptExpr` whose value is `True`); `None` for a `NoexceptExpr`
+whose value is `False`; `DependentNoexcept` with the profile for a
+`NoexceptExpr` whose value is `Dependent`; `Dynamic` with its types (kept,
+though Kiln's canonical form from C++17 on is `None`: before C++17 the
+types are behaviour).
 
 ### `kiln_ast::types::func::NoexceptValue`
 
@@ -1336,6 +1346,950 @@ they are functions of the class units.
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `map` | bookkeeping | demand | - | §11: filled when a layout is asked for |
+
+## 5. Declarations
+
+### 5.1 A declaration's stream
+
+A declaration, whether a unit (digest §2) or walked in place (§2.4), is
+written as:
+
+1. the rows of `DeclNode`, which bring in the payload record through the
+   `data` row of the declaration's kind;
+2. the rows of `ColdDeclData`;
+3. the row `decl_attrs` of `AttrArena` (§10.1) and the rows of `AnnotArena`
+   (§10.5);
+4. for a template, a template parameter or a specialisation, the rows §9
+   gives for it.
+
+For a unit the entity is read as §2.3 says. A row encoded `keyed` writes
+nothing here.
+
+### 5.2 Which declarations are units
+
+"unit" means a declared unit, or a derived one when the entity is implicit,
+instantiated or a builtin (digest §2.2). "local" means §2.4 applies inside
+a function body, default argument, initialiser or lambda; a kind that is
+both is a unit at namespace or class scope. "parent" means the declaration
+is written inside another declaration's stream. This table is not parsed
+against Kiln.
+
+| DeclKind | Is | KeyKind | Name; discriminator |
+|---|---|---|---|
+| `TranslationUnit` | nothing | | it is `Parent::root` |
+| `Namespace` | unit | `namespace` | identifier, or `anonymous` |
+| `NamespaceAlias` | unit, local | `namespace_alias` | identifier |
+| `LinkageSpec`, `Export` | nothing | | transparent: what they say is a fact of each declaration inside |
+| `Empty`, `AccessSpec` | nothing | | |
+| `FileScopeAsm` | unit | `file_scope_asm` | `content` |
+| `UsingDirective` | unit, local | `using_directive` | `content` |
+| `Using` | unit, local | `using_declaration` | the name; the key of the scope the qualifier names |
+| `UsingEnum` | unit, local | `using_enum` | `content` |
+| `UsingShadow`, `ConstructorUsingShadow` | unit, local | `using_shadow` | the name; the key of the target |
+| `UnresolvedUsingValue`, `UnresolvedUsingTypename` | unit | `using_declaration` | the name; the qualifier by structure |
+| `UnresolvedUsingIfExists` | unit | `unresolved_if_exists` | the name |
+| `Typedef`, `TypeAlias` | unit, local | `alias` | identifier |
+| `Enum` | unit, local | `enumeration` | identifier, or digest §3.3 |
+| `EnumConstant` | unit | `enumerator` | identifier; the parent is the enumeration |
+| `CXXRecord` | unit, local | `class` | identifier, digest §3.3, or `closure` |
+| `ClassTemplateSpecialization`, `VarTemplateSpecialization` | unit | `specialisation` | the template's name; the canonical arguments; the parent is the template |
+| `ClassTemplatePartialSpecialization`, `VarTemplatePartialSpecialization` | unit | `partial_specialisation` | the template's name; head and argument pattern; the parent is the template |
+| `Field` | unit | `field` | identifier; unnamed: `unnamed_by` the name of its anonymous class, else `unnamed_ordinal` among the class's unnamed fields |
+| `IndirectField` | unit | `field` | identifier |
+| `Friend` | unit | `friend` | `content`; the parent is the class |
+| `Function`, `CXXMethod` | unit | `function` | identifier, `operator` or `literal_operator`; the signature |
+| `CXXConstructor`, `CXXDestructor`, `CXXConversion` | unit | `function` | `constructor`, `destructor`, `conversion`; the signature |
+| `CXXDeductionGuide` | unit | `deduction_guide` | `deduction_guide`; the template and the signature |
+| `Var` | unit, local | `variable`, or `decomposition` | identifier; a decomposition is named by its first binding |
+| `ParmVar` | local | | an ordinal, or `Ref::param` inside a signature |
+| `Binding` | unit, local | `binding` | identifier |
+| `ClassTemplate`, `FunctionTemplate`, `VarTemplate`, `TypeAliasTemplate`, `Concept` | unit | `class_template`, `function_template`, `variable_template`, `alias_template`, `concept` | identifier (or the function's name); §3.3 |
+| `BuiltinTemplate` | unit | `class_template` | identifier; the parent is `Parent::builtin` |
+| `TemplateTypeParm`, `NonTypeTemplateParm`, `TemplateTemplateParm` | parent | | written in the template head; referred to as `Ref::template_param` |
+| `RequiresExprBody` | nothing | | the requires-expression lists its parameters |
+| `LifetimeExtendedTemporary` | parent | | written at its `MaterializeTemporaryExpr` |
+| `TemplateParamObject` | unit | `template_param_object` | `content` |
+| `StaticAssert` | unit, local | `static_assert` | `content` |
+| `ConstevalBlock` | unit | `consteval_block` | `content` |
+| `Label`, `ContractResultName` | local | | an ordinal |
+| `UsingPack`, `FriendTemplate`, `ImplicitParam`, `ImplicitConceptSpecialization` | unsupported | | no construction site found in Kiln |
+
+Further rules:
+
+- A declaration whose `TemplLink` kind is `Pattern` is not a unit: it is
+  the pattern of its template and is written in the template's unit (§9).
+  One whose kind is `Specialization` is a `specialisation` unit whatever
+  its `DeclKind`; one whose kind is `MemberOfSpecialization` has its
+  ordinary key under the specialisation's key.
+- A block-scope function or `extern` variable declaration belongs to the
+  entity's unit at namespace scope (§2.4).
+- An implicit special member, an implicit comparison or an implicit
+  deduction guide is a unit only if it has a body or some unit's stream
+  holds a `Ref` to it; the walk finds that out from the streams it writes,
+  not from `DeclFlags` (`0-used`, `0-referenced`). The same holds for a
+  lazily declared builtin and for a `TemplateParamObject`.
+- A unit under `Parent::c_linkage` is a function or variable whose first
+  declaration is lexically inside a `LinkageSpec` of language `C`
+  (`ScopeData`, `aux-lang`), and that is not a class member.
+- An injected-class-name is not a unit and a `Ref` never names one.
+
+### 5.3 Headers
+
+### `kiln_ast::decl::DeclKind`
+
+`kind=enum; pin=schema; base=256`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `TranslationUnit` | bookkeeping | out | - | the root scope: `Parent::root` |
+| `Namespace` | flag | in | tag 258 |  |
+| `NamespaceAlias` | flag | in | tag 259 |  |
+| `LinkageSpec` | flag | out | - | transparent: the language is written by each declaration inside (`ScopeData`, `aux-lang`) |
+| `Export` | flag | out | - | transparent: module ownership is written by each declaration inside (`DeclMisc`, `0-module-ownership`) |
+| `Empty` | written | out | - | declares nothing |
+| `FileScopeAsm` | flag | in | tag 263 |  |
+| `UsingDirective` | flag | in | tag 264 |  |
+| `Using` | flag | in | tag 265 |  |
+| `UsingEnum` | flag | in | tag 266 |  |
+| `UsingShadow` | flag | in | tag 267 |  |
+| `ConstructorUsingShadow` | flag | in | tag 268 |  |
+| `UsingPack` | entity | unsupported | unbuilt | no construction site found in Kiln |
+| `UnresolvedUsingValue` | flag | in | tag 270 |  |
+| `UnresolvedUsingTypename` | flag | in | tag 271 |  |
+| `UnresolvedUsingIfExists` | flag | in | tag 272 |  |
+| `Typedef` | flag | in | tag 273 |  |
+| `TypeAlias` | written | out | as Typedef | `using` against `typedef` |
+| `Enum` | flag | in | tag 275 |  |
+| `EnumConstant` | flag | in | tag 276 |  |
+| `CXXRecord` | flag | in | tag 277 |  |
+| `ClassTemplateSpecialization` | flag | in | tag 278 |  |
+| `ClassTemplatePartialSpecialization` | flag | in | tag 279 |  |
+| `Field` | flag | in | tag 280 |  |
+| `IndirectField` | flag | in | tag 281 |  |
+| `AccessSpec` | written | out | - | access is written by each member (`DeclMisc`, `0-access`) |
+| `Friend` | flag | in | tag 283 |  |
+| `FriendTemplate` | entity | unsupported | unbuilt | no construction site found in Kiln |
+| `Function` | flag | in | tag 285 |  |
+| `CXXMethod` | flag | in | tag 286 |  |
+| `CXXConstructor` | flag | in | tag 287 |  |
+| `CXXDestructor` | flag | in | tag 288 |  |
+| `CXXConversion` | flag | in | tag 289 |  |
+| `CXXDeductionGuide` | flag | in | tag 290 |  |
+| `Var` | flag | in | tag 291 |  |
+| `ParmVar` | flag | in | tag 292 |  |
+| `ImplicitParam` | entity | unsupported | unbuilt | no construction site found in Kiln |
+| `Binding` | flag | in | tag 294 |  |
+| `VarTemplateSpecialization` | flag | in | tag 295 |  |
+| `VarTemplatePartialSpecialization` | flag | in | tag 296 |  |
+| `ClassTemplate` | flag | in | tag 297 |  |
+| `FunctionTemplate` | flag | in | tag 298 |  |
+| `VarTemplate` | flag | in | tag 299 |  |
+| `TypeAliasTemplate` | flag | in | tag 300 |  |
+| `Concept` | flag | in | tag 301 |  |
+| `BuiltinTemplate` | flag | in | tag 302 |  |
+| `TemplateTypeParm` | flag | in | tag 303 |  |
+| `NonTypeTemplateParm` | flag | in | tag 304 |  |
+| `TemplateTemplateParm` | flag | in | tag 305 |  |
+| `ImplicitConceptSpecialization` | entity | unsupported | unbuilt | no construction site found in Kiln |
+| `RequiresExprBody` | bookkeeping | out | - | the scope of a requires-expression's parameters, which the expression lists |
+| `LifetimeExtendedTemporary` | flag | in | tag 308 |  |
+| `TemplateParamObject` | flag | in | tag 309 |  |
+| `StaticAssert` | flag | in | tag 310 |  |
+| `Label` | flag | in | tag 311 |  |
+| `ContractResultName` | flag | in | tag 312 |  |
+| `ConstevalBlock` | flag | in | tag 313 |  |
+
+### `kiln_ast::decl::DeclNode`
+
+`kind=struct; pin=schema; selector=kiln_ast::decl::DeclKind`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `kind` | flag | in | enum DeclKind | the node's tag |
+| `flags` | flag | in | record DeclFlags |  |
+| `misc` | flag | in | record DeclMisc |  |
+| `name` | name | in | keyed | a local entity's name is not digested (digest §4.3) |
+| `ctx` | entity | in | keyed | the semantic context: the key's parent |
+| `next` | bookkeeping | out | - | the next member of the context |
+| `loc` | location | out | - | also chooses the unit's group (digest §11) |
+| `ty-type` | type | in | type? | the declared type; a function's is written without its exception specification |
+| `ty-exception-spec` | value | in | enum ExcSpec? | functions only, in normal form, from `TypeContext::proto` and `exc_spec`; absent for a function of the deferrable class (§11.2) |
+| `NamespaceAlias.data` | entity | in | ref | the namespace named, through any alias |
+| `FileScopeAsm.data` | value | in | child | the string literal |
+| `UsingDirective.data` | entity | in | ref | the nominated namespace |
+| `Using.data` | name | in | keyed | the qualifier: the scope it names is the discriminator |
+| `UsingEnum.data` | entity | in | ref |  |
+| `UsingShadow.data` | entity | in | keyed | the target: the discriminator |
+| `ConstructorUsingShadow.data` | entity | in | keyed | the target constructor: the discriminator |
+| `UnresolvedUsingValue.data` | name | in | keyed | the qualifier, in the discriminator as `enum Nns` |
+| `UnresolvedUsingTypename.data` | name | in | keyed | as `UnresolvedUsingValue.data` |
+| `Typedef.data` | type | in | record TypedefData |  |
+| `TypeAlias.data` | type | in | record TypedefData |  |
+| `Enum.data` | type | in | record EnumData |  |
+| `EnumConstant.data` | value | in | record EnumeratorData |  |
+| `CXXRecord.data` | type | in | record RecordData |  |
+| `ClassTemplateSpecialization.data` | type | in | record RecordData |  |
+| `ClassTemplatePartialSpecialization.data` | type | in | record RecordData |  |
+| `Field.data` | entity | in | record FieldData |  |
+| `IndirectField.data` | entity | in | ref* | the chain of fields from the class to the member |
+| `Friend.data` | entity | in | enum FriendTarget | read with `ty` through `DeclArena::friend_target` |
+| `Function.data` | entity | in | record FunctionData |  |
+| `CXXMethod.data` | entity | in | record FunctionData |  |
+| `CXXConstructor.data` | entity | in | record FunctionData |  |
+| `CXXDestructor.data` | entity | in | record FunctionData |  |
+| `CXXConversion.data` | entity | in | record FunctionData |  |
+| `CXXDeductionGuide.data` | entity | in | record FunctionData |  |
+| `Var.data` | entity | in | record VarData |  |
+| `ParmVar.data` | entity | in | record ParamData |  |
+| `VarTemplateSpecialization.data` | entity | in | record VarData |  |
+| `VarTemplatePartialSpecialization.data` | entity | in | record VarData |  |
+| `ClassTemplate.data` | entity | in | record TemplateInfo | index into `TemplateTables` `infos` |
+| `FunctionTemplate.data` | entity | in | record TemplateInfo |  |
+| `VarTemplate.data` | entity | in | record TemplateInfo |  |
+| `TypeAliasTemplate.data` | entity | in | record TemplateInfo |  |
+| `Concept.data` | entity | in | record TemplateInfo |  |
+| `BuiltinTemplate.data` | flag | out | - | which builtin template: its name, in the key, says the same |
+| `TemplateTypeParm.data` | entity | in | record TemplateParmInfo | index into `TemplateTables` `parms` |
+| `NonTypeTemplateParm.data` | entity | in | record TemplateParmInfo |  |
+| `TemplateTemplateParm.data` | entity | in | record TemplateParmInfo |  |
+| `Namespace.data` | entity | in | record NamespaceData |  |
+| `TranslationUnit.data` | bookkeeping | out | - | `ScopeData`; the root is not written |
+| `LinkageSpec.data` | flag | out | - | `ScopeData`, read by the declarations inside |
+| `Export.data` | bookkeeping | out | - | `ScopeData` |
+| `RequiresExprBody.data` | bookkeeping | out | - | `ScopeData` |
+| `StaticAssert.data` | value | in | record StaticAssertData |  |
+| `ConstevalBlock.data` | value | in | record StaticAssertData |  |
+| `LifetimeExtendedTemporary.data` | entity | in | record LetData |  |
+
+`Binding`, `Label`, `ContractResultName`, `AccessSpec`, `Empty`,
+`UnresolvedUsingIfExists` and `TemplateParamObject` store 0 in `data`. A
+`TemplateParamObject`'s value is read with
+`TemplateTables::param_object_value` (§9).
+
+### `kiln_ast::decl::DeclFlags`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0-invalid` | flag | unsupported | - | an invalid declaration: digest §10 |
+| `0-implicit` | flag | in | bit |  |
+| `0-used` | bookkeeping | demand | - | §11 |
+| `0-referenced` | bookkeeping | demand | - | §11 |
+| `0-has-attrs` | bookkeeping | out | - |  |
+| `0-has-lexical-ctx` | bookkeeping | out | - |  |
+| `0-dependent-ctx` | bookkeeping | out | - | follows from the context |
+| `0-injected` | flag | in | bit | injected by `define_aggregate` |
+
+### `kiln_ast::decl::DeclMisc`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0-access` | flag | in | enum Access | bits 0-1 |
+| `0-friend` | flag | in | enum FriendKind | bits 2-3; `Undeclared` only if every declaration of the entity is: the entity is then found by argument-dependent lookup alone |
+| `0-local-extern` | flag | in | bit | set only if every declaration of the entity is at block scope |
+| `0-module-ownership` | flag | in | enum ModuleOwnership | bits 5-7, from the first declaration |
+| `0-name-independent` | flag | in | bit |  |
+| `0-linkage-cache` | bookkeeping | demand | - | §11 |
+| `0-visibility-cache` | bookkeeping | demand | - | §11 |
+| `0-first` | bookkeeping | out | - | position in the redeclaration chain |
+| `0-definition` | flag | in | bit | set if any declaration of the entity has it |
+
+### `kiln_ast::decl::Access`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | flag | in | tag 1 |  |
+| `Public` | flag | in | tag 2 |  |
+| `Protected` | flag | in | tag 3 |  |
+| `Private` | flag | in | tag 4 |  |
+
+### `kiln_ast::decl::FriendKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | flag | in | tag 1 |  |
+| `Declared` | written | out | as None | a friend declaration of an entity declared elsewhere: the befriending is in the class's `Friend` unit |
+| `Undeclared` | flag | in | tag 3 |  |
+
+### `kiln_ast::decl::ModuleOwnership`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Unowned` | flag | in | tag 1 |  |
+| `Visible` | flag | in | tag 2 |  |
+| `VisibleWhenImported` | flag | in | tag 3 |  |
+| `ReachableWhenImported` | flag | in | tag 4 |  |
+| `ModulePrivate` | flag | in | tag 5 |  |
+
+### `kiln_ast::decl::PayloadClass`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Function` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Var` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Record` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Field` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Enum` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Enumerator` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Param` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Typedef` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Namespace` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Scope` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `StaticAssert` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+| `Let` | bookkeeping | out | - | which payload record a kind has; the `data` rows of `DeclNode` say it kind by kind |
+
+### `kiln_ast::decl::Payload`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `None.0` | bookkeeping | out | - |  |
+| `Function` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Function.0` | bookkeeping | out | - |  |
+| `Var` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Var.0` | bookkeeping | out | - |  |
+| `Record` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Record.0` | bookkeeping | out | - |  |
+| `Field` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Field.0` | bookkeeping | out | - |  |
+| `Enum` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Enum.0` | bookkeeping | out | - |  |
+| `Enumerator` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Enumerator.0` | bookkeeping | out | - |  |
+| `Param` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Param.0` | bookkeeping | out | - |  |
+| `Typedef` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Typedef.0` | bookkeeping | out | - |  |
+| `Namespace` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Namespace.0` | bookkeeping | out | - |  |
+| `Scope` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Scope.0` | bookkeeping | out | - |  |
+| `StaticAssert` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `StaticAssert.0` | bookkeeping | out | - |  |
+| `Let` | bookkeeping | out | - | a borrowed payload record; the `data` rows of `DeclNode` say which |
+| `Let.0` | bookkeeping | out | - |  |
+
+### `kiln_ast::decl::Redecl`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `prev` | bookkeeping | out | - | the redeclaration chain; §2.3 says what is merged over it |
+| `group` | bookkeeping | out | - |  |
+
+### `kiln_ast::decl::Members`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `first` | bookkeeping | out | - | the member chain; the rows that hold a `Members` say what is listed |
+| `last` | bookkeeping | out | - |  |
+
+### 5.4 Functions and variables
+
+### `kiln_ast::decl::FunctionData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `redecl` | bookkeeping | out | - |  |
+| `params` | entity | in | decl* | the parameters, in order |
+| `body` | child | in | child? |  |
+| `spec` | flag | in | record FnSpec |  |
+| `templ` | entity | in | record TemplLink |  |
+
+A function's stream also holds its language linkage (`ScopeData`,
+`aux-lang`).
+
+### `kiln_ast::decl::FnSpec`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0-storage` | flag | in | enum FnStorage | bits 0-1 |
+| `0-inline` | flag | in | bit |  |
+| `0-implicit-inline` | flag | in | bit | kept apart from `0-inline`: only a written `inline` is a hint to the optimiser |
+| `0-constexpr-kind` | flag | in | enum ConstexprKind | bits 4-5 |
+| `0-virtual` | flag | in | bit |  |
+| `0-pure` | flag | in | bit |  |
+| `0-defaulted` | flag | in | enum Defaulted | bits 8-9 |
+| `0-deleted` | flag | in | bit |  |
+| `0-explicit` | flag | in | bit |  |
+| `0-trivial` | flag | in | bit |  |
+| `0-immediate-escalating` | flag | in | bit |  |
+| `0-has-contracts` | flag | in | bit |  |
+| `0-is-coroutine` | flag | in | bit |  |
+| `0-escalated` | flag | in | bit |  |
+| `0-variadic` | flag | in | bit |  |
+| `0-override` | written | out | - | `override` (digest §1 rule 2) |
+| `0-final` | flag | in | bit |  |
+| `0-explicit-object` | flag | in | bit |  |
+| `0-virtual-written` | written | out | - | whether `virtual` was written; `0-virtual` is the fact |
+| `0-storage-inherited` | written | out | - | whether the storage class was written here or inherited from the first declaration; `0-storage` is the fact |
+| `0-not-selected` | flag | in | bit |  |
+| `0-return-deduced` | flag | in | bit |  |
+
+### `kiln_ast::decl::FnStorage`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | flag | in | tag 1 |  |
+| `Static` | flag | in | tag 2 |  |
+| `Extern` | written | out | as None | `extern` on a function declaration changes nothing |
+
+### `kiln_ast::decl::ConstexprKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | flag | in | tag 1 |  |
+| `Constexpr` | flag | in | tag 2 |  |
+| `Consteval` | flag | in | tag 3 |  |
+
+### `kiln_ast::decl::Defaulted`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `No` | flag | in | tag 1 |  |
+| `Explicit` | flag | in | tag 2 |  |
+| `Implicit` | flag | in | tag 3 |  |
+
+### `kiln_ast::decl::ParamData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `default_arg` | child | in | child? | §11.4 when the function is instantiated |
+| `original_ty` | written | out | - | the type as written, before array and function types are adjusted; `DeclNode` `ty-type` is the fact |
+| `index` | bookkeeping | out | - | the position in `FunctionData` `params` |
+| `flags-explicit-object` | flag | in | bit |  |
+| `flags-pack` | flag | in | bit |  |
+| `flags-default-arg-pending` | bookkeeping | demand | - | §11.4: the default argument is not parsed or instantiated yet |
+| `flags-static-array` | flag | in | bit |  |
+| `flags-scope-depth` | value | in | uv | high byte: the function-prototype scope depth, the `level` of `Ref::param` |
+
+### `kiln_ast::decl::VarData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `redecl` | bookkeeping | out | - |  |
+| `init` | child | in | child? |  |
+| `spec` | flag | in | record VarSpec |  |
+| `eval` | value | demand | - | §11.3: the `resolved` unit `value` |
+| `templ` | entity | in | record TemplLink |  |
+
+A variable's stream also holds its language linkage (`ScopeData`,
+`aux-lang`).
+
+### `kiln_ast::decl::VarSpec`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0-storage` | flag | in | enum VarStorage | bits 0-2 |
+| `0-tls` | flag | in | enum TlsKind | bits 3-4 |
+| `0-init-style` | flag | in | enum InitStyle | bits 5-6; it selects the form of initialisation |
+| `0-constexpr` | flag | in | bit |  |
+| `0-constinit` | flag | in | bit |  |
+| `0-inline` | flag | in | bit |  |
+| `0-nrvo` | flag | in | bit |  |
+| `0-exception-var` | flag | in | bit |  |
+| `0-cxx-for-range` | flag | in | bit |  |
+| `0-inline-implied` | flag | in | bit |  |
+
+### `kiln_ast::decl::VarStorage`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | flag | in | tag 1 |  |
+| `Static` | flag | in | tag 2 |  |
+| `Extern` | flag | in | tag 3 |  |
+| `Register` | flag | in | tag 4 |  |
+
+### `kiln_ast::decl::TlsKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | flag | in | tag 1 |  |
+| `Static` | flag | in | tag 2 |  |
+| `Dynamic` | flag | in | tag 3 |  |
+
+### `kiln_ast::decl::InitStyle`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `C` | flag | in | tag 1 |  |
+| `Call` | flag | in | tag 2 |  |
+| `List` | flag | in | tag 3 |  |
+| `ParenList` | flag | in | tag 4 |  |
+
+### `kiln_ast::decl::VarEval`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0` | value | demand | - | §11.3 |
+
+### `kiln_ast::decl::VarEvalState`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `NotEvaluated` | value | demand | - | §11.3 |
+| `Evaluating` | value | demand | - | §11.3 |
+| `NotConstant` | value | demand | - | §11.3 |
+| `Value` | value | demand | - | §11.3 |
+| `Value.0` | value | demand | - | §11.3: written in the `resolved` unit `value` as `value` |
+
+### `kiln_ast::decl::LetData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `extending` | entity | in | ref |  |
+| `mangling_index` | value | in | uv | part of the temporary's symbol name |
+| `value` | value | in | value? | "Open questions": whether the Oven fills it only on demand |
+
+### 5.5 Classes and enumerations
+
+### `kiln_ast::decl::RecordData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `redecl` | bookkeeping | out | - |  |
+| `members-fields` | entity | in | key* | the non-static data members (`Field`, `IndirectField`), in declaration order |
+| `members-virtual` | entity | in | key* | the virtual member functions, in declaration order |
+| `members-other` | entity | in | key*sorted | every other member that is a declared unit |
+| `bases` | type | in | record BaseSpec* | in declaration order |
+| `defn` | flag | in | record DefinitionBits |  |
+| `templ` | entity | in | record TemplLink |  |
+| `lambda` | entity | in | record LambdaData? | a closure type (§10.4) |
+| `tag` | flag | in | enum TagKind |  |
+
+A member is in exactly one of the three lists. Members that are not units
+(§5.2) and members whose unit is derived are in none: the lists must not
+depend on which implicit members and instantiations the translation unit
+asked for. A local class (§2.4) writes its members in place instead, in
+the same three groups, each member as `decl`.
+
+### `kiln_ast::decl::TagKind`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Struct` | flag | in | tag 1 |  |
+| `Class` | written | out | as Struct | `struct` against `class` (digest §1 rule 2) |
+| `Union` | flag | in | tag 3 |  |
+
+### `kiln_ast::decl::DefinitionBits`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0-being-defined` | bookkeeping | out | - | state of the parse; clear once the class is complete |
+| `0-complete` | flag | in | bit |  |
+| `0-anonymous` | flag | in | bit |  |
+| `0-lambda` | flag | in | bit |  |
+| `0-aggregate` | flag | in | bit |  |
+| `0-polymorphic` | flag | in | bit |  |
+| `0-abstract` | flag | in | bit |  |
+| `0-empty` | flag | in | bit |  |
+| `0-standard-layout` | flag | in | bit |  |
+| `0-trivially-copyable` | flag | in | bit |  |
+| `0-trivial-default-ctor` | flag | in | bit |  |
+| `0-trivial-copy-ctor` | flag | in | bit |  |
+| `0-trivial-move-ctor` | flag | in | bit |  |
+| `0-trivial-copy-assign` | flag | in | bit |  |
+| `0-trivial-move-assign` | flag | in | bit |  |
+| `0-trivial-dtor` | flag | in | bit |  |
+| `0-literal` | flag | in | bit |  |
+| `0-structural` | flag | in | bit |  |
+| `0-user-declared-ctor` | flag | in | bit |  |
+| `0-has-constexpr-ctor` | flag | in | bit |  |
+| `0-has-variant-members` | flag | in | bit |  |
+| `0-has-mutable-fields` | flag | in | bit |  |
+| `0-has-virtual-bases` | flag | in | bit |  |
+| `0-trivially-relocatable` | flag | in | bit |  |
+| `0-user-declared-copy-ctor` | flag | in | bit |  |
+| `0-user-declared-move-ctor` | flag | in | bit |  |
+| `0-user-declared-copy-assign` | flag | in | bit |  |
+| `0-user-declared-move-assign` | flag | in | bit |  |
+| `0-user-declared-dtor` | flag | in | bit |  |
+| `0-user-provided-default-ctor` | flag | in | bit |  |
+| `0-has-in-class-init` | flag | in | bit |  |
+| `0-has-inherited-ctor` | flag | in | bit |  |
+| `0-has-inherited-assign` | flag | in | bit |  |
+| `0-implicit-copy-ctor-const-param` | flag | in | bit |  |
+| `0-implicit-copy-assign-const-param` | flag | in | bit |  |
+| `0-defaulted-default-ctor-constexpr` | flag | in | bit |  |
+| `0-needs-ovl-copy-ctor` | flag | in | bit |  |
+| `0-needs-ovl-move-ctor` | flag | in | bit |  |
+| `0-needs-ovl-copy-assign` | flag | in | bit |  |
+| `0-needs-ovl-move-assign` | flag | in | bit |  |
+| `0-needs-ovl-dtor` | flag | in | bit |  |
+| `0-defaulted-default-ctor-deleted` | flag | in | bit | "known deleted": see "Open questions" on when Kiln sets it |
+| `0-defaulted-copy-ctor-deleted` | flag | in | bit | "known deleted": see "Open questions" on when Kiln sets it |
+| `0-defaulted-move-ctor-deleted` | flag | in | bit | "known deleted": see "Open questions" on when Kiln sets it |
+| `0-defaulted-dtor-deleted` | flag | in | bit | "known deleted": see "Open questions" on when Kiln sets it |
+| `0-has-uninit-ref-or-const` | flag | in | bit |  |
+| `0-has-private-fields` | flag | in | bit |  |
+| `0-has-protected-fields` | flag | in | bit |  |
+| `0-pod` | flag | in | bit |  |
+| `0-can-const-default-init` | flag | in | bit |  |
+| `0-final` | flag | in | bit |  |
+| `0-lambda-captures` | flag | in | bit |  |
+| `0-has-flexible-array-member` | flag | in | bit |  |
+| `0-trivial-abi` | flag | in | bit |  |
+| `0-copy-ctor-for-call` | flag | in | bit |  |
+| `0-move-ctor-for-call` | flag | in | bit |  |
+| `0-dtor-for-call` | flag | in | bit |  |
+| `0-nontrivial-default-ctor` | flag | in | bit |  |
+| `0-nontrivial-copy-ctor` | flag | in | bit |  |
+| `0-nontrivial-move-ctor` | flag | in | bit |  |
+| `0-nontrivial-copy-assign` | flag | in | bit |  |
+| `0-nontrivial-move-assign` | flag | in | bit |  |
+| `0-complete-definition-required` | bookkeeping | demand | - | §11: set when something first needs the class complete; read by limited debug information only |
+
+### `kiln_ast::decl::BaseSpec`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `ty` | type | in | type |  |
+| `loc` | location | out | - |  |
+| `is_virtual` | flag | in | bool |  |
+| `access` | flag | in | enum Access | the effective access: a stored `None` is written as `Private` for a class declared `class` and `Public` otherwise |
+| `pack_expansion` | flag | in | bool |  |
+
+### `kiln_ast::decl::FieldData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `bit_width` | child | in | child? |  |
+| `init` | child | in | child? | the default member initialiser; §11.4 when the class is instantiated |
+| `flags-mutable` | flag | in | bit |  |
+| `flags-no-unique-address` | flag | in | bit |  |
+| `flags-init-style` | flag | in | enum InitStyle | bits 2-3 |
+| `flags-has-default-init` | bookkeeping | out | - | set before the initialiser is parsed; `init` present is the fact |
+
+### `kiln_ast::decl::EnumData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `redecl` | bookkeeping | out | - |  |
+| `members` | entity | in | key* | the enumerators, in declaration order |
+| `int_type` | type | in | type? |  |
+| `promotion_type` | type | in | type? |  |
+| `flags-scoped` | flag | in | bit |  |
+| `flags-scoped-struct` | written | out | - | `enum struct` against `enum class` |
+| `flags-fixed` | flag | in | bit |  |
+| `flags-being-defined` | bookkeeping | out | - | state of the parse |
+| `flags-complete` | flag | in | bit |  |
+| `templ` | entity | in | record TemplLink |  |
+
+A local enumeration (§2.4) writes its enumerators in place as `decl*`.
+
+### `kiln_ast::decl::EnumeratorData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `value` | value | in | value? |  |
+| `init` | child | in | child? | the initialiser: what it names is part of what resolves |
+
+### `kiln_ast::decl::TypedefData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `redecl` | bookkeeping | out | - |  |
+| `underlying` | type | in | type | canonical, like every type: the spelling of the aliased type is not digested |
+| `templ` | entity | in | record TemplLink |  |
+
+### `kiln_ast::decl::CtorInitKind`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Base` | flag | in | tag 1 |  |
+| `VirtualBase` | flag | in | tag 2 |  |
+| `Field` | flag | in | tag 3 |  |
+| `IndirectField` | flag | in | tag 4 |  |
+| `Delegating` | flag | in | tag 5 |  |
+
+### `kiln_ast::decl::CtorInit`
+
+`kind=struct; pin=schema; selector=kiln_ast::decl::CtorInitKind`
+
+The list a constructor holds (`ColdDeclData` `ctor_inits`) is in
+initialisation order.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `kind` | flag | in | enum CtorInitKind |  |
+| `Base.target` | type | in | type | a raw `TypeId` |
+| `VirtualBase.target` | type | in | type | a raw `TypeId` |
+| `Field.target` | entity | in | ref | a raw `DeclId` |
+| `IndirectField.target` | entity | in | ref | a raw `DeclId` |
+| `written_index` | written | out | - | the position as written, or "implicit"; the list order and `init` are the facts |
+| `init` | child | in | child |  |
+| `loc` | location | out | - |  |
+
+### 5.6 Scopes and the rest
+
+### `kiln_ast::decl::NamespaceData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `redecl` | bookkeeping | out | - |  |
+| `members` | entity | out | - | the members of a namespace are not listed (digest §5): each is a unit whose key names the namespace |
+| `flags-inline` | flag | in | bit |  |
+| `flags-anonymous` | name | in | keyed | the name `anonymous` |
+
+### `kiln_ast::decl::ScopeData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `members` | bookkeeping | out | - | a transparent scope: its members are members of the enclosing context |
+| `aux-lang` | flag | in | enum LinkageLang | low byte, `LinkageSpec` only; written in the stream of each function and variable whose first declaration is lexically inside (rule below) |
+| `aux-braceless` | written | out | - | bit 8: `extern "C" int x;` without braces; its effect, that the declaration is not a definition, is `DeclMisc` `0-definition` |
+
+Every function and variable stream holds one `enum LinkageLang?`: the
+language of the innermost `LinkageSpec` that lexically encloses the
+entity's first declaration, through enclosing classes and functions;
+absent when there is none. Whether the entity then has C language linkage
+(a class member has not, nor has an entity with internal linkage) follows
+from the rest of its stream; the key's parent uses the rule of §5.2.
+
+### `kiln_ast::decl::LinkageLang`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `C` | flag | in | tag 1 |  |
+| `Cxx` | flag | in | tag 2 |  |
+
+### `kiln_ast::decl::StaticAssertData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `cond` | child | in | child | for a `ConstevalBlock`, the call of the block |
+| `message` | child | in | child? |  |
+
+### `kiln_ast::decl::FriendTarget`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Decl` | entity | in | tag 1 |  |
+| `Decl.0` | entity | in | ref |  |
+| `Type` | entity | in | tag 2 |  |
+| `Type.ty` | type | in | type |  |
+| `Type.owned_tag` | written | out | - | the tag a `friend struct X;` itself declares; `ty` names it and the tag is a unit of its own |
+
+### 5.7 Cold maps and the arena
+
+`ColdMap` is Kiln's sparse side table; each field of `ColdDeclData` is one
+map keyed by `DeclId`, and its row says what an entry's value is.
+
+### `kiln_ast::slot::ColdMap`
+
+`kind=root; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `name` | bookkeeping | out | - | the map's name, for the snapshot |
+| `map` | bookkeeping | out | - | the entries: each field of type `ColdMap` has a row for them |
+
+### `kiln_ast::decl::ColdDeclData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `lexical_ctx` | written | out | - | where the declaration was written when that is not its semantic context; read only to find an enclosing `LinkageSpec` (`ScopeData` `aux-lang`) |
+| `begin_loc` | location | out | - |  |
+| `delete_message` | child | in | child? |  |
+| `explicit_expr` | child | in | child? |  |
+| `ctor_inits` | child | in | record CtorInit* |  |
+| `overrides` | entity | demand | - | §11.5: the `resolved` unit `overrides` |
+| `friends` | entity | in | key*sorted | the class's `Friend` units |
+| `key_function` | entity | demand | - | §11.5 |
+| `dtor_delete` | entity | demand | - | §11.5 |
+| `dtor_delete_this` | child | demand | - | §11.5 |
+| `record_pack` | value | in | uv? |  |
+| `contracts` | child | in | child* | the function's contract assertions, in order |
+| `asm_label` | name | in | string? |  |
+| `alignment` | child | in | child? |  |
+| `deprecation` | value | in | string? |  |
+| `instantiated_from` | entity | in | ref | written when the pattern has a key; the pattern of a local entity is a local of another unit and is not written |
+| `injection_point` | location | out | - |  |
+| `declarator_end` | location | out | - |  |
+| `builtin_id` | flag | demand | - | §11.6: the builtin is a derived unit keyed by its name under `Parent::builtin`; the id is Kiln's numbering and is not written |
+| `gnu_lib_twin` | flag | in | bool | whether the declaration is folded as a library builtin; which one follows from its name |
+| `lib_builtin` | flag | demand | - | §11.6 |
+| `typedef_for_anon` | name | in | keyed | the name of an unnamed class or enumeration (digest §3.3) |
+| `decomp_bindings` | entity | in | decl* | at namespace scope the bindings are units and are written as `key*` |
+| `binding_decomp` | bookkeeping | out | - | inverse of `decomp_bindings` |
+| `binding_expr` | child | in | child? |  |
+| `binding_var` | entity | in | decl? | the holding variable of a tuple-like binding |
+| `ctor_shadow_nominated` | entity | in | ref |  |
+| `inheriting_ctor` | entity | demand | - | §11.5 |
+| `inherited_ctor` | entity | demand | - | §11.5 |
+| `hidden_shadow` | entity | in | ref |  |
+| `conversion_spec_target` | written | out | - | the type a conversion function template specialisation's name prints with; the declaration keeps the pattern's name |
+| `compound_literal` | entity | unsupported | - | the implicit variable of a file-scope compound literal has no name to key it by; a GNU extension in C++ |
+
+### `kiln_ast::decl::DeclArena`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `nodes` | bookkeeping | out | - | arena: reached through `DeclId` |
+| `functions` | bookkeeping | out | - | arena |
+| `min_args` | bookkeeping | out | - | per function, the least number of arguments: follows from the parameters' default arguments |
+| `vars` | bookkeeping | out | - | arena |
+| `records` | bookkeeping | out | - | arena |
+| `fields` | bookkeeping | out | - | arena |
+| `enums` | bookkeeping | out | - | arena |
+| `enumerators` | bookkeeping | out | - | arena |
+| `params` | bookkeeping | out | - | arena |
+| `typedefs` | bookkeeping | out | - | arena |
+| `namespaces` | bookkeeping | out | - | arena |
+| `scopes` | bookkeeping | out | - | arena |
+| `static_asserts` | bookkeeping | out | - | arena |
+| `base_specs` | bookkeeping | out | - | arena |
+| `lets` | bookkeeping | out | - | arena |
+| `ctor_inits` | bookkeeping | out | - | arena |
+| `completed_records` | bookkeeping | demand | - | §11: the order in which classes were completed, instantiations included |
+| `top_level_ends` | bookkeeping | out | - | where each top-level declaration ended, for incremental consumers |
+| `fn_def_insts` | bookkeeping | demand | - | §11: function definitions in the order they were instantiated |
+| `cold` | bookkeeping | out | - | the cold maps: `ColdDeclData` |
+| `ty_journal` | bookkeeping | out | - | the log of in-place type rewrites |
+
+### `kiln_ast::journal::Journal`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `on` | bookkeeping | out | - | a mutation log used to undo tentative work |
+| `overflowed` | bookkeeping | out | - |  |
+| `items` | bookkeeping | out | - |  |
+
+### 5.8 Redeclaration and lookup tables
+
+Neither is written. The redeclaration table is how §2.3 finds an entity's
+first declaration and definition (`Ast::first`, `Ast::definition`,
+`Ast::redecls_of`). The lookup tables are Kiln's index of what each scope
+declares; what a lookup found is in the node that used it.
+
+### `kiln_ast::redecl::RedeclGroup`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `first` | bookkeeping | out | - |  |
+| `latest` | bookkeeping | out | - |  |
+| `definition` | bookkeeping | out | - |  |
+
+### `kiln_ast::redecl::RedeclTable`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `groups` | bookkeeping | out | - |  |
+| `journal` | bookkeeping | out | - |  |
+
+### `kiln_ast::lookup::LookupEntry`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0` | bookkeeping | out | - | one declaration, or an index into `LookupTables` `sets` |
+
+### `kiln_ast::lookup::LookupFlags`
+
+`kind=struct; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0` | bookkeeping | out | - | which kinds of declaration a lookup result holds |
+
+### `kiln_ast::lookup::LookupTables`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `map` | bookkeeping | out | - |  |
+| `sets` | bookkeeping | out | - |  |
+| `set_words` | bookkeeping | out | - |  |
+| `set_cap` | bookkeeping | out | - |  |
+| `inline_children` | bookkeeping | out | - | restates `NamespaceData` `flags-inline` |
+| `using_dirs` | bookkeeping | out | - | restates the `UsingDirective` units |
+| `generation` | bookkeeping | out | - |  |
+| `journal` | bookkeeping | out | - |  |
 
 ## Tests
 
