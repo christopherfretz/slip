@@ -1,1 +1,5 @@
+# the member enumeration's own record is the same on both sides (Kiln
+# keeps its MemberSpecInfo `ImplicitInstantiation` under an explicit
+# instantiation, kiln_ast/src/templates.rs:2033): the row changes here only
+# through X<int> (handback WP-027)
 changed X<int>

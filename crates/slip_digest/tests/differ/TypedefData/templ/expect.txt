@@ -1,1 +1,5 @@
+# Kiln links a member typedef of a specialization through
+# `instantiated_from`, not a TemplLink (kiln_ast/src/templates.rs:2022), so
+# S<int>::t has no `templ`; the row is set only for an alias template's
+# pattern, whose head is in the key (handback WP-027)
 changed S<int>
