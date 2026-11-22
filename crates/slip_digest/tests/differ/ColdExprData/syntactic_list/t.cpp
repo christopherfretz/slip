@@ -1,9 +1,8 @@
 #include "side.h"
-// §7.4 ColdExprData `syntactic_list`.
-// a list in a template pattern (expr_init.rs)
-template<class T> struct A {
+// WP-035, digest-kinds §7 `ColdExprData` `syntactic_list`: a non-dependent designated list in a template keeps its written form for instantiation; the semantic forms are the same.
+struct P { int x, y; };
 #ifdef B
-static inline T w[] = {1}; };
+template <class T> struct A { static inline P w = {1, 2}; };
 #else
-static inline T w[] = {1, 2}; };
+template <class T> struct A { static inline P w = {.x = 1, .y = 2}; };
 #endif
