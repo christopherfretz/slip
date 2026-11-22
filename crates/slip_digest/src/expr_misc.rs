@@ -666,3 +666,702 @@ pub(crate) fn pseudo_object_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     }
     s.uv(u64::from(n.b));
 }
+
+#[cfg(test)]
+mod tests {
+    //! Row-level tests: each kind's function, on a node Kiln built, against
+    //! the rows written by hand from `crate::tables` on a fresh walk of the
+    //! same AST. A pair test cannot isolate a row whose value moves with
+    //! another (a stored result, a suspend kind); these tests can, and they
+    //! cover the kinds whose pair tests wait on the statements' area.
+
+    use slip_kiln::kiln::ast::decl::builtin::atomic;
+    use slip_kiln::kiln::ast::expr::ExprKind;
+    use slip_kiln::kiln::ast::{DeclId, ExprId, ListId, QualType, StmtId};
+    use slip_model::keys::RuleTable;
+
+    use super::*;
+    use crate::expr::{KindFn, children};
+    use crate::{Cause, Input};
+
+    /// Runs `f` on the AST of `src` (`std` the language mode).
+    fn with(src: &str, std: &str, f: impl FnOnce(&Input<'_>, &RuleTable)) {
+        let files = [("main.cpp", src)];
+        let snippet =
+            slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
+        slip_kiln::snippet::parse(&snippet, |p| {
+            let path = |_| Vec::new();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let rules = RuleTable::empty();
+            f(&input, &rules);
+        })
+        .expect("parses");
+    }
+
+    /// The expressions of `kind`, in arena order.
+    fn of_kind(input: &Input<'_>, kind: ExprKind) -> Vec<ExprId> {
+        (1..=input.ast.exprs.len())
+            .filter_map(|i| ExprId::try_new(u32::try_from(i).ok()?))
+            .filter(|&e| input.ast.exprs.get(e).kind() == kind)
+            .collect()
+    }
+
+    /// The bytes and the cause `f` writes for `e` on a fresh walk.
+    fn written(
+        input: &Input<'_>,
+        rules: &RuleTable,
+        e: ExprId,
+        f: impl FnOnce(&mut Walk<'_>, &mut Stream, ExprId),
+    ) -> (Vec<u8>, Option<Cause>) {
+        let mut w = Walk::new(input, rules);
+        let mut s = Stream::new();
+        f(&mut w, &mut s, e);
+        (s.as_bytes().to_vec(), s.cause())
+    }
+
+    /// `kind_fn` on the `nth` node of `kind` in `src` writes what
+    /// `expected` writes.
+    fn rows(
+        src: &str,
+        kind: ExprKind,
+        nth: usize,
+        kind_fn: KindFn,
+        expected: impl FnOnce(&mut Walk<'_>, &mut Stream, ExprId),
+    ) {
+        rows_std(src, "c++20", kind, nth, kind_fn, expected);
+    }
+
+    fn rows_std(
+        src: &str,
+        std: &str,
+        kind: ExprKind,
+        nth: usize,
+        kind_fn: KindFn,
+        expected: impl FnOnce(&mut Walk<'_>, &mut Stream, ExprId),
+    ) {
+        with(src, std, |input, rules| {
+            let all = of_kind(input, kind);
+            let e = *all.get(nth).unwrap_or_else(|| panic!("{kind:?} #{nth} in {src}"));
+            let got = written(input, rules, e, kind_fn);
+            let want = written(input, rules, e, expected);
+            assert_eq!(got, want, "{kind:?} #{nth} of {src}");
+        });
+    }
+
+    fn expr(raw: u32) -> ExprId {
+        ExprId::try_new(raw).expect("an expression")
+    }
+
+    fn ty(raw: u32) -> QualType {
+        QualType::from_raw(raw).expect("a type")
+    }
+
+    fn list(w: &Walk<'_>, raw: u32) -> Vec<u32> {
+        w.ast.lists.get(ListId::try_new(raw).expect("a list")).to_vec()
+    }
+
+    // -----------------------------------------------------------------
+    // Names and builtins of a position.
+
+    #[test]
+    fn predefined_aux() {
+        let src = "const char *f(const char *s = __FUNCTION__);\n\
+                   const char *g(const char *s = __PRETTY_FUNCTION__);\n\
+                   const char *h(const char *s = __func__);\n";
+        let k = ExprKind::PredefinedExpr;
+        rows(src, k, 0, predefined_expr, |_, s, _| {
+            s.tag(predefined_kind::FUNCTION);
+        });
+        rows(src, k, 1, predefined_expr, |_, s, _| {
+            s.tag(predefined_kind::PRETTY_FUNCTION);
+        });
+        rows(src, k, 2, predefined_expr, |_, s, _| {
+            s.tag(predefined_kind::FUNC);
+        });
+    }
+
+    #[test]
+    fn source_loc_aux() {
+        let src = "unsigned a = __builtin_LINE();\nconst char *b = __builtin_FILE_NAME();\n";
+        let k = ExprKind::SourceLocExpr;
+        rows(src, k, 0, source_loc_expr, |_, s, _| {
+            s.tag(source_loc_kind::LINE);
+        });
+        rows(src, k, 1, source_loc_expr, |_, s, _| {
+            s.tag(source_loc_kind::FILE_NAME);
+        });
+    }
+
+    // -----------------------------------------------------------------
+    // noexcept and typeid.
+
+    #[test]
+    fn noexcept_rows() {
+        let src = "int a; void g();\nbool x = noexcept(a);\nbool y = noexcept(g());\n";
+        for (nth, result) in [(0, true), (1, false)] {
+            rows(src, ExprKind::CXXNoexceptExpr, nth, cxx_noexcept_expr, |w, s, e| {
+                let n = node(w, e);
+                child(w, s, expr(n.a));
+                s.bool(result);
+            });
+        }
+    }
+
+    #[test]
+    fn typeid_rows() {
+        let src = "namespace std { class type_info; }\n\
+                   struct P { virtual void h(); }; extern P &p; int a;\n\
+                   const std::type_info &x = typeid(int), &y = typeid(p), &z = typeid(a);\n";
+        let k = ExprKind::CXXTypeidExpr;
+        rows(src, k, 0, cxx_typeid_expr, |w, s, e| {
+            let n = node(w, e);
+            s.flags(FlagWord::new().bit(false)).tag(typeid_operand::TYPE);
+            w.write_type(s, ty(n.a));
+        });
+        for (nth, evaluated) in [(1, true), (2, false)] {
+            rows(src, k, nth, cxx_typeid_expr, |w, s, e| {
+                let n = node(w, e);
+                s.flags(FlagWord::new().bit(evaluated)).tag(typeid_operand::EXPR);
+                child(w, s, expr(n.a));
+            });
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Traits.
+
+    #[test]
+    fn unary_trait_rows() {
+        let src = "int a;\nunsigned long x = sizeof(a), y = alignof(int), z = __datasizeof(int),\n\
+                   u = __alignof(long);\n";
+        let k = ExprKind::UnaryExprOrTypeTraitExpr;
+        rows(src, k, 0, unary_expr_or_type_trait_expr, |w, s, e| {
+            let n = node(w, e);
+            s.flags(FlagWord::new().bit(false)).tag(trait_kind::SIZE_OF);
+            child(w, s, expr(n.a));
+        });
+        for (nth, row) in [
+            (1, trait_kind::ALIGN_OF),
+            (2, trait_kind::DATA_SIZE_OF),
+            (3, trait_kind::PREFERRED_ALIGN_OF),
+        ] {
+            rows(src, k, nth, unary_expr_or_type_trait_expr, |w, s, e| {
+                let n = node(w, e);
+                s.flags(FlagWord::new().bit(true)).tag(row);
+                w.write_type(s, ty(n.a));
+            });
+        }
+    }
+
+    #[test]
+    fn type_trait_rows() {
+        let src = "bool x = __is_same(int, long);\nbool y = __is_class(int);\n\
+                   bool z = __is_integral(int);\n";
+        let k = ExprKind::TypeTraitExpr;
+        for (nth, row, result) in [
+            (0, type_trait::IS_SAME, 0),
+            (1, type_trait::IS_CLASS, 0),
+            (2, type_trait::IS_INTEGRAL, 1),
+        ] {
+            rows(src, k, nth, type_trait_expr, |w, s, e| {
+                let n = node(w, e);
+                s.tag(row);
+                let types: Vec<QualType> = list(w, n.a).into_iter().map(ty).collect();
+                assert_eq!(types.len(), if nth == 0 { 2 } else { 1 });
+                w.write_types(s, &types);
+                s.uv(result);
+            });
+        }
+    }
+
+    #[test]
+    fn array_trait_rows() {
+        let src = "unsigned long x = __array_rank(int[1][2]), y = __array_extent(int[3][4], 1);\n";
+        let k = ExprKind::ArrayTypeTraitExpr;
+        for (nth, row) in [(0, type_trait::ARRAY_RANK), (1, type_trait::ARRAY_EXTENT)] {
+            rows(src, k, nth, array_type_trait_expr, |w, s, e| {
+                let n = node(w, e);
+                s.tag(row);
+                w.write_type(s, ty(n.a));
+            });
+        }
+        // The cold row: `dim` absent and the rank; `dim` and the extent.
+        rows(src, k, 0, array_trait_extra, |_, s, _| {
+            s.opt(false).uv(2);
+        });
+        rows(src, k, 1, array_trait_extra, |w, s, e| {
+            let dim = w.ast.exprs.cold.array_trait.get(e).and_then(|x| x.dim);
+            s.opt(true);
+            child(w, s, dim.expect("the dimension"));
+            s.uv(4);
+        });
+    }
+
+    #[test]
+    fn expression_trait_rows() {
+        let src = "int a;\nbool x = __is_lvalue_expr(a), y = __is_rvalue_expr(a);\n";
+        let k = ExprKind::ExpressionTraitExpr;
+        for (nth, row, result) in
+            [(0, type_trait::IS_LVALUE_EXPR, 1), (1, type_trait::IS_RVALUE_EXPR, 0)]
+        {
+            rows(src, k, nth, expression_trait_expr, |w, s, e| {
+                let n = node(w, e);
+                s.tag(row);
+                child(w, s, expr(n.a));
+                s.uv(result);
+            });
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // offsetof.
+
+    const OFFSETOF: &str = "struct Q { int o; int p; }; struct S { int n; Q x[4]; }; int a;\n\
+        unsigned long x = __builtin_offsetof(S, x[a].p), y = __builtin_offsetof(S, n),\n\
+        z = __builtin_offsetof(S, x[1].p);\n\
+        template <class T> struct A { unsigned long w = __builtin_offsetof(T, x[a].p); };\n";
+
+    #[test]
+    fn offsetof_rows() {
+        let k = ExprKind::OffsetOfExpr;
+        rows(OFFSETOF, k, 0, offset_of_expr, |w, s, e| {
+            let n = node(w, e);
+            s.bool(false);
+            let indices = list(w, n.a);
+            assert_eq!(indices.len(), 1);
+            s.count(1);
+            child(w, s, expr(indices[0]));
+            s.uv(0);
+        });
+        rows(OFFSETOF, k, 1, offset_of_expr, |_, s, _| {
+            s.bool(false).count(0).uv(0);
+        });
+        // A constant index is an element of `a` too.
+        rows(OFFSETOF, k, 2, offset_of_expr, |w, s, e| {
+            let n = node(w, e);
+            s.bool(false).count(1);
+            child(w, s, expr(list(w, n.a)[0]));
+            s.uv(16);
+        });
+    }
+
+    #[test]
+    fn offsetof_layout_rows() {
+        // `x[a].p`: 4 bytes to `x`, `a` elements of 8 bytes, 4 bytes to `p`.
+        rows(OFFSETOF, ExprKind::OffsetOfExpr, 0, offsetof_layout, |w, s, e| {
+            let n = node(w, e);
+            let index = expr(list(w, n.a)[0]);
+            s.count(3).tag(offsetof_step::OFFSET).uv(4).tag(offsetof_step::INDEX);
+            child(w, s, index);
+            s.uv(8).tag(offsetof_step::OFFSET).uv(4);
+        });
+    }
+
+    #[test]
+    fn offsetof_components_rows() {
+        rows(OFFSETOF, ExprKind::OffsetOfExpr, 3, offsetof_components, |w, s, e| {
+            let n = node(w, e);
+            let index = expr(list(w, n.a)[0]);
+            s.count(3).tag(offsetof_component::FIELD).bytes(b"x").tag(offsetof_component::INDEX);
+            child(w, s, index);
+            s.tag(offsetof_component::FIELD).bytes(b"p");
+        });
+    }
+
+    /// `OffsetOfExpr.aux` set (an invalid class on the path): the bool and
+    /// `Cause::Error` (the row is wrong about Kiln, WP-037 landed file).
+    #[test]
+    fn offsetof_invalid_record_is_an_error() {
+        let src = "struct S { int n; Undeclared u; int m; };\n\
+                   unsigned long x = __builtin_offsetof(S, m);\n";
+        with(src, "c++20", |input, rules| {
+            for e in of_kind(input, ExprKind::OffsetOfExpr) {
+                if node_of(input, e).aux() != 0 {
+                    let (_, cause) = written(input, rules, e, offset_of_expr);
+                    assert_eq!(cause, Some(Cause::Error));
+                }
+            }
+        });
+    }
+
+    fn node_of<'a>(input: &Input<'a>, e: ExprId) -> &'a slip_kiln::kiln::ast::expr::ExprNode {
+        input.ast.exprs.get(e)
+    }
+
+    // -----------------------------------------------------------------
+    // Coroutines.
+
+    const CORO: &str = "namespace std {\n\
+        template <class R, class... A> struct coroutine_traits { using promise_type = typename R::promise_type; };\n\
+        template <class P = void> struct coroutine_handle {\n\
+          static coroutine_handle from_address(void *) noexcept; void *address() const noexcept;\n\
+          template <class Q> coroutine_handle(coroutine_handle<Q>) noexcept; coroutine_handle() noexcept; };\n\
+        template <> struct coroutine_handle<void> {\n\
+          static coroutine_handle from_address(void *) noexcept; void *address() const noexcept;\n\
+          coroutine_handle() noexcept; template <class Q> coroutine_handle(coroutine_handle<Q>) noexcept; };\n\
+        }\n\
+        struct Never { bool await_ready() noexcept; void await_suspend(std::coroutine_handle<>) noexcept; void await_resume() noexcept; };\n\
+        struct Maybe { bool await_ready() noexcept; bool await_suspend(std::coroutine_handle<>) noexcept; int await_resume() noexcept; };\n\
+        struct Hand { bool await_ready() noexcept; std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept; int await_resume() noexcept; };\n\
+        struct Task { struct promise_type {\n\
+          Task get_return_object(); Never initial_suspend() noexcept; Never final_suspend() noexcept;\n\
+          void return_void(); void unhandled_exception(); Hand yield_value(int); }; };\n\
+        Never never; Maybe maybe; Hand hand;\n\
+        Task f() { co_await maybe; co_yield 1; }\n\
+        template <class T> Task g(T t) { co_await t; co_yield t; }\n";
+
+    /// The `nth` explicit (`aux` bit 0 clear) node of `kind` in [`CORO`].
+    fn explicit(input: &Input<'_>, kind: ExprKind, nth: usize) -> usize {
+        let all = of_kind(input, kind);
+        let picks: Vec<usize> =
+            (0..all.len()).filter(|&i| node_of(input, all[i]).aux() & 1 == 0).collect();
+        picks[nth]
+    }
+
+    /// The rows of a resolved `co_await` / `co_yield`, by hand.
+    fn resolved(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, implicit: bool, row: Row) {
+        let n = node(w, e);
+        let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+        assert_eq!(es.len(), 6);
+        assert_eq!(source_of(w, es[5]), Some(es[1]), "the opaque value stands for `common`");
+        s.flags(FlagWord::new().bit(implicit)).tag(row).count(5);
+        for (i, &x) in es[..5].iter().enumerate() {
+            if i == 1 {
+                let unit = &mut w.unit.expr;
+                unit.opaques.insert(x, unit.next_opaque);
+                unit.next_opaque += 1;
+            }
+            child(w, s, x);
+        }
+    }
+
+    #[test]
+    fn coawait_rows() {
+        with(CORO, "c++20", |input, _| {
+            let maybe = explicit(input, ExprKind::CoawaitExpr, 0);
+            rows(CORO, ExprKind::CoawaitExpr, maybe, coawait_expr, |w, s, e| {
+                resolved(w, s, e, false, suspend_kind::BOOL);
+            });
+            // The initial suspend point: implicit, `Never` (void).
+            rows(CORO, ExprKind::CoawaitExpr, 0, coawait_expr, |w, s, e| {
+                resolved(w, s, e, true, suspend_kind::VOID);
+            });
+        });
+        // `co_yield 1`: `Hand` (a handle).
+        rows(CORO, ExprKind::CoyieldExpr, 0, coyield_expr, |w, s, e| {
+            resolved(w, s, e, false, suspend_kind::HANDLE);
+        });
+        // The template pattern: the operand alone.
+        rows(CORO, ExprKind::CoyieldExpr, 1, coyield_expr, |w, s, e| {
+            let n = node(w, e);
+            s.flags(FlagWord::new().bit(false)).tag(suspend_kind::VOID).count(1);
+            child(w, s, expr(list(w, n.a)[0]));
+        });
+        rows(CORO, ExprKind::DependentCoawaitExpr, 0, dependent_coawait_expr, |w, s, e| {
+            let n = node(w, e);
+            child(w, s, expr(n.a));
+        });
+    }
+
+    /// `common` is written once: against the encoding that writes the five
+    /// elements without numbering it first, the walk saves exactly the
+    /// bytes of `common` (the first call's opaque value writes it there).
+    #[test]
+    fn coawait_writes_common_once() {
+        with(CORO, "c++20", |input, rules| {
+            for e in of_kind(input, ExprKind::CoawaitExpr) {
+                let (got, _) = written(input, rules, e, coawait_expr);
+                let (naive, _) = written(input, rules, e, |w, s, e| {
+                    let n = node(w, e);
+                    let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+                    s.flags(FlagWord::new().bit(n.aux & 1 != 0));
+                    s.tag(suspend(n.aux).map(|k| suspend_kind::row(&k)).expect("a kind"));
+                    children(w, s, &es[..5]);
+                });
+                let common = expr(list_of(input, e)[1]);
+                let (once, _) = written(input, rules, common, child);
+                assert!(naive.len() > got.len());
+                assert_eq!(naive.len() - got.len(), once.len(), "common written once");
+            }
+        });
+    }
+
+    fn list_of(input: &Input<'_>, e: ExprId) -> Vec<u32> {
+        let raw = node_of(input, e).a();
+        input.ast.lists.get(ListId::try_new(raw).expect("a list")).to_vec()
+    }
+
+    // -----------------------------------------------------------------
+    // GNU and C extensions.
+
+    #[test]
+    fn stmt_expr_rows() {
+        rows("int f() { return ({ 1; }); }\n", ExprKind::StmtExpr, 0, stmt_expr, |w, s, e| {
+            let n = node(w, e);
+            crate::stmt::child(w, s, StmtId::try_new(n.a).expect("a statement"));
+        });
+    }
+
+    #[test]
+    fn addr_label_rows() {
+        let src = "void f() { l: m: void *p = &&l, *q = &&m; }\n";
+        for nth in [0, 1] {
+            rows(src, ExprKind::AddrLabelExpr, nth, addr_label_expr, |w, s, e| {
+                let n = node(w, e);
+                w.write_ref(s, DeclId::try_new(n.a).expect("a label"));
+            });
+        }
+    }
+
+    #[test]
+    fn choose_rows() {
+        let src = "int a, b;\nint x = __builtin_choose_expr(1, a, b), y = __builtin_choose_expr(0, a, b);\n";
+        for (nth, chosen) in [(0, 1), (1, 2)] {
+            rows(src, ExprKind::ChooseExpr, nth, choose_expr, |w, s, e| {
+                let n = node(w, e);
+                s.uv(chosen);
+                child(w, s, expr(n.a));
+                let [first, second] = w.ast.exprs.choose_operands(e)[1..] else { unreachable!() };
+                child(w, s, first);
+                child(w, s, second);
+            });
+        }
+    }
+
+    #[test]
+    fn va_arg_rows() {
+        let src = "__builtin_va_list ap;\nlong v = __builtin_va_arg(ap, long);\n";
+        rows(src, ExprKind::VAArgExpr, 0, va_arg_expr, |w, s, e| {
+            let n = node(w, e);
+            child(w, s, expr(n.a));
+            w.write_type(s, ty(n.b));
+        });
+    }
+
+    /// The numbers [`ATOMIC_OPS`] writes are Kiln's, and they are exactly
+    /// the operations `is_op` names.
+    #[test]
+    fn atomic_numbering_is_kilns() {
+        let kiln = [
+            atomic::ADD_FETCH,
+            atomic::AND_FETCH,
+            atomic::CMPXCHG,
+            atomic::CMPXCHG_N,
+            atomic::EXCHANGE,
+            atomic::EXCHANGE_N,
+            atomic::FETCH_ADD,
+            atomic::FETCH_AND,
+            atomic::FETCH_MAX,
+            atomic::FETCH_MIN,
+            atomic::FETCH_NAND,
+            atomic::FETCH_OR,
+            atomic::FETCH_SUB,
+            atomic::FETCH_XOR,
+            atomic::LOAD,
+            atomic::LOAD_N,
+            atomic::MAX_FETCH,
+            atomic::MIN_FETCH,
+            atomic::NAND_FETCH,
+            atomic::OR_FETCH,
+            atomic::STORE,
+            atomic::STORE_N,
+            atomic::SUB_FETCH,
+            atomic::XOR_FETCH,
+            atomic::C11_CMPXCHG_STRONG,
+            atomic::C11_CMPXCHG_WEAK,
+            atomic::C11_EXCHANGE,
+            atomic::C11_FETCH_ADD,
+            atomic::C11_FETCH_AND,
+            atomic::C11_FETCH_MAX,
+            atomic::C11_FETCH_MIN,
+            atomic::C11_FETCH_NAND,
+            atomic::C11_FETCH_OR,
+            atomic::C11_FETCH_SUB,
+            atomic::C11_FETCH_XOR,
+            atomic::C11_INIT,
+            atomic::C11_LOAD,
+            atomic::C11_STORE,
+        ];
+        for (&(name, ours), theirs) in ATOMIC_OPS.iter().zip(kiln) {
+            assert_eq!(ours, theirs, "{name}");
+        }
+        for id in 0..=255 {
+            assert_eq!(atomic::is_op(id), ATOMIC_OPS.iter().any(|&(_, v)| v == id), "{id}");
+        }
+    }
+
+    #[test]
+    fn atomic_rows() {
+        let src = "int a;\nint x = __atomic_load_n(&a, 0), y = __atomic_fetch_add(&a, 1, 0);\n";
+        for (nth, op) in [(0, atomic::LOAD_N), (1, atomic::FETCH_ADD)] {
+            rows(src, ExprKind::AtomicExpr, nth, atomic_expr, |w, s, e| {
+                let n = node(w, e);
+                s.uv(u64::from(op));
+                let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+                children(w, s, &es);
+            });
+        }
+    }
+
+    const VEC: &str = "typedef int v4 __attribute__((ext_vector_type(4)));\n\
+        typedef float f4 __attribute__((ext_vector_type(4)));\nv4 vv; v4 *pv;\n";
+
+    #[test]
+    fn shuffle_rows() {
+        let src = format!(
+            "{VEC}v4 x = __builtin_shufflevector(vv, vv, 3, 2, 1, 0);\n\
+             template <int N> struct B {{ v4 w = __builtin_shufflevector(vv, vv, N, 1, 2, 3); }};\n"
+        );
+        rows(&src, ExprKind::ShuffleVectorExpr, 0, shuffle_vector_expr, |w, s, e| {
+            let n = node(w, e);
+            s.flags(FlagWord::new().bit(true));
+            let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+            children(w, s, &es);
+            s.count(4).uv(3).uv(2).uv(1).uv(0);
+        });
+        rows(&src, ExprKind::ShuffleVectorExpr, 1, shuffle_vector_expr, |w, s, e| {
+            let n = node(w, e);
+            s.flags(FlagWord::new().bit(false));
+            let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+            children(w, s, &es);
+        });
+    }
+
+    #[test]
+    fn vector_rows() {
+        let src =
+            format!("{VEC}f4 c = __builtin_convertvector(vv, f4);\nint x = vv.y, y = pv->z;\n");
+        rows(&src, ExprKind::ConvertVectorExpr, 0, convert_vector_expr, |w, s, e| {
+            let n = node(w, e);
+            child(w, s, expr(n.a));
+        });
+        for (nth, arrow, name) in [(0, false, b"y"), (1, true, b"z")] {
+            rows(&src, ExprKind::ExtVectorElementExpr, nth, ext_vector_element_expr, |w, s, e| {
+                let n = node(w, e);
+                s.flags(FlagWord::new().bit(arrow));
+                child(w, s, expr(n.a));
+                s.bytes(name);
+            });
+        }
+    }
+
+    #[test]
+    fn generic_rows() {
+        let src = "int a;\nint x = _Generic(a, int: 1, default: 2);\n\
+                   int y = _Generic(long, int: 1, long: 2);\n\
+                   template <class T> struct G { T t; int w = _Generic(t, int: 1, default: 2); };\n";
+        let k = ExprKind::GenericSelectionExpr;
+        rows(src, k, 0, generic_selection_expr, |w, s, e| {
+            let words = list(w, node(w, e).a);
+            s.tag(generic_control::EXPR);
+            child(w, s, expr(words[0]));
+            s.count(2);
+            w.write_type_opt(s, QualType::from_raw(words[2]));
+            child(w, s, expr(words[4]));
+            w.write_type_opt(s, None);
+            child(w, s, expr(words[7]));
+            s.opt(true).uv(0);
+        });
+        rows(src, k, 1, generic_selection_expr, |w, s, e| {
+            let words = list(w, node(w, e).a);
+            s.tag(generic_control::TYPE);
+            w.write_type(s, ty(words[0]));
+            s.count(2);
+            for i in [2, 5] {
+                w.write_type_opt(s, QualType::from_raw(words[i]));
+                child(w, s, expr(words[i + 2]));
+            }
+            s.opt(true).uv(1);
+        });
+        // Dependent: no association selected.
+        rows(src, k, 2, generic_selection_expr, |w, s, e| {
+            let words = list(w, node(w, e).a);
+            s.tag(generic_control::EXPR);
+            child(w, s, expr(words[0]));
+            s.count(2);
+            w.write_type_opt(s, QualType::from_raw(words[2]));
+            child(w, s, expr(words[4]));
+            w.write_type_opt(s, None);
+            child(w, s, expr(words[7]));
+            s.opt(false);
+        });
+    }
+
+    // -----------------------------------------------------------------
+    // The pseudo-object rewrite.
+
+    const CMP: &str = "namespace std { struct strong_ordering { int v;\n\
+        static const strong_ordering less, equal, greater;\n\
+        friend constexpr bool operator==(strong_ordering, int) { return true; }\n\
+        friend constexpr bool operator!=(strong_ordering, int) { return true; } };\n\
+        inline constexpr strong_ordering strong_ordering::less{-1}, strong_ordering::equal{0},\n\
+        strong_ordering::greater{1}; }\n\
+        struct M { bool operator==(const M &) const; bool operator<(const M &) const; };\n\
+        struct X { M m; std::strong_ordering operator<=>(const X &) const = default; };\n\
+        auto r = X{} <=> X{};\n";
+
+    /// The sources the syntactic form holds of the semantic opaque values.
+    fn sources(w: &Walk<'_>, es: &[ExprId]) -> Vec<ExprId> {
+        let direct = w.ast.exprs.children(es[0], &w.ast.lists);
+        es[1..].iter().filter_map(|&x| source_of(w, x)).filter(|x| direct.contains(x)).collect()
+    }
+
+    #[test]
+    fn pseudo_object_rows() {
+        with(CMP, "c++20", |input, _| {
+            assert!(!of_kind(input, ExprKind::PseudoObjectExpr).is_empty(), "Kiln builds one");
+        });
+        rows(CMP, ExprKind::PseudoObjectExpr, 0, pseudo_object_expr, |w, s, e| {
+            let n = node(w, e);
+            let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+            for src in sources(w, &es) {
+                let unit = &mut w.unit.expr;
+                unit.opaques.insert(src, unit.next_opaque);
+                unit.next_opaque += 1;
+            }
+            children(w, s, &es);
+            s.uv(u64::from(n.b));
+        });
+    }
+
+    /// Each operand of the comparison is written once: against the
+    /// encoding that writes the list without numbering the sources first,
+    /// the walk saves exactly the bytes of the two operands.
+    #[test]
+    fn pseudo_object_writes_operands_once() {
+        with(CMP, "c++20", |input, rules| {
+            let all = of_kind(input, ExprKind::PseudoObjectExpr);
+            assert!(!all.is_empty());
+            for e in all {
+                let (got, _) = written(input, rules, e, pseudo_object_expr);
+                let (naive, _) = written(input, rules, e, |w, s, e| {
+                    let n = node(w, e);
+                    let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+                    children(w, s, &es);
+                    s.uv(u64::from(n.b));
+                });
+                let es: Vec<ExprId> = list_of(input, e).into_iter().map(expr).collect();
+                let w = Walk::new(input, rules);
+                let srcs = sources(&w, &es);
+                assert_eq!(srcs.len(), 2, "both operands are bound");
+                let once: usize =
+                    srcs.iter().map(|&x| written(input, rules, x, child).0.len()).sum();
+                assert_eq!(naive.len() - got.len(), once, "the operands written once");
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------
+    // Words Kiln does not build: well formed, `Unaccounted`, no panic.
+
+    #[test]
+    fn unknown_values_are_unaccounted() {
+        assert!(predefined(3).is_none() && source_loc(6).is_none() && suspend(6).is_none());
+        let mut s = Stream::new();
+        tag_or(&mut s, None, Cause::Unaccounted("ExprNode/x"));
+        assert_eq!(s.cause(), Some(Cause::Unaccounted("ExprNode/x")));
+        let mut s = Stream::new();
+        bool_word(&mut s, 2, Cause::Unaccounted("ExprNode/y"));
+        assert_eq!(s.cause(), Some(Cause::Unaccounted("ExprNode/y")));
+    }
+}

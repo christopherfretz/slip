@@ -1,4 +1,5 @@
 # pending
 # needs: stmt
 changed X
-changed X::n
+changed X::m
+changed X::operator<=>(const X &) const

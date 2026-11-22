@@ -59,7 +59,8 @@ CMP = """namespace std { struct strong_ordering { int v;
   friend constexpr bool operator==(strong_ordering, int) { return true; }
   friend constexpr bool operator!=(strong_ordering, int) { return true; }
 }; inline constexpr strong_ordering strong_ordering::less{-1}, strong_ordering::equal{0},
-  strong_ordering::greater{1}; }"""
+  strong_ordering::greater{1}; }
+struct M { bool operator==(const M &) const; bool operator<(const M &) const; };"""
 
 
 def t(root, short, row, a, b, expect=None, **opts):
@@ -129,8 +130,8 @@ KINDS = [
     ("DependentCoawaitExpr", "template <class T> Task f(T t) { co_await t; }",
      "template <class T> Task f(T t) { co_return; }", "f(T)", {"needs": "stmt", "pre": CORO}),
     ("PseudoObjectExpr",
-     "struct X { int n; auto operator<=>(const X &) const = default; };",
-     "struct X { int n; };", "X", {"needs": "stmt", "pre": CMP}),
+     "struct X { M m; std::strong_ordering operator<=>(const X &) const = default; };",
+     "struct X { M m; };", "X", {"needs": "stmt", "pre": CMP}),
 ]
 for kind, a, b, name, opts in KINDS:
     pre = opts.pop("pre", KIND_PRE.get(kind, VARS))
@@ -459,14 +460,14 @@ differ("GenericAssoc", "expr", GS.format("a, int: 1, default: 2"),
 # `operator<=>` (its body is a derived body).
 
 
-node("PseudoObjectExpr.a",
-     "struct X { int n; int m; auto operator<=>(const X &) const = default; };",
-     "struct X { int m; int n; auto operator<=>(const X &) const = default; };",
-     ["changed X"], pre=CMP, needs="stmt")
-node("PseudoObjectExpr.b",
-     "struct X { int n; auto operator<=>(const X &) const = default; };",
-     "struct X { long n; auto operator<=>(const X &) const = default; };",
-     ["changed X", "changed X::n"], pre=CMP, needs="stmt")
+# `M` has `==` and `<` and no `<=>`: each member pair compares by the
+# synthesized form (`kiln_sema` class/compare/three_way.rs:76).
+SO = "std::strong_ordering operator<=>(const X &) const = default;"
+node("PseudoObjectExpr.a", f"struct X {{ M m; M k; {SO} }};", f"struct X {{ M k; M m; {SO} }};",
+     ["changed X", "changed X::operator<=>(const X &) const"], pre=CMP, needs="stmt")
+node("PseudoObjectExpr.b", f"struct X {{ M m; {SO} }};", f"struct X {{ int m; {SO} }};",
+     ["changed X", "changed X::m", "changed X::operator<=>(const X &) const"], pre=CMP,
+     needs="stmt", note="`PseudoObjectExpr.b`: the synthesized form on side A only.")
 
 # The tests of WP-031 that wait on these kinds (`# needs: expr`).
 differ("ColdExprData", "array_trait", UL.format("__array_rank(int[1][2])"),

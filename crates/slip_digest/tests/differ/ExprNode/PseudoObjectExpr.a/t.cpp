@@ -6,8 +6,9 @@ namespace std { struct strong_ordering { int v;
   friend constexpr bool operator!=(strong_ordering, int) { return true; }
 }; inline constexpr strong_ordering strong_ordering::less{-1}, strong_ordering::equal{0},
   strong_ordering::greater{1}; }
+struct M { bool operator==(const M &) const; bool operator<(const M &) const; };
 #ifdef B
-struct X { int m; int n; auto operator<=>(const X &) const = default; };
+struct X { M k; M m; std::strong_ordering operator<=>(const X &) const = default; };
 #else
-struct X { int n; int m; auto operator<=>(const X &) const = default; };
+struct X { M m; M k; std::strong_ordering operator<=>(const X &) const = default; };
 #endif
