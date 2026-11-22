@@ -7,7 +7,7 @@ payload, side record and cold map it says whether the fact enters the
 digest and how. `digest.md` defines everything the tables plug into (units,
 keys, streams, references); section numbers written "digest §N" are
 sections of that file. The Kiln revision described is the one the `kiln`
-submodule pins (`62d190007`, the branch `slip/kf1`; first written against `4bfd999da`); the facts were first collected in
+submodule pins (`83566cc47`, Kiln's `main`; first written against `4bfd999da`); the facts were first collected in
 `research/kiln-ast-inventory.md` of the context repository and then checked
 against the Kiln source, which wins where the two differ (§13).
 
@@ -2200,7 +2200,6 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `asm_label` | name | in | string? |  |
 | `alignment` | child | in | child? |  |
 | `deprecation` | value | in | string? |  |
-| `instantiated_from` | entity | in | ref | by the rule of §9 for a pattern; no site in Kiln fills this map (`TemplateTables` `instantiated_from` is the one in use) |
 | `injection_point` | location | out | - |  |
 | `declarator_end` | location | out | - |  |
 | `builtin_id` | flag | demand | - | §11.6: the builtin is a derived unit keyed by its name under `Parent::builtin`; the id is Kiln's numbering and is not written |
@@ -2215,9 +2214,12 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `inheriting_ctor` | entity | demand | - | §11.5 |
 | `inherited_ctor` | entity | demand | - | §11.5 |
 | `hidden_shadow` | entity | in | ref |  |
+| `using_shadows` | entity | out | - | the shadows a using-declaration introduced, in introduction order: each shadow is a unit whose key holds its scope, its name and what it names (§5.2), and its own `DeclMisc` `0-access` holds the access a class-scope using-declaration gives it; the order of introduction is not behaviour |
+| `shadow_using` | bookkeeping | out | - | inverse of `using_shadows` |
 | `conversion_spec_target` | written | out | - | the type a conversion function template specialisation's name prints with; the declaration keeps the pattern's name. It reaches the program only as text made from a name (digest §9) |
 | `compound_literal` | entity | unsupported | - | the implicit variable of a file-scope compound literal has no name to key it by; a GNU extension in C++ |
 | `init_fp` | flag | in | record FpOverride? | the floating-point pragma state a constructor's member initialisers, a field's default member initialiser or a parameter's default argument were parsed in, when it is not the command line's: code generation emits the initialiser under it, not under the state of the place that uses it |
+| `closure_owner` | entity | in | keyed | the declaration whose text holds a closure's lambda-expression when that is not the closure's context: the parent of the closure's key (§10.4, digest §4.3); `docs/wp/WP-040.md` implements it, and until then a closure is `Pending(Area::Local)` |
 
 `lexical_ctx` is written as `ref*sorted`: for each declaration counted,
 a `Ref` to the nearest context that encloses the place it was written
@@ -2375,7 +2377,6 @@ of its kind, which are in walk order. A kind with no rows (`NullStmt`,
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `kind` | flag | in | enum StmtKind | the node's tag |
-| `flags` | flag | unsupported | unbuilt | Kiln never sets it; a non-zero value would be a meaning this file does not know |
 | `loc` | location | out | - |  |
 | `CompoundStmt.aux` | flag | in | record FpOverride | index into `StmtArena` `fp_overrides`: the floating-point pragmas in effect in the block |
 | `CompoundStmt.a` | child | in | child* |  |
@@ -2743,12 +2744,12 @@ Rules the rows refer to:
   source walked in place. A node without a source writes the next number
   and no source.
 - **Overloaded member access.** A `MemberExpr` whose type is the
-  overloaded-function placeholder names the first candidate of a set that
-  Kiln's semantic analysis keeps outside `Ast`. The first candidate is
-  written; the rest of the set is the result of looking that member's name
-  up in a class whose unit is compared separately. The qualifier and the
-  explicit template arguments of such an access are kept with the set and
-  are not written ("Hazards accepted for now").
+  overloaded-function placeholder names the first candidate of its set.
+  The first candidate is written; the rest of the set is the result of
+  looking that member's name up in the naming class, whose unit is
+  compared separately. The names overload resolution reads besides,
+  the qualifier, the explicit template arguments and the naming class,
+  are `ColdExprData` `member_overload`.
 - **Literals from builtin macros.** A literal that came from `__LINE__`
   or one of its relatives is written by value until Kiln can say where a
   literal came from (digest "Open questions").
@@ -2896,7 +2897,7 @@ Rules the rows refer to:
 | `MemberExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: the member chosen is the fact (digest §6) |
 | `MemberExpr.aux` | flag | in | enum NonOdrUse |  |
 | `MemberExpr.a` | child | in | child | the object expression |
-| `MemberExpr.b` | entity | in | ref | the member; for an overloaded access the first candidate (rule above, and "Hazards accepted for now") |
+| `MemberExpr.b` | entity | in | ref | the member; for an overloaded access the first candidate (rule above) |
 | `CXXThisExpr.aux-implicit` | flag | in | bit | bit 0, written only for an instantiation-dependent node: Kiln's template substitution, its mangling of dependent expressions and its profiles read it; elsewhere nothing but diagnostics does (pitfalls E07) |
 | `PredefinedExpr.aux` | flag | in | enum PredefinedKind |  |
 | `PredefinedExpr.a` | value | symbolic | - | the string literal holding the enclosing function's name; absent in a dependent context |
@@ -2935,7 +2936,7 @@ Rules the rows refer to:
 | `ArraySubscriptExpr.b` | child | in | child |  |
 | `ParenExpr.a` | child | in | child |  |
 | `ParenExpr.b` | location | out | - | the closing parenthesis |
-| `CallExpr.bits-adl` | bookkeeping | out | - | bit 5: found by argument-dependent lookup; the callee is the fact (digest §6) |
+| `CallExpr.bits-adl` | bookkeeping | out | - | bit 5: found by argument-dependent lookup; the callee is the fact (digest §6). Only Kiln's dump reads it, not instantiation or code generation |
 | `CallExpr.bits-assume-ignored` | flag | in | bit | bit 6 |
 | `CallExpr.a` | child | in | child | the callee |
 | `CallExpr.b` | child | in | child* |  |
@@ -2947,7 +2948,7 @@ Rules the rows refer to:
 | `CXXOperatorCallExpr.b` | child | in | child* |  |
 | `CXXRewrittenBinaryOperator.aux` | flag | in | enum BinaryOp | the operator as written: instantiation rebuilds from it |
 | `CXXRewrittenBinaryOperator.a` | child | in | child | the semantic form |
-| `CXXRewrittenBinaryOperator.b` | child | in | child* | the two operands as written: instantiation rebuilds from them |
+| `CXXRewrittenBinaryOperator.b` | child | in | bool | the two operands as written: they are nodes of the semantic form `a`, where they are written; written is whether their order is the reverse of their order in `a` (a pre-order walk of `a` that does not enter them), which instantiation rebuilds from; one not found under `a` is `Unaccounted` |
 | `ParenListExpr.a` | child | in | child* |  |
 | `ImplicitCastExpr.bits-part-of-explicit-cast` | flag | in | bit | bit 4 |
 | `ImplicitCastExpr.aux` | flag | in | enum CastKind |  |
@@ -2974,7 +2975,7 @@ Rules the rows refer to:
 | `BuiltinBitCastExpr.aux` | flag | in | enum CastKind |  |
 | `BuiltinBitCastExpr.a` | child | in | child |  |
 | `BuiltinBitCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
-| `InitListExpr.a` | child | in | child* |  |
+| `InitListExpr.a` | child | in | child* | runs of one node: the count of runs, then for each its length and the node once; a GNU range designator's initialiser is one node in every slot it fills |
 | `InitListExpr.b` | child | in | record InitListExtra | index into `init_lists` |
 | `DesignatedInitExpr.a` | child | in | child | the initialiser; the designators are `ColdExprData` `designators` |
 | `CXXConstructExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: the constructor chosen is the fact (digest §6) |
@@ -2988,7 +2989,7 @@ Rules the rows refer to:
 | `CXXInheritedCtorInitExpr.aux-kind` | flag | in | enum ConstructionKind | bits 0-1 |
 | `CXXInheritedCtorInitExpr.aux-virtual-base` | flag | in | bit | bit 2 |
 | `CXXInheritedCtorInitExpr.a` | entity | in | ref | the inherited constructor |
-| `CXXDefaultArgExpr.a` | entity | in | uv | the parameter, by its position (`ParamData` `index`); its function is the callee or constructor of the enclosing call |
+| `CXXDefaultArgExpr.a` | entity | in | uv | the parameter, by its position (`ParamData` `index`). The callee or constructor of the enclosing call names the function; the default is that of the declaration name lookup found at the call (`kiln_sema` expr.rs:6189), which a block-scope redeclaration with defaults of its own is, and that declaration writes it (in its unit, or for a block-scope redeclaration where `local::write_decl` meets it) |
 | `CXXDefaultArgExpr.b` | bookkeeping | out | - | the context of the use, which follows from where the expression is |
 | `CXXDefaultInitExpr.aux` | bookkeeping | out | - | always 1 |
 | `CXXDefaultInitExpr.a` | entity | in | ref | the field |
@@ -3025,7 +3026,7 @@ Rules the rows refer to:
 | `CXXDeleteExpr.a` | child | in | child |  |
 | `CXXDeleteExpr.b` | entity | in | ref | the deallocation function |
 | `CXXPseudoDestructorExpr.aux-arrow` | flag | in | bit | bit 0 |
-| `CXXPseudoDestructorExpr.aux-qualified` | flag | in | bit | bit 1: the destructor name was qualified; instantiation reads it |
+| `CXXPseudoDestructorExpr.aux-qualified` | flag | in | bit | bit 1, written only for an instantiation-dependent node: the destructor name was qualified; Kiln's template substitution, its mangling of dependent expressions and its profiles read it; elsewhere nothing does |
 | `CXXPseudoDestructorExpr.a` | child | in | child |  |
 | `CXXPseudoDestructorExpr.b` | type | in | type | the destroyed type |
 | `CXXThrowExpr.a` | child | in | child? |  |
@@ -3046,7 +3047,7 @@ Rules the rows refer to:
 | `ExpressionTraitExpr.aux` | flag | in | enum TypeTrait |  |
 | `ExpressionTraitExpr.a` | child | in | child |  |
 | `ExpressionTraitExpr.b` | value | in | uv | the stored result |
-| `OffsetOfExpr.aux` | flag | in | bool | non-zero: the record is not standard-layout |
+| `OffsetOfExpr.aux` | flag | in | bool | non-zero: the designator passes through an invalid class (`invalid_record`); Kiln has reported an error, and the unit is indeterminate (`Cause::Error`) |
 | `OffsetOfExpr.a` | child | in | child* | the index expressions |
 | `OffsetOfExpr.b` | value | in | uv | the stored result |
 | `SizeOfPackExpr.a` | entity | in | ref | the pack |
@@ -3067,7 +3068,7 @@ Rules the rows refer to:
 | `CXXUnresolvedConstructExpr.a` | child | in | child* |  |
 | `CoawaitExpr.aux-implicit` | flag | in | bit | bit 0 |
 | `CoawaitExpr.aux-suspend` | flag | in | enum SuspendKind | bits 1-2 |
-| `CoawaitExpr.a` | child | in | child* | the first five elements of the list (`CoawaitParts`); the sixth, the placeholder for the awaiter, is reached from the calls |
+| `CoawaitExpr.a` | child | in | child* | elements two to five of the list (`CoawaitParts`): the first, the operand as written, is a node of `common`; the sixth, the placeholder for the awaiter, is reached from the calls |
 | `DependentCoawaitExpr.a` | child | in | child |  |
 | `CoyieldExpr.aux-implicit` | flag | in | bit | bit 0 |
 | `CoyieldExpr.aux-suspend` | flag | in | enum SuspendKind | bits 1-2 |
@@ -3549,7 +3550,7 @@ reads the list itself (`ExprNode`, `CoawaitExpr.a`).
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `operand` | child | out | - | first element of the list `CoawaitExpr.a` writes |
+| `operand` | child | out | - | first element: the operand as written, not written: `common` is built from it (for `co_yield {…}`, a placeholder `InitListExpr` of type `void` whose elements are nodes of `common`) |
 | `common` | child | out | - | second element: the awaiter |
 | `ready` | child | out | - | third element |
 | `suspend` | child | out | - | fourth element |
@@ -3632,7 +3633,7 @@ the row hold both cases.
 | `Field.start` | location | out | - |  |
 | `Field.end` | location | out | - |  |
 | `Index` | flag | in | tag 2 |  |
-| `Index.index` | child | in | child |  |
+| `Index.index` | child | in | uv | the position of the index in `OffsetOfExpr.a`, where it is written |
 | `Index.start` | location | out | - |  |
 | `Index.end` | location | out | - |  |
 
@@ -3645,7 +3646,7 @@ the row hold both cases.
 | `Offset` | flag | in | tag 1 |  |
 | `Offset.0` | value | in | uv | bytes |
 | `Index` | flag | in | tag 2 |  |
-| `Index.index` | child | in | child | also an element of `OffsetOfExpr.a`; written again here so that the step says which |
+| `Index.index` | child | in | uv | the position of the index in `OffsetOfExpr.a`, where it is written |
 | `Index.elem_size` | value | in | uv |  |
 
 ### `kiln_ast::expr::InitListExtra`
@@ -3714,6 +3715,7 @@ kind; an expression with no entry writes the encoding's empty form (§2.1).
 | `end_loc` | location | out | - |  |
 | `member_extra-qualified` | flag | in | bool | a `MemberExpr` whose `DeclRefExtra` has a qualifier and whose member is a virtual function: a qualified name suppresses virtual dispatch (digest §6); a qualifier on any other member is not a fact |
 | `member_extra-record` | written | in | record DeclRefExtra | no entry is written as a record with nothing present |
+| `member_overload` | entity | in | record OverloadedMember? | an overloaded `MemberExpr`: the names overload resolution reads (§7, "Overloaded member access") |
 | `designators` | name | in | enum Designator* | outermost first |
 | `syntactic_list` | child | in | child? | the list as written, in a template pattern: instantiation rebuilds from it |
 | `array_trait` | value | in | record ArrayTraitExtra? |  |
@@ -3729,6 +3731,16 @@ kind; an expression with no entry writes the encoding's empty form (§2.1).
 | `splice_args` | value | unsupported | - | reflection (§12) |
 | `default_arg_rewritten` | child | in | child? | the initialiser rebuilt for this use |
 | `fp_round` | flag | in | enum FpRound? |  |
+
+### `kiln_ast::expr::OverloadedMember`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `qualifier` | name | in | enum Nns? | the qualifier, by what it names (an alias of the class is the class): lookup is in its class, and a qualified call is not dispatched |
+| `template_args` | written | in | enum ArgView*? | the explicit template arguments, which select the candidates a call deduces from |
+| `naming_class` | entity | in | ref | the class access to the member is checked in ([class.access.base]/5): the qualifier's class, else the object's, so it is implied by `qualifier` and the object expression and no source changes it alone |
 
 ### `kiln_ast::expr::ExprArena`
 
@@ -4045,7 +4057,7 @@ is.
 | `Pattern` | flag | in | tag 1 |  |
 | `Specialization` | flag | in | tag 2 |  |
 | `MemberOfSpecialization` | flag | in | tag 3 |  |
-| `DependentFriend` | flag | unsupported | unbuilt | no construction site found in Kiln |
+| `DependentFriend` | flag | unsupported | unbuilt | retired |
 | `PartialSpecialization` | flag | in | tag 5 |  |
 
 ### `kiln_ast::decl::TemplLink`
@@ -4061,7 +4073,6 @@ specialisation. Otherwise bits 29-31 are the kind and bits 0-28 an index.
 | `Pattern.0-index` | bookkeeping | out | - | index into `TemplateTables` `infos`: the template whose pattern this is, in whose unit the declaration is being written |
 | `Specialization.0-index` | entity | in | record SpecInfo | index into `TemplateTables` `specs` |
 | `MemberOfSpecialization.0-index` | entity | in | record MemberSpecInfo | index into `TemplateTables` `member_specs` |
-| `DependentFriend.0-index` | entity | unsupported | unbuilt | no construction site found in Kiln |
 | `PartialSpecialization.0-index` | entity | in | record PartialSpecInfo | index into `TemplateTables` `partials` |
 
 ### 9.2 Templates and their parameters
@@ -4274,6 +4285,7 @@ a namespace), which an instantiation set there, is written absent.
 | `trailing_requires` | child | in | child? | by function; also in the key as a profile (§3.3) |
 | `expr_targs` | value | in | enum ArgView*? | the explicit template arguments of a dependent or unresolved name |
 | `expr_nns` | name | in | enum Nns? | the qualifier of a dependent or unresolved name |
+| `oper_lookups` | entity | in | record OperLookups | the definition-context lookup set of a dependent operator expression (rule below) |
 | `expr_begin` | location | out | - |  |
 | `size_of_pack_origin` | entity | in | ref | the pack a substituted `sizeof...` named: the literal still mangles by it |
 | `size_of_pack_partial` | value | in | enum ArgView*? | the partly substituted arguments of a `sizeof...`: mangled |
@@ -4308,6 +4320,59 @@ a namespace), which an instantiation set there, is written absent.
 | `partial_map` | bookkeeping | out | - | lookup table for redeclarations of a partial specialisation |
 | `param_objects` | bookkeeping | out | - | the inverse of `param_object_values` |
 | `param_object_values` | value | in | value? | by `TemplateParamObject`: the object's value, which is its unit's whole stream |
+
+`oper_lookups` holds, for a unary, binary or compound-assignment
+operator expression with a type-dependent operand in a template, the
+non-member operator functions unqualified lookup found at the definition
+([temp.dep.candidate]/1, [over.match.oper]/3.2). Instantiation uses that
+set and argument-dependent lookup at the point of instantiation, never a
+new unqualified lookup. The expression writes `by_expr` as the
+declarations of its candidates, each a `ref`, sorted and without
+duplicates as `UnresolvedLookupExpr.b` is. Absent and empty differ:
+instantiation looks up again for an expression with no set and uses
+argument-dependent lookup alone for an empty one. `found`, the
+using-declaration's shadow a candidate was found through, is `out`: Kiln
+keeps one candidate per function, so two shadows of one function are
+never both in a set, and the shadow reaches only a deprecation warning
+and `DeclRefExtra` `found_decl`, which is `out`.
+
+### `kiln_ast::oper_lookup::OperLookups`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `by_expr` | entity | in | ref*sorted? | by expression: the `decl` of each candidate of its set (rule above) |
+| `sets` | bookkeeping | out | - | interning: equal sets are stored once |
+| `cands` | bookkeeping | out | - | interning |
+| `index` | bookkeeping | out | - | interning; not stored (`snap(skip)`) |
+| `indexed` | bookkeeping | out | - | interning; not stored (`snap(skip)`) |
+
+### `kiln_ast::oper_lookup::OperCandidate`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `decl` | entity | in | ref | the function or function template |
+| `found` | entity | out | - | the shadow it was found through, else `decl`: rule above |
+
+### `kiln_ast::oper_lookup::OperSetId`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0` | bookkeeping | out | - | interning: the set is written by its members |
+
+### `kiln_ast::oper_lookup::SetSpan`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `start` | bookkeeping | out | - | interning |
+| `len` | bookkeeping | out | - | interning |
 
 ## 10. The other tables of `Ast`
 
@@ -4499,17 +4564,25 @@ node of the kind to a declaration or a statement.
 `kind=struct; pin=schema; selector=kiln_ast::attr::AttrKind`
 
 The rows give the node as Kiln leaves it once the declaration it is on
-has been checked. Before that, several kinds hold their arguments as
-written, and the node does not say which state it is in ("Open
-questions"); where the two can be told apart by value the row says so.
+has been checked, which the bit `CHECKED` says. Before that, several
+kinds hold their arguments as written (`CLEANUP`, `TLS_MODEL`,
+`CONSTRUCTOR`, `DESTRUCTOR` the first argument's expression and the
+argument count; `VISIBILITY` `u32::MAX`). Every attribute of a
+declaration's list or of an `AttributedStmt` is checked once the
+translation unit is done, and an implicit one is built checked; a node
+the walk reaches without the bit makes its unit indeterminate
+(`Unaccounted`). An argument that depends on a template parameter keeps
+its deferred form under its own per-kind bit (`flags-priority-dependent`,
+`MODE.flags-deferred`) on a checked node.
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `kind` | flag | in | enum AttrKind |  |
 | `syntax` | flag | in | enum AttrSyntax | `[[...]]`, `__attribute__`, a keyword, `__declspec` or a pragma: code generation tells `__attribute__((noreturn))` from `[[noreturn]]` by it |
-| `flags-implicit` | flag | in | bit | bit 0: added by sema or by a pragma, not written |
+| `flags-implicit` | flag | in | bit | bit 0: added by sema, not written. An attribute from `#pragma clang attribute` is stored as written, without this bit (`kiln_sema` `pragma_attr.rs:503-518`) |
 | `flags-inherited` | bookkeeping | out | - | bit 1: a copy from an earlier declaration, which the list rule leaves out. Kiln sets it at one site, for an `ASM_LABEL` |
 | `flags-gnu-scoped` | written | out | - | bit 3: written with the `gnu::` scope |
+| `flags-checked` | bookkeeping | out | - | bit 6: the declaration checks ran on the node; set on every node of a finished translation unit, and a node without it makes the unit indeterminate (rule above) |
 | `loc` | location | out | - |  |
 | `ASSUME.flags-ignored` | flag | in | bit | bit 2: the assumption may have side effects, so it is neither assumed nor checked |
 | `FALLTHROUGH.flags-scoped` | written | out | - | bit 2: written with an attribute scope |
@@ -4543,7 +4616,7 @@ questions"); where the two can be told apart by value the row says so.
 | `ASSUME.b` | location | out | - | a raw position |
 | `PREFERRED_NAME.b` | type | in | type | the typedef's type; its name is spelling |
 | `BUILTIN.a` | bookkeeping | out | - | the builtin's id in Kiln's numbering; the unit's key names the builtin (§11.6) |
-| `NONNULL.a` | child | in | child* | the parameter indices, integer literals; empty names every parameter |
+| `NONNULL.a` | child | in | child* | the parameter indices, integer literals, of which the check keeps the valid ones; empty names every parameter |
 | `ASM_LABEL.a` | value | in | string | the symbol name |
 | `SECTION.a` | value | in | string? | the section name |
 | `TARGET.a` | value | in | string? | the feature string |
@@ -4557,12 +4630,12 @@ questions"); where the two can be told apart by value the row says so.
 | `IFUNC.b` | location | out | - | a raw position |
 | `TARGET_VERSION.a` | value | in | string | the version string |
 | `TARGET_VERSION.b` | location | out | - | a raw position |
-| `CLEANUP.a` | entity | unsupported | - | the function as a `DeclId` once the declaration is checked and an expression before; the node does not say which |
-| `CLEANUP.b` | location | out | - | a raw position once checked |
+| `CLEANUP.a` | entity | in | ref | the function called with the variable's address at the end of its scope: a `DeclId` on a checked node |
+| `CLEANUP.b` | location | out | - | the argument's raw position on a checked node |
 | `ANNOTATE.a` | child | in | child? | the string |
 | `ANNOTATE.b` | child | in | child* | the extra arguments; 0 is the empty list |
-| `CALLBACK.a` | value | in | uv* | the argument indices |
-| `VISIBILITY.a` | flag | in | uv | 0 default, 1 hidden, 2 protected; another value is an unchecked node and makes the unit indeterminate |
+| `CALLBACK.a` | value | in | uv* | the argument indices, checked in place against the declaration |
+| `VISIBILITY.a` | flag | in | uv | 0 default, 1 hidden, 2 protected on a checked node; another value makes the unit indeterminate |
 | `VISIBILITY.b` | written | out | - | 1 when `hidden` was written `internal` |
 | `TYPE_VISIBILITY.a` | flag | in | uv | as `VISIBILITY.a` |
 | `FORMAT.a` | flag | in | uv | the archetype: 0 is `printf` |
@@ -4575,11 +4648,11 @@ questions"); where the two can be told apart by value the row says so.
 | `ENUM_EXTENSIBILITY.a` | flag | in | uv | 1 open, 0 closed |
 | `INIT_PRIORITY.a` | value | in | uv | the priority |
 | `MIN_VECTOR_WIDTH.a` | value | in | uv |  |
-| `CONSTRUCTOR.a-priority` | value | in | uv? | when `flags-priority-dependent` is clear: the priority |
+| `CONSTRUCTOR.a-priority` | value | in | uv? | when `flags-priority-dependent` is clear: the priority, on a checked node (65535 when none is written) |
 | `CONSTRUCTOR.a-expression` | child | in | child? | when it is set: the expression |
-| `DESTRUCTOR.a-priority` | value | in | uv? | when `flags-priority-dependent` is clear: the priority |
+| `DESTRUCTOR.a-priority` | value | in | uv? | when `flags-priority-dependent` is clear: the priority, on a checked node (65535 when none is written) |
 | `DESTRUCTOR.a-expression` | child | in | child? | when it is set: the expression |
-| `TLS_MODEL.a` | flag | in | uv | 1 to 4: global-dynamic, local-dynamic, initial-exec, local-exec; another value is an unchecked node and makes the unit indeterminate |
+| `TLS_MODEL.a` | flag | in | uv | 1 to 4 on a checked node: global-dynamic, local-dynamic, initial-exec, local-exec; another value makes the unit indeterminate |
 | `PASS_OBJECT_SIZE.a` | value | in | uv | the object-size type, 0 to 3 |
 | `PASS_OBJECT_SIZE.b` | flag | in | uv | 1 for `pass_dynamic_object_size` |
 | `PATCHABLE_FUNCTION_ENTRY.a` | value | in | uv |  |
@@ -4859,9 +4932,9 @@ owner that is a namespace, a class or the translation unit (a
 lambda-expression in a `static_assert`, in a base-specifier, in a
 bit-field width) has no stream that numbers the closure: the closure
 has no key, and what refers to it is indeterminate
-(`Unsupported("local/closure-owner")`). Before the Kiln pin has the
-query, the owner outside a function body is `LambdaMangling` `context`
-where Kiln stores one and unknown otherwise, with the same cause.
+(`Unsupported("local/closure-owner")`). The pinned Kiln answers the
+query (`ColdDeclData` `closure_owner`); until `docs/wp/WP-040.md`
+implements this rule, a closure is `Pending(Area::Local)`.
 
 A capture's `var` is `Ref::local` in the stream that holds the
 lambda-expression. An init-capture declares its variable: the variable
@@ -4876,7 +4949,7 @@ statement, and its initialiser is the corresponding entry of `inits`.
 |---|---|---|---|---|
 | `closure` | bookkeeping | out | - | the class whose row is writing this record |
 | `call_op` | bookkeeping | out | - | the call operator: a member of the closure, written with it |
-| `default` | flag | in | enum CaptureDefault |  |
+| `default` | flag | in | enum CaptureDefault | Kiln's ODR hash reads `[=]` with an implicit capture of `x` as `[x]`; the digest does not, on purpose: in a template the default decides what an instantiation captures, and `[=]` captures `this` differently |
 | `default_loc` | location | out | - |  |
 | `captures` | entity | in | record LambdaCapture* | in closure member order |
 | `inits` | child | in | child*? | the initialiser of each capture's member |
@@ -4910,7 +4983,7 @@ statement, and its initialiser is the corresponding entry of `inits`.
 | `loc` | location | out | - |  |
 | `ellipsis-present` | flag | in | bit | a capture pack |
 | `ellipsis-position` | location | out | - |  |
-| `implicit` | flag | in | bit |  |
+| `implicit` | flag | in | bit | see `LambdaData` `default` |
 | `init` | flag | in | bit |  |
 
 ### `kiln_ast::lambda::CaptureKind`
@@ -5288,6 +5361,54 @@ not written: a digest is relative to its command (digest §1 rule 8).
 | `contract_sites` | value | in | record ContractSite? | by statement: written by its `ContractAssertStmt` (§6) |
 | `symbols` | bookkeeping | out | - | `Interner` |
 | `inst` | bookkeeping | out | - | `InstantiationMeter` |
+| `decl_extents` | location | out | - | `DeclExtents`: the extents of each declaration as written, off unless a client turns it on |
+
+`Ast` `written_refs`, the table of references as written, is transient
+and has no descriptor; like `decl_extents` it records positions only and
+is off unless a client turns it on, so neither is written.
+
+### `kiln_ast::decl_extents::DeclExtents`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `on` | bookkeeping | out | - | whether extents are recorded |
+| `rows` | location | out | - |  |
+| `index` | bookkeeping | out | - | by declaration: its row |
+
+### `kiln_ast::decl_extents::DeclExtent`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `full` | location | out | - |  |
+| `own` | location | out | - |  |
+| `name` | location | out | - |  |
+| `qual` | location | out | - |  |
+| `body` | location | out | - |  |
+| `specs_end` | location | out | - |  |
+| `end` | location | out | - | which token ends the declaration text |
+
+### `kiln_ast::decl_extents::DeclEnd`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Other` | location | out | - |  |
+| `Semi` | location | out | - |  |
+| `Brace` | location | out | - |  |
+
+### `kiln_source::loc::Span`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `lo` | location | out | - |  |
+| `hi` | location | out | - |  |
 
 ### `kiln_ast::ast::InstantiationMeter`
 
@@ -5603,8 +5724,7 @@ reaches is reported even when only one parse instantiates it.
 | Variable length arrays | `TypeView` `VariableArray` | the bound is an expression evaluated at run time inside one function, and a type digest has no unit to number its locals in |
 | Functions without a prototype | `FuncInfo` `0-no-proto` | C only |
 | File-scope compound literals | `ExprNode` `CompoundLiteralExpr.aux`, `CompoundLiteralExpr.b`; `ColdDeclData` `compound_literal` | C only: the literal's object is a variable Kiln declares for it, whose key this file does not define |
-| `cleanup` | `AttrNode` `CLEANUP.a` | the word is a `DeclId` after the declaration is checked and an `ExprId` before, and the node does not say which |
-| Not built by Kiln | `DeclKind` `UsingPack`, `FriendTemplate`, `ImplicitParam`, `ImplicitConceptSpecialization`; `StmtNode` `flags`; `ExprKind` `UserDefinedLiteral`, `EmbedExpr`, `UnresolvedMemberExpr`; `TemplLinkKind` `DependentFriend`; `TemplateName` `DependentOperator`; fourteen rows of `AttrKind` | no construction site at the pinned revision, which Kiln confirms for all but the attribute kinds (KQ1 C17; Kiln's WP-2026 removes them); the walk treats one as indeterminate if it ever appears |
+| Not built by Kiln | `DeclKind` `UsingPack`, `FriendTemplate`, `ImplicitParam`, `ImplicitConceptSpecialization`; `ExprKind` `UserDefinedLiteral`, `EmbedExpr`, `UnresolvedMemberExpr`; `TemplateName` `DependentOperator`; fourteen rows of `AttrKind` | no construction site at the pinned revision, which Kiln confirms for all but the attribute kinds (KQ1 C17); the walk treats one as indeterminate if it ever appears. Kiln's WP-2026 removed `StmtNode` `flags` and `TemplLinkKind` `DependentFriend`, whose row is retired (§1.4) |
 
 ## 13. Differences between the inventory and the source
 
@@ -5621,14 +5741,11 @@ revision disagree, the tables follow the source.
   and `exc_spec`. There is no `Ast::exception_spec_of`.
 - `ColdDeclData` `overrides` is documented as written once at the end of
   the class, while digest §2.3 lists it as demand-driven (§11.5).
-- `ColdDeclData` `instantiated_from` is never filled; the map in use is
-  `TemplateTables` `instantiated_from`.
 - Kiln has no declaration kind for an explicit instantiation: it is the
   `SpecKind` of the specialisation it names.
-- `TemplLinkKind::DependentFriend` and `StmtNode` `flags` are never
-  written. `ExprKind::UnresolvedMemberExpr` is never built: an overloaded
-  member access is a `MemberExpr` and its candidate set is kept by
-  semantic analysis, outside `Ast`.
+- `ExprKind::UnresolvedMemberExpr` is never built: an overloaded member
+  access is a `MemberExpr`, whose names are `ColdExprData`
+  `member_overload`.
 - `CharKind`, `NonOdrUse` and the "part of an explicit cast" bit are
   listed as bookkeeping; nothing shows that code generation ignores them
   and they are `in`. `CXXThisExpr`'s implicit bit is listed as spelling;
@@ -5706,10 +5823,9 @@ compile) and by nothing else. `AttrKind` is a newtype: a new constant is
 caught only when a walk meets it.
 
 The `pin` values are checked by `tables.rs` against Kiln's descriptors.
-Twelve pinned types cannot be named from outside Kiln, so their hash is
-compared when the test runs and not when `slip_digest` compiles
-(`crates/slip_digest/tests/tables/pins.txt`); a request to Kiln to make
-them nameable is open.
+One pinned type, `kiln_ast::oper_lookup::SetSpan`, is private to Kiln,
+so its hash is compared when the test runs and not when `slip_digest`
+compiles (`crates/slip_digest/tests/tables/pins.txt`).
 
 ### Questions for Kiln
 
@@ -5724,11 +5840,6 @@ below. What they left open:
   functions left `Deferred` in numbers, the fix is a stored mark from
   Kiln, or widening the class to every member function and every friend
   defined in a class, at the cost of a resolved unit for each.
-- **Attributes Kiln never checks.** Kiln attaches the attributes of an
-  enumerator and of a lambda's call operator without checking them (a
-  Kiln defect, its WP-2022), so theirs stay as written at the pinned
-  revision. The rule for unchecked nodes below applies to them.
-- **`cleanup`** stays unsupported until Kiln's checked marker (WP-2022).
 
 ### Defaults inside a template template parameter's head
 
@@ -5746,23 +5857,13 @@ of a reported difference.
   digest. It errs towards a reported difference.
 - **Literals from builtin macros** (§7) are written by value: moving a
   line that uses `__LINE__` as a value is a reported difference.
-- **Overloaded member access** (§7): only the first candidate is
-  written. In a template the qualifier and the explicit template
-  arguments of such an access are in Kiln's semantic analysis
-  (`ovl.members`) and in no row, so a transformation that changes them is
-  seen in the instantiations and not in the pattern. The gap is an
-  access through a base that is not type-dependent, `this->` included,
-  which is still overloaded when the template ends; a type-dependent
-  base keeps its own data, and a resolved access names its function.
-  Kiln's WP-2020 puts the qualifier, the template arguments and the
-  naming class in `Ast` (request KQ1 A1); they get rows then.
-- **Operators in templates** (§7). The functions that unqualified lookup
-  found for an operator at the template's definition
-  ([temp.dep.candidate]) are also outside `Ast` (`oper_lookups`). A
-  change to that set (`pitfalls.md` E04 for operators) is seen in each
-  instantiation, where the call names its function, and not in the
-  pattern. Kiln's WP-2021 stores the set with the expression (request
-  KQ1 A2).
+- **Overloaded member access** (§7): of the candidate set only the
+  first candidate is written; the rest is the lookup of the member's
+  name in the naming class, which `member_overload` writes with the
+  qualifier and the template arguments. A change to the set is a change
+  to a member of that class, which its unit sees, and the access's own
+  unit sees it only when the first candidate changes. The instantiations
+  that call through the access name their function.
 - **Alias templates with dependent arguments** (§4.2). An alias template
   specialisation is digested as the type it names, so a condition that
   only its arguments carry (`void_t<decltype(…)>`) is in no digest of
@@ -5785,11 +5886,26 @@ of a reported difference.
   value that comes from a name is.
 - **Attribute order** (§10.1) is kept: reordering the attributes of one
   declaration is a reported difference.
-- **Unchecked attribute nodes** (§10.1): a node Kiln has not checked is
-  read as if it had been. For the kinds with a value range the row
-  detects it; for the others the words are the same kind of thing in
-  both states. No node says which state it is in. By Kiln's account an
-  unchecked `VISIBILITY` has `a` of `u32::MAX`; a checked `TLS_MODEL`
-  has `b` 0 and `a` not 0; a checked `CONSTRUCTOR` or `DESTRUCTOR` has
-  `b` 0; `NONNULL` and `CALLBACK` are checked in place.
+- **Unchecked attribute nodes** (§10.1): a node without `CHECKED` makes
+  its unit indeterminate. Kiln checks every attribute of a declaration's
+  list and of an `AttributedStmt` by the end of the translation unit, so
+  only a node no list reaches could be unchecked, and the walk reaches
+  nodes through lists.
+- **`offsetof` names neither its class nor its member** (§7). Kiln's
+  node of a non-dependent `offsetof` keeps the index expressions and the
+  folded offset; the operand type and the member path are dropped. Two
+  expressions with one value digest equal although they name different
+  things: another class of the same layout, another member at the same
+  offset (two members of a union), the same member through another
+  base. A transformation that changes which class an `offsetof` names
+  without changing the offset is not seen. Kiln is asked to keep the
+  operand type and the resolved designator (request KQ1 amendment 1,
+  §7); `differ/_/offsetof-other-class-same-layout` waits on it.
+- **A using-declaration and a member of the same name** (§5). In a
+  class, a member declared after `using Bs::f;` against before it
+  (`struct D : Bs { using Bs::f; int f(long); };` and the two swapped)
+  reports `added D::f`: Kiln makes the shadow and hides it in one order
+  and makes none in the other (`kiln_sema/src/using.rs:945`,
+  `ColdDeclData` `hidden_shadow`). The programs mean the same
+  ([namespace.udecl]/14); the difference is false, and accepted.
 - **Modules** (§10.7) have rows and no experience behind them.

@@ -21,7 +21,6 @@ use slip_kiln::kiln::ast::slot::ColdMap;
 use slip_kiln::kiln::ast::{DeclId, StmtId};
 
 use crate::keys::{Role, info};
-use crate::refs::REF_NONE;
 use crate::stream::{FlagWord, Stream};
 use crate::tables::friend_target;
 use crate::walk::Walk;
@@ -35,8 +34,6 @@ const NAMESPACE_MISSING: Cause = Cause::Unaccounted("NamespaceData/missing");
 const STATIC_ASSERT_MISSING: Cause = Cause::Unaccounted("StaticAssertData/missing");
 /// A `FileScopeAsm` with no string.
 const ASM_MISSING: Cause = Cause::Unaccounted("DeclNode/FileScopeAsm.data");
-/// An entry of the map no site in Kiln fills (§5.7).
-const INSTANTIATED_FROM: Cause = Cause::Unaccounted("ColdDeclData/instantiated_from");
 /// The implicit variable of a file-scope compound literal (§5.7).
 const COMPOUND_LITERAL: Cause = Cause::Unsupported("ColdDeclData/compound_literal");
 /// How far a chain of contexts is followed (an AST is far shallower).
@@ -129,7 +126,6 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         asm_label,
         alignment,
         deprecation,
-        instantiated_from,
         injection_point: _,
         declarator_end: _,
         builtin_id: _,
@@ -147,6 +143,12 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         conversion_spec_target: _,
         compound_literal,
         init_fp: _,
+        // `out` (§5.7): the shadows and the using-declaration are units
+        // of their own; the maps relate them in introduction order.
+        using_shadows: _,
+        shadow_using: _,
+        // `keyed` (§10.4): the parent of a closure's key (`local.rs`).
+        closure_owner: _,
     } = &ast.decls.cold;
     let e = w.entity(d);
     // The chain of `d`'s declarations, the first first (§2.3).
@@ -247,17 +249,6 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         }
         None => {
             s.opt(false);
-        }
-    }
-    // instantiated_from: ref. No site in Kiln fills it; an entry is a
-    // shape no rule has met.
-    match instantiated_from.get(d) {
-        Some(&x) => {
-            w.write_ref(s, x);
-            s.indeterminate(INSTANTIATED_FROM);
-        }
-        None => {
-            s.uv(REF_NONE);
         }
     }
     // injection_point, declarator_end: out. builtin_id: demand.
@@ -589,21 +580,6 @@ mod tests {
             let (b, cb) = written(w, |w, s| super::cold(w, s, plain));
             assert_eq!((ca, cb), (None, None));
             assert_ne!(a, b);
-        });
-    }
-
-    // §5.7 `instantiated_from`: no site in Kiln fills the map; an entry
-    // would be a shape the walk has not met.
-    #[test]
-    fn instantiated_from_is_never_filled() {
-        let src = "template <class T> struct A { T t; void f() {} static int s; struct N {}; };\n\
-                   template <class T> int A<T>::s = 0;\n\
-                   template <class T> T v = T();\n\
-                   template <class T> void g(T) {}\n\
-                   template struct A<long>;\n\
-                   int use() { A<int> a; a.f(); g(1); A<char>::N n; return v<int> + A<int>::s; }\n";
-        with_walk(src, |w| {
-            assert!(w.ast.decls.cold.instantiated_from.is_empty());
         });
     }
 

@@ -30,9 +30,6 @@ use crate::stream::{FlagWord, Stream};
 use crate::tables::{contract_kind, expansion_form, if_kind, stmt_kind};
 use crate::walk::{TOO_DEEP, Walk};
 
-/// `StmtNode` `flags`, `unsupported` (`unbuilt`): Kiln never sets it.
-const FLAGS: Cause = Cause::Unsupported("StmtNode/flags");
-
 /// `child`: the statement `st`, walked here (§6).
 pub(crate) fn child(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) {
     if !w.enter_node() {
@@ -139,10 +136,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
     let kind = n.kind();
     // kind: enum StmtKind, the node's tag.
     s.tag(stmt_kind::row(&kind));
-    // flags: unsupported, unbuilt. loc: out.
-    if n.flags() != 0 {
-        s.indeterminate(FLAGS);
-    }
+    // loc: out. (`flags` is gone from Kiln, WP-2026.)
     let (aux, a, b) = (n.aux(), n.a(), n.b());
     match kind {
         StmtKind::CompoundStmt => {
