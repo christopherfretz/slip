@@ -505,14 +505,13 @@ fn on_use(kind: SpecKind) -> bool {
 /// with no kind of its own, that of the nearest enclosing context that
 /// has one.
 ///
-/// An entity declared only by instantiations outside their class is
-/// (WP-032 rule 2); one with a written declaration is read from it, not
-/// from a declaration an instantiation added first.
+/// One with a written declaration is read from it, not from a
+/// declaration an instantiation added first. An entity declared only by
+/// instantiations outside their class is read from Kiln's first
+/// declaration, the friend function an instantiation made, whose own
+/// `MemberSpecInfo` is `ImplicitInstantiation` (WP-032 rule 2).
 pub(crate) fn instantiated_on_use(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
-    if crate::units::outside_only(w, e) {
-        return true;
-    }
     let mut c = Some(w.representative(e));
     for _ in 0..64 {
         let Some(x) = c else { return false };
