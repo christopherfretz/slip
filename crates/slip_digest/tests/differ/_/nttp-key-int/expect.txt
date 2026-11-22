@@ -1,0 +1,2 @@
+removed f(A<1>)
+added f(A<2>)

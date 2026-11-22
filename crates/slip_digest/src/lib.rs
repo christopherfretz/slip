@@ -60,7 +60,7 @@
 //! | `demand::deferrable(w, f)` | whether a function is of the deferrable class (§11.2); `None` where the demand area decides |
 //! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::profile(w, s, p)`, `expr::profile_expr(w, s, e)`, `expr::requires_clause` | pending (`Area::Expr`) |
 //! | `stmt::child(w, s, st)` | pending (`Area::Stmt`) |
-//! | `value::value(w, s, v)`, `value::string(w, s, l)` | pending (`Area::Value`) |
+//! | `value::value(w, s, v)`, `value::string(w, s, l)` (`value.rs`) | `value`: a constant in place by structure (§8); `string`: a string literal by content (§10.3) |
 //! | `local::write_decl(w, s, d)` | `decl` (§2.4): pending (`Area::Local`) |
 //! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each: pending (`Area::DeclData`) |
 //! | `decl_class::{typedef_data, enum_data, enumerator_data, record_data, field_data}(w, s, d)` | one `record T` of §5.5 each: pending (`Area::DeclData`) |
