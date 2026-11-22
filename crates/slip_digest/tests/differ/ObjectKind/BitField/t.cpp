@@ -1,9 +1,12 @@
 #include "side.h"
-// §7.1 ObjectKind `BitField`.
-struct BF { int b : 3; int o; };
-BF bf;
+// §7.1 ObjectKind `BitField`: the same member, a bit-field on one side
+// only, so `v` differs by its object kind alone (keys are not content).
+struct BF {
 #ifdef B
-int v = bf.o;
+  int b;
 #else
-int v = bf.b;
+  int b : 3;
 #endif
+};
+BF bf;
+int v = bf.b;
