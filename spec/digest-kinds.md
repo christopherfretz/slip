@@ -2947,7 +2947,7 @@ Rules the rows refer to:
 | `CXXOperatorCallExpr.b` | child | in | child* |  |
 | `CXXRewrittenBinaryOperator.aux` | flag | in | enum BinaryOp | the operator as written: instantiation rebuilds from it |
 | `CXXRewrittenBinaryOperator.a` | child | in | child | the semantic form |
-| `CXXRewrittenBinaryOperator.b` | child | in | child* | the two operands as written: instantiation rebuilds from them |
+| `CXXRewrittenBinaryOperator.b` | child | in | bool | the two operands as written: they are nodes of the semantic form `a`, where they are written; written is whether their order is the reverse of their order in `a` (a pre-order walk of `a` that does not enter them), which instantiation rebuilds from; one not found under `a` is `Unaccounted` |
 | `ParenListExpr.a` | child | in | child* |  |
 | `ImplicitCastExpr.bits-part-of-explicit-cast` | flag | in | bit | bit 4 |
 | `ImplicitCastExpr.aux` | flag | in | enum CastKind |  |
@@ -2974,7 +2974,7 @@ Rules the rows refer to:
 | `BuiltinBitCastExpr.aux` | flag | in | enum CastKind |  |
 | `BuiltinBitCastExpr.a` | child | in | child |  |
 | `BuiltinBitCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
-| `InitListExpr.a` | child | in | child* |  |
+| `InitListExpr.a` | child | in | child* | runs of one node: the count of runs, then for each its length and the node once; a GNU range designator's initialiser is one node in every slot it fills |
 | `InitListExpr.b` | child | in | record InitListExtra | index into `init_lists` |
 | `DesignatedInitExpr.a` | child | in | child | the initialiser; the designators are `ColdExprData` `designators` |
 | `CXXConstructExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: the constructor chosen is the fact (digest §6) |
@@ -2988,7 +2988,7 @@ Rules the rows refer to:
 | `CXXInheritedCtorInitExpr.aux-kind` | flag | in | enum ConstructionKind | bits 0-1 |
 | `CXXInheritedCtorInitExpr.aux-virtual-base` | flag | in | bit | bit 2 |
 | `CXXInheritedCtorInitExpr.a` | entity | in | ref | the inherited constructor |
-| `CXXDefaultArgExpr.a` | entity | in | uv | the parameter, by its position (`ParamData` `index`); its function is the callee or constructor of the enclosing call |
+| `CXXDefaultArgExpr.a` | entity | in | uv | the parameter, by its position (`ParamData` `index`). The callee or constructor of the enclosing call names the function; the default is that of the declaration name lookup found at the call (`kiln_sema` expr.rs:6189), which a block-scope redeclaration with defaults of its own is, and that declaration writes it (in its unit, or for a block-scope redeclaration where `local::write_decl` meets it) |
 | `CXXDefaultArgExpr.b` | bookkeeping | out | - | the context of the use, which follows from where the expression is |
 | `CXXDefaultInitExpr.aux` | bookkeeping | out | - | always 1 |
 | `CXXDefaultInitExpr.a` | entity | in | ref | the field |
@@ -3025,7 +3025,7 @@ Rules the rows refer to:
 | `CXXDeleteExpr.a` | child | in | child |  |
 | `CXXDeleteExpr.b` | entity | in | ref | the deallocation function |
 | `CXXPseudoDestructorExpr.aux-arrow` | flag | in | bit | bit 0 |
-| `CXXPseudoDestructorExpr.aux-qualified` | flag | in | bit | bit 1: the destructor name was qualified; instantiation reads it |
+| `CXXPseudoDestructorExpr.aux-qualified` | flag | in | bit | bit 1, written only for an instantiation-dependent node: the destructor name was qualified; Kiln's template substitution, its mangling of dependent expressions and its profiles read it; elsewhere nothing does |
 | `CXXPseudoDestructorExpr.a` | child | in | child |  |
 | `CXXPseudoDestructorExpr.b` | type | in | type | the destroyed type |
 | `CXXThrowExpr.a` | child | in | child? |  |
