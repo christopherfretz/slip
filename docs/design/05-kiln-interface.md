@@ -1,9 +1,10 @@
 # 05 — The Slip/Kiln interface
 
-Status: **a proposal to the Kiln agent, not an agreement.** Statements about
-Kiln come from reading revision `4bfd999da`; each is to be confirmed or
-corrected by Kiln before any of this is scheduled. File references are to that
-revision.
+Status: **revision 2 (2026-11-21), reviewed by the Kiln agent** against Kiln
+`0af36a384`. The "Today" cells below carry Kiln's corrections; the shape of
+KR1 and the ownership of each request (§7) are agreed between the two agents.
+Nothing is scheduled: size and order of the Kiln-side work are the operator's
+decision. File references are to Kiln `4bfd999da`.
 
 ## 1. Principles
 
@@ -12,11 +13,14 @@ revision.
    recording, the model, the pipeline and the checker.
 2. **One Slip crate depends on Kiln** (`slip_kiln`). Everything else in Slip
    depends on Slip's own model types. A Kiln API change touches one crate.
-3. **Kiln emits events; Slip stores them.** Extensions are observer hooks
-   (traits with default no-op methods) that Kiln calls with data it already
-   has at that moment. Kiln does not grow Slip's data structures, and
-   compilation pays nothing when no observer is attached. Kiln's performance
-   gates must not move.
+3. **Kiln records what only it knows; Slip reads it afterwards.** Semantic
+   facts that exist only while Kiln resolves a name are kept by Kiln in
+   opt-in, cold side tables next to the AST and read by Slip once the TU is
+   finished (KR1; §4 gives the reasons a stored table is preferred to a
+   callback). Preprocessor extensions are observer hooks (traits with default
+   no-op methods). Either way Kiln does not grow Slip's data structures, and
+   compilation pays at most one predictable branch per site when recording is
+   off. Kiln's performance gates must not move.
 4. **No behaviour change.** Nothing here alters what Kiln accepts, diagnoses or
    generates, with one exception that is a bug fix (KF4).
 5. **A facade with tests.** Kiln's crate APIs are explicitly unstable
@@ -43,8 +47,8 @@ Size: S = within one Kiln work package; M = a few; L = a spec of its own.
 
 | Id | Request | Today | Size |
 |---|---|---|---|
-| KF1 | **Front-end library entry.** A public function from (compile command, file system, observers) to a finished front-end state (preprocessor record, AST, Sema), with no dependency on code generation or LLVM. Public compilation-database reader. | Compile-command-to-preprocessor glue and the database reader (`kiln_driver/src/scan_deps_cdb.rs`) are `pub(crate)`. | S–M |
-| KF2 | **File identity and overlay.** Public mapping from `FileId` to (path, content hash); a virtual file system parameter so a TU can be parsed against in-memory replacements. | File identity is private; `FileId`/`Loc` are TU-local. | S–M |
+| KF1 | **Front-end library entry.** A public function from (compile command, file system, observers) to a finished front-end state (preprocessor record, AST, Sema), with no dependency on code generation or LLVM. Public compilation-database reader. | `syntax_only`, the compile-command-to-preprocessor glue and both database readers (`kiln_driver/src/scan_deps_cdb.rs`) are `pub(crate)`. | S–M |
+| KF2 | **File identity and overlay.** A content hash per file; a virtual file system (overlay) parameter that `#include` resolution goes through, so a TU can be parsed against in-memory replacements. | `SourceManager` has public `text(FileId)`, `file_name(FileId)` and `add_virtual(name, contents)`. There is no overlay that inclusion consults and no content hash; `FileId`/`Loc` are TU-local. | S–M |
 | KF3 | **Location utilities.** Public "this location range as an editable file character range, or none" (the fix-it logic in `kiln_sema/src/macro_fixit.rs`), end-of-token, and enumeration of macro-expansion entries. Preprocessor callbacks accept more than one observer. | Present but private; callbacks are single-observer. | S |
 | KF4 | **Bug: ADL flag.** `spec/sema-overload.md:194-196` says calls resolved through argument-dependent lookup are flagged. `set_call_adl` is called only for structured bindings (`struct_bind.rs:984`) and operators (`overload/oper.rs:1160`); ordinary calls are not flagged. | Divergence from spec. | S |
 
@@ -52,10 +56,10 @@ Size: S = within one Kiln work package; M = a few; L = a spec of its own.
 
 | Id | Request | Today | Size |
 |---|---|---|---|
-| KR1 | **Written-reference events.** A Sema observer called whenever a written name is resolved, with: the name's token range; the entity found; the syntactic role (expression, type name, nested-name-specifier component, base specifier, template name, using-declaration, using-directive, namespace alias target, member access, designator); the enclosing declaration; and, inside template instantiation, the instantiation it is happening for. One event per qualifier component, each with its own range. | The AST keeps the resolved entity but not the as-written form: no type-location information, no per-component qualifier locations, no stored end locations for many nodes. Slip cannot map a type name in source to an entity. | **L** |
-| KR2 | **Lookup provenance.** On the same event: how the name was found (unqualified scope walk, qualified, member, ADL), through which using-declaration or using-directive, and for ADL the associated namespaces considered. | Discarded after lookup. | M |
-| KR3 | **Declaration extents.** Full source range of each declaration, its name, its body, and for namespaces each reopening's braces. | Partial. | M |
-| KR4 | **Preprocessing record.** Events for: macro definition and undefinition (with a stable definition identity); each expansion with the invocation range and each argument's range; each conditional directive with its range, outcome and the skipped range; each inclusion. Per-token provenance for `#` and `##` results. | Only the final macro table is kept; the callback sees expansions without arguments or conditional structure; paste and stringise provenance is lost; skipped groups are not lexed. | M–L |
+| KR1 | **The written-reference table.** An opt-in side table, filled while Kiln resolves names, with one entry per written name: the name's token range; the entity found; the syntactic role (expression, type name, nested-name-specifier component, base specifier, template name, using-declaration, using-directive, namespace alias target, member access, designator); the enclosing declaration; the parent entry, for the components of a nested-name-specifier (one entry per component, each with its own range); and the specialization, for names resolved during template instantiation. Detail in §4. | The AST keeps the resolved entity but not the as-written form. There is no type-location information: a written type is a `QualType` plus a few single locations. Nested-name-specifier components carry no location. `DeclRefExpr` and `MemberExpr` keep no name token range. Slip cannot map a type name in source to an entity. | **L** (3–5 Kiln work packages: it touches every name-resolution site) |
+| KR2 | **Lookup provenance.** On the same entry: how the name was found (unqualified scope walk, qualified, member, ADL), through which using-directive, and for ADL the associated namespaces considered. | Partly kept: `DeclRefExtra.found_decl` (and the same for `MemberExpr`) holds the using-shadow declaration lookup found when it differs from the referenced declaration. Not kept: which using-directive was used; the ADL associated namespaces. | M |
+| KR3 | **Declaration extents.** Full source range of each declaration, its name, its body, and for namespaces each reopening's braces. | Declarations have a name `loc` and an optional `begin_loc`, and no end. Namespaces have no brace locations; each reopening is its own redeclaration with one location. | M |
+| KR4 | **Preprocessing record.** Events for: macro definition and undefinition (with a stable definition identity); each expansion with the invocation range and each argument's range; each conditional directive with its range, outcome and the skipped range; each inclusion. Per-token provenance for `#` and `##` results. | `PpCallbacks` (`kiln_pp/src/callbacks.rs`) holds a single boxed observer. `macro_expands` receives the whole invocation span and no argument ranges. `source_range_skipped` reports skipped groups (they are not lexed). There is no callback for the outcome of `#if`/`#elif`, no preprocessing record, and no `#`/`##` provenance. | M–L |
 | KR5 | **Exhaustive traversal.** A public visitor over the AST that is guaranteed to visit every node and field, with a test that fails when a node kind or field is added without the visitor (and the digest spec) being updated. | Traversals exist per consumer. | M |
 
 KR2 is deliberately separate and lower priority than KR1: because edits are
@@ -67,8 +71,8 @@ and diagnostics; it is not on the soundness path.
 
 | Id | Request | Today | Size |
 |---|---|---|---|
-| KS1 | **Host-call intrinsic.** One generic builtin, usable in constant evaluation, that forwards to a host-registered handler (sketch below). Recognised only when a handler is registered. Never memoised; an error if reached during speculative ("is this a constant expression?") evaluation. | Intrinsics are closed enums inside Kiln; no external registration; no output channel from constant evaluation. | M |
-| KS2 | **Repeated evaluation entry.** After a transform TU is compiled, evaluate a named `consteval` function many times (once per observer), each run isolated, with a per-run step budget, memory budget and cancellation. A budget profile suited to programs, not constant expressions. | No host API to evaluate a function after the TU; default budget 1,048,576 steps. Nearest hook: `parse_prefix` / `continue_preprocessed` (`kiln_parse/src/lib.rs`). | M |
+| KS1 | **Host-call intrinsic.** One generic builtin, usable in constant evaluation, that forwards to a host-registered handler (sketch below). Recognised only when a handler is registered. An error if reached during speculative ("is this a constant expression?") evaluation. Kiln's planned mechanism: one bytecode builtin dispatching to a `&mut dyn HostCalls` the Oven holds; a frame that executes a host call is marked, and the mark propagates up the stack, so no frame on that stack is memoised, while pure callees keep their memo entries, across runs too. | Builtins are closed enums inside Kiln; there is no embedder hook (`SemaBridge` is implemented by Sema only) and no output channel from constant evaluation. | M |
+| KS2 | **Repeated evaluation entry.** After a transform TU is compiled, evaluate a named `consteval` function many times (once per observer), each run isolated, with a per-run step budget, memory budget and cancellation, and memory reclaimed per run. A budget profile suited to programs, not constant expressions. Kiln's planned mechanism: a retained *session* (Sema and Oven kept alive) with `evaluate(function, arguments, budget)`. | No host API to evaluate a function after the TU. Every Oven entry point takes a `&mut dyn SemaBridge` (lazy instantiation, on-demand compilation of callees), so evaluation after the TU needs Sema kept alive, not only the AST. Default budget: 1,048,576 steps, depth 512, 256 MiB. Stopgap: re-entering from `parse_prefix` / `continue_preprocessed` (`kiln_parse/src/lib.rs`), which re-parses every time. | M |
 | KS3 | **Evaluator profile.** Step counts and hot functions per run, so Slip can report where a transform spends its time. | Counters exist in aggregate. | S |
 | KS4 | *(later, optional)* Token-sequence literals as values (the P4380 value model without injection), `constexpr` printing, expression reflection as it standardises. | Not implemented. | L |
 
@@ -109,10 +113,40 @@ evaluator benchmarks.
 
 | Id | Request | Size |
 |---|---|---|
-| KM1 | The `kiln_tooling` facade crate (principle 5), and a written statement of what may be shared across threads and how long a finished front-end state may be retained. | M |
+| KM1 | The `kiln_tooling` facade crate (principle 5), with static `Send`/`Sync` assertions and a written statement of what may be shared across threads and how long a finished front-end state may be retained. Kiln's account of today: `ParsedTu` owns `Ast` and `Oven` by value with no lifetime, so it can be kept and queried after the TU; the `Ast` arenas hold no `Rc`/`RefCell` (probably `Send + Sync`, not yet asserted); the Oven holds a `RefCell` (`Send`, not `Sync`); Sema holds `Rc`/`RefCell` (not `Send`). A session (Sema and Oven) is therefore single-threaded, which matches Slip's one-observer-per-worker-thread execution ([02](02-pipeline.md) §8). | M |
 | KM2 | Kiln's test and benchmark harness pieces that are not Kiln-specific (jobserver client, golden-file handling, counter gating) factored so Slip can depend on them instead of copying. | M |
 
-## 4. What Slip gives back
+## 4. KR1 in detail: a stored table, not an event sink
+
+Revision 1 proposed a Sema observer called at each resolution. Kiln prefers,
+and Slip agrees to, as-written information **stored beside the AST in an
+opt-in, cold side table**:
+
+- **PCH and modules.** Names in a precompiled header or an imported module are
+  resolved when that file is built; an observer in the consuming TU would
+  never see them. A stored table travels in the snapshot and in the module
+  image.
+- **Instantiation.** Kiln instantiates lazily and once per specialization, so
+  the order of events would depend on the point of first use. A table keyed
+  by pattern node and specialization is queried instead, independent of order.
+- **No re-entrancy.** Nothing calls into Slip in the middle of semantic
+  analysis.
+- **Reuse.** Kiln's own diagnostics and fix-its can use type ranges later, and
+  so can Tuck.
+
+An entry is: token range; entity; role; enclosing declaration; parent entry
+(for nested-name-specifier chains); specialization. Cost with recording off:
+one branch per resolution site, and Kiln's performance gates must hold. Cost
+with recording on: Kiln's estimate is 16–24 bytes per written name. The facade
+exposes the table to Slip as an iterator (per declaration and whole-TU), which
+is all Slip's extraction needs.
+
+Consequences on the Slip side: the subject model's written-reference section
+([02](02-pipeline.md) §2) is built by one pass over this table after the TU,
+not incrementally; and references inside a PCH or module are available in the
+consuming observer, which revision 1 could not promise.
+
+## 5. What Slip gives back
 
 - A second, demanding consumer of the front end: every digest mismatch on an
   identity transform is a Kiln non-determinism or a Slip bug, and Slip reports
@@ -122,7 +156,7 @@ evaluator benchmarks.
 - Tier T2 comparisons against clang ([03](03-equivalence.md) §8) surface
   accepts-invalid cases with locations.
 
-## 5. Sequencing and fallbacks
+## 6. Sequencing and fallbacks
 
 | Slip milestone | Blocked without | Fallback until it lands |
 |---|---|---|
@@ -135,24 +169,20 @@ evaluator benchmarks.
 KR1 is the long pole and has the most design freedom on the Kiln side, so it
 is the first thing to discuss.
 
-## 6. How requests are made
+## 7. Ownership (agreed with the Kiln agent)
+
+| Who | Requests |
+|---|---|
+| **Kiln designs and implements** | KF4 (being fixed; it has a Kiln backlog row), KR1, KR3, KR4, KS1, KS2, KM1 (the facade) |
+| **Slip prototypes on a Kiln branch; Kiln reviews and lands it as a work package** | KF1, KF2, KF3, KR5 (a generated or exhaustive visitor, with the test that fails when a field is added), KS3 |
+| **Later** | KR2, KM2, KS4 |
+
+## 8. How requests are made
 
 One request per message to the Kiln agent, sized to one of Kiln's work
-packages where possible, containing: the event or function signature Slip
-proposes; the behaviour in the form of spec text Kiln can adopt or rewrite;
-and acceptance tests (inputs and the expected event stream). Kiln owns the
-design of anything inside Kiln; Slip states needs and constraints.
-
-## 7. Questions for the Kiln agent
-
-1. Is the reading of each "Today" cell correct at your current head?
-2. KR1: is an event sink at resolution time the right shape, or would you
-   rather store as-written information in the AST (type locations, qualifier
-   locations), which Tuck and diagnostics could also use?
-3. KS1/KS2: can a compiled TU's evaluator state be reused across many isolated
-   top-level evaluations cheaply, or is re-entering from a parsed prefix the
-   practical route?
-4. Is retaining a finished front-end state after the TU (for queries against
-   it) compatible with how Sema owns its arenas today?
-5. Which of these would you rather Slip prototypes on a branch for you to
-   review, and which do you want to own outright?
+packages where possible, containing: the table entry, event or function
+signature Slip proposes; the behaviour in the form of spec text Kiln can adopt
+or rewrite; and acceptance tests (inputs and the expected table or event
+stream). Kiln owns the design of anything inside Kiln; Slip states needs and
+constraints. The Kiln agent relays each request to the operator, who decides
+scheduling.

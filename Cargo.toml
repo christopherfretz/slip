@@ -1,0 +1,100 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+# Kiln is a submodule with its own workspace and lock; Slip reaches it only
+# through path dependencies of `slip_kiln` (docs/design/05-kiln-interface.md).
+exclude = ["kiln"]
+# `cargo build`/`cargo test` without `-p` or `--workspace` leave out the
+# crates that link Kiln (slip_kiln, slip_digest, slip_script, slip_cli), so
+# work on the Kiln-free crates never pays for building the front end.
+default-members = [
+    "crates/slip_model",
+    "crates/slip_cdb",
+    "crates/slip_verify",
+    "crates/slip_reduce",
+    "crates/slip_apply",
+    "crates/slip_exec",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+# Pinned to Kiln's (rust-toolchain.toml); the two move together.
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/christopherfretz/slip"
+publish = false
+
+[workspace.dependencies]
+slip_model  = { path = "crates/slip_model" }
+slip_kiln   = { path = "crates/slip_kiln" }
+slip_digest = { path = "crates/slip_digest" }
+slip_verify = { path = "crates/slip_verify" }
+slip_cdb    = { path = "crates/slip_cdb" }
+slip_script = { path = "crates/slip_script" }
+slip_reduce = { path = "crates/slip_reduce" }
+slip_apply  = { path = "crates/slip_apply" }
+slip_exec   = { path = "crates/slip_exec" }
+# Kiln, at the revision the `kiln` submodule pins. ONLY `slip_kiln` may name
+# these (enforced by `cargo xtask lint`, spec/harness.md "Lints").
+kiln_driver = { path = "kiln/crates/kiln_driver" }
+kiln_source = { path = "kiln/crates/kiln_source" }
+kiln_diag   = { path = "kiln/crates/kiln_diag" }
+kiln_pp     = { path = "kiln/crates/kiln_pp" }
+kiln_ast    = { path = "kiln/crates/kiln_ast" }
+kiln_parse  = { path = "kiln/crates/kiln_parse" }
+kiln_sema   = { path = "kiln/crates/kiln_sema" }
+kiln_oven   = { path = "kiln/crates/kiln_oven" }
+# Third-party crates: none. Each addition is approved in a work package and
+# justified here (docs/AGENTS.md rule 7).
+
+# Kiln's lint levels (kiln/Cargo.toml), unchanged.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+collapsible_match = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+
+# Kiln's profiles (kiln/Cargo.toml): profiles are the workspace root's, so
+# these are what Kiln's crates are built with from here. `panic = "unwind"`
+# stays the default everywhere: a worker contains a panic on a pathological
+# translation unit and reports the observer as failed (spec/exec.md).
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4
+
+[profile.release.package.kiln_lex]
+codegen-units = 1
+
+[profile.release.package.kiln_source]
+codegen-units = 1
+
+[profile.release.package.kiln_pp]
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"
+
+# The quick gate's profile: optimised, no LTO, incremental.
+[profile.harness]
+inherits = "release"
+opt-level = 3
+debug = 1
+lto = false
+codegen-units = 16
+incremental = true
+debug-assertions = false
+overflow-checks = false

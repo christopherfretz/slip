@@ -1,0 +1,13 @@
+[package]
+name = "slip_model"
+description = "Slip's data model and on-disk formats: keys, ranges, edits, facts, shards, plans, reports (spec/model.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

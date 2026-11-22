@@ -1,0 +1,26 @@
+[package]
+name = "slip_cli"
+description = "The slip command-line tool."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+slip_model.workspace = true
+slip_cdb.workspace = true
+slip_exec.workspace = true
+slip_reduce.workspace = true
+slip_apply.workspace = true
+slip_verify.workspace = true
+slip_kiln.workspace = true
+slip_digest.workspace = true
+slip_script.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "slip"
+path = "src/main.rs"

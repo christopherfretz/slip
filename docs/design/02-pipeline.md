@@ -37,8 +37,9 @@ The plan phase:
 
 Per observer, in a worker:
 
-1. **Parse** the subject with Kiln's front end, with Slip's recorders attached
-   to the preprocessor and to semantic analysis ([05](05-kiln-interface.md)).
+1. **Parse** the subject with Kiln's front end, with Slip's observer attached
+   to the preprocessor and Kiln's written-reference table switched on
+   ([05](05-kiln-interface.md)).
 2. **Extract the subject model**: entity table with stable keys; declaration
    sites; written references with their referents and lookup kind; expression
    and statement trees (Kiln's arenas, retained); the preprocessing record

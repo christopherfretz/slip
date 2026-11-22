@@ -1,5 +1,14 @@
+# build output and workspace-local toolchain
 /target/
-/.build/
 /.toolchain/
+/.build/
+# supervisor-created worktrees for implementer agents
+/.worktrees/
+# implementer scratch space (per-WP notes, logs); never committed
+/scratchpad/
+# corpora, their build trees, run stores and reports (spec/harness.md "Corpora")
+/.corpus/
+# raw performance results (baselines under bench/baselines are committed)
+/bench/results/
 **/*.rs.bk
 .DS_Store

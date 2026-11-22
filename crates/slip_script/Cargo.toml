@@ -1,0 +1,15 @@
+[package]
+name = "slip_script"
+description = "Host side of the transform universe: host calls over the model; runs transforms (spec/api.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+slip_model.workspace = true
+slip_kiln.workspace = true
+
+[lints]
+workspace = true

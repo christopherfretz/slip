@@ -1,14 +1,15 @@
 # Slip — end-to-end design
 
-Status: **proposal, revision 1 (2026-11-21)**. Nothing here is implemented. This
+Status: **proposal, revision 1 (2026-11-21)**; [05](05-kiln-interface.md) is at
+revision 2 after the Kiln agent's review. Nothing here is implemented. This
 is the first deliverable: a design for composable, scalable, evolvable code
 transformation written in general-purpose constexpr C++.
 
 Evidence for the claims about Kiln, the C++ standard track and prior art is in
 the research notes that fed this design (kept in the agent workspace under
 `research/`, six files). Claims about Kiln are from reading Kiln at revision
-`4bfd999da`; they are to be confirmed by the Kiln agent before work is
-requisitioned (see [05](05-kiln-interface.md)).
+`4bfd999da`; those in [05](05-kiln-interface.md) have been checked and
+corrected by the Kiln agent.
 
 ## Reading order
 
@@ -100,7 +101,7 @@ Detail: [04](04-macros-and-configurations.md).
 
 **D9. One narrow, versioned boundary to Kiln.** Exactly one Slip crate depends
 on Kiln's crates. Slip asks Kiln for a small set of extensions (a written-
-reference recorder, a richer preprocessing record, a front-end library entry
+reference table, a richer preprocessing record, a front-end library entry
 point, a host-call intrinsic) and a facade tested in Kiln's CI. A first
 prototype needs none of them. Detail: [05](05-kiln-interface.md).
 

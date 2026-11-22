@@ -1,0 +1,15 @@
+[package]
+name = "slip_digest"
+description = "Entity keys and the semantic digest: the trusted base (spec/digest.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+slip_model.workspace = true
+slip_kiln.workspace = true
+
+[lints]
+workspace = true

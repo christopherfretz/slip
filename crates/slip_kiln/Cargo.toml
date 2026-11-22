@@ -1,0 +1,15 @@
+[package]
+name = "slip_kiln"
+description = "The only Slip crate that links Kiln: drives the front end and extracts the subject model (docs/design/05-kiln-interface.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+slip_model.workspace = true
+kiln_driver.workspace = true
+
+[lints]
+workspace = true
