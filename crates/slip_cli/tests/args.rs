@@ -48,6 +48,8 @@ fn db(name: Option<&str>, path: &str) -> Db {
 #[test]
 fn s8_commands() {
     assert_eq!(parse(&["--version"]), Ok(Invocation::Version));
+    assert_eq!(parse(&["--help"]), Ok(Invocation::Help));
+    assert_eq!(parse(&["-h"]), Ok(Invocation::Help));
     assert_eq!(parse(&["dump", "x.plan"]), Ok(Invocation::Dump { file: "x.plan".into() }));
     assert_eq!(parse(&["dump", "--", "-x"]), Ok(Invocation::Dump { file: "-x".into() }));
     assert_eq!(parse(&["__panic"]), Ok(Invocation::Panic));
@@ -200,7 +202,9 @@ fn s8_repetition() {
 fn s8_usage_errors() {
     assert!(usage_error(&[]).contains("no command"));
     assert!(usage_error(&["frobnicate"]).contains("unknown command `frobnicate`"));
-    assert!(usage_error(&["--help"]).contains("unknown command"));
+    assert!(usage_error(&["--help", "x"]).contains("no arguments"));
+    assert!(usage_error(&["-h", "x"]).contains("no arguments"));
+    assert!(usage_error(&["help"]).contains("unknown command"));
     assert!(usage_error(&["--version", "x"]).contains("no arguments"));
     assert!(
         usage_error(&["plan", "--db", "c.json", "--bogus"]).contains("unknown option `--bogus`")
@@ -355,7 +359,7 @@ fn s8_parse_size() {
 // §8.5: the usage text lists the commands but not the hidden ones.
 #[test]
 fn s8_usage_text() {
-    for word in ["slip plan", "slip parse", "slip dump", "slip --version", "--worker-stack"] {
+    for word in ["slip plan", "slip parse", "slip dump", "slip --version", "slip --help", "--worker-stack"] {
         assert!(args::USAGE.contains(word), "{word}");
     }
     assert!(!args::USAGE.contains("__worker") && !args::USAGE.contains("__panic"));

@@ -44,6 +44,10 @@ pub fn dispatch(invocation: Invocation, out: &mut dyn Write, err: &mut dyn Write
             let _ = writeln!(out, "{}", crate::version_line());
             Ok(status::OK)
         }
+        Invocation::Help => {
+            let _ = write!(out, "{}", args::USAGE);
+            Ok(status::OK)
+        }
         Invocation::Plan(a) => plan(&a, out, err),
         Invocation::Parse(a) => parse(&a, out, err),
         Invocation::Dump { file } => dump(&file, out),

@@ -582,6 +582,19 @@ fn s8_version() {
     assert!(out.stdout.starts_with(&format!("slip {} (kiln ", env!("CARGO_PKG_VERSION"))));
 }
 
+// §8: `--help` prints the usage text on standard output with status 0; a
+// usage error prints it on standard error with status 2.
+#[test]
+fn s8_help() {
+    let f = Fixture::new("help");
+    for flag in ["--help", "-h"] {
+        let out = f.slip(&[flag]);
+        assert_eq!(out.code(), Some(0), "{out:?}");
+        assert_eq!(out.stdout, slip_cli::args::USAGE);
+        assert!(out.stderr.is_empty(), "{out:?}");
+    }
+}
+
 // ----- the worker (§8.4) --------------------------------------------------------
 
 // §8.4, §5.2: `slip __worker` with its input closed at once prints one

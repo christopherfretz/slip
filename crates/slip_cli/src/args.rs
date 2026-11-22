@@ -10,7 +10,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
 
-/// The usage text (§8), printed after a usage error. `__worker` and
+/// The usage text (§8), printed by `--help` and after a usage error. `__worker` and
 /// `__panic` are not listed.
 pub const USAGE: &str = "\
 usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j <n>]
@@ -21,6 +21,7 @@ usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j 
                   [--worker-jobs <n>] [--worker-stack <size>]
        slip dump  <file>
        slip --version
+       slip --help
 <size> is a decimal number with an optional suffix K, M, G or T (powers of 1024).
 ";
 
@@ -38,6 +39,8 @@ pub const DEFAULT_WORKER_STACK: u64 = 1 << 30;
 pub enum Invocation {
     /// `slip --version`.
     Version,
+    /// `slip --help` or `slip -h`: the usage text on standard output.
+    Help,
     Plan(PlanArgs),
     Parse(ParseArgs),
     Dump {
@@ -152,6 +155,8 @@ pub fn parse(args: &[OsString]) -> Result<Invocation, UsageError> {
     match command.to_str() {
         Some("--version") if rest.is_empty() => Ok(Invocation::Version),
         Some("--version") => usage("`--version` takes no arguments"),
+        Some("--help" | "-h") if rest.is_empty() => Ok(Invocation::Help),
+        Some("--help" | "-h") => usage("`--help` takes no arguments"),
         Some("plan") => parse_plan(rest),
         Some("parse") => parse_parse(rest),
         Some("dump") => parse_dump(rest),
