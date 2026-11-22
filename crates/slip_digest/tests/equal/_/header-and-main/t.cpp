@@ -1,9 +1,8 @@
 #include "side.h"
-// spec/digest.md §1 rule 2: header and main does not matter.
-#ifdef B
+// WP-024 Tests: an entity declared in a header and defined in the main file
+// is one unit, in the header's group: the same as when it is also defined
+// in the header (side B).
 #include "h.h"
-void f(int) {}
-#else
-#include "h.h"
+#ifndef B
 void f(int) {}
 #endif

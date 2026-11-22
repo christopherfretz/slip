@@ -1,7 +1,8 @@
 #include "side.h"
-// spec/digest-kinds.md §3, §5.2: the key of a unnamed ordinal.
+// digest §3.3: an unnamed bit-field no other rule names is keyed by its
+// ordinal among the class's unnamed fields.
 #ifdef B
-struct S { struct { int a; }; struct { int b; }; };
+struct S { int a; int : 3; int : 4; };
 #else
-struct S { struct { int a; }; };
+struct S { int a; int : 3; };
 #endif

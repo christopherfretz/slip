@@ -1,3 +1,1 @@
-added S::(anonymous struct)
-added S::(anonymous struct)::b
-added S::b
+added S::(unnamed 1)

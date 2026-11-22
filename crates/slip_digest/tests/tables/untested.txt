@@ -1707,7 +1707,6 @@ TemplateParmInfo/params
 TemplateParmInfo/ttp_kind
 TemplateParmInfo/typename_kw
 TemplateTables/args_as_written
-TemplateTables/defaults
 TemplateTables/end_of_tu_defs
 TemplateTables/expr_nns
 TemplateTables/expr_targs
