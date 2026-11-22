@@ -50,9 +50,9 @@ Why a template: a call whose argument is not a `StringRef` exactly (a
 conversion to either parameter type, and then the non-template wins
 the tie. So the edit captures exactly the calls that pass a
 `StringRef`, and makes no call ambiguous; the selection compiles (check
-1). The other unqualified call with a `StringRef` in `Path.cpp`
-(`has_root_directory(p)` at line 911) is qualified `path::` and passes
-one argument: not affected.
+1). The other call of the name in `Path.cpp`
+(`path::has_root_directory(p)` at line 911) is qualified, so there is no
+argument-dependent lookup, and passes one argument: not affected.
 
 ## Checks
 
