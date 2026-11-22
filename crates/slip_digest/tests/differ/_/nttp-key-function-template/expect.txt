@@ -1,0 +1,2 @@
+removed ft<1>()
+added ft<2>()
