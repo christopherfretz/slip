@@ -186,10 +186,8 @@ fn write_part(
     let finished = stream.finish(UNIT_TAG);
     let h = w.hashed(finished);
     let disc_digest = disc.map(|n| {
-        let mut ds = Stream::new();
-        ds.uv(n);
-        let h = ds.finish(DISC_TAG);
-        w.hashed(h).digest
+        let d = disc_hashed(n);
+        w.hashed(d).digest
     });
     let key = Key { kind, parent: Parent::Unit(owner.key), name, disc: disc_digest };
     let key = w.rules.map(key);
@@ -222,6 +220,45 @@ fn write_part(
         resolved: None,
         default_argument: owner.default_argument,
     }
+}
+
+/// The discriminator stream of a part unit: one `uv`.
+fn disc_hashed(n: u64) -> crate::stream::Hashed {
+    let mut ds = Stream::new();
+    ds.uv(n);
+    ds.finish(DISC_TAG)
+}
+
+/// The mapped `Key` of the written part unit `u` (a resolved or
+/// `default_argument` unit), computed again from `entity`, the mapped key
+/// of its entity, as [`write_part`] builds it: the `default_argument` unit
+/// first if `u` is one or is under one, then the resolved unit. `None` for
+/// a unit that is neither (its key is `entity`). For unit records
+/// (`records.rs`); hashes into no unit.
+pub(crate) fn part_key(w: &Walk<'_>, entity: Key, u: &Written) -> Option<Key> {
+    if u.default_argument.is_none() && u.resolved.is_none() {
+        return None;
+    }
+    let mut key = entity;
+    if let Some(i) = u.default_argument {
+        let k = Key {
+            kind: KeyKind::DefaultArgument,
+            parent: Parent::Unit(key.id()),
+            name: Name::Parameter(i),
+            disc: None,
+        };
+        key = w.rules.map(k);
+    }
+    if let Some(r) = u.resolved {
+        let k = Key {
+            kind: KeyKind::Resolved,
+            parent: Parent::Unit(key.id()),
+            name: Name::Property(u64::from(r.property.number())),
+            disc: r.disc.map(|n| disc_hashed(n).digest),
+        };
+        key = w.rules.map(k);
+    }
+    Some(key)
 }
 
 /// Property 4, `key_function` (§11.1): a class's key function, `ref`,
