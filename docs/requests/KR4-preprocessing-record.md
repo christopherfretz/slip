@@ -259,10 +259,11 @@ as `file:offset`, so a test is one file. `L` is `legacy`.
    Slip builds: the tier of any token; tier 1 edits with their votes
    and the string note; tier 2 voting keyed by definition; the macro
    audit; "defined, never expanded". This is what M4 waits for.
-2. Conditionals (outcome, group range, guard, once) and inclusions.
+2. Conditionals (outcome, group range, guard, once), dead directives
+   included (case 15 needs them), and inclusions.
    Slip builds: coverage with reasons; include contexts for `.def` files.
 3. The table of made tokens, condition reads, `__has_include` and
-   feature queries, push and pop events, dead directives. Slip builds:
+   feature queries, push and pop events. Slip builds:
    equivalence classes for pasted names (04 R1), exact tier 3 reports,
    the configuration statement of an edit, macro renaming.
 4. Carriage in PCH snapshots and module images; the completeness check
@@ -338,3 +339,88 @@ is flagged incomplete; `DefIx` and `ExpIx` are equal across two runs
 of one input; Kiln computes no keys. Asked of Kiln in return: the
 switch reachable through the front-end entry (`FrontEndOptions`), with
 the record alive when the entry's closure runs.
+
+## 10. Kiln's phase 0 for stage 2 (2026-11-22, Kiln WP-2111)
+
+Kiln's design for conditionals, guards, inclusions and include
+contexts, reviewed by Slip and accepted the same day; implementation
+started on it. What changes in the text above:
+
+- **§2** again wrong in places:
+  - `#include` has three more silent exits: no name, an empty name,
+    and a directive inside macro arguments.
+  - The two exits at the depth limit differ: one is the limit; the
+    other never re-enters a file already entered once the limit was
+    hit.
+  - A guard is the controlling macro as Clang means it: `#ifndef X …
+    #endif` around a file is a guard even if the file never defines
+    `X`, and the file is skipped again while anyone's `X` is defined;
+    `#if !defined(X)` opens one too. None is recorded for the main
+    file.
+  - `#embed` resolves to bytes only: no file, no search index.
+  - `-include` is an `#include "f"` line of the predefines buffer.
+  - A header-unit import enters the buffer's own range, or nothing
+    when its macros come from a module file.
+- **§3.5** One row per directive (`#if`, `#ifdef`, `#ifndef`, the
+  `#elif` forms, `#else`, `#endif`, stray ones too), keyed by its `#`,
+  with the condition range (from the end of the directive name to the
+  end of the line, untrimmed, the same for live and dead rows), a link
+  to the opening directive and one to the next directive of the same
+  conditional. Outcome: taken, not taken, not evaluated, dead, or
+  closes (`#endif`). **The group range is not stored**: it runs from
+  the end of the directive's line to the `#` of the next directive of
+  the conditional; an unterminated conditional has its opener flagged
+  and its last group runs to the end of the file. Reads (stage 3) come
+  in a side table and do not change the row.
+- **The guard** is a flag on the opener's row, set when the file is
+  left, once per instance of the file. It says what Kiln decided, not
+  that the file defines `X`: Slip finds the definition of `X` in the
+  group through stage 1, and `X` by lexing the condition range. Case 18
+  is a row not taken and not flagged. `#pragma once` is a list of the
+  `#` of each.
+- **§3.6** One row per `#include`, `#include_next`, `#import`, header
+  import, `#embed` and `-include`: `#`, end, the name span as written
+  in the file (case 21: the token `H`), the spelling after expansion,
+  the first stage-1 expansion of a macro name, file, search-path index,
+  parent instance, and where the directive is (file, command line,
+  predefines). Outcomes: entered, skipped once, skipped guard (with the
+  definition current at the directive), not found, depth limit, and
+  four more: after the depth limit, malformed, embedded, imported.
+  `#embed`'s file and index are a later row.
+- **§3.2** The include context is an index of an entered inclusion;
+  the key equal across units is the chain of `#` keys through the
+  parent links, computed by Slip, which also maps a `Loc` to the
+  identity of its file. `inclusion_of(sm, loc)` gives the instance a
+  stage-1 or conditional row is in (a search over the entered bases;
+  nothing is stored per row). `-include` is keyed (command line,
+  ordinal).
+- **Cost** on `<bits/stdc++.h>`: 115,915 conditional rows (48,536 of
+  them dead, from 221 re-entries), 2.32 MB; 1,970 inclusions, about
+  0.09 MB; stage 1 was 5.0 MB.
+
+What Slip added, taken by Kiln as required items of the specification
+and its tests:
+
+1. Skipped once, skipped guard, depth limit and after the depth limit
+   still carry the file found and the search index (the include graph
+   has every resolved directive, entered or not); not found and
+   malformed carry none. Which outcome fills which field is stated.
+2. The row has the kind of the directive apart from where it is.
+3. Lines and groups tile a conditional: the end of a directive's line
+   is the end of its logical line, past splices and past a block
+   comment that opens on it and closes later, so that from an opener's
+   `#` to the end of its `#endif` line every byte is in one directive
+   line or one group, live or dead.
+4. `inclusion_of` is total and documented: a file `Loc` gives its
+   instance (the root for the main file), a `Loc` of the predefines or
+   the command line gives a value of its own, and for a macro `Loc`
+   either it resolves through the expansion site or the documentation
+   says the caller must.
+5. Case 24 compares keys of two main files; instance numbers are local
+   to a unit and are not part of what is compared.
+6. A header entered twice has its rows twice, each instance's rows
+   together in directive order; row indices are equal across two runs
+   of one input.
+7. A header-unit import whose macros come from a module file flags
+   the record incomplete, as stage 1 does for definitions met from an
+   image.

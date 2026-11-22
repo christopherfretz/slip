@@ -21,7 +21,7 @@
 //! Exit status: 0 if every step that ran passed, 1 if one failed, 2 for a
 //! usage error. Cargo is the `CARGO` environment variable (cargo sets it
 //! for `cargo run`), else `cargo` on `PATH`; each cargo command runs in
-//! the repository root.
+//! the repository root, without `SLIP_DIGEST_ONLY` in its environment.
 
 use crate::lint;
 use std::ffi::{OsStr, OsString};
@@ -166,7 +166,9 @@ fn run_step(name: &str, root: &Path, cargo: &OsStr, out: &mut dyn Write) -> bool
 
 fn cargo_ok(cargo: &OsStr, root: &Path, args: &[&str], out: &mut dyn Write) -> bool {
     let _ = out.flush();
-    match Command::new(cargo).args(args).current_dir(root).status() {
+    // A narrowed run of the digest's pair tests (`SLIP_DIGEST_ONLY`,
+    // spec/harness.md §6.1) left set in the shell is never the gate.
+    match Command::new(cargo).args(args).current_dir(root).env_remove("SLIP_DIGEST_ONLY").status() {
         Ok(status) => status.success(),
         Err(e) => {
             let _ =

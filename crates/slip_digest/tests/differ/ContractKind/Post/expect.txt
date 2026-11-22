@@ -1,4 +1,5 @@
 # pending
 # needs: decl_data
-# a function's contracts are ColdDeclData `contracts`, not walked yet
+# f is Pending(DeclData): ColdDeclData `contracts` is not written (decl_scope::cold).
+# <order> is Pending(Order), as in every test; it does not block one.
 changed f(int)

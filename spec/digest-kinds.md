@@ -182,6 +182,10 @@ The convention needs no column: the tables test lists the rows, derives
 the names and fails for a missing directory or a directory no row names
 (digest §13 obligation 5, §14).
 
+A test's files (`t.cpp`, or `a.cpp` and `b.cpp`), its header lines
+(`// std:`, `// errors:`, `// target:`, `// args:`) and the command line
+each side is parsed under are those of `spec/harness.md` §6.1.
+
 ### 1.6 What the test cannot see
 
 The descriptors show fields and variants. They do not show the meaning of
@@ -633,7 +637,7 @@ Derived from a node's operands by Kiln when the node is built.
 | `UnaryTransform.result` | written | out | - | sugar only |
 | `Auto` | type | in | tag 1066 |  |
 | `Auto.keyword` | flag | in | enum AutoKeyword | canonical only when undeduced |
-| `Auto.deduced` | written | out | - | sugar only: a deduced placeholder's canonical type is the deduced type |
+| `Auto.deduced` | flag | in | bool | true: the placeholder of a templated entity not yet deduced, whose `deduced` is the builtin dependent type; any other deduced type is sugar (the canonical type is the deduced type) and is not written |
 | `Auto.concept` | entity | in | ref |  |
 | `Auto.args` | value | in | enum ArgView*? |  |
 | `Auto.pack` | flag | in | bool |  |
@@ -4237,6 +4241,19 @@ initialisation of an instantiated variable is unordered
 lists no instantiation. The rows that record what was instantiated, and in
 what order, are `demand`.
 
+`member_like_friend` names the class specialisation in which a friend
+function template whose constraint depends on the class's parameters
+([temp.friend]/9) is mangled: such a friend is declared by each
+specialisation apart and exists only through instantiations, so it is a
+derived unit (digest §2.2) and that specialisation is its key's parent. A
+non-template friend with a requires-clause, which Kiln's mangler scopes
+the same way, has as parent the class specialisation that declares it.
+`instantiated_from` is written as it is for a declaration instantiated
+outside its class (digest §2.2) and for any other instantiated
+declaration; on a declaration written in source, an entry naming a
+friend's pattern (a declaration lexically in a class and semantically in
+a namespace), which an instantiation set there, is written absent.
+
 ### `kiln_ast::templates::TemplateTables`
 
 `kind=struct; pin=schema`
@@ -5507,7 +5524,12 @@ parts. The class is:
    `SpecInfo` or `MemberSpecInfo` kind is `ImplicitInstantiation`;
 2. a class template specialisation of that kind;
 3. an implicitly declared special member function, comparison operator
-   or deduction guide, and the conversion functions of a closure type.
+   or deduction guide, and the conversion functions of a closure type;
+4. an entity all of whose declarations are instantiated outside their
+   class (digest §2.2): a friend declared only by instantiations, whose
+   definition is instantiated on use. An entity with a declaration
+   written in source is classified from the earliest such declaration,
+   not from one an instantiation made before it.
 
 The predicate reads only facts that do not change when the definition is
 made. For a unit of the class the rows below write their empty form in

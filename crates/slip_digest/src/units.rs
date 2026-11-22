@@ -35,6 +35,10 @@ pub(crate) enum UnitClass {
 pub(crate) struct Written {
     /// The entity (its first declaration); `None` for the order unit.
     pub entity: Option<DeclId>,
+    /// The declaration the unit's name is read from: the one its stream
+    /// is read from for an entity declared only by instantiations, else
+    /// the representative (WP-032).
+    pub read: Option<DeclId>,
     pub key: Digest,
     pub kind: KeyKind,
     pub digest: Digest,
@@ -102,10 +106,24 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
     if w.is_local(e) && !w.is_local_extern(e) {
         return None;
     }
-    let link = ast.templ_link(e).get();
-    if let Some((TemplLinkKind::Pattern, _)) = link {
+    if let Some((TemplLinkKind::Pattern, _)) = ast.templ_link(e).get() {
         return None;
     }
+    // Declared only in the bodies of templated functions and of their
+    // instantiations: no unit (`spec/digest.md` §2.2; WP-032, check 3).
+    if w.chain(e).iter().all(|&d| in_templated_body(w, d)) {
+        return None;
+    }
+    // Declared only by instantiations, outside their classes: derived
+    // (`spec/digest.md` §2.2, WP-032 rule 2).
+    if outside_only(w, e) {
+        return Some(UnitClass::Derived);
+    }
+    // An entity with a written declaration is classified from it, not
+    // from a declaration an instantiation added first (WP-032 rule 1).
+    let e = w.representative(e);
+    let n = ast.decls.get(e);
+    let link = ast.templ_link(e).get();
     let kind = n.kind();
     // A using-shadow is declared by its using-declaration, and an indirect
     // field by the anonymous member that holds it, which are written.
@@ -185,6 +203,97 @@ pub(crate) fn in_implicit_instantiation(w: &Walk<'_>, e: DeclId) -> bool {
     false
 }
 
+/// The kind of `x`'s own `SpecInfo`, else of its `MemberSpecInfo`.
+fn own_spec_kind(w: &Walk<'_>, x: DeclId) -> Option<SpecKind> {
+    let ast = w.ast;
+    ast.spec_info(x).map(|(_, i)| i.kind).or_else(|| ast.member_spec_info(x).map(|(_, i)| i.kind))
+}
+
+/// Declaration `d` is *instantiated outside its class* (`spec/digest.md`
+/// §2.2, WP-032): its lexical context is an implicitly instantiated
+/// class specialisation or a member of one (`in_implicit_instantiation`
+/// applied to the lexical context), and its semantic context is not.
+pub(crate) fn instantiated_outside_class(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let Some(lex) = ast.decls.lexical_ctx(d) else { return false };
+    if Some(lex) == ast.decls.get(d).ctx() {
+        return false;
+    }
+    let lexically = match own_spec_kind(w, lex) {
+        Some(SpecKind::ImplicitInstantiation) => true,
+        Some(
+            SpecKind::ExplicitSpecialization
+            | SpecKind::ExplicitInstantiationDeclaration
+            | SpecKind::ExplicitInstantiationDefinition
+            | SpecKind::Undeclared,
+        ) => false,
+        None => in_implicit_instantiation(w, lex),
+    };
+    lexically && !in_implicit_instantiation(w, d)
+}
+
+/// Declaration `d` names an entity outside the function whose body holds
+/// it (a block-scope `extern` declaration, or a friend of a local
+/// class), and that function is templated or is in an implicit
+/// instantiation (`spec/digest.md` §2.2; WP-032, check 3). Kiln chains the
+/// pattern's declaration to no other ([temp.spec.general]/2,
+/// `Sema::note_local_extern`), and an instantiation's declaration
+/// repeats the pattern's: neither is a declaration a unit reads.
+pub(crate) fn in_templated_body(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let lex = ast.decls.lexical_ctx(d);
+    if !w.is_local_extern(d) && lex == ast.decls.get(d).ctx() {
+        return false;
+    }
+    let mut ctx = lex;
+    let mut in_body = false;
+    for _ in 0..4096 {
+        let Some(x) = ctx else { return false };
+        let kind = ast.decls.get(x).kind();
+        if kind == DeclKind::TranslationUnit || kind == DeclKind::Namespace {
+            return false;
+        }
+        in_body = in_body || info(kind).local_scope;
+        if in_body {
+            match own_spec_kind(w, x) {
+                Some(SpecKind::ImplicitInstantiation) => return true,
+                Some(
+                    SpecKind::ExplicitSpecialization
+                    | SpecKind::ExplicitInstantiationDeclaration
+                    | SpecKind::ExplicitInstantiationDefinition
+                    | SpecKind::Undeclared,
+                ) => return false,
+                None => {}
+            }
+            if ast.described_template(x).is_some()
+                || kind == DeclKind::ClassTemplatePartialSpecialization
+            {
+                return true;
+            }
+        }
+        ctx = ast.decls.lexical_ctx(x);
+    }
+    false
+}
+
+/// Every declaration of entity `e` is instantiated outside its class
+/// (WP-032 rule 2): the entity exists only through instantiations.
+pub(crate) fn outside_only(w: &Walk<'_>, e: DeclId) -> bool {
+    w.chain(e).iter().all(|&d| instantiated_outside_class(w, d))
+}
+
+/// `from`, the `TemplateTables` `instantiated_from` entry of the written
+/// declaration `d`, is a friend's pattern an instantiation set on it
+/// (`kiln_sema/src/templ/member.rs:316-329`): a declaration lexically in
+/// a class but not semantically, while `d` itself is not instantiated
+/// outside its class. Written absent (WP-032 rule 1).
+pub(crate) fn instantiated_friend_link(w: &Walk<'_>, d: DeclId, from: DeclId) -> bool {
+    let ast = w.ast;
+    let Some(lex) = ast.decls.lexical_ctx(from) else { return false };
+    let friend_pattern = ast.decls.record(lex).is_some() && ast.decls.get(from).ctx() != Some(lex);
+    friend_pattern && !instantiated_outside_class(w, d)
+}
+
 /// The nearest entity around `d` that may be a unit (its first
 /// declaration), `None` at the top level.
 fn enclosing_entity(w: &Walk<'_>, d: DeclId) -> Option<DeclId> {
@@ -250,9 +359,51 @@ fn all_implicit(w: &Walk<'_>, e: DeclId) -> bool {
 pub(crate) fn read_decl(w: &Walk<'_>, e: DeclId) -> DeclId {
     let ast = w.ast;
     if let Some(pattern) = ast.template_info(e).and_then(|i| i.pattern) {
-        return defining_decl(w, pattern).and_then(|def| ast.described_template(def)).unwrap_or(e);
+        return defining_decl(w, pattern)
+            .and_then(|def| ast.described_template(def))
+            .unwrap_or_else(|| w.representative(e));
     }
-    defining_decl(w, e).unwrap_or(e)
+    defining_decl(w, e).unwrap_or_else(|| w.representative(e))
+}
+
+/// The declaration an entity declared only by instantiations outside
+/// their class is read from (digest §2.2, WP-032 rule 3): the one whose
+/// declaring class specialisation (its lexical context) has the least
+/// mapped key, by the key's bytes; among declarations of one class (a
+/// friend declared twice), the one whose own stream digest is least.
+/// Its unit's stream, origin file and name are read from it, once; a
+/// definition another of them holds is not part of the unit.
+pub(crate) fn canonical_decl(w: &mut Walk<'_>, e: DeclId) -> DeclId {
+    let ast = w.ast;
+    let mut best: Option<(Vec<u8>, Vec<DeclId>)> = None;
+    for d in w.chain(e) {
+        #[cfg(test)]
+        tests::count_candidate(false);
+        let class = ast.decls.lexical_ctx(d).and_then(|c| w.key_bytes(c)).unwrap_or_default();
+        match &mut best {
+            Some((b, tied)) if *b == class => tied.push(d),
+            Some((b, _)) if *b < class => {}
+            Some(_) | None => best = Some((class, vec![d])),
+        }
+    }
+    let Some((_, tied)) = best else { return e };
+    if tied.len() == 1 {
+        return tied[0];
+    }
+    let mut least: Option<(Digest, DeclId)> = None;
+    for d in tied {
+        #[cfg(test)]
+        tests::count_candidate(true);
+        let saved = w.take_unit();
+        let mut s = Stream::new();
+        w.decl_stream(&mut s, d, e);
+        w.unit = saved;
+        let h = s.finish(UNIT_TAG);
+        if least.is_none_or(|(l, _)| h.digest < l) {
+            least = Some((h.digest, d));
+        }
+    }
+    least.map_or(e, |(_, d)| d)
 }
 
 /// The defining declaration of entity `e` (§2.3), if it has one. Kiln
@@ -260,10 +411,19 @@ pub(crate) fn read_decl(w: &Walk<'_>, e: DeclId) -> DeclId {
 /// a variable it is the first declaration of the chain that is a
 /// definition ([basic.def]/2), the search Kiln's own reading of a
 /// variable's initialiser makes over the chain (`kiln_oven/src/value.rs`).
+///
+/// A definition an instantiation added outside its class is none: of an
+/// entity that has a written declaration, nor of one declared only by
+/// instantiations, whose unit is read from one declaration and whose
+/// definition is its class specialisation's (WP-032 rules 1 and 3).
 pub(crate) fn defining_decl(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
     let ast = w.ast;
     if ast.decls.var(e).is_none() {
-        return ast.definition(e);
+        // Through the representative: Kiln's definition of a template is
+        // the template asked about (`Ast::definition`).
+        return ast
+            .definition(w.representative(e))
+            .filter(|&def| !instantiated_outside_class(w, def));
     }
     let mut chain = w.redecls(e);
     chain.reverse();
@@ -298,14 +458,18 @@ fn is_var_definition(w: &Walk<'_>, d: DeclId) -> bool {
 /// (`spec/landed/digest/WP-024.md`): nothing §2.1 makes a unit vanishes.
 pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Written> {
     let content = matches!(info(w.ast.decls.get(e).kind()).role, Role::Content(_));
+    let outside = !content && outside_only(w, e);
+    let read = if outside { canonical_decl(w, e) } else { w.representative(e) };
     let hashed = if content {
         w.content_hash(e)
     } else {
-        let read = read_decl(w, e);
+        let from = if outside { read } else { read_decl(w, e) };
         let saved = w.take_unit();
         let mut s = Stream::new();
-        w.decl_stream(&mut s, read, e);
+        w.decl_stream(&mut s, from, e);
         w.unit = saved;
+        #[cfg(test)]
+        tests::count_read(e);
         let h = s.finish(UNIT_TAG);
         w.hashed(h)
     };
@@ -325,11 +489,12 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         (GroupClass::Tu, Vec::new())
     } else {
         match class {
-            UnitClass::Declared => (GroupClass::Declared, w.file_of(e)),
-            UnitClass::Derived | UnitClass::OnDemand => (GroupClass::Derived, origin_file(w, e)),
+            UnitClass::Declared => (GroupClass::Declared, w.file_of(w.representative(e))),
+            UnitClass::Derived | UnitClass::OnDemand => (GroupClass::Derived, origin_file(w, read)),
         }
     };
-    Some(Written { entity: Some(e), key, kind, digest: hashed.digest, cause, class, file })
+    let entity = Some(e);
+    Some(Written { entity, read: Some(read), key, kind, digest: hashed.digest, cause, class, file })
 }
 
 /// The fallback key of a unit whose key cannot be formed: its own key
@@ -411,6 +576,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
     w.bytes += bytes.len() as u64;
     Written {
         entity: None,
+        read: None,
         key: key.id(),
         kind: KeyKind::Order,
         digest: h.digest,
@@ -509,15 +675,61 @@ fn repeatable(kind: KeyKind) -> bool {
 }
 
 impl Walk<'_> {
-    /// The declarations of entity `e`, in Kiln's chain order (latest
-    /// first); one element for a declaration that is not redeclarable.
+    /// The declarations of entity `e` a unit reads, in Kiln's chain order
+    /// (latest first); one element for a declaration that is not
+    /// redeclarable. Declarations instantiated outside their class are
+    /// left out unless every declaration is one (WP-032 rule 1).
     pub(crate) fn redecls(&self, e: DeclId) -> Vec<DeclId> {
+        let chain = self.chain(e);
+        let read = |&d: &DeclId| !in_templated_body(self, d);
+        let chain: Vec<DeclId> = if chain.iter().any(read) && chain.len() <= REDECL_LIMIT {
+            chain.into_iter().filter(read).collect()
+        } else {
+            chain
+        };
+        if chain.len() > REDECL_LIMIT || chain.iter().all(|&d| instantiated_outside_class(self, d))
+        {
+            return chain;
+        }
+        chain.into_iter().filter(|&d| !instantiated_outside_class(self, d)).collect()
+    }
+
+    /// The declaration an entity with a written declaration is classified
+    /// from: its earliest declaration that is not instantiated outside its
+    /// class; `e` itself for an entity that has none.
+    pub(crate) fn representative(&self, e: DeclId) -> DeclId {
+        let mut chain = self.chain(e);
+        chain.reverse();
+        chain
+            .into_iter()
+            .find(|&d| !instantiated_outside_class(self, d) && !in_templated_body(self, d))
+            .unwrap_or(e)
+    }
+
+    /// Every declaration of entity `e`, in Kiln's chain order. A template
+    /// is not redeclarable itself: Kiln keeps its declarations as those
+    /// of its pattern (`Ast::first`, `template_redecl`), so its chain is
+    /// the templates its pattern's declarations describe.
+    pub(crate) fn chain(&self, e: DeclId) -> Vec<DeclId> {
         let ast = self.ast;
-        if ast.decls.redecl(e).is_none() {
+        let pattern = ast.template_info(e).and_then(|i| i.pattern);
+        let (start, template) = match pattern {
+            Some(p) if ast.decls.redecl(e).is_none() && ast.decls.redecl(p).is_some() => (p, true),
+            Some(_) | None => (e, false),
+        };
+        if ast.decls.redecl(start).is_none() {
             return vec![e];
         }
         let mut out: Vec<DeclId> = Vec::new();
-        for d in ast.redecls_of(e) {
+        for d in ast.redecls_of(start) {
+            let d = if template {
+                match ast.described_template(d) {
+                    Some(t) => t,
+                    None => continue,
+                }
+            } else {
+                d
+            };
             // Past the limit the list ends with one more element, which
             // `decl_node` makes `Unaccounted("redecls/limit")`.
             if out.len() > REDECL_LIMIT {
@@ -540,5 +752,338 @@ impl Walk<'_> {
             Some((file, _)) => (self.subject_path)(file),
             None => Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use slip_kiln::kiln::ast::DeclId;
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    use slip_kiln::kiln::ast::templates::SpecKind;
+    use slip_model::Digest;
+    use slip_model::digests::GroupClass;
+    use slip_model::keys::RuleTable;
+
+    use super::{UnitClass, instantiated_outside_class, outside_only, unit_class};
+    use crate::decl_func::tests::{named, with_walk};
+    use crate::walk::Walk;
+
+    thread_local! {
+        /// How many times `write` has read each entity's stream.
+        static READS: std::cell::RefCell<std::collections::BTreeMap<DeclId, u64>> =
+            const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    }
+
+    /// Counts one read of `e`'s stream by `write`.
+    pub(super) fn count_read(e: DeclId) {
+        READS.with(|r| *r.borrow_mut().entry(e).or_insert(0) += 1);
+    }
+
+    thread_local! {
+        /// The candidates `canonical_decl` has keyed, and those whose
+        /// stream it has read to break a tie.
+        static CANDIDATES: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+    }
+
+    /// Counts one candidate `canonical_decl` keys, or (`read`) reads.
+    pub(super) fn count_candidate(read: bool) {
+        CANDIDATES.with(|c| {
+            let (k, r) = c.get();
+            c.set(if read { (k, r + 1) } else { (k + 1, r) });
+        });
+    }
+
+    // WP-032 rule 3: an entity declared only by the instantiations of `n`
+    // class templates has its stream read once, from one candidate, after
+    // `n` candidates are keyed and none is read; the work grows linearly
+    // (2,000 declaring specialisations cost about ten times 200, not a
+    // hundred times).
+    #[test]
+    fn canonical_candidate_read_once() {
+        let src = |n: usize| -> String {
+            use std::fmt::Write as _;
+            let mut s = String::new();
+            for i in 0..n {
+                let _ = writeln!(
+                    s,
+                    "template <class T> struct A{i} {{ friend void j(long); }};\nA{i}<int> a{i};"
+                );
+            }
+            s
+        };
+        let run = |n: usize| -> std::time::Duration {
+            let text = src(n);
+            let j = with_walk(&text, |w| w.entity(named(w, "j", DeclKind::Function)[0]));
+            READS.with(|r| r.borrow_mut().clear());
+            CANDIDATES.with(|c| c.set((0, 0)));
+            let (all, took) = units_timed(&text);
+            let derived = all
+                .into_iter()
+                .filter(|(class, name, _, _)| *class == GroupClass::Derived && name == "j(long)")
+                .count();
+            assert_eq!(derived, 1, "one unit for j");
+            assert_eq!(READS.with(|r| r.borrow().get(&j).copied()), Some(1), "read once");
+            let (keyed, read) = CANDIDATES.with(std::cell::Cell::get);
+            assert_eq!(read, 0, "no tie, no candidate's stream read");
+            assert_eq!(keyed, n as u64, "each candidate keyed once");
+            took
+        };
+        let small = run(200);
+        let large = run(2000);
+        assert!(large < small * 30, "200: {small:?}, 2000: {large:?}");
+    }
+
+    /// The kind of `d`'s lexical context's own `SpecInfo`, if any.
+    fn lexical_spec(w: &Walk<'_>, d: DeclId) -> Option<SpecKind> {
+        let lex = w.ast.decls.lexical_ctx(d)?;
+        w.ast.spec_info(lex).map(|(_, i)| i.kind)
+    }
+
+    // WP-032: the predicate over hand-picked declarations. Only the
+    // declarations an implicit instantiation makes of a friend, in the
+    // class or in a member class of it, are instantiated outside their
+    // class; the written one, the pattern's, an explicit specialisation's
+    // and the `Friend` declarations themselves are not.
+    #[test]
+    fn instantiated_outside_class_predicate() {
+        let src = "void g(int);\n\
+                   template <class T> struct A {\n\
+                     friend void g(int) {}\n\
+                     struct In { friend void q(In) {} };\n\
+                   };\n\
+                   template <> struct A<char> { friend void g(int); };\n\
+                   A<int> a;\n\
+                   A<int>::In in;\n";
+        with_walk(src, |w| {
+            let gs = named(w, "g", DeclKind::Function);
+            assert_eq!(gs.len(), 4, "written, pattern, A<char>'s, A<int>'s");
+            let outside: Vec<DeclId> =
+                gs.iter().copied().filter(|&d| instantiated_outside_class(w, d)).collect();
+            assert_eq!(outside.len(), 1);
+            assert_eq!(lexical_spec(w, outside[0]), Some(SpecKind::ImplicitInstantiation));
+            for &d in &gs {
+                if d != outside[0] {
+                    assert_ne!(lexical_spec(w, d), Some(SpecKind::ImplicitInstantiation));
+                }
+            }
+            // A member class of the instantiation: its friend too.
+            let qs = named(w, "q", DeclKind::Function);
+            assert_eq!(qs.len(), 2, "pattern, A<int>::In's");
+            let q_outside: Vec<bool> =
+                qs.iter().map(|&d| instantiated_outside_class(w, d)).collect();
+            assert_eq!(q_outside, [false, true]);
+            // `Friend` declarations are in their class semantically too.
+            for d in super::super::decl_func::tests::of_kind(w, DeclKind::Friend) {
+                assert!(!instantiated_outside_class(w, d));
+            }
+        });
+    }
+
+    // WP-032: a friend that redeclares a member of another implicit
+    // instantiation (`B<int>::m`, declared in `A<int>`) is in an
+    // instantiation semantically too, so not instantiated outside its
+    // class: it stays a declaration of `B<int>::m`'s unit.
+    #[test]
+    fn friend_member_of_instantiation_is_not_outside() {
+        let src = "template <class T> struct B { void m(); };\n\
+                   template <class T> struct A { friend void B<T>::m(); };\n\
+                   A<int> a;\n";
+        with_walk(src, |w| {
+            let ms = named(w, "m", DeclKind::CXXMethod);
+            let friend: Vec<DeclId> = ms
+                .iter()
+                .copied()
+                .filter(|&d| lexical_spec(w, d) == Some(SpecKind::ImplicitInstantiation))
+                .filter(|&d| w.ast.decls.lexical_ctx(d) != w.ast.decls.get(d).ctx())
+                .collect();
+            assert_eq!(friend.len(), 1, "A<int>'s declaration of B<int>::m");
+            let d = friend[0];
+            assert!(!instantiated_outside_class(w, d));
+            assert!(w.redecls(w.entity(d)).contains(&d));
+        });
+    }
+
+    // WP-032 rule 2: a friend function template declared only by an
+    // instantiation (not a function, so `definition_class` reaches its last
+    // branch) is of the definition class, as its specialisations are
+    // instantiated on use.
+    #[test]
+    fn friend_template_declared_by_instantiation_is_definition_class() {
+        let src = "template <class T> struct A { template <class U> friend void g(U) {} };\n\
+                   A<int> a;\n";
+        with_walk(src, |w| {
+            let gs = named(w, "g", DeclKind::FunctionTemplate);
+            let inst = *gs.last().expect("A<int>'s g");
+            let g = w.entity(inst);
+            assert!(outside_only(w, g));
+            assert!(crate::decl_func::definition_class(w, g));
+        });
+    }
+
+    // WP-032: a friend of a local class in an instantiated member
+    // function. The local class has no `SpecInfo` or `MemberSpecInfo` of
+    // its own, so whether it is in an implicit instantiation is asked of
+    // its contexts (`in_implicit_instantiation`).
+    #[test]
+    fn friend_of_local_class_in_instantiation_is_outside() {
+        let src = "template <class T> struct A {\n\
+                     int m() { void r(int); struct L { friend void r(int); }; return 0; }\n\
+                   };\n\
+                   int u = A<int>().m();\n";
+        with_walk(src, |w| {
+            let rs = named(w, "r", DeclKind::Function);
+            let local: Vec<DeclId> = rs
+                .iter()
+                .copied()
+                .filter(|&d| {
+                    let lex = w.ast.decls.lexical_ctx(d);
+                    lex != w.ast.decls.get(d).ctx()
+                        && lex.is_some_and(|c| super::own_spec_kind(w, c).is_none())
+                        && lex.is_some_and(|c| super::in_implicit_instantiation(w, c))
+                })
+                .collect();
+            assert_eq!(local.len(), 1, "the instantiated local class's friend: {rs:?}");
+            assert!(instantiated_outside_class(w, local[0]));
+        });
+    }
+
+    // WP-032 rule 3: the canonical candidate is the declaration whose
+    // declaring class specialisation has the least mapped key, by bytes.
+    #[test]
+    fn canonical_candidate_has_least_key() {
+        let src = "template <class T> struct A { friend void j(long); };\n\
+                   template <class T> struct C { friend void j(long); };\n\
+                   A<int> a;\nC<int> c;\nA<long> b;\n";
+        with_walk(src, |w| {
+            let js = named(w, "j", DeclKind::Function);
+            let j = w.entity(*js.last().expect("A<long>'s j"));
+            let chain = w.chain(j);
+            assert_eq!(chain.len(), 3);
+            let key = |w: &mut Walk<'_>, d: DeclId| {
+                let c = w.ast.decls.lexical_ctx(d).expect("a class");
+                w.key_bytes(c).expect("a key")
+            };
+            let least = chain.iter().copied().min_by_key(|&d| key(w, d)).expect("a candidate");
+            assert_eq!(super::canonical_decl(w, j), least);
+        });
+    }
+
+    // WP-032 rules 1 and 2: `k` is declared first by an instantiation and
+    // then in source: a declared unit, classified from the written
+    // declaration. `j` exists only through the instantiations: derived, of
+    // the definition class.
+    #[test]
+    fn entity_declared_by_instantiation() {
+        let src = "template <class T> struct A { friend void k(int); friend void j(long); };\n\
+                   A<int> a;\n\
+                   A<long> b;\n\
+                   void k(int);\n";
+        with_walk(src, |w| {
+            let ks = named(w, "k", DeclKind::Function);
+            let written = *ks.last().expect("the written k");
+            let k = w.entity(written);
+            assert_ne!(k, written, "Kiln's first declaration of k is the instantiation's");
+            assert!(!outside_only(w, k));
+            assert_eq!(w.representative(k), written);
+            assert_eq!(w.redecls(k), vec![written]);
+            assert_eq!(unit_class(w, k), Some(UnitClass::Declared));
+            assert!(!crate::decl_func::definition_class(w, k));
+            let js = named(w, "j", DeclKind::Function);
+            let j = w.entity(js[1]);
+            assert!(outside_only(w, j));
+            assert_eq!(w.redecls(j).len(), 2, "both instantiations' declarations");
+            assert_eq!(unit_class(w, j), Some(UnitClass::Derived));
+            assert!(crate::decl_func::definition_class(w, j));
+        });
+    }
+
+    /// The units of `src`: (class, name, key, digest).
+    fn units(src: &str) -> Vec<(GroupClass, String, Digest, Digest)> {
+        units_timed(src).0
+    }
+
+    /// `units(src)`, and how long the digest took (not the parse).
+    fn units_timed(src: &str) -> (Vec<(GroupClass, String, Digest, Digest)>, std::time::Duration) {
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++26",
+        };
+        let rules = RuleTable::empty();
+        slip_kiln::snippet::parse(&snippet, |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let options = crate::Options { rules: &rules, detail: crate::Detail::All, names: true };
+            let t = std::time::Instant::now();
+            let o = crate::digest(&input, &options);
+            let took = t.elapsed();
+            let names: std::collections::BTreeMap<Digest, String> =
+                o.names.iter().cloned().collect();
+            let mut out = Vec::new();
+            for g in &o.digests.groups {
+                for u in g.units.iter().flatten() {
+                    let name = names.get(&u.key).cloned().unwrap_or_default();
+                    out.push((g.class, name, u.key, u.digest));
+                }
+            }
+            (out, took)
+        })
+        .expect("the snippet parses")
+    }
+
+    // WP-032 rule 3, with `differ/_/member-like-friends-two-specialisations`:
+    // the member-like friends of `M<int>`, `M<long>` and `N<int>` are three
+    // derived units with three keys; changing `N`'s friend moves only the
+    // unit `N<int>` declares.
+    #[test]
+    fn member_like_friends_move_alone() {
+        let side = |b: bool| {
+            let n = if b { "m(U *)" } else { "m(U)" };
+            format!(
+                "template <class T> concept C = true;\n\
+                 template <class T> struct M {{ template <class U> friend void m(U) requires C<T> {{}} }};\n\
+                 template <class T> struct N {{ template <class U> friend void {n} requires C<T> {{}} }};\n\
+                 M<int> a;\nM<long> b;\nN<int> c;\n"
+            )
+        };
+        let friends = |src: &str| -> BTreeSet<(Digest, Digest)> {
+            units(src)
+                .into_iter()
+                .filter(|(class, name, _, _)| {
+                    *class == GroupClass::Derived && name.starts_with("m(type-parameter-0-0")
+                })
+                .map(|(_, _, key, digest)| (key, digest))
+                .collect()
+        };
+        let a = friends(&side(false));
+        let b = friends(&side(true));
+        assert_eq!(a.len(), 3, "three keys on side A");
+        assert_eq!(b.len(), 3, "three keys on side B");
+        assert_eq!(a.intersection(&b).count(), 2, "M<int>'s and M<long>'s do not move");
+    }
+
+    // WP-032 rule 3: `j`, declared by two instantiations, is one derived
+    // unit whose digest does not depend on which came first.
+    #[test]
+    fn friend_of_two_instantiations_is_one_unit() {
+        let src = |first: &str, second: &str| {
+            format!("template <class T> struct A {{ friend void j(long); }};\n{first}\n{second}\n")
+        };
+        let j = |src: &str| -> Vec<(GroupClass, Digest, Digest)> {
+            units(src)
+                .into_iter()
+                .filter(|(class, name, _, _)| *class == GroupClass::Derived && name == "j(long)")
+                .map(|(class, _, key, digest)| (class, key, digest))
+                .collect()
+        };
+        let a = j(&src("A<int> a;", "A<long> b;"));
+        let b = j(&src("A<long> b;", "A<int> a;"));
+        assert_eq!(a.len(), 1, "one derived unit");
+        assert_eq!(a, b);
     }
 }

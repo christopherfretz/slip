@@ -1,8 +1,8 @@
-// std: c++26
 #include "side.h"
-// §6 ContractKind `Post`.
+// std: c++26
+// §6 ContractKind `Post`: against `pre`.
 #ifdef B
-void f(int x) post(x > 0) { }
+void f(const int x) pre(x > 0);
 #else
-void f(int x) pre(x > 0) { }
+void f(const int x) post(x > 0);
 #endif
