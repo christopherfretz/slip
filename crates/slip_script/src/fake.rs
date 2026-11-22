@@ -422,7 +422,9 @@ impl Subject for FakeSubject {
     }
 
     fn origin(&self, e: Entity) -> Entity {
-        self.ent(e).origin.unwrap_or(e)
+        // Robust to a referent that is not live, so that tests can describe
+        // an inconsistent subject.
+        self.entities.get(e.0 as usize).and_then(|x| x.origin).unwrap_or(e)
     }
 
     fn references_to(&self, e: Entity) -> Vec<Reference> {
