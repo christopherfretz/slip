@@ -70,3 +70,12 @@ not take from Kiln and copies or leaves out:
   answers from the unstaged `ClangFeatures`.
 - `ParseOptions::complex_promoted` is computed by comparing a
   `kiln_codegen` type; an accessor on `Args` would do.
+
+## Prototype handed over (2026-11-22, WP-020)
+
+Kiln branch `slip/kf1`, head `62d190007`. Open with Kiln for its
+review: the corpus against clang 22; `drive()` mirroring `run_as` and
+`run_jobs` by hand; a module-cache build inside the job still writing
+to the user's cache, and its engine's diagnostics not counted in the
+report; the renumbering of PCH snapshot format 117.
+
