@@ -205,9 +205,13 @@ A node or record is written as:
    the position of the words in Kiln's record. A prefixed row replaces,
    for its kind, an unprefixed row of the same member, at the unprefixed
    row's position;
-3. for a declaration or expression, the `in` rows of its arena's cold-map
-   table (`ColdDeclData`, `ColdExprData`), in table order, each as an
-   optional value whether or not the map can hold an entry for the kind.
+3. for a declaration or expression, the `in` rows of the maps keyed by
+   its id, in table order: for a declaration what §5.1 lists, for an
+   expression the rows of `ColdExprData` and then the rows of
+   `TemplateTables` whose map is keyed by `ExprId` (§9). Every such row is
+   written whatever the node's kind. A map with no entry for the node
+   writes the **empty form** of the row's encoding: an absent optional, an
+   empty list, `Ref::none`, `false`.
 
 The rows of one record that are encoded `bit` are gathered, in the order
 just given, into one flag word written as `uv` at the position of the first
@@ -2674,6 +2678,1028 @@ comes from the assertion's position or spelling.
 | `Ignore` | flag | in | tag 1 |  |
 | `MayTrap` | flag | in | tag 2 |  |
 | `Strict` | flag | in | tag 3 |  |
+
+## 7. Expressions
+
+An expression is written as the rows of `ExprNode` (§2.1): its tag, value
+category, object kind, dependence and type, then the rows of its kind in
+walk order, then the rows of the maps keyed by its `ExprId`
+(`ColdExprData`, and the expression maps of `TemplateTables`, §9). A kind
+with no rows of its own (`CXXNullPtrLiteralExpr`, `GNUNullExpr`,
+`ImplicitValueInitExpr`, `CXXScalarValueInitExpr`, `NoInitExpr`,
+`ArrayInitIndexExpr`) is the common rows alone.
+
+Rules the rows refer to:
+
+- **Conditional rows.** A row whose note begins "when" is written only
+  under that condition, which is always a fact an earlier row of the same
+  node wrote.
+- **Parentheses.** A `ParenExpr` is not written: the walk writes its
+  operand in its place (digest §6). The one exception is a `ParenExpr`
+  that is the whole expression a `profile` of a `DependentDecltype` walks
+  (§4.2 rule 7): that node is written with its rows.
+- **Shared nodes.** The default argument behind a `CXXDefaultArgExpr` and
+  the default member initialiser behind a `CXXDefaultInitExpr` are not
+  children: they are written in the unit of the function or field
+  (`ParamData` `default_arg`, `FieldData` `init`). The use writes its own
+  node and, when Kiln rebuilt the initialiser for the use, the rebuilt
+  expression (`ColdExprData` `default_arg_rewritten`).
+- **Opaque values.** An `OpaqueValueExpr` stands for the value of its
+  source, which is evaluated once elsewhere. The walk numbers sources from
+  0 in the order it first reaches them through an `OpaqueValueExpr` of the
+  unit. The node writes that number as `uv` and, the first time only, the
+  source walked in place. A node without a source writes the next number
+  and no source.
+- **Overloaded member access.** A `MemberExpr` whose type is the
+  overloaded-function placeholder names the first candidate of a set that
+  Kiln's semantic analysis keeps outside `Ast`. The first candidate is
+  written; the rest of the set is the result of looking that member's name
+  up in a class whose unit is compared separately ("Open questions").
+- **Literals from builtin macros.** A literal that came from `__LINE__`
+  or one of its relatives is written by value until Kiln can say where a
+  literal came from (digest "Open questions").
+
+### `kiln_ast::expr::ExprKind`
+
+`kind=enum; pin=schema; base=768`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `IntegerLiteral` | flag | in | tag 769 |  |
+| `FloatingLiteral` | flag | in | tag 770 |  |
+| `CharacterLiteral` | flag | in | tag 771 |  |
+| `StringLiteral` | flag | in | tag 772 |  |
+| `CXXBoolLiteralExpr` | flag | in | tag 773 |  |
+| `CXXNullPtrLiteralExpr` | flag | in | tag 774 |  |
+| `UserDefinedLiteral` | flag | unsupported | unbuilt | never built: a call of a literal operator is a `CallExpr` |
+| `ImaginaryLiteral` | flag | in | tag 776 |  |
+| `EmbedExpr` | flag | unsupported | unbuilt | never built: `#embed` expands to integer literals |
+| `GNUNullExpr` | flag | in | tag 778 |  |
+| `DeclRefExpr` | flag | in | tag 779 |  |
+| `MemberExpr` | flag | in | tag 780 |  |
+| `CXXThisExpr` | flag | in | tag 781 |  |
+| `PredefinedExpr` | flag | in | tag 782 |  |
+| `SourceLocExpr` | flag | in | tag 783 |  |
+| `UnresolvedLookupExpr` | flag | in | tag 784 |  |
+| `UnresolvedMemberExpr` | flag | unsupported | unbuilt | never built: an overloaded member access is a `MemberExpr` of overloaded type |
+| `DependentScopeDeclRefExpr` | flag | in | tag 786 |  |
+| `CXXDependentScopeMemberExpr` | flag | in | tag 787 |  |
+| `SubstNonTypeTemplateParmExpr` | flag | in | tag 788 |  |
+| `SubstNonTypeTemplateParmPackExpr` | flag | in | tag 789 |  |
+| `FunctionParmPackExpr` | flag | in | tag 790 |  |
+| `UnaryOperator` | flag | in | tag 791 |  |
+| `BinaryOperator` | flag | in | tag 792 |  |
+| `CompoundAssignOperator` | flag | in | tag 793 |  |
+| `ConditionalOperator` | flag | in | tag 794 |  |
+| `BinaryConditionalOperator` | flag | in | tag 795 |  |
+| `ArraySubscriptExpr` | flag | in | tag 796 |  |
+| `ParenExpr` | written | in | tag 797 | written only by the rule for parentheses above |
+| `CallExpr` | flag | in | tag 798 |  |
+| `CXXMemberCallExpr` | flag | in | tag 799 |  |
+| `CXXOperatorCallExpr` | flag | in | tag 800 |  |
+| `CXXRewrittenBinaryOperator` | flag | in | tag 801 |  |
+| `ParenListExpr` | flag | in | tag 802 |  |
+| `ImplicitCastExpr` | flag | in | tag 803 |  |
+| `CStyleCastExpr` | flag | in | tag 804 |  |
+| `CXXFunctionalCastExpr` | flag | in | tag 805 |  |
+| `CXXStaticCastExpr` | flag | in | tag 806 |  |
+| `CXXConstCastExpr` | flag | in | tag 807 |  |
+| `CXXReinterpretCastExpr` | flag | in | tag 808 |  |
+| `CXXDynamicCastExpr` | flag | in | tag 809 |  |
+| `BuiltinBitCastExpr` | flag | in | tag 810 |  |
+| `InitListExpr` | flag | in | tag 811 |  |
+| `ImplicitValueInitExpr` | flag | in | tag 812 |  |
+| `DesignatedInitExpr` | flag | in | tag 813 |  |
+| `CXXConstructExpr` | flag | in | tag 814 |  |
+| `CXXTemporaryObjectExpr` | flag | in | tag 815 |  |
+| `CXXInheritedCtorInitExpr` | flag | in | tag 816 |  |
+| `CXXDefaultArgExpr` | flag | in | tag 817 |  |
+| `CXXDefaultInitExpr` | flag | in | tag 818 |  |
+| `CXXScalarValueInitExpr` | flag | in | tag 819 |  |
+| `CXXParenListInitExpr` | flag | in | tag 820 |  |
+| `ArrayInitLoopExpr` | flag | in | tag 821 |  |
+| `ArrayInitIndexExpr` | flag | in | tag 822 |  |
+| `CXXStdInitializerListExpr` | flag | in | tag 823 |  |
+| `CompoundLiteralExpr` | flag | in | tag 824 |  |
+| `NoInitExpr` | flag | in | tag 825 |  |
+| `DesignatedInitUpdateExpr` | flag | in | tag 826 |  |
+| `MaterializeTemporaryExpr` | flag | in | tag 827 |  |
+| `CXXBindTemporaryExpr` | flag | in | tag 828 |  |
+| `ExprWithCleanups` | flag | in | tag 829 |  |
+| `OpaqueValueExpr` | flag | in | tag 830 |  |
+| `CXXNewExpr` | flag | in | tag 831 |  |
+| `CXXDeleteExpr` | flag | in | tag 832 |  |
+| `CXXPseudoDestructorExpr` | flag | in | tag 833 |  |
+| `CXXThrowExpr` | flag | in | tag 834 |  |
+| `CXXNoexceptExpr` | flag | in | tag 835 |  |
+| `CXXTypeidExpr` | flag | in | tag 836 |  |
+| `UnaryExprOrTypeTraitExpr` | flag | in | tag 837 |  |
+| `TypeTraitExpr` | flag | in | tag 838 |  |
+| `ArrayTypeTraitExpr` | flag | in | tag 839 |  |
+| `ExpressionTraitExpr` | flag | in | tag 840 |  |
+| `OffsetOfExpr` | flag | in | tag 841 |  |
+| `SizeOfPackExpr` | flag | in | tag 842 |  |
+| `RequiresExpr` | flag | in | tag 843 |  |
+| `ConceptSpecializationExpr` | flag | in | tag 844 |  |
+| `LambdaExpr` | flag | in | tag 845 |  |
+| `PackExpansionExpr` | flag | in | tag 846 |  |
+| `CXXFoldExpr` | flag | in | tag 847 |  |
+| `PackIndexingExpr` | flag | in | tag 848 |  |
+| `CXXUnresolvedConstructExpr` | flag | in | tag 849 |  |
+| `CoawaitExpr` | flag | in | tag 850 |  |
+| `DependentCoawaitExpr` | flag | in | tag 851 |  |
+| `CoyieldExpr` | flag | in | tag 852 |  |
+| `ConstantExpr` | flag | in | tag 853 |  |
+| `StmtExpr` | flag | in | tag 854 |  |
+| `AddrLabelExpr` | flag | in | tag 855 |  |
+| `ChooseExpr` | flag | in | tag 856 |  |
+| `VAArgExpr` | flag | in | tag 857 |  |
+| `AtomicExpr` | flag | in | tag 858 |  |
+| `ShuffleVectorExpr` | flag | in | tag 859 |  |
+| `ConvertVectorExpr` | flag | in | tag 860 |  |
+| `ExtVectorElementExpr` | flag | in | tag 861 |  |
+| `CXXReflectExpr` | flag | unsupported | - | reflection (§12) |
+| `CXXSpliceExpr` | flag | unsupported | - | reflection (§12) |
+| `RecoveryExpr` | flag | unsupported | - | an error-recovery expression: digest §10 |
+| `CXXExpansionSelectExpr` | flag | in | tag 865 |  |
+| `PseudoObjectExpr` | flag | in | tag 866 |  |
+| `GenericSelectionExpr` | flag | in | tag 867 |  |
+| `IntegerPackExpr` | flag | in | tag 868 |  |
+
+### `kiln_ast::expr::ExprNode`
+
+`kind=struct; pin=schema; selector=kiln_ast::expr::ExprKind`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `kind` | flag | in | enum ExprKind | the node's tag |
+| `bits-value-category` | flag | in | enum ValueCategory | bits 0-1 |
+| `bits-object-kind` | flag | in | enum ObjectKind | bits 2-3 |
+| `deps` | flag | in | record ExprDeps |  |
+| `ty` | type | in | type |  |
+| `loc` | location | out | - |  |
+| `IntegerLiteral.bits-wide` | flag | in | bit | bit 4: wider than 64 bits |
+| `IntegerLiteral.a-low` | value | in | uv | when not wide: bits 0-31 of the value |
+| `IntegerLiteral.b-high` | value | in | uv | when not wide: bits 32-63 |
+| `IntegerLiteral.a-wide` | value | in | value | when wide: the constant `a` names |
+| `IntegerLiteral.aux` | written | out | - | `Radix`: the base the literal was written in |
+| `FloatingLiteral.a` | value | in | value |  |
+| `CharacterLiteral.aux` | flag | in | enum CharKind |  |
+| `CharacterLiteral.a` | value | in | uv | the code unit's value |
+| `StringLiteral.aux` | flag | in | enum StringKind |  |
+| `StringLiteral.a` | value | in | string |  |
+| `CXXBoolLiteralExpr.a` | value | in | bool |  |
+| `ImaginaryLiteral.a` | child | in | child |  |
+| `DeclRefExpr.bits-names-closure-copy` | flag | in | bit | bit 4 |
+| `DeclRefExpr.bits-refers-to-enclosing` | flag | in | bit | bit 5 |
+| `DeclRefExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: the entity chosen is the fact (digest §6) |
+| `DeclRefExpr.bits-immediate-escalating` | flag | in | bit | bit 7 |
+| `DeclRefExpr.aux` | flag | in | enum NonOdrUse |  |
+| `DeclRefExpr.a` | entity | in | ref | the entity named, not the declaration it was found through |
+| `DeclRefExpr.b` | written | in | record DeclRefExtra | index into `ExprArena` `declref_extras`; 0 is written as a record with nothing present |
+| `MemberExpr.bits-arrow` | flag | in | bit | bit 4 |
+| `MemberExpr.bits-spliced` | flag | unsupported | - | bit 5: written as a member splice; reflection (§12) |
+| `MemberExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: the member chosen is the fact (digest §6) |
+| `MemberExpr.aux` | flag | in | enum NonOdrUse |  |
+| `MemberExpr.a` | child | in | child | the object expression |
+| `MemberExpr.b` | entity | in | ref | the member; for an overloaded access the first candidate (rule above) |
+| `CXXThisExpr.aux-implicit` | flag | in | bit | bit 0: Kiln's evaluator and its template substitution read it |
+| `PredefinedExpr.aux` | flag | in | enum PredefinedKind |  |
+| `PredefinedExpr.a` | value | symbolic | - | the string literal holding the enclosing function's name; absent in a dependent context |
+| `SourceLocExpr.aux` | flag | in | enum SourceLocKind |  |
+| `SourceLocExpr.a` | entity | symbolic | - | the declaration the builtin is evaluated in, which follows from where the expression is |
+| `UnresolvedLookupExpr.aux` | flag | in | bool | the name is subject to argument-dependent lookup at instantiation (digest §8) |
+| `UnresolvedLookupExpr.a` | name | in | name | a raw `DeclName` |
+| `UnresolvedLookupExpr.b` | entity | in | ref*sorted | the declarations found at the definition |
+| `DependentScopeDeclRefExpr.a` | name | in | enum Nns | a raw `NnsId` |
+| `DependentScopeDeclRefExpr.b` | name | in | name | a raw `DeclName` |
+| `CXXDependentScopeMemberExpr.aux-arrow` | flag | in | bit | bit 0 |
+| `CXXDependentScopeMemberExpr.aux-template-keyword` | written | out | - | bit 1: `template` was written; the explicit arguments (`TemplateTables` `expr_targs`) are the fact |
+| `CXXDependentScopeMemberExpr.a` | child | in | child? | the object expression; absent for an implicit access |
+| `CXXDependentScopeMemberExpr.b` | name | in | name | a raw `DeclName` |
+| `SubstNonTypeTemplateParmExpr.bits-reference-parameter` | flag | in | bit | bit 4 |
+| `SubstNonTypeTemplateParmExpr.a` | entity | in | ref | the parameter replaced |
+| `SubstNonTypeTemplateParmExpr.b` | child | in | child | the replacement |
+| `SubstNonTypeTemplateParmPackExpr.a` | entity | in | ref |  |
+| `SubstNonTypeTemplateParmPackExpr.b` | value | in | enum ArgView* | a raw `ArgListId` |
+| `FunctionParmPackExpr.a` | entity | in | ref | the pattern's parameter pack |
+| `FunctionParmPackExpr.b` | entity | in | ref* | the expanded parameters, in order |
+| `UnaryOperator.bits-cannot-overflow` | flag | in | bit | bit 4 |
+| `UnaryOperator.aux` | flag | in | enum UnaryOp |  |
+| `UnaryOperator.a` | child | in | child |  |
+| `BinaryOperator.aux` | flag | in | enum BinaryOp |  |
+| `BinaryOperator.a` | child | in | child |  |
+| `BinaryOperator.b` | child | in | child |  |
+| `CompoundAssignOperator.aux` | flag | in | enum BinaryOp |  |
+| `CompoundAssignOperator.a` | child | in | child |  |
+| `CompoundAssignOperator.b` | child | in | record CompoundAssignExtra | index into `compound_assigns` |
+| `ConditionalOperator.a` | child | in | child |  |
+| `ConditionalOperator.b-then` | child | in | child | index into `cond_arms`: the first arm |
+| `ConditionalOperator.b-else` | child | in | child | the second arm |
+| `BinaryConditionalOperator.a` | child | in | child* | common expression, condition, true arm, false arm |
+| `ArraySubscriptExpr.a` | child | in | child |  |
+| `ArraySubscriptExpr.b` | child | in | child |  |
+| `ParenExpr.a` | child | in | child |  |
+| `ParenExpr.b` | location | out | - | the closing parenthesis |
+| `CallExpr.bits-adl` | bookkeeping | out | - | bit 5: found by argument-dependent lookup; the callee is the fact (digest §6) |
+| `CallExpr.bits-assume-ignored` | flag | in | bit | bit 6 |
+| `CallExpr.a` | child | in | child | the callee |
+| `CallExpr.b` | child | in | child* |  |
+| `CXXMemberCallExpr.a` | child | in | child | the callee: a `MemberExpr` or a pointer-to-member operator |
+| `CXXMemberCallExpr.b` | child | in | child* |  |
+| `CXXOperatorCallExpr.bits-adl` | bookkeeping | out | - | bit 5: as `CallExpr.bits-adl` |
+| `CXXOperatorCallExpr.aux` | flag | in | enum OverloadedOperator | the operator as written, which fixes the order of evaluation |
+| `CXXOperatorCallExpr.a` | child | in | child |  |
+| `CXXOperatorCallExpr.b` | child | in | child* |  |
+| `CXXRewrittenBinaryOperator.aux` | flag | in | enum BinaryOp | the operator as written: instantiation rebuilds from it |
+| `CXXRewrittenBinaryOperator.a` | child | in | child | the semantic form |
+| `CXXRewrittenBinaryOperator.b` | child | in | child* | the two operands as written: instantiation rebuilds from them |
+| `ParenListExpr.a` | child | in | child* |  |
+| `ImplicitCastExpr.bits-part-of-explicit-cast` | flag | in | bit | bit 4 |
+| `ImplicitCastExpr.aux` | flag | in | enum CastKind |  |
+| `ImplicitCastExpr.a` | child | in | child |  |
+| `ImplicitCastExpr.b` | entity | in | type* | the base path: the base class type of each `BaseSpec` step |
+| `CStyleCastExpr.aux` | flag | in | enum CastKind |  |
+| `CStyleCastExpr.a` | child | in | child |  |
+| `CStyleCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
+| `CXXFunctionalCastExpr.aux` | flag | in | enum CastKind |  |
+| `CXXFunctionalCastExpr.a` | child | in | child |  |
+| `CXXFunctionalCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
+| `CXXStaticCastExpr.aux` | flag | in | enum CastKind |  |
+| `CXXStaticCastExpr.a` | child | in | child |  |
+| `CXXStaticCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
+| `CXXConstCastExpr.aux` | flag | in | enum CastKind |  |
+| `CXXConstCastExpr.a` | child | in | child |  |
+| `CXXConstCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
+| `CXXReinterpretCastExpr.aux` | flag | in | enum CastKind |  |
+| `CXXReinterpretCastExpr.a` | child | in | child |  |
+| `CXXReinterpretCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
+| `CXXDynamicCastExpr.aux` | flag | in | enum CastKind |  |
+| `CXXDynamicCastExpr.a` | child | in | child |  |
+| `CXXDynamicCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
+| `BuiltinBitCastExpr.aux` | flag | in | enum CastKind |  |
+| `BuiltinBitCastExpr.a` | child | in | child |  |
+| `BuiltinBitCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
+| `InitListExpr.a` | child | in | child* |  |
+| `InitListExpr.b` | child | in | record InitListExtra | index into `init_lists` |
+| `DesignatedInitExpr.a` | child | in | child | the initialiser; the designators are `ColdExprData` `designators` |
+| `CXXConstructExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: the constructor chosen is the fact (digest §6) |
+| `CXXConstructExpr.aux` | flag | in | record ConstructInfo |  |
+| `CXXConstructExpr.a` | entity | in | ref | the constructor |
+| `CXXConstructExpr.b` | child | in | child* |  |
+| `CXXTemporaryObjectExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: as `CXXConstructExpr` |
+| `CXXTemporaryObjectExpr.aux` | flag | in | record ConstructInfo |  |
+| `CXXTemporaryObjectExpr.a` | entity | in | ref |  |
+| `CXXTemporaryObjectExpr.b` | child | in | child* |  |
+| `CXXInheritedCtorInitExpr.aux-kind` | flag | in | enum ConstructionKind | bits 0-1 |
+| `CXXInheritedCtorInitExpr.aux-virtual-base` | flag | in | bit | bit 2 |
+| `CXXInheritedCtorInitExpr.a` | entity | in | ref | the inherited constructor |
+| `CXXDefaultArgExpr.a` | entity | in | uv | the parameter, by its position (`ParamData` `index`); its function is the callee or constructor of the enclosing call |
+| `CXXDefaultArgExpr.b` | bookkeeping | out | - | the context of the use, which follows from where the expression is |
+| `CXXDefaultInitExpr.aux` | bookkeeping | out | - | always 1 |
+| `CXXDefaultInitExpr.a` | entity | in | ref | the field |
+| `CXXDefaultInitExpr.b` | bookkeeping | out | - | the context of the use |
+| `CXXParenListInitExpr.a` | child | in | child* |  |
+| `CXXParenListInitExpr.b` | child | in | child? | the array filler |
+| `ArrayInitLoopExpr.a` | child | in | child | the common expression, an `OpaqueValueExpr` |
+| `ArrayInitLoopExpr.b` | child | in | child | the element initialiser |
+| `CXXStdInitializerListExpr.a` | child | in | child |  |
+| `CompoundLiteralExpr.aux` | flag | unsupported | - | non-zero: a file-scope compound literal, whose implicit variable has no key (`ColdDeclData` `compound_literal`) |
+| `CompoundLiteralExpr.a` | child | in | child |  |
+| `CompoundLiteralExpr.b` | entity | unsupported | - | the implicit variable, when `aux` is non-zero |
+| `DesignatedInitUpdateExpr.a` | child | in | child |  |
+| `DesignatedInitUpdateExpr.b` | child | in | child |  |
+| `MaterializeTemporaryExpr.aux-storage` | flag | in | enum StorageDuration | bits 0-1 |
+| `MaterializeTemporaryExpr.aux-lvalue-reference` | flag | in | bit | bit 2 |
+| `MaterializeTemporaryExpr.a` | child | in | child |  |
+| `MaterializeTemporaryExpr.b` | entity | in | decl? | the `LifetimeExtendedTemporary`, written here as the rows of its declaration, without an ordinal |
+| `CXXBindTemporaryExpr.a` | child | in | child |  |
+| `CXXBindTemporaryExpr.b` | entity | in | ref | the destructor |
+| `ExprWithCleanups.aux-side-effects` | flag | in | bit | bit 0 |
+| `ExprWithCleanups.a` | child | in | child |  |
+| `OpaqueValueExpr.a` | child | in | child? | the source, by the rule for opaque values above |
+| `CXXNewExpr.bits-global` | flag | in | bit | bit 4 |
+| `CXXNewExpr.bits-array-form` | flag | in | bit | bit 5 |
+| `CXXNewExpr.bits-pass-align` | flag | in | bit | bit 6 |
+| `CXXNewExpr.aux` | flag | in | enum NewInitStyle |  |
+| `CXXNewExpr.a` | child | in | record NewExtra | index into `news` |
+| `CXXDeleteExpr.bits-global` | flag | in | bit | bit 4 |
+| `CXXDeleteExpr.bits-array-form` | flag | in | bit | bit 5 |
+| `CXXDeleteExpr.bits-array-as-written` | written | out | - | bit 6: `delete[]` was written; `bits-array-form` is the fact |
+| `CXXDeleteExpr.aux-sized` | flag | in | bit | bit 0: the deallocation function takes the size |
+| `CXXDeleteExpr.aux-aligned` | flag | in | bit | bit 1: it takes the alignment |
+| `CXXDeleteExpr.a` | child | in | child |  |
+| `CXXDeleteExpr.b` | entity | in | ref | the deallocation function |
+| `CXXPseudoDestructorExpr.aux-arrow` | flag | in | bit | bit 0 |
+| `CXXPseudoDestructorExpr.aux-qualified` | flag | in | bit | bit 1: the destructor name was qualified; instantiation reads it |
+| `CXXPseudoDestructorExpr.a` | child | in | child |  |
+| `CXXPseudoDestructorExpr.b` | type | in | type | the destroyed type |
+| `CXXThrowExpr.a` | child | in | child? |  |
+| `CXXNoexceptExpr.a` | child | in | child |  |
+| `CXXNoexceptExpr.b` | value | in | bool | the stored result |
+| `CXXTypeidExpr.bits-arg-is-type` | bookkeeping | out | - | bit 4: which variant of `TypeidOperand` `a` holds |
+| `CXXTypeidExpr.aux-potentially-evaluated` | flag | in | bit | bit 0 |
+| `CXXTypeidExpr.a` | child | in | enum TypeidOperand |  |
+| `UnaryExprOrTypeTraitExpr.bits-arg-is-type` | flag | in | bit | bit 4 |
+| `UnaryExprOrTypeTraitExpr.aux` | flag | in | enum TraitKind |  |
+| `UnaryExprOrTypeTraitExpr.a-type` | type | in | type | when the operand is a type |
+| `UnaryExprOrTypeTraitExpr.a-expr` | child | in | child | when it is not |
+| `TypeTraitExpr.aux` | flag | in | enum TypeTrait |  |
+| `TypeTraitExpr.a` | type | in | type* |  |
+| `TypeTraitExpr.b` | value | in | uv | the stored result: 0 or 1, or a count |
+| `ArrayTypeTraitExpr.aux` | flag | in | enum TypeTrait |  |
+| `ArrayTypeTraitExpr.a` | type | in | type |  |
+| `ExpressionTraitExpr.aux` | flag | in | enum TypeTrait |  |
+| `ExpressionTraitExpr.a` | child | in | child |  |
+| `ExpressionTraitExpr.b` | value | in | uv | the stored result |
+| `OffsetOfExpr.aux` | flag | in | bool | non-zero: the record is not standard-layout |
+| `OffsetOfExpr.a` | child | in | child* | the index expressions |
+| `OffsetOfExpr.b` | value | in | uv | the stored result |
+| `SizeOfPackExpr.a` | entity | in | ref | the pack |
+| `RequiresExpr.aux` | value | in | uv | the stored result: 0 not computed, 1 false, 2 true ("Open questions") |
+| `RequiresExpr.a` | bookkeeping | out | - | the `RequiresExprBody`, the scope of the parameters `RequiresData` lists |
+| `RequiresExpr.b` | child | in | record RequiresData | index into `TemplateTables` `requires` (§9) |
+| `ConceptSpecializationExpr.aux` | value | in | uv | as `RequiresExpr.aux` |
+| `ConceptSpecializationExpr.a` | entity | in | ref | the concept |
+| `ConceptSpecializationExpr.b` | value | in | enum ArgView* | a raw `ArgListId` |
+| `LambdaExpr.a` | child | in | decl | the closure type of the `LambdaData` that `a` indexes, written whole (§2.4); its `RecordData` `lambda` row writes the rest of the record (§10.4) |
+| `PackExpansionExpr.a` | child | in | child |  |
+| `CXXFoldExpr.aux` | flag | in | enum BinaryOp |  |
+| `CXXFoldExpr.a` | child | in | child? |  |
+| `CXXFoldExpr.b` | child | in | child? |  |
+| `PackIndexingExpr.a` | child | in | child |  |
+| `PackIndexingExpr.b` | child | in | child |  |
+| `CXXUnresolvedConstructExpr.aux` | flag | in | bool | the braced form |
+| `CXXUnresolvedConstructExpr.a` | child | in | child* |  |
+| `CoawaitExpr.aux-implicit` | flag | in | bit | bit 0 |
+| `CoawaitExpr.aux-suspend` | flag | in | enum SuspendKind | bits 1-2 |
+| `CoawaitExpr.a` | child | in | child* | the first five elements of the list (`CoawaitParts`); the sixth, the placeholder for the awaiter, is reached from the calls |
+| `DependentCoawaitExpr.a` | child | in | child |  |
+| `CoyieldExpr.aux-implicit` | flag | in | bit | bit 0 |
+| `CoyieldExpr.aux-suspend` | flag | in | enum SuspendKind | bits 1-2 |
+| `CoyieldExpr.a` | child | in | child* | as `CoawaitExpr.a`; in a template pattern the operand alone |
+| `ConstantExpr.aux-elided` | flag | in | bit | bit 0 |
+| `ConstantExpr.aux-value-hidden` | flag | in | bit | bit 1 |
+| `ConstantExpr.a` | child | in | child |  |
+| `ConstantExpr.b` | value | in | value? | the stored value |
+| `StmtExpr.a` | child | in | child | the compound statement |
+| `AddrLabelExpr.a` | entity | in | ref | the label |
+| `ChooseExpr.aux` | value | in | uv | the arm chosen: 1 or 2; 0 while dependent |
+| `ChooseExpr.a` | child | in | child |  |
+| `ChooseExpr.b-first` | child | in | child | index into `cond_arms` |
+| `ChooseExpr.b-second` | child | in | child |  |
+| `VAArgExpr.a` | child | in | child |  |
+| `VAArgExpr.b` | type | in | type |  |
+| `AtomicExpr.aux` | flag | in | uv | which atomic builtin, in Kiln's numbering ("Open questions") |
+| `AtomicExpr.a` | child | in | child* |  |
+| `ShuffleVectorExpr.aux-mask-known` | flag | in | bit | bit 0 |
+| `ShuffleVectorExpr.a` | child | in | child* |  |
+| `ShuffleVectorExpr.b` | value | in | uv* | when the mask is known: the folded indices |
+| `ConvertVectorExpr.a` | child | in | child |  |
+| `ExtVectorElementExpr.bits-arrow` | flag | in | bit | bit 4 |
+| `ExtVectorElementExpr.a` | child | in | child |  |
+| `ExtVectorElementExpr.b` | name | in | sym | the accessor, a raw `Symbol` |
+| `CXXReflectExpr.aux` | value | unsupported | - | reflection (§12) |
+| `CXXReflectExpr.a` | value | unsupported | - | reflection (§12) |
+| `CXXReflectExpr.b` | value | unsupported | - | reflection (§12) |
+| `CXXSpliceExpr.aux` | written | unsupported | - | reflection (§12) |
+| `CXXSpliceExpr.a` | child | unsupported | - | reflection (§12) |
+| `CXXSpliceExpr.b` | child | unsupported | - | reflection (§12) |
+| `RecoveryExpr.a` | child | unsupported | - | digest §10 |
+| `CXXExpansionSelectExpr.aux` | flag | in | enum ExpansionForm |  |
+| `CXXExpansionSelectExpr.a` | value | in | uv | the depth of the statement's template level |
+| `PseudoObjectExpr.a` | child | in | child* | the syntactic form, then the semantic expressions in evaluation order |
+| `PseudoObjectExpr.b` | value | in | uv | which semantic expression is the result |
+| `GenericSelectionExpr.bits-arg-is-type` | bookkeeping | out | - | bit 4: which variant of `GenericControl` the list starts with |
+| `GenericSelectionExpr.a-control` | child | in | enum GenericControl | the first two words of the list |
+| `GenericSelectionExpr.a-associations` | child | in | record GenericAssoc* | the rest of the list, three words each |
+| `GenericSelectionExpr.b` | value | in | uv? | the association selected, by position; absent while dependent |
+| `IntegerPackExpr.a` | child | in | child |  |
+
+### 7.1 Words of the header
+
+### `kiln_ast::expr::ValueCategory`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `PRValue` | flag | in | tag 1 |  |
+| `LValue` | flag | in | tag 2 |  |
+| `XValue` | flag | in | tag 3 |  |
+
+### `kiln_ast::expr::ObjectKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Ordinary` | flag | in | tag 1 |  |
+| `BitField` | flag | in | tag 2 |  |
+| `VectorComponent` | flag | in | tag 3 |  |
+
+### `kiln_ast::expr::ExprFlags`
+
+`kind=struct; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0` | bookkeeping | out | - | bits 4-7 of `ExprNode` `bits`; their meaning is per kind and is in the `bits-` rows of `ExprNode` |
+
+### `kiln_ast::expr::ExprDeps`
+
+`kind=struct; pin=schema`
+
+Dependence is written: it decides what instantiation does with the node.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0-type` | flag | in | bit |  |
+| `0-value` | flag | in | bit |  |
+| `0-instantiation` | flag | in | bit |  |
+| `0-unexpanded-pack` | flag | in | bit |  |
+| `0-error` | flag | unsupported | - | the expression holds an error: digest §10 |
+
+### 7.2 Enumerations stored in `aux`
+
+### `kiln_ast::expr::UnaryOp`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `PostInc` | flag | in | tag 1 |  |
+| `PostDec` | flag | in | tag 2 |  |
+| `PreInc` | flag | in | tag 3 |  |
+| `PreDec` | flag | in | tag 4 |  |
+| `AddrOf` | flag | in | tag 5 |  |
+| `Deref` | flag | in | tag 6 |  |
+| `Plus` | flag | in | tag 7 |  |
+| `Minus` | flag | in | tag 8 |  |
+| `Not` | flag | in | tag 9 |  |
+| `LNot` | flag | in | tag 10 |  |
+| `Real` | flag | in | tag 11 |  |
+| `Imag` | flag | in | tag 12 |  |
+| `Extension` | flag | in | tag 13 |  |
+| `Coawait` | flag | in | tag 14 |  |
+
+### `kiln_ast::expr::BinaryOp`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `PtrMemD` | flag | in | tag 1 |  |
+| `PtrMemI` | flag | in | tag 2 |  |
+| `Mul` | flag | in | tag 3 |  |
+| `Div` | flag | in | tag 4 |  |
+| `Rem` | flag | in | tag 5 |  |
+| `Add` | flag | in | tag 6 |  |
+| `Sub` | flag | in | tag 7 |  |
+| `Shl` | flag | in | tag 8 |  |
+| `Shr` | flag | in | tag 9 |  |
+| `Cmp` | flag | in | tag 10 |  |
+| `LT` | flag | in | tag 11 |  |
+| `GT` | flag | in | tag 12 |  |
+| `LE` | flag | in | tag 13 |  |
+| `GE` | flag | in | tag 14 |  |
+| `EQ` | flag | in | tag 15 |  |
+| `NE` | flag | in | tag 16 |  |
+| `And` | flag | in | tag 17 |  |
+| `Xor` | flag | in | tag 18 |  |
+| `Or` | flag | in | tag 19 |  |
+| `LAnd` | flag | in | tag 20 |  |
+| `LOr` | flag | in | tag 21 |  |
+| `Assign` | flag | in | tag 22 |  |
+| `MulAssign` | flag | in | tag 23 |  |
+| `DivAssign` | flag | in | tag 24 |  |
+| `RemAssign` | flag | in | tag 25 |  |
+| `AddAssign` | flag | in | tag 26 |  |
+| `SubAssign` | flag | in | tag 27 |  |
+| `ShlAssign` | flag | in | tag 28 |  |
+| `ShrAssign` | flag | in | tag 29 |  |
+| `AndAssign` | flag | in | tag 30 |  |
+| `XorAssign` | flag | in | tag 31 |  |
+| `OrAssign` | flag | in | tag 32 |  |
+| `Comma` | flag | in | tag 33 |  |
+
+### `kiln_ast::expr::CastKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Dependent` | flag | in | tag 1 |  |
+| `NoOp` | flag | in | tag 2 |  |
+| `LValueToRValue` | flag | in | tag 3 |  |
+| `LValueToRValueBitCast` | flag | in | tag 4 |  |
+| `LValueBitCast` | flag | in | tag 5 |  |
+| `BitCast` | flag | in | tag 6 |  |
+| `ArrayToPointerDecay` | flag | in | tag 7 |  |
+| `FunctionToPointerDecay` | flag | in | tag 8 |  |
+| `BuiltinFnToFnPtr` | flag | in | tag 9 |  |
+| `NullToPointer` | flag | in | tag 10 |  |
+| `NullToMemberPointer` | flag | in | tag 11 |  |
+| `IntegralToPointer` | flag | in | tag 12 |  |
+| `PointerToIntegral` | flag | in | tag 13 |  |
+| `PointerToBoolean` | flag | in | tag 14 |  |
+| `IntegralCast` | flag | in | tag 15 |  |
+| `IntegralToBoolean` | flag | in | tag 16 |  |
+| `BooleanToSignedIntegral` | flag | in | tag 17 |  |
+| `IntegralToFloating` | flag | in | tag 18 |  |
+| `FloatingToIntegral` | flag | in | tag 19 |  |
+| `FloatingToBoolean` | flag | in | tag 20 |  |
+| `FloatingCast` | flag | in | tag 21 |  |
+| `DerivedToBase` | flag | in | tag 22 |  |
+| `UncheckedDerivedToBase` | flag | in | tag 23 |  |
+| `BaseToDerived` | flag | in | tag 24 |  |
+| `Dynamic` | flag | in | tag 25 |  |
+| `DerivedToBaseMemberPointer` | flag | in | tag 26 |  |
+| `BaseToDerivedMemberPointer` | flag | in | tag 27 |  |
+| `MemberPointerToBoolean` | flag | in | tag 28 |  |
+| `ReinterpretMemberPointer` | flag | in | tag 29 |  |
+| `UserDefinedConversion` | flag | in | tag 30 |  |
+| `ConstructorConversion` | flag | in | tag 31 |  |
+| `ToVoid` | flag | in | tag 32 |  |
+| `ToUnion` | flag | in | tag 33 |  |
+| `VectorSplat` | flag | in | tag 34 |  |
+| `NonAtomicToAtomic` | flag | in | tag 35 |  |
+| `AtomicToNonAtomic` | flag | in | tag 36 |  |
+| `IntegralRealToComplex` | flag | in | tag 37 |  |
+| `FloatingRealToComplex` | flag | in | tag 38 |  |
+| `IntegralComplexCast` | flag | in | tag 39 |  |
+| `FloatingComplexCast` | flag | in | tag 40 |  |
+| `IntegralComplexToReal` | flag | in | tag 41 |  |
+| `FloatingComplexToReal` | flag | in | tag 42 |  |
+| `IntegralComplexToBoolean` | flag | in | tag 43 |  |
+| `FloatingComplexToBoolean` | flag | in | tag 44 |  |
+| `IntegralComplexToFloatingComplex` | flag | in | tag 45 |  |
+| `FloatingComplexToIntegralComplex` | flag | in | tag 46 |  |
+| `AddressSpaceConversion` | flag | in | tag 47 |  |
+
+### `kiln_ast::expr::CharKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Ascii` | flag | in | tag 1 |  |
+| `Wide` | flag | in | tag 2 |  |
+| `Utf8` | flag | in | tag 3 |  |
+| `Utf16` | flag | in | tag 4 |  |
+| `Utf32` | flag | in | tag 5 |  |
+
+### `kiln_ast::expr::StringKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Ordinary` | flag | in | tag 1 |  |
+| `Wide` | flag | in | tag 2 |  |
+| `Utf8` | flag | in | tag 3 |  |
+| `Utf16` | flag | in | tag 4 |  |
+| `Utf32` | flag | in | tag 5 |  |
+| `Unevaluated` | flag | in | tag 6 |  |
+
+### `kiln_ast::expr::TraitKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `SizeOf` | flag | in | tag 1 |  |
+| `AlignOf` | flag | in | tag 2 |  |
+| `PreferredAlignOf` | flag | in | tag 3 |  |
+| `DataSizeOf` | flag | in | tag 4 |  |
+| `VecStep` | flag | in | tag 5 |  |
+
+### `kiln_ast::expr::NonOdrUse`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | flag | in | tag 1 |  |
+| `Unevaluated` | flag | in | tag 2 |  |
+| `Constant` | flag | in | tag 3 |  |
+| `Discarded` | flag | in | tag 4 |  |
+
+### `kiln_ast::expr::Radix`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Decimal` | written | out | - | the base an integer literal was written in |
+| `Hex` | written | out | - | the base an integer literal was written in |
+| `Octal` | written | out | - | the base an integer literal was written in |
+| `Binary` | written | out | - | the base an integer literal was written in |
+
+### `kiln_ast::expr::ConstructionKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Complete` | flag | in | tag 1 |  |
+| `NonVirtualBase` | flag | in | tag 2 |  |
+| `VirtualBase` | flag | in | tag 3 |  |
+| `Delegating` | flag | in | tag 4 |  |
+
+### `kiln_ast::expr::StorageDuration`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `FullExpression` | flag | in | tag 1 |  |
+| `Automatic` | flag | in | tag 2 |  |
+| `Static` | flag | in | tag 3 |  |
+| `Thread` | flag | in | tag 4 |  |
+
+### `kiln_ast::expr::TypeTrait`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `HasNothrowAssign` | flag | in | tag 1 |  |
+| `HasNothrowConstructor` | flag | in | tag 2 |  |
+| `HasNothrowCopy` | flag | in | tag 3 |  |
+| `HasNothrowMoveAssign` | flag | in | tag 4 |  |
+| `HasTrivialAssign` | flag | in | tag 5 |  |
+| `HasTrivialDefaultConstructor` | flag | in | tag 6 |  |
+| `HasTrivialCopy` | flag | in | tag 7 |  |
+| `HasTrivialDestructor` | flag | in | tag 8 |  |
+| `HasTrivialMoveAssign` | flag | in | tag 9 |  |
+| `HasTrivialMoveConstructor` | flag | in | tag 10 |  |
+| `HasUniqueObjectRepresentations` | flag | in | tag 11 |  |
+| `HasVirtualDestructor` | flag | in | tag 12 |  |
+| `IsAbstract` | flag | in | tag 13 |  |
+| `IsAggregate` | flag | in | tag 14 |  |
+| `IsArithmetic` | flag | in | tag 15 |  |
+| `IsArray` | flag | in | tag 16 |  |
+| `IsBoundedArray` | flag | in | tag 17 |  |
+| `IsClass` | flag | in | tag 18 |  |
+| `IsCompleteType` | flag | in | tag 19 |  |
+| `IsCompound` | flag | in | tag 20 |  |
+| `IsConst` | flag | in | tag 21 |  |
+| `IsDestructible` | flag | in | tag 22 |  |
+| `IsEmpty` | flag | in | tag 23 |  |
+| `IsEnum` | flag | in | tag 24 |  |
+| `IsFinal` | flag | in | tag 25 |  |
+| `IsFloatingPoint` | flag | in | tag 26 |  |
+| `IsFunction` | flag | in | tag 27 |  |
+| `IsFundamental` | flag | in | tag 28 |  |
+| `IsIntegral` | flag | in | tag 29 |  |
+| `IsLiteral` | flag | in | tag 30 |  |
+| `IsLiteralType` | flag | in | tag 31 |  |
+| `IsLvalueReference` | flag | in | tag 32 |  |
+| `IsMemberFunctionPointer` | flag | in | tag 33 |  |
+| `IsMemberObjectPointer` | flag | in | tag 34 |  |
+| `IsMemberPointer` | flag | in | tag 35 |  |
+| `IsNothrowDestructible` | flag | in | tag 36 |  |
+| `IsNullptr` | flag | in | tag 37 |  |
+| `IsObject` | flag | in | tag 38 |  |
+| `IsPod` | flag | in | tag 39 |  |
+| `IsPointer` | flag | in | tag 40 |  |
+| `IsPolymorphic` | flag | in | tag 41 |  |
+| `IsReference` | flag | in | tag 42 |  |
+| `IsReferenceable` | flag | in | tag 43 |  |
+| `IsRvalueReference` | flag | in | tag 44 |  |
+| `IsScalar` | flag | in | tag 45 |  |
+| `IsScopedEnum` | flag | in | tag 46 |  |
+| `IsSigned` | flag | in | tag 47 |  |
+| `IsStandardLayout` | flag | in | tag 48 |  |
+| `IsTrivial` | flag | in | tag 49 |  |
+| `IsTriviallyCopyable` | flag | in | tag 50 |  |
+| `IsTriviallyDestructible` | flag | in | tag 51 |  |
+| `IsTriviallyEqualityComparable` | flag | in | tag 52 |  |
+| `IsTriviallyRelocatable` | flag | in | tag 53 |  |
+| `IsUnboundedArray` | flag | in | tag 54 |  |
+| `IsUnion` | flag | in | tag 55 |  |
+| `IsUnsigned` | flag | in | tag 56 |  |
+| `IsVoid` | flag | in | tag 57 |  |
+| `IsVolatile` | flag | in | tag 58 |  |
+| `CanPassInRegs` | flag | in | tag 59 |  |
+| `IsBitwiseCloneable` | flag | in | tag 60 |  |
+| `IsImplicitLifetime` | flag | in | tag 61 |  |
+| `IsCppTriviallyRelocatable` | flag | in | tag 62 |  |
+| `IsBaseOf` | flag | in | tag 63 |  |
+| `IsVirtualBaseOf` | flag | in | tag 64 |  |
+| `IsSame` | flag | in | tag 65 |  |
+| `IsSameAs` | flag | in | tag 66 |  |
+| `IsAssignable` | flag | in | tag 67 |  |
+| `IsConvertible` | flag | in | tag 68 |  |
+| `IsConvertibleTo` | flag | in | tag 69 |  |
+| `IsLayoutCompatible` | flag | in | tag 70 |  |
+| `IsNothrowAssignable` | flag | in | tag 71 |  |
+| `IsNothrowConvertible` | flag | in | tag 72 |  |
+| `IsPointerInterconvertibleBaseOf` | flag | in | tag 73 |  |
+| `IsTriviallyAssignable` | flag | in | tag 74 |  |
+| `ReferenceBindsToTemporary` | flag | in | tag 75 |  |
+| `ReferenceConstructsFromTemporary` | flag | in | tag 76 |  |
+| `ReferenceConvertsFromTemporary` | flag | in | tag 77 |  |
+| `IsConstructible` | flag | in | tag 78 |  |
+| `IsNothrowConstructible` | flag | in | tag 79 |  |
+| `IsTriviallyConstructible` | flag | in | tag 80 |  |
+| `ArrayRank` | flag | in | tag 81 |  |
+| `ArrayExtent` | flag | in | tag 82 |  |
+| `IsLvalueExpr` | flag | in | tag 83 |  |
+| `IsRvalueExpr` | flag | in | tag 84 |  |
+| `TypesCompatible` | flag | in | tag 85 |  |
+| `IsStructural` | flag | in | tag 86 |  |
+| `IsInvocable` | flag | in | tag 87 |  |
+| `IsNothrowInvocable` | flag | in | tag 88 |  |
+| `StructuredBindingSize` | flag | in | tag 89 |  |
+| `LtSynthesizesFromSpaceship` | flag | in | tag 90 |  |
+| `LeSynthesizesFromSpaceship` | flag | in | tag 91 |  |
+| `GtSynthesizesFromSpaceship` | flag | in | tag 92 |  |
+| `GeSynthesizesFromSpaceship` | flag | in | tag 93 |  |
+
+### `kiln_ast::expr::NewInitStyle`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | flag | in | tag 1 |  |
+| `Parens` | flag | in | tag 2 |  |
+| `Braces` | flag | in | tag 3 |  |
+
+### `kiln_ast::expr::PredefinedKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Func` | flag | in | tag 1 |  |
+| `Function` | flag | in | tag 2 |  |
+| `PrettyFunction` | flag | in | tag 3 |  |
+
+### `kiln_ast::expr::SourceLocKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `File` | flag | in | tag 1 |  |
+| `FileName` | flag | in | tag 2 |  |
+| `Function` | flag | in | tag 3 |  |
+| `Line` | flag | in | tag 4 |  |
+| `Column` | flag | in | tag 5 |  |
+| `SourceLocStruct` | flag | in | tag 6 |  |
+
+### `kiln_ast::expr::SuspendKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Void` | flag | in | tag 1 |  |
+| `Bool` | flag | in | tag 2 |  |
+| `Handle` | flag | in | tag 3 |  |
+
+### `kiln_ast::expr::ConstructInfo`
+
+`kind=struct; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `kind` | flag | in | enum ConstructionKind | bits 0-1 of `aux` |
+| `list` | flag | in | bit | list-initialisation: its arguments are evaluated in order |
+| `std_init_list` | flag | in | bit |  |
+| `zeroing` | flag | in | bit |  |
+| `immediate_escalating` | flag | in | bit |  |
+
+### `kiln_ast::expr::TypeidOperand`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Type` | flag | in | tag 1 |  |
+| `Type.0` | type | in | type |  |
+| `Expr` | flag | in | tag 2 |  |
+| `Expr.0` | child | in | child |  |
+
+### `kiln_ast::expr::GenericControl`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Expr` | flag | in | tag 1 |  |
+| `Expr.0` | child | in | child |  |
+| `Type` | flag | in | tag 2 |  |
+| `Type.0` | type | in | type |  |
+| `Type.1` | location | out | - |  |
+
+### `kiln_ast::expr::GenericAssoc`
+
+`kind=struct; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `ty` | type | in | type? | absent for `default` |
+| `ty_loc` | location | out | - |  |
+| `expr` | child | in | child |  |
+
+### `kiln_ast::expr::CoawaitParts`
+
+`kind=struct; pin=extra`
+
+The decoded list of a resolved `CoawaitExpr` or `CoyieldExpr`. The walk
+reads the list itself (`ExprNode`, `CoawaitExpr.a`).
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `operand` | child | out | - | first element of the list `CoawaitExpr.a` writes |
+| `common` | child | out | - | second element: the awaiter |
+| `ready` | child | out | - | third element |
+| `suspend` | child | out | - | fourth element |
+| `resume` | child | out | - | fifth element |
+| `opaque` | child | out | - | sixth element: the `OpaqueValueExpr` standing for `common`, which the three calls name and the rule for opaque values writes there |
+
+### `kiln_ast::expr::ExtVectorAccess`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Lanes` | bookkeeping | out | - | computed from the accessor's spelling by `ext_vector_access`; never stored |
+| `Lanes.lanes` | bookkeeping | out | - |  |
+| `Lanes.repeated` | bookkeeping | out | - |  |
+| `Illegal` | bookkeeping | out | - | computed from the accessor's spelling by `ext_vector_access`; never stored |
+| `Illegal.0` | bookkeeping | out | - |  |
+| `Illegal.1` | bookkeeping | out | - |  |
+| `Exceeds` | bookkeeping | out | - | computed from the accessor's spelling by `ext_vector_access`; never stored |
+
+### 7.3 Side records
+
+### `kiln_ast::expr::DeclRefExtra`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `qualifier` | written | out | - | how the name was qualified: the entity found is the fact. Whether a member access is qualified is `ColdExprData` `member_extra-qualified` |
+| `template_args` | written | in | enum ArgView*? | written only when the entity named is a template, where the arguments select what the name means; for a specialisation the entity is the fact |
+| `found_decl` | entity | out | - | the using-declaration the name was found through: a reference names the entity (digest §4.1) |
+
+### `kiln_ast::expr::CompoundAssignExtra`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `rhs` | child | in | child |  |
+| `lhs_ty` | type | in | type | the type the left operand is converted to |
+| `result_ty` | type | in | type | the type of the computation |
+
+### `kiln_ast::expr::Designator`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Field` | flag | in | tag 1 |  |
+| `Field.name` | name | in | sym | the member is looked up by name at instantiation |
+| `Field.loc` | location | out | - |  |
+| `Index` | flag | in | tag 2 |  |
+| `Index.index` | child | in | child |  |
+| `Index.loc` | location | out | - |  |
+| `Range` | flag | in | tag 3 |  |
+| `Range.first` | child | in | child |  |
+| `Range.last` | child | in | child |  |
+| `Range.loc` | location | out | - |  |
+| `Range.ellipsis` | location | out | - |  |
+
+### `kiln_ast::expr::OffsetofComponent`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Field` | flag | in | tag 1 |  |
+| `Field.name` | name | in | sym |  |
+| `Field.start` | location | out | - |  |
+| `Field.end` | location | out | - |  |
+| `Index` | flag | in | tag 2 |  |
+| `Index.index` | child | in | child |  |
+| `Index.start` | location | out | - |  |
+| `Index.end` | location | out | - |  |
+
+### `kiln_ast::expr::OffsetofStep`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Offset` | flag | in | tag 1 |  |
+| `Offset.0` | value | in | uv | bytes |
+| `Index` | flag | in | tag 2 |  |
+| `Index.index` | child | in | child | also an element of `OffsetOfExpr.a`; written again here so that the step says which |
+| `Index.elem_size` | value | in | uv |  |
+
+### `kiln_ast::expr::InitListExtra`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `array_filler` | child | in | child? |  |
+| `union_field` | entity | in | ref |  |
+| `rbrace` | location | out | - |  |
+
+### `kiln_ast::expr::NewExtra`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `allocated_ty` | type | in | type |  |
+| `array_size` | child | in | child? |  |
+| `init` | child | in | child? |  |
+| `placement` | child | in | child*? |  |
+| `operator_new` | entity | in | ref |  |
+| `operator_delete` | entity | in | ref |  |
+| `type_loc` | location | out | - |  |
+
+### `kiln_ast::expr::SourceLocValues`
+
+`kind=struct; pin=schema`
+
+The values of the source-location builtins at one use. All of them follow
+from where the use is and what the enclosing function is called (digest
+§9); the builtin named is `ExprNode` `SourceLocExpr.aux`.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `file` | value | symbolic | - | the presumed file name |
+| `file_name` | value | symbolic | - | its last component |
+| `function` | value | symbolic | - | the enclosing function's name |
+| `line` | value | symbolic | - | the presumed line |
+| `column` | value | symbolic | - | the column |
+| `location` | value | symbolic | - | the `std::source_location::__impl` object built from the others |
+| `at` | location | out | - |  |
+| `ctx` | entity | symbolic | - | the declaration the values are for, which follows from where the use is |
+
+### `kiln_ast::expr::ArrayTraitExtra`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `dim` | child | in | child? |  |
+| `value` | value | in | uv | the stored result |
+
+### 7.4 Cold maps and the arena
+
+Each row of `ColdExprData` is written for every expression, whatever its
+kind; an expression with no entry writes the encoding's empty form (§2.1).
+
+### `kiln_ast::expr::ColdExprData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `end_loc` | location | out | - |  |
+| `member_extra-qualified` | flag | in | bool | a `MemberExpr` whose `DeclRefExtra` has a qualifier: a qualified member name suppresses virtual dispatch (digest §6) |
+| `member_extra-record` | written | in | record DeclRefExtra | no entry is written as a record with nothing present |
+| `designators` | name | in | enum Designator* | outermost first |
+| `syntactic_list` | child | in | child? | the list as written, in a template pattern: instantiation rebuilds from it |
+| `array_trait` | value | in | record ArrayTraitExtra? |  |
+| `trait_rhs_loc` | location | out | - |  |
+| `source_loc` | value | symbolic | - | the rows of `SourceLocValues` |
+| `default_imm` | value | demand | - | §11.4 |
+| `union_field` | entity | in | ref |  |
+| `cast_written-unresolved-construct` | type | in | type? | on a `CXXUnresolvedConstructExpr`: the type as written, which instantiation and mangling use |
+| `cast_written-cast` | written | out | - | on a cast: qualifiers and a reference the node's type and value category already say |
+| `offsetof_pattern-type` | type | in | type? | a value-dependent `OffsetOfExpr`: the operand type |
+| `offsetof_pattern-components` | name | in | enum OffsetofComponent* | its designator as written |
+| `offsetof_layout` | value | in | enum OffsetofStep* |  |
+| `splice_args` | value | unsupported | - | reflection (§12) |
+| `default_arg_rewritten` | child | in | child? | the initialiser rebuilt for this use |
+| `fp_round` | flag | in | enum FpRound? |  |
+
+### `kiln_ast::expr::ExprArena`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `nodes` | bookkeeping | out | - | arena: reached through `ExprId` |
+| `cond_arms` | bookkeeping | out | - | arena |
+| `declref_extras` | bookkeeping | out | - | arena |
+| `compound_assigns` | bookkeeping | out | - | arena |
+| `init_lists` | bookkeeping | out | - | arena |
+| `news` | bookkeeping | out | - | arena |
+| `lambdas` | bookkeeping | out | - | arena: `LambdaArena` (§10.4) |
+| `cold` | bookkeeping | out | - | the cold maps: `ColdExprData` |
+| `round_scope` | bookkeeping | out | - | the builder's state while parsing; not stored (`snap(skip)`) |
 
 ## Tests
 
