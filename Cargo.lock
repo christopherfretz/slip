@@ -235,6 +235,7 @@ dependencies = [
  "kiln_ast",
  "kiln_diag",
  "kiln_driver",
+ "kiln_lex",
  "kiln_oven",
  "kiln_parse",
  "kiln_pp",

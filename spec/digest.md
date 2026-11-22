@@ -183,12 +183,14 @@ member).
 
 Kiln's account of what in the AST exists only because the translation unit
 used it (Kiln `62afe3289`), and where each goes. At the pinned
-`83566cc47` (WP-044) it still holds: what Kiln added since (the
-definition-context operator sets, the names of an overloaded member
-access, the shadows of a using-declaration, the owner of a closure, the
-checked mark of an attribute) is recorded where the source is parsed,
-whatever the unit uses, and the written-reference and declaration-extent
-tables exist only when a client turns them on.
+`913a490bb` (WP-101; its `kiln_ast` is that of `83566cc47`, WP-044) it
+still holds: what Kiln added since (the definition-context operator sets,
+the names of an overloaded member access, the shadows of a
+using-declaration, the owner of a closure, the checked mark of an
+attribute) is recorded where the source is parsed, whatever the unit
+uses, and the written-reference and declaration-extent tables exist only
+when a client turns them on, as does the preprocessing record, which is
+the preprocessor's and not the AST's.
 
 | State | In the digest as |
 |---|---|

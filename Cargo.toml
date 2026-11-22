@@ -41,6 +41,7 @@ slip_exec   = { path = "crates/slip_exec" }
 kiln_driver = { path = "kiln/crates/kiln_driver" }
 kiln_source = { path = "kiln/crates/kiln_source" }
 kiln_diag   = { path = "kiln/crates/kiln_diag" }
+kiln_lex    = { path = "kiln/crates/kiln_lex" }
 kiln_pp     = { path = "kiln/crates/kiln_pp" }
 kiln_ast    = { path = "kiln/crates/kiln_ast" }
 kiln_parse  = { path = "kiln/crates/kiln_parse" }
