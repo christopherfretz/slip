@@ -10,7 +10,8 @@ is not part of the gate (as `attrs.py`).
 A test is `(root, short, row, a, b, expect, opts)`:
 - `a`/`b`: the source of side A and side B (the `#ifdef B` branches);
 - `expect`: the lines of `expect.txt` (default `changed v`);
-- `opts`: `pre` (source before the branches), `std`, `needs` (marks the
+- `opts`: `pre` (source before the branches), `post` (after them), `std`,
+  `needs` (marks the
   test `# pending` on that area), `note` (the comment after the section).
 """
 
@@ -120,7 +121,8 @@ KINDS = [
     ("ConvertVectorExpr", "v4 v = __builtin_convertvector(vv, v4);", "v4 v = vv;", "v", {}),
     ("ExtVectorElementExpr", "int v = vv.x;", "int v = vv[0];", "v", {}),
     ("GenericSelectionExpr", "int v = _Generic(a, int: 1, default: 2);", "int v = 1;", "v", {}),
-    ("StmtExpr", "int v = ({ 1; });", "int v = 1;", "v", {"needs": "stmt"}),
+    ("StmtExpr", "int f() { return ({ 1; }); }", "int f() { return 1; }", "f()",
+     {"needs": "stmt"}),
     ("AddrLabelExpr", "void f() { l: void *p = &&l; }", "void f() { l: void *p = 0; }", "f()",
      {"needs": "stmt"}),
     ("CoawaitExpr", "Task f() { co_await never; }", "Task f() { co_return; }", "f()",
@@ -411,7 +413,8 @@ for row in ("Void", "Bool", "Handle"):
 # ---------------------------------------------------------------------------
 # GNU and C extensions.
 
-node("StmtExpr.a", "int v = ({ 1; });", "int v = ({ 2; });", needs="stmt")
+node("StmtExpr.a", "int f() { return ({ 1; }); }", "int f() { return ({ 2; }); }", ["changed f()"],
+     needs="stmt")
 node("AddrLabelExpr.a", "void f() { l: m: void *p = &&l; }", "void f() { l: m: void *p = &&m; }",
      ["changed f()"], needs="stmt")
 CH = "int v = __builtin_choose_expr({});"
@@ -488,6 +491,30 @@ equal("ColdExprData", "source_loc", "int v = __builtin_LINE();", "\nint v = __bu
       note="the values of `SourceLocValues` (expr_misc.rs)")
 
 
+
+# ---------------------------------------------------------------------------
+# Review of WP-037.
+
+# The order of a trait's type arguments is a fact.
+differ("_", "type-trait-argument-order", "bool v = __is_constructible(T, int, long);",
+       "bool v = __is_constructible(T, long, int);", pre="struct T { T(int, long); };")
+# Hazard: a non-dependent `offsetof` keeps only its indices and the folded
+# offset (`kiln_ast` builder.rs:3525-3550), so another class of the same
+# layout digests equal until Kiln stores the operand type and the member path.
+differ("_", "offsetof-other-class-same-layout", "unsigned long v = __builtin_offsetof(A, y);",
+       "unsigned long v = __builtin_offsetof(Bq, q);", needs="kiln",
+       pre="struct A { int x; int y; }; struct Bq { int p; int q; };")
+# Demand independence: an instantiation a trait or `noexcept` triggers,
+# made earlier on side B by another use.
+t("demand", "_", "trait-instantiation-earlier", "", "unsigned long w = sizeof(W<int>);",
+  ["added w"], pre="template <class T> struct W { T t; W(T); };",
+  post="bool v = __is_constructible(W<int>, int);",
+  note="an earlier use instantiates `W<int>`; the trait's unit is unchanged.")
+t("demand", "_", "noexcept-instantiation-earlier", "", "bool w = noexcept(f<int>());",
+  ["added w"], pre="template <class T> void f() noexcept(sizeof(T) > 1);",
+  post="bool v = noexcept(f<int>());",
+  note="an earlier `noexcept` resolves `f<int>`'s deferred exception specification.")
+
 def write():
     names = set()
     for root, short, row, a, b, expect, opts in TESTS:
@@ -513,6 +540,8 @@ def write():
         lines.append("#else")
         lines.append(a)
         lines.append("#endif")
+        if opts.get("post"):
+            lines.append(opts["post"])
         with open(os.path.join(d, "t.cpp"), "w") as f:
             f.write("\n".join(lines) + "\n")
         out = []

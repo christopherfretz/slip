@@ -1,0 +1,3 @@
+indeterminate v
+indeterminate S
+indeterminate S::u

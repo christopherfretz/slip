@@ -3545,7 +3545,7 @@ reads the list itself (`ExprNode`, `CoawaitExpr.a`).
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `operand` | child | out | - | first element: the operand as written, not written: `common` is built from it |
+| `operand` | child | out | - | first element: the operand as written, not written: `common` is built from it (for `co_yield {…}`, a placeholder `InitListExpr` of type `void` whose elements are nodes of `common`) |
 | `common` | child | out | - | second element: the awaiter |
 | `ready` | child | out | - | third element |
 | `suspend` | child | out | - | fourth element |

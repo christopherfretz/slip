@@ -11,12 +11,15 @@
 //! through a Kiln accessor that panics on a word Kiln did not build: a
 //! word no row accounts for is `Unaccounted`, and the stream stays well
 //! formed (a placeholder takes the place of what could not be written).
+//! The one Kiln accessor called, `choose_operands`, is called after both
+//! words it reads unchecked are checked; a symbol index is checked against
+//! the interner's length before it is read.
 
 use slip_kiln::kiln::ast::expr::{
     ArrayTraitExtra, ExprFlags, ExprKind, GenericControl, OffsetofComponent, OffsetofStep,
     PredefinedKind, SourceLocKind, SuspendKind, TraitKind, TypeTrait, TypeidOperand,
 };
-use slip_kiln::kiln::ast::{DeclId, ExprId, ListId, QualType, RawId, StmtId};
+use slip_kiln::kiln::ast::{DeclId, ExprId, HeapSize, ListId, QualType, RawId, StmtId};
 use slip_kiln::kiln::source::Loc;
 use slip_kiln::kiln::source::symbol::Symbol;
 
@@ -468,9 +471,13 @@ pub(crate) fn choose_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         s.indeterminate(Cause::Unaccounted("ExprNode/ChooseExpr.aux"));
     }
     s.uv(u64::from(n.aux));
-    if n.a == 0 {
-        // `choose_operands` would panic on the condition word.
-        s.uv(0).indeterminate(Cause::Unaccounted("ExprNode/ChooseExpr.a"));
+    // `choose_operands` panics on a condition word of 0 and indexes
+    // `cond_arms` by `b` unchecked (`kiln_ast` expr.rs:1859-1863): both are
+    // checked first, the length through the arena's memory report, which
+    // is the one public reading of it.
+    let arms = HeapSize::heap_bytes(&w.ast.exprs).row("cond_arms").map_or(0, |r| r.count);
+    if let Some(row) = choose_unreadable(arms, n.a, n.b) {
+        s.uv(0).indeterminate(Cause::Unaccounted(row));
         s.uv(0).uv(0);
         return;
     }
@@ -478,6 +485,19 @@ pub(crate) fn choose_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     child(w, s, cond);
     child(w, s, first);
     child(w, s, second);
+}
+
+/// The row of a `ChooseExpr` whose words `choose_operands` cannot read:
+/// a condition word of 0, or an index `b` past `cond_arms` (`arms`
+/// entries).
+fn choose_unreadable(arms: u64, a: u32, b: u32) -> Option<&'static str> {
+    if a == 0 {
+        Some("ExprNode/ChooseExpr.a")
+    } else if u64::from(b) >= arms {
+        Some("ExprNode/ChooseExpr.b-first")
+    } else {
+        None
+    }
 }
 
 /// `VAArgExpr`: `a` the `va_list`, `b` the written type.
@@ -584,7 +604,20 @@ pub(crate) fn ext_vector_element_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprI
     );
     s.flags(FlagWord::new().bit(has(&n, ExprFlags::ARROW)));
     child_word(w, s, n.a, Cause::Unaccounted("ExprNode/ExtVectorElementExpr.a"));
-    w.write_sym(s, Symbol::from_index(n.b));
+    // `Interner::as_str` panics on an index it never issued (`kiln_source`
+    // symbol.rs:242): the index is checked against the interner's length.
+    write_issued_sym(w, s, n.b, Cause::Unaccounted("ExprNode/ExtVectorElementExpr.b"));
+}
+
+/// `sym` of the symbol with index `index` when the interner issued it
+/// (`Interner::as_str` panics on another, `kiln_source` symbol.rs:242);
+/// otherwise the empty string and `cause`.
+fn write_issued_sym(w: &mut Walk<'_>, s: &mut Stream, index: u32, cause: Cause) {
+    if (index as usize) < w.ast.symbols().len() {
+        w.write_sym(s, Symbol::from_index(index));
+    } else {
+        s.bytes(b"").indeterminate(cause);
+    }
 }
 
 /// `GenericSelectionExpr`: `a-control` (`enum GenericControl`, the first
@@ -781,6 +814,31 @@ mod tests {
     // -----------------------------------------------------------------
     // Names and builtins of a position.
 
+    /// `PredefinedExpr.a`, `SourceLocExpr.a` and the `SourceLocValues`
+    /// rows are symbolic: two functions of different names (of one length,
+    /// so that `const char[N]` agrees) give the same bytes for the
+    /// expression, on different lines too. The pair tests of these rows
+    /// only move the expression, so they do not test this alone.
+    #[test]
+    fn position_names_are_not_written() {
+        let src = "const char *fa() { return __func__; }\n\
+                   const char *fb() {\n return __func__; }\n\
+                   const char *ga() { return __builtin_FUNCTION(); }\n\
+                   const char *gb() {\n\n return __builtin_FUNCTION(); }\n\
+                   unsigned la() { return __builtin_LINE(); }\n\
+                   unsigned lb() {\n return __builtin_LINE(); }\n";
+        with(src, "c++20", |input, rules| {
+            for kind in [ExprKind::PredefinedExpr, ExprKind::SourceLocExpr] {
+                let all = of_kind(input, kind);
+                for pair in all.chunks(2) {
+                    let [x, y] = pair else { panic!("{kind:?}: two of each") };
+                    assert_eq!(written(input, rules, *x, child), written(input, rules, *y, child));
+                }
+                assert_eq!(all.len(), if kind == ExprKind::PredefinedExpr { 2 } else { 4 });
+            }
+        });
+    }
+
     #[test]
     fn predefined_aux() {
         let src = "const char *f(const char *s = __FUNCTION__);\n\
@@ -874,18 +932,25 @@ mod tests {
     #[test]
     fn type_trait_rows() {
         let src = "bool x = __is_same(int, long);\nbool y = __is_class(int);\n\
-                   bool z = __is_integral(int);\n";
+                   bool z = __is_integral(int);\nstruct T { T(int, long); };\n\
+                   bool c = __is_constructible(T, int, long);\n";
         let k = ExprKind::TypeTraitExpr;
-        for (nth, row, result) in [
-            (0, type_trait::IS_SAME, 0),
-            (1, type_trait::IS_CLASS, 0),
-            (2, type_trait::IS_INTEGRAL, 1),
+        for (nth, row, result, len) in [
+            (0, type_trait::IS_SAME, 0, 2),
+            (1, type_trait::IS_CLASS, 0, 1),
+            (2, type_trait::IS_INTEGRAL, 1, 1),
+            (3, type_trait::IS_CONSTRUCTIBLE, 1, 3),
         ] {
             rows(src, k, nth, type_trait_expr, |w, s, e| {
                 let n = node(w, e);
                 s.tag(row);
                 let types: Vec<QualType> = list(w, n.a).into_iter().map(ty).collect();
-                assert_eq!(types.len(), if nth == 0 { 2 } else { 1 });
+                assert_eq!(types.len(), len);
+                if len == 3 {
+                    // In the order written, which is not the order of ids.
+                    assert!(!types.is_sorted_by_key(|t| t.raw()), "{types:?}");
+                    assert!(!types.iter().rev().is_sorted_by_key(|t| t.raw()), "{types:?}");
+                }
                 w.write_types(s, &types);
                 s.uv(result);
             });
@@ -991,12 +1056,13 @@ mod tests {
         let src = "struct S { int n; Undeclared u; int m; };\n\
                    unsigned long x = __builtin_offsetof(S, m);\n";
         with(src, "c++20", |input, rules| {
-            for e in of_kind(input, ExprKind::OffsetOfExpr) {
-                if node_of(input, e).aux() != 0 {
-                    let (_, cause) = written(input, rules, e, offset_of_expr);
-                    assert_eq!(cause, Some(Cause::Error));
-                }
-            }
+            let invalid: Vec<ExprId> = of_kind(input, ExprKind::OffsetOfExpr)
+                .into_iter()
+                .filter(|&e| node_of(input, e).aux() != 0)
+                .collect();
+            assert_eq!(invalid.len(), 1, "Kiln marks the invalid record");
+            let (_, cause) = written(input, rules, invalid[0], offset_of_expr);
+            assert_eq!(cause, Some(Cause::Error));
         });
     }
 
@@ -1238,9 +1304,10 @@ mod tests {
         struct Mem { Aw operator co_await() noexcept; };\n\
         struct Free {};\n\
         Aw operator co_await(Free) noexcept;\n\
+        struct Pair { int a, b; };\n\
         struct Task { struct promise_type {\n\
           Task get_return_object(); Aw initial_suspend() noexcept; Aw final_suspend() noexcept;\n\
-          void return_void(); void unhandled_exception(); Aw yield_value(int); }; };\n\
+          void return_void(); void unhandled_exception(); Aw yield_value(int); Aw yield_value(Pair); }; };\n\
         struct TaskT { struct promise_type {\n\
           TaskT get_return_object(); Aw initial_suspend() noexcept; Aw final_suspend() noexcept;\n\
           void return_void(); void unhandled_exception(); Aw await_transform(int); }; };\n\
@@ -1254,7 +1321,10 @@ mod tests {
         Task free() { co_await Free{}; }\n\
         TaskT transform() { co_await 1; }\n\
         TaskB both() { co_await 2; }\n\
-        Task yield() { co_yield 3; }\n";
+        Task yield() { co_yield 3; }\n\
+        Task braced() { co_yield {1, 2}; }\n\
+        template <class T> Task tbraced(T) { co_yield {1, T()}; }\n\
+        template Task tbraced<int>(int);\n";
 
     /// The expressions reachable from `e` in Kiln's AST: its children
     /// and the sources of the opaque values among them.
@@ -1284,20 +1354,40 @@ mod tests {
     #[test]
     fn coawait_operand_is_in_common() {
         with(AWAIT_FORMS, "c++20", |input, _| {
-            let mut forms = 0;
+            let (mut forms, mut braced) = (0, 0);
             for kind in [ExprKind::CoawaitExpr, ExprKind::CoyieldExpr] {
                 for e in of_kind(input, kind) {
                     let es = list_of(input, e);
+                    if es.len() == 1 {
+                        continue; // `tbraced`'s pattern: the operand alone.
+                    }
                     assert_eq!(es.len(), 6, "resolved");
-                    let (operand, common) = (es[0], expr(es[1]));
-                    assert!(
-                        reachable(input, common).contains(&operand),
-                        "{kind:?} {e:?}: the operand is a node of `common`"
-                    );
+                    let (operand, common) = (expr(es[0]), expr(es[1]));
+                    let inside = reachable(input, common);
+                    if node_of(input, operand).kind() == ExprKind::InitListExpr {
+                        // `co_yield {…}`: the operand is the void placeholder
+                        // of `act_on_braced_arg` (`kiln_sema` forms.rs:32),
+                        // not a node of `common`; each of its elements is.
+                        assert!(!inside.contains(&operand.raw()));
+                        let elements = input.ast.exprs.children(operand, &input.ast.lists);
+                        assert_eq!(elements.len(), 2);
+                        for x in elements {
+                            assert!(inside.contains(&x.raw()), "{e:?}: element {x:?} in `common`");
+                        }
+                        braced += 1;
+                    } else {
+                        assert!(
+                            inside.contains(&operand.raw()),
+                            "{kind:?} {e:?}: the operand is a node of `common`"
+                        );
+                    }
                     forms += 1;
                 }
             }
-            assert_eq!(forms, 21, "seven explicit and fourteen implicit points");
+            // Nine functions (`tbraced` by its instantiation), each with its
+            // explicit point and the implicit initial and final ones.
+            assert_eq!(forms, 27, "nine explicit and eighteen implicit points");
+            assert_eq!(braced, 2, "`braced` and the instantiation of `tbraced`");
         });
     }
 
@@ -1615,5 +1705,29 @@ mod tests {
         let mut s = Stream::new();
         bool_word(&mut s, 2, Cause::Unaccounted("ExprNode/y"));
         assert_eq!(s.cause(), Some(Cause::Unaccounted("ExprNode/y")));
+        // `ChooseExpr`: a condition word of 0, an arm index past the
+        // table; a readable node.
+        assert_eq!(choose_unreadable(4, 0, 1), Some("ExprNode/ChooseExpr.a"));
+        assert_eq!(choose_unreadable(4, 7, 4), Some("ExprNode/ChooseExpr.b-first"));
+        assert_eq!(choose_unreadable(4, 7, 3), None);
+        // An accessor index the interner never issued: no panic, the
+        // empty string and the cause; an issued one is written.
+        with("int a;\n", "c++20", |input, rules| {
+            let cause = Cause::Unaccounted("ExprNode/ExtVectorElementExpr.b");
+            let never = u32::try_from(input.ast.symbols().len()).expect("fits");
+            let got = written(input, rules, expr(1), |w, s, _| {
+                write_issued_sym(w, s, never, cause);
+            });
+            let mut want = Stream::new();
+            want.bytes(b"");
+            assert_eq!(got, (want.as_bytes().to_vec(), Some(cause)));
+            let a = input.ast.symbols().get("a").expect("interned");
+            let got = written(input, rules, expr(1), |w, s, _| {
+                write_issued_sym(w, s, a.index(), cause);
+            });
+            let mut want = Stream::new();
+            want.bytes(b"a");
+            assert_eq!(got, (want.as_bytes().to_vec(), None));
+        });
     }
 }
