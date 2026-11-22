@@ -1,0 +1,10 @@
+#include "side.h"
+// §7 ExprNode `ConstantExpr.aux-elided`.
+consteval int g(int x) { return x; }
+consteval int g2(int x) { return x; }
+constexpr int h(int x) { return x; }
+#ifdef B
+constexpr int v = g(h(1));
+#else
+constexpr int v = g(g(1));
+#endif

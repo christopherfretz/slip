@@ -106,7 +106,14 @@ pub(crate) struct Node {
 /// Reads the words of `e`.
 pub(crate) fn node(w: &Walk<'_>, e: ExprId) -> Node {
     let n = w.ast.exprs.get(e);
-    Node { kind: n.kind(), flags: n.raw_bits() & 0xF0, aux: n.aux(), a: n.a(), b: n.b(), ty: n.ty() }
+    Node {
+        kind: n.kind(),
+        flags: n.raw_bits() & 0xF0,
+        aux: n.aux(),
+        a: n.a(),
+        b: n.b(),
+        ty: n.ty(),
+    }
 }
 
 /// The expression a word names; `None` (and `cause` on the stream) when
@@ -203,11 +210,17 @@ pub(crate) fn requires_clause(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 
 /// The walk of one expression ("The walk" above).
 fn walk(w: &mut Walk<'_>, s: &mut Stream, root: ExprId, keep_paren: bool) {
+    walk_items(w, s, Item::Node(root, keep_paren));
+}
+
+/// The loop of [`walk`], from one item (`tests` starts it from an
+/// [`Item::Exec`] to measure a level of recursion).
+fn walk_items(w: &mut Walk<'_>, s: &mut Stream, first: Item) {
     if !w.enter_node() {
         s.uv(0).indeterminate(TOO_DEEP);
         return;
     }
-    let mut stack: Vec<Item> = vec![Item::Node(root, keep_paren)];
+    let mut stack: Vec<Item> = vec![first];
     let mut items: Vec<Item> = Vec::new();
     while let Some(item) = stack.pop() {
         match item {
@@ -271,16 +284,15 @@ fn base_path(w: &mut Walk<'_>, s: &mut Stream, l: Option<ListId>) {
 fn opaque(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<Item>) {
     let source = ExprId::try_new(w.ast.exprs.get(e).a());
     let unit = &mut w.unit;
-    let (n, first) = match source.and_then(|src| unit.opaques.get(&src).copied()) {
-        Some(n) => (n, false),
-        None => {
-            let n = unit.next_opaque;
-            unit.next_opaque += 1;
-            if let Some(src) = source {
-                unit.opaques.insert(src, n);
-            }
-            (n, true)
+    let (n, first) = if let Some(n) = source.and_then(|src| unit.opaques.get(&src).copied()) {
+        (n, false)
+    } else {
+        let n = unit.next_opaque;
+        unit.next_opaque += 1;
+        if let Some(src) = source {
+            unit.opaques.insert(src, n);
         }
+        (n, true)
     };
     s.uv(n);
     match source {
@@ -316,20 +328,20 @@ fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out
         return;
     };
     let ast = w.ast;
-    let x = ast.exprs.get(e);
+    let words = ast.exprs.get(e);
     let n = node(w, e);
     let row = expr_kind::row(&n.kind);
     s.tag(row);
-    let bits = x.raw_bits();
+    let bits = words.raw_bits();
     if bits & 3 == 3 {
         s.indeterminate(Cause::Unaccounted("ExprNode/bits-value-category"));
     }
-    s.tag(value_category_row(x.value_category()));
+    s.tag(value_category_row(words.value_category()));
     if (bits >> 2) & 3 == 3 {
         s.indeterminate(Cause::Unaccounted("ExprNode/bits-object-kind"));
     }
-    s.tag(object_kind_row(x.object_kind()));
-    deps(s, x.deps());
+    s.tag(object_kind_row(words.object_kind()));
+    deps(s, words.deps());
     w.write_type(s, n.ty);
     let tail = dispatch(w, s, e, &n, out);
     cold(w, e, &n, tail, out);
@@ -345,21 +357,19 @@ fn strip_parens(w: &Walk<'_>, s: &mut Stream, e: ExprId, keep: bool) -> Option<E
         return Some(e);
     }
     loop {
-        let x = w.ast.exprs.get(e);
-        if x.kind() != ExprKind::ParenExpr {
+        let words = w.ast.exprs.get(e);
+        if words.kind() != ExprKind::ParenExpr {
             return Some(e);
         }
         if cold_entry(w, e) {
             // A map row of a skipped node would be lost.
             s.indeterminate(Cause::Unaccounted("ExprNode/ParenExpr"));
         }
-        match ExprId::try_new(x.a()) {
-            Some(a) => e = a,
-            None => {
-                s.uv(0).indeterminate(Cause::Unaccounted("ExprNode/ParenExpr.a"));
-                return None;
-            }
-        }
+        let Some(operand) = ExprId::try_new(words.a()) else {
+            s.uv(0).indeterminate(Cause::Unaccounted("ExprNode/ParenExpr.a"));
+            return None;
+        };
+        e = operand;
     }
 }
 
@@ -552,48 +562,45 @@ fn dispatch(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec
 /// every expression, the empty form when the map has no entry.
 fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
     let ast = w.ast;
-    let c = &ast.exprs.cold;
+    let maps = &ast.exprs.cold;
     // member_extra-qualified, member_extra-record.
-    match c.member_extra.get(e) {
-        Some(x) => {
-            if tail != Tail::Member {
-                out.push(Item::Cause(Cause::Unaccounted("ColdExprData/member_extra-record")));
-            }
-            let &slip_kiln::kiln::ast::expr::DeclRefExtra { qualifier, template_args, found_decl: _ } =
-                x;
-            out.push(Item::Bool(qualifier.is_some()));
-            let member = DeclId::try_new(n.b);
-            crate::expr_core::decl_ref_extra(w, member, template_args, out);
+    if let Some(extra) = maps.member_extra.get(e) {
+        if tail != Tail::Member {
+            out.push(Item::Cause(Cause::Unaccounted("ColdExprData/member_extra-record")));
         }
-        None => {
-            out.push(Item::Bool(false));
-            let member = if tail == Tail::Member { DeclId::try_new(n.b) } else { None };
-            crate::expr_core::decl_ref_extra(w, member, None, out);
-        }
+        let &slip_kiln::kiln::ast::expr::DeclRefExtra { qualifier, template_args, found_decl: _ } =
+            extra;
+        out.push(Item::Bool(qualifier.is_some()));
+        let member = DeclId::try_new(n.b);
+        crate::expr_core::decl_ref_extra(w, member, template_args, out);
+    } else {
+        out.push(Item::Bool(false));
+        let member = if tail == Tail::Member { DeclId::try_new(n.b) } else { None };
+        crate::expr_core::decl_ref_extra(w, member, None, out);
     }
     // designators.
-    if c.designators.contains(e) {
+    if maps.designators.contains(e) {
         out.push(Item::Exec(crate::expr_init::designators, e));
     } else {
         out.push(Item::Count(0));
     }
     // syntactic_list.
-    let syntactic = c.syntactic_list.get(e).copied();
+    let syntactic = maps.syntactic_list.get(e).copied();
     out.push(Item::Opt(syntactic.is_some()));
     if let Some(l) = syntactic {
         out.push(Item::Node(l, false));
     }
     // array_trait.
-    let array_trait = c.array_trait.contains(e);
+    let array_trait = maps.array_trait.contains(e);
     out.push(Item::Opt(array_trait));
     if array_trait {
         out.push(Item::Exec(crate::expr_misc::array_trait_extra, e));
     }
     // source_loc (symbolic) and default_imm (demand) write nothing.
     // union_field.
-    out.push(Item::RefOpt(c.union_field.get(e).copied()));
+    out.push(Item::RefOpt(maps.union_field.get(e).copied()));
     // cast_written-unresolved-construct, cast_written-cast.
-    let written = c.cast_written.get(e).copied();
+    let written = maps.cast_written.get(e).copied();
     let (unresolved, cast) = match tail {
         Tail::UnresolvedConstruct => (written, None),
         Tail::ExplicitCast => (None, written),
@@ -607,38 +614,214 @@ fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
     out.push(Item::TypeOpt(unresolved));
     out.push(Item::TypeOpt(cast));
     // offsetof_pattern-type, offsetof_pattern-components.
-    match c.offsetof_pattern.get(e) {
-        Some((ty, _)) => {
-            out.push(Item::TypeOpt(Some(*ty)));
-            out.push(Item::Exec(crate::expr_misc::offsetof_components, e));
-        }
-        None => {
-            out.push(Item::TypeOpt(None));
-            out.push(Item::Count(0));
-        }
+    if let Some((ty, _)) = maps.offsetof_pattern.get(e) {
+        out.push(Item::TypeOpt(Some(*ty)));
+        out.push(Item::Exec(crate::expr_misc::offsetof_components, e));
+    } else {
+        out.push(Item::TypeOpt(None));
+        out.push(Item::Count(0));
     }
     // offsetof_layout.
-    if c.offsetof_layout.contains(e) {
+    if maps.offsetof_layout.contains(e) {
         out.push(Item::Exec(crate::expr_misc::offsetof_layout, e));
     } else {
         out.push(Item::Count(0));
     }
     // splice_args: unsupported.
-    if c.splice_args.contains(e) {
+    if maps.splice_args.contains(e) {
         out.push(Item::Cause(Cause::Unsupported("ColdExprData/splice_args")));
     }
     // default_arg_rewritten.
-    let rewritten = c.default_arg_rewritten.get(e).copied();
+    let rewritten = maps.default_arg_rewritten.get(e).copied();
     out.push(Item::Opt(rewritten.is_some()));
-    if let Some(r) = rewritten {
-        out.push(Item::Node(r, false));
+    if let Some(rebuilt) = rewritten {
+        out.push(Item::Node(rebuilt, false));
     }
     // fp_round.
-    match c.fp_round.get(e) {
-        Some(r) => {
-            out.push(Item::Opt(true));
-            out.push(Item::Tag(fp_round::row(r)));
+    let round = maps.fp_round.get(e);
+    out.push(Item::Opt(round.is_some()));
+    if let Some(round) = round {
+        out.push(Item::Tag(fp_round::row(round)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use slip_kiln::kiln::ast::ExprId;
+    use slip_model::keys::RuleTable;
+
+    use super::{Item, walk_items};
+    use crate::stream::Stream;
+    use crate::walk::{DEPTH_LIMIT, NODE_LIMIT, STACK_LOW, STACK_SIZE, Walk};
+    use crate::{Detail, Input, Options};
+
+    thread_local! {
+        static LEVELS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// A kind's function that recurses through `child` as a kind of
+    /// another file does: `LEVELS` levels, then the expression itself.
+    fn nest(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+        let left = LEVELS.with(Cell::get);
+        if left == 0 {
+            super::child(w, s, e);
+            return;
         }
-        None => out.push(Item::Opt(false)),
+        LEVELS.with(|l| l.set(left - 1));
+        walk_items(w, s, Item::Exec(nest, e));
+    }
+
+    fn here() -> usize {
+        let x = 0u8;
+        std::hint::black_box(std::ptr::addr_of!(x) as usize)
+    }
+
+    /// The stack used below `base` since the last reset.
+    fn used(base: usize) -> usize {
+        base.saturating_sub(STACK_LOW.with(Cell::get))
+    }
+
+    fn parse<R>(src: &str, f: impl FnOnce(&slip_kiln::snippet::Parsed<'_>) -> R) -> R {
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        slip_kiln::snippet::parse(&snippet, f).expect("parses")
+    }
+
+    /// `lib.rs` "What bounds the stack": measures the bytes one level of
+    /// [`NODE_LIMIT`] takes (`walk_items` and a kind's function calling
+    /// `child`) and the bytes the walk takes at [`DEPTH_LIMIT`] levels of
+    /// types and keys, and checks that [`STACK_SIZE`] holds four times
+    /// both limits at those sizes. Run in the test profile, whose frames
+    /// are larger than the release profile's.
+    #[test]
+    fn frames_fit_the_stack() {
+        const LEVELS_MEASURED: u32 = 200;
+        let per_node = parse("int a;\nint v = a + 1;\n", |p| {
+            let path = |_| Vec::new();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let rules = RuleTable::empty();
+            let mut w = Walk::new(&input, &rules);
+            let e = ExprId::try_new(1).expect("an expression");
+            let mut s = Stream::new();
+            // Once without nesting, then nested: the difference is the
+            // nesting alone.
+            STACK_LOW.with(|l| l.set(usize::MAX));
+            let base = here();
+            LEVELS.with(|l| l.set(0));
+            walk_items(&mut w, &mut s, Item::Exec(nest, e));
+            let flat = used(base);
+            STACK_LOW.with(|l| l.set(usize::MAX));
+            LEVELS.with(|l| l.set(LEVELS_MEASURED));
+            walk_items(&mut w, &mut s, Item::Exec(nest, e));
+            let deep = used(base);
+            assert_eq!(w.node_depth, 0, "every level left");
+            (deep - flat) / LEVELS_MEASURED as usize
+        });
+        // Types and keys nested to the limit: a template-id in its own
+        // argument, one level deeper than DEPTH_LIMIT can hold.
+        let deep_type = {
+            let n = DEPTH_LIMIT as usize + 10;
+            let mut t = String::from("int");
+            for _ in 0..n {
+                t = format!("W<{t}>");
+            }
+            format!("template<class T> struct W {{}};\n{t} *x;\nauto v = x;\n")
+        };
+        let at_depth_limit = parse(&deep_type, |p| {
+            let path = |_| Vec::new();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let rules = RuleTable::empty();
+            let options = Options { rules: &rules, detail: Detail::All, names: false };
+            STACK_LOW.with(|l| l.set(usize::MAX));
+            let base = here();
+            let out = crate::digest(&input, &options);
+            let hit = out.causes.iter().any(|(_, c)| *c == crate::walk::TOO_DEEP);
+            (used(base), hit)
+        });
+        let (at_depth_limit, hit) = at_depth_limit;
+        assert!(hit, "the source reaches DEPTH_LIMIT");
+        let need = NODE_LIMIT as usize * per_node + at_depth_limit;
+        eprintln!(
+            "per node level: {per_node} bytes; the walk at DEPTH_LIMIT: {at_depth_limit} bytes; \
+             NODE_LIMIT {NODE_LIMIT} levels and DEPTH_LIMIT {DEPTH_LIMIT}: {need} bytes; \
+             STACK_SIZE {STACK_SIZE}"
+        );
+        assert!(per_node > 0 && at_depth_limit > 0, "the probes saw the stack");
+        assert!(4 * need <= STACK_SIZE, "STACK_SIZE holds four times {need} bytes");
+    }
+
+    /// Past [`NODE_LIMIT`] levels the stream is indeterminate with
+    /// `walk/depth` and well formed, on a thread of [`STACK_SIZE`] (`lib.rs`
+    /// "What bounds the stack").
+    #[test]
+    fn past_the_node_limit_is_too_deep() {
+        parse("int a;\nint v = a;\n", |p| {
+            let (ast, sm) = (p.ast, p.sm);
+            std::thread::scope(|scope| {
+                std::thread::Builder::new()
+                    .stack_size(STACK_SIZE)
+                    .spawn_scoped(scope, || {
+                        let path = |_| Vec::new();
+                        let input = Input { ast, sm, subject_path: &path };
+                        let rules = RuleTable::empty();
+                        let mut w = Walk::new(&input, &rules);
+                        let e = ExprId::try_new(1).expect("an expression");
+                        let mut s = Stream::new();
+                        LEVELS.with(|l| l.set(NODE_LIMIT + 5));
+                        walk_items(&mut w, &mut s, Item::Exec(nest, e));
+                        assert_eq!(s.cause(), Some(crate::walk::TOO_DEEP));
+                        assert_eq!(w.node_depth, 0, "every level left");
+                    })
+                    .expect("a thread")
+                    .join()
+                    .expect("no panic");
+            });
+        });
+    }
+
+    /// Prints Kiln's dump of the file `$SLIP_EXPR_DUMP` (`// std:` on its
+    /// first line as the pair tests read it): what a test source builds.
+    #[test]
+    #[ignore = "a tool for writing tests: SLIP_EXPR_DUMP=<file> --ignored --nocapture"]
+    fn dump_source() {
+        let Some(path) = std::env::var_os("SLIP_EXPR_DUMP") else { return };
+        let text = std::fs::read_to_string(path).expect("the file");
+        let std = text
+            .lines()
+            .next()
+            .and_then(|l| l.strip_prefix("// std:"))
+            .map_or("c++20", str::trim)
+            .to_owned();
+        let files = [("main.cpp", text.as_str())];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: &std,
+        };
+        let out = slip_kiln::snippet::parse(&snippet, |p| {
+            let opts = slip_kiln::kiln::ast::dump::DumpOptions {
+                ids: true,
+                canonical_types: true,
+                implicit: false,
+                sources: Some(p.sm),
+                main_file: Some(p.main_file),
+                ..Default::default()
+            };
+            format!(
+                "{}\n{}",
+                p.diagnostics,
+                slip_kiln::kiln::ast::dump::dump_to_string(p.ast, &opts)
+            )
+        })
+        .expect("parses");
+        println!("{out}");
     }
 }

@@ -33,7 +33,11 @@ pub(crate) fn subst_non_type_template_parm_expr(_w: &mut Walk<'_>, s: &mut Strea
 }
 
 /// `SubstNonTypeTemplateParmPackExpr` (`spec/digest-kinds.md` §7, `ExprNode` rows `SubstNonTypeTemplateParmPackExpr.*`): pending.
-pub(crate) fn subst_non_type_template_parm_pack_expr(_w: &mut Walk<'_>, s: &mut Stream, _e: ExprId) {
+pub(crate) fn subst_non_type_template_parm_pack_expr(
+    _w: &mut Walk<'_>,
+    s: &mut Stream,
+    _e: ExprId,
+) {
     s.pending(Area::Expr);
 }
 

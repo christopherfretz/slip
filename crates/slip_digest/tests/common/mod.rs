@@ -158,11 +158,10 @@ pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Dig
     let out = slip_kiln::snippet::parse(&snippet, |p| {
         // `Parsed` is not `Sync`: the walk's thread gets the AST, the
         // source manager and the paths.
-        let paths: Vec<Vec<u8>> = p
-            .sm
-            .file_ids()
-            .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
-            .collect();
+        let paths: Vec<Vec<u8>> =
+            p.sm.file_ids()
+                .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                .collect();
         let (ast, sm) = (p.ast, p.sm);
         let output = on_walk_stack(|| {
             let path = |f: slip_kiln::kiln::source::FileId| {

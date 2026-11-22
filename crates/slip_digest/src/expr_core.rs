@@ -34,23 +34,21 @@ const fn has(n: &Node, f: ExprFlags) -> bool {
 /// A child word: [`Item::Node`], or a cause and the placeholder when
 /// the word is 0.
 fn child(out: &mut Vec<Item>, raw: u32, cause: Cause) {
-    match ExprId::try_new(raw) {
-        Some(e) => out.push(Item::Node(e, false)),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(cause));
-        }
+    if let Some(e) = ExprId::try_new(raw) {
+        out.push(Item::Node(e, false));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(cause));
     }
 }
 
 /// A `ref` word: [`Item::Ref`], or `Ref::none` and a cause when it is 0.
 fn entity(out: &mut Vec<Item>, raw: u32, cause: Cause) {
-    match DeclId::try_new(raw) {
-        Some(d) => out.push(Item::Ref(d)),
-        None => {
-            out.push(Item::RefOpt(None));
-            out.push(Item::Cause(cause));
-        }
+    if let Some(d) = DeclId::try_new(raw) {
+        out.push(Item::Ref(d));
+    } else {
+        out.push(Item::RefOpt(None));
+        out.push(Item::Cause(cause));
     }
 }
 
@@ -92,12 +90,11 @@ fn radix(s: &mut Stream, aux: u8) {
 
 /// A `value` word.
 fn value(out: &mut Vec<Item>, raw: u32, cause: Cause) {
-    match ConstValueId::try_new(raw) {
-        Some(v) => out.push(Item::Value(v)),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(cause));
-        }
+    if let Some(v) = ConstValueId::try_new(raw) {
+        out.push(Item::Value(v));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(cause));
     }
 }
 
@@ -110,12 +107,11 @@ pub(crate) fn floating_literal(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
 /// `CharacterLiteral`: `aux` (`CharKind`), then `a`, the code unit.
 pub(crate) fn character_literal(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/CharacterLiteral.bits"));
-    match CharKind::from_u8(n.aux) {
-        Some(k) => out.push(Item::Tag(char_kind::row(&k))),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(Cause::Unaccounted("ExprNode/CharacterLiteral.aux")));
-        }
+    if let Some(k) = CharKind::from_u8(n.aux) {
+        out.push(Item::Tag(char_kind::row(&k)));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(Cause::Unaccounted("ExprNode/CharacterLiteral.aux")));
     }
     out.push(Item::Uv(u64::from(n.a)));
 }
@@ -123,19 +119,17 @@ pub(crate) fn character_literal(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
 /// `StringLiteral`: `aux` (`StringKind`), then `a`, the string.
 pub(crate) fn string_literal(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/StringLiteral.bits"));
-    match StringKind::from_u8(n.aux) {
-        Some(k) => out.push(Item::Tag(string_kind::row(&k))),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(Cause::Unaccounted("ExprNode/StringLiteral.aux")));
-        }
+    if let Some(k) = StringKind::from_u8(n.aux) {
+        out.push(Item::Tag(string_kind::row(&k)));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(Cause::Unaccounted("ExprNode/StringLiteral.aux")));
     }
-    match StringLitId::try_new(n.a) {
-        Some(l) => out.push(Item::String(l)),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(Cause::Unaccounted("ExprNode/StringLiteral.a")));
-        }
+    if let Some(l) = StringLitId::try_new(n.a) {
+        out.push(Item::String(l));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(Cause::Unaccounted("ExprNode/StringLiteral.a")));
     }
 }
 
@@ -159,12 +153,11 @@ pub(crate) fn imaginary_literal(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
 
 /// The `NonOdrUse` of `aux`.
 fn non_odr(out: &mut Vec<Item>, aux: u8, cause: Cause) {
-    match NonOdrUse::from_u8(aux) {
-        Some(u) => out.push(Item::Tag(non_odr_use::row(&u))),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(cause));
-        }
+    if let Some(u) = NonOdrUse::from_u8(aux) {
+        out.push(Item::Tag(non_odr_use::row(&u)));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(cause));
     }
 }
 
@@ -273,24 +266,22 @@ pub(crate) fn unary(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
         Cause::Unaccounted("ExprNode/UnaryOperator.bits"),
     );
     out.push(Item::Flags(FlagWord::new().bit(has(n, ExprFlags::CANNOT_OVERFLOW))));
-    match UnaryOp::from_u8(n.aux) {
-        Some(op) => out.push(Item::Tag(unary_op::row(&op))),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(Cause::Unaccounted("ExprNode/UnaryOperator.aux")));
-        }
+    if let Some(op) = UnaryOp::from_u8(n.aux) {
+        out.push(Item::Tag(unary_op::row(&op)));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(Cause::Unaccounted("ExprNode/UnaryOperator.aux")));
     }
     child(out, n.a, Cause::Unaccounted("ExprNode/UnaryOperator.a"));
 }
 
 /// The `BinaryOp` of `aux`.
 fn binary_op_row(out: &mut Vec<Item>, aux: u8, cause: Cause) {
-    match BinaryOp::from_u8(aux) {
-        Some(op) => out.push(Item::Tag(binary_op::row(&op))),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(cause));
-        }
+    if let Some(op) = BinaryOp::from_u8(aux) {
+        out.push(Item::Tag(binary_op::row(&op)));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(cause));
     }
 }
 
@@ -322,13 +313,7 @@ pub(crate) fn compound_assign(
 }
 
 /// `ConditionalOperator`: `a`, then `b-then` and `b-else`.
-pub(crate) fn conditional(
-    w: &Walk<'_>,
-    s: &mut Stream,
-    e: ExprId,
-    n: &Node,
-    out: &mut Vec<Item>,
-) {
+pub(crate) fn conditional(w: &Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec<Item>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/ConditionalOperator.bits"));
     child(out, n.a, Cause::Unaccounted("ExprNode/ConditionalOperator.a"));
     let [then, els] = w.ast.exprs.cond_arms(e);
@@ -386,12 +371,11 @@ pub(crate) fn member_call(w: &Walk<'_>, s: &mut Stream, n: &Node, out: &mut Vec<
 /// `out`), `a` the callee, `b` the arguments.
 pub(crate) fn operator_call(w: &Walk<'_>, s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
     check_bits(s, n, bit(ExprFlags::ADL), Cause::Unaccounted("ExprNode/CXXOperatorCallExpr.bits"));
-    match OverloadedOperator::from_u8(n.aux) {
-        Some(op) => out.push(Item::Tag(overloaded_operator::row(&op))),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(Cause::Unaccounted("ExprNode/CXXOperatorCallExpr.aux")));
-        }
+    if let Some(op) = OverloadedOperator::from_u8(n.aux) {
+        out.push(Item::Tag(overloaded_operator::row(&op)));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(Cause::Unaccounted("ExprNode/CXXOperatorCallExpr.aux")));
     }
     child(out, n.a, Cause::Unaccounted("ExprNode/CXXOperatorCallExpr.a"));
     child_list(w, s, out, n.b, Cause::Unaccounted("ExprNode/CXXOperatorCallExpr.b"));
@@ -415,12 +399,11 @@ pub(crate) fn cast(s: &mut Stream, n: &Node, implicit: bool, out: &mut Vec<Item>
     } else {
         check_bits(s, n, 0, Cause::Unaccounted("ExprNode/cast.bits"));
     }
-    match CastKind::from_u8(n.aux) {
-        Some(k) => out.push(Item::Tag(cast_kind::row(&k))),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(Cause::Unaccounted("ExprNode/cast.aux")));
-        }
+    if let Some(k) = CastKind::from_u8(n.aux) {
+        out.push(Item::Tag(cast_kind::row(&k)));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(Cause::Unaccounted("ExprNode/cast.aux")));
     }
     child(out, n.a, Cause::Unaccounted("ExprNode/cast.a"));
     out.push(Item::BasePath(ListId::try_new(n.b)));
@@ -435,14 +418,11 @@ pub(crate) fn cast(s: &mut Stream, n: &Node, implicit: bool, out: &mut Vec<Item>
 pub(crate) fn materialize(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/MaterializeTemporaryExpr.bits"));
     check_aux(s, n, 7, Cause::Unaccounted("ExprNode/MaterializeTemporaryExpr.aux"));
-    match StorageDuration::from_u8(n.aux & 3) {
-        Some(d) => out.push(Item::Tag(storage_duration::row(&d))),
-        None => {
-            out.push(Item::Uv(0));
-            out.push(Item::Cause(Cause::Unaccounted(
-                "ExprNode/MaterializeTemporaryExpr.aux-storage",
-            )));
-        }
+    if let Some(d) = StorageDuration::from_u8(n.aux & 3) {
+        out.push(Item::Tag(storage_duration::row(&d)));
+    } else {
+        out.push(Item::Uv(0));
+        out.push(Item::Cause(Cause::Unaccounted("ExprNode/MaterializeTemporaryExpr.aux-storage")));
     }
     out.push(Item::Flags(FlagWord::new().bit(n.aux & 4 != 0)));
     child(out, n.a, Cause::Unaccounted("ExprNode/MaterializeTemporaryExpr.a"));

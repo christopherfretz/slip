@@ -18,8 +18,8 @@ use crate::{Cause, Input, Options, Output};
 /// the unit is indeterminate (`Cause::Unaccounted("walk/depth")`). The
 /// closure `slip_kiln::snippet` runs, and the worker's walk, run outside
 /// Kiln's stack guard: this bound is what keeps the walk's own stack
-/// finite (WP-024 "what bounds the stack"). Each level is a few frames of
-/// a few hundred bytes, so 200 levels stay far below a 2 MiB thread stack.
+/// finite (WP-024 "what bounds the stack"). The stack 200 levels take is
+/// measured with [`NODE_LIMIT`]'s (`lib.rs` "What bounds the stack").
 pub(crate) const DEPTH_LIMIT: u32 = 200;
 
 /// The cause of a walk deeper than [`DEPTH_LIMIT`] or [`NODE_LIMIT`].
@@ -33,14 +33,15 @@ pub(crate) const TOO_DEEP: Cause = Cause::Unaccounted("walk/depth");
 /// one level; what recurses is a kind function that calls
 /// `expr::child` itself, and the statements. The stack this needs is
 /// [`STACK_SIZE`] (`lib.rs` "What bounds the stack").
-pub(crate) const NODE_LIMIT: u32 = 4096;
+pub(crate) const NODE_LIMIT: u32 = 10_000;
 
 /// The stack `crate::digest` needs, in bytes (`lib.rs` "What bounds the
 /// stack"): [`NODE_LIMIT`] levels of statement or expression recursion
 /// and [`DEPTH_LIMIT`] levels of types, keys and declarations at the
-/// frame sizes `expr::tests::frames_fit_the_stack` measures, with a
-/// margin of four.
-pub const STACK_SIZE: usize = 256 << 20;
+/// frame sizes `expr::tests::frames_fit_the_stack` measures (about 7.8 MB
+/// in the test profile), with a margin of more than four, which that test
+/// checks.
+pub const STACK_SIZE: usize = 64 << 20;
 
 /// The state of the unit being written (`spec/digest.md` §4.3).
 #[derive(Debug, Default)]
@@ -201,7 +202,7 @@ thread_local! {
 }
 
 /// Records how deep the stack is here (tests only; nothing otherwise).
-#[inline(always)]
+#[inline]
 pub(crate) fn stack_probe() {
     #[cfg(test)]
     {
