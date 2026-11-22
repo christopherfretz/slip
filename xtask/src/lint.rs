@@ -9,7 +9,7 @@
 mod crates;
 mod doc_links;
 mod local_paths;
-mod manifest;
+pub(crate) mod manifest;
 mod specs;
 mod wp_files;
 
