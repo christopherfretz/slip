@@ -163,10 +163,17 @@ For a transformation declared semantics-preserving modulo a relocation map `M`:
    in-TU bridge for C++26 subjects (`slip::subject(^^ns::f)` converting a
    native reflection into a Slip handle) is wanted, at lower priority; the
    API must keep room for it ([01](01-transform-api.md) §3).
-2. **The transform's standard library.** Transforms should be able to use
-   `std::vector`, `<algorithm>`, `<ranges>`. Proposal: Slip pins and ships the
-   library headers the transform universe uses (libc++), so runs are hermetic
-   and reproducible. Alternative: use whatever the host has.
+2. **The transform's standard library.** *Decided 2026-11-21: pinned, with
+   an option to use another installation.* Slip pins the standard library
+   the transform universe is compiled against and records its identity in
+   the plan, so a transform behaves the same on every machine; the subject
+   is unaffected (D2). An option selects a different installation. The pin
+   is **libstdc++ (GCC 16.1)**, not libc++: it is the only production
+   library with `<meta>`, and the one Kiln's reflection support is validated
+   against. `<slip/meta.h>` itself stays library-neutral and is tested
+   against both, so the pin can move. Still open: whether the pinned headers
+   are bundled with Slip (libstdc++ is GPLv3 with the GCC Runtime Library
+   Exception) or located on the host and checked against the pinned digest.
 3. **Formatting.** Slip edits bytes and leaves everything else untouched. It
    will not reformat. Running a formatter over touched ranges is left to the
    user's tooling unless you want it built in.
