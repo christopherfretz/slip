@@ -1199,6 +1199,33 @@ mod tests {
         });
     }
 
+    // §5.5 `BaseSpec` `access` (landed WP-027): the class-key pair differs
+    // in the bases only, so that the effective access is what it shows.
+    #[test]
+    fn class_key_pair_differs_in_the_bases_only() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/differ/_/class-key-default-base-access");
+        let side = |b| {
+            with_side(&dir, b, |w| {
+                let c = named(w, "C", DeclKind::CXXRecord)[0];
+                let r = *w.ast.decls.record(c).expect("RecordData");
+                let mut bases = Stream::new();
+                let tag = r.tag;
+                let default = match tag {
+                    TagKind::Class => Access::Private,
+                    TagKind::Struct | TagKind::Union => Access::Public,
+                };
+                for b in w.ast.decls.bases(c, &w.ast.lists).copied().collect::<Vec<_>>() {
+                    base_spec(w, &mut bases, b, default);
+                }
+                (r.defn, bases.as_bytes().to_vec())
+            })
+        };
+        let (a, b) = (side(false), side(true));
+        assert_eq!(a.0, b.0, "DefinitionBits are the same");
+        assert_ne!(a.1, b.1, "the bases differ");
+    }
+
     // §2.1: the record rows this file writes are those of the tables.
     #[test]
     fn record_rows_are_the_tables() {
