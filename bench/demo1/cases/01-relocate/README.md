@@ -33,7 +33,8 @@ Over the whole of `<src>` (every directory of the monorepo, not only
 
 - `hashing::detail`, `hashing\s+::`, `namespace hashing`,
   `using namespace (::)?(llvm::)?hashing`, `hashing;` (a using-directive
-  or a namespace alias): the files above, and three outside the root;
+  or a namespace alias): the files above, `bolt/lib/Profile/StaleProfileMatching.cpp` and the IR
+  test `llvm/test/CodeGen/PowerPC/pr15031.ll` (below), and comments;
 - every identifier the namespace declares (`fetch64`, `fetch32`,
   `shift_mix`, `hash_16_bytes`,
   `hash_1to3_bytes` … `hash_33to64_bytes`, `hash_short`, `hash_state`,
