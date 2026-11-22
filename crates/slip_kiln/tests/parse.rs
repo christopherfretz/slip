@@ -151,6 +151,11 @@ fn errors_of(unit: &Unit<'_>) -> u32 {
     unit.errors()
 }
 
+/// The closure of `parse_observer_with` that returns the stack left.
+fn stack_of(unit: &Unit<'_>) -> Option<usize> {
+    unit.stack_remaining()
+}
+
 fn counter(shard: &Shard, name: &str) -> Option<u64> {
     shard.counters.iter().find(|c| c.name == name).map(|c| c.value)
 }
@@ -652,8 +657,7 @@ fn s8_4_with_closure_stack_remaining() {
     f.write("main.cpp", "int x;\n");
     let left = |argv: &[&str]| {
         let o = f.observer(".", argv);
-        let (shard, seen) =
-            parse_observer_with(&o, Phase::Map, 3, |unit| unit.stack_remaining()).unwrap();
+        let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, stack_of).unwrap();
         assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
         seen.unwrap().expect("a guard on the front end's thread")
     };

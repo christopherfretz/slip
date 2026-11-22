@@ -168,13 +168,12 @@ fn s8_5_subject_paths_of_inputs_and_predefines() {
     let buffers = seen.unwrap().expect("every buffer has a subject path");
     let mut virtuals = 0;
     for (name, real, subject) in &buffers {
-        match real {
-            Some(real) => assert_eq!(subject, real, "{name}: an input is its real path"),
-            None => {
-                assert!(name.starts_with('<'), "{name}: a buffer that is no input is `<…>`");
-                assert_eq!(subject, name.as_bytes(), "{name}: has its name");
-                virtuals += 1;
-            }
+        if let Some(real) = real {
+            assert_eq!(subject, real, "{name}: an input is its real path");
+        } else {
+            assert!(name.starts_with('<'), "{name}: a buffer that is no input is `<…>`");
+            assert_eq!(subject, name.as_bytes(), "{name}: has its name");
+            virtuals += 1;
         }
     }
     assert!(virtuals >= 1, "the predefines are a buffer: {buffers:?}");
