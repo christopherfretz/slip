@@ -90,8 +90,12 @@ fn each_side(dir: &Path, mut f: impl FnMut(&mut Walk<'_>)) {
             .map_or("c++20", str::trim)
             .to_owned();
         let refs: Vec<(&str, &str)> = list.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-        let snippet =
-            slip_kiln::snippet::Snippet { files: &refs, main: "main.cpp", include: &[""], std: &std };
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &refs,
+            main: "main.cpp",
+            include: &[""],
+            std: &std,
+        };
         slip_kiln::snippet::parse(&snippet, |p| {
             let path = |_| Vec::new();
             let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
@@ -198,7 +202,8 @@ fn first_tag_rows(
         if skip.contains(&name.as_str()) {
             continue;
         }
-        let want = format!("tag {}", row(&name).unwrap_or_else(|| panic!("{table}/{name}: no row")).tag);
+        let want =
+            format!("tag {}", row(&name).unwrap_or_else(|| panic!("{table}/{name}: no row")).tag);
         let mut seen = Vec::new();
         each_side(&dir, |w| {
             for e in exprs(w) {
@@ -281,12 +286,7 @@ fn every_non_odr_use_is_written() {
 #[test]
 fn every_storage_duration_is_written() {
     let row = |n: &str| by_name(StorageDuration::from_u8, n).map(|v| storage_duration::row(&v));
-    check(&first_tag_rows(
-        "StorageDuration",
-        &[ExprKind::MaterializeTemporaryExpr],
-        &row,
-        &[],
-    ));
+    check(&first_tag_rows("StorageDuration", &[ExprKind::MaterializeTemporaryExpr], &row, &[]));
 }
 
 /// §7.1 the common rows: for each test directory of `ValueCategory`,
@@ -499,15 +499,20 @@ fn every_other_row_is_written() {
     }
     // `CXXBoolLiteralExpr.a`: both values.
     for v in ["bool true", "bool false"] {
-        f.extend(some_node("ExprNode/CXXBoolLiteralExpr.a", &[ExprKind::CXXBoolLiteralExpr], false, &|r| {
-            r == [v]
-        }));
+        f.extend(some_node(
+            "ExprNode/CXXBoolLiteralExpr.a",
+            &[ExprKind::CXXBoolLiteralExpr],
+            false,
+            &|r| r == [v],
+        ));
     }
     // `ColdExprData` `union_field`: the only `ref` of the cold rows.
     f.extend(some_node("ColdExprData/union_field", &[], true, &|r| r.iter().any(|x| x == "ref")));
     // `ColdExprData` `fp_round`: the last rows, `FE_UPWARD`.
     let up = format!("tag {}", fp_round::UPWARD.tag);
-    f.extend(some_node("ColdExprData/fp_round", &[], true, &|r| r.ends_with(&["opt true".into(), up.clone()])));
+    f.extend(some_node("ColdExprData/fp_round", &[], true, &|r| {
+        r.ends_with(&["opt true".into(), up.clone()])
+    }));
     check(&f);
 }
 
@@ -518,8 +523,12 @@ fn every_other_row_is_written() {
 fn opaque_values_are_numbered() {
     let src = "int a, b;\nint v = a ?: b;\nint u = b ?: a;\n";
     let files = [("main.cpp", src)];
-    let snippet =
-        slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std: "c++20" };
+    let snippet = slip_kiln::snippet::Snippet {
+        files: &files,
+        main: "main.cpp",
+        include: &[""],
+        std: "c++20",
+    };
     slip_kiln::snippet::parse(&snippet, |p| {
         let path = |_| Vec::new();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
@@ -564,7 +573,8 @@ fn opaque_values_are_numbered() {
 /// Parses `src` alone and runs `f` on a walk of it.
 fn with_source(src: &str, std: &str, f: impl FnOnce(&mut Walk<'_>)) {
     let files = [("main.cpp", src)];
-    let snippet = slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
+    let snippet =
+        slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
     slip_kiln::snippet::parse(&snippet, |p| {
         let path = |_| Vec::new();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
@@ -672,7 +682,9 @@ fn every_fp_round_is_written() {
     ];
     let mut src = String::from("double d;\n");
     for (i, (m, _)) in modes.iter().enumerate() {
-        src.push_str(&format!("double f{i}() {{\n#pragma STDC FENV_ROUND {m}\n  return d + d;\n}}\n"));
+        src.push_str(&format!(
+            "double f{i}() {{\n#pragma STDC FENV_ROUND {m}\n  return d + d;\n}}\n"
+        ));
     }
     let tags = tags_of(&src, "c++20", Some(ExprKind::BinaryOperator), true);
     let missing: Vec<_> = modes

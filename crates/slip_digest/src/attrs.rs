@@ -1264,7 +1264,8 @@ mod tests {
     // operands that are expressions, written through `expr::child`.
     #[test]
     fn s10_1_expression_operands() {
-        let ((got, _), ops) = decl_ops("void *f(int) __attribute__((alloc_size(1)));", "c++20", "f");
+        let ((got, _), ops) =
+            decl_ops("void *f(int) __attribute__((alloc_size(1)));", "c++20", "f");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::ALLOC_SIZE, GNU, &[false]);
@@ -1272,7 +1273,8 @@ mod tests {
             no_annotations(s);
         });
         assert_eq!(got, want);
-        let ((got, _), ops) = decl_ops("void *f(int) __attribute__((alloc_align(1)));", "c++20", "f");
+        let ((got, _), ops) =
+            decl_ops("void *f(int) __attribute__((alloc_align(1)));", "c++20", "f");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::ALLOC_ALIGN, GNU, &[false]);

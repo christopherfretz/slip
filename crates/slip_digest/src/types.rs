@@ -106,7 +106,10 @@ impl Walk<'_> {
 
     /// The stream of canonical type `c`: `Quals`, then `enum TypeView`.
     fn type_stream(&mut self, s: &mut Stream, c: QualType, no_exc: bool) {
-        debug_assert!(self.unit.expr.is_fresh(), "a type digest starts from a fresh expression state");
+        debug_assert!(
+            self.unit.expr.is_fresh(),
+            "a type digest starts from a fresh expression state"
+        );
         let types = &self.ast.types;
         if types.flags(c.ty()).contains(TypeFlags::CONTAINS_ERROR) {
             s.indeterminate(Cause::Error);
