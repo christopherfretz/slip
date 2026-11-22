@@ -336,7 +336,7 @@ parent key and nothing else.
 | KeyKind | `disc` is the digest of |
 |---|---|
 | `deduction_guide` | the `Ref` of the template deduced, then as `function` |
-| `function` | parameter types in order (`type*`), variadic, cv- and ref-qualifiers, explicit-object flag, trailing requires-clause (`profile?`); absent for a function with C language linkage |
+| `function` | parameter types in order (`type*`), variadic, cv- and ref-qualifiers, explicit-object flag, trailing requires-clause (`profile?`); then, only for a friend whose parent is the class that befriends it (a member-like friend, or a friend every declaration of which is in a templated class), `uv` 1, so that it never has the key of a member of that class with the same name and signature; absent for a function with C language linkage |
 | `function_template` | the template head (§9, `TemplateParamList`), then the function's discriminator, then its return type |
 | `class_template`, `variable_template`, `alias_template`, `concept` | the template head |
 | `specialisation` | the canonical template arguments (`enum ArgView*`) |
