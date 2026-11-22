@@ -4,11 +4,11 @@
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, FriendKind};
 
+use crate::Cause;
 use crate::keys::info;
 use crate::stream::{FlagWord, Hashed, Stream, UNIT_TAG};
 use crate::tables::{Decision, access, decl_kind, friend_kind, module_ownership};
 use crate::walk::{TOO_DEEP, Walk};
-use crate::Cause;
 
 /// A content-keyed entity whose key needs its own digest
 /// (`spec/digest.md` §3.3).

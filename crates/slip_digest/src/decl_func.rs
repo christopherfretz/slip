@@ -222,9 +222,10 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     // initialiser, which need not be the one read (an in-class
     // `static const int x = 1;` defined by `const int S::x;`).
     let (init, style) = match init_holder(w, e) {
-        Ok(Some(holder)) => {
-            ast.decls.var(holder).map_or((init, spec.init_style()), |v| (v.init, v.spec.init_style()))
-        }
+        Ok(Some(holder)) => ast
+            .decls
+            .var(holder)
+            .map_or((init, spec.init_style()), |v| (v.init, v.spec.init_style())),
         Ok(None) => (init, spec.init_style()),
         Err(()) => {
             s.indeterminate(TWO_INITS);
@@ -413,7 +414,10 @@ pub(crate) fn param_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 /// whatever Kiln holds: its default is the `default_argument` unit's
 /// (§11.4). Else the default a declaration of the function that is not
 /// instantiated and not at block scope gives, `p`'s own first (§2.3).
-pub(crate) fn written_default(w: &Walk<'_>, p: DeclId) -> (bool, Option<slip_kiln::kiln::ast::ExprId>) {
+pub(crate) fn written_default(
+    w: &Walk<'_>,
+    p: DeclId,
+) -> (bool, Option<slip_kiln::kiln::ast::ExprId>) {
     let ast = w.ast;
     let Some(&ParamData { default_arg, index, .. }) = ast.decls.param(p) else {
         return (false, None);
