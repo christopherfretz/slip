@@ -1,0 +1,163 @@
+{
+  "kind": "PLAN",
+  "version": 1,
+  "sections": {
+    "tool": {
+      "slip": "0.0.0",
+      "kiln": "1.3.0"
+    },
+    "configurations": [
+      {
+        "name": "debug",
+        "database": {
+          "path": "$ROOT/build/debug/compile_commands.json",
+          "size": "<size>",
+          "content": "<digest>"
+        }
+      },
+      {
+        "name": "release",
+        "database": {
+          "path": "$ROOT/build/release/compile_commands.json",
+          "size": "<size>",
+          "content": "<digest>"
+        }
+      }
+    ],
+    "observers": [
+      {
+        "id": "<observer id>",
+        "command": {
+          "directory": "$ROOT/build/debug",
+          "argv": [
+            "clang++",
+            "../../src/big.cpp"
+          ],
+          "env": []
+        },
+        "language": "cxx",
+        "main": {
+          "path": "$ROOT/src/big.cpp",
+          "size": 300,
+          "content": "64ee6d090a1b6bdf4cc98c123b49676fe7945b36f3d00102f48803adfb0f4394"
+        },
+        "cost_hint": 300,
+        "origins": [
+          {
+            "configuration": 0,
+            "entry": 1
+          },
+          {
+            "configuration": 0,
+            "entry": 8
+          },
+          {
+            "configuration": 1,
+            "entry": 0
+          }
+        ]
+      },
+      {
+        "id": "<observer id>",
+        "command": {
+          "directory": "$ROOT/build/debug",
+          "argv": [
+            "gcc",
+            "-std=c11",
+            "$ROOT/src/mid.c"
+          ],
+          "env": []
+        },
+        "language": "c",
+        "main": {
+          "path": "$ROOT/src/mid.c",
+          "size": 200,
+          "content": "2e572f74de558cb6c864e9f2d72ab8cfe9a61b132dd2f02bc3c8cf86c991191e"
+        },
+        "cost_hint": 200,
+        "origins": [
+          {
+            "configuration": 0,
+            "entry": 2
+          }
+        ]
+      },
+      {
+        "id": "<observer id>",
+        "command": {
+          "directory": "$ROOT/build/release",
+          "argv": [
+            "clang++",
+            "-O2",
+            "$ROOT/src/small.cc"
+          ],
+          "env": []
+        },
+        "language": "cxx",
+        "main": {
+          "path": "$ROOT/src/small.cc",
+          "size": 100,
+          "content": "458e54c6e0a4ed1ceb38e5a9bed0978054805b878b05238f44ad0c9d231d4fb8"
+        },
+        "cost_hint": 100,
+        "origins": [
+          {
+            "configuration": 1,
+            "entry": 1
+          }
+        ]
+      }
+    ],
+    "excluded": [
+      {
+        "configuration": 0,
+        "entry": 0,
+        "file": "",
+        "reason": "malformed_entry",
+        "detail": "the entry is a number, not an object"
+      },
+      {
+        "configuration": 0,
+        "entry": 3,
+        "file": "app",
+        "reason": "not_a_compile",
+        "detail": "input `big.o` is not a source file"
+      },
+      {
+        "configuration": 0,
+        "entry": 4,
+        "file": "../../src/f.f90",
+        "reason": "unsupported_language",
+        "detail": ".f90"
+      },
+      {
+        "configuration": 0,
+        "entry": 5,
+        "file": "$ROOT/src/small.cc",
+        "reason": "unsupported_flag",
+        "detail": "-fbad"
+      },
+      {
+        "configuration": 0,
+        "entry": 6,
+        "file": "../../src/gone.cpp",
+        "reason": "missing_file",
+        "detail": "main file `../../src/gone.cpp` does not exist"
+      },
+      {
+        "configuration": 0,
+        "entry": 7,
+        "file": "x.cpp",
+        "reason": "unsupported_compiler",
+        "detail": "`cl.exe` is not a GCC/clang-style compiler"
+      },
+      {
+        "configuration": 1,
+        "entry": 2,
+        "file": "../../src/dup.cpp",
+        "reason": "malformed_entry",
+        "detail": "several inputs: `../../src/dup.cpp`, `../../src/a.cpp`"
+      }
+    ]
+  }
+}

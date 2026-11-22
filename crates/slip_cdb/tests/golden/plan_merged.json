@@ -1,0 +1,89 @@
+{
+  "kind": "PLAN",
+  "version": 1,
+  "sections": {
+    "tool": {
+      "slip": "0.0.0",
+      "kiln": "1.3.0"
+    },
+    "configurations": [
+      {
+        "name": "one",
+        "database": {
+          "path": "$ROOT/one.json",
+          "size": "<size>",
+          "content": "<digest>"
+        }
+      },
+      {
+        "name": "two",
+        "database": {
+          "path": "$ROOT/two.json",
+          "size": "<size>",
+          "content": "<digest>"
+        }
+      }
+    ],
+    "observers": [
+      {
+        "id": "<observer id>",
+        "command": {
+          "directory": "$ROOT/out",
+          "argv": [
+            "cc",
+            "-I../inc dir",
+            "../src/util.c"
+          ],
+          "env": []
+        },
+        "language": "c",
+        "main": {
+          "path": "$ROOT/src/util.c",
+          "size": 26,
+          "content": "cb288484373696ef09d7dcbe07adf98518ad26a615f1bddb8b79b30ac5af899d"
+        },
+        "cost_hint": 26,
+        "origins": [
+          {
+            "configuration": 1,
+            "entry": 1
+          }
+        ]
+      },
+      {
+        "id": "<observer id>",
+        "command": {
+          "directory": "$ROOT/out",
+          "argv": [
+            "clang++",
+            "-std=c++17",
+            "../src/lib.cpp"
+          ],
+          "env": []
+        },
+        "language": "cxx",
+        "main": {
+          "path": "$ROOT/src/lib.cpp",
+          "size": 22,
+          "content": "4af30a35ec9094eb3e427afecd3997ba08eb031ba2aa38c8bb4c0f88448da47c"
+        },
+        "cost_hint": 22,
+        "origins": [
+          {
+            "configuration": 0,
+            "entry": 0
+          },
+          {
+            "configuration": 0,
+            "entry": 1
+          },
+          {
+            "configuration": 1,
+            "entry": 0
+          }
+        ]
+      }
+    ],
+    "excluded": []
+  }
+}
