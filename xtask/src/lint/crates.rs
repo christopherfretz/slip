@@ -19,6 +19,12 @@ pub const KILN_ADAPTER_MANIFEST: &str = "crates/slip_kiln/Cargo.toml";
 /// crates that link Kiln.
 pub const KILN_LINKING: &[&str] = &["slip_kiln", "slip_digest", "slip_script", "slip_cli"];
 
+/// The modules of `slip_kiln` that name Kiln's types, and the files
+/// outside `crates/slip_kiln/` that may name them (`kiln-boundary`, third
+/// rule): the prefixes of the paths allowed, and for `snippet` also the
+/// `tests/` of every crate in [`KILN_LINKING`].
+pub const KILN_MODULE_USERS: &[&str] = &["crates/slip_digest/", "crates/slip_script/"];
+
 /// §3.1: the third-party crates allowed in `Cargo.lock`, any version.
 pub const ALLOWED_CRATES: &[&str] = &["signal-hook", "libc", "signal-hook-registry"];
 
@@ -177,6 +183,85 @@ pub fn kiln_boundary(repo: &Repo) -> Vec<Violation> {
                     path.join(" -> ")
                 ),
             ));
+        }
+    }
+    out.extend(kiln_modules(repo));
+    out
+}
+
+/// `kiln-boundary`'s third rule: outside `crates/slip_kiln/`, the paths
+/// `slip_kiln::kiln` and `slip_kiln::snippet` (or a `use slip_kiln::{…}`
+/// group naming either) appear only in the `.rs` files that may name them.
+fn kiln_modules(repo: &Repo) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for path in repo.files().filter(|f| {
+        Path::new(f).extension().is_some_and(|e| e == "rs") && !f.starts_with("crates/slip_kiln/")
+    }) {
+        let users = KILN_MODULE_USERS.iter().any(|p| path.starts_with(p));
+        let tests = KILN_LINKING.iter().any(|c| path.starts_with(&format!("crates/{c}/tests/")));
+        if users {
+            continue;
+        }
+        let Some(text) = repo.read(path) else { continue };
+        for (module, line) in kiln_module_paths(&text) {
+            if module == "snippet" && tests {
+                continue;
+            }
+            let allowed = if module == "snippet" {
+                "crates/slip_digest/, crates/slip_script/ and the tests/ of slip_kiln, \
+                 slip_digest, slip_script and slip_cli may"
+            } else {
+                "crates/slip_digest/ and crates/slip_script/ may"
+            };
+            out.push(Violation::new(
+                path,
+                Some(line),
+                "kiln-boundary",
+                format!("names `slip_kiln::{module}`; only {allowed}"),
+            ));
+        }
+    }
+    out
+}
+
+/// Every `slip_kiln::kiln` and `slip_kiln::snippet` in Rust source `text`,
+/// as the module named and the line of its name: the path form, and the
+/// items of a `slip_kiln::{…}` group that start with either. Comments and
+/// literals are not code.
+fn kiln_module_paths(text: &str) -> Vec<(&'static str, usize)> {
+    let module = |t: &str| ["kiln", "snippet"].into_iter().find(|&m| m == t);
+    let toks = super::rust_tokens::tokens(text);
+    let mut out = Vec::new();
+    for (i, t) in toks.iter().enumerate() {
+        if t.text != "slip_kiln" || toks.get(i + 1).is_none_or(|t| t.text != "::") {
+            continue;
+        }
+        let Some(next) = toks.get(i + 2) else { continue };
+        if let Some(m) = module(next.text) {
+            out.push((m, next.line));
+            continue;
+        }
+        if next.text != "{" {
+            continue;
+        }
+        // The group's items at its own depth: a name after `{` or `,`.
+        let mut depth = 0usize;
+        for (j, t) in toks.iter().enumerate().skip(i + 2) {
+            match t.text {
+                "{" => depth += 1,
+                "}" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                text if depth == 1 && matches!(toks[j - 1].text, "{" | ",") => {
+                    if let Some(m) = module(text) {
+                        out.push((m, t.line));
+                    }
+                }
+                _ => {}
+            }
         }
     }
     out

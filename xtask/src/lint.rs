@@ -10,6 +10,7 @@ mod crates;
 mod doc_links;
 mod local_paths;
 pub(crate) mod manifest;
+mod rust_tokens;
 mod specs;
 mod wp_files;
 

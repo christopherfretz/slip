@@ -100,6 +100,62 @@ fn s3_kiln_boundary_dependents() {
     );
 }
 
+// §3 `kiln-boundary`, third rule (spec/landed/harness/WP-021.md): the
+// paths `slip_kiln::kiln` and `slip_kiln::snippet`, in the path form and
+// in a `use` group, outside the files that may name them; comments and
+// literals are not code.
+#[test]
+fn s3_kiln_boundary_kiln_modules() {
+    let f = Fixture::new("kb4");
+    // Allowed: slip_digest and slip_script name both; slip_kiln itself.
+    f.write(
+        "crates/slip_digest/src/walk.rs",
+        "use slip_kiln::kiln::ast::Ast;\nuse slip_kiln::{kiln, snippet};\n",
+    );
+    f.write(
+        "crates/slip_script/src/lib.rs",
+        "#![forbid(unsafe_code)]\nuse slip_kiln::snippet::parse;\n",
+    );
+    f.write(
+        "crates/slip_kiln/src/x.rs",
+        "use crate::kiln;\nfn f() { slip_kiln::kiln::ast::dump(); }\n",
+    );
+    // `snippet` in the tests of a crate that links Kiln.
+    f.write("crates/slip_cli/tests/walk.rs", "use slip_kiln::snippet::{Snippet, parse};\n");
+    // Refused: both paths in slip_cli/src, the path form and the group
+    // form (one item per line), and `kiln` in slip_cli's tests.
+    f.write(
+        "crates/slip_cli/src/a.rs",
+        "fn f() {\n    let _ = slip_kiln :: kiln::ast::Ast::new;\n}\nuse slip_kiln::snippet;\n\
+         use ::slip_kiln::{\n    KilnCheck,\n    snippet::parse,\n    kiln as k,\n    x::{kiln},\n};\n",
+    );
+    f.write("crates/slip_cli/tests/t.rs", "use slip_kiln::kiln::ast;\n");
+    // Ignored: in comments and literals, and other paths.
+    f.write(
+        "crates/slip_cli/src/b.rs",
+        "// slip_kiln::kiln\n/* use slip_kiln::{snippet}; */\n/// slip_kiln::snippet::parse\n\
+         const A: &str = \"slip_kiln::kiln\";\nconst B: &str = r#\"use slip_kiln::{kiln}\"#;\n\
+         use slip_kiln::kiln_version;\nfn g<'a>(x: &'a str) -> char { 'k' }\n",
+    );
+    assert_eq!(
+        lint(&f),
+        [
+            "crates/slip_cli/src/a.rs:2: kiln-boundary: names `slip_kiln::kiln`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+            "crates/slip_cli/src/a.rs:4: kiln-boundary: names `slip_kiln::snippet`; only \
+             crates/slip_digest/, crates/slip_script/ and the tests/ of slip_kiln, slip_digest, \
+             slip_script and slip_cli may",
+            "crates/slip_cli/src/a.rs:7: kiln-boundary: names `slip_kiln::snippet`; only \
+             crates/slip_digest/, crates/slip_script/ and the tests/ of slip_kiln, slip_digest, \
+             slip_script and slip_cli may",
+            "crates/slip_cli/src/a.rs:8: kiln-boundary: names `slip_kiln::kiln`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+            "crates/slip_cli/tests/t.rs:1: kiln-boundary: names `slip_kiln::kiln`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+        ]
+    );
+}
+
 // §3 `kiln-boundary`: a directory outside `members` (or in `exclude`) is
 // not a member and not checked.
 #[test]
