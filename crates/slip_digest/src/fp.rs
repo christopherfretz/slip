@@ -89,9 +89,7 @@ fn fp_options(s: &mut Stream, o: FpOptions) {
 
 #[cfg(test)]
 mod tests {
-    use slip_kiln::kiln::ast::fp::{
-        FpContract, FpEval, FpExcept, FpOverride, FpRound, fp_bit,
-    };
+    use slip_kiln::kiln::ast::fp::{FpContract, FpEval, FpExcept, FpOverride, FpRound, fp_bit};
 
     use super::{MASK_BITS, fp_override};
     use crate::Cause;

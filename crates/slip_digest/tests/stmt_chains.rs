@@ -5,6 +5,7 @@
 
 mod common;
 
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use slip_digest::{Cause, Detail, Input, Options, Output};
@@ -20,7 +21,7 @@ fn else_ifs(n: usize) -> String {
         if i > 0 {
             s.push_str(" else ");
         }
-        s.push_str(&format!("if ({i}) ;"));
+        let _ = write!(s, "if ({i}) ;");
     }
     s.push_str(" else ;\n}\n");
     s
@@ -31,7 +32,7 @@ fn else_ifs(n: usize) -> String {
 fn case_labels(n: usize) -> String {
     let mut s = String::from("void f(int x) {\nswitch (x) {\n");
     for i in 0..n {
-        s.push_str(&format!("case {i}:\n"));
+        let _ = writeln!(s, "case {i}:");
     }
     s.push_str(";\n}\n}\n");
     s
@@ -41,7 +42,7 @@ fn case_labels(n: usize) -> String {
 fn statements(n: usize) -> String {
     let mut s = String::from("void f(int &x) {\n");
     for i in 0..n {
-        s.push_str(&format!("x = {i};\n"));
+        let _ = writeln!(s, "x = {i};");
     }
     s.push_str("}\n");
     s

@@ -128,6 +128,11 @@ fn required_expr(w: &mut Walk<'_>, s: &mut Stream, raw: u32, cause: Cause) {
 /// Writes the rows of `st` and returns its tail, the statement of its
 /// last row, which the caller writes next ("The walk" above). Every
 /// variant is listed (digest §13 obligation 2).
+#[allow(
+    clippy::many_single_char_names,
+    clippy::too_many_lines,
+    reason = "one arm per kind; `aux`, `a` and `b` are the rows' names in §6"
+)]
 fn node(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
     crate::walk::stack_probe();
     let n = *w.ast.stmts.get(st);
@@ -209,7 +214,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
             }
             required_stmt(s, b, Cause::Unaccounted("StmtNode/AttributedStmt.b"))
         }
-        StmtKind::CXXForRangeStmt => range_for(w, s, st),
+        StmtKind::CXXForRangeStmt => Some(range_for(w, s, st)),
         StmtKind::CXXExpansionStmt => {
             expansion(w, s, st, aux, b);
             None
@@ -247,7 +252,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
     }
 }
 
-/// `CompoundStmt.aux` (record FpOverride: the override in effect, the
+/// `CompoundStmt.aux` (`record FpOverride`: the override in effect, the
 /// empty one where no pragma is) and `CompoundStmt.a` (`child*`).
 fn compound(w: &mut Walk<'_>, s: &mut Stream, st: StmtId, a: u32) {
     crate::fp::fp_override(s, w.ast.stmts.compound_fp(st));
@@ -272,7 +277,7 @@ fn coreturn(w: &mut Walk<'_>, s: &mut Stream, aux: u16, a: u32, b: u32) {
     expr::child_opt(w, s, ExprId::try_new(b));
 }
 
-/// `IfStmt.aux` (enum IfKind) and `IfStmt.a` (record IfData); `els` is
+/// `IfStmt.aux` (`enum IfKind`) and `IfStmt.a` (`record IfData`); `els` is
 /// the tail.
 fn if_stmt(w: &mut Walk<'_>, s: &mut Stream, st: StmtId, aux: u16) -> Option<StmtId> {
     if aux > 3 {
@@ -287,7 +292,7 @@ fn if_stmt(w: &mut Walk<'_>, s: &mut Stream, st: StmtId, aux: u16) -> Option<Stm
     tail_opt(s, els)
 }
 
-/// `SwitchStmt.a`: record SwitchData. `cases` is `out`: the case and
+/// `SwitchStmt.a`: `record SwitchData`. `cases` is `out`: the case and
 /// default statements, which the walk meets in `body`.
 fn switch(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) {
     let &SwitchData { init, cond_var, cond, body, cases: _ } = w.ast.stmts.switch_data(st);
@@ -297,7 +302,7 @@ fn switch(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) {
     child(w, s, body);
 }
 
-/// `WhileStmt.a`, `DoStmt.a`, `ForStmt.a`: record LoopData; `body` is
+/// `WhileStmt.a`, `DoStmt.a`, `ForStmt.a`: `record LoopData`; `body` is
 /// the tail. `DoStmt.b` is a location.
 fn loop_data(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
     let &LoopData { init, cond_var, cond, inc, body } = w.ast.stmts.loop_data(st);
@@ -308,8 +313,8 @@ fn loop_data(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
     tail_opt(s, body)
 }
 
-/// `CXXForRangeStmt.a`: record RangeForData; `body` is the tail.
-fn range_for(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
+/// `CXXForRangeStmt.a`: `record RangeForData`; `body` is the tail.
+fn range_for(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> StmtId {
     let &RangeForData { init, range, begin, end, cond, inc, loop_var, body, colon: _ } =
         w.ast.stmts.range_for_data(st);
     child_opt(w, s, init);
@@ -319,12 +324,12 @@ fn range_for(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
     expr::child_opt(w, s, cond);
     expr::child_opt(w, s, inc);
     crate::local::write_decl(w, s, loop_var);
-    Some(body)
+    body
 }
 
-/// `CXXExpansionStmt`: `aux-form` (bits 0-1, enum ExpansionForm),
+/// `CXXExpansionStmt`: `aux-form` (bits 0-1, `enum ExpansionForm`),
 /// `aux-expanded` (bit 2, the record's one `bit` row), `b` (uv), `a`
-/// (record ExpansionData: the pattern parts, then the expansions).
+/// (`record ExpansionData`: the pattern parts, then the expansions).
 fn expansion(w: &mut Walk<'_>, s: &mut Stream, st: StmtId, aux: u16, b: u32) {
     if aux & !(ExpansionForm::MASK | ExpansionForm::EXPANDED) != 0 {
         s.indeterminate(Cause::Unaccounted("StmtNode/CXXExpansionStmt.aux"));
@@ -338,8 +343,7 @@ fn expansion(w: &mut Walk<'_>, s: &mut Stream, st: StmtId, aux: u16, b: u32) {
         w.ast.stmts.expansion_data(st);
     child_opt(w, s, init);
     crate::local::write_decl(w, s, decl);
-    let es: Vec<ExprId> =
-        list_of(w, s, exprs, Cause::Unaccounted("ExpansionData/exprs"));
+    let es: Vec<ExprId> = list_of(w, s, exprs, Cause::Unaccounted("ExpansionData/exprs"));
     expr::children(w, s, &es);
     expr::child_opt(w, s, range_init);
     child(w, s, body);
@@ -350,7 +354,7 @@ fn expansion(w: &mut Walk<'_>, s: &mut Stream, st: StmtId, aux: u16, b: u32) {
     children(w, s, &exp);
 }
 
-/// `CoroutineBodyStmt.a`: record CoroutineBodyData. `promise_stmt` is
+/// `CoroutineBodyStmt.a`: `record CoroutineBodyData`. `promise_stmt` is
 /// `out`: the `DeclStmt` of `promise`, which that row writes.
 fn coroutine_body(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) {
     let &CoroutineBodyData {
@@ -392,7 +396,7 @@ fn coroutine_body(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) {
 const ASM_BITS: [u16; 4] = [1, 2, 4, 8];
 
 /// `GCCAsmStmt`: the four `aux` bits as one flag word, then `a` (record
-/// AsmData).
+/// `AsmData`).
 fn asm(w: &mut Walk<'_>, s: &mut Stream, st: StmtId, aux: u16) {
     let known = ASM_BITS.iter().fold(0, |m, b| m | b);
     if aux & !known != 0 {
@@ -455,7 +459,6 @@ fn contract(w: &mut Walk<'_>, s: &mut Stream, aux: u16, a: u32, b: u32) {
     required_expr(w, s, a, Cause::Unaccounted("StmtNode/ContractAssertStmt.a"));
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
@@ -490,7 +493,10 @@ mod tests {
     }
 
     /// The bytes `g` writes on a fresh walk of `p`.
-    fn bytes(p: &slip_kiln::snippet::Parsed<'_>, g: impl FnOnce(&mut Walk<'_>, &mut Stream)) -> Vec<u8> {
+    fn bytes(
+        p: &slip_kiln::snippet::Parsed<'_>,
+        g: impl FnOnce(&mut Walk<'_>, &mut Stream),
+    ) -> Vec<u8> {
         let path = |_| Vec::new();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
         let rules = RuleTable::empty();
@@ -500,17 +506,16 @@ mod tests {
         s.as_bytes().to_vec()
     }
 
+    /// The rows of a kind, from the statement and its `(aux, a, b)`.
+    type Rows = fn(&mut Walk<'_>, &mut Stream, StmtId, u16, u32, u32);
+    /// A change of `(aux, b)`.
+    type Change = fn(u16, u32) -> (u16, u32);
+
     /// The one statement of kind `k` in `src`, and a check that
     /// `node` writes its tag then what `rows` writes for the statement's
     /// own `(aux, a, b)`; then that `rows` writes other bytes for each of
     /// `changed` (a row skipped or written as a constant fails here).
-    fn holds(
-        src: &str,
-        std: &str,
-        k: StmtKind,
-        rows: fn(&mut Walk<'_>, &mut Stream, StmtId, u16, u32, u32),
-        changed: &[(&str, fn(u16, u32) -> (u16, u32))],
-    ) {
+    fn holds(src: &str, std: &str, k: StmtKind, rows: Rows, changed: &[(&str, Change)]) {
         parse(src, std, |p| {
             let st = *of_kind(p.ast, k).first().expect("the statement");
             let n = *p.ast.stmts.get(st);
@@ -537,7 +542,10 @@ mod tests {
     // GCCAsmStmt.aux-*: the constants are Kiln's `asm_bits`, in row order.
     #[test]
     fn asm_bits_are_kilns() {
-        assert_eq!(ASM_BITS, [asm_bits::VOLATILE, asm_bits::GOTO, asm_bits::INLINE, asm_bits::BASIC]);
+        assert_eq!(
+            ASM_BITS,
+            [asm_bits::VOLATILE, asm_bits::GOTO, asm_bits::INLINE, asm_bits::BASIC]
+        );
     }
 
     // GCCAsmStmt.aux-volatile, -goto, -inline, -basic: each bit is
@@ -681,7 +689,8 @@ mod tests {
             let src = |n: usize| {
                 format!("void f(int x, int (&a)[2]) {{ {}{} }}\n", open.repeat(n), close.repeat(n))
             };
-            let per_level = (stack_of(&src(DEEP)) - stack_of(&src(FLAT))) / ((DEEP - FLAT) * levels);
+            let per_level =
+                (stack_of(&src(DEEP)) - stack_of(&src(FLAT))) / ((DEEP - FLAT) * levels);
             eprintln!("{name}: {per_level} bytes per level");
             assert!(per_level > 0, "the probes saw the stack");
             worst = worst.max(per_level);
