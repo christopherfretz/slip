@@ -585,7 +585,8 @@ impl Walk<'_> {
         self.leave();
     }
 
-    fn write_arg(&mut self, s: &mut Stream, v: ArgView) {
+    /// `enum ArgView` (digest-kinds §4.6) of one argument.
+    pub(crate) fn write_arg(&mut self, s: &mut Stream, v: ArgView) {
         match v {
             ArgView::Null => {
                 s.tag(arg_view::NULL);

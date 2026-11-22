@@ -53,18 +53,24 @@
 //! | `Walk::decl_node(s, d, e)` (`decl.rs`) | the rows of `DeclNode` (§5.3) of declaration `d` of entity `e`, with `DeclFlags` and `DeclMisc` merged over the entity's declarations |
 //! | `Walk::decl_stream(s, d, e)` | a declaration's stream (§5.1): `decl_node`, then `decl_data::cold`, `attrs::decl_attrs`, `templ::decl_maps`, `other::module_rows` |
 //! | `Walk::content_hash(e)` | the unit digest of a content-keyed entity, which is its discriminator |
-//! | `templ::template_head(w, s, l)` | `record TemplateParamList` (§9.2), each parameter as its `DeclNode` rows |
+//! | `templ::template_head(w, s, l)` | the template head of a key (§9, §3.3): `record TemplateParamList`, each parameter as its `DeclNode` rows |
+//! | `templ::template_head_unit(w, s, l)` | `record TemplateParamList` as a unit writes it: each parameter's whole stream, defaults included |
 //! | `templ::template_parm_info(w, s, d)`, `templ::template_info(w, s, d)` | `record TemplateParmInfo`, `record TemplateInfo` (the pattern written whole) |
 //! | `local::ordinal(w, d)` | the ordinal of a local entity of the unit (digest §4.3), first met first |
 //! | `demand::deferrable(w, f)` | whether a function is of the deferrable class (§11.2); `None` where the demand area decides |
-//! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::profile(w, s, p)`, `expr::requires_clause` | pending (`Area::Expr`) |
+//! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::profile(w, s, p)`, `expr::profile_expr(w, s, e)`, `expr::requires_clause` | pending (`Area::Expr`) |
 //! | `stmt::child(w, s, st)` | pending (`Area::Stmt`) |
 //! | `value::value(w, s, v)`, `value::string(w, s, l)` | pending (`Area::Value`) |
 //! | `local::write_decl(w, s, d)` | `decl` (§2.4): pending (`Area::Local`) |
 //! | `decl_data::{typedef_data, enum_data, enumerator_data, record_data, field_data, friend_target, function_data, var_data, param_data, namespace_data, static_assert_data, let_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.4 to §5.7 each: pending (`Area::DeclData`) |
 //! | `attrs::decl_attrs(w, s, d)` | pending (`Area::Attrs`) |
 //! | `other::module_rows(w, s, d)` | pending (`Area::Other`) |
-//! | `templ::decl_maps(w, s, d)`, `templ::param_object(w, s, d)` | pending (`Area::Templ`) |
+//! | `templ::decl_maps(w, s, d)` | `TemplateTables.defaults` written; the other rows keyed by `DeclId` pending (`Area::Templ`) |
+//! | `templ::param_object(w, s, d)` | pending (`Area::Templ`) |
+//!
+//! A key is computed with the unit's state put aside (`Walk::in_key`):
+//! an area must not write a local ordinal from inside one (`write_ref`
+//! makes it `Unaccounted("key/local-ref")`).
 //!
 //! A `Ref` to a local entity bumps `UnitState::local_uses`, so that a type
 //! digest that holds one is memoised for the unit only (digest §4.2); an

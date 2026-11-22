@@ -27,7 +27,22 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
         .iter()
         .map(|u| {
             let name = match u.entity {
-                Some(e) => entity_name(w.ast, e, u.kind),
+                Some(e) => {
+                    let mut name = entity_name(w.ast, e, u.kind);
+                    // An entity Kiln prints without a name: its ordinal
+                    // (digest §3.3) when it has one.
+                    if name.is_empty() || name.ends_with("::") {
+                        match w.ordinal_of.get(&e) {
+                            Some(n) => {
+                                name.push_str("(unnamed ");
+                                name.push_str(&n.to_string());
+                                name.push(')');
+                            }
+                            None => name.push_str("(unnamed)"),
+                        }
+                    }
+                    name
+                }
                 None => "<order>".to_owned(),
             };
             (u.key, name)

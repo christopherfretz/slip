@@ -113,6 +113,9 @@ impl Stream {
     /// A record's flag word (`spec/digest-kinds.md` §2.1), as `uv`.
     pub(crate) fn flags(&mut self, word: FlagWord) -> &mut Self {
         self.enc.uv(word.bits);
+        if word.n > 64 {
+            self.indeterminate(FLAGS_OVERFLOW);
+        }
         self
     }
 
@@ -168,6 +171,10 @@ pub(crate) struct FlagWord {
     n: u32,
 }
 
+/// A flag word given more than 64 rows: no record of the tables has as
+/// many, so this is a shape the walk does not account for.
+const FLAGS_OVERFLOW: Cause = Cause::Unaccounted("flags/overflow");
+
 impl FlagWord {
     pub(crate) fn new() -> FlagWord {
         FlagWord::default()
@@ -176,11 +183,15 @@ impl FlagWord {
     /// The next `bit` row.
     #[must_use]
     pub(crate) fn bit(mut self, v: bool) -> FlagWord {
-        debug_assert!(self.n < 64, "a flag word holds at most 64 rows");
-        if v {
-            self.bits |= 1 << self.n;
+        // `n` saturates at 65: `flags` makes the stream indeterminate.
+        if self.n < 64 {
+            if v {
+                self.bits |= 1 << self.n;
+            }
+            self.n += 1;
+        } else {
+            self.n = 65;
         }
-        self.n += 1;
         self
     }
 

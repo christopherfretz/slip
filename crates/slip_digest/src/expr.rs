@@ -25,6 +25,13 @@ pub(crate) fn profile(_w: &mut Walk<'_>, s: &mut Stream, _p: ProfileId) {
     s.pending(Area::Expr);
 }
 
+/// `profile` given by its expression (a function's trailing
+/// requires-clause in its discriminator, digest-kinds §3.3): the canonical
+/// operand of that expression (§4.4).
+pub(crate) fn profile_expr(_w: &mut Walk<'_>, s: &mut Stream, _e: ExprId) {
+    s.pending(Area::Expr);
+}
+
 /// A requires-clause (a template head's, a function's trailing one), as
 /// the `child` its row names.
 pub(crate) fn requires_clause(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {

@@ -43,6 +43,8 @@ impl Walk<'_> {
             return *h;
         }
         if !self.content_in_progress.insert(e) {
+            // Not memoised above this point (`Walk::aborts`).
+            self.aborts += 1;
             return Hashed {
                 digest: slip_model::Digest([0; 32]),
                 cause: Some(CONTENT_CYCLE),
@@ -51,9 +53,13 @@ impl Walk<'_> {
         }
         let aborts = self.aborts;
         let read = crate::units::read_decl(self, e);
+        // A unit digest of its own: a fresh unit state, and not inside the
+        // key computation that may have asked for it.
         let saved = std::mem::take(&mut self.unit);
+        let in_key = std::mem::take(&mut self.in_key);
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);
+        self.in_key = in_key;
         self.unit = saved;
         let h = s.finish(UNIT_TAG);
         let h = self.hashed(h);
@@ -80,6 +86,9 @@ impl Walk<'_> {
             s.indeterminate(Cause::Unsupported("DeclKind"));
         }
         let redecls = self.redecls(e);
+        if redecls.len() > crate::units::REDECL_LIMIT {
+            s.indeterminate(Cause::Unaccounted("redecls/limit"));
+        }
         // flags: record DeclFlags.
         if redecls.iter().any(|&x| ast.decls.get(x).has(DeclFlags::INVALID)) {
             s.indeterminate(Cause::Error);
@@ -135,12 +144,15 @@ impl Walk<'_> {
     }
 
     /// `DeclNode` `ty-exception-spec` (§5.3, §11.2): `enum ExcSpec?`,
-    /// absent for a function of the deferrable class.
+    /// absent for a function of the deferrable class, whose specification
+    /// is the resolved unit `exception_spec`. Until resolved units are
+    /// written, the absence carries `Pending(Demand)`: what the unit leaves
+    /// out is not yet anywhere.
     fn own_exception_spec(&mut self, s: &mut Stream, d: DeclId) {
         let ast = self.ast;
         match crate::demand::deferrable(self, d) {
             Some(true) => {
-                s.opt(false);
+                s.opt(false).pending(Area::Demand);
             }
             Some(false) => {
                 let proto = ast.decls.get(d).ty().and_then(|q| ast.types.proto(q)).copied();

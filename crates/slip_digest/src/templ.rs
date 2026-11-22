@@ -3,21 +3,31 @@
 //! (WP-024).
 
 use slip_kiln::kiln::ast::templates::TemplateParmInfo;
+use slip_kiln::kiln::ast::types::ArgView;
 use slip_kiln::kiln::ast::{DeclId, TemplateParamListId};
 
 use crate::stream::{FlagWord, Stream};
-use crate::tables::ttp_kind;
+use crate::tables::{arg_view, ttp_kind};
 use crate::walk::{TOO_DEEP, Walk};
 use crate::{Area, Cause};
 
-/// `record TemplateParamList` (§9.2): `depth uv`, the parameters as
-/// `decl*` (each its `DeclNode` rows, which bring in its
-/// `TemplateParmInfo`), and the requires-clause `child?`.
-///
-/// A parameter's default argument is a row of `ColdDeclData`, written by
-/// the declaration's own stream, not here: a template head in a key does
-/// not change when a default is added.
+/// The template head of a discriminator (§9, §3.3): `record
+/// TemplateParamList` with each parameter as its `DeclNode` rows (which
+/// bring in its `TemplateParmInfo`) and nothing else, so that a key does
+/// not change when a default argument is added.
 pub(crate) fn template_head(w: &mut Walk<'_>, s: &mut Stream, l: TemplateParamListId) {
+    head(w, s, l, false);
+}
+
+/// `record TemplateParamList` (§9.2) as a unit writes it: the parameters
+/// as `decl*`, each its whole stream (§5.1), which closes with the rows
+/// of `TemplateTables` keyed by the parameter: its default argument
+/// (`decl_maps`).
+pub(crate) fn template_head_unit(w: &mut Walk<'_>, s: &mut Stream, l: TemplateParamListId) {
+    head(w, s, l, true);
+}
+
+fn head(w: &mut Walk<'_>, s: &mut Stream, l: TemplateParamListId, unit: bool) {
     if !w.enter() {
         s.uv(0).indeterminate(TOO_DEEP);
         return;
@@ -29,7 +39,11 @@ pub(crate) fn template_head(w: &mut Walk<'_>, s: &mut Stream, l: TemplateParamLi
     let params: Vec<DeclId> = ast.lists.iter::<DeclId>(params).collect();
     s.count(params.len());
     for p in params {
-        w.decl_node(s, p, p);
+        if unit {
+            w.decl_stream(s, p, p);
+        } else {
+            w.decl_node(s, p, p);
+        }
     }
     s.opt(requires.is_some());
     if let Some(r) = requires {
@@ -73,7 +87,7 @@ pub(crate) fn template_info(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         return;
     };
     let (params, pattern, constraint) = (i.params, i.pattern, i.constraint);
-    template_head(w, s, params);
+    template_head_unit(w, s, params);
     s.opt(pattern.is_some());
     if let Some(p) = pattern {
         let read = ast.definition(p).unwrap_or(p);
@@ -88,8 +102,34 @@ pub(crate) fn param_object(_w: &mut Walk<'_>, s: &mut Stream, _d: DeclId) {
 }
 
 /// The `in` rows of `TemplateTables` whose map is keyed by `DeclId`
-/// (§9.5), for `d`: its `TemplLink` record and the specialisation and
-/// partial-specialisation records.
-pub(crate) fn decl_maps(_w: &mut Walk<'_>, s: &mut Stream, _d: DeclId) {
+/// (§9.5), for `d`: `defaults` (written: the default template argument of
+/// a parameter, its own or the one `inherited_defaults` names, in
+/// canonical form), then the rest pending: `trailing_requires`, the
+/// `TemplLink` record and the specialisation and partial-specialisation
+/// records.
+pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let ast = w.ast;
+    let templates = &ast.templates;
+    let default = templates.defaults.get(d).copied().or_else(|| {
+        templates.inherited_defaults.get(d).and_then(|&o| templates.defaults.get(o).copied())
+    });
+    s.opt(default.is_some());
+    if let Some(a) = default {
+        match ast.types.canonical_arg(a).view() {
+            // A default written as an expression stays one in canonical
+            // form: it is the canonical operand of that expression.
+            ArgView::Expr { expr, profile: _ } => {
+                s.tag(arg_view::PROFILE);
+                crate::expr::profile_expr(w, s, expr);
+            }
+            v @ (ArgView::Null
+            | ArgView::Type(_)
+            | ArgView::Value { .. }
+            | ArgView::Template(_)
+            | ArgView::TemplateExpansion { .. }
+            | ArgView::Profile(_)
+            | ArgView::Pack(_)) => w.write_arg(s, v),
+        }
+    }
     s.pending(Area::Templ);
 }
