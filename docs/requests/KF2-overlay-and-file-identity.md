@@ -1,7 +1,10 @@
 # KF2 — an overlay the front end reads through, and file identity
 
-A request from Slip to Kiln. Status: **sent 2026-11-22**; waiting for
-Kiln's answers to §3.2 and §3.4 and its choice in §6.
+A request from Slip to Kiln. Status: **sent 2026-11-22 and accepted.**
+Kiln implements stage 1 itself as its WP-2390 (the tests of §4 are its
+acceptance); stage 2 is its WP-2391 (design first, when Slip needs it for
+M3); stage 3 its WP-2392 (deferred). Kiln's answers are under §3.2, §3.4
+and §6.
 Context: [05-kiln-interface.md](../design/05-kiln-interface.md) §3 (row KF2)
 and §5 (Slip prototypes KF2 on a Kiln branch, Kiln reviews and lands it);
 [spec/edits.md](../../spec/edits.md) §7.1 and
@@ -133,6 +136,12 @@ To decide: what a platform without device and inode does (the second
 `file_key`, `manager.rs:565`, falls back to the path); Slip only needs
 Unix.
 
+**Kiln's answer (2026-11-22): accepted.** An entry is keyed by the
+identity (device and inode) of the file the path names when the entry is
+added. `replace` fails if the path does not name an existing regular
+file. Where there is no inode the key is the one `file_key` uses (the
+path), documented as best effort.
+
 ### 3.3 What Slip does not ask
 
 - No change to Kiln's content hash, and no hash in the interface.
@@ -158,6 +167,12 @@ lazy route (`add_lazy_file`, `manager.rs:825`, which answers
 `LazyFile::Changed` at `:843`) treats an overlaid identity as `Changed`.
 The proper rule (validate against the overlay's bytes) can follow when a
 corpus needs it.
+
+**Kiln's answer (2026-11-22): accepted for stage 1.** A run whose
+overlay names an input of its PCH or of a module file the command uses
+is refused with a diagnostic, as a rejected command. A lazy buffer of an
+overlaid identity answers `Changed`, and `load_regular_file_expecting`
+loads the overlay's bytes.
 
 ## 4. Acceptance tests
 
@@ -198,7 +213,13 @@ equal AST dump, and the same list of files read up to the root.
 
 ## 6. The prototype
 
-Slip prototypes **stage 1 only**, on a Kiln branch `slip/kf2`, and Kiln
+**Superseded (Kiln, 2026-11-22): there is no prototype.** Kiln
+implements stage 1 directly, as it did KF3 stage 1, and asked that no
+branch `slip/kf2` be cut (a branch from outside goes through its
+screening). What follows is kept as the statement of scope Kiln works
+to; Slip's side is `docs/wp/WP-066.md`.
+
+As proposed: Slip prototypes **stage 1 only**, on a Kiln branch `slip/kf2`, and Kiln
 reviews and lands it as a work package.
 
 - **Base.** Kiln's `main` (KF1 is there since Kiln WP-2120), at the
