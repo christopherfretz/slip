@@ -156,12 +156,13 @@ For a transformation declared semantics-preserving modulo a relocation map `M`:
 
 ## Open questions for the operator
 
-1. **Two universes (D2).** This is the largest departure from a literal reading
-   of the brief: reflection on the subject is "foreign" (`slip::info` handles
-   obtained by lookup) rather than `^^entity` inside the subject TU. I believe
-   it is forced by C++17-era subjects and by the correctness model, and that
-   it is also the faster design. An "in-TU" convenience mode for C++26
-   subjects can be layered on later. Objection now is cheap; later it is not.
+1. **Two universes (D2).** *Decided 2026-11-21: accepted by the operator.*
+   The deciding argument is that a transform compiled inside the subject TU
+   changes the shape of the AST being refactored, more than language mode:
+   the motivating codebase is old but maintained and builds as C++23. The
+   in-TU bridge for C++26 subjects (`slip::subject(^^ns::f)` converting a
+   native reflection into a Slip handle) is wanted, at lower priority; the
+   API must keep room for it ([01](01-transform-api.md) §3).
 2. **The transform's standard library.** Transforms should be able to use
    `std::vector`, `<algorithm>`, `<ranges>`. Proposal: Slip pins and ships the
    library headers the transform universe uses (libc++), so runs are hermetic
