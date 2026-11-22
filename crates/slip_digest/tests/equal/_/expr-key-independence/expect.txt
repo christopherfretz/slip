@@ -1,2 +1,4 @@
 # pending
-# needs: expr
+# needs: stmt
+# the expression kinds are in; the sides reorder two variables, which the order unit
+# records (digest §9): rewrite u and v as functions that name f<1> when statements land
