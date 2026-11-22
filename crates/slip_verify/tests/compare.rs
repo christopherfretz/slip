@@ -559,6 +559,18 @@ fn s6_file_with_a_moved_unit_beside_a_real_difference() {
         decl("/c.h", &[u(4, 4)]),
     ];
     assert_eq!(plain(&pre, &post), only(vec![f(Changed, 1, "/a.h", Some(1), Some(2))]));
+    // A group whose units differ only in a flag differs too (§6: "units",
+    // flags included): key 2 became indeterminate in /a.h, so /a.h is
+    // reported for key 1 although key 1's copy there did not change.
+    let pre2 = [decl("/a.h", &[u(1, 1), u(2, 2)]), decl("/b.h", &[u(1, 1)])];
+    let post2 = [decl("/a.h", &[u(1, 1), ui(2, 2)]), decl("/b.h", &[u(1, 3)])];
+    assert_eq!(
+        plain(&pre2, &post2),
+        only(vec![
+            f(Changed, 1, "/a.h", Some(1), Some(3)),
+            f(Indeterminate, 2, "/a.h", None, Some(2)),
+        ])
+    );
     // Without the move, /a.h does not differ and /b.h is reported.
     let post = [decl("/a.h", &[u(1, 1)]), decl("/b.h", &[u(1, 2), u(2, 2)]), pre[2].clone()];
     assert_eq!(plain(&pre, &post), only(vec![f(Changed, 1, "/b.h", Some(1), Some(2))]));
@@ -922,6 +934,15 @@ fn s4_1_at_sums_equal_tu_with_an_indeterminate_unit() {
     assert_eq!(at_sums(&p, &q), AtSums::Differing(vec![(Derived, b"/c.h".to_vec())]));
     let q = digests(vec![decl("/a.h", &[ui(1, 1)]), decl("/b.h", &[u(2, 2)])]);
     assert_eq!(at_sums(&p, &q), AtSums::Differing(vec![(Declared, b"/a.h".to_vec())]));
+    // at_sums states no precondition: `Equal` needs every `indeterminate` of
+    // *both* images to be 0, read from the groups, even when the `tu`
+    // digests given are equal (here forged equal).
+    let forged = Digests { tu: p.tu, ..q.clone() };
+    assert_eq!(at_sums(&p, &forged), AtSums::Differing(vec![(Declared, b"/a.h".to_vec())]));
+    assert_eq!(
+        at_sums(&Digests { tu: q.tu, ..p.clone() }, &q),
+        AtSums::Differing(vec![(Declared, b"/a.h".to_vec())])
+    );
 }
 
 // Landed: at_sums does not rely on sorted groups, and reports an id given
