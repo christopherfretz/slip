@@ -1,8 +1,8 @@
-// std: c++26
 #include "side.h"
-// §5.7 ColdDeclData `contracts`: a function's contract assertions.
+// std: c++26
+// §5.7 ColdDeclData `contracts`: the predicate differs.
 #ifdef B
-void f(int x) pre(x > 0);
+void f(int x) pre(x > 1);
 #else
-void f(int x);
+void f(int x) pre(x > 0);
 #endif
