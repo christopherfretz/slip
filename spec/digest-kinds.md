@@ -3701,6 +3701,259 @@ kind; an expression with no entry writes the encoding's empty form (§2.1).
 | `cold` | bookkeeping | out | - | the cold maps: `ColdExprData` |
 | `round_scope` | bookkeeping | out | - | the builder's state while parsing; not stored (`snap(skip)`) |
 
+## 8. Constant values
+
+`value` writes a constant in place, by structure (digest §7): the tag of
+its `ValueKind`, then the `in` rows of the variant of `Scalar` with the
+same name, or the rows of `ByteImage` for `Aggregate`. The walk reads a
+constant only through `ConstStore::get`, which returns the decoded
+`ConstValue`; the stored words (`Node`, `Pools`) have rows that are `out`
+and name the view, as for types (§4.1). Nothing written depends on the
+`ConstValueId` or on the order in which Kiln interned the values.
+
+A constant can hold a pointer to a constant (`PtrBase::Const`, `Reloc`);
+that one is written in place by the same rule. Kiln's store is append-only
+and a value can only name values interned before it, so this ends.
+
+### `kiln_ast::consts::value::ValueKind`
+
+`kind=enum; pin=extra; base=1280`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Int` | value | in | tag 1281 |  |
+| `Bool` | value | in | tag 1282 |  |
+| `Float` | value | in | tag 1283 |  |
+| `Null` | value | in | tag 1284 |  |
+| `Pointer` | value | in | tag 1285 |  |
+| `MemberPtr` | value | in | tag 1286 |  |
+| `Reflection` | value | unsupported | - | reflection (§12) |
+| `Aggregate` | value | in | tag 1288 |  |
+
+### `kiln_ast::consts::value::ConstValue`
+
+`kind=view; pin=none`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Scalar` | bookkeeping | out | - | not a tag: `ValueKind` gives the tag |
+| `Scalar.0` | value | in | record Scalar | the rows of the scalar's variant |
+| `Aggregate` | bookkeeping | out | - | not a tag: `ValueKind` gives the tag |
+| `Aggregate.0` | value | in | record ByteImage |  |
+
+### `kiln_ast::consts::value::Scalar`
+
+`kind=view; pin=none`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Int` | bookkeeping | out | - | not a tag: the `ValueKind` of the same name gives the tag |
+| `Int.ty` | type | in | type |  |
+| `Int.signed` | flag | in | bool |  |
+| `Int.bits` | value | in | bytes | the normalised words, each little-endian: 8 bytes for every 64 bits of the type's width |
+| `Bool` | bookkeeping | out | - | not a tag: the `ValueKind` of the same name gives the tag |
+| `Bool.ty` | type | in | type |  |
+| `Bool.value` | value | in | bool |  |
+| `Float` | bookkeeping | out | - | not a tag: the `ValueKind` of the same name gives the tag |
+| `Float.ty` | type | in | type |  |
+| `Float.kind` | flag | in | enum FloatKind |  |
+| `Float.bits` | value | in | bytes | the exact encoding, 16 bytes little-endian |
+| `Null` | bookkeeping | out | - | not a tag: the `ValueKind` of the same name gives the tag |
+| `Null.ty` | type | in | type |  |
+| `Null.kind` | flag | in | enum NullKind |  |
+| `Pointer` | bookkeeping | out | - | not a tag: the `ValueKind` of the same name gives the tag |
+| `Pointer.ty` | type | in | type |  |
+| `Pointer.base` | entity | in | enum PtrBase |  |
+| `Pointer.offset` | value | in | uv |  |
+| `Pointer.designated` | type | in | type? |  |
+| `Pointer.past` | flag | in | bool |  |
+| `MemberPtr` | bookkeeping | out | - | not a tag: the `ValueKind` of the same name gives the tag |
+| `MemberPtr.ty` | type | in | type |  |
+| `MemberPtr.member` | entity | in | ref |  |
+| `MemberPtr.kind` | flag | in | enum MemberKind |  |
+| `MemberPtr.derived` | flag | in | bool |  |
+| `MemberPtr.path` | entity | in | ref* | the classes traversed, outermost first |
+| `Reflection` | bookkeeping | out | - | not a tag: the `ValueKind` of the same name gives the tag |
+| `Reflection.ty` | type | unsupported | - | reflection (§12) |
+| `Reflection.id` | value | unsupported | - | reflection (§12) |
+
+### `kiln_ast::consts::value::FloatKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Half` | flag | in | tag 1 |  |
+| `BFloat16` | flag | in | tag 2 |  |
+| `Single` | flag | in | tag 3 |  |
+| `Double` | flag | in | tag 4 |  |
+| `X87Extended` | flag | in | tag 5 |  |
+| `Quad` | flag | in | tag 6 |  |
+
+### `kiln_ast::consts::value::NullKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Pointer` | flag | in | tag 1 |  |
+| `MemberData` | flag | in | tag 2 |  |
+| `MemberFunction` | flag | in | tag 3 |  |
+
+### `kiln_ast::consts::value::MemberKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Data` | flag | in | tag 1 |  |
+| `Function` | flag | in | tag 2 |  |
+
+### `kiln_ast::consts::value::PtrBase`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Decl` | entity | in | tag 1 |  |
+| `Decl.0` | entity | in | ref |  |
+| `Function` | entity | in | tag 2 |  |
+| `Function.0` | entity | in | ref |  |
+| `Temporary` | entity | in | tag 3 |  |
+| `Temporary.0` | entity | in | ref | the `Ref` of the temporary's extending declaration, then `uv` its `LetData` `mangling_index`; the temporary's value is written where it is materialised (rule below) |
+| `StringLit` | entity | in | tag 4 |  |
+| `StringLit.lit` | value | in | string |  |
+| `StringLit.origin` | entity | out | - | which literal expression made the object: whether two equal literals are one object is unspecified and is not digested (digest §7) |
+| `Const` | entity | in | tag 5 |  |
+| `Const.0` | value | in | value |  |
+| `TypeInfo` | entity | in | tag 6 |  |
+| `TypeInfo.0` | type | in | type |  |
+| `Label` | entity | in | tag 7 |  |
+| `Label.label` | entity | in | ref |  |
+| `Label.origin` | entity | out | - | which `AddrLabelExpr` produced the address; the label is the fact |
+| `Absolute` | entity | in | tag 8 |  |
+| `LabelDiff` | entity | in | tag 9 |  |
+| `LabelDiff.plus` | entity | in | ref | the label the `AddrLabelExpr` names |
+| `LabelDiff.minus` | entity | in | ref | the label the `AddrLabelExpr` names |
+| `LabelDiff.size` | value | in | uv |  |
+
+A pointer to a lifetime-extended temporary does not write the temporary's
+value, although digest §7 says "by the digest of its value": a temporary
+can hold a pointer to itself, and its value is already written, with its
+`LetData`, at the `MaterializeTemporaryExpr` in the unit of the declaration
+that extends it. The pair written here names the temporary within that
+declaration. ("Open questions" proposes the matching change to
+`digest.md`.)
+
+### `kiln_ast::consts::value::ByteImage`
+
+`kind=view; pin=none`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `ty` | type | in | type |  |
+| `bytes` | value | in | bytes | the object representation in target layout; relocated and padding bytes are zero in it |
+| `relocs` | value | in | record Reloc* | sorted by offset, as stored |
+| `padding` | value | in | record ByteRange* | bytes that hold no value; an uninitialised subobject is among them, so the list is not a function of the type alone |
+| `unions` | entity | in | record UnionMember* |  |
+
+### `kiln_ast::consts::value::ByteRange`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `start` | value | in | uv |  |
+| `len` | value | in | uv |  |
+
+### `kiln_ast::consts::value::Reloc`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `at` | value | in | uv |  |
+| `value` | value | in | value | the pointer the bytes hold |
+
+### `kiln_ast::consts::value::UnionMember`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `at` | value | in | uv |  |
+| `field` | entity | in | ref | the active member |
+
+### `kiln_ast::consts::value::ShadowKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Value` | bookkeeping | out | - | computed from `relocs` and `padding` by `ConstStore::shadow`; never stored |
+| `Padding` | bookkeeping | out | - | computed from `relocs` and `padding` by `ConstStore::shadow`; never stored |
+| `Pointer` | bookkeeping | out | - | computed from `relocs` and `padding` by `ConstStore::shadow`; never stored |
+| `Pointer.0` | bookkeeping | out | - |  |
+
+### `kiln_ast::consts::value::ShadowRun`
+
+`kind=struct; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `range` | bookkeeping | out | - | as `ShadowKind` |
+| `kind` | bookkeeping | out | - | as `ShadowKind` |
+
+### 8.1 The store
+
+### `kiln_ast::consts::Node`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `ty` | bookkeeping | out | - | read through `ConstValue` |
+| `tag` | bookkeeping | out | - | kind, flags and a 24-bit operand, packed; read through `ConstValue` |
+| `a` | bookkeeping | out | - | per kind; read through `ConstValue` |
+| `b` | bookkeeping | out | - | per kind; read through `ConstValue` |
+
+### `kiln_ast::consts::AggRec`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `bytes` | bookkeeping | out | - | where the aggregate's slices start in the pools |
+| `relocs` | bookkeeping | out | - |  |
+| `padding` | bookkeeping | out | - |  |
+| `unions` | bookkeeping | out | - |  |
+| `hash` | bookkeeping | out | - | the intern hash |
+
+### `kiln_ast::consts::Pools`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `pointer_bytes` | bookkeeping | out | - | the target's pointer size, also `TargetTypes` (§4.7) |
+| `nodes` | bookkeeping | out | - | arena: reached through `ConstValueId` |
+| `words` | bookkeeping | out | - | arena |
+| `paths` | bookkeeping | out | - | arena |
+| `aggs` | bookkeeping | out | - | arena |
+| `bytes` | bookkeeping | out | - | arena |
+| `relocs` | bookkeeping | out | - | arena |
+| `padding` | bookkeeping | out | - | arena |
+| `unions` | bookkeeping | out | - | arena |
+
+### `kiln_ast::consts::ConstStore`
+
+`kind=root; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `pools` | bookkeeping | out | - |  |
+| `table` | bookkeeping | out | - | the intern table; not stored (`snap(skip)`) |
+
 ## Tests
 
 To be completed with the last group of tables.
