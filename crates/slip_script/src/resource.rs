@@ -25,6 +25,8 @@ pub const META_H: &[u8] = include_bytes!("../../../resource/include/slip/meta.h"
 pub const INTRINSICS_H: &[u8] = include_bytes!("../../../resource/include/slip/__intrinsics.h");
 
 /// The API level (`spec/api.md` §8.2): the value of `__slip_lib_meta`.
+/// Spelled as the macro is, year and month.
+#[allow(clippy::unreadable_literal)]
 pub const API_LEVEL: u64 = 202611;
 
 /// The variable that names the resource directory (§2.1 rule 1).

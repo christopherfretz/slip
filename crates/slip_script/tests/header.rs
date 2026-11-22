@@ -294,9 +294,10 @@ fn s2_1_6_examples_under_another_compiler() {
     let compilers = suitable_compilers(&s.0);
     if compilers.is_empty() {
         let reason = format!("no C++26 compiler among {COMPILERS:?} on PATH");
-        if std::env::var_os("SLIP_REQUIRE_ALL").is_some_and(|v| v == "1") {
-            panic!("SLIP_REQUIRE_ALL=1 and {reason}");
-        }
+        assert!(
+            std::env::var_os("SLIP_REQUIRE_ALL").is_none_or(|v| v != "1"),
+            "SLIP_REQUIRE_ALL=1 and {reason}"
+        );
         say(&format!("SKIP header.rs s2_1_6_examples_under_another_compiler: {reason}"));
         return;
     }
