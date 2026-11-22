@@ -3,7 +3,9 @@
 Status: draft (M0). Implemented by `slip_exec` (machinery; does not link
 Kiln) and `slip_cli` (wiring). M0 has two phases: **plan** (`spec/cdb.md`)
 and **parse**, which is the map phase with a task that only runs the front
-end. Reduce, apply and verify are added to this spec by their milestones.
+end. M1 makes the map task write digests (`spec/model.md` §8.5) and adds
+the **verify** phase with the commands `verify`, `declare` and `units`
+(§8.4, §8.7 to §8.9). Reduce and apply are added by their milestones.
 
 ## 1. Principles
 
@@ -29,6 +31,7 @@ end. Reduce, apply and verify are added to this spec by their milestones.
 <store>/
   VERSION                                   the text "1\n"
   plans/<plan id>.plan                      PLAN containers, named by content id
+  declared/<declared id>.decl               DECL containers (spec/verify.md §2), named by content id
   shards/<plan id>/<phase>.<round>/<observer id>.shard
   runs/<plan id>/<phase>.<round>.<started_unix_ns>.run
   logs/<plan id>/<phase>.<round>/<observer id>.<attempt>.log     worker stderr, kept only for failed attempts
@@ -79,8 +82,8 @@ Ids are 64 hexadecimal digits (`spec/model.md` §3); `<phase>` is `map` or
 - **Opening.** `VERSION` must be exactly the bytes `1\n`; anything else
   (including `1` without the newline) is `Version` with the text, lossily
   decoded. A missing `VERSION` in an absent or empty directory initialises
-  it, in both access modes: `tmp/`, `plans/`, `shards/`, `runs/`, `logs/`
-  are created, then `VERSION` is published (a `tmp/` file and a rename)
+  it, in both access modes: `tmp/`, `plans/`, `declared/`, `shards/`,
+  `runs/`, `logs/` are created, then `VERSION` is published (a `tmp/` file and a rename)
   last, so a directory with `VERSION` is complete. A non-empty directory
   without `VERSION`, or a path that is not a directory, is `Unrecognised`.
 - **`tmp/` names.** A file being written is `tmp/<pid>.<n>.tmp`, `n` a
@@ -88,7 +91,10 @@ Ids are 64 hexadecimal digits (`spec/model.md` §3); `<phase>` is `map` or
   the store makes starts with `<pid>.`, `<pid>` in canonical decimal, which
   is what stale cleaning and `remove_entries_of` read.
 - **Publishing validates.** `publish_plan` requires a valid `PLAN` file and
-  names it by its content id; `publish_shard` a valid `SHRD` whose header
+  names it by its content id; `publish_declared` a valid `DECL` file,
+  named by its content id (the directory `declared/` is made when the
+  store is initialised and, for a store initialised before it existed, by
+  the first `publish_declared`); `publish_shard` a valid `SHRD` whose header
   names the observer, phase and round given; `publish_run` a valid `RUNR`
   whose `plan`, `phase`, `round` and `started_unix_ns` are the ones given.
   Anything else is `Invalid` and nothing is written. The `read_*`
@@ -153,6 +159,9 @@ impl Store {
     pub fn publish_plan(&self, bytes: &[u8]) -> Result<Digest, StoreError>;
     pub fn read_plan(&self, id: &Digest) -> Result<Option<Vec<u8>>, StoreError>;
     pub fn find_plan(&self, hex_prefix: &str) -> Result<Vec<Digest>, StoreError>;
+    pub fn declared_path(&self, id: &Digest) -> PathBuf;
+    pub fn publish_declared(&self, bytes: &[u8]) -> Result<Digest, StoreError>;
+    pub fn read_declared(&self, id: &Digest) -> Result<Option<Vec<u8>>, StoreError>;
     pub fn publish_shard(&self, plan: &Digest, phase: Phase, round: u64, observer: &Digest, bytes: &[u8]) -> Result<Digest, StoreError>;
     pub fn read_shard(&self, plan: &Digest, phase: Phase, round: u64, observer: &Digest) -> Result<Option<Vec<u8>>, StoreError>;
     pub fn publish_run(&self, plan: &Digest, phase: Phase, round: u64, started_unix_ns: u64, bytes: &[u8]) -> Result<PathBuf, StoreError>;
@@ -824,7 +833,7 @@ pub fn finish(code: ExitCode) -> ExitCode;
 pub fn exit_interrupted() -> !;
 ```
 
-## 8. Commands (M0)
+## 8. Commands
 
 ```
 slip plan  --db [<name>=]<compile_commands.json>…  [--store <dir>] [-j <n>]
@@ -833,10 +842,23 @@ slip parse (--plan <id or file> | --db [<name>=]<compile_commands.json>…)
            [--memory <size>] [--observer-memory <size>] [--observer-timeout <seconds>]
            [--estimate-base <size>] [--estimate-per-byte <n>]
            [--worker-jobs <n>] [--worker-stack <size>]
+slip verify --plan <id or file> [--round <n>] [--declared <file>]
+           [--root <dir>]… [--post <dir>]… [--findings <n>] [--locate <n>] [--report <file>]
+           [--store <dir>] [-j <n>] [--only <substring>]… [--limit <n>]
+           [--memory <size>] [--observer-memory <size>] [--observer-timeout <seconds>]
+           [--estimate-base <size>] [--estimate-per-byte <n>]
+           [--worker-jobs <n>] [--worker-stack <size>]
+slip declare --plan <id or file> --from <file> --out <file>
+           [--root <dir>]… [--post <dir>]… [--store <dir>] [--only <substring>]… [--limit <n>]
+slip units --plan <id or file> [--post-image] [--root <dir>]… [--post <dir>]…
+           [--store <dir>] [--only <substring>]… [--limit <n>] [--match <substring>]…
 slip dump  <file>
 slip --version
 slip --help
 ```
+
+`plan`, `parse` and `dump` are M0's; `verify`, `declare` and `units` are
+M1's (§8.7 to §8.9).
 
 `slip --help` (or `-h`) prints the usage text on standard output and
 exits with status 0. `slip --version` prints `slip <version> (kiln
@@ -850,7 +872,7 @@ is a decimal number with an optional suffix `K`, `M`, `G`, `T` (powers of
 UTF-8.
 
 - **Options** are those above, each command accepting only its own;
-  `__worker` accepts `--worker-jobs` and `--worker-stack`; `dump` accepts
+  `__worker` accepts the options of §8.4; `dump` accepts
   none (`dump -- <file>` reads a file whose name starts with `-`). An
   argument that starts with `-` (other than `-` and `--`) in option
   position is an option; an option's value is taken whatever it starts
@@ -862,7 +884,11 @@ UTF-8.
   Lower-case suffixes are malformed.
 - **Ranges.** `-j`, `--worker-jobs`, `--worker-stack` and
   `--observer-memory` must be at least 1; `--limit`, `--memory`,
-  `--observer-timeout`, `--estimate-base` and `--estimate-per-byte` may be 0.
+  `--observer-timeout`, `--estimate-base`, `--estimate-per-byte`,
+  `--round`, `--findings` and `--locate` may be 0.
+- **Images.** The k-th `--root` and the k-th `--post` are one root map
+  (`spec/verify.md` §5.1); a different number of the two is a usage
+  error. None of either is the identity image.
 - **Usage errors** are `slip: <message>` and then the usage text, on
   standard error. No command, and `--help`, `-h` or `--version` with an
   argument, are usage errors.
@@ -898,7 +924,8 @@ before the plan is published.
 
 ### 8.2 `parse`
 
-Runs the map phase with the parse task on the observers of a plan.
+Runs the map phase with the map task (`spec/model.md` §8.5) on the
+observers of a plan: each `ok` shard carries the observer's `digests`.
 
 - `--plan <x>`: if `x` is 4 to 64 hexadecimal digits (either case; it is
   lower-cased) it is the prefix of a plan id in the store, which must
@@ -960,19 +987,40 @@ standard output.
 
 ### 8.4 The worker
 
-`slip __worker [--worker-jobs <n>] [--worker-stack <size>]` is `serve`
-(§5.2) over standard input and output with the parse task: it runs the
-front end on the job's observer (`slip_kiln::parse_observer`). It is not
-listed in the usage text. Nothing but protocol messages may be written to its standard output.
+```
+slip __worker [--worker-jobs <n>] [--worker-stack <size>]
+              [--declared <declared id>] [--root <dir>]… [--post <dir>]…
+              [--findings <n>] [--locate <n>]
+```
+
+is `serve` (§5.2) over standard input and output. It is not listed in the
+usage text. Nothing but protocol messages may be written to its standard
+output.
 
 - `serve` runs with `tool` = the `--version` line, `stack_bytes` =
   `--worker-stack` and `max_jobs` = `--worker-jobs`, over unlocked
   standard input and output. A `serve` error is `slip __worker: <error>` on
   standard error and status 1.
-- **The parse task** opens the job's store (`Job::store_path`, absolute)
-  shared on its first job and keeps it for its lifetime; a job naming
-  another store replaces it. The parse writes no file (`spec/model.md`
-  §8.4), so the task asks the store for no scratch directory.
+- **The task** is chosen by the job's phase: `map` is the map task
+  (`spec/model.md` §8.5), `verify` the verify task (`spec/verify.md` §5).
+  Either opens the job's store (`Job::store_path`, absolute) shared on its
+  first job and keeps it for its lifetime; a job naming another store
+  replaces it. Neither writes a file other than through the store, so
+  neither asks it for a scratch directory.
+- **A round's parameters** reach the verify task on the worker's command
+  line, which the coordinator builds (§8.7): the protocol and `Job` do not
+  change. `--declared` is 64 hexadecimal digits; `--root` and `--post`
+  pair as in §8 and are taken as given (the coordinator made them real
+  paths and checked the image); `--findings` (default 64) is `limit` and
+  `--locate` (default 16) is `locate` of `spec/verify.md` §5. The map
+  task ignores them.
+- **The verify task**, per job: reads `declared/<id>.decl` from the job's
+  store and checks that it is a valid `DECL` whose content id is the id
+  given; then does `spec/verify.md` §5.2. A verify job in a worker that
+  was given no `--declared`, a container that is absent or invalid or has
+  another id, and an image that breaks `spec/verify.md` §5.1 are each
+  `Err` (the worker answers `Failed`), naming which. The `Declared` and
+  its `RuleTable` are kept across the jobs of one worker.
 - The front end runs under Kiln's stack guard (`spec/model.md` §8.4):
   nesting deeper than the stack ends in Kiln's fatal diagnostic, a
   `diagnosed` shard, instead of aborting the worker.
@@ -983,10 +1031,11 @@ listed in the usage text. Nothing but protocol messages may be written to its st
 
 | Status | Meaning |
 |---|---|
-| 0 | The command did what was asked and has nothing to report. For `parse`: every selected observer's shard has status `ok`. |
-| 1 | Completed with findings. For `parse`: at least one shard is not `ok`. For `plan`: at least one entry was excluded for a reason other than `not_a_compile`. For `parse --db`: either. |
+| 0 | The command did what was asked and has nothing to report. For `parse`: every selected observer's shard has status `ok`. For `verify`: the run is verified. |
+| 1 | Completed with findings. For `parse`: at least one shard is not `ok`. For `plan`: at least one entry was excluded for a reason other than `not_a_compile`. For `parse --db`: either. For `verify`: the run is not verified. For `declare`: a line of the text is in error. |
 | 2 | Usage error (unknown command or option, missing or malformed argument, duplicate or missing configuration names). One line on standard error, then the usage text. |
-| 3 | Input error: a database, plan, store or container that cannot be read or is invalid, or a busy store. One line on standard error: `slip: <what>: <why>`. |
+| 3 | Input error: a database, plan, store or container that cannot be read or is invalid, an image that is refused, or a busy store. One line on standard error: `slip: <what>: <why>`. |
+| 4 | For `verify`: the run is incomplete (`spec/verify.md` §7): nothing was found to differ, and not everything could be checked. |
 | 70 | Internal error (a bug): a panic in the coordinator. One line on standard error, `slip: internal error: <message> (<file>:<line>)`, after every live child has been killed and every pool token returned. |
 | killed by signal | Interrupted (§7). |
 
@@ -1046,6 +1095,186 @@ pub fn dispatch(invocation: Invocation, out: &mut dyn Write, err: &mut dyn Write
 pub struct ParseTask;  impl ParseTask { pub fn new() -> ParseTask; }  impl Task for ParseTask;
 pub fn main(args: &WorkerArgs) -> ExitCode;
 ```
+
+The commands of M1 add (§8.7 to §8.9):
+
+```rust
+// lib.rs
+pub mod declare; pub mod image; pub mod locate; pub mod units; pub mod verify_cmd; pub mod verify_job;
+pub mod status { pub const INCOMPLETE: u8 = 4; }
+
+// args.rs
+pub const DEFAULT_FINDINGS: u64 /* 64 */; pub const DEFAULT_LOCATE: u64 /* 16 */;
+pub enum Invocation { /* … */ Verify(VerifyArgs), Declare(DeclareArgs), Units(UnitsArgs) }
+pub struct ImageArgs { pub roots: Vec<PathBuf>, pub posts: Vec<PathBuf> }       // equal lengths
+pub struct RunArgs { /* the options `parse` and `verify` share: */
+                     pub store: PathBuf, pub jobs: Option<usize>, pub only: Vec<Vec<u8>>, pub limit: Option<u64>,
+                     pub memory: Option<u64>, pub observer_memory: Option<u64>, pub observer_timeout: Option<u64>,
+                     pub estimate_base: Option<u64>, pub estimate_per_byte: Option<u64>,
+                     pub worker_jobs: u64, pub worker_stack: u64 }
+pub struct VerifyArgs { pub plan: OsString, pub round: u64, pub declared: Option<PathBuf>, pub image: ImageArgs,
+                        pub findings: u64, pub locate: u64, pub report: Option<PathBuf>, pub run: RunArgs }
+pub struct DeclareArgs { pub plan: OsString, pub from: PathBuf, pub out: PathBuf, pub image: ImageArgs,
+                         pub store: PathBuf, pub only: Vec<Vec<u8>>, pub limit: Option<u64> }
+pub struct UnitsArgs { pub plan: OsString, pub post_image: bool, pub image: ImageArgs, pub store: PathBuf,
+                       pub only: Vec<Vec<u8>>, pub limit: Option<u64>, pub matches: Vec<Vec<u8>> }
+pub struct WorkerArgs { pub worker_jobs: u64, pub worker_stack: u64, pub declared: Option<Digest>,
+                        pub image: ImageArgs, pub findings: u64, pub locate: u64 }
+
+// image.rs — spec/verify.md §5.1
+pub struct RootMap { pub subject: Vec<u8>, pub post: Vec<u8> }
+pub struct Image { /* root maps, sorted */ }
+pub enum ImageError { NotAbsolute(Vec<u8>), IsRoot, Nested { inner: Vec<u8>, outer: Vec<u8> }, Duplicate(Vec<u8>),
+                      NotUtf8(Vec<u8>), EqualsInPost(Vec<u8>) }
+impl Image {
+    pub fn identity() -> Image;
+    pub fn new(maps: Vec<RootMap>) -> Result<Image, ImageError>;     // the checks of §5.1 that need no file system
+    pub fn from_args(args: &ImageArgs) -> Result<Image, String>;     // each directory made a real path, then `new`
+    pub fn maps(&self) -> &[RootMap];
+    pub fn is_identity(&self) -> bool;
+    pub fn command(&self, command: &Command) -> Command;             // the post command
+    pub fn to_subject(&self, real: &[u8]) -> Vec<u8>;                // the subject path of a real path
+    pub fn under_subject(&self, real: &[u8]) -> bool;                // guard G1
+    /// One parse of an observer's image with the walk's input: `Pre` is the observer's command and
+    /// real paths, `Post` the post command and subject paths. `f` runs on the front end's thread when
+    /// the unit has no error (`slip_digest::map::with_input`, whose `Err` is this function's). The
+    /// shard is the parse task's, with the plan's observer id on either side.
+    pub fn parse<R: Send>(&self, observer: &Observer, side: Side, phase: Phase, round: u64,
+                          f: impl FnOnce(&slip_digest::Input<'_>) -> R + Send) -> Result<(Shard, Option<R>), String>;
+}
+pub enum Side { Pre, Post }
+
+// worker.rs
+pub struct MapTask;     impl Task for MapTask;                       // spec/model.md §8.5
+pub struct PhaseTask;   impl Task for PhaseTask;                     // §8.4: by `job.phase`
+// verify_job.rs
+pub struct Params { pub declared: Declared, pub image: Image, pub limit: usize, pub locate: usize }
+pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String>;   // spec/verify.md §5.2
+// locate.rs — spec/verify.md §6.1 "Interface"
+// declare.rs — spec/verify.md §2.3 "Interface", and the command:
+pub fn main(args: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode;   // §8.8
+// units.rs
+pub fn main(args: &UnitsArgs, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode;     // §8.9
+// verify_cmd.rs
+pub fn main(args: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode;    // §8.7
+```
+
+`ParseTask` is replaced by `MapTask`; the worker serves `PhaseTask`.
+`ParseArgs` becomes `{ source: PlanSource, run: RunArgs }`.
+
+### 8.7 `verify`
+
+Runs the verify phase (`spec/verify.md` §5) for one round over the
+observers of a plan, and prints the run's report (`spec/verify.md` §7).
+
+- `--plan` as for `parse` (§8.2). There is no `--db`: the plan is the one
+  the map phase ran over.
+- `--round <n>` (default 0) names the round. The pre shards are always
+  those of phase `map`, round 0. A round that was run before is run again
+  and its shards replaced.
+- `--declared <file>` is a `DECL` container (`slip declare` writes one);
+  without it the declared changes are `Declared::none()`.
+- `--root`, `--post`: the image (§8). Each directory is made a real path
+  (`std::fs::canonicalize`); the image is then checked
+  (`spec/verify.md` §5.1).
+- `--findings`, `--locate`: `limit` and `locate` of `spec/verify.md` §5.
+- `--report <file>`: the JSON report is written there (to a file beside
+  it, then renamed).
+- The other options are those of `parse`, with the same meaning.
+
+In this order: the store is opened exclusively and the signal handling
+installed, as for `parse`; the plan is resolved; the declared file is
+read, validated and published (`Store::publish_declared`; the container
+of `Declared::none()` when there is no `--declared`); the image is made;
+the store is asked for the plan's latest map run (`Store::latest_run`);
+the selection is made as for `parse`, with the same warning; the phase is
+run (`pool::run`, phase `verify`); the report is made and printed.
+
+Input errors (status 3), each `slip: verify: <message>` unless a form of
+§8.5 applies:
+
+| When | Message |
+|---|---|
+| the declared file cannot be read or is not a valid `DECL` | `slip: <path>: <error>` |
+| a `--root` or `--post` cannot be made a real path | `image: <path as given>: <error>` |
+| the image is refused | `image: <ImageError>` |
+| the store has no run record of phase `map` for the plan | `plan <id> has no map run in the store <root>; run slip parse first` |
+
+The worker command is that of `parse` followed by `--declared <id>`, one
+`--root <subject> --post <post>` pair per root map in the image's order,
+`--findings <n>` and `--locate <n>`, all always passed.
+
+**The report.** For each selected observer in plan order the command
+reads its shard of phase `verify` and this round, decodes it, and takes
+it as this run's only if its content id is the `shard` of the observer's
+last `Job` entry in the run record the pool returned
+(`spec/verify.md` §7). For an observer whose verify shard is `diagnosed`
+or `rejected` it reads the map shard for its status. Each goes to
+`slip_verify::run::Report::add`. Standard output and standard error are
+those of `spec/verify.md` §7.1; `wall` and `peak_rss` are computed as for
+`parse`.
+
+Exit status: 0 for a verified run, 1 for one not verified, 4 for an
+incomplete one (§8.5). A run over an empty selection is incomplete.
+
+### 8.8 `declare`
+
+Makes a `Declared` from the text of `spec/verify.md` §2.3 and writes it
+as a `DECL` container to `--out`.
+
+- `--plan`, `--only`, `--limit`, `--root`, `--post` as for `verify`. The
+  selection must keep at least one observer and at most 64 (an input
+  error otherwise, naming the number): every selected observer is parsed
+  here, in this process, one after another.
+- The store is opened shared; no shard is read or written.
+- For each selected observer, in plan order: the pre-image is parsed and
+  its unit records taken (`slip_digest::records`), with no rules; if the
+  text has a `relocate` with a parent, or a `created` line, the
+  post-image is parsed with no rules; if it has a `created` line, the
+  post-image is parsed again with the rules the `relocate` lines gave.
+  An image of an observer that does not parse `ok` contributes no record
+  and is a warning: `slip: warning: declare: <main file>: the <pre|post>-image is <status>`.
+- The records of all selected observers together are the sets of
+  `spec/verify.md` §2.3. Records of one `KeyId` from several observers
+  are one record.
+
+Standard output:
+
+```
+declared <id of the container>
+rules <rules_id> <n>
+changed <n>
+created <n>
+removed <n>
+```
+
+An error of §2.3 is `slip: <text file>:<line>: <error>: <detail>` on
+standard error, status 1, and nothing is written. An unreadable text
+file, a text that is not UTF-8 and an unwritable `--out` are input
+errors.
+
+### 8.9 `units`
+
+Prints the unit records of the selected observers, for a person writing a
+declared file or reading a report.
+
+- `--plan`, `--only`, `--limit`, `--root`, `--post` as for `declare`,
+  with the same bound on the selection and the same in-process parses.
+- Without `--post-image` the pre-image's records are printed; with it,
+  the post-image's (no rules).
+- `--match` keeps the records whose name contains the substring (any of
+  them, if repeated).
+
+One line per record, sorted by `(name, key)`, records of one `KeyId` from
+several observers once:
+
+```
+<key, 16 hexadecimal digits> <kind> <declared|derived|tu> <flags> <name>
+```
+
+`<flags>` is `-`, or `i` for an indeterminate unit and `f` for a fallback
+key (both: `if`). Status 0; an observer that does not parse is the
+warning of §8.8.
 
 ## Tests
 
@@ -1116,12 +1345,40 @@ pub fn main(args: &WorkerArgs) -> ExitCode;
   `tmp/<pid>.fake.tmp`, names both on standard error, and removes the
   loose file only if the behaviour returns.
 - `crates/slip_cli/tests/args.rs` — §8: the command line, parsed without
-  starting a process.
+  starting a process; the options of `verify`, `declare`, `units` and of
+  the worker, unpaired `--root` and `--post`.
 - `crates/slip_cli/tests/cli.rs` — §8 through the executable, including
   each exit status of §8.5.
+- `crates/slip_exec/tests/store.rs` — also §2 `declared/`: publishing a
+  valid and an invalid `DECL`, the name by content id, reading, a store
+  initialised without the directory.
+- `crates/slip_cli/tests/verify.rs` — §8.7 to §8.9 through the
+  executable (`spec/verify.md` "Tests"): every input error of §8.7, the
+  worker command seen in a job, statuses 0, 1 and 4, a shard of another
+  run not read as this run's, `declare` with each error of
+  `spec/verify.md` §2.3 and its output, `units` with and without
+  `--post-image` and `--match`.
+- `crates/slip_cli/tests/image.rs`, `crates/slip_cli/tests/verify_job.rs`,
+  `crates/slip_cli/tests/locate.rs`, `crates/slip_cli/tests/declare.rs` —
+  `spec/verify.md` "Tests".
 
 ## Open questions
 
+- A verify job's first estimate is rule 2 of §6, not the observer's peak
+  in the map phase: rule 1 reads records of the same phase only. Reading
+  the latest map record for a verify job that has no verify record is a
+  small change to `admission`, proposed in `spec/verify.md`.
+- A round's parameters travel on the worker's command line (§8.4), which
+  ties every job of a pool run to one `Declared` and one image. That is
+  what a round is; the price is that nothing in a shard or a run record
+  says which parameters it was made with (`spec/verify.md` "Open
+  questions").
+- `declare` and `units` parse in the calling process (§8.8), outside the
+  pool: no admission, no cap, no retry, one observer at a time. Enough
+  for a handful of observers; a relocation whose names no small selection
+  sees needs them run as a phase.
+- Exit status 4 for an incomplete verify run is new; scripts that test
+  for "0 or 1" need to know it.
 - Defaults of `--estimate-base` and `--estimate-per-byte` are guesses until
   M0 measures LLVM; so is `--worker-jobs 1`, which costs a process start and
   later a transform compilation per observer.
