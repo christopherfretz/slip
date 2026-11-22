@@ -196,7 +196,7 @@ pub fn header(main: &str) -> Result<Header, String> {
             "std" => value.clone_into(&mut h.std),
             "errors" if value == "yes" => h.errors = true,
             "args" => {
-                h.args = value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect()
+                h.args = value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect();
             }
             "target" if !value.contains(' ') => h.target = Some(value.to_owned()),
             _ => return Err(bad()),
