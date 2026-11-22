@@ -100,7 +100,14 @@ impl Walk<'_> {
         // name, ctx: keyed.
         // ty-type
         let function = info(kind).function || kind == DeclKind::CXXDeductionGuide;
-        match n.ty() {
+        // A variable's type is the completed one (an array of unknown
+        // bound that another declaration completes, WP-026).
+        let ty = if ast.decls.var(d).is_some() {
+            crate::decl_func::var_type(self, d, e)
+        } else {
+            n.ty()
+        };
+        match ty {
             Some(q) => {
                 s.opt(true);
                 let t = self.type_digest(q, function);

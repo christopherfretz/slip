@@ -7,12 +7,13 @@
 //! §2.3 merges. What `spec/landed/digest-kinds/WP-026.md` decides is
 //! cited where it is applied.
 
-use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::{
     ConstexprKind, DeclFlags, Defaulted, FnSpec, FnStorage, FunctionData, InitStyle, LetData,
     ParamData, ScopeData, VarData, VarEvalState, VarSpec,
 };
 use slip_kiln::kiln::ast::templates::SpecKind;
+use slip_kiln::kiln::ast::types::TypeKind;
+use slip_kiln::kiln::ast::{DeclId, QualType};
 
 use crate::stream::{FlagWord, Stream};
 use crate::tables::{
@@ -40,6 +41,9 @@ const SCOPE_AUX_UNACCOUNTED: Cause = Cause::Unaccounted("ScopeData/aux");
 const LANG_UNACCOUNTED: Cause = Cause::Unaccounted("ScopeData/aux-lang");
 /// A declaration of a function or variable kind with no payload record.
 const NO_PAYLOAD: Cause = Cause::Unaccounted("DeclNode/data");
+/// Two declarations of a variable's chain hold an initialiser (ill-formed,
+/// [basic.def.odr]); Kiln reads the first.
+const TWO_INITS: Cause = Cause::Unaccounted("VarData/init");
 
 /// `FunctionData` (§5.4), then the language linkage (§5.6).
 pub(crate) fn function_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
@@ -214,6 +218,20 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     };
     let e = ast.first(d);
     let definition_class = var_definition_class(w, e);
+    // `init`, `0-init-style` and `eval` belong to the declaration that
+    // holds the initialiser, which need not be the one read (an in-class
+    // `static const int x = 1;` defined by `const int S::x;`).
+    let (init, style, eval) = match init_holder(w, e) {
+        Ok(Some(holder)) => ast
+            .decls
+            .var(holder)
+            .map_or((init, spec.init_style(), eval), |v| (v.init, v.spec.init_style(), v.eval)),
+        Ok(None) => (init, spec.init_style(), eval),
+        Err(()) => {
+            s.indeterminate(TWO_INITS);
+            (init, spec.init_style(), eval)
+        }
+    };
     // init: child?; in `definition` for the definition class (§11.9).
     if definition_class {
         s.opt(false).pending(Area::Demand);
@@ -221,29 +239,79 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         crate::expr::child_opt(w, s, init);
     }
     // spec: record VarSpec.
-    var_spec(w, s, e, spec, definition_class);
+    var_spec(w, s, e, spec, style, definition_class);
     // eval: demand, the resolved unit `value` (§11.3). Only a state that
     // cannot outlive the translation unit is read here.
     match eval.state() {
         VarEvalState::Evaluating => {
             s.indeterminate(EVALUATING);
         }
-        // Kiln evaluates at the declaration; what it found is the
-        // resolved unit's, not yet written.
+        // What Kiln found is the resolved unit's, not yet written.
         VarEvalState::NotConstant | VarEvalState::Value(_) => {
             s.pending(Area::Demand);
         }
-        VarEvalState::NotEvaluated => {}
+        // Not evaluated yet: with an initialiser, the value is still the
+        // resolved unit's, whenever Kiln evaluates it (it evaluates an
+        // out-of-line `const int S::x = 1;` at once, the in-class
+        // `static const int x = 1;` later).
+        VarEvalState::NotEvaluated => {
+            if init.is_some() && !definition_class {
+                s.pending(Area::Demand);
+            }
+        }
     }
     // templ: record TemplLink.
     crate::templ::templ_link(w, s, templ);
     linkage(w, s, e);
 }
 
+/// The declaration of variable `e`'s chain that holds its initialiser,
+/// block-scope `extern`s left out (Kiln reads the first that has one,
+/// `kiln_oven/src/value.rs:89-98`); `Err` when two hold one.
+fn init_holder(w: &Walk<'_>, e: DeclId) -> Result<Option<DeclId>, ()> {
+    let ast = w.ast;
+    let mut chain = w.redecls(e);
+    chain.reverse();
+    let mut holders = chain
+        .into_iter()
+        .filter(|&x| !w.is_local_extern(x))
+        .filter(|&x| ast.decls.var(x).is_some_and(|v| v.init.is_some()));
+    let first = holders.next();
+    if holders.next().is_some() { Err(()) } else { Ok(first) }
+}
+
+/// The type a variable's unit holds: the type of the declaration read,
+/// unless it is an array of unknown bound that another declaration of
+/// the chain (not a block-scope `extern`) completes ([basic.types.general]/6);
+/// then the first such declaration's, first declaration first.
+pub(crate) fn var_type(w: &Walk<'_>, d: DeclId, e: DeclId) -> Option<QualType> {
+    let ast = w.ast;
+    let own = ast.decls.get(d).ty();
+    let incomplete = |q: QualType| ast.types.canonical_kind(q) == TypeKind::IncompleteArray;
+    if !own.is_some_and(incomplete) {
+        return own;
+    }
+    let mut chain = w.redecls(e);
+    chain.reverse();
+    chain
+        .into_iter()
+        .filter(|&x| !w.is_local_extern(x))
+        .filter_map(|x| ast.decls.get(x).ty())
+        .find(|&q| !incomplete(q))
+        .or(own)
+}
+
 /// `record VarSpec` of the declaration read (`spec`), merged over the
 /// declarations of `e` as §2.3 and `spec/landed/digest-kinds/WP-026.md`
 /// say.
-fn var_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: VarSpec, definition_class: bool) {
+fn var_spec(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    e: DeclId,
+    spec: VarSpec,
+    style: InitStyle,
+    definition_class: bool,
+) {
     let ast = w.ast;
     let specs: Vec<VarSpec> =
         w.redecls(e).iter().filter_map(|&x| ast.decls.var(x).map(|v| v.spec)).collect();
@@ -262,7 +330,7 @@ fn var_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: VarSpec, definiti
     s.tag(tls_kind::row(&spec.tls()));
     // 0-init-style, 0-inline and 0-inline-implied are in `definition` for
     // the definition class (§11.9): their empty forms here.
-    let style = if definition_class { InitStyle::C } else { spec.init_style() };
+    let style = if definition_class { InitStyle::C } else { style };
     s.tag(init_style::row(&style));
     s.flags(
         FlagWord::new()
@@ -874,5 +942,47 @@ pub(crate) mod tests {
             assert!(super::merged_default(w, fs[0], 0).is_some());
             assert!(super::merged_default(w, fs[0], 1).is_none());
         });
+    }
+    /// The `var_data` bytes and cause of the declaration the walk reads for
+    /// the variable whose first declaration is named `name`.
+    fn var_bytes(src: &str, name: &str) -> (Vec<u8>, Option<Cause>) {
+        with_walk(src, |w| {
+            let e = w.ast.first(named(w, name, DeclKind::Var)[0]);
+            let d = crate::units::read_decl(w, e);
+            written(w, |w, s| super::var_data(w, s, d))
+        })
+    }
+
+    // §2.3, landed WP-026 "The declaration read": an in-class initialiser
+    // of a member defined out of line is the unit's `init` child (the
+    // first byte, `opt`), and its value is pending the resolved unit.
+    #[test]
+    fn the_initialiser_comes_from_its_holder() {
+        let (held, cause) =
+            var_bytes("struct S { static const int x = 1; };\nconst int S::x;", "x");
+        assert_eq!(held[0], 1);
+        assert_eq!(cause, Some(Cause::Pending(crate::Area::Expr)));
+        let (none, _) = var_bytes("struct S { static int x; };\nint S::x;", "x");
+        assert_eq!(none[0], 0);
+        let (out_of_line, _) =
+            var_bytes("struct S { static const int x; };\nconst int S::x = 1;", "x");
+        assert_eq!(held, out_of_line);
+    }
+
+    // §2.3, landed WP-026: a variable's type is the completed one,
+    // whichever declaration is read.
+    #[test]
+    fn a_variable_type_is_the_completed_one() {
+        use slip_kiln::kiln::ast::types::TypeKind;
+        for src in ["extern int a[];\nextern int a[3];", "extern int a[3];\nextern int a[];"] {
+            with_walk(src, |w| {
+                let ds = named(w, "a", DeclKind::Var);
+                let e = w.ast.first(ds[0]);
+                for &d in &ds {
+                    let q = super::var_type(w, d, e).expect("a type");
+                    assert_eq!(w.ast.types.canonical_kind(q), TypeKind::ConstantArray, "{src}");
+                }
+            });
+        }
     }
 }
