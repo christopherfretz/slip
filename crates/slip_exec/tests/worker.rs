@@ -328,9 +328,9 @@ fn s5_2_serve_in_process() {
 
 #[test]
 fn s5_2_serve_rejects_a_shard_for_another_job() {
+    type MakeShard = Box<dyn Fn(&Job) -> Shard + Send>;
     let s = scratch("wrongshard");
     let j = job(&s, "a");
-    type MakeShard = Box<dyn Fn(&Job) -> Shard + Send>;
     let cases: Vec<MakeShard> = vec![
         Box::new(|j| Shard { observer: d(0), ..ok_shard(j) }),
         Box::new(|j| Shard { phase: Phase::Verify, ..ok_shard(j) }),
