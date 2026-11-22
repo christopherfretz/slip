@@ -276,7 +276,7 @@ fn s8_standard_library_headers_are_inputs() {
     }
 }
 
-// spec/landed/exec/WP-012.md "Stack guard": Kiln's stack guard is installed
+// spec/model.md §8.4, spec/exec.md §8.4: Kiln's stack guard is installed
 // on the front end's thread, so nesting deeper than its stack ends in
 // Kiln's fatal diagnostic (`diagnosed`), not a stack overflow that would
 // abort this test process. A small `-fkiln-stack-size=` makes it quick.

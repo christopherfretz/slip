@@ -1,5 +1,5 @@
 //! `spec/exec.md` §5.1, §5.2: the worker protocol and `serve`, plus the
-//! rules of `spec/landed/exec/WP-008.md`. Messages are checked against
+//! rules of §5.5. Messages are checked against
 //! hand-written bytes; `serve` runs in process against in-memory streams and
 //! as the `slip-fake-worker` child process. Every child is killed and reaped
 //! on every path ([`Worker`]'s `Drop`), and every wait is bounded.

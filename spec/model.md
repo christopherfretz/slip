@@ -372,6 +372,11 @@ pub fn decode_phase(input: &mut Decoder<'_>) -> Result<Phase, wire::Error>;
 pub struct JsonFormError { pub path: String, pub message: String }
 pub const MESSAGE_MAX: usize = 4096;
 pub fn clip_message(message: &str) -> &str;                    // cut to MESSAGE_MAX at a character boundary
+
+// The enumerations of §7–§9
+impl Reason { pub const ALL: [Reason; 6]; pub fn name(self) -> &'static str; }
+impl Status { pub const ALL: [Status; 4]; pub fn name(self) -> &'static str; }
+impl End    { pub const ALL: [End; 5];    pub fn name(self) -> &'static str; }
 ```
 
 - `undump` is the inverse of `dump`, for any of the three kinds. It is the
@@ -390,6 +395,8 @@ pub fn clip_message(message: &str) -> &str;                    // cut to MESSAGE
 - `Shard` has, besides the fields of §8, `digests: Option<Digests>`
   (`slip_model::digests`) and `verdict: Option<Verdict>`
   (`slip_model::verdict`); an absent section is `None`.
+- `ALL` lists every value of the enumeration once, in code order; `name()`
+  is its name in §7–§9, the one the JSON rendering uses (§10).
 
 ## 6. Files and paths
 

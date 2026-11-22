@@ -22,9 +22,9 @@
 //! arrives first). While a worker is known to be ending (its output ended
 //! but it is not reaped, or its input was closed) the wait is at most
 //! 5 ms. Nothing else blocks: the loop never reads, writes or waits on a
-//! child directly. The rules the spec leaves open are in
-//! `spec/landed/exec/WP-009.md`; the removal of the workers' `tmp/`
-//! entries and [`Summary::outcomes`] in `spec/landed/exec/WP-018.md`.
+//! child directly. The rules in detail, the removal of the workers' `tmp/`
+//! entries and [`Summary::outcomes`] included, are `spec/exec.md` §5.6 and
+//! §7.1; the interface is §5.7.
 
 use std::collections::HashMap;
 use std::ffi::OsString;

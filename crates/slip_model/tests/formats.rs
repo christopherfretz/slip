@@ -1405,7 +1405,7 @@ fn model_8_clip_message_cuts_at_a_character_boundary() {
 
 // ---------------------------------------------------------------------------
 // The names of the enumerations (§7 `Reason`, §8 `Status`, §9 `End`):
-// `name()` and `ALL` (spec/landed/model/WP-018.md)
+// `name()` and `ALL` (§5.5)
 
 /// §7–§9: `ALL` lists every value once, in code order, and `name()` is the
 /// spec's name, the one the JSON form uses.

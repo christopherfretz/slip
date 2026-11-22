@@ -68,6 +68,101 @@ Ids are 64 hexadecimal digits (`spec/model.md` §3); `<phase>` is `map` or
 - **Path.** The store's path is made absolute when it is opened; that is the
   path a `Job` carries (§5.2), since a worker changes its current directory.
 
+### 2.1 Store rules
+
+- **Root.** `open` makes the directory absolute against the current
+  directory (`std::path::absolute`: not canonicalised, symbolic links
+  kept), so `root()` and a `Job.store` made from it stay valid after a
+  worker changes its current directory.
+- **Opening.** `VERSION` must be exactly the bytes `1\n`; anything else
+  (including `1` without the newline) is `Version` with the text, lossily
+  decoded. A missing `VERSION` in an absent or empty directory initialises
+  it, in both access modes: `tmp/`, `plans/`, `shards/`, `runs/`, `logs/`
+  are created, then `VERSION` is published (a `tmp/` file and a rename)
+  last, so a directory with `VERSION` is complete. A non-empty directory
+  without `VERSION`, or a path that is not a directory, is `Unrecognised`.
+- **`tmp/` names.** A file being written is `tmp/<pid>.<n>.tmp`, `n` a
+  process-wide counter; the scratch directory is `tmp/<pid>.d`. Every entry
+  the store makes starts with `<pid>.`, `<pid>` in canonical decimal, which
+  is what stale cleaning and `remove_entries_of` read.
+- **Publishing validates.** `publish_plan` requires a valid `PLAN` file and
+  names it by its content id; `publish_shard` a valid `SHRD` whose header
+  names the observer, phase and round given; `publish_run` a valid `RUNR`
+  whose `plan`, `phase` and `started_unix_ns` are the ones given (it holds
+  no round). Anything else is `Invalid` and nothing is written. The `read_*`
+  methods and `latest_run` return the bytes unvalidated; `None` when the
+  file does not exist. Files are not `fsync`ed.
+- **The lock** holds `<pid>\n`. It is written in full under `tmp/` and
+  hard-linked to `lock`, so it never exists without its pid. If `lock`
+  exists: a content other than a canonical decimal pid and a newline is an
+  `Io` error (`InvalidData`) and the lock is left alone; a live owner
+  (including this process, for a second exclusive open) is `Busy`; a dead
+  owner's lock is renamed into `tmp/` and, if the file moved still names
+  that dead pid, removed and the link retried; if it names another process
+  (a racing opener got there first) it is linked back and that process is
+  reported `Busy`. At most 8 rounds, then `Busy`.
+- **Stale cleaning** (exclusive open, after the lock is taken): every
+  `tmp/` entry whose name starts with `<pid>.` for a process that does not
+  exist is removed, directories recursively. Entries of live processes
+  (shared writers beside the phase) and names not of that form are kept.
+- **The entries of one process.** `remove_entries_of(pid)` removes every
+  `tmp/` entry whose name is `<pid>.…` with `<pid>` the canonical decimal
+  of `pid`, directories recursively, in either access mode. The caller
+  vouches that the process is gone: `/proc` is not consulted. This
+  process's own id is a no-op. No `tmp/`, or an entry that vanishes
+  meanwhile, is not an error; any other failure is returned (the first
+  one) after the remaining entries have been tried.
+- **Closing.** `Drop` and `cleanup_on_signal` run the same cleanup: mark the
+  store closed, remove the `tmp/` files it has open, remove its scratch
+  directory recursively if `scratch_dir` was called on it, and remove
+  `lock` if it holds it *and* the file still holds this process's pid.
+  Errors are ignored; it never panics; it is idempotent. Once closed, a
+  store refuses to create `tmp/` files or the scratch directory (`Io`,
+  `Interrupted`). `tmp/` files are created under the same mutex the cleanup
+  takes, so none is created after the cleanup and left behind.
+- **`find_plan`** returns, ascending, the ids of `plans/<64 hex>.plan`
+  files that start with the prefix. A prefix that is longer than 64 or not
+  lower-case hexadecimal matches nothing; the empty prefix matches all.
+- **`latest_run`** considers `runs/<plan>/<phase>.<round>.<ns>.run` names
+  with canonical decimal `round` and `ns` only; the greatest `ns` wins, then
+  the greatest `round`.
+- **Logs.** `log_path` creates the parent directories, not the file.
+  `remove_log` of an absent log succeeds.
+
+### 2.2 Interface
+
+`slip_exec::store`:
+
+```rust
+pub const VERSION_TEXT: &str = "1\n";
+pub fn phase_name(phase: Phase) -> &'static str;            // "map", "verify"
+pub enum Access { Exclusive, Shared }
+pub enum StoreError { Unrecognised(PathBuf), Version(String), Busy { pid: u32, lock: PathBuf },
+                      Invalid(String), Io { path: PathBuf, error: io::Error } }   // Display, Error
+pub struct Store;   // Drop: §2.1 "Closing"
+impl Store {
+    pub fn open(dir: &Path, access: Access) -> Result<Store, StoreError>;
+    pub fn root(&self) -> &Path;                                  // absolute
+    pub fn scratch_dir(&self) -> Result<PathBuf, StoreError>;     // <root>/tmp/<pid>.d, created, idempotent
+    pub fn remove_entries_of(&self, pid: u32) -> Result<(), StoreError>;
+    pub fn plan_path(&self, id: &Digest) -> PathBuf;
+    pub fn shard_path(&self, plan: &Digest, phase: Phase, round: u64, observer: &Digest) -> PathBuf;
+    pub fn run_path(&self, plan: &Digest, phase: Phase, round: u64, started_unix_ns: u64) -> PathBuf;
+    pub fn publish_plan(&self, bytes: &[u8]) -> Result<Digest, StoreError>;
+    pub fn read_plan(&self, id: &Digest) -> Result<Option<Vec<u8>>, StoreError>;
+    pub fn find_plan(&self, hex_prefix: &str) -> Result<Vec<Digest>, StoreError>;
+    pub fn publish_shard(&self, plan: &Digest, phase: Phase, round: u64, observer: &Digest, bytes: &[u8]) -> Result<Digest, StoreError>;
+    pub fn read_shard(&self, plan: &Digest, phase: Phase, round: u64, observer: &Digest) -> Result<Option<Vec<u8>>, StoreError>;
+    pub fn publish_run(&self, plan: &Digest, phase: Phase, round: u64, started_unix_ns: u64, bytes: &[u8]) -> Result<PathBuf, StoreError>;
+    pub fn latest_run(&self, plan: &Digest, phase: Phase) -> Result<Option<Vec<u8>>, StoreError>;
+    pub fn log_path(&self, plan: &Digest, phase: Phase, round: u64, observer: &Digest, attempt: u64) -> Result<PathBuf, StoreError>;
+    pub fn remove_log(&self, plan: &Digest, phase: Phase, round: u64, observer: &Digest, attempt: u64) -> Result<(), StoreError>;
+}
+pub fn cleanup_on_signal(store: &Store) -> impl FnOnce() + Send + 'static;
+```
+
+Every `StoreError` is an `Input` error of the command (§8.5, status 3).
+
 ## 3. Jobserver
 
 `slip_exec::jobserver` is a GNU make jobserver client. Its behaviour is
@@ -86,8 +181,10 @@ ported, with these names:
   a job killed by a cap or a timeout.
 - **Fallback.** With no `MAKEFLAGS`, the descriptor forms
   (`--jobserver-auth=R,W`), a path that is not a fifo or cannot be opened, or
-  a later fifo I/O error: a warning is printed once, acquisition becomes
-  free, and `-j` alone bounds parallelism.
+  a later fifo I/O error: acquisition becomes free, and `-j` alone bounds
+  parallelism. A warning is printed for a fifo that was named and cannot be
+  used, and for a later fifo I/O error (§3.1); none without `MAKEFLAGS` or
+  for the descriptor forms.
 - **Inspection.** `status(fifo)` counts idle tokens without blocking (read
   until the fifo would block, write the same bytes back); `refill(fifo, n)`
   tops the pool up to `n` idle tokens and is only correct while no client
@@ -98,6 +195,70 @@ channel, so the scheduler never blocks in a read and can stop waiting when a
 job finishes (the implicit token becoming free) or the run is cancelled. A
 byte read after the scheduler stopped wanting it is written straight back.
 
+### 3.1 Requests and release
+
+- **Requests.** `request` queues a waiter served in order. Its token is
+  passed to `deliver` exactly once. That happens on the caller's thread if
+  the implicit token is free or acquisition is free, on the helper thread
+  after a read, or on the thread dropping another token, which hands the
+  token straight to the oldest waiter. `deliver` must not block. Dropping
+  the `Request` before delivery abandons it, and a byte read for it later
+  is written straight back. A token delivered into a channel nobody reads
+  any more is released when the channel drops it. `acquire` is a request
+  served over a private channel.
+- **`try_acquire`** takes the implicit token, a free token when acquisition
+  is free, or one byte read with `O_NONBLOCK` from a second descriptor.
+  Otherwise it returns `None` and never blocks. Where `O_NONBLOCK`'s value is
+  not known for the platform, it only ever gets the implicit or a free token.
+- **Fallback warnings** are printed once per pool (a later fifo error), and
+  once per `from_makeflags` call that names a fifo it cannot use. Every
+  message on these paths ignores write errors.
+- **`release_all`** (per pool, or for every pool of the process) writes back
+  every byte held by live tokens, including tokens delivered but not
+  received. It then serves pending requests free tokens and marks the pool
+  released: later drops return nothing and later acquisitions are free. It
+  waits up to 200 ms for a helper read in flight to put its byte back.
+- The helper thread ends once only it still refers to the pool (checked
+  every second while idle), after `release_all`, or on a fifo error.
+
+### 3.2 Interface
+
+`slip_exec::jobserver`:
+
+```rust
+pub const DEFAULT_FIFO: &str = "/run/slip/jobserver.fifo";
+pub const DEFAULT_POOL_SIZE: usize = 8;
+pub fn fifo_from_makeflags(flags: &str) -> Option<PathBuf>;
+pub fn default_fifo() -> PathBuf;                 // MAKEFLAGS fifo:, else $SLIP_JOBSERVER_FIFO, else DEFAULT_FIFO
+pub fn resolve_fifo(makeflags: Option<&str>, fifo_var: Option<PathBuf>) -> PathBuf;
+pub fn default_pool_size() -> Result<usize, String>;   // $SLIP_JOBS, else 8
+pub fn resolve_pool_size(jobs_var: Option<&str>) -> Result<usize, String>;
+pub fn available_cores() -> usize;
+
+#[derive(Clone)] pub struct Pool;                 // clones share the connection
+impl Pool {
+    pub fn none() -> Pool;
+    pub fn from_env() -> Pool;                    // MAKEFLAGS, with the fallback of §3
+    pub fn from_makeflags(flags: &str) -> Pool;
+    pub fn from_fifo(path: &Path) -> io::Result<Pool>;
+    pub fn with_jobs(self, jobs: usize) -> Pool;  // -j, at least 1; default available_cores()
+    pub fn jobs(&self) -> usize;
+    pub fn describe(&self) -> Option<String>;     // "fifo:<path>"
+    pub fn is_free(&self) -> bool;
+    pub fn acquire(&self) -> Token;               // blocking
+    pub fn try_acquire(&self) -> Option<Token>;   // never blocks
+    pub fn request(&self, deliver: impl FnOnce(Token) + Send + 'static) -> Request;
+    pub fn release_all(&self) -> usize;
+}
+pub struct Token;   pub fn kind(&self) -> Kind;   // released on Drop
+pub enum Kind { Free, Implicit, Pool(u8) }
+pub struct Request; pub fn is_pending(&self) -> bool;   // Drop abandons
+pub fn release_all() -> usize;                    // every pool of the process
+pub struct RefillReport { pub idle: usize, pub added: usize }
+pub fn status(fifo: &Path) -> io::Result<usize>;
+pub fn refill(fifo: &Path, jobs: usize) -> io::Result<RefillReport>;
+```
+
 ## 4. Child processes
 
 `slip_exec::process` starts and supervises children without unsafe code:
@@ -105,7 +266,7 @@ byte read after the scheduler stopped wanting it is written straight back.
 - **Own process group.** Every child is the leader of a new process group, so
   the whole tree under it can be signalled together.
 - **Address-space cap.** A child given a cap is started through
-  `sh -c 'ulimit -v <KiB> || exit 125; ulimit -c 0; exec "$@"' slip-mem-limit <program> <args…>`,
+  `sh -c 'ulimit -v <KiB> || exit 125; ulimit -c 0 2>/dev/null; exec "$@"' slip-mem-limit <program> <args…>`,
   which applies `RLIMIT_AS` and disables core dumps before `exec`. If the
   cap cannot be applied the wrapper exits with status 125 rather than run
   the program uncapped. If `sh` is not available the child is started
@@ -121,6 +282,69 @@ byte read after the scheduler stopped wanting it is written straight back.
   supervisor records why it sent the signal before sending it.
 - **Table.** Every live child is in a process-wide table from spawn to reap,
   which is what signal handling (§7) walks.
+
+### 4.1 Child rules
+
+- **Wrapper.** A child with `address_space = Some(b)` runs under the
+  wrapper of §4 with `<KiB>` = `b / 1024`, rounded down and at least 1.
+  If `ulimit -v` fails, the wrapper exits 125 (`ULIMIT_FAILED`) instead of
+  running uncapped. `Some(0)` is refused with `InvalidInput`. `sh` counts
+  as "not available" when it is not on the command's own `PATH` (if it
+  sets one) or the process's `PATH`. The child then starts directly with
+  its streams, and one warning is printed per process.
+- **Kill.** `kill` records the reason, unless one is already recorded (the
+  first one wins). It then sends `SIGKILL` to the group (`kill -KILL --
+  -<pid>`, else the shell builtin) and to the pid. All of this happens under
+  the child's lock and only while it is unreaped, so a reused pid is never
+  signalled. A child that ended by itself, even by a signal, has no reason.
+- **Supervision.** `check` samples first, then kills if `rss > rss_cap`
+  (`Memory`) or if the time since spawn is at least `timeout` (`Time`). A
+  sample of 0 never exceeds a cap. `wait_supervised` repeats this every
+  `interval` until the child exits.
+- **Table.** A child is in the table from spawn to reap. A shutdown records
+  `Signal`, kills every group and reaps the children itself, so it does not
+  depend on their owners polling. A spawn in flight is counted and killed as
+  it registers, and every later spawn fails with `Interrupted`. `wait` polls
+  `try_wait` (1 ms rising to 25 ms) instead of blocking in `waitpid`, so a
+  shutdown is never locked out of a child. Dropping an unreaped `Child`
+  kills its group and reaps it.
+
+### 4.2 Interface
+
+`slip_exec::process`:
+
+```rust
+pub const SAMPLE_INTERVAL: Duration;              // 50 ms
+pub const ULIMIT_FAILED: i32 = 125;
+pub const WRAPPER_NAME: &str = "slip-mem-limit";
+pub struct Limits { pub address_space: Option<u64>, pub timeout: Option<Duration>, pub rss_cap: Option<u64> }
+pub enum Killed { Memory, Time, Signal }
+pub struct Sample { pub rss: u64, pub hwm: u64 }  // bytes; from_proc_status(&str), max
+pub trait Sampler: Send + Sync { fn sample(&self, pid: u32) -> Sample; }
+pub struct ProcSampler;
+pub struct Io { pub stdin: Stdio, pub stdout: Stdio, pub stderr: Stdio }   // null(), piped()
+pub struct Exit { pub status: ExitStatus, pub killed: Option<Killed>, pub peak: Sample, pub elapsed: Duration }
+pub struct Child;
+impl Child {
+    pub fn spawn(cmd: &Command, io: Io, limits: &Limits) -> io::Result<Child>;
+    pub fn id(&self) -> u32;                      // = its process group id
+    pub fn limits(&self) -> &Limits;
+    pub fn take_stdin/take_stdout/take_stderr(&mut self);
+    pub fn elapsed(&self) -> Duration;
+    pub fn kill(&self, reason: Killed);
+    pub fn killed(&self) -> Option<Killed>;
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>>;
+    pub fn wait(&mut self) -> io::Result<ExitStatus>;
+    pub fn sample(&mut self, sampler: &dyn Sampler) -> Sample;
+    pub fn peak(&self) -> Sample;
+    pub fn check(&mut self, sampler: &dyn Sampler) -> Option<Killed>;
+    pub fn wait_supervised(&mut self, sampler: &dyn Sampler, interval: Duration) -> io::Result<Exit>;
+}
+pub fn live_children() -> Vec<u32>;
+pub fn shutting_down() -> bool;
+pub fn kill_live_children(grace: Duration) -> usize;
+pub fn kill_live_children_now();
+```
 
 ## 5. Workers
 
@@ -166,7 +390,8 @@ thread with a large stack (`--worker-stack`, default 1 GiB reserved), catches
 a panic of that thread, publishes the shard to the store (§2) and answers
 `Done`, or answers `Failed`. Before `Done` it reads its own CPU time and peak
 resident size from `/proc/self` (0 if unavailable). On `Exit` or end of
-input it exits with status 0.
+input it exits with status 0. The coordinator does not send `Exit`: closing
+the worker's standard input is its `Exit` (§5.6).
 
 A worker runs at most `--worker-jobs` jobs (default 1) and is then replaced
 by a new process. With the default every observer gets a fresh process, so
@@ -177,7 +402,8 @@ its peak counter between jobs where the system allows it
 Anything else is a **protocol violation** and is treated as a crash: a
 message that does not decode, a `Done` for another observer, a `Done` whose
 shard is not in the store or does not open as a `SHRD` for that observer and
-phase, output after `Exit`.
+phase, output from a worker that holds no job. §5.6 "Messages" lists every
+violation.
 
 ### 5.3 Scheduling
 
@@ -190,13 +416,207 @@ admission accepts it (§6).
 | What happened | `End` (run record) | Shard |
 |---|---|---|
 | The worker answered `Done` | `completed` | the worker's |
-| The worker answered `Failed`, exited, was killed by a signal, or violated the protocol | `crashed` | after the retry (below), a shard with status `failed` written by the coordinator; `message` is the worker's message or the last 4096 bytes of its log |
+| The worker answered `Failed`, exited, was killed by a signal, or violated the protocol | `crashed` | after the retry (below), a shard with status `failed` written by the coordinator; `message` is the worker's message, or one line saying why followed by the end of its log (§5.6 "The coordinator's shard") |
 | Killed for exceeding its memory cap | `killed_memory` | as above, after the retries of §6 |
 | Killed for exceeding `--observer-timeout` (default 3600 s; 0 disables) | `killed_time` | `failed`, no retry |
 | The run was interrupted | `cancelled` | none |
 
 A crashed job is retried once. Every attempt is a `Job` entry in the run
 record, with its attempt number.
+
+### 5.5 The worker's side
+
+- **Messages.** The tag is checked first: an unknown tag (0 included) is
+  `Malformed` at offset 0. The observer is checked by `decode_observer`
+  (`spec/model.md` §5.5), the phase by `decode_phase`. A byte after the
+  last field is `Malformed` at that byte (`Decoder::finish`).
+- **Frames.** `read_frame` returns `None` only if the input ends before
+  the first byte of a length; an end inside the length or the payload is
+  `UnexpectedEof`; a length above `max` is `InvalidData`, refused after
+  reading the four length bytes and before allocating; the payload buffer
+  grows as bytes arrive. `write_frame` refuses a payload of 4 GiB or more
+  (`InvalidInput`). Either side accepts frames of at most `FRAME_MAX`
+  (64 MiB).
+- **`serve`.** Sends `Ready { protocol: 1, tool }`. Then, until `max_jobs`
+  jobs have been answered: reads a frame (end of input: returns `Ok`);
+  `Exit` returns `Ok`; a frame that does not decode, or is over
+  `FRAME_MAX`, returns an `InvalidData` error (the worker's `main` then
+  exits non-zero, which the coordinator sees as a crash). `max_jobs = 0`
+  sends `Ready` and returns without reading.
+- **A job** runs on a scoped thread named `slip-job` with `stack_bytes` of
+  stack (if the thread cannot be started, `Failed`). Its shard must pass
+  `Shard::validate` and name the job's observer, phase and round, or the
+  answer is `Failed` with a message saying so. The store named by the job
+  is opened `Shared` and the shard published; a failure there is `Failed`.
+  Otherwise `Done` with the shard's content id.
+- **A panic** of the job thread is `Failed` with the message
+  `panicked: <panic message>` (`a panic with a non-text payload` if it has
+  none), after which `serve` returns `Ok` even if jobs remain: the task's
+  state is suspect, so the next observer gets a fresh process. The panic
+  hook's report goes to standard error, that is, the attempt's log.
+- **`Failed.message`** is clipped to 4096 bytes at a character boundary
+  (`clip_message`) by `serve`, since it only ever becomes a shard message.
+- **`cpu_ns`** is user plus system time of the whole process from
+  `/proc/self/stat` (fields 14 and 15, in units of `USER_HZ` = 100), as the
+  difference since the end of the previous job, or since `serve` started
+  for the first job, so the jobs of one worker add up to its CPU time
+  after startup. 0 if unavailable.
+- **`peak_rss`** is `VmHWM` of `/proc/self/status`, read before `Done`.
+  Before every job but the first, `serve` writes `5` to
+  `/proc/self/clear_refs`; if that fails, that job's `peak_rss` is 0.
+
+### 5.6 The coordinator
+
+`slip_exec::pool::run` runs one phase over a list of observers.
+
+- **The loop waits** in `recv_timeout` on one channel until the next
+  sampling instant. Into that channel go: each worker's messages (a thread
+  per worker reads its standard output, one frame at a time, at most
+  `FRAME_MAX`, and reports end of output), the end of its standard
+  error (a second thread copies it to the current attempt's log), tokens
+  (`jobserver::Pool::request` delivers into it), and the cancellation
+  (`pool::cleanup_on_signal`, §7.1). A third thread per worker writes its
+  standard input, so a worker that does not read cannot block the loop.
+  Exited children are reaped with `try_wait` at each wakeup; at each
+  sampling instant (`sample_interval`, at least 1 ms) the running workers
+  are sampled and the time limit checked. While a worker is ending (its
+  output ended, it is reaped but its streams are open, its input is
+  closed, or it is being killed) the wait is at most 5 ms. Nothing blocks
+  the loop otherwise.
+- **Tokens and `-j`.** At most `min(options.jobs, tokens.jobs())` (each at
+  least 1) jobs run. A token is requested only when fewer run and
+  `Admission::peek` would start a job; at most one request is outstanding.
+  A token that arrives when no job can start is dropped (returned). Each
+  job holds its token until its attempt is finished (for a killed job:
+  until the process is reaped), then drops it. When a job starts, the next
+  token is requested at once, so jobs whose tokens are available now start
+  before the next sampling instant. `workers_max` counts running jobs.
+- **Workers.** Started as `program args…`, `env_remove` applied, all three
+  streams piped, under `Admission::address_space_cap` (none with `B = 0`),
+  with no `Limits::rss_cap` or `timeout`: caps and the time limit are the
+  coordinator's (the time limit runs from the job's start, not the
+  process's). The `Job` is sent at once (not after `Ready`). A worker gets
+  at most `worker_jobs` jobs; after the last its input is closed (that is
+  its `Exit`; the `Exit` message is never sent). An idle worker is reused
+  while jobs are pending; once none is pending its input is closed. A
+  worker whose input is closed and that has no job is killed if it has not
+  exited 5 s later; one whose output ended and that has not exited 1 s
+  later is killed. `worker_jobs` must not exceed the worker's own limit in
+  `args`, or an idle worker may have exited when it is given a job (that
+  job then crashes and is retried).
+- **Messages.** The first message must be `Ready` with protocol 1 (its
+  `tool` is not checked). Violations, each a crash of the job the worker
+  holds (if any) with the message `protocol violation: <what>`: a frame
+  that does not decode or cannot be read, a second `Ready`, any other
+  message first, `Done` or `Failed` with no job or for another observer,
+  a `Done` whose shard is absent from
+  `shards/<plan>/<phase>.<round>/<observer>.shard`, unreadable, not valid,
+  of another content id, or for another observer, phase or round. The
+  worker is killed and never reused; later messages are ignored. Output
+  from a worker that holds no job is a violation with no job to fail. A
+  job being killed (cap, pressure, time) ignores the worker's later `Done`
+  or `Failed`: the decision stands.
+- **A worker that answered `Failed`** is not reused (its input is closed).
+- **End of an attempt** (§5.4). `Done` and `Failed` finish the attempt when
+  they arrive. Otherwise the attempt is finished once its process is reaped
+  and both its streams ended, or 1 s after the reap. An attempt whose
+  worker ends without answering is a crash: `the worker ended without
+  answering (<exit status>)`. A worker that cannot be started is a crash
+  of the job: `cannot start the worker <program>: <error>`.
+- **Attempts and retries.** A crash (including `Failed`) is retried once,
+  at the head of the queue, as attempt + 1. A cap kill with `retry` is
+  attempt + 1. A pressure kill keeps the attempt number (it is not an
+  attempt): the run record has two entries with that number, the first
+  `killed_memory` with no shard. The crash retry and the cap retry are
+  independent: a job can have both.
+- **The coordinator's shard** (`failed`, no `inputs`, no counters) carries,
+  for `Failed`, the worker's message (`the worker failed without a message`
+  if empty); otherwise one line saying why (`protocol violation: …`, `the
+  worker ended without answering (…)`, `killed: resident size N bytes
+  exceeded the cap of M bytes`, `killed: exceeded the observer timeout of
+  Ns`), then a newline and as much of the end of the attempt's log as fits
+  in 4096 bytes (cut at a character boundary, lossily decoded, trailing
+  white space removed). The final attempt's run-record entry carries its
+  content id; earlier ones carry none.
+- **Logs.** A log is created (truncated) when the attempt starts and
+  receives the worker's standard error while it holds that job; bytes the
+  worker writes while idle go nowhere. With `worker_jobs > 1` the split
+  between consecutive jobs follows the coordinator's assignment, not the
+  worker's timing. The log is removed for `completed`, pressure-killed and
+  `cancelled` attempts, and kept for every other end.
+- **Workers' `tmp/` entries** (§2 "Cleaning"). The coordinator removes a
+  worker's entries (`Store::remove_entries_of`) at the moment
+  `Child::try_wait` first returns the worker's status (whatever ended it),
+  before anything else is started, so the pid cannot have been given to a
+  new worker of this run; and, when the run is abandoned (cancellation or
+  an error, below), for every worker still known, reaped or not: each has
+  been sent `SIGKILL` and runs no more user code. Each worker's entries are
+  removed once. Failures are ignored: the next exclusive open removes what
+  is left (§2). The worker's process group is not searched for descendants
+  (a worker runs the front end in its own process).
+- **Run record.** Jobs in the order their attempts finished; `queued_ns`
+  is from the start of `run` to the attempt's start; `wall_ns` to its
+  finish; `cpu_ns` is the worker's (0 unless `Done`); `peak_rss` is the
+  larger of the largest sampled `VmRSS` (and the sampled `VmHWM` for a
+  process's first job) and `Done.peak_rss`; `estimate` is the `e` the job
+  was admitted with (§6); `cores` is `jobserver::available_cores()`;
+  `peak_rss_sum` the largest sum of one sampling round; `memory_budget` is
+  `B`.
+- **Summary.** `Summary::statuses` counts the final shards by status,
+  `ends` the run-record entries by end. `Summary::outcomes` has one element
+  per observer given to `run`, in that order (plan order), for the final
+  shard: its observer id, its `outcome.status`, and the first line of its
+  `outcome.message` as `str::lines` gives it (empty for an empty message).
+  For a shard the worker wrote, it comes from the shard the coordinator
+  already reads to check a `Done`; for one the coordinator writes, from
+  the message it writes (clipped as written). `statuses` counts the same
+  statuses.
+- **Errors.** A store error reading the previous run record is returned
+  before anything starts. A store or I/O error later (a log or shard that
+  cannot be written, a child that cannot be waited for) ends the run: the
+  workers are killed and reaped (at most 10 s), every job not finished is
+  recorded `cancelled`, the run record is published (errors ignored) and
+  the error returned.
+
+### 5.7 Interface
+
+`slip_exec::worker`:
+
+```rust
+pub const PROTOCOL: u64 = 1;
+pub const FRAME_MAX: usize = 64 << 20;
+pub struct Job { pub store: Vec<u8>, pub plan: Digest, pub phase: Phase, pub round: u64, pub observer: Observer }
+impl Job { pub fn store_path(&self) -> &Path; }
+pub trait Task { fn run(&mut self, job: &Job) -> Result<Shard, String>; }   // §5.1
+pub enum ToWorker { Job(Box<Job>), Exit }
+pub enum ToCoordinator { Ready { protocol: u64, tool: String },
+                         Done { observer: Digest, shard: Digest, cpu_ns: u64, peak_rss: u64 },
+                         Failed { observer: Digest, message: String } }
+// encode(&self) -> Vec<u8>; decode(&[u8]) -> Result<Self, wire::Error>, for both
+pub fn write_frame(w: &mut impl Write, payload: &[u8]) -> io::Result<()>;
+pub fn read_frame(r: &mut impl Read, max: usize) -> io::Result<Option<Vec<u8>>>;
+pub struct ServeOptions { pub tool: String, pub stack_bytes: usize, pub max_jobs: u64 }
+pub fn serve(task: impl Task + Send, options: &ServeOptions, input: impl Read, output: impl Write) -> io::Result<()>;
+pub fn cpu_ns_from_stat(text: &str) -> Option<u64>;
+```
+
+`slip_exec::pool` (the coordinator, §5.3–§7):
+
+```rust
+pub const DEFAULT_OBSERVER_TIMEOUT: Duration;                     // 1 h
+pub struct WorkerCommand { pub program: PathBuf, pub args: Vec<OsString>, pub env_remove: Vec<OsString> }
+pub struct Options { pub jobs: usize, pub admission: admission::Config, pub observer_timeout: Option<Duration>,
+                     pub worker_jobs: u64, pub sample_interval: Duration, pub tool_slip: String, pub tool_kiln: String }
+impl Options { pub fn new(jobs: usize, admission: admission::Config) -> Options; }   // the others at their defaults
+pub struct Summary { pub run: RunRecord, pub run_path: PathBuf, pub statuses: [u64; 4], pub ends: [u64; 5],
+                     pub outcomes: Vec<ObserverOutcome> }
+pub struct ObserverOutcome { pub observer: Digest, pub status: Status, pub message: String }
+pub enum PoolError { Store(StoreError), Io(io::Error), Cancelled }   // Display, Error, From<StoreError>, From<io::Error>
+pub fn run(store: &Store, plan_id: &Digest, observers: &[Observer], phase: Phase, round: u64,
+           worker: &WorkerCommand, options: &Options, tokens: &jobserver::Pool, sampler: &dyn process::Sampler)
+           -> Result<Summary, PoolError>;
+pub fn cleanup_on_signal(store: &Store) -> impl FnOnce() + Send + 'static;   // §7.1
+```
 
 ## 6. Memory admission
 
@@ -239,15 +659,101 @@ alone, it fails.
 All sampling is at the interval of §4. Decisions use sampled values only, so
 a test can drive the scheduler with a fake sampler.
 
+### 6.1 Admission rules
+
+`slip_exec::admission` is pure: no clock, no processes, no I/O. It owns the
+queue of pending jobs, so a requeue at the head is its own act.
+
+- **Budget.** `budget_from_system` takes `m`, the smaller of the cgroup
+  limit and the total (either alone when the other is unknown: `None`, or
+  a total of 0) and returns `m − max(2 GiB, m / 10)`. When that reserve is
+  not smaller than `m` (a machine of 2 GiB or less) the reserve is `m / 10`
+  only. Unknown memory (`None`, 0) gives 0, which disables admission.
+  `read_system` takes the smallest `memory.max` number along the process's
+  cgroup v2 directory (`/proc/self/cgroup` `0::` line, under
+  `/sys/fs/cgroup`) and its ancestors, and `MemTotal` of `/proc/meminfo`.
+- **Estimate.** Rule 1 uses the largest `peak_rss` of any job of the
+  observer in the most recent run record of the phase, any round
+  (`Store::latest_run`); 0 counts as unknown and falls to rule 2. `× 1.25`
+  is `p + p / 4`. A record that does not decode is ignored. All arithmetic
+  saturates.
+- **Pick.** With `B = 0`: the head of the queue (no admission, no caps, no
+  decisions). Otherwise nothing while a running job runs alone; then the
+  queue is scanned in order: a job that must run alone is admitted only
+  when nothing runs, and until then it **blocks the jobs after it**; a job
+  is admitted if nothing runs or `R + e ≤ B`; a job not admitted that has
+  been passed over `SKIP_LIMIT` times blocks the jobs after it. When a job
+  is started, every job before it in the queue is passed over once more.
+- **Reservation.** A running job's sample is its last one (0 before the
+  first); its reservation `max(e, sample)` lasts until `finished`, also
+  while it is being killed.
+- **Caps** (`on_samples`, `B > 0`): `rss > cap` (strictly; 0 never) is
+  `KillAtCap`. `retry` is true when more than one job is running and the
+  job has not had its cap retry. The retry is at the head of the queue,
+  alone, once; a job retried for its cap and killed at its cap again (it
+  then runs alone) fails.
+- **Pressure** (after the caps of the same round): the jobs neither being
+  killed nor `stopping` are summed; if the sum exceeds `B` and more than
+  one of them runs, the one started last (start order, not plan order) is
+  `KillForPressure`, at most one per round. Its new `e` is `2 ×` its last
+  sample, or its old `e` when that sample is 0. It goes back at the head
+  of the queue when it `finished`; from its third such requeue on it runs
+  alone, for every later run (a crash retry included).
+- **`finished(job, retry)`**: a decision taken by `on_samples` wins over
+  `retry` (a job failed at its cap is never requeued); otherwise `retry`
+  puts the job at the head of the queue. Unknown or not running: nothing.
+- **`stopping(job)`**: the coordinator is ending the job for a reason of
+  its own (a time limit, a protocol violation); it keeps its reservation
+  until `finished` but is no longer decided on.
+
+### 6.2 Interface
+
+`slip_exec::admission`:
+
+```rust
+pub const GIB: u64; pub const DEFAULT_ESTIMATE_BASE: u64 /* 512 MiB */;
+pub const DEFAULT_ESTIMATE_PER_BYTE: u64 /* 64 */; pub const DEFAULT_WORKER_STACK: u64 /* 1 GiB */;
+pub const SKIP_LIMIT: u32 /* 64 */; pub const ALONE_AFTER_REQUEUES: u32 /* 3 */;
+pub struct Config { pub budget: u64, pub estimate_base: u64, pub estimate_per_byte: u64,
+                    pub observer_memory: Option<u64>, pub worker_stack: u64 }
+impl Config { pub fn with_budget(budget: u64) -> Config; }        // the other fields at their defaults
+pub fn budget_from_system(cgroup_max: Option<u64>, total: u64) -> u64;
+pub fn read_system() -> (Option<u64>, u64);
+pub fn meminfo_total(text: &str) -> Option<u64>;                  // parsers behind read_system
+pub fn cgroup_memory_max(text: &str) -> Option<u64>;
+pub fn cgroup_v2_path(text: &str) -> Option<&str>;
+pub fn estimate<S: BuildHasher>(config: &Config, previous: &HashMap<Digest, u64, S>, observer: &Observer) -> u64;
+pub type JobKey = usize;                                          // index into the observers given
+pub enum Decision { KillAtCap { job: JobKey, retry: bool }, KillForPressure { job: JobKey, estimate: u64 } }
+pub struct Pick { pub job: JobKey, pub estimate: u64, pub alone: bool }
+pub struct Admission;
+impl Admission {
+    pub fn new<S: BuildHasher>(config: Config, previous: &HashMap<Digest, u64, S>, observers: &[Observer]) -> Admission;
+    pub fn config(&self) -> &Config;
+    pub fn estimate(&self, job: JobKey) -> u64;                   // current e
+    pub fn rss_cap(&self) -> Option<u64>;  pub fn address_space_cap(&self) -> Option<u64>;
+    pub fn reserved(&self) -> u64;                                // R
+    pub fn pending(&self) -> impl Iterator<Item = JobKey>;  pub fn pending_len(&self) -> usize;
+    pub fn running(&self) -> impl Iterator<Item = JobKey>;  pub fn running_len(&self) -> usize;
+    pub fn skips(&self, job: JobKey) -> u32;  pub fn requeues(&self, job: JobKey) -> u32;
+    pub fn runs_alone(&self, job: JobKey) -> bool;
+    pub fn peek(&self) -> Option<JobKey>;                         // what pick would start; no change
+    pub fn pick(&mut self) -> Option<Pick>;                       // selects AND marks running
+    pub fn on_samples(&mut self, samples: &[(JobKey, u64)]) -> Vec<Decision>;
+    pub fn finished(&mut self, job: JobKey, retry: bool);
+    pub fn stopping(&mut self, job: JobKey);  pub fn is_killing(&self, job: JobKey) -> bool;
+}
+```
+
 ## 7. Signals
 
 On `SIGINT` or `SIGTERM` the coordinator: kills every live child's process
 group (§4); waits for them to be reaped (at most 10 s); returns every pool
-token it holds (§3); removes its `tmp/` files, its workers' `tmp/` entries
-(§2 "Cleaning") and the store lock; writes the run record with the
-remaining jobs as `cancelled` (best effort); prints one line to standard
-error; and ends by the signal's default action, so its parent sees it
-killed by that signal. A second signal 0.5 s or more after the
+token it holds (§3); writes the run record with the remaining jobs as
+`cancelled` (best effort); removes its workers' `tmp/` entries (§2
+"Cleaning"), its own `tmp/` files and the store lock; prints one line to
+standard error; and ends by the signal's default action, so its parent sees
+it killed by that signal. A second signal 0.5 s or more after the
 first ends the process at once, after killing the children and returning the
 tokens. The process ends at the latest 15 s after the first signal. No write
 to standard error on these paths may panic or block the exit.
@@ -257,6 +763,64 @@ to standard error on these paths may panic or block the exit.
 entries (its own and its workers'), which the next run clears (§2).
 
 A worker does not handle signals; it dies with its process group.
+
+### 7.1 The signal path
+
+- `signals::install` is idempotent: only the first call installs anything.
+  Later calls drop their callback and return `false`. It also installs a
+  panic hook: a thread other than the signal threads that panics during an
+  interruption waits for the process to end.
+- **Cleanup order** (cleanup thread): `kill_live_children(reap)`, then
+  `jobserver::release_all()`, then the callback (a panic in it is caught),
+  then the single line
+  `slip: signal N: killed K child process(es), returned T jobserver token(s)`.
+  `; the cleanup callback panicked` is appended if it did. The process then
+  ends by the signal's default action, or by `_exit(128 + N)` if that cannot
+  be emulated.
+- **Bound or second signal.** Both kill every group without waiting and
+  return the tokens. Their line is
+  `slip: signal N: cleanup still running after <bound>s; exiting anyway`
+  (`<bound>` in seconds with one decimal) or
+  `slip: signal N: exiting without waiting for cleanup`, written from a
+  thread the signal thread waits on for at most 100 ms.
+- `finish(code)` returns `code` unless the process is interrupted. If it is,
+  `finish` waits like `exit_interrupted`, which ends the process itself 5 s
+  after the bound if the signal thread has not.
+- **The coordinator.** `pool::run` is cancelled when
+  `signals::interrupted()` is set or `pool::cleanup_on_signal`'s callback
+  runs. It then does what its error path does (§5.6 "Errors") and returns
+  `PoolError::Cancelled`: the running jobs and every pending one (attempt
+  number of its next run, `queued_ns` the time of the cancellation,
+  `wall_ns` 0) are `cancelled`, with no shard. A worker found dead after
+  the interruption is never counted as a crash and no `failed` shard is
+  written for it. Tokens are dropped with the coordinator; after
+  `jobserver::release_all` that returns nothing.
+- **`pool::cleanup_on_signal(store)`** is the callback for
+  `signals::install` in a process that runs phases. Each run in progress
+  registers the pids of the workers it started whose `tmp/` entries it has
+  not removed yet. The callback tells every run in progress that it is
+  cancelled, waits at most 3 s for each to publish its run record, removes
+  the `tmp/` entries of every pid still registered (the signal path has
+  killed every child by then), and then runs `store::cleanup_on_signal`
+  (§2.1 "Closing"). A run that finishes its cancellation in time has
+  emptied its registry, so the removal here matters only for a run that
+  does not. Whichever of the coordinator and the signal path kills and
+  reaps the workers first, the other finds nothing left, so the counts in
+  the signal line vary; the fifo is whole either way.
+
+### 7.2 Interface
+
+`slip_exec::signals`:
+
+```rust
+pub struct Timing { pub reap: Duration, pub bound: Duration, pub duplicate: Duration }  // default 10 s, 15 s, 0.5 s
+pub const SIGNAL_THREAD: &str; pub const CLEANUP_THREAD: &str;
+pub fn install(on_cleanup: Box<dyn FnOnce() + Send>) -> bool;
+pub fn install_with(on_cleanup: Box<dyn FnOnce() + Send>, timing: Timing) -> bool;
+pub fn interrupted() -> Option<i32>;
+pub fn finish(code: ExitCode) -> ExitCode;
+pub fn exit_interrupted() -> !;
+```
 
 ## 8. Commands (M0)
 
@@ -273,7 +837,8 @@ slip --help
 ```
 
 `slip --help` (or `-h`) prints the usage text on standard output and
-exits with status 0.
+exits with status 0. `slip --version` prints `slip <version> (kiln
+<version>)`; the same string is the `tool` of the worker's `Ready`.
 
 An option's value is the next argument, or follows `=` for a long option
 (`--store=x`) and directly for `-j` (`-j4`). An option given twice is a
@@ -282,10 +847,34 @@ is a decimal number with an optional suffix `K`, `M`, `G`, `T` (powers of
 1024). Paths and `--only` values are byte strings, not required to be
 UTF-8.
 
+- **Options** are those above, each command accepting only its own;
+  `__worker` accepts `--worker-jobs` and `--worker-stack`; `dump` accepts
+  none (`dump -- <file>` reads a file whose name starts with `-`). An
+  argument that starts with `-` (other than `-` and `--`) in option
+  position is an option; an option's value is taken whatever it starts
+  with. A positional argument is refused except `dump`'s one file. After
+  `--` everything is positional. `-j=4` has the value `=4` (malformed).
+- **Numbers** are decimal digits only (no sign, no white space, leading
+  zeros allowed), at most `u64::MAX`. **Sizes** are a number and an
+  optional upper-case suffix; a product above `u64::MAX` is malformed.
+  Lower-case suffixes are malformed.
+- **Ranges.** `-j`, `--worker-jobs`, `--worker-stack` and
+  `--observer-memory` must be at least 1; `--limit`, `--memory`,
+  `--observer-timeout`, `--estimate-base` and `--estimate-per-byte` may be 0.
+- **Usage errors** are `slip: <message>` and then the usage text, on
+  standard error. No command, and `--help`, `-h` or `--version` with an
+  argument, are usage errors.
+
 Without `--db name=`, a single database is named `default`; several need
 names. A `--db` value is split at its first `=` only if what precedes it is
 a non-empty name of ASCII letters, digits, `_`, `-` and `.`; otherwise the
-whole value is the path.
+whole value is the path. With several `--db`, an unnamed one or a name
+given twice is a usage error, reported before anything is read.
+
+`main` passes a locked standard output and an *unlocked* standard error:
+the signal thread, the jobserver and the pool write warnings to standard
+error from other threads, and a lock held by the main thread would block
+them (the signal path for up to its 15 s bound).
 
 ### 8.1 `plan`
 
@@ -300,27 +889,44 @@ excluded <reason> <n>          one line per reason of spec/model.md §7, in its 
 
 Main files are hashed on as many threads as CPU tokens can be had without
 waiting (§3: the implicit token, then pool tokens while one is idle), at
-most `-j`.
+most `-j`: `Pool::from_env()` (with `-j` if given), then `try_acquire`
+until it returns none or `jobs()` tokens are held; the plan is built on
+that many threads and the tokens are dropped when the build returns,
+before the plan is published.
 
 ### 8.2 `parse`
 
 Runs the map phase with the parse task on the observers of a plan.
 
-- `--plan <x>`: if `x` is 4 to 64 hexadecimal digits it is the prefix of a
-  plan id in the store, which must match exactly one plan (none, or several:
-  `Input` error naming them); otherwise `x` is the path of a plan file,
-  which is read, validated and published to the store.
+- `--plan <x>`: if `x` is 4 to 64 hexadecimal digits (either case; it is
+  lower-cased) it is the prefix of a plan id in the store, which must
+  match exactly one plan (none, or several: `Input` error naming them);
+  otherwise `x` is the path of a plan file, which is read, validated and
+  published to the store (`Store::publish_plan`, which validates it again).
 - `--db …`: the plan is built and published as by `plan`, with the same
   output, and then parsed. Exactly one of `--plan` and `--db` is given.
 - `--only` keeps the observers whose main file path contains the substring
   (any of them, if repeated); `--limit` then keeps the first `n` in plan
   order. If a non-empty plan is left with no observer, a warning is printed
-  and the phase runs over nothing.
+  and the phase runs over nothing:
+  `slip: warning: the selection keeps none of the plan's <n> observer(s); the phase runs over nothing`.
 
-The store is opened exclusively (§2). The worker command is the running
-executable (`std::env::current_exe`) with the arguments `__worker`,
-`--worker-jobs` and `--worker-stack`. The round is 0. On standard output,
-after the phase:
+The store is opened exclusively (§2) before any database or plan is read,
+and the signal handling is installed at once
+(`signals::install(pool::cleanup_on_signal(store))`, §7.1), so an
+interruption while the plan is built also removes the lock. The worker
+command is the running executable (`std::env::current_exe`) with the
+arguments `__worker`, `--worker-jobs <n>` and `--worker-stack <bytes>`
+(both always passed), and with every variable of the coordinator's
+environment whose name starts with `KILN_` removed. The round is 0. The
+pool is given `-j` (`Pool::jobs`); the tools of the plan; `--worker-jobs`;
+`--observer-timeout` (default `DEFAULT_OBSERVER_TIMEOUT`, 0: none); and
+`admission::Config::with_budget(B)` with `--observer-memory`,
+`--worker-stack` and the two estimate parameters when given. The sampler
+is `ProcSampler`. When `B` comes from the system and is 0, a warning is
+printed:
+`slip: warning: the memory available is unknown; memory admission and caps are off (as with --memory 0)`.
+On standard output, after the phase:
 
 ```
 plan <plan id>                 (not repeated after --db)
@@ -332,8 +938,18 @@ peak_rss <bytes> <main file of the observer it belongs to>      (omitted if no j
 run <path of the run record>
 ```
 
-and on standard error one line per observer whose shard is not `ok`, in plan
-order: `slip: <status>: <main file>: <first line of the shard's message>`.
+`wall` is the run record's `wall_ns`, truncated to milliseconds.
+`peak_rss` is the largest `peak_rss` of the run record's jobs (the first
+such job on a tie) and its observer's main file; it is omitted when every
+job's is 0, or there is no job. Paths are written as their bytes.
+
+After that summary, on standard error, one line per observer whose shard is
+not `ok`, in plan order: `slip: <status>: <main file>: <first line of the
+shard's message>`, from the pool's outcomes (`Summary::outcomes`, §5.6);
+the shards are not read again.
+
+`PoolError::Cancelled` returns through `signals::finish` (§7.1), printing
+nothing more.
 
 ### 8.3 `dump`
 
@@ -348,6 +964,21 @@ front end on the job's observer (`slip_kiln::parse_observer`) with the
 scratch directory of §2 in the job's store. It is not listed in the usage
 text. Nothing but protocol messages may be written to its standard output.
 
+- `serve` runs with `tool` = the `--version` line, `stack_bytes` =
+  `--worker-stack` and `max_jobs` = `--worker-jobs`, over unlocked
+  standard input and output. A `serve` error is `slip __worker: <error>` on
+  standard error and status 1.
+- **The parse task** opens the job's store (`Job::store_path`, absolute)
+  shared on its first job and keeps it, with its `Store::scratch_dir`, for
+  its lifetime; a job naming another store replaces both. The scratch
+  directory is `ParseOptions::scratch`. The store's `Drop` (at the end of
+  `serve`) removes the scratch directory.
+- The front end runs under Kiln's stack guard (`spec/model.md` §8.4):
+  nesting deeper than the stack ends in Kiln's fatal diagnostic, a
+  `diagnosed` shard, instead of aborting the worker.
+- The worker keeps Rust's default panic hook: its report goes to the
+  attempt's log.
+
 ### 8.5 Exit status
 
 | Status | Meaning |
@@ -359,20 +990,135 @@ text. Nothing but protocol messages may be written to its standard output.
 | 70 | Internal error (a bug): a panic in the coordinator. One line on standard error, `slip: internal error: <message> (<file>:<line>)`, after every live child has been killed and every pool token returned. |
 | killed by signal | Interrupted (§7). |
 
+- **Status 1 for `parse`** also when the pool's outcomes are not one per
+  selected observer.
+- **Input errors.** A store error names the store (the `Unrecognised` and
+  `Io` errors already start with a path and are printed as they are); a
+  database error is `slip: <path as given>: <detail>`
+  (`PlanError::Database`); a plan or container file that cannot be read or
+  is invalid is `slip: <path>: <error>`; `--plan` prefixes are
+  `slip: plan <prefix>: no plan in the store <root> has an id starting with it`
+  and `slip: plan <prefix>: <n> plans have an id starting with it: <ids>`.
+  `pool::run` returning `PoolError::Store` or `PoolError::Io` is also
+  status 3 (`slip: parse: <error>` for the latter).
+- **Status 70.** `run` (every command but `__worker`) installs, once per
+  process, a panic hook that prints nothing and records the first panic's
+  `<message> (<file>:<line>)`. `run` wraps the command in `catch_unwind`;
+  on a panic it calls `process::kill_live_children_now` and
+  `jobserver::release_all`, then prints `slip: internal error: <that>` and
+  returns 70. A panic on a thread that does not reach `run` (none is known)
+  prints nothing. `signals::install`, which `parse` calls later, wraps this
+  hook. The hidden `slip __panic` panics on purpose, for the test of this
+  status.
+
+### 8.6 Interface
+
+`slip_cli`:
+
+```rust
+// lib.rs
+pub mod args; pub mod commands; pub mod worker;
+pub mod status { pub const OK: u8 = 0; FINDINGS = 1; USAGE = 2; INPUT = 3; INTERNAL = 70; }
+pub fn version_line() -> String;                 // "slip <v> (kiln <v>)"
+pub fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> ExitCode;
+
+// args.rs
+pub const USAGE: &str; pub const DEFAULT_STORE: &str /* ".slip" */;
+pub const DEFAULT_WORKER_JOBS: u64 /* 1 */; pub const DEFAULT_WORKER_STACK: u64 /* 1 GiB */;
+pub enum Invocation { Version, Help, Plan(PlanArgs), Parse(ParseArgs), Dump { file: PathBuf }, Worker(WorkerArgs), Panic }
+pub struct Db { pub name: Option<String>, pub path: PathBuf }
+pub struct PlanArgs { pub dbs: Vec<Db>, pub store: PathBuf, pub jobs: Option<usize> }
+pub enum PlanSource { Plan(OsString), Db(Vec<Db>) }
+pub struct ParseArgs { pub source: PlanSource, pub store: PathBuf, pub jobs: Option<usize>,
+                       pub only: Vec<Vec<u8>>, pub limit: Option<u64>, pub memory: Option<u64>,
+                       pub observer_memory: Option<u64>, pub observer_timeout: Option<u64>,
+                       pub estimate_base: Option<u64>, pub estimate_per_byte: Option<u64>,
+                       pub worker_jobs: u64, pub worker_stack: u64 }
+pub struct WorkerArgs { pub worker_jobs: u64, pub worker_stack: u64 }
+pub struct UsageError(pub String);
+pub fn parse(args: &[OsString]) -> Result<Invocation, UsageError>;
+pub fn parse_size(text: &str) -> Option<u64>;
+
+// commands.rs
+pub fn dispatch(invocation: Invocation, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode;
+
+// worker.rs
+pub struct ParseTask;  impl ParseTask { pub fn new() -> ParseTask; }  impl Task for ParseTask;
+pub fn main(args: &WorkerArgs) -> ExitCode;
+```
+
 ## Tests
 
-- `crates/slip_exec/tests/jobserver.rs` — §3 against a fifo made by the
-  test: the implicit token, release on every path, fallback, `status` and
+- `crates/slip_exec/tests/jobserver.rs` — §3, §3.1 against fifos made by
+  the tests (never the host pool): `MAKEFLAGS` parsing, the defaults,
+  fallback, `-j`, pool + implicit bound, a freed implicit token waking a
+  waiter, release on drop, error and panic, `try_acquire`, channel
+  requests, abandoned requests, `release_all` exactly once, `status` and
   `refill`.
-- `crates/slip_exec/tests/process.rs` — §4: process groups, caps, kill
-  reasons, the table.
-- `crates/slip_exec/tests/signals.rs` — §7 at the level of `signals`:
-  children killed, tokens returned, the second signal, the bound.
-- `crates/slip_exec/tests/store.rs` — §2.
-- `crates/slip_exec/tests/pool.rs` — §5–§7 with a fake worker program whose
-  behaviour is chosen per job (succeed, allocate, crash, hang, violate the
-  protocol) and a fake sampler: every row of §5.4, every rule of §6, signals.
-- `crates/slip_cli/tests/cli.rs` — §8, including each exit status.
+- `crates/slip_exec/tests/process.rs` — §4, §4.1: the process group, a kill
+  reaching grandchildren, kill reasons, timeout, the rss cap on fake
+  samples, `/proc` sampling, the wrapper's transparency and the cap, a zero
+  cap, no `sh`, and the table from spawn to reap. The unit tests of
+  `crates/slip_exec/src/process.rs`: a shutdown that kills, reaps and
+  refuses spawns, including a spawn that was in flight, and the immediate
+  kill, both on a private table.
+- `crates/slip_exec/tests/signals.rs` — §7, §7.1 against a re-executed probe
+  holding the implicit token, a 4-token pool and 5 children, with a sixth
+  job waiting: `SIGTERM` and `SIGINT`, a dead stderr reader, signals
+  between spawns, a panicking callback, a second signal and the bound.
+- `crates/slip_exec/tests/store.rs` — §2, §2.1: initialising absent and
+  empty directories, refusing unrecognised and other-version ones, an
+  absolute root, every path of the layout, validation on publish, atomic
+  replacement under a concurrent reader, `find_plan`, `latest_run`, `Busy`
+  against a re-executed lock holder and within one process, the takeover of
+  a dead pid's lock with stale files and scratch directories removed, an
+  unreadable lock, `Shared` neither locking nor cleaning,
+  `remove_entries_of`, `Drop` and `cleanup_on_signal`. The lock holder's
+  output is read on a thread and every wait for it, and for its exit, is
+  bounded (1 min).
+- `crates/slip_exec/tests/worker.rs` — §5.1, §5.2, §5.5: hand-written bytes
+  and round trips of every message, rejections, frames, `serve` in process
+  (validation of the task's shard, clipping, a panic ending the worker,
+  `max_jobs`, `Exit`, bad input), and the fake worker as a child process
+  for every behaviour of its table.
+- `crates/slip_exec/tests/admission.rs` — §6, §6.1 with numbers only: the
+  budget formula and its edge cases, the readings' parsers; both estimate
+  rules; the reservation; admission when it fits (equality included), when
+  nothing runs, backfill, the 64-skip guard; caps and their values; a cap
+  kill alone (fails) and beside others (one alone retry, then fails; once
+  only); pressure (newest by start order, `2 ×` the sample, head of the
+  queue, not with one job, alone after three, caps first); `B = 0`;
+  `finished` with retry and `stopping`.
+- `crates/slip_exec/tests/pool.rs` — §5–§7 with `slip-fake-worker` under a
+  fake sampler (real `/proc` values, or a constant): every row of §5.4
+  (`ok`, `diagnosed`, `fail:`, `panic`, `exit:`, `abort`, `garbage`,
+  `wrong-observer`, `no-shard`, `hang` with a 3 s timeout, `late-output`)
+  with the retry, the two records, messages and logs; a `Ready` for another
+  protocol, a silent exit, a missing program; `-j` and the implicit token
+  against a test fifo (all tokens back, after failures too); plan order;
+  `worker_jobs = 3`; cap alone, cap retry alone, pressure, `B = 0`, rule 1
+  of the estimate across two runs, the address-space cap and `env_remove`
+  seen in `/proc`; the workers' `tmp/` entries removed after a crash, a
+  protocol violation, a timeout, a cap kill and a pressure kill
+  (`s2_cleaning_*`); `SIGINT` and `SIGTERM` to a re-executed probe running
+  the pool (dies by the signal, workers gone, fifo whole, lock and `tmp/`
+  clean, a run record of six `cancelled` jobs, no logs left). Every run is
+  bounded (2 min) and checks that the record validates, accounts for every
+  attempt and that the outcomes match the shards (`check_run`).
+- `crates/slip_exec/src/bin/slip-fake-worker.rs` — the test fixture behind
+  `worker.rs` and `pool.rs`, not part of Slip: `serve` with tool
+  `slip-fake-worker`, `--jobs <n>` (default 1), `--stack <bytes>` (default
+  16 MiB) and `--scratch 0|1`. Its behaviours (`observer.command.argv[1]`)
+  are documented at the top of the file; `abort` sends itself `SIGKILL`
+  (through `kill`, so no core file is written); `garbage`,
+  `wrong-observer` and `no-shard` exit 0 right after writing. With
+  `--scratch 1`, each job first makes `tmp/<pid>.d/f` and a loose file
+  `tmp/<pid>.fake.tmp`, names both on standard error, and removes the
+  loose file only if the behaviour returns.
+- `crates/slip_cli/tests/args.rs` — §8: the command line, parsed without
+  starting a process.
+- `crates/slip_cli/tests/cli.rs` — §8 through the executable, including
+  each exit status of §8.5.
 
 ## Open questions
 
@@ -396,12 +1142,11 @@ text. Nothing but protocol messages may be written to its standard output.
   to start is dropped without removal; a worker killed and not yet reaped
   when the run is abandoned can write one more entry after the removal.
   The next exclusive open removes what is left.
-- Store corner cases left as landed (`spec/landed/exec/WP-008.md`): two
-  openers initialising one empty directory at the same moment (one can be
-  refused as unrecognised); entries under `tmp/` that the store did not
-  name are never removed; without `/proc` nothing is ever stale; a worker
-  given a store that has been removed creates a new one; two `Store`s of
-  one process share a scratch directory.
+- Store corner cases: two openers initialising one empty directory at the
+  same moment (one can be refused as unrecognised); entries under `tmp/`
+  that the store did not name are never removed; without `/proc` nothing
+  is ever stale; a worker given a store that has been removed creates a
+  new one; two `Store`s of one process share a scratch directory.
 - `jobserver::resolve_pool_size` accepts `0` and a padded number for
   `$SLIP_JOBS`; `cargo xtask jobserver` refuses both itself
   (`spec/harness.md` §5). One rule, in `slip_exec`.
@@ -409,15 +1154,15 @@ text. Nothing but protocol messages may be written to its standard output.
   empty; the container trailer makes that detectable, not impossible.
 - Whether the coordinator should lower its budget when other processes in
   the same cgroup use memory. Today the budget is static.
-- Coordinator corner cases left as landed (`spec/landed/exec/WP-009.md`):
-  a store or I/O error while a job is being started or finished leaves that
-  job out of the `cancelled` run record; a worker that has exited but whose
-  attempt is not finished still counts towards pressure with its last
-  sample, so a crash in that window can be recorded as a pressure requeue;
-  a `Done` not delivered within 1 s of the worker being reaped is a crash;
-  the estimate's rule 1 reads the most recent run record even when that run
-  was cancelled; idle workers kept for reuse hold memory that admission
-  does not count; while a worker is ending the loop polls every 5 ms.
+- Coordinator corner cases: a store or I/O error while a job is being
+  started or finished leaves that job out of the `cancelled` run record; a
+  worker that has exited but whose attempt is not finished still counts
+  towards pressure with its last sample, so a crash in that window can be
+  recorded as a pressure requeue; a `Done` not delivered within 1 s of the
+  worker being reaped is a crash; the estimate's rule 1 reads the most
+  recent run record even when that run was cancelled; idle workers kept
+  for reuse hold memory that admission does not count; while a worker is
+  ending the loop polls every 5 ms.
 - A job that must run alone blocks the jobs behind it instead of letting
   them start around it. Simple and never over budget; costs throughput when
   a large job waits for the running ones to drain.

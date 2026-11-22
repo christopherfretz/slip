@@ -1,5 +1,5 @@
 //! `spec/exec.md` §2: the store. Opening, the layout, publishing, locking
-//! and cleaning, plus the rules of `spec/landed/exec/WP-008.md`. The only
+//! and cleaning, plus the rules of §2.1. The only
 //! child processes are this test binary re-executed as a lock holder and
 //! `true`; each is killed and reaped on every path.
 #![cfg(target_os = "linux")]
@@ -187,7 +187,7 @@ fn s2_open_refuses_other_version() {
     assert_eq!(names(&s), ["VERSION"]);
 }
 
-// landed/exec/WP-008: the root is absolute.
+// §2.1 "Root": the root is absolute.
 #[test]
 fn s2_root_is_absolute() {
     let s = scratch("relative");
@@ -266,7 +266,7 @@ fn s2_layout_paths() {
     assert!(names(&root.join("tmp")).is_empty());
 }
 
-// landed/exec/WP-008: publish_* validate what they publish.
+// §2.1 "Publishing validates": publish_* validate what they publish.
 #[test]
 fn s2_publish_refuses_invalid_files() {
     let s = scratch("invalid");
@@ -552,7 +552,7 @@ fn s2_dead_lock_taken_over_and_stale_tmp_removed() {
     let tmp = s.join("tmp");
     fs::write(tmp.join(format!("{dead}.0.tmp")), "partial").unwrap();
     fs::write(tmp.join(format!("{dead}.17.tmp")), "partial").unwrap();
-    // A dead process's scratch directory, with contents (landed/exec/WP-008).
+    // A dead process's scratch directory, with contents (§2.1).
     fs::create_dir_all(tmp.join(format!("{dead}.d/sub"))).unwrap();
     fs::write(tmp.join(format!("{dead}.d/sub/f")), "x").unwrap();
     // Entries of live processes and names not of the store's form stay.

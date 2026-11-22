@@ -20,8 +20,8 @@
 //! its own `tmp/` entries and, if it holds it, the lock, when dropped, and
 //! [`cleanup_on_signal`] does the same from the signal path (§7).
 //! [`Store::remove_entries_of`] removes the entries of a dead child (the
-//! pool's workers). The rules the spec leaves open are in
-//! `spec/landed/exec/WP-008.md` and `WP-018.md`.
+//! pool's workers). The rules in detail are `spec/exec.md` §2.1, the
+//! interface §2.2.
 
 use std::collections::HashSet;
 use std::fmt;

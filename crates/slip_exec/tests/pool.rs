@@ -4,7 +4,7 @@
 //! the test. The signal tests re-execute this binary as a probe that runs
 //! the pool and is then signalled. Every run is bounded ([`run_bounded`]),
 //! every wait is on a condition with a deadline, and every test removes its
-//! directory. The rules beyond the spec are in `spec/landed/exec/WP-009.md`.
+//! directory. The coordinator's rules in detail are §5.6 and §7.1.
 #![cfg(target_os = "linux")]
 
 use std::collections::{HashMap, HashSet};
@@ -396,7 +396,7 @@ fn s5_4_every_row_retry_and_logs() {
 
 /// §5.2 "protocol violation": a `Ready` for another protocol, and a worker
 /// that exits 0 without answering, are crashes; a worker that cannot be
-/// started is one too (landed).
+/// started is one too (§5.6).
 #[test]
 fn s5_2_ready_protocol_and_silent_exit_are_crashes() {
     let dir = scratch("ready");
@@ -517,7 +517,7 @@ fn s5_3_plan_order() {
 
 /// §5.2 `--worker-jobs` above 1: a worker serves that many jobs, then a new
 /// process takes over; a worker that answered `Failed` is not reused
-/// (landed); every observer still gets its shard.
+/// (§5.6); every observer still gets its shard.
 #[test]
 fn s5_2_worker_jobs_above_one() {
     let dir = scratch("reuse");
