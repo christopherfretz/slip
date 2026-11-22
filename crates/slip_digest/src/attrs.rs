@@ -1491,6 +1491,19 @@ mod tests {
             });
             assert_eq!(decl_bytes(src, "c++20", "S"), (want, None), "{src}");
         }
+        for (src, kind) in [
+            ("struct [[gsl::Owner(int)]] S {};", attr_kind::GSL_OWNER),
+            ("struct [[gsl::Pointer(int)]] S {};", attr_kind::GSL_POINTER),
+        ] {
+            let (got, cause) = decl_bytes(src, "c++20", "S");
+            let start = bytes(|s| {
+                s.count(1);
+                head(s, kind, CXX11, &[false, true]);
+                s.opt(true);
+            });
+            assert!(got.starts_with(&start), "{src}: {got:?}");
+            assert_eq!(cause, None, "{src}");
+        }
     }
 
     // §10.1 `BUILTIN`, `BUILTIN.a` (`out`), `flags-implicit`: a lazily
