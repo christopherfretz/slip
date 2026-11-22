@@ -79,3 +79,21 @@ review: the corpus against clang 22; `drive()` mirroring `run_as` and
 to the user's cache, and its engine's diagnostics not counted in the
 report; the renumbering of PCH snapshot format 117.
 
+
+## Asked next (2026-11-22, after WP-025)
+
+Slip's parse task now runs on the entry (`spec/model.md` §8.4). What it
+still works around, in the order it matters:
+
+1. **A working directory and an environment as parameters**
+   (`FrontEndOptions`). Today Slip calls `std::env::set_current_dir`
+   before each parse, which is process state: one parse at a time per
+   process, and `Command.env` is not applied at all.
+2. **The bytes, or size and a digest, of each `consulted` file** (an
+   `#embed` resource, a `__has_embed` hit). Kiln read them; Slip reads
+   them a second time for the input list, and a file changed in between
+   is not detected.
+3. **The PCH probe off** (an option): `-include h` with `h.pch` beside
+   it is turned into `-include-pch` and then refused with
+   `drv_front_end_unsupported`; a tooling client wants the header
+   parsed as text.
