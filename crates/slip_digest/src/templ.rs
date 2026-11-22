@@ -18,6 +18,50 @@ use crate::tables::{arg_view, spec_kind, templ_link_kind, ttp_kind};
 use crate::walk::{TOO_DEEP, Walk};
 use crate::{Area, Cause};
 
+/// The specialisation kind that governs declaration `d`: the first kind
+/// found climbing from `d` through its lexical contexts, where each step
+/// reads the declaration's own `SpecInfo` or `MemberSpecInfo` and else its
+/// entity's (Kiln keys a member specialisation by the entity's first
+/// declaration, not by an out-of-line definition of it). The climb stops
+/// at the first kind found, so an explicit specialisation and what is
+/// written in it are governed by `ExplicitSpecialization` whatever
+/// encloses them (digest §2.1), and a friend defined in an instantiation
+/// by the instantiation. `None`: nothing on the way has a kind.
+pub(crate) fn governing_kind(w: &Walk<'_>, d: DeclId) -> Option<SpecKind> {
+    let ast = w.ast;
+    let own = |x: DeclId| {
+        ast.spec_info(x)
+            .map(|(_, i)| i.kind)
+            .or_else(|| ast.member_spec_info(x).map(|(_, i)| i.kind))
+    };
+    let mut c = Some(d);
+    for _ in 0..GOVERNING_LIMIT {
+        let x = c?;
+        if let Some(k) = own(x).or_else(|| own(w.entity(x))) {
+            return Some(k);
+        }
+        c = ast.decls.lexical_ctx(x);
+    }
+    None
+}
+
+/// Contexts deeper than this are not climbed by `governing_kind`.
+const GOVERNING_LIMIT: u32 = 1024;
+
+/// Whether declaration `d` was made by instantiation, of any form
+/// (`governing_kind`): an explicit specialisation, a declaration in one,
+/// and one in no specialisation are written in source.
+pub(crate) fn instantiated(w: &Walk<'_>, d: DeclId) -> bool {
+    match governing_kind(w, d) {
+        Some(
+            SpecKind::ImplicitInstantiation
+            | SpecKind::ExplicitInstantiationDeclaration
+            | SpecKind::ExplicitInstantiationDefinition,
+        ) => true,
+        Some(SpecKind::ExplicitSpecialization | SpecKind::Undeclared) | None => false,
+    }
+}
+
 /// The template head of a discriminator (§9, §3.3): `record
 /// TemplateParamList` with each parameter as its `DeclNode` rows (which
 /// bring in its `TemplateParmInfo`) and nothing else, so that a key does

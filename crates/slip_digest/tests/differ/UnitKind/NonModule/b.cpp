@@ -1,5 +1,4 @@
-// §10.7 UnitKind `NonModule`: the owner of a declaration of a translation unit that is not a module unit.
-#if 0
-export module m;
-#endif
+// §10.7 UnitKind `NonModule`: a declaration of a translation unit that is not a module unit (no owner written) against one of the global module fragment of an interface unit.
+module;
 int x;
+export module m;

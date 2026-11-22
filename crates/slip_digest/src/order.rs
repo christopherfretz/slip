@@ -13,9 +13,10 @@
 //! unordered ([basic.start.dynamic]/1). An explicit specialisation is
 //! written in source and is listed.
 
+use std::collections::HashSet;
+
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
-use slip_kiln::kiln::ast::templates::SpecKind;
 
 use crate::Cause;
 use crate::stream::Stream;
@@ -28,6 +29,10 @@ const HEADER_IMPORT: Cause = Cause::Unaccounted("UnitInfo/imports");
 const DEPTH_LIMIT: u32 = 1024;
 /// A scope nested past `DEPTH_LIMIT`.
 const TOO_DEEP: Cause = Cause::Unaccounted("order/depth");
+/// A member of a kind Kiln does not make (`ClassTemplateSpecialization`,
+/// `VarTemplateSpecialization`: a specialisation is a `CXXRecord` or a
+/// `Var`, `kiln_ast/src/decl.rs:74`, `:117`).
+const KIND_UNACCOUNTED: Cause = Cause::Unaccounted("order/kind");
 
 /// The order unit's stream: `count` and the `key` of each variable, then
 /// `count` and, for each import of the translation unit's own
@@ -47,49 +52,132 @@ pub(crate) fn write(w: &mut Walk<'_>, s: &mut Stream) {
 /// The variables defined in the lexical members of `ctx`, in order, and
 /// of the scopes among them that are walked.
 fn collect(w: &Walk<'_>, s: &mut Stream, ctx: DeclId, depth: u32, out: &mut Vec<DeclId>) {
+    // The holding variables of tuple-like bindings, once.
+    let holding: HashSet<DeclId> = w.ast.decls.cold.binding_var.iter().map(|(_, &h)| h).collect();
+    members(w, s, &holding, ctx, depth, out);
+}
+
+/// What the walk does with a member.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Visit {
+    /// A scope whose members are walked.
+    Enter,
+    /// A variable declaration, listed if `listed` says so.
+    Var,
+    /// Neither.
+    Skip,
+}
+
+/// `collect` over the members of `ctx`.
+fn members(
+    w: &Walk<'_>,
+    s: &mut Stream,
+    holding: &HashSet<DeclId>,
+    ctx: DeclId,
+    depth: u32,
+    out: &mut Vec<DeclId>,
+) {
     if depth > DEPTH_LIMIT {
         s.indeterminate(TOO_DEEP);
         return;
     }
     let ast = w.ast;
     for m in ast.decls.members(ctx) {
-        if listed(w, m) {
-            out.push(m);
-        }
-        if walked(w, m) {
-            collect(w, s, m, depth + 1, out);
+        match visit(s, ast.decls.get(m).kind()) {
+            Visit::Enter => members(w, s, holding, m, depth + 1, out),
+            Visit::Var => {
+                if listed(w, holding, m) {
+                    out.push(m);
+                }
+            }
+            Visit::Skip => {}
         }
     }
 }
 
-/// Whether the member `m` is a scope whose members the walk reads: a
-/// namespace, a transparent scope, or a class written in source (not a
-/// template's pattern or partial specialisation, not an instantiation).
-fn walked(w: &Walk<'_>, m: DeclId) -> bool {
-    let ast = w.ast;
-    let kind = ast.decls.get(m).kind();
-    if kind == DeclKind::Namespace || kind == DeclKind::LinkageSpec || kind == DeclKind::Export {
-        return true;
+/// The walk Kiln's code generation makes (`kiln_codegen/src/module.rs:657`):
+/// into namespaces, the transparent scopes and classes, not into function
+/// bodies (whose variables are not at namespace or class scope) nor
+/// templates. A class that is a template's pattern or an instantiation is
+/// entered: `listed` leaves out what is declared in it.
+fn visit(s: &mut Stream, kind: DeclKind) -> Visit {
+    match kind {
+        DeclKind::Namespace | DeclKind::LinkageSpec | DeclKind::Export | DeclKind::CXXRecord => {
+            Visit::Enter
+        }
+        DeclKind::Var => Visit::Var,
+        DeclKind::ClassTemplateSpecialization | DeclKind::VarTemplateSpecialization => {
+            s.indeterminate(KIND_UNACCOUNTED);
+            Visit::Skip
+        }
+        DeclKind::TranslationUnit
+        | DeclKind::NamespaceAlias
+        | DeclKind::Empty
+        | DeclKind::FileScopeAsm
+        | DeclKind::UsingDirective
+        | DeclKind::Using
+        | DeclKind::UsingEnum
+        | DeclKind::UsingShadow
+        | DeclKind::ConstructorUsingShadow
+        | DeclKind::UsingPack
+        | DeclKind::UnresolvedUsingValue
+        | DeclKind::UnresolvedUsingTypename
+        | DeclKind::UnresolvedUsingIfExists
+        | DeclKind::Typedef
+        | DeclKind::TypeAlias
+        | DeclKind::Enum
+        | DeclKind::EnumConstant
+        | DeclKind::ClassTemplatePartialSpecialization
+        | DeclKind::Field
+        | DeclKind::IndirectField
+        | DeclKind::AccessSpec
+        | DeclKind::Friend
+        | DeclKind::FriendTemplate
+        | DeclKind::Function
+        | DeclKind::CXXMethod
+        | DeclKind::CXXConstructor
+        | DeclKind::CXXDestructor
+        | DeclKind::CXXConversion
+        | DeclKind::CXXDeductionGuide
+        | DeclKind::ParmVar
+        | DeclKind::ImplicitParam
+        | DeclKind::Binding
+        | DeclKind::VarTemplatePartialSpecialization
+        | DeclKind::ClassTemplate
+        | DeclKind::FunctionTemplate
+        | DeclKind::VarTemplate
+        | DeclKind::TypeAliasTemplate
+        | DeclKind::Concept
+        | DeclKind::BuiltinTemplate
+        | DeclKind::TemplateTypeParm
+        | DeclKind::NonTypeTemplateParm
+        | DeclKind::TemplateTemplateParm
+        | DeclKind::ImplicitConceptSpecialization
+        | DeclKind::RequiresExprBody
+        | DeclKind::LifetimeExtendedTemporary
+        | DeclKind::TemplateParamObject
+        | DeclKind::StaticAssert
+        | DeclKind::Label
+        | DeclKind::ContractResultName
+        | DeclKind::ConstevalBlock => Visit::Skip,
     }
-    (kind == DeclKind::CXXRecord || kind == DeclKind::ClassTemplateSpecialization)
-        && ast.decls.record(m).is_some_and(|r| r.lambda.is_none())
-        && !templated(w, m)
-        && !instantiated(w, m)
 }
 
-/// Whether the member `m` is the definition of a variable the order
-/// unit lists: a variable or a variable template's explicit
-/// specialisation, written in source, not in a template, not made by
-/// instantiation, and the definition of its entity (§2.3).
-fn listed(w: &Walk<'_>, m: DeclId) -> bool {
-    let ast = w.ast;
-    let n = ast.decls.get(m);
-    if n.kind() != DeclKind::Var && n.kind() != DeclKind::VarTemplateSpecialization {
+/// Whether the variable declaration `m` is listed: a definition
+/// (`units::is_var_definition`, tested first: it reads `m` alone), not
+/// the holding variable of a tuple-like binding (initialised with the
+/// decomposition, which is listed), not in a template, not made by
+/// instantiation (`templ::instantiated`: an explicit specialisation and
+/// its members are written in source), and the definition of its entity
+/// (§2.3).
+fn listed(w: &Walk<'_>, holding: &HashSet<DeclId>, m: DeclId) -> bool {
+    if !crate::units::is_var_definition(w, m) {
         return false;
     }
-    if n.has(DeclFlags::IMPLICIT) || templated(w, m) || instantiated(w, m) {
-        // An implicit variable (the holding variable of a tuple-like
-        // binding) is initialised with the declaration that made it.
+    if w.ast.decls.get(m).has(DeclFlags::IMPLICIT) && holding.contains(&m) {
+        return false;
+    }
+    if templated(w, m) || crate::templ::instantiated(w, m) {
         return false;
     }
     crate::units::defining_decl(w, w.entity(m)) == Some(m)
@@ -115,33 +203,6 @@ fn templated(w: &Walk<'_>, m: DeclId) -> bool {
     }
 }
 
-/// `m` was made by instantiation, of any form: the kind of its own
-/// `SpecInfo` or `MemberSpecInfo`, else of the nearest enclosing context
-/// that has one. An explicit specialisation, and a member of one, are
-/// written in source.
-fn instantiated(w: &Walk<'_>, m: DeclId) -> bool {
-    let ast = w.ast;
-    let mut c = Some(w.entity(m));
-    for _ in 0..DEPTH_LIMIT {
-        let Some(x) = c else { return false };
-        let kind = ast
-            .spec_info(x)
-            .map(|(_, i)| i.kind)
-            .or_else(|| ast.member_spec_info(x).map(|(_, i)| i.kind));
-        match kind {
-            Some(
-                SpecKind::ImplicitInstantiation
-                | SpecKind::ExplicitInstantiationDeclaration
-                | SpecKind::ExplicitInstantiationDefinition,
-            ) => return true,
-            Some(SpecKind::ExplicitSpecialization | SpecKind::Undeclared) => return false,
-            None => {}
-        }
-        c = ast.decls.get(x).ctx();
-    }
-    false
-}
-
 /// `UnitInfo` `imports` of the translation unit itself (`units[0]`,
 /// §10.7): empty when it has none or ownership is not tracked.
 fn imports(w: &Walk<'_>, s: &mut Stream) {
@@ -162,7 +223,9 @@ fn imports(w: &Walk<'_>, s: &mut Stream) {
 
 #[cfg(test)]
 mod tests {
-    use crate::decl_func::tests::with_walk;
+    use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind};
+
+    use crate::decl_func::tests::{named, with_walk};
     use crate::stream::Stream;
 
     /// The names of the variables the order unit lists for `src`.
@@ -220,6 +283,102 @@ mod tests {
     fn a_structured_binding_is_listed_once() {
         let src = "struct P { int x, y; };\nP p;\nauto [a, b] = p;\n";
         assert_eq!(listed(src).len(), 2);
+    }
+
+    // digest §2.1: an explicit specialisation of a member class is
+    // written in source, and so are its static members, although its
+    // entity is declared in the implicit instantiation `A<int>`.
+    #[test]
+    fn members_of_a_member_class_explicit_specialisation_are_listed() {
+        let src = "int h(); template <class T> struct A { struct N; };\n\
+                   template <> struct A<int>::N { static inline int z = h(); };\n\
+                   int g = h();\n";
+        let got = listed(src);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].ends_with("::z"), "{got:?}");
+        assert_eq!(got[1], "g");
+    }
+
+    // [temp.expl.spec]/14: an explicit specialisation of a static data
+    // member without an initialiser is a declaration; the one with it is
+    // listed, where it is.
+    #[test]
+    fn a_member_explicit_specialisation_without_initialiser_is_not_listed() {
+        let src = "int h(); template <class T> struct A { static int s; };\n\
+                   template <> int A<char>::s;\n\
+                   int g = h();\n\
+                   template <> int A<char>::s = h();\n";
+        let got = listed(src);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[0], "g");
+        assert!(got[1].ends_with("::s"), "{got:?}");
+    }
+
+    // digest §2.1: the object of a namespace-scope anonymous union is an
+    // implicit variable that is listed; a tuple-like binding's holding
+    // variables are not.
+    #[test]
+    fn an_anonymous_union_object_is_listed() {
+        with_walk("int h(); static union { int a = h(); }; int g = h();\n", |w| {
+            let mut out = Vec::new();
+            let mut s = Stream::new();
+            super::collect(w, &mut s, w.ast.tu, 0, &mut out);
+            assert_eq!(out.len(), 2, "{out:?}");
+            assert!(w.ast.decls.get(out[0]).has(DeclFlags::IMPLICIT));
+        });
+    }
+
+    // digest §2.1: the stream holds the variables in the order of their
+    // definitions, `b` declared before `a` and defined after it, then no
+    // imports.
+    #[test]
+    fn the_stream_is_the_keys_in_definition_order() {
+        let src = "extern int b;\nint a = 1;\nint b = 2;\nnamespace N { int c = 3; }\n";
+        with_walk(src, |w| {
+            let var = |n: &str| {
+                let all = named(w, n, DeclKind::Var);
+                *all.last().expect("declared")
+            };
+            let (a, b, c) = (var("a"), var("b"), var("c"));
+            let mut want = Stream::new();
+            want.count(3);
+            for v in [a, b, c] {
+                w.write_key(&mut want, v);
+            }
+            want.count(0);
+            let mut got = Stream::new();
+            super::write(w, &mut got);
+            assert_eq!(got.as_bytes(), want.as_bytes());
+            assert_eq!(got.cause(), None);
+        });
+    }
+
+    // A variable declared many times costs one walk of its chain, not
+    // one per declaration: 2,000 declarations against 200 take about
+    // ten times as long, not a hundred.
+    #[test]
+    fn redeclarations_cost_linear_time() {
+        fn time(n: usize) -> std::time::Duration {
+            let src = format!("{}int x = 1;\n", "extern int x;\n".repeat(n));
+            with_walk(&src, |w| {
+                (0..5)
+                    .map(|_| {
+                        let start = std::time::Instant::now();
+                        for _ in 0..20 {
+                            let mut out = Vec::new();
+                            let mut s = Stream::new();
+                            super::collect(w, &mut s, w.ast.tu, 0, &mut out);
+                            assert_eq!(out.len(), 1);
+                        }
+                        start.elapsed()
+                    })
+                    .min()
+                    .expect("runs")
+            })
+        }
+        let small = time(200);
+        let large = time(2_000);
+        assert!(large < small * 40, "200: {small:?}, 2000: {large:?}");
     }
 
     // digest §2.1: the imports of a translation unit without modules.

@@ -1,7 +1,7 @@
 //! Which entities are units, and writing one (`spec/digest.md` §2, §3.4,
 //! §11; `spec/digest-kinds.md` §5.2).
 
-use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, ScopeData, TemplLinkKind, VarStorage};
+use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind, VarStorage};
 use slip_kiln::kiln::ast::ids::DeclId;
 use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_model::Digest;
@@ -270,25 +270,27 @@ pub(crate) fn defining_decl(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
     chain.into_iter().find(|&d| is_var_definition(w, d))
 }
 
-/// Whether the variable declaration `d` is a definition ([basic.def]/2):
-/// not a non-inline static data member declared in its class, not a
-/// block-scope `extern`, and either initialised or not `extern` (a
-/// braceless linkage specification makes it `extern`, [dcl.link]/8).
-fn is_var_definition(w: &Walk<'_>, d: DeclId) -> bool {
+/// Whether the variable declaration `d` is a definition ([basic.def]/2),
+/// as Kiln's `Sema::is_var_definition` decides it
+/// (`kiln_sema/src/decl.rs:7582`): not a non-inline static data member
+/// declared in its class, not a block-scope `extern`, not an explicit
+/// specialisation of a static data member without an initialiser
+/// ([temp.expl.spec]/14, `Ast::is_member_spec_declaration`), and either
+/// initialised or not `extern` (a braceless linkage specification makes
+/// it `extern`, [dcl.link]/8), a declaration with its own `selectany`
+/// being a definition all the same.
+pub(crate) fn is_var_definition(w: &Walk<'_>, d: DeclId) -> bool {
     let ast = w.ast;
     let Some(v) = ast.decls.var(d) else { return false };
     let in_class = ast.decls.lexical_ctx(d).is_some_and(|c| ast.decls.record(c).is_some());
     if in_class {
         return v.spec.is_inline();
     }
-    if w.is_local_extern(d) {
+    if w.is_local_extern(d) || ast.is_member_spec_declaration(d) {
         return false;
     }
-    let braceless = ast.decls.lexical_ctx(d).is_some_and(|c| {
-        ast.decls.get(c).kind() == DeclKind::LinkageSpec
-            && ast.decls.scope(c).is_some_and(|x| x.aux & ScopeData::LINKAGE_BRACELESS != 0)
-    });
-    let is_extern = braceless || v.spec.storage() == VarStorage::Extern;
+    let is_extern = (ast.decls.is_single_line_linkage(d) || v.spec.storage() == VarStorage::Extern)
+        && !ast.has_own_selectany(d);
     v.init.is_some() || !is_extern
 }
 

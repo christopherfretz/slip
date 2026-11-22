@@ -5,7 +5,7 @@
 //! Each function writes one `record T` of §5.6 for the declaration `d`,
 //! read as §2.3 says; `cold` writes the rows of `ColdDeclData` (§5.7).
 //! §5.8 (the redeclaration and lookup tables) writes nothing: every row
-//! is `out`. `ScopeData` `aux-lang` and `aux-braceless` are written in the
+//! is `out`. `ScopeData` `aux-lang` is written in the
 //! stream of each function and variable (`decl_func::linkage`).
 //!
 //! Which declaration each cold map is read from is that of Kiln's own
@@ -18,7 +18,6 @@ use slip_kiln::kiln::ast::decl::{
 };
 use slip_kiln::kiln::ast::fp::FpOverride;
 use slip_kiln::kiln::ast::slot::ColdMap;
-use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{DeclId, StmtId};
 
 use crate::keys::{Role, info};
@@ -425,7 +424,7 @@ fn init_fp(w: &Walk<'_>, d: DeclId) -> Option<FpOverride> {
     let ast = w.ast;
     let o = if ast.decls.param(d).is_some() {
         let function = ast.decls.get(d).ctx().filter(|&f| ast.decls.function(f).is_some());
-        if function.is_some_and(|f| instantiated(w, f)) {
+        if function.is_some_and(|f| crate::templ::instantiated(w, f)) {
             return None;
         }
         ast.default_arg_fp(d)
@@ -433,36 +432,6 @@ fn init_fp(w: &Walk<'_>, d: DeclId) -> Option<FpOverride> {
         ast.init_fp(d)
     };
     (o != FpOverride::NONE).then_some(o)
-}
-
-/// Whether the function declaration `f` was made by instantiation: its
-/// own `SpecInfo` kind is an instantiation of any form, or that of the
-/// nearest lexically enclosing context with a kind is (the reading of
-/// `ParamData` `default_arg`, `decl_func.rs`).
-fn instantiated(w: &Walk<'_>, f: DeclId) -> bool {
-    let ast = w.ast;
-    let instantiation = |k: SpecKind| match k {
-        SpecKind::ImplicitInstantiation
-        | SpecKind::ExplicitInstantiationDeclaration
-        | SpecKind::ExplicitInstantiationDefinition => true,
-        SpecKind::Undeclared | SpecKind::ExplicitSpecialization => false,
-    };
-    if let Some((_, i)) = ast.spec_info(f) {
-        return instantiation(i.kind);
-    }
-    let mut c = ast.decls.lexical_ctx(f);
-    for _ in 0..64 {
-        let Some(y) = c else { return false };
-        let kind = ast
-            .spec_info(y)
-            .map(|(_, i)| i.kind)
-            .or_else(|| ast.member_spec_info(y).map(|(_, i)| i.kind));
-        if let Some(k) = kind {
-            return instantiation(k);
-        }
-        c = ast.decls.lexical_ctx(y);
-    }
-    false
 }
 
 #[cfg(test)]

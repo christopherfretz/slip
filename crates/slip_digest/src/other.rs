@@ -2,7 +2,7 @@
 //! rows of a declaration's stream (§10.7).
 
 use slip_kiln::kiln::ast::DeclId;
-use slip_kiln::kiln::ast::modules::{Owner, UnitInfo};
+use slip_kiln::kiln::ast::modules::{Owner, UnitInfo, UnitKind};
 
 use crate::Cause;
 use crate::stream::{FlagWord, Stream};
@@ -15,12 +15,12 @@ const UNIT_MISSING: Cause = Cause::Unaccounted("Owner/unit");
 /// The rows `points` and `explicit_defs` of `ModuleTable` for `d`
 /// (§10.7), both read from the entity's first declaration (§2.3):
 /// `record Owner?`, then `record UnitInfo?` of the unit that holds the
-/// explicit instantiation definition. Both are absent when ownership is
-/// not tracked (`active` clear).
+/// explicit instantiation definition. Both are absent when the
+/// translation unit is not a module unit (`tracked`).
 pub(crate) fn module_rows(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let ast = w.ast;
     let modules = &ast.modules;
-    if !modules.active {
+    if !tracked(w) {
         s.opt(false).opt(false);
         return;
     }
@@ -40,6 +40,22 @@ pub(crate) fn module_rows(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
             s.opt(false);
         }
     }
+}
+
+/// Whether ownership is written: Kiln tracks it (`active`) and the
+/// translation unit is a module unit or imports one. Kiln sets `active`
+/// for any line of the main file that starts with `module`, `import` or
+/// `export`, a line the preprocessor skips included
+/// (`kiln_pp/src/modules.rs:403-411`), so for a translation unit of kind
+/// `NonModule` without imports, `active` says only how its text is laid
+/// out: the rows are then absent whatever it says.
+fn tracked(w: &Walk<'_>) -> bool {
+    let modules = &w.ast.modules;
+    modules.active
+        && !modules
+            .units
+            .first()
+            .is_some_and(|u| u.kind == UnitKind::NonModule && u.imports.is_empty())
 }
 
 /// `record UnitInfo` of unit `u`, written for an `Owner` or for
@@ -89,6 +105,18 @@ mod tests {
     #[test]
     fn a_translation_unit_without_modules_writes_empty_forms() {
         assert_eq!(rows("int x;"), vec![0, 0]);
+    }
+
+    // §10.7 (WP-033 review, item 7): a line that starts with `module`
+    // makes Kiln track ownership; the translation unit is no module unit,
+    // and both rows are absent all the same.
+    #[test]
+    fn textual_activation_writes_empty_forms() {
+        with_walk("int module;\nvoid f() {\nmodule = 1; }\nint x;\n", |w| {
+            assert!(w.ast.modules.active, "Kiln no longer activates on text: drop this test");
+        });
+        assert_eq!(rows("int module;\nvoid f() {\nmodule = 1; }\nint x;\n"), vec![0, 0]);
+        assert_eq!(rows("#if 0\nexport module m;\n#endif\nint x;\n"), vec![0, 0]);
     }
 
     // §10.7: an owner, its `UnitInfo` without imports, then the flags.
