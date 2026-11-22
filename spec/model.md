@@ -121,6 +121,7 @@ Two ways of using it:
 | `slip.group.v1` | `list<Unit>` | `digest.md` §11 |
 | `slip.tu.v1` | `list<GroupSum>` | `digest.md` §11 |
 | `slip.rules.v1` | `list<Rule>` | `verify.md` §2 |
+| `slip.basis.v1` | `list<Basis>`: the shards an edit set was reduced from | `edits.md` §6 |
 
 `slip_model` implements BLAKE3 itself, in safe Rust, with an incremental
 interface (`new`, `update(&[u8])`, `finalize() -> Digest`) and a one-shot
@@ -271,6 +272,12 @@ its final name.
 | `PLAN` | The plan | yes | §7 |
 | `SHRD` | A shard: one observer's output for one phase | yes | §8 |
 | `RUNR` | A run record: what happened and what it cost | no | §9 |
+| `DECL` | Declared changes | yes | `verify.md` §2 |
+| `TRFM` | A transform request | yes | `edits.md` §3 |
+| `EDTS` | An edit set: what reduce accepted and refused | yes | `edits.md` §6 |
+| `OVLY` | An overlay: the files of a post-image | yes | `edits.md` §7.1 |
+| `RSLT` | The result of one run of a transform | yes | `edits.md` §8.5 |
+| `RUNT` | A transform run record | no | `edits.md` §10.6 |
 
 ### 5.2 Interface
 
@@ -519,12 +526,14 @@ the same bytes.
 | 2 | outcome | yes | `Outcome` |
 | 3 | inputs | no | `list<FileRef>` sorted by `path`: every file the front end read, the main file included |
 | 4 | counters | yes | `list<Counter>` sorted by `name` |
-| 16 | coverage | — | reserved (M2) |
-| 17 | edits | — | reserved (M2) |
+| 16 | coverage | — | reserved (M4, with the preprocessing record) |
+| 17 | edits | no | `Edits` (`edits.md` §4): the claims of a transform; phase `map` |
 | 18 | facts | — | reserved (M3) |
 | 19 | digests | no | `Digests` (`digest.md` §11; §8.2) |
-| 20 | reports | — | reserved (M2) |
+| 20 | reports | — | reserved (M3: a transform's own diagnostics) |
 | 21 | verdict | no | `Verdict` (`verify.md` §6; §8.3) |
+| 24 | binding | no | `Binding` (`verify.md` §9): the overlay and declared changes a verify shard was made with; phase `verify` |
+| 25 | rule_use | no | `RuleUse` (`verify.md` §9); phase `verify` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -553,8 +562,15 @@ harness gates on counters exactly (`spec/harness.md`).
 A shard with status `failed` has no `inputs` section and an empty `counters`
 list: nothing about a failed observer is deterministic.
 
-A reserved id (16, 17, 18, 20) is a critical id no reader knows: a file with
-one is `UnknownSection`.
+A reserved id (16, 18, 20) is a critical id no reader knows: a file with
+one is `UnknownSection`. Sections 17, 24 and 25 were added without a change
+of the shard's version: a reader that predates them refuses a shard that
+has one (the ids are critical), and a shard without them reads as before.
+An `edits` section in a shard of phase `verify`, or a `binding` or
+`rule_use` section in a shard of phase `map`, is `Invalid`; so is any of
+the three in a shard whose status is not `ok`. Their own invariants are
+`edits.md` §4.4 and `verify.md` §9, checked after those of §8.1 to §8.3 in
+the order of the section ids.
 
 ### 8.1 Invariants
 

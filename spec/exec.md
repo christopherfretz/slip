@@ -38,6 +38,15 @@ end. Reduce, apply and verify are added to this spec by their milestones.
 Ids are 64 hexadecimal digits (`spec/model.md` §3); `<phase>` is `map` or
 `verify`; `<round>` is decimal, 0 for the first.
 
+A run of a transform adds the directories and files of `spec/edits.md`
+§10.4 (`transforms/`, `edits/`, `declared/`, `overlays/`, `results/`,
+`blobs/`, the transform run records under `runs/`, and `write.journal`).
+Everything in this section holds for them: they are published by rename,
+never written in place, and a command that does not know them leaves them
+alone. A store that holds `write.journal` has an unfinished write of the
+working tree, and a command that opens it exclusively refuses to run
+(`spec/edits.md` §7.3).
+
 - **Publishing.** A file is written under `tmp/` with a name unique to the
   writing process and moved to its final name with one rename. A reader never
   sees a partial file. If the final name exists, the rename replaces it.
@@ -386,6 +395,14 @@ captured to the attempt's log file.
 | to coordinator | `Failed = 3` | `observer: digest`, `message: str` |
 
 Each message starts with its tag as a `uv`.
+
+**Protocol 2** (`spec/edits.md` §10.3). `Job` has two more fields after
+`observer`: `transform: opt<digest>`, the transform a map job runs after
+the parse, and `post: opt<Post>` with `Post := overlay: digest, declared:
+digest`, the post-image and declared changes of a verify job; both name
+files in the job's store. `Ready.protocol` is then 2. A coordinator
+refuses a worker whose `Ready` names another protocol than its own (a
+protocol violation). A job with neither field is the job of protocol 1.
 
 The worker sends `Ready` once at start. For each `Job` it runs the task on a
 thread with a large stack (`--worker-stack`, default 1 GiB reserved), catches
@@ -838,6 +855,13 @@ slip --version
 slip --help
 ```
 
+The commands that run a transform (`rename`, `reduce`, `check`, `apply`)
+are specified in `spec/edits.md` §10: their options, output and exit
+statuses. They follow every rule of this section for options, numbers,
+sizes and usage errors; `rename` and `check` accept the memory, timeout
+and worker options of `parse` and run their phases as `parse` runs its
+own (§8.2).
+
 `slip --help` (or `-h`) prints the usage text on standard output and
 exits with status 0. `slip --version` prints `slip <version> (kiln
 <version>)`; the same string is the `tool` of the worker's `Ready`.
@@ -989,6 +1013,9 @@ listed in the usage text. Nothing but protocol messages may be written to its st
 | 3 | Input error: a database, plan, store or container that cannot be read or is invalid, or a busy store. One line on standard error: `slip: <what>: <why>`. |
 | 70 | Internal error (a bug): a panic in the coordinator. One line on standard error, `slip: internal error: <message> (<file>:<line>)`, after every live child has been killed and every pool token returned. |
 | killed by signal | Interrupted (§7). |
+
+For `rename`, `reduce`, `check` and `apply` the meanings of statuses 0, 1
+and 3 are those of `spec/edits.md` §10.5; 2, 70 and a signal are as above.
 
 - **Status 1 for `parse`** also when the pool's outcomes are not one per
   selected observer.

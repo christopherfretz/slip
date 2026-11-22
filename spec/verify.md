@@ -124,7 +124,9 @@ Exemptions are by key. A unit keyed by content (`digest.md` §3.3) cannot be
 
 **Shards.** The pre shard is the observer's shard of phase `map`; the post
 shard is its shard of phase `verify`, round `r` (the `r`-th application of
-edits). Both must be `ok` and carry a `digests` section of the same
+edits). The pre shard is that of round `r` when the plan has map shards of
+round `r` (a run of a transform maps and verifies in one round,
+`spec/edits.md` §8), and of round 0 otherwise. Both must be `ok` and carry a `digests` section of the same
 `scheme`, the one this build of `slip_verify` implements; and the post
 shard's digests must have been computed with the rule table `rules_id`
 (§5 records it). In each of the two `digests` sections the groups must be
@@ -351,6 +353,27 @@ unit lists of the groups of `G` (detail `differing`, `digest.md` §11), and
 the `verdict` section. Its content is a function of the post-image's
 inputs, the pre shard and `Declared`.
 
+**The post-image as an overlay.** A job of a transform's run is given the
+post-image as an overlay (`spec/edits.md` §7.1): the front end reads the
+overlay's bytes for the files it names and the file system for every
+other file. The paths of the two images are then the same, and a subject
+path is a real path in both.
+
+**Inputs under an overlay.** After step 1 the job compares the post
+shard's `inputs` with the overlay and with the pre shard's `inputs`, when
+step 2 found a usable pre shard:
+
+- a file the overlay names must have the overlay's `post` size and
+  content digest;
+- a file the overlay does not name, and that the pre shard also lists,
+  must have the size and content digest the pre shard gives it.
+
+If either fails the verdict is `unverifiable`, the reason naming the
+first such path in path order: the subject changed between the two
+phases, or the overlay was not what the front end read. A file in only
+one of the two lists is not an error: an edit can change what is
+included, and the comparison of digests is what judges that.
+
 The second parse happens only for an observer that does not verify at the
 level of sums. In a run that verifies, every observer is parsed once.
 
@@ -365,6 +388,13 @@ for comparing, not a property of a program that did not change. Condition
 not record the lookups that failed ("Open questions"). A run may be asked
 to verify unchanged observers anyway (this is how invariants (a) and (b)
 are run); it must then be given no rules.
+
+With a rule table that is not empty, "whatever the rules are" holds for
+the observer's own verdict and not for the run: §9 needs to know that the
+observer has no entity a rule renames, and nothing in a pre shard says so.
+In such a run an observer that would be unchanged gets a verify job all
+the same (`spec/edits.md` §8.2). Its post-image is its pre-image; the job
+is there for its `rule_use`.
 
 ## 6. Verdicts and findings
 
@@ -478,8 +508,10 @@ other one empty.
 
 A run of the verify phase over a plan and a round has the verdict:
 
-- **verified**: every observer is `verified` or `unchanged`;
-- **not verified**: some observer is `mismatch` or `not_parsed`;
+- **verified**: every observer is `verified` or `unchanged`, and no
+  observer is stale (§9);
+- **not verified**: some observer is `mismatch` or `not_parsed`, or is
+  stale (§9);
 - **incomplete**: neither of those; some observer is `unverifiable`, or has
   a shard of status `failed`, or the run was cancelled.
 
@@ -507,17 +539,10 @@ Counters of a verify shard, added to those of `digest.md` §12:
 - **One front end.** Both images are resolved by Kiln. An error Kiln makes
   the same way twice is invisible here; tiers T2 to T4 of
   [03](../docs/design/03-equivalence.md) §8 exist for that.
-- **Agreement between observers.** Each observer is verified against its
-  own pre-image. If one declaration of a relocated entity is edited and
-  another, in a file other observers use, is not, each observer can verify
-  (in one the entity has its new name, in the other its old one and nothing
-  to collide with), and the program no longer links. The condition that
-  rules it out is: an entity's key is reached through a rule in every
-  observer that has it, or in none. Checking it needs, per unit, whether a
-  rule was applied to it or to an enclosing entity, which the `digests`
-  section does not hold yet ("Open questions"). Until it does, this is
-  left to the reducer, which sees every observer's declarations, and to
-  tier T3.
+- **Agreement between observers** is not shown by any one observer's
+  verdict. §9 adds the check that shows it, for the observers of the run.
+  What remains outside is the first point above: a declaration in a file
+  that no observer of the run reads.
 - **Sums are believed.** A group's `count`, `indeterminate` and `digest`
   are checked against its unit list only where there is one. A shard
   whose sums were not computed from its units (a defect of the walk, or a
@@ -525,6 +550,92 @@ Counters of a verify shard, added to those of `digest.md` §12:
   The walk that writes sums is as much trusted base as the comparison.
 - **Text.** Strings, comments and anything else that spells a name without
   referring to it ([03](../docs/design/03-equivalence.md) §7 rows 14, 15).
+
+## 9. Agreement between observers
+
+Each observer is verified against its own pre-image. If one declaration
+of a renamed entity is edited and another, in a file other observers use,
+is not, each observer can verify (in one the entity has its new name, in
+the other its old one and nothing to collide with), and the program no
+longer links. The same happens if the edits never reach an observer that
+declares the entity itself. Per-observer verdicts cannot see it. The
+reducer could, but the reducer is not trusted. So the walk reports, and
+the run checks, how each rule was used.
+
+**Rule use.** A walk with a rule table that is not empty counts, for each
+rule `r` (by its index in `Declared.rules`):
+
+- `via(r)`: the entities whose own `(parent, kind, name, disc)`, parent
+  and discriminator mapped, matched `r`, so that the rule gave them their
+  key;
+- `direct(r)`: the entities whose mapped key is the key `r` produces,
+  `(r.to_parent, r.kind, r.to_name, r.disc)`, and whose own key no rule
+  was applied to.
+
+Entities are counted once each, declared or derived, whatever number of
+declarations they have. An entity counted in `direct(r)` is one that
+still is what `r` says was renamed.
+
+```
+RuleUse := rules: digest            rules_id
+           uses:  list<Use>         sorted by `rule`; only rules with `via` or `direct` not 0
+Use     := rule: uv, via: uv, direct: uv
+
+Binding := overlay:  opt<digest>    the overlay the post-image was read through; absent for a post-image in a directory
+           declared: digest         content id of the DECL container the job was given
+```
+
+Sections 25 (`rule_use`) and 24 (`binding`) of a shard of phase `verify`
+(`spec/model.md` §8). `binding` is present in every verify shard of a
+transform's run, whatever the outcome. `rule_use` is present when the
+outcome is `ok` and the rule table is not empty. Invariants: `uses`
+strictly ascending by `rule`; no `Use` with both counts 0.
+
+**Stale.** An observer is **stale** for a rule `r` whose kind is not
+`namespace` if its `direct(r)` is not 0. (For a namespace, an entity that
+keeps the key a rule maps another onto is the merge of §2.1.) A stale
+observer is one finding of the run, `stale`, with the rule and the
+observer. A run with a stale observer is not verified (§7).
+
+**Why this is the condition.** The claim of §1, for a rule, is that the
+entity it names has the new name. Two observers disagree about an entity
+when one reaches its key through the rule and the other has it without.
+`direct(r) = 0` in every observer says no observer has it without: every
+observer that has the entity reached it through the rule, or no observer
+has it at all. In an observer that has the entity both ways the two
+collide and both are indeterminate (§2.1), so that case was already a
+finding; the count catches the observer that has only the old one.
+
+**What the run needs.** The check is over every observer of the run. An
+observer with no post shard contributes nothing, so with rules:
+
+- every observer whose pre shard is `ok` must have a post shard whose
+  `binding` names the run's overlay and declared changes, else the run is
+  incomplete (§7);
+- a post shard whose `rule_use.rules` is not the run's `rules_id` is
+  treated as missing.
+
+**Unused rules.** A rule with `via` and `direct` 0 in every observer names
+an entity no observer has. It is reported with the run, like an exemption
+no observer needed (§2.2).
+
+**What the walk exposes** for this and for the transforms that must name
+entities by key (`spec/edits.md` §9.7), from `slip_digest`:
+
+```rust
+pub struct Keys<'a> { /* over an Input; no rules */ }
+impl<'a> Keys<'a> {
+    pub fn new(input: &'a Input<'a>) -> Keys<'a>;
+    pub fn key(&self, decl: DeclId) -> Option<Key>;        // None: the declaration has no key (a parameter, a local variable)
+    pub fn unit_of(&self, decl: DeclId) -> Option<Digest>; // the key id of the declared unit whose stream holds the declaration
+}
+// Options gains `rule_use: bool`; Output gains `rule_use: Vec<Use>`.
+```
+
+`Keys` uses the functions the walk uses, so a key it gives is the key a
+unit of the map shard has. A transform that gets a key wrong produces a
+rule that matches nothing: the rule is unused and the entity's unit is
+`removed` and `added`. It cannot produce a wrong `verified`.
 
 ## Tests
 
@@ -551,13 +662,30 @@ Counters of a verify shard, added to those of `digest.md` §12:
   that did not parse, an unchanged observer, the report.
 - `spec/pitfalls.md` and its tests — each catalogued hazard as a correct
   edit that verifies under its rules and a wrong edit that does not.
+- `crates/slip_digest/tests/rule_use.rs` — §9: `via` and `direct` for a
+  renamed function, an overload set with one rule per overload, a member
+  of a specialisation, a declaration left under its old name beside the
+  renamed one (a collision and a `direct`), one left alone in the unit
+  (`direct` only), a merged namespace (not stale); `Keys` against the
+  keys of the walk's units for every declaration of each pair test.
+- `crates/slip_verify/tests/agreement.rs` — §9 over sections written by
+  hand: stale and unused rules, a missing post shard, a shard bound to
+  another overlay, another `rules_id`.
+- `crates/slip_cli/tests/verify_overlay.rs` — §5 "Inputs under an
+  overlay": a subject file changed after the map phase, an overlay blob
+  that is not what the manifest says, an edit that adds an `#include`.
 
 ## Open questions
 
-- **Agreement between observers** (§8). Proposed: a per-group digest of the
-  keys of the group that were reached through a rule, so that observers
-  sharing a header can be compared group by group without unit lists, and
-  a reduction over distinct groups. To be specified with reduce (M2).
+- **Agreement costs a job per observer** (§9, §5): with rules, no
+  observer is unchanged. `spec/edits.md` ("Open questions") proposes a
+  filter of key ids in the map shard so that an observer that cannot have
+  a renamed entity is shown not to, without a parse.
+- **Agreement for namespaces** (§9). A relocated namespace merges with
+  the one that stays, so `direct` says nothing for it. The members that
+  move have rules of their own only if the transform declares each; how
+  a partial relocation is shown to agree is to be specified with the
+  namespace migration (M4).
 - **Indeterminate units cost a second parse.** Every group with an
   indeterminate unit is in `G` (§4.1), so an observer that has one needs
   unit lists even when nothing changed. Proposed: a map shard stores the
@@ -573,7 +701,10 @@ Counters of a verify shard, added to those of `digest.md` §12:
   in the walk's interface, which is why it is not in M1.
 - **`changed` checks nothing about the unit.** The design asks for the
   edit's own obligations to be checked instead (the callee at this site is
-  now `K`). Not specified.
+  now `K`). Not specified. The first transform to rely on it is the native
+  rename, for a pattern that holds a renamed dependent name
+  (`spec/edits.md` §9.4); the spelling rule proposed there would remove
+  that use.
 - **A compatibility declaration that takes the old name** of a relocated
   entity with the same kind and signature (a forwarding function) collides
   with the relocated entity's mapped key. A using-declaration or an alias

@@ -46,7 +46,7 @@ re-implementable from the spec.
 | `spec/model.md` | Entity keys; the subject model; shard, plan and report formats (byte level, versioned) |
 | `spec/digest.md` | The semantic digest: for every Kiln AST node kind and field, included or excluded, and why |
 | `spec/api.md` | `<slip/meta.h>`: every function's signature, preconditions, result, errors; versioning rules |
-| `spec/reduce.md` | Reduce as a function from a set of shards to an edit set and report |
+| `spec/edits.md` | Claims, reduce as a function from a set of shards to an edit set, apply, the verify loop, native rename (planned as `spec/reduce.md`; written as one file because the formats run through all four) |
 | `spec/verify.md` | Comparison under declared changes; outcomes; localisation |
 | `spec/macros.md` | Token origin; tiers; coverage states |
 | `spec/exec.md` | Phases, the store and cache keys, admission, failure handling, exit codes |

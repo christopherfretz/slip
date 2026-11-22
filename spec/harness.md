@@ -64,9 +64,11 @@ exit status 2, nothing runs.
 - `fmt`, `clippy` and `test` run the commands of the table without `-p`,
   so cargo takes the default members.
 - `kiln` runs the same clippy and test with
-  `-p slip_kiln -p slip_digest -p slip_script -p slip_cli`, the test only
-  if clippy passed.
-- `transform` prints
+  `-p slip_kiln -p slip_digest -p slip_script -p slip_refactor -p slip_cli`,
+  the test only if clippy passed.
+- `transform` runs `cargo xtask transform` (§6.3) over every transform
+  test and fails if any outcome is `FAIL`, `XPASS`, `ERROR` or `KILLED`.
+  Until the runner exists it prints
   `transform: no transform tests yet (spec/harness.md §6)` and passes.
 
 Cargo is `$CARGO` if set and non-empty, else `cargo` on `PATH`, run in the
@@ -97,7 +99,7 @@ line. Nothing is printed when there is none. With any, standard error gets
 
 | Lint | Rule |
 |---|---|
-| `kiln-boundary` | Only `crates/slip_kiln/Cargo.toml` names a `kiln_*` dependency. Only `slip_kiln`, `slip_digest`, `slip_script` and `slip_cli` depend on `slip_kiln`, directly or indirectly. |
+| `kiln-boundary` | Only `crates/slip_kiln/Cargo.toml` names a `kiln_*` dependency. Only `slip_kiln`, `slip_digest`, `slip_script`, `slip_refactor` and `slip_cli` depend on `slip_kiln`, directly or indirectly. |
 | `forbid-unsafe` | Every crate root (`src/lib.rs`, `src/main.rs`, each `.rs` file under `src/bin/`) of every workspace member contains `#![forbid(unsafe_code)]`. |
 | `dependencies` | Every third-party crate in `Cargo.lock` is in the allow list in this spec (§3.1). |
 | `spec-index` | `spec/README.md`'s index: every `spec/*.md` other than `README.md` has a row; every row whose status is not `not written` names an existing file; the status is `not written`, `draft` or `stable`. |
@@ -144,7 +146,8 @@ in both places.
   ``names Kiln crate `<crate>`; only crates/slip_kiln/Cargo.toml may`` at the
   dependency's line, and
   `` `<crate>` depends on `slip_kiln` (<a> -> … -> slip_kiln); only
-  slip_digest, slip_script and slip_cli may`` at the line of the first hop.
+  slip_digest, slip_script, slip_refactor and slip_cli may`` at the line of
+  the first hop.
 - **`forbid-unsafe`.** A root passes when a line, after leading spaces,
   starts with `#![forbid(unsafe_code)]`. Every `.rs` file under `src/bin/`,
   at any depth, counts as a root. A `[lib]` or `[[bin]]` `path` outside
@@ -268,14 +271,15 @@ pub fn inspect(request: &Request) -> Result<String, String>;
 
 The environment is a parameter, so tests never read the host's own.
 
-## 6. Transform tests (outline; specified with M2)
+## 6. Transform tests
 
-A transform test is a directory: an input tree, compile commands, a
-transform, and the expected result (post-image, report, exit status) as
-golden files. Outcomes follow Kiln's model: `PASS`, `FAIL`, `XFAIL`
-(`xfail: <reason>` required), `XPASS` (fails the gate), `SKIP`, `ERROR`,
-`KILLED` (never masked by `xfail`). Unknown directives are errors. Every test
-names the spec section it covers.
+A transform test is a directory: an input tree, a transform, and the
+expected result (post-image, report, exit status) as golden files; §6.2
+gives the format. Outcomes follow Kiln's model: `PASS`, `FAIL`, `XFAIL`
+(`xfail: <reason>` required), `XPASS` (fails the gate), `SKIP`, `ERROR`
+(the test itself is wrong: a bad directive, a pre-image the front end or
+clang rejects), `KILLED` (never masked by `xfail`). Unknown directives are
+errors. Every test names the spec section it covers.
 
 **Golden files.** A golden is the JSON rendering (`spec/model.md` §10) or the
 exact bytes of an output. `--bless` rewrites goldens and prints each path it
@@ -336,6 +340,162 @@ lines, in any order, among its leading lines:
   narrows (the determinism and tables tests use every directory), and
   `cargo xtask ci` removes the variable from the environment of what it
   runs.
+
+### 6.2 A transform test
+
+```
+tests/transform/<area>/<name>/
+  test.txt        directives
+  pre/            the input tree
+  post/           the files of the expected post-image that differ from pre/, at the same relative paths
+  expect.txt      the expected standard output of the run (§6.3)
+  cdb.json        optional: the compilation database, with @ROOT@ for the tree's directory
+```
+
+`<area>` is the transform (`rename`). Sources are self-contained: no
+system header. A directory `pre/dep/` is read-only code, as in
+`spec/pitfalls.md`.
+
+`test.txt` holds one directive per line, `<name>: <value>`; blank lines
+and lines starting with `#` are skipped:
+
+| Directive | Meaning | Default |
+|---|---|---|
+| `spec` | the section covered, as `edits §9.3`; may repeat | required |
+| `run` | the transform command and its own options: `rename --from a::f --to g` | required, once |
+| `state` | the expected `State` of the result (`spec/edits.md` §8.5), or `usage` or `input` for a run that must end with status 2 or 3 | required |
+| `exit` | the expected exit status | 0 for `verified`, 2 for `usage`, 3 for `input`, else 1 |
+| `std` | the language standard | `c++20` |
+| `args` | arguments added to every default command | none |
+| `tu` | the main files, relative to the tree | every `*.cpp` not under `dep/`, in byte order of paths |
+| `owned`, `readonly` | paths relative to the tree; may repeat | `owned: .`, and `readonly: dep` if `pre/dep` exists |
+| `allow` | `residue`, `unparsed` or `partial`: the run is given `--allow-<value>`; may repeat | none |
+| `oracle` | `no-<oracle> <reason>` turns one oracle of §6.4 off for this test | all on |
+| `xfail` | the reason the test is expected to fail | absent |
+
+Without `cdb.json`, each main file has the command
+`kiln -std=<std> <args> -I@ROOT@ -I@ROOT@/dep -c <file>`, with directory
+`@ROOT@`, in the order of `tu`.
+
+The expected post-image is `pre/` with the files of `post/` laid over it.
+A `post/` file equal to its `pre/` file, or with no `pre/` file, is an
+error of the test. A test whose state does not permit writing has no
+`post/`.
+
+### 6.3 Running
+
+```
+cargo xtask transform [--only <substring>]… [--bless] [-j <n>] [--no-clang] [--slip <path>]
+```
+
+`--slip` names the executable under test (default: the workspace's
+`slip`, which the runner builds first); the runner's own tests give it a
+scripted stand-in. `--no-clang` is §6.4's.
+
+For each test, in byte order of paths:
+
+1. `pre/` is copied to a fresh **tree** under the target directory, and a
+   fresh store is made beside it. Nothing is written into the test's own
+   directory except by `--bless`.
+2. `slip <run> --db <database> --owned … --readonly … --store <store>
+   --relative-to <tree> --write -j 2` and the `allow` options. `--write` is
+   always given: a state that does not permit it must leave the tree
+   untouched, and the test checks that.
+3. **Compared**: the exit status; the state; standard output with
+   `expect.txt`, after replacing every 64-digit id by `<id>` and the
+   tree's path by `@ROOT@`; the tree, file by file, with the expected
+   post-image (a file added, missing or different fails). The first
+   difference of each is printed.
+4. The oracles of §6.4.
+
+The runner takes job tokens as every harness command does (§5). It runs
+tests in parallel, each with `-j 2`, and prints one line per outcome that
+is not `PASS`, then `transform: <n> passed, <n> failed, …` with every
+outcome that occurred. Exit status 1 if the gate would fail.
+
+`--bless` rewrites `expect.txt` and `post/` from the run, for tests whose
+state and exit status are as `test.txt` says; it never changes
+`test.txt`.
+
+### 6.4 Oracles
+
+Checks that hold for every transform test, beyond its golden files. Each
+is a way the untrusted parts (transform, reduce, apply) and the trusted
+ones (digest, verify) are tested against something other than
+themselves.
+
+| Oracle | Runs when | Passes when |
+|---|---|---|
+| `determinism` | always | a second run in a fresh store with `-j 1` gives the same transform, edit set, declared, overlay and result ids, and the same standard output |
+| `verify` | the state is `verified` or `verified_with_residue` | this is corpus invariant (c): the run itself verified the post-image. The oracle adds that `slip check` over the run's own edit set, in the same store, gives the same result id |
+| `back` | the tree was written | the inverse transform (for `rename --from a::f --to g`: `rename --from a::g --to f`) on the written tree, with a fresh store, ends in the same state and leaves the tree byte-identical to `pre/` |
+| `clang` | the tree was written, and a clang is available | every command of the test, with the compiler replaced by clang and `-fsyntax-only`, exits 0 on the pre-image (else `ERROR`) and on the written tree |
+| `mutation` | the edit set is accepted | each mutated edit set, given to `slip check`, does **not** verify (below) |
+
+**Clang.** The compiler is `$SLIP_CLANG` if set, else `clang++-19`, else
+`clang++` on `PATH`. If there is none the oracle is skipped, the runner
+counts it (`clang oracle skipped: <n>`), and `cargo xtask ci` fails unless
+it was given `--no-clang`.
+
+**Mutation.** The trusted base must reject what the untrusted parts get
+wrong, so the harness gets it wrong on purpose. From the run's edit set
+it makes, one at a time:
+
+- the edit set without edit `i`, for every `i` if there are at most 8
+  edits, else for `i = ⌊k·n/8⌋`, `k = 0..7`;
+- the edit set with one more edit: the replacement text of the first
+  edit, at a `kept` range (the first 4 in order).
+
+Each is published as a new `EDTS` (the harness links `slip_model`) and
+given to `slip check` with the declared changes of the original. The
+outcome must be `not_verified`, or, for a dropped edit only,
+`verified_with_residue` with the dropped range in the residue. `verified`
+fails the test: an edit was lost or invented and nothing noticed. That is
+a hole in the trusted base and blocks a release, like a `bad` tree that
+verifies (`spec/pitfalls.md`). A dropped edit that provably changes
+nothing observable is turned off per test with `oracle: no-mutation
+<reason>`.
+
+### 6.5 Transforms on a corpus
+
+```
+cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kind <k>]
+        [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>]
+```
+
+runs `slip rename` over the corpus's database (§8) with a store under the
+corpus's build directory, `--allow-unparsed`, `--allow-residue`, and
+`--patch` (never `--write`: the corpus's source tree is shared and stays
+as fetched). `--owned` defaults to the corpus's source directory. It then
+checks, in order:
+
+1. the state is `--expect` (default `verified_with_residue` or
+   `verified`);
+2. **determinism**: `slip reduce` run again over the same shards gives the
+   same edit set id;
+3. with `--accept`: every command of the plan, run by clang with
+   `-fsyntax-only` and a clang VFS overlay file that maps each overlay
+   path to its blob, exits as it does on the pre-image (the two units
+   clang rejects in `llvm`, §8.7, must be rejected the same way);
+4. with `--build`: the patch is applied to a copy of the source
+   directory under the corpus's build directory; the copy is configured
+   and generated as the corpus is (§8.3) and built with clang (`all`);
+   the build succeeds;
+5. with `--build`, **back**: the inverse rename over the copy's database,
+   with `--write`, leaves every file of the copy byte-identical to the
+   corpus's source.
+
+The copy and its build tree are removed when the checks pass, and kept,
+with their path printed, when one fails.
+
+It prints the lines of `slip rename`, then one line per check, and writes
+`bench/results/<corpus>.rename.<target>.json`: the counters of the edit
+set (`spec/edits.md` §6.3), the tally, the residue counts, and from the
+transform run record (`spec/edits.md` §10.6) and the two phase records it
+names: wall time per step, the coordinator's peak resident size per step,
+and the phases' `peak_rss_max` and `peak_rss_sum` (§7.1). Counters are
+compared exactly with the file already there, if any; times and sizes
+are reported and not gated ("Open questions").
 
 ## 7. Performance records
 
@@ -857,6 +1017,16 @@ counts):
   refused, `record` then `check`, every kind of check difference, malformed
   baselines, and the executable's usage, unknown-corpus and
   unreadable-record errors.
+- `xtask/tests/transform.rs` — §6.2 to §6.4 with a fake `slip`: every
+  directive and its default, each malformed-test error, each outcome, the
+  normalisation of ids and paths, `--bless`, the post-image comparison (a
+  file added, missing, different), each oracle passing and failing, the
+  mutation sample for 1, 8 and 100 edits, a skipped clang.
+- `tests/transform/` — the transform tests themselves, run by the
+  `transform` step of the gate.
+- `xtask/tests/corpus_rename.rs` — §6.5 over the local three-file corpus
+  of the §8 tests: the checks in order, the result file, a failing check
+  keeping the copy.
 - `xtask/tests/corpus.rs` — §8: rows and their Kiln pins, every
   malformed-row error, the committed `llvm` row (§8.1); root and layout
   (§8.2); `path`, `list` and usage errors through the binary (§8.3); the
@@ -870,6 +1040,18 @@ counts):
 
 ## Open questions
 
+- **`back` on a corpus needs a second tree** (§6.5): the inverse run has
+  to parse the post-image as a pre-image, and a run cannot yet take an
+  overlay as its subject. With that (wanted anyway for running one
+  transform after another, M3), `back` and `--accept` would need no copy.
+- **`--build` is expensive**: a copy of the source directory, a configured
+  tree and a full clang build, per target renamed. Whether a release
+  needs it for every sample of invariant (c), or for one target per run
+  with `--accept` for the rest.
+- **An independent equivalence oracle** for transforms (tier T3 of
+  `docs/design/03-equivalence.md`): compiling both images with clang and
+  comparing the objects' symbols and code modulo the declared renames.
+  Not specified.
 - The `inputs.*` counters include system headers, so a baseline is exact
   only for one set of installed headers (the host compiler's and the
   standard library's). The baseline does not record which; a change of the
