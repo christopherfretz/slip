@@ -39,14 +39,14 @@ use crate::stream::{FlagWord, Stream};
 use crate::tables::{binary_op, expansion_form, overloaded_operator, requirement};
 use crate::walk::Walk;
 
-/// The numbering of a profile being walked (§4.4): the entities declared
-/// inside it, by first declaration, and whether a local entity declared
-/// outside it took the unit's ordinal.
+/// The numbering of a stream that holds no unit ordinal (§4.4): the
+/// entities declared inside it, by first declaration (a
+/// requires-expression's parameters in a key, or in an expression of a
+/// kind profile mode walks in full).
 #[derive(Debug, Default)]
 pub(crate) struct Frame {
     locals: HashMap<DeclId, u64>,
     next: u64,
-    outer: bool,
 }
 
 /// `Cause::Unaccounted` of row `row` of `ExprNode`.
@@ -137,6 +137,11 @@ pub(crate) fn decl_name(w: &mut Walk<'_>, raw: u32) -> Option<(Name, Option<Caus
 
 /// `name` of a raw `DeclName`; `Name::Anonymous` and `cause` for a word
 /// that is no name.
+/// A `DeclNameId` word in profile mode (`expr_profile.rs`).
+pub(crate) fn name_of(w: &mut Walk<'_>, s: &mut Stream, raw: u32) {
+    name_word(w, s, raw, Cause::Unaccounted("profile/name"));
+}
+
 fn name_word(w: &mut Walk<'_>, s: &mut Stream, raw: u32, cause: Cause) {
     match decl_name(w, raw) {
         Some((name, c)) => {
@@ -433,18 +438,23 @@ pub(crate) fn profile(w: &mut Walk<'_>, s: &mut Stream, p: ProfileId) {
 }
 
 /// `profile` given by its expression (a function's trailing
-/// requires-clause in its discriminator, digest-kinds §3.3; a default
-/// template argument): the canonical operand of that expression (§4.4),
-/// walked with the stream's expression state put aside and a fresh
-/// [`Frame`], both restored after. The outermost parenthesis is kept
-/// (§7 "Parentheses").
+/// requires-clause in its discriminator, digest-kinds §3.3; a template
+/// head's requires-clause in a key, §3.4): the canonical operand of that
+/// expression (§4.4), walked in profile mode (`expr_profile.rs`) with the
+/// stream's expression state put aside and a fresh [`Frame`], both
+/// restored after.
+///
+/// Whether a local entity took the unit's ordinal is read from
+/// `UnitState::local_uses`, which a nested profile or type digest raises
+/// too, so it carries to every enclosing frame and to the unit (F7).
 pub(crate) fn profile_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     let saved = w.take_expr_state();
+    let uses = w.unit.local_uses;
     w.unit.expr.profile = Some(Frame::default());
-    expr::child_keep_paren(w, s, e);
+    crate::expr_profile::walk(w, s, e);
     let frame = w.unit.expr.profile.take().unwrap_or_default();
     w.unit.expr = saved;
-    if frame.outer && !frame.locals.is_empty() {
+    if w.unit.local_uses != uses && !frame.locals.is_empty() {
         // Two numberings in one stream: an ordinal of the frame and one of
         // the unit could be equal.
         s.indeterminate(Cause::Unaccounted("profile/local-mix"));
@@ -466,9 +476,6 @@ pub(crate) fn profile_local(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     if w.ast.decls.get(d).kind() == DeclKind::ParmVar {
         param_ref(w, s, d, Cause::Unaccounted("profile/param"));
         return;
-    }
-    if let Some(f) = w.unit.expr.profile.as_mut() {
-        f.outer = true;
     }
     if w.in_key > 0 {
         s.uv(REF_NONE).indeterminate(Cause::Unaccounted("key/local-ref"));

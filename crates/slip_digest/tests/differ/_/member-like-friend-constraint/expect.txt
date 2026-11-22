@@ -1,1 +1,4 @@
-changed f(A<type-parameter-0-0>)
+# the trailing requires-clause is in the key (digest-kinds §3.3): another
+# constraint is another function (WP-036)
+added f(A<type-parameter-0-0>)
+removed f(A<type-parameter-0-0>)

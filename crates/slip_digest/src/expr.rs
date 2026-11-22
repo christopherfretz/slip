@@ -422,12 +422,16 @@ fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out
     }
 }
 
-/// `e` with its parentheses skipped (§7 "Parentheses"); with `keep`, an
-/// outermost `ParenExpr` is kept. `None` when a `ParenExpr` has no
-/// operand (a placeholder is written).
+/// `e` with its redundant parentheses skipped (§7 "Parentheses"): a
+/// `ParenExpr` is skipped only outside a profile and when its operand is
+/// not instantiation-dependent (in a dependent operand a parenthesis can
+/// change the meaning: `decltype((x))`, `&(T::m)`). With `keep`, or
+/// while a profile or a key's numbering is installed, every one is kept.
+/// `None` when a skipped `ParenExpr` has no operand (a placeholder is
+/// written).
 fn strip_parens(w: &Walk<'_>, s: &mut Stream, e: ExprId, keep: bool) -> Option<ExprId> {
     let mut e = e;
-    if keep {
+    if keep || w.unit.expr.profile.is_some() {
         return Some(e);
     }
     loop {
@@ -435,14 +439,20 @@ fn strip_parens(w: &Walk<'_>, s: &mut Stream, e: ExprId, keep: bool) -> Option<E
         if words.kind() != ExprKind::ParenExpr {
             return Some(e);
         }
+        let Some(operand) = ExprId::try_new(words.a()) else {
+            if cold_entry(w, e) {
+                s.indeterminate(Cause::Unaccounted("ExprNode/ParenExpr"));
+            }
+            s.uv(0).indeterminate(Cause::Unaccounted("ExprNode/ParenExpr.a"));
+            return None;
+        };
+        if w.ast.exprs.get(operand).deps().contains(ExprDeps::INSTANTIATION) {
+            return Some(e);
+        }
         if cold_entry(w, e) {
             // A map row of a skipped node would be lost.
             s.indeterminate(Cause::Unaccounted("ExprNode/ParenExpr"));
         }
-        let Some(operand) = ExprId::try_new(words.a()) else {
-            s.uv(0).indeterminate(Cause::Unaccounted("ExprNode/ParenExpr.a"));
-            return None;
-        };
         e = operand;
     }
 }

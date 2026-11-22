@@ -137,6 +137,19 @@ pub(crate) struct Walk<'a> {
     /// result computed below such a hit (its cause depends on the path
     /// that reached it).
     pub aborts: u64,
+    /// How many facts a profile walk left out that its spelling holds
+    /// (`expr_profile.rs`): a type digest whose stream raised it is
+    /// marked (`TypeRef::spelling`).
+    pub left_out: u64,
+    /// How many `type_digest` calls are under way.
+    pub type_nesting: u32,
+    /// Type digests computed below a depth-limit hit or a cycle, by raw
+    /// canonical `QualType` and whether the exception specification was
+    /// left out, with whether they used a local entity: kept only for the
+    /// outermost `type_digest` call (their cause depends on the path that
+    /// reached them, which within one call is the same), so a type met
+    /// again at the limit is not walked again (WP-036, F4).
+    pub abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
     /// `digest.bytes` (`spec/digest.md` §12).
     pub bytes: u64,
 }
@@ -171,6 +184,9 @@ impl<'a> Walk<'a> {
             depth: 0,
             node_depth: 0,
             aborts: 0,
+            left_out: 0,
+            type_nesting: 0,
+            abort_memo: HashMap::new(),
             bytes: 0,
         }
     }

@@ -111,7 +111,7 @@ impl Walk<'_> {
             Some(q) => {
                 s.opt(true);
                 let t = self.type_digest(q, function);
-                s.digest(&t.digest).absorb(t.cause);
+                self.absorb_type(s, t);
             }
             None => {
                 s.opt(false);

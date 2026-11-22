@@ -196,6 +196,7 @@ mod expr_core;
 mod expr_dep;
 mod expr_init;
 mod expr_misc;
+mod expr_profile;
 mod fp;
 mod groups;
 mod keys;
@@ -337,6 +338,11 @@ pub enum Area {
     Demand,
     /// The order unit (digest §2.1).
     Order,
+    /// A fact a canonical profile leaves out but its first spelling
+    /// holds: the declarations lookup found for an unresolved name in a
+    /// dependent type (digest-kinds §4.4, WP-036). Written by the unit
+    /// stream when the spelling is (WP-041).
+    Spelling,
 }
 
 impl Area {
@@ -353,6 +359,7 @@ impl Area {
             Area::Other => "other",
             Area::Demand => "demand",
             Area::Order => "order",
+            Area::Spelling => "spelling",
         }
     }
 }

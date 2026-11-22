@@ -77,7 +77,13 @@ fn head(w: &mut Walk<'_>, s: &mut Stream, l: TemplateParamListId, how: Head<'_>)
     }
     s.opt(requires.is_some());
     if let Some(r) = requires {
-        crate::expr::requires_clause(w, s, r);
+        match how {
+            // A key's head holds the requires-clause's canonical operand,
+            // as a trailing one's (§3.3, §4.4): two spellings of one
+            // constraint are one key.
+            Head::Key => crate::expr_dep::profile_expr(w, s, r),
+            Head::Unit(_) => crate::expr::requires_clause(w, s, r),
+        }
     }
     w.leave();
 }
@@ -420,20 +426,27 @@ pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let default = default_of(w, d);
     s.opt(default.is_some());
     if let Some(a) = default {
-        match ast.types.canonical_arg(a).view() {
-            // A default written as an expression stays one in canonical
-            // form: it is the canonical operand of that expression.
-            ArgView::Expr { expr, profile: _ } => {
+        match (a.view(), ast.types.canonical_arg(a).view()) {
+            // A default written as an expression is the declaration's own:
+            // walked in full (§7), as a default function argument is.
+            (ArgView::Expr { expr, profile: _ }, _) => {
+                s.tag(arg_view::EXPR);
+                crate::expr::child(w, s, expr);
+            }
+            (_, ArgView::Expr { expr, profile: _ }) => {
                 s.tag(arg_view::PROFILE);
                 crate::expr_dep::profile_expr(w, s, expr);
             }
-            v @ (ArgView::Null
-            | ArgView::Type(_)
-            | ArgView::Value { .. }
-            | ArgView::Template(_)
-            | ArgView::TemplateExpansion { .. }
-            | ArgView::Profile(_)
-            | ArgView::Pack(_)) => w.write_arg(s, v),
+            (
+                _,
+                v @ (ArgView::Null
+                | ArgView::Type(_)
+                | ArgView::Value { .. }
+                | ArgView::Template(_)
+                | ArgView::TemplateExpansion { .. }
+                | ArgView::Profile(_)
+                | ArgView::Pack(_)),
+            ) => w.write_arg(s, v),
         }
     }
     // trailing_requires: child?
