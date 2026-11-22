@@ -422,3 +422,11 @@ To be listed as work packages land:
 - `Decoder::count` bounds a list's count by the bytes remaining, which is
   sound only while every element type encodes to at least one byte. A
   zero-width element type would need its own bound.
+- Whether a section must be present (`spec/landed/model/WP-015.md` "Not
+  checked"): `digests` on every `ok` shard and `verdict` on every `ok`
+  verify shard. Not required today because no writer produces them yet;
+  becomes a rule with the package that writes them (the walk, the verify
+  job). The same package decides the consistency rules of a verdict that
+  the format does not check (`unverifiable` with counts or a `pre`; `pre`
+  or `post` on an unnamed finding; the `digest.*` counters against the
+  section).
