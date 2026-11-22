@@ -522,7 +522,7 @@ fn s4_1_verdict_at_sums() {
     check_valid(&v);
     assert_eq!(v.kind, VerdictKind::Verified);
     assert_eq!((v.pre, v.rules), (dg(100), dg(101)));
-    for (n, limit, shown) in [(3u64, 64usize, 3usize), (3, 3, 3), (3, 2, 2), (u64::MAX, 64, 64)] {
+    for (n, limit, shown) in [(1u64, 64usize, 1usize), (3, 64, 3), (3, 3, 3), (3, 2, 2), (u64::MAX, 64, 64)] {
         let v = verdict_at_sums(n, dg(100), dg(101), limit);
         check_valid(&v);
         assert_eq!(v.kind, VerdictKind::Mismatch);
