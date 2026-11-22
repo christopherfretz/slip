@@ -136,10 +136,11 @@ multiset** `D`; derived units as the **derived multiset** `V`.
 
 Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
 
-1. **Indeterminate.** Every unit of `Dp` or `Dq` with the indeterminate
-   flag is a finding `indeterminate`. It takes no further part.
-2. **By key.** For each key `k` among the remaining units, let `P(k)` and
-   `Q(k)` be the multisets of digests of that key in `Dp` and `Dq`.
+1. **Indeterminate.** Every key that has a unit with the indeterminate
+   flag in `Dp` or in `Dq` is one finding `indeterminate`. The key takes no
+   further part, and no exemption applies to it.
+2. **By key.** For each other key `k`, let `P(k)` and `Q(k)` be the
+   multisets of digests of that key in `Dp` and `Dq`.
    - `P(k) = Q(k)`: no finding.
    - both non-empty and different: finding `changed`, unless `k` is in
      `changed`.
@@ -264,8 +265,8 @@ VerdictKind := verified = 0 | mismatch = 1 | unverifiable = 2
 Finding := kind:  FindingKind
            key:   opt<digest>           absent only for an unnamed `indeterminate` (§4.1 step 1)
            file:  bytes                 the group's file, pre-image group if there is one; empty if unknown
-           pre:   opt<digest>           the unit's digest in each image
-           post:  opt<digest>
+           pre:   opt<digest>           the unit's digest in each image, where the image has
+           post:  opt<digest>           exactly one unit of that key in the groups compared
            name:  str                   the entity as a person would write it; for the report only
            where: opt<Where>            §6.1
 
@@ -273,7 +274,8 @@ FindingKind := changed = 0 | removed = 1 | added = 2 | indeterminate = 3
              | derived_changed = 4 | derived_indeterminate = 5
 ```
 
-Findings are ordered by kind as listed, then by `file`, then by `key`.
+There is at most one finding per kind and key. Findings are ordered by
+kind as listed, then by `file`, then by `key` (an absent key first).
 `mismatch` if there is a finding, else `verified`. An observer whose post
 shard is not `ok` has no verdict and is `not_parsed`; an observer without a
 job is `unchanged`. Those five are the verdicts of an observer.
