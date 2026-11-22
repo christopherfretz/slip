@@ -166,7 +166,7 @@ pub(crate) fn dependent_scope_decl_ref_expr(w: &mut Walk<'_>, s: &mut Stream, e:
     check_bits(s, &n, 0, row("ExprNode/DependentScopeDeclRefExpr.bits"));
     check_aux(s, &n, 0, row("ExprNode/DependentScopeDeclRefExpr.aux"));
     match NnsId::try_new(n.a) {
-        Some(q) => w.write_nns(s, q),
+        Some(qualifier) => w.write_nns(s, qualifier),
         None => {
             s.uv(0).indeterminate(row("ExprNode/DependentScopeDeclRefExpr.a"));
         }
@@ -230,8 +230,10 @@ pub(crate) fn function_parm_pack_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprI
     check_aux(s, &n, 0, row("ExprNode/FunctionParmPackExpr.aux"));
     let cause = row("ExprNode/FunctionParmPackExpr.a");
     match DeclId::try_new(n.a) {
-        Some(d) if w.ast.decls.get(d).kind() == DeclKind::ParmVar => param_ref(w, s, d, cause),
-        Some(d) => w.write_ref(s, d),
+        Some(pack) if w.ast.decls.get(pack).kind() == DeclKind::ParmVar => {
+            param_ref(w, s, pack, cause);
+        }
+        Some(pack) => w.write_ref(s, pack),
         None => {
             s.uv(REF_NONE).indeterminate(cause);
         }
@@ -344,11 +346,11 @@ pub(crate) fn lambda_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     let n = expr::node(w, e);
     check_bits(s, &n, 0, row("ExprNode/LambdaExpr.bits"));
     check_aux(s, &n, 0, row("ExprNode/LambdaExpr.aux"));
-    let Some(l) = LambdaId::try_new(n.a) else {
+    let Some(lambda) = LambdaId::try_new(n.a) else {
         s.uv(0).indeterminate(row("ExprNode/LambdaExpr.a"));
         return;
     };
-    let closure = w.ast.exprs.lambdas.get(l).closure;
+    let closure = w.ast.exprs.lambdas.get(lambda).closure;
     crate::local::write_decl(w, s, closure);
 }
 

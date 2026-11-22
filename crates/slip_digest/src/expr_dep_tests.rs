@@ -7,7 +7,7 @@ use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::expr::ExprKind;
 
 use crate::decl_func::tests::{of_kind, with_walk};
-use crate::stream::Stream;
+use crate::stream::{FlagWord, Stream};
 use crate::walk::Walk;
 
 /// Every expression of kind `k`.
@@ -152,7 +152,6 @@ fn subst_reference_parameter_bit() {
         ExprKind::SubstNonTypeTemplateParmExpr,
         super::subst_non_type_template_parm_expr,
     );
-    use crate::stream::FlagWord;
     starts(
         &got,
         &[
