@@ -140,8 +140,8 @@ pub(crate) fn template_parm_info(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 
 /// The `data` row of a template: `record TemplateInfo` (§9.2): the head,
 /// with each default from the declaration that gives it (§2.3), the
-/// pattern written whole (`decl?`, its definition if it has one), and a
-/// concept's constraint.
+/// pattern written whole (`decl?`, its defining declaration if it has
+/// one), and a concept's constraint.
 pub(crate) fn template_info(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let ast = w.ast;
     let Some(i) = ast.template_info(d) else {
@@ -163,7 +163,8 @@ pub(crate) fn template_info(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     head(w, s, params, Head::Unit(&others));
     s.opt(pattern.is_some());
     if let Some(p) = pattern {
-        let read = ast.definition(p).unwrap_or(p);
+        // Its defining declaration (a variable's, `units::defining_decl`).
+        let read = crate::units::defining_decl(w, p).unwrap_or(p);
         w.decl_stream(s, read, p);
     }
     crate::expr::child_opt(w, s, constraint);
