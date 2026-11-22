@@ -10,8 +10,8 @@ consumers. Kiln owns the design of everything inside Kiln.
 Line references in §2 are to Kiln `main` at `913a490bb`, where the
 delivery is. Those of §5 are to `83566cc47`, where Slip's pin goes with
 `docs/wp/WP-044.md`. Slip's pin is before both: nothing of §2 can be
-called until the pin move after WP-044 (the package that moves the pin
-to Kiln `main` at or after `913a490bb`).
+called until the pin move after WP-044 (`docs/wp/WP-101.md`, which
+moves the pin to Kiln `main` at or after `913a490bb`).
 
 **What changed since the first draft.** Stage 1 asked Kiln for four
 functions (the extent of a token, a range as file characters, the origin
@@ -25,12 +25,13 @@ does not write them a second time. `slip_kiln` calls Kiln's functions
 | Part | Kind | State |
 |---|---|---|
 | §2 What Kiln delivered, under which names, and where its rule differs from Slip's | A reading | **Delivered**: U1, U2, U5, U6. **Not delivered, and Slip's own**: U3 (the classification, §3), U4 (offsets in the file's bytes) |
-| §2.2 Two follow-ups Slip may send | **Implementation against a settled specification**, small | Not asked. Slip derives both from Kiln's public functions |
+| §2.2 Two follow-ups for Kiln | 1: **implementation against a settled specification**, small. 2: **a small design question** (no prior art in clang for the mode), then implementation | Drafted, not sent. Neither blocks M2 |
 | §3 The classification of a token's origin, Slip's tiers | **Design, small, with prior art for the pieces** (`isMacroArgExpansion`, `isWrittenInScratchSpace`, `getImmediateMacroCallerLoc`) | **Not asked.** Offered for review; becomes a request only if Slip's implementation finds a row the public functions cannot decide |
 | §4 Stage 2 (U5, U6) | — | **Delivered** with stage 1 |
 | §5 The written-reference table and the declaration extents against a rename | A reading, not a request. Its follow-ups are KR1's and are sent or scheduled there | — |
 
-Nothing in this document is design without prior art.
+Nothing in this document is design without prior art, except the mode
+of §2.2 item 2, which is marked there.
 
 ## 1. Need
 
@@ -52,7 +53,7 @@ Kiln WP-2150, merged at `913a490bb`. The normative text is Kiln's:
 |---|---|---|
 | U1, the exact extent of the token at a location | `kiln_lex::token_end(sm, &Interner, loc, LexOptions) -> Option<Loc>` (`kiln_lex/src/token_end.rs:32`) | It gives the end and takes the start as given: `None` if `loc` is not the first character of a token (white space or a comment is there), at the end of the buffer, or off a character boundary. For a macro location the token is measured where it is spelled and the end is in the location's own entry. It is not clang's `getLocForEndOfToken`; that is `file_loc_at_macro_end(token_end(..))`. It needs the unit's interner and lexer options, which the front-end entry gives (`FrontEnd.interner`, `kiln_driver/src/front_end.rs:103`; `FrontEnd.pp`, `:113`, with `Preprocessor::lex_options`, `kiln_pp/src/preprocessor.rs:614`) |
 | U2, a location range as a range of file characters, or none | `SourceManager::editable_range(Span) -> Option<Span>` (`kiln_source/src/editable.rs:151`) and `editable_file_range(Span) -> Option<(FileId, u32, u32)>` (`:164`); the two rules it is made of are public too: `file_loc_at_macro_start` (`:68`), `file_loc_at_macro_end` (`:83`) | clang's `makeFileCharRange` and `canInsert`, and in addition the result must be one buffer range, in order. It does not say **which rule answered** (Slip's tier), it prefers the **whole invocation** to the argument when a range is both (§2.1), an empty range is an insertion point, and there is no system-header check (the client's policy: Slip's ownership) |
-| U3, the origin of a token | Not a function. The facts are public: `expansion_info` (`kiln_source/src/manager.rs:1532`), `immediate_spelling_loc` (`:1588`), `is_written_in_scratch_space` (`:1170`), `file_origin` (`:1236`), and now the entry list with parents (U5) | Slip's classification (§3), in `slip_kiln::ranges` and `slip_kiln::sites` |
+| U3, the origin of a token | Not a function. The facts are public: `expansion_info` (`kiln_source/src/manager.rs:1532`), `immediate_spelling_loc` (`:1588`), `is_written_in_scratch_space` (`:1170`), `file_origin` (`:1236`), and now the entry list with parents (U5) | Slip's classification (§3), in `slip_kiln::sites`. It decides the tier and the reason of a refusal, and no range |
 | U4, offsets in the file's bytes | Not delivered: `editable_file_range` and `offset_of` (`manager.rs:1296`) give offsets in `text(file)`, the text after loading | Slip's check: the offsets are the file's when the load report is clean (`load_report`, `:1225`); a file that was recoded on load is refused (`file_recoded`, `spec/edits.md` §2.3). A byte-order mark is part of Kiln's text and shifts nothing (`original_bytes`, `:1253`) |
 | U5, the expansion entries | `SourceManager::expansion_count()` (`manager.rs:1553`), `expansion_entries(from)` (`:1562`) giving `ExpansionEntry { index, info, parent }` (`:178`), `ExpansionInfo::spelling_range` (`:171`) | More than asked: creation order is promised, the table is append-only, and each entry names its parent |
 | U6, several preprocessor observers | `Preprocessor::add_callbacks` (`kiln_pp/src/preprocessor.rs:565`); `set_callbacks` (`:556`) replaces all | As asked |
@@ -86,7 +87,8 @@ written. Read against Kiln's `spec/source.md`:
    extent Kiln's answer is the one Slip takes. For a **name** it cannot
    be: `spec/api.md` §6.6 rule 1 makes a name's range "the identifier
    token", and a rename writes an identifier over it. `spec/edits.md`
-   §2.2 puts the token in tier 1 with the argument's bytes.
+   §2.2 puts the token in tier 1 (it is written in an argument), and
+   the range a rename would want is the argument's three bytes.
 3. **A whole expansion made of other bytes.** `NAME` with `#define NAME
    foo`, `S(abc)` with `#define S(x) #x`, and `A(B)` with `#define B
    foo`, where rule 4 leads to `B`: Kiln gives the invocation (`NAME`,
@@ -101,40 +103,48 @@ written. Read against Kiln's `spec/source.md`:
 5. **Offsets and ownership** are rows U4 and U2 above: the text's
    offsets, and no policy.
 
-So Slip has two functions over Kiln's one (`docs/wp/WP-084.md`):
+**What Slip does about it** (`spec/edits.md` §2.2, `docs/wp/WP-084.md`,
+`docs/wp/WP-068.md`): it takes Kiln's function as it is and adds no
+range rule of its own. The range of a span is `editable_file_range`,
+with the tier of item 1. A name is edited only when it is written at
+tier 0 or 1 by the classification of §3, Kiln gives a range for its
+span, and the bytes of that range are the name. So:
 
-- **the range of a span** (an extent): Kiln's `editable_file_range`,
-  unchanged, with the tier of item 1;
-- **the range of a name token**: the classification of §3 decides the
-  tier from where the token is written (while the location is in a
-  macro-argument entry it is replaced by its immediate spelling, with
-  Kiln's `expansion_info` and `immediate_spelling_loc`); for tier 0
-  or 1 the end is Kiln's `token_end` at the location reached, and the
-  range is Kiln's `editable_file_range` of that span, which is then
-  rule 1 with the check of rule 5. Slip never moves an end by
-  arithmetic of its own.
+- item 2: `ID(foo)` is **refused** (`not_plain`), though the token is in
+  tier 1. This is the one site Slip's own definition calls editable and
+  Kiln's function does not serve; it is follow-up 2 below;
+- item 3: refused by tier (`macro_body`, `pasted`), which is what
+  `spec/edits.md` wants. A use of `foo` under `#define foo foo` is
+  refused too, though Kiln's range there is the name's own bytes: the
+  token is written in a replacement list.
 
-The two agree wherever Kiln's function answers through rule 4 alone,
-and differ exactly in items 2 and 3; a test of `docs/wp/WP-084.md`
-holds that over every name token of the snippets. The alternative for
-item 2 was to take Kiln's order and refuse such a name. It is safe and
-loses a site that is editable by Slip's own definition; and a macro
-that is the identity in this configuration may not be in one no
-observer has, so replacing the invocation is the larger claim.
+The alternative for item 2 was a range rule of Slip's own: take the
+file location the classification's walk reaches (§3) as the start of
+the name and ask Kiln about that span. It is five lines, and it is
+Kiln's rule 4 written a second time and used for every name in every
+macro argument. Slip does not do it: the walk decides a tier and a
+reason, never a range.
 
-### 2.2 Two follow-ups Slip may send (not asked)
+### 2.2 Two follow-ups for Kiln (drafted, not sent)
 
-- **The rule that answered.** `editable_file_range` returning also
-  whether the argument step was taken would replace the derivation of
-  §2.1 item 1 (two more walks per range).
-- **The argument first, on request.** A variant that, for a range inside
-  one use of one argument, never widens to the invocation: §2.1 item 2
-  for ranges of more than one token (a qualified name, `a::b`, written
-  whole in an identity macro's argument). Slip's name rule handles one
-  token and has no use for more in M2.
-
-Neither blocks anything. Both are implementation against Kiln's settled
-rule.
+1. **The rule that answered.** `editable_file_range` returning also
+   whether the argument step was taken (rule 4). It would replace the
+   derivation of §2.1 item 1, which costs two more walks per range.
+   Implementation against Kiln's settled rule; nothing waits for it.
+2. **The argument first, on request.** A variant (an option, or a
+   second function) that for a range inside one use of one argument
+   gives where the argument is written even when the range is also a
+   whole expansion: rule 4 before rule 3. With it `ID(foo)`, and a
+   qualified name written whole in such an argument, become editable
+   names at tier 1. **A small design question for Kiln** before it is
+   an implementation: clang has no such mode, and Kiln decides whether
+   it belongs in `kiln_source` (the reason Slip gives: a macro that is
+   the identity in this configuration may not be in one no observer
+   has, so the argument is the smaller claim). M2 does not wait for
+   it: such names are refused and reported. How many there are in the
+   `llvm` corpus is counted by Demo 2's record (refusals with reason
+   `not_plain` whose range is an invocation), and that number is what
+   decides whether this is sent.
 
 ## 3. The origin of a token: the classification Slip implements
 

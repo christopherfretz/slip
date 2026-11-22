@@ -1402,10 +1402,10 @@ file is in the parse's `inputs`:
    later takes part from the day `spec/api.md` announces it). Entries
    equal in role, name range and referent are one reference.
 2. A reference's **name range** is the file range of its name: the bytes
-   its identifier is written with in a file, at tier 0 or 1
-   (`spec/edits.md` §2.2; `slip_kiln::ranges::name_range`, the function
-   the rename took the site's range from). A reference whose name has no
-   such range takes no part.
+   of one file that translation turned into exactly the name's tokens,
+   at tier 0 or 1 (`spec/api.md` §5.4; `slip_kiln::ranges`, which is
+   Kiln's `editable_file_range`, `spec/edits.md` §2.2). A reference
+   whose name has no such range takes no part.
 3. A reference **answers** the obligation if its name range is in the
    obligation's file, ends at `hi` and starts at or after `lo`. (A
    spelling `::a::b::f` is answered by the reference `f`; `a` and `b`

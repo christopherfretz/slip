@@ -87,32 +87,41 @@ The **tier** of a token the parser saw
 | 3 | made by `##` or `#`, or by a builtin macro | refused (`pasted`) |
 | X | not one token of one of the above: a name whose tokens come from different expansions, or from a buffer that is not a file (command-line definitions, predefines) | refused (`crossing`, `not_a_file`) |
 
-Tiers 0 and 1 are those of `api.md` §5.4, and one module decides them
-for both producers: `slip_kiln::ranges` (`docs/wp/WP-084.md`), which gives
-the file range of a name token, or none. Tiers 2, 3 and X are this file's
-names for *why* there is none; `slip_kiln::sites` finds them (§2.3).
+Tiers 0 and 1 are those of `api.md` §5.4, and one function gives their
+ranges to both producers: `slip_kiln::ranges` (`docs/wp/WP-084.md`),
+which gives the file range of a token span, or none. Tiers 2, 3 and X
+are this file's names for *why* a name is not edited; `slip_kiln::sites`
+finds them (§2.3).
 
-The tier is decided by where the token is written, which is read from
-Kiln's expansion entries: while the token's location is in a
-macro-argument entry it is replaced by its immediate spelling; a file
-location reached so is tier 0 if no step was taken and tier 1 otherwise.
-Everything after that is Kiln's (WP-2150; Kiln `spec/source.md`
-"Editable file ranges", `spec/lex.md` "End of a token"): the end of the
-token is `kiln_lex::token_end`, and the range is
-`SourceManager::editable_file_range` of that span. Slip has no rule of
-its own for the end of a token or for a range of file characters, and
-`slip_kiln::ranges` is the only caller of either.
+**The range is Kiln's.** Which bytes of a file an edit must replace to
+replace a range of tokens, and where a token ends, are answered by
+Kiln's own functions (Kiln WP-2150: `SourceManager::editable_file_range`,
+Kiln `spec/source.md` "Editable file ranges"; `kiln_lex::token_end`,
+Kiln `spec/lex.md` "End of a token"), the ones Kiln's fix-its use.
+`slip_kiln::ranges` calls them and Slip has no rule of its own for
+either. They need Slip's Kiln revision at or after `913a490bb`.
 
-Kiln's function answers for a range of tokens, and for a range that is a
-whole macro expansion it gives the invocation: `ID(foo)` for the `foo`
-of `ID(foo)` with `#define ID(x) x`, and `NAME` for the `foo` that
-`#define NAME foo` produces. That is the range of the *expression*
-(`api.md` §5.4) and is not the name: a rename writes an identifier over
-a claim's range. So the name's range is asked for at the location where
-the token is written, as above, and not at the location the parser saw:
-the first `foo` is tier 1 with the three bytes of the argument, the
-second is tier 2. ([KF3](../docs/requests/KF3-location-utilities.md)
-§2.1 lists every difference between Kiln's rule and this one.)
+**The tier is where the token is written**, which Kiln has no function
+for and Slip reads from Kiln's expansion entries: the token's location
+is followed to its immediate spelling while it is in a macro-argument
+entry; what is reached is a location in a file (tier 0 if no step was
+taken, tier 1 otherwise), in a replacement list (2), in scratch space
+(3), or in a buffer that is not a file (X).
+
+A name is edited only when both agree: it is written at tier 0 or 1,
+Kiln gives a range for its span, and the bytes of that range are the
+name (§2.3). The two rules differ in one place, a name that is a whole
+macro expansion, for which Kiln gives the invocation
+([KF3](../docs/requests/KF3-location-utilities.md) §2.1):
+
+- `ID(foo)` with `#define ID(x) x`: the token is in tier 1, Kiln's
+  range is the seven bytes of the invocation, and they are not the
+  name. It is refused (`not_plain`). Slip does not go to the argument's
+  bytes by a rule of its own; a range for them is a question to Kiln
+  (KF3 §2.2), and until Kiln answers such a name is not edited.
+- `NAME` with `#define NAME foo`, and a use of `foo` with `#define foo
+  foo`: the token is written in a replacement list. It is refused
+  (`macro_body`), whatever Kiln's range is.
 
 A token is tier 1 only if every expansion between its bytes and the parser
 is the substitution of a parameter by an argument. An argument that is
@@ -129,20 +138,20 @@ was claimed at (§5.3).
 
 A claim's range is `[lo, hi)` in byte offsets of the file's bytes: the
 bytes its content digest is computed over. `slip_kiln::ranges` maps a
-name token to a file range (§2.2). Kiln's offsets are offsets in its
-text of the file, which are offsets in the file's bytes exactly when
-Kiln changed nothing on loading (`file_recoded` below). Where there is
-no range, or the range may not be edited, `slip_kiln::sites` gives the
+Kiln token span to a file range (§2.2). Kiln's offsets are offsets in
+its text of the file, which are offsets in the file's bytes exactly when
+Kiln changed nothing on loading (`file_recoded` below). Where it gives
+none, or the range may not be edited, `slip_kiln::sites` gives the
 reason, and the native rename claims a refusal with it (§4.2); a
 programmable transform sees a null range or `is_editable` false
 (`api.md` §5.4, §6.6) and requests nothing.
 
 | Reason | Condition |
 |---|---|
-| `macro_body`, `pasted`, `crossing`, `not_a_file` | the tier (§2.2) |
+| `macro_body`, `pasted`, `crossing`, `not_a_file` | the tier (§2.2); `crossing` also when the token is written at tier 0 or 1 and Kiln gives no range for it |
 | `not_owned` | the file is read-only (§2.1) |
 | `file_recoded` | the front end's text of the file is not the file's bytes: Kiln replaced invalid UTF-8 when it loaded the file (its load report is not clean), so offsets in the text are not offsets in the file |
-| `not_plain` | the bytes of the range are not the token's spelling: the name is written with a universal-character-name, a line splice or a trigraph |
+| `not_plain` | the bytes of the range are not the token's spelling: the name is written with a universal-character-name, a line splice or a trigraph, or the range is a macro invocation that expands to the name (§2.2) |
 
 When several conditions hold, the reason is the first in the order of the
 table. A byte-order mark is part of Kiln's text of a file and shifts no
@@ -319,9 +328,11 @@ piece taken as its path: this is the edit of `api.md` §7.6.
 - `keep` and `unresolved` claims have tiers 0 and 1 only, and their range
   is a token's file range (§2.3).
 - A `refuse` claim's range is where a person must look: for `macro_body`
-  the token's bytes in the macro definition; for every other reason the
-  name token of the outermost invocation, or `[0, 0)` of the main file if
-  there is none. `subjects` is not empty.
+  the token's bytes in the macro definition; for `not_owned` and
+  `not_plain` the range Kiln gave for the name (§2.2), in whatever file
+  it is; for every other reason the name token of the outermost
+  invocation, or `[0, 0)` of the main file if there is none. `subjects`
+  is not empty.
 - `keep` is claimed for every name token whose bytes equal those a
   `replace` of the transform would replace elsewhere and that this
   observer resolved to an entity that is not a subject (rename: every
@@ -1507,7 +1518,7 @@ end's tables:
 |---|---|
 | `slip_digest::query::Keys` (`docs/wp/WP-087.md`) | key ids and keys with no rules, the unit that holds a declaration, `rename_rule` |
 | `slip_kiln::written` (`docs/wp/WP-067.md`) | the written references of the unit, deduplicated, with role, name span and referent; the names of declarations from the declaration extents |
-| `slip_kiln::ranges` (`docs/wp/WP-084.md`) | the file range and tier of a name, or none: Kiln's `token_end` and `editable_file_range` (§2.2), which need Kiln at or after `913a490bb` |
+| `slip_kiln::ranges` (`docs/wp/WP-084.md`) | the file range of a name's span, or none: Kiln's `editable_file_range` (§2.2), which needs Kiln at or after `913a490bb` |
 | `slip_kiln::sites` (`docs/wp/WP-068.md`) | why there is none, and where a person must look (§2.3) |
 
 `run` is a function of the unit: two parses of the same inputs give equal

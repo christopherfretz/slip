@@ -28,8 +28,8 @@ is checked against: the run's own counters are the record.
   entry (KF1, Kiln WP-2120); the written-reference table stages 1 and 2
   (Kiln WP-1930, WP-1931) and the declaration extents (Kiln WP-2090);
   the fixes of KD1 and KD2 (so that no unit of the corpus is `failed`).
-  Then the pin move after WP-044, to Kiln `main` at or after
-  `913a490bb`: Kiln WP-2150, which delivered
+  Then the pin move after WP-044 (`docs/wp/WP-101.md`), to Kiln `main`
+  at or after `913a490bb`: Kiln WP-2150, which delivered
   [KF3](../requests/KF3-location-utilities.md) stage 1 (the end of a
   token, a location range as file characters, the expansion entries).
   `docs/wp/WP-084.md` and `docs/wp/WP-068.md` call those functions and
@@ -251,7 +251,7 @@ share no file.
 |---|---|---|
 | 1 | 060 (model: request, shard sections), 064 (protocol 2, the store's files) | nothing |
 | 2 | 061 (model: edit set, overlay, result), 069 (rule use), 067 (written references, declaration names) | 067: the pin at Kiln's main (WP-044); 069: `slip_digest`'s `lib.rs` and `keys.rs` free of M1's open packages |
-| 3 | 062 (reduce), 063 (apply), 077 (test runner), 070 (agreement, spellings, guards, state), 066 (the overlay), 068 (sites, scan) | 070: M1's run report (WP-055); 066: Kiln's answer to KF2, then its review; 068: M3's file ranges (WP-084), which wait for the pin move after WP-044 (Kiln WP-2150); 068's `scan` and `tree` do not |
+| 3 | 062 (reduce), 063 (apply), 077 (test runner), 070 (agreement, spellings, guards, state), 066 (the overlay), 068 (sites, scan) | 070: M1's run report (WP-055); 066: Kiln's answer to KF2, then its review; 068: M3's file ranges (WP-084), which wait for the pin move after WP-044 (WP-101; Kiln WP-2150); 068's `scan` and `tree` do not |
 | 4 | 071 (rename, core), 075 (`reduce`, `apply`) | 071: M3's keys (WP-087); 075: M1's commands (WP-053) |
 | 5 | 072 (families, followers), 073 (templates), 074 (worker) | 074: M1's map and verify tasks (WP-050, WP-052) and M3's check of spelled entities (WP-096); 073: KR1 amendment 1 §2 and Kiln WP-1933, part by part |
 | 6 | 076 (`map`, `check`, `rename`) | |
