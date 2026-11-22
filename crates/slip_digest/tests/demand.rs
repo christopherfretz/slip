@@ -1,14 +1,17 @@
 //! Demand independence (`spec/digest.md` §14): every key in both sides has
 //! the same digests and flags, and the declared keys only B has are
 //! exactly the `added` lines (none if there are none); A has no declared
-//! key B lacks.
+//! key B lacks. A key both sides declare is in the declared group of one
+//! file on both, and a declared group that holds no key of one side only
+//! has the same sum on both (`spec/digest.md` §11).
 
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use common::{Expect, Side};
+use slip_model::Digest;
 use slip_model::digests::GroupClass;
 
 fn one(dir: &Path) -> Result<(), String> {
@@ -49,7 +52,44 @@ fn one(dir: &Path) -> Result<(), String> {
     if !only_a.is_empty() {
         problems.push(format!("declared keys only A has: {only_a:?}"));
     }
+    let (fa, fb) = (declared_files(&a), declared_files(&b));
+    for (k, f) in &fa {
+        if let Some(g) = fb.get(k)
+            && f != g
+        {
+            problems.push(format!("declared in another file: {}", a.name(k)));
+        }
+    }
+    let one_side: BTreeSet<&Vec<u8>> = fa
+        .iter()
+        .filter(|(k, _)| !fb.contains_key(*k))
+        .chain(fb.iter().filter(|(k, _)| !fa.contains_key(*k)))
+        .map(|(_, f)| f)
+        .collect();
+    let sums = |d: &common::Digested| -> BTreeMap<Vec<u8>, (u64, u64, Digest)> {
+        d.output
+            .digests
+            .groups
+            .iter()
+            .filter(|g| g.class == GroupClass::Declared && !one_side.contains(&g.file))
+            .map(|g| (g.file.clone(), (g.count, g.indeterminate, g.digest)))
+            .collect()
+    };
+    if sums(&a) != sums(&b) {
+        problems.push("a declared group's sum differs".into());
+    }
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
+}
+
+/// The file of the declared group that holds each declared key.
+fn declared_files(d: &common::Digested) -> BTreeMap<Digest, Vec<u8>> {
+    let mut out = BTreeMap::new();
+    for g in d.output.digests.groups.iter().filter(|g| g.class == GroupClass::Declared) {
+        for u in g.units.iter().flatten() {
+            out.insert(u.key, g.file.clone());
+        }
+    }
+    out
 }
 
 #[test]
