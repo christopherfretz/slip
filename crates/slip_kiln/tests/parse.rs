@@ -44,8 +44,12 @@ impl Fixture {
 
     /// Parses `argv` in `dir` (relative to the root).
     fn parse(&self, dir: &str, argv: &[&str]) -> Shard {
-        parse_observer(&observer(&self.root.join(dir), argv), Phase::Map, 3, &self.options())
-            .expect("parse_observer")
+        let shard =
+            parse_observer(&observer(&self.root.join(dir), argv), Phase::Map, 3, &self.options())
+                .expect("parse_observer");
+        // Every shard satisfies the format's invariants (spec/model.md §8).
+        shard.validate().expect("a valid shard");
+        shard
     }
 
     fn scratch_is_empty(&self) -> bool {
@@ -186,6 +190,7 @@ fn s8_deterministic() {
     let two = f.parse(".", &["c++", "main.cpp"]);
     assert_eq!(one.outcome.status, Status::Diagnosed);
     assert_eq!(one, two);
+    assert_eq!(one.to_bytes(), two.to_bytes(), "byte for byte once encoded");
 }
 
 // §8: a C translation unit is parsed as C (`new` is an identifier).

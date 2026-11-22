@@ -10,12 +10,11 @@
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use slip_model::formats::clip_message;
+
 /// The most of one line that is kept; the rest of a longer line is dropped
 /// (the fields read come first in the object).
 const LINE_CAP: usize = 64 * 1024;
-
-/// The longest `message` (`spec/model.md` §8).
-pub(crate) const MESSAGE_CAP: usize = 4096;
 
 /// What the diagnostics said.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -24,13 +23,13 @@ pub(crate) struct Tally {
     pub errors: u64,
     pub warnings: u64,
     /// The first error, `file:line:col: message` (or `message` without a
-    /// location), at most [`MESSAGE_CAP`] bytes.
+    /// location), at most [`slip_model::formats::MESSAGE_MAX`] bytes.
     pub first_error: Option<String>,
     /// The first error's id is a driver diagnostic (`drv_…`): the driver
     /// refused the command line.
     pub first_error_is_driver: bool,
     /// The first line that is not a JSON object (Kiln wrote something
-    /// unstructured), at most [`MESSAGE_CAP`] bytes.
+    /// unstructured), at most [`slip_model::formats::MESSAGE_MAX`] bytes.
     pub first_other: Option<String>,
 }
 
@@ -59,7 +58,7 @@ impl State {
                             (Some(f), Some(l), Some(c)) => format!("{f}:{l}:{c}: {}", d.message),
                             _ => d.message,
                         };
-                        self.tally.first_error = Some(cut(located, MESSAGE_CAP));
+                        self.tally.first_error = Some(clip_message(&located).to_owned());
                     }
                 }
                 "warning" => self.tally.warnings += 1,
@@ -67,7 +66,7 @@ impl State {
             },
             None => {
                 if self.tally.first_other.is_none() {
-                    self.tally.first_other = Some(cut(text.to_owned(), MESSAGE_CAP));
+                    self.tally.first_other = Some(clip_message(text).to_owned());
                 }
             }
         }
@@ -110,21 +109,9 @@ fn push_capped(line: &mut Vec<u8>, bytes: &[u8]) {
     line.extend_from_slice(&bytes[..bytes.len().min(room)]);
 }
 
-/// `s` cut to at most `max` bytes at a character boundary.
-pub(crate) fn cut(mut s: String, max: usize) -> String {
-    if s.len() > max {
-        let mut end = max;
-        while !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        s.truncate(end);
-    }
-    s
-}
-
 /// The top-level fields of one diagnostic line that the tally uses.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Line {
+struct Diagnostic {
     id: Option<String>,
     severity: String,
     file: Option<String>,
@@ -137,13 +124,13 @@ struct Line {
 /// `message` of a JSON object, stopping at the first value it cannot read
 /// (a line cut at [`LINE_CAP`]). `None` if `text` does not start as an
 /// object with a `severity` string.
-fn parse_line(text: &str) -> Option<Line> {
+fn parse_line(text: &str) -> Option<Diagnostic> {
     let mut p = Parser { s: text.as_bytes(), i: 0 };
     p.ws();
     if !p.eat(b'{') {
         return None;
     }
-    let mut out = Line::default();
+    let mut out = Diagnostic::default();
     let mut severity = None;
     loop {
         p.ws();
@@ -154,11 +141,11 @@ fn parse_line(text: &str) -> Option<Line> {
         }
         p.ws();
         let ok = match key.as_str() {
-            "id" => p.opt_string().map(|v| out.id = v).is_some(),
+            "id" => p.opt_string().map(|v| out.id = v).is_ok(),
             "severity" => p.string().map(|v| severity = Some(v)).is_some(),
-            "file" => p.opt_string().map(|v| out.file = v).is_some(),
-            "line" => p.opt_number().map(|v| out.line = v).is_some(),
-            "col" => p.opt_number().map(|v| out.col = v).is_some(),
+            "file" => p.opt_string().map(|v| out.file = v).is_ok(),
+            "line" => p.opt_number().map(|v| out.line = v).is_ok(),
+            "col" => p.opt_number().map(|v| out.col = v).is_ok(),
             "message" => p.string().map(|v| out.message = v).is_some(),
             _ => p.skip_value(),
         };
@@ -173,6 +160,9 @@ fn parse_line(text: &str) -> Option<Line> {
     out.severity = severity?;
     Some(out)
 }
+
+/// A value that is not complete or not of the expected kind.
+struct Incomplete;
 
 struct Parser<'a> {
     s: &'a [u8],
@@ -208,19 +198,22 @@ impl Parser<'_> {
         }
     }
 
-    fn opt_string(&mut self) -> Option<Option<String>> {
-        if self.literal(b"null") { Some(None) } else { self.string().map(Some) }
+    /// A string or `null`.
+    fn opt_string(&mut self) -> Result<Option<String>, Incomplete> {
+        if self.literal(b"null") { Ok(None) } else { self.string().map(Some).ok_or(Incomplete) }
     }
 
-    fn opt_number(&mut self) -> Option<Option<u64>> {
+    /// A non-negative integer or `null`.
+    fn opt_number(&mut self) -> Result<Option<u64>, Incomplete> {
         if self.literal(b"null") {
-            return Some(None);
+            return Ok(None);
         }
         let start = self.i;
         while self.peek().is_some_and(|c| c.is_ascii_digit()) {
             self.i += 1;
         }
-        std::str::from_utf8(&self.s[start..self.i]).ok()?.parse().ok().map(Some)
+        let digits = std::str::from_utf8(&self.s[start..self.i]).map_err(|_| Incomplete)?;
+        digits.parse().map(Some).map_err(|_| Incomplete)
     }
 
     fn hex4(&mut self) -> Option<u32> {
@@ -377,7 +370,7 @@ mod tests {
         let line = format!("{{\"id\":\"x\",\"severity\":\"error\",\"message\":\"{long}\"}}\n");
         let t = tally(&line, 100);
         let m = t.first_error.unwrap();
-        assert_eq!(m.len(), MESSAGE_CAP);
+        assert_eq!(m.len(), slip_model::formats::MESSAGE_MAX);
         assert!(m.chars().all(|c| c == 'é'));
         // A line longer than the cap still counts, from its prefix.
         let huge = "x".repeat(LINE_CAP * 2);

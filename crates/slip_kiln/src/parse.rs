@@ -12,7 +12,8 @@ use slip_model::{Counter, FileRef, Observer, Outcome, Phase, Shard, Status};
 
 use crate::check::{DEP_TARGET, front_end_line, overridden, program, utf8_command};
 use crate::depfile;
-use crate::diags::{self, MESSAGE_CAP};
+use crate::diags;
+use slip_model::formats::clip_message;
 
 /// How the parse task runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +65,7 @@ pub fn parse_observer(
     let (argv0, rest) = match utf8_command(&observer.command) {
         Ok(words) => words,
         Err(arg) => {
-            return Ok(shard(rejected(format!("argument `{arg}` is not UTF-8")), None));
+            return Ok(shard(rejected(&format!("argument `{arg}` is not UTF-8")), None));
         }
     };
 
@@ -88,7 +89,7 @@ pub fn parse_observer(
     let args = kiln_driver::args::Args::parse_as(&program, &line);
     if let Some(argument) = overridden(&args, &rest, &dep_arg) {
         return Ok(shard(
-            rejected(format!("argument `{argument}` overrides an option the parse relies on")),
+            rejected(&format!("argument `{argument}` overrides an option the parse relies on")),
             None,
         ));
     }
@@ -135,12 +136,12 @@ pub fn parse_observer(
     Ok(shard(outcome, inputs))
 }
 
-fn rejected(message: String) -> Outcome {
+fn rejected(message: &str) -> Outcome {
     Outcome {
         status: Status::Rejected,
         errors: 1,
         warnings: 0,
-        message: diags::cut(message, MESSAGE_CAP),
+        message: clip_message(message).to_owned(),
     }
 }
 
@@ -175,24 +176,20 @@ fn run_front_end(argv0: String, line: Vec<String>, counter: diags::Counter) -> R
 
 /// Each listed file once, by real path, sorted, with its size and digest.
 fn file_refs(directory: &Path, names: &[String]) -> Result<Vec<FileRef>, String> {
-    let mut paths: Vec<PathBuf> = Vec::with_capacity(names.len());
+    let mut paths: Vec<(Vec<u8>, PathBuf)> = Vec::with_capacity(names.len());
     for name in names {
         let spelled = directory.join(name);
         let real = std::fs::canonicalize(&spelled)
             .map_err(|e| format!("cannot resolve {}: {e}", spelled.display()))?;
-        paths.push(real);
+        paths.push((path_bytes(&real), real));
     }
-    let mut refs: Vec<FileRef> = Vec::with_capacity(paths.len());
-    paths.sort_by(|a, b| path_bytes(a).cmp(&path_bytes(b)));
+    paths.sort();
     paths.dedup();
-    for path in paths {
+    let mut refs: Vec<FileRef> = Vec::with_capacity(paths.len());
+    for (key, path) in paths {
         let bytes =
             std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        refs.push(FileRef {
-            path: path_bytes(&path),
-            size: bytes.len() as u64,
-            content: content_digest(&bytes),
-        });
+        refs.push(FileRef { path: key, size: bytes.len() as u64, content: content_digest(&bytes) });
     }
     Ok(refs)
 }
@@ -209,6 +206,7 @@ fn path_bytes(p: &Path) -> Vec<u8> {
 }
 
 #[cfg(unix)]
+#[allow(clippy::unnecessary_wraps, reason = "fallible on other platforms")]
 fn bytes_path(b: &[u8]) -> Result<PathBuf, String> {
     use std::os::unix::ffi::OsStrExt;
     Ok(PathBuf::from(std::ffi::OsStr::from_bytes(b)))
