@@ -1428,8 +1428,10 @@ Further rules:
 - A declaration whose `TemplLink` kind is `Pattern` is not a unit: it is
   the pattern of its template and is written in the template's unit (§9).
   One whose kind is `Specialization` is a `specialisation` unit whatever
-  its `DeclKind`; one whose kind is `MemberOfSpecialization` has its
-  ordinary key under the specialisation's key.
+  its `DeclKind`, unless its `SpecKind` is `Undeclared` (§9); one whose
+  kind is `MemberOfSpecialization` has its ordinary key under the
+  specialisation's key. A `PartialSpecialization` is a
+  `partial_specialisation` unit.
 - A block-scope function or `extern` variable declaration belongs to the
   entity's unit at namespace scope (§2.4).
 - An implicit special member, an implicit comparison or an implicit
