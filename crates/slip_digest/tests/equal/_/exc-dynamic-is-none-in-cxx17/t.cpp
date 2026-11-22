@@ -1,7 +1,7 @@
 // std: c++17
 // args: -Wno-dynamic-exception-spec
 #include "side.h"
-// §4.6 ExcSpec `Dynamic`: `throw(int)` against none (an error in C++17 that `-Wno-dynamic-exception-spec` lets through).
+// digest-kinds rule `ExcSpec` `Dynamic` in C++17: `throw(int)` is canonical `None` (kiln_ast/src/types/canon.rs:657).
 #ifdef B
 void f() throw(int);
 #else

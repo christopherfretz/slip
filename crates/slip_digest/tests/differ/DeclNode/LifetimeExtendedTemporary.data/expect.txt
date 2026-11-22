@@ -1,1 +1,4 @@
+# pending
+# needs: expr
+# the aggregate initialiser is Pending(Expr), as in LetData/mangling_index
 changed r

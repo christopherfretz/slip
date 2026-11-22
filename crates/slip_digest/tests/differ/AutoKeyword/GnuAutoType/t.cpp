@@ -1,8 +1,8 @@
 // std: c++17
 #include "side.h"
-// §4.3 AutoKeyword `GnuAutoType`: `__auto_type` against `auto`.
+// §4.3 AutoKeyword `GnuAutoType`: `__auto_type` against `auto`, undeduced in a template.
 #ifdef B
-__auto_type f();
+template <class T> __auto_type v = T();
 #else
-auto f();
+template <class T> auto v = T();
 #endif

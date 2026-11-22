@@ -125,14 +125,14 @@ kind("CXXConversion", "struct S { };", "struct S { operator int(); };",
 kind("CXXDeductionGuide", "", "S(char) -> S<int>;",
      ["added <deduction guide for S>(char)"], "added",
      pre="template <class T> struct S { S(T); };", std="c++17")
-kind("Var", "", "int v;", ["added v"], "added")
+kind("Var", "", "int v;", ["changed <order>", "added v"], "added")
 kind("ParmVar", "void f(int);", "void f(int = 1);", ["changed f(int)"],
      "through the function: a parameter with a default argument")
 kind("Binding", "", "auto [a, b] = p;",
-     ["added [a, b]", "added a", "added b"], "added",
+     ["changed <order>", "added [a, b]", "added a", "added b"], "added",
      pre="struct P { int x, y; } p;", std="c++17")
 kind("VarTemplateSpecialization", "", "template <> int v<int> = 1;",
-     ["added v<int>"], "added",
+     ["changed <order>", "added v<int>"], "added",
      pre="template <class> int v = 0;", std="c++17")
 kind("VarTemplatePartialSpecialization", "", "template <class T> int v<T *> = 1;",
      ["added v<type-parameter-0-0 *>"], "added",
@@ -222,11 +222,12 @@ data("Var", "int v = 0;", "inline int v = 0;", ["changed v"], "`inline`", std="c
 data("ParmVar", "void f(int = 1);", "void f(int = 2);", ["changed f(int)"],
      "the default argument")
 data("TemplateTypeParm", "template <class T> struct S;", "template <class... T> struct S;",
-     ["changed S"], "a pack")
+     ["removed S", "added S"], "a pack (the head is in the key, §3.3)")
 data("NonTypeTemplateParm", "template <int N> struct S;", "template <int... N> struct S;",
-     ["changed S"], "a pack")
+     ["removed S", "added S"], "a pack (the head is in the key, §3.3)")
 data("TemplateTemplateParm", "template <template <class> class T> struct S;",
-     "template <template <class> class... T> struct S;", ["changed S"], "a pack")
+     "template <template <class> class... T> struct S;", ["removed S", "added S"],
+     "a pack (the head is in the key, §3.3)")
 data("Namespace", "namespace n {}", "inline namespace n {}", ["changed n"], "`inline`")
 data("IndirectField", "struct S { union { int a; }; };",
      "struct S { union { union { int a; }; }; };",
@@ -252,8 +253,10 @@ data("TypeAlias", "using X = int;", "using X = long;", ["changed X"], "the type"
 data("StaticAssert", 'static_assert(true, "a");', 'static_assert(true, "b");',
      ["removed <static_assert>", "added <static_assert>"],
      "the message (content-keyed: the key moves)")
-data("LifetimeExtendedTemporary", "const S &r = S{1};", "const S &r = S{2};", ["changed r"],
-     "the temporary", pre="struct S { int a; };", std="c++17")
+data("LifetimeExtendedTemporary", "P r{1, 1, 1};", "P r{1, 2, 3};", ["changed r"],
+     "the record is written (the temporaries' mangling indices)",
+     pre="struct P { const int &a; const int &b; const int &c; };", needs="expr",
+     why="the aggregate initialiser is Pending(Expr), as in LetData/mangling_index")
 differ("DeclNode", "flags",
        "", "consteval { std::meta::define_aggregate(^^S, {std::meta::data_member_spec(^^int, {.name = \"e\"})}); }",
        ["changed S", "added S::e", "added <consteval_block>"],
@@ -381,7 +384,7 @@ def op_decl(op):
     if op in UNARY:
         return f"S operator{s}();", f"S::operator{s}()"
     if op in ALLOC:
-        return f"static void *operator{s}(Z);", f"S::operator{s}(Z)"
+        return f"static void *operator{s}(Z);", f"S::operator{s}(unsigned long)"
     if op in DEALLOC:
         return f"static void operator{s}(void *);", f"S::operator{s}(void *)"
     return f"S operator{s}(int);", f"S::operator{s}(int)"
@@ -417,20 +420,21 @@ differ("AutoKeyword", "Auto", "decltype(auto) f();", "auto f();",
        ["changed f()"], note="`Auto`: `auto` against `decltype(auto)`, undeduced.", std="c++17")
 differ("AutoKeyword", "DecltypeAuto", "auto f();", "decltype(auto) f();",
        ["changed f()"], note="`DecltypeAuto`.", std="c++17")
-differ("AutoKeyword", "GnuAutoType", "auto f();", "__auto_type f();", ["changed f()"],
-       note="`GnuAutoType`: `__auto_type` against `auto`.", std="c++17")
-differ("ExcSpec", "Dynamic", "void f() noexcept(false);", "void f() throw(int);",
-       ["changed f()"], note="`Dynamic`: `throw(int)` against none (an error in C++17 that "
-       "`-Wno-dynamic-exception-spec` lets through).", std="c++17",
-       args="-Wno-dynamic-exception-spec")
-differ("ExcSpec", "Dynamic.0", "void f() throw(int);", "void f() throw(long);",
-       ["changed f()"], note="`Dynamic.0`: the types.", std="c++17",
-       args="-Wno-dynamic-exception-spec")
-t("demand", "ExcSpec", "Deferred", "", "constexpr bool b = noexcept(S());", ["added b"],
+differ("AutoKeyword", "GnuAutoType", "template <class T> auto v = T();",
+       "template <class T> __auto_type v = T();", ["changed v"],
+       note="`GnuAutoType`: `__auto_type` against `auto`, undeduced in a template.", std="c++17")
+# `Dynamic` is reachable only before C++17, which the snippet runner has
+# no mode for (crates/slip_kiln/src/snippet.rs:435); from C++17 Kiln's
+# type holds the canonical `None` (kiln_ast/src/types/canon.rs:657).
+equal("_", "exc-dynamic-is-none-in-cxx17", "void f() noexcept(false);", "void f() throw(int);",
+      note="`ExcSpec` `Dynamic` in C++17: `throw(int)` is canonical `None` "
+           "(kiln_ast/src/types/canon.rs:657).",
+      std="c++17", args="-Wno-dynamic-exception-spec")
+t("demand", "ExcSpec", "Deferred", "", "bool g() { return noexcept(S()); }", ["added g()"],
   note="`Deferred`, §11.2: a use that resolves the deferred specification of a defaulted "
        "constructor changes no unit.",
   pre="struct S { S() = default; };")
-t("demand", "ExcSpec", "Deferred.0", "", "constexpr bool b = noexcept(S(s));", ["added b"],
+t("demand", "ExcSpec", "Deferred.0", "", "bool g() { return noexcept(S(s)); }", ["added g()"],
   note="`Deferred.0`, §11.2: the function whose specification is deferred, resolved by a use.",
   pre="struct S { S(); S(const S &) = default; };\nextern S s;")
 differ("ExcSpec", "DependentNoexcept", "template <class T> void f() noexcept;",
@@ -463,7 +467,8 @@ def write():
             lines.insert(0, f"// std: {opts['std']}")
         if opts.get("errors"):
             lines.insert(0, "// errors: yes")
-        lines.append(f"// {SECTION[short]} {short} {opts['note']}")
+        lines.append(f"// {SECTION.get(short, 'digest-kinds')} {short if short != '_' else 'rule'}"
+                     f" {opts['note']}")
         if opts.get("pre"):
             lines.append(opts["pre"])
         lines.append("#ifdef B")
