@@ -1,0 +1,34 @@
+{
+  "corpus": "llvm",
+  "pin": "llvmorg-19.1.7",
+  "slip": "0.0.0",
+  "kiln": "1.3.0",
+  "counters": {
+    "inputs.bytes": 32412847921,
+    "inputs.files": 1836485,
+    "plan.excluded.malformed_entry": 0,
+    "plan.excluded.missing_file": 0,
+    "plan.excluded.not_a_compile": 0,
+    "plan.excluded.unsupported_compiler": 0,
+    "plan.excluded.unsupported_flag": 0,
+    "plan.excluded.unsupported_language": 0,
+    "plan.observers": 4061,
+    "run.observers": 4061,
+    "shard.diagnosed": 2,
+    "shard.failed": 6,
+    "shard.ok": 4053,
+    "shard.rejected": 0
+  },
+  "measured": {
+    "wall_s": 746.085,
+    "cpu_s": 6763.79,
+    "peak_rss_max": 459132928,
+    "peak_rss_p50": 88567808,
+    "peak_rss_p90": 205918208,
+    "peak_rss_p99": 284712960,
+    "peak_rss_sum": 2141122560,
+    "cores": 24,
+    "workers_max": 12,
+    "memory_budget": 30237773415
+  }
+}
