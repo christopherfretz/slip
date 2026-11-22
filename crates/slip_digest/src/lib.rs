@@ -63,7 +63,8 @@
 //! | `value::value(w, s, v)`, `value::string(w, s, l)` | pending (`Area::Value`) |
 //! | `local::write_decl(w, s, d)` | `decl` (§2.4): pending (`Area::Local`) |
 //! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each: pending (`Area::DeclData`) |
-//! | `decl_class::{typedef_data, enum_data, enumerator_data, record_data, field_data}(w, s, d)` | one `record T` of §5.5 each: pending (`Area::DeclData`) |
+//! | `decl_class::{typedef_data, enum_data, enumerator_data, record_data, field_data}(w, s, d)` | one `record T` of §5.5 each |
+//! | `decl_class::ctor_init(w, s, i)` | `record CtorInit` (§5.5), for `ColdDeclData` `ctor_inits` |
 //! | `decl_scope::{friend_target, namespace_data, static_assert_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.6 each, and the rows of `ColdDeclData` (§5.7): pending (`Area::DeclData`) |
 //! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1): pending (`Area::Templ`) |
 //! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5): pending (`Area::Templ`) |
