@@ -1,0 +1,174 @@
+{
+  "kind": "PLAN",
+  "version": 1,
+  "sections": {
+    "tool": {
+      "slip": "0.0.0",
+      "kiln": "1.3.0"
+    },
+    "configurations": [
+      {
+        "name": "debug",
+        "database": {
+          "path": "/build/compile_commands.json",
+          "size": 4096,
+          "content": "0101010101010101010101010101010101010101010101010101010101010101"
+        }
+      },
+      {
+        "name": "release",
+        "database": {
+          "path": "/rel/compile_commands.json",
+          "size": "9007199254740992",
+          "content": "0202020202020202020202020202020202020202020202020202020202020202"
+        }
+      }
+    ],
+    "observers": [
+      {
+        "id": "52da8e7da8dede2243670be2e41b05f7a57523e9edce95c6b28d44b8c4b62078",
+        "command": {
+          "directory": "/other",
+          "argv": [
+            "g++",
+            "-c",
+            "x.cc"
+          ],
+          "env": []
+        },
+        "language": "cxx",
+        "main": {
+          "path": "/src/a.cc",
+          "size": "18446744073709551615",
+          "content": "0707070707070707070707070707070707070707070707070707070707070707"
+        },
+        "cost_hint": "18446744073709551615",
+        "origins": [
+          {
+            "configuration": 0,
+            "entry": 5
+          }
+        ]
+      },
+      {
+        "id": "e0e97a06a2135409f8e4f4833f40a6dfbd1c5e9d9540f1246e8d434d1f288e62",
+        "command": {
+          "directory": "/build",
+          "argv": [
+            "clang++",
+            "-c",
+            "b.cc"
+          ],
+          "env": [
+            {
+              "name": "CPATH",
+              "value": "/inc"
+            },
+            {
+              "name": "SDKROOT",
+              "value": {
+                "hex": "fe"
+              }
+            }
+          ]
+        },
+        "language": "cxx",
+        "main": {
+          "path": "/src/a.cc",
+          "size": "9007199254740993",
+          "content": "0707070707070707070707070707070707070707070707070707070707070707"
+        },
+        "cost_hint": "9007199254740993",
+        "origins": [
+          {
+            "configuration": 0,
+            "entry": 1
+          }
+        ]
+      },
+      {
+        "id": "0ab881850db37fd1c695132d4c16686f204b6e09144483c112cfdee4a0705ffb",
+        "command": {
+          "directory": "/build",
+          "argv": [
+            "cc",
+            "-c",
+            {
+              "hex": "ff2e63"
+            }
+          ],
+          "env": []
+        },
+        "language": "c",
+        "main": {
+          "path": {
+            "hex": "2f7372632fff2e63"
+          },
+          "size": 100,
+          "content": "0909090909090909090909090909090909090909090909090909090909090909"
+        },
+        "cost_hint": 100,
+        "origins": [
+          {
+            "configuration": 1,
+            "entry": 0
+          }
+        ]
+      },
+      {
+        "id": "c0568d94642200d311412a2ee8afe812545dd97fee5f30ea8654722515230469",
+        "command": {
+          "directory": "/build",
+          "argv": [
+            "clang++",
+            "-c",
+            "a.cc"
+          ],
+          "env": []
+        },
+        "language": "cxx",
+        "main": {
+          "path": "/src/a.cc",
+          "size": 100,
+          "content": "0707070707070707070707070707070707070707070707070707070707070707"
+        },
+        "cost_hint": 100,
+        "origins": [
+          {
+            "configuration": 0,
+            "entry": 0
+          },
+          {
+            "configuration": 1,
+            "entry": 2
+          }
+        ]
+      }
+    ],
+    "excluded": [
+      {
+        "configuration": 0,
+        "entry": 2,
+        "file": "/src/link",
+        "reason": "not_a_compile",
+        "detail": ""
+      },
+      {
+        "configuration": 0,
+        "entry": 3,
+        "file": {
+          "hex": "2f7372632f802e6363"
+        },
+        "reason": "unsupported_flag",
+        "detail": "-fno-such-flag"
+      },
+      {
+        "configuration": 1,
+        "entry": 1,
+        "file": "y.f90",
+        "reason": "unsupported_language",
+        "detail": "fortran"
+      }
+    ]
+  }
+}
