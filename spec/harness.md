@@ -172,3 +172,9 @@ the same code: LLVM 19.1.7 as C++17 first.
 - Whether Slip and Kiln should share harness code as one crate (request KM2
   in `docs/design/05-kiln-interface.md`). Until then Slip ports what it
   needs, with attribution.
+- The corpus lock is a file holding a process id, which only excludes within
+  one container (`flock` does not exclude on the bind-mounted workspace).
+  Corpora shared between containers need something else.
+- `corpus configure` does not report a generator target that the row's
+  `generate` list fails to reach; a pin change can leave the list short and
+  only a failed parse would show it.

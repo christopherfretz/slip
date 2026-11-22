@@ -265,7 +265,7 @@ impl Fake {
         ] {
             f.write(name, text);
             std::fs::set_permissions(f.path(name), std::fs::Permissions::from_mode(0o755)).unwrap();
-            wait_executable(&f.path(name));
+            common::wait_executable(&f.path(name));
         }
         let fake = Fake { f };
         let l = fake.layout(c);
@@ -297,24 +297,6 @@ impl Fake {
         let _ = std::fs::remove_file(self.f.path("log"));
         text.lines().map(|l| l.split(' ').next().unwrap_or_default().to_owned()).collect()
     }
-}
-
-/// Runs the script `p --probe` until it does not fail with `ETXTBSY`: a
-/// thread of another test that forks while `p` is open for writing holds
-/// the file busy until its child execs, so the first run of a script just
-/// written can fail ("Text file busy").
-fn wait_executable(p: &Path) {
-    const ETXTBSY: i32 = 26;
-    for _ in 0..200 {
-        match Command::new(p).arg("--probe").status() {
-            Err(e) if e.raw_os_error() == Some(ETXTBSY) => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Ok(st) => return assert!(st.success(), "{}: {st}", p.display()),
-            Err(e) => panic!("{}: {e}", p.display()),
-        }
-    }
-    panic!("{} stays busy", p.display());
 }
 
 fn fake_corpus(configure: &str, generate: &str) -> Corpus {

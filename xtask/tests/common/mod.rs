@@ -140,3 +140,21 @@ impl Drop for Fixture {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
+
+/// Runs the script `p --probe` until it does not fail with `ETXTBSY`: a
+/// thread of another test that forks while `p` is open for writing holds
+/// the file busy until its child execs, so the first run of a script just
+/// written can fail ("Text file busy").
+pub fn wait_executable(p: &Path) {
+    const ETXTBSY: i32 = 26;
+    for _ in 0..200 {
+        match std::process::Command::new(p).arg("--probe").status() {
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(st) => return assert!(st.success(), "{}: {st}", p.display()),
+            Err(e) => panic!("{}: {e}", p.display()),
+        }
+    }
+    panic!("{} stays busy", p.display());
+}
