@@ -208,7 +208,7 @@ fn s2_2_check_refuses_a_header_with_one_byte_changed() {
 #[test]
 fn s2_2_check_refuses_the_right_header_from_another_directory() {
     let res = Path::new("/opt/slip/resource");
-    let copy = Path::new("/home/author/vendored-slip");
+    let copy = Path::new("/srv/author/vendored-slip");
     assert_eq!(check_headers(&unit_reading(copy), res), Err(HeaderError::NotRead("slip/meta.h")));
     // One of the two from elsewhere.
     let mut read = unit_reading(res);
