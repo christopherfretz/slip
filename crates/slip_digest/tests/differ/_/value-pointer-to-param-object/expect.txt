@@ -1,4 +1,1 @@
-# pending
-# needs: templ
-# the object is keyed by content, and its content (`templ::param_object`) is pending
 changed x

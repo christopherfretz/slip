@@ -5681,6 +5681,15 @@ below. What they left open:
   revision. The rule for unchecked nodes below applies to them.
 - **`cleanup`** stays unsupported until Kiln's checked marker (WP-2022).
 
+### Defaults inside a template template parameter's head
+
+A default template argument inside the head of a template template
+parameter (`template <template <class = int> class P> struct X;`) is
+written from the declaration the walk reads. When another declaration
+of the template gives it, the unit does not hold it (WP-029): the two
+ways of writing the same template then differ, which errs on the side
+of a reported difference.
+
 ### Hazards accepted for now
 
 - **First spellings** (§4.4). A transformation that changes which of two
