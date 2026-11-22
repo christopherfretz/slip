@@ -473,17 +473,7 @@ fn default_arguments(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec
         chain.reverse();
         let decls: Vec<DeclId> =
             chain.into_iter().filter(|&x| crate::decl_func::instantiated_decl(w, x)).collect();
-        // Parameter i of every declaration of the chain, by its index.
-        let mut params: Vec<Vec<DeclId>> = Vec::new();
-        for x in w.redecls(ast.first(e)) {
-            let Some(f) = ast.decls.function(x) else { continue };
-            for (i, p) in ast.lists.iter::<DeclId>(f.params).enumerate() {
-                if params.len() <= i {
-                    params.resize_with(i + 1, Vec::new);
-                }
-                params[i].push(ast.first(p));
-            }
-        }
+        let params = chain_params(w, e);
         for i in 0..params.len() {
             let default = decls.iter().find_map(|&x| {
                 let f = ast.decls.function(x)?;
@@ -520,12 +510,7 @@ fn default_argument(
 ) {
     let mut values = Vec::new();
     let u = write_default_argument(w, e, owner, index, |w, s| {
-        for (j, ps) in params.iter().enumerate() {
-            for &p in ps {
-                w.unit.locals.entry(p).or_insert(j as u64);
-            }
-        }
-        w.unit.next_local = params.len() as u64;
+        number_params(w, params);
         w.unit.expr.imms = Some(Vec::new());
         crate::expr::child(w, s, x);
         values = w.unit.expr.imms.take().unwrap_or_default();
@@ -533,6 +518,35 @@ fn default_argument(
     let imms = immediates_unit(w, e, &u, disc, values);
     out.push(u);
     out.extend(imms);
+}
+
+/// Parameter i of every declaration of function `e`'s chain (their first
+/// declarations), by index i.
+fn chain_params(w: &Walk<'_>, e: DeclId) -> Vec<Vec<DeclId>> {
+    let ast = w.ast;
+    let mut params: Vec<Vec<DeclId>> = Vec::new();
+    for x in w.redecls(ast.first(e)) {
+        let Some(f) = ast.decls.function(x) else { continue };
+        for (i, p) in ast.lists.iter::<DeclId>(f.params).enumerate() {
+            if params.len() <= i {
+                params.resize_with(i + 1, Vec::new);
+            }
+            params[i].push(ast.first(p));
+        }
+    }
+    params
+}
+
+/// Numbers the parameters `params` (`chain_params`) in the unit being
+/// written as the function's own stream does: parameter j is local j, and
+/// the next local is the parameter count.
+fn number_params(w: &mut Walk<'_>, params: &[Vec<DeclId>]) {
+    for (j, ps) in params.iter().enumerate() {
+        for &p in ps {
+            w.unit.locals.entry(p).or_insert(j as u64);
+        }
+    }
+    w.unit.next_local = params.len() as u64;
 }
 
 /// Whether function `f` is of the deferrable class (§11.2). It reads the
@@ -638,6 +652,12 @@ fn defers(w: &Walk<'_>, d: DeclId) -> bool {
 mod tests {
     use std::collections::BTreeMap;
 
+    use slip_kiln::kiln::ast::DeclId;
+    use slip_kiln::kiln::ast::decl::DeclKind;
+
+    use super::{chain_params, inherited_constructor, number_params};
+    use crate::stream::{Stream, UNIT_TAG};
+
     use slip_model::Digest;
     use slip_model::digests::GroupClass;
     use slip_model::keys::{Key, KeyKind, Name, Parent, RuleTable};
@@ -669,6 +689,72 @@ mod tests {
             out
         })
         .expect("the snippet parses")
+    }
+
+    // digest-kinds §11.4: a `default_argument` unit numbers the
+    // function's parameters as the function's own stream does, so a
+    // default argument naming an earlier parameter names the same local.
+    // (Its bytes cannot show it while `sizeof` is `Pending(Expr)`: the
+    // operand is not written yet.)
+    #[test]
+    fn default_argument_numbers_parameters_as_the_function() {
+        let src = "template <class T> struct A { void f(T p, int q = sizeof(p)); };
+                   A<long> x; void h() { x.f(1); }";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let f = crate::decl_func::tests::named(w, "f", DeclKind::CXXMethod)
+                .into_iter()
+                .find(|&d| crate::decl_func::instantiated_decl(w, d))
+                .expect("A<long>::f");
+            let ps: Vec<DeclId> =
+                ast.lists.iter::<DeclId>(ast.decls.function(f).expect("f").params).collect();
+            // The function's own stream.
+            let saved = w.take_unit();
+            let mut s = Stream::new();
+            crate::decl_func::function_data(w, &mut s, f);
+            let own: Vec<u64> = ps.iter().map(|&p| w.unit.locals[&ast.first(p)]).collect();
+            w.unit = saved;
+            // The `default_argument` unit's.
+            let saved = w.take_unit();
+            number_params(w, &chain_params(w, f));
+            let unit: Vec<u64> = ps.iter().map(|&p| w.unit.locals[&ast.first(p)]).collect();
+            assert_eq!(w.unit.next_local, 2);
+            w.unit = saved;
+            assert_eq!(own, vec![0, 1]);
+            assert_eq!(unit, own);
+        });
+    }
+
+    // digest-kinds §11.1 property 6: the stream is the `ref` of the
+    // using-declaration's shadow, then that of the base constructor.
+    #[test]
+    fn inherited_constructor_stream_is_the_two_refs() {
+        let src = "struct B0 { B0(int); }; struct D : B0 { using B0::B0; }; void h() { D d(1); }";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let dc = ast
+                .decls
+                .ids()
+                .find(|&d| ast.decls.cold.inheriting_ctor.contains(d))
+                .expect("the inheriting constructor");
+            let shadow = ast.decls.cold.inheriting_ctor.get(dc).copied().expect("shadow");
+            let base = ast.decls.cold.inherited_ctor.get(dc).copied().expect("base");
+            let owner = crate::units::write(w, dc, crate::units::UnitClass::Derived).expect("unit");
+            let mut out = Vec::new();
+            inherited_constructor(w, dc, &owner, &mut out);
+            assert_eq!(out.len(), 1);
+            let saved = w.take_unit();
+            let mut s = Stream::new();
+            w.write_ref(&mut s, shadow);
+            w.write_ref(&mut s, base);
+            w.unit = saved;
+            let h = s.finish(UNIT_TAG);
+            assert_eq!(out[0].digest, h.digest);
+            // Empty, or one ref only, is not the same digest.
+            let mut one = Stream::new();
+            w.write_ref(&mut one, base);
+            assert_ne!(out[0].digest, one.finish(UNIT_TAG).digest);
+        });
     }
 
     // digest-kinds §11.1, digest §2.2: a resolved unit's key is kind

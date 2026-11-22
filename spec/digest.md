@@ -194,8 +194,8 @@ used it (Kiln `62afe3289`), and where each goes:
 | The value of an immediate invocation inside a default argument, computed at its first use | `resolved` unit |
 | A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
 | A deduced return type of a template member | part of the instantiation's derived unit |
-| A variable's evaluated constant value (`eval`), default-argument immediate values | `resolved` unit |
-| A class's key function; `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
+| A variable's evaluated constant value (`eval`), default-argument immediate values. At Kiln `62d190007` `eval` is written when Kiln checks the declaration's initialiser, not on a later use (`digest-kinds.md` §11.3) | `resolved` unit |
+| A class's key function; `dtor_delete`, `dtor_delete_this` (set when a virtual destructor is defined, which for an implicit or defaulted one is on use), `inheriting_ctor`, `inherited_ctor` (set when Kiln declares the inheriting constructor, on use) cold maps | `resolved` unit of the class or function |
 | The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |
 | "vtable used" marks | not in the AST: nothing to digest |
 | "A complete definition was required" marks; the lists of classes completed and of function definitions instantiated; the tables that record which specialisations exist and in what order they were made | not digested |
