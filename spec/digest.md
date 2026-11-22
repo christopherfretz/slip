@@ -30,7 +30,11 @@ make them fail (§14).
    change what code generation reads, that effect is included as a fact of
    its own: a qualified call to a virtual function is non-virtual; an
    unqualified dependent call uses argument-dependent lookup at
-   instantiation; `decltype((x))` is a different type.
+   instantiation; `decltype((x))` is a different type. A field that keeps
+   a written form and that instantiation, mangling or code generation
+   reads is therefore in the digest, unless writing it would make one of
+   the edits excluded above a difference; the effect of each such field is
+   then written by the rows `digest-kinds.md` names beside it.
 3. **Nothing local to a parse.** No arena index, interning order, address or
    hash-map order reaches the digest. Entities are named by keys (§3) or by
    their position inside a unit (§4.3).
@@ -51,6 +55,12 @@ make them fail (§14).
    (§11), not one per entity, unless detail is asked for. Tens of thousands
    of observers that include the same headers cost tens of bytes each per
    header.
+8. **Relative to the command.** The options of the compilation and the
+   target (language mode, the sizes and signedness the target gives the
+   builtin types, the contract semantic) are not digested. A digest is
+   only ever compared with a digest of the same observer, which is the
+   same command (`verify.md` §5). Two digests of different observers say
+   nothing about each other ("Open questions").
 
 ## 2. Units
 
@@ -62,13 +72,22 @@ therefore compares the whole program: no unit needs to contain another.
 ### 2.1 Which entities are units
 
 Every entity declared at namespace scope or class scope: namespaces,
-classes and enumerations, enumerators, functions, variables, data members,
-alias and typedef names, templates of every kind, concepts, explicit and
-partial specialisations, using-declarations, namespace aliases and
-deduction guides; and each of the following, which declare no name:
-using-directives, `static_assert` declarations, explicit instantiations,
-friend declarations, file-scope `asm`. A unit that declares no name is
-keyed by its content (§3.3).
+classes and enumerations, enumerators, functions, variables, structured
+bindings and the variable they decompose, data members, alias and typedef
+names, templates of every kind, concepts, explicit and partial
+specialisations, using-declarations and each name one brings into its
+scope (a *using-shadow*), namespace aliases and deduction guides; and each
+of the following, which declare no name: using-directives, using-enum
+declarations, `static_assert` declarations, `consteval` blocks, friend
+declarations, file-scope `asm`. A unit that declares no name is keyed by
+its content (§3.3).
+
+An explicit instantiation is not a unit of its own: it is a fact of the
+specialisation it names, whose unit is then declared (§2.2) and says
+whether it was explicitly instantiated, declared or defined. A
+specialisation that was only named (a class template specialisation used
+as an incomplete type) is not a unit either: nothing is known of it but
+its key.
 
 Entities declared inside a function body, a default argument, an
 initialiser or a lambda are **local**: they are digested inside the unit
@@ -82,8 +101,11 @@ how many declarations there were or in what order.
 One more unit exists per translation unit, the **order unit** (kind
 `order`, parent `root`): the keys of the variables with static or thread
 storage duration that are defined at namespace or class scope, in the order
-of their definitions. Initialisation order is program behaviour that no
-other unit holds.
+of their definitions, and then the module units the translation unit
+imports, in order. Initialisation order is program behaviour that no
+other unit holds. An instantiated variable is not listed: its dynamic
+initialisation is unordered ([basic.start.dynamic]), and where the front
+end happens to emit it depends on where it was first used.
 
 ### 2.2 Declared and derived units
 
@@ -97,9 +119,19 @@ and **derived** otherwise. Derived units are:
   function or variable specialisation, a member of a specialisation, an
   instantiated default argument or default member initialiser;
 - a builtin function or type Kiln declares on first use;
+- the object of a class-type constant used as a template argument, keyed
+  by its content;
 - a **resolved property** of a declared unit (kind `resolved`, parent the
   unit it belongs to, name the property): a fact Kiln computes for a
   declaration only when something needs it. Present only if computed.
+  The **definition** of an implicit instantiation or of an implicitly
+  defined member is one of these: such an entity is declared when it is
+  named and defined only when it is used, so its unit holds the
+  declaration and the resolved unit `definition` holds what the
+  definition added (the body, the initialiser, a deduced type, the
+  pattern a class was instantiated from). Otherwise a use added in one
+  function would change the digest of every instantiation it is the
+  first to define, against rule 5 of §1.
 
 An implicit member that Kiln has declared but nothing references is not a
 unit: whether Kiln declared it depends on which lookups happened. What such
@@ -117,10 +149,16 @@ used it (Kiln `62afe3289`), and where each goes:
 | Implicit special members: declared by lookups, defined on odr-use | derived unit if referenced or defined; else nothing |
 | Implicit instantiations of every kind; the specialisation tables and their order | derived units; order not digested |
 | Bodies of a closure's conversion functions; definitions of defaulted comparisons; the implicit `==` of a defaulted `<=>` | derived units |
-| A function's deferred exception specification, once resolved | `resolved` unit |
+| The definition of an implicit instantiation or implicit member: body, initialiser, deduced type, the pattern chosen for a class | `resolved` unit `definition` (§2.2) |
+| An instantiated default argument or default member initialiser; whether one is still pending | derived unit; the pending mark is not digested |
+| The value of an immediate invocation inside a default argument, computed at its first use | `resolved` unit |
+| A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
 | A deduced return type of a template member | part of the instantiation's derived unit |
 | A variable's evaluated constant value (`eval`), default-argument immediate values | `resolved` unit |
-| A class's key function; "vtable used" marks; `overrides`, `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
+| A class's key function; `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
+| The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |
+| "vtable used" marks | not in the AST: nothing to digest |
+| "A complete definition was required" marks; the lists of classes completed and of function definitions instantiated; the tables that record which specialisations exist and in what order they were made | not digested |
 | Record layouts (`Ast::layouts`) | not digested (§6, last rule) |
 | Concept satisfaction and normal-form caches | not digested; the result stored in each expression is (§6) |
 | `USED` and `REFERENCED` marks; linkage and visibility caches | not digested |
@@ -184,9 +222,16 @@ deduction guide; `anonymous` (the unnamed namespace); or one of the forms of
 - a partial specialisation: the digest of its template head and argument
   pattern.
 - a using-declaration: the key of the scope its qualifier names.
+- a using-shadow: the key of the entity the name stands for.
+- a deduction guide: the template deduced, then as a function.
 
 A non-template function's return type is not in its key: changing it
 changes the unit, not which entity it is.
+
+A discriminator is the tagged digest `H("slip.disc.v1", stream)` of a
+stream of its own, written with the encodings of §4: its entities are
+`Ref`s and its types type digests, so it maps under relocation (§3.4)
+with everything else.
 
 ### 3.3 Entities without a name
 
@@ -222,6 +267,11 @@ rules come from, and why this is sound, is `verify.md`.
 
 Two different entities of one translation unit with the same mapped `KeyId`
 are a **key collision**: every unit with that key is indeterminate (§10).
+Declarations that the language lets a scope repeat and that Kiln does not
+join into one entity (a using-declaration and its using-shadows, a
+namespace alias, and every declaration keyed by content) are the same
+entity when their keys and their digests are equal, and a collision when
+only their keys are.
 The exception is namespaces: two namespaces that a rule gives one key (the
 new namespace mapped onto the old one, which still exists for what stays in
 it) are **merged**. Each is written as a unit with that key; if what the
@@ -269,6 +319,17 @@ canonical form keeps a spelling), with entities as `Ref`s and component
 types as their digests. A constant value is written by the rules of §7. Both
 are memoised per parse; the memo is not observable.
 
+A dependent type or key can hold an expression (the operand of a
+`decltype`, an array bound, a `noexcept` operand, a requires-clause). It
+is written as an expression of §6 inside the stream that holds it.
+Entities the expression itself declares (the parameters of a
+requires-expression or of a lambda) are numbered from 0 within that
+stream; a reference to a local entity declared outside it uses the
+ordinal of the unit being written (§4.3), and a type digest that holds
+such a reference is memoised for that unit only. In a `decltype` operand
+a parenthesis that is the whole operand is written, since it changes the
+type.
+
 ### 4.3 Local entities
 
 Inside a unit, entities are numbered in the order the walk first meets
@@ -280,12 +341,31 @@ them, by declaration or by reference:
 - local classes, enumerations and closure types get a key whose parent is
   the unit and whose name is `local(n)`, `n` counting the local types of the
   unit in the same order; their members have ordinary keys under it. They
-  are digested in place, at their declaration, not as units.
+  are digested in place, at their declaration, not as units. This holds
+  for every closure type, wherever its lambda-expression is written: one
+  in the initialiser of a namespace-scope variable is a local type of
+  that variable's unit, one in a default member initialiser of the
+  field's.
 - a local alias or typedef is not digested: the types it names appear
   canonically wherever it is used.
 
 The walk order is fixed by `digest-kinds.md` (each node lists its children
 in order), so numbering is a function of the program and not of the parse.
+
+- An entity referred to before its declaration is walked (a `goto` to a
+  later label) gets its ordinal at the reference; its declaration writes
+  that ordinal and then what it is.
+- Another unit can name a local type (the return type of a function that
+  returns a closure; `decltype` of a variable initialised with one). Its
+  key needs `n`, so the walk numbers the local types of the unit that
+  declares it before writing the reference. Numbering reads no key and
+  writes nothing, so it cannot depend on the order units are written in.
+  A local type that no unit's walk declares (a lambda-expression inside a
+  type that only a canonical type keeps) makes the unit that names it
+  indeterminate (§10).
+- A value computed once and used at several places (Kiln's opaque values)
+  is numbered in the same way, in a sequence of its own: the first use
+  writes the number and the expression, later uses the number.
 
 ## 5. Declarations
 
@@ -332,7 +412,15 @@ rules common to all:
   `delete` runs.
 - A call's "found by argument-dependent lookup" bit and "had several
   candidates" bit are not written when the call is resolved: the callee is
-  the fact. A qualified member call's suppression of virtual dispatch is.
+  the fact. The same holds for a construction and for a resolved name. A
+  qualified member call's suppression of virtual dispatch is written.
+- Of a resolved name, the qualifier, the declaration it was found through
+  and its template arguments as written are not written (§1 rule 2,
+  §4.1). The template arguments are written when the entity named is a
+  template, where they are part of what the name means.
+- A use of a default argument writes which parameter's it is, by
+  position, and not the expression: that is in the unit of the function
+  (or, in an instantiation, in the default argument's own unit, §2.2).
 - Stored results are written: the value of a type trait, of `noexcept(e)`,
   of a concept check or a requires-expression, of `sizeof...`, of
   `offsetof`.
@@ -348,12 +436,17 @@ A constant is written by structure, never by Kiln's interned id:
 - integers and booleans by type and value; floating-point values by format
   and exact bits; null pointers by kind;
 - a pointer by its base (an entity as a `Ref`; a string literal by its
-  kind, type and bytes; a label by its ordinal; a temporary by the digest of
-  its value; `typeid` by the type), its offset and designated type;
+  kind, type and bytes; a label by its ordinal; a lifetime-extended
+  temporary by the `Ref` of the declaration that extends it and the
+  temporary's index among that declaration's, since a temporary can hold
+  a pointer to itself and its value is written where it is materialised;
+  `typeid` by the type), its offset and designated type;
 - a pointer to member by the member's `Ref` and its path;
 - an aggregate by its type and its target-layout image with padding bytes
-  zeroed, each relocation written as the pointer it holds, and each active
-  union member as a `Ref`.
+  zeroed, the ranges of the image that hold no value (padding and
+  uninitialised subobjects: not a function of the type alone), each
+  relocation written as the pointer it holds, and each active union
+  member as a `Ref`.
 
 String literals are compared by content: whether two literals are the same
 object is unspecified by the language and is not digested.
@@ -374,6 +467,12 @@ object is unspecified by the language and is not digested.
   what an unqualified call inside a template finds becomes visible.
 - A specialisation records the template or partial specialisation it was
   instantiated from, as a `Ref`.
+- The guarantee for templates rests on the instantiations. A pattern's
+  digest holds what Kiln's AST holds for the pattern, and some of what
+  decides an instantiation is not there (`digest-kinds.md`, "Hazards
+  accepted for now"): a transformation whose only effect is on such a
+  fact is found in every specialisation the translation unit
+  instantiates, and in no other.
 
 ## 9. Values that come from names and positions
 
@@ -476,8 +575,11 @@ true by mechanism, not by review alone.
    Kiln enumeration the AST uses, and one row for every stored field of
    every AST record, payload, side record and cold map, each with a class
    (entity, type, value, child, name, flag, written, location, bookkeeping),
-   a decision (`in`, `out`, `symbolic`, `demand`, `unsupported`) and, for a
-   field that packs several facts into one word, one row per fact.
+   a decision (`in`, `out`, `symbolic`, `demand`, `unsupported`). A field
+   that packs several facts into one word has one row per fact and none
+   of its own. A decoded form Kiln's interface returns in place of a
+   stored record (a type view, a constant) and a type whose values are
+   named constants have tables like any other.
 2. **No wildcard.** Every dispatch of the walk over a Kiln enumeration lists
    every variant. A new variant in Kiln does not compile.
 3. **Pinned schemas.** For every Kiln type the tables cover, `slip_digest`
@@ -491,8 +593,10 @@ true by mechanism, not by review alone.
    has no row, or a row names something that does not exist.
 5. **Tables against tests.** Every row decided `in` names at least one
    *must-differ* test (§14); every row decided `out` with class *written*
-   names at least one *must-equal* test. A test fails for a row that names
-   none or names a test that does not exist.
+   and every row decided `symbolic` names at least one *must-equal* test;
+   every `demand` row names a *demand* test and every `unsupported` row
+   whose construct Kiln can build an *indeterminate* test. A test fails
+   for a row that names none or names a test that does not exist.
 6. **What the pins cannot see.** A word whose meaning changes inside Kiln
    without its type changing (a per-kind operand, a bit of a flag word) is
    invisible to 3 and 4. Mutation tests (§14) and, when Kiln provides it, a
@@ -509,9 +613,12 @@ true by mechanism, not by review alone.
 - **Determinism**: every test source is parsed twice in one process and in
   two; all digests equal. On the corpora this is invariant (a) of the
   engineering plan.
-- **Demand independence**: a source, and the same source with an added
-  declaration that only *uses* existing entities (forcing implicit members
-  and instantiations); every unit present in both must be equal.
+- **Demand independence** (`tests/demand/`): a source, and the same source
+  with an added declaration that only *uses* existing entities (forcing
+  implicit members and instantiations); every unit present in both must
+  be equal. One pair at least per `demand` row.
+- **Indeterminate** (`tests/indeterminate/`): a source holding a construct
+  decided `unsupported`; the unit that holds it must have the flag.
 - **Mutation**: the catalogue of `spec/pitfalls.md`, each row a correct edit
   that must compare equal under its relocations and a wrong edit that must
   be caught.
@@ -523,7 +630,8 @@ true by mechanism, not by review alone.
 
 - `crates/slip_digest/tests/equal.rs`, `differ.rs` — §14 pairs, one
   directory of sources per test under `tests/equal/` and `tests/differ/`.
-- `crates/slip_digest/tests/determinism.rs`, `demand.rs` — §14.
+- `crates/slip_digest/tests/determinism.rs`, `demand.rs`,
+  `indeterminate.rs` — §14.
 - `crates/slip_digest/tests/tables.rs` — §13 obligations 4 and 5.
 - `crates/slip_model/tests/formats.rs` — §11, the section's encoding.
 - `spec/pitfalls.md` and its tests — the mutation catalogue.
@@ -539,9 +647,6 @@ true by mechanism, not by review alone.
   ([03](../docs/design/03-equivalence.md) §7 row 6). If derived units prove
   unstable between equal programs, the fallback is to compare them only in
   a stricter mode.
-- Virtual overriding (`overrides`) being demand-driven means a class's unit
-  does not say which base functions each member overrides. Either the walk
-  computes it for every virtual member, or Kiln fills the map eagerly.
 - Whether two parses of the same input give the same instantiation order
   matters only to performance here (the digest sorts), but is assumed by
   the determinism test's failure messages.
@@ -558,6 +663,18 @@ true by mechanism, not by review alone.
 - A type-alias template specialisation is transparent like any alias. Is
   there a case where the alias chosen changes a deduction or a mangled name
   that code generation reads?
+- §1 rule 8: if digests of different observers are ever compared (to
+  verify a shared header once for many observers; the agreement check of
+  `verify.md` §8), the options and the target have to enter the digest
+  first, as one more unit of the `tu` group.
+- A cold map with no entry for a node writes the empty form of its rows
+  (`digest-kinds.md` §2.1), several bytes hashed for every declaration
+  and expression, so that the stream does not depend on which maps Kiln
+  filled. If `digest.bytes` shows this to matter, the rows can be limited
+  to the kinds that can have an entry; that changes `scheme`.
+- The order unit lists no instantiated variable (§2.1). Kiln emits them
+  at a fixed place, and a program that relies on unordered
+  initialisation can observe it.
 - Attributes that only affect diagnostics (`[[nodiscard]]`,
   `[[deprecated]]`) are included. A policy to exclude them would let a
   transform change them without declaring it.
