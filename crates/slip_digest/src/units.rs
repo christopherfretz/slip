@@ -989,6 +989,35 @@ mod tests {
         });
     }
 
+    // WP-045 decision 4: Kiln instantiates a static data member's
+    // out-of-line definition on use as a new redeclaration at namespace
+    // scope. The own unit reads the first written declaration and leaves
+    // that one out of its chain; the `definition` unit keeps it.
+    #[test]
+    fn instantiated_out_of_line_definition_is_left_out() {
+        let src = "template <class T> struct A { static int s; };\n\
+                   template <class T> int A<T>::s = 1;\n\
+                   A<int> a;\n\
+                   int y() { return A<int>::s; }\n";
+        with_walk(src, |w| {
+            let ss = named(w, "s", DeclKind::Var);
+            let out: Vec<DeclId> =
+                ss.iter().copied().filter(|&d| super::instantiated_out_of_line(w, d)).collect();
+            assert_eq!(out.len(), 1, "A<int>'s instantiated definition of s: {ss:?}");
+            let d = out[0];
+            let e = w.entity(d);
+            assert_ne!(e, d);
+            assert!(crate::demand::definition_class(w, e));
+            assert!(!w.redecls(e).contains(&d));
+            assert_eq!(super::read_decl(w, e), w.representative(e));
+            assert_ne!(super::read_decl(w, e), d);
+            w.unit.definition = true;
+            assert!(w.redecls(e).contains(&d));
+            w.unit.definition = false;
+            assert_eq!(crate::demand::defining_declaration(w, e), Some(d));
+        });
+    }
+
     // WP-032 rules 1 and 2: `k` is declared first by an instantiation and
     // then in source: a declared unit, classified from the written
     // declaration. `j` exists only through the instantiations: derived, of

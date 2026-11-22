@@ -1,0 +1,5 @@
+# pending
+# needs: stmt
+# bodies are Pending(Stmt) until WP-034; then the body is hashed
+changed Q::g()
+changed Q<int>::g()::<definition>

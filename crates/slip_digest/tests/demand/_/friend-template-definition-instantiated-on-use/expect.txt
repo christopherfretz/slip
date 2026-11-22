@@ -1,6 +1,9 @@
 # pending
+# needs: demand
 # t<int>'s FnSpec (an inline bit, FnSpec(8) against FnSpec(0)) comes from the definition it is
 # instantiated from (side B: the friend's, defined in its class): a fact of
-# the definition, to move to the resolved unit `definition` with the rows of
-# digest-kinds §11.9 (decl_func.rs `fn_spec`, not WP-032's to change)
-added use()
+# the definition. WP-045's table of digest-kinds §11.9 moves no FnSpec bit
+# but is_coroutine and escalated, so the own unit of t<int> (of the
+# definition class) still differs: reported at WP-045's handback, for a
+# decision on moving FnSpec `inline` (decl_func.rs `fn_spec`).
+added make()
