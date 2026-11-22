@@ -298,3 +298,43 @@ computed by Kiln: `Loc`s and KF2's file identity are enough. `Send` or
    `lex_header_name` glues tokens (`directive.rs:1209`)? Parameter
    names have no locations (`macros.rs:46`): what would keeping them
    cost (parameter renaming, 04 R4)?
+
+## 9. Kiln's phase 0 (2026-11-22, Kiln WP-2110)
+
+Kiln measured before building; stage 1 started the same day. What
+changes in the text above:
+
+- **§8 Q1** yes: no file-located name token is expanded twice per
+  inclusion (`<bits/stdc++.h>`, two LLVM units). Exhausted location
+  space sets a flag `LOC_SPACE_EXHAUSTED`; Slip treats a flagged record
+  as incomplete.
+- **Q2** search by entry base is sound; the record keeps a side index
+  (8 bytes per macro entry). No new `ExpansionKind`.
+- **Q3** the record stores the start `Loc` of every raw argument token
+  (4 bytes each); `origin()` derives a token's index from it.
+- **Q4** size: about 9.7 MB for `SemaExpr.cpp` (131k expansions), 3.5
+  MB for `Instructions.cpp`, 2.6 MB for `<bits/stdc++.h>`; the source
+  manager's own expansion tables are about the same size.
+- **Q5** skipped `#elif`/`#else` and every read, short-circuited
+  operands included, are cheap to note.
+- **Q6** under `#include MACRO` the name span is one macro entry or a
+  glued `<…>` token (then `name` is the `<`); parameter-name locations
+  are kept.
+- **§2** is wrong in places: `-D`/`-U` are written in command-line
+  order after a `# 1 "<command line>"` marker, not appended; a macro
+  entry is 36 bytes; a replacement list can give more than one kind of
+  entry (single token, `_Pragma` text, glued header name, the `##` of
+  an invalid paste); `inclusion_directive` does fire at the depth
+  limit, only the outcome is missing.
+
+Stage 1 as Kiln builds it (`kiln_pp::record`): the switch is
+`PpOptions::pp_record`; `pp.record() -> Option<&PpRecord>`;
+`origin(sm, loc)` gives `File | Body{exp, tok} | Arg{exp, arg,
+param_tok, from, index} | Made{exp, kind, from} | Unknown`; paste,
+stringise and builtin are separate `MadeKind`s; an expansion's parent
+is the one it was dynamically nested in (case 13); definitions met from
+a PCH or an imported unit are registered when first met and the record
+is flagged incomplete; `DefIx` and `ExpIx` are equal across two runs
+of one input; Kiln computes no keys. Asked of Kiln in return: the
+switch reachable through the front-end entry (`FrontEndOptions`), with
+the record alive when the entry's closure runs.
