@@ -145,7 +145,9 @@ enum Mode {
 }
 
 /// A sampler that reports [`Mode`] and remembers, per pid sampled, the
-/// process's `limits` and `environ` (read at its first sample).
+/// process's `limits` and `environ` as of its latest sample at which both
+/// could be read: the first sample can land in the `sh` wrapper of §4
+/// before its `ulimit -v` has run.
 #[derive(Debug)]
 struct FakeSampler {
     mode: Mode,
@@ -164,12 +166,15 @@ impl FakeSampler {
 
 impl Sampler for FakeSampler {
     fn sample(&self, pid: u32) -> Sample {
-        self.seen.lock().unwrap().entry(pid).or_insert_with(|| {
-            (
-                fs::read_to_string(format!("/proc/{pid}/limits")).unwrap_or_default(),
-                fs::read(format!("/proc/{pid}/environ")).unwrap_or_default(),
-            )
-        });
+        let limits = fs::read_to_string(format!("/proc/{pid}/limits")).unwrap_or_default();
+        let environ = fs::read(format!("/proc/{pid}/environ")).unwrap_or_default();
+        let mut seen = self.seen.lock().unwrap();
+        if !limits.is_empty() && !environ.is_empty() {
+            seen.insert(pid, (limits, environ));
+        } else {
+            seen.entry(pid).or_insert((limits, environ));
+        }
+        drop(seen);
         match &self.mode {
             Mode::Real => slip_exec::process::ProcSampler.sample(pid),
             Mode::Constant(v) => Sample { rss: *v, hwm: *v },
