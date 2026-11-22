@@ -115,6 +115,9 @@ const HEADER: &str = "\
 // From `spec/digest-kinds.md` and the schema descriptors of the Kiln that
 // `slip_kiln` links (the `kiln` submodule). After changing either, run
 // `SLIP_BLESS=1 cargo test -p slip_digest --test tables` and review the diff.
+// When a pin below no longer compiles (the Kiln pin moved), add
+// `--features unpinned` to that command: the feature leaves the pins out
+// and exists for nothing else.
 ";
 
 /// `src/tables.rs`. `unnameable` holds the descriptor names of the pinned
@@ -133,6 +136,7 @@ pub fn tables_rs(
          //! pins (`spec/digest.md` §13 obligation 3).\n\n\
          #![allow(dead_code, clippy::too_many_lines, clippy::trivially_copy_pass_by_ref)]\n\n\
          use slip_kiln::kiln;\n\
+         #[cfg(not(feature = \"unpinned\"))]\n\
          use kiln::snap::Snap;\n\n\
          /// The Decision column (`spec/digest-kinds.md` §1.2).\n\
          #[derive(Clone, Copy, Debug, PartialEq, Eq)]\n\
@@ -169,7 +173,12 @@ pub fn tables_rs(
         }
         o.push_str("}\n");
     }
-    o.push_str("\n// Obligation 3: the schema hash of every pinned type, per instantiation.\n");
+    o.push_str(
+        "\n// Obligation 3: the schema hash of every pinned type, per instantiation.\n\
+         macro_rules! pin {\n    ($t:ty, $h:expr) => {\n        \
+         #[cfg(not(feature = \"unpinned\"))]\n        \
+         const _: () = assert!(<$t as Snap>::SCHEMA_HASH == $h);\n    };\n}\n",
+    );
     for (t, name, hash) in pinned(doc, descs) {
         let Some(h) = hash else {
             errors.push(format!("{name}: its descriptor declares no SCHEMA_HASH"));
@@ -178,12 +187,7 @@ pub fn tables_rs(
         if unnameable.contains(name) {
             let _ = writeln!(o, "// `{name}` ({}): in `tests/tables/pins.txt`.", t.pin);
         } else {
-            let _ = writeln!(
-                o,
-                "const _: () = assert!(<{} as Snap>::SCHEMA_HASH == {});",
-                rust_type(name),
-                hex(h)
-            );
+            let _ = writeln!(o, "pin!({}, {});", rust_type(name), hex(h));
         }
     }
     if errors.is_empty() { Ok(o) } else { Err(errors) }

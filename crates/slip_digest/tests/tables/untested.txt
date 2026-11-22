@@ -535,6 +535,7 @@ ColdDeclData/gnu_lib_twin
 ColdDeclData/hidden_shadow
 ColdDeclData/inherited_ctor
 ColdDeclData/inheriting_ctor
+ColdDeclData/init_fp
 ColdDeclData/instantiated_from
 ColdDeclData/key_function
 ColdDeclData/lexical_ctx

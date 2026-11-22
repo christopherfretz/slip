@@ -11,5 +11,12 @@ publish.workspace = true
 slip_model.workspace = true
 slip_kiln.workspace = true
 
+[features]
+# Leaves the schema pins of `src/tables.rs` out, so that the tables test
+# can run and bless them after the Kiln pin moved. For that one command
+# only (`spec/landed/digest-kinds/WP-023.md`); the tables test fails under
+# it unless it is blessing.
+unpinned = []
+
 [lints]
 workspace = true
