@@ -278,6 +278,7 @@ the same bytes.
 | 18 | facts | — | reserved (M3) |
 | 19 | digests | — | reserved (M1) |
 | 20 | reports | — | reserved (M2) |
+| 21 | verdict | — | reserved (M1; `verify.md` §6) |
 
 ```
 Phase   := map = 1 | verify = 2
