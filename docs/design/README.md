@@ -171,9 +171,11 @@ For a transformation declared semantics-preserving modulo a relocation map `M`:
    is **libstdc++ (GCC 16.1)**, not libc++: it is the only production
    library with `<meta>`, and the one Kiln's reflection support is validated
    against. `<slip/meta.h>` itself stays library-neutral and is tested
-   against both, so the pin can move. Still open: whether the pinned headers
-   are bundled with Slip (libstdc++ is GPLv3 with the GCC Runtime Library
-   Exception) or located on the host and checked against the pinned digest.
+   against both, so the pin can move. The pinned headers are located on the
+   host and checked against the pinned digest; bundling them with Slip is
+   deferred until there is a release to package (libstdc++ is GPLv3 with the
+   GCC Runtime Library Exception; the operator's only requirement is that it
+   is used within its terms).
 3. **Formatting.** Slip edits bytes and leaves everything else untouched. It
    will not reformat. Running a formatter over touched ranges is left to the
    user's tooling unless you want it built in.
