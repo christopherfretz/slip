@@ -1,0 +1,94 @@
+file llvm/include/llvm/ADT/Hashing.h
+replace all
+namespace detail {
+with
+namespace impl {
+end
+replace all
+} // namespace detail
+with
+} // namespace impl
+end
+replace
+  return ::llvm::hashing::detail::hash_combine_range_impl(first, last);
+with
+  return ::llvm::hashing::impl::hash_combine_range_impl(first, last);
+end
+replace
+  ::llvm::hashing::detail::hash_combine_recursive_helper helper;
+with
+  ::llvm::hashing::impl::hash_combine_recursive_helper helper;
+end
+replace all
+  return ::llvm::hashing::detail::hash_integer_value(
+with
+  return ::llvm::hashing::impl::hash_integer_value(
+end
+file llvm/include/llvm/ADT/StableHashing.h
+replace
+namespace detail {
+with
+namespace impl {
+end
+replace
+} // namespace detail
+with
+} // namespace impl
+end
+replace all
+  stable_hash Hash = hashing::detail::FNV_OFFSET_64;
+with
+  stable_hash Hash = hashing::impl::FNV_OFFSET_64;
+end
+replace all
+  hashing::detail::stable_hash_append(Hash, A);
+with
+  hashing::impl::stable_hash_append(Hash, A);
+end
+replace all
+  hashing::detail::stable_hash_append(Hash, B);
+with
+  hashing::impl::stable_hash_append(Hash, B);
+end
+replace all
+  hashing::detail::stable_hash_append(Hash, C);
+with
+  hashing::impl::stable_hash_append(Hash, C);
+end
+replace
+  hashing::detail::stable_hash_append(Hash, D);
+with
+  hashing::impl::stable_hash_append(Hash, D);
+end
+replace
+    hashing::detail::stable_hash_append(Hash, *I);
+with
+    hashing::impl::stable_hash_append(Hash, *I);
+end
+replace
+    hashing::detail::stable_hash_append(Hash, P[I]);
+with
+    hashing::impl::stable_hash_append(Hash, P[I]);
+end
+replace
+    hashing::detail::stable_hash_append(Hash, *(C++));
+with
+    hashing::impl::stable_hash_append(Hash, *(C++));
+end
+file llvm/lib/IR/StructuralHash.cpp
+replace
+  void hash(uint64_t V) { Hash = hashing::detail::hash_16_bytes(Hash, V); }
+with
+  void hash(uint64_t V) { Hash = hashing::impl::hash_16_bytes(Hash, V); }
+end
+file llvm/unittests/ADT/HashingTest.cpp
+replace
+namespace detail {
+with
+namespace impl {
+end
+replace
+} // namespace detail
+with
+} // namespace impl
+end

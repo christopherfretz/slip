@@ -1,0 +1,3 @@
+added S::S(S &)
+changed (unnamed)
+changed S
