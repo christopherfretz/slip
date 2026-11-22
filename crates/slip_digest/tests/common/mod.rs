@@ -214,30 +214,7 @@ pub fn digest_side(dir: &Path, side: Side) -> Result<Digested, String> {
 
 /// [`digest_side`] under the rules `rules`.
 pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Digested, String> {
-    let all = files(dir)?;
-    let mut list: Vec<(String, String)> = Vec::new();
-    let main_text;
-    if let Some(t) = all.get("t.cpp") {
-        main_text = t.clone();
-        let side_h = match side {
-            Side::A => "",
-            Side::B => "#define B 1\n",
-        };
-        list.push(("side.h".to_owned(), side_h.to_owned()));
-    } else {
-        let name = match side {
-            Side::A => "a.cpp",
-            Side::B => "b.cpp",
-        };
-        main_text = all.get(name).cloned().ok_or_else(|| format!("no t.cpp and no {name}"))?;
-    }
-    list.push(("main.cpp".to_owned(), main_text.clone()));
-    for (name, text) in &all {
-        if !matches!(name.as_str(), "t.cpp" | "a.cpp" | "b.cpp" | "expect.txt") {
-            list.push((name.clone(), text.clone()));
-        }
-    }
-    let head = header(&main_text).map_err(|e| format!("side {side:?}: {e}"))?;
+    let (list, head) = side_files(&files(dir)?, side)?;
     let refs: Vec<(&str, &str)> = list.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let snippet = slip_kiln::snippet::Snippet {
         files: &refs,
@@ -293,6 +270,40 @@ pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Dig
         }
     }
     Ok(Digested { output, units, errors, diagnostics })
+}
+
+/// The snippet files of one side of a test whose files are `all`, and
+/// the header lines its main file says: a `t.cpp` is both sides' main
+/// file (with the side's `side.h`), so both read its lines; an
+/// `a.cpp` / `b.cpp` test's sides each read their own.
+pub fn side_files(
+    all: &BTreeMap<String, String>,
+    side: Side,
+) -> Result<(Vec<(String, String)>, Header), String> {
+    let mut list: Vec<(String, String)> = Vec::new();
+    let main_text;
+    if let Some(t) = all.get("t.cpp") {
+        main_text = t.clone();
+        let side_h = match side {
+            Side::A => "",
+            Side::B => "#define B 1\n",
+        };
+        list.push(("side.h".to_owned(), side_h.to_owned()));
+    } else {
+        let name = match side {
+            Side::A => "a.cpp",
+            Side::B => "b.cpp",
+        };
+        main_text = all.get(name).cloned().ok_or_else(|| format!("no t.cpp and no {name}"))?;
+    }
+    list.push(("main.cpp".to_owned(), main_text.clone()));
+    for (name, text) in all {
+        if !matches!(name.as_str(), "t.cpp" | "a.cpp" | "b.cpp" | "expect.txt") {
+            list.push((name.clone(), text.clone()));
+        }
+    }
+    let head = header(&main_text).map_err(|e| format!("side {side:?}: {e}"))?;
+    Ok((list, head))
 }
 
 /// Runs `f` (a walk) on a thread of the stack `slip_digest::digest`
@@ -475,6 +486,33 @@ mod header_tests {
         assert!(twice.contains("a second `// std:` line"), "{twice}");
         let named = header("// std: c++17\n// arg: -x\n").unwrap_err();
         assert!(named.starts_with("line 2: `// arg: -x`"), "{named}");
+    }
+
+    // Both sides of a `t.cpp` test read its lines; each side of an
+    // `a.cpp` / `b.cpp` test its own, so a pair may differ in its
+    // `// args:` line alone.
+    #[test]
+    fn wp038_header_lines_by_side() {
+        use super::{Side, side_files};
+        let files = |list: &[(&str, &str)]| -> std::collections::BTreeMap<String, String> {
+            list.iter().map(|(a, b)| ((*a).to_owned(), (*b).to_owned())).collect()
+        };
+        let t = files(&[("t.cpp", "#include \"side.h\"\n// args: -fno-rtti\nint x;\n")]);
+        for side in [Side::A, Side::B] {
+            assert_eq!(side_files(&t, side).unwrap().1.args, ["-fno-rtti"]);
+        }
+        let ab = files(&[
+            ("a.cpp", "// args: -frounding-math\ndouble x;\n"),
+            ("b.cpp", "double x;\n"),
+            ("h.h", "// args: -fno-rtti\n"),
+        ]);
+        let (list, a) = side_files(&ab, Side::A).unwrap();
+        assert_eq!(a.args, ["-frounding-math"]);
+        assert!(list.iter().any(|(n, _)| n == "h.h"), "{list:?}");
+        assert!(side_files(&ab, Side::B).unwrap().1.args.is_empty());
+        let bad = files(&[("a.cpp", "int x;\n"), ("b.cpp", "// arg: -x\n")]);
+        assert!(side_files(&bad, Side::A).is_ok());
+        assert!(side_files(&bad, Side::B).unwrap_err().starts_with("side B: line 1"));
     }
 
     #[test]
