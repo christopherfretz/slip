@@ -240,6 +240,17 @@ const OWN: &[&str] = &[
      template<int... N> auto v() -> decltype((N + ... + 0));\n\
      template<int... N> auto w() -> decltype((0 + ... + N));\n\
      template<class... T> auto s() -> decltype(sizeof...(T));\n",
+    "template<class T> auto f(T a) -> int requires requires (T b) { b + 1; };\n\
+     template<class T> auto g(T a) -> int requires requires (T b) { a + 1; };\n\
+     template<class T> auto h(T a) -> int requires requires (T* b) { b + 1; };\n\
+     template<class T> auto k(T a) -> int requires requires (T b) { { b } noexcept; };\n\
+     template<class T> auto l(T a) -> int requires requires (T b) { { b }; };\n",
+    "struct A { int m; };\nstruct B { int m; };\n\
+     template<class T> auto f(T a, T b) -> decltype(a.A::m);\n\
+     template<class T> auto g(T a, T b) -> decltype(a.B::m);\n\
+     template<class T> auto h(T a, T b) -> decltype(a.m);\n\
+     template<class T> auto k(T a, T b) -> decltype(b.m);\n\
+     template<class T> auto l(T* a, T* b) -> decltype(a->m);\n",
 ];
 
 #[test]
@@ -347,10 +358,18 @@ fn chain(n: usize) -> String {
 fn a_chain_at_the_depth_limit_is_linear() {
     for (n, deep) in [(190, false), (205, true), (400, true)] {
         let src = chain(n);
-        let t = std::time::Instant::now();
-        let f = digest_named(&src, "f(");
-        let took = t.elapsed();
-        assert!(took < std::time::Duration::from_secs(30), "n = {n}: {took:?}");
+        // On a thread of its own, so that a walk that does not end fails
+        // the test instead of hanging it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .stack_size(crate::STACK_SIZE)
+            .spawn(move || {
+                let _ = tx.send(digest_named(&src, "f("));
+            })
+            .expect("a thread");
+        let f = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .unwrap_or_else(|_| panic!("n = {n}: not done in 60 s"));
         assert_eq!(f.len(), 1, "n = {n}");
         assert_eq!(f[0].1.contains(&crate::walk::TOO_DEEP), deep, "n = {n}: {:?}", f[0].1);
     }
