@@ -1,6 +1,6 @@
 # KS2 amendment 1 — sessions as Slip will use them
 
-A request from Slip to Kiln. Status: **draft, not sent.**
+A request from Slip to Kiln. Status: **sent 2026-11-22.**
 Amends [KS2](KS2-eval-session.md). Found while specifying `spec/api.md` §2
 against Kiln main `0295475a3`; the reading is in
 [kiln-landed-2026-11.md](../design/notes/kiln-landed-2026-11.md) §4.

@@ -294,11 +294,12 @@ exactly the command line the parse task gives Kiln's front-end library
 entry (`spec/model.md` §8.4):
 
 ```
-argv[0]  -fsyntax-only  argv[1..]
+argv[0]  -fsyntax-only  -fkiln-reproducible-time  argv[1..]
 ```
 
-`-fsyntax-only` comes first, where no argument of the command can take it
-as its value. The entry writes nothing and renders nothing, so the
+`-fsyntax-only` and `-fkiln-reproducible-time` (`spec/model.md` §8.4)
+come first, where no argument of the command can take either as its
+value. The entry writes nothing and renders nothing, so the
 command's own `-MD`, `-MF`, `-MT`, `-MP`, `-MJ`, `-o` and
 `-fdiagnostics-format=` do not matter to the parse and are not checked; a
 later phase option (`-c`, `-S`, `--precompile`) leaves the action

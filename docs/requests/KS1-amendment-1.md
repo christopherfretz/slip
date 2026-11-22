@@ -1,6 +1,6 @@
 # KS1 amendment 1 — the handler of a run and the thread it lives on
 
-A request from Slip to Kiln. Status: **draft, not sent.**
+A request from Slip to Kiln. Status: **sent 2026-11-22.**
 Amends [KS1](KS1-host-call.md). Found while specifying `spec/api.md` §3
 against Kiln main `0295475a3`; the reading is in
 [kiln-landed-2026-11.md](../design/notes/kiln-landed-2026-11.md) §3.4.
