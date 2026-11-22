@@ -236,10 +236,14 @@ pub(crate) fn field_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.indeterminate(Cause::Unaccounted("FieldData/flags"));
     }
     crate::expr::child_opt(w, s, bit_width);
-    // init: §11.4, absent in an implicit instantiation whatever Kiln holds
-    // (an instantiated one is a `default_argument` unit).
-    let init = if implicit_instantiation(w, d) { None } else { init };
-    crate::expr::child_opt(w, s, init);
+    // init: §11.4, absent for a field instantiated from a pattern whatever
+    // Kiln holds: Kiln instantiates it on use, under any kind of
+    // instantiation. Where it is read is the demand area's.
+    if instantiated_field(w, d) {
+        s.opt(false).indeterminate(Cause::Pending(Area::Demand));
+    } else {
+        crate::expr::child_opt(w, s, init);
+    }
     // flags-mutable, flags-no-unique-address.
     s.flags(
         FlagWord::new()
@@ -461,34 +465,57 @@ fn definition_bits(s: &mut Stream, defn: DefinitionBits) {
     }
 }
 
-/// `d` is an implicit instantiation or a member of one: its own `SpecInfo`
-/// or `MemberSpecInfo` says `ImplicitInstantiation`, or it has neither and
-/// an enclosing context is one (`units::in_implicit_instantiation`, the
-/// reading that makes it a derived unit).
-fn implicit_instantiation(w: &Walk<'_>, d: DeclId) -> bool {
+/// The specialisation kind that governs class or enumeration `d`: its
+/// own `SpecInfo` or `MemberSpecInfo` kind, or, when it has neither, that
+/// of the class it is a member of, reached through classes only. The walk
+/// stops at a function: anything declared in a function body (a local
+/// entity) is written in full, whatever function it is in (§11.9).
+fn governing_kind(w: &Walk<'_>, d: DeclId) -> Option<SpecKind> {
     let ast = w.ast;
-    let e = w.entity(d);
-    let own = ast
-        .spec_info(e)
-        .map(|(_, i)| i.kind)
-        .or_else(|| ast.member_spec_info(e).map(|(_, i)| i.kind));
-    match own {
-        Some(SpecKind::ImplicitInstantiation) => true,
-        Some(
-            SpecKind::Undeclared
-            | SpecKind::ExplicitSpecialization
-            | SpecKind::ExplicitInstantiationDeclaration
-            | SpecKind::ExplicitInstantiationDefinition,
-        ) => false,
-        None => crate::units::in_implicit_instantiation(w, e),
+    let mut e = w.entity(d);
+    if w.is_local(e) {
+        return None;
     }
+    for _ in 0..64 {
+        let own = ast
+            .spec_info(e)
+            .map(|(_, i)| i.kind)
+            .or_else(|| ast.member_spec_info(e).map(|(_, i)| i.kind));
+        if own.is_some() {
+            return own;
+        }
+        let Some(c) = ast.decls.get(e).ctx() else { return None };
+        if ast.decls.record(c).is_none() {
+            return None;
+        }
+        e = w.entity(c);
+    }
+    None
 }
 
-/// A class or enumeration of the definition class (§11.9, rules 1 and
-/// 2): an implicit instantiation, or a member class or enumeration of
-/// one.
+/// A class or enumeration of the definition class (§11.9): a
+/// specialisation that is itself an implicit instantiation, or a member
+/// class or enumeration of one reached through classes only.
 fn definition_class(w: &Walk<'_>, d: DeclId) -> bool {
-    implicit_instantiation(w, d)
+    governing_kind(w, d) == Some(SpecKind::ImplicitInstantiation)
+}
+
+/// Field `d` was instantiated from a pattern: its class is governed by an
+/// implicit instantiation, an explicit instantiation declaration or an
+/// explicit instantiation definition (§11.4,
+/// `spec/landed/digest-kinds/WP-027.md`). A field written in source (a
+/// primary template, a partial or explicit specialisation, a class that
+/// is not a template, a local class) is not.
+fn instantiated_field(w: &Walk<'_>, d: DeclId) -> bool {
+    let Some(c) = w.ast.decls.get(d).ctx() else { return false };
+    match governing_kind(w, c) {
+        Some(
+            SpecKind::ImplicitInstantiation
+            | SpecKind::ExplicitInstantiationDeclaration
+            | SpecKind::ExplicitInstantiationDefinition,
+        ) => true,
+        Some(SpecKind::Undeclared | SpecKind::ExplicitSpecialization) | None => false,
+    }
 }
 
 #[cfg(test)]
@@ -811,6 +838,7 @@ mod tests {
             ("differ/EnumData/flags-complete", enumeration, "E", true),
             ("differ/EnumeratorData/init", &[DeclKind::EnumConstant], "a", true),
             ("differ/TypedefData/underlying", typedef, "X", true),
+            ("differ/_/class-key-default-base-access", class, "C", true),
             ("equal/TagKind/Class", class, "C", false),
             ("equal/EnumData/flags-scoped-struct", enumeration, "E", false),
             ("equal/_/typedef-against-alias", typedef, "X", false),
@@ -858,39 +886,118 @@ mod tests {
         assert!(checked >= 56, "{checked} directories checked");
     }
 
-    // §11.4 `FieldData` `init`: absent in an implicit instantiation even
-    // where Kiln has instantiated it; present in the template.
-    #[test]
-    fn field_init_absent_in_an_implicit_instantiation() {
-        let src = "template <class T> struct X { int m = 1; X() {} }; X<int> v;";
-        with_walk(src, |w| {
-            let ast = w.ast;
-            let fields: Vec<DeclId> = ast
-                .decls
-                .ids()
-                .filter(|&d| ast.decls.get(d).kind() == DeclKind::Field)
-                .filter(|&d| {
-                    ast.decls.field(d).is_some_and(|x| x.flags & FieldData::HAS_DEFAULT_INIT != 0)
-                })
-                .collect();
-            let (mut inst, mut pattern) = (None, None);
-            for &f in &fields {
-                assert!(ast.decls.field(f).is_some_and(|x| x.init.is_some()), "Kiln holds init");
-                if implicit_instantiation(w, f) {
-                    inst = Some(f);
-                } else {
-                    pattern = Some(f);
+    /// For every field named `m` with a default member initialiser: how
+    /// many write it (`Pending(Expr)`) and how many write it absent
+    /// (`Pending(Demand)`); Kiln holds it in each case it is counted.
+    fn field_inits(w: &mut Walk<'_>) -> (usize, usize) {
+        let ms: Vec<DeclId> = named(w, "m", DeclKind::Field)
+            .into_iter()
+            .filter(|&d| {
+                w.ast.decls.field(d).is_some_and(|x| x.flags & FieldData::HAS_DEFAULT_INIT != 0)
+            })
+            .collect();
+        let (mut written, mut absent) = (0, 0);
+        for f in ms {
+            let mut s = Stream::new();
+            field_data(w, &mut s, f);
+            match s.cause() {
+                Some(Cause::Pending(Area::Expr)) => written += 1,
+                Some(Cause::Pending(Area::Demand)) => {
+                    // bit_width absent, then init absent.
+                    assert_eq!(&s.as_bytes()[..2], &[0, 0]);
+                    absent += 1;
                 }
+                other => panic!("{f:?}: {other:?}"),
             }
-            let (inst, pattern) = (inst.expect("X<int>::m"), pattern.expect("X::m"));
-            let cause = |w: &mut Walk<'_>, f| {
-                let mut s = Stream::new();
-                field_data(w, &mut s, f);
-                s.cause()
-            };
-            assert_eq!(cause(w, pattern), Some(Cause::Pending(Area::Expr)), "init written");
-            assert_eq!(cause(w, inst), None, "no init written");
-        });
+        }
+        (written, absent)
+    }
+
+    // §11.4 `FieldData` `init` (with spec/landed/digest-kinds/WP-027.md):
+    // absent, `Pending(Demand)`, for a field instantiated from a pattern
+    // under any kind of instantiation, even where Kiln has instantiated
+    // it; written for a field written in source, a local class of an
+    // instantiated function included.
+    #[test]
+    fn field_init_absent_when_instantiated_from_a_pattern() {
+        let cases: &[(&str, (usize, usize))] = &[
+            ("template <class T> struct X { int m = 1; X() {} }; X<int> v;", (1, 1)),
+            ("template <class T> struct X { int m = 1; }; template struct X<int>;", (1, 1)),
+            (
+                "template <class T> struct X { int m = 1; void f() {} };
+                 extern template struct X<int>; void u(X<int>& x) { x.f(); }",
+                (1, 1),
+            ),
+            (
+                "template <class T> struct X { int m = 1; X() {} }; X<int> v0;
+                 template struct X<int>;",
+                (1, 1),
+            ),
+            (
+                "template <class T> struct X { struct In { int m = 1; In() {} }; };
+                 X<int>::In i;",
+                (1, 1),
+            ),
+            (
+                "template <class T> struct X { int m = 1; };
+                 template <> struct X<int> { int m = 2; }; X<int> v;",
+                (2, 0),
+            ),
+            (
+                "template <class T> struct X {}; template <class T> struct X<T*> { int m = 1; };",
+                (1, 0),
+            ),
+            (
+                "template <class T> int f() { struct L { int m = 1; int b; }; return L{}.m; }
+                 int x = f<int>();",
+                (2, 0),
+            ),
+            (
+                "template <class T> struct A {
+                   int g() { struct L { int m = 1; int b; }; return L{}.m; }
+                 };
+                 int y = A<int>().g();",
+                (2, 0),
+            ),
+        ];
+        for &(src, want) in cases {
+            let got = with_walk(src, field_inits);
+            assert_eq!(got, want, "{src}");
+        }
+    }
+
+    // §11.9: a local class or enumeration is never of the definition
+    // class, whatever function it is in: an instantiated function's local
+    // class is written in full (the walk stops at a function).
+    #[test]
+    fn local_types_of_instantiated_functions_are_written_in_full() {
+        for src in [
+            "template <class T> int f() {
+               struct L { int a = 1; int b; }; enum LE { q }; return L{}.a + q;
+             }
+             int x = f<int>();",
+            "template <class T> struct A {
+               int g() { struct L { int a = 1; int b; }; enum LE { q }; return L{}.a + q; }
+             };
+             int y = A<int>().g();",
+        ] {
+            with_walk(src, |w| {
+                let ls = named(w, "L", DeclKind::CXXRecord);
+                let les = named(w, "LE", DeclKind::Enum);
+                assert_eq!((ls.len(), les.len()), (2, 2), "pattern and instantiation: {src}");
+                for d in ls.into_iter().chain(les) {
+                    assert!(!definition_class(w, d), "{d:?}");
+                    let mut s = Stream::new();
+                    if w.ast.decls.get(d).kind() == DeclKind::Enum {
+                        enum_data(w, &mut s, d);
+                    } else {
+                        record_data(w, &mut s, d);
+                    }
+                    assert_ne!(s.cause(), Some(Cause::Pending(Area::Demand)), "{d:?}");
+                    assert_ne!(s.as_bytes()[0], 0, "{d:?}: members written");
+                }
+            });
+        }
     }
 
     // §11.9: a class or enumeration of the definition class writes the
@@ -1047,6 +1154,46 @@ mod tests {
             assert_eq!(a.0 != b.0, int_changes, "{row}: int_type {a:?} {b:?}");
             assert_eq!(a.1 != b.1, !int_changes, "{row}: promotion_type {a:?} {b:?}");
         }
+    }
+
+    // §5.5 `TypedefData` `templ`, `EnumData` `templ`: the record ends with
+    // the declaration's `TemplLink` (§9.1), here one that is set: an alias
+    // template's pattern, a member enumeration of an implicit
+    // instantiation and of a class template.
+    #[test]
+    fn templ_ends_the_typedef_and_enum_records() {
+        let src = "template <class T> using A = T*;
+                   template <class T> struct X { enum E : int { e }; }; X<int> v;";
+        with_walk(src, |w| {
+            let ast = w.ast;
+            let mut checked = (0, 0);
+            let typedefs = named(w, "A", DeclKind::TypeAlias);
+            let enums = named(w, "E", DeclKind::Enum);
+            for d in typedefs.into_iter().chain(enums) {
+                let is_enum = ast.decls.get(d).kind() == DeclKind::Enum;
+                let templ = if is_enum {
+                    ast.decls.enumeration(d).expect("EnumData").templ
+                } else {
+                    ast.decls.typedef(d).expect("TypedefData").templ
+                };
+                if templ.is_none() {
+                    continue;
+                }
+                let mut link = Stream::new();
+                crate::templ::templ_link(w, &mut link, templ);
+                assert!(link.as_bytes().len() > 1, "a set link");
+                let mut s = Stream::new();
+                if is_enum {
+                    enum_data(w, &mut s, d);
+                    checked.1 += 1;
+                } else {
+                    typedef_data(w, &mut s, d);
+                    checked.0 += 1;
+                }
+                assert!(s.as_bytes().ends_with(link.as_bytes()), "{d:?} ends with templ");
+            }
+            assert!(checked.0 >= 1 && checked.1 >= 1, "{checked:?}");
+        });
     }
 
     // §2.1: the record rows this file writes are those of the tables.

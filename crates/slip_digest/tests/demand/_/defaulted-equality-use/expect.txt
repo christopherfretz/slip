@@ -1,0 +1,3 @@
+# pending
+# needs: demand
+# S::operator==(const S &) const is defined on use

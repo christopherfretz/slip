@@ -160,7 +160,7 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
 /// An enclosing context of `e` is an implicitly instantiated
 /// specialisation, or a member of one, with no explicitly specialised
 /// context in between (whose members are written in source).
-pub(crate) fn in_implicit_instantiation(w: &Walk<'_>, e: DeclId) -> bool {
+fn in_implicit_instantiation(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
     let mut c = ast.decls.get(e).ctx();
     for _ in 0..64 {
