@@ -261,6 +261,11 @@ rules come from, and why this is sound, is `verify.md`.
 
 Two different entities of one translation unit with the same mapped `KeyId`
 are a **key collision**: every unit with that key is indeterminate (§10).
+Declarations that the language lets a scope repeat and that Kiln does not
+join into one entity (a using-declaration and its using-shadows, a
+namespace alias, and every declaration keyed by content) are the same
+entity when their keys and their digests are equal, and a collision when
+only their keys are.
 The exception is namespaces: two namespaces that a rule gives one key (the
 new namespace mapped onto the old one, which still exists for what stays in
 it) are **merged**. Each is written as a unit with that key; if what the
