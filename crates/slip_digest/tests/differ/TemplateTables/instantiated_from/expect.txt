@@ -1,0 +1,3 @@
+added X<type-parameter-0-0 *>
+added X<type-parameter-0-0 *>::a
+derived-changed X<int *>::a
