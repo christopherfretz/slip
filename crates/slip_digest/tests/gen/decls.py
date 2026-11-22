@@ -460,7 +460,10 @@ def write():
         names.add(key)
         d = os.path.join(ROOT, root, short, row)
         os.makedirs(d, exist_ok=True)
-        lines = ['#include "side.h"']
+        # A module declaration must open the unit (after the header lines),
+        # so a module test takes no side header, as in `differ/Owner`.
+        module = opts.get("pre", "").startswith("export module")
+        lines = [] if module else ['#include "side.h"']
         if "args" in opts:
             lines.insert(0, f"// args: {opts['args']}")
         if "std" in opts:
