@@ -1796,7 +1796,7 @@ mod tests {
                 rules,
                 one(ExprKind::TypeTraitExpr),
                 |_, n| Node { a: mask, ..n },
-                |w, s, n| type_trait_expr_of(w, s, n),
+                type_trait_expr_of,
             );
             assert_eq!(c, un("ExprNode/TypeTraitExpr.a"));
             let c = crafted(
@@ -1812,31 +1812,19 @@ mod tests {
                 rules,
                 one(ExprKind::AtomicExpr),
                 |_, n| Node { aux: 99, ..n },
-                |w, s, n| atomic_expr_of(w, s, n),
+                atomic_expr_of,
             );
             assert_eq!(c, un("ExprNode/AtomicExpr.aux"));
-            let c = crafted(
-                input,
-                rules,
-                sh,
-                |_, n| Node { aux: 3, ..n },
-                |w, s, n| shuffle_vector_expr_of(w, s, n),
-            );
+            let c = crafted(input, rules, sh, |_, n| Node { aux: 3, ..n }, shuffle_vector_expr_of);
             assert_eq!(c, un("ExprNode/ShuffleVectorExpr.aux"));
-            let c = crafted(
-                input,
-                rules,
-                sh,
-                |_, n| Node { b: 0, ..n },
-                |w, s, n| shuffle_vector_expr_of(w, s, n),
-            );
+            let c = crafted(input, rules, sh, |_, n| Node { b: 0, ..n }, shuffle_vector_expr_of);
             assert_eq!(c, un("ExprNode/ShuffleVectorExpr.b"), "a list word of 0");
             let c = crafted(
                 input,
                 rules,
                 one(ExprKind::ConvertVectorExpr),
                 |_, n| Node { a: 0, ..n },
-                |w, s, n| convert_vector_expr_of(w, s, n),
+                convert_vector_expr_of,
             );
             assert_eq!(c, un("ExprNode/ConvertVectorExpr.a"), "a child word of 0");
             let c = crafted(
@@ -1844,7 +1832,7 @@ mod tests {
                 rules,
                 one(ExprKind::ExtVectorElementExpr),
                 |_, n| Node { flags: n.flags | 0x20, ..n },
-                |w, s, n| ext_vector_element_expr_of(w, s, n),
+                ext_vector_element_expr_of,
             );
             assert_eq!(c, un("ExprNode/ExtVectorElementExpr.bits"));
             let gs = one(ExprKind::GenericSelectionExpr);
@@ -1853,7 +1841,7 @@ mod tests {
                 rules,
                 gs,
                 |_, n| Node { b: gs.raw(), ..n },
-                |w, s, n| generic_selection_expr_of(w, s, n),
+                generic_selection_expr_of,
             );
             assert_eq!(c, un("ExprNode/GenericSelectionExpr.b"), "no association's expression");
             // The shuffle's operand list, six expressions: four words after
@@ -1863,7 +1851,7 @@ mod tests {
                 rules,
                 gs,
                 |_, n| Node { a: operands, ..n },
-                |w, s, n| generic_selection_expr_of(w, s, n),
+                generic_selection_expr_of,
             );
             assert_eq!(c, un("ExprNode/GenericSelectionExpr.a-associations"));
             let c = crafted(
@@ -1875,6 +1863,13 @@ mod tests {
             );
             assert_eq!(c, un("ExprNode/SourceLocExpr.bits"));
         });
+    }
+
+    /// [`crafted_words_are_unaccounted`], for the coroutines and the
+    /// pseudo-object rewrite.
+    #[test]
+    fn crafted_words_are_unaccounted_2() {
+        let un = |r: &'static str| Some(Cause::Unaccounted(r));
         with(CORO, "c++20", |input, rules| {
             let aw = of_kind(input, ExprKind::CoawaitExpr)[0];
             let c = crafted(
@@ -1898,13 +1893,7 @@ mod tests {
         });
         with(CMP, "c++20", |input, rules| {
             let po = of_kind(input, ExprKind::PseudoObjectExpr)[0];
-            let c = crafted(
-                input,
-                rules,
-                po,
-                |_, n| Node { b: 99, ..n },
-                |w, s, n| pseudo_object_expr_of(w, s, n),
-            );
+            let c = crafted(input, rules, po, |_, n| Node { b: 99, ..n }, pseudo_object_expr_of);
             assert_eq!(c, un("ExprNode/PseudoObjectExpr.b"));
         });
     }
