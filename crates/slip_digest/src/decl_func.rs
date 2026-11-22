@@ -961,7 +961,7 @@ pub(crate) mod tests {
         let (held, cause) =
             var_bytes("struct S { static const int x = 1; };\nconst int S::x;", "x");
         assert_eq!(held[0], 1);
-        assert_eq!(cause, Some(Cause::Pending(crate::Area::Expr)));
+        assert_eq!(cause, Some(Cause::Pending(crate::Area::Demand)));
         let (none, _) = var_bytes("struct S { static int x; };\nint S::x;", "x");
         assert_eq!(none[0], 0);
         let (out_of_line, _) =

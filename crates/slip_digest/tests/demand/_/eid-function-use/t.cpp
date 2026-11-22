@@ -3,7 +3,7 @@
 template <class T> inline int f(T) { return 1; }
 extern template int f<int>(int);
 #ifdef B
-int y = f(1);
+int y() { return f(1); }
 #else
 
 #endif

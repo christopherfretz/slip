@@ -230,7 +230,7 @@ impl Walk<'_> {
         self.keys_in_progress.insert(e);
         // A key does not depend on the unit that asks for it: the unit's
         // local state is put aside (`Walk::in_key`).
-        let saved = std::mem::take(&mut self.unit);
+        let saved = self.take_unit();
         self.in_key += 1;
         let computed = self.compute_key(e);
         self.in_key -= 1;
@@ -1013,7 +1013,7 @@ impl Walk<'_> {
         let requires = ast.templates.trailing_requires.get(f).copied();
         s.opt(requires.is_some());
         if let Some(r) = requires {
-            crate::expr::profile_expr(self, s, r);
+            crate::expr_dep::profile_expr(self, s, r);
         }
     }
 }

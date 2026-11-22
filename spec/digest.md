@@ -311,6 +311,7 @@ Ref := none = 0
      | local = 2, ordinal: uv                     a local variable, parameter, binding or label of this unit (§4.3)
      | template_param = 3, depth: uv, index: uv
      | param = 4, level: uv, index: uv            a function parameter named inside a signature
+     | outer = 5, owner: KeyId, index: uv         a local variable, parameter or binding of another unit (§4.3)
 ```
 
 A reference names the entity, never the declaration it was found through:
@@ -339,40 +340,87 @@ type.
 
 ### 4.3 Local entities
 
-Inside a unit, entities are numbered in the order the walk first meets
-them, by declaration or by reference:
+A local entity has an **owner**: the innermost entity with a key whose
+own stream holds its declaration. For what a function body declares
+(in any block of it) the owner is the function; for what a lambda's
+body declares, the call operator (for a generic lambda the call
+operator template, and in an instantiated body the specialisation);
+for a closure type outside a function body, the declaration whose text
+holds the lambda-expression (the variable or field for an initialiser,
+the function for a default argument, the template for a default
+template argument). A member of a local class has an ordinary key and
+is the owner of what its own body or initialiser declares.
 
-- parameters, local variables, structured bindings and labels get the next
-  **ordinal** and are referred to by `Ref::local`. Their names are not
-  digested.
-- local classes, enumerations and closure types get a key whose parent is
-  the unit and whose name is `local(n)`, `n` counting the local types of the
-  unit in the same order; their members have ordinary keys under it. They
-  are digested in place, at their declaration, not as units. This holds
-  for every closure type, wherever its lambda-expression is written: one
-  in the initialiser of a namespace-scope variable is a local type of
-  that variable's unit, one in a default member initialiser of the
-  field's.
-- a local alias or typedef is not digested: the types it names appear
+- Parameters, local variables, structured bindings and labels are
+  **local objects**. Inside the unit whose stream holds their
+  declaration they are numbered in the order the walk first meets
+  them, by declaration or by reference, in one sequence for the unit,
+  and referred to by `Ref::local` with that **ordinal**. Their names
+  are not digested. An entity referred to before its declaration is
+  walked (a `goto` to a later label) gets its ordinal at the
+  reference; its declaration writes that ordinal and then what it is.
+- Local classes, enumerations and closure types are **local types**.
+  A local type has a key: its parent is its owner and its name is
+  `local(n)`, `n` counting the local types of that owner in the order
+  the walk of the owner's stream meets their **declarations** (the
+  declaration statement of a class or enumeration; the
+  lambda-expression of a closure). A reference never numbers a local
+  type: a function's own return type can name one before the body is
+  walked. The members of a local type have ordinary keys under it.
+- A local type is digested in place, at its declaration, in the stream
+  of the unit that holds it, and is not a unit: its number, its own
+  stream, then the streams of the members a class's member lists name
+  (§5), in the order of those lists. A closure whose lambda-expression
+  the walk meets again (Kiln copies a default argument it rewrites)
+  writes its number alone.
+- What would be a derived unit were the type not local is a derived
+  unit all the same: a specialisation of a generic lambda's call
+  operator or conversion function, an implicit member defined on use.
+  Such a unit is keyed under the local type and is no part of the
+  stream that holds the type, so a use never changes a declared unit
+  (§1 rule 5).
+- A local alias or typedef is not digested: the types it names appear
   canonically wherever it is used.
 
 The walk order is fixed by `digest-kinds.md` (each node lists its children
 in order), so numbering is a function of the program and not of the parse.
 
-- An entity referred to before its declaration is walked (a `goto` to a
-  later label) gets its ordinal at the reference; its declaration writes
-  that ordinal and then what it is.
-- Another unit can name a local type (the return type of a function that
-  returns a closure; `decltype` of a variable initialised with one). Its
-  key needs `n`, so the walk numbers the local types of the unit that
-  declares it before writing the reference. Numbering reads no key and
-  writes nothing, so it cannot depend on the order units are written in.
-  A local type that no unit's walk declares (a lambda-expression inside a
-  type that only a canonical type keeps) makes the unit that names it
-  indeterminate (§10).
+**Numbering an owner.** The number of a local type is needed wherever
+its key is: at its declaration, at a reference that the walk meets
+first, and in another unit (the return type of a function that returns
+a closure; a call of a closure held by a namespace-scope variable; the
+key of a derived unit under it). It is found by numbering the owner:
+a walk of the owner's own stream that stops at each local type's
+declaration without entering its members, records the local types and
+the local objects the owner declares, in order, reads no key, no type
+and no reference, and writes nothing. So the numbers cannot depend on
+the order units are written in, and each owner is numbered once. A
+local type that the numbering of its owner does not find (a
+lambda-expression that only a type holds, an owner that is a namespace
+or a class) has no key: whatever needs it is indeterminate (§10).
+
+**Local objects of another unit.** The body of a derived unit under a
+local type names local objects that its own stream does not declare:
+an instantiated body of a generic lambda refers to the variables of
+the enclosing function its closure captures, and to those it only
+names in an unevaluated operand or as constants. Such a reference is
+`Ref::outer`: the key of the object's owner and the object's index
+among the local objects that owner declares (the variables an
+init-capture declares, in capture order; then the parameters, in
+order; then the others in the order the numbering meets their
+declarations). Inside the unit that holds the declaration the same
+object is `Ref::local`. Neither form is allowed in a key.
+
+**Lambda-expressions inside a key or a type.** A closure type whose
+lambda-expression is walked inside a key or a type digest (the operand
+of a `decltype` in a signature, a template argument) would need the
+key that is being written. The key or type that holds it is
+indeterminate.
+
 - A value computed once and used at several places (Kiln's opaque values)
-  is numbered in the same way, in a sequence of its own: the first use
-  writes the number and the expression, later uses the number.
+  is numbered in the same way as a local object, in a sequence of its
+  own: the first use writes the number and the expression, later uses
+  the number.
 
 ## 5. Declarations
 

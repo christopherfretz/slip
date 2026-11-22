@@ -3,3 +3,5 @@ added B2::B2
 added C::C
 removed B2::B2(int)
 removed C::C
+changed B2
+changed C

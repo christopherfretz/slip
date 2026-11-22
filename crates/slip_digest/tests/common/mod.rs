@@ -156,10 +156,22 @@ pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Dig
     let snippet =
         slip_kiln::snippet::Snippet { files: &refs, main: "main.cpp", include: &[""], std: &std };
     let out = slip_kiln::snippet::parse(&snippet, |p| {
-        let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-        let options = Options { rules, detail: Detail::All, names: true };
-        (slip_digest::digest(&input, &options), p.errors, p.diagnostics.clone())
+        // `Parsed` is not `Sync`: the walk's thread gets the AST, the
+        // source manager and the paths.
+        let paths: Vec<Vec<u8>> =
+            p.sm.file_ids()
+                .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                .collect();
+        let (ast, sm) = (p.ast, p.sm);
+        let output = on_walk_stack(|| {
+            let path = |f: slip_kiln::kiln::source::FileId| {
+                paths.get(f.index()).cloned().unwrap_or_default()
+            };
+            let input = Input { ast, sm, subject_path: &path };
+            let options = Options { rules, detail: Detail::All, names: true };
+            slip_digest::digest(&input, &options)
+        });
+        (output, p.errors, p.diagnostics.clone())
     })?;
     let (output, errors, diagnostics) = out;
     if errors > 0 && !errors_allowed {
@@ -185,6 +197,21 @@ pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Dig
         }
     }
     Ok(Digested { output, units, errors, diagnostics })
+}
+
+/// Runs `f` (a walk) on a thread of the stack `slip_digest::digest`
+/// documents it needs (`slip_digest::STACK_SIZE`, `lib.rs` "What bounds
+/// the stack"), as a caller of the walk must.
+pub fn on_walk_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("walk".into())
+            .stack_size(slip_digest::STACK_SIZE)
+            .spawn_scoped(scope, f)
+            .expect("a thread for the walk")
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    })
 }
 
 /// Every unit of an output by key.

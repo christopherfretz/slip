@@ -1,3 +1,4 @@
 removed C::f()
 added C::f(int)
 changed D::f()
+changed C

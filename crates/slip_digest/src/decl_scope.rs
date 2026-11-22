@@ -177,13 +177,10 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
             s.pending(Area::Demand);
         }
     } else {
-        let inits: Vec<_> = ast.ctor_inits(d).map(|i| i.init).collect();
+        let inits: Vec<_> = ast.ctor_inits(d).copied().collect();
         s.count(inits.len());
-        for init in inits {
-            // The `CtorInit` record is the class area's
-            // (`decl_class::ctor_init`); its `init` is reached here.
-            s.pending(Area::DeclData);
-            crate::expr::child(w, s, init);
+        for init in &inits {
+            crate::decl_class::ctor_init(w, s, init);
         }
     }
     // overrides: ref*sorted, from the first declaration.

@@ -1,4 +1,2 @@
-# pending
-# needs: expr
 removed <static_assert>
 added <static_assert>

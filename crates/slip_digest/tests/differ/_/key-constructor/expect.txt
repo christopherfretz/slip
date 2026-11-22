@@ -1,2 +1,3 @@
 removed C::C(int)
 added C::C(long)
+changed C

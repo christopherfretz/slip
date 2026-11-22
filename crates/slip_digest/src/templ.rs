@@ -427,7 +427,7 @@ pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
             // form: it is the canonical operand of that expression.
             ArgView::Expr { expr, profile: _ } => {
                 s.tag(arg_view::PROFILE);
-                crate::expr::profile_expr(w, s, expr);
+                crate::expr_dep::profile_expr(w, s, expr);
             }
             v @ (ArgView::Null
             | ArgView::Type(_)

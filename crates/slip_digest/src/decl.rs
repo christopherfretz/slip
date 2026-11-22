@@ -55,7 +55,7 @@ impl Walk<'_> {
         let read = crate::units::read_decl(self, e);
         // A unit digest of its own: a fresh unit state, and not inside the
         // key computation that may have asked for it.
-        let saved = std::mem::take(&mut self.unit);
+        let saved = self.take_unit();
         let in_key = std::mem::take(&mut self.in_key);
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);

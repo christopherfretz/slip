@@ -3,3 +3,4 @@
 # `0-trivial`, which Kiln sets for this defaulted constructor; no edit changes the
 # tag alone. The unit test decl_func::tests::fn_spec_defaulted_tag isolates it.
 changed C::C()
+changed C
