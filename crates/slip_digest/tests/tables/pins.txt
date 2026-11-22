@@ -1,0 +1,16 @@
+# The schema pins of the types `src/tables.rs` cannot name from outside Kiln
+# (spec/digest.md §13 obligation 3; WP-023): `<SCHEMA_HASH> <type>`, one per
+# line, sorted by type. A type is listed by hand; SLIP_BLESS=1 rewrites the
+# hashes. Each line is a visibility request to Kiln.
+0x79aa_0dfb_af94_4859 kiln_ast::ast::InstantiationMeter
+0x36b5_acfa_dfa7_181e kiln_ast::consts::AggRec
+0xd77d_54d6_ebb2_2167 kiln_ast::consts::Node
+0xa934_8a00_3f09_ea6d kiln_ast::consts::Pools
+0xd068_2f3f_8f50_e54b kiln_ast::strings::Entry
+0xe695_d10a_1286_38b1 kiln_ast::types::args::ArgTable
+0x8c10_2950_cf87_88d7 kiln_ast::types::args::ListEntry
+0xe7a7_0180_3200_e996 kiln_ast::types::intern::KeyedEntry
+0x70e0_3ff8_4d49_2d1f kiln_ast::types::intern::KeyedTable
+0x7874_c602_b3f4_2d77 kiln_ast::types::node::Store
+0x56b8_069e_0a35_d0b2 kiln_ast::types::profile::ProfileEntry
+0x6993_7b79_4caa_1569 kiln_ast::types::profile::ProfileTable

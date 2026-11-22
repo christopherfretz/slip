@@ -3871,7 +3871,7 @@ names the temporary within that declaration.
 
 ### `kiln_ast::consts::value::ByteImage`
 
-`kind=view; pin=none`
+`kind=struct; pin=none`
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
@@ -4674,7 +4674,7 @@ template (§3.2, §3.3).
 
 ### `kiln_ast::names::DeclNameKind`
 
-`kind=enum; pin=extra`
+`kind=enum; pin=schema`
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
