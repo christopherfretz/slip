@@ -1,1 +1,2 @@
 changed C
+changed C::C(int)

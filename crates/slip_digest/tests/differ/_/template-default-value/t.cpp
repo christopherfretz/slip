@@ -1,5 +1,5 @@
 #include "side.h"
-// §9.5 `defaults` holding a value: visible once the value area lands.
+// §9.5 `defaults` holding a value: an expression argument, visible once the expression area lands.
 #ifdef B
 template <class T, int N = 2> using Y = T[N];
 #else

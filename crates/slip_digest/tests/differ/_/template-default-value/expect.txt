@@ -1,3 +1,4 @@
 # pending
-# the default is a value (Area::Value)
+# needs: expr
+# the default is an expression argument (`TemplateArg` `Expr`), not a constant: Kiln interns no value for it (WP-028)
 changed Y

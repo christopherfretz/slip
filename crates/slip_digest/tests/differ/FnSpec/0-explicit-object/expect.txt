@@ -1,0 +1,3 @@
+removed C::f()
+added C::f(C &)
+changed C

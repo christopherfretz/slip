@@ -1,0 +1,2 @@
+removed f(A<&D::x>)
+added f(A<&D::y>)
