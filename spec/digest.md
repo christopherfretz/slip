@@ -30,7 +30,11 @@ make them fail (§14).
    change what code generation reads, that effect is included as a fact of
    its own: a qualified call to a virtual function is non-virtual; an
    unqualified dependent call uses argument-dependent lookup at
-   instantiation; `decltype((x))` is a different type.
+   instantiation; `decltype((x))` is a different type. A field that keeps
+   a written form and that instantiation, mangling or code generation
+   reads is therefore in the digest, unless writing it would make one of
+   the edits excluded above a difference; the effect of each such field is
+   then written by the rows `digest-kinds.md` names beside it.
 3. **Nothing local to a parse.** No arena index, interning order, address or
    hash-map order reaches the digest. Entities are named by keys (§3) or by
    their position inside a unit (§4.3).
@@ -97,7 +101,8 @@ how many declarations there were or in what order.
 One more unit exists per translation unit, the **order unit** (kind
 `order`, parent `root`): the keys of the variables with static or thread
 storage duration that are defined at namespace or class scope, in the order
-of their definitions. Initialisation order is program behaviour that no
+of their definitions, and then the module units the translation unit
+imports, in order. Initialisation order is program behaviour that no
 other unit holds. An instantiated variable is not listed: its dynamic
 initialisation is unordered ([basic.start.dynamic]), and where the front
 end happens to emit it depends on where it was first used.
@@ -150,7 +155,8 @@ used it (Kiln `62afe3289`), and where each goes:
 | A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
 | A deduced return type of a template member | part of the instantiation's derived unit |
 | A variable's evaluated constant value (`eval`), default-argument immediate values | `resolved` unit |
-| A class's key function; `overrides`, `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
+| A class's key function; `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
+| The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |
 | "vtable used" marks | not in the AST: nothing to digest |
 | "A complete definition was required" marks; the lists of classes completed and of function definitions instantiated; the tables that record which specialisations exist and in what order they were made | not digested |
 | Record layouts (`Ast::layouts`) | not digested (§6, last rule) |
@@ -461,6 +467,12 @@ object is unspecified by the language and is not digested.
   what an unqualified call inside a template finds becomes visible.
 - A specialisation records the template or partial specialisation it was
   instantiated from, as a `Ref`.
+- The guarantee for templates rests on the instantiations. A pattern's
+  digest holds what Kiln's AST holds for the pattern, and some of what
+  decides an instantiation is not there (`digest-kinds.md`, "Hazards
+  accepted for now"): a transformation whose only effect is on such a
+  fact is found in every specialisation the translation unit
+  instantiates, and in no other.
 
 ## 9. Values that come from names and positions
 
@@ -635,9 +647,6 @@ true by mechanism, not by review alone.
   ([03](../docs/design/03-equivalence.md) §7 row 6). If derived units prove
   unstable between equal programs, the fallback is to compare them only in
   a stricter mode.
-- Virtual overriding (`overrides`) being demand-driven means a class's unit
-  does not say which base functions each member overrides. Either the walk
-  computes it for every virtual member, or Kiln fills the map eagerly.
 - Whether two parses of the same input give the same instantiation order
   matters only to performance here (the digest sorts), but is assumed by
   the determinism test's failure messages.

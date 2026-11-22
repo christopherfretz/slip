@@ -1102,9 +1102,9 @@ the canonical form. Template argument lists are written from
 | `DependentIdentifier` | entity | in | tag 3 |  |
 | `DependentIdentifier.nns` | name | in | enum Nns |  |
 | `DependentIdentifier.name` | name | in | sym |  |
-| `DependentOperator` | name | unsupported | - | the operator is a raw `kiln_lex` token kind, for which Kiln exposes no stable numbering |
-| `DependentOperator.nns` | name | unsupported | - | as `DependentOperator` |
-| `DependentOperator.op` | name | unsupported | - | as `DependentOperator` |
+| `DependentOperator` | name | unsupported | unbuilt | nothing in Kiln builds one outside the canonicaliser, which only copies one it is given |
+| `DependentOperator.nns` | name | unsupported | unbuilt | as `DependentOperator` |
+| `DependentOperator.op` | name | unsupported | unbuilt | as `DependentOperator` |
 | `TemplateTemplateParm` | written | out | - | sugar: canonical is `CanonTemplateTemplateParm` |
 | `TemplateTemplateParm.decl` | written | out | - | sugar |
 | `TemplateTemplateParm.depth` | written | out | - | sugar |
@@ -1762,7 +1762,7 @@ A function's stream also holds its language linkage (`ScopeData`,
 |---|---|---|---|---|
 | `None` | flag | in | tag 1 |  |
 | `Static` | flag | in | tag 2 |  |
-| `Extern` | written | out | as None | `extern` on a function declaration changes nothing |
+| `Extern` | flag | in | tag 3 | written with the tag of `None` unless the function is inline: `extern` on a function changes nothing but what `inline` means under C99 and `gnu_inline` rules, which code generation reads |
 
 ### `kiln_ast::decl::ConstexprKind`
 
@@ -1791,7 +1791,7 @@ A function's stream also holds its language linkage (`ScopeData`,
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `default_arg` | child | in | child? | §11.4 when the function is instantiated |
-| `original_ty` | written | out | - | the type as written, before array and function types are adjusted; `DeclNode` `ty-type` is the fact |
+| `original_ty` | type | in | type? | the type before an array or function type is adjusted to a pointer; present when it differs from `DeclNode` `ty-type`. Instantiation and the mangling of a dependent array bound read it |
 | `index` | bookkeeping | out | - | the position in `FunctionData` `params` |
 | `flags-explicit-object` | flag | in | bit |  |
 | `flags-pack` | flag | in | bit |  |
@@ -1891,7 +1891,7 @@ A variable's stream also holds its language linkage (`ScopeData`,
 |---|---|---|---|---|
 | `extending` | entity | in | ref |  |
 | `mangling_index` | value | in | uv | part of the temporary's symbol name |
-| `value` | value | in | value? | "Open questions": whether the Oven fills it only on demand |
+| `value` | value | demand | - | §11.3: frozen when the extending variable's initialiser is evaluated; written in that variable's `resolved` unit `value` |
 
 ### 5.5 Classes and enumerations
 
@@ -1974,10 +1974,10 @@ the same three groups, each member as `decl`.
 | `0-needs-ovl-copy-assign` | flag | in | bit |  |
 | `0-needs-ovl-move-assign` | flag | in | bit |  |
 | `0-needs-ovl-dtor` | flag | in | bit |  |
-| `0-defaulted-default-ctor-deleted` | flag | in | bit | "known deleted": see "Open questions" on when Kiln sets it |
-| `0-defaulted-copy-ctor-deleted` | flag | in | bit | "known deleted": see "Open questions" on when Kiln sets it |
-| `0-defaulted-move-ctor-deleted` | flag | in | bit | "known deleted": see "Open questions" on when Kiln sets it |
-| `0-defaulted-dtor-deleted` | flag | in | bit | "known deleted": see "Open questions" on when Kiln sets it |
+| `0-defaulted-default-ctor-deleted` | flag | in | bit | "known deleted": set when the class is completed, whether or not the member is ever declared |
+| `0-defaulted-copy-ctor-deleted` | flag | in | bit | "known deleted": set when the class is completed, whether or not the member is ever declared |
+| `0-defaulted-move-ctor-deleted` | flag | in | bit | "known deleted": set when the class is completed, whether or not the member is ever declared |
+| `0-defaulted-dtor-deleted` | flag | in | bit | "known deleted": set when the class is completed, whether or not the member is ever declared |
 | `0-has-uninit-ref-or-const` | flag | in | bit |  |
 | `0-has-private-fields` | flag | in | bit |  |
 | `0-has-protected-fields` | flag | in | bit |  |
@@ -2111,14 +2111,16 @@ initialisation order.
 |---|---|---|---|---|
 | `members` | bookkeeping | out | - | a transparent scope: its members are members of the enclosing context |
 | `aux-lang` | flag | in | enum LinkageLang | low byte, `LinkageSpec` only; written in the stream of each function and variable whose first declaration is lexically inside (rule below) |
-| `aux-braceless` | written | out | - | bit 8: `extern "C" int x;` without braces; its effect, that the declaration is not a definition, is `DeclMisc` `0-definition` |
+| `aux-braceless` | flag | in | bool | bit 8: `extern "C" int x;` without braces, which makes the declaration `extern` ([dcl.link]/8). Mangling, code generation and thread-local access read it; written after the language (rule below) |
 
 Every function and variable stream holds one `enum LinkageLang?`: the
 language of the innermost `LinkageSpec` that lexically encloses the
 entity's first declaration, through enclosing classes and functions;
-absent when there is none. Whether the entity then has C language linkage
-(a class member has not, nor has an entity with internal linkage) follows
-from the rest of its stream; the key's parent uses the rule of §5.2.
+absent when there is none. When it is present a `bool` follows it:
+`aux-braceless` of that `LinkageSpec`. Whether the entity then has C
+language linkage (a class member has not, nor has an entity with internal
+linkage) follows from the rest of its stream; the key's parent uses the
+rule of §5.2.
 
 ### `kiln_ast::decl::LinkageLang`
 
@@ -2170,12 +2172,12 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `lexical_ctx` | written | out | - | where the declaration was written when that is not its semantic context; read only to find an enclosing `LinkageSpec` (`ScopeData` `aux-lang`) |
+| `lexical_ctx` | entity | in | ref? | where the declaration the walk reads (§2.3) was written, when that is not its semantic context (rule below). Mangling, visibility, code generation and instantiation read it |
 | `begin_loc` | location | out | - |  |
 | `delete_message` | child | in | child? |  |
 | `explicit_expr` | child | in | child? |  |
 | `ctor_inits` | child | in | record CtorInit* |  |
-| `overrides` | entity | demand | - | §11.5: the `resolved` unit `overrides` |
+| `overrides` | entity | in | ref*sorted | the functions this one overrides: filled when the member is declared, also for an implicitly declared one (§11.5) |
 | `friends` | entity | in | key*sorted | the class's `Friend` units |
 | `key_function` | entity | demand | - | §11.5 |
 | `dtor_delete` | entity | demand | - | §11.5 |
@@ -2200,8 +2202,18 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `inheriting_ctor` | entity | demand | - | §11.5 |
 | `inherited_ctor` | entity | demand | - | §11.5 |
 | `hidden_shadow` | entity | in | ref |  |
-| `conversion_spec_target` | written | out | - | the type a conversion function template specialisation's name prints with; the declaration keeps the pattern's name |
+| `conversion_spec_target` | written | out | - | the type a conversion function template specialisation's name prints with; the declaration keeps the pattern's name. It reaches the program only as text made from a name (digest §9) |
 | `compound_literal` | entity | unsupported | - | the implicit variable of a file-scope compound literal has no name to key it by; a GNU extension in C++ |
+
+`lexical_ctx` is written as a `Ref` to the nearest context that encloses
+the place the declaration was written and is not transparent (§5.2), when
+that context is not the entity's semantic context; it is absent otherwise.
+The declaration is the one the walk reads (§2.3). It is present for a
+friend declared or defined in a class, for a function or an `extern`
+variable declared in a block, and for a member defined outside its class
+or its namespace. A function defined in the class that befriends it
+differs from one only declared there by this row, which is why
+`FriendKind` needs no variant for it.
 
 ### `kiln_ast::decl::DeclArena`
 
@@ -2715,7 +2727,9 @@ Rules the rows refer to:
   overloaded-function placeholder names the first candidate of a set that
   Kiln's semantic analysis keeps outside `Ast`. The first candidate is
   written; the rest of the set is the result of looking that member's name
-  up in a class whose unit is compared separately ("Open questions").
+  up in a class whose unit is compared separately. The qualifier and the
+  explicit template arguments of such an access are kept with the set and
+  are not written ("Hazards accepted for now").
 - **Literals from builtin macros.** A literal that came from `__LINE__`
   or one of its relatives is written by value until Kiln can say where a
   literal came from (digest "Open questions").
@@ -2863,7 +2877,7 @@ Rules the rows refer to:
 | `MemberExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: the member chosen is the fact (digest §6) |
 | `MemberExpr.aux` | flag | in | enum NonOdrUse |  |
 | `MemberExpr.a` | child | in | child | the object expression |
-| `MemberExpr.b` | entity | in | ref | the member; for an overloaded access the first candidate (rule above) |
+| `MemberExpr.b` | entity | in | ref | the member; for an overloaded access the first candidate (rule above, and "Hazards accepted for now") |
 | `CXXThisExpr.aux-implicit` | flag | in | bit | bit 0: Kiln's evaluator and its template substitution read it |
 | `PredefinedExpr.aux` | flag | in | enum PredefinedKind |  |
 | `PredefinedExpr.a` | value | symbolic | - | the string literal holding the enclosing function's name; absent in a dependent context |
@@ -2986,7 +3000,7 @@ Rules the rows refer to:
 | `CXXNewExpr.a` | child | in | record NewExtra | index into `news` |
 | `CXXDeleteExpr.bits-global` | flag | in | bit | bit 4 |
 | `CXXDeleteExpr.bits-array-form` | flag | in | bit | bit 5 |
-| `CXXDeleteExpr.bits-array-as-written` | written | out | - | bit 6: `delete[]` was written; `bits-array-form` is the fact |
+| `CXXDeleteExpr.bits-array-as-written` | flag | in | bit | bit 6: `delete[]` was written. In a template `bits-array-form` is not known yet and instantiation reads this bit |
 | `CXXDeleteExpr.aux-sized` | flag | in | bit | bit 0: the deallocation function takes the size |
 | `CXXDeleteExpr.aux-aligned` | flag | in | bit | bit 1: it takes the alignment |
 | `CXXDeleteExpr.a` | child | in | child |  |
@@ -3017,7 +3031,7 @@ Rules the rows refer to:
 | `OffsetOfExpr.a` | child | in | child* | the index expressions |
 | `OffsetOfExpr.b` | value | in | uv | the stored result |
 | `SizeOfPackExpr.a` | entity | in | ref | the pack |
-| `RequiresExpr.aux` | value | in | uv | the stored result: 0 not computed, 1 false, 2 true ("Open questions") |
+| `RequiresExpr.aux` | value | in | uv | the stored result: 1 false, 2 true; 0 for a dependent expression and after a substitution error, never for want of asking |
 | `RequiresExpr.a` | bookkeeping | out | - | the `RequiresExprBody`, the scope of the parameters `RequiresData` lists |
 | `RequiresExpr.b` | child | in | record RequiresData | index into `TemplateTables` `requires` (§9) |
 | `ConceptSpecializationExpr.aux` | value | in | uv | as `RequiresExpr.aux` |
@@ -3545,9 +3559,20 @@ reads the list itself (`ExprNode`, `CoawaitExpr.a`).
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `qualifier` | written | out | - | how the name was qualified: the entity found is the fact. Whether a member access is qualified is `ColdExprData` `member_extra-qualified` |
+| `qualifier` | written | out | - | how the name was qualified: the entity found is the fact, and each thing Kiln reads the qualifier for is written elsewhere (rule below) |
 | `template_args` | written | in | enum ArgView*? | written only when the entity named is a template, where the arguments select what the name means; for a specialisation the entity is the fact |
-| `found_decl` | entity | out | - | the using-declaration the name was found through: a reference names the entity (digest §4.1) |
+| `found_decl` | entity | out | - | the using-declaration the name was found through: a reference names the entity (digest §4.1). Only the dump and the module image read it |
+
+Once a name is resolved Kiln reads `qualifier` for four things, and
+another row writes each: that a qualified call of a virtual function is
+not dispatched (`ColdExprData` `member_extra-qualified`); that a
+qualified name in a dependent call gets no argument-dependent lookup at
+instantiation (`UnresolvedLookupExpr.aux`); the conversion of an object
+expression to the class the qualifier names (an implicit cast node and
+its base path); and a qualifier that is itself dependent (`ColdExprData`
+`expr_nns`). Adding, removing or respelling a qualifier that leaves all
+four alone changes no digest, inside a template as well: the tests of
+the row hold both cases.
 
 ### `kiln_ast::expr::CompoundAssignExtra`
 
@@ -3678,7 +3703,7 @@ kind; an expression with no entry writes the encoding's empty form (§2.1).
 | `default_imm` | value | demand | - | §11.4 |
 | `union_field` | entity | in | ref |  |
 | `cast_written-unresolved-construct` | type | in | type? | on a `CXXUnresolvedConstructExpr`: the type as written, which instantiation and mangling use |
-| `cast_written-cast` | written | out | - | on a cast: qualifiers and a reference the node's type and value category already say |
+| `cast_written-cast` | type | in | type? | on an explicit cast: the type as written, with the qualifiers and the reference the node's type drops. Partial ordering, the search for unexpanded packs and the normal form of a constraint read it |
 | `offsetof_pattern-type` | type | in | type? | a value-dependent `OffsetOfExpr`: the operand type |
 | `offsetof_pattern-components` | name | in | enum OffsetofComponent* | its designator as written |
 | `offsetof_layout` | value | in | enum OffsetofStep* |  |
@@ -4140,7 +4165,7 @@ the definition exists.
 | `from` | entity | in | ref | rule above (digest §8); in `definition` for an implicit instantiation (§11.9) |
 | `from_args` | value | in | enum ArgView*? | the arguments deduced for the partial specialisation `from`; as `from` |
 | `point_of_instantiation` | location | out | - |  |
-| `print_args` | written | out | - | the arguments names print with: `args` without trailing defaults; read by printing only |
+| `print_args` | written | out | - | the arguments names print with: `args` without trailing defaults. It reaches the program only as text made from a name (digest §9) |
 | `defaulted` | flag | in | uv | bit i: argument i came from, or equals, its parameter's default; debug information reads it |
 
 ### `kiln_ast::templates::MemberSpecInfo`
@@ -4162,7 +4187,7 @@ the definition exists.
 | `partial` | bookkeeping | out | - | the partial specialisation itself |
 | `template` | entity | in | keyed | the primary template: the key's parent |
 | `params` | entity | in | record TemplateParamList | the head; also in the key (§3.3) |
-| `args` | written | out | - | the argument pattern as written; `canonical` carries it |
+| `args` | written | out | - | the argument pattern as written; `canonical` carries it, except for what an alias template specialisation says only in its arguments ("Hazards accepted for now") |
 | `canonical` | value | in | keyed | the argument pattern: in the discriminator after the head |
 | `has_pack` | bookkeeping | out | - | computed from `params` |
 | `shapes` | bookkeeping | out | - | index into `TemplateTables` `shapes`: a prefilter computed from `canonical` |
@@ -4236,11 +4261,11 @@ what order, are `demand`.
 | `end_of_tu_defs` | bookkeeping | demand | - | §11: the definitions instantiated at the end of the translation unit, in instantiation order |
 | `ref_var_insts` | bookkeeping | demand | - | §11: the variables instantiated at a reference, with the declaration each is emitted beside |
 | `moved_class_insts` | bookkeeping | out | - | the classes whose members are emitted at an explicit instantiation definition that follows a declaration; both are `SpecInfo` `kind`, of which the last is written |
-| `written_args` | written | out | - | how many arguments were written before defaults filled the rest: read by GCC-style display names only |
-| `args_as_written` | written | out | - | the arguments of an explicit specialisation or instantiation as written: read by the type printer only; `SpecInfo` `args` is the fact |
+| `written_args` | written | out | - | how many arguments were written before defaults filled the rest: text made from a name (digest §9) |
+| `args_as_written` | written | out | - | the arguments of an explicit specialisation or instantiation as written: text made from a name (digest §9); `SpecInfo` `args` is the fact |
 | `late_explicit_insts` | bookkeeping | out | - | functions explicitly instantiated before their template was defined: emitted at the end of the translation unit |
 | `late_explicit_set` | bookkeeping | out | - | the same functions as a set |
-| `preferred_named` | written | out | - | which specialisations print by their template's `preferred_name`: the attribute is written with the template, and names are not digested |
+| `preferred_named` | written | out | - | which specialisations print by their template's `preferred_name`: the attribute is written with the template, and the rest is text made from a name (digest §9) |
 | `specializations` | bookkeeping | demand | - | §11: the lookup table from template and canonical arguments to specialisation; each specialisation is a unit or nothing by the rule of this section |
 | `spec_order` | bookkeeping | demand | - | §11: each template's specialisations in creation order |
 | `instantiated_from` | entity | in | ref | by declaration: the pattern of an instantiated declaration that has no `TemplLink` |
@@ -4264,9 +4289,11 @@ The encoding `attrs` writes an attribute list: a count, then each node as
 - For a declaration they are the nodes of `AttrArena` `decl_attrs` for
   every declaration of the entity's chain, in chain order and within a
   declaration in stored order, leaving out each node whose `inherited`
-  flag is set: Kiln copies an attribute to later declarations, and the
-  copy says nothing new. The order is kept because Kiln mangles the
-  `enable_if` conditions of a function in it.
+  flag is set: it is a copy from an earlier declaration and says nothing
+  new. Kiln makes such a copy for an `ASM_LABEL` only; for every other
+  kind a later declaration has no node and Kiln reads the chain, as this
+  rule does. The order is kept because Kiln mangles the `enable_if`
+  conditions of a function in it.
 
 An instantiated declaration carries the attributes Kiln instantiated from
 its pattern; they are written as found.
@@ -4447,9 +4474,9 @@ questions"); where the two can be told apart by value the row says so.
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `kind` | flag | in | enum AttrKind |  |
-| `syntax` | written | out | - | `[[...]]`, `__attribute__`, a keyword, `__declspec` or a pragma |
+| `syntax` | flag | in | enum AttrSyntax | `[[...]]`, `__attribute__`, a keyword, `__declspec` or a pragma: code generation tells `__attribute__((noreturn))` from `[[noreturn]]` by it |
 | `flags-implicit` | flag | in | bit | bit 0: added by sema or by a pragma, not written |
-| `flags-inherited` | bookkeeping | out | - | bit 1: a copy from an earlier declaration, which the list rule leaves out |
+| `flags-inherited` | bookkeeping | out | - | bit 1: a copy from an earlier declaration, which the list rule leaves out. Kiln sets it at one site, for an `ASM_LABEL` |
 | `flags-gnu-scoped` | written | out | - | bit 3: written with the `gnu::` scope |
 | `loc` | location | out | - |  |
 | `ASSUME.flags-ignored` | flag | in | bit | bit 2: the assumption may have side effects, so it is neither assumed nor checked |
@@ -4557,11 +4584,11 @@ questions"); where the two can be told apart by value the row says so.
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `Cxx11` | written | out | - | the syntax an attribute was written in; `AttrNode` `syntax` is not written |
-| `Gnu` | written | out | - | the syntax an attribute was written in; `AttrNode` `syntax` is not written |
-| `Keyword` | written | out | - | the syntax an attribute was written in; `AttrNode` `syntax` is not written |
-| `Declspec` | written | out | - | the syntax an attribute was written in; `AttrNode` `syntax` is not written |
-| `Pragma` | written | out | - | the syntax an attribute was written in; `AttrNode` `syntax` is not written |
+| `Cxx11` | flag | in | tag 1 |  |
+| `Gnu` | flag | in | tag 2 |  |
+| `Keyword` | flag | in | tag 3 |  |
+| `Declspec` | flag | in | tag 4 |  |
+| `Pragma` | flag | in | tag 5 |  |
 
 ### `kiln_ast::attr::LoopHint`
 
@@ -4810,11 +4837,11 @@ indeterminate.
 | `default_loc` | location | out | - |  |
 | `captures` | entity | in | record LambdaCapture* | in closure member order |
 | `inits` | child | in | child*? | the initialiser of each capture's member |
-| `body` | bookkeeping | out | - | the call operator's body, which `FunctionData` `body` writes |
+| `body` | bookkeeping | out | - | the call operator's body, which `FunctionData` `body` writes; for a coroutine the statement that body wraps |
 | `lbracket` | location | out | - |  |
 | `rbracket` | location | out | - |  |
-| `explicit_params` | flag | in | bit | a parameter clause was written; kept because nothing shows what reads it |
-| `explicit_result` | flag | in | bit | a trailing return type was written; as `explicit_params` |
+| `explicit_params` | written | out | - | a parameter clause was written: `[]{}` against `[](){}`. Nothing in Kiln decides anything by it |
+| `explicit_result` | flag | in | bit | a trailing return type was written: instantiation substitutes into the return type only then, and deduces it otherwise |
 | `mutable` | flag | in | bit |  |
 | `mangling` | value | in | record LambdaMangling |  |
 
@@ -5085,8 +5112,15 @@ questions".
 | `kind` | flag | in | enum UnitKind |  |
 | `module` | name | in | bytes? | the module's name |
 | `partition` | name | in | bytes? |  |
-| `imports` | entity | out | - | what the unit imports: its effect is in the names its declarations resolve |
+| `imports` | entity | in | bytes* | the units it imports, in order: the order fixes that of the module initialisers. Written in the order unit (rule below) |
 | `merged` | bookkeeping | out | - | ranges of declaration ids |
+
+`imports` is written once, in the order unit (digest §2.1), for the
+`UnitInfo` of the translation unit itself: a count, then for each import
+in stored order its key as `bytes` and `bool` for `export import`. The
+key of a header unit is a path, written through the path rule of digest
+§9. A `UnitInfo` written for an `Owner` or for `explicit_defs` writes no
+imports.
 
 ### `kiln_ast::modules::UnitKind`
 
@@ -5272,7 +5306,7 @@ The numbers are Slip's own and are never reused.
 |---|---|---|---|
 | 1 | `exception_spec` | a function of the deferrable class (§11.2) | `enum ExcSpec`, in normal form |
 | 2 | `value` | a variable | `value?` (§11.3) |
-| 3 | `overrides` | a virtual member function | `ref*sorted` |
+| 3 | retired | | was `overrides`, now a row of the function's own unit (§11.5) |
 | 4 | `key_function` | a class | `ref` |
 | 5 | `dtor_delete` | a virtual destructor | `ref`: `ColdDeclData` `dtor_delete`; then `child?`: `dtor_delete_this` |
 | 6 | `inherited_constructor` | an inheriting constructor | `ref`: `inheriting_ctor`; then `ref`: `inherited_ctor` |
@@ -5325,6 +5359,12 @@ variable's value. The resolved unit `value` exists if the state is
 state `Evaluating` cannot be met after the translation unit ends; a walk
 that meets it makes the variable's unit indeterminate.
 
+After the variable's own value the stream holds one `value?` for each
+temporary whose lifetime the variable extends (each `LetData` whose
+`extending` names it), in `mangling_index` order: `LetData` `value`,
+which the Oven freezes when it evaluates the variable's initialiser and
+at no other time.
+
 ### 11.4 Default arguments and default member initialisers
 
 A default argument of a function that is not an instantiation, and a
@@ -5351,18 +5391,15 @@ walk order.
 
 ### 11.5 Facts of classes and virtual functions
 
-`overrides`, `key_function`, `dtor_delete`, `dtor_delete_this`,
-`inheriting_ctor` and `inherited_ctor` of `ColdDeclData` are written in
-the resolved units of §11.1 and nowhere else. Kiln's source says that
-`overrides` is written once, when the class is completed, which would
-make it an ordinary fact (§13); it is kept in a resolved unit because
-digest §2.3 lists it as demand-driven. If it is in fact always filled,
-the unit exists on both sides whenever the function overrides and is
-compared like any other. What a resolved unit gives up is the finding for
-a unit present on one side only, and a function cannot start or stop
-overriding without a change to a declared unit: its own key holds its
-name and signature, and the units of the base class and of the base's
-function hold the base list and `virtual`.
+`key_function`, `dtor_delete`, `dtor_delete_this`, `inheriting_ctor` and
+`inherited_ctor` of `ColdDeclData` are written in the resolved units of
+§11.1 and nowhere else.
+
+`overrides` is not demand-driven. Kiln fills it when the member function
+is declared, and for an implicitly declared member when it declares it,
+so it is there whenever the function's unit is: it is a row of that unit
+(`ColdDeclData` `overrides`), and the property number it once had is
+retired.
 
 Kiln keeps "vtable used" marks in its semantic analysis and not in `Ast`;
 there is nothing to write for them.
@@ -5464,9 +5501,8 @@ reaches is reported even when only one parse instantiates it.
 | Variable length arrays | `TypeView` `VariableArray` | the bound is an expression evaluated at run time inside one function, and a type digest has no unit to number its locals in |
 | Functions without a prototype | `FuncInfo` `0-no-proto` | C only |
 | File-scope compound literals | `ExprNode` `CompoundLiteralExpr.aux`, `CompoundLiteralExpr.b`; `ColdDeclData` `compound_literal` | C only: the literal's object is a variable Kiln declares for it, whose key this file does not define |
-| A dependent operator template name | `TemplateName` `DependentOperator` | `op` is a token kind of `kiln_lex`, for which there is no table and no stable numbering |
 | `cleanup` | `AttrNode` `CLEANUP.a` | the word is a `DeclId` after the declaration is checked and an `ExprId` before, and the node does not say which |
-| Not built by Kiln | `DeclKind` `UsingPack`, `FriendTemplate`, `ImplicitParam`, `ImplicitConceptSpecialization`; `StmtNode` `flags`; `ExprKind` `UserDefinedLiteral`, `EmbedExpr`, `UnresolvedMemberExpr`; `TemplLinkKind` `DependentFriend`; fourteen rows of `AttrKind` | no construction site was found at the pinned revision; the walk treats one as indeterminate if it ever appears |
+| Not built by Kiln | `DeclKind` `UsingPack`, `FriendTemplate`, `ImplicitParam`, `ImplicitConceptSpecialization`; `StmtNode` `flags`; `ExprKind` `UserDefinedLiteral`, `EmbedExpr`, `UnresolvedMemberExpr`; `TemplLinkKind` `DependentFriend`; `TemplateName` `DependentOperator`; fourteen rows of `AttrKind` | no construction site was found at the pinned revision; the walk treats one as indeterminate if it ever appears |
 
 ## 13. Differences between the inventory and the source
 
@@ -5572,46 +5608,9 @@ source; the first run of `tables.rs` settles them.
 
 ### Questions for Kiln
 
-1. KR5: a public table of operand roles for the words listed above.
-   For attributes one exists inside `kiln_sema`
-   (`bmi_image::attrs::TABLE`); could it move to `kiln_ast`?
-2. Can an attribute node say whether its declaration has been checked?
-   `VISIBILITY`, `TLS_MODEL`, `CLEANUP`, `CONSTRUCTOR`, `DESTRUCTOR`,
-   `NONNULL`, `WEAKREF` and `CALLBACK` hold their arguments as written
-   until then, and for `CLEANUP` the two forms cannot be told apart.
-3. `Snap` descriptors for the decoded views listed above, and for
-   `DeclNameView`.
-4. A public walk of a canonical expression profile (§4.4), and
-   `TemplateName::DependentOperator` `op` as an `OverloadedOperator`.
-5. Is the deferrable class of §11.2 right, and does naming a function
-   always resolve its exception specification before a type that holds
-   it is formed? Can a destructor's implicit specification be recovered
-   once resolved?
-6. Is `ColdDeclData` `overrides` filled when the class is completed, or
-   on demand? When are `DefinitionBits` `0-defaulted-*-deleted`, `LetData`
-   `value` and `gnu_lib_twin` set?
-7. Can a non-dependent `RequiresExpr` or `ConceptSpecializationExpr`
-   keep `aux` 0 (not computed) at the end of the translation unit? If it
-   can, that state is demand-driven and the row needs a rule.
-8. The candidate set of an overloaded member access is in semantic
-   analysis (`ovl.members`), not in `Ast`. Could `Ast` hold it?
-9. A query that says a literal came from `__LINE__` or a relative
-   (KF3), so that §7 can write such a literal symbolically.
-10. Are `LambdaData` `body` and the call operator's body always the same
-    statement, also for a generic lambda? What reads `explicit_params`,
-    `explicit_result` and a capture's `implicit`?
-11. Is the key of a closure type outside a function body (parent,
-    mangling context, mangling number) unique, and what names a closure
-    whose number is 0?
-12. The declaration kinds, the `TemplLinkKind` and the statement flag
-    word listed in §12 as not built: are they reserved or dead?
-13. `ColdDeclData` `instantiated_from` has no writer. Is it dead?
-14. Are declarations loaded from an imported module unit in `Ast` like
-    any other, and how does a walk tell them from the unit's own (§10.7)?
-15. A query from a `Using` declaration to its shadows, and a query for
-    an entity's language linkage, in `kiln_ast`.
-16. Stable names for the SME bits, the `fp_bit` constants, the
-    address-space words and the atomic builtin ids.
+They are in [`docs/requests/KQ1-digest-fields.md`](../docs/requests/KQ1-digest-fields.md),
+sent to the Kiln agent on 2026-11-22. A row that waits on an answer says
+so in its note or is listed under the hazards below.
 
 ### Hazards accepted for now
 
@@ -5621,7 +5620,34 @@ source; the first run of `tables.rs` settles them.
 - **Literals from builtin macros** (§7) are written by value: moving a
   line that uses `__LINE__` as a value is a reported difference.
 - **Overloaded member access** (§7): only the first candidate is
-  written.
+  written. In a template the qualifier and the explicit template
+  arguments of such an access are in Kiln's semantic analysis
+  (`ovl.members`) and in no row, so a transformation that changes them is
+  seen in the instantiations and not in the pattern. Kiln is asked to
+  keep them in `Ast` (request KQ1).
+- **Operators in templates** (§7). The functions that unqualified lookup
+  found for an operator at the template's definition
+  ([temp.dep.candidate]) are also outside `Ast` (`oper_lookups`). A
+  change to that set (`pitfalls.md` E04 for operators) is seen in each
+  instantiation, where the call names its function, and not in the
+  pattern. Same request.
+- **Alias templates with dependent arguments** (§4.2). An alias template
+  specialisation is digested as the type it names, so a condition that
+  only its arguments carry (`void_t<decltype(…)>`) is in no digest of
+  the pattern, and two partial specialisations that differ only there
+  have one key: a collision, which makes both indeterminate and counts in
+  `digest.collisions`. The corpus run says how often; the fix would be to
+  stop treating such an alias as transparent.
+- **Nullability on a dependent type** (§4.3). A nullability attribute is
+  sugar and is not written; on a dependent type Kiln checks it at
+  instantiation, where it can be a substitution failure. The
+  instantiations show it.
+- **Text made from names** (digest §9). `SpecInfo` `print_args`,
+  `TemplateTables` `written_args`, `args_as_written` and
+  `preferred_named`, and `ColdDeclData` `conversion_spec_target` reach
+  `__PRETTY_FUNCTION__`, `display_string_of`, sanitiser type descriptors
+  and the names of types in generated code. They are left out as every
+  value that comes from a name is.
 - **Attribute order** (§10.1) is kept: reordering the attributes of one
   declaration is a reported difference.
 - **Unchecked attribute nodes** (§10.1): a node Kiln has not checked is
