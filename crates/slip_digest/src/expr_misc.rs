@@ -292,7 +292,27 @@ pub(crate) fn offsetof_components(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         s.tag(offsetof_component::row(c));
         match *c {
             OffsetofComponent::Field { name, start: _, end: _ } => w.write_sym(s, name),
-            OffsetofComponent::Index { index, start: _, end: _ } => child(w, s, index),
+            OffsetofComponent::Index { index, start: _, end: _ } => {
+                index_position(w, s, e, index, Cause::Unaccounted("OffsetofComponent/Index.index"))
+            }
+        }
+    }
+}
+
+/// `OffsetofStep::Index.index` and `OffsetofComponent::Index.index`: `uv`
+/// of the position of `index` in `OffsetOfExpr.a` of `e`, where it is
+/// written (both builders put every index there: `kiln_ast`
+/// builder.rs:3538, :3597). An index not in the list is `cause`, and
+/// writes `uv` of the list's length.
+fn index_position(w: &Walk<'_>, s: &mut Stream, e: ExprId, index: ExprId, cause: Cause) {
+    let words: &[u32] = ListId::try_new(node(w, e).a).map_or(&[], |l| w.ast.lists.get(l));
+    match words.iter().position(|&x| x == index.raw()) {
+        Some(i) => {
+            s.uv(i as u64);
+        }
+        None => {
+            s.indeterminate(cause);
+            s.uv(words.len() as u64);
         }
     }
 }
@@ -310,7 +330,7 @@ pub(crate) fn offsetof_layout(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
                 s.uv(bytes);
             }
             OffsetofStep::Index { index, elem_size } => {
-                child(w, s, index);
+                index_position(w, s, e, index, Cause::Unaccounted("OffsetofStep/Index.index"));
                 s.uv(elem_size);
             }
         }
@@ -349,13 +369,16 @@ fn suspend(aux: u8) -> Option<SuspendKind> {
 /// `CoawaitExpr` and `CoyieldExpr`: the flag word (`aux-implicit`),
 /// `aux-suspend`, then `a`.
 ///
-/// `a` of a resolved expression is the first five elements of the list
+/// `a` of a resolved expression is elements two to five of the list
 /// `[operand, common, ready, suspend, resume, opaque]` (`kiln_sema`
-/// coroutine.rs:716, `kiln_ast` builder.rs:3345). The sixth is the
-/// `OpaqueValueExpr` whose source is `common`, and the three calls name
-/// it: `common` takes its opaque number before it is written, so the
-/// calls' opaque values write the number alone and `common` is written
-/// once. A `CoyieldExpr` of a template pattern holds the operand alone
+/// coroutine.rs:716, `kiln_ast` builder.rs:3345). The operand is a node
+/// of `common`: `common` is the operand itself, its materialisation, or
+/// a call with it as argument (`build_resolved_coawait`,
+/// `build_unresolved_coawait`, `build_coyield`), so it is not written
+/// again. The sixth is the `OpaqueValueExpr` whose source is `common`,
+/// and the three calls name it: `common` takes its opaque number before
+/// it is written, so the calls' opaque values write the number alone and
+/// `common` is written once. A `CoyieldExpr` of a template pattern holds the operand alone
 /// (builder.rs:3376), written as a list of one.
 fn coawait(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, yield_: bool) {
     let (bits, aux, suspend_row, list) = if yield_ {
@@ -381,13 +404,11 @@ fn coawait(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, yield_: bool) {
     let es = expr_list(w, s, n.a, Cause::Unaccounted(list));
     match es.len() {
         6 => {
-            s.count(5);
-            for (i, &x) in es[..5].iter().enumerate() {
-                if i == 1 {
-                    opaque_source(w, x);
-                }
-                child(w, s, x);
-            }
+            // The operand (the first) is a node of `common`, which every
+            // builder makes from it: it is not written (§7.2
+            // `CoawaitParts.operand`).
+            opaque_source(w, es[1]);
+            crate::expr::children(w, s, &es[1..5]);
         }
         1 if yield_ => crate::expr::children(w, s, &es),
         _ => {
@@ -950,10 +971,9 @@ mod tests {
         // `x[a].p`: 4 bytes to `x`, `a` elements of 8 bytes, 4 bytes to `p`.
         rows(OFFSETOF, ExprKind::OffsetOfExpr, 0, offsetof_layout, |w, s, e| {
             let n = node(w, e);
-            let index = expr(list(w, n.a)[0]);
+            assert_eq!(list(w, n.a).len(), 1);
             s.count(3).tag(offsetof_step::OFFSET).uv(4).tag(offsetof_step::INDEX);
-            child(w, s, index);
-            s.uv(8).tag(offsetof_step::OFFSET).uv(4);
+            s.uv(0).uv(8).tag(offsetof_step::OFFSET).uv(4);
         });
     }
 
@@ -961,10 +981,9 @@ mod tests {
     fn offsetof_components_rows() {
         rows(OFFSETOF, ExprKind::OffsetOfExpr, 3, offsetof_components, |w, s, e| {
             let n = node(w, e);
-            let index = expr(list(w, n.a)[0]);
+            assert_eq!(list(w, n.a).len(), 1);
             s.count(3).tag(offsetof_component::FIELD).bytes(b"x").tag(offsetof_component::INDEX);
-            child(w, s, index);
-            s.tag(offsetof_component::FIELD).bytes(b"p");
+            s.uv(0).tag(offsetof_component::FIELD).bytes(b"p");
         });
     }
 
@@ -982,6 +1001,123 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// Each `Index` step and component names its index by position in
+    /// `OffsetOfExpr.a`: `z[1][a]` and `z[a][b]` have two `Index` steps
+    /// each (a constant index is a step too once the offset is not
+    /// constant), the pattern `z[b][a]` two `Index` components.
+    #[test]
+    fn offsetof_index_positions() {
+        let src = "struct S { int n; int z[4][4]; }; int a, b;\n\
+            unsigned long u = __builtin_offsetof(S, z[1][a]), v = __builtin_offsetof(S, z[a][b]);\n\
+            template <class T> struct A { unsigned long w = __builtin_offsetof(T, z[b][a]); };\n";
+        let k = ExprKind::OffsetOfExpr;
+        for nth in [0, 1] {
+            let want = [0, 1];
+            rows(src, k, nth, offsetof_layout, |w, s, e| {
+                let steps = w.ast.exprs.cold.offsetof_layout.get(e).expect("a layout").clone();
+                let mut want = want.into_iter();
+                s.count(steps.len());
+                for step in &*steps {
+                    s.tag(offsetof_step::row(step));
+                    match *step {
+                        OffsetofStep::Offset(bytes) => {
+                            s.uv(bytes);
+                        }
+                        OffsetofStep::Index { index: _, elem_size } => {
+                            s.uv(want.next().expect("an index")).uv(elem_size);
+                        }
+                    }
+                }
+                assert_eq!(want.next(), None, "every index is a step");
+            });
+        }
+        rows(src, k, 2, offsetof_components, |_, s, _| {
+            s.count(3).tag(offsetof_component::FIELD).bytes(b"z");
+            s.tag(offsetof_component::INDEX).uv(0).tag(offsetof_component::INDEX).uv(1);
+        });
+    }
+
+    /// An index that is not an element of `OffsetOfExpr.a`: `Unaccounted`,
+    /// and `uv` of the list's length.
+    #[test]
+    fn offsetof_index_not_in_the_list() {
+        let src = "struct S { int z[4]; }; int a, b;\n\
+            unsigned long u = __builtin_offsetof(S, z[a]);\nint v = b;\n";
+        with(src, "c++20", |input, rules| {
+            let e = of_kind(input, ExprKind::OffsetOfExpr)[0];
+            let other = *of_kind(input, ExprKind::DeclRefExpr).last().expect("`b`");
+            let cause = Cause::Unaccounted("OffsetofStep/Index.index");
+            let got = written(input, rules, e, |w, s, e| index_position(w, s, e, other, cause));
+            let mut want = Stream::new();
+            want.uv(1);
+            assert_eq!(got, (want.as_bytes().to_vec(), Some(cause)));
+        });
+    }
+
+    /// Runs `f` on a thread with the walk's stack (deep sources).
+    fn on_big_stack(f: impl FnOnce() + Send) {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(crate::walk::STACK_SIZE)
+                .spawn_scoped(scope, f)
+                .expect("a thread")
+                .join()
+                .expect("no panic");
+        });
+    }
+
+    /// The bytes `child` writes for the largest outermost node of `kind`
+    /// in `src` (one no node of `kind` holds as a child or in `a`), and its
+    /// cause.
+    fn outermost(src: &str, kind: ExprKind) -> (usize, Option<Cause>) {
+        let mut out = (0, None);
+        on_big_stack(|| {
+            with(src, "c++20", |input, rules| {
+                let all = of_kind(input, kind);
+                let inner: std::collections::HashSet<u32> = all
+                    .iter()
+                    .flat_map(|&e| {
+                        let mut v = input.ast.exprs.children(e, &input.ast.lists);
+                        if let Some(l) = ListId::try_new(node_of(input, e).a()) {
+                            v.extend(
+                                input.ast.lists.get(l).iter().filter_map(|&x| ExprId::try_new(x)),
+                            );
+                        }
+                        v.into_iter().map(RawId::raw)
+                    })
+                    .collect();
+                let tops: Vec<ExprId> =
+                    all.into_iter().filter(|e| !inner.contains(&e.raw())).collect();
+                out = tops
+                    .into_iter()
+                    .map(|e| {
+                        let (bytes, cause) = written(input, rules, e, child);
+                        (bytes.len(), cause)
+                    })
+                    .max_by_key(|&(n, _)| n)
+                    .expect("an outermost node");
+            });
+        });
+        out
+    }
+
+    /// `offsetof` nested in a non-constant index, 20 against 200 deep
+    /// (Kiln's bracket nesting bounds the depth): the bytes grow by ten.
+    #[test]
+    fn nested_offsetof_is_linear() {
+        let src = |n: usize| {
+            let mut e = String::from("a");
+            for _ in 0..n {
+                e = format!("__builtin_offsetof(S, z[{e}])");
+            }
+            format!("struct S {{ int z[4]; }}; unsigned long a;\nunsigned long v = {e};\n")
+        };
+        let (small, c_small) = outermost(&src(20), ExprKind::OffsetOfExpr);
+        let (large, c_large) = outermost(&src(200), ExprKind::OffsetOfExpr);
+        assert_eq!((c_small, c_large), (None, None));
+        assert!(large >= small * 9 && large <= small * 11, "bytes {small} -> {large}");
     }
 
     fn node_of<'a>(input: &Input<'a>, e: ExprId) -> &'a slip_kiln::kiln::ast::expr::ExprNode {
@@ -1024,13 +1160,11 @@ mod tests {
         let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
         assert_eq!(es.len(), 6);
         assert_eq!(source_of(w, es[5]), Some(es[1]), "the opaque value stands for `common`");
-        s.flags(FlagWord::new().bit(implicit)).tag(row).count(5);
-        for (i, &x) in es[..5].iter().enumerate() {
-            if i == 1 {
-                let unit = &mut w.unit.expr;
-                unit.opaques.insert(x, unit.next_opaque);
-                unit.next_opaque += 1;
-            }
+        s.flags(FlagWord::new().bit(implicit)).tag(row).count(4);
+        let unit = &mut w.unit.expr;
+        unit.opaques.insert(es[1], unit.next_opaque);
+        unit.next_opaque += 1;
+        for &x in &es[1..5] {
             child(w, s, x);
         }
     }
@@ -1063,7 +1197,7 @@ mod tests {
         });
     }
 
-    /// `common` is written once: against the encoding that writes the five
+    /// `common` is written once: against the encoding that writes the four
     /// elements without numbering it first, the walk saves exactly the
     /// bytes of `common` (the first call's opaque value writes it there).
     #[test]
@@ -1076,7 +1210,7 @@ mod tests {
                     let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
                     s.flags(FlagWord::new().bit(n.aux & 1 != 0));
                     s.tag(suspend(n.aux).map(|k| suspend_kind::row(&k)).expect("a kind"));
-                    children(w, s, &es[..5]);
+                    children(w, s, &es[1..5]);
                 });
                 let common = expr(list_of(input, e)[1]);
                 let (once, _) = written(input, rules, common, child);
@@ -1089,6 +1223,127 @@ mod tests {
     fn list_of(input: &Input<'_>, e: ExprId) -> Vec<u32> {
         let raw = node_of(input, e).a();
         input.ast.lists.get(ListId::try_new(raw).expect("a list")).to_vec()
+    }
+
+    /// The forms `common` is built in (`kiln_sema` coroutine.rs
+    /// `build_resolved_coawait`, `build_unresolved_coawait`,
+    /// `build_coyield`, `build_suspend`).
+    const AWAIT_FORMS: &str = "namespace std {\n\
+        template <class R, class... A> struct coroutine_traits { using promise_type = typename R::promise_type; };\n\
+        template <class P = void> struct coroutine_handle {\n\
+          static coroutine_handle from_address(void *) noexcept; void *address() const noexcept;\n\
+          template <class Q> coroutine_handle(coroutine_handle<Q>) noexcept; coroutine_handle() noexcept; };\n\
+        template <> struct coroutine_handle<void> {\n\
+          static coroutine_handle from_address(void *) noexcept; void *address() const noexcept;\n\
+          coroutine_handle() noexcept; template <class Q> coroutine_handle(coroutine_handle<Q>) noexcept; };\n\
+        }\n\
+        struct Aw { bool await_ready() noexcept; void await_suspend(std::coroutine_handle<>) noexcept; void await_resume() noexcept; };\n\
+        struct Mem { Aw operator co_await() noexcept; };\n\
+        struct Free {};\n\
+        Aw operator co_await(Free) noexcept;\n\
+        struct Task { struct promise_type {\n\
+          Task get_return_object(); Aw initial_suspend() noexcept; Aw final_suspend() noexcept;\n\
+          void return_void(); void unhandled_exception(); Aw yield_value(int); }; };\n\
+        struct TaskT { struct promise_type {\n\
+          TaskT get_return_object(); Aw initial_suspend() noexcept; Aw final_suspend() noexcept;\n\
+          void return_void(); void unhandled_exception(); Aw await_transform(int); }; };\n\
+        struct TaskB { struct promise_type {\n\
+          TaskB get_return_object(); Mem initial_suspend() noexcept; Free final_suspend() noexcept;\n\
+          void return_void(); void unhandled_exception(); Mem await_transform(int); }; };\n\
+        Aw aw;\n\
+        Task lvalue() { co_await aw; }\n\
+        Task prvalue() { co_await Aw{}; }\n\
+        Task member() { co_await Mem{}; }\n\
+        Task free() { co_await Free{}; }\n\
+        TaskT transform() { co_await 1; }\n\
+        TaskB both() { co_await 2; }\n\
+        Task yield() { co_yield 3; }\n";
+
+    /// The expressions reachable from `e` in Kiln's AST: its children
+    /// and the sources of the opaque values among them.
+    fn reachable(input: &Input<'_>, e: ExprId) -> std::collections::HashSet<u32> {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![e];
+        while let Some(x) = stack.pop() {
+            if !seen.insert(x.raw()) {
+                continue;
+            }
+            let n = node_of(input, x);
+            if n.kind() == ExprKind::OpaqueValueExpr
+                && let Some(src) = ExprId::try_new(n.a())
+            {
+                stack.push(src);
+            }
+            input.ast.exprs.children_into(x, &input.ast.lists, &mut stack);
+        }
+        seen
+    }
+
+    /// The fact the encoding rests on (§7.2 `CoawaitParts.operand`): in
+    /// every form, the operand is a node of `common`. Seven functions,
+    /// each with its explicit suspension point and the implicit initial
+    /// and final ones (`TaskB`'s through a member and a non-member
+    /// `operator co_await`).
+    #[test]
+    fn coawait_operand_is_in_common() {
+        with(AWAIT_FORMS, "c++20", |input, _| {
+            let mut forms = 0;
+            for kind in [ExprKind::CoawaitExpr, ExprKind::CoyieldExpr] {
+                for e in of_kind(input, kind) {
+                    let es = list_of(input, e);
+                    assert_eq!(es.len(), 6, "resolved");
+                    let (operand, common) = (es[0], expr(es[1]));
+                    assert!(
+                        reachable(input, common).contains(&operand),
+                        "{kind:?} {e:?}: the operand is a node of `common`"
+                    );
+                    forms += 1;
+                }
+            }
+            assert_eq!(forms, 21, "seven explicit and fourteen implicit points");
+        });
+    }
+
+    /// A change in the operand alone changes what `co_await` writes,
+    /// through `common`.
+    #[test]
+    fn coawait_operand_change_differs() {
+        let src =
+            |x: &str| format!("{AWAIT_FORMS}Aw &id(int);\nTask g() {{ co_await id({x}); }}\n");
+        let bytes = |src: &str| {
+            let mut out = Vec::new();
+            with(src, "c++20", |input, rules| {
+                let e = *of_kind(input, ExprKind::CoawaitExpr)
+                    .iter()
+                    .rfind(|&&e| node_of(input, e).aux() & 1 == 0)
+                    .expect("`co_await id(…)`");
+                out = written(input, rules, e, coawait_expr).0;
+            });
+            out
+        };
+        assert_ne!(bytes(&src("1")), bytes(&src("2")));
+    }
+
+    /// `co_await co_await … aw`, 200 against 2,000 deep: the bytes grow by
+    /// ten (writing the operand besides `common` doubles them per level).
+    #[test]
+    fn nested_coawait_is_linear() {
+        let src = |n: usize| {
+            format!(
+                "{AWAIT_FORMS}struct Re {{ bool await_ready() noexcept; \
+                 void await_suspend(std::coroutine_handle<>) noexcept; Re &await_resume() noexcept; }};\n\
+                 Re re;\nTask g() {{ {}re; }}\n",
+                "co_await ".repeat(n)
+            )
+        };
+        let (small, c_small) = outermost(&src(200), ExprKind::CoawaitExpr);
+        let (large, c_large) = outermost(&src(2_000), ExprKind::CoawaitExpr);
+        // Kinds of `expr_init.rs` / `expr_dep.rs` (other packages) are
+        // still placeholders under the calls.
+        let pending = Some(Cause::Pending(crate::Area::Expr));
+        assert!(c_small.is_none() || c_small == pending, "{c_small:?}");
+        assert!(c_large.is_none() || c_large == pending, "{c_large:?}");
+        assert!(large >= small * 9 && large <= small * 11, "bytes {small} -> {large}");
     }
 
     // -----------------------------------------------------------------

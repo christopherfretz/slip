@@ -28,7 +28,7 @@ VEC = ("typedef int v4 __attribute__((ext_vector_type(4)));\n"
        "typedef float f4 __attribute__((ext_vector_type(4)));\n"
        "v4 vv, vv2; v4 *pv;")
 TYPEINFO = "namespace std { class type_info; }"
-OFFSET = "struct S { int n; int m; int x[4]; int y[4]; };"
+OFFSET = "struct S { int n; int m; int x[4]; int y[4]; int z[4][4]; };"
 SOURCE_LOCATION = (
     "namespace std { struct source_location { struct __impl { const char *_M_file_name;"
     " const char *_M_function_name; unsigned _M_line; unsigned _M_column; }; }; }")
@@ -361,7 +361,9 @@ differ("OffsetofStep", "Offset.0", OF.format("S, x[a]"), OF.format("S, y[a]"),
 differ("OffsetofStep", "Index", OF.format("S, x[a]"), OF.format("S, x[a].p"),
        pre="struct Q { int o; int p; };\nstruct S { int n; Q x[4]; };\n" + VARS,
        note="`Index`: the steps differ in number and kind.")
-differ("OffsetofStep", "Index.index", OF.format("S, x[a]"), OF.format("S, x[b]"),
+# Two indices swapped between two steps: each step names its index by
+# its position in `OffsetOfExpr.a`.
+differ("OffsetofStep", "Index.index", OF.format("S, z[a][b]"), OF.format("S, z[b][a]"),
        pre=OFFSET + "\n" + VARS)
 differ("OffsetofStep", "Index.elem_size", "typedef int E;\nstruct S { E x[4]; };\n" +
        OF.format("S, x[a]"), "typedef long E;\nstruct S { E x[4]; };\n" + OF.format("S, x[a]"),
@@ -373,8 +375,8 @@ differ("OffsetofComponent", "Field.name", tmpl(TOF.format("n")), tmpl(TOF.format
        ["changed A::w"])
 differ("OffsetofComponent", "Index", tmpl(TOF.format("x[0]")), tmpl(TOF.format("x.n")),
        ["changed A::w"])
-differ("OffsetofComponent", "Index.index", tmpl(TOF.format("x[a]")), tmpl(TOF.format("x[b]")),
-       ["changed A::w"], pre=VARS)
+differ("OffsetofComponent", "Index.index", tmpl(TOF.format("z[a][b]")),
+       tmpl(TOF.format("z[b][a]")), ["changed A::w"], pre=VARS)
 
 # ---------------------------------------------------------------------------
 # Coroutines (in function bodies: the statements' area).
@@ -395,6 +397,11 @@ node("CoyieldExpr.a", "Task f() { co_yield 1; }", "Task f() { co_yield 2; }",
 node("DependentCoawaitExpr.a", "template <class T> Task f(T t, T u) { co_await t; }",
      "template <class T> Task f(T t, T u) { co_await u; }", ["changed f(T, T)"], pre=CORO,
      needs="stmt")
+# A change in the operand alone still differs, through `common`, which is
+# built from it (the operand itself is not written: `CoawaitParts.operand`).
+differ("_", "coawait-operand-alone", "Task f() { co_await id(1); }",
+       "Task f() { co_await id(2); }", ["changed f()"], pre=CORO + "\nNever &id(int);",
+       needs="stmt")
 for row in ("Void", "Bool", "Handle"):
     x = {"Void": "never", "Bool": "maybe", "Handle": "hand"}[row]
     y = {"Void": "maybe", "Bool": "hand", "Handle": "never"}[row]
