@@ -1370,15 +1370,18 @@ warning of §8.8.
   small change to `admission`, proposed in `spec/verify.md`.
 - A round's parameters travel on the worker's command line (§8.4), which
   ties every job of a pool run to one `Declared` and one image. That is
-  what a round is; the price is that nothing in a shard or a run record
-  says which parameters it was made with (`spec/verify.md` "Open
-  questions").
+  what a round is in M1; the price is that nothing in a shard or a run
+  record says which parameters it was made with (`spec/verify.md` "Open
+  questions"). A `Job` that carries them (an overlay's id, a `Declared`'s
+  id; a new protocol number) is M2's to specify. It replaces the
+  worker's options `--declared`, `--root` and `--post` and the sentence
+  of §8.4 that the protocol does not change; `verify_job::verify` (§8.6)
+  already takes a job's parameters as an argument, and `declared/` (§2)
+  already holds a `Declared` by its id.
 - `declare` and `units` parse in the calling process (§8.8), outside the
   pool: no admission, no cap, no retry, one observer at a time. Enough
   for a handful of observers; a relocation whose names no small selection
   sees needs them run as a phase.
-- Exit status 4 for an incomplete verify run is new; scripts that test
-  for "0 or 1" need to know it.
 - Defaults of `--estimate-base` and `--estimate-per-byte` are guesses until
   M0 measures LLVM; so is `--worker-jobs 1`, which costs a process start and
   later a transform compilation per observer.

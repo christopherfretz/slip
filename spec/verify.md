@@ -647,9 +647,30 @@ FindingKind := changed = 0 | removed = 1 | added = 2 | indeterminate = 3
              | derived_changed = 4 | derived_indeterminate = 5
 ```
 
-Findings are ordered by `(kind, file, key)`: `kind` by its number, `file`
-and `key` by their bytes. No two findings are equal in all three, so the
-first `limit` are determined.
+Findings are ordered by `(rank, file, key)`: `file` and `key` by their
+bytes, and `rank` from the kind:
+
+| Kind | Number in the format | Rank |
+|---|---|---|
+| `changed` | 0 | 0 |
+| `removed` | 1 | 1 |
+| `added` | 2 | 2 |
+| `derived_changed` | 4 | 3 |
+| `indeterminate` | 3 | 4 |
+| `derived_indeterminate` | 5 | 5 |
+
+- The findings that say a unit differs come before those that say a unit
+  is unknown: a `derived_changed` finding is within the first `limit`
+  (and the first `locate`, §6.1) however many indeterminate units the
+  observer has.
+- The rank is not the kind's number and is not written: the numbers of
+  `FindingKind` in the format do not change. The decoder checks the order
+  by rank (`spec/model.md` §8.3 rule 4b). No verify shard was written
+  under the earlier order (by number): the verify job (§5) is the first
+  writer.
+- No two findings are equal in all three, so the first `limit` are
+  determined.
+- The report's groups (§7.1) use the same rank.
 
 `pre`, `post` and `file` are defined on what §4 looked at, so that they too
 are the same whether or not the comparison was restricted to `G`:
@@ -919,7 +940,8 @@ FindingGroup := { "kind": <FindingKind by name>, "key": <id>, "name": <str>,
   of one `(kind, key)`; `observers` counts the observers that list it.
   `file`, `pre`, `post`, `name` and `where` are those of the first
   observer, in plan order, whose finding has a `name` that is not empty,
-  else of the first. Groups are sorted by `(kind, name, key)`.
+  else of the first. Groups are sorted by `(rank, name, key)`, with the
+  rank of §6.
 - `not_verified` lists, in plan order, every selected observer that is
   neither `verified` nor `unchanged`: its state; the verdict's `reason`
   (`unverifiable`), the shard's message (`not_parsed`, `never_parsed`,
@@ -1078,7 +1100,9 @@ impl Report {
   preventing exactly its finding and no other, multiplicities, two units
   of one key, derived keys on one side, a key declared in one image and
   derived in the other, `file`, `pre` and `post` of each kind, the order
-  of findings, the three ways of making a verdict, malformed groups,
+  of findings by rank (a `derived_changed` finding is within the first
+  `limit` when ten thousand indeterminate findings exist, and alone
+  with `limit` 1), the three ways of making a verdict, malformed groups,
   `comparable`, and `at_sums` over unsorted and duplicate groups.
 - `crates/slip_verify/tests/groups.rs` — §4.1: for generated pairs of
   images (random units, groups, moves between groups, duplicates), the
@@ -1216,17 +1240,8 @@ impl Report {
 - **Mapping allocates.** `RuleTable::map` encodes each key's match to
   look it up; with a table that is not empty that is one allocation per
   key of the post-image. To be measured on the corpus with the verify job.
-- **`limit` (64) and `locate` (16)** are guesses.
-- **The order of findings and `limit`.** Findings are ordered by kind
-  number (§6), which puts `derived_changed` after `indeterminate`. While
-  an observer has thousands of indeterminate units, a `derived_changed`
-  finding is beyond `limit` and `locate` and is neither listed nor named
-  (it is counted: `verify.findings.derived_changed`, and the state is
-  `mismatch` either way). Ordering the findings that say something
-  before those that say "unknown" needs a rank that is not the kind's
-  number; `compare.rs` and its tests would change. Until then the
-  pitfalls runner and Demo 1 ask for every finding
-  (`--findings 100000`).
+- **`limit` (64) and `locate` (16)** are the defaults for M1; to be
+  looked at again with the counts of the first corpus run.
 - **Exit status of a `mismatch` that is only indeterminate** (§7): the
   same as any other mismatch. While the walk has areas that are not
   written, that is every observer with a function body.

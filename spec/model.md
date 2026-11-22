@@ -622,7 +622,7 @@ field).
 | 2 | `reason`; each finding's `name`, then `where.pre.node`, `where.pre.what`, `where.post.node`, `where.post.what`: at most 4096 bytes | the field | `sections.verdict.reason`, `….findings[i].name`, `….findings[i].where.<pre\|post>.<node\|what>` |
 | 3 | by `kind`, checking in field order: `verified`: `reason` empty, `total` 0, `findings` empty; `mismatch`: `reason` empty, `total` ≥ 1; `unverifiable`: `reason` non-empty, `total` 0, `findings` empty | the `reason` field, the `total` field, the `findings` list's count | `sections.verdict.reason`, `.total`, `.findings` |
 | 4a | `findings` has at most `total` elements | the first finding beyond `total` | `sections.verdict.findings[total]` |
-| 4b | for each finding in turn: ascending by `(kind, file, key)`, an absent key first (not strictly: findings with no key may tie); then, if it has a key, no earlier finding has the same `(kind, key)` | that finding's first byte | `sections.verdict.findings[i]` |
+| 4b | for each finding in turn: ascending by `(rank, file, key)`, where `rank` is that of the finding's kind (`verify.md` §6: `changed` 0, `removed` 1, `added` 2, `derived_changed` 3, `indeterminate` 4, `derived_indeterminate` 5; not the kind's number), an absent key first (not strictly: findings with no key may tie); then, if it has a key, no earlier finding has the same `(kind, key)` | that finding's first byte | `sections.verdict.findings[i]` |
 | 5 | for each finding in turn: `key` absent only for `indeterminate`; an `added` finding has no `pre`; a `removed` finding has no `post` | the `opt` tag of `key`, `pre`, `post` | `sections.verdict.findings[i].key`, `.pre`, `.post` |
 | 6 | `used` strictly ascending | the later element | `sections.verdict.used[j]` |
 | 7 | in each `Site` (pre, then post), `line` is 0 exactly when `column` is 0 | the `line` field | `sections.verdict.findings[i].where.<pre\|post>.line` |
@@ -1061,11 +1061,15 @@ Running the tests with `SLIP_BLESS=1` rewrites the golden files (until
 - `findings` longer than the default limit of 64, or more than 16 findings
   with a `where` (`verify.md` §6.1), are not rejected: the limit is a
   parameter of the job, not of the format.
-- `-fkiln-reproducible-time` on every parse (§8.4) is recorded in a
-  precompiled header's and a module file's snapshot by Kiln
-  (`kiln_driver/src/pch_snapshot.rs`), so a module file the build made
-  without it may be refused. No corpus has one yet; to be settled with
-  the first that does.
+- **For Kiln.** `-fkiln-reproducible-time` is on every parse (§8.4), and
+  nobody has verified it together with precompiled headers and module
+  files. Kiln records the flag in a precompiled header's and a module
+  file's snapshot (`kiln_driver/src/pch_snapshot.rs`), so a file the
+  build made without it may be refused, or accepted with the build's
+  `__DATE__` and `__TIME__` inside it. The flag stays: the LLVM corpus
+  uses neither. The question for Kiln, before the first corpus that does:
+  what a parse with the flag does with a snapshot made without it, and
+  whether a snapshot can carry time-dependent tokens at all.
 - The counter namespace `digest.cause.*` (§8.5) is as wide as the walk's
   list of cause texts (about 170 today). It shrinks as rows are decided;
   a baseline that gates on counters exactly (`spec/harness.md` §7.3)

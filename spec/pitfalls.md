@@ -64,7 +64,8 @@ expect.txt      what each tree must give
   - `mismatch <kind> <entity>`: the state is `mismatch` and the report
     has a finding of that kind whose `name` is `<entity>`. With
     ` @ <file>:<line>` the finding's `where.post` (`where.pre` for
-    `removed`) must be that file, relative to the tree, and that line.
+    `removed`) must be that file, relative to the tree, and that line
+    ("Places" below).
   - `mismatch` alone: the state is `mismatch` and at least one finding is
     neither `indeterminate` nor `derived_indeterminate`. A tree whose
     findings are all indeterminate has not shown the hazard caught; it
@@ -99,6 +100,24 @@ verifies is a hole in the trusted base and blocks a release. A `good`
 tree that does not verify fails too: a verifier that rejects correct
 edits is not usable. An `unverifiable` verdict meets no line.
 
+**Places.** The runner has one switch, a constant `PLACES`, with two
+states:
+
+| State | A line with ` @ <file>:<line>` is met when |
+|---|---|
+| `advisory` | the finding is there, and either has no `where` or has it at that file and line |
+| `mandatory` | the finding is there with a `where` at that file and line |
+
+- A finding whose `where` is at another file or line does not meet the
+  line in either state: a place may be absent before localisation
+  exists, never wrong.
+- The switch is `advisory` until localisation (`verify.md` §6.1) is on
+  main and `mandatory` from then on; the package that merges second of
+  the runner and localisation sets it. In the `advisory` state the
+  summary counts the lines met without their place (`places skipped`).
+- M1's exit needs `mandatory`, with `places skipped` gone from the
+  summary.
+
 **The production compiler** (tier T2). Every subject and every tree is
 also compiled with `clang++-19`, else `clang++`, found on `PATH`:
 `<compiler> -std=<std> -fsyntax-only -I. -Idep main.cpp` in the tree. A
@@ -117,6 +136,7 @@ The summary, printed whether or not the test passes:
 
 ```
 pitfalls: <rows> rows, <trees> trees: PASS <n> XFAIL <n> FAIL <n> XPASS <n> ERROR <n> SKIP(T2) <n>
+pitfalls: places <advisory|mandatory>[, <n> skipped]
 pitfalls: <n> rows caught only by a failed parse
   <outcome> <row>/<tree>: <what was expected> / <what was found>      every tree that is not PASS
 ```
@@ -223,7 +243,9 @@ exercises the pipeline, not the digest.
   rows the test writes to a temporary directory: each outcome of the
   table, a `bad` tree that verifies with an `xfail` (still `FAIL`),
   `mismatch` alone against findings that are all indeterminate, the `@`
-  place one line off, a `bad` tree whose `created` line does not
+  place one line off (not met in either state of `PLACES`), a place
+  absent (met in `advisory` and counted, not met in `mandatory`), a
+  `bad` tree whose `created` line does not
   resolve, a changed `dep/`, a malformed `expect.txt`, `pre-2/`.
 
 ## Open questions
@@ -235,10 +257,11 @@ exercises the pipeline, not the digest.
 - `xfail` lines are the list of what the trusted base does not catch
   yet. M1's exit needs none (`docs/design/06-engineering-plan.md` §5);
   the summary line is what is watched.
-- Whether the `@` place should be required on every `mismatch` line, so
-  that the catalogue also pins localisation
+- Whether every `mismatch` line should carry an `@` place, so that the
+  catalogue pins localisation for every row
   (`docs/design/06-engineering-plan.md` §3 "caught with the right
-  location"). Today it is optional per row.
+  location"). Today a row gives one where the hazard sits on one line;
+  where it is given it is checked as "Places" says.
 - R11 and the agreement between observers: the single-observer form is
   written above; the form with two observers (one sees the renamed
   declaration, the other only a stale one) needs the check that `verify.md`

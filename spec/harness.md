@@ -938,6 +938,20 @@ requirement. `different` above 0 is a defect of the walk (two parses of
 one tree disagree, which (a) would also show) or a tree that changed
 between the two phases (then G2 makes it `unverifiable`).
 
+**At M1's exit** (`docs/design/06-engineering-plan.md` §5) both
+invariants hold on the LLVM corpus, the whole plan, with no selection:
+
+- (b) is clean: every `map_ok` observer is `verified`. There is no list
+  of excepted observers and no list of excepted causes.
+- So no unit of the corpus is indeterminate. A cause the corpus run shows
+  (`digest.indeterminate.<cause>`, `digest.cause.*`, §9.3) is removed
+  from the walk, whichever it is: `pending` by the package that writes
+  the area, `unsupported` and `unaccounted` by a row of
+  `spec/digest-kinds.md` and its code, `collision` by the key. A cause
+  that is not removed keeps the exit waiting; it is not waived.
+- "The corpora" of M1's exit is the LLVM corpus (the row `llvm` of
+  `bench/corpora.toml`). A libc++ corpus is not M1's ("Open questions").
+
 ### 9.3 What a corpus run records
 
 A map run of a corpus with digests is measured with the commands of §7:
@@ -1080,7 +1094,8 @@ to `src/` with a line. The **image of a line** is the post-image for
 ### 10.2 The cases
 
 The subset is the translation units of `llvm/lib/Support/` in the `llvm`
-corpus (about 140 observers); the one subject root is `llvm`. Every
+corpus (151 observers on the pin of `bench/corpora.toml`); the one
+subject root is `llvm`. Every
 header named below is included by most of them.
 
 | Case | What is edited | Declared | Expect |
@@ -1156,6 +1171,11 @@ then `ERROR` (the edit is not silent, or the run is broken).
 | `mismatch` | `found` | every line is found, and the run's verdict is `not_verified` |
 | | `partly` | no line is missing or at a wrong place, and at least one is blocked or found with no place |
 | | `MISSED` | a line is missing or at a wrong place; or the run's verdict is `verified` |
+
+`demo 1: ok` admits no `blocked` line and no line found without its
+place: one of either makes its case `partly` and the run `PARTIAL`. The
+latitude of a blocked line (a name several units share is blocked if any
+of them is indeterminate, §10.1) exists in the `PARTIAL` form only.
 
 Standard output:
 
@@ -1322,7 +1342,14 @@ pub fn main(repo: &Path, args: &[String]) -> ExitCode;
   `blocked` trusts `slip units` for the indeterminate flag of a name,
   and a name that several units share is blocked if any of them is
   indeterminate; a hazard hidden behind such a name would be `blocked`
-  where it should be `MISSING`. The `ok` form has no such latitude.
+  where it should be `MISSING`. Accepted for `PARTIAL` only: `ok` admits
+  no blocked line (§10.3).
+- A libc++ corpus: a row of `bench/corpora.toml` for libc++'s own
+  headers and tests under its own build, with its baseline and the two
+  invariants of §9. It is a later package and not part of M1's exit,
+  which is stated on the LLVM corpus (§9.2). The LLVM corpus is built
+  against the host's standard library, so it says little about libc++'s
+  headers as a subject.
 - Whether a `PARTIAL` run is something to show outside the project is
   the operator's call; §10.4 says what it may be said to show.
 - `edit.txt` (§10.1) is one more small format. A unified diff would be
