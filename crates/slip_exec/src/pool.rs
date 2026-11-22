@@ -1040,6 +1040,8 @@ impl Coordinator<'_> {
             },
             inputs: None,
             counters: Vec::new(),
+            digests: None,
+            verdict: None,
         };
         Ok(self.store.publish_shard(
             &self.plan,
