@@ -77,7 +77,11 @@ pub fn render_summary(given: &str, loaded: &Loaded) -> Result<String, String> {
     line(format!("run {}", text(given.as_bytes())));
     line(format!("plan {}", loaded.path.plan));
     line(format!("phase {} round {}", store::phase_name(loaded.path.phase), loaded.path.round));
-    line(format!("tool slip {} kiln {}", text(run.tool_slip.as_bytes()), text(run.tool_kiln.as_bytes())));
+    line(format!(
+        "tool slip {} kiln {}",
+        text(run.tool_slip.as_bytes()),
+        text(run.tool_kiln.as_bytes())
+    ));
     line(format!("observers {} of {}", loaded.shards.len(), loaded.plan.observers.len()));
     for (st, n) in shard_statuses(loaded) {
         line(format!("shard {} {n}", status_name(st)));
@@ -110,7 +114,8 @@ pub fn render_summary(given: &str, loaded: &Loaded) -> Result<String, String> {
     let mut per: BTreeMap<Digest, (u64, u64)> = BTreeMap::new();
     for j in &rec.jobs {
         let e = per.entry(j.observer).or_insert((0, 0));
-        e.0 = add(e.0, j.cpu_ns, &format!("cpu_ns summed over the jobs of observer {}", j.observer))?;
+        e.0 =
+            add(e.0, j.cpu_ns, &format!("cpu_ns summed over the jobs of observer {}", j.observer))?;
         e.1 = e.1.max(j.peak_rss);
     }
     let main_of = |id: &Digest| {
@@ -284,13 +289,12 @@ pub fn read_baseline(bytes: &[u8]) -> Result<Baseline, String> {
     let string = |key: &str| -> Result<String, String> {
         get(key)?.as_str().map(str::to_owned).ok_or(format!("at {key}: expected a string"))
     };
-    let (corpus, pin, slip, kiln) = (string("corpus")?, string("pin")?, string("slip")?, string("kiln")?);
+    let (corpus, pin, slip, kiln) =
+        (string("corpus")?, string("pin")?, string("slip")?, string("kiln")?);
     let mut counters = BTreeMap::new();
     let cs = get("counters")?.as_object().ok_or("at counters: expected an object")?;
     for (k, v) in cs {
-        let n = v
-            .as_u64()
-            .ok_or(format!("at counters.{k}: expected an integer in 0..2^64"))?;
+        let n = v.as_u64().ok_or(format!("at counters.{k}: expected an integer in 0..2^64"))?;
         counters.insert(k.clone(), n);
     }
     let ms = get("measured")?.as_object().ok_or("at measured: expected an object")?;
@@ -309,10 +313,16 @@ pub fn read_baseline(bytes: &[u8]) -> Result<Baseline, String> {
         let n = if is_seconds {
             match v {
                 Value::Float(x) if *x >= 0.0 => Num::Seconds(*x),
-                _ => return Err(format!("at measured.{name}: expected a non-negative number of seconds with a fraction")),
+                _ => {
+                    return Err(format!(
+                        "at measured.{name}: expected a non-negative number of seconds with a fraction"
+                    ));
+                }
             }
         } else {
-            Num::Count(v.as_u64().ok_or(format!("at measured.{name}: expected an integer in 0..2^64"))?)
+            Num::Count(
+                v.as_u64().ok_or(format!("at measured.{name}: expected an integer in 0..2^64"))?,
+            )
         };
         measured.push((name.to_owned(), n));
     }
@@ -334,7 +344,11 @@ fn as_f64(n: Num) -> f64 {
 /// the check; the tool versions are printed when they differ and the
 /// measured values always, with their ratio to the baseline, and neither
 /// fails it. `Err` for anything [`counters`] refuses.
-pub fn check(baseline: &Baseline, corpus: &Corpus, loaded: &Loaded) -> Result<(String, bool), String> {
+pub fn check(
+    baseline: &Baseline,
+    corpus: &Corpus,
+    loaded: &Loaded,
+) -> Result<(String, bool), String> {
     let run_counters = counters(loaded)?;
     let m = measured(&loaded.record)?;
     let run = &loaded.record.run;
@@ -342,11 +356,19 @@ pub fn check(baseline: &Baseline, corpus: &Corpus, loaded: &Loaded) -> Result<(S
     let mut failures = 0usize;
     if baseline.pin != corpus.tag {
         failures += 1;
-        let _ = writeln!(s, "pin: baseline {}, run {}", text(baseline.pin.as_bytes()), text(corpus.tag.as_bytes()));
+        let _ = writeln!(
+            s,
+            "pin: baseline {}, run {}",
+            text(baseline.pin.as_bytes()),
+            text(corpus.tag.as_bytes())
+        );
     }
-    for (what, a, b) in [("slip", &baseline.slip, &run.tool_slip), ("kiln", &baseline.kiln, &run.tool_kiln)] {
+    for (what, a, b) in
+        [("slip", &baseline.slip, &run.tool_slip), ("kiln", &baseline.kiln, &run.tool_kiln)]
+    {
         if a != b {
-            let _ = writeln!(s, "{what}: baseline {}, run {}", text(a.as_bytes()), text(b.as_bytes()));
+            let _ =
+                writeln!(s, "{what}: baseline {}, run {}", text(a.as_bytes()), text(b.as_bytes()));
         }
     }
     let names: std::collections::BTreeSet<&String> =
@@ -356,7 +378,8 @@ pub fn check(baseline: &Baseline, corpus: &Corpus, loaded: &Loaded) -> Result<(S
         if a != b {
             failures += 1;
             let shown = |v: Option<&u64>| v.map_or_else(|| "-".to_owned(), u64::to_string);
-            let _ = writeln!(s, "{}: baseline {}, run {}", text(name.as_bytes()), shown(a), shown(b));
+            let _ =
+                writeln!(s, "{}: baseline {}, run {}", text(name.as_bytes()), shown(a), shown(b));
         }
     }
     for (((name, now), shown), (_, then)) in

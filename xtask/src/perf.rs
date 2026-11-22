@@ -59,9 +59,7 @@ pub struct RunPath {
 /// A canonical decimal `u64`: `0`, or digits without a leading zero.
 fn canonical_u64(text: &str) -> Option<u64> {
     let canonical = text == "0"
-        || (!text.is_empty()
-            && !text.starts_with('0')
-            && text.bytes().all(|b| b.is_ascii_digit()));
+        || (!text.is_empty() && !text.starts_with('0') && text.bytes().all(|b| b.is_ascii_digit()));
     if canonical { text.parse().ok() } else { None }
 }
 
@@ -103,9 +101,8 @@ pub fn parse_run_path(path: &Path) -> Result<RunPath, String> {
     };
     let round = canonical_u64(round)
         .ok_or_else(|| format!("{shown}: round `{round}` is not a canonical decimal u64"))?;
-    let started_unix_ns = canonical_u64(started).ok_or_else(|| {
-        format!("{shown}: start time `{started}` is not a canonical decimal u64")
-    })?;
+    let started_unix_ns = canonical_u64(started)
+        .ok_or_else(|| format!("{shown}: start time `{started}` is not a canonical decimal u64"))?;
     parts.truncate(parts.len() - 3);
     let store: PathBuf = parts.iter().collect();
     let store = if store.as_os_str().is_empty() { PathBuf::from(".") } else { store };
@@ -175,8 +172,8 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
         .read_plan(&rp.plan)
         .map_err(|e| format!("{plan_shown}: {e}"))?
         .ok_or_else(|| format!("{plan_shown}: the run's plan is not in the store"))?;
-    let plan =
-        Plan::from_bytes(&plan_bytes).map_err(|e| format!("{plan_shown}: not a valid plan: {e}"))?;
+    let plan = Plan::from_bytes(&plan_bytes)
+        .map_err(|e| format!("{plan_shown}: not a valid plan: {e}"))?;
     let id = slip_model::formats::content_id(&plan_bytes)
         .map_err(|e| format!("{plan_shown}: not a valid plan: {e}"))?;
     if id != rp.plan {
@@ -189,7 +186,10 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
             continue;
         }
         if !in_plan.contains(&job.observer) {
-            return Err(format!("{shown}: observer {} of the record is not in the plan", job.observer));
+            return Err(format!(
+                "{shown}: observer {} of the record is not in the plan",
+                job.observer
+            ));
         }
         let shard_path = st.shard_path(&rp.plan, rp.phase, rp.round, &job.observer);
         let ss = shard_path.display();
@@ -199,7 +199,8 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
         {
             None => None,
             Some(b) => {
-                let s = Shard::from_bytes(&b).map_err(|e| format!("{ss}: not a valid shard: {e}"))?;
+                let s =
+                    Shard::from_bytes(&b).map_err(|e| format!("{ss}: not a valid shard: {e}"))?;
                 if s.observer != job.observer || s.phase != rp.phase || s.round != rp.round {
                     return Err(format!(
                         "{ss}: the shard names observer {}, phase {}, round {}; the run's is \
@@ -467,7 +468,8 @@ pub fn run(repo: &Path, args: &[String], out: &mut dyn Write) -> Result<bool, Fa
             } else {
                 let text = std::fs::read(&path)
                     .map_err(|e| Failure::Error(format!("{rel}: cannot read: {e}")))?;
-                let baseline = read_baseline(&text).map_err(|e| Failure::Error(format!("{rel}: {e}")))?;
+                let baseline =
+                    read_baseline(&text).map_err(|e| Failure::Error(format!("{rel}: {e}")))?;
                 if baseline.corpus != corpus.name {
                     return Err(err(format!(
                         "{rel}: the baseline is of corpus `{}`, not `{}`",

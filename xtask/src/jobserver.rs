@@ -123,9 +123,9 @@ pub fn parse(args: &[String], env: &dyn Fn(&str) -> Option<OsString>) -> Result<
         None => match env("SLIP_JOBS") {
             None => jobserver::DEFAULT_POOL_SIZE,
             Some(v) => {
-                let v = v
-                    .into_string()
-                    .map_err(|v| Failure::Error(format!("SLIP_JOBS `{}`: not UTF-8", v.display())))?;
+                let v = v.into_string().map_err(|v| {
+                    Failure::Error(format!("SLIP_JOBS `{}`: not UTF-8", v.display()))
+                })?;
                 positive(&v).map_err(|e| Failure::Error(format!("SLIP_JOBS: {e}")))?
             }
         },
