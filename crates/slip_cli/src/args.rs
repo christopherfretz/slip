@@ -20,6 +20,7 @@ usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j 
                   [--estimate-base <size>] [--estimate-per-byte <n>]
                   [--worker-jobs <n>] [--worker-stack <size>]
        slip dump  <file>
+       slip resource --write <dir>
        slip --version
        slip --help
 <size> is a decimal number with an optional suffix K, M, G or T (powers of 1024).
@@ -45,6 +46,11 @@ pub enum Invocation {
     Parse(ParseArgs),
     Dump {
         file: PathBuf,
+    },
+    /// `slip resource --write <dir>` (§8.7): the embedded resource files
+    /// written under `dir`.
+    Resource {
+        write: PathBuf,
     },
     /// The hidden `slip __worker` (§8.4).
     Worker(WorkerArgs),
@@ -160,6 +166,7 @@ pub fn parse(args: &[OsString]) -> Result<Invocation, UsageError> {
         Some("plan") => parse_plan(rest),
         Some("parse") => parse_parse(rest),
         Some("dump") => parse_dump(rest),
+        Some("resource") => parse_resource(rest),
         Some("__worker") => parse_worker(rest),
         Some("__panic") if rest.is_empty() => Ok(Invocation::Panic),
         _ => usage(format!("unknown command `{}`", command.to_string_lossy())),
@@ -421,6 +428,14 @@ fn parse_dump(args: &[OsString]) -> Result<Invocation, UsageError> {
         [file] => Ok(Invocation::Dump { file: PathBuf::from(file) }),
         [] => usage("`dump` needs a file"),
         _ => usage("`dump` takes one file"),
+    }
+}
+
+fn parse_resource(args: &[OsString]) -> Result<Invocation, UsageError> {
+    let values = options_only(args, &["--write"], &[])?;
+    match values.one("--write") {
+        Some(dir) => Ok(Invocation::Resource { write: PathBuf::from(dir) }),
+        None => usage("`resource` needs `--write`"),
     }
 }
 
