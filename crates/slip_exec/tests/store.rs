@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::time::{Duration, Instant};
 
 use slip_exec::store::{Access, Store, StoreError, cleanup_on_signal};
 use slip_model::{
@@ -437,7 +439,15 @@ impl Drop for Holder {
     }
 }
 
-fn hold_lock(dir: &Path) -> (Holder, BufReader<std::process::ChildStdout>) {
+/// How long the lock holder may take to say `locked` or `released`, and to
+/// exit (a loaded machine).
+const HOLDER_DEADLINE: Duration = Duration::from_mins(1);
+
+/// The holder's standard output, one line per message, read on a thread
+/// so that every wait for it is bounded.
+type Lines = Receiver<String>;
+
+fn hold_lock(dir: &Path) -> (Holder, Lines) {
     let mut c = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "lock_holder", "--nocapture", "--test-threads=1"])
         .env(HOLDER, dir)
@@ -448,30 +458,48 @@ fn hold_lock(dir: &Path) -> (Holder, BufReader<std::process::ChildStdout>) {
         .unwrap();
     let stdout = c.stdout.take().unwrap();
     let holder = Holder(c);
-    let mut out = BufReader::new(stdout);
-    let mut line = String::new();
-    loop {
-        line.clear();
-        assert!(out.read_line(&mut line).unwrap() > 0, "the lock holder ended before locking");
-        if line.contains("locked ") {
-            break;
+    let (tx, lines) = channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
         }
-    }
-    (holder, out)
+    });
+    wait_line(&lines, "locked ", "the lock holder ended before locking");
+    (holder, lines)
 }
 
-/// Waits for the holder to say it released the lock.
-fn release(mut holder: Holder, mut out: BufReader<std::process::ChildStdout>) {
-    drop(holder.0.stdin.take());
-    let mut line = String::new();
+/// Waits (bounded) for a line containing `want`.
+fn wait_line(lines: &Lines, want: &str, ended: &str) {
+    let deadline = Instant::now() + HOLDER_DEADLINE;
     loop {
-        line.clear();
-        assert!(out.read_line(&mut line).unwrap() > 0, "the lock holder ended without releasing");
-        if line.contains("released") {
-            break;
+        let left = deadline.saturating_duration_since(Instant::now());
+        match lines.recv_timeout(left) {
+            Ok(line) if line.contains(want) => return,
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("the lock holder did not say {want:?} in time")
+            }
+            Err(RecvTimeoutError::Disconnected) => panic!("{ended}"),
         }
     }
-    let status = holder.0.wait().unwrap();
+}
+
+/// Waits for the holder to say it released the lock, then (bounded) for
+/// it to exit.
+fn release(mut holder: Holder, lines: &Lines) {
+    drop(holder.0.stdin.take());
+    wait_line(lines, "released", "the lock holder ended without releasing");
+    let deadline = Instant::now() + HOLDER_DEADLINE;
+    let status = loop {
+        if let Some(s) = holder.0.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "the lock holder did not exit in time");
+        std::thread::sleep(Duration::from_millis(10));
+    };
     assert!(status.success());
 }
 
@@ -496,7 +524,7 @@ fn s2_busy_while_a_live_process_holds_the_lock() {
     drop(shared);
     assert!(s.join("lock").exists());
     // Dropping the holder's Store removes the lock (another process's Drop).
-    release(holder, out);
+    release(holder, &out);
     assert!(!s.join("lock").exists());
     drop(Store::open(&s, Access::Exclusive).unwrap());
 }
