@@ -1,0 +1,6 @@
+file llvm/include/llvm/ADT/StringRef.h
+replace
+    [[nodiscard]] size_t find(char C, size_t From = 0) const {
+with
+    [[nodiscard]] size_t find(char C, size_t From = 1) const {
+end
