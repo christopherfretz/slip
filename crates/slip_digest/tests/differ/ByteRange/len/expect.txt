@@ -1,0 +1,2 @@
+# Not isolated: the padding follows from the type and the active union member, so the union field changes too; unit test value::tests::an_aggregate_by_its_rows isolates ByteRange.len.
+changed x

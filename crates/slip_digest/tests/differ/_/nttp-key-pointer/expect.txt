@@ -1,0 +1,2 @@
+removed f(A<&g>)
+added f(A<&h>)

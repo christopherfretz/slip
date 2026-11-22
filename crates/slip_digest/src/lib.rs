@@ -60,7 +60,7 @@
 //! | `demand::deferrable(w, f)` | whether a function is of the deferrable class (§11.2); `None` where the demand area decides |
 //! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::profile(w, s, p)`, `expr::profile_expr(w, s, e)`, `expr::requires_clause` | pending (`Area::Expr`) |
 //! | `stmt::child(w, s, st)` | pending (`Area::Stmt`) |
-//! | `value::value(w, s, v)`, `value::string(w, s, l)` | pending (`Area::Value`) |
+//! | `value::value(w, s, v)`, `value::string(w, s, l)` (`value.rs`) | `value`: a constant in place by structure, a constant it points to by content digest (§8); `string`: a string literal by content (§10.3) |
 //! | `local::write_decl(w, s, d)` | `decl` (§2.4): a local entity's ordinal and stream, a block-scope variable with linkage a `ref`, a block-scope function a `ref` and its own default arguments; a local type pending (`Area::Local`) |
 //! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each; a function's and a variable's language linkage (§5.6 `ScopeData`) |
 //! | `decl_func::implicit_instantiation(w, e)` | nothing: whether the entity is an implicit instantiation (its own kind, else an enclosing one), the first rule of §11.9 |
@@ -75,7 +75,8 @@
 //! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5), each in its empty form when absent |
 //! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4): pending (`Area::Local`) |
 //! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1): pending (`Area::Stmt`) |
-//! | `attrs::decl_attrs(w, s, d)` | pending (`Area::Attrs`) |
+//! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
+//! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
 //! | `other::module_rows(w, s, d)` | the rows `points` and `explicit_defs` of `ModuleTable` (§10.7), from the first declaration; empty forms when ownership is not tracked |
 //! | `order::write(w, s)` | the order unit's stream (digest §2.1): the keys of the variable definitions at namespace and class scope in order, then the translation unit's imports (§10.7) |
 //! | `templ::decl_maps(w, s, d)` | the `in` rows of `TemplateTables` keyed by `DeclId` (§9.5), each in its empty form when absent |

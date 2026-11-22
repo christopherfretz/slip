@@ -117,6 +117,7 @@ Two ways of using it:
 | `slip.key.v1` | an entity's `Key` | `digest.md` §3 |
 | `slip.unit.v1` | a unit's stream | `digest.md` §4 |
 | `slip.type.v1` | a type's stream | `digest.md` §4.2 |
+| `slip.value.v1` | a constant's stream, where a pointer names the constant | `digest.md` §7 |
 | `slip.group.v1` | `list<Unit>` | `digest.md` §11 |
 | `slip.tu.v1` | `list<GroupSum>` | `digest.md` §11 |
 | `slip.rules.v1` | `list<Rule>` | `verify.md` §2 |

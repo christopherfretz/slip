@@ -1,5 +1,6 @@
-# pending
-# needs: value
-# the object's value is a constant
+# the object's value is a constant; its key is its content, so the two
+# sides hold two different objects (one removed, one added: derived
+# units are free) and no unit of one key changes. `v` changes through
+# its type's argument. The row itself is isolated by a unit test of
+# `templ::param_object` (to be written with the header-row tests).
 changed v
-derived-changed <template_param_object>
