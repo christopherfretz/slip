@@ -5792,4 +5792,14 @@ of a reported difference.
   unchecked `VISIBILITY` has `a` of `u32::MAX`; a checked `TLS_MODEL`
   has `b` 0 and `a` not 0; a checked `CONSTRUCTOR` or `DESTRUCTOR` has
   `b` 0; `NONNULL` and `CALLBACK` are checked in place.
+- **`offsetof` names neither its class nor its member** (§7). Kiln's
+  node of a non-dependent `offsetof` keeps the index expressions and the
+  folded offset; the operand type and the member path are dropped. Two
+  expressions with one value digest equal although they name different
+  things: another class of the same layout, another member at the same
+  offset (two members of a union), the same member through another
+  base. A transformation that changes which class an `offsetof` names
+  without changing the offset is not seen. Kiln is asked to keep the
+  operand type and the resolved designator (request KQ1 amendment 1,
+  §7); `differ/_/offsetof-other-class-same-layout` waits on it.
 - **Modules** (§10.7) have rows and no experience behind them.
