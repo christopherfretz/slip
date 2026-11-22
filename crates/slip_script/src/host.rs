@@ -7,13 +7,18 @@
 //! inconsistent). Only once all of that passed does the host change: it
 //! issues handles for the values it returns and writes the answer. A
 //! failure changes nothing but the failure list (§3.5 rule 2).
+//!
+//! What the host holds is bounded whatever the transform does (§2.5 rule
+//! 3): handles by what the subject has, failures by
+//! [`Limits::kept_failures`] (§3.5 rule 3), effects by the other limits of
+//! §7.7.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use slip_model::{Counter, Digest};
 
-use crate::output::RunOutput;
+use crate::output::{Changed, Edit, Report, RunOutput};
 use crate::subject::{Entity, File, Range, Subject, Value};
 use crate::wire::{self, Errc, Operation};
 
@@ -41,6 +46,9 @@ pub struct Limits {
     pub text_bytes: u64,
     /// Bytes in one qualified name or identifier argument.
     pub name_bytes: u64,
+    /// Failures whose text and record are kept: the first this many, and
+    /// the most recent (§3.5 rule 3).
+    pub kept_failures: u64,
 }
 
 impl Default for Limits {
@@ -54,6 +62,7 @@ impl Default for Limits {
             reports: 1 << 16,
             text_bytes: 1 << 12,
             name_bytes: 1 << 12,
+            kept_failures: 1 << 16,
         }
     }
 }
@@ -81,6 +90,30 @@ pub(crate) enum Stop {
 }
 
 pub(crate) type Step<T> = Result<T, Stop>;
+
+// The statuses the specification allows a subject to choose (the trait's
+// documentation lists them; anything else is a host failure).
+/// `Subject::declarations`: §6.4 rule 3 (a parameter).
+pub(crate) const ALLOWED_DECLARATIONS: &[Errc] = &[Errc::Unsupported];
+/// `Subject::calls_to`: §6.7 rule 3 (not a function or function template).
+pub(crate) const ALLOWED_CALLS_TO: &[Errc] = &[Errc::WrongKind];
+/// `Subject::name_range`: none; the host refuses the other sorts itself.
+pub(crate) const ALLOWED_NAME_RANGE: &[Errc] = &[];
+/// `Subject::extent`: none; the host refuses the other sorts itself.
+pub(crate) const ALLOWED_EXTENT: &[Errc] = &[];
+
+/// What the effects record (WP-088), raw: edits in request order, one list
+/// of raw edit indices per group made. The host alone makes the counters
+/// (§7.6 rule 6), in [`Host::finish`]: this has none, so no effect can
+/// emit a counter of a name the host owns.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Record {
+    pub(crate) edits: Vec<Edit>,
+    pub(crate) groups: Vec<Vec<usize>>,
+    pub(crate) reports: Vec<Report>,
+    pub(crate) changed: Vec<Changed>,
+    pub(crate) renamed: Vec<slip_model::keys::Rule>,
+}
 
 fn refuse<T>(errc: Errc, message: impl Into<String>) -> Step<T> {
     Err(Stop::Refused { errc, message: message.into(), place: None })
@@ -112,11 +145,20 @@ pub struct Host<'s> {
     /// The file of each file handle issued (handle = position + 1).
     files: Vec<File>,
     file_handle: HashMap<File, u32>,
-    failures: Vec<Failure>,
+    /// The first `limits.kept_failures` failures.
+    kept: Vec<Failure>,
+    /// The most recent failure (also in `kept` while there are few).
+    last: Option<Failure>,
+    /// How many failures the run has had: the last ordinal issued.
+    failure_count: u64,
     /// Successful calls per operation name.
     used: BTreeMap<&'static str, u64>,
+    /// The non-empty identifiers of the entities given to a successful
+    /// `references_to` or `calls_to` (§6.5 rule 6).
+    spelled: BTreeSet<Vec<u8>>,
+    transform: Digest,
     /// What the effects recorded, raw (WP-088).
-    pub(crate) record: RunOutput,
+    pub(crate) record: Record,
 }
 
 impl fmt::Debug for Host<'_> {
@@ -125,7 +167,7 @@ impl fmt::Debug for Host<'_> {
             .field("limits", &self.limits)
             .field("issued", &self.issued.iter().map(Vec::len).collect::<Vec<_>>())
             .field("files", &self.files.len())
-            .field("failures", &self.failures.len())
+            .field("failures", &self.failure_count)
             .finish_non_exhaustive()
     }
 }
@@ -139,9 +181,13 @@ impl<'s> Host<'s> {
             index_of: Default::default(),
             files: Vec::new(),
             file_handle: HashMap::new(),
-            failures: Vec::new(),
+            kept: Vec::new(),
+            last: None,
+            failure_count: 0,
             used: BTreeMap::new(),
-            record: RunOutput::empty(transform),
+            spelled: BTreeSet::new(),
+            transform,
+            record: Record::default(),
         }
     }
 
@@ -178,31 +224,99 @@ impl<'s> Host<'s> {
             }
             Err(Stop::Internal(m)) => return Err(format!("{}: {m}", row.name)),
         };
-        let word = self.deliver(row, answer, out);
+        // §6.5 rule 6: the identifier of the entity given, asked before
+        // anything changes.
+        let spelled = match row.op {
+            wire::OP_REFERENCES_TO | wire::OP_CALLS_TO => {
+                let Ok(e) = self.value_arg(ints[0]) else {
+                    return Err(format!("{}: an argument checked once is refused", row.name));
+                };
+                match self.subject.identifier(e) {
+                    Some(id) => Some(id),
+                    None => {
+                        return Err(format!(
+                            "{}: Subject::identifier gave None for an entity",
+                            row.name
+                        ));
+                    }
+                }
+            }
+            _ => None,
+        };
+        let word = self.deliver(row, answer, out).map_err(|m| format!("{}: {m}", row.name))?;
         *self.used.entry(row.name).or_default() += 1;
+        if let Some(id) = spelled
+            && !id.is_empty()
+        {
+            self.spelled.insert(id);
+        }
         Ok(word)
     }
 
-    /// The failures of this run, in order (ordinal `i + 1` at `i`).
+    /// The failures of this run whose record is kept, in order: the first
+    /// [`Limits::kept_failures`] (ordinal `i + 1` at `i`). Past the bound
+    /// it holds no more; [`Host::last_failure`] is the most recent and
+    /// [`Host::failure_count`] how many there were.
     pub fn failures(&self) -> &[Failure] {
-        &self.failures
+        &self.kept
+    }
+
+    /// The most recent failure of the run, whatever its ordinal.
+    pub fn last_failure(&self) -> Option<&Failure> {
+        self.last.as_ref()
+    }
+
+    /// How many failures the run has had (the last ordinal issued).
+    pub fn failure_count(&self) -> u64 {
+        self.failure_count
+    }
+
+    /// The bytes the host holds for failures: each kept record, its
+    /// message included, and the most recent. Bounded by
+    /// [`Limits::kept_failures`] + 1 records (§3.5 rule 3).
+    pub fn failure_bytes(&self) -> usize {
+        let one = |f: &Failure| size_of::<Failure>() + f.message.len();
+        self.kept.iter().map(one).sum::<usize>() + self.last.as_ref().map_or(0, one)
     }
 
     /// The run output in canonical form (§7.6), with the counters the host
-    /// keeps: `api.edits`, `api.reports` and one `api.op.<name>` per
-    /// operation that succeeded at least once. `api.host_calls`,
-    /// `api.steps` and `api.peak_bytes` are the evaluator's and are added
-    /// by the driver.
+    /// keeps (§7.6 rule 6): `api.edits`, `api.reports`,
+    /// `api.unresolved_spelling_matches` (§6.5 rule 6) and one
+    /// `api.op.<name>` per operation that succeeded at least once, counting
+    /// its successful calls. `api.host_calls`, `api.steps` and
+    /// `api.peak_bytes` are the evaluator's and are added by the driver.
+    /// The host is the only writer of counters, so no name occurs twice.
     pub fn finish(self) -> RunOutput {
-        let mut out = self.record.canonical();
-        out.counters.push(Counter { name: "api.edits".to_owned(), value: out.edits.len() as u64 });
-        out.counters
-            .push(Counter { name: "api.reports".to_owned(), value: out.reports.len() as u64 });
-        for (name, n) in self.used {
-            out.counters.push(Counter { name: format!("api.op.{name}"), value: n });
+        let Record { edits, groups, reports, changed, renamed } = self.record;
+        let mut out = RunOutput {
+            transform: self.transform,
+            edits,
+            groups,
+            reports,
+            changed,
+            renamed,
+            counters: Vec::new(),
         }
-        out.counters.sort();
-        out.counters.dedup();
+        .canonical();
+        let mut counters = vec![
+            Counter { name: "api.edits".to_owned(), value: out.edits.len() as u64 },
+            Counter { name: "api.reports".to_owned(), value: out.reports.len() as u64 },
+        ];
+        for (name, n) in self.used {
+            counters.push(Counter { name: format!("api.op.{name}"), value: n });
+        }
+        let mut unresolved = Some(0u64);
+        for id in &self.spelled {
+            unresolved = match (unresolved, self.subject.unresolved_named(id)) {
+                (Some(sum), Some(n)) => Some(sum.saturating_add(n)),
+                _ => None,
+            };
+        }
+        if let Some(value) = unresolved {
+            counters.push(Counter { name: "api.unresolved_spelling_matches".to_owned(), value });
+        }
+        counters.sort();
+        out.counters = counters;
         out
     }
 
@@ -217,9 +331,14 @@ impl<'s> Host<'s> {
         message: String,
         place: Option<Range>,
     ) -> u64 {
-        let ordinal = self.failures.len() as u64 + 1;
+        self.failure_count += 1;
+        let ordinal = self.failure_count;
         let place = place.filter(|r| self.range_is_valid(*r));
-        self.failures.push(Failure { ordinal, op, errc: status, message, place });
+        let failure = Failure { ordinal, op, errc: status, message, place };
+        if (self.kept.len() as u64) < self.limits.kept_failures {
+            self.kept.push(failure.clone());
+        }
+        self.last = Some(failure);
         wire::failure_word(status, ordinal)
     }
 
@@ -300,16 +419,24 @@ impl<'s> Host<'s> {
         Ok(match row.op {
             wire::OP_ERROR_MESSAGE => {
                 let n = ints[0];
-                match usize::try_from(n).ok().and_then(|n| n.checked_sub(1)) {
-                    Some(i) if i < self.failures.len() => {
-                        Answer::Bytes(self.failures[i].message.clone().into_bytes())
-                    }
-                    _ => {
-                        return refuse(
-                            Errc::InvalidArgument,
-                            "not the ordinal of a failure of this run",
-                        );
-                    }
+                if n == 0 || n > self.failure_count {
+                    return refuse(
+                        Errc::InvalidArgument,
+                        "not the ordinal of a failure of this run",
+                    );
+                }
+                let kept = usize::try_from(n - 1).ok().and_then(|i| self.kept.get(i));
+                let last = self.last.as_ref().filter(|f| f.ordinal == n);
+                match kept.or(last) {
+                    Some(f) => Answer::Bytes(f.message.clone().into_bytes()),
+                    None => Answer::Bytes(
+                        format!(
+                            "the text of failure {n} was not kept: a run keeps the text of its \
+                             first {} failures and of its last",
+                            self.limits.kept_failures
+                        )
+                        .into_bytes(),
+                    ),
                 }
             }
             wire::OP_LOOKUP => {
@@ -355,7 +482,13 @@ impl<'s> Host<'s> {
                 }
                 match s.identifier(v) {
                     Some(id) => Answer::Bytes(id),
-                    None => return Err(self.wrong_kind(v, "a value with a name")),
+                    None => {
+                        return Err(Stop::Internal(format!(
+                            "Subject::identifier gave None for {}; §6.3 allows wrong_kind only \
+                             for an expression",
+                            v.sort_name()
+                        )));
+                    }
                 }
             }
             wire::OP_DISPLAY_STRING_OF => {
@@ -380,7 +513,14 @@ impl<'s> Host<'s> {
                 let e = self.entity_arg(ints[0])?;
                 match s.declarations(e) {
                     Ok(d) => Answer::Values(d.into_iter().map(Value::Declaration).collect()),
-                    Err(errc) => return Err(self.subject_refusal(Value::Entity(e), errc)),
+                    Err(errc) => {
+                        return Err(self.subject_status(
+                            "declarations",
+                            Value::Entity(e),
+                            errc,
+                            ALLOWED_DECLARATIONS,
+                        ));
+                    }
                 }
             }
             wire::OP_ENTITY_OF => match self.value_arg(ints[0])? {
@@ -402,7 +542,9 @@ impl<'s> Host<'s> {
                 }
                 match s.name_range(v) {
                     Ok(r) => Answer::Range(r),
-                    Err(errc) => return Err(self.subject_refusal(v, errc)),
+                    Err(errc) => {
+                        return Err(self.subject_status("name_range", v, errc, ALLOWED_NAME_RANGE));
+                    }
                 }
             }
             wire::OP_EXTENT_OF => {
@@ -422,7 +564,9 @@ impl<'s> Host<'s> {
                 }
                 match s.extent(v) {
                     Ok(r) => Answer::Range(r),
-                    Err(errc) => return Err(self.subject_refusal(v, errc)),
+                    Err(errc) => {
+                        return Err(self.subject_status("extent", v, errc, ALLOWED_EXTENT));
+                    }
                 }
             }
             wire::OP_SOURCE_TEXT_OF => {
@@ -445,7 +589,14 @@ impl<'s> Host<'s> {
                 let e = self.entity_arg(ints[0])?;
                 match s.calls_to(e) {
                     Ok(x) => Answer::Values(x.into_iter().map(Value::Expression).collect()),
-                    Err(errc) => return Err(self.subject_refusal(Value::Entity(e), errc)),
+                    Err(errc) => {
+                        return Err(self.subject_status(
+                            "calls_to",
+                            Value::Entity(e),
+                            errc,
+                            ALLOWED_CALLS_TO,
+                        ));
+                    }
                 }
             }
             wire::OP_CALLEE_OF | wire::OP_CALLEE_REFERENCE_OF | wire::OP_ARGUMENTS_AS_WRITTEN => {
@@ -475,9 +626,26 @@ impl<'s> Host<'s> {
         })
     }
 
-    /// A refusal the subject chose (`Err(errc)` from a method).
-    fn subject_refusal(&self, v: Value, errc: Errc) -> Stop {
-        self.refusal_at(v, errc, format!("{} refused for {}", errc.name(), v.sort_name()))
+    /// A status the subject chose (`Err(errc)` from `Subject::<method>`):
+    /// a refusal if the specification allows it there (`allowed`, the list
+    /// in the trait's documentation), a host failure naming the method and
+    /// the status otherwise.
+    pub(crate) fn subject_status(
+        &self,
+        method: &str,
+        v: Value,
+        errc: Errc,
+        allowed: &[Errc],
+    ) -> Stop {
+        if allowed.contains(&errc) {
+            self.refusal_at(v, errc, format!("{} for {}", errc.name(), v.sort_name()))
+        } else {
+            Stop::Internal(format!(
+                "Subject::{method} gave {} for {}, which the specification does not allow there",
+                errc.name(),
+                v.sort_name()
+            ))
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -547,20 +715,31 @@ impl<'s> Host<'s> {
 
     /// Issues the handles the answer needs, writes it (convention B: all
     /// or nothing) and returns the result word.
-    fn deliver(&mut self, row: &Operation, answer: Answer, out: &mut dyn Out) -> u64 {
+    fn deliver(
+        &mut self,
+        row: &Operation,
+        answer: Answer,
+        out: &mut dyn Out,
+    ) -> Result<u64, String> {
         let (ints, bytes) = match answer {
             Answer::Word(w) => {
                 debug_assert_eq!(row.convention, wire::Convention::V, "{}", row.name);
-                return wire::value_word(w);
+                return Ok(wire::value_word(w));
             }
             Answer::Info(v) => {
                 debug_assert_eq!(row.convention, wire::Convention::V, "{}", row.name);
-                return wire::value_word(v.map_or(0, |v| self.issue(v)));
+                let h = match v {
+                    Some(v) => self.issue(v)?,
+                    None => 0,
+                };
+                return Ok(wire::value_word(h));
             }
-            Answer::Values(vs) => (vs.into_iter().map(|v| self.issue(v)).collect(), Vec::new()),
+            Answer::Values(vs) => {
+                (vs.into_iter().map(|v| self.issue(v)).collect::<Result<Vec<_>, _>>()?, Vec::new())
+            }
             Answer::Range(None) => (Vec::new(), Vec::new()),
             Answer::Range(Some(r)) => {
-                let f = u64::from(self.issue_file(r.file));
+                let f = u64::from(self.issue_file(r.file)?);
                 (vec![f, u64::from(r.lo) << 32 | u64::from(r.hi)], Vec::new())
             }
             Answer::Bytes(b) => (Vec::new(), b),
@@ -574,40 +753,155 @@ impl<'s> Host<'s> {
                 out.write_bytes(&bytes);
             }
         }
-        wire::counts_word(bytes.len() as u64, ints.len() as u64)
+        Ok(wire::counts_word(bytes.len() as u64, ints.len() as u64))
     }
 
-    /// The handle of live value `v`, issuing one the first time.
-    pub(crate) fn issue(&mut self, v: Value) -> u64 {
+    /// The handle of live value `v`, issuing one the first time. `Err`
+    /// (a host failure) when 2^48 values of one sort were issued.
+    pub(crate) fn issue(&mut self, v: Value) -> Result<u64, String> {
         let sort = v.tag() as usize - 1;
         let n = v.number();
-        let issued = &mut self.issued[sort];
-        let index = *self.index_of[sort].entry(n).or_insert_with(|| {
-            issued.push(n);
-            issued.len() as u64 - 1
-        });
-        wire::handle(v.tag(), index)
+        if let Some(&index) = self.index_of[sort].get(&n) {
+            return Ok(wire::handle(v.tag(), index));
+        }
+        let index = self.issued[sort].len() as u64;
+        if index > wire::INDEX_MASK {
+            return Err(format!("more than 2^48 handles of {}", v.sort_name()));
+        }
+        self.issued[sort].push(n);
+        self.index_of[sort].insert(n, index);
+        Ok(wire::handle(v.tag(), index))
     }
 
-    /// The file handle of live file `f`, issuing one the first time.
-    pub(crate) fn issue_file(&mut self, f: File) -> u32 {
-        let files = &mut self.files;
-        *self.file_handle.entry(f).or_insert_with(|| {
-            files.push(f);
-            files.len() as u32
-        })
+    /// The file handle of live file `f`, issuing one the first time. `Err`
+    /// (a host failure) when 2^32 - 1 files were issued.
+    pub(crate) fn issue_file(&mut self, f: File) -> Result<u32, String> {
+        if let Some(&h) = self.file_handle.get(&f) {
+            return Ok(h);
+        }
+        let Ok(h) = u32::try_from(self.files.len() + 1) else {
+            return Err("more than 2^32 - 1 file handles".to_owned());
+        };
+        self.files.push(f);
+        self.file_handle.insert(f, h);
+        Ok(h)
     }
 }
+
+/// The keywords and alternative tokens of the C++26 working draft, sorted
+/// as bytes. Never an identifier (§6.1 rule 1). The identifiers with
+/// special meaning (`final`, `override`, `import`, `module`, `pre`, `post`,
+/// ...) are not here: they are identifiers.
+pub const KEYWORDS: &[&str] = &[
+    "alignas",
+    "alignof",
+    "and",
+    "and_eq",
+    "asm",
+    "auto",
+    "bitand",
+    "bitor",
+    "bool",
+    "break",
+    "case",
+    "catch",
+    "char",
+    "char16_t",
+    "char32_t",
+    "char8_t",
+    "class",
+    "co_await",
+    "co_return",
+    "co_yield",
+    "compl",
+    "concept",
+    "const",
+    "const_cast",
+    "consteval",
+    "constexpr",
+    "constinit",
+    "continue",
+    "contract_assert",
+    "decltype",
+    "default",
+    "delete",
+    "do",
+    "double",
+    "dynamic_cast",
+    "else",
+    "enum",
+    "explicit",
+    "export",
+    "extern",
+    "false",
+    "float",
+    "for",
+    "friend",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "mutable",
+    "namespace",
+    "new",
+    "noexcept",
+    "not",
+    "not_eq",
+    "nullptr",
+    "operator",
+    "or",
+    "or_eq",
+    "private",
+    "protected",
+    "public",
+    "register",
+    "reinterpret_cast",
+    "requires",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "static_assert",
+    "static_cast",
+    "struct",
+    "switch",
+    "template",
+    "this",
+    "thread_local",
+    "throw",
+    "true",
+    "try",
+    "typedef",
+    "typeid",
+    "typename",
+    "union",
+    "unsigned",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "wchar_t",
+    "while",
+    "xor",
+    "xor_eq",
+];
 
 /// Parses a qualified name by the grammar of §6.1 rule 1: `::`, or an
 /// optional leading `::` followed by identifiers separated by `::`.
 /// Returns whether it began with `::` and the identifiers (`(true, [])` for
 /// `::` alone).
 ///
-/// `Err(InvalidArgument)` for anything else; `Err(Unsupported)` for a name
-/// that is otherwise well formed and has a byte outside ASCII in an
-/// identifier (`spec/landed/api/WP-081.md`).
+/// The checks of §6.1 rule 1 "What version 0 takes for an identifier",
+/// over the whole text: `Err(InvalidArgument)` for text that is not UTF-8
+/// or any component that is certainly not an identifier
+/// ([`check_identifier`]); otherwise `Err(Unsupported)` if any component
+/// has `$` or a code point outside ASCII.
 pub fn parse_qualified_name(text: &[u8]) -> Result<(bool, Vec<&[u8]>), Errc> {
+    if std::str::from_utf8(text).is_err() {
+        return Err(Errc::InvalidArgument);
+    }
     if text == b"::" {
         return Ok((true, Vec::new()));
     }
@@ -623,31 +917,57 @@ pub fn parse_qualified_name(text: &[u8]) -> Result<(bool, Vec<&[u8]>), Errc> {
     components.push(rest);
     let mut unsupported = false;
     for c in &components {
-        match check_identifier(c) {
-            Ok(()) => {}
-            Err(Errc::Unsupported) => unsupported = true,
-            Err(e) => return Err(e),
+        match classify(c) {
+            Class::Plain => {}
+            Class::Undecided => unsupported = true,
+            Class::Invalid => return Err(Errc::InvalidArgument),
         }
     }
     if unsupported { Err(Errc::Unsupported) } else { Ok((global, components)) }
 }
 
-/// Whether `id` is an identifier (§6.1 rule 1, §7.5 rule 3): a letter or
-/// `_`, then letters, digits and `_`. `Err(InvalidArgument)` if it is not;
-/// `Err(Unsupported)` if it would be one but for bytes outside ASCII,
-/// which this version does not classify.
+/// Whether `id` is an identifier version 0 takes (§6.1 rule 1, §7.5 rule
+/// 3): `Ok` for a plain one (an ASCII letter or `_`, then ASCII letters,
+/// digits and `_`, and not a keyword or alternative token, [`KEYWORDS`]).
+/// `Err(InvalidArgument)` for one that is certainly not an identifier: not
+/// UTF-8, empty, a digit first, a keyword, or any ASCII byte other than a
+/// letter, a digit, `_` or `$`. `Err(Unsupported)` otherwise: it has `$`
+/// or a code point outside ASCII, which version 0 does not decide.
 pub fn check_identifier(id: &[u8]) -> Result<(), Errc> {
-    let Some(&first) = id.first() else { return Err(Errc::InvalidArgument) };
-    if first.is_ascii_digit() {
+    if std::str::from_utf8(id).is_err() {
         return Err(Errc::InvalidArgument);
     }
-    let mut non_ascii = false;
-    for &b in id {
-        if b >= 0x80 {
-            non_ascii = true;
+    match classify(id) {
+        Class::Plain => Ok(()),
+        Class::Undecided => Err(Errc::Unsupported),
+        Class::Invalid => Err(Errc::InvalidArgument),
+    }
+}
+
+enum Class {
+    Plain,
+    Invalid,
+    Undecided,
+}
+
+/// One component of UTF-8 text (`spec/landed/api/WP-081.md` decision 6).
+fn classify(c: &[u8]) -> Class {
+    let Some(&first) = c.first() else { return Class::Invalid };
+    if first.is_ascii_digit() {
+        return Class::Invalid;
+    }
+    let mut undecided = false;
+    for &b in c {
+        if b >= 0x80 || b == b'$' {
+            undecided = true;
         } else if !(b.is_ascii_alphanumeric() || b == b'_') {
-            return Err(Errc::InvalidArgument);
+            return Class::Invalid;
         }
     }
-    if non_ascii { Err(Errc::Unsupported) } else { Ok(()) }
+    if undecided {
+        return Class::Undecided;
+    }
+    // ASCII only here.
+    let word = std::str::from_utf8(c).unwrap_or("");
+    if KEYWORDS.binary_search(&word).is_ok() { Class::Invalid } else { Class::Plain }
 }

@@ -16,9 +16,11 @@ use slip_model::{Counter, Digest, FileRef};
 use slip_script::fake::{
     FakeCall, FakeDeclaration, FakeEntity, FakeExpression, FakeOut, FakeReference, FakeSubject,
 };
-use slip_script::host::{Host, Limits, check_identifier, parse_qualified_name};
+use slip_script::host::{Host, KEYWORDS, Limits, check_identifier, parse_qualified_name};
 use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity};
-use slip_script::subject::{Entity, File, Range};
+use slip_script::subject::{
+    Declaration, Entity, Expression, File, Range, Reference, Subject, Value,
+};
 use slip_script::wire::{self, Arity, Convention, Errc};
 
 // ---------------------------------------------------------------------------
@@ -116,10 +118,7 @@ fn world() -> World {
         let call = FakeCall {
             callee,
             reference,
-            arguments: vec![
-                slip_script::subject::Expression(first + 1),
-                slip_script::subject::Expression(first + 2),
-            ],
+            arguments: vec![Expression(first + 1), Expression(first + 2)],
         };
         f.expression(FakeExpression { call: Some(call), ..FakeExpression::at(extent) });
         for a in args {
@@ -632,7 +631,9 @@ fn s6_1_lookup_grammar() {
         ("::a", true, &["a"]),
         ("a::b", false, &["a", "b"]),
         ("::_a1::B_::c", true, &["_a1", "B_", "c"]),
-        ("operator", false, &["operator"]),
+        // Identifiers with special meaning are identifiers.
+        ("final::override::import::module", false, &["final", "override", "import", "module"]),
+        ("classy::operator_", false, &["classy", "operator_"]),
     ];
     for &(text, global, components) in ok {
         let (g, c) =
@@ -643,39 +644,103 @@ fn s6_1_lookup_grammar() {
             "{text}"
         );
     }
-    for bad in [
-        "",
-        ":",
-        ":::",
-        "::::",
-        "a::",
-        "a:::b",
-        "a::::b",
-        ":a",
-        "a:b",
-        " a",
-        "a ",
-        "a:: b",
-        "1a",
-        "a::2",
-        "vector<int>",
-        "operator+",
-        "operator==",
-        "~S",
-        "a.b",
-        "a-b",
-        "a$b",
-        "a\0b",
-        "\t",
-    ] {
-        assert_eq!(parse_qualified_name(bad.as_bytes()), Err(Errc::InvalidArgument), "{bad:?}");
+    let invalid: &[&[u8]] = &[
+        b"",
+        b":",
+        b":::",
+        b"::::",
+        b"a::",
+        b"a:::b",
+        b"a::::b",
+        b":a",
+        b"a:b",
+        b" a",
+        b"a ",
+        b"a:: b",
+        b"1a",
+        b"a::2",
+        b"vector<int>",
+        b"operator+",
+        b"operator==",
+        b"~S",
+        b"a.b",
+        b"a-b",
+        b"a\0b",
+        b"\t",
+        // Keywords and alternative tokens.
+        b"class",
+        b"operator",
+        b"and",
+        b"lib::int",
+        b"xor_eq::a",
+        b"contract_assert",
+        // Not UTF-8.
+        b"\xff",
+        b"a\xffb",
+        b"\xc3",
+        b"a::\xe9",
+        // Malformed wins over undecided, across the whole text.
+        "a b::\u{e9}".as_bytes(),
+        "\u{e9}::a b".as_bytes(),
+        "a$::1".as_bytes(),
+        "1\u{e9}".as_bytes(),
+        "\u{e9} x".as_bytes(),
+    ];
+    for &bad in invalid {
+        assert_eq!(
+            parse_qualified_name(bad),
+            Err(Errc::InvalidArgument),
+            "{:?}",
+            String::from_utf8_lossy(bad)
+        );
     }
-    // Bytes outside ASCII: unsupported, unless the name is malformed anyway.
-    assert_eq!(parse_qualified_name("caf\u{e9}".as_bytes()), Err(Errc::Unsupported));
-    assert_eq!(parse_qualified_name("a::\u{3bb}".as_bytes()), Err(Errc::Unsupported));
-    assert_eq!(parse_qualified_name("\u{3bb}::a b".as_bytes()), Err(Errc::InvalidArgument));
+    // `$` or a code point outside ASCII: version 0 does not decide.
+    for undecided in
+        ["caf\u{e9}", "\u{e9}::a", "a::\u{3bb}", "a$", "$", "$a::b", "a\u{a0}b", "\u{e9}"]
+    {
+        assert_eq!(
+            parse_qualified_name(undecided.as_bytes()),
+            Err(Errc::Unsupported),
+            "{undecided:?}"
+        );
+    }
     assert_eq!(check_identifier(b"x_9"), Ok(()));
+    assert_eq!(check_identifier(b"final"), Ok(()));
     assert_eq!(check_identifier(b""), Err(Errc::InvalidArgument));
+    assert_eq!(check_identifier(b"and"), Err(Errc::InvalidArgument));
+    assert_eq!(check_identifier(b"\xff"), Err(Errc::InvalidArgument));
+    assert_eq!(check_identifier(b"a::b"), Err(Errc::InvalidArgument));
+    assert_eq!(check_identifier(b"a$"), Err(Errc::Unsupported));
+    assert_eq!(check_identifier("a\u{a0}b".as_bytes()), Err(Errc::Unsupported));
+}
+
+/// §6.1 rule 1: the keyword table is sorted, has no duplicate, holds the
+/// alternative tokens, and leaves out the identifiers with special meaning.
+#[test]
+fn s6_1_keyword_table() {
+    assert!(KEYWORDS.windows(2).all(|w| w[0].as_bytes() < w[1].as_bytes()), "sorted, no duplicate");
+    for alt in [
+        "and", "and_eq", "bitand", "bitor", "compl", "not", "not_eq", "or", "or_eq", "xor",
+        "xor_eq",
+    ] {
+        assert!(KEYWORDS.contains(&alt), "{alt}");
+    }
+    for kw in [
+        "class",
+        "operator",
+        "consteval",
+        "constinit",
+        "co_await",
+        "char8_t",
+        "concept",
+        "requires",
+        "contract_assert",
+    ] {
+        assert!(KEYWORDS.contains(&kw), "{kw}");
+    }
+    for id in ["final", "override", "import", "module", "pre", "post", "std"] {
+        assert!(!KEYWORDS.contains(&id), "{id}");
+    }
 }
 
 /// §6.1: through the host, grammar errors are statuses; components reach
@@ -1300,7 +1365,13 @@ fn s7_6_finish_is_canonical_with_counters() {
         out.counters.iter().map(|c| (c.name.as_str(), c.value)).collect();
     assert_eq!(
         counters,
-        [("api.edits", 0), ("api.op.lookup", 2), ("api.op.references_to", 1), ("api.reports", 0)]
+        [
+            ("api.edits", 0),
+            ("api.op.lookup", 2),
+            ("api.op.references_to", 1),
+            ("api.reports", 0),
+            ("api.unresolved_spelling_matches", 0)
+        ]
     );
 }
 
@@ -1384,4 +1455,374 @@ fn s3_5_random_calls_get_a_status_and_never_fail_the_host() {
         }
         assert!(h.finish().is_canonical());
     }
+}
+
+// ---------------------------------------------------------------------------
+// The fix round of the WP-081 review.
+
+/// §3.5 rule 3: the text of the first `kept_failures` failures and of the
+/// last is kept; `error_message` of another ordinal of the run succeeds
+/// with the fixed text; an ordinal never issued is refused.
+#[test]
+fn s3_5_failure_records_are_bounded() {
+    let w = world();
+    let mut h =
+        Host::new(&w.fake, Digest([1; 32]), Limits { kept_failures: 3, ..Limits::default() });
+    for _ in 0..10 {
+        assert_eq!(status(&mut h, wire::OP_KIND, &[0], &[]), errc(Errc::InvalidHandle));
+    }
+    assert_eq!(h.failure_count(), 10);
+    assert_eq!(h.failures().iter().map(|f| f.ordinal).collect::<Vec<_>>(), [1, 2, 3]);
+    let last = h.last_failure().expect("ten failures").clone();
+    assert_eq!(last.ordinal, 10);
+    let fixed = |n: u64| {
+        format!(
+            "the text of failure {n} was not kept: a run keeps the text of its first 3 failures \
+             and of its last"
+        )
+    };
+    // A kept ordinal, a dropped one, the last.
+    let kept = h.failures()[1].message.clone();
+    assert_eq!(bytes(&mut h, wire::OP_ERROR_MESSAGE, &[2]), kept.as_bytes());
+    assert_eq!(bytes(&mut h, wire::OP_ERROR_MESSAGE, &[5]), fixed(5).as_bytes());
+    assert_eq!(bytes(&mut h, wire::OP_ERROR_MESSAGE, &[10]), last.message.as_bytes());
+    assert_eq!(h.failure_count(), 10, "a successful error_message is no failure");
+    // Never issued: the call's own ordinal and a later one.
+    assert_eq!(status(&mut h, wire::OP_ERROR_MESSAGE, &[11], &[]), errc(Errc::InvalidArgument));
+    assert_eq!(status(&mut h, wire::OP_ERROR_MESSAGE, &[99], &[]), errc(Errc::InvalidArgument));
+    assert_eq!(h.failure_count(), 12);
+    assert_eq!(h.last_failure().map(|f| f.ordinal), Some(12));
+    // 10 was the last; it is now an ordinary dropped one.
+    assert_eq!(bytes(&mut h, wire::OP_ERROR_MESSAGE, &[10]), fixed(10).as_bytes());
+    assert_eq!(h.failures().len(), 3);
+    // With the default bound the text is the specification's.
+    let mut h = host(&w.fake);
+    for _ in 0..(1 << 16) + 2 {
+        let _ = status(&mut h, wire::OP_KIND, &[0], &[]);
+    }
+    assert_eq!(
+        bytes(&mut h, wire::OP_ERROR_MESSAGE, &[(1 << 16) + 1]),
+        b"the text of failure 65537 was not kept: a run keeps the text of its first 65536 \
+          failures and of its last"
+    );
+}
+
+/// §3.5 rule 3: memory does not grow with the number of failures.
+#[test]
+fn s3_5_failure_memory_is_bounded() {
+    let w = world();
+    let mut h =
+        Host::new(&w.fake, Digest([1; 32]), Limits { kept_failures: 1000, ..Limits::default() });
+    let mut out = FakeOut::with_capacity(0, 0);
+    let mut at_bound = 0;
+    for i in 1..=1_000_000_u64 {
+        let word = h.call(wire::OP_KIND, &[0], &[], &mut out).expect("no host failure");
+        assert_eq!(wire::payload(word), i);
+        if i == 1001 {
+            at_bound = h.failure_bytes();
+        }
+    }
+    assert_eq!(h.failure_count(), 1_000_000);
+    assert_eq!(h.failures().len(), 1000);
+    assert!(at_bound > 0);
+    assert_eq!(h.failure_bytes(), at_bound, "the stored bytes stop growing at the bound");
+}
+
+/// A subject that delegates to the fake but for one lie.
+#[derive(Clone, Copy, Debug)]
+enum Lie {
+    Declarations(Errc),
+    CallsTo(Errc),
+    NameRange(Errc),
+    Extent(Errc),
+    IdentifierNone,
+    ParametersNone,
+    CalleeNone,
+    CalleeReferenceNone,
+    ArgumentsNone,
+}
+
+struct Liar<'a> {
+    fake: &'a FakeSubject,
+    lie: Lie,
+}
+
+impl Subject for Liar<'_> {
+    fn is_live(&self, v: Value) -> bool {
+        self.fake.is_live(v)
+    }
+    fn file_len(&self, f: File) -> Option<u32> {
+        self.fake.file_len(f)
+    }
+    fn kind_bits(&self, v: Value) -> u64 {
+        self.fake.kind_bits(v)
+    }
+    fn lookup(&self, global: bool, components: &[&[u8]]) -> Vec<Entity> {
+        self.fake.lookup(global, components)
+    }
+    fn identifier(&self, v: Value) -> Option<Vec<u8>> {
+        match (self.lie, v) {
+            (Lie::IdentifierNone, Value::Entity(_)) => None,
+            _ => self.fake.identifier(v),
+        }
+    }
+    fn display(&self, v: Value) -> String {
+        self.fake.display(v)
+    }
+    fn parent(&self, e: Entity) -> Option<Entity> {
+        self.fake.parent(e)
+    }
+    fn parameters(&self, v: Value) -> Option<Vec<Entity>> {
+        if let Lie::ParametersNone = self.lie { None } else { self.fake.parameters(v) }
+    }
+    fn declarations(&self, e: Entity) -> Result<Vec<Declaration>, Errc> {
+        if let Lie::Declarations(x) = self.lie { Err(x) } else { self.fake.declarations(e) }
+    }
+    fn entity_of(&self, d: Declaration) -> Entity {
+        self.fake.entity_of(d)
+    }
+    fn origin(&self, e: Entity) -> Entity {
+        self.fake.origin(e)
+    }
+    fn references_to(&self, e: Entity) -> Vec<Reference> {
+        self.fake.references_to(e)
+    }
+    fn referent(&self, r: Reference) -> Entity {
+        self.fake.referent(r)
+    }
+    fn name_range(&self, v: Value) -> Result<Option<Range>, Errc> {
+        if let Lie::NameRange(x) = self.lie { Err(x) } else { self.fake.name_range(v) }
+    }
+    fn extent(&self, v: Value) -> Result<Option<Range>, Errc> {
+        if let Lie::Extent(x) = self.lie { Err(x) } else { self.fake.extent(v) }
+    }
+    fn text(&self, r: Range) -> &[u8] {
+        self.fake.text(r)
+    }
+    fn owned(&self, f: File) -> bool {
+        self.fake.owned(f)
+    }
+    fn calls_to(&self, e: Entity) -> Result<Vec<Expression>, Errc> {
+        if let Lie::CallsTo(x) = self.lie { Err(x) } else { self.fake.calls_to(e) }
+    }
+    fn callee(&self, x: Expression) -> Option<Entity> {
+        if let Lie::CalleeNone = self.lie { None } else { self.fake.callee(x) }
+    }
+    fn callee_reference(&self, x: Expression) -> Option<Reference> {
+        if let Lie::CalleeReferenceNone = self.lie { None } else { self.fake.callee_reference(x) }
+    }
+    fn arguments(&self, x: Expression) -> Option<Vec<Expression>> {
+        if let Lie::ArgumentsNone = self.lie { None } else { self.fake.arguments(x) }
+    }
+    fn unresolved_named(&self, identifier: &[u8]) -> Option<u64> {
+        self.fake.unresolved_named(identifier)
+    }
+    fn tier(&self, r: Range) -> Option<u8> {
+        self.fake.tier(r)
+    }
+    fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
+        self.fake.qualified(e)
+    }
+    fn references_at(&self, r: Range) -> Vec<Reference> {
+        self.fake.references_at(r)
+    }
+    fn found_directly(&self, r: Reference) -> bool {
+        self.fake.found_directly(r)
+    }
+    fn entity_key(&self, e: Entity) -> Option<Digest> {
+        self.fake.entity_key(e)
+    }
+    fn unit_keys(&self, v: Value) -> Result<Vec<Digest>, Errc> {
+        self.fake.unit_keys(v)
+    }
+    fn rename_rule(&self, e: Entity, new_identifier: &[u8]) -> Result<Rule, Errc> {
+        self.fake.rename_rule(e, new_identifier)
+    }
+    fn place(&self, v: Value) -> Option<(Range, bool)> {
+        self.fake.place(v)
+    }
+    fn file_ref(&self, f: File) -> FileRef {
+        self.fake.file_ref(f)
+    }
+}
+
+/// What one call gives under a lie: `Ok(status)` or the host failure.
+fn under(fake: &FakeSubject, lie: Lie, op: u32, arg: &str) -> Result<u8, String> {
+    // The handles come from an honest host: numbering is the subject's, so
+    // a second host issues the same handles in the same order.
+    let liar = Liar { fake, lie };
+    let mut h = Host::new(&liar, Digest([1; 32]), Limits::default());
+    let foo = one(&mut h, "lib::foo");
+    let a = match arg {
+        "foo" => foo,
+        "decl" => {
+            let main = one(&mut h, "main");
+            ints(&mut h, wire::OP_DECLARATIONS_OF, &[main], &[])[0]
+        }
+        "ref" => ints(&mut h, wire::OP_REFERENCES_TO, &[foo], &[])[0],
+        "call" => ints(&mut h, wire::OP_CALLS_TO, &[foo], &[])[0],
+        _ => unreachable!("{arg}"),
+    };
+    let mut out = FakeOut::with_capacity(ROOM, ROOM);
+    let word = h.call(op, &[a], &[], &mut out)?;
+    assert_eq!(out.writes, 0, "a refusal or a failure writes nothing");
+    Ok(wire::status(word))
+}
+
+/// §6, the trait documentation: a status the specification allows the
+/// subject is passed on; any other is a host failure naming the method and
+/// the status.
+#[test]
+fn s6_subject_statuses_outside_the_specification_are_host_failures() {
+    let w = world();
+    let f = &w.fake;
+    let failure = |r: Result<u8, String>, method: &str, status: &str| {
+        let m = r.expect_err("a host failure");
+        assert!(m.contains(method) && m.contains(status), "{m}");
+    };
+    // declarations: unsupported allowed; anything else not.
+    assert_eq!(
+        under(f, Lie::Declarations(Errc::Unsupported), wire::OP_DECLARATIONS_OF, "foo"),
+        Ok(errc(Errc::Unsupported))
+    );
+    failure(
+        under(f, Lie::Declarations(Errc::NotEditable), wire::OP_DECLARATIONS_OF, "foo"),
+        "Subject::declarations",
+        "not_editable",
+    );
+    failure(
+        under(f, Lie::Declarations(Errc::WrongKind), wire::OP_DECLARATIONS_OF, "foo"),
+        "Subject::declarations",
+        "wrong_kind",
+    );
+    // calls_to: wrong_kind allowed; anything else not.
+    assert_eq!(
+        under(f, Lie::CallsTo(Errc::WrongKind), wire::OP_CALLS_TO, "foo"),
+        Ok(errc(Errc::WrongKind))
+    );
+    failure(
+        under(f, Lie::CallsTo(Errc::Unsupported), wire::OP_CALLS_TO, "foo"),
+        "Subject::calls_to",
+        "unsupported",
+    );
+    // name_range and extent: no Err at all.
+    for e in [Errc::InvalidHandle, Errc::WrongKind, Errc::Unsupported, Errc::LimitExceeded] {
+        failure(
+            under(f, Lie::NameRange(e), wire::OP_NAME_RANGE_OF, "decl"),
+            "Subject::name_range",
+            e.name(),
+        );
+        failure(under(f, Lie::Extent(e), wire::OP_EXTENT_OF, "ref"), "Subject::extent", e.name());
+    }
+    // identifier: None for an entity is a host failure, from identifier_of
+    // and from the two operations that record the identifier (§6.5 rule 6).
+    failure(
+        under(f, Lie::IdentifierNone, wire::OP_IDENTIFIER_OF, "foo"),
+        "Subject::identifier",
+        "None",
+    );
+    failure(
+        under(f, Lie::IdentifierNone, wire::OP_REFERENCES_TO, "foo"),
+        "Subject::identifier",
+        "None",
+    );
+    failure(under(f, Lie::IdentifierNone, wire::OP_CALLS_TO, "foo"), "Subject::identifier", "None");
+    // The Option methods whose None is wrong_kind.
+    let wrong = errc(Errc::WrongKind);
+    assert_eq!(under(f, Lie::ParametersNone, wire::OP_PARAMETERS_OF, "foo"), Ok(wrong));
+    assert_eq!(under(f, Lie::CalleeNone, wire::OP_CALLEE_OF, "call"), Ok(wrong));
+    assert_eq!(under(f, Lie::CalleeReferenceNone, wire::OP_CALLEE_REFERENCE_OF, "call"), Ok(wrong));
+    assert_eq!(under(f, Lie::ArgumentsNone, wire::OP_ARGUMENTS_AS_WRITTEN, "call"), Ok(wrong));
+}
+
+fn unresolved_counter(out: &RunOutput) -> Option<u64> {
+    out.counters.iter().find(|c| c.name == "api.unresolved_spelling_matches").map(|c| c.value)
+}
+
+/// §6.5 rule 6: `api.unresolved_spelling_matches` sums, once per
+/// identifier, the subject's answer for every non-empty identifier given
+/// to a successful `references_to` or `calls_to`.
+#[test]
+fn s6_5_unresolved_spelling_matches() {
+    let mut w = world();
+    w.fake.unresolved =
+        Some([(b"foo".to_vec(), 3), (b"lib".to_vec(), 5), (b"main".to_vec(), 7)].into());
+    let run = |f: &FakeSubject, script: &dyn Fn(&mut Host<'_>)| {
+        let mut h = host(f);
+        script(&mut h);
+        unresolved_counter(&h.finish())
+    };
+    // No identifier: present and 0.
+    assert_eq!(run(&w.fake, &|_| {}), Some(0));
+    // Two overloads (foo and its specialisation) of one name count once.
+    let overloads = |h: &mut Host<'_>| {
+        let foo = one(h, "lib::foo");
+        let calls = ints(h, wire::OP_CALLS_TO, &[foo], &[]);
+        let mut foos: Vec<u64> = calls.iter().map(|&c| v(h, wire::OP_CALLEE_OF, &[c])).collect();
+        foos.dedup();
+        assert_eq!(foos.len(), 2, "foo and its specialisation");
+        for x in foos {
+            ints(h, wire::OP_REFERENCES_TO, &[x], &[]);
+        }
+    };
+    assert_eq!(run(&w.fake, &overloads), Some(3));
+    // Twice, or in another order, changes nothing.
+    let forward = |h: &mut Host<'_>| {
+        let foo = one(h, "lib::foo");
+        let main = one(h, "main");
+        ints(h, wire::OP_REFERENCES_TO, &[foo], &[]);
+        ints(h, wire::OP_CALLS_TO, &[main], &[]);
+    };
+    let backward = |h: &mut Host<'_>| {
+        let main = one(h, "main");
+        let foo = one(h, "lib::foo");
+        for _ in 0..2 {
+            ints(h, wire::OP_CALLS_TO, &[main], &[]);
+            ints(h, wire::OP_CALLS_TO, &[foo], &[]);
+            ints(h, wire::OP_REFERENCES_TO, &[foo], &[]);
+        }
+    };
+    assert_eq!(run(&w.fake, &forward), Some(10));
+    assert_eq!(run(&w.fake, &backward), Some(10));
+    // A failed references_to or calls_to adds nothing.
+    let failed = |h: &mut Host<'_>| {
+        let lib = one(h, "lib");
+        assert_eq!(status(h, wire::OP_REFERENCES_TO, &[lib, lib], &[]), 255);
+        assert_eq!(status(h, wire::OP_CALLS_TO, &[lib], &[]), errc(Errc::WrongKind));
+    };
+    assert_eq!(run(&w.fake, &failed), Some(0));
+    // A subject that cannot tell: the counter is absent.
+    w.fake.unresolved = None;
+    assert_eq!(run(&w.fake, &forward), None);
+    assert_eq!(run(&w.fake, &|_| {}), Some(0), "no question asked");
+}
+
+/// §7.6 rule 6: the host writes every counter itself, each name once.
+#[test]
+fn s7_6_counter_names_are_unique() {
+    let w = world();
+    let mut h = host(&w.fake);
+    for _ in 0..3 {
+        let foo = one(&mut h, "lib::foo");
+        ints(&mut h, wire::OP_REFERENCES_TO, &[foo], &[]);
+        ints(&mut h, wire::OP_CALLS_TO, &[foo], &[]);
+        v(&mut h, wire::OP_KIND, &[foo]);
+    }
+    let out = h.finish();
+    let names: Vec<&str> = out.counters.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.windows(2).all(|n| n[0] < n[1]), "{names:?}");
+    assert_eq!(out.counters.iter().find(|c| c.name == "api.op.lookup").map(|c| c.value), Some(3));
+}
+
+/// §7.6, §3.3: `canonical` is total: a group index out of range names no
+/// edit and is ignored.
+#[test]
+fn s7_6_canonical_is_total() {
+    let mut bad = raw();
+    let n = bad.edits.len();
+    bad.groups.push(vec![0, n, usize::MAX]);
+    bad.groups.push(vec![n + 1, n + 2]);
+    let mut good = raw();
+    good.groups.push(vec![0]);
+    assert_eq!(bad.canonical(), good.canonical());
 }

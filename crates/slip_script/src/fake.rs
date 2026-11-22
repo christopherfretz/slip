@@ -179,6 +179,10 @@ pub struct FakeSubject {
     /// `Subject::place` for a value with no place of its own: the nearest
     /// place the host can name (§7.4 rule 3).
     pub nearest: Vec<(Value, Range)>,
+    /// `Subject::unresolved_named` (§6.5 rule 6): the count of unresolved
+    /// names for each identifier, 0 for one not listed; `None`: the subject
+    /// cannot tell. Default `Some` of an empty map.
+    pub unresolved: Option<std::collections::BTreeMap<Vec<u8>, u64>>,
 }
 
 impl Default for FakeSubject {
@@ -206,6 +210,7 @@ impl FakeSubject {
             expressions: Vec::new(),
             tier1: Vec::new(),
             nearest: Vec::new(),
+            unresolved: Some(std::collections::BTreeMap::new()),
         }
     }
 
@@ -483,6 +488,10 @@ impl Subject for FakeSubject {
 
     fn arguments(&self, x: Expression) -> Option<Vec<Expression>> {
         self.expressions[x.0 as usize].call.as_ref().map(|c| c.arguments.clone())
+    }
+
+    fn unresolved_named(&self, identifier: &[u8]) -> Option<u64> {
+        self.unresolved.as_ref().map(|m| m.get(identifier).copied().unwrap_or(0))
     }
 
     fn tier(&self, r: Range) -> Option<u8> {

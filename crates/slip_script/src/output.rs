@@ -127,8 +127,8 @@ impl RunOutput {
     /// deduplicated; counters sorted by name.
     ///
     /// `self.groups` is read as raw: indices into `self.edits` as given.
-    /// An index out of range is a host bug; it is ignored (and asserted in
-    /// debug builds).
+    /// The function is total: an index out of range names no edit and is
+    /// ignored.
     #[must_use]
     pub fn canonical(self) -> RunOutput {
         let RunOutput { transform, edits, groups, mut reports, mut changed, renamed, mut counters } =
@@ -168,7 +168,6 @@ impl RunOutput {
         for group in &groups {
             let mut first: Option<usize> = None;
             for &raw in group {
-                debug_assert!(raw < raw_len, "a group names edit {raw} of {raw_len}");
                 let Some(&e) = new_index.get(raw) else { continue };
                 grouped[e] = true;
                 match first {

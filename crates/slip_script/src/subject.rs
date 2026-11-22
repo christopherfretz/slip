@@ -4,7 +4,18 @@
 //! transform sends, asks the subject, checks what the subject answers and
 //! encodes it. A subject names its values by small numbers of its own; the
 //! host never shows them to the transform (it issues handles of its own,
-//! §3.4), so a subject may number them as it likes.
+//! §3.4), so a subject may choose them as it likes, under one contract:
+//!
+//! **One number per value, per sort, for the life of the `Host`.** The
+//! host gives a value the same handle every time it meets the same number,
+//! and that is the whole of `info` identity (§5.1 rule 2: two `info` are
+//! equal exactly when they denote the same thing). So a subject must give
+//! each entity (declaration, reference, expression, file) exactly one
+//! number, return that number from every method that yields the value,
+//! and never renumber while a `Host` holds it. Two numbers for one entity
+//! make two unequal handles for one entity: a defect of the subject that
+//! the host cannot see. Numbers of different sorts are independent
+//! (`Entity(3)` and `Declaration(3)` are unrelated).
 
 use crate::wire::Errc;
 
@@ -100,28 +111,55 @@ impl Value {
 /// of the sort the method names; it checks every value, range and
 /// sequence the subject returns (live, in bounds, no duplicate) and treats
 /// a violation as a host failure (§2.8), never as the transform's fault.
+///
+/// **Statuses a subject may choose.** Where a method returns `Err(errc)`
+/// or `None` and the host passes it on as a status, the specification
+/// allows only the statuses listed on the method below. The host turns
+/// any other into a host failure naming the method and the status; a
+/// method with no list may not refuse at all for the sorts the host asks
+/// it about (the host refuses the other sorts itself, before asking).
+///
+/// Every number the subject returns follows the numbering contract of the
+/// module documentation.
 pub trait Subject {
     fn is_live(&self, v: Value) -> bool;
     fn file_len(&self, f: File) -> Option<u32>;
     fn kind_bits(&self, v: Value) -> u64;
     fn lookup(&self, global: bool, components: &[&[u8]]) -> Vec<Entity>;
+    /// §6.3 rule 1. `None` only for an expression, which the host never
+    /// asks about: `None` for any other sort is a host failure. An empty
+    /// identifier is `Some(vec![])`.
     fn identifier(&self, v: Value) -> Option<Vec<u8>>; // None: an expression
     fn display(&self, v: Value) -> String;
     fn parent(&self, e: Entity) -> Option<Entity>;
+    /// §6.4 rule 2, for an entity or a declaration. `None` becomes
+    /// `wrong_kind` (not a function, a function template, or a
+    /// declaration of one).
     fn parameters(&self, v: Value) -> Option<Vec<Entity>>; // None: wrong kind
+    /// §6.4 rule 3. Allowed: `Err(Unsupported)` (a parameter).
     fn declarations(&self, e: Entity) -> Result<Vec<Declaration>, Errc>;
     fn entity_of(&self, d: Declaration) -> Entity;
     fn origin(&self, e: Entity) -> Entity; // spec/api.md §5.5
     fn references_to(&self, e: Entity) -> Vec<Reference>;
     fn referent(&self, r: Reference) -> Entity;
+    /// §6.6 rule 1, asked only for a declaration or a reference. No `Err`
+    /// is allowed.
     fn name_range(&self, v: Value) -> Result<Option<Range>, Errc>;
+    /// §6.6 rules 2 to 4, asked only for a reference or an expression. No
+    /// `Err` is allowed.
     fn extent(&self, v: Value) -> Result<Option<Range>, Errc>;
     fn text(&self, r: Range) -> &[u8];
     fn owned(&self, f: File) -> bool;
+    /// §6.7 rule 3. Allowed: `Err(WrongKind)` (not a function or a
+    /// function template).
     fn calls_to(&self, e: Entity) -> Result<Vec<Expression>, Errc>;
+    /// §6.7 rule 4. `None` becomes `wrong_kind` (not a call, rule 6); so
+    /// for the next two.
     fn callee(&self, x: Expression) -> Option<Entity>; // None: not a call
     fn callee_reference(&self, x: Expression) -> Option<Reference>;
     fn arguments(&self, x: Expression) -> Option<Vec<Expression>>;
+    /// §6.5 rule 6: how many unresolved names of the unit have this identifier; None: the subject cannot tell.
+    fn unresolved_named(&self, identifier: &[u8]) -> Option<u64>;
 
     // What the effects need (§7). WP-088 is their only caller.
     /// §5.4: 0 or 1 if `r` is a range the subject gave out or lies inside one; else None.
@@ -133,11 +171,13 @@ pub trait Subject {
     /// §7.2 rule 1, third condition.
     fn found_directly(&self, r: Reference) -> bool;
     /// The key of `e` as an entity (for a spelled piece); None: it has none, and `spell` refuses.
+    /// (`None` becomes `unsupported`, §7.1 rule 4; so does `None` from `qualified`.)
     fn entity_key(&self, e: Entity) -> Option<slip_model::Digest>;
     /// §7.5 rule 1: the key of the unit that holds `v` (a reference or an expression;
     /// the host refuses the other sorts before asking), then the keys derived from it, sorted.
+    /// Allowed: `Err(Unsupported)` (§7.5 rule 2).
     fn unit_keys(&self, v: Value) -> Result<Vec<slip_model::Digest>, Errc>;
-    /// §7.5 rule 3.
+    /// §7.5 rule 3. Allowed: `Err(Unsupported)` (not a unit keyed by name).
     fn rename_rule(&self, e: Entity, new_identifier: &[u8])
     -> Result<slip_model::keys::Rule, Errc>;
     /// §7.4 rule 3: the place, and whether it is the value's own (`false`: the nearest nameable place).
