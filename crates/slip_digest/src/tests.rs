@@ -401,3 +401,199 @@ fn order_unit_key() {
     assert_eq!(key_of(&o, "<order>"), k.id());
     assert!(o.causes.contains(&(k.id(), Cause::Pending(crate::Area::Order))));
 }
+
+/// Runs `f` on a walk over `src` (one file, `main.cpp`), with the AST.
+fn with_walk<R>(src: &str, f: impl FnOnce(&mut crate::walk::Walk<'_>) -> R) -> R {
+    let files = [("main.cpp", src)];
+    let snippet = slip_kiln::snippet::Snippet {
+        files: &files,
+        main: "main.cpp",
+        include: &[""],
+        std: "c++20",
+    };
+    let rules = RuleTable::empty();
+    slip_kiln::snippet::parse(&snippet, |p| {
+        assert_eq!(p.errors, 0, "{}", p.diagnostics);
+        let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+        let mut w = crate::walk::Walk::new(&input, &rules);
+        f(&mut w)
+    })
+    .expect("the snippet parses")
+}
+
+/// Every declaration of kind `kind` whose identifier is `name`, in arena
+/// order.
+fn decls_named(
+    w: &crate::walk::Walk<'_>,
+    name: &str,
+    kind: slip_kiln::kiln::ast::decl::DeclKind,
+) -> Vec<slip_kiln::kiln::ast::DeclId> {
+    use slip_kiln::kiln::ast::names::DeclNameView;
+    let ast = w.ast;
+    ast.decls
+        .ids()
+        .filter(|&d| {
+            let n = ast.decls.get(d);
+            let ident = match ast.names.view(n.name()) {
+                DeclNameView::Identifier(s) => ast.symbols().as_str(s) == name,
+                DeclNameView::Empty
+                | DeclNameView::Operator(_)
+                | DeclNameView::Constructor(_)
+                | DeclNameView::Destructor(_)
+                | DeclNameView::Conversion(_)
+                | DeclNameView::LiteralOperator(_)
+                | DeclNameView::DeductionGuide(_) => false,
+            };
+            n.kind() == kind && ident
+        })
+        .collect()
+}
+
+fn cause_of(o: &Output, name: &str) -> Option<Cause> {
+    let k = key_of(o, name);
+    o.causes.iter().find(|(x, _)| *x == k).map(|(_, c)| *c)
+}
+
+/// digest-kinds §5.3 `ty-exception-spec`, digest §11.2: a function of the
+/// deferrable class writes no specification, and the absence is
+/// `Pending(Demand)` until resolved units exist (WP-024 review B).
+#[test]
+fn deferrable_absence_is_pending() {
+    let o = walk(&[("main.cpp", "struct S { ~S() noexcept(false); };\n")]);
+    let name = o.names.iter().map(|(_, n)| n.clone()).find(|n| n.contains("~S")).expect("~S");
+    assert_eq!(cause_of(&o, &name), Some(Cause::Pending(crate::Area::Demand)));
+}
+
+/// digest §3.4, digest-kinds §3: the cause of a key is that of every key it
+/// is built from; a member of `A<1>` carries `A<1>`'s `Pending(Value)`
+/// (WP-024 review C).
+#[test]
+fn a_key_keeps_its_parents_cause() {
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    let src = "template <int N> struct A { struct In {}; };\nvoid g(A<1>::In);\nvoid h(A<1>);\n";
+    with_walk(src, |w| {
+        for name in ["g", "h"] {
+            let f = decls_named(w, name, DeclKind::Function)[0];
+            match w.key(f) {
+                crate::keys::KeyRes::Key { cause, .. } => {
+                    assert_eq!(cause, Some(Cause::Pending(crate::Area::Value)), "{name}");
+                }
+                crate::keys::KeyRes::None(c) => panic!("{name}: no key ({c:?})"),
+            }
+        }
+    });
+    // Two such keys in one translation unit are one key, and marked.
+    let o = walk(&[(
+        "main.cpp",
+        "template <int N> struct A { struct In {}; };\nvoid g(A<1>::In);\nvoid g(A<2>::In);\n",
+    )]);
+    let g: Vec<_> = o.names.iter().filter(|(_, n)| n.starts_with("g(")).collect();
+    assert!(!g.is_empty());
+    for (k, n) in g {
+        let c = o.causes.iter().find(|(x, _)| x == k).map(|(_, c)| *c);
+        assert!(
+            matches!(c, Some(Cause::Collision | Cause::Pending(crate::Area::Value))),
+            "{n}: {c:?}"
+        );
+    }
+    assert!(counter(&o, "digest.collisions") > 0);
+}
+
+/// WP-024 review H: a key computed below a detected cycle depends on the
+/// path that reached it and is not memoised.
+#[test]
+fn a_key_below_a_cycle_is_not_memoised() {
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    with_walk("struct S { int m; };\n", |w| {
+        let s = decls_named(w, "S", DeclKind::CXXRecord)[0];
+        let m = decls_named(w, "m", DeclKind::Field)[0];
+        let s = w.entity(s);
+        w.keys_in_progress.insert(s);
+        assert!(matches!(w.key(m), crate::keys::KeyRes::None(Some(_))));
+        w.keys_in_progress.remove(&s);
+        assert!(matches!(w.key(m), crate::keys::KeyRes::Key { .. }));
+    });
+}
+
+/// WP-024 review G: a key is computed with the unit's state put aside, and
+/// a local entity met inside one takes no ordinal.
+#[test]
+fn a_key_does_not_touch_the_unit() {
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    with_walk("void f(int p);\n", |w| {
+        let f = decls_named(w, "f", DeclKind::Function)[0];
+        let p = decls_named(w, "p", DeclKind::ParmVar)[0];
+        w.unit.next_local = 7;
+        assert!(matches!(w.key(f), crate::keys::KeyRes::Key { .. }));
+        assert_eq!(w.unit.next_local, 7);
+        w.in_key = 1;
+        let mut s = crate::stream::Stream::new();
+        w.write_ref(&mut s, p);
+        w.in_key = 0;
+        assert_eq!(s.cause(), Some(Cause::Unaccounted("key/local-ref")));
+        assert_eq!(w.unit.next_local, 7);
+    });
+}
+
+/// digest-kinds §5.2 (as corrected by WP-024 review F): a function declared
+/// at block scope inside `extern "C"` has the `c_linkage` parent, the key
+/// of the same function declared at namespace scope.
+#[test]
+fn a_block_scope_c_function_is_c_linkage() {
+    let inner = walk(&[("main.cpp", "extern \"C\" { void f() { void g(); } }\n")]);
+    let outer = walk(&[("main.cpp", "extern \"C\" void g();\n")]);
+    let gi = o_key(&inner, "g");
+    let go = o_key(&outer, "g");
+    assert_eq!(gi, go);
+}
+
+/// The key of the unit whose name starts with `name` (followed by `(` or
+/// the end).
+fn o_key(o: &Output, name: &str) -> Digest {
+    o.names
+        .iter()
+        .find(|(_, n)| n == name || n.strip_prefix(name).is_some_and(|r| r.starts_with('(')))
+        .map_or_else(|| panic!("no unit named {name}: {:?}", o.names), |(k, _)| *k)
+}
+
+/// digest-kinds §2.1: a flag word of more than 64 rows is a shape no table
+/// has: the stream is indeterminate, not wrong (WP-024 review J).
+#[test]
+fn a_flag_word_past_64_rows_is_unaccounted() {
+    let mut w = crate::stream::FlagWord::new();
+    for _ in 0..64 {
+        w = w.bit(true);
+    }
+    let mut s = crate::stream::Stream::new();
+    s.flags(w);
+    assert_eq!(s.cause(), None);
+    let mut s = crate::stream::Stream::new();
+    s.flags(w.bit(false));
+    assert_eq!(s.cause(), Some(Cause::Unaccounted("flags/overflow")));
+}
+
+/// digest §10 (WP-024 review E): a unit whose key cannot be formed is
+/// written under a fallback key (its own kind, parent the nearest keyed
+/// entity, name `content`, disc its digest), indeterminate with the key's
+/// cause; it does not vanish.
+#[test]
+fn a_unit_without_a_key_is_kept() {
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    with_walk("struct S { int m; };\n", |w| {
+        let m = w.entity(decls_named(w, "m", DeclKind::Field)[0]);
+        let s = w.entity(decls_named(w, "S", DeclKind::CXXRecord)[0]);
+        let crate::keys::KeyRes::Key { id: parent, .. } = w.key(s) else { panic!("S has a key") };
+        w.keys.insert(m, crate::keys::KeyRes::None(Some(Cause::Unaccounted("key/test"))));
+        let u = crate::units::write(w, m, crate::units::UnitClass::Declared).expect("written");
+        assert_eq!(u.cause, Some(Cause::Unaccounted("key/test")));
+        assert_eq!(u.kind, KeyKind::Field);
+        let want = Key {
+            kind: KeyKind::Field,
+            parent: Parent::Unit(parent),
+            name: Name::Content,
+            disc: Some(u.digest),
+        };
+        assert_eq!(u.key, want.id());
+    });
+}
