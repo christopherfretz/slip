@@ -220,8 +220,7 @@ fn walk(w: &mut Walk<'_>, s: &mut Stream, root: ExprId, keep_paren: bool) {
     walk_items(w, s, Item::Node(root, keep_paren));
 }
 
-/// The loop of [`walk`], from one item (`tests` starts it from an
-/// [`Item::Exec`] to measure a level of recursion).
+/// The loop of [`walk`], from one item.
 fn walk_items(w: &mut Walk<'_>, s: &mut Stream, first: Item) {
     if !w.enter_node() {
         s.uv(0).indeterminate(TOO_DEEP);
@@ -368,6 +367,10 @@ fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out
     let tail = dispatch(w, s, e, &n, out);
     cold(w, e, &n, tail, out);
     out.push(Item::Exec(crate::templ::expr_maps, e));
+    #[cfg(test)]
+    if tests::NEST.with(std::cell::Cell::get) {
+        out.push(Item::Exec(tests::nest, e));
+    }
     if dependent {
         out.push(Item::LeaveDependent);
     }
@@ -690,25 +693,37 @@ mod tests {
     use slip_kiln::kiln::ast::ExprId;
     use slip_model::keys::RuleTable;
 
-    use super::{Item, walk_items};
+    use crate::expr::child;
     use crate::stream::Stream;
     use crate::walk::{DEPTH_LIMIT, NODE_LIMIT, STACK_LOW, STACK_SIZE, Walk};
     use crate::{Detail, Input, Options};
 
     thread_local! {
         static LEVELS: Cell<u32> = const { Cell::new(0) };
+        /// While set, every node the walk writes ends with an
+        /// `Item::Exec` of [`nest`], as a kind of another file does.
+        pub(super) static NEST: Cell<bool> = const { Cell::new(false) };
     }
 
     /// A kind's function that recurses through `child` as a kind of
-    /// another file does: `LEVELS` levels, then the expression itself.
-    fn nest(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    /// another file does, `LEVELS` more times: each level is the path a
+    /// real kind takes, `child` → `walk` → `walk_items` → the kind's
+    /// function → `child`.
+    pub(super) fn nest(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         let left = LEVELS.with(Cell::get);
         if left == 0 {
-            super::child(w, s, e);
             return;
         }
         LEVELS.with(|l| l.set(left - 1));
-        walk_items(w, s, Item::Exec(nest, e));
+        child(w, s, e);
+    }
+
+    /// `child` of `e` with [`nest`] after every node, `levels` deep.
+    fn nested(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, levels: u32) {
+        LEVELS.with(|l| l.set(levels));
+        NEST.with(|n| n.set(true));
+        child(w, s, e);
+        NEST.with(|n| n.set(false));
     }
 
     fn here() -> usize {
@@ -733,8 +748,8 @@ mod tests {
     }
 
     /// `lib.rs` "What bounds the stack": measures the bytes one level of
-    /// [`NODE_LIMIT`] takes (`walk_items` and a kind's function calling
-    /// `child`) and the bytes the walk takes at [`DEPTH_LIMIT`] levels of
+    /// [`NODE_LIMIT`] takes (`child`, `walk`, `walk_items` and a kind's
+    /// function calling `child`) and the bytes the walk takes at [`DEPTH_LIMIT`] levels of
     /// types and keys, and checks that [`STACK_SIZE`] holds four times
     /// both limits at those sizes. Run in the test profile, whose frames
     /// are larger than the release profile's.
@@ -752,12 +767,10 @@ mod tests {
             // nesting alone.
             STACK_LOW.with(|l| l.set(usize::MAX));
             let base = here();
-            LEVELS.with(|l| l.set(0));
-            walk_items(&mut w, &mut s, Item::Exec(nest, e));
+            nested(&mut w, &mut s, e, 0);
             let flat = used(base);
             STACK_LOW.with(|l| l.set(usize::MAX));
-            LEVELS.with(|l| l.set(LEVELS_MEASURED));
-            walk_items(&mut w, &mut s, Item::Exec(nest, e));
+            nested(&mut w, &mut s, e, LEVELS_MEASURED);
             let deep = used(base);
             assert_eq!(w.node_depth, 0, "every level left");
             (deep - flat) / LEVELS_MEASURED as usize
@@ -812,8 +825,7 @@ mod tests {
                         let mut w = Walk::new(&input, &rules);
                         let e = ExprId::try_new(1).expect("an expression");
                         let mut s = Stream::new();
-                        LEVELS.with(|l| l.set(NODE_LIMIT + 5));
-                        walk_items(&mut w, &mut s, Item::Exec(nest, e));
+                        nested(&mut w, &mut s, e, NODE_LIMIT + 5);
                         assert_eq!(s.cause(), Some(crate::walk::TOO_DEEP));
                         assert_eq!(w.node_depth, 0, "every level left");
                     })

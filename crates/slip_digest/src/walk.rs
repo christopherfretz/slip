@@ -38,7 +38,7 @@ pub(crate) const NODE_LIMIT: u32 = 10_000;
 /// The stack `crate::digest` needs, in bytes (`lib.rs` "What bounds the
 /// stack"): [`NODE_LIMIT`] levels of statement or expression recursion
 /// and [`DEPTH_LIMIT`] levels of types, keys and declarations at the
-/// frame sizes `expr::tests::frames_fit_the_stack` measures (about 7.8 MB
+/// frame sizes `expr::tests::frames_fit_the_stack` measures (about 9.0 MB
 /// in the test profile), with a margin of more than four, which that test
 /// checks.
 pub const STACK_SIZE: usize = 64 << 20;

@@ -109,13 +109,17 @@
 //! `digest` therefore needs a stack of [`STACK_SIZE`] (64 MiB): it must
 //! run on a thread of at least that size (the tests' runner does,
 //! `tests/common/mod.rs` `on_walk_stack`). The figure comes from measured
-//! frames (`expr::tests::frames_fit_the_stack`, test profile): one node
-//! level is about 710 bytes (`walk_items` and a kind function calling
-//! `child`), the walk at `DEPTH_LIMIT` levels of types and keys about
-//! 0.73 MB, so both limits need about 7.8 MB; `STACK_SIZE` is more than
-//! four times that, which the test asserts. A package whose recursion
-//! through `enter_node` has larger frames (a statement's walk) adds its
-//! path to that test.
+//! frames (`expr::tests::frames_fit_the_stack`): one node level is about
+//! 820 bytes (the path a kind of another file takes: `child`, `walk`,
+//! `walk_items`, the kind's function, `child` again), the walk at
+//! `DEPTH_LIMIT` levels of types and keys about 0.74 MB, so both limits
+//! need about 9.0 MB; `STACK_SIZE` is more than four times that, which
+//! the test asserts. A package whose recursion through `enter_node` has
+//! larger frames (a statement's walk) adds its path to that test.
+//!
+//! These are frames of the test profile only. The worker package must
+//! measure the release profile, on the corpus, before `STACK_SIZE` (and
+//! the scheme that runs `digest`) is fixed.
 //!
 //! # How to fill an area
 //!
