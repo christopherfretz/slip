@@ -57,10 +57,10 @@ five deliverables. Three small WPs are better than one large one.
 10. **Behaviour your WP lands that the spec does not yet describe** goes in
     `spec/landed/<spec>/WP-NNN.md` (`spec/README.md` "Landed sections"),
     never appended to the spec.
-11. **Before handing back**: `cargo fmt --all --check`, `cargo clippy` with
-    `-D warnings` and `cargo test` on the crates you touched are clean, and
-    `origin/main` is merged in. Commit on your branch. Never push, never
-    merge to `main`.
+11. **Before handing back**: `origin/main` is merged in and
+    `cargo xtask ci --quick` passes (`cargo xtask ci`, the full gate, if
+    your WP is in a crate that links Kiln). Commit on your branch. Never
+    push, never merge to `main`.
 12. **Hand back with**: the branch head; a summary; the commands you ran and
     their results; open questions; and follow-ups written as `file:line` plus
     one sentence each, so the supervisor can file them.

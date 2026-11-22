@@ -176,9 +176,13 @@ For a transformation declared semantics-preserving modulo a relocation map `M`:
    deferred until there is a release to package (libstdc++ is GPLv3 with the
    GCC Runtime Library Exception; the operator's only requirement is that it
    is used within its terms).
-3. **Formatting.** Slip edits bytes and leaves everything else untouched. It
-   will not reformat. Running a formatter over touched ranges is left to the
-   user's tooling unless you want it built in.
+3. **Formatting.** *Decided 2026-11-21.* Slip does not contain a formatter.
+   It edits bytes and leaves everything else untouched, and provides:
+   insertion helpers that copy the surrounding indentation; a
+   machine-readable list of the ranges it changed; and an optional hook that
+   runs the user's formatter (some configuration of clang-format, for the
+   motivating codebase) over the touched ranges *before* verification, so
+   the bytes that are verified are the bytes that land.
 4. **What "dependencies" means for the migration.** The design takes a list of
    path globs for *owned* code; everything else is read-only. If ownership is
    defined some other way in your codebase (build targets, a manifest), the

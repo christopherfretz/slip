@@ -45,11 +45,18 @@ Ids are 64 hexadecimal digits (`spec/model.md` §3); `<phase>` is `map` or
   directory is empty or absent, and otherwise refused (`Input` error): Slip
   does not write into a directory it does not recognise. A `VERSION` other
   than `1` is refused.
+- **Locking.** A command that runs a phase opens the store *exclusively*:
+  it creates `<store>/lock` exclusively, holding its process id in decimal
+  and a newline. If the file exists and its owner is alive (`/proc/<pid>`
+  exists; where there is no `/proc` the owner is taken to be alive), the
+  store is busy: an `Input` error naming the process and the lock file. A
+  lock whose owner no longer exists is taken over. Every other command, and
+  every worker, opens the store *shared*: no lock; it only reads and
+  publishes, which is safe beside a running phase. The lock is removed on
+  every exit path its owner controls (§7).
 - **Cleaning.** `tmp/` entries are removed by the process that made them, on
   every exit path it controls. Stale entries (from a killed process) are
-  removed when a store is opened and no other Slip process holds its lock
-  (`<store>/lock`, an advisory lock file created exclusively and holding the
-  owner's process id; a lock whose owner no longer exists is taken over).
+  removed when the store is opened exclusively.
 
 ## 3. Jobserver
 
@@ -295,5 +302,7 @@ names.
   later a transform compilation per observer.
 - Cache keys for shards (command, input digests, transform, tool version)
   replace the plan-id directory in M5.
+- A stale lock whose process id has been reused by an unrelated process
+  reads as busy until the file is removed by hand.
 - Whether the coordinator should lower its budget when other processes in
   the same cgroup use memory. Today the budget is static.
