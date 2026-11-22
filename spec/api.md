@@ -327,7 +327,9 @@ If `n_ints <= cap_out` and `n_bytes <= cap_bout` it writes the answer and
 returns the counts. Otherwise it writes nothing and returns the same
 counts; the caller calls again with room. Every operation with convention
 B is a query, and a query repeated in one run gives the same answer (§2.7),
-so the second call is the first one with more room.
+so the second call is the first one with more room. An answer that
+would have 2^28 integers or 2^28 bytes, or more, cannot be counted in
+the word: the operation fails with `limit_exceeded` (§7.7).
 
 ### 3.4 Handles and kind bits
 
@@ -365,7 +367,13 @@ call. Other bits are 0.
 2. A failed operation has no effect and writes nothing.
 3. The host numbers the failures of a run from 1. `error_message` returns
    the text for an ordinal of this run, and fails with `invalid_argument`
-   for any other number.
+   for any other number. The host keeps the text of the first 2^16
+   failures of a run and of the most recent one (§7.7); for any other
+   ordinal of the run `error_message` succeeds with the text
+   `the text of failure <n> was not kept: a run keeps the text of its
+   first 65536 failures and of its last`, `<n>` in decimal. What the host
+   holds for the failures of a run is so bounded whatever the transform
+   does (§2.5 rule 3); the ordinals and the statuses are not affected.
 4. The host returns Kiln's handler error (which ends the evaluation and
    cannot be caught) only for `host-failure` (§2.8). Nothing a transform
    does, through L1 or by calling the primitive directly, may produce it.
@@ -575,6 +583,25 @@ order of their first declarations.
    separated by `::`. An identifier is a C++ identifier in the encoding of
    the source. Anything else throws `invalid_argument`: template
    arguments, operator names, whitespace.
+
+   **What version 0 takes for an identifier** (here and wherever an
+   operation takes one, §7.5 rule 3). The text must be UTF-8. A
+   component is *plain* when it is not empty, each of its bytes is an
+   ASCII letter, an ASCII digit or `_`, its first is not a digit, and it
+   is not a keyword or an alternative token of the C++26 working draft
+   (`class`, `operator`, `and`; the identifiers with special meaning,
+   `final`, `override`, `import`, `module`, are identifiers). The
+   checks, in order, over the whole text:
+   - text that is not UTF-8, or a component that is not plain and has
+     no byte other than ASCII letters, digits, `_` and `$` and no code
+     point outside ASCII (so: empty, a digit first, a keyword, any other
+     ASCII byte anywhere): `invalid_argument`;
+   - otherwise, a component with `$` or with a code point outside
+     ASCII: `unsupported`. Version 0 does not decide whether such a
+     component is an identifier (the front end accepts `$` as an
+     extension, and which code points an identifier may hold is a table
+     the host does not carry): it refuses rather than guess, whether or
+     not the source could spell it ("Open questions" 10).
 2. `::` alone names the global namespace.
 3. Matching is by declaration, not by C++ name lookup. The name is walked
    from the global namespace. A component names every entity declared
@@ -707,10 +734,17 @@ consteval info referent_of(info reference);
    and declares the change (§7.5) is checked by verification, which is
    what catches the references it was not given: the post-image no longer
    resolves, or resolves differently.
-6. The host counts, for each entity given to `references_to` or
-   `calls_to`, the unresolved names in the unit that are spelled like it,
-   and puts the count in the run output (§7.6), so that a report can say
-   how much was not examined.
+6. The host counts the unresolved names in the unit that are spelled
+   like an entity given to `references_to` or `calls_to`, and puts the
+   count in the run output (§7.6), so that a report can say how much was
+   not examined. Precisely: the identifiers (§6.3) of the entities given
+   to a call of either operation that succeeded form a set; the count is
+   the number of unresolved names of the unit whose identifier is in the
+   set. A name is counted once, however many entities of the set share
+   its identifier (the functions of an overload set) and however often
+   or in whatever order the operations were called. An entity whose
+   identifier is empty adds nothing. When the subject cannot tell which
+   names are unresolved (§6.8), the counter is absent, not zero.
 
 ### 6.6 Ranges and text
 
@@ -1083,7 +1117,11 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
 6. Counters (`spec/model.md`'s `Counter`): `api.host_calls`,
    `api.steps`, `api.peak_bytes`, `api.edits`, `api.reports`,
    `api.unresolved_spelling_matches` (§6.5 rule 6), and one
-   `api.op.<name>` per operation used.
+   `api.op.<name>` per operation that succeeded at least once, counting
+   its calls that succeeded. `api.host_calls` counts every call, failed
+   ones too: it is the evaluator's number, as `api.steps` and
+   `api.peak_bytes` are, and the three are added by whoever runs the
+   evaluation, not by the host that answers the operations.
 
 ### 7.7 Limits of a run
 
@@ -1097,9 +1135,12 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
 | reports | 2^16 |
 | bytes in one note, reason or message | 2^12 |
 | bytes in one qualified name or identifier argument | 2^12 |
+| integers in one answer; bytes in one answer (§3.3) | 2^28 - 1 each |
+| failures whose text is kept (§3.5 rule 3) | the first 2^16, and the most recent |
 
-Exceeding one throws `limit_exceeded`. The limits are part of the API
-level and are the same on every machine.
+Exceeding one throws `limit_exceeded`, except the last row, which fails
+nothing (§3.5 rule 3). The limits are part of the API level and are the
+same on every machine.
 
 ## 8. Stability
 

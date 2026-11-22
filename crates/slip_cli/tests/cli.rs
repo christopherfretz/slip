@@ -597,6 +597,36 @@ fn s8_help() {
     }
 }
 
+// ----- `resource` (§8.10) ---------------------------------------------------------
+
+// §8.10: the embedded files, byte for byte, under directories made for them;
+// a stale file replaced; nothing printed, status 0.
+#[test]
+fn s8_10_resource_write() {
+    let f = Fixture::new("resource");
+    let out = f.slip(&["resource", "--write", "res/a"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
+    f.write("res/a/include/slip/meta.h", "stale\n");
+    let out = f.slip(&["resource", "--write=res/a"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    for h in &slip_script::resource::HEADERS {
+        assert_eq!(std::fs::read(h.path_in(&f.path("res/a"))).unwrap(), h.bytes, "{}", h.path);
+    }
+    let names = std::fs::read_dir(f.path("res/a/include/slip")).unwrap().count();
+    assert_eq!(names, 2, "no temporary file is left");
+}
+
+// §8.10: a directory that cannot be made is status 3 naming the path.
+#[test]
+fn s8_10_resource_write_error() {
+    let f = Fixture::new("resource-error");
+    f.write("res/include", "a file where a directory must be\n");
+    let out = f.slip(&["resource", "--write", "res"]);
+    assert_input(&out, "slip: res/include/slip: ");
+    assert_usage(&f.slip(&["resource"]), "`resource` needs `--write`");
+}
+
 // ----- the worker (§8.4) --------------------------------------------------------
 
 // §8.4, §5.2: `slip __worker` with its input closed at once prints one
