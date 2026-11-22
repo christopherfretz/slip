@@ -1,6 +1,6 @@
 # KE1 — the extent of an expression, exact or absent
 
-A request from Slip to Kiln. Status: **draft, not sent.**
+A request from Slip to Kiln. Status: **sent 2026-11-22.**
 Context: `spec/api.md` §6.6 (`extent_of`) and §6.7 (`arguments_as_written`);
 the reading of Kiln main `0295475a3` is in
 [kiln-landed-2026-11.md](../design/notes/kiln-landed-2026-11.md) §5.3.
