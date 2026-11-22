@@ -1,65 +1,67 @@
 //! The Kiln-backed front-end check (`spec/cdb.md` §6, §6.1, §6.2). Work
-//! package WP-010.
+//! packages WP-010, WP-025.
 //!
 //! Kiln's own command-line parser (`kiln_driver::args::Args::parse_as`)
 //! decides both questions: whether every flag is accepted, and which
 //! language the input is compiled as. Nothing is read from disk and nothing
 //! is compiled.
 
-use kiln_driver::args::{Action, ArgError, Args, AsmKind, DepHeaders, Input, Lang};
+use kiln_driver::args::{Action, ArgError, Args, AsmKind, Input, Lang, ModuleHeaderJob};
 use slip_cdb::check::{FrontEndCheck, Rejection};
 use slip_model::{Command, Language};
 
-/// The target the parse task names with `-MT`.
-pub(crate) const DEP_TARGET: &str = "slip.d";
-
-/// The dependency file the check stands in for the parse task's (never
-/// opened: the check only parses the command line).
-const CHECK_DEP_FILE: &str = "/slip-check/slip.d";
-
 /// The command line the parse task gives Kiln (`spec/cdb.md` §6.1):
-/// its own options first, where no argument of the command can take them
-/// as a value, then the command's arguments, then the diagnostic format,
-/// last so that it wins over the command's own.
-pub(crate) fn front_end_line(rest: &[String], dep_file: &str) -> Vec<String> {
-    let mut line: Vec<String> = ["-fsyntax-only", "-MD", "-MF", dep_file, "-MT", DEP_TARGET]
-        .iter()
-        .map(|s| (*s).to_owned())
-        .collect();
+/// `-fsyntax-only`, then the command's arguments.
+pub(crate) fn front_end_line(rest: &[String]) -> Vec<String> {
+    let mut line = Vec::with_capacity(rest.len() + 1);
+    line.push("-fsyntax-only".to_owned());
     line.extend(rest.iter().cloned());
-    line.push(DIAGNOSTICS_FORMAT.to_owned());
     line
 }
 
-const DIAGNOSTICS_FORMAT: &str = "-fdiagnostics-format=json";
+/// Whether `run_front_end` refuses `args` (`spec/cdb.md` §6.2 rejection
+/// 3): what it refuses without running (`NotSyntaxOnly`, and standard
+/// input as `NotOneInput`), and what it refuses with
+/// `drv_front_end_unsupported` when written on the command line. `whole`
+/// is false for a prefix of the command line, whose input may not have
+/// come yet: there `-fmodule-header` without one input counts as refused.
+fn refused(args: &Args, whole: bool) -> bool {
+    let module_header = args.module_header.is_some()
+        && match args.inputs.as_slice() {
+            [input] => !matches!(args.module_header_job(input), ModuleHeaderJob::Build),
+            _ => !whole,
+        };
+    args.action != Action::SyntaxOnly
+        || args.help
+        || args.probe.any()
+        || args.print_resource_dir
+        || args.print_commands
+        || args.deps.only.is_some()
+        || matches!(args.inputs.as_slice(), [input] if input.path == "-")
+        || module_header
+        || args.verify.is_some()
+        || args.pch.include.is_some()
+}
 
-/// Whether the command's own arguments override what the parse task
-/// relies on: the action, the JSON diagnostics, and a dependency file of
-/// every header at `dep_file` under one `-MT` target. `Some(argument)`
-/// names the argument responsible, as well as it can be told.
-pub(crate) fn overridden(args: &Args, rest: &[String], dep_file: &str) -> Option<String> {
-    if args.diag_args.last().map(String::as_str) != Some(DIAGNOSTICS_FORMAT) {
-        // Only an option that takes a separate value, left without one at
-        // the end of the command, can have taken it.
-        return Some(rest.last().cloned().unwrap_or_default());
+/// The argument of `rest` that makes the front end refuse it: the last of
+/// the shortest prefix that is refused; the option before it instead when
+/// that option took it as its value (the prefix before it lacked that
+/// option's value).
+fn refusing_argument(program: &str, rest: &[String]) -> String {
+    for k in 1..=rest.len() {
+        if !refused(&Args::parse_as(program, &front_end_line(&rest[..k])), false) {
+            continue;
+        }
+        if k >= 2 {
+            let before = Args::parse_as(program, &front_end_line(&rest[..k - 1]));
+            let option = &rest[k - 2];
+            if before.errors.iter().any(|e| matches!(e, ArgError::MissingValue(o) if o == option)) {
+                return option.clone();
+            }
+        }
+        return rest[k - 1].clone();
     }
-    let deps = &args.deps;
-    let deps_ok = deps.only.is_none()
-        && deps.side == Some(DepHeaders::All)
-        && deps.file.as_deref() == Some(dep_file)
-        && deps.targets == [(DEP_TARGET.to_owned(), false)]
-        && !deps.phony
-        && !deps.missing_generated
-        && deps.cdb_fragment.is_none();
-    if args.action != Action::SyntaxOnly || !deps_ok {
-        let culprit = rest
-            .iter()
-            .find(|a| a.starts_with("-Wp,") || a.starts_with("-M") || a.starts_with("--"))
-            .cloned()
-            .unwrap_or_else(|| "an option that overrides -fsyntax-only or -MD".to_owned());
-        return Some(culprit);
-    }
-    None
+    "an option the front-end library entry refuses".to_owned()
 }
 
 /// The front-end check of the linked Kiln (`spec/cdb.md` §6).
@@ -69,8 +71,8 @@ pub struct KilnCheck;
 impl FrontEndCheck for KilnCheck {
     fn check(&self, command: &Command, _main: &[u8]) -> Result<Language, Rejection> {
         let (argv0, rest) = utf8_command(command).map_err(Rejection::UnsupportedFlag)?;
-        let line = front_end_line(&rest, CHECK_DEP_FILE);
-        let args = Args::parse_as(&program(&argv0), &line);
+        let program = program(&argv0);
+        let args = Args::parse_as(&program, &front_end_line(&rest));
 
         if let Some(error) = args.errors.iter().find(|e| is_error(e)) {
             return Err(match error {
@@ -81,8 +83,8 @@ impl FrontEndCheck for KilnCheck {
                 _ => Rejection::UnsupportedFlag(written_argument(error, &rest)),
             });
         }
-        if let Some(argument) = overridden(&args, &rest, CHECK_DEP_FILE) {
-            return Err(Rejection::UnsupportedFlag(argument));
+        if refused(&args, true) {
+            return Err(Rejection::UnsupportedFlag(refusing_argument(&program, &rest)));
         }
 
         let input = match args.inputs.as_slice() {
@@ -104,7 +106,7 @@ impl FrontEndCheck for KilnCheck {
 }
 
 /// The program name the driver is run as. `argv[0]` itself, except a name
-/// that would make `kiln_driver::run_as` start its dependency scanner
+/// that would make Kiln's driver start its dependency scanner
 /// (`clang-scan-deps…`): that runs as `kiln`, the driver mode such a name
 /// has anyway (`spec/cdb.md` §6.1).
 pub(crate) fn program(argv0: &str) -> String {

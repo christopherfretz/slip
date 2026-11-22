@@ -962,19 +962,17 @@ standard output.
 
 `slip __worker [--worker-jobs <n>] [--worker-stack <size>]` is `serve`
 (§5.2) over standard input and output with the parse task: it runs the
-front end on the job's observer (`slip_kiln::parse_observer`) with the
-scratch directory of §2 in the job's store. It is not listed in the usage
-text. Nothing but protocol messages may be written to its standard output.
+front end on the job's observer (`slip_kiln::parse_observer`). It is not
+listed in the usage text. Nothing but protocol messages may be written to its standard output.
 
 - `serve` runs with `tool` = the `--version` line, `stack_bytes` =
   `--worker-stack` and `max_jobs` = `--worker-jobs`, over unlocked
   standard input and output. A `serve` error is `slip __worker: <error>` on
   standard error and status 1.
 - **The parse task** opens the job's store (`Job::store_path`, absolute)
-  shared on its first job and keeps it, with its `Store::scratch_dir`, for
-  its lifetime; a job naming another store replaces both. The scratch
-  directory is `ParseOptions::scratch`. The store's `Drop` (at the end of
-  `serve`) removes the scratch directory.
+  shared on its first job and keeps it for its lifetime; a job naming
+  another store replaces it. The parse writes no file (`spec/model.md`
+  §8.4), so the task asks the store for no scratch directory.
 - The front end runs under Kiln's stack guard (`spec/model.md` §8.4):
   nesting deeper than the stack ends in Kiln's fatal diagnostic, a
   `diagnosed` shard, instead of aborting the worker.
@@ -1168,6 +1166,13 @@ pub fn main(args: &WorkerArgs) -> ExitCode;
   recent run record even when that run was cancelled; idle workers kept
   for reuse hold memory that admission does not count; while a worker is
   ending the loop polls every 5 ms.
+- A panic of the front end is caught by Kiln's entry and returned to the
+  parse task (`spec/model.md` §8.4), so the job answers `Failed` and the
+  worker goes on serving: the next observer runs in the same process, and
+  the coordinator retries the failed one once, although a front-end panic
+  on a given unit is deterministic. Answering "do not retry, and end this
+  worker" needs a field in the protocol's `Failed` (§5.2); until then a
+  panic costs one retry and no fresh process.
 - A job that must run alone blocks the jobs behind it instead of letting
   them start around it. Simple and never over budget; costs throughput when
   a large job waits for the running ones to drain.

@@ -1,9 +1,13 @@
 //! `spec/cdb.md` §6, §6.1 and §6.2: `KilnCheck`, Kiln's
 //! command-line parser as the authority on flags and language.
 
+use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, PoisonError};
+
 use slip_cdb::check::{ByExtension, FrontEndCheck, Rejection};
-use slip_kiln::KilnCheck;
-use slip_model::{Command, Language};
+use slip_kiln::{KilnCheck, parse_observer};
+use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard, Status};
 
 fn command(args: &[&str]) -> Command {
     Command {
@@ -13,8 +17,71 @@ fn command(args: &[&str]) -> Command {
     }
 }
 
+/// `KilnCheck` on `args`, after asserting that the check and the parse
+/// agree on it (`agree`).
 fn check(args: &[&str]) -> Result<Language, Rejection> {
-    KilnCheck.check(&command(args), b"/work/main")
+    let result = KilnCheck.check(&command(args), b"/work/main");
+    agree(args, &result);
+    result
+}
+
+/// The parse changes the current directory: one at a time.
+static PARSE: Mutex<()> = Mutex::new(());
+
+/// Parses `args` in a fresh directory where each relative argument that
+/// does not start with `-` is an empty file.
+fn parse_in_fixture(args: &[&str]) -> Shard {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let _lock = PARSE.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = std::env::temp_dir().join(format!(
+        "slip-kiln-check-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    for a in &args[1..] {
+        let p = Path::new(a);
+        if a.starts_with('-') || p.is_absolute() || a.contains("..") || a.is_empty() {
+            continue;
+        }
+        let p = dir.join(p);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let _ = std::fs::write(&p, b"");
+    }
+    let mut c = command(args);
+    c.directory = dir.to_str().unwrap().as_bytes().to_vec();
+    let o = Observer {
+        id: Digest([1; 32]),
+        command: c,
+        language: Language::Cxx,
+        main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
+        cost_hint: 1,
+        origins: vec![Origin { configuration: 0, entry: 0 }],
+    };
+    let shard = parse_observer(&o, Phase::Map, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+    shard.expect("parse_observer")
+}
+
+/// The parse refused the command for a reason of §6.2 rejection 3: what
+/// `run_front_end` refuses without running, or with
+/// `drv_front_end_unsupported`.
+fn refused_by_entry(shard: &Shard) -> bool {
+    shard.outcome.status == Status::Rejected
+        && (shard.outcome.message == "the command line is not -fsyntax-only"
+            || shard.outcome.message == "the command line has not one source input"
+            || shard.outcome.message.contains("is not supported by the front-end library entry"))
+}
+
+/// §6.2: a command `KilnCheck` accepts is never refused by the parse for a
+/// reason of rejection 3.
+fn agree(args: &[&str], result: &Result<Language, Rejection>) {
+    if result.is_ok() {
+        let shard = parse_in_fixture(args);
+        assert!(!refused_by_entry(&shard), "KilnCheck accepts {args:?}: {:?}", shard.outcome);
+    }
 }
 
 // §6: C and C++ by extension, under a C driver name.
@@ -149,11 +216,7 @@ fn s6_unknown_flag_refused() {
         check(&["clang++", "--language=c", "a.cpp"]),
         Err(Rejection::UnsupportedFlag("--language=c".into()))
     );
-    // Landed: an argument that overrides what the parse task relies on.
-    assert_eq!(
-        check(&["clang++", "-Wp,-MMD,x.d", "a.cpp"]),
-        Err(Rejection::UnsupportedFlag("-Wp,-MMD,x.d".into()))
-    );
+    // A separate-value option left without one at the end (rejection 2).
     assert_eq!(
         check(&["clang++", "a.cpp", "-dumpdir"]),
         Err(Rejection::UnsupportedFlag("-dumpdir".into()))
@@ -247,5 +310,57 @@ fn s6_agrees_with_by_extension() {
             (Err(Rejection::UnsupportedLanguage(_)), Ok(Language::ObjC | Language::ObjCxx)) => {}
             _ => panic!("{argv:?}: Kiln {kiln:?}, ByExtension {ext:?}"),
         }
+    }
+}
+
+// §6.2 rejection 3: what `run_front_end` refuses without running and what
+// it refuses with `drv_front_end_unsupported` when written; the argument
+// responsible as the detail; and the parse refuses each one too.
+#[test]
+fn s6_2_rejection_3_front_end_refusals() {
+    let rows: &[(&[&str], &str)] = &[
+        (&["clang++", "-E", "a.cpp"], "-E"),
+        (&["clang++", "--help"], "--help"),
+        (&["clang++", "a.cpp", "-###"], "-###"),
+        (&["clang++", "-dumpversion", "a.cpp"], "-dumpversion"),
+        (&["clang++", "-dumpmachine", "a.cpp"], "-dumpmachine"),
+        (&["clang++", "-print-target-triple", "a.cpp"], "-print-target-triple"),
+        (&["clang++", "-print-file-name=libc.so", "a.cpp"], "-print-file-name=libc.so"),
+        (&["clang++", "-print-resource-dir", "a.cpp"], "-print-resource-dir"),
+        (&["clang++", "-M", "a.cpp"], "-M"),
+        (&["clang++", "-Iinc", "-MM", "a.cpp"], "-MM"),
+        (&["clang++", "-fmodule-header=user", "a.cpp"], "-fmodule-header=user"),
+        (&["clang++", "-verify", "a.cpp"], "-verify"),
+        (&["clang++", "-include-pch", "pre.pch", "a.cpp"], "-include-pch"),
+        (&["clang++", "-x", "c++", "-"], "-"),
+    ];
+    for (argv, culprit) in rows {
+        assert_eq!(
+            KilnCheck.check(&command(argv), b"/work/main"),
+            Err(Rejection::UnsupportedFlag((*culprit).into())),
+            "{argv:?}"
+        );
+        if argv.contains(&"--help") {
+            // No input: the entry says `NotSyntaxOnly` before it counts.
+            continue;
+        }
+        let shard = parse_in_fixture(argv);
+        assert!(refused_by_entry(&shard), "{argv:?}: {:?}", shard.outcome);
+    }
+    // What the parse used to rely on and no longer does is accepted: the
+    // entry writes nothing and renders nothing.
+    for argv in [
+        &["clang++", "-Wp,-MMD,x.d", "a.cpp"][..],
+        &["clang++", "-MD", "-MF", "x.d", "-MT", "x.o", "-MP", "a.cpp"],
+        &["clang++", "-o", "x.o", "-MJ", "x.json", "a.cpp"],
+        &["clang++", "-fdiagnostics-format=sarif", "a.cpp"],
+        &["clang++", "-fdiagnostics-format=json", "a.cpp"],
+        &["clang++", "-c", "a.cpp"],
+        // `-fsyntax-only` comes first and wins over a later phase.
+        &["clang++", "-S", "a.cpp"],
+        &["clang++", "--precompile", "a.cppm"],
+        &["clang++", "-fmodule-header", "a.h"],
+    ] {
+        assert_eq!(check(argv), Ok(Language::Cxx), "{argv:?}");
     }
 }
