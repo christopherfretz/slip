@@ -452,10 +452,10 @@ impl Language {
             // Last on a line, an option that takes the next argument as
             // its value (`-Xclang`, `-o`, `-target-feature`) is missing
             // it: it would take `-fsyntax-only` or the next argument.
-            let mut bare = head.clone();
-            bare.push(arg.to_owned());
-            let bare = Args::parse_as("kiln", &bare);
-            if bare.errors.iter().any(|e| matches!(e, kiln_driver::args::ArgError::MissingValue(_)))
+            let mut last = head.clone();
+            last.push(arg.to_owned());
+            let last = Args::parse_as("kiln", &last);
+            if last.errors.iter().any(|e| matches!(e, kiln_driver::args::ArgError::MissingValue(_)))
             {
                 return Err(format!(
                     "argument `{arg}` is refused: it takes the next argument as its value \
@@ -1246,7 +1246,13 @@ mod tests {
             let err = run(text, "c++20", &[arg], None).expect_err(arg);
             assert!(err.contains(&format!("`{arg}`")), "{arg}: {err}");
         }
-        // Accepted, and the same arguments once more in one line.
+    }
+
+    // WP-038: arguments that change only the language, accepted alone and
+    // together on one line.
+    #[test]
+    fn wp038_accepted_arguments() {
+        let text = "int x;\n";
         let accepted = [
             "-fno-rtti",
             "-fno-exceptions",
