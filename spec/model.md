@@ -82,6 +82,12 @@ Two ways of using it:
 | Tag | Value hashed | Defined in |
 |---|---|---|
 | `slip.observer.v1` | `Command` | §7 |
+| `slip.key.v1` | an entity's `Key` | `digest.md` §3 |
+| `slip.unit.v1` | a unit's stream | `digest.md` §4 |
+| `slip.type.v1` | a type's stream | `digest.md` §4.2 |
+| `slip.group.v1` | `list<Unit>` | `digest.md` §11 |
+| `slip.tu.v1` | `list<GroupSum>` | `digest.md` §11 |
+| `slip.rules.v1` | `list<Rule>` | `verify.md` §2 |
 
 `slip_model` implements BLAKE3 itself, in safe Rust, with an incremental
 interface (`new`, `update(&[u8])`, `finalize() -> Digest`) and a one-shot
@@ -278,6 +284,7 @@ the same bytes.
 | 18 | facts | — | reserved (M3) |
 | 19 | digests | — | reserved (M1) |
 | 20 | reports | — | reserved (M2) |
+| 21 | verdict | — | reserved (M1; `verify.md` §6) |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -396,6 +403,8 @@ To be listed as work packages land:
 
 ## Open questions
 
+- The run record does not forbid two jobs with the same observer and
+  attempt, and its reader does not reject them.
 - Windows paths and command lines: out of scope until a corpus needs them.
 - Which environment variables enter `Command.env`. Candidates: `CPATH`,
   `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `SDKROOT`, `SOURCE_DATE_EPOCH`.
@@ -413,3 +422,11 @@ To be listed as work packages land:
 - `Decoder::count` bounds a list's count by the bytes remaining, which is
   sound only while every element type encodes to at least one byte. A
   zero-width element type would need its own bound.
+- Whether a section must be present (`spec/landed/model/WP-015.md` "Not
+  checked"): `digests` on every `ok` shard and `verdict` on every `ok`
+  verify shard. Not required today because no writer produces them yet;
+  becomes a rule with the package that writes them (the walk, the verify
+  job). The same package decides the consistency rules of a verdict that
+  the format does not check (`unverifiable` with counts or a `pre`; `pre`
+  or `post` on an unnamed finding; the `digest.*` counters against the
+  section).

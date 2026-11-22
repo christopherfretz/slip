@@ -54,6 +54,8 @@ fn ok_shard(job: &Job) -> Shard {
         outcome: Outcome { status: Status::Ok, errors: 0, warnings: 0, message: String::new() },
         inputs: Some(vec![job.observer.main.clone()]),
         counters: vec![Counter { name: "fake.jobs".to_owned(), value: 1 }],
+        digests: None,
+        verdict: None,
     }
 }
 

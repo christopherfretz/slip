@@ -8,6 +8,10 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Workspace crates only (spec/harness.md: xtask "may depend on slip_model and
+# slip_exec"): the container formats and JSON, the store and the jobserver.
+slip_model.workspace = true
+slip_exec.workspace = true
 
 [lints]
 workspace = true

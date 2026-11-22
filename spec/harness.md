@@ -85,7 +85,7 @@ worktrees are never scanned.
 
 | Crate | Used by | Why |
 |---|---|---|
-| `signal-hook` and its dependencies `libc`, `signal-hook-registry` | `slip_exec` | Returning jobserver tokens and killing children on `SIGINT`/`SIGTERM` (`spec/exec.md` §7). The handler's `unsafe` stays inside the dependency. |
+| `signal-hook` and its dependencies `libc`, `signal-hook-registry` | `slip_exec` (and `xtask` through it) | Returning jobserver tokens and killing children on `SIGINT`/`SIGTERM` (`spec/exec.md` §7). The handler's `unsafe` stays inside the dependency. |
 
 Kiln's own dependencies (reached through the `kiln` submodule's path
 dependencies) are allowed as Kiln's lock file lists them.
@@ -159,8 +159,7 @@ print `xtask perf: <message>` and exit 1 (2 for usage).
 
 From the record, its plan and its shards:
 
-- **Observers**: the distinct observers among the record's jobs. An
-  observer's **last job** is its job with the greatest `attempt`.
+- **Observers**: the distinct observers among the record's jobs.
 - **Counters**, all exact and deterministic for a given corpus, tool and
   host headers:
 
@@ -275,6 +274,10 @@ the same code: LLVM 19.1.7 as C++17 first.
   only for one set of installed headers (the host compiler's and the
   standard library's). The baseline does not record which; a change of the
   container image shows up as a counter difference with no stated cause.
+- Nothing checks that a shard in the store is the one the record's job
+  wrote (`Job.shard` is its content id): a later run of the same plan,
+  phase and round replaces shards. Counters of shards that are not `failed`
+  are the same either way, which is why this is left open.
 - `measured` has no gate. A regression budget (Kiln fails at a stated
   percentage on dedicated hardware) needs a quiet host; ours is shared.
 - Hosted CI (GitHub Actions) for the Slip repository: not set up; the gate

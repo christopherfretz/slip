@@ -131,6 +131,8 @@ fn sample_shard() -> Shard {
             Counter { name: "inputs.files".to_owned(), value: 3 },
             Counter { name: "pp.tokens".to_owned(), value: u64::MAX },
         ],
+        digests: None,
+        verdict: None,
     }
 }
 
@@ -147,6 +149,8 @@ fn failed_shard() -> Shard {
         },
         inputs: None,
         counters: Vec::new(),
+        digests: None,
+        verdict: None,
     }
 }
 
@@ -442,6 +446,8 @@ fn small_shard() -> Shard {
         },
         inputs: Some(vec![file(b"/m", 2, 0x22)]),
         counters: vec![Counter { name: "pp.tokens".to_owned(), value: 300 }],
+        digests: None,
+        verdict: None,
     }
 }
 
@@ -1086,14 +1092,15 @@ fn required_sections() {
 }
 
 // spec/model.md §5 rule 2, §8: an unknown critical section, including the
-// reserved shard sections 16–20, is UnknownSection.
+// reserved shard sections 16, 17, 18 and 20, is UnknownSection (19 and 21
+// are WP-015's, `tests/sections.rs`).
 #[test]
 fn unknown_critical_sections() {
     let mut sections = raw_plan_sections(&small_plan());
     sections.push((5, Vec::new()));
     let e = Plan::from_bytes(&sealed(*b"PLAN", &sections)).unwrap_err();
     assert_eq!(e.kind, ErrorKind::UnknownSection);
-    for id in [5u64, 16, 17, 18, 19, 20, 63] {
+    for id in [5u64, 16, 17, 18, 20, 22, 63] {
         let mut sections = raw_shard_sections(&small_shard());
         sections.push((id, Vec::new()));
         let bytes = sealed(*b"SHRD", &sections);

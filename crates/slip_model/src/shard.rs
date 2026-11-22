@@ -3,6 +3,8 @@
 //! Plain data. The binary and JSON forms are implemented in `formats`
 //! (work package WP-006).
 
+use crate::digests::Digests;
+use crate::verdict::Verdict;
 use crate::{Digest, FileRef};
 
 /// A parallel phase.
@@ -54,4 +56,9 @@ pub struct Shard {
     pub inputs: Option<Vec<FileRef>>,
     /// Sorted by name.
     pub counters: Vec<Counter>,
+    /// The semantic digest (`spec/digest.md` §11); only for status `Ok`.
+    pub digests: Option<Digests>,
+    /// The verdict of a verify shard (`spec/verify.md` §6); only for phase
+    /// `Verify`, status `Ok` and with `digests`.
+    pub verdict: Option<Verdict>,
 }
