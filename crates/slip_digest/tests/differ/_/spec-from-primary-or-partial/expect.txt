@@ -1,5 +1,3 @@
-# pending
-# needs: decl_data
 # the `templ` row is written by the payload records (decl_func.rs, decl_class.rs)
 changed X<int *>
 added X<type-parameter-0-0 *>
