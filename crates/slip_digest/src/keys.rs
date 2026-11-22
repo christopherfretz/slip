@@ -478,39 +478,51 @@ impl Walk<'_> {
         if !self.external_for_c(e) {
             return false;
         }
-        let local_extern = self.is_local_extern(e);
-        let mut c = ast.decls.lexical_ctx(e);
+        match self.linkage_spec(e, false) {
+            Some((_, LinkageLang::C)) => true,
+            Some((_, LinkageLang::Cxx)) | None => false,
+        }
+    }
+
+    /// The innermost `LinkageSpec` that lexically encloses `d`, with its
+    /// language (`ScopeData` `aux-lang`). With `all` the search goes
+    /// through every enclosing class and function (digest-kinds §5.6, the
+    /// language a function's or variable's stream holds); without it, as
+    /// the key's parent needs it (§5.2): through namespaces and
+    /// transparent scopes only, and through the functions around a
+    /// block-scope declaration.
+    pub(crate) fn linkage_spec(&self, d: DeclId, all: bool) -> Option<(DeclId, LinkageLang)> {
+        let ast = self.ast;
+        let local_extern = !all && self.is_local_extern(d);
+        let mut c = ast.decls.lexical_ctx(d);
         for _ in 0..CTX_LIMIT {
-            let Some(x) = c else { return false };
+            let x = c?;
             let n = ast.decls.get(x);
             if local_extern && info(n.kind()).local_scope {
                 c = ast.decls.lexical_ctx(x);
                 continue;
             }
-            match info(n.kind()).role {
-                Role::Transparent | Role::Entity(KeyKind::Namespace) => {
-                    if let Some(lang) = ast
-                        .decls
-                        .scope(x)
-                        .and_then(slip_kiln::kiln::ast::decl::ScopeData::linkage_lang)
-                    {
-                        return match lang {
-                            LinkageLang::C => true,
-                            LinkageLang::Cxx => false,
-                        };
-                    }
-                }
-                Role::Root
-                | Role::Entity(_)
+            let through = match info(n.kind()).role {
+                Role::Root => return None,
+                Role::Transparent | Role::Entity(KeyKind::Namespace) => true,
+                Role::Entity(_)
                 | Role::Nothing
                 | Role::Content(_)
                 | Role::Local
                 | Role::InParent
-                | Role::Unsupported(_) => return false,
+                | Role::Unsupported(_) => all,
+            };
+            if !through {
+                return None;
+            }
+            if let Some(lang) =
+                ast.decls.scope(x).and_then(slip_kiln::kiln::ast::decl::ScopeData::linkage_lang)
+            {
+                return Some((x, lang));
             }
             c = ast.decls.lexical_ctx(x);
         }
-        false
+        None
     }
 
     /// Whether the name of `e`, a function or variable, can have external
