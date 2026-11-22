@@ -14,6 +14,7 @@ use std::process::Command;
 use xtask::ci::{self, Options};
 
 const FAKE: &str = "#!/bin/sh\n\
+    [ \"$1\" = --probe ] && exit 0\n\
     echo \"$*\" >> \"$FAKE_CARGO_LOG\"\n\
     case \" $* \" in *\" $FAKE_CARGO_FAIL \"*) exit 1 ;; esac\n\
     exit 0\n";
@@ -24,6 +25,7 @@ fn fake(tag: &str) -> (Fixture, PathBuf, PathBuf) {
     f.write("bin/cargo", FAKE);
     let cargo = f.path("bin/cargo");
     std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    common::wait_executable(&cargo);
     let log = f.path("log");
     (f, cargo, log)
 }

@@ -7,6 +7,14 @@
 
 #![forbid(unsafe_code)]
 
+mod check;
+mod depfile;
+mod diags;
+mod parse;
+
+pub use check::KilnCheck;
+pub use parse::{ParseOptions, parse_observer};
+
 /// The version of the Kiln front end this build of Slip links
 /// (`MAJOR.MINOR.PATCH[-PRE]`).
 pub fn kiln_version() -> &'static str {

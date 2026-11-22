@@ -12,7 +12,8 @@ usage: cargo xtask <command>
 commands:
   lint                                         the lints of spec/harness.md §3
   wp [--ready]                                 the work packages (§4)
-  ci [--quick] [--step <name>]… [--keep-going] the gate (§2)";
+  ci [--quick] [--step <name>]… [--keep-going] the gate (§2)
+  corpus list|fetch|configure|status|path      the corpora (§8)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -22,6 +23,7 @@ fn main() -> ExitCode {
         Some("lint") => xtask::lint::main(&root, rest),
         Some("wp") => xtask::wp::main(&root, rest),
         Some("ci") => xtask::ci::main(&root, rest),
+        Some("corpus") => xtask::corpus::main(&root, rest),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
             ExitCode::SUCCESS

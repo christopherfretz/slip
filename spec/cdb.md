@@ -251,3 +251,15 @@ files, the front-end check, and the tool versions.
   database format.
 - A launcher written as `env VAR=value compiler …` is not recognised; the
   entry is excluded as `malformed_entry` (several inputs).
+- Options that make the front end write files even under `-fsyntax-only`
+  (`-ftime-trace`, `-fconstexpr-report=`): `KilnCheck` accepts them today,
+  so a parse can write into the subject's build tree. Refuse them in the
+  check, or have Kiln offer a mode without side outputs
+  (`docs/requests/KF1-front-end-entry.md` h).
+- Entries with the same observer id whose main file or language differ can
+  only arise if the file system changes while the plan is built. The first
+  entry's are kept; the change is not detected.
+- A database is read whole and parsed to a tree before any entry is used,
+  and entries are normalised and checked on one thread. A database of
+  hundreds of megabytes needs a streaming reader and a parallel check; the
+  plan format does not change.

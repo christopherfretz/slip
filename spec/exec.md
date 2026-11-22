@@ -55,8 +55,13 @@ Ids are 64 hexadecimal digits (`spec/model.md` §3); `<phase>` is `map` or
   publishes, which is safe beside a running phase. The lock is removed on
   every exit path its owner controls (§7).
 - **Cleaning.** `tmp/` entries are removed by the process that made them, on
-  every exit path it controls. Stale entries (from a killed process) are
-  removed when the store is opened exclusively.
+  every exit path it controls. Stale entries (from a killed process),
+  directories included, are removed when the store is opened exclusively.
+- **Scratch.** A process that needs temporary files of its own (a worker,
+  for what the front end writes) keeps them in the directory
+  `tmp/<process id>.d/`, which is a `tmp/` entry like any other.
+- **Path.** The store's path is made absolute when it is opened; that is the
+  path a `Job` carries (§5.2), since a worker changes its current directory.
 
 ## 3. Jobserver
 
@@ -250,37 +255,98 @@ A worker does not handle signals; it dies with its process group.
 ## 8. Commands (M0)
 
 ```
-slip plan  --db [<name>=]<compile_commands.json>…  [--store <dir>]
-slip parse [--plan <id or file> | --db …]  [--store <dir>] [-j <n>] [--memory <size>]
-           [--observer-memory <size>] [--observer-timeout <seconds>]
-           [--only <substring>]… [--limit <n>] [--worker-jobs <n>]
+slip plan  --db [<name>=]<compile_commands.json>…  [--store <dir>] [-j <n>]
+slip parse (--plan <id or file> | --db [<name>=]<compile_commands.json>…)
+           [--store <dir>] [-j <n>] [--only <substring>]… [--limit <n>]
+           [--memory <size>] [--observer-memory <size>] [--observer-timeout <seconds>]
+           [--estimate-base <size>] [--estimate-per-byte <n>]
+           [--worker-jobs <n>] [--worker-stack <size>]
 slip dump  <file>
 slip --version
 ```
 
-- `plan` builds the plan, publishes it, and prints its id and a summary: the
-  number of observers, and of exclusions per reason.
-- `parse` runs the map phase with the parse task on every observer of the
-  plan (`--only` keeps observers whose main file path contains the
-  substring; `--limit` keeps the first `n` in plan order), and prints a
-  summary: observers per shard status, jobs per `End`, wall time, the largest
-  `peak_rss` and the observer it belongs to.
-- `dump` prints the JSON rendering of a container file (`spec/model.md` §10).
-- `<size>` is a decimal number with an optional suffix `K`, `M`, `G`, `T`
-  (powers of 1024).
+An option's value is the next argument, or follows `=` for a long option
+(`--store=x`) and directly for `-j` (`-j4`). An option given twice is a
+usage error unless it is marked `…` above. `--` ends the options. `<size>`
+is a decimal number with an optional suffix `K`, `M`, `G`, `T` (powers of
+1024). Paths and `--only` values are byte strings, not required to be
+UTF-8.
 
 Without `--db name=`, a single database is named `default`; several need
-names.
+names. A `--db` value is split at its first `=` only if what precedes it is
+a non-empty name of ASCII letters, digits, `_`, `-` and `.`; otherwise the
+whole value is the path.
 
-### 8.1 Exit status
+### 8.1 `plan`
+
+Builds the plan (`spec/cdb.md` §7) with Kiln's front-end check, publishes it
+to the store (opened shared) and prints, on standard output:
+
+```
+plan <plan id>
+observers <n>
+excluded <reason> <n>          one line per reason of spec/model.md §7, in its order, zeros included
+```
+
+Main files are hashed on as many threads as CPU tokens can be had without
+waiting (§3: the implicit token, then pool tokens while one is idle), at
+most `-j`.
+
+### 8.2 `parse`
+
+Runs the map phase with the parse task on the observers of a plan.
+
+- `--plan <x>`: if `x` is 4 to 64 hexadecimal digits it is the prefix of a
+  plan id in the store, which must match exactly one plan (none, or several:
+  `Input` error naming them); otherwise `x` is the path of a plan file,
+  which is read, validated and published to the store.
+- `--db …`: the plan is built and published as by `plan`, with the same
+  output, and then parsed. Exactly one of `--plan` and `--db` is given.
+- `--only` keeps the observers whose main file path contains the substring
+  (any of them, if repeated); `--limit` then keeps the first `n` in plan
+  order. If a non-empty plan is left with no observer, a warning is printed
+  and the phase runs over nothing.
+
+The store is opened exclusively (§2). The worker command is the running
+executable (`std::env::current_exe`) with the arguments `__worker`,
+`--worker-jobs` and `--worker-stack`. The round is 0. On standard output,
+after the phase:
+
+```
+plan <plan id>                 (not repeated after --db)
+selected <n>                   observers the phase ran over
+shard <status> <n>             one line per Status of spec/model.md §8, in its order, zeros included
+job <end> <n>                  one line per End of spec/model.md §9, in its order, zeros included
+wall <seconds, three decimals>
+peak_rss <bytes> <main file of the observer it belongs to>      (omitted if no job reported one)
+run <path of the run record>
+```
+
+and on standard error one line per observer whose shard is not `ok`, in plan
+order: `slip: <status>: <main file>: <first line of the shard's message>`.
+
+### 8.3 `dump`
+
+Prints the JSON rendering of a container file (`spec/model.md` §10) on
+standard output.
+
+### 8.4 The worker
+
+`slip __worker [--worker-jobs <n>] [--worker-stack <size>]` is `serve`
+(§5.2) over standard input and output with the parse task: it runs the
+front end on the job's observer (`slip_kiln::parse_observer`) with the
+scratch directory of §2 in the job's store. It is not listed in the usage
+text. Nothing but protocol messages may be written to its standard output.
+
+### 8.5 Exit status
 
 | Status | Meaning |
 |---|---|
-| 0 | The command did what was asked and has nothing to report. For `parse`: every observer's shard has status `ok`. |
-| 1 | Completed with findings. For `parse`: at least one shard is not `ok`. For `plan`: at least one entry was excluded for a reason other than `not_a_compile`. |
-| 2 | Usage error (unknown option, missing argument). |
-| 3 | Input error: a database, plan, store or container that cannot be read or is invalid. |
-| 70 | Internal error (a bug): a panic in the coordinator. |
+| 0 | The command did what was asked and has nothing to report. For `parse`: every selected observer's shard has status `ok`. |
+| 1 | Completed with findings. For `parse`: at least one shard is not `ok`. For `plan`: at least one entry was excluded for a reason other than `not_a_compile`. For `parse --db`: either. |
+| 2 | Usage error (unknown command or option, missing or malformed argument, duplicate or missing configuration names). One line on standard error, then the usage text. |
+| 3 | Input error: a database, plan, store or container that cannot be read or is invalid, or a busy store. One line on standard error: `slip: <what>: <why>`. |
+| 70 | Internal error (a bug): a panic in the coordinator. One line on standard error, `slip: internal error: <message> (<file>:<line>)`, after every live child has been killed and every pool token returned. |
 | killed by signal | Interrupted (§7). |
 
 ## Tests
@@ -311,5 +377,8 @@ names.
   `kill(2)`. One process start per kill is acceptable at Slip's rates.
 - A stale lock whose process id has been reused by an unrelated process
   reads as busy until the file is removed by hand.
+- `parse` prints nothing while it runs. A progress line (observers done,
+  running, memory reserved) belongs on standard error when it is a terminal;
+  the pool needs a way to report it.
 - Whether the coordinator should lower its budget when other processes in
   the same cgroup use memory. Today the budget is static.
