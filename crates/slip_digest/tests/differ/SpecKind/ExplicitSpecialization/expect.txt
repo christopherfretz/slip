@@ -1,5 +1,3 @@
-# pending
-# needs: decl_data
 # the `templ` row is written by the payload records (decl_func.rs, decl_class.rs)
 # a class explicitly specialised has `from` itself (kiln_sema/src/templ/spec.rs:931),
 # so the kind of a class specialisation cannot change alone; a member's

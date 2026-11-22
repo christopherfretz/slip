@@ -100,7 +100,14 @@ impl Walk<'_> {
         // name, ctx: keyed.
         // ty-type
         let function = info(kind).function || kind == DeclKind::CXXDeductionGuide;
-        match n.ty() {
+        // A variable's type is the completed one (an array of unknown
+        // bound that another declaration completes, WP-026).
+        let ty = if ast.decls.var(d).is_some() {
+            crate::decl_func::var_type(self, d, e)
+        } else {
+            n.ty()
+        };
+        match ty {
             Some(q) => {
                 s.opt(true);
                 let t = self.type_digest(q, function);
@@ -136,7 +143,11 @@ impl Walk<'_> {
         let friend = if undeclared { FriendKind::Undeclared } else { FriendKind::None };
         let local_extern = redecls.iter().all(|&x| self.is_local_extern(x));
         let first = ast.decls.get(ast.first(e)).misc();
-        let definition = ast.definition(e).is_some();
+        // In `definition` for the definition class (§11.9), whose
+        // definition Kiln makes on use: its empty form here
+        // (`spec/landed/digest-kinds/WP-026.md`).
+        let definition = !crate::decl_func::definition_class(self, e)
+            && crate::units::defining_decl(self, e).is_some();
         s.tag(access::row(&misc.access()));
         s.tag(friend_kind::row(&friend));
         s.flags(FlagWord::new().bit(local_extern).bit(misc.name_independent()).bit(definition));
