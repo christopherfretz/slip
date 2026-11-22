@@ -140,22 +140,31 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    flag in `Dp` or in `Dq` is one finding `indeterminate`. The key takes no
    further part, and no exemption applies to it.
 2. **By key.** For each other key `k`, let `P(k)` and `Q(k)` be the
-   multisets of digests of that key in `Dp` and `Dq`.
-   - `P(k) = Q(k)`: no finding.
-   - both non-empty and different: finding `changed`, unless `k` is in
-     `changed`.
-   - `Q(k)` empty: finding `removed`, unless `k` is in `removed`.
-   - `P(k)` empty: finding `added`, unless `k` is in `created`.
+   multisets of digests of that key in `Dp` and `Dq`, and let
+   `R(k) = P(k) − Q(k)` and `A(k) = Q(k) − P(k)` be their differences as
+   multisets: what only the pre-image has of the key, and what only the
+   post-image has.
+   - both empty: no finding.
+   - both non-empty: finding `changed`, unless `k` is in `changed`.
+   - only `R(k)` non-empty: finding `removed`, unless `k` is in `removed`.
+   - only `A(k)` non-empty: finding `added`, unless `k` is in `created`.
 
-   A key normally has one unit on each side; several arise only from a
-   content-keyed unit written in several files (equal digests, a
+   A key normally has one unit on each side, and then this is the obvious
+   rule: equal, different, gone, new. Several units of one key arise only
+   from a content-keyed unit written in several files (equal digests, a
    multiplicity) and from merged namespaces that are not the same (unequal
-   digests). The rule above covers both without naming them.
-3. **Derived units.** For each key `k` that both `Vp` and `Vq` have: if any
-   of its units is indeterminate, finding `derived_indeterminate`; else if
-   the digest multisets differ, finding `derived_changed`. A derived key
-   that only one image has is **not** a finding. It is counted
-   (`verify.derived.only_pre`, `verify.derived.only_post`).
+   digests). Of two copies of one `static_assert`, deleting one is
+   `removed`, not `changed`: the rule is stated on the differences so that
+   what is equal on both sides never decides the kind of a finding (§4.1
+   depends on that).
+3. **Derived units.** Let `Vp`, `Vq` be the derived multisets. Every key
+   that has a unit with the indeterminate flag in `Vp` or in `Vq` is one
+   finding `derived_indeterminate`, and takes no further part. For each
+   other key, with `R(k)` and `A(k)` as in step 2: if both are non-empty,
+   finding `derived_changed`. If only one is, there is **no** finding; the
+   key is counted (`verify.derived.only_pre` when it is `R(k)`,
+   `verify.derived.only_post` when it is `A(k)`). No exemption applies to
+   a derived key.
 
 The observer is **verified** when there is no finding.
 
@@ -172,7 +181,9 @@ until it reaches a declared unit, as it must: nothing derived exists
 without a chain of demands that starts at something written. So a
 difference in the set of derived units always comes with a finding on a
 declared unit, and reporting the derived unit too would only add a second
-finding with less to say. What must not be skipped is a derived unit that
+finding with less to say. (An indeterminate derived unit is reported even
+on one side only: nothing can be argued from a digest that cannot be
+trusted.) What must not be skipped is a derived unit that
 both have and that differs: the same specialisation instantiated to
 something else is exactly how a dependent name that resolves differently
 shows up ([03](../docs/design/03-equivalence.md) §7 row 6), and no declared
@@ -187,20 +198,33 @@ Unit lists are not normally in a shard. The comparison is carried out on
 group sums first (`digest.md` §11):
 
 1. If the two `tu` digests are equal, the unit multisets are equal, flags
-   included. The observer is verified if `digest.indeterminate` is 0; else
-   it has that many `indeterminate` findings, unnamed until unit lists are
-   produced.
+   included. If, further, no group has an indeterminate unit (every
+   `GroupSum.indeterminate` is 0), there is no finding and the observer is
+   verified.
 2. Otherwise let `G` be the groups, identified by `(class, file)`, whose
-   sum is not the same in both shards, a group present in one shard only
-   included. The rules of §4 are applied to the units of the groups of `G`
-   alone.
+   sum is not the same in both shards (a group present in one shard only
+   included), together with every group of either shard that has an
+   indeterminate unit. The rules of §4 are applied to the units of the
+   groups of `G` alone.
 
-Restricting to `G` is exact, not an approximation: a group outside `G` has
-the same units, with the same multiplicities, in both images, and adding
-equal multisets to both sides of each comparison of §4 changes no outcome.
-(This is why §3 counts a unit once per group instead of once per image.) An
-entity whose first declaration moved from one file to another is in two
-groups of `G`, once on each side, and compares equal.
+Restricting to `G` is exact, not an approximation: it gives the same
+findings, the same counts and the same used exemptions as applying §4 to
+all units.
+
+- A group outside `G` has no indeterminate unit. So every indeterminate
+  unit of either image is in `G`, and the keys that steps 1 and 3 set
+  aside are the same keys.
+- A group outside `G` has the same units, with the same multiplicities, in
+  both images (§3 counts a unit once per group for this reason). For every
+  other key, leaving those groups out removes the same multiset `X` from
+  `P(k)` and from `Q(k)`, and `(P − X) − (Q − X) = P − Q`: `R(k)` and
+  `A(k)` do not change, and they are all that steps 2 and 3 look at.
+
+The second point is why §4 is stated on differences. A rule that asked
+"does the post-image have the key at all" would give a different answer
+inside `G` for a key that also has a unit outside it. An entity whose first
+declaration moved from one file to another is in two groups of `G`, once on
+each side, and compares equal.
 
 Step 2 needs the unit lists of the groups of `G` from both images. §5 says
 how the verify job obtains them.
@@ -218,7 +242,7 @@ the observer, the round, the post-image and `Declared`:
    with the reason.
 3. Compare group sums (§4.1). If the verdict is reached there, write it.
 4. Otherwise parse the pre-image again and digest it with no rules and
-   with detail for the files of `G` (the pre-image is the subject itself;
+   with detail for the groups of `G` (the pre-image is the subject itself;
    edits exist only in the overlay). Its group sums must equal the stored
    pre shard's: if not, the subject changed under the run or the front end
    is not deterministic, and the verdict is `unverifiable` saying so.
@@ -254,7 +278,7 @@ Verdict := kind:      VerdictKind
            pre:       digest            content id of the pre shard compared against; zero if there was none
            rules:     digest            rules_id
            reason:    str               for `unverifiable`; else empty
-           only_pre:  uv                derived keys only the pre-image has; 0 when the comparison ended at the sums
+           only_pre:  uv                derived keys counted by §4 step 3; 0 when the comparison ended at the sums
            only_post: uv
            used:      list<KeyId>       exemptions that prevented a finding, sorted
            total:     uv                number of findings
@@ -263,10 +287,10 @@ Verdict := kind:      VerdictKind
 VerdictKind := verified = 0 | mismatch = 1 | unverifiable = 2
 
 Finding := kind:  FindingKind
-           key:   opt<digest>           absent only for an unnamed `indeterminate` (§4.1 step 1)
-           file:  bytes                 the group's file, pre-image group if there is one; empty if unknown
-           pre:   opt<digest>           the unit's digest in each image, where the image has
-           post:  opt<digest>           exactly one unit of that key in the groups compared
+           key:   opt<digest>           always present in a verdict of this spec ("Open questions")
+           file:  bytes                 below
+           pre:   opt<digest>           below
+           post:  opt<digest>
            name:  str                   the entity as a person would write it; for the report only
            where: opt<Where>            §6.1
 
@@ -274,14 +298,21 @@ FindingKind := changed = 0 | removed = 1 | added = 2 | indeterminate = 3
              | derived_changed = 4 | derived_indeterminate = 5
 ```
 
-There is at most one finding per kind and key. Findings are ordered by
-kind as listed, then by `file`, then by `key` (an absent key first).
-`mismatch` if there is a finding, else `verified`. An observer whose post
-shard is not `ok` has no verdict and is `not_parsed`; an observer without a
-job is `unchanged`. Those five are the verdicts of an observer.
+`pre`, `post` and `file` are defined on what §4 looked at, so that they too
+are the same whether or not the comparison was restricted to `G`:
 
-A difference in the number of warnings between the pre and post shards is
-not a finding ("Open questions").
+- For `changed`, `removed`, `added` and `derived_changed`: `pre` is the
+  digest in `R(k)` when `R(k)` has exactly one element (counting
+  multiplicity), else absent; `post` likewise from `A(k)`. `file` is the
+  file of the first group, in the order of `(class, file)`, among the
+  groups whose units are not the same in both images, that holds a unit of
+  the key in the pre-image; if there is none, in the post-image. (There is
+  one: a key with a difference has a unit in a group that differs.)
+- For `indeterminate` and `derived_indeterminate`: `pre` is the digest of
+  the key's indeterminate unit in the pre-image when there is exactly one
+  such unit, else absent; `post` likewise. `file` is the file of the first
+  group that holds an indeterminate unit of the key, in the pre-image if
+  it has one, else in the post-image.
 
 ### 6.1 Localisation
 
@@ -326,9 +357,9 @@ Counters of a verify shard, added to those of `digest.md` §12:
 
 | Counter | Meaning |
 |---|---|
-| `verify.groups.differing` | groups of `G` |
+| `verify.groups.differing` | groups of `G` (§4.1) |
 | `verify.findings` | findings (`total`) |
-| `verify.derived.only_pre`, `verify.derived.only_post` | derived keys in one image only |
+| `verify.derived.only_pre`, `verify.derived.only_post` | derived keys counted by §4 step 3 |
 | `verify.exemptions.used` | exemptions that prevented a finding |
 | `verify.reparsed` | 1 if the pre-image was parsed again |
 
@@ -415,3 +446,16 @@ Counters of a verify shard, added to those of `digest.md` §12:
   (`digest.md` "Open questions") would remove most of those parses and cost
   shard size; to be measured on the corpus.
 - **`limit` and the sixteen** of §6 are guesses.
+- **`Finding.key` is optional in the format** and nothing produces a
+  finding without one since §4.1 names every finding. Make it required at
+  the next change of the section.
+- **The kind of a finding for a key with several units** follows the
+  differences (§4 step 2): one of two equal copies removed is `removed`,
+  and a second, different namespace merged onto a key is `added`. Whether
+  a transform author expects to write `removed`/`created` for these is to
+  be seen with the first transforms that do it (M3).
+- **A derived key with units on one side only** is not a finding even when
+  the other side has other units of that key (§4 step 3). Two different
+  units of one derived key in one image are a collision and so
+  indeterminate (`digest.md` §3.4), which is a finding; the case left is a
+  content-keyed derived unit, of which `digest-kinds.md` has none yet.

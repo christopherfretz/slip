@@ -416,10 +416,11 @@ Digests := scheme: uv              1; changes whenever any stream, key or table 
 Group   := class:  GroupClass
            file:   bytes           the subject path of a file; empty for class `tu`
            count:  uv              units in the group
+           indeterminate: uv       units in the group with the indeterminate flag
            digest: digest          H("slip.group.v1", list<Unit>) over the group's units
            units:  opt<list<Unit>> sorted by (key, digest); present when detail was asked for
 
-GroupSum   := class, file, count, digest
+GroupSum   := class, file, count, indeterminate, digest
 GroupClass := declared = 0 | derived = 1 | tu = 2
 
 Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminate; other bits must be 0
@@ -439,13 +440,18 @@ Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminat
   after.
 - Two units of one group with the same key and digest are one unit.
 - **Detail** is a parameter of the walk: `none` (no `units` lists), `all`,
-  a list of files (the groups of those files, of every class), or
-  `differing` from a list of `GroupSum`s (every group whose sum is not in
-  that list; this is what a verify job asks for, `verify.md` §5). The group
-  digests and `tu` are the same whatever the detail.
+  a list of groups by `(class, file)`, or `differing` from a list of
+  `GroupSum`s (every group whose sum is not in that list, and every group
+  that has an indeterminate unit; this is what a verify job asks for,
+  `verify.md` §4.1, §5). The group digests and `tu` are the same whatever
+  the detail.
+- `indeterminate` is in the sum, although the group's digest already
+  covers every flag, so that a reader of sums alone knows which groups
+  hold a unit that verification must report (`verify.md` §4.1).
 
 Equal `tu` digests mean equal unit sets. Unequal ones are narrowed to the
-groups that differ, whose unit lists (asked for with detail, by parsing
+groups that differ and the groups with an indeterminate unit, whose unit
+lists (asked for with detail, by parsing
 again if the shard does not have them) are compared unit by unit. Groups
 are an index, not a rule: verification's definition is always the
 comparison of unit sets (`verify.md`).
