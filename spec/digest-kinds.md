@@ -390,7 +390,13 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
 1. **First spellings.** A dependent `TemplateSpecialization`, `decltype`
    or array bound is canonical by profile; `TypeContext::arg_origins` and
    `expr_origins` keep the expressions of the first spelling for mangling
-   and printing. They are `out`: the profile is the fact (§4.4).
+   and printing. They are `out`: the profile is the fact (§4.4), and the
+   bytes of a profile are a function of the profile, not of the spelling
+   Kiln met first. A fact a spelling holds and the profile does not (the
+   declarations lookup found for an unresolved name) is not in the type;
+   a type that left one out is marked, and a unit that writes a marked
+   type is `Pending(Spelling)` until the unit writes its own spellings
+   (§4.4).
 2. **Alias template specialisations** are sugar; `alias_converted` holds
    their converted arguments and is `out`. The type the alias names is what
    is digested.
@@ -417,8 +423,8 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    it in the canonical type and the digest ignores it everywhere.
 7. **Parentheses in `decltype`.** A non-dependent `decltype((x))` has a
    different canonical type from `decltype(x)`, so nothing is needed. In a
-   `DependentDecltype` the operand is walked by §4.4, where a `ParenExpr`
-   that is the whole operand is written (§7, `ExprNode`,
+   `DependentDecltype` the operand is walked in profile mode (§4.4),
+   where every `ParenExpr` is written (§7 "Parentheses", `ExprNode`,
    `ParenExpr.a`).
 
 ### 4.3 The type records
@@ -880,23 +886,58 @@ written like any other builtin.
 
 A `ProfileId` names a canonical expression: Kiln's private word format,
 whose words hold ids local to the parse. The digest does not read the
-words. `profile` is written as the expression `ProfileEntry.first_expr`
-(`TypeContext::profile_expr`), walked by §7, inside the type or key stream
-being written, with these rules:
+words. `profile` is the expression `ProfileEntry.first_expr`
+(`TypeContext::profile_expr`) walked in **profile mode**, inside the type
+or key stream being written. Profile mode is also how every expression
+written into a key is walked (a function's trailing requires-clause,
+§3.3, and a template head's requires-clause, §3.4).
 
+- **A row is written iff Kiln's profile distinguishes it**
+  (`kiln_ast` `types/profile_expr.rs`, [temp.over.link]/5): two
+  equivalent expressions give the same bytes whichever was met first, and
+  two expressions Kiln tells apart give different bytes. The walk follows
+  Kiln's profiler kind by kind and writes for each of its words the
+  digest's form of the same fact: a canonical type as its type digest, a
+  declaration as its `Ref`, a name as its `Name`, a canonical qualifier,
+  template name or argument list as §4.3 writes it. The rows left out and
+  the facts added are listed per kind in
+  `spec/landed/digest-kinds/WP-036.md`; in short:
+  - left out: the value category, type and dependence of each node, the
+    implicit nodes Kiln walks through (conversions, temporaries,
+    cleanups, `ConstantExpr`), the parameter a
+    `SubstNonTypeTemplateParmExpr` replaced (it is its replacement), the
+    stored result of a requires-expression or concept-id, the qualifier
+    and found declaration of a resolved reference, non-dependent explicit
+    template arguments of a reference to a non-template, and the
+    declarations lookup found for an unresolved name;
+  - written as Kiln does: every `ParenExpr`; a template parameter by
+    depth, position and pack-ness (a non-type one with its type, a
+    top-level placeholder's constraint ignored); a function parameter by
+    position, pack-ness, function-scope depth, whether it is a
+    requires-expression's, and its type; a requires-expression's
+    parameters by type only; the spelled qualifier of a member access on
+    an object of dependent type, level by level.
+- A kind Kiln profiles as unique (a lambda, a statement expression, a
+  substituted pack, ...) is equal only to itself: it is walked in full by
+  §7, its bytes a function of its own spelling. So are a reflection and a
+  splice until their profile form is written.
+- **The mark.** When the walk leaves out a fact a spelling holds (a
+  non-empty found set of an `UnresolvedLookupExpr`), the type digest is
+  marked; a key ignores the mark, and a unit stream that writes a marked
+  type, outside any key and type, is indeterminate with
+  `Pending(Spelling)`. The fact belongs to the unit that owns the
+  spelling, which writes it when spellings are written ("Hazards accepted
+  for now").
 - If `first_expr` is absent the unit is indeterminate.
-- Entities declared inside the walked expression (the parameters of a
-  requires-expression or of a lambda) are numbered from 0 within the
-  stream being written. A reference to a local entity declared outside it
-  uses the unit's ordinal (digest §4.3); a type digest that contains such a
-  reference is memoised for the unit only.
-- A function parameter named in a signature is `Ref::param`, a template
-  parameter `Ref::template_param`; neither depends on the unit.
-
-Two parses that agree on the program walk the same first spelling, because
-both meet the spellings in the same order. A transformation that changes
-which of two equivalent spellings comes first can change the digest; that
-errs on the side of a reported difference ("Open questions").
+- A reference to a local entity declared outside the walked expression
+  uses the unit's ordinal (digest §4.3) and a type digest that holds one
+  is memoised for the unit only; in a key it is indeterminate. A use
+  inside a nested profile or type counts for every enclosing one.
+- **Owned expressions are not profiles.** The expressions a declaration
+  owns outside its type (its requires-clauses, default arguments,
+  `noexcept` and `explicit` operands, default template arguments) are
+  walked in full by §7 in the declaration's unit; only the key holds
+  their profile.
 
 ### `kiln_ast::types::profile::ProfileEntry`
 
@@ -2722,10 +2763,12 @@ Rules the rows refer to:
 - **Conditional rows.** A row whose note begins "when" is written only
   under that condition, which is always a fact an earlier row of the same
   node wrote.
-- **Parentheses.** A `ParenExpr` is not written: the walk writes its
-  operand in its place (digest §6). The one exception is a `ParenExpr`
-  that is the whole expression a `profile` of a `DependentDecltype` walks
-  (§4.2 rule 7): that node is written with its rows.
+- **Parentheses.** A `ParenExpr` around an operand that is not
+  instantiation-dependent is not written outside a canonical operand: the
+  walk writes its operand in its place (digest §6). Every other
+  `ParenExpr` is written with its rows: around a dependent operand, where
+  a parenthesis can change the meaning (`decltype((x))`, `&(T::m)`), and
+  everywhere in profile mode (§4.4), as Kiln's profile keeps them.
 - **Shared nodes.** The default argument behind a `CXXDefaultArgExpr` and
   the default member initialiser behind a `CXXDefaultInitExpr` are not
   children: they are written in the unit of the function or field
@@ -5731,9 +5774,13 @@ of a reported difference.
 
 ### Hazards accepted for now
 
-- **First spellings** (§4.4). A transformation that changes which of two
-  equivalent dependent spellings Kiln meets first can change a profile's
-  digest. It errs towards a reported difference.
+- **First spellings** (§4.4). A profile's bytes are a function of the
+  profile, so which of two equivalent spellings Kiln meets first does not
+  change them. What a spelling holds beyond its profile (the declarations
+  lookup found for an unresolved name in a dependent type) is in no row
+  yet: a unit that writes a type which left such a fact out is
+  `Pending(Spelling)` until units write their own spellings (WP-041), so
+  the gap is reported, never hidden.
 - **Literals from builtin macros** (§7) are written by value: moving a
   line that uses `__LINE__` as a value is a reported difference.
 - **Overloaded member access** (§7): only the first candidate is
