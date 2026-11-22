@@ -3046,7 +3046,7 @@ Rules the rows refer to:
 | `ExpressionTraitExpr.aux` | flag | in | enum TypeTrait |  |
 | `ExpressionTraitExpr.a` | child | in | child |  |
 | `ExpressionTraitExpr.b` | value | in | uv | the stored result |
-| `OffsetOfExpr.aux` | flag | in | bool | non-zero: the record is not standard-layout |
+| `OffsetOfExpr.aux` | flag | in | bool | non-zero: the designator passes through an invalid class (`invalid_record`); Kiln has reported an error, and the unit is indeterminate (`Cause::Error`) |
 | `OffsetOfExpr.a` | child | in | child* | the index expressions |
 | `OffsetOfExpr.b` | value | in | uv | the stored result |
 | `SizeOfPackExpr.a` | entity | in | ref | the pack |
@@ -3067,7 +3067,7 @@ Rules the rows refer to:
 | `CXXUnresolvedConstructExpr.a` | child | in | child* |  |
 | `CoawaitExpr.aux-implicit` | flag | in | bit | bit 0 |
 | `CoawaitExpr.aux-suspend` | flag | in | enum SuspendKind | bits 1-2 |
-| `CoawaitExpr.a` | child | in | child* | the first five elements of the list (`CoawaitParts`); the sixth, the placeholder for the awaiter, is reached from the calls |
+| `CoawaitExpr.a` | child | in | child* | elements two to five of the list (`CoawaitParts`): the first, the operand as written, is a node of `common`; the sixth, the placeholder for the awaiter, is reached from the calls |
 | `DependentCoawaitExpr.a` | child | in | child |  |
 | `CoyieldExpr.aux-implicit` | flag | in | bit | bit 0 |
 | `CoyieldExpr.aux-suspend` | flag | in | enum SuspendKind | bits 1-2 |
@@ -3549,7 +3549,7 @@ reads the list itself (`ExprNode`, `CoawaitExpr.a`).
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `operand` | child | out | - | first element of the list `CoawaitExpr.a` writes |
+| `operand` | child | out | - | first element: the operand as written, not written: `common` is built from it (for `co_yield {…}`, a placeholder `InitListExpr` of type `void` whose elements are nodes of `common`) |
 | `common` | child | out | - | second element: the awaiter |
 | `ready` | child | out | - | third element |
 | `suspend` | child | out | - | fourth element |
@@ -3632,7 +3632,7 @@ the row hold both cases.
 | `Field.start` | location | out | - |  |
 | `Field.end` | location | out | - |  |
 | `Index` | flag | in | tag 2 |  |
-| `Index.index` | child | in | child |  |
+| `Index.index` | child | in | uv | the position of the index in `OffsetOfExpr.a`, where it is written |
 | `Index.start` | location | out | - |  |
 | `Index.end` | location | out | - |  |
 
@@ -3645,7 +3645,7 @@ the row hold both cases.
 | `Offset` | flag | in | tag 1 |  |
 | `Offset.0` | value | in | uv | bytes |
 | `Index` | flag | in | tag 2 |  |
-| `Index.index` | child | in | child | also an element of `OffsetOfExpr.a`; written again here so that the step says which |
+| `Index.index` | child | in | uv | the position of the index in `OffsetOfExpr.a`, where it is written |
 | `Index.elem_size` | value | in | uv |  |
 
 ### `kiln_ast::expr::InitListExtra`
@@ -4507,7 +4507,7 @@ questions"); where the two can be told apart by value the row says so.
 |---|---|---|---|---|
 | `kind` | flag | in | enum AttrKind |  |
 | `syntax` | flag | in | enum AttrSyntax | `[[...]]`, `__attribute__`, a keyword, `__declspec` or a pragma: code generation tells `__attribute__((noreturn))` from `[[noreturn]]` by it |
-| `flags-implicit` | flag | in | bit | bit 0: added by sema or by a pragma, not written |
+| `flags-implicit` | flag | in | bit | bit 0: added by sema, not written. An attribute from `#pragma clang attribute` is stored as written, without this bit (`kiln_sema` `pragma_attr.rs:503-518`) |
 | `flags-inherited` | bookkeeping | out | - | bit 1: a copy from an earlier declaration, which the list rule leaves out. Kiln sets it at one site, for an `ASM_LABEL` |
 | `flags-gnu-scoped` | written | out | - | bit 3: written with the `gnu::` scope |
 | `loc` | location | out | - |  |
@@ -4876,7 +4876,7 @@ statement, and its initialiser is the corresponding entry of `inits`.
 |---|---|---|---|---|
 | `closure` | bookkeeping | out | - | the class whose row is writing this record |
 | `call_op` | bookkeeping | out | - | the call operator: a member of the closure, written with it |
-| `default` | flag | in | enum CaptureDefault |  |
+| `default` | flag | in | enum CaptureDefault | Kiln's ODR hash reads `[=]` with an implicit capture of `x` as `[x]`; the digest does not, on purpose: in a template the default decides what an instantiation captures, and `[=]` captures `this` differently |
 | `default_loc` | location | out | - |  |
 | `captures` | entity | in | record LambdaCapture* | in closure member order |
 | `inits` | child | in | child*? | the initialiser of each capture's member |
@@ -4910,7 +4910,7 @@ statement, and its initialiser is the corresponding entry of `inits`.
 | `loc` | location | out | - |  |
 | `ellipsis-present` | flag | in | bit | a capture pack |
 | `ellipsis-position` | location | out | - |  |
-| `implicit` | flag | in | bit |  |
+| `implicit` | flag | in | bit | see `LambdaData` `default` |
 | `init` | flag | in | bit |  |
 
 ### `kiln_ast::lambda::CaptureKind`
@@ -5792,4 +5792,14 @@ of a reported difference.
   unchecked `VISIBILITY` has `a` of `u32::MAX`; a checked `TLS_MODEL`
   has `b` 0 and `a` not 0; a checked `CONSTRUCTOR` or `DESTRUCTOR` has
   `b` 0; `NONNULL` and `CALLBACK` are checked in place.
+- **`offsetof` names neither its class nor its member** (§7). Kiln's
+  node of a non-dependent `offsetof` keeps the index expressions and the
+  folded offset; the operand type and the member path are dropped. Two
+  expressions with one value digest equal although they name different
+  things: another class of the same layout, another member at the same
+  offset (two members of a union), the same member through another
+  base. A transformation that changes which class an `offsetof` names
+  without changing the offset is not seen. Kiln is asked to keep the
+  operand type and the resolved designator (request KQ1 amendment 1,
+  §7); `differ/_/offsetof-other-class-same-layout` waits on it.
 - **Modules** (§10.7) have rows and no experience behind them.
