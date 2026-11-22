@@ -1,0 +1,4 @@
+# pending
+# needs: stmt
+# the body of g is a statement; local::write_decl writes the redeclaration's default (WP-026)
+changed g()
