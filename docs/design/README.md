@@ -192,5 +192,6 @@ For a transformation declared semantics-preserving modulo a relocation map `M`:
    the build treats them: a file every observer reaches as a system header
    (`-isystem` and the like) is read-only. A file that some observers see
    as a system header and others do not is reported, not guessed.
-5. **Naming.** This design calls a user's program a *transform*, the code it
-   runs on the *subject*, and a (TU, configuration) pair an *observer*.
+5. **Naming.** *Decided 2026-11-22: the names stay.* A user's program is a
+   *transform*, the code it runs on the *subject*, and a (TU, configuration)
+   pair an *observer*.
