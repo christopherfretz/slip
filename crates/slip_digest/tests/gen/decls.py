@@ -287,8 +287,8 @@ differ("DeclMisc", "0-module-ownership", "int x;", "export int x;", ["changed x"
        pre="export module m;", std="c++20", needs="kiln",
        why="Kiln sets no module ownership: `DeclMisc::with_module_ownership` has no caller "
            "(kiln_ast/src/decl.rs:512), so every declaration is `Unowned`")
-equal("ModuleOwnership", "Unowned", "int x;", "int x;",
-      note="`Unowned`: every declaration Kiln makes (no other value is set, kiln_ast/src/decl.rs:512).",
+equal("_", "module-ownership-unowned", "int x;", "int x;",
+      note="ModuleOwnership `Unowned` is every declaration Kiln makes (no other value is set, kiln_ast/src/decl.rs:512).",
       pre="export module m;", std="c++20")
 
 # ---------------------------------------------------------------------------
@@ -412,8 +412,8 @@ for i, (row, kw) in enumerate(KEYWORDS):
     differ("TagKeyword", row, f"using X = {kw}T::x;", f"using X = {pkw}T::x;", ["changed A::X"],
            note=f"`{row}`: `{kw}T::x` against `{pkw}T::x`.",
            pre="template <class T> struct A {", post="};", std="c++20")
-equal("TagKeyword", "None", "using X = typename T::x;", "using X = T::x;",
-      note="`None`: canonical as `Typename` (kiln_ast/src/types/canon.rs:899 "
+equal("_", "tag-keyword-none-is-typename", "using X = typename T::x;", "using X = T::x;",
+      note="TagKeyword `None` is canonical as `Typename` (kiln_ast/src/types/canon.rs:899 "
            "`canonical_keyword`), so no canonical type holds it.",
       pre="template <class T> struct A {", post="};", std="c++20")
 differ("AutoKeyword", "Auto", "decltype(auto) f();", "auto f();",
