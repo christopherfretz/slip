@@ -272,7 +272,11 @@ says so in its note.
   resolved through them;
 - a block-scope declaration of a function or of a variable with linkage
   (`DeclMisc` `misc-local-extern`) is written as a `ref`: the entity is a
-  unit of the namespace it belongs to;
+  unit of the namespace it belongs to. A function's `ref` is followed by a
+  count and, for each parameter, what that declaration's parameter holds
+  that the entity's unit leaves out: its default argument (`child?`), then
+  its attributes (`attrs`, §10.1) and its annotations (§10.5), its own
+  alone (`spec/landed/digest-kinds/WP-026.md`, `WP-100.md`);
 - a local `static_assert` is written as its rows.
 
 ## 3. Keys
@@ -1812,6 +1816,13 @@ A function's stream also holds its language linkage (`ScopeData`,
 | `flags-default-arg-pending` | bookkeeping | demand | - | §11.4: the default argument is not parsed or instantiated yet |
 | `flags-static-array` | flag | in | bit |  |
 | `flags-scope-depth` | value | in | uv | high byte: the function-prototype scope depth, the `level` of `Ref::param` |
+
+A parameter has no redeclarations of its own. Where a rule reads "every
+declaration of the chain" of a parameter (its attributes, §10.1, and its
+annotations, §10.5), the chain is parameter *i* of every declaration of
+the function's chain except those at block scope, in chain order, the
+first declaration first; `default_arg` reads the same declarations,
+leaving out also the instantiated ones (§11.4).
 
 ### `kiln_ast::decl::VarData`
 
@@ -4326,6 +4337,20 @@ The encoding `attrs` writes an attribute list: a count, then each node as
   kind a later declaration has no node and Kiln reads the chain, as this
   rule does. The order is kept because Kiln mangles the `enable_if`
   conditions of a function in it.
+- For a parameter of a function, the chain is parameter *i* (its
+  `ParamData` `index`) of every declaration of the function's chain
+  except those at block scope, in chain order, the first declaration
+  first: the declarations whose defaults `ParamData` `default_arg` reads
+  (§5.4), instantiated declarations included. Within one parameter the
+  nodes are in stored order, and `inherited` copies are left out as for
+  any declaration. A declaration with no parameter *i* contributes
+  nothing. The attributes on a parameter of a block-scope declaration
+  are that declaration's own: they are written with it in its block
+  (§2.4), not in the entity's unit. A parameter that is not at the
+  position its `index` names in its function's list makes the unit
+  `Unaccounted("ParamData/index")`, and a parameter of a declaration
+  (not at block scope) that is not in the function's chain
+  `Unaccounted("ParamData/chain")`.
 
 An instantiated declaration carries the attributes Kiln instantiated from
 its pattern; they are written as found.
@@ -4945,7 +4970,8 @@ statement, and its initialiser is the corresponding entry of `inits`.
 ### 10.5 Annotations
 
 A declaration's stream holds the annotations of every declaration of its
-chain, in chain order (`of_decl`). A class's stream then holds one list
+chain, in chain order (`of_decl`); a parameter's chain is the one §10.1
+gives it. A class's stream then holds one list
 for each base specifier of its definition, in order (`of_base`).
 
 ### `kiln_ast::annot::Annotation`

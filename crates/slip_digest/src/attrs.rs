@@ -559,34 +559,25 @@ fn kind_row(kind: AttrKind) -> Option<&'static KindRow> {
     KINDS.iter().find(|r| r.kind == kind)
 }
 
+/// The position of a parameter that is not where its `ParamData` `index`
+/// says in its function's parameter list.
+const PARAM_INDEX_UNACCOUNTED: Cause = Cause::Unaccounted("ParamData/index");
+/// A parameter of a declaration (not at block scope) that its function's
+/// chain (`decl_func::param_decls`) does not hold.
+const PARAM_CHAIN_UNACCOUNTED: Cause = Cause::Unaccounted("ParamData/chain");
+
 /// The row `decl_attrs` of `AttrArena` (`attrs`, §10.1) and the rows of
 /// `AnnotArena` (§10.5) for `d`: the attributes and annotations of every
-/// declaration of `d`'s chain, first to last.
+/// declaration of `d`'s chain, first to last. A parameter's chain is
+/// [`param_chain`].
 pub(crate) fn decl_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let ast = w.ast;
-    let mut chain = w.redecls(d);
-    chain.reverse();
-    // AttrArena `decl_attrs`: the nodes of every declaration, in chain
-    // order and stored order, without the `inherited` copies.
-    let mut nodes: Vec<AttrNode> = Vec::new();
-    for &x in &chain {
-        for a in attr_ids(w, s, ast.attrs.of_decl(x)) {
-            let n = *ast.attrs.get(a);
-            if n.flags & INHERITED == 0 {
-                nodes.push(n);
-            }
-        }
-    }
-    s.count(nodes.len());
-    for n in &nodes {
-        attr_node(w, s, n);
-    }
-    // AnnotArena `of_decl`: one list over the chain.
-    let mut anns: Vec<AnnId> = Vec::new();
-    for &x in &chain {
-        anns.extend(ann_ids(w, s, ast.annots.of_decl(x)));
-    }
-    annotations(w, s, &anns);
+    let chain = param_chain(w, s, d).unwrap_or_else(|| {
+        let mut chain = w.redecls(d);
+        chain.reverse();
+        chain
+    });
+    chain_attrs(w, s, &chain);
     // AnnotArena `of_base`: a list per base-specifier of the definition.
     let bases = match ast.definition(d) {
         Some(def) => ast.decls.bases(def, &ast.lists).count(),
@@ -603,6 +594,69 @@ pub(crate) fn decl_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         };
         annotations(w, s, &anns);
     }
+}
+
+/// `AttrArena` `decl_attrs` and `AnnotArena` `of_decl` over the
+/// declarations `chain`, in its order: the nodes of every declaration in
+/// stored order, without the `inherited` copies; then one list of
+/// annotations.
+fn chain_attrs(w: &mut Walk<'_>, s: &mut Stream, chain: &[DeclId]) {
+    let ast = w.ast;
+    let mut nodes: Vec<AttrNode> = Vec::new();
+    for &x in chain {
+        for a in attr_ids(w, s, ast.attrs.of_decl(x)) {
+            let n = *ast.attrs.get(a);
+            if n.flags & INHERITED == 0 {
+                nodes.push(n);
+            }
+        }
+    }
+    s.count(nodes.len());
+    for n in &nodes {
+        attr_node(w, s, n);
+    }
+    let mut anns: Vec<AnnId> = Vec::new();
+    for &x in chain {
+        anns.extend(ann_ids(w, s, ast.annots.of_decl(x)));
+    }
+    annotations(w, s, &anns);
+}
+
+/// The chain of parameter `d` of a function (§10.1): parameter i of each
+/// declaration of `decl_func::param_decls` of its function, in that
+/// order; a declaration with no parameter i gives none. `None` when `d`
+/// is no function's parameter. A parameter of a block-scope declaration
+/// thus has no attributes in the unit: they are written with that
+/// declaration in its block ([`own_attrs`]).
+fn param_chain(w: &Walk<'_>, s: &mut Stream, d: DeclId) -> Option<Vec<DeclId>> {
+    let ast = w.ast;
+    let index = usize::from(ast.decls.param(d)?.index);
+    let f = ast.decls.get(d).ctx()?;
+    let own = ast.decls.function(f)?;
+    if ast.lists.iter::<DeclId>(own.params).nth(index) != Some(d) {
+        s.indeterminate(PARAM_INDEX_UNACCOUNTED);
+        return Some(vec![d]);
+    }
+    let decls = crate::decl_func::param_decls(w, f);
+    if !decls.contains(&f) && !w.is_local_extern(f) {
+        // The declaration whose parameter is written is not in the chain
+        // read: its own nodes would be lost.
+        s.indeterminate(PARAM_CHAIN_UNACCOUNTED);
+    }
+    Some(
+        decls
+            .iter()
+            .filter_map(|&x| ast.decls.function(x))
+            .filter_map(|x| ast.lists.iter::<DeclId>(x.params).nth(index))
+            .collect(),
+    )
+}
+
+/// The attributes and annotations parameter `d` of a block-scope function
+/// declaration holds itself, as `decl_attrs` writes them for a chain of
+/// `d` alone (`local::write_decl`, `spec/landed/digest-kinds/WP-100.md`).
+pub(crate) fn own_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    chain_attrs(w, s, &[d]);
 }
 
 /// `attrs` of a statement (`AttributedStmt.a`, §10.1): the nodes of the
@@ -1758,5 +1812,91 @@ mod tests {
             s.count(2).bytes(lo.as_bytes()).bytes(hi.as_bytes()).bool(false);
         });
         assert_eq!(set(3, 0), want);
+    }
+
+    /// The parameters named `name`, in the order Kiln made them.
+    fn params_named(w: &Walk<'_>, name: &str) -> Vec<DeclId> {
+        let ast = w.ast;
+        (1..=u32::try_from(ast.decls.len()).expect("few declarations"))
+            .map(DeclId::new)
+            .filter(|&d| {
+                ast.decls.param(d).is_some()
+                    && ast
+                        .decls
+                        .get(d)
+                        .name()
+                        .as_ident()
+                        .is_some_and(|s| ast.symbols().as_str(s) == name)
+            })
+            .collect()
+    }
+
+    /// What `decl_attrs` writes for parameter `name` number `n` of `src`.
+    fn param_bytes(src: &str, std: &str, name: &str, n: usize) -> (Vec<u8>, Option<Cause>) {
+        with_walk(src, std, |w| {
+            let p = params_named(w, name)[n];
+            let mut s = Stream::new();
+            decl_attrs(w, &mut s, p);
+            (s.as_bytes().to_vec(), s.cause())
+        })
+    }
+
+    // §10.1 the encoding `attrs`, for a parameter (WP-100): the nodes of
+    // parameter i of every declaration of its function, first declaration
+    // first; read from the definition's parameter, the first
+    // declaration's node comes first.
+    #[test]
+    fn s10_1_param_chain_order() {
+        let two = "void f(int *p __attribute__((nonnull)));\n\
+                   void f(int *p __attribute__((noescape))) {}";
+        let got = param_bytes(two, "c++20", "p", 1);
+        let one = "void f(int *p __attribute__((nonnull)) __attribute__((noescape)));";
+        assert_eq!(got, param_bytes(one, "c++20", "p", 0));
+        let swapped = "void f(int *p __attribute__((noescape)) __attribute__((nonnull)));";
+        assert_ne!(got.0, param_bytes(swapped, "c++20", "p", 0).0);
+        // Read from either declaration, the same list.
+        assert_eq!(param_bytes(two, "c++20", "p", 0), got);
+    }
+
+    // §10.5 (WP-100): a parameter's annotations follow the same chain.
+    #[test]
+    fn s10_5_param_annotations_over_the_chain() {
+        let src = "void f([[=1]] int x);\nvoid f(int x) {}";
+        let got = param_bytes(src, "c++26", "x", 1);
+        assert_eq!(got, param_bytes("void f([[=1]] int x);", "c++26", "x", 0));
+        assert_ne!(got.0, param_bytes("void f(int x);", "c++26", "x", 0).0);
+    }
+
+    // §10.1 (WP-100): a block-scope declaration's parameter is left out
+    // of the chain of the entity's parameter; the block writes its own
+    // (`local::tests::a_block_scope_parameter_writes_its_attributes`).
+    #[test]
+    fn s10_1_param_chain_leaves_out_block_scope() {
+        let src = "void f(int *p);\nvoid g() { void f(int *p __attribute__((nonnull))); }";
+        let got = param_bytes(src, "c++20", "p", 0);
+        assert_eq!(got, param_bytes("void f(int *p);", "c++20", "p", 0));
+        let after = "void g() { void f(int *p __attribute__((nonnull))); }\nvoid f(int *p);";
+        assert_eq!(param_bytes(after, "c++20", "p", 1), got);
+    }
+
+    // §10.1 last paragraph (WP-100 decision 4): an instantiated
+    // declaration's attributes are written as found. Kiln gives an
+    // instantiated function's parameters only their Swift ABI attributes
+    // (kiln_sema templ/subst/decls.rs `param_infos`); when this fails,
+    // Kiln instantiates the others, and the explicit instantiation in
+    // `differ/_/param-attr-template-*` changes too.
+    #[test]
+    fn kiln_does_not_instantiate_parameter_attributes() {
+        let src = "template<class T> void f(T *p __attribute__((nonnull)));\n\
+                   template<class T> void f(T *p __attribute__((nonnull))) {}\n\
+                   template void f<int>(int *);";
+        with_walk(src, "c++20", |w| {
+            let ast = w.ast;
+            let ps = params_named(w, "p");
+            assert_eq!(ps.len(), 3, "two patterns' and the instantiation's");
+            let has = |p: DeclId| ast.lists.iter::<AttrId>(ast.attrs.of_decl(p)).count();
+            assert_eq!((has(ps[0]), has(ps[1])), (1, 1));
+            assert_eq!(has(ps[2]), 0, "Kiln now instantiates a parameter's attributes");
+        });
     }
 }
