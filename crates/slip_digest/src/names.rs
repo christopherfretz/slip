@@ -174,9 +174,19 @@ impl<'n, 'w> Names<'n, 'w> {
         }
         self.qualified(d, &mut out, 0);
         spec_args(ast, d, &mut out);
-        let k = n.kind();
-        if info(k).function || k == DeclKind::CXXDeductionGuide {
-            function_suffix(ast, d, &mut out);
+        self.suffix(d, e, kind, &mut out);
+        out
+    }
+
+    /// What follows the qualified name of the unit of entity `e`, read from
+    /// declaration `d`: the parameters, and the marks that tell apart units
+    /// that would otherwise share a name.
+    fn suffix(&self, d: DeclId, e: DeclId, kind: KeyKind, out: &mut String) {
+        let ast = self.ast;
+        let node = ast.decls.get(d);
+        let kind_of = node.kind();
+        if info(kind_of).function || kind_of == DeclKind::CXXDeductionGuide {
+            function_suffix(ast, d, out);
         }
         if self.holding.contains_key(&e) || self.holding.contains_key(&d) {
             out.push_str(" (holding variable)");
@@ -184,21 +194,21 @@ impl<'n, 'w> Names<'n, 'w> {
         // Two name-independent members of one name: their ordinal, as in
         // the key (`keys.rs` `name_independent_ordinal`).
         if kind == KeyKind::Field
-            && n.misc().name_independent()
-            && let Some(i) = self.w.name_independent_ordinal(d)
+            && node.misc().name_independent()
+            && let Some(ordinal) = self.w.name_independent_ordinal(d)
         {
             out.push_str(" (name-independent ");
-            out.push_str(&i.to_string());
+            out.push_str(&ordinal.to_string());
             out.push(')');
         }
         // An unnamed field or variable: the object of an anonymous class,
         // named by it, or a bit-field, by its ordinal (digest §3.3).
         if out.is_empty() || out.ends_with("::") {
-            let anonymous = n.ty().and_then(|q| ast.types.as_record(ast.types.canonical(q)));
+            let anonymous = node.ty().and_then(|q| ast.types.as_record(ast.types.canonical(q)));
             match (anonymous, self.w.ordinal_of.get(&e)) {
                 (Some(r), _) if self.is_unnamed_tag(r) => {
                     out.push_str("(object of ");
-                    self.unnamed_tag(r, &mut out);
+                    self.unnamed_tag(r, out);
                     out.push(')');
                 }
                 (_, Some(i)) => {
@@ -209,7 +219,6 @@ impl<'n, 'w> Names<'n, 'w> {
                 (_, None) => out.push_str("(unnamed)"),
             }
         }
-        out
     }
 
     /// The name of an entity a unit refers to (a using-shadow's target,

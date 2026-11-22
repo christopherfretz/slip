@@ -932,6 +932,35 @@ impl Walk<'_> {
         self.ordinal_of.get(&e).copied()
     }
 
+    /// The discriminator of function template `e` (digest-kinds §3.3): its
+    /// template head, then its pattern's function discriminator and return
+    /// type.
+    fn function_template_disc(&mut self, s: &mut Stream, e: DeclId) {
+        let ast = self.ast;
+        let info = ast.template_info(e).copied();
+        match info {
+            Some(i) => {
+                crate::templ::template_head(self, s, i.params);
+                match i.pattern {
+                    Some(p) => {
+                        let befriended = self.friend_class(e).is_some();
+                        self.function_disc(s, p, befriended);
+                        let ret = ast.decls.get(p).ty().and_then(|q| {
+                            ast.types.proto(q).map(slip_kiln::kiln::ast::types::FuncProto::ret)
+                        });
+                        self.write_type_opt(s, ret);
+                    }
+                    None => {
+                        s.indeterminate(Cause::Unaccounted("key/function-template"));
+                    }
+                }
+            }
+            None => {
+                s.indeterminate(Cause::Unaccounted("key/function-template"));
+            }
+        }
+    }
+
     /// The discriminator of entity `e` of key kind `kind` (digest-kinds
     /// §3.3), with the cause it carries; `None` when the kind has none.
     fn disc(
@@ -964,32 +993,7 @@ impl Walk<'_> {
                 self.write_ref_opt(&mut s, template);
                 self.function_disc(&mut s, e, false);
             }
-            KeyKind::FunctionTemplate => {
-                let info = ast.template_info(e).copied();
-                match info {
-                    Some(i) => {
-                        crate::templ::template_head(self, &mut s, i.params);
-                        match i.pattern {
-                            Some(p) => {
-                                let befriended = self.friend_class(e).is_some();
-                                self.function_disc(&mut s, p, befriended);
-                                let ret = ast.decls.get(p).ty().and_then(|q| {
-                                    ast.types
-                                        .proto(q)
-                                        .map(slip_kiln::kiln::ast::types::FuncProto::ret)
-                                });
-                                self.write_type_opt(&mut s, ret);
-                            }
-                            None => {
-                                s.indeterminate(Cause::Unaccounted("key/function-template"));
-                            }
-                        }
-                    }
-                    None => {
-                        s.indeterminate(Cause::Unaccounted("key/function-template"));
-                    }
-                }
-            }
+            KeyKind::FunctionTemplate => self.function_template_disc(&mut s, e),
             KeyKind::ClassTemplate
             | KeyKind::VariableTemplate
             | KeyKind::AliasTemplate
