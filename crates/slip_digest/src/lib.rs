@@ -69,7 +69,8 @@
 //! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5): pending (`Area::Templ`) |
 //! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4): pending (`Area::Local`) |
 //! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1): pending (`Area::Stmt`) |
-//! | `attrs::decl_attrs(w, s, d)` | pending (`Area::Attrs`) |
+//! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
+//! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
 //! | `other::module_rows(w, s, d)` | pending (`Area::Other`) |
 //! | `templ::decl_maps(w, s, d)` | `TemplateTables.defaults` written; the other rows keyed by `DeclId` pending (`Area::Templ`) |
 //! | `templ::param_object(w, s, d)` | pending (`Area::Templ`) |
