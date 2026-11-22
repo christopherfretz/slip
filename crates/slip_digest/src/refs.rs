@@ -60,6 +60,13 @@ impl Walk<'_> {
             | Role::Unsupported(_) => false,
         };
         if local_object {
+            if self.in_key > 0 {
+                // A key holds no local entity of a unit: a parameter in a
+                // signature is `Ref::param`, written by the expression
+                // area; anything else here is a shape no rule gives.
+                s.uv(REF_NONE).indeterminate(Cause::Unaccounted("key/local-ref"));
+                return;
+            }
             let n = crate::local::ordinal(self, d);
             self.unit.local_uses += 1;
             s.uv(REF_LOCAL).uv(n);

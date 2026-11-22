@@ -2,7 +2,9 @@
 //! key each declaration has, its parent, name and discriminator, mapped
 //! under the walk's rules.
 
-use slip_kiln::kiln::ast::decl::{DeclKind, LinkageLang, TemplLinkKind, VarStorage};
+use slip_kiln::kiln::ast::decl::{
+    DeclKind, FnStorage, LinkageLang, NamespaceData, TemplLinkKind, VarStorage,
+};
 use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_kiln::kiln::ast::types::TypeView;
 use slip_kiln::kiln::ast::{DeclId, QualType};
@@ -216,6 +218,9 @@ impl Walk<'_> {
             return *k;
         }
         if self.keys_in_progress.contains(&e) {
+            // What is computed above this point depends on the path that
+            // reached the cycle: not memoised, as for a depth abort.
+            self.aborts += 1;
             return KeyRes::None(Some(KEY_CYCLE));
         }
         if !self.enter() {
@@ -223,7 +228,14 @@ impl Walk<'_> {
         }
         let aborts = self.aborts;
         self.keys_in_progress.insert(e);
-        let res = match self.compute_key(e) {
+        // A key does not depend on the unit that asks for it: the unit's
+        // local state is put aside (`Walk::in_key`).
+        let saved = std::mem::take(&mut self.unit);
+        self.in_key += 1;
+        let computed = self.compute_key(e);
+        self.in_key -= 1;
+        self.unit = saved;
+        let res = match computed {
             Ok((key, cause)) => {
                 let kind = key.kind;
                 let key = self.rules.map(key);
@@ -303,10 +315,10 @@ impl Walk<'_> {
         let kind = match kind_info.role {
             Role::Entity(kind) => kind,
             Role::Content(kind) => {
-                let parent = self.parent_of(e)?;
+                let (parent, parent_cause) = self.parent_of(e)?;
                 let h = self.content_hash(e);
                 let key = Key { kind, parent, name: Name::Content, disc: Some(h.digest) };
-                return Ok((key, h.cause));
+                return Ok((key, merge(parent_cause, h.cause)));
             }
             Role::Unsupported(what) => return Err(Some(Cause::Unsupported(what))),
             Role::Nothing | Role::Transparent | Role::Root | Role::Local | Role::InParent => {
@@ -315,7 +327,7 @@ impl Walk<'_> {
         };
         let decomposition = kind == KeyKind::Variable && ast.decls.is_decomposition(e);
         let kind = if decomposition { KeyKind::Decomposition } else { kind };
-        let parent = self.parent_of(e)?;
+        let (parent, parent_cause) = self.parent_of(e)?;
         let mut cause;
         let name = if decomposition {
             let first =
@@ -335,6 +347,7 @@ impl Walk<'_> {
         if let Err(what) = name.validate() {
             return Err(Some(Cause::Unaccounted(what)));
         }
+        cause = merge(cause, parent_cause);
         let disc = self.disc(e, kind, parent == Parent::CLinkage);
         let disc = match disc {
             Some(h) => {
@@ -354,11 +367,12 @@ impl Walk<'_> {
         params: Option<slip_kiln::kiln::ast::TemplateParamListId>,
         args: slip_kiln::kiln::ast::ArgListId,
     ) -> Result<(Key, Option<Cause>), Option<Cause>> {
-        let parent = match self.key(template) {
-            KeyRes::Key { id, .. } => Parent::Unit(id),
+        let (parent, template_cause) = match self.key(template) {
+            KeyRes::Key { id, cause, .. } => (Parent::Unit(id), cause),
             KeyRes::None(c) => return Err(Some(c.unwrap_or(BAD_PARENT))),
         };
         let (name, mut cause) = self.entity_name(self.entity(template))?;
+        cause = merge(cause, template_cause);
         let mut s = Stream::new();
         let kind = if let Some(p) = params {
             crate::templ::template_head(self, &mut s, p);
@@ -374,30 +388,34 @@ impl Walk<'_> {
         Ok((Key { kind, parent, name, disc: Some(h.digest) }, cause))
     }
 
-    /// The parent of entity `e` (`spec/digest.md` §3): `Err` for a local
-    /// entity, whose key is `local(n)` and needs the statement walk.
-    fn parent_of(&mut self, e: DeclId) -> Result<Parent, Option<Cause>> {
+    /// The parent of entity `e` (`spec/digest.md` §3), with the cause its
+    /// key carries: `Err` for a local entity, whose key is `local(n)` and
+    /// needs the statement walk.
+    pub(crate) fn parent_of(
+        &mut self,
+        e: DeclId,
+    ) -> Result<(Parent, Option<Cause>), Option<Cause>> {
         let ast = self.ast;
         let n = ast.decls.get(e);
         if ast.decls.builtin_id(e).is_some() || n.kind() == DeclKind::BuiltinTemplate {
-            return Ok(Parent::Builtin);
+            return Ok((Parent::Builtin, None));
         }
         if ast.decls.record(e).is_some_and(|r| r.lambda.is_some()) {
             return Err(Some(Cause::Pending(crate::Area::Local)));
         }
         let local_extern = self.is_local_extern(e);
         if info(n.kind()).c_linkage && self.in_c_linkage(e) {
-            return Ok(Parent::CLinkage);
+            return Ok((Parent::CLinkage, None));
         }
         let mut c = n.ctx();
         let mut to_namespace = false;
         for _ in 0..CTX_LIMIT {
-            let Some(x) = c else { return Ok(Parent::Root) };
+            let Some(x) = c else { return Ok((Parent::Root, None)) };
             let xn = ast.decls.get(x);
             let xi = info(xn.kind());
             if to_namespace {
                 match xi.role {
-                    Role::Root => return Ok(Parent::Root),
+                    Role::Root => return Ok((Parent::Root, None)),
                     Role::Entity(KeyKind::Namespace) => return self.unit_parent(x),
                     Role::Nothing
                     | Role::Transparent
@@ -420,7 +438,7 @@ impl Walk<'_> {
                 return Err(Some(Cause::Pending(crate::Area::Local)));
             }
             match xi.role {
-                Role::Root => return Ok(Parent::Root),
+                Role::Root => return Ok((Parent::Root, None)),
                 Role::Transparent => c = xn.ctx(),
                 Role::Entity(
                     KeyKind::Namespace
@@ -441,24 +459,34 @@ impl Walk<'_> {
         Err(Some(BAD_PARENT))
     }
 
-    fn unit_parent(&mut self, x: DeclId) -> Result<Parent, Option<Cause>> {
+    fn unit_parent(&mut self, x: DeclId) -> Result<(Parent, Option<Cause>), Option<Cause>> {
         match self.key(x) {
-            KeyRes::Key { id, .. } => Ok(Parent::Unit(id)),
+            KeyRes::Key { id, cause, .. } => Ok((Parent::Unit(id), cause)),
             KeyRes::None(c) => Err(Some(c.unwrap_or(BAD_PARENT))),
         }
     }
 
-    /// The first declaration is lexically inside `extern "C"`, and the
-    /// entity is no class member (digest-kinds §5.2).
+    /// The first declaration is lexically inside `extern "C"`, the entity
+    /// is no class member, and its name has external linkage
+    /// (digest-kinds §5.2, [dcl.link]/1). A block-scope declaration looks
+    /// through the functions around it.
     fn in_c_linkage(&self, e: DeclId) -> bool {
         let ast = self.ast;
         if ast.decls.get(e).ctx().is_some_and(|c| ast.decls.record(c).is_some()) {
             return false;
         }
+        if !self.external_for_c(e) {
+            return false;
+        }
+        let local_extern = self.is_local_extern(e);
         let mut c = ast.decls.lexical_ctx(e);
         for _ in 0..CTX_LIMIT {
             let Some(x) = c else { return false };
             let n = ast.decls.get(x);
+            if local_extern && info(n.kind()).local_scope {
+                c = ast.decls.lexical_ctx(x);
+                continue;
+            }
             match info(n.kind()).role {
                 Role::Transparent | Role::Entity(KeyKind::Namespace) => {
                     if let Some(lang) = ast
@@ -485,6 +513,58 @@ impl Walk<'_> {
         false
     }
 
+    /// Whether the name of `e`, a function or variable, can have external
+    /// linkage, as far as [dcl.link]/1 needs it: not `static`, not in an
+    /// unnamed namespace, and not a namespace-scope `const` variable
+    /// declared neither `extern` nor in a one-declaration linkage
+    /// specification ([basic.link]/3). Kiln has no public linkage query
+    /// (its linkage bits in `DeclMisc` are a cache).
+    fn external_for_c(&self, e: DeclId) -> bool {
+        let ast = self.ast;
+        for d in self.redecls(e) {
+            let n = ast.decls.get(d);
+            let kind = n.kind();
+            if kind == DeclKind::Function
+                && ast.decls.function(d).is_some_and(|f| f.spec.storage() == FnStorage::Static)
+            {
+                return false;
+            }
+            if kind == DeclKind::Var
+                && ast.decls.var(d).is_some_and(|v| v.spec.storage() == VarStorage::Static)
+            {
+                return false;
+            }
+        }
+        let first = ast.first(e);
+        let n = ast.decls.get(first);
+        if n.kind() == DeclKind::Var && !self.is_local_extern(first) {
+            let explicit_extern = self.redecls(e).iter().any(|&d| {
+                ast.decls.var(d).is_some_and(|v| v.spec.storage() == VarStorage::Extern)
+                    || ast.decls.is_single_line_linkage(d)
+            });
+            let constant = n.ty().is_some_and(|q| ast.types.canonical(q).quals().is_const());
+            if constant && !explicit_extern {
+                return false;
+            }
+        }
+        let mut c = n.ctx();
+        for _ in 0..CTX_LIMIT {
+            let Some(x) = c else { return true };
+            let xn = ast.decls.get(x);
+            if xn.kind() == DeclKind::Namespace
+                && (xn.name().is_empty()
+                    || ast
+                        .decls
+                        .namespace(x)
+                        .is_some_and(|ns| ns.flags & NamespaceData::ANONYMOUS != 0))
+            {
+                return false;
+            }
+            c = xn.ctx();
+        }
+        true
+    }
+
     /// A named entity's name, or for one without a name the forms of
     /// digest §3.3 (`Err` when none applies).
     fn entity_name(&mut self, e: DeclId) -> Result<(Name, Option<Cause>), Option<Cause>> {
@@ -497,6 +577,7 @@ impl Walk<'_> {
             Role::Entity(KeyKind::Namespace) => Ok((Name::Anonymous, None)),
             Role::Entity(KeyKind::Class | KeyKind::Enumeration) => self.unnamed_tag(e),
             Role::Entity(KeyKind::Field) => self.unnamed_field(e),
+            Role::Entity(KeyKind::Variable) => self.unnamed_variable(e),
             Role::Entity(_)
             | Role::Nothing
             | Role::Transparent
@@ -652,6 +733,23 @@ impl Walk<'_> {
         }
         let ordinal = self.ordinal_in_scope(e).ok_or(Some(BAD_NAME))?;
         Ok((Name::UnnamedOrdinal(ordinal), None))
+    }
+
+    /// An unnamed variable: the object of an anonymous union at namespace
+    /// scope (`static union { int a; };`), named by its union as an
+    /// unnamed field is (digest-kinds §5.2).
+    fn unnamed_variable(&mut self, e: DeclId) -> Result<(Name, Option<Cause>), Option<Cause>> {
+        let ast = self.ast;
+        if let Some(q) = ast.decls.get(e).ty()
+            && let TypeView::Record(r) = ast.types.view(ast.types.canonical(q).ty())
+        {
+            let r = ast.first(r);
+            if ast.decls.get(r).name().is_empty() {
+                let (name, cause) = self.entity_name(r)?;
+                return Ok((Name::UnnamedBy(Box::new(name)), cause));
+            }
+        }
+        Err(Some(BAD_NAME))
     }
 
     /// The ordinal of `e` among the unnamed types (for a field, the
@@ -896,7 +994,7 @@ impl Walk<'_> {
         let requires = ast.templates.trailing_requires.get(f).copied();
         s.opt(requires.is_some());
         if let Some(r) = requires {
-            crate::expr::requires_clause(self, s, r);
+            crate::expr::profile_expr(self, s, r);
         }
     }
 }

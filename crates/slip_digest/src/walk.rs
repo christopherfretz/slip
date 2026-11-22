@@ -62,15 +62,23 @@ pub(crate) struct Walk<'a> {
     /// (`spec/digest.md` §3.3), and each one's ordinal.
     pub ordinal_scopes: HashSet<DeclId>,
     pub ordinal_of: HashMap<DeclId, u64>,
+    /// Declarations of a kind with no key kind, with the entity around
+    /// them (`None`: the top level) and their cause (`units::apply_taints`).
+    pub taints: Vec<(Option<DeclId>, Cause)>,
     /// Entities queued as units.
     pub queued: HashSet<DeclId>,
     /// The worklist, in the order units are written.
     pub queue: Vec<(DeclId, UnitClass)>,
     pub unit: UnitState,
+    /// How many key computations are under way: a key is computed with
+    /// the unit's state put aside, and nothing in it may take a local
+    /// ordinal (`write_ref`).
+    pub in_key: u32,
     pub depth: u32,
-    /// How many times the depth limit was hit: a memo entry is not kept
-    /// for a result computed below such a hit (its cause depends on where
-    /// it was computed from).
+    /// How many times the depth limit was hit or a cycle was met (a key or
+    /// a content digest that needs itself): a memo entry is not kept for a
+    /// result computed below such a hit (its cause depends on the path
+    /// that reached it).
     pub aborts: u64,
     /// `digest.bytes` (`spec/digest.md` §12).
     pub bytes: u64,
@@ -97,9 +105,11 @@ impl<'a> Walk<'a> {
             content_in_progress: HashSet::new(),
             ordinal_scopes: HashSet::new(),
             ordinal_of: HashMap::new(),
+            taints: Vec::new(),
             queued: HashSet::new(),
             queue: Vec::new(),
             unit: UnitState::default(),
+            in_key: 0,
             depth: 0,
             aborts: 0,
             bytes: 0,
@@ -150,6 +160,7 @@ pub(crate) fn run(input: &Input<'_>, options: &Options<'_>) -> Output {
         }
     }
     written.push(crate::units::order_unit(&mut w));
+    crate::units::apply_taints(&w, &mut written);
     let collisions = crate::units::mark_collisions(&mut written);
     let names = if options.names { crate::names::names(&w, &written) } else { Vec::new() };
     let (digests, totals) = crate::groups::build(&written, &options.detail);
