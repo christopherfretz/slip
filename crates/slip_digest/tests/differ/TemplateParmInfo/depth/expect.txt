@@ -1,2 +1,5 @@
-removed C::M
-added C::M
+# a parameter's depth is the nesting of its list, which is the key's parent
+# chain: depth changes only together with the key (no edit isolates the
+# row; landed WP-029)
+removed g(type-parameter-0-0)
+added A::g(type-parameter-1-0)

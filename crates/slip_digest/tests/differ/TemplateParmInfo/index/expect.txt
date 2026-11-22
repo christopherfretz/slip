@@ -1,2 +1,4 @@
+# the index is the position in the key's head: it changes only together
+# with the key (landed WP-029)
 removed X
 added X

@@ -1,9 +1,10 @@
 #include "side.h"
-// §9.4 SpecKind `ExplicitSpecialization` against an explicit instantiation
-// definition of the same (empty) class.
-template <class T> struct X {};
+// §9.4 SpecKind `ExplicitSpecialization`: a member of a specialisation
+// explicitly specialised against one explicitly instantiated (its
+// `MemberSpecInfo` `instantiated_from` is the same).
+template <class T> struct A { void f() {} };
 #ifdef B
-template <> struct X<int> {};
+template <> void A<int>::f() {}
 #else
-template struct X<int>;
+template void A<int>::f();
 #endif

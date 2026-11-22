@@ -1,2 +1,4 @@
-removed S<type-parameter-0-0 *, int>
-added S<type-parameter-0-0 *, type-parameter-0-1>
+# pending
+# needs: decl_data
+# the `templ` row is written by the payload records (decl_func.rs, decl_class.rs)
+changed X<template-parameter-0-0<char>>

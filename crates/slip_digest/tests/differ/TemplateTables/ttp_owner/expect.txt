@@ -1,2 +1,5 @@
+# only a concept template parameter has an owner, always its own template:
+# the entry comes and goes only with `ttp_kind`, which is in the key
+# (landed WP-029)
 removed X
 added X

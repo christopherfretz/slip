@@ -3,7 +3,7 @@
 // defaults dropped) are spelling.
 template <class T, class U = int> struct X {};
 #ifdef B
-X<char, int> v;
+template struct X<char, int>;
 #else
-X<char> v;
+template struct X<char>;
 #endif

@@ -1,1 +1,6 @@
+# pending
+# needs: units
+# the unit `g` exists only because `A<int>` is instantiated (see
+# demand/_/member-like-friend-declared-by-instantiation); once such a
+# friend is a derived unit this change is no longer a declared one
 changed g(type-parameter-0-0)

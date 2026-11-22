@@ -58,11 +58,19 @@ fn head(w: &mut Walk<'_>, s: &mut Stream, l: TemplateParamListId, how: Head<'_>)
     s.uv(u64::from(depth));
     let params: Vec<DeclId> = ast.lists.iter::<DeclId>(params).collect();
     s.count(params.len());
+    // The other declarations' parameters, each list read once (linear).
+    let others: Vec<Vec<DeclId>> = match how {
+        Head::Key => Vec::new(),
+        Head::Unit(others) => others
+            .iter()
+            .map(|&o| ast.lists.iter::<DeclId>(ast.templates.param_list(o).params).collect())
+            .collect(),
+    };
     for (i, &p) in params.iter().enumerate() {
         match how {
             Head::Key => w.decl_node(s, p, p),
-            Head::Unit(others) => {
-                let q = default_giver(w, p, i, others);
+            Head::Unit(_) => {
+                let q = default_giver(w, p, i, &others);
                 w.decl_stream(s, q, q);
             }
         }
@@ -78,20 +86,16 @@ fn head(w: &mut Walk<'_>, s: &mut Stream, l: TemplateParamListId, how: Head<'_>)
 /// itself if it has a default (its own or inherited) or if no other
 /// declaration's parameter at `i` has one of its own; else the first such
 /// parameter, in the order of `others`.
-fn default_giver(w: &Walk<'_>, p: DeclId, i: usize, others: &[TemplateParamListId]) -> DeclId {
+fn default_giver(w: &Walk<'_>, p: DeclId, i: usize, others: &[Vec<DeclId>]) -> DeclId {
     if default_of(w, p).is_some() {
         return p;
     }
-    let ast = w.ast;
-    for &l in others {
-        let list = ast.templates.param_list(l);
-        if let Some(q) = ast.lists.iter::<DeclId>(list.params).nth(i)
-            && ast.templates.defaults.get(q).is_some()
-        {
-            return q;
-        }
-    }
-    p
+    let defaults = &w.ast.templates.defaults;
+    others
+        .iter()
+        .filter_map(|l| l.get(i).copied())
+        .find(|&q| defaults.get(q).is_some())
+        .unwrap_or(p)
 }
 
 /// The default template argument of parameter `p`: its own, or the one
