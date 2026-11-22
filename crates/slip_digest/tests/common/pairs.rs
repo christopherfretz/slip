@@ -198,11 +198,8 @@ pub fn judge_demand(
     let want_derived: BTreeSet<Expect> =
         expect.iter().filter(|e| matches!(e, Expect::DerivedAdded(_))).cloned().collect();
     let dd = derived_differences(a, b);
-    let got_derived: BTreeSet<Expect> = if exact {
-        dd
-    } else {
-        want_derived.iter().filter(|e| dd.contains(e)).cloned().collect()
-    };
+    let got_derived: BTreeSet<Expect> =
+        if exact { dd } else { want_derived.iter().filter(|e| dd.contains(e)).cloned().collect() };
     if got_derived != want_derived {
         let missing: Vec<_> = want_derived.difference(&got_derived).collect();
         let extra: Vec<_> = got_derived.difference(&want_derived).collect();

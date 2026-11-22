@@ -555,9 +555,7 @@ pub fn pool_size_from(var: Option<&std::ffi::OsStr>) -> Result<usize, String> {
         .filter(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|n| *n > 0)
-        .ok_or_else(|| {
-            format!("SLIP_TEST_THREADS={}: not a positive number", v.to_string_lossy())
-        })
+        .ok_or_else(|| format!("SLIP_TEST_THREADS={}: not a positive number", v.to_string_lossy()))
 }
 
 /// The text of a panic's payload.
@@ -636,23 +634,24 @@ impl Outcome {
     /// the notes, the `skipped (pending)` lines and the count line; the
     /// failures joined in order. The times are no part of it.
     pub fn report(&self) -> (String, Option<String>) {
-        let mut text = String::new();
-        for n in &self.notes {
-            text.push_str(n);
-            text.push('\n');
-        }
-        for s in &self.skipped {
-            text.push_str(&format!("skipped (pending): {s}\n"));
-        }
-        text.push_str(&format!(
-            "{}: {} run, {} skipped, {} failed\n",
+        let mut lines: Vec<String> = self.notes.clone();
+        lines.extend(self.skipped.iter().map(|s| format!("skipped (pending): {s}")));
+        lines.push(format!(
+            "{}: {} run, {} skipped, {} failed",
             self.root,
             self.ran,
             self.skipped.len(),
             self.failures.len()
         ));
+        let mut text = lines.join("\n");
+        text.push('\n');
         let failure = (!self.failures.is_empty()).then(|| {
-            format!("{} of {} failed:\n{}", self.failures.len(), self.ran, self.failures.join("\n\n"))
+            format!(
+                "{} of {} failed:\n{}",
+                self.failures.len(),
+                self.ran,
+                self.failures.join("\n\n")
+            )
         });
         (text, failure)
     }
@@ -747,10 +746,7 @@ fn run_dirs_of(root: &str) -> Vec<PathBuf> {
 /// [`run_all`] keeping the notes `f` gives a passing directory, and
 /// returning the outcome without printing it or failing: the caller
 /// ends with [`Outcome::finish`].
-pub fn run_collect(
-    root: &str,
-    f: impl Fn(&Path) -> Result<Vec<String>, String> + Sync,
-) -> Outcome {
+pub fn run_collect(root: &str, f: impl Fn(&Path) -> Result<Vec<String>, String> + Sync) -> Outcome {
     let threads = pool_size().unwrap_or_else(|e| panic!("{e}"));
     run_dirs(root, &run_dirs_of(root), threads, f)
 }
