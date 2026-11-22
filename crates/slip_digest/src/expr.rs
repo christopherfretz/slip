@@ -89,6 +89,10 @@ pub(crate) enum Item {
     Opaque(ExprId),
     /// A kind's function, or a row written by another file's function.
     Exec(KindFn, ExprId),
+    /// Numbers `e` as an opaque value's source now, when it is written as
+    /// a child before any opaque value names it (`OpaqueValueExpr.a`
+    /// then writes only the number); nothing is written.
+    OpaqueSource(ExprId),
     /// The end of an instantiation-dependent node's items
     /// (`UnitState::dependent`).
     LeaveDependent,
@@ -265,6 +269,13 @@ fn walk_items(w: &mut Walk<'_>, s: &mut Stream, first: Item) {
                 s.indeterminate(c);
             }
             Item::Exec(f, e) => f(w, s, e),
+            Item::OpaqueSource(e) => {
+                let unit = &mut w.unit;
+                if !unit.opaques.contains_key(&e) {
+                    unit.opaques.insert(e, unit.next_opaque);
+                    unit.next_opaque += 1;
+                }
+            }
             Item::LeaveDependent => {
                 w.unit.dependent -= 1;
             }

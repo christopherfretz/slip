@@ -325,10 +325,21 @@ pub(crate) fn conditional(w: &Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out
 }
 
 /// `BinaryConditionalOperator.a`: `child*`, the common expression, the
-/// condition and the two arms.
+/// condition and the two arms. The common expression is the source of
+/// the opaque value the condition and the true arm name (kiln_sema
+/// forms.rs:699, the only builder): it takes its opaque number before it
+/// is written, so that the opaque value writes the number alone and the
+/// common expression is written once (a left-nested `?:` stays linear).
 pub(crate) fn binary_conditional(w: &Walk<'_>, s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/BinaryConditionalOperator.bits"));
-    child_list(w, s, out, n.a, Cause::Unaccounted("ExprNode/BinaryConditionalOperator.a"));
+    let es = expr_list(w, s, n.a, Cause::Unaccounted("ExprNode/BinaryConditionalOperator.a"));
+    out.push(Item::Count(es.len()));
+    for (i, e) in es.into_iter().enumerate() {
+        if i == 0 {
+            out.push(Item::OpaqueSource(e));
+        }
+        out.push(Item::Node(e, false));
+    }
 }
 
 /// `ArraySubscriptExpr`: `a`, `b`.

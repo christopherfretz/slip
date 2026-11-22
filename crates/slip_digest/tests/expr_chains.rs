@@ -30,6 +30,28 @@ fn member_calls(n: usize) -> String {
     s
 }
 
+/// `((a ?: a) ?: a) …`, `n` operators: each one's common expression is
+/// the one before it, which an opaque value names again (§7 "Opaque
+/// values"). Parenthesised: Kiln limits bracket nesting, so `n` stays
+/// small.
+fn left_conditionals(n: usize) -> String {
+    let mut e = String::from("a");
+    for _ in 0..n {
+        e = format!("({e} ?: a)");
+    }
+    format!("int a;\nint v = {e};\n")
+}
+
+/// `a ?: a ?: … ?: a`, `n` operators: each one's false arm is the next.
+fn right_conditionals(n: usize) -> String {
+    let mut s = String::from("int a;\nint v = a");
+    for _ in 0..n {
+        s.push_str(" ?: a");
+    }
+    s.push_str(";\n");
+    s
+}
+
 /// The output of digesting `src`, the fastest of three walks' time, and
 /// `digest.bytes`.
 fn digest(src: &str) -> (Output, Duration, u64) {
@@ -72,9 +94,9 @@ fn determinate(o: &Output) {
     assert!(hard.is_empty(), "indeterminate: {hard:?}");
 }
 
-fn linear(make: fn(usize) -> String) {
-    let (small, t_small, b_small) = digest(&make(2_000));
-    let (large, t_large, b_large) = digest(&make(20_000));
+fn linear(make: fn(usize) -> String, small_n: usize) {
+    let (small, t_small, b_small) = digest(&make(small_n));
+    let (large, t_large, b_large) = digest(&make(small_n * 10));
     determinate(&small);
     determinate(&large);
     // Ten times the length: the bytes written grow by about ten, and the
@@ -91,10 +113,20 @@ fn linear(make: fn(usize) -> String) {
 
 #[test]
 fn an_operator_chain_is_linear() {
-    linear(operators);
+    linear(operators, 2_000);
 }
 
 #[test]
 fn a_member_call_chain_is_linear() {
-    linear(member_calls);
+    linear(member_calls, 2_000);
+}
+
+#[test]
+fn left_nested_conditionals_are_linear() {
+    linear(left_conditionals, 20);
+}
+
+#[test]
+fn right_nested_conditionals_are_linear() {
+    linear(right_conditionals, 2_000);
 }
