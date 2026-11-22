@@ -42,16 +42,22 @@ What Slip does take from the standard track:
 
 | Layer | What | Stability |
 |---|---|---|
-| L0 | `__slip_*` intrinsics | Private. One generic host-call primitive (see §8). Refused outside Slip's resource directory. May change in any release. |
-| L1 | `<slip/meta.h>`: `namespace slip { inline namespace v1 { … } }` | **The stable contract.** Opaque values and free functions; option structs extended by adding members; open enumerations; feature-test macros `__slip_lib_*`. Specified in `spec/api.md` with behavioural tests per function. |
+| L0 | `<slip/__intrinsics.h>` | Private. One generic host-call primitive (see §8). A host accepts only the copy of the header it was built with. May change in any release. |
+| L1 | `<slip/meta.h>`: `namespace slip { inline namespace v0 { … } }` (`v0` while the contract is a draft; `spec/api.md` §8.1) | **The stable contract.** Opaque values and free functions; option structs extended by adding members; open enumerations; feature-test macros `__slip_lib_*`. Specified in `spec/api.md` with behavioural tests per function. |
 | L2 | `<slip/rules.h>`, `<slip/refactor.h>`, `<slip/view.h>` | Ordinary constexpr C++ written only against L1: rules, typed views, reusable refactorings (rename, relocate namespace, change signature). Versioned as a library; forkable. |
 | L3 | User transforms | Source files. Compose by `#include`. |
 
 Transforms are distributed as source and compiled by the Slip that ships the
 header, so there is no binary interface to keep stable (contrast Rust
 proc-macro dylibs and Swift macro plugins). A transform states the API level
-it needs (`#if __slip_lib_core < 202701L`), and L1 never removes a name within
+it needs (`#if __slip_lib_meta < 202611L`), and L1 never removes a name within
 a major version.
+
+**Version 0** of L1 is specified in `spec/api.md` and is a deliberate
+subset of what this document describes. Sections 4 to 9 use version 0's
+names and forms wherever version 0 has fixed them, and mark what lies
+beyond it as *later*; the names of later features are reserved
+(`spec/api.md` §14) and their design here is illustrative.
 
 ## 3. Two universes
 
@@ -99,22 +105,26 @@ not change the model.
 ## 4. Values
 
 ```cpp
-namespace slip { inline namespace v1 {
-  class info;    // opaque, 64-bit, equality-comparable. Denotes a piece of the SUBJECT:
-                 //   entity | declaration site | name use | expression | statement | type as written
-                 //   | macro definition | macro expansion | token | file inclusion
-  class file;    // identity of a source file (canonical path + content digest)
+namespace slip { inline namespace v0 {
+  class info;    // opaque, 64-bit, equality-comparable. Denotes a piece of the SUBJECT.
+                 //   version 0: entity | declaration | reference (a written name) | expression
+                 //   later:     statement | type as written | macro definition | macro expansion
+                 //              | token | file inclusion
   class range;   // half-open byte range of spelled text within ONE file
   class code;    // replacement text: literal text, entities to spell, source ranges to copy
-  class guard;   // predicate over folded facts, evaluated in reduce
   class group;   // atomic edit group
+  // later:
+  class file;    // identity of a source file (canonical path + content digest)
+  class guard;   // predicate over folded facts, evaluated in reduce
 }}
 ```
 
-`info` is a class wrapping one integer, so the constant evaluator treats it as
-a scalar. Entity handles are interned per TU by the host; syntax handles
-(expressions, uses, tokens) encode a kind tag and an index and cost nothing to
-create — a TU has millions of them. Kind is queried, not typed: `is_use(i)`,
+`info` is a class wrapping one integer. It is a class type and not a scalar:
+Kiln's cache of pure calls does not apply to functions that take or return
+one, and nothing in the API depends on that cache (`spec/api.md` §5.1).
+Entity handles are interned per TU by the host; syntax handles
+(expressions, references, tokens) encode a kind tag and an index and cost nothing to
+create — a TU has millions of them. Kind is queried, not typed: `is_reference(i)`,
 `is_expression(i)`, `is_entity(i)`. Passing the wrong kind to a query throws
 `slip::error` (catchable; uncaught, it fails that observer with a diagnostic
 pointing into the transform's source).
@@ -134,9 +144,17 @@ semantic and includes them.
 
 ## 5. Queries (L1 core, illustrative)
 
-Final signatures belong to `spec/api.md`. Sequence-returning functions return
-`std::vector<info>`; each also has a counting form and an index form
-(`count_…`, `…_at`) so hot loops need not allocate.
+Final signatures belong to `spec/api.md`, which fixes version 0: `lookup`,
+the kind predicates, `identifier_of`, `display_string_of`, `parent_of`,
+`parameters_of`, `declarations_of`, `entity_of`, `references_to`,
+`referent_of`, `name_range_of`, `extent_of`, `source_text_of`,
+`is_editable`, `calls_to`, `callee_of`, `callee_reference_of`,
+`arguments_as_written`. Everything else in the block below is *later*: the
+direction, not a contract. In version 0 a written name is a **reference**
+and the general `uses(filter)` below is `references_to(entity)`; text comes
+back as `std::string`. Sequence-returning functions return
+`std::vector<info>`; counting and index forms (`count_…`, `…_at`) may be
+added so hot loops need not allocate.
 
 ```cpp
 // --- finding things -----------------------------------------------------------------------------
@@ -172,6 +190,7 @@ info              enclosing_declaration_of(info);             // lexical context
 
 // --- expressions and statements ----------------------------------------------------------------------
 bool is_call(info);  info callee_of(info call);  std::vector<info> operands_of(info);
+info              callee_reference_of(info call);             // the callee's name as written (a reference)
 std::vector<info> arguments_as_written(info call);
 std::vector<info> calls_to(info function);       // however spelled: alias, using, ADL, operator syntax
 std::vector<info> children_of(info);             info parent_node_of(info);
@@ -195,8 +214,8 @@ Notes on semantics that matter for correctness:
   them; the reducer and the verifier enforce that across TUs
   ([02](02-pipeline.md) §4).
 - Ranges are always spelling ranges in one file. A node spelled across a macro
-  boundary has no single range; `extent_of` throws and `is_editable` is the
-  test to use first.
+  boundary has no single range; `extent_of` returns the null range (absence
+  is a value, not an error) and `is_editable` is the test to use first.
 - Queries are answered from the subject model. Two classes exist: *static*
   queries (facts recorded while the subject was parsed; always available,
   cacheable, replayable from a stored model) and *probes*
@@ -210,9 +229,10 @@ Notes on semantics that matter for correctness:
 ```cpp
 code text(std::string_view literal);       // literal source text
 code spell(info entity);                   // "the name of this entity, correctly qualified where it lands"
-code copy(range);                          // the original bytes, verbatim: comments, formatting, macros
+code copy(range);                          // that text as it will be: comments, formatting, macros kept,
+                                           // and any accepted edit inside the range applied (by reference)
 code copy(info node);                      // = copy(extent_of(node))
-code cat(auto&&... pieces);                // strings, infos (entities are spelled, syntax is copied), codes
+code cat(auto&&... pieces);                // strings, ranges (copied), codes. Not an info: say spell or copy
 ```
 
 `spell` is the requalification primitive. A transform never builds a
@@ -220,7 +240,10 @@ qualified name as a string. It says *which entity* it means; Slip chooses the
 spelling at the destination, in the post-image, under a policy
 (`minimal`, `relative`, `fully_qualified`), and the verifier proves the choice
 resolves to that entity ([03](03-equivalence.md) §5). If the minimal spelling
-fails verification, Slip falls back to a longer one.
+fails verification, Slip falls back to a longer one. Version 0 has two
+spellings (a sibling of the name that was written, else fully qualified),
+no fallback, and the proof: verification checks every spelled name in the
+post-image (`spec/api.md` §7.2).
 
 Planned sugar, once Kiln has token-sequence literals (the P4380 value model
 without injection): `^^{ \(spell(e)):: }` constructs the same `code` value.
@@ -232,32 +255,44 @@ A transform's only effects are records appended to the observer's output
 shard. They are write-only: nothing the transform can query changes.
 
 ```cpp
+// ---- version 0 (spec/api.md §7) ------------------------------------------------------------------
 struct edit_options {
-  guard        when   = {};      // apply only if this predicate over folded facts holds
   group        atomic = {};      // all edits of a group apply, or none
   std::string_view note = {};    // shown in reports
-  int          order  = 0;       // tie-break for insertions at the same offset
+  // later:  guard when = {};    // apply only if this predicate over folded facts holds
+  //         int   order = 0;    // tie-break for insertions at the same offset
 };
+group new_group();
 void replace(range, code, edit_options = {});
+
+// Declared semantic changes: what the verifier should expect to differ (03 §4).
+void expect_changed(info reference_or_expression, std::string_view why);   // intentional change, at a place
+void expect_renamed(info entity, std::string_view new_identifier);         // same entity, new name
+
+enum class severity { note, review, error };
+void report(severity, std::string_view message);
+void report(info where, severity, std::string_view message);
+void report(range where, severity, std::string_view message);
+
+// ---- later (names reserved) ----------------------------------------------------------------------
 void insert(range at, code, edit_options = {});     // `at` is empty: before(r) or after(r)
 void remove(range, edit_options = {});
 void create_file(std::string_view path, code, edit_options = {});   // whole-cloth generation
-
-// Declared semantic changes: what the verifier should expect to differ (03 §4).
 void relocate(info entity, std::string_view new_qualified_name, edit_options = {});
-void expect_changed(info declaration, std::string_view why);        // intentional behaviour change
 
 // Facts: contributions folded across all observers by a monoid, readable only through guards
 // and in a reduce hook.
 template<class T, class Fold> struct fact;       // e.g. fact<bool, all_of>, fact<long, sum>, fact<set, set_union>
 void contribute(fact_key, value);
 guard holds(fact_key);  guard operator&&(guard, guard);  guard operator!(guard);
-
-enum class severity { note, review, error };
-void report(info where, severity, std::string_view message);
 ```
 
-Why guards and facts: many decisions need whole-program knowledge. "Does this
+A declared change is made at a place, the call or the name being edited, and
+not at a declaration: the host knows which unit the digest uses, and the
+declaration is in force only if an edit at that place is accepted
+(`spec/api.md` §7.5).
+
+Why guards and facts (later): many decisions need whole-program knowledge. "Does this
 entity move?" is true only if *every* declaration of it, in every TU, is in
 owned code. One TU cannot know. Instead of a scan pass followed by a second
 full parse, each TU contributes `owned[E] &= is_owned(site)` for the
@@ -271,7 +306,7 @@ transform universe with the folded facts bound instead of a subject TU.
 | Level | Selector | Action | Use |
 |---|---|---|---|
 | A. Native | native (Rust) | native | Built-in transformations configured by data: `slip::refactor::rename`, `relocate_namespace`. Fastest; no per-site evaluation. |
-| B. Rules | native | constexpr C++ per match | `slip::on(selector, action)`. The host evaluates the selector over the subject model and hands matches to the action. |
+| B. Rules | native | constexpr C++ per match | The host evaluates a selector (`calls_to(f)`, `references_to(e)`) natively over indexes of the subject model; the transform loops over the matches in the same evaluation. Version 0 has no callback registration and no isolation between matches (`spec/api.md` §2.4, §9). |
 | C. Free-form | constexpr C++ | constexpr C++ | Walk the model with queries. Most flexible; slowest; opts out of memoisation. |
 
 Kiln's evaluator runs roughly 65 M steps/s on scalar code but about 10 M on
@@ -289,29 +324,34 @@ of Slip-specific intrinsics ([05](05-kiln-interface.md) §3).
 ### 9.1 Replace `lib::foo(a, b)` with `lib::bar(b, a)` — Level B
 
 ```cpp
-#include <slip/rules.h>
+#include <slip/meta.h>
 using namespace slip;
 
 consteval void transform() {
   for (info foo : lookup("lib::foo")) for (info bar : lookup("lib::bar")) {
     if (!is_function(foo) || parameters_of(foo).size() != 2 || !is_function(bar)) continue;
-    on(calls_to(foo), [=](info call) {
+    for (info call : calls_to(foo)) {
       auto args = arguments_as_written(call);
-      if (args.size() != 2 || !is_editable(extent_of(call)))
-        return report(call, severity::review, "not a plain two-argument call");
+      if (args.size() != 2 || !is_editable(extent_of(call))) {
+        report(call, severity::review, "not a plain two-argument call");
+        continue;
+      }
       group g = new_group();
-      replace(name_range_of(callee_of(call)), spell(bar), {.atomic = g});
+      replace(extent_of(callee_reference_of(call)), spell(bar), {.atomic = g});
       replace(extent_of(args[0]), copy(args[1]), {.atomic = g});
       replace(extent_of(args[1]), copy(args[0]), {.atomic = g});
-      expect_changed(enclosing_declaration_of(call), "foo(a,b) -> bar(b,a)");
-    });
+      expect_changed(call, "foo(a,b) -> bar(b,a)");
+    }
   }
 }
 ```
 
+This is version 0 as specified; the complete transform, with the cases this
+sketch skips, is `resource/examples/swap_arguments.cpp`. `callee_of(call)`
+is the function as resolved; the name to edit is the callee's *reference*.
 The edits are small and local (the callee name, each argument) so that
 independent transforms compose; the call's own formatting and any macros in
-the arguments are preserved because arguments are copied verbatim.
+the arguments are preserved because arguments are copied, not retyped.
 
 ### 9.2 Migrate root namespace `legacy` → `acme` — Level A, and what it expands to
 
@@ -325,7 +365,9 @@ consteval void transform() {
 ```
 
 Ownership (which files may be edited) comes from the run configuration, not
-the transform. The core of the library function, at Level B:
+the transform. The core of the library function, at Level B. It is **not
+version 0**: it uses facts, guards, `relocate`, `insert`, `uses` and
+`how_found`, all later:
 
 ```cpp
 consteval void relocate_namespace_impl(info old_ns, std::string_view to) {
@@ -337,15 +379,15 @@ consteval void relocate_namespace_impl(info old_ns, std::string_view to) {
   for (info site : declarations_of(old_ns))
     if (is_owned(file_of(name_range_of(site))))
       replace(name_range_of(site), text(to));
-  on(declarations_within(old_ns), [=](info site) {
+  for (info site : declarations_within(old_ns)) {
     info e = entity_of(site);
     contribute(fact_key{"owned", key_of(e)}, is_owned(file_of(name_range_of(site))));
     relocate(e, relocated_name(e, to), {.when = moves(e)});
-  });
+  }
 
   // 2. Every written name that denotes something inside `legacy`.
-  on(uses({.referent_within = old_ns}), [=](info use) {
-    if (!is_owned(file_of(name_range_of(use)))) return;          // never edit dependency sources
+  for (info use : uses({.referent_within = old_ns})) {
+    if (!is_owned(file_of(name_range_of(use)))) continue;        // never edit dependency sources
     info target = referent_of(use);
     switch (how_found(use)) {
       case found_by::qualified:        // `legacy::x::T`: respell the qualifier if the target moves
@@ -357,7 +399,7 @@ consteval void relocate_namespace_impl(info old_ns, std::string_view to) {
         break;
       default: break;
     }
-  });
+  }
 }
 ```
 
@@ -371,7 +413,8 @@ case analysis misses, is [03](03-equivalence.md) §7.
 
 ## 10. Whole-cloth generation
 
-`create_file` and insertions with empty ranges cover generating new code:
+`create_file` and insertions with empty ranges (both later than version 0)
+cover generating new code:
 bindings, serialisers, forwarding headers. The payload is the same `code`
 value, with entities spelled by Slip at the destination. Generated files are
 parsed and verified like any other post-image file. If Kiln later implements
