@@ -1385,6 +1385,15 @@ mod tests {
             s.tag(loop_hint_spelling::UNROLL);
         });
         assert_eq!(stmt_bytes(src, "c++20").0, want);
+        let src = "void f() {\n#pragma clang loop vectorize(assume_safety)\n for (;;) { }\n}";
+        let want = bytes(|s| {
+            s.count(1);
+            head(s, attr_kind::LOOP_HINT, PRAGMA, &[false]);
+            s.opt(false);
+            s.tag(loop_hint_option::VECTORIZE).tag(loop_hint_state::ASSUME_SAFETY);
+            s.tag(loop_hint_spelling::CLANG_LOOP);
+        });
+        assert_eq!(stmt_bytes(src, "c++20"), (want, None));
     }
 
     // §10.1 statement attributes: `ASSUME` (`flags-ignored`, `a`),
