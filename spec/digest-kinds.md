@@ -2181,7 +2181,7 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `lexical_ctx` | entity | in | ref? | where the declaration the walk reads (§2.3) was written, when that is not its semantic context (rule below). Mangling, visibility, code generation and instantiation read it |
+| `lexical_ctx` | entity | in | ref*sorted | where the declarations were written, when that is not their semantic context (rule below). Mangling, visibility, code generation and instantiation read it |
 | `begin_loc` | location | out | - |  |
 | `delete_message` | child | in | child? |  |
 | `explicit_expr` | child | in | child? |  |
@@ -2215,13 +2215,18 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `compound_literal` | entity | unsupported | - | the implicit variable of a file-scope compound literal has no name to key it by; a GNU extension in C++ |
 | `init_fp` | flag | in | record FpOverride? | the floating-point pragma state a constructor's member initialisers, a field's default member initialiser or a parameter's default argument were parsed in, when it is not the command line's: code generation emits the initialiser under it, not under the state of the place that uses it |
 
-`lexical_ctx` is written as a `Ref` to the nearest context that encloses
-the place the declaration was written and is not transparent (§5.2), when
-that context is not the entity's semantic context; it is absent otherwise.
-The declaration is the one the walk reads (§2.3). It is present for a
-friend declared or defined in a class, for a function or an `extern`
-variable declared in a block, and for a member defined outside its class
-or its namespace. A function defined in the class that befriends it
+`lexical_ctx` is written as `ref*sorted`: for each declaration counted,
+a `Ref` to the nearest context that encloses the place it was written
+and is not transparent (§5.2), when that context is not the entity's
+semantic context (`Ref::none` for the global namespace). With a
+definition the one declaration counted is the one the walk reads (§2.3),
+so the row holds at most one `Ref`; without one, every declaration of the
+entity counts, except a class declaration that a friend declaration made
+(`friend struct H;` declares `H` only when no `H` is found), so that the
+row does not depend on which declaration came first (digest §2.1). It is
+non-empty for a friend declared or defined in a class, for a function or
+an `extern` variable declared in a block, and for a member defined
+outside its class or its namespace. A function defined in the class that befriends it
 differs from one only declared there by this row, which is why
 `FriendKind` needs no variant for it.
 

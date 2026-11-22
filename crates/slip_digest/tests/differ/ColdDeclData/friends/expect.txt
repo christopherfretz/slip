@@ -1,3 +1,5 @@
 changed X
 removed X::<friend>
 added X::<friend>
+changed f()
+changed g()

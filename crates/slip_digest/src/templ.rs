@@ -48,11 +48,28 @@ pub(crate) fn governing_kind(w: &Walk<'_>, d: DeclId) -> Option<SpecKind> {
 /// Contexts deeper than this are not climbed by `governing_kind`.
 const GOVERNING_LIMIT: u32 = 1024;
 
-/// Whether declaration `d` was made by instantiation, of any form
-/// (`governing_kind`): an explicit specialisation, a declaration in one,
-/// and one in no specialisation are written in source.
-pub(crate) fn instantiated(w: &Walk<'_>, d: DeclId) -> bool {
-    match governing_kind(w, d) {
+/// Whether the declaration `x` was made by instantiation, of any form.
+/// Decided by, in turn: its own `SpecInfo` kind; else the
+/// `MemberSpecInfo` kind of `x` or of its entity, unless that is
+/// `ExplicitSpecialization` (Kiln puts the definition it instantiates for
+/// a member defined outside its class template, `A<int>::s`, at namespace
+/// scope: only the kind says it is an instantiation); else the kind that
+/// governs its lexical context (`governing_kind`). An explicitly
+/// specialised member thus answers by where the declaration is: the one
+/// Kiln made in the implicit instantiation of its class (`template <>
+/// void Q<int>::g(int) {}` keeps it in the chain) was made by
+/// instantiation, the specialisation written in source was not.
+pub(crate) fn instantiated_declaration(w: &Walk<'_>, x: DeclId) -> bool {
+    let ast = w.ast;
+    let member = |y: DeclId| ast.member_spec_info(y).map(|(_, i)| i.kind);
+    let kind = match ast.spec_info(x) {
+        Some((_, i)) => Some(i.kind),
+        None => match member(x).or_else(|| member(w.entity(x))) {
+            Some(k) if k != SpecKind::ExplicitSpecialization => Some(k),
+            Some(_) | None => ast.decls.lexical_ctx(x).and_then(|c| governing_kind(w, c)),
+        },
+    };
+    match kind {
         Some(
             SpecKind::ImplicitInstantiation
             | SpecKind::ExplicitInstantiationDeclaration

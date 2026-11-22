@@ -14,7 +14,7 @@
 //! declaration of the chain that has an entry.
 
 use slip_kiln::kiln::ast::decl::{
-    ColdDeclData, DeclKind, FriendTarget, NamespaceData, StaticAssertData,
+    ColdDeclData, DeclKind, FriendKind, FriendTarget, NamespaceData, StaticAssertData,
 };
 use slip_kiln::kiln::ast::fp::FpOverride;
 use slip_kiln::kiln::ast::slot::ColdMap;
@@ -338,30 +338,61 @@ fn write_keys_sorted(w: &mut Walk<'_>, s: &mut Stream, ds: &[DeclId]) {
     }
 }
 
-/// `lexical_ctx` (rule under §5.7's table): present when the nearest
-/// non-transparent context around the place `d` was written is not the
-/// entity's semantic context, as a `Ref` to it; `Ref::none` when that
-/// context is the global namespace, which has no key.
-///
-/// When the entity has no definition the walk reads its first
-/// declaration, and which declaration came first is not a fact (digest
-/// §2.1): the row is then present only if every declaration of the
-/// entity is written outside its semantic context, so that `void f();
-/// struct C { friend void f(); };` and its reverse are equal.
+/// `lexical_ctx` (rule under §5.7's table), `ref*sorted`: the scope a
+/// declaration was written in, the nearest non-transparent context around
+/// it, for each declaration written outside the entity's semantic
+/// context; `Ref::none` for the global namespace, which has no key. With
+/// a definition the declaration is `d`, the one the walk reads, and the
+/// row holds at most one scope. Without one, every declaration of the
+/// entity counts and the scopes are sorted, so that the row does not
+/// depend on which declaration came first (digest §2.1): `void f();
+/// struct C { friend void f(); };` and its reverse are equal, and so are
+/// two classes befriending `f` in either order. A class declaration made
+/// by a friend declaration does not count (`friend struct H;` declares
+/// `H` only when no `H` is found). For an entity of the definition class
+/// (§11.9), defined only on use, every declaration counts but a
+/// definition that is not the first declaration: the use made it, and
+/// the row does not move with a use (`demand/_/lexical-ctx-*`).
 fn lexical(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let ast = w.ast;
-    let written = written_scope(w, d);
-    let semantic = semantic_scope(w, d);
-    let outside = |x: DeclId| written_scope(w, x) != semantic_scope(w, x);
-    let present = written != semantic
-        && (crate::units::defining_decl(w, ast.first(d)).is_some()
-            || w.redecls(ast.first(d)).into_iter().all(outside));
-    if !present {
-        s.opt(false);
-        return;
+    let first = ast.first(d);
+    let definition = crate::units::defining_decl(w, first);
+    let decls = if crate::decl_func::definition_class(w, w.entity(d)) {
+        // Defined only on use (§11.9): a definition that is not the first
+        // declaration is the instantiation the use made (Kiln puts a
+        // static data member's at namespace scope); the row reads the
+        // declarations the class gave, which no use changes.
+        let mut all = w.redecls(first);
+        all.retain(|&x| definition != Some(x) || x == first);
+        all
+    } else if definition.is_some() {
+        vec![d]
+    } else {
+        w.redecls(first)
+    };
+    let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(decls.len());
+    for x in decls {
+        // A class declaration a friend declaration made (`friend struct
+        // H;` finding no `H`): Kiln makes it only when no declaration is
+        // found, so it would make the row depend on the order.
+        let n = ast.decls.get(x);
+        if ast.decls.record(x).is_some() && n.misc().friend() != FriendKind::None {
+            continue;
+        }
+        let written = written_scope(w, x);
+        if written != semantic_scope(w, x) {
+            let mut one = Stream::new();
+            w.write_ref_opt(&mut one, written);
+            s.absorb(one.cause());
+            encoded.push(one.as_bytes().to_vec());
+        }
     }
-    s.opt(true);
-    w.write_ref_opt(s, written);
+    encoded.sort();
+    encoded.dedup();
+    s.count(encoded.len());
+    for e in &encoded {
+        s.raw(e);
+    }
 }
 
 /// The entity of the nearest context that lexically encloses `d` and is
@@ -424,7 +455,7 @@ fn init_fp(w: &Walk<'_>, d: DeclId) -> Option<FpOverride> {
     let ast = w.ast;
     let o = if ast.decls.param(d).is_some() {
         let function = ast.decls.get(d).ctx().filter(|&f| ast.decls.function(f).is_some());
-        if function.is_some_and(|f| crate::templ::instantiated(w, f)) {
+        if function.is_some_and(|f| crate::templ::instantiated_declaration(w, f)) {
             return None;
         }
         ast.default_arg_fp(d)
@@ -505,10 +536,60 @@ mod tests {
     // the order of its declarations (digest §2.1).
     #[test]
     fn lexical_ctx_of_an_undefined_entity_ignores_declaration_order() {
+        // `ref*sorted` of the scopes of the declarations written outside
+        // the semantic context: one, `C`, whichever came first.
         let a = lexical_of("void f(); struct C { friend void f(); };", "f", DeclKind::Function);
         let b = lexical_of("struct C { friend void f(); }; void f();", "f", DeclKind::Function);
-        assert_eq!(a[0], ABSENT);
-        assert_eq!(b[0], ABSENT, "the first declaration is the friend");
+        assert_eq!(a[0][0], 1);
+        assert_eq!(b[0][0], 1, "the first declaration is the friend");
+        // Two classes befriend `f`: both scopes, in either order.
+        let c = lexical_of(
+            "struct A { friend void f(); }; struct C { friend void f(); };",
+            "f",
+            DeclKind::Function,
+        );
+        assert_eq!(c[0][0], 2);
+        assert_eq!(c[0], c[1], "every declaration writes the same row");
+    }
+
+    // §5.7 `lexical_ctx` of the definition class (§11.9): the definition
+    // a use instantiates for a static data member, at namespace scope,
+    // does not count; the row is the same with and without the use.
+    #[test]
+    fn lexical_ctx_of_a_member_defined_on_use() {
+        let base = "template <class T> struct A { static int s; };\n\
+                    template <class T> int A<T>::s = 1;\nA<int> a;\n";
+        let row = |src: &str| {
+            with_walk(src, |w| {
+                let d = named(w, "s", DeclKind::Var)
+                    .into_iter()
+                    .find(|&d| crate::decl_func::definition_class(w, w.entity(d)))
+                    .expect("A<int>::s");
+                let read = crate::units::read_decl(w, w.ast.first(d));
+                written(w, |w, s| super::lexical(w, s, read)).0
+            })
+        };
+        let used = format!("{base}int y() {{ return A<int>::s; }}\n");
+        assert_eq!(row(base), ABSENT);
+        assert_eq!(row(&used), ABSENT);
+    }
+
+    // §5.7 `gnu_lib_twin`: a library function GCC folds as its
+    // `__builtin_` twin (`kiln_sema/src/builtins.rs:349`) against one of
+    // the same type that has none; the row is the only difference.
+    #[test]
+    fn gnu_lib_twin_is_written() {
+        let src = "extern \"C\" double fabs(double);\nextern \"C\" double fabx(double);\n";
+        with_walk(src, |w| {
+            let twin = named(w, "fabs", DeclKind::Function)[0];
+            let plain = named(w, "fabx", DeclKind::Function)[0];
+            assert!(w.ast.decls.gnu_lib_twin(twin).is_some(), "the snippet's library is GCC's");
+            assert!(w.ast.decls.gnu_lib_twin(plain).is_none());
+            let (a, ca) = written(w, |w, s| super::cold(w, s, twin));
+            let (b, cb) = written(w, |w, s| super::cold(w, s, plain));
+            assert_eq!((ca, cb), (None, None));
+            assert_ne!(a, b);
+        });
     }
 
     // §5.7 `instantiated_from`: no site in Kiln fills the map; an entry

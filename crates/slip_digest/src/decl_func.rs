@@ -531,10 +531,10 @@ pub(crate) fn instantiated_on_use(w: &Walk<'_>, e: DeclId) -> bool {
 }
 
 /// Whether the declaration `x` was made by instantiation
-/// (`templ::instantiated`). A declaration written in source (an explicit
+/// (`templ::instantiated_declaration`). A declaration written in source (an explicit
 /// specialisation, or the out-of-line definition of one) is not.
 fn instantiated_decl(w: &Walk<'_>, x: DeclId) -> bool {
-    crate::templ::instantiated(w, x)
+    crate::templ::instantiated_declaration(w, x)
 }
 
 /// A function of the definition class (§11.9): defined only when used

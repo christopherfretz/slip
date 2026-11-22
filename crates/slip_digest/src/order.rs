@@ -167,7 +167,7 @@ fn visit(s: &mut Stream, kind: DeclKind) -> Visit {
 /// (`units::is_var_definition`, tested first: it reads `m` alone), not
 /// the holding variable of a tuple-like binding (initialised with the
 /// decomposition, which is listed), not in a template, not made by
-/// instantiation (`templ::instantiated`: an explicit specialisation and
+/// instantiation (`templ::instantiated_declaration`: an explicit specialisation and
 /// its members are written in source), and the definition of its entity
 /// (§2.3).
 fn listed(w: &Walk<'_>, holding: &HashSet<DeclId>, m: DeclId) -> bool {
@@ -177,7 +177,7 @@ fn listed(w: &Walk<'_>, holding: &HashSet<DeclId>, m: DeclId) -> bool {
     if w.ast.decls.get(m).has(DeclFlags::IMPLICIT) && holding.contains(&m) {
         return false;
     }
-    if templated(w, m) || crate::templ::instantiated(w, m) {
+    if templated(w, m) || crate::templ::instantiated_declaration(w, m) {
         return false;
     }
     crate::units::defining_decl(w, w.entity(m)) == Some(m)
