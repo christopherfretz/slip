@@ -3,6 +3,9 @@
 // From `spec/digest-kinds.md` and the schema descriptors of the Kiln that
 // `slip_kiln` links (the `kiln` submodule). After changing either, run
 // `SLIP_BLESS=1 cargo test -p slip_digest --test tables` and review the diff.
+// When a pin below no longer compiles (the Kiln pin moved), add
+// `--features unpinned` to that command: the feature leaves the pins out
+// and exists for nothing else.
 
 //! The types whose `pin` is `extra` (`spec/digest-kinds.md` §1.1), which
 //! the test registers by name since `Ast`'s descriptor does not reach them.

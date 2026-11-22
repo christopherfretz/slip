@@ -7,7 +7,7 @@ payload, side record and cold map it says whether the fact enters the
 digest and how. `digest.md` defines everything the tables plug into (units,
 keys, streams, references); section numbers written "digest §N" are
 sections of that file. The Kiln revision described is the one the `kiln`
-submodule pins (`4bfd999da`); the facts were first collected in
+submodule pins (`62d190007`, the branch `slip/kf1`; first written against `4bfd999da`); the facts were first collected in
 `research/kiln-ast-inventory.md` of the context repository and then checked
 against the Kiln source, which wins where the two differ (§13).
 
@@ -2203,6 +2203,7 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `hidden_shadow` | entity | in | ref |  |
 | `conversion_spec_target` | written | out | - | the type a conversion function template specialisation's name prints with; the declaration keeps the pattern's name. It reaches the program only as text made from a name (digest §9) |
 | `compound_literal` | entity | unsupported | - | the implicit variable of a file-scope compound literal has no name to key it by; a GNU extension in C++ |
+| `init_fp` | flag | in | record FpOverride? | the floating-point pragma state a constructor's member initialisers, a field's default member initialiser or a parameter's default argument were parsed in, when it is not the command line's: code generation emits the initialiser under it, not under the state of the place that uses it |
 
 `lexical_ctx` is written as a `Ref` to the nearest context that encloses
 the place the declaration was written and is not transparent (§5.2), when

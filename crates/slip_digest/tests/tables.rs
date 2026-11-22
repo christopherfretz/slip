@@ -141,6 +141,18 @@ fn generated_file_is_current() {
     current("src/tables.rs", &out);
 }
 
+/// The feature `unpinned` leaves the compile-time pins out so that this
+/// test can bless them after the Kiln pin moved; any other run under it
+/// would pass without obligation 3.
+#[test]
+fn unpinned_only_when_blessing() {
+    assert!(
+        !cfg!(feature = "unpinned") || blessing(),
+        "the feature `unpinned` is only for `SLIP_BLESS=1 cargo test -p slip_digest --test \
+         tables --features unpinned`"
+    );
+}
+
 /// The registrations of the `pin=extra` types follow the file.
 #[test]
 fn extra_registrations_are_current() {
