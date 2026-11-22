@@ -212,7 +212,8 @@ pub struct Comparison {
 pub enum CompareError {
     /// The group has no unit list.
     MissingUnits { class: GroupClass, file: Vec<u8>, post: bool },
-    /// The unit list is not strictly ascending (unsorted, or two equal).
+    /// The unit list is not strictly ascending by `(key, digest)` (unsorted,
+    /// or two units with one key and digest, whatever their flags).
     UnitsNotAscending { class: GroupClass, file: Vec<u8>, post: bool },
     /// A unit has a flag bit other than bit 0 set (`digest.md` §11).
     BadFlags { class: GroupClass, file: Vec<u8>, post: bool },
@@ -294,7 +295,7 @@ fn multisets<'a>(groups: &[&'a Group], post: bool) -> Result<Multisets<'a>, Comp
         let Some(units) = &g.units else {
             return Err(CompareError::MissingUnits { class, file: file(), post });
         };
-        if units.windows(2).any(|w| w[0] >= w[1]) {
+        if units.windows(2).any(|w| (w[0].key, w[0].digest) >= (w[1].key, w[1].digest)) {
             return Err(CompareError::UnitsNotAscending { class, file: file(), post });
         }
         if units.iter().any(|u| u.flags & !Unit::INDETERMINATE != 0) {

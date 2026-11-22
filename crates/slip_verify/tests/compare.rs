@@ -2,9 +2,9 @@
 //! rules of `spec/landed/verify/WP-016.md`. Each test names the step it
 //! covers.
 
-use slip_model::Digest;
 use slip_model::digests::{Digests, Group, GroupClass, SCHEME, Unit, group_digest, tu_digest};
 use slip_model::verdict::{Finding, FindingKind, Verdict, VerdictKind};
+use slip_model::{Digest, Outcome, Phase, Shard, Status};
 use slip_verify::compare::{NO_REASON, REASON_MAX};
 use slip_verify::{
     AtSums, CompareError, Comparison, Exemptions, at_sums, comparable, compare_groups,
@@ -108,9 +108,23 @@ fn used(keys: &[u8]) -> Comparison {
     Comparison { used: keys.iter().map(|&n| key(n)).collect(), ..none() }
 }
 
-/// The verdict invariants of `docs/wp/WP-015.md` (§6), checked field by
-/// field until `slip_model` validates a `Verdict` itself.
+/// The verdict is valid under `slip_model`'s invariants
+/// (`spec/landed/model/WP-015.md`), as the section of a verify shard; and,
+/// field by field, under the rules of §6 that this crate relies on.
 fn check_valid(v: &Verdict) {
+    let shard = Shard {
+        observer: dg(1),
+        phase: Phase::Verify,
+        round: 1,
+        outcome: Outcome { status: Status::Ok, errors: 0, warnings: 0, message: String::new() },
+        inputs: None,
+        counters: vec![],
+        digests: Some(Digests { scheme: SCHEME, tu: tu_digest(&[]), groups: vec![] }),
+        verdict: Some(v.clone()),
+    };
+    if let Err(e) = shard.validate() {
+        panic!("verdict rejected by slip_model: {e}\n{v:?}");
+    }
     match v.kind {
         VerdictKind::Verified => {
             assert_eq!(v.total, 0);
@@ -522,7 +536,9 @@ fn s4_1_verdict_at_sums() {
     check_valid(&v);
     assert_eq!(v.kind, VerdictKind::Verified);
     assert_eq!((v.pre, v.rules), (dg(100), dg(101)));
-    for (n, limit, shown) in [(1u64, 64usize, 1usize), (3, 64, 3), (3, 3, 3), (3, 2, 2), (u64::MAX, 64, 64)] {
+    for (n, limit, shown) in
+        [(1u64, 64usize, 1usize), (3, 64, 3), (3, 3, 3), (3, 2, 2), (u64::MAX, 64, 64)]
+    {
         let v = verdict_at_sums(n, dg(100), dg(101), limit);
         check_valid(&v);
         assert_eq!(v.kind, VerdictKind::Mismatch);
@@ -595,6 +611,12 @@ fn landed_malformed_groups_are_rejected() {
     check(Group { digest: group_digest(&dup), units: Some(dup), ..good.clone() }, |file, post| {
         CompareError::UnitsNotAscending { class: Declared, file, post }
     });
+    // digest.md §11: sorted by (key, digest); one key and digest is one unit.
+    let flagged = vec![u(1, 1), ui(1, 1)];
+    check(
+        Group { digest: group_digest(&flagged), units: Some(flagged), ..good.clone() },
+        |file, post| CompareError::UnitsNotAscending { class: Declared, file, post },
+    );
     let flags = vec![u(1, 1), Unit { flags: 2, ..u(2, 2) }];
     check(
         Group { digest: group_digest(&flags), units: Some(flags), ..good.clone() },

@@ -14,10 +14,10 @@
 
 use std::collections::BTreeSet;
 
-use slip_model::Digest;
 use slip_model::digests::{Digests, Group, GroupClass, SCHEME, Unit, group_digest, tu_digest};
 use slip_model::verdict::{Finding, FindingKind};
-use slip_verify::{AtSums, Comparison, Exemptions, at_sums, comparable, compare_groups};
+use slip_model::{Digest, Outcome, Phase, Shard, Status};
+use slip_verify::{AtSums, Comparison, Exemptions, at_sums, comparable, compare_groups, verdict};
 
 const SEED: u64 = 0x5eed_0016_c0de_f00d;
 const CASES: usize = 12_000;
@@ -172,7 +172,16 @@ fn edit(rng: &mut Rng, img: &mut Image, next_key: &mut u64, cov: &mut Coverage) 
 fn digests(img: &Image) -> Digests {
     let mut sorted = img.clone();
     sorted.sort();
-    sorted.dedup(); // two units of one group with one key and digest are one
+    // Two units of one group with one key and digest are one unit
+    // (digest.md §11); indeterminate if either is.
+    sorted.dedup_by(|later, kept| {
+        let same = (kept.0, &kept.1, kept.2.key, kept.2.digest)
+            == (later.0, &later.1, later.2.key, later.2.digest);
+        if same {
+            kept.2.flags |= later.2.flags;
+        }
+        same
+    });
     let mut groups: Vec<Group> = Vec::new();
     for (class, file, unit) in sorted {
         match groups.last_mut() {
@@ -240,6 +249,18 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
     for f in &full.findings {
         cov.findings[kind_index(f.kind)] += 1;
     }
+    // §6: the verdict of every comparison is valid under slip_model's rules.
+    let shard = Shard {
+        observer: dg(1),
+        phase: Phase::Verify,
+        round: 1,
+        outcome: Outcome { status: Status::Ok, errors: 0, warnings: 0, message: String::new() },
+        inputs: None,
+        counters: vec![],
+        digests: Some(post.clone()),
+        verdict: Some(verdict(full.clone(), dg(2), dg(3), 8)),
+    };
+    shard.validate()?;
     cov.used += u64::from(!full.used.is_empty());
     cov.only += u64::from(full.only_pre + full.only_post > 0);
 
