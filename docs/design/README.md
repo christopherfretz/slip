@@ -176,12 +176,21 @@ For a transformation declared semantics-preserving modulo a relocation map `M`:
    deferred until there is a release to package (libstdc++ is GPLv3 with the
    GCC Runtime Library Exception; the operator's only requirement is that it
    is used within its terms).
-3. **Formatting.** Slip edits bytes and leaves everything else untouched. It
-   will not reformat. Running a formatter over touched ranges is left to the
-   user's tooling unless you want it built in.
-4. **What "dependencies" means for the migration.** The design takes a list of
-   path globs for *owned* code; everything else is read-only. If ownership is
-   defined some other way in your codebase (build targets, a manifest), the
-   plan phase should read that instead.
+3. **Formatting.** *Decided 2026-11-21.* Slip does not contain a formatter.
+   It edits bytes and leaves everything else untouched, and provides:
+   insertion helpers that copy the surrounding indentation; a
+   machine-readable list of the ranges it changed; and an optional hook that
+   runs the user's formatter (some configuration of clang-format, for the
+   motivating codebase) over the touched ranges *before* verification, so
+   the bytes that are verified are the bytes that land.
+4. **What "dependencies" means for the migration.** *Decided 2026-11-21.*
+   A file is *owned* (Slip may edit it, and names it declares move) or
+   *read-only* (never edited; names it declares keep the old namespace and
+   are requalified at their uses). Two sources, in this order: path
+   prefixes given by the user (the motivating codebase installs its
+   dependencies under one prefix), then, for files no prefix decides, how
+   the build treats them: a file every observer reaches as a system header
+   (`-isystem` and the like) is read-only. A file that some observers see
+   as a system header and others do not is reported, not guessed.
 5. **Naming.** This design calls a user's program a *transform*, the code it
    runs on the *subject*, and a (TU, configuration) pair an *observer*.

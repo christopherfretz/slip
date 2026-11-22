@@ -46,8 +46,10 @@ kiln_ast    = { path = "kiln/crates/kiln_ast" }
 kiln_parse  = { path = "kiln/crates/kiln_parse" }
 kiln_sema   = { path = "kiln/crates/kiln_sema" }
 kiln_oven   = { path = "kiln/crates/kiln_oven" }
-# Third-party crates: none. Each addition is approved in a work package and
+# Third-party crates. Each addition is approved in a work package and
 # justified here (docs/AGENTS.md rule 7).
+# signal-hook (WP-004): SIGINT/SIGTERM cleanup that kills the children and returns the jobserver tokens (spec/exec.md §7) while slip stays forbid(unsafe_code).
+signal-hook = { version = "0.3", default-features = false, features = ["iterator"] }
 
 # Kiln's lint levels (kiln/Cargo.toml), unchanged.
 [workspace.lints.rust]
