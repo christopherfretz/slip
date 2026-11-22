@@ -10,9 +10,9 @@ template <class T> struct A {
 };
 void k(int);
 #ifdef B
-A<long> b;
-A<int> a;
+void use_b() { A<long> b; }
+void use_a() { A<int> a; }
 #else
-A<int> a;
-A<long> b;
+void use_a() { A<int> a; }
+void use_b() { A<long> b; }
 #endif

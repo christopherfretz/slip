@@ -6,5 +6,5 @@
 template <class T> int t() { void g(int); return 0; }
 void g(int);
 #ifdef B
-int u = t<int>();
+int use() { return t<int>(); }
 #endif

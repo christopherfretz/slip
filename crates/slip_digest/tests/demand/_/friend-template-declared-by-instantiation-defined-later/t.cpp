@@ -5,7 +5,7 @@
 // a written template (a specialisation copies its template's).
 template <class T> struct A { template <class U> friend int g(U); };
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #endif
 template <class U> int g(U) { return 0; }
 int u = g(1);
