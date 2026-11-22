@@ -1,6 +1,5 @@
 //! The parse task: one observer through Kiln's front end, to its shard
-//! (`spec/model.md` §8, `spec/exec.md` §5.1; the rules beyond the spec are
-//! `spec/landed/model/WP-010.md`). Work package WP-010.
+//! (`spec/model.md` §8, §8.4, `spec/exec.md` §5.1). Work package WP-010.
 
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};

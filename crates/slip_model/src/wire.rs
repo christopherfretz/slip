@@ -3,7 +3,7 @@
 //! Every value has exactly one valid encoding (§1 rule 1), so the decoder
 //! rejects anything the encoder would not have produced. Errors carry the
 //! byte offset at which they were detected (§2.1); the conventions for which
-//! offset are in `spec/landed/model/WP-001.md`:
+//! offset are in `spec/model.md` §2.2:
 //!
 //! - `Truncated`: the offset at which the input ended (its length).
 //! - `Malformed` in a value: the offset of the offending byte (the redundant

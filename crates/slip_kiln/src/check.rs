@@ -1,5 +1,5 @@
-//! The Kiln-backed front-end check (`spec/cdb.md` §6; the rules beyond §6
-//! are `spec/landed/cdb/WP-010.md`). Work package WP-010.
+//! The Kiln-backed front-end check (`spec/cdb.md` §6, §6.1, §6.2). Work
+//! package WP-010.
 //!
 //! Kiln's own command-line parser (`kiln_driver::args::Args::parse_as`)
 //! decides both questions: whether every flag is accepted, and which
@@ -17,7 +17,7 @@ pub(crate) const DEP_TARGET: &str = "slip.d";
 /// opened: the check only parses the command line).
 const CHECK_DEP_FILE: &str = "/slip-check/slip.d";
 
-/// The command line the parse task gives Kiln (`spec/landed/cdb/WP-010.md`):
+/// The command line the parse task gives Kiln (`spec/cdb.md` §6.1):
 /// its own options first, where no argument of the command can take them
 /// as a value, then the command's arguments, then the diagnostic format,
 /// last so that it wins over the command's own.
@@ -106,7 +106,7 @@ impl FrontEndCheck for KilnCheck {
 /// The program name the driver is run as. `argv[0]` itself, except a name
 /// that would make `kiln_driver::run_as` start its dependency scanner
 /// (`clang-scan-deps…`): that runs as `kiln`, the driver mode such a name
-/// has anyway (`spec/landed/cdb/WP-010.md`).
+/// has anyway (`spec/cdb.md` §6.1).
 pub(crate) fn program(argv0: &str) -> String {
     if kiln_driver::scan_deps::is_scanner_name(kiln_driver::args::program_basename(argv0)) {
         "kiln".to_owned()
@@ -185,7 +185,7 @@ fn written_argument(error: &ArgError, line: &[String]) -> String {
 /// The extensions Kiln types as C or C++ without `-x` (`kiln/spec/driver.md`
 /// "Input languages"; case-sensitive). Kiln compiles any other extension
 /// as C++ under `-fsyntax-only`, where the build's own compiler would not:
-/// those are refused (`spec/landed/cdb/WP-010.md`).
+/// those are refused (`spec/cdb.md` §6.2).
 const KILN_SOURCE_EXTENSIONS: &[&str] = &[
     "c", "h", "i", "cc", "cp", "cpp", "CPP", "cxx", "c++", "C", "ii", "cppm", "ixx", "hh", "hpp",
     "hxx", "H", "inc",

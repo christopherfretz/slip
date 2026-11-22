@@ -1,6 +1,6 @@
 //! Reading the Make rule Kiln writes for `-MD -MF` (`kiln/spec/driver.md`
 //! "Dependency output"), to list the files a parse read
-//! (`spec/landed/model/WP-010.md`).
+//! (`spec/model.md` §8.4).
 //!
 //! Kiln writes one rule, `<target>: <file> <file> …`, lines continued with
 //! ` \`, file names escaped as clang's `DependencyFileGenerator` does

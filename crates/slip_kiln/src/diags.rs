@@ -1,5 +1,5 @@
 //! Counting Kiln's diagnostics while they stream (`spec/model.md` §8
-//! `Outcome`; `spec/landed/model/WP-010.md`).
+//! `Outcome`, §8.4).
 //!
 //! The parse runs Kiln with `-fdiagnostics-format=json`: one JSON object
 //! per diagnostic per line (`kiln/spec/diag.md` "JSON output"), its notes

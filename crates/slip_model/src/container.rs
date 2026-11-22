@@ -15,7 +15,7 @@
 //! (`Truncated`, `Corrupt`), then the section framing. A header field that
 //! the input is too short to hold is not judged; the length check then
 //! reports `Truncated`. Offsets are into the whole file; the conventions are
-//! in `spec/landed/model/WP-001.md`.
+//! in `spec/model.md` §2.2 and §5.3.
 
 use std::cell::Cell;
 

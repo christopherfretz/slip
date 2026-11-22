@@ -1,4 +1,4 @@
-//! `spec/cdb.md` §6 and `spec/landed/cdb/WP-010.md`: `KilnCheck`, Kiln's
+//! `spec/cdb.md` §6, §6.1 and §6.2: `KilnCheck`, Kiln's
 //! command-line parser as the authority on flags and language.
 
 use slip_cdb::check::{ByExtension, FrontEndCheck, Rejection};

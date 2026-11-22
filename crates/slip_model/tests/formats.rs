@@ -1247,7 +1247,7 @@ fn json_wrong_type() {
 }
 
 // spec/model.md §10: only the canonical rendering of a value is accepted
-// (see spec/landed/model/WP-006.md "Reading JSON").
+// (spec/model.md §10.2).
 #[test]
 fn json_non_canonical_forms_rejected() {
     let at = &["sections", "observers", "0", "cost_hint"][..];
@@ -1296,7 +1296,7 @@ fn json_non_canonical_forms_rejected() {
 }
 
 // spec/model.md §10: members are in field order, sections in id order
-// (spec/landed/model/WP-006.md "Reading JSON").
+// (spec/model.md §10.2).
 #[test]
 fn json_member_order() {
     let mut v = sample_plan().to_json();

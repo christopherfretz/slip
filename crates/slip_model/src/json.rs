@@ -6,8 +6,7 @@
 //! forms, [`write_compact`] and [`write_pretty`]; reading its output gives
 //! back an equal value.
 //!
-//! Rules this module follows that §4 leaves open are recorded in
-//! `spec/landed/model/WP-002.md`.
+//! The details of the reader and writer are `spec/model.md` §4.1–§4.3.
 
 use std::collections::HashSet;
 use std::fmt;
