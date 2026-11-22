@@ -1,0 +1,67 @@
+# The corpora of `cargo xtask corpus` (spec/harness.md §8,
+# spec/landed/harness/WP-011.md). One table per corpus, keyed by the name
+# the commands take; the corpus lives in $SLIP_CORPUS_DIR/<name>/ (else
+# .corpus/<name>/ in the repository).
+#
+#   kiln          a table of kiln/scripts/oss/projects.toml: its `url`, `tag`
+#                 and `source_subdir` are the pin, so Slip and Kiln measure
+#                 the same code
+#   cxx_std       CMAKE_CXX_STANDARD
+#   build_type    CMAKE_BUILD_TYPE
+#   c_compiler    CMAKE_C_COMPILER, a name looked up on PATH
+#   cxx_compiler  CMAKE_CXX_COMPILER, a name looked up on PATH
+#   configure     further CMake arguments (not the generator, -S, -B, or the
+#                 variables above, which xtask sets)
+#   generate      the build targets that make the generated sources the
+#                 translation units include; `configure` builds exactly these.
+#                 `<target>:<file>` builds one generated file of a target
+#                 (`make -f <its build.make> <file>`), for a generated source
+#                 that is not a target of its own
+#
+# All keys are required. Changing a row makes the next `configure` run
+# CMake (and the generate step) again.
+
+[llvm]
+kiln = "llvm_project"
+cxx_std = 17
+build_type = "Release"
+c_compiler = "clang-19"
+cxx_compiler = "clang++-19"
+configure = [
+  "-DLLVM_ENABLE_PROJECTS=clang",
+  "-DLLVM_TARGETS_TO_BUILD=X86;AArch64",
+  "-DLLVM_INCLUDE_TESTS=ON",
+  "-DLLVM_INCLUDE_BENCHMARKS=OFF",
+  "-DLLVM_INCLUDE_EXAMPLES=OFF",
+  "-DLLVM_ENABLE_ZLIB=OFF",
+  "-DLLVM_ENABLE_ZSTD=OFF",
+  "-DLLVM_ENABLE_LIBXML2=OFF",
+  "-DLLVM_ENABLE_LIBEDIT=OFF",
+  "-DLLVM_ENABLE_LIBPFM=OFF",
+]
+generate = [
+  # llvm: intrinsics, OpenMP/OpenACC directives, value types, the revision
+  # header, the target parsers
+  "intrinsics_gen", "omp_gen", "acc_gen", "vt_gen", "llvm_vcsrevision_h",
+  "AArch64TargetParserTableGen", "ARMTargetParserTableGen", "RISCVTargetParserTableGen",
+  # the two configured targets
+  "X86CommonTableGen", "AArch64CommonTableGen",
+  # llvm libraries and tools outside those: option tables and the like
+  "BitcodeStripOptsTableGen", "CvtResTableGen", "CxxfiltOptsTableGen",
+  "DebugInfodOptsTableGen", "DllOptionsTableGen", "DsymutilTableGen",
+  "DwarfutilTableGen", "DwpOptsTableGen", "GSYMUtilOptsTableGen", "IFSOptsTableGen",
+  "InstallNameToolOptsTableGen", "JITLinkTableGen", "LibOptionsTableGen",
+  "LibtoolDarwinOptsTableGen", "LipoOptsTableGen", "MLTableGen", "MtTableGen",
+  "NmOptsTableGen", "ObjcopyOptsTableGen", "ObjdumpOptsTableGen", "Opcodes",
+  "OtoolOptsTableGen", "RcOptsTableGen", "ReadTAPIOptsTableGen", "ReadobjOptsTableGen",
+  "SancovOptsTableGen", "SizeOptsTableGen", "StringsOptsTableGen", "StripOptsTableGen",
+  "SymbolizerOptsTableGen", "TLICheckerOptsTableGen", "WindresOptsTableGen",
+  # llvm unit tests
+  "AutomataTestTableGen", "OptsTestTableGen",
+  # clang: CLANG_TABLEGEN_TARGETS, and what is not in it
+  "clang-tablegen-targets", "ClangAttrDocTable", "ClangOpenCLBuiltinsImpl",
+  "InstallAPIDriverOptions", "LinkerWrapperOpts", "NVLinkWrapperOpts",
+  "ScanDepsOptsTableGen", "clangAnalysisFlowSensitiveResources",
+  # clang's revision header: a source of clangBasic, not a target of its own
+  "obj.clangBasic:tools/clang/lib/Basic/VCSVersion.inc",
+]

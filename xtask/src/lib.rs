@@ -4,7 +4,8 @@
 //!
 //! - [`lint`]: `cargo xtask lint` (§3),
 //! - [`wp`]: `cargo xtask wp [--ready]` (§4),
-//! - [`ci`]: `cargo xtask ci [--quick] [--step <name>]… [--keep-going]` (§2).
+//! - [`ci`]: `cargo xtask ci [--quick] [--step <name>]… [--keep-going]` (§2),
+//! - [`corpus`]: `cargo xtask corpus list|fetch|configure|status|path` (§8).
 //!
 //! Every command takes the repository root as a parameter so the tests can
 //! point it at fixture trees; [`repo_root`] is the root of the checkout this
@@ -13,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod ci;
+pub mod corpus;
 pub mod lint;
 pub mod repo;
 pub mod wp;
