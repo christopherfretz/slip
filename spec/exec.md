@@ -380,5 +380,13 @@ text. Nothing but protocol messages may be written to its standard output.
 - `parse` prints nothing while it runs. A progress line (observers done,
   running, memory reserved) belongs on standard error when it is a terminal;
   the pool needs a way to report it.
+- Store corner cases left as landed (`spec/landed/exec/WP-008.md`): two
+  openers initialising one empty directory at the same moment (one can be
+  refused as unrecognised); entries under `tmp/` that the store did not
+  name are never removed; without `/proc` nothing is ever stale; a worker
+  given a store that has been removed creates a new one; two `Store`s of
+  one process share a scratch directory.
+- Nothing is `fsync`ed. A crash of the machine can leave a published file
+  empty; the container trailer makes that detectable, not impossible.
 - Whether the coordinator should lower its budget when other processes in
   the same cgroup use memory. Today the budget is static.
