@@ -121,6 +121,8 @@ and **derived** otherwise. Derived units are:
 - an implicit instantiation: a class template specialisation's definition, a
   function or variable specialisation, a member of a specialisation, an
   instantiated default argument or default member initialiser;
+- an entity every declaration of which an instantiation made outside its
+  class (below), such as a friend declared only by a class template;
 - a builtin function or type Kiln declares on first use;
 - the object of a class-type constant used as a template argument, keyed
   by its content;
@@ -135,6 +137,41 @@ and **derived** otherwise. Derived units are:
   pattern a class was instantiated from). Otherwise a use added in one
   function would change the digest of every instantiation it is the
   first to define, against rule 5 of §1.
+
+A declaration is **instantiated outside its class** when its lexical
+context is an implicitly instantiated class specialisation or a member of
+one, and its semantic context is not: the friends an instantiation
+declares, whose semantic context is the namespace. Such a declaration is
+no part of a declared unit: everything a declared unit reads over the
+redeclaration chain (the declarations merged, the definition, the
+pattern an entity was instantiated from) leaves it out, so a use that
+instantiates a class does not change the units of the entities it
+befriends (rule 5 of §1). An entity all of whose declarations are
+instantiated outside their class is a derived unit; it is keyed as a
+friend is (§3: a member-like friend in the class specialisation that
+declares it, any other in its namespace). Its unit is read from one
+declaration, its **canonical candidate**: the declaration whose declaring
+class specialisation (its lexical context) has the least mapped key,
+compared by the key's bytes (§3.4); among declarations one specialisation
+makes (a friend declared twice), the one whose own declaration stream has
+the least digest. The unit's stream, its origin file and its name are read
+from the canonical candidate, once, so the unit does not depend on which
+specialisation came first, and a definition another candidate holds is
+no part of it (that definition is its class specialisation's).
+
+A declaration in the body of a templated function, or of an instantiation
+of one, that names an entity outside that function (a block-scope
+`extern` declaration of a function or variable, a friend of a local
+class) is no declaration a unit reads, and an entity declared only by
+such declarations is no unit. Kiln chains the pattern's declaration to no
+other ([temp.spec.general]/2), and an instantiation's declaration repeats
+the pattern's: the entity it names is the one its pattern's declaration
+names. Instantiating the function makes or moves no unit.
+
+What an instantiation adds to an
+entity that also has written declarations (a friend's definition) is the
+class specialisation's: its friend unit refers to the entity, and the
+definition is the entity's resolved unit `definition`.
 
 An implicit member that Kiln has declared but nothing references is not a
 unit: whether Kiln declared it depends on which lookups happened. What such

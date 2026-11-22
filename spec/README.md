@@ -22,7 +22,7 @@ normative. Where the two disagree, the spec wins and the design is corrected.
 | [verify.md](verify.md) | Comparison under declared changes; localisation | `slip_verify` | draft |
 | [pitfalls.md](pitfalls.md) | The catalogue of semantic hazards; one test per row | tests | draft |
 | reduce.md | Reduce as a function from shards to an edit set and report | `slip_reduce` | not written (M2) |
-| api.md | `<slip/meta.h>` | `slip_script`, resource headers | not written (M3) |
+| [api.md](api.md) | The transform API, version 0: the transform universe, the intrinsic layer, `<slip/meta.h>`, the run output | `slip_script`, `resource/` | draft |
 | macros.md | Token origin, tiers, coverage states | `slip_kiln`, `slip_reduce` | not written (M4) |
 
 Status is one of: `not written`, `draft` (may change freely), `stable`

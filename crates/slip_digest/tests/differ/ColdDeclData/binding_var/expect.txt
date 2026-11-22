@@ -1,0 +1,7 @@
+# the binding of a tuple-like class has a holding variable; the specialisations that make it one are added, and list a static member in the order unit
+changed a
+changed <order>
+added std::tuple_element<0, P>
+added std::tuple_element<0, P>::type
+added std::tuple_size<P>
+added std::tuple_size<P>::value

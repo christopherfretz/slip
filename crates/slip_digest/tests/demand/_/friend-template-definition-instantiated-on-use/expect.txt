@@ -1,0 +1,6 @@
+# pending
+# t<int>'s FnSpec (an inline bit, FnSpec(8) against FnSpec(0)) comes from the definition it is
+# instantiated from (side B: the friend's, defined in its class): a fact of
+# the definition, to move to the resolved unit `definition` with the rows of
+# digest-kinds §11.9 (decl_func.rs `fn_spec`, not WP-032's to change)
+added use()

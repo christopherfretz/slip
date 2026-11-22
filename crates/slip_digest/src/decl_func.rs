@@ -52,7 +52,7 @@ pub(crate) fn function_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
     };
-    let e = ast.first(d);
+    let e = w.representative(ast.first(d));
     let definition_class = function_definition_class(w, e);
     // params: decl*, in order. A default argument taken from another
     // declaration names that declaration's parameters: parameter i of
@@ -216,7 +216,7 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
     };
-    let e = ast.first(d);
+    let e = w.representative(ast.first(d));
     let definition_class = var_definition_class(w, e);
     // `init`, `0-init-style` and `eval` belong to the declaration that
     // holds the initialiser, which need not be the one read (an in-class
@@ -238,7 +238,16 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     } else {
         crate::expr::child_opt(w, s, init);
     }
-    // spec: record VarSpec.
+    // spec: record VarSpec. A declaration directly in a linkage
+    // specification without braces is `extern` ([dcl.link]/8): written so,
+    // which is all `ScopeData` `aux-braceless` (out) says of a variable.
+    let spec = if spec.storage() == slip_kiln::kiln::ast::decl::VarStorage::None
+        && ast.decls.is_single_line_linkage(d)
+    {
+        spec.with_storage(slip_kiln::kiln::ast::decl::VarStorage::Extern)
+    } else {
+        spec
+    };
     var_spec(w, s, e, spec, style, definition_class);
     // eval: demand, the resolved unit `value` (§11.3). Only a state that
     // cannot outlive the translation unit is read here.
@@ -440,8 +449,9 @@ pub(crate) fn let_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 /// The language linkage a function's or variable's stream holds
 /// (§5.6 `ScopeData`): `enum LinkageLang?` of the innermost
 /// `LinkageSpec` around the first declaration `e`, through classes and
-/// functions, then, when present, `aux-braceless` as `bool`. The reading
-/// is the one the key's parent uses (`Walk::linkage_spec`).
+/// functions. `aux-braceless` is `out`: what it changes, whether a
+/// variable's declaration is a definition, the unit holds already. The
+/// reading is the one the key's parent uses (`Walk::linkage_spec`).
 fn linkage(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
     match w.linkage_spec(e, true) {
         Some((_, None)) => {
@@ -453,7 +463,6 @@ fn linkage(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
                 s.indeterminate(SCOPE_AUX_UNACCOUNTED);
             }
             s.opt(true).tag(linkage_lang::row(&lang));
-            s.bool(aux & ScopeData::LINKAGE_BRACELESS != 0);
         }
         None => {
             s.opt(false);
@@ -504,9 +513,15 @@ fn on_use(kind: SpecKind) -> bool {
 /// implicit instantiation or an explicit instantiation declaration, or,
 /// with no kind of its own, that of the nearest enclosing context that
 /// has one.
+///
+/// One with a written declaration is read from it, not from a
+/// declaration an instantiation added first. An entity declared only by
+/// instantiations outside their class is read from Kiln's first
+/// declaration, the friend function an instantiation made, whose own
+/// `MemberSpecInfo` is `ImplicitInstantiation` (WP-032 rule 2).
 pub(crate) fn instantiated_on_use(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
-    let mut c = Some(e);
+    let mut c = Some(w.representative(e));
     for _ in 0..64 {
         let Some(x) = c else { return false };
         let kind = ast
@@ -521,35 +536,11 @@ pub(crate) fn instantiated_on_use(w: &Walk<'_>, e: DeclId) -> bool {
     false
 }
 
-/// Whether the declaration `x` was made by instantiation: its own
-/// `SpecInfo` kind is an instantiation of any form, or the nearest
-/// lexically enclosing context with a kind is one. A declaration written
-/// in source (an explicit specialisation, or the out-of-line definition
-/// of one) is not.
+/// Whether the declaration `x` was made by instantiation
+/// (`templ::instantiated_declaration`). A declaration written in source (an explicit
+/// specialisation, or the out-of-line definition of one) is not.
 fn instantiated_decl(w: &Walk<'_>, x: DeclId) -> bool {
-    let ast = w.ast;
-    let instantiation = |k: SpecKind| match k {
-        SpecKind::ImplicitInstantiation
-        | SpecKind::ExplicitInstantiationDeclaration
-        | SpecKind::ExplicitInstantiationDefinition => true,
-        SpecKind::Undeclared | SpecKind::ExplicitSpecialization => false,
-    };
-    if let Some((_, i)) = ast.spec_info(x) {
-        return instantiation(i.kind);
-    }
-    let mut c = ast.decls.lexical_ctx(x);
-    for _ in 0..64 {
-        let Some(y) = c else { return false };
-        let kind = ast
-            .spec_info(y)
-            .map(|(_, i)| i.kind)
-            .or_else(|| ast.member_spec_info(y).map(|(_, i)| i.kind));
-        if let Some(k) = kind {
-            return instantiation(k);
-        }
-        c = ast.decls.lexical_ctx(y);
-    }
-    false
+    crate::templ::instantiated_declaration(w, x)
 }
 
 /// A function of the definition class (§11.9): defined only when used
@@ -559,8 +550,9 @@ fn instantiated_decl(w: &Walk<'_>, x: DeclId) -> bool {
 /// on its first declaration, which Kiln defines on odr-use as it does an
 /// implicit member (`spec/landed/digest-kinds/WP-026.md`).
 fn function_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
+    let first = w.representative(e);
     let defaulted_first =
-        w.ast.decls.function(e).is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
+        w.ast.decls.function(first).is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
     instantiated_on_use(w, e) || all_implicit(w, e) || defaulted_first
 }
 
@@ -572,7 +564,9 @@ fn var_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
 /// Whether the entity `e` (a first declaration) is of the definition
 /// class of §11.9, whose definition, and with it `DeclMisc`
 /// `0-definition`, Kiln makes on use: a function or variable as above,
-/// and any other entity that is an implicit instantiation.
+/// and any other entity that is an implicit instantiation or declared
+/// only by instantiations outside their class (a friend's definition is
+/// instantiated on use; WP-032 rule 2).
 pub(crate) fn definition_class(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
     if ast.decls.function(e).is_some() {
@@ -580,7 +574,7 @@ pub(crate) fn definition_class(w: &Walk<'_>, e: DeclId) -> bool {
     } else if ast.decls.var(e).is_some() {
         var_definition_class(w, e)
     } else {
-        implicit_instantiation(w, e)
+        crate::units::outside_only(w, e) || implicit_instantiation(w, w.representative(e))
     }
 }
 
@@ -821,10 +815,10 @@ pub(crate) mod tests {
         });
     }
 
-    // digest-kinds §5.6 ScopeData rule: `enum LinkageLang?`, then
-    // `aux-braceless` as `bool`; absent with no `LinkageSpec`.
+    // digest-kinds §5.6 ScopeData rule: `enum LinkageLang?`, absent with
+    // no `LinkageSpec`; `aux-braceless` is `out` (WP-033 review).
     #[test]
-    fn linkage_is_an_optional_language_then_braceless() {
+    fn linkage_is_an_optional_language() {
         let (none, c0) = linkage_bytes("void f();", "f", DeclKind::Function);
         assert_eq!(c0, None);
         let mut want = Stream::new();
@@ -834,11 +828,10 @@ pub(crate) mod tests {
         assert_eq!(c1, None);
         let mut want = Stream::new();
         want.opt(true)
-            .tag(crate::tables::linkage_lang::row(&slip_kiln::kiln::ast::decl::LinkageLang::C))
-            .bool(true);
+            .tag(crate::tables::linkage_lang::row(&slip_kiln::kiln::ast::decl::LinkageLang::C));
         assert_eq!(braceless, want.as_bytes());
         let (braced, _) = linkage_bytes("extern \"C\" { void f(); }", "f", DeclKind::Function);
-        assert_ne!(braced, braceless);
+        assert_eq!(braced, braceless);
         // Through an enclosing class and an enclosing function.
         let (member, _) =
             linkage_bytes("extern \"C\" { struct C { void m(); }; }", "m", DeclKind::CXXMethod);
@@ -890,6 +883,24 @@ pub(crate) mod tests {
             let ss = named(w, "s", DeclKind::Var);
             let vs: Vec<bool> = ss.iter().map(|&v| super::var_definition_class(w, v)).collect();
             assert_eq!(vs.iter().filter(|&&b| b).count(), 1, "{vs:?}");
+        });
+    }
+
+    // WP-032 rule 1: a comparison an instantiation declares first, as a
+    // friend, and that is then defaulted at namespace scope is defaulted on
+    // its first written declaration, the representative, not on Kiln's
+    // first declaration: of the definition class.
+    #[test]
+    fn defaulted_after_friend_instantiation() {
+        let src = "template <class T> struct E { friend bool operator==(const E&, const E&); };\n\
+                   E<int> e;\n\
+                   bool operator==(const E<int>&, const E<int>&) = default;\n";
+        with_walk(src, |w| {
+            let written = *of_kind(w, DeclKind::Function).last().expect("the written ==");
+            let e = w.entity(written);
+            assert_ne!(e, written, "Kiln's first declaration is the instantiation's");
+            assert_eq!(w.representative(e), written);
+            assert!(super::function_definition_class(w, e));
         });
     }
 
