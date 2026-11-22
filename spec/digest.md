@@ -1,0 +1,549 @@
+# digest — the semantic digest
+
+Status: draft (M1). Implemented by `slip_digest` (the walk over Kiln's AST)
+and `slip_model` (the `digests` section). The per-kind and per-field rules
+are in `digest-kinds.md`; this file defines everything they
+plug into. How two digests are compared is `verify.md`. Design rationale:
+[03-equivalence.md](../docs/design/03-equivalence.md). The Kiln facts behind
+this spec are in `research/kiln-ast-inventory.md` of the context repository.
+
+The digest is what makes "everything resolves as before" checkable: a
+summary of one translation unit's resolved program such that two parses have
+equal summaries exactly when they are the same program up to the things
+listed in §1. `slip_digest` and `slip_verify` are Slip's trusted base. They
+are specified first, kept small, and tested by tests whose purpose is to
+make them fail (§14).
+
+## 1. Principles
+
+1. **The standard for inclusion is code generation.** A fact is in the
+   digest if code generation, constant evaluation or overload resolution of
+   a later declaration can read it. Kiln generates code from the same AST,
+   so the rule is applied field by field (`digest-kinds.md`): every stored
+   field is classified, and the classification, not a judgement made while
+   coding, decides.
+2. **Spelling is not meaning.** Excluded: source locations; whether and how
+   a name is qualified; the alias, using-declaration or injected name a type
+   or entity was reached through; redundant parentheses; `struct` against
+   `class`; `override`; the names of parameters and of block-scope entities;
+   comments, whitespace and macro structure. Where a written form *does*
+   change what code generation reads, that effect is included as a fact of
+   its own: a qualified call to a virtual function is non-virtual; an
+   unqualified dependent call uses argument-dependent lookup at
+   instantiation; `decltype((x))` is a different type.
+3. **Nothing local to a parse.** No arena index, interning order, address or
+   hash-map order reaches the digest. Entities are named by keys (§3) or by
+   their position inside a unit (§4.3).
+4. **End of translation unit only.** Kiln rewrites declarations in place
+   until the unit ends (deduced types, resolved specifications, pending
+   instantiations). The walk runs once, after the front end has finished the
+   translation unit.
+5. **Demand-driven state is kept apart.** What Kiln creates only when the
+   translation unit uses it (implicit special members, implicit
+   instantiations, lazily resolved specifications) is digested as *derived*
+   units (§2.2), so that whether something was demanded never changes the
+   digest of the thing it was demanded from.
+6. **Unknown means different.** Anything the walk cannot digest exactly
+   makes the unit *indeterminate* (§10), which compares unequal to
+   everything, itself included. The walk has no default arm and no "other"
+   case.
+7. **Small on disk.** A shard carries one digest per file of declarations
+   (§11), not one per entity, unless detail is asked for. Tens of thousands
+   of observers that include the same headers cost tens of bytes each per
+   header.
+
+## 2. Units
+
+The digest of a translation unit is a set of **units**. A unit is one entity
+with a key (§3) and the digest of everything that entity is, except the
+content of other units, which it mentions by key. Comparing every unit
+therefore compares the whole program: no unit needs to contain another.
+
+### 2.1 Which entities are units
+
+Every entity declared at namespace scope or class scope: namespaces,
+classes and enumerations, enumerators, functions, variables, data members,
+alias and typedef names, templates of every kind, concepts, explicit and
+partial specialisations, using-declarations, namespace aliases and
+deduction guides; and each of the following, which declare no name:
+using-directives, `static_assert` declarations, explicit instantiations,
+friend declarations, file-scope `asm`. A unit that declares no name is
+keyed by its content (§3.3).
+
+Entities declared inside a function body, a default argument, an
+initialiser or a lambda are **local**: they are digested inside the unit
+that contains them (§4.3) and are not units.
+
+An entity declared more than once is one unit. Its digest covers the
+entity as the declarations together define it (the definition; default
+arguments from every declaration; attributes from every declaration), not
+how many declarations there were or in what order.
+
+One more unit exists per translation unit, the **order unit** (kind
+`order`, parent `root`): the keys of the variables with static or thread
+storage duration that are defined at namespace or class scope, in the order
+of their definitions. Initialisation order is program behaviour that no
+other unit holds.
+
+### 2.2 Declared and derived units
+
+A unit is **declared** if the entity has a declaration written in source,
+and **derived** otherwise. Derived units are:
+
+- an implicitly declared special member function, an implicitly declared
+  comparison operator or an implicitly generated deduction guide, **if it is
+  referenced or defined** in the translation unit;
+- an implicit instantiation: a class template specialisation's definition, a
+  function or variable specialisation, a member of a specialisation, an
+  instantiated default argument or default member initialiser;
+- a builtin function or type Kiln declares on first use;
+- a **resolved property** of a declared unit (kind `resolved`, parent the
+  unit it belongs to, name the property): a fact Kiln computes for a
+  declaration only when something needs it. Present only if computed.
+
+An implicit member that Kiln has declared but nothing references is not a
+unit: whether Kiln declared it depends on which lookups happened. What such
+a member would be is determined by its class, whose unit holds the facts
+(`DefinitionBits`: triviality, deletedness, constexpr-ness of each special
+member).
+
+### 2.3 Demand-driven state
+
+Kiln's account of what in the AST exists only because the translation unit
+used it (Kiln `62afe3289`), and where each goes:
+
+| State | In the digest as |
+|---|---|
+| Implicit special members: declared by lookups, defined on odr-use | derived unit if referenced or defined; else nothing |
+| Implicit instantiations of every kind; the specialisation tables and their order | derived units; order not digested |
+| Bodies of a closure's conversion functions; definitions of defaulted comparisons; the implicit `==` of a defaulted `<=>` | derived units |
+| A function's deferred exception specification, once resolved | `resolved` unit |
+| A deduced return type of a template member | part of the instantiation's derived unit |
+| A variable's evaluated constant value (`eval`), default-argument immediate values | `resolved` unit |
+| A class's key function; "vtable used" marks; `overrides`, `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
+| Record layouts (`Ast::layouts`) | not digested (§6, last rule) |
+| Concept satisfaction and normal-form caches | not digested; the result stored in each expression is (§6) |
+| `USED` and `REFERENCED` marks; linkage and visibility caches | not digested |
+| Lazily declared builtins (`builtin_id`, `lib_builtin`) | derived unit if referenced |
+| `source_loc` values | symbolic (§9) |
+| Arena indices and interning order of declarations, types, constants | never digested (§1 rule 3) |
+
+`digest-kinds.md` marks each field behind a row of this table `demand`.
+A field that turns out to be demand-driven and is not in this table is a
+defect of this spec: the "demand independence" test (§14) exists to find
+them.
+
+Derived units are compared when both parses have them. A derived unit that
+only one parse has is not by itself a difference (`verify.md` says when it
+is reported): the reference that demanded it is in some unit, and that
+unit's digest differs.
+
+## 3. Keys
+
+A **key** identifies an entity independently of the parse, of source
+positions and of the translation unit. It is structural: an entity's key
+contains the key of the entity it is a member of.
+
+```
+Key    := kind:   KeyKind
+          parent: Parent
+          name:   Name
+          disc:   opt<digest>
+
+Parent := root = 0                 the global namespace
+        | c_linkage = 1            entities with C language linkage: one entity whatever namespace declares them
+        | builtin = 2              entities the front end declares itself
+        | unit = 3, id: KeyId      the enclosing namespace, class, function or template
+
+KeyId  := H("slip.key.v1", Key)    the tagged digest of spec/model.md §3
+```
+
+`KeyKind`, `Name` and what `disc` holds for each kind are tables of
+`digest-kinds.md`. The rules they follow:
+
+### 3.1 Names
+
+A name is an identifier; an operator (by Slip's own operator table, not
+Kiln's numbering); `constructor`; `destructor`; a conversion function (with
+the digest of the type converted to); a literal operator (its suffix); a
+deduction guide; `anonymous` (the unnamed namespace); or one of the forms of
+§3.3 and §4.3 for entities without a name.
+
+### 3.2 Discriminators
+
+`disc` distinguishes entities that share kind, parent and name:
+
+- a function: the digest of its signature — parameter types, variadic,
+  cv- and ref-qualifiers, explicit object parameter; and, for a function
+  template, its template head and return type as well; and the trailing
+  requires-clause if any ([over.load], [temp.over.link]). A function with C
+  language linkage has no discriminator.
+- a template: the digest of its template head.
+- a specialisation: the digest of its canonical template arguments; its
+  parent is the template's key.
+- a partial specialisation: the digest of its template head and argument
+  pattern.
+- a using-declaration: the key of the scope its qualifier names.
+
+A non-template function's return type is not in its key: changing it
+changes the unit, not which entity it is.
+
+### 3.3 Entities without a name
+
+- An unnamed class or enumeration at namespace or class scope is named by
+  the first name its declaration introduces: the typedef name it is given
+  for linkage, else its first declarator, else its first enumerator, else
+  (an anonymous union) its first member. Failing all of those it is named
+  by its ordinal among the unnamed types of its scope.
+- A declaration that introduces no name at all (§2.1) is **keyed by
+  content**: `name` is `content` and `disc` is the unit's own digest. Two
+  identical `static_assert`s in one scope are one unit. Adding or removing
+  such a declaration adds or removes a key; it never renumbers another.
+
+### 3.4 Mapped keys
+
+Every `KeyId` in a digest is a **mapped** id: computed under a relocation
+table `R` given to the walk. `R` is a list of rules
+
+```
+Rule := parent: KeyId, kind: KeyKind, name: Name, disc: opt<digest>     an entity as the walk finds it
+        to_parent: KeyId, to_name: Name                                 what it is to be called instead
+```
+
+and the mapped id of an entity is computed bottom-up: map its parent and
+everything in its discriminator first; if a rule matches the resulting
+(parent, kind, name, disc), replace parent and name by the rule's; hash.
+With `R` empty this is the identity, which is what the map phase uses.
+Verification digests the post-image with the rules that undo the declared
+relocations, so that a relocated entity, every member of it, every type
+that mentions it and every signature that contains it get the keys they had
+before, and the two digests are compared for plain equality. Where the
+rules come from, and why this is sound, is `verify.md`.
+
+Two different entities of one translation unit with the same mapped `KeyId`
+are a **key collision**: every unit with that key is indeterminate (§10).
+
+## 4. Streams
+
+A unit's digest is `H("slip.unit.v1", stream)`: the tagged digest of a byte
+stream the walk produces. The stream is a sequence of **nodes** in the
+encodings of `spec/model.md` §2.
+
+```
+Node := tag: uv, fields…
+```
+
+`digest-kinds.md` gives every node its tag (Slip's own numbering, never a
+Kiln discriminant), its fields in order, and their encodings. A node's
+encoding is self-delimiting given the tables: every list is preceded by its
+count and every optional field by its presence byte, so two different trees
+cannot produce the same bytes.
+
+### 4.1 References
+
+Wherever a node refers to an entity:
+
+```
+Ref := none = 0
+     | unit = 1,  id: KeyId                       an entity with a key (mapped, §3.4)
+     | local = 2, ordinal: uv                     a local variable, parameter, binding or label of this unit (§4.3)
+     | template_param = 3, depth: uv, index: uv
+     | param = 4, level: uv, index: uv            a function parameter named inside a signature
+```
+
+A reference names the entity, never the declaration it was found through:
+a using-declaration, an alias or an injected class name resolve to their
+target.
+
+### 4.2 Types and values
+
+A type is written as its digest, `H("slip.type.v1", type stream)`, where
+the type stream is the structure of the **canonical** type (Kiln's
+`canonical`, plus the adjustments `digest-kinds.md` lists where Kiln's
+canonical form keeps a spelling), with entities as `Ref`s and component
+types as their digests. A constant value is written by the rules of §7. Both
+are memoised per parse; the memo is not observable.
+
+### 4.3 Local entities
+
+Inside a unit, entities are numbered in the order the walk first meets
+them, by declaration or by reference:
+
+- parameters, local variables, structured bindings and labels get the next
+  **ordinal** and are referred to by `Ref::local`. Their names are not
+  digested.
+- local classes, enumerations and closure types get a key whose parent is
+  the unit and whose name is `local(n)`, `n` counting the local types of the
+  unit in the same order; their members have ordinary keys under it. They
+  are digested in place, at their declaration, not as units.
+- a local alias or typedef is not digested: the types it names appear
+  canonically wherever it is used.
+
+The walk order is fixed by `digest-kinds.md` (each node lists its children
+in order), so numbering is a function of the program and not of the parse.
+
+## 5. Declarations
+
+For each unit kind, `digest-kinds.md` lists the fields of the stream. The
+rules common to all:
+
+- **Order that is behaviour is kept**: base classes, non-static data
+  members, virtual functions, enumerators, parameters, template parameters,
+  the captures of a closure. **Order that is not is removed** by sorting by
+  key: the other members of a class, the friends of a class, the members of
+  a namespace (which are not listed at all: a namespace's unit holds only
+  what the namespace itself is).
+- A class's unit lists its members by key and holds the class-level facts
+  (bases, layout-affecting attributes, `DefinitionBits`); each member is a
+  unit of its own.
+- A function's unit holds its declaration facts (type, specifiers,
+  attributes, default arguments, contracts) and, if it is defined, its body.
+  A function defined in one parse and only declared in the other has
+  different digests.
+- A template's unit holds its head and its pattern, digested as written,
+  with dependent constructs by structure (§8).
+- Access, linkage, storage class, `inline`, `constexpr`/`consteval`,
+  `virtual`, `final`, deleted and defaulted, the module a declaration
+  belongs to, and every attribute Kiln stores are included.
+
+## 6. Statements and expressions
+
+Every statement and expression kind has a row in `digest-kinds.md`. The
+rules common to all:
+
+- An expression node writes its kind's tag, its value category and object
+  kind, its type (§4.2), then its kind's fields.
+- **Implicit nodes are nodes.** Implicit conversions (with their cast kind
+  and base path), materialised temporaries, bound temporaries, cleanups,
+  implicit `this`, default arguments and default member initialisers at
+  their point of use, and constant-expression wrappers (with their value)
+  are all written. Only a redundant parenthesis is skipped.
+- **The selected entity is written wherever one was selected**: the callee
+  of every call, the constructor of every construction, the conversion
+  function of every user-defined conversion, the allocation and
+  deallocation functions of `new` and `delete`, the `begin`/`end`/`get`
+  functions a range-for or structured binding uses, the functions a
+  coroutine or a rewritten comparison uses, the destructor a temporary or a
+  `delete` runs.
+- A call's "found by argument-dependent lookup" bit and "had several
+  candidates" bit are not written when the call is resolved: the callee is
+  the fact. A qualified member call's suppression of virtual dispatch is.
+- Stored results are written: the value of a type trait, of `noexcept(e)`,
+  of a concept check or a requires-expression, of `sizeof...`, of
+  `offsetof`.
+- Values the front end does not store (`sizeof`, `alignof`, the condition
+  of a `static_assert`) are covered by their operands: they are functions
+  of types and expressions whose digests are compared, in a translation
+  unit all of whose units are compared.
+
+## 7. Constant values
+
+A constant is written by structure, never by Kiln's interned id:
+
+- integers and booleans by type and value; floating-point values by format
+  and exact bits; null pointers by kind;
+- a pointer by its base (an entity as a `Ref`; a string literal by its
+  kind, type and bytes; a label by its ordinal; a temporary by the digest of
+  its value; `typeid` by the type), its offset and designated type;
+- a pointer to member by the member's `Ref` and its path;
+- an aggregate by its type and its target-layout image with padding bytes
+  zeroed, each relocation written as the pointer it holds, and each active
+  union member as a `Ref`.
+
+String literals are compared by content: whether two literals are the same
+object is unspecified by the language and is not digested.
+
+## 8. Templates and instantiations
+
+- A template's pattern is digested with dependent names by structure: a
+  dependent name's identifier and nested-name structure; for an unresolved
+  call, the set of declarations found at the definition (as sorted `Ref`s)
+  and whether the name is subject to argument-dependent lookup at
+  instantiation.
+- Template parameters are `Ref::template_param`; their names are not
+  digested.
+- Each specialisation that exists in the translation unit is a unit: an
+  explicit one is declared, an implicit one is derived (§2.2). Its digest is
+  that of the instantiated declaration, exactly as for a non-template.
+  Dependent lookups resolve at instantiation, so this is where a change in
+  what an unqualified call inside a template finds becomes visible.
+- A specialisation records the template or partial specialisation it was
+  instantiated from, as a `Ref`.
+
+## 9. Values that come from names and positions
+
+`__func__`, `__PRETTY_FUNCTION__` and the fields of `std::source_location`
+are written **symbolically** (which builtin, not its value), as are literals
+that come from the expansion of `__LINE__`, `__FILE__`, `__COUNTER__`,
+`__DATE__`, `__TIME__` and their relatives. Where such a value determines a
+type or another constant (an array bound from `__LINE__`), that type or
+constant is written by value as always, so a real change is seen.
+
+## 10. Indeterminate units
+
+A unit is **indeterminate** when its digest cannot be trusted to mean what
+this spec says:
+
+- it contains an invalid declaration, an error-recovery expression or a
+  type that contains an error;
+- it contains a kind or a value that `digest-kinds.md` marks `unsupported`;
+- its key collides with another entity's (§3.4);
+- it holds demand-driven state that `digest-kinds.md` could not assign to a
+  derived unit.
+
+Its digest is still computed and recorded, with the `indeterminate` flag.
+Verification treats an indeterminate unit as different from every unit.
+The number of indeterminate units is a counter (§12) that the corpus
+baselines gate: on a corpus that parses without errors it must be zero
+before M1 closes, or each remaining cause is listed in "Open questions".
+
+Digests are produced only for an observer whose shard is `ok`.
+
+## 11. The `digests` section
+
+Section 19 of the shard (`spec/model.md` §8).
+
+```
+Digests := scheme: uv              1; changes whenever any stream, key or table of this spec changes
+           tu:     digest          H("slip.tu.v1", list<GroupSum>), groups in the order below
+           groups: list<Group>     sorted by (class, file)
+
+Group   := class:  GroupClass
+           file:   bytes           the subject path of a file; empty for class `tu`
+           count:  uv              units in the group
+           digest: digest          H("slip.group.v1", list<Unit>) over the group's units
+           units:  opt<list<Unit>> sorted by (key, digest); present when detail was asked for
+
+GroupSum   := class, file, count, digest
+GroupClass := declared = 0 | derived = 1 | tu = 2
+
+Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminate; other bits must be 0
+```
+
+- A declared unit belongs to the group of the file that holds the entity's
+  first declaration in the translation unit. A derived unit belongs to the
+  derived group of the file that holds the first declaration of what it
+  derives from (the template, the class, the function). The order unit is
+  the only member of the single `tu` group. Builtins are in the derived
+  group with the empty path.
+- The file of a declaration is the file of its location, or of the
+  outermost macro expansion that produced it. A **subject path** is the real
+  path of that file, with the root of a post-image mapped back to the root
+  of the subject, so that the same file has the same group before and
+  after.
+- Two units of one group with the same key and digest are one unit.
+- **Detail** is a parameter of the walk: `none` (no `units` lists), `all`,
+  or a list of files. The group digests and `tu` are the same whatever the
+  detail.
+
+Equal `tu` digests mean equal unit sets. Unequal ones are narrowed to the
+groups that differ, whose unit lists (asked for with detail, by parsing
+again if the shard does not have them) are compared unit by unit. Groups
+are an index, not a rule: verification's definition is always the
+comparison of unit sets (`verify.md`).
+
+## 12. Counters
+
+| Counter | Meaning |
+|---|---|
+| `digest.units` | units, declared and derived |
+| `digest.units.derived` | derived units |
+| `digest.groups` | groups |
+| `digest.indeterminate` | indeterminate units |
+| `digest.collisions` | keys shared by different entities |
+| `digest.bytes` | bytes of unit, type and key streams hashed |
+
+## 13. Completeness obligations
+
+The claim "every field that code generation reads is digested" is kept
+true by mechanism, not by review alone.
+
+1. **Tables.** `digest-kinds.md` has one row for every variant of every
+   Kiln enumeration the AST uses, and one row for every stored field of
+   every AST record, payload, side record and cold map, each with a class
+   (entity, type, value, child, name, flag, written, location, bookkeeping),
+   a decision (`in`, `out`, `symbolic`, `demand`, `unsupported`) and, for a
+   field that packs several facts into one word, one row per fact.
+2. **No wildcard.** Every dispatch of the walk over a Kiln enumeration lists
+   every variant. A new variant in Kiln does not compile.
+3. **Pinned schemas.** For every Kiln type the tables cover, `slip_digest`
+   asserts at compile time that the type's `Snap::SCHEMA_HASH` is the value
+   recorded when its rows were last reviewed. A Kiln change that adds,
+   removes or retypes a field or variant does not compile, and names the
+   type. The fix is to review the rows, then update the pin; the commit says
+   what was reviewed.
+4. **Tables against Kiln.** A test reads `digest-kinds.md` and Kiln's own
+   schema descriptors (`kiln_snap::Schema`) and fails if a variant or field
+   has no row, or a row names something that does not exist.
+5. **Tables against tests.** Every row decided `in` names at least one
+   *must-differ* test (§14); every row decided `out` with class *written*
+   names at least one *must-equal* test. A test fails for a row that names
+   none or names a test that does not exist.
+6. **What the pins cannot see.** A word whose meaning changes inside Kiln
+   without its type changing (a per-kind operand, a bit of a flag word) is
+   invisible to 3 and 4. Mutation tests (§14) and, when Kiln provides it, a
+   public table of operand roles (`docs/design/05-kiln-interface.md` KR5)
+   cover it; until then every such word is listed in "Open questions".
+
+## 14. What the tests must show
+
+- **Must-equal pairs** (`crates/slip_digest/tests/equal/`): two sources that
+  differ only in something §1 rule 2 excludes; their digests must be equal.
+- **Must-differ pairs** (`tests/differ/`): two sources that differ in one
+  included fact; the digests must differ, and the differing unit must be the
+  one the test names. One pair at least per `in` row.
+- **Determinism**: every test source is parsed twice in one process and in
+  two; all digests equal. On the corpora this is invariant (a) of the
+  engineering plan.
+- **Demand independence**: a source, and the same source with an added
+  declaration that only *uses* existing entities (forcing implicit members
+  and instantiations); every unit present in both must be equal.
+- **Mutation**: the catalogue of `spec/pitfalls.md`, each row a correct edit
+  that must compare equal under its relocations and a wrong edit that must
+  be caught.
+- **Format**: the `digests` section round-trips, and every malformed
+  encoding is rejected (`crates/slip_model/tests/`).
+- **Completeness**: obligations 4 and 5 of §13.
+
+## Tests
+
+- `crates/slip_digest/tests/equal.rs`, `differ.rs` — §14 pairs, one
+  directory of sources per test under `tests/equal/` and `tests/differ/`.
+- `crates/slip_digest/tests/determinism.rs`, `demand.rs` — §14.
+- `crates/slip_digest/tests/tables.rs` — §13 obligations 4 and 5.
+- `crates/slip_model/tests/formats.rs` — §11, the section's encoding.
+- `spec/pitfalls.md` and its tests — the mutation catalogue.
+
+## Open questions
+
+- Kiln has no "complete the translation unit" step, and advises against
+  forcing one (resolving a `noexcept` can instantiate; defining an implicit
+  member can diagnose). §2.3 therefore keeps demand-driven state apart
+  instead. Kiln's own advice goes further (digest only what is written and
+  leave instantiations out); this spec keeps instantiations as derived
+  units because dependent lookups resolve only there
+  ([03](../docs/design/03-equivalence.md) §7 row 6). If derived units prove
+  unstable between equal programs, the fallback is to compare them only in
+  a stricter mode.
+- Virtual overriding (`overrides`) being demand-driven means a class's unit
+  does not say which base functions each member overrides. Either the walk
+  computes it for every virtual member, or Kiln fills the map eagerly.
+- Whether two parses of the same input give the same instantiation order
+  matters only to performance here (the digest sorts), but is assumed by
+  the determinism test's failure messages.
+- Recognising a literal that came from `__LINE__` and its relatives (§9)
+  needs a public location query in Kiln (KF3). Until then such literals are
+  written by value, and a transform that moves lines sees a difference in
+  units that use them.
+- `sizeof` and `alignof` are covered by their operands (§6). A direct layout
+  digest per class (size, alignment, field offsets, vtable slots) would be
+  an independent check of the same facts and is cheap if Kiln exposes its
+  layout query.
+- Detail by list of files, and storing unit lists for owned files by
+  default so that a mismatch needs no second parse.
+- A type-alias template specialisation is transparent like any alias. Is
+  there a case where the alias chosen changes a deduction or a mangled name
+  that code generation reads?
+- Attributes that only affect diagnostics (`[[nodiscard]]`,
+  `[[deprecated]]`) are included. A policy to exclude them would let a
+  transform change them without declaring it.
