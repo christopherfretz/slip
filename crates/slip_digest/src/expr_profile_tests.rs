@@ -244,7 +244,11 @@ const OWN: &[&str] = &[
      template<class T> auto g(T a) -> int requires requires (T b) { a + 1; };\n\
      template<class T> auto h(T a) -> int requires requires (T* b) { b + 1; };\n\
      template<class T> auto k(T a) -> int requires requires (T b) { { b } noexcept; };\n\
-     template<class T> auto l(T a) -> int requires requires (T b) { { b }; };\n",
+     template<class T> auto l(T a) -> int requires requires (T b) { { b }; };\n\
+     template<class T> auto m(T a) -> int requires requires (T b) { 1; };\n\
+     template<class T> auto n(T a) -> int requires requires (T* b) { 1; };\n\
+     template<class T> auto o(T a, auto (*g)(T c) -> decltype(c + 1)) -> int\n\
+       requires requires (T b) { b + 1; };\n",
     "struct A { int m; };\nstruct B { int m; };\n\
      template<class T> auto f(T a, T b) -> decltype(a.A::m);\n\
      template<class T> auto g(T a, T b) -> decltype(a.B::m);\n\
