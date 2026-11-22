@@ -427,16 +427,23 @@ fn bases(w: &mut Walk<'_>, s: &mut Stream, d: DeclId, tag: TagKind) {
     };
     let list: Vec<BaseSpec> = ast.decls.bases(d, &ast.lists).copied().collect();
     s.count(list.len());
-    for BaseSpec { ty, loc: _, is_virtual, access: written, pack_expansion } in list {
-        w.write_type(s, ty);
-        s.bool(is_virtual);
-        let effective = match written {
-            Access::None => default,
-            a @ (Access::Public | Access::Protected | Access::Private) => a,
-        };
-        s.tag(access::row(&effective));
-        s.bool(pack_expansion);
+    for b in list {
+        base_spec(w, s, b, default);
     }
+}
+
+/// One `record BaseSpec`; `default` is the access of a base written
+/// without one.
+fn base_spec(w: &mut Walk<'_>, s: &mut Stream, b: BaseSpec, default: Access) {
+    let BaseSpec { ty, loc: _, is_virtual, access: written, pack_expansion } = b;
+    w.write_type(s, ty);
+    s.bool(is_virtual);
+    let effective = match written {
+        Access::None => default,
+        a @ (Access::Public | Access::Protected | Access::Private) => a,
+    };
+    s.tag(access::row(&effective));
+    s.bool(pack_expansion);
 }
 
 /// `defn`: `record DefinitionBits`, one flag word.
@@ -986,6 +993,39 @@ mod tests {
             }
             assert_eq!(listed, 3, "a, p, g");
             assert!(closure >= 1 && implicit >= 1, "closure {closure}, implicit {implicit}");
+        });
+    }
+
+    // §5.5 `BaseSpec`: `ty`, `is_virtual`, `access` and `pack_expansion`
+    // are in, each on its own; `loc` is out; `access` is the effective one.
+    #[test]
+    fn base_spec_rows_in_and_out() {
+        with_walk("struct P {}; struct Q {}; struct C : P, Q {};", |w| {
+            let ast = w.ast;
+            let c = named(w, "C", DeclKind::CXXRecord)[0];
+            let list: Vec<BaseSpec> = ast.decls.bases(c, &ast.lists).copied().collect();
+            assert_eq!(list.len(), 2);
+            let b = list[0];
+            let bytes = |w: &mut Walk<'_>, b: BaseSpec, default: Access| {
+                let mut s = Stream::new();
+                base_spec(w, &mut s, b, default);
+                assert_eq!(s.cause(), None);
+                s.as_bytes().to_vec()
+            };
+            let b0 = bytes(w, b, Access::Public);
+            assert_eq!(bytes(w, BaseSpec { loc: list[1].loc, ..b }, Access::Public), b0, "loc");
+            assert_ne!(bytes(w, BaseSpec { ty: list[1].ty, ..b }, Access::Public), b0, "ty");
+            let virt = BaseSpec { is_virtual: !b.is_virtual, ..b };
+            assert_ne!(bytes(w, virt, Access::Public), b0, "is_virtual");
+            let pack = BaseSpec { pack_expansion: !b.pack_expansion, ..b };
+            assert_ne!(bytes(w, pack, Access::Public), b0, "pack_expansion");
+            let prot = BaseSpec { access: Access::Protected, ..b };
+            assert_ne!(bytes(w, prot, Access::Public), b0, "access");
+            let none = BaseSpec { access: Access::None, ..b };
+            let public = BaseSpec { access: Access::Public, ..b };
+            let private = BaseSpec { access: Access::Private, ..b };
+            assert_eq!(bytes(w, none, Access::Public), bytes(w, public, Access::Public));
+            assert_eq!(bytes(w, none, Access::Private), bytes(w, private, Access::Public));
         });
     }
 
