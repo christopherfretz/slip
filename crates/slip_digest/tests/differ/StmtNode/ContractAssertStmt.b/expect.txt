@@ -1,0 +1,4 @@
+# pending
+# needs: decl_data
+# a function's contracts are ColdDeclData `contracts`, not walked yet
+changed f()
