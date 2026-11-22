@@ -1,3 +1,1 @@
-# pending
-# needs: decl_data
 changed S::f(const int &)

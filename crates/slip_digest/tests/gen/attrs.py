@@ -107,7 +107,7 @@ kind("EXCLUDE_FROM_EXPLICIT_INSTANTIATION",
 gnu("ABI_TAG", 'abi_tag("v1")')
 gnu("INTERNAL_LINKAGE", "internal_linkage")
 kind("LIFETIMEBOUND", "const int &f(const int &x);",
-     "const int &f(const int &x [[clang::lifetimebound]]);", "f(const int &)", needs="decl_data")
+     "const int &f(const int &x [[clang::lifetimebound]]);", "f(const int &)")
 gnu("NO_SANITIZE", 'no_sanitize("address")')
 kind("MODE", "template <class T> struct X { T v; };",
      "template <class T> struct X { T v __attribute__((mode(DI))); };", "X::v")
@@ -157,7 +157,7 @@ kind("TLS_MODEL", "thread_local int v;",
      'thread_local int v __attribute__((tls_model("local-exec")));', "v")
 gnu("RETURNS_TWICE", "returns_twice")
 kind("PASS_OBJECT_SIZE", "void f(void *p);",
-     "void f(void *p __attribute__((pass_object_size(0))));", "f(void *)", needs="decl_data")
+     "void f(void *p __attribute__((pass_object_size(0))));", "f(void *)")
 gnu("OVERLOADABLE", "overloadable")
 kind("MUSTTAIL", "int g(); int f() { return g(); }",
      "int g(); int f() { [[clang::musttail]] return g(); }", "f()", needs="stmt")
@@ -195,11 +195,11 @@ gnu("CONVERGENT", "convergent")
 gnu("NOUWTABLE", "nouwtable")
 gnu("ASSUME_ALIGNED", "assume_aligned(16)", decl="void *f()")
 kind("ALIGN_VALUE", "void f(int *p);", "void f(int *p __attribute__((align_value(16))));",
-     "f(int *)", needs="decl_data")
+     "f(int *)")
 kind("CALLBACK", "void f(void (*cb)(int), int x);",
      "void f(void (*cb)(int), int x) __attribute__((callback(cb, x)));", "f(void (*)(int), int)")
-kind("NOESCAPE", "void f(int *p);", "void f(int *p __attribute__((noescape)));", "f(int *)", needs="decl_data")
-kind("MAYBE_UNDEF", "void f(int x);", "void f(int x __attribute__((maybe_undef)));", "f(int)", needs="decl_data")
+kind("NOESCAPE", "void f(int *p);", "void f(int *p __attribute__((noescape)));", "f(int *)")
+kind("MAYBE_UNDEF", "void f(int x);", "void f(int x __attribute__((maybe_undef)));", "f(int)")
 kind("CODE_ALIGN", "void f() { for (;;) { } }",
      "void f() { [[clang::code_align(16)]] for (;;) { } }", "f()", needs="stmt")
 kind("LOADER_UNINITIALIZED", "int v;", "[[clang::loader_uninitialized]] int v;", "v")
@@ -209,7 +209,7 @@ kind("OMP_ASSUME", "void f();", '[[omp::assume("ompx_a")]] void f();', "f()")
 kind("STANDALONE_DEBUG", "struct S {};", "struct __attribute__((standalone_debug)) S {};", "S")
 kind("CORO_AWAIT_ELIDABLE", "struct S {};", "struct [[clang::coro_await_elidable]] S {};", "S")
 kind("CORO_AWAIT_ELIDABLE_ARGUMENT", "void f(int x);",
-     "void f([[clang::coro_await_elidable_argument]] int x);", "f(int)", needs="decl_data")
+     "void f([[clang::coro_await_elidable_argument]] int x);", "f(int)")
 kind("GSL_OWNER", "struct S {};", "struct [[gsl::Owner]] S {};", "S")
 kind("GSL_POINTER", "struct S {};", "struct [[gsl::Pointer]] S {};", "S")
 gnu("UNAVAILABLE", "unavailable")
@@ -224,7 +224,7 @@ kind("X86_INTERRUPT", "struct F; void f(F *);",
      "struct F; __attribute__((interrupt)) void f(F *);", "f(F *)")
 gnu("WEAK_IMPORT", "weak_import")
 kind("SWIFT_PARAM_ABI", "void f(void *p) __attribute__((swiftcall));",
-     "void f(void *p __attribute__((swift_context))) __attribute__((swiftcall));", "f(void *)", needs="decl_data")
+     "void f(void *p __attribute__((swift_context))) __attribute__((swiftcall));", "f(void *)")
 
 # ---------------------------------------------------------------------------
 # §10.1 AttrNode: the rows every node has.
@@ -254,7 +254,7 @@ equal("AttrNode", "NODISCARD.flags-clang-scoped",
       "[[clang::warn_unused_result]] int f();", "[[nodiscard]] int f();")
 equal("AttrNode", "LIFETIMEBOUND.flags-args",
       "const int &f(const int &x [[clang::lifetimebound]]);",
-      "const int &f(const int &x [[clang::lifetimebound()]]);", needs="decl_data")
+      "const int &f(const int &x [[clang::lifetimebound()]]);")
 differ("AttrNode", "CONSTRUCTOR.flags-priority-dependent",
        "template <int N> struct X { __attribute__((constructor(101))) static void f(); };",
        "template <int N> struct X { __attribute__((constructor(N))) static void f(); };",
@@ -363,7 +363,7 @@ differ("AttrNode", "FORMAT.b", "__attribute__((format(printf, 1, 2))) void f(con
 differ("AttrNode", "LIFETIMEBOUND.a",
        "struct S { const int &f(const int &x [[clang::lifetimebound]]); };",
        "struct S { const int &f(const int &x) [[clang::lifetimebound]]; };",
-       ["changed S::f(const int &)"], needs="decl_data")
+       ["changed S::f(const int &)"])
 differ("AttrNode", "NO_SANITIZE.a", '__attribute__((no_sanitize("address"))) void f();',
        '__attribute__((no_sanitize("thread"))) void f();', ["changed f()"])
 equal("AttrNode", "NO_SANITIZE.b-spelling", '__attribute__((no_sanitize("address"))) void f();',
@@ -392,9 +392,9 @@ differ("AttrNode", "DESTRUCTOR.a-expression",
 differ("AttrNode", "TLS_MODEL.a", 'thread_local int v __attribute__((tls_model("local-exec")));',
        'thread_local int v __attribute__((tls_model("initial-exec")));', ["changed v"])
 differ("AttrNode", "PASS_OBJECT_SIZE.a", "void f(void *p __attribute__((pass_object_size(0))));",
-       "void f(void *p __attribute__((pass_object_size(1))));", ["changed f(void *)"], needs="decl_data")
+       "void f(void *p __attribute__((pass_object_size(1))));", ["changed f(void *)"])
 differ("AttrNode", "PASS_OBJECT_SIZE.b", "void f(void *p __attribute__((pass_object_size(0))));",
-       "void f(void *p __attribute__((pass_dynamic_object_size(0))));", ["changed f(void *)"], needs="decl_data")
+       "void f(void *p __attribute__((pass_dynamic_object_size(0))));", ["changed f(void *)"])
 differ("AttrNode", "PATCHABLE_FUNCTION_ENTRY.a",
        "__attribute__((patchable_function_entry(1, 0))) void f();",
        "__attribute__((patchable_function_entry(2, 0))) void f();", ["changed f()"])
@@ -416,7 +416,7 @@ differ("AttrNode", "ASSUME_ALIGNED.a", "void *f() __attribute__((assume_aligned(
 differ("AttrNode", "ASSUME_ALIGNED.b", "void *f() __attribute__((assume_aligned(16)));",
        "void *f() __attribute__((assume_aligned(16, 4)));", ["changed f()"])
 differ("AttrNode", "ALIGN_VALUE.a", "void f(int *p __attribute__((align_value(16))));",
-       "void f(int *p __attribute__((align_value(32))));", ["changed f(int *)"], needs="decl_data")
+       "void f(int *p __attribute__((align_value(32))));", ["changed f(int *)"])
 differ("AttrNode", "CODE_ALIGN.a", "void f() { [[clang::code_align(16)]] for (;;) { } }",
        "void f() { [[clang::code_align(32)]] for (;;) { } }", ["changed f()"], needs="stmt")
 differ("AttrNode", "CODE_MODEL.a", 'int v __attribute__((model("small")));',
@@ -424,7 +424,7 @@ differ("AttrNode", "CODE_MODEL.a", 'int v __attribute__((model("small")));',
 differ("AttrNode", "SWIFT_PARAM_ABI.a",
        "void f(void *p __attribute__((swift_context))) __attribute__((swiftcall));",
        "void f(void *p __attribute__((swift_async_context))) __attribute__((swiftcall));",
-       ["changed f(void *)"], needs="decl_data")
+       ["changed f(void *)"])
 differ("AttrNode", "ABI_TAG.a", '__attribute__((abi_tag("v1"))) void f();',
        '__attribute__((abi_tag("v2"))) void f();', ["changed f()"])
 differ("AttrNode", "NO_BUILTIN.a", '__attribute__((no_builtin("memcpy"))) void f() {}',
