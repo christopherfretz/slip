@@ -2882,7 +2882,7 @@ Rules the rows refer to:
 | `MemberExpr.aux` | flag | in | enum NonOdrUse |  |
 | `MemberExpr.a` | child | in | child | the object expression |
 | `MemberExpr.b` | entity | in | ref | the member; for an overloaded access the first candidate (rule above, and "Hazards accepted for now") |
-| `CXXThisExpr.aux-implicit` | flag | in | bit | bit 0: Kiln's evaluator and its template substitution read it |
+| `CXXThisExpr.aux-implicit` | flag | in | bit | bit 0, written only for an instantiation-dependent node: Kiln's template substitution, its mangling of dependent expressions and its profiles read it; elsewhere nothing but diagnostics does (pitfalls E07) |
 | `PredefinedExpr.aux` | flag | in | enum PredefinedKind |  |
 | `PredefinedExpr.a` | value | symbolic | - | the string literal holding the enclosing function's name; absent in a dependent context |
 | `SourceLocExpr.aux` | flag | in | enum SourceLocKind |  |
@@ -3697,7 +3697,7 @@ kind; an expression with no entry writes the encoding's empty form (§2.1).
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `end_loc` | location | out | - |  |
-| `member_extra-qualified` | flag | in | bool | a `MemberExpr` whose `DeclRefExtra` has a qualifier: a qualified member name suppresses virtual dispatch (digest §6) |
+| `member_extra-qualified` | flag | in | bool | a `MemberExpr` whose `DeclRefExtra` has a qualifier and whose member is a virtual function: a qualified name suppresses virtual dispatch (digest §6); a qualifier on any other member is not a fact |
 | `member_extra-record` | written | in | record DeclRefExtra | no entry is written as a record with nothing present |
 | `designators` | name | in | enum Designator* | outermost first |
 | `syntactic_list` | child | in | child? | the list as written, in a template pattern: instantiation rebuilds from it |

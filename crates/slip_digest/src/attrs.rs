@@ -1183,6 +1183,20 @@ mod tests {
         })
     }
 
+    /// What a test reads, and the bytes of each expression operand.
+    type WithOps = ((Vec<u8>, Option<Cause>), Vec<Vec<u8>>);
+
+    /// `decl_bytes`, and the bytes of each expression operand (what
+    /// `expr::child` wrote for it), in order.
+    fn decl_ops(src: &str, std: &str, name: &str) -> WithOps {
+        crate::expr::capture::captured(|| decl_bytes(src, std, name))
+    }
+
+    /// `stmt_bytes`, and the bytes of each expression operand.
+    fn stmt_ops(src: &str, std: &str) -> WithOps {
+        crate::expr::capture::captured(|| stmt_bytes(src, std))
+    }
+
     /// What `node` alone writes, over the walk of an empty source.
     fn node_cause(node: AttrNode) -> Option<Cause> {
         with_walk("", "c++20", |w| {
@@ -1225,59 +1239,61 @@ mod tests {
         s.count(0).count(0);
     }
 
-    use crate::Area;
     use attr_syntax::{CXX11, GNU, KEYWORD, PRAGMA};
 
     // §10.1 `DEPRECATED.a`, `NODISCARD.a`: the message is its expression,
-    // after the presence byte (the content is `expr`'s placeholder).
+    // after the presence byte (the content is what `expr::child` writes).
     #[test]
     fn s10_1_message_is_an_expression_operand() {
-        let got = decl_bytes(r#"[[deprecated("m")]] void f();"#, "c++20", "f");
+        let (got, ops) = decl_ops(r#"[[deprecated("m")]] void f();"#, "c++20", "f");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::DEPRECATED, CXX11, &[false]);
-            s.opt(true).pending(Area::Expr).opt(false);
-            no_annotations(s);
-        });
-        assert_eq!(got, (want, Some(Cause::Pending(Area::Expr))));
-        let got = decl_bytes(r#"[[nodiscard("m")]] int f();"#, "c++20", "f");
-        let want = bytes(|s| {
-            s.count(1);
-            head(s, attr_kind::NODISCARD, CXX11, &[false]);
-            s.opt(true).pending(Area::Expr).opt(false);
+            s.opt(true).raw(&ops[0]).opt(false);
             no_annotations(s);
         });
         assert_eq!(got.0, want);
+        let ((got, _), ops) = decl_ops(r#"[[nodiscard("m")]] int f();"#, "c++20", "f");
+        let want = bytes(|s| {
+            s.count(1);
+            head(s, attr_kind::NODISCARD, CXX11, &[false]);
+            s.opt(true).raw(&ops[0]).opt(false);
+            no_annotations(s);
+        });
+        assert_eq!(got, want);
     }
 
     // §10.1 `ALLOC_SIZE.a`, `ALLOC_ALIGN.a`, `ENABLE_IF.a`, `ENABLE_IF.b`:
     // operands that are expressions, written through `expr::child`.
     #[test]
     fn s10_1_expression_operands() {
-        let got = decl_bytes("void *f(int) __attribute__((alloc_size(1)));", "c++20", "f").0;
+        let ((got, _), ops) =
+            decl_ops("void *f(int) __attribute__((alloc_size(1)));", "c++20", "f");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::ALLOC_SIZE, GNU, &[false]);
-            s.opt(true).pending(Area::Expr).opt(false);
+            s.opt(true).raw(&ops[0]).opt(false);
             no_annotations(s);
         });
         assert_eq!(got, want);
-        let got = decl_bytes("void *f(int) __attribute__((alloc_align(1)));", "c++20", "f").0;
+        let ((got, _), ops) =
+            decl_ops("void *f(int) __attribute__((alloc_align(1)));", "c++20", "f");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::ALLOC_ALIGN, GNU, &[false]);
-            s.opt(true).pending(Area::Expr).opt(false);
+            s.opt(true).raw(&ops[0]).opt(false);
             no_annotations(s);
         });
         assert_eq!(got, want);
         let src = r#"void f(int x) __attribute__((enable_if(x > 0, "m")));"#;
+        let ((got, _), ops) = decl_ops(src, "c++20", "f");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::ENABLE_IF, GNU, &[false]);
-            s.opt(true).pending(Area::Expr).opt(true).pending(Area::Expr);
+            s.opt(true).raw(&ops[0]).opt(true).raw(&ops[1]);
             no_annotations(s);
         });
-        assert_eq!(decl_bytes(src, "c++20", "f").0, want);
+        assert_eq!(got, want);
     }
 
     // §10.1 `DIAGNOSE_IF`: its three bits in table order after
@@ -1285,26 +1301,28 @@ mod tests {
     #[test]
     fn s10_1_diagnose_if() {
         let src = r#"void f(int x) __attribute__((diagnose_if(x < 0, "m", "error")));"#;
+        let ((got, _), ops) = decl_ops(src, "c++20", "f");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::DIAGNOSE_IF, GNU, &[false, true, true, false]);
-            s.opt(true).pending(Area::Expr).opt(true).pending(Area::Expr);
+            s.opt(true).raw(&ops[0]).opt(true).raw(&ops[1]);
             no_annotations(s);
         });
-        assert_eq!(decl_bytes(src, "c++20", "f").0, want);
+        assert_eq!(got, want);
     }
 
     // §10.1 `ANNOTATE.a`, `ANNOTATE.b`: the string, then the extra
     // arguments (0, the empty list, written as a count of 0).
     #[test]
     fn s10_1_annotate() {
+        let ((got, _), ops) = decl_ops(r#"[[clang::annotate("x")]] void f();"#, "c++20", "f");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::ANNOTATE, CXX11, &[false]);
-            s.opt(true).pending(Area::Expr).count(0);
+            s.opt(true).raw(&ops[0]).count(0);
             no_annotations(s);
         });
-        assert_eq!(decl_bytes(r#"[[clang::annotate("x")]] void f();"#, "c++20", "f").0, want);
+        assert_eq!(got, want);
     }
 
     // §10.1 `CONSTRUCTOR.flags-priority-dependent`, `.a-priority`,
@@ -1312,13 +1330,14 @@ mod tests {
     #[test]
     fn s10_1_constructor_priority() {
         let src = "template <int N> struct X { __attribute__((constructor(N))) static void c(); };";
+        let ((got, _), ops) = decl_ops(src, "c++20", "c");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::CONSTRUCTOR, GNU, &[false, true]);
-            s.opt(false).opt(true).pending(Area::Expr);
+            s.opt(false).opt(true).raw(&ops[0]);
             no_annotations(s);
         });
-        assert_eq!(decl_bytes(src, "c++20", "c").0, want);
+        assert_eq!(got, want);
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::DESTRUCTOR, GNU, &[false, false]);
@@ -1441,14 +1460,15 @@ mod tests {
         });
         assert_eq!(stmt_bytes(src, "c++20"), (want, None));
         let src = "void f() {\n#pragma unroll 4\n for (;;) { }\n}";
+        let ((got, _), ops) = stmt_ops(src, "c++20");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::LOOP_HINT, PRAGMA, &[false]);
-            s.opt(true).pending(Area::Expr);
+            s.opt(true).raw(&ops[0]);
             s.tag(loop_hint_option::UNROLL_COUNT).tag(loop_hint_state::NUMERIC);
             s.tag(loop_hint_spelling::UNROLL);
         });
-        assert_eq!(stmt_bytes(src, "c++20").0, want);
+        assert_eq!(got, want);
         let src = "void f() {\n#pragma clang loop vectorize(assume_safety)\n for (;;) { }\n}";
         let want = bytes(|s| {
             s.count(1);
@@ -1464,19 +1484,21 @@ mod tests {
     // `FALLTHROUGH`, `LIKELY`, `CODE_ALIGN.a`.
     #[test]
     fn s10_1_statement_attributes() {
+        let ((got, _), ops) = stmt_ops("void f(int x) { [[assume(x > 0)]]; }", "c++23");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::ASSUME, CXX11, &[false, false]);
-            s.pending(Area::Expr);
+            s.raw(&ops[0]);
         });
-        assert_eq!(stmt_bytes("void f(int x) { [[assume(x > 0)]]; }", "c++23").0, want);
+        assert_eq!(got, want);
+        let src = "int g(); void f() { [[assume(g() > 0)]]; }";
+        let ((got, _), ops) = stmt_ops(src, "c++23");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::ASSUME, CXX11, &[false, true]);
-            s.pending(Area::Expr);
+            s.raw(&ops[0]);
         });
-        let src = "int g(); void f() { [[assume(g() > 0)]]; }";
-        assert_eq!(stmt_bytes(src, "c++23").0, want);
+        assert_eq!(got, want);
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::FALLTHROUGH, CXX11, &[false]);
@@ -1499,21 +1521,23 @@ mod tests {
 
     // §10.5 `AnnotArena` `of_decl`, `Annotation` `value`, `written_type`,
     // `expr`: the value (`value`, here an `Int`), the type, the expression
-    // (`expr`'s placeholder); `of_base` is a count of the bases.
+    // (what `expr::child` writes); `of_base` is a count of the bases.
     #[test]
     fn s10_5_annotations() {
-        let (got, cause) = decl_bytes("[[=1]] void f();", "c++26", "f");
+        let ((got, _), ops) = decl_ops("[[=1]] void f();", "c++26", "f");
         let start = bytes(|s| {
             s.count(0).count(1).opt(true).tag(value_kind::INT);
         });
         assert!(got.starts_with(&start), "{got:?}");
-        assert_eq!(cause, Some(Cause::Pending(Area::Expr)));
         let end = bytes(|s| {
-            s.pending(Area::Expr).count(0);
+            s.raw(&ops[0]).count(0);
         });
         assert!(got.ends_with(&end), "{got:?}");
-        // The expression differs inside `expr`'s placeholder only.
-        assert_eq!(decl_bytes("[[=1 + 0]] void f();", "c++26", "f").0, got);
+        // The same value: the bytes differ in the expression only.
+        let ((other, _), other_ops) = decl_ops("[[=1 + 0]] void f();", "c++26", "f");
+        let cut = |b: &[u8], op: &[u8]| b[..b.len() - op.len() - 1].to_vec();
+        assert_eq!(cut(&other, &other_ops[0]), cut(&got, &ops[0]));
+        assert_ne!(other, got);
         let src = "struct Base {}; struct Base2 {}; struct D : Base, [[=1]] Base2 {};";
         let (got, _) = decl_bytes(src, "c++26", "D");
         let start = bytes(|s| {
@@ -1529,13 +1553,14 @@ mod tests {
     #[test]
     fn s10_1_bits_with_their_operands() {
         let src = "template <int N> struct X { __attribute__((destructor(N))) static void c(); };";
+        let ((got, _), ops) = decl_ops(src, "c++20", "c");
         let want = bytes(|s| {
             s.count(1);
             head(s, attr_kind::DESTRUCTOR, GNU, &[false, true]);
-            s.opt(false).opt(true).pending(Area::Expr);
+            s.opt(false).opt(true).raw(&ops[0]);
             no_annotations(s);
         });
-        assert_eq!(decl_bytes(src, "c++20", "c").0, want);
+        assert_eq!(got, want);
         let src = "template <class T> struct X { T v __attribute__((mode(DI))); };";
         let (got, _) = decl_bytes(src, "c++20", "v");
         let start = bytes(|s| {
