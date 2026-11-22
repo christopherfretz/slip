@@ -1402,9 +1402,10 @@ file is in the parse's `inputs`:
    later takes part from the day `spec/api.md` announces it). Entries
    equal in role, name range and referent are one reference.
 2. A reference's **name range** is the file range of its name: the bytes
-   of one file that translation turned into exactly the name's tokens,
-   at tier 0 or 1 (`spec/api.md` §5.4; `slip_kiln::ranges`). A reference
-   whose name has no such range takes no part.
+   its identifier is written with in a file, at tier 0 or 1
+   (`spec/edits.md` §2.2; `slip_kiln::ranges::name_range`, the function
+   the rename took the site's range from). A reference whose name has no
+   such range takes no part.
 3. A reference **answers** the obligation if its name range is in the
    obligation's file, ends at `hi` and starts at or after `lo`. (A
    spelling `::a::b::f` is answered by the reference `f`; `a` and `b`
@@ -1449,8 +1450,9 @@ A run with a failed obligation is not verified (§9.3). An obligation is
 or did not finish; the run is then not verified on that account as well
 as theirs.
 
-`unseen` is the conservative reading (`spec/api.md` "Open questions" 4):
-text that no observer resolves was written on a transform's word alone.
+`unseen` is the conservative reading, and it is the rule
+(`spec/api.md` §7.2 rule 5): text that no observer resolves was written
+on a transform's word alone.
 
 ### 10.4 The `spellings` section
 
@@ -1683,13 +1685,14 @@ using-declaration). Those are judged by the comparison of digests alone.
   check; the spelling rule proposed there would remove that use.
 - **An obligation no observer resolves** fails the run (§10.3). Whether
   it should be a counted residue instead needs the preprocessing record
-  to say why the bytes were not parsed (`spec/api.md` "Open questions"
-  4).
+  to say why the bytes were not parsed (KR4). `spec/api.md` §7.2 rule
+  5 states the rule as it is.
 - **One key per spelled piece.** A name that different observers resolve
   to different overloads of a renamed function has one obligation with
   one key, and fails where the other overload is chosen; reduce already
-  rejects such a site as `divergent` (`spec/edits.md` "Open questions").
-  An obligation with a set of keys would accept it.
+  rejects such a site as `divergent`, which is decided
+  (`spec/edits.md` §5.3). An obligation with a set of keys would accept
+  it, and is not proposed while that decision stands.
 - **What a reference found through a using-declaration refers to** in
   Kiln's table (the using-shadow or its target) decides whether step 4 of
   §10.2 needs to look through it. To be fixed by the first test of

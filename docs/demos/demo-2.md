@@ -20,17 +20,33 @@ is checked against: the run's own counters are the record.
   packages of M3 that the rename and its verification read through:
   `WP-084.md` (file ranges), `WP-087.md` (keys and rename rules) and
   `WP-096.md` (the check of spelled entities, `spec/verify.md` §10).
+  **Decided:** M2's exit runs through these three as they are. M2 does
+  not carry smaller versions of its own, so the native rename and a
+  rename written in C++ read one implementation of ranges, of keys and
+  of the check.
 - Slip's Kiln pin at Kiln's main (`docs/wp/WP-044.md`): the front-end
   entry (KF1, Kiln WP-2120); the written-reference table stages 1 and 2
   (Kiln WP-1930, WP-1931) and the declaration extents (Kiln WP-2090);
   the fixes of KD1 and KD2 (so that no unit of the corpus is `failed`).
-  Beyond what main has today: KF2 stage 1 (the overlay), and Kiln
-  WP-2320 (an option of the entry that records the written-reference
-  table without printing it,
-  [KR1 amendment 1](../requests/KR1-amendment-1.md) §1). KF3 is not a
-  prerequisite: file ranges and tiers are computed in Slip from what the
-  source manager already answers (`docs/wp/WP-084.md`,
-  `docs/wp/WP-068.md`).
+  Then the pin move after WP-044, to Kiln `main` at or after
+  `913a490bb`: Kiln WP-2150, which delivered
+  [KF3](../requests/KF3-location-utilities.md) stage 1 (the end of a
+  token, a location range as file characters, the expansion entries).
+  `docs/wp/WP-084.md` and `docs/wp/WP-068.md` call those functions and
+  compute no range of their own. Beyond what Kiln's main has today:
+  KF2 stage 1 (the overlay).
+- **Not a prerequisite, decided:** Kiln WP-2320 (an option of the entry
+  that records the written-reference table without printing it,
+  [KR1 amendment 1](../requests/KR1-amendment-1.md) §1). The
+  demonstration runs before it. Until it lands, every parse that needs
+  the table is given Kiln's dump flag and the dump is discarded
+  (`docs/wp/WP-067.md`), so the map and verify phases are measured with
+  a front end that also formats a dump nobody reads. The record of the
+  demonstration states which front-end configuration each run used (the
+  Kiln commit, and whether the table was switched on by the dump flag
+  or by the recording option), and its measurements are read with that
+  beside them (§4). If WP-2320 lands first, the runs use it and the
+  record says so; the runs are not repeated only to have both.
 - M1 closed for the corpus: every `ok` unit has digests with no
   indeterminate unit, or each remaining cause is listed.
 
@@ -175,7 +191,11 @@ Written to `bench/results/llvm.rename.<target>.json` by each run:
 | Determinism | `reduce` run twice; the whole first run repeated once with `-j 4` | the same edit set, overlay and result ids |
 
 The counters are exact and are compared with the committed file on later
-runs. Times and sizes are recorded with the host's core count.
+runs. Times and sizes are recorded with the host's core count and with
+the front-end configuration of §1 (the Kiln commit, and how the
+written-reference table was switched on): a map or verify time measured
+with the dump flag is not compared with one measured after Kiln WP-2320
+without saying so.
 
 ## 5. What the demonstration may claim
 
@@ -231,19 +251,20 @@ share no file.
 |---|---|---|
 | 1 | 060 (model: request, shard sections), 064 (protocol 2, the store's files) | nothing |
 | 2 | 061 (model: edit set, overlay, result), 069 (rule use), 067 (written references, declaration names) | 067: the pin at Kiln's main (WP-044); 069: `slip_digest`'s `lib.rs` and `keys.rs` free of M1's open packages |
-| 3 | 062 (reduce), 063 (apply), 077 (test runner), 070 (agreement, spellings, guards, state), 066 (the overlay), 068 (sites, scan) | 070: M1's run report (WP-055); 066: Kiln's answer to KF2, then its review; 068: M3's file ranges (WP-084) |
+| 3 | 062 (reduce), 063 (apply), 077 (test runner), 070 (agreement, spellings, guards, state), 066 (the overlay), 068 (sites, scan) | 070: M1's run report (WP-055); 066: Kiln's answer to KF2, then its review; 068: M3's file ranges (WP-084), which wait for the pin move after WP-044 (Kiln WP-2150); 068's `scan` and `tree` do not |
 | 4 | 071 (rename, core), 075 (`reduce`, `apply`) | 071: M3's keys (WP-087); 075: M1's commands (WP-053) |
 | 5 | 072 (families, followers), 073 (templates), 074 (worker) | 074: M1's map and verify tasks (WP-050, WP-052) and M3's check of spelled entities (WP-096); 073: KR1 amendment 1 §2 and Kiln WP-1933, part by part |
 | 6 | 076 (`map`, `check`, `rename`) | |
 | 7 | 078 (the rename tests) | |
-| 8 | 079 (corpus, this demonstration) | M1 closed for the corpus; Kiln WP-2320 |
+| 8 | 079 (corpus, this demonstration) | M1 closed for the corpus. Not Kiln WP-2320 (§1) |
 
-The critical path is the one through Kiln's tables: WP-044, 067,
-WP-084, 068, WP-087, 071, WP-096, 074, 076, 078, 079, with the overlay
+The critical path is the one through Kiln's tables: WP-044, 067, the
+pin move after WP-044, WP-084, 068, WP-087, 071, WP-096, 074, 076, 078,
+079, with the overlay
 (KF2, 066) joining it at 074. The packages that need neither Kiln nor an
 open package of M1 (060, 061, 062, 063, 064, 069, 077) can be done
 before that path reaches 071. 073 is on no path to this demonstration's
 two accepted targets. Three packages of M3 (WP-084, WP-087, WP-096) are
-on M2's path: the rename reads the subject through the interfaces a
-programmable transform will, and its replaced references are checked as
-a script's are.
+on M2's path, by decision (§1): the rename reads the subject through
+the interfaces a programmable transform will, and its replaced
+references are checked as a script's are.

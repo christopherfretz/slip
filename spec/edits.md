@@ -71,9 +71,8 @@ tree, and whatever `readonly` carves out of an owned directory.
 `owned` must not be empty. Entries are made real paths when the request is
 built (§10.1); an entry that does not exist is an `Input` error.
 
-This is the ownership `api.md` §6.6 rule 6 leaves to the pipeline:
-`is_editable(r)` is true exactly when `r` is not null and its file is
-owned.
+This is the ownership `api.md` §6.6 rule 6 cites: `is_editable(r)` is
+true exactly when `r` is not null and its file is owned.
 
 ### 2.2 Tiers
 
@@ -88,10 +87,32 @@ The **tier** of a token the parser saw
 | 3 | made by `##` or `#`, or by a builtin macro | refused (`pasted`) |
 | X | not one token of one of the above: a name whose tokens come from different expansions, or from a buffer that is not a file (command-line definitions, predefines) | refused (`crossing`, `not_a_file`) |
 
-Tiers 0 and 1 are those of `api.md` §5.4, and one function decides them
+Tiers 0 and 1 are those of `api.md` §5.4, and one module decides them
 for both producers: `slip_kiln::ranges` (`docs/wp/WP-084.md`), which gives
-the file range of a token span, or none. Tiers 2, 3 and X are this file's
+the file range of a name token, or none. Tiers 2, 3 and X are this file's
 names for *why* there is none; `slip_kiln::sites` finds them (§2.3).
+
+The tier is decided by where the token is written, which is read from
+Kiln's expansion entries: while the token's location is in a
+macro-argument entry it is replaced by its immediate spelling; a file
+location reached so is tier 0 if no step was taken and tier 1 otherwise.
+Everything after that is Kiln's (WP-2150; Kiln `spec/source.md`
+"Editable file ranges", `spec/lex.md` "End of a token"): the end of the
+token is `kiln_lex::token_end`, and the range is
+`SourceManager::editable_file_range` of that span. Slip has no rule of
+its own for the end of a token or for a range of file characters, and
+`slip_kiln::ranges` is the only caller of either.
+
+Kiln's function answers for a range of tokens, and for a range that is a
+whole macro expansion it gives the invocation: `ID(foo)` for the `foo`
+of `ID(foo)` with `#define ID(x) x`, and `NAME` for the `foo` that
+`#define NAME foo` produces. That is the range of the *expression*
+(`api.md` §5.4) and is not the name: a rename writes an identifier over
+a claim's range. So the name's range is asked for at the location where
+the token is written, as above, and not at the location the parser saw:
+the first `foo` is tier 1 with the three bytes of the argument, the
+second is tier 2. ([KF3](../docs/requests/KF3-location-utilities.md)
+§2.1 lists every difference between Kiln's rule and this one.)
 
 A token is tier 1 only if every expansion between its bytes and the parser
 is the substitution of a parameter by an argument. An argument that is
@@ -107,11 +128,14 @@ was claimed at (§5.3).
 ### 2.3 File ranges
 
 A claim's range is `[lo, hi)` in byte offsets of the file's bytes: the
-bytes its content digest is computed over. `slip_kiln::ranges` maps a Kiln
-token span to a file range. Where it gives none, or the range may not be
-edited, `slip_kiln::sites` gives the reason, and the native rename claims
-a refusal with it (§4.2); a programmable transform sees a null range or
-`is_editable` false (`api.md` §5.4, §6.6) and requests nothing.
+bytes its content digest is computed over. `slip_kiln::ranges` maps a
+name token to a file range (§2.2). Kiln's offsets are offsets in its
+text of the file, which are offsets in the file's bytes exactly when
+Kiln changed nothing on loading (`file_recoded` below). Where there is
+no range, or the range may not be edited, `slip_kiln::sites` gives the
+reason, and the native rename claims a refusal with it (§4.2); a
+programmable transform sees a null range or `is_editable` false
+(`api.md` §5.4, §6.6) and requests nothing.
 
 | Reason | Condition |
 |---|---|
@@ -168,7 +192,7 @@ asks for it (§10.1).
 The **request id** is the content id of the container. A map job names
 it, and the map shard repeats it (§4), so shards of different requests
 are never reduced together. Since the request holds the `TransformId`,
-this is also the refusal `api.md` §2.2 asks of reduce.
+this is the refusal of `api.md` §2.2, which is stated by request id.
 
 ## 4. Claims: the `edits` section
 
@@ -252,7 +276,7 @@ Claim := file:     uv                index into `files`
          tiers:    uv                bit t set: the claim was derived at tier t (t = 0, 1, 2, 3; bit 4: X)
          macro:    opt<MacroSite>    absent if `tiers` is bit 0 alone
          votes:    uv                times this observer derived the claim; at least 1
-         notes:    list<str>         shown beside the edit in reports; sorted, no two equal
+         notes:    list<bytes>       shown beside the edit in reports; sorted, no two equal
 
 Stance := replace = 0        these bytes become the text of `pieces`
         | keep = 1           these bytes denote something the transform must not change
@@ -309,7 +333,7 @@ piece taken as its path: this is the edit of `api.md` §7.6.
 
 Only the native rename makes `keep`, `refuse` and `unresolved` claims. A
 programmable transform has no operation for them; what it does not
-request, it is silent about (`api.md` "Open questions" 13).
+request, it is silent about (`api.md` §7.3 rule 7).
 
 ### 4.3 Votes
 
@@ -341,7 +365,7 @@ one group whatever this list says, and the native rename writes none.
 ```
 Report := place:    opt<Place>       absent: the subject unit as a whole
           severity: Severity
-          message:  str
+          message:  bytes
           attached: bool             the place is the nearest the producer could name, not the place
                                      meant (api.md §7.4 rule 3)
 
@@ -349,8 +373,15 @@ Severity := note = 0 | review = 1 | error = 2
 
 Changed := key:    KeyId             a unit whose digest is meant to differ
           place:  Place             lo < hi: the bytes whose edit is the reason
-          reason: str
+          reason: bytes
 ```
+
+A note, a report's message and a declaration's reason are `bytes`, not
+`str`: a programmable transform makes them from character arrays, and
+`api.md` §7 does not require them to be UTF-8. They are compared and
+sorted as bytes, and nothing of a run output is lost or refused for its
+encoding. They are text only where they are printed (§10.5). A failed
+run's texts (§4.6) are `str`: the host and Kiln's renderer make them.
 
 - `reports` is sorted by `(place, severity, message, attached)`, an
   absent place first, and has no two equal entries.
@@ -433,7 +464,7 @@ this is how `slip_script` writes it (`docs/wp/WP-092.md`):
 | Run output (`api.md` §7.6) | In the shard |
 |---|---|
 | `RunOutput.transform`, `RunFailure.transform` | not written: it must equal `Script.id` of the request the job names, else the job fails (§3). `Edits.transform` is the request id |
-| an `Edit` | a `replace` claim: `file`, `lo`, `hi`, `pieces` and `notes` as they are; `tiers` the bit of `tier`; `subjects` empty; `reason` `none`; `votes` 1; `macro` given when the host knows the invocation |
+| an `Edit` | a `replace` claim: `file`, `lo`, `hi`, `pieces` and `notes` as they are; `tiers` the edit's set, bit t for tier t; `subjects` empty; `reason` `none`; `votes` 1; `macro` given when the host knows the invocation |
 | `groups` | `groups`: the indices are the claims' indices, since a run output has only `replace` claims and the same sort order |
 | a `Report`, a `Changed` | the same record |
 | `renamed` | `renamed` |
@@ -441,8 +472,9 @@ this is how `slip_script` writes it (`docs/wp/WP-092.md`):
 | a `RunFailure` | `failure`; its counters in the shard's `counters` |
 
 Two requests of one run with one file, range and pieces are one `Edit`
-there and one claim here; if they were derived at different tiers, the
-claim has both bits. Nothing of a run output is lost in the shard, and a
+there and one claim here; if they were made at different tiers, the
+edit's `tiers` has both and so has the claim (`api.md` §7.6 rule 1).
+Nothing of a run output is lost in the shard, and a
 shard of a programmable transform has nothing a run output lacks except
 `votes` and `macro`.
 
@@ -536,7 +568,20 @@ one collapsed claim with `observers` 10000 and eight sample observers.
 observers that replace one range with the same text and mean different
 entities by it have made two different edits of one range (§5.4,
 `divergent`). So have one that writes a spelled piece and one that writes
-the same bytes as a literal. ("Open questions": the overload set.)
+the same bytes as a literal.
+
+This is decided, for M2 and for a script alike: `divergent` refuses, and
+reduce does not accept a site on equal text alone. The case it costs is
+an overload set seen differently: two observers that resolve one call to
+two different overloads of the renamed name (a type that differs between
+configurations) write spelled pieces with different keys, and the rename
+is refused where a text-only identity would have accepted it. The
+refusal names the site and both observers. A spelled piece that carries
+a set of keys, joined across observers by union when the text is equal,
+with the obligation holding when the name denotes one of them, would
+accept it by weakening the check to "one of the entities some observer
+meant"; it is not in this specification, and it would need the trusted
+base's agreement (`verify.md` §10) and `api.md` §7.6 to say so.
 
 The join is associative and commutative, so the collapsed claims do not
 depend on the order or the grouping in which shards are read. Reports,
@@ -594,8 +639,7 @@ Two edits are **tied** if some shard has them in one group (§4.4). The
 under the transitive closure of "tied"; an edit tied to nothing is a
 group of its own. Under an `indivisible` request all edits are one
 group. So two observers that see one edit in different groups have made
-one larger group: all or none is transitive (`api.md` "Open questions"
-12).
+one larger group: all or none is transitive (`api.md` §7.6 rule 2).
 
 A group is **rejected** if any edit of the group is at a rejected site,
 or any refusal of §5.2 applies to a subject one of its claims names. All
@@ -611,8 +655,10 @@ effective would be accepted and change nothing: its bytes are replaced
 by an edit around it, and nothing carries it elsewhere. Reduce publishes
 no such edit. Every remaining edit that is not effective is rejected
 with `buried`, together with the innermost remaining edit that contains
-it, and with the groups of both; this is repeated until every remaining
-edit is effective. A repetition only rejects, and it ends because the
+it, and with the groups of both (`api.md` §7.1 rule 3c: an edit that
+replaces a range without copying it, over an edit some observer asked
+for inside it, is a disagreement between two requests, and both are
+rejected); this is repeated until every remaining edit is effective. A repetition only rejects, and it ends because the
 set shrinks.
 
 The edits of the edit set are the edits that remain. If there are none
@@ -714,12 +760,12 @@ Edit := file: uv, lo: uv, hi: uv
         subjects:  list<KeyId>
         tiers:     uv
         macro:     opt<MacroSite>
-        notes:     list<str>         at most 8
+        notes:     list<bytes>       at most 8
         observers: uv
         votes:     uv
         first:     list<digest>      the observers of the least 8 indices that made the claim, in plan order
 
-Exempt   := key: KeyId, place: Place, reason: str
+Exempt   := key: KeyId, place: Place, reason: bytes
             in_force:  bool          an accepted edit shares a byte with `place` (§6.2)
             observers: uv
             first:     list<digest>
@@ -1239,7 +1285,10 @@ The state is the first that applies:
 `--write` and `--patch` act only on `verified`, and on
 `verified_with_residue` when every reason for it is permitted:
 `--allow-residue` permits residue and refusals, `--allow-errors` permits
-failed runs and `error` reports (`api.md` §2.8 rule 4, §7.4 rule 2). They
+failed runs and `error` reports (`api.md` §2.8 rule 4, §7.4 rule 2).
+Neither is implied by the other or by anything else: by default a run
+with a failed run or an `error` report writes nothing, however good its
+verification. They
 never act on a `partial` result unless `--allow-partial` is given. Under
 `--allow-unparsed` the main file of every unparsed observer is scanned as
 a file no observer read.
@@ -1260,10 +1309,10 @@ the digest walk. It renames **functions and variables**. Its request is
 ### 9.1 The target
 
 `target` is a qualified name from the global namespace: `a::b::f` is
-`[a, b, f]`. An entity **matches** if its key (`digest.md` §3) has the
-name `identifier(f)`, its parent chain to `root` is, innermost first,
-entities named `b` then `a` of kind `namespace`, `class` or
-`class_template`, and its kind is allowed:
+`[a, b, f]`. An entity **matches** if its key (`digest.md` §3; read
+with `Keys::key`, §9.7) has the name `identifier(f)`, its parent chain
+to `root` is, innermost first, entities named `b` then `a` of kind
+`namespace`, `class` or `class_template`, and its kind is allowed:
 
 | `TargetKind` | Key kinds |
 |---|---|
@@ -1278,7 +1327,11 @@ it cannot ("Open questions").
 
 An entity that has the target's name and scope and another key kind (a
 class, a field, an enumerator, an alias, a namespace, a concept) is a seed
-with the flag `unsupported`.
+with the flag `unsupported`. So is an entity with C language linkage
+that is declared with the target's name in the target's scope: its key
+has the parent `c_linkage` whatever namespace declares it (`digest.md`
+§3), so it never matches, and it is recognised by the scopes that
+enclose its declaration.
 
 ### 9.2 Subjects
 
@@ -1308,8 +1361,9 @@ declared with the new identifier in the same scope, has the key it has
 now: `Keys::rename_rule(entity, new_name)`. For the one follower whose
 key does not hold the identifier as its name (an unnamed class's name is
 `unnamed_by` the variable's), the rule is made from the entity's `Key`
-with the inner name replaced; until `Keys` gives the `Key` itself, such a
-follower has the flag `unsupported` ("Open questions").
+(`Keys::key`, §9.7) with the inner name replaced: found as the key with
+`unnamed_by(new_name)`, to be called by the name it has now. A follower
+for which `Keys::key` refuses has the flag `unsupported` (§9.5).
 
 ### 9.3 Written references
 
@@ -1451,9 +1505,9 @@ end's tables:
 
 | From | What |
 |---|---|
-| `slip_digest::query::Keys` (`docs/wp/WP-087.md`) | key ids with no rules, the unit that holds a declaration, `rename_rule` |
+| `slip_digest::query::Keys` (`docs/wp/WP-087.md`) | key ids and keys with no rules, the unit that holds a declaration, `rename_rule` |
 | `slip_kiln::written` (`docs/wp/WP-067.md`) | the written references of the unit, deduplicated, with role, name span and referent; the names of declarations from the declaration extents |
-| `slip_kiln::ranges` (`docs/wp/WP-084.md`) | the file range and tier of a name, or none |
+| `slip_kiln::ranges` (`docs/wp/WP-084.md`) | the file range and tier of a name, or none: Kiln's `token_end` and `editable_file_range` (§2.2), which need Kiln at or after `913a490bb` |
 | `slip_kiln::sites` (`docs/wp/WP-068.md`) | why there is none, and where a person must look (§2.3) |
 
 `run` is a function of the unit: two parses of the same inputs give equal
@@ -1596,7 +1650,11 @@ followed by `<kind>: <n> more (slip dump <file of the record>)`. The
 records hold every entry. Lines and columns are computed by the command,
 from the pre-image file, and for a `spelling` line from the post-image
 blob; they are not in the records. A place a report was only attached to
-(§4.5) is followed by ` (nearest place)`.
+(§4.5) is followed by ` (nearest place)`. A report's message and a
+declaration's reason are bytes (§4.5): they are printed with every
+invalid UTF-8 sequence replaced by U+FFFD and every control character
+below U+0020 by a space, so that a line stays a line; the record keeps
+the bytes.
 
 Exit status (`exec.md` §8.5):
 
@@ -1744,18 +1802,8 @@ and nothing under it.
 
 ## Open questions
 
-- **The overload set and strict identity** (§5.3, §9.3). Two observers
-  that resolve one call to two different overloads of the renamed name
-  (a type that differs between configurations) write spelled pieces with
-  different keys, and the site is `divergent`; the rename is refused,
-  where a text-only identity would accept it. Proposed: a spelled piece
-  that carries a *set* of keys, joined across observers by union when the
-  text is equal, the obligation holding when the name denotes one of
-  them. It weakens the check to "one of the entities some observer
-  meant", so it needs the trusted base's agreement, and `api.md` §7.6
-  would say so.
 - **What `api.md` lacks that a native producer has** (§4.8): a way to
-  say `keep` (`api.md` "Open questions" 13), to say `refuse` with a
+  say `keep` (`api.md` §7.3 rule 7), to say `refuse` with a
   reason at a place the transform could not edit, and to tie entities
   together across observers (subjects, links, selection). A rename
   written against `api.md` version 0 is therefore weaker than the native
@@ -1769,12 +1817,6 @@ and nothing under it.
   applied to the post-image only, and equality is still required), at the
   price of a false mismatch when the holder already used `to` as a
   dependent name. It changes `digest.md` §3.4 and §8 and `Declared`.
-- **A follower whose key does not hold the identifier as its name**
-  (§9.2): its rule needs the `Key`, which `slip_digest::query::Keys` does
-  not give. Proposed: `Keys::key(&mut self, e) -> Result<Key, NoKey>`.
-  The same accessor would let §9.1's match read the key's name, parents
-  and kind; without it the native rename matches over the AST's semantic
-  parents (`docs/wp/WP-071.md`), which must give the same seeds.
 - **A stringised argument.** A renamed name inside an argument that the
   macro also stringises (`EXPECT_EQ(f(x), 1)`, `assert` with assertions
   on) changes a string literal, and the unit that holds it is `changed`.
@@ -1794,10 +1836,6 @@ and nothing under it.
   was rejected for `buried` may or may not have been worth keeping. Not
   done: the order of rescue would have to be specified, and a rejected
   group is reported, not lost.
-- **`buried` rejects the container too** (§5.5). An edit that replaces a
-  range without copying it, over an edit some observer asked for inside
-  it, is a disagreement between two requests; rejecting both is the
-  conservative reading. `api.md` §7.1 does not say; it should.
 - **A whole run that produces no edit** is `refused` with `no_edit`
   (§5.5), and exits with status 1. For a script whose job is to report,
   not to edit, that is the wrong word.
