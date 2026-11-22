@@ -1,4 +1,1 @@
-# pending
-# needs: demand
-# DeclMisc 0-definition is set on odr-use, and §11.9 does not move it
 added g()

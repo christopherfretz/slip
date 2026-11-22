@@ -1,7 +1,7 @@
 //! Which entities are units, and writing one (`spec/digest.md` §2, §3.4,
 //! §11; `spec/digest-kinds.md` §5.2).
 
-use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
+use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, ScopeData, TemplLinkKind, VarStorage};
 use slip_kiln::kiln::ast::ids::DeclId;
 use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_model::Digest;
@@ -250,9 +250,46 @@ fn all_implicit(w: &Walk<'_>, e: DeclId) -> bool {
 pub(crate) fn read_decl(w: &Walk<'_>, e: DeclId) -> DeclId {
     let ast = w.ast;
     if let Some(pattern) = ast.template_info(e).and_then(|i| i.pattern) {
-        return ast.definition(pattern).and_then(|def| ast.described_template(def)).unwrap_or(e);
+        return defining_decl(w, pattern).and_then(|def| ast.described_template(def)).unwrap_or(e);
     }
-    ast.definition(e).unwrap_or(e)
+    defining_decl(w, e).unwrap_or(e)
+}
+
+/// The defining declaration of entity `e` (§2.3), if it has one. Kiln
+/// records `definition` for classes, enumerations and functions only; for
+/// a variable it is the first declaration of the chain that is a
+/// definition ([basic.def]/2), the search Kiln's own reading of a
+/// variable's initialiser makes over the chain (`kiln_oven/src/value.rs`).
+pub(crate) fn defining_decl(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
+    let ast = w.ast;
+    if ast.decls.var(e).is_none() {
+        return ast.definition(e);
+    }
+    let mut chain = w.redecls(e);
+    chain.reverse();
+    chain.into_iter().find(|&d| is_var_definition(w, d))
+}
+
+/// Whether the variable declaration `d` is a definition ([basic.def]/2):
+/// not a non-inline static data member declared in its class, not a
+/// block-scope `extern`, and either initialised or not `extern` (a
+/// braceless linkage specification makes it `extern`, [dcl.link]/8).
+fn is_var_definition(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let Some(v) = ast.decls.var(d) else { return false };
+    let in_class = ast.decls.lexical_ctx(d).is_some_and(|c| ast.decls.record(c).is_some());
+    if in_class {
+        return v.spec.is_inline();
+    }
+    if w.is_local_extern(d) {
+        return false;
+    }
+    let braceless = ast.decls.lexical_ctx(d).is_some_and(|c| {
+        ast.decls.get(c).kind() == DeclKind::LinkageSpec
+            && ast.decls.scope(c).is_some_and(|x| x.aux & ScopeData::LINKAGE_BRACELESS != 0)
+    });
+    let is_extern = braceless || v.spec.storage() == VarStorage::Extern;
+    v.init.is_some() || !is_extern
 }
 
 /// Writes the unit of entity `e`; `None` only for a role without a key

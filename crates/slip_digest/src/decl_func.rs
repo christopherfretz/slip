@@ -36,6 +36,8 @@ const DEFAULT_ARG_MISSING: Cause = Cause::Unaccounted("ParamData/flags-default-a
 const EVALUATING: Cause = Cause::Unaccounted("VarEvalState/Evaluating");
 /// `ScopeData` `aux` bits no row accounts for.
 const SCOPE_AUX_UNACCOUNTED: Cause = Cause::Unaccounted("ScopeData/aux");
+/// A `LinkageSpec` whose language byte is no `LinkageLang`.
+const LANG_UNACCOUNTED: Cause = Cause::Unaccounted("ScopeData/aux-lang");
 /// A declaration of a function or variable kind with no payload record.
 const NO_PAYLOAD: Cause = Cause::Unaccounted("DeclNode/data");
 
@@ -48,8 +50,13 @@ pub(crate) fn function_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     };
     let e = ast.first(d);
     let definition_class = function_definition_class(w, e);
-    // params: decl*, in order.
+    // params: decl*, in order. A default argument taken from another
+    // declaration names that declaration's parameters: parameter i of
+    // every declaration of the chain is one local entity, with the
+    // ordinal of parameter i of the declaration read
+    // (`spec/landed/digest-kinds/WP-026.md`).
     let params: Vec<DeclId> = ast.lists.iter::<DeclId>(params).collect();
+    alias_params(w, e, &params);
     s.count(params.len());
     for p in params {
         crate::local::write_decl(w, s, p);
@@ -71,26 +78,43 @@ pub(crate) fn function_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     linkage(w, s, e);
 }
 
+/// Gives the parameters `params` of the declaration read their ordinals,
+/// in order, and makes parameter i of every other declaration of `e` the
+/// same local entity as `params[i]`.
+fn alias_params(w: &mut Walk<'_>, e: DeclId, params: &[DeclId]) {
+    let ast = w.ast;
+    let ordinals: Vec<u64> = params.iter().map(|&p| crate::local::ordinal(w, p)).collect();
+    for x in w.redecls(e) {
+        let Some(f) = ast.decls.function(x) else { continue };
+        for (i, q) in ast.lists.iter::<DeclId>(f.params).enumerate() {
+            if let Some(&n) = ordinals.get(i) {
+                w.unit.locals.entry(ast.first(q)).or_insert(n);
+            }
+        }
+    }
+}
+
 /// `record FnSpec` of the declaration read (`spec`), merged over the
 /// declarations of `e` as §2.3 and `spec/landed/digest-kinds/WP-026.md`
-/// say.
+/// say: every bit is set if any declaration sets it.
 fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition_class: bool) {
     let ast = w.ast;
     if rebuild_fn_spec(spec).bits() != spec.bits() {
         s.indeterminate(FN_SPEC_UNACCOUNTED);
     }
-    let specs: Vec<FnSpec> =
+    let mut specs: Vec<FnSpec> =
         w.redecls(e).iter().filter_map(|&x| ast.decls.function(x).map(|f| f.spec)).collect();
+    specs.push(spec);
     for &x in &specs {
         if rebuild_fn_spec(x).bits() != x.bits() {
             s.indeterminate(FN_SPEC_UNACCOUNTED);
         }
     }
-    // Set if any declaration sets them (§2.3).
-    let inline = specs.iter().any(|x| x.is_inline());
+    let any = |f: fn(FnSpec) -> bool| specs.iter().any(|&x| f(x));
+    let inline = any(FnSpec::is_inline);
     // A declaration after an `inline` one is marked implicitly inline by
     // Kiln: that mark says nothing a written `inline` does not.
-    let implicit_inline = !inline && specs.iter().any(|x| x.implicit_inline());
+    let implicit_inline = !inline && any(FnSpec::implicit_inline);
     let (mut any_constexpr, mut any_consteval) = (false, false);
     for x in &specs {
         match x.constexpr_kind() {
@@ -114,9 +138,8 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
     let storage = match spec.storage() {
         FnStorage::Static => FnStorage::Static,
         FnStorage::None | FnStorage::Extern => {
-            let any_extern = specs.iter().any(|x| x.storage() == FnStorage::Extern)
-                || spec.storage() == FnStorage::Extern;
-            if any_extern && (inline || specs.iter().any(|x| x.implicit_inline())) {
+            let any_extern = specs.iter().any(|x| x.storage() == FnStorage::Extern);
+            if any_extern && (inline || any(FnSpec::implicit_inline)) {
                 FnStorage::Extern
             } else {
                 FnStorage::None
@@ -124,26 +147,30 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
         }
     };
     s.tag(fn_storage::row(&storage));
-    // 0-return-deduced is in `definition` for the definition class
-    // (§11.9): its empty form here.
-    let return_deduced = spec.return_deduced() && !definition_class;
+    // In `definition` for the definition class (§11.9), their empty form
+    // here: `0-escalated` and `0-is-coroutine`, which the analysis of the
+    // body sets; `0-return-deduced` for an instantiation, whose return
+    // type is deduced when its body is instantiated (a function defaulted
+    // on its first declaration deduces at the class's end).
+    let from_body = |v: bool| v && !definition_class;
+    let return_deduced = any(FnSpec::return_deduced) && !instantiated_on_use(w, e);
     s.flags(
         FlagWord::new()
             .bit(inline)
             .bit(implicit_inline)
-            .bit(spec.is_virtual())
-            .bit(spec.is_pure())
-            .bit(spec.is_deleted())
-            .bit(spec.is_explicit())
-            .bit(spec.is_trivial())
-            .bit(spec.immediate_escalating())
-            .bit(spec.has_contracts())
-            .bit(spec.is_coroutine())
-            .bit(spec.escalated())
-            .bit(spec.is_variadic())
-            .bit(spec.is_final())
-            .bit(spec.has_explicit_object())
-            .bit(spec.not_selected())
+            .bit(any(FnSpec::is_virtual))
+            .bit(any(FnSpec::is_pure))
+            .bit(any(FnSpec::is_deleted))
+            .bit(any(FnSpec::is_explicit))
+            .bit(any(FnSpec::is_trivial))
+            .bit(any(FnSpec::immediate_escalating))
+            .bit(any(FnSpec::has_contracts))
+            .bit(from_body(any(FnSpec::is_coroutine)))
+            .bit(from_body(any(FnSpec::escalated)))
+            .bit(any(FnSpec::is_variadic))
+            .bit(any(FnSpec::is_final))
+            .bit(any(FnSpec::has_explicit_object))
+            .bit(any(FnSpec::not_selected))
             .bit(return_deduced),
     );
     s.tag(constexpr_kind::row(&constexpr));
@@ -201,7 +228,12 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         VarEvalState::Evaluating => {
             s.indeterminate(EVALUATING);
         }
-        VarEvalState::NotEvaluated | VarEvalState::NotConstant | VarEvalState::Value(_) => {}
+        // Kiln evaluates at the declaration; what it found is the
+        // resolved unit's, not yet written.
+        VarEvalState::NotConstant | VarEvalState::Value(_) => {
+            s.pending(Area::Demand);
+        }
+        VarEvalState::NotEvaluated => {}
     }
     // templ: record TemplLink.
     crate::templ::templ_link(w, s, templ);
@@ -277,16 +309,19 @@ pub(crate) fn param_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     }
     // The function whose parameter `d` is, if it is one's.
     let function = ast.decls.get(d).ctx().filter(|&f| ast.decls.function(f).is_some());
-    let instantiation = function.is_some_and(|f| implicit_instantiation(w, ast.first(f)));
-    // default_arg: child?. In an implicit instantiation an absent child
-    // whatever Kiln holds (§11.4); else the one a declaration of the
-    // function gives (§2.3).
-    let default = if instantiation {
+    let instantiated = function.is_some_and(|f| instantiated_decl(w, f));
+    // default_arg: child?. A parameter of an instantiated declaration
+    // writes an absent child whatever Kiln holds: its default is the
+    // `default_argument` derived unit's (§11.4). Else the default a
+    // declaration of the function that is not instantiated and not at
+    // block scope gives (§2.3).
+    let default = if instantiated {
         None
     } else {
-        default_arg.or_else(|| function.and_then(|f| merged_default(w, f, index)))
+        let own = default_arg.filter(|_| function.is_none_or(|f| !w.is_local_extern(f)));
+        own.or_else(|| function.and_then(|f| merged_default(w, f, index)))
     };
-    if !instantiation && default.is_none() && flags & ParamData::DEFAULT_ARG_PENDING != 0 {
+    if !instantiated && default.is_none() && flags & ParamData::DEFAULT_ARG_PENDING != 0 {
         s.indeterminate(DEFAULT_ARG_MISSING);
     }
     crate::expr::child_opt(w, s, default);
@@ -305,12 +340,14 @@ pub(crate) fn param_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 }
 
 /// The default argument of parameter `index` given by a declaration of
-/// function `f`'s entity, the first declaration first (§2.3).
+/// function `f`'s entity, the first declaration first (§2.3), leaving out
+/// block-scope declarations ([dcl.fct.default]/4: theirs are their own,
+/// `local::write_decl`) and instantiated ones.
 fn merged_default(w: &Walk<'_>, f: DeclId, index: u16) -> Option<slip_kiln::kiln::ast::ExprId> {
     let ast = w.ast;
     let mut chain = w.redecls(ast.first(f));
     chain.reverse();
-    chain.iter().find_map(|&x| {
+    chain.iter().filter(|&&x| !w.is_local_extern(x) && !instantiated_decl(w, x)).find_map(|&x| {
         let data = ast.decls.function(x)?;
         let p = ast.lists.iter::<DeclId>(data.params).nth(usize::from(index))?;
         ast.decls.param(p)?.default_arg
@@ -319,7 +356,7 @@ fn merged_default(w: &Walk<'_>, f: DeclId, index: u16) -> Option<slip_kiln::kiln
 
 /// `LetData` (§5.4).
 pub(crate) fn let_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
-    let Some(&LetData { extending, mangling_index, value: _ }) = w.ast.decls.lifetime_extended(d)
+    let Some(&LetData { extending, mangling_index, value }) = w.ast.decls.lifetime_extended(d)
     else {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
@@ -327,6 +364,9 @@ pub(crate) fn let_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     // extending: ref; mangling_index: uv; value: demand (§11.3).
     w.write_ref(s, extending);
     s.uv(u64::from(mangling_index));
+    if value.is_some() {
+        s.pending(Area::Demand);
+    }
 }
 
 /// The language linkage a function's or variable's stream holds
@@ -336,7 +376,10 @@ pub(crate) fn let_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 /// is the one the key's parent uses (`Walk::linkage_spec`).
 fn linkage(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
     match w.linkage_spec(e, true) {
-        Some((spec, lang)) => {
+        Some((_, None)) => {
+            s.uv(0).indeterminate(LANG_UNACCOUNTED);
+        }
+        Some((spec, Some(lang))) => {
             let aux = w.ast.decls.scope(spec).map_or(0, |x| x.aux);
             if aux & !(0xff | ScopeData::LINKAGE_BRACELESS) != 0 {
                 s.indeterminate(SCOPE_AUX_UNACCOUNTED);
@@ -376,22 +419,101 @@ fn all_implicit(w: &Walk<'_>, e: DeclId) -> bool {
     w.redecls(e).iter().all(|&x| w.ast.decls.get(x).has(DeclFlags::IMPLICIT))
 }
 
-/// A function of the definition class (§11.9): an implicit
-/// instantiation, an implicitly declared member, comparison or deduction
-/// guide (and the conversion functions of a closure type, which Kiln
-/// declares implicitly). Also a function explicitly defaulted on its
-/// first declaration, which Kiln defines on odr-use as it does an
+/// Whether the kind says the entity is defined only when used: an
+/// implicit instantiation, or the subject of an explicit instantiation
+/// declaration.
+fn on_use(kind: SpecKind) -> bool {
+    match kind {
+        SpecKind::ImplicitInstantiation | SpecKind::ExplicitInstantiationDeclaration => true,
+        SpecKind::Undeclared
+        | SpecKind::ExplicitSpecialization
+        | SpecKind::ExplicitInstantiationDefinition => false,
+    }
+}
+
+/// Whether the function or variable `e` (a first declaration) is defined
+/// only when used: its own `SpecInfo` or `MemberSpecInfo` kind is an
+/// implicit instantiation or an explicit instantiation declaration, or,
+/// with no kind of its own, that of the nearest enclosing context that
+/// has one.
+pub(crate) fn instantiated_on_use(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    let mut c = Some(e);
+    for _ in 0..64 {
+        let Some(x) = c else { return false };
+        let kind = ast
+            .spec_info(x)
+            .map(|(_, i)| i.kind)
+            .or_else(|| ast.member_spec_info(x).map(|(_, i)| i.kind));
+        if let Some(k) = kind {
+            return on_use(k);
+        }
+        c = ast.decls.get(x).ctx();
+    }
+    false
+}
+
+/// Whether the declaration `x` was made by instantiation: its own
+/// `SpecInfo` kind is an instantiation of any form, or the nearest
+/// lexically enclosing context with a kind is one. A declaration written
+/// in source (an explicit specialisation, or the out-of-line definition
+/// of one) is not.
+fn instantiated_decl(w: &Walk<'_>, x: DeclId) -> bool {
+    let ast = w.ast;
+    let instantiation = |k: SpecKind| match k {
+        SpecKind::ImplicitInstantiation
+        | SpecKind::ExplicitInstantiationDeclaration
+        | SpecKind::ExplicitInstantiationDefinition => true,
+        SpecKind::Undeclared | SpecKind::ExplicitSpecialization => false,
+    };
+    if let Some((_, i)) = ast.spec_info(x) {
+        return instantiation(i.kind);
+    }
+    let mut c = ast.decls.lexical_ctx(x);
+    for _ in 0..64 {
+        let Some(y) = c else { return false };
+        let kind = ast
+            .spec_info(y)
+            .map(|(_, i)| i.kind)
+            .or_else(|| ast.member_spec_info(y).map(|(_, i)| i.kind));
+        if let Some(k) = kind {
+            return instantiation(k);
+        }
+        c = ast.decls.lexical_ctx(y);
+    }
+    false
+}
+
+/// A function of the definition class (§11.9): defined only when used
+/// (`instantiated_on_use`), or an implicitly declared member, comparison
+/// or deduction guide (and the conversion functions of a closure type,
+/// which Kiln declares implicitly). Also a function explicitly defaulted
+/// on its first declaration, which Kiln defines on odr-use as it does an
 /// implicit member (`spec/landed/digest-kinds/WP-026.md`).
 fn function_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
     let defaulted_first =
         w.ast.decls.function(e).is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
-    implicit_instantiation(w, e) || all_implicit(w, e) || defaulted_first
+    instantiated_on_use(w, e) || all_implicit(w, e) || defaulted_first
 }
 
-/// A variable of the definition class (§11.9): an implicit
-/// instantiation.
+/// A variable of the definition class (§11.9): defined only when used.
 fn var_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
-    implicit_instantiation(w, e)
+    instantiated_on_use(w, e)
+}
+
+/// Whether the entity `e` (a first declaration) is of the definition
+/// class of §11.9, whose definition, and with it `DeclMisc`
+/// `0-definition`, Kiln makes on use: a function or variable as above,
+/// and any other entity that is an implicit instantiation.
+pub(crate) fn definition_class(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    if ast.decls.function(e).is_some() {
+        function_definition_class(w, e)
+    } else if ast.decls.var(e).is_some() {
+        var_definition_class(w, e)
+    } else {
+        implicit_instantiation(w, e)
+    }
 }
 
 #[cfg(test)]
@@ -556,6 +678,51 @@ pub(crate) mod tests {
                     .tag(crate::tables::defaulted::row(&Defaulted::No));
                 assert_eq!(got, want.as_bytes(), "place {place}");
             }
+        });
+    }
+
+    // digest-kinds §5.4 FnSpec `0-defaulted`, Defaulted: the tag read from
+    // the declaration, last in the record; its pair tests also change
+    // other rows (a defaulted function is of the definition class).
+    #[test]
+    fn fn_spec_defaulted_tag() {
+        with_walk("void f();", |w| {
+            let f = named(w, "f", DeclKind::Function)[0];
+            for d in [Defaulted::No, Defaulted::Explicit, Defaulted::Implicit] {
+                let (got, _) = written(w, |w, s| {
+                    super::fn_spec(w, s, f, FnSpec::new().with_defaulted(d), false);
+                });
+                let mut word = crate::stream::FlagWord::new();
+                for _ in 0..16 {
+                    word = word.bit(false);
+                }
+                let mut want = Stream::new();
+                want.tag(crate::tables::fn_storage::row(&FnStorage::None))
+                    .flags(word)
+                    .tag(crate::tables::constexpr_kind::row(&ConstexprKind::None))
+                    .tag(crate::tables::defaulted::row(&d));
+                assert_eq!(got, want.as_bytes(), "{d:?}");
+            }
+        });
+    }
+
+    // digest §4.3, WP-026: parameter i of every declaration of the chain
+    // is the local entity of parameter i of the declaration read, so a
+    // default argument taken from another declaration names it.
+    #[test]
+    fn parameters_of_the_chain_share_ordinals() {
+        with_walk("void f(int a, int b = sizeof(a));\nvoid f(int c, int d) {}", |w| {
+            let def = named(w, "f", DeclKind::Function)[1];
+            let (_, _) = written(w, |w, s| super::function_data(w, s, def));
+            let ordinal = |w: &Walk<'_>, n: &str| {
+                let p = named(w, n, DeclKind::ParmVar)[0];
+                w.unit.locals.get(&w.ast.first(p)).copied()
+            };
+            assert_eq!(ordinal(w, "c"), Some(0));
+            assert_eq!(ordinal(w, "d"), Some(1));
+            assert_eq!(ordinal(w, "a"), Some(0));
+            assert_eq!(ordinal(w, "b"), Some(1));
+            assert_eq!(w.unit.next_local, 2);
         });
     }
 

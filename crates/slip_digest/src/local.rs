@@ -26,9 +26,11 @@ pub(crate) fn ordinal(w: &mut Walk<'_>, d: DeclId) -> u64 {
 /// `decl`: a declaration met inside a unit, walked in place (§2.4).
 ///
 /// A variable, parameter, binding or label writes its ordinal and then
-/// its stream (§5.1); a block-scope function or variable with linkage a
-/// `ref`; a `static_assert`, a template parameter and a lifetime-extended
-/// temporary their stream, with no ordinal (§9, §5.2 "parent"); a
+/// its stream (§5.1); a block-scope variable with linkage a `ref`, and a
+/// block-scope function a `ref` and the default arguments it holds; a
+/// `static_assert`, a `consteval` block, a template parameter and a
+/// lifetime-extended temporary their stream, with no ordinal (§9, §5.2
+/// "parent"); a
 /// typedef, alias, using-declaration, using-directive or empty
 /// declaration nothing. A local class, enumeration or closure type, and a
 /// member of one, are the local package's. A kind §2.4 does not name is
@@ -39,7 +41,10 @@ pub(crate) fn write_decl(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let kind = ast.decls.get(d).kind();
     match kind {
         DeclKind::Var if w.is_local_extern(d) => w.write_ref(s, d),
-        DeclKind::Function => w.write_ref(s, d),
+        DeclKind::Function => {
+            w.write_ref(s, d);
+            block_defaults(w, s, d);
+        }
         DeclKind::Var
         | DeclKind::ParmVar
         | DeclKind::Binding
@@ -50,6 +55,7 @@ pub(crate) fn write_decl(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
             w.decl_stream(s, d, ast.first(d));
         }
         DeclKind::StaticAssert
+        | DeclKind::ConstevalBlock
         | DeclKind::TemplateTypeParm
         | DeclKind::NonTypeTemplateParm
         | DeclKind::TemplateTemplateParm
@@ -82,11 +88,11 @@ pub(crate) fn write_decl(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         | DeclKind::FunctionTemplate => {
             s.pending(Area::Local);
         }
-        DeclKind::UsingPack
-        | DeclKind::FriendTemplate
-        | DeclKind::ImplicitParam
-        | DeclKind::ImplicitConceptSpecialization => {
-            s.uv(0).indeterminate(Cause::Unsupported("DeclKind"));
+        DeclKind::UsingPack => unsupported(s, "DeclKind/UsingPack"),
+        DeclKind::FriendTemplate => unsupported(s, "DeclKind/FriendTemplate"),
+        DeclKind::ImplicitParam => unsupported(s, "DeclKind/ImplicitParam"),
+        DeclKind::ImplicitConceptSpecialization => {
+            unsupported(s, "DeclKind/ImplicitConceptSpecialization");
         }
         // Nothing of these is declared in a block (§5.2).
         DeclKind::TranslationUnit
@@ -105,10 +111,32 @@ pub(crate) fn write_decl(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         | DeclKind::Concept
         | DeclKind::BuiltinTemplate
         | DeclKind::RequiresExprBody
-        | DeclKind::TemplateParamObject
-        | DeclKind::ConstevalBlock => {
+        | DeclKind::TemplateParamObject => {
             s.uv(0).indeterminate(NOT_IN_BLOCK);
         }
+    }
+}
+
+/// A kind Kiln does not build (`Unsupported("<short name>/<row>")`).
+fn unsupported(s: &mut Stream, row: &'static str) {
+    s.uv(0).indeterminate(Cause::Unsupported(row));
+}
+
+/// The default arguments a block-scope function declaration `d` holds,
+/// after its `ref`: `count`, then one `child?` per parameter. They are
+/// that declaration's own ([dcl.fct.default]/4), which the entity's unit
+/// leaves out (`spec/landed/digest-kinds/WP-026.md`, an addition to §2.4).
+fn block_defaults(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let ast = w.ast;
+    let params: Vec<DeclId> = ast
+        .decls
+        .function(d)
+        .map(|f| ast.lists.iter::<DeclId>(f.params).collect())
+        .unwrap_or_default();
+    s.count(params.len());
+    for p in params {
+        let default = ast.decls.param(p).and_then(|x| x.default_arg);
+        crate::expr::child_opt(w, s, default);
     }
 }
 
@@ -153,17 +181,35 @@ mod tests {
         });
     }
 
-    // digest-kinds §2.4: a block-scope function, and a block-scope extern
-    // variable, write a `ref`.
+    // digest-kinds §2.4: a block-scope extern variable writes a `ref`; a
+    // block-scope function a `ref`, then a count and one `child?` per
+    // parameter: the defaults that declaration holds (WP-026).
     #[test]
     fn a_block_scope_entity_with_linkage_is_a_ref() {
-        with_walk("void h(); extern int v; void g() { void h(); extern int v; }", |w| {
-            for (name, kind) in [("h", DeclKind::Function), ("v", DeclKind::Var)] {
-                let d = *named(w, name, kind).last().expect("the block-scope declaration");
-                let mut want = Stream::new();
-                w.write_ref(&mut want, d);
-                assert_eq!(write(w, d).as_bytes(), want.as_bytes(), "{name}");
-            }
+        let src = "void h(int, int); extern int v;\n\
+                   void g() { void h(int, int = 1); extern int v; }";
+        with_walk(src, |w| {
+            let v = *named(w, "v", DeclKind::Var).last().expect("the block-scope v");
+            let mut want = Stream::new();
+            w.write_ref(&mut want, v);
+            assert_eq!(write(w, v).as_bytes(), want.as_bytes());
+            let h = *named(w, "h", DeclKind::Function).last().expect("the block-scope h");
+            let params: Vec<_> = w
+                .ast
+                .lists
+                .iter::<slip_kiln::kiln::ast::DeclId>(w.ast.decls.function(h).expect("h").params)
+                .collect();
+            let second = w.ast.decls.param(params[1]).and_then(|p| p.default_arg);
+            assert!(second.is_some());
+            let mut want = Stream::new();
+            w.write_ref(&mut want, h);
+            want.count(2);
+            crate::expr::child_opt(w, &mut want, None);
+            crate::expr::child_opt(w, &mut want, second);
+            assert_eq!(write(w, h).as_bytes(), want.as_bytes());
+            // The namespace-scope declaration holds no default.
+            let outer = named(w, "h", DeclKind::Function)[0];
+            assert_ne!(write(w, outer).as_bytes(), want.as_bytes());
             assert_eq!(w.unit.next_local, 0);
         });
     }
@@ -194,6 +240,21 @@ mod tests {
             assert_eq!(write(w, l).cause(), Some(Cause::Pending(Area::Local)));
             let n = named(w, "n", DeclKind::Namespace)[0];
             assert_eq!(write(w, n).cause(), Some(super::NOT_IN_BLOCK));
+        });
+    }
+
+    // digest-kinds §2.4 (WP-026): a block-scope `consteval` block, legal
+    // C++26, writes its stream with no ordinal, as a `static_assert` does.
+    #[test]
+    fn a_consteval_block_in_a_block() {
+        with_walk("void g() { consteval { } }", |w| {
+            let d = of_kind(w, DeclKind::ConstevalBlock)[0];
+            let mut want = Stream::new();
+            w.decl_stream(&mut want, d, d);
+            let got = write(w, d);
+            assert_eq!(got.as_bytes(), want.as_bytes());
+            assert_ne!(got.cause(), Some(super::NOT_IN_BLOCK));
+            assert_eq!(w.unit.next_local, 0);
         });
     }
 

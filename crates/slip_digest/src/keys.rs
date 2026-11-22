@@ -479,19 +479,24 @@ impl Walk<'_> {
             return false;
         }
         match self.linkage_spec(e, false) {
-            Some((_, LinkageLang::C)) => true,
-            Some((_, LinkageLang::Cxx)) | None => false,
+            Some((_, Some(LinkageLang::C))) => true,
+            Some((_, Some(LinkageLang::Cxx) | None)) | None => false,
         }
     }
 
     /// The innermost `LinkageSpec` that lexically encloses `d`, with its
-    /// language (`ScopeData` `aux-lang`). With `all` the search goes
+    /// language (`ScopeData` `aux-lang`; `None` for a byte that is no
+    /// `LinkageLang`, which the payload makes `Unaccounted`). With `all` the search goes
     /// through every enclosing class and function (digest-kinds §5.6, the
     /// language a function's or variable's stream holds); without it, as
     /// the key's parent needs it (§5.2): through namespaces and
     /// transparent scopes only, and through the functions around a
     /// block-scope declaration.
-    pub(crate) fn linkage_spec(&self, d: DeclId, all: bool) -> Option<(DeclId, LinkageLang)> {
+    pub(crate) fn linkage_spec(
+        &self,
+        d: DeclId,
+        all: bool,
+    ) -> Option<(DeclId, Option<LinkageLang>)> {
         let ast = self.ast;
         let local_extern = !all && self.is_local_extern(d);
         let mut c = ast.decls.lexical_ctx(d);
@@ -515,9 +520,11 @@ impl Walk<'_> {
             if !through {
                 return None;
             }
-            if let Some(lang) =
-                ast.decls.scope(x).and_then(slip_kiln::kiln::ast::decl::ScopeData::linkage_lang)
-            {
+            if n.kind() == DeclKind::LinkageSpec {
+                let lang = ast
+                    .decls
+                    .scope(x)
+                    .and_then(slip_kiln::kiln::ast::decl::ScopeData::linkage_lang);
                 return Some((x, lang));
             }
             c = ast.decls.lexical_ctx(x);
