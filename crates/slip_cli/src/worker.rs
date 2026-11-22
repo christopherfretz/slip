@@ -1,5 +1,6 @@
 //! The hidden `slip __worker` (`spec/exec.md` §8.4): `serve` over standard
-//! input and output with the parse task.
+//! input and output with the map task (`spec/model.md` §8.5): the parse
+//! task with the semantic digest's walk run on the finished unit.
 //!
 //! The worker changes its current directory during a parse
 //! (`slip_kiln::parse_observer`), so every path it uses is absolute: the
@@ -9,25 +10,29 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+use slip_digest::map::{counters, digest_unit};
+use slip_digest::{Detail, Options};
 use slip_exec::store::{Access, Store};
 use slip_exec::worker::{Job, ServeOptions, Task, serve};
-use slip_kiln::parse_observer;
-use slip_model::Shard;
+use slip_kiln::parse_observer_with;
+use slip_model::keys::RuleTable;
+use slip_model::{Observer, Phase, Shard, Status};
 
 use crate::args::WorkerArgs;
 
-/// The parse task: one observer through Kiln's front end, its shard
-/// published in the job's store.
+/// The map task (`spec/model.md` §8.5): one observer through Kiln's front
+/// end, the digest's walk run on the finished unit, its shard published in
+/// the job's store.
 ///
 /// The store is opened shared on the first job and kept for the task's
 /// lifetime; a job naming another store replaces it. The parse itself
 /// writes no file (`spec/model.md` §8.4).
 #[derive(Debug, Default)]
-pub struct ParseTask {
+pub struct MapTask {
     store: Option<Store>,
 }
 
-impl ParseTask {
+impl MapTask {
     pub fn new() -> Self {
         Self::default()
     }
@@ -45,11 +50,51 @@ impl ParseTask {
     }
 }
 
-impl Task for ParseTask {
+impl Task for MapTask {
     fn run(&mut self, job: &Job) -> Result<Shard, String> {
+        if job.phase != Phase::Map {
+            return Err(format!(
+                "the map task runs phase map only; the job is of phase {}",
+                phase_name(job.phase)
+            ));
+        }
         self.open_store(job)?;
-        parse_observer(&job.observer, job.phase, job.round)
+        map_observer(&job.observer, job.round)
     }
+}
+
+fn phase_name(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Map => "map",
+        Phase::Verify => "verify",
+    }
+}
+
+/// The shard of phase `map` of one observer (`spec/model.md` §8.5): the
+/// parse task's, with the walk run inside its closure on the front end's
+/// thread when the unit has no error (rules none, detail `none`, no
+/// names). An `ok` shard gets the walk's `digests` and counters; a shard
+/// that is not `ok` drops the walk's result. A walk that reported an error
+/// (too little stack, a buffer that is not an input) is `Err`: the job
+/// fails.
+fn map_observer(observer: &Observer, round: u64) -> Result<Shard, String> {
+    let rules = RuleTable::empty();
+    let options = Options { rules: &rules, detail: Detail::None, names: false };
+    let identity = |path: &[u8]| path.to_vec();
+    let (mut shard, walked) = parse_observer_with(observer, Phase::Map, round, |unit| {
+        (unit.errors() == 0).then(|| digest_unit(unit, &options, &identity))
+    })?;
+    let output = match walked.flatten() {
+        Some(Ok(output)) => output,
+        Some(Err(e)) => return Err(e),
+        None => return Ok(shard),
+    };
+    if shard.outcome.status == Status::Ok {
+        shard.counters.extend(counters(&output));
+        shard.counters.sort_by(|a, b| a.name.cmp(&b.name));
+        shard.digests = Some(output.digests);
+    }
+    Ok(shard)
 }
 
 /// `slip __worker`: serves until the input ends, `--worker-jobs` jobs have
@@ -61,11 +106,125 @@ pub fn main(args: &WorkerArgs) -> ExitCode {
         stack_bytes: usize::try_from(args.worker_stack).unwrap_or(usize::MAX),
         max_jobs: args.worker_jobs,
     };
-    match serve(ParseTask::new(), &options, std::io::stdin(), std::io::stdout()) {
+    match serve(MapTask::new(), &options, std::io::stdin(), std::io::stdout()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             let _ = writeln!(std::io::stderr(), "slip __worker: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `spec/model.md` §8.5 "The walk" and "The shard": the map task's
+    //! composition of the parse task and the walk.
+
+    use std::path::PathBuf;
+    use std::sync::{Mutex, PoisonError};
+
+    use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Status};
+
+    use super::map_observer;
+
+    /// The parse changes the current directory: one at a time.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Writes `files` to a directory of its own and returns the map shard
+    /// of `argv` there.
+    fn map_in(
+        name: &str,
+        files: &[(&str, &str)],
+        argv: &[&str],
+    ) -> Result<slip_model::Shard, String> {
+        let _lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let dir: PathBuf =
+            std::env::temp_dir().join(format!("slip-cli-map-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        for (rel, text) in files {
+            std::fs::write(dir.join(rel), text).unwrap();
+        }
+        let observer = Observer {
+            id: Digest([3; 32]),
+            command: Command {
+                directory: dir.to_str().unwrap().as_bytes().to_vec(),
+                argv: argv.iter().map(|a| a.as_bytes().to_vec()).collect(),
+                env: Vec::new(),
+            },
+            language: Language::Cxx,
+            main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
+            cost_hint: 1,
+            origins: vec![Origin { configuration: 0, entry: 0 }],
+        };
+        let shard = map_observer(&observer, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+        shard
+    }
+
+    fn names(shard: &slip_model::Shard) -> Vec<&str> {
+        shard.counters.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    // §8.5 "The shard": an `ok` shard has the walk's `digests` and the
+    // parse task's counters with the walk's, sorted by name.
+    #[test]
+    fn s8_5_ok_shard_has_digests_and_counters() {
+        let shard =
+            map_in("ok", &[("a.cpp", "int f() { return 1; }\n")], &["c++", "a.cpp"]).unwrap();
+        shard.validate().unwrap();
+        assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+        assert_eq!(shard.round, 2);
+        let digests = shard.digests.as_ref().expect("digests");
+        assert!(digests.groups.iter().all(|g| g.units.is_none()), "detail none");
+        let names = names(&shard);
+        for n in ["digest.bytes", "digest.units", "inputs.files", "pp.tokens"] {
+            assert!(names.contains(&n), "{n} in {names:?}");
+        }
+        assert!(names.windows(2).all(|w| w[0] < w[1]), "{names:?}");
+    }
+
+    // §8.5 "The walk": with errors the walk does not run; the shard is the
+    // parse task's (`diagnosed`, no `digests`, no digest counter).
+    #[test]
+    fn s8_5_walk_skipped_on_a_unit_with_errors() {
+        let shard =
+            map_in("diag", &[("a.cpp", "int f() { return nope; }\n")], &["c++", "a.cpp"]).unwrap();
+        assert_eq!(shard.outcome.status, Status::Diagnosed, "{:?}", shard.outcome);
+        assert!(shard.digests.is_none());
+        assert_eq!(names(&shard), ["inputs.bytes", "inputs.files", "pp.tokens"]);
+    }
+
+    // §8.5 "The stack": a walk that reports an error fails the job.
+    #[test]
+    fn s8_5_too_little_stack_fails_the_job() {
+        let e =
+            map_in("stack", &[("a.cpp", "int x;\n")], &["c++", "-fkiln-stack-size=8M", "a.cpp"])
+                .unwrap_err();
+        assert!(e.starts_with("the front end's thread has "), "{e}");
+    }
+
+    // The map task runs phase `map` only: a job of another phase is `Err`
+    // before anything is opened or parsed.
+    #[test]
+    fn map_task_refuses_another_phase() {
+        use slip_exec::worker::{Job, Task};
+        let job = Job {
+            store: b"/nonexistent/store".to_vec(),
+            plan: Digest([1; 32]),
+            phase: slip_model::Phase::Verify,
+            round: 0,
+            observer: Observer {
+                id: Digest([3; 32]),
+                command: Command { directory: b"/".to_vec(), argv: Vec::new(), env: Vec::new() },
+                language: Language::Cxx,
+                main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
+                cost_hint: 1,
+                origins: vec![Origin { configuration: 0, entry: 0 }],
+            },
+        };
+        let e = super::MapTask::new().run(&job).unwrap_err();
+        assert_eq!(e, "the map task runs phase map only; the job is of phase verify");
     }
 }

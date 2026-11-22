@@ -199,6 +199,7 @@ mod fp;
 mod groups;
 mod keys;
 mod local;
+pub mod map;
 mod names;
 mod order;
 mod other;
