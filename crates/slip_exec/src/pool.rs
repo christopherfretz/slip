@@ -23,7 +23,8 @@
 //! but it is not reaped, or its input was closed) the wait is at most
 //! 5 ms. Nothing else blocks: the loop never reads, writes or waits on a
 //! child directly. The rules the spec leaves open are in
-//! `spec/landed/exec/WP-009.md`.
+//! `spec/landed/exec/WP-009.md`; the removal of the workers' `tmp/`
+//! entries and [`Summary::outcomes`] in `spec/landed/exec/WP-018.md`.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -126,6 +127,20 @@ pub struct Summary {
     pub statuses: [u64; 4],
     /// Run-record jobs by end (`End as usize`).
     pub ends: [u64; 5],
+    /// The final shard of each observer given to [`run`], in that order
+    /// (plan order).
+    pub outcomes: Vec<ObserverOutcome>,
+}
+
+/// What one observer's final shard says (WP-018).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObserverOutcome {
+    pub observer: Digest,
+    /// The shard's `outcome.status`.
+    pub status: Status,
+    /// The first line of the shard's `outcome.message` (`str::lines`);
+    /// empty if the message is.
+    pub message: String,
 }
 
 /// Why [`run`] did not finish.
@@ -178,6 +193,10 @@ struct Active {
     wake: Mutex<Option<Sender<Event>>>,
     done: Mutex<bool>,
     finished: Condvar,
+    /// The store's `tmp/` directory.
+    tmp: PathBuf,
+    /// The workers started whose `tmp/` entries have not been removed yet.
+    workers: Mutex<Vec<u32>>,
 }
 
 static ACTIVE: Mutex<Vec<Arc<Active>>> = Mutex::new(Vec::new());
@@ -186,11 +205,13 @@ static ACTIVE: Mutex<Vec<Arc<Active>>> = Mutex::new(Vec::new());
 struct ActiveGuard(Arc<Active>);
 
 impl ActiveGuard {
-    fn register(wake: Sender<Event>) -> Self {
+    fn register(wake: Sender<Event>, tmp: PathBuf) -> Self {
         let a = Arc::new(Active {
             wake: Mutex::new(Some(wake)),
             done: Mutex::new(false),
             finished: Condvar::new(),
+            tmp,
+            workers: Mutex::new(Vec::new()),
         });
         ACTIVE.lock().unwrap_or_else(PoisonError::into_inner).push(Arc::clone(&a));
         Self(a)
@@ -209,17 +230,29 @@ impl Drop for ActiveGuard {
 /// The callback for [`signals::install`] of a process that runs phases on
 /// `store` (§7): tells every [`run`] in progress that it is cancelled,
 /// waits (at most 3 s) for each to write its run record with the remaining
-/// jobs `cancelled`, then removes the store's `tmp/` files and lock
-/// ([`crate::store::cleanup_on_signal`]). Never panics.
+/// jobs `cancelled`, removes the `tmp/` entries of every worker those runs
+/// started that they have not removed themselves (the signal path has
+/// killed them all by then), then removes the store's own `tmp/` files and
+/// lock ([`crate::store::cleanup_on_signal`]). Never panics.
 pub fn cleanup_on_signal(store: &Store) -> impl FnOnce() + Send + 'static {
     let store_cleanup = crate::store::cleanup_on_signal(store);
     move || {
-        wait_for_cancelled_runs(CANCEL_WAIT);
+        let active = wait_for_cancelled_runs(CANCEL_WAIT);
+        for a in &active {
+            let pids =
+                std::mem::take(&mut *a.workers.lock().unwrap_or_else(PoisonError::into_inner));
+            for pid in pids {
+                // Best effort: the next exclusive open removes what is left.
+                let _ = crate::store::remove_entries_of(&a.tmp, pid);
+            }
+        }
         store_cleanup();
     }
 }
 
-fn wait_for_cancelled_runs(bound: Duration) {
+/// Cancels every run in progress and waits for them (at most `bound`);
+/// returns them.
+fn wait_for_cancelled_runs(bound: Duration) -> Vec<Arc<Active>> {
     let active: Vec<Arc<Active>> = ACTIVE.lock().unwrap_or_else(PoisonError::into_inner).clone();
     for a in &active {
         if let Some(tx) = a.wake.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
@@ -227,16 +260,17 @@ fn wait_for_cancelled_runs(bound: Duration) {
         }
     }
     let deadline = Instant::now() + bound;
-    for a in &active {
+    'runs: for a in &active {
         let mut done = a.done.lock().unwrap_or_else(PoisonError::into_inner);
         while !*done {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return;
+                break 'runs;
             }
             done = a.finished.wait_timeout(done, left).unwrap_or_else(PoisonError::into_inner).0;
         }
     }
+    active
 }
 
 // ----- the loop ---------------------------------------------------------------
@@ -268,6 +302,9 @@ type LogSink = Arc<Mutex<Option<File>>>;
 struct Worker {
     serial: u64,
     child: Child,
+    /// Its pid while its `tmp/` entries are not removed yet; `None` once
+    /// they are (it was reaped, or killed for good by `abandon`).
+    unclean: Option<u32>,
     /// Frames for its standard input; `None` once closed.
     input: Option<Sender<Vec<u8>>>,
     log: LogSink,
@@ -324,6 +361,8 @@ enum Finish {
     Done {
         shard: Digest,
         status: Status,
+        /// The first line of the shard's message.
+        message: String,
         cpu_ns: u64,
         peak_rss: u64,
     },
@@ -332,13 +371,14 @@ enum Finish {
     Ended(Ending),
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct JobState {
     /// The attempt number of the next run.
     attempt: u64,
     crash_retried: bool,
-    /// The final shard's status, once there is one.
-    status: Option<Status>,
+    /// The final shard's status and the first line of its message, once
+    /// there is one.
+    status: Option<(Status, String)>,
 }
 
 struct Coordinator<'a> {
@@ -356,6 +396,7 @@ struct Coordinator<'a> {
     worker_jobs: u64,
 
     tx: Sender<Event>,
+    active: Arc<Active>,
     admission: Admission,
     state: Vec<JobState>,
     workers: Vec<Worker>,
@@ -396,7 +437,7 @@ pub fn run(
         .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
     let previous = previous_peaks(store, plan_id, phase)?;
     let (tx, rx) = mpsc::channel();
-    let _active = ActiveGuard::register(tx.clone());
+    let active = ActiveGuard::register(tx.clone(), crate::store::tmp_dir_of(store));
     let mut c = Coordinator {
         store,
         plan: *plan_id,
@@ -411,6 +452,7 @@ pub fn run(
         interval: options.sample_interval.max(Duration::from_millis(1)),
         worker_jobs: options.worker_jobs.max(1),
         tx,
+        active: Arc::clone(&active.0),
         admission: Admission::new(options.admission, &previous, observers),
         state: vec![JobState { attempt: 1, ..JobState::default() }; observers.len()],
         workers: Vec::new(),
@@ -691,9 +733,12 @@ impl Coordinator<'_> {
             let _ = tx.send(Event::Stderr { worker: serial });
         })?;
 
+        let pid = child.id();
+        self.active.workers.lock().unwrap_or_else(PoisonError::into_inner).push(pid);
         Ok(Worker {
             serial,
             child,
+            unclean: Some(pid),
             input: Some(input_tx),
             log,
             ready: false,
@@ -754,9 +799,9 @@ impl Coordinator<'_> {
                     return Ok(());
                 }
                 match self.check_shard(key, &shard) {
-                    Ok(status) => {
+                    Ok((status, message)) => {
                         let a = self.take_job(i);
-                        self.finish(a, Finish::Done { shard, status, cpu_ns, peak_rss })?;
+                        self.finish(a, Finish::Done { shard, status, message, cpu_ns, peak_rss })?;
                     }
                     Err(why) => self.violation(i, &why),
                 }
@@ -793,7 +838,7 @@ impl Coordinator<'_> {
 
     /// The shard named by a `Done` is in the store, is a valid `SHRD` with
     /// that content id, for the job's observer, phase and round (§5.2).
-    fn check_shard(&self, key: JobKey, id: &Digest) -> Result<Status, String> {
+    fn check_shard(&self, key: JobKey, id: &Digest) -> Result<(Status, String), String> {
         let observer = &self.observers[key].id;
         let bytes = match self.store.read_shard(&self.plan, self.phase, self.round, observer) {
             Ok(Some(b)) => b,
@@ -810,7 +855,7 @@ impl Coordinator<'_> {
         if shard.observer != *observer || shard.phase != self.phase || shard.round != self.round {
             return Err(format!("shard {id} is not for this observer, phase and round"));
         }
-        Ok(shard.outcome.status)
+        Ok((shard.outcome.status, first_line(&shard.outcome.message)))
     }
 
     /// A protocol violation (§5.2): treated as a crash of its job, if it
@@ -893,6 +938,9 @@ impl Coordinator<'_> {
                 if let Some(s) = w.child.try_wait()? {
                     w.status = Some(s);
                     w.reaped_at = Some(Instant::now());
+                    // Before anything else is started, so its pid cannot
+                    // be one of ours again yet.
+                    clean_worker(&self.active, w);
                 } else if w.closed_at.is_some_and(|t| t.elapsed() >= EXIT_GRACE)
                     || w.stdout_done_at.is_some_and(|t| t.elapsed() >= PIPE_GRACE)
                 {
@@ -961,12 +1009,12 @@ impl Coordinator<'_> {
         };
         // (requeue for a crash retry, message of a final failed shard)
         let (retry, failure) = match how {
-            Finish::Done { shard, status, cpu_ns, peak_rss } => {
+            Finish::Done { shard, status, message, cpu_ns, peak_rss } => {
                 record.end = End::Completed;
                 record.shard = Some(shard);
                 record.cpu_ns = cpu_ns;
                 record.peak_rss = a.peak.max(peak_rss);
-                self.state[key].status = Some(status);
+                self.state[key].status = Some((status, message));
                 self.store.remove_log(&self.plan, self.phase, self.round, &observer, a.number)?;
                 (false, None)
             }
@@ -1004,7 +1052,7 @@ impl Coordinator<'_> {
         };
         if let Some(message) = failure {
             record.shard = Some(self.write_failed(key, &message)?);
-            self.state[key].status = Some(Status::Failed);
+            self.state[key].status = Some((Status::Failed, first_line(clip_message(&message))));
         }
         self.records.push(record);
         self.admission.finished(key, retry);
@@ -1080,9 +1128,17 @@ impl Coordinator<'_> {
             &run.to_bytes(),
         )?;
         let mut statuses = [0u64; 4];
-        for s in &self.state {
-            match s.status {
-                Some(st) => statuses[st as usize] += 1,
+        let mut outcomes = Vec::with_capacity(self.state.len());
+        for (s, o) in self.state.iter().zip(self.observers) {
+            match &s.status {
+                Some((status, message)) => {
+                    statuses[*status as usize] += 1;
+                    outcomes.push(ObserverOutcome {
+                        observer: o.id,
+                        status: *status,
+                        message: message.clone(),
+                    });
+                }
                 None => unreachable!("pool: a finished run left an observer without a shard"),
             }
         }
@@ -1090,7 +1146,7 @@ impl Coordinator<'_> {
         for j in &run.jobs {
             ends[j.end as usize] += 1;
         }
-        Ok(Summary { run, run_path, statuses, ends })
+        Ok(Summary { run, run_path, statuses, ends, outcomes })
     }
 
     /// The run did not finish (cancelled or an error): kills the workers,
@@ -1115,6 +1171,8 @@ impl Coordinator<'_> {
         let elapsed = ns(self.t0.elapsed());
         let mut cancelled = Vec::new();
         for w in &mut self.workers {
+            // Killed, reaped or not: it writes nothing more.
+            clean_worker(&self.active, w);
             *w.log.lock().unwrap_or_else(PoisonError::into_inner) = None;
             if let Some(a) = w.job.take() {
                 cancelled.push((
@@ -1175,6 +1233,22 @@ impl Worker {
             || self.closed_at.is_some()
             || self.job.as_ref().is_some_and(|a| a.ending.is_some())
     }
+}
+
+/// Removes the `tmp/` entries of `w`, a worker that is dead (or killed for
+/// good), once, and forgets it in `active` (§2 "Cleaning", WP-018). Best
+/// effort: an entry that cannot be removed is left to the next exclusive
+/// open of the store.
+fn clean_worker(active: &Active, w: &mut Worker) {
+    let Some(pid) = w.unclean.take() else { return };
+    let _ = crate::store::remove_entries_of(&active.tmp, pid);
+    active.workers.lock().unwrap_or_else(PoisonError::into_inner).retain(|p| *p != pid);
+}
+
+/// The first line of a shard message (`str::lines`), as [`ObserverOutcome`]
+/// holds it.
+fn first_line(message: &str) -> String {
+    message.lines().next().unwrap_or_default().to_owned()
 }
 
 /// `reason`, then as much of the end of the log as fits in a shard message.

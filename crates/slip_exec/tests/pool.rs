@@ -103,6 +103,14 @@ fn fake_worker(jobs: u64) -> WorkerCommand {
     }
 }
 
+/// [`fake_worker`] with `--scratch 1`: every job leaves `tmp/` entries
+/// behind unless the worker ends normally.
+fn scratch_worker(jobs: u64) -> WorkerCommand {
+    let mut w = fake_worker(jobs);
+    w.args.extend(["--scratch".into(), "1".into()]);
+    w
+}
+
 /// Admission with estimates of 1 MiB per job.
 fn config(budget: u64, observer_memory: Option<u64>) -> Config {
     Config {
@@ -124,12 +132,16 @@ fn options(jobs: usize, admission: Config) -> Options {
 }
 
 /// What the sampler reports.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Mode {
     /// `/proc/<pid>/status`, as the real sampler.
     Real,
     /// Every process has this resident size.
     Constant(u64),
+    /// 1 MiB until the process's scratch directory `<dir>/<pid>.d` exists,
+    /// this resident size from then on (for `--scratch 1` workers that must
+    /// make their `tmp/` entries before they are killed).
+    AfterScratch(PathBuf, u64),
 }
 
 /// A sampler that reports [`Mode`] and remembers, per pid sampled, the
@@ -158,9 +170,13 @@ impl Sampler for FakeSampler {
                 fs::read(format!("/proc/{pid}/environ")).unwrap_or_default(),
             )
         });
-        match self.mode {
+        match &self.mode {
             Mode::Real => slip_exec::process::ProcSampler.sample(pid),
-            Mode::Constant(v) => Sample { rss: v, hwm: v },
+            Mode::Constant(v) => Sample { rss: *v, hwm: *v },
+            Mode::AfterScratch(dir, v) => {
+                let v = if dir.join(format!("{pid}.d")).exists() { *v } else { MIB };
+                Sample { rss: v, hwm: v }
+            }
         }
     }
 }
@@ -230,6 +246,16 @@ fn check_run(s: &Summary, store: &Store, obs: &[Observer], jobs: usize) {
         let id = last.shard.expect("the last attempt carries the shard");
         let stored = store.read_shard(&PLAN, Phase::Map, 0, &o.id).unwrap().unwrap();
         assert_eq!(content_id(&stored).unwrap(), id);
+    }
+    // WP-018: one outcome per observer, in the order given, saying what
+    // its final shard in the store says.
+    assert_eq!(s.outcomes.len(), obs.len());
+    for (o, outcome) in obs.iter().zip(&s.outcomes) {
+        let shard = shard_of(store, o);
+        assert_eq!(outcome.observer, o.id);
+        assert_eq!(outcome.status, shard.outcome.status);
+        let first = shard.outcome.message.lines().next().unwrap_or_default();
+        assert_eq!(outcome.message, first);
     }
     assert_eq!(s.run.jobs.len(), s.ends.iter().sum::<u64>() as usize);
     for (i, n) in s.ends.iter().enumerate() {
@@ -355,6 +381,14 @@ fn s5_4_every_row_retry_and_logs() {
 
     assert_eq!(s.statuses, [2, 1, 0, 8]);
     assert_eq!(s.ends, [3, 14, 0, 1, 0]);
+    // WP-018: the outcomes hold the first line of a message of several.
+    let outcome = |b: &str| s.outcomes.iter().find(|x| x.observer == by[b].id).unwrap().clone();
+    assert!(message("exit:3").contains('\n'));
+    assert_eq!(outcome("exit:3").message, "the worker ended without answering (exit status: 3)");
+    assert_eq!(outcome("exit:3").status, Status::Failed);
+    assert_eq!(outcome("diagnosed").message, "fake diagnostic");
+    assert_eq!(outcome("diagnosed").status, Status::Diagnosed);
+    assert_eq!(outcome("ok").message, "");
     let completed = &records_of(&s.run, by["ok"])[0];
     assert!(completed.peak_rss > 0, "the worker's own VmHWM at least");
     drop(r.store);
@@ -682,6 +716,101 @@ fn s6_address_space_cap_and_env_remove() {
 }
 
 // ---------------------------------------------------------------------------
+// §2 "Cleaning": the pool removes the tmp/ entries of the workers it reaps
+// (WP-018)
+
+/// The entries every `scratch` line of the attempt's log names: they were
+/// made (the line is written after them), and none exists any more.
+fn assert_scratch_removed(store: &Store, o: &Observer, attempt: u64) {
+    let log = fs::read_to_string(log_of(store, o, attempt)).unwrap();
+    let lines: Vec<&str> =
+        log.lines().filter_map(|l| l.strip_prefix("slip-fake-worker: scratch ")).collect();
+    assert_eq!(lines.len(), 1, "attempt {attempt} made its scratch: {log:?}");
+    for path in lines[0].split(' ') {
+        assert!(Path::new(path).starts_with(store.root().join("tmp")), "{path}");
+        assert!(!Path::new(path).exists(), "{path} is left after the run");
+    }
+}
+
+/// The store's `tmp/` is empty.
+fn assert_tmp_empty(store: &Store) {
+    let tmp: Vec<OsString> =
+        fs::read_dir(store.root().join("tmp")).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert!(tmp.is_empty(), "tmp/ is clean once run returns: {tmp:?}");
+}
+
+/// §2 "Cleaning": a worker that crashed (died by a signal, exited without
+/// answering, panicked), violated the protocol or was killed for the time
+/// limit leaves no `tmp/` entry once `run` returns: the pool removes them
+/// when it reaps the worker.
+#[test]
+fn s2_cleaning_crashed_violating_and_timed_out_workers() {
+    let dir = scratch("clean-crash");
+    let behaviours = ["abort", "exit:3", "panic", "garbage", "hang", "ok"];
+    let obs = observers(&behaviours);
+    let mut opts = options(4, config(0, None));
+    opts.observer_timeout = Some(Duration::from_secs(3));
+    let sampler = FakeSampler::new(Mode::Real);
+    let r = run_bounded(
+        open(&dir),
+        &obs,
+        &scratch_worker(1),
+        &opts,
+        &Pool::none().with_jobs(4),
+        &sampler,
+    );
+    let s = r.result.unwrap();
+    check_run(&s, &r.store, &obs, 4);
+    assert_eq!(s.statuses, [1, 0, 0, 5]);
+    for (b, o) in behaviours.iter().zip(&obs) {
+        let attempts: &[u64] = match *b {
+            "ok" => &[],
+            "hang" => &[1],
+            _ => &[1, 2],
+        };
+        for &attempt in attempts {
+            assert_scratch_removed(&r.store, o, attempt);
+        }
+    }
+    assert_tmp_empty(&r.store);
+}
+
+/// §2 "Cleaning", §6 "Caps": a worker killed at its memory cap leaves no
+/// `tmp/` entry.
+#[test]
+fn s2_cleaning_worker_killed_at_its_cap() {
+    let dir = scratch("clean-cap");
+    let store = open(&dir);
+    let obs = observers(&["sleep:30000"]);
+    let sampler = FakeSampler::new(Mode::AfterScratch(store.root().join("tmp"), 200 * MIB));
+    let opts = options(1, config(GIB, Some(100 * MIB)));
+    let r = run_bounded(store, &obs, &scratch_worker(1), &opts, &Pool::none(), &sampler);
+    let s = r.result.unwrap();
+    check_run(&s, &r.store, &obs, 1);
+    let ends: Vec<End> = records_of(&s.run, &obs[0]).iter().map(|j| j.end).collect();
+    assert_eq!(ends, [End::KilledMemory]);
+    assert_scratch_removed(&r.store, &obs[0], 1);
+    assert_tmp_empty(&r.store);
+}
+
+/// §2 "Cleaning", §6 "Pressure": a worker killed for pressure (and
+/// requeued) leaves no `tmp/` entry.
+#[test]
+fn s2_cleaning_worker_killed_for_pressure() {
+    let dir = scratch("clean-pressure");
+    let store = open(&dir);
+    let obs = observers(&["sleep:1500", "sleep:300"]);
+    let sampler = FakeSampler::new(Mode::AfterScratch(store.root().join("tmp"), 200 * MIB));
+    let opts = options(2, config(300 * MIB, Some(GIB)));
+    let r = run_bounded(store, &obs, &scratch_worker(1), &opts, &Pool::none(), &sampler);
+    let s = r.result.unwrap();
+    check_run(&s, &r.store, &obs, 2);
+    assert!(s.ends[End::KilledMemory as usize] >= 1, "a kill for pressure: {:#?}", s.run.jobs);
+    assert_eq!(s.statuses, [2, 0, 0, 0]);
+    assert_tmp_empty(&r.store);
+}
+
+// ---------------------------------------------------------------------------
 // §7: signals delivered to a process running the pool
 
 const PROBE: &str = "SLIP_EXEC_POOL_PROBE";
@@ -693,7 +822,8 @@ const POOL_TOKENS: usize = 4;
 const PROBE_JOBS: usize = 3;
 
 /// The re-executed side: runs the pool over six `hang` jobs with `-j 3`
-/// under the signal path. Does nothing in a normal test run.
+/// under the signal path, with workers that make `tmp/` entries. Does
+/// nothing in a normal test run.
 #[test]
 fn probe() {
     let Some(dir) = std::env::var_os(PROBE) else { return };
@@ -710,7 +840,7 @@ fn probe() {
         &obs,
         Phase::Map,
         0,
-        &fake_worker(1),
+        &scratch_worker(1),
         &opts,
         &pool,
         &slip_exec::process::ProcSampler,
@@ -771,7 +901,8 @@ fn wait_for(what: &str, probe: &mut Probe, mut ready: impl FnMut() -> bool) {
 }
 
 /// §7 for a process running the pool: it dies by the signal; its workers
-/// are gone; every token is back; the lock and `tmp/` are clean; a run
+/// are gone; every token is back; the lock and `tmp/` are clean (the
+/// workers' entries included, §2 "Cleaning"); a run
 /// record exists with every job `cancelled` (the three running and the
 /// three pending), and no log is left.
 fn interrupted_run(signal: i32) {
@@ -804,6 +935,10 @@ fn interrupted_run(signal: i32) {
         })
     };
     wait_for("three running jobs", &mut probe, || running() == PROBE_JOBS);
+    // Each running worker has its scratch directory and loose file (§2,
+    // WP-018), which the signal path must remove.
+    let entries = || fs::read_dir(store_dir.join("tmp")).map_or(0, |d| d.flatten().count());
+    wait_for("the workers' tmp/ entries", &mut probe, || entries() >= 2 * PROBE_JOBS);
     let workers = workers_of(pid);
     assert_eq!(workers.len(), PROBE_JOBS, "{workers:?}");
     assert_eq!(

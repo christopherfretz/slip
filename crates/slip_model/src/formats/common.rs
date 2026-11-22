@@ -100,6 +100,48 @@ impl Enumeration for End {
          \"killed_memory\", \"killed_time\", \"cancelled\"";
 }
 
+// The names of `Reason`, `Status` and `End` for callers outside the
+// formats (`spec/model.md` §7–§9): the JSON names of the tables above, and
+// every value in code order. Work package WP-018.
+
+impl Reason {
+    /// Every value, in code order.
+    pub const ALL: [Reason; 6] = [
+        Reason::NotACompile,
+        Reason::UnsupportedLanguage,
+        Reason::UnsupportedFlag,
+        Reason::MissingFile,
+        Reason::MalformedEntry,
+        Reason::UnsupportedCompiler,
+    ];
+
+    /// The name of `spec/model.md` §7 (`not_a_compile`, …), as in JSON.
+    pub fn name(self) -> &'static str {
+        Enumeration::name(self)
+    }
+}
+
+impl Status {
+    /// Every value, in code order.
+    pub const ALL: [Status; 4] = [Status::Ok, Status::Diagnosed, Status::Rejected, Status::Failed];
+
+    /// The name of `spec/model.md` §8 (`ok`, …), as in JSON.
+    pub fn name(self) -> &'static str {
+        Enumeration::name(self)
+    }
+}
+
+impl End {
+    /// Every value, in code order.
+    pub const ALL: [End; 5] =
+        [End::Completed, End::Crashed, End::KilledMemory, End::KilledTime, End::Cancelled];
+
+    /// The name of `spec/model.md` §9 (`completed`, …), as in JSON.
+    pub fn name(self) -> &'static str {
+        Enumeration::name(self)
+    }
+}
+
 pub(super) fn enc_enum<E: Enumeration>(e: &mut Encoder, v: E) {
     e.uv(v.code());
 }

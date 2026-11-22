@@ -18,8 +18,10 @@
 //! final name, so a reader never sees a partial file. An exclusive [`Store`]
 //! holds `lock`; a shared one only reads and publishes. A `Store` removes
 //! its own `tmp/` entries and, if it holds it, the lock, when dropped, and
-//! [`cleanup_on_signal`] does the same from the signal path (§7). The rules
-//! the spec leaves open are in `spec/landed/exec/WP-008.md`.
+//! [`cleanup_on_signal`] does the same from the signal path (§7).
+//! [`Store::remove_entries_of`] removes the entries of a dead child (the
+//! pool's workers). The rules the spec leaves open are in
+//! `spec/landed/exec/WP-008.md` and `WP-018.md`.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -400,6 +402,18 @@ impl Store {
         Ok(path)
     }
 
+    /// Removes every `tmp/` entry of process `pid` (named `<pid>.…`),
+    /// directories included: what a child of this process that is known to
+    /// be dead left behind (§2 "Cleaning"; the pool calls it for the workers
+    /// it reaps). The caller vouches that `pid` is gone; unlike the stale
+    /// cleaning of an exclusive open, `/proc` is not consulted. This
+    /// process's own id is never removed (a no-op). An entry that vanishes
+    /// meanwhile is not an error; the first other failure is returned, after
+    /// the remaining entries have been tried.
+    pub fn remove_entries_of(&self, pid: u32) -> Result<()> {
+        remove_entries_of(&self.inner.tmp_dir(), pid)
+    }
+
     // -- paths -------------------------------------------------------------
 
     /// `plans/<id>.plan`.
@@ -625,6 +639,52 @@ impl Store {
 pub fn cleanup_on_signal(store: &Store) -> impl FnOnce() + Send + 'static {
     let inner = Arc::clone(&store.inner);
     move || inner.clean()
+}
+
+/// What the signal path needs to call [`Store::remove_entries_of`] without
+/// the store: the store's `tmp/` directory.
+pub(crate) fn tmp_dir_of(store: &Store) -> PathBuf {
+    store.inner.tmp_dir()
+}
+
+/// [`Store::remove_entries_of`] on the `tmp/` directory `dir`.
+pub(crate) fn remove_entries_of(dir: &Path, pid: u32) -> Result<()> {
+    if pid == std::process::id() {
+        return Ok(());
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(StoreError::Io { path: dir.to_path_buf(), error: e }),
+    };
+    let mut first = None;
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                first.get_or_insert(StoreError::Io { path: dir.to_path_buf(), error: e });
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        if name.to_str().and_then(pid_prefix) != Some(pid) {
+            continue;
+        }
+        let path = entry.path();
+        let removed = match entry.file_type() {
+            Ok(t) if t.is_dir() => fs::remove_dir_all(&path),
+            Ok(_) => fs::remove_file(&path),
+            Err(e) => Err(e),
+        };
+        match removed {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                first.get_or_insert(StoreError::Io { path, error: e });
+            }
+        }
+    }
+    first.map_or(Ok(()), Err)
 }
 
 /// The content id of a file already validated: its trailer.
