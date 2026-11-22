@@ -50,7 +50,11 @@ pub const SAME_NAME: &[(&str, &str, &str)] = &[
     // whose instantiated signatures meet, share a name.
     ("differ/FnSpec/0-not-selected", "X::~X<T>()", "prospective destructors differ in requires"),
     ("differ/FnSpec/0-not-selected", "X<int>::~X()", "prospective destructors differ in requires"),
-    ("differ/_/key-member-of-template-overloads", "A<int>::f(int)", "f(T) requires C<T> and f(int) at T = int"),
+    (
+        "differ/_/key-member-of-template-overloads",
+        "A<int>::f(int)",
+        "f(T) requires C<T> and f(int) at T = int",
+    ),
     // Kiln's argument printer (`write_arg_list`) writes a null pointer
     // argument as `nullptr` whatever its type.
     ("differ/_/key-null-pointer-typed", "N<nullptr>", "N<nullptr> against N<(int *)nullptr>"),
