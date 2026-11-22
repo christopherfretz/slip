@@ -14,8 +14,6 @@
 //!
 //! Decisions and their Kiln sites: `spec/landed/digest-kinds/WP-035.md`.
 
-use std::cell::Cell;
-
 use slip_kiln::kiln::ast::expr::{
     BinaryOp, ConstructInfo, ConstructionKind, Designator, ExprFlags, InitListExtra, NewExtra,
     NewInitStyle,
@@ -127,6 +125,27 @@ fn child_list(w: &Walk<'_>, s: &mut Stream, out: &mut Vec<R>, raw: u32, cause: C
     out.extend(es.into_iter().map(R::Child));
 }
 
+/// `InitListExpr.a`: the list as runs of one node, the count of runs,
+/// then for each its length (`uv`) and the node once. A GNU range
+/// designator's initialiser is one node in every slot it fills (`kiln_sema`
+/// `init.rs:3109`, the loop over the range's slots), so `[0 ... N] = x`
+/// writes `x` once whatever `N` is.
+fn child_runs(w: &Walk<'_>, s: &mut Stream, out: &mut Vec<R>, raw: u32, cause: Cause) {
+    let es = expr_list(w, s, raw, cause);
+    let at = out.len();
+    out.push(R::Count(0));
+    let mut runs = 0;
+    let mut i = 0;
+    while let Some(&e) = es.get(i) {
+        let len = es[i..].iter().take_while(|&&x| x == e).count();
+        out.push(R::Uv(len as u64));
+        out.push(R::Child(e));
+        runs += 1;
+        i += len;
+    }
+    out[at] = R::Count(runs);
+}
+
 /// `child*` of a list.
 fn child_list_id(w: &Walk<'_>, s: &mut Stream, out: &mut Vec<R>, l: ListId, cause: Cause) {
     child_list(w, s, out, l.raw(), cause);
@@ -165,7 +184,7 @@ pub(crate) fn init_list_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 fn init_list_rows(w: &Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec<R>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/InitListExpr.bits"));
     check_aux(s, n, 0, Cause::Unaccounted("ExprNode/InitListExpr.aux"));
-    child_list(w, s, out, n.a, Cause::Unaccounted("ExprNode/InitListExpr.a"));
+    child_runs(w, s, out, n.a, Cause::Unaccounted("ExprNode/InitListExpr.a"));
     let &InitListExtra { array_filler, union_field, rbrace: _ } = w.ast.exprs.init_list(e);
     child_opt(out, array_filler);
     out.push(R::RefOpt(union_field));
@@ -537,47 +556,17 @@ fn throw_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R
 // ---------------------------------------------------------------------
 // Rewritten comparisons.
 
-/// How many `CXXRewrittenBinaryOperator`s may enclose one another, on the
-/// path the walk is on, before the inner ones are cut
-/// ([`cxx_rewritten_binary_operator`]).
-pub(crate) const REWRITTEN_LIMIT: u32 = 8;
-
-/// The cause of a rewritten comparison nested deeper than
-/// [`REWRITTEN_LIMIT`].
-const REWRITTEN_TOO_DEEP: Cause = Cause::Unaccounted("ExprNode/CXXRewrittenBinaryOperator.b");
-
-thread_local! {
-    /// The `CXXRewrittenBinaryOperator`s the walk is inside, on this
-    /// thread.
-    static REWRITTEN_DEPTH: Cell<u32> = const { Cell::new(0) };
-}
-
 /// `CXXRewrittenBinaryOperator`: `aux` the operator as written, `a` the
-/// semantic form, `b` the two operands as written.
-///
-/// The operands of `b` are the very nodes the semantic form holds
-/// (`kiln_sema` overload/oper.rs:536 and :1184), so each rewritten
-/// comparison writes its operands twice, and a comparison nested in an
-/// operand of another doubles again: `2^n` for `n` levels. Past
-/// [`REWRITTEN_LIMIT`] enclosing rewritten comparisons, a node writes `b`
-/// as an empty list and makes the stream indeterminate, so the walk stays
-/// linear past that depth; `Walk::aborts` is bumped, as for the depth
-/// limit, since the cut depends on the path that reached the node.
+/// semantic form. `b`, the two operands as written, is `out`: they are
+/// the very nodes the semantic form holds (`kiln_sema` overload/oper.rs:536
+/// and :1184; the unit test `rewritten_operands_are_in_the_semantic_form`
+/// pins it), written there. Writing them again would double the walk at
+/// every nested rewritten comparison.
 pub(crate) fn cxx_rewritten_binary_operator(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = node(w, e);
-    let depth = REWRITTEN_DEPTH.with(Cell::get);
-    let cut = depth >= REWRITTEN_LIMIT;
-    let mut out = Vec::new();
-    rewritten_rows(w, s, &n, cut, &mut out);
-    if cut {
-        w.aborts += 1;
-    }
-    REWRITTEN_DEPTH.with(|d| d.set(depth + 1));
-    emit(w, s, &out);
-    REWRITTEN_DEPTH.with(|d| d.set(depth));
+    run(w, s, e, rewritten_rows);
 }
 
-fn rewritten_rows(w: &Walk<'_>, s: &mut Stream, n: &Node, cut: bool, out: &mut Vec<R>) {
+fn rewritten_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/CXXRewrittenBinaryOperator.bits"));
     if let Some(op) = BinaryOp::from_u8(n.aux) {
         out.push(R::Tag(binary_op::row(&op)));
@@ -586,12 +575,6 @@ fn rewritten_rows(w: &Walk<'_>, s: &mut Stream, n: &Node, cut: bool, out: &mut V
         s.indeterminate(Cause::Unaccounted("ExprNode/CXXRewrittenBinaryOperator.aux"));
     }
     child_word(s, out, n.a, Cause::Unaccounted("ExprNode/CXXRewrittenBinaryOperator.a"));
-    if cut {
-        out.push(R::Count(0));
-        s.indeterminate(REWRITTEN_TOO_DEEP);
-    } else {
-        child_list(w, s, out, n.b, Cause::Unaccounted("ExprNode/CXXRewrittenBinaryOperator.b"));
-    }
 }
 
 // ---------------------------------------------------------------------
@@ -637,6 +620,7 @@ mod tests {
     //! function body, a constructor's initialisers) is checked all the
     //! same.
 
+    use std::collections::HashSet;
     use std::path::Path;
 
     use slip_kiln::kiln::ast::dump::AstNames;
@@ -646,12 +630,12 @@ mod tests {
     use slip_model::keys::RuleTable;
 
     use super::{
-        Node, R, REWRITTEN_LIMIT, REWRITTEN_TOO_DEEP, array_init_index_rows, array_init_loop_rows,
-        compound_literal_rows, construct_rows_complete, construct_rows_temporary, default_arg_rows,
-        default_init_rows, delete_rows, designated_init_rows, designated_init_update_rows,
-        designator_rows, implicit_value_init_rows, inherited_ctor_init_rows, init_list_rows,
-        new_rows, no_init_rows, paren_list_init_rows, paren_list_rows, pseudo_destructor_rows,
-        rewritten_rows, scalar_value_init_rows, std_initializer_list_rows, throw_rows,
+        Node, R, array_init_index_rows, array_init_loop_rows, compound_literal_rows,
+        construct_rows_complete, construct_rows_temporary, default_arg_rows, default_init_rows,
+        delete_rows, designated_init_rows, designated_init_update_rows, designator_rows,
+        implicit_value_init_rows, inherited_ctor_init_rows, init_list_rows, new_rows, no_init_rows,
+        paren_list_init_rows, paren_list_rows, pseudo_destructor_rows, rewritten_rows,
+        scalar_value_init_rows, std_initializer_list_rows, throw_rows,
     };
     use crate::Input;
     use crate::expr::{child, node};
@@ -659,10 +643,6 @@ mod tests {
     use crate::walk::{STACK_SIZE, Walk};
 
     type RowsFn = fn(&Walk<'_>, &mut Stream, ExprId, &Node, &mut Vec<R>);
-
-    fn rewritten_uncut(w: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R>) {
-        rewritten_rows(w, s, n, false, out);
-    }
 
     fn designators_of(w: &Walk<'_>, s: &mut Stream, e: ExprId, _: &Node, out: &mut Vec<R>) {
         designator_rows(w, s, e, out);
@@ -692,7 +672,7 @@ mod tests {
         (ExprKind::CXXDeleteExpr, delete_rows),
         (ExprKind::CXXPseudoDestructorExpr, pseudo_destructor_rows),
         (ExprKind::CXXThrowExpr, throw_rows),
-        (ExprKind::CXXRewrittenBinaryOperator, rewritten_uncut),
+        (ExprKind::CXXRewrittenBinaryOperator, rewritten_rows),
         (ExprKind::ParenListExpr, paren_list_rows),
     ];
 
@@ -816,16 +796,33 @@ mod tests {
         use ExprKind as K;
         // InitListExpr.b, InitListExtra.
         let filler = (
-            "count 1; child IntegerLiteral; opt true; child ImplicitValueInitExpr; ref none",
-            "count 3; child IntegerLiteral; child IntegerLiteral; child IntegerLiteral; opt false; ref none",
+            "count 1; uv 1; child IntegerLiteral; opt true; child ImplicitValueInitExpr; ref none",
+            "count 3; uv 1; child IntegerLiteral; uv 1; child IntegerLiteral; uv 1; child IntegerLiteral; \
+             opt false; ref none",
         );
         check("differ/ExprNode/InitListExpr.b", K::InitListExpr, filler.0, Some(filler.1));
         check("differ/InitListExtra/array_filler", K::InitListExpr, filler.0, Some(filler.1));
         check(
             "differ/InitListExtra/union_field",
             K::InitListExpr,
-            "count 1; child IntegerLiteral; opt false; ref U::i",
-            Some("count 1; child IntegerLiteral; opt false; ref U::j"),
+            "count 1; uv 1; child IntegerLiteral; opt false; ref U::i",
+            Some("count 1; uv 1; child IntegerLiteral; opt false; ref U::j"),
+        );
+        // InitListExpr.a as runs: a range is one run of its shared node.
+        check(
+            "differ/_/init-list-range-length",
+            K::InitListExpr,
+            "count 1; uv 3; child IntegerLiteral; opt true; child ImplicitValueInitExpr; ref none",
+            Some("count 1; uv 4; child IntegerLiteral; opt false; ref none"),
+        );
+        check(
+            "differ/_/init-list-range-against-written-out",
+            K::InitListExpr,
+            "count 1; uv 3; child IntegerLiteral; opt false; ref none",
+            Some(
+                "count 3; uv 1; child IntegerLiteral; uv 1; child IntegerLiteral; uv 1; \
+                 child IntegerLiteral; opt false; ref none",
+            ),
         );
         // ConstructInfo, ConstructionKind.
         let list = (
@@ -1049,11 +1046,7 @@ mod tests {
             Some("opt false"),
         );
         // CXXRewrittenBinaryOperator.aux (`BinaryOp` 11 `<`, 12 `>`).
-        let rewritten = |tag: u32| {
-            format!(
-                "tag {tag}; child CXXOperatorCallExpr; count 2; child DeclRefExpr; child DeclRefExpr"
-            )
-        };
+        let rewritten = |tag: u32| format!("tag {tag}; child CXXOperatorCallExpr");
         check(
             "differ/ExprNode/CXXRewrittenBinaryOperator.aux",
             K::CXXRewrittenBinaryOperator,
@@ -1089,7 +1082,7 @@ mod tests {
         check(
             "differ/ColdExprData/syntactic_list",
             K::InitListExpr,
-            "count 2; child DesignatedInitExpr; child DesignatedInitExpr; opt false; ref none",
+            "count 2; uv 1; child DesignatedInitExpr; uv 1; child DesignatedInitExpr; opt false; ref none",
             None,
         );
         // CompoundLiteralExpr.aux, .b: unsupported when non-zero.
@@ -1140,7 +1133,6 @@ mod tests {
                     let mut s = Stream::new();
                     child(w, &mut s, root);
                     assert_eq!(w.node_depth, 0, "every level left");
-                    assert_eq!(super::REWRITTEN_DEPTH.with(std::cell::Cell::get), 0, "put back");
                     (s.as_bytes().len(), s.cause())
                 })
             })
@@ -1199,38 +1191,310 @@ mod tests {
         assert!(steps.windows(2).all(|s| s[0] == s[1]), "bytes by dimension: {bytes:?}");
     }
 
-    /// A rewritten comparison writes its operands twice (in its semantic
-    /// form and as written), so `n` nested ones would write the innermost
-    /// operands `2^n` times: past [`REWRITTEN_LIMIT`] enclosing ones a
-    /// node is cut, the stream is indeterminate and the walk grows by the
-    /// same bytes per level.
-    #[test]
-    fn nested_rewritten_comparisons_are_cut() {
-        let chain = |n: usize| {
-            let mut e = String::from("a");
-            for _ in 0..n {
-                e = format!("({e} < a)");
+    /// Every expression reachable from `root` in Kiln's AST: its children
+    /// (`ExprArena::children`) and an opaque value's source.
+    fn reachable(w: &Walk<'_>, root: ExprId) -> HashSet<ExprId> {
+        let mut seen = HashSet::new();
+        let mut todo = vec![root];
+        while let Some(e) = todo.pop() {
+            if seen.insert(e) {
+                todo.extend(w.ast.exprs.children(e, &w.ast.lists));
+                if w.ast.exprs.get(e).kind() == ExprKind::OpaqueValueExpr {
+                    todo.extend(w.ast.exprs.opaque_source(e));
+                }
             }
+        }
+        seen
+    }
+
+    /// `CXXRewrittenBinaryOperator.b` is `out` because both operands as
+    /// written are nodes of the semantic form `a` (`kiln_sema`
+    /// overload/oper.rs:536, :1184): checked for every rewrite Kiln makes.
+    #[test]
+    fn rewritten_operands_are_in_the_semantic_form() {
+        const R: &str = "struct R { int r; };\n\
+            bool operator<(R, int); bool operator>(R, int);\n\
+            bool operator<=(R, int); bool operator>=(R, int);\n\
+            bool operator<(int, R); bool operator>(int, R);\n\
+            bool operator<=(int, R); bool operator>=(int, R);\n\
+            R operator<=>(int, R);\n";
+        let non_member = "struct X { int i; }; R operator<=>(X, int); X a;\n";
+        let member = "struct X { int i; R operator<=>(int) const; }; X a;\n";
+        let mut forms: Vec<(String, String)> = vec![
+            (
+                "`!=` from a non-member `==`".into(),
+                "struct X { int i; }; bool operator==(X, X); X a, b;\nbool v = a != b;\n".into(),
+            ),
+            (
+                "`!=` from a member `==`".into(),
+                "struct X { bool operator==(const X &) const; }; X a, b;\nbool v = a != b;\n"
+                    .into(),
+            ),
+            (
+                "reversed `==`".into(),
+                "struct X { bool operator==(int) const; }; X a;\nbool v = 1 == a;\n".into(),
+            ),
+            (
+                "reversed `!=`".into(),
+                "struct X { bool operator==(int) const; }; X a;\nbool v = 1 != a;\n".into(),
+            ),
+            (
+                "`!=` from a defaulted `==`".into(),
+                "struct D { int i; bool operator==(const D &) const = default; }; D a, b;\n\
+                 bool v = a != b;\n"
+                    .into(),
+            ),
+        ];
+        for (which, decl) in [("non-member", non_member), ("member", member)] {
+            for op in ["<", ">", "<=", ">=", "<=>"] {
+                if op != "<=>" {
+                    forms.push((
+                        format!("`{op}` from a {which} `<=>`"),
+                        format!("{R}{decl}auto v = a {op} 1;\n"),
+                    ));
+                }
+                forms.push((
+                    format!("reversed `{op}` from a {which} `<=>`"),
+                    format!("{R}{decl}auto v = 1 {op} a;\n"),
+                ));
+            }
+        }
+        // A defaulted secondary comparison is defined by a rewrite of
+        // `<=>` ([class.compare.secondary]); its body is built when used.
+        let defaulted = "struct F { int i; R operator<=>(const F &) const;\n\
+                         bool operator<(const F &) const = default; }; F a, b;\n\
+                         bool v = a < b;\n";
+        forms.push(("a defaulted `<` (its body)".into(), format!("{R}{defaulted}")));
+        let mut none = Vec::new();
+        for (form, src) in &forms {
+            let files = [("main.cpp", src.as_str())];
+            let found = with_walk(&files, "c++20", |w| {
+                let mut found = 0;
+                for e in exprs(w) {
+                    if w.ast.exprs.get(e).kind() != ExprKind::CXXRewrittenBinaryOperator {
+                        continue;
+                    }
+                    found += 1;
+                    let semantic = reachable(w, w.ast.exprs.rewritten_semantic(e));
+                    let (_, written) = w.ast.exprs.rewritten_written(e);
+                    let written: Vec<ExprId> = w.ast.lists.iter(written).collect();
+                    assert_eq!(written.len(), 2, "{form}: two operands");
+                    for o in written {
+                        assert!(semantic.contains(&o), "{form}: operand {o:?} not in `a`");
+                    }
+                }
+                found
+            });
+            if found == 0 {
+                none.push(form.as_str());
+            }
+        }
+        // Every form builds the node, the defaulted `<`'s body too.
+        assert!(none.is_empty(), "no node for: {none:?}");
+    }
+
+    /// Rewritten comparisons nested 200 and 2 000 deep (`a < a < …`, each
+    /// `<` from `<=>`, its result compared again) are written in bytes
+    /// linear in the depth, with no cause: each node writes its operands
+    /// once, in the semantic form.
+    #[test]
+    fn nested_rewritten_comparisons_are_linear() {
+        let chain = |n: usize| {
             format!(
                 "struct R {{ int r; }};\nstruct X {{ int i; }};\nX operator<(R, int);\n\
-                 R operator<=>(X, X);\nX a;\nX v = {e};\n"
+                 R operator<=>(X, X);\nX a;\nX v = a{};\n",
+                " < a".repeat(n)
             )
         };
-        let limit = REWRITTEN_LIMIT as usize;
-        let mut bytes = Vec::new();
-        for n in 1..=limit + 6 {
-            let (b, c) = walk_last(chain(n), ExprKind::CXXRewrittenBinaryOperator);
-            // The innermost of `n` sits at nesting `n - 1`: cut from `limit`.
-            let want = (n > limit).then_some(REWRITTEN_TOO_DEEP);
-            assert_eq!(c, want, "{n} nested");
-            bytes.push(b);
+        let (short, c1) = walk_last(chain(200), ExprKind::CXXRewrittenBinaryOperator);
+        let (long, c2) = walk_last(chain(2_000), ExprKind::CXXRewrittenBinaryOperator);
+        assert_eq!((c1, c2), (None, None));
+        let per = short / 200;
+        assert!(long >= 9 * short && long <= 10 * short + per, "200: {short} bytes; 2 000: {long}");
+    }
+
+    /// A GNU range designator `[0 ... N - 1] = x` writes `x` once: the
+    /// list is one run, and only the run's length depends on `N`.
+    #[test]
+    fn a_range_is_one_run() {
+        let range = |n: usize| format!("int v[{n}] = {{[0 ... {}] = 7}};\n", n - 1);
+        let (small, c1) = walk_last(range(1_000), ExprKind::InitListExpr);
+        let (big, c2) = walk_last(range(1_000_000), ExprKind::InitListExpr);
+        assert_eq!((c1, c2), (None, None));
+        // The length's `uv` grows from 2 to 3 bytes.
+        assert!(big - small <= 2, "1 000: {small} bytes; 1 000 000: {big}");
+    }
+
+    /// Nested ranges: Kiln builds one sub-list per slot of the outer
+    /// range (`kiln_sema` init.rs, `descend` per slot), each one run of
+    /// the shared node; so bytes grow with the outer length only, and the
+    /// inner length costs nothing.
+    #[test]
+    fn nested_ranges_grow_with_the_outer_length_only() {
+        let nested = |outer: usize, inner: usize| {
+            format!(
+                "int v[{outer}][{inner}] = {{[0 ... {}][0 ... {}] = 7}};\n",
+                outer - 1,
+                inner - 1
+            )
+        };
+        let walk = |o, i| {
+            let (b, c) = walk_last(nested(o, i), ExprKind::InitListExpr);
+            assert_eq!(c, None);
+            b
+        };
+        let (a, b, c) = (walk(10, 10), walk(10, 1_000), walk(20, 10));
+        eprintln!("10x10: {a}; 10x1000: {b}; 20x10: {c}");
+        assert!(b - a <= 2 * 10 + 2, "the inner length costs its `uv`: {a} against {b}");
+        assert!(c > a, "another outer slot is another sub-list: {a} against {c}");
+    }
+
+    /// A designated list in a template keeps its written form
+    /// (`ColdExprData` `syntactic_list`, written by `expr::cold`), whose
+    /// `DesignatedInitExpr`s hold the very initialisers of the semantic
+    /// form (`kiln_sema` init.rs:2114): measures the bytes by nesting.
+    #[test]
+    #[ignore = "a measure: --ignored --nocapture"]
+    fn nested_designated_lists() {
+        let nested = |n: usize| {
+            let mut lines = vec!["struct N0 { int x; };".to_owned()];
+            lines.extend((1..=n).map(|i| format!("struct N{i} {{ N{} a; }};", i - 1)));
+            let mut e = String::from("{.x = 1}");
+            for _ in 1..=n {
+                e = format!("{{.a = {e}}}");
+            }
+            lines.push(format!("template <class T> struct A {{ static inline N{n} w = {e}; }};"));
+            lines.join("\n")
+        };
+        for n in [1, 2, 3, 4, 8, 12] {
+            let src = nested(n);
+            let files = [("main.cpp", src.as_str())];
+            let (roots, bytes) = with_walk(&files, "c++20", |w| {
+                let roots: Vec<ExprId> = exprs(w)
+                    .into_iter()
+                    .filter(|&e| w.ast.exprs.syntactic_list(e).is_some())
+                    .collect();
+                let mut s = Stream::new();
+                if let Some(&r) = roots.last() {
+                    child(w, &mut s, r);
+                }
+                (roots.len(), s.as_bytes().len())
+            });
+            println!("{n} nested: {roots} lists with a written form; outermost {bytes} bytes");
         }
-        eprintln!("bytes by nesting: {bytes:?}");
-        // Below the limit each level doubles the walk.
-        assert!(bytes[limit - 1] > bytes[limit - 2] * 3 / 2, "{bytes:?}");
-        // Past it, a constant step.
-        let steps: Vec<usize> = bytes[limit..].windows(2).map(|w| w[1] - w[0]).collect();
-        assert!(steps.windows(2).all(|s| s[0] == s[1]), "{bytes:?}");
+    }
+
+    /// Scans the sources of every pair test for a node the walk reaches
+    /// twice through a kind of this file: a node with two parents (the
+    /// rows of this file's kinds, Kiln's children for the others; an
+    /// opaque value excepted) one of which is ours, and an initialiser
+    /// list repeating a node other than in a run. A tool: `--ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore = "a tool: --ignored --nocapture"]
+    #[allow(clippy::too_many_lines, reason = "one scan")]
+    fn shared_nodes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let mut dirs = Vec::new();
+        let mut todo = vec![root.clone()];
+        while let Some(d) = todo.pop() {
+            for entry in std::fs::read_dir(&d).expect("a directory").flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    todo.push(p);
+                } else if p.file_name().is_some_and(|n| n == "t.cpp" || n == "a.cpp") {
+                    dirs.push(d.strip_prefix(&root).expect("under tests").to_owned());
+                }
+            }
+        }
+        dirs.sort();
+        let ours = |k: ExprKind| KINDS.iter().any(|&(x, _)| x == k);
+        for dir in dirs {
+            let dir = dir.to_string_lossy().into_owned();
+            let full = root.join(&dir);
+            let read = |n: &str| std::fs::read_to_string(full.join(n)).ok();
+            for b in [false, true] {
+                let side = if b { "#define B 1\n" } else { "" };
+                let Some(main) = read("t.cpp").or_else(|| read(if b { "b.cpp" } else { "a.cpp" }))
+                else {
+                    continue;
+                };
+                let std = main
+                    .lines()
+                    .take(4)
+                    .find_map(|l| l.strip_prefix("// std:"))
+                    .map_or("c++20", str::trim)
+                    .to_owned();
+                let files = [("main.cpp", main.as_str()), ("side.h", side)];
+                let found = slip_kiln::snippet::parse(
+                    &slip_kiln::snippet::Snippet {
+                        files: &files,
+                        main: "main.cpp",
+                        include: &[""],
+                        std: &std,
+                    },
+                    |p| {
+                        let path = |_| Vec::new();
+                        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                        let rules = RuleTable::empty();
+                        let w = Walk::new(&input, &rules);
+                        let mut parents: std::collections::HashMap<
+                            ExprId,
+                            Vec<(ExprKind, ExprId)>,
+                        > = std::collections::HashMap::new();
+                        let mut found = Vec::new();
+                        for e in exprs(&w) {
+                            let k = w.ast.exprs.get(e).kind();
+                            let kids: Vec<ExprId> = if ours(k) {
+                                let n = node(&w, e);
+                                let mut out = Vec::new();
+                                let mut s = Stream::new();
+                                for &(x, f) in KINDS {
+                                    if x == k {
+                                        f(&w, &mut s, e, &n, &mut out);
+                                    }
+                                }
+                                out.iter()
+                                    .filter_map(
+                                        |r| if let R::Child(c) = *r { Some(c) } else { None },
+                                    )
+                                    .collect()
+                            } else {
+                                w.ast.exprs.children(e, &w.ast.lists)
+                            };
+                            if k == ExprKind::InitListExpr {
+                                let mut runs: Vec<ExprId> = kids.clone();
+                                runs.dedup();
+                                let mut set = HashSet::new();
+                                if runs.iter().any(|x| !set.insert(*x)) {
+                                    found.push(format!("list {e:?} repeats a node apart"));
+                                }
+                            }
+                            let mut kids = kids;
+                            kids.dedup();
+                            for c in kids {
+                                parents.entry(c).or_default().push((k, e));
+                            }
+                        }
+                        for (c, ps) in parents {
+                            let kind = w.ast.exprs.get(c).kind();
+                            if ps.len() > 1
+                                && ps.iter().any(|&(k, _)| ours(k))
+                                && kind != ExprKind::OpaqueValueExpr
+                            {
+                                found.push(format!("{kind:?} {c:?} under {ps:?}"));
+                            }
+                        }
+                        found
+                    },
+                );
+                if let Ok(found) = found {
+                    for f in found {
+                        println!("{dir} {}: {f}", if b { "B" } else { "A" });
+                    }
+                }
+            }
+        }
     }
 
     /// Prints the renderings of every node of this file's kinds in the

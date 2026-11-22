@@ -2939,7 +2939,7 @@ Rules the rows refer to:
 | `CXXOperatorCallExpr.b` | child | in | child* |  |
 | `CXXRewrittenBinaryOperator.aux` | flag | in | enum BinaryOp | the operator as written: instantiation rebuilds from it |
 | `CXXRewrittenBinaryOperator.a` | child | in | child | the semantic form |
-| `CXXRewrittenBinaryOperator.b` | child | in | child* | the two operands as written: instantiation rebuilds from them |
+| `CXXRewrittenBinaryOperator.b` | child | out | - | the two operands as written: they are nodes of the semantic form `a`, where they are written |
 | `ParenListExpr.a` | child | in | child* |  |
 | `ImplicitCastExpr.bits-part-of-explicit-cast` | flag | in | bit | bit 4 |
 | `ImplicitCastExpr.aux` | flag | in | enum CastKind |  |
@@ -2966,7 +2966,7 @@ Rules the rows refer to:
 | `BuiltinBitCastExpr.aux` | flag | in | enum CastKind |  |
 | `BuiltinBitCastExpr.a` | child | in | child |  |
 | `BuiltinBitCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
-| `InitListExpr.a` | child | in | child* |  |
+| `InitListExpr.a` | child | in | child* | runs of one node: the count of runs, then for each its length and the node once; a GNU range designator's initialiser is one node in every slot it fills |
 | `InitListExpr.b` | child | in | record InitListExtra | index into `init_lists` |
 | `DesignatedInitExpr.a` | child | in | child | the initialiser; the designators are `ColdExprData` `designators` |
 | `CXXConstructExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: the constructor chosen is the fact (digest §6) |
