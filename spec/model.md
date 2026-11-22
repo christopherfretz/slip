@@ -82,6 +82,12 @@ Two ways of using it:
 | Tag | Value hashed | Defined in |
 |---|---|---|
 | `slip.observer.v1` | `Command` | §7 |
+| `slip.key.v1` | an entity's `Key` | `digest.md` §3 |
+| `slip.unit.v1` | a unit's stream | `digest.md` §4 |
+| `slip.type.v1` | a type's stream | `digest.md` §4.2 |
+| `slip.group.v1` | `list<Unit>` | `digest.md` §11 |
+| `slip.tu.v1` | `list<GroupSum>` | `digest.md` §11 |
+| `slip.rules.v1` | `list<Rule>` | `verify.md` §2 |
 
 `slip_model` implements BLAKE3 itself, in safe Rust, with an incremental
 interface (`new`, `update(&[u8])`, `finalize() -> Digest`) and a one-shot

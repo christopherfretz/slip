@@ -11,12 +11,14 @@
 
 pub mod container;
 mod digest;
+pub mod digests;
 pub mod formats;
 pub mod hash;
 pub mod json;
 mod plan;
 mod run;
 mod shard;
+pub mod verdict;
 pub mod wire;
 
 pub use digest::Digest;
