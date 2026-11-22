@@ -757,6 +757,29 @@ mod tests {
         });
     }
 
+    // digest-kinds §11.1 property 6: the base constructor an inheriting
+    // constructor names is in its resolved unit only. Two programs whose
+    // inherited constructor is a different entity (the base's namespace)
+    // give the inheriting constructor equal own units.
+    #[test]
+    fn inherited_constructor_is_not_in_the_own_unit() {
+        let src = |ns: &str| {
+            format!(
+                "namespace {ns} {{ struct B0 {{ B0(int); }}; }}\n\
+                 struct D : {ns}::B0 {{ using {ns}::B0::B0; }};\n\
+                 void h() {{ D d(1); }}\n"
+            )
+        };
+        let a = units(&src("n"));
+        let b = units(&src("m"));
+        let own = "D::B0(int)";
+        let res = "D::B0(int)::<inherited_constructor>";
+        let (ua, ub) = (a.get(own).expect("own A"), b.get(own).expect("own B"));
+        assert_eq!(ua.2, ub.2, "the key");
+        assert_eq!(ua.3, ub.3, "the own unit");
+        assert_ne!(a.get(res).expect("A").3, b.get(res).expect("B").3);
+    }
+
     // digest-kinds §11.1, digest §2.2: a resolved unit's key is kind
     // `resolved`, parent the owner's key, name `property(n)`, no
     // discriminator; it is derived, in the owner's file. Property 4, the
