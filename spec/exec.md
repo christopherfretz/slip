@@ -41,6 +41,8 @@ Ids are 64 hexadecimal digits (`spec/model.md` §3); `<phase>` is `map` or
 - **Publishing.** A file is written under `tmp/` with a name unique to the
   writing process and moved to its final name with one rename. A reader never
   sees a partial file. If the final name exists, the rename replaces it.
+  A run record is published only under the plan, phase, round and start
+  time it names (`spec/model.md` §9); any other is `Invalid`.
 - **Opening.** A store whose `VERSION` is missing is initialised if the
   directory is empty or absent, and otherwise refused (`Input` error): Slip
   does not write into a directory it does not recognise. A `VERSION` other

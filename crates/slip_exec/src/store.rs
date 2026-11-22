@@ -549,8 +549,8 @@ impl Store {
     // -- run records ---------------------------------------------------------
 
     /// Publishes a run record and returns its path. The bytes must be a
-    /// valid `RUNR` file whose `plan`, `phase` and `started_unix_ns` are the
-    /// ones given (the record does not hold the round).
+    /// valid `RUNR` file whose `plan`, `phase`, `round` and
+    /// `started_unix_ns` are the ones given.
     pub fn publish_run(
         &self,
         plan: &Digest,
@@ -562,12 +562,17 @@ impl Store {
         let record = RunRecord::from_bytes(bytes)
             .map_err(|e| StoreError::Invalid(format!("not a valid run record: {e}")))?;
         let r = &record.run;
-        if r.plan != *plan || r.phase != phase || r.started_unix_ns != started_unix_ns {
+        if r.plan != *plan
+            || r.phase != phase
+            || r.round != round
+            || r.started_unix_ns != started_unix_ns
+        {
             return Err(StoreError::Invalid(format!(
-                "the run record is for plan {}, {}, started {}, not plan {plan}, {}, started \
-                 {started_unix_ns}",
+                "the run record is for plan {}, {} round {}, started {}, not plan {plan}, {} \
+                 round {round}, started {started_unix_ns}",
                 r.plan,
                 phase_name(r.phase),
+                r.round,
                 r.started_unix_ns,
                 phase_name(phase),
             )));

@@ -196,12 +196,34 @@ fn run_bounded(
     tokens: &Pool,
     sampler: &Arc<FakeSampler>,
 ) -> Run {
+    run_bounded_round(store, obs, 0, worker, options, tokens, sampler)
+}
+
+/// [`run_bounded`] at round `round`.
+fn run_bounded_round(
+    store: Store,
+    obs: &[Observer],
+    round: u64,
+    worker: &WorkerCommand,
+    options: &Options,
+    tokens: &Pool,
+    sampler: &Arc<FakeSampler>,
+) -> Run {
     let (obs, worker, options, tokens, sampler) =
         (obs.to_vec(), worker.clone(), options.clone(), tokens.clone(), Arc::clone(sampler));
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let result =
-            pool::run(&store, &PLAN, &obs, Phase::Map, 0, &worker, &options, &tokens, &*sampler);
+        let result = pool::run(
+            &store,
+            &PLAN,
+            &obs,
+            Phase::Map,
+            round,
+            &worker,
+            &options,
+            &tokens,
+            &*sampler,
+        );
         let _ = tx.send(Run { store, result });
     });
     rx.recv_timeout(DEADLINE).expect("pool::run did not return within the deadline")
@@ -232,6 +254,7 @@ fn check_run(s: &Summary, store: &Store, obs: &[Observer], jobs: usize) {
     published.validate().unwrap();
     assert_eq!(s.run.run.plan, PLAN);
     assert_eq!(s.run.run.phase, Phase::Map);
+    assert_eq!(s.run.run.round, 0);
     assert_eq!(s.run.run.tool_slip, "slip-test");
     assert!(s.run_path.starts_with(store.root().join("runs")));
     for o in obs {
@@ -678,6 +701,24 @@ fn s6_estimate_from_previous_run_record() {
         assert_eq!(records_of(&second.run, o)[0].estimate, peak + peak / 4);
     }
     assert_ne!(first.run_path, second.run_path);
+}
+
+/// `spec/model.md` §9, `spec/exec.md` §2: the run record names the round
+/// it ran, and is published under that round.
+#[test]
+fn s2_run_record_carries_its_round() {
+    let dir = scratch("round");
+    let obs = observers(&["ok"]);
+    let sampler = FakeSampler::new(Mode::Real);
+    let opts = options(1, config(0, None));
+    let r = run_bounded_round(open(&dir), &obs, 3, &fake_worker(1), &opts, &Pool::none(), &sampler);
+    let s = r.result.unwrap();
+    assert_eq!(s.run.run.round, 3);
+    let published = RunRecord::from_bytes(&fs::read(&s.run_path).unwrap()).unwrap();
+    assert_eq!(published.run.round, 3);
+    let started = published.run.started_unix_ns;
+    assert_eq!(s.run_path, r.store.run_path(&PLAN, Phase::Map, 3, started));
+    assert!(r.store.read_shard(&PLAN, Phase::Map, 3, &obs[0].id).unwrap().is_some());
 }
 
 /// §4, §6 "Caps": the worker runs under the address-space cap (twice the

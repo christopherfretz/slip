@@ -75,8 +75,8 @@ pub fn render_summary(given: &str, loaded: &Loaded) -> Result<String, String> {
         s.push('\n');
     };
     line(format!("run {}", text(given.as_bytes())));
-    line(format!("plan {}", loaded.path.plan));
-    line(format!("phase {} round {}", store::phase_name(loaded.path.phase), loaded.path.round));
+    line(format!("plan {}", run.plan));
+    line(format!("phase {} round {}", store::phase_name(run.phase), run.round));
     line(format!(
         "tool slip {} kiln {}",
         text(run.tool_slip.as_bytes()),
