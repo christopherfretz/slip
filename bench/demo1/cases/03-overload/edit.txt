@@ -1,0 +1,11 @@
+file llvm/include/llvm/ADT/StringRef.h
+replace
+      return !empty() && front() == Prefix;
+    }
+with
+      return !empty() && front() == Prefix;
+    }
+    [[nodiscard]] bool starts_with(const char *Prefix) const {
+      return starts_with(StringRef(Prefix));
+    }
+end

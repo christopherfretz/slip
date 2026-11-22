@@ -1,0 +1,12 @@
+file llvm/include/llvm/Support/Path.h
+replace
+} // end namespace sys
+with
+} // end namespace sys
+
+/// Whether \p Path begins with a separator of style \p S.
+template <typename T = void>
+bool has_root_directory(StringRef Path, sys::path::Style S) {
+  return !Path.empty() && sys::path::is_separator(Path.front(), S);
+}
+end
