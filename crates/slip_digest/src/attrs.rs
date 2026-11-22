@@ -1521,6 +1521,21 @@ mod tests {
         assert_eq!(decl_bytes(src, "c++20", "__builtin_abs"), (want, None));
     }
 
+    // §10.1 AttrKind `X86_INTERRUPT`: Kiln adds an implicit `used` with it
+    // (kiln_sema/src/imported_used.rs), so the differ pair cannot isolate
+    // the node; here the interrupt node is pinned itself.
+    #[test]
+    fn s10_1_x86_interrupt() {
+        let src = "struct F; __attribute__((interrupt)) void f(F *);";
+        let want = bytes(|s| {
+            s.count(2);
+            head(s, attr_kind::X86_INTERRUPT, GNU, &[false]);
+            head(s, attr_kind::USED, GNU, &[true]);
+            no_annotations(s);
+        });
+        assert_eq!(decl_bytes(src, "c++20", "f"), (want, None));
+    }
+
     // §10.1 `CLEANUP.a` is `unsupported`: the unit is indeterminate.
     #[test]
     fn s10_1_cleanup_is_unsupported() {
