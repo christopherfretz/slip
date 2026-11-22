@@ -4,18 +4,19 @@
 //! The generator is a fixed-seed xorshift (no dependency); a failure prints
 //! the seed and case, and `SLIP_VERIFY_SEED=<n>` reruns with another seed.
 //!
-//! §4.1 says restricting §4 to the groups `G` whose sums differ is exact.
-//! That holds when no key has a unit in a group outside `G` and no unit
-//! outside `G` is indeterminate; it does not hold otherwise (the tests at
-//! the end of this file, and `spec/landed/verify/WP-016.md` "Open
-//! questions"). The property checked is therefore: exact equality in the
-//! first case, and in every case equality on the keys that have no unit
-//! outside `G`.
+//! §4.1 says restricting §4 to the groups `G` (those whose sums differ and
+//! those with an indeterminate unit) is exact: the same findings, counts
+//! and used exemptions as over all units. That is checked on every
+//! generated pair, with no pair set aside: `compare_groups` over all groups
+//! equals `compare_groups` over the groups `at_sums` lists, field for
+//! field; and `at_sums` is `Equal` exactly when every group has the same
+//! sum in both images and none has an indeterminate unit, and then the
+//! full comparison has no finding, no count and nothing used.
 
 use std::collections::BTreeSet;
 
 use slip_model::digests::{Digests, Group, GroupClass, SCHEME, Unit, group_digest, tu_digest};
-use slip_model::verdict::{Finding, FindingKind};
+use slip_model::verdict::FindingKind;
 use slip_model::{Digest, Outcome, Phase, Shard, Status};
 use slip_verify::{AtSums, Comparison, Exemptions, at_sums, comparable, compare_groups, verdict};
 
@@ -100,21 +101,29 @@ fn base(rng: &mut Rng) -> Image {
     img
 }
 
-/// What edits were made, for the coverage counters.
+/// What edits were made and what the pairs held, for the coverage
+/// assertions: each counter is a number of pairs (`edits` and `findings`:
+/// of edits and findings).
 #[derive(Default)]
 struct Coverage {
     edits: [u64; 7],
+    /// `at_sums` was `Equal`.
     equal: u64,
-    exact: u64,
-    partial: u64,
-    divergent: u64,
-    /// Divergent with an indeterminate unit outside G, and with a key
-    /// straddling G (both can hold).
-    divergent_indeterminate: u64,
-    divergent_straddling: u64,
+    /// `Differing` with equal `tu` digests (only indeterminate groups).
+    equal_tu_differing: u64,
+    /// A key with units both in a group of `G` and in a group outside it.
+    straddling: u64,
+    /// A group with an indeterminate unit and the same sum in both images.
+    indeterminate_unchanged: u64,
     findings: [u64; 6],
     used: u64,
-    only: u64,
+    only_pre: u64,
+    only_post: u64,
+    /// A `derived_indeterminate` key the other image's `V` does not have.
+    derived_indeterminate_one_sided: u64,
+    /// A `removed` or `added` finding for a key with a unit in both images
+    /// (several units of one key, classified by the differences).
+    one_sided_kind_on_shared_key: u64,
 }
 
 fn edit(rng: &mut Rng, img: &mut Image, next_key: &mut u64, cov: &mut Coverage) {
@@ -192,6 +201,7 @@ fn digests(img: &Image) -> Digests {
                 class,
                 file,
                 count: 0,
+                indeterminate: 0,
                 digest: Digest([0; 32]),
                 units: Some(vec![unit]),
             }),
@@ -200,6 +210,7 @@ fn digests(img: &Image) -> Digests {
     for g in &mut groups {
         let units = g.units.as_ref().expect("built with units");
         g.count = units.len() as u64;
+        g.indeterminate = units.iter().filter(|u| u.is_indeterminate()).count() as u64;
         g.digest = group_digest(units);
     }
     Digests { scheme: SCHEME, tu: tu_digest(&groups), groups }
@@ -233,12 +244,7 @@ fn kind_index(kind: FindingKind) -> usize {
     }
 }
 
-fn restrict(c: &Comparison, keep: impl Fn(&Digest) -> bool) -> (Vec<Finding>, Vec<Digest>) {
-    let findings =
-        c.findings.iter().filter(|f| f.key.as_ref().is_some_and(&keep)).cloned().collect();
-    let used = c.used.iter().copied().filter(|k| keep(k)).collect();
-    (findings, used)
-}
+type Id<'a> = (GroupClass, &'a [u8]);
 
 /// The property of §4.1 for one pair; `Err` says what failed.
 fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> Result<(), String> {
@@ -262,87 +268,88 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
     };
     shard.validate()?;
     cov.used += u64::from(!full.used.is_empty());
-    cov.only += u64::from(full.only_pre + full.only_post > 0);
+    cov.only_pre += u64::from(full.only_pre > 0);
+    cov.only_post += u64::from(full.only_post > 0);
 
-    // G, computed independently of at_sums: the ids whose group differs.
-    let ids: BTreeSet<(GroupClass, &[u8])> =
-        pre.groups.iter().chain(&post.groups).map(id).collect();
-    let find = |d: &'_ Digests, i: (GroupClass, &[u8])| {
-        d.groups.iter().find(|g| id(g) == i).map(|g| (g.count, g.digest))
+    // G, computed independently of at_sums: the ids whose sum differs, a
+    // group in one image only included, and the ids with an indeterminate
+    // unit in either image.
+    let ids: BTreeSet<Id<'_>> = pre.groups.iter().chain(&post.groups).map(id).collect();
+    let find = |d: &'_ Digests, i: Id<'_>| {
+        d.groups.iter().find(|g| id(g) == i).map(|g| (g.count, g.indeterminate, g.digest))
     };
+    let flagged = |d: &'_ Digests, i: Id<'_>| find(d, i).is_some_and(|(_, n, _)| n > 0);
     let g: Vec<(GroupClass, Vec<u8>)> = ids
         .iter()
-        .filter(|&&i| find(pre, i) != find(post, i))
+        .filter(|&&i| find(pre, i) != find(post, i) || flagged(pre, i) || flagged(post, i))
         .map(|&(c, f)| (c, f.to_vec()))
         .collect();
+    cov.indeterminate_unchanged +=
+        u64::from(ids.iter().any(|&i| find(pre, i) == find(post, i) && flagged(pre, i)));
+
+    // Coverage only: derived_indeterminate keys on one side, and
+    // removed/added findings for keys both images have.
+    let keys_of = |d: &Digests, derived: bool| -> BTreeSet<Digest> {
+        d.groups
+            .iter()
+            .filter(|gr| (gr.class == GroupClass::Derived) == derived)
+            .flat_map(|gr| gr.units.as_deref().unwrap_or_default())
+            .map(|u| u.key)
+            .collect()
+    };
+    let (vp, vq) = (keys_of(pre, true), keys_of(post, true));
+    let (dp, dq) = (keys_of(pre, false), keys_of(post, false));
+    let has = |set: &BTreeSet<Digest>, k: &Option<Digest>| k.is_some_and(|k| set.contains(&k));
+    cov.derived_indeterminate_one_sided += u64::from(full.findings.iter().any(|f| {
+        f.kind == FindingKind::DerivedIndeterminate && has(&vp, &f.key) != has(&vq, &f.key)
+    }));
+    cov.one_sided_kind_on_shared_key += u64::from(full.findings.iter().any(|f| {
+        matches!(f.kind, FindingKind::Removed | FindingKind::Added)
+            && has(&dp, &f.key)
+            && has(&dq, &f.key)
+    }));
 
     match at_sums(pre, post) {
         AtSums::Equal => {
             cov.equal += 1;
-            if !g.is_empty() || pre.groups != post.groups {
-                return Err("at_sums: Equal, but groups differ".into());
+            if !g.is_empty() {
+                return Err(format!("at_sums: Equal, but G is {g:?}"));
             }
-            // Equal multisets: only step 1 and its derived counterpart can find.
-            let only_indeterminate = full.findings.iter().all(|f| match f.kind {
-                FindingKind::Indeterminate | FindingKind::DerivedIndeterminate => true,
-                FindingKind::Changed
-                | FindingKind::Removed
-                | FindingKind::Added
-                | FindingKind::DerivedChanged => false,
-            });
-            if !only_indeterminate || full.only_pre != 0 || full.only_post != 0 {
-                return Err(format!("Equal sums, but the full comparison found {full:?}"));
+            if pre.groups != post.groups {
+                return Err("at_sums: Equal, but the groups differ".into());
             }
-            if !full.used.is_empty() {
-                return Err("Equal sums, but an exemption was used".into());
+            if full != (Comparison { findings: vec![], only_pre: 0, only_post: 0, used: vec![] }) {
+                return Err(format!("at_sums: Equal, but the full comparison is {full:?}"));
             }
             Ok(())
         }
         AtSums::Differing(differing) => {
+            if g.is_empty() {
+                return Err(
+                    "at_sums: Differing, but every sum is equal and none indeterminate".into()
+                );
+            }
             if differing != g {
                 return Err(format!("at_sums: {differing:?}, expected {g:?}"));
             }
+            cov.equal_tu_differing += u64::from(pre.tu == post.tu);
             let in_g = |gr: &&Group| g.iter().any(|(c, f)| (*c, f.as_slice()) == id(gr));
             let sel_pre: Vec<&Group> = pre.groups.iter().filter(in_g).collect();
             let sel_post: Vec<&Group> = post.groups.iter().filter(in_g).collect();
             let narrow = compare_groups(&sel_pre, &sel_post, ex).map_err(|e| e.to_string())?;
 
-            // Units outside G (equal in both images).
-            let outside: Vec<&Unit> = pre
-                .groups
-                .iter()
-                .filter(|gr| !in_g(gr))
-                .flat_map(|gr| gr.units.as_deref().unwrap_or_default())
-                .collect();
-            let touched: BTreeSet<Digest> = outside.iter().map(|u| u.key).collect();
-            // The condition under which §4.1's restriction is exact: no
-            // indeterminate unit outside G, and no key with units both
-            // outside and inside G.
-            let inside_g = sel_pre
-                .iter()
-                .chain(&sel_post)
-                .flat_map(|gr| gr.units.as_deref().unwrap_or_default());
-            let straddling = inside_g.clone().any(|u| touched.contains(&u.key));
-            if outside.iter().all(|u| !u.is_indeterminate()) && !straddling {
-                cov.exact += 1;
-                if narrow != full {
-                    return Err(format!("through groups {narrow:?}\nover all units {full:?}"));
-                }
-            } else {
-                cov.partial += 1;
-                if narrow != full {
-                    cov.divergent += 1;
-                    cov.divergent_indeterminate +=
-                        u64::from(outside.iter().any(|u| u.is_indeterminate()));
-                    cov.divergent_straddling += u64::from(straddling);
-                }
-            }
-            // In every case: equal on the keys with no unit outside G.
-            let keep = |k: &Digest| !touched.contains(k);
-            if restrict(&narrow, keep) != restrict(&full, keep) {
-                return Err(format!(
-                    "on untouched keys: through groups {narrow:?}\nover all units {full:?}"
-                ));
+            let units = |groups: &mut dyn Iterator<Item = &Group>| -> BTreeSet<Digest> {
+                groups
+                    .flat_map(|gr| gr.units.as_deref().unwrap_or_default())
+                    .map(|u| u.key)
+                    .collect()
+            };
+            let outside = units(&mut pre.groups.iter().filter(|gr| !in_g(gr)));
+            let inside = units(&mut sel_pre.iter().chain(&sel_post).copied());
+            cov.straddling += u64::from(inside.intersection(&outside).next().is_some());
+
+            if narrow != full {
+                return Err(format!("through groups {narrow:?}\nover all units {full:?}"));
             }
             Ok(())
         }
@@ -379,110 +386,28 @@ fn s4_1_through_groups_equals_over_all_units() {
     }
     // The generator really exercises what the brief lists.
     let msg = format!(
-        "edits {:?}, equal {}, exact {}, partial {} (divergent {}: indeterminate outside G {}, \
-         straddling G {}), findings {:?}, used {}, one-sided derived {}",
+        "seed {seed:#x}, {CASES} pairs: edits {:?}, equal {}, equal tu but differing {}, \
+         straddling G {}, indeterminate in an unchanged group {}, findings {:?}, used {}, \
+         only_pre {}, only_post {}, one-sided derived_indeterminate {}, \
+         removed/added on a key both have {}",
         cov.edits,
         cov.equal,
-        cov.exact,
-        cov.partial,
-        cov.divergent,
-        cov.divergent_indeterminate,
-        cov.divergent_straddling,
+        cov.equal_tu_differing,
+        cov.straddling,
+        cov.indeterminate_unchanged,
         cov.findings,
         cov.used,
-        cov.only
+        cov.only_pre,
+        cov.only_post,
+        cov.derived_indeterminate_one_sided,
+        cov.one_sided_kind_on_shared_key,
     );
     eprintln!("groups.rs coverage: {msg}");
     assert!(cov.edits.iter().all(|&n| n > 500), "{msg}");
     assert!(cov.findings.iter().all(|&n| n > 50), "{msg}");
-    assert!(cov.equal > 1000 && cov.exact > 5000 && cov.used > 500 && cov.only > 200, "{msg}");
-}
-
-// ---------------------------------------------------------------------------
-// Where §4.1's exactness does not hold (open questions of
-// spec/landed/verify/WP-016.md). Each test pins what the comparison does
-// with the spec as written, so that a change of the spec shows up here.
-
-fn unit(k: u64, d: u64, flags: u64) -> Unit {
-    Unit { key: key(k), digest: dg(d), flags }
-}
-
-fn group(class: GroupClass, file: &[u8], units: &[Unit]) -> Group {
-    let mut units = units.to_vec();
-    units.sort_unstable();
-    Group {
-        class,
-        file: file.to_vec(),
-        count: units.len() as u64,
-        digest: group_digest(&units),
-        units: Some(units),
-    }
-}
-
-fn through_groups(pre: &[Group], post: &[Group], ex: &Exemptions) -> (Comparison, Comparison) {
-    let (p, q) = (
-        Digests { scheme: SCHEME, tu: tu_digest(pre), groups: pre.to_vec() },
-        Digests { scheme: SCHEME, tu: tu_digest(post), groups: post.to_vec() },
-    );
-    let AtSums::Differing(g) = at_sums(&p, &q) else { panic!("sums differ") };
-    let pick = |d: &[Group]| -> Vec<Group> {
-        d.iter()
-            .filter(|gr| g.iter().any(|(c, f)| (*c, f) == (gr.class, &gr.file)))
-            .cloned()
-            .collect()
-    };
-    let (sp, sq) = (pick(pre), pick(post));
-    let narrow =
-        compare_groups(&sp.iter().collect::<Vec<_>>(), &sq.iter().collect::<Vec<_>>(), ex).unwrap();
-    let full =
-        compare_groups(&pre.iter().collect::<Vec<_>>(), &post.iter().collect::<Vec<_>>(), ex)
-            .unwrap();
-    (narrow, full)
-}
-
-// Open question 1: an indeterminate unit in a group outside G gives a step-1
-// finding over all units, and none through groups.
-#[test]
-fn s4_1_open_indeterminate_outside_g_is_not_seen() {
-    let a = group(GroupClass::Declared, b"/a.h", &[unit(1, 1, Unit::INDETERMINATE)]);
-    let pre = [a.clone(), group(GroupClass::Declared, b"/b.h", &[unit(2, 1, 0)])];
-    let post = [a, group(GroupClass::Declared, b"/b.h", &[unit(2, 2, 0)])];
-    let (narrow, full) = through_groups(&pre, &post, &Exemptions::none());
-    assert_eq!(narrow.findings.len(), 1);
-    assert_eq!(narrow.findings[0].kind, FindingKind::Changed);
-    assert_eq!(full.findings.len(), 2);
-    assert_eq!(full.findings[1].kind, FindingKind::Indeterminate);
-}
-
-// Open question 2: a content-keyed unit in two files, one copy removed:
-// `changed` (2 against 1) over all units, `removed` through groups, so a
-// `removed` exemption prevents it only through groups.
-#[test]
-fn s4_1_open_content_keyed_copy_removed_changes_kind() {
-    let a = group(GroupClass::Declared, b"/a.h", &[unit(1, 1, 0)]);
-    let pre = [a.clone(), group(GroupClass::Declared, b"/b.h", &[unit(1, 1, 0), unit(2, 2, 0)])];
-    let post = [a, group(GroupClass::Declared, b"/b.h", &[unit(2, 2, 0)])];
-    let removed = Exemptions::new(vec![], vec![], vec![key(1)]).unwrap();
-    let (narrow, full) = through_groups(&pre, &post, &removed);
-    assert!(narrow.findings.is_empty());
-    assert_eq!(narrow.used, vec![key(1)]);
-    assert_eq!(full.findings.len(), 1);
-    assert_eq!(full.findings[0].kind, FindingKind::Changed);
-    assert!(full.used.is_empty());
-}
-
-// Open question 3: a derived key with a unit outside G and one inside G on
-// one side only: `derived_changed` over all units, a one-sided count
-// through groups.
-#[test]
-fn s4_1_open_derived_key_partly_outside_g_is_counted() {
-    let a = group(GroupClass::Derived, b"/a.h", &[unit(1, 1, 0)]);
-    let pre = [a.clone(), group(GroupClass::Derived, b"/b.h", &[unit(1, 1, 0)])];
-    let post = [a, group(GroupClass::Derived, b"/b.h", &[unit(2, 2, 0)])];
-    let (narrow, full) = through_groups(&pre, &post, &Exemptions::none());
-    assert!(narrow.findings.is_empty());
-    assert_eq!((narrow.only_pre, narrow.only_post), (1, 1));
-    assert_eq!(full.findings.len(), 1);
-    assert_eq!(full.findings[0].kind, FindingKind::DerivedChanged);
-    assert_eq!((full.only_pre, full.only_post), (0, 1));
+    assert!(cov.equal > 1000 && cov.used > 500, "{msg}");
+    assert!(cov.only_pre > 200 && cov.only_post > 200, "{msg}");
+    assert!(cov.straddling > 200 && cov.indeterminate_unchanged > 200, "{msg}");
+    assert!(cov.equal_tu_differing > 20 && cov.derived_indeterminate_one_sided > 20, "{msg}");
+    assert!(cov.one_sided_kind_on_shared_key > 20, "{msg}");
 }

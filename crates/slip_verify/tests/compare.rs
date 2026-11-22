@@ -1,6 +1,6 @@
-//! `spec/verify.md` §3, §4 and §6 over unit lists written by hand, plus the
-//! rules of `spec/landed/verify/WP-016.md`. Each test names the step it
-//! covers.
+//! `spec/verify.md` §3, §4, §4.1 and §6 over unit lists written by hand,
+//! plus the rules of `spec/landed/verify/WP-016.md`. Each test names the
+//! step or sentence it covers.
 
 use slip_model::digests::{Digests, Group, GroupClass, SCHEME, Unit, group_digest, tu_digest};
 use slip_model::verdict::{Finding, FindingKind, Verdict, VerdictKind};
@@ -8,7 +8,7 @@ use slip_model::{Digest, Outcome, Phase, Shard, Status};
 use slip_verify::compare::{NO_REASON, REASON_MAX};
 use slip_verify::{
     AtSums, CompareError, Comparison, Exemptions, at_sums, comparable, compare_groups,
-    unverifiable, verdict, verdict_at_sums,
+    unverifiable, verdict, verified,
 };
 
 use FindingKind::{Added, Changed, DerivedChanged, DerivedIndeterminate, Indeterminate, Removed};
@@ -48,6 +48,7 @@ fn group(class: GroupClass, file: &str, units: &[Unit]) -> Group {
         class,
         file: file.as_bytes().to_vec(),
         count: units.len() as u64,
+        indeterminate: units.iter().filter(|u| u.is_indeterminate()).count() as u64,
         digest: group_digest(&units),
         units: Some(units),
     }
@@ -246,25 +247,27 @@ fn s4_2_unneeded_exemptions_are_not_used() {
 // ---------------------------------------------------------------------------
 // §4 step 1: indeterminate
 
-type Case = (Vec<Unit>, Vec<Unit>, Option<u8>, Option<u8>);
+type Case = (Vec<Unit>, Vec<Unit>, &'static str, Option<u8>, Option<u8>);
 
 // §4 step 1: an indeterminate unit in the pre-image only, the post-image
-// only, and both; never prevented by any exemption, never `used`.
+// only, and both; never prevented by any exemption, never `used`. §6:
+// `pre`/`post` are the digest of the key's indeterminate unit in that
+// image, absent where the image has none; `file` is that of the first
+// group holding an indeterminate unit, pre-image first.
 #[test]
 fn s4_1_indeterminate_on_either_side_is_never_exempt() {
     let all = ex(&[1], &[1], &[1]);
-    // (pre units, post units, expected pre digest, expected post digest)
+    // (pre units, post units, expected file, pre digest, post digest)
     let cases: [Case; 7] = [
-        (vec![ui(1, 1)], vec![u(1, 1)], Some(1), Some(1)), // pre only, same digest
-        (vec![u(1, 1)], vec![ui(1, 1)], Some(1), Some(1)), // post only
-        (vec![ui(1, 1)], vec![ui(1, 1)], Some(1), Some(1)), // both, equal
-        (vec![ui(1, 1)], vec![ui(1, 2)], Some(1), Some(2)), // both, different
-        (vec![ui(1, 1)], vec![], Some(1), None),           // pre only, absent after
-        (vec![], vec![ui(1, 1)], None, Some(1)),           // post only, absent before
-        (vec![ui(1, 1), u(1, 2)], vec![u(1, 2)], None, Some(2)), // one of two units
+        (vec![ui(1, 1)], vec![u(1, 1)], "/p.h", Some(1), None), // pre only, same digest
+        (vec![u(1, 1)], vec![ui(1, 1)], "/q.h", None, Some(1)), // post only
+        (vec![ui(1, 1)], vec![ui(1, 1)], "/p.h", Some(1), Some(1)), // both, equal
+        (vec![ui(1, 1)], vec![ui(1, 2)], "/p.h", Some(1), Some(2)), // both, different
+        (vec![ui(1, 1)], vec![], "/p.h", Some(1), None),        // pre only, absent after
+        (vec![], vec![ui(1, 1)], "/q.h", None, Some(1)),        // post only, absent before
+        (vec![ui(1, 1), u(1, 2)], vec![u(1, 2)], "/p.h", Some(1), None), // one of two units
     ];
-    for (n, (p, q, dp, dq)) in cases.into_iter().enumerate() {
-        let file = if p.is_empty() { "/q.h" } else { "/p.h" };
+    for (n, (p, q, file, dp, dq)) in cases.into_iter().enumerate() {
         let pre = [decl("/p.h", &p), decl("/x.h", &[u(7, 7)])];
         let post = [decl("/q.h", &q), decl("/x.h", &[u(7, 7)])];
         let found = only(vec![f(Indeterminate, 1, file, dp, dq)]);
@@ -280,7 +283,8 @@ fn s4_1_one_indeterminate_finding_per_key() {
     let pre = [decl("/a.h", &[ui(1, 1), ui(1, 2)]), decl("/b.h", &[ui(1, 1)])];
     let post = [decl("/a.h", &[u(1, 3)])];
     let c = plain(&pre, &post);
-    assert_eq!(c.findings, vec![f(Indeterminate, 1, "/a.h", None, Some(3))]);
+    // §6: three indeterminate occurrences before, none after: no digest.
+    assert_eq!(c.findings, vec![f(Indeterminate, 1, "/a.h", None, None)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,29 +298,69 @@ fn s3_multiplicity_two_against_two() {
     assert_eq!(plain(&pre, &post), none());
 }
 
-// §3 multiplicity: 2 against 1 differs (`changed`), and `pre`/`post` is
-// absent on the side with more than one unit (§6).
+// §4 step 2 on differences: two equal copies against one is `removed`
+// (R = {d1}, A = {}), and the `removed` exemption prevents it, the
+// `changed` one does not. §6: `pre` is the one element of R, and `file`
+// the first group that differs (/a.h: /b.h is the same in both).
 #[test]
-fn s3_multiplicity_two_against_one() {
+fn s4_2_two_equal_copies_against_one_is_removed() {
     let pre = [decl("/a.h", &[u(1, 1)]), decl("/b.h", &[u(1, 1)])];
     let post = [decl("/b.h", &[u(1, 1)])];
-    assert_eq!(plain(&pre, &post), only(vec![f(Changed, 1, "/a.h", None, Some(1))]));
-    assert_eq!(plain(&post, &pre), only(vec![f(Changed, 1, "/b.h", Some(1), None)]));
-    // Within the rule of step 2: `changed` prevents it.
-    assert_eq!(run(&pre, &post, &ex(&[1], &[], &[])), used(&[1]));
+    let found = only(vec![f(Removed, 1, "/a.h", Some(1), None)]);
+    assert_eq!(plain(&pre, &post), found);
+    assert_eq!(run(&pre, &post, &ex(&[], &[], &[1])), used(&[1]));
+    assert_eq!(run(&pre, &post, &ex(&[1], &[1], &[])), found, "changed/created do not prevent");
+}
+
+// §4 step 2 on differences: one copy against two is `added` (R = {},
+// A = {d1}), prevented by `created` only. §6: the pre-image has no group
+// that differs holding the key, so `file` is the post-image's (/a.h).
+#[test]
+fn s4_2_one_copy_against_two_is_added() {
+    let pre = [decl("/b.h", &[u(1, 1)])];
+    let post = [decl("/a.h", &[u(1, 1)]), decl("/b.h", &[u(1, 1)])];
+    let found = only(vec![f(Added, 1, "/a.h", None, Some(1))]);
+    assert_eq!(plain(&pre, &post), found);
+    assert_eq!(run(&pre, &post, &ex(&[], &[1], &[])), used(&[1]));
+    assert_eq!(run(&pre, &post, &ex(&[1], &[], &[1])), found, "changed/removed do not prevent");
+}
+
+// §4 step 2, §6: `{d1, d2}` against `{d1}` is `removed` with `pre = d2`.
+#[test]
+fn s4_2_two_digests_against_one_is_removed_with_pre_the_difference() {
+    let pre = [tu(&[u(1, 1), u(1, 2)])];
+    let post = [tu(&[u(1, 1)])];
+    assert_eq!(plain(&pre, &post), only(vec![f(Removed, 1, "", Some(2), None)]));
+    assert_eq!(plain(&post, &pre), only(vec![f(Added, 1, "", None, Some(2))]));
+}
+
+// §4 step 2, §6: `{d1}` against `{d2, d3}` is `changed` with `pre = d1` and
+// `post` absent (A has two elements).
+#[test]
+fn s4_2_one_digest_against_two_others_is_changed_with_post_absent() {
+    let pre = [tu(&[u(1, 1)])];
+    let post = [tu(&[u(1, 2), u(1, 3)])];
+    assert_eq!(plain(&pre, &post), only(vec![f(Changed, 1, "", Some(1), None)]));
+    assert_eq!(plain(&post, &pre), only(vec![f(Changed, 1, "", None, Some(1))]));
+    // R(k) counts multiplicity: two equal copies removed is not one element.
+    let pre = [decl("/a.h", &[u(1, 1)]), decl("/b.h", &[u(1, 1)])];
+    let post = [decl("/a.h", &[u(1, 2)])];
+    assert_eq!(plain(&pre, &post), only(vec![f(Changed, 1, "/a.h", None, Some(2))]));
 }
 
 // §4 step 2: two different units of one key on one side (merged
-// namespaces that are not the same).
+// namespaces that are not the same), classified by the differences.
 #[test]
 fn s4_2_two_units_of_one_key() {
     let two = [tu(&[u(1, 1), u(1, 2)])];
     assert_eq!(plain(&two, &two), none());
     let one = [tu(&[u(1, 1)])];
-    assert_eq!(plain(&one, &two), only(vec![f(Changed, 1, "", Some(1), None)]));
-    assert_eq!(plain(&two, &one), only(vec![f(Changed, 1, "", None, Some(1))]));
+    assert_eq!(plain(&one, &two), only(vec![f(Added, 1, "", None, Some(2))]));
+    assert_eq!(plain(&two, &one), only(vec![f(Removed, 1, "", Some(2), None)]));
     let other = [tu(&[u(1, 1), u(1, 3)])];
-    assert_eq!(plain(&two, &other), only(vec![f(Changed, 1, "", None, None)]));
+    assert_eq!(plain(&two, &other), only(vec![f(Changed, 1, "", Some(2), Some(3))]));
+    let neither = [tu(&[u(1, 3), u(1, 4)])];
+    assert_eq!(plain(&two, &neither), only(vec![f(Changed, 1, "", None, None)]));
 }
 
 // §4.1, last paragraph of §4.1: a declared unit that moved between groups
@@ -361,42 +405,72 @@ fn s4_3_derived_both_different() {
     let found = only(vec![f(DerivedChanged, 1, "/a.h", Some(1), Some(2))]);
     assert_eq!(plain(&pre, &post), found);
     assert_eq!(run(&pre, &post, &ex(&[1], &[1], &[1])), found);
-    // Multiplicity counts for derived units too.
+    // Multiplicity counts for derived units too, on the differences: two
+    // equal copies against one is R = {d1}, A = {}, a one-sided count.
     let pre = [deriv("/a.h", &[u(1, 1)]), deriv("/b.h", &[u(1, 1)])];
     let post = [deriv("/a.h", &[u(1, 1)])];
-    assert_eq!(plain(&pre, &post), only(vec![f(DerivedChanged, 1, "/a.h", None, Some(1))]));
+    assert_eq!(plain(&pre, &post), Comparison { only_pre: 1, ..none() });
+    assert_eq!(plain(&post, &pre), Comparison { only_post: 1, ..none() });
+    // And two copies against one other digest is `derived_changed`.
+    let post = [deriv("/a.h", &[u(1, 2)])];
+    assert_eq!(plain(&pre, &post), only(vec![f(DerivedChanged, 1, "/a.h", None, Some(2))]));
 }
 
 // §4 step 3: both, one indeterminate, is `derived_indeterminate` (whether
-// or not the digests differ), which no exemption prevents.
+// or not the digests differ), which no exemption prevents. §6: `pre`/`post`
+// from the indeterminate unit of that image only.
 #[test]
 fn s4_3_derived_both_one_indeterminate() {
-    for (p, q) in [(ui(1, 1), u(1, 1)), (u(1, 1), ui(1, 2)), (ui(1, 1), ui(1, 1))] {
+    let cases = [
+        (ui(1, 1), u(1, 1), Some(1), None),
+        (u(1, 1), ui(1, 2), None, Some(2)),
+        (ui(1, 1), ui(1, 1), Some(1), Some(1)),
+    ];
+    for (p, q, dp, dq) in cases {
         let pre = [deriv("/a.h", &[p])];
         let post = [deriv("/a.h", &[q])];
-        let found = only(vec![f(
-            DerivedIndeterminate,
-            1,
-            "/a.h",
-            Some(p.digest.0[1]),
-            Some(q.digest.0[1]),
-        )]);
+        let found = only(vec![f(DerivedIndeterminate, 1, "/a.h", dp, dq)]);
         assert_eq!(plain(&pre, &post), found);
         assert_eq!(run(&pre, &post, &ex(&[1], &[1], &[1])), found);
     }
 }
 
-// §4 step 3: a derived key on one side only is counted, not a finding;
-// also when it is indeterminate.
+// §4 step 3: a derived key on one side only is counted, not a finding.
 #[test]
 fn s4_3_derived_one_side_only_is_counted() {
-    let pre = [deriv("/a.h", &[u(1, 1), u(2, 2), ui(3, 3), u(5, 5)])];
-    let post = [deriv("/a.h", &[u(2, 2), ui(4, 4), u(5, 5)]), deriv("/b.h", &[u(6, 6)])];
+    let pre = [deriv("/a.h", &[u(1, 1), u(2, 2), u(3, 3), u(5, 5)])];
+    let post = [deriv("/a.h", &[u(2, 2), u(5, 5)]), deriv("/b.h", &[u(4, 4), u(6, 6)])];
     let c = plain(&pre, &post);
     assert_eq!(c, Comparison { only_pre: 2, only_post: 2, ..none() });
     // Counted per key, not per unit.
     let pre = [deriv("/a.h", &[u(1, 1), u(1, 2)]), deriv("/b.h", &[u(1, 1)])];
     assert_eq!(plain(&pre, &[]), Comparison { only_pre: 1, ..none() });
+    assert_eq!(plain(&[], &pre), Comparison { only_post: 1, ..none() });
+}
+
+// §4 step 3: "every key that has a unit with the indeterminate flag in Vp
+// or in Vq is one finding derived_indeterminate": also when the other image
+// does not have the key, and then it is not counted in only_pre/only_post.
+#[test]
+fn s4_3_derived_indeterminate_on_one_side_only_is_a_finding_not_counted() {
+    let pre = [deriv("/a.h", &[u(1, 1), ui(3, 3)])];
+    let post = [deriv("/b.h", &[ui(4, 4), u(6, 6)])];
+    assert_eq!(
+        plain(&pre, &post),
+        Comparison {
+            findings: vec![
+                f(DerivedIndeterminate, 3, "/a.h", Some(3), None),
+                f(DerivedIndeterminate, 4, "/b.h", None, Some(4)),
+            ],
+            only_pre: 1,
+            only_post: 1,
+            used: vec![],
+        }
+    );
+    // No exemption prevents it.
+    let c = run(&pre, &post, &ex(&[3, 4], &[3, 4], &[3, 4]));
+    assert_eq!(c.findings.len(), 2);
+    assert!(c.used.is_empty());
 }
 
 // §4 steps 2 and 3: a key declared in one image and derived in the other
@@ -438,8 +512,9 @@ fn s4_declared_and_derived_of_one_key_are_compared_separately() {
 // ---------------------------------------------------------------------------
 // §6: file of a finding, order of findings
 
-// WP-016 brief: the file is the smallest pre-image group's that holds the
-// key, else the smallest post-image group's.
+// §6 `file`: the first group, in (class, file) order, among the groups
+// that differ, holding a unit of the key in the pre-image; else in the
+// post-image.
 #[test]
 fn s6_file_of_a_finding() {
     let pre = [decl("/b.h", &[u(1, 1)]), decl("/c.h", &[u(1, 1)])];
@@ -447,6 +522,82 @@ fn s6_file_of_a_finding() {
     assert_eq!(plain(&pre, &post).findings[0].file, b"/b.h");
     let post = [decl("/z.h", &[u(1, 2)]), decl("/y.h", &[u(1, 2)])];
     assert_eq!(plain(&[], &post).findings[0].file, b"/y.h");
+    // By class first: a declared group comes before the `tu` group, whose
+    // file is empty.
+    let pre = [decl("/z.h", &[u(1, 1)]), tu(&[u(1, 1)])];
+    let post = [decl("/z.h", &[u(1, 2)]), tu(&[u(1, 2)])];
+    assert_eq!(plain(&pre, &post), only(vec![f(Changed, 1, "/z.h", None, None)]));
+}
+
+// §6 `file`: a key with a unit in a group that differs and one in a group
+// that does not: the group that differs, although the other comes first.
+#[test]
+fn s6_file_skips_a_group_that_does_not_differ() {
+    let pre = [decl("/a.h", &[u(1, 1)]), decl("/b.h", &[u(1, 1), u(2, 2)])];
+    let post = [decl("/a.h", &[u(1, 1)]), decl("/b.h", &[u(1, 2), u(2, 2)])];
+    assert_eq!(plain(&pre, &post), only(vec![f(Changed, 1, "/b.h", Some(1), Some(2))]));
+    // The same with the derived class.
+    let pre = [deriv("/a.h", &[u(1, 1)]), deriv("/b.h", &[u(1, 1), u(2, 2)])];
+    let post = [deriv("/a.h", &[u(1, 1)]), deriv("/b.h", &[u(1, 2), u(2, 2)])];
+    assert_eq!(plain(&pre, &post), only(vec![f(DerivedChanged, 1, "/b.h", Some(1), Some(2))]));
+}
+
+// §6 `file`: a moved unit beside a real difference. Key 3 moved from /c.h
+// to /a.h (no finding of its own) and so /a.h differs; key 1's copy in
+// /b.h changed, its copy in /a.h did not. The first group that differs and
+// holds key 1 in the pre-image is /a.h, which is what is reported.
+#[test]
+fn s6_file_with_a_moved_unit_beside_a_real_difference() {
+    let pre = [
+        decl("/a.h", &[u(1, 1)]),
+        decl("/b.h", &[u(1, 1), u(2, 2)]),
+        decl("/c.h", &[u(3, 3), u(4, 4)]),
+    ];
+    let post = [
+        decl("/a.h", &[u(1, 1), u(3, 3)]),
+        decl("/b.h", &[u(1, 2), u(2, 2)]),
+        decl("/c.h", &[u(4, 4)]),
+    ];
+    assert_eq!(plain(&pre, &post), only(vec![f(Changed, 1, "/a.h", Some(1), Some(2))]));
+    // A group whose units differ only in a flag differs too (§6: "units",
+    // flags included): key 2 became indeterminate in /a.h, so /a.h is
+    // reported for key 1 although key 1's copy there did not change.
+    let pre2 = [decl("/a.h", &[u(1, 1), u(2, 2)]), decl("/b.h", &[u(1, 1)])];
+    let post2 = [decl("/a.h", &[u(1, 1), ui(2, 2)]), decl("/b.h", &[u(1, 3)])];
+    assert_eq!(
+        plain(&pre2, &post2),
+        only(vec![
+            f(Changed, 1, "/a.h", Some(1), Some(3)),
+            f(Indeterminate, 2, "/a.h", None, Some(2)),
+        ])
+    );
+    // Without the move, /a.h does not differ and /b.h is reported.
+    let post = [decl("/a.h", &[u(1, 1)]), decl("/b.h", &[u(1, 2), u(2, 2)]), pre[2].clone()];
+    assert_eq!(plain(&pre, &post), only(vec![f(Changed, 1, "/b.h", Some(1), Some(2))]));
+}
+
+// §6 `file` for an indeterminate key: the first group holding an
+// indeterminate unit of the key, in the pre-image if it has one, whether
+// or not that group differs.
+#[test]
+fn s6_file_of_an_indeterminate_key() {
+    let a = decl("/a.h", &[u(1, 1)]);
+    let b = decl("/b.h", &[ui(1, 2)]);
+    let same = [a.clone(), b.clone()];
+    assert_eq!(plain(&same, &same), only(vec![f(Indeterminate, 1, "/b.h", Some(2), Some(2))]));
+    // Not in the pre-image: the post-image's.
+    let post = [a.clone(), decl("/c.h", &[ui(1, 3)])];
+    assert_eq!(
+        plain(std::slice::from_ref(&a), &post),
+        only(vec![f(Indeterminate, 1, "/c.h", None, Some(3))])
+    );
+    // Pre-image first, even when the post-image's group comes first.
+    let pre = [a.clone(), decl("/c.h", &[ui(1, 3)])];
+    let post = [decl("/a.h", &[ui(1, 1)])];
+    assert_eq!(plain(&pre, &post), only(vec![f(Indeterminate, 1, "/c.h", Some(3), Some(1))]));
+    // Derived.
+    let pre = [deriv("/a.h", &[u(1, 1)]), deriv("/b.h", &[ui(1, 2)])];
+    assert_eq!(plain(&pre, &pre), only(vec![f(DerivedIndeterminate, 1, "/b.h", Some(2), Some(2))]));
 }
 
 // §6: findings ordered by kind, then file, then key.
@@ -528,29 +679,17 @@ fn s6_verdict_verified() {
     assert_eq!(v.used, vec![key(1)]);
 }
 
-// §4.1 step 1: equal sums with `digest.indeterminate` 0 is `verified`;
-// otherwise that many unnamed `indeterminate` findings, cut to `limit`.
+// §4.1 step 1: `verified` replaces the verdict at the sums: no finding,
+// no count, nothing used.
 #[test]
-fn s4_1_verdict_at_sums() {
-    let v = verdict_at_sums(0, dg(100), dg(101), 64);
+fn s4_1_verified() {
+    let v = verified(dg(100), dg(101));
     check_valid(&v);
     assert_eq!(v.kind, VerdictKind::Verified);
     assert_eq!((v.pre, v.rules), (dg(100), dg(101)));
-    for (n, limit, shown) in
-        [(1u64, 64usize, 1usize), (3, 64, 3), (3, 3, 3), (3, 2, 2), (u64::MAX, 64, 64)]
-    {
-        let v = verdict_at_sums(n, dg(100), dg(101), limit);
-        check_valid(&v);
-        assert_eq!(v.kind, VerdictKind::Mismatch);
-        assert_eq!(v.total, n);
-        assert_eq!(v.findings.len(), shown);
-        assert!(v.used.is_empty() && v.only_pre == 0 && v.only_post == 0);
-        for x in &v.findings {
-            assert_eq!(x.kind, Indeterminate);
-            assert_eq!((x.key, x.pre, x.post), (None, None, None));
-            assert!(x.file.is_empty() && x.name.is_empty() && x.location.is_none());
-        }
-    }
+    assert_eq!((v.only_pre, v.only_post, v.total), (0, 0, 0));
+    assert!(v.used.is_empty() && v.findings.is_empty() && v.reason.is_empty());
+    assert_eq!(v, verdict(none(), dg(100), dg(101), 64));
 }
 
 // §6 `unverifiable`: reason kept, cut to 4096 bytes at a character
@@ -626,6 +765,25 @@ fn landed_malformed_groups_are_rejected() {
         class: Declared,
         file,
         post,
+    });
+    // WP-017: `indeterminate` is the number of flagged units; checked after
+    // `count` and before `digest`.
+    check(Group { indeterminate: 1, ..good.clone() }, |file, post| {
+        CompareError::IndeterminateMismatch { class: Declared, file, post }
+    });
+    let flagged = decl("/a.h", &[u(1, 1), ui(2, 2)]);
+    assert_eq!(flagged.indeterminate, 1);
+    check(Group { indeterminate: 0, ..flagged.clone() }, |file, post| {
+        CompareError::IndeterminateMismatch { class: Declared, file, post }
+    });
+    check(Group { indeterminate: 2, ..flagged.clone() }, |file, post| {
+        CompareError::IndeterminateMismatch { class: Declared, file, post }
+    });
+    check(Group { count: 3, indeterminate: 0, ..flagged.clone() }, |file, post| {
+        CompareError::CountMismatch { class: Declared, file, post }
+    });
+    check(Group { indeterminate: 0, digest: dg(0), ..flagged.clone() }, |file, post| {
+        CompareError::IndeterminateMismatch { class: Declared, file, post }
     });
     check(Group { digest: dg(0), ..good.clone() }, |file, post| CompareError::DigestMismatch {
         class: Declared,
@@ -710,8 +868,81 @@ fn s4_1_at_sums() {
     // A group whose count differs but whose digest is the same still differs.
     let g = decl("/a.h", &[u(1, 1)]);
     let p = digests(vec![g.clone()]);
-    let q = digests(vec![Group { count: 2, ..g }]);
+    let q = digests(vec![Group { count: 2, ..g.clone() }]);
     assert_eq!(at_sums(&p, &q), AtSums::Differing(vec![(Declared, b"/a.h".to_vec())]));
+    // Likewise `indeterminate` (§4.1: the sum is count, indeterminate, digest).
+    let q = digests(vec![Group { indeterminate: 1, ..g }]);
+    assert_eq!(at_sums(&p, &q), AtSums::Differing(vec![(Declared, b"/a.h".to_vec())]));
+}
+
+// §4.1 step 1: equal `tu` digests with an indeterminate unit are not
+// `Equal`: `Differing` names every group with an indeterminate unit, and
+// only those.
+#[test]
+fn s4_1_at_sums_equal_tu_with_an_indeterminate_unit() {
+    let pre = digests(vec![
+        decl("/a.h", &[u(1, 1)]),
+        decl("/b.h", &[u(2, 2), ui(3, 3)]),
+        deriv("/a.h", &[ui(4, 4)]),
+        tu(&[u(5, 5)]),
+    ]);
+    assert_eq!(
+        at_sums(&pre, &pre),
+        AtSums::Differing(vec![(Declared, b"/b.h".to_vec()), (Derived, b"/a.h".to_vec())])
+    );
+    // And the comparison over those groups reports both keys.
+    let AtSums::Differing(g) = at_sums(&pre, &pre) else { unreachable!() };
+    let sel: Vec<&Group> = pre
+        .groups
+        .iter()
+        .filter(|x| g.iter().any(|(c, f)| (*c, f.as_slice()) == (x.class, x.file.as_slice())))
+        .collect();
+    let c = compare_groups(&sel, &sel, &Exemptions::none()).unwrap();
+    assert_eq!(
+        c.findings,
+        vec![
+            f(Indeterminate, 3, "/b.h", Some(3), Some(3)),
+            f(DerivedIndeterminate, 4, "/a.h", Some(4), Some(4)),
+        ]
+    );
+    // Different tu digests: the differing groups and the indeterminate ones,
+    // on either side.
+    let post = digests(vec![
+        decl("/a.h", &[u(1, 9)]),
+        decl("/b.h", &[u(2, 2), u(3, 3)]),
+        deriv("/a.h", &[u(4, 4)]),
+        deriv("/z.h", &[u(6, 6)]),
+        tu(&[u(5, 5)]),
+    ]);
+    assert_eq!(
+        at_sums(&pre, &post),
+        AtSums::Differing(vec![
+            (Declared, b"/a.h".to_vec()),
+            (Declared, b"/b.h".to_vec()),
+            (Derived, b"/a.h".to_vec()),
+            (Derived, b"/z.h".to_vec()),
+        ])
+    );
+    // An indeterminate unit in the post-image only, in a group otherwise
+    // the same.
+    let p = digests(vec![decl("/a.h", &[u(1, 1)]), decl("/b.h", &[u(2, 2)])]);
+    let q = digests(vec![
+        decl("/a.h", &[u(1, 1)]),
+        decl("/b.h", &[u(2, 2)]),
+        deriv("/c.h", &[ui(3, 3)]),
+    ]);
+    assert_eq!(at_sums(&p, &q), AtSums::Differing(vec![(Derived, b"/c.h".to_vec())]));
+    let q = digests(vec![decl("/a.h", &[ui(1, 1)]), decl("/b.h", &[u(2, 2)])]);
+    assert_eq!(at_sums(&p, &q), AtSums::Differing(vec![(Declared, b"/a.h".to_vec())]));
+    // at_sums states no precondition: `Equal` needs every `indeterminate` of
+    // *both* images to be 0, read from the groups, even when the `tu`
+    // digests given are equal (here forged equal).
+    let forged = Digests { tu: p.tu, ..q.clone() };
+    assert_eq!(at_sums(&p, &forged), AtSums::Differing(vec![(Declared, b"/a.h".to_vec())]));
+    assert_eq!(
+        at_sums(&Digests { tu: q.tu, ..p.clone() }, &q),
+        AtSums::Differing(vec![(Declared, b"/a.h".to_vec())])
+    );
 }
 
 // Landed: at_sums does not rely on sorted groups, and reports an id given

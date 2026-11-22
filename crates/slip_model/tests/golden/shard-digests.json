@@ -21,12 +21,13 @@
     ],
     "digests": {
       "scheme": 1,
-      "tu": "85867e7eb9a1593245f8bd4a20241f0b1ef688d8a9e7642c473518b7178ef685",
+      "tu": "8ce2bbe9792bff3bfd8902d2ef50daaf4db1fbac564d05c70e26959a3cf88ec4",
       "groups": [
         {
           "class": "declared",
           "file": "/a",
           "count": 2,
+          "indeterminate": 1,
           "digest": "db3248c61386d5aa2e494aa55c9b780e301275eacc26c569cfd147b39300323d",
           "units": [
             {
@@ -45,6 +46,7 @@
           "class": "derived",
           "file": "",
           "count": 1,
+          "indeterminate": 0,
           "digest": "6666666666666666666666666666666666666666666666666666666666666666",
           "units": null
         },
@@ -52,6 +54,7 @@
           "class": "tu",
           "file": "",
           "count": 1,
+          "indeterminate": 0,
           "digest": "5555555555555555555555555555555555555555555555555555555555555555",
           "units": null
         }

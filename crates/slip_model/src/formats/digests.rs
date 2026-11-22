@@ -38,6 +38,7 @@ pub(super) enum Loc {
     Group(usize),
     GroupFile(usize),
     GroupCount(usize),
+    GroupIndeterminate(usize),
     GroupDigest(usize),
     Units(usize),
     Unit(usize, usize),
@@ -54,6 +55,7 @@ impl Loc {
             Loc::Group(i) => format!("{S}.groups[{i}]"),
             Loc::GroupFile(i) => format!("{S}.groups[{i}].file"),
             Loc::GroupCount(i) => format!("{S}.groups[{i}].count"),
+            Loc::GroupIndeterminate(i) => format!("{S}.groups[{i}].indeterminate"),
             Loc::GroupDigest(i) => format!("{S}.groups[{i}].digest"),
             Loc::Units(i) => format!("{S}.groups[{i}].units"),
             Loc::Unit(i, j) => format!("{S}.groups[{i}].units[{j}]"),
@@ -83,22 +85,32 @@ pub(super) fn violation(d: &Digests, status_ok: bool) -> Option<(Loc, &'static s
     }
     // 4.
     for (i, g) in groups.iter().enumerate() {
-        match g.class {
-            GroupClass::Tu if !g.file.is_empty() => {
-                return Some((Loc::GroupFile(i), "a tu group has a non-empty file"));
+        let bad = match g.class {
+            GroupClass::Tu => (!g.file.is_empty()).then_some("a tu group has a non-empty file"),
+            GroupClass::Declared => {
+                g.file.is_empty().then_some("a declared group has an empty file")
             }
-            GroupClass::Declared if g.file.is_empty() => {
-                return Some((Loc::GroupFile(i), "a declared group has an empty file"));
-            }
-            _ => {}
+            // Builtins have the empty path; any file is allowed.
+            GroupClass::Derived => None,
+        };
+        if let Some(what) = bad {
+            return Some((Loc::GroupFile(i), what));
         }
     }
-    // 5.
+    // 5a.
     if let Some(i) = groups.iter().position(|g| g.count == 0) {
         return Some((Loc::GroupCount(i), "a group has a count of 0"));
     }
-    // 6, each part over every group with a unit list.
+    // 5b.
+    if let Some(i) = groups.iter().position(|g| g.indeterminate > g.count) {
+        return Some((
+            Loc::GroupIndeterminate(i),
+            "a group has more indeterminate units than units",
+        ));
+    }
+    // 6a-6e, each part over every group with a unit list.
     let listed = || groups.iter().enumerate().filter_map(|(i, g)| Some((i, g, g.units.as_ref()?)));
+    // 6a.
     for (i, _, units) in listed() {
         if let Some(j) = (1..units.len())
             .find(|&j| (units[j - 1].key, units[j - 1].digest) >= (units[j].key, units[j].digest))
@@ -106,16 +118,29 @@ pub(super) fn violation(d: &Digests, status_ok: bool) -> Option<(Loc, &'static s
             return Some((Loc::Unit(i, j), "units are not strictly ascending by (key, digest)"));
         }
     }
+    // 6b.
     for (i, g, units) in listed() {
         if units.len() as u64 != g.count {
             return Some((Loc::Units(i), "the number of units is not the group's count"));
         }
     }
+    // 6c.
     for (i, _, units) in listed() {
         if let Some(j) = units.iter().position(|u| u.flags & !Unit::INDETERMINATE != 0) {
             return Some((Loc::UnitFlags(i, j), "unit flags have a bit other than bit 0 set"));
         }
     }
+    // 6d.
+    for (i, g, units) in listed() {
+        let flagged = units.iter().filter(|u| u.is_indeterminate()).count();
+        if u64::try_from(flagged).ok() != Some(g.indeterminate) {
+            return Some((
+                Loc::GroupIndeterminate(i),
+                "indeterminate is not the number of the group's units with the flag",
+            ));
+        }
+    }
+    // 6e.
     for (i, g, units) in listed() {
         if g.digest != group_digest(units) {
             return Some((Loc::GroupDigest(i), "the group's digest is not that of its units"));
@@ -135,7 +160,7 @@ pub(super) fn encode(e: &mut Encoder, d: &Digests) {
     e.uv(d.scheme).digest(&d.tu).count(d.groups.len());
     for g in &d.groups {
         enc_enum(e, g.class);
-        e.bytes(&g.file).uv(g.count).digest(&g.digest);
+        e.bytes(&g.file).uv(g.count).uv(g.indeterminate).digest(&g.digest);
         match &g.units {
             None => {
                 e.u8(0);
@@ -163,6 +188,7 @@ struct GroupOffsets {
     start: usize,
     file: usize,
     count: usize,
+    indeterminate: usize,
     digest: usize,
     /// The unit list's count (after the `opt` tag).
     units: usize,
@@ -179,6 +205,7 @@ impl Offsets {
             Loc::Group(i) => g(i).start,
             Loc::GroupFile(i) => g(i).file,
             Loc::GroupCount(i) => g(i).count,
+            Loc::GroupIndeterminate(i) => g(i).indeterminate,
             Loc::GroupDigest(i) => g(i).digest,
             Loc::Units(i) => g(i).units,
             Loc::Unit(i, j) => g(i).unit[j],
@@ -200,6 +227,8 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Digests, Offsets)> {
         let file = d.bytes()?.to_vec();
         go.count = d.offset();
         let count = d.uv()?;
+        go.indeterminate = d.offset();
+        let indeterminate = d.uv()?;
         go.digest = d.offset();
         let digest = d.digest()?;
         let units = dec_opt(d, |d| {
@@ -212,7 +241,7 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Digests, Offsets)> {
             })
         })?;
         o.groups.push(go);
-        Ok(Group { class, file, count, digest, units })
+        Ok(Group { class, file, count, indeterminate, digest, units })
     })?;
     Ok((Digests { scheme, tu, groups }, o))
 }
@@ -229,6 +258,7 @@ pub(super) fn render(d: &Digests) -> Value {
                 ("class", json_enum(g.class)),
                 ("file", json_bytes(&g.file)),
                 ("count", json_uv(g.count)),
+                ("indeterminate", json_uv(g.indeterminate)),
                 ("digest", json_digest(&g.digest)),
                 (
                     "units",
@@ -264,12 +294,13 @@ pub(super) fn read(v: &Value, at: &At<'_>) -> JResult<Digests> {
     let scheme = read_uv(scheme, &at.key("scheme"))?;
     let tu = read_digest(tu, &at.key("tu"))?;
     let groups = read_list(groups, &at.key("groups"), |v, at| {
-        let [class, file, count, digest, units] =
-            read_record(v, at, ["class", "file", "count", "digest", "units"])?;
+        let [class, file, count, indeterminate, digest, units] =
+            read_record(v, at, ["class", "file", "count", "indeterminate", "digest", "units"])?;
         Ok(Group {
             class: read_enum(class, &at.key("class"))?,
             file: read_bytes(file, &at.key("file"))?,
             count: read_uv(count, &at.key("count"))?,
+            indeterminate: read_uv(indeterminate, &at.key("indeterminate"))?,
             digest: read_digest(digest, &at.key("digest"))?,
             units: read_opt(units, &at.key("units"), |v, at| {
                 read_list(v, at, |v, at| {

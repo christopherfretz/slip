@@ -35,14 +35,15 @@ fn listed(class: GroupClass, file: &[u8], units: Vec<Unit>) -> Group {
         class,
         file: file.to_vec(),
         count: units.len() as u64,
+        indeterminate: units.iter().filter(|u| u.is_indeterminate()).count() as u64,
         digest: group_digest(&units),
         units: Some(units),
     }
 }
 
-/// A group without its unit list.
+/// A group without its unit list and without indeterminate units.
 fn summed(class: GroupClass, file: &[u8], count: u64, digest: Digest) -> Group {
-    Group { class, file: file.to_vec(), count, digest, units: None }
+    Group { class, file: file.to_vec(), count, indeterminate: 0, digest, units: None }
 }
 
 fn digests_of(groups: Vec<Group>) -> Digests {
@@ -161,7 +162,7 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
         let mut e = Encoder::new();
         e.uv(ds.scheme).digest(&ds.tu).count(ds.groups.len());
         for g in &ds.groups {
-            e.uv(g.class as u64).bytes(&g.file).uv(g.count).digest(&g.digest);
+            e.uv(g.class as u64).bytes(&g.file).uv(g.count).uv(g.indeterminate).digest(&g.digest);
             match &g.units {
                 None => {
                     e.u8(0);
@@ -221,8 +222,9 @@ fn raw(s: &Shard) -> Vec<u8> {
 
 /// A map shard: observer 33…, round 0, ok; counters [digest.units = 3];
 /// digests with three groups: declared "/a" with units
-/// [(41…, 42…, 0), (43…, 44…, 1)], derived "" (builtins) count 1 sum 66…
-/// without units, tu "" count 1 sum 55… without units.
+/// [(41…, 42…, 0), (43…, 44…, 1)] (count 2, indeterminate 1), derived ""
+/// (builtins) count 1 indeterminate 0 sum 66… without units, tu "" count 1
+/// indeterminate 0 sum 55… without units.
 fn map_shard() -> Shard {
     Shard {
         observer: d(0x33),
@@ -243,8 +245,8 @@ fn map_shard() -> Shard {
 /// `group_digest` of the declared group of `map_shard`.
 const MAP_GROUP: &str = "db3248c61386d5aa2e494aa55c9b780e301275eacc26c569cfd147b39300323d";
 /// `tu_digest` of `map_shard`'s groups.
-const MAP_TU: &str = "85867e7eb9a1593245f8bd4a20241f0b1ef688d8a9e7642c473518b7178ef685";
-const MAP_TRAILER: &str = "0c6264d4325c31b67154e002e5ffec00a638a6da021877ed0bfee19dd4b5a85c";
+const MAP_TU: &str = "8ce2bbe9792bff3bfd8902d2ef50daaf4db1fbac564d05c70e26959a3cf88ec4";
+const MAP_TRAILER: &str = "5a220ec189c5ab62b5c42a4dd7e828e747dd64440a2fde2de3dd0b63048cdfb0";
 
 fn map_shard_bytes() -> Vec<u8> {
     hex(&[
@@ -254,26 +256,26 @@ fn map_shard_bytes() -> Vec<u8> {
         "01 00",              // header: observer, map, round 0
         "02 04  00 00 00 00", // outcome: ok, 0, 0, ""
         "04 0f  01  0c 64 69 67 65 73 74 2e 75 6e 69 74 73  03", // counters: digest.units = 3
-        "13 93 02",           // digests, 275 bytes:
+        "13 96 02",           // digests, 278 bytes:
         "01",                 //   scheme 1      @78
         MAP_TU,               //   tu            @79
         "03",                 //   3 groups      @111
-        "00  02 2f 61  02",   //   declared "/a" count 2   @112
-        MAP_GROUP,            //     digest      @117
-        "01 02",              //     units: 2    @149
+        "00  02 2f 61  02  01", //   declared "/a" count 2 (@116), indeterminate 1 (@117)   @112
+        MAP_GROUP,            //     digest      @118
+        "01 02",              //     units: 2    @150
         &rep("41", 32),
         &rep("42", 32),
-        "00", //       (41…, 42…, 0)   @151
+        "00", //       (41…, 42…, 0)   @152
         &rep("43", 32),
         &rep("44", 32),
-        "01",           //       (43…, 44…, 1)   @216
-        "01  00  01",   //   derived "" count 1      @281
-        &rep("66", 32), //     digest
-        "00",           //     no units
-        "02  00  01",   //   tu "" count 1           @317
-        &rep("55", 32), //     digest
-        "00",           //     no units
-        "00",           // end                       @353
+        "01",             //       (43…, 44…, 1)   @217
+        "01  00  01  00", //   derived "" count 1 (@284), indeterminate 0 (@285)   @282
+        &rep("66", 32),   //     digest
+        "00",             //     no units      @318
+        "02  00  01  00", //   tu "" count 1, indeterminate 0   @319
+        &rep("55", 32),   //     digest
+        "00",             //     no units
+        "00",             // end                       @356
         MAP_TRAILER,
     ])
 }
@@ -338,52 +340,52 @@ fn verify_shard() -> Shard {
 }
 
 const VERIFY_GROUP: &str = "16616ca8c602bc6c8ebe3c4e0dcd9c1659ee02809421d7d815b05b0176c69cd6";
-const VERIFY_TU: &str = "a327fad2ef1fb81ae8fed18238d771a5f765e130b0d37fbc1fec978d375b7ef7";
-const VERIFY_TRAILER: &str = "0d60e022db1c43ef050fa7556cac2917941b984e9693ded59be234c4afab32f7";
+const VERIFY_TU: &str = "7caedd7cdd53009ed0e15c4fac970a603d974936dd94351078141828b4ecaadc";
+const VERIFY_TRAILER: &str = "f4c8c71984041cea8d223b639da4c27dcf39b1e91d730a7231ed742e44e0ed07";
 
 fn verify_shard_bytes() -> Vec<u8> {
     hex(&[
         "53 4c 49 50 1a 0a 00 00  53 48 52 44  01 00 00 00", // magic, SHRD, version 1
         "01 22",
         &rep("33", 32),
-        "02 01",              // header: observer, verify, round 1
-        "02 04  00 00 00 00", // outcome: ok, 0, 0, ""
-        "04 01  00",          // counters: []
-        "13 8a 01",           // digests, 138 bytes:
-        "01",                 //   scheme 1                 @64
-        VERIFY_TU,            //   tu                       @65
-        "01",                 //   1 group
-        "00  02 2f 61  01",   //   declared "/a" count 1    @98
-        VERIFY_GROUP,         //     digest                 @103
-        "01 01",              //     units: 1
+        "02 01",                // header: observer, verify, round 1
+        "02 04  00 00 00 00",   // outcome: ok, 0, 0, ""
+        "04 01  00",            // counters: []
+        "13 8b 01",             // digests, 139 bytes:
+        "01",                   //   scheme 1                 @64
+        VERIFY_TU,              //   tu                       @65
+        "01",                   //   1 group
+        "00  02 2f 61  01  00", //   declared "/a" count 1, indeterminate 0   @98
+        VERIFY_GROUP,           //     digest                 @104
+        "01 01",                //     units: 1
         &rep("41", 32),
         &rep("42", 32),
-        "00",           //       (41…, 42…, 0)        @137
+        "00",           //       (41…, 42…, 0)        @138
         "15 b3 02",     // verdict, 307 bytes:
-        "01",           //   mismatch                 @205
+        "01",           //   mismatch                 @206
         &rep("77", 32), //   pre
         &rep("88", 32), //   rules
-        "00",           //   reason ""                @270
+        "00",           //   reason ""                @271
         "00 01",        //   only_pre 0, only_post 1
-        "01",           //   used: 1                  @273
-        &rep("99", 32), //     99…                    @274
-        "03",           //   total 3                  @306
-        "02",           //   findings: 2              @307
-        "00  01",       //   changed, key             @308
+        "01",           //   used: 1                  @274
+        &rep("99", 32), //     99…                    @275
+        "03",           //   total 3                  @307
+        "02",           //   findings: 2              @308
+        "00  01",       //   changed, key             @309
         &rep("41", 32),
-        "02 2f 61  01", //     file "/a", pre         @342
+        "02 2f 61  01", //     file "/a", pre         @343
         &rep("42", 32),
-        "01", //     post                   @378
+        "01", //     post                   @379
         &rep("45", 32),
-        "01 66  01",                              //     name "f", where        @411
-        "02 2f 61  02 05  04 63 61 6c 6c  01 67", // pre: /a:2:5 call "g"   @414
-        "02 2f 61  02 05  04 63 61 6c 6c  01 68", // post: /a:2:5 call "h"  @426
-        "01  01",                                 //   removed, key             @438
+        "01 66  01",                              //     name "f", where        @412
+        "02 2f 61  02 05  04 63 61 6c 6c  01 67", // pre: /a:2:5 call "g"   @415
+        "02 2f 61  02 05  04 63 61 6c 6c  01 68", // post: /a:2:5 call "h"  @427
+        "01  01",                                 //   removed, key             @439
         &rep("46", 32),
-        "02 2f 61  01", //     file "/a", pre         @472
+        "02 2f 61  01", //     file "/a", pre         @473
         &rep("47", 32),
-        "00  01 78  00", //     no post, name "x", no where   @508
-        "00",            // end                        @512
+        "00  01 78  00", //     no post, name "x", no where   @509
+        "00",            // end                        @513
         VERIFY_TRAILER,
     ])
 }
@@ -393,7 +395,7 @@ fn verify_shard_bytes() -> Vec<u8> {
 #[test]
 fn digests_bytes_exact() {
     let bytes = map_shard_bytes();
-    assert_eq!(bytes.len(), 386);
+    assert_eq!(bytes.len(), 389);
     assert_eq!(map_shard().to_bytes(), bytes);
     assert_eq!(raw(&map_shard()), bytes);
     assert_eq!(Shard::from_bytes(&bytes).unwrap(), map_shard());
@@ -404,7 +406,7 @@ fn digests_bytes_exact() {
 #[test]
 fn verdict_bytes_exact() {
     let bytes = verify_shard_bytes();
-    assert_eq!(bytes.len(), 545);
+    assert_eq!(bytes.len(), 546);
     assert_eq!(verify_shard().to_bytes(), bytes);
     assert_eq!(raw(&verify_shard()), bytes);
     assert_eq!(Shard::from_bytes(&bytes).unwrap(), verify_shard());
@@ -430,18 +432,18 @@ fn group_and_tu_digest_preimages() {
         TU_TAG,
         hex(&[
             "03",
-            "00 02 2f 61 02",
+            "00 02 2f 61 02 01",
             MAP_GROUP,
-            "01 00 01",
+            "01 00 01 00",
             &rep("66", 32),
-            "02 00 01",
+            "02 00 01 00",
             &rep("55", 32),
         ]),
     );
     assert_eq!(tu.to_string(), MAP_TU);
     let group = tagged(GROUP_TAG, hex(&["01", &rep("41", 32), &rep("42", 32), "00"]));
     assert_eq!(group.to_string(), VERIFY_GROUP);
-    let tu = tagged(TU_TAG, hex(&["01", "00 02 2f 61 01", VERIFY_GROUP]));
+    let tu = tagged(TU_TAG, hex(&["01", "00 02 2f 61 01 00", VERIFY_GROUP]));
     assert_eq!(tu.to_string(), VERIFY_TU);
 }
 
@@ -516,8 +518,9 @@ fn round_trip(s: &Shard) {
     assert_eq!(content_id(&bytes).unwrap().as_bytes()[..], bytes[bytes.len() - 32..]);
 }
 
-/// Groups of every class, with a non-UTF-8 file, a count at or above 2^53
-/// (unlisted), and the unit lists of the groups `listed_at` names.
+/// Groups of every class, with a non-UTF-8 file, a count and an
+/// indeterminate at or above 2^53 (unlisted), and the unit lists of the
+/// groups `listed_at` names.
 fn sample_digests(listed_at: &[usize]) -> Digests {
     let groups: Vec<(GroupClass, &[u8], Vec<Unit>)> = vec![
         (GroupClass::Declared, b"/s/a.h", vec![unit(1, 2, 0), unit(1, 3, 0), unit(5, 6, 1)]),
@@ -538,7 +541,11 @@ fn sample_digests(listed_at: &[usize]) -> Digests {
         })
         .collect();
     if listed_at.len() < 5 {
-        groups.insert(4, summed(GroupClass::Derived, b"/s/z.h", u64::MAX, d(0xee)));
+        let big = Group {
+            indeterminate: u64::MAX,
+            ..summed(GroupClass::Derived, b"/s/z.h", u64::MAX, d(0xee))
+        };
+        groups.insert(4, big);
     }
     digests_of(groups)
 }
@@ -675,6 +682,8 @@ fn digests_round_trip() {
     let groups = groups.as_array().unwrap();
     assert_eq!(groups[1].get("file"), Some(&parse(r#"{"hex": "2f732fff622e68"}"#)));
     assert_eq!(groups[4].get("count"), Some(&Value::Str("18446744073709551615".into())));
+    assert_eq!(groups[4].get("indeterminate"), Some(&Value::Str("18446744073709551615".into())));
+    assert_eq!(groups[0].get("indeterminate"), Some(&Value::Int(1)));
     assert_eq!(groups[4].get("units"), Some(&Value::Null));
     assert_eq!(groups[5].get("class"), Some(&Value::Str("tu".into())));
 }
@@ -779,16 +788,16 @@ fn digests_3_groups_ascending() {
     let mut s = map_shard();
     groups(&mut s).swap(1, 2);
     resum(&mut s);
-    assert_eq!(rejected(&s, "sections.digests.groups[2]"), 317);
+    assert_eq!(rejected(&s, "sections.digests.groups[2]"), 319);
     let mut s = map_shard();
     groups(&mut s).swap(0, 1);
     resum(&mut s);
-    assert_eq!(rejected(&s, "sections.digests.groups[1]"), 148);
+    assert_eq!(rejected(&s, "sections.digests.groups[1]"), 149);
     // Equal (class, file) twice.
     let mut s = map_shard();
     groups(&mut s)[2].class = GroupClass::Derived;
     resum(&mut s);
-    assert_eq!(rejected(&s, "sections.digests.groups[2]"), 317);
+    assert_eq!(rejected(&s, "sections.digests.groups[2]"), 319);
     // By file within a class, a proper prefix first.
     let mut s = sample_map_shard(sample_digests(&[]));
     groups(&mut s)[0].file = b"/s/a.hh".to_vec();
@@ -804,7 +813,7 @@ fn digests_4_group_files() {
     let mut s = map_shard();
     groups(&mut s)[2].file = b"/t".to_vec();
     resum(&mut s);
-    assert_eq!(rejected(&s, "sections.digests.groups[2].file"), 318);
+    assert_eq!(rejected(&s, "sections.digests.groups[2].file"), 320);
     let mut s = map_shard();
     groups(&mut s)[0].file.clear();
     resum(&mut s);
@@ -816,13 +825,40 @@ fn digests_4_group_files() {
     round_trip(&s);
 }
 
-// digests rule 5 (spec/digest.md §11): count at least 1.
+// digests rule 5a (spec/digest.md §11): count at least 1.
 #[test]
-fn digests_5_count_at_least_1() {
+fn digests_5a_count_at_least_1() {
     let mut s = map_shard();
     groups(&mut s)[1].count = 0;
     resum(&mut s);
-    assert_eq!(rejected(&s, "sections.digests.groups[1].count"), 283);
+    assert_eq!(rejected(&s, "sections.digests.groups[1].count"), 284);
+}
+
+// digests rule 5b (spec/digest.md §11, WP-017): `indeterminate` is at most
+// `count`, also for a group without a unit list.
+#[test]
+fn digests_5b_indeterminate_at_most_count() {
+    let mut s = map_shard();
+    groups(&mut s)[1].indeterminate = 2;
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[1].indeterminate"), 285);
+    let mut s = map_shard();
+    groups(&mut s)[2].indeterminate = u64::MAX;
+    resum(&mut s);
+    // count 1, indeterminate u64::MAX (10 bytes) at 322.
+    assert_eq!(rejected(&s, "sections.digests.groups[2].indeterminate"), 322);
+    // Equal to count is allowed.
+    let mut s = map_shard();
+    groups(&mut s)[1].indeterminate = 1;
+    resum(&mut s);
+    round_trip(&s);
+    // Checked over every group before rule 6: group 1 breaks 5b, group 0
+    // (earlier) breaks 6b.
+    let mut s = map_shard();
+    groups(&mut s)[0].count = 3;
+    groups(&mut s)[1].indeterminate = 2;
+    resum(&mut s);
+    rejected(&s, "sections.digests.groups[1].indeterminate");
 }
 
 // digests rule 6 (spec/digest.md §11): a unit list is strictly ascending by
@@ -832,17 +868,17 @@ fn digests_6_units_ascending() {
     let mut s = map_shard();
     units(&mut s, 0).swap(0, 1);
     resum(&mut s);
-    assert_eq!(rejected(&s, "sections.digests.groups[0].units[1]"), 216);
+    assert_eq!(rejected(&s, "sections.digests.groups[0].units[1]"), 217);
     // The same key and digest twice is one unit (§11), whatever the flags.
     let mut s = map_shard();
     units(&mut s, 0)[1] = unit(0x41, 0x42, 1);
     resum(&mut s);
-    assert_eq!(rejected(&s, "sections.digests.groups[0].units[1]"), 216);
+    assert_eq!(rejected(&s, "sections.digests.groups[0].units[1]"), 217);
     // Same key, different digests: ascending by digest.
     let mut s = map_shard();
     units(&mut s, 0)[1] = unit(0x41, 0x40, 0);
     resum(&mut s);
-    assert_eq!(rejected(&s, "sections.digests.groups[0].units[1]"), 216);
+    assert_eq!(rejected(&s, "sections.digests.groups[0].units[1]"), 217);
 }
 
 // digests rule 6 (spec/digest.md §11): the list's length is the count.
@@ -852,13 +888,13 @@ fn digests_6_units_length_is_count() {
         let mut s = map_shard();
         groups(&mut s)[0].count = count;
         resum(&mut s);
-        assert_eq!(rejected(&s, "sections.digests.groups[0].units"), 150);
+        assert_eq!(rejected(&s, "sections.digests.groups[0].units"), 151);
     }
     // An empty list against a count of 1 (rule 5 holds).
     let mut s = map_shard();
     groups(&mut s)[1].units = Some(Vec::new());
     resum(&mut s);
-    assert_eq!(rejected(&s, "sections.digests.groups[1].units"), 317);
+    assert_eq!(rejected(&s, "sections.digests.groups[1].units"), 319);
 }
 
 // digests rule 6 (spec/digest.md §11): flags are 0 or 1.
@@ -868,23 +904,60 @@ fn digests_6_unit_flags() {
         let mut s = map_shard();
         units(&mut s, 0)[1].flags = flags;
         resum(&mut s);
-        assert_eq!(rejected(&s, "sections.digests.groups[0].units[1].flags"), 280);
+        assert_eq!(rejected(&s, "sections.digests.groups[0].units[1].flags"), 281);
     }
 }
 
-// digests rule 6 (spec/digest.md §11): a listed group's digest is
+// digests rule 6d (spec/digest.md §11, WP-017): a listed group's
+// `indeterminate` is the number of its units with the flag.
+#[test]
+fn digests_6d_indeterminate_is_the_number_flagged() {
+    for n in [0, 2] {
+        let mut s = map_shard();
+        groups(&mut s)[0].indeterminate = n;
+        resum(&mut s);
+        assert_eq!(rejected(&s, "sections.digests.groups[0].indeterminate"), 117, "{n}");
+    }
+    // The flag cleared, the count kept.
+    let mut s = map_shard();
+    units(&mut s, 0)[1].flags = 0;
+    resum(&mut s);
+    assert_eq!(rejected(&s, "sections.digests.groups[0].indeterminate"), 117);
+    // And both changed together is consistent.
+    groups(&mut s)[0].indeterminate = 0;
+    resum(&mut s);
+    round_trip(&s);
+    // Checked after 6c (flags) and before 6e (digest).
+    let mut s = map_shard();
+    units(&mut s, 0)[1].flags = 2;
+    resum(&mut s);
+    rejected(&s, "sections.digests.groups[0].units[1].flags");
+    let mut s = map_shard();
+    groups(&mut s)[0].indeterminate = 0;
+    resum(&mut s);
+    groups(&mut s)[0].digest = d(0x01);
+    s.digests.as_mut().unwrap().tu = tu_digest(&s.digests.as_ref().unwrap().groups);
+    rejected(&s, "sections.digests.groups[0].indeterminate");
+    // A group without a unit list is not checked against its units.
+    let mut s = map_shard();
+    groups(&mut s)[1].indeterminate = 1;
+    resum(&mut s);
+    round_trip(&s);
+}
+
+// digests rule 6e (spec/digest.md §11): a listed group's digest is
 // group_digest of its units, recomputed by the reader.
 #[test]
-fn digests_6_group_digest_recomputed() {
+fn digests_6e_group_digest_recomputed() {
     let mut s = map_shard();
     groups(&mut s)[0].digest = d(0x01);
     s.digests.as_mut().unwrap().tu = tu_digest(&s.digests.as_ref().unwrap().groups);
-    assert_eq!(rejected(&s, "sections.digests.groups[0].digest"), 117);
+    assert_eq!(rejected(&s, "sections.digests.groups[0].digest"), 118);
     // The reader computes it: flipping a unit's digest byte in the file,
     // with the trailer resealed, is detected.
     let bytes = map_shard_bytes();
-    let bad = patch(&bytes, 183, 0x42, 0x43);
-    assert_eq!(error(Shard::from_bytes(&bad)), (ErrorKind::Malformed, 117));
+    let bad = patch(&bytes, 184, 0x42, 0x43);
+    assert_eq!(error(Shard::from_bytes(&bad)), (ErrorKind::Malformed, 118));
 }
 
 // digests rule 7 (spec/digest.md §11): tu is tu_digest of the groups,
@@ -895,7 +968,11 @@ fn digests_7_tu_recomputed() {
     s.digests.as_mut().unwrap().tu = d(0x01);
     assert_eq!(rejected(&s, "sections.digests.tu"), 79);
     // A group's sum changed in the file is detected through tu.
-    let bad = patch(&map_shard_bytes(), 283, 0x01, 0x02);
+    let bad = patch(&map_shard_bytes(), 284, 0x01, 0x02);
+    assert_eq!(error(Shard::from_bytes(&bad)), (ErrorKind::Malformed, 79));
+    // `indeterminate` is part of the sum (WP-017): changed in a group
+    // without a unit list, within its count, it is detected through tu.
+    let bad = patch(&map_shard_bytes(), 285, 0x00, 0x01);
     assert_eq!(error(Shard::from_bytes(&bad)), (ErrorKind::Malformed, 79));
 }
 
@@ -905,11 +982,11 @@ fn digests_7_tu_recomputed() {
 fn verdict_1_where_it_may_be() {
     let mut s = verify_shard();
     s.phase = Phase::Map;
-    assert_eq!(rejected(&s, "sections.verdict"), 205);
+    assert_eq!(rejected(&s, "sections.verdict"), 206);
     let mut s = verify_shard();
     s.digests = None;
-    // Without the 141 bytes of the digests section.
-    assert_eq!(rejected(&s, "sections.verdict"), 205 - 141);
+    // Without the 142 bytes of the digests section.
+    assert_eq!(rejected(&s, "sections.verdict"), 206 - 142);
     let mut s = verify_shard();
     s.digests = None;
     s.outcome.status = Status::Rejected;
@@ -918,7 +995,7 @@ fn verdict_1_where_it_may_be() {
         s.validate().unwrap_err(),
         "sections.verdict: a verdict section in a shard whose status is not ok"
     );
-    assert_eq!(offset, 205 - 141);
+    assert_eq!(offset, 206 - 142);
 }
 
 // verdict rule 2 (spec/verify.md §6, spec/model.md §8): reason, name, node
@@ -928,12 +1005,12 @@ fn verdict_2_strings_at_most_4096_bytes() {
     let mut s = verify_shard();
     *verdict(&mut s) = Verdict { reason: "r".repeat(4097), ..unverifiable() };
     verdict(&mut s).pre = d(0x77);
-    assert_eq!(rejected(&s, "sections.verdict.reason"), 270);
+    assert_eq!(rejected(&s, "sections.verdict.reason"), 271);
     let mut s = verify_shard();
     verdict(&mut s).findings[1].name = "é".repeat(2049);
-    assert_eq!(rejected(&s, "sections.verdict.findings[1].name"), 509);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1].name"), 510);
     for (side, field, offset) in
-        [("pre", "node", 419), ("pre", "what", 424), ("post", "node", 431), ("post", "what", 436)]
+        [("pre", "node", 420), ("pre", "what", 425), ("post", "node", 432), ("post", "what", 437)]
     {
         let mut s = verify_shard();
         let w = verdict(&mut s).findings[0].location.as_mut().unwrap();
@@ -963,7 +1040,7 @@ fn verdict_3_kinds() {
     // mismatch: empty reason, total at least 1.
     let mut s = verify_shard();
     verdict(&mut s).reason = "x".into();
-    assert_eq!(rejected(&s, "sections.verdict.reason"), 270);
+    assert_eq!(rejected(&s, "sections.verdict.reason"), 271);
     let mut s = verify_shard();
     verdict(&mut s).total = 0;
     verdict(&mut s).findings.clear();
@@ -978,17 +1055,17 @@ fn verdict_3_kinds() {
     // Offsets in the hand-written file.
     let mut s = verify_shard();
     verdict(&mut s).kind = VerdictKind::Verified;
-    assert_eq!(rejected(&s, "sections.verdict.total"), 306);
+    assert_eq!(rejected(&s, "sections.verdict.total"), 307);
     let mut s = verify_shard();
     verdict(&mut s).kind = VerdictKind::Verified;
     verdict(&mut s).total = 0;
-    assert_eq!(rejected(&s, "sections.verdict.findings"), 307);
+    assert_eq!(rejected(&s, "sections.verdict.findings"), 308);
     let mut s = verify_shard();
     verdict(&mut s).kind = VerdictKind::Unverifiable;
     verdict(&mut s).reason = "r".into();
     verdict(&mut s).total = 0;
     // The reason moves `total` and `findings` one byte up.
-    assert_eq!(rejected(&s, "sections.verdict.findings"), 308);
+    assert_eq!(rejected(&s, "sections.verdict.findings"), 309);
 }
 
 // verdict rule 4 (spec/verify.md §6): no more findings than total.
@@ -996,7 +1073,7 @@ fn verdict_3_kinds() {
 fn verdict_4_findings_within_total() {
     let mut s = verify_shard();
     verdict(&mut s).total = 1;
-    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 438);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
     let mut s = verify_shard();
     verdict(&mut s).total = 2;
     round_trip(&s);
@@ -1009,12 +1086,12 @@ fn verdict_4_findings_order_and_uniqueness() {
     // By kind.
     let mut s = verify_shard();
     verdict(&mut s).findings.swap(0, 1);
-    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 308 + 74);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 309 + 74);
     // By file within a kind.
     let mut s = verify_shard();
     verdict(&mut s).findings[1].kind = FindingKind::Changed;
     verdict(&mut s).findings[0].file = b"/b".to_vec();
-    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 438);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
     // By key within a kind and file, an absent key first.
     let mut v = sample_mismatch();
     v.findings.swap(5, 6);
@@ -1028,7 +1105,7 @@ fn verdict_4_findings_order_and_uniqueness() {
     verdict(&mut s).findings[1].kind = FindingKind::Changed;
     verdict(&mut s).findings[1].key = Some(d(0x41));
     verdict(&mut s).findings[1].file = b"/b".to_vec();
-    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 438);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
     // The same kind and key in the same file, and in another file.
     let mut v = sample_mismatch();
     v.findings[7].key = Some(d(0x14));
@@ -1060,14 +1137,14 @@ fn verdict_5_finding_fields() {
         f.pre = None;
         // After finding 0 in every order.
         f.file = b"/b".to_vec();
-        assert_eq!(rejected(&s, "sections.verdict.findings[1].key"), 439, "{kind:?}");
+        assert_eq!(rejected(&s, "sections.verdict.findings[1].key"), 440, "{kind:?}");
     }
     let mut s = verify_shard();
     verdict(&mut s).findings[1].kind = FindingKind::Added;
-    assert_eq!(rejected(&s, "sections.verdict.findings[1].pre"), 475);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1].pre"), 476);
     let mut s = verify_shard();
     verdict(&mut s).findings[1].post = Some(d(0x48));
-    assert_eq!(rejected(&s, "sections.verdict.findings[1].post"), 508);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1].post"), 509);
 }
 
 // verdict rule 6 (spec/verify.md §6): used strictly ascending.
@@ -1075,10 +1152,10 @@ fn verdict_5_finding_fields() {
 fn verdict_6_used_ascending() {
     let mut s = verify_shard();
     verdict(&mut s).used.push(d(0x99));
-    assert_eq!(rejected(&s, "sections.verdict.used[1]"), 306);
+    assert_eq!(rejected(&s, "sections.verdict.used[1]"), 307);
     let mut s = verify_shard();
     verdict(&mut s).used.push(d(0x98));
-    assert_eq!(rejected(&s, "sections.verdict.used[1]"), 306);
+    assert_eq!(rejected(&s, "sections.verdict.used[1]"), 307);
 }
 
 // verdict rule 7 (spec/verify.md §6.1): line is 0 exactly when column is 0.
@@ -1086,10 +1163,10 @@ fn verdict_6_used_ascending() {
 fn verdict_7_site_line_and_column() {
     let mut s = verify_shard();
     verdict(&mut s).findings[0].location.as_mut().unwrap().pre.line = 0;
-    assert_eq!(rejected(&s, "sections.verdict.findings[0].where.pre.line"), 417);
+    assert_eq!(rejected(&s, "sections.verdict.findings[0].where.pre.line"), 418);
     let mut s = verify_shard();
     verdict(&mut s).findings[0].location.as_mut().unwrap().post.column = 0;
-    assert_eq!(rejected(&s, "sections.verdict.findings[0].where.post.line"), 429);
+    assert_eq!(rejected(&s, "sections.verdict.findings[0].where.post.line"), 430);
 }
 
 // ---------------------------------------------------------------------------
@@ -1100,7 +1177,7 @@ fn verdict_7_site_line_and_column() {
 #[test]
 fn truncated_sections_and_leftover_bytes() {
     for (shard, id, leftover) in
-        [(map_shard(), 19, 353), (verify_shard(), 19, 202), (verify_shard(), 21, 512)]
+        [(map_shard(), 19, 356), (verify_shard(), 19, 203), (verify_shard(), 21, 513)]
     {
         let mut sections = raw_sections(&shard);
         let at = sections.iter().position(|s| s.0 == id).unwrap();
@@ -1124,7 +1201,7 @@ fn truncated_sections_and_leftover_bytes() {
 #[test]
 fn unlisted_values_and_opt_tags() {
     let map = map_shard_bytes();
-    for (at, from, to) in [(112, 0, 3), (281, 1, 0x7f), (149, 1, 2), (316, 0, 0xff)] {
+    for (at, from, to) in [(112, 0, 3), (282, 1, 0x7f), (150, 1, 2), (318, 0, 0xff)] {
         assert_eq!(
             error(Shard::from_bytes(&patch(&map, at, from, to))),
             (ErrorKind::Malformed, at)
@@ -1132,13 +1209,13 @@ fn unlisted_values_and_opt_tags() {
     }
     let verify = verify_shard_bytes();
     for (at, from, to) in [
-        (205, 1, 3),
-        (308, 0, 6),
-        (438, 1, 0x40),
-        (309, 1, 2),
-        (378, 1, 2),
-        (413, 1, 2),
-        (511, 0, 2),
+        (206, 1, 3),
+        (309, 0, 6),
+        (439, 1, 0x40),
+        (310, 1, 2),
+        (379, 1, 2),
+        (414, 1, 2),
+        (512, 0, 2),
     ] {
         assert_eq!(
             error(Shard::from_bytes(&patch(&verify, at, from, to))),
@@ -1149,7 +1226,7 @@ fn unlisted_values_and_opt_tags() {
     // A count larger than the bytes remaining is TooLarge, never allocated:
     // the groups count and the findings count replaced by 65535 with
     // nothing after it (the section's length now takes one byte, not two).
-    for (shard, id, keep, at) in [(map_shard(), 19, 33, 110), (verify_shard(), 21, 102, 306)] {
+    for (shard, id, keep, at) in [(map_shard(), 19, 33, 110), (verify_shard(), 21, 102, 307)] {
         let mut sections = raw_sections(&shard);
         let s = sections.iter_mut().find(|s| s.0 == id).unwrap();
         s.1.truncate(keep);
@@ -1184,6 +1261,22 @@ fn json_members() {
     let f0: Vec<&str> =
         f.as_array().unwrap()[0].as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(f0, ["kind", "key", "file", "pre", "post", "name", "where"]);
+    let g = v.get("sections").unwrap().get("digests").unwrap().get("groups").unwrap();
+    let g0: Vec<&str> =
+        g.as_array().unwrap()[0].as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(g0, ["class", "file", "count", "indeterminate", "digest", "units"]);
+    // WP-017: `indeterminate` is required, after `count`.
+    let text = json::write_pretty(&verify_shard().to_json()).unwrap();
+    assert_eq!(text.matches("\"indeterminate\": 0,").count(), 1);
+    for (edit, at) in [
+        (text.replace("\"indeterminate\": 0,", ""), "sections.digests.groups[0].indeterminate"),
+        (
+            text.replace("\"indeterminate\": 0,", "\"indeterminate\": -1,"),
+            "sections.digests.groups[0].indeterminate",
+        ),
+    ] {
+        assert_eq!(Shard::from_json(&parse(&edit)).unwrap_err().path, at);
+    }
 
     let mut v = verify_shard().to_json();
     set(&mut v, &["sections", "verdict", "findings", "0", "where"], parse(r#"{"pre": null}"#));
