@@ -3,7 +3,7 @@
 Status: draft (M1). Implemented by `slip_digest` (the walk over Kiln's AST)
 and `slip_model` (the `digests` section). The per-kind and per-field rules
 are in `digest-kinds.md`; this file defines everything they
-plug into. How two digests are compared is `verify.md`. Design rationale:
+plug into. How two digests are compared is [verify.md](verify.md). Design rationale:
 [03-equivalence.md](../docs/design/03-equivalence.md). The Kiln facts behind
 this spec are in `research/kiln-ast-inventory.md` of the context repository.
 
@@ -222,6 +222,11 @@ rules come from, and why this is sound, is `verify.md`.
 
 Two different entities of one translation unit with the same mapped `KeyId`
 are a **key collision**: every unit with that key is indeterminate (§10).
+The exception is namespaces: two namespaces that a rule gives one key (the
+new namespace mapped onto the old one, which still exists for what stays in
+it) are **merged**. Each is written as a unit with that key; if what the
+two namespaces are is the same, those are one unit (§11), and if not,
+verification finds two digests under one key.
 
 ## 4. Streams
 
@@ -423,9 +428,10 @@ Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminat
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit. A derived unit belongs to the
   derived group of the file that holds the first declaration of what it
-  derives from (the template, the class, the function). The order unit is
-  the only member of the single `tu` group. Builtins are in the derived
-  group with the empty path.
+  derives from (the template, the class, the function). The single `tu`
+  group holds the order unit and every namespace: a namespace is reopened
+  wherever its members are, and which file opens it first is not a fact
+  about it. Builtins are in the derived group with the empty path.
 - The file of a declaration is the file of its location, or of the
   outermost macro expansion that produced it. A **subject path** is the real
   path of that file, with the root of a post-image mapped back to the root
@@ -433,8 +439,10 @@ Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminat
   after.
 - Two units of one group with the same key and digest are one unit.
 - **Detail** is a parameter of the walk: `none` (no `units` lists), `all`,
-  or a list of files. The group digests and `tu` are the same whatever the
-  detail.
+  a list of files (the groups of those files, of every class), or
+  `differing` from a list of `GroupSum`s (every group whose sum is not in
+  that list; this is what a verify job asks for, `verify.md` §5). The group
+  digests and `tu` are the same whatever the detail.
 
 Equal `tu` digests mean equal unit sets. Unequal ones are narrowed to the
 groups that differ, whose unit lists (asked for with detail, by parsing
