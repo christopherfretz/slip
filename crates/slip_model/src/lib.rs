@@ -10,11 +10,13 @@
 #![forbid(unsafe_code)]
 
 pub mod container;
+pub mod declared;
 mod digest;
 pub mod digests;
 pub mod formats;
 pub mod hash;
 pub mod json;
+pub mod keys;
 mod plan;
 mod run;
 mod shard;

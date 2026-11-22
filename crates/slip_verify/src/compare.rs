@@ -9,6 +9,7 @@ use std::cmp::Ordering;
 use std::fmt;
 
 use slip_model::Digest;
+use slip_model::declared::Declared;
 use slip_model::digests::{self, Digests, Group, GroupClass, Unit, group_digest, tu_digest};
 use slip_model::verdict::{Finding, FindingKind, Verdict, VerdictKind};
 
@@ -49,6 +50,17 @@ impl Exemptions {
             }
         }
         Ok(Exemptions { changed, created, removed })
+    }
+
+    /// The exemption lists of `declared` (§2.2), which are already
+    /// strictly ascending. Its rules are not exemptions: they are applied
+    /// by the walk of the post-image (§2.1).
+    pub fn from_declared(declared: &Declared) -> Exemptions {
+        Exemptions {
+            changed: declared.changed().to_vec(),
+            created: declared.created().to_vec(),
+            removed: declared.removed().to_vec(),
+        }
     }
 
     pub fn changed(&self) -> &[Digest] {

@@ -725,6 +725,32 @@ fn s2_exemptions_must_be_strictly_ascending() {
     }
 }
 
+// §2, §2.2: the exemptions of declared changes are its three lists, and
+// its rules are not among them.
+#[test]
+fn s2_exemptions_from_declared() {
+    use slip_model::keys::{KeyKind, Name, Parent, Rule};
+    let rule = Rule {
+        parent: Parent::Root,
+        kind: KeyKind::Namespace,
+        name: Name::Identifier(b"b".to_vec()),
+        disc: None,
+        to_parent: Parent::Root,
+        to_name: Name::Identifier(b"a".to_vec()),
+    };
+    let declared = slip_model::declared::Declared::new(
+        vec![rule],
+        vec![key(1), key(2)],
+        vec![key(2)],
+        vec![key(3)],
+    )
+    .unwrap();
+    let e = Exemptions::from_declared(&declared);
+    assert_eq!(e, Exemptions::new(vec![key(1), key(2)], vec![key(2)], vec![key(3)]).unwrap());
+    let none = Exemptions::from_declared(&slip_model::declared::Declared::none());
+    assert_eq!(none, Exemptions::none());
+}
+
 // §4.2: malformed groups are an error naming the group and the image.
 #[test]
 fn landed_malformed_groups_are_rejected() {

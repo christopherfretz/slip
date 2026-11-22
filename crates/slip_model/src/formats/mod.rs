@@ -1,11 +1,12 @@
 //! Binary and JSON forms of the plan, shard and run record
 //! (`spec/model.md` §6–§10), work package WP-006, and of the shard's `digests`
 //! and `verdict` sections (`spec/digest.md` §11, `spec/verify.md` §6), work
-//! package WP-015.
+//! package WP-015, and of declared changes (`spec/verify.md` §2), work
+//! package WP-022.
 //!
-//! Each of [`Plan`], [`Shard`] and [`RunRecord`] has `KIND`, `VERSION`,
+//! Each of [`Plan`], [`Shard`], [`RunRecord`] and [`Declared`] has `KIND`, `VERSION`,
 //! `to_bytes`, `from_bytes`, `to_json`, `from_json` and `validate`.
-//! [`dump`] renders any of the three as pretty JSON and [`undump`] turns
+//! [`dump`] renders any of the four as pretty JSON and [`undump`] turns
 //! such a rendering back into the file's bytes, unknown ignorable sections
 //! included; [`content_id`] validates a file and returns its trailer.
 //!
@@ -17,11 +18,13 @@
 use std::fmt::{self, Write as _};
 
 use crate::container::{FIRST_IGNORABLE, Reader, TRAILER_LEN, Writer};
+use crate::declared::Declared;
 use crate::json::{self, Value};
 use crate::wire::{Decoder, Encoder, Error, ErrorKind};
 use crate::{Digest, Observer, Phase, Plan, RunRecord, Shard};
 
 mod common;
+mod declared;
 mod digests;
 mod plan;
 mod run;
@@ -331,14 +334,15 @@ macro_rules! format_impl {
 format_impl!(Plan, plan, b"PLAN");
 format_impl!(Shard, shard, b"SHRD");
 format_impl!(RunRecord, run, b"RUNR");
+format_impl!(Declared, declared, b"DECL");
 
-/// The kind of a file, if its header names one of the three formats.
+/// The kind of a file, if its header names one of the four formats.
 fn kind_of(bytes: &[u8]) -> Option<[u8; 4]> {
     let kind: [u8; 4] = bytes.get(8..12)?.try_into().ok()?;
-    [Plan::KIND, Shard::KIND, RunRecord::KIND].contains(&kind).then_some(kind)
+    [Plan::KIND, Shard::KIND, RunRecord::KIND, Declared::KIND].contains(&kind).then_some(kind)
 }
 
-/// Renders a plan, shard or run record as pretty JSON (§10), for
+/// Renders a plan, shard, run record or declared changes as pretty JSON (§10), for
 /// `slip dump`. The file is validated as by `from_bytes`; unknown ignorable
 /// sections are rendered as `"#<id>"`.
 pub fn dump(bytes: &[u8]) -> std::result::Result<String, Error> {
@@ -351,7 +355,11 @@ pub fn dump(bytes: &[u8]) -> std::result::Result<String, Error> {
             let (r, extras, _) = run::decode(bytes)?;
             run::render(&r, &extras)
         }
-        // A plan, or a file that is not one of the three: opening it as a
+        Some(k) if k == Declared::KIND => {
+            let (x, extras, _) = declared::decode(bytes)?;
+            declared::render(&x, &extras)
+        }
+        // A plan, or a file that is not one of the four: opening it as a
         // plan reports `BadMagic` (or `Truncated`) for the latter.
         _ => {
             let (p, extras, _) = plan::decode(bytes)?;
@@ -380,16 +388,21 @@ pub fn undump(value: &Value) -> std::result::Result<Vec<u8>, JsonFormError> {
             let (r, extras) = run::read(value)?;
             Ok(run::encode(&r, &extras_ref(&extras)))
         }
-        _ => Err(root.key("kind").error("expected one of \"PLAN\", \"SHRD\", \"RUNR\"")),
+        "DECL" => {
+            let (x, extras) = declared::read(value)?;
+            Ok(declared::encode(&x, &extras_ref(&extras)))
+        }
+        _ => Err(root.key("kind").error("expected one of \"PLAN\", \"SHRD\", \"RUNR\", \"DECL\"")),
     }
 }
 
-/// The content id (§5) of a plan, shard or run record: its trailer digest,
+/// The content id (§5) of a plan, shard, run record or declared changes: its trailer digest,
 /// returned only once the whole file has been validated as by `from_bytes`.
 pub fn content_id(bytes: &[u8]) -> std::result::Result<Digest, Error> {
     Ok(match kind_of(bytes) {
         Some(k) if k == Shard::KIND => shard::decode(bytes)?.2,
         Some(k) if k == RunRecord::KIND => run::decode(bytes)?.2,
+        Some(k) if k == Declared::KIND => declared::decode(bytes)?.2,
         _ => plan::decode(bytes)?.2,
     })
 }
