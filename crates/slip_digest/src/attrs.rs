@@ -1458,6 +1458,41 @@ mod tests {
         assert!(got.starts_with(&start), "{got:?}");
     }
 
+    // §10.1 the `bit` rows whose pair tests also change another row:
+    // `DESTRUCTOR.flags-priority-dependent`, `MODE.flags-deferred` (Kiln
+    // keeps the node only while it is set), `GSL_OWNER.flags-has-type`,
+    // `GSL_POINTER.flags-has-type`.
+    #[test]
+    fn s10_1_bits_with_their_operands() {
+        let src = "template <int N> struct X { __attribute__((destructor(N))) static void c(); };";
+        let want = bytes(|s| {
+            s.count(1);
+            head(s, attr_kind::DESTRUCTOR, GNU, &[false, true]);
+            s.opt(false).opt(true).pending(Area::Expr);
+            no_annotations(s);
+        });
+        assert_eq!(decl_bytes(src, "c++20", "c").0, want);
+        let src = "template <class T> struct X { T v __attribute__((mode(DI))); };";
+        let (got, _) = decl_bytes(src, "c++20", "v");
+        let start = bytes(|s| {
+            s.count(1);
+            head(s, attr_kind::MODE, GNU, &[false, true]);
+        });
+        assert!(got.starts_with(&start), "{got:?}");
+        for (src, kind) in [
+            ("struct [[gsl::Owner]] S {};", attr_kind::GSL_OWNER),
+            ("struct [[gsl::Pointer]] S {};", attr_kind::GSL_POINTER),
+        ] {
+            let want = bytes(|s| {
+                s.count(1);
+                head(s, kind, CXX11, &[false, false]);
+                s.opt(false);
+                no_annotations(s);
+            });
+            assert_eq!(decl_bytes(src, "c++20", "S"), (want, None), "{src}");
+        }
+    }
+
     // §10.1 `BUILTIN`, `BUILTIN.a` (`out`), `flags-implicit`: a lazily
     // declared builtin's implicit attributes, in stored order.
     #[test]

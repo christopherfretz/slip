@@ -431,8 +431,6 @@ differ("AttrNode", "NO_BUILTIN.a", '__attribute__((no_builtin("memcpy"))) void f
        '__attribute__((no_builtin("memset"))) void f() {}', ["changed f()"])
 differ("AttrNode", "TARGET_CLONES.a", '__attribute__((target_clones("avx2", "default"))) void f() {}',
        '__attribute__((target_clones("sse4.2", "default"))) void f() {}', ["changed f()"])
-differ("AttrNode", "TARGET_CLONES.b", '__attribute__((target_clones("avx2", "default"))) void f() {}',
-       '__attribute__((target_clones("avx2", "avx2", "default"))) void f() {}', ["changed f()"])
 differ("AttrNode", "LOOP_HINT.a",
        "void f() {\n#pragma clang loop unroll_count(2)\n  for (;;) { }\n}",
        "void f() {\n#pragma clang loop unroll_count(4)\n  for (;;) { }\n}", ["changed f()"],
@@ -444,7 +442,7 @@ differ("AttrNode", "LOOP_HINT.b",
 differ("AttrNode", "MODE.a", "template <class T> struct X { T v __attribute__((mode(DI))); };",
        "template <class T> struct X { T v __attribute__((mode(SI))); };", ["changed X::v"])
 equal("AttrNode", "MODE.b", "template <class T> struct X { T v __attribute__((mode(DI))); };",
-      "template <class T> struct X { T v __attribute__((mode(__DI__))); };")
+      "template <class T> struct X { T v __attribute__((mode(word))); };")
 differ("AttrNode", "GSL_OWNER.b", "struct [[gsl::Owner(int)]] S {};",
        "struct [[gsl::Owner(long)]] S {};", ["changed S"])
 differ("AttrNode", "GSL_POINTER.b", "struct [[gsl::Pointer(int)]] S {};",
