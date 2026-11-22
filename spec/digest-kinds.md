@@ -1436,7 +1436,11 @@ Further rules:
   lazily declared builtin and for a `TemplateParamObject`.
 - A unit under `Parent::c_linkage` is a function or variable whose first
   declaration is lexically inside a `LinkageSpec` of language `C`
-  (`ScopeData`, `aux-lang`), and that is not a class member.
+  (`ScopeData`, `aux-lang`; a block-scope declaration looks through the
+  functions around it), that is not a class member, and whose name has
+  external linkage (not `static`, not a member of an unnamed namespace,
+  not a namespace-scope `const` or `constexpr` variable without `extern`):
+  only such names have a language linkage ([dcl.link]/1).
 - An injected-class-name is not a unit and a `Ref` never names one.
 
 ### 5.3 Headers
