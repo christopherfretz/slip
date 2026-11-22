@@ -19,8 +19,7 @@ const OUTCOME: u64 = 2;
 const INPUTS: u64 = 3;
 const COUNTERS: u64 = 4;
 
-/// The longest `Outcome.message`, in bytes (§8).
-pub(super) const MESSAGE_MAX: usize = 4096;
+use super::MESSAGE_MAX;
 
 // ---------------------------------------------------------------------------
 // Invariants

@@ -47,6 +47,22 @@ impl fmt::Display for JsonFormError {
 
 impl std::error::Error for JsonFormError {}
 
+/// The longest `Outcome.message`, in bytes (§8).
+pub const MESSAGE_MAX: usize = 4096;
+
+/// `message` cut to at most [`MESSAGE_MAX`] bytes at a character boundary
+/// (§8): what a writer of a shard stores as `Outcome.message`.
+pub fn clip_message(message: &str) -> &str {
+    if message.len() <= MESSAGE_MAX {
+        return message;
+    }
+    let mut end = MESSAGE_MAX;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    &message[..end]
+}
+
 /// A JSON path under construction, rendered only when an error needs it.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum At<'p> {

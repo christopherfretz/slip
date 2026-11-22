@@ -1377,3 +1377,21 @@ fn phase_round_trip() {
         assert_eq!(kind_of_error(decode_phase(&mut Decoder::new(&[bad]))), ErrorKind::Malformed);
     }
 }
+
+// §8: `Outcome.message` is at most 4096 bytes, cut at a character boundary.
+#[test]
+fn model_8_clip_message_cuts_at_a_character_boundary() {
+    use slip_model::formats::{MESSAGE_MAX, clip_message};
+    assert_eq!(MESSAGE_MAX, 4096);
+    assert_eq!(clip_message(""), "");
+    let exact = "a".repeat(MESSAGE_MAX);
+    assert_eq!(clip_message(&exact), exact);
+    let long = "a".repeat(MESSAGE_MAX + 10);
+    assert_eq!(clip_message(&long), exact);
+    // A three-byte character straddling the limit is dropped whole.
+    let straddle = format!("{}\u{20ac}tail", "a".repeat(MESSAGE_MAX - 1));
+    assert_eq!(clip_message(&straddle), "a".repeat(MESSAGE_MAX - 1));
+    // One that ends exactly at the limit is kept.
+    let fits = format!("{}\u{20ac}tail", "a".repeat(MESSAGE_MAX - 3));
+    assert_eq!(clip_message(&fits).len(), MESSAGE_MAX);
+}
