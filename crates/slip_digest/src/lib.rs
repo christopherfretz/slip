@@ -62,7 +62,13 @@
 //! | `stmt::child(w, s, st)` | pending (`Area::Stmt`) |
 //! | `value::value(w, s, v)`, `value::string(w, s, l)` | pending (`Area::Value`) |
 //! | `local::write_decl(w, s, d)` | `decl` (§2.4): pending (`Area::Local`) |
-//! | `decl_data::{typedef_data, enum_data, enumerator_data, record_data, field_data, friend_target, function_data, var_data, param_data, namespace_data, static_assert_data, let_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.4 to §5.7 each: pending (`Area::DeclData`) |
+//! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each: pending (`Area::DeclData`) |
+//! | `decl_class::{typedef_data, enum_data, enumerator_data, record_data, field_data}(w, s, d)` | one `record T` of §5.5 each: pending (`Area::DeclData`) |
+//! | `decl_scope::{friend_target, namespace_data, static_assert_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.6 each, and the rows of `ColdDeclData` (§5.7): pending (`Area::DeclData`) |
+//! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1): pending (`Area::Templ`) |
+//! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5): pending (`Area::Templ`) |
+//! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4): pending (`Area::Local`) |
+//! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1): pending (`Area::Stmt`) |
 //! | `attrs::decl_attrs(w, s, d)` | pending (`Area::Attrs`) |
 //! | `other::module_rows(w, s, d)` | pending (`Area::Other`) |
 //! | `templ::decl_maps(w, s, d)` | `TemplateTables.defaults` written; the other rows keyed by `DeclId` pending (`Area::Templ`) |
@@ -90,7 +96,11 @@
 //! A pending function has its final signature and the body
 //! `s.pending(Area::X)`: the unit becomes indeterminate with
 //! `Cause::Pending(Area::X)` and the fixed placeholder `uv 0` keeps the
-//! stream well formed. The package that fills an area replaces the bodies
+//! stream well formed. A pending function of `decl_func.rs`,
+//! `decl_class.rs` and `decl_scope.rs` also writes, after the placeholder,
+//! the statements and expressions its record owns (a *reach stub*), so
+//! that statements and expressions can be reached and tested before the
+//! payload records land. The package that fills an area replaces the bodies
 //! in its module, writes the rows of its tables in table order with the
 //! functions above, adds its pair tests (`tests/differ/<short>/<row>/` and
 //! the other roots), removes the names from `tests/tables/untested.txt`
@@ -115,9 +125,12 @@ pub(crate) mod tables;
 
 mod attrs;
 mod decl;
-mod decl_data;
+mod decl_class;
+mod decl_func;
+mod decl_scope;
 mod demand;
 mod expr;
+mod fp;
 mod groups;
 mod keys;
 mod local;
@@ -235,7 +248,7 @@ impl std::fmt::Display for Cause {
 #[non_exhaustive]
 pub enum Area {
     /// The payload records and cold maps of declarations (digest-kinds
-    /// §5.4 to §5.8): `decl_data.rs`.
+    /// §5.4 to §5.8): `decl_func.rs`, `decl_class.rs`, `decl_scope.rs`.
     DeclData,
     /// Declarations walked in place (§2.4): `local.rs`.
     Local,

@@ -96,6 +96,23 @@ pub(crate) fn template_info(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     crate::expr::child_opt(w, s, constraint);
 }
 
+/// `record TemplLink` (§9.1): the `templ` row of a payload record.
+#[allow(dead_code, reason = "the interface of an area that lands later (lib.rs)")]
+pub(crate) fn templ_link(
+    _w: &mut Walk<'_>,
+    s: &mut Stream,
+    _l: slip_kiln::kiln::ast::decl::TemplLink,
+) {
+    s.pending(Area::Templ);
+}
+
+/// The `in` rows of `TemplateTables` whose map is keyed by `ExprId`
+/// (§9.5), for `e`: they close every expression's stream (§2.1 step 3).
+#[allow(dead_code, reason = "the interface of an area that lands later (lib.rs)")]
+pub(crate) fn expr_maps(_w: &mut Walk<'_>, s: &mut Stream, _e: slip_kiln::kiln::ast::ExprId) {
+    s.pending(Area::Templ);
+}
+
 /// The value of a `TemplateParamObject` (`TemplateTables::param_object_value`).
 pub(crate) fn param_object(_w: &mut Walk<'_>, s: &mut Stream, _d: DeclId) {
     s.pending(Area::Templ);

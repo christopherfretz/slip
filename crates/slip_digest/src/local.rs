@@ -26,3 +26,10 @@ pub(crate) fn ordinal(w: &mut Walk<'_>, d: DeclId) -> u64 {
 pub(crate) fn write_decl(_w: &mut Walk<'_>, s: &mut Stream, _d: DeclId) {
     s.pending(Area::Local);
 }
+
+/// `record LambdaData` (§10.4): the `lambda` row of a closure type's
+/// `RecordData`.
+#[allow(dead_code, reason = "the interface of an area that lands later (lib.rs)")]
+pub(crate) fn lambda_data(_w: &mut Walk<'_>, s: &mut Stream, _l: slip_kiln::kiln::ast::LambdaId) {
+    s.pending(Area::Local);
+}

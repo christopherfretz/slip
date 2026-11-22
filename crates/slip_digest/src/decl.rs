@@ -28,7 +28,7 @@ impl Walk<'_> {
             return;
         }
         self.decl_node(s, d, e);
-        crate::decl_data::cold(self, s, d);
+        crate::decl_scope::cold(self, s, d);
         crate::attrs::decl_attrs(self, s, d);
         crate::templ::decl_maps(self, s, d);
         crate::other::module_rows(self, s, d);
@@ -190,37 +190,37 @@ impl Walk<'_> {
                     }
                 }
             }
-            DeclKind::FileScopeAsm => crate::decl_data::file_scope_asm(self, s, d),
+            DeclKind::FileScopeAsm => crate::decl_scope::file_scope_asm(self, s, d),
             DeclKind::Using
             | DeclKind::UsingShadow
             | DeclKind::ConstructorUsingShadow
             | DeclKind::UnresolvedUsingValue
             | DeclKind::UnresolvedUsingTypename => {}
-            DeclKind::Typedef | DeclKind::TypeAlias => crate::decl_data::typedef_data(self, s, d),
-            DeclKind::Enum => crate::decl_data::enum_data(self, s, d),
-            DeclKind::EnumConstant => crate::decl_data::enumerator_data(self, s, d),
+            DeclKind::Typedef | DeclKind::TypeAlias => crate::decl_class::typedef_data(self, s, d),
+            DeclKind::Enum => crate::decl_class::enum_data(self, s, d),
+            DeclKind::EnumConstant => crate::decl_class::enumerator_data(self, s, d),
             DeclKind::CXXRecord
             | DeclKind::ClassTemplateSpecialization
             | DeclKind::ClassTemplatePartialSpecialization => {
-                crate::decl_data::record_data(self, s, d);
+                crate::decl_class::record_data(self, s, d);
             }
-            DeclKind::Field => crate::decl_data::field_data(self, s, d),
+            DeclKind::Field => crate::decl_class::field_data(self, s, d),
             DeclKind::IndirectField => {
                 let chain: Vec<DeclId> =
                     ast.lists.iter::<DeclId>(ast.indirect_field_chain(d)).collect();
                 self.write_refs(s, &chain);
             }
-            DeclKind::Friend => crate::decl_data::friend_target(self, s, d),
+            DeclKind::Friend => crate::decl_scope::friend_target(self, s, d),
             DeclKind::Function
             | DeclKind::CXXMethod
             | DeclKind::CXXConstructor
             | DeclKind::CXXDestructor
             | DeclKind::CXXConversion
-            | DeclKind::CXXDeductionGuide => crate::decl_data::function_data(self, s, d),
+            | DeclKind::CXXDeductionGuide => crate::decl_func::function_data(self, s, d),
             DeclKind::Var
             | DeclKind::VarTemplateSpecialization
-            | DeclKind::VarTemplatePartialSpecialization => crate::decl_data::var_data(self, s, d),
-            DeclKind::ParmVar => crate::decl_data::param_data(self, s, d),
+            | DeclKind::VarTemplatePartialSpecialization => crate::decl_func::var_data(self, s, d),
+            DeclKind::ParmVar => crate::decl_func::param_data(self, s, d),
             DeclKind::ClassTemplate
             | DeclKind::FunctionTemplate
             | DeclKind::VarTemplate
@@ -229,11 +229,11 @@ impl Walk<'_> {
             DeclKind::TemplateTypeParm
             | DeclKind::NonTypeTemplateParm
             | DeclKind::TemplateTemplateParm => crate::templ::template_parm_info(self, s, d),
-            DeclKind::Namespace => crate::decl_data::namespace_data(self, s, d),
+            DeclKind::Namespace => crate::decl_scope::namespace_data(self, s, d),
             DeclKind::StaticAssert | DeclKind::ConstevalBlock => {
-                crate::decl_data::static_assert_data(self, s, d);
+                crate::decl_scope::static_assert_data(self, s, d);
             }
-            DeclKind::LifetimeExtendedTemporary => crate::decl_data::let_data(self, s, d),
+            DeclKind::LifetimeExtendedTemporary => crate::decl_func::let_data(self, s, d),
             // `out`, or 0 in `data`.
             DeclKind::BuiltinTemplate
             | DeclKind::TranslationUnit
