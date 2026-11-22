@@ -596,6 +596,9 @@ Counters of a verify shard, added to those of `digest.md` §12:
   verify at the sums. Storing unit lists for owned files at map time
   (`digest.md` "Open questions") would remove most of those parses and cost
   shard size; to be measured on the corpus.
+- **Mapping allocates.** `RuleTable::map` encodes each key's match to
+  look it up; with a table that is not empty that is one allocation per
+  key of the post-image. To be measured on the corpus with the verify job.
 - **`limit` and the sixteen** of §6 are guesses.
 - **`Finding.key` is optional in the format** and nothing produces a
   finding without one since §4.1 names every finding. Make it required at
