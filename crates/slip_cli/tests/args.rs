@@ -359,7 +359,9 @@ fn s8_parse_size() {
 // §8.5: the usage text lists the commands but not the hidden ones.
 #[test]
 fn s8_usage_text() {
-    for word in ["slip plan", "slip parse", "slip dump", "slip --version", "slip --help", "--worker-stack"] {
+    for word in
+        ["slip plan", "slip parse", "slip dump", "slip --version", "slip --help", "--worker-stack"]
+    {
         assert!(args::USAGE.contains(word), "{word}");
     }
     assert!(!args::USAGE.contains("__worker") && !args::USAGE.contains("__panic"));

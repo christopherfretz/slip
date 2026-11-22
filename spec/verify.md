@@ -166,6 +166,11 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    `verify.derived.only_post` when it is `A(k)`). No exemption applies to
    a derived key.
 
+Steps 1 and 2 are over `D` and step 3 over `V`, independently: a key set
+aside in one is not thereby set aside in the other. (A key is in both
+only if an entity is declared in one image and derived in the other, or
+by a collision.)
+
 The observer is **verified** when there is no finding.
 
 **Why a derived unit on one side only is not a difference.** A derived unit
@@ -298,6 +303,10 @@ FindingKind := changed = 0 | removed = 1 | added = 2 | indeterminate = 3
              | derived_changed = 4 | derived_indeterminate = 5
 ```
 
+Findings are ordered by `(kind, file, key)`: `kind` by its number, `file`
+and `key` by their bytes. No two findings are equal in all three, so the
+first `limit` are determined.
+
 `pre`, `post` and `file` are defined on what §4 looked at, so that they too
 are the same whether or not the comparison was restricted to `G`:
 
@@ -305,12 +314,17 @@ are the same whether or not the comparison was restricted to `G`:
   digest in `R(k)` when `R(k)` has exactly one element (counting
   multiplicity), else absent; `post` likewise from `A(k)`. `file` is the
   file of the first group, in the order of `(class, file)`, among the
-  groups whose units are not the same in both images, that holds a unit of
-  the key in the pre-image; if there is none, in the post-image. (There is
-  one: a key with a difference has a unit in a group that differs.)
+  groups of the multiset the finding is about (the declared and `tu`
+  groups for `D`, the derived groups for `V`) whose units, flags
+  included, are not the same in both images, that holds a unit of the key
+  in the pre-image; if there is none, in the post-image. (There is one: a
+  key with a difference has a unit in a group that differs.) The group
+  named need not be where the key itself changed: it can differ on
+  account of another unit.
 - For `indeterminate` and `derived_indeterminate`: `pre` is the digest of
   the key's indeterminate unit in the pre-image when there is exactly one
-  such unit, else absent; `post` likewise. `file` is the file of the first
+  such unit (counting multiplicity: one unit in two groups is two), else
+  absent; `post` likewise. `file` is the file of the first
   group that holds an indeterminate unit of the key, in the pre-image if
   it has one, else in the post-image.
 
@@ -383,6 +397,11 @@ Counters of a verify shard, added to those of `digest.md` §12:
   section does not hold yet ("Open questions"). Until it does, this is
   left to the reducer, which sees every observer's declarations, and to
   tier T3.
+- **Sums are believed.** A group's `count`, `indeterminate` and `digest`
+  are checked against its unit list only where there is one. A shard
+  whose sums were not computed from its units (a defect of the walk, or a
+  shard written by something else) can verify wrongly at §4.1 step 1.
+  The walk that writes sums is as much trusted base as the comparison.
 - **Text.** Strings, comments and anything else that spells a name without
   referring to it ([03](../docs/design/03-equivalence.md) §7 rows 14, 15).
 
@@ -413,6 +432,12 @@ Counters of a verify shard, added to those of `digest.md` §12:
   keys of the group that were reached through a rule, so that observers
   sharing a header can be compared group by group without unit lists, and
   a reduction over distinct groups. To be specified with reduce (M2).
+- **Indeterminate units cost a second parse.** Every group with an
+  indeterminate unit is in `G` (§4.1), so an observer that has one needs
+  unit lists even when nothing changed. Proposed: a map shard stores the
+  unit lists of its groups that have an indeterminate unit, which are
+  few. To be decided with the verify job (§5) from the corpus's
+  `digest.indeterminate` counts.
 - **Created units by key** only works where the reducer can compute the
   key: a namespace, a class, a variable, an alias, a using-declaration. A
   created function's key holds its signature's digest and a content-keyed
