@@ -45,6 +45,9 @@ pub(crate) struct Written {
     pub cause: Option<Cause>,
     pub class: GroupClass,
     pub file: Vec<u8>,
+    /// For a resolved unit, its property (`demand.rs`); its `entity` is
+    /// the owner's.
+    pub resolved: Option<crate::demand::Resolved>,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -496,7 +499,17 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         }
     };
     let entity = Some(e);
-    Some(Written { entity, read: Some(read), key, kind, digest: hashed.digest, cause, class, file })
+    Some(Written {
+        entity,
+        read: Some(read),
+        key,
+        kind,
+        digest: hashed.digest,
+        cause,
+        class,
+        file,
+        resolved: None,
+    })
 }
 
 /// The fallback key of a unit whose key cannot be formed: its own key
@@ -585,6 +598,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         cause: h.cause,
         class: GroupClass::Tu,
         file: Vec::new(),
+        resolved: None,
     }
 }
 
@@ -595,7 +609,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
     clippy::many_single_char_names,
     reason = "the names of digest-kinds: s stream, d declaration, e entity, n node, q type"
 )]
-fn origin_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
+pub(crate) fn origin_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
     let ast = w.ast;
     let mut d = e;
     for _ in 0..64 {

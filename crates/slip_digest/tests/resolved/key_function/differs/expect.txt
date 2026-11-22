@@ -1,0 +1,3 @@
+present S::<key_function>
+changed S::<key_function>
+changed S::f()

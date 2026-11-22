@@ -212,6 +212,7 @@ fn written(key: u8, digest: u8, kind: KeyKind) -> Written {
         cause: None,
         class: GroupClass::Declared,
         file: b"f".to_vec(),
+        resolved: None,
     }
 }
 

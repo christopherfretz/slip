@@ -21,7 +21,7 @@ const END: &str = "=== slip-digest-output-end";
 
 fn all_dirs() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    for root in ["differ", "equal", "demand", "indeterminate"] {
+    for root in ["differ", "equal", "demand", "indeterminate", "resolved"] {
         v.extend(common::dirs(root).into_iter().filter(|d| !common::is_pending(d)));
     }
     v

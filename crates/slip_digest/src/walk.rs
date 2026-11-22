@@ -266,7 +266,11 @@ pub(crate) fn run(input: &Input<'_>, options: &Options<'_>) -> Output {
         let (e, class) = w.queue[i];
         i += 1;
         if let Some(u) = crate::units::write(&mut w, e, class) {
+            // Its resolved units (`demand.rs`), after it.
+            let mut resolved = Vec::new();
+            crate::demand::resolved_units(&mut w, e, &u, &mut resolved);
             written.push(u);
+            written.append(&mut resolved);
         }
     }
     written.push(crate::units::order_unit(&mut w));

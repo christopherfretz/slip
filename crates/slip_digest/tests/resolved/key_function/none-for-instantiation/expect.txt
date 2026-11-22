@@ -1,0 +1,2 @@
+present S<char>::<key_function>
+added h()

@@ -7,7 +7,10 @@
 //! (`ns::f(int, char *)`), and ` const`, ` volatile`, ` &`, ` &&` after
 //! them for a method's qualifiers; a specialisation with its arguments
 //! (`ns::S<int>`); a content-keyed unit as its scope and `<kind>`
-//! (`ns::<static_assert>`); the order unit as `<order>`.
+//! (`ns::<static_assert>`); a resolved unit as its owner's name and
+//! `::<property>`, with its discriminator after a space
+//! (`S::<key_function>`, `f(int)::<default_immediates 0>`); the order
+//! unit as `<order>`.
 
 use slip_kiln::kiln::ast::Ast;
 use slip_kiln::kiln::ast::DeclId;
@@ -40,6 +43,15 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
                             }
                             None => name.push_str("(unnamed)"),
                         }
+                    }
+                    if let Some(r) = u.resolved {
+                        name.push_str("::<");
+                        name.push_str(r.property.word());
+                        if let Some(n) = r.disc {
+                            name.push(' ');
+                            name.push_str(&n.to_string());
+                        }
+                        name.push('>');
                     }
                     name
                 }
