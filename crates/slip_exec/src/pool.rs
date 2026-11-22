@@ -1090,6 +1090,10 @@ impl Coordinator<'_> {
             counters: Vec::new(),
             digests: None,
             verdict: None,
+            edits: None,
+            binding: None,
+            rule_use: None,
+            spellings: None,
         };
         Ok(self.store.publish_shard(
             &self.plan,

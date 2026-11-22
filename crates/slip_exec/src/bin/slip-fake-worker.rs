@@ -88,6 +88,10 @@ fn ok_shard(job: &Job) -> Shard {
         counters: vec![Counter { name: "fake.jobs".to_owned(), value: 1 }],
         digests: None,
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 

@@ -239,6 +239,10 @@ fn map_shard() -> Shard {
             summed(GroupClass::Tu, b"", 1, d(0x55)),
         ])),
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 
@@ -336,6 +340,10 @@ fn verify_shard() -> Shard {
                 },
             ],
         }),
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 
@@ -560,6 +568,10 @@ fn sample_map_shard(digests: Digests) -> Shard {
         counters: vec![Counter { name: "digest.groups".to_owned(), value: 5 }],
         digests: Some(digests),
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 
@@ -640,6 +652,10 @@ fn sample_verify_shard(verdict: Verdict) -> Shard {
     Shard {
         phase: Phase::Verify,
         verdict: Some(verdict),
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
         ..sample_map_shard(sample_digests(&[0, 3]))
     }
 }
@@ -1396,11 +1412,12 @@ fn json_members() {
     assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.digests");
 }
 
-// spec/model.md §5 rule 2, §8: sections 19 and 21 are known; 16, 17, 18 and
-// 20 stay reserved, UnknownSection.
+// spec/model.md §5 rule 2, §8: sections 19 and 21 are known (and 17, 24,
+// 25 and 26, `tests/edits.rs` and below); 16, 18 and 20 stay reserved,
+// UnknownSection.
 #[test]
 fn reserved_ids_still_unknown() {
-    for id in [16u64, 17, 18, 20] {
+    for id in [16u64, 18, 20] {
         let mut sections = raw_sections(&map_shard());
         sections.push((id, Vec::new()));
         sections.sort_by_key(|s| s.0);

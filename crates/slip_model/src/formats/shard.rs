@@ -1,4 +1,5 @@
-//! The shard, kind `SHRD` (`spec/model.md` §8).
+//! The shard, kind `SHRD` (`spec/model.md` §8), with the sections of M2
+//! (`edits`, `binding`, `rule_use`, `spellings`; work package WP-060).
 
 use crate::json::Value;
 use crate::wire::Encoder;
@@ -10,16 +11,20 @@ use super::common::{
     read_list, read_record, read_str, read_uv,
 };
 use super::{
-    At, Extra, JsonFormError, OwnedExtras, SectionName, digests, open, read_container,
-    render_container, seal, verdict,
+    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, open,
+    read_container, render_container, seal, spellings, verdict,
 };
 
 const HEADER: u64 = 1;
 const OUTCOME: u64 = 2;
 const INPUTS: u64 = 3;
 const COUNTERS: u64 = 4;
+const EDITS: u64 = edits::ID;
 const DIGESTS: u64 = digests::ID;
 const VERDICT: u64 = verdict::ID;
+const BINDING: u64 = agreement::BINDING;
+const RULE_USE: u64 = agreement::RULE_USE;
+const SPELLINGS: u64 = spellings::ID;
 
 use super::MESSAGE_MAX;
 
@@ -35,6 +40,9 @@ enum Loc {
     Counter(usize),
     Digests(digests::Loc),
     Verdict(verdict::Loc),
+    Edits(edits::Loc),
+    Agreement(agreement::Loc),
+    Spellings(spellings::Loc),
 }
 
 impl Loc {
@@ -47,6 +55,9 @@ impl Loc {
             Loc::Counter(i) => format!("sections.counters[{i}]"),
             Loc::Digests(l) => l.path(),
             Loc::Verdict(l) => l.path(),
+            Loc::Edits(l) => l.path(),
+            Loc::Agreement(l) => l.path(),
+            Loc::Spellings(l) => l.path(),
         }
     }
 }
@@ -102,6 +113,28 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
             return Some((Loc::Verdict(l), what));
         }
     }
+    // spec/model.md §8: the sections of M2, in the order of their ids.
+    let (phase, status) = (s.phase, s.outcome.status);
+    if let Some(e) = &s.edits
+        && let Some((l, what)) = edits::violation(e, edits::Context { phase, status })
+    {
+        return Some((Loc::Edits(l), what));
+    }
+    if s.binding.is_some()
+        && let Some((l, what)) = agreement::binding_violation(phase, status)
+    {
+        return Some((Loc::Agreement(l), what));
+    }
+    if let Some(r) = &s.rule_use
+        && let Some((l, what)) = agreement::rule_use_violation(r, phase, status)
+    {
+        return Some((Loc::Agreement(l), what));
+    }
+    if let Some(x) = &s.spellings
+        && let Some((l, what)) = spellings::violation(x, phase, status)
+    {
+        return Some((Loc::Spellings(l), what));
+    }
     None
 }
 
@@ -138,6 +171,14 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
         sections.push((INPUTS, inputs));
     }
     sections.push((COUNTERS, counters.as_bytes()));
+    let edits = s.edits.as_ref().map(|x| {
+        let mut e = Encoder::new();
+        edits::encode(&mut e, x);
+        e.into_bytes()
+    });
+    if let Some(edits) = &edits {
+        sections.push((EDITS, edits));
+    }
     let digests = s.digests.as_ref().map(|d| {
         let mut e = Encoder::new();
         digests::encode(&mut e, d);
@@ -154,6 +195,30 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     if let Some(verdict) = &verdict {
         sections.push((VERDICT, verdict));
     }
+    let binding = s.binding.as_ref().map(|b| {
+        let mut e = Encoder::new();
+        agreement::encode_binding(&mut e, b);
+        e.into_bytes()
+    });
+    if let Some(binding) = &binding {
+        sections.push((BINDING, binding));
+    }
+    let rule_use = s.rule_use.as_ref().map(|r| {
+        let mut e = Encoder::new();
+        agreement::encode_rule_use(&mut e, r);
+        e.into_bytes()
+    });
+    if let Some(rule_use) = &rule_use {
+        sections.push((RULE_USE, rule_use));
+    }
+    let spellings = s.spellings.as_ref().map(|x| {
+        let mut e = Encoder::new();
+        spellings::encode(&mut e, x);
+        e.into_bytes()
+    });
+    if let Some(spellings) = &spellings {
+        sections.push((SPELLINGS, spellings));
+    }
     seal(Shard::KIND, Shard::VERSION, &sections, extras)
 }
 
@@ -163,10 +228,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         bytes,
         Shard::KIND,
         Shard::VERSION,
-        [HEADER, OUTCOME, INPUTS, COUNTERS, DIGESTS, VERDICT],
+        [HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, RULE_USE, SPELLINGS],
     )?;
     let end = opened.end;
-    let [header, outcome, inputs, counters, digests, verdict] = opened.sections;
+    let [header, outcome, inputs, counters, edits, digests, verdict, binding, rule_use, spellings] =
+        opened.sections;
 
     let mut d = super::required(header, end, "shard has no header section")?;
     let observer = d.digest()?;
@@ -201,6 +267,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
     })?;
     d.finish()?;
 
+    let (edits, edits_at) = match edits {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = edits::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
     let (digests, digests_at) = match digests {
         None => (None, None),
         Some(mut d) => {
@@ -217,6 +291,30 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             (Some(v), Some(at))
         }
     };
+    let (binding, binding_at) = match binding {
+        None => (None, 0),
+        Some(mut d) => {
+            let (v, at) = agreement::decode_binding(&mut d)?;
+            d.finish()?;
+            (Some(v), at)
+        }
+    };
+    let (rule_use, rule_use_at) = match rule_use {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = agreement::decode_rule_use(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
+    let (spellings, spellings_at) = match spellings {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = spellings::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
 
     let shard = Shard {
         observer,
@@ -227,6 +325,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         counters,
         digests,
         verdict,
+        edits,
+        binding,
+        rule_use,
+        spellings,
     };
     if let Some((l, what)) = violation(&shard) {
         let at = match l {
@@ -240,6 +342,16 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             Loc::Verdict(l) => verdict_at
                 .as_ref()
                 .map_or_else(|| unreachable!("a verdict violation without verdict"), |o| o.of(l)),
+            Loc::Edits(l) => edits_at
+                .as_ref()
+                .map_or_else(|| unreachable!("an edits violation without edits"), |o| o.of(l)),
+            Loc::Agreement(agreement::Loc::Binding) => binding_at,
+            Loc::Agreement(l) => rule_use_at
+                .as_ref()
+                .map_or_else(|| unreachable!("a rule_use violation without rule_use"), |o| o.of(l)),
+            Loc::Spellings(l) => spellings_at
+                .as_ref()
+                .map_or_else(|| unreachable!("a spellings violation without spellings"), |o| o.of(l)),
         };
         return Err(malformed(at, what));
     }
@@ -249,13 +361,17 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
 // ---------------------------------------------------------------------------
 // JSON
 
-const NAMES: [SectionName; 6] = [
+const NAMES: [SectionName; 10] = [
     SectionName { id: HEADER, name: "header", required: true },
     SectionName { id: OUTCOME, name: "outcome", required: true },
     SectionName { id: INPUTS, name: "inputs", required: false },
     SectionName { id: COUNTERS, name: "counters", required: true },
+    SectionName { id: EDITS, name: "edits", required: false },
     SectionName { id: DIGESTS, name: "digests", required: false },
     SectionName { id: VERDICT, name: "verdict", required: false },
+    SectionName { id: BINDING, name: "binding", required: false },
+    SectionName { id: RULE_USE, name: "rule_use", required: false },
+    SectionName { id: SPELLINGS, name: "spellings", required: false },
 ];
 
 pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
@@ -287,11 +403,23 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
         .map(|c| object(vec![("name", Value::Str(c.name.clone())), ("value", json_uv(c.value))]))
         .collect();
     sections.push(("counters", Value::Array(counters)));
+    if let Some(x) = &s.edits {
+        sections.push(("edits", edits::render(x)));
+    }
     if let Some(d) = &s.digests {
         sections.push(("digests", digests::render(d)));
     }
     if let Some(v) = &s.verdict {
         sections.push(("verdict", verdict::render(v)));
+    }
+    if let Some(b) = &s.binding {
+        sections.push(("binding", agreement::render_binding(b)));
+    }
+    if let Some(r) = &s.rule_use {
+        sections.push(("rule_use", agreement::render_rule_use(r)));
+    }
+    if let Some(x) = &s.spellings {
+        sections.push(("spellings", spellings::render(x)));
     }
     render_container(Shard::KIND, Shard::VERSION, sections, extras)
 }
@@ -299,7 +427,19 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
 /// The shard and the unknown ignorable sections of a JSON rendering.
 pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
     let s = read_container(v, Shard::KIND, Shard::VERSION, &NAMES)?;
-    let [Some(header), Some(outcome), inputs, Some(counters), digests, verdict] = s.known else {
+    let [
+        Some(header),
+        Some(outcome),
+        inputs,
+        Some(counters),
+        edits,
+        digests,
+        verdict,
+        binding,
+        rule_use,
+        spellings,
+    ] = s.known
+    else {
         unreachable!("read_container returns every required section")
     };
     let root = At::Root;
@@ -331,10 +471,30 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         })
     })?;
 
+    let edits = edits.map(|v| edits::read(v, &sections.key("edits"))).transpose()?;
     let digests = digests.map(|v| digests::read(v, &sections.key("digests"))).transpose()?;
     let verdict = verdict.map(|v| verdict::read(v, &sections.key("verdict"))).transpose()?;
+    let binding =
+        binding.map(|v| agreement::read_binding(v, &sections.key("binding"))).transpose()?;
+    let rule_use =
+        rule_use.map(|v| agreement::read_rule_use(v, &sections.key("rule_use"))).transpose()?;
+    let spellings =
+        spellings.map(|v| spellings::read(v, &sections.key("spellings"))).transpose()?;
 
-    let shard = Shard { observer, phase, round, outcome, inputs, counters, digests, verdict };
+    let shard = Shard {
+        observer,
+        phase,
+        round,
+        outcome,
+        inputs,
+        counters,
+        digests,
+        verdict,
+        edits,
+        binding,
+        rule_use,
+        spellings,
+    };
     if let Some((l, what)) = violation(&shard) {
         return Err(JsonFormError { path: l.path(), message: what.to_owned() });
     }

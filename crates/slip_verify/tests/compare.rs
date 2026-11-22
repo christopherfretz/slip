@@ -122,6 +122,10 @@ fn check_valid(v: &Verdict) {
         counters: vec![],
         digests: Some(Digests { scheme: SCHEME, tu: tu_digest(&[]), groups: vec![] }),
         verdict: Some(v.clone()),
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     };
     if let Err(e) = shard.validate() {
         panic!("verdict rejected by slip_model: {e}\n{v:?}");

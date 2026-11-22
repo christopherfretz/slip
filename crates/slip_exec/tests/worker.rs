@@ -278,6 +278,10 @@ fn ok_shard(job: &Job) -> Shard {
         counters: vec![],
         digests: None,
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 

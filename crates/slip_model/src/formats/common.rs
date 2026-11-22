@@ -362,6 +362,13 @@ pub(super) fn json_bytes(bytes: &[u8]) -> Value {
     }
 }
 
+pub(super) fn read_bool(v: &Value, at: &At<'_>) -> JResult<bool> {
+    match v {
+        Value::Bool(b) => Ok(*b),
+        _ => Err(at.error("wrong type: expected true or false")),
+    }
+}
+
 pub(super) fn read_str<'v>(v: &'v Value, at: &At<'_>) -> JResult<&'v str> {
     v.as_str().ok_or_else(|| at.error("wrong type: expected a string"))
 }
