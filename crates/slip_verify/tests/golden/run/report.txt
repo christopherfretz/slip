@@ -1,0 +1,32 @@
+plan 0101010101010101010101010101010101010101010101010101010101010101
+round 1
+declared 0202020202020202020202020202020202020202020202020202020202020202 rules 0303030303030303030303030303030303030303030303030303030303030303
+image /src/app => /tmp/post/app
+image /src/\xfflib => /tmp/post/lib
+selected 5 of 6
+observer verified 1
+observer unchanged 0
+observer mismatch 2
+observer not_parsed 1
+observer unverifiable 1
+observer never_parsed 0
+observer failed 0
+mismatch indeterminate_only 0
+finding changed 1001000000000000 observers 2 app::run()
+  first /src/app/main.cpp
+  pre  /src/app/main.cpp:12:5 CallExpr refers to lib::f(long)
+  post /src/app/main.cpp:12:5 CallExpr refers to app::f(int)
+finding added 1002000000000000 observers 1 app::fresh
+  first /src/app/main.cpp
+  pre  -
+  post /src/app/main.cpp:12:5 CallExpr
+finding derived_changed 1003000000000000 observers 1 app::S<int>
+  first /src/app/main.cpp
+finding indeterminate 1004000000000000 observers 1 app::g()
+  first /src/app/other.cpp
+findings 6 total, 5 listed, 4 group(s)
+exemption changed 1021000000000000 observers 2
+exemption created 1022000000000000 observers 1
+exemption removed 1021000000000000 observers 2
+exemption removed 1023000000000000 observers 0
+verdict not verified
