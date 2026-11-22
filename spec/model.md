@@ -403,6 +403,8 @@ To be listed as work packages land:
 
 ## Open questions
 
+- The run record does not forbid two jobs with the same observer and
+  attempt, and its reader does not reject them.
 - Windows paths and command lines: out of scope until a corpus needs them.
 - Which environment variables enter `Command.env`. Candidates: `CPATH`,
   `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `SDKROOT`, `SOURCE_DATE_EPOCH`.
