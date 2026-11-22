@@ -753,7 +753,7 @@ fn s2_exemptions_from_declared() {
 
 // §4.2: malformed groups are an error naming the group and the image.
 #[test]
-fn landed_malformed_groups_are_rejected() {
+fn s4_2_malformed_groups_are_rejected() {
     let good = decl("/a.h", &[u(1, 1), u(2, 2)]);
     let file = b"/a.h".to_vec();
     let check = |g: Group, expect: fn(Vec<u8>, bool) -> CompareError| {
@@ -857,7 +857,7 @@ fn s3_comparable_schemes() {
 
 // §3: `comparable` also checks what §4.1 step 1 trusts.
 #[test]
-fn landed_comparable_checks_group_order_and_tu() {
+fn s3_comparable_checks_group_order_and_tu() {
     let groups = vec![decl("/b.h", &[u(1, 1)]), decl("/a.h", &[u(2, 2)])];
     let unsorted = Digests { scheme: SCHEME, tu: tu_digest(&groups), groups };
     let a = digests(vec![decl("/a.h", &[u(1, 1)])]);
@@ -974,7 +974,7 @@ fn s4_1_at_sums_equal_tu_with_an_indeterminate_unit() {
 // §4.1: at_sums does not rely on sorted groups, and reports an id given
 // twice in one image only.
 #[test]
-fn landed_at_sums_unsorted_and_duplicate_groups() {
+fn s4_1_at_sums_unsorted_and_duplicate_groups() {
     let a = decl("/a.h", &[u(1, 1)]);
     let b = decl("/b.h", &[u(2, 2)]);
     let b2 = decl("/b.h", &[u(2, 3)]);

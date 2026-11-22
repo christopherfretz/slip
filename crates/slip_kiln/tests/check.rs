@@ -176,9 +176,9 @@ fn s6_objective_c_refused() {
     assert_eq!(lang(&["clang", "-x", "objective-c++", "a.cpp"]), "objective-c++");
 }
 
-// Landed: other inputs Kiln would not compile as the build's compiler would.
+// §6.2 rejection 5: other inputs Kiln would not compile as the build's compiler would.
 #[test]
-fn landed_other_languages_refused() {
+fn s6_2_other_languages_refused() {
     let lang = |args: &[&str]| match check(args) {
         Err(Rejection::UnsupportedLanguage(d)) => d,
         other => panic!("{args:?}: {other:?}"),

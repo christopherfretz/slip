@@ -761,10 +761,19 @@ counts):
   error at the same place: `clang/tools/clang-fuzzer/ClangFuzzer.cpp` and
   `ClangObjectiveCFuzzer.cpp` name `uint8_t` without including a header
   that declares it (no target of the configuration builds them).
-- With Kiln at `4bfd999da`, six units are `failed`: the front end panics
-  in two defects of Kiln's constant evaluator
-  (`docs/requests/KD1-oven-panics-llvm.md`). They become `ok` when Slip's
-  pin moves past the fixes, and the baseline is recorded again then.
+- With Kiln at `62d190007`, nineteen units are `failed`: the front end
+  panics in three defects of Kiln's constant evaluator. Six are the two
+  of `docs/requests/KD1-oven-panics-llvm.md`; thirteen (eleven of
+  `llvm/lib/DWARFLinker/Parallel`, two unit tests) include
+  `llvm/ADT/ConcurrentHashtable.h`, whose parenthesised `std::min` call
+  as a shift count panics a fast path Kiln added between Slip's two pins
+  (`docs/requests/KD2-oven-minmax-paren.md`). They become `ok` when
+  Slip's pin moves past the fixes, and the baseline is recorded again
+  then.
+- The parse task on Kiln's front-end entry (WP-025) gives every unit
+  that is not `failed` the shard the dependency-file flow of WP-010 gave
+  it at `4bfd999da`: 4040 `ok` and 2 `diagnosed` shards with the same
+  outcome and the same inputs, entry for entry. `pp.tokens` is 2 787 822 931.
 
 ## Tests
 
