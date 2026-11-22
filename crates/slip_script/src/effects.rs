@@ -78,11 +78,20 @@ pub(crate) enum Effect {
     /// A new code value (not empty).
     Code(Vec<HeldPiece>),
     Group,
-    Edit { edit: Edit, group: Option<usize>, pieces: u64, bytes: u64 },
+    Edit {
+        edit: Edit,
+        group: Option<usize>,
+        pieces: u64,
+        bytes: u64,
+    },
     Report(Report),
     /// The declared changes not already recorded.
     Changed(Vec<Changed>),
-    Renamed { entity: Entity, name: Vec<u8>, rule: Rule },
+    Renamed {
+        entity: Entity,
+        name: Vec<u8>,
+        rule: Rule,
+    },
     /// A request that repeats one already recorded (§7.5 rule 4).
     Nothing,
 }
@@ -258,7 +267,10 @@ impl Host<'_> {
         if self.subject.is_live(v) {
             Ok(v)
         } else {
-            Err(Stop::Internal(format!("Subject::{method} gave {} that is not live", v.sort_name())))
+            Err(Stop::Internal(format!(
+                "Subject::{method} gave {} that is not live",
+                v.sort_name()
+            )))
         }
     }
 
@@ -602,7 +614,10 @@ impl Host<'_> {
         let e = self.entity_arg(h)?;
         let v = Value::Entity(e);
         if name.len() as u64 > self.limits.name_bytes {
-            return limit(&format!("an identifier of {} bytes", name.len()), self.limits.name_bytes);
+            return limit(
+                &format!("an identifier of {} bytes", name.len()),
+                self.limits.name_bytes,
+            );
         }
         match check_identifier(name) {
             Ok(()) => {}

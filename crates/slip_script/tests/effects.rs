@@ -153,7 +153,8 @@ fn world() -> World {
     let decl = |f: &mut FakeSubject, entity, name: Option<Range>| {
         f.declaration(FakeDeclaration { entity, name, definition: false });
     };
-    for (e, needle) in [(lib, "lib"), (foo, "foo"), (bar, "bar"), (hidden, "hidden"), (main, "main")]
+    for (e, needle) in
+        [(lib, "lib"), (foo, "foo"), (bar, "bar"), (hidden, "hidden"), (main, "main")]
     {
         let r = at(&f, t, needle, 0);
         decl(&mut f, e, Some(r));
@@ -198,7 +199,8 @@ fn world() -> World {
         ..FakeExpression::at(Some(at(&f, t, "lib::foo(1, 2)", 0)))
     });
     let arg1 = f.expression(FakeExpression::at(Some(at(&f, t, "1", 0))));
-    let x_null = f.expression(FakeExpression { unit_keys: Ok(vec![U_K]), ..FakeExpression::at(None) });
+    let x_null =
+        f.expression(FakeExpression { unit_keys: Ok(vec![U_K]), ..FakeExpression::at(None) });
     let near = at(&f, t, "other", 0);
     f.nearest.push((Value::Entity(other_foo), near));
 
@@ -318,7 +320,8 @@ impl<'w, 's> Run<'w, 's> {
                 if f.is(e, wire::KIND_PARAMETER) {
                     let fh = self.handle(Value::Entity(f.parent(e).expect("a function")));
                     let ps = self.ints(wire::OP_PARAMETERS_OF, &[fh], &[]);
-                    let i = f.parameters(Value::Entity(f.parent(e).expect("a function")))
+                    let i = f
+                        .parameters(Value::Entity(f.parent(e).expect("a function")))
                         .expect("parameters")
                         .iter()
                         .position(|&p| p == e)
@@ -1212,13 +1215,13 @@ fn s7_5_subject_unit_keys_statuses() {
         Ok(errc(Errc::Unsupported))
     );
     for e in [Errc::InvalidHandle, Errc::WrongKind, Errc::InvalidArgument, Errc::LimitExceeded] {
-        host_failure(under(&w, Lie::UnitKeys(Err(e)), "changed"), &["Subject::unit_keys", e.name()]);
+        host_failure(
+            under(&w, Lie::UnitKeys(Err(e)), "changed"),
+            &["Subject::unit_keys", e.name()],
+        );
     }
     host_failure(under(&w, Lie::UnitKeys(Ok(vec![])), "changed"), &["Subject::unit_keys"]);
-    host_failure(
-        under(&w, Lie::UnitKeys(Ok(vec![U_K, U_K])), "changed"),
-        &["Subject::unit_keys"],
-    );
+    host_failure(under(&w, Lie::UnitKeys(Ok(vec![U_K, U_K])), "changed"), &["Subject::unit_keys"]);
 }
 
 /// `Subject::rename_rule` (§7.5 rule 3): `unsupported` is passed on; any
@@ -1703,9 +1706,8 @@ fn s4_a_failed_operation_leaves_the_output_as_without_it() {
                 .collect();
             let bytes: Vec<u8> = match op {
                 wire::OP_LOOKUP => {
-                    [&b"lib::foo"[..], b"lib::bar", b"other::foo", b"hidden", b"lib"]
-                        [rng.below(5)]
-                    .to_vec()
+                    [&b"lib::foo"[..], b"lib::bar", b"other::foo", b"hidden", b"lib"][rng.below(5)]
+                        .to_vec()
                 }
                 _ if wire::operation(op).is_some_and(|o| o.text) => {
                     texts[rng.below(texts.len())].to_vec()
