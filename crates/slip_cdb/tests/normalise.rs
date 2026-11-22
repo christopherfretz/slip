@@ -501,6 +501,16 @@ fn s5_step5_non_source_extensions_not_a_compile() {
     }
 }
 
+// §5 step 5: the extension is judged before the file is looked for, so a link
+// step whose object file is not built yet is `not_a_compile`, not
+// `missing_file`.
+#[test]
+fn s5_step5_non_source_extension_before_existence() {
+    let t = fixture();
+    assert_eq!(reason(&t, &["clang++", "gone.o", "-o", "app"], "gone.o"), Reason::NotACompile);
+    assert_eq!(reason(&t, &["clang++", "gone.o"], "main.cpp"), Reason::NotACompile);
+}
+
 #[test]
 fn s5_step5_extension_compared_exactly() {
     let t = fixture();

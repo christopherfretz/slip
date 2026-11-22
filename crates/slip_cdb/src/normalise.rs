@@ -205,6 +205,11 @@ pub fn normalise(
             ));
         }
     };
+    if let Some(extension) = Path::new(input).extension()
+        && extension.to_str().is_some_and(|e| NOT_SOURCE_EXTENSIONS.contains(&e))
+    {
+        return Err(exclude(Reason::NotACompile, format!("input `{input}` is not a source file")));
+    }
     let directory_path = Path::new(directory);
     let main = std::fs::canonicalize(directory_path.join(input)).map_err(|e| {
         let detail = if e.kind() == std::io::ErrorKind::NotFound {
@@ -220,11 +225,6 @@ pub fn normalise(
             Reason::MalformedEntry,
             format!("file does not match the command: `{file}` is not the input `{input}`"),
         ));
-    }
-    if let Some(extension) = Path::new(input).extension()
-        && extension.to_str().is_some_and(|e| NOT_SOURCE_EXTENSIONS.contains(&e))
-    {
-        return Err(exclude(Reason::NotACompile, format!("input `{input}` is not a source file")));
     }
 
     // Result.

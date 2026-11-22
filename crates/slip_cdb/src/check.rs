@@ -34,7 +34,7 @@ pub struct ByExtension;
 pub const LANGUAGE_NAMES: &[(&str, Language)] = &[
     ("c", Language::C),
     ("c-header", Language::C),
-    ("c-cpp-output", Language::C),
+    ("cpp-output", Language::C),
     ("c++", Language::Cxx),
     ("c++-header", Language::Cxx),
     ("c++-cpp-output", Language::Cxx),

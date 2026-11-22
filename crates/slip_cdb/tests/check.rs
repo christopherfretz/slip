@@ -65,7 +65,7 @@ fn s6_language_values() {
     let rows = [
         ("c", Language::C),
         ("c-header", Language::C),
-        ("c-cpp-output", Language::C),
+        ("cpp-output", Language::C),
         ("c++", Language::Cxx),
         ("c++-header", Language::Cxx),
         ("c++-cpp-output", Language::Cxx),
@@ -95,7 +95,7 @@ fn s6_language_values() {
 // §6: any other `-x` value is UnsupportedLanguage, with the value as detail.
 #[test]
 fn s6_other_language_values_unsupported() {
-    for value in ["cuda", "assembler", "none", "C++", "cpp-output", "c++-module"] {
+    for value in ["cuda", "assembler", "none", "C++", "c-cpp-output", "c++-module"] {
         assert_eq!(unsupported(&["clang", "-x", value, "x.cpp"]), value);
     }
 }
