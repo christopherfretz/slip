@@ -1,0 +1,5 @@
+# also changes: `0-implicit-inline`, `0-constexpr-kind` and `0-trivial` (Kiln marks a
+# function defaulted on its declaration), and `ty-exception-spec` (a defaulted
+# member is of the deferrable class). decl_func::tests::fn_spec_defaulted_tag
+# isolates the tag.
+changed C::C()

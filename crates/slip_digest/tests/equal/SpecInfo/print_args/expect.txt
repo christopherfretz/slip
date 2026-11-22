@@ -1,0 +1,1 @@
+# the `templ` row is written by the payload records (decl_func.rs, decl_class.rs)

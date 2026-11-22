@@ -1,0 +1,2 @@
+# Not isolated: for one member pointer type, derived follows from the member named, so MemberPtr.member changes too; unit test value::tests::null_and_member_kinds_by_their_rows isolates MemberPtr.derived.
+changed x

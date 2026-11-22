@@ -103,6 +103,9 @@ pub(crate) struct Walk<'a> {
     /// The unit digests of content-keyed entities, needed by their keys.
     pub content: HashMap<DeclId, Hashed>,
     pub content_in_progress: HashSet<DeclId>,
+    /// Content digests of the constants a pointer names (`PtrBase::Const`),
+    /// by `ConstValueId` index (`value::const_digest`).
+    pub const_memo: HashMap<u32, Hashed>,
     /// The scopes whose unnamed types and fields have been numbered
     /// (`spec/digest.md` §3.3), and each one's ordinal.
     pub ordinal_scopes: HashSet<DeclId>,
@@ -151,6 +154,7 @@ impl<'a> Walk<'a> {
             keys_in_progress: HashSet::new(),
             content: HashMap::new(),
             content_in_progress: HashSet::new(),
+            const_memo: HashMap::new(),
             ordinal_scopes: HashSet::new(),
             ordinal_of: HashMap::new(),
             taints: Vec::new(),

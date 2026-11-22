@@ -1,0 +1,5 @@
+# a parameter's depth is the nesting of its list, which is the key's parent
+# chain: depth changes only together with the key (no edit isolates the
+# row; landed WP-029)
+removed M
+added A::M

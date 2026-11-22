@@ -217,7 +217,53 @@ pub(crate) fn requires_clause(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 
 /// The walk of one expression ("The walk" above).
 fn walk(w: &mut Walk<'_>, s: &mut Stream, root: ExprId, keep_paren: bool) {
+    #[cfg(test)]
+    let start = capture::enter(s);
     walk_items(w, s, Item::Node(root, keep_paren));
+    #[cfg(test)]
+    capture::leave(s, start);
+}
+
+/// For other files' tests: the bytes each outermost expression walk
+/// writes, so a test of what holds an expression need not spell the
+/// expression's own rows.
+#[cfg(test)]
+pub(crate) mod capture {
+    use std::cell::RefCell;
+
+    use crate::stream::Stream;
+
+    thread_local! {
+        static CAPTURE: RefCell<Option<(u32, Vec<Vec<u8>>)>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn enter(s: &Stream) -> Option<usize> {
+        CAPTURE.with_borrow_mut(|c| {
+            let (depth, _) = c.as_mut()?;
+            *depth += 1;
+            (*depth == 1).then(|| s.as_bytes().len())
+        })
+    }
+
+    pub(super) fn leave(s: &Stream, start: Option<usize>) {
+        CAPTURE.with_borrow_mut(|c| {
+            if let Some((depth, walks)) = c.as_mut() {
+                *depth -= 1;
+                if let Some(start) = start {
+                    walks.push(s.as_bytes()[start..].to_vec());
+                }
+            }
+        });
+    }
+
+    /// `f`'s result and the bytes of each outermost expression walk it
+    /// made, in order.
+    pub(crate) fn captured<R>(f: impl FnOnce() -> R) -> (R, Vec<Vec<u8>>) {
+        CAPTURE.with_borrow_mut(|c| *c = Some((0, Vec::new())));
+        let r = f();
+        let walks = CAPTURE.with_borrow_mut(|c| c.take()).map(|(_, w)| w).unwrap_or_default();
+        (r, walks)
+    }
 }
 
 /// The loop of [`walk`], from one item.

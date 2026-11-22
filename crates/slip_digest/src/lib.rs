@@ -62,19 +62,26 @@
 //! | `expr::child_keep_paren(w, s, e)` | `child`, an outermost `ParenExpr` written with its rows: for a `DependentDecltype` profile (§7 "Parentheses") |
 //! | `expr_dep::profile(w, s, p)`, `expr_dep::profile_expr(w, s, e)` | pending (`Area::Expr`) |
 //! | `stmt::child(w, s, st)` | pending (`Area::Stmt`) |
-//! | `value::value(w, s, v)`, `value::string(w, s, l)` | pending (`Area::Value`) |
-//! | `local::write_decl(w, s, d)` | `decl` (§2.4): pending (`Area::Local`) |
-//! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each: pending (`Area::DeclData`) |
+//! | `value::value(w, s, v)`, `value::string(w, s, l)` (`value.rs`) | `value`: a constant in place by structure, a constant it points to by content digest (§8); `string`: a string literal by content (§10.3) |
+//! | `local::write_decl(w, s, d)` | `decl` (§2.4): a local entity's ordinal and stream, a block-scope variable with linkage a `ref`, a block-scope function a `ref` and its own default arguments; a local type pending (`Area::Local`) |
+//! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each; a function's and a variable's language linkage (§5.6 `ScopeData`) |
+//! | `decl_func::implicit_instantiation(w, e)` | nothing: whether the entity is an implicit instantiation (its own kind, else an enclosing one), the first rule of §11.9 |
+//! | `decl_func::definition_class(w, e)` | nothing: whether the entity is of the §11.9 definition class (defined on use, implicit, or defaulted on its first declaration) |
+//! | `decl_func::instantiated_on_use(w, e)` | nothing: whether a function or variable is an implicit instantiation or named by `extern template` (its own kind, else an enclosing one) |
+//! | `decl_func::var_type(w, d, e)` | nothing: the type a variable's unit holds, an array of unknown bound completed by another declaration |
+//! | `units::defining_decl(w, e)` | nothing: the defining declaration of a variable ([basic.def]) or Kiln's `definition` of another entity |
+//! | `Walk::linkage_spec(d, all)` (`keys.rs`) | nothing: the innermost `LinkageSpec` around `d` and its language (`None` for an unknown byte), through namespaces only unless `all` |
 //! | `decl_class::{typedef_data, enum_data, enumerator_data, record_data, field_data}(w, s, d)` | one `record T` of §5.5 each: pending (`Area::DeclData`) |
 //! | `decl_scope::{friend_target, namespace_data, static_assert_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.6 each, and the rows of `ColdDeclData` (§5.7): pending (`Area::DeclData`) |
-//! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1): pending (`Area::Templ`) |
-//! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5): pending (`Area::Templ`) |
+//! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1), which brings in `SpecInfo`, `MemberSpecInfo` or `PartialSpecInfo` (§9.4) |
+//! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5), each in its empty form when absent |
 //! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4): pending (`Area::Local`) |
 //! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1): pending (`Area::Stmt`) |
-//! | `attrs::decl_attrs(w, s, d)` | pending (`Area::Attrs`) |
+//! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
+//! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
 //! | `other::module_rows(w, s, d)` | pending (`Area::Other`) |
-//! | `templ::decl_maps(w, s, d)` | `TemplateTables.defaults` written; the other rows keyed by `DeclId` pending (`Area::Templ`) |
-//! | `templ::param_object(w, s, d)` | pending (`Area::Templ`) |
+//! | `templ::decl_maps(w, s, d)` | the `in` rows of `TemplateTables` keyed by `DeclId` (§9.5), each in its empty form when absent |
+//! | `templ::param_object(w, s, d)` | the value of a `TemplateParamObject` (`param_object_values`), at its `data` position |
 //!
 //! A key is computed with the unit's state put aside (`Walk::in_key`):
 //! an area must not write a local ordinal from inside one (`write_ref`
