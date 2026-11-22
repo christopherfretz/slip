@@ -502,7 +502,7 @@ impl Walk<'_> {
     ///   (`spec/landed/digest/WP-032.md`).
     ///
     /// `None` for any other declaration, which keeps its namespace.
-    fn friend_class(&self, e: DeclId) -> Option<DeclId> {
+    pub(crate) fn friend_class(&self, e: DeclId) -> Option<DeclId> {
         let ast = self.ast;
         let n = ast.decls.get(e);
         let kind = n.kind();
@@ -748,7 +748,7 @@ impl Walk<'_> {
 
     /// The declaration whose name names unnamed tag `e`, by the first
     /// three rules of digest §3.3.
-    fn unnamed_tag_by(&self, e: DeclId) -> Option<DeclId> {
+    pub(crate) fn unnamed_tag_by(&self, e: DeclId) -> Option<DeclId> {
         let ast = self.ast;
         if let Some(td) = ast.decls.typedef_for_anon(e) {
             return Some(td);
@@ -1011,6 +1011,16 @@ impl Walk<'_> {
                 let target = ast.using_target(e);
                 self.write_ref_opt(&mut s, target);
             }
+            KeyKind::Field if ast.decls.get(e).misc().name_independent() => {
+                match self.name_independent_ordinal(e) {
+                    Some(n) => {
+                        s.uv(n);
+                    }
+                    None => {
+                        s.uv(u64::MAX).indeterminate(Cause::Unaccounted("key/name-independent"));
+                    }
+                }
+            }
             KeyKind::Namespace
             | KeyKind::Class
             | KeyKind::Enumeration
@@ -1039,6 +1049,31 @@ impl Walk<'_> {
         let h = s.finish(DISC_TAG);
         let h = self.hashed(h);
         Some((h.digest, h.cause))
+    }
+
+    /// The ordinal of name-independent member `e` (P2169: a member named
+    /// `_` in C++26, [basic.scope.scope]/5) among the name-independent
+    /// members of its kind and name in its class, in member order: two
+    /// of them in one class are two entities of one name, so the ordinal
+    /// is the discriminator that tells them apart
+    /// (`spec/landed/digest/WP-039.md`). `None` if `e` is not found
+    /// among its class's members.
+    pub(crate) fn name_independent_ordinal(&self, e: DeclId) -> Option<u64> {
+        let ast = self.ast;
+        let n = ast.decls.get(e);
+        let scope = self.entity(n.ctx()?);
+        let holder = ast.definition(scope).unwrap_or(scope);
+        let mut ordinal = 0u64;
+        for m in ast.members(holder) {
+            if m == e {
+                return Some(ordinal);
+            }
+            let mn = ast.decls.get(m);
+            if mn.kind() == n.kind() && mn.name() == n.name() && mn.misc().name_independent() {
+                ordinal += 1;
+            }
+        }
+        None
     }
 
     /// The function discriminator of digest-kinds §3.3, written into `s`:
@@ -1128,5 +1163,74 @@ fn merge(a: Option<Cause>, b: Option<Cause>) -> Option<Cause> {
     match (a, b) {
         (None, x) | (x, None) => x,
         (Some(x), Some(y)) => Some(crate::units::merge(Some(x), y)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use slip_kiln::kiln::ast::names::{DeclNameView, OverloadedOperator};
+    use slip_model::keys::{KeyKind, Name, RuleTable};
+
+    use crate::Input;
+    use crate::tables::overloaded_operator;
+    use crate::walk::Walk;
+
+    /// Every overloadable operator, as a member of `S` (the allocation
+    /// functions static), one signature per group.
+    const OPERATORS: &str = "using Z = decltype(sizeof 0);\nstruct S {\n\
+        static void *operator new(Z); static void *operator new[](Z);\n\
+        static void operator delete(void *); static void operator delete[](void *);\n\
+        S operator~(); S operator!(); S operator->(); S operator++(); S operator--();\n\
+        S operator co_await();\n\
+        S operator+(int); S operator-(int); S operator*(int); S operator/(int);\n\
+        S operator%(int); S operator^(int); S operator&(int); S operator|(int);\n\
+        S operator=(int); S operator<(int); S operator>(int); S operator+=(int);\n\
+        S operator-=(int); S operator*=(int); S operator/=(int); S operator%=(int);\n\
+        S operator^=(int); S operator&=(int); S operator|=(int); S operator<<(int);\n\
+        S operator>>(int); S operator<<=(int); S operator>>=(int); S operator==(int);\n\
+        S operator!=(int); S operator<=(int); S operator>=(int); S operator<=>(int);\n\
+        S operator&&(int); S operator||(int); S operator,(int); S operator->*(int);\n\
+        S operator()(int); S operator[](int);\n};\n";
+
+    /// digest-kinds §3.2, §10.2 (WP-039): the key of `operator<op>` is
+    /// a function key named `operator` with the tag of `op`'s
+    /// `OverloadedOperator` row, for every row; no two operators share
+    /// a key name.
+    #[test]
+    fn the_key_of_an_operator_holds_its_row() {
+        let files = [("main.cpp", OPERATORS)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        let rules = RuleTable::empty();
+        let seen = slip_kiln::snippet::parse(&snippet, |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let mut w = Walk::new(&input, &rules);
+            let (mut seen, mut names) = (BTreeSet::new(), BTreeSet::new());
+            for d in p.ast.decls.ids() {
+                let DeclNameView::Operator(op) = p.ast.names.view(p.ast.decls.get(d).name()) else {
+                    continue;
+                };
+                let want = Name::Operator(u64::from(overloaded_operator::row(&op).tag));
+                let (key, cause) = w.compute_key(d).expect("an operator has a key");
+                assert_eq!(cause, None, "{op:?}");
+                assert_eq!(key.kind, KeyKind::Function, "{op:?}");
+                assert_eq!(key.name, want, "{op:?}");
+                assert!(seen.insert(op as u8), "{op:?} declared once");
+                assert!(names.insert(key.name), "{op:?}: its key name is another operator's");
+            }
+            seen
+        })
+        .expect("the snippet parses");
+        let every: BTreeSet<u8> =
+            (1..=u8::MAX).filter_map(OverloadedOperator::from_u8).map(|op| op as u8).collect();
+        assert_eq!(seen, every, "every row is declared");
     }
 }

@@ -521,3 +521,72 @@ pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         .filter(|&p| !crate::units::instantiated_friend_link(w, d, p));
     write_pattern_ref_opt(w, s, from);
 }
+
+#[cfg(test)]
+mod tests {
+    use slip_kiln::kiln::ast::DeclId;
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    use slip_model::keys::RuleTable;
+
+    use crate::Input;
+    use crate::stream::Stream;
+    use crate::walk::Walk;
+
+    /// The `param_object` stream of every template parameter object of
+    /// `src`, in arena order, with whether Kiln holds its value.
+    fn param_objects(src: &str) -> Vec<(bool, Vec<u8>)> {
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        let rules = RuleTable::empty();
+        slip_kiln::snippet::parse(&snippet, |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let mut w = Walk::new(&input, &rules);
+            let objects: Vec<DeclId> = p
+                .ast
+                .decls
+                .ids()
+                .filter(|&d| p.ast.decls.get(d).kind() == DeclKind::TemplateParamObject)
+                .collect();
+            objects
+                .into_iter()
+                .map(|d| {
+                    let held = p.ast.templates.param_object_value(d).is_some();
+                    let mut s = Stream::new();
+                    super::param_object(&mut w, &mut s, d);
+                    assert_eq!(s.cause(), None, "a plain class constant is determinate");
+                    (held, s.as_bytes().to_vec())
+                })
+                .collect()
+        })
+        .expect("the snippet parses")
+    }
+
+    /// digest-kinds §5.3 (`TemplateParamObject` stores 0 in `data`; its
+    /// value is read with `TemplateTables::param_object_value`, §9): the
+    /// row is `opt` then the value. Kiln makes one object per value, so
+    /// two arguments that differ in one member are two objects whose
+    /// streams differ, and the same value written twice is one object.
+    #[test]
+    fn param_object_writes_the_value() {
+        let objects = param_objects(
+            "struct V { int a, b; };\ntemplate <V> struct N {};\n\
+             N<V{1, 2}> x;\nN<V{1, 3}> y;\nN<V{1, 2}> z;\n",
+        );
+        assert_eq!(objects.len(), 2, "one object per value: {objects:?}");
+        let mut present = Stream::new();
+        present.opt(true);
+        for (held, bytes) in &objects {
+            assert!(held, "Kiln holds the value of a used object");
+            assert!(bytes.starts_with(present.as_bytes()), "the option is present: {bytes:?}");
+            assert!(bytes.len() > present.as_bytes().len(), "the value follows the option");
+        }
+        assert_ne!(objects[0].1, objects[1].1, "the objects differ in `b`");
+    }
+}

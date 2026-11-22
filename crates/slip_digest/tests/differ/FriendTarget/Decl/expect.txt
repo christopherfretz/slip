@@ -1,4 +1,4 @@
 changed X
-removed X::<friend>
-added X::<friend>
 changed f()
+added X::<friend f()>
+removed X::<friend Y>

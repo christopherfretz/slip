@@ -1,1 +1,5 @@
-added ?
+# pending
+# needs: expr
+# A type-constraint is profiled as an expression (Pending(Expr)), so the two
+# templates have one key and collide; their display names are alike too.
+added template <C2 T> void f(type-parameter-0-0)

@@ -1,1 +1,7 @@
-added ?
+# pending
+# needs: units
+# An explicit specialisation of a member template of an implicit class
+# specialisation (template <> template <class U> void A<long>::g(U);) is written
+# in source, so it is declared (§2.2), but units classes it derived
+# (Pending(Demand)), so its addition is not reported. The keys are distinct.
+added template <class> void A<long>::g(type-parameter-0-0)

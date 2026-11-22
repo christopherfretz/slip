@@ -1,1 +1,3 @@
-added ?
+added b
+added b::(anonymous enum for A)
+added b::A

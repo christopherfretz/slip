@@ -1057,7 +1057,7 @@ mod tests {
             units(src)
                 .into_iter()
                 .filter(|(class, name, _, _)| {
-                    *class == GroupClass::Derived && name.starts_with("m(type-parameter-0-0")
+                    *class == GroupClass::Derived && name.contains("::friend template <class> void m(")
                 })
                 .map(|(_, _, key, digest)| (key, digest))
                 .collect()

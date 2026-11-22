@@ -1,1 +1,1 @@
-added ?
+added template <int> void f()

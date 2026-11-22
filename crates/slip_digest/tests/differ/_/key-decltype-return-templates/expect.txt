@@ -1,1 +1,4 @@
-added ?
+# pending
+# needs: expr
+# A decltype operand is Pending(Expr): the two templates have one key and collide.
+added template <class> decltype(t.b) f(type-parameter-0-0)

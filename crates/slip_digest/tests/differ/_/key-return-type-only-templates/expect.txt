@@ -1,1 +1,1 @@
-added ?
+added template <class> long f(type-parameter-0-0)

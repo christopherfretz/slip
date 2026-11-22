@@ -25,14 +25,36 @@ use std::collections::{BTreeMap, BTreeSet};
 /// reason: each is a collision the walk marks (the units are
 /// indeterminate), caused by an area still pending or by what the test
 /// is about.
-pub const SAME_KEY: &[(&str, &str)] = &[(
-    "indeterminate/DeclFlags/0-invalid",
-    "an invalid redeclaration is an entity of its own in Kiln; the test is about it",
-)];
+pub const SAME_KEY: &[(&str, &str)] = &[
+    (
+        "indeterminate/DeclFlags/0-invalid",
+        "an invalid redeclaration is an entity of its own in Kiln; the test is about it",
+    ),
+    // The five below differ only in an expression the key profiles
+    // (§3.4: `function_disc`, `spec_disc`), and the expression area is
+    // pending (`expr_dep::profile_expr`): both entities profile as
+    // Pending(Expr) and get one key, which the walk marks a collision.
+    // Each test is `# pending`, `# needs: expr`.
+    ("differ/_/key-constraint-only", "a trailing requires-clause is Pending(Expr)"),
+    ("differ/_/key-decltype-return-templates", "a decltype operand is Pending(Expr)"),
+    ("differ/_/key-dependent-array-bound-templates", "a dependent array bound is Pending(Expr)"),
+    ("differ/_/key-partial-specs-by-constraint", "a requires-clause is Pending(Expr)"),
+    ("differ/_/key-type-constraint-only", "a type-constraint is Pending(Expr)"),
+];
 
 /// Display names two different units of one output are known to share:
 /// (directory, name, reason).
-pub const SAME_NAME: &[(&str, &str, &str)] = &[];
+pub const SAME_NAME: &[(&str, &str, &str)] = &[
+    // Names leave a requires-clause out (it is an expression, and names
+    // print no expressions): two members that differ in it alone, or
+    // whose instantiated signatures meet, share a name.
+    ("differ/FnSpec/0-not-selected", "X::~X<T>()", "prospective destructors differ in requires"),
+    ("differ/FnSpec/0-not-selected", "X<int>::~X()", "prospective destructors differ in requires"),
+    ("differ/_/key-member-of-template-overloads", "A<int>::f(int)", "f(T) requires C<T> and f(int) at T = int"),
+    // Kiln's argument printer (`write_arg_list`) writes a null pointer
+    // argument as `nullptr` whatever its type.
+    ("differ/_/key-null-pointer-typed", "N<nullptr>", "N<nullptr> against N<(int *)nullptr>"),
+];
 
 /// The content-keyed units whose display name is the word alone
 /// (`names.rs` `content_word`): two of them in one scope share it.

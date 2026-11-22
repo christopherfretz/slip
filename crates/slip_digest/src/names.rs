@@ -2,17 +2,40 @@
 //! (`verify.md` §6 `name`). For messages and the pair tests only: never
 //! hashed.
 //!
-//! The forms: a qualified name (`ns::C::m`, `(anonymous namespace)::x`);
-//! a function with its parameter types, as Kiln prints canonical types
-//! (`ns::f(int, char *)`), and ` const`, ` volatile`, ` &`, ` &&` after
-//! them for a method's qualifiers; a specialisation with its arguments
-//! (`ns::S<int>`); a content-keyed unit as its scope and `<kind>`
-//! (`ns::<static_assert>`); the order unit as `<order>`.
+//! The forms (`spec/landed/digest/WP-039.md` "Display names"):
+//!
+//! - a qualified name (`ns::C::m`, `(anonymous namespace)::x`), with a
+//!   specialisation's arguments (`ns::S<int>`);
+//! - a function with its parameter types, as Kiln prints canonical types
+//!   (`ns::f(int, char *)`), and ` const`, ` volatile`, ` &`, ` &&` after
+//!   them for a method's qualifiers; a deduction guide likewise;
+//! - a function template with its head and, but for a constructor, a
+//!   destructor and a conversion function, its return type before the
+//!   name (`template <class, int> void ns::f(type-parameter-0-0)`): both
+//!   are in its key (digest-kinds §3.3);
+//! - an unnamed class or enumeration as the name that keys it (digest
+//!   §3.3): `(anonymous struct for P)`, `(anonymous enum 1)` for the
+//!   second of its scope named by ordinal; its members under that name;
+//! - the variable of a structured binding declaration as its bindings,
+//!   `[a, b]`, and the holding variable of a tuple-like binding `a` as
+//!   `a (holding variable)`;
+//! - a using-declaration as `<using Q::n>` and a using-shadow as
+//!   `<shadow T>` (`T` the name of its target), under their scope;
+//! - a friend function keyed in the class that befriends it (digest-kinds
+//!   §3.3 `function`) as `A<int>::friend k(int)`;
+//! - a content-keyed unit as its scope and `<kind>`, with what it names
+//!   for a friend (`<friend C>`), a using-directive and a using-enum
+//!   (`ns::<using_directive n>`); the order unit as `<order>`.
+
+use std::collections::BTreeMap;
 
 use slip_kiln::kiln::ast::Ast;
 use slip_kiln::kiln::ast::DeclId;
+use slip_kiln::kiln::ast::decl::{DeclKind, FriendTarget};
 use slip_kiln::kiln::ast::dump::AstNames;
-use slip_kiln::kiln::ast::types::{PrintOptions, print_type, write_arg_list};
+use slip_kiln::kiln::ast::names::DeclNameView;
+use slip_kiln::kiln::ast::templates::TtpKind;
+use slip_kiln::kiln::ast::types::{PrintOptions, print_type, write_arg_list, write_nns};
 use slip_kiln::kiln::ast::types::{RefQual, TypeView};
 use slip_model::Digest;
 use slip_model::keys::KeyKind;
@@ -21,28 +44,18 @@ use crate::keys::{Role, info};
 use crate::units::Written;
 use crate::walk::Walk;
 
+/// How deep a name nests unnamed classes or friends before it stops
+/// (an AST is far shallower).
+const DEPTH: u32 = 64;
+
 /// Every unit's name, sorted by key (and by name for units sharing one).
 pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> {
+    let n = Names::new(w);
     let mut out: Vec<(Digest, String)> = written
         .iter()
         .map(|u| {
             let name = match u.entity {
-                Some(e) => {
-                    let mut name = entity_name(w.ast, u.read.unwrap_or(e), u.kind);
-                    // An entity Kiln prints without a name: its ordinal
-                    // (digest §3.3) when it has one.
-                    if name.is_empty() || name.ends_with("::") {
-                        match w.ordinal_of.get(&e) {
-                            Some(n) => {
-                                name.push_str("(unnamed ");
-                                name.push_str(&n.to_string());
-                                name.push(')');
-                            }
-                            None => name.push_str("(unnamed)"),
-                        }
-                    }
-                    name
-                }
+                Some(e) => n.unit(u.read.unwrap_or(e), e, u.kind),
                 None => "<order>".to_owned(),
             };
             (u.key, name)
@@ -53,37 +66,358 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
     out
 }
 
-/// The name of entity `e` of key kind `kind`.
+/// The name of entity `e` of key kind `kind`, read from `e` (for the
+/// order unit's unit tests, which have no walk at hand): the qualified
+/// form, without what needs the walk (the names of unnamed classes).
+#[cfg(test)]
 pub(crate) fn entity_name(ast: &Ast, e: DeclId, kind: KeyKind) -> String {
     let names = AstNames::new(ast);
     let mut out = String::new();
-    let n = ast.decls.get(e);
-    if let Role::Content(_) = info(n.kind()).role {
-        if let Some(ctx) = n.ctx()
-            && info(ast.decls.get(ctx).kind()).role != Role::Root
-        {
-            names.write_qualified_name(ctx, &mut out);
-            out.push_str("::");
-        }
-        out.push('<');
-        out.push_str(content_word(kind));
-        out.push('>');
-        return out;
-    }
     names.write_qualified_spec_name(e, &mut out);
-    if let Some((_, si)) = ast.spec_info(e) {
-        write_arg_list(&ast.types, ast, ast.types.canonical_args(si.args), &mut out);
-    } else if let Some((_, pi)) = ast.partial_spec_info(e) {
-        write_arg_list(&ast.types, ast, pi.canonical, &mut out);
-    }
-    let function = match ast.template_info(e).and_then(|i| i.pattern) {
-        Some(p) if kind == KeyKind::FunctionTemplate => Some(p),
-        Some(_) | None => info(n.kind()).function.then_some(e),
-    };
-    if let Some(f) = function {
-        function_suffix(ast, f, &mut out);
+    spec_args(ast, e, &mut out);
+    if kind != KeyKind::FunctionTemplate && info(ast.decls.get(e).kind()).function {
+        function_suffix(ast, e, &mut out);
     }
     out
+}
+
+/// What naming needs besides the AST: the walk (how unnamed classes and
+/// friends are keyed) and the holding variables of tuple-like bindings.
+struct Names<'n, 'w> {
+    w: &'n Walk<'w>,
+    ast: &'n Ast,
+    kiln: AstNames<'n>,
+    /// Holding variable to its binding.
+    holding: BTreeMap<DeclId, DeclId>,
+}
+
+impl<'n, 'w> Names<'n, 'w> {
+    fn new(w: &'n Walk<'w>) -> Self {
+        let ast = w.ast;
+        let holding = ast.decls.cold.binding_var.iter().map(|(b, &h)| (h, b)).collect();
+        Names { w, ast, kiln: AstNames::new(ast), holding }
+    }
+
+    /// The name of the unit of entity `e`, read from declaration `d`.
+    fn unit(&self, d: DeclId, e: DeclId, kind: KeyKind) -> String {
+        let ast = self.ast;
+        let mut out = String::new();
+        let n = ast.decls.get(d);
+        match info(n.kind()).role {
+            Role::Content(_) => {
+                self.scope(d, &mut out, 0);
+                out.push('<');
+                out.push_str(content_word(kind));
+                self.content_object(d, &mut out);
+                out.push('>');
+                return out;
+            }
+            Role::Entity(_)
+            | Role::Nothing
+            | Role::Transparent
+            | Role::Root
+            | Role::Local
+            | Role::InParent
+            | Role::Unsupported(_) => {}
+        }
+        match kind {
+            KeyKind::UsingDeclaration => {
+                self.scope(d, &mut out, 0);
+                out.push_str("<using ");
+                let mut q = String::new();
+                if let Some(nns) = ast.using_qualifier(d) {
+                    write_nns(&ast.types, ast, nns, &mut q);
+                }
+                out.push_str(&q);
+                // An inheriting constructor's name is the derived class's
+                // constructor in Kiln: written as `B::B`, the qualifier's
+                // last name.
+                if let DeclNameView::Constructor(_) = ast.names.view(n.name()) {
+                    let last = q.trim_end_matches("::").rsplit("::").next().unwrap_or_default();
+                    out.push_str(last.split('<').next().unwrap_or_default());
+                } else {
+                    self.kiln.write_name(d, &mut out);
+                }
+                out.push('>');
+                return out;
+            }
+            KeyKind::UsingShadow => {
+                self.scope(d, &mut out, 0);
+                out.push_str("<shadow ");
+                match ast.using_target(d) {
+                    Some(t) => out.push_str(&self.plain(t)),
+                    None => self.kiln.write_name(d, &mut out),
+                }
+                out.push('>');
+                return out;
+            }
+            KeyKind::Decomposition => {
+                self.scope(d, &mut out, 0);
+                self.kiln.write_diag_name(d, &mut out);
+                return out;
+            }
+            KeyKind::FunctionTemplate => {
+                if let Some(class) = self.w.friend_class(e) {
+                    out.push_str(&self.unit(class, self.w.entity(class), KeyKind::Class));
+                    out.push_str("::friend ");
+                }
+                self.function_template(d, &mut out);
+                return out;
+            }
+            KeyKind::Function => {
+                if let Some(class) = self.w.friend_class(e) {
+                    out.push_str(&self.unit(class, self.w.entity(class), KeyKind::Class));
+                    out.push_str("::friend ");
+                }
+            }
+            _ => {}
+        }
+        self.qualified(d, &mut out, 0);
+        spec_args(ast, d, &mut out);
+        let k = n.kind();
+        if info(k).function || k == DeclKind::CXXDeductionGuide {
+            function_suffix(ast, d, &mut out);
+        }
+        if self.holding.contains_key(&e) || self.holding.contains_key(&d) {
+            out.push_str(" (holding variable)");
+        }
+        // Two name-independent members of one name: their ordinal, as in
+        // the key (`keys.rs` `name_independent_ordinal`).
+        if kind == KeyKind::Field
+            && n.misc().name_independent()
+            && let Some(i) = self.w.name_independent_ordinal(d)
+        {
+            out.push_str(" (name-independent ");
+            out.push_str(&i.to_string());
+            out.push(')');
+        }
+        // An unnamed field or variable: the object of an anonymous class,
+        // named by it, or a bit-field, by its ordinal (digest §3.3).
+        if out.is_empty() || out.ends_with("::") {
+            let anonymous = n.ty().and_then(|q| ast.types.as_record(ast.types.canonical(q)));
+            match (anonymous, self.w.ordinal_of.get(&e)) {
+                (Some(r), _) if self.is_unnamed_tag(r) => {
+                    out.push_str("(object of ");
+                    self.unnamed_tag(r, &mut out);
+                    out.push(')');
+                }
+                (_, Some(i)) => {
+                    out.push_str("(unnamed ");
+                    out.push_str(&i.to_string());
+                    out.push(')');
+                }
+                (_, None) => out.push_str("(unnamed)"),
+            }
+        }
+        out
+    }
+
+    /// The name of an entity a unit refers to (a using-shadow's target,
+    /// what a friend names): qualified, with its arguments and a
+    /// function's signature.
+    fn plain(&self, d: DeclId) -> String {
+        let ast = self.ast;
+        let mut out = String::new();
+        if ast.decls.get(d).kind() == DeclKind::FunctionTemplate {
+            self.function_template(d, &mut out);
+            return out;
+        }
+        self.qualified(d, &mut out, 0);
+        spec_args(ast, d, &mut out);
+        let k = ast.decls.get(d).kind();
+        if info(k).function || k == DeclKind::CXXDeductionGuide {
+            function_suffix(ast, d, &mut out);
+        }
+        out
+    }
+
+    /// What a content-keyed unit names, after its word: ` <target>` for
+    /// a friend, a using-directive and a using-enum.
+    fn content_object(&self, d: DeclId, out: &mut String) {
+        let ast = self.ast;
+        let k = ast.decls.get(d).kind();
+        if k == DeclKind::Friend {
+            out.push(' ');
+            match ast.decls.friend_target(d) {
+                FriendTarget::Decl(x) => out.push_str(&self.plain(x)),
+                FriendTarget::Type { ty, owned_tag: _ } => {
+                    out.push_str(&print_type(&ast.types, ast, ty, PrintOptions::CANONICAL));
+                }
+            }
+        } else if (k == DeclKind::UsingDirective || k == DeclKind::UsingEnum)
+            && let Some(t) = ast.using_target(d)
+        {
+            out.push(' ');
+            out.push_str(&self.plain(t));
+        }
+    }
+
+    /// `template <…> R name(params)` of function template `t`.
+    fn function_template(&self, t: DeclId, out: &mut String) {
+        let ast = self.ast;
+        let Some(i) = ast.template_info(t).copied() else {
+            self.qualified(t, out, 0);
+            return;
+        };
+        self.head(i.params, out, 0);
+        out.push(' ');
+        let f = i.pattern.unwrap_or(t);
+        let shows_return = !matches!(
+            ast.decls.get(f).kind(),
+            DeclKind::CXXConstructor | DeclKind::CXXDestructor | DeclKind::CXXConversion
+        );
+        if shows_return
+            && let Some(q) = ast.decls.get(f).ty()
+            && let Some(p) = ast.types.proto(q)
+        {
+            out.push_str(&print_type(&ast.types, ast, p.ret(), PrintOptions::CANONICAL));
+            out.push(' ');
+        }
+        self.qualified(t, out, 0);
+        function_suffix(ast, f, out);
+    }
+
+    /// `template <class, int, template <class> class>`: a template head
+    /// by the kinds of its parameters (their names are not the entity's).
+    fn head(&self, l: slip_kiln::kiln::ast::TemplateParamListId, out: &mut String, depth: u32) {
+        let ast = self.ast;
+        out.push_str("template <");
+        let list = ast.templates.param_list(l);
+        for (k, p) in ast.lists.iter::<DeclId>(list.params).enumerate() {
+            if k > 0 {
+                out.push_str(", ");
+            }
+            let parm = ast.template_parm(p).copied();
+            let k = ast.decls.get(p).kind();
+            if k == DeclKind::NonTypeTemplateParm {
+                match ast.decls.get(p).ty() {
+                    Some(q) => {
+                        out.push_str(&print_type(&ast.types, ast, q, PrintOptions::CANONICAL));
+                    }
+                    None => out.push_str("auto"),
+                }
+            } else if k == DeclKind::TemplateTemplateParm {
+                match parm.and_then(|x| x.params) {
+                    Some(inner) if depth < DEPTH => self.head(inner, out, depth + 1),
+                    Some(_) | None => out.push_str("template <>"),
+                }
+                out.push_str(match parm.map(|x| x.ttp_kind) {
+                    Some(TtpKind::Variable) => " auto",
+                    Some(TtpKind::Concept) => " concept",
+                    Some(TtpKind::Type) | None => " class",
+                });
+            } else {
+                out.push_str("class");
+            }
+            if parm.is_some_and(|x| x.pack) {
+                out.push_str("...");
+            }
+        }
+        out.push('>');
+    }
+
+    /// The qualified name of `d`, with the unnamed classes and
+    /// enumerations among its scopes, and `d` itself if it is one, named
+    /// as their keys name them.
+    fn qualified(&self, d: DeclId, out: &mut String, depth: u32) {
+        let mut kiln = String::new();
+        self.kiln.write_qualified_spec_name(d, &mut kiln);
+        if depth < DEPTH && self.is_unnamed_tag(d) {
+            // Kiln's last component is `(anonymous struct)` or the typedef
+            // name; the scope before it is that of `d`.
+            self.scope(d, out, depth);
+            self.unnamed_tag(d, out);
+            return;
+        }
+        if depth < DEPTH
+            && let Some(t) = self.unnamed_scope(d)
+        {
+            let mut prefix = String::new();
+            self.kiln.write_qualified_spec_name(t, &mut prefix);
+            prefix.push_str("::");
+            if let Some(rest) = kiln.strip_prefix(&prefix) {
+                self.qualified(t, out, depth + 1);
+                out.push_str("::");
+                out.push_str(rest);
+                return;
+            }
+        }
+        out.push_str(&kiln);
+    }
+
+    /// The scope of `d` followed by `::` (empty at the top level), as
+    /// [`Self::qualified`] names it.
+    fn scope(&self, d: DeclId, out: &mut String, depth: u32) {
+        let ast = self.ast;
+        let Some(ctx) = ast.decls.get(d).ctx() else { return };
+        let k = ast.decls.get(ctx).kind();
+        if k == DeclKind::TranslationUnit {
+            return;
+        }
+        if depth < DEPTH && (self.is_unnamed_tag(ctx) || self.unnamed_scope(ctx).is_some()) {
+            self.qualified(ctx, out, depth + 1);
+            out.push_str("::");
+            return;
+        }
+        self.kiln.write_scope_prefix(d, true, out);
+    }
+
+    /// `d` is a class or enumeration without a name of its own.
+    fn is_unnamed_tag(&self, d: DeclId) -> bool {
+        let ast = self.ast;
+        let k = ast.decls.get(d).kind();
+        matches!(k, DeclKind::CXXRecord | DeclKind::Enum)
+            && ast.decls.get(d).name().is_empty()
+            && ast.decls.record(d).is_none_or(|r| r.lambda.is_none())
+    }
+
+    /// The innermost unnamed class around `d` (an unnamed enumeration
+    /// is no scope Kiln prints).
+    fn unnamed_scope(&self, d: DeclId) -> Option<DeclId> {
+        let ast = self.ast;
+        let mut c = ast.decls.get(d).ctx();
+        for _ in 0..DEPTH {
+            let x = c?;
+            let k = ast.decls.get(x).kind();
+            if k == DeclKind::TranslationUnit {
+                return None;
+            }
+            if k == DeclKind::CXXRecord && self.is_unnamed_tag(x) {
+                return Some(x);
+            }
+            c = ast.decls.get(x).ctx();
+        }
+        None
+    }
+
+    /// `(anonymous struct for P)`, `(anonymous enum 1)`: unnamed tag `d`
+    /// by the rule of digest §3.3 its key follows.
+    fn unnamed_tag(&self, d: DeclId, out: &mut String) {
+        let ast = self.ast;
+        let e = self.w.entity(d);
+        out.push_str("(anonymous ");
+        out.push_str(match ast.decls.record(e) {
+            Some(r) => r.tag.keyword(),
+            None => "enum",
+        });
+        if let Some(by) = self.w.unnamed_tag_by(e) {
+            out.push_str(" for ");
+            self.kiln.write_name(by, out);
+        } else if let Some(i) = self.w.ordinal_of.get(&e) {
+            out.push(' ');
+            out.push_str(&i.to_string());
+        }
+        out.push(')');
+    }
+}
+
+/// A specialisation's arguments, or a partial specialisation's pattern.
+fn spec_args(ast: &Ast, d: DeclId, out: &mut String) {
+    if let Some((_, si)) = ast.spec_info(d) {
+        write_arg_list(&ast.types, ast, ast.types.canonical_args(si.args), out);
+    } else if let Some((_, pi)) = ast.partial_spec_info(d) {
+        write_arg_list(&ast.types, ast, pi.canonical, out);
+    }
 }
 
 /// `(T1, T2)` and the method qualifiers of function `f`.

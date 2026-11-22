@@ -1,1 +1,4 @@
-added ?
+# pending
+# needs: expr
+# A dependent array bound is Pending(Expr): the two templates have one key and collide.
+added template <int> void f(int (&)[N + 1])

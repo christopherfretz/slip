@@ -1,1 +1,4 @@
-added ?
+changed <order>
+added (anonymous struct for b)
+added (anonymous struct for b)::x
+added b

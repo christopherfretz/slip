@@ -1,1 +1,2 @@
-added ?
+added <shadow n::f()>
+added <using n::f>

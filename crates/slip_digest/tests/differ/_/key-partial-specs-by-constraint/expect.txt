@@ -1,1 +1,5 @@
-added ?
+# pending
+# needs: expr
+# The requires-clause of a partial specialisation is Pending(Expr): one key,
+# a collision.
+added S<type-parameter-0-0 *> requires C2<T>

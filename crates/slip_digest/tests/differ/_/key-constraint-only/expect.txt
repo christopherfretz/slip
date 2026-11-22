@@ -1,1 +1,6 @@
-added ?
+# pending
+# needs: expr
+# A trailing requires-clause is Pending(Expr) (expr_dep::profile_expr), so the
+# two overloads have one key and collide (digest.collisions = 1). The display
+# name leaves the clause out too, so both are named alike (determinism/keys.rs).
+added template <class> void f(type-parameter-0-0) requires C2<T>

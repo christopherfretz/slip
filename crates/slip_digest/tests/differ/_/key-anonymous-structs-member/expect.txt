@@ -1,1 +1,4 @@
-added ?
+changed S
+added S::(anonymous struct for b)
+added S::(anonymous struct for b)::b
+added S::b

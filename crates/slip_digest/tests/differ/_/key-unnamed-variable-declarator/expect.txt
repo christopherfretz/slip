@@ -1,1 +1,8 @@
-added ?
+changed <order>
+changed w
+added (anonymous struct for x)
+added (anonymous struct for x)::m
+added x
+removed (anonymous struct for v)
+removed (anonymous struct for v)::m
+removed v

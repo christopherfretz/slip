@@ -1,1 +1,4 @@
-added ?
+changed P
+changed T
+added (anonymous struct for T)
+removed (anonymous struct for P)

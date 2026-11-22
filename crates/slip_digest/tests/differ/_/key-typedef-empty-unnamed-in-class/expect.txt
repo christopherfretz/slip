@@ -1,1 +1,5 @@
-added ?
+changed C
+changed C::P
+changed C::T
+added C::(anonymous struct for T)
+removed C::(anonymous struct for P)
