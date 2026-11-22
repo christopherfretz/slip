@@ -1,0 +1,2 @@
+# Not isolated: no constant reaches a literal of another encoding while expressions are pending, so this pair changes Entry.start (the bytes); unit test value::tests::an_encoding_by_its_row isolates Entry.enc (ordinary against UTF-8, same bytes).
+changed x

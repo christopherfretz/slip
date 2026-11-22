@@ -1,0 +1,3 @@
+removed A
+added A
+changed x

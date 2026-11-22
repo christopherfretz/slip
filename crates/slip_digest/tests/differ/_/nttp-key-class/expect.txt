@@ -1,0 +1,2 @@
+removed f(A<S{1}>)
+added f(A<S{2}>)

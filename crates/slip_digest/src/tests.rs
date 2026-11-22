@@ -404,13 +404,14 @@ fn order_unit_key() {
 
 /// Runs `f` on a walk over `src` (one file, `main.cpp`), with the AST.
 fn with_walk<R>(src: &str, f: impl FnOnce(&mut crate::walk::Walk<'_>) -> R) -> R {
+    with_walk_std(src, "c++20", f)
+}
+
+/// [`with_walk`] in the language mode `std`.
+fn with_walk_std<R>(src: &str, std: &str, f: impl FnOnce(&mut crate::walk::Walk<'_>) -> R) -> R {
     let files = [("main.cpp", src)];
-    let snippet = slip_kiln::snippet::Snippet {
-        files: &files,
-        main: "main.cpp",
-        include: &[""],
-        std: "c++20",
-    };
+    let snippet =
+        slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
     let rules = RuleTable::empty();
     slip_kiln::snippet::parse(&snippet, |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
@@ -466,36 +467,50 @@ fn deferrable_absence_is_pending() {
 }
 
 /// digest §3.4, digest-kinds §3: the cause of a key is that of every key it
-/// is built from; a member of `A<1>` carries `A<1>`'s `Pending(Value)`
-/// (WP-024 review C).
+/// is built from; a member of `A<^^int>` carries `A<^^int>`'s cause, a
+/// reflection value being `unsupported` (digest-kinds §8 `ValueKind`
+/// `Reflection`; WP-024 review C, moved off `Pending(Value)` by WP-028).
 #[test]
 fn a_key_keeps_its_parents_cause() {
     use slip_kiln::kiln::ast::decl::DeclKind;
-    let src = "template <int N> struct A { struct In {}; };\nvoid g(A<1>::In);\nvoid h(A<1>);\n";
-    with_walk(src, |w| {
+    const REFLECTION: Cause = Cause::Unsupported("ValueKind/Reflection");
+    let src =
+        "template <auto V> struct A { struct In {}; };\nvoid g(A<^^int>::In);\nvoid h(A<^^int>);\n";
+    with_walk_std(src, "c++26", |w| {
         for name in ["g", "h"] {
             let f = decls_named(w, name, DeclKind::Function)[0];
             match w.key(f) {
                 crate::keys::KeyRes::Key { cause, .. } => {
-                    assert_eq!(cause, Some(Cause::Pending(crate::Area::Value)), "{name}");
+                    assert_eq!(cause, Some(REFLECTION), "{name}");
                 }
                 crate::keys::KeyRes::None(c) => panic!("{name}: no key ({c:?})"),
             }
         }
     });
     // Two such keys in one translation unit are one key, and marked.
-    let o = walk(&[(
+    let files = [(
         "main.cpp",
-        "template <int N> struct A { struct In {}; };\nvoid g(A<1>::In);\nvoid g(A<2>::In);\n",
-    )]);
+        "template <auto V> struct A { struct In {}; };\nvoid g(A<^^int>::In);\nvoid g(A<^^char>::In);\n",
+    )];
+    let rules = RuleTable::empty();
+    let snippet = slip_kiln::snippet::Snippet {
+        files: &files,
+        main: "main.cpp",
+        include: &[""],
+        std: "c++26",
+    };
+    let o = slip_kiln::snippet::parse(&snippet, |p| {
+        assert_eq!(p.errors, 0, "{}", p.diagnostics);
+        let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+        crate::digest(&input, &Options { rules: &rules, detail: Detail::All, names: true })
+    })
+    .expect("the snippet parses");
     let g: Vec<_> = o.names.iter().filter(|(_, n)| n.starts_with("g(")).collect();
     assert!(!g.is_empty());
     for (k, n) in g {
         let c = o.causes.iter().find(|(x, _)| x == k).map(|(_, c)| *c);
-        assert!(
-            matches!(c, Some(Cause::Collision | Cause::Pending(crate::Area::Value))),
-            "{n}: {c:?}"
-        );
+        assert!(matches!(c, Some(Cause::Collision | REFLECTION)), "{n}: {c:?}");
     }
     assert!(counter(&o, "digest.collisions") > 0);
 }

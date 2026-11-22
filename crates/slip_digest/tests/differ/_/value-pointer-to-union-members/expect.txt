@@ -1,0 +1,4 @@
+# pending
+# needs: kiln
+# Kiln stores no member path in a pointer constant: reported to Kiln (WP-028 review).
+changed x

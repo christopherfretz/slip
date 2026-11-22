@@ -1,0 +1,2 @@
+# Not isolated: in a non-type template argument the value's type is the argument's, so ArgView/Value.ty changes too; unit test value::tests::the_type_of_a_scalar_by_its_row isolates Int.ty.
+changed x
