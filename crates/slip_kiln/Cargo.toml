@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 slip_model.workspace = true
+slip_cdb.workspace = true
 kiln_driver.workspace = true
 
 [lints]
