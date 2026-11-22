@@ -233,7 +233,11 @@ name = "slip_kiln"
 version = "0.0.0"
 dependencies = [
  "kiln_ast",
+ "kiln_diag",
  "kiln_driver",
+ "kiln_oven",
+ "kiln_parse",
+ "kiln_pp",
  "kiln_sema",
  "kiln_snap",
  "kiln_source",
