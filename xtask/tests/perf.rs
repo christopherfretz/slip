@@ -1,4 +1,4 @@
-//! `cargo xtask perf` (spec/harness.md §7, spec/landed/harness/WP-013.md).
+//! `cargo xtask perf` (spec/harness.md §7).
 //!
 //! Every test writes its own store in a temporary directory with
 //! `slip_exec::store` and `slip_model`: a plan of four observers with
@@ -467,7 +467,7 @@ fn shard_of_another_observer_or_invalid() {
     assert!(e.starts_with(&format!("{}: not a valid shard: ", path.display())), "{e}");
 }
 
-/// §7.1 and WP-013: a counter sum that overflows `u64` is an error, and so
+/// §7.1: a counter sum that overflows `u64` is an error, and so
 /// is a shard counter named like a counter §7.1 computes.
 #[test]
 fn counters_overflow_and_collision() {
@@ -495,7 +495,7 @@ fn counters_overflow_and_collision() {
     );
 }
 
-/// WP-013: a record observer that is not in the plan is an error.
+/// §7 loading: a record observer that is not in the plan is an error.
 #[test]
 fn record_observer_not_in_plan() {
     let w = World::new("perf-notinplan", plan_of(&[A], vec![]));
@@ -569,7 +569,7 @@ fn measured_leaves_out_incomplete_and_unknown() {
     );
 }
 
-/// §7.1 / WP-013: seconds have three decimals, rounded half up, from
+/// §7.1: seconds have three decimals, rounded half up, from
 /// integer nanoseconds.
 #[test]
 fn seconds_rounding() {
@@ -801,7 +801,7 @@ fn check_tools_and_measured_are_informational() {
     assert!(report.ends_with("perf check: tiny: ok\n"), "{report}");
 }
 
-/// §7.3 / WP-013: a baseline is read strictly; each error names the member.
+/// §7.3: a baseline is read strictly; each error names the member.
 #[test]
 fn check_rejects_malformed_baselines() {
     let r = runs("perf-check-bad");

@@ -275,7 +275,7 @@ fn s3_wp() {
 }
 
 // §3 `local-paths`. The paths are assembled at run time so this file
-// spells none (spec/landed/harness/WP-005.md).
+// spells none (spec/harness.md §3.2).
 #[test]
 fn s3_local_paths() {
     let f = Fixture::new("lp");

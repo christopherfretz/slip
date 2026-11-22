@@ -1,5 +1,4 @@
-//! `cargo xtask corpus` (`spec/harness.md` §8,
-//! `spec/landed/harness/WP-011.md`): fetch a pinned corpus, configure it
+//! `cargo xtask corpus` (`spec/harness.md` §8): fetch a pinned corpus, configure it
 //! so it has a compilation database, and build the targets that generate
 //! the sources its translation units include.
 //!

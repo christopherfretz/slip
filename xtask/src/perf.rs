@@ -1,5 +1,4 @@
-//! `cargo xtask perf summarize|record|check` (`spec/harness.md` §7,
-//! `spec/landed/harness/WP-013.md`): what a parallel phase's run record,
+//! `cargo xtask perf summarize|record|check` (`spec/harness.md` §7): what a parallel phase's run record,
 //! its plan and its shards say about a run, and the committed baseline a
 //! corpus's counters are gated against.
 //!
