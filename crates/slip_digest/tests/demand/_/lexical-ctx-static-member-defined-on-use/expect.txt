@@ -1,0 +1,6 @@
+# pending
+# needs: units
+# lexical_ctx no longer moves with the use (decl_scope::tests::lexical_ctx_of_a_member_defined_on_use);
+# the unit still does: the use makes the instantiated definition the declaration read (§2.3),
+# whose VarData `templ` is empty while TemplateTables holds its link (decl_maps)
+added y()

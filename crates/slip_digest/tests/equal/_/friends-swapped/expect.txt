@@ -1,4 +1,0 @@
-# pending
-# needs: decl_data
-# both friends get one content key while FriendTarget is pending (WP-033
-# writes it), so the pair passes without the sort

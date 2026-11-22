@@ -10,7 +10,7 @@ struct R { struct promise_type { R get_return_object(); S initial_suspend(); S f
 template <class T> R c(T) { co_return; }
 using Y = decltype(c(1));
 #ifdef B
-R r = c(1);
+R r() { return c(1); }
 #else
 
 #endif
