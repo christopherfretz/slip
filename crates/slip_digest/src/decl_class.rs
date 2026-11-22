@@ -1029,6 +1029,26 @@ mod tests {
         });
     }
 
+    // §5.5 `EnumData`: the pair tests of `int_type` and `promotion_type`
+    // change that type only, so that each shows its own row.
+    #[test]
+    fn enum_type_pairs_change_one_type() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/differ/EnumData");
+        let types = |dir: &std::path::Path, b| {
+            with_side(dir, b, |w| {
+                let e = named(w, "E", DeclKind::Enum)[0];
+                let data = w.ast.decls.enumeration(e).expect("EnumData");
+                (data.int_type, data.promotion_type)
+            })
+        };
+        for (row, int_changes) in [("int_type", true), ("promotion_type", false)] {
+            let dir = root.join(row);
+            let (a, b) = (types(&dir, false), types(&dir, true));
+            assert_eq!(a.0 != b.0, int_changes, "{row}: int_type {a:?} {b:?}");
+            assert_eq!(a.1 != b.1, !int_changes, "{row}: promotion_type {a:?} {b:?}");
+        }
+    }
+
     // §2.1: the record rows this file writes are those of the tables.
     #[test]
     fn record_rows_are_the_tables() {
