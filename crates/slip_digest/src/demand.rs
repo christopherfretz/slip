@@ -180,15 +180,15 @@ fn write_part(
     body: impl FnOnce(&mut Walk<'_>, &mut Stream),
 ) -> Written {
     let saved = w.take_unit();
-    let mut s = Stream::new();
-    body(w, &mut s);
+    let mut stream = Stream::new();
+    body(w, &mut stream);
     w.unit = saved;
-    let h = s.finish(UNIT_TAG);
-    let h = w.hashed(h);
+    let finished = stream.finish(UNIT_TAG);
+    let h = w.hashed(finished);
     let disc_digest = disc.map(|n| {
-        let mut d = Stream::new();
-        d.uv(n);
-        let h = d.finish(DISC_TAG);
+        let mut ds = Stream::new();
+        ds.uv(n);
+        let h = ds.finish(DISC_TAG);
         w.hashed(h).digest
     });
     let key = Key { kind, parent: Parent::Unit(owner.key), name, disc: disc_digest };
@@ -268,8 +268,10 @@ fn exception_spec(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Wr
     if ast.decls.function(f).is_none() || !deferrable(w, f) {
         return;
     }
-    let Some(p) = ast.decls.get(f).ty().and_then(|q| ast.types.proto(q)).copied() else { return };
-    let spec = ast.types.exc_spec(&p);
+    let Some(proto) = ast.decls.get(f).ty().and_then(|q| ast.types.proto(q)).copied() else {
+        return;
+    };
+    let spec = ast.types.exc_spec(&proto);
     if matches!(spec, ExcSpec::Deferred(_)) {
         return;
     }
@@ -476,9 +478,9 @@ fn default_arguments(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec
         let params = chain_params(w, e);
         for i in 0..params.len() {
             let default = decls.iter().find_map(|&x| {
-                let f = ast.decls.function(x)?;
-                let p = ast.lists.iter::<DeclId>(f.params).nth(i)?;
-                ast.decls.param(p)?.default_arg
+                let func = ast.decls.function(x)?;
+                let param = ast.lists.iter::<DeclId>(func.params).nth(i)?;
+                ast.decls.param(param)?.default_arg
             });
             if let Some(x) = default {
                 default_argument(w, e, owner, i as u64, &params, x, Some(i as u64), out);
