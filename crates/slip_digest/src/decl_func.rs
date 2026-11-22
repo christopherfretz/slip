@@ -79,11 +79,8 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
     if rebuild_fn_spec(spec).bits() != spec.bits() {
         s.indeterminate(FN_SPEC_UNACCOUNTED);
     }
-    let specs: Vec<FnSpec> = w
-        .redecls(e)
-        .iter()
-        .filter_map(|&x| ast.decls.function(x).map(|f| f.spec))
-        .collect();
+    let specs: Vec<FnSpec> =
+        w.redecls(e).iter().filter_map(|&x| ast.decls.function(x).map(|f| f.spec)).collect();
     for &x in &specs {
         if rebuild_fn_spec(x).bits() != x.bits() {
             s.indeterminate(FN_SPEC_UNACCOUNTED);
@@ -309,11 +306,7 @@ pub(crate) fn param_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 
 /// The default argument of parameter `index` given by a declaration of
 /// function `f`'s entity, the first declaration first (§2.3).
-fn merged_default(
-    w: &Walk<'_>,
-    f: DeclId,
-    index: u16,
-) -> Option<slip_kiln::kiln::ast::ExprId> {
+fn merged_default(w: &Walk<'_>, f: DeclId, index: u16) -> Option<slip_kiln::kiln::ast::ExprId> {
     let ast = w.ast;
     let mut chain = w.redecls(ast.first(f));
     chain.reverse();
@@ -463,7 +456,10 @@ pub(crate) mod tests {
         w.ast.decls.ids().filter(|&d| w.ast.decls.get(d).kind() == kind).collect()
     }
 
-    fn written(w: &mut Walk<'_>, f: impl FnOnce(&mut Walk<'_>, &mut Stream)) -> (Vec<u8>, Option<Cause>) {
+    fn written(
+        w: &mut Walk<'_>,
+        f: impl FnOnce(&mut Walk<'_>, &mut Stream),
+    ) -> (Vec<u8>, Option<Cause>) {
         let mut s = Stream::new();
         f(w, &mut s);
         (s.as_bytes().to_vec(), s.cause())
@@ -519,6 +515,77 @@ pub(crate) mod tests {
         assert_eq!(super::rebuild_var_spec(v).bits(), v.bits());
     }
 
+    // digest-kinds §5.4 FnSpec: each bit row read from the declaration
+    // has its place in the flag word, in table order (rule 6 for the rows
+    // whose pair test also changes another unit or the key).
+    #[test]
+    fn fn_spec_bits_in_table_order() {
+        type Set = fn(FnSpec) -> FnSpec;
+        // Places 0 and 1 (`0-inline`, `0-implicit-inline`) are merged
+        // from the declarations and not taken from `spec`.
+        let rows: [(usize, Set); 14] = [
+            (2, |x| x.with_virtual(true)),
+            (3, |x| x.with_pure(true)),
+            (4, |x| x.with_deleted(true)),
+            (5, |x| x.with_explicit(true)),
+            (6, |x| x.with_trivial(true)),
+            (7, |x| x.with_immediate_escalating(true)),
+            (8, |x| x.with_has_contracts(true)),
+            (9, |x| x.with_coroutine(true)),
+            (10, |x| x.with_escalated(true)),
+            (11, |x| x.with_variadic(true)),
+            (12, |x| x.with_final(true)),
+            (13, |x| x.with_explicit_object(true)),
+            (14, |x| x.with_not_selected(true)),
+            (15, |x| x.with_return_deduced(true)),
+        ];
+        with_walk("void f();", |w| {
+            let f = named(w, "f", DeclKind::Function)[0];
+            for (place, set) in rows {
+                let (got, cause) =
+                    written(w, |w, s| super::fn_spec(w, s, f, set(FnSpec::new()), false));
+                assert_eq!(cause, None, "place {place}");
+                let mut word = crate::stream::FlagWord::new();
+                for i in 0..16 {
+                    word = word.bit(i == place);
+                }
+                let mut want = Stream::new();
+                want.tag(crate::tables::fn_storage::row(&FnStorage::None))
+                    .flags(word)
+                    .tag(crate::tables::constexpr_kind::row(&ConstexprKind::None))
+                    .tag(crate::tables::defaulted::row(&Defaulted::No));
+                assert_eq!(got, want.as_bytes(), "place {place}");
+            }
+        });
+    }
+
+    // digest-kinds §5.4 ParamData `flags-pack`, `flags-explicit-object`:
+    // the bits are in the parameter's own record (their pair tests also
+    // change the key).
+    #[test]
+    fn param_flag_bits_are_written() {
+        let src = "template <class... T> void f(T... a);\nstruct C { void m(this C& b); };\nvoid g(int c);";
+        with_walk(src, |w| {
+            let mut bytes = Vec::new();
+            for n in ["a", "b", "c"] {
+                let p = named(w, n, DeclKind::ParmVar)[0];
+                let (b, _) = written(w, |w, s| super::param_data(w, s, p));
+                bytes.push(b);
+            }
+            let flag = |explicit_object: bool, pack: bool| {
+                let mut s = Stream::new();
+                s.opt(false)
+                    .opt(false)
+                    .flags(crate::stream::FlagWord::new().bit(explicit_object).bit(pack).bit(false))
+                    .uv(0);
+                s.as_bytes().to_vec()
+            };
+            assert_eq!(bytes[0], flag(false, true));
+            assert_eq!(bytes[1], flag(true, false));
+            assert_eq!(bytes[2], flag(false, false));
+        });
+    }
+
     // digest-kinds §5.6 ScopeData rule: `enum LinkageLang?`, then
     // `aux-braceless` as `bool`; absent with no `LinkageSpec`.
     #[test]
@@ -541,8 +608,7 @@ pub(crate) mod tests {
         let (member, _) =
             linkage_bytes("extern \"C\" { struct C { void m(); }; }", "m", DeclKind::CXXMethod);
         assert_eq!(member, braced);
-        let (local, _) =
-            linkage_bytes("extern \"C\" { void g() { int x; } }", "x", DeclKind::Var);
+        let (local, _) = linkage_bytes("extern \"C\" { void g() { int x; } }", "x", DeclKind::Var);
         let (top, _) = linkage_bytes("extern \"C\" { int x; }", "x", DeclKind::Var);
         assert_eq!(local, top);
     }
@@ -562,7 +628,9 @@ pub(crate) mod tests {
             let user: Vec<DeclId> = ctors
                 .iter()
                 .copied()
-                .filter(|&c| !w.ast.decls.get(c).has(slip_kiln::kiln::ast::decl::DeclFlags::IMPLICIT))
+                .filter(|&c| {
+                    !w.ast.decls.get(c).has(slip_kiln::kiln::ast::decl::DeclFlags::IMPLICIT)
+                })
                 .collect();
             // S::S() defaulted on its first declaration; T::T() not.
             let s = w.ast.first(user[0]);
@@ -594,17 +662,20 @@ pub(crate) mod tests {
     // the unit `Pending(Demand)` until resolved units exist.
     #[test]
     fn definition_class_body_is_pending_demand() {
-        with_walk("template <class U> struct Q { void g() {} };\nQ<int> q;\nvoid h() { q.g(); }\n", |w| {
-            let gs = named(w, "g", DeclKind::CXXMethod);
-            let inst = gs
-                .iter()
-                .copied()
-                .find(|&g| super::implicit_instantiation(w, w.ast.first(g)))
-                .expect("Q<int>::g");
-            assert!(w.ast.decls.function(inst).is_some_and(|f| f.body.is_some()));
-            let (_, cause) = written(w, |w, s| super::function_data(w, s, inst));
-            assert_eq!(cause, Some(Cause::Pending(crate::Area::Demand)));
-        });
+        with_walk(
+            "template <class U> struct Q { void g() {} };\nQ<int> q;\nvoid h() { q.g(); }\n",
+            |w| {
+                let gs = named(w, "g", DeclKind::CXXMethod);
+                let inst = gs
+                    .iter()
+                    .copied()
+                    .find(|&g| super::implicit_instantiation(w, w.ast.first(g)))
+                    .expect("Q<int>::g");
+                assert!(w.ast.decls.function(inst).is_some_and(|f| f.body.is_some()));
+                let (_, cause) = written(w, |w, s| super::function_data(w, s, inst));
+                assert_eq!(cause, Some(Cause::Pending(crate::Area::Demand)));
+            },
+        );
     }
 
     // A declaration of another kind than the record read has no payload:

@@ -5,9 +5,9 @@
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::DeclKind;
 
-use crate::{Area, Cause};
 use crate::stream::Stream;
 use crate::walk::Walk;
+use crate::{Area, Cause};
 
 /// The ordinal of a local entity of the unit being written: the next
 /// one when the walk first meets it, by its declaration or by an earlier
@@ -174,7 +174,9 @@ mod tests {
     fn a_name_only_declaration_writes_nothing() {
         let src = "namespace n { int i; } void g() { typedef int T; using U = int; using n::i; using namespace n; }";
         with_walk(src, |w| {
-            for kind in [DeclKind::Typedef, DeclKind::TypeAlias, DeclKind::Using, DeclKind::UsingDirective] {
+            for kind in
+                [DeclKind::Typedef, DeclKind::TypeAlias, DeclKind::Using, DeclKind::UsingDirective]
+            {
                 let d = of_kind(w, kind)[0];
                 let s = write(w, d);
                 assert!(s.as_bytes().is_empty(), "{kind:?}");

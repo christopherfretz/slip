@@ -1,8 +1,9 @@
 #include "side.h"
-// §5.4 VarEvalState `Value`, §11.3.
+// §5.4 VarEvalState Value, §11.3: a use of `v<int>` as a value added on side B changes no unit; eval is not written.
+template <class T> constexpr int v = sizeof(T);
+const int* p = &v<int>;
 #ifdef B
-const int x = 1;
-int y = x;
+int y = v<int>;
 #else
-const int x = 1;
+
 #endif
