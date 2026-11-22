@@ -231,7 +231,9 @@ impl Admission {
     /// The address-space cap: twice the resident-size cap plus the worker
     /// stack plus 1 GiB; none when `B` is 0.
     pub fn address_space_cap(&self) -> Option<u64> {
-        self.rss_cap().map(|c| c.saturating_mul(2).saturating_add(self.config.worker_stack) + GIB)
+        self.rss_cap().map(|c| {
+            c.saturating_mul(2).saturating_add(self.config.worker_stack).saturating_add(GIB)
+        })
     }
 
     /// `R`: the sum of the running jobs' reservations `max(e, sample)`.

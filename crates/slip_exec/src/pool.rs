@@ -508,6 +508,9 @@ impl Coordinator<'_> {
                 }
                 if let Some(pick) = self.admission.pick() {
                     self.start(pick, token)?;
+                    // A token available at once arrives before the next
+                    // sampling instant, so jobs that can start together do.
+                    self.maybe_request();
                 }
             }
             Event::Message { worker, message } => self.on_message(worker, message)?,
