@@ -89,6 +89,9 @@ pub(crate) enum Item {
     Opaque(ExprId),
     /// A kind's function, or a row written by another file's function.
     Exec(KindFn, ExprId),
+    /// The end of an instantiation-dependent node's items
+    /// (`UnitState::dependent`).
+    LeaveDependent,
 }
 
 /// The words of a node, read once.
@@ -262,6 +265,9 @@ fn walk_items(w: &mut Walk<'_>, s: &mut Stream, first: Item) {
                 s.indeterminate(c);
             }
             Item::Exec(f, e) => f(w, s, e),
+            Item::LeaveDependent => {
+                w.unit.dependent -= 1;
+            }
         }
     }
     w.leave_node();
@@ -342,10 +348,18 @@ fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out
     }
     s.tag(object_kind_row(words.object_kind()));
     deps(s, words.deps());
+    // Counted before the kind's rows are decided: `CXXThisExpr` reads it.
+    let dependent = words.deps().contains(ExprDeps::INSTANTIATION);
+    if dependent {
+        w.unit.dependent += 1;
+    }
     w.write_type(s, n.ty);
     let tail = dispatch(w, s, e, &n, out);
     cold(w, e, &n, tail, out);
     out.push(Item::Exec(crate::templ::expr_maps, e));
+    if dependent {
+        out.push(Item::LeaveDependent);
+    }
 }
 
 /// `e` with its parentheses skipped (§7 "Parentheses"); with `keep`, an
@@ -440,7 +454,7 @@ fn dispatch(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec
             core::member(s, n, out);
             return Tail::Member;
         }
-        ExprKind::CXXThisExpr => core::this(s, n, out),
+        ExprKind::CXXThisExpr => core::this(s, n, w.unit.dependent > 0, out),
         ExprKind::UnaryOperator => core::unary(s, n, out),
         ExprKind::BinaryOperator => core::binary(s, n, out),
         ExprKind::CompoundAssignOperator => core::compound_assign(w, s, e, n, out),
@@ -558,6 +572,19 @@ fn dispatch(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec
     Tail::Other
 }
 
+/// Whether `d` (through a using-shadow, its entity) is a virtual member
+/// function: `FnSpec::is_virtual` on any declaration of its chain. Kiln
+/// sets it for `virtual` written (kiln_sema class/virtual/mod.rs:119), a
+/// redeclaration of a virtual function (:127), an overrider written
+/// without `virtual`, a destructor overriding a virtual one included
+/// (:160), and an implicit destructor or assignment operator that
+/// overrides (class/special/implicit.rs:1525).
+fn virtual_fn(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let first = ast.first(ast.strip_shadow(d));
+    ast.redecls_of(first).any(|r| ast.decls.function(r).is_some_and(|f| f.spec.is_virtual()))
+}
+
 /// The rows of `ColdExprData` (§7.4) for `e`, into `out`: written for
 /// every expression, the empty form when the map has no entry.
 fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
@@ -570,8 +597,8 @@ fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
         }
         let &slip_kiln::kiln::ast::expr::DeclRefExtra { qualifier, template_args, found_decl: _ } =
             extra;
-        out.push(Item::Bool(qualifier.is_some()));
         let member = DeclId::try_new(n.b);
+        out.push(Item::Bool(qualifier.is_some() && member.is_some_and(|m| virtual_fn(w, m))));
         crate::expr_core::decl_ref_extra(w, member, template_args, out);
     } else {
         out.push(Item::Bool(false));

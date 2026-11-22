@@ -60,6 +60,10 @@ pub(crate) struct UnitState {
     /// "Opaque values"), and the next number.
     pub opaques: HashMap<slip_kiln::kiln::ast::ExprId, u64>,
     pub next_opaque: u64,
+    /// How many instantiation-dependent expressions enclose the node the
+    /// expression walk is writing, itself included
+    /// (`expr_core::this`).
+    pub dependent: u32,
 }
 
 /// The context of one walk: the memo, the key table, the worklist and the

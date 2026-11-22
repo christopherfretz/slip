@@ -1,6 +1,9 @@
 #include "side.h"
-// §7 ExprNode `CXXThisExpr.aux-implicit`. This contradicts WP-031's must-equal `this->m` against `m`: the row is `in`.
-struct Th { int m; int m2;
+// §7 ExprNode `CXXThisExpr.aux-implicit`: written for an
+// instantiation-dependent node only, here a member of a class template
+// (the pattern unit); outside a template a redundant `this->` changes
+// nothing (`equal/_/expr-qualifier`, pitfalls E07).
+template<class T> struct Th { int m;
 #ifdef B
 int n = m; };
 #else

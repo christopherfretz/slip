@@ -247,11 +247,14 @@ pub(crate) fn member(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
     entity(out, n.b, Cause::Unaccounted("ExprNode/MemberExpr.b"));
 }
 
-/// `CXXThisExpr.aux-implicit`: bit 0 of `aux`, in the flag word.
-pub(crate) fn this(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
+/// `CXXThisExpr.aux-implicit`: bit 0 of `aux`, in the flag word, written
+/// only inside an instantiation-dependent expression (`dependent`: the
+/// node itself or one around it; WP-031 landed file), else the empty
+/// form. Outside one, only diagnostics read the bit (pitfalls E07).
+pub(crate) fn this(s: &mut Stream, n: &Node, dependent: bool, out: &mut Vec<Item>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/CXXThisExpr.bits"));
     check_aux(s, n, 1, Cause::Unaccounted("ExprNode/CXXThisExpr.aux"));
-    out.push(Item::Flags(FlagWord::new().bit(n.aux & 1 != 0)));
+    out.push(Item::Flags(FlagWord::new().bit(dependent && n.aux & 1 != 0)));
 }
 
 // ---------------------------------------------------------------------
