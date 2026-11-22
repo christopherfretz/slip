@@ -18,7 +18,9 @@ the record.
 
 - Demo 2 has run: plan, map, reduce, apply and verify work for a native
   rename on this corpus.
-- `docs/wp/WP-080.md` to `WP-093.md` and `WP-095.md`.
+- `docs/wp/WP-080.md` to `WP-093.md`, `WP-095.md` and `WP-096.md`. The
+  last is the check of spelled entities (`spec/api.md` §7.2 rule 5);
+  without it the demonstration may not be called verified.
 - `spec/edits.md` carries what `spec/api.md` §7.6 hands over, and reduce
   and apply implement it: groups, declared changes with their places,
   reports, and either composed copies or their rejection.
@@ -150,7 +152,8 @@ and is the first thing the real migration will need.
 4. `apply` to an overlay.
 5. `verify`: the observers that read an edited file are parsed against
    the overlay and digested; every unit not declared changed must be
-   equal; every unit declared changed must exist.
+   equal; every unit declared changed must exist; every name the
+   transform had Slip spell must denote the entity it named.
 6. Part A only, outside Slip: write the overlay to a copy of the tree,
    build `SupportTests` with the corpus's own compiler and run
    `--gtest_filter='KnownBitsTest.*'`. It must pass. (An operator
@@ -168,8 +171,9 @@ the edit sets must be byte-identical.
 | Part A edits | exactly the 36 of §2, in 12 groups; the diff of the three files is shown in full in the report |
 | Part A declared units | each is a unit that holds one of the 12 calls; nothing else is exempt |
 | Part A verification | every other unit of every affected observer is equal |
+| Part A spelled callees | each of the 12 respelled names denotes, in the post-image, the function the transform named (`ugt`, `uge`, `sgt` or `sge` of `llvm::KnownBits`): 12 obligations, 12 hold, none unseen |
 | Part A, independent | `KnownBitsTest` passes on the post-image |
-| Part A, negative | the same run with the pair `{"llvm::KnownBits::ult","llvm::KnownBits::uge"}` (not equivalent) still verifies, because the calls are declared changed, and `KnownBitsTest` fails. This is recorded to show what verification does not claim |
+| Part A, negative | the same run with the pair `{"llvm::KnownBits::ult","llvm::KnownBits::uge"}` (not equivalent) still verifies: the calls are declared changed, and `uge` is a correctly spelled wrong function, so the spelling check holds too. `KnownBitsTest` fails. This is recorded to show what verification does not claim |
 | Part A, sabotage | a transform that swaps the arguments and does not call `expect_changed` is refused by verification, naming the three units |
 | Part B edits | equal to the native rename's accepted edits and rules for the same target; every difference explained |
 | Part B verification | all equal under the rule; no unit exempt |
@@ -208,6 +212,9 @@ It may claim:
    result whatever the number of workers.
 2. Every call it rewrote was selected by the entity it resolves to, not
    by its spelling; the same spelling for other entities was not touched.
+   And every respelled callee denotes, in the result, the entity the
+   transform named: checked in the post-image by the trusted base, also
+   inside the units that are declared changed.
 3. For every translation unit of the corpus in the configuration it is
    built in, every declaration other than the listed ones means exactly
    what it meant before (invariant (c) of
@@ -218,10 +225,12 @@ It may claim:
 It may not claim, and the report must say so in these words or better:
 
 1. **That the rewritten calls are equivalent.** The units that hold them
-   are declared changed and are not compared. That they still behave the
-   same is the author's claim; for this pair it is supported by the
-   library's definitions and by its unit test, not by Slip. The negative
-   check of §5 is there to make this visible.
+   are declared changed and are not compared. Slip checks that each call
+   now names the function the transform asked for; that calling it with
+   the arguments exchanged behaves the same is the author's claim. For
+   this pair it is supported by the library's definitions and by its
+   unit test, not by Slip. The negative check of §5 is there to make
+   this visible: a wrong pair, correctly spelled, verifies.
 2. **Anything about other configurations**: other targets, assertions
    on, other platforms' `#if` branches (§3.1 measures how much that is
    for one function).

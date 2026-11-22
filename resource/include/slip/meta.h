@@ -221,7 +221,7 @@ consteval std::vector<info> arguments_as_written(info __call);
 consteval code text(std::string_view);
 
 // A name that denotes this entity at the place the code is put. Slip chooses
-// the spelling.
+// the spelling, and verification checks that it denotes this entity.
 consteval code spell(info __entity);
 
 // The text of a range, with every edit that lies inside the range applied.
@@ -264,7 +264,11 @@ consteval void report(range __where, severity, std::string_view __message);
 
 // Declares that the meaning of the declaration enclosing this place is
 // intended to change. Verification then does not compare it, and says so.
-consteval void expect_changed(info __where, std::string_view __why);
+// The place is a reference or an expression with an extent; the
+// declaration is in force only if an edit at that place is accepted. An
+// entity or a declaration is refused (unsupported): version 0 has no
+// declared change without a place.
+consteval void expect_changed(info __reference_or_expression, std::string_view __why);
 
 // Declares that this entity is intended to keep everything but its
 // identifier. Verification then compares it under the new name.
@@ -534,8 +538,8 @@ consteval void report(range __where, severity __s, std::string_view __message) {
   __impl::__v(__l0::__op_report, __in, 4, __message);
 }
 
-consteval void expect_changed(info __where, std::string_view __why) {
-  __impl::__v1(__l0::__op_expect_changed, __access::__raw(__where), __why);
+consteval void expect_changed(info __reference_or_expression, std::string_view __why) {
+  __impl::__v1(__l0::__op_expect_changed, __access::__raw(__reference_or_expression), __why);
 }
 
 consteval void expect_renamed(info __entity, std::string_view __new_identifier) {

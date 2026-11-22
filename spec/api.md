@@ -7,7 +7,7 @@ unit and asks for edits. This specification defines what the program may
 say and what Slip must answer.
 
 Rationale is in `docs/design/01-transform-api.md`; where that document and
-this one differ (§13), this one is the contract. What the API rests on in
+this one differ, this one is the contract (§13). What the API rests on in
 Kiln is recorded in `docs/design/notes/kiln-landed-2026-11.md`.
 
 Three texts are normative together:
@@ -834,11 +834,28 @@ kinds of piece:
    of Slip that cannot apply an edit properly inside a copied range must
    reject the edits involved as a conflict; it must never apply the stale
    bytes.
+
+   (a) **Two different edits of one range conflict.** A second request
+   that replaces exactly `r` with different pieces is a different edit
+   of the same range; both are rejected. So in version 0 a wrap,
+   `replace(extent_of(call), cat("g(", copy(call), ")"))`, cannot be
+   combined with an exchange that moves the same call.
+
+   (b) **Copies must be well-founded.** Say that an edit *draws on*
+   another when the other lies properly inside a range the first copies.
+   `replace(x, copy(r))` with `x` properly inside `r` draws on itself: it
+   asks for the text of `r` with the edit at `x` applied, which contains
+   the text of `r`. Among the accepted edits no edit may draw on itself,
+   directly or through a chain of edits each drawing on the next. Edits
+   on such a cycle are a conflict and are rejected. The host records the
+   requests (§7.3 rule 3); it is reduce that rejects.
 4. `spell(e)` throws `wrong_kind` if `e` is not an entity, and
    `unsupported` if `e` cannot be named by a qualified name without
    template arguments: a specialisation or a member of one, a member of a
    class template, a parameter, an entity with no identifier, an entity
-   declared in an unnamed class.
+   declared in an unnamed class. Likewise if the digest has no key for
+   `e` (an entity declared in a function body): a spelling that could not
+   be checked (§7.2 rule 5) is not given.
 5. `cat` concatenates. A piece is a `code`, a `range` (as by `copy`) or a
    value convertible to `std::string_view` (as by `text`). An `info` is
    not accepted: the caller says `spell` or `copy`.
@@ -875,10 +892,23 @@ recorded. Version 0 has two spellings.
 3. The rule depends only on the subject unit at the place of the edit, so
    every subject unit that sees the same place records the same edit.
 4. The API promises that the text is the host's best spelling of `E` and
-   that the record says which entity was meant (§7.6). It does not
-   promise that the spelling resolves; verification decides. Later
+   that the record says which entity was meant (§7.6). The host does not
+   promise that the spelling resolves; rule 5 has it checked. Later
    versions may choose shorter spellings in more places. The text is not
    observable by the transform.
+5. **Every spelling is checked.** For every accepted edit with a
+   spelled-entity piece, verification checks, in the post-image, that
+   the name written where the piece's text landed denotes the entity the
+   piece records: in each observer that parses those bytes there is a
+   reference whose name ends where the piece's text ends, and the origin
+   (§5.5) of its referent has the recorded `KeyId` under the rules of
+   the Slip run (§7.5). A name there that denotes anything else is a
+   verification failure of that observer, whether or not the unit that
+   holds the name is declared changed. A spelled piece that no observer
+   could check is a failure of the Slip run's verification. The check is
+   made by the trusted base from the record; nothing the transform does
+   after `spell` affects it. (The normative text of the check belongs to
+   `spec/verify.md` and moves there when the two are reconciled.)
 
 ### 7.3 `replace` and groups
 
@@ -939,18 +969,20 @@ conclude. It can declare that a specific change is intended; the
 declaration is recorded, reported, and checked as far as it can be.
 
 ```cpp
-consteval void expect_changed(info where, std::string_view why);
+consteval void expect_changed(info reference_or_expression, std::string_view why);
 consteval void expect_renamed(info entity, std::string_view new_identifier);
 ```
 
 1. `expect_changed(x, why)` declares that the meaning of the digest unit
-   that holds `x` is intended to change. The unit is the entity itself if
-   `x` is an entity that `spec/digest.md` §2.1 makes a unit; otherwise the
-   innermost such entity whose declaration contains `x`. The host records
-   the key of that unit, and the keys of the units of this subject unit
-   that `spec/digest.md` §2.2 derives from it (its resolved properties,
-   its instantiations).
-2. It throws `unsupported` when the unit is keyed by content
+   that holds `x` is intended to change. `x` is a reference or an
+   expression whose extent is not null: a declaration is made at a place
+   (rule 7). The unit is the innermost entity that `spec/digest.md` §2.1
+   makes a unit and whose declaration contains `x`. The host records the
+   key of that unit, the keys of the units of this subject unit that
+   `spec/digest.md` §2.2 derives from it (its resolved properties, its
+   instantiations), and with each the extent of `x`.
+2. It throws `unsupported` when `x` is an entity or a declaration, when
+   the extent of `x` is null, and when the unit is keyed by content
    (`spec/digest.md` §3.3) or has no key the digest can compute.
 3. `expect_renamed(e, n)` declares that entity `e` is intended to be
    declared with identifier `n` and to be otherwise unchanged, in the same
@@ -971,23 +1003,34 @@ consteval void expect_renamed(info entity, std::string_view new_identifier);
    subject unit needed is reported (`spec/verify.md` §2.2). A wrong rule
    cannot make two different programs compare equal (`spec/verify.md`
    §2.1).
-7. **A declaration made at a place holds only with an edit there.** When
-   `x` is a reference or an expression, the host records its extent with
-   the declaration. Slip puts the declaration in force only if it accepts
-   an edit of this Slip run that shares a byte with that extent in some
-   subject unit; a declaration whose edits were all rejected exempts
-   nothing. A declaration made with an entity or a declaration as `x`, or
-   with an `x` that has no extent, has no place and is in force whenever
-   the run's output is used; the report marks it so.
+7. **A declaration holds only with an edit at its place.** The place of
+   a declaration is the extent of `x`. Slip puts the declaration in force
+   only if it accepts an edit of this Slip run that shares a byte with
+   that extent; a declaration whose edits were all rejected exempts
+   nothing. Version 0 has no declaration without a place: that is why
+   rule 2 refuses an entity, a declaration and a null extent.
 8. Version 0 cannot declare that an entity is created, removed, or moved
    to another scope.
 
 ### 7.6 The run output
 
-This is what a completed run hands to the rest of Slip. The encoding in a
-shard is `spec/edits.md`'s; this section fixes the content.
+This is what a run hands to the rest of Slip: the output of a completed
+run, or the record of a failed one (§2.8). The encoding in a shard is
+`spec/edits.md`'s; this section fixes the content.
 
 ```
+RunResult := completed(RunOutput) | failed(RunFailure)
+
+RunFailure :=
+  transform:  TransformId
+  kind:       uncaught | not-constant | step-budget | memory-budget | depth-limit | host-failure    (§2.8)
+  message:    text                the diagnostic's first line
+  place:      none | (file of the transform unit, line, column)     where in the transform it arose
+  rendered:   text                the diagnostics as Kiln renders them, the call stack included
+  refusal:    none | (function, errc, message, subject place: none | (file, lo, hi))
+                                  for `uncaught` with a `slip::error` (§2.8 rule 3)
+  counters:   list<Counter>       `api.host_calls`, `api.steps`, `api.peak_bytes` up to the failure
+
 RunOutput :=
   transform:  TransformId
   edits:      list<Edit>          sorted by (file, lo, hi, pieces); no two equal
@@ -1011,7 +1054,7 @@ Piece :=
 
 Report := place: none | (file, lo, hi);  severity;  message;  attached: bool   (§7.4 rule 3)
 
-Changed := key: KeyId;  place: none | (file, lo, hi);  reason: text             (§7.5 rules 1 and 7)
+Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    (§7.5 rules 1 and 7)
 ```
 
 1. **Identity is content.** Two requests with the same file, range and
@@ -1024,7 +1067,20 @@ Changed := key: KeyId;  place: none | (file, lo, hi);  reason: text             
    not a group and is dropped; the edit stays.
 3. `KeyId` values are in the key space of the pre-image
    (`spec/verify.md` §2).
-4. Counters (`spec/model.md`'s `Counter`): `api.host_calls`,
+4. **Where a spelled piece lands** (for §7.2 rule 5) is not recorded by
+   the run and need not be: the piece's offset inside the replacement is
+   the sum of the lengths of the pieces before it, and the length of a
+   copy piece is known only once the edits inside the copied range are
+   decided. Whoever composes the copies (apply) therefore derives, for
+   each spelled piece of each accepted edit, its byte range in the
+   post-image, and hands it with the piece's `KeyId` to verification. An
+   encoding that flattens the pieces to text before reduce must record,
+   for each spelled piece, its offset and length in that text and its
+   `KeyId`; the offsets are then valid only while no edit lands inside a
+   copied range, which rule 3 of §7.1 already makes a conflict there.
+5. A failed run hands over nothing else: no edit, report or declaration
+   it requested (§2.8 rule 1).
+6. Counters (`spec/model.md`'s `Counter`): `api.host_calls`,
    `api.steps`, `api.peak_bytes`, `api.edits`, `api.reports`,
    `api.unresolved_spelling_matches` (§6.5 rule 6), and one
    `api.op.<name>` per operation used.
@@ -1222,20 +1278,11 @@ Errors of the tool, as opposed to `slip::error` in a transform (§4).
 
 Failures of a run are in §2.8.
 
-## 13. Differences from the design document
+## 13. The design document
 
-`docs/design/01-transform-api.md` is illustrative; these are the places
-version 0 differs from it, to be folded back there.
-
-| Design | Version 0 | Why |
-|---|---|---|
-| `inline namespace v1` | `v0` | the draft is not yet the stable contract |
-| `on(selector, action)` | a loop over `calls_to(...)` | §2.4, §9 |
-| `enclosing_declaration_of(call)` passed to `expect_changed` | `expect_changed(call, why)` | the host knows which unit the digest uses; the transform should not have to |
-| `name_range_of(callee_of(call))` | `extent_of(callee_reference_of(call))` | `callee_of` is the resolved entity; the written name is a reference |
-| `cat` accepts `info` | it does not | "spell" and "copy" are different requests |
-| `info` "is treated as a scalar" | it is not, in Kiln's cache | §5.1 |
-| `insert`, `remove`, `create_file`, guards, facts, `relocate`, `class file` | absent | §14 |
+`docs/design/01-transform-api.md` was aligned with this specification on
+2026-11-22: it uses the names and forms of version 0 and marks what it
+describes beyond version 0 as later.
 
 ## 14. Not in version 0
 
@@ -1269,6 +1316,7 @@ To be created by the work packages named; none exists yet.
 | `crates/slip_script/tests/api/examples/` | §10: both examples on subjects that exercise every branch | WP-091 |
 | `crates/slip_script/tests/isolation.rs` | §2.4 rule 3, §2.7: N runs in any order give the same outputs and step counts; a failed run leaves the next unaffected | WP-091 |
 | `crates/slip_script/tests/subject_keys.rs` | §7.5 rules 1 to 3 over Kiln: the keys declared are the keys the digest gives | WP-095 |
+| `crates/slip_digest/tests/spelling.rs` | §7.2 rule 5: a spelled piece that denotes the recorded entity; one that denotes another; one nobody parses; inside an exempt unit; under a rename rule | WP-096 |
 | `crates/slip_cli/tests/transform_map.rs` | a transform run through a worker: the run output arrives in the shard; a failing transform fails the observer; one compile per worker | WP-092 |
 | `crates/slip_script/tests/cost.rs` | §9: the cost table, measured (not in the gate) | WP-093 |
 | `crates/slip_cli/tests/demo3_small.rs` | §10 end to end on a small corpus: plan, map, reduce, apply, verify | WP-094 |
@@ -1284,14 +1332,17 @@ To be created by the work packages named; none exists yet.
 3. **Units derived from a declared unit.** §7.5 rule 1 has the host list
    the derived units it can see. An edit can also create or remove derived
    units (a call respelled to a function template instantiates a new
-   specialisation). Version 0 cannot declare those; verification will
-   report them. Whether verification should treat a derived unit that is
-   reachable only from exempt units as exempt is a question for
-   `spec/verify.md`.
-4. **Checking spelled entities.** The run output says which entity each
-   spelled piece means. Verification could check that the name at that
-   place in the post-image denotes that entity, which would close most of
-   what `expect_changed` leaves unchecked. Not specified anywhere yet.
+   specialisation). Decided for version 0: such a unit is **not exempt**,
+   even when it is reachable only from exempt units; verification reports
+   it as it finds it, and a transform cannot declare it. Open: whether a
+   later version lets a transform declare created and removed units, or
+   has verification derive the exemption.
+4. **Spelled pieces nobody parses.** §7.2 rule 5 fails the Slip run when
+   no observer could check a spelled piece (the text landed in a skipped
+   conditional group, an unused macro argument, a name resolved only at
+   instantiation). That is the conservative reading. Whether such a piece
+   should instead be a counted residue needs the preprocessing record to
+   say why the bytes were not parsed.
 5. **Stringised arguments.** A tier 1 edit inside an argument that the
    macro also stringises (`assert`) changes a string literal in a unit the
    transform did not declare. Verification reports it. Whether a rename
@@ -1311,11 +1362,11 @@ To be created by the work packages named; none exists yet.
    yet.
 10. **Identifiers outside the basic character set** in `lookup` and
     `expect_renamed`: the rule "as the source encodes them" is untested.
-11. **A declaration with no place** (§7.5 rule 7: `expect_changed` given
-    an entity) is in force whether or not any edit was accepted. Whether
-    version 0 should refuse it, or tie it to "some edit inside a
-    declaration of the entity", needs the ranges of declarations
-    (request KR3).
+11. **A declaration with no place.** Version 0 refuses `expect_changed`
+    for an entity or a declaration (§7.5 rule 2), because nothing could
+    tie such a declaration to an accepted edit. It is lifted when
+    declarations have ranges (request KR3): the place is then the
+    declaration's extent.
 12. **Groups seen by several subject units.** A group's identity is its
     member set (§7.6 rule 1). Two subject units that see one edit in
     different groups (a header call whose second argument is edited only
