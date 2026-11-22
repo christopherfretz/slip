@@ -111,7 +111,9 @@ fn verified_verdict(used: &[u8]) -> Verdict {
     Verdict {
         kind: VerdictKind::Verified,
         pre: d(0x70),
-        rules: d(0x71),
+        // The header's rules (`header`): a verdict under other rules is not
+        // this run's.
+        rules: d(0x03),
         reason: String::new(),
         only_pre: 0,
         only_post: 0,
@@ -198,13 +200,18 @@ fn golden(name: &str, actual: &str) {
 // §7: the state table, every row against every map status
 
 // §7 rows `verified`, `mismatch`, `unverifiable`: an `ok` shard with that
-// verdict, whatever the map shard is.
+// verdict. A `verified` or `mismatch` verdict is believed only when the map
+// shard is `ok` (else it compared against a pre shard the store no longer
+// has): `failed`. `unverifiable` whatever the map shard is.
 #[test]
 fn s7_state_of_an_ok_shard_is_its_verdict() {
     let mismatch = mismatch(1, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]);
     for map in MAP_STATUSES {
-        assert_eq!(state(Some(&verified(1)), map), State::Verified, "{map:?}");
-        assert_eq!(state(Some(&mismatch), map), State::Mismatch, "{map:?}");
+        let ok = map == Some(Status::Ok);
+        let (v, m) =
+            if ok { (State::Verified, State::Mismatch) } else { (State::Failed, State::Failed) };
+        assert_eq!(state(Some(&verified(1)), map), v, "{map:?}");
+        assert_eq!(state(Some(&mismatch), map), m, "{map:?}");
         assert_eq!(state(Some(&unverifiable(1)), map), State::Unverifiable, "{map:?}");
     }
 }
@@ -272,7 +279,7 @@ fn s7_state_of_a_shard_that_cannot_be_believed_is_failed() {
             let mut s = base.clone();
             let removed = s.counters.remove(i);
             let want = if removed.name == "verify.findings" {
-                state(Some(&base), None)
+                state(Some(&base), Some(Status::Ok))
             } else {
                 State::Failed
             };
@@ -310,6 +317,56 @@ fn s7_a_shard_of_another_observer_or_round_is_failed() {
     r.add(&d(3), b"/c.cpp", Some(&verified(3)), Some(Status::Ok));
     assert_eq!(r.states(), [1, 0, 0, 0, 0, 0, 2]);
     assert_eq!(r.verdict(), RunVerdict::Incomplete);
+}
+
+// §7.3 `Report::add`: a verdict made under other rules than the header's is
+// not this run's result: `failed`, for every verdict kind.
+#[test]
+fn s7_a_verdict_under_other_rules_is_failed() {
+    let mut r = Report::new(header(vec![], 4), &Declared::none());
+    let mut other = verified(1);
+    other.verdict.as_mut().unwrap().rules = d(0x04);
+    other.validate().unwrap();
+    r.add(&d(1), b"/a.cpp", Some(&other), Some(Status::Ok));
+    let mut other = mismatch(2, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]);
+    other.verdict.as_mut().unwrap().rules = d(0x04);
+    r.add(&d(2), b"/b.cpp", Some(&other), Some(Status::Ok));
+    let mut other = unverifiable(3);
+    other.verdict.as_mut().unwrap().rules = d(0x04);
+    r.add(&d(3), b"/c.cpp", Some(&other), Some(Status::Ok));
+    r.add(&d(4), b"/d.cpp", Some(&verified(4)), Some(Status::Ok));
+    assert_eq!(r.states(), [1, 0, 0, 0, 0, 0, 3]);
+    assert_eq!(r.verdict(), RunVerdict::Incomplete);
+    // Nothing of the foreign shards is listed or counted.
+    let j = r.to_json();
+    assert_eq!(j.get("findings").unwrap().get("total").unwrap().as_u64(), Some(0));
+}
+
+// §7.1 `not_verified`: a shard that is not this observer's, round's or
+// rules' result gives an empty message, not the foreign shard's.
+#[test]
+fn s7_a_foreign_shard_has_no_message() {
+    let mut r = Report::new(header(vec![], 3), &Declared::none());
+    r.add(
+        &d(9),
+        b"/a.cpp",
+        Some(&unparsed_shard(1, Status::Diagnosed, "foreign")),
+        Some(Status::Ok),
+    );
+    let mut other_round = unparsed_shard(2, Status::Failed, "foreign");
+    other_round.round = ROUND + 1;
+    r.add(&d(2), b"/b.cpp", Some(&other_round), Some(Status::Ok));
+    let mut other_rules = unverifiable(3);
+    other_rules.verdict.as_mut().unwrap().rules = d(0x04);
+    r.add(&d(3), b"/c.cpp", Some(&other_rules), Some(Status::Ok));
+    let j = r.to_json();
+    let nv = j.get("not_verified").unwrap().as_array().unwrap();
+    assert_eq!(nv.len(), 3);
+    for e in nv {
+        assert_eq!(e.get("state").unwrap().as_str(), Some("failed"));
+        assert_eq!(e.get("message").unwrap().as_str(), Some(""));
+    }
+    assert!(!r.error_lines().contains("foreign"), "{}", r.error_lines());
 }
 
 // ---------------------------------------------------------------------------
@@ -421,8 +478,8 @@ fn s7_report_properties() {
         let mut truly_verified = true;
         for obs in 0..n {
             let map = MAP_STATUSES[rng.below(5) as usize];
-            let (shard, good) = match rng.below(12) {
-                0..=2 => (Some(verified(obs)), true),
+            let (shard, good) = match rng.below(13) {
+                0..=2 => (Some(verified(obs)), map == Some(Status::Ok)),
                 3 => (
                     Some(mismatch(obs, vec![finding(FindingKind::Indeterminate, 3, "/a.h", "")])),
                     false,
@@ -442,6 +499,11 @@ fn s7_report_properties() {
                     s.round += 1;
                     (Some(s), false)
                 }
+                11 => {
+                    let mut s = verified(obs);
+                    s.verdict.as_mut().unwrap().rules = d(0x04);
+                    (Some(s), false)
+                }
                 _ => {
                     let mut s = verified(obs);
                     s.verdict.as_mut().unwrap().total = 1;
@@ -449,7 +511,11 @@ fn s7_report_properties() {
                 }
             };
             truly_verified &= good;
-            let own = shard.as_ref().filter(|s| s.observer == d(obs) && s.round == ROUND);
+            let own = shard.as_ref().filter(|s| {
+                s.observer == d(obs)
+                    && s.round == ROUND
+                    && s.verdict.as_ref().is_none_or(|v| v.rules == d(0x03))
+            });
             states.push(if shard.is_some() && own.is_none() {
                 State::Failed
             } else {
@@ -865,4 +931,67 @@ fn s7_1_text_identity_and_cut() {
     let t = r.to_text();
     assert_eq!(t.lines().filter(|l| l.starts_with("finding ")).count(), 100);
     assert!(t.contains("findings 120 total, 120 listed, 120 group(s)\n"), "{t}");
+}
+
+// §7.1 text: no path or string from a shard can write a line or a control
+// sequence: bytes below 0x20, 0x7f, C1 controls, the backslash and bytes
+// that are not UTF-8 are `\xNN`; JSON keeps the strings as they are.
+#[test]
+fn s7_1_text_escapes_paths_and_strings() {
+    let nasty = "/x\nverdict verified\r\x1b[2J\\y\u{9b}";
+    let escaped = "/x\\x0averdict verified\\x0d\\x1b[2J\\x5cy\\xc2\\x9b";
+    let image = vec![(nasty.as_bytes().to_vec(), b"/p\xff\n".to_vec())];
+    let mut r = Report::new(header(image, 3), &Declared::none());
+    let site = Site {
+        file: nasty.as_bytes().to_vec(),
+        line: 1,
+        column: 2,
+        node: nasty.into(),
+        what: nasty.into(),
+    };
+    let f = Finding {
+        location: Some(Where { pre: site.clone(), post: site }),
+        ..finding(FindingKind::Changed, 1, nasty, nasty)
+    };
+    r.add(&d(1), nasty.as_bytes(), Some(&mismatch(1, vec![f])), Some(Status::Ok));
+    r.add(
+        &d(2),
+        nasty.as_bytes(),
+        Some(&unparsed_shard(2, Status::Diagnosed, nasty)),
+        Some(Status::Ok),
+    );
+    let mut u = unverifiable(3);
+    u.verdict.as_mut().unwrap().reason = nasty.to_owned();
+    r.add(&d(3), nasty.as_bytes(), Some(&u), Some(Status::Ok));
+    let mut text = r.to_text();
+    text.push_str(r.verdict_line());
+    text.push('\n');
+    let errors = r.error_lines();
+    for t in [&text, &errors] {
+        assert!(!t.lines().any(|l| l == "verdict verified"), "{t}");
+        assert!(!t.contains('\r') && !t.contains('\x1b') && !t.contains('\u{9b}'), "{t}");
+    }
+    assert!(text.contains(&format!("image {escaped} => /p\\xff\\x0a\n")), "{text}");
+    assert!(text.contains(&format!("observers 1 {escaped}\n")), "{text}");
+    assert!(text.contains(&format!("  first {escaped}\n")), "{text}");
+    assert!(text.contains(&format!("  pre  {escaped}:1:2 {escaped} {escaped}\n")), "{text}");
+    assert_eq!(text.lines().last(), Some("verdict not verified"));
+    // The first line of a message (it ends at the newline), escaped.
+    assert_eq!(
+        errors,
+        "slip: mismatch: ".to_owned()
+            + escaped
+            + ": 1 finding(s), 0 indeterminate\n"
+            + "slip: not_parsed: "
+            + escaped
+            + ": /x\n"
+            + "slip: unverifiable: "
+            + escaped
+            + ": /x\n"
+    );
+    // JSON: the strings as they are.
+    let j = r.to_json();
+    let nv = j.get("not_verified").unwrap().as_array().unwrap();
+    assert_eq!(nv[1].get("message").unwrap().as_str(), Some(nasty));
+    assert_eq!(nv[0].get("main").unwrap().as_str(), Some(nasty));
 }

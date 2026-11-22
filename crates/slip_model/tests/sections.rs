@@ -1071,6 +1071,37 @@ fn verdict_3_kinds() {
     assert_eq!(rejected(&s, "sections.verdict.findings"), 309);
 }
 
+// verdict rule 3, `pre` (spec/model.md §8.3): a verified or mismatch
+// verdict compared against a pre shard, so its `pre` is not all zero; only
+// an unverifiable one may have none. Checked first, `pre` being the first
+// field after `kind`; binary (offset 207, the `pre` field) and JSON.
+#[test]
+fn verdict_3_pre_shard() {
+    let zero = Digest([0; 32]);
+    let mut s = verify_shard();
+    verdict(&mut s).pre = zero;
+    assert_eq!(rejected(&s, "sections.verdict.pre"), 207);
+    let e = Shard::from_bytes(&raw(&s)).unwrap_err();
+    assert_eq!(e.what, "a mismatch verdict without a pre shard");
+    // Before the reason of rule 3.
+    verdict(&mut s).reason = "x".into();
+    assert_eq!(rejected(&s, "sections.verdict.pre"), 207);
+    let mut s = verify_shard();
+    verdict(&mut s).kind = VerdictKind::Verified;
+    verdict(&mut s).total = 0;
+    verdict(&mut s).findings.clear();
+    verdict(&mut s).pre = zero;
+    // Without findings the section's length takes one byte less: `pre` is
+    // at 206.
+    assert_eq!(rejected(&s, "sections.verdict.pre"), 206);
+    let e = Shard::from_bytes(&raw(&s)).unwrap_err();
+    assert_eq!(e.what, "a verified verdict without a pre shard");
+    // Unverifiable: with or without a pre shard.
+    let with = |v: Verdict| Shard { verdict: Some(v), ..verify_shard() };
+    round_trip(&with(Verdict { pre: zero, ..unverifiable() }));
+    round_trip(&with(Verdict { pre: d(0x70), ..unverifiable() }));
+}
+
 // verdict rule 4 (spec/verify.md §6): no more findings than total.
 #[test]
 fn verdict_4_findings_within_total() {

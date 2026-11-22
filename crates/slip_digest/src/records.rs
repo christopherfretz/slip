@@ -180,6 +180,73 @@ mod tests {
         found.expect("the declaration")
     }
 
+    /// Parses `struct S { int m; };`, writes the units of `m` and `S`, and
+    /// gives `f` the walk, the ids of `S` and `m`, and the written units.
+    fn with_units<R>(
+        f: impl FnOnce(&mut Walk<'_>, [slip_kiln::kiln::ast::DeclId; 2], &mut Vec<units::Written>) -> R,
+    ) -> R {
+        let files = [("main.cpp", "struct S { int m; };\n")];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        let rules = RuleTable::empty();
+        slip_kiln::snippet::parse(&snippet, |p| {
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let mut w = Walk::new(&input, &rules);
+            let s = w.entity(named(&w, "S", DeclKind::CXXRecord));
+            let m = w.entity(named(&w, "m", DeclKind::Field));
+            let mut written = Vec::new();
+            f(&mut w, [s, m], &mut written)
+        })
+        .expect("the snippet parses")
+    }
+
+    fn output_of(w: &Walk<'_>, written: &[units::Written]) -> Output {
+        let mut names = crate::names::names(w, written);
+        names.sort();
+        Output {
+            digests: Digests { scheme: 0, tu: slip_model::Digest([0; 32]), groups: Vec::new() },
+            counters: Vec::new(),
+            causes: Vec::new(),
+            names,
+        }
+    }
+
+    // `records` never guesses: a unit written under a `KeyId` that its
+    // `Key`, computed again, does not have is an `Err` naming the unit.
+    #[test]
+    fn a_unit_whose_key_has_another_id_is_err() {
+        with_units(|w, [_, m], written| {
+            let KeyRes::Key { kind, cause, .. } = w.key(m) else { panic!("m has a key") };
+            let wrong = slip_model::Digest([0xee; 32]);
+            w.keys.insert(m, KeyRes::Key { id: wrong, kind, cause });
+            written.push(units::write(w, m, UnitClass::Declared).expect("m written"));
+            assert_eq!(written[0].key, wrong);
+            let output = output_of(w, written);
+            let e = collect(w, written, &output).expect_err("a wrong id is an error");
+            assert!(e.contains("`S::m`") && e.contains(&wrong.to_string()), "{e}");
+            assert!(e.contains("computed again, is"), "{e}");
+        });
+    }
+
+    // And one whose `Key` cannot be computed again (here: the key of its
+    // parent is in progress, a cycle) is an `Err` naming it.
+    #[test]
+    fn a_unit_whose_key_cannot_be_computed_again_is_err() {
+        with_units(|w, [s, m], written| {
+            written.push(units::write(w, m, UnitClass::Declared).expect("m written"));
+            let output = output_of(w, written);
+            w.keys.remove(&s);
+            w.keys_in_progress.insert(s);
+            let e = collect(w, written, &output).expect_err("no key computed again is an error");
+            assert!(e.contains("`S::m`") && e.contains("computed again it has none"), "{e}");
+        });
+    }
+
     #[test]
     fn a_fallback_key_has_no_key() {
         let files = [("main.cpp", "struct S { int m; };\n")];

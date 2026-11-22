@@ -168,9 +168,13 @@ fn judge(verify: Option<&Shard>, map: Option<Status>) -> Judged<'_> {
         Status::Ok => {
             let Some(verdict) = &shard.verdict else { return failed };
             let Some(counts) = counts_by_kind(shard, verdict) else { return failed };
+            // A comparison is believed only against the pre shard the store
+            // has now: an ok map shard. `unverifiable` compared nothing.
+            let compared = map == Some(Status::Ok);
             let state = match verdict.kind {
-                VerdictKind::Verified => State::Verified,
-                VerdictKind::Mismatch => State::Mismatch,
+                VerdictKind::Verified if compared => State::Verified,
+                VerdictKind::Mismatch if compared => State::Mismatch,
+                VerdictKind::Verified | VerdictKind::Mismatch => return failed,
                 VerdictKind::Unverifiable => State::Unverifiable,
             };
             Judged { state, verdict: Some((verdict, counts)) }
@@ -185,8 +189,10 @@ fn judge(verify: Option<&Shard>, map: Option<Status>) -> Judged<'_> {
 /// or whose verdict lacks the counters of §7.2 by kind or disagrees with
 /// them (they must add up to `total`, `verify.findings` must be `total`
 /// when present, and no kind may have more findings listed than counted)
-/// is `Failed`. `Unchanged` is never returned: it is decided without a
-/// shard (§5.5, not in M1).
+/// is `Failed`; so is a `verified` or `mismatch` verdict when `map` is
+/// not `Some(Status::Ok)` (the pre shard it compared against is not the
+/// one the store has now). `Unchanged` is never returned: it is decided
+/// without a shard (§5.5, not in M1).
 pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State {
     judge(verify, map).state
 }
@@ -326,9 +332,10 @@ impl Report {
     /// One call per selected observer, in plan order.
     ///
     /// `verify` is this run's shard of the observer, as for [`state`]; a
-    /// shard whose `observer` is not `observer` or whose `round` is not the
-    /// header's is not this observer's result in this run and the observer
-    /// is `Failed`. Only a `Mismatch` contributes findings, and only a
+    /// shard whose `observer` is not `observer`, whose `round` is not the
+    /// header's, or whose verdict's `rules` is not the header's is not this
+    /// observer's result in this run: the observer is `Failed`, with an
+    /// empty message. Only a `Mismatch` contributes findings, and only a
     /// `Verified` or `Mismatch` verdict contributes used exemptions.
     pub fn add(
         &mut self,
@@ -339,7 +346,12 @@ impl Report {
     ) {
         let index = self.selected;
         self.selected += 1;
-        let ours = verify.filter(|s| s.observer == *observer && s.round == self.header.round);
+        let rules = self.header.rules;
+        let ours = verify.filter(|s| {
+            s.observer == *observer
+                && s.round == self.header.round
+                && s.verdict.as_ref().is_none_or(|v| v.rules == rules)
+        });
         let judged = if verify.is_some() && ours.is_none() {
             Judged { state: State::Failed, verdict: None }
         } else {
@@ -380,7 +392,7 @@ impl Report {
                     judged.verdict.map(|(v, _)| v.reason.clone()).unwrap_or_default()
                 }
                 State::NotParsed | State::NeverParsed | State::Failed => {
-                    verify.map(|s| s.outcome.message.clone()).unwrap_or_default()
+                    ours.map(|s| s.outcome.message.clone()).unwrap_or_default()
                 }
                 State::Mismatch | State::Verified | State::Unchanged => String::new(),
             };
@@ -549,7 +561,8 @@ impl Report {
     /// §7.1 from `plan` to `exemption`: the caller adds `wall`, `peak_rss`,
     /// `run`, `report` and prints `verdict_line()` last.
     ///
-    /// Paths are their bytes where UTF-8, each other byte `\xNN`; a key is
+    /// Every path and every string from a shard is written as `escape`
+    /// gives it, so none can write a line or a control sequence; a key is
     /// its first 16 hexadecimal digits (`-` for a finding without one); a
     /// line's last word is left out when it is empty, so no line ends in a
     /// blank.
@@ -577,7 +590,7 @@ impl Report {
             line(
                 &mut out,
                 &format!("finding {} {key} observers {}", kind_name(f.kind), g.observers),
-                &[&f.name],
+                &[&text(&f.name)],
             );
             let _ = writeln!(out, "  first {}", path(&g.first));
             if let Some(w) = &f.location {
@@ -616,7 +629,7 @@ impl Report {
             let message = if n.state == State::Mismatch {
                 format!("{} finding(s), {} indeterminate", n.findings, n.indeterminate)
             } else {
-                n.message.lines().next().unwrap_or("").to_owned()
+                text(n.message.lines().next().unwrap_or(""))
             };
             let _ = writeln!(out, "slip: {}: {}: {message}", n.state.name(), path(&n.main));
         }
@@ -646,7 +659,7 @@ fn site_line(out: &mut String, prefix: &str, s: &Site) {
     } else {
         format!("{}:{}:{}", path(&s.file), s.line, s.column)
     };
-    line(out, &format!("{prefix}{place}"), &[&s.node, &s.what]);
+    line(out, &format!("{prefix}{place}"), &[&text(&s.node), &text(&s.what)]);
 }
 
 /// A key's first 16 hexadecimal digits.
@@ -656,17 +669,37 @@ fn short(d: &Digest) -> String {
     s
 }
 
-/// A path for the text: its bytes where they are UTF-8, each other byte as
-/// `\xNN` (as `spec/verify.md` §5.3 writes a path).
-fn path(bytes: &[u8]) -> String {
+/// Bytes for the text form (`spec/verify.md` §7.1): each byte that is not
+/// UTF-8, each byte below 0x20, 0x7f, the backslash, and the bytes of a C1
+/// control character (U+0080 to U+009F) as `\xNN` (lower-case hexadecimal);
+/// every other character as it is. The result has no control character,
+/// and `\` in it always starts an escape, so it reads back unambiguously.
+fn escape(bytes: &[u8]) -> String {
     let mut out = String::new();
     for chunk in bytes.utf8_chunks() {
-        out.push_str(chunk.valid());
+        for c in chunk.valid().chars() {
+            if c.is_control() || c == '\\' {
+                let mut buf = [0; 4];
+                for b in c.encode_utf8(&mut buf).bytes() {
+                    let _ = write!(out, "\\x{b:02x}");
+                }
+            } else {
+                out.push(c);
+            }
+        }
         for b in chunk.invalid() {
             let _ = write!(out, "\\x{b:02x}");
         }
     }
     out
+}
+
+fn path(bytes: &[u8]) -> String {
+    escape(bytes)
+}
+
+fn text(s: &str) -> String {
+    escape(s.as_bytes())
 }
 
 // ---------------------------------------------------------------------------

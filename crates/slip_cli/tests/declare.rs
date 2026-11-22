@@ -415,7 +415,7 @@ fn duplicates() {
     let p = pre();
     let e = err("relocate n::C => :: D\n# x\nrelocate n::C => :: D", &p.recs, &[]);
     assert_eq!((e.line, e.kind), (3, ErrorKind::Duplicate));
-    // Two entities moved to one place.
+    // One entity moved twice to one place (two entities: below).
     let e = err(
         "relocate [function] n::f(char) => :: g\nrelocate [function] n::f(char) => :: g",
         &p.recs,
@@ -526,10 +526,19 @@ fn digest_of(source: &str, rules: &RuleTable) -> Output {
 }
 
 fn findings(pre: &Output, post: &Output, ex: &Exemptions) -> Vec<FindingKind> {
+    named_findings(pre, post, ex).into_iter().map(|(k, _)| k).collect()
+}
+
+/// The findings with the name of their key (in either image).
+fn named_findings(pre: &Output, post: &Output, ex: &Exemptions) -> Vec<(FindingKind, String)> {
     let p: Vec<&Group> = pre.digests.groups.iter().collect();
     let q: Vec<&Group> = post.digests.groups.iter().collect();
     let c = compare_groups(&p, &q, ex).expect("groups compare");
-    c.findings.iter().map(|f| f.kind).collect()
+    let name = |k: Option<Digest>| {
+        let find = |o: &Output| o.names.iter().find(|(n, _)| Some(*n) == k).map(|(_, s)| s.clone());
+        find(pre).or_else(|| find(post)).unwrap_or_default()
+    };
+    c.findings.iter().map(|f| (f.kind, name(f.key))).collect()
 }
 
 /// The command's loop: the `Declared` of `text` over `pre` and `post`,
@@ -582,7 +591,7 @@ fn loop_namespace_to_the_global_namespace() {
                using T = acme::inner::S;\nvoid g(T *, acme::inner::S *);\n";
     let post = "namespace acme { int keep; }\nnamespace inner { struct S; void f(S *); }\n\
                 using T = inner::S;\nvoid g(T *, inner::S *);\n";
-    let d = verified(pre, post, "relocate acme::inner => :: inner\nchanged <order>\n");
+    let d = verified(pre, post, "relocate acme::inner => :: inner\n");
     assert_eq!(d.rules().rules().len(), 1);
 }
 
@@ -591,7 +600,7 @@ fn loop_namespace_to_the_global_namespace() {
 fn loop_namespace_into_an_existing_one() {
     let pre = "namespace a { struct X; }\nnamespace b { struct Y; }\nusing Z = a::X;\n";
     let post = "namespace b { struct Y; namespace a { struct X; } }\nusing Z = b::a::X;\n";
-    verified(pre, post, "relocate a => b :: a\nchanged <order>\n");
+    verified(pre, post, "relocate a => b :: a\n");
 }
 
 // Into a namespace another line relocates: `old` becomes `fresh`, and
@@ -600,7 +609,7 @@ fn loop_namespace_into_an_existing_one() {
 fn loop_into_a_relocated_namespace() {
     let pre = "namespace old { struct V; }\nnamespace x { struct T; struct W; }\nusing U = x::T;\nusing R = old::V;\n";
     let post = "namespace fresh { struct V; struct T; }\nnamespace x { struct W; }\nusing U = fresh::T;\nusing R = fresh::V;\n";
-    verified(pre, post, "relocate old => :: fresh\nrelocate x::T => fresh :: T\nchanged <order>\n");
+    verified(pre, post, "relocate old => :: fresh\nrelocate x::T => fresh :: T\n");
 }
 
 // A member function renamed.
@@ -608,7 +617,7 @@ fn loop_into_a_relocated_namespace() {
 fn loop_member_function_renamed() {
     let pre = "struct C { void m(int); void k(); };\n";
     let post = "struct C { void n(int); void k(); };\n";
-    verified(pre, post, "relocate C::m(int) => C :: n\nchanged C\n");
+    verified(pre, post, "relocate C::m(int) => C :: n\n");
 }
 
 // A class renamed, with a use; its member named under the new parent with
@@ -673,4 +682,100 @@ fn loop_a_wrong_relocation_is_found() {
     let post = "namespace n { void g(int); void f(char); }\n";
     let (_, with, _) = round_trip(pre, post, "relocate [function] n::f(char) => n :: g\n");
     assert!(with.iter().copied().any(real), "the wrong overload relocated: {with:?}");
+}
+
+// A change of initialisation order alone: `<order>` is changed, and
+// `changed <order>` exempts it. (The loops above move namespaces and
+// classes and need no `changed <order>`: their order unit is equal.)
+#[test]
+fn loop_order_of_initialisation() {
+    let pre = "int x = 1;\nint y = 2;\n";
+    let post = "int y = 2;\nint x = 1;\n";
+    let empty = RuleTable::empty();
+    let (pre_d, post_d) = (digest_of(pre, &empty), digest_of(post, &empty));
+    let without = named_findings(&pre_d, &post_d, &Exemptions::none());
+    assert!(without.contains(&(FindingKind::Changed, "<order>".to_owned())), "{without:?}");
+    assert!(
+        without.iter().all(|(k, n)| !real(*k) || n == "<order>"),
+        "only the order changed: {without:?}"
+    );
+    // The initialisers are a pending area (indeterminate); every real
+    // finding is gone with the exemption.
+    let (d, with, _) = round_trip(pre, post, "changed <order>\n");
+    assert_eq!(d.changed().len(), 1);
+    assert!(!with.iter().copied().any(real), "{with:?}");
+    assert!(with.iter().all(|k| *k == FindingKind::Indeterminate), "{with:?}");
+}
+
+// §2.3 `Duplicate`, two entities to one place: two namespaces relocated to
+// one name have one `(parent, kind, name, disc)`, so the later line is the
+// error; two overloads relocated to one name have two discriminators and
+// are two rules.
+#[test]
+fn two_entities_relocated_to_one_place() {
+    let p = pre();
+    let e = err("relocate n => :: z\n\nrelocate m => :: z", &p.recs, &[]);
+    assert_eq!((e.line, e.kind), (3, ErrorKind::Duplicate), "{e}");
+    let r = resolve(
+        &read("relocate [function] n::f(int) => :: g\nrelocate [function] n::f(char) => :: g")
+            .unwrap(),
+        &p.recs,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(r.rules.rules().len(), 2);
+}
+
+// `resolve` and `finish` take records in any order: shuffled records give
+// what sorted ones give, for every line form and for the errors.
+#[test]
+fn records_in_any_order() {
+    let p = pre();
+    let fresh = key(KeyKind::Namespace, Parent::Root, ident("fresh"), None);
+    let deep = key(KeyKind::Namespace, Parent::Unit(fresh.id()), ident("deep"), None);
+    let post = sorted(vec![rec(&fresh, "fresh"), rec(&deep, "fresh::deep")]);
+    let texts = [
+        "relocate n => :: fresh\nrelocate n::C => fresh::deep :: =\nchanged [function] n::f(char)\nremoved n::C\n",
+        "changed n::f(int)\n",
+        "changed nothing\n",
+        "relocate n::C::<friend> => :: =\n",
+    ];
+    let mut rng = 0x5eed_0055_0000_005b_u64;
+    let mut shuffle = |v: &mut Vec<Record>| {
+        for i in (1..v.len()).rev() {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            v.swap(i, (rng % (i as u64 + 1)) as usize);
+        }
+    };
+    for text in texts {
+        let lines = read(text).unwrap();
+        let want = resolve(&lines, &p.recs, &post);
+        for _ in 0..20 {
+            let (mut a, mut b) = (p.recs.clone(), post.clone());
+            shuffle(&mut a);
+            shuffle(&mut b);
+            b.reverse();
+            assert_eq!(resolve(&lines, &a, &b), want, "{text}");
+        }
+    }
+    let lines = read("created D::fresh\ncreated D::other\n").unwrap();
+    let f = key(KeyKind::Variable, Parent::Root, ident("fresh"), None);
+    let o = key(KeyKind::Variable, Parent::Root, ident("other"), None);
+    let mut mapped = vec![rec(&f, "D::fresh"), rec(&o, "D::other")];
+    let r = Resolved { rules: RuleTable::empty(), changed: vec![], removed: vec![] };
+    let want = finish(&lines, r.clone(), &mapped).unwrap();
+    mapped.reverse();
+    assert_eq!(finish(&lines, r, &mapped).unwrap(), want);
+}
+
+// §2.3: a byte order mark at the start is skipped; elsewhere it is text.
+#[test]
+fn a_byte_order_mark_is_skipped() {
+    let l = read("\u{feff}changed a\n").unwrap();
+    assert_eq!(l, vec![(1, Line::Changed(ent(None, "a")))]);
+    let l = read("\u{feff}# comment\r\nremoved b").unwrap();
+    assert_eq!(l, vec![(2, Line::Removed(ent(None, "b")))]);
+    assert_eq!(read("changed a\n\u{feff}changed b").unwrap_err().line, 2);
 }

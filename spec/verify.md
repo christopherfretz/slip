@@ -128,7 +128,7 @@ names in the two images. It is outside the trusted base: what it produces
 is the data of §2, which the report prints, and a wrong rule cannot make
 two different programs compare equal (§2.1).
 
-**The text.** UTF-8. A line that is empty, or blank, or whose first
+**The text.** UTF-8; a byte order mark at its start is skipped. A line that is empty, or blank, or whose first
 character after blanks is `#`, is ignored. Every other line is one of
 
 ```
@@ -196,7 +196,7 @@ they need the rules the file gives:
 | `Ambiguous` | units of that name have more than one `KeyId`; the message lists their kinds |
 | `Fallback` | the unit has a fallback key: there is no `Key` to make a rule from, and no stable key to exempt |
 | `NotRenamable` | `relocate` with an identifier for an entity whose `Name` is not an identifier |
-| `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)`; two lines of one exemption list give one key |
+| `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)` (one entity relocated twice to one place, or two entities of one kind and discriminator relocated to one place; two overloads to one name have two discriminators and are not); two lines of one exemption list give one key. Reported at the later line |
 
 A file with no line gives `Declared::none()`.
 
@@ -873,13 +873,13 @@ selected observer ends in one **state**:
 
 | State | When |
 |---|---|
-| `verified` | its shard of this run is `ok` and has the verdict `verified` |
+| `verified` | its shard of this run is `ok` and has the verdict `verified`, and its map shard is `ok` |
 | `unchanged` | it got no job (§5.5); not in M1 |
-| `mismatch` | its shard is `ok` and has the verdict `mismatch` |
+| `mismatch` | its shard is `ok` and has the verdict `mismatch`, and its map shard is `ok` |
 | `not_parsed` | its shard is `diagnosed` or `rejected`, and its map shard is `ok`: the post-image does not parse where the pre-image did |
-| `unverifiable` | its shard is `ok` and has the verdict `unverifiable` |
+| `unverifiable` | its shard is `ok` and has the verdict `unverifiable`, whatever its map shard is |
 | `never_parsed` | its shard is `diagnosed` or `rejected`, and its map shard is absent or not `ok`: nothing is known to have changed |
-| `failed` | anything else: a shard of status `failed`, no shard, an `ok` shard without a verdict, a shard that is not this run's |
+| `failed` | anything else: a shard of status `failed`, no shard, an `ok` shard without a verdict, a shard that is not this run's; a `verified` or `mismatch` verdict whose map shard is absent or not `ok` (the pre shard it compared against is not the one the store has now); a shard of another observer or round, or a verdict under rules other than the run's (`Report::add`, §7.3) |
 
 **This run's shard.** The shard of an observer is read from the store and
 is this run's if its content id is the `shard` of the observer's last
@@ -985,6 +985,15 @@ most 100 and then `slip: and <n> more (see the report)`:
 `slip: <state>: <main file>: <first line of the message>`, the message of
 a `mismatch` being `<findings> finding(s), <indeterminate> indeterminate`.
 
+In the text and on standard error, every path and every string taken from
+a shard (names, `node` and `what`, messages, reasons) is written as its
+characters, except that each byte that is not UTF-8, each byte below
+0x20, 0x7f, the backslash, and each byte of a C1 control character
+(U+0080 to U+009F) is written `\xNN` (two lower-case hexadecimal
+digits). So no path or name can write a line (`verdict verified`) or a
+control sequence, and a `\` always starts an escape. The JSON report is
+not escaped this way: its strings are JSON strings.
+
 ### 7.2 Counters
 
 Counters of a verify shard, added to those of the parse and of
@@ -1035,8 +1044,17 @@ impl Report {
     /// `run`, `report` and prints `verdict_line()` last.
     pub fn to_text(&self) -> String;
     pub fn verdict_line(&self) -> &'static str;
+    /// The lines for standard error (§7.1), each ending in a newline: one per
+    /// entry of `not_verified`, at most 100, then `slip: and <n> more (see
+    /// the report)` if there are more.
+    pub fn error_lines(&self) -> String;
 }
 ```
+
+`add` refuses a shard that is not this observer's result in this run: a
+shard whose `observer` is not `observer`, whose `round` is not the
+header's, or whose verdict's `rules` is not the header's `rules` makes the
+observer `failed`, with an empty message.
 
 `add` keeps the findings of a shard and drops the shard; a report over
 4000 observers of 64 findings each holds a quarter of a million findings.
@@ -1245,6 +1263,11 @@ impl Report {
 - **Exit status of a `mismatch` that is only indeterminate** (§7): the
   same as any other mismatch. While the walk has areas that are not
   written, that is every observer with a function body.
+- **`changed <order>` is coarse.** It exempts every change of
+  initialisation order in the translation unit, not only the one a
+  declared removal or creation causes. A narrower form (the order unit
+  compared with the declared keys taken out of both lists) is to be
+  specified.
 - **`Finding.key` is optional in the format** and nothing produces a
   finding without one since §4.1 names every finding. Make it required at
   the next change of the section.
