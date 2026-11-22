@@ -634,79 +634,134 @@ bytes of UTF-8.
 ### 8.4 The parse task
 
 `slip_kiln::parse_observer` produces the shard of one observer by running
-Kiln's front end in the calling process:
+Kiln's front end in the calling process, through Kiln's front-end library
+entry `kiln_driver::front_end::run_front_end` (`kiln/spec/driver.md`
+"Front-end library entry"); `parse_observer_with` does the same and calls a
+closure on the finished unit:
 
 ```rust
-pub fn parse_observer(observer: &Observer, phase: Phase, round: u64, options: &ParseOptions)
-    -> Result<Shard, String>;
-pub struct ParseOptions { pub scratch: PathBuf }   // a directory for temporary files, unique to the caller
+pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<Shard, String>;
+pub fn parse_observer_with<R: Send>(
+    observer: &Observer, phase: Phase, round: u64,
+    f: impl FnOnce(&Unit<'_>) -> R + Send,
+) -> Result<(Shard, Option<R>), String>;
+
+pub struct Unit<'r> { /* … */ }        // the finished front end, valid inside the call
+impl<'r> Unit<'r> {
+    pub fn ast(&self) -> &'r kiln::ast::Ast;
+    pub fn sm(&self) -> &'r kiln::source::SourceManager;
+    pub fn oven(&self) -> &'r kiln::oven::Oven;
+    pub fn main_file(&self) -> Option<kiln::source::FileId>;
+    pub fn real_path(&self, file: kiln::source::FileId) -> Option<&'r [u8]>;
+    pub fn errors(&self) -> u32;
+}
 ```
 
 `Err` is a failure of the worker itself, not of the subject; the
-coordinator records `failed` (`spec/exec.md`).
+coordinator records `failed` (`spec/exec.md`). `parse_observer` is
+`parse_observer_with` with a closure that does nothing. `kiln::…` is
+`slip_kiln::kiln`: only the crates that may name it call `Unit`'s methods
+(`spec/landed/harness/WP-021.md`); any crate may pass a `&Unit` on.
 
-**Running the front end.**
+**The run.**
 
-- The command line is the one of `spec/cdb.md` §6.1, with the dependency
-  file `<scratch>/slip-parse-<pid>-<n>.d`, created empty before the run
-  (failing that is `Err`) and removed afterwards, whatever the outcome.
+- A command that is not UTF-8 is `rejected` without running the front end:
+  `errors` 1, `warnings` 0, `message` `` argument `<argument>` is not
+  UTF-8 `` (the first such argument, decoded lossily).
 - The process's current directory is set to `Command.directory` (failing
-  that is `Err`) and not restored.
-- `kiln_driver::run_as` runs on a thread of its own whose stack is the
-  command's `-fkiln-stack-size=`, else Kiln's default, with Kiln's stack
-  guard installed, as the `kiln` executable does. Standard input is empty,
-  standard output is discarded, standard error is counted as it streams. A
-  panic of the front end is `Err` ("the front end panicked: …").
+  that is `Err`) and not restored: Kiln has no working-directory parameter.
+  Callers that parse on several threads of one process must serialise.
+- The command line is the one of `spec/cdb.md` §6.1, `argv[0]
+  -fsyntax-only argv[1..]`, given to `run_front_end` with
+  `FrontEndOptions::default()`: a thread of the front end's own, whose stack
+  is the command's `-fkiln-stack-size=`, else Kiln's default, with Kiln's
+  stack guard installed; no lookup log; nothing rendered. The entry writes
+  no file whatever the command asks (`-o`, `-MD`, `-MF`, `-MJ`,
+  `-fconstexpr-report=`, …) and reads no standard input.
 - `Command.env` is not applied: the front end sees the worker's environment.
+- When a parse happened, the entry calls the closure once the AST is final,
+  with errors or without (a fatal error included): the parse task first
+  computes the inputs (below) from the unit, then calls `f` on a `Unit`
+  over the same state. `real_path(file)` is the `path` of the `inputs`
+  entry that buffer `file` gave (the real path), `None` for any other
+  buffer; `errors()` is the job engine's error count when `f` is called
+  (the driver's not included). A failure computing the inputs is `Err` and
+  `f` is not called. No parse, no call: `f`'s result is `None`.
+- `FrontEndError::Panicked(text)` (a panic of the front end or of `f`) is
+  `Err("the front end panicked: <text>")`; `FrontEndError::Thread` is `Err`
+  with the error's text. The worker answers `Failed`; the coordinator
+  retries once (`spec/exec.md` §5.4).
 
-**Outcome.** Diagnostics are read structurally: one JSON object per line
-(`-fdiagnostics-format=json`), the top-level `severity` of each counted
-(`error` and `fatal` are errors, `warning` is a warning; notes are nested
-and not counted; remarks are not counted). Only the totals and the first
-error are kept; a line is read from at most its first 64 KiB.
+**Outcome**, from the entry's `FrontEndReport`:
 
-- `ok`: no error was counted and the exit status is 0. `message` is empty.
-- Otherwise, `rejected` if the first error is a driver diagnostic (its `id`
-  starts with `drv_`: the driver refused the command line before any job,
-  or a job's command-line check such as `-std=` failed), else `diagnosed`.
-- `errors` is the count, but at least 1: a non-zero exit with no error
-  diagnostic counted is one error. `message` is the first error as
-  `<file>:<line>:<col>: <message>` (the presumed file name as Kiln prints
-  it; `<message>` alone when the diagnostic has no location), else the
-  first non-empty line of standard error that is not a JSON object with a
-  `severity` string, else
-  `the front end exited with status N and reported no error`; cut to 4096
-  bytes at a character boundary.
-- A command that is not UTF-8, or whose own arguments override the parse's
-  options (`spec/cdb.md` §6.2 rejection 3), is `rejected` without running
-  the front end, `errors` 1, `warnings` 0, `message`
-  `` argument `<argument>` is not UTF-8 `` (decoded lossily) or
-  `` argument `<argument>` overrides an option the parse relies on ``.
-- The error count is what Kiln reports: the command's `-ferror-limit=`
-  (Kiln's default, as clang's) and `-Wfatal-errors` apply.
+- `errors` and `warnings` are the report's: the driver's and the job's
+  engines together, after the command's `-ferror-limit=` (Kiln's default,
+  as clang's) and `-Wfatal-errors`, with `-Werror` applied.
+- `ok`: `errors` is 0 and a parse happened. `message` is empty. No error
+  and no parse is `Err` ("the front end did not parse and reported no
+  error").
+- Otherwise `rejected` if the first error (`FrontEndReport.first_error`,
+  the first diagnostic of level error or fatal in the order emitted) has an
+  id whose name (`DiagId::name`) starts with `drv_`: the driver refused the
+  command line, or a job's command-line check such as `-std=` failed. Else
+  `diagnosed` (a free-text first error, without an id, included).
+- `message` is the first error as `<file>:<line>:<col>: <message>` from
+  `FirstError.at` (the presumed file name and line, the column in bytes, as
+  Kiln's text output prints them) and `FirstError.message` (the text after
+  `error: `, with the ` [<option>]` suffix the text output prints when the
+  command shows options, as it does by default); `<message>` alone when
+  the error has no position. Cut to 4096 bytes at a character boundary. An
+  error count with no first error kept (not expected) is `diagnosed` with
+  the message `the front end reported <N> errors and kept none`.
+- `FrontEndError::NotSyntaxOnly` and `FrontEndError::NotOneInput` (what the
+  entry refuses without running: an action other than `-fsyntax-only`,
+  `--help`, `-###`, a `-print-*` or `-dump*` probe, `-M`/`-MM`, an unbuilt
+  header unit; not exactly one input, standard input, an assembler input)
+  are `rejected`, `errors` 1, `warnings` 0, `message` the error's text
+  (`the command line is not -fsyntax-only`, `the command line has not one
+  source input`). What the entry refuses with `drv_front_end_unsupported`
+  (`-verify`, `-include-pch`, written or made by the PCH probe of
+  `-include`) is a driver error, so `rejected` by the rule above.
 
-**Inputs.**
+**Inputs.** Present exactly when a parse happened, whatever the status
+(so also for a `diagnosed` unit whose `#include` was not found); absent
+otherwise. The list is made from the unit, without a second read of a file
+the front end read:
 
-- `rejected`: no `inputs` section.
-- Otherwise the dependency file is read. Empty (Kiln writes no rule after an
-  `#include` it did not find): no `inputs` section if the status is
-  `diagnosed`, `Err` if it is `ok`.
-- Otherwise its one rule must have the target `slip.d` (`Err` if not). Each
-  prerequisite is unescaped as Make reads Kiln's rendering (`\#` is `#`,
-  `$$` is `$`, 2k+1 backslashes before a space are k backslashes and a
-  space, 2k are k backslashes and a separator), resolved against
-  `Command.directory`, and resolved to its real path (failing that is
-  `Err`). The real paths are sorted by their bytes and made unique; each
-  file is then read whole (failing that is `Err`) for its size and content
-  digest.
-- The list is Kiln's: the main file, every header entered or skipped by an
-  include guard or `#pragma once`, every file found by `__has_include`,
-  every `#embed` resource; system headers included.
+- every buffer of the source manager (`SourceManager::file_ids`) whose
+  origin (`file_origin`) is `Disk`: its size and content digest are those
+  of `original_bytes` (the bytes as read, byte-order mark and invalid UTF-8
+  included);
+- every buffer whose origin is `Lazy` (from a module file or a precompiled
+  header) that has `original_bytes`; one without them (never read) is left
+  out;
+- every path of `FrontEnd.consulted` (`__has_include` and `__has_embed`
+  hits, `#embed` resources; Kiln lists each once and leaves out the files
+  the preprocessor entered) whose real path is not that of a buffer above:
+  read here, once, for its size and digest; failing that is `Err`. (A
+  `__has_include` hit is a buffer; an `#embed` resource is not: Kiln keeps
+  no bytes of it.)
 
-**Counters.** `inputs.bytes` (the sum of the inputs' sizes) and
-`inputs.files` (their number), when there is an `inputs` section; none
-otherwise. `pp.tokens` is not produced: Kiln's public API does not report
-it.
+`Virtual` buffers (the predefines, the command line's macros, token-paste
+results) are not inputs. Each name (`file_name`, the path as first loaded,
+or the consulted path) is resolved against `Command.directory` and to its
+real path (failing that is `Err`). The list is sorted by path bytes and
+made unique; two entries with one real path and different sizes or digests
+are `Err` (`<path> changed during the parse: two buffers of it differ`).
+
+For a unit the parse task of WP-010 gave inputs for (Kiln's `-MD`: the main
+file, every header entered or skipped by an include guard or `#pragma
+once`, every file found by `__has_include`, every `#embed` resource, system
+headers included), this is the same list
+(`crates/slip_kiln/tests/parse.rs` "parity").
+
+**Counters**, when a parse happened; none otherwise:
+
+- `inputs.bytes`: the sum of the inputs' sizes;
+- `inputs.files`: their number;
+- `pp.tokens`: the tokens the preprocessor delivered to the parser, the end
+  of file not counted (`FrontEnd.tokens`). After a fatal error, Kiln's
+  count: the tokens before it and the one returned with it.
 
 The parse task writes neither `digests` nor `verdict`.
 
@@ -847,7 +902,8 @@ form as it has one binary form (§1 rule 1):
   `crates/slip_model/tests/golden/shard-digests.json` and
   `shard-verdict.json`.
 - `crates/slip_kiln/tests/parse.rs` and the unit tests of
-  `crates/slip_kiln/src/diags.rs` and `depfile.rs` — §8.4.
+  `crates/slip_kiln/src/parse.rs` — §8.4; the parity test's oracle (the
+  parse task of WP-010) is `crates/slip_kiln/tests/support/`.
 
 Running the tests with `SLIP_BLESS=1` rewrites the golden files (until
 `cargo xtask` owns blessing, `spec/harness.md` §6).

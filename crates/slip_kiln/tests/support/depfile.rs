@@ -1,6 +1,6 @@
 //! Reading the Make rule Kiln writes for `-MD -MF` (`kiln/spec/driver.md`
-//! "Dependency output"), to list the files a parse read
-//! (`spec/model.md` §8.4).
+//! "Dependency output"): how the parse task listed the files a parse read
+//! before WP-025, kept as the oracle's (`super::oracle`).
 //!
 //! Kiln writes one rule, `<target>: <file> <file> …`, lines continued with
 //! ` \`, file names escaped as clang's `DependencyFileGenerator` does
@@ -10,7 +10,7 @@
 
 /// The prerequisites of the rule in `text` whose target is `target`, in
 /// order, unescaped. `Err` if `text` is not one such rule.
-pub(crate) fn prerequisites(text: &str, target: &str) -> Result<Vec<String>, String> {
+pub fn prerequisites(text: &str, target: &str) -> Result<Vec<String>, String> {
     let head = format!("{target}:");
     let Some(rest) = text.strip_prefix(&head) else {
         return Err(format!("the dependency file does not start with `{head}`"));

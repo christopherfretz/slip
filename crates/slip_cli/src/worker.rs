@@ -3,30 +3,28 @@
 //!
 //! The worker changes its current directory during a parse
 //! (`slip_kiln::parse_observer`), so every path it uses is absolute: the
-//! job's store path is (§2 "Path"), and so is the scratch directory made in
-//! it. Its standard output carries protocol messages only: nothing here
-//! prints there.
+//! job's store path is (§2 "Path"). Its standard output carries protocol
+//! messages only: nothing here prints there.
 
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use slip_exec::store::{Access, Store};
 use slip_exec::worker::{Job, ServeOptions, Task, serve};
-use slip_kiln::{ParseOptions, parse_observer};
+use slip_kiln::parse_observer;
 use slip_model::Shard;
 
 use crate::args::WorkerArgs;
 
-/// The parse task: one observer through Kiln's front end, with the scratch
-/// directory of §2 in the job's store.
+/// The parse task: one observer through Kiln's front end, its shard
+/// published in the job's store.
 ///
 /// The store is opened shared on the first job and kept for the task's
-/// lifetime (its `Drop` removes the scratch directory); a job naming
-/// another store replaces it.
+/// lifetime; a job naming another store replaces it. The parse itself
+/// writes no file (`spec/model.md` §8.4).
 #[derive(Debug, Default)]
 pub struct ParseTask {
-    store: Option<(Store, PathBuf)>,
+    store: Option<Store>,
 }
 
 impl ParseTask {
@@ -34,27 +32,23 @@ impl ParseTask {
         Self::default()
     }
 
-    fn scratch(&mut self, job: &Job) -> Result<PathBuf, String> {
+    fn open_store(&mut self, job: &Job) -> Result<(), String> {
         let path = job.store_path();
-        if let Some((store, scratch)) = &self.store
-            && store.root() == path
-        {
-            return Ok(scratch.clone());
+        if self.store.as_ref().is_some_and(|store| store.root() == path) {
+            return Ok(());
         }
         self.store = None;
         let store = Store::open(path, Access::Shared)
             .map_err(|e| format!("cannot open the store {}: {e}", path.display()))?;
-        let scratch =
-            store.scratch_dir().map_err(|e| format!("cannot make the scratch directory: {e}"))?;
-        self.store = Some((store, scratch.clone()));
-        Ok(scratch)
+        self.store = Some(store);
+        Ok(())
     }
 }
 
 impl Task for ParseTask {
     fn run(&mut self, job: &Job) -> Result<Shard, String> {
-        let scratch = self.scratch(job)?;
-        parse_observer(&job.observer, job.phase, job.round, &ParseOptions { scratch })
+        self.open_store(job)?;
+        parse_observer(&job.observer, job.phase, job.round)
     }
 }
 
