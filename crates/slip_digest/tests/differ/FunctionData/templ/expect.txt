@@ -1,3 +1,2 @@
-# pending
-# needs: templ
-changed f<int>(int)
+changed A<int>::f()
+added A<int>

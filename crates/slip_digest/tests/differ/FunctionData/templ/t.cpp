@@ -1,9 +1,9 @@
 #include "side.h"
-// §5.4 FunctionData `templ`, §9.1: the specialisation's template link.
+// §5.4 FunctionData `templ`, §9.1: a member of a specialisation explicitly specialised has a link; the same member of an explicit specialisation of the class has none.
+template <class T> struct A { void f(); };
 #ifdef B
-template <class T> void f(T);
-template <> void f<int>(int) {}
+template <> struct A<int> { void f(); };
+void A<int>::f() {}
 #else
-template <class T> void f(T);
-template <> void f(int) {}
+template <> void A<int>::f() {}
 #endif
