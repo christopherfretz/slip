@@ -484,10 +484,9 @@ fn governing_kind(w: &Walk<'_>, d: DeclId) -> Option<SpecKind> {
         if own.is_some() {
             return own;
         }
-        let Some(c) = ast.decls.get(e).ctx() else { return None };
-        if ast.decls.record(c).is_none() {
-            return None;
-        }
+        // Through classes only: a namespace or a function ends the walk.
+        let c = ast.decls.get(e).ctx()?;
+        ast.decls.record(c)?;
         e = w.entity(c);
     }
     None
