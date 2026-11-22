@@ -853,6 +853,7 @@ slip declare --plan <id or file> --from <file> --out <file>
 slip units --plan <id or file> [--post-image] [--root <dir>]… [--post <dir>]…
            [--store <dir>] [--only <substring>]… [--limit <n>] [--match <substring>]…
 slip dump  <file>
+slip resource --write <dir>
 slip --version
 slip --help
 ```
@@ -872,7 +873,8 @@ is a decimal number with an optional suffix `K`, `M`, `G`, `T` (powers of
 UTF-8.
 
 - **Options** are those above, each command accepting only its own;
-  `__worker` accepts the options of §8.4; `dump` accepts
+  `__worker` accepts the options of §8.4; `resource` accepts `--write`
+  and requires it; `dump` accepts
   none (`dump -- <file>` reads a file whose name starts with `-`). An
   argument that starts with `-` (other than `-` and `--`) in option
   position is an option; an option's value is taken whatever it starts
@@ -1074,7 +1076,8 @@ pub fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> ExitC
 // args.rs
 pub const USAGE: &str; pub const DEFAULT_STORE: &str /* ".slip" */;
 pub const DEFAULT_WORKER_JOBS: u64 /* 1 */; pub const DEFAULT_WORKER_STACK: u64 /* 1 GiB */;
-pub enum Invocation { Version, Help, Plan(PlanArgs), Parse(ParseArgs), Dump { file: PathBuf }, Worker(WorkerArgs), Panic }
+pub enum Invocation { Version, Help, Plan(PlanArgs), Parse(ParseArgs), Dump { file: PathBuf },
+                      Resource { write: PathBuf }, Worker(WorkerArgs), Panic }
 pub struct Db { pub name: Option<String>, pub path: PathBuf }
 pub struct PlanArgs { pub dbs: Vec<Db>, pub store: PathBuf, pub jobs: Option<usize> }
 pub enum PlanSource { Plan(OsString), Db(Vec<Db>) }
@@ -1276,6 +1279,26 @@ several observers once:
 key (both: `if`). Status 0; an observer that does not parse is the
 warning of §8.8.
 
+### 8.10 `resource`
+
+`slip resource --write <dir>` writes the resource files embedded in this
+build (`spec/api.md` §2.1, `slip_script::resource`) under `<dir>`:
+`<dir>/include/slip/meta.h` and `<dir>/include/slip/__intrinsics.h`, byte
+for byte. Directories that do not exist are made. A file already there is
+replaced: each is written to a temporary file beside it and renamed over
+it, so a reader sees the old bytes or the new ones. Nothing else under
+`<dir>` is touched. Nothing is printed on standard output; the status is 0.
+
+- A directory that cannot be made or a file that cannot be written is
+  status 3, `slip: <path>: <error>`, where `<path>` is the one that
+  failed. Files written before the failure stay.
+- `resource` without `--write`, `--write` twice, or a positional argument
+  is a usage error.
+
+The directory written is a resource directory: pointing
+`$SLIP_RESOURCE_DIR` at it makes it the one the running Slip uses
+(`spec/api.md` §2.1 rule 1).
+
 ## Tests
 
 - `crates/slip_exec/tests/jobserver.rs` — §3, §3.1 against fifos made by
@@ -1348,7 +1371,8 @@ warning of §8.8.
   starting a process; the options of `verify`, `declare`, `units` and of
   the worker, unpaired `--root` and `--post`.
 - `crates/slip_cli/tests/cli.rs` — §8 through the executable, including
-  each exit status of §8.5.
+  each exit status of §8.5, and §8.10: the files written, a replaced
+  file, an error naming its path.
 - `crates/slip_exec/tests/store.rs` — also §2 `declared/`: publishing a
   valid and an invalid `DECL`, the name by content id, reading, a store
   initialised without the directory.

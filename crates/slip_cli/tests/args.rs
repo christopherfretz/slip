@@ -220,6 +220,24 @@ fn s8_usage_errors() {
     assert!(usage_error(&["plan", "--db", "c.json", "extra"]).contains("unexpected argument"));
 }
 
+// §8.10: `resource --write <dir>` in each spelling; without `--write`,
+// with it twice, with a positional or another option.
+#[test]
+fn s8_10_resource() {
+    for words in [&["resource", "--write", "out"][..], &["resource", "--write=out"]] {
+        assert_eq!(parse(words), Ok(Invocation::Resource { write: "out".into() }), "{words:?}");
+    }
+    assert_eq!(
+        parse(&["resource", "--write", "-x"]),
+        Ok(Invocation::Resource { write: "-x".into() })
+    );
+    assert!(usage_error(&["resource"]).contains("`resource` needs `--write`"));
+    assert!(usage_error(&["resource", "--write"]).contains("`--write` needs a value"));
+    assert!(usage_error(&["resource", "--write", "a", "--write", "b"]).contains("more than once"));
+    assert!(usage_error(&["resource", "--write", "a", "b"]).contains("unexpected argument"));
+    assert!(usage_error(&["resource", "--write", "a", "-j", "1"]).contains("unknown option"));
+}
+
 // §8: malformed numbers and sizes.
 #[test]
 fn s8_malformed_numbers_and_sizes() {
@@ -359,9 +377,15 @@ fn s8_parse_size() {
 // §8.5: the usage text lists the commands but not the hidden ones.
 #[test]
 fn s8_usage_text() {
-    for word in
-        ["slip plan", "slip parse", "slip dump", "slip --version", "slip --help", "--worker-stack"]
-    {
+    for word in [
+        "slip plan",
+        "slip parse",
+        "slip dump",
+        "slip resource --write",
+        "slip --version",
+        "slip --help",
+        "--worker-stack",
+    ] {
         assert!(args::USAGE.contains(word), "{word}");
     }
     assert!(!args::USAGE.contains("__worker") && !args::USAGE.contains("__panic"));
