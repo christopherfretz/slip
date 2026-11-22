@@ -104,6 +104,8 @@ fn shard(observer: Digest, round: u64, status: Status, counters: &[(&str, u64)])
         },
         inputs: (status != Status::Failed).then(Vec::new),
         counters: counters.iter().map(|(n, v)| Counter { name: (*n).into(), value: *v }).collect(),
+        digests: None,
+        verdict: None,
     }
 }
 
