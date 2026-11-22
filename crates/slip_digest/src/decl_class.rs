@@ -664,9 +664,8 @@ mod tests {
         assert_eq!(s.cause(), Some(Cause::Unaccounted("DefinitionBits/0")));
     }
 
-    /// The `DefinitionBits` of every complete class of one side of the
-    /// pair test in `dir`, for `bit`: how many have it set and written.
-    fn classes_with(dir: &std::path::Path, side_b: bool, bit: DefinitionBits) -> usize {
+    /// Runs `f` on a walk over one side of the pair test in `dir`.
+    fn with_side<R>(dir: &std::path::Path, side_b: bool, f: impl FnOnce(&mut Walk<'_>) -> R) -> R {
         let main = std::fs::read_to_string(dir.join("t.cpp")).expect("t.cpp");
         let std = main
             .lines()
@@ -682,12 +681,25 @@ mod tests {
             include: &[""],
             std: &std,
         };
+        let rules = RuleTable::empty();
         slip_kiln::snippet::parse(&snippet, |p| {
             assert_eq!(p.errors, 0, "{}: {}", dir.display(), p.diagnostics);
-            p.ast
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let mut w = Walk::new(&input, &rules);
+            f(&mut w)
+        })
+        .expect("the pair test parses")
+    }
+
+    /// The `DefinitionBits` of every complete class of one side of the
+    /// pair test in `dir`, for `bit`: how many have it set and written.
+    fn classes_with(dir: &std::path::Path, side_b: bool, bit: DefinitionBits) -> usize {
+        with_side(dir, side_b, |w| {
+            w.ast
                 .decls
                 .ids()
-                .filter_map(|d| p.ast.decls.record(d))
+                .filter_map(|d| w.ast.decls.record(d))
                 .filter(|r| r.defn.contains(DefinitionBits::COMPLETE) && r.defn.contains(bit))
                 .filter(|r| {
                     // The written word holds the bit: clearing it changes
@@ -700,7 +712,113 @@ mod tests {
                 })
                 .count()
         })
-        .expect("the pair test parses")
+    }
+
+    /// Every declaration of kind `kind` whose identifier is `name`.
+    fn named(w: &Walk<'_>, name: &str, kind: DeclKind) -> Vec<DeclId> {
+        use slip_kiln::kiln::ast::names::DeclNameView;
+        let ast = w.ast;
+        ast.decls
+            .ids()
+            .filter(|&d| {
+                let n = ast.decls.get(d);
+                let ident = match ast.names.view(n.name()) {
+                    DeclNameView::Identifier(s) => ast.symbols().as_str(s) == name,
+                    DeclNameView::Empty
+                    | DeclNameView::Operator(_)
+                    | DeclNameView::Constructor(_)
+                    | DeclNameView::Destructor(_)
+                    | DeclNameView::Conversion(_)
+                    | DeclNameView::LiteralOperator(_)
+                    | DeclNameView::DeductionGuide(_) => false,
+                };
+                n.kind() == kind && ident
+            })
+            .collect()
+    }
+
+    /// The bytes of the record of every declaration of `kind` named
+    /// `name` on one side of the pair test in `dir`, in arena order.
+    fn records(
+        dir: &std::path::Path,
+        side_b: bool,
+        kinds: &[DeclKind],
+        name: &str,
+    ) -> Vec<Vec<u8>> {
+        with_side(dir, side_b, |w| {
+            let ds: Vec<DeclId> = kinds.iter().flat_map(|&k| named(w, name, k)).collect();
+            assert!(!ds.is_empty(), "{}: no {name}", dir.display());
+            ds.into_iter()
+                .map(|d| {
+                    let mut s = Stream::new();
+                    let k = w.ast.decls.get(d).kind();
+                    if k == DeclKind::CXXRecord {
+                        record_data(w, &mut s, d);
+                    } else if k == DeclKind::Enum {
+                        enum_data(w, &mut s, d);
+                    } else if k == DeclKind::EnumConstant {
+                        enumerator_data(w, &mut s, d);
+                    } else if k == DeclKind::Field {
+                        field_data(w, &mut s, d);
+                    } else {
+                        typedef_data(w, &mut s, d);
+                    }
+                    s.as_bytes().to_vec()
+                })
+                .collect()
+        })
+    }
+
+    // §5.5, common rule 5: each pair test shows its row in the record
+    // itself (the record's bytes differ, or are equal for an `equal`
+    // test), not only in another row the edit also changed.
+    #[test]
+    fn pair_tests_show_their_row_in_the_record() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let class = &[DeclKind::CXXRecord][..];
+        let enumeration = &[DeclKind::Enum][..];
+        let typedef = &[DeclKind::Typedef, DeclKind::TypeAlias][..];
+        let cases: &[(&str, &[DeclKind], &str, bool)] = &[
+            ("differ/BaseSpec/ty", class, "C", true),
+            ("differ/BaseSpec/is_virtual", class, "C", true),
+            ("differ/BaseSpec/access", class, "C", true),
+            ("differ/BaseSpec/pack_expansion", class, "C", true),
+            ("differ/RecordData/members-fields", class, "C", true),
+            ("differ/RecordData/members-virtual", class, "C", true),
+            ("differ/RecordData/members-other", class, "C", true),
+            ("differ/RecordData/bases", class, "C", true),
+            ("differ/RecordData/defn", class, "C", true),
+            ("differ/RecordData/tag", class, "C", true),
+            ("differ/TagKind/Struct", class, "C", true),
+            ("differ/TagKind/Union", class, "C", true),
+            ("differ/_/field-order-against-members", class, "C", true),
+            ("differ/FieldData/bit_width", &[DeclKind::Field], "a", true),
+            ("differ/FieldData/init", &[DeclKind::Field], "a", true),
+            ("differ/FieldData/flags-mutable", &[DeclKind::Field], "a", true),
+            ("differ/FieldData/flags-init-style", &[DeclKind::Field], "a", true),
+            ("differ/EnumData/members", enumeration, "E", true),
+            ("differ/EnumData/int_type", enumeration, "E", true),
+            ("differ/EnumData/promotion_type", enumeration, "E", true),
+            ("differ/EnumData/flags-scoped", enumeration, "E", true),
+            ("differ/EnumData/flags-fixed", enumeration, "E", true),
+            ("differ/EnumData/flags-complete", enumeration, "E", true),
+            ("differ/EnumeratorData/init", &[DeclKind::EnumConstant], "a", true),
+            ("differ/TypedefData/underlying", typedef, "X", true),
+            ("equal/TagKind/Class", class, "C", false),
+            ("equal/EnumData/flags-scoped-struct", enumeration, "E", false),
+            ("equal/_/typedef-against-alias", typedef, "X", false),
+            ("equal/_/member-functions-swapped", class, "C", false),
+            ("equal/_/friends-swapped", class, "C", false),
+        ];
+        let mut problems = Vec::new();
+        for &(dir, kinds, name, differ) in cases {
+            let dir = root.join(dir);
+            let (a, b) = (records(&dir, false, kinds, name), records(&dir, true, kinds, name));
+            if (a != b) != differ {
+                problems.push(format!("{}: differ={differ}, a={a:?}, b={b:?}", dir.display()));
+            }
+        }
+        assert!(problems.is_empty(), "{problems:#?}");
     }
 
     // §5.5 `DefinitionBits`, common rule 5: every pair test of a bit row
@@ -765,6 +883,109 @@ mod tests {
             };
             assert_eq!(cause(w, pattern), Some(Cause::Pending(Area::Expr)), "init written");
             assert_eq!(cause(w, inst), None, "no init written");
+        });
+    }
+
+    // §11.9: a class or enumeration of the definition class writes the
+    // empty forms and is `Pending(Demand)`; an explicit specialisation
+    // writes its members.
+    #[test]
+    fn definition_class_writes_empty_forms() {
+        let src = "template <class T> struct X { int a; enum E : int { e }; };
+                   template <> struct X<char> { int a; enum E : int { e }; };
+                   X<int> v; int n = sizeof(X<int>::E);";
+        with_walk(src, |w| {
+            let ast = w.ast;
+            let mut seen = (0, 0, 0, 0);
+            let specs: Vec<DeclId> = ast
+                .decls
+                .ids()
+                .filter(|&d| ast.decls.record(d).is_some() && ast.spec_info(d).is_some())
+                .collect();
+            for d in specs.into_iter().chain(named(w, "E", DeclKind::Enum)) {
+                let mut s = Stream::new();
+                let is_enum = ast.decls.get(d).kind() == DeclKind::Enum;
+                if is_enum {
+                    enum_data(w, &mut s, d);
+                } else {
+                    record_data(w, &mut s, d);
+                }
+                if definition_class(w, d) {
+                    assert_eq!(s.cause(), Some(Cause::Pending(Area::Demand)), "{d:?}");
+                    if is_enum {
+                        assert_eq!(&s.as_bytes()[..4], &[0, 0, 0, 0], "{d:?}");
+                        seen.1 += 1;
+                    } else {
+                        assert_eq!(&s.as_bytes()[..5], &[0, 0, 0, 0, 0], "{d:?}");
+                        seen.0 += 1;
+                    }
+                } else {
+                    assert_ne!(s.cause(), Some(Cause::Pending(Area::Demand)), "{d:?}");
+                    if is_enum { seen.3 += 1 } else { seen.2 += 1 }
+                }
+            }
+            assert!(seen.0 >= 1 && seen.1 >= 1 && seen.2 >= 1 && seen.3 >= 1, "{seen:?}");
+        });
+    }
+
+    // spec/landed/digest-kinds/WP-027.md: an invalid member makes its
+    // class indeterminate with `Error`, the class itself being valid.
+    #[test]
+    fn invalid_member_makes_its_class_indeterminate() {
+        let src = "struct S { int x; void x(); };";
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        let rules = RuleTable::empty();
+        slip_kiln::snippet::parse(&snippet, |p| {
+            assert!(p.errors > 0, "the second `x` is an error");
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let mut w = Walk::new(&input, &rules);
+            let ss = named(&w, "S", DeclKind::CXXRecord);
+            assert_eq!(ss.len(), 1);
+            let d = ss[0];
+            assert!(!w.ast.decls.get(d).has(DeclFlags::INVALID), "S itself is valid");
+            assert!(w.ast.members(d).any(|m| w.ast.decls.get(m).has(DeclFlags::INVALID)));
+            let mut s = Stream::new();
+            record_data(&mut w, &mut s, d);
+            assert_eq!(s.cause(), Some(Cause::Error));
+        })
+        .expect("the snippet parses");
+    }
+
+    // §5.5 with §2.4 and §10.4: a local class lists what would be declared
+    // units, not an implicit member Kiln declared for a use, and not a
+    // closure type.
+    #[test]
+    fn local_class_lists_no_implicit_member_and_no_closure() {
+        let src = "void f() {
+                     struct L { int a; int (*p)() = [] { return 0; }; void g() {} };
+                     L x; L y = x; y = x;
+                   }";
+        with_walk(src, |w| {
+            let ast = w.ast;
+            let ls = named(w, "L", DeclKind::CXXRecord);
+            assert_eq!(ls.len(), 1);
+            let (mut listed, mut implicit, mut closure) = (0, 0, 0);
+            for m in ast.members(ls[0]) {
+                let e = w.entity(m);
+                let is_closure = ast.decls.record(e).is_some_and(|r| r.lambda.is_some());
+                let is_implicit = ast.decls.get(e).has(DeclFlags::IMPLICIT);
+                if local_member(w, e) {
+                    assert!(!is_closure && !is_implicit, "{:?}", ast.decls.get(e).kind());
+                    listed += 1;
+                } else {
+                    closure += usize::from(is_closure);
+                    implicit += usize::from(is_implicit);
+                }
+            }
+            assert_eq!(listed, 3, "a, p, g");
+            assert!(closure >= 1 && implicit >= 1, "closure {closure}, implicit {implicit}");
         });
     }
 
