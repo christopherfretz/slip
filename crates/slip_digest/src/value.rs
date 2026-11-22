@@ -258,12 +258,14 @@ mod tests {
 
     use std::sync::Arc;
 
-    use slip_kiln::kiln::ast::consts::{ConstValue, IntBits, PtrBase, Scalar};
+    use slip_kiln::kiln::ast::consts::{
+        ConstValue, IntBits, MemberKind, NullKind, PtrBase, Scalar,
+    };
     use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, DeclMisc, NewDecl, Payload};
     use slip_kiln::kiln::ast::names::DeclName;
     use slip_kiln::kiln::ast::strings::StringEncoding;
     use slip_kiln::kiln::ast::types::TypeContext;
-    use slip_kiln::kiln::ast::{Ast, ConstValueId, QualType};
+    use slip_kiln::kiln::ast::{Ast, ConstValueId, DeclId, QualType};
     use slip_kiln::kiln::source::Loc;
     use slip_kiln::kiln::source::SourceManager;
     use slip_kiln::kiln::source::symbol::Interner;
@@ -272,7 +274,9 @@ mod tests {
     use super::{TOO_LARGE, value, write_value};
     use crate::refs::REF_LOCAL;
     use crate::stream::Stream;
-    use crate::tables::{float_kind, ptr_base, string_encoding, value_kind};
+    use crate::tables::{
+        float_kind, member_kind, null_kind, ptr_base, string_encoding, value_kind,
+    };
     use crate::walk::{TOO_DEEP, Walk};
     use crate::{Cause, Input};
 
@@ -533,7 +537,7 @@ mod tests {
         (ast, void_ptr)
     }
 
-    fn label(ast: &mut Ast) -> slip_kiln::kiln::ast::DeclId {
+    fn label(ast: &mut Ast) -> DeclId {
         let tu = ast.tu;
         ast.decls.push(
             NewDecl {
@@ -594,10 +598,13 @@ mod tests {
         let ml = ast.consts.push_scalar(mk(minus, plus, 8)).expect("a difference");
         let lm4 = ast.consts.push_scalar(mk(plus, minus, 4)).expect("a difference");
         with_ast(&ast, |w| {
+            // `m` is seen first, so its ordinal is 0: a swap of `plus` and
+            // `minus` shows in the ordinals.
+            w.write_ref(&mut Stream::new(), m);
             let mut want = Stream::new();
             want.tag(value_kind::POINTER);
             w.write_type(&mut want, QualType::LONG);
-            want.tag(ptr_base::LABEL_DIFF).uv(REF_LOCAL).uv(0).uv(REF_LOCAL).uv(1).uv(8);
+            want.tag(ptr_base::LABEL_DIFF).uv(REF_LOCAL).uv(1).uv(REF_LOCAL).uv(0).uv(8);
             plain_tail(&mut want);
             let got = written(w, lm);
             assert_eq!(got.as_bytes(), want.as_bytes());
@@ -672,26 +679,74 @@ mod tests {
     #[test]
     fn nesting_is_bounded() {
         let (mut ast, ty) = hand_built();
-        let mut v = ast.consts.push_scalar(Scalar::Int {
-            ty: QualType::INT,
-            signed: true,
-            bits: IntBits::from_i128(32, 7),
-        });
-        for _ in 0..300 {
-            let base = PtrBase::Const(v.expect("a value"));
-            v = ast.consts.push_scalar(Scalar::Pointer {
-                ty,
-                base,
-                offset: 0,
-                designated: None,
-                past: false,
+        let mut chain = |n: usize| {
+            let mut v = ast.consts.push_scalar(Scalar::Int {
+                ty: QualType::INT,
+                signed: true,
+                bits: IntBits::from_i128(32, 7),
             });
-        }
-        let v = v.expect("a value");
+            for _ in 0..n {
+                let base = PtrBase::Const(v.expect("a value"));
+                v = ast.consts.push_scalar(Scalar::Pointer {
+                    ty,
+                    base,
+                    offset: 0,
+                    designated: None,
+                    past: false,
+                });
+            }
+            v.expect("a value")
+        };
+        let (deep, deeper) = (chain(250), chain(300));
         with_ast(&ast, |w| {
-            let got = written(w, v);
+            let got = written(w, deeper);
             assert_eq!(got.cause(), Some(TOO_DEEP));
             assert_eq!(w.depth, 0, "every level entered is left");
+            // Both chains are cut at the same depth, above their ends.
+            assert_eq!(got.as_bytes(), written(w, deep).as_bytes());
+        });
+    }
+
+    // digest-kinds §8 `Scalar` `Null.kind` (`NullKind`) and `MemberPtr`
+    // `kind` (`MemberKind`), `derived`: each by its row, with the type held.
+    #[test]
+    fn null_and_member_kinds_by_their_rows() {
+        let (mut ast, ty) = hand_built();
+        let member = label(&mut ast);
+        let mut null = |kind| ast.consts.push_scalar(Scalar::Null { ty, kind }).expect("a null");
+        let nulls =
+            [NullKind::Pointer, NullKind::MemberData, NullKind::MemberFunction].map(&mut null);
+        let mut mp = |kind, derived| {
+            let path: &[DeclId] = &[];
+            ast.consts
+                .push_scalar(Scalar::MemberPtr { ty, member, kind, derived, path })
+                .expect("a member pointer")
+        };
+        let data = mp(MemberKind::Data, false);
+        let function = mp(MemberKind::Function, false);
+        let derived = mp(MemberKind::Data, true);
+        with_ast(&ast, |w| {
+            for (v, kind) in nulls.into_iter().zip([
+                NullKind::Pointer,
+                NullKind::MemberData,
+                NullKind::MemberFunction,
+            ]) {
+                let mut want = Stream::new();
+                want.tag(value_kind::NULL);
+                w.write_type(&mut want, ty);
+                want.tag(null_kind::row(&kind));
+                assert_eq!(written(w, v).as_bytes(), want.as_bytes());
+            }
+            w.write_ref(&mut Stream::new(), member);
+            let mut want = Stream::new();
+            want.tag(value_kind::MEMBER_PTR);
+            w.write_type(&mut want, ty);
+            want.uv(REF_LOCAL).uv(0).tag(member_kind::FUNCTION).bool(false).count(0);
+            assert_eq!(written(w, function).as_bytes(), want.as_bytes());
+            assert_ne!(written(w, data).as_bytes(), want.as_bytes(), "another kind");
+            let d = written(w, derived);
+            assert_ne!(d.as_bytes(), written(w, data).as_bytes(), "derived");
+            assert_eq!(d.cause(), None);
         });
     }
 

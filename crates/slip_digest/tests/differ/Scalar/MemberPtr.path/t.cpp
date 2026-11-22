@@ -1,11 +1,12 @@
 #include "side.h"
-// §8 Scalar `MemberPtr.path`: `&D::x` as `int E::*` against as `int D::*`.
+// §8 Scalar `MemberPtr.path`: `L::x` as `int N::*` through `M1` against through `M2` (same type and member).
 template <auto V> struct A;
-struct D { int x; int y; void f(); void g(); };
-struct E : D { int z; };
-struct F : E {};
+struct L { int x; };
+struct M1 : L {};
+struct M2 : L {};
+struct N : M1, M2 {};
 #ifdef B
-A<&D::x>* x;
+A<(int N::*)(int M2::*)&L::x>* x;
 #else
-A<(int E::*)&D::x>* x;
+A<(int N::*)(int M1::*)&L::x>* x;
 #endif
