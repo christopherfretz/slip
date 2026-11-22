@@ -251,9 +251,13 @@ Every `KeyId` in a digest is a **mapped** id: computed under a relocation
 table `R` given to the walk. `R` is a list of rules
 
 ```
-Rule := parent: KeyId, kind: KeyKind, name: Name, disc: opt<digest>     an entity as the walk finds it
-        to_parent: KeyId, to_name: Name                                 what it is to be called instead
+Rule := parent: Parent, kind: KeyKind, name: Name, disc: opt<digest>    an entity as the walk finds it
+        to_parent: Parent, to_name: Name                                what it is to be called instead
 ```
+
+A rule's parents are `Parent`s, not bare ids: an entity of the global
+namespace has the parent `root`, and relocating a top-level namespace is
+the first use of a rule. `parent` is in mapped terms (`verify.md` §2.1).
 
 and the mapped id of an entity is computed bottom-up: map its parent and
 everything in its discriminator first; if a rule matches the resulting

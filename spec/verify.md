@@ -37,7 +37,8 @@ Declared := rules:   list<Rule>      digest.md §3.4; sorted by (parent, kind, n
             removed: list<KeyId>     units that may exist only in the pre-image
 ```
 
-Each list is sorted and has no duplicate; a key may be in more than one of
+Each list is sorted and has no duplicate (rules by the bytes of their
+encoded `(parent, kind, name, disc)`, keys by their bytes); a key may be in more than one of
 the three exemption lists. Every `KeyId` is in the key space
 of the pre-image: for an entity a rule renames, the key it had before. The
 container form is kind `DECL`, version 1, one required section `declared`
@@ -56,8 +57,10 @@ A relocation "the entity with key `K = (parent, kind, name, disc)` is now
 Rule { parent: map(parent'), kind, name: name', disc,  to_parent: parent, to_name: name }
 ```
 
-where `map(parent')` is the mapped id of the new parent under the same rule
-table (the id of `parent'` itself if no rule reaches it). The walk of the
+where `map(parent')` is the new parent as the walk maps it under the same
+rule table (`parent'` itself if no rule reaches it; `root`, `c_linkage` and
+`builtin` map to themselves). Both parents of a rule are `Parent`s
+(`digest.md` §3.4). The walk of the
 post-image applies the rules bottom-up (`digest.md` §3.4), so the relocated
 entity, its members, and every type and signature that mentions it are
 written with the keys they had in the pre-image, and the comparison below
@@ -537,7 +540,7 @@ Counters of a verify shard, added to those of `digest.md` §12:
   outcome through groups equals the outcome over all units; 12000 pairs
   from the fixed seed `0x5eed0016c0def00d` (`SLIP_VERIFY_SEED` overrides),
   the property asserted on every pair.
-- `crates/slip_verify/tests/declared.rs` — §2: the `DECL` container round
+- `crates/slip_model/tests/declared.rs` — §2: the `DECL` container round
   trip; rejected forms (unsorted, duplicate, two rules with one match).
 - `crates/slip_digest/tests/rules.rs` — §2.1: mapped keys under rules, one
   directory per case: a relocated namespace, a merged namespace, a renamed
