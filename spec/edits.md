@@ -1772,6 +1772,9 @@ and nothing under it.
 - **A follower whose key does not hold the identifier as its name**
   (§9.2): its rule needs the `Key`, which `slip_digest::query::Keys` does
   not give. Proposed: `Keys::key(&mut self, e) -> Result<Key, NoKey>`.
+  The same accessor would let §9.1's match read the key's name, parents
+  and kind; without it the native rename matches over the AST's semantic
+  parents (`docs/wp/WP-071.md`), which must give the same seeds.
 - **A stringised argument.** A renamed name inside an argument that the
   macro also stringises (`EXPECT_EQ(f(x), 1)`, `assert` with assertions
   on) changes a string literal, and the unit that holds it is `changed`.

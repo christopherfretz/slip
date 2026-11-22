@@ -1641,10 +1641,12 @@ using-declaration). Those are judged by the comparison of digests alone.
   the table; an index the overlay does not have and a file the shard did
   not read; the invariants of the section.
 - `crates/slip_cli/tests/verify_overlay.rs` — §5.1 "The overlay form"
-  through the task: the post command and subject paths; O1 by an overlay
-  blob that is not what the overlay says; O2 by a subject file changed
-  after the map phase; an edit that adds an `#include` of another
-  overlaid file (two parses, one shard); a missing blob (a failed job);
+  through the task: the post command and subject paths; O1 by a loading
+  loop that a test hook stops before its end, so that an overlaid file
+  is read from disk; O2 by a subject file changed after the map phase;
+  an edit that adds an `#include` of another overlaid file (two parses,
+  one shard); a missing blob and a blob that does not hash to its name
+  (each a failed job);
   the `binding`, `rule_use` and `spellings` sections; an unchanged
   observer with and without rules (§5.5).
 

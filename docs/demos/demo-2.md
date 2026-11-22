@@ -16,11 +16,21 @@ is checked against: the run's own counters are the record.
 ## 1. What must be in place
 
 - Every package of `docs/wp/WP-060.md` to `WP-078.md` except `WP-073.md`
-  (`WP-079.md` lists what each gives the demonstration).
-- Slip's Kiln pin at a commit that has: the front-end entry (KF1); the
-  written-reference table stages 1 and 2 (Kiln WP-1930, WP-1931) and an
-  option of the entry that turns it on; the fixes of KD1 and KD2 (so that
-  no unit of the corpus is `failed`); KF2 stage 1; KF3 stage 1.
+  (`WP-079.md` lists what each gives the demonstration), and three
+  packages of M3 that the rename and its verification read through:
+  `WP-084.md` (file ranges), `WP-087.md` (keys and rename rules) and
+  `WP-096.md` (the check of spelled entities, `spec/verify.md` §10).
+- Slip's Kiln pin at Kiln's main (`docs/wp/WP-044.md`): the front-end
+  entry (KF1, Kiln WP-2120); the written-reference table stages 1 and 2
+  (Kiln WP-1930, WP-1931) and the declaration extents (Kiln WP-2090);
+  the fixes of KD1 and KD2 (so that no unit of the corpus is `failed`).
+  Beyond what main has today: KF2 stage 1 (the overlay), and Kiln
+  WP-2320 (an option of the entry that records the written-reference
+  table without printing it,
+  [KR1 amendment 1](../requests/KR1-amendment-1.md) §1). KF3 is not a
+  prerequisite: file ranges and tiers are computed in Slip from what the
+  source manager already answers (`docs/wp/WP-084.md`,
+  `docs/wp/WP-068.md`).
 - M1 closed for the corpus: every `ok` unit has digests with no
   indeterminate unit, or each remaining cause is listed.
 
@@ -102,10 +112,11 @@ and nothing is written.
   `mismatch changed`, localised at the string literal.
 - `llvm/include/llvm/ADT/DenseSet.h:71` and `:76` call it with a dependent
   argument inside a class template: the dependent callee of
-  `spec/edits.md` §9.4. With follow-up K-a of
-  [KF3](../requests/KF3-location-utilities.md) §7 the name is edited and
-  its pattern exempted; without it the name is `unresolved`, and every
-  observer that instantiates `DenseSet` fails to parse the post-image.
+  `spec/edits.md` §9.4. With the join of
+  [KR1 amendment 1](../requests/KR1-amendment-1.md) §2 in the pin and
+  `docs/wp/WP-073.md` part A the name is edited and its pattern
+  exempted; without them the name is `unresolved`, and every observer
+  that instantiates `DenseSet` fails to parse the post-image.
 
 Either way the run must end `not_verified` and write nothing. The point
 of the exhibit is that the pipeline did produce edits that M2 cannot
@@ -127,9 +138,13 @@ cargo xtask corpus rename llvm --from llvm::PowerOf2Ceil --to powerOf2Ceil \
 ```
 
 Each is (`spec/harness.md` §6.5) one
-`slip rename --db <the corpus's database> --owned <its source directory>
---allow-unparsed --allow-residue --patch <file> --relative-to <its source
-directory>`, followed by the harness's checks. `--owned` is the whole
+`slip rename --from … --to … --db <the corpus's database> --owned <its
+source directory> --allow-unparsed --allow-residue --patch <file>
+--relative-to <its source directory>` (`spec/exec.md` §8.11,
+`spec/edits.md` §10.1), followed by the harness's checks. The same run
+can be made a stage at a time (`slip map`, `slip reduce`, `slip check`,
+`slip apply`, `spec/edits.md` §10.2); the harness's determinism check
+is `slip reduce` run again. `--owned` is the whole
 checkout, so that uses in projects the corpus does not configure are
 residue rather than unseen. `--allow-unparsed` is for the two units of
 `clang/tools/clang-fuzzer` that neither Kiln nor clang accepts
@@ -155,6 +170,7 @@ Written to `bench/results/llvm.rename.<target>.json` by each run:
 | `peak_rss_max`, `peak_rss_sum`, workers at once, for map and verify | the two phase run records | as the M1 digest pass |
 | `reduce.claims`, `reduce.sites`, `reduce.edits`, `reduce.edits.shared`, `reduce.edits.max_observers`, `reduce.files`, `reduce.runs` | the edit set | `max_observers` near the number of observers that read `StringRef.h`; `claims` in the tens of thousands collapsing to under thirty edits |
 | The tally of verdicts; stale observers; unused rules | the result | every `ok` observer `verified`; none stale; none unused |
+| Spelling obligations: how many, passed, failed | the result (`spec/verify.md` §10) | one per replaced reference (about 26 for each target: every token but the declarations'); all passed |
 | Residue by category; mentions | the result | the lists of §2 |
 | Determinism | `reduce` run twice; the whole first run repeated once with `-j 4` | the same edit set, overlay and result ids |
 
@@ -173,6 +189,10 @@ It may claim, for the two accepted targets:
   (`spec/digest.md`) under one declared rule.
 - No observer of the plan still declares the entity under its old name
   (`spec/verify.md` §9).
+- Every reference the rename rewrote names, in the post-image, the
+  entity it named before, as some observer of the plan resolves it
+  (`spec/verify.md` §10). This holds also for a reference inside a unit
+  that a transform declared changed, though no target here has one.
 - The edit set is a function of the inputs: the same bytes from one
   worker or twelve.
 - Each shared-header site was claimed by thousands of observers and
@@ -207,19 +227,23 @@ It may not claim:
 package it needs, all in earlier waves, has merged; packages of one wave
 share no file.
 
-| Wave | Packages | Waits for, outside the packages |
+| Wave | Packages | Waits for, outside M2's packages |
 |---|---|---|
-| 1 | 060 (model: request, shard sections), 064 (store, protocol 2), 065 (the pin) | 065: Kiln's front-end entry on `main` |
-| 2 | 061 (model: edit set, overlay, result), 069 (keys, rule use), 066 (KF2), 067 (KF3) | 066, 067: Kiln's answers to the two requests, then its review; 069: `slip_digest`'s `keys.rs` free of M1's open packages |
-| 3 | 062 (reduce), 063 (apply), 070 (agreement, state), 077 (test runner), 068 (sites, scan) | 068: KF2 and KF3 in the pin |
-| 4 | 075 (`reduce`, `apply`), 071 (rename, core) | |
-| 5 | 072 (families, followers), 073 (templates), 074 (worker) | 074: M1's worker (digest in the map job, the verify job); 073: Kiln follow-ups K-a, K-d, K-e, part by part |
-| 6 | 076 (`check`, `rename`) | |
+| 1 | 060 (model: request, shard sections), 064 (protocol 2, the store's files) | nothing |
+| 2 | 061 (model: edit set, overlay, result), 069 (rule use), 067 (written references, declaration names) | 067: the pin at Kiln's main (WP-044); 069: `slip_digest`'s `lib.rs` and `keys.rs` free of M1's open packages |
+| 3 | 062 (reduce), 063 (apply), 077 (test runner), 070 (agreement, spellings, guards, state), 066 (the overlay), 068 (sites, scan) | 070: M1's run report (WP-055); 066: Kiln's answer to KF2, then its review; 068: M3's file ranges (WP-084) |
+| 4 | 071 (rename, core), 075 (`reduce`, `apply`) | 071: M3's keys (WP-087); 075: M1's commands (WP-053) |
+| 5 | 072 (families, followers), 073 (templates), 074 (worker) | 074: M1's map and verify tasks (WP-050, WP-052) and M3's check of spelled entities (WP-096); 073: KR1 amendment 1 §2 and Kiln WP-1933, part by part |
+| 6 | 076 (`map`, `check`, `rename`) | |
 | 7 | 078 (the rename tests) | |
-| 8 | 079 (corpus, this demonstration) | M1 closed for the corpus |
+| 8 | 079 (corpus, this demonstration) | M1 closed for the corpus; Kiln WP-2320 |
 
-The critical path is the one through Kiln: 065, 067, 068, 071, 074, 076,
-078, 079. The packages that need neither Kiln nor M1 (060, 061, 062,
-063, 064, 070, 075, 077) reach wave 4 on their own and can be done
+The critical path is the one through Kiln's tables: WP-044, 067,
+WP-084, 068, WP-087, 071, WP-096, 074, 076, 078, 079, with the overlay
+(KF2, 066) joining it at 074. The packages that need neither Kiln nor an
+open package of M1 (060, 061, 062, 063, 064, 069, 077) can be done
 before that path reaches 071. 073 is on no path to this demonstration's
-two accepted targets.
+two accepted targets. Three packages of M3 (WP-084, WP-087, WP-096) are
+on M2's path: the rename reads the subject through the interfaces a
+programmable transform will, and its replaced references are checked as
+a script's are.
