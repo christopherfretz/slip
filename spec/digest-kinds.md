@@ -180,9 +180,8 @@ obliges (digest §13 obligation 5), all under `crates/slip_digest/tests/`:
 | `unsupported`, not `unbuilt` | `indeterminate/<short name>/<row>/` | the unit holding the construct is flagged indeterminate |
 
 The convention needs no column: the tables test lists the rows, derives
-the names and fails for a missing directory or a directory no row names.
-`demand/` and `indeterminate/` are directories `digest.md` does not have
-yet ("Open questions").
+the names and fails for a missing directory or a directory no row names
+(digest §13 obligation 5, §14).
 
 ### 1.6 What the test cannot see
 
@@ -328,7 +327,6 @@ parsed against Kiln. Which key kind each `DeclKind` has is in §5.2.
 | 13 | `property` | `uv`: a resolved property (§11.1) |
 | 14 | `order` | |
 | 15 | `parameter` | `uv`: the parameter's index (a default argument unit) |
-| 16 | `closure` | `uv`: a closure type declared outside a function body, by its lambda's mangling number (§10.4, `LambdaMangling`) |
 
 A class's constructors and destructor are named `constructor` and
 `destructor`, never by the class name: renaming the class changes their
@@ -346,7 +344,6 @@ parent key and nothing else.
 | `partial_specialisation` | the template head, then the argument pattern (`enum ArgView*`) |
 | `using_declaration` | the key of the scope its qualifier names; for a dependent one, the qualifier by structure (`enum Nns`) |
 | `using_shadow` | the key of the entity the name stands for |
-| `class` named `closure` | the `Ref` of the lambda's mangling context (§10.4) |
 | every content-keyed kind, `template_param_object` | the unit's own stream |
 | every other kind | absent |
 
@@ -1240,9 +1237,8 @@ the canonical form. Template argument lists are written from
 ### 4.7 The type arena and the target
 
 Nothing below is written. The options and the target description are
-properties of the command line, which is the same for the two parses a
-verification compares (`verify.md`); "Open questions" asks whether they
-should be in a unit all the same.
+properties of the command line, and a digest is relative to its command
+(digest §1 rule 8): only digests of one observer are compared.
 
 ### `kiln_ast::types::node::Store`
 
@@ -1400,7 +1396,7 @@ against Kiln.
 | `Typedef`, `TypeAlias` | unit, local | `alias` | identifier |
 | `Enum` | unit, local | `enumeration` | identifier, or digest §3.3 |
 | `EnumConstant` | unit | `enumerator` | identifier; the parent is the enumeration |
-| `CXXRecord` | unit, local | `class` | identifier, digest §3.3, or `closure` |
+| `CXXRecord` | unit, local | `class` | identifier, or digest §3.3; a closure type is always local (§10.4) |
 | `ClassTemplateSpecialization`, `VarTemplateSpecialization` | unit | `specialisation` | the template's name; the canonical arguments; the parent is the template |
 | `ClassTemplatePartialSpecialization`, `VarTemplatePartialSpecialization` | unit | `partial_specialisation` | the template's name; head and argument pattern; the parent is the template |
 | `Field` | unit | `field` | identifier; unnamed: `unnamed_by` the name of its anonymous class, else `unnamed_ordinal` among the class's unnamed fields |
@@ -3843,12 +3839,10 @@ and a value can only name values interned before it, so this ends.
 | `LabelDiff.size` | value | in | uv |  |
 
 A pointer to a lifetime-extended temporary does not write the temporary's
-value, although digest §7 says "by the digest of its value": a temporary
-can hold a pointer to itself, and its value is already written, with its
-`LetData`, at the `MaterializeTemporaryExpr` in the unit of the declaration
-that extends it. The pair written here names the temporary within that
-declaration. ("Open questions" proposes the matching change to
-`digest.md`.)
+value (digest §7): a temporary can hold a pointer to itself, and its value
+is already written, with its `LetData`, at the `MaterializeTemporaryExpr`
+in the unit of the declaration that extends it. The pair written here
+names the temporary within that declaration.
 
 ### `kiln_ast::consts::value::ByteImage`
 
@@ -4133,16 +4127,18 @@ the requirements.
 `from` is the template itself until Kiln instantiates the definition, and
 then the pattern chosen: the primary template's pattern or a partial
 specialisation. It is written as the `Ref` of the template or of the
-partial specialisation, so a specialisation not yet instantiated and one
-instantiated from the primary template write the same.
+partial specialisation. For an implicit instantiation `from` and
+`from_args` are written in the resolved unit `definition` and not in the
+specialisation's own stream (§11.9), because they are known only once
+the definition exists.
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `template` | entity | in | keyed | the primary template: the key's parent |
 | `args` | value | in | keyed | the discriminator, in canonical form (`TypeContext::canonical_args`); the sugar is not written |
 | `kind` | flag | in | enum SpecKind |  |
-| `from` | entity | in | ref | rule above (digest §8) |
-| `from_args` | value | in | enum ArgView*? | the arguments deduced for the partial specialisation `from` |
+| `from` | entity | in | ref | rule above (digest §8); in `definition` for an implicit instantiation (§11.9) |
+| `from_args` | value | in | enum ArgView*? | the arguments deduced for the partial specialisation `from`; as `from` |
 | `point_of_instantiation` | location | out | - |  |
 | `print_args` | written | out | - | the arguments names print with: `args` without trailing defaults; read by printing only |
 | `defaulted` | flag | in | uv | bit i: argument i came from, or equals, its parameter's default; debug information reads it |
@@ -4778,12 +4774,29 @@ template (§3.2, §3.3).
 ### 10.4 Lambdas
 
 A `LambdaExpr` writes its closure type by `decl` (§7); the closure's
-`RecordData` `lambda` row writes the rows of `LambdaData`. Inside a
-function body the closure is a local class (§2.4). Outside one it is a
-unit of kind `class` named `closure` with its mangling number, and its
-discriminator is the `Ref` of its mangling context (§3.3); a closure whose
-number is 0 has no stable name and is keyed as an unnamed class (digest
-§3.3).
+`RecordData` `lambda` row writes the rows of `LambdaData`. A closure type
+is a local class (§2.4) of the unit whose stream walks its `LambdaExpr`,
+wherever that is: a function body, the initialiser of a variable at
+namespace or class scope, a default member initialiser, a default
+argument (digest §4.3). It is never a unit and never a member of its
+semantic context's lists (`RecordData` `members-other`, a namespace's
+members).
+
+The mangling number and context are written as facts of the closure, since
+mangling reads them, and are not its key: Kiln numbers the lambdas of one
+context per signature, as the ABI does, so two closures of one context can
+share a number, and a closure the ABI gives no context has none.
+
+A `Ref` to a closure or other local type from another unit needs the
+type's `local(n)`, and so the unit that declares it: the walk numbers
+that unit's local types first (digest §4.3). For a local type of a
+function body the unit is the function, its semantic context. For a
+closure outside a function body the context is the namespace or class, and
+the unit is found from `LambdaMangling` `context` where Kiln stores one,
+and otherwise by numbering the units of that scope whose streams hold
+expressions outside function bodies ("Questions for Kiln" asks for the
+query). A closure no unit's walk declares makes the unit that names it
+indeterminate.
 
 ### `kiln_ast::lambda::LambdaData`
 
@@ -4848,8 +4861,8 @@ number is 0 has no stable name and is keyed as an unnamed class (digest
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `number` | value | in | uv | also the key's name for a closure outside a function body (§3.2) |
-| `context` | entity | in | ref | also that key's discriminator (§3.3) |
+| `number` | value | in | uv | read by mangling; not the closure's key (rule above) |
+| `context` | entity | in | ref | read by mangling; names the unit a closure outside a function body is local to, where Kiln stores it |
 
 ### `kiln_ast::lambda::LambdaArena`
 
@@ -5155,8 +5168,7 @@ rows hold.
 
 Three fields of `Ast` are options of the compilation, not facts of any
 declaration: `contract_semantic`, `lang_c` and `freestanding`. They are
-not written, because both sides of a comparison are compiled by the same
-command; `digest.md` has no place for them ("Open questions").
+not written: a digest is relative to its command (digest §1 rule 8).
 
 ### `kiln_ast::ast::Ast`
 
@@ -5243,7 +5255,8 @@ every unit independent of what was asked. There are three rules:
 
 - the fact goes to a **resolved unit** (digest §2.2), which exists only
   if Kiln computed it, so that a unit present on both sides of a
-  comparison holds it on both or lacks it on both (§11.1 to §11.5);
+  comparison holds it on both or lacks it on both (§11.1 to §11.5,
+  §11.9);
 - the fact is a property of a **derived unit** that exists only if
   something referenced the entity (§11.4, §11.6);
 - the fact is **not written**, because it is computed from facts that
@@ -5264,6 +5277,7 @@ The numbers are Slip's own and are never reused.
 | 5 | `dtor_delete` | a virtual destructor | `ref`: `ColdDeclData` `dtor_delete`; then `child?`: `dtor_delete_this` |
 | 6 | `inherited_constructor` | an inheriting constructor | `ref`: `inheriting_ctor`; then `ref`: `inherited_ctor` |
 | 7 | `default_immediates` | a function, a field or a `default_argument` unit | `value*` (§11.4) |
+| 8 | `definition` | an implicit instantiation or an implicitly declared member (§11.9) | the rows §11.9 lists, in table order |
 
 A resolved unit `default_immediates` has a discriminator: the index of
 the parameter as `uv`, absent for a field.
@@ -5385,23 +5399,56 @@ and `0-visibility-cache`; `DefinitionBits`
 member or a builtin is a unit is decided from the streams the walk
 writes, never from the marks (§5.2).
 
-### 11.9 What remains
+### 11.9 Definitions of implicit instantiations and implicit members
 
-Inside a derived unit some content is still there by demand, and this
-file does not remove it:
+Kiln declares an implicit instantiation when something names it and
+defines it only when something uses it; it declares an implicit special
+member or comparison on lookup and defines it on odr-use. So that a
+unit's digest does not depend on which of the two happened (digest §1
+rule 5, §2.2), a unit of the **definition class** is written in two
+parts. The class is:
 
-- the body of an implicitly instantiated function, the initialiser of an
-  implicitly instantiated variable, and the definition of a member class
-  or enumeration of a specialisation are instantiated only when needed;
-  with them come a deduced return type and `SpecInfo` `from`;
-- the body of an implicit special member or defaulted comparison is
-  defined on odr-use.
+1. a function, variable, member class or member enumeration whose
+   `SpecInfo` or `MemberSpecInfo` kind is `ImplicitInstantiation`;
+2. a class template specialisation of that kind;
+3. an implicitly declared special member function, comparison operator
+   or deduction guide, and the conversion functions of a closure type.
 
-A specialisation or member that both sides declare and only one defines
-is therefore a changed derived unit. The use that asked for the
-definition is in the stream of the unit that made it, so the change is
-never the only finding; "Open questions" proposes a resolved property
-`definition` that would remove the secondary one.
+The predicate reads only facts that do not change when the definition is
+made. For a unit of the class the rows below write their empty form in
+the unit's own stream, and are written, in the order given, in the
+resolved unit `definition` (§11.1), which exists if and only if the
+entity is defined:
+
+| Entity | Rows moved to `definition` |
+|---|---|
+| a function | `FunctionData` `body`; `ColdDeclData` `ctor_inits`; the return type, when the pattern's declared return type holds a placeholder |
+| a variable | `VarData` `init`; `VarSpec` rows that the initialiser decides; the type, when the pattern's declared type holds a placeholder |
+| a class | `SpecInfo` `from` and `from_args`; `RecordData` `members-fields`, `members-virtual`, `members-other`, `bases`, `defn`; `ColdDeclData` `friends`, `record_pack` |
+| an enumeration | `EnumData` `members`, `int_type`, `promotion_type`, `flags-fixed`, `flags-complete` |
+
+A function or variable of the class whose pattern's declared type holds a
+placeholder (`auto`, `decltype(auto)`, a constrained placeholder) writes,
+in its own stream, its type with the placeholder as the pattern declares
+it: the deduced type is known only once the definition exists and is in
+`definition`. The pattern is the declaration `SpecInfo` `template` or
+`MemberSpecInfo` `instantiated_from` names; whether its type holds a
+placeholder is a fact of the pattern.
+
+A class template specialisation whose kind is `ImplicitInstantiation`
+and that has no definition (the instantiation failed, or Kiln set the
+kind first) has a unit and no `definition`, like a function declared and
+not defined.
+
+The split costs one more unit for each defined instantiation. Without it
+a use added to one function, which is the first to need the body of some
+`std::vector<int>::size`, would be reported as a change of that member
+as well.
+
+"Questions for Kiln" asks whether Kiln keeps the declared type of an
+instantiation after it deduces the return type, and which `VarSpec` bits
+are set by the initialiser; until both are answered the rows concerned
+are the ones the first implementation checks with a `demand` test each.
 
 ## 12. Unsupported
 
@@ -5522,59 +5569,6 @@ caught only when a walk meets it.
 
 The `pin` values `schema` and `extra` were assigned by reading the
 source; the first run of `tables.rs` settles them.
-
-### Questions for `digest.md`
-
-1. The tables test needs `tests/demand/` and `tests/indeterminate/`, and
-   a must-equal test for every `symbolic` row (§1.5). Digest §13
-   obligation 5 and §14 name only `equal/` and `differ/`.
-2. Obligation 1 asks for a row per field. A packed word has only fact
-   rows here, and decoded views and `consts` types have tables (§1.1).
-3. Key kinds this file adds (§3.1): `using_shadow`,
-   `unresolved_if_exists`, `default_argument`, `template_param_object`,
-   `decomposition`, `binding`, `consteval_block`; the name `closure` and
-   the discriminators of a closure and of `default_immediates`; the hash
-   tag `slip.disc.v1` of a discriminator.
-4. Explicit instantiations are not units (§9): Kiln has no declaration
-   for one. Digest §2.1 lists them among the declared units.
-5. A specialisation of kind `Undeclared` is not a unit (§9).
-6. Digest §2.3 does not mention `DefinitionBits`
-   `0-complete-definition-required`, `DeclArena` `completed_records` and
-   `fn_def_insts`, `ParamData` `flags-default-arg-pending`, or the
-   template tables of §11.8; and it does not say where `default_imm`
-   goes (§11.4) or what the deferrable class is (§11.2).
-7. Digest §7 writes a pointer to a lifetime-extended temporary "by the
-   digest of its value". §8 writes the extending declaration and the
-   temporary's index instead, because a temporary can point to itself.
-   Digest §7 also does not say that the padding of an aggregate image is
-   written.
-8. Digest §6 does not say that the qualifier, the found declaration and
-   the written template arguments of a resolved name are left out, that
-   "had several candidates" covers constructions, or that a use of a
-   default argument writes the parameter's position and not the
-   expression (§7).
-9. Digest §4.3 does not say how a local is numbered when a reference
-   precedes its declaration (§2.4), nor how the sources of opaque values
-   are numbered (§7).
-10. Digest §4.2 and §8 do not say how the expression of a canonical
-    profile is walked (§4.4), nor how locals inside a type stream are
-    numbered.
-11. A cold map with no entry for a node writes the empty form of its
-    row (§2.1). The cost is several bytes hashed for every declaration
-    and expression; the alternative, a presence word per node, would
-    make the stream depend on which maps Kiln happens to fill.
-12. The options of the compilation and the target (`TypeOptions`,
-    `TargetTypes`, `Ast` `contract_semantic`, `lang_c`, `freestanding`)
-    are in no unit (§4.7, §10.9). A header record of the `digests`
-    section would be the place, so that two parses made with different
-    commands cannot compare equal by accident.
-13. A resolved property `definition` (§11.9) would hold the body of an
-    implicit instantiation or implicit member, so that a specialisation
-    declared on both sides and defined on one is not a changed unit.
-14. The order unit lists no instantiated variable (§9.5), on the
-    ground that their initialisation is unordered. Kiln does emit them
-    in a fixed place (`ref_var_insts`, `explicit_member_insts`), and a
-    program can observe it.
 
 ### Questions for Kiln
 
