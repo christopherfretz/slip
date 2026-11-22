@@ -687,6 +687,10 @@ fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
 }
 
 #[cfg(test)]
+#[path = "expr_rows.rs"]
+mod rows;
+
+#[cfg(test)]
 mod tests {
     use std::cell::Cell;
 

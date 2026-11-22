@@ -1,10 +1,11 @@
 #include "side.h"
-// §7 ExprNode `ConstantExpr.aux-elided`.
+// §7 ExprNode `ConstantExpr.aux-elided`: an immediate invocation nested in
+// another, in an initialiser that does not fold (kiln_sema
+// consteval.rs:1351).
 consteval int g(int x) { return x; }
-consteval int g2(int x) { return x; }
-constexpr int h(int x) { return x; }
+int a;
 #ifdef B
-constexpr int v = g(h(1));
+int v = g(1) + a;
 #else
-constexpr int v = g(g(1));
+int v = g(g(1)) + a;
 #endif
