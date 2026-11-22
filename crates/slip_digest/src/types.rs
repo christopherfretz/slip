@@ -340,7 +340,12 @@ impl Walk<'_> {
                     self.write_args(s, l);
                 }
                 s.bool(pack);
-                if deduced.is_some() {
+                // The placeholder of a templated entity not yet deduced is
+                // canonical with `deduced` the builtin dependent type
+                // (`kiln_ast/src/types/canon.rs`, `auto_type`).
+                let dependent = deduced == Some(QualType::DEPENDENT);
+                s.bool(dependent);
+                if deduced.is_some() && !dependent {
                     s.indeterminate(sugar("TypeView/Auto.deduced"));
                 }
             }

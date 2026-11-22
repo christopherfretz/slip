@@ -64,19 +64,8 @@ pub fn manifest() -> PathBuf {
 }
 
 /// Every test directory under `tests/<root>`, sorted: `<short>/<row>`
-/// and `_/<slug>`. With `SLIP_DIGEST_ONLY=<text>` in the environment,
-/// only those whose path relative to `tests/` contains the text (to look
-/// at a few with `SLIP_DIGEST_DUMP`; the tables test does not use this).
+/// and `_/<slug>`. [`run_all`] alone narrows them (`SLIP_DIGEST_ONLY`).
 pub fn dirs(root: &str) -> Vec<PathBuf> {
-    let mut out = all_dirs(root);
-    if let Some(only) = std::env::var_os("SLIP_DIGEST_ONLY") {
-        let only = only.to_string_lossy().into_owned();
-        out.retain(|d| rel(d).contains(&only));
-    }
-    out
-}
-
-fn all_dirs(root: &str) -> Vec<PathBuf> {
     let base = manifest().join("tests").join(root);
     let mut out = Vec::new();
     let Ok(shorts) = std::fs::read_dir(&base) else { return out };
@@ -155,9 +144,20 @@ fn looks_like_header(line: &str) -> bool {
         && rest[word..].trim_start().starts_with(':')
 }
 
+/// Whether `line` is exactly a header line of one of the keys (the value
+/// not checked further), after a byte-order mark if any.
+fn is_header_line(line: &str) -> bool {
+    let line = line.trim_start_matches('\u{feff}');
+    line.strip_prefix("// ").and_then(|r| r.split_once(": ")).is_some_and(|(key, value)| {
+        HEADER_KEYS.contains(&key) && !value.is_empty() && (key != "errors" || value == "yes")
+    })
+}
+
 /// The header lines of a main file: the lines from its top that are
 /// header lines or `#include "side.h"` (a `t.cpp` begins with it), up to
-/// the first that is neither; a header line after that is not read.
+/// the first that is neither. A header line after that (after a blank
+/// line, a comment, a byte-order mark, a `/* */`) is an error of the
+/// test: it would not be read.
 ///
 /// A header line is exactly `// <key>: <value>` (one space after `//`
 /// and after the colon, the value not empty) with the key `std`,
@@ -168,12 +168,16 @@ fn looks_like_header(line: &str) -> bool {
 pub fn header(main: &str) -> Result<Header, String> {
     let mut h = Header { std: "c++20".to_owned(), errors: false, args: Vec::new(), target: None };
     let mut seen: Vec<&str> = Vec::new();
-    for (i, line) in main.lines().enumerate() {
+    let mut lines = main.lines().enumerate();
+    for (i, line) in lines.by_ref() {
         let line = line.trim_end();
         if line == "#include \"side.h\"" {
             continue;
         }
         if !looks_like_header(line) {
+            if is_header_line(line) {
+                return Err(format!("line {}: header line outside the header block", i + 1));
+            }
             break;
         }
         let bad = || {
@@ -201,6 +205,9 @@ pub fn header(main: &str) -> Result<Header, String> {
             "target" if !value.contains(' ') => h.target = Some(value.to_owned()),
             _ => return Err(bad()),
         }
+    }
+    if let Some((i, _)) = lines.find(|(_, l)| is_header_line(l.trim_end())) {
+        return Err(format!("line {}: header line outside the header block", i + 1));
     }
     Ok(h)
 }
@@ -430,11 +437,24 @@ pub fn hard_indeterminate(d: &Digested) -> Vec<String> {
 
 /// Runs `f` on every directory of `root`, collects every failure with its
 /// directory, and panics with all of them; lists the skipped ones.
+///
+/// With `SLIP_DIGEST_ONLY=<text>` in the environment, only the directories
+/// whose path relative to `tests/` contains the text, to look at a few
+/// with `SLIP_DIGEST_DUMP`; it says so. Nothing else narrows: the
+/// determinism and tables tests use every directory, and `cargo xtask ci`
+/// removes the variable from what it runs.
 pub fn run_all(root: &str, f: impl Fn(&Path) -> Result<(), String>) {
     let mut failures = Vec::new();
     let mut skipped = Vec::new();
     let mut ran = 0;
-    for dir in dirs(root) {
+    let mut dirs = dirs(root);
+    if let Some(only) = std::env::var_os("SLIP_DIGEST_ONLY") {
+        let only = only.to_string_lossy().into_owned();
+        let all = dirs.len();
+        dirs.retain(|d| rel(d).contains(&only));
+        eprintln!("SLIP_DIGEST_ONLY={only}: {} of {all} directories", dirs.len());
+    }
+    for dir in dirs {
         if is_pending(&dir) {
             skipped.push(rel(&dir));
             continue;
@@ -486,13 +506,20 @@ mod header_tests {
                 Some("aarch64-unknown-linux-gnu")
             ))
         );
-        // A header line after the first line that is not one is not read.
-        assert_eq!(header("// a comment\n// args: -fno-rtti\n"), Ok(h("c++20", false, &[], None)));
-        assert_eq!(header("int x;\n// std: c++17\n"), Ok(h("c++20", false, &[], None)));
+        // A header line after the end of the block is an error
+        // (`wp038_header_line_outside_block`).
+        let outside =
+            |line: usize| Err(format!("line {line}: header line outside the header block"));
+        assert_eq!(header("// a comment\n// args: -fno-rtti\n"), outside(2));
+        assert_eq!(header("int x;\n// std: c++17\n"), outside(2));
         // Comments that do not read as `word:` end the block quietly.
         assert_eq!(
-            header("// std: c++23\n// WP-028 review, digest §7: x\n// args: -fno-rtti\n"),
+            header("// std: c++23\n// WP-028 review, digest §7: x\nint x;\n"),
             Ok(h("c++23", false, &[], None))
+        );
+        assert_eq!(
+            header("// std: c++23\n// WP-028 review, digest §7: x\n// args: -fno-rtti\n"),
+            outside(3)
         );
     }
 
@@ -517,6 +544,32 @@ mod header_tests {
         assert!(twice.contains("a second `// std:` line"), "{twice}");
         let named = header("// std: c++17\n// arg: -x\n").unwrap_err();
         assert!(named.starts_with("line 2: `// arg: -x`"), "{named}");
+    }
+
+    // WP-038 review: a header line after the block has ended is an error
+    // of the test, not silently unread; a comment like one is not.
+    #[test]
+    fn wp038_header_line_outside_block() {
+        for (text, line) in [
+            ("int x;\n// std: c++26\n", 2),
+            ("// std: c++17\n\n// args: -fno-rtti\n", 3),
+            ("// §1 a comment\n// target: aarch64\n", 2),
+            ("\u{feff}// std: c++26\nint x;\n", 1),
+            ("/* a */\n// errors: yes\n", 2),
+            ("#include \"side.h\"\nint x;\n#ifdef B\n// args: -fno-rtti\n#endif\n", 4),
+        ] {
+            let err = header(text).unwrap_err();
+            assert_eq!(
+                err,
+                format!("line {line}: header line outside the header block"),
+                "{text:?}"
+            );
+        }
+        for text in
+            ["int x;\n// errors: no\n", "int x;\n// Note: std: c++26\n", "int x; // std: c++26\n"]
+        {
+            assert!(header(text).is_ok(), "{text:?}");
+        }
     }
 
     // Both sides of a `t.cpp` test read its lines; each side of an

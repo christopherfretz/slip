@@ -1,3 +1,5 @@
 # pending
-# needs: stmt
+# needs: decl_data
+# f is Pending(DeclData): ColdDeclData `contracts` is not written (decl_scope::cold).
+# <order> is Pending(Order), as in every test; it does not block one.
 changed f(int)

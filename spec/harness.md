@@ -308,11 +308,17 @@ lines, in any order, among its leading lines:
   spaces, no quoting). A line of the block that looks like one
   (`//`, blanks, a word of letters and `-`, blanks, `:`) but is not one
   (`// arg:`, `//target:`, `// std:c++26`, a key given twice) fails the
-  test; a comment that does not look like one ends the block.
+  test; a comment that does not look like one ends the block. A header
+  line anywhere after the block (after a blank line, a comment, a
+  byte-order mark, a `/* */`) fails the test: it would not be read.
 - `target` is a triple Kiln's driver knows (`aarch64` or `x86_64` Linux);
   `args` are Kiln driver arguments that change the language, never what
-  is read or written. `slip_kiln::snippet::parse_with` refuses the others,
-  and the refusal fails the test (`spec/landed/harness/WP-038.md`).
+  is read or written or the form of the diagnostics. A line on which
+  `kiln` would stop before the job (a driver error, an invalid
+  diagnostic option, a driver warning `-Werror` makes an error, a
+  per-input error such as `-fgnu89-inline` for C++) is refused too.
+  `slip_kiln::snippet::parse_with` refuses them, and the refusal fails
+  the test (`spec/landed/harness/WP-038.md`).
 - In a `t.cpp` test both sides read the same lines. In an `a.cpp` /
   `b.cpp` test each side reads its own, so a `differ` test may differ in
   nothing but its `// args:` line: that shows a command-line fact is in
@@ -324,8 +330,12 @@ lines, in any order, among its leading lines:
   reflection tests use, as Kiln's own test header
   (`kiln/tests/support/kiln_meta.h`) declares them.
 - `SLIP_DIGEST_DUMP=1` prints, for each side, the command line in effect
-  and the units; `SLIP_DIGEST_ONLY=<text>` runs only the directories
-  whose path contains `<text>`.
+  and the units; `SLIP_DIGEST_ONLY=<text>` makes the four pair runners
+  run only the directories whose path contains `<text>`, and they print
+  `SLIP_DIGEST_ONLY=<text>: <n> of <m> directories`. Nothing else
+  narrows (the determinism and tables tests use every directory), and
+  `cargo xtask ci` removes the variable from the environment of what it
+  runs.
 
 ## 7. Performance records
 

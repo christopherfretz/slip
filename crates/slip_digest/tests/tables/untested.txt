@@ -950,7 +950,6 @@ TypeView/Attributed.modified
 TypeView/Auto
 TypeView/Auto.args
 TypeView/Auto.concept
-TypeView/Auto.deduced
 TypeView/Auto.keyword
 TypeView/Auto.pack
 TypeView/BitInt

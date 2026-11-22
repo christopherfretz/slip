@@ -66,10 +66,11 @@
 //!   no module file, no prebuilt path, no `std` module directory or cache
 //!   (those are found on the file system), so an `import` is "module not
 //!   found".
-//! - **`__has_builtin`** answers from `kiln_pp::ClangFeatures` for the
-//!   target, without the driver's staging of the builtins Kiln does not
-//!   handle yet (`StagedFeatures`, `kiln_driver/src/pp_cmd.rs:1247`, is
-//!   private); the other feature queries are the driver's.
+//! - **`__has_builtin` and `__has_constexpr_builtin`** answer from
+//!   `kiln_pp::ClangFeatures` for the target, without the driver's
+//!   staging of the builtins Kiln does not handle yet (`StagedFeatures`,
+//!   `kiln_driver/src/pp_cmd.rs:1247`, is private); the other feature
+//!   queries are the driver's.
 //! - **The note after a missing `<meta>`** at C++26 (`PpOptions::meta_hint`)
 //!   is not given: it depends on the GCC installation on the host.
 //! - **`__DATE__`, `__TIME__` and `__TIMESTAMP__`** are those of the Unix
@@ -81,7 +82,14 @@
 //! - **The driver's own diagnostics** (warnings about the command line:
 //!   `-Woption-ignored`, `-Wunused-command-line-argument`, the
 //!   floating-point overrides) are not in [`Parsed::diagnostics`], which
-//!   holds the job's; a driver error is an `Err` of [`parse_with`].
+//!   holds the job's. A driver error, and a driver warning the `-W`
+//!   options make an error (`-Werror -mno-outline-atomics` on x86-64), is
+//!   an `Err` of [`parse_with`], as `kiln` stops before the job for it.
+//! - **The sanitizers' default ignorelists** (`clang_rt`'s, in Kiln's
+//!   resource directory) are not read, so a malformed one is no error:
+//!   `kiln` reads them from the file system (`Sanitize::ignorelist_errors`).
+//! - **`KILN_BACKEND`** is not read (`hod::selected` reads the
+//!   environment); `-fkiln-backend=` is refused.
 //!
 //! # Extra arguments and targets
 //!
@@ -104,7 +112,9 @@
 //!     `-x…`, a second `-std=`, `-target` / `--target=` (the target is
 //!     [`Extra::target`]), a `native` `-march=` / `-mcpu=` / `-mtune=`
 //!     (it reads the host's processor), `-fkiln-stack-size=` (the thread
-//!     rules below), `-fsyntax-only` (already last on the line);
+//!     rules below), `-fsyntax-only` (already last on the line),
+//!     `-Xpreprocessor` (it takes the next argument, and last on a line
+//!     the driver keeps it silently);
 //!   - it takes the next argument as its value (`-Xclang`, `-o`,
 //!     `-target-feature`, `-mllvm`): last on a line it is the driver's
 //!     missing value, and before `-fsyntax-only` it would take that;
@@ -114,8 +124,13 @@
 //!     joined where the driver allows it, or is refused), or one of the
 //!     errors `kiln_driver::run_as` reports before the job runs
 //!     (`features::resolve`, the sanitizer checks, the code-generation
-//!     invocation checks). `kiln_driver::hod::selected` is not asked: it
-//!     reads the environment;
+//!     invocation checks), or the ones it reports before the job
+//!     otherwise: an error among the diagnostic options' own
+//!     (`-fdiagnostics-format=sarif`), a driver warning the `-W` options
+//!     make an error, the per-input errors for a C++ input
+//!     (`-fvisibility=bogus`, `-fgnu89-inline`).
+//!     `kiln_driver::hod::selected` is not asked: it reads the
+//!     environment;
 //!   - it changes a field of `Args` that says what is read or written
 //!     rather than the language (`io_change`, which names every field of
 //!     `Args`): an input, `-o`, `-D`/`-U` (a test writes `#define`),
@@ -128,9 +143,12 @@
 //!     `-fconstexpr-profile*`, `-fkiln-instantiation-report`), the crash
 //!     reproducer's options, `-fkiln-backend=`, the module-file kinds,
 //!     the coverage options, the sanitizer ignore- and coverage lists,
-//!     `-###`, `-v`, `--help`, the probes, the link and assembler options.
+//!     `-###`, `-v`, `--help`, the probes, the link and assembler options,
+//!     and `-fdiagnostics-format=json` (the diagnostics are text);
 //! - **The whole line** is `Err` when the driver reports an error for the
-//!   arguments together (`-fno-rtti -fsanitize=vptr`).
+//!   arguments together (`-fno-rtti -fsanitize=vptr`, `-Werror
+//!   -ffp-model=fast -ffp-contract=on`), or when they together change
+//!   what is read or written.
 //!
 //! A snippet stays the only input and its unit's AST the only output.
 //! Every other argument the driver knows is accepted and reaches the
@@ -153,7 +171,7 @@ use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use kiln_diag::{DiagEngine, DiagOptions, SharedBuffer, TextSink};
+use kiln_diag::{DiagEngine, DiagId, DiagOptions, SharedBuffer, TextSink};
 use kiln_driver::args::Args;
 use kiln_driver::toolchain::{LangStd, StdLib, Target as DriverTarget};
 use kiln_oven::Oven;
@@ -164,7 +182,7 @@ use kiln_pp::{
 };
 use kiln_sema::target::Target;
 use kiln_source::symbol::Interner;
-use kiln_source::{FileId, SourceManager};
+use kiln_source::{FileId, SourceManager, Span};
 
 use crate::kiln;
 
@@ -466,6 +484,9 @@ impl Language {
             if let Some(e) = driver_errors(&alone, &target).first() {
                 return Err(format!("argument `{arg}`: Kiln's driver reports {e}"));
             }
+            if let Some(e) = driver_reports(&alone, &target) {
+                return Err(format!("argument `{arg}`: Kiln's driver stops before the job: {e}"));
+            }
             if let Some(field) = io_change(&base, &alone) {
                 return Err(format!(
                     "argument `{arg}` is refused: it changes what is read or written \
@@ -475,10 +496,19 @@ impl Language {
         }
         let line = line_of(extra.args);
         let args = Args::parse_as("kiln", &line);
+        let together = extra.args.join(" ");
         if let Some(e) = driver_errors(&args, &target).first() {
+            return Err(format!("arguments `{together}` together: Kiln's driver reports {e}"));
+        }
+        if let Some(e) = driver_reports(&args, &target) {
             return Err(format!(
-                "arguments `{}` together: Kiln's driver reports {e}",
-                extra.args.join(" ")
+                "arguments `{together}` together: Kiln's driver stops before the job: {e}"
+            ));
+        }
+        if let Some(field) = io_change(&base, &args) {
+            return Err(format!(
+                "arguments `{together}` together are refused: they change what is read or \
+                 written (`Args::{field}`), and a snippet's files are its only input"
             ));
         }
         Ok(Language { line, args, std: lang, target })
@@ -490,9 +520,7 @@ impl Language {
 
     /// The diagnostic options (`run_as`).
     fn diag_options(&self) -> DiagOptions {
-        let mut o = DiagOptions::from_args(&self.args.diag_args);
-        o.clang_compat = self.args.predef.clang_compat.major();
-        o
+        diag_options_of(&self.args)
     }
 
     /// Sema's target (`SyntaxJob::target`).
@@ -685,6 +713,13 @@ fn refused_spelling(arg: &str) -> Option<&'static str> {
     if arg.starts_with("-fkiln-stack-size=") {
         return Some("the front end's thread has `kiln`'s default stack");
     }
+    if arg == "-Xpreprocessor" {
+        // `splice_preprocessor_args` replaces it and the next argument by
+        // that argument; last on a line it stays, and nothing reports it.
+        return Some(
+            "`-Xpreprocessor` takes the next argument as its value: write that argument alone",
+        );
+    }
     None
 }
 
@@ -711,6 +746,152 @@ fn driver_errors(a: &Args, target: &DriverTarget) -> Vec<String> {
     }
     out.extend(a.codegen.xray_errors().iter().map(|e| format!("{e:?}")));
     out.extend(a.codegen.invocation_errors(x86, target.triple).iter().map(|e| format!("{e:?}")));
+    out
+}
+
+/// The diagnostic options of `a`, as the driver makes them (`diag_options`).
+fn diag_options_of(a: &Args) -> DiagOptions {
+    let mut o = DiagOptions::from_args(&a.diag_args);
+    o.clang_compat = a.predef.clang_compat.major();
+    o
+}
+
+/// The errors `run_as` reports before the job that [`driver_errors`] does
+/// not list, rendered as `kiln` renders them (the driver's prefix
+/// `kiln: `), or `None` when there is none:
+///
+/// - an error among the diagnostic options' own (`DiagOptions::pending`:
+///   `-fdiagnostics-format=sarif`, `-ferror-limit=x`), which the driver's
+///   engine (`driver_options`: no `-W`, no `-R`) reports first;
+/// - a driver warning (`driver_warnings`, [`driver_warnings`] here) that
+///   the `-W` options make an error (`-Werror -mno-outline-atomics` on
+///   x86-64): `kiln` then runs no job;
+/// - the per-input errors of `input_std` for a C++ input in the
+///   snippet's standard: an invalid `-fvisibility=` value, and
+///   `-fgnu89-inline` (C only). Its other errors are about `-std=` and
+///   `-ansi`, which are refused.
+fn driver_reports(a: &Args, target: &DriverTarget) -> Option<String> {
+    let diag_opts = diag_options_of(a);
+    let render = |opts: &DiagOptions, prefix: bool, diags: Vec<kiln_diag::Diag>| {
+        let sm = SourceManager::new();
+        let buffer = SharedBuffer::new();
+        let sink = TextSink::new(buffer.clone(), opts);
+        let sink = if prefix { sink.with_prefix(a.program.clone()) } else { sink };
+        let e = DiagEngine::new(&sm, opts, sink);
+        for d in diags {
+            d.emit(&e);
+        }
+        e.flush();
+        (e.error_count() > 0).then(|| buffer.contents().trim_end().to_owned())
+    };
+    // `driver_options`: the main engine, which emits the pending ones.
+    let mut drv = diag_opts.clone();
+    drv.warnings.clear();
+    drv.remarks.clear();
+    if let Some(text) = render(&drv, true, Vec::new()) {
+        return Some(text);
+    }
+    // `codegen_cmd::driver_diag_options`: the driver warnings' engine.
+    let mut warn = diag_opts.clone();
+    warn.pending.clear();
+    warn.remarks.clear();
+    warn.warnings.retain(|w| {
+        let w = w.strip_prefix("no-").unwrap_or(w);
+        let w = w.strip_prefix("error=").unwrap_or(w);
+        matches!(w, "error" | "everything") || kiln_diag::Group::from_name(w).is_some()
+    });
+    if let Some(text) = render(&warn, true, driver_warnings(a, target)) {
+        return Some(text);
+    }
+    // `input_std` for a C++ input, on the job's options (no prefix).
+    let mut job = diag_opts;
+    job.pending.clear();
+    let invalid = |id, x: &str, y: &str| kiln_diag::Diag::new(id, Span::INVALID).arg(x).arg(y);
+    let input = if let Some(arg) = &a.invalid_visibility {
+        let v = arg.strip_prefix("-fvisibility=").unwrap_or(arg);
+        Some(invalid(DiagId::drv_invalid_value, arg, v))
+    } else if a.predef.gnu89_inline == Some(true) {
+        Some(invalid(DiagId::drv_argument_not_allowed_with, "-fgnu89-inline", "C++"))
+    } else {
+        None
+    };
+    render(&job, false, input.into_iter().collect())
+}
+
+/// The warnings `driver_warnings` (`kiln_driver/src/lib.rs`) reports for
+/// the line's one C++ source input, in its order. Its others cannot occur
+/// on a line [`io_change`] accepts: an input promoted from C (the input is
+/// C++), the retired `-fkiln-pch-image` (`Args::pch`) and the unused phase
+/// options (`Args::phase_args`).
+fn driver_warnings(a: &Args, target: &DriverTarget) -> Vec<kiln_diag::Diag> {
+    use kiln_diag::Diag;
+    use kiln_driver::fp_flags::FpWarning;
+    use kiln_driver::x86_features as x86f;
+    let arm = target.is_aarch64();
+    let mut out: Vec<Diag> = a
+        .fp_model()
+        .warnings
+        .iter()
+        .map(|w| match w {
+            FpWarning::ComplexRange { implied_by, flag, old, new } => {
+                Diag::new(DiagId::drv_overriding_complex_range, Span::INVALID)
+                    .arg(implied_by)
+                    .arg(flag)
+                    .arg(*old)
+                    .arg(*new)
+            }
+            FpWarning::Option(old, new) => {
+                Diag::new(DiagId::drv_overriding_option, Span::INVALID).arg(old).arg(new)
+            }
+        })
+        .collect();
+    let ignored = |flag: &str| {
+        Diag::new(DiagId::drv_option_ignored, Span::INVALID).arg(target.arch).arg(flag)
+    };
+    if let Some(on) = a.outline_atomics.filter(|_| !arm) {
+        out.push(ignored(if on { "-moutline-atomics" } else { "-mno-outline-atomics" }));
+    }
+    if a.codegen.outline == Some(true) && !arm {
+        out.push(ignored("-moutline"));
+    }
+    if a.codegen.large_data_threshold_ignored(!arm) {
+        out.push(
+            Diag::new(DiagId::drv_large_data_threshold_invalid_code_model, Span::INVALID)
+                .arg("mlarge-data-threshold="),
+        );
+    }
+    let mut unused: Vec<String> = Vec::new();
+    if !a.quiet_unused_arguments {
+        unused = a.codegen.unused_xray_args();
+        if !arm {
+            unused.extend(a.codegen.sign_return_address_written.iter().cloned());
+        }
+        unused.extend(kiln_driver::time_trace::unused(a).iter().cloned());
+        unused.extend(a.codegen.trapv_handler_separate.iter().cloned());
+        let san = a.sanitize(!arm, target.triple).0;
+        unused.extend(a.sanitize.unused_coverage_lists(&san));
+    }
+    let v22 = a.predef.clang_compat == kiln_pp::ClangCompat::Clang22;
+    let mut no_3dnow: Vec<&String> = Vec::new();
+    for f in a
+        .x86_feature_flags
+        .iter()
+        .filter(|f| !x86f::unknown_at(f, v22) && f.as_str() != x86f::GENERAL_REGS_ONLY)
+    {
+        if arm {
+            if !a.quiet_unused_arguments && x86f::non_x86_spelling(f, v22).is_none() {
+                unused.push(f.clone());
+            }
+        } else if x86f::is_3dnow(f) && !f.starts_with("-mno-") {
+            no_3dnow.push(f);
+        }
+    }
+    for u in unused.iter().filter(|u| !a.no_unused.quiet(u)) {
+        out.push(Diag::new(DiagId::drv_argument_unused, Span::INVALID).arg(u));
+    }
+    for f in no_3dnow {
+        out.push(Diag::new(DiagId::drv_clang_unsupported, Span::INVALID).arg(f));
+    }
     out
 }
 
@@ -791,7 +972,7 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         stdlib: _,
         experimental_library: _,
         target,
-        diag_args: _,
+        diag_args,
         deps,
         predef: _,
         trigraphs: _,
@@ -922,7 +1103,10 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
     );
     // The parts of three option groups that are files or reports; their
     // limits and the sanitizer set are the language's.
-    let checks: [(bool, &'static str); 9] = [
+    let format = |args: &[String]| DiagOptions::from_args(args).format;
+    let checks: [(bool, &'static str); 10] = [
+        // `-fdiagnostics-format=json`: `Parsed::diagnostics` is text.
+        (format(diag_args) != format(&base.diag_args), "diag_args (-fdiagnostics-format=)"),
         (constexpr.report != base.constexpr.report, "constexpr.report"),
         (constexpr.stats != base.constexpr.stats, "constexpr.stats"),
         (constexpr.profile != base.constexpr.profile, "constexpr.profile"),
@@ -1123,6 +1307,11 @@ mod tests {
     /// `text`: its standard error without the summary line, the input
     /// named `main.cpp` (as `tests/snippet.rs` does it for WP-021).
     fn kiln_stderr(std: &str, args: &[&str], target: Option<&str>, text: &str) -> String {
+        kiln_run(std, args, target, text).1
+    }
+
+    /// [`kiln_stderr`] with `kiln`'s exit status first.
+    fn kiln_run(std: &str, args: &[&str], target: Option<&str>, text: &str) -> (i32, String) {
         let err = SharedBuffer::new();
         let io = kiln_driver::Io {
             stdout: Box::new(std::io::sink()),
@@ -1134,13 +1323,15 @@ mod tests {
             vec![format!("-std={std}"), format!("--target={}", target.unwrap_or(TRIPLE))];
         line.extend(args.iter().map(|a| (*a).to_owned()));
         line.extend(["-fsyntax-only", "-x", "c++", "-"].map(str::to_owned));
-        kiln_driver::run_as("kiln", &line, io);
-        err.contents()
+        let status = kiln_driver::run_as("kiln", &line, io);
+        let text = err
+            .contents()
             .replace("<stdin>", "main.cpp")
             .lines()
             .filter(|l| !l.ends_with(" generated."))
             .flat_map(|l| [l, "\n"])
-            .collect()
+            .collect();
+        (status, text)
     }
 
     // WP-038 "Rules of `parse_with`": `parse` is `parse_with` with
@@ -1158,89 +1349,95 @@ mod tests {
         assert!(plain.contains("missing"), "{plain}");
     }
 
+    /// Arguments `parse_with` refuses alone, by spelling or by what they
+    /// read or write, or because the driver reports an error for them.
+    const REFUSED: &[&str] = &[
+        "-o",
+        "-oout.o",
+        "-Iinc",
+        "-iquoteinc",
+        "-isystem/usr/include",
+        "-idirafter/x",
+        "--sysroot=/",
+        "-resource-dir=/x",
+        "-include",
+        "-includeh.h",
+        "--include=h.h",
+        "-imacros",
+        "-DX=1",
+        "-UX",
+        "-x",
+        "-xc",
+        "-c",
+        "-S",
+        "-E",
+        "-emit-llvm",
+        "-M",
+        "-MM",
+        "-MD",
+        "-MMD",
+        "-MFdeps.d",
+        "-MTx",
+        "-fmodule-file=m=m.pcm",
+        "-fmodule-file=m.pcm",
+        "-fmodule-output",
+        "-fmodule-output=m.pcm",
+        "-fmodule-header",
+        "-fprebuilt-module-path=d",
+        "-fmodules-cache-path=d",
+        "--precompile",
+        "-verify",
+        "-verify=x",
+        "-std=c++17",
+        "-std=c++20",
+        "--std=c++20",
+        "-ansi",
+        "a.cpp",
+        "-",
+        "--target=x86_64-unknown-linux-gnu",
+        "-target",
+        "-march=native",
+        "-mcpu=native",
+        "-mtune=native",
+        "-fkiln-stack-size=8M",
+        "-fdump-ast",
+        "-fdump-record-layouts",
+        "-fkiln-dump-cfg",
+        "-fkiln-memory-report",
+        "-ftime-trace",
+        "-fconstexpr-report=text",
+        "-fkiln-instantiation-report=text",
+        "-fsanitize-ignorelist=list.txt",
+        "-fprofile-instr-generate",
+        "--coverage",
+        "-include-pch",
+        "-emit-pch",
+        "--driver-mode=g++",
+        "-fkiln-backend=hod",
+        "-v",
+        "-###",
+        "--help",
+        "-lm",
+        "-Wl,-z,now",
+        "-fbogus",
+        "-fms-extensions",
+        "-fdeclspec",
+        "-fconstexpr-steps=lots",
+        "-target-feature",
+        "-Xclang",
+        "-Xlinker",
+        "-mllvm",
+        "-fsyntax-only",
+        "-Xpreprocessor",
+        "-fdiagnostics-format=json",
+    ];
+
     // WP-038: an argument that changes what is read or written, one the
     // driver does not know or reports an error for, and one that makes the
     // result depend on the host, each `Err` naming it before any parse.
     #[test]
     fn wp038_refused_arguments() {
-        let refused = [
-            "-o",
-            "-oout.o",
-            "-Iinc",
-            "-iquoteinc",
-            "-isystem/usr/include",
-            "-idirafter/x",
-            "--sysroot=/",
-            "-resource-dir=/x",
-            "-include",
-            "-includeh.h",
-            "--include=h.h",
-            "-imacros",
-            "-DX=1",
-            "-UX",
-            "-x",
-            "-xc",
-            "-c",
-            "-S",
-            "-E",
-            "-emit-llvm",
-            "-M",
-            "-MM",
-            "-MD",
-            "-MMD",
-            "-MFdeps.d",
-            "-MTx",
-            "-fmodule-file=m=m.pcm",
-            "-fmodule-file=m.pcm",
-            "-fmodule-output",
-            "-fmodule-output=m.pcm",
-            "-fmodule-header",
-            "-fprebuilt-module-path=d",
-            "-fmodules-cache-path=d",
-            "--precompile",
-            "-verify",
-            "-verify=x",
-            "-std=c++17",
-            "-std=c++20",
-            "--std=c++20",
-            "-ansi",
-            "a.cpp",
-            "-",
-            "--target=x86_64-unknown-linux-gnu",
-            "-target",
-            "-march=native",
-            "-mcpu=native",
-            "-mtune=native",
-            "-fkiln-stack-size=8M",
-            "-fdump-ast",
-            "-fdump-record-layouts",
-            "-fkiln-dump-cfg",
-            "-fkiln-memory-report",
-            "-ftime-trace",
-            "-fconstexpr-report=text",
-            "-fkiln-instantiation-report=text",
-            "-fsanitize-ignorelist=list.txt",
-            "-fprofile-instr-generate",
-            "--coverage",
-            "-include-pch",
-            "-emit-pch",
-            "--driver-mode=g++",
-            "-fkiln-backend=hod",
-            "-v",
-            "-###",
-            "--help",
-            "-lm",
-            "-Wl,-z,now",
-            "-fbogus",
-            "-fms-extensions",
-            "-fdeclspec",
-            "-fconstexpr-steps=lots",
-            "-target-feature",
-            "-Xclang",
-            "-Xlinker",
-            "-mllvm",
-            "-fsyntax-only",
-        ];
+        let refused = REFUSED;
         let text = "int x;\n";
         for arg in refused {
             let err = run(text, "c++20", &[arg], None).expect_err(arg);
@@ -1271,6 +1468,75 @@ mod tests {
             assert_eq!(run(text, "c++20", &[arg], None).map(|r| r.0), Ok(0), "{arg}");
         }
         assert_eq!(run(text, "c++20", &accepted, None).map(|r| r.0), Ok(0));
+    }
+
+    // WP-038 "Rules of `parse_with`", the net under them: on a source
+    // whose job always reports (an undeclared name; a shift too wide for
+    // the `-W` options to act on), `parse_with`
+    // is `Err` exactly when `kiln` on the same line stops before the job
+    // (a failing status and no diagnostic of the job's), and the job's
+    // diagnostics are `kiln`'s when both run (the driver's own, `kiln: `,
+    // are not in `Parsed`). `REFUSED` is not run by `kiln`: some of it
+    // writes files.
+    #[test]
+    fn wp038_err_exactly_when_kiln_stops() {
+        let text = "int x = 1 << 40;\nint y = undeclared;\n";
+        let arm = Some("aarch64-unknown-linux-gnu");
+        let stops: [(&[&str], Option<&str>); 15] = [
+            (&["-fgnu89-inline"], None),
+            (&["-fvisibility=bogus"], None),
+            (&["-Werror", "-mno-outline-atomics"], None),
+            (&["-Werror=option-ignored", "-moutline-atomics"], None),
+            (&["-Werror", "-ffp-model=fast", "-ffp-contract=on"], None),
+            (&["-Werror", "-mlarge-data-threshold=10"], None),
+            (&["-Werror", "-m3dnow"], None),
+            (&["-Werror", "-msse4.2"], arm),
+            (&["-fdiagnostics-format=sarif"], None),
+            (&["-ferror-limit=x"], None),
+            (&["-fbogus"], None),
+            (&["-fno-rtti", "-fsanitize=vptr"], None),
+            (&["-msve-vector-bits=512"], None),
+            (&["-march=armv9-a+sve2"], None),
+            (&["-fconstexpr-steps=lots"], None),
+        ];
+        let runs: [(&[&str], Option<&str>); 16] = [
+            (&[], None),
+            (&["-mno-outline-atomics"], None),
+            (&["-Werror", "-Wno-option-ignored", "-mno-outline-atomics"], None),
+            (&["-Werror", "-Wno-error=option-ignored", "-mno-outline-atomics"], None),
+            (&["-ffp-model=fast", "-ffp-contract=on"], None),
+            (&["-Werror"], None),
+            (&["-w", "-Werror", "-mno-outline-atomics"], None),
+            (&["-Wall", "-fno-rtti", "-funsigned-char"], None),
+            (&["-fno-caret-diagnostics", "-fno-show-column"], None),
+            (&["-fno-diagnostics-show-line-numbers"], None),
+            (&["-fdiagnostics-format=clang", "-ftabstop=0"], None),
+            (&["-fvisibility=hidden", "-fno-gnu89-inline"], None),
+            (&["-O2", "-g", "-fsanitize=address"], None),
+            (&["-march=armv8-a+sve", "-Werror"], arm),
+            (&["-msse4.2"], arm),
+            (&["-Werror", "-mno-outline-atomics"], arm),
+        ];
+        for (args, target) in stops {
+            let (status, theirs) = kiln_run("c++20", args, target, text);
+            assert!(status != 0 && !theirs.contains("main.cpp:"), "{args:?}: kiln ran: {theirs}");
+            let ours = run(text, "c++20", args, target);
+            assert!(ours.is_err(), "{args:?} {target:?}: accepted, kiln stops: {theirs}");
+        }
+        for (args, target) in runs {
+            let (_, theirs) = kiln_run("c++20", args, target, text);
+            let job: String = theirs
+                .lines()
+                .filter(|l| !l.starts_with("kiln: "))
+                .flat_map(|l| [l, "\n"])
+                .collect();
+            assert!(job.contains("main.cpp:"), "{args:?} {target:?}: kiln stopped: {theirs}");
+            let ours = run(text, "c++20", args, target);
+            assert_eq!(ours.map(|r| r.1), Ok(job), "{args:?} {target:?}");
+        }
+        for arg in REFUSED {
+            assert!(run(text, "c++20", &[arg], None).is_err(), "{arg}");
+        }
     }
 
     // WP-038: an error only the target or the arguments together give.
