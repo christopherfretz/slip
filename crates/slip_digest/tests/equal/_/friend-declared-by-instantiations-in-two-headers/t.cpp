@@ -5,9 +5,9 @@
 #include "a.h"
 #include "c.h"
 #ifdef B
-C<int> c;
-A<int> a;
+void use_c() { C<int> c; }
+void use_a() { A<int> a; }
 #else
-A<int> a;
-C<int> c;
+void use_a() { A<int> a; }
+void use_c() { C<int> c; }
 #endif

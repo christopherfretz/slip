@@ -5,6 +5,6 @@
 // whose head names the class specialisation's levels).
 template <class T> struct A { template <class U> friend void g(U); };
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #endif
 template <class U> void g(U);

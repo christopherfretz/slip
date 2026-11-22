@@ -4,6 +4,6 @@
 // sides, not in the header that holds the friend.
 #include "a.h"
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #endif
 void k(int);

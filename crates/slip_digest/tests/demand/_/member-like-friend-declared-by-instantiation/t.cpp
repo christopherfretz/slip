@@ -5,7 +5,7 @@
 template <class T> concept C = true;
 template <class T> struct A { template <class U> friend void g(U) requires C<T> {} };
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #else
 
 #endif

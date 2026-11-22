@@ -424,3 +424,77 @@ and its tests:
 7. A header-unit import whose macros come from a module file flags
    the record incomplete, as stage 1 does for definitions met from an
    image.
+
+## 11. Kiln's phase 0 for stage 3 (2026-11-22, Kiln WP-2112)
+
+Kiln's design for §6 item 3, reviewed and accepted by Slip. It corrects
+§2 and §3.4:
+
+- A failed paste makes two entries that are not in scratch space: the
+  `##` (`InvalidPaste`) and the left operand wrapped again.
+- Stage 1 already tells paste, stringise, builtin, pragma text, header
+  name and invalid paste apart, and hooks `pop_macro` (`DefEnd::Popped`,
+  the same `DefIx` restored: case 22 holds since stage 1).
+- Every builtin, `__has_include` and the feature queries included, has
+  an expansion row since stage 1; only the operand, the file and the
+  search index were missing.
+- Operands that short-circuit are still parsed, so their reads come
+  through with no change to the evaluator.
+
+**Made tokens** (§8 question 2): a side table keyed by the base of the
+entry, not a new `ExpansionKind` (which would change `Loc`s or cost
+with recording off, and the snapshot and image formats). Rows only
+where stage 1 cannot derive the answer: one per paste chain (`a##b##c`
+is one row with three operand locations, each asked again through
+`origin()`; the intermediate has no location), and one per
+`#__VA_OPT__(…)` with its tokens. No row for `#x` (the argument index
+is derived), for a builtin, or for a paste with a placemarker (the
+surviving token keeps its ordinary origin). An invalid paste is a
+flagged row with the rejected token last. `made(sm, loc)` sits beside
+an unchanged `origin()`. For classes of pasted names: `mades()`,
+`made_text`, `made_buffer`; across translation units the key is the
+text.
+
+**Reads**: `reads(cond)`, 16-byte rows in evaluation order: tested
+(`defined` and the `#ifdef` family), expanded (an expansion index), or
+left (an identifier evaluated to 0), each with the definition bound
+there or "undefined"; a flag marks a condition cut off by an error.
+
+**Queries**: `query(exp)` keyed by the builtin's expansion: operand
+text, value, the name's range, and for `__has_include` and
+`__has_include_next` the file and the lookup, in the vocabulary of
+inclusion rows.
+
+**Nesting**: `cond_at(loc)` and `enclosing(c)`; Slip composes the
+configuration statement of an edit from them and the reads.
+
+**Push and pop**: `stack_events()`: push, pop, unmatched pop, with the
+definition saved or restored, the one it replaced, and the link between
+a push and its pop. The key is the `#`, or through `_Pragma` the
+`_Pragma`'s expansion key (libc++ has five `_Pragma` pushes in one
+macro body).
+
+Cost measured by Kiln: 1.56 MB more on `<bits/stdc++.h>` (18% of the
+record); 1.97 MB more on clang's `SemaExpr.cpp` (33,000 pastes, 6,500
+stringisings, 46,000 reads).
+
+Decisions: `made()` beside `origin()`; no "short-circuited" bit on reads
+for now (every read with its binding is the sound precondition; a spare
+flag bit is kept); nesting from Kiln, not derived by Slip; a popped
+definition's end carries the key of its pop event; expanded reads are
+rows; a placemarker paste makes no row.
+
+Slip's additions, accepted as items of the specification and its tests:
+a tested or left read carries the location of the identifier it read
+(macro renaming edits exactly those tokens, the ones bound to
+"undefined" included); which expansions get an expanded row is stated;
+one tested row for each of the `#ifdef` family; a made row is reachable
+from its expansion with its position in the body, so that a site has a
+key across translation units; an operand that is an argument is the one
+token pasted, at its location before substitution; `cond_at` answers
+for every file location, bytes of skipped groups included, per
+inclusion instance; queries from a macro and outside a condition; a
+push of an undefined name; a completeness check (every scratch-space
+token has a derivation or a made row) on `<bits/stdc++.h>` and
+`SemaExpr.cpp`; the acceptance cases 5, 6, 10, 17, 20, 22, 23 of §5 and
+ten more.

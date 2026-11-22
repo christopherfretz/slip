@@ -4,6 +4,6 @@
 // no new one, so the written definition is unaffected by it.
 template <class T> struct A { template <class U> friend struct F; };
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #endif
 template <class U> struct F {};

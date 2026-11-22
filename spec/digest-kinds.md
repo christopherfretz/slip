@@ -2125,13 +2125,12 @@ initialisation order.
 |---|---|---|---|---|
 | `members` | bookkeeping | out | - | a transparent scope: its members are members of the enclosing context |
 | `aux-lang` | flag | in | enum LinkageLang | low byte, `LinkageSpec` only; written in the stream of each function and variable whose first declaration is lexically inside (rule below) |
-| `aux-braceless` | flag | in | bool | bit 8: `extern "C" int x;` without braces, which makes the declaration `extern` ([dcl.link]/8). Mangling, code generation and thread-local access read it; written after the language (rule below) |
+| `aux-braceless` | written | out | - | bit 8: `extern "C" int x;` without braces, which makes the declaration `extern` ([dcl.link]/8). For a function it means nothing; for a variable its effect is whether the declaration is a definition, which the variable's unit holds already (`DeclMisc` `definition`, §2.3), and its linkage, which its key holds (`spec/landed/digest-kinds/WP-033.md`) |
 
 Every function and variable stream holds one `enum LinkageLang?`: the
 language of the innermost `LinkageSpec` that lexically encloses the
 entity's first declaration, through enclosing classes and functions;
-absent when there is none. When it is present a `bool` follows it:
-`aux-braceless` of that `LinkageSpec`. Whether the entity then has C
+absent when there is none. Whether the entity then has C
 language linkage (a class member has not, nor has an entity with internal
 linkage) follows from the rest of its stream; the key's parent uses the
 rule of §5.2.
@@ -2186,7 +2185,7 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `lexical_ctx` | entity | in | ref? | where the declaration the walk reads (§2.3) was written, when that is not its semantic context (rule below). Mangling, visibility, code generation and instantiation read it |
+| `lexical_ctx` | entity | in | ref*sorted | where the declarations were written, when that is not their semantic context (rule below). Mangling, visibility, code generation and instantiation read it |
 | `begin_loc` | location | out | - |  |
 | `delete_message` | child | in | child? |  |
 | `explicit_expr` | child | in | child? |  |
@@ -2220,13 +2219,18 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `compound_literal` | entity | unsupported | - | the implicit variable of a file-scope compound literal has no name to key it by; a GNU extension in C++ |
 | `init_fp` | flag | in | record FpOverride? | the floating-point pragma state a constructor's member initialisers, a field's default member initialiser or a parameter's default argument were parsed in, when it is not the command line's: code generation emits the initialiser under it, not under the state of the place that uses it |
 
-`lexical_ctx` is written as a `Ref` to the nearest context that encloses
-the place the declaration was written and is not transparent (§5.2), when
-that context is not the entity's semantic context; it is absent otherwise.
-The declaration is the one the walk reads (§2.3). It is present for a
-friend declared or defined in a class, for a function or an `extern`
-variable declared in a block, and for a member defined outside its class
-or its namespace. A function defined in the class that befriends it
+`lexical_ctx` is written as `ref*sorted`: for each declaration counted,
+a `Ref` to the nearest context that encloses the place it was written
+and is not transparent (§5.2), when that context is not the entity's
+semantic context (`Ref::none` for the global namespace). With a
+definition the one declaration counted is the one the walk reads (§2.3),
+so the row holds at most one `Ref`; without one, every declaration of the
+entity counts, except a class declaration that a friend declaration made
+(`friend struct H;` declares `H` only when no `H` is found), so that the
+row does not depend on which declaration came first (digest §2.1). It is
+non-empty for a friend declared or defined in a class, for a function or
+an `extern` variable declared in a block, and for a member defined
+outside its class or its namespace. A function defined in the class that befriends it
 differs from one only declared there by this row, which is why
 `FriendKind` needs no variant for it.
 
@@ -5110,10 +5114,16 @@ it is written (§11.7).
 
 ### 10.7 Modules
 
-When `active` is set, a declaration's stream holds its owner
-(`ModuleTable::owner_of`, from the first declaration, §2.3) and, for a
-specialisation or member explicitly instantiated, the unit that holds the
-definition. When it is clear both rows have their empty form.
+When the translation unit is a module unit or imports one, a
+declaration's stream holds its owner (`ModuleTable::owner`, from the
+first declaration, §2.3) and, for a specialisation or member explicitly
+instantiated, the unit that holds the definition. Otherwise both rows
+have their empty form: when `active` is clear, and when it is set but
+unit 0 is of kind `NonModule` with no imports. Kiln sets `active` for
+any line of the main file that starts with `module`, `import` or
+`export`, a skipped line included (`kiln_pp/src/modules.rs:403-411`), so
+for such a unit it says only how the text is laid out
+(`spec/landed/digest-kinds/WP-033.md`).
 
 Declarations of an imported unit are in the importing translation
 unit's `Ast` like its own: `ModuleTable` `owner` of one has a `unit`
@@ -5130,7 +5140,7 @@ decided ("Hazards accepted for now", modules).
 |---|---|---|---|---|
 | `units` | bookkeeping | out | - | arena: reached through `Owner` `unit` |
 | `points` | entity | in | record Owner? | by declaration: the owner of every declaration from an index on |
-| `active` | bookkeeping | out | - | whether ownership is tracked at all |
+| `active` | bookkeeping | out | - | whether ownership is tracked at all; set by the text alone for a unit that is no module unit (see above) |
 | `links` | bookkeeping | out | - | state of a sema check, drained by it |
 | `explicit_defs` | entity | in | record UnitInfo? | by declaration: the unit whose text holds its explicit instantiation definition |
 

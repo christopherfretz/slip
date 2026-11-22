@@ -6,7 +6,7 @@
 template <class U> void g(U);
 template <class T> struct A { template <class U> friend void g(U) {} };
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #else
 
 #endif

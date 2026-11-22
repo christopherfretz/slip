@@ -2012,7 +2012,7 @@ pub(crate) mod scope_data {
     pub(crate) const ROWS: &[(&str, Decision)] = &[
         ("members", Decision::Out),
         ("aux-lang", Decision::In),
-        ("aux-braceless", Decision::In),
+        ("aux-braceless", Decision::Out),
     ];
 }
 
