@@ -471,6 +471,37 @@ indeterminate.
   own: the first use writes the number and the expression, later uses
   the number.
 
+### 4.4 A stream does not depend on when it is written
+
+**A unit's stream is a function of the translation unit and the unit
+alone.** It does not depend on which units were written before it, on
+whether a type digest, a key or a local numbering it uses was already
+computed and memoised for another unit, or on whether it is written by
+the ordinary walk or written again afterwards. Consequences the code
+must keep:
+
+- every numbering a stream uses (local entities §4.3, opaque values,
+  back-references to a node already written in the same stream) starts
+  from nothing at the head of the unit's stream, and is saved and
+  restored around a stream written inside another (a type digest, a
+  key);
+- a memo holds only values that are functions of their key (a type's
+  digest, an entity's key), never a position in some unit's numbering;
+- nothing a stream writes is read from state that writing another
+  stream changed.
+
+Two interfaces stand on this property and check it: `slip_digest::records`
+computes a unit's key again after the walk and compares it with the one
+the walk used (`spec/verify.md` §2.3), and `slip_digest::trace` writes a
+unit's stream a second time and accepts it only if it hashes to the
+unit's digest (`spec/verify.md` §6.1). A unit for which the second
+writing differs is a defect of the walk; it is counted
+(`verify.traces.unstable`, `spec/verify.md` §7.2) and loses its
+place, never its finding. The tests of the two interfaces hold the
+property over every pair test: every record's key is the walk's
+(`tests/records.rs`), and every unit has a trace whose stream hashes to
+its digest (`tests/trace.rs`).
+
 ## 5. Declarations
 
 For each unit kind, `digest-kinds.md` lists the fields of the stream. The
@@ -655,6 +686,22 @@ Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminat
   path of that file, with the root of a post-image mapped back to the root
   of the subject, so that the same file has the same group before and
   after.
+- The walk is given the subject path of a buffer by its caller (`Input`
+  `subject_path`) and does not compute one. What a caller answers for a
+  buffer that is not a file read from disk is the caller's rule and is
+  stated where the caller is: the map task gives a buffer the front end
+  made (`<built-in>`, the command line's macros) its name in the source
+  manager and refuses any other buffer that is not one of the shard's
+  inputs (`spec/model.md` §8.5 "Subject paths"); the snippet runner of
+  the tests gives the snippet's path.
+- A declared unit whose first declaration has **no location** (the walk
+  finds no file for it) is written with the empty path. The walk does not
+  invent a file and does not drop the unit; a shard that holds such a
+  group breaks `spec/model.md` §8.2 and is refused where it is written
+  (`spec/model.md` §8.5). An entity that Kiln declares without a
+  location and that §2.1 makes a declared unit is therefore a defect of
+  the tables to be decided (derived, as builtins are, or `tu`), not a
+  case this section covers: none is known.
 - Two units of one group with the same key and digest are one unit.
 - **Detail** is a parameter of the walk: `none` (no `units` lists), `all`,
   a list of groups by `(class, file)`, or `differing` from a list of
@@ -683,6 +730,44 @@ comparison of unit sets (`verify.md`).
 | `digest.indeterminate` | indeterminate units |
 | `digest.collisions` | keys shared by different entities |
 | `digest.bytes` | bytes of unit, type and key streams hashed |
+| `digest.indeterminate.<cause>` | indeterminate keys whose first cause is of this kind: `error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`, and `pending` while the walk has areas not yet written. Present only when not 0 |
+| `digest.indeterminate.pending.<area>` | of the `pending` ones, by area. Goes with `Cause::Pending` |
+| `digest.cause.<cause>.<word>` | for the causes that carry a text (`unsupported`, `unaccounted`): indeterminate keys whose first cause has this text. The word's form and the function that makes it (`slip_digest::map::cause_word`) are `spec/model.md` §8.5 |
+
+These three count keys, each once, under the first cause the walk met
+for it; `digest.indeterminate` counts units, so the
+`digest.indeterminate.<cause>` counters can add up to less than it.
+`digest.cause.unaccounted.walk.depth` is the number of keys cut off by
+the bounds of §12.1.
+
+### 12.1 The walk's bounds and its stack
+
+The walk recurses over types, keys and nested entities, and over
+statements and expressions. Both recursions are bounded, and a stream
+that would pass a bound is indeterminate with the cause
+`unaccounted` `walk/depth` instead of going deeper:
+
+| Bound | Counts | Value |
+|---|---|---|
+| `DEPTH_LIMIT` | nested streams other than statements and expressions (a type inside a type, a key's parent, a template argument list, a declaration stream) | 200 |
+| `NODE_LIMIT` | levels of statement and expression recursion. A chain that the walk writes in a loop (operators, calls, member accesses, casts; `else if`, runs of labels, nested loop bodies) is one level whatever its length | 10 000 |
+
+- The walk needs `slip_digest::STACK_SIZE` bytes of stack (64 MiB) and
+  must run on a thread that has them. A caller checks before it calls
+  (`spec/model.md` §8.5 "The stack"); the walk does not check for itself
+  and does not grow a stack.
+- `STACK_SIZE` is at least four times what both bounds can use, by
+  measurement: a test walks to each bound over the deepest path of
+  frames each area has (`frames_fit_the_stack` and the tests an area
+  adds to it) and asserts the factor. The measurement that counts is the
+  one of the **release profile** (`spec/harness.md` §9.3); the test
+  profile's is a second check, with larger frames.
+- An area that adds a recursion through `enter_node` or the depth count
+  adds its path to that measurement in the same change. A recursion that
+  enters neither count is a defect.
+- The bounds and `STACK_SIZE` are part of the scheme (§11): a unit that
+  is indeterminate for `walk/depth` under one value would have a digest
+  under another.
 
 ## 13. Completeness obligations
 
@@ -751,6 +836,9 @@ true by mechanism, not by review alone.
 - `crates/slip_digest/tests/determinism.rs`, `demand.rs`,
   `indeterminate.rs` — §14.
 - `crates/slip_digest/tests/tables.rs` — §13 obligations 4 and 5.
+- `crates/slip_digest/tests/records.rs`, `trace.rs` — §4.4.
+- `frames_fit_the_stack` in `crates/slip_digest/src/expr.rs` and the
+  tests each area adds to it — §12.1.
 - `crates/slip_model/tests/formats.rs` — §11, the section's encoding.
 - `spec/pitfalls.md` and its tests — the mutation catalogue.
 

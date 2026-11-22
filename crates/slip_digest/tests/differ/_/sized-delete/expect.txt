@@ -1,0 +1,4 @@
+changed v
+changed C
+added C::operator delete(void *, unsigned long)
+removed C::operator delete(void *)

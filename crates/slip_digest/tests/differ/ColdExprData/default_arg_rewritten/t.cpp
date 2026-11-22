@@ -1,10 +1,8 @@
 #include "side.h"
-// §7.4 ColdExprData `default_arg_rewritten`.
-// the use of a default argument (expr_init.rs)
-int fd(int x = __builtin_LINE());
+// WP-035, digest-kinds §7 `ColdExprData` `default_arg_rewritten`: the default member initialiser binds a temporary to a reference member: aggregate initialisation extends it (CWG1815), so the use is rebuilt with temporaries of its own (`kiln_sema` class/temporary.rs:565).
+struct Agg { const int &r = 1; };
 #ifdef B
-
-int v = fd();
+Agg v{1};
 #else
-int v = fd();
+Agg v{};
 #endif
