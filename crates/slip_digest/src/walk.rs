@@ -74,13 +74,19 @@ pub(crate) struct ExprState {
     /// expression walk is writing, itself included
     /// (`expr_core::this`).
     pub dependent: u32,
+    /// The numbering of the profile being walked (`expr_dep::profile_expr`,
+    /// digest-kinds §4.4); `None` outside one.
+    pub profile: Option<crate::expr_dep::Frame>,
 }
 
 impl ExprState {
     /// Nothing numbered and nothing around: the state a type digest
     /// starts from.
     pub(crate) fn is_fresh(&self) -> bool {
-        self.opaques.is_empty() && self.next_opaque == 0 && self.dependent == 0
+        self.opaques.is_empty()
+            && self.next_opaque == 0
+            && self.dependent == 0
+            && self.profile.is_none()
     }
 }
 
