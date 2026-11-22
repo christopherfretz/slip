@@ -118,6 +118,8 @@ and **derived** otherwise. Derived units are:
 - an implicit instantiation: a class template specialisation's definition, a
   function or variable specialisation, a member of a specialisation, an
   instantiated default argument or default member initialiser;
+- an entity every declaration of which an instantiation made outside its
+  class (below), such as a friend declared only by a class template;
 - a builtin function or type Kiln declares on first use;
 - the object of a class-type constant used as a template argument, keyed
   by its content;
@@ -132,6 +134,24 @@ and **derived** otherwise. Derived units are:
   pattern a class was instantiated from). Otherwise a use added in one
   function would change the digest of every instantiation it is the
   first to define, against rule 5 of §1.
+
+A declaration is **instantiated outside its class** when its lexical
+context is an implicitly instantiated class specialisation or a member of
+one, and its semantic context is not: the friends an instantiation
+declares, whose semantic context is the namespace. Such a declaration is
+no part of a declared unit: everything a declared unit reads over the
+redeclaration chain (the declarations merged, the definition, the
+pattern an entity was instantiated from) leaves it out, so a use that
+instantiates a class does not change the units of the entities it
+befriends (rule 5 of §1). An entity all of whose declarations are
+instantiated outside their class is a derived unit, in the origin file of
+the first of them; it is keyed as a friend is (§3: a member-like friend in
+the class specialisation that declares it, any other in its namespace),
+and when several specialisations declare the same entity its unit does
+not depend on which of them came first. What an instantiation adds to an
+entity that also has written declarations (a friend's definition) is the
+class specialisation's: its friend unit refers to the entity, and the
+definition is the entity's resolved unit `definition`.
 
 An implicit member that Kiln has declared but nothing references is not a
 unit: whether Kiln declared it depends on which lookups happened. What such
