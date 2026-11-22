@@ -182,6 +182,10 @@ The convention needs no column: the tables test lists the rows, derives
 the names and fails for a missing directory or a directory no row names
 (digest §13 obligation 5, §14).
 
+A test's files (`t.cpp`, or `a.cpp` and `b.cpp`), its header lines
+(`// std:`, `// errors:`, `// target:`, `// args:`) and the command line
+each side is parsed under are those of `spec/harness.md` §6.1.
+
 ### 1.6 What the test cannot see
 
 The descriptors show fields and variants. They do not show the meaning of
@@ -254,8 +258,15 @@ says so in its note.
   walk first met it, by this declaration or by an earlier reference (a
   `goto` before its label). At its declaration, and not at a reference, its
   ordinal and then its rows are written;
-- a local class, enumeration or closure type is written whole, members
-  included, under the key `local(n)`;
+- a local class, enumeration or closure type is written whole under the
+  key `local(n)` of its owner (digest §4.3): `uv` `n`, the type's own
+  stream as a unit of its kind would have it, then one stream for each
+  member its lists name (`RecordData` `members-fields`,
+  `members-virtual`, `members-other`, in that order and in the order
+  of each list; an enumeration's enumerators are in its own stream).
+  Implicit members and the specialisations of member templates are not
+  written here: one that is used is a derived unit. A closure met a
+  second time writes `n` alone;
 - a local typedef or alias, a using-declaration, a using-directive and an
   empty declaration write nothing: their effect is in the references
   resolved through them;
@@ -626,7 +637,7 @@ Derived from a node's operands by Kiln when the node is built.
 | `UnaryTransform.result` | written | out | - | sugar only |
 | `Auto` | type | in | tag 1066 |  |
 | `Auto.keyword` | flag | in | enum AutoKeyword | canonical only when undeduced |
-| `Auto.deduced` | written | out | - | sugar only: a deduced placeholder's canonical type is the deduced type |
+| `Auto.deduced` | flag | in | bool | true: the placeholder of a templated entity not yet deduced, whose `deduced` is the builtin dependent type; any other deduced type is sugar (the canonical type is the deduced type) and is not written |
 | `Auto.concept` | entity | in | ref |  |
 | `Auto.args` | value | in | enum ArgView*? |  |
 | `Auto.pack` | flag | in | bool |  |
@@ -4819,39 +4830,39 @@ template (§3.2, §3.3).
 
 A `LambdaExpr` writes its closure type by `decl` (§7); the closure's
 `RecordData` `lambda` row writes the rows of `LambdaData`. A closure type
-is a local class (§2.4) of the unit whose stream walks its `LambdaExpr`,
-wherever that is: a function body, the initialiser of a variable at
-namespace or class scope, a default member initialiser, a default
-argument (digest §4.3). It is never a unit and never a member of its
-semantic context's lists (`RecordData` `members-other`, a namespace's
-members).
+is a local type (§2.4), written in the stream that walks its
+`LambdaExpr`, wherever that is: a function body, the initialiser of a
+variable at namespace or class scope, a default member initialiser, a
+default argument (digest §4.3). It is never a unit and never a member of
+its semantic context's lists (`RecordData` `members-other`, a
+namespace's members), although Kiln puts a closure made outside a
+function body in the member list of its namespace, class or
+enumeration.
 
 The mangling number and context are written as facts of the closure, since
 mangling reads them, and are not its key: Kiln numbers the lambdas of one
 context per signature, as the ABI does, so two closures of one context can
 share a number, and a closure the ABI gives no context has none.
 
-A `Ref` to a closure or other local type from another unit needs the
-type's `local(n)`, and so the unit that declares it: the walk numbers
-that unit's local types first (digest §4.3). For a local type of a
-function body the unit is the function, its semantic context. For a
-closure outside a function body the context is the namespace or class, and
-the unit is found from `LambdaMangling` `context` where Kiln stores one,
-and otherwise by numbering the units of that scope whose streams hold
-expressions outside function bodies. A closure no unit's walk declares
-makes the unit that names it indeterminate.
+A closure's key is `local(n)` under its owner (digest §4.3). For a
+closure in a function body the owner is the function, or the call
+operator of the lambda whose body holds it: Kiln's semantic context.
+For a closure outside a function body it is what Kiln's
+`Ast::closure_owner` answers (Kiln WP-2023), taken to the entity that
+has a key: a parameter's function, a template parameter's template, and
+otherwise the field, variable, alias, function or template itself. An
+owner that is a namespace, a class or the translation unit (a
+lambda-expression in a `static_assert`, in a base-specifier, in a
+bit-field width) has no stream that numbers the closure: the closure
+has no key, and what refers to it is indeterminate
+(`Unsupported("local/closure-owner")`). Before the Kiln pin has the
+query, the owner outside a function body is `LambdaMangling` `context`
+where Kiln stores one and unknown otherwise, with the same cause.
 
-Kiln stores a context for a lambda in a default argument of a member
-function (the parameter), in a default member initialiser (the field),
-in the initialiser of an inline or templated namespace-scope variable
-(the variable), and in the signature of a function template during
-deduction (the pattern). It stores none for a lambda in a default
-template argument (numbered in the enclosing scope), in a `decltype` of
-a signature that is not a template's, in a requires-clause, in an alias
-template, in a default argument of a namespace-scope function, or in
-the initialiser of a plain namespace-scope variable (which has no
-number either). Those are found by the walk; Kiln's WP-2023 adds the
-query from a closure to its owner, which replaces the numbering.
+A capture's `var` is `Ref::local` in the stream that holds the
+lambda-expression. An init-capture declares its variable: the variable
+is a local object owned by the call operator, it has no declaration
+statement, and its initialiser is the corresponding entry of `inits`.
 
 ### `kiln_ast::lambda::LambdaData`
 
