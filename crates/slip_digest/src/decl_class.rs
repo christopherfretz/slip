@@ -1159,11 +1159,14 @@ mod tests {
     // §5.5 `TypedefData` `templ`, `EnumData` `templ`: the record ends with
     // the declaration's `TemplLink` (§9.1), here one that is set: an alias
     // template's pattern, a member enumeration of an implicit
-    // instantiation and of a class template.
+    // instantiation (§11.9 empty forms) and an explicit specialisation of
+    // a member enumeration (written in full).
     #[test]
     fn templ_ends_the_typedef_and_enum_records() {
         let src = "template <class T> using A = T*;
-                   template <class T> struct X { enum E : int { e }; }; X<int> v;";
+                   template <class T> struct X { enum E : int { e }; }; X<int> v;
+                   template <class T> struct Y { enum E : int; };
+                   template <> enum Y<int>::E : int { z };";
         with_walk(src, |w| {
             let ast = w.ast;
             let mut checked = (0, 0);
@@ -1192,7 +1195,7 @@ mod tests {
                 }
                 assert!(s.as_bytes().ends_with(link.as_bytes()), "{d:?} ends with templ");
             }
-            assert!(checked.0 >= 1 && checked.1 >= 1, "{checked:?}");
+            assert!(checked.0 >= 1 && checked.1 >= 2, "{checked:?}");
         });
     }
 
