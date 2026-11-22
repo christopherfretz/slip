@@ -4507,7 +4507,7 @@ questions"); where the two can be told apart by value the row says so.
 |---|---|---|---|---|
 | `kind` | flag | in | enum AttrKind |  |
 | `syntax` | flag | in | enum AttrSyntax | `[[...]]`, `__attribute__`, a keyword, `__declspec` or a pragma: code generation tells `__attribute__((noreturn))` from `[[noreturn]]` by it |
-| `flags-implicit` | flag | in | bit | bit 0: added by sema or by a pragma, not written |
+| `flags-implicit` | flag | in | bit | bit 0: added by sema, not written. An attribute from `#pragma clang attribute` is stored as written, without this bit (`kiln_sema` `pragma_attr.rs:503-518`) |
 | `flags-inherited` | bookkeeping | out | - | bit 1: a copy from an earlier declaration, which the list rule leaves out. Kiln sets it at one site, for an `ASM_LABEL` |
 | `flags-gnu-scoped` | written | out | - | bit 3: written with the `gnu::` scope |
 | `loc` | location | out | - |  |
@@ -4876,7 +4876,7 @@ statement, and its initialiser is the corresponding entry of `inits`.
 |---|---|---|---|---|
 | `closure` | bookkeeping | out | - | the class whose row is writing this record |
 | `call_op` | bookkeeping | out | - | the call operator: a member of the closure, written with it |
-| `default` | flag | in | enum CaptureDefault |  |
+| `default` | flag | in | enum CaptureDefault | Kiln's ODR hash reads `[=]` with an implicit capture of `x` as `[x]`; the digest does not, on purpose: in a template the default decides what an instantiation captures, and `[=]` captures `this` differently |
 | `default_loc` | location | out | - |  |
 | `captures` | entity | in | record LambdaCapture* | in closure member order |
 | `inits` | child | in | child*? | the initialiser of each capture's member |
@@ -4910,7 +4910,7 @@ statement, and its initialiser is the corresponding entry of `inits`.
 | `loc` | location | out | - |  |
 | `ellipsis-present` | flag | in | bit | a capture pack |
 | `ellipsis-position` | location | out | - |  |
-| `implicit` | flag | in | bit |  |
+| `implicit` | flag | in | bit | see `LambdaData` `default` |
 | `init` | flag | in | bit |  |
 
 ### `kiln_ast::lambda::CaptureKind`

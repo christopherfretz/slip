@@ -1,7 +1,8 @@
-# KQ1 amendment 1 — what the audit of `odr_def` found on Kiln's side
+# KQ1 amendment 1 — what the audit of `odr_def` found on Kiln's side, and one more field
 
-A reply from Slip to Kiln. Status: **draft** (the supervisor sends it).
-It amends [KQ1](KQ1-digest-fields.md) §E.
+A reply from Slip to Kiln. Status: **sent** (2026-11-22). It amends
+[KQ1](KQ1-digest-fields.md) §E (§1 to §6) and adds one request for a
+field of `Ast` (§7) and two small reports (§8).
 
 Read: `kiln_abi::odr_def` (eleven files) and the parts of
 `kiln_abi/src/odr.rs` that feed it, at Kiln `62d190007` (Slip's pin),
@@ -30,6 +31,12 @@ in one of them.
 | §4 `cleanup` on a local | **Implementation**, or a decision to add a Misses row. |
 | §5 `musttail` | **Decision**: a Misses row is enough. |
 | §6 Concatenated literals | **Decision**: reword Miss #9, or narrow the placeholder. |
+| §7 `offsetof`: operand type and designator | **Implementation.** A cold row filled where the builder already has both; the form of the designator is `OffsetofComponent`'s. |
+| §8 Two reports | **Implementation** (an error bit; a diagnostic). Low. |
+
+Nothing here is design without prior art. §1 to §6 are about Kiln's
+own ODR hash (Slip does not depend on them: its digest already tells
+each pair apart); §7 is the one thing Slip waits on.
 
 ## 1. Local classes: `union` against `struct`, and attributes
 
@@ -206,3 +213,58 @@ Two notes, not gaps:
   (kiln_sema `pragma_attr.rs:503-518`), so they are hashed as written.
   The comment at `attrs.rs:50-51` ("added by sema") is accurate.
   Slip's own table said otherwise and will be corrected.
+
+## 7. `offsetof`: the class and the member path are not in the node
+
+Not a gap of the ODR hash (the value is hashed, and two definitions
+with one value generate one code), but a fact Slip's digest needs and
+`Ast` drops. `Builder::offsetof` (`kiln_ast` builder.rs:3525-3550)
+keeps the index expressions, the folded offset and `invalid_record`;
+`ColdExprData` keeps layout steps for an offset that is not constant.
+The operand type and the designator (which field, through which base)
+are in the node only while the expression is dependent (the pattern
+components).
+
+```cpp
+struct A  { int x, y; };
+struct Bq { int p, q; };
+unsigned long a = __builtin_offsetof(A, y);    // the same node as
+unsigned long b = __builtin_offsetof(Bq, q);   // this one
+```
+
+So a transformation after which `offsetof(T, m)` names another class
+of the same layout (the root-namespace migration is exactly a change of
+which `T` a name finds), another member at the same offset (two members
+of a union), or the same member through another base, is invisible to
+the digest: Slip's promise is that every name denotes what it did, not
+only that the value is the same. Slip records it under "Hazards
+accepted for now" and has a pending test
+(`differ/_/offsetof-other-class-same-layout`, `# needs: kiln`).
+
+Asked: for a non-dependent `OffsetOfExpr`, keep the operand type (a
+`QualType`) and the designator as resolved: per component, the field
+(`DeclId`), the base class stepped through for a member found in a
+base, or the index position, as `OffsetofComponent` has them for the
+dependent form. A cold row is enough; nothing reads it but a consumer
+of `Ast`.
+
+## 8. Two small reports, not requests about the hash
+
+- **`va_arg` of a class that is not trivially copyable.** Kiln reports
+  the error and builds an ordinary `VAArgExpr` whose dependence has no
+  `ERROR` bit, where every other erroneous form of the miscellaneous
+  expression kinds becomes a `RecoveryExpr`
+  (`struct N { N(const N&); }; void f(__builtin_va_list l) { (void)__builtin_va_arg(l, N); }`).
+  A consumer that walks the body cannot see that the expression is
+  erroneous. Asked: a `RecoveryExpr`, or the `ERROR` bit.
+- **A friend template redeclared with a default template argument is
+  not diagnosed** ([temp.param]/12: a default template argument shall
+  not be specified in a friend template declaration unless it is a
+  definition, and then no other declaration is allowed). When an
+  instantiation of a class template declares the friend template with
+  the default argument and the template is declared again later, Kiln
+  accepts the program. Seen while testing Slip's rule for the
+  declaration read (`spec/landed/digest/WP-032.md`); the shape, not
+  compiled as written here:
+  `template<class T> struct S { template<class U = int> friend void g(S, U) {} }; S<int> s; template<class U> void g(S<int>, U);`.
+  Low: recorded so that it is not rediscovered.
