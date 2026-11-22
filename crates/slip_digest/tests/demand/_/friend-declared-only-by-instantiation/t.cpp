@@ -3,8 +3,7 @@
 // instantiation of `H<int>`, outside the class: a derived unit.
 template <class T> struct H { friend void h(H) {} };
 #ifdef B
-H<int> hi;
-void use() { h(hi); }
+void use() { H<int> hi; h(hi); }
 #else
 
 #endif

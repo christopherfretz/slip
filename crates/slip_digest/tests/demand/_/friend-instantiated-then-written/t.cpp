@@ -5,7 +5,7 @@
 // declaration, as on side A.
 template <class T> struct A { friend void k(int); };
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #else
 
 #endif

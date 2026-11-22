@@ -465,31 +465,15 @@ fn definition_bits(s: &mut Stream, defn: DefinitionBits) {
     }
 }
 
-/// The specialisation kind that governs class or enumeration `d`: its
-/// own `SpecInfo` or `MemberSpecInfo` kind, or, when it has neither, that
-/// of the class it is a member of, reached through classes only. The walk
-/// stops at a function: anything declared in a function body (a local
-/// entity) is written in full, whatever function it is in (§11.9).
+/// The specialisation kind that governs class or enumeration `d`
+/// (`templ::governing_kind`), none for a local entity: anything declared
+/// in a function body is written in full, whatever function it is in
+/// (§11.9).
 fn governing_kind(w: &Walk<'_>, d: DeclId) -> Option<SpecKind> {
-    let ast = w.ast;
-    let mut e = w.entity(d);
-    if w.is_local(e) {
+    if w.is_local(w.entity(d)) {
         return None;
     }
-    for _ in 0..64 {
-        let own = ast
-            .spec_info(e)
-            .map(|(_, i)| i.kind)
-            .or_else(|| ast.member_spec_info(e).map(|(_, i)| i.kind));
-        if own.is_some() {
-            return own;
-        }
-        // Through classes only: a namespace or a function ends the walk.
-        let c = ast.decls.get(e).ctx()?;
-        ast.decls.record(c)?;
-        e = w.entity(c);
-    }
-    None
+    crate::templ::governing_kind(w, d)
 }
 
 /// A class or enumeration of the definition class (§11.9): a

@@ -4,9 +4,9 @@
 // declares it, whichever comes first.
 template <class T> struct A { friend int f(int) requires (sizeof(T) > 0) { return 1; } };
 #ifdef B
-A<long> b;
-A<int> a;
+void use_b() { A<long> b; }
+void use_a() { A<int> a; }
 #else
-A<int> a;
-A<long> b;
+void use_a() { A<int> a; }
+void use_b() { A<long> b; }
 #endif

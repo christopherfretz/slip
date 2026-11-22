@@ -3,7 +3,7 @@
 template <class T> constexpr int v = sizeof(T);
 const int* p = &v<int>;
 #ifdef B
-int y = v<int>;
+int y() { return v<int>; }
 #else
 
 #endif

@@ -5,7 +5,7 @@
 struct S { void f(); };
 template <class T> struct A { friend void S::f(); };
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #else
 
 #endif

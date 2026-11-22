@@ -3,7 +3,7 @@
 // `X<long>`, side A after; the order is in no unit.
 template <class T> struct X { int a; };
 #ifdef B
-X<int> a;
+void a() { X<int> x; }
 #else
 
 #endif
