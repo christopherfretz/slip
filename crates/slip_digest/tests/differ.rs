@@ -1,93 +1,58 @@
-//! Must-differ pairs (`spec/digest.md` §14, `spec/digest-kinds.md` §1.5):
-//! over declared and `tu` units, the keys whose units differ between the
-//! sides are exactly the `changed`, `added` and `removed` lines; derived
-//! units are free unless a `derived-changed` line names one.
+//! Must-differ pairs (`spec/digest.md` §14, `spec/digest-kinds.md` §1.5,
+//! `spec/landed/harness/WP-047.md`): over declared and `tu` units, the
+//! keys whose units differ between the sides are exactly the `changed`,
+//! `added` and `removed` lines; derived units are free unless a
+//! `derived-*` line names one, or all of them are named under the
+//! directive `exact derived` (`common::pairs::differ`).
+//!
+//! With `SLIP_DIGEST_DERIVED=report` the runner also prints, per
+//! directory, the derived units that differ and no line names, as the
+//! lines that would name them, and their count by kind; it still passes.
 
 mod common;
 
-use std::collections::BTreeSet;
-use std::path::Path;
-
-use common::{Digested, Expect, Side};
-use slip_model::digests::GroupClass;
-
-/// The units of `d` under `key` that are not derived.
-fn declared(d: &Digested, key: &slip_model::Digest) -> Vec<(GroupClass, slip_model::Digest, u64)> {
-    d.units
-        .get(key)
-        .into_iter()
-        .flatten()
-        .filter(|u| u.class != GroupClass::Derived)
-        .map(|u| (u.class, u.digest, u.flags))
-        .collect()
-}
-
-fn derived(d: &Digested, key: &slip_model::Digest) -> Vec<(slip_model::Digest, u64)> {
-    d.units
-        .get(key)
-        .into_iter()
-        .flatten()
-        .filter(|u| u.class == GroupClass::Derived)
-        .map(|u| (u.digest, u.flags))
-        .collect()
-}
-
-fn one(dir: &Path) -> Result<(), String> {
-    let expect = common::expect(dir)?;
-    if expect.is_empty() {
-        return Err("a differ test needs at least one line in expect.txt".into());
-    }
-    if let Some(Expect::Indeterminate(n)) =
-        expect.iter().find(|e| matches!(e, Expect::Indeterminate(_)))
-    {
-        return Err(format!(
-            "`indeterminate {n}`: a differ test asserts no indeterminate unit; it belongs under tests/indeterminate"
-        ));
-    }
-    let a = common::digest_side(dir, Side::A)?;
-    let b = common::digest_side(dir, Side::B)?;
-    let mut problems = Vec::new();
-    for (side, d) in [("A", &a), ("B", &b)] {
-        for u in common::hard_indeterminate(d) {
-            problems.push(format!("side {side}: indeterminate {u}"));
-        }
-    }
-    let keys: BTreeSet<_> = a.units.keys().chain(b.units.keys()).copied().collect();
-    let mut got = BTreeSet::new();
-    for k in &keys {
-        let (da, db) = (declared(&a, k), declared(&b, k));
-        let name = if a.units.contains_key(k) { a.name(k) } else { b.name(k) };
-        match (da.is_empty(), db.is_empty()) {
-            (true, true) => {}
-            (false, true) => {
-                got.insert(Expect::Removed(name.clone()));
-            }
-            (true, false) => {
-                got.insert(Expect::Added(name.clone()));
-            }
-            (false, false) => {
-                if da != db {
-                    got.insert(Expect::Changed(name.clone()));
-                }
-            }
-        }
-        if expect.contains(&Expect::DerivedChanged(name.clone()))
-            && derived(&a, k) != derived(&b, k)
-        {
-            got.insert(Expect::DerivedChanged(name));
-        }
-    }
-    let want = expect;
-    if got != want {
-        let missing: Vec<_> = want.difference(&got).collect();
-        let extra: Vec<_> = got.difference(&want).collect();
-        problems
-            .push(format!("expected but not seen: {missing:?}\nseen but not expected: {extra:?}"));
-    }
-    if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
-}
+use std::collections::BTreeMap;
 
 #[test]
 fn differ() {
-    common::run_all("differ", one);
+    let report = std::env::var_os("SLIP_DIGEST_DERIVED").is_some_and(|v| v == "report");
+    let outcome = common::run_collect("differ", |dir| {
+        common::pairs::differ(dir).map(|lines| {
+            if report {
+                lines.into_iter().map(|l| format!("unnamed {l}")).collect()
+            } else {
+                Vec::new()
+            }
+        })
+    });
+    if report {
+        let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+        let mut by_dir: BTreeMap<&str, usize> = BTreeMap::new();
+        for n in &outcome.notes {
+            let Some((dir, line)) = n.split_once(": unnamed ") else { continue };
+            let word = line.split(' ').next().unwrap_or_default();
+            let loose = if line.ends_with(" (written derived-changed)") {
+                " (written derived-changed)"
+            } else {
+                ""
+            };
+            *kinds.entry(format!("{word}{loose}")).or_default() += 1;
+            *by_dir.entry(dir).or_default() += 1;
+        }
+        let mut most: Vec<_> = by_dir.iter().collect();
+        most.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        eprintln!(
+            "SLIP_DIGEST_DERIVED=report: {} unnamed derived differences in {} directories",
+            kinds.values().sum::<usize>(),
+            by_dir.len()
+        );
+        for (k, n) in &kinds {
+            eprintln!("  {n:>6}  {k}");
+        }
+        eprintln!("the directories with the most:");
+        for (d, n) in most.iter().take(20) {
+            eprintln!("  {n:>6}  {d}");
+        }
+    }
+    outcome.finish();
 }

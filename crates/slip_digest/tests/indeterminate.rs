@@ -2,6 +2,7 @@
 //! flagged for a cause other than `Pending` are exactly the
 //! `indeterminate` lines, and none of those has the cause `Pending`. A
 //! unit indeterminate only for `Pending` is ignored while `Area` exists.
+//! `expect.txt` has no `derived-*` line (`spec/landed/harness/WP-047.md`).
 
 mod common;
 
@@ -12,6 +13,7 @@ use common::{Expect, Side};
 use slip_digest::Cause;
 
 fn one(dir: &Path) -> Result<(), String> {
+    common::pairs::no_derived_lines(dir, "an indeterminate test")?;
     let expect = common::expect(dir)?;
     let want: BTreeSet<String> = expect
         .iter()
