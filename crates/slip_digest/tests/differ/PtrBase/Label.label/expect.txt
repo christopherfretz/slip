@@ -1,4 +1,1 @@
-# pending
-# needs: expr
-# AddrLabelExpr is pending (expr_misc.rs:80 addr_label_expr): both sides write the same placeholder
 changed f()

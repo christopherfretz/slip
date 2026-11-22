@@ -1,6 +1,1 @@
-# pending
-# needs: types
-# the type of `__range` is `auto &&` deduced from a type-dependent range: its
-# canonical type is `Auto` with `deduced` set, which types.rs:343 takes for sugar
-# (`Unaccounted(TypeView/Auto.deduced)`); the same for `auto y = t;` in a template
 changed f(type-parameter-0-0 &)
