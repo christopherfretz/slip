@@ -103,8 +103,9 @@ or a small enumeration), `written` (how the source spelled something),
   is indeterminate (digest §10). `Note` gives the reason.
 
 **Encoding** is `-` for a row that is not `in`, except that an
-`unsupported` row may say `unbuilt` (no construction site was found in Kiln;
-the row needs no test) and an `out` variant may say `as V` (§1.4). For an
+`unsupported` row may say `unbuilt` (no construction site was found in Kiln,
+or for an attribute kind none that attaches it, §10.1; the row needs no
+test) and an `out` variant may say `as V` (§1.4). For an
 `in` row it is one of the forms of §1.3.
 
 ### 1.3 Encodings
@@ -327,7 +328,7 @@ parsed against Kiln. Which key kind each `DeclKind` has is in §5.2.
 | 13 | `property` | `uv`: a resolved property (§11.1) |
 | 14 | `order` | |
 | 15 | `parameter` | `uv`: the parameter's index (a default argument unit) |
-| 16 | `closure` | `uv`, `uv`: a closure type declared outside a function body, by the lambda's mangling context and number (§10.4, `LambdaMangling`) |
+| 16 | `closure` | `uv`: a closure type declared outside a function body, by its lambda's mangling number (§10.4, `LambdaMangling`) |
 
 A class's constructors and destructor are named `constructor` and
 `destructor`, never by the class name: renaming the class changes their
@@ -345,6 +346,7 @@ parent key and nothing else.
 | `partial_specialisation` | the template head, then the argument pattern (`enum ArgView*`) |
 | `using_declaration` | the key of the scope its qualifier names; for a dependent one, the qualifier by structure (`enum Nns`) |
 | `using_shadow` | the key of the entity the name stands for |
+| `class` named `closure` | the `Ref` of the lambda's mangling context (§10.4) |
 | every content-keyed kind, `template_param_object` | the unit's own stream |
 | every other kind | absent |
 
@@ -1366,7 +1368,8 @@ written as:
 3. the row `decl_attrs` of `AttrArena` (§10.1) and the rows of `AnnotArena`
    (§10.5);
 4. the `in` rows of `TemplateTables` whose map is keyed by `DeclId`
-   (§9.5).
+   (§9.5);
+5. the rows `points` and `explicit_defs` of `ModuleTable` (§10.7).
 
 For a unit the entity is read as §2.3 says. A row encoded `keyed` writes
 nothing here.
@@ -4250,6 +4253,985 @@ what order, are `demand`.
 | `partial_map` | bookkeeping | out | - | lookup table for redeclarations of a partial specialisation |
 | `param_objects` | bookkeeping | out | - | the inverse of `param_object_values` |
 | `param_object_values` | value | in | value? | by `TemplateParamObject`: the object's value, which is its unit's whole stream |
+
+## 10. The other tables of `Ast`
+
+### 10.1 Attributes
+
+The encoding `attrs` writes an attribute list: a count, then each node as
+`record AttrNode`.
+
+- For a statement (`AttributedStmt`) the nodes are those of its list, in
+  stored order.
+- For a declaration they are the nodes of `AttrArena` `decl_attrs` for
+  every declaration of the entity's chain, in chain order and within a
+  declaration in stored order, leaving out each node whose `inherited`
+  flag is set: Kiln copies an attribute to later declarations, and the
+  copy says nothing new. The order is kept because Kiln mangles the
+  `enable_if` conditions of a function in it.
+
+An instantiated declaration carries the attributes Kiln instantiated from
+its pattern; they are written as found.
+
+A kind with no row for `a` or for `b` stores 0 there. A non-zero word, like
+a flag bit no row names, makes the unit indeterminate (§2.1): Kiln's
+operand roles are documented kind by kind and nothing in its types
+enforces them ("Open questions"). The roles below are those of
+`kiln_ast::attr` and of the operand table of Kiln's module image
+(`kiln_sema::bmi_image::attrs`, which a Kiln test keeps complete).
+
+For an attribute kind, `unbuilt` means that no site in Kiln attaches a
+node of the kind to a declaration or a statement.
+
+### `kiln_ast::attr::AttrKind`
+
+`kind=consts; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `ALIGNED` | flag | in | tag 1 |  |
+| `ASSUME` | flag | in | tag 2 |  |
+| `CARRIES_DEPENDENCY` | flag | in | tag 3 |  |
+| `DEPRECATED` | flag | in | tag 4 |  |
+| `FALLTHROUGH` | flag | in | tag 5 |  |
+| `INDETERMINATE` | flag | in | tag 6 |  |
+| `LIKELY` | flag | in | tag 7 |  |
+| `UNLIKELY` | flag | in | tag 8 |  |
+| `MAYBE_UNUSED` | flag | in | tag 9 |  |
+| `NODISCARD` | flag | in | tag 10 |  |
+| `NORETURN` | flag | in | tag 11 |  |
+| `NO_UNIQUE_ADDRESS` | flag | in | tag 12 |  |
+| `ANNOTATION` | flag | unsupported | unbuilt | sema moves each into `AnnotArena` (§10.5); no declaration keeps one |
+| `ALWAYS_INLINE` | flag | in | tag 14 |  |
+| `NOINLINE` | flag | in | tag 15 |  |
+| `PACKED` | flag | in | tag 16 |  |
+| `USED` | flag | in | tag 17 |  |
+| `UNUSED` | flag | in | tag 18 |  |
+| `WEAK` | flag | in | tag 19 |  |
+| `VISIBILITY` | flag | in | tag 20 |  |
+| `SECTION` | flag | in | tag 21 |  |
+| `FORMAT` | flag | in | tag 22 |  |
+| `CONST` | flag | in | tag 23 |  |
+| `PURE` | flag | in | tag 24 |  |
+| `COLD` | flag | in | tag 25 |  |
+| `NOTHROW` | flag | in | tag 26 |  |
+| `ENABLE_IF` | flag | in | tag 27 |  |
+| `DIAGNOSE_IF` | flag | in | tag 28 |  |
+| `TRIVIAL_ABI` | flag | in | tag 29 |  |
+| `PREFERRED_NAME` | flag | in | tag 30 |  |
+| `EXCLUDE_FROM_EXPLICIT_INSTANTIATION` | flag | in | tag 31 |  |
+| `ABI_TAG` | flag | in | tag 32 |  |
+| `INTERNAL_LINKAGE` | flag | in | tag 33 |  |
+| `LIFETIMEBOUND` | flag | in | tag 34 |  |
+| `NO_SANITIZE` | flag | in | tag 35 |  |
+| `MODE` | flag | in | tag 36 | kept on a declaration only while its type is dependent (`MODE.flags-deferred`); otherwise consumed into the declared type |
+| `VECTOR_SIZE` | flag | unsupported | unbuilt | consumed into the declared type, never attached |
+| `ASM_LABEL` | flag | in | tag 38 |  |
+| `BUILTIN` | flag | in | tag 39 | the implicit attribute of a lazily declared builtin |
+| `EXT_VECTOR_TYPE` | flag | unsupported | unbuilt | consumed into the declared type, never attached |
+| `MALLOC` | flag | in | tag 41 |  |
+| `ALLOC_SIZE` | flag | in | tag 42 |  |
+| `ALLOC_ALIGN` | flag | in | tag 43 |  |
+| `USING_IF_EXISTS` | flag | in | tag 44 |  |
+| `HOT` | flag | in | tag 45 |  |
+| `FLAG_ENUM` | flag | in | tag 46 |  |
+| `ENUM_EXTENSIBILITY` | flag | in | tag 47 |  |
+| `CORO_ONLY_DESTROY_WHEN_COMPLETE` | flag | in | tag 48 |  |
+| `OPTNONE` | flag | in | tag 49 |  |
+| `MINSIZE` | flag | in | tag 50 |  |
+| `NAKED` | flag | in | tag 51 |  |
+| `MAY_ALIAS` | flag | in | tag 52 |  |
+| `NONNULL` | flag | in | tag 53 |  |
+| `RETURNS_NONNULL` | flag | in | tag 54 |  |
+| `INIT_PRIORITY` | flag | in | tag 55 |  |
+| `LOOP_HINT` | flag | in | tag 56 |  |
+| `UNINITIALIZED` | flag | in | tag 57 |  |
+| `TYPE_VISIBILITY` | flag | in | tag 58 |  |
+| `TYPE_NULLABLE` | flag | in | tag 59 |  |
+| `NEON_VECTOR_TYPE` | flag | unsupported | unbuilt | consumed into the declared type, never attached |
+| `NEON_POLYVECTOR_TYPE` | flag | unsupported | unbuilt | consumed into the declared type, never attached |
+| `TARGET` | flag | in | tag 62 |  |
+| `GNU_INLINE` | flag | in | tag 63 |  |
+| `NODEBUG` | flag | in | tag 64 |  |
+| `MIN_VECTOR_WIDTH` | flag | in | tag 65 |  |
+| `WEAKREF` | flag | in | tag 66 |  |
+| `ALIAS` | flag | in | tag 67 |  |
+| `ANALYZER_NORETURN` | flag | in | tag 68 |  |
+| `DISABLE_TAIL_CALLS` | flag | in | tag 69 |  |
+| `IFUNC` | flag | in | tag 70 |  |
+| `ARTIFICIAL` | flag | in | tag 71 |  |
+| `CONSTRUCTOR` | flag | in | tag 72 |  |
+| `DESTRUCTOR` | flag | in | tag 73 |  |
+| `CLEANUP` | flag | in | tag 74 |  |
+| `COMMON` | flag | unsupported | unbuilt | rejected in C++ and never attached |
+| `TLS_MODEL` | flag | in | tag 76 |  |
+| `RETURNS_TWICE` | flag | in | tag 77 |  |
+| `PASS_OBJECT_SIZE` | flag | in | tag 78 |  |
+| `OVERLOADABLE` | flag | in | tag 79 |  |
+| `MUSTTAIL` | flag | in | tag 80 |  |
+| `TRANSPARENT_UNION` | flag | in | tag 81 |  |
+| `SELECTANY` | flag | in | tag 82 |  |
+| `MS_STRUCT` | flag | in | tag 83 |  |
+| `GCC_STRUCT` | flag | in | tag 84 |  |
+| `RETAIN` | flag | in | tag 85 |  |
+| `NO_DESTROY` | flag | in | tag 86 |  |
+| `ALWAYS_DESTROY` | flag | in | tag 87 |  |
+| `CALLING_CONV` | flag | unsupported | unbuilt | consumed into the function type (`FuncInfo`), never attached |
+| `NO_CALLER_SAVED_REGS` | flag | unsupported | unbuilt | consumed into the function type (`FuncInfo`), never attached |
+| `REGPARM` | flag | unsupported | unbuilt | consumed into the function type (`FuncInfo`), never attached |
+| `NO_BUILTIN` | flag | in | tag 91 |  |
+| `ARM_SVE_VECTOR_BITS` | flag | unsupported | unbuilt | consumed into the declared type, never attached |
+| `BUILTIN_ALIAS` | flag | in | tag 93 |  |
+| `TARGET_VERSION` | flag | in | tag 94 |  |
+| `TARGET_CLONES` | flag | in | tag 95 |  |
+| `CPU_DISPATCH` | flag | unsupported | unbuilt | never attached |
+| `CPU_SPECIFIC` | flag | unsupported | unbuilt | never attached |
+| `NO_STACK_PROTECTOR` | flag | in | tag 98 |  |
+| `PATCHABLE_FUNCTION_ENTRY` | flag | in | tag 99 |  |
+| `ZERO_CALL_USED_REGS` | flag | in | tag 100 |  |
+| `SPECULATIVE_LOAD_HARDENING` | flag | in | tag 101 |  |
+| `NO_SPECULATIVE_LOAD_HARDENING` | flag | in | tag 102 |  |
+| `NO_SPLIT_STACK` | flag | in | tag 103 |  |
+| `NO_INSTRUMENT_FUNCTION` | flag | in | tag 104 |  |
+| `NO_PROFILE_INSTRUMENT_FUNCTION` | flag | in | tag 105 |  |
+| `XRAY_INSTRUMENT` | flag | in | tag 106 |  |
+| `XRAY_LOG_ARGS` | flag | in | tag 107 |  |
+| `DISABLE_SANITIZER_INSTRUMENTATION` | flag | in | tag 108 |  |
+| `NOCF_CHECK` | flag | in | tag 109 |  |
+| `FUNCTION_RETURN` | flag | in | tag 110 |  |
+| `CFI_CANONICAL_JUMP_TABLE` | flag | in | tag 111 |  |
+| `FORCE_ALIGN_ARG_POINTER` | flag | in | tag 112 |  |
+| `FLATTEN` | flag | in | tag 113 |  |
+| `LEAF` | flag | in | tag 114 |  |
+| `NOMERGE` | flag | in | tag 115 |  |
+| `NOT_TAIL_CALLED` | flag | in | tag 116 |  |
+| `NODUPLICATE` | flag | in | tag 117 |  |
+| `CONVERGENT` | flag | in | tag 118 |  |
+| `NOUWTABLE` | flag | in | tag 119 |  |
+| `ASSUME_ALIGNED` | flag | in | tag 120 |  |
+| `ALIGN_VALUE` | flag | in | tag 121 |  |
+| `CALLBACK` | flag | in | tag 122 |  |
+| `NOESCAPE` | flag | in | tag 123 |  |
+| `MAYBE_UNDEF` | flag | in | tag 124 |  |
+| `CODE_ALIGN` | flag | in | tag 125 |  |
+| `LOADER_UNINITIALIZED` | flag | in | tag 126 |  |
+| `LTO_VISIBILITY_PUBLIC` | flag | in | tag 127 |  |
+| `OMP_ASSUME` | flag | in | tag 128 |  |
+| `STANDALONE_DEBUG` | flag | in | tag 129 |  |
+| `CORO_AWAIT_ELIDABLE` | flag | in | tag 130 |  |
+| `CORO_AWAIT_ELIDABLE_ARGUMENT` | flag | in | tag 131 |  |
+| `GSL_OWNER` | flag | in | tag 132 |  |
+| `GSL_POINTER` | flag | in | tag 133 |  |
+| `UNAVAILABLE` | flag | in | tag 134 |  |
+| `REQUIRE_CONSTANT_INIT` | flag | in | tag 135 |  |
+| `ANNOTATE` | flag | in | tag 136 |  |
+| `SME_TYPE` | flag | unsupported | unbuilt | consumed into the function type (`FuncInfo`), never attached |
+| `ARM_LOCALLY_STREAMING` | flag | in | tag 138 |  |
+| `ARM_NEW` | flag | in | tag 139 |  |
+| `NONSTRING` | flag | in | tag 140 |  |
+| `NOCOMMON` | flag | in | tag 141 |  |
+| `PRAGMA_CLANG_SECTION` | flag | in | tag 142 |  |
+| `CODE_MODEL` | flag | in | tag 143 |  |
+| `X86_INTERRUPT` | flag | in | tag 144 | a node whose `a` is 1 failed its check and is dropped before it is kept |
+| `WEAK_IMPORT` | flag | in | tag 145 |  |
+| `SWIFT_PARAM_ABI` | flag | in | tag 146 |  |
+| `ADDRESS_SPACE` | flag | unsupported | unbuilt | consumed into the declared type, never attached |
+
+### `kiln_ast::attr::AttrNode`
+
+`kind=struct; pin=schema; selector=kiln_ast::attr::AttrKind`
+
+The rows give the node as Kiln leaves it once the declaration it is on
+has been checked. Before that, several kinds hold their arguments as
+written, and the node does not say which state it is in ("Open
+questions"); where the two can be told apart by value the row says so.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `kind` | flag | in | enum AttrKind |  |
+| `syntax` | written | out | - | `[[...]]`, `__attribute__`, a keyword, `__declspec` or a pragma |
+| `flags-implicit` | flag | in | bit | bit 0: added by sema or by a pragma, not written |
+| `flags-inherited` | bookkeeping | out | - | bit 1: a copy from an earlier declaration, which the list rule leaves out |
+| `flags-gnu-scoped` | written | out | - | bit 3: written with the `gnu::` scope |
+| `loc` | location | out | - |  |
+| `ASSUME.flags-ignored` | flag | in | bit | bit 2: the assumption may have side effects, so it is neither assumed nor checked |
+| `FALLTHROUGH.flags-scoped` | written | out | - | bit 2: written with an attribute scope |
+| `NODISCARD.flags-clang-scoped` | written | out | - | bit 2: spelled `clang::warn_unused_result` |
+| `LIFETIMEBOUND.flags-args` | written | out | - | bit 2: an argument list was written, which Kiln does not check in a type position |
+| `CONSTRUCTOR.flags-priority-dependent` | flag | in | bit | bit 2: the priority is value-dependent |
+| `DESTRUCTOR.flags-priority-dependent` | flag | in | bit | bit 2: the priority is value-dependent |
+| `MODE.flags-deferred` | flag | in | bit | bit 2: applies at instantiation |
+| `GSL_OWNER.flags-has-type` | flag | in | bit | bit 2: a type argument was written |
+| `GSL_POINTER.flags-has-type` | flag | in | bit | bit 2: a type argument was written |
+| `DIAGNOSE_IF.flags-error` | flag | in | bit | bit 2: the diagnostic is an error, not a warning |
+| `DIAGNOSE_IF.flags-arg-dependent` | flag | in | bit | bit 4: the condition names a parameter or `this` |
+| `DIAGNOSE_IF.flags-group` | flag | in | bit | bit 5: a warning group was written; the node does not keep its name |
+| `DEPRECATED.a` | child | in | child? | the message |
+| `DEPRECATED.b` | child | in | child? | a second argument, if any |
+| `NODISCARD.a` | child | in | child? | the message |
+| `NODISCARD.b` | child | in | child? | a second argument, if any |
+| `UNAVAILABLE.a` | child | in | child? | the message |
+| `UNAVAILABLE.b` | child | in | child? | a second argument, if any |
+| `ALLOC_SIZE.a` | child | in | child? | the one-based parameter index, an integer literal |
+| `ALLOC_SIZE.b` | child | in | child? | the second index |
+| `ALLOC_ALIGN.a` | child | in | child? | the one-based parameter index, an integer literal |
+| `ALLOC_ALIGN.b` | child | in | child? |  |
+| `ENABLE_IF.a` | child | in | child? | the condition; mangled |
+| `ENABLE_IF.b` | child | in | child? | the message |
+| `DIAGNOSE_IF.a` | child | in | child? | the condition |
+| `DIAGNOSE_IF.b` | child | in | child? | the message |
+| `ALIGNED.a` | child | in | child? | the alignment expression |
+| `ALIGNED.b` | type | in | type? | the type of `alignas(type-id)` |
+| `ASSUME.a` | child | in | child | the assumption |
+| `ASSUME.b` | location | out | - | a raw position |
+| `PREFERRED_NAME.b` | type | in | type | the typedef's type; its name is spelling |
+| `BUILTIN.a` | bookkeeping | out | - | the builtin's id in Kiln's numbering; the unit's key names the builtin (§11.6) |
+| `NONNULL.a` | child | in | child* | the parameter indices, integer literals; empty names every parameter |
+| `ASM_LABEL.a` | value | in | string | the symbol name |
+| `SECTION.a` | value | in | string? | the section name |
+| `TARGET.a` | value | in | string? | the feature string |
+| `WEAKREF.a` | value | in | string? | the target as written; 0 once Kiln has split it into an `ALIAS` |
+| `OMP_ASSUME.a` | value | in | string? | the assumption string |
+| `PRAGMA_CLANG_SECTION.a` | value | in | string? | the section name |
+| `PRAGMA_CLANG_SECTION.b` | flag | in | uv | which section kind: Kiln's index into `CLANG_SECTION_KINDS` ("Open questions") |
+| `ALIAS.a` | value | in | string | the aliased symbol's name |
+| `ALIAS.b` | location | out | - | a raw position |
+| `IFUNC.a` | value | in | string | the resolver's symbol name |
+| `IFUNC.b` | location | out | - | a raw position |
+| `TARGET_VERSION.a` | value | in | string | the version string |
+| `TARGET_VERSION.b` | location | out | - | a raw position |
+| `CLEANUP.a` | entity | unsupported | - | the function as a `DeclId` once the declaration is checked and an expression before; the node does not say which |
+| `CLEANUP.b` | location | out | - | a raw position once checked |
+| `ANNOTATE.a` | child | in | child? | the string |
+| `ANNOTATE.b` | child | in | child* | the extra arguments; 0 is the empty list |
+| `CALLBACK.a` | value | in | uv* | the argument indices |
+| `VISIBILITY.a` | flag | in | uv | 0 default, 1 hidden, 2 protected; another value is an unchecked node and makes the unit indeterminate |
+| `VISIBILITY.b` | written | out | - | 1 when `hidden` was written `internal` |
+| `TYPE_VISIBILITY.a` | flag | in | uv | as `VISIBILITY.a` |
+| `FORMAT.a` | flag | in | uv | the archetype: 0 is `printf` |
+| `FORMAT.b` | value | in | uv | the format-string index and, shifted by 16, the first data argument index |
+| `LIFETIMEBOUND.a` | flag | in | uv | 1 for the implicit object parameter |
+| `NO_SANITIZE.a` | flag | in | record SanitizerSet | the excluded set: `a` with the set bits of `b` |
+| `NO_SANITIZE.b-set` | bookkeeping | out | - | the high bits of the set, which `NO_SANITIZE.a` writes |
+| `NO_SANITIZE.b-spelling` | written | out | - | which `no_sanitize*` spelling |
+| `NO_SANITIZE.b-coverage` | flag | in | bool | bit 31: the attribute names `coverage` |
+| `ENUM_EXTENSIBILITY.a` | flag | in | uv | 1 open, 0 closed |
+| `INIT_PRIORITY.a` | value | in | uv | the priority |
+| `MIN_VECTOR_WIDTH.a` | value | in | uv |  |
+| `CONSTRUCTOR.a-priority` | value | in | uv? | when `flags-priority-dependent` is clear: the priority |
+| `CONSTRUCTOR.a-expression` | child | in | child? | when it is set: the expression |
+| `DESTRUCTOR.a-priority` | value | in | uv? | when `flags-priority-dependent` is clear: the priority |
+| `DESTRUCTOR.a-expression` | child | in | child? | when it is set: the expression |
+| `TLS_MODEL.a` | flag | in | uv | 1 to 4: global-dynamic, local-dynamic, initial-exec, local-exec; another value is an unchecked node and makes the unit indeterminate |
+| `PASS_OBJECT_SIZE.a` | value | in | uv | the object-size type, 0 to 3 |
+| `PASS_OBJECT_SIZE.b` | flag | in | uv | 1 for `pass_dynamic_object_size` |
+| `PATCHABLE_FUNCTION_ENTRY.a` | value | in | uv |  |
+| `PATCHABLE_FUNCTION_ENTRY.b` | value | in | uv |  |
+| `ZERO_CALL_USED_REGS.a` | flag | in | uv | Kiln's index into `ZERO_CALL_USED_REGS_KINDS` ("Open questions") |
+| `XRAY_INSTRUMENT.a` | flag | in | uv | 1 always, 0 never |
+| `XRAY_LOG_ARGS.a` | value | in | uv |  |
+| `FUNCTION_RETURN.a` | flag | in | uv | 1 thunk-extern, 0 keep |
+| `ASSUME_ALIGNED.a` | value | in | uv | the alignment, folded |
+| `ASSUME_ALIGNED.b` | value | in | uv | the offset, folded |
+| `ALIGN_VALUE.a` | value | in | uv |  |
+| `CODE_ALIGN.a` | value | in | uv |  |
+| `ARM_LOCALLY_STREAMING.b` | location | out | - | the keyword's index and offsets of its strings from `loc` |
+| `ARM_NEW.a` | flag | in | uv | bit 0 ZA, bit 1 ZT0 |
+| `ARM_NEW.b` | location | out | - | as `ARM_LOCALLY_STREAMING.b` |
+| `CODE_MODEL.a` | flag | in | uv | 1 small, 2 large |
+| `SWIFT_PARAM_ABI.a` | flag | in | enum ParamAbi |  |
+| `ABI_TAG.a` | name | in | sym | the tags: mangled |
+| `NO_BUILTIN.a` | name | in | sym | the builtin names, sorted and joined by Kiln; `*` for all |
+| `BUILTIN_ALIAS.a` | name | in | sym | the builtin called |
+| `BUILTIN_ALIAS.b` | written | out | - | 1 for the `__clang_arm_builtin_alias` spelling |
+| `TARGET_CLONES.a` | name | in | sym | the clone list as Kiln normalises it |
+| `TARGET_CLONES.b` | flag | in | uv | 1 when the list was kept |
+| `LOOP_HINT.a` | child | in | child? | the value as written |
+| `LOOP_HINT.b` | flag | in | record LoopHint |  |
+| `MODE.a` | value | in | uv | the mode: width and class, in Kiln's packing ("Open questions") |
+| `MODE.b` | written | out | - | the mode name as written; `MODE.a` is the fact |
+| `GSL_OWNER.b` | type | in | type? | the type argument; absent when `flags-has-type` is clear |
+| `GSL_POINTER.b` | type | in | type? | the type argument; absent when `flags-has-type` is clear |
+
+### `kiln_ast::attr::AttrSyntax`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Cxx11` | written | out | - | the syntax an attribute was written in; `AttrNode` `syntax` is not written |
+| `Gnu` | written | out | - | the syntax an attribute was written in; `AttrNode` `syntax` is not written |
+| `Keyword` | written | out | - | the syntax an attribute was written in; `AttrNode` `syntax` is not written |
+| `Declspec` | written | out | - | the syntax an attribute was written in; `AttrNode` `syntax` is not written |
+| `Pragma` | written | out | - | the syntax an attribute was written in; `AttrNode` `syntax` is not written |
+
+### `kiln_ast::attr::LoopHint`
+
+`kind=struct; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `option` | flag | in | enum LoopHintOption |  |
+| `state` | flag | in | enum LoopHintState |  |
+| `spelling` | flag | in | enum LoopHintSpelling | which pragma: kept because nothing shows that code generation ignores it |
+
+### `kiln_ast::attr::LoopHintOption`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Vectorize` | flag | in | tag 1 |  |
+| `VectorizeWidth` | flag | in | tag 2 |  |
+| `Interleave` | flag | in | tag 3 |  |
+| `InterleaveCount` | flag | in | tag 4 |  |
+| `Unroll` | flag | in | tag 5 |  |
+| `UnrollCount` | flag | in | tag 6 |  |
+| `UnrollAndJam` | flag | in | tag 7 |  |
+| `UnrollAndJamCount` | flag | in | tag 8 |  |
+| `PipelineDisabled` | flag | in | tag 9 |  |
+| `PipelineInitiationInterval` | flag | in | tag 10 |  |
+| `Distribute` | flag | in | tag 11 |  |
+| `VectorizePredicate` | flag | in | tag 12 |  |
+
+### `kiln_ast::attr::LoopHintState`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Enable` | flag | in | tag 1 |  |
+| `Disable` | flag | in | tag 2 |  |
+| `Numeric` | flag | in | tag 3 |  |
+| `FixedWidth` | flag | in | tag 4 |  |
+| `ScalableWidth` | flag | in | tag 5 |  |
+| `AssumeSafety` | flag | in | tag 6 |  |
+| `Full` | flag | in | tag 7 |  |
+
+### `kiln_ast::attr::LoopHintSpelling`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `ClangLoop` | flag | in | tag 1 |  |
+| `Unroll` | flag | in | tag 2 |  |
+| `Nounroll` | flag | in | tag 3 |  |
+| `UnrollAndJam` | flag | in | tag 4 |  |
+| `NounrollAndJam` | flag | in | tag 5 |  |
+
+### `kiln_ast::sanitize::SanitizerSet`
+
+`kind=struct; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0` | flag | in | bytes*sorted | the `-fsanitize=` name of each member (`SANITIZERS`); the bit positions are Kiln's |
+
+### `kiln_ast::attr::AttrArena`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `nodes` | bookkeeping | out | - | arena: reached through `AttrId` |
+| `kinds` | bookkeeping | out | - | which kinds occur at all: a cache |
+| `decl_attrs` | flag | in | attrs | by declaration |
+
+### 10.2 Names
+
+A `DeclName` is read through `NameTable::view`. Where a row writes a
+`name` it is the `Name` of §3.2, whose first seven tags are the tags of
+`DeclNameKind`, followed by the payload rows of `DeclName`. A `Name` in a
+key has no payload for a constructor, a destructor or a deduction guide:
+the parent key and the discriminator already name the class and the
+template (§3.2, §3.3).
+
+### `kiln_ast::names::DeclNameKind`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Identifier` | name | in | tag 1 |  |
+| `Operator` | name | in | tag 2 |  |
+| `Constructor` | name | in | tag 3 |  |
+| `Destructor` | name | in | tag 4 |  |
+| `Conversion` | name | in | tag 5 |  |
+| `LiteralOperator` | name | in | tag 6 |  |
+| `DeductionGuide` | name | in | tag 7 |  |
+
+### `kiln_ast::names::DeclName`
+
+`kind=struct; pin=schema; selector=kiln_ast::names::DeclNameKind`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0-kind` | name | in | enum DeclNameKind | bits 29-31 |
+| `Identifier.0-payload` | name | in | sym | the symbol's index plus 1; 0 is the empty name, which no stream row writes (an unnamed entity's key: §3.2) |
+| `Operator.0-payload` | name | in | enum OverloadedOperator |  |
+| `Constructor.0-payload` | type | in | type | index into `NameTable` `special`: the class; in a stream only |
+| `Destructor.0-payload` | type | in | type | as `Constructor.0-payload` |
+| `Conversion.0-payload` | type | in | type | index into `NameTable` `special`: the type converted to |
+| `LiteralOperator.0-payload` | name | in | sym | the suffix |
+| `DeductionGuide.0-payload` | entity | in | ref | index into `NameTable` `special`: the template; in a stream only |
+
+### `kiln_ast::names::OverloadedOperator`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `New` | name | in | tag 1 |  |
+| `Delete` | name | in | tag 2 |  |
+| `ArrayNew` | name | in | tag 3 |  |
+| `ArrayDelete` | name | in | tag 4 |  |
+| `Plus` | name | in | tag 5 |  |
+| `Minus` | name | in | tag 6 |  |
+| `Star` | name | in | tag 7 |  |
+| `Slash` | name | in | tag 8 |  |
+| `Percent` | name | in | tag 9 |  |
+| `Caret` | name | in | tag 10 |  |
+| `Amp` | name | in | tag 11 |  |
+| `Pipe` | name | in | tag 12 |  |
+| `Tilde` | name | in | tag 13 |  |
+| `Exclaim` | name | in | tag 14 |  |
+| `Equal` | name | in | tag 15 |  |
+| `Less` | name | in | tag 16 |  |
+| `Greater` | name | in | tag 17 |  |
+| `PlusEqual` | name | in | tag 18 |  |
+| `MinusEqual` | name | in | tag 19 |  |
+| `StarEqual` | name | in | tag 20 |  |
+| `SlashEqual` | name | in | tag 21 |  |
+| `PercentEqual` | name | in | tag 22 |  |
+| `CaretEqual` | name | in | tag 23 |  |
+| `AmpEqual` | name | in | tag 24 |  |
+| `PipeEqual` | name | in | tag 25 |  |
+| `LessLess` | name | in | tag 26 |  |
+| `GreaterGreater` | name | in | tag 27 |  |
+| `LessLessEqual` | name | in | tag 28 |  |
+| `GreaterGreaterEqual` | name | in | tag 29 |  |
+| `EqualEqual` | name | in | tag 30 |  |
+| `ExclaimEqual` | name | in | tag 31 |  |
+| `LessEqual` | name | in | tag 32 |  |
+| `GreaterEqual` | name | in | tag 33 |  |
+| `Spaceship` | name | in | tag 34 |  |
+| `AmpAmp` | name | in | tag 35 |  |
+| `PipePipe` | name | in | tag 36 |  |
+| `PlusPlus` | name | in | tag 37 |  |
+| `MinusMinus` | name | in | tag 38 |  |
+| `Comma` | name | in | tag 39 |  |
+| `ArrowStar` | name | in | tag 40 |  |
+| `Arrow` | name | in | tag 41 |  |
+| `Call` | name | in | tag 42 |  |
+| `Subscript` | name | in | tag 43 |  |
+| `Coawait` | name | in | tag 44 |  |
+
+### `kiln_ast::names::NameTable`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `special` | bookkeeping | out | - | arena: the operands of constructor, destructor, conversion and deduction-guide names |
+| `index` | bookkeeping | out | - | interning |
+
+### 10.3 Strings
+
+`string` writes the rows of the literal's `Entry`.
+
+### `kiln_ast::strings::Entry`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `start` | value | in | bytes | the `len` bytes of `StringPool` `bytes` from this offset: the code units as Kiln stores them |
+| `len` | bookkeeping | out | - | the length `start` writes |
+| `enc` | flag | in | enum StringEncoding |  |
+
+### `kiln_ast::strings::StringEncoding`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Ordinary` | flag | in | tag 1 |  |
+| `Utf8` | flag | in | tag 2 |  |
+| `Utf16` | flag | in | tag 3 |  |
+| `Utf32` | flag | in | tag 4 |  |
+| `Wide16` | flag | in | tag 5 |  |
+| `Wide32` | flag | in | tag 6 |  |
+
+### `kiln_ast::strings::StringPool`
+
+`kind=root; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `bytes` | bookkeeping | out | - | arena: reached through `Entry` |
+| `entries` | bookkeeping | out | - | arena: reached through `StringLitId` |
+| `table` | bookkeeping | out | - | interning |
+
+### 10.4 Lambdas
+
+A `LambdaExpr` writes its closure type by `decl` (§7); the closure's
+`RecordData` `lambda` row writes the rows of `LambdaData`. Inside a
+function body the closure is a local class (§2.4). Outside one it is a
+unit of kind `class` named `closure` with its mangling number, and its
+discriminator is the `Ref` of its mangling context (§3.3); a closure whose
+number is 0 has no stable name and is keyed as an unnamed class (digest
+§3.3).
+
+### `kiln_ast::lambda::LambdaData`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `closure` | bookkeeping | out | - | the class whose row is writing this record |
+| `call_op` | bookkeeping | out | - | the call operator: a member of the closure, written with it |
+| `default` | flag | in | enum CaptureDefault |  |
+| `default_loc` | location | out | - |  |
+| `captures` | entity | in | record LambdaCapture* | in closure member order |
+| `inits` | child | in | child*? | the initialiser of each capture's member |
+| `body` | bookkeeping | out | - | the call operator's body, which `FunctionData` `body` writes |
+| `lbracket` | location | out | - |  |
+| `rbracket` | location | out | - |  |
+| `explicit_params` | flag | in | bit | a parameter clause was written; kept because nothing shows what reads it |
+| `explicit_result` | flag | in | bit | a trailing return type was written; as `explicit_params` |
+| `mutable` | flag | in | bit |  |
+| `mangling` | value | in | record LambdaMangling |  |
+
+### `kiln_ast::lambda::CaptureDefault`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | flag | in | tag 1 |  |
+| `ByCopy` | flag | in | tag 2 |  |
+| `ByRef` | flag | in | tag 3 |  |
+
+### `kiln_ast::lambda::LambdaCapture`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `kind` | flag | in | enum CaptureKind |  |
+| `var` | entity | in | ref |  |
+| `field` | entity | in | ref | the member holding the capture |
+| `loc` | location | out | - |  |
+| `ellipsis-present` | flag | in | bit | a capture pack |
+| `ellipsis-position` | location | out | - |  |
+| `implicit` | flag | in | bit |  |
+| `init` | flag | in | bit |  |
+
+### `kiln_ast::lambda::CaptureKind`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `This` | flag | in | tag 1 |  |
+| `StarThis` | flag | in | tag 2 |  |
+| `ByCopy` | flag | in | tag 3 |  |
+| `ByRef` | flag | in | tag 4 |  |
+| `VlaBound` | flag | in | tag 5 |  |
+
+### `kiln_ast::lambda::LambdaMangling`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `number` | value | in | uv | also the key's name for a closure outside a function body (§3.2) |
+| `context` | entity | in | ref | also that key's discriminator (§3.3) |
+
+### `kiln_ast::lambda::LambdaArena`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `records` | bookkeeping | out | - | arena: reached through `LambdaId` |
+
+### 10.5 Annotations
+
+A declaration's stream holds the annotations of every declaration of its
+chain, in chain order (`of_decl`). A class's stream then holds one list
+for each base specifier of its definition, in order (`of_base`).
+
+### `kiln_ast::annot::Annotation`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `decl` | bookkeeping | out | - | the declaration it is written on, whose stream this is |
+| `value` | value | in | value? | the underlying constant; absent while the operand is dependent |
+| `loc` | location | out | - |  |
+| `written_type` | type | in | type |  |
+| `expr` | child | in | child | the operand; the only carrier while it is dependent |
+
+### `kiln_ast::annot::AnnotArena`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `nodes` | bookkeeping | out | - | arena: reached through `AnnId` |
+| `of_decl` | value | in | record Annotation* | by declaration; rule above |
+| `of_base` | value | in | record Annotation* | by class and base index; rule above |
+
+### 10.6 Tables computed for classes
+
+Everything in this section is computed by Kiln the first time something
+needs it, from facts that units hold: a class's bases and virtual
+functions, the definitions of the `<compare>` category classes. None of
+it is written (§11.7).
+
+### `kiln_ast::class::ClassCache`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `map` | value | demand | - | §11.7: `Ast` `virtuals` and `vtables` |
+
+### `kiln_ast::class::SubobjectId`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0` | value | demand | - | §11.7 |
+
+### `kiln_ast::class::Subobject`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `class` | entity | demand | - | §11.7 |
+| `parent` | value | demand | - | §11.7 |
+| `base_index` | value | demand | - | §11.7 |
+| `is_virtual` | flag | demand | - | §11.7 |
+
+### `kiln_ast::class::ClassVirtuals`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `subobjects` | value | demand | - | §11.7 |
+| `overriders` | entity | demand | - | §11.7 |
+
+### `kiln_ast::class::VTableComponent`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `VCallOffset` | value | demand | - | §11.7 |
+| `VCallOffset.0` | value | demand | - | §11.7 |
+| `VBaseOffset` | value | demand | - | §11.7 |
+| `VBaseOffset.0` | value | demand | - | §11.7 |
+| `OffsetToTop` | value | demand | - | §11.7 |
+| `OffsetToTop.0` | value | demand | - | §11.7 |
+| `Rtti` | value | demand | - | §11.7 |
+| `Rtti.0` | entity | demand | - | §11.7 |
+| `Func` | value | demand | - | §11.7 |
+| `Func.0` | entity | demand | - | §11.7 |
+| `CompleteDtor` | value | demand | - | §11.7 |
+| `CompleteDtor.0` | entity | demand | - | §11.7 |
+| `DeletingDtor` | value | demand | - | §11.7 |
+| `DeletingDtor.0` | entity | demand | - | §11.7 |
+| `UnusedFunc` | value | demand | - | §11.7 |
+| `UnusedFunc.0` | entity | demand | - | §11.7 |
+
+### `kiln_ast::class::Thunk`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `this` | value | demand | - | §11.7 |
+| `ret` | value | demand | - | §11.7 |
+| `method` | entity | demand | - | §11.7 |
+| `this_class` | entity | demand | - | §11.7 |
+
+### `kiln_ast::class::VTableLayout`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `components` | value | demand | - | §11.7 |
+| `vtable_starts` | value | demand | - | §11.7 |
+| `address_points` | value | demand | - | §11.7 |
+| `thunks` | value | demand | - | §11.7 |
+| `method_thunks` | entity | demand | - | §11.7 |
+| `vbase_offset_offsets` | value | demand | - | §11.7 |
+| `method_indices` | value | demand | - | §11.7 |
+
+### `kiln_ast::class::VttComponent`
+
+`kind=struct; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `vtable_index` | value | demand | - | §11.7 |
+| `base` | value | demand | - | §11.7 |
+
+### `kiln_ast::class::CmpCategories`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `infos` | value | demand | - | §11.7 |
+
+### `kiln_ast::class::CmpCategoryInfo`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `kind` | flag | demand | - | §11.7 |
+| `record` | entity | demand | - | §11.7 |
+| `field` | entity | demand | - | §11.7 |
+| `values` | entity | demand | - | §11.7 |
+| `ints` | value | demand | - | §11.7 |
+
+### `kiln_ast::class::CmpCategory`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Partial` | flag | demand | - | §11.7 |
+| `Weak` | flag | demand | - | §11.7 |
+| `Strong` | flag | demand | - | §11.7 |
+
+### `kiln_ast::class::CmpResult`
+
+`kind=enum; pin=extra`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Equal` | flag | demand | - | §11.7: indexes `CmpCategoryInfo` `values` |
+| `Equivalent` | flag | demand | - | §11.7: indexes `CmpCategoryInfo` `values` |
+| `Less` | flag | demand | - | §11.7: indexes `CmpCategoryInfo` `values` |
+| `Greater` | flag | demand | - | §11.7: indexes `CmpCategoryInfo` `values` |
+| `Unordered` | flag | demand | - | §11.7: indexes `CmpCategoryInfo` `values` |
+
+### 10.7 Modules
+
+When `active` is set, a declaration's stream holds its owner
+(`ModuleTable::owner_of`, from the first declaration, §2.3) and, for a
+specialisation or member explicitly instantiated, the unit that holds the
+definition. When it is clear both rows have their empty form.
+
+Declarations that come from an imported unit have not been examined:
+whether they are units of the importing translation unit is in "Open
+questions".
+
+### `kiln_ast::modules::ModuleTable`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `units` | bookkeeping | out | - | arena: reached through `Owner` `unit` |
+| `points` | entity | in | record Owner? | by declaration: the owner of every declaration from an index on |
+| `active` | bookkeeping | out | - | whether ownership is tracked at all |
+| `links` | bookkeeping | out | - | state of a sema check, drained by it |
+| `explicit_defs` | entity | in | record UnitInfo? | by declaration: the unit whose text holds its explicit instantiation definition |
+
+### `kiln_ast::modules::Owner`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `unit` | entity | in | record UnitInfo | index into `ModuleTable` `units` |
+| `purview` | flag | in | bit |  |
+| `exported` | flag | in | bit |  |
+
+### `kiln_ast::modules::UnitInfo`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `key` | location | out | - | the preprocessor's key: the module name again, or a header's path |
+| `kind` | flag | in | enum UnitKind |  |
+| `module` | name | in | bytes? | the module's name |
+| `partition` | name | in | bytes? |  |
+| `imports` | entity | out | - | what the unit imports: its effect is in the names its declarations resolve |
+| `merged` | bookkeeping | out | - | ranges of declaration ids |
+
+### `kiln_ast::modules::UnitKind`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `NonModule` | flag | in | tag 1 |  |
+| `Header` | flag | in | tag 2 |  |
+| `Interface` | flag | in | tag 3 |  |
+| `Implementation` | flag | in | tag 4 |  |
+| `PartitionInterface` | flag | in | tag 5 |  |
+| `PartitionImplementation` | flag | in | tag 6 |  |
+
+### 10.8 Reflection
+
+No part of reflection is digested by the first implementation (§12). The
+tables are reached only through `ReflectionId`, which only `unsupported`
+rows hold.
+
+### `kiln_ast::reflect::Reflectee`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Null` | value | unsupported | - | reflection (§12) |
+| `Type` | value | unsupported | - | reflection (§12) |
+| `Type.0` | type | unsupported | - | reflection (§12) |
+| `Decl` | value | unsupported | - | reflection (§12) |
+| `Decl.0` | entity | unsupported | - | reflection (§12) |
+| `Namespace` | value | unsupported | - | reflection (§12) |
+| `Namespace.0` | entity | unsupported | - | reflection (§12) |
+| `NamespaceAlias` | value | unsupported | - | reflection (§12) |
+| `NamespaceAlias.0` | entity | unsupported | - | reflection (§12) |
+| `Template` | value | unsupported | - | reflection (§12) |
+| `Template.0` | entity | unsupported | - | reflection (§12) |
+| `Value` | value | unsupported | - | reflection (§12) |
+| `Value.0` | value | unsupported | - | reflection (§12) |
+| `Object` | value | unsupported | - | reflection (§12) |
+| `Object.0` | value | unsupported | - | reflection (§12) |
+| `BaseSpec` | value | unsupported | - | reflection (§12) |
+| `BaseSpec.0` | entity | unsupported | - | reflection (§12) |
+| `BaseSpec.1` | value | unsupported | - | reflection (§12) |
+| `DataMemberSpec` | value | unsupported | - | reflection (§12) |
+| `DataMemberSpec.0` | value | unsupported | - | reflection (§12) |
+| `Annotation` | value | unsupported | - | reflection (§12) |
+| `Annotation.0` | value | unsupported | - | reflection (§12) |
+| `FnParam` | value | unsupported | - | reflection (§12) |
+| `FnParam.0` | entity | unsupported | - | reflection (§12) |
+| `FnParam.1` | value | unsupported | - | reflection (§12) |
+
+### `kiln_ast::reflect::DmsDesc`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `ty` | type | unsupported | - | reflection (§12) |
+| `name` | name | unsupported | - | reflection (§12) |
+| `alignment` | value | unsupported | - | reflection (§12) |
+| `bit_width` | value | unsupported | - | reflection (§12) |
+| `nua` | flag | unsupported | - | reflection (§12) |
+| `annotations` | value | unsupported | - | reflection (§12) |
+
+### `kiln_ast::reflect::ReflectionTable`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `items` | bookkeeping | out | - | arena: reached through `ReflectionId` |
+| `map` | bookkeeping | out | - | interning |
+| `by_decl` | bookkeeping | out | - | interning |
+| `limit` | bookkeeping | out | - | a capacity |
+| `dms` | bookkeeping | out | - | arena: reached through `Reflectee` `DataMemberSpec` |
+
+### 10.9 The root
+
+Three fields of `Ast` are options of the compilation, not facts of any
+declaration: `contract_semantic`, `lang_c` and `freestanding`. They are
+not written, because both sides of a comparison are compiled by the same
+command; `digest.md` has no place for them ("Open questions").
+
+### `kiln_ast::ast::Ast`
+
+`kind=root; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `types` | bookkeeping | out | - | `TypeContext` (§4.7) |
+| `decls` | bookkeeping | out | - | `DeclArena` (§5) |
+| `exprs` | bookkeeping | out | - | `ExprArena` (§7.4) |
+| `stmts` | bookkeeping | out | - | `StmtArena` (§6) |
+| `attrs` | bookkeeping | out | - | `AttrArena` (§10.1) |
+| `annots` | bookkeeping | out | - | `AnnotArena` (§10.5) |
+| `lists` | bookkeeping | out | - | `IdLists` |
+| `strings` | bookkeeping | out | - | `StringPool` (§10.3) |
+| `names` | bookkeeping | out | - | `NameTable` (§10.2) |
+| `lookup` | bookkeeping | out | - | `LookupTables` (§5) |
+| `redecls` | bookkeeping | out | - | `RedeclTable` (§5) |
+| `templates` | bookkeeping | out | - | `TemplateTables` (§9.5) |
+| `consts` | bookkeeping | out | - | `ConstStore` (§8.1) |
+| `reflections` | bookkeeping | out | - | `ReflectionTable` (§10.8) |
+| `layouts` | value | demand | - | §11.7: `LayoutCache` (§4.7) |
+| `virtuals` | value | demand | - | §11.7 |
+| `vtables` | value | demand | - | §11.7 |
+| `cmp_categories` | value | demand | - | §11.7 |
+| `tu` | entity | out | - | the translation unit's declaration: `Parent::root` |
+| `modules` | bookkeeping | out | - | `ModuleTable` (§10.7) |
+| `contract_semantic` | flag | out | - | an option of the compilation: rule above |
+| `lang_c` | flag | out | - | an option of the compilation: rule above |
+| `freestanding` | flag | out | - | an option of the compilation: rule above |
+| `contract_sites` | value | in | record ContractSite? | by statement: written by its `ContractAssertStmt` (§6) |
+| `symbols` | bookkeeping | out | - | `Interner` |
+| `inst` | bookkeeping | out | - | `InstantiationMeter` |
+
+### `kiln_ast::ast::InstantiationMeter`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `depth` | bookkeeping | out | - | a meter of memory retained by instantiation |
+| `start` | bookkeeping | out | - |  |
+| `retained` | bookkeeping | out | - |  |
+| `count` | bookkeeping | out | - |  |
+
+### `kiln_ast::lists::IdLists`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `spans` | bookkeeping | out | - | arena: reached through `ListId` |
+| `data` | bookkeeping | out | - | arena |
+
+### `kiln_source::symbol::Interner`
+
+`kind=root; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `strings` | bookkeeping | out | - | arena: a `Symbol` is written by its spelling |
+
+### `kiln_source::symbol::Symbol`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0` | name | in | sym |  |
+
+### `kiln_source::loc::Loc`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0` | location | out | - |  |
 
 ## Tests
 
