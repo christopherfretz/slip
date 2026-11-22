@@ -1,0 +1,2 @@
+removed A::f()
+added A::f()

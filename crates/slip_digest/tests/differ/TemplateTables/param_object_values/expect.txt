@@ -1,0 +1,5 @@
+# pending
+# needs: value
+# the object's value is a constant
+changed v
+derived-changed <template_param_object>
