@@ -180,6 +180,9 @@ pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Dig
                 );
             }
         }
+        for c in &output.counters {
+            eprintln!("  counter {c:?}");
+        }
     }
     Ok(Digested { output, units, errors, diagnostics })
 }
