@@ -55,15 +55,33 @@ pub(crate) struct UnitState {
     pub local_uses: u64,
     /// Type digests that hold a reference to a local entity of this unit.
     pub types: HashMap<u64, TypeRef>,
+    /// The expression walk's state.
+    pub expr: ExprState,
+}
+
+/// The state of the expression walk in a unit (`expr.rs`): put aside with
+/// the rest of [`UnitState`] for a key, a content digest or a unit
+/// ([`Walk::take_unit`]), and alone for a type digest
+/// ([`Walk::take_expr_state`]), whose bytes must not depend on the unit
+/// that asks first.
+#[derive(Debug, Default)]
+pub(crate) struct ExprState {
     /// The number of each opaque value's source, in the order the walk
-    /// first reaches it through an `OpaqueValueExpr` (digest-kinds §7,
-    /// "Opaque values"), and the next number.
+    /// numbers it (digest-kinds §7, "Opaque values"), and the next number.
     pub opaques: HashMap<slip_kiln::kiln::ast::ExprId, u64>,
     pub next_opaque: u64,
     /// How many instantiation-dependent expressions enclose the node the
     /// expression walk is writing, itself included
     /// (`expr_core::this`).
     pub dependent: u32,
+}
+
+impl ExprState {
+    /// Nothing numbered and nothing around: the state a type digest
+    /// starts from.
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.opaques.is_empty() && self.next_opaque == 0 && self.dependent == 0
+    }
 }
 
 /// The context of one walk: the memo, the key table, the worklist and the
@@ -181,6 +199,20 @@ impl<'a> Walk<'a> {
     pub(crate) fn leave_node(&mut self) {
         debug_assert!(self.node_depth > 0, "leave_node without enter_node");
         self.node_depth -= 1;
+    }
+
+    /// The unit's state, put aside for a computation that must not depend
+    /// on the unit that asks for it (a key, a content digest, a unit),
+    /// leaving a fresh one; the caller puts it back.
+    pub(crate) fn take_unit(&mut self) -> UnitState {
+        std::mem::take(&mut self.unit)
+    }
+
+    /// The expression walk's state alone, put aside for a type digest
+    /// (memoised across units); the unit's locals stay, since a type may
+    /// name one (§4.2). The caller puts it back.
+    pub(crate) fn take_expr_state(&mut self) -> ExprState {
+        std::mem::take(&mut self.unit.expr)
     }
 
     /// Counts the bytes of a hashed stream.

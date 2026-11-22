@@ -81,7 +81,11 @@ impl Walk<'_> {
         let aborts = self.aborts;
         let uses = self.unit.local_uses;
         let mut s = Stream::new();
+        // The expression state is the unit's: a memoised type must not
+        // depend on it (`Walk::take_expr_state`).
+        let expr = self.take_expr_state();
         self.type_stream(&mut s, c, no_exc);
+        self.unit.expr = expr;
         self.leave();
         let h = s.finish(TYPE_TAG);
         let h = self.hashed(h);
@@ -102,6 +106,7 @@ impl Walk<'_> {
 
     /// The stream of canonical type `c`: `Quals`, then `enum TypeView`.
     fn type_stream(&mut self, s: &mut Stream, c: QualType, no_exc: bool) {
+        debug_assert!(self.unit.expr.is_fresh(), "a type digest starts from a fresh expression state");
         let types = &self.ast.types;
         if types.flags(c.ty()).contains(TypeFlags::CONTAINS_ERROR) {
             s.indeterminate(Cause::Error);

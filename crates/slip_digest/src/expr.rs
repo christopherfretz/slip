@@ -270,14 +270,14 @@ fn walk_items(w: &mut Walk<'_>, s: &mut Stream, first: Item) {
             }
             Item::Exec(f, e) => f(w, s, e),
             Item::OpaqueSource(e) => {
-                let unit = &mut w.unit;
+                let unit = &mut w.unit.expr;
                 if !unit.opaques.contains_key(&e) {
                     unit.opaques.insert(e, unit.next_opaque);
                     unit.next_opaque += 1;
                 }
             }
             Item::LeaveDependent => {
-                w.unit.dependent -= 1;
+                w.unit.expr.dependent -= 1;
             }
         }
     }
@@ -300,7 +300,7 @@ fn base_path(w: &mut Walk<'_>, s: &mut Stream, l: Option<ListId>) {
 /// absent after; a node without a source takes the next number.
 fn opaque(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<Item>) {
     let source = ExprId::try_new(w.ast.exprs.get(e).a());
-    let unit = &mut w.unit;
+    let unit = &mut w.unit.expr;
     let (n, first) = if let Some(n) = source.and_then(|src| unit.opaques.get(&src).copied()) {
         (n, false)
     } else {
@@ -362,7 +362,7 @@ fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out
     // Counted before the kind's rows are decided: `CXXThisExpr` reads it.
     let dependent = words.deps().contains(ExprDeps::INSTANTIATION);
     if dependent {
-        w.unit.dependent += 1;
+        w.unit.expr.dependent += 1;
     }
     w.write_type(s, n.ty);
     let tail = dispatch(w, s, e, &n, out);
@@ -465,7 +465,7 @@ fn dispatch(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec
             core::member(s, n, out);
             return Tail::Member;
         }
-        ExprKind::CXXThisExpr => core::this(s, n, w.unit.dependent > 0, out),
+        ExprKind::CXXThisExpr => core::this(s, n, w.unit.expr.dependent > 0, out),
         ExprKind::UnaryOperator => core::unary(s, n, out),
         ExprKind::BinaryOperator => core::binary(s, n, out),
         ExprKind::CompoundAssignOperator => core::compound_assign(w, s, e, n, out),
@@ -821,6 +821,34 @@ mod tests {
                     .join()
                     .expect("no panic");
             });
+        });
+    }
+
+    /// A type digest does not depend on the expression state of the unit
+    /// that asks for it first (review item 4): the same type, asked from a
+    /// unit with opaque values numbered inside a dependent expression,
+    /// gives the bytes a fresh walk gives, and the unit's state is back
+    /// after it.
+    #[test]
+    fn a_type_digest_ignores_the_expression_state() {
+        parse("struct S { int m; };\nS s;\nS *v = &s;\n", |p| {
+            let path = |_| Vec::new();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let rules = RuleTable::empty();
+            // The first expression, `s`: its type is `S`.
+            let e = ExprId::try_new(1).expect("an expression");
+            let ty = |w: &Walk<'_>| w.ast.exprs.get(e).ty();
+            let mut fresh = Walk::new(&input, &rules);
+            let q = ty(&fresh);
+            let want = fresh.type_digest(q, false);
+            let mut w = Walk::new(&input, &rules);
+            w.unit.expr.next_opaque = 3;
+            w.unit.expr.dependent = 1;
+            w.unit.expr.opaques.insert(e, 2);
+            let got = w.type_digest(q, false);
+            assert_eq!(got.digest, want.digest);
+            assert_eq!((w.unit.expr.next_opaque, w.unit.expr.dependent), (3, 1), "put back");
+            assert_eq!(w.unit.expr.opaques.len(), 1, "put back");
         });
     }
 

@@ -265,7 +265,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         w.content_hash(e)
     } else {
         let read = read_decl(w, e);
-        let saved = std::mem::take(&mut w.unit);
+        let saved = w.take_unit();
         let mut s = Stream::new();
         w.decl_stream(&mut s, read, e);
         w.unit = saved;
