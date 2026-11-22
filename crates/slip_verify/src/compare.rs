@@ -120,20 +120,25 @@ fn group_id(g: &Group) -> (GroupClass, &[u8]) {
 /// §4.1 step 1 and the definition of `G`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AtSums {
-    /// Equal `tu` digests.
+    /// Equal `tu` digests and no group with an indeterminate unit in either
+    /// image: the observer is verified (§4.1 step 1).
     Equal,
-    /// The groups, by `(class, file)`, whose sum is not the same in both
-    /// images, a group in one image only included; ascending, no two equal.
+    /// `G` (§4.1 step 2): the groups, by `(class, file)`, whose sum is not
+    /// the same in both images, a group in one image only included, and
+    /// every group of either image with an indeterminate unit; ascending,
+    /// no two equal. Returned also when the `tu` digests are equal.
     Differing(Vec<(GroupClass, Vec<u8>)>),
 }
 
 /// Compares group sums. Trusts `tu` (which `comparable` checks), and does
 /// not rely on `groups` being sorted: an id is in `Differing` when its
-/// sums `(count, digest)` in one image are not those in the other, so an
-/// id given twice in one image only is reported (and `compare_groups`
-/// rejects the duplicate) rather than hidden.
+/// sums `(count, indeterminate, digest)` in one image are not those in the
+/// other, so an id given twice in one image only is reported (and
+/// `compare_groups` rejects the duplicate) rather than hidden; and when a
+/// group of that id in either image has `indeterminate > 0`.
 pub fn at_sums(pre: &Digests, post: &Digests) -> AtSums {
-    if pre.tu == post.tu {
+    let flagged = |d: &Digests| d.groups.iter().any(|g| g.indeterminate > 0);
+    if pre.tu == post.tu && !flagged(pre) && !flagged(post) {
         return AtSums::Equal;
     }
     let (before, after) = (by_sum(pre), by_sum(post));
@@ -143,8 +148,10 @@ pub fn at_sums(pre: &Digests, post: &Digests) -> AtSums {
         &after,
         |g| group_id(g),
         |(class, file), here, there| {
-            let sum = |g: &&Group| (g.count, g.digest);
-            if !here.iter().map(sum).eq(there.iter().map(sum)) {
+            let sum = |g: &&Group| (g.count, g.indeterminate, g.digest);
+            let differs = !here.iter().map(sum).eq(there.iter().map(sum));
+            let indeterminate = here.iter().chain(there).any(|g| g.indeterminate > 0);
+            if differs || indeterminate {
                 out.push((class, file.to_vec()));
             }
         },
@@ -152,11 +159,17 @@ pub fn at_sums(pre: &Digests, post: &Digests) -> AtSums {
     AtSums::Differing(out)
 }
 
-/// The groups of `d`, sorted by `(class, file, count, digest)`.
+/// The groups of `d`, sorted by `(class, file)` and then by sum.
 fn by_sum(d: &Digests) -> Vec<&Group> {
     let mut v: Vec<&Group> = d.groups.iter().collect();
     v.sort_unstable_by(|a, b| {
-        (a.class, &a.file, a.count, a.digest).cmp(&(b.class, &b.file, b.count, b.digest))
+        (a.class, &a.file, a.count, a.indeterminate, a.digest).cmp(&(
+            b.class,
+            &b.file,
+            b.count,
+            b.indeterminate,
+            b.digest,
+        ))
     });
     v
 }
@@ -219,6 +232,8 @@ pub enum CompareError {
     BadFlags { class: GroupClass, file: Vec<u8>, post: bool },
     /// `count` is not the length of the unit list.
     CountMismatch { class: GroupClass, file: Vec<u8>, post: bool },
+    /// `indeterminate` is not the number of units with the indeterminate flag.
+    IndeterminateMismatch { class: GroupClass, file: Vec<u8>, post: bool },
     /// `digest` is not `group_digest` of the unit list.
     DigestMismatch { class: GroupClass, file: Vec<u8>, post: bool },
     /// Two groups given for one image have the same `(class, file)`.
@@ -239,6 +254,9 @@ impl fmt::Display for CompareError {
             }
             CompareError::CountMismatch { class, file, post } => {
                 ("has a count that is not its number of units", class, file, post)
+            }
+            CompareError::IndeterminateMismatch { class, file, post } => {
+                ("has an indeterminate that is not its number of flagged units", class, file, post)
             }
             CompareError::DigestMismatch { class, file, post } => {
                 ("has a digest that is not the digest of its units", class, file, post)
@@ -267,29 +285,14 @@ fn class_name(class: GroupClass) -> &'static str {
     }
 }
 
-/// One occurrence of a unit in the multiset of §3, with the file of its group.
-#[derive(Clone, Copy)]
-struct Occ<'a> {
-    key: Digest,
-    digest: Digest,
-    indeterminate: bool,
-    file: &'a [u8],
-}
-
-/// The declared multiset `D` (declared and `tu` groups) and the derived
-/// multiset `V` of one image, each sorted by `(key, digest)`.
-struct Multisets<'a> {
-    declared: Vec<Occ<'a>>,
-    derived: Vec<Occ<'a>>,
-}
-
-fn multisets<'a>(groups: &[&'a Group], post: bool) -> Result<Multisets<'a>, CompareError> {
+/// Checks the preconditions of `compare_groups` for the groups of one
+/// image, in the order of `spec/landed/verify/WP-016.md`.
+fn check_groups(groups: &[&Group], post: bool) -> Result<(), CompareError> {
     let mut ids: Vec<(GroupClass, &[u8])> = groups.iter().map(|g| group_id(g)).collect();
     ids.sort_unstable();
     if let Some(w) = ids.windows(2).find(|w| w[0] == w[1]) {
         return Err(CompareError::DuplicateGroup { class: w[0].0, file: w[0].1.to_vec(), post });
     }
-    let mut out = Multisets { declared: Vec::new(), derived: Vec::new() };
     for g in groups {
         let (class, file) = (g.class, || g.file.clone());
         let Some(units) = &g.units else {
@@ -304,64 +307,201 @@ fn multisets<'a>(groups: &[&'a Group], post: bool) -> Result<Multisets<'a>, Comp
         if u64::try_from(units.len()).ok() != Some(g.count) {
             return Err(CompareError::CountMismatch { class, file: file(), post });
         }
+        let flagged = units.iter().filter(|u| u.is_indeterminate()).count();
+        if u64::try_from(flagged).ok() != Some(g.indeterminate) {
+            return Err(CompareError::IndeterminateMismatch { class, file: file(), post });
+        }
         if group_digest(units) != g.digest {
             return Err(CompareError::DigestMismatch { class, file: file(), post });
         }
+    }
+    Ok(())
+}
+
+/// The unit list of a group `check_groups` accepted.
+fn units_of(g: &Group) -> &[Unit] {
+    match &g.units {
+        Some(units) => units,
+        None => unreachable!("compare_groups: a group without units passed check_groups"),
+    }
+}
+
+/// One occurrence of a unit in the multiset of §3, with its group's id and
+/// whether that group's units are the same in both images (§6 `file`).
+#[derive(Clone, Copy)]
+struct Occ<'a> {
+    key: Digest,
+    digest: Digest,
+    indeterminate: bool,
+    class: GroupClass,
+    file: &'a [u8],
+    /// The group's unit list is not the same in both of the images given
+    /// (a group given for one image only included).
+    differs: bool,
+}
+
+/// The declared multiset `D` (declared and `tu` groups) and the derived
+/// multiset `V` of one image, each sorted by `(key, digest)`.
+#[derive(Default)]
+struct Multisets<'a> {
+    declared: Vec<Occ<'a>>,
+    derived: Vec<Occ<'a>>,
+}
+
+impl<'a> Multisets<'a> {
+    fn add(&mut self, g: &'a Group, differs: bool) {
         // §3: declared and `tu` units form D; derived units form V.
         let target = match g.class {
-            GroupClass::Declared | GroupClass::Tu => &mut out.declared,
-            GroupClass::Derived => &mut out.derived,
+            GroupClass::Declared | GroupClass::Tu => &mut self.declared,
+            GroupClass::Derived => &mut self.derived,
         };
-        target.extend(units.iter().map(|u| Occ {
+        target.extend(units_of(g).iter().map(|u| Occ {
             key: u.key,
             digest: u.digest,
             indeterminate: u.is_indeterminate(),
+            class: g.class,
             file: &g.file,
+            differs,
         }));
     }
-    for v in [&mut out.declared, &mut out.derived] {
-        v.sort_unstable_by_key(|o| (o.key, o.digest));
+
+    fn sort(&mut self) {
+        for v in [&mut self.declared, &mut self.derived] {
+            v.sort_unstable_by_key(|o| (o.key, o.digest));
+        }
     }
-    Ok(out)
 }
 
-/// The digests of a key's run, as a multiset: the run is sorted by digest.
-fn same_digests(p: &[Occ<'_>], q: &[Occ<'_>]) -> bool {
-    p.iter().map(|o| o.digest).eq(q.iter().map(|o| o.digest))
+/// The multisets of both images, with each group paired with the group of
+/// the same `(class, file)` in the other image to know whether it differs.
+fn multisets<'a>(pre: &[&'a Group], post: &[&'a Group]) -> (Multisets<'a>, Multisets<'a>) {
+    let sorted = |groups: &[&'a Group]| {
+        let mut v: Vec<&'a Group> = groups.to_vec();
+        v.sort_unstable_by(|a, b| group_id(a).cmp(&group_id(b)));
+        v
+    };
+    let (before, after) = (sorted(pre), sorted(post));
+    let (mut p, mut q) = (Multisets::default(), Multisets::default());
+    runs(
+        &before,
+        &after,
+        |g| group_id(g),
+        |_, here, there| {
+            let differs = match (here, there) {
+                ([x], [y]) => units_of(x) != units_of(y),
+                _ => true,
+            };
+            for g in here {
+                p.add(g, differs);
+            }
+            for g in there {
+                q.add(g, differs);
+            }
+        },
+    );
+    p.sort();
+    q.sort();
+    (p, q)
 }
 
-/// A finding for `key` (§6): `file` is the smallest file of the pre-image
-/// groups holding the key, else of the post-image ones; `pre` and `post`
-/// are the digest where that image has exactly one occurrence of the key.
-fn finding(kind: FindingKind, key: Digest, p: &[Occ<'_>], q: &[Occ<'_>]) -> Finding {
-    let side = if p.is_empty() { q } else { p };
-    let file = side.iter().map(|o| o.file).min().unwrap_or_default().to_vec();
-    let only = |run: &[Occ<'_>]| match run {
-        [one] => Some(one.digest),
+/// `R(k) = P(k) − Q(k)` and `A(k) = Q(k) − P(k)` (§4 step 2), as multisets
+/// of digests; each run is sorted by digest.
+fn differences(p: &[Occ<'_>], q: &[Occ<'_>]) -> (Vec<Digest>, Vec<Digest>) {
+    let (mut only_p, mut only_q) = (Vec::new(), Vec::new());
+    let (mut at_p, mut at_q) = (0, 0);
+    while let (Some(x), Some(y)) = (p.get(at_p), q.get(at_q)) {
+        match x.digest.cmp(&y.digest) {
+            Ordering::Less => {
+                only_p.push(x.digest);
+                at_p += 1;
+            }
+            Ordering::Greater => {
+                only_q.push(y.digest);
+                at_q += 1;
+            }
+            Ordering::Equal => {
+                at_p += 1;
+                at_q += 1;
+            }
+        }
+    }
+    only_p.extend(p[at_p..].iter().map(|o| o.digest));
+    only_q.extend(q[at_q..].iter().map(|o| o.digest));
+    (only_p, only_q)
+}
+
+/// The one element of `v`, counting multiplicity; else absent.
+fn only<T: Copy>(v: &[T]) -> Option<T> {
+    match v {
+        [one] => Some(*one),
         _ => None,
+    }
+}
+
+/// The file of the first occurrence, in `(class, file)` order, that `keep`
+/// keeps.
+fn first_file<'a>(run: &[Occ<'a>], keep: impl Fn(&Occ<'a>) -> bool) -> Option<&'a [u8]> {
+    run.iter().filter(|o| keep(o)).map(|o| (o.class, o.file)).min().map(|(_, file)| file)
+}
+
+/// A finding of kind `changed`, `removed`, `added` or `derived_changed`
+/// for `key` (§6): `pre`/`post` from `R(k)`/`A(k)` when it has exactly one
+/// element; `file` from the first group that differs between the images
+/// and holds a unit of the key, in the pre-image, else in the post-image.
+fn difference(kind: FindingKind, key: Digest, p: &[Occ<'_>], q: &[Occ<'_>]) -> Finding {
+    let (r, a) = differences(p, q);
+    let file = first_file(p, |o| o.differs).or_else(|| first_file(q, |o| o.differs));
+    let Some(file) = file else {
+        unreachable!("§6: a key with a difference has a unit in a group that differs")
     };
     Finding {
         kind,
         key: Some(key),
-        file,
-        pre: only(p),
-        post: only(q),
+        file: file.to_vec(),
+        pre: only(&r),
+        post: only(&a),
+        name: String::new(),
+        location: None,
+    }
+}
+
+/// A finding of kind `indeterminate` or `derived_indeterminate` for `key`
+/// (§6): `pre`/`post` the digest of the key's indeterminate unit in that
+/// image when it has exactly one; `file` from the first group holding an
+/// indeterminate unit of the key, in the pre-image, else in the post-image.
+fn indeterminate(kind: FindingKind, key: Digest, p: &[Occ<'_>], q: &[Occ<'_>]) -> Finding {
+    let flagged = |run: &[Occ<'_>]| -> Vec<Digest> {
+        run.iter().filter(|o| o.indeterminate).map(|o| o.digest).collect()
+    };
+    let file = first_file(p, |o| o.indeterminate).or_else(|| first_file(q, |o| o.indeterminate));
+    let Some(file) = file else {
+        unreachable!("§6: an indeterminate key has an indeterminate unit")
+    };
+    Finding {
+        kind,
+        key: Some(key),
+        file: file.to_vec(),
+        pre: only(&flagged(p)),
+        post: only(&flagged(q)),
         name: String::new(),
         location: None,
     }
 }
 
 /// §4 over the unit lists of the groups given: the groups of `G` from each
-/// image (§4.1 step 2), or all of them. Every group must have its unit
-/// list, consistent with its `count` and `digest`, and no `(class, file)`
-/// may be given twice for one image; otherwise `Err`.
+/// image (§4.1 step 2), or all of them; the result is the same (§4.1).
+/// Groups are paired across the images by `(class, file)`. Every group
+/// must have its unit list, consistent with its `count`, `indeterminate`
+/// and `digest`, and no `(class, file)` may be given twice for one image;
+/// otherwise `Err`.
 pub fn compare_groups(
     pre: &[&Group],
     post: &[&Group],
     exemptions: &Exemptions,
 ) -> Result<Comparison, CompareError> {
-    let before = multisets(pre, false)?;
-    let after = multisets(post, true)?;
+    check_groups(pre, false)?;
+    check_groups(post, true)?;
+    let (before, after) = multisets(pre, post);
     let mut findings = Vec::new();
     let mut used = Vec::new();
 
@@ -373,22 +513,22 @@ pub fn compare_groups(
         |key, pk, qk| {
             // Step 1: an indeterminate unit on either side; no exemption applies.
             if pk.iter().chain(qk).any(|o| o.indeterminate) {
-                findings.push(finding(FindingKind::Indeterminate, key, pk, qk));
+                findings.push(indeterminate(FindingKind::Indeterminate, key, pk, qk));
                 return;
             }
-            // Step 2.
-            let kind = match (pk.is_empty(), qk.is_empty()) {
-                (false, false) if same_digests(pk, qk) => return,
+            // Step 2, on the differences.
+            let (r, a) = differences(pk, qk);
+            let kind = match (r.is_empty(), a.is_empty()) {
+                (true, true) => return,
                 (false, false) => FindingKind::Changed,
                 (false, true) => FindingKind::Removed,
                 (true, false) => FindingKind::Added,
-                (true, true) => unreachable!("runs: a key has a unit on some side"),
             };
             let exempt = exemptions.list_for(kind).is_some_and(|l| l.binary_search(&key).is_ok());
             if exempt {
                 used.push(key);
             } else {
-                findings.push(finding(kind, key, pk, qk));
+                findings.push(difference(kind, key, pk, qk));
             }
         },
     );
@@ -400,14 +540,19 @@ pub fn compare_groups(
         &after.derived,
         |o| o.key,
         |key, pk, qk| {
-            if qk.is_empty() {
-                only_pre += 1;
-            } else if pk.is_empty() {
-                only_post += 1;
-            } else if pk.iter().chain(qk).any(|o| o.indeterminate) {
-                findings.push(finding(FindingKind::DerivedIndeterminate, key, pk, qk));
-            } else if !same_digests(pk, qk) {
-                findings.push(finding(FindingKind::DerivedChanged, key, pk, qk));
+            // An indeterminate unit on either side, also on one side only.
+            if pk.iter().chain(qk).any(|o| o.indeterminate) {
+                findings.push(indeterminate(FindingKind::DerivedIndeterminate, key, pk, qk));
+                return;
+            }
+            let (r, a) = differences(pk, qk);
+            match (r.is_empty(), a.is_empty()) {
+                (true, true) => {}
+                (false, false) => {
+                    findings.push(difference(FindingKind::DerivedChanged, key, pk, qk));
+                }
+                (false, true) => only_pre += 1,
+                (true, false) => only_post += 1,
             }
         },
     );
@@ -443,35 +588,19 @@ pub fn verdict(comparison: Comparison, pre_shard: Digest, rules: Digest, limit: 
     }
 }
 
-/// §4.1 step 1: equal `tu` digests with `indeterminate` indeterminate
-/// units. `verified` if 0, else `mismatch` with that many unnamed
-/// `indeterminate` findings, cut to `limit`.
-pub fn verdict_at_sums(
-    indeterminate: u64,
-    pre_shard: Digest,
-    rules: Digest,
-    limit: usize,
-) -> Verdict {
-    let shown = usize::try_from(indeterminate).map_or(limit, |n| n.min(limit));
-    let unnamed = Finding {
-        kind: FindingKind::Indeterminate,
-        key: None,
-        file: Vec::new(),
-        pre: None,
-        post: None,
-        name: String::new(),
-        location: None,
-    };
+/// The verdict when `at_sums` is `Equal` (§4.1 step 1): `verified`, with
+/// no finding, no count and nothing used.
+pub fn verified(pre_shard: Digest, rules: Digest) -> Verdict {
     Verdict {
-        kind: if indeterminate == 0 { VerdictKind::Verified } else { VerdictKind::Mismatch },
+        kind: VerdictKind::Verified,
         pre: pre_shard,
         rules,
         reason: String::new(),
         only_pre: 0,
         only_post: 0,
         used: Vec::new(),
-        total: indeterminate,
-        findings: vec![unnamed; shown],
+        total: 0,
+        findings: Vec::new(),
     }
 }
 
