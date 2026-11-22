@@ -1,0 +1,169 @@
+//! `Walk`, the context of one walk, and `run`, which drives it.
+
+use std::collections::{HashMap, HashSet};
+
+use slip_kiln::kiln::ast::Ast;
+use slip_kiln::kiln::ast::ids::DeclId;
+use slip_kiln::kiln::source::SourceManager;
+use slip_model::Digest;
+use slip_model::keys::RuleTable;
+
+use crate::keys::KeyRes;
+use crate::stream::Hashed;
+use crate::types::TypeRef;
+use crate::units::{UnitClass, Written};
+use crate::{Cause, Input, Options, Output};
+
+/// How deep types, keys and declarations walked in place may nest before
+/// the unit is indeterminate (`Cause::Unaccounted("walk/depth")`). The
+/// closure `slip_kiln::snippet` runs, and the worker's walk, run outside
+/// Kiln's stack guard: this bound is what keeps the walk's own stack
+/// finite (WP-024 "what bounds the stack"). Each level is a few frames of
+/// a few hundred bytes, so 200 levels stay far below a 2 MiB thread stack.
+pub(crate) const DEPTH_LIMIT: u32 = 200;
+
+/// The cause of a walk deeper than [`DEPTH_LIMIT`].
+pub(crate) const TOO_DEEP: Cause = Cause::Unaccounted("walk/depth");
+
+/// The state of the unit being written (`spec/digest.md` §4.3).
+#[derive(Debug, Default)]
+pub(crate) struct UnitState {
+    /// Ordinals of the parameters, variables, bindings and labels met.
+    pub locals: HashMap<DeclId, u64>,
+    pub next_local: u64,
+    /// Bumped whenever a stream writes a reference to a local entity of
+    /// this unit: a type digest that did is memoised for this unit only
+    /// (§4.2).
+    pub local_uses: u64,
+    /// Type digests that hold a reference to a local entity of this unit.
+    pub types: HashMap<u64, TypeRef>,
+}
+
+/// The context of one walk: the memo, the key table, the worklist and the
+/// unit being written.
+pub(crate) struct Walk<'a> {
+    pub ast: &'a Ast,
+    pub sm: &'a SourceManager,
+    pub subject_path: &'a dyn Fn(slip_kiln::kiln::source::FileId) -> Vec<u8>,
+    pub rules: &'a RuleTable,
+    /// Type digests by the raw canonical `QualType`.
+    pub type_memo: HashMap<u32, TypeRef>,
+    /// Digests of function types written without their exception
+    /// specification (`DeclNode` `ty-type`), by raw canonical `QualType`.
+    pub type_memo_no_exc: HashMap<u32, TypeRef>,
+    /// Keys by entity (its first declaration).
+    pub keys: HashMap<DeclId, KeyRes>,
+    /// Entities whose key is being computed: a cycle is `Unaccounted`.
+    pub keys_in_progress: HashSet<DeclId>,
+    /// The unit digests of content-keyed entities, needed by their keys.
+    pub content: HashMap<DeclId, Hashed>,
+    pub content_in_progress: HashSet<DeclId>,
+    /// The scopes whose unnamed types and fields have been numbered
+    /// (`spec/digest.md` §3.3), and each one's ordinal.
+    pub ordinal_scopes: HashSet<DeclId>,
+    pub ordinal_of: HashMap<DeclId, u64>,
+    /// Entities queued as units.
+    pub queued: HashSet<DeclId>,
+    /// The worklist, in the order units are written.
+    pub queue: Vec<(DeclId, UnitClass)>,
+    pub unit: UnitState,
+    pub depth: u32,
+    /// How many times the depth limit was hit: a memo entry is not kept
+    /// for a result computed below such a hit (its cause depends on where
+    /// it was computed from).
+    pub aborts: u64,
+    /// `digest.bytes` (`spec/digest.md` §12).
+    pub bytes: u64,
+}
+
+impl std::fmt::Debug for Walk<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Walk").field("queue", &self.queue.len()).finish_non_exhaustive()
+    }
+}
+
+impl<'a> Walk<'a> {
+    pub(crate) fn new(input: &Input<'a>, rules: &'a RuleTable) -> Walk<'a> {
+        Walk {
+            ast: input.ast,
+            sm: input.sm,
+            subject_path: input.subject_path,
+            rules,
+            type_memo: HashMap::new(),
+            type_memo_no_exc: HashMap::new(),
+            keys: HashMap::new(),
+            keys_in_progress: HashSet::new(),
+            content: HashMap::new(),
+            content_in_progress: HashSet::new(),
+            ordinal_scopes: HashSet::new(),
+            ordinal_of: HashMap::new(),
+            queued: HashSet::new(),
+            queue: Vec::new(),
+            unit: UnitState::default(),
+            depth: 0,
+            aborts: 0,
+            bytes: 0,
+        }
+    }
+
+    /// Enters one level of nesting; `false` (and the level is not
+    /// entered) past [`DEPTH_LIMIT`].
+    pub(crate) fn enter(&mut self) -> bool {
+        if self.depth >= DEPTH_LIMIT {
+            self.aborts += 1;
+            return false;
+        }
+        self.depth += 1;
+        true
+    }
+
+    pub(crate) fn leave(&mut self) {
+        debug_assert!(self.depth > 0, "leave without enter");
+        self.depth -= 1;
+    }
+
+    /// Counts the bytes of a hashed stream.
+    pub(crate) fn hashed(&mut self, h: Hashed) -> Hashed {
+        self.bytes += h.bytes;
+        h
+    }
+
+    /// Queues `e` as a unit of class `class` unless it is queued already.
+    pub(crate) fn enqueue(&mut self, e: DeclId, class: UnitClass) {
+        if self.queued.insert(e) {
+            self.queue.push((e, class));
+        }
+    }
+}
+
+/// The walk: units, then collisions, groups, counters, causes and names.
+pub(crate) fn run(input: &Input<'_>, options: &Options<'_>) -> Output {
+    let mut w = Walk::new(input, options.rules);
+    crate::units::collect(&mut w);
+    let mut written: Vec<Written> = Vec::new();
+    let mut i = 0;
+    while i < w.queue.len() {
+        let (e, class) = w.queue[i];
+        i += 1;
+        if let Some(u) = crate::units::write(&mut w, e, class) {
+            written.push(u);
+        }
+    }
+    written.push(crate::units::order_unit(&mut w));
+    let collisions = crate::units::mark_collisions(&mut written);
+    let names = if options.names { crate::names::names(&w, &written) } else { Vec::new() };
+    let (digests, totals) = crate::groups::build(&written, &options.detail);
+    let causes = causes(&written);
+    let counters = crate::groups::counters(&totals, collisions, w.bytes, &causes);
+    Output { digests, counters, causes, names }
+}
+
+/// One cause per indeterminate key: of the unit first in `(key, digest)`
+/// order.
+fn causes(written: &[Written]) -> Vec<(Digest, Cause)> {
+    let mut out: Vec<(Digest, Digest, Cause)> =
+        written.iter().filter_map(|u| u.cause.map(|c| (u.key, u.digest, c))).collect();
+    out.sort();
+    out.dedup_by(|b, a| a.0 == b.0);
+    out.into_iter().map(|(k, _, c)| (k, c)).collect()
+}
