@@ -332,9 +332,6 @@ impl Walk<'_> {
                     return self.spec_key(template, Some(params), args);
                 }
             }
-            Some((TemplLinkKind::DependentFriend, _)) => {
-                return Err(Some(Cause::Unsupported("TemplLinkKind/DependentFriend")));
-            }
             Some((TemplLinkKind::Pattern | TemplLinkKind::MemberOfSpecialization, _)) | None => {}
         }
         let kind = match kind_info.role {
