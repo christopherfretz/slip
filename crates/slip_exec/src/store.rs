@@ -48,7 +48,7 @@ pub enum Access {
 }
 
 /// Why a store operation failed. All of these are `Input` errors of the
-/// command (`spec/exec.md` §8.1, status 3).
+/// command (`spec/exec.md` §8.5, status 3).
 #[derive(Debug)]
 pub enum StoreError {
     /// The directory is not empty and has no `VERSION` (or is not a

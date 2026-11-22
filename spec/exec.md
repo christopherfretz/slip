@@ -90,8 +90,8 @@ Ids are 64 hexadecimal digits (`spec/model.md` §3); `<phase>` is `map` or
 - **Publishing validates.** `publish_plan` requires a valid `PLAN` file and
   names it by its content id; `publish_shard` a valid `SHRD` whose header
   names the observer, phase and round given; `publish_run` a valid `RUNR`
-  whose `plan`, `phase` and `started_unix_ns` are the ones given (it holds
-  no round). Anything else is `Invalid` and nothing is written. The `read_*`
+  whose `plan`, `phase`, `round` and `started_unix_ns` are the ones given.
+  Anything else is `Invalid` and nothing is written. The `read_*`
   methods and `latest_run` return the bytes unvalidated; `None` when the
   file does not exist. Files are not `fsync`ed.
 - **The lock** holds `<pid>\n`. It is written in full under `tmp/` and
@@ -1129,6 +1129,9 @@ pub fn main(args: &WorkerArgs) -> ExitCode;
   later a transform compilation per observer.
 - Cache keys for shards (command, input digests, transform, tool version)
   replace the plan-id directory in M5.
+- The wrapper of §4 applies the address-space cap after the child has
+  started, so a child runs for a moment without it, and a sample taken
+  then reads its limit as unlimited.
 - Dropping a `Child` that was not reaped waits for it without a bound after
   `SIGKILL`; a child stuck in the kernel would hang its owner.
 - Killing a process group starts a `kill` process, since std has no safe
