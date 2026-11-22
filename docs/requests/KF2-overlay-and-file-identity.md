@@ -1,6 +1,7 @@
 # KF2 — an overlay the front end reads through, and file identity
 
-A request from Slip to Kiln. Status: **draft, not sent.**
+A request from Slip to Kiln. Status: **sent 2026-11-22**; waiting for
+Kiln's answers to §3.2 and §3.4 and its choice in §6.
 Context: [05-kiln-interface.md](../design/05-kiln-interface.md) §3 (row KF2)
 and §5 (Slip prototypes KF2 on a Kiln branch, Kiln reviews and lands it);
 [spec/edits.md](../../spec/edits.md) §7.1 and
