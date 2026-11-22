@@ -922,6 +922,54 @@ mod tests {
         });
     }
 
+    // WP-032: a friend of a local class in an instantiated member
+    // function. The local class has no `SpecInfo` or `MemberSpecInfo` of
+    // its own, so whether it is in an implicit instantiation is asked of
+    // its contexts (`in_implicit_instantiation`).
+    #[test]
+    fn friend_of_local_class_in_instantiation_is_outside() {
+        let src = "template <class T> struct A {\n\
+                     int m() { void r(int); struct L { friend void r(int); }; return 0; }\n\
+                   };\n\
+                   int u = A<int>().m();\n";
+        with_walk(src, |w| {
+            let rs = named(w, "r", DeclKind::Function);
+            let local: Vec<DeclId> = rs
+                .iter()
+                .copied()
+                .filter(|&d| {
+                    let lex = w.ast.decls.lexical_ctx(d);
+                    lex != w.ast.decls.get(d).ctx()
+                        && lex.is_some_and(|c| super::own_spec_kind(w, c).is_none())
+                        && lex.is_some_and(|c| super::in_implicit_instantiation(w, c))
+                })
+                .collect();
+            assert_eq!(local.len(), 1, "the instantiated local class's friend: {rs:?}");
+            assert!(instantiated_outside_class(w, local[0]));
+        });
+    }
+
+    // WP-032 rule 3: the canonical candidate is the declaration whose
+    // declaring class specialisation has the least mapped key, by bytes.
+    #[test]
+    fn canonical_candidate_has_least_key() {
+        let src = "template <class T> struct A { friend void j(long); };\n\
+                   template <class T> struct C { friend void j(long); };\n\
+                   A<int> a;\nC<int> c;\nA<long> b;\n";
+        with_walk(src, |w| {
+            let js = named(w, "j", DeclKind::Function);
+            let j = w.entity(*js.last().expect("A<long>'s j"));
+            let chain = w.chain(j);
+            assert_eq!(chain.len(), 3);
+            let key = |w: &mut Walk<'_>, d: DeclId| {
+                let c = w.ast.decls.lexical_ctx(d).expect("a class");
+                w.key_bytes(c).expect("a key")
+            };
+            let least = chain.iter().copied().min_by_key(|&d| key(w, d)).expect("a candidate");
+            assert_eq!(super::canonical_decl(w, j), least);
+        });
+    }
+
     // WP-032 rules 1 and 2: `k` is declared first by an instantiation and
     // then in source: a declared unit, classified from the written
     // declaration. `j` exists only through the instantiations: derived, of
