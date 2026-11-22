@@ -1,0 +1,8 @@
+# pending
+# needs: decl_data
+# the `templ` row is written by the payload records (decl_func.rs, decl_class.rs)
+# the kind changes only together with the key: a pattern, a
+# specialisation, a partial specialisation and a declaration with no link
+# are different entities (no edit isolates the row; landed WP-029)
+removed S<int *>
+added S<type-parameter-0-0 *>

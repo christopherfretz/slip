@@ -1,0 +1,4 @@
+# the clause is also in the function's discriminator (digest-kinds §3.3):
+# the row changes only together with the key (landed WP-029)
+removed A::f()
+added A::f()
