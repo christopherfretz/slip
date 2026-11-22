@@ -155,14 +155,19 @@ fn rejected(message: &str) -> Outcome {
 }
 
 /// Runs `kiln_driver::run_as` on a thread of its own with the stack size
-/// the command asks for (`-fkiln-stack-size=`, else Kiln's default), as the
-/// `kiln` executable does. Returns the exit status; a panic is an `Err`.
+/// the command asks for (`-fkiln-stack-size=`, else Kiln's default), with
+/// Kiln's stack guard installed on it, as the `kiln` executable does.
+/// Returns the exit status; a panic is an `Err`.
 fn run_front_end(argv0: String, line: Vec<String>, counter: diags::Counter) -> Result<i32, String> {
     let size = kiln_driver::templ_opts::stack_size_of(&line);
     let handle = std::thread::Builder::new()
         .name("kiln".into())
         .stack_size(size)
         .spawn(move || {
+            // As the `kiln` executable's compile thread does: deep recursion
+            // becomes Kiln's fatal diagnostic instead of a stack overflow
+            // that aborts the worker.
+            kiln_sema::stack_guard::StackGuard::install(size);
             let io = Io {
                 stdout: Box::new(io::sink()),
                 stderr: SharedWriter::new(counter),

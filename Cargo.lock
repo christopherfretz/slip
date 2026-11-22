@@ -233,6 +233,7 @@ name = "slip_kiln"
 version = "0.0.0"
 dependencies = [
  "kiln_driver",
+ "kiln_sema",
  "slip_cdb",
  "slip_model",
 ]
