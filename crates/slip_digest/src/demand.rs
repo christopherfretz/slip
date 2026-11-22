@@ -29,10 +29,10 @@
 //! first unit of an entity indeterminate, which is the owner (the walk
 //! appends resolved units after it).
 
-use slip_kiln::kiln::ast::types::TypeView;
-use slip_kiln::kiln::ast::{DeclId, QualType};
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, Defaulted};
 use slip_kiln::kiln::ast::templates::SpecKind;
+use slip_kiln::kiln::ast::types::TypeView;
+use slip_kiln::kiln::ast::{DeclId, QualType};
 use slip_model::digests::GroupClass;
 use slip_model::keys::{DISC_TAG, Key, KeyKind, Name, Parent};
 
@@ -269,11 +269,9 @@ pub(crate) fn defining_declaration(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
             .filter(|&d| !w.is_local_extern(d) && !crate::units::in_templated_body(w, d))
             .collect();
         chain.reverse();
-        return chain
-            .iter()
-            .copied()
-            .find(|&d| crate::units::is_var_definition(w, d))
-            .or_else(|| chain.iter().copied().find(|&d| ast.decls.var(d).is_some_and(|v| v.init.is_some())));
+        return chain.iter().copied().find(|&d| crate::units::is_var_definition(w, d)).or_else(
+            || chain.iter().copied().find(|&d| ast.decls.var(d).is_some_and(|v| v.init.is_some())),
+        );
     }
     if ast.decls.record(rep).is_some() || ast.decls.enumeration(rep).is_some() {
         return ast.definition(rep);
@@ -471,13 +469,10 @@ pub(crate) fn definition_class(w: &Walk<'_>, e: DeclId) -> bool {
     }
     let kind = ast.decls.get(e).kind();
     if crate::keys::info(kind).function || kind == DeclKind::CXXDeductionGuide {
-        let all_implicit =
-            w.redecls(e).iter().all(|&x| ast.decls.get(x).has(DeclFlags::IMPLICIT));
+        let all_implicit = w.redecls(e).iter().all(|&x| ast.decls.get(x).has(DeclFlags::IMPLICIT));
         let first = w.representative(e);
-        let defaulted_first = ast
-            .decls
-            .function(first)
-            .is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
+        let defaulted_first =
+            ast.decls.function(first).is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
         if all_implicit || defaulted_first {
             return true;
         }

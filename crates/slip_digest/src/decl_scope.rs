@@ -20,12 +20,12 @@ use slip_kiln::kiln::ast::fp::FpOverride;
 use slip_kiln::kiln::ast::slot::ColdMap;
 use slip_kiln::kiln::ast::{DeclId, StmtId};
 
+use crate::Cause;
 use crate::keys::{Role, info};
 use crate::refs::REF_NONE;
 use crate::stream::{FlagWord, Stream};
 use crate::tables::friend_target;
 use crate::walk::Walk;
-use crate::Cause;
 
 /// `NamespaceData` `flags` holds a bit no row names.
 const NAMESPACE_FLAGS: Cause = Cause::Unaccounted("NamespaceData/flags");

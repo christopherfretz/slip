@@ -196,9 +196,7 @@ pub(crate) fn enum_definition(w: &mut Walk<'_>, s: &mut Stream, def: DeclId) {
         return;
     };
     enum_rows(w, s, def, int_type, promotion_type);
-    s.flags(
-        FlagWord::new().bit(flags & EnumData::FIXED != 0).bit(flags & EnumData::COMPLETE != 0),
-    );
+    s.flags(FlagWord::new().bit(flags & EnumData::FIXED != 0).bit(flags & EnumData::COMPLETE != 0));
 }
 
 /// `EnumeratorData`.

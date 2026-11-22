@@ -11,12 +11,12 @@ use slip_kiln::kiln::ast::templates::{
 use slip_kiln::kiln::ast::types::{ArgView, TemplateArg};
 use slip_kiln::kiln::ast::{DeclId, ExprId, TemplateParamListId};
 
+use crate::Cause;
 use crate::keys::{Role, info};
 use crate::refs::{REF_NONE, REF_PARAM};
 use crate::stream::{FlagWord, Stream};
 use crate::tables::{arg_view, spec_kind, templ_link_kind, ttp_kind};
 use crate::walk::{TOO_DEEP, Walk};
-use crate::Cause;
 
 /// The specialisation kind that governs declaration `d`: the first kind
 /// found climbing from `d` through its lexical contexts, where each step

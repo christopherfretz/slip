@@ -530,9 +530,10 @@ pub(crate) fn var_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: D
         return;
     };
     let (init, style) = match init_holder(w, e) {
-        Ok(Some(holder)) => {
-            ast.decls.var(holder).map_or((v.init, v.spec.init_style()), |h| (h.init, h.spec.init_style()))
-        }
+        Ok(Some(holder)) => ast
+            .decls
+            .var(holder)
+            .map_or((v.init, v.spec.init_style()), |h| (h.init, h.spec.init_style())),
         Ok(None) => (v.init, v.spec.init_style()),
         Err(()) => {
             s.indeterminate(TWO_INITS);
@@ -921,8 +922,7 @@ pub(crate) mod tests {
                 assert_eq!(cause, None);
                 let e = w.entity(inst);
                 assert_eq!(crate::demand::defining_declaration(w, e), Some(inst));
-                let (def, cause) =
-                    written(w, |w, s| super::function_definition(w, s, e, inst));
+                let (def, cause) = written(w, |w, s| super::function_definition(w, s, e, inst));
                 assert_ne!(cause, Some(Cause::Pending(crate::Area::Demand)));
                 assert_ne!(bytes, def);
             },
