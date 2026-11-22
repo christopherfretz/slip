@@ -264,8 +264,6 @@ enum Event {
 /// Where a worker's standard error goes: the current attempt's log.
 type LogSink = Arc<Mutex<Option<File>>>;
 
-// Independent facts about one process, each set once by its own event.
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 struct Worker {
     serial: u64,
@@ -277,7 +275,8 @@ struct Worker {
     /// Jobs given to it.
     served: u64,
     job: Option<Attempt>,
-    stdout_done: bool,
+    /// When its output ended.
+    stdout_done_at: Option<Instant>,
     stderr_done: bool,
     status: Option<ExitStatus>,
     reaped_at: Option<Instant>,
@@ -516,7 +515,7 @@ impl Coordinator<'_> {
             Event::Message { worker, message } => self.on_message(worker, message)?,
             Event::Stdout { worker } => {
                 if let Some(w) = self.workers.iter_mut().find(|w| w.serial == worker) {
-                    w.stdout_done = true;
+                    w.stdout_done_at = Some(Instant::now());
                 }
             }
             Event::Stderr { worker } => {
@@ -700,7 +699,7 @@ impl Coordinator<'_> {
             ready: false,
             served: 0,
             job: None,
-            stdout_done: false,
+            stdout_done_at: None,
             stderr_done: false,
             status: None,
             reaped_at: None,
@@ -894,16 +893,25 @@ impl Coordinator<'_> {
                 if let Some(s) = w.child.try_wait()? {
                     w.status = Some(s);
                     w.reaped_at = Some(Instant::now());
-                } else if w.closed_at.is_some_and(|t| t.elapsed() >= EXIT_GRACE) {
+                } else if w.closed_at.is_some_and(|t| t.elapsed() >= EXIT_GRACE)
+                    || w.stdout_done_at.is_some_and(|t| t.elapsed() >= PIPE_GRACE)
+                {
+                    // Closed and not exiting, or its output ended and it
+                    // goes on running: it can never answer.
                     w.child.kill(Killed::Signal);
                 }
             }
-            let gone = w
-                .reaped_at
-                .is_some_and(|t| (w.stdout_done && w.stderr_done) || t.elapsed() >= PIPE_GRACE);
+            let gone = w.reaped_at.is_some_and(|t| {
+                (w.stdout_done_at.is_some() && w.stderr_done) || t.elapsed() >= PIPE_GRACE
+            });
             if !gone {
                 i += 1;
                 continue;
+            }
+            if self.is_cancelled() {
+                // Killed by the signal path, perhaps: the attempt is
+                // cancelled, not crashed (`abandon` records it).
+                return Err(PoolError::Cancelled);
             }
             let mut w = self.workers.swap_remove(i);
             *w.log.lock().unwrap_or_else(PoisonError::into_inner) = None;
@@ -1155,13 +1163,13 @@ impl Worker {
             && self.input.is_some()
             && !self.spent
             && self.status.is_none()
-            && !self.stdout_done
+            && self.stdout_done_at.is_none()
     }
 
     /// Known to be on its way out: the loop polls it more often.
     fn ending(&self) -> bool {
         self.reaped_at.is_some()
-            || self.stdout_done
+            || self.stdout_done_at.is_some()
             || self.closed_at.is_some()
             || self.job.as_ref().is_some_and(|a| a.ending.is_some())
     }
