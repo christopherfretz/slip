@@ -138,12 +138,17 @@ pub fn at_sums(pre: &Digests, post: &Digests) -> AtSums {
     }
     let (before, after) = (by_sum(pre), by_sum(post));
     let mut out: Vec<(GroupClass, Vec<u8>)> = Vec::new();
-    runs(&before, &after, |g| group_id(g), |(class, file), here, there| {
-        let sum = |g: &&Group| (g.count, g.digest);
-        if !here.iter().map(sum).eq(there.iter().map(sum)) {
-            out.push((class, file.to_vec()));
-        }
-    });
+    runs(
+        &before,
+        &after,
+        |g| group_id(g),
+        |(class, file), here, there| {
+            let sum = |g: &&Group| (g.count, g.digest);
+            if !here.iter().map(sum).eq(there.iter().map(sum)) {
+                out.push((class, file.to_vec()));
+            }
+        },
+    );
     AtSums::Differing(out)
 }
 
@@ -360,41 +365,51 @@ pub fn compare_groups(
     let mut used = Vec::new();
 
     // §4 steps 1 and 2, over D.
-    runs(&before.declared, &after.declared, |o| o.key, |key, pk, qk| {
-        // Step 1: an indeterminate unit on either side; no exemption applies.
-        if pk.iter().chain(qk).any(|o| o.indeterminate) {
-            findings.push(finding(FindingKind::Indeterminate, key, pk, qk));
-            return;
-        }
-        // Step 2.
-        let kind = match (pk.is_empty(), qk.is_empty()) {
-            (false, false) if same_digests(pk, qk) => return,
-            (false, false) => FindingKind::Changed,
-            (false, true) => FindingKind::Removed,
-            (true, false) => FindingKind::Added,
-            (true, true) => unreachable!("runs: a key has a unit on some side"),
-        };
-        let exempt = exemptions.list_for(kind).is_some_and(|l| l.binary_search(&key).is_ok());
-        if exempt {
-            used.push(key);
-        } else {
-            findings.push(finding(kind, key, pk, qk));
-        }
-    });
+    runs(
+        &before.declared,
+        &after.declared,
+        |o| o.key,
+        |key, pk, qk| {
+            // Step 1: an indeterminate unit on either side; no exemption applies.
+            if pk.iter().chain(qk).any(|o| o.indeterminate) {
+                findings.push(finding(FindingKind::Indeterminate, key, pk, qk));
+                return;
+            }
+            // Step 2.
+            let kind = match (pk.is_empty(), qk.is_empty()) {
+                (false, false) if same_digests(pk, qk) => return,
+                (false, false) => FindingKind::Changed,
+                (false, true) => FindingKind::Removed,
+                (true, false) => FindingKind::Added,
+                (true, true) => unreachable!("runs: a key has a unit on some side"),
+            };
+            let exempt = exemptions.list_for(kind).is_some_and(|l| l.binary_search(&key).is_ok());
+            if exempt {
+                used.push(key);
+            } else {
+                findings.push(finding(kind, key, pk, qk));
+            }
+        },
+    );
 
     // §4 step 3, over V. No exemption applies to a derived key.
     let (mut only_pre, mut only_post) = (0u64, 0u64);
-    runs(&before.derived, &after.derived, |o| o.key, |key, pk, qk| {
-        if qk.is_empty() {
-            only_pre += 1;
-        } else if pk.is_empty() {
-            only_post += 1;
-        } else if pk.iter().chain(qk).any(|o| o.indeterminate) {
-            findings.push(finding(FindingKind::DerivedIndeterminate, key, pk, qk));
-        } else if !same_digests(pk, qk) {
-            findings.push(finding(FindingKind::DerivedChanged, key, pk, qk));
-        }
-    });
+    runs(
+        &before.derived,
+        &after.derived,
+        |o| o.key,
+        |key, pk, qk| {
+            if qk.is_empty() {
+                only_pre += 1;
+            } else if pk.is_empty() {
+                only_post += 1;
+            } else if pk.iter().chain(qk).any(|o| o.indeterminate) {
+                findings.push(finding(FindingKind::DerivedIndeterminate, key, pk, qk));
+            } else if !same_digests(pk, qk) {
+                findings.push(finding(FindingKind::DerivedChanged, key, pk, qk));
+            }
+        },
+    );
 
     findings.sort_by(|a, b| (a.kind, &a.file, a.key).cmp(&(b.kind, &b.file, b.key)));
     // Each key is visited once in D, so `used` has no two equal; it is in
@@ -430,7 +445,12 @@ pub fn verdict(comparison: Comparison, pre_shard: Digest, rules: Digest, limit: 
 /// §4.1 step 1: equal `tu` digests with `indeterminate` indeterminate
 /// units. `verified` if 0, else `mismatch` with that many unnamed
 /// `indeterminate` findings, cut to `limit`.
-pub fn verdict_at_sums(indeterminate: u64, pre_shard: Digest, rules: Digest, limit: usize) -> Verdict {
+pub fn verdict_at_sums(
+    indeterminate: u64,
+    pre_shard: Digest,
+    rules: Digest,
+    limit: usize,
+) -> Verdict {
     let shown = usize::try_from(indeterminate).map_or(limit, |n| n.min(limit));
     let unnamed = Finding {
         kind: FindingKind::Indeterminate,
