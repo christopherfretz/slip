@@ -8,10 +8,10 @@ use slip_model::Digest;
 use slip_model::digests::GroupClass;
 use slip_model::keys::{Key, KeyKind, Name, Parent};
 
+use crate::Cause;
 use crate::keys::{KeyRes, Role, info};
 use crate::stream::{Stream, UNIT_TAG};
 use crate::walk::Walk;
-use crate::{Area, Cause};
 
 /// How many declarations of one entity are read; a longer chain is
 /// `Unaccounted("redecls/limit")`.
@@ -403,7 +403,7 @@ pub(crate) fn merge(prev: Option<Cause>, c: Cause) -> Cause {
 pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
     let key = Key { kind: KeyKind::Order, parent: Parent::Root, name: Name::Order, disc: None };
     let mut s = Stream::new();
-    s.pending(Area::Order);
+    crate::order::write(w, &mut s);
     let h = s.finish(UNIT_TAG);
     let h = w.hashed(h);
     let key = w.rules.map(key);

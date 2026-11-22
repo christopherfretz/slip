@@ -1,0 +1,4 @@
+# Kiln tracks ownership when a line of the main file starts with `module`, `import` or
+# `export`, even one the preprocessor skips (kiln_pp/src/modules.rs:403): side B is a
+# translation unit that is not a module unit, with ownership tracked
+changed x

@@ -70,13 +70,14 @@
 //! | `units::defining_decl(w, e)` | nothing: the defining declaration of a variable ([basic.def]) or Kiln's `definition` of another entity |
 //! | `Walk::linkage_spec(d, all)` (`keys.rs`) | nothing: the innermost `LinkageSpec` around `d` and its language (`None` for an unknown byte), through namespaces only unless `all` |
 //! | `decl_class::{typedef_data, enum_data, enumerator_data, record_data, field_data}(w, s, d)` | one `record T` of §5.5 each: pending (`Area::DeclData`) |
-//! | `decl_scope::{friend_target, namespace_data, static_assert_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.6 each, and the rows of `ColdDeclData` (§5.7): pending (`Area::DeclData`) |
+//! | `decl_scope::{friend_target, namespace_data, static_assert_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.6 each, and the rows of `ColdDeclData` (§5.7), each map read from the declaration Kiln keys it by; `CtorInit` records pending (`Area::DeclData`) until `decl_class::ctor_init` |
 //! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1), which brings in `SpecInfo`, `MemberSpecInfo` or `PartialSpecInfo` (§9.4) |
 //! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5), each in its empty form when absent |
 //! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4): pending (`Area::Local`) |
 //! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1): pending (`Area::Stmt`) |
 //! | `attrs::decl_attrs(w, s, d)` | pending (`Area::Attrs`) |
-//! | `other::module_rows(w, s, d)` | pending (`Area::Other`) |
+//! | `other::module_rows(w, s, d)` | the rows `points` and `explicit_defs` of `ModuleTable` (§10.7), from the first declaration; empty forms when ownership is not tracked |
+//! | `order::write(w, s)` | the order unit's stream (digest §2.1): the keys of the variable definitions at namespace and class scope in order, then the translation unit's imports (§10.7) |
 //! | `templ::decl_maps(w, s, d)` | the `in` rows of `TemplateTables` keyed by `DeclId` (§9.5), each in its empty form when absent |
 //! | `templ::param_object(w, s, d)` | the value of a `TemplateParamObject` (`param_object_values`), at its `data` position |
 //!
@@ -141,6 +142,7 @@ mod groups;
 mod keys;
 mod local;
 mod names;
+mod order;
 mod other;
 mod refs;
 mod stmt;

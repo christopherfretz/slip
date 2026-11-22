@@ -399,7 +399,7 @@ fn order_unit_key() {
     let o = walk(&[("main.cpp", "int x;\n")]);
     let k = Key { kind: KeyKind::Order, parent: Parent::Root, name: Name::Order, disc: None };
     assert_eq!(key_of(&o, "<order>"), k.id());
-    assert!(o.causes.contains(&(k.id(), Cause::Pending(crate::Area::Order))));
+    assert!(!o.causes.iter().any(|(id, _)| *id == k.id()), "the order unit is written (WP-033)");
 }
 
 /// Runs `f` on a walk over `src` (one file, `main.cpp`), with the AST.

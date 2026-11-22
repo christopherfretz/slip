@@ -1,0 +1,3 @@
+changed X
+removed X::<friend>
+added X::<friend>

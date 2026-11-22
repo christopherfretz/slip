@@ -1,7 +1,9 @@
 //! Demand independence (`spec/digest.md` §14): every key in both sides has
 //! the same digests and flags, and the declared keys only B has are
 //! exactly the `added` lines (none if there are none); A has no declared
-//! key B lacks.
+//! key B lacks. The one other line allowed is `changed <order>`: an added
+//! variable definition is listed by the order unit (digest §2.1), which
+//! then differs, and must (WP-033).
 
 mod common;
 
@@ -21,17 +23,23 @@ fn one(dir: &Path) -> Result<(), String> {
             problems.push(format!("side {side}: indeterminate {u}"));
         }
     }
+    let order = Expect::Changed("<order>".to_owned());
+    let order_changes = expect.contains(&order);
     for (k, ua) in &a.units {
-        if let Some(ub) = b.units.get(k)
-            && ua != ub
-        {
-            problems.push(format!("differs: {}", a.name(k)));
+        let name = a.name(k);
+        let differs = b.units.get(k).is_some_and(|ub| ua != ub);
+        if name == "<order>" && order_changes {
+            if !differs {
+                problems.push("expected but not seen: changed <order>".to_owned());
+            }
+        } else if differs {
+            problems.push(format!("differs: {name}"));
         }
     }
-    if let Some(e) = expect.iter().find(|e| !matches!(e, Expect::Added(_))) {
-        return Err(format!("{e:?}: a demand test has `added` lines only"));
+    if let Some(e) = expect.iter().find(|e| !matches!(e, Expect::Added(_)) && **e != order) {
+        return Err(format!("{e:?}: a demand test has `added` lines and `changed <order>` only"));
     }
-    let added: BTreeSet<Expect> = expect;
+    let added: BTreeSet<Expect> = expect.into_iter().filter(|e| *e != order).collect();
     let declared = |d: &common::Digested, other: &common::Digested| -> BTreeSet<String> {
         d.units
             .iter()
