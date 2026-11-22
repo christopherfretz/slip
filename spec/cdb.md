@@ -240,6 +240,12 @@ files, the front-end check, and the tool versions.
   include directories in the real build. Kiln finds a toolchain its own way.
   How Slip detects and reports a mismatch between the two belongs to the
   front-end adapter and is not specified yet.
+- Kiln reads no include-path environment variable (`CPATH`,
+  `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `SDKROOT`), on purpose. A
+  database does not record the environment of the build, so a build that
+  depends on one of them parses differently under Slip and nothing says
+  so. A warning, or a refusal, when one is set where `slip plan` runs is
+  the candidate rule.
 - Entries with several inputs, and `-x` appearing more than once.
 - Windows command lines (`cl`, and the Windows splitting rules).
 - The joined form `-o<x>` also matches clang's `-objcmt-…` migration options

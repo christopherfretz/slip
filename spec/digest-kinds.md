@@ -1752,7 +1752,7 @@ A function's stream also holds its language linkage (`ScopeData`,
 | `0-virtual-written` | written | out | - | whether `virtual` was written; `0-virtual` is the fact |
 | `0-storage-inherited` | written | out | - | whether the storage class was written here or inherited from the first declaration; `0-storage` is the fact |
 | `0-not-selected` | flag | in | bit |  |
-| `0-return-deduced` | flag | in | bit |  |
+| `0-return-deduced` | flag | in | bit | in `definition` for a function of the definition class (§11.9) |
 
 ### `kiln_ast::decl::FnStorage`
 
@@ -1822,14 +1822,14 @@ A variable's stream also holds its language linkage (`ScopeData`,
 |---|---|---|---|---|
 | `0-storage` | flag | in | enum VarStorage | bits 0-2 |
 | `0-tls` | flag | in | enum TlsKind | bits 3-4 |
-| `0-init-style` | flag | in | enum InitStyle | bits 5-6; it selects the form of initialisation |
+| `0-init-style` | flag | in | enum InitStyle | bits 5-6; it selects the form of initialisation. In `definition` for a variable of the definition class (§11.9) |
 | `0-constexpr` | flag | in | bit |  |
 | `0-constinit` | flag | in | bit |  |
-| `0-inline` | flag | in | bit |  |
+| `0-inline` | flag | in | bit | in `definition` for a variable of the definition class (§11.9) |
 | `0-nrvo` | flag | in | bit |  |
 | `0-exception-var` | flag | in | bit |  |
 | `0-cxx-for-range` | flag | in | bit |  |
-| `0-inline-implied` | flag | in | bit |  |
+| `0-inline-implied` | flag | in | bit | as `0-inline` |
 
 ### `kiln_ast::decl::VarStorage`
 
@@ -1891,7 +1891,7 @@ A variable's stream also holds its language linkage (`ScopeData`,
 |---|---|---|---|---|
 | `extending` | entity | in | ref |  |
 | `mangling_index` | value | in | uv | part of the temporary's symbol name |
-| `value` | value | demand | - | §11.3: frozen when the extending variable's initialiser is evaluated; written in that variable's `resolved` unit `value` |
+| `value` | value | demand | - | §11.3: written once, by a strict evaluation whose result points at the temporary; written in the extending variable's `resolved` unit `value` |
 
 ### 5.5 Classes and enumerations
 
@@ -2177,7 +2177,7 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `delete_message` | child | in | child? |  |
 | `explicit_expr` | child | in | child? |  |
 | `ctor_inits` | child | in | record CtorInit* |  |
-| `overrides` | entity | in | ref*sorted | the functions this one overrides: filled when the member is declared, also for an implicitly declared one (§11.5) |
+| `overrides` | entity | in | ref*sorted | the functions this one overrides: filled when the member is declared, also for an implicitly declared one (§11.5). Read from the first declaration, whose list a redeclaration copies |
 | `friends` | entity | in | key*sorted | the class's `Friend` units |
 | `key_function` | entity | demand | - | §11.5 |
 | `dtor_delete` | entity | demand | - | §11.5 |
@@ -4821,9 +4821,20 @@ function body the unit is the function, its semantic context. For a
 closure outside a function body the context is the namespace or class, and
 the unit is found from `LambdaMangling` `context` where Kiln stores one,
 and otherwise by numbering the units of that scope whose streams hold
-expressions outside function bodies ("Questions for Kiln" asks for the
-query). A closure no unit's walk declares makes the unit that names it
-indeterminate.
+expressions outside function bodies. A closure no unit's walk declares
+makes the unit that names it indeterminate.
+
+Kiln stores a context for a lambda in a default argument of a member
+function (the parameter), in a default member initialiser (the field),
+in the initialiser of an inline or templated namespace-scope variable
+(the variable), and in the signature of a function template during
+deduction (the pattern). It stores none for a lambda in a default
+template argument (numbered in the enclosing scope), in a `decltype` of
+a signature that is not a template's, in a requires-clause, in an alias
+template, in a default argument of a namespace-scope function, or in
+the initialiser of a plain namespace-scope variable (which has no
+number either). Those are found by the walk; Kiln's WP-2023 adds the
+query from a closure to its owner, which replaces the numbering.
 
 ### `kiln_ast::lambda::LambdaData`
 
@@ -4840,7 +4851,7 @@ indeterminate.
 | `body` | bookkeeping | out | - | the call operator's body, which `FunctionData` `body` writes; for a coroutine the statement that body wraps |
 | `lbracket` | location | out | - |  |
 | `rbracket` | location | out | - |  |
-| `explicit_params` | written | out | - | a parameter clause was written: `[]{}` against `[](){}`. Nothing in Kiln decides anything by it |
+| `explicit_params` | written | out | - | a parameter clause was written: `[]{}` against `[](){}`. Instantiation copies it and the module image stores it; nothing in Kiln decides anything by it |
 | `explicit_result` | flag | in | bit | a trailing return type was written: instantiation substitutes into the return type only then, and deduces it otherwise |
 | `mutable` | flag | in | bit |  |
 | `mangling` | value | in | record LambdaMangling |  |
@@ -5076,9 +5087,12 @@ When `active` is set, a declaration's stream holds its owner
 specialisation or member explicitly instantiated, the unit that holds the
 definition. When it is clear both rows have their empty form.
 
-Declarations that come from an imported unit have not been examined:
-whether they are units of the importing translation unit is in "Open
-questions".
+Declarations of an imported unit are in the importing translation
+unit's `Ast` like its own: `ModuleTable` `owner` of one has a `unit`
+other than 0 (Kiln's `is_imported_named_unit_decl` says the same), and
+`UnitInfo` `merged` lists the ranges of ids the main unit declared
+again. Whether they are units of the importing translation unit is not
+decided ("Hazards accepted for now", modules).
 
 ### `kiln_ast::modules::ModuleTable`
 
@@ -5330,7 +5344,11 @@ function is of the **deferrable class** if Kiln can do that to it:
    in its `SpecInfo` or `MemberSpecInfo`) whose pattern has a
    value-dependent `noexcept` operand or a dynamic specification that
    names a dependent type, or whose pattern is itself of the deferrable
-   class.
+   class;
+4. it is a destructor. Kiln defers one written without a specification,
+   and once the specification is resolved `Ast` does not say whether it
+   was written (`implicit_exc_dtors` is in Kiln's semantic analysis), so
+   every destructor is of the class.
 
 The predicate reads only stored facts that do not change when the
 specification is resolved. For a function of the class:
@@ -5346,9 +5364,22 @@ the `Ref` of `d`. A declaration outside the class whose type holds
 `Deferred` makes its unit indeterminate: the predicate above was derived
 from Kiln's deferral sites (`kiln_sema` `except.rs`, `templ/subst/decls.rs`,
 `class/special/implicit.rs`, `class/inhctor.rs`) and is not a Kiln
-interface ("Open questions"). A member function whose `noexcept` waits
-for the end of its class is deferred only while the class is being
-parsed and is never seen deferred by the walk.
+interface ("Open questions").
+
+Kiln also defers the `noexcept` of a member function or friend that is
+parsed late (at the end of its class), and one nothing uses can stay
+`Deferred` to the end of the translation unit. No stored fact that
+survives resolution marks such a function, so it is outside the class:
+resolved, its own unit writes the specification; still deferred, its
+unit is indeterminate by the rule above ("Open questions" has what
+would bring it into the class).
+
+A specification is not always resolved before a type that holds it is
+formed: naming a function leaves a late `noexcept` that is not parsed
+yet, and inside a template one that cannot be resolved yet, as
+`Deferred`. So a type digest can meet `Deferred(d)` for a function that
+is resolved by the end of the translation unit. It writes what it meets;
+Kiln keeps the two types distinct, and so does the digest.
 
 ### 11.3 Evaluated values of variables
 
@@ -5361,9 +5392,15 @@ that meets it makes the variable's unit indeterminate.
 
 After the variable's own value the stream holds one `value?` for each
 temporary whose lifetime the variable extends (each `LetData` whose
-`extending` names it), in `mangling_index` order: `LetData` `value`,
-which the Oven freezes when it evaluates the variable's initialiser and
-at no other time.
+`extending` names it), in `mangling_index` order: `LetData` `value`.
+Kiln writes that value once, in any strict evaluation whose result
+points at a temporary the variable being initialised extends; a lax
+evaluation leaves it unset, and so do the two other writers Kiln has
+(the code generator's fold prepass, which a Slip parse does not run, and
+the module importer). So a variable in state `Value` can have a
+temporary without a value: the `value?` is then absent, and a
+transformation that changes which evaluation reaches the initialiser
+first is a reported difference in this unit, never an unreported one.
 
 ### 11.4 Default arguments and default member initialisers
 
@@ -5459,8 +5496,8 @@ entity is defined:
 
 | Entity | Rows moved to `definition` |
 |---|---|
-| a function | `FunctionData` `body`; `ColdDeclData` `ctor_inits`; the return type, when the pattern's declared return type holds a placeholder |
-| a variable | `VarData` `init`; `VarSpec` rows that the initialiser decides; the type, when the pattern's declared type holds a placeholder |
+| a function | `FunctionData` `body`; `ColdDeclData` `ctor_inits`; the return type and `FnSpec` `0-return-deduced`, when the pattern's declared return type holds a placeholder |
+| a variable | `VarData` `init`; `VarSpec` `0-init-style`, `0-inline` and `0-inline-implied`; the type, when the pattern's declared type holds a placeholder |
 | a class | `SpecInfo` `from` and `from_args`; `RecordData` `members-fields`, `members-virtual`, `members-other`, `bases`, `defn`; `ColdDeclData` `friends`, `record_pack` |
 | an enumeration | `EnumData` `members`, `int_type`, `promotion_type`, `flags-fixed`, `flags-complete` |
 
@@ -5470,7 +5507,20 @@ in its own stream, its type with the placeholder as the pattern declares
 it: the deduced type is known only once the definition exists and is in
 `definition`. The pattern is the declaration `SpecInfo` `template` or
 `MemberSpecInfo` `instantiated_from` names; whether its type holds a
-placeholder is a fact of the pattern.
+placeholder is a fact of the pattern. The placeholder is read from the
+pattern and never from the instantiation: Kiln re-points the
+instantiation's `DeclNode` `ty` when it deduces, and keeps the
+substituted placeholder only in its semantic analysis
+(`declared_returns`). `FnSpec` `0-return-deduced` is moved with the type
+because nothing says it is set before the deduction.
+
+The three `VarSpec` rows are the ones instantiating a static data
+member's initialiser sets (Kiln's `VarSpec::LATE`). The other late bits
+are not demand-driven: `ParenList`, and `Call` for a default-initialised
+class variable, are set when the initialiser is checked, with the
+declaration or with the instantiation of the initialiser; `0-nrvo` is
+set when the variable's scope ends, inside the body that holds it. The
+Oven sets no `VarSpec` bit.
 
 A class template specialisation whose kind is `ImplicitInstantiation`
 and that has no definition (the instantiation failed, or Kiln set the
@@ -5482,10 +5532,9 @@ a use added to one function, which is the first to need the body of some
 `std::vector<int>::size`, would be reported as a change of that member
 as well.
 
-"Questions for Kiln" asks whether Kiln keeps the declared type of an
-instantiation after it deduces the return type, and which `VarSpec` bits
-are set by the initialiser; until both are answered the rows concerned
-are the ones the first implementation checks with a `demand` test each.
+The rows moved for a placeholder and the three `VarSpec` rows follow
+Kiln's answers to `docs/requests/KQ1-digest-fields.md` (C12, C13); the
+first implementation checks each with a `demand` test.
 
 ## 12. Unsupported
 
@@ -5502,7 +5551,7 @@ reaches is reported even when only one parse instantiates it.
 | Functions without a prototype | `FuncInfo` `0-no-proto` | C only |
 | File-scope compound literals | `ExprNode` `CompoundLiteralExpr.aux`, `CompoundLiteralExpr.b`; `ColdDeclData` `compound_literal` | C only: the literal's object is a variable Kiln declares for it, whose key this file does not define |
 | `cleanup` | `AttrNode` `CLEANUP.a` | the word is a `DeclId` after the declaration is checked and an `ExprId` before, and the node does not say which |
-| Not built by Kiln | `DeclKind` `UsingPack`, `FriendTemplate`, `ImplicitParam`, `ImplicitConceptSpecialization`; `StmtNode` `flags`; `ExprKind` `UserDefinedLiteral`, `EmbedExpr`, `UnresolvedMemberExpr`; `TemplLinkKind` `DependentFriend`; `TemplateName` `DependentOperator`; fourteen rows of `AttrKind` | no construction site was found at the pinned revision; the walk treats one as indeterminate if it ever appears |
+| Not built by Kiln | `DeclKind` `UsingPack`, `FriendTemplate`, `ImplicitParam`, `ImplicitConceptSpecialization`; `StmtNode` `flags`; `ExprKind` `UserDefinedLiteral`, `EmbedExpr`, `UnresolvedMemberExpr`; `TemplLinkKind` `DependentFriend`; `TemplateName` `DependentOperator`; fourteen rows of `AttrKind` | no construction site at the pinned revision, which Kiln confirms for all but the attribute kinds (KQ1 C17; Kiln's WP-2026 removes them); the walk treats one as indeterminate if it ever appears |
 
 ## 13. Differences between the inventory and the source
 
@@ -5609,8 +5658,21 @@ source; the first run of `tables.rs` settles them.
 ### Questions for Kiln
 
 They are in [`docs/requests/KQ1-digest-fields.md`](../docs/requests/KQ1-digest-fields.md),
-sent to the Kiln agent on 2026-11-22. A row that waits on an answer says
-so in its note or is listed under the hazards below.
+sent to the Kiln agent on 2026-11-22 and answered the same day; the
+answers are recorded there and folded into the rows, §11 and the hazards
+below. What they left open:
+
+- **Late `noexcept`** (§11.2). A member function or friend whose
+  `noexcept` Kiln parses late is outside the deferrable class, because
+  nothing stored marks it once resolved. If the corpus shows such
+  functions left `Deferred` in numbers, the fix is a stored mark from
+  Kiln, or widening the class to every member function and every friend
+  defined in a class, at the cost of a resolved unit for each.
+- **Attributes Kiln never checks.** Kiln attaches the attributes of an
+  enumerator and of a lambda's call operator without checking them (a
+  Kiln defect, its WP-2022), so theirs stay as written at the pinned
+  revision. The rule for unchecked nodes below applies to them.
+- **`cleanup`** stays unsupported until Kiln's checked marker (WP-2022).
 
 ### Hazards accepted for now
 
@@ -5623,21 +5685,29 @@ so in its note or is listed under the hazards below.
   written. In a template the qualifier and the explicit template
   arguments of such an access are in Kiln's semantic analysis
   (`ovl.members`) and in no row, so a transformation that changes them is
-  seen in the instantiations and not in the pattern. Kiln is asked to
-  keep them in `Ast` (request KQ1).
+  seen in the instantiations and not in the pattern. The gap is an
+  access through a base that is not type-dependent, `this->` included,
+  which is still overloaded when the template ends; a type-dependent
+  base keeps its own data, and a resolved access names its function.
+  Kiln's WP-2020 puts the qualifier, the template arguments and the
+  naming class in `Ast` (request KQ1 A1); they get rows then.
 - **Operators in templates** (§7). The functions that unqualified lookup
   found for an operator at the template's definition
   ([temp.dep.candidate]) are also outside `Ast` (`oper_lookups`). A
   change to that set (`pitfalls.md` E04 for operators) is seen in each
   instantiation, where the call names its function, and not in the
-  pattern. Same request.
+  pattern. Kiln's WP-2021 stores the set with the expression (request
+  KQ1 A2).
 - **Alias templates with dependent arguments** (§4.2). An alias template
   specialisation is digested as the type it names, so a condition that
   only its arguments carry (`void_t<decltype(…)>`) is in no digest of
   the pattern, and two partial specialisations that differ only there
   have one key: a collision, which makes both indeterminate and counts in
-  `digest.collisions`. The corpus run says how often; the fix would be to
-  stop treating such an alias as transparent.
+  `digest.collisions`. Kiln confirms it keeps nothing canonical that
+  tells them apart (they are one declaration to Kiln too, as to clang;
+  only `PartialSpecInfo` `args` as written differs). The corpus run says
+  how often; the fix would be to stop treating such an alias as
+  transparent.
 - **Nullability on a dependent type** (§4.3). A nullability attribute is
   sugar and is not written; on a dependent type Kiln checks it at
   instantiation, where it can be a substitution failure. The
@@ -5653,5 +5723,8 @@ so in its note or is listed under the hazards below.
 - **Unchecked attribute nodes** (§10.1): a node Kiln has not checked is
   read as if it had been. For the kinds with a value range the row
   detects it; for the others the words are the same kind of thing in
-  both states.
+  both states. No node says which state it is in. By Kiln's account an
+  unchecked `VISIBILITY` has `a` of `u32::MAX`; a checked `TLS_MODEL`
+  has `b` 0 and `a` not 0; a checked `CONSTRUCTOR` or `DESTRUCTOR` has
+  `b` 0; `NONNULL` and `CALLBACK` are checked in place.
 - **Modules** (§10.7) have rows and no experience behind them.
