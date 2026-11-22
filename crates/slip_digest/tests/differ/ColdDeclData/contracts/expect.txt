@@ -1,3 +1,4 @@
 # pending
-# needs: decl_data
+# needs: stmt
+# ColdDeclData `contracts` is written (WP-033); each assertion is a statement, pending
 changed f(int)

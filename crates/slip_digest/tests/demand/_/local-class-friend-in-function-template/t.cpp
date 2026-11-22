@@ -4,5 +4,5 @@
 // declarations nor the instantiation's make a unit or collide.
 template <class T> int t() { void g(int); struct L { friend void g(int); }; return 0; }
 #ifdef B
-int u = t<int>();
+int use() { return t<int>(); }
 #endif

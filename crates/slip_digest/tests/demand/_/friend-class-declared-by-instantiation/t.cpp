@@ -7,7 +7,7 @@ template <class T> struct A {
   template <class U> friend class G;
 };
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #else
 
 #endif

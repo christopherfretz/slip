@@ -1,0 +1,5 @@
+removed (anonymous namespace)
+removed (anonymous namespace)::x
+added a
+added a::x
+changed <order>

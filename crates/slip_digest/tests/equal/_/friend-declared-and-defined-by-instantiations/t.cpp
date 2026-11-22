@@ -5,9 +5,9 @@
 template <class T> struct A { friend void j(long); };
 template <class T> struct C { friend void j(long) {} };
 #ifdef B
-C<int> c;
-A<int> a;
+void use_c() { C<int> c; }
+void use_a() { A<int> a; }
 #else
-A<int> a;
-C<int> c;
+void use_a() { A<int> a; }
+void use_c() { C<int> c; }
 #endif

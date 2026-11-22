@@ -1,2 +1,3 @@
 removed a::v
 added b::v
+changed <order>

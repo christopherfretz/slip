@@ -4,6 +4,6 @@
 // declaration.
 template <class T> struct A { friend void c2(int); };
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #endif
 extern "C++" { void c2(int); }

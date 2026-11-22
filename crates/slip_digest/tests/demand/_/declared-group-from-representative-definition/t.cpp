@@ -3,6 +3,6 @@
 // a written definition.
 #include "a.h"
 #ifdef B
-A<int> a;
+void use() { A<int> a; }
 #endif
 void k(int) {}

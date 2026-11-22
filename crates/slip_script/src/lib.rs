@@ -2,3 +2,5 @@
 //! subject model and runs transforms (`spec/api.md`).
 
 #![forbid(unsafe_code)]
+
+pub mod resource;

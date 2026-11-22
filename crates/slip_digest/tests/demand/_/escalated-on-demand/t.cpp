@@ -4,7 +4,7 @@ consteval int id(int x) { return x; }
 template <class T> constexpr int g(T t) { return id(t); }
 using X = decltype(g(1));
 #ifdef B
-int v = g(1);
+int v() { return g(1); }
 #else
 
 #endif
