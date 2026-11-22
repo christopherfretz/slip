@@ -131,8 +131,8 @@ impl Loaded {
 /// the store its path names, opened shared (`spec/exec.md` §2).
 ///
 /// Errors, each naming the file: a path of another shape; a record that
-/// cannot be read or does not validate, or whose plan, phase or start time
-/// is not its path's; a store that cannot be opened; a plan that is missing,
+/// cannot be read or does not validate, or whose plan, phase, round or
+/// start time is not its path's; a store that cannot be opened; a plan that is missing,
 /// does not validate or whose content id is not its name; a record
 /// observer that is not in the plan; a shard that does not validate or
 /// names another observer, phase or round. A missing shard is not an
@@ -155,6 +155,12 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
             "{shown}: the record's phase {} is not the phase {} of its path",
             store::phase_name(run.phase),
             store::phase_name(rp.phase)
+        ));
+    }
+    if run.round != rp.round {
+        return Err(format!(
+            "{shown}: the record's round {} is not the round {} of its path",
+            run.round, rp.round
         ));
     }
     if run.started_unix_ns != rp.started_unix_ns {
@@ -190,17 +196,17 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
                 job.observer
             ));
         }
-        let shard_path = st.shard_path(&rp.plan, rp.phase, rp.round, &job.observer);
+        let shard_path = st.shard_path(&run.plan, run.phase, run.round, &job.observer);
         let ss = shard_path.display();
         let shard = match st
-            .read_shard(&rp.plan, rp.phase, rp.round, &job.observer)
+            .read_shard(&run.plan, run.phase, run.round, &job.observer)
             .map_err(|e| format!("{ss}: {e}"))?
         {
             None => None,
             Some(b) => {
                 let s =
                     Shard::from_bytes(&b).map_err(|e| format!("{ss}: not a valid shard: {e}"))?;
-                if s.observer != job.observer || s.phase != rp.phase || s.round != rp.round {
+                if s.observer != job.observer || s.phase != run.phase || s.round != run.round {
                     return Err(format!(
                         "{ss}: the shard names observer {}, phase {}, round {}; the run's is \
                          observer {}, phase {}, round {}: the store is not the run's",
@@ -208,8 +214,8 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
                         store::phase_name(s.phase),
                         s.round,
                         job.observer,
-                        store::phase_name(rp.phase),
-                        rp.round
+                        store::phase_name(run.phase),
+                        run.round
                     ));
                 }
                 Some(s)

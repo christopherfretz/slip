@@ -161,6 +161,7 @@ fn sample_run() -> RunRecord {
             tool_kiln: "1.3.0".to_owned(),
             plan: d(0x44),
             phase: Phase::Map,
+            round: 2,
             started_unix_ns: 1_763_700_000_000_000_000,
             wall_ns: 12_345_678_901,
             cores: 64,
@@ -314,6 +315,7 @@ fn raw_run(r: &RunRecord) -> Vec<u8> {
         .str(&x.tool_kiln)
         .digest(&x.plan)
         .uv(x.phase as u64)
+        .uv(x.round)
         .uv(x.started_unix_ns)
         .uv(x.wall_ns)
         .uv(x.cores)
@@ -473,6 +475,7 @@ fn small_run() -> RunRecord {
             tool_kiln: "k".to_owned(),
             plan: d(0x44),
             phase: Phase::Verify,
+            round: 5,
             started_unix_ns: 1 << 53,
             wall_ns: 1,
             cores: 2,
@@ -510,9 +513,10 @@ fn small_run() -> RunRecord {
 fn small_run_bytes() -> Vec<u8> {
     hex(&[
         "53 4c 49 50 1a 0a 00 00  52 55 4e 52  01 00 00 00", // magic, RUNR, version 1
-        "01 33  01 73  01 6b",                               // run: "s", "k"
+        "01 34  01 73  01 6b",                               // run: "s", "k"
         &rep("44", 32),                                      // plan
         "02",                                                // verify
+        "05",                                                // round 5
         "80 80 80 80 80 80 80 10",                           // started_unix_ns 2^53
         "01 02 01 00  80 01", // wall 1, cores 2, workers 1, budget 0, peak 128
         "02 7a  02",          // jobs: 2
@@ -525,7 +529,7 @@ fn small_run_bytes() -> Vec<u8> {
         "ff ff ff ff ff ff ff ff ff 01", // queued u64::MAX
         "00 00 00 00",        // wall, cpu, peak, estimate 0
         "00",                 // end
-        "3ed3528596a187f09a307abf1469b0a94940ae98d64a79731d97720bae538ed8",
+        "5c2c9eda3608a5240c8fed22cbd06a5f5c7faa9be8b4d9ef43fa8d317fc6b838",
     ])
 }
 
@@ -724,6 +728,9 @@ fn json_scalar_forms() {
     assert_eq!(run.get("peak_rss_sum"), Some(&Value::Int((1 << 53) - 1)));
     assert_eq!(run.get("started_unix_ns"), Some(&Value::Str("1763700000000000000".to_owned())));
     assert_eq!(run.get("phase"), Some(&Value::Str("map".to_owned())));
+    assert_eq!(run.get("round"), Some(&Value::Int(2)));
+    let names: Vec<&str> = run.as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(names[3..5], ["phase", "round"], "round comes right after phase");
     assert_eq!(run.get("plan"), Some(&Value::Str("44".repeat(32))));
     let jobs = v.get("sections").unwrap().get("jobs").unwrap().as_array().unwrap();
     assert_eq!(jobs[0].get("shard"), Some(&Value::Str("55".repeat(32))));
@@ -1060,7 +1067,7 @@ fn unlisted_enumeration_values() {
         assert_eq!(malformed_at(Shard::from_bytes(&patch(&shard, at, from, to))), at);
     }
     let run = small_run_bytes();
-    for (at, from, to) in [(54, 2, 0), (54, 2, 3), (105, 0, 5), (177, 2, 0x7f)] {
+    for (at, from, to) in [(54, 2, 0), (54, 2, 3), (106, 0, 5), (178, 2, 0x7f)] {
         assert_eq!(malformed_at(RunRecord::from_bytes(&patch(&run, at, from, to))), at);
     }
 }
@@ -1069,7 +1076,7 @@ fn unlisted_enumeration_values() {
 #[test]
 fn opt_tag_must_be_0_or_1() {
     let run = small_run_bytes();
-    assert_eq!(malformed_at(RunRecord::from_bytes(&patch(&run, 178, 0, 2))), 178);
+    assert_eq!(malformed_at(RunRecord::from_bytes(&patch(&run, 179, 0, 2))), 179);
 }
 
 // spec/model.md §5 rule 6: required sections must be present.
@@ -1120,6 +1127,24 @@ fn trailing_bytes_in_a_section() {
     let mut sections = raw_plan_sections(&small_plan());
     sections[3].1.push(0);
     assert_eq!(kind_of_error(Plan::from_bytes(&sealed(*b"PLAN", &sections))), ErrorKind::Malformed);
+}
+
+// spec/model.md §9, §2.1: a `Run` that ends after `phase`, without its
+// `round` (the form before the field existed), is `Truncated` where the
+// section ends.
+#[test]
+fn run_cut_short_before_round() {
+    let x = small_run().run;
+    let mut s1 = Encoder::new();
+    s1.str(&x.tool_slip).str(&x.tool_kiln).digest(&x.plan).uv(x.phase as u64);
+    let s1 = s1.into_bytes();
+    let mut s2 = Encoder::new();
+    s2.count(0);
+    let bytes = sealed(*b"RUNR", &[(1, s1.clone()), (2, s2.into_bytes())]);
+    let e = RunRecord::from_bytes(&bytes).unwrap_err();
+    // Header (16), section id and length (2), then the payload.
+    assert_eq!((e.kind, e.offset), (ErrorKind::Truncated, 16 + 2 + s1.len()));
+    assert_eq!(kind_of_error(dump(&bytes)), ErrorKind::Truncated);
 }
 
 // spec/model.md §5 rule 5: kind and version are checked; dump and
@@ -1199,6 +1224,11 @@ fn json_missing_member() {
     members(&mut v, &["sections", "jobs", "1"]).retain(|(k, _)| k != "shard");
     let e = RunRecord::from_json(&v).unwrap_err();
     assert_eq!((e.path.as_str(), e.message.as_str()), ("sections.jobs[1].shard", "missing member"));
+    // spec/model.md §9: `round` is a required member of `run`.
+    let mut v = sample_run().to_json();
+    members(&mut v, &["sections", "run"]).retain(|(k, _)| k != "round");
+    let e = RunRecord::from_json(&v).unwrap_err();
+    assert_eq!((e.path.as_str(), e.message.as_str()), ("sections.run.round", "missing member"));
 }
 
 // spec/model.md §10: a value of the wrong type is an error naming its path.

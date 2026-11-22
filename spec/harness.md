@@ -286,9 +286,10 @@ changed; it never runs in the gate.
 A parallel phase writes a run record (`spec/model.md` §9) into its store
 (`spec/exec.md` §2). The commands here take a run record **by its path in
 the store**, `<store>/runs/<plan id>/<phase>.<round>.<started>.run`: the
-store is the directory three levels up, the round is read from the file
-name, and the plan and the shards of the run are read from that store
-(shared access).
+store is the directory three levels up, and the plan and the shards of
+the run are read from that store (shared access). The plan, phase and
+round are the record's own (`spec/model.md` §9); the file name only
+locates it.
 
 ```
 cargo xtask perf summarize <run record>…
@@ -308,10 +309,10 @@ error.
 **Loading**, in this order:
 
 1. The record is read and validated as a `RUNR` container; its `plan`,
-   `phase` and `started_unix_ns` must be its path's (the store names the
-   file by all three, `spec/exec.md` §2). The record is read before the
-   store is opened, so an absent or empty directory is never initialised as
-   a store.
+   `phase`, `round` and `started_unix_ns` must be its path's (the store
+   names the file by all four, `spec/exec.md` §2). The record is read
+   before the store is opened, so an absent or empty directory is never
+   initialised as a store.
 2. The store is opened `Shared`.
 3. The plan must be in the store, validate, and have the content id its
    name says.
@@ -788,8 +789,6 @@ entry `obj.clangBasic:tools/clang/lib/Basic/VCSVersion.inc`.
 
 ## Open questions
 
-- The run record does not carry its round; §7 reads it from the file name.
-  Add `round` to `Run` (`spec/model.md` §9) when the M0 specs are folded.
 - The `inputs.*` counters include system headers, so a baseline is exact
   only for one set of installed headers (the host compiler's and the
   standard library's). The baseline does not record which; a change of the

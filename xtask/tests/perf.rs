@@ -130,6 +130,7 @@ fn record(plan: Digest, started: u64, wall_ns: u64, jobs: Vec<Job>) -> RunRecord
             tool_kiln: "1.3.0".into(),
             plan,
             phase: Phase::Map,
+            round: 0,
             started_unix_ns: started,
             wall_ns,
             cores: 8,
@@ -162,7 +163,10 @@ impl World {
     fn shard(&self, s: &Shard) {
         self.store.publish_shard(&self.id, s.phase, s.round, &s.observer, &s.to_bytes()).unwrap();
     }
+    /// Publishes `r` as the record of round `round` (which it is made to name).
     fn run(&self, round: u64, r: &RunRecord) -> PathBuf {
+        let mut r = r.clone();
+        r.run.round = round;
         let p = self
             .store
             .publish_run(&self.id, Phase::Map, round, r.run.started_unix_ns, &r.to_bytes())
@@ -359,8 +363,8 @@ fn parse_run_path_malformed() {
     }
 }
 
-/// §7: "a record whose plan or phase disagrees with its path is an error"
-/// (and its start time, which the store puts in the name).
+/// §7: a record whose plan, phase, round or start time disagrees with its
+/// path is an error (the store names the file by all four).
 #[test]
 fn record_disagreeing_with_its_path() {
     let r = runs("perf-disagree");
@@ -381,6 +385,10 @@ fn record_disagreeing_with_its_path() {
     let p = put(&format!("runs/{}/verify.0.{STARTED}.run", r.w.id));
     let e = perf::load(&p).unwrap_err();
     assert!(e.contains("the record's phase map is not the phase verify of its path"), "{e}");
+    // Renamed to another round: the record says round 0.
+    let p = put(&format!("runs/{}/map.1.{STARTED}.run", r.w.id));
+    let e = perf::load(&p).unwrap_err();
+    assert!(e.contains("the record's round 0 is not the round 1 of its path"), "{e}");
     let p = put(&format!("runs/{}/map.0.5.run", r.w.id));
     let e = perf::load(&p).unwrap_err();
     assert!(

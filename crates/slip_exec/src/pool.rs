@@ -1107,6 +1107,7 @@ impl Coordinator<'_> {
                 tool_kiln: self.options.tool_kiln.clone(),
                 plan: self.plan,
                 phase: self.phase,
+                round: self.round,
                 started_unix_ns: self.started_unix_ns,
                 wall_ns: ns(self.t0.elapsed()),
                 cores: jobserver::available_cores() as u64,

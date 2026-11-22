@@ -241,11 +241,13 @@ fn assert_summary(out: &Out, selected: u64, shards: [u64; 4], jobs: [u64; 5]) {
     }
 }
 
-/// The run record of `out` validates and accounts for `selected` observers.
+/// The run record of `out` validates and accounts for `selected` observers;
+/// `slip parse` runs round 0 and its record says so (`spec/model.md` §9).
 fn run_record(out: &Out) -> RunRecord {
     let bytes = std::fs::read(out.value("run").unwrap()).unwrap();
     let record = RunRecord::from_bytes(&bytes).expect("the run record validates");
     record.validate().unwrap();
+    assert_eq!(record.run.round, 0);
     record
 }
 

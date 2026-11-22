@@ -14,6 +14,8 @@ pub struct Run {
     /// Content id of the plan.
     pub plan: Digest,
     pub phase: Phase,
+    /// The round of the phase, 0 for the first (`spec/exec.md` §2).
+    pub round: u64,
     pub started_unix_ns: u64,
     /// Wall time of the whole phase.
     pub wall_ns: u64,

@@ -85,13 +85,14 @@ fn shard(observer: Digest, phase: Phase, round: u64) -> Shard {
     }
 }
 
-fn run(plan: Digest, phase: Phase, started: u64, jobs: usize) -> RunRecord {
+fn run(plan: Digest, phase: Phase, round: u64, started: u64, jobs: usize) -> RunRecord {
     RunRecord {
         run: Run {
             tool_slip: "s".into(),
             tool_kiln: "k".into(),
             plan,
             phase,
+            round,
             started_unix_ns: started,
             wall_ns: 1,
             cores: 1,
@@ -240,7 +241,7 @@ fn s2_layout_paths() {
     store.publish_shard(&plan_id, Phase::Map, 0, &obs, &sh0).unwrap();
     assert!(root.join(format!("shards/{ph}/map.0/{obs}.shard")).is_file());
 
-    let r = run(plan_id, Phase::Map, 1234, 1).to_bytes();
+    let r = run(plan_id, Phase::Map, 7, 1234, 1).to_bytes();
     let run_file = store.publish_run(&plan_id, Phase::Map, 7, 1234, &r).unwrap();
     assert_eq!(run_file, root.join(format!("runs/{ph}/map.7.1234.run")));
     assert_eq!(store.run_path(&plan_id, Phase::Map, 7, 1234), run_file);
@@ -293,14 +294,21 @@ fn s2_publish_refuses_invalid_files() {
         store.publish_shard(&d(0), Phase::Map, 1, &obs, &sh),
         Err(StoreError::Invalid(_))
     ));
-    // A run record for another plan, phase or start time.
-    let r = run(d(5), Phase::Map, 10, 0).to_bytes();
+    // A run record for another plan, phase, round or start time.
+    let r = run(d(5), Phase::Map, 0, 10, 0).to_bytes();
     assert!(matches!(store.publish_run(&d(6), Phase::Map, 0, 10, &r), Err(StoreError::Invalid(_))));
     assert!(matches!(
         store.publish_run(&d(5), Phase::Verify, 0, 10, &r),
         Err(StoreError::Invalid(_))
     ));
     assert!(matches!(store.publish_run(&d(5), Phase::Map, 0, 11, &r), Err(StoreError::Invalid(_))));
+    // Under another round (`spec/exec.md` §2): the record names round 0.
+    assert!(matches!(store.publish_run(&d(5), Phase::Map, 3, 10, &r), Err(StoreError::Invalid(_))));
+    let r3 = run(d(5), Phase::Map, 3, 10, 0).to_bytes();
+    assert!(matches!(
+        store.publish_run(&d(5), Phase::Map, 0, 10, &r3),
+        Err(StoreError::Invalid(_))
+    ));
     assert!(names(&s.join("plans")).is_empty());
     assert!(names(&s.join("shards")).is_empty());
     assert!(names(&s.join("runs")).is_empty());
@@ -313,8 +321,8 @@ fn s2_publish_is_atomic_and_replaces() {
     let store = Arc::new(Store::open(&s, Access::Shared).unwrap());
     let plan_id = d(0x44);
     // Two different files for the same name, of different sizes.
-    let small = run(plan_id, Phase::Map, 99, 1).to_bytes();
-    let large = run(plan_id, Phase::Map, 99, 200).to_bytes();
+    let small = run(plan_id, Phase::Map, 0, 99, 1).to_bytes();
+    let large = run(plan_id, Phase::Map, 0, 99, 200).to_bytes();
     assert!(large.len() > small.len() * 10);
     let path = store.publish_run(&plan_id, Phase::Map, 0, 99, &small).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
@@ -388,10 +396,10 @@ fn s2_latest_run_any_round() {
     let store = Store::open(&s, Access::Shared).unwrap();
     let p = d(7);
     assert_eq!(store.latest_run(&p, Phase::Map).unwrap(), None);
-    let oldest = run(p, Phase::Map, 100, 1).to_bytes();
-    let newest = run(p, Phase::Map, 300, 2).to_bytes();
-    let middle = run(p, Phase::Map, 200, 3).to_bytes();
-    let verify = run(p, Phase::Verify, 900, 4).to_bytes();
+    let oldest = run(p, Phase::Map, 5, 100, 1).to_bytes();
+    let newest = run(p, Phase::Map, 0, 300, 2).to_bytes();
+    let middle = run(p, Phase::Map, 9, 200, 3).to_bytes();
+    let verify = run(p, Phase::Verify, 0, 900, 4).to_bytes();
     store.publish_run(&p, Phase::Map, 5, 100, &oldest).unwrap();
     store.publish_run(&p, Phase::Map, 0, 300, &newest).unwrap();
     store.publish_run(&p, Phase::Map, 9, 200, &middle).unwrap();
@@ -399,7 +407,7 @@ fn s2_latest_run_any_round() {
     // Greatest started_unix_ns, whatever the round; numeric, not textual.
     assert_eq!(store.latest_run(&p, Phase::Map).unwrap(), Some(newest));
     assert_eq!(store.latest_run(&p, Phase::Verify).unwrap(), Some(verify));
-    let later = run(p, Phase::Map, 1000, 5).to_bytes();
+    let later = run(p, Phase::Map, 1, 1000, 5).to_bytes();
     store.publish_run(&p, Phase::Map, 1, 1000, &later).unwrap();
     assert_eq!(store.latest_run(&p, Phase::Map).unwrap(), Some(later.clone()));
     // Names that are not run records are ignored.

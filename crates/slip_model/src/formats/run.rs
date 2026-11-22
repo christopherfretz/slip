@@ -27,7 +27,8 @@ pub(super) fn encode(r: &RunRecord, extras: &[Extra<'_>]) -> Vec<u8> {
     let mut run = Encoder::new();
     run.str(&x.tool_slip).str(&x.tool_kiln).digest(&x.plan);
     enc_enum(&mut run, x.phase);
-    run.uv(x.started_unix_ns)
+    run.uv(x.round)
+        .uv(x.started_unix_ns)
         .uv(x.wall_ns)
         .uv(x.cores)
         .uv(x.workers_max)
@@ -69,6 +70,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(RunRecord, Vec<Extra<'_>>, Digest)
         tool_kiln: d.str()?.to_owned(),
         plan: d.digest()?,
         phase: dec_enum(&mut d)?,
+        round: d.uv()?,
         started_unix_ns: d.uv()?,
         wall_ns: d.uv()?,
         cores: d.uv()?,
@@ -105,11 +107,12 @@ const NAMES: [SectionName; 2] = [
     SectionName { id: JOBS, name: "jobs", required: true },
 ];
 
-const RUN_FIELDS: [&str; 10] = [
+const RUN_FIELDS: [&str; 11] = [
     "tool_slip",
     "tool_kiln",
     "plan",
     "phase",
+    "round",
     "started_unix_ns",
     "wall_ns",
     "cores",
@@ -140,6 +143,7 @@ pub(super) fn render(r: &RunRecord, extras: &[Extra<'_>]) -> Value {
                 Value::Str(x.tool_kiln.clone()),
                 json_digest(&x.plan),
                 json_enum(x.phase),
+                json_uv(x.round),
                 json_uv(x.started_unix_ns),
                 json_uv(x.wall_ns),
                 json_uv(x.cores),
@@ -189,19 +193,20 @@ pub(super) fn read(v: &Value) -> JResult<(RunRecord, OwnedExtras)> {
     let sections = root.key("sections");
 
     let at = sections.key("run");
-    let [tool_slip, tool_kiln, plan, phase, started, wall, cores, workers, budget, peak] =
+    let [tool_slip, tool_kiln, plan, phase, round, started, wall, cores, workers, budget, peak] =
         read_record(run, &at, RUN_FIELDS)?;
     let run = Run {
         tool_slip: read_str(tool_slip, &at.key(RUN_FIELDS[0]))?.to_owned(),
         tool_kiln: read_str(tool_kiln, &at.key(RUN_FIELDS[1]))?.to_owned(),
         plan: read_digest(plan, &at.key(RUN_FIELDS[2]))?,
         phase: read_enum(phase, &at.key(RUN_FIELDS[3]))?,
-        started_unix_ns: read_uv(started, &at.key(RUN_FIELDS[4]))?,
-        wall_ns: read_uv(wall, &at.key(RUN_FIELDS[5]))?,
-        cores: read_uv(cores, &at.key(RUN_FIELDS[6]))?,
-        workers_max: read_uv(workers, &at.key(RUN_FIELDS[7]))?,
-        memory_budget: read_uv(budget, &at.key(RUN_FIELDS[8]))?,
-        peak_rss_sum: read_uv(peak, &at.key(RUN_FIELDS[9]))?,
+        round: read_uv(round, &at.key(RUN_FIELDS[4]))?,
+        started_unix_ns: read_uv(started, &at.key(RUN_FIELDS[5]))?,
+        wall_ns: read_uv(wall, &at.key(RUN_FIELDS[6]))?,
+        cores: read_uv(cores, &at.key(RUN_FIELDS[7]))?,
+        workers_max: read_uv(workers, &at.key(RUN_FIELDS[8]))?,
+        memory_budget: read_uv(budget, &at.key(RUN_FIELDS[9]))?,
+        peak_rss_sum: read_uv(peak, &at.key(RUN_FIELDS[10]))?,
     };
 
     let jobs = read_list(jobs, &sections.key("jobs"), |v, at| {

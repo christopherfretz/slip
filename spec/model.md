@@ -713,7 +713,9 @@ The parse task writes neither `digests` nor `verdict`.
 ## 9. The run record
 
 One per invocation of a parallel phase; kind `RUNR`, version 1. Not
-deterministic. All sections are required.
+deterministic. All sections are required. A record names its plan, phase,
+round and start time itself, so a reader never takes them from its file
+name (`spec/exec.md` §2, `spec/harness.md` §7).
 
 | Id | Section | Payload |
 |---|---|---|
@@ -725,6 +727,7 @@ Run := tool_slip:     str
        tool_kiln:     str
        plan:          digest     content id of the plan
        phase:         Phase
+       round:         uv         the round of the phase run, 0 for the first (spec/exec.md §2)
        started_unix_ns: uv
        wall_ns:       uv         whole phase
        cores:         uv         cores available to the process
@@ -792,6 +795,8 @@ wrong type is an error naming the JSON path (`sections.observers[3].main`).
   `verdict`) is not rendered; present and empty is `[]`.
 - `"#<id>"` payloads are always in hex form, even when they are valid UTF-8.
 - `kind` is the four-letter kind; `version` the number 1.
+- The run record's `"run"` has `"round"` right after `"phase"` (§9 field
+  order).
 - The shard's `"digests"` and `"verdict"` come after `"counters"`. Their
   members are named as the fields of `digest.md` §11 and `verify.md` §6
   (`Finding.where` is `"where"`), in field order, all required. A group's
