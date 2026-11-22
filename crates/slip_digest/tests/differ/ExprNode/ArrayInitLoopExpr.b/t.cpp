@@ -1,9 +1,11 @@
 #include "side.h"
-// WP-035, digest-kinds §7 `ExprNode` `ArrayInitLoopExpr.b`: the element initialiser.
-int arr[2] = {1, 2};
-long arl[2] = {1, 2};
+// WP-035, digest-kinds §7 `ExprNode` `ArrayInitLoopExpr.b`: the element initialiser: the same array, another copy constructor.
+struct S {
+  S();
+  S(const S &);
 #ifdef B
-auto [p, q] = arl;
-#else
-auto [p, q] = arr;
+  S(S &);
 #endif
+};
+S arr[2];
+auto [p, q] = arr;

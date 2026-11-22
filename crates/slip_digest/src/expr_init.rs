@@ -1019,8 +1019,8 @@ mod tests {
         check(
             "differ/ExprNode/CXXDeleteExpr.b",
             K::CXXDeleteExpr,
-            &del(0, "C::operator delete"),
-            Some(&del(9, "operator delete")),
+            &del(0, "D1::operator delete"),
+            Some(&del(0, "D2::operator delete")),
         );
         // CXXPseudoDestructorExpr: bit 0 arrow, 1 qualified.
         check(

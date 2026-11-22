@@ -1,10 +1,11 @@
 #include "side.h"
-// WP-035, digest-kinds §7 `ExprNode` `CXXDeleteExpr.b`: the class's own deallocation function against the global one.
-struct C { int i; static void operator delete(void *); };
-struct D { int i; };
-C *pc;
+// WP-035, digest-kinds §7 `ExprNode` `CXXDeleteExpr.b`: the deallocation function: the same expression finds another class's.
+struct D1 { static void operator delete(void *); };
+struct D2 { static void operator delete(void *); };
 #ifdef B
-int v = (::delete pc, 0);
+struct C : D2 { int i; };
 #else
-int v = (delete pc, 0);
+struct C : D1 { int i; };
 #endif
+C *pc;
+int v = (delete pc, 0);
