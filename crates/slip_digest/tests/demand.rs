@@ -1,6 +1,7 @@
 //! Demand independence (`spec/digest.md` §14): every key in both sides has
-//! the same digests and flags; `added` lines, if any, are exactly the
-//! declared keys only B has.
+//! the same digests and flags, and the declared keys only B has are
+//! exactly the `added` lines (none if there are none); A has no declared
+//! key B lacks.
 
 mod common;
 
@@ -27,20 +28,26 @@ fn one(dir: &Path) -> Result<(), String> {
             problems.push(format!("differs: {}", a.name(k)));
         }
     }
-    let added: BTreeSet<Expect> =
-        expect.iter().filter(|e| matches!(e, Expect::Added(_))).cloned().collect();
-    if !added.is_empty() {
-        let got: BTreeSet<Expect> = b
-            .units
+    if let Some(e) = expect.iter().find(|e| !matches!(e, Expect::Added(_))) {
+        return Err(format!("{e:?}: a demand test has `added` lines only"));
+    }
+    let added: BTreeSet<Expect> = expect;
+    let declared = |d: &common::Digested, other: &common::Digested| -> BTreeSet<String> {
+        d.units
             .iter()
             .filter(|(k, v)| {
-                !a.units.contains_key(*k) && v.iter().any(|u| u.class == GroupClass::Declared)
+                !other.units.contains_key(*k) && v.iter().any(|u| u.class == GroupClass::Declared)
             })
-            .map(|(k, _)| Expect::Added(b.name(k)))
-            .collect();
-        if got != added {
-            problems.push(format!("added: expected {added:?}, saw {got:?}"));
-        }
+            .map(|(k, _)| d.name(k))
+            .collect()
+    };
+    let got: BTreeSet<Expect> = declared(&b, &a).into_iter().map(Expect::Added).collect();
+    if got != added {
+        problems.push(format!("declared keys only B has: expected {added:?}, saw {got:?}"));
+    }
+    let only_a = declared(&a, &b);
+    if !only_a.is_empty() {
+        problems.push(format!("declared keys only A has: {only_a:?}"));
     }
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
 }

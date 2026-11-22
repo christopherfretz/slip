@@ -37,6 +37,13 @@ fn one(dir: &Path) -> Result<(), String> {
     if expect.is_empty() {
         return Err("a differ test needs at least one line in expect.txt".into());
     }
+    if let Some(Expect::Indeterminate(n)) =
+        expect.iter().find(|e| matches!(e, Expect::Indeterminate(_)))
+    {
+        return Err(format!(
+            "`indeterminate {n}`: a differ test asserts no indeterminate unit; it belongs under tests/indeterminate"
+        ));
+    }
     let a = common::digest_side(dir, Side::A)?;
     let b = common::digest_side(dir, Side::B)?;
     let mut problems = Vec::new();
@@ -70,8 +77,7 @@ fn one(dir: &Path) -> Result<(), String> {
             got.insert(Expect::DerivedChanged(name));
         }
     }
-    let want: BTreeSet<_> =
-        expect.iter().filter(|e| !matches!(e, Expect::Indeterminate(_))).cloned().collect();
+    let want = expect;
     if got != want {
         let missing: Vec<_> = want.difference(&got).collect();
         let extra: Vec<_> = got.difference(&want).collect();
