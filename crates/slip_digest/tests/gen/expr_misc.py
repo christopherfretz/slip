@@ -505,13 +505,14 @@ differ("_", "offsetof-other-class-same-layout", "unsigned long v = __builtin_off
        "unsigned long v = __builtin_offsetof(Bq, q);", needs="kiln",
        pre="struct A { int x; int y; }; struct Bq { int p; int q; };")
 # Demand independence: an instantiation a trait or `noexcept` triggers,
-# made earlier on side B by another use.
-t("demand", "_", "trait-instantiation-earlier", "", "unsigned long w = sizeof(W<int>);",
-  ["added w"], pre="template <class T> struct W { T t; W(T); };",
+# made earlier on side B by another use (a function, so that the order
+# unit does not change).
+t("demand", "_", "trait-instantiation-earlier", "", "unsigned long w() { return sizeof(W<int>); }",
+  ["added w()"], pre="template <class T> struct W { T t; W(T); };",
   post="bool v = __is_constructible(W<int>, int);",
   note="an earlier use instantiates `W<int>`; the trait's unit is unchanged.")
-t("demand", "_", "noexcept-instantiation-earlier", "", "bool w = noexcept(f<int>());",
-  ["added w"], pre="template <class T> void f() noexcept(sizeof(T) > 1);",
+t("demand", "_", "noexcept-instantiation-earlier", "", "bool w() { return noexcept(f<int>()); }",
+  ["added w()"], pre="template <class T> void f() noexcept(sizeof(T) > 1);",
   post="bool v = noexcept(f<int>());",
   note="an earlier `noexcept` resolves `f<int>`'s deferred exception specification.")
 

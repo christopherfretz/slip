@@ -2,7 +2,7 @@
 // §7 _: an earlier use instantiates `W<int>`; the trait's unit is unchanged.
 template <class T> struct W { T t; W(T); };
 #ifdef B
-unsigned long w = sizeof(W<int>);
+unsigned long w() { return sizeof(W<int>); }
 #else
 
 #endif
