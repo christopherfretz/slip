@@ -293,7 +293,7 @@ pub(crate) fn offsetof_components(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         match *c {
             OffsetofComponent::Field { name, start: _, end: _ } => w.write_sym(s, name),
             OffsetofComponent::Index { index, start: _, end: _ } => {
-                index_position(w, s, e, index, Cause::Unaccounted("OffsetofComponent/Index.index"))
+                index_position(w, s, e, index, Cause::Unaccounted("OffsetofComponent/Index.index"));
             }
         }
     }
@@ -306,14 +306,11 @@ pub(crate) fn offsetof_components(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 /// writes `uv` of the list's length.
 fn index_position(w: &Walk<'_>, s: &mut Stream, e: ExprId, index: ExprId, cause: Cause) {
     let words: &[u32] = ListId::try_new(node(w, e).a).map_or(&[], |l| w.ast.lists.get(l));
-    match words.iter().position(|&x| x == index.raw()) {
-        Some(i) => {
-            s.uv(i as u64);
-        }
-        None => {
-            s.indeterminate(cause);
-            s.uv(words.len() as u64);
-        }
+    if let Some(i) = words.iter().position(|&x| x == index.raw()) {
+        s.uv(i as u64);
+    } else {
+        s.indeterminate(cause);
+        s.uv(words.len() as u64);
     }
 }
 
