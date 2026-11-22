@@ -139,8 +139,12 @@ pub(crate) fn predefined_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 /// `SourceLocExpr`: `aux` (`SourceLocKind`); `a`, the context, is
 /// `symbolic`, and so are its `SourceLocValues` (§7.4 `source_loc`).
 pub(crate) fn source_loc_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = node(w, e);
-    check_bits(s, &n, 0, Cause::Unaccounted("ExprNode/SourceLocExpr.bits"));
+    source_loc_expr_of(s, &node(w, e));
+}
+
+/// [`source_loc_expr`] of the words `n`: those of `e`, or changed by a test.
+fn source_loc_expr_of(s: &mut Stream, n: &Node) {
+    check_bits(s, n, 0, Cause::Unaccounted("ExprNode/SourceLocExpr.bits"));
     tag_or(
         s,
         source_loc(n.aux).map(|k| source_loc_kind::row(&k)),
@@ -225,7 +229,11 @@ fn trait_aux(s: &mut Stream, aux: u8, cause: Cause) {
 /// `TypeTraitExpr`: `aux` (`TypeTrait`), `a` (`type*`), `b` the stored
 /// result.
 pub(crate) fn type_trait_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = node(w, e);
+    type_trait_expr_of(w, s, node(w, e));
+}
+
+/// [`type_trait_expr`] of the words `n`: those of `e`, or changed by a test.
+fn type_trait_expr_of(w: &mut Walk<'_>, s: &mut Stream, n: Node) {
     check_bits(s, &n, 0, Cause::Unaccounted("ExprNode/TypeTraitExpr.bits"));
     trait_aux(s, n.aux, Cause::Unaccounted("ExprNode/TypeTraitExpr.aux"));
     let cause = Cause::Unaccounted("ExprNode/TypeTraitExpr.a");
@@ -380,7 +388,7 @@ fn suspend(aux: u8) -> Option<SuspendKind> {
 /// it is written, so the calls' opaque values write the number alone and
 /// `common` is written once. A `CoyieldExpr` of a template pattern holds the operand alone
 /// (builder.rs:3376), written as a list of one.
-fn coawait(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, yield_: bool) {
+fn coawait(w: &mut Walk<'_>, s: &mut Stream, n: Node, yield_: bool) {
     let (bits, aux, suspend_row, list) = if yield_ {
         (
             "ExprNode/CoyieldExpr.bits",
@@ -396,7 +404,6 @@ fn coawait(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, yield_: bool) {
             "ExprNode/CoawaitExpr.a",
         )
     };
-    let n = node(w, e);
     check_bits(s, &n, 0, Cause::Unaccounted(bits));
     check_aux(s, &n, 7, Cause::Unaccounted(aux));
     s.flags(FlagWord::new().bit(n.aux & 1 != 0));
@@ -420,7 +427,7 @@ fn coawait(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, yield_: bool) {
 
 /// `CoawaitExpr` (see [`coawait`]).
 pub(crate) fn coawait_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    coawait(w, s, e, false);
+    coawait(w, s, node(w, e), false);
 }
 
 /// `DependentCoawaitExpr`: `a`, the operand.
@@ -433,7 +440,7 @@ pub(crate) fn dependent_coawait_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId
 
 /// `CoyieldExpr` (see [`coawait`]).
 pub(crate) fn coyield_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    coawait(w, s, e, true);
+    coawait(w, s, node(w, e), true);
 }
 
 // ---------------------------------------------------------------------
@@ -465,7 +472,11 @@ pub(crate) fn addr_label_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 /// `ChooseExpr`: `aux` the arm chosen, `a` the condition, then the two
 /// arms of `cond_arms[b]`.
 pub(crate) fn choose_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = node(w, e);
+    choose_expr_of(w, s, e, node(w, e));
+}
+
+/// [`choose_expr`] of the words `n`: those of `e`, or changed by a test.
+fn choose_expr_of(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, n: Node) {
     check_bits(s, &n, 0, Cause::Unaccounted("ExprNode/ChooseExpr.bits"));
     if n.aux > 2 {
         s.indeterminate(Cause::Unaccounted("ExprNode/ChooseExpr.aux"));
@@ -556,7 +567,11 @@ const ATOMIC_OPS: [(&str, u32); 38] = [
 /// `AtomicExpr`: `aux` the operation, in Kiln's numbering (a number of
 /// [`ATOMIC_OPS`], else `Unaccounted`), then `a` the operands.
 pub(crate) fn atomic_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = node(w, e);
+    atomic_expr_of(w, s, node(w, e));
+}
+
+/// [`atomic_expr`] of the words `n`: those of `e`, or changed by a test.
+fn atomic_expr_of(w: &mut Walk<'_>, s: &mut Stream, n: Node) {
     check_bits(s, &n, 0, Cause::Unaccounted("ExprNode/AtomicExpr.bits"));
     let op = u32::from(n.aux);
     if !ATOMIC_OPS.iter().any(|&(_, v)| v == op) {
@@ -569,7 +584,11 @@ pub(crate) fn atomic_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 /// `ShuffleVectorExpr`: the flag word (`aux-mask-known`), `a` the
 /// operands, then `b` the folded indices when the mask is known.
 pub(crate) fn shuffle_vector_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = node(w, e);
+    shuffle_vector_expr_of(w, s, node(w, e));
+}
+
+/// [`shuffle_vector_expr`] of the words `n`: those of `e`, or changed by a test.
+fn shuffle_vector_expr_of(w: &mut Walk<'_>, s: &mut Stream, n: Node) {
     check_bits(s, &n, 0, Cause::Unaccounted("ExprNode/ShuffleVectorExpr.bits"));
     check_aux(s, &n, 1, Cause::Unaccounted("ExprNode/ShuffleVectorExpr.aux"));
     let known = n.aux & 1 != 0;
@@ -587,7 +606,11 @@ pub(crate) fn shuffle_vector_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 
 /// `ConvertVectorExpr.a`: the operand (the written type is the node's).
 pub(crate) fn convert_vector_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = node(w, e);
+    convert_vector_expr_of(w, s, node(w, e));
+}
+
+/// [`convert_vector_expr`] of the words `n`: those of `e`, or changed by a test.
+fn convert_vector_expr_of(w: &mut Walk<'_>, s: &mut Stream, n: Node) {
     check_bits(s, &n, 0, Cause::Unaccounted("ExprNode/ConvertVectorExpr.bits"));
     child_word(w, s, n.a, Cause::Unaccounted("ExprNode/ConvertVectorExpr.a"));
 }
@@ -595,7 +618,11 @@ pub(crate) fn convert_vector_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 /// `ExtVectorElementExpr`: the flag word (`bits-arrow`), `a` the vector,
 /// `b` the accessor.
 pub(crate) fn ext_vector_element_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = node(w, e);
+    ext_vector_element_expr_of(w, s, node(w, e));
+}
+
+/// [`ext_vector_element_expr`] of the words `n`: those of `e`, or changed by a test.
+fn ext_vector_element_expr_of(w: &mut Walk<'_>, s: &mut Stream, n: Node) {
     check_bits(
         s,
         &n,
@@ -626,7 +653,11 @@ fn write_issued_sym(w: &mut Walk<'_>, s: &mut Stream, index: u32, cause: Cause) 
 /// then `b`: the position of the association selected, absent while
 /// dependent (Kiln stores the selected expression, builder.rs:2098).
 pub(crate) fn generic_selection_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = node(w, e);
+    generic_selection_expr_of(w, s, node(w, e));
+}
+
+/// [`generic_selection_expr`] of the words `n`: those of `e`, or changed by a test.
+fn generic_selection_expr_of(w: &mut Walk<'_>, s: &mut Stream, n: Node) {
     check_bits(
         s,
         &n,
@@ -697,7 +728,11 @@ pub(crate) fn generic_selection_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId
 /// (`kiln_sema` `class/compare/three_way.rs:76`), whose operands are
 /// subobject accesses: pseudo-objects do not nest from source.
 pub(crate) fn pseudo_object_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = node(w, e);
+    pseudo_object_expr_of(w, s, node(w, e));
+}
+
+/// [`pseudo_object_expr`] of the words `n`: those of `e`, or changed by a test.
+fn pseudo_object_expr_of(w: &mut Walk<'_>, s: &mut Stream, n: Node) {
     check_bits(s, &n, 0, Cause::Unaccounted("ExprNode/PseudoObjectExpr.bits"));
     let es = expr_list(w, s, n.a, Cause::Unaccounted("ExprNode/PseudoObjectExpr.a"));
     if let Some((&syntactic, semantics)) = es.split_first() {
@@ -1096,6 +1131,20 @@ mod tests {
                 assert_eq!(want.next(), None, "every index is a step");
             });
         }
+        // `OffsetOfExpr.a` in the order written: `z[a][b]`.
+        rows(src, k, 1, offset_of_expr, |w, s, e| {
+            let es: Vec<ExprId> = list(w, node(w, e).a).into_iter().map(expr).collect();
+            assert_eq!(es.len(), 2);
+            let mut one = |x| {
+                let mut t = Stream::new();
+                child(w, &mut t, x);
+                t.as_bytes().to_vec()
+            };
+            assert_ne!(one(es[0]), one(es[1]), "`a` and `b` write differently");
+            s.bool(false);
+            children(w, s, &es);
+            s.uv(0);
+        });
         rows(src, k, 2, offsetof_components, |_, s, _| {
             s.count(3).tag(offsetof_component::FIELD).bytes(b"z");
             s.tag(offsetof_component::INDEX).uv(0).tag(offsetof_component::INDEX).uv(1);
@@ -1695,6 +1744,170 @@ mod tests {
 
     // -----------------------------------------------------------------
     // Words Kiln does not build: well formed, `Unaccounted`, no panic.
+
+    /// The cause `f` gives `e`'s words changed by `change` (the guards
+    /// against words Kiln never writes), after checking that the words as
+    /// Kiln wrote them give none of their own.
+    fn crafted(
+        input: &Input<'_>,
+        rules: &RuleTable,
+        e: ExprId,
+        change: impl Fn(&Walk<'_>, Node) -> Node,
+        f: impl Fn(&mut Walk<'_>, &mut Stream, Node),
+    ) -> Option<Cause> {
+        let (_, clean) = written(input, rules, e, |w, s, e| f(w, s, node(w, e)));
+        // Pending: kinds of other packages under the node, met after the
+        // guards (the first cause is kept).
+        assert!(
+            matches!(clean, None | Some(Cause::Pending(_))),
+            "{e:?} {:?} as built: {clean:?}",
+            node_of(input, e).kind()
+        );
+        written(input, rules, e, |w, s, e| {
+            let n = change(w, node(w, e));
+            f(w, s, n);
+        })
+        .1
+    }
+
+    /// Every guard against a word Kiln never writes: a crafted word makes
+    /// the unit `Unaccounted` with the guard's row (kills the guard
+    /// removals of the WP-037 review: M22, M46, M51, M57, M61, M68, M72,
+    /// M81, M82, M85, M86, M87, M88).
+    #[test]
+    fn crafted_words_are_unaccounted() {
+        let un = |r: &'static str| Some(Cause::Unaccounted(r));
+        let src = format!(
+            "{VEC}v4 sh = __builtin_shufflevector(vv, vv, 0, 1, 2, 3);\n\
+             f4 cv = __builtin_convertvector(vv, f4);\nint ex = vv.y;\nint a;\n\
+             int ch = __builtin_choose_expr(1, a, a);\nint at = __atomic_load_n(&a, 0);\n\
+             int g = _Generic(a, int: 1, default: 2);\nbool tt = __is_same(int, long);\n\
+             unsigned l = __builtin_LINE();\n"
+        );
+        with(&src, "c++20", |input, rules| {
+            let one = |k| of_kind(input, k)[0];
+            let sh = one(ExprKind::ShuffleVectorExpr);
+            let mask = node_of(input, sh).b();
+            let operands = node_of(input, sh).a();
+            assert_eq!(list_of(input, sh).len(), 6, "two vectors and four indices");
+            // `TypeTraitExpr.a` naming the mask list `[0, 1, 2, 3]`: a 0 word.
+            let c = crafted(
+                input,
+                rules,
+                one(ExprKind::TypeTraitExpr),
+                |_, n| Node { a: mask, ..n },
+                |w, s, n| type_trait_expr_of(w, s, n),
+            );
+            assert_eq!(c, un("ExprNode/TypeTraitExpr.a"));
+            let c = crafted(
+                input,
+                rules,
+                one(ExprKind::ChooseExpr),
+                |_, n| Node { aux: 3, ..n },
+                |w, s, n| choose_expr_of(w, s, one(ExprKind::ChooseExpr), n),
+            );
+            assert_eq!(c, un("ExprNode/ChooseExpr.aux"));
+            let c = crafted(
+                input,
+                rules,
+                one(ExprKind::AtomicExpr),
+                |_, n| Node { aux: 99, ..n },
+                |w, s, n| atomic_expr_of(w, s, n),
+            );
+            assert_eq!(c, un("ExprNode/AtomicExpr.aux"));
+            let c = crafted(
+                input,
+                rules,
+                sh,
+                |_, n| Node { aux: 3, ..n },
+                |w, s, n| shuffle_vector_expr_of(w, s, n),
+            );
+            assert_eq!(c, un("ExprNode/ShuffleVectorExpr.aux"));
+            let c = crafted(
+                input,
+                rules,
+                sh,
+                |_, n| Node { b: 0, ..n },
+                |w, s, n| shuffle_vector_expr_of(w, s, n),
+            );
+            assert_eq!(c, un("ExprNode/ShuffleVectorExpr.b"), "a list word of 0");
+            let c = crafted(
+                input,
+                rules,
+                one(ExprKind::ConvertVectorExpr),
+                |_, n| Node { a: 0, ..n },
+                |w, s, n| convert_vector_expr_of(w, s, n),
+            );
+            assert_eq!(c, un("ExprNode/ConvertVectorExpr.a"), "a child word of 0");
+            let c = crafted(
+                input,
+                rules,
+                one(ExprKind::ExtVectorElementExpr),
+                |_, n| Node { flags: n.flags | 0x20, ..n },
+                |w, s, n| ext_vector_element_expr_of(w, s, n),
+            );
+            assert_eq!(c, un("ExprNode/ExtVectorElementExpr.bits"));
+            let gs = one(ExprKind::GenericSelectionExpr);
+            let c = crafted(
+                input,
+                rules,
+                gs,
+                |_, n| Node { b: gs.raw(), ..n },
+                |w, s, n| generic_selection_expr_of(w, s, n),
+            );
+            assert_eq!(c, un("ExprNode/GenericSelectionExpr.b"), "no association's expression");
+            // The shuffle's operand list, six expressions: four words after
+            // the control and its location are not triples.
+            let c = crafted(
+                input,
+                rules,
+                gs,
+                |_, n| Node { a: operands, ..n },
+                |w, s, n| generic_selection_expr_of(w, s, n),
+            );
+            assert_eq!(c, un("ExprNode/GenericSelectionExpr.a-associations"));
+            let c = crafted(
+                input,
+                rules,
+                one(ExprKind::SourceLocExpr),
+                |_, n| Node { flags: 0x10, ..n },
+                |_, s, n| source_loc_expr_of(s, &n),
+            );
+            assert_eq!(c, un("ExprNode/SourceLocExpr.bits"));
+        });
+        with(CORO, "c++20", |input, rules| {
+            let aw = of_kind(input, ExprKind::CoawaitExpr)[0];
+            let c = crafted(
+                input,
+                rules,
+                aw,
+                |_, n| Node { aux: n.aux | 8, ..n },
+                |w, s, n| coawait(w, s, n, false),
+            );
+            assert_eq!(c, un("ExprNode/CoawaitExpr.aux"));
+            // The pattern's list of one, for a `co_await`: a wrong length.
+            let pattern = node_of(input, of_kind(input, ExprKind::CoyieldExpr)[1]).a();
+            let c = crafted(
+                input,
+                rules,
+                aw,
+                |_, n| Node { a: pattern, ..n },
+                |w, s, n| coawait(w, s, n, false),
+            );
+            assert_eq!(c, un("ExprNode/CoawaitExpr.a"));
+        });
+        with(CMP, "c++20", |input, rules| {
+            let po = of_kind(input, ExprKind::PseudoObjectExpr)[0];
+            let c = crafted(
+                input,
+                rules,
+                po,
+                |_, n| Node { b: 99, ..n },
+                |w, s, n| pseudo_object_expr_of(w, s, n),
+            );
+            assert_eq!(c, un("ExprNode/PseudoObjectExpr.b"));
+        });
+    }
 
     #[test]
     fn unknown_values_are_unaccounted() {
