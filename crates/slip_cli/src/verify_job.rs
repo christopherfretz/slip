@@ -14,7 +14,7 @@
 //! post-image does not parse), or the job's `Err`.
 
 use slip_digest::map::counters as walk_counters;
-use slip_digest::{Detail, Options, ReadOnly, ReadOnlyFiles, digest};
+use slip_digest::{Detail, Options, Output, ReadOnly, ReadOnlyFiles, digest};
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_kiln::Lookups;
@@ -101,21 +101,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     let sums: Vec<GroupSum> =
         pre_digests.map(|d| d.groups.iter().map(Group::sum).collect()).unwrap_or_default();
     let detail = if pre_digests.is_some() { Detail::Differing(&sums) } else { Detail::None };
-    // The read-only files are decided from each buffer's real path
-    // (`Input::subject_path` maps the real path, never the path as the
-    // front end spells it; `spec/verify.md` §2.1).
-    let (mut shard, output) =
-        params.image.parse_looking(observer, Side::Post, Phase::Verify, job.round, |input| {
-            let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
-            let options = Options {
-                rules,
-                read_only: ReadOnly::files(&read_only),
-                detail,
-                names: false,
-                rule_use: false,
-            };
-            digest(input, &options)
-        })?;
+    let (mut shard, output) = post_walk(params, observer, job.round, detail)?;
     if shard.outcome.status != Status::Ok {
         // `not_parsed`: the parse task's shard, no digests, no verdict.
         return Ok(shard);
@@ -203,6 +189,30 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         }
     }
     Ok(post.finish(&mut shard, v))
+}
+
+/// Step 1 (§5.2): the post-image parsed and walked under the declared
+/// rules, with the read-only files decided from each buffer's real path
+/// (`Input::subject_path` maps the real path, never the path as the front
+/// end spells it; `spec/verify.md` §2.1), and the lookups for L1.
+fn post_walk(
+    params: &Params,
+    observer: &Observer,
+    round: u64,
+    detail: Detail<'_>,
+) -> Result<(Shard, Option<(Output, Lookups)>), String> {
+    let (rules, files) = (params.declared.rules(), params.declared.files());
+    params.image.parse_looking(observer, Side::Post, Phase::Verify, round, |input| {
+        let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
+        let options = Options {
+            rules,
+            read_only: ReadOnly::files(&read_only),
+            detail,
+            names: false,
+            rule_use: false,
+        };
+        digest(input, &options)
+    })
 }
 
 /// Step 4 (§5.2): the pre-image parsed with detail for the groups of `G`,
