@@ -57,6 +57,10 @@ pub(crate) struct UnitState {
     pub types: HashMap<u64, TypeRef>,
     /// The expression walk's state.
     pub expr: ExprState,
+    /// The left-out facts of the unit's own spellings, in walk order
+    /// (`spelling.rs`), and whether one of them makes the list due.
+    pub facts: Vec<crate::spelling::Fact>,
+    pub facts_due: bool,
 }
 
 /// The state of the expression walk in a unit (`expr.rs`): put aside with
@@ -152,12 +156,20 @@ pub(crate) struct Walk<'a> {
     pub abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
     /// `digest.bytes` (`spec/digest.md` §12).
     pub bytes: u64,
+    /// Whether the own spelling of a typedef-name holds a left-out fact
+    /// (`spelling.rs`), by its first declaration.
+    pub alias_due: HashMap<DeclId, bool>,
+    /// How many profiles the unit writes straight into its stream are
+    /// being walked (`expr_dep::profile_expr`): their facts are read by
+    /// that site, not by `absorb_type` for the types inside them.
+    pub spelling_off: u32,
 }
 
 /// What [`Walk::take_types`] puts aside.
 pub(crate) struct TypeState {
     left_out: u64,
     type_nesting: u32,
+    spelling_off: u32,
     abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
 }
 
@@ -195,6 +207,8 @@ impl<'a> Walk<'a> {
             type_nesting: 0,
             abort_memo: HashMap::new(),
             bytes: 0,
+            alias_due: HashMap::new(),
+            spelling_off: 0,
         }
     }
 
@@ -244,13 +258,14 @@ impl<'a> Walk<'a> {
     /// The type digests' state, put aside for a key or a content digest
     /// (memoised): what they compute neither depends on the enclosing
     /// type digest nor raises its `left_out`, so whether a unit is
-    /// `Pending(Area::Spelling)` does not depend on which was computed
+    /// marked does not depend on which was computed
     /// first (WP-036, F-G). The caller puts it back with
     /// [`Walk::restore_types`].
     pub(crate) fn take_types(&mut self) -> TypeState {
         TypeState {
             left_out: self.left_out,
             type_nesting: std::mem::take(&mut self.type_nesting),
+            spelling_off: std::mem::take(&mut self.spelling_off),
             abort_memo: std::mem::take(&mut self.abort_memo),
         }
     }
@@ -259,6 +274,7 @@ impl<'a> Walk<'a> {
     pub(crate) fn restore_types(&mut self, t: TypeState) {
         self.left_out = t.left_out;
         self.type_nesting = t.type_nesting;
+        self.spelling_off = t.spelling_off;
         self.abort_memo = t.abort_memo;
     }
 
@@ -267,6 +283,13 @@ impl<'a> Walk<'a> {
     /// name one (§4.2). The caller puts it back.
     pub(crate) fn take_expr_state(&mut self) -> ExprState {
         std::mem::take(&mut self.unit.expr)
+    }
+
+    /// Whether what is written now goes straight into a unit stream: not
+    /// inside a key, a type digest or a profile written into the unit
+    /// (the places a unit reads its own spellings, `spelling.rs`).
+    pub(crate) fn unit_level(&self) -> bool {
+        self.in_key == 0 && self.type_nesting == 0 && self.spelling_off == 0
     }
 
     /// Counts the bytes of a hashed stream.

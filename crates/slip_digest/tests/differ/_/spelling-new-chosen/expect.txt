@@ -1,0 +1,2 @@
+added operator new(unsigned long, int)
+changed h(type-parameter-0-0)

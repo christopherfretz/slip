@@ -340,24 +340,26 @@ fn member_spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &MemberSpecInfo) {
 ///
 /// The arguments are in the key only, where a profile's left-out fact
 /// (`Walk::left_out`) is ignored; the unit, whose meaning is that of its
-/// arguments, is `Pending(Area::Spelling)` when one left a fact out
-/// (digest-kinds §4.4 "The mark"). They are written for that into a
-/// stream that is dropped, as in a key: with the unit state and the type
-/// digests' state put aside.
+/// arguments, adds to its list the left-out facts of the arguments as
+/// written (`PartialSpecInfo::args`; digest-kinds §4.4 "Spellings"). The
+/// canonical list is walked into a stream that is dropped, as in a key
+/// (with the unit state and the type digests' state put aside), for its
+/// mark: what a canonical operand without a spelling is (rule 5).
 fn partial_spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &PartialSpecInfo) {
     template_head_unit(w, s, x.params);
+    if !w.unit_level() {
+        return;
+    }
     let saved = w.take_unit();
     let types = w.take_types();
     let before = w.left_out;
     w.in_key += 1;
     w.write_args(&mut Stream::new(), x.canonical);
     w.in_key -= 1;
-    let left_out = w.left_out != before;
+    let marked = w.left_out != before;
     w.restore_types(types);
     w.unit = saved;
-    if left_out {
-        s.absorb(Some(Cause::Pending(Area::Spelling)));
-    }
+    crate::spelling::left_out_of_args(w, s, x.args, marked);
 }
 
 /// `ref` to a declaration of a pattern (§9): `Ref::none` for one that has
@@ -534,7 +536,19 @@ pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
                 | ArgView::TemplateExpansion { .. }
                 | ArgView::Profile(_)
                 | ArgView::Pack(_)),
-            ) => w.write_arg(s, v),
+            ) => {
+                // The canonical form's bytes; the left-out facts of the
+                // default as written (digest-kinds §4.4 "Spellings").
+                let unit = w.unit_level();
+                let left_out = w.left_out;
+                w.spelling_off += 1;
+                w.write_arg(s, v);
+                w.spelling_off -= 1;
+                if unit {
+                    let marked = w.left_out != left_out;
+                    crate::spelling::left_out_of_arg(w, s, a, marked);
+                }
+            }
         }
     }
     // trailing_requires: child?

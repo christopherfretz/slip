@@ -1,0 +1,2 @@
+added f(long)
+changed h(type-parameter-0-0, char (*)[sizeof (f(T()))])

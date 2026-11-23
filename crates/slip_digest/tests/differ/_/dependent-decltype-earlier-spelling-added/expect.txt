@@ -1,4 +1,2 @@
-# pending
-# needs: spelling
-# a differ test, not equal: the added f is a unit. h must not be changed.
+# a differ test, not equal: the added f is a unit. h must not be changed (its list is its own spelling's, WP-041).
 added f(type-parameter-0-0)

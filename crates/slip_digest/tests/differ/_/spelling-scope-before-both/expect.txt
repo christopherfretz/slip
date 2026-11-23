@@ -1,0 +1,3 @@
+added f(long)
+changed g(type-parameter-0-0)
+changed h(type-parameter-0-0)
