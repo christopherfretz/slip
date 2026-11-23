@@ -1,6 +1,6 @@
 //! The shard, kind `SHRD` (`spec/model.md` §8), with the sections of M2
 //! (`edits`, `binding`, `rule_use`, `spellings`; work package WP-060) and
-//! `negatives` (work package WP-117).
+//! `negatives` (work package WP-117) and `found` (work package WP-135).
 
 use crate::json::Value;
 use crate::wire::Encoder;
@@ -12,8 +12,8 @@ use super::common::{
     read_list, read_record, read_str, read_uv,
 };
 use super::{
-    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, negatives, open,
-    read_container, render_container, seal, spellings, verdict,
+    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, found, negatives,
+    open, read_container, render_container, seal, spellings, verdict,
 };
 
 const HEADER: u64 = 1;
@@ -27,6 +27,7 @@ const BINDING: u64 = agreement::BINDING;
 const RULE_USE: u64 = agreement::RULE_USE;
 const SPELLINGS: u64 = spellings::ID;
 const NEGATIVES: u64 = negatives::ID;
+const FOUND: u64 = found::ID;
 
 use super::MESSAGE_MAX;
 
@@ -46,6 +47,7 @@ enum Loc {
     Agreement(agreement::Loc),
     Spellings(spellings::Loc),
     Negatives(negatives::Loc),
+    Found(found::Loc),
 }
 
 impl Loc {
@@ -62,6 +64,7 @@ impl Loc {
             Loc::Agreement(l) => l.path(),
             Loc::Spellings(l) => l.path(),
             Loc::Negatives(l) => l.path(),
+            Loc::Found(l) => l.path(),
         }
     }
 }
@@ -143,6 +146,11 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
         && let Some((l, what)) = negatives::violation(n, phase, s.inputs.is_some())
     {
         return Some((Loc::Negatives(l), what));
+    }
+    if let Some(f) = &s.found
+        && let Some((l, what)) = found::violation(f, phase, s.inputs.as_ref().map(Vec::len))
+    {
+        return Some((Loc::Found(l), what));
     }
     None
 }
@@ -236,6 +244,14 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     if let Some(negatives) = &negatives {
         sections.push((NEGATIVES, negatives));
     }
+    let found = s.found.as_ref().map(|x| {
+        let mut e = Encoder::new();
+        found::encode(&mut e, x);
+        e.into_bytes()
+    });
+    if let Some(found) = &found {
+        sections.push((FOUND, found));
+    }
     seal(Shard::KIND, Shard::VERSION, &sections, extras)
 }
 
@@ -248,7 +264,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         Shard::VERSION,
         [
             HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, RULE_USE,
-            SPELLINGS, NEGATIVES,
+            SPELLINGS, NEGATIVES, FOUND,
         ],
     )?;
     let end = opened.end;
@@ -264,6 +280,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         rule_use,
         spellings,
         negatives,
+        found,
     ] = opened.sections;
 
     let mut d = super::required(header, end, "shard has no header section")?;
@@ -355,6 +372,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             (Some(v), Some(at))
         }
     };
+    let (found, found_at) = match found {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = found::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
 
     let shard = Shard {
         observer,
@@ -370,6 +395,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         rule_use,
         spellings,
         negatives,
+        found,
     };
     if let Some((l, what)) = violation(&shard) {
         let at = match l {
@@ -398,6 +424,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
                 || unreachable!("a negatives violation without negatives"),
                 |o| o.of(l),
             ),
+            Loc::Found(l) => found_at
+                .as_ref()
+                .map_or_else(|| unreachable!("a found violation without found"), |o| o.of(l)),
         };
         return Err(malformed(at, what));
     }
@@ -407,7 +436,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
 // ---------------------------------------------------------------------------
 // JSON
 
-const NAMES: [SectionName; 11] = [
+const NAMES: [SectionName; 12] = [
     SectionName { id: HEADER, name: "header", required: true },
     SectionName { id: OUTCOME, name: "outcome", required: true },
     SectionName { id: INPUTS, name: "inputs", required: false },
@@ -419,6 +448,7 @@ const NAMES: [SectionName; 11] = [
     SectionName { id: RULE_USE, name: "rule_use", required: false },
     SectionName { id: SPELLINGS, name: "spellings", required: false },
     SectionName { id: NEGATIVES, name: "negatives", required: false },
+    SectionName { id: FOUND, name: "found", required: false },
 ];
 
 pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
@@ -471,6 +501,9 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
     if let Some(x) = &s.negatives {
         sections.push(("negatives", negatives::render(x)));
     }
+    if let Some(x) = &s.found {
+        sections.push(("found", found::render(x)));
+    }
     render_container(Shard::KIND, Shard::VERSION, sections, extras)
 }
 
@@ -489,6 +522,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         rule_use,
         spellings,
         negatives,
+        found,
     ] = s.known
     else {
         unreachable!("read_container returns every required section")
@@ -533,6 +567,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         spellings.map(|v| spellings::read(v, &sections.key("spellings"))).transpose()?;
     let negatives =
         negatives.map(|v| negatives::read(v, &sections.key("negatives"))).transpose()?;
+    let found = found.map(|v| found::read(v, &sections.key("found"))).transpose()?;
 
     let shard = Shard {
         observer,
@@ -548,6 +583,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         rule_use,
         spellings,
         negatives,
+        found,
     };
     if let Some((l, what)) = violation(&shard) {
         return Err(JsonFormError { path: l.path(), message: what.to_owned() });

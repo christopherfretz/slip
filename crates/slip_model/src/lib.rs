@@ -41,7 +41,7 @@ pub use plan::{
 };
 pub use result::TransformResult;
 pub use run::{End, Job, Run, RunRecord};
-pub use shard::{Counter, Outcome, Phase, Shard, Status};
+pub use shard::{Counter, Found, FoundPlace, Outcome, Phase, Shard, Status};
 pub use spellings::Spellings;
 pub use transform::Transform;
 pub use transform_run::TransformRun;

@@ -331,6 +331,7 @@ fn map_shard() -> Shard {
         rule_use: None,
         spellings: None,
         negatives: None,
+        found: None,
     }
 }
 
@@ -433,6 +434,7 @@ fn verify_shard() -> Shard {
         rule_use: None,
         spellings: None,
         negatives: None,
+        found: None,
     }
 }
 
@@ -662,6 +664,7 @@ fn sample_map_shard(digests: Digests) -> Shard {
         rule_use: None,
         spellings: None,
         negatives: None,
+        found: None,
     }
 }
 
