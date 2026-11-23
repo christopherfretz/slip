@@ -899,6 +899,10 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             tag(s, k);
             s.bool(arrow);
             w.write_type(s, destroyed);
+            // Rule 11: the qualifier Kiln does not keep.
+            if x.pseudo_destructor_qualified(e) {
+                raise_unlisted(w);
+            }
             stack.push(P::Expr(base));
         }
         K::CXXTypeidExpr => {

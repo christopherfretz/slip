@@ -179,6 +179,10 @@ pub(crate) struct UnitLocals {
     /// The named local types whose streams are being written in place,
     /// outermost first ([`write_scope_names`]).
     scopes: Vec<DeclId>,
+    /// How many generic lambdas' closure types are being written in
+    /// place ([`lambda_expr`]): their bodies are templated whatever the
+    /// holder is (`own_spelling::templated_stream`).
+    pub generic: u32,
 }
 
 /// The numbering mode is on: what the mode skips returns at once.
@@ -1193,7 +1197,17 @@ pub(crate) fn lambda_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         s.uv(0).indeterminate(LAMBDA_IN_TYPE);
         return;
     }
+    let generic = w
+        .ast
+        .decls
+        .record(closure)
+        .and_then(|r| r.lambda)
+        .filter(|l| l.index() as usize <= w.ast.exprs.lambdas.len())
+        .and_then(|l| w.ast.exprs.lambdas.get(l).call_op)
+        .is_none_or(|op| w.ast.described_template(op).is_some());
+    w.unit.local.generic += u32::from(generic);
     write_decl(w, s, closure);
+    w.unit.local.generic -= u32::from(generic);
 }
 
 /// `record LambdaData` (§10.4): the `lambda` row of a closure type's

@@ -673,6 +673,62 @@ pub(crate) fn left_out_of_nns(w: &mut Walk<'_>, s: &mut Stream, n: NnsId) {
     nns(w, s, n);
 }
 
+/// A qualified pseudo-destructor name (`p->X::I::~I()`): Kiln keeps that
+/// it was qualified and not the qualifier (rule 11), which can hold an
+/// instantiation-dependent operand.
+pub(crate) const PSEUDO_DESTRUCTOR_QUALIFIER: Cause =
+    Cause::Unaccounted("spelling/pseudo-destructor-qualifier");
+
+/// A qualified pseudo-destructor in the full walk (rule 11), in a
+/// templated stream ([`templated_stream`]): in a unit stream
+/// `spelling/pseudo-destructor-qualifier`; elsewhere the mark.
+pub(crate) fn pseudo_destructor(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    if !qualifier_lost(w, e) {
+        return;
+    }
+    if w.unit_level() {
+        s.indeterminate(PSEUDO_DESTRUCTOR_QUALIFIER);
+    } else {
+        w.left_out += 1;
+    }
+}
+
+/// A qualified pseudo-destructor whose qualifier Kiln did not keep: it
+/// keeps it for a dependent qualifier only, as `TemplateTables` `expr_nns`
+/// or as the first type-name `pseudo_dtor_first` with the rest in the
+/// destroyed type (`kiln_sema` `class/member_expr.rs`), which
+/// `templ::expr_maps` and rule 1 read. Otherwise it keeps the bit, and
+/// computes the node's dependence without the qualifier, so in a
+/// templated stream the qualifier can hold an instantiation-dependent
+/// operand no field has.
+fn qualifier_lost(w: &Walk<'_>, e: ExprId) -> bool {
+    let t = &w.ast.templates;
+    w.ast.exprs.pseudo_destructor_qualified(e)
+        && t.expr_nns.get(e).is_none()
+        && t.pseudo_dtor_first.get(e).is_none()
+        && templated_stream(w)
+}
+
+/// The stream being written can hold an instantiation-dependent operand
+/// (rule 11): its holder is a template's pattern, a partial
+/// specialisation or lexically inside one, or the walk is inside a
+/// generic lambda or an instantiation-dependent expression. A stream that
+/// is no unit's own (a content digest) counts as one: nothing says
+/// otherwise. Outside these, a qualifier names what it names at its
+/// point of use, which the node's other fields already write.
+pub(crate) fn templated_stream(w: &Walk<'_>) -> bool {
+    let Some(h) = w.unit.local.holder else { return true };
+    w.unit.local.generic > 0
+        || w.unit.expr.dependent > 0
+        || w.ast.described_template(h).is_some()
+        || matches!(
+            w.ast.decls.get(h).kind(),
+            DeclKind::ClassTemplatePartialSpecialization
+                | DeclKind::VarTemplatePartialSpecialization
+        )
+        || templated_context(w, h)
+}
+
 /// A using-declaration's qualifier as written (rule 11): its key writes
 /// the canonical qualifier (`KeyKind::UsingDeclaration`), its stream
 /// nothing more, so what the written one holds is read into the list.
@@ -1026,6 +1082,13 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
         K::CXXThrowExpr => opt(kids, x.throw_operand(e)),
         K::CXXPseudoDestructorExpr => {
             let (base, _, destroyed) = x.pseudo_destructor(e);
+            // Rule 11: Kiln keeps that the name was qualified, not the
+            // qualifier (`pseudo_destructor_qualified`).
+            if qualifier_lost(w, e) {
+                s.indeterminate(PSEUDO_DESTRUCTOR_QUALIFIER);
+            }
+            kids.extend(ast.templates.expr_nns.get(e).copied().map(I::N));
+            kids.extend(ast.templates.pseudo_dtor_first.get(e).map(|&(q, _)| I::T(q)));
             kids.extend([I::T(destroyed), I::E(base)]);
         }
         K::CXXTypeidExpr => match x.typeid_operand(e) {

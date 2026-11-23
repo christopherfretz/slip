@@ -429,6 +429,7 @@ const REACHED: &[&str] = &[
     "spelling/fold-operator",
     "spelling/full",
     "spelling/using-enum",
+    "spelling/pseudo-destructor-qualifier",
 ];
 
 /// The sources tried for rule 5 through the digest, aimed at a caller

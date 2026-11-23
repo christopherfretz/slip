@@ -80,6 +80,7 @@ ExcSpec/Dynamic.0
 ExprNode/BuiltinBitCastExpr.b
 ExprNode/CXXConstCastExpr.b
 ExprNode/CXXDependentScopeMemberExpr.aux-template-keyword
+ExprNode/CXXPseudoDestructorExpr.aux-qualified
 ExprNode/CXXReinterpretCastExpr.b
 ExprNode/CXXRewrittenBinaryOperator.b
 ExprNode/DeclRefExpr.b
