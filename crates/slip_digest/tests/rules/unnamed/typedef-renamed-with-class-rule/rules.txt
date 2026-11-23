@@ -1,0 +1,4 @@
+# Item 7: the typedef renamed and the unnamed class given its own rule, from unnamed_by Q to unnamed_by P: equal.
+relocate acme => :: legacy
+relocate acme::P => legacy :: Q
+rule class | mapped legacy | name-of post legacy::(anonymous struct for Q) | none | pre acme | name-of pre acme::(anonymous struct for P)

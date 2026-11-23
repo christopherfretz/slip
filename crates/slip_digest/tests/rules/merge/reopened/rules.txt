@@ -1,0 +1,2 @@
+# Item 5 and 10: acme reopened twice, merged onto legacy: one entity via the rule, legacy itself direct (a merge, not stale).
+relocate legacy => :: acme

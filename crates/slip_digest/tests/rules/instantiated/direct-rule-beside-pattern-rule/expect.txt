@@ -1,0 +1,2 @@
+indeterminate u()
+indeterminate S<int>::g()

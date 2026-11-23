@@ -1,0 +1,3 @@
+# Item 7: the typedef renamed with a rule, the class without one: unnamed_by holds the plain name Q (spec/verify.md §2.1), so the class is another key, and everything that mentions it differs.
+relocate acme => :: legacy
+relocate acme::P => legacy :: Q

@@ -1,0 +1,4 @@
+# Fix round 3, finding 2: every declaration of the entity's chain is asked for its pattern, not the representative only (spec/digest.md §3.4).
+# One function befriended by two class templates; S defines it, V only declares it. f(int) follows S's pattern (the one with a definition) and keys as g(int) equal; V's friend declaration is its own entity in V and, without a rule of its own, keeps f: V differs.
+# Two patterns that both define the function cannot both be instantiated in one program (a redefinition, [temp.inst]/3 and [basic.def.odr]), so key/patterns-disagree does not arise in a valid program.
+relocate S::friend f(int) => S :: g

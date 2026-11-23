@@ -1,0 +1,2 @@
+# Item 8: a function outside the namespace calls into it (ADL included), names its types, takes the address of a function and a member, uses enumerators of both enum kinds, a variable, and its templates with arguments from inside and outside.
+relocate acme => :: legacy

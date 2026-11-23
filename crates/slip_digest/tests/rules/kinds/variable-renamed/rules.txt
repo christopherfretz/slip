@@ -1,0 +1,2 @@
+# digest-kinds §3.1 variable, renamed: the order unit lists it by key.
+relocate v => :: u

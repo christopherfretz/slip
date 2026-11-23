@@ -1,0 +1,2 @@
+# Fix round 3, X8: a template whose first declaration is a friend declaration in a class template, so that its representative (the namespace-scope definition) is not its first declaration; W<int> takes the name of W's key computed from the representative.
+relocate W => :: V
