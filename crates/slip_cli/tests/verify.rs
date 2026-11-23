@@ -1215,11 +1215,18 @@ fn s8_8_declare_files() {
     assert_eq!(read(&f).files(), None);
     // With a rule, as real paths: `link` is `s`, given twice.
     f.write("t.txt", "changed h(int)\nrelocate old => :: fresh\n");
-    let out =
-        declare(&f, &plan, "t.txt", &["--owned", "link", "--readonly", "link/a.h", "--owned", "s"]);
+    // Given out of order: sorted.
+    let out = declare(
+        &f,
+        &plan,
+        "t.txt",
+        &["--owned", "link", "--readonly", "link/u1.cpp", "--readonly", "s/a.h", "--owned", "s"],
+    );
     assert_eq!(out.code(), Some(0), "{out:?}");
-    let files =
-        Ownership { owned: vec![real_path(&f, "s")], readonly: vec![real_path(&f, "s/a.h")] };
+    let files = Ownership {
+        owned: vec![real_path(&f, "s")],
+        readonly: vec![real_path(&f, "s/a.h"), real_path(&f, "s/u1.cpp")],
+    };
     assert_eq!(read(&f).files(), Some(&files));
 
     let _ = std::fs::remove_file(f.path("d.decl"));
@@ -1269,6 +1276,36 @@ fn s2_1_rule_naming_a_dependency_entity_matches_nothing() {
     assert_eq!(states(&report), [0, 0, 0, 0, 0, 0, 2]);
     assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 1"));
     assert_eq!(out.value("unused rule"), Some("0"));
+}
+
+// spec/verify.md §2.3 "created": resolved in the post-images walked under
+// the file's rules WITH the run's files. A function added in the
+// relocated namespace has the mapped key (`old::k()`) only when its file
+// is owned; the exemption then holds at the job and both observers
+// verify. Walked with every file read-only, the key would be
+// `fresh::k()`'s and `u0` would mismatch (an added unit).
+#[test]
+fn s2_2_created_resolved_under_the_rules_and_files() {
+    let f = two_units("created-rules");
+    let plan = f.parse();
+    relocate_in_post(&f);
+    let u0 = U0.replace("old::", "fresh::");
+    f.write("post/u0.cpp", &format!("{u0}namespace fresh {{ int k() {{ return 0; }} }}\n"));
+    f.write("t.txt", "relocate old => :: fresh\ncreated fresh::k()\n");
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(out.value("created"), Some("1"));
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    f.verify(&plan, &with);
+    for (o, main) in &f.observers(&plan) {
+        let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
+        assert_eq!(v.kind, VerdictKind::Verified, "{main}: {:?}", v.findings);
+    }
 }
 
 // spec/verify.md §2.1: ownership is of real paths. The header is reached
