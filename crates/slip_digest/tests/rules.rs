@@ -38,7 +38,9 @@
 //!   (`spec/digest.md` §12) is `n`. Without the line it must be 0.
 //! - `refused <text>`: the table cannot be made: the resolver or
 //!   `RuleTable::new` refuses it with a message that contains `<text>`
-//!   (a rule `Rule::validate` refuses, `spec/verify.md` §2.1). Nothing
+//!   (a rule `Rule::refusal` refuses, `spec/verify.md` §2.1); and the
+//!   same table made without the refusal keys nothing: every unit of the
+//!   post-image under it but the order unit is indeterminate. Nothing
 //!   else is checked.
 //!
 //! # What every case also checks

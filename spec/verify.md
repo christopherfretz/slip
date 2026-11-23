@@ -129,10 +129,15 @@ needs no map.
   `named-namespace-merged-onto-unnamed`: before, all equal, with
   internal symbols made external or the reverse).
 
-`Rule::validate` refuses all three, so every table does, whichever way it is
-made: `RuleTable::new` and the reader of the declared container
-(`RuleTable::from_sorted`) call it on every rule (`RuleError::InvalidName`,
-`SortError::Invalid`).
+The three are refused in one place, `Rule::refusal`
+(`crates/slip_model/src/keys.rs`), and every table records the first rule
+it refuses when it is made (`RuleTable::refused`), whichever way: by
+`RuleTable::new` or by the reader of the declared container. The
+container's encoding still admits such a rule (it is a well-formed
+`Rule`); what refuses it is the use: a resolver (`slip declare`, §2.3)
+must not make a table that holds one, and the walk keys nothing under
+such a table, so every unit of the post-image is indeterminate
+(`key/refused-rule`) and nothing verifies.
 
 **Rules rename owned entities only.** A run has files it may edit and
 files it may not (`spec/edits.md` §2.1; `Declared.files`). A rule that
