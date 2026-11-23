@@ -1,8 +1,10 @@
 # N44: an inline function of the unnamed namespace inside legacy, hoisted
-# out of it into acme, and the hoist declared (declared-2.txt), so that
-# every key is as before. clang++-19 -c, nm: `t _ZN6legacy12_GLOBAL__N_16helperEv`
-# in pre and good, `W _ZN4acme6helperEv` in bad-2: a weak external symbol,
-# merged with any other translation unit's acme::helper(). The key holds
-# names only; the row `enclosing` of helper's unit holds its linkage.
+# out of it into acme beside a function that stays in it, and the hoist
+# declared (declared-2.txt), so that every key is as before. clang++-19 -c,
+# nm: `t _ZN6legacy12_GLOBAL__N_16helperEv` in pre (and `t
+# _ZN4acme12_GLOBAL__N_16helperEv` in good), `W _ZN4acme6helperEv` in bad-2:
+# a weak external symbol, merged with any other translation unit's
+# acme::helper(). The key holds names only; the row `enclosing` of helper's
+# unit holds its linkage (WP-113; before, bad-2 verified).
 good:  verified
-bad-2: mismatch changed legacy::(anonymous namespace)::helper() @ main.cpp:4
+bad-2: mismatch changed legacy::(anonymous namespace)::helper() @ main.cpp:7
