@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# `cargo xtask` runs `cargo run --package xtask`; `fake-slip` is a test
+# fixture (src/bin/fake-slip.rs).
+default-run = "xtask"
 
 [dependencies]
 # Workspace crates only (spec/harness.md: xtask "may depend on slip_model and
