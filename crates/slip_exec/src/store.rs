@@ -667,13 +667,18 @@ impl Store {
         self.root().join(object.dir()).join(format!("{id}.{}", object.extension()))
     }
 
-    /// Publishes a container of `object`'s kind under its content id, which
-    /// is returned. `Invalid` (nothing written) if `bytes` is not a
-    /// container of that kind (`spec/model.md` §5: magic, kind, version 1,
-    /// trailer, section framing; the sections are not decoded). The file
-    /// is left untouched when it already holds that content.
+    /// Publishes a file of `object`'s kind under its content id, which is
+    /// returned. `Invalid` (nothing written) if `bytes` is not a container
+    /// of that kind (`spec/model.md` §5: magic, kind, version 1, trailer,
+    /// section framing) or not a valid file of it, decoded and checked in
+    /// full by `slip_model::formats::content_id`. The file is left
+    /// untouched when it already holds that content.
     pub fn publish_object(&self, object: Object, bytes: &[u8]) -> Result<Digest> {
         let id = container_id(bytes, object.kind())?;
+        formats::content_id(bytes).map_err(|e| {
+            let name = String::from_utf8_lossy(&object.kind()).into_owned();
+            StoreError::Invalid(format!("not a valid {name} file: {e}"))
+        })?;
         self.publish_once(&self.object_path(object, &id), bytes)?;
         Ok(id)
     }

@@ -203,9 +203,9 @@
       "refusals": [
         {
           "cause": "mixed_set",
-          "file": null,
-          "lo": 0,
-          "hi": 0,
+          "file": 0,
+          "lo": 50,
+          "hi": 55,
           "reason": "none",
           "subject": "1212121212121212121212121212121212121212121212121212121212121212",
           "macro": null,

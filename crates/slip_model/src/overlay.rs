@@ -12,14 +12,14 @@ use crate::Digest;
 use crate::edits::KeyId;
 
 /// The size and content digest of one image of a file (§7.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Content {
     pub size: u64,
     pub content: Digest,
 }
 
 /// A file the overlay replaces (§7.1): `post` equal to `pre` is valid.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct OverlayFile {
     /// Its real path: canonical (`transform::is_canonical`).
     pub path: Vec<u8>,

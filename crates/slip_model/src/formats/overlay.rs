@@ -5,7 +5,7 @@
 use crate::Digest;
 use crate::json::Value;
 use crate::overlay::{Content, Obligation, Overlay, OverlayFile};
-use crate::transform::is_canonical;
+use crate::transform::is_file_path;
 use crate::wire::{Decoder, Encoder};
 
 use super::common::{
@@ -40,15 +40,15 @@ impl Loc {
 }
 
 /// The first violation, each rule over its whole list before the next:
-/// `files` not empty, canonical, strictly ascending by path; `spellings`
+/// `files` not empty, canonical paths of files, strictly ascending by path; `spellings`
 /// strictly ascending, each `file` an index of `files`, `lo < hi <=
 /// post.size`.
 fn violation(x: &Overlay) -> Option<(Loc, &'static str)> {
     if x.files.is_empty() {
         return Some((Loc::Files, "an overlay has no file"));
     }
-    if let Some(i) = x.files.iter().position(|f| !is_canonical(&f.path)) {
-        return Some((Loc::File(i), "not a canonical absolute path"));
+    if let Some(i) = x.files.iter().position(|f| !is_file_path(&f.path)) {
+        return Some((Loc::File(i), super::editset::path_what(&x.files[i].path)));
     }
     if let Some(i) = (1..x.files.len()).find(|&i| x.files[i - 1].path >= x.files[i].path) {
         return Some((Loc::File(i), "files are not strictly ascending by path"));

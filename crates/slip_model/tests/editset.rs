@@ -292,7 +292,9 @@ fn raw_set(x: &EditSet) -> Raw {
         r.mark(at.clone());
         r.e.digest(&c.key);
         r.place(&c.place);
-        r.e.bytes(&c.reason).bool(c.in_force);
+        r.e.bytes(&c.reason);
+        r.mark(format!("{at}.in_force"));
+        r.e.bool(c.in_force);
         r.counts(&at, c.observers, &c.first);
     }
     for (name, list) in [("kept", &x.kept), ("unresolved", &x.unresolved)] {
@@ -307,15 +309,20 @@ fn raw_set(x: &EditSet) -> Raw {
         let at = format!("{S}.refusals[{i}]");
         r.mark(at.clone());
         r.e.uv(f.cause as u64);
+        r.mark(format!("{at}.file"));
         r.opt(f.file.as_ref(), |r, &n| {
             r.e.uv(n);
         });
         r.e.uv(f.lo).uv(f.hi);
         r.mark(format!("{at}.reason"));
         r.e.uv(f.reason as u64);
+        r.mark(format!("{at}.subject"));
         r.opt_digest(f.subject.as_ref());
+        r.mark(format!("{at}.macro"));
         r.macro_site(f.macro_site.as_ref());
+        r.mark(format!("{at}.other"));
         r.opt(f.other.as_ref(), Raw::place);
+        r.mark(format!("{at}.observers"));
         r.counts(&at, f.observers, &f.first);
     }
     r.e.count(x.reports.len());
@@ -613,7 +620,7 @@ fn refusal(cause: Cause, file: Option<u64>, lo: u64, hi: u64) -> Refusal {
 /// path not UTF-8), a seed with a rule and a follower, a rule, an edit
 /// with each piece, one nested in it at a macro argument, one of exactly
 /// the range the first copies, a group, a `changed` entry, kept and
-/// unresolved ranges, refusals of a set, of a site and contested by
+/// unresolved ranges, refusals of a mixed set, of a site and contested by
 /// another range, reports with and without a place, failures with and
 /// without a place and a host refusal, an unparsed observer and counters.
 #[allow(clippy::too_many_lines, reason = "one value per record of spec/edits.md §6")]
@@ -683,7 +690,7 @@ fn sample() -> EditSet {
         kept: vec![place(0, 30, 33), place(1, 6, 7)],
         unresolved: vec![place(2, 1, 4)],
         refusals: vec![
-            Refusal { subject: Some(d(0x12)), ..refusal(Cause::MixedSet, None, 0, 0) },
+            Refusal { subject: Some(d(0x12)), ..refusal(Cause::MixedSet, Some(0), 50, 55) },
             Refusal {
                 subject: Some(d(0x10)),
                 macro_site: Some(MacroSite { name_start: 40, name: b"N".to_vec() }),
@@ -757,13 +764,16 @@ fn sample() -> EditSet {
     }
 }
 
-/// A refused edit set: no edits, no groups, a refusal for want of an
-/// observer, one of a subject.
+/// A refused edit set: no edits, no groups, so no `changed` entry in
+/// force; a refusal for want of an observer, one of a subject, `no_edit`.
 fn refused() -> EditSet {
+    let mut changed = sample().changed;
+    changed[0].in_force = false;
     EditSet {
         state: SetState::Refused,
         edits: Vec::new(),
         groups: Vec::new(),
+        changed,
         refusals: vec![
             refusal(Cause::NoObserver, None, 0, 0),
             Refusal { subject: Some(d(0x10)), ..refusal(Cause::NameTaken, None, 0, 0) },
@@ -1216,7 +1226,8 @@ fn round_trips() {
         let mut x = refused();
         x.refusals = vec![Refusal {
             reason: if c == Cause::SiteRefused { Reason::Pasted } else { Reason::None },
-            ..refusal(c, None, 0, 0)
+            subject: (c.is_of_subject() && c != Cause::NoSubject).then_some(d(0x10)),
+            ..if c.is_of_site() { refusal(c, Some(0), 1, 2) } else { refusal(c, None, 0, 0) }
         }];
         round_trip(&x);
     }
@@ -1460,7 +1471,8 @@ fn json_members() {
     assert_eq!(keys(&first("counters")), ["name", "value"]);
     assert_eq!(s.get("state").unwrap(), &Value::Str("accepted".to_owned()));
     assert_eq!(first("refusals").get("cause").unwrap(), &Value::Str("mixed_set".to_owned()));
-    assert_eq!(first("refusals").get("file").unwrap(), &Value::Null);
+    assert_eq!(first("refusals").get("file").unwrap(), &Value::Int(0));
+    assert_eq!(first("refusals").get("other").unwrap(), &Value::Null);
 
     let v = overlay().to_json();
     let o = v.get("sections").unwrap().get("overlay").unwrap();
@@ -1568,11 +1580,40 @@ fn json_members() {
 // ---------------------------------------------------------------------------
 // The edit set's invariants (spec/edits.md §6.1)
 
+/// Every file index of `x`'s records (row 12's list), for a test that
+/// inserts a file.
+fn shift_files(x: &mut EditSet) -> Vec<&mut u64> {
+    let mut v: Vec<&mut u64> = Vec::new();
+    for e in &mut x.edits {
+        v.push(&mut e.file);
+        for p in &mut e.pieces {
+            if let Piece::Copy(c) = p {
+                v.push(&mut c.file);
+            }
+        }
+    }
+    v.extend(x.changed.iter_mut().map(|c| &mut c.place.file));
+    v.extend(x.kept.iter_mut().chain(&mut x.unresolved).map(|p| &mut p.file));
+    for r in &mut x.refusals {
+        v.extend(r.file.as_mut());
+        v.extend(r.other.as_mut().map(|p| &mut p.file));
+    }
+    v.extend(x.reports.iter_mut().filter_map(|r| r.report.place.as_mut()).map(|p| &mut p.file));
+    for f in &mut x.failures {
+        if let Some(p) = f.failure.refusal.as_mut().and_then(|r| r.subject.as_mut()) {
+            v.push(&mut p.file);
+        }
+    }
+    v
+}
+
 fn broken(f: impl FnOnce(&mut EditSet), path: &str) -> String {
     let mut x = sample();
     f(&mut x);
     rejected(&x, path)
 }
+
+// The row numbers below are those of `spec/landed/edits/WP-061.md` §2.
 
 // §6.1 row 1: scheme is 1.
 #[test]
@@ -1582,13 +1623,25 @@ fn set_scheme() {
     }
 }
 
-// §6.1 rows 3 and 4: files canonical, then strictly ascending by path.
+// §6.1 rows 2 and 3: files canonical, then strictly ascending by path.
 #[test]
 fn set_files() {
-    for path in [&b"s/a.h"[..], b"/s/./a.h", b"/s//a.h", b"/s/a.h/", b"/s/../a.h", b""] {
+    for path in [&b"s/a.h"[..], b"/s/./a.h", b"/s//a.h", b"/s/a.h/", b"/s/../a.h", b"", b"/s/a\0.h"]
+    {
         let what = broken(|x| x.files[1].path = path.to_vec(), "sections.set.files[1]");
         assert_eq!(what, "not a canonical absolute path");
     }
+    // `/` is canonical (an ownership entry) but names no file.
+    let what = broken(
+        |x| {
+            x.files.insert(0, file(b"/", 0, 0x50));
+            for f in shift_files(x) {
+                *f += 1;
+            }
+        },
+        "sections.set.files[0]",
+    );
+    assert_eq!(what, "the root / is not a file");
     let what = broken(|x| x.files[1].path = b"/s/a.cc".to_vec(), "sections.set.files[1]");
     assert_eq!(what, "files are not strictly ascending by path");
     let what = broken(|x| x.files.swap(1, 2), "sections.set.files[2]");
@@ -1604,7 +1657,7 @@ fn set_files() {
     assert_eq!(what, "not a canonical absolute path");
 }
 
-// §6.1 row 5: the subject rules, as in the shard (WP-060): ascending by
+// §6.1 row 4: the subject rules, as in the shard (WP-060): ascending by
 // id, then `of`, then the flags, each over the whole list.
 #[test]
 fn set_subjects() {
@@ -1624,7 +1677,7 @@ fn set_subjects() {
     );
 }
 
-// §6.1 row 6: rules as a rule table; a name a reader refuses, in memory.
+// §6.1 row 5: rules as a rule table; a name a reader refuses, in memory.
 #[test]
 fn set_rules() {
     let what = broken(|x| x.rules[1] = rule(b"f", b"j"), "sections.set.rules[1]");
@@ -1639,7 +1692,7 @@ fn set_rules() {
     assert!(x.validate().unwrap_err().starts_with("sections.set.subjects[0].rule: "));
 }
 
-// §6.1 row 7: a refused set has no edits, then no groups.
+// §6.1 row 6: a refused set has no edits, then no groups.
 #[test]
 fn set_refused_lists() {
     let what = broken(|x| x.state = SetState::Refused, "sections.set.edits[0]");
@@ -1654,7 +1707,7 @@ fn set_refused_lists() {
     assert_eq!(what, "a refused edit set has groups");
 }
 
-// §6.1 row 8, §5.4: edits ascending, not empty, nested or disjoint, and
+// §6.1 row 7, §5.4: edits ascending, not empty, nested or disjoint, and
 // crossing no copied range. Nested edits and an edit of exactly a copied
 // range are valid (the sample has both).
 #[test]
@@ -1725,7 +1778,7 @@ fn set_edit_geometry() {
     assert_eq!(what, "an edit crosses a range an edit copies");
 }
 
-// §6.1 row 9: the piece rules, for each edit in turn.
+// §6.1 row 8: the piece rules, for each edit in turn.
 #[test]
 fn set_pieces() {
     broken(
@@ -1758,7 +1811,7 @@ fn set_pieces() {
     );
 }
 
-// §6.1 row 10: an edit's subjects and notes strictly ascending, its tiers
+// §6.1 row 9: an edit's subjects and notes strictly ascending, its tiers
 // those of a replace claim.
 #[test]
 fn set_edit_fields() {
@@ -1810,7 +1863,7 @@ fn set_edit_fields() {
     );
 }
 
-// §6.1 row 11: the group rules, over edits.
+// §6.1 row 10: the group rules, over edits.
 #[test]
 fn set_groups() {
     let what = broken(|x| x.groups[0] = vec![0], "sections.set.groups[0]");
@@ -1834,7 +1887,7 @@ fn set_groups() {
     assert_eq!(rejected(&x, "sections.set.groups[1]"), "groups are not strictly ascending");
 }
 
-// §6.1 row 12: every place within its file; a changed place not empty; a
+// §6.1 row 11: every place within its file; a changed place not empty; a
 // refusal that is not of a site has no range.
 #[test]
 fn set_places() {
@@ -1850,9 +1903,15 @@ fn set_places() {
     broken(|x| x.kept[1] = place(1, 7, 6), "sections.set.kept[1]");
     let what = broken(|x| x.unresolved[0] = place(2, 1, 41), "sections.set.unresolved[0]");
     assert_eq!(what, "an unresolved range is not within its file");
-    let what = broken(|x| x.refusals[0].lo = 1, "sections.set.refusals[0]");
+    let what = broken(
+        |x| x.refusals.insert(0, refusal(Cause::NoObserver, None, 1, 0)),
+        "sections.set.refusals[0]",
+    );
     assert_eq!(what, "a refusal that is not of a site has a range");
-    broken(|x| x.refusals[0].hi = 1, "sections.set.refusals[0]");
+    broken(
+        |x| x.refusals.insert(0, refusal(Cause::NoObserver, None, 0, 1)),
+        "sections.set.refusals[0]",
+    );
     let what = broken(|x| x.refusals[1].hi = 101, "sections.set.refusals[1]");
     assert_eq!(what, "a refusal's range is not within its file");
     broken(|x| x.refusals[1].file = Some(3), "sections.set.refusals[1]");
@@ -1889,7 +1948,7 @@ fn set_places() {
     );
 }
 
-// §6.1 row 13: first at most 8 and at most observers; notes at most 8.
+// §6.1 row 14: first at most 8 and at most observers; notes at most 8.
 #[test]
 fn set_first_and_notes() {
     let nine = || (0..9u8).map(|i| vec![b'a' + i]).collect::<Vec<_>>();
@@ -1947,16 +2006,16 @@ fn set_first_and_notes() {
     );
 }
 
-// §6.1 row 14: the six lists strictly ascending in their keys.
+// §6.1 row 15: the six lists strictly ascending in their keys.
 #[test]
 fn set_order() {
     let what = broken(|x| x.changed.push(x.changed[0].clone()), "sections.set.changed[1]");
     assert_eq!(what, "changed is not strictly ascending by (key, place, reason)");
-    // The key is (key, place, reason): in_force and the counts are not in it.
+    // The key is (key, place, reason): the counts are not in it.
     broken(
         |x| {
             let mut c = x.changed[0].clone();
-            c.in_force = false;
+            c.observers = 2;
             x.changed.push(c);
         },
         "sections.set.changed[1]",
@@ -1982,12 +2041,21 @@ fn set_order() {
         },
         "sections.set.refusals[3]",
     );
-    // An absent file sorts first; an absent subject before a present one.
+    // An absent subject before a present one (an absent file before a
+    // present one cannot be seen: of one cause, either every refusal has a
+    // file or none has, row 17).
     let mut x = sample();
-    x.refusals.insert(0, refusal(Cause::MixedSet, None, 0, 0));
+    x.refusals.insert(0, refusal(Cause::MixedSet, Some(0), 50, 55));
     x.validate().unwrap();
     x.refusals.swap(0, 1);
     rejected(&x, "sections.set.refusals[1]");
+    // Two refusals that differ only in `hi`.
+    let mut x = sample();
+    x.refusals.push(refusal(Cause::Overlap, Some(0), 3, 5));
+    x.refusals.push(refusal(Cause::Overlap, Some(0), 3, 8));
+    x.validate().unwrap();
+    x.refusals.swap(3, 4);
+    rejected(&x, "sections.set.refusals[4]");
     let what = broken(|x| x.reports.swap(0, 1), "sections.set.reports[1]");
     assert_eq!(what, "reports are not strictly ascending");
     let what = broken(|x| x.failures.swap(0, 1), "sections.set.failures[1]");
@@ -2002,6 +2070,14 @@ fn set_order() {
         },
         "sections.set.failures[1]",
     );
+    // Two failures that differ only in `message`.
+    let mut x = sample();
+    let mut f = x.failures[1].clone();
+    "steps2".clone_into(&mut f.failure.message);
+    x.failures.push(f);
+    x.validate().unwrap();
+    x.failures.swap(1, 2);
+    rejected(&x, "sections.set.failures[2]");
     // An absent place before a present one, then by file, line, column.
     let mut x = sample();
     let mut f = x.failures[0].clone();
@@ -2037,7 +2113,102 @@ fn set_order() {
     );
 }
 
-// §6.1 row 15: a refusal's reason is not none iff its cause is site_refused.
+// §6.1 row 12: every file is named by a record, each kind of record
+// counting.
+#[test]
+fn set_named_files() {
+    let what = broken(|x| x.files.push(file(b"/s/\xffc.h", 1, 0x54)), "sections.set.files[3]");
+    assert_eq!(what, "no record names the file");
+    // Each kind of record alone names a file: an extra file 3 named by it.
+    let namers: [fn(&mut EditSet); 9] = [
+        |x| x.edits.push(Edit { pieces: vec![Piece::Literal(b"z".to_vec())], ..edit(3, 0, 1) }),
+        |x| x.edits[0].pieces.push(Piece::Copy(place(3, 0, 1))),
+        |x| {
+            x.changed.push(Exempt {
+                place: place(3, 0, 1),
+                in_force: false,
+                ..x.changed[0].clone()
+            });
+        },
+        |x| x.kept.push(place(3, 0, 1)),
+        |x| x.unresolved.push(place(3, 0, 1)),
+        |x| x.refusals.push(refusal(Cause::Buried, Some(3), 0, 1)),
+        |x| x.refusals[2].other = Some(place(3, 0, 1)),
+        |x| {
+            x.reports[1].report.place = Some(place(3, 0, 1));
+        },
+        |x| {
+            x.failures[0].failure.refusal.as_mut().unwrap().subject = Some(place(3, 0, 1));
+        },
+    ];
+    for (i, f) in namers.iter().enumerate() {
+        let mut x = sample();
+        x.files.push(file(b"/s/\xffc.h", 1, 0x54));
+        f(&mut x);
+        x.validate().unwrap_or_else(|e| panic!("namer {i}: {e}"));
+    }
+    // A failure's source place is a path, not a file of the set.
+    let mut x = sample();
+    x.files.push(file(b"/t/x.cc", 1, 0x54));
+    rejected(&x, "sections.set.files[3]");
+    // For each file in turn, after every place (row 11).
+    broken(
+        |x| {
+            x.files.push(file(b"/s/\xffc.h", 1, 0x54));
+            x.kept[1] = place(1, 6, 61);
+        },
+        "sections.set.kept[1]",
+    );
+}
+
+// §6.1 row 13, §6.2: a changed entry is in force iff an edit shares a byte
+// with its place.
+#[test]
+fn set_in_force() {
+    const WHAT: &str = "in_force is not whether an edit shares a byte with the place";
+    let what = broken(|x| x.changed[0].in_force = false, "sections.set.changed[0].in_force");
+    assert_eq!(what, WHAT);
+    let exempt = |place, in_force| Exempt { place, in_force, ..sample().changed[0].clone() };
+    // The edits of file 0 are [10, 20) and [12, 14) inside it; of file 1, [0, 5).
+    for (p, in_force) in [
+        (place(0, 0, 10), false),  // touching at the start
+        (place(0, 20, 30), false), // touching at the end
+        (place(0, 0, 11), true),
+        (place(0, 19, 25), true),
+        (place(0, 15, 16), true), // inside the outer edit, after the inner one
+        (place(0, 13, 14), true),
+        (place(0, 30, 33), false),
+        (place(1, 4, 9), true),
+        (place(1, 5, 9), false),
+        (place(2, 0, 40), false), // a file with no edit
+    ] {
+        let mut x = sample();
+        x.changed = vec![exempt(p, in_force)];
+        x.validate().unwrap_or_else(|e| panic!("{p:?}: {e}"));
+        x.changed[0].in_force = !in_force;
+        assert_eq!(rejected(&x, "sections.set.changed[0].in_force"), WHAT, "{p:?}");
+    }
+    // A refused set has no edit: no entry is in force.
+    let mut x = refused();
+    x.validate().unwrap();
+    x.changed[0].in_force = true;
+    rejected(&x, "sections.set.changed[0].in_force");
+    // For each entry in turn.
+    let mut x = sample();
+    x.changed.push(exempt(place(0, 30, 33), true));
+    x.changed.push(exempt(place(0, 40, 41), true));
+    rejected(&x, "sections.set.changed[1].in_force");
+    // After the files (row 12).
+    broken(
+        |x| {
+            x.changed[0].in_force = false;
+            x.files.push(file(b"/s/\xffc.h", 1, 0x54));
+        },
+        "sections.set.files[3]",
+    );
+}
+
+// §6.1 row 16: a refusal's reason is not none iff its cause is site_refused.
 #[test]
 fn set_refusal_reason() {
     let what = broken(|x| x.refusals[1].reason = Reason::None, "sections.set.refusals[1].reason");
@@ -2046,7 +2217,161 @@ fn set_refusal_reason() {
     broken(|x| x.refusals[0].reason = Reason::MacroBody, "sections.set.refusals[0].reason");
 }
 
-// §6.1 row 16: the counter rules of spec/model.md §8.1.
+// §6.1 row 17: a refusal's fields against its cause.
+#[test]
+#[allow(clippy::too_many_lines, reason = "one block per rule of the row")]
+fn set_refusal_fields() {
+    let subject_cause = |c: Cause| c.is_of_subject() && c != Cause::NoSubject;
+    let alone = [Cause::NoSubject, Cause::NoObserver, Cause::NoEdit, Cause::RuleConflict];
+    // A valid refusal of each cause, in a refused set.
+    let valid = |c: Cause| Refusal {
+        reason: if c == Cause::SiteRefused { Reason::Pasted } else { Reason::None },
+        subject: subject_cause(c).then_some(d(0x10)),
+        ..if c.is_of_site() { refusal(c, Some(0), 1, 2) } else { refusal(c, None, 0, 0) }
+    };
+    let one = |r: Refusal| EditSet { refusals: vec![r], ..refused() };
+    for c in Cause::ALL {
+        one(valid(c)).validate().unwrap_or_else(|e| panic!("{c:?}: {e}"));
+    }
+    // `file` present iff of a site.
+    for c in Cause::ALL {
+        let r = if c.is_of_site() {
+            Refusal { file: None, lo: 0, hi: 0, ..valid(c) }
+        } else {
+            Refusal { file: Some(0), lo: 1, hi: 2, ..valid(c) }
+        };
+        let what = rejected(&one(r), "sections.set.refusals[0].file");
+        assert_eq!(what, "file is absent for a refusal of a site or present for another cause");
+    }
+    // A subject for a refusal of a subject but no_subject; none for the
+    // four without one; either for a refusal of a site.
+    for c in Cause::ALL.into_iter().filter(|&c| subject_cause(c)) {
+        let what = rejected(
+            &one(Refusal { subject: None, ..valid(c) }),
+            "sections.set.refusals[0].subject",
+        );
+        assert_eq!(what, "a refusal of a subject has no subject", "{c:?}");
+    }
+    for c in alone {
+        let what = rejected(
+            &one(Refusal { subject: Some(d(0x10)), ..valid(c) }),
+            "sections.set.refusals[0].subject",
+        );
+        assert_eq!(
+            what,
+            "a no_subject, no_observer, no_edit or rule_conflict refusal has a subject"
+        );
+    }
+    for c in Cause::ALL.into_iter().filter(|c| c.is_of_site()) {
+        one(Refusal { subject: Some(d(0x10)), ..valid(c) }).validate().unwrap();
+    }
+    // A macro only for a refusal of a site.
+    let m = Some(MacroSite { name_start: 1, name: b"M".to_vec() });
+    for c in Cause::ALL {
+        let x = one(Refusal { macro_site: m.clone(), ..valid(c) });
+        if c.is_of_site() {
+            x.validate().unwrap();
+        } else {
+            let what = rejected(&x, "sections.set.refusals[0].macro");
+            assert_eq!(what, "a refusal that is not of a site has a macro");
+        }
+    }
+    // `other` only for contested, overlap and buried.
+    for c in Cause::ALL {
+        let x = one(Refusal { other: Some(place(0, 5, 6)), ..valid(c) });
+        if matches!(c, Cause::Contested | Cause::Overlap | Cause::Buried) {
+            x.validate().unwrap();
+        } else {
+            let what = rejected(&x, "sections.set.refusals[0].other");
+            assert_eq!(
+                what,
+                "other is present for a cause other than contested, overlap or buried"
+            );
+        }
+    }
+    // No count for the four without a subject; `first` then fails row 14.
+    for c in Cause::ALL {
+        let x = one(Refusal { observers: 1, ..valid(c) });
+        if alone.contains(&c) {
+            let what = rejected(&x, "sections.set.refusals[0].observers");
+            assert_eq!(
+                what,
+                "a no_subject, no_observer, no_edit or rule_conflict refusal has observers"
+            );
+        } else {
+            x.validate().unwrap();
+        }
+    }
+    rejected(
+        &one(Refusal { first: vec![d(0xa0)], ..valid(Cause::NoEdit) }),
+        "sections.set.refusals[0].first",
+    );
+    // no_edit: only in a set with no edit, beside no refusal of a replace claim.
+    let what =
+        broken(|x| x.refusals.push(refusal(Cause::NoEdit, None, 0, 0)), "sections.set.refusals[3]");
+    assert_eq!(what, "a no_edit refusal is in a set with an edit");
+    for c in Cause::ALL.into_iter().filter(|&c| c != Cause::NoEdit) {
+        let x = EditSet { refusals: vec![valid(c), valid(Cause::NoEdit)], ..refused() };
+        if matches!(
+            c,
+            Cause::Contested
+                | Cause::Divergent
+                | Cause::Overlap
+                | Cause::FileDiffers
+                | Cause::Cyclic
+                | Cause::Buried
+        ) {
+            let what = rejected(&x, "sections.set.refusals[1]");
+            assert_eq!(
+                what,
+                "a no_edit refusal is beside a contested, divergent, overlap, file_differs, cyclic or buried refusal",
+                "{c:?}"
+            );
+        } else {
+            x.validate().unwrap_or_else(|e| panic!("{c:?}: {e}"));
+        }
+    }
+    // The rules in order, for one refusal: file, subject, macro, other, observers.
+    let r = Refusal {
+        file: Some(0),
+        lo: 1,
+        hi: 2,
+        subject: Some(d(0x10)),
+        macro_site: m.clone(),
+        other: Some(place(0, 5, 6)),
+        observers: 1,
+        first: vec![d(0xa0)],
+        ..refusal(Cause::NoObserver, None, 0, 0)
+    };
+    rejected(&one(r.clone()), "sections.set.refusals[0].file");
+    let r = Refusal { file: None, lo: 0, hi: 0, ..r };
+    rejected(&one(r.clone()), "sections.set.refusals[0].subject");
+    let r = Refusal { subject: None, ..r };
+    rejected(&one(r.clone()), "sections.set.refusals[0].macro");
+    let r = Refusal { macro_site: None, ..r };
+    rejected(&one(r.clone()), "sections.set.refusals[0].other");
+    let r = Refusal { other: None, ..r };
+    rejected(&one(r), "sections.set.refusals[0].observers");
+    // For each refusal in turn; after the reasons (row 16).
+    let x = EditSet {
+        refusals: vec![
+            Refusal { observers: 1, ..valid(Cause::NoObserver) },
+            Refusal { subject: None, ..valid(Cause::NameTaken) },
+        ],
+        ..refused()
+    };
+    rejected(&x, "sections.set.refusals[0].observers");
+    let x = EditSet {
+        refusals: vec![
+            Refusal { file: Some(0), lo: 1, hi: 2, ..valid(Cause::NoObserver) },
+            Refusal { reason: Reason::Pasted, ..valid(Cause::NameTaken) },
+        ],
+        ..refused()
+    };
+    rejected(&x, "sections.set.refusals[1].reason");
+}
+
+// §6.1 row 18: the counter rules of spec/model.md §8.1.
 #[test]
 fn set_counters() {
     for name in ["", "A", "a..b", ".a", "a.", "a-b"] {
@@ -2075,7 +2400,8 @@ fn set_counters() {
     );
 }
 
-// §6.1 row 17: the state is refused when it must be.
+// §6.1 row 19: the state is refused when it must be, and a refused set
+// has a refusal.
 #[test]
 fn set_state() {
     const WHAT: &str = "an edit set with no edit, or with a refusal of a subject, no_observer or rule_conflict, is not refused";
@@ -2089,26 +2415,36 @@ fn set_state() {
         Cause::MixedFollower,
         Cause::RuleConflict,
     ] {
-        let what = broken(|x| x.refusals = vec![refusal(cause, None, 0, 0)], "sections.set.state");
-        assert_eq!(what, WHAT, "{cause:?}");
-    }
-    for cause in [Cause::MixedSet, Cause::NoEdit, Cause::Cyclic, Cause::Buried, Cause::Divergent] {
         let mut x = sample();
-        x.refusals = vec![refusal(cause, None, 0, 0)];
+        x.refusals = vec![Refusal {
+            subject: (cause.is_of_subject() && cause != Cause::NoSubject).then_some(d(0x10)),
+            ..refusal(cause, None, 0, 0)
+        }];
+        assert_eq!(rejected(&x, "sections.set.state"), WHAT, "{cause:?}");
+    }
+    // The refusals of a site leave a set accepted.
+    for cause in Cause::ALL.into_iter().filter(|c| c.is_of_site()) {
+        let mut x = sample();
+        x.refusals = vec![Refusal {
+            reason: if cause == Cause::SiteRefused { Reason::Pasted } else { Reason::None },
+            ..refusal(cause, Some(0), 50, 55)
+        }];
         x.validate().unwrap();
     }
     let what = broken(
         |x| {
             x.edits.clear();
             x.groups.clear();
+            x.changed[0].in_force = false;
         },
         "sections.set.state",
     );
     assert_eq!(what, WHAT);
-    // A refused set with an edit-free list of everything else is valid,
-    // whatever its refusals.
+    // A refused set has a refusal (§5.5).
     let mut x = refused();
     x.refusals.clear();
+    assert_eq!(rejected(&x, "sections.set.state"), "a refused edit set has no refusal");
+    x.refusals.push(refusal(Cause::Buried, Some(0), 10, 20));
     x.validate().unwrap();
 }
 
@@ -2130,11 +2466,20 @@ fn set_rows() -> Vec<Break<EditSet>> {
         (|x| x.edits[1].notes = vec![b"b".to_vec(), b"a".to_vec()], "sections.set.edits[1].notes"),
         (|x| x.groups[0] = vec![0], "sections.set.groups[0]"),
         (|x| x.kept[1] = place(1, 6, 61), "sections.set.kept[1]"),
+        (|x| x.files.push(file(b"/s/\xffc.h", 1, 0x54)), "sections.set.files[3]"),
+        (|x| x.changed[0].in_force = false, "sections.set.changed[0].in_force"),
         (|x| x.refusals[0].first = vec![d(0xd0)], "sections.set.refusals[0].first"),
         (|x| x.unresolved.push(place(2, 1, 4)), "sections.set.unresolved[1]"),
         (|x| x.refusals[2].reason = Reason::Crossing, "sections.set.refusals[2].reason"),
+        (|x| x.refusals[1].other = Some(place(0, 1, 2)), "sections.set.refusals[1].other"),
         (|x| "A".clone_into(&mut x.counters[0].name), "sections.set.counters[0].name"),
-        (|x| x.refusals[0].cause = Cause::NoObserver, "sections.set.state"),
+        (
+            |x| {
+                x.refusals[0] =
+                    Refusal { subject: Some(d(0x12)), ..refusal(Cause::NameTaken, None, 0, 0) };
+            },
+            "sections.set.state",
+        ),
     ]
 }
 
@@ -2178,10 +2523,20 @@ fn overlay_invariants() {
         "sections.overlay.files",
     );
     assert_eq!(what, "an overlay has no file");
-    for path in [&b"s/a.h"[..], b"/s/./a.h", b"/s/a.h/", b""] {
+    for path in [&b"s/a.h"[..], b"/s/./a.h", b"/s/a.h/", b"", b"/s/a.h\0"] {
         let what = broken_overlay(|x| x.files[1].path = path.to_vec(), "sections.overlay.files[1]");
         assert_eq!(what, "not a canonical absolute path");
     }
+    let what = broken_overlay(
+        |x| {
+            x.files.insert(0, OverlayFile { path: b"/".to_vec(), ..x.files[0].clone() });
+            for o in &mut x.spellings {
+                o.file += 1;
+            }
+        },
+        "sections.overlay.files[0]",
+    );
+    assert_eq!(what, "the root / is not a file");
     let what = broken_overlay(|x| x.files.swap(0, 1), "sections.overlay.files[1]");
     assert_eq!(what, "files are not strictly ascending by path");
     broken_overlay(|x| x.files[1].path = b"/s/a.cc".to_vec(), "sections.overlay.files[1]");
@@ -2249,6 +2604,26 @@ fn overlay_order_of_checks() {
     rejected(&x, "sections.overlay.files");
 }
 
+// spec/edits.md §6: the index of a file by path, and the edits of a file.
+#[test]
+fn set_file_index_and_edits_of() {
+    let x = sample();
+    assert_eq!(x.file_index(b"/s/a.cc"), Some(0));
+    assert_eq!(x.file_index(b"/s/a.h"), Some(1));
+    assert_eq!(x.file_index(b"/s/\xffb.h"), Some(2));
+    for missing in [&b"/"[..], b"/s/a", b"/s/a.c", b"/s/b.h", b"/t", b""] {
+        assert_eq!(x.file_index(missing), None, "{missing:?}");
+    }
+    assert_eq!(x.edits_of(0), &x.edits[0..2]);
+    assert_eq!(x.edits_of(1), &x.edits[2..3]);
+    assert!(x.edits_of(2).is_empty(), "the last file, with no edit");
+    assert!(x.edits_of(3).is_empty());
+    let y = EditSet { edits: x.edits[2..].to_vec(), groups: Vec::new(), ..sample() };
+    assert!(y.edits_of(0).is_empty(), "the first file, with no edit");
+    assert_eq!(y.edits_of(1), &y.edits[..]);
+    assert!(refused().edits_of(0).is_empty());
+}
+
 // spec/edits.md §7.1: find by path, and the obligations of a file.
 #[test]
 fn overlay_find_and_obligations() {
@@ -2312,9 +2687,24 @@ fn result_invariants() {
     assert_eq!(what, "passed and the failed spellings do not add up to obligations");
     broken_result(|x| x.spellings.obligations = 6, "sections.result.spellings.obligations");
     broken_result(|x| x.spellings.passed = u64::MAX, "sections.result.spellings.obligations");
+    // The sum does not wrap: u64::MAX + 1 is not 0.
+    broken_result(
+        |x| {
+            x.spellings.passed = u64::MAX;
+            x.spellings.failed.truncate(1);
+            x.spellings.obligations = 0;
+        },
+        "sections.result.spellings.obligations",
+    );
     let what =
         broken_result(|x| x.residue[2].file = b"s/a.h".to_vec(), "sections.result.residue[2].file");
     assert_eq!(what, "not a canonical absolute path");
+    broken_result(|x| x.residue[2].file = b"/s/a\0h".to_vec(), "sections.result.residue[2].file");
+    let what = broken_result(
+        |x| x.residue.insert(0, Residue { file: b"/".to_vec(), ..x.residue[0].clone() }),
+        "sections.result.residue[0].file",
+    );
+    assert_eq!(what, "the root / is not a file");
     let what = broken_result(|x| x.residue.swap(0, 1), "sections.result.residue[1]");
     assert_eq!(what, "residue is not strictly ascending by (file, lo)");
     // Equal (file, lo), whatever else differs.

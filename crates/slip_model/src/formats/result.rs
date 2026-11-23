@@ -8,7 +8,7 @@ use crate::result::{
     Category, FailedSpelling, Residue, RunVerdict, SCHEME, Spellings, Stale, State, Tally,
     TransformResult, Why,
 };
-use crate::transform::is_canonical;
+use crate::transform::is_file_path;
 use crate::wire::{Decoder, Encoder};
 
 use super::common::{
@@ -221,8 +221,8 @@ fn violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
         ));
     }
     let r = &x.residue;
-    if let Some(i) = r.iter().position(|e| !is_canonical(&e.file)) {
-        return Some((Loc::ResidueFile(i), "not a canonical absolute path"));
+    if let Some(i) = r.iter().position(|e| !is_file_path(&e.file)) {
+        return Some((Loc::ResidueFile(i), super::editset::path_what(&r[i].file)));
     }
     if let Some(i) = (1..r.len()).find(|&i| (&r[i - 1].file, r[i - 1].lo) >= (&r[i].file, r[i].lo))
     {

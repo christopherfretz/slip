@@ -312,7 +312,8 @@ macro_rules! format_impl {
             pub const VERSION: u32 = 1;
 
             /// The file. The value must satisfy [`Self::validate`]; that is
-            /// checked by a debug assertion.
+            /// only debug-asserted, and a release build writes an invalid
+            /// value as it is: a producer calls `validate()` first.
             pub fn to_bytes(&self) -> Vec<u8> {
                 debug_assert!(
                     self.validate().is_ok(),

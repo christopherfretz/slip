@@ -63,8 +63,11 @@ Ownership := owned:    list<path>     canonical real paths of directories or fil
 ```
 
 Every entry is a **canonical absolute path**: it starts with `/`, has no
-empty, `.` or `..` component, and has no trailing `/` unless it is `/`
-itself. A reader refuses any other entry (§3). The entry `/` **covers**
+empty, `.` or `..` component, has no NUL byte (no file has one), and has
+no trailing `/` unless it is `/` itself. A reader refuses any other entry
+(§3). `/` is canonical, an entry that covers every file, but it is not a
+file: where a path names a file (an edit set's `files`, an overlay's
+`files`, a residue's `file`), a reader refuses `/` too. The entry `/` **covers**
 every absolute path; any other entry `e` covers a real path `p` iff `p`
 equals `e` or `p` starts with `e` followed by `/` (so `/a/b` covers
 `/a/b/x` and not `/a/bc/x`). A file is **owned** if some entry covers it
@@ -758,7 +761,7 @@ EditSet := scheme:     uv                    1
            transform:  digest                the request id
            basis:      digest                H("slip.basis.v1", list<Basis>): the shards reduced
            state:      SetState
-           files:      list<FileRef>         canonical real paths, sorted by path; every file a record below names
+           files:      list<FileRef>         canonical real paths of files, sorted by path; exactly the files the records below name
            subjects:   list<Subject>         the selected subjects and followers, joined (§5.2); sorted by id
            rules:      list<Rule>            the `renamed` rules of the shards, joined (§6.2); a rule table
            edits:      list<Edit>            sorted by (file, lo, hi), no two with one range; empty unless accepted
@@ -800,13 +803,15 @@ Failed   := failure: Failure         §4.6; `rendered` and `refusal` those of th
             first:     list<digest>
 
 Refusal := cause:     Cause
-           file:      opt<uv>         absent for a refusal that is not of a site
+           file:      opt<uv>         present iff the cause is of a site (`Cause` below)
            lo:        uv              0 when `file` is absent
            hi:        uv              0 when `file` is absent
            reason:    Reason          for `site_refused`; else `none`
-           subject:   opt<KeyId>      the subject, for a refusal of a subject; else the least subject of the site, if any
-           macro:     opt<MacroSite>
-           other:     opt<Place>      for `contested` by another range, `overlap` and `buried`: the least other range involved
+           subject:   opt<KeyId>      the subject, for a refusal of a subject (absent for `no_subject`); else the least
+                                      subject of the site, if any (absent for `no_observer`, `rule_conflict`, `no_edit`)
+           macro:     opt<MacroSite>  absent unless of a site
+           other:     opt<Place>      for `contested` by another range, `overlap` and `buried`: the least other range
+                                      involved; absent for every other cause
            observers: uv
            first:     list<digest>
 
@@ -815,6 +820,15 @@ Cause := no_observer = 0 | no_subject = 1 | subject_read_only = 2 | subject_unsu
        | site_refused = 8 | contested = 9 | divergent = 10 | overlap = 11 | file_differs = 12
        | cyclic = 13 | buried = 14 | rule_conflict = 15 | no_edit = 16
 ```
+
+The causes **of a site** are `mixed_set`, `site_refused`, `contested`,
+`divergent`, `overlap`, `file_differs`, `cyclic` and `buried` (§5.2,
+§5.4, §5.5). The others are of the set: the refusals of a subject (§5.2),
+`no_observer` (§5.1), `rule_conflict` (§6.2) and `no_edit` (§5.5).
+`no_edit` stands only in a set with no edit and beside no refusal that
+needs a `replace` claim (`contested`, `divergent`, `overlap`,
+`file_differs`, `cyclic`, `buried`): it says no observer claimed one. A
+refused set has at least one refusal.
 
 Refusals are sorted by `(cause, file, lo, hi, subject)`, an absent `file`
 or `subject` before any present one; no two are equal in that key. For a
@@ -841,7 +855,7 @@ row's rules and messages).
 |---|---|---|
 | `scheme` is 1 | the field | `sections.set.scheme` |
 | `basis` is the tagged digest of the list implied by `unparsed` and the reader's shards | not checked by the format | — |
-| every `files` path canonical (`transform::is_canonical`) | that `FileRef` | `sections.set.files[i]` |
+| every `files` path canonical (`transform::is_canonical`) and not `/` (§2.1) | that `FileRef` | `sections.set.files[i]` |
 | `files` strictly ascending by path | that `FileRef` | `sections.set.files[i]` |
 | the subject rules of §4.7: ascending by id, then `of`, then the flags, each over the whole list | that subject, its `of`, its `flags` | `sections.set.subjects[i]`, `….of`, `….flags` |
 | `rules` strictly ascending as a rule table | that rule | `sections.set.rules[i]` |
@@ -851,16 +865,18 @@ row's rules and messages).
 | an edit's `subjects` and `notes` strictly ascending; its `tiers` obey the tier rules of a `replace` claim (§4.7) | the field | `sections.set.edits[i].subjects`, `….notes`, `….tiers` |
 | the group rules of §4.7, over `edits` | that group | `sections.set.groups[i]` |
 | every place within its file's size, and a `changed` place not empty; a refusal without `file` has `lo` and `hi` 0 | that record | its path |
+| every file is named by a record: an edit, a copy piece, a `changed`, `kept` or `unresolved` place, a refusal's `file` or `other`, a report's place, a failure's `refusal.subject` | that `FileRef` | `sections.set.files[i]` |
+| a `changed` entry's `in_force` is true iff an edit shares a byte with its place (§6.2) | the field | `sections.set.changed[i].in_force` |
 | `first` has at most 8 entries and at most `observers`; `notes` at most 8 | the field | its path |
 | `changed`, `kept`, `unresolved`, `refusals`, `reports`, `failures` strictly ascending in their keys | that record | its path |
 | a refusal's `reason` is not `none` iff its cause is `site_refused` | the field | `sections.set.refusals[i].reason` |
+| a refusal's fields against its cause (§6): `file` present iff of a site; `subject` present for a refusal of a subject but `no_subject`, absent for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `macro` absent unless of a site; `other` only for `contested`, `overlap`, `buried`; `observers` 0 for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `no_edit` only with no edit and beside no refusal that needs a `replace` claim | the field, or the refusal for `no_edit` | `sections.set.refusals[i].file`, `….subject`, `….macro`, `….other`, `….observers`, `sections.set.refusals[i]` |
 | the counter rules of `model.md` §8.1: the name form, strictly ascending by name | that counter's name, that counter | `sections.set.counters[i].name`, `sections.set.counters[i]` |
-| `state` is `refused` if there is a refusal of a subject, `no_observer`, `rule_conflict`, or no edit | the `state` field | `sections.set.state` |
+| `state` is `refused` if there is a refusal of a subject, `no_observer`, `rule_conflict`, or no edit; a refused set has a refusal | the `state` field | `sections.set.state` |
 
 Not checked by the format: the order of `unparsed` and of a `first`
 list (plan order, which needs the plan), the values of `observers` and
-`votes`, that a `no_subject`, `no_observer`, `no_edit` or
-`rule_conflict` refusal has `observers` 0 and `first` empty, and that
+`votes` beyond the rows above (which need the shards), and that
 `groups` is empty under an `indivisible` request (which needs the
 request).
 
@@ -983,7 +999,7 @@ Overlay := edits:     digest                  the edit set id
            files:     list<OverlayFile>       sorted by path, no two equal; not empty
            spellings: list<Obligation>        verify.md §10.1; sorted by (file, lo, hi, key), no two equal
 
-OverlayFile := path: path                     real path
+OverlayFile := path: path                     real path: canonical, not `/` (§2.1)
                pre:  Content
                post: Content
 
@@ -1242,7 +1258,7 @@ Category := dependent = 0 | not_compiled = 1 | not_planned = 2 | mention = 3
 ```
 
 sorted by `(file, lo)`, no two equal in that key; `file` a canonical
-real path (`transform::is_canonical`); line and column are 1-based, the
+real path (`transform::is_canonical`, not `/`); line and column are 1-based, the
 column in bytes.
 
 The scan is made for a request of kind `rename`. A script has no old

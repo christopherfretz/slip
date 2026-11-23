@@ -16,7 +16,7 @@ use crate::edits::KeyId;
 pub const SCHEME: u64 = 1;
 
 /// What a residue entry is (§8.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Category {
     Dependent = 0,
     NotCompiled = 1,
@@ -57,7 +57,7 @@ pub struct Tally {
 
 /// The verify phase's verdict (`spec/verify.md` §7, §9.3). The one type:
 /// `slip_verify::run` re-exports it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RunVerdict {
     Verified = 0,
     NotVerified = 1,
@@ -66,7 +66,7 @@ pub enum RunVerdict {
 
 /// An observer that still declares a rule's entity under its old name
 /// (`spec/verify.md` §9.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Stale {
     /// Index of the rule in the declared changes.
     pub rule: u64,
@@ -75,7 +75,7 @@ pub struct Stale {
 }
 
 /// Why a spelling obligation failed (§8.5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Why {
     DenotesOther = 0,
     Unseen = 1,
@@ -105,7 +105,7 @@ pub struct Spellings {
 }
 
 /// The state of a result (§8.5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum State {
     Verified = 0,
     VerifiedWithResidue = 1,

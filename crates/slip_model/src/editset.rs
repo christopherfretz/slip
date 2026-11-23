@@ -44,7 +44,7 @@ pub fn basis_id(basis: &[Basis]) -> Digest {
 }
 
 /// Whether reduce accepted the edits (§6, §5.5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SetState {
     Accepted = 0,
     Refused = 1,
@@ -148,6 +148,23 @@ impl Cause {
         Cause::NoEdit,
     ];
 
+    /// A refusal of a site (§5.2, §5.4, §5.5): `mixed_set`, `site_refused`,
+    /// `contested`, `divergent`, `overlap`, `file_differs`, `cyclic`,
+    /// `buried`. Its `file` is present; every other cause's is absent (§6).
+    pub fn is_of_site(self) -> bool {
+        matches!(
+            self,
+            Cause::MixedSet
+                | Cause::SiteRefused
+                | Cause::Contested
+                | Cause::Divergent
+                | Cause::Overlap
+                | Cause::FileDiffers
+                | Cause::Cyclic
+                | Cause::Buried
+        )
+    }
+
     /// A refusal of a subject (§5.2 rule 3): `no_subject` to `mixed_follower`.
     pub fn is_of_subject(self) -> bool {
         matches!(
@@ -211,7 +228,8 @@ pub struct EditSet {
     /// [`basis_id`] of the shards reduced; not checked by the format.
     pub basis: Digest,
     pub state: SetState,
-    /// Canonical real paths; sorted by path, no two equal.
+    /// Canonical real paths of files; sorted by path, no two equal;
+    /// exactly the files the records below name.
     pub files: Vec<FileRef>,
     /// Sorted by id, no two equal.
     pub subjects: Vec<Subject>,
@@ -238,6 +256,22 @@ pub struct EditSet {
     pub unparsed: Vec<Digest>,
     /// §6.3; sorted by name.
     pub counters: Vec<Counter>,
+}
+
+impl EditSet {
+    /// The index in `files` of the file at `real_path` (a binary search:
+    /// `files` is sorted by path).
+    pub fn file_index(&self, real_path: &[u8]) -> Option<u64> {
+        self.files.binary_search_by(|f| f.path.as_slice().cmp(real_path)).ok().map(|i| i as u64)
+    }
+
+    /// The edits of the file at index `file` of `files` (they are sorted by
+    /// file); empty if it has none.
+    pub fn edits_of(&self, file: u64) -> &[Edit] {
+        let lo = self.edits.partition_point(|e| e.file < file);
+        let hi = self.edits.partition_point(|e| e.file <= file);
+        &self.edits[lo..hi]
+    }
 }
 
 // ---------------------------------------------------------------------------

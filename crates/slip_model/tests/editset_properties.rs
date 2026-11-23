@@ -484,7 +484,8 @@ fn crossing_checks_agree_with_every_pair() {
             edits,
             groups: Vec::new(),
             changed: Vec::new(),
-            kept: Vec::new(),
+            // Empty places that name both files (row 12).
+            kept: vec![Place { file: 0, lo: 0, hi: 0 }, Place { file: 1, lo: 0, hi: 0 }],
             unresolved: Vec::new(),
             refusals: Vec::new(),
             reports: Vec::new(),

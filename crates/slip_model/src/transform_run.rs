@@ -8,7 +8,7 @@
 use crate::Digest;
 
 /// A step of the command (§10.6).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StepName {
     Plan = 0,
     Map = 1,

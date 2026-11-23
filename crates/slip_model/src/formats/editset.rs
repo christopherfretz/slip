@@ -11,7 +11,7 @@ use crate::editset::{
 };
 use crate::json::Value;
 use crate::keys::{DUPLICATE_RULE, RuleTable, SortError, UNSORTED_RULES};
-use crate::transform::is_canonical;
+use crate::transform::{is_canonical, is_file_path};
 use crate::wire::{Decoder, Encoder};
 use crate::{Counter, Digest};
 
@@ -109,11 +109,17 @@ enum Loc {
     EditFirst(usize),
     Group(usize),
     Changed(usize),
+    ChangedInForce(usize),
     ChangedFirst(usize),
     Kept(usize),
     Unresolved(usize),
     Refusal(usize),
+    RefusalFile(usize),
     RefusalReason(usize),
+    RefusalSubject(usize),
+    RefusalMacro(usize),
+    RefusalOther(usize),
+    RefusalObservers(usize),
     RefusalFirst(usize),
     Report(usize),
     ReportFirst(usize),
@@ -144,11 +150,17 @@ impl Loc {
             Loc::EditFirst(i) => format!("{S}.edits[{i}].first"),
             Loc::Group(i) => format!("{S}.groups[{i}]"),
             Loc::Changed(i) => format!("{S}.changed[{i}]"),
+            Loc::ChangedInForce(i) => format!("{S}.changed[{i}].in_force"),
             Loc::ChangedFirst(i) => format!("{S}.changed[{i}].first"),
             Loc::Kept(i) => format!("{S}.kept[{i}]"),
             Loc::Unresolved(i) => format!("{S}.unresolved[{i}]"),
             Loc::Refusal(i) => format!("{S}.refusals[{i}]"),
+            Loc::RefusalFile(i) => format!("{S}.refusals[{i}].file"),
             Loc::RefusalReason(i) => format!("{S}.refusals[{i}].reason"),
+            Loc::RefusalSubject(i) => format!("{S}.refusals[{i}].subject"),
+            Loc::RefusalMacro(i) => format!("{S}.refusals[{i}].macro"),
+            Loc::RefusalOther(i) => format!("{S}.refusals[{i}].other"),
+            Loc::RefusalObservers(i) => format!("{S}.refusals[{i}].observers"),
             Loc::RefusalFirst(i) => format!("{S}.refusals[{i}].first"),
             Loc::Report(i) => format!("{S}.reports[{i}]"),
             Loc::ReportFirst(i) => format!("{S}.reports[{i}].first"),
@@ -164,6 +176,11 @@ impl Loc {
 type Violation = Option<(Loc, &'static str)>;
 
 const NOT_CANONICAL: &str = "not a canonical absolute path";
+
+/// Why `path`, which is not [`is_file_path`], cannot name a file.
+pub(super) fn path_what(path: &[u8]) -> &'static str {
+    if is_canonical(path) { "the root / is not a file" } else { NOT_CANONICAL }
+}
 
 fn sort_what(e: SortError) -> &'static str {
     match e {
@@ -191,8 +208,8 @@ fn violation(x: &EditSet) -> Violation {
     if x.scheme != SCHEME {
         return Some((Loc::Scheme, "unknown edit set scheme"));
     }
-    if let Some(i) = x.files.iter().position(|f| !is_canonical(&f.path)) {
-        return Some((Loc::File(i), NOT_CANONICAL));
+    if let Some(i) = x.files.iter().position(|f| !is_file_path(&f.path)) {
+        return Some((Loc::File(i), path_what(&x.files[i].path)));
     }
     if let Some(i) = (1..x.files.len()).find(|&i| x.files[i - 1].path >= x.files[i].path) {
         return Some((Loc::File(i), "files are not strictly ascending by path"));
@@ -221,6 +238,8 @@ fn violation(x: &EditSet) -> Violation {
         .or_else(|| edit_violation(x))
         .or_else(|| group_violation(x))
         .or_else(|| place_violation(x))
+        .or_else(|| named_violation(x))
+        .or_else(|| in_force_violation(x))
         .or_else(|| first_violation(x))
         .or_else(|| order_violation(x))
         .or_else(|| {
@@ -234,11 +253,12 @@ fn violation(x: &EditSet) -> Violation {
                     )
                 })
         })
+        .or_else(|| refusal_violation(x))
         .or_else(|| counter_violation(&x.counters))
         .or_else(|| state_violation(x))
 }
 
-/// Row 8 of §6.1 for every edit in turn: strictly ascending by `(file,
+/// Row 7 for every edit in turn: strictly ascending by `(file,
 /// lo, hi)`; `lo < hi`; crosses no earlier edit of its file; crosses no
 /// range an edit copies. `O((E + C) log C)` for `E` edits and `C` copies.
 fn geometry_violation(edits: &[Edit]) -> Option<(usize, &'static str)> {
@@ -379,7 +399,7 @@ impl Tree {
     }
 }
 
-/// Row 9 (the piece rules of §4.7), then row 10 (an edit's `subjects` and
+/// Row 8 (the piece rules of §4.7), then row 9 (an edit's `subjects` and
 /// `notes` strictly ascending, the tier rules of a replace claim), each
 /// over every edit.
 fn edit_violation(x: &EditSet) -> Violation {
@@ -402,7 +422,7 @@ fn edit_violation(x: &EditSet) -> Violation {
     None
 }
 
-/// Row 11: the group rules of §4.7, over `edits`.
+/// Row 10: the group rules of §4.7, over `edits`.
 fn group_violation(x: &EditSet) -> Violation {
     let mut grouped = BTreeSet::new();
     for (i, g) in x.groups.iter().enumerate() {
@@ -427,7 +447,7 @@ fn group_violation(x: &EditSet) -> Violation {
     None
 }
 
-/// Row 12: every place within its file's size, in field order.
+/// Row 11: every place within its file's size, in field order.
 fn place_violation(x: &EditSet) -> Violation {
     let f = &x.files;
     for (i, e) in x.edits.iter().enumerate() {
@@ -478,6 +498,70 @@ fn place_violation(x: &EditSet) -> Violation {
     None
 }
 
+/// Row 12: every file is named by a record: an edit, a copy piece, a
+/// `changed`, `kept` or `unresolved` place, a refusal's `file` or `other`,
+/// a report's place, a failure's `refusal.subject`.
+fn named_violation(x: &EditSet) -> Violation {
+    let mut named = vec![false; x.files.len()];
+    let mut name = |f: u64| {
+        if let Some(n) = usize::try_from(f).ok().and_then(|i| named.get_mut(i)) {
+            *n = true;
+        }
+    };
+    for e in &x.edits {
+        name(e.file);
+        for p in &e.pieces {
+            if let Piece::Copy(c) = p {
+                name(c.file);
+            }
+        }
+    }
+    for c in &x.changed {
+        name(c.place.file);
+    }
+    for p in x.kept.iter().chain(&x.unresolved) {
+        name(p.file);
+    }
+    for r in &x.refusals {
+        if let Some(f) = r.file {
+            name(f);
+        }
+        if let Some(p) = &r.other {
+            name(p.file);
+        }
+    }
+    for p in x.reports.iter().filter_map(|r| r.report.place.as_ref()) {
+        name(p.file);
+    }
+    for f in &x.failures {
+        if let Some(p) = f.failure.refusal.as_ref().and_then(|r| r.subject.as_ref()) {
+            name(p.file);
+        }
+    }
+    named.iter().position(|n| !n).map(|i| (Loc::File(i), "no record names the file"))
+}
+
+/// Row 13: a `changed` entry is in force iff an edit shares a byte with
+/// its place (§6.2). `O(log E)` each: the edits of a file below the
+/// place's `hi`, and the greatest `hi` among them.
+fn in_force_violation(x: &EditSet) -> Violation {
+    let e = &x.edits;
+    // The greatest `hi` of the edits of one file up to each index.
+    let mut reach: Vec<u64> = Vec::with_capacity(e.len());
+    for i in 0..e.len() {
+        let before = if i > 0 && e[i - 1].file == e[i].file { reach[i - 1] } else { 0 };
+        reach.push(before.max(e[i].hi));
+    }
+    // Rows 7 and 11: every edit and every `changed` place has a byte.
+    let touched = |p: &Place| {
+        let n = e.partition_point(|t| (t.file, t.lo) < (p.file, p.hi));
+        n > 0 && e[n - 1].file == p.file && reach[n - 1] > p.lo
+    };
+    x.changed.iter().position(|c| c.in_force != touched(&c.place)).map(|i| {
+        (Loc::ChangedInForce(i), "in_force is not whether an edit shares a byte with the place")
+    })
+}
+
 fn first_what(first: &[Digest], observers: u64) -> Option<&'static str> {
     if first.len() > FIRST_MAX {
         Some("first has more than 8 entries")
@@ -491,7 +575,7 @@ fn first_what(first: &[Digest], observers: u64) -> Option<&'static str> {
 /// A list's location and the `(first, observers)` of its records.
 type FirstLists<'a> = (&'a dyn Fn(usize) -> Loc, Vec<(&'a [Digest], u64)>);
 
-/// Row 13: `first` at most 8 entries and at most `observers`, an edit's
+/// Row 14: `first` at most 8 entries and at most `observers`, an edit's
 /// `notes` at most 8, in field order.
 fn first_violation(x: &EditSet) -> Violation {
     for (i, e) in x.edits.iter().enumerate() {
@@ -550,7 +634,7 @@ fn first_unsorted<T>(list: &[T], cmp: impl Fn(&T, &T) -> Ordering) -> Option<usi
     (1..list.len()).find(|&i| cmp(&list[i - 1], &list[i]) != Ordering::Less)
 }
 
-/// Row 14: `changed`, `kept`, `unresolved`, `refusals`, `reports`,
+/// Row 15: `changed`, `kept`, `unresolved`, `refusals`, `reports`,
 /// `failures` strictly ascending in their keys.
 fn order_violation(x: &EditSet) -> Violation {
     if let Some(i) = first_unsorted(&x.changed, |a, b| exempt_key(a).cmp(&exempt_key(b))) {
@@ -583,7 +667,75 @@ fn order_violation(x: &EditSet) -> Violation {
     None
 }
 
-/// Row 16: the counter rules of `spec/model.md` §8.1, for each counter in turn.
+/// Row 17: a refusal's fields against its cause, for each refusal in turn
+/// (§6): `file` present iff of a site; a refusal of a subject but
+/// `no_subject` has a `subject`, and `no_subject`, `no_observer`, `no_edit`
+/// and `rule_conflict` have none; no `macro` but of a site; `other` only
+/// for `contested`, `overlap` and `buried`; `observers` 0 for the four
+/// without a subject (row 14 then makes `first` empty); a `no_edit`
+/// refusal only in a set with no edit, and beside no refusal that needs a
+/// `replace` claim (§5.5: "with `no_edit` if no observer claimed a
+/// `replace`").
+fn refusal_violation(x: &EditSet) -> Violation {
+    let of_replace = |c: Cause| {
+        matches!(
+            c,
+            Cause::Contested
+                | Cause::Divergent
+                | Cause::Overlap
+                | Cause::FileDiffers
+                | Cause::Cyclic
+                | Cause::Buried
+        )
+    };
+    for (i, r) in x.refusals.iter().enumerate() {
+        let c = r.cause;
+        let alone =
+            matches!(c, Cause::NoSubject | Cause::NoObserver | Cause::NoEdit | Cause::RuleConflict);
+        let found = if r.file.is_some() != c.is_of_site() {
+            Some((
+                Loc::RefusalFile(i),
+                "file is absent for a refusal of a site or present for another cause",
+            ))
+        } else if c.is_of_subject() && !alone && r.subject.is_none() {
+            Some((Loc::RefusalSubject(i), "a refusal of a subject has no subject"))
+        } else if alone && r.subject.is_some() {
+            Some((
+                Loc::RefusalSubject(i),
+                "a no_subject, no_observer, no_edit or rule_conflict refusal has a subject",
+            ))
+        } else if !c.is_of_site() && r.macro_site.is_some() {
+            Some((Loc::RefusalMacro(i), "a refusal that is not of a site has a macro"))
+        } else if r.other.is_some()
+            && !matches!(c, Cause::Contested | Cause::Overlap | Cause::Buried)
+        {
+            Some((
+                Loc::RefusalOther(i),
+                "other is present for a cause other than contested, overlap or buried",
+            ))
+        } else if alone && r.observers != 0 {
+            Some((
+                Loc::RefusalObservers(i),
+                "a no_subject, no_observer, no_edit or rule_conflict refusal has observers",
+            ))
+        } else if c == Cause::NoEdit && !x.edits.is_empty() {
+            Some((Loc::Refusal(i), "a no_edit refusal is in a set with an edit"))
+        } else if c == Cause::NoEdit && x.refusals.iter().any(|r| of_replace(r.cause)) {
+            Some((
+                Loc::Refusal(i),
+                "a no_edit refusal is beside a contested, divergent, overlap, file_differs, cyclic or buried refusal",
+            ))
+        } else {
+            None
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+/// Row 18: the counter rules of `spec/model.md` §8.1, for each counter in turn.
 fn counter_violation(counters: &[Counter]) -> Violation {
     for (i, c) in counters.iter().enumerate() {
         if !is_counter_name(&c.name) {
@@ -596,16 +748,22 @@ fn counter_violation(counters: &[Counter]) -> Violation {
     None
 }
 
-/// Row 17: an accepted set has an edit, and no refusal of a subject,
-/// `no_observer` or `rule_conflict`.
+/// Row 19: an accepted set has an edit, and no refusal of a subject,
+/// `no_observer` or `rule_conflict`; a refused set has a refusal (§5.5:
+/// "with the refusals that explain it, or with `no_edit`").
 fn state_violation(x: &EditSet) -> Violation {
     let forces = |r: &Refusal| {
         r.cause.is_of_subject() || matches!(r.cause, Cause::NoObserver | Cause::RuleConflict)
     };
-    (x.state == SetState::Accepted && (x.edits.is_empty() || x.refusals.iter().any(forces))).then_some((
-        Loc::State,
-        "an edit set with no edit, or with a refusal of a subject, no_observer or rule_conflict, is not refused",
-    ))
+    let what = match x.state {
+        SetState::Accepted if x.edits.is_empty() || x.refusals.iter().any(forces) => {
+            "an edit set with no edit, or with a refusal of a subject, no_observer or \
+             rule_conflict, is not refused"
+        }
+        SetState::Refused if x.refusals.is_empty() => "a refused edit set has no refusal",
+        _ => return None,
+    };
+    Some((Loc::State, what))
 }
 
 pub(super) fn check(x: &EditSet) -> std::result::Result<(), (String, &'static str)> {
@@ -725,13 +883,25 @@ struct Offsets {
     rule: Vec<usize>,
     edit: Vec<EditOffsets>,
     group: Vec<usize>,
-    changed: Vec<[usize; 2]>,
+    changed: Vec<[usize; 3]>,
     kept: Vec<usize>,
     unresolved: Vec<usize>,
-    refusal: Vec<[usize; 3]>,
+    refusal: Vec<RefusalOffsets>,
     report: Vec<[usize; 2]>,
     failure: Vec<[usize; 3]>,
     counter: Vec<usize>,
+}
+
+#[derive(Debug, Default)]
+struct RefusalOffsets {
+    start: usize,
+    file: usize,
+    reason: usize,
+    subject: usize,
+    macro_site: usize,
+    other: usize,
+    observers: usize,
+    first: usize,
 }
 
 #[derive(Debug, Default)]
@@ -763,12 +933,18 @@ impl Offsets {
             Loc::EditFirst(i) => self.edit[i].first,
             Loc::Group(i) => self.group[i],
             Loc::Changed(i) => self.changed[i][0],
+            Loc::ChangedInForce(i) => self.changed[i][2],
             Loc::ChangedFirst(i) => self.changed[i][1],
             Loc::Kept(i) => self.kept[i],
             Loc::Unresolved(i) => self.unresolved[i],
-            Loc::Refusal(i) => self.refusal[i][0],
-            Loc::RefusalReason(i) => self.refusal[i][1],
-            Loc::RefusalFirst(i) => self.refusal[i][2],
+            Loc::Refusal(i) => self.refusal[i].start,
+            Loc::RefusalFile(i) => self.refusal[i].file,
+            Loc::RefusalReason(i) => self.refusal[i].reason,
+            Loc::RefusalSubject(i) => self.refusal[i].subject,
+            Loc::RefusalMacro(i) => self.refusal[i].macro_site,
+            Loc::RefusalOther(i) => self.refusal[i].other,
+            Loc::RefusalObservers(i) => self.refusal[i].observers,
+            Loc::RefusalFirst(i) => self.refusal[i].first,
             Loc::Report(i) => self.report[i][0],
             Loc::ReportFirst(i) => self.report[i][1],
             Loc::Failure(i) => self.failure[i][0],
@@ -850,28 +1026,33 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(EditSet, Vec<Extra<'_>>, Digest)> 
         let key = d.digest()?;
         let place = dec_place(d)?;
         let reason = d.bytes()?.to_vec();
+        let in_force_at = d.offset();
         let in_force = d.bool()?;
         let mut first_at = 0;
         let (observers, first) = dec_counts(d, &mut first_at)?;
-        o.changed.push([start, first_at]);
+        o.changed.push([start, first_at, in_force_at]);
         Ok(Exempt { key, place, reason, in_force, observers, first })
     })?;
     let kept = dec_list(d, Some(&mut o.kept), dec_place)?;
     let unresolved = dec_list(d, Some(&mut o.unresolved), dec_place)?;
     let refusals = dec_list(d, None, |d| {
-        let start = d.offset();
+        let mut ro = RefusalOffsets { start: d.offset(), ..RefusalOffsets::default() };
         let cause = dec_enum(d)?;
+        ro.file = d.offset();
         let file = dec_opt(d, Decoder::uv)?;
         let lo = d.uv()?;
         let hi = d.uv()?;
-        let reason_at = d.offset();
+        ro.reason = d.offset();
         let reason = dec_enum(d)?;
+        ro.subject = d.offset();
         let subject = dec_opt(d, Decoder::digest)?;
+        ro.macro_site = d.offset();
         let macro_site = dec_macro(d)?;
+        ro.other = d.offset();
         let other = dec_opt(d, dec_place)?;
-        let mut first_at = 0;
-        let (observers, first) = dec_counts(d, &mut first_at)?;
-        o.refusal.push([start, reason_at, first_at]);
+        ro.observers = d.offset();
+        let (observers, first) = dec_counts(d, &mut ro.first)?;
+        o.refusal.push(ro);
         Ok(Refusal { cause, file, lo, hi, reason, subject, macro_site, other, observers, first })
     })?;
     let reports = dec_list(d, None, |d| {
