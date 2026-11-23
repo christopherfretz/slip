@@ -12,7 +12,7 @@ mod common;
 
 use common::Fixture;
 use slip_exec::store::{Access, Object, Store};
-use slip_model::edits::{Piece, Place};
+use slip_model::edits::{MacroSite, Piece, Place};
 use slip_model::editset::{Edit, EditSet, SetState};
 use slip_model::hash::content_digest;
 use slip_model::result::{self, Category, Residue, RunVerdict, State, Tally, TransformResult};
@@ -1115,11 +1115,20 @@ fn s6_4_mutation_sample() {
 // dropped edit is gone, the only one leaves a refused set.
 #[test]
 fn s6_4_mutation_shapes() {
-    let s = synthetic(3, 1, 2);
+    let mut s = synthetic(3, 1, 2);
+    // The first edit is of a macro's invocation and carries a note: the
+    // added edit takes the note and not the invocation, which is of the
+    // first edit's place.
+    s.edits[0].tiers = 3;
+    s.edits[0].macro_site = Some(MacroSite { name_start: 0, name: b"M".to_vec() });
+    s.edits[0].notes = vec![b"n".to_vec()];
+    assert_eq!(s.validate(), Ok(()));
     let all = mutate::all(&s);
     let add = all.iter().find(|m| m.label == "add edit at kept 0").unwrap();
     let added = add.set.edits.iter().find(|e| (e.lo, e.hi) == (5000, 5003)).unwrap();
     assert_eq!(added.pieces, s.edits[0].pieces);
+    assert_eq!((added.tiers, &added.notes), (3, &s.edits[0].notes));
+    assert_eq!(added.macro_site, None);
     assert_eq!(add.set.edits.len(), 4);
     assert_eq!(add.set.edits[3], *added, "sorted by range");
     let key = all.iter().find(|m| m.label == "change key of edit 0 piece 2").unwrap();
