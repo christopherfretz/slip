@@ -1,0 +1,10 @@
+# pending
+# needs: harness
+# A template's __func__ under a rename of the template (review fix round 2,
+# "not checked"). The harness's `rename` maps one record's key: renaming the
+# pattern leaves start<int>(int) unmapped (the differ runner sees it added and
+# f<int>(int) removed; the equal runner compares only the units both sides
+# have), and a second rule for the specialisation does not map it either. The
+# pattern also differs under the rename with a plain literal in place of the
+# names, so it is not WP-104's. Runs once the harness renames a template with
+# its specialisations; then f<int>(int) must be equal.
