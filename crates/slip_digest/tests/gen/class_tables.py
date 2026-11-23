@@ -380,6 +380,19 @@ pair("differ", "typedef-alignment-reference", "unsigned long f() { return aligno
      "unsigned long f() { return alignof(L &); }", ["changed f()"],
      "`alignof` of a reference to the typedef is the typedef's ([expr.alignof]/3; clang 19: 4;"
      " Kiln: 8, \"For Kiln\").", pre=TDL)
+pair("differ", "typedef-alignment-atomic", "struct S { char c; _Atomic(Big) a; };",
+     "struct S { char c; _Atomic(BA) a; };", ["changed S::a"],
+     "an atomic of the typedef, too wide to be promoted: its alignment is the typedef's.",
+     pre="struct Big { char b[32]; };\ntypedef Big BA __attribute__((aligned(64)));",
+     post="static_assert(sizeof(S) == (alignof(S) == 64 ? 128 : 33));")
+pair("differ", "typedef-alignment-dependent-array",
+     "template <int N> struct T { char c; long a[N]; };",
+     "template <int N> struct T { char c; L a[N]; };", ["changed T::a"],
+     "a dependent-sized array of the typedef in a class template.", pre=TDL,
+     post="static_assert(sizeof(T<2>) == (alignof(T<2>) == 4 ? 20 : 24));")
+pair("differ", "typedef-alignment-address-space", "__attribute__((address_space(1))) long v;",
+     "__attribute__((address_space(1))) L v;", ["changed v"],
+     "an address-space-qualified type of the typedef (Kiln's `ExtQual`).", pre=TDL)
 pair("differ", "typedef-alignment-value", "typedef int I __attribute__((aligned(8)));",
      "typedef int I __attribute__((aligned(16)));", ["changed I"],
      "another alignment on the typedef: its own unit; a class with a field of it holds the"
