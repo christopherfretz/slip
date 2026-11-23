@@ -372,7 +372,7 @@ fn s9_1_failed() {
     assert_eq!(x.different[0].observer, a);
     assert_eq!(x.different[0].first.status(), Some(Status::Failed));
     // The same failed shard in both: failed in both, not equal.
-    let r3 = run_of(&p, &[f2.clone()]);
+    let r3 = run_of(&p, std::slice::from_ref(&f2));
     let x = compare_runs(&p, &r3, &r3.clone(), &[b]);
     assert_eq!((x.equal, x.failed_both, x.different.len()), (0, 1, 0));
 }
@@ -408,13 +408,17 @@ fn s9_1_last_entry() {
     let old = shard(a, Status::Failed, 0);
     let new = shard(a, Status::Ok, 1);
     // The store holds the last attempt's shard (a retry replaces it).
-    let retried =
-        loaded(&p, vec![job(a, 1, End::Crashed, Some(id_of(&old))), wrote(&new)], &[new.clone()]);
-    let once = run_of(&p, &[new.clone()]);
+    let retried = loaded(
+        &p,
+        vec![job(a, 1, End::Crashed, Some(id_of(&old))), wrote(&new)],
+        std::slice::from_ref(&new),
+    );
+    let once = run_of(&p, std::slice::from_ref(&new));
     let x = compare_runs(&p, &retried, &once, &[a]);
     assert_eq!((x.equal, x.different.len()), (1, 0));
     // Last entry without a shard: `no shard <end>`, different even in both.
-    let crashed = loaded(&p, vec![wrote(&new), job(a, 2, End::Crashed, None)], &[new.clone()]);
+    let crashed =
+        loaded(&p, vec![wrote(&new), job(a, 2, End::Crashed, None)], std::slice::from_ref(&new));
     let x = compare_runs(&p, &crashed, &crashed.clone(), &[a]);
     assert_eq!(x.different.len(), 1);
     assert_eq!(x.different[0].first, Side::NoShard(End::Crashed));
@@ -428,11 +432,11 @@ fn s9_1_store_shard_not_the_runs() {
     let p = plan();
     let a = obs(&p, A);
     let s = shard(a, Status::Ok, 1);
-    let good = run_of(&p, &[s.clone()]);
+    let good = run_of(&p, std::slice::from_ref(&s));
     // The record names a shard the store does not have.
     let absent = loaded(&p, vec![wrote(&s)], &[]);
     // The store's shard is another one (the record names d(7)).
-    let other = loaded(&p, vec![job(a, 1, End::Completed, Some(d(7)))], &[s.clone()]);
+    let other = loaded(&p, vec![job(a, 1, End::Completed, Some(d(7)))], std::slice::from_ref(&s));
     for (bad, want) in [(absent, Side::Absent(id_of(&s))), (other, Side::Other(d(7)))] {
         let x = compare_runs(&p, &good, &bad, &[a]);
         assert_eq!(x.different.len(), 1);
@@ -481,7 +485,8 @@ fn s9_1_render() {
 fn s9_1_fifty_lines() {
     let mains: Vec<String> = (0..60).map(|i| format!("/src/{i:02}.cpp")).collect();
     let mut p = plan();
-    p.observers = mains.iter().enumerate().map(|(i, m)| observer(m, 1000 - i as u64, i as u64)).collect();
+    p.observers =
+        mains.iter().enumerate().map(|(i, m)| observer(m, 1000 - i as u64, i as u64)).collect();
     let r = loaded(&p, vec![], &[]);
     let x = compare_runs(&p, &r, &r.clone(), &all(&p));
     assert_eq!(x.different.len(), 60);
@@ -693,7 +698,8 @@ fn s9_2_render() {
 
     let mains: Vec<String> = (0..60).map(|i| format!("/src/{i:02}.cpp")).collect();
     let mut p = plan();
-    p.observers = mains.iter().enumerate().map(|(i, m)| observer(m, 1000 - i as u64, i as u64)).collect();
+    p.observers =
+        mains.iter().enumerate().map(|(i, m)| observer(m, 1000 - i as u64, i as u64)).collect();
     let shards: Vec<Shard> = p.observers.iter().map(|o| shard(o.id, Status::Ok, 1)).collect();
     let m = run_of(&p, &shards);
     let entries: Vec<Nv> = mains.iter().map(|m| nv(m, "failed")).collect();
