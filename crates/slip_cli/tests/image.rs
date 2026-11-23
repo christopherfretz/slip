@@ -543,6 +543,41 @@ fn g5_word_leaves_the_subject() {
     assert_eq!(post.conflict, None);
 }
 
+// §5.3 G5 (e), by real paths: a pair whose post prefix does not exist,
+// under a post root once resolved, with no `..` after the part that
+// exists, is accepted (not an over-refusal). `-Ib/../gone/inc` from
+// `<s>/a` is written `gone/inc` from `<p>/a`; `gone` exists in neither
+// tree. A `..` after a component that does not exist is refused (G5 (f)):
+// where it ends cannot be decided.
+#[test]
+fn g5_missing_prefix_under_a_post_root() {
+    let dir = Dir::new("missing");
+    let (s, p) = (dir.mkdir("s"), dir.mkdir("p"));
+    dir.mkdir("s/a/b");
+    dir.mkdir("p/a/b");
+    let image = Image::new(vec![RootMap { subject: bytes(&s), post: bytes(&p) }]).unwrap();
+    let sp = s.to_str().unwrap();
+    let c = Command {
+        directory: bytes(&s.join("a")),
+        argv: words(&["c++", "-Ib/../gone/inc", &format!("{sp}/a.cpp")]),
+        env: Vec::new(),
+    };
+    let post = image.post_command(&c);
+    assert_eq!(post.command.argv[1], b"-Igone/inc");
+    assert!(post.maps.contains(&(b"gone/inc/".to_vec(), b"b/../gone/inc/".to_vec())));
+    assert_eq!(post.conflict, None);
+    let c = Command { argv: words(&["c++", "-Igone/../inc", &format!("{sp}/a.cpp")]), ..c };
+    let post = image.post_command(&c);
+    assert_eq!(post.command.argv[1], b"-Igone/../inc");
+    assert_eq!(
+        post.conflict.as_deref(),
+        Some(&*format!(
+            "post-image: -Igone/../inc has a `..` after {sp}/a/gone, which does not exist; slip \
+             cannot tell where it ends"
+        ))
+    );
+}
+
 // §5.3 G5, the command's own prefix maps: one whose old prefix overlaps a
 // prefix the rewrite maps is refused, before or after the word it
 // overlaps, alone, after `-Xclang` or in a `-Wp,` list; one that overlaps

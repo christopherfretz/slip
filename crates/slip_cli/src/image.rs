@@ -299,7 +299,7 @@ impl Image {
         let directory = match r.resolve_part(&command.directory, PathKind::Dir, root, root) {
             Part::Rewrite { new, .. } => new,
             Part::Keep { .. } => command.directory.clone(),
-            Part::Textual => {
+            Part::Textual | Part::Undecided(_) => {
                 match self.maps.iter().find(|m| at_or_under(&command.directory, &m.subject)) {
                     Some(m) => [&m.post[..], &command.directory[m.subject.len()..]].concat(),
                     None => command.directory.clone(),
@@ -307,6 +307,19 @@ impl Image {
             }
         };
         let (from, to) = (bytes_path(&command.directory), bytes_path(&directory));
+        // G5 (f): the directory, then each word's path with a `..`, walks
+        // the post tree as it walks the subject.
+        let differs = |what: &str, (path, ours, theirs): (PathBuf, Kind, Kind)| {
+            format!(
+                "post-image: {what} walks {}, which is {} in the subject and {} in the post tree",
+                path.display(),
+                ours.describe(),
+                theirs.describe()
+            )
+        };
+        let mut walked: Option<String> = r
+            .walk_differs(root, &command.directory)
+            .map(|d| differs(&format!("the directory {}", show_path(&command.directory)), d));
         let mut argv: Vec<Vec<u8>> = Vec::with_capacity(command.argv.len() + self.maps.len());
         let mut pairs: Vec<maps::Pair> = Vec::new();
         let mut next = Next::None;
@@ -320,7 +333,22 @@ impl Image {
                 argv.push(self.rewrite(word));
                 continue;
             };
-            match r.resolve_part(&word[at..], kind, &from, &to) {
+            let part = &word[at..];
+            if walked.is_none() && part.split(|&b| b == b'/').any(|c| c == b"..") {
+                walked = r.walk_differs(&from, part).map(|d| differs(&show_path(word), d));
+            }
+            match r.resolve_part(part, kind, &from, &to) {
+                Part::Undecided(at) => {
+                    walked.get_or_insert_with(|| {
+                        format!(
+                            "post-image: {} has a `..` after {}, which does not exist; slip \
+                             cannot tell where it ends",
+                            show_path(word),
+                            show_path(&at)
+                        )
+                    });
+                    argv.push(word.clone());
+                }
                 Part::Rewrite { new, map } => {
                     pairs.push(maps::Pair::new(map, word));
                     argv.push([&word[..at], &new[..]].concat());
@@ -342,7 +370,8 @@ impl Image {
         // The pairs of the words; the root pairs are the roots themselves.
         let words = pairs.len() - self.maps.len();
         let conflict = maps::leaves(&pairs[..words], |post| r.in_post(post, &to))
-            .or_else(|| maps::conflict(&pairs, &argv));
+            .or_else(|| maps::conflict(&pairs, &argv))
+            .or(walked);
         let maps = maps::emitted(&pairs);
         for (post, written) in &maps {
             argv.push([b"-fmacro-prefix-map=", &post[..], b"=", &written[..]].concat());
@@ -513,6 +542,9 @@ enum Part {
     Keep { map: (Vec<u8>, Vec<u8>) },
     /// By the textual rule.
     Textual,
+    /// Kept as written, and refused (G5 (f)): a `..` follows the path
+    /// given, which does not exist.
+    Undecided(Vec<u8>),
 }
 
 /// The map pair of a path whose leading part `old` became `new` (§5.1):
@@ -694,11 +726,23 @@ enum Region {
 
 /// What `lstat` says of a path.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Kind {
+pub(crate) enum Kind {
     Missing,
     Dir,
     File,
     Link(PathBuf),
+}
+
+impl Kind {
+    /// In a reason: "a directory", "a file", "missing", "a link to <t>".
+    fn describe(&self) -> String {
+        match self {
+            Kind::Missing => "missing".to_owned(),
+            Kind::Dir => "a directory".to_owned(),
+            Kind::File => "a file".to_owned(),
+            Kind::Link(t) => format!("a link to {}", t.display()),
+        }
+    }
 }
 
 /// Symbolic links a walk follows before it stops (Linux's `MAXSYMLINKS`).
@@ -892,14 +936,76 @@ impl Resolver<'_> {
 
     /// Whether the post prefix `post` of a map pair (relative to `to`, the
     /// post command's directory, when relative) lies under a post root
-    /// (§5.1, the invariant G5 checks): by identity when it exists, else
-    /// by its lexical form as bytes.
+    /// (§5.1, the invariant G5 checks), by real paths: walked from the real
+    /// path of `to` (`/` when absolute), each component resolved before
+    /// the next, a `..` taken from a real path only. Where a component
+    /// does not exist, the deepest existing ancestor decides, and only if
+    /// no `..` follows; anything else is not under a post root.
     fn in_post(&mut self, post: &[u8], to: &Path) -> bool {
-        let path = lexical(&to.join(bytes_path(post)));
-        match self.canonical(&path) {
-            Some(real) => matches!(self.place(&real), Region::Post { .. }),
-            None => self.maps.iter().any(|m| at_or_under(&path_bytes(&path), &m.post)),
+        let mut cur = if post.starts_with(b"/") {
+            PathBuf::from("/")
+        } else {
+            match self.canonical(to) {
+                Some(real) => real,
+                None => return false,
+            }
+        };
+        let parts: Vec<&[u8]> = post.split(|&b| b == b'/').collect();
+        for (i, c) in parts.iter().enumerate() {
+            match *c {
+                b"" | b"." => {}
+                b".." => {
+                    cur.pop();
+                }
+                name => match self.canonical(&cur.join(bytes_path(name))) {
+                    Some(real) => cur = real,
+                    None if parts[i..].contains(&&b".."[..]) => return false,
+                    None => break,
+                },
+            }
         }
+        matches!(self.place(&cur), Region::Post { .. })
+    }
+
+    /// Guard G5 (f) for the path `part` walked from the directory `from`
+    /// (`/` for an absolute part): the first path whose kind differs
+    /// between the subject and the post tree (with both kinds), among the
+    /// names the walk looks up in a directory of the subject. The walk is
+    /// the kernel's, by real paths. Before the last `..` every difference
+    /// counts: the `..` of the real post-image is taken from where the post
+    /// tree's entry leads. After it, only a link in the subject counts: the
+    /// rewrite writes the place the subject's walk reached, with its links
+    /// resolved, and the post parse walks the rest of a path as written as
+    /// the real post-image does. A post root looked up in its subject is
+    /// skipped.
+    fn walk_differs(&mut self, from: &Path, part: &[u8]) -> Option<(PathBuf, Kind, Kind)> {
+        let mut cur =
+            if part.starts_with(b"/") { PathBuf::from("/") } else { self.canonical(from)? };
+        let parts: Vec<&[u8]> = part.split(|&b| b == b'/').collect();
+        let last_up = parts.iter().rposition(|c| *c == b"..").unwrap_or(0);
+        for (i, c) in parts.into_iter().enumerate() {
+            match c {
+                b"" | b"." => continue,
+                b".." => {
+                    cur.pop();
+                    continue;
+                }
+                _ => {}
+            }
+            let next = cur.join(bytes_path(c));
+            if let Region::Subject { map, depth } = self.region(&cur) {
+                let ours = self.kind(&next);
+                let counts = i < last_up || matches!(ours, Kind::Link(_));
+                if counts && !(ours == Kind::Dir && self.is_post_root(&next)) {
+                    let theirs = self.kind(&self.counterpart(&cur, map, depth).join(bytes_path(c)));
+                    if ours != theirs {
+                        return Some((next, ours, theirs));
+                    }
+                }
+            }
+            cur = self.canonical(&next)?;
+        }
+        None
     }
 
     /// The region of the real path `real`: its own for a directory, its
@@ -1004,23 +1110,20 @@ impl Resolver<'_> {
         let target = if let Some(target) = walked.entered {
             target
         } else if walked.link_in_subject {
-            if relative && start != lexical(&to.join(bytes_path(part))) {
+            if relative {
                 let new = path_bytes(&start);
                 return Part::Rewrite { map: map_of(&new, part, true, kind), new };
             }
             return Part::Keep { map: map_of(part, part, true, kind) };
         } else {
             let mut end = walked.end;
-            let mut tail: Vec<std::ffi::OsString> = Vec::new();
-            for c in walked.tail {
-                if c == ".." {
-                    if tail.pop().is_none() {
-                        end.pop();
-                    }
-                } else if c != "." {
-                    tail.push(c);
-                }
+            // A `..` after a component that does not exist (or is a file)
+            // is not folded: where it ends cannot be decided.
+            if walked.tail.iter().any(|c| c == "..") {
+                return Part::Undecided(path_bytes(&end.join(&walked.tail[0])));
             }
+            let tail: Vec<std::ffi::OsString> =
+                walked.tail.into_iter().filter(|c| c != ".").collect();
             if let Region::Subject { map, depth } = self.region(&end) {
                 end = self.counterpart(&end, map, depth);
             }
@@ -1122,22 +1225,6 @@ fn components(path: &Path, out: &mut VecDeque<std::ffi::OsString>) {
             Component::RootDir | Component::Prefix(_) => {}
         }
     }
-}
-
-/// `path` with `.` and `..` taken lexically.
-fn lexical(path: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut out = PathBuf::new();
-    for c in path.components() {
-        match c {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::CurDir => {}
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// The directory of the file whose real path is `real`.

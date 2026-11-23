@@ -1507,6 +1507,73 @@ fn z_word_leaves_into_another_root() {
     );
 }
 
+// A3 (re-check of fix round 3), §5.3 G5 (e): the command's directory
+// `<s>/a/w` is a directory in the subject; the edit makes `<post>/a/w` a
+// link to `<b>/z/w`. The word `-I../../../s2/inc` names `<b>/s2/inc` from
+// the subject's directory; the rewrite writes it from the post
+// directory's real place, `../../s2/inc`, whose pair is, by real paths,
+// under no post root: refused. The real post-image (the link in the
+// subject's place) does not find the header at all.
+#[test]
+fn a3_post_directory_becomes_a_link() {
+    let xh = "inline char where[sizeof(__FILE__)] = {};\n";
+    let main = "#include <x.h>\nint f() { return sizeof(where); }\n";
+    let tree = Tree::new("a3", &[("a.cpp", main)]);
+    write(&tree.base.join("s2/inc/x.h"), xh);
+    std::fs::create_dir_all(tree.base.join("z/w")).unwrap();
+    std::fs::create_dir_all(tree.post.join("a")).unwrap();
+    std::os::unix::fs::symlink(tree.base.join("z/w"), tree.post.join("a/w")).unwrap();
+    let o = tree.observer_in(&tree.subject.join("a/w"), &["-I../../../s2/inc".to_owned()]);
+    let m = tree.map(&o);
+    assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert_eq!(
+        reason(&v),
+        "post-image: -I../../../s2/inc is spelled through the subject and leaves it \
+         (../../s2/inc/ is under no post root)"
+    );
+    // The truth: the link in the subject's place.
+    std::fs::remove_dir_all(tree.subject.join("a/w")).unwrap();
+    std::os::unix::fs::symlink(tree.base.join("z/w"), tree.subject.join("a/w")).unwrap();
+    let now = MapTask::new().run(&tree.job(&o, Phase::Map, 0)).unwrap();
+    assert_ne!(now.outcome.status, Status::Ok, "the real post-image finds no x.h");
+}
+
+// A3, the link deeper in the word: the directory `<s>/a` is the same in
+// both trees; `-Iw/../inc` walks `<s>/a/w`, a directory in the subject and
+// a link to `<b>/z/w` in the post tree. The rewrite (`inc`, from the
+// subject's walk) stays in the post root, so G5 (e) holds; the real
+// post-image reads `<b>/z/inc/x.h` instead: G5 (f).
+#[test]
+fn a3_link_deeper_in_the_word() {
+    let main = "#include <x.h>\nint f() { return k; }\n";
+    let tree = Tree::new("a3w", &[("a.cpp", main), ("a/inc/x.h", "inline int k = 1;\n")]);
+    std::fs::create_dir_all(tree.subject.join("a/w")).unwrap();
+    write(&tree.base.join("z/inc/x.h"), "inline int k = 2;\n");
+    std::fs::create_dir_all(tree.base.join("z/w")).unwrap();
+    std::os::unix::fs::symlink(tree.base.join("z/w"), tree.post.join("a/w")).unwrap();
+    let o = tree.observer_in(&tree.subject.join("a"), &["-Iw/../inc".to_owned()]);
+    let m = tree.map(&o);
+    assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert_eq!(
+        reason(&v),
+        format!(
+            "post-image: -Iw/../inc walks {}, which is a directory in the subject and a link \
+             to {} in the post tree",
+            tree.subject.join("a/w").display(),
+            tree.base.join("z/w").display()
+        )
+    );
+    std::fs::remove_dir_all(tree.subject.join("a/w")).unwrap();
+    std::os::unix::fs::symlink(tree.base.join("z/w"), tree.subject.join("a/w")).unwrap();
+    let now = MapTask::new().run(&tree.job(&o, Phase::Map, 0)).unwrap();
+    assert_eq!(now.outcome.status, Status::Ok, "{:?}", now.outcome);
+    assert_ne!(now.digests, m.digests, "the real post-image reads another x.h");
+}
+
 // F6r (re-check): the two routes with no edit, from outside the roots and
 // from the subject: verified (the back-maps refuse nothing they need not).
 #[test]
