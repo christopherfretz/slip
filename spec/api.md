@@ -1247,14 +1247,39 @@ consteval void expect_renamed(info entity, std::string_view new_identifier);
    makes a unit and whose declaration contains `x`. The host records the
    key of that unit, the keys of the units of this subject unit that
    `spec/digest.md` §2.2 derives from it (its resolved properties, its
-   instantiations), and with each the extent of `x`.
+   instantiations, implicit or explicit, of it and of its members), and
+   with each the extent of `x`. Which declaration contains `x`:
+   - A declaration at block scope is contained by the function whose
+     body holds it, whatever its kind (a local class and its members, a
+     local alias, a block-scope function declaration and its parameters,
+     default arguments and exception specification). A block-scope
+     `extern` declaration (a function, a variable) also declares an
+     entity of the namespace, whose unit holds the declaration's type:
+     a name in it is contained by both, but for a name in a parameter's
+     default argument, which only the body has.
+   - A name or an expression in the decl-specifiers shared by a
+     declarator group (`S a, b;`, `X<g(1)> a, b;`, `typedef X<1> T1,
+     T2;`, `alignas(g(8)) int a1, a2;`) is contained by every
+     declarator of the group; at block scope they are all in the one
+     function's unit.
+   - A name in a class's head (a base specifier, the arguments of a
+     specialisation) is contained by the class; for a class template,
+     the derived units are those of every instantiation and of its
+     members.
+   - An expression and its callee's reference are answered each on its
+     own: an expression of a header entered in two units has its own
+     unit, while the one written name has two.
 2. It throws `unsupported` when `x` is an entity or a declaration, when
    the extent of `x` is null, and when the unit is keyed by content
    (`spec/digest.md` §3.3) or has no key the digest can compute. It
    also throws `unsupported` when the host cannot establish which unit
-   holds `x`: a name in the decl-specifiers shared by two declarators,
-   a name written once in a file entered in two units, a name whose
-   holder the front end does not record. The host never guesses a
+   holds `x`, or when `x` is contained by declarations of two units: a
+   name or an expression in the decl-specifiers shared by two
+   declarators outside a body, a name in a block-scope `extern`
+   declaration's type, a name in a friend declaration's decl-specifiers
+   (the friend and what it declares are two declarations of one
+   extent), a name written once in a file entered in two units, a name
+   whose holder the front end does not record. The host never guesses a
    unit.
 3. `expect_renamed(e, n)` declares that entity `e` is intended to be
    declared with identifier `n` and to be otherwise unchanged, in the same
