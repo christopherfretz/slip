@@ -444,8 +444,12 @@ fn raw_result(x: &TransformResult) -> Raw {
     r.e.uv(x.spellings.obligations).uv(x.spellings.passed).count(x.spellings.failed.len());
     for (i, f) in x.spellings.failed.iter().enumerate() {
         r.mark(format!("{S}.spellings.failed[{i}]"));
-        r.e.uv(f.obligation).uv(f.why as u64).uv(f.observers);
+        r.e.uv(f.obligation).uv(f.why as u64);
+        r.mark(format!("{S}.spellings.failed[{i}].observers"));
+        r.e.uv(f.observers);
+        r.mark(format!("{S}.spellings.failed[{i}].first"));
         r.opt_digest(f.first.as_ref());
+        r.mark(format!("{S}.spellings.failed[{i}].found"));
         r.opt_digest(f.found.as_ref());
         r.e.str(&f.name);
     }
@@ -454,7 +458,13 @@ fn raw_result(x: &TransformResult) -> Raw {
         r.mark(format!("{S}.residue[{i}]"));
         r.e.uv(e.category as u64);
         r.mark(format!("{S}.residue[{i}].file"));
-        r.e.bytes(&e.file).uv(e.lo).uv(e.hi).uv(e.line).uv(e.column);
+        r.e.bytes(&e.file);
+        r.mark(format!("{S}.residue[{i}].lo"));
+        r.e.uv(e.lo).uv(e.hi);
+        r.mark(format!("{S}.residue[{i}].line"));
+        r.e.uv(e.line);
+        r.mark(format!("{S}.residue[{i}].column"));
+        r.e.uv(e.column);
     }
     r.e.count(x.exempt.len());
     for (i, k) in x.exempt.iter().enumerate() {
@@ -1214,8 +1224,14 @@ fn round_trips() {
     }
     for (i, w) in Why::ALL.into_iter().enumerate() {
         assert_eq!(w as usize, i);
+        // failed[1] is unseen: its observers, first and found are those
+        // §8.5 row 6a asks of either kind.
         let mut x = result();
-        x.spellings.failed[0].why = w;
+        x.spellings.failed[1] = FailedSpelling { why: w, ..x.spellings.failed[1].clone() };
+        if w == Why::DenotesOther {
+            x.spellings.failed[1].observers = 1;
+            x.spellings.failed[1].first = Some(d(0xa1));
+        }
         round_trip(&x);
     }
     for (i, s) in SetState::ALL.into_iter().enumerate() {
@@ -2745,19 +2761,171 @@ fn result_invariants() {
         let what = rejected(&x, &format!("sections.result.tally.{name}"));
         assert_eq!(what, "a refused result has a count of observers verified");
     }
-    // Not checked: the tally's sum, first for unseen, line and column,
-    // which state applies.
+    // Not checked: which state applies, and a residue's range against its
+    // file (that needs the file).
     let mut x = result();
-    x.tally.verified = 1000;
-    x.spellings.failed[1].first = Some(d(1));
-    x.residue[0].line = 0;
-    x.residue[0].hi = 0;
     x.state = State::Verified;
+    x.residue[0].hi = 1_000_000;
     x.validate().unwrap();
     let mut x = refused_result();
     x.residue = result().residue;
     x.agreement = result().agreement;
     x.validate().unwrap();
+}
+
+// spec/edits.md §8.5 row 6a (spec/landed/verify/WP-070.md §1): what `why`
+// decides of a failed spelling, each field alone, for each kind.
+#[test]
+fn result_failed_spelling_against_why() {
+    const OBS: &str = "observers is not 0 for unseen or is 0 for denotes_other";
+    const FIRST: &str = "first is present for unseen or absent for denotes_other";
+    const FOUND: &str = "found is present for unseen";
+    let p = |i: usize, f: &str| format!("sections.result.spellings.failed[{i}].{f}");
+    // [0] is denotes_other, [1] unseen.
+    assert_eq!(broken_result(|x| x.spellings.failed[0].observers = 0, &p(0, "observers")), OBS);
+    assert_eq!(broken_result(|x| x.spellings.failed[1].observers = 1, &p(1, "observers")), OBS);
+    assert_eq!(broken_result(|x| x.spellings.failed[0].first = None, &p(0, "first")), FIRST);
+    assert_eq!(broken_result(|x| x.spellings.failed[1].first = Some(d(1)), &p(1, "first")), FIRST);
+    assert_eq!(broken_result(|x| x.spellings.failed[1].found = Some(d(1)), &p(1, "found")), FOUND);
+    // A denotes_other may have no found key (the origin has none); any
+    // name is read, for either kind.
+    let mut x = result();
+    x.spellings.failed[0].found = None;
+    x.spellings.failed[0].name = String::new();
+    x.spellings.failed[1].name = String::new();
+    x.validate().unwrap();
+    // In field order within an entry: observers, first, found.
+    broken_result(
+        |x| {
+            x.spellings.failed[1].observers = 1;
+            x.spellings.failed[1].first = Some(d(1));
+            x.spellings.failed[1].found = Some(d(1));
+        },
+        &p(1, "observers"),
+    );
+    broken_result(
+        |x| {
+            x.spellings.failed[1].first = Some(d(1));
+            x.spellings.failed[1].found = Some(d(1));
+        },
+        &p(1, "first"),
+    );
+}
+
+// spec/edits.md §8.4, §8.5 row 8a: a residue entry is not empty, its line
+// and column 1-based.
+#[test]
+fn result_residue_range_line_column() {
+    let p = |i: usize, f: &str| format!("sections.result.residue[{i}].{f}");
+    let what = broken_result(|x| x.residue[2].hi = x.residue[2].lo, &p(2, "lo"));
+    assert_eq!(what, "a residue's range is empty");
+    broken_result(|x| x.residue[2].hi = 0, &p(2, "lo"));
+    let what = broken_result(|x| x.residue[1].line = 0, &p(1, "line"));
+    assert_eq!(what, "a residue's line is 0: lines are 1-based");
+    let what = broken_result(|x| x.residue[3].column = 0, &p(3, "column"));
+    assert_eq!(what, "a residue's column is 0: columns are 1-based");
+    // Within an entry: range, line, column; across entries, in order.
+    broken_result(
+        |x| {
+            x.residue[0].line = 0;
+            x.residue[0].column = 0;
+        },
+        &p(0, "line"),
+    );
+    broken_result(
+        |x| {
+            x.residue[1].column = 0;
+            x.residue[2].hi = 0;
+        },
+        &p(1, "column"),
+    );
+    // Line 1, column 1 is the least.
+    let mut x = result();
+    x.residue[0].line = 1;
+    x.residue[0].column = 1;
+    x.validate().unwrap();
+}
+
+// spec/edits.md §8.5 rows 13 and 14: the tally adds up.
+#[test]
+fn result_tally_adds_up() {
+    const SUM: &str = "the states of the tally do not add up to selected less unparsed";
+    // result(): selected 12, unparsed 1, the seven states 11.
+    for i in 4..11 {
+        let mut x = result();
+        let mut t = tally_values(&x.tally);
+        t[i] += 1;
+        x.tally = tally_from(t);
+        assert_eq!(rejected(&x, "sections.result.tally.verified"), SUM, "{}", TALLY[i]);
+        let mut x = result();
+        let mut t = tally_values(&x.tally);
+        t[i] -= 1;
+        x.tally = tally_from(t);
+        assert_eq!(rejected(&x, "sections.result.tally.verified"), SUM, "{}", TALLY[i]);
+    }
+    // Selected and unparsed move the target.
+    broken_result(|x| x.tally.selected = 13, "sections.result.tally.verified");
+    broken_result(|x| x.tally.unparsed = 0, "sections.result.tally.verified");
+    let mut x = result();
+    x.tally.selected = 13;
+    x.tally.unparsed = 2;
+    x.validate().unwrap();
+    // failed_runs and error_reports are not states.
+    let mut x = result();
+    x.tally.failed_runs = 100;
+    x.tally.error_reports = 100;
+    x.validate().unwrap();
+    // unparsed above selected, also for a refused result.
+    let what = broken_result(|x| x.tally.unparsed = 13, "sections.result.tally.unparsed");
+    assert_eq!(what, "unparsed is more than selected");
+    let mut x = refused_result();
+    x.tally.unparsed = x.tally.selected + 1;
+    rejected(&x, "sections.result.tally.unparsed");
+    // A sum that would overflow does not wrap.
+    broken_result(
+        |x| {
+            x.tally.verified = u64::MAX;
+            x.tally.failed = 2;
+        },
+        "sections.result.tally.verified",
+    );
+    // No verdict (the verify phase did not finish): no state is counted.
+    let what = broken_result(|x| x.verdict = None, "sections.result.tally.verified");
+    assert_eq!(what, "a result without a verdict has a count of observers verified");
+    for (i, name) in TALLY.iter().enumerate().skip(4) {
+        let mut x = result();
+        x.verdict = None;
+        let mut t = tally_values(&x.tally);
+        t[4..].fill(0);
+        t[i] = 1;
+        x.tally = tally_from(t);
+        let what = rejected(&x, &format!("sections.result.tally.{name}"));
+        assert_eq!(what, "a result without a verdict has a count of observers verified");
+    }
+    let mut x = result();
+    x.verdict = None;
+    x.tally = Tally { selected: 12, unparsed: 1, failed_runs: 2, ..Tally::default() };
+    x.validate().unwrap();
+    // A run over no observer: 0 of 0.
+    let mut x = result();
+    x.tally = Tally { selected: 3, unparsed: 3, ..Tally::default() };
+    x.validate().unwrap();
+}
+
+fn tally_from(t: [u64; 11]) -> Tally {
+    Tally {
+        selected: t[0],
+        unparsed: t[1],
+        failed_runs: t[2],
+        error_reports: t[3],
+        verified: t[4],
+        unchanged: t[5],
+        mismatch: t[6],
+        not_parsed: t[7],
+        unverifiable: t[8],
+        never_parsed: t[9],
+        failed: t[10],
+    }
 }
 
 #[test]
@@ -2769,10 +2937,13 @@ fn result_order_of_checks() {
         (|x| x.exempt.swap(0, 1), "sections.result.exempt[1]"),
         (|x| x.spellings.failed.swap(0, 1), "sections.result.spellings.failed[1]"),
         (|x| x.spellings.passed = 2, "sections.result.spellings.obligations"),
+        (|x| x.spellings.failed[0].first = None, "sections.result.spellings.failed[0].first"),
         (|x| x.residue[3].file = b"/s/z/".to_vec(), "sections.result.residue[3].file"),
         (|x| x.residue.swap(0, 1), "sections.result.residue[1]"),
+        (|x| x.residue[2].line = 0, "sections.result.residue[2].line"),
         (|x| x.state = State::Refused, "sections.result.overlay"),
         (|x| x.declared = None, "sections.result.declared"),
+        (|x| x.tally.verified += 1, "sections.result.tally.verified"),
     ];
     for (i, (f, path)) in rows.iter().enumerate() {
         broken_result(f, path);

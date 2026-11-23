@@ -1323,13 +1323,20 @@ Invariants, checked in this order: `scheme` is 1; `agreement` strictly
 ascending by `(rule, observer)`;
 `unused` and `exempt` strictly ascending; `spellings.failed` strictly
 ascending by `obligation`, and `passed` plus its length is `obligations`;
-every `residue` file canonical, then `residue` strictly ascending by
-`(file, lo)`; `overlay`, then `declared`, absent iff
-`state` is `refused`, and a `refused` result has no `verdict` and a tally
-of 0 in every field but `selected`, `unparsed`, `failed_runs` and
-`error_reports`. The format checks nothing else: not that the tally adds
-up, that `first` is absent for `unseen`, nor a residue's line, column or
-range, nor which state applies, which is conclude's (below).
+for each failed spelling, `observers` is 0 and `first` and `found` are
+absent if it is `unseen`, and `observers` is not 0 and `first` is
+present if it is `denotes_other`; every `residue` file canonical, then
+`residue` strictly ascending by `(file, lo)`, then each entry's `lo <
+hi`, `line` and `column` at least 1; `overlay`, then `declared`, absent
+iff `state` is `refused`, and a `refused` result has no `verdict` and a
+tally of 0 in every field but `selected`, `unparsed`, `failed_runs` and
+`error_reports`; `unparsed` at most `selected`; with a `verdict`, the
+seven states add up to `selected` less `unparsed`, and without one each
+of them is 0 (no verify phase finished, so no observer has a state).
+The format checks nothing else: not a residue's range against its
+file, nor which state applies, which is conclude's (below). (The rows
+on failed spellings, on a residue's range, line and column and on the
+tally are `spec/landed/verify/WP-070.md` §1.)
 
 The state is the first that applies:
 
