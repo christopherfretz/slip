@@ -1006,7 +1006,7 @@ fn declare(
         |ls: &[&str]| ls.iter().any(|l| !l.trim().is_empty() && !l.trim().starts_with('#'));
     let from_file = p.work.join(format!("{}.declared.txt", tree.name));
     let out_path = p.work.join(format!("{}.decl", tree.name));
-    let (txt_s, out_s) = (from_file.to_str().unwrap_or(""), out_path.to_str().unwrap_or(""));
+    let (from_s, out_s) = (from_file.to_str().unwrap_or(""), out_path.to_str().unwrap_or(""));
     let dep = p.real.join("dep");
     let dep_s = dep.to_str().unwrap_or("").to_owned();
     loop {
@@ -1016,8 +1016,9 @@ fn declare(
         let mut body = lines.join("\n");
         body.push('\n');
         std::fs::write(&from_file, body).map_err(|e| e.to_string())?;
-        let mut args =
-            vec!["declare", "--plan", &p.plan, "--store", "store", "--from", txt_s, "--out", out_s];
+        let mut args = vec![
+            "declare", "--plan", &p.plan, "--store", "store", "--from", from_s, "--out", out_s,
+        ];
         args.extend(["--owned", p.real.to_str().unwrap_or("")]);
         if dep.is_dir() {
             args.extend(["--readonly", &dep_s]);
@@ -1039,12 +1040,44 @@ fn declare(
                         ));
                         lines[n - 1] = "";
                     }
-                    _ => return Err(format!("slip declare: {}", out.brief())),
+                    _ => return Err(refused(&out, from_s)),
                 }
             }
+            Some(1) => return Err(refused(&out, from_s)),
             _ => return Err(format!("slip declare: {}", out.brief())),
         }
     }
+}
+
+/// How an `ERROR` from `slip declare` refusing the declared file begins.
+const REFUSED: &str = "slip declare refuses the declared file: ";
+
+/// The message of a `slip declare` that refused the text `from` (status
+/// 1): `REFUSED`, then `line <n>: <class>: <detail>` as `slip` printed it
+/// (`spec/exec.md` §8.8).
+fn refused(out: &Out, from: &str) -> String {
+    let error = out.stderr.lines().find_map(|l| {
+        let rest = l.strip_prefix("slip: ")?.strip_prefix(from)?.strip_prefix(':')?;
+        let (n, rest) = rest.split_once(": ")?;
+        Some(format!("line {n}: {rest}"))
+    });
+    match error {
+        Some(e) => format!("{REFUSED}{e}"),
+        None => format!("slip declare: {}", out.brief()),
+    }
+}
+
+/// Whether an `xfail` with `reason` covers the `ERROR` `error`: only a
+/// refusal of the declared file, and only when the reason quotes, in
+/// backquotes, the error's class or a word the error quotes
+/// (`spec/pitfalls.md` §1, `xfail`).
+fn covers(reason: &str, error: &str) -> bool {
+    let Some(rest) = error.strip_prefix(REFUSED) else { return false };
+    let Some((_, rest)) = rest.split_once(": ") else { return false };
+    let (class, detail) = rest.split_once(": ").unwrap_or((rest, ""));
+    let mut quoted: Vec<&str> = detail.split('`').skip(1).step_by(2).collect();
+    quoted.push(class);
+    quoted.iter().any(|q| !q.is_empty() && reason.contains(&format!("`{q}`")))
 }
 
 /// Whether `name` is declared in the subject and derived in the tree
@@ -1092,7 +1125,8 @@ fn run_tree(
     match evaluate(p, tree, &line, xfail.is_some(), round, env, places, &mut r) {
         Ok(()) => {}
         Err(e) => {
-            r.outcome = Outcome::Error;
+            let covered = xfail.is_some_and(|x| covers(x, &e));
+            r.outcome = if covered { Outcome::Xfail } else { Outcome::Error };
             r.found = e;
         }
     }
@@ -1835,4 +1869,42 @@ fn summary_lines() {
          pitfalls: 1 rows caught only by a failed parse\n\
          \x20 XFAIL n01-x/bad: mismatch / verdict incomplete, unverifiable\n"
     );
+}
+
+/// §1 `xfail`: an `ERROR` from `slip declare` refusing the declared file is
+/// covered only by a reason that quotes its class or a word it quotes.
+#[test]
+fn xfail_covers_a_declare_refusal_only_when_it_quotes_it() {
+    let e = format!("{REFUSED}line 4: syntax: unknown keyword `kept`");
+    assert!(covers("WP-111: the keyword `kept`", &e));
+    assert!(covers("WP-111: a `syntax` error", &e));
+    assert!(!covers("WP-111: kept", &e));
+    assert!(!covers("WP-111: `no unit`", &e));
+    assert!(!covers("`kept`", "slip verify: status Some(3): slip: kept"));
+    assert!(!covers("`syntax`", "slip declare: status Some(3): syntax"));
+
+    let root = work_dir("refusal");
+    let m = "int f() { return 1; }\n";
+    let env = Env { cc: None, require_all: false };
+    for (name, reason, want) in [
+        ("z01-quoted", "WP-111: `kept`", Outcome::Xfail),
+        ("z02-unrelated", "WP-111: something else", Outcome::Error),
+    ] {
+        let expect = format!("good: verified\nxfail good: {reason}\n");
+        let dir = write_row(
+            &root,
+            name,
+            &[
+                ("pre/main.cpp", m),
+                ("good/main.cpp", m),
+                ("declared.txt", "kept f()\n"),
+                ("expect.txt", &expect),
+            ],
+        );
+        let r = run_row(&dir, &root.join("work"), &env, Places::Mandatory);
+        assert_eq!(r.len(), 1, "{r:#?}");
+        assert_eq!(r[0].outcome, want, "{name}: {r:#?}");
+        assert!(r[0].found.starts_with(REFUSED), "{name}: {}", r[0].found);
+    }
+    let _ = std::fs::remove_dir_all(&root);
 }
