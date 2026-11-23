@@ -1725,7 +1725,18 @@ seed of either kind: it is the §9.2 follower of what it names
     at `D::f` reaches the same subjects through the link and is decided
     the same way. When the overrider is declared before the
     using-declaration the front end makes no shadow for the hidden
-    declaration, and the rename is accepted and verifies. An inheriting
+    declaration, and the rename is accepted; it verifies when the
+    using-declarator still names something in the base after the rename
+    (another `f` that it introduces before and after). Otherwise it is a
+    known mismatch, loud but not refused (`spec/landed/digest/WP-119.md`,
+    "Known mismatches after the review", F2; WP-127): in `struct A { void
+    f(int); }; struct B : A { virtual void f(); }; struct D : B { void f()
+    override; using B::f; };`, renaming `n::B::f` or `n::D::f` to `g`
+    leaves `using B::f;` as written, which now names `A::f(int)`, and
+    the digest shows `changed n::D` and `added n::D::<shadow
+    n::A::f(int)>`; without `A` the post-image does not compile. With
+    the using-declaration first it is rewritten to `using B::g;` and
+    verifies. An inheriting
     constructor's shadows (`using B::B;`) are another name and never
     followers. A using-declaration that names a class and functions of
     one name has both in its `of`; the class is a seed of another kind

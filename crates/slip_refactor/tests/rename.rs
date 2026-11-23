@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 
 use slip_digest::query::{Keys, NoKey};
 use slip_kiln::kiln::ast::DeclId;
+use slip_kiln::kiln::ast::decl::FriendKind;
 use slip_kiln::tree::Tree;
 use slip_kiln::written;
 use slip_kiln::{ParseOptions, Unit};
@@ -898,7 +899,17 @@ fn followers_of_class_template_members_map_with_their_seed() {
                             Ok(id) => {
                                 ids.insert(id);
                             }
-                            Err(NoKey::Indeterminate(c)) => causes.push(format!("{c:?}")),
+                            Err(NoKey::Indeterminate(c)) => {
+                                // Whether the entity is a friend a class
+                                // template defines, instantiated here.
+                                let ast = u.ast();
+                                let friend = ast.redecls_of(keys.entity(d)).any(|x| {
+                                    ast.instantiated_from(x).is_some()
+                                        && ast.decls.get(x).misc().friend() != FriendKind::None
+                                });
+                                let tag = if friend { " (instantiated friend)" } else { "" };
+                                causes.push(format!("{c:?}{tag}"));
+                            }
                             Err(_) => {}
                         }
                     }
@@ -911,9 +922,9 @@ fn followers_of_class_template_members_map_with_their_seed() {
         // Where the seed is itself an instantiated member (a friend the
         // class template defines, redeclared at namespace scope: F4), the
         // seeds' rules alone put a rule on an instantiated member with none
-        // on its pattern: indeterminate, as it should be, and only for that
-        // cause; the pattern's rule (a follower's) beside it, below, makes
-        // it the key following gives.
+        // on its pattern: indeterminate, as it should be, only for that
+        // cause and only on such a friend; the pattern's rule (a
+        // follower's) beside it, below, makes it the key following gives.
         let (ids, causes) = walk(rules(false), "seeds");
         if causes.is_empty() {
             for s in &e.subjects {
@@ -921,7 +932,10 @@ fn followers_of_class_template_members_map_with_their_seed() {
             }
         } else {
             assert!(
-                causes.iter().all(|c| c.contains("rule-on-instantiated-member")),
+                causes.iter().all(|c| {
+                    c.contains("rule-on-instantiated-member")
+                        && c.ends_with("(instantiated friend)")
+                }),
                 "{}: indeterminate under the seeds' rules: {causes:?}",
                 case.name
             );
@@ -1659,4 +1673,89 @@ fn wp119_instantiated_using_hidden_by_a_subject_end_to_end() {
     )];
     let r = end_to_end("wp119-n4-inst", &files, &["main.cpp"], &["n", "D", "f"], "g", &right);
     assert!(causes(&r).contains(&"MixedFollower"), "{r:?}");
+}
+
+/// Known mismatch after the review of WP-119, F1 (`spec/landed/digest/WP-119.md`,
+/// "Known mismatches after the review"): a dependent call in a function
+/// template instantiated with `n::S<int>`, whose base has another `f`.
+/// Until WP-119 the followers' `unsupported` refused the run; now the
+/// rename is accepted, the call is left spelling `f` (it binds `Base::f`
+/// in the post-image) and verification reports the difference: loud,
+/// never `verified`. The rename should refuse or rewrite (WP-127).
+#[test]
+fn wp119_known_mismatch_f1_dependent_call() {
+    let forms: [(&str, &[u8]); 3] = [
+        (
+            "wp119-f1-call",
+            b"namespace n {\nstruct Base { int f() { return 2; } };\ntemplate <class T> struct S : Base { int f() { return 1; } };\n}\ntemplate <class T> int call(T t) { return t.f(); }\nint u() { return call(n::S<int>()); }\n",
+        ),
+        (
+            "wp119-f1-static",
+            b"namespace n {\nstruct Base { static int f() { return 2; } };\ntemplate <class T> struct S : Base { static int f() { return 1; } };\n}\ntemplate <class T> int call() { return T::f(); }\nint u() { return call<n::S<int>>(); }\n",
+        ),
+        (
+            "wp119-f1-address",
+            b"namespace n {\nstruct Base { int f() { return 2; } };\ntemplate <class T> struct S : Base { int f() { return 1; } };\n}\ntemplate <class T> int call(T t) { int (T::*p)() = &T::f; return (t.*p)(); }\nint u() { return call(n::S<int>()); }\n",
+        ),
+    ];
+    for (name, text) in forms {
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text)];
+        let r = end_to_end(name, &files, &["main.cpp"], &["n", "S", "f"], "g", &right);
+        // Accepted: no refusal.
+        assert!(r.refusals.is_empty(), "{name}: {r:?}");
+        // And verification fails: the instantiated call's definition
+        // changed (it binds `Base::f` now), and the definition of the
+        // member it called is not used any more.
+        assert!(
+            r.differences.iter().any(|d| d.starts_with("main.cpp: changed call<n::S<int>>(")),
+            "{name}: {r:?}"
+        );
+        assert!(
+            r.differences.iter().any(|d| d == "main.cpp: removed n::S<int>::f()::<definition>"),
+            "{name}: {r:?}"
+        );
+    }
+}
+
+/// Known mismatch after the review of WP-119, F2 (`spec/edits.md` §9.2):
+/// the overrider declared before the using-declaration, so Kiln makes no
+/// shadow for `B::f()`, and the base has another `f` (`A::f(int)`).
+/// Renaming `n::B::f` or `n::D::f` is accepted and leaves `using B::f;`
+/// as written, which now names `A::f(int)`: verification reports
+/// `changed n::D` and the added shadow. The other order (using-declaration
+/// first) rewrites it to `using B::g;` and verifies.
+#[test]
+fn wp119_known_mismatch_f2_member_first_using() {
+    let member_first: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct A { void f(int); };\nstruct B : A { virtual void f(); };\nstruct D : B { void f() override; using B::f; };\n}\nvoid h(n::D& d) { d.f(); }\n",
+    )];
+    let using_first: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct A { void f(int); };\nstruct B : A { virtual void f(); };\nstruct D : B { using B::f; void f() override; };\n}\nvoid h(n::D& d) { d.f(); }\n",
+    )];
+    for seed in ["B", "D"] {
+        let target = ["n", seed, "f"];
+        let r = end_to_end(
+            &format!("wp119-f2-mf-{seed}"),
+            &member_first,
+            &["main.cpp"],
+            &target,
+            "g",
+            &right,
+        );
+        assert!(r.refusals.is_empty(), "{seed}: {r:?}");
+        for d in ["main.cpp: changed n::D", "main.cpp: added n::D::<shadow n::A::f(int)>"] {
+            assert!(r.differences.iter().any(|x| x == d), "{seed}: no {d:?}: {r:?}");
+        }
+        let r = end_to_end(
+            &format!("wp119-f2-uf-{seed}"),
+            &using_first,
+            &["main.cpp"],
+            &target,
+            "g",
+            &right,
+        );
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{seed}: {r:?}");
+    }
 }
