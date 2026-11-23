@@ -1,2 +1,2 @@
 added f(long)
-changed h(type-parameter-0-0, void (*)() noexcept(noexcept(f(T()))))
+changed template <class> void h(type-parameter-0-0, void (*)() noexcept(noexcept(f(T()))))

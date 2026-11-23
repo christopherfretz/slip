@@ -1,2 +1,2 @@
 # the unit of h writes its own found set (WP-041): it differs, the key does not
-changed h(type-parameter-0-0)
+changed template <class> decltype(g(t)) h(type-parameter-0-0)

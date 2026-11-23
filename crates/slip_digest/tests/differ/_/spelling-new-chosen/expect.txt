@@ -1,2 +1,2 @@
 added operator new(unsigned long, int)
-changed h(type-parameter-0-0)
+changed template <class> decltype(... , t) h(type-parameter-0-0)

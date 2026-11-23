@@ -1,2 +1,2 @@
 added f(long)
-changed h(type-parameter-0-0)
+changed template <class> requires (sizeof (f(T())) > 1) void h(type-parameter-0-0)
