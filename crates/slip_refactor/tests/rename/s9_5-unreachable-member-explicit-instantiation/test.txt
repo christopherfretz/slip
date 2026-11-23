@@ -1,0 +1,4 @@
+spec: edits.md §9.5 unreachable (an explicit instantiation of a member names it where neither table records the name: no extent row, and Kiln stage 3 SpecTarget is not in the pin), WP-073 part B without its follow-up
+from: n::S::f
+to: g
+kind: function
