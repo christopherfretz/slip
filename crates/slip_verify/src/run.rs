@@ -508,10 +508,10 @@ impl Report {
                             x.rule
                         ));
                     }
-                    let k = self.kept.len() as u64;
-                    if let Some(x) = u.kept.iter().find(|&&x| x >= k) {
+                    let kept = self.kept.len() as u64;
+                    if let Some(i) = u.kept.iter().find(|&&i| i >= kept) {
                         return Err(format!(
-                            "the shard's rule_use names kept key {x}; the run has {k}"
+                            "the shard's rule_use names kept key {i}; the run has {kept}"
                         ));
                     }
                 }

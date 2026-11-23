@@ -1057,20 +1057,25 @@ fn s2_3_declare_errors() {
         "slip: t.txt:1: refused: the rule of `tt<int>(int)` is refused: a rule may not match a \
          specialisation: its key follows its template's"
     );
-    // WP-111: a dependency entity (the header read-only), an entity with C
-    // language linkage, and a line that relocates the new parent of a line
-    // above it.
+    // WP-111: a dependency entity (the header read-only), and a line that
+    // relocates the new parent of a line above it.
     assert_eq!(
         line_error(&f, &plan, "relocate S => :: S2\n", &["--owned", "s", "--readonly", "s/a.h"]),
         "slip: t.txt:1: dependency entity: `S` is a dependency entity (a declaration of it is in \
          a read-only file, or it is a specialisation or an implicit member of one): no rule \
          renames it"
     );
+    // §2.3: an entity with C language linkage is renamed with the parent
+    // `c_linkage`; a parent that resolves to nothing is still an error.
     assert_eq!(
-        line_error(&f, &plan, "changed k(int)\nrelocate cfn(int) => :: cfn2\n", &["--owned", "s"]),
-        "slip: t.txt:2: C linkage: `cfn(int)` has C language linkage: its key's parent is \
-         `c_linkage` whatever namespace declares it, and its name is what the linker sees; no \
-         `relocate` line renames it"
+        line_error(
+            &f,
+            &plan,
+            "changed k(int)\nrelocate cfn(int) => nowhere :: cfn2\n",
+            &["--owned", "s"]
+        ),
+        "slip: t.txt:2: no unit: no unit of the post-images is named `nowhere`, and no unit's \
+         name contains `nowhere`"
     );
     assert_eq!(
         line_error(

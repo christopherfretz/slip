@@ -334,16 +334,13 @@ fn verdict_violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
     }
     // Row 16: the verdict `verified` has no stale pair and no failed
     // obligation (verify.md §9.3).
-    match x.verdict {
-        Some(RunVerdict::Verified) => {
-            if !x.agreement.is_empty() {
-                return Some((Loc::Agreement(0), "a verified verdict has a stale pair"));
-            }
-            if !x.spellings.failed.is_empty() {
-                return Some((Loc::Failed(0), "a verified verdict has a failed spelling"));
-            }
+    if x.verdict == Some(RunVerdict::Verified) {
+        if !x.agreement.is_empty() {
+            return Some((Loc::Agreement(0), "a verified verdict has a stale pair"));
         }
-        _ => {}
+        if !x.spellings.failed.is_empty() {
+            return Some((Loc::Failed(0), "a verified verdict has a failed spelling"));
+        }
     }
     // Row 17: the state against the verdict (rows 2 to 5 of §8.5).
     let unparsed_bars = x.tally.unparsed != 0 && !x.allow_unparsed;

@@ -581,9 +581,12 @@ fn s2_3_dependency_entity() {
     assert!(resolve(&read("relocate n::C => :: D").unwrap(), &p.recs, &[]).is_ok());
 }
 
-// WP-111, "Added after the reviews of WP-069 and WP-110": a `relocate` line
-// for an entity with C language linkage is `CLinkage`, whatever its new
-// parent and name.
+// §2.3 "An entity with C language linkage" (the coordinator's ruling on
+// WP-111): the line is accepted, its parent resolved and checked like any
+// other, and the rule keeps the parent `c_linkage`: the two spellings of
+// the new parent give one rule and one `rules_id`; a parent that resolves
+// to nothing is an error; moving the function between namespaces without
+// renaming it gives a rule that maps its key to itself.
 #[test]
 fn s2_3_c_linkage() {
     let p = pre();
@@ -591,18 +594,53 @@ fn s2_3_c_linkage() {
     let mut recs = p.recs.clone();
     recs.push(rec(&c_fn, "n::c_fn(int)"));
     let post = sorted(vec![rec(&p.n, "n")]);
+    let table = |text: &str| resolve(&read(text).unwrap(), &recs, &post).unwrap().rules;
+    let want = Rule {
+        parent: Parent::CLinkage,
+        kind: KeyKind::Function,
+        name: ident("c_fn2"),
+        disc: None,
+        to_parent: Parent::CLinkage,
+        to_name: ident("c_fn"),
+    };
+    let (a, b) =
+        (table("relocate n::c_fn(int) => n :: c_fn2"), table("relocate n::c_fn(int) => :: c_fn2"));
+    assert_eq!(a.rules(), [want]);
+    assert_eq!((a.rules(), a.id()), (b.rules(), b.id()));
+    // The parent is resolved in the post-images like any other.
+    let e = err("changed n::C\nrelocate n::c_fn(int) => nowhere :: c_fn2", &recs, &post);
+    assert_eq!((e.line, e.kind), (2, ErrorKind::NoUnit), "{e}");
+    // Moved, not renamed: the rule maps the key to itself (§9.2: it is
+    // `via` for the function, so used and not stale).
+    let same = table("relocate n::c_fn(int) => n :: =");
+    assert_eq!(same.rules().len(), 1);
+    assert_eq!(same.map(c_fn.clone()), c_fn);
+    // A C function's rule looks nothing up: no `Order` with a later line
+    // that relocates the namespace it names.
+    assert!(
+        resolve(
+            &read("relocate n::c_fn(int) => n :: c_fn2\nrelocate n => :: m").unwrap(),
+            &recs,
+            &post
+        )
+        .is_ok()
+    );
+}
+
+// The rename of a C function, end to end: verified with the line, a real
+// finding without it.
+#[test]
+fn loop_c_function_renamed() {
+    let pre =
+        "namespace legacy { extern \"C\" int c_fn(int); }\nint u() { return legacy::c_fn(1); }\n";
+    let post =
+        "namespace legacy { extern \"C\" int c_fn2(int); }\nint u() { return legacy::c_fn2(1); }\n";
     for text in [
-        "relocate n::c_fn(int) => :: c_fn2",
-        "relocate n::c_fn(int) => n :: =",
-        "changed n::C\nrelocate n::c_fn(int) => n :: c_fn2",
+        "relocate legacy::c_fn(int) => legacy :: c_fn2\n",
+        "relocate legacy::c_fn(int) => :: c_fn2\n",
     ] {
-        let e = err(text, &recs, &post);
-        assert_eq!(
-            (e.line, e.kind),
-            (text.lines().count() as u64, ErrorKind::CLinkage),
-            "{text}: {e}"
-        );
-        assert!(e.detail.starts_with("`n::c_fn(int)` has C language linkage"), "{e}");
+        let d = verified(pre, post, text);
+        assert_eq!(d.rules().rules()[0].parent, Parent::CLinkage, "{text}");
     }
 }
 

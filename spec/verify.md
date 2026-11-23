@@ -584,14 +584,26 @@ order; one that gives another rule with its match is `Duplicate`.
 
 **An entity with C language linkage.** Its key's parent is `c_linkage`
 whatever namespace declares it (`digest.md` §3), so moving it between
-namespaces changes no key and needs no line, and its name is what the
-linker sees. A `relocate` line whose `<entity>` has a `Key` with the
-parent `c_linkage` is the error `CLinkage` (WP-111, "Added after the
-reviews of WP-069 and WP-110"): `slip declare` writes no rule for such
-an entity. (A rule `{ parent: c_linkage, … }` for a rename was the
-earlier text of this section; the package's brief asked for the error,
-and the rename of a C function stays undeclarable until that is
-decided again: `spec/landed/verify/WP-111.md`.)
+namespaces changes no key and needs no line. Renaming it does: for an
+`<entity>` whose `Key` has the parent `c_linkage`, the line's `<parent>`
+is resolved and checked like any other (it says where the declaration
+is, and a name that resolves to nothing is an error), and the rule is
+
+```
+Rule { parent: c_linkage, kind, name: N', disc,  to_parent: c_linkage, to_name: name }
+```
+
+So `relocate legacy::c_fn(int) => legacy :: c_fn2` and `=> :: c_fn2`
+give one rule. The row that needs it is the rename of a C function to a
+builtin's name (`docs/wp/WP-109.md`, sketch 11): the front end then
+treats the calls as the builtin's, which the callers' units show. What
+C sources and the linker see of such a rename is §8's. Such a line's
+parent looks nothing up in the rules above (its rule does not depend on
+it), so it has no probe (**Order**). A line that moves the function
+without renaming it (`relocate legacy::c_fn(int) => acme :: c_fn`, or
+`=`) is accepted and gives the rule that maps the key to itself: it
+changes no key, and the function's key is matched by it, so it counts
+in `via` (§9.1) and the rule is used, not stale (WP-111).
 
 **Errors**, each naming the line number. One error is reported: the
 first `Syntax` error in file order if the text has one; else the first
@@ -608,7 +620,6 @@ last because they need the rules the file gives:
 | `NotRenamable` | `relocate` with an identifier for an entity whose `Name` is not an identifier |
 | `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)` (one entity relocated twice to one place, or two entities of one kind and discriminator relocated to one place; two overloads to one name have two discriminators and are not); two lines of one exemption list give one key. Reported at the later line |
 | `DependencyEntity` | `relocate` whose entity is not a namespace and is a dependency entity (§2.1, rule 1) in some selected observer's pre-image under the run's files: no rule renames it. A namespace is not refused: its rule applies in the owned view (§2.1, rule 2) |
-| `CLinkage` | `relocate` whose entity's `Key` has the parent `c_linkage` |
 | `Order` | `relocate` one of whose rules matches a probe of a line above it (**Order** above); the message names that line |
 | `Refused` | `relocate` whose rule §2.1 refuses (`Rule::refusal`): of kind `specialisation` or `partial_specialisation` (rename the template), or `resolved` or `default_argument` (a part follows its owner). A namespace rule across the unnamed namespace, the third form §2.1 refuses, is never made by a line: the unnamed namespace's name is not an identifier (`NotRenamable`), and no identifier names it. The walk keys nothing under a table that holds such a rule, however it was made; this error is where its reason is given |
 
@@ -660,7 +671,7 @@ pub struct Entity { pub kind: Option<KeyKind>, pub text: String }
 pub enum Line { Relocate { entity: Entity, parent: Option<Entity>, name: Option<String> },   // None: the global namespace; `=`
                 Changed(Entity), Created(Entity), Removed(Entity), Kept(Entity) }
 pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate, Refused,
-                     DependencyEntity, CLinkage, Order }
+                     DependencyEntity, Order }
 pub struct LineError { pub line: u64, pub kind: ErrorKind, pub detail: String }
 pub fn read(text: &str) -> Result<Vec<(u64, Line)>, LineError>;            // line numbers from 1
 pub struct Needs { pub post: bool, pub post_mapped: bool }                 // which post-image parses the table asks for

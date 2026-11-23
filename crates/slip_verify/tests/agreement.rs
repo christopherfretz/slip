@@ -131,6 +131,17 @@ fn s9_2_kept_via_of_another_kind_is_stale() {
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
 }
 
+/// A case of WP-111's attack list: each observer's `Use` of the rule and
+/// its `kept` keys seen; the stale pairs `(observer, direct, kept_via)`.
+struct AttackCase {
+    name: &'static str,
+    fixtures: &'static str,
+    a0: (Option<slip_model::agreement::Use>, &'static [u64]),
+    a1: (Option<slip_model::agreement::Use>, &'static [u64]),
+    stale: &'static [(u8, u64, u64)],
+    right: bool,
+}
+
 // WP-111 item 5, the attack list: each case is two observers whose
 // `rule_use` is what the walk counts for the case's fixtures under
 // `crates/slip_digest/tests/rules/stale/` (named per case; the counts are
@@ -140,19 +151,10 @@ fn s9_2_kept_via_of_another_kind_is_stale() {
 // one for the program; the one case where it is not is WP-116's.
 #[test]
 fn s9_2_attack_list_two_observers() {
-    use slip_model::agreement::Use;
     use slip_model::verdict::VerdictKind;
-    struct Case {
-        name: &'static str,
-        fixtures: &'static str,
-        a0: (Option<Use>, &'static [u64]),
-        a1: (Option<Use>, &'static [u64]),
-        stale: &'static [(u8, u64, u64)],
-        right: bool,
-    }
     let u = |via, direct, kept_via| Some(used_kept(0, via, direct, kept_via));
     let cases = [
-        Case {
+        AttackCase {
             name: "a function in two owned headers, one edited",
             fixtures: "two-headers-edited, two-headers-unedited",
             a0: (u(1, 0, 0), &[]),
@@ -160,7 +162,7 @@ fn s9_2_attack_list_two_observers() {
             stale: &[(0xa1, 1, 0)],
             right: true,
         },
-        Case {
+        AttackCase {
             name: "an owned overload that stays, kept",
             fixtures: "overload-kept (both observers)",
             a0: (u(1, 0, 0), &[0]),
@@ -168,7 +170,7 @@ fn s9_2_attack_list_two_observers() {
             stale: &[],
             right: true,
         },
-        Case {
+        AttackCase {
             name: "an owned overload that stays, not kept",
             fixtures: "overload-not-kept, overload-kept",
             a0: (u(1, 1, 0), &[]),
@@ -176,7 +178,7 @@ fn s9_2_attack_list_two_observers() {
             stale: &[(0xa0, 1, 0)],
             right: true,
         },
-        Case {
+        AttackCase {
             name: "kept, and moved in one observer (the same key reached through the rule there and directly here)",
             fixtures: "overload-kept, overload-kept-moved",
             a0: (u(1, 0, 0), &[0]),
@@ -184,7 +186,7 @@ fn s9_2_attack_list_two_observers() {
             stale: &[(0xa1, 0, 1)],
             right: true,
         },
-        Case {
+        AttackCase {
             name: "a compatibility using in kept and created",
             fixtures: "compat-using (both observers)",
             a0: (u(1, 0, 0), &[0]),
@@ -192,7 +194,7 @@ fn s9_2_attack_list_two_observers() {
             stale: &[],
             right: true,
         },
-        Case {
+        AttackCase {
             name: "an owned explicit specialisation of a dependency template",
             fixtures: "explicit-spec-of-dependency (both observers)",
             a0: (u(1, 0, 0), &[]),
@@ -200,7 +202,7 @@ fn s9_2_attack_list_two_observers() {
             stale: &[],
             right: true,
         },
-        Case {
+        AttackCase {
             name: "owned in one observer, a dependency entity in the other",
             fixtures: "owned-or-dependency-dep, owned-or-dependency-owned",
             a0: (u(1, 0, 0), &[]),
@@ -210,7 +212,7 @@ fn s9_2_attack_list_two_observers() {
             // and acme::f in owned code: closed by docs/wp/WP-116.md.
             right: false,
         },
-        Case {
+        AttackCase {
             name: "a namespace only one observer sees",
             // The first observer's files declare no `legacy`: no rules
             // fixture can say so (`rules.txt` resolves in the pre-image).

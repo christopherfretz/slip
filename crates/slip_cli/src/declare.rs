@@ -74,8 +74,6 @@ pub enum ErrorKind {
     /// A `relocate` line whose entity is a dependency entity and not a
     /// namespace (`spec/verify.md` §2.1: no rule renames it).
     DependencyEntity,
-    /// A `relocate` line whose entity has C language linkage.
-    CLinkage,
     /// A `relocate` line that relocates the new parent of a line above
     /// it, or a namespace or class enclosing that parent.
     Order,
@@ -93,7 +91,6 @@ impl ErrorKind {
             ErrorKind::Duplicate => "duplicate",
             ErrorKind::Refused => "refused",
             ErrorKind::DependencyEntity => "dependency entity",
-            ErrorKind::CLinkage => "C linkage",
             ErrorKind::Order => "order",
         }
     }
@@ -505,9 +502,10 @@ fn undefined_friends<'r>(r: &Record, k: &Key, pre: &Index<'r>, facts: &Facts) ->
 /// pre-images under the run's files. The first error in file order.
 ///
 /// A `relocate` line whose entity is a dependency entity (not a
-/// namespace) is `DependencyEntity`; one whose entity has C language
-/// linkage is `CLinkage`; one whose rule matches a level of the new parent
-/// of a line above it, as that line looked it up, is `Order`. A line
+/// namespace) is `DependencyEntity`; one whose rule matches a level of the
+/// new parent of a line above it, as that line looked it up, is `Order`.
+/// An entity with C language linkage keeps the parent `c_linkage` in its
+/// rule, whatever the line's parent, which is resolved like any other. A line
 /// whose entity is a function with undefined friend declarations in class
 /// templates (`facts`) gives, beside its rule, a rule for each of them when
 /// the name changes; a later line that gives one of these rules again is
@@ -558,16 +556,6 @@ pub fn resolve_with(
                         ),
                     ));
                 }
-                if k.parent == Parent::CLinkage {
-                    return Err(error(
-                        n,
-                        ErrorKind::CLinkage,
-                        format!(
-                            "`{}` has C language linkage: its key's parent is `c_linkage` whatever namespace declares it, and its name is what the linker sees; no `relocate` line renames it",
-                            entity.text
-                        ),
-                    ));
-                }
                 let new_name = match name {
                     None => k.name.clone(),
                     Some(id) => {
@@ -593,12 +581,22 @@ pub fn resolve_with(
                     stale = false;
                 }
                 let mut probes = Vec::new();
+                // §2.3 "An entity with C language linkage": its key's parent
+                // is `c_linkage` whatever namespace declares it, so its rule
+                // has that parent; the line's parent is still resolved (it
+                // says where the declaration is) and looks nothing up.
+                let c_linkage = k.parent == Parent::CLinkage;
                 let new_parent = match parent {
+                    None if c_linkage => Parent::CLinkage,
                     None => Parent::Root,
                     Some(p) => {
                         let r =
                             resolve_in(p, &post, "post-images").map_err(|(k, d)| error(n, k, d))?;
-                        map_parent(Parent::Unit(r.id), &post, &table, &mut probes)
+                        if c_linkage {
+                            Parent::CLinkage
+                        } else {
+                            map_parent(Parent::Unit(r.id), &post, &table, &mut probes)
+                        }
                     }
                 };
                 let mut given = vec![Rule {
