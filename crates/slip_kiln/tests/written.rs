@@ -393,6 +393,48 @@ fn s9_3_call_through_a_using_declaration() {
     });
 }
 
+// A found declaration that is not a using-shadow (the template of the
+// specialisation a call selects) is not `via_using`.
+#[test]
+fn s9_3_found_template_is_not_via_using() {
+    let src = "\
+template <class T> void tf(T) {}
+template <class T> struct S { static void m(); };
+void k() { tf(1); S<int>::m(); }
+";
+    with_unit("found-template", src, |u| {
+        let r = written_refs(u);
+        let call = r.iter().find(|r| bytes(u, r.name) == at(src, "tf(1)", "tf")).unwrap();
+        assert!(!call.via_using);
+        assert!(r.iter().all(|r| !r.via_using), "{r:?}");
+    });
+}
+
+// A friend declaration's own row is not a name: the function or class it
+// declares has the row and is given, once.
+#[test]
+fn s9_3_friend_is_its_function_once() {
+    let src = "\
+struct X {
+  friend void g(int) {}
+  friend void h(int);
+  template <class T> friend struct Y;
+  friend struct Z;
+};
+";
+    with_unit("friends", src, |u| {
+        let kinds: Vec<DeclKind> =
+            decl_names(u).iter().map(|n| u.ast().decls.get(n.decl).kind()).collect();
+        assert!(
+            !kinds.iter().any(|k| matches!(k, DeclKind::Friend | DeclKind::FriendTemplate)),
+            "{kinds:?}"
+        );
+        let decl = DeclNameKind::Declaration;
+        assert_eq!(names_at(u, src, "friend void g(int)", "g"), [(decl, DeclKind::Function)]);
+        assert_eq!(names_at(u, src, "friend void h(int)", "h"), [(decl, DeclKind::Function)]);
+    });
+}
+
 #[test]
 fn s9_3_global_and_first() {
     with_unit("global", CALLS, |u| {
@@ -916,6 +958,12 @@ fn sweep_one(line: &[String], root: &Path, label: &str) -> Tally {
             }
         }
         let names = decl_names(u);
+        for n in &names {
+            let kind = u.ast().decls.get(n.decl).kind();
+            if matches!(kind, DeclKind::Friend | DeclKind::FriendTemplate) {
+                t.failures.push(format!("{label}: a {kind:?} row is a declaration name"));
+            }
+        }
         let ast = u.ast();
         for (d, e) in ast.decl_extents.iter() {
             if !e.name.lo.is_valid() {
