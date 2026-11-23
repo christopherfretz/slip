@@ -1,0 +1,12 @@
+subjects:
+  01d7064a seed - rule=yes n::f(double)
+  9f28e21c seed - rule=yes n::f(int)
+links:
+claims:
+  main.cpp:1:20+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:1:33+1 replace "g" t0 votes=1 none [01d7064a]
+  main.cpp:2:20+1 keep t0 votes=1 none
+  main.cpp:4:6+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
+  main.cpp:5:6+1 replace spell(01d7064a, "g") t0 votes=1 none [01d7064a]
+  main.cpp:6:6+1 keep t0 votes=1 none
+changed:

@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (only ::main is unsupported: a function main in a namespace is renamed; WP-071 review, R01)
+from: n::main
+to: start
+kind: function

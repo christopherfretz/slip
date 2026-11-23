@@ -1,0 +1,4 @@
+spec: edits.md §9.1 (a target of one component: the global namespace)
+from: f
+to: g
+kind: function

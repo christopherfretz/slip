@@ -1,0 +1,4 @@
+# clang++-19: GLOBAL HIDDEN _ZN1n1vIiEE in a (the first declaration's opening is hidden),
+# DEFAULT in b. A specialisation of a variable template takes the template's pair, its first
+# declaration's (the use's specialisation has no unit of its own here).
+changed n::v

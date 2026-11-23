@@ -1,0 +1,4 @@
+spec: edits.md §9.5 name_taken (a base class declares the new name; the class was declared before its definition, whose bases are read; WP-071 review, R08)
+from: n::D::f
+to: g
+kind: function

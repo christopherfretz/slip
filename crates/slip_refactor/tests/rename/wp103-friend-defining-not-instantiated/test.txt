@@ -1,0 +1,4 @@
+spec: spec/edits.md §9.2 (the pair of wp103-friend-defining-instantiated)
+from: n::f
+to: g
+kind: function

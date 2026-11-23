@@ -1,5 +1,3 @@
-# pending
-# needs: WP-113
 # A variable moved into the unnamed namespace: clang++-19 -c, nm: `B _ZN6detail7counterE` in a.o,
 # `b _ZN12_GLOBAL__N_17counterE` in b.o (external linkage becomes internal). Equal today.
 changed detail::counter

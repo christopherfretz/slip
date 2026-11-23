@@ -1,0 +1,1 @@
+# Pitfall row N44 (crates/slip_verify/tests/pitfalls/n44-declared-hoist-out-of-unnamed, declared.txt), its good tree against its pre-image: the unnamed namespace moves with the block.

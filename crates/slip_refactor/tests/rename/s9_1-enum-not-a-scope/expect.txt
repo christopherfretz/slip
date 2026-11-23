@@ -1,0 +1,6 @@
+subjects:
+links:
+claims:
+  main.cpp:1:16+1 keep t0 votes=1 none
+  main.cpp:2:10+1 keep t0 votes=1 none
+changed:

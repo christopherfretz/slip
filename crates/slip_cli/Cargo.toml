@@ -17,6 +17,7 @@ slip_verify.workspace = true
 slip_kiln.workspace = true
 slip_digest.workspace = true
 slip_script.workspace = true
+slip_refactor.workspace = true
 
 [lints]
 workspace = true

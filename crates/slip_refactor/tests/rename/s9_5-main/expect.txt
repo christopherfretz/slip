@@ -1,0 +1,6 @@
+subjects:
+  2032b353 seed unsupported rule=yes main()
+links:
+claims:
+  main.cpp:1:5+4 replace "start" t0 votes=1 none [2032b353]
+changed:

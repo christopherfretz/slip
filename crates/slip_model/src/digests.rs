@@ -9,7 +9,7 @@ use crate::hash::tagged_digest;
 use crate::wire::Encoder;
 
 /// The digest scheme this crate reads and writes (`Digests::scheme`).
-pub const SCHEME: u64 = 1;
+pub const SCHEME: u64 = 2;
 
 /// Tag of a group's digest: `H("slip.group.v1", list<Unit>)`.
 pub const GROUP_TAG: &str = "slip.group.v1";

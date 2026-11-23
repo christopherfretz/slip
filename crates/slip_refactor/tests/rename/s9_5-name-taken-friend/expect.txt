@@ -1,0 +1,8 @@
+subjects:
+  3fdabc5b seed name_taken rule=yes n::f(n::S)
+links:
+claims:
+  main.cpp:1:52+1 replace "g" t0 votes=1 none [3fdabc5b]
+  main.cpp:2:23+1 replace spell(3fdabc5b, "g") t0 votes=1 none [3fdabc5b]
+  main.cpp:2:29+1 replace spell(3fdabc5b, "g") t0 votes=1 none [3fdabc5b]
+changed:

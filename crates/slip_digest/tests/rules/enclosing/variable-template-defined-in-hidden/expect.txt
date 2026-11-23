@@ -1,0 +1,3 @@
+# clang++-19: DEFAULT _ZN1n1vIiEE (weak) on both sides: a variable template's specialisations take
+# its first declaration's opening (plain here), not its definition's.
+changed n

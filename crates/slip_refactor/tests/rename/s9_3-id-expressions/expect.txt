@@ -1,0 +1,14 @@
+subjects:
+  9f28e21c seed - rule=yes n::f(int)
+links:
+claims:
+  main.cpp:2:5+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:3:23+1 keep t0 votes=1 none
+  main.cpp:6:14+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
+  main.cpp:7:17+1 keep t0 votes=1 none
+  main.cpp:8:23+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
+  main.cpp:9:25+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
+  main.cpp:10:19+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
+  main.cpp:11:23+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
+  main.cpp:12:6+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
+changed:

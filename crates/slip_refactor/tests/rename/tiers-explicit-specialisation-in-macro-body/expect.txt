@@ -1,0 +1,7 @@
+subjects:
+  95010aba seed - rule=yes n::f
+links:
+claims:
+  main.cpp:1:39+1 refuse t2 votes=1 macro_body [95010aba] macro=SPECIALISE_F@99
+  main.cpp:3:25+1 replace "g" t0 votes=1 none [95010aba]
+changed:

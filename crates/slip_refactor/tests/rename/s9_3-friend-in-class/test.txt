@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 1 (a friend declaration in a class that is not a template)
+from: n::f
+to: g
+kind: function
