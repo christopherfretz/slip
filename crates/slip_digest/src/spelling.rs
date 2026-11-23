@@ -331,3 +331,34 @@ fn collisions(input: &Input<'_>, rules: &RuleTable) -> Collisions {
         Collisions { keys, with_unit, unitless, names }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // §10.2 rule 1: the seven roles of `spec/api.md` §6.5 rule 3 take
+    // part, the others do not.
+    #[test]
+    fn s10_2_rule1_roles() {
+        let part = [
+            Role::Expr,
+            Role::Member,
+            Role::Nns,
+            Role::Type,
+            Role::Template,
+            Role::Base,
+            Role::MemInit,
+        ];
+        let other = [
+            Role::UsingDecl,
+            Role::UsingDirective,
+            Role::NamespaceAlias,
+            Role::Elaborated,
+            Role::SpecTarget,
+            Role::Concept,
+            Role::Designator,
+        ];
+        assert!(part.iter().all(|&r| takes_part(r)));
+        assert!(other.iter().all(|&r| !takes_part(r)));
+    }
+}

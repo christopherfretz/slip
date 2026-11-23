@@ -515,3 +515,410 @@ fn s10_6_parallel_and_empty() {
     let c = case(&post, &wants);
     assert_eq!(run(&c), [Holds, Holds]);
 }
+
+// ---------------------------------------------------------------------
+// Attacks: attempts to make the check answer `Holds` where the name
+// denotes another entity, or where nothing at the piece was checked.
+// Each says which answer §10.2 requires.
+// ---------------------------------------------------------------------
+
+/// A one-file case.
+fn one(src: &str, wants: &[Want<'_>]) -> Vec<Spelling> {
+    run(&case(&[("main.cpp", src)], wants))
+}
+
+fn key(src: &str, name: &str) -> Digest {
+    key_of(&[("main.cpp", src)], name)
+}
+
+// A name found through a using-declaration denotes its target (Kiln's
+// referent is the target, not the using-shadow: the open question of
+// `spec/verify.md` "What a reference found through a using-declaration
+// refers to"). Holds for the target, fails for another entity of the
+// same name.
+#[test]
+fn attack_through_a_using_declaration() {
+    let src = "namespace a { int f(); }\nnamespace b { int f(); }\nnamespace c { using a::f; int u() { return «f»(); } }\n";
+    assert_eq!(one(src, &[Named("a::f()")]), [Holds]);
+    let got = one(src, &[Named("b::f()")]);
+    assert_eq!(fails(&got[0]).expect("fails").0, Some(key(src, "a::f()")));
+}
+
+// A namespace alias: the qualifier names the alias, the name the entity
+// in the aliased namespace.
+#[test]
+fn attack_through_a_namespace_alias() {
+    let src = "namespace a { int f(); }\nnamespace b { int f(); }\nnamespace al = b;\nint u() { return al::«f»(); }\n";
+    assert_eq!(one(src, &[Named("b::f()")]), [Holds]);
+    let got = one(src, &[Named("a::f()")]);
+    assert_eq!(fails(&got[0]).expect("fails").0, Some(key(src, "b::f()")));
+}
+
+// An inline namespace: `a::f` finds `a::v2::f`; the key names the inline
+// namespace, so an entity of `a` itself is another key. (The host's name,
+// which the cases look entities up by, leaves the inline namespace out;
+// the walk's, which `found_name` is, does not: `spec/verify.md` §6.1.)
+#[test]
+fn attack_an_inline_namespace() {
+    let src = "namespace a { inline namespace v2 { int f(int); } int f(long); }\nint u() { return a::«f»(1); }\n";
+    assert_eq!(one(src, &[Named("a::f(int)")]), [Holds]);
+    let got = one(src, &[Named("a::f(long)")]);
+    let (found, name) = fails(&got[0]).expect("fails");
+    assert_eq!(found, Some(key(src, "a::f(int)")));
+    assert_eq!(name, "a::v2::f(int)");
+}
+
+// Argument-dependent lookup: the referent is what overload resolution
+// chose, not what ordinary lookup found.
+#[test]
+fn attack_argument_dependent_lookup() {
+    let src = "namespace n { struct S {}; int g(S); }\nint g(long);\nint u() { n::S s; return «g»(s); }\n";
+    assert_eq!(one(src, &[Named("n::g(n::S)")]), [Holds]);
+    let got = one(src, &[Named("g(long)")]);
+    assert_eq!(fails(&got[0]).expect("fails").0, Some(key(src, "n::g(n::S)")));
+}
+
+// An overload with the same parameter list in another namespace: the key
+// holds the parent.
+#[test]
+fn attack_same_signature_another_namespace() {
+    let src = "namespace a { int f(int); }\nnamespace b { int f(int); }\nint u() { return b::«f»(1); }\n";
+    let got = one(src, &[Named("a::f(int)")]);
+    assert_eq!(fails(&got[0]).expect("fails").0, Some(key(src, "b::f(int)")));
+}
+
+// A constructor call written as the class name: the reference is to the
+// class (role type name), so an obligation for the class holds and one
+// for the constructor fails.
+#[test]
+fn attack_a_constructor() {
+    let src = "struct S { S(int); };\nS s = «S»(1);\n";
+    assert_eq!(one(src, &[Named("S")]), [Holds]);
+    assert!(fails(&one(src, &[Named("S::S(int)")])[0]).is_some());
+}
+
+// A conversion function named explicitly, an operator function named
+// explicitly, and an operator used as an operator (no reference: not
+// seen).
+#[test]
+fn attack_conversion_and_operators() {
+    let src = "struct S { operator int(); };\nint operator+(S, S);\nint u(S s) { return s.«operator int»() + «operator+»(s, s) + (s «+» s); }\n";
+    let got = one(src, &[Named("S::operator int()"), Named("operator+(S, S)"), Named("operator+(S, S)")]);
+    assert_eq!(got, [Holds, Holds, NotSeen]);
+}
+
+// A template-id: the name range is the template's name only; an
+// obligation over the whole template-id is answered by nothing.
+#[test]
+fn attack_a_template_id() {
+    let src = "template <class T> int f(T);\nint u() { return «f»<int>(1) + «f<int>»(2); }\n";
+    assert_eq!(one(src, &[Named("f"), Named("f")]), [Holds, NotSeen]);
+}
+
+// A dependent call that resolves, at instantiation, to two entities in
+// two instantiations. §10.2 requires `Fails` if the instantiations'
+// references answer (one is wrong), `NotSeen` if none does (a name
+// resolved only at instantiation that the table does not record).
+#[test]
+fn attack_a_dependent_call_two_instantiations() {
+    let src = "namespace x { struct A {}; int h(A); }\nnamespace y { struct B {}; int h(B); }\ntemplate <class T> int g(T t) { return «h»(t); }\nint u() { return g(x::A{}) + g(y::B{}); }\n";
+    // At this pin Kiln records the dependent name once, without a
+    // referent, and nothing of the instantiations: not seen, for the
+    // right key and the wrong one alike.
+    assert_eq!(one(src, &[Named("x::h(x::A)")]), [NotSeen]);
+    assert_eq!(one(src, &[Named("y::h(y::B)")]), [NotSeen]);
+}
+
+// A reference in a default argument used from several places, and in a
+// default member initialiser used by several objects.
+#[test]
+fn attack_default_argument_and_member_initialiser() {
+    let src = "int f();\nint h();\nint g(int a = «f»());\nstruct S { int m = «f»(); };\nS s1, s2;\nint u() { return g() + g() + s1.m; }\n";
+    assert_eq!(one(src, &[Named("f()"), Named("f()")]), [Holds, Holds]);
+    let got = one(src, &[Named("h()"), Named("h()")]);
+    assert!(fails(&got[0]).is_some() && fails(&got[1]).is_some(), "{got:?}");
+}
+
+// Unevaluated operands: `decltype`, `sizeof`, `noexcept`.
+#[test]
+fn attack_unevaluated_operands() {
+    let src = "int f();\nint h();\nusing T = decltype(«f»());\nunsigned long s = sizeof(«f»());\nbool b = noexcept(«f»());\n";
+    assert_eq!(one(src, &[Named("f()"), Named("f()"), Named("f()")]), [Holds, Holds, Holds]);
+    let got = one(src, &[Named("h()"), Named("h()"), Named("h()")]);
+    assert!(got.iter().all(|g| fails(g).is_some()), "{got:?}");
+}
+
+// A requires-expression: a non-dependent name in it is resolved at the
+// definition; a dependent one is not.
+#[test]
+fn attack_a_requires_expression() {
+    let src = "int f();\nint k(int);\ntemplate <class T> concept C = requires(T t) { «f»(); «k»(t); };\n";
+    assert_eq!(one(src, &[Named("f()"), Named("k(int)")]), [Holds, NotSeen]);
+    let wrong = one(src, &[Named("k(int)"), Named("f()")]);
+    assert!(fails(&wrong[0]).is_some(), "{wrong:?}");
+    assert_eq!(wrong[1], NotSeen);
+}
+
+// Lambda captures: a simple capture names a local (no key: fails for
+// any key); an init-capture's initialiser is an expression.
+#[test]
+fn attack_lambda_captures() {
+    let src = "int f();\nint u() { int v = 1; auto l = [«v», w = «f»()] { return v + w; }; return l(); }\n";
+    let got = one(src, &[Named("f()"), Named("f()")]);
+    assert_eq!(got[0], Spelling::Fails { found: None, found_name: "v".into() });
+    assert_eq!(got[1], Holds);
+}
+
+// A discarded `if constexpr` branch: outside a template its names are
+// resolved (seen); inside one a non-dependent name is resolved at the
+// definition (seen) and a dependent one is not.
+#[test]
+fn attack_a_discarded_branch() {
+    let src = "int f();\nint h();\nint u() { if constexpr (false) { return «f»(); } return 0; }\ntemplate <class T> int t() { if constexpr (sizeof(T) == 0) { return «f»(); } return 0; }\nint v = t<int>();\n";
+    assert_eq!(one(src, &[Named("f()"), Named("f()")]), [Holds, Holds]);
+    let wrong = one(src, &[Named("h()"), Named("h()")]);
+    assert!(!wrong.contains(&Holds), "{wrong:?}");
+}
+
+// A function template the unit never instantiates: a non-dependent name
+// in it is resolved at the definition.
+#[test]
+fn attack_never_instantiated() {
+    let src = "int f();\nint h();\ntemplate <class T> int t(T) { return «f»(); }\n";
+    assert_eq!(one(src, &[Named("f()")]), [Holds]);
+    assert!(fails(&one(src, &[Named("h()")])[0]).is_some());
+}
+
+// An obligation one byte off, empty, reversed, or over two tokens
+// (§10.2 rule 3: ends at `hi`, starts at or after `lo`).
+#[test]
+fn attack_ranges_off_by_one_empty_two_tokens() {
+    let src = "int f();\nint x = 1;\nint u() { return x + f(); }\n";
+    // The `f` of the call is the last `f()` of the text.
+    let call = src.rfind("f()").expect("f") as u32;
+    let k = key(src, "f()");
+    let ob = |lo: u32, hi: u32| Obligation { file: b"main.cpp".to_vec(), lo, hi, key: k };
+    let files = [("main.cpp", src)];
+    let c = case(&files, &[]);
+    let x = src.rfind("x + f").expect("x") as u32;
+    let (_, got) = run_with(
+        &c,
+        &[
+            ob(call, call + 1),     // exact: holds
+            ob(call - 1, call + 1), // one byte before: still ends at `hi`, holds
+            ob(call, call + 2),     // one byte after: nothing ends there
+            ob(call + 1, call + 1), // empty
+            ob(call + 1, call),     // reversed
+            ob(x, call + 1),        // `x + f`: answered by `f` alone (rule 3)
+            ob(call + 1, call + 2), // `(`: nothing
+        ],
+    );
+    assert_eq!(got, [Holds, Holds, NotSeen, NotSeen, NotSeen, Holds, NotSeen]);
+    // Over two tokens where the last denotes another entity: fails.
+    let kx = key(src, "x");
+    let (_, got) = run_with(&c, &[Obligation { key: kx, ..ob(x, call + 1) }]);
+    assert!(fails(&got[0]).is_some(), "{got:?}");
+}
+
+// A header without a guard entered twice, under two spellings of its
+// path, where one entry's name denotes another entity (the qualifier is a
+// macro redefined in between): both references have the one range and
+// subject path, and one is wrong: fails.
+#[test]
+fn attack_a_file_entered_twice() {
+    let post = [
+        (
+            "main.cpp",
+            "namespace a { int f(); }\nnamespace b { int f(); }\n#define NS a\n#define NAME ua\n#include \"h.h\"\n#undef NS\n#undef NAME\n#define NS b\n#define NAME ub\n#include \"d/../h.h\"\n",
+        ),
+        ("h.h", "inline int NAME() { return NS::«f»(); }\n"),
+        ("d/keep.h", ""),
+    ];
+    let got = run(&case(&post, &[Named("a::f()")]));
+    let (found, _) = fails(&got[0]).expect("fails");
+    assert_eq!(found, Some(key_of(&post, "b::f()")));
+}
+
+// A name that is a macro expanding to one name (an object-like macro):
+// the reference's range is the invocation, at tier 0; it denotes what the
+// macro expands to.
+#[test]
+fn attack_a_macro_spelled_as_the_name() {
+    let src = "namespace a { int f(); }\nint other();\n#define g other\nint u() { return «g»(); }\n";
+    let got = one(src, &[Named("a::f()")]);
+    assert_eq!(fails(&got[0]).expect("fails").0, Some(key(src, "other()")));
+    assert_eq!(one(src, &[Named("other()")]), [Holds]);
+}
+
+// A name inside a macro body (tier 2): no range, not seen, whatever it
+// denotes.
+#[test]
+fn attack_a_name_in_a_macro_body() {
+    let src = "int f();\n#define CALL() f() + 0\nint u() { return CALL(); }\n";
+    let call = src.rfind("CALL").expect("CALL") as u32;
+    let k = key(src, "f()");
+    let files = [("main.cpp", src)];
+    let c = case(&files, &[]);
+    let (_, got) = run_with(&c, &[Obligation { file: b"main.cpp".to_vec(), lo: call, hi: call + 6, key: k }]);
+    assert_eq!(got, [NotSeen]);
+}
+
+// A line splice inside the name: if Kiln records the reference with a
+// range, it is the token's bytes, splice included, and the name denotes
+// the entity; never `Holds` for another key.
+#[test]
+fn attack_a_splice_in_the_name() {
+    let src = "int foo();\nint h();\nint u() { return «fo\\\no»(); }\n";
+    assert_eq!(one(src, &[Named("foo()")]), [Holds]);
+    assert_ne!(one(src, &[Named("h()")])[0], Holds);
+}
+
+// A universal-character-name in the name of the reference.
+#[test]
+fn attack_a_ucn_in_the_name() {
+    let src = "int f\\u00e9();\nint h();\nint u() { return «f\\u00e9»(); }\n";
+    assert_eq!(one(src, &[Named("fé()")]), [Holds]);
+    let got = one(src, &[Named("h()")]);
+    assert_eq!(fails(&got[0]).expect("fails").0, Some(key(src, "fé()")));
+}
+
+// A key two entities share in the post-image (a collision, digest §3.4)
+// is not one entity's key: a reference to either fails, `found` absent.
+// Here a rename of `o::f` to `g` leaves a declaration under the old name
+// (a compatibility function), whose key is the one `g`'s maps to: the
+// sibling spelling `f` resolves to the old declaration, which is not the
+// entity the transform meant, though its key is the obligation's.
+#[test]
+fn attack_a_colliding_key() {
+    let pre = [("main.cpp", "namespace o { int f(int); }\nint u() { return o::f(1); }\n")];
+    let post = [(
+        "main.cpp",
+        "namespace o { int g(int); int f(int); }\nint u() { return o::«f»(1) + o::«g»(2); }\n",
+    )];
+    let wants = [Named("o::f(int)"), Named("o::f(int)")];
+    let c = Case { pre: Some(&pre), renames: &[("o::f(int)", "g")], ..case(&post, &wants) };
+    let got = run(&c);
+    assert_eq!(fails(&got[0]).expect("fails").0, None, "{got:?}");
+    assert_eq!(fails(&got[1]).expect("fails").0, None, "{got:?}");
+    // Without the rule nothing collides, and `f` is `f`.
+    let c = Case { pre: Some(&pre), ..case(&post, &wants) };
+    let got = run(&c);
+    assert_eq!(got[0], Holds);
+    assert!(fails(&got[1]).is_some());
+}
+
+// Under a table `RuleTable::refused` refuses, no entity has a key: an
+// answered obligation fails with `found` absent, an unanswered one is not
+// seen; none holds (`spec/landed/verify/WP-096.md`).
+#[test]
+fn attack_a_refused_table() {
+    let src = "template <class T> struct S {};\nS<int> si;\nint f(int);\nint u() { return f(1); }\n";
+    let call = src.rfind("f(1)").expect("f") as u32;
+    with_unit(&[("main.cpp", src)], "c++20", true, |unit, input| {
+        let ast = input.ast;
+        let mut plain = Keys::new(input);
+        let spec = ast
+            .decls
+            .ids()
+            .find(|&d| {
+                ast.spec_info(d).is_some_and(|(_, s)| s.kind == SpecKind::ImplicitInstantiation)
+            })
+            .expect("S<int>");
+        let sk = plain.key(spec).expect("S<int>'s key");
+        let refused = Rule {
+            parent: sk.parent,
+            kind: sk.kind,
+            name: slip_model::keys::Name::Identifier(b"R".to_vec()),
+            disc: sk.disc,
+            to_parent: sk.parent,
+            to_name: sk.name.clone(),
+        };
+        let table = RuleTable::new(vec![refused]).expect("a table may hold it");
+        assert!(table.refused().is_some());
+        let k = plain.key_id(entity(&plain, input, "f(int)")).expect("f's key");
+        let obs = [
+            Obligation { file: b"main.cpp".to_vec(), lo: call, hi: call + 1, key: k },
+            Obligation { file: b"main.cpp".to_vec(), lo: call, hi: call + 2, key: k },
+        ];
+        let got = check_spellings(unit, input, &table, &obs);
+        assert_eq!(got[0], Spelling::Fails { found: None, found_name: "f(int)".into() });
+        assert_eq!(got[1], NotSeen);
+        // The same obligation holds under no rule.
+        assert_eq!(check_spellings(unit, input, &RuleTable::empty(), &obs[..1]), [Holds]);
+    });
+}
+
+// A unit and an input of two parses (the caller's error): every
+// obligation is not seen.
+#[test]
+fn s10_6_unit_and_input_of_two_parses() {
+    let src = "int f();\nint y = f();\n";
+    let call = src.rfind("f()").expect("f") as u32;
+    let k = key(src, "f()");
+    let ob = [Obligation { file: b"main.cpp".to_vec(), lo: call, hi: call + 1, key: k }];
+    with_unit(&[("main.cpp", src)], "c++20", true, |unit, _| {
+        with_unit(&[("main.cpp", src)], "c++20", true, |_, other| {
+            let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                check_spellings(unit, other, &RuleTable::empty(), &ob)
+            }));
+            // A debug build asserts; a release build answers `NotSeen`.
+            match got {
+                Ok(got) => assert_eq!(got, [NotSeen]),
+                Err(_) => assert!(cfg!(debug_assertions), "only a debug build asserts"),
+            }
+        });
+    });
+}
+
+// Names in the roles outside §10.2 rule 1 (a using-declaration's name,
+// a namespace alias's target, a using-directive's namespace, a concept
+// name, a designator, an explicit instantiation's target) take no part:
+// not seen (`spec/verify.md` §10.7). At this pin Kiln records none of
+// them (its stage 3); the role filter keeps them out when it does.
+#[test]
+fn attack_names_in_other_roles() {
+    let src = "namespace a { int f(); struct S { int x; }; template <class T> concept C = true; template <class T> int t(T) { return 0; } }\nnamespace b { using a::«f»; }\nnamespace al = «a»;\nusing namespace «a»;\ntemplate <a::«C» T> int k(T);\na::S s = { .«x» = 1 };\ntemplate int a::«t»<int>(int);\n";
+    let got = one(src, &[Named("a::f()"), Named("a"), Named("a"), Named("a::C"), Named("a::S::x"), Named("a::t")]);
+    assert_eq!(got, [NotSeen, NotSeen, NotSeen, NotSeen, NotSeen, NotSeen]);
+}
+
+// §10.2 rule 3 "starts at or after `lo`": bytes that are the end of a
+// longer name are not answered by it.
+#[test]
+fn s10_2_a_suffix_of_a_name_is_not_answered() {
+    let src = "int ff();\nint u() { return ff(); }\n";
+    let call = src.rfind("ff()").expect("ff") as u32;
+    let k = key(src, "ff()");
+    let files = [("main.cpp", src)];
+    let c = case(&files, &[]);
+    let ob = |lo, hi| Obligation { file: b"main.cpp".to_vec(), lo, hi, key: k };
+    let (_, got) = run_with(&c, &[ob(call + 1, call + 2), ob(call, call + 2)]);
+    assert_eq!(got, [NotSeen, Holds]);
+}
+
+// §10.2 rule 3 "in the obligation's file": the offsets of a reference of
+// one file name nothing in another.
+#[test]
+fn s10_2_the_file_must_be_the_obligations() {
+    let post = [
+        ("main.cpp", "#include \"h.h\"\nint use() { return «f»(1); }\n"),
+        ("h.h", "int f(int);\n"),
+    ];
+    let c = case(&post, &[Named("f(int)")]);
+    let (obs, got) = run_with(&c, &[]);
+    assert_eq!(got, [Holds]);
+    let elsewhere = Obligation { file: b"h.h".to_vec(), ..obs[0].clone() };
+    let (_, got) = run_with(&c, &[elsewhere]);
+    assert_eq!(got, [Holds, NotSeen]);
+}
+
+// Rule 6 of the package: `found` is that of the first answering reference
+// in unit order that does not have the key.
+#[test]
+fn s10_4_found_is_the_first_other_reference() {
+    let src = "namespace a { int f(); }\nnamespace b { int f(); }\nnamespace c { int f(); }\n#define THREE(x) (a::x() + b::x() + c::x())\nint y = THREE(«f»);\n";
+    let got = one(src, &[Named("a::f()")]);
+    assert_eq!(fails(&got[0]).expect("fails"), (Some(key(src, "b::f()")), "b::f()".into()));
+    let got = one(src, &[Named("c::f()")]);
+    assert_eq!(fails(&got[0]).expect("fails"), (Some(key(src, "a::f()")), "a::f()".into()));
+}
