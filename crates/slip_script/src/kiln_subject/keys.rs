@@ -55,6 +55,7 @@ use slip_model::Digest;
 use slip_model::keys::Rule;
 
 use super::KilnSubject;
+use super::calls::Walked;
 use crate::subject::{Expression, Reference};
 use crate::wire::Errc;
 
@@ -133,7 +134,7 @@ enum Attributed {
 /// The stack of the key server's thread: the walk's, and a margin.
 const SERVER_STACK: usize = slip_digest::STACK_SIZE + (1 << 20);
 
-impl<'u> KilnSubject<'u> {
+impl KilnSubject<'_> {
     /// Runs `f` with this subject's key server running: every key
     /// question `f` asks (`unit_keys`, `rename_rule`, `entity_key`) is
     /// answered by one `slip_digest::query::Keys`, built on the first and
@@ -289,12 +290,12 @@ impl<'u> KilnSubject<'u> {
         for j in entries {
             let mut found = false;
             match self.entry_holder(j) {
-                Some(Some(h)) => {
+                Walked::One(h) => {
                     out.push(h);
                     found = true;
                 }
-                Some(None) => return None,
-                None => {}
+                Walked::Two => return None,
+                Walked::NotPassed => {}
             }
             match self.attributed(j) {
                 Attributed::Holder(h) => {

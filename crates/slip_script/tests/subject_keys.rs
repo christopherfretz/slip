@@ -69,7 +69,7 @@ fn with<R>(src: &str, f: impl FnOnce(&KilnSubject<'_>, &Digested) -> R) -> R {
     let snippet = Snippet { files: &files, main: "main.cpp", include: &[], std: "c++23" };
     parse_with_tables(&snippet, &Extra::default(), |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
-        let d = digested(p);
+        let digest = digested(p);
         let owned = |_: &[u8]| true;
         let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
         s.with_keys(|s| {
@@ -87,7 +87,7 @@ fn with<R>(src: &str, f: impl FnOnce(&KilnSubject<'_>, &Digested) -> R) -> R {
                 );
                 r += 1;
             }
-            f(s, &d)
+            f(s, &digest)
         })
     })
     .expect("the snippet parses")

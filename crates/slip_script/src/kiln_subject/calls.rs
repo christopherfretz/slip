@@ -56,6 +56,18 @@ struct Call {
 }
 
 /// The calls of the unit, built once ([`KilnSubject::index`]).
+/// What the walk of the index says of one written-reference entry
+/// (WP-095).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Walked {
+    /// The walk did not pass the entry as the name of an expression.
+    NotPassed,
+    /// It passed it from this holder only.
+    One(DeclId),
+    /// It reached it from two holders.
+    Two,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct Index {
     /// Every call, in unit order.
@@ -1476,11 +1488,14 @@ impl KilnSubject<'_> {
     }
 
     /// The holder the walk gives written-reference entry `j` (an index in
-    /// `self.refs`) when it passed it as the name of an expression:
-    /// `Some(Some(h))`; `Some(None)` when it reached it from two holders;
-    /// `None` when it did not pass it (WP-095).
-    pub(super) fn entry_holder(&self, j: u32) -> Option<Option<DeclId>> {
-        self.call_index().ref_holder.get(&j).copied()
+    /// `self.refs`) when it passed it as the name of an expression
+    /// (WP-095).
+    pub(super) fn entry_holder(&self, j: u32) -> Walked {
+        match self.call_index().ref_holder.get(&j) {
+            Some(&Some(h)) => Walked::One(h),
+            Some(None) => Walked::Two,
+            None => Walked::NotPassed,
+        }
     }
 
     /// How many entries the walk recorded a holder for, and the capacity
