@@ -787,44 +787,81 @@ with `argv[0]` and `env` kept and:
   (joined or separate), `--sysroot` and `-resource-dir` (separate or after
   `=`), `--embed-dir=` and `--gcc-toolchain=`. The value of any other
   option (`-D`, `-o`, `-x`, `-Xclang` and the rest of Kiln's options that
-  take a separate value) is not one. The path is resolved against
-  `directory`: when its resolution enters a directory of the subject (it
-  looks a name up there), with no `..` left, it is rewritten to the same
-  place under that subject root's post root, whatever its spelling
-  (`-I../s/inc` from a directory outside every root, another letter case
-  on a file system that ignores case, a symbolic link to the subject); it
-  is kept as written when, relative, it already names that place from the
-  post command's `directory`. A path that enters the subject only to
-  leave it by `..` is rewritten to where it ends (kept as written, through
-  the subject, when it followed a symbolic link there). Each path so
-  rewritten adds one word `-fmacro-prefix-map=<new>=<as written>`
-  (`/`-terminated for a directory), so that the spelling of every file
-  found through it is the one it has in the post-image parsed with the
-  observer's own command; a new path with `=` in it adds none.
-- `directory` resolved the same way.
+  take a separate value) is not one. The path's **leading parts** are
+  resolved against `directory` (against `/` for an absolute path), by
+  real path, shortest first: for a relative path the empty one (the
+  directory itself) first, then each one that ends at a component. The
+  first that is in the subject, by identity (a directory under a subject
+  root; for the whole path, a file whose directory is), is the part that
+  **reaches the subject**, whatever its spelling (`../s` from a
+  directory outside every root, another letter case on a file system that
+  ignores case, a symbolic link to the subject). It is replaced by the
+  same place in the post tree: written relative to the post command's
+  `directory` (by its real path) when the path is relative, absolute when
+  it is absolute. **The rest of the path is kept byte for byte**: `../s/./inc`
+  becomes `../p/./inc`, so two words that reach one directory by two
+  spellings stay two spellings. A path that is unchanged by this is kept
+  as written. When the rest has a `..` component, the path is instead
+  resolved whole to where it ends (in the post tree when that is in the
+  subject) and written whole, relative for a relative path (kept as
+  written, through the subject, when it followed a symbolic link there).
+  Each path so rewritten gives one **map pair** `(post prefix, prefix as
+  written)`: the new leading part and the one it replaced, each followed
+  by `/` (both bare for a file named whole; an empty leading part stays
+  empty); a path kept as written gives the identity pair of the path.
+- `directory` resolved the same way (an absolute path; it gives no pair).
 - In every other word, and in a path-bearing word that does not reach
   the subject, the **textual rule**: each occurrence of a subject root
   that is followed by `/` or by the end of the word replaced by its post
   root. Occurrences are taken from the left and do not overlap; no two
   roots match at one place, since no subject root lies under another.
-- Then, after the last word, the words added for rewritten paths, in the
-  order of the words, each once; then one word
-  `-fmacro-prefix-map=<post>/=<subject>/` per root map, in the image's
-  order.
+- Then, after the last word, one word `-fmacro-prefix-map=<post
+  prefix>=<prefix as written>` per map pair other than the identity, each
+  once, with the pair `(<post>/, <subject>/)` of every root map among
+  them, longest post prefix first (descending bytes, the order Kiln
+  applies them in, below).
 
 With the identity image the post command is the observer's command.
 
-The added words make `__FILE__` and the other spellings of a file's path
-those the file will have once the edit is applied to the subject, which
-is the program the claim of §1 is about; without them a constant computed
-from such a path (`sizeof(__FILE__)`) would differ for every file of the
-tree. Kiln replaces the prefix of the first entry that matches, as a
-plain string prefix (`kiln_source/src/manager.rs:627`), so the command's
-own `-fmacro-prefix-map=` and `-ffile-prefix-map=` entries, which come
-first and were rewritten with the rest, keep their effect, and the
-trailing `/` keeps `/p` from matching `/pq`. The mapping cannot make two
-different files spell alike: it is one to one on the paths under the post
-roots, and G1 (§5.3) excludes a post-image parse that read the subject.
+**Spellings.** The added words make the spelling of every file the
+post-image parse reads the spelling that file has once the edit is
+applied to the subject, which is the program the claim of §1 is about;
+without them a constant computed from such a path (`sizeof(__FILE__)`)
+would differ for every file of the tree. Kiln keeps the entries of
+`-fmacro-prefix-map=` and `-ffile-prefix-map=`, the command's own and
+the added ones together, sorted by their old prefix in descending byte
+order (a stable sort), and replaces the old prefix of the first that is a
+plain string prefix of the path (`kiln_source/src/manager.rs:691`,
+`set_macro_prefix_map`; `:703`, `remap_macro_path`): of two entries that
+both match, the longer. Every spelling of a file reaches the program
+through that function: `__FILE__`, `__BASE_FILE__` (the main file's) and
+`__FILE_NAME__` (its last component, after the map;
+`kiln_pp/src/expand.rs:1300`), `__builtin_FILE()` and
+`std::source_location::current().file_name()`
+(`kiln_sema/src/builtins.rs:3619`, `:3741`), and a contract's location
+(`kiln_sema/src/contracts.rs:219`). The name of a `#line` directive also
+goes through it, though it is the source's text and not a path of
+Slip's: G5 below.
+
+The invariant the pairs keep, which G5 (§5.3) checks and refuses when it
+cannot: **every spelling of a file the post parse can produce is mapped
+to the spelling that file has when the post tree stands in the subject's
+place.** A file's spelling is made from the path of the word that found
+it (an include directory, the main file, `-include`) or from its
+includer's spelling, so it begins with the post prefix of that route. Two
+routes can reach one file (F6: `-I../s/inc` and the includer's directory
+of an absolute main file); the file is then spelled through whichever
+route loaded it first, in the post parse as in the real post-image, and
+each route's own pair gives its real spelling, provided that no pair of
+another route matches it first. That is what G5 checks: when one post
+prefix is a prefix of another, the shorter one's pair applied to the
+longer post prefix gives exactly the longer one's written prefix, so the
+order in which Kiln tries them changes nothing. Keeping a relative word
+relative is what makes this hold in the common case: `../p/` and `<p>/`
+are not prefix-related. A word that reaches the subject through a
+symbolic link or another letter case gets a post prefix another route
+also has (`<p>/` for `-I/link/inc` with `link` a link to `s`, and for the
+main file `s/a.cpp`) with another written prefix, and is refused.
 
 The textual rule rewrites what is not resolved: `-DROOT="/s/"` becomes
 `-DROOT="/p/"`, and `-DROOT="/s"` is kept (the root is followed by `"`);
@@ -848,6 +885,7 @@ saw. Each half is one guard of §5.3:
 | G1 | no file the parse read (`inputs`, real paths) is under a subject root, by identity | `verify_job.rs` `g1_*`, `f3_case_insensitive_spelling`; `image.rs` `s5_1_under_subject_by_identity` |
 | L1 | no directory of the search list, no directory that would hold a place a lookup tried (found or not, `#include` and `__has_include` in every form, `#embed` and `__has_embed`, `-include`), and no directory of a file read, as spelled, has its resolution look a name up under a subject root | `verify_job.rs` `l1_*`, `f3_symbolic_link_to_the_subject`; `crates/slip_kiln/tests/lookups.rs` for what the log holds |
 | G4 | no word is a response file, whose words Kiln's driver would read without Slip seeing them | `verify_job.rs` `g4_response_file` |
+| G5 | every spelling of a file the post parse makes is mapped to its spelling in the real post-image: the map pairs are consistent, no prefix map of the command's own overlaps them, no `#line` name is mapped | `verify_job.rs` `f6_two_routes_to_one_file`, `f6s_two_routes_through_a_link`, `f6r_two_routes_no_edit`, `g5_command_prefix_map`, `g5_line_name`; `image.rs` `s5_1_post_command_resolves`, `g5_command_prefix_maps` |
 | O2 | every file outside every root that both images read has the pre shard's size and digest (an image other than the identity) | `verify_job.rs` `o2_outside_drift_at_the_sums` |
 | G2, R2, G3 | the pre-image parsed at step 4 is the map phase's, and the post-image did not change during the job | `verify_job.rs` `g2_*`, `r2_*`, `g3_*` |
 
@@ -858,6 +896,17 @@ miss of the rewrite) names files that are the same in both images (O2).
 So `-DROOT="/s"` is safe not because G1 refuses something but because a
 string becomes a file name only by naming a directory or a file to the
 front end, which a lookup or a read then shows (L1, G1).
+
+The rewrite and the guards resolve paths each with its own resolver, at
+different moments: a directory swapped for another (a symbolic link
+retargeted) between the parse and the guards' resolution is caught only by
+G3, and G3 runs only when there is a finding to localise.
+
+G4 refuses a post command with a response file even when the edit is
+correct. It cannot arise from a plan: `slip_cdb` expands every response
+file when it reads a compilation database (`spec/cdb.md` §4), so an
+observer's command never holds an `@` word; only a command given to
+`slip verify` by other means can.
 
 **What remains outside.** A post tree written while step 1 runs is not
 seen until G3, which runs only when there is a finding to localise. Kiln's
@@ -873,6 +922,25 @@ L1 sees them, and a toolchain under a subject root is refused through
 them. A file system that ignores case can let O2 miss a file the two
 images spell differently. The command itself is the plan's (§8, "The
 command").
+
+Two holes are known and pinned by tests that wait (`#[ignore = "needs:
+…"]`, `crates/slip_cli/tests/verify_job.rs`):
+
+- **An absolute name looked for and not found** (F7 of the re-check):
+  `#if __has_include("<s>/new.h")` with an edit that adds `new.h`. Kiln's
+  log does not record it (Kiln `spec/pp.md`, "Lookup log"); Kiln has been
+  asked to. `slip_kiln::Lookups` already lists an absolute name where it
+  is, whatever the form, so L1 refuses it with no new code once the log
+  holds it. Test: `f7_absolute_has_include`.
+- **A file outside both roots that appears after the map phase and
+  shadows one the map parse read** (F4b): `ext2/cfg.h` added in a
+  directory searched before `ext/`, with an edit that compensates. O2
+  compares only files both parses read, and the map shard keeps no record
+  of the lookups that failed. Closing it needs the pre shard to hold its
+  parse's **negative inputs**: each place a lookup tried and did not find
+  (directory and name, as L1 lists them), so that a file now present at
+  one of them is a drift (a package of its own). Test:
+  `f4b_outside_header_added_after_the_map`.
 
 **The overlay form.** The image is an overlay (`spec/edits.md` §7.1,
 kind `OVLY`): for each file it names, by real path, the size and content
@@ -931,8 +999,8 @@ post-image's bytes being a blob in the store.
    (§7), and the job ends. In the same parse, after the walk: the rule
    use of §9.1 when `Declared.rules` is not empty, and the checks of
    §10.2 when the overlay has obligations.
-2. Check, in this order: the pre shard is usable; guards G1, L1, G4 and,
-   with an image other than the identity, O2 (tree form), or guards O1
+2. Check, in this order: the pre shard is usable; guards G1, L1, G4, G5
+   and, with an image other than the identity, O2 (tree form), or guards O1
    then O2 (overlay form); `comparable` (§3). The first that fails makes
    the verdict `unverifiable` with the reason of §5.3, and the job ends.
    L1 reads the lookups of the step 1 parse (Kiln's lookup log, asked for
@@ -971,6 +1039,7 @@ only withdraws: guard G3.
 | G1 | step 2, tree form: no entry of the post-image parse's `inputs` is under a subject root (§5.1, by identity) | `post-image: read <path>, a file of the subject` (the first such entry) |
 | L1 | step 2, tree form: the resolution from the post command's `directory` (§5.1) of each directory of the search list, of the directory that would hold each place a lookup tried, and of the directory of each file read as the front end spelled it, looks no name up in a directory under a subject root, except the name of a post root in it | `post-image: searches <dir>: <subject dir> is a directory of the subject`; `post-image: looked for <name> in <dir>: <subject dir> is …`; `post-image: read <name>: <subject dir> is …` (the first, in that order; `<subject dir>` the first directory of the subject the resolution looked in) |
 | G4 | step 2: no word of the post command after `argv[0]` is a response file (`@` and a name, as Kiln's driver reads one) | `post-image: the command names the response file <word>, whose words slip cannot examine` |
+| G5 | step 2, tree form: the post command's map pairs (§5.1) are consistent: (a) none other than the identity has a post prefix that is empty or holds `=`; (b) when one pair's post prefix is a prefix of another's, the first applied to the second's post prefix gives the second's written prefix; (c) no `-fmacro-prefix-map=` or `-ffile-prefix-map=` of the command's own (alone, after `-Xclang` or `-Xpreprocessor`, in a `-Wp,` list) has an old prefix prefix-related to a post or written prefix of a pair other than the identity; (d) no `#line` name of the post parse begins with the post prefix of such a pair | (a) `post-image: <word> is rewritten to <path>, which no -fmacro-prefix-map word can map back`; (b) `post-image: <word> and <word> spell the files under <post prefix> differently (<pair> and <pair>)`; (c) `post-image: <option word> maps <old>, which overlaps <prefix> of <word>; slip does not compose prefix maps`; (d) `post-image: the #line name <name> begins with <post prefix>, which the post command maps` |
 | O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
 | O2 | step 2, overlay form, and tree form other than the identity: every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it | `pre-image: <path> changed since the map phase` (the first such path, in path order) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
@@ -984,9 +1053,9 @@ only withdraws: guard G3.
 they are UTF-8, else with each other byte as `\xNN`. The reason is then
 cut as §6 says.
 
-- **G1, L1, G4 and O2** are the tree form's safety argument (§5.1, "Why
+- **G1, L1, G4, G5 and O2** are the tree form's safety argument (§5.1, "Why
   a wrong `verified` cannot come of it"). With the identity image there
-  is no root: G1 and L1 hold trivially, and O2 is not checked, since
+  is no root: G1, L1 and G5 hold trivially, and O2 is not checked, since
   every change since the map phase is then the edit compared. G4 is
   checked with every image: Kiln's driver reads a response file from the
   disk as it is when the job runs, and nothing records what it read
@@ -2223,6 +2292,14 @@ using-declaration). Those are judged by the comparison of digests alone.
   observer with and without rules (§5.5).
 
 ## Open questions
+
+- **The tree form as an overlay** (long term; not to be built now). When
+  Kiln's overlay is in the pin (`docs/wp/WP-066.md`), an image of the tree
+  form can be parsed as an overlay of the post tree's files onto the
+  subject's paths, with the observer's command unchanged: every file is
+  then reached and spelled by its subject path, as in the real
+  post-image. That removes the rewrite of §5.1, the map pairs and guards
+  G1, L1 and G5 together, leaving the overlay form's O1 and O2.
 
 - **A literal operator as a rule's new name.** `relocate` moves a literal
   operator with `=` and cannot rename its suffix (`NotRenamable`: `<name>`

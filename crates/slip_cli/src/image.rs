@@ -27,6 +27,23 @@ use slip_model::{Command, Observer, Phase, Shard, Status};
 
 use crate::args::ImageArgs;
 
+mod maps;
+
+/// The post command of an observer (§5.1) and what guard G5 (§5.3) reads
+/// of it ([`Image::post_command`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostCommand {
+    pub command: Command,
+    /// The map pairs `(post prefix, prefix as written)` the command ends
+    /// with, as its `-fmacro-prefix-map=` words give them, longest post
+    /// prefix first; the identity pairs are not among them.
+    pub maps: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Guard G5's reason, when the pairs cannot give every spelling of a
+    /// file the post parse makes the spelling it has when the post tree
+    /// stands in the subject's place.
+    pub conflict: Option<String>,
+}
+
 /// One root map: the files under `subject` are, in the post-image, the
 /// files at the same place under `post` (§5.1). Both are real paths of
 /// directories, as bytes.
@@ -255,28 +272,33 @@ impl Image {
         self.maps.is_empty()
     }
 
-    /// The post command of §5.1. `argv[0]` and `env` are kept. Every
-    /// path-bearing word (§5.1, "Path-bearing words") is resolved against
-    /// the command's `directory`, by identity, and rewritten to the same
-    /// place in the post tree when it reaches the subject
-    /// ([`Resolver::resolve_part`]), with one
-    /// `-fmacro-prefix-map=<new>=<as written>` word so that the paths under
-    /// it keep their spelling; `directory` is resolved the same way. Every
-    /// other word, and a path that cannot be resolved (a root that is not
-    /// there), takes the textual rule: each occurrence of a subject root
-    /// followed by `/` or the end of the word replaced by its post root,
-    /// from the left, not overlapping. Then one
-    /// `-fmacro-prefix-map=<post>/=<subject>/` per map. The identity's is
-    /// the command itself.
+    /// The post command of §5.1: [`Image::post_command`]'s command.
     pub fn command(&self, command: &Command) -> Command {
+        self.post_command(command).command
+    }
+
+    /// The post command of §5.1, with its map pairs and guard G5's
+    /// finding (§5.3). `argv[0]` and `env` are kept. Every path-bearing
+    /// word (§5.1, "Path-bearing words") is resolved against the
+    /// command's `directory`, by identity, and its leading part that
+    /// reaches the subject is replaced by the same place in the post tree
+    /// ([`Resolver::resolve_part`]); `directory` is resolved the same way.
+    /// Every other word, and a path that cannot be resolved, takes the
+    /// textual rule: each occurrence of a subject root followed by `/` or
+    /// the end of the word replaced by its post root, from the left, not
+    /// overlapping. Then one `-fmacro-prefix-map=<post prefix>=<prefix as
+    /// written>` word per pair, the root maps' `<post>/=<subject>/`
+    /// included, longest post prefix first. The identity's is the command
+    /// itself.
+    pub fn post_command(&self, command: &Command) -> PostCommand {
         if self.maps.is_empty() {
-            return command.clone();
+            return PostCommand { command: command.clone(), maps: Vec::new(), conflict: None };
         }
         let mut r = self.resolver();
         let root = Path::new("/");
-        let directory = match r.resolve_part(&command.directory, root, root) {
-            Part::Rewrite(new) => new,
-            Part::Keep => command.directory.clone(),
+        let directory = match r.resolve_part(&command.directory, PathKind::Dir, root, root) {
+            Part::Rewrite { new, .. } => new,
+            Part::Keep { .. } => command.directory.clone(),
             Part::Textual => {
                 match self.maps.iter().find(|m| at_or_under(&command.directory, &m.subject)) {
                     Some(m) => [&m.post[..], &command.directory[m.subject.len()..]].concat(),
@@ -286,7 +308,7 @@ impl Image {
         };
         let (from, to) = (bytes_path(&command.directory), bytes_path(&directory));
         let mut argv: Vec<Vec<u8>> = Vec::with_capacity(command.argv.len() + self.maps.len());
-        let mut back: Vec<Vec<u8>> = Vec::new();
+        let mut pairs: Vec<maps::Pair> = Vec::new();
         let mut next = Next::None;
         for (i, word) in command.argv.iter().enumerate() {
             if i == 0 {
@@ -298,31 +320,35 @@ impl Image {
                 argv.push(self.rewrite(word));
                 continue;
             };
-            let part = &word[at..];
-            match r.resolve_part(part, &from, &to) {
-                Part::Rewrite(new) => {
-                    let slash: &[u8] = match kind {
-                        PathKind::Dir if !new.ends_with(b"/") && !part.ends_with(b"/") => b"/",
-                        _ => b"",
-                    };
-                    if !new.contains(&b'=') {
-                        let map =
-                            [b"-fmacro-prefix-map=", &new[..], slash, b"=", part, slash].concat();
-                        if !back.contains(&map) {
-                            back.push(map);
-                        }
-                    }
+            match r.resolve_part(&word[at..], kind, &from, &to) {
+                Part::Rewrite { new, map } => {
+                    pairs.push(maps::Pair::new(map, word));
                     argv.push([&word[..at], &new[..]].concat());
                 }
-                Part::Keep => argv.push(word.clone()),
+                Part::Keep { map } => {
+                    pairs.push(maps::Pair::new(map, word));
+                    argv.push(word.clone());
+                }
                 Part::Textual => argv.push(self.rewrite(word)),
             }
         }
-        argv.extend(back);
         for m in &self.maps {
-            argv.push([b"-fmacro-prefix-map=", &m.post[..], b"/=", &m.subject[..], b"/"].concat());
+            let word = [b"-fmacro-prefix-map=", &m.post[..], b"/=", &m.subject[..], b"/"].concat();
+            pairs.push(maps::Pair::new(
+                ([&m.post[..], b"/"].concat(), [&m.subject[..], b"/"].concat()),
+                &word,
+            ));
         }
-        Command { directory, argv, env: command.env.clone() }
+        let conflict = maps::conflict(&pairs, &argv);
+        let maps = maps::emitted(&pairs);
+        for (post, written) in &maps {
+            argv.push([b"-fmacro-prefix-map=", &post[..], b"=", &written[..]].concat());
+        }
+        PostCommand {
+            command: Command { directory, argv, env: command.env.clone() },
+            maps,
+            conflict,
+        }
     }
 
     /// Every occurrence of a subject root in `word` followed by `/` or the
@@ -376,6 +402,7 @@ impl Image {
             regions: HashMap::new(),
             kinds: HashMap::new(),
             walks: HashMap::new(),
+            canon: HashMap::new(),
         }
     }
 
@@ -471,15 +498,68 @@ type Parsed<R> = (Shard, Option<(R, Option<Lookups>)>);
 type Identity = Option<(u64, u64)>;
 
 /// How a path-bearing word's path is to be rewritten
-/// ([`Resolver::resolve_part`]).
+/// ([`Resolver::resolve_part`]). `map` is the pair `(post prefix, prefix as
+/// written)` that maps the spellings the front end makes under the new
+/// path back to those it makes under the written one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Part {
-    /// To this path.
-    Rewrite(Vec<u8>),
-    /// As written: it names the same place from the post command.
-    Keep,
+    /// To `new`.
+    Rewrite { new: Vec<u8>, map: (Vec<u8>, Vec<u8>) },
+    /// As written: it names the same place from the post command (`map`
+    /// is the identity).
+    Keep { map: (Vec<u8>, Vec<u8>) },
     /// By the textual rule.
     Textual,
+}
+
+/// The map pair of a path whose leading part `old` became `new` (§5.1):
+/// with a `/` after each, unless the leading part is the whole path and
+/// names a file (an empty leading part stays empty: the spellings under it
+/// are relative).
+fn map_of(new: &[u8], old: &[u8], whole: bool, kind: PathKind) -> (Vec<u8>, Vec<u8>) {
+    let slash = |h: &[u8]| {
+        if h.is_empty() || h.ends_with(b"/") { h.to_vec() } else { [h, b"/"].concat() }
+    };
+    if whole && kind == PathKind::File {
+        (new.to_vec(), old.to_vec())
+    } else {
+        (slash(new), slash(old))
+    }
+}
+
+/// The offset after each component of `path` (a run of bytes other than
+/// `/`), in order.
+fn component_ends(path: &[u8]) -> Vec<usize> {
+    let mut ends = Vec::new();
+    let mut i = 0;
+    while i < path.len() {
+        if path[i] == b'/' {
+            i += 1;
+            continue;
+        }
+        while i < path.len() && path[i] != b'/' {
+            i += 1;
+        }
+        ends.push(i);
+    }
+    ends
+}
+
+/// The relative path from the directory `from` to `to`, both absolute and
+/// with no `.`, `..` or symbolic link (`..` for each component of `from`
+/// past the common ones); empty when they are equal.
+fn relative_to(from: &Path, to: &Path) -> PathBuf {
+    let a: Vec<_> = from.components().collect();
+    let b: Vec<_> = to.components().collect();
+    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut out = PathBuf::new();
+    for _ in common..a.len() {
+        out.push("..");
+    }
+    for c in &b[common..] {
+        out.push(c);
+    }
+    out
 }
 
 /// What a path-bearing word names (§5.1).
@@ -656,6 +736,7 @@ pub struct Resolver<'i> {
     regions: HashMap<PathBuf, Region>,
     kinds: HashMap<PathBuf, Kind>,
     walks: HashMap<PathBuf, Option<PathBuf>>,
+    canon: HashMap<PathBuf, Option<PathBuf>>,
 }
 
 impl Resolver<'_> {
@@ -795,33 +876,124 @@ impl Resolver<'_> {
         r
     }
 
+    /// The real path of `path` (`std::fs::canonicalize`, cached); `None`
+    /// when it does not exist.
+    fn canonical(&mut self, path: &Path) -> Option<PathBuf> {
+        if let Some(r) = self.canon.get(path) {
+            return r.clone();
+        }
+        let r = std::fs::canonicalize(path).ok();
+        self.canon.insert(path.to_path_buf(), r.clone());
+        r
+    }
+
+    /// The region of the real path `real`: its own for a directory, its
+    /// directory's for anything else.
+    fn place(&mut self, real: &Path) -> Region {
+        if self.kind(real) == Kind::Dir {
+            self.region(real)
+        } else {
+            self.region(&file_dir(&path_bytes(real)))
+        }
+    }
+
+    /// The same place as the real path `real`, of the subject's region
+    /// `(map, depth)`, in the post tree.
+    fn counterpart(&self, real: &Path, map: usize, depth: usize) -> PathBuf {
+        let mut target = bytes_path(&self.maps[map].post);
+        target.extend(real.components().skip(1 + depth));
+        target
+    }
+
+    /// `target` as the post command writes it: relative to `to` (the post
+    /// command's `directory`, by its real path) when `relative`, else
+    /// absolute (and absolute when `to` cannot be resolved).
+    fn written(&mut self, target: &Path, relative: bool, to: &Path) -> Vec<u8> {
+        if relative && let Some(real_to) = self.canonical(to) {
+            return path_bytes(&relative_to(&real_to, target));
+        }
+        path_bytes(target)
+    }
+
     /// How the path `part` of a word of the post command is written
-    /// (§5.1): resolved against `from` (the command's `directory`) by a
-    /// walk; when it reaches the subject, the same place in the post tree
-    /// ([`Part::Keep`] if `part`, relative, already names that place from
-    /// `to`, the post command's `directory`). A path that reaches the
-    /// subject only to leave it by `..` is rewritten to where it ends
-    /// (written through the subject when it followed a symbolic link
-    /// there, which guard L1 then refuses if the front end looks there).
-    /// One that never reaches the subject, or that cannot be resolved
-    /// (`from` not absolute), takes the textual rule.
-    fn resolve_part(&mut self, part: &[u8], from: &Path, to: &Path) -> Part {
+    /// (§5.1). Its leading parts are resolved against `from` (the
+    /// command's `directory`; `/` for an absolute part), shortest first,
+    /// by real path: the empty one first for a relative part, then each
+    /// one ending at a component. The first that is in the subject (by
+    /// identity, [`Resolver::place`]) is replaced by the same place in the
+    /// post tree, written relative to `to` (the post command's
+    /// `directory`) when `part` is relative, absolute when it is
+    /// absolute; the rest of `part` is kept byte for byte, so that two
+    /// spellings of one directory stay two spellings ([`Part::Keep`] when
+    /// that gives `part`). A rest with a `..` component is resolved with
+    /// the leading part instead ([`Resolver::leaving`]). A part none of
+    /// whose leading parts is in the subject, or that cannot be resolved
+    /// (`from` not absolute, a component missing first, a leading part in
+    /// a post tree), takes the textual rule.
+    fn resolve_part(&mut self, part: &[u8], kind: PathKind, from: &Path, to: &Path) -> Part {
         let relative = !part.starts_with(b"/");
         if part.is_empty() || (relative && !from.is_absolute()) {
             return Part::Textual;
         }
-        let written = bytes_path(part);
-        let start = if relative { from.join(&written) } else { written.clone() };
+        let base = if relative { from.to_path_buf() } else { PathBuf::from("/") };
+        let ends = component_ends(part);
+        let heads = relative.then_some(0).into_iter().chain(ends.iter().copied());
+        for end in heads {
+            let head = &part[..end];
+            let Some(real) = self.canonical(&base.join(bytes_path(head))) else {
+                return Part::Textual;
+            };
+            let (map, depth) = match self.place(&real) {
+                Region::Neither => continue,
+                Region::Post { .. } => return Part::Textual,
+                Region::Subject { map, depth } => (map, depth),
+            };
+            let rest = &part[end..];
+            if rest.split(|&b| b == b'/').any(|c| c == b"..") {
+                return self.leaving(part, kind, &base, relative, to);
+            }
+            let target = self.counterpart(&real, map, depth);
+            let mut new_head = self.written(&target, relative, to);
+            if new_head.is_empty() && end > 0 {
+                new_head = b".".to_vec();
+            }
+            let new = if end == 0 && !new_head.is_empty() {
+                [&new_head[..], b"/", rest].concat()
+            } else {
+                [&new_head[..], rest].concat()
+            };
+            if new == part {
+                return Part::Keep { map: map_of(part, part, true, kind) };
+            }
+            return Part::Rewrite { map: map_of(&new_head, head, rest.is_empty(), kind), new };
+        }
+        Part::Textual
+    }
+
+    /// [`Resolver::resolve_part`] of a `part` that reaches the subject and
+    /// has a `..` after: walked as a whole ([`Resolver::walk`]) to where it
+    /// ends, in the post tree when that is in the subject, and written
+    /// whole (relative to `to` when `part` is relative). A part that
+    /// followed a symbolic link in the subject is written through the
+    /// subject, which guard L1 then refuses if the front end looks there.
+    fn leaving(
+        &mut self,
+        part: &[u8],
+        kind: PathKind,
+        base: &Path,
+        relative: bool,
+        to: &Path,
+    ) -> Part {
+        let start = base.join(bytes_path(part));
         let walked = self.walk(&start, true);
         let target = if let Some(target) = walked.entered {
             target
-        } else if walked.subject.is_none() {
-            return Part::Textual;
         } else if walked.link_in_subject {
-            if relative && start != lexical(&to.join(&written)) {
-                return Part::Rewrite(path_bytes(&start));
+            if relative && start != lexical(&to.join(bytes_path(part))) {
+                let new = path_bytes(&start);
+                return Part::Rewrite { map: map_of(&new, part, true, kind), new };
             }
-            return Part::Keep;
+            return Part::Keep { map: map_of(part, part, true, kind) };
         } else {
             let mut end = walked.end;
             let mut tail: Vec<std::ffi::OsString> = Vec::new();
@@ -835,20 +1007,19 @@ impl Resolver<'_> {
                 }
             }
             if let Region::Subject { map, depth } = self.region(&end) {
-                let mut target = bytes_path(&self.maps[map].post);
-                target.extend(end.components().skip(1 + depth));
-                end = target;
+                end = self.counterpart(&end, map, depth);
             }
             end.extend(tail);
             end
         };
-        if relative && lexical(&to.join(&written)) == lexical(&target) {
-            return Part::Keep;
+        let mut new = self.written(&target, relative, to);
+        if new.is_empty() {
+            new = b".".to_vec();
         }
-        if !relative && written == target {
-            return Part::Keep;
+        if new == part {
+            return Part::Keep { map: map_of(part, part, true, kind) };
         }
-        Part::Rewrite(path_bytes(&target))
+        Part::Rewrite { map: map_of(&new, part, true, kind), new }
     }
 
     /// Guard G1's test (§5.3) for the real path of a file read: its

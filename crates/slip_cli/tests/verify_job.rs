@@ -1151,7 +1151,8 @@ fn image_word(tree: &Tree, word: &str) -> String {
 
 // F3 (review): an include directory spelled with another case than the
 // subject root, on a file system that ignores case. The rewrite resolves
-// it by identity: mismatch, as the truth is. Skipped, visibly, where the
+// it by identity, and the post prefix it gives is the main file's, spelled
+// another way: guard G5 (the truth differs). Skipped, visibly, where the
 // file system is case-sensitive.
 #[test]
 fn f3_case_insensitive_spelling() {
@@ -1168,7 +1169,13 @@ fn f3_case_insensitive_spelling() {
     let o = tree.observer_in(&tree.subject, &[arg("-I", &upper)]);
     let m = tree.map(&o);
     let v = tree.verify(&o);
-    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    let g5 = format!(
+        "post-image: -I{} and {} spell the files under",
+        upper.display(),
+        tree.path("a.cpp")
+    );
+    assert!(reason(&v).starts_with(&g5), "{}", reason(&v));
     // Through a word the rewrite does not resolve: G1, by identity.
     let o2 = tree.observer_in(&tree.subject, &[arg("-Wp,-I", &upper)]);
     tree.map(&o2);
@@ -1179,7 +1186,8 @@ fn f3_case_insensitive_spelling() {
 }
 
 // F3, the symbolic-link form (runs everywhere): `link` -> `s`. Resolved by
-// the rewrite: mismatch; through a word it does not resolve: L1.
+// the rewrite, to the post prefix the main file has by another spelling:
+// G5 (F6s of the re-check); through a word it does not resolve: L1.
 #[test]
 fn f3_symbolic_link_to_the_subject() {
     let tree = Tree::new(
@@ -1192,7 +1200,10 @@ fn f3_symbolic_link_to_the_subject() {
     let o = tree.observer_in(&tree.subject, &[arg("-I", &inc)]);
     let m = tree.map(&o);
     let v = tree.verify(&o);
-    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    let g5 =
+        format!("post-image: -I{} and {} spell the files under", inc.display(), tree.path("a.cpp"));
+    assert!(reason(&v).starts_with(&g5), "{}", reason(&v));
     let o2 = tree.observer_in(&tree.subject, &[arg("-Wp,-I", &inc)]);
     tree.map(&o2);
     let v2 = tree.verify(&o2);
@@ -1236,4 +1247,224 @@ fn o2_outside_drift_at_the_sums() {
     let v = tree.verify(&o);
     assert_eq!(reason(&v), format!("pre-image: {} changed since the map phase", cfg.display()));
     check_post_shard(&v);
+}
+
+/// The F6 tree of the re-check: `x.h` in `s/inc` holds `head` and an array
+/// whose length is that of `spelling` (a file's spelling, as a constant);
+/// the pre-image includes `<x.h>` through `-I../s/inc` from `build/`, the
+/// edit `"inc/x.h"` from the includer's directory. The main file is
+/// absolute, or `../s/a.cpp` when `relative_main`. The verdict and whether
+/// the truth differs.
+fn two_routes(name: &str, head: &str, spelling: &str, relative_main: bool) -> (Shard, bool) {
+    let xh = format!("{head}\ninline char where[__builtin_strlen({spelling}) + 1] = {{}};\n");
+    let tree = Tree::new(
+        name,
+        &[("a.cpp", "#include <x.h>\nint f() { return sizeof(where); }\n"), ("inc/x.h", &xh)],
+    );
+    write(&tree.post.join("a.cpp"), "#include \"inc/x.h\"\nint f() { return sizeof(where); }\n");
+    let mut o = tree.observer_in(&tree.base.join("build"), &["-I../s/inc".to_owned()]);
+    if relative_main {
+        *o.command.argv.last_mut().unwrap() = b"../s/a.cpp".to_vec();
+        o.id = o.command.observer_id();
+    }
+    let m = tree.map(&o);
+    assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+    let v = tree.verify(&o);
+    let truth = tree.truth_differs(&o, &m);
+    (v, truth)
+}
+
+/// A hand-written `std::source_location` of the shape Kiln's
+/// `__builtin_source_location` asks for.
+const SOURCE_LOCATION: &str = "namespace std { struct source_location {
+  struct __impl { const char* _M_file_name; const char* _M_function_name; unsigned _M_line; unsigned _M_column; };
+  static consteval source_location current(decltype(__builtin_source_location()) p = __builtin_source_location()) noexcept {
+    source_location s; s.p_ = static_cast<const __impl*>(p); return s; }
+  constexpr const char* file_name() const noexcept { return p_->_M_file_name; }
+  const __impl* p_ = nullptr;
+}; }";
+
+// F6 (re-check), §5.1 1(b): two routes to one file, `-I../s/inc` and the
+// includer's directory. The relative word stays relative
+// (`../post-tree/inc`), so its post prefix is not related to the main
+// file's (`<post>/`) and each route keeps its own spelling: the edit's
+// change of spelling is seen, mismatch, as the truth is. Each channel of a
+// file's spelling (§5.1, "Spellings"): `__FILE__`, `__builtin_FILE()`,
+// `std::source_location::current().file_name()` show the change;
+// `__FILE_NAME__` (the last component) and `__BASE_FILE__` (the main
+// file's) have none to show, and verify, as the truth does not differ.
+#[test]
+fn f6_two_routes_to_one_file() {
+    for (name, head, spelling) in [
+        ("f6-file", "", "__FILE__"),
+        ("f6-builtin", "", "__builtin_FILE()"),
+        ("f6-srcloc", SOURCE_LOCATION, "std::source_location::current().file_name()"),
+    ] {
+        let (v, truth) = two_routes(name, head, spelling, false);
+        assert_eq!(kind(&v), VerdictKind::Mismatch, "{name}: {}", reason(&v));
+        assert!(truth, "{name}");
+    }
+    for (name, spelling, relative_main) in [
+        ("f6-file-name", "__FILE_NAME__", false),
+        ("f6-base-file", "__BASE_FILE__", false),
+        ("f6-base-file-rel", "__BASE_FILE__", true),
+    ] {
+        let (v, truth) = two_routes(name, "", spelling, relative_main);
+        assert_eq!(kind(&v), VerdictKind::Verified, "{name}: {}", reason(&v));
+        assert!(!truth, "{name}");
+    }
+}
+
+// F6s (re-check), §5.3 G5: the same two routes, the include directory
+// through a symbolic link to the subject (absolute). Its post prefix is
+// the main file's, `<post>/`, written two ways: refused, naming both words.
+#[test]
+fn f6s_two_routes_through_a_link() {
+    let xh = "inline char where[sizeof(__FILE__)] = {};\n";
+    let tree = Tree::new(
+        "f6s",
+        &[("a.cpp", "#include <x.h>\nint f() { return sizeof(where); }\n"), ("inc/x.h", xh)],
+    );
+    write(&tree.post.join("a.cpp"), "#include \"inc/x.h\"\nint f() { return sizeof(where); }\n");
+    std::os::unix::fs::symlink(&tree.subject, tree.base.join("link")).unwrap();
+    let inc = tree.base.join("link/inc");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &inc)]);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    let (b, sp, pp) = (tree.base.display(), tree.subject.display(), tree.post.display());
+    assert_eq!(
+        reason(&v),
+        format!(
+            "post-image: -I{b}/link/inc and {sp}/a.cpp spell the files under {pp}/ differently \
+             ({pp}/={b}/link/ and {pp}/={sp}/)"
+        )
+    );
+    assert!(tree.truth_differs(&o, &m));
+}
+
+// F6r (re-check): the two routes with no edit, from outside the roots and
+// from the subject: verified (the back-maps refuse nothing they need not).
+#[test]
+fn f6r_two_routes_no_edit() {
+    let xh = "inline char where[sizeof(__FILE__)] = {};\n";
+    let main = "#include <x.h>\n#include \"inc/x.h\"\nint f() { return sizeof(where); }\n";
+    let tree = Tree::new("f6r", &[("a.cpp", main), ("inc/x.h", xh)]);
+    for (dir, flag) in [
+        (tree.base.join("build"), "-I../s/inc".to_owned()),
+        (tree.subject.clone(), "-Iinc".to_owned()),
+        (tree.subject.clone(), arg("-I", &tree.subject.join("inc"))),
+    ] {
+        let o = tree.observer_in(&dir, std::slice::from_ref(&flag));
+        tree.map(&o);
+        let v = tree.verify(&o);
+        assert_eq!(kind(&v), VerdictKind::Verified, "{flag}: {}", reason(&v));
+    }
+}
+
+// Q3 (re-check), §5.3 G5: the command's own prefix map over a prefix the
+// rewrite maps, no edit (it was a mismatch with no reason): refused,
+// naming the option, before and after the word.
+#[test]
+fn g5_command_prefix_map() {
+    let xh = "inline char where[sizeof(__FILE__)] = {};\n";
+    let tree = Tree::new(
+        "g5",
+        &[("a.cpp", "#include <x.h>\nint f() { return sizeof(where); }\n"), ("inc/x.h", xh)],
+    );
+    let user = "-fmacro-prefix-map=../s/=SRC/".to_owned();
+    for flags in [[user.clone(), "-I../s/inc".to_owned()], ["-I../s/inc".to_owned(), user.clone()]]
+    {
+        let o = tree.observer_in(&tree.base.join("build"), &flags);
+        tree.map(&o);
+        let v = tree.verify(&o);
+        assert_eq!(
+            reason(&v),
+            format!(
+                "post-image: {user} maps ../s/, which overlaps ../s/ of -I../s/inc; \
+                 slip does not compose prefix maps"
+            ),
+            "{flags:?}"
+        );
+    }
+}
+
+// §5.3 G5, `#line`: a name the source writes is kept by the real
+// post-image, but the post command's pairs apply to it. An edit that
+// writes the post prefix of `-I../s/inc` in a `#line` name would map back
+// to the pre-image's name: refused. A plain change of name: mismatch.
+#[test]
+fn g5_line_name() {
+    let main = |name: &str| {
+        format!("#include <h.h>\n#line 1 \"{name}\"\ninline char where[sizeof(__FILE__)] = {{}};\n")
+    };
+    let tree = Tree::new("g5-line", &[("a.cpp", &main("../s/z.h")), ("inc/h.h", "\n")]);
+    write(&tree.post.join("a.cpp"), &main("../post-tree/z.h"));
+    let o = tree.observer_in(&tree.base.join("build"), &["-I../s/inc".to_owned()]);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(
+        reason(&v),
+        "post-image: the #line name ../post-tree/z.h begins with ../post-tree/, which the post \
+         command maps"
+    );
+    assert!(tree.truth_differs(&o, &m));
+    let tree = Tree::new("g5-line2", &[("a.cpp", &main("z.h")), ("inc/h.h", "\n")]);
+    write(&tree.post.join("a.cpp"), &main("zz.h"));
+    let o = tree.observer_in(&tree.base.join("build"), &["-I../s/inc".to_owned()]);
+    tree.map(&o);
+    assert_eq!(kind(&tree.verify(&o)), VerdictKind::Mismatch);
+}
+
+// F7 (re-check): an absolute `__has_include` of a file under the subject
+// root; the edit adds the file. Kiln's lookup log does not record an
+// absolute name (Kiln `spec/pp.md`), so L1 cannot see the probe: §5.1
+// "What remains outside". When the log has it, `Lookups::of` lists the
+// name where it is and L1 refuses, with no new code.
+#[test]
+#[ignore = "needs: kiln (absolute names in the lookup log)"]
+fn f7_absolute_has_include() {
+    let tree = Tree::new("f7", &[]);
+    let main = format!(
+        "#if __has_include(\"{}\")\nint f() {{ return 2; }}\n#else\nint f() {{ return 1; }}\n#endif\n",
+        tree.path("new.h")
+    );
+    write(&tree.subject.join("a.cpp"), &main);
+    write(&tree.post.join("a.cpp"), &main);
+    write(&tree.post.join("new.h"), "\n");
+    let o = tree.observer();
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(
+        reason(&v),
+        format!(
+            "post-image: looked for {} in /: {} is a directory of the subject",
+            tree.path("new.h"),
+            tree.subject.display()
+        )
+    );
+    assert!(tree.truth_differs(&o, &m));
+}
+
+// F4b (re-check): a header added outside both roots after the map phase,
+// in a directory searched before the one the map read it from, with an
+// edit that compensates. O2 compares only files both parses read; the map
+// parse's failed lookups are not kept ("negative inputs", a package to
+// come): §5.1 "What remains outside".
+#[test]
+#[ignore = "needs: negative inputs in the map shard (a package to come)"]
+fn f4b_outside_header_added_after_the_map() {
+    let pre = "#include <cfg.h>\n#if USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+    let post = "#include <cfg.h>\n#if !USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+    let tree = Tree::new("f4b", &[("a.cpp", pre)]);
+    write(&tree.post.join("a.cpp"), post);
+    std::fs::create_dir_all(tree.base.join("ext2")).unwrap();
+    write(&tree.base.join("ext/cfg.h"), "#define USE_NEW 0\n");
+    let o = tree.observer_in(
+        &tree.subject,
+        &[arg("-I", &tree.base.join("ext2")), arg("-I", &tree.base.join("ext"))],
+    );
+    tree.map(&o);
+    write(&tree.base.join("ext2/cfg.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
 }

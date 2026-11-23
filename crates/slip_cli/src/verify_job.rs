@@ -403,7 +403,7 @@ fn without_units(d: &Digests) -> Digests {
 }
 
 /// Step 2's guards on what the post-image parse read and looked at, in
-/// this order (§5.3): G1, L1, G4, then O2 of the tree form (not with the
+/// this order (§5.3): G1, L1, G4, G5, then O2 of the tree form (not with the
 /// identity, where every change since the map phase is the edit
 /// compared). The reason of the first that fails.
 fn image_guards(
@@ -417,14 +417,23 @@ fn image_guards(
     if let Some(read) = post_inputs.iter().find(|f| resolver.under_subject(&f.path)) {
         return Some(format!("post-image: read {}, a file of the subject", show_path(&read.path)));
     }
-    let post_command = params.image.command(&observer.command);
-    if let Some(reason) = resolver.looked_in_subject(&post_command.directory, lookups) {
+    let post = params.image.post_command(&observer.command);
+    if let Some(reason) = resolver.looked_in_subject(&post.command.directory, lookups) {
         return Some(reason);
     }
-    if let Some(word) = response_file(&post_command) {
+    if let Some(word) = response_file(&post.command) {
         return Some(format!(
             "post-image: the command names the response file {}, whose words slip cannot examine",
             show_path(word)
+        ));
+    }
+    if let Some(reason) = post.conflict {
+        return Some(reason);
+    }
+    if let Some((name, prefix)) = mapped_line_name(&post.maps, lookups) {
+        return Some(format!(
+            "post-image: the #line name {name} begins with {}, which the post command maps",
+            show_path(prefix)
         ));
     }
     if params.image.is_identity() {
@@ -433,6 +442,21 @@ fn image_guards(
     let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
     drifted(&mut resolver, post_inputs, pre_inputs)
         .map(|path| format!("pre-image: {} changed since the map phase", show_path(path)))
+}
+
+/// Guard G5's second part (§5.3): the first `#line` name of the post
+/// parse that a map pair of the post command applies to, with the pair's
+/// post prefix. The name is the source's text, which the real post-image
+/// keeps; the pair would make it another.
+fn mapped_line_name<'a>(
+    maps: &'a [(Vec<u8>, Vec<u8>)],
+    lookups: &'a Lookups,
+) -> Option<(&'a str, &'a [u8])> {
+    lookups.line_names.iter().find_map(|name| {
+        maps.iter()
+            .find(|(post, _)| name.as_bytes().starts_with(post))
+            .map(|(post, _)| (name.as_str(), post.as_slice()))
+    })
 }
 
 /// Guard G4 (§5.3): the first word after `argv[0]` that Kiln's driver

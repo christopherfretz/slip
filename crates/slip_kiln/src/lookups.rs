@@ -34,6 +34,11 @@ pub struct Lookups {
     /// The name of every buffer read from disk and of every consulted path
     /// (each of the shard's `inputs`, as spelled when it was read).
     pub read: Vec<String>,
+    /// The file name of every `#line` directive and line marker that has
+    /// one, in the buffers' order then the directives' (Kiln
+    /// `SourceManager::line_directives`): text of the source, which Kiln's
+    /// prefix maps apply to as to a path.
+    pub line_names: Vec<String>,
 }
 
 impl Lookups {
@@ -58,6 +63,12 @@ impl Lookups {
         let mut embed_dirs = Some(embed_dirs);
         let mut embeds: Option<Vec<String>> = None;
         for l in &log.lookups {
+            // An absolute name is tried where it is, whatever the form
+            // (Kiln's log does not record one yet: `spec/verify.md` §5.1,
+            // "What remains outside").
+            if l.name.starts_with('/') {
+                push(&mut out, "/", &l.name);
+            }
             if let Some(i) = l.includer {
                 push(&mut out, dir(log, i), &l.name);
             }
@@ -105,6 +116,9 @@ impl Lookups {
             };
             if read {
                 out.read.push(fe.sm.file_name(file).to_owned());
+            }
+            if fe.sm.has_line_directives(file) {
+                out.line_names.extend(fe.sm.line_directives(file).into_iter().filter_map(|d| d.2));
             }
         }
         out.read.extend(fe.consulted.iter().map(|c| c.path.clone()));
