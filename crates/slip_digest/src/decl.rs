@@ -66,7 +66,7 @@ impl Walk<'_> {
         let keys = std::mem::take(&mut self.keys_in_progress);
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);
-        crate::spelling::write_unit_list(self, &mut s);
+        crate::own_spelling::write_unit_list(self, &mut s);
         self.keys_in_progress = keys;
         self.in_key = in_key;
         self.restore_types(types);

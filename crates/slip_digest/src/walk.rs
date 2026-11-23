@@ -60,11 +60,11 @@ pub(crate) struct UnitState {
     /// The expression walk's state.
     pub expr: ExprState,
     /// The left-out facts of the unit's own spellings, in walk order
-    /// (`spelling.rs`), and whether one of them makes the list due.
-    pub facts: Vec<crate::spelling::Fact>,
+    /// (`own_spelling.rs`), and whether one of them makes the list due.
+    pub facts: Vec<crate::own_spelling::Fact>,
     pub facts_due: bool,
     /// How many expressions the unit's reading of its spellings has met
-    /// (`spelling::Fact::Round`).
+    /// (`own_spelling::Fact::Round`).
     pub roots: u64,
     /// The unit is a resolved unit `definition` (`demand.rs`), whose
     /// stream reads every declaration of its entity, those an
@@ -257,7 +257,7 @@ pub(crate) struct Walk<'a> {
     /// `digest.bytes` (`spec/digest.md` §12).
     pub bytes: u64,
     /// Whether the own spelling of a typedef-name holds a left-out fact
-    /// (`spelling.rs`), by its first declaration.
+    /// (`own_spelling.rs`), by its first declaration.
     pub alias_due: HashMap<DeclId, bool>,
     /// How many profiles the unit writes straight into its stream are
     /// being walked (`expr_dep::profile_expr`): their facts are read by
@@ -416,7 +416,7 @@ impl<'a> Walk<'a> {
 
     /// Whether what is written now goes straight into a unit stream: not
     /// inside a key, a type digest or a profile written into the unit
-    /// (the places a unit reads its own spellings, `spelling.rs`).
+    /// (the places a unit reads its own spellings, `own_spelling.rs`).
     pub(crate) fn unit_level(&self) -> bool {
         self.in_key == 0 && self.type_nesting == 0 && self.spelling_off == 0
     }

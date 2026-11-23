@@ -524,7 +524,7 @@ fn a_left_out_found_set_marks_the_unit() {
                 .facts
                 .iter()
                 .filter_map(|f| match f {
-                    crate::spelling::Fact::Found(ds) => Some(ds.len()),
+                    crate::own_spelling::Fact::Found(ds) => Some(ds.len()),
                     _ => None,
                 })
                 .collect();

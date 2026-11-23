@@ -31,7 +31,7 @@
 //! left-out set that held a declaration is counted in `Walk::left_out`:
 //! a type digest whose stream left one out is marked
 //! (`TypeRef::spelling`). A unit writes the sets of its own spellings
-//! (`spelling.rs`); the mark decides only where it has none.
+//! (`own_spelling.rs`); the mark decides only where it has none.
 //!
 //! A kind Kiln profiles as unique (equal only to itself: a lambda, a
 //! statement expression, a pack of substituted parameters, ...) has no
@@ -89,7 +89,7 @@ thread_local! {
     /// The kinds profile mode met (`expr_profile_tests::the_bytes_are_pinned`).
     static VISITED: std::cell::RefCell<Vec<K>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The expressions whose left-out set raised `Walk::left_out`, with
-    /// the type nesting then (`spelling_tests`, rule 6's count).
+    /// the type nesting then (`own_spelling_tests`, rule 6's count).
     pub(crate) static RAISED: std::cell::RefCell<Vec<(ExprId, u32)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }

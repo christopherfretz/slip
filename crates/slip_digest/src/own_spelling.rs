@@ -96,7 +96,7 @@ impl Fact {
 thread_local! {
     /// The expressions whose non-empty set a reading yielded directly
     /// (not through a type nested in the expression): the count test of
-    /// rule 6 (`spelling_tests`).
+    /// rule 6 (`own_spelling_tests`).
     pub(crate) static DIRECT: std::cell::RefCell<Vec<ExprId>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// How many types the reading is inside.
@@ -971,5 +971,5 @@ fn record(e: ExprId) {
 }
 
 #[cfg(test)]
-#[path = "spelling_tests.rs"]
+#[path = "own_spelling_tests.rs"]
 mod tests;

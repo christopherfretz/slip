@@ -467,7 +467,7 @@ pub(crate) fn profile(w: &mut Walk<'_>, s: &mut Stream, p: ProfileId) {
 /// Whether the profile left out a fact (`Walk::left_out`) is read the same
 /// way. Written straight into a unit stream (outside a type, a key and
 /// another profile), `e` is the unit's own spelling: its left-out facts
-/// are added to the unit's list (`spelling::left_out_of_expr`).
+/// are added to the unit's list (`own_spelling::left_out_of_expr`).
 pub(crate) fn profile_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     let unit = w.unit_level();
     let saved = w.take_expr_state();
@@ -481,7 +481,7 @@ pub(crate) fn profile_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     w.unit.expr = saved;
     if unit {
         let marked = w.left_out != left_out;
-        crate::spelling::left_out_of_expr(w, s, e, marked);
+        crate::own_spelling::left_out_of_expr(w, s, e, marked);
     }
     if w.unit.local_uses != uses && !frame.locals.is_empty() {
         // Two numberings in one stream: an ordinal of the frame and one of

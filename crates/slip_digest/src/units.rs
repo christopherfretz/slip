@@ -554,7 +554,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         w.unit.local.holder = Some(e);
         let mut s = Stream::new();
         w.decl_stream(&mut s, from, e);
-        crate::spelling::write_unit_list(w, &mut s);
+        crate::own_spelling::write_unit_list(w, &mut s);
         w.unit = saved;
         #[cfg(test)]
         tests::count_read(e);

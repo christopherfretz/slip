@@ -412,7 +412,7 @@ fn partial_spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &PartialSpecInfo) {
     let marked = w.left_out != before;
     w.restore_types(types);
     w.unit = saved;
-    crate::spelling::left_out_of_args(w, s, x.args, marked);
+    crate::own_spelling::left_out_of_args(w, s, x.args, marked);
 }
 
 /// `ref` to a declaration of a pattern (§9): `Ref::none` for one that has
@@ -599,7 +599,7 @@ pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
                 w.spelling_off -= 1;
                 if unit {
                     let marked = w.left_out != left_out;
-                    crate::spelling::left_out_of_arg(w, s, a, marked);
+                    crate::own_spelling::left_out_of_arg(w, s, a, marked);
                 }
             }
         }

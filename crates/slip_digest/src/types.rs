@@ -26,7 +26,7 @@ pub(crate) struct TypeRef {
     /// The type's stream left out a fact its first spelling holds (a
     /// profile's found set, `Walk::left_out`): a key ignores it; a unit
     /// that writes the type and has no spelling of its own for the
-    /// operand is `Unaccounted("spelling/<site>")` (`spelling.rs`).
+    /// operand is `Unaccounted("spelling/<site>")` (`own_spelling.rs`).
     pub spelling: bool,
 }
 
@@ -46,7 +46,7 @@ impl Walk<'_> {
     /// Writes type digest `t` of written type `written`: its digest and
     /// cause, and, in a unit stream (outside any key, type and profile
     /// written straight into the unit), adds the left-out facts of
-    /// `written` to the unit's list (`spelling::left_out_of_type`, digest-
+    /// `written` to the unit's list (`own_spelling::left_out_of_type`, digest-
     /// kinds §4.4 "Spellings"). `own_fn`: `written` is the own type of
     /// function declaration `d`, digested without its exception
     /// specification.
@@ -59,7 +59,7 @@ impl Walk<'_> {
     ) {
         s.digest(&t.digest).absorb(t.cause);
         if self.unit_level() {
-            crate::spelling::left_out_of_type(self, s, written, own_fn);
+            crate::own_spelling::left_out_of_type(self, s, written, own_fn);
         }
     }
 
@@ -688,7 +688,7 @@ impl Walk<'_> {
     /// `enum ArgView*` of the canonical form of list `l` (digest-kinds
     /// §4.6). Written straight into a unit stream, `l` is the list as the
     /// unit holds it: its left-out facts are added to the unit's list
-    /// (`spelling::left_out_of_args`), and not those of the canonical
+    /// (`own_spelling::left_out_of_args`), and not those of the canonical
     /// list's types and profiles.
     pub(crate) fn write_args(&mut self, s: &mut Stream, l: ArgListId) {
         if self.unit_level() {
@@ -697,7 +697,7 @@ impl Walk<'_> {
             self.write_canonical_args(s, l);
             self.spelling_off -= 1;
             let marked = self.left_out != left_out;
-            crate::spelling::left_out_of_args(self, s, l, marked);
+            crate::own_spelling::left_out_of_args(self, s, l, marked);
         } else {
             self.write_canonical_args(s, l);
         }

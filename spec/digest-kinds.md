@@ -1127,7 +1127,7 @@ The rest of profile mode:
   the canonical type, so the name holds the first spelling only).
 - **Spellings** (WP-041). What a profile leaves out is written by the
   unit that owns the spelling, from that spelling, not from the type's
-  first one (`spelling.rs`):
+  first one (`own_spelling.rs`):
   1. *The left-out facts of an expression*, in the order of profile
      mode's walk of it (pre-order, children in the order of the table
      above): per `UnresolvedLookupExpr` (not a template template

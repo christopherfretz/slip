@@ -1,4 +1,4 @@
-//! Tests of `spelling.rs` (WP-041): what a unit's own spellings hold
+//! Tests of `own_spelling.rs` (WP-041): what a unit's own spellings hold
 //! beyond their profiles.
 
 use std::collections::BTreeMap;
@@ -238,7 +238,7 @@ fn a_list_changes_only_the_units_that_write_one() {
 /// Rule 6: `Walk::left_out` is raised at exactly the expressions where the
 /// reading yields a non-empty set, on every pair-test snippet: for each
 /// expression, walked in profile mode (outside a type) and read
-/// (`spelling::expr`, outside a type), the same expressions.
+/// (`own_spelling::expr`, outside a type), the same expressions.
 #[test]
 fn left_out_is_raised_where_the_list_has_an_entry() {
     let mut met = 0usize;
@@ -352,6 +352,35 @@ fn an_alias_whose_spelling_is_indeterminate_is_listed() {
         super::left_out_of_type(w, &mut Stream::new(), q, None);
         assert_eq!(w.unit.facts, vec![Fact::Alias(w.ast.first(pattern))]);
         assert!(w.unit.facts_due);
+    });
+}
+
+/// Rule 4: an alias whose own spelling makes no list due but carries a
+/// cause (a canonical operand, rule 5) is an `Alias` entry too: its
+/// user is determinate, and the alias's unit is the indeterminate one.
+#[test]
+fn an_alias_whose_only_spelling_is_a_cause_is_listed() {
+    let src = format!(
+        "{PRELUDE}template<class T> using R = void (*)(decltype(f(T())) [2]);\n\
+         template<class T> void u(T, R<T> r);\n"
+    );
+    crate::decl_func::tests::with_walk(&src, |w| {
+        let alias_r = crate::decl_func::tests::named(w, "R", DeclKind::TypeAliasTemplate)[0];
+        let pattern = w.ast.template_info(alias_r).and_then(|i| i.pattern).expect("R's pattern");
+        let under = w.ast.decls.typedef(pattern).expect("R").underlying;
+        w.unit = crate::walk::UnitState::default();
+        let mut s = Stream::new();
+        super::left_out_of_type(w, &mut s, under, None);
+        assert_eq!(s.cause(), Some(Cause::Unaccounted("spelling/decltype")));
+        assert!(!w.unit.facts_due, "{:?}", w.unit.facts);
+        let d = crate::decl_func::tests::named(w, "u", DeclKind::Function)[0];
+        let q = w.ast.decls.get(d).ty().expect("a type");
+        w.unit = crate::walk::UnitState::default();
+        w.alias_due.clear();
+        let mut s = Stream::new();
+        super::left_out_of_type(w, &mut s, q, None);
+        assert_eq!(w.unit.facts, vec![Fact::Alias(w.ast.first(pattern))]);
+        assert_eq!(s.cause(), None);
     });
 }
 
