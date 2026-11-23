@@ -1792,7 +1792,7 @@ Rename sets a subject's flags (§4.1), which refuse the run (§5.2):
 |---|---|
 | `read_only` | a declaration of the entity is in a read-only file. A function that overrides one of a library is refused this way, through its link |
 | `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a member of a class template, until the package that adds followers of specialisations lands; a follower whose rule cannot be made (§9.2); a subject whose key follows a pattern member (a function defined as a friend in an instantiated class template, `digest.md` §3.4): its rule is kept (§4.1), but a rule on an instantiated member's key makes it indeterminate |
-| `name_taken` | a scope the entity's name enters declares an entity named `new_name`, or a macro named `new_name` is defined in the unit. The scopes a name enters are its semantic scope and, outwards from it, every transparent one: an unscoped enumeration, an anonymous union or struct, a linkage specification, `export`, an inline namespace (in both directions: a name in an inline namespace enters the enclosing one, and an entity declared there is taken for one in the inline namespace). A block-scope `extern` declaration enters its innermost enclosing namespace. For a namespace, every part of it the observer sees; for a class, the class and its bases at any depth, read from each class's definition; and a class derived from the entity's class that declares `new_name` (it hides the renamed member). A template parameter enters no scope: one named `new_name` takes nothing |
+| `name_taken` | a scope the entity's name enters declares an entity named `new_name`, or a macro named `new_name` is defined in the unit (the rename reads the unit's preprocessing record, and `run` refuses a unit parsed without it, §9.7). The scopes a name enters are its semantic scope and, outwards from it, every transparent one: an unscoped enumeration, an anonymous union or struct, a linkage specification, `export`, an inline namespace (in both directions: a name in an inline namespace enters the enclosing one, and an entity declared there is taken for one in the inline namespace). A block-scope `extern` declaration enters its innermost enclosing namespace. For a namespace, every part of it the observer sees; for a class, the class and its bases at any depth, read from each class's definition; and a class derived from the entity's class that declares `new_name` (it hides the renamed member). A template parameter enters no scope: one named `new_name` takes nothing. `name_taken` is what one observer sees; it is set only where the unit sees both. A declaration of `new_name` of the same kind and signature in a unit that does not see the target is caught by verification, not by the rename: the run's rules apply in every observer (`verify.md` §2.1), so there it takes the target's key and the digest shows it removed and added (`crates/slip_digest/tests/rules/verify/name-taken-in-another-unit`). One of another signature, kind or class there is no clash (an overload, or a name no unit sees with the target) and verifies equal (`name-taken-in-another-unit-overload`) |
 | `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator; a dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln) |
 
 and claims `refuse` (§4.2) at a reference it found and cannot edit (§2.3).
@@ -1831,7 +1831,7 @@ pub fn run(transform: &Transform, unit: &slip_kiln::Unit<'_>, keys: &mut slip_di
            files: &dyn Fn(kiln::source::FileId) -> Option<FileRef>) -> Result<Edits, String>;
 ```
 
-It reads the subject through four things and nothing else of the front
+It reads the subject through five things and nothing else of the front
 end's tables:
 
 | From | What |
@@ -1840,9 +1840,12 @@ end's tables:
 | `slip_kiln::written` (`docs/wp/WP-067.md`) | the written references of the unit, deduplicated, with role, name span and referent; the names of declarations from the declaration extents |
 | `slip_kiln::ranges` (`docs/wp/WP-084.md`) | the file range of a name's span, or none: Kiln's `editable_file_range` (§2.2), which needs Kiln at or after `913a490bb` |
 | `slip_kiln::sites` (`docs/wp/WP-068.md`) | why there is none, and where a person must look (§2.3) |
+| `Unit::pp_record` | the macros the unit defines, for `name_taken` (§9.5) |
 
 `run` is a function of the unit: two parses of the same inputs give equal
-`Edits`.
+`Edits`. It returns `Err` for a unit parsed without `ParseOptions::written`
+or without `ParseOptions::pp_record`: a guard does not depend on the caller
+remembering an option.
 
 ## 10. Commands
 

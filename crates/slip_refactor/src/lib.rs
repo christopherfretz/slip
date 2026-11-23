@@ -33,7 +33,8 @@ use slip_model::{Counter, FileRef, Transform};
 ///
 /// `Err` is a failure of Slip, never a fact about the subject: a request
 /// that is not a rename, a request that does not satisfy `spec/edits.md`
-/// §3, a unit parsed without `ParseOptions::written`, a claim in a buffer
+/// §3, a unit parsed without `ParseOptions::written` or without
+/// `ParseOptions::pp_record`, a claim in a buffer
 /// `files` does not know, a unit without a main file. Everything about
 /// the subject is in the `Edits`, which has passed `Edits::normalise`,
 /// satisfies §4.7, and has `failure`, `groups`, `reports` and `renamed`

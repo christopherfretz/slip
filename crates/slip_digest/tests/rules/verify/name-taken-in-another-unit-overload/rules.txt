@@ -1,0 +1,8 @@
+# vacuous
+# spec/edits.md §9.5, a name taken in another unit (WP-071 review), the
+# overload variant: this unit sees n::g(double), which the rename of
+# n::f(int) to g does not clash with (an overload, not a redeclaration),
+# and the rule matches nothing here: equal, and rightly so. h(int) is only
+# here to give the rule f(int)'s discriminator (a function's does not
+# depend on its name).
+rule function | post n | id g | disc-of pre n::h(int) | pre n | id f

@@ -99,6 +99,14 @@ pub(crate) fn run(
     if !written::recorded(unit) {
         return Err("the unit was parsed without ParseOptions::written".to_owned());
     }
+    // `name_taken` asks the preprocessing record for a macro named like
+    // the new name (§9.5): a guard must not depend on the caller
+    // remembering an option.
+    if unit.pp_record().is_none() {
+        return Err("the unit was parsed without the preprocessing record \
+                    (ParseOptions::pp_record)"
+            .to_owned());
+    }
     let main = unit.main_file().ok_or("the unit has no main file")?;
     let old = request.target.last().ok_or("the request's target is empty")?;
 

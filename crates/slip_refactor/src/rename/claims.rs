@@ -281,6 +281,7 @@ mod tests {
         let obs = tree.observer("main.cpp", "c++20", &[]);
         let mut o = ParseOptions::default();
         o.written = true;
+        o.pp_record = true;
         let (_, r) = tree
             .parse(&obs, &o, |u| {
                 let sites = Sites::new(u, &ownership);

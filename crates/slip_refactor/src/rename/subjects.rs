@@ -189,7 +189,7 @@ pub(crate) fn flag_unreachable(ctx: &mut Ctx<'_, '_, '_>) {
 ///   the new name (a class derived from the subject's, which this observer
 ///   sees, hides the renamed member);
 /// - a macro named like the new name, defined anywhere in the unit
-///   (`Unit::pp_record`, when the unit was parsed with it): every
+///   (`Unit::pp_record`; `run` refuses a unit parsed without it): every
 ///   subject.
 ///
 /// A local or a template parameter named like the new name in a function
@@ -228,9 +228,11 @@ pub(crate) fn flag_name_taken(ctx: &mut Ctx<'_, '_, '_>) {
 }
 
 /// Whether the preprocessing record of `unit` has a definition of a macro
-/// named `name` (any definition, in effect at the end or not).
+/// named `name` (any definition, in effect at the end or not). `run`
+/// refuses a unit without the record, so it is there; were it not, every
+/// subject would be taken (the safe answer).
 fn macro_named(unit: &slip_kiln::Unit<'_>, name: &[u8]) -> bool {
-    let Some(record) = unit.pp_record() else { return false };
+    let Some(record) = unit.pp_record() else { return true };
     let symbols = unit.ast().symbols();
     record.defs().iter().any(|d| symbols.as_str(d.def.name()).as_bytes() == name)
 }
@@ -344,6 +346,7 @@ mod tests {
         let obs = tree.observer("main.cpp", "c++20", &[]);
         let mut o = ParseOptions::default();
         o.written = true;
+        o.pp_record = true;
         let (_, r) = tree
             .parse(&obs, &o, |u| {
                 let ast = u.ast();

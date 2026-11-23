@@ -627,7 +627,7 @@ fn run_on_a_diagnosed_unit_does_not_panic() {
 /// `Err` is a failure of Slip, never a fact about the subject: a request
 /// that is not a rename, one that breaks §3 (a keyword new name, a new
 /// name with a universal-character-name), a unit parsed without
-/// `written`.
+/// `written` or without the preprocessing record.
 #[test]
 fn requests_the_rename_does_not_run() {
     let files = [("main.cpp", &b"namespace n { void f(); }\n"[..])];
@@ -669,6 +669,12 @@ fn requests_the_rename_does_not_run() {
     assert!(script_r.unwrap().contains("runs a rename"));
     let [plain, ..] = results(ParseOptions::default());
     assert!(plain.unwrap().contains("without ParseOptions::written"));
+    // `name_taken` needs the preprocessing record (§9.5): a unit parsed
+    // without it is refused, not run with the macro check skipped.
+    let mut no_record = written_options();
+    no_record.pp_record = false;
+    let [no_record_r, ..] = results(no_record);
+    assert!(no_record_r.unwrap().contains("without the preprocessing record"));
 }
 
 /// The key a rename's rule maps to has the old name (a sanity check of
