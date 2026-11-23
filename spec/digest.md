@@ -387,7 +387,30 @@ Three kinds of key take another entity's name as the rules map it
   is how a function defined as a friend in a class template and declared
   at namespace scope is renamed: a unit that does not instantiate the
   class keys the function by its own declaration, which needs the rule,
-  and a unit that does accepts the same rule;
+  and a unit that does accepts the same rule.
+  A member follows its patterns only where its own name is the
+  pattern's by construction, so that following gives the member its own
+  key under every table that renames nothing of the pattern (WP-131): an
+  identifier, an operator, `constructor`, `destructor`, a literal
+  operator, `deduction_guide`, and `unnamed_by` of one of those, are
+  written in the pattern and not substituted. A member whose name is a
+  **conversion** name does not take its pattern's name: the name is the
+  type converted to, which is the instantiation's (`W<bool>::operator
+  bool()`, instantiated from `W::operator T()`), so the pattern's name is
+  another name. No rule renames a conversion function apart from its
+  type, and the type digest in the member's own name is already in mapped
+  terms: a rule on the type it converts to reaches it there. The same
+  holds of `unnamed_by` of a conversion name (a class whose declarator is
+  name-independent, named by its first member, a conversion function,
+  P2169), of a `local` number (it counts the instantiation's own local
+  types: a discarded `if constexpr` branch of the instantiation declares
+  none) and of an `unnamed_ordinal` (it counts the scope's own unnamed
+  types). Such a member is keyed as an entity that follows no pattern:
+  a rule that matches its plain key applies to it as to any key, and the
+  checks above are not made. A rule whose name is a conversion name comes
+  from one declared change, a `relocate` of a conversion function with
+  `=` (`slip declare` gives a new name only to an identifier): it moves
+  that conversion function, and matches its key, as for any entity;
 - a decomposition is named by its first binding (digest-kinds §5.2),
   as the rules map the binding.
 
@@ -398,6 +421,20 @@ or variable named by its anonymous class, and a using-shadow, which has
 the name it is written with (its discriminator, the key of the entity it
 stands for, is mapped as any key is).
 With `R` empty this is the identity, which is what the map phase uses.
+
+**A rule that matches nothing changes nothing** (WP-131). For every
+translation unit, the walk under a table none of whose rules matches a
+key of that translation unit (a rule's `(parent, kind, name, disc)` is no
+entity's, its parent and discriminator mapped) gives the units, keys,
+digests, flags, causes, names and counters of the walk under the empty
+table, whichever files are read-only, and no rule a use (`via` and
+`direct` 0, `verify.md` §9.1). Every route the walk takes only under a
+non-empty table (following a pattern, a mapped name, a namespace keyed in
+a member's view, the collisions among mapped keys, the ownership of an
+entity) must therefore give the answer of the empty table when no rule
+applies. A table is no reason for a key to differ; only a rule that
+matches is. `crates/slip_digest/tests/inert.rs` holds it over every
+source of the crate's pair and rule tests.
 Verification digests the post-image with the rules that undo the declared
 relocations, so that a relocated entity, every member of it, every type
 that mentions it and every signature that contains it get the keys they had
@@ -1204,6 +1241,9 @@ true by mechanism, not by review alone.
   be equal. One pair at least per `demand` row.
 - **Indeterminate** (`tests/indeterminate/`): a source holding a construct
   decided `unsupported`; the unit that holds it must have the flag.
+- **Inert rules** (§3.4, `tests/inert.rs`): every source of every pair
+  test and of every rule case, walked under tables of rules that match
+  nothing of it, gives the walk under the empty table, compared in full.
 - **Mutation**: the catalogue of `spec/pitfalls.md`, each row a correct edit
   that must compare equal under its relocations and a wrong edit that must
   be caught.

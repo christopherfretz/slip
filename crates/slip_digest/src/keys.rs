@@ -469,7 +469,7 @@ impl Walk<'_> {
             None => None,
         };
         let key = Key { kind, parent, name, disc };
-        if !decomposition && !self.rules.is_empty() {
+        if !decomposition && !self.rules.is_empty() && follows_pattern(&key.name) {
             let patterns = self.instantiated_patterns(e);
             if !patterns.is_empty() {
                 return self.follow_patterns(e, &patterns, key, cause);
@@ -619,12 +619,26 @@ impl Walk<'_> {
     /// (the plain name), and where the key cannot be formed (the caller
     /// has the error already). Mapped as the entity's own key is
     /// (`map_key`): a dependency entity's name is its plain name.
+    ///
+    /// The entity's key is asked for first, as any key is (`key_in`:
+    /// computed once, its bytes counted once), and its `Key` computed again
+    /// for the name with the bytes of that second computation not counted,
+    /// as [`Walk::key_bytes`] does: under no rule the name is not asked for,
+    /// so counting them would make `digest.bytes` depend on a table that
+    /// matches nothing (WP-131). `None` when the entity has no key, which
+    /// is what the caller does under no rule.
     fn mapped_name(&mut self, d: DeclId) -> Option<Name> {
         if self.rules.is_empty() {
             return None;
         }
         let e = self.entity(d);
-        let (key, _) = self.compute_key(self.representative(e)).ok()?;
+        if !matches!(self.key(e), KeyRes::Key { .. }) {
+            return None;
+        }
+        let bytes = self.bytes;
+        let computed = self.compute_key(self.representative(e));
+        self.bytes = bytes;
+        let (key, _) = computed.ok()?;
         Some(self.map_key(e, None, key).name)
     }
 
@@ -1518,6 +1532,42 @@ pub(crate) fn mark_mapped_collisions(
         }
     }
     collisions
+}
+
+/// Whether a member instantiated from a pattern member whose own name is
+/// `name` takes the pattern's mapped name (`spec/digest.md` §3.4, WP-131):
+/// only where the two names are equal by construction under no rule, so
+/// that a rule that matches nothing changes no key. An identifier, an
+/// operator, `constructor`, `destructor`, a literal operator's suffix and
+/// `deduction_guide` are written in the pattern and not substituted; so is
+/// `unnamed_by` of one of them. A conversion name is the type converted
+/// to, which is the instantiation's (`operator bool` of `W<bool>`, where
+/// the pattern has `operator T`), and so is `unnamed_by` of one (a class
+/// named by its first member, a conversion function, P2169); a `local`
+/// number counts the instantiation's own local types (a discarded
+/// `if constexpr` branch declares none), and an `unnamed_ordinal` the
+/// scope's own unnamed types: those keep their own name, and no declared
+/// change renames them apart from what they are made of (a rule on the
+/// type converted to reaches the conversion's name, which is a type
+/// digest in mapped terms). The other forms name no instantiated member.
+fn follows_pattern(name: &Name) -> bool {
+    match name {
+        Name::Identifier(_)
+        | Name::Operator(_)
+        | Name::Constructor
+        | Name::Destructor
+        | Name::LiteralOperator(_)
+        | Name::DeductionGuide => true,
+        Name::UnnamedBy(inner) => follows_pattern(inner),
+        Name::Conversion(_)
+        | Name::Local(_)
+        | Name::UnnamedOrdinal(_)
+        | Name::Anonymous
+        | Name::Content
+        | Name::Property(_)
+        | Name::Order
+        | Name::Parameter(_) => false,
+    }
 }
 
 /// `merge` of two optional causes, as `Stream::indeterminate` keeps them.
