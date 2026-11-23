@@ -4,3 +4,8 @@
 # on the function, not on D2. The rule for D2::f is unused in bad.
 good: verified
 bad:  mismatch changed D2::f() @ main.cpp:8
+# pre-2: the opposite. B::f renamed g where D already has a non-virtual
+# g(): D::g now overrides B::g ([class.virtual]/2) and b.f() through a D
+# returns 1 instead of 0. D::g's text is the same; its overrides row is not.
+good-2: none D already declares g(): every rename of B::f to g makes D::g an override
+bad-2:  mismatch changed D::g() @ main.cpp:5

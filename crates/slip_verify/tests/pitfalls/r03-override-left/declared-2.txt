@@ -1,0 +1,1 @@
+relocate B::f() => B :: g

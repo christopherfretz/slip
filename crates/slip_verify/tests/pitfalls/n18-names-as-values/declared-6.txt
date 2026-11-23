@@ -1,0 +1,3 @@
+# pre-6 is pre-4; with where() declared changed, the move verifies.
+relocate legacy => :: acme
+changed legacy::where()

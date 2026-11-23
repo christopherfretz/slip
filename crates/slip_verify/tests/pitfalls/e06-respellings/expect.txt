@@ -7,3 +7,11 @@ good-2: verified
 good-3: verified
 good-4: verified
 bad:    mismatch changed take(lib::Item *) @ main.cpp:16
+
+# pre-5 (WP-109): __PRETTY_FUNCTION__ prints the parameter types as written
+# (clang prints the sugar): the parameter of name respelled from Int to
+# int, the same length, changes the string name returns from
+# "const char *name(Int)" to "const char *name(int)". good-5 respells
+# plain's parameter, which nothing prints.
+good-5: verified
+bad-5:  mismatch changed name(int) @ main.cpp:4

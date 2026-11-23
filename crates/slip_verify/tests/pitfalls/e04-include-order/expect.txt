@@ -3,3 +3,14 @@
 # after. good swaps the two hook headers, both still before run.h.
 good: verified
 bad:  mismatch changed template <class> int run(type-parameter-0-0) @ run.h:1
+
+# pre-2 (WP-109): a partial specialisation moved after the point of
+# instantiation. use() instantiates Tr<int *>; with ptr.h before use.h the
+# partial specialisation Tr<T *> is selected (v is 2), after it the primary
+# already was. The program is then ill-formed, no diagnostic required
+# ([temp.class.spec]/1): clang and Kiln both accept it, and both keep the
+# primary's instantiation (v is 1). No place: the pattern is in ptr.h in
+# one image and tr.h in the other.
+good-2: none ptr.h must come before every use of Tr<int *>; no other order of the three headers is well-formed and different
+bad-2:  mismatch derived_changed Tr<int *>
+bad-2:  mismatch derived_changed Tr<int *>::v
