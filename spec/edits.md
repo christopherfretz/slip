@@ -1672,7 +1672,18 @@ enclose its declaration.
     introduces (`of`: the entities named);
   - a member of a class template specialisation instantiated from a
     subject, when its key has the old name (`of`: the member of the
-    template);
+    template). "Instantiated from" is the link the front end records
+    (`instantiated_from`), asked of every declaration of the member and
+    followed through the whole chain of patterns, as the digest follows
+    it (`digest.md` §3.4); `of` is the subject the member was
+    instantiated from directly. A member of an implicit or explicit
+    instantiation of the class, an explicit specialisation of a member
+    (`template <> void S<int>::f() {}`) included, is one; a member of an
+    explicit or partial specialisation of the class is not: it is
+    declared there and linked to nothing, another entity, and its names
+    are `keep`s. Such a follower's key follows the pattern member's, on
+    which the digest makes a rule indeterminate: it is `unsupported`
+    (§9.5);
   - an unnamed class or enumeration that the subject names (`digest.md`
     §3.3, `unnamed_by`).
 
@@ -1766,6 +1777,31 @@ name token, `reason` `dependent name <old name>`. Reduce puts the key in
 key to exempt (it is keyed by content, or its key is indeterminate) gets
 no entry: the edit is claimed, and verification reports the unit.
 
+Read precisely (`docs/wp/WP-073.md`):
+
+- **Which entity a declaration or a resolution is** is decided as for a
+  written reference (§9.3): taken to its origin (`api.md` §5.5) and to
+  the digest's entity, then looked up among the observer's subjects. A
+  member of an instantiated class resolved to in row 2 is therefore the
+  member of the template, and a claim names that subject.
+- **"Every one", "none" and "mixed"** are over what this observer gives:
+  the set `S` in row 1, and in row 2 every instantiation of the pattern
+  the observer made. Two observers that instantiate differently make
+  different claims at one site, and reduce sees the disagreement (§5.4).
+- **`subjects` of the claim**: for a `replace` or a `refuse`, the subjects
+  among the entities of `S` (row 1) or among those resolved to (row 2);
+  none for a `keep` or an `unresolved`.
+- **The holder** is `Keys::unit_of` the entry's enclosing declaration
+  (the front end's innermost declaration whose extent holds the name);
+  its key is `Keys::key_id` of that unit. No entry when the name has no
+  enclosing declaration, no unit holds it, or the unit has no key. A
+  `replace` that `slip_kiln::sites` turns into a `refuse` (a name in a
+  macro body) edits nothing and gets no entry.
+- **At this pin** neither row has what it needs from the front end (the
+  join from a dependent entry to the declarations found at the
+  definition; per-specialisation entries): every dependent name spelled
+  like the old name is `unresolved` (`spec/landed/edits/WP-073.md`).
+
 This is where rename guesses, and where it leans on verification most:
 
 - A `replace` from the first row can be wrong for one instantiation: the
@@ -1791,9 +1827,9 @@ Rename sets a subject's flags (§4.1), which refuse the run (§5.2):
 | Flag | When |
 |---|---|
 | `read_only` | a declaration of the entity is in a read-only file. A function that overrides one of a library is refused this way, through its link |
-| `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a member of a class template, until the package that adds followers of specialisations lands; a follower whose rule cannot be made (§9.2); a subject whose key follows a pattern member (a function defined as a friend in an instantiated class template, `digest.md` §3.4): its rule is kept (§4.1), but a rule on an instantiated member's key makes it indeterminate |
+| `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a follower whose rule cannot be made (§9.2); a subject whose key follows a pattern member (a member of an instantiated specialisation of a class template, a follower of §9.2; a function defined as a friend in an instantiated class template; `digest.md` §3.4): its rule is kept (§4.1), but a rule on an instantiated member's key makes it indeterminate (`key/rule-on-instantiated-member`). A member of a class template that is a seed is not flagged: in an observer that does not instantiate the class it has no follower and nothing is refused |
 | `name_taken` | a scope the entity's name enters declares an entity named `new_name`, or a macro named `new_name` is defined in the unit (the rename reads the unit's preprocessing record, and `run` refuses a unit parsed without it, §9.7). The scopes a name enters are its semantic scope and, outwards from it, every transparent one: an unscoped enumeration, an anonymous union or struct, a linkage specification, `export`, an inline namespace (in both directions: a name in an inline namespace enters the enclosing one, and an entity declared there is taken for one in the inline namespace). A block-scope `extern` declaration enters its innermost enclosing namespace. For a namespace, every part of it the observer sees; for a class, the class and its bases at any depth, read from each class's definition; and a class derived from the entity's class that declares `new_name` (it hides the renamed member). A template parameter enters no scope: one named `new_name` takes nothing. `name_taken` is what one observer sees; it is set only where the unit sees both. A declaration of `new_name` of the same kind and signature in a unit that does not see the target is caught by verification, not by the rename: the run's rules apply in every observer (`verify.md` §2.1), so there it takes the target's key and the digest shows it removed and added (`crates/slip_digest/tests/rules/verify/name-taken-in-another-unit`). One of another signature, kind or class there is no clash (an overload, or a name no unit sees with the target) and verifies equal (`name-taken-in-another-unit-overload`) |
-| `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator; a dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln) |
+| `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator; a dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln); an explicit instantiation of a member of a class template (`template void S<long>::f();`), whose name the front end records in no table at this pin (no declaration extent; the written reference of role `SpecTarget` is Kiln's stage 3): the follower it instantiates is flagged |
 
 and claims `refuse` (§4.2) at a reference it found and cannot edit (§2.3).
 
