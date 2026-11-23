@@ -754,3 +754,74 @@ fn tree_observer_is_the_default_command() {
     let (shard, _) = tree.parse(&o, &ParseOptions::default(), |_| ()).unwrap();
     assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
 }
+
+// Rule 6 by tiers alone: the caller expects the invocation's bytes, which
+// are `ranges`' tier 0 range, but the token is written at tier 1.
+#[test]
+fn s2_3_not_plain_by_tiers_alone() {
+    let src = "#define ID(x) x\nint foo = 0;\nint g() { return ID(foo); }\n";
+    let lo = off(src, "ID(foo)", "foo");
+    let inv = off(src, "ID(foo)", "ID");
+    let got = with_tree("idtier", &[("main.cpp", src.as_bytes())], &[], |u, s, root| {
+        let spans = spelled_at(u, root, "main.cpp", lo);
+        spans.into_iter().map(|sp| describe(u, s, root, sp, "ID(foo)")).collect::<Vec<_>>()
+    });
+    assert_eq!(
+        one(got),
+        refused(Reason::NotPlain, T1, Some(("main.cpp", inv, "ID(foo)")), Some((inv, "ID")))
+    );
+}
+
+// KF3 §3 edge rows 3, 5 and 6 (`docs/requests/KF3-location-utilities.md`).
+#[test]
+fn s2_2_kf3_edge_rows() {
+    // Row 3: an argument inside another argument: tier 1. With `B` the
+    // identity, `B(foo)` is a whole expansion and Kiln's range is it:
+    // `not_plain`, as for `ID(foo)`.
+    let src = "int foo;\n#define A(x) int v = x;\n#define B(y) (y)\nA(B(foo))\n";
+    let got = one(main_names("row3", src, &[], "B(foo)", "foo"));
+    assert_eq!(
+        got,
+        at("main.cpp", off(src, "B(foo)", "foo"), "foo", T1, Some((off(src, "A(B", "A"), "A")))
+    );
+    let src = "#define A(x) int x = 0;\n#define B(y) y\nA(B(foo))\n";
+    let got = one(main_names("row3id", src, &[], "B(foo)", "foo"));
+    let b = off(src, "B(foo)", "B");
+    assert_eq!(
+        got,
+        refused(
+            Reason::NotPlain,
+            T1,
+            Some(("main.cpp", b, "B(foo)")),
+            Some((off(src, "A(B", "A"), "A"))
+        )
+    );
+    // Row 5: an invocation whose name comes from a body and whose
+    // argument is written in the file.
+    let src = "#define F(x) int x = 0;\n#define FN F\nFN(foo)\n";
+    let got = one(main_names("row5", src, &[], "FN(foo)", "foo"));
+    assert_eq!(
+        got,
+        at(
+            "main.cpp",
+            off(src, "FN(foo)", "foo"),
+            "foo",
+            T1,
+            Some((off(src, "FN(foo)", "FN"), "FN"))
+        )
+    );
+    // Row 6: one argument both substituted and stringised: the name is
+    // tier 1 (the string is `pasted`, `s2_2_tier3_stringised`).
+    let src = "#define SS(x) int x = 0; const char *s_##x = #x;\nSS(foo)\n";
+    let got = one(main_names("row6", src, &[], "SS(foo)", "foo"));
+    assert_eq!(
+        got,
+        at(
+            "main.cpp",
+            off(src, "SS(foo)", "foo"),
+            "foo",
+            T1,
+            Some((off(src, "SS(foo)", "SS"), "SS"))
+        )
+    );
+}

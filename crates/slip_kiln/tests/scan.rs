@@ -256,3 +256,9 @@ fn s8_4_invalid_byte_after_a_backslash_splices_nothing() {
     assert_eq!(hits(b"int fo\\\xff\no;", "foo"), vec![]);
     assert_eq!(hits(b"int fo\\ \no;", "foo"), vec![id("fo\\ \no", 1, 5)]);
 }
+
+// A string literal's ud-suffix is part of the literal: a mention.
+#[test]
+fn s8_4_ud_suffix() {
+    assert_eq!(hits(b"auto a = \"x\"_foo; auto b = 12_foo;", "_foo"), vec![mention("_foo", 1, 13)]);
+}
