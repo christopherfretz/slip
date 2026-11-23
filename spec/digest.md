@@ -619,7 +619,13 @@ variable), whose parameters the own stream met first; then the
 owner of the variable of each expanded expansion statement is numbered
 too: Kiln keeps the statement's pattern parts in an instantiated body,
 so a specialisation's `definition` names its pattern's variable, by
-`Ref::outer`. So the numbers cannot depend on
+`Ref::outer`. So is the owner of the variable a lifetime-extended
+temporary extends, when that owner is a template's pattern or a member
+of one: Kiln shares a non-dependent temporary of a pattern's body with
+its instantiations (a range-`for` over a prvalue: the temporary's
+`LetData` `extending` is the pattern's `__range` variable), so the
+specialisation's `definition` names that variable by `Ref::outer` too
+(WP-123). So the numbers cannot depend on
 the order units are written in, and each owner is numbered once. A
 local type that the numbering of its owner does not find (a
 lambda-expression that only a type holds, an owner that is a namespace
@@ -880,7 +886,11 @@ object is unspecified by the language and is not digested.
   dependent name's identifier and nested-name structure; for an unresolved
   call, the set of declarations found at the definition (as sorted `Ref`s)
   and whether the name is subject to argument-dependent lookup at
-  instantiation.
+  instantiation. Its explicit template arguments are written too, and an
+  expression among them that no template was chosen to convert it for
+  (`get<n::k>(t)`) is the pattern's own expression, walked in full as
+  every other (§6; `digest-kinds.md` §4.6 `ArgView` `Expr`, WP-123), so
+  what it names is compared under the rules.
 - Template parameters are `Ref::template_param`; their names are not
   digested.
 - Each specialisation that exists in the translation unit is a unit: an

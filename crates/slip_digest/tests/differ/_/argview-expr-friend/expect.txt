@@ -1,0 +1,3 @@
+changed M
+removed M::<friend It<type-parameter-0-0, n::k>>
+added M::<friend It<type-parameter-0-0, n::j>>

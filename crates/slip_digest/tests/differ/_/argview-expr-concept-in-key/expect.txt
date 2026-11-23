@@ -1,0 +1,2 @@
+removed template <class> requires C<T, n::k> int f(type-parameter-0-0)
+added template <class> requires C<T, n::j> int f(type-parameter-0-0)
