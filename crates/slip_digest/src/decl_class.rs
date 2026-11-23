@@ -1344,7 +1344,7 @@ pub(crate) const TYPEDEF_ALIGNMENT: Cause = Cause::Unsupported("layout/typedef-a
 
 /// Whether the layout of class `d` reads a typedef's alignment: the type
 /// of one of its fields (every field Kiln lays out, `props::fields`,
-/// `kiln_abi/src/layout/props.rs:124`, whether or not the member list
+/// `kiln_abi/src/layout/props.rs:129`, whether or not the member list
 /// names it: an instantiation's fields are derived), or the type of an
 /// `alignas(type-id)` on the class or on one of its fields, on any
 /// declaration (Kiln reads every redeclaration: `max_align_attr`,

@@ -248,7 +248,7 @@ pair("differ", "layout-packed-on-friend-in-template",
      pre="struct S;", post="struct S { char c; int i; };")
 pair("equal", "layout-packed-after-definition", "",
      "struct __attribute__((packed)) S;", [],
-     "`packed` on a redeclaration after the definition is dropped (kiln_sema `after_def.rs:153`):"
+     "`packed` on a redeclaration after the definition is dropped (kiln_sema `after_def.rs:57`):"
      " neither the layout nor a unit changes.", pre="struct S { char c; int i; };")
 pair("differ", "layout-unnamed-bit-field", "struct S { char a; char b; };",
      "struct S { char a; int : 0; char b; };", ["changed S", "added S::(unnamed 0)"],
@@ -277,7 +277,7 @@ pair("indeterminate", "layout-typedef-alignment-pattern", "",
 pair("indeterminate", "layout-typedef-alignment-alignas-class", "",
      "struct alignas(I) S { char c; };", ["indeterminate S"],
      "`alignas(type-id)` naming the typedef: the alignment is the typedef's"
-     " (kiln_abi `layout/props.rs:88`), the attribute's type digest canonical.", pre=TD)
+     " (kiln_abi `layout/props.rs:90`), the attribute's type digest canonical.", pre=TD)
 pair("indeterminate", "layout-typedef-alignment-alignas-field", "",
      "struct S { char c; alignas(I) char d; };", ["indeterminate S"],
      "`alignas(type-id)` on a field naming the typedef.", pre=TD)
@@ -366,7 +366,7 @@ pair("equal", "cmp-category-member-order",
      "namespace std { struct strong_ordering { int v; static const strong_ordering equal, less, greater; };",
      [],
      "the order of the category's values in its class: Kiln finds them by name (kiln_sema"
-     " `class/compare/mod.rs:165`), and the static members are written sorted.",
+     " `class/compare/mod.rs:163`), and no unit differs.",
      post="inline constexpr strong_ordering strong_ordering::less{-1}, strong_ordering::equal{0},"
      " strong_ordering::greater{1}; }\nint a = 1, b = 2;\nauto v = a <=> b;")
 pair("differ", "cmp-category-field-type",
