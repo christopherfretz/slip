@@ -58,6 +58,12 @@ pub(crate) const LAMBDA_IN_TYPE: Cause = Cause::Unsupported("local/lambda-in-typ
 /// An entity a requires-expression's parameter scope declares: the
 /// profile package's (WP-036), not an owner's.
 pub(crate) const REQUIRES_SCOPE: Cause = Cause::Unsupported("local/requires-scope");
+/// A numbering asked for after [`number_all`] (never, the pair tests
+/// check).
+pub(crate) const LATE: Cause = Cause::Unaccounted("local/late-numbering");
+/// A numbering asked for while it is being computed: its owner's stream
+/// source needs its own numbering.
+pub(crate) const CYCLE: Cause = Cause::Unaccounted("local/numbering-cycle");
 /// What a number asked for while numbering is (never: the mode returns
 /// before anything asks).
 pub(crate) const IN_NUMBERING: Cause = Cause::Unaccounted("local/in-numbering");
@@ -76,23 +82,26 @@ pub(crate) struct Numbering {
     /// others in the order the numbering meets their declarations.
     pub objects: Vec<DeclId>,
     object_index: HashMap<DeclId, u64>,
-    /// A depth limit was reached: no number is read from it.
-    pub cut: bool,
+    /// No number is read from it: a depth limit was reached
+    /// ([`TOO_DEEP`]), or it is the empty numbering of an owner that could
+    /// not be numbered (a cycle, or one asked for after [`number_all`]:
+    /// [`LATE`]).
+    pub cut: Option<Cause>,
 }
 
 impl Numbering {
     /// The position of local type `t`.
     pub(crate) fn type_of(&self, t: DeclId) -> Result<u64, Cause> {
-        if self.cut {
-            return Err(TOO_DEEP);
+        if let Some(c) = self.cut {
+            return Err(c);
         }
         self.type_index.get(&t).copied().ok_or(Cause::UndeclaredLocal)
     }
 
     /// The index of local object `d` (`Ref::outer`).
     pub(crate) fn object_of(&self, d: DeclId) -> Result<u64, Cause> {
-        if self.cut {
-            return Err(TOO_DEEP);
+        if let Some(c) = self.cut {
+            return Err(c);
         }
         self.object_index.get(&d).copied().ok_or(Cause::UndeclaredLocal)
     }
@@ -122,6 +131,10 @@ pub(crate) struct LocalState {
     empty: Numbering,
     /// How many owners were numbered (computed, not read from the memo).
     pub numbered: u64,
+    /// [`number_all`] has run: no numbering starts inside a unit's walk.
+    sealed: bool,
+    /// Numberings asked for after [`number_all`] (none: a test checks).
+    pub late: u64,
     /// How many type digests are being written ([`LAMBDA_IN_TYPE`]).
     pub in_type: u32,
     /// The template of each template parameter, built on first use.
@@ -409,10 +422,17 @@ pub(crate) fn local_parent(
 /// each in order. Memoised in the walk.
 pub(crate) fn numbering<'a>(w: &'a mut Walk<'_>, owner: DeclId) -> &'a Numbering {
     if !w.local.numberings.contains_key(&owner) {
+        if w.local.sealed {
+            // Not among the owners `number_all` numbered: never numbered
+            // inside a unit's walk, where the stack holds that walk.
+            w.local.late += 1;
+            w.local.empty.cut = Some(LATE);
+            return &w.local.empty;
+        }
         if numbering_mode(w) || !w.local.in_progress.insert(owner) {
             // Never while numbering; a cycle through the owner's stream
             // source: nothing to number from.
-            w.local.empty.cut = true;
+            w.local.empty.cut = Some(CYCLE);
             return &w.local.empty;
         }
         let n = compute(w, owner);
@@ -420,6 +440,31 @@ pub(crate) fn numbering<'a>(w: &'a mut Walk<'_>, owner: DeclId) -> &'a Numbering
         w.local.numberings.insert(owner, n);
     }
     &w.local.numberings[&owner]
+}
+
+/// Numbers, before any unit is written and outside every walk, each owner
+/// a unit's walk can ask a number of: the owner of every local type, and
+/// the call operator of every closure (whose init-capture variables a
+/// specialisation's body names by `Ref::outer`). Then seals the memo: a
+/// numbering is never started inside a unit's walk, so the stack holds
+/// one walk's budget at most (`lib.rs` "What bounds the stack"). A
+/// translation unit without local types numbers nothing.
+pub(crate) fn number_all(w: &mut Walk<'_>) {
+    let ast = w.ast;
+    for d in ast.decls.ids() {
+        if ast.first(d) != d || !is_local_type(w, d) {
+            continue;
+        }
+        if let Ok(o) = owner_of(w, d) {
+            let _ = numbering(w, o);
+        }
+        let op = ast.decls.record(d).and_then(|r| r.lambda).and_then(|l| ast.exprs.lambdas.get(l).call_op);
+        if let Some(op) = op {
+            let e = w.entity(op);
+            let _ = numbering(w, e);
+        }
+    }
+    w.local.sealed = true;
 }
 
 /// Numbers `owner`: walks its stream in numbering mode.
@@ -455,7 +500,7 @@ fn compute(w: &mut Walk<'_>, owner: DeclId) -> Numbering {
     let mut sink = Stream::new();
     w.decl_stream(&mut sink, from, owner);
     let record = std::mem::take(&mut w.local.record);
-    let cut = w.aborts != aborts;
+    let cut = (w.aborts != aborts).then_some(TOO_DEEP);
     w.unit = saved;
     w.depth = depth;
     w.node_depth = node_depth;
@@ -593,13 +638,40 @@ pub(crate) fn outer(w: &mut Walk<'_>, d: DeclId) -> Option<Result<(Digest, u64, 
     }
     let d = w.ast.first(d);
     let r = owner_of(w, d).and_then(|o| {
-        let index = numbering(w, o).object_of(d)?;
+        let index = match direct_param(w, o, d) {
+            Some(i) if w.local.sealed && !w.local.numberings.contains_key(&o) => i,
+            Some(_) | None => numbering(w, o).object_of(d)?,
+        };
         match w.key(o) {
             KeyRes::Key { id, cause, .. } => Ok((id, index, cause)),
             KeyRes::None(c) => Err(c.unwrap_or(BAD_OWNER)),
         }
     });
     Some(r)
+}
+
+/// The index among `o`'s local objects of `d` when `d` is a parameter of
+/// `o`'s own prototype and `o` is not a call operator: its position, since
+/// no init-capture variable comes before it and the prototype is walked
+/// before anything else that declares an object (digest §4.3). What a
+/// specialisation's unit names of its pattern (a parameter, in an
+/// expansion statement's pattern) without its owner numbered by
+/// [`number_all`]: an owner without local types.
+fn direct_param(w: &Walk<'_>, o: DeclId, d: DeclId) -> Option<u64> {
+    let ast = w.ast;
+    if ast.decls.get(d).kind() != DeclKind::ParmVar {
+        return None;
+    }
+    let p = ast.decls.param(d)?;
+    let f = ast.decls.get(d).ctx()?;
+    if p.scope_depth() != 0
+        || !info(ast.decls.get(f).kind()).function
+        || ast.call_op_lambda(f).is_some()
+        || scope_owner(w, f) != Ok(o)
+    {
+        return None;
+    }
+    Some(u64::from(p.index))
 }
 
 /// `decl`: a declaration met inside a unit, walked in place (§2.4).
@@ -1286,13 +1358,28 @@ mod tests {
                     let ok = !want.is_empty()
                         && got.len() % want.len() == 0
                         && got.chunks(want.len()).all(|c| c == want.as_slice());
-                    if !ok && !n.cut {
+                    if !ok && n.cut.is_none() {
                         problems.push(format!("{}: wrote {got:?}, numbered {want:?}", describe(w, o)));
                     }
                 }
-                (problems, !by_owner.is_empty())
+                // `direct_param` gives the index the numbering gives.
+                let numbered: Vec<(DeclId, Vec<DeclId>)> =
+                    w.local.numberings.iter().map(|(&o, n)| (o, n.objects.clone())).collect();
+                for (o, objects) in numbered {
+                    for (i, &d) in objects.iter().enumerate() {
+                        if let Some(j) = super::direct_param(w, o, d)
+                            && j != i as u64
+                        {
+                            problems.push(format!("{}: parameter {d:?} at {i}, direct {j}", describe(w, o)));
+                        }
+                    }
+                }
+                (problems, !by_owner.is_empty(), w.local.late)
             });
-            let Some((problems, any)) = r else { continue };
+            // Asserted out here: a panic inside the parse's callback reads
+            // as a source that does not parse.
+            let Some((problems, any, late)) = r else { continue };
+            assert_eq!(late, 0, "a numbering inside a unit's walk:\n{src}");
             assert!(problems.is_empty(), "side {}: {problems:?}\n{src}", if b { "B" } else { "A" });
             checked += 1;
             with_types += usize::from(any);
@@ -1318,7 +1405,7 @@ mod tests {
             let own = named(w, "Own", DeclKind::CXXRecord)[0];
             let n = super::numbering(w, g);
             assert_eq!(n.types, vec![own]);
-            assert!(!n.cut);
+            assert_eq!(n.cut, None);
             assert_eq!(w.local.numbered, 1);
             // Memoised: asked again, nothing more is numbered.
             let _ = super::numbering(w, g);
@@ -1328,7 +1415,7 @@ mod tests {
 
     // digest §4.3 "Linear and bounded": a translation unit without local
     // types numbers no owner, local objects or not; one with them numbers
-    // each owner once.
+    // each owner once, before any unit, and none inside a unit's walk.
     #[test]
     fn the_common_case_numbers_nothing() {
         let src = "int f(int a) { int b = a; for (int i = 0; i < b; ++i) b += i; return b; }\n\
@@ -1337,7 +1424,8 @@ mod tests {
         assert_eq!(run(src, |w, _, _| w.local.numbered), 0);
         let src = "int f() { struct L { int m; }; auto l = [] { return 1; }; return L{1}.m + l(); }\n\
                    auto g() { struct M {}; return M{}; }\nauto x = g();\nauto y = g();\n";
-        assert_eq!(run(src, |w, _, _| w.local.numbered), 2);
+        // f, g and the call operator of f's closure.
+        assert_eq!(run(src, |w, _, _| (w.local.numbered, w.local.late)), (3, 0));
     }
 
     /// Every written unit's key and digest, sorted.
@@ -1372,9 +1460,10 @@ mod tests {
         keys_and_digests(&written)
     }
 
-    // digest §4.3 "Order of units does not matter": the same keys and
-    // digests with every owner numbered before any unit is written, and
-    // with the units written in reverse.
+    // digest §4.3 "Order of units does not matter": the walk numbers every
+    // owner before any unit (`number_all`); the same keys and digests when
+    // each owner is numbered where a unit's walk first asks (in unit
+    // order and in reverse), and when numbered by type before any unit.
     #[test]
     fn the_order_of_units_does_not_matter() {
         let src = "auto mk() { struct P { int v; }; return P{1}; }\n\
@@ -1424,6 +1513,10 @@ mod tests {
                         );
                         let mut w = Walk::new(&input, &rules);
                         let backward = walk_by_hand(&mut w, |_| {}, true);
+                        assert!(w.local.numbered >= 6, "numbered inside the walk");
+                        let mut w = Walk::new(&input, &rules);
+                        let lazy = walk_by_hand(&mut w, |_| {}, false);
+                        assert_eq!(lazy, backward);
                         (normal, forward, backward)
                     })
                     .expect("parses")
@@ -1613,5 +1706,101 @@ mod tests {
             w.decl_stream(&mut sc, c, c);
             assert_ne!(sb.as_bytes(), sc.as_bytes());
         });
+    }
+
+    // digest §4.3 "Things to settle" (WP-040): the owners of the places
+    // Kiln's test leaves out, and whether the owner's numbering finds the
+    // closure (`true`) or not (its uses are `UndeclaredLocal`).
+    #[test]
+    fn the_owner_of_each_closure_more() {
+        const SRC: &str = "struct T { static int s; };\n\
+        int T::s = [] { return 1; }();\n\
+        struct BF { int b : sizeof([] {}); };\n\
+        enum EN { e1 = sizeof([] {}) };\n\
+        struct BS : decltype([] {}) {};\n\
+        template <class T> void fdi(int a = [] { return 1; }()) {}\n\
+        void ud() { fdi<int>(); }\n\
+        template <class U, int N = sizeof([] { return 1; }())> void tf(U) {}\n\
+        void ut() { tf(1); tf(2L); }\n\
+        void k() { auto o = [y = [] { return 1; }] { return y(); }; static_assert(sizeof([] {}) > 0); }\n\
+        int pv = [] { return 2; }();\n";
+        let got = run(SRC, |w, _, _| {
+            let ast = w.ast;
+            let mut out = Vec::new();
+            for (line, o) in owners(w) {
+                out.push((line, o));
+            }
+            let mut found = Vec::new();
+            for i in 1..=ast.exprs.lambdas.len() {
+                let l = ast.exprs.lambdas.get(LambdaId::new(u32::try_from(i).expect("an index")));
+                found.push(super::type_number(w, l.closure).map_err(|c| format!("{c:?}")));
+            }
+            (out, found)
+        });
+        let got: Vec<(u32, &str, String)> =
+            got.0.iter().zip(&got.1).map(|((l, o), n)| (*l, o.as_str(), format!("{n:?}"))).collect();
+        let closure_owner = "Unsupported(\"local/closure-owner\")";
+        let unnumbered = "Err(\"UndeclaredLocal\")".to_owned();
+        let want: Vec<(u32, &str, String)> = vec![
+            // A static member defined outside its class: the variable.
+            (2, "Var s", "Ok(0)".into()),
+            // A bit-field width: the field.
+            (3, "Field b", "Ok(0)".into()),
+            // An enumerator and a base-specifier: no owner with a stream.
+            (4, closure_owner, format!("Err({closure_owner:?})")),
+            (5, closure_owner, format!("Err({closure_owner:?})")),
+            // A default argument of a template: the pattern's closure is
+            // the template's; the one Kiln instantiates for `fdi<int>` is
+            // the specialisation's, whose stream does not walk it.
+            (6, "FunctionTemplate fdi", "Ok(0)".into()),
+            (6, "Function fdi spec", unnumbered.clone()),
+            // A default template argument: one closure for the pattern and
+            // one per use, none walked by the template's stream.
+            (8, "FunctionTemplate tf", unnumbered.clone()),
+            (8, "FunctionTemplate tf", unnumbered.clone()),
+            (8, "FunctionTemplate tf", unnumbered),
+            // An init-capture's initialiser and a block-scope
+            // `static_assert`: the function.
+            (10, "Function k", "Ok(1)".into()),
+            (10, "Function k", "Ok(0)".into()),
+            (10, "Function k", "Ok(2)".into()),
+            (11, "Var pv", "Ok(0)".into()),
+        ];
+        assert_eq!(got, want);
+    }
+
+    // digest §4.3 "Local objects of another unit": a specialisation names
+    // a parameter of its pattern (an expansion statement's pattern) whose
+    // template has no local types and so no numbering: `Ref::outer` with
+    // the parameter's position, which is what the numbering gives.
+    #[test]
+    fn a_pattern_parameter_named_by_a_specialisation() {
+        let src = "struct P { int x, y; };\n\
+            template <class T> void f(int a, T t) { template for (int e : t) ; }\n\
+            template void f<P>(int, P);\n";
+        let (late, causes, direct, numbered) = run(src, |w, _, out| {
+            let ast = w.ast;
+            let t = ast
+                .decls
+                .ids()
+                .find(|&d| {
+                    ast.decls.get(d).kind() == DeclKind::ParmVar
+                        && ast.decls.get(d).name().as_ident().is_some_and(|s| ast.symbols().as_str(s) == "t")
+                        && super::owner(w, d).is_some_and(|o| ast.decls.get(o).kind() == DeclKind::FunctionTemplate)
+                })
+                .expect("the pattern's t");
+            let o = super::owner(w, t).expect("an owner");
+            let late = w.local.late;
+            let causes: Vec<Cause> = out.causes.iter().map(|(_, c)| *c).collect();
+            let direct = super::direct_param(w, o, t);
+            assert!(!w.local.numberings.contains_key(&o), "not numbered by number_all");
+            w.local.sealed = false;
+            let numbered = super::numbering(w, o).object_of(t).ok();
+            (late, causes, direct, numbered)
+        });
+        assert_eq!(late, 0);
+        assert!(causes.iter().all(|c| matches!(c, Cause::Pending(_))), "{causes:?}");
+        assert_eq!(direct, Some(1));
+        assert_eq!(numbered, Some(1));
     }
 }

@@ -465,7 +465,7 @@ mod tests {
     use crate::Input;
     use crate::stream::Stream;
     use crate::tables::stmt_kind;
-    use crate::walk::{NODE_LIMIT, STACK_LOW, STACK_SIZE, Walk};
+    use crate::walk::{DEPTH_LIMIT, NODE_LIMIT, STACK_LOW, STACK_SIZE, Walk};
 
     fn parse<R>(src: &str, std: &str, f: impl FnOnce(&slip_kiln::snippet::Parsed<'_>) -> R) -> R {
         let files = [("main.cpp", src)];
@@ -648,12 +648,15 @@ mod tests {
             let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
             let rules = RuleTable::empty();
             let mut w = Walk::new(&input, &rules);
+            // As `walk::run_with`: owners are numbered before any walk.
+            crate::local::number_all(&mut w);
             let body = StmtId::try_new(p.ast.stmts.len() as u32).expect("a statement");
             let mut s = Stream::new();
             STACK_LOW.with(|l| l.set(usize::MAX));
             let base = here();
             child(&mut w, &mut s, body);
             assert_eq!(w.node_depth, 0, "every level left");
+            assert_eq!(w.aborts, 0, "below every limit: the frames measured are all walked");
             base.saturating_sub(STACK_LOW.with(Cell::get))
         })
     }
@@ -689,9 +692,28 @@ mod tests {
             assert!(per_level > 0, "the probes saw the stack");
             worst = worst.max(per_level);
         }
-        let need = NODE_LIMIT as usize * worst;
+        // Lambdas (WP-040): a closure nested in a lambda's body, and one in
+        // a statement expression. Each nesting is a closure's stream and
+        // its call operator's, at least one level of DEPTH_LIMIT, so at
+        // most DEPTH_LIMIT nestings: measured per nesting, below the limit.
+        let lambda_shapes: [(&str, &str, &str); 2] =
+            [("lambda", "[&] { ", "}(); "), ("statement-expression lambda", "({ [&] { ", "}(); }); ")];
+        let mut worst_lambda = 0;
+        for (name, open, close) in lambda_shapes {
+            const LDEEP: usize = 40;
+            const LFLAT: usize = 10;
+            let src = |n: usize| {
+                format!("void f(int x, int (&a)[2]) {{ {}{} }}\n", open.repeat(n), close.repeat(n))
+            };
+            let per_nesting = (stack_of(&src(LDEEP)) - stack_of(&src(LFLAT))) / (LDEEP - LFLAT);
+            eprintln!("{name}: {per_nesting} bytes per nesting");
+            assert!(per_nesting > 0, "the probes saw the stack");
+            worst_lambda = worst_lambda.max(per_nesting);
+        }
+        let need = NODE_LIMIT as usize * worst + DEPTH_LIMIT as usize * worst_lambda;
         eprintln!(
-            "statements: {worst} bytes per level at most; NODE_LIMIT {NODE_LIMIT} levels: {need} bytes; \
+            "statements: {worst} bytes per level at most; lambdas {worst_lambda} bytes per nesting; \
+             NODE_LIMIT {NODE_LIMIT} levels and DEPTH_LIMIT {DEPTH_LIMIT} nestings: {need} bytes; \
              STACK_SIZE {STACK_SIZE}"
         );
         assert!(4 * need <= STACK_SIZE, "STACK_SIZE holds four times {need} bytes");

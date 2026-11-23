@@ -275,6 +275,7 @@ pub(crate) fn run_with<R>(
 ) -> R {
     let mut w = Walk::new(input, options.rules);
     crate::units::collect(&mut w);
+    crate::local::number_all(&mut w);
     let mut written: Vec<Written> = Vec::new();
     let mut i = 0;
     while i < w.queue.len() {
