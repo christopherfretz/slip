@@ -1,0 +1,2 @@
+# spec/landed/pitfalls/WP-109.md row R16, its good image against its pre-image (crates/slip_verify/tests/pitfalls/r16-deduction-guide, declared.txt): the deduction guide and Box<long> follow the renamed template.
+relocate Box => :: Crate
