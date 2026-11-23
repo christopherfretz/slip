@@ -209,24 +209,24 @@ fn embed(
     tried: &mut Places,
     missed: &mut Places,
 ) {
-    let mut tries: Vec<(&str, String)> = Vec::new();
+    let mut order: Vec<(&str, String)> = Vec::new();
     if let Some(i) = l.includer {
-        tries.push((dir(log, i), join_path(dir(log, i), &l.name)));
+        order.push((dir(log, i), join_path(dir(log, i), &l.name)));
     }
     if !l.angled {
-        tries.push((".", l.name.clone()));
+        order.push((".", l.name.clone()));
     }
-    tries.extend(embed_dirs.iter().map(|d| (d.as_str(), join_path(d, &l.name))));
-    for (d, _) in &tries {
+    order.extend(embed_dirs.iter().map(|d| (d.as_str(), join_path(d, &l.name))));
+    for (d, _) in &order {
         tried.push(d, &l.name);
     }
     let read = match &l.found {
-        Found::Embed { path } => tries.iter().position(|(_, p)| p == path),
+        Found::Embed { path } => order.iter().position(|(_, p)| p == path),
         _ => None,
     };
     // A path read that is none of the tries cannot be placed: every try is
     // then missed, which refuses more, never less.
-    for (d, _) in &tries[..read.unwrap_or(tries.len())] {
+    for (d, _) in &order[..read.unwrap_or(order.len())] {
         missed.push(d, &l.name);
     }
 }

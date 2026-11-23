@@ -1,6 +1,7 @@
 //! The cost of the map shard's negative inputs (work package WP-117,
 //! `spec/landed/verify/WP-117.md` "Costs"): not part of the gate.
 
+use std::fmt::Write as _;
 use std::time::Instant;
 
 use slip_cli::worker::map_observer;
@@ -116,11 +117,13 @@ fn measure_negatives_on_a_unit() {
             .map(|p| &p[..p.iter().rposition(|&b| b == b'/').unwrap_or(0)])
             .collect::<std::collections::HashSet<_>>()
             .len();
-        line.push_str(&format!(
+        write!(
+            line,
             " negatives={} dirs={dirs} section={} B (in the shard) flat={flat} front={front} grouped={grouped}",
             n.len(),
             total - without,
-        ));
+        )
+        .expect("a String");
     }
     println!("{line}");
 }
