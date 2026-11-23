@@ -1606,8 +1606,7 @@ fn wp119_friend_over_two_observers_end_to_end() {
     let mains = ["a.cpp", "b.cpp"];
     let r = end_to_end("wp119-i5", &files, &mains, &["n", "f"], "g", &right);
     assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
-    type Wrong = (&'static str, &'static str, &'static str, &'static str);
-    let wrongs: [Wrong; 3] = [
+    let wrongs: [(&str, &str, &str, &str); 3] = [
         ("wp119-i5-namespace-kept", "s.h", "int g(S<int>);", "int f(S<int>);"),
         ("wp119-i5-friend-kept", "s.h", "friend int g(S)", "friend int f(S)"),
         ("wp119-i5-call-kept", "b.cpp", "return g(s);", "return f(s);"),
