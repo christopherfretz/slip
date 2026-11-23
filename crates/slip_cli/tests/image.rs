@@ -441,6 +441,8 @@ fn s5_1_under_subject_by_identity() {
     if std::fs::metadata(&upper).is_ok() {
         assert!(image.under_subject(&bytes(&upper.join("inc/h.h"))));
     } else {
-        eprintln!("s5_1_under_subject_by_identity: case: SKIPPED, the file system is case-sensitive");
+        eprintln!(
+            "s5_1_under_subject_by_identity: case: SKIPPED, the file system is case-sensitive"
+        );
     }
 }
