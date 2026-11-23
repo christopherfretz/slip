@@ -989,24 +989,26 @@ counts):
   error at the same place: `clang/tools/clang-fuzzer/ClangFuzzer.cpp` and
   `ClangObjectiveCFuzzer.cpp` name `uint8_t` without including a header
   that declares it (no target of the configuration builds them).
-- With Kiln at `62d190007`, nineteen units are `failed`: the front end
-  panics in three defects of Kiln's constant evaluator. Six are the two
+- With Kiln at `62d190007`, nineteen units were `failed`: the front end
+  panicked in three defects of Kiln's constant evaluator. Six were the two
   of `docs/requests/KD1-oven-panics-llvm.md`; thirteen (eleven of
   `llvm/lib/DWARFLinker/Parallel`, two unit tests) include
   `llvm/ADT/ConcurrentHashtable.h`, whose parenthesised `std::min` call
-  as a shift count panics a fast path Kiln added between Slip's two pins
-  (`docs/requests/KD2-oven-minmax-paren.md`). Slip's pin moved to
-  `83566cc47` (Kiln's `main`, WP-044), which has both fixes: the
-  reproducers of KD1 and KD2 parse `ok` (`crates/slip_kiln/tests/
-  parse.rs`); it is now `913a490bb` (Kiln's `main`, WP-101), which adds
-  the preprocessing record and the editable ranges, both off for the
-  parse task, and leaves the AST as it was. The counts in this section
-  and in `bench/baselines/llvm.json` are still those of `62d190007`
-  until the corpus is run again at the new pin.
-- The parse task on Kiln's front-end entry (WP-025) gives every unit
-  that is not `failed` the shard the dependency-file flow of WP-010 gave
-  it at `4bfd999da`: 4040 `ok` and 2 `diagnosed` shards with the same
-  outcome and the same inputs, entry for entry. `pp.tokens` is 2 787 822 931.
+  as a shift count panicked a fast path Kiln added between Slip's two pins
+  (`docs/requests/KD2-oven-minmax-paren.md`). Kiln's `main` fixed both
+  (`83566cc47`, WP-044). With Kiln at `913a490bb` (WP-101) none is
+  `failed`: 4059 `ok` and the 2 `diagnosed` above.
+- The counts of `bench/baselines/llvm.json` are those of the map task
+  (WP-050: the parse task and the semantic digest's walk, `spec/model.md`
+  §8.5) at `913a490bb`, so they hold the `digest.*` counters of every
+  `ok` shard. Against the parse-only run at `62d190007`, `inputs.files`
+  rose by 9730, `inputs.bytes` by 152 341 114 and `pp.tokens` by
+  14 471 506: the nineteen units that now parse are counted (whether
+  any other unit's inputs moved with the pin was not compared).
+- Before the pin moved, the parse task on Kiln's front-end entry (WP-025)
+  gave every unit that was not `failed` the shard the dependency-file flow
+  of WP-010 gave it at `4bfd999da`: 4040 `ok` and 2 `diagnosed` shards
+  with the same outcome and the same inputs, entry for entry.
 
 ## 9. Corpus invariants
 
