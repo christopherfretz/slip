@@ -122,6 +122,11 @@ impl<'a> Keys<'a> {
     /// The same over a post-image, with the Slip run's rules: the keys
     /// are then mapped, in the pre-image's key space (`spec/verify.md`
     /// §2.1). Runs nothing.
+    ///
+    /// A table that holds a rule §2.1 refuses (`RuleTable::refused`) is
+    /// taken as the walk takes it: nothing is keyed under it. Every
+    /// `key_id`, `key` and `rename_rule` of an entity with a key kind is
+    /// `Indeterminate` with the walk's cause, and `derived` is empty.
     pub fn with_rules(input: &'a Input<'a>, rules: &'a RuleTable) -> Keys<'a> {
         Keys {
             input,
@@ -215,7 +220,12 @@ impl<'a> Keys<'a> {
     /// writes.
     pub fn key_id(&mut self, e: DeclId) -> Result<Digest, NoKey> {
         let e = self.w.entity(e);
-        if let Role::Content(_) = info(self.w.ast.decls.get(e).kind()).role {
+        // Under a table that holds a refused rule (`RuleTable::refused`)
+        // the walk keys nothing, a content-keyed unit included: its
+        // refusal is `Walk::key`'s, with the walk's cause.
+        if let Role::Content(_) = info(self.w.ast.decls.get(e).kind()).role
+            && self.rules.refused().is_none()
+        {
             return Err(NoKey::ContentKeyed);
         }
         match self.w.key(e) {
@@ -258,6 +268,10 @@ impl<'a> Keys<'a> {
     /// runs the walk over the translation unit, as `digest` does, to know
     /// which units it writes.
     pub fn derived(&mut self, e: DeclId) -> Vec<Digest> {
+        // Under a refused table no unit has a key to list.
+        if self.rules.refused().is_some() {
+            return Vec::new();
+        }
         let e = self.w.entity(e);
         let mut found: Vec<DeclId> = Vec::new();
         {

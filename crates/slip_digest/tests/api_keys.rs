@@ -855,13 +855,12 @@ fn rename_rule_undoes_a_rename() {
     assert!(errs.is_empty(), "{}", errs.join("\n"));
 }
 
-// The renames that wait for WP-103 (the rules suite's fix round, the
-// branch where a specialisation's key takes its template's mapped name,
-// a member of an implicit instantiation is reached by its template
-// member's rule, and a decomposition takes its first binding's mapped
-// name): on today's main the digests are not equal.
+// The renames that waited for WP-103 (a specialisation's key takes its
+// template's mapped name, a member of an implicit instantiation is
+// reached by its template member's rule, a decomposition takes its first
+// binding's mapped name), which pass since it landed.
 
-const PENDING: [Rename; 8] = [
+const AFTER_WP103: [Rename; 8] = [
     Rename {
         what: "a class template with an instantiation",
         pre: "template <class T> struct S { T t; };\nS<int> s;\nint use() { return s.t; }\n",
@@ -928,67 +927,112 @@ const PENDING: [Rename; 8] = [
     },
 ];
 
-// # pending WP-103: tests 4, 7 and 8 for a renamed class template with an
+// Tests 4, 7 and 8 for a renamed class template with an
 // instantiation.
 #[test]
-#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
-fn pending_rename_class_template_with_instantiation() {
-    check_rename(&PENDING[0]).unwrap_or_else(|e| panic!("{e}"));
+fn rename_after_wp103_class_template_with_instantiation() {
+    check_rename(&AFTER_WP103[0]).unwrap_or_else(|e| panic!("{e}"));
 }
 
-// # pending WP-103: the same for a member function of a class template
+// The same for a member function of a class template
 // with an instantiation.
 #[test]
-#[ignore = "pending WP-103: a rule on S::f reaches S<int>::f"]
-fn pending_rename_member_of_class_template_with_instantiation() {
-    check_rename(&PENDING[1]).unwrap_or_else(|e| panic!("{e}"));
+fn rename_after_wp103_member_of_class_template_with_instantiation() {
+    check_rename(&AFTER_WP103[1]).unwrap_or_else(|e| panic!("{e}"));
 }
 
-// # pending WP-103: the same for a structured binding.
+// The same for a structured binding.
 #[test]
-#[ignore = "pending WP-103: a decomposition takes its first binding's mapped name"]
-fn pending_rename_structured_binding() {
-    check_rename(&PENDING[2]).unwrap_or_else(|e| panic!("{e}"));
+fn rename_after_wp103_structured_binding() {
+    check_rename(&AFTER_WP103[2]).unwrap_or_else(|e| panic!("{e}"));
 }
 
-// # pending WP-103: the same for a function template with an
+// The same for a function template with an
 // instantiation.
 #[test]
-#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
-fn pending_rename_function_template_with_instantiation() {
-    check_rename(&PENDING[3]).unwrap_or_else(|e| panic!("{e}"));
+fn rename_after_wp103_function_template_with_instantiation() {
+    check_rename(&AFTER_WP103[3]).unwrap_or_else(|e| panic!("{e}"));
 }
 
-// # pending WP-103: the same for a variable template with an
+// The same for a variable template with an
 // instantiation.
 #[test]
-#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
-fn pending_rename_variable_template_with_instantiation() {
-    check_rename(&PENDING[4]).unwrap_or_else(|e| panic!("{e}"));
+fn rename_after_wp103_variable_template_with_instantiation() {
+    check_rename(&AFTER_WP103[4]).unwrap_or_else(|e| panic!("{e}"));
 }
 
-// # pending WP-103: the same for a function template with an explicit
+// The same for a function template with an explicit
 // specialisation.
 #[test]
-#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
-fn pending_rename_function_template_with_explicit_specialisation() {
-    check_rename(&PENDING[5]).unwrap_or_else(|e| panic!("{e}"));
+fn rename_after_wp103_function_template_with_explicit_specialisation() {
+    check_rename(&AFTER_WP103[5]).unwrap_or_else(|e| panic!("{e}"));
 }
 
-// # pending WP-103: the same for a member function template of a class
+// The same for a member function template of a class
 // that is no template.
 #[test]
-#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
-fn pending_rename_member_function_template() {
-    check_rename(&PENDING[6]).unwrap_or_else(|e| panic!("{e}"));
+fn rename_after_wp103_member_function_template() {
+    check_rename(&AFTER_WP103[6]).unwrap_or_else(|e| panic!("{e}"));
 }
 
-// # pending WP-103: the same for a class template used through class
+// The same for a class template used through class
 // template argument deduction (its implicit deduction guides).
 #[test]
-#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
-fn pending_rename_class_template_with_deduction() {
-    check_rename(&PENDING[7]).unwrap_or_else(|e| panic!("{e}"));
+fn rename_after_wp103_class_template_with_deduction() {
+    check_rename(&AFTER_WP103[7]).unwrap_or_else(|e| panic!("{e}"));
+}
+
+// A table that holds a rule `spec/verify.md` §2.1 refuses (WP-103,
+// `RuleTable::refused`): the walk keys nothing under it, and `Keys`
+// mirrors it, with the walk's cause, content-keyed units included.
+#[test]
+fn a_refused_table_keys_nothing() {
+    let src = "template <class T> struct S {};\n\
+               S<int> si;\n\
+               int f(int p) { return p; }\n\
+               static_assert(true);\n";
+    snippet(src, |input| {
+        let ast = input.ast;
+        let mut plain = Keys::new(input);
+        let spec = ast
+            .decls
+            .ids()
+            .find(|&d| {
+                ast.spec_info(d).is_some_and(|(_, s)| s.kind == SpecKind::ImplicitInstantiation)
+            })
+            .expect("S<int>");
+        let sk = plain.key(spec).expect("S<int>'s key");
+        let refused_rule = Rule {
+            parent: sk.parent,
+            kind: sk.kind,
+            name: Name::Identifier(b"R".to_vec()),
+            disc: sk.disc,
+            to_parent: sk.parent,
+            to_name: sk.name.clone(),
+        };
+        let table = RuleTable::new(vec![refused_rule]).expect("a table may hold it");
+        assert!(table.refused().is_some());
+        let cause = NoKey::Indeterminate(Cause::Unaccounted("key/refused-rule"));
+        let mut k = Keys::with_rules(input, &table);
+        let f = one(ast, "f", DeclKind::Function);
+        let s = one(ast, "S", DeclKind::ClassTemplate);
+        let sa = of_kind(ast, DeclKind::StaticAssert)[0];
+        for e in [f, s, spec, sa] {
+            assert_eq!(k.key_id(e), Err(cause), "{e:?}");
+            assert_eq!(k.key(e), Err(cause), "{e:?}");
+            assert!(k.derived(e).is_empty(), "{e:?}");
+        }
+        assert_eq!(k.rename_rule(f, b"g"), Err(cause));
+        assert!(!plain.derived(s).is_empty(), "S<int> is derived from S without the table");
+        // What has no key has none under it either.
+        assert_eq!(k.key_id(one(ast, "p", DeclKind::ParmVar)), Err(NoKey::NotAUnit));
+        // The walk agrees: every unit it writes under the table is
+        // indeterminate.
+        let out = digest(input, &table);
+        let units = walk_units(input, &table);
+        let causes: BTreeSet<Digest> = out.causes.iter().map(|(k, _)| *k).collect();
+        assert!(!units.is_empty() && units.iter().all(|u| causes.contains(&u.key)));
+    });
 }
 
 // verify §2.3 "An entity with C language linkage": the rule of a function
