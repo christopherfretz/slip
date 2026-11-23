@@ -12,3 +12,6 @@ struct X { M k; M m; std::strong_ordering operator<=>(const X &) const = default
 #else
 struct X { M m; M k; std::strong_ordering operator<=>(const X &) const = default; };
 #endif
+// The use defines the defaulted operator on both sides (its body is the
+// resolved unit `definition`, digest-kinds §11.9).
+bool r = (X{} <=> X{}) == 0;

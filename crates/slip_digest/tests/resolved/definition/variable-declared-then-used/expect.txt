@@ -1,0 +1,3 @@
+resolved v<int>::<definition>
+resolved v<int>::<value>
+added h()

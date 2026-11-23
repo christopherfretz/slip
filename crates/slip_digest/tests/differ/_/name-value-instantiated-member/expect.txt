@@ -1,0 +1,3 @@
+exact derived
+changed S::m()
+derived-changed S<int>::m()::<definition>

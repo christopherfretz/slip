@@ -1,5 +1,5 @@
 # pending
-# needs: demand
+# needs: WP-046 open question (Kiln evaluates the in-class form, or §11.3 writes no unit for one)
 # WP-046: Kiln evaluates `const int S::x = 1;` at its declaration and never
 # records an evaluation of the in-class `static const int x = 1;` (not even
 # for a constant-expression use), so S::x::<value> (digest-kinds §11.3) is
