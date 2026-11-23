@@ -154,7 +154,7 @@ fn huge_counts() {
     // scheme, plan, round, transform, basis and state.
     let state = 19 + 1 + 32 + 1 + 32 + 32;
     assert_eq!(bytes[state + 1], 3, "files count of the sample");
-    let mut b = bytes[..state + 1].to_vec();
+    let mut b = bytes[..=state].to_vec();
     b.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f]);
     b.extend_from_slice(&bytes[state + 2..]);
     let b = reseal(b);
@@ -165,6 +165,7 @@ fn huge_counts() {
 // ---------------------------------------------------------------------------
 // Generated values
 
+#[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §6")]
 fn gen_set(r: &mut Lcg) -> EditSet {
     let n = 1 + r.below(3);
     let files: Vec<FileRef> = (0..n)
@@ -320,29 +321,30 @@ fn generated_values() {
         match x.validate() {
             Ok(()) => {
                 valid += 1;
-                let b = x.to_bytes();
-                assert_eq!(EditSet::from_bytes(&b).unwrap(), x);
+                let bytes = x.to_bytes();
+                assert_eq!(EditSet::from_bytes(&bytes).unwrap(), x);
                 assert_eq!(EditSet::from_json(&x.to_json()).unwrap(), x);
-                assert_eq!(undump(&json::parse(dump(&b).unwrap().as_bytes()).unwrap()).unwrap(), b);
+                let text = dump(&bytes).unwrap();
+                assert_eq!(undump(&json::parse(text.as_bytes()).unwrap()).unwrap(), bytes);
             }
             Err(v) => {
                 invalid += 1;
-                let e = EditSet::from_json(&x.to_json()).unwrap_err();
-                assert_eq!(v, format!("{}: {}", e.path, e.message));
-                assert_eq!(undump(&x.to_json()).unwrap_err(), e);
+                let err = EditSet::from_json(&x.to_json()).unwrap_err();
+                assert_eq!(v, format!("{}: {}", err.path, err.message));
+                assert_eq!(undump(&x.to_json()).unwrap_err(), err);
             }
         }
-        let o = gen_overlay(&mut r);
-        match o.validate() {
+        let ov = gen_overlay(&mut r);
+        match ov.validate() {
             Ok(()) => {
-                let b = o.to_bytes();
-                assert_eq!(Overlay::from_bytes(&b).unwrap(), o);
-                assert_eq!(Overlay::from_json(&o.to_json()).unwrap(), o);
-                survives(&b);
+                let bytes = ov.to_bytes();
+                assert_eq!(Overlay::from_bytes(&bytes).unwrap(), ov);
+                assert_eq!(Overlay::from_json(&ov.to_json()).unwrap(), ov);
+                survives(&bytes);
             }
             Err(v) => {
-                let e = Overlay::from_json(&o.to_json()).unwrap_err();
-                assert_eq!(v, format!("{}: {}", e.path, e.message));
+                let err = Overlay::from_json(&ov.to_json()).unwrap_err();
+                assert_eq!(v, format!("{}: {}", err.path, err.message));
             }
         }
     }

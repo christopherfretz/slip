@@ -1399,6 +1399,8 @@ fn unlisted_values() {
 // spec/landed/edits/WP-061.md §6: the JSON members, in order; a missing,
 // extra or misplaced member is an error at its path.
 #[test]
+#[allow(clippy::many_single_char_names, reason = "one short name per record of §6")]
+#[allow(clippy::too_many_lines, reason = "one block per kind, one statement per record")]
 fn json_members() {
     let v = sample().to_json();
     let s = v.get("sections").unwrap().get("set").unwrap();
@@ -2110,9 +2112,12 @@ fn set_state() {
     x.validate().unwrap();
 }
 
+/// A change that breaks one rule, and the path of the violation.
+type Break<T> = (fn(&mut T), &'static str);
+
 /// One break for each row of §6.1, in the table's order, each alone a
 /// violation at its path.
-fn set_rows() -> Vec<(fn(&mut EditSet), &'static str)> {
+fn set_rows() -> Vec<Break<EditSet>> {
     vec![
         (|x| x.scheme = 0, "sections.set.scheme"),
         (|x| x.files[2].path = b"/s/./b.h".to_vec(), "sections.set.files[2]"),
@@ -2128,7 +2133,7 @@ fn set_rows() -> Vec<(fn(&mut EditSet), &'static str)> {
         (|x| x.refusals[0].first = vec![d(0xd0)], "sections.set.refusals[0].first"),
         (|x| x.unresolved.push(place(2, 1, 4)), "sections.set.unresolved[1]"),
         (|x| x.refusals[2].reason = Reason::Crossing, "sections.set.refusals[2].reason"),
-        (|x| x.counters[0].name = "A".to_owned(), "sections.set.counters[0].name"),
+        (|x| "A".clone_into(&mut x.counters[0].name), "sections.set.counters[0].name"),
         (|x| x.refusals[0].cause = Cause::NoObserver, "sections.set.state"),
     ]
 }
@@ -2209,7 +2214,7 @@ fn overlay_invariants() {
 
 #[test]
 fn overlay_order_of_checks() {
-    let rows: Vec<(fn(&mut Overlay), &str)> = vec![
+    let rows: Vec<Break<Overlay>> = vec![
         (|x| x.files[2].path = b"/s/x/".to_vec(), "sections.overlay.files[2]"),
         (|x| x.files[1].path = b"/s/a.cc".to_vec(), "sections.overlay.files[1]"),
         (|x| x.spellings.swap(1, 2), "sections.overlay.spellings[2]"),
@@ -2367,7 +2372,7 @@ fn result_invariants() {
 
 #[test]
 fn result_order_of_checks() {
-    let rows: Vec<(fn(&mut TransformResult), &str)> = vec![
+    let rows: Vec<Break<TransformResult>> = vec![
         (|x| x.scheme = 2, "sections.result.scheme"),
         (|x| x.agreement.swap(0, 1), "sections.result.agreement[1]"),
         (|x| x.unused = vec![4, 1], "sections.result.unused[1]"),
@@ -2448,7 +2453,8 @@ fn transform_run_names_of_a_record() {
 #[test]
 fn geometry_cases() {
     // (a, b, share_byte, within(a, b), within(b, a), cross)
-    let cases: [((u64, u64), (u64, u64), bool, bool, bool, bool); 12] = [
+    type Case = ((u64, u64), (u64, u64), bool, bool, bool, bool);
+    let cases: [Case; 12] = [
         ((0, 2), (5, 7), false, false, false, false), // disjoint
         ((0, 2), (2, 4), false, false, false, false), // touching at one end
         ((1, 3), (1, 3), true, true, true, false),    // equal

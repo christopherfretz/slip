@@ -110,12 +110,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Overlay, Vec<Extra<'_>>, Digest)> 
     let mut d = super::required(section, opened.end, "overlay has no overlay section")?;
     let edits = d.digest()?;
     let files_at = d.offset();
-    let mut file_at = Vec::new();
-    let files = dec_list(&mut d, Some(&mut file_at), |d| {
+    let mut file_offsets = Vec::new();
+    let files = dec_list(&mut d, Some(&mut file_offsets), |d| {
         Ok(OverlayFile { path: d.bytes()?.to_vec(), pre: dec_content(d)?, post: dec_content(d)? })
     })?;
-    let mut spelling_at = Vec::new();
-    let spellings = dec_list(&mut d, Some(&mut spelling_at), |d| {
+    let mut spelling_offsets = Vec::new();
+    let spellings = dec_list(&mut d, Some(&mut spelling_offsets), |d| {
         Ok(Obligation { file: d.uv()?, lo: d.uv()?, hi: d.uv()?, key: d.digest()? })
     })?;
     d.finish()?;
@@ -123,8 +123,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Overlay, Vec<Extra<'_>>, Digest)> 
     if let Some((l, what)) = violation(&x) {
         let at = match l {
             Loc::Files => files_at,
-            Loc::File(i) => file_at[i],
-            Loc::Spelling(i) => spelling_at[i],
+            Loc::File(i) => file_offsets[i],
+            Loc::Spelling(i) => spelling_offsets[i],
         };
         return Err(malformed(at, what));
     }

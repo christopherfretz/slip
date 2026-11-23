@@ -488,6 +488,9 @@ fn first_what(first: &[Digest], observers: u64) -> Option<&'static str> {
     }
 }
 
+/// A list's location and the `(first, observers)` of its records.
+type FirstLists<'a> = (&'a dyn Fn(usize) -> Loc, Vec<(&'a [Digest], u64)>);
+
 /// Row 13: `first` at most 8 entries and at most `observers`, an edit's
 /// `notes` at most 8, in field order.
 fn first_violation(x: &EditSet) -> Violation {
@@ -499,7 +502,7 @@ fn first_violation(x: &EditSet) -> Violation {
             return Some((Loc::EditFirst(i), what));
         }
     }
-    let lists: [(&dyn Fn(usize) -> Loc, Vec<(&[Digest], u64)>); 4] = [
+    let lists: [FirstLists<'_>; 4] = [
         (&Loc::ChangedFirst, x.changed.iter().map(|c| (c.first.as_slice(), c.observers)).collect()),
         (
             &Loc::RefusalFirst,
@@ -525,9 +528,13 @@ fn exempt_key(e: &Exempt) -> (&Digest, &Place, &[u8]) {
     (&e.key, &e.place, &e.reason)
 }
 
+/// The sort key of a failure: `(kind, message, place)`, a place as
+/// `(file, line, column)`.
+type FailureKey<'a> = (FailureKind, &'a [u8], Option<(&'a [u8], u64, u64)>);
+
 /// `(kind, message, place)`, an absent place first (§6).
 fn failure_cmp(a: &Failed, b: &Failed) -> Ordering {
-    fn key(f: &Failed) -> (FailureKind, &[u8], Option<(&[u8], u64, u64)>) {
+    fn key(f: &Failed) -> FailureKey<'_> {
         let x = &f.failure;
         (
             x.kind,

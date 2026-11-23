@@ -556,6 +556,7 @@ pub(super) fn render(x: &TransformResult, extras: &[Extra<'_>]) -> Value {
 }
 
 /// The result and the unknown ignorable sections of a JSON rendering.
+#[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §8.5")]
 pub(super) fn read(v: &Value) -> JResult<(TransformResult, OwnedExtras)> {
     let s = read_container(v, TransformResult::KIND, TransformResult::VERSION, &NAMES)?;
     let [Some(section)] = s.known else {
