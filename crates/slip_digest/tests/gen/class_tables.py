@@ -438,6 +438,16 @@ pair("indeterminate", "typedef-alignment-by-value-third-declaration", "",
      "aligned(16), then aligned(8) twice: the two latest declarations agree, the first does not"
      " (Kiln's `redecls_of` walks from the latest), so every declaration is compared.",
      post=USE_R)
+pair("differ", "typedef-alignment-same-requests-other-order", "int v;", "R v;", ["changed v"],
+     "two declarations with the same two `aligned` requests in another order: the same set,"
+     " so they agree and stay determinate.",
+     pre="typedef int R __attribute__((aligned(8), aligned(16)));\n"
+         "typedef int R __attribute__((aligned(16), aligned(8)));")
+pair("differ", "typedef-alignment-same-value-expression", "int v;", "R v;", ["changed v"],
+     "two declarations whose argument is the same constant expression: Sema keeps its value,"
+     " so they agree and stay determinate.",
+     pre="typedef int R __attribute__((aligned(alignof(long) * 2)));\n"
+         "typedef int R __attribute__((aligned(alignof(long) * 2)));")
 pair("differ", "typedef-alignment-same-value", "int v;", "R v;", ["changed v"],
      "every declaration carries aligned(16): the declarations agree, determinate.",
      pre=R16 + "\n" + R16)

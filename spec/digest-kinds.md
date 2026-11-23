@@ -499,16 +499,23 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    After 4096 steps the walk stops, and the type is indeterminate:
    `Unsupported("TypeView/Typedef-aligned-bound")`.
 
-   A listed typedef whose declarations disagree (some carry an
-   alignment, some do not) makes the type indeterminate:
+   A listed typedef whose declarations do not all carry the same
+   alignment makes the type indeterminate:
    `Unsupported("typedef/alignment-by-declaration")`. The typedef's own
-   unit is indeterminate for the same cause. Kiln's layout reads every
-   declaration, but its `alignof` (`Ast::layout_attributed_typedef`,
-   `kiln_ast/src/layout_sugar.rs:58`, asked by the Oven and by codegen)
-   reads only the declaration the sugar node names, so the answer
-   depends on which declaration a use names, a fact no unit holds. The
-   digest does not try to say which. The cause goes when Kiln reads
-   every declaration there too.
+   unit is indeterminate for the same cause. The declarations disagree
+   when one carries an alignment and another none, or their requests
+   (each `ALIGNED` attribute's value, the target's biggest alignment
+   for one with no argument, the canonical type of `alignas(type-id)`,
+   and the `cold.alignment` value) differ as sets, or a request's value
+   is not a constant the AST holds (read as Kiln's layout reads it). A
+   single declaration agrees. Kiln's `alignof`
+   (`Ast::layout_attributed_typedef`, `kiln_ast/src/layout_sugar.rs:58`,
+   asked by the Oven and by codegen) reads only the declaration the
+   sugar node names, and its layout reads every declaration present
+   when a class is first laid out, then caches the layout. So the answer
+   depends on which declaration a use names and where a layout is first
+   asked for, facts no unit holds. The digest does not try to say which.
+   The cause goes when Kiln reads the declarations as clang does.
 
    What is written depends on the sugar a typedef `I` carrying an
    alignment is reached through.
