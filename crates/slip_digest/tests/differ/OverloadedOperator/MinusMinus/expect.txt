@@ -1,0 +1,3 @@
+changed S
+removed S::operator--()
+added S::operator co_await()

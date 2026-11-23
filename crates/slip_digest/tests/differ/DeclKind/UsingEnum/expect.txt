@@ -1,0 +1,2 @@
+added <using_enum E>
+added <shadow E::e>

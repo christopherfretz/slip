@@ -1,2 +1,2 @@
 # the body is walked when statements land
-changed f(type-parameter-0-0)
+changed template <class> decltype(auto) f(type-parameter-0-0)

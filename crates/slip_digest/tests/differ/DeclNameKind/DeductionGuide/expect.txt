@@ -1,0 +1,1 @@
+added <deduction guide for S>(char)

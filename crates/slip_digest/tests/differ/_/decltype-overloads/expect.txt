@@ -1,1 +1,1 @@
-added f(type-parameter-0-0)
+added template <class> decltype(a - 1) f(type-parameter-0-0)

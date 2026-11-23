@@ -1,2 +1,2 @@
 # the expansion statement is in a function body (the statements package)
-changed ex(type-parameter-0-0)
+changed template <class> void ex(type-parameter-0-0)

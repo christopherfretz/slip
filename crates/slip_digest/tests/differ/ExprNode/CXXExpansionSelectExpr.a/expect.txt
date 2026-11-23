@@ -1,4 +1,4 @@
 # the expansion statement is in a function body (the statements package)
-added ex(type-parameter-0-0)
+added template <class> int ex(type-parameter-0-0)
 removed ex(int)
 changed i
