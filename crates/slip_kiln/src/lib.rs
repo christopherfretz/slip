@@ -11,7 +11,9 @@
 //!   observer to its shard, through Kiln's front-end library entry
 //!   `kiln_driver::front_end::run_front_end`) and [`parse_observer_with`]
 //!   (the same, with a closure called on the finished [`Unit`] before
-//!   anything is dropped: the production entry of the semantic digest);
+//!   anything is dropped: the production entry of the semantic digest),
+//!   whose [`ParseOptions`] ask for what the front end keeps only on
+//!   request (the preprocessing record);
 //! - [`KilnCheck`] (`spec/cdb.md` §6) and [`kiln_version`];
 //! - the module [`kiln`] (re-exports of Kiln's crates), which [`Unit`]'s
 //!   methods name, and the module [`snippet`] (an in-memory front end for
@@ -36,10 +38,16 @@ mod parse;
 /// names them through here, and this crate's manifest stays the only one
 /// that names a `kiln_*` crate (`spec/harness.md` §3, `kiln-boundary`).
 /// Only `slip_digest` and `slip_script` may use this module. `oven` is
-/// there for [`snippet::Parsed::oven`] and [`Unit::oven`].
+/// there for [`snippet::Parsed::oven`] and [`Unit::oven`]; `pp` for the
+/// preprocessing record ([`Unit::pp_record`], Kiln's `kiln_pp::PpRecord`)
+/// and `lex` for `kiln_lex::token_end` (the end of a token), so that the
+/// packages reading them call Kiln's functions and take no Kiln
+/// dependency of their own (`docs/wp/WP-101.md`).
 pub mod kiln {
     pub use kiln_ast as ast;
+    pub use kiln_lex as lex;
     pub use kiln_oven as oven;
+    pub use kiln_pp as pp;
     pub use kiln_snap as snap;
     pub use kiln_source as source;
 }
@@ -47,7 +55,7 @@ pub mod kiln {
 pub mod snippet;
 
 pub use check::KilnCheck;
-pub use parse::{Unit, parse_observer, parse_observer_with};
+pub use parse::{ParseOptions, Unit, parse_observer, parse_observer_with};
 
 /// The version of the Kiln front end this build of Slip links
 /// (`MAJOR.MINOR.PATCH[-PRE]`).
