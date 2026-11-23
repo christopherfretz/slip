@@ -478,6 +478,31 @@ fn s1_test5_unit_order_expansions() {
     });
 }
 
+/// Test 5, locations that are no token: an invocation comes before the
+/// tokens it expands to, and an `#include` before the included file's
+/// tokens (a chain that is a prefix of the other comes first).
+#[test]
+fn s1_test5_unit_order_invocation_and_include_come_first() {
+    let src = "#define E x y\nint x, y;\nint q = (E);\n#include \"h.h\"\n";
+    unit(src, &[("h.h", "int h1;\n")], |u| {
+        let sm = u.sm();
+        let main = u.p.unit().main_file().expect("a main file");
+        let off = |needle: &str| sm.loc(main, u32::try_from(sm.text(main).find(needle).unwrap()).unwrap());
+        let at = |t: &str, n: usize| u.toks[u.nth(t, n)].span.lo;
+        let (open, inv, close) = (at("(", 0), off("E);"), at(")", 0));
+        let (x, y) = (at("x", 1), at("y", 1));
+        assert!(x.is_macro() && y.is_macro());
+        for (a, b) in [(open, inv), (inv, x), (x, y), (y, close)] {
+            assert_eq!(unit_order(sm, a, b), Ordering::Less, "{a:?} {b:?}");
+            assert_eq!(unit_order(sm, b, a), Ordering::Greater, "{a:?} {b:?}");
+        }
+        let (h1, include) = (at("h1", 0), sm.include_loc(at("h1", 0)));
+        assert!(include.is_valid());
+        assert_eq!(unit_order(sm, include, h1), Ordering::Less);
+        assert_eq!(unit_order(sm, h1, include), Ordering::Greater);
+    });
+}
+
 /// Test 5: the order is total over a source with includes, expansions,
 /// arguments split by expansions, `#` and `##`.
 #[test]

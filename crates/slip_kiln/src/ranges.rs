@@ -25,7 +25,7 @@
 use std::cmp::Ordering;
 
 use crate::Unit;
-use crate::kiln::source::{FileId, Loc, SourceManager, Span};
+use crate::kiln::source::{FileId, FileOrigin, Loc, SourceManager, Span};
 
 /// The tier of a file range (`spec/api.md` §5.4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -118,8 +118,12 @@ const MAX_DEPTH: usize = 1 << 16;
 /// there. It is a total order on all locations: equal exactly when `a ==
 /// b`. Locations that are no token of the sequence (an invocation's
 /// parentheses, an argument as written) are placed by the same rule.
-/// Roots (the main file, the predefines, a buffer never included) are in
-/// raw order; the invalid location is a root.
+/// The invalid location is a root and comes first. Then the predefines
+/// buffer (`<built-in>`), which the preprocessor reads before the main
+/// file although it creates it after: it holds the command line's macros
+/// and the `#include` lines of `-include`, so every location of a forced
+/// header comes before every location of the main file. Then the other
+/// roots (the main file, a buffer never included) in raw order.
 pub fn unit_order(sm: &SourceManager, a: Loc, b: Loc) -> Ordering {
     if a == b {
         return Ordering::Equal;
@@ -130,12 +134,32 @@ pub fn unit_order(sm: &SourceManager, a: Loc, b: Loc) -> Ordering {
     }
     let (pa, pb) = (chain(sm, a), chain(sm, b));
     // Root first: compare from the far ends.
-    for (x, y) in pa.iter().rev().zip(pb.iter().rev()) {
+    for (k, (x, y)) in pa.iter().rev().zip(pb.iter().rev()).enumerate() {
         if x != y {
+            if k == 0 {
+                return root_rank(sm, *x).cmp(&root_rank(sm, *y)).then(x.cmp(y));
+            }
             return x.cmp(y);
         }
     }
     pa.len().cmp(&pb.len())
+}
+
+/// The rank of a root (raw location) in unit order: the invalid location,
+/// then the predefines buffer, then the rest. The predefines buffer is
+/// the in-memory buffer the preprocessor names `<built-in>` when it
+/// enters the main file (Kiln `Preprocessor::enter_main_file`), the name
+/// Kiln's own `-E` printer recognises it by.
+fn root_rank(sm: &SourceManager, raw: u32) -> u8 {
+    let loc = Loc::from_raw(raw);
+    if !loc.is_valid() {
+        return 0;
+    }
+    let builtin = !loc.is_macro()
+        && sm.offset_of(loc).is_some_and(|(f, _)| {
+            sm.file_origin(f) == FileOrigin::Virtual && sm.file_name(f) == "<built-in>"
+        });
+    if builtin { 1 } else { 2 }
 }
 
 /// The chain of `loc` to its root, `loc` first, as raw locations.

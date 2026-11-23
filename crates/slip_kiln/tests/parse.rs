@@ -624,6 +624,89 @@ fn s8_4_with_token_end_uses_the_unit_lexer_options() {
     assert_eq!(seen, Some((Some(2), Some(6), None)), "`u8`; `ab\\\ncd`; a blank is no token");
 }
 
+// `spec/api.md` §1 unit order through a real `-include` (WP-084): Kiln
+// writes the forced include as an `#include` line in `<built-in>`, a root
+// it creates after the main file and reads before it. The predefines and
+// every location of a forced header (and of a header it includes) come
+// before every location of the main file. The tree is under the target
+// directory.
+#[test]
+fn s1_unit_order_forced_include_comes_before_the_main_file() {
+    use slip_kiln::kiln::ast::ids::ExprId;
+    use slip_kiln::kiln::source::Loc;
+    use slip_kiln::ranges::unit_order;
+    use std::cmp::Ordering;
+    let _lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("slip-kiln-wp084-forced-include-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    std::fs::write(dir.join("pre.h"), "int p1 = 11;\n#include \"pre2.h\"\nint p2 = 12;\n").unwrap();
+    std::fs::write(dir.join("pre2.h"), "int q1 = 21;\n").unwrap();
+    std::fs::write(dir.join("main.cpp"), "#define E 31\nint m0 = 30;\nint m1 = E;\n").unwrap();
+    let o = observer(&dir, &["c++", "-include", "pre.h", "main.cpp"]);
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        let sm = unit.sm();
+        let ast = unit.ast();
+        let main = unit.main_file().expect("a main file");
+        let named = |n: &str| sm.file_ids().find(|&f| sm.file_name(f).ends_with(n)).expect(n);
+        let (builtin, pre, pre2) = (named("<built-in>"), named("/pre.h"), named("/pre2.h"));
+        assert!(builtin.index() > main.index(), "Kiln creates <built-in> after the main file");
+        // The first token of every expression (the integer literals), by
+        // the file it is in; a forced header's tokens are in the range of
+        // its inclusion, not in the buffer's own range.
+        let firsts: Vec<_> = (1..=ast.exprs.len())
+            .filter_map(|k| ExprId::try_new(u32::try_from(k).ok()?))
+            .map(|e| ast.begin_loc(e))
+            .filter(|l| l.is_valid())
+            .collect();
+        let in_file = |f| -> Vec<_> {
+            firsts.iter().copied().filter(|&l| sm.offset_of(l).is_some_and(|(g, _)| g == f)).collect()
+        };
+        let (p, q, mut m) = (in_file(pre), in_file(pre2), in_file(main));
+        m.extend(firsts.iter().copied().filter(|l| l.is_macro()));
+        // Every byte of each inclusion range of a forced header, every
+        // byte of <built-in> (the `#include` line), and those tokens;
+        // against every byte of the main file and its tokens, `E`'s
+        // expansion included.
+        let range_of = |l: Loc| {
+            let (f, off) = sm.offset_of(l).unwrap();
+            let base = l.to_raw() - off;
+            let len = u32::try_from(sm.text(f).len()).unwrap();
+            (0..=len).map(move |o| Loc::from_raw(base + o))
+        };
+        let bytes = |f| {
+            let len = u32::try_from(sm.text(f).len()).unwrap();
+            (0..=len).map(move |o| sm.loc(f, o))
+        };
+        let mut before: Vec<_> = bytes(builtin).collect();
+        before.extend(range_of(p[0]).chain(range_of(q[0])));
+        before.push(sm.include_loc(p[0]));
+        let after: Vec<_> = bytes(main).chain(m.iter().copied()).collect();
+        let mut wrong = 0;
+        for &a in &before {
+            for &b in &after {
+                wrong += usize::from(unit_order(sm, a, b) != Ordering::Less);
+                wrong += usize::from(unit_order(sm, b, a) != Ordering::Greater);
+            }
+        }
+        // Translation order: 11, 21, 12, 30, 31.
+        let order = [p[0], q[0], p[1], m[0], m[1]];
+        assert!(m[1].is_macro(), "31 comes from `E`");
+        for w in order.windows(2) {
+            wrong += usize::from(unit_order(sm, w[0], w[1]) != Ordering::Less);
+        }
+        (wrong, (p.len(), q.len(), m.len()), unit.errors())
+    })
+    .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok);
+    let (wrong, counts, errors) = seen.unwrap();
+    assert_eq!((counts, errors), ((2, 1, 2), 0));
+    assert_eq!(wrong, 0, "every forced location before every main location");
+}
+
 // §8.4 `parse_observer_with`: the closure runs for a `diagnosed` unit and
 // not for a `rejected` one.
 #[test]
