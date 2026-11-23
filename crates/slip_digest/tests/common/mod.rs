@@ -350,7 +350,7 @@ fn rename_rules(
     if renames.is_empty() {
         return Ok(base);
     }
-    let records = slip_digest::records::records(input, &base)
+    let records = slip_digest::records::records(input, &base, slip_digest::ReadOnly::NO_FILE)
         .map_err(|e| format!("relocate.txt: the records of side B: {e:?}"))?;
     let mut all = rules.to_vec();
     for (name, from) in renames {
