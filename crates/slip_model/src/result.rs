@@ -141,6 +141,11 @@ pub struct TransformResult {
     pub agreement: Vec<Stale>,
     /// Strictly ascending.
     pub unused: Vec<u64>,
+    /// The namespace rules an observer used, whose agreement between
+    /// observers was not checked (`spec/verify.md` §9.2, until WP-111);
+    /// strictly ascending. Not empty: the state is neither `verified` nor
+    /// `verified_with_residue`.
+    pub unchecked: Vec<u64>,
     pub spellings: Spellings,
     /// Strictly ascending by `(file, lo)`.
     pub residue: Vec<Residue>,

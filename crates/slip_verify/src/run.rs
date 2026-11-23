@@ -11,14 +11,27 @@
 //! [`Report::add`] keeps what the report needs of a shard (its state, its
 //! listed findings folded into groups, its used exemptions) and drops the
 //! shard.
+//!
+//! M2 (WP-070, `spec/verify.md` §9.3 to §9.5, §10.3, §10.5, §10.6) adds
+//! the two conditions over all observers: agreement (stale observers and
+//! unused rules, from each shard's `rule_use`) and the spelled entities
+//! (the fold of each shard's `spellings`, [`crate::spelling`]); and to
+//! "this run's shard" what a shard alone decides of it (its `binding`, the
+//! presence of `rule_use` and `spellings`). The verdict is [`combine`] of
+//! M1's. A run with a tree image and no rule gives M1's report, byte for
+//! byte.
 
-use std::collections::BTreeMap;
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use slip_model::declared::Declared;
 use slip_model::json::Value;
+use slip_model::keys::KeyKind;
 use slip_model::verdict::{Finding, FindingKind, Site, Verdict, VerdictKind, Where};
-use slip_model::{Digest, Phase, Shard, Status};
+use slip_model::{Binding, Digest, Overlay, Phase, Shard, Status};
+
+use crate::spelling::{Fold, Outcome};
 
 /// The report's format name (§7.1).
 const REPORT: &str = "slip.verify.v1";
@@ -202,6 +215,25 @@ pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State {
 /// depend on this crate. Its `name()` is the name in the report.
 pub use slip_model::result::RunVerdict;
 
+/// A stale observer (§9.2): the rule's index in `Declared.rules`, the
+/// observer, and its `direct` count for the rule. The one type, as for
+/// [`RunVerdict`]: the result (`spec/edits.md` §8.5) stores it.
+pub use slip_model::result::Stale;
+
+/// §9.3: the verdict of the states, with the two conditions over all
+/// observers. `NotVerified` if `states` is, or if `stale` (stale pairs) or
+/// `obligations_not_passed` is not 0: a stale observer and a failed
+/// obligation are facts about the post-image, like a `mismatch`, and make
+/// the run not verified also when other observers are `unverifiable` or
+/// `failed`. Else `states`.
+pub fn combine(states: RunVerdict, stale: usize, obligations_not_passed: usize) -> RunVerdict {
+    if states == RunVerdict::NotVerified || stale != 0 || obligations_not_passed != 0 {
+        RunVerdict::NotVerified
+    } else {
+        states
+    }
+}
+
 /// §7: `NotVerified` if some state is `Mismatch` or `NotParsed`; else
 /// `Verified` if there is at least one state and every one is `Verified`
 /// or `Unchanged`; else `Incomplete` (also for no state at all).
@@ -240,15 +272,18 @@ pub struct Header {
 #[derive(Clone, Debug)]
 struct FindingGroup {
     observers: u64,
-    /// The index (in `add` order) of the last observer counted, so that an
-    /// observer listing a `(kind, key)` twice (only possible without a key)
-    /// is counted once.
+    /// The plan position of the last observer counted, so that an observer
+    /// listing a `(kind, key)` twice (only possible without a key) is
+    /// counted once: one call's findings are folded together.
     last: u64,
-    /// The main file of the first observer that lists it.
+    /// The main file of the first observer in plan order that lists it,
+    /// and that observer's plan position.
     first: Vec<u8>,
-    /// The finding the group shows: of the first observer whose finding has
-    /// a name, else of the first.
+    first_at: u64,
+    /// The finding the group shows: of the first observer in plan order
+    /// whose finding has a name, else of the first; and its position.
     shown: Finding,
+    shown_at: u64,
 }
 
 /// An entry of `not_verified` (§7.1).
@@ -263,22 +298,59 @@ struct NotVerified {
     listed: u64,
 }
 
+/// A stale pair with the main file of its observer, for the report.
+#[derive(Clone, Debug)]
+struct StaleAt {
+    stale: Stale,
+    main: Vec<u8>,
+}
+
+/// The overlay of a run of the overlay form (§9.5 `Report::overlay`).
+#[derive(Clone, Debug)]
+struct OverlayRun {
+    id: Digest,
+    overlay: Overlay,
+    fold: Fold,
+}
+
 /// The report of one run (§7.1), built one observer at a time.
 #[derive(Clone, Debug)]
 pub struct Report {
     header: Header,
+    /// Per rule of `Declared.rules`, by index: whether its kind is
+    /// `namespace` (§9.2: such a rule is never stale).
+    namespace: Vec<bool>,
+    /// Per rule: whether some `ok` shard of this run used it (§9.2).
+    used_rules: Vec<bool>,
+    /// The round of the pre shards (§9.5 `pre_round`).
+    pre: u64,
+    overlay: Option<Box<OverlayRun>>,
+    /// The stale pairs by `(rule, plan position)`.
+    stale: BTreeMap<(u64, u64), StaleAt>,
+    stale_count: usize,
+    /// `stale` flattened, made on demand and dropped by `add`.
+    stale_flat: OnceCell<Vec<Stale>>,
+    /// The fold's outcomes, made on demand and dropped by `add`.
+    outcomes: OnceCell<Vec<Outcome>>,
+    /// The observer and main file of every plan position that became the
+    /// `first` of an obligation's failure.
+    firsts: BTreeMap<usize, (Digest, Vec<u8>)>,
     changed: Vec<Digest>,
     created: Vec<Digest>,
     removed: Vec<Digest>,
     /// How many `add` calls there were.
     selected: u64,
+    /// The plan positions and the observers added (§7.3: each at most once).
+    positions: BTreeSet<u64>,
+    observers: BTreeSet<Digest>,
     states: [u64; 7],
     indeterminate_only: u64,
     total: u64,
     listed: u64,
     /// By `(kind's number, key)`.
     groups: BTreeMap<(u8, Option<Digest>), FindingGroup>,
-    not_verified: Vec<NotVerified>,
+    /// By plan position.
+    not_verified: BTreeMap<u64, NotVerified>,
     /// The observers whose verdict has the key in `used`, for every key of
     /// a list of `Declared`.
     used: BTreeMap<Digest, u64>,
@@ -297,32 +369,131 @@ impl Report {
             .chain(declared.removed())
             .map(|&k| (k, 0))
             .collect();
+        let namespace: Vec<bool> =
+            declared.rules().rules().iter().map(|r| r.kind == KeyKind::Namespace).collect();
         Report {
             header,
+            used_rules: vec![false; namespace.len()],
+            namespace,
+            pre: 0,
+            overlay: None,
+            stale: BTreeMap::new(),
+            stale_count: 0,
+            stale_flat: OnceCell::new(),
+            outcomes: OnceCell::new(),
+            firsts: BTreeMap::new(),
             changed: declared.changed().to_vec(),
             created: declared.created().to_vec(),
             removed: declared.removed().to_vec(),
             selected: 0,
+            positions: BTreeSet::new(),
+            observers: BTreeSet::new(),
             states: [0; 7],
             indeterminate_only: 0,
             total: 0,
             listed: 0,
             groups: BTreeMap::new(),
-            not_verified: Vec::new(),
+            not_verified: BTreeMap::new(),
             used,
             any_bad: false,
             all_good: true,
         }
     }
 
-    /// One call per selected observer, in plan order.
+    /// Before the first `add`, for a run whose image is an overlay (§9.5):
+    /// `add` then expects `Binding.overlay` to be `id` in every shard, and
+    /// folds the overlay's obligations (§10.3). The image of such a run has
+    /// no root map: the report's `image` is `[]`.
     ///
-    /// `verify` is this run's shard of the observer, as for [`state`]; a
-    /// shard whose `observer` is not `observer`, whose `round` is not the
-    /// header's, or whose verdict's `rules` is not the header's is not this
-    /// observer's result in this run: the observer is `Failed`, with an
-    /// empty message. Only a `Mismatch` contributes findings, and only a
-    /// `Verified` or `Mismatch` verdict contributes used exemptions.
+    /// # Panics
+    ///
+    /// If called after an `add`, a second time, or with a header whose
+    /// `image` is not empty: each is a defect of the caller.
+    pub fn overlay(&mut self, id: Digest, overlay: &Overlay) {
+        assert!(self.selected == 0, "Report::overlay after Report::add");
+        assert!(self.overlay.is_none(), "Report::overlay called twice");
+        assert!(self.header.image.is_empty(), "Report::overlay with a tree image in the header");
+        self.overlay =
+            Some(Box::new(OverlayRun { id, overlay: overlay.clone(), fold: Fold::new(overlay) }));
+    }
+
+    /// Before the first `add`: the round of the pre shards (default 0),
+    /// which `add` expects as `Binding.pre` (§9.3).
+    ///
+    /// # Panics
+    ///
+    /// If called after an `add`: a defect of the caller.
+    pub fn pre_round(&mut self, pre: u64) {
+        assert!(self.selected == 0, "Report::pre_round after Report::add");
+        self.pre = pre;
+    }
+
+    /// Whether the run has rules (`Declared.rules` not empty).
+    fn has_rules(&self) -> bool {
+        !self.namespace.is_empty()
+    }
+
+    /// Whether the run's image is an overlay with at least one obligation.
+    fn has_obligations(&self) -> bool {
+        self.overlay.as_ref().is_some_and(|o| !o.fold.is_empty())
+    }
+
+    /// Whether a shard is this observer's result in this run as far as the
+    /// shard alone decides it (§7.3, §9.3, §10.4): its observer, round and
+    /// verdict's rules; for a shard a worker wrote (status not `failed`),
+    /// its `binding` (required unless the run is M1's, a tree image with no
+    /// rule; when present, the run's in all three fields); for an `ok`
+    /// shard, `rule_use` present exactly when the run has rules, with the
+    /// run's `rules_id` and no rule index past the table, and `spellings`
+    /// present exactly when the overlay has obligations. Status and section
+    /// placement beyond that are `Shard::validate`'s (`judge`).
+    fn ours(&self, s: &Shard, observer: &Digest) -> bool {
+        let h = &self.header;
+        if s.observer != *observer
+            || s.round != h.round
+            || s.verdict.as_ref().is_some_and(|v| v.rules != h.rules)
+        {
+            return false;
+        }
+        if s.outcome.status != Status::Failed {
+            let want = Binding {
+                overlay: self.overlay.as_ref().map(|o| o.id),
+                declared: h.declared,
+                pre: self.pre,
+            };
+            let required = self.overlay.is_some() || self.has_rules();
+            match &s.binding {
+                Some(b) if *b != want => return false,
+                None if required => return false,
+                _ => {}
+            }
+        }
+        if s.outcome.status == Status::Ok {
+            match &s.rule_use {
+                None if self.has_rules() => return false,
+                Some(_) if !self.has_rules() => return false,
+                Some(u) => {
+                    let n = self.namespace.len() as u64;
+                    if u.rules != h.rules || u.uses.iter().any(|x| x.rule >= n) {
+                        return false;
+                    }
+                }
+                None => {}
+            }
+            if s.spellings.is_some() != self.has_obligations() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// [`Report::add_at`] at the next position: the number of `add` calls
+    /// so far. For a caller that adds every selected observer in plan
+    /// order and selects them all (M1's `slip verify`).
+    ///
+    /// # Panics
+    ///
+    /// As [`Report::add_at`].
     pub fn add(
         &mut self,
         observer: &Digest,
@@ -330,19 +501,82 @@ impl Report {
         verify: Option<&Shard>,
         map: Option<Status>,
     ) {
-        let index = self.selected;
+        self.add_at(self.selected, observer, main, verify, map);
+    }
+
+    /// One call per selected observer, `position` being its index in the
+    /// plan, in any order: nothing the report holds depends on the order of
+    /// the calls (the stale pairs, `not_verified`, a group's `first` and
+    /// shown finding, and the fold's `first` are by plan position).
+    ///
+    /// `verify` is this run's shard of the observer, as for [`state`]; a
+    /// shard whose `observer` is not `observer`, whose `round` is not the
+    /// header's, or whose verdict's `rules` is not the header's is not this
+    /// observer's result in this run: the observer is `Failed`, with an
+    /// empty message. Only a `Mismatch` contributes findings, and only a
+    /// `Verified` or `Mismatch` verdict contributes used exemptions.
+    ///
+    /// M2 (§9.3, §10.4): so is a shard whose `binding` is not the run's
+    /// (declared, overlay or its absence, pre round; a shard without one,
+    /// unless the run has a tree image and no rule), an `ok` shard without
+    /// a `rule_use` of the run's `rules_id` in a run with rules (or with
+    /// one in a run without, or naming a rule past the table), an `ok`
+    /// shard without `spellings` when the overlay has obligations (or with
+    /// one when it has none), and one whose `spellings` the fold refuses.
+    /// The `rule_use` and `spellings` of an `ok` shard the state table
+    /// accepts with a verdict (`verified`, `mismatch`, `unverifiable`) are
+    /// read: a stale pair for every `direct` not 0 of a rule whose kind is
+    /// not `namespace`; every rule with a use is used. The fold reads the
+    /// `spellings` of a `verified` or `mismatch` shard only; that of an
+    /// `unverifiable` one is checked (a refusal makes it `failed`) but not
+    /// folded (§10.6).
+    ///
+    /// # Panics
+    ///
+    /// If `position` is not less than the header's `plan_observers`, or
+    /// was added before, or `observer` was: each is a defect of the caller
+    /// (§7.3), which would otherwise let one observer stand for another.
+    pub fn add_at(
+        &mut self,
+        position: u64,
+        observer: &Digest,
+        main: &[u8],
+        verify: Option<&Shard>,
+        map: Option<Status>,
+    ) {
+        assert!(
+            position < self.header.plan_observers,
+            "Report::add_at: position {position} is not in the plan of {}",
+            self.header.plan_observers
+        );
+        // Both checked before either is kept: a refused call changes
+        // nothing.
+        assert!(
+            !self.positions.contains(&position),
+            "Report::add_at: position {position} added twice"
+        );
+        assert!(!self.observers.contains(observer), "Report::add_at: an observer added twice");
+        self.positions.insert(position);
+        self.observers.insert(*observer);
+        let index = position;
         self.selected += 1;
-        let rules = self.header.rules;
-        let ours = verify.filter(|s| {
-            s.observer == *observer
-                && s.round == self.header.round
-                && s.verdict.as_ref().is_none_or(|v| v.rules == rules)
-        });
-        let judged = if verify.is_some() && ours.is_none() {
+        self.stale_flat = OnceCell::new();
+        self.outcomes = OnceCell::new();
+        let ours = verify.filter(|s| self.ours(s, observer));
+        let mut judged = if verify.is_some() && ours.is_none() {
             Judged { state: State::Failed, verdict: None }
         } else {
             judge(ours, map)
         };
+        // The sections of an ok shard the state table accepts. The fold is
+        // the last check: it refuses before it changes anything, and its
+        // refusal makes the shard no shard of this run (§10.4).
+        let accepted = judged.verdict.is_some();
+        if let (Some(s), true) = (ours, accepted)
+            && !self.read_sections(index, observer, main, s, judged.state)
+        {
+            judged = Judged { state: State::Failed, verdict: None };
+        }
         let state = judged.state;
         self.states[state.index()] += 1;
         self.any_bad |= matches!(state, State::Mismatch | State::NotParsed);
@@ -382,19 +616,72 @@ impl Report {
                 }
                 State::Mismatch | State::Verified | State::Unchanged => String::new(),
             };
-            self.not_verified.push(NotVerified {
-                observer: *observer,
-                main: main.to_vec(),
-                state,
-                message,
-                findings,
-                indeterminate,
-                listed,
-            });
+            self.not_verified.insert(
+                index,
+                NotVerified {
+                    observer: *observer,
+                    main: main.to_vec(),
+                    state,
+                    message,
+                    findings,
+                    indeterminate,
+                    listed,
+                },
+            );
         }
     }
 
-    /// Folds one listed finding of observer number `index` into its group.
+    /// The `spellings` and `rule_use` of an `ok` shard the state table
+    /// accepted as `state`, of the observer at plan position `index`; false
+    /// if the fold refuses the section (the shard is then not this run's,
+    /// and nothing of it is read). An unverifiable shard's post-image is
+    /// not the run's (§10.6): its section is checked, not folded.
+    fn read_sections(
+        &mut self,
+        index: u64,
+        observer: &Digest,
+        main: &[u8],
+        s: &Shard,
+        state: State,
+    ) -> bool {
+        let position = usize::try_from(index).unwrap_or(usize::MAX);
+        let fold = matches!(state, State::Verified | State::Mismatch);
+        if let (Some(o), Some(section)) = (&mut self.overlay, &s.spellings)
+            && !o.fold.is_empty()
+        {
+            let inputs = s.inputs.as_deref().unwrap_or(&[]);
+            if fold {
+                match o.fold.add_first(position, inputs, section) {
+                    Ok(true) => {
+                        self.firsts.insert(position, (*observer, main.to_vec()));
+                    }
+                    Ok(false) => {}
+                    Err(_) => return false,
+                }
+            } else if o.fold.check(inputs, section).is_err() {
+                return false;
+            }
+        }
+        if let Some(u) = &s.rule_use {
+            for x in &u.uses {
+                let r = usize::try_from(x.rule).unwrap_or(usize::MAX);
+                if x.via != 0 || x.direct != 0 {
+                    self.used_rules[r] = true;
+                }
+                if x.direct != 0 && !self.namespace[r] {
+                    let pair = Stale { rule: x.rule, observer: *observer, direct: x.direct };
+                    let at = StaleAt { stale: pair, main: main.to_vec() };
+                    if self.stale.insert((x.rule, index), at).is_none() {
+                        self.stale_count += 1;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Folds one listed finding of the observer at plan position `index`
+    /// into its group.
     fn group(&mut self, index: u64, main: &[u8], f: &Finding) {
         let id = (kind_index(f.kind) as u8, f.key);
         match self.groups.get_mut(&id) {
@@ -403,7 +690,9 @@ impl Report {
                     observers: 1,
                     last: index,
                     first: main.to_vec(),
+                    first_at: index,
                     shown: f.clone(),
+                    shown_at: index,
                 };
                 self.groups.insert(id, g);
             }
@@ -412,22 +701,81 @@ impl Report {
                     g.observers += 1;
                     g.last = index;
                 }
-                if g.shown.name.is_empty() && !f.name.is_empty() {
+                if index < g.first_at {
+                    g.first_at = index;
+                    main.clone_into(&mut g.first);
+                }
+                // A named finding over an unnamed one, then the lower
+                // position; within one observer, the first listed.
+                let (named, shown_named) = (!f.name.is_empty(), !g.shown.name.is_empty());
+                if (named && !shown_named) || (named == shown_named && index < g.shown_at) {
                     g.shown = f.clone();
+                    g.shown_at = index;
                 }
             }
         }
     }
 
-    /// The run's verdict over the observers added so far (§7).
+    /// The run's verdict over the observers added so far (§7, §9.3):
+    /// [`combine`] of the states' verdict, the stale pairs and the
+    /// obligations that did not pass.
     pub fn verdict(&self) -> RunVerdict {
-        if self.any_bad {
+        let states = if self.any_bad {
             RunVerdict::NotVerified
         } else if self.selected > 0 && self.all_good {
             RunVerdict::Verified
         } else {
             RunVerdict::Incomplete
-        }
+        };
+        let not_passed = self.spellings().iter().filter(|o| !o.passed()).count();
+        combine(states, self.stale_count, not_passed)
+    }
+
+    /// Every stale pair (§9.2), sorted by `(rule, plan position)`.
+    pub fn stale(&self) -> &[Stale] {
+        self.stale_flat.get_or_init(|| self.stale.values().map(|s| s.stale).collect())
+    }
+
+    /// The rules no `ok` shard of this run used (§9.2), ascending: indices
+    /// of `Declared.rules`. Empty for a run without rules.
+    pub fn unused(&self) -> Vec<u64> {
+        (0u64..).zip(&self.used_rules).filter(|(_, u)| !**u).map(|(i, _)| i).collect()
+    }
+
+    /// The namespace rules some `ok` shard of this run used (`via` or
+    /// `direct` not 0), ascending: whether the observers agree on them is
+    /// not checked until WP-111 (§9.2, §9.4). Not empty: the report says
+    /// so, and conclude permits no write (`spec/edits.md` §8.5); the
+    /// verdict is not changed by it.
+    pub fn unchecked(&self) -> Vec<u64> {
+        (0u64..)
+            .zip(self.namespace.iter().zip(&self.used_rules))
+            .filter(|(_, (n, u))| **n && **u)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The outcome of every obligation of the overlay (§10.3, §10.6), in
+    /// its order; empty for a run without an overlay or obligations.
+    pub fn spellings(&self) -> &[Outcome] {
+        self.outcomes
+            .get_or_init(|| self.overlay.as_ref().map_or_else(Vec::new, |o| o.fold.outcomes()))
+    }
+
+    /// The header the report was made with.
+    pub(crate) fn header(&self) -> &Header {
+        &self.header
+    }
+
+    /// The overlay given to [`Report::overlay`], if any.
+    pub(crate) fn overlay_given(&self) -> Option<&Overlay> {
+        self.overlay.as_ref().map(|o| &o.overlay)
+    }
+
+    /// The observer at plan position `position` that is the `first` of an
+    /// obligation's failure.
+    pub(crate) fn first_at(&self, position: usize) -> Option<&(Digest, Vec<u8>)> {
+        self.firsts.get(&position)
     }
 
     /// The number of observers in each state, in the order of [`State::ALL`].
@@ -495,7 +843,7 @@ impl Report {
             .collect();
         let not_verified = self
             .not_verified
-            .iter()
+            .values()
             .map(|n| {
                 obj(vec![
                     ("observer", digest(&n.observer)),
@@ -519,13 +867,18 @@ impl Report {
                 ])
             })
             .collect();
-        obj(vec![
+        let mut members = vec![
             ("report", Value::Str(REPORT.to_owned())),
             ("plan", digest(&h.plan)),
             ("round", uv(h.round)),
             ("declared", digest(&h.declared)),
             ("rules", digest(&h.rules)),
             ("image", Value::Array(image)),
+        ];
+        if let Some(o) = &self.overlay {
+            members.push(("overlay", digest(&o.id)));
+        }
+        members.extend([
             ("limit", uv(h.limit)),
             ("locate", uv(h.locate)),
             ("verdict", Value::Str(self.verdict().name().to_owned())),
@@ -540,7 +893,97 @@ impl Report {
             ),
             ("not_verified", Value::Array(not_verified)),
             ("exemptions", Value::Array(exemptions)),
-            ("run", bytes(&h.run)),
+        ]);
+        if self.has_rules() {
+            members.push(("agreement", self.agreement_json()));
+        }
+        if self.has_obligations() {
+            members.push(("spellings", self.spellings_json()));
+        }
+        members.push(("run", bytes(&h.run)));
+        obj(members)
+    }
+
+    /// §9.4 `agreement`.
+    fn agreement_json(&self) -> Value {
+        let stale = self
+            .stale
+            .values()
+            .map(|s| {
+                obj(vec![
+                    ("rule", uv(s.stale.rule)),
+                    ("observer", digest(&s.stale.observer)),
+                    ("main", bytes(&s.main)),
+                    ("direct", uv(s.stale.direct)),
+                ])
+            })
+            .collect();
+        obj(vec![
+            ("rules", uv(self.namespace.len() as u64)),
+            ("stale", Value::Array(stale)),
+            ("unused", Value::Array(self.unused().into_iter().map(uv).collect())),
+            ("unchecked", Value::Array(self.unchecked().into_iter().map(uv).collect())),
+        ])
+    }
+
+    /// The failed obligations of §10.5, in the obligations' order:
+    /// `(index, why, observers, first's main file, found, name)`.
+    fn failed_spellings(&self) -> Vec<FailedAt<'_>> {
+        self.spellings()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, o)| match o {
+                Outcome::Passed { .. } => None,
+                Outcome::Unseen => Some(FailedAt {
+                    index: i,
+                    why: "unseen",
+                    observers: 0,
+                    first: None,
+                    found: None,
+                    name: "",
+                }),
+                Outcome::DenotesOther { observers, first, found, name } => Some(FailedAt {
+                    index: i,
+                    why: "denotes_other",
+                    observers: *observers,
+                    first: Some(self.first_at(*first).map_or_else(
+                        || unreachable!("the report records the first observer of every failure"),
+                        |(_, m)| m.as_slice(),
+                    )),
+                    found: *found,
+                    name,
+                }),
+            })
+            .collect()
+    }
+
+    /// §10.5 `spellings`.
+    fn spellings_json(&self) -> Value {
+        let Some(o) = &self.overlay else { unreachable!("spellings without an overlay") };
+        let outcomes = self.spellings();
+        let passed = outcomes.iter().filter(|o| o.passed()).count() as u64;
+        let failed = self
+            .failed_spellings()
+            .into_iter()
+            .map(|f| {
+                let ob = &o.overlay.spellings[f.index];
+                obj(vec![
+                    ("file", bytes(o.fold.path_of(f.index))),
+                    ("lo", uv(ob.lo)),
+                    ("hi", uv(ob.hi)),
+                    ("key", digest(&ob.key)),
+                    ("why", Value::Str(f.why.to_owned())),
+                    ("observers", uv(f.observers)),
+                    ("first", f.first.map_or(Value::Null, bytes)),
+                    ("found", opt_digest(f.found.as_ref())),
+                    ("name", Value::Str(f.name.to_owned())),
+                ])
+            })
+            .collect();
+        obj(vec![
+            ("obligations", uv(outcomes.len() as u64)),
+            ("passed", uv(passed)),
+            ("failed", Value::Array(failed)),
         ])
     }
 
@@ -558,7 +1001,9 @@ impl Report {
         let _ = writeln!(out, "plan {}", h.plan);
         let _ = writeln!(out, "round {}", h.round);
         let _ = writeln!(out, "declared {} rules {}", h.declared, h.rules);
-        if h.image.is_empty() {
+        if let Some(o) = &self.overlay {
+            let _ = writeln!(out, "image overlay {}", o.id);
+        } else if h.image.is_empty() {
             out.push_str("image identity\n");
         }
         for (s, p) in &h.image {
@@ -594,7 +1039,80 @@ impl Report {
         for (list, key, n) in self.exemptions() {
             let _ = writeln!(out, "exemption {list} {} observers {n}", short(&key));
         }
+        self.agreement_text(&mut out);
+        self.spellings_text(&mut out);
         out
+    }
+
+    /// The lines of §9.4, when the run has rules.
+    fn agreement_text(&self, out: &mut String) {
+        if self.has_rules() {
+            let unused = self.unused();
+            let _ = writeln!(
+                out,
+                "agreement rules {} stale {} unused {}",
+                self.namespace.len(),
+                self.stale_count,
+                unused.len()
+            );
+            for s in self.stale.values().take(TEXT_MAX) {
+                let _ = writeln!(
+                    out,
+                    "stale rule {} direct {} {}",
+                    s.stale.rule,
+                    s.stale.direct,
+                    path(&s.main)
+                );
+            }
+            if self.stale_count > TEXT_MAX {
+                let _ =
+                    writeln!(out, "stale: {} more (see the report)", self.stale_count - TEXT_MAX);
+            }
+            for r in unused {
+                let _ = writeln!(out, "unused rule {r}");
+            }
+            for r in self.unchecked() {
+                let _ = writeln!(
+                    out,
+                    "not checked: agreement between observers for namespace rule {r}"
+                );
+            }
+        }
+    }
+
+    /// The lines of §10.5, when the overlay has obligations.
+    fn spellings_text(&self, out: &mut String) {
+        if let Some(o) = self.overlay.as_ref().filter(|_| self.has_obligations()) {
+            let outcomes = self.spellings();
+            let passed = outcomes.iter().filter(|o| o.passed()).count();
+            let failed = self.failed_spellings();
+            let _ = writeln!(
+                out,
+                "spelling obligations {} passed {passed} failed {}",
+                outcomes.len(),
+                failed.len()
+            );
+            for f in failed.iter().take(TEXT_MAX) {
+                let ob = &o.overlay.spellings[f.index];
+                line(
+                    out,
+                    &format!(
+                        "spelling {} {}:{}-{} {} observers {}",
+                        f.why,
+                        path(o.fold.path_of(f.index)),
+                        ob.lo,
+                        ob.hi,
+                        short(&ob.key),
+                        f.observers
+                    ),
+                    &[&text(f.name)],
+                );
+            }
+            if failed.len() > TEXT_MAX {
+                let _ =
+                    writeln!(out, "spelling: {} more (see the report)", failed.len() - TEXT_MAX);
+            }
+        }
     }
 
     /// The last line of the text (§7.1).
@@ -611,7 +1129,7 @@ impl Report {
     /// the report)`. Each ends in a newline.
     pub fn error_lines(&self) -> String {
         let mut out = String::new();
-        for n in self.not_verified.iter().take(TEXT_MAX) {
+        for n in self.not_verified.values().take(TEXT_MAX) {
             let message = if n.state == State::Mismatch {
                 format!("{} finding(s), {} indeterminate", n.findings, n.indeterminate)
             } else {
@@ -625,6 +1143,18 @@ impl Report {
         }
         out
     }
+}
+
+/// A failed obligation as the report shows it (§10.5).
+struct FailedAt<'r> {
+    index: usize,
+    why: &'static str,
+    observers: u64,
+    /// The main file of the first observer it failed in; `None` for
+    /// `unseen`.
+    first: Option<&'r [u8]>,
+    found: Option<Digest>,
+    name: &'r str,
 }
 
 /// `head` and then each non-empty word of `tail`, blank-separated.
