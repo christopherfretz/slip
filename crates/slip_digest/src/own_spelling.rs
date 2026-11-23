@@ -154,6 +154,60 @@ pub(crate) fn left_out_of_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, mark
     w.left_out = facts;
 }
 
+/// Rule 10 in the full walk (§7 `DeclRefExtra`): what the qualifier of
+/// resolved name `e` and its own template arguments hold beyond the
+/// referent, read as written into the unit's list (rule 7 for an
+/// instantiation-dependent operand, rule 1 for the rest), whatever Kiln's
+/// flags say. Arguments of a name of a template are the bytes' (written
+/// through `Walk::write_args`, a site already). Outside a unit stream
+/// (in a type digest, a key, a profile) the facts are left out: the mark
+/// is raised as profile mode raises it (`name_parts_left_out`).
+pub(crate) fn name_parts(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    let Some(&slip_kiln::kiln::ast::expr::DeclRefExtra { qualifier, template_args, found_decl: _ }) =
+        w.ast.exprs.decl_ref_extra(e)
+    else {
+        return;
+    };
+    let node = *w.ast.exprs.get(e);
+    // `DeclRefExpr.a` the entity, `MemberExpr.b` the member.
+    let d = DeclId::try_new(if node.kind() == K::DeclRefExpr { node.a() } else { node.b() });
+    let template_args =
+        template_args.filter(|_| !d.is_some_and(|d| crate::expr_core::names_template(w, d)));
+    if qualifier.is_none() && template_args.is_none() {
+        return;
+    }
+    if w.unit_level() {
+        if let Some(q) = qualifier {
+            nns(w, s, q);
+        }
+        if let Some(l) = template_args {
+            args(w, s, l, Ctx::Known(true));
+        }
+    } else if d.is_some_and(|d| name_parts_left_out(w, d)) {
+        w.left_out += 1;
+    }
+}
+
+/// Whether a reference to `d` in a profile may have had a qualifier or
+/// template arguments that hold more than `d` (rule 10): a member of a
+/// class or an enumeration (named through a type, which can be an
+/// alias's or a specialisation's with any operand), or a specialisation.
+/// A function of the referent, so of the profile, not of the spelling Kiln
+/// met first.
+pub(crate) fn name_parts_left_out(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    ast.spec_info(d).is_some()
+        || ast.decls.get(d).ctx().is_some_and(|c| {
+            matches!(
+                ast.decls.get(c).kind(),
+                DeclKind::CXXRecord
+                    | DeclKind::ClassTemplateSpecialization
+                    | DeclKind::ClassTemplatePartialSpecialization
+                    | DeclKind::Enum
+            )
+        })
+}
+
 /// The left-out facts of written type `written`, added to the unit's list.
 /// `own_fn`: `written` is the own type of function declaration `d`, whose
 /// unit walks a dependent exception specification in full (`DeclNode`
@@ -736,6 +790,12 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
         | K::ArrayInitIndexExpr
         | K::NoInitExpr => {}
         K::DeclRefExpr | K::MemberExpr => {
+            // The qualifier and the arguments as written: what they hold
+            // beyond the referent (an instantiation-dependent operand) is
+            // the unit's (rule 10); the prefix itself is not a fact.
+            if let Some(q) = x.decl_ref_extra(e).and_then(|r| r.qualifier) {
+                kids.push(I::N(q));
+            }
             if let Some(l) = x.decl_ref_extra(e).and_then(|r| r.template_args) {
                 kids.push(I::A(l));
             }

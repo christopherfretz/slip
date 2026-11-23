@@ -187,6 +187,7 @@ pub(crate) fn decl_ref(w: &Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &
         template_args
     });
     decl_ref_extra(w, DeclId::try_new(n.a), args, out);
+    out.push(Item::Exec(crate::own_spelling::name_parts, e));
     out.push(Item::Exec(local_value, e));
 }
 
@@ -242,7 +243,7 @@ pub(crate) fn decl_ref_extra(
 
 /// Whether `d` (through a using-shadow, from its entity) is a template:
 /// its arguments as written select what the name means (digest §6).
-fn names_template(w: &Walk<'_>, d: DeclId) -> bool {
+pub(crate) fn names_template(w: &Walk<'_>, d: DeclId) -> bool {
     let ast = w.ast;
     let e = w.entity(ast.strip_shadow(d));
     let kind = ast.decls.get(e).kind();

@@ -1108,7 +1108,10 @@ The rest of profile mode:
   counts it (`Walk::left_out`), whatever the first spelling's value: every
   `UnresolvedLookupExpr` (an empty found set too), every expression with an
   `oper_lookups` entry (an empty set too), every `CXXNewExpr` and
-  `CXXDeleteExpr`, a fold that rule 9 makes indeterminate, and an
+  `CXXDeleteExpr`, a fold that rule 9 makes indeterminate, a resolved
+  `DeclRefExpr` or `MemberExpr` whose referent is a member of a class or
+  enumeration or a specialisation (rule 10: it may have been named through
+  a qualifier or arguments that hold more), and an
   operation that may round (a `BinaryOperator`, `CompoundAssignOperator`,
   `UnaryOperator` or cast whose type is floating or dependent: rule 8;
   whether the first spelling's node has an `fp_round` does not count). The mark is so a function of the
@@ -1248,6 +1251,19 @@ The rest of profile mode:
      (`expr_profile::fold_left_out`). With no such declaration the
      definition context finds nothing in any spelling, and only members
      of the operands' classes, which the profile holds, can be found.
+  10. *Prefixes and arguments of a resolved name.* A resolved name's
+     qualifier as written (`DeclRefExtra` `qualifier`) and its own
+     arguments when the referent is a specialisation (`template_args`)
+     are read as written, in rule 1 (after the name, the qualifier
+     outermost first, then the arguments) and in the full walk (§7
+     `DeclRefExtra`, `own_spelling::name_parts`, outside a unit stream
+     raising the mark instead): each type level by rule 2, each argument
+     by rule 7 or rule 1. Their parts are read whatever Kiln's flags say;
+     only what they hold beyond the referent reaches the list (a found set,
+     an instantiation-dependent operand's profile), so requalifying a name
+     that keeps its referent changes no digest. Profile mode raises the
+     mark at every reference whose referent could have been named so (the
+     mark above), a function of the referent and so of the profile.
   A key reads no spelling: two declarations are one entity by
   [temp.over.link] whatever their found sets, and a difference in the
   sets is a difference of the units. No hazard of first spellings is
@@ -4003,8 +4019,8 @@ reads the list itself (`ExprNode`, `CoawaitExpr.a`).
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `qualifier` | written | out | - | how the name was qualified: the entity found is the fact, and each thing Kiln reads the qualifier for is written elsewhere (rule below) |
-| `template_args` | written | in | enum ArgView*? | written only when the entity named is a template, where the arguments select what the name means; for a specialisation the entity is the fact |
+| `qualifier` | written | out | - | how the name was qualified: the entity found is the fact, and each thing Kiln reads the qualifier for is written elsewhere (rule below); what its types hold beyond the referent (an instantiation-dependent operand of a template argument, with the found sets in it) is the unit's list (§4.4 "Spellings", rule 10) |
+| `template_args` | written | in | enum ArgView*? | written only when the entity named is a template, where the arguments select what the name means; for a specialisation the entity is the fact, and what the arguments hold beyond it is the unit's list (rule 10) |
 | `found_decl` | entity | out | - | the using-declaration the name was found through: a reference names the entity (digest §4.1). Only the dump and the module image read it |
 
 Once a name is resolved Kiln reads `qualifier` for four things, and
@@ -4016,7 +4032,13 @@ expression to the class the qualifier names (an implicit cast node and
 its base path); and a qualifier that is itself dependent (`ColdExprData`
 `expr_nns`). Adding, removing or respelling a qualifier that leaves all
 four alone changes no digest, inside a template as well: the tests of
-the row hold both cases.
+the row hold both cases (and `equal/_/spelling-requalified-name*`). What
+a qualifier's types and a specialisation's arguments hold beyond the
+referent is not a property of the qualifier: `Bq<sizeof(sizeof(f(t)))>::value`
+names `Bq<8>::value` whatever `f` finds, while what `f` finds decides
+whether the program is well-formed at instantiation. The full walk reads
+those parts as written into the unit's list, as profile mode's units do
+(§4.4 "Spellings", rule 10).
 
 ### `kiln_ast::expr::CompoundAssignExtra`
 

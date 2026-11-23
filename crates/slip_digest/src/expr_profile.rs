@@ -89,7 +89,8 @@ thread_local! {
     /// The kinds profile mode met (`expr_profile_tests::the_bytes_are_pinned`).
     static VISITED: std::cell::RefCell<Vec<K>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The expressions whose left-out set raised `Walk::left_out`, with
-    /// the type nesting then (`own_spelling_tests`, rule 6's count).
+    /// the type nesting plus the key nesting then (`own_spelling_tests`,
+    /// rule 6's count).
     pub(crate) static RAISED: std::cell::RefCell<Vec<(ExprId, u32)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -101,7 +102,7 @@ thread_local! {
 fn raise(w: &mut Walk<'_>, e: ExprId) {
     w.left_out += 1;
     #[cfg(test)]
-    RAISED.with(|r| r.borrow_mut().push((e, w.type_nesting)));
+    RAISED.with(|r| r.borrow_mut().push((e, w.type_nesting + w.in_key)));
     #[cfg(not(test))]
     let _ = e;
 }
@@ -598,6 +599,9 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             decl_words(w, s, d);
             let l = x.decl_ref_extra(e).and_then(|r| r.template_args);
             ref_args(w, s, d, l, stack);
+            if crate::own_spelling::name_parts_left_out(w, d) {
+                raise_unlisted(w);
+            }
         }
         K::MemberExpr => {
             tag(s, k);
@@ -606,6 +610,9 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             decl_words(w, s, d);
             let l = x.decl_ref_extra(e).and_then(|r| r.template_args);
             ref_args(w, s, d, l, stack);
+            if crate::own_spelling::name_parts_left_out(w, d) {
+                raise_unlisted(w);
+            }
             stack.push(P::Opt(id(n.a())));
         }
         K::CXXThisExpr => {

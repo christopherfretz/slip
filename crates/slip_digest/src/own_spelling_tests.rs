@@ -256,11 +256,13 @@ fn left_out_is_raised_where_the_list_has_an_entry() {
         for i in 1..=w.ast.exprs.len() {
             let Some(e) = u32::try_from(i).ok().and_then(ExprId::try_new) else { continue };
             RAISED.with(|r| r.borrow_mut().clear());
+            // Raised outside a type and outside a key the walk computes
+            // on the way (a specialisation's): `type_nesting + in_key == 1`.
             w.in_key += 1;
             crate::expr_dep::profile_expr(&mut w, &mut Stream::new(), e);
             w.in_key -= 1;
             let mut raised: Vec<ExprId> = RAISED
-                .with(|r| r.borrow().iter().filter(|(_, n)| *n == 0).map(|(e, _)| *e).collect());
+                .with(|r| r.borrow().iter().filter(|(_, n)| *n == 1).map(|(e, _)| *e).collect());
             DIRECT.with(|d| d.borrow_mut().clear());
             let saved = w.take_unit();
             super::expr(&mut w, &mut Stream::new(), e, super::Ctx::Known(false));

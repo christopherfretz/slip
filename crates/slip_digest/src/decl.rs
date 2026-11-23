@@ -225,7 +225,7 @@ impl Walk<'_> {
     /// gives (Kiln records the written one apart, `exc_protos`); from
     /// C++17 on, where `proto` gives the canonical prototype and so the
     /// first spelling's operand, the first function node of `d`'s type as
-    /// written (a dynamic specification excepted: the canonical one).
+    /// written.
     pub(crate) fn own_proto(&self, d: DeclId) -> Option<FuncProto> {
         let types = &self.ast.types;
         let q = self.ast.decls.get(d).ty()?;
@@ -237,12 +237,9 @@ impl Walk<'_> {
         let mut cur = q;
         for _ in 0..256 {
             if let Some(w) = types.proto_of(cur.ty()) {
-                // A dynamic specification is canonically `None` from
-                // C++17 on: `throw(int)` is `noexcept(false)`
-                // ([except.spec]/1), and its types are not its meaning.
-                if matches!(types.exc_spec(w), ExcSpec::Dynamic(_)) {
-                    return p;
-                }
+                // A dynamic specification too: canonically `None` from
+                // C++17 on, but Kiln keeps its types and checks an
+                // overrider's against them (`check_override_exc_spec`).
                 return Some(*w);
             }
             let next = types.desugar_once(cur);

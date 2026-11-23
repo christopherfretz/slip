@@ -789,6 +789,7 @@ fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
         let member = DeclId::try_new(n.b);
         out.push(Item::Bool(qualifier.is_some() && member.is_some_and(|m| virtual_fn(w, m))));
         crate::expr_core::decl_ref_extra(w, member, template_args, out);
+        out.push(Item::Exec(crate::own_spelling::name_parts, e));
     } else {
         out.push(Item::Bool(false));
         let member = if tail == Tail::Member { DeclId::try_new(n.b) } else { None };
