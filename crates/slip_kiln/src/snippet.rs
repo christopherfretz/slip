@@ -228,6 +228,7 @@ pub struct Parsed<'r> {
     /// Every diagnostic as Kiln's text sink renders it, in order.
     pub diagnostics: String,
     paths: &'r HashMap<FileId, &'r str>,
+    unit: crate::Unit<'r>,
 }
 
 impl std::fmt::Debug for Parsed<'_> {
@@ -241,11 +242,18 @@ impl std::fmt::Debug for Parsed<'_> {
     }
 }
 
-impl Parsed<'_> {
+impl<'r> Parsed<'r> {
     /// The snippet path a buffer was added under; `None` for a buffer the
     /// front end made itself.
     pub fn path(&self, file: FileId) -> Option<&str> {
         self.paths.get(&file).copied()
+    }
+
+    /// The unit as [`crate::parse_observer_with`]'s closure would see it
+    /// (`Unit::token_end`, `crate::ranges`): no preprocessing record and
+    /// no inputs, so `Unit::real_path` is `None` for every buffer.
+    pub fn unit(&self) -> &crate::Unit<'r> {
+        &self.unit
     }
 }
 
@@ -276,7 +284,7 @@ pub struct Extra<'a> {
 ///
 /// It is [`parse_with`] with [`Extra::default()`].
 pub fn parse<R>(snippet: &Snippet<'_>, f: impl FnOnce(&Parsed<'_>) -> R) -> Result<R, String> {
-    parse_on(snippet, &Extra::default(), None, f)
+    parse_on(snippet, &Extra::default(), None, false, f)
 }
 
 /// [`parse`] as `kiln -std=<std> [--target=<target>] <args>
@@ -293,16 +301,30 @@ pub fn parse_with<R>(
     extra: &Extra<'_>,
     f: impl FnOnce(&Parsed<'_>) -> R,
 ) -> Result<R, String> {
-    parse_on(snippet, extra, None, f)
+    parse_on(snippet, extra, None, false, f)
+}
+
+/// [`parse_with`] with Kiln's written-reference table (Kiln `spec/ast.md`
+/// §18) and declaration-extent table (§19) recorded, as
+/// `-fkiln-dump-written-refs -fkiln-decl-extents` record them without
+/// printing anything: the tests of what reads them (work package WP-084,
+/// test 6). Nothing else changes.
+pub fn parse_with_tables<R>(
+    snippet: &Snippet<'_>,
+    extra: &Extra<'_>,
+    f: impl FnOnce(&Parsed<'_>) -> R,
+) -> Result<R, String> {
+    parse_on(snippet, extra, None, true, f)
 }
 
 /// [`parse_with`] with the front end's thread given `stack` bytes instead
 /// of `kiln`'s default (`-fkiln-stack-size=`; the tests of the stack
-/// guard).
+/// guard), and the two tables of [`parse_with_tables`] when `tables`.
 fn parse_on<R>(
     snippet: &Snippet<'_>,
     extra: &Extra<'_>,
     stack: Option<usize>,
+    tables: bool,
     f: impl FnOnce(&Parsed<'_>) -> R,
 ) -> Result<R, String> {
     let checked = check(snippet)?;
@@ -310,21 +332,7 @@ fn parse_on<R>(
     if let Some(bytes) = stack {
         lang.line.push(format!("-fkiln-stack-size={bytes}"));
     }
-    let size = kiln_driver::templ_opts::stack_size_of(&lang.line);
-    let done = std::thread::scope(|scope| {
-        let handle = std::thread::Builder::new()
-            .name("kiln".into())
-            .stack_size(size)
-            .spawn_scoped(scope, || {
-                // As the `kiln` executable's compile thread does.
-                kiln_sema::stack_guard::StackGuard::install(size);
-                front_end(snippet, &checked, &lang)
-            })
-            .map_err(|e| {
-                format!("cannot start the front end's thread with a {size}-byte stack: {e}")
-            })?;
-        handle.join().map_err(|payload| format!("the front end panicked: {}", text_of(&*payload)))
-    })??;
+    let done = on_front_end_thread(&lang, || front_end(snippet, &checked, &lang, tables))?;
     let paths: HashMap<FileId, &str> =
         done.loaded.iter().map(|&(file, index)| (file, snippet.files[index].0)).collect();
     let parsed = Parsed {
@@ -336,9 +344,166 @@ fn parse_on<R>(
         warnings: done.warnings,
         diagnostics: done.diagnostics,
         paths: &paths,
+        unit: crate::Unit::of_snippet(
+            &done.ast,
+            &done.sm,
+            &done.oven,
+            &done.interner,
+            done.lex,
+            done.main_file,
+            done.errors,
+        ),
     };
     catch_unwind(AssertUnwindSafe(|| f(&parsed)))
         .map_err(|payload| format!("the callback panicked: {}", text_of(&*payload)))
+}
+
+/// Runs `work` on a thread with the stack `kiln` gives its compile thread
+/// for `lang`'s line, with Kiln's stack guard installed (module
+/// documentation, "Threads").
+fn on_front_end_thread<T: Send>(
+    lang: &Language,
+    work: impl FnOnce() -> Result<T, String> + Send,
+) -> Result<T, String> {
+    let size = kiln_driver::templ_opts::stack_size_of(&lang.line);
+    std::thread::scope(|scope| {
+        let handle = std::thread::Builder::new()
+            .name("kiln".into())
+            .stack_size(size)
+            .spawn_scoped(scope, || {
+                // As the `kiln` executable's compile thread does.
+                kiln_sema::stack_guard::StackGuard::install(size);
+                work()
+            })
+            .map_err(|e| {
+                format!("cannot start the front end's thread with a {size}-byte stack: {e}")
+            })?;
+        handle.join().map_err(|payload| format!("the front end panicked: {}", text_of(&*payload)))
+    })?
+}
+
+/// The tokens of a snippet after translation phase 4, as [`preprocess`]
+/// hands them over. References only, valid inside the call.
+#[non_exhaustive]
+pub struct Preprocessed<'r> {
+    pub sm: &'r SourceManager,
+    pub main_file: FileId,
+    /// Every token the preprocessor delivered, in order, without the end
+    /// of file.
+    pub tokens: &'r [kiln::lex::Token],
+    /// The errors the preprocessor reported.
+    pub errors: u32,
+    paths: &'r HashMap<FileId, &'r str>,
+}
+
+impl std::fmt::Debug for Preprocessed<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Preprocessed")
+            .field("main_file", &self.main_file)
+            .field("tokens", &self.tokens.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Preprocessed<'_> {
+    /// As [`Parsed::path`].
+    pub fn path(&self, file: FileId) -> Option<&str> {
+        self.paths.get(&file).copied()
+    }
+}
+
+/// The preprocessor of [`parse_with`] alone over `snippet`: its tokens,
+/// as the parser would have received them, handed to `f` (`kiln -E`
+/// without the printing). The source manager is built as the parse
+/// builds it, so for a snippet the parse reads to its end the locations
+/// are the parse's (work package WP-084, the property of its test 4).
+///
+/// Err as [`parse_with`]; a panic in `f` is an `Err`.
+pub fn preprocess<R>(
+    snippet: &Snippet<'_>,
+    extra: &Extra<'_>,
+    f: impl FnOnce(&Preprocessed<'_>) -> R,
+) -> Result<R, String> {
+    let checked = check(snippet)?;
+    let lang = Language::new(snippet.std, extra)?;
+    let done = on_front_end_thread(&lang, || preprocess_only(snippet, &checked, &lang))?;
+    let paths: HashMap<FileId, &str> =
+        done.loaded.iter().map(|&(file, index)| (file, snippet.files[index].0)).collect();
+    let pre = Preprocessed {
+        sm: &done.sm,
+        main_file: done.main_file,
+        tokens: &done.tokens,
+        errors: done.errors,
+        paths: &paths,
+    };
+    catch_unwind(AssertUnwindSafe(|| f(&pre)))
+        .map_err(|payload| format!("the callback panicked: {}", text_of(&*payload)))
+}
+
+/// What [`preprocess_only`] hands back across the join.
+struct PpDone {
+    sm: SourceManager,
+    main_file: FileId,
+    tokens: Vec<kiln::lex::Token>,
+    errors: u32,
+    loaded: Vec<(FileId, usize)>,
+}
+
+/// [`front_end`]'s preprocessor, run to the end of the main file.
+fn preprocess_only(
+    snippet: &Snippet<'_>,
+    checked: &Checked<'_>,
+    lang: &Language,
+) -> Result<PpDone, String> {
+    let sm = SourceManager::new();
+    sm.set_macro_prefix_map(&lang.args.macro_prefix_map);
+    sm.set_source_path_style(lang.args.source_path_style);
+    let interner = Arc::new(Interner::new());
+    let diag_opts = lang.diag_options();
+    let features = lang.features()?;
+    let (main_path, main_text) = snippet.files[checked.main];
+    let main_file = sm
+        .add_virtual(main_path, main_text.to_owned())
+        .map_err(|_| "the source manager's location space is exhausted".to_owned())?;
+    let loaded = std::rc::Rc::new(std::cell::RefCell::new(vec![(main_file, checked.main)]));
+    let (tokens, errors) = {
+        let engine =
+            DiagEngine::new(&sm, &diag_opts, TextSink::new(SharedBuffer::new(), &diag_opts));
+        let mut pp = Preprocessor::new(&sm, &engine, &interner, lang.pp_options());
+        configure(&mut pp, snippet, checked, lang, &loaded, features);
+        pp.enter_main_file(main_file);
+        let mut tokens = Vec::new();
+        loop {
+            let t = pp.next();
+            if t.is_eof() {
+                break;
+            }
+            tokens.push(t);
+        }
+        drop(pp);
+        (tokens, engine.error_count())
+    };
+    let loaded = loaded.borrow().clone();
+    Ok(PpDone { sm, main_file, tokens, errors, loaded })
+}
+
+/// What [`front_end`] and [`preprocess_only`] set on their preprocessor
+/// before entering the main file.
+fn configure<'d>(
+    pp: &mut Preprocessor<'_, 'd>,
+    snippet: &'d Snippet<'d>,
+    checked: &'d Checked<'d>,
+    lang: &Language,
+    loaded: &std::rc::Rc<std::cell::RefCell<Vec<(FileId, usize)>>>,
+    features: ClangFeatures,
+) {
+    pp.set_include_resolver(Box::new(Resolver {
+        snippet,
+        index: &checked.index,
+        loaded: std::rc::Rc::clone(loaded),
+    }));
+    pp.set_if_evaluator(Box::new(if_evaluator(lang)));
+    pp.set_feature_queries(Box::new(features));
 }
 
 /// The text of a panic's payload.
@@ -416,6 +581,10 @@ struct Done {
     diagnostics: String,
     /// Every snippet file added to `sm`, with its index in the snippet.
     loaded: Vec<(FileId, usize)>,
+    /// The identifiers' interner and the preprocessor's lexer options,
+    /// for [`Parsed::unit`].
+    interner: Arc<Interner>,
+    lex: kiln_lex::LexOptions,
 }
 
 /// The language options of `kiln -std=<std> [--target=<t>] <args>
@@ -1150,6 +1319,7 @@ fn front_end(
     snippet: &Snippet<'_>,
     checked: &Checked<'_>,
     lang: &Language,
+    tables: bool,
 ) -> Result<Done, String> {
     let sm = SourceManager::new();
     sm.set_macro_prefix_map(&lang.args.macro_prefix_map);
@@ -1158,7 +1328,9 @@ fn front_end(
     let buffer = SharedBuffer::new();
     let diag_opts = lang.diag_options();
     let target = lang.sema_target()?;
-    let popts = lang.parse_options();
+    let mut popts = lang.parse_options();
+    popts.written_refs = tables;
+    popts.decl_extents = tables;
     let limits = lang.args.constexpr.limits();
     let features = lang.features()?;
 
@@ -1168,26 +1340,32 @@ fn front_end(
         .map_err(|_| "the source manager's location space is exhausted".to_owned())?;
     let loaded = std::rc::Rc::new(std::cell::RefCell::new(vec![(main_file, checked.main)]));
 
-    let (tu, errors, warnings) = {
+    let (tu, lex, errors, warnings) = {
         let engine = DiagEngine::new(&sm, &diag_opts, TextSink::new(buffer.clone(), &diag_opts));
         let mut pp = Preprocessor::new(&sm, &engine, &interner, lang.pp_options());
-        pp.set_include_resolver(Box::new(Resolver {
-            snippet,
-            index: &checked.index,
-            loaded: std::rc::Rc::clone(&loaded),
-        }));
-        pp.set_if_evaluator(Box::new(if_evaluator(lang)));
-        pp.set_feature_queries(Box::new(features));
+        configure(&mut pp, snippet, checked, lang, &loaded, features);
         pp.enter_main_file(main_file);
         let (tu, pp) =
             parse_preprocessed(pp, Arc::clone(&interner), &engine, target, &popts, limits);
+        let lex = *pp.lex_options();
         drop(pp);
         engine.flush();
-        (tu, engine.error_count(), engine.warning_count())
+        (tu, lex, engine.error_count(), engine.warning_count())
     };
     let diagnostics = buffer.contents();
     let loaded = loaded.borrow().clone();
-    Ok(Done { ast: tu.ast, oven: tu.oven, sm, main_file, errors, warnings, diagnostics, loaded })
+    Ok(Done {
+        ast: tu.ast,
+        oven: tu.oven,
+        sm,
+        main_file,
+        errors,
+        warnings,
+        diagnostics,
+        loaded,
+        interner,
+        lex,
+    })
 }
 
 /// `#if`'s integer model for the target (`Job::configure_preprocessor`).
@@ -1295,9 +1473,10 @@ mod tests {
         text.push_str(";\nint after = 2;\n");
         let files = [("deep.cpp", text.as_str())];
         let s = Snippet { files: &files, main: "deep.cpp", include: &[], std: "c++20" };
-        let (errors, diags) =
-            parse_on(&s, &Extra::default(), Some(8 << 20), |p| (p.errors, p.diagnostics.clone()))
-                .unwrap();
+        let (errors, diags) = parse_on(&s, &Extra::default(), Some(8 << 20), false, |p| {
+            (p.errors, p.diagnostics.clone())
+        })
+        .unwrap();
         assert!(errors >= 1);
         assert!(
             diags.starts_with("deep.cpp:2:")
