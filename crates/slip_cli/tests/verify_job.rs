@@ -338,7 +338,8 @@ fn s5_2_mismatch_on_a_changed_callee() {
     check_post_shard(&v);
     let f = verdict.findings.iter().find(|f| f.kind == FindingKind::Changed).unwrap();
     assert!(f.name.contains('f'), "{:?}", f.name);
-    assert!(verdict.findings.iter().all(|f| f.location.is_none()));
+    // WP-054: the finding is placed (the site is `tests/locate.rs`'s).
+    assert!(f.location.is_some());
 }
 
 // §5.2 step 6 and §6.1: with `locate` 0 no finding is named and the
