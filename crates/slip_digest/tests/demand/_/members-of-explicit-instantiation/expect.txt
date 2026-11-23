@@ -1,5 +1,1 @@
-# pending
-# needs: units
-# fields and member functions of an explicit instantiation are classed
-# differently (declared against derived); members of explicit
-# instantiations need one rule (a package after WP-032)
+added use()

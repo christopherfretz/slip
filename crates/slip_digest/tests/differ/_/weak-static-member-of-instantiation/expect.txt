@@ -1,0 +1,3 @@
+exact derived
+changed S::v
+derived-changed S<int>::v

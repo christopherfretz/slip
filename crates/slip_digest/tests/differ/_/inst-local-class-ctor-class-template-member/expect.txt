@@ -1,0 +1,4 @@
+# WP-040's indeterminate test, determinate since WP-045: L is local(0) of S<int>::f()
+changed S::f()
+exact derived
+derived-changed S<int>::f()::<definition>

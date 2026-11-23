@@ -86,7 +86,10 @@ its content (§3.3).
 
 An explicit instantiation is not a unit of its own: it is a fact of the
 specialisation it names, whose unit is then declared (§2.2) and says
-whether it was explicitly instantiated, declared or defined. A
+whether it was explicitly instantiated, declared or defined. The members
+of a class so instantiated, by an explicit instantiation declaration
+(`extern template`) or definition, are declared units too, all of them,
+whatever Kiln instantiated before (`digest-kinds.md` §5.2, §11.10). A
 specialisation that was only named (a class template specialisation used
 as an incomplete type) is not a unit either: nothing is known of it but
 its key.
@@ -120,8 +123,11 @@ and **derived** otherwise. Derived units are:
 - an implicitly declared special member function, an implicitly declared
   comparison operator or an implicitly generated deduction guide, **if it is
   referenced or defined** in the translation unit;
-- an implicit instantiation: a class template specialisation's definition, a
-  function or variable specialisation, a member of a specialisation, an
+- an implicit instantiation: a class, function or variable template
+  specialisation whose kind is `ImplicitInstantiation`, a member of one
+  (a member's kind is its effective kind, `digest-kinds.md` §11.10: the
+  greater of its own and its class's, so a member of an explicit
+  instantiation is declared whatever Kiln instantiated first), an
   instantiated default argument or default member initialiser;
 - an entity every declaration of which an instantiation made outside its
   class (below), such as a friend declared only by a class template;
@@ -133,17 +139,28 @@ and **derived** otherwise. Derived units are:
   only if referenced, as a builtin (`spec/landed/model/WP-050.md`);
 - the object of a class-type constant used as a template argument, keyed
   by its content;
-- a **resolved property** of a declared unit (kind `resolved`, parent the
-  unit it belongs to, name the property): a fact Kiln computes for a
-  declaration only when something needs it. Present only if computed.
-  The **definition** of an implicit instantiation or of an implicitly
-  defined member is one of these: such an entity is declared when it is
-  named and defined only when it is used, so its unit holds the
-  declaration and the resolved unit `definition` holds what the
-  definition added (the body, the initialiser, a deduced type, the
-  pattern a class was instantiated from). Otherwise a use added in one
+- a **resolved property** of a unit, declared or derived (kind
+  `resolved`, parent the unit it belongs to, its *owner*, name the
+  property): a fact Kiln computes for a declaration only when something
+  needs it. Present only if computed. It is a derived unit whatever its
+  owner is (`digest-kinds.md` §11.1).
+  The **definition** of an entity Kiln may define on use is one of these
+  (the *definition class*, `digest-kinds.md` §11.9: an implicit
+  instantiation, a specialisation named by an explicit instantiation
+  declaration, every member of an instantiated class, an implicitly
+  declared or first-declaration-defaulted function, a friend declared
+  only by instantiations): such an entity is declared when it is named
+  and defined only when it is used, so its unit holds the declaration
+  and the resolved unit `definition` holds what the definition added
+  (the body, the initialiser, a deduced type, the pattern a class was
+  instantiated from, a class's members). Otherwise a use added in one
   function would change the digest of every instantiation it is the
-  first to define, against rule 5 of §1.
+  first to define, against rule 5 of §1. The entity's own unit is
+  derived or declared as the entity is (the own unit of a member of an
+  explicit instantiation is declared); its `definition` is derived in
+  every case, so a difference in it is reported when both parses have
+  it and differ (`verify.md` §4), and a `definition` on one side only is
+  not a difference by itself.
 
 A declaration is **instantiated outside its class** when its lexical
 context is an implicitly instantiated class specialisation or a member of
@@ -203,12 +220,12 @@ the preprocessor's and not the AST's.
 |---|---|
 | Implicit special members: declared by lookups, defined on odr-use | derived unit if referenced or defined; else nothing |
 | Implicit instantiations of every kind; the specialisation tables and their order | derived units; order not digested |
-| Bodies of a closure's conversion functions; definitions of defaulted comparisons; the implicit `==` of a defaulted `<=>` | derived units |
+| Bodies of a closure's conversion functions; definitions of defaulted comparisons; the implicit `==` of a defaulted `<=>` | `resolved` unit `definition` of their derived units |
 | The definition of an implicit instantiation or implicit member: body, initialiser, deduced type, the pattern chosen for a class | `resolved` unit `definition` (§2.2) |
 | An instantiated default argument or default member initialiser; whether one is still pending | derived unit; the pending mark is not digested |
 | The value of an immediate invocation inside a default argument, computed at its first use | `resolved` unit |
 | A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
-| A deduced return type of a template member | part of the instantiation's derived unit |
+| A deduced return type of a template member | `resolved` unit `definition` of the instantiation |
 | A variable's evaluated constant value (`eval`), default-argument immediate values. At Kiln `913a490bb` `eval` is written when Kiln checks the declaration's initialiser: with the declaration, or, for one made by instantiation, when a use instantiates it (`digest-kinds.md` §11.3) | `resolved` unit |
 | A class's key function; `dtor_delete`, `dtor_delete_this` (set when a virtual destructor is defined, which for an implicit or defaulted one is on use), `inheriting_ctor`, `inherited_ctor` (set when Kiln declares the inheriting constructor, on use) cold maps | `resolved` unit of the class or function |
 | The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |
@@ -390,6 +407,12 @@ rules give one key are a collision even if one of them, or neither, has a
 unit; if no unit has the key, the order unit is marked, so that the
 collision is a finding. Entities whose keys are equal under no rule are
 one entity, not a collision (WP-103).
+A part of a unit (a resolved or `default_argument` unit, `digest-kinds.md`
+§11.1, §11.4) is keyed under its owner's key and follows its owner's key
+cause: every part of an owner whose key collides is indeterminate with
+it (`Collision`), whether or not another part shares its key, and parts
+of two colliding owners that share a key are the owners' collision,
+counted once (§12), whichever of them uses made the parts.
 Declarations that the language lets a scope repeat and that Kiln does not
 join into one entity (a using-declaration and its using-shadows, a
 namespace alias, and every declaration keyed by content) are the same
@@ -509,7 +532,17 @@ key of a derived unit under it). It is found by numbering the owner:
 a walk of the owner's own stream that stops at each local type's
 declaration without entering its members, records the local types and
 the local objects the owner declares, in order, reads no key, no type
-and no reference, and writes nothing. So the numbers cannot depend on
+and no reference, and writes nothing. The walk goes on into the streams
+of the owner's units that hold what its own stream leaves out, each
+recording only what was not met before: the resolved unit `definition`
+of an owner of the definition class (`digest-kinds.md` §11.9: the body
+of an instantiated function, the initialiser of an instantiated
+variable), whose parameters the own stream met first; then the
+`default_argument` unit of a field an instantiation made (§11.4). The
+owner of the variable of each expanded expansion statement is numbered
+too: Kiln keeps the statement's pattern parts in an instantiated body,
+so a specialisation's `definition` names its pattern's variable, by
+`Ref::outer`. So the numbers cannot depend on
 the order units are written in, and each owner is numbered once. A
 local type that the numbering of its owner does not find (a
 lambda-expression that only a type holds, an owner that is a namespace
@@ -559,9 +592,9 @@ would print:
   is indeterminate today, and the package that writes reflections owes
   the same rule.
 - A template instantiated with a local type prints it too (`f<X>` in a
-  specialisation's `__PRETTY_FUNCTION__`); its instantiated body is
-  `Pending(Demand)` today, and the package that walks instantiated
-  bodies owes the same rule.
+  specialisation's `__PRETTY_FUNCTION__`); its instantiated body, the
+  resolved unit `definition` since WP-045, is held to the same rule,
+  which no pair test shows yet.
 
 **An owner keyed by its content.** A `consteval` block is the call of
 a lambda (P3289R1) that Kiln gives the block's scope as owner; its
@@ -573,13 +606,15 @@ another unit.
 
 **What these rules do not yet show.**
 
-- "In an instantiated body the specialisation" is vacuous until
-  instantiated bodies are walked (§11, `Pending(Demand)`): no stream
-  numbers a local type of a specialisation today, so whatever needs one
-  is pending (the implicit constructor of a local class of a function
-  template's specialisation, a closure an instantiated body passes to
-  another template, a lambda in a variable template's initialiser, a
-  lambda returned from a generic lambda's body).
+- "In an instantiated body the specialisation" holds since WP-045: the
+  instantiated body is the resolved unit `definition`, which numbering
+  the specialisation walks (the implicit constructor of a local class of
+  a function template's specialisation, a closure an instantiated body
+  passes to another template, a lambda in a variable template's
+  initialiser, a lambda returned from a generic lambda's body:
+  `tests/differ/_/inst-*`). A lambda in the default argument of an
+  instantiated function is in that function's `default_argument` unit,
+  which numbering does not walk: such a closure has no number.
 - Kiln's owner of a lambda in the default argument of a lambda's
   parameter is the function whose body holds the outer lambda, not the
   call operator whose stream walks the default: the numbering of that
@@ -991,7 +1026,7 @@ comparison of unit sets (`verify.md`).
 | `digest.units.derived` | derived units |
 | `digest.groups` | groups |
 | `digest.indeterminate` | indeterminate units |
-| `digest.collisions` | keys shared by different entities |
+| `digest.collisions` | keys shared by different entities; a key shared only by parts is counted unless every two of its parts are parts of two different owners whose shared key collides (§3.4) |
 | `digest.bytes` | bytes of unit, type and key streams hashed |
 | `digest.indeterminate.<cause>` | indeterminate keys whose first cause is of this kind: `error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`, and `pending` while the walk has areas not yet written. Present only when not 0 |
 | `digest.indeterminate.pending.<area>` | of the `pending` ones, by area. Goes with `Cause::Pending` |

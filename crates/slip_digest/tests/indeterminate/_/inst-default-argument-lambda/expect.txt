@@ -1,0 +1,1 @@
+indeterminate S<int>::f(int)::<default_argument 0>

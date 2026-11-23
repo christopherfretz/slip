@@ -2,5 +2,7 @@ indeterminate S::f()
 indeterminate S::g()
 indeterminate S<int>::f()
 indeterminate S<int>::g()
+indeterminate S<int>::f()::<definition>
+indeterminate S<int>::g()::<definition>
 changed u()
 collisions 2
