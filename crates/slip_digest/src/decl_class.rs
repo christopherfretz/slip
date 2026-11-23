@@ -548,6 +548,94 @@ pub(crate) fn instantiated_field(w: &Walk<'_>, d: DeclId) -> bool {
     }
 }
 
+/// The layout of a class reads an alignment that only type sugar holds
+/// (`spec/landed/digest/WP-107.md`, item 1): a typedef carrying
+/// `__attribute__((aligned(N)))` raises the alignment of the type it names
+/// (Kiln `kiln_abi/src/layout/mod.rs:443`, `type_info` of a `Typedef`),
+/// while a type digest is taken of the canonical type (digest-kinds §4.1),
+/// which has lost it. Until a unit holds that alignment, a class whose
+/// layout reads one is indeterminate.
+pub(crate) const TYPEDEF_ALIGNMENT: Cause = Cause::Unsupported("layout/typedef-alignment");
+
+/// Whether the layout of class `d` reads a typedef's alignment: the type
+/// of one of its fields (every field Kiln lays out, `props::fields`,
+/// `kiln_abi/src/layout/props.rs:129`, whether or not the member list
+/// names it: an instantiation's fields are derived), or the type of an
+/// `alignas(type-id)` on the class or on one of its fields, on any
+/// declaration (Kiln reads every redeclaration: `max_align_attr`,
+/// `kiln_abi/src/layout/props.rs:78`).
+fn layout_reads_typedef_alignment(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let aligned_by_type = |x: DeclId| {
+        ast.redecls_of(x).any(|r| {
+            alignment_attrs(w, r)
+                .any(|b| QualType::from_raw(b).is_some_and(|q| typedef_alignment(w, q)))
+        })
+    };
+    aligned_by_type(d)
+        || ast.members(d).filter(|&m| ast.decls.get(m).kind() == DeclKind::Field).any(|f| {
+            ast.decls.get(f).ty().is_some_and(|q| typedef_alignment(w, q)) || aligned_by_type(f)
+        })
+}
+
+/// The `b` operands (`alignas(type-id)`'s type, raw) of the `ALIGNED`
+/// attributes of declaration `r`.
+fn alignment_attrs<'a>(w: &'a Walk<'_>, r: DeclId) -> impl Iterator<Item = u32> + 'a {
+    let ast = w.ast;
+    ast.lists
+        .iter::<slip_kiln::kiln::ast::AttrId>(ast.attrs.of_decl(r))
+        .map(|a| ast.attrs.get(a))
+        .filter(|n| n.kind == slip_kiln::kiln::ast::attr::AttrKind::ALIGNED)
+        .map(|n| n.b)
+}
+
+/// Whether layout, reading `q`, meets a typedef that carries an
+/// alignment: the sugar Kiln's layout follows
+/// (`Ast::layout_attributed_typedef`, `kiln_ast/src/layout_sugar.rs:58`,
+/// through `layout_desugar_once` and array element types), with Kiln's
+/// own test of the typedef (`max_align_attr`: an `ALIGNED` node or an
+/// `alignment` entry on any of its declarations). A walk longer than
+/// the bound answers yes.
+fn typedef_alignment(w: &Walk<'_>, q: QualType) -> bool {
+    use slip_kiln::kiln::ast::types::TypeView;
+    let ast = w.ast;
+    let mut x = q;
+    for _ in 0..SUGAR_LIMIT {
+        if ast.types.is_canonical(x.ty()) {
+            return false;
+        }
+        let view = ast.types.view(x.ty());
+        if let TypeView::Typedef { decl, underlying: _ } = view
+            && ast.redecls_of(decl).any(|r| {
+                alignment_attrs(w, r).next().is_some() || ast.decls.cold.alignment.get(r).is_some()
+            })
+        {
+            return true;
+        }
+        // Kiln's walk goes into the element of an array (cv-qualified or
+        // not) and otherwise desugars once; `if let` rather than a `match`
+        // because every other view is that one step.
+        let next = if let TypeView::QualifiedArray { quals: _, base } = view {
+            QualType::unqual(base)
+        } else if let TypeView::ConstantArray(a) = view {
+            a.elem
+        } else if let TypeView::IncompleteArray(elem) = view {
+            elem
+        } else {
+            ast.layout_desugar_once(x)
+        };
+        if next == x {
+            return false;
+        }
+        x = next;
+    }
+    true
+}
+
+/// The bound of [`typedef_alignment`]'s walk: more sugar than any source
+/// writes.
+const SUGAR_LIMIT: usize = 1 << 12;
+
 #[cfg(test)]
 mod tests {
     use slip_kiln::kiln::ast::decl::{CtorInit, CtorInitKind, DeclKind, DefinitionBits};
@@ -1332,91 +1420,3 @@ mod tests {
         );
     }
 }
-
-/// The layout of a class reads an alignment that only type sugar holds
-/// (`spec/landed/digest/WP-107.md`, item 1): a typedef carrying
-/// `__attribute__((aligned(N)))` raises the alignment of the type it names
-/// (Kiln `kiln_abi/src/layout/mod.rs:443`, `type_info` of a `Typedef`),
-/// while a type digest is taken of the canonical type (digest-kinds §4.1),
-/// which has lost it. Until a unit holds that alignment, a class whose
-/// layout reads one is indeterminate.
-pub(crate) const TYPEDEF_ALIGNMENT: Cause = Cause::Unsupported("layout/typedef-alignment");
-
-/// Whether the layout of class `d` reads a typedef's alignment: the type
-/// of one of its fields (every field Kiln lays out, `props::fields`,
-/// `kiln_abi/src/layout/props.rs:129`, whether or not the member list
-/// names it: an instantiation's fields are derived), or the type of an
-/// `alignas(type-id)` on the class or on one of its fields, on any
-/// declaration (Kiln reads every redeclaration: `max_align_attr`,
-/// `kiln_abi/src/layout/props.rs:78`).
-fn layout_reads_typedef_alignment(w: &Walk<'_>, d: DeclId) -> bool {
-    let ast = w.ast;
-    let aligned_by_type = |x: DeclId| {
-        ast.redecls_of(x).any(|r| {
-            alignment_attrs(w, r)
-                .any(|b| QualType::from_raw(b).is_some_and(|q| typedef_alignment(w, q)))
-        })
-    };
-    aligned_by_type(d)
-        || ast.members(d).filter(|&m| ast.decls.get(m).kind() == DeclKind::Field).any(|f| {
-            ast.decls.get(f).ty().is_some_and(|q| typedef_alignment(w, q)) || aligned_by_type(f)
-        })
-}
-
-/// The `b` operands (`alignas(type-id)`'s type, raw) of the `ALIGNED`
-/// attributes of declaration `r`.
-fn alignment_attrs<'a>(w: &'a Walk<'_>, r: DeclId) -> impl Iterator<Item = u32> + 'a {
-    let ast = w.ast;
-    ast.lists
-        .iter::<slip_kiln::kiln::ast::AttrId>(ast.attrs.of_decl(r))
-        .map(|a| ast.attrs.get(a))
-        .filter(|n| n.kind == slip_kiln::kiln::ast::attr::AttrKind::ALIGNED)
-        .map(|n| n.b)
-}
-
-/// Whether layout, reading `q`, meets a typedef that carries an
-/// alignment: the sugar Kiln's layout follows
-/// (`Ast::layout_attributed_typedef`, `kiln_ast/src/layout_sugar.rs:58`,
-/// through `layout_desugar_once` and array element types), with Kiln's
-/// own test of the typedef (`max_align_attr`: an `ALIGNED` node or an
-/// `alignment` entry on any of its declarations). A walk longer than
-/// the bound answers yes.
-fn typedef_alignment(w: &Walk<'_>, q: QualType) -> bool {
-    use slip_kiln::kiln::ast::types::TypeView;
-    let ast = w.ast;
-    let mut x = q;
-    for _ in 0..SUGAR_LIMIT {
-        if ast.types.is_canonical(x.ty()) {
-            return false;
-        }
-        let view = ast.types.view(x.ty());
-        if let TypeView::Typedef { decl, underlying: _ } = view
-            && ast.redecls_of(decl).any(|r| {
-                alignment_attrs(w, r).next().is_some() || ast.decls.cold.alignment.get(r).is_some()
-            })
-        {
-            return true;
-        }
-        // Kiln's walk goes into the element of an array (cv-qualified or
-        // not) and otherwise desugars once; `if let` rather than a `match`
-        // because every other view is that one step.
-        let next = if let TypeView::QualifiedArray { quals: _, base } = view {
-            QualType::unqual(base)
-        } else if let TypeView::ConstantArray(a) = view {
-            a.elem
-        } else if let TypeView::IncompleteArray(elem) = view {
-            elem
-        } else {
-            ast.layout_desugar_once(x)
-        };
-        if next == x {
-            return false;
-        }
-        x = next;
-    }
-    true
-}
-
-/// The bound of [`typedef_alignment`]'s walk: more sugar than any source
-/// writes.
-const SUGAR_LIMIT: usize = 1 << 12;
