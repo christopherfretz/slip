@@ -1,0 +1,2 @@
+# Item 6: the global namespace as a rule's parent: f moved out of acme to the global namespace keeps its name.
+relocate acme::f() => :: =

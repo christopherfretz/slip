@@ -1,0 +1,2 @@
+# Item 9, from verify/renamed-member: the rule given the global namespace as its parent instead of S.
+rule function | root | id g | disc-of post S::g() | pre S | id f

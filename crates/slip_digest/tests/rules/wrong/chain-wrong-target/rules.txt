@@ -1,0 +1,3 @@
+# Item 9, from chain/rename-chain: the target of the second rule replaced by another existing entity, use(): h and use collide.
+relocate f() => :: g
+relocate use() => :: h

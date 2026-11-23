@@ -1,0 +1,2 @@
+# digest-kinds §3.1 namespace, renamed by its own rule; its parent stays.
+relocate acme::inner => acme :: core

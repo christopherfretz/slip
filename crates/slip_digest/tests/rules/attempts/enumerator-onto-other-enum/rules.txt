@@ -1,0 +1,2 @@
+# Item 9 attempt: an enumerator of another enumeration (of one value) mapped into E: E lists its enumerators, and use() reads a value of another type.
+relocate b => F :: =

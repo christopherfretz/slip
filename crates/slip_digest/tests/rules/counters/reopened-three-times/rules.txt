@@ -1,0 +1,2 @@
+# Item 10: a namespace reopened three times is one entity: via 1.
+relocate legacy => :: acme

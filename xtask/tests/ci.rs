@@ -264,3 +264,68 @@ fn wp090_the_gate_never_blesses() {
         assert_eq!(std::fs::read_to_string(&log).unwrap_or_default(), "", "no step ran");
     }
 }
+
+/// The fake cargo behind a wrapper that sets its log and failure word.
+fn wrapped(f: &Fixture, cargo: &std::path::Path, log: &std::path::Path, fail: &str) -> PathBuf {
+    f.write(
+        "bin/wrap",
+        &format!(
+            "#!/bin/sh\nFAKE_CARGO_LOG='{}' FAKE_CARGO_FAIL='{fail}' exec '{}' \"$@\"\n",
+            log.display(),
+            cargo.display()
+        ),
+    );
+    let wrap = f.path("bin/wrap");
+    std::fs::set_permissions(&wrap, std::fs::Permissions::from_mode(0o755)).unwrap();
+    common::wait_executable(&wrap);
+    wrap
+}
+
+// §2 and spec/harness.md §6.3: with no transform test (no directory, or
+// an area with none) the `transform` step prints today's line and runs
+// nothing.
+#[test]
+fn s2_transform_step_without_tests() {
+    let (f, cargo, log) = fake("transform-none");
+    let wrap = wrapped(&f, &cargo, &log, "");
+    let opts = Options { steps: vec!["transform"], keep_going: false };
+    for _ in 0..2 {
+        let mut out = Vec::new();
+        assert!(ci::run(&opts, f.root(), wrap.as_os_str(), &mut out));
+        assert_eq!(
+            normalise(&String::from_utf8(out).unwrap()),
+            [
+                "==> transform",
+                "transform: no transform tests yet (spec/harness.md §6)",
+                "transform: ok (Ts)",
+                "ci: ok"
+            ]
+        );
+        assert!(!log.exists());
+        std::fs::create_dir_all(f.path("tests/transform/rename")).unwrap();
+    }
+}
+
+// §2: with one transform test the step runs `cargo xtask transform`, and
+// its failure fails the step.
+#[test]
+fn s2_transform_step_with_a_test() {
+    let (f, cargo, log) = fake("transform-one");
+    f.write("tests/transform/rename/one/test.txt", "spec: edits §9\n");
+    let opts = Options { steps: vec!["transform"], keep_going: false };
+    let wrap = wrapped(&f, &cargo, &log, "");
+    let mut out = Vec::new();
+    assert!(ci::run(&opts, f.root(), wrap.as_os_str(), &mut out));
+    assert_eq!(
+        normalise(&String::from_utf8(out).unwrap()),
+        ["==> transform", "transform: ok (Ts)", "ci: ok"]
+    );
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "xtask transform\n");
+    let wrap = wrapped(&f, &cargo, &log, "transform");
+    let mut out = Vec::new();
+    assert!(!ci::run(&opts, f.root(), wrap.as_os_str(), &mut out));
+    assert_eq!(
+        normalise(&String::from_utf8(out).unwrap()),
+        ["==> transform", "transform: FAILED", "ci: FAILED (transform)"]
+    );
+}

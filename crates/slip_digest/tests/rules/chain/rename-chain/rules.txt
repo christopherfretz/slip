@@ -1,0 +1,3 @@
+# Item 4: f was renamed g and g renamed h. The rules are h -> g and g -> f; were they chained, h would end as f.
+relocate f() => :: g
+relocate g() => :: h

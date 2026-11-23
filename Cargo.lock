@@ -296,4 +296,5 @@ version = "0.0.0"
 dependencies = [
  "slip_exec",
  "slip_model",
+ "slip_verify",
 ]

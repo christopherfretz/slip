@@ -101,8 +101,8 @@ fn s3_kiln_boundary_dependents() {
 }
 
 // §3 `kiln-boundary`, third rule (spec/landed/harness/WP-021.md): the
-// paths `slip_kiln::kiln` and `slip_kiln::snippet`, in the path form and
-// in a `use` group, outside the files that may name them; comments and
+// paths `slip_kiln::kiln`, `slip_kiln::snippet` and `slip_kiln::ranges`
+// (spec/landed/api/WP-084.md), in the path form and in a `use` group, outside the files that may name them; comments and
 // literals are not code.
 #[test]
 fn s3_kiln_boundary_kiln_modules() {
@@ -110,7 +110,8 @@ fn s3_kiln_boundary_kiln_modules() {
     // Allowed: slip_digest and slip_script name both; slip_kiln itself.
     f.write(
         "crates/slip_digest/src/walk.rs",
-        "use slip_kiln::kiln::ast::Ast;\nuse slip_kiln::{kiln, snippet};\n",
+        "use slip_kiln::kiln::ast::Ast;\nuse slip_kiln::{kiln, snippet};\n\
+         use slip_kiln::ranges::unit_order;\n",
     );
     f.write(
         "crates/slip_script/src/lib.rs",
@@ -130,6 +131,12 @@ fn s3_kiln_boundary_kiln_modules() {
          use ::slip_kiln::{\n    KilnCheck,\n    snippet::parse,\n    kiln as k,\n    x::{kiln},\n};\n",
     );
     f.write("crates/slip_cli/tests/t.rs", "use slip_kiln::kiln::ast;\n");
+    // `ranges`, which takes Kiln's types without naming `kiln`.
+    f.write(
+        "crates/slip_cli/src/c.rs",
+        "fn f(u: &slip_kiln::Unit<'_>) {\n    let _ = slip_kiln::ranges::unit_order;\n}\n\
+         use slip_kiln::{ranges::file_range, ParseOptions};\n",
+    );
     // Ignored: in comments and literals, and other paths.
     f.write(
         "crates/slip_cli/src/b.rs",
@@ -149,6 +156,10 @@ fn s3_kiln_boundary_kiln_modules() {
              crates/slip_digest/, crates/slip_script/ and the tests/ of slip_kiln, slip_digest, \
              slip_script and slip_cli may",
             "crates/slip_cli/src/a.rs:8: kiln-boundary: names `slip_kiln::kiln`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+            "crates/slip_cli/src/c.rs:2: kiln-boundary: names `slip_kiln::ranges`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+            "crates/slip_cli/src/c.rs:4: kiln-boundary: names `slip_kiln::ranges`; only \
              crates/slip_digest/ and crates/slip_script/ may",
             "crates/slip_cli/tests/t.rs:1: kiln-boundary: names `slip_kiln::kiln`; only \
              crates/slip_digest/ and crates/slip_script/ may",

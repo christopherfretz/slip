@@ -165,10 +165,19 @@ fn run_step(name: &str, root: &Path, cargo: &OsStr, out: &mut dyn Write) -> bool
             let test = [&["test"][..], &kiln_packages].concat();
             cargo_ok(cargo, root, &clippy, out) && cargo_ok(cargo, root, &test, out)
         }
-        "transform" => {
-            let _ = writeln!(out, "transform: no transform tests yet (spec/harness.md §6)");
-            true
-        }
+        // spec/harness.md §2: `cargo xtask transform` over the tests of
+        // `tests/transform/`, and today's line while there are none.
+        "transform" => match crate::transform::discover(root) {
+            Ok(tests) if tests.is_empty() => {
+                let _ = writeln!(out, "transform: no transform tests yet (spec/harness.md §6)");
+                true
+            }
+            Ok(_) => cargo_ok(cargo, root, &["xtask", "transform"], out),
+            Err(e) => {
+                let _ = writeln!(out, "transform: {e}");
+                false
+            }
+        },
         _ => unreachable!("parse_args admits only the steps of STEPS, not `{name}`"),
     }
 }
