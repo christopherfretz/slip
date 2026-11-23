@@ -715,8 +715,8 @@ fn param_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) -> bool {
     let params: Vec<(DeclId, DeclId)> = decls
         .iter()
         .filter_map(|&x| {
-            let p = ast.lists.iter::<DeclId>(ast.decls.function(x)?.params).nth(index)?;
-            Some((x, p))
+            let param = ast.lists.iter::<DeclId>(ast.decls.function(x)?.params).nth(index)?;
+            Some((x, param))
         })
         .collect();
     let def_param = params.iter().find(|&&(x, _)| Some(x) == def).map(|&(_, p)| p);
