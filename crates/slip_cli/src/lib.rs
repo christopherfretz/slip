@@ -11,6 +11,9 @@ pub mod declare;
 
 pub mod args;
 pub mod commands;
+pub mod image;
+pub mod locate;
+pub mod verify_job;
 pub mod worker;
 
 use std::ffi::OsString;

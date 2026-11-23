@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (an override in a class template of a base that is not dependent: a candidate, unsupported until docs/wp/WP-073.md)
+from: n::B::f
+to: g
+kind: function

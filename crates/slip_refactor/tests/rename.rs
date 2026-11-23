@@ -497,17 +497,29 @@ fn rules_give_the_ids_in_the_post_image() {
                 // read-only file is flagged `read_only` and skipped above.
                 let mut keys = Keys::with_rules(input, &table, slip_digest::ReadOnly::NO_FILE);
                 let mut ids = BTreeSet::new();
+                let mut insert = |keys: &mut Keys<'_>, e: DeclId| match keys.key_id(e) {
+                    Ok(id) => {
+                        ids.insert(id);
+                    }
+                    Err(NoKey::Indeterminate(c)) => {
+                        panic!("{name}: a declaration's key is indeterminate: {c:?}")
+                    }
+                    Err(_) => {}
+                };
+                let ast = u.ast();
                 for d in written::decl_names(u) {
                     let e = written::origin(u, d.decl);
                     if named(u, e, &new_name) {
-                        match keys.key_id(e) {
-                            Ok(id) => {
-                                ids.insert(id);
-                            }
-                            Err(NoKey::Indeterminate(c)) => {
-                                panic!("{name}: a declaration's key is indeterminate: {c:?}")
-                            }
-                            Err(_) => {}
+                        insert(&mut keys, e);
+                        // The followers that have no name token of their
+                        // own (WP-072): a using-declaration's shadows, and
+                        // an unnamed class or enumeration the declaration
+                        // names.
+                        for s in ast.using_shadows(d.decl) {
+                            insert(&mut keys, s);
+                        }
+                        if let Some(t) = ast.decls.get(e).ty().and_then(|q| unnamed_tag(u, q)) {
+                            insert(&mut keys, t);
                         }
                     }
                 }
@@ -550,6 +562,29 @@ fn reason_name(r: Reason) -> &'static str {
 fn is_pending(case: &Case) -> bool {
     std::fs::read_to_string(case.dir.join("expect.txt"))
         .is_ok_and(|t| t.lines().any(|l| l.trim() == "# pending"))
+}
+
+/// The unnamed class or enumeration a declaration of type `q` declares
+/// an object of, through pointers, references and arrays.
+fn unnamed_tag(u: &Unit<'_>, q: slip_kiln::kiln::ast::QualType) -> Option<DeclId> {
+    use slip_kiln::kiln::ast::types::TypeView;
+    let ast = u.ast();
+    let mut q = ast.types.canonical(q);
+    for _ in 0..64 {
+        match ast.types.view(q.ty()) {
+            TypeView::Record(d) | TypeView::Enum(d) => {
+                let d = ast.first(d);
+                return ast.decls.get(d).name().is_empty().then_some(d);
+            }
+            TypeView::Pointer(x) | TypeView::LValueRef(x) | TypeView::RValueRef(x) => {
+                q = ast.types.canonical(x);
+            }
+            TypeView::ConstantArray(a) => q = ast.types.canonical(a.elem),
+            TypeView::IncompleteArray(x) => q = ast.types.canonical(x),
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Whether the AST names `d` (an identifier) `name`.
@@ -833,4 +868,160 @@ fn a_class_template_member_seed_does_not_depend_on_instantiation() {
     let followers = |e: &Edits| e.subjects.iter().filter(|s| s.role == Role::Follower).count();
     assert_eq!((followers(&inst), followers(&not)), (1, 0));
     assert!(inst.subjects.iter().all(|s| s.role != Role::Follower || s.of == [a.id]));
+}
+
+// ---------------------------------------------------------------------
+// Families across observers (`docs/wp/WP-072.md` "Tests", the last
+// paragraph): two observers' sections reduced (`slip_reduce`, §5.2).
+
+/// The shards of `mains`, each parsed as an observer of one tree of
+/// `files`, with the run of `t` over it as its `edits` section.
+fn map_shards(
+    name: &str,
+    files: &[(&str, &[u8])],
+    mains: &[&str],
+    t: &dyn Fn(&str) -> Transform,
+) -> (Transform, Vec<slip_model::Shard>) {
+    let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), name, files).unwrap();
+    let root = tree.root().to_str().unwrap().to_owned();
+    let t = t(&root);
+    let mut shards = Vec::new();
+    for main in mains {
+        let obs = tree.observer(main, "c++20", &[]);
+        let (mut shard, r) = tree
+            .parse(&obs, &written_options(), |u| {
+                assert_eq!(u.errors(), 0, "{name}: {main} has errors");
+                let prefix = format!("{root}/");
+                let subject = |p: &[u8]| p.strip_prefix(prefix.as_bytes()).unwrap_or(p).to_vec();
+                slip_digest::map::with_input(u, &subject, |input| {
+                    let mut keys = Keys::new(input);
+                    let sites = slip_kiln::sites::Sites::new(u, &t.ownership);
+                    slip_refactor::run(&t, u, &mut keys, &|f| sites.file_ref(f)).expect("run")
+                })
+                .expect("with_input")
+            })
+            .unwrap();
+        shard.edits = Some(r.expect("parsed"));
+        shards.push(shard);
+    }
+    (t, shards)
+}
+
+/// The shards in plan order (`slip_reduce::Shards`).
+struct Plan(Vec<slip_model::Shard>);
+
+impl slip_reduce::Shards for Plan {
+    fn open(&self, index: usize) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.0.get(index).map(slip_model::Shard::to_bytes))
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn observer(&self, index: usize) -> Digest {
+        self.0[index].observer
+    }
+}
+
+/// Reduces the shards of `t`.
+fn reduced(name: &str, t: &Transform, shards: Vec<slip_model::Shard>) -> slip_reduce::Reduced {
+    let id = slip_model::formats::content_id(&t.to_bytes()).unwrap();
+    let scratch = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-scratch"));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let options = slip_reduce::Options::new(scratch.clone());
+    let r = slip_reduce::reduce(t, id, Digest([0x50; 32]), 1, &Plan(shards), &options)
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    let _ = std::fs::remove_dir(&scratch);
+    r
+}
+
+/// Two observers that share only the base class: one sees the seed
+/// `D1::f` overriding `B::f`, the other `D2::f` overriding `B::f` and an
+/// unrelated `X::f`. The request names `n::D1::f`.
+fn family_over_two_observers(name: &str) -> (Vec<slip_model::Shard>, slip_reduce::Reduced) {
+    let files: [(&str, &[u8]); 3] = [
+        ("base.h", b"namespace n { struct B { virtual void f(); }; }\n"),
+        ("a.cpp", b"#include \"base.h\"\nnamespace n { struct D1 : B { void f() override; }; }\nvoid ha(n::D1& d) { d.f(); }\n"),
+        ("b.cpp", b"#include \"base.h\"\nnamespace n { struct D2 : B { void f() override; }; }\nnamespace n { struct X { virtual void f(); }; }\nvoid hb(n::B& b, n::X& x) { b.f(); x.f(); }\n"),
+    ];
+    let case = |root: &str| {
+        let c = Case {
+            name: name.into(),
+            dir: PathBuf::new(),
+            target: vec![b"n".to_vec(), b"D1".to_vec(), b"f".to_vec()],
+            kind: TargetKind::Function,
+            new_name: b"g".to_vec(),
+            args: Vec::new(),
+            files: Vec::new(),
+        };
+        transform(&c, root)
+    };
+    let (t, shards) = map_shards(name, &files, &["a.cpp", "b.cpp"], &case);
+    let r = reduced(name, &t, shards.clone());
+    (shards, r)
+}
+
+/// The subject of `shard` displayed as `display`.
+fn subject_named(shard: &slip_model::Shard, display: &str) -> slip_model::edits::Subject {
+    let e = shard.edits.as_ref().unwrap();
+    e.subjects.iter().find(|s| s.display == display).unwrap_or_else(|| panic!("{display}")).clone()
+}
+
+/// The family is selected whole: the second observer has no seed, and its
+/// `D2::f` is reached from the seed through `B::f`, which both observers
+/// link. Every declaration of the three is edited.
+#[test]
+fn a_family_split_over_two_observers_is_selected_whole() {
+    let (shards, r) = family_over_two_observers("family-two-observers-whole");
+    let (a, b) = (&shards[0], &shards[1]);
+    let d1 = subject_named(a, "n::D1::f()");
+    let base = subject_named(a, "n::B::f()");
+    let d2 = subject_named(b, "n::D2::f()");
+    assert_eq!(d1.role, Role::Seed);
+    assert_eq!(subject_named(b, "n::B::f()").role, Role::Candidate);
+    assert!(!b.edits.as_ref().unwrap().subjects.iter().any(|s| s.role == Role::Seed));
+    let set = &r.edits;
+    assert_eq!(set.state, slip_model::editset::SetState::Accepted, "{:?}", set.refusals);
+    let selected: BTreeSet<Digest> = set.subjects.iter().map(|s| s.id).collect();
+    for id in [d1.id, base.id, d2.id] {
+        assert!(selected.contains(&id), "{} not selected", short(&id));
+    }
+    // Each of the three is renamed where it is declared.
+    for (path, id) in [("base.h", base.id), ("a.cpp", d1.id), ("b.cpp", d2.id)] {
+        let edited = set.edits.iter().any(|e| {
+            set.files[e.file as usize].path.ends_with(format!("/{path}").as_bytes())
+                && e.subjects.contains(&id)
+        });
+        assert!(edited, "{path}: no edit of {}", short(&id));
+    }
+    assert!(r.declared.is_some());
+}
+
+/// An unrelated family is not selected: `X::f` is a candidate of the
+/// second observer with no link to the seed's family, so its claims are
+/// `keep`s of the edit set and nothing of it is edited or ruled.
+#[test]
+fn an_unrelated_family_is_not_selected_and_kept() {
+    let (shards, r) = family_over_two_observers("family-two-observers-unrelated");
+    let b = &shards[1];
+    let x = subject_named(b, "n::X::f()");
+    assert_eq!(x.role, Role::Candidate);
+    let eb = b.edits.as_ref().unwrap();
+    assert!(!eb.links.iter().any(|l| l.a == x.id || l.b == x.id), "X::f is linked");
+    let set = &r.edits;
+    assert_eq!(set.state, slip_model::editset::SetState::Accepted, "{:?}", set.refusals);
+    assert!(!set.subjects.iter().any(|s| s.id == x.id), "X::f selected");
+    assert!(!set.edits.iter().any(|e| e.subjects.contains(&x.id)), "X::f edited");
+    // Every claim the second observer made for X::f is kept.
+    let file = |i: u64| eb.files[i as usize].path.clone();
+    let mut claimed = 0;
+    for c in eb.claims.iter().filter(|c| c.subjects.contains(&x.id)) {
+        claimed += 1;
+        let kept = set.kept.iter().any(|p| {
+            set.files[p.file as usize].path == file(c.file) && (p.lo, p.hi) == (c.lo, c.hi)
+        });
+        assert!(kept, "the claim at {}..{} is not kept", c.lo, c.hi);
+    }
+    assert_eq!(claimed, 2, "X::f's declaration and its call");
+    let rules = r.declared.as_ref().map(|d| d.rules().rules().len());
+    assert_eq!(rules, Some(3), "the three functions of the family, and no other");
 }

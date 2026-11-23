@@ -1,0 +1,5 @@
+spec: edits.md §9.2 candidates (a virtual function and one override: two subjects, one link)
+spec: edits.md §9.3 row 7 (an overriding function's name: literal)
+from: n::C::f
+to: g
+kind: function

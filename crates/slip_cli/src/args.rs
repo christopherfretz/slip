@@ -35,6 +35,14 @@ pub const DEFAULT_WORKER_JOBS: u64 = 1;
 /// `--worker-stack` by default (§5.2): 1 GiB.
 pub const DEFAULT_WORKER_STACK: u64 = 1 << 30;
 
+/// `--findings` by default: the findings a verdict keeps (`spec/verify.md`
+/// §5, `limit`).
+pub const DEFAULT_FINDINGS: u64 = 64;
+
+/// `--locate` by default: the findings that are named and localised
+/// (`spec/verify.md` §5, §6.1).
+pub const DEFAULT_LOCATE: u64 = 16;
+
 /// What the command line asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invocation {
@@ -108,11 +116,23 @@ pub struct ParseArgs {
     pub worker_stack: u64,
 }
 
-/// `slip __worker`.
+/// `slip __worker` (§8.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerArgs {
     pub worker_jobs: u64,
     pub worker_stack: u64,
+    /// `--findings`: `limit` of every verify job the worker serves.
+    pub findings: u64,
+    /// `--locate`: `locate` of every verify job the worker serves.
+    pub locate: u64,
+}
+
+/// The post-image of the command line (`--root`, `--post`; §8.7): the
+/// directories as given, `roots[i]` mapped to `posts[i]`. Equal lengths.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ImageArgs {
+    pub roots: Vec<PathBuf>,
+    pub posts: Vec<PathBuf>,
 }
 
 /// A usage error (§8.5 status 2): the one line, without the `slip: `
@@ -440,10 +460,13 @@ fn parse_resource(args: &[OsString]) -> Result<Invocation, UsageError> {
 }
 
 fn parse_worker(args: &[OsString]) -> Result<Invocation, UsageError> {
-    let values = options_only(args, &["--worker-jobs", "--worker-stack"], &[])?;
+    let values =
+        options_only(args, &["--worker-jobs", "--worker-stack", "--findings", "--locate"], &[])?;
     Ok(Invocation::Worker(WorkerArgs {
         worker_jobs: values.number("--worker-jobs", 1)?.unwrap_or(DEFAULT_WORKER_JOBS),
         worker_stack: values.size("--worker-stack", 1)?.unwrap_or(DEFAULT_WORKER_STACK),
+        findings: values.number("--findings", 0)?.unwrap_or(DEFAULT_FINDINGS),
+        locate: values.number("--locate", 0)?.unwrap_or(DEFAULT_LOCATE),
     }))
 }
 

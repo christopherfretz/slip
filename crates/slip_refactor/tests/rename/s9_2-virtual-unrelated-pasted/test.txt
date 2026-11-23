@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (an unrelated virtual function first declared by a pasted name and defined out of line: a candidate with no link; its refusal is dropped by reduce, §5.2)
+from: n::B::f
+to: g
+kind: function

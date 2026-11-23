@@ -1,0 +1,13 @@
+subjects:
+  27394c7f seed - rule=yes n::C::f()
+  3b98ec8e candidate - rule=yes n::D::f()
+  599ef791 candidate - rule=yes n::B::f()
+links:
+  27394c7f 3b98ec8e
+  27394c7f 599ef791
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:3:21+1 replace "g" t0 votes=1 none [27394c7f]
+  main.cpp:4:21+1 replace "g" t0 votes=1 none [3b98ec8e]
+  main.cpp:6:21+1 replace spell(3b98ec8e, "g") t0 votes=1 none [3b98ec8e]
+changed:

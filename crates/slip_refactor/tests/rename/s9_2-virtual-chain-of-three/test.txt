@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (a chain of three: each linked to the function it overrides directly; the seed is the middle one)
+from: n::C::f
+to: g
+kind: function

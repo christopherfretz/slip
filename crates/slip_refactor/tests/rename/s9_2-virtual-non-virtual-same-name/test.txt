@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (a non-virtual function of the same name in an unrelated class: no subject, keep)
+from: n::A::f
+to: g
+kind: function

@@ -1,0 +1,8 @@
+subjects:
+  c9ca68fe follower - rule=yes n::(anonymous struct) of=d5852d7c
+  d5852d7c seed - rule=yes n::p
+links:
+claims:
+  main.cpp:1:34+1 replace "q" t0 votes=1 none [d5852d7c]
+  main.cpp:2:21+1 replace spell(d5852d7c, "q") t0 votes=1 none [d5852d7c]
+changed:

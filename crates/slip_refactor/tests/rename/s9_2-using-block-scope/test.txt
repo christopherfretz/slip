@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (a using-declaration at block scope: no key, so no follower; its name is claimed for the subject it names)
+from: n::f
+to: g
+kind: function

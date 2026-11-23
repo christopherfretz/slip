@@ -1,0 +1,9 @@
+subjects:
+  152dddff candidate - rule=yes n::D::f(double)
+  36cceb9c seed - rule=yes n::B::f(int)
+links:
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [36cceb9c]
+  main.cpp:3:29+1 replace "g" t0 votes=1 none [152dddff]
+  main.cpp:5:21+1 replace spell(152dddff, "g") t0 votes=1 none [152dddff]
+changed:
