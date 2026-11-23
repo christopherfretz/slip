@@ -61,13 +61,19 @@ pub struct Ran {
 /// output is not UTF-8 is an error; any exit status is returned (the
 /// caller decides which it accepts).
 pub fn run(slip: &Path, args: &[OsString]) -> Result<Ran, String> {
+    run_to(slip, args, Stdio::inherit())
+}
+
+/// [`run`], with `slip`'s standard error sent to `stderr` (a log file, so
+/// that it does not interleave with what the caller prints).
+pub fn run_to(slip: &Path, args: &[OsString], stderr: Stdio) -> Result<Ran, String> {
     use std::os::unix::process::ExitStatusExt;
     let shown = slip.display();
     let out = Command::new(slip)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(stderr)
         .output()
         .map_err(|e| format!("cannot run {shown}: {e}"))?;
     let status = match (out.status.code(), out.status.signal()) {

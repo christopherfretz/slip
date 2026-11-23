@@ -32,6 +32,14 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+/// The log of `slip`'s standard error for the version, the plan and the
+/// map run, in `demo1/`; a case's is `demo1/<case>.log`.
+const MAP_LOG: &str = "map.log";
+
+fn case_log(case: &Case) -> String {
+    format!("{}.log", case.name)
+}
+
 const USAGE: &str = "usage: cargo xtask demo 1 [--slip <path>] [-j <n>] [--case <name>]… [--keep]";
 
 /// The inputs of Demo 1, relative to the repository root.
@@ -1147,13 +1155,24 @@ impl Ctx<'_> {
     }
 
     /// Runs `slip` with `args`; a status not in `accept` is an error.
-    fn slip(&self, args: &[OsString], accept: &[i32]) -> Result<Ran, String> {
+    /// Runs `slip`, its standard error appended to `demo1/<log>` (kept out
+    /// of the table: §10.3's output is the table alone).
+    fn slip(&self, args: &[OsString], accept: &[i32], log: &str) -> Result<Ran, String> {
         let what = args.first().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
-        let ran = slip_run::run(self.slip, args)?;
+        let path = self.demo1().join(log);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("{}: cannot open: {e}", path.display()))?;
+        let ran = slip_run::run_to(self.slip, args, file.into())?;
         if accept.contains(&ran.status) {
             Ok(ran)
         } else {
-            Err(format!("`slip {what}` exited with status {}", ran.status))
+            Err(format!(
+                "`slip {what}` exited with status {} (its standard error: demo1/{log})",
+                ran.status
+            ))
         }
     }
 
@@ -1206,11 +1225,11 @@ impl Ctx<'_> {
         }
         let made: Vec<&Case> = all.iter().filter(|c| needed.contains(c.name.as_str())).collect();
         let pristine = self.pristine_hashes(&made)?;
-        let (version_slip, version_kiln) = self.versions()?;
         let demo1 = self.demo1();
         slip_run::remove_tree(&self.layout.dir, &demo1)?;
         std::fs::create_dir_all(&demo1)
             .map_err(|e| format!("{}: cannot create: {e}", demo1.display()))?;
+        let (version_slip, version_kiln) = self.versions()?;
 
         let map = self.map_run()?;
         let width = selected.iter().map(|c| c.name.len()).max().unwrap_or(0).max(10) + 2;
@@ -1268,7 +1287,7 @@ impl Ctx<'_> {
         let mut args: Vec<OsString> =
             vec!["plan".into(), "--db".into(), self.layout.database().into()];
         args.extend(store());
-        let ran = self.slip(&args, &[0, 1])?;
+        let ran = self.slip(&args, &[0, 1], MAP_LOG)?;
         let plan = slip_run::line(&ran.stdout, "plan")
             .and_then(Digest::from_hex)
             .ok_or_else(|| "`slip plan` printed no `plan <id>` line".to_owned())?;
@@ -1276,7 +1295,7 @@ impl Ctx<'_> {
         args.extend(store());
         args.extend(self.only_args());
         args.extend(self.jobs_args());
-        let ran = self.slip(&args, &[0, 1])?;
+        let ran = self.slip(&args, &[0, 1], MAP_LOG)?;
         let map = load_printed(&ran, "parse", &plan)?;
         let counters = perf::shard_counters(&map)?;
         let determinate = map
@@ -1302,7 +1321,7 @@ impl Ctx<'_> {
 
     /// `slip --version`: `slip <version> (kiln <version>)`.
     fn versions(&self) -> Result<(String, String), String> {
-        let ran = self.slip(&["--version".into()], &[0])?;
+        let ran = self.slip(&["--version".into()], &[0], MAP_LOG)?;
         let line = ran.stdout.lines().next().unwrap_or("");
         line.strip_prefix("slip ")
             .and_then(|r| r.strip_suffix(')'))
@@ -1388,7 +1407,7 @@ impl Ctx<'_> {
                 }
                 a.extend(self.image_args(&case.name));
                 a.extend(self.observer_args(case));
-                self.slip(&a, &[0])?;
+                self.slip(&a, &[0], &case_log(case))?;
             }
             let (value, n) = self.verify(case, plan, case.declared.is_some().then_some(&decl))?;
             numbers = Some(n);
@@ -1441,7 +1460,7 @@ impl Ctx<'_> {
         ]);
         a.extend(self.only_args());
         a.extend(self.jobs_args());
-        let ran = self.slip(&a, &[0, 1, 4])?;
+        let ran = self.slip(&a, &[0, 1, 4], &case_log(case))?;
         let shown = path.display();
         let bytes =
             std::fs::read(&path).map_err(|e| format!("{shown}: cannot read the report: {e}"))?;
@@ -1486,7 +1505,7 @@ impl Ctx<'_> {
             for n in names {
                 a.extend(["--match".into(), (*n).into()]);
             }
-            flags[i] = indeterminate_units(&self.slip(&a, &[0])?.stdout);
+            flags[i] = indeterminate_units(&self.slip(&a, &[0], &case_log(case))?.stdout);
         }
         Ok(flags)
     }

@@ -21,6 +21,8 @@ use slip_model::{
     Outcome, Phase, Plan, Run, RunRecord, Shard, Status,
 };
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use xtask::corpus::{self, Layout, rows};
@@ -209,6 +211,10 @@ fn pristine(f: &Fixture) -> PathBuf {
     std::fs::set_permissions(f.path("src/lib/b.cpp"), std::fs::Permissions::from_mode(0o640))
         .unwrap();
     std::os::unix::fs::symlink("sub", f.path("src/lib/link")).unwrap();
+    // G6 (spec/verify.md §5.3): a link keeps its target bytes, a route
+    // out of the root and bytes that are not UTF-8 included.
+    std::os::unix::fs::symlink(OsStr::from_bytes(b"../out/\xff/./x//"), f.path("src/lib/away"))
+        .unwrap();
     f.path("src")
 }
 
@@ -220,11 +226,15 @@ fn s10_3_link_tree_and_apply_edit() {
     let f = Fixture::empty("demo-tree");
     let src = pristine(&f);
     let tree = f.path("trees/01");
-    assert_eq!(demo::link_tree(&src.join("lib"), &tree.join("lib")), Ok(4));
+    assert_eq!(demo::link_tree(&src.join("lib"), &tree.join("lib")), Ok(5));
     let ino = |p: &Path| std::fs::metadata(p).unwrap().ino();
     assert_eq!(ino(&tree.join("lib/a.h")), ino(&src.join("lib/a.h")));
     assert_eq!(ino(&tree.join("lib/sub/c.h")), ino(&src.join("lib/sub/c.h")));
     assert_eq!(std::fs::read_link(tree.join("lib/link")).unwrap(), Path::new("sub"));
+    assert_eq!(
+        std::fs::read_link(tree.join("lib/away")).unwrap().as_os_str().as_bytes(),
+        b"../out/\xff/./x//"
+    );
     assert!(demo::link_tree(&src.join("lib"), &tree.join("lib")).unwrap_err().ends_with("exists"));
 
     let edit = read_edit(
@@ -653,6 +663,7 @@ case "$cmd" in
   verify)
     [ -f "$D/report.$round.json" ] && cp "$D/report.$round.json" "$report"
     echo "run $store/$(cat "$D/verify.$round.run")"
+    echo "slip: verify of round $round says this on standard error" >&2
     exit $(cat "$D/verify.$round.status" 2>/dev/null || echo 1) ;;
   units)
     if [ $post = 1 ]; then cat "$D/units.post" 2>/dev/null; else cat "$D/units.pre" 2>/dev/null; fi
@@ -1028,9 +1039,16 @@ fn s10_3_failed() {
     let (r, out) = w.run(&["1", "--case", "00-control"]);
     assert_eq!(r, Ok(DemoOutcome::Failed));
     assert!(
-        out.contains("00-control  ERROR\n  error `slip verify` exited with status 3\n"),
+        out.contains(
+            "00-control  ERROR\n  error `slip verify` exited with status 3 \
+             (its standard error: demo1/00-control.log)\n"
+        ),
         "{out}"
     );
+    // `slip`'s standard error is kept out of the table, in the case's log.
+    assert!(!out.contains("standard error\n"), "{out}");
+    let log = std::fs::read_to_string(w.f.path("corpora/tiny/demo1/00-control.log")).unwrap();
+    assert_eq!(log, "slip: verify of round 0 says this on standard error\n");
     // A report of another round is an error of the case.
     w.report(0, "verified.json", 0);
     let text = std::fs::read_to_string(w.f.path("fake/report.1.json")).unwrap();
