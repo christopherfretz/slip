@@ -426,9 +426,10 @@ mod tests {
     /// The panic hook of the second writing: panics at `here` if
     /// [`PANIC_AT`] says so.
     pub(super) fn panic_at(here: u8) {
-        if PANIC_AT.with(Cell::get) == here {
-            panic!("WP-054 test: the second writing panics at {here}");
-        }
+        assert!(
+            PANIC_AT.with(Cell::get) != here,
+            "WP-054 test: the second writing panics at {here}"
+        );
     }
 
     /// The mutation hook of [`traces`]: a byte added to the second writing
