@@ -1,0 +1,4 @@
+# Fix round 2, F5 (the review's case): f1 and f2 swapped; g's alias string still names _Z2f1v, so g now aliases the body that was f2's.
+# Recorded equal: a name in a string the toolchain resolves is not a name the digest sees; spec/verify.md §8 "Names in strings the toolchain resolves" says what is checked instead.
+relocate f1() => :: f2
+relocate f2() => :: f1

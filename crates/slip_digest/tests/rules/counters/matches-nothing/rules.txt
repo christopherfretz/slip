@@ -1,0 +1,3 @@
+# Item 10: a rule whose source no entity has: via 0. Its produced key is f's own, which the post-image has: direct 1.
+# vacuous
+rule function | root | id nothing | disc-of post f() | root | id f

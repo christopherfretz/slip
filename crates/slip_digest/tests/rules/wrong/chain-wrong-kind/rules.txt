@@ -1,0 +1,3 @@
+# Item 9, from chain/rename-chain: the second rule given the kind variable and no discriminator.
+relocate f() => :: g
+rule variable | root | id h | none | root | id g

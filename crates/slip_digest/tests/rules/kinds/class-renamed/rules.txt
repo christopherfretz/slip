@@ -1,0 +1,2 @@
+# digest-kinds §3.1 class, renamed: its constructor and destructor are named `constructor` and `destructor` and follow.
+relocate S => :: T

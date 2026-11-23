@@ -1,0 +1,5 @@
+transform <id>
+report - note "one"
+report - note "two"
+counter api.edits 0
+counter api.reports 2

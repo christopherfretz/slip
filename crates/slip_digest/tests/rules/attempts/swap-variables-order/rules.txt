@@ -1,0 +1,3 @@
+# Item 9 attempt: two variables swapped, names and values: the order unit lists the mapped keys in the order of definition, x then y on both sides. Equal: an isomorphism.
+relocate x => :: y
+relocate y => :: x

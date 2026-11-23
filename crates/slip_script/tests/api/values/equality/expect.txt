@@ -1,0 +1,9 @@
+transform <id>
+report - note "no: lib::f is its declaration"
+report - note "no: lib::f is lib::g"
+report - note "yes: lib::f and ::lib::f are one entity"
+report - note "yes: lib::f found twice is one entity"
+report - note "yes: lib::f is not lib::g"
+report - note "yes: one declaration found twice is one declaration"
+report - note "yes: the entity of the declaration is lib::f"
+report - note "yes: the parent of lib::f is lib"

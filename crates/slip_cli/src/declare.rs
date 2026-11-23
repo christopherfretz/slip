@@ -49,6 +49,9 @@ pub enum ErrorKind {
     Fallback,
     NotRenamable,
     Duplicate,
+    /// A `relocate` line whose rule `spec/verify.md` §2.1 refuses
+    /// (`Rule::refusal`).
+    Refused,
 }
 
 impl ErrorKind {
@@ -61,6 +64,7 @@ impl ErrorKind {
             ErrorKind::Fallback => "fallback key",
             ErrorKind::NotRenamable => "not renamable",
             ErrorKind::Duplicate => "duplicate",
+            ErrorKind::Refused => "refused",
         }
     }
 }
@@ -462,6 +466,15 @@ pub fn resolve(
                         n,
                         ErrorKind::NotRenamable,
                         format!("the rule of `{}` cannot be in a rule table: {what}", entity.text),
+                    ));
+                }
+                // A rule §2.1 refuses: the walk keys nothing under a table
+                // that holds one, so it is refused here, with its reason.
+                if let Some(what) = rule.refusal() {
+                    return Err(error(
+                        n,
+                        ErrorKind::Refused,
+                        format!("the rule of `{}` is refused: {what}", entity.text),
                     ));
                 }
                 if !matches.insert((rule.parent, rule.kind, rule.name.clone(), rule.disc)) {

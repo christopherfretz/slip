@@ -387,13 +387,13 @@ fn scope_owner(w: &Walk<'_>, c: DeclId) -> Result<DeclId, Cause> {
 /// The template whose head declares template parameter `p` (Kiln gives a
 /// template parameter the template's context, not the template), from
 /// the map [`param_templates`] builds.
-fn param_template(w: &Walk<'_>, p: DeclId) -> Option<DeclId> {
+pub(crate) fn param_template(w: &Walk<'_>, p: DeclId) -> Option<DeclId> {
     w.local.param_templates.as_ref().and_then(|m| m.get(&p).copied())
 }
 
 /// Builds the map [`param_template`] reads, once per walk, when the
 /// first closure owned by a template parameter needs it.
-fn param_templates(w: &mut Walk<'_>) {
+pub(crate) fn param_templates(w: &mut Walk<'_>) {
     if w.local.param_templates.is_some() {
         return;
     }
@@ -936,6 +936,31 @@ pub(crate) fn write_scope_names(w: &mut Walk<'_>, s: &mut Stream) {
     let all: Vec<DeclId> = around.into_iter().chain(w.unit.local.scopes.iter().copied()).collect();
     s.count(all.len());
     for t in all {
+        w.write_name(s, t);
+    }
+}
+
+/// The names of the named local types around entity `d`, outermost
+/// first: what a function name of `d` prints of them, and a reference to
+/// `d` does not hold, since a local entity has no key (digest §9: they
+/// are part of a name-derived value's identity, in both modes).
+pub(crate) fn write_names_around(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let ast = w.ast;
+    let mut around = Vec::new();
+    let mut next = ast.decls.get(d).ctx();
+    for _ in 0..CHAIN_LIMIT {
+        let Some(x) = next else { break };
+        if !w.is_local(x) && !is_local_type(w, x) {
+            break;
+        }
+        if is_local_type(w, x) && is_named_local(w, x) {
+            around.push(x);
+        }
+        next = ast.decls.get(x).ctx();
+    }
+    around.reverse();
+    s.count(around.len());
+    for t in around {
         w.write_name(s, t);
     }
 }

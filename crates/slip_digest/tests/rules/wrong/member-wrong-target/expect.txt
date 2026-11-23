@@ -1,0 +1,4 @@
+added S::g()
+changed S
+changed use(S)
+removed S::f()

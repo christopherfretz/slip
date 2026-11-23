@@ -1,0 +1,2 @@
+# Item 10: an entity the post-image still has under its old name: direct 1 (and a collision).
+relocate f() => :: g

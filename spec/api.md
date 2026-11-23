@@ -530,8 +530,11 @@ class error {
 5. `error` is not derived from `std::exception`, so that the header needs
    nothing of the library's exception support in constant evaluation.
 6. `message()` is a host function (§2.6). Its text is for a person.
-7. The predicates of §6.2 accept every `info`, null included, and never
-   throw `wrong_kind`.
+7. The predicates of §6.2 accept every `info` the host gave, of any
+   kind, and the null `info`, and never throw `wrong_kind`; a forged
+   `info` is `invalid_handle`, as for every other function (§5.2 rule 2):
+   a forged handle is a programming error of the transform, and a silent
+   `false` would hide it.
 
 Rejected: returning `std::expected` from every query (every call site pays
 for an error that correct transforms never see, and absence already has a
@@ -1504,19 +1507,33 @@ unit and one transform. It is a directory:
    | `// spec: §N.M` | required: the section the test covers |
    | `// args: ...` | author's options (§2.1 rule 2) |
    | `// steps: N`, `// bytes: N`, `// depth: N` | budgets (§2.5) |
-   | `// owned: no` | no file of the subject is editable |
+   | `// owned: no` | no file of the subject is editable (`no` is the only value) |
    | `// xfail: reason` | as `spec/harness.md` §6 |
+   | `// counters: a, b` | the counters rendered (rule 3) |
 
 3. `expect.txt` is the rendering of the result: for a completed run, the
-   run output of §7.6, one item per line, places as `file:line:col`,
-   keys as the names `spec/verify.md` §6 gives them, counters omitted
-   except those the test lists with `// counters: a, b`; for a failed
+   run output of §7.6, one item per line, places as
+   `file:line:col-line:col` (the end exclusive, columns in bytes), keys
+   as the names `spec/verify.md` §6 gives them, counters omitted except
+   those the test lists with `// counters: a, b`; for a failed
    run, the failure kind and the diagnostic's first line; for a transform
    that does not compile, the error name. The exact grammar is fixed by
-   the work package that builds it and recorded under `spec/landed/api/`.
+   the work package that builds it and recorded under `spec/landed/api/`
+   (`WP-090.md`). The rendering is compared with `expect.txt` byte for
+   byte: no normalisation of line ends, trailing blanks or a final
+   newline.
 4. A transform test of `spec/harness.md` §6, which runs the whole
    pipeline, names a programmable transform as a `.cpp` file with the same
    header lines.
+5. A test whose subject has errors, or whose transform reads a file of the
+   test's directory, is an error of the test. A `host-failure` is never a
+   rendering: it fails the test whatever `xfail` says.
+6. The subject is every file of the directory at any depth, except
+   `transform.cpp` and `expect.txt` at its top.
+7. `SLIP_BLESS=1` writes `expect.txt` from the rendering; `1` is its only
+   value, and a test that says `// xfail:` is not blessed (its
+   `expect.txt` is written by hand). A blessed file is reviewed like
+   code. `cargo xtask ci` refuses to run while `SLIP_BLESS` is set.
 
 ## 12. Errors
 

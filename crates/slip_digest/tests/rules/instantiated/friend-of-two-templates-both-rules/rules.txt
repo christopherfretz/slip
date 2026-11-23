@@ -1,0 +1,4 @@
+# Fix round 3, finding 2: every declaration of the entity's chain is asked for its pattern, not the representative only (spec/digest.md §3.4).
+# As friend-of-two-templates, with a rule on each pattern: the two agree.
+relocate S::friend f(int) => S :: g
+relocate V::friend f(int) => V :: g

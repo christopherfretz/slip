@@ -22,7 +22,9 @@
 //! usage error. Cargo is the `CARGO` environment variable (cargo sets it
 //! for `cargo run`), else `cargo` on `PATH`; each cargo command runs in
 //! the repository root, without `SLIP_DIGEST_ONLY`, `SLIP_TEST_THREADS`,
-//! `SLIP_DIGEST_DERIVED` or `SLIP_DIGEST_TIMES` in its environment.
+//! `SLIP_DIGEST_DERIVED` or `SLIP_DIGEST_TIMES` in its environment. With
+//! `SLIP_BLESS` set (the script tests would write their `expect.txt`) no
+//! step runs and the gate fails.
 
 use crate::lint;
 use std::ffi::{OsStr, OsString};
@@ -105,6 +107,12 @@ pub fn cargo() -> OsString {
 /// Runs the gate over the repository at `root` with `cargo`, writing the
 /// gate's lines to `out`; returns whether every step passed.
 pub fn run(opts: &Options, root: &Path, cargo: &OsStr, out: &mut dyn Write) -> bool {
+    if let Some(refusal) = bless_refusal(std::env::var_os(BLESS).as_deref()) {
+        let _ = writeln!(out, "{refusal}");
+        let _ = writeln!(out, "ci: FAILED ({BLESS} is set)");
+        let _ = out.flush();
+        return false;
+    }
     let mut failed: Vec<&str> = Vec::new();
     for &name in &opts.steps {
         let _ = writeln!(out, "==> {name}");
@@ -157,12 +165,38 @@ fn run_step(name: &str, root: &Path, cargo: &OsStr, out: &mut dyn Write) -> bool
             let test = [&["test"][..], &kiln_packages].concat();
             cargo_ok(cargo, root, &clippy, out) && cargo_ok(cargo, root, &test, out)
         }
-        "transform" => {
-            let _ = writeln!(out, "transform: no transform tests yet (spec/harness.md §6)");
-            true
-        }
+        // spec/harness.md §2: `cargo xtask transform` over the tests of
+        // `tests/transform/`, and today's line while there are none.
+        "transform" => match crate::transform::discover(root) {
+            Ok(tests) if tests.is_empty() => {
+                let _ = writeln!(out, "transform: no transform tests yet (spec/harness.md §6)");
+                true
+            }
+            Ok(_) => cargo_ok(cargo, root, &["xtask", "transform"], out),
+            Err(e) => {
+                let _ = writeln!(out, "transform: {e}");
+                false
+            }
+        },
         _ => unreachable!("parse_args admits only the steps of STEPS, not `{name}`"),
     }
+}
+
+/// The variable that makes the script tests write their `expect.txt`
+/// (`spec/landed/api/WP-090.md`).
+pub const BLESS: &str = "SLIP_BLESS";
+
+/// Why the gate refuses to run with `SLIP_BLESS` set to `value` (`None`:
+/// unset): a gate that blessed would pass whatever the host renders.
+/// Any value, the empty one too, is refused: nothing runs.
+pub fn bless_refusal(value: Option<&OsStr>) -> Option<String> {
+    value.map(|v| {
+        format!(
+            "ci: {BLESS}={} is set; the gate never blesses (spec/landed/api/WP-090.md): \
+             unset it, bless with `cargo test -p slip_script --test api`, review the files",
+            v.to_string_lossy()
+        )
+    })
 }
 
 /// The variables of the digest's pair tests the gate removes from the

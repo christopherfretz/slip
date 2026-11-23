@@ -1,0 +1,2 @@
+# Item 6: a function with C language linkage (parent c_linkage) in a relocated namespace: its key does not move.
+relocate acme => :: legacy
