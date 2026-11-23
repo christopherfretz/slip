@@ -691,6 +691,18 @@ written entity it comes from: the template, or the member of the template.
 `references_to(e)` and `calls_to(e)` match by origin: a reference whose
 referent's origin is `e` is a reference to `e`.
 
+The origin is one function, Kiln's `slip_kiln::written::origin`, so that
+the native rename, the host and verification cannot disagree about it:
+a specialisation's origin is its template, whether it is implicit,
+explicitly instantiated or an **explicit specialisation** (`template <>
+void f<int>(int)`, `template <> void S<int>::g()`, `template <> int
+v<int>`); a member of an instantiated class's is the member of the
+template it was instantiated from; repeated until neither applies. So a
+use that resolves to an explicit specialisation is a reference to the
+template. A member that only an explicit specialisation of a class
+template declares comes from no member of the template: it is its own
+origin.
+
 ## 6. Queries
 
 In this section "throws `X`" means `slip::error` with that `errc`. Every
@@ -863,9 +875,14 @@ consteval info referent_of(info reference);
 
    | Not returned | Feature test that will announce it |
    |---|---|
-   | the name in a using-declaration or using-directive, a namespace alias's target, the qualifier of a declarator (`void [A]::f()`), an elaborated or friend reference, an explicit specialisation's target, a concept name, a designator | `__slip_lib_meta_declarative_references` |
+   | the name in a using-declaration, a using-enum-declaration (`using enum [n]::[E];`) or a using-directive, a namespace alias's target, the qualifier of a declarator (`void [A]::f()`), an elaborated reference that declares (`class [X];`, `friend struct [S];`), an explicit specialisation's target, a concept name, a designator | `__slip_lib_meta_declarative_references` |
    | a name in a template that is resolved only when the template is instantiated | `__slip_lib_meta_dependent_references` |
    | a name that reached the unit through a precompiled header or a module | `__slip_lib_meta_imported_references` |
+
+   Only the names of the first row's contexts are left out: a template
+   argument written inside one (`template <> int n::W<[n::A]>::k`) is a
+   type name of rule 3 and is returned. An elaborated type specifier that
+   does not declare (`struct [S] *p;`) is a type name.
 
 5. **Coverage only grows.** A later version returns everything this one
    returns, and more. A transform that edits every reference it is given
@@ -896,14 +913,21 @@ consteval bool is_editable(range);
 1. `name_range_of(declaration)`: the identifier token that is the
    declaration's own name. `name_range_of(reference)`: the identifier
    token of the name, without qualifier and without template arguments.
-   Null if the name is not an identifier or is not in tier 0 or 1 (§5.4).
+   Null if the name is not an identifier or is not in tier 0 or 1 (§5.4),
+   and when the token's bytes are not the identifier: a name written
+   with a universal-character-name or a line splice. Null too for a
+   declaration whose own name the host cannot tell exactly.
    Throws `wrong_kind` for an entity or an expression.
 2. `extent_of(reference)`: from the first token of the reference's
    qualifier (a leading `::` included) to the last token of its name.
    Template arguments after the name are not part of it; `typename` and
    `template` keywords before it are not part of it. For an unqualified
    reference it equals `name_range_of`, except that it is also non-null
-   for a name that is not an identifier.
+   for a name that is not an identifier and for one written with a
+   universal-character-name or a line splice: its extent is exact, its
+   name range null. A reference that is the whole expansion of a macro
+   invocation (`foo` from `ID(foo)`) has the invocation as its extent, at
+   tier 0 (§5.4 rule 6), and a null name range.
 3. `extent_of(expression)`: from the first token of the expression to its
    last.
 4. `extent_of` returns null when the tokens are not in tier 0 or 1, and
@@ -1077,6 +1101,7 @@ recorded. Version 0 has two spellings.
    identifier of `E`. The qualifier that was written is left as written.
    If several references have that extent (§5.4 rule 3), the conditions
    must hold for each of them, and their name ranges must be one range.
+   The references with one extent are taken, and given, in unit order.
 2. **Fully qualified.** Otherwise the text is `::` followed by the
    identifiers of `E`'s enclosing scopes and of `E`, separated by `::`.
    Unnamed namespaces and unnamed enumerations are skipped; inline
@@ -1173,8 +1198,11 @@ consteval void report(range where, severity, std::string_view message);
    §2.8 rule 4).
 3. The place of an `info` is: for a reference or an expression, its
    extent; for a declaration, its name; for an entity, the name of its
-   first written declaration. If that is not a range of tier 0 or 1, the
-   report is attached to the nearest place the host can name (the macro
+   first written declaration. That place is the value's own even when it
+   is a macro invocation: the extent of a reference that is a whole
+   expansion (`ID(foo)`) is the invocation. If that is not a range of
+   tier 0 or 1, the report is attached to the nearest place the host can
+   name (the macro
    invocation that produced it) and says so; if the host can name none,
    the report has no place and says that its value's place could not be
    named. An entity with no written declaration has no
