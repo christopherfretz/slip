@@ -1,0 +1,4 @@
+# pending
+# needs: expr
+# the dependent decltype of the signature is Pending(Expr) before the walk reaches the lambda
+indeterminate f(decltype(...))

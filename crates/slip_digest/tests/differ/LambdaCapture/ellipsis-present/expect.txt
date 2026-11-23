@@ -1,0 +1,1 @@
+changed template <class...> int f(type-parameter-0-0...)

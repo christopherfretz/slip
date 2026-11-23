@@ -78,6 +78,10 @@ impl Walk<'_> {
         reason = "the names of digest-kinds: s stream, d declaration, e entity, n node, q type"
     )]
     pub(crate) fn type_digest(&mut self, q: QualType, no_exc: bool) -> TypeRef {
+        // Numbering an owner reads no type (`local.rs`).
+        if crate::local::numbering_mode(self) {
+            return TypeRef { digest: Digest([0; 32]), cause: None, spelling: false };
+        }
         let c = self.ast.types.canonical(q);
         let raw = c.to_raw();
         let memo = if no_exc { &self.type_memo_no_exc } else { &self.type_memo };
@@ -104,20 +108,24 @@ impl Walk<'_> {
         }
         let aborts = self.aborts;
         let uses = self.unit.local_uses;
+        let rooted = self.local.self_rooted;
         let left_out = self.left_out;
         let mut s = Stream::new();
         // The expression state is the unit's: a memoised type must not
         // depend on it (`Walk::take_expr_state`).
         let expr = self.take_expr_state();
+        // A lambda-expression in a type is the type's cause (digest §4.3).
+        self.local.in_type += 1;
         self.type_nesting += 1;
         self.type_stream(&mut s, c, no_exc);
         self.type_nesting -= 1;
+        self.local.in_type -= 1;
         self.unit.expr = expr;
         self.leave();
         let h = s.finish(TYPE_TAG);
         let h = self.hashed(h);
         let t = TypeRef { digest: h.digest, cause: h.cause, spelling: self.left_out != left_out };
-        let local = self.unit.local_uses != uses;
+        let local = self.unit.local_uses != uses || self.local.self_rooted != rooted;
         if self.aborts == aborts {
             if local {
                 self.unit.types.insert(unit_key, t);

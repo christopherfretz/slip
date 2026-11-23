@@ -1,0 +1,13 @@
+# N42: spec/verify.md §2.1 "Rules rename owned entities only", against false
+# findings; three independent subjects, each moved under the merged rule.
+# pre: the owned Mine is declared through the dependency's macro
+# LEGACY_DECLARE in main.cpp: its expansion location is the owned file, so
+# it is owned and moves.
+good:   verified
+# pre-2: the dependency also opens acme (acme::Theirs). It is the
+# dependency's before and after, keeps (acme, Theirs) and is not mapped, and
+# acme's own unit is the dependency's (one opening is read-only).
+good-2: verified
+# pre-3: touch(legacy::Dep) is owned and stays in legacy so that argument-
+# dependent lookup finds it through the dependency's type; declared kept.
+good-3: verified

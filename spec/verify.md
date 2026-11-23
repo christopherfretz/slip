@@ -279,6 +279,23 @@ a new parent whose own discriminator mentions a relocated entity gets a
 rule that does not match, which verification then reports as differences.
 So a line whose new parent another line relocates comes after that line.
 
+**An entity with C language linkage.** Its key's parent is `c_linkage`
+whatever namespace declares it (`digest.md` §3), so moving it between
+namespaces changes no key and needs no line. Renaming it does: for an
+`<entity>` whose `Key` has the parent `c_linkage`, the line's `<parent>`
+is resolved and checked like any other (it says where the declaration
+is, and a name that resolves to nothing is an error), and the rule is
+
+```
+Rule { parent: c_linkage, kind, name: N', disc,  to_parent: c_linkage, to_name: name }
+```
+
+So `relocate legacy::c_fn(int) => legacy :: c_fn2` and `=> :: c_fn2`
+give one rule. The row that needs it is the rename of a C function to a
+builtin's name (`docs/wp/WP-109.md`, sketch 11): the front end then
+treats the calls as the builtin's, which the callers' units show. What
+C sources and the linker see of such a rename is §8's.
+
 **Errors**, each naming the line number. One error is reported: the
 first `Syntax` error in file order if the text has one; else the first
 error in file order among the `relocate`, `changed` and `removed` lines;
@@ -398,10 +415,33 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    key that has a unit in `Vp`, the finding is `changed` instead, unless
    `k` is in `changed`. `removed` and `created` do not prevent it and
    are not used by it, and step 3 does not count the key in `only_post`
-   or `only_pre` (a `derived_indeterminate` of step 3 stands beside
-   it). The two units are not compared: one is what was written and the
-   other what the front end made, and their streams differ by
-   construction.
+   or `only_pre` (a `derived_indeterminate` or `derived_changed` of
+   step 3 stands beside it). The two units are not compared: one is
+   what was written and the other what the front end made, and their
+   streams differ by construction. "Has a unit in `Vq`" is read on the
+   differences, as steps 2 and 3 are: `Vq(k) − Vp(k)` is not empty (for
+   `added`, `Vp(k) − Vq(k)`), with `Vp(k)` and `Vq(k)` the multisets of
+   digests of the key in `Vp` and `Vq`, so that §4.1 holds for it. On
+   what the walk produces the two readings are one: a key with a
+   determinate declared unit has no derived unit in the same image,
+   since a second entity of one key is a collision (`digest.md` §3.4),
+   so `Vp(k)` is empty where step 2 gives `removed`. The walk does not
+   mark two runs as a collision (`crates/slip_digest/src/units.rs`
+   `collides`), and neither breaks this: a run made only of namespace
+   units, since a namespace is always in the `tu` group (`digest.md`
+   §11), so a namespace key is never in `V`; and a run of the kinds a
+   scope may repeat (a using-declaration, a `static_assert`, a friend
+   and the others of §3.4) whose digests are all equal, since such a
+   unit is keyed by its content under its parent, and a derived one has
+   an implicit instantiation for its parent, which no declared unit has
+   (an explicit specialisation makes its members declared). Were such a
+   key in `D` and `V` of one image all the same, the reading on the
+   differences is still the one that holds through groups, and a unit
+   of `V` that both images have equally is no difference to report. (WP-108: read as
+   "`Vq` has a unit of the key", step 4 gives `changed` over all groups
+   and `removed` through `G` for a key whose derived unit is the same in
+   a group outside `G`.) `pre`, `post` and `file` are those of §6 for a
+   finding about `D`: one of `pre` and `post` is present.
 
 Steps 1 and 2 are over `D` and step 3 over `V`, independently: a key set
 aside in one is not thereby set aside in the other. (A key is in both
@@ -495,6 +535,13 @@ all units.
   other key, leaving those groups out removes the same multiset `X` from
   `P(k)` and from `Q(k)`, and `(P − X) − (Q − X) = P − Q`: `R(k)` and
   `A(k)` do not change, and they are all that steps 2 and 3 look at.
+- Step 4 looks at `R(k)` and `A(k)` of `D` and of `V`, which do not
+  change either. The group shortcut cannot skip such a key: step 2 has a
+  finding for it, so a declared or `tu` group holding it differs and is
+  in `G`; and since the other image's `V` has a unit of it that this
+  image's has not, a derived group holding that unit differs too and is
+  in `G`. The derived groups of `G` are opened (their unit lists given)
+  for this as for step 3: to tell `removed` from `changed`.
 
 The second point is why §4 is stated on differences. A rule that asked
 "does the post-image have the key at all" would give a different answer
@@ -1010,8 +1057,8 @@ RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) wh
          key:   KeyId                 the key of a unit of this image: a reference to it
 ```
 
-- A mark is made where the walk begins a unit (offset 0, the location of
-  the unit's first declaration) and where it begins a statement or an
+- A mark is made where the walk begins a unit (offset 0, at the unit's
+  **place**, below) and where it begins a statement or an
   expression inside one. A declaration's own rows (its type, its
   specifiers, each redeclaration) have no mark: a difference there is at
   the unit's mark or at the last expression before it. Types and constant
@@ -1074,6 +1121,22 @@ The empty site is an empty `file`, line and column 0, an empty `node` and
 an empty `what`. A unit's first mark is the mark at offset 0. Where an
 image has several units of the key, the one with the smallest digest is
 taken.
+
+A unit's **place**, the location of its first mark, is that of the first
+declaration of its chain, in chain order, that the source wrote. A
+declaration the front end made, by instantiation or implicitly, has no
+place of its own and is skipped, also when it comes first in the chain:
+an explicit specialisation `template <> int pick<int>()` in `pick_int.h`
+whose chain begins with the declaration Kiln instantiated from the
+template in `pick.h` has its place in `pick_int.h`. When no declaration
+of the chain is written (a derived unit, an implicit member), the place
+is that of the first declaration of the chain that has a location, which
+for an instantiation is where its pattern is (the row for step 4 above).
+This is not the finding's `file` (§6): that is the unit's group, the file
+of the entity's first declaration including one Kiln made
+(`digest.md` §11), and the two differ for such a specialisation
+(`file` `pick.h`, place `pick_int.h:1`). Localisation reads the place
+from the chain and not from `file`.
 
 **When they are made.** The pre-image's names, traces and causes are taken
 while the parse of step 4 is in memory, after the comparison (which needs
@@ -1352,6 +1415,32 @@ observer `failed`, with an empty message.
   The walk that writes sums is as much trusted base as the comparison.
 - **Text.** Strings, comments and anything else that spells a name without
   referring to it ([03](../docs/design/03-equivalence.md) §7 rows 14, 15).
+- **Names in strings the toolchain resolves.** A name or a mangled name
+  that the program spells as a string for the compiler's back end or the
+  linker: an `asm` label (`int f() __asm__("_ZN6legacy1gEv");`), the
+  target of an `alias`, `ifunc` or `weakref` attribute, a `symver`
+  attribute, the text of a file-scope `asm` (`.symver`, `.globl`, `.set`
+  directives). The string is the same in both images, and
+  nothing in the translation unit looks it up (clang resolves an `alias`
+  target only when it emits code: `-fsyntax-only` accepts one that names
+  nothing), so the unit that holds it is the same too. A rename or a
+  relocation of the entity the string names verifies, and the program
+  then fails to link or binds another symbol. No row pins this: a `good`
+  tree for such an edit would state that a wrong edit is correct. A name
+  the front end does look up is not text and has its row:
+  `__attribute__((cleanup(fn)))` (R14); `#pragma weak` and `#pragma
+  redefine_extname`, whose identifier the front end resolves to the
+  declaration it then gives the attribute (R23); and the values of
+  `__func__` and `__PRETTY_FUNCTION__` (R12, N18, R21).
+- **Other languages and build files.** A name held in a file that is not
+  a C++ translation unit of the run: a renamed `extern "C"` function
+  called from `.c` files the run does not parse, a linker or version
+  script, a `.def` export list, a symbol list in a build rule,
+  `dlsym("f")` or `GetProcAddress` with the name as a string. These are
+  outside both images. The rename verifies, and the binary no longer
+  links, exports the name or finds it at run time. A transform that
+  renames an entity with C language linkage, or one a binary exports,
+  owes its user the list of such files to edit; Slip reads none of them.
 - **Derived inputs.** A file the build generated from the subject (a
   table, a configuration header, a module file) lies in the build tree,
   outside every subject root, and is the same file in both images: the
@@ -1935,6 +2024,13 @@ using-declaration). Those are judged by the comparison of digests alone.
 
 ## Open questions
 
+- **A literal operator as a rule's new name.** `relocate` moves a literal
+  operator with `=` and cannot rename its suffix (`NotRenamable`: `<name>`
+  is an identifier). A rename of `_km` to `_m` is a refactoring a tool
+  makes; it needs a `<name>` form for `operator""_m` and nothing else of
+  §2.1. Not urgent: such a rename is reported today, never silent
+  (`spec/landed/pitfalls/WP-109.md`).
+
 - **Name-derived values that changed** (`digest.md` §9). A relocation
   changes what `__func__`, `__PRETTY_FUNCTION__`,
   `std::source_location` and `typeid(T).name()` yield for the entities
@@ -2085,3 +2181,26 @@ using-declaration). Those are judged by the comparison of digests alone.
   units of one derived key in one image are a collision and so
   indeterminate (`digest.md` §3.4), which is a finding; the case left is a
   content-keyed derived unit, of which `digest-kinds.md` has none yet.
+- **A partial specialisation equal to the primary, removed or added**
+  (WP-108, item 3, attempts 3b and 3c). Removing
+  `template <class T> struct S<T *> { int a; };` where the primary also
+  has `int a` leaves the program the same, and the members of `S<int *>`
+  differ: each writes the pattern it was instantiated from, `S<T *>::a`
+  on one side and `S<T>::a` on the other (`crates/slip_digest/src/templ.rs`
+  `decl_maps`, `instantiated_from`, `:557-562`, for a field and an
+  enumerator; `member_spec_info`, `MemberSpecInfo.instantiated_from`,
+  `:330-333`, for a member enumeration). The finding is
+  `derived_changed`, which nothing can declare: a correct edit the
+  verifier rejects. It is kept for now: the verifier errs on the side
+  that cannot verify a wrong program. Two ways out are rejected. A
+  declared `changed K` must not exempt a derived finding of `K` (step
+  3): exemptions are per run, so a `changed box<Mine>::found` would make
+  row E11 `bad-6` verify and hide an argument-dependent lookup that
+  resolves otherwise in that specialisation in every observer.
+  Dropping the pattern's identity from an instantiation's unit needs an
+  audit of `digest-kinds.md` §11.4 first: that reference carries the
+  facts the instantiated declaration leaves out on purpose (whether a
+  default argument exists, initialisers still pending, definitions not
+  instantiated), and it is safe to drop only where each such fact, when
+  it matters, shows in a derived unit made on use. That would be a
+  package of the digest with that audit as its obligation.

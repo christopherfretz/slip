@@ -10,3 +10,11 @@ good:   verified
 bad:    mismatch removed legacy::Dep @ dep/dep.h:3
 good-2: verified
 bad-2:  mismatch removed legacy::Dep @ dep/dep.h:3
+# pre-3: the other form spec/verify.md §2.1 names, a dependency header
+# (dep/inner.h, no namespace of its own) included inside the owned block. bad-3
+# moves the block with the include in it, so the dependency's Inner is
+# declared in acme; good-3 splits the block and leaves the include in
+# legacy. Under the merged rule only "Rules rename owned entities only"
+# keeps acme::Inner unmapped.
+good-3: verified
+bad-3:  mismatch removed legacy::Inner @ dep/inner.h:1
