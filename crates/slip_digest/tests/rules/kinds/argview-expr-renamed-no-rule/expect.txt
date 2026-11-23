@@ -1,0 +1,5 @@
+# digest-kinds §4.6 ArgView `Expr` (WP-123): the sides of the case beside this one, without its rule: the constant the argument names is another entity.
+removed n::k
+added n::u
+changed <order>
+changed template <class> int f(type-parameter-0-0)

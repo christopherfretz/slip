@@ -7,7 +7,7 @@ use slip_kiln::kiln::ast::types::{
     ArgView, ExcSpec, ExprOperand, FuncProto, Nns, NoexceptValue, ParamAbi, Quals, TemplateName,
     TypeFlags, TypeOfOperand, TypeView,
 };
-use slip_kiln::kiln::ast::{ArgListId, NnsId, QualType, TemplateNameId};
+use slip_kiln::kiln::ast::{ArgListId, ExprId, NnsId, QualType, TemplateNameId};
 use slip_model::Digest;
 
 use crate::Cause;
@@ -846,8 +846,11 @@ impl Walk<'_> {
                     s.uv(u64::from(n));
                 }
             }
-            ArgView::Expr { expr: _, profile: _ } => {
-                s.tag(arg_view::EXPR).indeterminate(sugar("ArgView/Expr"));
+            ArgView::Expr { expr, profile: _ } => {
+                // An argument Kiln never converted; a canonical list holds
+                // no profile with it (`canonical_arg`).
+                s.tag(arg_view::EXPR);
+                self.written_arg(s, expr);
             }
             ArgView::Profile(p) => {
                 s.tag(arg_view::PROFILE);
@@ -857,6 +860,28 @@ impl Walk<'_> {
                 s.tag(arg_view::PACK);
                 self.write_args(s, l);
             }
+        }
+    }
+
+    /// The expression of an `ArgView::Expr` argument (digest-kinds §4.6
+    /// `Expr`, WP-123): in a unit stream (outside a type, a key and a
+    /// profile) the unit's own expression, walked in full (digest §7);
+    /// inside a profile, walked in the profile's frame, as Kiln's own
+    /// profile writes such an argument (`expr_profile` `args each`);
+    /// inside a type or a key, its canonical operand (`profile`). Inside a
+    /// type or a key the unit's local state is put aside
+    /// (`local::detached`): a type is memoised across units, and its
+    /// bytes must not depend on the unit that met it first.
+    fn written_arg(&mut self, s: &mut Stream, e: ExprId) {
+        let shared = self.type_nesting > 0 || self.in_key > 0;
+        if !shared && self.unit.expr.profile.is_none() {
+            crate::expr::child(self, s, e);
+        } else if !shared {
+            crate::expr_profile::walk(self, s, e);
+        } else if self.unit.expr.profile.is_some() {
+            crate::local::detached(self, |w| crate::expr_profile::walk(w, s, e));
+        } else {
+            crate::local::detached(self, |w| crate::expr_dep::profile_expr(w, s, e));
         }
     }
 }
@@ -1009,10 +1034,7 @@ fn alignment_requests(ast: &slip_kiln::kiln::ast::Ast, r: DeclId) -> Option<Vec<
 /// layout reads it (`eval_int`, `kiln_abi/src/layout/props.rs:39`): a
 /// `ConstantExpr`'s value, or an integer literal under parentheses and
 /// casts. `None` otherwise.
-fn constant_int(
-    ast: &slip_kiln::kiln::ast::Ast,
-    mut e: slip_kiln::kiln::ast::ExprId,
-) -> Option<u128> {
+fn constant_int(ast: &slip_kiln::kiln::ast::Ast, mut e: ExprId) -> Option<u128> {
     use slip_kiln::kiln::ast::consts::Scalar;
     use slip_kiln::kiln::ast::expr::ExprKind;
     let scalar = |v| match ast.consts.scalar(v)? {

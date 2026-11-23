@@ -22,8 +22,8 @@ use slip_digest::{Detail, Options};
 use slip_kiln::kiln::ast::types::{ArgView, TypeView};
 use slip_kiln::kiln::ast::{ArgListId, Ast, ExprId, QualType};
 use slip_kiln::{ParseOptions, parse_observer_with};
-use slip_model::Plan;
 use slip_model::Phase;
+use slip_model::Plan;
 
 fn main() -> ExitCode {
     let (Some(plan), Some(only)) = (std::env::var_os("SLIP_PLAN"), std::env::var("SLIP_ONLY").ok())
@@ -47,8 +47,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let Some(observer) =
-        plan.observers.iter().find(|o| o.main.path.windows(only.len()).any(|w| w == only.as_bytes()))
+    let Some(observer) = plan
+        .observers
+        .iter()
+        .find(|o| o.main.path.windows(only.len()).any(|w| w == only.as_bytes()))
     else {
         eprintln!("no observer's main file contains {only}");
         return ExitCode::from(1);
@@ -103,7 +105,11 @@ fn main() -> ExitCode {
         .causes
         .iter()
         .map(|(k, c)| format!("{c}\t{}", names.get(k).map_or("?", String::as_str)))
-        .filter(|l| cause_filter.as_deref().is_none_or(|f| l.split('\t').next().is_some_and(|c| c.contains(f))))
+        .filter(|l| {
+            cause_filter
+                .as_deref()
+                .is_none_or(|f| l.split('\t').next().is_some_and(|c| c.contains(f)))
+        })
         .collect();
     lines.sort();
     for l in lines {
@@ -128,7 +134,9 @@ fn expr_arg_types(ast: &Ast, sm: &slip_kiln::kiln::source::SourceManager) -> Vec
                 ("DependentTemplateSpecialization", vec![args])
             }
             TypeView::Auto { args: Some(args), .. } => ("Auto", vec![args]),
-            TypeView::SubstTemplateTypeParmPack { pack, .. } => ("SubstTemplateTypeParmPack", vec![pack]),
+            TypeView::SubstTemplateTypeParmPack { pack, .. } => {
+                ("SubstTemplateTypeParmPack", vec![pack])
+            }
             _ => continue,
         };
         let mut exprs = Vec::new();
