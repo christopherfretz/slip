@@ -710,7 +710,7 @@ fn qualifier_lost(w: &Walk<'_>, e: ExprId) -> bool {
 }
 
 /// The stream being written can hold an instantiation-dependent operand
-/// (rule 11): its holder is a template's pattern, a partial
+/// (rule 11): its holder is a template, a template's pattern, a partial
 /// specialisation or lexically inside one, or the walk is inside a
 /// generic lambda or an instantiation-dependent expression. A stream that
 /// is no unit's own (a content digest) counts as one: nothing says
@@ -720,12 +720,7 @@ pub(crate) fn templated_stream(w: &Walk<'_>) -> bool {
     let Some(h) = w.unit.local.holder else { return true };
     w.unit.local.generic > 0
         || w.unit.expr.dependent > 0
-        || w.ast.described_template(h).is_some()
-        || matches!(
-            w.ast.decls.get(h).kind(),
-            DeclKind::ClassTemplatePartialSpecialization
-                | DeclKind::VarTemplatePartialSpecialization
-        )
+        || templated_decl(w, h)
         || templated_context(w, h)
 }
 
@@ -752,6 +747,21 @@ pub(crate) fn using_enum(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     }
 }
 
+/// `d` is a template (the declaration a unit of one is held by), a
+/// template's pattern or a partial specialisation.
+fn templated_decl(w: &Walk<'_>, d: DeclId) -> bool {
+    matches!(
+        w.ast.decls.get(d).kind(),
+        DeclKind::ClassTemplate
+            | DeclKind::FunctionTemplate
+            | DeclKind::VarTemplate
+            | DeclKind::TypeAliasTemplate
+            | DeclKind::Concept
+            | DeclKind::ClassTemplatePartialSpecialization
+            | DeclKind::VarTemplatePartialSpecialization
+    ) || w.ast.described_template(d).is_some()
+}
+
 /// `d` is lexically inside a template's pattern or a partial
 /// specialisation, up to the nearest namespace.
 fn templated_context(w: &Walk<'_>, d: DeclId) -> bool {
@@ -763,12 +773,7 @@ fn templated_context(w: &Walk<'_>, d: DeclId) -> bool {
         if matches!(kind, DeclKind::TranslationUnit | DeclKind::Namespace) {
             return false;
         }
-        if matches!(
-            kind,
-            DeclKind::ClassTemplatePartialSpecialization
-                | DeclKind::VarTemplatePartialSpecialization
-        ) || ast.described_template(x).is_some()
-        {
+        if templated_decl(w, x) {
             return true;
         }
         c = ast.decls.lexical_ctx(x);
