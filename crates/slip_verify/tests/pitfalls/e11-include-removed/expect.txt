@@ -1,24 +1,47 @@
 # E11: an #include removed. good: unused.h, which nothing uses. bad: spec.h,
 # whose explicit specialisation traits<Mine> width<Mine> instantiates with:
 # without it the primary's type is int and the instantiated body of
-# width<Mine> differs, a derived unit, while mine_width() is the same. bad-2:
-# better.h, whose conv(int) the call conv(1) chose over conv(long). bad-3:
-# pick_int.h, the explicit specialisation pick<int>; user() calls the
-# primary's instantiation instead, which has the same key, so no caller
-# differs: an entity declared in one image and derived in the other is
-# changed, and its declared removed does not prevent it (spec/verify.md §4
-# step 4).
+# width<Mine> differs, a derived unit, while mine_width() is the same. Under
+# spec/verify.md §4 step 4 bad also gives `changed traits<Mine>` (and
+# `changed traits<Mine>::type`): declared in pre, derived in bad, and its
+# declared removed does not prevent it. Both lines must be met.
+# bad-2: better.h, whose conv(int) the call conv(1) chose over conv(long).
+# bad-3: pick_int.h, the explicit specialisation pick<int>; user() calls
+# the primary's instantiation instead, which has the same key, so no
+# caller differs: an entity declared in one image and derived in the other
+# is changed, and its declared removed does not prevent it (§4 step 4).
 # declared.txt declares the removal of what each removed header declared;
 # in good the lines for spec.h, better.h and pick_int.h are unused.
-good:  verified
-bad:   mismatch derived_changed width<Mine>() @ traits.h:4
-bad-2: mismatch changed convert() @ main.cpp:10
-bad-3: mismatch changed pick<int>() @ pick_int.h:1
 
 # pre-4 (WP-109): widget.h replaced by a forward declaration of Widget.
 # delete p on a pointer to an incomplete class type whose destructor is not
 # trivial is undefined ([expr.delete]/5); clang warns, and calls neither
 # ~Widget nor anything but the global operator delete. declared-4.txt
 # declares what the definition of Widget held.
+#
+# pre-5 is pre; good-5 is bad-3's edit with declared-5.txt's `changed
+# pick<int>()`, what a tool that removes the specialisation on purpose
+# declares: it verifies.
+#
+# pre-6: the explicit specialisation traits<Mine> is kept in every tree;
+# what differs is only what an instantiation finds. tag.h declares
+# tag(Mine), which box<Mine> finds by argument-dependent lookup over the
+# template tag<T> (int against long). bad-6 removes tag.h: box<Mine>::found
+# is long, a derived unit that differs, and no declared unit differs
+# (mine_use() names box<Mine> by key; tag(Mine)'s removal is declared).
+# What bad no longer shows alone since step 4, bad-6 does: a verifier that
+# compares declared units only, or applies step 4 but not step 3, accepts
+# it. good-6 removes unused.h.
+good:   verified
+bad:    mismatch changed traits<Mine> @ spec.h:1
+bad:    mismatch derived_changed width<Mine>() @ traits.h:4
+bad-2:  mismatch changed convert() @ main.cpp:10
+bad-3:  mismatch changed pick<int>() @ pick_int.h:1
 good-4: none drop deletes through the pointer: every forward declaration makes Widget incomplete there
 bad-4:  mismatch changed drop(Widget *) @ main.cpp:3
+good-5: verified
+good-6: verified
+bad-6:  mismatch derived_changed box<Mine>::found @ traits.h:7
+xfail good: width<Mine>()'s instantiated body is Pending(Demand): derived_indeterminate until WP-045
+xfail good-5: pick<int>()'s instantiated body is Pending(Demand): derived_indeterminate until WP-045
+xfail good-6: box::found's decltype of a dependent call is Pending(Spelling) (WP-041), and box<Mine>'s instantiation Pending(Demand) (WP-045)
