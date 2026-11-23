@@ -49,7 +49,7 @@ use std::sync::{MutexGuard, PoisonError};
 
 use slip_digest::query::{Keys, NoKey};
 use slip_kiln::kiln::ast::DeclId;
-use slip_kiln::kiln::ast::decl::DeclKind;
+use slip_kiln::kiln::ast::decl::{DeclKind, VarStorage};
 use slip_kiln::kiln::source::{FileId, Loc};
 use slip_model::Digest;
 use slip_model::keys::Rule;
@@ -123,6 +123,9 @@ pub(super) struct Tables {
 enum Attributed {
     /// The holder.
     Holder(DeclId),
+    /// Two holders: the function whose body holds a local `extern`
+    /// declaration, and that declaration.
+    Both(DeclId, DeclId),
     /// The table gives a context whose names may be another
     /// declaration's: no answer from this source.
     Unknown,
@@ -130,6 +133,9 @@ enum Attributed {
     /// made: no holder at all.
     Refused,
 }
+
+/// How far a chain of lexical contexts is followed.
+const CTX_LIMIT: u32 = 4096;
 
 /// The stack of the key server's thread: the walk's, and a margin.
 const SERVER_STACK: usize = slip_digest::STACK_SIZE + (1 << 20);
@@ -221,6 +227,13 @@ impl KilnSubject<'_> {
     /// there are none.
     pub fn expression_unit_keys(&self, x: Expression) -> Result<Vec<Digest>, Why> {
         let h = self.holder(x).ok_or(Why::NoHolder)?;
+        let at = self.expr(x.0).map(|e| self.ast.exprs.get(e).loc()).ok_or(Why::NoHolder)?;
+        // An expression in decl-specifiers shared by a declarator group
+        // (`X<g(1)> a, b;`): the walk passes the shared type once, from
+        // the first declarator, but every declarator holds it.
+        if self.shared_specifiers(h, at) {
+            return Err(Why::NoHolder);
+        }
         self.unit_keys_of_holders(vec![h])
     }
 
@@ -291,6 +304,10 @@ impl KilnSubject<'_> {
             let mut found = false;
             match self.entry_holder(j) {
                 Walked::One(h) => {
+                    let at = self.refs.get(j as usize).map(|r| r.name.lo);
+                    if at.is_none_or(|at| self.shared_specifiers(h, at)) {
+                        return None;
+                    }
                     out.push(h);
                     found = true;
                 }
@@ -300,6 +317,10 @@ impl KilnSubject<'_> {
             match self.attributed(j) {
                 Attributed::Holder(h) => {
                     out.push(h);
+                    found = true;
+                }
+                Attributed::Both(f, x) => {
+                    out.extend([f, x]);
                     found = true;
                 }
                 Attributed::Refused => return None,
@@ -362,6 +383,22 @@ impl KilnSubject<'_> {
         if self.instantiated_or_implicit(e) {
             return Attributed::Refused;
         }
+        // At block scope: the function whose body holds the declaration,
+        // whatever its kind (a local function's or a local `extern`
+        // variable's entity is a namespace's, not the body's).
+        if let Some(f) = self.block_scope_holder(e) {
+            // A local `extern` declaration (`extern S v;`, `void lg(S);`
+            // in a body) also declares an entity of the namespace, whose
+            // unit holds its type: both hold the name (the digest changes
+            // both), but for a name in a parameter's default argument,
+            // which only the body's declaration has.
+            if let Some(x) = self.local_extern_owner(e, f)
+                && !self.in_default_argument(e, at)
+            {
+                return Attributed::Both(f, x);
+            }
+            return Attributed::Holder(f);
+        }
         let kind = self.kind(e);
         if matches!(
             kind,
@@ -386,21 +423,93 @@ impl KilnSubject<'_> {
                 _ => Attributed::Unknown,
             };
         }
-        if let Some(row) = row
-            && row.specs_end.is_valid()
-            && self.before(row.full.lo, at, row.specs_end)
-        {
-            let shared = self
-                .tables()
-                .groups
-                .get(&(row.full.lo.to_raw(), row.full.hi.to_raw()))
-                .copied()
-                .unwrap_or(0);
-            if shared > 1 {
-                return Attributed::Refused;
-            }
+        if self.shared_specifiers(e, at) {
+            return Attributed::Refused;
         }
         Attributed::Holder(e)
+    }
+
+    /// Whether a name or an expression at `at`, held by declaration `d`
+    /// (the walk's holder or the table's), may be in decl-specifiers that
+    /// `d` shares with another declarator (`S a, b;`, `X<g(1)> fa(),
+    /// fb();`, `typedef X<g(1)> T1, T2;`): `d`'s declaration-extent row
+    /// has decl-specifiers, its `full` span is shared by two declarations
+    /// as written, and `at` is not known to be at or after the end of the
+    /// decl-specifiers in the same source entry. One check for the
+    /// reference and the expression paths (WP-095 review, F1).
+    fn shared_specifiers(&self, d: DeclId, at: Loc) -> bool {
+        let ast = self.ast;
+        let Some(row) =
+            ast.decl_extents.get(d).or_else(|| ast.decl_extents.get(self.as_written(d)))
+        else {
+            return false;
+        };
+        if !row.specs_end.is_valid() {
+            return false;
+        }
+        let shared = self
+            .tables()
+            .groups
+            .get(&(row.full.lo.to_raw(), row.full.hi.to_raw()))
+            .copied()
+            .unwrap_or(0);
+        shared > 1 && self.sm.same_entry_distance(row.specs_end, at).is_none()
+    }
+
+    /// The local `extern` declaration that is `d` or holds it, below
+    /// function `f`: Kiln's mark, or a function, or a variable declared
+    /// `extern`, whose context is a function (the digest's
+    /// `Walk::is_local_extern`, read the same way): it declares an entity
+    /// of the namespace.
+    fn local_extern_owner(&self, d: DeclId, f: DeclId) -> Option<DeclId> {
+        let decls = &self.ast.decls;
+        let mut x = d;
+        for _ in 0..CTX_LIMIT {
+            if x == f {
+                return None;
+            }
+            let n = decls.get(x);
+            let candidate = n.kind() == DeclKind::Function
+                || (n.kind() == DeclKind::Var
+                    && decls.var(x).is_some_and(|v| v.spec.storage() == VarStorage::Extern));
+            if n.misc().local_extern()
+                || (candidate && n.ctx().is_some_and(|c| decls.function(c).is_some()))
+            {
+                return Some(x);
+            }
+            x = decls.lexical_ctx(x)?;
+        }
+        None
+    }
+
+    /// Whether `at` is in the default argument of parameter `d`: at or
+    /// after the argument's first token, in the same source entry (a
+    /// default argument ends its parameter).
+    fn in_default_argument(&self, d: DeclId, at: Loc) -> bool {
+        let ast = self.ast;
+        ast.decls
+            .param(d)
+            .and_then(|p| p.default_arg)
+            .is_some_and(|a| self.sm.same_entry_distance(ast.begin_loc(a), at).is_some())
+    }
+
+    /// For a declaration at block scope (one of its lexical contexts is a
+    /// function), the outermost function among its lexical contexts: the
+    /// declaration whose body holds it (`spec/digest.md` §2.1: what a body
+    /// declares is the body's unit). A parameter's is its function. `None`
+    /// for a declaration none of whose lexical contexts is a function.
+    fn block_scope_holder(&self, d: DeclId) -> Option<DeclId> {
+        let decls = &self.ast.decls;
+        let mut found = None;
+        let mut x = decls.lexical_ctx(d);
+        for _ in 0..CTX_LIMIT {
+            let Some(c) = x else { break };
+            if decls.function(c).is_some() {
+                found = Some(c);
+            }
+            x = decls.lexical_ctx(c);
+        }
+        found
     }
 
     /// `lo <= at < hi`, all three in one entry of the source manager (a

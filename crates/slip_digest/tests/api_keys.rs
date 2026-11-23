@@ -629,7 +629,12 @@ fn derived_lists_instantiations_and_resolved_units() {
 
 /// Every unit of `o`, key to digest.
 fn unit_digests(o: &Output) -> BTreeMap<Digest, Digest> {
-    o.digests.groups.iter().flat_map(|g| g.units.iter().flatten()).map(|u| (u.key, u.digest)).collect()
+    o.digests
+        .groups
+        .iter()
+        .flat_map(|g| g.units.iter().flatten())
+        .map(|u| (u.key, u.digest))
+        .collect()
 }
 
 #[test]

@@ -300,6 +300,8 @@ template <class T = S> void t() {}
 struct C { using I = S; };
 S a, b;
 namespace m { using J = S; }
+template <int N> struct X {};
+X<sizeof(S)> xa, xb;
 ";
     with(src, |s, d| {
         for r in refs_to(s, one(s, "S")) {
@@ -530,5 +532,147 @@ template <int N = f(2)> int t() { return N; }
             .map(|r| keys_of(s, d, Value::Reference(r)))
             .collect();
         assert_eq!(held, vec![Ok(strs(&["q"])), Ok(strs(&["template <int> int t()"]))]);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// The review round (F1, F2, F5, F8): each answer checked against the
+// digest. The one written reference to `B` is changed to `B2`; every
+// unit whose digest changes must be among the keys declared for it.
+
+/// The last whole-word occurrence of `name` in `src`.
+fn last_word(src: &str, name: &str) -> usize {
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+    src.match_indices(name)
+        .map(|(i, _)| i)
+        .filter(|&i| {
+            !word(src[..i].chars().next_back()) && !word(src[i + name.len()..].chars().next())
+        })
+        .last()
+        .expect("an occurrence")
+}
+
+/// The keys of the one reference to `entity` (its last word in `src`),
+/// and the units that change, undeclared, when it is written `to`.
+fn oracle(src: &str, entity: &str, to: &str) -> (Result<Vec<String>, Why>, Vec<String>) {
+    let name = entity.rsplit("::").next().expect("a name");
+    let (keys, declared, before) = with_files(&[("main.cpp", src)], |s, d| {
+        let refs = refs_to(s, one(s, entity));
+        assert_eq!(refs.len(), 1, "one reference to {entity}: {refs:?}\n{src}");
+        let keys = keys_of(s, d, Value::Reference(refs[0]));
+        let declared: BTreeSet<Digest> =
+            s.reference_unit_keys(refs[0]).unwrap_or_default().into_iter().collect();
+        (keys, declared, Digested { names: d.names.clone(), units: d.units.clone() })
+    });
+    let at = last_word(src, name);
+    let changed = format!("{}{to}{}", &src[..at], &src[at + name.len()..]);
+    let after = digest_of(&changed);
+    let differ: BTreeSet<Digest> = before
+        .units
+        .iter()
+        .filter(|(k, v)| after.units.get(k) != Some(v))
+        .map(|(k, _)| *k)
+        .chain(after.units.keys().filter(|k| !before.units.contains_key(k)).copied())
+        .collect();
+    assert!(!differ.is_empty(), "the change changes a unit:\n{changed}");
+    let undeclared = if keys.is_ok() {
+        differ
+            .difference(&declared)
+            .map(|k| {
+                before.names.get(k).or_else(|| after.names.get(k)).cloned().unwrap_or_default()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (keys, undeclared)
+}
+
+const B: &str = "struct B {}; struct B2 { int x; };\n";
+
+// F2: a declaration at block scope is held by the function whose body
+// holds it, whatever its kind; F8: the declarators of a group at block
+// scope are all in that function's unit.
+#[test]
+fn s7_5_rule1_block_scope_declarations_are_held_by_the_body() {
+    // A local `extern` declaration (a variable, a function) declares an
+    // entity of the namespace too, whose unit may hold its type (`ev`'s
+    // does): two holders, two units, `unsupported`, but for a name in a
+    // parameter's default argument, which is the body's only.
+    let two = Err(Why::TwoUnits);
+    let cases: [(&str, Result<Vec<String>, Why>); 8] = [
+        ("void f() { void lg(int = sizeof(B)); lg(); }", Ok(strs(&["f()"]))),
+        ("void f() { extern B ev; }", two.clone()),
+        ("void f() { struct L { void m(int = sizeof(B)) {} }; }", Ok(strs(&["f()"]))),
+        ("void f() { struct L { int k = sizeof(B); }; }", Ok(strs(&["f()"]))),
+        ("void f() { using A = B; A* a; }", Ok(strs(&["f()"]))),
+        ("void f() { void lp(B); }", two.clone()),
+        ("void f() { void ln() noexcept(sizeof(B) > 1); ln(); }", two),
+        ("void f() { B *l1, *l2; }", Ok(strs(&["f()"]))),
+    ];
+    for (body, want) in cases {
+        let src = format!("{B}{body}\n");
+        let (keys, undeclared) = oracle(&src, "B", "B2");
+        assert_eq!(keys, want, "{body}");
+        assert!(undeclared.is_empty(), "{body}: changed, not declared: {undeclared:?}");
+    }
+    // A using-declaration at block scope (its own name refers to no
+    // class; the name it brings in does).
+    let src =
+        "namespace n { struct B {}; struct B2 { int x; }; }\nvoid f() { using n::B; B* b; }\n";
+    let (keys, undeclared) = oracle(src, "n::B", "n::B2");
+    assert_eq!(keys, Ok(strs(&["f()"])));
+    assert!(undeclared.is_empty(), "{undeclared:?}");
+}
+
+// F5: the walk (the call's holder, `f`) and the table (the local
+// function `lg`, whose entity is the namespace's `lg`) once disagreed
+// here; at block scope both give `f`.
+#[test]
+fn s7_5_rule1_a_default_argument_of_a_local_function_declaration() {
+    let src = "\
+constexpr int g(int x) { return x; }
+void lg(int);
+void f() { void lg(int = g(1)); lg(); }
+";
+    with(src, |s, d| {
+        let r = refs_to(s, one(s, "g"));
+        assert_eq!(r.len(), 1);
+        assert_eq!(keys_of(s, d, Value::Reference(r[0])), Ok(strs(&["f()"])));
+        let x = calls(s, "g");
+        assert_eq!(keys_of(s, d, Value::Expression(x[0])), Ok(strs(&["f()"])));
+    });
+}
+
+// F1: an expression in decl-specifiers shared by a declarator group is
+// held by every declarator: no holder, by the reference's path and by
+// the expression's.
+#[test]
+fn s7_5_rule2_an_expression_in_shared_decl_specifiers_has_no_holder() {
+    for decl in [
+        "X<g(1)> a, b;",
+        "alignas(g(8)) int a1, a2;",
+        "struct M { X<g(1)> p, q; };",
+        "X<g(1)> fa(), fb();",
+        "struct S { static const X<g(1)> p, q; };",
+        "typedef X<g(1)> T1, T2;",
+    ] {
+        let src = format!(
+            "constexpr int g(int x) {{ return x; }}\ntemplate <int N> struct X {{}};\n{decl}\n"
+        );
+        with(&src, |s, d| {
+            for r in refs_to(s, one(s, "g")) {
+                assert_eq!(keys_of(s, d, Value::Reference(r)), Err(Why::NoHolder), "{decl}");
+            }
+            let xs = calls(s, "g");
+            assert_eq!(xs.len(), 1, "{decl}");
+            assert_eq!(keys_of(s, d, Value::Expression(xs[0])), Err(Why::NoHolder), "{decl}");
+        });
+    }
+    // One declarator: its own.
+    let src = "constexpr int g(int x) { return x; }\ntemplate <int N> struct X {};\nX<g(1)> a;\n";
+    with(src, |s, d| {
+        let xs = calls(s, "g");
+        assert_eq!(keys_of(s, d, Value::Expression(xs[0])), Ok(strs(&["a"])));
     });
 }

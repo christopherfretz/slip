@@ -1434,7 +1434,7 @@ impl KilnSubject<'_> {
     }
 
     /// The `ExprId` numbered `n`.
-    fn expr(&self, n: u32) -> Option<ExprId> {
+    pub(super) fn expr(&self, n: u32) -> Option<ExprId> {
         (n >= 1 && n as usize <= self.ast.exprs.len()).then(|| ExprId::new(n))
     }
 }
