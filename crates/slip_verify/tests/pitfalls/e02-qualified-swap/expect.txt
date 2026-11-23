@@ -1,0 +1,6 @@
+# E02: swap(a, b) finds the user's app::swap by argument-dependent lookup;
+# std::swap(a, b) does not. good qualifies the call on int, where no
+# argument-dependent lookup applies and std::swap<int> is chosen either way.
+# namespace std is the two-line stand-in of the library's swap.
+good: verified
+bad:  mismatch changed exchange(app::Buf &, app::Buf &, int &, int &) @ main.cpp:12
