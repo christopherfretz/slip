@@ -1,2 +1,3 @@
 indeterminate f()
 indeterminate f()::local(0)::operator()<int>(int) const
+indeterminate f()::local(0)::operator()<int>(int) const::<definition>

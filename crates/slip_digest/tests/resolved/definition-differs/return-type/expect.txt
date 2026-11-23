@@ -1,0 +1,4 @@
+changed Q<int>::g()::<definition>
+changed Q::g()
+# h()'s body: the call's type is the deduced return type.
+changed h()

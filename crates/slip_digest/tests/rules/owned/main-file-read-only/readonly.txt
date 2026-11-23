@@ -1,0 +1,2 @@
+# The main file of each side (the runner parses a.cpp and b.cpp as main.cpp).
+main.cpp

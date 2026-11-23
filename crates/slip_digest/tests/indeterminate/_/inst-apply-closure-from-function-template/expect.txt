@@ -1,2 +1,0 @@
-# the instantiated body is Pending(Demand): no stream numbers its local types, so what is keyed under one has no number (digest §4.3 "What these rules do not yet show")
-indeterminate apply<(lambda)>((lambda))

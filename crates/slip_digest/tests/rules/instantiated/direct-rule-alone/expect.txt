@@ -1,5 +1,6 @@
 indeterminate u()
 indeterminate S<int>::g()
+indeterminate S<int>::g()::<definition>
 changed S
 added S::g()
 removed S::f()

@@ -153,71 +153,10 @@ impl<'u> KilnSubject<'u> {
     // ---- written declarations --------------------------------------------
 
     /// Whether `d` is a declaration written in the unit (§6.4 rule 3), not
-    /// one Kiln made. **The one place the subject decides it**: WP-085
-    /// replaces this body by a read of Kiln's declaration-extent table
-    /// (Kiln `spec/ast.md` §19.1, one row per declaration the parser
-    /// parsed, on with `ParseOptions.written`), keeping the tests of
-    /// `tests/subject_entities.rs`. An explicit instantiation has a row
-    /// there and is still no declaration of the subject (landed
-    /// decision 2), so `instantiated` stays first.
-    ///
-    /// Until then the rule is structural (landed decision 1):
-    ///
-    /// 1. never an implicit declaration, the translation unit, or an
-    ///    instantiation: an implicit or explicit instantiation, a member of
-    ///    one, the declaration deduction makes of a specialisation before
-    ///    its explicit specialisation is read (`instantiated`);
-    /// 2. a declaration reached from the translation unit through member
-    ///    lists (`listed`: Kiln links every declaration it parsed outside
-    ///    a function body into its lexical context's member list, and
-    ///    none it made, `kiln_ast/src/decl.rs:2161`);
-    /// 3. a template parameter whose context (the template's scope, Kiln
-    ///    `TemplateParamList`) is the translation unit or listed;
-    /// 4. a declaration that is not listed is written only when it is
-    ///    declared in a block (its lexical context is a function, a
-    ///    deduction guide, a requires-expression, or a variable or data
-    ///    member whose initialiser holds it) or in a local class or
-    ///    enumeration (one that is not listed itself), and that context is
-    ///    written. A class that is listed lists every member the parser
-    ///    parsed, so a declaration it does not list (the one deduction
-    ///    makes for `template <> void A::mt<int>(int)`, whose lexical
-    ///    context is `A`) is not written.
+    /// one Kiln made: Kiln's declaration-extent table's answer
+    /// (`references.rs`, `written_by_table`; WP-085).
     pub(super) fn written(&self, d: DeclId) -> bool {
-        let mut d = d;
-        for _ in 0..self.chain_bound() {
-            let n = self.ast.decls.get(d);
-            if n.has(DeclFlags::IMPLICIT) || n.kind() == DeclKind::TranslationUnit {
-                return false;
-            }
-            if self.instantiated(d) {
-                return false;
-            }
-            if self.listed(d) {
-                return true;
-            }
-            let k = n.kind();
-            let up = if template_parm_kind(k) { n.ctx() } else { self.ast.decls.lexical_ctx(d) };
-            let Some(up) = up else { return false };
-            let uk = self.kind(up);
-            if template_parm_kind(k) && (uk == DeclKind::TranslationUnit || self.listed(up)) {
-                return true;
-            }
-            let block = function_kind(uk)
-                || matches!(
-                    uk,
-                    DeclKind::CXXDeductionGuide
-                        | DeclKind::RequiresExprBody
-                        | DeclKind::Var
-                        | DeclKind::Field
-                );
-            let local_class =
-                matches!(uk, DeclKind::CXXRecord | DeclKind::Enum) && !self.listed(up);
-            if !block && !local_class {
-                return false;
-            }
-            d = up;
-        }
-        false
+        self.written_by_table(d)
     }
 
     /// How many steps a walk up a chain of contexts or origins may take: a
@@ -246,58 +185,6 @@ impl<'u> KilnSubject<'u> {
                 .is_none_or(|s| s.kind != SpecKind::ExplicitSpecialization),
             _ => ast.templates.instantiated_from_map(d).is_some(),
         }
-    }
-
-    /// Whether `d` is reached from the translation unit through member
-    /// lists, not descending into an implicit declaration (a builtin record
-    /// such as `__va_list_tag`) or an instantiation (an explicit
-    /// instantiation is in its context's member list; its members are
-    /// Kiln's). The set is built once, on first use.
-    fn listed(&self, d: DeclId) -> bool {
-        let bits = self.listed.get_or_init(|| self.build_listed());
-        let i = d.index() as usize;
-        bits.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 == 1)
-    }
-
-    fn build_listed(&self) -> Vec<u64> {
-        let ast = self.ast;
-        let mut bits = vec![0u64; ast.decls.len() / 64 + 2];
-        let set = |d: DeclId, bits: &mut Vec<u64>| -> bool {
-            let i = d.index() as usize;
-            let (w, b) = (i / 64, 1u64 << (i % 64));
-            let fresh = bits[w] & b == 0;
-            bits[w] |= b;
-            fresh
-        };
-        let mut stack = vec![ast.tu];
-        while let Some(c) = stack.pop() {
-            for m in ast.decls.members(c) {
-                let add = |x: DeclId, bits: &mut Vec<u64>, stack: &mut Vec<DeclId>| {
-                    if ast.decls.get(x).has(DeclFlags::IMPLICIT) || self.instantiated(x) {
-                        return;
-                    }
-                    if set(x, bits) {
-                        stack.push(x);
-                        if let Some(p) = ast.template_info(x).and_then(|t| t.pattern)
-                            && set(p, bits)
-                        {
-                            stack.push(p);
-                        }
-                    }
-                };
-                add(m, &mut bits, &mut stack);
-                if self.kind(m) == DeclKind::Friend {
-                    match ast.decls.friend_target(m) {
-                        FriendTarget::Decl(x) => add(x, &mut bits, &mut stack),
-                        FriendTarget::Type { owned_tag: Some(x), .. } => {
-                            add(x, &mut bits, &mut stack);
-                        }
-                        FriendTarget::Type { owned_tag: None, .. } => {}
-                    }
-                }
-            }
-        }
-        bits
     }
 
     /// The written declarations of entity `e`, in unit order.
@@ -537,30 +424,13 @@ impl<'u> KilnSubject<'u> {
             .unwrap_or_default()
     }
 
-    /// §5.5: the written entity `e` comes from. A written entity is its own
-    /// origin; a specialisation's is its template's; a member of an
-    /// instantiation's is the member it was instantiated from; followed
-    /// until a written entity (the member specialisation of a member
-    /// template: the specialisation, its template in the instantiation,
-    /// the member template of the class template). An entity Kiln made
-    /// that comes from nothing (an implicit member) is its own origin.
+    /// §5.5: `slip_kiln::written::origin` of `e` (the one function the
+    /// rename, the host and the check share), as an entity, read when the
+    /// subject was made: a specialisation's is its template, an explicit
+    /// specialisation's included; a member of an instantiation's is the
+    /// member it was instantiated from.
     pub(super) fn origin_decl(&self, e: DeclId) -> DeclId {
-        let ast = self.ast;
-        let mut x = e;
-        for _ in 0..self.chain_bound() {
-            if self.first_written(x).is_some() {
-                return x;
-            }
-            let next = match ast.spec_info(x) {
-                Some((_, s)) => Some(s.template),
-                None => ast.instantiated_from(x),
-            };
-            match next.map(|n| self.entity(n)) {
-                Some(n) if n != x && self.is_entity(n) => x = n,
-                _ => return x,
-            }
-        }
-        x
+        self.names.origin(e)
     }
 
     /// Whether `e` is a scope `lookup` walks into (§6.1 rule 4).

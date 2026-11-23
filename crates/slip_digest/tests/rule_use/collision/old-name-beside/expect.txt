@@ -1,0 +1,4 @@
+use 3 via 1 direct 1
+collisions 1
+indeterminate f()
+indeterminate g()

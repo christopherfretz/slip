@@ -5,7 +5,7 @@
 //! Slip's own model types (`slip_model`).
 //!
 //! **No Kiln type outside [`kiln`], [`Unit`]'s methods, [`ranges`],
-//! [`snippet`] and [`written`].**
+//! [`sites`], [`snippet`] and [`written`].**
 //! The public interface is:
 //!
 //! - the parse task (`spec/model.md` §8.4): [`parse_observer`] (an
@@ -26,7 +26,13 @@
 //!   tests, whose types name Kiln's);
 //! - the module [`written`]: a unit's names as written, from Kiln's
 //!   written-reference and declaration-extent tables (`spec/edits.md`
-//!   §9.7), whose types name Kiln's spans and declarations.
+//!   §9.7), whose types name Kiln's spans and declarations;
+//! - the module [`sites`]: where a name token is written and why it
+//!   cannot be edited (`spec/edits.md` §2.2, §2.3), over Kiln's spans and
+//!   buffer ids; the module [`scan`]: the lexical half of the residue scan
+//!   (§8.4), Kiln's lexer over bytes, whose types name no Kiln type; the
+//!   module [`tree`]: a front end over files written to a fresh directory,
+//!   for tests.
 //!
 //! So a Kiln API change touches this crate and the crates that may name
 //! those modules, and no other. Outside this crate only `slip_digest` and
@@ -63,8 +69,11 @@ pub mod kiln {
     pub use kiln_source as source;
 }
 
+pub mod scan;
 pub mod session;
+pub mod sites;
 pub mod snippet;
+pub mod tree;
 pub mod written;
 
 pub use check::KilnCheck;

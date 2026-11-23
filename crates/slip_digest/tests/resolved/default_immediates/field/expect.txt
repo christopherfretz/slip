@@ -1,3 +1,4 @@
 resolved S::m::<default_immediates>
 resolved S::S()::<exception_spec>
+resolved S::S()::<definition>
 added h()

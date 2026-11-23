@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round. A dependency macro whose name comes from its argument, spelled in the owned file: owned (as LEGACY_DECLARE(Mine)).
+relocate legacy => :: acme

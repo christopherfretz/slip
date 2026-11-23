@@ -20,12 +20,12 @@ use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{DeclId, QualType};
 use slip_model::Digest;
 
+use crate::Cause;
 use crate::keys::{Role, info};
 use crate::stream::{FlagWord, Stream};
 use crate::tables::{access, ctor_init_kind, init_style, tag_kind};
 use crate::units::UnitClass;
 use crate::walk::Walk;
-use crate::{Area, Cause};
 
 /// The `in` rows of `DefinitionBits`, in table order (§5.5): bit 0 of the
 /// flag word is `0-complete`. `0-being-defined` (`out`) and
@@ -117,7 +117,7 @@ pub(crate) fn typedef_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     };
     // underlying: canonical, like every type.
     w.write_type(s, underlying);
-    crate::templ::templ_link(w, s, templ);
+    crate::templ::templ_link(w, s, d, templ);
 }
 
 /// `EnumData`.
@@ -133,16 +133,35 @@ pub(crate) fn enum_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.indeterminate(Cause::Unaccounted("EnumData/flags"));
     }
     let scoped = flags & EnumData::SCOPED != 0;
-    if definition_class(w, d) {
+    if crate::demand::definition_class(w, d) {
         // §11.9: `members`, `int_type`, `promotion_type`, `flags-fixed` and
-        // `flags-complete` are in the resolved unit `definition`; here
-        // their empty forms. That unit is the demand area's.
+        // `flags-complete` are in the resolved unit `definition`
+        // (`enum_definition`); here their empty forms.
         s.count(0).opt(false).opt(false);
         s.flags(FlagWord::new().bit(scoped).bit(false).bit(false));
-        s.indeterminate(Cause::Pending(Area::Demand));
-        crate::templ::templ_link(w, s, templ);
+        crate::templ::templ_link(w, s, d, templ);
         return;
     }
+    enum_rows(w, s, d, int_type, promotion_type);
+    // flags-scoped, flags-fixed, flags-complete.
+    s.flags(
+        FlagWord::new()
+            .bit(scoped)
+            .bit(flags & EnumData::FIXED != 0)
+            .bit(flags & EnumData::COMPLETE != 0),
+    );
+    crate::templ::templ_link(w, s, d, templ);
+}
+
+/// `EnumData` `members`, `int_type`, `promotion_type` of `d`.
+fn enum_rows(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    d: DeclId,
+    int_type: Option<QualType>,
+    promotion_type: Option<QualType>,
+) {
+    let ast = w.ast;
     // members: the enumerators, in declaration order; a local enumeration
     // writes them in place (§2.4).
     let local = w.is_local(d);
@@ -172,14 +191,19 @@ pub(crate) fn enum_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     }
     w.write_type_opt(s, int_type);
     w.write_type_opt(s, promotion_type);
-    // flags-scoped, flags-fixed, flags-complete.
-    s.flags(
-        FlagWord::new()
-            .bit(scoped)
-            .bit(flags & EnumData::FIXED != 0)
-            .bit(flags & EnumData::COMPLETE != 0),
-    );
-    crate::templ::templ_link(w, s, templ);
+}
+
+/// The rows of an enumeration's resolved unit `definition` (§11.9), read
+/// from its definition `def`: `EnumData` `members`, `int_type`,
+/// `promotion_type`, then the flag word `flags-fixed`, `flags-complete`.
+pub(crate) fn enum_definition(w: &mut Walk<'_>, s: &mut Stream, def: DeclId) {
+    let Some(&EnumData { int_type, promotion_type, flags, .. }) = w.ast.decls.enumeration(def)
+    else {
+        s.uv(0).indeterminate(Cause::Unaccounted("EnumData/missing"));
+        return;
+    };
+    enum_rows(w, s, def, int_type, promotion_type);
+    s.flags(FlagWord::new().bit(flags & EnumData::FIXED != 0).bit(flags & EnumData::COMPLETE != 0));
 }
 
 /// `EnumeratorData`.
@@ -204,20 +228,19 @@ pub(crate) fn record_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(Cause::Unaccounted("RecordData/missing"));
         return;
     };
-    if definition_class(w, d) {
+    if crate::demand::definition_class(w, d) {
         // §11.9: `members-fields`, `members-virtual`, `members-other`,
-        // `bases` and `defn` are in the resolved unit `definition`; here
-        // their empty forms (three empty lists, no base, a flag word with
-        // no bit set). That unit is the demand area's.
+        // `bases` and `defn` are in the resolved unit `definition`
+        // (`record_definition`); here their empty forms (three empty
+        // lists, no base, a flag word with no bit set).
         s.count(0).count(0).count(0).count(0);
         s.flags(FlagWord::new());
-        s.indeterminate(Cause::Pending(Area::Demand));
     } else {
         members(w, s, d);
         bases(w, s, d, tag);
         definition_bits(s, defn);
     }
-    crate::templ::templ_link(w, s, templ);
+    crate::templ::templ_link(w, s, d, templ);
     // lambda: record LambdaData?
     s.opt(lambda.is_some());
     if let Some(l) = lambda {
@@ -225,6 +248,22 @@ pub(crate) fn record_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     }
     // tag: `class` is written as `struct` (`as Struct`).
     s.tag(tag_kind::row(&tag));
+}
+
+/// The rows of a class's resolved unit `definition` (§11.9), read from
+/// its definition `def`: `RecordData` `members-fields`,
+/// `members-virtual`, `members-other`, `bases`, `defn`, then
+/// `ColdDeclData` `friends` and `record_pack`
+/// (`decl_scope::class_definition`).
+pub(crate) fn record_definition(w: &mut Walk<'_>, s: &mut Stream, def: DeclId) {
+    let Some(&RecordData { defn, tag, .. }) = w.ast.decls.record(def) else {
+        s.uv(0).indeterminate(Cause::Unaccounted("RecordData/missing"));
+        return;
+    };
+    members(w, s, def);
+    bases(w, s, def, tag);
+    definition_bits(s, defn);
+    crate::decl_scope::class_definition(w, s, def);
 }
 
 /// `FieldData`.
@@ -489,33 +528,14 @@ fn definition_bits(s: &mut Stream, defn: DefinitionBits) {
     }
 }
 
-/// The specialisation kind that governs class or enumeration `d`
-/// (`templ::governing_kind`), none for a local entity: anything declared
-/// in a function body is written in full, whatever function it is in
-/// (§11.9).
-fn governing_kind(w: &Walk<'_>, d: DeclId) -> Option<SpecKind> {
-    if w.is_local(w.entity(d)) {
-        return None;
-    }
-    crate::templ::governing_kind(w, d)
-}
-
-/// A class or enumeration of the definition class (§11.9): a
-/// specialisation that is itself an implicit instantiation, or a member
-/// class or enumeration of one reached through classes only.
-fn definition_class(w: &Walk<'_>, d: DeclId) -> bool {
-    governing_kind(w, d) == Some(SpecKind::ImplicitInstantiation)
-}
-
-/// Field `d` was instantiated from a pattern: its class is governed by an
-/// implicit instantiation, an explicit instantiation declaration or an
-/// explicit instantiation definition (§11.4,
+/// Field `d` was instantiated from a pattern: it has the effective kind
+/// of an instantiation (§11.10; implicit instantiation, explicit
+/// instantiation declaration or definition; §11.4,
 /// `spec/landed/digest-kinds/WP-027.md`). A field written in source (a
 /// primary template, a partial or explicit specialisation, a class that
 /// is not a template, a local class) is not.
 pub(crate) fn instantiated_field(w: &Walk<'_>, d: DeclId) -> bool {
-    let Some(c) = w.ast.decls.get(d).ctx() else { return false };
-    match governing_kind(w, c) {
+    match crate::demand::effective_kind(w, d) {
         Some(
             SpecKind::ImplicitInstantiation
             | SpecKind::ExplicitInstantiationDeclaration
@@ -1005,14 +1025,13 @@ mod tests {
                 let les = named(w, "LE", DeclKind::Enum);
                 assert_eq!((ls.len(), les.len()), (2, 2), "pattern and instantiation: {src}");
                 for d in ls.into_iter().chain(les) {
-                    assert!(!definition_class(w, d), "{d:?}");
+                    assert!(!crate::demand::definition_class(w, d), "{d:?}");
                     let mut s = Stream::new();
                     if w.ast.decls.get(d).kind() == DeclKind::Enum {
                         enum_data(w, &mut s, d);
                     } else {
                         record_data(w, &mut s, d);
                     }
-                    assert_ne!(s.cause(), Some(Cause::Pending(Area::Demand)), "{d:?}");
                     assert_ne!(s.as_bytes()[0], 0, "{d:?}: members written");
                 }
             });
@@ -1020,8 +1039,8 @@ mod tests {
     }
 
     // §11.9: a class or enumeration of the definition class writes the
-    // empty forms and is `Pending(Demand)`; an explicit specialisation
-    // writes its members.
+    // empty forms, without a cause; an explicit specialisation writes its
+    // members.
     #[test]
     fn definition_class_writes_empty_forms() {
         let src = "template <class T> struct X { int a; enum E : int { e }; };
@@ -1043,8 +1062,8 @@ mod tests {
                 } else {
                     record_data(w, &mut s, d);
                 }
-                if definition_class(w, d) {
-                    assert_eq!(s.cause(), Some(Cause::Pending(Area::Demand)), "{d:?}");
+                if crate::demand::definition_class(w, d) {
+                    assert_eq!(s.cause(), None, "{d:?}");
                     if is_enum {
                         assert_eq!(&s.as_bytes()[..4], &[0, 0, 0, 0], "{d:?}");
                         seen.1 += 1;
@@ -1053,7 +1072,7 @@ mod tests {
                         seen.0 += 1;
                     }
                 } else {
-                    assert_ne!(s.cause(), Some(Cause::Pending(Area::Demand)), "{d:?}");
+                    assert!(!matches!(s.cause(), Some(Cause::Pending(_))), "{d:?}");
                     if is_enum { seen.3 += 1 } else { seen.2 += 1 }
                 }
             }
@@ -1202,7 +1221,7 @@ mod tests {
                     continue;
                 }
                 let mut link = Stream::new();
-                crate::templ::templ_link(w, &mut link, templ);
+                crate::templ::templ_link(w, &mut link, d, templ);
                 assert!(link.as_bytes().len() > 1, "a set link");
                 let mut s = Stream::new();
                 if is_enum {

@@ -89,7 +89,7 @@ The **tier** of a token the parser saw
 | Tier | The token's bytes are | M2 |
 |---|---|---|
 | 0 | written in a file, outside every macro argument | editable |
-| 1 | written in a file, inside one argument of one macro invocation, and reached the parser only by parameter substitution | editable; every substitution is a vote (§4.3) |
+| 1 | written in a file, inside one argument of one macro invocation, and reached the parser by parameter substitution (the same argument may also be an operand of `#` or `##`: see below) | editable; every substitution is a vote (§4.3) |
 | 2 | written in the replacement list of a macro definition | refused (`macro_body`) |
 | 3 | made by `##` or `#`, or by a builtin macro | refused (`pasted`) |
 | X | not one token of one of the above: a name whose tokens come from different expansions, or from a buffer that is not a file (command-line definitions, predefines) | refused (`crossing`, `not_a_file`) |
@@ -133,7 +133,25 @@ macro expansion, for which Kiln gives the invocation
 A token is tier 1 only if every expansion between its bytes and the parser
 is the substitution of a parameter by an argument. An argument that is
 itself the name of a macro whose body holds the token gives a tier 2
-token.
+token. A paste whose other operand is empty makes nothing: the token is
+the argument's (`CAT(foo, )` and `CAT(, foo)` with `#define CAT(a, b)
+a##b`: `foo` is tier 1).
+
+**An argument also stringised or pasted.** The substituted bytes of an
+argument are tier 1, and editable, also when the same argument is an
+operand of `#` or `##` in that expansion (`#define SS(x) int x = 0;
+const char *s = #x;`, `SS(foo)`). The other product changes with the
+edit: the string `"foo"` becomes `"bar"`, `foo##_v` becomes `bar_v`.
+That is as designed ([04](../docs/design/04-macros-and-configurations.md)
+"Stringised arguments"; "Open questions" below, "A stringised
+argument"): the string is a value of the program and is in its unit by
+value, so verification reports the unit that holds it as changed
+(`mismatch changed`, `pitfalls.md` rows N17 and R15), and a pasted name
+is a removed or an added entity. Slip cannot tell at this pin which uses
+of an argument feed `#` or `##` (Kiln's expansion entries record only
+the substituted ones; a question for Kiln,
+[KF3](../docs/requests/KF3-location-utilities.md) §3), so it neither
+refuses nor reports such an edit itself.
 
 Tier 0 and tier 1 are properties of an observer, not of the bytes: the
 same bytes are an argument in an observer where the name before `(` is a
@@ -155,7 +173,7 @@ programmable transform sees a null range or `is_editable` false
 
 | Reason | Condition |
 |---|---|
-| `macro_body`, `pasted`, `crossing`, `not_a_file` | the tier (§2.2); `crossing` also when the token is written at tier 0 or 1 and Kiln gives no range for it |
+| `macro_body`, `pasted`, `crossing`, `not_a_file` | the tier (§2.2); `crossing` also when the token is written at tier 0 or 1 and Kiln gives no range for it, and when the span is not one token (its range is not the range of the one token at its start: `n::m` with `#define m m` has a range, `n::m`, though `m` is written in a replacement list). `not_a_file` also for a token written directly in a buffer that is not a file (a snippet's in-memory file, the predefines): its row is the tier's, after `crossing` and before `directive` |
 | `directive` | the range holds a preprocessing directive or any part of a group that was skipped: replacing it would delete another configuration's text, or leave a conditional unbalanced, and no observer's verification sees either. `slip_kiln::ranges` gives no range for such a span, at any tier (`api.md` §5.4) |
 | `not_owned` | the file is read-only (§2.1) |
 | `file_recoded` | the front end's text of the file is not the file's bytes: Kiln replaced invalid UTF-8 when it loaded the file (its load report is not clean), so offsets in the text are not offsets in the file |
@@ -311,6 +329,7 @@ Piece := literal = 0: bytes                         not empty
 
 Reason := none = 0 | macro_body = 1 | pasted = 2 | crossing = 3 | not_a_file = 4 | not_owned = 5
         | file_recoded = 6 | not_plain = 7 | mixed_set = 8 | mixed_instances = 9
+        | directive = 10
 
 MacroSite := name_start: uv          offset, in the claim's file, of the name token of the outermost
                                       macro invocation the bytes are an argument of or were produced by
@@ -344,8 +363,17 @@ piece taken as its path: this is the edit of `api.md` §7.6.
   the token's bytes in the macro definition; for `not_owned` and
   `not_plain` the range Kiln gave for the name (§2.2), in whatever file
   it is; for every other reason the name token of the outermost
-  invocation, or `[0, 0)` of the main file if there is none. `subjects`
-  is not empty.
+  invocation, or `[0, 0)` of the main file if there is none. It is also
+  `[0, 0)` of the main file when that place is in a buffer that is not
+  a file, or in a file whose load report is not clean (§2.3
+  `file_recoded`): offsets there are not offsets of a file's bytes.
+  `subjects` is not empty.
+- `macro` is absent when the bytes are not from an expansion (tier 0),
+  and when the outermost invocation's name token is not in the claim's
+  file (a `macro_body` refusal whose range is in a header and whose
+  invocation is elsewhere; a claim at `[0, 0)` of the main file because
+  the invocation is in no file): `name_start` is an offset in the
+  claim's file.
 - `keep` is claimed for every name token whose bytes equal those a
   `replace` of the transform would replace elsewhere and that this
   observer resolved to an entity that is not a subject (rename: every
@@ -629,8 +657,9 @@ base's agreement (`verify.md` §10) and `api.md` §7.6 to say so.
 
 The join is associative and commutative, so the collapsed claims do not
 depend on the order or the grouping in which shards are read. Reports,
-`changed` entries and failures are joined the same way, each by its
-whole record with places by path, to a record with `observers` and
+`changed` entries are joined the same way, each by its whole record with
+places by path, and failures by `(kind, message, place)` (§6; `rendered`
+and `refusal` are the first observer's), to a record with `observers` and
 `first` (§6).
 
 ### 5.4 Outcome of a site
@@ -653,18 +682,32 @@ tier 0 in others is live; both bits are in the edit.
 
 **Geometry.** Live sites are not empty ranges. Two ranges of one file
 **cross** if they share a byte and neither is within the other; `a` is
-**properly inside** `b` if it is within `b` and is not `b`. The ranges a
-live edit **copies** are the places of its copy pieces. Each rule below
-is applied to the live sites that the rules before it left:
+**properly inside** `b` if it is within `b` and is not `b`. A **claimed
+site** is a site at which some `replace` claim remains after §5.2,
+whatever the table or the rules below make of it: a live site, and a
+rejected one (`divergent`, `contested`, `mixed_set`, `site_refused`, or
+by a rule below). The ranges a claimed site **copies** are the places of
+the copy pieces of every such claim of it.
+
+**Every claimed site blocks**, live or not: a live site that crosses it,
+crosses what it copies, or nests in it is rejected as it would be if the
+claimed site were live, with the cause it would then get, exactly as a
+rejected site's kept and unresolved ranges still contest. So more
+disagreement never accepts more: an observer that disagrees about a site
+turns it from live to rejected, and the site goes on blocking what it
+blocked (`spec/landed/edits/WP-062.md` §5). Each rule below is applied to
+the live sites that the rules before it left, against every claimed
+site:
 
 | Cause | Rejected |
 |---|---|
 | `contested` | a live site, when a kept or unresolved range of another site shares a byte with it |
-| `overlap` | two live sites that cross: both. A live site that crosses a range another live edit, or itself, copies: both sites (`api.md` §7.1 rule 3) |
-| `cyclic` | say an edit **draws on** another when the other is properly inside a range the first copies. Every live edit on a cycle of that relation, a cycle of one included: `replace(x, copy(r))` with `x` properly inside `r` (`api.md` §7.1 rule 3b) |
+| `overlap` | a live site that crosses a claimed site, or a range a claimed site (itself included) copies; and a live site that copies a range a claimed site crosses. Of two live sites that cross, both; of a live site and a live edit whose copy it crosses, both (`api.md` §7.1 rule 3) |
+| `cyclic` | say a site **draws on** another when the other is properly inside a range the first copies. Every live site on a cycle of that relation over the claimed sites, a cycle of one included: `replace(x, copy(r))` with `x` properly inside `r` (`api.md` §7.1 rule 3b) |
 
-What is left is a family of ranges in which any two are disjoint or
-nested, no copied range is crossed, and copies are well-founded. An edit
+What is left is a family of live ranges in which any two are disjoint or
+nested, none crosses a claimed site or a range one copies, and copies are
+well-founded. An edit
 within a copied range and an edit that contains one are not conflicts;
 §7.1 says what they mean. An edit of exactly a copied range is not
 applied to the copy (`api.md` §7.1 rule 3).
@@ -689,25 +732,54 @@ A group is **rejected** if any edit of the group is at a rejected site,
 or any refusal of §5.2 applies to a subject one of its claims names. All
 rejections of §5.4 are computed first, over the live sites of every
 group; then groups are rejected. A site that was rejected for crossing a
-site of a group that is itself rejected stays rejected.
+site of a group that is itself rejected stays rejected. A live site
+rejected with its group, and with no refusal of its own, is refused with
+`with_group`: its `other` is the least site of a member of the group
+that has a refusal of its own, absent if a refusal of §5.2 alone took
+the group down. Under an `indivisible` request there is no `with_group`
+refusal: the set's `refused` state says it.
 
-**Effect.** Among the edits that remain, an edit is **outermost** if it
-is within no other, and **effective** if it is outermost or is drawn on,
-through a copy in which no other remaining edit properly inside the
-copied range contains it, by an effective edit. An edit that is not
-effective would be accepted and change nothing: its bytes are replaced
-by an edit around it, and nothing carries it elsewhere. Reduce publishes
-no such edit. Every remaining edit that is not effective is rejected
-with `buried`, together with the innermost remaining edit that contains
-it, and with the groups of both (`api.md` §7.1 rule 3c: an edit that
-replaces a range without copying it, over an edit some observer asked
-for inside it, is a disagreement between two requests, and both are
-rejected); this is repeated until every remaining edit is effective. A repetition only rejects, and it ends because the
-set shrinks.
+**Effect.** Every claimed site (§5.4) contains, whatever became of it;
+only an edit that remains (a live site not rejected) **carries**. A
+claimed site is **outermost** if it is within no other claimed site, and
+**effective** if it is outermost or is drawn on, through a copy in which
+no claimed site properly inside the copied range contains it, by an
+effective edit that carries. Its **innermost container** is, of the
+claimed sites that properly contain it, the one that starts last, and of
+those the shortest (in a family without crossings, the innermost). An
+edit that is not effective would be accepted and change nothing: its
+bytes are replaced by an edit around it, and nothing carries it
+elsewhere. Reduce publishes no such edit. Every remaining edit that is
+not effective is rejected with `buried`, and so is the innermost
+container of every claimed site that is not effective, if that container
+is an edit that remains; then the groups of both (`api.md` §7.1 rule 3c:
+an edit that replaces a range without copying it, over an edit some
+observer asked for inside it, is a disagreement between two requests,
+and both are rejected). A `buried` refusal's `other` is the site's
+innermost container, or for a container the least claimed site it was
+buried for, the least of the two if it is both. This is repeated until
+every remaining edit is effective. A repetition only rejects, and it
+ends because the set shrinks.
+
+The one way in which one more shard can make an edit accepted that was
+`buried` without it is the effect: the shard's edit copies a range the
+buried edit is inside, and carries it (as in an exchange of two ranges
+with an edit inside one). That is what the effect means, not a
+disagreement let through (`spec/landed/edits/WP-062.md` §5). §5.2's
+treatment is of every shard as well: one more shard can select or
+deselect a subject, or name one at a claim, so that a `replace` becomes
+a `keep` or a `mixed_set` becomes an edit.
+
+**Every `replace` is explained.** Every site at which some shard claims
+a `replace` is an edit of the set, the site of a refusal, or `kept`
+(§5.2 made the claim a `keep`); or the set is refused as a whole, under
+an `indivisible` request or with a refusal of no site.
 
 The edits of the edit set are the edits that remain. If there are none
 the edit set's `state` is `refused`: with the refusals that explain it,
-or with `no_edit` if no observer claimed a `replace`.
+or with `no_edit` if no `replace` claim remains after §5.2's treatment
+(none was made, or every one was turned into a `keep`;
+`spec/landed/edits/WP-062.md` §4).
 
 ### 5.6 Cost
 
@@ -748,9 +820,10 @@ counters of §6.3.
 ```rust
 pub struct Options { pub fan_in: usize, pub threads: usize, pub scratch: PathBuf }
 
-pub trait Shards {
-    /// The shard of the observer at `index` of the plan, or `None` (unparsed).
-    fn open(&self, index: usize) -> Result<Option<Shard>, String>;
+pub trait Shards: Sync {
+    /// The bytes of the stored shard of the observer at `index` of the
+    /// plan, or `None` (unparsed). Their trailer is the `shard` of its `Basis`.
+    fn open(&self, index: usize) -> Result<Option<Vec<u8>>, String>;
     fn len(&self) -> usize;
     fn observer(&self, index: usize) -> Digest;
 }
@@ -760,11 +833,21 @@ pub struct Reduced { pub edits: EditSet, pub declared: Option<Declared> }
 pub fn reduce(request: &Transform, request_id: Digest, plan: Digest, round: u64,
               shards: &dyn Shards, options: &Options) -> Result<Reduced, ReduceError>;
 
-pub enum ReduceError { Input { observer: Digest, message: String }, Io(String) }
+pub enum ReduceError { Input { observer: Digest, message: String }, Io(String), Options(String) }
 
 /// §6.2, from an edit set alone: `None` for a refused one.
 pub fn declared(set: &EditSet) -> Result<Option<Declared>, String>;
 ```
+
+`Shards` is `Sync` and gives the bytes of each stored shard: reduce
+decodes them, and the id in the basis is their trailer, of the very bytes
+decoded (decoding drops an ignorable section, so re-encoding is not that
+id); the second pass compares the ids of what each pass read. A plan
+that names one observer twice is an `Input` error at the second index
+that names it. `fan_in < 2` and `threads == 0` are `ReduceError::Options`. The
+counter `reduce.runs` of an earlier draft of §6.3 is not written: it
+depends on `fan_in`, which by §1 rule 3 the edit set does not
+(`spec/landed/edits/WP-062.md` §1, §8).
 
 `slip_reduce` depends on `slip_model` only. `Shards` is implemented over
 the store by `slip_cli` and over a vector by tests.
@@ -831,23 +914,25 @@ Refusal := cause:     Cause
                                       subject of the site, if any (absent for `no_observer`, `rule_conflict`, `no_edit`)
            macro:     opt<MacroSite>  absent unless of a site
            other:     opt<Place>      for `contested` by another range, `overlap` and `buried`: the least other range
-                                      involved; absent for every other cause
+                                      involved; for `with_group`, the least member of the group with a refusal
+                                      of its own, if any; absent for every other cause
            observers: uv
            first:     list<digest>
 
 Cause := no_observer = 0 | no_subject = 1 | subject_read_only = 2 | subject_unsupported = 3
        | subject_unreachable = 4 | name_taken = 5 | mixed_follower = 6 | mixed_set = 7
        | site_refused = 8 | contested = 9 | divergent = 10 | overlap = 11 | file_differs = 12
-       | cyclic = 13 | buried = 14 | rule_conflict = 15 | no_edit = 16
+       | cyclic = 13 | buried = 14 | rule_conflict = 15 | no_edit = 16 | with_group = 17
 ```
 
 The causes **of a site** are `mixed_set`, `site_refused`, `contested`,
-`divergent`, `overlap`, `file_differs`, `cyclic` and `buried` (§5.2,
-§5.4, §5.5). The others are of the set: the refusals of a subject (§5.2),
+`divergent`, `overlap`, `file_differs`, `cyclic`, `buried` and
+`with_group` (§5.2, §5.4, §5.5). The others are of the set: the refusals of a subject (§5.2),
 `no_observer` (§5.1), `rule_conflict` (§6.2) and `no_edit` (§5.5).
 `no_edit` stands only in a set with no edit and beside no refusal that
 needs a `replace` claim (`contested`, `divergent`, `overlap`,
-`file_differs`, `cyclic`, `buried`): it says no observer claimed one. A
+`file_differs`, `cyclic`, `buried`, `with_group`): it says no observer
+claimed one. A
 refused set has at least one refusal.
 
 Refusals are sorted by `(cause, file, lo, hi, subject)`, an absent `file`
@@ -855,8 +940,8 @@ or `subject` before any present one; no two are equal in that key. For a
 refusal of a subject, `observers` and `first` count the observers whose
 shard set the flag (for `no_subject`, `no_observer`, `no_edit` and
 `rule_conflict`: 0 and empty). For `contested`, they count the observers
-that claimed `keep`; for the others, the observers of the rejected
-claims.
+that claimed `keep`; for the others (`with_group` included), the
+observers of the rejected claims.
 
 Failures are joined by `(kind, message, place)`: the same failure in many
 observers is one record with a count (`api.md` §2.8 rule 3).
@@ -890,7 +975,7 @@ row's rules and messages).
 | `first` has at most 8 entries and at most `observers`; `notes` at most 8 | the field | its path |
 | `changed`, `kept`, `unresolved`, `refusals`, `reports`, `failures` strictly ascending in their keys | that record | its path |
 | a refusal's `reason` is not `none` iff its cause is `site_refused` | the field | `sections.set.refusals[i].reason` |
-| a refusal's fields against its cause (§6): `file` present iff of a site; `subject` present for a refusal of a subject but `no_subject`, absent for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `macro` absent unless of a site; `other` only for `contested`, `overlap`, `buried`; `observers` 0 for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `no_edit` only with no edit and beside no refusal that needs a `replace` claim | the field, or the refusal for `no_edit` | `sections.set.refusals[i].file`, `….subject`, `….macro`, `….other`, `….observers`, `sections.set.refusals[i]` |
+| a refusal's fields against its cause (§6): `file` present iff of a site; `subject` present for a refusal of a subject but `no_subject`, absent for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `macro` absent unless of a site; `other` only for `contested`, `overlap`, `buried`, `with_group`; `observers` 0 for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `no_edit` only with no edit and beside no refusal that needs a `replace` claim | the field, or the refusal for `no_edit` | `sections.set.refusals[i].file`, `….subject`, `….macro`, `….other`, `….observers`, `sections.set.refusals[i]` |
 | the counter rules of `model.md` §8.1: the name form, strictly ascending by name | that counter's name, that counter | `sections.set.counters[i].name`, `sections.set.counters[i]` |
 | `state` is `refused` if there is a refusal of a subject, `no_observer`, `rule_conflict`, or no edit; a refused set has a refusal | the `state` field | `sections.set.state` |
 
@@ -922,6 +1007,9 @@ refused one has none.
 - **`changed`**: the keys of the `changed` entries that are in force: an
   edit of the set shares a byte with the entry's place.
 - **`created`, `removed`**: empty.
+- **`files`**: the request's `ownership` when `rules` is not empty, else
+  absent (`verify.md` §2: a container holds the run's files exactly when
+  it has rules).
 
 That `Declared` is derived by untrusted code is the design: a rule that is
 wrong or missing cannot make two different programs compare equal
@@ -954,7 +1042,6 @@ In `EditSet.counters`:
 | `reduce.reports.note`, `.review`, `.error` | joined reports by severity |
 | `reduce.changed`, `reduce.changed.in_force` | joined `changed` entries |
 | `reduce.rules` | rules declared (§6.2) |
-| `reduce.runs` | temporary files written (§5.6) |
 
 Reduce also sums, over the `ok` shards, each shard counter whose name
 starts with `api.` or `edits.`, and writes the sum under the same name;
@@ -1361,6 +1448,28 @@ A comment or a string or character literal that contains the old name as
 a whole word (not preceded or followed by an identifier character) is a
 **mention**. Mentions are listed and never change the state.
 
+**What the scan does not find.** The scan lexes every file as C++26 (the
+latest standard Kiln has) and decodes no literal or comment. So these
+are never residue, and the result's report says so beside the residue
+(that the scan found nothing there is no evidence that nothing is
+there):
+
+- a name formed by `##` or by any other macro (`a##b` mentions no `ab`);
+- a name spelled with escapes in a literal (`"\x66oo"`, `"\u0066oo"`),
+  or with a universal-character-name in a comment (`// caf\u00e9` is not
+  `café`);
+- a ud-suffix of a number (`12_foo` is one pp-number); that of a string
+  or character literal is part of a mention;
+- what a file's own, older standard lexes otherwise: trigraphs (`??/` is
+  no line splice in C++26, so an identifier split by `??/` and a line end
+  in a C++14 file is two identifiers), digit separators (`1'foo'; foo;`
+  lexes as the pp-number `1'foo` and an unterminated character literal,
+  so the second `foo` is a mention, not an identifier), and every other
+  such difference;
+- a header name (`#include <foo>`, `import <foo>;`, `__has_include(<foo>)`):
+  a file name is no mention of an entity. A header name is lexed only on
+  the line of its directive.
+
 ```
 Residue := category: Category, file: path, lo: uv, hi: uv, line: uv, column: uv
 Category := dependent = 0 | not_compiled = 1 | not_planned = 2 | mention = 3
@@ -1618,10 +1727,14 @@ A name token spelled like the old name that denotes an entity that is not
 a subject of the observer is claimed `keep` (§4.2).
 
 Not references, never claimed: comments; string and character literals;
-the operand of `#`; identifiers in preprocessor directives; text in a
-conditional group the observer skips; a macro argument that is never
-substituted. Verification does not cover them (`verify.md` §8, "Text");
-§8.4 lists them.
+identifiers in preprocessor directives; text in a conditional group the
+observer skips; a macro argument that is never substituted.
+Verification does not cover them (`verify.md` §8, "Text"); §8.4 lists
+them. The operand of `#` is no reference either, but when it is an
+argument the parser also sees by substitution, it is edited with that
+argument (§2.2, "An argument also stringised or pasted"): after the edit
+the old name is gone from the file, so §8.4 does not list it, and
+verification reports the unit that holds the string as changed.
 
 A reference the language makes without a token (the `begin` of a
 range-based `for`, a coroutine's `await_ready`, `get` for a structured

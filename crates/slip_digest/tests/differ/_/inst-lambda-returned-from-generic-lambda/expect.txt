@@ -1,0 +1,5 @@
+# WP-040's indeterminate test, determinate since WP-045: the specialisation's
+# body is walked by its resolved unit `definition`, which numbers the closure
+changed g
+exact derived
+derived-changed g::local(0)::operator()<int>(int) const::<definition>

@@ -116,6 +116,7 @@ line. Nothing is printed when there is none. With any, standard error gets
 | `wp` | Every `docs/wp/WP-*.md` follows `docs/wp/README.md`: the title line with the same id as the file name; `Status`, `Milestone`, `Track`, `Needs`, `Size` lines with allowed values; `Needs` names existing files. |
 | `local-paths` | No committed text file contains an absolute path into a home directory or this host's workspace (`/home/`, `/Users/`, `/root/`, `/Volumes/`). |
 | `doc-links` | Every relative Markdown link in `docs/`, `spec/` and `README.md` points at an existing file. |
+| `api-tests` | Every directory under `crates/slip_script/tests/api/` with a `transform.cpp` has `t.cpp` and `expect.txt`, lies in no other, and its `// spec:` line names a heading of `spec/api.md`; no other file lies there (`spec/api.md` §11). |
 
 Lints read the files tracked by git, so build output and worktrees are
 never scanned. If the root holds `.git` (a directory, or a file as in a
@@ -1164,7 +1165,10 @@ run <path of the second run record>
 invariant a: holds                              or: FAILED (<n> observer(s) differ)
 ```
 
-The invariant holds when `different` is 0. It does not need a single
+The invariant holds when `different` is 0 and at least one observer is
+selected (over none it ends `FAILED (no observer selected)`;
+`spec/landed/harness/WP-051.md` has the forms of a `different` line's
+sides and the other rules of the run). It does not need a single
 determinate unit: an indeterminate unit has a digest and a flag like any
 other, and both must come out the same twice.
 
@@ -1201,7 +1205,8 @@ invariant b: holds                              or: FAILED (<n> of <map_ok> obse
 ```
 
 The invariant holds when every selected observer whose map shard is `ok`
-is `verified`. An observer that is `indeterminate_only` is not verified
+is `verified`, and there is at least one (with none it ends
+`FAILED (no observer with an ok map shard)`). An observer that is `indeterminate_only` is not verified
 and counts against it: (b) cannot hold on a corpus that has an
 indeterminate unit, which is the form `digest.md` §10 gives the same
 requirement. `different` above 0 is a defect of the walk (two parses of
