@@ -374,7 +374,9 @@ read-only when the caller has none, so that every key is the key of the
 empty table). A rule matches only an
 **owned** entity, and the namespaces that enclose a namespace member are
 mapped only when the member is owned; a dependency entity (one with a
-declaration in a read-only file, by its expansion location; a
+declaration in a read-only file, by its expansion location or its name
+token's spelling location, a file read-only per inclusion when its
+include chain passes through a read-only file; a
 specialisation of such a template; an implicit member of such a class)
 keeps its own name and its namespaces theirs, with only what its
 discriminators mention mapped. The definition and the reason are
