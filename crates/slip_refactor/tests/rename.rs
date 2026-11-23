@@ -1675,57 +1675,83 @@ fn wp119_instantiated_using_hidden_by_a_subject_end_to_end() {
     assert!(causes(&r).contains(&"MixedFollower"), "{r:?}");
 }
 
-/// Known mismatch after the review of WP-119, F1 (`spec/landed/digest/WP-119.md`,
-/// "Known mismatches after the review"): a dependent call in a function
-/// template instantiated with `n::S<int>`, whose base has another `f`.
-/// Until WP-119 the followers' `unsupported` refused the run; now the
-/// rename is accepted, the call is left spelling `f` (it binds `Base::f`
-/// in the post-image) and verification reports the difference: loud,
-/// never `verified`. The rename should refuse or rewrite (WP-127).
+/// `docs/wp/WP-127.md` item 2, the refusing form (was WP-119's known
+/// mismatch F1): a dependent name of a pattern that an instantiation binds
+/// to a renamed entity is refused at the pattern's name (`site_refused`,
+/// `mixed_instances`), in its three forms (`t.f()`, `T::f()`, `&T::f`),
+/// with one instantiation and with two of which one binds elsewhere
+/// (`n::R`). Before, the run was accepted and verification reported
+/// `changed call<n::S<int>>(...)`.
 #[test]
-fn wp119_known_mismatch_f1_dependent_call() {
-    let forms: [(&str, &[u8]); 3] = [
+fn wp127_dependent_name_bound_by_an_instantiation_is_refused() {
+    let forms: [(&str, &str, &str); 3] = [
+        ("call", "template <class T> int call(T t) { return t.f(); }\n", "call(n::S<int>())"),
+        ("static", "template <class T> int call() { return T::f(); }\n", "call<n::S<int>>()"),
         (
-            "wp119-f1-call",
-            b"namespace n {\nstruct Base { int f() { return 2; } };\ntemplate <class T> struct S : Base { int f() { return 1; } };\n}\ntemplate <class T> int call(T t) { return t.f(); }\nint u() { return call(n::S<int>()); }\n",
-        ),
-        (
-            "wp119-f1-static",
-            b"namespace n {\nstruct Base { static int f() { return 2; } };\ntemplate <class T> struct S : Base { static int f() { return 1; } };\n}\ntemplate <class T> int call() { return T::f(); }\nint u() { return call<n::S<int>>(); }\n",
-        ),
-        (
-            "wp119-f1-address",
-            b"namespace n {\nstruct Base { int f() { return 2; } };\ntemplate <class T> struct S : Base { int f() { return 1; } };\n}\ntemplate <class T> int call(T t) { int (T::*p)() = &T::f; return (t.*p)(); }\nint u() { return call(n::S<int>()); }\n",
+            "address",
+            "template <class T> int call(T t) { int (T::*p)() = &T::f; return (t.*p)(); }\n",
+            "call(n::S<int>())",
         ),
     ];
-    for (name, text) in forms {
-        let files: [(&str, &[u8]); 1] = [("main.cpp", text)];
-        let r = end_to_end(name, &files, &["main.cpp"], &["n", "S", "f"], "g", &right);
-        // Accepted: no refusal.
-        assert!(r.refusals.is_empty(), "{name}: {r:?}");
-        // And verification fails: the instantiated call's definition
-        // changed (it binds `Base::f` now), and the definition of the
-        // member it called is not used any more.
-        assert!(
-            r.differences.iter().any(|d| d.starts_with("main.cpp: changed call<n::S<int>>(")),
-            "{name}: {r:?}"
+    for (name, pattern, use_s) in forms {
+        let stat = if name == "static" { "static " } else { "" };
+        let classes = format!(
+            "namespace n {{\nstruct Base {{ {stat}int f() {{ return 2; }} }};\ntemplate <class T> struct S : Base {{ {stat}int f() {{ return 1; }} }};\nstruct R {{ {stat}int f() {{ return 3; }} }};\n}}\n"
         );
-        assert!(
-            r.differences.iter().any(|d| d == "main.cpp: removed n::S<int>::f()::<definition>"),
-            "{name}: {r:?}"
-        );
+        let use_r = use_s.replace("n::S<int>", "n::R");
+        for (tag, uses) in [
+            ("one", format!("int u() {{ return {use_s}; }}\n")),
+            ("two", format!("int u() {{ return {use_s} + {use_r}; }}\n")),
+        ] {
+            let text = format!("{classes}{pattern}{uses}");
+            let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+            let n = format!("wp127-dep-{name}-{tag}");
+            let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", "f"], "g", &right);
+            assert_eq!(causes(&r), ["SiteRefused"], "{n}: {r:?}");
+        }
+        // Instantiated with `n::R` only: nothing binds the name to a
+        // subject, it stays `unresolved`, and the rename verifies.
+        let text = format!("{classes}{pattern}int u() {{ return {use_r}; }}\n");
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp127-dep-{name}-elsewhere");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", "f"], "g", &right);
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
     }
 }
 
-/// Known mismatch after the review of WP-119, F2 (`spec/edits.md` §9.2):
-/// the overrider declared before the using-declaration, so Kiln makes no
-/// shadow for `B::f()`, and the base has another `f` (`A::f(int)`).
-/// Renaming `n::B::f` or `n::D::f` is accepted and leaves `using B::f;`
-/// as written, which now names `A::f(int)`: verification reports
-/// `changed n::D` and the added shadow. The other order (using-declaration
-/// first) rewrites it to `using B::g;` and verifies.
+/// Item 2 over two observers of which only one instantiates the pattern
+/// with `n::S<int>`, in both orders: refused whichever observer comes
+/// first (the mutation "checked in the first observer only").
 #[test]
-fn wp119_known_mismatch_f2_member_first_using() {
+fn wp127_dependent_name_two_observers_one_instantiates() {
+    let files: [(&str, &[u8]); 3] = [
+        (
+            "t.h",
+            b"namespace n {\nstruct Base { int f() { return 2; } };\ntemplate <class T> struct S : Base { int f() { return 1; } };\n}\ntemplate <class T> int call(T t) { return t.f(); }\n",
+        ),
+        ("use.cpp", b"#include \"t.h\"\nint u() { return call(n::S<int>()); }\n"),
+        ("pattern.cpp", b"#include \"t.h\"\nint k() { return n::S<int>().f(); }\n"),
+    ];
+    for mains in [["use.cpp", "pattern.cpp"], ["pattern.cpp", "use.cpp"]] {
+        let n = format!("wp127-dep-two-{}", mains[0].trim_end_matches(".cpp"));
+        let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], "g", &right);
+        assert_eq!(causes(&r), ["SiteRefused"], "{n}: {r:?}");
+    }
+    // The observer that does not instantiate alone: accepted, and it
+    // verifies (no observer makes the instantiation that would differ:
+    // what the rename does not see, `spec/edits.md` §9.4).
+    let r = end_to_end("wp127-dep-two-alone", &files, &["pattern.cpp"], &["n", "S", "f"], "g", &right);
+    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
+}
+
+/// `docs/wp/WP-127.md` item 1 (was WP-119's known mismatch F2): the
+/// using-declaration is read by what its declarator names, not by its
+/// shadows, so the order of the members does not matter. Every named
+/// declaration renamed (`B::f()`, with its overrider `D::f()`): rewritten
+/// to `using B::g;` and verifies, the overrider before the
+/// using-declaration or after it.
+#[test]
+fn wp127_using_named_set_all_renamed_both_orders() {
     let member_first: [(&str, &[u8]); 1] = [(
         "main.cpp",
         b"namespace n {\nstruct A { void f(int); };\nstruct B : A { virtual void f(); };\nstruct D : B { void f() override; using B::f; };\n}\nvoid h(n::D& d) { d.f(); }\n",
@@ -1735,27 +1761,61 @@ fn wp119_known_mismatch_f2_member_first_using() {
         b"namespace n {\nstruct A { void f(int); };\nstruct B : A { virtual void f(); };\nstruct D : B { using B::f; void f() override; };\n}\nvoid h(n::D& d) { d.f(); }\n",
     )];
     for seed in ["B", "D"] {
-        let target = ["n", seed, "f"];
-        let r = end_to_end(
-            &format!("wp119-f2-mf-{seed}"),
-            &member_first,
-            &["main.cpp"],
-            &target,
-            "g",
-            &right,
-        );
-        assert!(r.refusals.is_empty(), "{seed}: {r:?}");
-        for d in ["main.cpp: changed n::D", "main.cpp: added n::D::<shadow n::A::f(int)>"] {
-            assert!(r.differences.iter().any(|x| x == d), "{seed}: no {d:?}: {r:?}");
+        for (order, files) in [("mf", &member_first), ("uf", &using_first)] {
+            let n = format!("wp127-f2-{order}-{seed}");
+            let r = end_to_end(&n, files, &["main.cpp"], &["n", seed, "f"], "g", &right);
+            assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
         }
-        let r = end_to_end(
-            &format!("wp119-f2-uf-{seed}"),
-            &using_first,
-            &["main.cpp"],
-            &target,
-            "g",
-            &right,
+    }
+}
+
+/// Item 1, some named declarations renamed and some not: the name would
+/// mean two things. Refused as `mixed_follower`, in both member orders:
+/// (a) `B::f()` renamed through its family and `B::f(int)` not, both
+/// introduced (the using-declaration's `of` holds both); (b) a
+/// non-virtual `B::f()` hidden by `D::f()`: renaming one of them unhides
+/// it (`D::f` or `B::f` the seed).
+#[test]
+fn wp127_using_named_set_mixed_both_orders() {
+    let family = |d: &str| {
+        format!(
+            "namespace n {{\nstruct A {{ virtual void f(); }};\nstruct B : A {{ void f() override; void f(int); }};\nstruct D : B {{ {d} }};\n}}\nvoid h(n::D& d) {{ d.f(); d.f(1); }}\n"
+        )
+    };
+    let hidden = |d: &str| {
+        format!(
+            "namespace n {{\nstruct B {{ void f(); void f(int); }};\nstruct D : B {{ {d} }};\n}}\nvoid h(n::D& d) {{ d.f(); d.f(1); }}\n"
+        )
+    };
+    let cases = [
+        ("a-mf", family("void f(long); using B::f;"), ["n", "A", "f"]),
+        ("a-uf", family("using B::f; void f(long);"), ["n", "A", "f"]),
+        ("b-mf-d", hidden("void f(); using B::f;"), ["n", "D", "f"]),
+        ("b-uf-d", hidden("using B::f; void f();"), ["n", "D", "f"]),
+        ("b-mf-b", hidden("void f(); using B::f;"), ["n", "B", "f"]),
+        ("b-uf-b", hidden("using B::f; void f();"), ["n", "B", "f"]),
+    ];
+    for (tag, text, target) in &cases {
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp127-mixed-{tag}");
+        let r = end_to_end(&n, &files, &["main.cpp"], target, "g", &right);
+        assert_eq!(causes(&r), ["MixedFollower"], "{n}: {r:?}");
+    }
+}
+
+/// Item 1 in a class template whose using-declaration names a dependent
+/// base (`docs/wp/WP-120.md`'s rule: the pattern's name is `unresolved`,
+/// the instantiated using-declaration follows the pattern's): the hider
+/// `D<int>::f()` renamed, both member orders, refused (`mixed_follower`).
+#[test]
+fn wp127_using_named_set_dependent_base_both_orders() {
+    for (tag, d) in [("mf", "void f(); using Base<T>::f;"), ("uf", "using Base<T>::f; void f();")] {
+        let text = format!(
+            "namespace n {{\ntemplate <class T> struct Base {{ void f(); void f(int); }};\ntemplate <class T> struct D : Base<T> {{ {d} }};\n}}\nvoid h(n::D<int>& d) {{ d.f(); d.f(1); }}\n"
         );
-        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{seed}: {r:?}");
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp127-dep-base-{tag}");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "D", "f"], "g", &right);
+        assert!(causes(&r).contains(&"MixedFollower"), "{n}: {r:?}");
     }
 }
