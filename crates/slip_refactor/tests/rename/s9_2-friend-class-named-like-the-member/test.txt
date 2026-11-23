@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (a friend type named like the member is not a function: nothing is flagged), WP-073 fix round F1
+from: n::S::f
+to: g
+kind: function

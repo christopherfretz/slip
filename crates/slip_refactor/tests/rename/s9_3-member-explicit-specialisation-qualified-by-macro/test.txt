@@ -1,0 +1,4 @@
+spec: edits.md §9.3 (a name a macro body spells is refused macro_body: an explicit specialisation of a member qualified by a macro is given, not unreachable), WP-073 part B
+from: n::S::f
+to: g
+kind: function

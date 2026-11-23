@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 11 for a candidate (an override whose name a macro body writes: refuse macro_body)
+from: n::B::f
+to: g
+kind: function

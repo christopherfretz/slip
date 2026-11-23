@@ -173,5 +173,36 @@ pub(crate) fn enclosing(ast: &Ast, d: DeclId) -> Option<DeclId> {
     None
 }
 
+/// `written::origin` of `d`; for a **variable** that has no link of its
+/// own (origin takes no step), `written::origin` of its entity.
+///
+/// The one case this is for: the explicit specialisation of a static
+/// data member, `template <> int S<int>::v = 1;`, is a redeclaration of
+/// the member of the instantiation that the front end does not link (its
+/// entity is linked). `written::origin` stops at it, so its claim named
+/// the follower, while a member function's explicit specialisation,
+/// which is linked, names the seed. Through the entity it names the seed
+/// as well (`spec/edits.md` §9.2).
+///
+/// Here rename differs from `written::origin`, which the host and the
+/// check share ("one function, so that the rename, the host and the check
+/// cannot disagree"). Nothing they compare depends on it: the claim of a
+/// declaration carries a literal piece, and a reference's spelled key is
+/// only changed for a variable whose entity's origin is the seed, so the
+/// key the check reads is the seed's, which maps to the same name. The
+/// step is limited to variables because for a function it would make
+/// the subject depend on instantiation order: a namespace-scope
+/// redeclaration `void f(S<int>);` of a friend that the class template
+/// defines has, as its entity, the instantiated friend when it follows
+/// `S<int> s;` and itself when it precedes it
+/// (`s9_3-friend-redeclared-after-instantiation`, `-before-`).
+pub(crate) fn origin_of(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> DeclId {
+    let o = written::origin(ctx.unit, d);
+    if o != d || ctx.unit.ast().decls.get(d).kind() != DeclKind::Var {
+        return o;
+    }
+    written::origin(ctx.unit, ctx.keys.entity(d))
+}
+
 /// How far a chain of contexts is followed.
 pub(crate) const CTX_LIMIT: u32 = 4096;

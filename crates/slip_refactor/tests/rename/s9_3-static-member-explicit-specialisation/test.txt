@@ -1,0 +1,4 @@
+spec: edits.md §9.3 (an explicit specialisation of a static data member is claimed for the seed, as a member function's is; the follower S<int>::v is a subject), WP-073 fix round F4
+from: n::S::v
+to: w
+kind: variable

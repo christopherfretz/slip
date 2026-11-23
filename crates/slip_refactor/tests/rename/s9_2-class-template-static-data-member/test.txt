@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (a static data member of a class template and its follower in S<int>), WP-073 part C
+from: n::S::v
+to: w
+kind: variable

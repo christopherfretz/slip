@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 1 (an explicit specialisation of a member: its row in the declaration extents, a literal piece), §9.2 (S<int>::f a follower), WP-073 part B (the extents give the name)
+from: n::S::f
+to: g
+kind: function

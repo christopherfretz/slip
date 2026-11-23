@@ -1,0 +1,10 @@
+subjects:
+  34817475 candidate unsupported rule=yes n::D<type-parameter-0-0 *>::f()
+  599ef791 seed - rule=yes n::B::f()
+links:
+  34817475 599ef791
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:4:44+1 replace "g" t0 votes=1 none [34817475]
+  main.cpp:6:27+1 replace spell(34817475, "g") t0 votes=1 none [34817475]
+changed:

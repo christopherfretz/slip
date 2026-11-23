@@ -1,0 +1,7 @@
+subjects:
+  5a1821e8 seed - rule=yes n::w
+links:
+claims:
+  main.cpp:1:36+1 replace "x" t0 votes=1 none [5a1821e8]
+  main.cpp:2:21+1 replace spell(5a1821e8, "x") t0 votes=1 none [5a1821e8]
+changed:

@@ -1,0 +1,10 @@
+# pending
+# needs: K-a, the join from a dependent entry to its unresolved-lookup expression and the declarations found at the definition (docs/requests/KR1-amendment-1.md §2; not in the pin: spec/landed/edits/WP-073.md, "Kiln at the pin"); until then unresolved
+# needs: also Kiln WP-1980: a name in a static_assert is enclosed by the static_assert (kiln/spec/ast.md §18.3; at the pin it is enclosed by the class, whose key would be exempted instead: For Kiln)
+subjects:
+  9f28e21c seed - rule=yes n::f(int)
+links:
+claims:
+  main.cpp:2:6+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:3:52+1 replace "g" t0 votes=1 none [9f28e21c]
+changed:

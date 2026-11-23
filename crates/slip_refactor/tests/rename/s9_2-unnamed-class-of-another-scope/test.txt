@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (a variable whose type is an unnamed class another scope's variable of the same name names: no follower, the class is not the subject's)
+from: n::v
+to: w
+kind: variable

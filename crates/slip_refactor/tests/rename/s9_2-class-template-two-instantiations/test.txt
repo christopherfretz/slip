@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (two instantiations in one observer: two followers, one of), WP-073 part C
+from: n::S::f
+to: g
+kind: function

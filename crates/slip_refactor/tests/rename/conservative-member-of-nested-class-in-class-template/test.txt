@@ -1,4 +1,0 @@
-spec: docs/wp/WP-071.md conservative rows (spec_members.rs: a class template anywhere in the parent chain makes the seed unsupported, not only the innermost class; WP-071 review, R06)
-from: n::A::B::f
-to: g
-kind: function

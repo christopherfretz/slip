@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (template struct S<short>: its f is a follower; the explicit instantiation names the class, not f), WP-073 part C
+from: n::S::f
+to: g
+kind: function

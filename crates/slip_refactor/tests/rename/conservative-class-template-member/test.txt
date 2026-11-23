@@ -1,4 +1,0 @@
-spec: docs/wp/WP-071.md conservative rows (spec_members.rs: a member of a class template is unsupported until WP-073)
-from: n::S::f
-to: g
-kind: function
