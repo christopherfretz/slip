@@ -1,1 +1,2 @@
 indeterminate legacy::hidden()
+collisions 1

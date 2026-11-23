@@ -1,0 +1,2 @@
+# Fix round 2, F2 (the review's case): a rule of kind specialisation is refused (spec/verify.md §2.1).
+rule specialisation | post W2 | id W2 | disc-of post W3<A> | post W1 | id W1

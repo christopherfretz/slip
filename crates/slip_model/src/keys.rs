@@ -263,6 +263,14 @@ pub(crate) const NAME_FORMS: [&str; 15] = [
 pub(crate) const TOO_DEEP: &str = "unnamed_by nested more than 8 deep";
 /// The `what` of an `operator` name with number 0.
 pub(crate) const OPERATOR_ZERO: &str = "operator number is 0";
+/// The `what` of a rule of kind `specialisation` or
+/// `partial_specialisation` (`spec/verify.md` §2.1).
+pub const RULE_ON_SPECIALISATION: &str =
+    "a rule may not match a specialisation: its key follows its template's";
+/// The `what` of a rule of kind `namespace` between the unnamed namespace
+/// and a named one (`spec/verify.md` §2.1).
+pub const RULE_UNNAMED_NAMESPACE: &str =
+    "a rule may not rename the unnamed namespace to a named one or a named one to it";
 
 impl Name {
     /// Its number in digest-kinds §3.2.
@@ -521,10 +529,28 @@ impl Rule {
         match_bytes(&self.parent, self.kind, &self.name, self.disc.as_ref())
     }
 
-    /// Its names as a reader checks them ([`Name::validate`]).
+    /// Its names as a reader checks them ([`Name::validate`]), and the
+    /// rules `spec/verify.md` §2.1 refuses: one of kind `specialisation`
+    /// or `partial_specialisation`, whose key follows its template's and
+    /// is never matched directly; one of kind `namespace` whose `name`
+    /// and `to_name` differ in being the unnamed namespace's (the linkage
+    /// of every member would change, which no unit holds).
+    ///
+    /// Every table passes here: [`RuleTable::new`], and the reader of a
+    /// container's rules (`RuleTable::from_sorted`), so a table no tool
+    /// may give cannot be applied whatever made it.
     fn validate(&self) -> Result<(), &'static str> {
         self.name.validate()?;
-        self.to_name.validate()
+        self.to_name.validate()?;
+        if matches!(self.kind, KeyKind::Specialisation | KeyKind::PartialSpecialisation) {
+            return Err(RULE_ON_SPECIALISATION);
+        }
+        if self.kind == KeyKind::Namespace
+            && (self.name == Name::Anonymous) != (self.to_name == Name::Anonymous)
+        {
+            return Err(RULE_UNNAMED_NAMESPACE);
+        }
+        Ok(())
     }
 }
 
@@ -534,7 +560,9 @@ pub enum RuleError {
     /// Rules `first` and `second` (indices as given, `first < second`)
     /// have the same `(parent, kind, name, disc)`.
     Duplicate { first: usize, second: usize },
-    /// Rule `index` has a name no reader accepts ([`Name::validate`]).
+    /// Rule `index` has a name no reader accepts ([`Name::validate`]),
+    /// or is a rule `spec/verify.md` §2.1 refuses ([`RULE_ON_SPECIALISATION`],
+    /// [`RULE_UNNAMED_NAMESPACE`]); `what` says which.
     InvalidName { index: usize, what: &'static str },
 }
 
@@ -676,5 +704,38 @@ mod tests {
         assert_eq!(KeyKind::from_code(0), None);
         assert_eq!(KeyKind::from_code(34), None);
         assert_eq!(KeyKind::from_code(u64::MAX), None);
+    }
+
+    fn rule(kind: KeyKind, name: Name, to_name: Name) -> Rule {
+        Rule { parent: Parent::Root, kind, name, disc: None, to_parent: Parent::Root, to_name }
+    }
+
+    // spec/verify.md §2.1 (WP-103): the rules no table may hold, through
+    // both doors.
+    #[test]
+    fn refused_rules() {
+        let id = |s: &str| Name::Identifier(s.as_bytes().to_vec());
+        let refused = [
+            (rule(KeyKind::Specialisation, id("W2"), id("W1")), RULE_ON_SPECIALISATION),
+            (rule(KeyKind::PartialSpecialisation, id("W"), id("W")), RULE_ON_SPECIALISATION),
+            (rule(KeyKind::Namespace, id("detail"), Name::Anonymous), RULE_UNNAMED_NAMESPACE),
+            (rule(KeyKind::Namespace, Name::Anonymous, id("detail")), RULE_UNNAMED_NAMESPACE),
+        ];
+        for (r, what) in refused {
+            assert_eq!(
+                RuleTable::new(vec![r.clone()]),
+                Err(RuleError::InvalidName { index: 0, what }),
+                "{r:?}"
+            );
+            assert_eq!(RuleTable::from_sorted(vec![r]).unwrap_err().0, 0);
+        }
+        for ok in [
+            rule(KeyKind::Namespace, Name::Anonymous, Name::Anonymous),
+            rule(KeyKind::Namespace, id("acme"), id("legacy")),
+            rule(KeyKind::ClassTemplate, id("W2"), id("W1")),
+            rule(KeyKind::Class, id("Impl"), id("Impl")),
+        ] {
+            assert!(RuleTable::new(vec![ok.clone()]).is_ok(), "{ok:?}");
+        }
     }
 }

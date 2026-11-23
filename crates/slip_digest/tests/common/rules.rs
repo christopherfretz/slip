@@ -34,15 +34,14 @@
 //! Rule { parent: m(P'), kind: K.kind, name: N', disc: K.disc, to_parent: K.parent, to_name: K.name }
 //! ```
 //!
-//! where `m` is the mapping of §2.1 under **the whole table**: `m(root)`,
-//! `m(c_linkage)`, `m(builtin)` are themselves; `m(unit(id))` takes the
-//! post-image's `Key` `k` with that id, maps its parent by `m`, applies
-//! the table (`RuleTable::map`), and is `unit` of the result's id. The
-//! table is found as a fixed point (every `m` computed under the table of
-//! the previous round, from the table whose parents are unmapped, until
-//! no rule changes), so the order of the lines does not matter: unlike
-//! `slip declare`, which maps under the lines above only. A discriminator
-//! on the way is not mapped (a record holds it as a digest).
+//! where `m` is the mapping of §2.1 under **the rules of the lines above**
+//! (`spec/verify.md` §2.3: a line whose new parent another line relocates
+//! comes after that line): `m(root)`, `m(c_linkage)`, `m(builtin)` are
+//! themselves; `m(unit(id))` takes the post-image's `Key` `k` with that
+//! id, maps its parent by `m`, applies the table (`RuleTable::map`), and
+//! is `unit` of the result's id. A discriminator on the way is not mapped
+//! (a record holds it as a digest). `mapped <entity>` below is the same
+//! `m`.
 //!
 //! **`rule`** is a rule written field by field, for a rule no declared
 //! change gives (a wrong one, a chained one, one that matches nothing):
@@ -305,7 +304,7 @@ fn image_records<'r>(i: Image, pre: &'r [Record], post: &'r [Record]) -> &'r [Re
     }
 }
 
-/// The rule of one line under `table` (the previous round's).
+/// The rule of one line under `table` (the lines above it).
 fn rule_of(
     line: &Line,
     table: &RuleTable,
@@ -367,24 +366,16 @@ fn rule_of(
 }
 
 /// The table of `lines` over the records of the two images (no rules):
-/// the fixed point described at the head of this file.
+/// each line's rule is made under the table of the lines above it
+/// (`spec/verify.md` §2.3), then joins the table.
 pub fn table(lines: &[(usize, Line)], pre: &[Record], post: &[Record]) -> Result<Table, String> {
     let mut table = RuleTable::empty();
-    let mut last: Option<Vec<(usize, Rule)>> = None;
-    for _ in 0..=lines.len() + 1 {
-        let mut rules = Vec::with_capacity(lines.len());
-        for (n, line) in lines {
-            rules.push((
-                *n,
-                rule_of(line, &table, pre, post).map_err(|e| format!("rules.txt:{n}: {e}"))?,
-            ));
-        }
+    let mut rules: Vec<(usize, Rule)> = Vec::with_capacity(lines.len());
+    for (n, line) in lines {
+        let rule = rule_of(line, &table, pre, post).map_err(|e| format!("rules.txt:{n}: {e}"))?;
+        rules.push((*n, rule));
         table = RuleTable::new(rules.iter().map(|(_, r)| r.clone()).collect())
-            .map_err(|e| format!("rules.txt: not a table: {e}"))?;
-        if last.as_ref() == Some(&rules) {
-            return Ok(Table { table, rules });
-        }
-        last = Some(rules);
+            .map_err(|e| format!("rules.txt:{n}: not a table: {e}"))?;
     }
-    Err("rules.txt: the parents of the rules do not settle".into())
+    Ok(Table { table, rules })
 }

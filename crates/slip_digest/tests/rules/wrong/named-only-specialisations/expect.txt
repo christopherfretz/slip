@@ -1,1 +1,5 @@
-indeterminate <order>
+# Defect 1 of WP-103 was first shown here: W2<A>, only named, given the key of W1<A>, also only named,
+# compared equal before mark_mapped_collisions. Since fix round 2 (F2) a rule of kind specialisation
+# is refused: a specialisation's key follows its template's only (spec/verify.md §2.1). Defect 1 is
+# shown by wrong/merged-local-extern and wrong/local-extern-onto-instantiated-member.
+refused a rule may not match a specialisation

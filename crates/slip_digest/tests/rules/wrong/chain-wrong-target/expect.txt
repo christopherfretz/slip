@@ -1,3 +1,4 @@
 indeterminate h()
 indeterminate use()
 removed g()
+collisions 1

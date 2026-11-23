@@ -34,13 +34,20 @@
 //!   (`(to_parent, kind, to_name, disc)`). An entity counted is a record:
 //!   a unit, declared or derived, once whatever number of declarations it
 //!   has.
+//! - `collisions <n>`: the post-image's counter `digest.collisions`
+//!   (`spec/digest.md` §12) is `n`. Without the line it must be 0.
+//! - `refused <text>`: the table cannot be made: the resolver or
+//!   `RuleTable::new` refuses it with a message that contains `<text>`
+//!   (a rule `Rule::validate` refuses, `spec/verify.md` §2.1). Nothing
+//!   else is checked.
 //!
 //! # What every case also checks
 //!
-//! - The table is the same (`RuleTable::id`) from the lines of `rules.txt`
-//!   in their order and in the reverse order (WP-103 items 3 and 11).
-//! - The post-image digested under the table twice, and under the table
-//!   of the reversed lines, gives the same `Output` each time (item 11).
+//! - The post-image digested under the table twice gives the same
+//!   `Output` (item 11). (A table made from the lines in another order
+//!   is not a second check of the walk: `RuleTable::new` sorts its rules,
+//!   and under `spec/verify.md` §2.3 the order of `relocate` lines is not
+//!   free.)
 //! - Every record of the post-image under the table has a `Key` whose id
 //!   is its `KeyId` (`records` is `Ok`: `spec/digest.md` §4.4).
 
@@ -62,13 +69,31 @@ struct Expected {
     exact: bool,
     /// `use` lines: the rule's line, `via`, `direct`.
     uses: Vec<(usize, u64, u64)>,
+    /// `collisions <n>` (absent: 0).
+    collisions: u64,
+    /// `refused <text>`.
+    refused: Option<String>,
 }
 
 fn expected(dir: &Path) -> Result<Expected, String> {
     let text = std::fs::read_to_string(dir.join("expect.txt")).unwrap_or_default();
-    let (lines, exact, own) = common::expect_text(&text, |l| l.starts_with("use "))?;
+    let (lines, exact, own) = common::expect_text(&text, |l| {
+        l.starts_with("use ") || l.starts_with("collisions ") || l.starts_with("refused ")
+    })?;
     let mut uses = Vec::new();
+    let (mut collisions, mut refused) = (0, None);
     for (n, l) in own {
+        if let Some(c) = l.strip_prefix("collisions ") {
+            collisions = c
+                .trim()
+                .parse()
+                .map_err(|_| format!("expect.txt:{n}: `{l}` is not `collisions <n>`"))?;
+            continue;
+        }
+        if let Some(t) = l.strip_prefix("refused ") {
+            refused = Some(t.trim().to_owned());
+            continue;
+        }
         let w: Vec<&str> = l.split_whitespace().collect();
         let parsed = match w.as_slice() {
             ["use", line, "via", v, "direct", d] => line
@@ -83,7 +108,7 @@ fn expected(dir: &Path) -> Result<Expected, String> {
             format!("expect.txt:{n}: `{l}` is not `use <line> via <n> direct <n>`")
         })?);
     }
-    Ok(Expected { lines, exact, uses })
+    Ok(Expected { lines, exact, uses, collisions, refused })
 }
 
 /// The lines of `rules.txt` (absent: none).
@@ -133,27 +158,28 @@ fn rule_use(input: &Input<'_>, t: &Table, n: usize) -> Result<(u64, u64), String
     Ok((count(&produced(&probe)), count(&produced(rule))))
 }
 
+/// The table of a case whose `expect.txt` says `refused <text>`: it must
+/// be refused, with `<text>` in the message.
+fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
+    let lines = lines_of(dir)?;
+    common::with_side(dir, Side::B, |input| -> Result<(), String> {
+        let plain = records(input, &RuleTable::empty())?;
+        match table(&lines, pre, &plain) {
+            Ok(t) => Err(format!("the table is not refused: {:#?}", t.table.rules())),
+            Err(e) if e.contains(text) => Ok(()),
+            Err(e) => Err(format!("refused, but not with `{text}`: {e}")),
+        }
+    })?
+}
+
 fn post_side(dir: &Path, pre: &[Record], uses: &[(usize, u64, u64)]) -> Result<Post, String> {
     let lines = lines_of(dir)?;
     common::with_side(dir, Side::B, |input| -> Result<Post, String> {
         let plain = records(input, &RuleTable::empty())?;
         let t = table(&lines, pre, &plain)?;
-        let mut reversed = lines.clone();
-        reversed.reverse();
-        let r = table(&reversed, pre, &plain)?;
-        if r.table.id() != t.table.id() {
-            return Err(format!(
-                "the lines in reverse order give another table:\n{:#?}\n{:#?}",
-                t.table.rules(),
-                r.table.rules()
-            ));
-        }
         let first = digest_under(input, &t.table);
         if digest_under(input, &t.table) != first {
             return Err("the post-image under its table: two walks differ".into());
-        }
-        if digest_under(input, &r.table) != first {
-            return Err("the post-image under the reversed table: the walks differ".into());
         }
         records(input, &t.table).map_err(|e| format!("records under the table: {e}"))?;
         let mut got = Vec::new();
@@ -272,8 +298,24 @@ fn case(dir: &Path) -> Result<(), String> {
     })?;
     let pre = pre.map_err(|x| format!("records of the pre-image: {x}"))?;
     let a = common::digested(a);
+    if let Some(text) = &e.refused {
+        return refused_side(dir, &pre, text);
+    }
     let post = post_side(dir, &pre, &e.uses)?;
     let mut problems = Vec::new();
+    let collisions = post
+        .digested
+        .output
+        .counters
+        .iter()
+        .find(|c| c.name == "digest.collisions")
+        .map_or(0, |c| c.value);
+    if collisions != e.collisions {
+        problems.push(format!(
+            "digest.collisions is {collisions}, expected {}",
+            e.collisions
+        ));
+    }
     if let Err(p) = judge(&e, &a, &post.digested) {
         problems.push(p);
     }

@@ -1,3 +1,4 @@
 indeterminate legacy::x
 indeterminate acme::x
 changed <order>
+collisions 1

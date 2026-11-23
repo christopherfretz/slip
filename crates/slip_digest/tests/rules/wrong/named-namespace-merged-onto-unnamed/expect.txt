@@ -1,0 +1,3 @@
+# The table is refused (Rule::validate, crates/slip_model/src/keys.rs). clang++-19 -c:
+# nm: `d _ZN12_GLOBAL__N_11bE` in a.o, `D _ZN1n1bE` in b.o: b's linkage changes.
+refused a rule may not rename the unnamed namespace
