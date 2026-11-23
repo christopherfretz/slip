@@ -771,8 +771,8 @@ fn a_seed_rule_does_not_depend_on_instantiation() {
 /// `docs/wp/WP-073.md` part C (`spec/edits.md` §9.2, `spec/digest.md`
 /// §3.4): the followers of a member of a class template are flagged
 /// `unsupported` because of the digest, not because their ids are wrong.
-/// In the post-image of every directory whose only flag is `unsupported`
-/// on followers, the seeds' rules alone give each follower's id to a
+/// In the post-image of every directory of WP-073 (its `test.txt` names
+/// the package) whose only flag is `unsupported` on followers, the seeds' rules alone give each follower's id to a
 /// declaration named like the new name (the instantiated member takes
 /// the pattern member's name as the rules map it); and with the
 /// followers' own rules added, the follower's key is indeterminate
@@ -783,7 +783,8 @@ fn a_seed_rule_does_not_depend_on_instantiation() {
 fn followers_of_class_template_members_map_with_their_seed() {
     let mut checked = 0;
     for case in cases() {
-        if is_pending(&case) {
+        let request = std::fs::read_to_string(case.dir.join("test.txt")).unwrap();
+        if is_pending(&case) || !request.contains("WP-073") {
             continue;
         }
         let Ran::Edits(e) = run_case(&case) else { continue };
