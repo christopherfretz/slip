@@ -479,6 +479,26 @@ fn unwritten(name: &str, test_txt: &str, state: State) -> (Case, Records) {
     (c, r)
 }
 
+/// `s` refused: no edit, a `no_edit` refusal.
+fn refuse(s: &mut EditSet) {
+    use slip_model::edits::Reason;
+    use slip_model::editset::{Cause, Refusal};
+    s.state = SetState::Refused;
+    s.edits.clear();
+    s.refusals.push(Refusal {
+        cause: Cause::NoEdit,
+        file: None,
+        lo: 0,
+        hi: 0,
+        reason: Reason::None,
+        subject: None,
+        macro_site: None,
+        other: None,
+        observers: 0,
+        first: Vec::new(),
+    });
+}
+
 /// A change of a script.
 type ScriptEdit = Box<dyn FnOnce(String) -> String>;
 
@@ -1409,6 +1429,13 @@ fn s6_3_the_records_are_of_the_tree() {
             ),
         ),
         (
+            // R29 of the second review's mutations: a verified result over
+            // a refused set.
+            "set-refused",
+            Box::new(|_, s, _| refuse(s)),
+            "store: the result is verified and its edit set @E@ is not accepted".into(),
+        ),
+        (
             // N3 of the mutations: the overlay of another edit set.
             "overlay-other-set",
             Box::new(|_, _, o| o.edits = d(0x77)),
@@ -1762,29 +1789,7 @@ fn s6_3_permission_table() {
             Box::new(|s, _| s.round = 2),
             vec![(none, false), (all, false)],
         ),
-        (
-            "a refused set",
-            State::Refused,
-            Box::new(|s, _| {
-                use slip_model::edits::Reason;
-                use slip_model::editset::{Cause, Refusal};
-                s.state = SetState::Refused;
-                s.edits.clear();
-                s.refusals.push(Refusal {
-                    cause: Cause::NoEdit,
-                    file: None,
-                    lo: 0,
-                    hi: 0,
-                    reason: Reason::None,
-                    subject: None,
-                    macro_site: None,
-                    other: None,
-                    observers: 0,
-                    first: Vec::new(),
-                });
-            }),
-            vec![(all, false)],
-        ),
+        ("a refused set", State::Refused, Box::new(|s, _| refuse(s)), vec![(all, false)]),
     ];
     for (name, state, make, expect) in rows {
         let mut set = tree_set(&c);

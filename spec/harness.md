@@ -399,7 +399,9 @@ is `verified`, or `verified_with_residue` with `allow: residue` or `allow:
 errors` (a result of either state permits writing only so, `spec/edits.md`
 §8.5). A test that may write has a `post/` holding at least one file, or
 says `post: none` (its run writes nothing, and the expected post-image is
-`pre/`); either is required, and both are an error. A test that may not
+`pre/`); either is required, and both are an error. `post: none` is
+checked again against the run's record (§6.3 step 4): it is for a result
+that does not permit writing, or whose overlay changes no file. A test that may not
 write has no `post/` and no `post: none`. No entry of a test, nor
 anything under `pre/` or `post/`, is a symbolic link (a `post/` that is
 one would lead `--bless` out of the test); each is an error of the test.
@@ -430,7 +432,10 @@ For each test, in byte order of paths:
    the oracles') runs in a process group of its own and has the test's
    `timeout`: when it ends, the whole group is killed and the test is
    `KILLED`, also when the invocation itself has ended and a process it
-   started holds its output open. After each invocation the work
+   started holds its output open. When the group cannot be killed (no
+   `kill` program works), the child alone is, and the `KILLED` message
+   says the group may have survivors; a process that left the group (a
+   new session) is beyond the runner's reach. After each invocation the work
    directory holds only the tree, the stores, the database and the
    oracles' directories, and the test's directory is byte for byte as it
    was; anything else is a `FAIL` ("wrote outside its tree", "changed
@@ -448,7 +453,23 @@ For each test, in byte order of paths:
    and transform, where printed); the edit set, the declared changes
    (`declared/<id>.decl`, `spec/exec.md` §2) and the overlay must be in
    the store and valid, the overlay of that edit set; no `write.journal`
-   may be left. Any lie is a `FAIL`.
+   may be left. **The records are of this tree**: every file the edit set
+   or the overlay names is a regular file of `pre/` at its path under
+   the tree (the tree's path, then `/`, then a relative path with no
+   `.` or `..`), and the record's pre-image of it (size and content
+   digest) is that file's. Any lie is a `FAIL`.
+   **The tree is the verified overlay's** when the result permits writing
+   (below; every run is asked to write): each file the overlay changes
+   (`post` not `pre`) has, in the tree, the overlay's `post` size and
+   content digest and `pre/`'s mode; every other entry is `pre/`'s;
+   nothing else exists. Verification proves the overlay, so this ties
+   the written bytes to what was verified, not only to `post/`. A
+   difference is a `FAIL` of its own, before anything is compared or
+   blessed, "tree differs from the verified overlay: <the first
+   difference>"; a run that wrote nothing is "permitted and not
+   written". A test that says `post: none` under a result that permits
+   writing and an overlay that changes a file is malformed against its
+   own record, a `FAIL` that says so.
 5. **Compared**: the exit status; the state; standard output with
    `expect.txt`, after replacing every 64-digit id by `<id>` and the
    tree's path by `@ROOT@`; the tree, entry by entry, with the expected
@@ -474,12 +495,13 @@ clang oracle skipped for want of a compiler (not for `--no-clang`) is an
 It is for a host that has every capability and must show it: a release
 candidate's gate.
 
-`--bless` rewrites `expect.txt` and `post/` (contents and modes) from the
-run, for tests whose output's structure and store are sound, whose state
-and exit status are as `test.txt` says, and whose written tree `post/`
-can hold (changed regular files only) and the result permits; a test
-that may write and wrote nothing must say `post: none`, and one that says
-it must not write. It never changes `test.txt`.
+`--bless` rewrites `expect.txt` and `post/` from the run, for tests whose
+output's structure and store are sound, whose records are of the tree,
+whose state and exit status are as `test.txt` says, and whose written
+tree the result permits and is the verified overlay's (so `post/` holds
+only what verification proved); a test that may write, whose result
+does not permit writing or whose overlay changes nothing, and whose run
+wrote nothing must say `post: none`. It never changes `test.txt`.
 
 ### 6.4 Oracles
 
@@ -499,7 +521,10 @@ themselves.
 An oracle that does not run, for any reason but `oracle: no-<name>`, is
 **skipped**, with its reason ("the tree was not written", "no compiler",
 "the result is not_verified", "the run has no result"), and counted
-(§6.3). No oracle is passed over silently.
+(§6.3). No oracle is passed over silently. A written tree reaches the
+oracles only once it is the verified overlay's (§6.3 step 4), so `clang`,
+`back` and `determinism` (whose tree must equal it) judge the image that
+was verified.
 
 **Clang.** The compiler is `$SLIP_CLANG` if set, else `clang++-19`, else
 `clang++` on `PATH`. If there is none the oracle is skipped, the runner
