@@ -237,6 +237,7 @@ pub mod spelling;
 mod stmt;
 mod stream;
 mod templ;
+pub mod trace;
 mod types;
 mod units;
 mod value;

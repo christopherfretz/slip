@@ -1,0 +1,5 @@
+# pending
+# needs: kiln-srcloc-origin
+# A cost (spec/landed/digest/WP-115.md, item 1): "h" has uses in x::h() and h(), so
+# its bytes are written and change under the
+# rename: h() differs.

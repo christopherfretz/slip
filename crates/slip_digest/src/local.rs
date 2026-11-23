@@ -986,6 +986,135 @@ pub(crate) fn write_names_around(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     }
 }
 
+/// The types a function's printed signature is made of
+/// ([`write_signature_names`]): its pattern's parameter types and its own
+/// and its pattern's declared types, with their sugar, and its template
+/// arguments.
+fn signature_types(w: &Walk<'_>, f: DeclId) -> Vec<QualType> {
+    let ast = w.ast;
+    let pattern = ast.function_pattern(f);
+    let mut roots: Vec<QualType> = Vec::new();
+    if let Some(fd) = ast.decls.function(pattern) {
+        for p in ast.lists.iter::<DeclId>(fd.params) {
+            roots.extend(ast.decls.get(p).ty());
+        }
+    }
+    roots.extend(ast.decls.get(pattern).ty());
+    roots.extend(ast.decls.get(f).ty());
+    if let Some((_, si)) = ast.spec_info(f) {
+        for a in ast.types.args(ast.types.canonical_args(si.args)) {
+            if let ArgView::Type(t) = a.view() {
+                roots.push(t);
+            }
+        }
+    }
+    roots
+}
+
+/// The names of the named local types, and of the block-scope aliases,
+/// that the printed signature of function `f` mentions, in the order
+/// met: what a pretty function name prints of them (Kiln's
+/// `pretty_function`: the parameter types of the pattern and its return
+/// type as written, the template arguments canonical) and no rule maps,
+/// since a local entity has no key. Part of a pretty name's identity
+/// beside [`write_names_around`] (digest §9; WP-115 item 5, H1). The
+/// types are walked with their sugar, an alias's underlying type and a
+/// type's canonical form included, so it may name more than is printed,
+/// never less.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the names of digest-kinds: s stream, d declaration, f function, q type"
+)]
+pub(crate) fn write_signature_names(w: &mut Walk<'_>, s: &mut Stream, f: DeclId) {
+    let ast = w.ast;
+    let roots = signature_types(w, f);
+    let mut found: Vec<DeclId> = Vec::new();
+    let mut seen: HashSet<QualType> = HashSet::new();
+    let mut stack: Vec<QualType> = roots.into_iter().rev().collect();
+    let mut steps = 0u32;
+    let mut cut = false;
+    let add = |w: &Walk<'_>, found: &mut Vec<DeclId>, d: DeclId| {
+        let d = w.ast.first(d);
+        if !found.contains(&d) {
+            found.push(d);
+        }
+    };
+    while let Some(q) = stack.pop() {
+        if !seen.insert(q) {
+            continue;
+        }
+        steps += 1;
+        if steps > CHAIN_LIMIT {
+            cut = true;
+            break;
+        }
+        let canon = ast.types.canonical(q);
+        if canon != q {
+            stack.push(canon);
+        }
+        match ast.types.view(q.ty()) {
+            TypeView::Typedef { decl, underlying } => {
+                if w.is_local(decl) {
+                    add(w, &mut found, decl);
+                }
+                stack.push(underlying);
+            }
+            TypeView::Using { shadow: _, underlying }
+            | TypeView::Elaborated { keyword: _, nns: _, named: underlying }
+            | TypeView::Pointer(underlying)
+            | TypeView::LValueRef(underlying)
+            | TypeView::RValueRef(underlying)
+            | TypeView::IncompleteArray(underlying)
+            | TypeView::Paren(underlying)
+            | TypeView::Complex(underlying)
+            | TypeView::Atomic(underlying) => stack.push(underlying),
+            TypeView::MemberPointer { pointee, class } => {
+                stack.push(QualType::unqual(class));
+                stack.push(pointee);
+            }
+            TypeView::ConstantArray(a) => stack.push(a.elem),
+            TypeView::Function(p) => {
+                for &t in ast.types.params(&p).iter().rev() {
+                    stack.push(t);
+                }
+                stack.push(p.ret());
+            }
+            TypeView::Record(d) | TypeView::Enum(d) => {
+                // Around it, outermost first, then itself.
+                let mut chain = Vec::new();
+                let mut x = Some(ast.first(d));
+                for _ in 0..CHAIN_LIMIT {
+                    let Some(y) = x else { break };
+                    if is_local_type(w, y) && is_named_local(w, y) {
+                        chain.push(y);
+                    } else if !w.is_local(y) && !is_local_type(w, y) {
+                        break;
+                    }
+                    x = ast.decls.get(y).ctx();
+                }
+                for t in chain.into_iter().rev() {
+                    add(w, &mut found, t);
+                }
+                if let Some((_, si)) = ast.spec_info(d) {
+                    for a in ast.types.args(ast.types.canonical_args(si.args)).iter().rev() {
+                        if let ArgView::Type(t) = a.view() {
+                            stack.push(t);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    s.count(found.len());
+    for t in found {
+        w.write_name(s, t);
+    }
+    if cut {
+        s.indeterminate(TOO_DEEP);
+    }
+}
+
 /// The names of the named local types the type `q` mentions (itself, a
 /// pointee, an element, a parameter or return type, a template argument),
 /// each with the named local types around it, outermost first, in the
