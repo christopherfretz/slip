@@ -1,18 +1,20 @@
 //! [`KilnSubject`]: the [`Subject`] over one parsed unit of Kiln
 //! (`spec/api.md` §5, §6; `docs/wp/WP-083.md`).
 //!
-//! This package answers entities, lookup and structure: `is_live`,
-//! `kind_bits`, `lookup`, `identifier`, `display`, `parent`, `parameters`,
-//! `declarations`, `entity_of`, `origin`, `qualified`, `file_len`, `text`,
-//! `owned`, `file_ref`. Every other method answers "nothing" as the trait
-//! documents it, until WP-085 (references and ranges), WP-086 (calls) and
-//! WP-095 (keys): no reference or expression is live, so the host never
-//! asks the methods that take one.
+//! WP-083 answers entities, lookup and structure (`entities.rs`,
+//! `lookup.rs`); WP-085 references, ranges, places and the written
+//! declarations (`references.rs`). Every other method answers "nothing"
+//! as the trait documents it, until WP-086 (calls) and WP-095 (keys): no
+//! expression is live, so the host never asks the methods that take one.
 //!
-//! Everything is read from Kiln's declaration arena; what is costly is
-//! built on first use and kept for the life of the subject: the set of
-//! listed declarations (`entities.rs`), one name index per scope that
-//! `lookup` reaches (`lookup.rs`), each file's bytes.
+//! Entities are read from Kiln's declaration arena, references from its
+//! written-reference and declaration-extent tables (`slip_kiln::written`),
+//! which the unit must have recorded. What needs the unit is read when
+//! the subject is made; what is costly otherwise is built on first use
+//! and kept for the life of the subject: the template parameters' owners
+//! (`entities.rs`), one name index per scope that `lookup` reaches
+//! (`lookup.rs`), the references by origin and by extent
+//! (`references.rs`), each file's bytes.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -30,9 +32,20 @@ use crate::wire::{self, Errc};
 
 mod entities;
 mod lookup;
-mod order;
+mod references;
 
-pub use order::unit_order;
+pub use references::name_token;
+
+/// Unit order (§1): `slip_kiln::ranges`' comparator (WP-084), which
+/// replaced WP-083's own, except that an invalid location (a declaration
+/// Kiln made, with no place) sorts after every valid one, as WP-083's did
+/// (its mutant M17); `ranges` puts it first.
+pub fn unit_order(sm: &SourceManager, a: Loc, b: Loc) -> std::cmp::Ordering {
+    match (a.is_valid(), b.is_valid()) {
+        (true, true) => slip_kiln::ranges::unit_order(sm, a, b),
+        (va, vb) => vb.cmp(&va),
+    }
+}
 
 /// A file of the subject: its path and its bytes.
 type SubjectFile<'u> = (Vec<u8>, Cow<'u, [u8]>);
@@ -48,14 +61,14 @@ pub struct KilnSubject<'u> {
     owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
     /// Per buffer: its path and its bytes, once asked.
     files: Vec<OnceLock<Option<SubjectFile<'u>>>>,
-    /// The declarations reached through member lists (`entities.rs`).
-    listed: OnceLock<Vec<u64>>,
     /// Template parameter → its template (`entities.rs`).
     parm_owner: OnceLock<HashMap<u32, u32>>,
     /// The name index of each scope `lookup` reached (`lookup.rs`). The
     /// lock is held only to read or insert, never while an index is
     /// built: two threads may build one index twice, to the same value.
     scopes: Mutex<HashMap<u32, Arc<lookup::Index>>>,
+    /// References, ranges and written declarations (`references.rs`).
+    names: references::Names,
 }
 
 impl std::fmt::Debug for KilnSubject<'_> {
@@ -63,6 +76,7 @@ impl std::fmt::Debug for KilnSubject<'_> {
         f.debug_struct("KilnSubject")
             .field("declarations", &self.ast.decls.len())
             .field("scopes_indexed", &self.scopes().len())
+            .field("names", &self.names)
             .finish_non_exhaustive()
     }
 }
@@ -70,55 +84,64 @@ impl std::fmt::Debug for KilnSubject<'_> {
 impl<'u> KilnSubject<'u> {
     /// `owned`: the run's ownership, by subject file (its real path).
     /// The subject keeps the unit's AST, source manager and real paths,
-    /// not the unit (which holds the Oven, and is not `Sync`).
+    /// and what it read from the unit's tables, not the unit (which holds
+    /// the Oven, and is not `Sync`). `Err` when the unit was parsed
+    /// without Kiln's written-reference and declaration-extent tables
+    /// (`ParseOptions::written`): its references cannot be told.
     pub fn new(
         unit: &slip_kiln::Unit<'u>,
         owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
-    ) -> KilnSubject<'u> {
-        KilnSubject::from_parts(
-            unit.ast(),
-            unit.sm(),
-            |f| unit.real_path(f).map(Cow::Borrowed),
-            owned,
-        )
+    ) -> Result<KilnSubject<'u>, String> {
+        KilnSubject::from_parts(unit, |f| unit.real_path(f).map(Cow::Borrowed), owned)
     }
 
     /// The subject over a snippet's unit (`slip_kiln::snippet`, for tests):
     /// a snippet's path is its subject path; a buffer the front end made
     /// itself is no file of the subject.
+    /// Parsed with `slip_kiln::snippet::parse_with_tables`; `Err` as for
+    /// [`Self::new`].
     pub fn from_snippet(
         p: &slip_kiln::snippet::Parsed<'u>,
         owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
-    ) -> KilnSubject<'u> {
+    ) -> Result<KilnSubject<'u>, String> {
         KilnSubject::from_parts(
-            p.ast,
-            p.sm,
+            p.unit(),
             |id| p.path(id).map(|x| Cow::Owned(x.as_bytes().to_vec())),
             owned,
         )
     }
 
-    /// The subject over an AST, the source manager **of the same unit**,
-    /// and `path`, the subject path of each of that unit's buffers that is
-    /// a file of the subject (asked once per buffer, here). Private so that
-    /// no caller can join the parts of two units: [`Self::new`] and
-    /// [`Self::from_snippet`] take them from one.
+    /// The subject over `unit`, with `path`, the subject path of each of
+    /// its buffers that is a file of the subject (asked once per buffer,
+    /// here).
     fn from_parts(
-        ast: &'u Ast,
-        sm: &'u SourceManager,
+        unit: &slip_kiln::Unit<'u>,
         path: impl Fn(FileId) -> Option<Cow<'u, [u8]>>,
         owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
-    ) -> KilnSubject<'u> {
-        KilnSubject {
+    ) -> Result<KilnSubject<'u>, String> {
+        if !slip_kiln::written::recorded(unit) {
+            return Err("the unit was parsed without Kiln's written-reference and \
+                        declaration-extent tables (ParseOptions::written)"
+                .to_owned());
+        }
+        let (ast, sm): (&'u Ast, &'u SourceManager) = (unit.ast(), unit.sm());
+        let mut s = KilnSubject {
             ast,
             sm,
             paths: sm.file_ids().map(path).collect(),
             owned,
             files: (0..sm.file_count()).map(|_| OnceLock::new()).collect(),
-            listed: OnceLock::new(),
             parm_owner: OnceLock::new(),
             scopes: Mutex::new(HashMap::new()),
-        }
+            names: references::Names::default(),
+        };
+        s.names = references::Names::build(&s, unit);
+        let live: std::collections::HashSet<u32> = (1..=u32::try_from(ast.decls.len())
+            .unwrap_or(u32::MAX))
+            .filter(|&n| s.decl(n).is_some_and(|d| s.is_declaration(d)))
+            .collect();
+        s.names.add_declaration_tiers(|d| live.contains(&d));
+        Ok(s)
     }
 
     /// The scope indexes (a poisoned lock is as good: an index is inserted
@@ -154,13 +177,11 @@ impl<'u> KilnSubject<'u> {
     }
 
     /// The file handle of buffer `id`.
-    #[allow(dead_code, reason = "the ranges of WP-085 give files out")]
     fn file_number(id: FileId) -> File {
         File(id.index() as u32 + 1)
     }
 
-    /// Unit order of two locations: the one place the subject compares
-    /// positions, so that WP-084's comparator replaces [`unit_order`] here.
+    /// Unit order of two locations: `slip_kiln::ranges`' (WP-084).
     fn order(&self, a: Loc, b: Loc) -> std::cmp::Ordering {
         unit_order(self.sm, a, b)
     }
@@ -186,7 +207,8 @@ impl Subject for KilnSubject<'_> {
             Value::Declaration(Declaration(n)) => {
                 self.decl(n).is_some_and(|d| self.is_declaration(d))
             }
-            Value::Reference(_) | Value::Expression(_) => false,
+            Value::Reference(r) => self.reference_is_live(r),
+            Value::Expression(_) => false,
         }
     }
 
@@ -218,7 +240,7 @@ impl Subject for KilnSubject<'_> {
             Value::Entity(Entity(n)) | Value::Declaration(Declaration(n)) => {
                 Some(self.decl(n).map(|d| self.identifier_of(d)).unwrap_or_default())
             }
-            Value::Reference(_) => Some(Vec::new()),
+            Value::Reference(r) => Some(self.reference_identifier(r)),
             Value::Expression(_) => None,
         }
     }
@@ -237,7 +259,7 @@ impl Subject for KilnSubject<'_> {
                 ),
                 None => format!("declaration {n}"),
             },
-            Value::Reference(Reference(n)) => format!("reference {n}"),
+            Value::Reference(r) => self.reference_display(r),
             Value::Expression(Expression(n)) => format!("expression {n}"),
         }
     }
@@ -276,21 +298,29 @@ impl Subject for KilnSubject<'_> {
         self.decl(e.0).map_or(e, |d| Entity(self.origin_decl(d).index()))
     }
 
-    fn references_to(&self, _e: Entity) -> Vec<Reference> {
-        Vec::new()
+    fn references_to(&self, e: Entity) -> Vec<Reference> {
+        self.references_to_entity(e)
     }
 
-    fn referent(&self, _r: Reference) -> Entity {
-        // No reference is live until WP-085: the host never asks.
-        Entity(self.ast.tu.index())
+    fn referent(&self, r: Reference) -> Entity {
+        self.referent_of(r)
     }
 
-    fn name_range(&self, _v: Value) -> Result<Option<Range>, Errc> {
-        Ok(None)
+    fn name_range(&self, v: Value) -> Result<Option<Range>, Errc> {
+        Ok(match v {
+            Value::Reference(r) => self.reference_name_range(r),
+            Value::Declaration(Declaration(n)) => {
+                self.decl(n).and_then(|d| self.declaration_name_range(d))
+            }
+            Value::Entity(_) | Value::Expression(_) => None,
+        })
     }
 
-    fn extent(&self, _v: Value) -> Result<Option<Range>, Errc> {
-        Ok(None)
+    fn extent(&self, v: Value) -> Result<Option<Range>, Errc> {
+        Ok(match v {
+            Value::Reference(r) => self.reference_extent(r),
+            Value::Entity(_) | Value::Declaration(_) | Value::Expression(_) => None,
+        })
     }
 
     fn text(&self, r: Range) -> &[u8] {
@@ -327,24 +357,24 @@ impl Subject for KilnSubject<'_> {
         None
     }
 
-    fn unresolved_named(&self, _identifier: &[u8]) -> Option<u64> {
-        None
+    fn unresolved_named(&self, identifier: &[u8]) -> Option<u64> {
+        Some(self.unresolved_spelled(identifier))
     }
 
-    fn tiers(&self, _r: Range) -> Option<[bool; 2]> {
-        None
+    fn tiers(&self, r: Range) -> Option<[bool; 2]> {
+        self.name_tiers(r)
     }
 
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
         self.decl(e.0).and_then(|d| self.qualified_decl(d))
     }
 
-    fn references_at(&self, _r: Range) -> Vec<Reference> {
-        Vec::new()
+    fn references_at(&self, r: Range) -> Vec<Reference> {
+        self.references_with_extent(r)
     }
 
-    fn found_directly(&self, _r: Reference) -> bool {
-        false
+    fn found_directly(&self, r: Reference) -> bool {
+        self.reference_found_directly(r)
     }
 
     fn entity_key(&self, _e: Entity) -> Option<slip_model::Digest> {
@@ -361,11 +391,17 @@ impl Subject for KilnSubject<'_> {
 
     fn place(&self, v: Value) -> PlaceOf {
         match v {
-            Value::Entity(Entity(n)) => match self.decl(n) {
-                Some(d) if self.first_written(d).is_some() => PlaceOf::Unnamed,
-                _ => PlaceOf::Nowhere,
+            // §7.4 rule 3: an entity's is its first written declaration's.
+            Value::Entity(Entity(n)) => match self.decl(n).and_then(|d| self.first_written(d)) {
+                Some(d) => self.declaration_place(d),
+                None => PlaceOf::Nowhere,
             },
-            Value::Declaration(_) | Value::Reference(_) | Value::Expression(_) => PlaceOf::Unnamed,
+            Value::Declaration(Declaration(n)) => match self.decl(n) {
+                Some(d) => self.declaration_place(d),
+                None => PlaceOf::Unnamed,
+            },
+            Value::Reference(r) => self.reference_place(r),
+            Value::Expression(_) => PlaceOf::Unnamed,
         }
     }
 
