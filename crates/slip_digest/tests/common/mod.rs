@@ -536,10 +536,7 @@ pub type ExpectText = (BTreeSet<Expect>, bool, Vec<(usize, String)>);
 /// read them, but for the lines `own` accepts, which a runner reads
 /// itself (WP-103: the `use` lines of `tests/rules.rs`) and which are
 /// returned, trimmed, with their numbers.
-pub fn expect_text(
-    text: &str,
-    own: impl Fn(&str) -> bool,
-) -> Result<ExpectText, String> {
+pub fn expect_text(text: &str, own: impl Fn(&str) -> bool) -> Result<ExpectText, String> {
     let mut out = BTreeSet::new();
     let mut exact = false;
     let mut mine = Vec::new();
