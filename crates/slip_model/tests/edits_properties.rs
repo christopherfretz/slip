@@ -221,6 +221,7 @@ fn shuffle(x: &Edits, r: &mut Lcg) -> Edits {
 
 /// The claims split at `k`, each half normalised, then the concatenation
 /// normalised; `None` when a group spans the halves.
+#[allow(clippy::many_single_char_names, reason = "the whole, its halves a and b, their join c")]
 fn split_join(x: &Edits, k: usize) -> Option<Edits> {
     let k64 = k as u64;
     if x.groups.iter().any(|g| g.iter().any(|&m| m < k64) && g.iter().any(|&m| m >= k64)) {

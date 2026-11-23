@@ -819,6 +819,12 @@ fn edits_json_members() {
         set(&mut v, path, parse(new));
         assert_eq!(Shard::from_json(&v).unwrap_err().path, at, "{at}");
     }
+}
+
+// spec/model.md §10: the JSON paths in a failure: its kind, its place, its
+// refusal's subject.
+#[test]
+fn failure_json_paths() {
     let mut v = map_shard(failed_run()).to_json();
     set(&mut v, &["sections", "edits", "failure", "kind"], parse("\"panic\""));
     assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.edits.failure.kind");
@@ -1025,6 +1031,7 @@ fn edits_failure_lists() {
 // file, and `files` is empty unless the refusal has a subject.
 #[test]
 fn edits_failure_refusal_subject() {
+    const AT: &str = "sections.edits.failure.refusal.subject";
     let failed = |f: &dyn Fn(&mut Edits), path: &str| {
         let mut x = failed_run();
         f(&mut x);
@@ -1033,7 +1040,6 @@ fn edits_failure_refusal_subject() {
     let subject = |x: &mut Edits, p: Option<Place>| {
         x.failure.as_mut().unwrap().refusal.as_mut().unwrap().subject = p;
     };
-    const AT: &str = "sections.edits.failure.refusal.subject";
     for p in
         [place(7, 5, 1), place(1, 0, 1), place(0, 5, 1), place(0, 0, 101), place(u64::MAX, 0, 0)]
     {
@@ -1746,6 +1752,9 @@ fn is_owned() {
     assert!(covers(b"/", b"/x") && !covers(b"/", b"x"));
     assert!(covers(b"/a/b", b"/a/b") && covers(b"/a/b", b"/a/b/c/d"));
     assert!(!covers(b"/a/b", b"/a/bc/x") && !covers(b"/a/b", b"/a"));
+    // One reading only: an entry ending in `/` (not canonical, so never in
+    // a valid request) covers nothing but itself.
+    assert!(!covers(b"/a/", b"/a/b") && covers(b"/a/", b"/a/"));
     // A carve-out: readonly inside owned, with the file and the directory.
     let o = ownership(&[b"/s"], &[b"/s/gen"]);
     assert!(!o.is_owned(b"/s/gen/x.h"));
