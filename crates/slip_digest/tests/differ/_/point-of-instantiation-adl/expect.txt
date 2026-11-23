@@ -2,5 +2,5 @@
 # is definition's (digest-kinds §11.9), and the value Kiln evaluates
 # with it the resolved unit value's (§11.3); nothing else differs.
 exact derived
-derived-changed S<A>::x::<definition>
-derived-changed S<A>::x::<value>
+derived-changed S<N::A>::x::<definition>
+derived-changed S<N::A>::x::<value>

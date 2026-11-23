@@ -1,4 +1,4 @@
 # The base is chosen when S<N::A> is instantiated and is definition's
 # (digest-kinds §11.9); nothing else differs.
 exact derived
-derived-changed S<A>::<definition>
+derived-changed S<N::A>::<definition>
