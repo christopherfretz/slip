@@ -11,7 +11,10 @@
 //!   needs the report's `verified`. A report that does not describe the
 //!   run of these facts (another plan or round, states that do not add up
 //!   to the observers the verify phase selected) is read as no report:
-//!   `incomplete`.
+//!   `incomplete`. So is a report of an accepted set that was not made
+//!   over the set's own overlay (a tree report compared nothing the set
+//!   changed, §8.1), and one with an unchecked namespace rule
+//!   (`Report::unchecked`, until WP-111).
 //! - [`permits`] reads its answer from the result again, and checks that
 //!   the edit set it is given is the result's (by content id): a result
 //!   whose fields contradict its state, or a set that is not its own,
@@ -65,13 +68,20 @@ fn error_reports(set: &EditSet) -> u64 {
 
 /// The report, if it describes the run of these facts: the set is
 /// accepted (a refused set has no verify phase, §8.1); the report is of
-/// the set's plan and round; and its states add up to the observers the
-/// verify phase selected, `selected − unparsed` (§8.2, §8.5).
+/// the overlay form, over an overlay of this set (`Overlay.edits` is the
+/// set's content id: an accepted set is always verified through its
+/// overlay, §8.1, and a tree report compared nothing the set changed); it
+/// is of the set's plan and round; and its states add up to the observers
+/// the verify phase selected, `selected − unparsed` (§8.2, §8.5).
 fn report_of<'a>(facts: &Facts<'a>) -> Option<&'a Report> {
     if facts.set.state == SetState::Refused {
         return None;
     }
     let r = facts.report?;
+    let o = r.overlay_given()?;
+    if formats::content_id(&facts.set.to_bytes()).ok() != Some(o.edits) {
+        return None;
+    }
     let h = r.header();
     if h.plan != facts.set.plan || h.round != facts.set.round {
         return None;
@@ -81,19 +91,12 @@ fn report_of<'a>(facts: &Facts<'a>) -> Option<&'a Report> {
     (sum == parsed).then_some(r)
 }
 
-/// [`report_of`], and the report was made over `overlay`, and its stale
-/// pairs are one per `(rule, observer)` (an observer added twice is a
-/// defect of the caller, and would give a result the reader refuses).
+/// [`report_of`], and the report was made over `overlay` (which is then
+/// present). Its stale pairs are one per `(rule, observer)`:
+/// `Report::add_at` refuses an observer added twice.
 fn usable<'a>(facts: &Facts<'a>, overlay: Option<&Overlay>) -> Option<&'a Report> {
     let r = report_of(facts)?;
-    if r.overlay_given() != overlay {
-        return None;
-    }
-    let agreement = agreement(r);
-    if agreement.windows(2).any(|w| (w[0].rule, w[0].observer) == (w[1].rule, w[1].observer)) {
-        return None;
-    }
-    Some(r)
+    (overlay.is_some() && r.overlay_given() == overlay).then_some(r)
 }
 
 fn tally_with(facts: &Facts<'_>, report: Option<&Report>) -> Tally {
@@ -129,12 +132,18 @@ fn state_with(facts: &Facts<'_>, report: Option<&Report>) -> State {
         return State::Refused;
     }
     // Rows 2 and 3: the report's verdict, or none.
-    match report.map(Report::verdict) {
-        Some(RunVerdict::NotVerified) => return State::NotVerified,
-        Some(RunVerdict::Incomplete) | None => return State::Incomplete,
-        Some(RunVerdict::Verified) => {}
+    let Some(report) = report else { return State::Incomplete };
+    match report.verdict() {
+        RunVerdict::NotVerified => return State::NotVerified,
+        RunVerdict::Incomplete => return State::Incomplete,
+        RunVerdict::Verified => {}
     }
     if unparsed(set) != 0 && !facts.allow_unparsed {
+        return State::Incomplete;
+    }
+    // Until WP-111: a namespace rule an observer used, whose agreement
+    // between observers was not checked, permits no write (§8.5).
+    if !report.unchecked().is_empty() {
         return State::Incomplete;
     }
     // Row 4.
@@ -152,9 +161,11 @@ fn state_with(facts: &Facts<'_>, report: Option<&Report>) -> State {
 /// 2. `NotVerified`: the report's verdict (`Report::verdict`) is
 ///    `NotVerified`.
 /// 3. `Incomplete`: it is `Incomplete`; or there is no report, or none
-///    that describes this run (another plan or round, or states that do
-///    not add up to `selected − unparsed`); or `unparsed` is not 0 and the
-///    run was not given `--allow-unparsed`.
+///    that describes this run (another plan or round, not over an overlay
+///    of this set, or states that do not add up to `selected −
+///    unparsed`); or `unparsed` is not 0 and the run was not given
+///    `--allow-unparsed`; or (until WP-111) the report has an unchecked
+///    namespace rule.
 /// 4. `VerifiedWithResidue`: the residue has an entry that is not a
 ///    mention; or the set has a refusal; or `failed_runs` or
 ///    `error_reports` is not 0.
@@ -175,6 +186,9 @@ pub struct Concluded {
     /// The stale pairs, sorted by `(rule, observer)`.
     pub agreement: Vec<Stale>,
     pub unused: Vec<u64>,
+    /// `Report::unchecked`: the namespace rules an observer used (until
+    /// WP-111).
+    pub unchecked: Vec<u64>,
     pub spellings: Spellings,
 }
 
@@ -224,13 +238,15 @@ fn unseen(i: u64) -> FailedSpelling {
     }
 }
 
-/// The `state`, `verdict`, `tally`, `agreement`, `unused` and `spellings`
-/// of a result: copied from the report and decided by [`state`].
+/// The `state`, `verdict`, `tally`, `agreement`, `unused`, `unchecked` and
+/// `spellings` of a result: copied from the report and decided by
+/// [`state`].
 /// `overlay` is the run's overlay (`None` for a refused set, or when apply
 /// made none).
 ///
 /// A report that does not describe the run (as for [`state`]), or that was
-/// not made over `overlay`, is read as no report: `Incomplete`, no
+/// not made over `overlay` (for an accepted set `overlay` must be given),
+/// is read as no report: `Incomplete`, no
 /// verdict, no state counted, no stale pair or unused rule, and every
 /// obligation of `overlay` `unseen` (none checked it). For a refused set:
 /// `Refused`, and the spellings of no obligation.
@@ -245,6 +261,7 @@ pub fn conclude(facts: &Facts<'_>, overlay: Option<&Overlay>) -> Concluded {
             tally,
             agreement: agreement(r),
             unused: r.unused(),
+            unchecked: r.unchecked(),
             spellings: spellings(r),
         };
     }
@@ -256,7 +273,15 @@ pub fn conclude(facts: &Facts<'_>, overlay: Option<&Overlay>) -> Concluded {
         }
         _ => Spellings::default(),
     };
-    Concluded { state, verdict: None, tally, agreement: Vec::new(), unused: Vec::new(), spellings }
+    Concluded {
+        state,
+        verdict: None,
+        tally,
+        agreement: Vec::new(),
+        unused: Vec::new(),
+        unchecked: Vec::new(),
+        spellings,
+    }
 }
 
 /// What the person running the command permits beyond `verified`
@@ -281,8 +306,9 @@ pub struct Allow {
 ///
 /// And no, whatever the state, unless the result is consistent with it:
 /// the result and the set validate; the set is accepted and is the
-/// result's (`result.edits` is its content id); the verdict is `verified`,
-/// with no stale pair and no failed obligation; no observer is in a state
+/// result's (`result.edits` is its content id, and the result's plan,
+/// round and transform are the set's); the verdict is `verified`, with no
+/// stale pair, no failed obligation and no unchecked rule; no observer is in a state
 /// other than `verified` or `unchanged`, and one is; `unparsed` is 0
 /// unless the run was given `--allow-unparsed`; the tally's `unparsed`,
 /// `failed_runs` and `error_reports` are the set's; and a `Verified`
@@ -297,13 +323,18 @@ pub fn permits(result: &TransformResult, set: &EditSet, allow: Allow) -> bool {
     if result.validate().is_err() || set.validate().is_err() || set.state != SetState::Accepted {
         return false;
     }
-    if formats::content_id(&set.to_bytes()).ok() != Some(result.edits) {
+    if formats::content_id(&set.to_bytes()).ok() != Some(result.edits)
+        || result.plan != set.plan
+        || result.round != set.round
+        || result.transform != set.transform
+    {
         return false;
     }
     let t = &result.tally;
     let verified = result.verdict == Some(RunVerdict::Verified)
         && result.agreement.is_empty()
         && result.spellings.failed.is_empty()
+        && result.unchecked.is_empty()
         && t.mismatch == 0
         && t.not_parsed == 0
         && t.unverifiable == 0

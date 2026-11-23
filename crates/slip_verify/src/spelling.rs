@@ -164,6 +164,12 @@ impl Fold {
         Ok(first)
     }
 
+    /// Whether [`Fold::add`] would accept the section, changing nothing:
+    /// the check of a shard whose spellings are not folded (§10.6).
+    pub(crate) fn check(&self, inputs: &[FileRef], section: &Spellings) -> Result<(), String> {
+        self.marks(inputs, section).map(|_| ())
+    }
+
     /// Every obligation whose file `inputs` lists, ascending, with what the
     /// section says of it; or the reason the section is refused. Changes
     /// nothing.

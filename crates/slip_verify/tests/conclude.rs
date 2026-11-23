@@ -19,20 +19,27 @@
 
 mod common;
 
-use common::{Rng, Run, SetFacts, d, key, overlay, residue, result_of, rule, section, set, used};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use common::{
+    Rng, Run, SetFacts, d, key, overlay, overlay_for, residue, result_of, rule, section, set, used,
+};
+use slip_model::Overlay;
 use slip_model::editset::EditSet;
 use slip_model::keys::KeyKind;
 use slip_model::result::{Category, Residue, RunVerdict, Stale, State, Tally};
 use slip_model::verdict::VerdictKind;
 use slip_model::{FileRef, Status};
-use slip_verify::conclude::{Allow, Facts, conclude, permits, state, tally};
+use slip_verify::conclude::{Allow, Concluded, Facts, conclude, permits, state, tally};
 use slip_verify::guards::overlay_inputs;
 use slip_verify::run::Report;
 
-/// The report of a run without rules or overlay over two observers whose
-/// states give `verdict`.
-fn report(verdict: RunVerdict) -> Report {
-    let run = Run::new(vec![], None);
+/// The report of a run without rules over two observers whose states give
+/// `verdict`, through `set`'s overlay (without obligations), and that
+/// overlay.
+fn report(verdict: RunVerdict, set: &EditSet) -> (Report, Overlay) {
+    let o = overlay_for(set);
+    let run = Run::new(vec![], Some(o.clone()));
     let mut r = run.report();
     let second = match verdict {
         RunVerdict::Verified => run.verified(0xa1),
@@ -43,7 +50,7 @@ fn report(verdict: RunVerdict) -> Report {
         r.add(&s.observer, b"/m.cc", Some(&s), Some(Status::Ok));
     }
     assert_eq!(r.verdict(), verdict);
-    r
+    (r, o)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +135,8 @@ fn expect(r: &Row) -> State {
 struct Built {
     set: EditSet,
     report: Option<Report>,
+    /// The run's overlay, given to conclude.
+    overlay: Option<Overlay>,
     residue: Vec<Residue>,
     selected: u64,
 }
@@ -135,7 +144,14 @@ struct Built {
 fn build(r: &Row) -> Built {
     let set = set(r.set);
     let selected = 2 + u64::from(r.set.unparsed);
-    Built { set, report: r.verdict.map(report), residue: residue_of(r.residue), selected }
+    let report = r.verdict.map(|v| report(v, &set).0);
+    let overlay = Some(overlay_for(&set));
+    Built { set, report, overlay, residue: residue_of(r.residue), selected }
+}
+
+/// conclude over `b` with its overlay.
+fn concluded(b: &Built, allow_unparsed: bool) -> Concluded {
+    conclude(&facts(b, allow_unparsed), b.overlay.as_ref())
 }
 
 fn facts(b: &Built, allow_unparsed: bool) -> Facts<'_> {
@@ -161,7 +177,7 @@ fn s8_5_state_exhaustive() {
         let f = facts(&b, r.allow_unparsed);
         let want = expect(r);
         assert_eq!(state(&f), want, "{r:?}");
-        let c = conclude(&f, None);
+        let c = conclude(&f, b.overlay.as_ref());
         assert_eq!(c.state, want, "{r:?}");
         by_state[want as usize] += 1;
         // The tally.
@@ -246,8 +262,9 @@ fn s8_5_each_row_alone_and_in_pairs() {
 
 // §8.5, conclude: a report that does not describe the run is no report:
 // another plan, another round, states that do not add up to `selected −
-// unparsed`, or a report over another overlay. Each gives `incomplete`,
-// no verdict, no state counted, and every obligation `unseen`.
+// unparsed`, a report over another overlay, or no overlay given. Each
+// gives `incomplete`, no verdict, no state counted, and every obligation
+// `unseen`.
 #[test]
 fn s8_5_report_of_another_run_is_none() {
     let b = build(&Row {
@@ -258,6 +275,7 @@ fn s8_5_report_of_another_run_is_none() {
     });
     let f = facts(&b, false);
     assert_eq!(state(&f), State::Verified);
+    assert_eq!(concluded(&b, false).state, State::Verified);
     for selected in [0, 1, 3, u64::MAX] {
         let f = Facts { selected, ..f };
         assert_eq!(state(&f), State::Incomplete, "{selected}");
@@ -269,8 +287,15 @@ fn s8_5_report_of_another_run_is_none() {
     let mut other = b.set.clone();
     other.round += 1;
     assert_eq!(state(&Facts { set: &other, ..f }), State::Incomplete);
-    // Made without an overlay, concluded with one.
-    let o = overlay();
+    // Made with the set's overlay, concluded with none.
+    let c = conclude(&f, None);
+    assert_eq!((c.state, c.verdict, c.tally.verified), (State::Incomplete, None, 0));
+    assert_eq!(c.spellings.obligations, 0);
+    assert_eq!(result_of(&c, &b.set, false, false, &[]).validate(), Ok(()));
+    // Made with the set's overlay (no obligations), concluded with one
+    // that has them.
+    let mut o = overlay_for(&b.set);
+    o.spellings = overlay().spellings;
     let c = conclude(&f, Some(&o));
     assert_eq!(c.state, State::Incomplete);
     assert_eq!(c.verdict, None);
@@ -284,7 +309,13 @@ fn s8_5_report_of_another_run_is_none() {
     let mut r = run.report();
     let s = run.verified(0xa0);
     r.add(&s.observer, b"/m", Some(&s), Some(Status::Ok));
-    let b = Built { set: set(SetFacts::default()), report: Some(r), residue: vec![], selected: 1 };
+    let b = Built {
+        set: set(SetFacts::default()),
+        report: Some(r),
+        overlay: Some(overlay()),
+        residue: vec![],
+        selected: 1,
+    };
     let f = facts(&b, false);
     assert_eq!(conclude(&f, Some(&overlay())).verdict, Some(RunVerdict::NotVerified));
     let mut o2 = overlay();
@@ -293,29 +324,176 @@ fn s8_5_report_of_another_run_is_none() {
     assert_eq!(conclude(&f, None).state, State::Incomplete);
 }
 
-// conclude: an observer added twice gives a stale pair twice; the report
-// is then not usable (the result's agreement would not be strictly
-// ascending).
-#[test]
-fn s8_5_duplicate_stale_pair_is_no_report() {
-    let run = Run::new(vec![rule(KeyKind::Function, "f", "g")], None);
-    let s = run.ok(0xa0, run.verdict(VerdictKind::Verified), &[], &[used(0, 0, 1)]);
+/// conclude over `report` for `set` (two observers, nothing unparsed)
+/// with `overlay`: the state alone, conclude's state, and whether the
+/// result permits anything.
+fn verifies(set: &EditSet, report: &Report, overlay: Option<&Overlay>) -> (State, State, bool) {
+    let f = Facts { set, selected: 2, report: Some(report), allow_unparsed: false, residue: &[] };
+    let c = conclude(&f, overlay);
+    let r = result_of(&c, set, false, false, &[]);
+    assert_eq!(r.validate(), Ok(()));
+    (state(&f), c.state, permits(&r, set, ALL_ALLOWED))
+}
+
+/// A report over `run` of two verified observers.
+fn two_verified(run: &Run) -> Report {
     let mut r = run.report();
-    r.add(&s.observer, b"/m", Some(&s), Some(Status::Ok));
-    let b1 = Built {
-        set: set(SetFacts::default()),
-        report: Some(r.clone()),
-        residue: vec![],
-        selected: 1,
-    };
-    let c = conclude(&facts(&b1, false), None);
-    assert_eq!(c.state, State::NotVerified);
-    assert_eq!(c.agreement, [Stale { rule: 0, observer: d(0xa0), direct: 1 }]);
-    r.add(&s.observer, b"/m", Some(&s), Some(Status::Ok));
-    let b2 = Built { set: set(SetFacts::default()), report: Some(r), residue: vec![], selected: 2 };
-    let c = conclude(&facts(&b2, false), None);
-    assert_eq!((c.state, c.verdict), (State::Incomplete, None));
-    assert_eq!(result_of(&c, &b2.set, false, false, &[]).validate(), Ok(()));
+    for obs in [0xa0, 0xa1] {
+        let sh = run.verified(obs);
+        r.add(&sh.observer, b"/m.cc", Some(&sh), Some(Status::Ok));
+    }
+    assert_eq!(r.verdict(), RunVerdict::Verified);
+    r
+}
+
+// §8.1, §8.5 (review F1, F2): an accepted set is verified only through a
+// report of the overlay form over its own overlay (`Overlay.edits` its
+// content id). A tree report compared nothing the set changed; an overlay
+// of another set, or another transform's overlay and report over the
+// same plan and round, verify nothing of this one.
+#[test]
+fn s8_5_accepted_set_needs_a_report_over_its_overlay() {
+    let s = set(SetFacts::default());
+    let (good, o) = report(RunVerdict::Verified, &s);
+    assert_eq!(verifies(&s, &good, Some(&o)), (State::Verified, State::Verified, true));
+    let none = (State::Incomplete, State::Incomplete, false);
+    // Review P3: a tree report (no rules, so its shards need no binding),
+    // concluded with no overlay and with the set's.
+    let tree = two_verified(&Run::new(vec![], None));
+    assert_eq!(verifies(&s, &tree, None), none);
+    assert_eq!(verifies(&s, &tree, Some(&o)), none);
+    // Review P2: an overlay whose `edits` is not this set's.
+    let foreign = Overlay { edits: d(4), ..o.clone() };
+    let r = two_verified(&Run::new(vec![], Some(foreign.clone())));
+    assert_eq!(verifies(&s, &r, Some(&foreign)), none);
+    assert_eq!(verifies(&s, &r, Some(&o)), none);
+    // Another transform over the same plan and round: its own set, its
+    // overlay, its report, all verified; this set is not.
+    let mut theirs = s.clone();
+    theirs.transform = d(0x99);
+    theirs.validate().unwrap();
+    let (their_report, their_overlay) = report(RunVerdict::Verified, &theirs);
+    assert_eq!(
+        verifies(&theirs, &their_report, Some(&their_overlay)),
+        (State::Verified, State::Verified, true)
+    );
+    assert_eq!(verifies(&s, &their_report, Some(&their_overlay)), none);
+    assert_eq!(verifies(&s, &their_report, Some(&o)), none);
+}
+
+// §7.3 `Report::add_at` (review F3): a position added twice, an observer
+// added twice, and a position past the plan are defects of the caller:
+// each panics (the run stops, nothing is written), and the refused call
+// changes nothing. Review P1: observer A added twice and B never, which
+// would otherwise add up to `selected`.
+#[test]
+fn s7_3_add_at_refuses_a_caller_defect() {
+    let run = Run::new(vec![rule(KeyKind::Function, "f", "g")], Some(overlay()));
+    let a = run.ok(0xa0, run.verdict(VerdictKind::Verified), &[], &[used(0, 0, 1)]);
+    let b = run.verified(0xa1);
+    let mut r = run.report();
+    r.add_at(0, &a.observer, b"/m/a", Some(&a), Some(Status::Ok));
+    let before = slip_model::json::write_compact(&r.to_json()).unwrap();
+    let defects: [(&str, u64, &slip_model::Shard); 4] = [
+        ("P1: A again at B's position", 1, &a),
+        ("position 0 again", 0, &b),
+        ("position past the plan", 10, &b),
+        ("position u64::MAX", u64::MAX, &b),
+    ];
+    for (what, position, s) in defects {
+        let mut r2 = r.clone();
+        let hit = catch_unwind(AssertUnwindSafe(|| {
+            r2.add_at(position, &s.observer, b"/m/x", Some(s), Some(Status::Ok));
+        }));
+        assert!(hit.is_err(), "{what}");
+        assert_eq!(slip_model::json::write_compact(&r2.to_json()).unwrap(), before, "{what}");
+    }
+    // M1's `add` is `add_at` at the next position: it refuses a repeat too.
+    let mut r2 = r.clone();
+    let hit = catch_unwind(AssertUnwindSafe(|| {
+        r2.add(&a.observer, b"/m/a", Some(&a), Some(Status::Ok));
+    }));
+    assert!(hit.is_err());
+    // The last position of the plan is accepted.
+    r.add_at(9, &b.observer, b"/m/b", Some(&b), Some(Status::Ok));
+    assert_eq!(r.states()[0], 2);
+    assert_eq!(r.stale(), [Stale { rule: 0, observer: d(0xa0), direct: 1 }]);
+}
+
+/// A mismatch over `run` reading overlay file 0, with one finding named
+/// `name`, `uses`, and obligation 1 failed with the key `found`.
+fn mismatch_at(
+    run: &Run,
+    obs: u8,
+    name: &str,
+    uses: &[slip_model::agreement::Use],
+    found: u8,
+) -> slip_model::Shard {
+    let mut v = run.verdict(VerdictKind::Mismatch);
+    v.total = 1;
+    v.findings = vec![slip_model::verdict::Finding {
+        kind: slip_model::verdict::FindingKind::Changed,
+        key: Some(key(1)),
+        file: b"/s/a.h".to_vec(),
+        pre: Some(d(0xa1)),
+        post: Some(d(0xb1)),
+        name: name.to_owned(),
+        location: None,
+    }];
+    let mut s = run.ok(obs, v, &[0], uses);
+    let i = s.inputs.clone().unwrap();
+    s.spellings = Some(section(run.overlay.as_ref().unwrap(), &i, &[0], &[(1, found)]));
+    s.validate().unwrap();
+    s
+}
+
+// §7.3 (review F4): nothing a report holds depends on the order of the
+// `add_at` calls. Every permutation of three shards gives the same JSON,
+// text and error lines, byte for byte, and the same concluded result.
+// The shards exercise all that once followed the call order: two stale
+// pairs of one rule, a finding group whose name is only in the second
+// observer, `not_verified`, an obligation failed in two observers with
+// different `found`.
+#[test]
+fn s7_3_report_independent_of_call_order() {
+    let s = set(SetFacts::default());
+    let run = Run::new(vec![rule(KeyKind::Function, "f", "g")], Some(overlay()));
+    let o = run.overlay.clone().unwrap();
+    let shards = [
+        (0, mismatch_at(&run, 0xc0, "", &[used(0, 0, 1)], 3), &b"/m/c0.cc"[..]),
+        (1, mismatch_at(&run, 0xc1, "f", &[used(0, 1, 2)], 4), b"/m/c1.cc"),
+        (2, run.unverifiable(0xc2, "post-image: why"), b"/m/c2.cc"),
+    ];
+    let perms = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+    let mut seen = Vec::new();
+    for p in perms {
+        let mut r = run.report();
+        for i in p {
+            let (pos, sh, main) = &shards[i];
+            r.add_at(*pos, &sh.observer, main, Some(sh), Some(Status::Ok));
+        }
+        let json = slip_model::json::write_compact(&r.to_json()).unwrap();
+        let f =
+            Facts { set: &s, selected: 3, report: Some(&r), allow_unparsed: false, residue: &[] };
+        let c = conclude(&f, Some(&o));
+        assert_eq!(c.state, State::NotVerified);
+        let result = result_of(&c, &s, false, false, &[]);
+        assert_eq!(result.validate(), Ok(()));
+        seen.push((json, r.to_text(), r.error_lines(), result.to_bytes()));
+    }
+    for w in seen.windows(2) {
+        assert_eq!(w[0], w[1]);
+    }
+    let (json, text, errors, _) = &seen[0];
+    let c0 = "c0".repeat(32);
+    assert!(json.contains(&format!(r#""stale":[{{"rule":0,"observer":"{c0}""#)), "{json}");
+    assert!(json.contains(r#""name":"f","observers":2,"first":"/m/c0.cc""#), "{json}");
+    let one = text.find("stale rule 0 direct 1 /m/c0.cc").unwrap();
+    let two = text.find("stale rule 0 direct 2 /m/c1.cc").unwrap();
+    assert!(one < two, "{text}");
+    assert!(errors.lines().next().unwrap().contains("/m/c0.cc"), "{errors}");
+    let k3 = format!("1003{}", "00".repeat(30));
+    assert!(json.contains(&format!(r#""first":"/m/c0.cc","found":"{k3}""#)), "{json}");
 }
 
 // conclude copies the report: agreement sorted by (rule, observer),
@@ -334,7 +512,13 @@ fn s8_5_conclude_copies_the_report() {
     r.add(&s.observer, b"/m2", Some(&s), Some(Status::Ok));
     let s = run.ok(0xb1, v, &[], &[used(0, 0, 4)]);
     r.add(&s.observer, b"/m1", Some(&s), Some(Status::Ok));
-    let b = Built { set: set(SetFacts::default()), report: Some(r), residue: vec![], selected: 2 };
+    let b = Built {
+        set: set(SetFacts::default()),
+        report: Some(r),
+        overlay: Some(o.clone()),
+        residue: vec![],
+        selected: 2,
+    };
     let c = conclude(&facts(&b, false), Some(&o));
     assert_eq!(c.state, State::NotVerified);
     assert_eq!(
@@ -393,7 +577,7 @@ fn s8_5_permits_exhaustive() {
             verdict: V,
         };
         let b = build(&row);
-        let c = conclude(&facts(&b, false), None);
+        let c = concluded(&b, false);
         let natural = if bits == 0 { State::Verified } else { State::VerifiedWithResidue };
         assert_eq!(c.state, natural);
         for st in STATES {
@@ -439,7 +623,7 @@ fn permitted() -> (slip_model::result::TransformResult, EditSet) {
         residue: Res::None,
         verdict: V,
     });
-    let c = conclude(&facts(&b, false), None);
+    let c = concluded(&b, false);
     let r = result_of(&c, &b.set, false, false, &[]);
     assert!(permits(&r, &b.set, Allow::default()));
     (r, b.set)
@@ -451,8 +635,12 @@ fn permitted() -> (slip_model::result::TransformResult, EditSet) {
 fn s8_5_permits_refuses_inconsistent_results() {
     let (good, set0) = permitted();
     type Break = fn(&mut slip_model::result::TransformResult, &mut EditSet);
-    let breaks: [(&str, Break); 21] = [
+    let breaks: [(&str, Break); 25] = [
         ("another set", |_, s| s.basis = d(0x77)),
+        ("another plan", |r, _| r.plan = d(0x77)),
+        ("another round", |r, _| r.round += 1),
+        ("another transform", |r, _| r.transform = d(0x77)),
+        ("an unchecked namespace rule", |r, _| r.unchecked = vec![0]),
         ("the set refused", |_, s| {
             *s = set(SetFacts { refused: true, ..SetFacts::default() });
         }),
@@ -568,7 +756,8 @@ fn s8_5_unchanged_counts() {
 
 // ---------------------------------------------------------------------------
 // The property: no write from a run with a finding, a stale observer, a
-// failed guard, or an obligation that did not pass.
+// failed guard, an obligation that did not pass, an unchecked namespace
+// rule, a report not over the set's own overlay, or a caller defect.
 
 /// What a random run had that keeps it from being verified.
 #[derive(Debug, Default)]
@@ -578,15 +767,35 @@ struct Bad {
     guard: bool,
     state: bool,
     spelling: bool,
+    /// A namespace rule used (`via` or `direct` not 0): not checked until
+    /// WP-111.
+    unchecked: bool,
+    /// The report and the overlay are another set's.
+    foreign: bool,
+    /// A tree report (no overlay) for an accepted set.
+    tree: bool,
+    /// No observer added.
+    empty: bool,
 }
 
 impl Bad {
     fn any(&self) -> bool {
-        self.finding || self.stale || self.guard || self.state || self.spelling
+        self.finding
+            || self.stale
+            || self.guard
+            || self.state
+            || self.spelling
+            || self.unchecked
+            || self.foreign
+            || self.tree
+            || self.empty
     }
 }
 
-fn random_run(g: &mut Rng) -> (Report, u64, Bad, Option<slip_model::Overlay>) {
+/// A random run over `set`: its report (`None`: the caller added an
+/// observer twice, which panics, so the run wrote nothing), the number
+/// of observers added, what was bad in it, and its overlay.
+fn random_run(g: &mut Rng, set: &EditSet) -> (Option<Report>, u64, Bad, Option<Overlay>) {
     let mut rules = Vec::new();
     for (i, name) in ["f", "h", "n"].iter().enumerate() {
         if g.chance(2) {
@@ -594,22 +803,38 @@ fn random_run(g: &mut Rng) -> (Report, u64, Bad, Option<slip_model::Overlay>) {
             rules.push(rule(kind, name, &format!("{name}2")));
         }
     }
-    let ov = g.chance(3).then(overlay).or_else(|| {
-        (g.chance(2)).then(|| {
-            let mut o = overlay();
-            o.spellings.clear();
-            o
-        })
-    });
+    let mut bad = Bad::default();
+    let own = Overlay { edits: overlay_for(set).edits, ..overlay() };
+    let mut ov = match g.below(6) {
+        0 | 1 => Some(own),
+        2 | 3 => Some(Overlay { spellings: vec![], ..own }),
+        _ => None,
+    };
+    if ov.is_none() {
+        bad.tree = true;
+    } else if g.chance(8) {
+        // Another set's overlay (review P2), and the report over it.
+        bad.foreign = true;
+        if let Some(o) = ov.as_mut() {
+            o.edits = d(4);
+        }
+    }
     let run = Run::new(rules, ov.clone());
     let kinds: Vec<KeyKind> = run.declared.rules().rules().iter().map(|r| r.kind).collect();
     let n_obl = ov.as_ref().map_or(0, |o| o.spellings.len());
     let mut held = vec![false; n_obl];
     let mut failed = vec![false; n_obl];
-    let mut bad = Bad::default();
     let mut r = run.report();
-    let n = 1 + g.below(5);
-    for k in 0..n {
+    let n = g.below(6);
+    bad.empty = n == 0;
+    // Plan positions in a random order (the calls need not follow the
+    // plan, §7.3); sometimes one observer is added a second time.
+    let mut order: Vec<u64> = (0..n).collect();
+    for i in (1..order.len()).rev() {
+        order.swap(i, g.below(i as u64 + 1) as usize);
+    }
+    let duplicate = n > 0 && g.chance(30);
+    for &k in &order {
         let obs = 0xa0 + k as u8;
         let main = format!("/m/{k}.cc");
         let pick = g.below(10);
@@ -619,9 +844,9 @@ fn random_run(g: &mut Rng) -> (Report, u64, Bad, Option<slip_model::Overlay>) {
             bad.state = true;
             if pick == 8 {
                 let s = run.unparsed(obs, Status::Diagnosed, "e");
-                r.add(&s.observer, main.as_bytes(), Some(&s), Some(Status::Ok));
+                r.add_at(k, &s.observer, main.as_bytes(), Some(&s), Some(Status::Ok));
             } else {
-                r.add(&d(obs), main.as_bytes(), None, Some(Status::Ok));
+                r.add_at(k, &d(obs), main.as_bytes(), None, Some(Status::Ok));
             }
             continue;
         }
@@ -653,7 +878,7 @@ fn random_run(g: &mut Rng) -> (Report, u64, Bad, Option<slip_model::Overlay>) {
                 None => overlay_inputs(
                     &pre,
                     &post,
-                    &slip_model::Overlay { edits: d(4), files: vec![], spellings: vec![] },
+                    &Overlay { edits: d(4), files: vec![], spellings: vec![] },
                 ),
             };
             // Every entry is the overlay's or the pre shard's, so another
@@ -667,15 +892,18 @@ fn random_run(g: &mut Rng) -> (Report, u64, Bad, Option<slip_model::Overlay>) {
         inputs.sort_by(|a, b| a.path.cmp(&b.path));
         let mut uses = Vec::new();
         for (i, kind) in kinds.iter().enumerate() {
+            let namespace = *kind == KeyKind::Namespace;
             match g.below(3) {
                 0 => {}
-                1 => uses.push(used(i as u64, 1 + g.below(3), 0)),
+                1 => {
+                    uses.push(used(i as u64, 1 + g.below(3), 0));
+                    bad.unchecked |= namespace;
+                }
                 _ => {
                     let direct = 1 + g.below(3);
                     uses.push(used(i as u64, g.below(2), direct));
-                    if *kind != KeyKind::Namespace {
-                        bad.stale = true;
-                    }
+                    bad.stale |= !namespace;
+                    bad.unchecked |= namespace;
                 }
             }
         }
@@ -694,11 +922,13 @@ fn random_run(g: &mut Rng) -> (Report, u64, Bad, Option<slip_model::Overlay>) {
                     0 => {}
                     1 => {
                         f.push((i as u64, 5));
-                        failed[i] = true;
+                        // An unverifiable observer's spellings are not
+                        // folded (§10.6); it makes the run bad anyway.
+                        failed[i] |= pick != 7;
                     }
                     _ => {
                         h.push(i as u64);
-                        held[i] = true;
+                        held[i] |= pick != 7;
                     }
                 }
             }
@@ -706,23 +936,36 @@ fn random_run(g: &mut Rng) -> (Report, u64, Bad, Option<slip_model::Overlay>) {
         }
         s.inputs = Some(inputs);
         s.validate().expect("a valid random shard");
-        r.add(&s.observer, main.as_bytes(), Some(&s), Some(Status::Ok));
+        r.add_at(k, &s.observer, main.as_bytes(), Some(&s), Some(Status::Ok));
+    }
+    if duplicate {
+        // Review P1: an observer added again, at a free position (or at
+        // its own): a defect of the caller, which stops the run.
+        let k = g.below(n);
+        let s = run.verified(0xa0 + k as u8);
+        let at = if g.chance(2) { k } else { n };
+        let hit = catch_unwind(AssertUnwindSafe(|| {
+            r.add_at(at, &s.observer, b"/m/again.cc", Some(&s), Some(Status::Ok));
+        }));
+        assert!(hit.is_err(), "an observer added twice is refused");
+        return (None, n, bad, ov);
     }
     bad.spelling = (0..n_obl).any(|i| failed[i] || !held[i]);
-    (r, n, bad, ov)
+    (Some(r), n, bad, ov)
 }
 
 // §8.5, §9.3, §10.3: over random runs, a result permits a write (with
 // everything allowed) exactly when the run had no finding, no stale
-// observer, no failed guard, every observer verified and every
-// obligation passed (and the set is accepted, and `unparsed` is 0 or
-// allowed). `SLIP_VERIFY_SEED` replays a run.
+// observer, no failed guard, no unchecked namespace rule, every observer
+// verified and every obligation passed, was made over the set's own
+// overlay, and had an observer (and the set is accepted, and `unparsed`
+// is 0 or allowed). A run whose caller added an observer twice stops and
+// writes nothing. `SLIP_VERIFY_SEED` replays a run.
 #[test]
 fn s8_5_property_no_write_from_a_bad_run() {
     let mut g = Rng::from_env(0x5eed_0070);
-    let (mut bad_runs, mut good_runs) = (0, 0);
-    for round in 0..3000 {
-        let (report, n, bad, ov) = random_run(&mut g);
+    let (mut bad_runs, mut good_runs, mut stopped) = (0, 0, 0);
+    for round in 0..6000 {
         let sf = SetFacts {
             refused: g.chance(10),
             refusal: g.chance(4),
@@ -730,14 +973,21 @@ fn s8_5_property_no_write_from_a_bad_run() {
             error_report: g.chance(4),
             unparsed: u8::from(g.chance(4)),
         };
+        let edit_set = set(sf);
+        let (report, n, bad, ov) = random_run(&mut g, &edit_set);
+        let Some(report) = report else {
+            stopped += 1;
+            continue;
+        };
         let allow_unparsed = g.chance(2);
         let b = Built {
-            set: set(sf),
+            set: edit_set,
             report: Some(report),
+            overlay: ov,
             residue: if g.chance(3) { vec![residue(Category::Dependent, 0)] } else { vec![] },
             selected: n + u64::from(sf.unparsed),
         };
-        let c = conclude(&facts(&b, allow_unparsed), ov.as_ref());
+        let c = conclude(&facts(&b, allow_unparsed), b.overlay.as_ref());
         let partial = g.chance(3);
         let result = result_of(&c, &b.set, partial, allow_unparsed, &b.residue);
         assert_eq!(result.validate(), Ok(()), "round {round}: {bad:?}");
@@ -748,6 +998,13 @@ fn s8_5_property_no_write_from_a_bad_run() {
             "round {round}: {bad:?} {sf:?} {:?}",
             c.state
         );
+        // `unchanged` counts as `verified` (§8.5): the report never gives
+        // it (§5.5 is not implemented, `run::state`), so the result's
+        // verified observers are moved to it: the answer is the same.
+        let mut moved = result.clone();
+        moved.tally.unchanged = moved.tally.verified;
+        moved.tally.verified = 0;
+        assert_eq!(permits(&moved, &b.set, ALL_ALLOWED), can, "round {round}: unchanged");
         if bad.any() {
             bad_runs += 1;
             assert!(
@@ -759,12 +1016,15 @@ fn s8_5_property_no_write_from_a_bad_run() {
                     Allow { residue: bits & 1 != 0, errors: bits & 2 != 0, partial: bits & 4 != 0 };
                 assert!(!permits(&result, &b.set, allow), "round {round}");
             }
+            if bad.unchecked && !sf.refused && !bad.tree && !bad.foreign && !bad.empty {
+                assert!(!c.unchecked.is_empty(), "round {round}");
+            }
         } else {
             good_runs += 1;
         }
     }
-    // Both sides are exercised.
-    assert!(bad_runs > 1000 && good_runs > 100, "{bad_runs} bad, {good_runs} good");
+    // Every side is exercised.
+    assert!(bad_runs > 1000 && good_runs > 100 && stopped > 20, "{bad_runs} {good_runs} {stopped}");
 }
 
 // §8.5 row 4: every category of residue but `mention` is a reason, each
@@ -786,7 +1046,7 @@ fn s8_5_each_residue_category() {
         let residue = vec![residue(cat, 3)];
         let f = Facts { residue: &residue, ..facts(&b, false) };
         assert_eq!(state(&f), want, "{cat:?}");
-        let c = conclude(&f, None);
+        let c = conclude(&f, b.overlay.as_ref());
         let r = result_of(&c, &b.set, false, false, &residue);
         assert_eq!(permits(&r, &b.set, Allow::default()), want == State::Verified, "{cat:?}");
         assert!(permits(&r, &b.set, Allow { residue: true, ..Allow::default() }), "{cat:?}");
@@ -803,9 +1063,9 @@ fn s8_5_tally_counts_observers_and_error_reports_only() {
     review.report.message = b"r".to_vec();
     s.reports.insert(0, review);
     s.validate().unwrap();
-    let report = report(RunVerdict::Verified);
+    let (report1, _) = report(RunVerdict::Verified, &s);
     let f =
-        Facts { set: &s, selected: 2, report: Some(&report), allow_unparsed: false, residue: &[] };
+        Facts { set: &s, selected: 2, report: Some(&report1), allow_unparsed: false, residue: &[] };
     let t = tally(&f);
     assert_eq!((t.failed_runs, t.error_reports), (3, 1));
     assert_eq!(state(&f), State::VerifiedWithResidue);
@@ -813,10 +1073,11 @@ fn s8_5_tally_counts_observers_and_error_reports_only() {
     let mut s2 = set(SetFacts::default());
     s2.reports = vec![s.reports[0].clone()];
     s2.validate().unwrap();
-    let f = Facts { set: &s2, ..f };
+    let (report2, o2) = report(RunVerdict::Verified, &s2);
+    let f = Facts { set: &s2, report: Some(&report2), ..f };
     assert_eq!(tally(&f).error_reports, 0);
     assert_eq!(state(&f), State::Verified);
-    let c = conclude(&f, None);
+    let c = conclude(&f, Some(&o2));
     assert!(permits(&result_of(&c, &s2, false, false, &[]), &s2, Allow::default()));
 }
 
@@ -831,4 +1092,88 @@ fn s8_5_permits_refuses_a_refused_set() {
         r.state = st;
         assert!(!permits(&r, &s, ALL_ALLOWED), "{st:?}");
     }
+}
+
+// §9.2, §9.4, §8.5 (until WP-111): a namespace rule an observer used,
+// through `via` or `direct`, is listed in `agreement.unchecked` and on a
+// text line of its own; the report's verdict is not changed by it; and
+// conclude makes the run `incomplete` (unless something worse applies),
+// so nothing permits a write, whatever is allowed. Unused, or used only
+// by a shard that is not read, it is not listed.
+#[test]
+fn s9_2_namespace_rule_use_is_unchecked_and_permits_nothing() {
+    let s = set(SetFacts::default());
+    let o = overlay_for(&s);
+    let run = Run::new(
+        vec![rule(KeyKind::Namespace, "n", "m"), rule(KeyKind::Function, "f", "g")],
+        Some(o.clone()),
+    );
+    let ns = (0..2).find(|&i| run.declared.rules().rules()[i].kind == KeyKind::Namespace).unwrap();
+    let v = run.verdict(VerdictKind::Verified);
+    for (uses, listed) in [
+        (vec![], false),
+        (vec![used(ns as u64, 1, 0)], true),
+        (vec![used(ns as u64, 0, 2)], true),
+        (vec![used(ns as u64, 3, 1)], true),
+    ] {
+        let mut r = run.report();
+        for obs in [0xa0, 0xa1] {
+            let u = if obs == 0xa1 { uses.clone() } else { vec![] };
+            let sh = run.ok(obs, v.clone(), &[], &u);
+            r.add(&sh.observer, b"/m.cc", Some(&sh), Some(Status::Ok));
+        }
+        // An observer whose shard is not read (another round) says
+        // nothing either way.
+        let mut stray = run.ok(0xa2, v.clone(), &[], &[used(ns as u64, 1, 1)]);
+        stray.round += 1;
+        r.add(&stray.observer, b"/m2.cc", Some(&stray), Some(Status::Ok));
+        let want: Vec<u64> = if listed { vec![ns as u64] } else { vec![] };
+        assert_eq!(r.unchecked(), want);
+        assert!(r.stale().is_empty(), "a namespace rule is never stale");
+        assert_eq!(r.verdict(), RunVerdict::Incomplete, "the stray shard is failed");
+        let json = slip_model::json::write_compact(&r.to_json()).unwrap();
+        let line = format!("not checked: agreement between observers for namespace rule {ns}\n");
+        assert_eq!(r.to_text().contains(&line), listed);
+        let member =
+            format!(r#""unchecked":[{}]"#, if listed { ns.to_string() } else { String::new() });
+        assert!(json.contains(&member), "{json}");
+        // Without the stray observer: verified, and the verdict is so
+        // whether or not a rule is unchecked.
+        let mut r = run.report();
+        for obs in [0xa0, 0xa1] {
+            let u = if obs == 0xa1 { uses.clone() } else { vec![] };
+            let sh = run.ok(obs, v.clone(), &[], &u);
+            r.add(&sh.observer, b"/m.cc", Some(&sh), Some(Status::Ok));
+        }
+        assert_eq!(r.verdict(), RunVerdict::Verified);
+        let f =
+            Facts { set: &s, selected: 2, report: Some(&r), allow_unparsed: true, residue: &[] };
+        let c = conclude(&f, Some(&o));
+        assert_eq!(state(&f), c.state);
+        assert_eq!(c.unchecked, want);
+        assert_eq!(c.verdict, Some(RunVerdict::Verified));
+        let result = result_of(&c, &s, false, true, &[]);
+        assert_eq!(result.validate(), Ok(()));
+        if listed {
+            assert_eq!(c.state, State::Incomplete);
+        } else {
+            assert_eq!(c.state, State::Verified);
+        }
+        for bits in 0u8..8 {
+            let allow =
+                Allow { residue: bits & 1 != 0, errors: bits & 2 != 0, partial: bits & 4 != 0 };
+            assert_eq!(permits(&result, &s, allow), !listed, "{allow:?}");
+        }
+    }
+    // Something worse applies first: a mismatch makes it not verified.
+    let mut r = run.report();
+    let sh = run.ok(0xa0, v.clone(), &[], &[used(ns as u64, 1, 0)]);
+    r.add(&sh.observer, b"/m.cc", Some(&sh), Some(Status::Ok));
+    let mut m = run.mismatch(0xa1);
+    m.rule_use.as_mut().unwrap().uses.clear();
+    r.add(&m.observer, b"/m.cc", Some(&m), Some(Status::Ok));
+    let f = Facts { set: &s, selected: 2, report: Some(&r), allow_unparsed: false, residue: &[] };
+    let c = conclude(&f, Some(&o));
+    assert_eq!((c.state, c.unchecked.clone()), (State::NotVerified, vec![ns as u64]));
+    assert_eq!(result_of(&c, &s, false, false, &[]).validate(), Ok(()));
 }

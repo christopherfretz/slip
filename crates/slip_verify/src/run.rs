@@ -22,7 +22,7 @@
 //! byte.
 
 use std::cell::OnceCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use slip_model::declared::Declared;
@@ -272,15 +272,18 @@ pub struct Header {
 #[derive(Clone, Debug)]
 struct FindingGroup {
     observers: u64,
-    /// The index (in `add` order) of the last observer counted, so that an
-    /// observer listing a `(kind, key)` twice (only possible without a key)
-    /// is counted once.
+    /// The plan position of the last observer counted, so that an observer
+    /// listing a `(kind, key)` twice (only possible without a key) is
+    /// counted once: one call's findings are folded together.
     last: u64,
-    /// The main file of the first observer that lists it.
+    /// The main file of the first observer in plan order that lists it,
+    /// and that observer's plan position.
     first: Vec<u8>,
-    /// The finding the group shows: of the first observer whose finding has
-    /// a name, else of the first.
+    first_at: u64,
+    /// The finding the group shows: of the first observer in plan order
+    /// whose finding has a name, else of the first; and its position.
     shown: Finding,
+    shown_at: u64,
 }
 
 /// An entry of `not_verified` (§7.1).
@@ -322,14 +325,14 @@ pub struct Report {
     /// The round of the pre shards (§9.5 `pre_round`).
     pre: u64,
     overlay: Option<Box<OverlayRun>>,
-    /// The stale pairs by rule, each list in `add` order (plan order).
-    stale: BTreeMap<u64, Vec<StaleAt>>,
+    /// The stale pairs by `(rule, plan position)`.
+    stale: BTreeMap<(u64, u64), StaleAt>,
     stale_count: usize,
     /// `stale` flattened, made on demand and dropped by `add`.
     stale_flat: OnceCell<Vec<Stale>>,
     /// The fold's outcomes, made on demand and dropped by `add`.
     outcomes: OnceCell<Vec<Outcome>>,
-    /// The observer and main file of every `add` position that became the
+    /// The observer and main file of every plan position that became the
     /// `first` of an obligation's failure.
     firsts: BTreeMap<usize, (Digest, Vec<u8>)>,
     changed: Vec<Digest>,
@@ -337,13 +340,17 @@ pub struct Report {
     removed: Vec<Digest>,
     /// How many `add` calls there were.
     selected: u64,
+    /// The plan positions and the observers added (§7.3: each at most once).
+    positions: BTreeSet<u64>,
+    observers: BTreeSet<Digest>,
     states: [u64; 7],
     indeterminate_only: u64,
     total: u64,
     listed: u64,
     /// By `(kind's number, key)`.
     groups: BTreeMap<(u8, Option<Digest>), FindingGroup>,
-    not_verified: Vec<NotVerified>,
+    /// By plan position.
+    not_verified: BTreeMap<u64, NotVerified>,
     /// The observers whose verdict has the key in `used`, for every key of
     /// a list of `Declared`.
     used: BTreeMap<Digest, u64>,
@@ -379,12 +386,14 @@ impl Report {
             created: declared.created().to_vec(),
             removed: declared.removed().to_vec(),
             selected: 0,
+            positions: BTreeSet::new(),
+            observers: BTreeSet::new(),
             states: [0; 7],
             indeterminate_only: 0,
             total: 0,
             listed: 0,
             groups: BTreeMap::new(),
-            not_verified: Vec::new(),
+            not_verified: BTreeMap::new(),
             used,
             any_bad: false,
             all_good: true,
@@ -478,7 +487,27 @@ impl Report {
         true
     }
 
-    /// One call per selected observer, in plan order.
+    /// [`Report::add_at`] at the next position: the number of `add` calls
+    /// so far. For a caller that adds every selected observer in plan
+    /// order and selects them all (M1's `slip verify`).
+    ///
+    /// # Panics
+    ///
+    /// As [`Report::add_at`].
+    pub fn add(
+        &mut self,
+        observer: &Digest,
+        main: &[u8],
+        verify: Option<&Shard>,
+        map: Option<Status>,
+    ) {
+        self.add_at(self.selected, observer, main, verify, map);
+    }
+
+    /// One call per selected observer, `position` being its index in the
+    /// plan, in any order: nothing the report holds depends on the order of
+    /// the calls (the stale pairs, `not_verified`, a group's `first` and
+    /// shown finding, and the fold's `first` are by plan position).
     ///
     /// `verify` is this run's shard of the observer, as for [`state`]; a
     /// shard whose `observer` is not `observer`, whose `round` is not the
@@ -497,15 +526,39 @@ impl Report {
     /// The `rule_use` and `spellings` of an `ok` shard the state table
     /// accepts with a verdict (`verified`, `mismatch`, `unverifiable`) are
     /// read: a stale pair for every `direct` not 0 of a rule whose kind is
-    /// not `namespace`; every rule with a use is used; the fold.
-    pub fn add(
+    /// not `namespace`; every rule with a use is used. The fold reads the
+    /// `spellings` of a `verified` or `mismatch` shard only; that of an
+    /// `unverifiable` one is checked (a refusal makes it `failed`) but not
+    /// folded (§10.6).
+    ///
+    /// # Panics
+    ///
+    /// If `position` is not less than the header's `plan_observers`, or
+    /// was added before, or `observer` was: each is a defect of the caller
+    /// (§7.3), which would otherwise let one observer stand for another.
+    pub fn add_at(
         &mut self,
+        position: u64,
         observer: &Digest,
         main: &[u8],
         verify: Option<&Shard>,
         map: Option<Status>,
     ) {
-        let index = self.selected;
+        assert!(
+            position < self.header.plan_observers,
+            "Report::add_at: position {position} is not in the plan of {}",
+            self.header.plan_observers
+        );
+        // Both checked before either is kept: a refused call changes
+        // nothing.
+        assert!(
+            !self.positions.contains(&position),
+            "Report::add_at: position {position} added twice"
+        );
+        assert!(!self.observers.contains(observer), "Report::add_at: an observer added twice");
+        self.positions.insert(position);
+        self.observers.insert(*observer);
+        let index = position;
         self.selected += 1;
         self.stale_flat = OnceCell::new();
         self.outcomes = OnceCell::new();
@@ -519,40 +572,10 @@ impl Report {
         // the last check: it refuses before it changes anything, and its
         // refusal makes the shard no shard of this run (§10.4).
         let accepted = judged.verdict.is_some();
-        if let (Some(s), true) = (ours, accepted) {
-            let position = usize::try_from(index).unwrap_or(usize::MAX);
-            let refused = match (&mut self.overlay, &s.spellings) {
-                (Some(o), Some(section)) if !o.fold.is_empty() => {
-                    let inputs = s.inputs.as_deref().unwrap_or(&[]);
-                    match o.fold.add_first(position, inputs, section) {
-                        Ok(true) => {
-                            self.firsts.insert(position, (*observer, main.to_vec()));
-                            false
-                        }
-                        Ok(false) => false,
-                        Err(_) => true,
-                    }
-                }
-                _ => false,
-            };
-            if refused {
-                judged = Judged { state: State::Failed, verdict: None };
-            } else if let Some(u) = &s.rule_use {
-                for x in &u.uses {
-                    let r = usize::try_from(x.rule).unwrap_or(usize::MAX);
-                    if x.via != 0 || x.direct != 0 {
-                        self.used_rules[r] = true;
-                    }
-                    if x.direct != 0 && !self.namespace[r] {
-                        let stale = Stale { rule: x.rule, observer: *observer, direct: x.direct };
-                        self.stale
-                            .entry(x.rule)
-                            .or_default()
-                            .push(StaleAt { stale, main: main.to_vec() });
-                        self.stale_count += 1;
-                    }
-                }
-            }
+        if let (Some(s), true) = (ours, accepted)
+            && !self.read_sections(index, observer, main, s, judged.state)
+        {
+            judged = Judged { state: State::Failed, verdict: None };
         }
         let state = judged.state;
         self.states[state.index()] += 1;
@@ -593,19 +616,72 @@ impl Report {
                 }
                 State::Mismatch | State::Verified | State::Unchanged => String::new(),
             };
-            self.not_verified.push(NotVerified {
-                observer: *observer,
-                main: main.to_vec(),
-                state,
-                message,
-                findings,
-                indeterminate,
-                listed,
-            });
+            self.not_verified.insert(
+                index,
+                NotVerified {
+                    observer: *observer,
+                    main: main.to_vec(),
+                    state,
+                    message,
+                    findings,
+                    indeterminate,
+                    listed,
+                },
+            );
         }
     }
 
-    /// Folds one listed finding of observer number `index` into its group.
+    /// The `spellings` and `rule_use` of an `ok` shard the state table
+    /// accepted as `state`, of the observer at plan position `index`; false
+    /// if the fold refuses the section (the shard is then not this run's,
+    /// and nothing of it is read). An unverifiable shard's post-image is
+    /// not the run's (§10.6): its section is checked, not folded.
+    fn read_sections(
+        &mut self,
+        index: u64,
+        observer: &Digest,
+        main: &[u8],
+        s: &Shard,
+        state: State,
+    ) -> bool {
+        let position = usize::try_from(index).unwrap_or(usize::MAX);
+        let fold = matches!(state, State::Verified | State::Mismatch);
+        if let (Some(o), Some(section)) = (&mut self.overlay, &s.spellings)
+            && !o.fold.is_empty()
+        {
+            let inputs = s.inputs.as_deref().unwrap_or(&[]);
+            if fold {
+                match o.fold.add_first(position, inputs, section) {
+                    Ok(true) => {
+                        self.firsts.insert(position, (*observer, main.to_vec()));
+                    }
+                    Ok(false) => {}
+                    Err(_) => return false,
+                }
+            } else if o.fold.check(inputs, section).is_err() {
+                return false;
+            }
+        }
+        if let Some(u) = &s.rule_use {
+            for x in &u.uses {
+                let r = usize::try_from(x.rule).unwrap_or(usize::MAX);
+                if x.via != 0 || x.direct != 0 {
+                    self.used_rules[r] = true;
+                }
+                if x.direct != 0 && !self.namespace[r] {
+                    let pair = Stale { rule: x.rule, observer: *observer, direct: x.direct };
+                    let at = StaleAt { stale: pair, main: main.to_vec() };
+                    if self.stale.insert((x.rule, index), at).is_none() {
+                        self.stale_count += 1;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Folds one listed finding of the observer at plan position `index`
+    /// into its group.
     fn group(&mut self, index: u64, main: &[u8], f: &Finding) {
         let id = (kind_index(f.kind) as u8, f.key);
         match self.groups.get_mut(&id) {
@@ -614,7 +690,9 @@ impl Report {
                     observers: 1,
                     last: index,
                     first: main.to_vec(),
+                    first_at: index,
                     shown: f.clone(),
+                    shown_at: index,
                 };
                 self.groups.insert(id, g);
             }
@@ -623,8 +701,16 @@ impl Report {
                     g.observers += 1;
                     g.last = index;
                 }
-                if g.shown.name.is_empty() && !f.name.is_empty() {
+                if index < g.first_at {
+                    g.first_at = index;
+                    main.clone_into(&mut g.first);
+                }
+                // A named finding over an unnamed one, then the lower
+                // position; within one observer, the first listed.
+                let (named, shown_named) = (!f.name.is_empty(), !g.shown.name.is_empty());
+                if (named && !shown_named) || (named == shown_named && index < g.shown_at) {
                     g.shown = f.clone();
+                    g.shown_at = index;
                 }
             }
         }
@@ -647,13 +733,26 @@ impl Report {
 
     /// Every stale pair (§9.2), sorted by `(rule, plan position)`.
     pub fn stale(&self) -> &[Stale] {
-        self.stale_flat.get_or_init(|| self.stale.values().flatten().map(|s| s.stale).collect())
+        self.stale_flat.get_or_init(|| self.stale.values().map(|s| s.stale).collect())
     }
 
     /// The rules no `ok` shard of this run used (§9.2), ascending: indices
     /// of `Declared.rules`. Empty for a run without rules.
     pub fn unused(&self) -> Vec<u64> {
         (0u64..).zip(&self.used_rules).filter(|(_, u)| !**u).map(|(i, _)| i).collect()
+    }
+
+    /// The namespace rules some `ok` shard of this run used (`via` or
+    /// `direct` not 0), ascending: whether the observers agree on them is
+    /// not checked until WP-111 (§9.2, §9.4). Not empty: the report says
+    /// so, and conclude permits no write (`spec/edits.md` §8.5); the
+    /// verdict is not changed by it.
+    pub fn unchecked(&self) -> Vec<u64> {
+        (0u64..)
+            .zip(self.namespace.iter().zip(&self.used_rules))
+            .filter(|(_, (n, u))| **n && **u)
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// The outcome of every obligation of the overlay (§10.3, §10.6), in
@@ -673,7 +772,7 @@ impl Report {
         self.overlay.as_ref().map(|o| &o.overlay)
     }
 
-    /// The observer at `add` position `position` that is the `first` of an
+    /// The observer at plan position `position` that is the `first` of an
     /// obligation's failure.
     pub(crate) fn first_at(&self, position: usize) -> Option<&(Digest, Vec<u8>)> {
         self.firsts.get(&position)
@@ -744,7 +843,7 @@ impl Report {
             .collect();
         let not_verified = self
             .not_verified
-            .iter()
+            .values()
             .map(|n| {
                 obj(vec![
                     ("observer", digest(&n.observer)),
@@ -810,7 +909,6 @@ impl Report {
         let stale = self
             .stale
             .values()
-            .flatten()
             .map(|s| {
                 obj(vec![
                     ("rule", uv(s.stale.rule)),
@@ -824,6 +922,7 @@ impl Report {
             ("rules", uv(self.namespace.len() as u64)),
             ("stale", Value::Array(stale)),
             ("unused", Value::Array(self.unused().into_iter().map(uv).collect())),
+            ("unchecked", Value::Array(self.unchecked().into_iter().map(uv).collect())),
         ])
     }
 
@@ -956,7 +1055,7 @@ impl Report {
                 self.stale_count,
                 unused.len()
             );
-            for s in self.stale.values().flatten().take(TEXT_MAX) {
+            for s in self.stale.values().take(TEXT_MAX) {
                 let _ = writeln!(
                     out,
                     "stale rule {} direct {} {}",
@@ -971,6 +1070,12 @@ impl Report {
             }
             for r in unused {
                 let _ = writeln!(out, "unused rule {r}");
+            }
+            for r in self.unchecked() {
+                let _ = writeln!(
+                    out,
+                    "not checked: agreement between observers for namespace rule {r}"
+                );
             }
         }
     }
@@ -1024,7 +1129,7 @@ impl Report {
     /// the report)`. Each ends in a newline.
     pub fn error_lines(&self) -> String {
         let mut out = String::new();
-        for n in self.not_verified.iter().take(TEXT_MAX) {
+        for n in self.not_verified.values().take(TEXT_MAX) {
             let message = if n.state == State::Mismatch {
                 format!("{} finding(s), {} indeterminate", n.findings, n.indeterminate)
             } else {

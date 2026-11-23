@@ -475,7 +475,8 @@ fn s9_4_members_only_when_they_apply() {
 // JSON holds every pair.
 #[test]
 fn s9_4_stale_lines_at_most_100() {
-    let run = Run::new(vec![rule(KeyKind::Function, "f", "g")], None);
+    let mut run = Run::new(vec![rule(KeyKind::Function, "f", "g")], None);
+    run.plan_observers = 200;
     let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
     for (n, more) in [(100u8, None), (101, Some(1)), (103, Some(3))] {
         let mut r = run.report();

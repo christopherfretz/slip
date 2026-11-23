@@ -307,11 +307,13 @@ fn s10_4_fold_refusal_through_report_add() {
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
 }
 
-// §10.3, §10.5: only this run's `ok` shards the state table accepts are
-// folded: a verified verdict whose map shard is not `ok` (failed) and an
-// unparsed shard fold nothing; an `unverifiable` one folds. Positions are
-// those of `add`, so `first` names the observer of the first `add` that
-// failed it.
+// §10.3, §10.5, §10.6: only this run's `verified` and `mismatch` shards
+// are folded: a verified verdict whose map shard is not `ok` (failed) and
+// an unparsed shard fold nothing; an `unverifiable` one (a guard failed:
+// its post-image is not the overlay's) folds nothing either, but its
+// section is checked, and one the fold refuses makes it `failed`.
+// Positions are plan positions, so `first` names the observer of the
+// lowest position that failed it.
 #[test]
 fn s10_3_which_shards_are_folded() {
     let run = Run::new(vec![], Some(overlay()));
@@ -324,14 +326,34 @@ fn s10_3_which_shards_are_folded() {
     let u = run.unparsed(0xa1, Status::Diagnosed, "e");
     r.add(&u.observer, b"/m/a1.cc", Some(&u), Some(Status::Ok));
     assert_eq!(r.spellings(), [Outcome::Unseen, Outcome::Unseen, Outcome::Unseen]);
+    let at = |st: State| State::ALL.iter().position(|&x| x == st).unwrap();
+    // Held and failed by an unverifiable observer: not counted.
     let mut s = run.unverifiable(0xa2, "post-image: why");
     s.inputs = Some(i.clone());
     s.spellings = Some(section(&o, &i, &[0], &[(1, 9)]));
+    s.validate().unwrap();
     r.add(&s.observer, b"/m/a2.cc", Some(&s), Some(Status::Ok));
-    assert_eq!(r.spellings(), [Outcome::Passed { not_seen: 0 }, other(1, 2, 9), Outcome::Unseen]);
-    assert_eq!(r.states()[State::ALL.iter().position(|&x| x == State::Unverifiable).unwrap()], 1);
+    assert_eq!(r.spellings(), [Outcome::Unseen, Outcome::Unseen, Outcome::Unseen]);
+    assert_eq!(r.states()[at(State::Unverifiable)], 1);
+    // Checked all the same: obligation 2 is of /s/b.h, which it did not
+    // read.
+    let mut s = run.unverifiable(0xa3, "post-image: why");
+    s.inputs = Some(i.clone());
+    s.spellings =
+        Some(Spellings { seen: 2, held: vec![Span { first: 2, count: 1 }], failed: vec![] });
+    s.validate().unwrap();
+    r.add(&s.observer, b"/m/a3.cc", Some(&s), Some(Status::Ok));
+    assert_eq!(r.states()[at(State::Unverifiable)], 1);
+    assert_eq!(r.states()[at(State::Failed)], 2, "a0 (its map shard) and a3");
+    // A mismatch folds.
+    let mut s = run.mismatch(0xa4);
+    s.inputs = Some(i.clone());
+    s.spellings = Some(section(&o, &i, &[0], &[(1, 9)]));
+    s.validate().unwrap();
+    r.add(&s.observer, b"/m/a4.cc", Some(&s), Some(Status::Ok));
+    assert_eq!(r.spellings(), [Outcome::Passed { not_seen: 0 }, other(1, 4, 9), Outcome::Unseen]);
     let j = slip_model::json::write_compact(&r.to_json()).unwrap();
-    assert!(j.contains(r#""first":"/m/a2.cc""#), "{j}");
+    assert!(j.contains(r#""first":"/m/a4.cc""#), "{j}");
     assert!(j.contains(r#""obligations":3,"passed":1"#), "{j}");
 }
 

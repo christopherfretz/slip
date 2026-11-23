@@ -16,6 +16,7 @@ agreement rules 3 stale 2 unused 1
 stale rule 1 direct 2 /m/a0.cc
 stale rule 1 direct 1 /m/a1.cc
 unused rule 2
+not checked: agreement between observers for namespace rule 0
 spelling obligations 3 passed 1 failed 2
 spelling denotes_other /s/a.h:5-9 1041000000000000 observers 2 other119
 spelling unseen /s/b.h:0-3 1042000000000000 observers 0

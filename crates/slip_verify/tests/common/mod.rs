@@ -86,9 +86,11 @@ pub fn declared(rules: Vec<Rule>) -> Declared {
 
 /// Two overlay files, `/s/a.h` with obligations 0 and 1, `/s/b.h` with
 /// obligation 2; and `/s/c.h`, unchanged (`post == pre`), with none.
+/// An overlay of [`set`]`(SetFacts::default())` (its `edits` is that
+/// set's content id) over three files, with three obligations.
 pub fn overlay() -> Overlay {
     Overlay {
-        edits: d(0x04),
+        edits: content_id(&set(SetFacts::default()).to_bytes()).unwrap(),
         files: vec![
             OverlayFile {
                 path: b"/s/a.h".to_vec(),
@@ -112,6 +114,11 @@ pub fn overlay() -> Overlay {
             Obligation { file: 1, lo: 0, hi: 3, key: key(0x42) },
         ],
     }
+}
+
+/// An overlay of `set` without obligations: the files of [`overlay`].
+pub fn overlay_for(set: &EditSet) -> Overlay {
+    Overlay { edits: content_id(&set.to_bytes()).unwrap(), spellings: Vec::new(), ..overlay() }
 }
 
 /// The `inputs` entry of overlay file `i` as read through the overlay.
@@ -450,6 +457,7 @@ pub fn result_of(
         tally: c.tally,
         agreement: c.agreement.clone(),
         unused: c.unused.clone(),
+        unchecked: c.unchecked.clone(),
         spellings: c.spellings.clone(),
         residue: residue.to_vec(),
         exempt: vec![],
