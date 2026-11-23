@@ -1,4 +1,1 @@
-# pending
-# needs: stmt
-# the node is in a function body (stmt.rs); expr_init.rs's row test reads it from the AST
 changed D

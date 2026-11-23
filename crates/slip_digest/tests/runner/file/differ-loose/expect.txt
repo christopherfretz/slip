@@ -1,1 +1,2 @@
 derived-changed g<int>()
+changed f()

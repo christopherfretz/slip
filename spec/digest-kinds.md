@@ -2455,7 +2455,7 @@ A `ContractAssertStmt` also writes the rows of its `ContractSite`
 | `init` | child | in | child? |  |
 | `cond_var` | entity | in | decl? |  |
 | `cond` | child | in | child? |  |
-| `then` | child | in | child? | absent when discarded in an instantiation |
+| `then` | child | in | child? | always present; a branch discarded in an instantiation is an empty block |
 | `els` | child | in | child? |  |
 
 ### `kiln_ast::stmt::SwitchData`
