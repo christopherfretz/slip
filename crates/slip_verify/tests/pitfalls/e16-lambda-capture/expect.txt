@@ -16,5 +16,5 @@ bad-2:  mismatch changed f() @ main.cpp:3
 # captures nothing and the closure is empty; [&n] captures it by
 # reference. closure_size<int>() returns 1, then 8.
 good-3: none as good
-bad-3:  mismatch changed template <class> int closure_size() @ main.cpp:1
-bad-3:  mismatch derived_changed closure_size<int>() @ main.cpp:1
+bad-3:  mismatch changed template <class> int closure_size() @ main.cpp:3
+bad-3:  mismatch derived_changed closure_size<int>() @ main.cpp:3

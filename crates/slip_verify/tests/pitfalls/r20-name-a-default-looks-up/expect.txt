@@ -5,7 +5,7 @@
 # caller, which names take<8> instead of take<4>). The rename analogue of
 # N23. Against a verifier that redoes the lookups of function bodies only.
 good:   none the new name is the one the default looks up; every rename to limit changes it
-bad:    mismatch changed app::Box::n @ main.cpp:6
+bad:    mismatch changed app::Box::n @ main.cpp:5
 good-2: none as good
-bad-2:  mismatch changed template <int> int app::take() @ main.cpp:5
-bad-2:  mismatch changed user() @ main.cpp:8
+bad-2:  mismatch changed template <int> int app::take() @ main.cpp:4
+bad-2:  mismatch changed user() @ main.cpp:7

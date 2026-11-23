@@ -7,4 +7,4 @@
 # string is not what it was, so f() differs.
 good:   verified
 good-2: none the program holds the local class's name; every rename changes it
-bad-2:  mismatch changed f() @ main.cpp:4
+bad-2:  mismatch changed f() @ main.cpp:3

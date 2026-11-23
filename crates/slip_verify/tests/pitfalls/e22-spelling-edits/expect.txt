@@ -24,7 +24,7 @@ bad-2:  mismatch changed caller() @ main.cpp:4
 good-3: none push_back and emplace_back are different members: no respelling is digest-equal
 bad-3:  mismatch changed fill() @ main.cpp:12
 good-4: none the loop variable's type is written: no respelling is digest-equal
-bad-4:  mismatch changed zero_first() @ main.cpp:1
+bad-4:  mismatch changed zero_first() @ main.cpp:3
 good-5: none the cast is an expression: removing it changes the function
 bad-5:  mismatch changed pass(M &) @ main.cpp:8
 good-6: none a scoped enumeration is another type

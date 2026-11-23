@@ -7,4 +7,4 @@
 # edit changes besides the rename (Derived and its shadow), so that bad is
 # caught by caller() alone.
 good: verified
-bad:  mismatch changed caller() @ main.cpp:11
+bad:  mismatch changed caller() @ main.cpp:10
