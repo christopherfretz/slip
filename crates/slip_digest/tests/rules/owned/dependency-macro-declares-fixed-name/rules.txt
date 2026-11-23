@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. A declaration made wholly by a dependency macro (its name too is spelled in dep.h) invoked in an owned file: owned, by the expansion location. Kills ownership by spelling location (dependency-macro-declares spells the name in the owned file).
+relocate legacy => :: acme

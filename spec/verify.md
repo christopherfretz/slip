@@ -187,7 +187,14 @@ post-image is a **dependency entity** if
   and for a declaration that a macro expansion produces, wholly or in
   part, the file that holds the outermost invocation. A declaration with
   no location in a file (a builtin, an implicitly declared function)
-  lies in a read-only file;
+  lies in a read-only file; so does one whose expansion location is in
+  a buffer that is not a file (`<built-in>`, the command line, a
+  buffer whose name begins with `<`, scratch space), in a file the
+  image cannot map to a subject path (§5.1), or in a file read after
+  the walk was given its files. An entity with more declarations than
+  the walk follows (`digest.md` §2, the redeclaration limit) is a
+  dependency entity: an unread declaration might be in a read-only
+  file;
 - or it is a specialisation of a template, implicit, explicit or
   partial, or a deduction guide made from a template's constructors, and
   the template is a dependency entity. A specialisation is keyed by its
@@ -195,7 +202,10 @@ post-image is a **dependency entity** if
   the one an instantiation makes (§4 step 4 depends on it);
 - or it is an implicitly declared member and its class is one.
 
-Every other entity is **owned**. The walk maps a key bottom-up as above,
+Every other entity is **owned**. Ownership is decided once per entity,
+from all its declarations in the translation unit: not by its first
+declaration, nor by its definition (an owned definition of a function a
+dependency header declares is the dependency's). The walk maps a key bottom-up as above,
 with two changes:
 
 1. **A rule matches an entity only if the entity is owned.**
@@ -246,7 +256,16 @@ includes both, nothing shows it (§8).
 dependency entity and not a namespace (`DependencyEntity`).
 
 With an empty rule table nothing is mapped and ownership is not
-consulted: a digest of the map phase does not depend on `files`.
+consulted: a digest of the map phase does not depend on `files`. A walk under
+rules that is not given the run's files treats every file as read-only:
+every key is then the key of the empty table (knowing less never
+accepts more).
+
+Two kinds of key are not an entity's and are not decided by ownership:
+the key of a `resolved` or `default_argument` unit has its entity's
+mapped key as its parent, and a rule of either kind is refused (above);
+the order unit's key is a constant. What the rules do to such a unit
+follows from its entity's key.
 
 **Why applying rules to the post-image is sound.** Let `φ` be the function
 from the entities of `B` to keys that the walk computes. If no unit is
@@ -472,7 +491,9 @@ pub struct Record {
 /// One record per unit that `digest(input, …)` has under `rules`, sorted by
 /// `(id, name)`. `Err`, naming the unit, if a unit that has no fallback key
 /// gets a `Key` whose id is not the unit's `KeyId`: no record is guessed.
-pub fn records(input: &Input<'_>, rules: &RuleTable) -> Result<Vec<Record>, String>;
+/// `read_only` is the run's read-only files, as `Options::read_only`
+/// (`digest.md` §11); not read when `rules` is empty.
+pub fn records(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Result<Vec<Record>, String>;
 
 // slip_cli::declare
 pub struct Entity { pub kind: Option<KeyKind>, pub text: String }

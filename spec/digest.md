@@ -368,7 +368,10 @@ rules also counts how each rule was used, so that a run can check that no
 observer still has a renamed entity under its old name (`verify.md` §9).
 
 **Ownership.** With rules the walk is also given which files are
-read-only (`verify.md` §2, `Declared.files`). A rule matches only an
+read-only (`verify.md` §2, `Declared.files`; `Options::read_only`, a
+predicate over the image's files that the caller makes: every file
+read-only when the caller has none, so that every key is the key of the
+empty table). A rule matches only an
 **owned** entity, and the namespaces that enclose a namespace member are
 mapped only when the member is owned; a dependency entity (one with a
 declaration in a read-only file, by its expansion location; a
@@ -378,7 +381,13 @@ discriminators mention mapped. The definition and the reason are
 `verify.md` §2.1 "Rules rename owned entities only". "Map its parent"
 above is therefore: a parent that is not a namespace has its own key; a
 namespace parent is mapped from the point of view of the entity being
-keyed. With `R` empty none of this is consulted.
+keyed: the same namespace can have two keys in one walk, one for its
+owned members and one for its dependency members, and its own unit has
+the key of its own ownership. Every site that writes a key (a unit's
+own, a reference from another unit's stream, a parent, a
+specialisation's template name) takes it through the one mapping, so an
+entity and every reference to it agree (WP-110). With `R` empty none of
+this is consulted.
 
 Two different entities of one translation unit with the same mapped `KeyId`
 are a **key collision**: every unit with that key is indeterminate (§10).
