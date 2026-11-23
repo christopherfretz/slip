@@ -7,7 +7,9 @@
 //! - [`ci`]: `cargo xtask ci [--quick] [--step <name>]… [--keep-going]` (§2),
 //! - [`corpus`]: `cargo xtask corpus list|fetch|configure|status|path` (§8),
 //! - [`jobserver`]: `cargo xtask jobserver status|refill` (§5),
-//! - [`perf`]: `cargo xtask perf summarize|record|check` (§7).
+//! - [`perf`]: `cargo xtask perf summarize|record|check` (§7),
+//! - [`invariants`]: `cargo xtask invariants a|b <corpus>` (§9), running
+//!   `slip` through [`slip_run`].
 //!
 //! Every command takes the repository root as a parameter so the tests can
 //! point it at fixture trees; [`repo_root`] is the root of the checkout this
@@ -17,10 +19,12 @@
 
 pub mod ci;
 pub mod corpus;
+pub mod invariants;
 pub mod jobserver;
 pub mod lint;
 pub mod perf;
 pub mod repo;
+pub mod slip_run;
 pub mod wp;
 
 use std::path::PathBuf;

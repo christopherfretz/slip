@@ -18,7 +18,9 @@ commands:
                                                the jobserver pool (§5); refill only
                                                while no client holds a token
   perf summarize <run record>…                 performance records (§7)
-  perf record|check <corpus> <run record>      the corpus baseline (§7.3)";
+  perf record|check <corpus> <run record>      the corpus baseline (§7.3)
+  invariants a|b <corpus> [--slip <path>] [--only <substring>]… [--limit <n>] [-j <n>]
+                                               the corpus invariants (§9)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,6 +33,7 @@ fn main() -> ExitCode {
         Some("corpus") => xtask::corpus::main(&root, rest),
         Some("jobserver") => xtask::jobserver::main(rest, &|name| std::env::var_os(name)),
         Some("perf") => xtask::perf::main(&root, rest),
+        Some("invariants") => xtask::invariants::main(&root, rest),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
             ExitCode::SUCCESS
