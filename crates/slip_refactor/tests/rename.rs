@@ -1064,6 +1064,9 @@ enum Wp119 {
     Simulated,
 }
 
+/// A tree's files: path and bytes.
+type Image = Vec<(String, Vec<u8>)>;
+
 /// The shards of `mains` over `files`, reduced, applied, and verified;
 /// `wrong` changes the post-image before it is digested (the wrong edit
 /// beside a right one).
@@ -1074,7 +1077,7 @@ fn end_to_end(
     target: &[&str],
     new: &str,
     wp119: Wp119,
-    wrong: &dyn Fn(&mut Vec<(String, Vec<u8>)>),
+    wrong: &dyn Fn(&mut Image),
 ) -> EndToEnd {
     let request = |root: &str| {
         let c = Case {
@@ -1124,32 +1127,7 @@ fn end_to_end(
     if set.state != slip_model::editset::SetState::Accepted {
         return EndToEnd { refusals, differences: Vec::new() };
     }
-    // The post-image: every accepted edit spliced into its file.
-    let mut post: Vec<(String, Vec<u8>)> =
-        files.iter().map(|(p, b)| ((*p).to_owned(), b.to_vec())).collect();
-    for (path, bytes) in &mut post {
-        let suffix = format!("/{path}");
-        let mut edits: Vec<(usize, usize, Vec<u8>)> = set
-            .edits
-            .iter()
-            .filter(|e| set.files[e.file as usize].path.ends_with(suffix.as_bytes()))
-            .map(|e| {
-                let text: Vec<u8> = e
-                    .pieces
-                    .iter()
-                    .flat_map(|p| match p {
-                        Piece::Literal(b) | Piece::Spelled { text: b, .. } => b.clone(),
-                        Piece::Copy(_) => panic!("{name}: a copy piece"),
-                    })
-                    .collect();
-                (e.lo as usize, e.hi as usize, text)
-            })
-            .collect();
-        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
-        for (lo, hi, text) in edits {
-            bytes.splice(lo..hi, text);
-        }
-    }
+    let mut post = applied(name, set, files);
     wrong(&mut post);
     let rules: Vec<_> = set
         .subjects
@@ -1229,8 +1207,37 @@ fn digest_units(
     r.expect("parsed")
 }
 
+/// The post-image: every accepted edit of `set` spliced into its file.
+fn applied(name: &str, set: &slip_model::editset::EditSet, files: &[(&str, &[u8])]) -> Image {
+    let mut post: Image = files.iter().map(|(p, b)| ((*p).to_owned(), b.to_vec())).collect();
+    for (path, bytes) in &mut post {
+        let suffix = format!("/{path}");
+        let mut edits: Vec<(usize, usize, Vec<u8>)> = set
+            .edits
+            .iter()
+            .filter(|e| set.files[e.file as usize].path.ends_with(suffix.as_bytes()))
+            .map(|e| {
+                let text: Vec<u8> = e
+                    .pieces
+                    .iter()
+                    .flat_map(|p| match p {
+                        Piece::Literal(b) | Piece::Spelled { text: b, .. } => b.clone(),
+                        Piece::Copy(_) => panic!("{name}: a copy piece"),
+                    })
+                    .collect();
+                (e.lo as usize, e.hi as usize, text)
+            })
+            .collect();
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+        for (lo, hi, text) in edits {
+            bytes.splice(lo..hi, text);
+        }
+    }
+    post
+}
+
 /// No change to the post-image.
-fn right(_: &mut Vec<(String, Vec<u8>)>) {}
+fn right(_: &mut Image) {}
 
 /// In `path` of the post-image, `from` (once) replaced by `to`.
 fn edit_back(post: &mut [(String, Vec<u8>)], path: &str, from: &str, to: &str) {
@@ -1253,7 +1260,7 @@ fn wp120_override_of_an_instantiated_member_end_to_end() {
         ("d.cpp", b"#include \"b.h\"\nnamespace n { struct D : B<int> { void f() override; }; }\nvoid h(n::D& d, n::B<int>& b) { d.f(); b.f(); }\n"),
         ("base.cpp", b"#include \"b.h\"\nvoid k(n::B<long>* b) { b->f(); }\n"),
     ];
-    let run = |name: &str, wp119, wrong: &dyn Fn(&mut Vec<(String, Vec<u8>)>)| {
+    let run = |name: &str, wp119, wrong: &dyn Fn(&mut Image)| {
         end_to_end(name, &files, &["d.cpp", "base.cpp"], &["n", "D", "f"], "g", wp119, wrong)
     };
     let now = run("wp120-a-now", Wp119::Now, &right);
@@ -1285,15 +1292,40 @@ fn wp120_override_in_a_class_template_end_to_end() {
         ("pattern.cpp", b"#include \"e.h\"\n"),
     ];
     let target = ["n", "Base", "f"];
-    let not = end_to_end("wp120-b-not", &files, &["pattern.cpp", "only.cpp"], &target, "g", Wp119::Now, &right);
+    let not = end_to_end(
+        "wp120-b-not",
+        &files,
+        &["pattern.cpp", "only.cpp"],
+        &target,
+        "g",
+        Wp119::Now,
+        &right,
+    );
     assert!(not.refusals.is_empty() && not.differences.is_empty(), "{not:?}");
-    let now = end_to_end("wp120-b-now", &files, &["use.cpp", "only.cpp"], &target, "g", Wp119::Now, &right);
+    let now = end_to_end(
+        "wp120-b-now",
+        &files,
+        &["use.cpp", "only.cpp"],
+        &target,
+        "g",
+        Wp119::Now,
+        &right,
+    );
     assert_eq!(now.refusals, ["SubjectUnsupported n::E<int>::f()"], "{now:?}");
-    let r = end_to_end("wp120-b-right", &files, &["use.cpp", "only.cpp"], &target, "g", Wp119::Simulated, &right);
+    let r = end_to_end(
+        "wp120-b-right",
+        &files,
+        &["use.cpp", "only.cpp"],
+        &target,
+        "g",
+        Wp119::Simulated,
+        &right,
+    );
     assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
-    let w = end_to_end("wp120-b-wrong", &files, &["pattern.cpp"], &target, "g", Wp119::Now, &|post| {
-        edit_back(post, "e.h", "void g() override;", "void f();");
-    });
+    let w =
+        end_to_end("wp120-b-wrong", &files, &["pattern.cpp"], &target, "g", Wp119::Now, &|post| {
+            edit_back(post, "e.h", "void g() override;", "void f();");
+        });
     assert!(!w.differences.is_empty(), "{w:?}");
 }
 
@@ -1311,9 +1343,25 @@ fn wp120_using_declaration_in_a_class_template_end_to_end() {
     let target = ["n", "Base", "f"];
     let not = end_to_end("wp120-c-not", &files, &["pattern.cpp"], &target, "g", Wp119::Now, &right);
     assert!(not.refusals.is_empty() && not.differences.is_empty(), "{not:?}");
-    let now = end_to_end("wp120-c-now", &files, &["use.cpp", "pattern.cpp"], &target, "g", Wp119::Now, &right);
+    let now = end_to_end(
+        "wp120-c-now",
+        &files,
+        &["use.cpp", "pattern.cpp"],
+        &target,
+        "g",
+        Wp119::Now,
+        &right,
+    );
     assert_eq!(now.refusals, ["SubjectUnsupported n::F<int>::f"], "{now:?}");
-    let r = end_to_end("wp120-c-right", &files, &["use.cpp", "pattern.cpp"], &target, "g", Wp119::Simulated, &right);
+    let r = end_to_end(
+        "wp120-c-right",
+        &files,
+        &["use.cpp", "pattern.cpp"],
+        &target,
+        "g",
+        Wp119::Simulated,
+        &right,
+    );
     assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
 }
 
@@ -1327,7 +1375,15 @@ fn wp120_dependent_base_over_two_observers_is_contested() {
         ("use.cpp", b"#include \"g.h\"\nvoid h(n::G<n::B>& x) { x.f(); }\n"),
         ("pattern.cpp", b"#include \"g.h\"\n"),
     ];
-    let r = end_to_end("wp120-g", &files, &["use.cpp", "pattern.cpp"], &["n", "B", "f"], "g", Wp119::Simulated, &right);
+    let r = end_to_end(
+        "wp120-g",
+        &files,
+        &["use.cpp", "pattern.cpp"],
+        &["n", "B", "f"],
+        "g",
+        Wp119::Simulated,
+        &right,
+    );
     assert_eq!(r.refusals, ["Contested n::G::f()"], "{r:?}");
 }
 
@@ -1342,13 +1398,37 @@ fn wp120_unhide_idiom_end_to_end() {
         "main.cpp",
         b"namespace n {\nstruct B { virtual void f(); void f(int); };\nstruct D : B { using B::f; void f() override; };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
     )];
-    let base = end_to_end("wp120-u-base", &idiom, &["main.cpp"], &["n", "B", "f"], "g", Wp119::Now, &right);
+    let base = end_to_end(
+        "wp120-u-base",
+        &idiom,
+        &["main.cpp"],
+        &["n", "B", "f"],
+        "g",
+        Wp119::Now,
+        &right,
+    );
     assert!(base.refusals.is_empty() && base.differences.is_empty(), "{base:?}");
-    let wrong = end_to_end("wp120-u-wrong", &idiom, &["main.cpp"], &["n", "B", "f"], "g", Wp119::Now, &|post| {
-        edit_back(post, "main.cpp", "void g() override;", "void f();");
-    });
+    let wrong = end_to_end(
+        "wp120-u-wrong",
+        &idiom,
+        &["main.cpp"],
+        &["n", "B", "f"],
+        "g",
+        Wp119::Now,
+        &|post| {
+            edit_back(post, "main.cpp", "void g() override;", "void f();");
+        },
+    );
     assert!(!wrong.differences.is_empty(), "{wrong:?}");
-    let derived = end_to_end("wp120-u-derived", &idiom, &["main.cpp"], &["n", "D", "f"], "g", Wp119::Now, &right);
+    let derived = end_to_end(
+        "wp120-u-derived",
+        &idiom,
+        &["main.cpp"],
+        &["n", "D", "f"],
+        "g",
+        Wp119::Now,
+        &right,
+    );
     // The hidden shadow (no subject of the reduced set: shown by its id).
     assert!(
         derived.refusals.len() == 1 && derived.refusals[0].starts_with("MixedFollower "),
@@ -1358,14 +1438,30 @@ fn wp120_unhide_idiom_end_to_end() {
         "main.cpp",
         b"namespace n {\nstruct B { virtual void f(); void f(int); };\nstruct D : B { void f() override; using B::f; };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
     )];
-    let b = end_to_end("wp120-u-before", &before, &["main.cpp"], &["n", "D", "f"], "g", Wp119::Now, &right);
+    let b = end_to_end(
+        "wp120-u-before",
+        &before,
+        &["main.cpp"],
+        &["n", "D", "f"],
+        "g",
+        Wp119::Now,
+        &right,
+    );
     assert!(b.refusals.is_empty() && b.differences.is_empty(), "{b:?}");
     // A second derived class in which B::f() is not hidden: refused.
     let second: [(&str, &[u8]); 1] = [(
         "main.cpp",
         b"namespace n {\nstruct B { virtual void f(); void f(int); };\nstruct D : B { void f() override; using B::f; };\nstruct E : B { using B::f; };\n}\nvoid h(n::E& e) { e.f(); e.f(1); }\n",
     )];
-    let s = end_to_end("wp120-u-second", &second, &["main.cpp"], &["n", "D", "f"], "g", Wp119::Now, &right);
+    let s = end_to_end(
+        "wp120-u-second",
+        &second,
+        &["main.cpp"],
+        &["n", "D", "f"],
+        "g",
+        Wp119::Now,
+        &right,
+    );
     assert!(s.refusals.len() == 1 && s.refusals[0].starts_with("MixedFollower "), "{s:?}");
 }
 
@@ -1392,10 +1488,18 @@ fn wp120_local_classes_of_templates_end_to_end() {
     for (name, files) in [("wp120-vt", &vt), ("wp120-ft", &ft), ("wp120-mt", &mt)] {
         let r = end_to_end(name, files, &["main.cpp"], &["n", "B", "f"], "g", Wp119::Now, &right);
         assert!(r.refusals.is_empty() && r.differences.is_empty(), "{name}: {r:?}");
-        let w = end_to_end(&format!("{name}-wrong"), files, &["main.cpp"], &["n", "B", "f"], "g", Wp119::Now, &|post| {
-            edit_back(post, "main.cpp", "void g() override {}", "void f() {}");
-            edit_back(post, "main.cpp", "l.g()", "l.f()");
-        });
+        let w = end_to_end(
+            &format!("{name}-wrong"),
+            files,
+            &["main.cpp"],
+            &["n", "B", "f"],
+            "g",
+            Wp119::Now,
+            &|post| {
+                edit_back(post, "main.cpp", "void g() override {}", "void f() {}");
+                edit_back(post, "main.cpp", "l.g()", "l.f()");
+            },
+        );
         assert!(!w.differences.is_empty(), "{name}: {w:?}");
     }
 }

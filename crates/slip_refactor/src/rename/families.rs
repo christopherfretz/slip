@@ -166,11 +166,9 @@ pub(crate) fn in_class_pattern(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> bool {
             return false;
         }
         let s = ctx.keys.entity(s);
-        if ctx
-            .keys
-            .key(s)
-            .is_ok_and(|k| matches!(k.kind, KeyKind::ClassTemplate | KeyKind::PartialSpecialisation))
-        {
+        if ctx.keys.key(s).is_ok_and(|k| {
+            matches!(k.kind, KeyKind::ClassTemplate | KeyKind::PartialSpecialisation)
+        }) {
             return true;
         }
         at = s;

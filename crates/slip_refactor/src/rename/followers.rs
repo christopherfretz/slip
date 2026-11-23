@@ -169,7 +169,7 @@ fn using_declaration(ctx: &mut Ctx<'_, '_, '_>, d: &DeclName) {
 
 /// One shadow of a using-declaration: what it names.
 struct Shadow {
-    shadow: DeclId,
+    decl: DeclId,
     /// The key id of its target's origin: the subject's, or the entity's
     /// (`None`: no key).
     id: Option<KeyId>,
@@ -187,13 +187,13 @@ fn shadows_named(ctx: &mut Ctx<'_, '_, '_>, shadows: &[DeclId]) -> Vec<Shadow> {
     for &s in shadows {
         let hidden = ast.decls.hidden_shadow(s).is_some();
         let Some(t) = ast.using_target(s) else {
-            named.push(Shadow { shadow: s, id: None, subject: false, hidden });
+            named.push(Shadow { decl: s, id: None, subject: false, hidden });
             continue;
         };
         let o = written::origin(unit, t);
         let subject = ctx.subjects.of_decl(ctx.keys, o);
         let id = subject.or_else(|| ctx.keys.key_id(ctx.keys.entity(o)).ok());
-        named.push(Shadow { shadow: s, id, subject: subject.is_some(), hidden });
+        named.push(Shadow { decl: s, id, subject: subject.is_some(), hidden });
     }
     named
 }
@@ -225,7 +225,7 @@ fn shadow_followers(ctx: &mut Ctx<'_, '_, '_>, named: &[Shadow], using: Option<K
         if let (true, Some(u)) = (n.hidden, using) {
             of.push(u);
         }
-        ctx.subjects.add(ctx.keys, n.shadow, Role::Follower, ctx.new, &of);
+        ctx.subjects.add(ctx.keys, n.decl, Role::Follower, ctx.new, &of);
     }
 }
 

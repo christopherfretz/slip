@@ -180,10 +180,7 @@ fn unlinked_member(ast: &Ast, d: DeclId) -> bool {
     // A using-shadow is never linked (Kiln links its using-declaration),
     // and nothing can specialise one: the shadows of an instantiated
     // using-declaration are `followers::instantiated_using`'s.
-    if matches!(
-        ast.decls.get(d).kind(),
-        DeclKind::UsingShadow | DeclKind::ConstructorUsingShadow
-    ) {
+    if matches!(ast.decls.get(d).kind(), DeclKind::UsingShadow | DeclKind::ConstructorUsingShadow) {
         return false;
     }
     let linked =
