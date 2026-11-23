@@ -1,2 +1,2 @@
-removed f(int)
-added f(int)
+added template <class> type-parameter-0-0 * f(int)
+removed template <class> type-parameter-0-0 f(int)

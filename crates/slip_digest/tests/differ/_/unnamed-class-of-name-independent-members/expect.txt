@@ -1,0 +1,2 @@
+changed S::(anonymous struct 0)::_ (name-independent 0)
+changed S::(anonymous struct 1)::_ (name-independent 0)

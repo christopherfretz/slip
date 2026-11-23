@@ -1,2 +1,3 @@
-added S::(unnamed 1)
 changed S
+changed S::(anonymous enum 0)
+removed S::(anonymous enum 1)

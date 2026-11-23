@@ -1,2 +1,2 @@
-added g(Z<2UL + sizeof...(U)>)
-removed g(Z<1UL + sizeof...(U)>)
+added template <class...> void g(Z<2UL + sizeof...(U)>)
+removed template <class...> void g(Z<1UL + sizeof...(U)>)

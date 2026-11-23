@@ -1,0 +1,7 @@
+changed T
+added (anonymous struct for R2)
+added (anonymous struct for R2)::m
+added R2
+removed (anonymous struct for R)
+removed (anonymous struct for R)::m
+removed R

@@ -1,0 +1,1 @@
+added template <template <class, class> class> void f()

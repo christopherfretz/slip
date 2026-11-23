@@ -1,2 +1,2 @@
-removed f(type-parameter-0-0)
-added f(type-parameter-0-0...)
+added template <class...> void f(type-parameter-0-0...)
+removed template <class> void f(type-parameter-0-0)

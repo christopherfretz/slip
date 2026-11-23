@@ -1,4 +1,6 @@
 removed S
 added T
-removed S::a
-added T::a
+added (anonymous struct for T)
+added (anonymous struct for T)::a
+removed (anonymous struct for S)
+removed (anonymous struct for S)::a

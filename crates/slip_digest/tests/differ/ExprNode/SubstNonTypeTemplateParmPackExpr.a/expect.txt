@@ -1,4 +1,4 @@
 changed S
-added S::g()
-removed S::g()
+added template <int...> decltype(((Ms * Ms) + ...)) S::g()
+removed template <int...> decltype(((Ns * Ms) + ...)) S::g()
 changed p
