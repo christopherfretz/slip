@@ -412,6 +412,30 @@ pair("indeterminate", "typedef-alignment-by-declaration-use-between", "",
      ["indeterminate R", "indeterminate g()"],
      "a use between an aligned declaration and a plain one: Kiln's `alignof(R)` is 8 there and 4"
      " after the plain one; clang 19 gives 8 for both.")
+# Re-check R1: declarations that all carry an alignment, with different
+# values. Kiln's layout reads every declaration present when a class is
+# first laid out and caches it; clang reads the named declaration.
+R16 = "typedef int R __attribute__((aligned(16)));"
+CACHE = "struct S { char c; R r; };"
+for slug, mid, end in [("laid-out-before", "static_assert(sizeof(S) > 0);", ""),
+                       ("laid-out-after", "", "static_assert(sizeof(S) > 0);")]:
+    pair("indeterminate", "typedef-alignment-by-value-" + slug, "",
+         "\n".join(x for x in [RD, CACHE, mid, R16, end] if x),
+         ["indeterminate R", "indeterminate S::r"],
+         "aligned(8), a class laid out " + slug.split("-")[-1] + " the aligned(16) redeclaration:"
+         " Kiln's `sizeof(S)` is 16 if S is laid out first between them and 32 after (cached);"
+         " clang 19 gives 16. `g()` and `S` hold no type that meets `R` (`g` holds `sizeof(S)`,"
+         " which the class's units decide), so only `R` and `S::r` are indeterminate.",
+         post="unsigned long g() { return sizeof(S); }")
+for slug, first, second in [("8-then-16", RD, R16), ("16-then-8", R16, RD)]:
+    pair("indeterminate", "typedef-alignment-by-value-" + slug, "", first + "\n" + second,
+         ["indeterminate R", "indeterminate g()", "indeterminate S::r"],
+         "two declarations with different alignments: Kiln's `alignof(R)` reads the declaration"
+         " a use names, its layout every one present when the class is first laid out.",
+         post=USE_R)
+pair("differ", "typedef-alignment-same-value", "int v;", "R v;", ["changed v"],
+     "every declaration carries aligned(16): the declarations agree, determinate.",
+     pre=R16 + "\n" + R16)
 pair("differ", "typedef-alignment-every-declaration", "int v;", "R v;", ["changed v"],
      "every declaration carries the alignment: determinate.",
      pre=RD + "\n" + RD)

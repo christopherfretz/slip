@@ -803,13 +803,14 @@ impl Walk<'_> {
 /// layout reads in it is not known.
 const ALIGNED_SUGAR_BOUND: Cause = Cause::Unsupported("TypeView/Typedef-aligned-bound");
 
-/// A typedef met by rule 9 whose declarations disagree on carrying an
-/// alignment (digest-kinds §4.2 rule 9, digest §10). Kiln's layout reads
-/// every declaration, its `alignof` only the one the sugar node names
-/// (`Ast::layout_attributed_typedef`), so the answer depends on which
-/// declaration a use names: a fact no unit holds. Goes when Kiln reads
-/// every declaration there too (`spec/landed/digest/WP-107.md`, "For
-/// Kiln").
+/// A typedef met by rule 9 whose declarations do not all carry the same
+/// alignment (digest-kinds §4.2 rule 9, digest §10). Kiln's `alignof`
+/// reads only the declaration the sugar node names
+/// (`Ast::layout_attributed_typedef`), and its layout every declaration
+/// present when the class is first laid out, then caches it; so the
+/// answer depends on which declaration a use names and where a layout
+/// is first asked for, facts no unit holds. Goes when Kiln fixes both
+/// (`spec/landed/digest/WP-107.md`, "For Kiln" items 2 and 4).
 pub(crate) const ALIGNMENT_BY_DECLARATION: Cause =
     Cause::Unsupported("typedef/alignment-by-declaration");
 
@@ -884,18 +885,98 @@ fn carries_alignment(ast: &slip_kiln::kiln::ast::Ast, d: DeclId) -> bool {
     ast.redecls_of(d).any(|r| declaration_aligned(ast, r))
 }
 
-/// Whether typedef `d` carries an alignment on some of its declarations
-/// and not on others ([`ALIGNMENT_BY_DECLARATION`]).
+/// Whether the declarations of typedef `d` do not all carry the same
+/// alignment ([`ALIGNMENT_BY_DECLARATION`]): one has none and another
+/// some, or their requests differ, or a request has a value that cannot
+/// be compared (then they disagree). A single declaration agrees.
 pub(crate) fn alignment_by_declaration(ast: &slip_kiln::kiln::ast::Ast, d: DeclId) -> bool {
-    let (mut with, mut without) = (false, false);
+    let mut first: Option<Option<Vec<AlignRequest>>> = None;
     for r in ast.redecls_of(d) {
-        if declaration_aligned(ast, r) {
-            with = true;
-        } else {
-            without = true;
+        let mine = alignment_requests(ast, r);
+        match &first {
+            None => first = Some(mine),
+            Some(f) => {
+                if f.is_none() || mine.is_none() || *f != mine {
+                    return true;
+                }
+            }
         }
     }
-    with && without
+    false
+}
+
+/// One alignment request of a declaration, as Kiln's `max_align_attr`
+/// reads it (`kiln_abi/src/layout/props.rs:78`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AlignRequest {
+    /// `aligned` with no argument: the target's biggest alignment.
+    Biggest,
+    /// A constant argument, in bytes.
+    Value(u128),
+    /// `alignas(type-id)`: the canonical type, raw.
+    Type(u32),
+}
+
+/// The alignment requests of declaration `r`, sorted; `None` when one has
+/// an argument that is not a constant the AST holds.
+fn alignment_requests(ast: &slip_kiln::kiln::ast::Ast, r: DeclId) -> Option<Vec<AlignRequest>> {
+    use slip_kiln::kiln::ast::attr::AttrKind;
+    use slip_kiln::kiln::ast::{ExprId, RawId};
+    let mut out = Vec::new();
+    for a in ast.lists.iter::<slip_kiln::kiln::ast::AttrId>(ast.attrs.of_decl(r)) {
+        let a = ast.attrs.get(a);
+        if a.kind != AttrKind::ALIGNED {
+            continue;
+        }
+        out.push(if let Some(q) = QualType::from_raw(a.b) {
+            AlignRequest::Type(ast.types.canonical(q).to_raw())
+        } else if let Some(e) = ExprId::from_raw(a.a) {
+            AlignRequest::Value(constant_int(ast, e)?)
+        } else {
+            AlignRequest::Biggest
+        });
+    }
+    if let Some(&e) = ast.decls.cold.alignment.get(r) {
+        out.push(AlignRequest::Value(constant_int(ast, e)?));
+    }
+    out.sort_unstable();
+    Some(out)
+}
+
+/// The value of an alignment argument Sema checked, read as Kiln's
+/// layout reads it (`eval_int`, `kiln_abi/src/layout/props.rs:39`): a
+/// `ConstantExpr`'s value, or an integer literal under parentheses and
+/// casts. `None` otherwise.
+fn constant_int(
+    ast: &slip_kiln::kiln::ast::Ast,
+    mut e: slip_kiln::kiln::ast::ExprId,
+) -> Option<u128> {
+    use slip_kiln::kiln::ast::consts::Scalar;
+    use slip_kiln::kiln::ast::expr::ExprKind;
+    let scalar = |v| match ast.consts.scalar(v)? {
+        Scalar::Int { bits, .. } => bits.to_u128(),
+        Scalar::Bool { value, .. } => Some(u128::from(value)),
+        _ => None,
+    };
+    for _ in 0..64 {
+        let kind = ast.exprs.get(e).kind();
+        if kind == ExprKind::ConstantExpr {
+            if let Some(v) = ast.exprs.constant_value(e) {
+                return scalar(v);
+            }
+            e = ast.exprs.operand(e);
+        } else if kind == ExprKind::IntegerLiteral {
+            return match ast.exprs.int_value(e) {
+                Some(v) => Some(u128::from(v)),
+                None => ast.exprs.literal_const(e).and_then(scalar),
+            };
+        } else if kind == ExprKind::ParenExpr || kind.is_cast() {
+            e = ast.exprs.operand(e);
+        } else {
+            return None;
+        }
+    }
+    None
 }
 
 /// Whether declaration `r` itself has an `ALIGNED` attribute or an
