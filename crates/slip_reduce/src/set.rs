@@ -154,7 +154,7 @@ impl Builder {
             let Some((_, claims, observed)) = &mut self.pending else { unreachable!("set above") };
             match (entry, val) {
                 (Entry::Claim { stance, pieces }, Val::Claim(v)) => {
-                    claims.push((stance, pieces, v))
+                    claims.push((stance, pieces, v));
                 }
                 (Entry::Observed(variants), Val::Sample(v)) => observed.push((variants, v)),
                 _ => return Err(corrupt("a claim without its value")),
@@ -272,7 +272,7 @@ impl Builder {
                     subject: out.least_subject,
                     sample,
                     other: None,
-                })
+                });
             }
             Outcome::Nothing => {}
         }

@@ -192,6 +192,7 @@ fn put(records: &mut BTreeMap<Key, Val>, key: Key, val: Val) -> Result<(), Strin
 }
 
 /// Folds an `ok` shard, checked by [`read`], into a run.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn fold(
     ctx: &Ctx<'_>,
     index: u64,

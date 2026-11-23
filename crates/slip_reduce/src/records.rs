@@ -403,6 +403,7 @@ fn failure_kind_of(v: u64) -> Option<FailureKind> {
 }
 
 /// Decodes one record written by [`encode`].
+#[allow(clippy::too_many_lines)]
 pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
     let mut d = Decoder::new(bytes);
     let tag = w(d.u8())?;
