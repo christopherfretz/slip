@@ -399,13 +399,18 @@ const OWN: &[&str] = &[
 /// `Pending(Local)` before WP-040): a lambda's closure that no numbering
 /// of its owner finds, a lambda in a signature (16 of 22 565 at the
 /// merge of WP-040); `local/closure-owner`: a lambda whose closure a
-/// namespace or a class owns, which has no key (4). The own sources leave nothing out (`OWN_CEILINGS`), which is
+/// namespace or a class owns, which has no key (4); `local/lambda-in-type`:
+/// an expression whose type is a closure, profiled in a key as these nets
+/// profile every expression (8 of 24 202 at the WP-040 fix round, the
+/// call of a `consteval` block's closure among them, which no key holds).
+/// The own sources leave nothing out (`OWN_CEILINGS`), which is
 /// the exact guard; this one bounds the drift of the pair tests.
 const PAIR_CEILINGS: &[(&str, usize)] = &[
     ("full", 50),
     ("Unaccounted(\"key/local-ref\")", 250),
     ("UndeclaredLocal", 5),
     ("Unsupported(\"local/closure-owner\")", 5),
+    ("Unsupported(\"local/lambda-in-type\")", 1),
 ];
 
 /// The same for `OWN`.

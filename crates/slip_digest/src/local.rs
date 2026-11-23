@@ -32,7 +32,8 @@ use std::collections::{HashMap, HashSet};
 
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind};
 use slip_kiln::kiln::ast::lambda::{LambdaCapture, LambdaData, LambdaMangling};
-use slip_kiln::kiln::ast::{DeclId, ExprId, LambdaId};
+use slip_kiln::kiln::ast::types::{ArgView, TypeView};
+use slip_kiln::kiln::ast::{DeclId, ExprId, LambdaId, QualType};
 use slip_model::Digest;
 use slip_model::keys::Parent;
 
@@ -67,6 +68,16 @@ pub(crate) const CYCLE: Cause = Cause::Unaccounted("local/numbering-cycle");
 /// What a number asked for while numbering is (never: the mode returns
 /// before anything asks).
 pub(crate) const IN_NUMBERING: Cause = Cause::Unaccounted("local/in-numbering");
+/// The parent a content-keyed owner's local types have inside the
+/// owner's own content digest (digest §4.3): that owner, whose key is
+/// the digest being computed.
+const SELF_KEY: Digest = Digest(*b"slip/digest/local/content-self!!");
+/// The exception specification of a local class's member that Kiln
+/// still holds `Deferred` (an implicit or defaulted member never used):
+/// no resolved unit can hold it, since the member's key is under a local
+/// type, and Kiln has not computed it (`decl.rs` `own_exception_spec`).
+pub(crate) const DEFERRED_EXCEPTION_SPEC: Cause =
+    Cause::Unsupported("local/deferred-exception-spec");
 /// How far a chain of contexts or owners is followed.
 const CHAIN_LIMIT: u32 = 4096;
 
@@ -139,6 +150,12 @@ pub(crate) struct LocalState {
     pub in_type: u32,
     /// The template of each template parameter, built on first use.
     param_templates: Option<HashMap<DeclId, DeclId>>,
+    /// How many keys were computed under [`SELF_KEY`]: a key, type or
+    /// value computed while it grows is not memoised for other units.
+    pub self_rooted: u64,
+    /// The consteval block at each location, built with
+    /// `param_templates`: `None` for a location two blocks share.
+    blocks: HashMap<slip_kiln::kiln::source::Loc, Option<DeclId>>,
     /// [`unit_of`], memoised.
     units: HashMap<DeclId, Option<DeclId>>,
     /// Tests only: each local type the walk declared in place, with its
@@ -158,6 +175,9 @@ pub(crate) struct UnitLocals {
     written: HashSet<DeclId>,
     /// Per owner, the number the next local type it declares must have.
     next: HashMap<DeclId, u64>,
+    /// The named local types whose streams are being written in place,
+    /// outermost first ([`write_scope_names`]).
+    scopes: Vec<DeclId>,
 }
 
 /// The numbering mode is on: what the mode skips returns at once.
@@ -215,6 +235,10 @@ pub(crate) fn owner_res(w: &Walk<'_>, d: DeclId) -> Result<DeclId, Cause> {
 fn closure_owner(w: &Walk<'_>, r: DeclId, o: DeclId) -> Result<DeclId, Cause> {
     let ast = w.ast;
     let kind = ast.decls.get(o).kind();
+    // A consteval block's lambda: owned by the block, a unit of its own.
+    if let Some(b) = consteval_block(w, r, o) {
+        return Ok(b);
+    }
     match kind {
         DeclKind::ParmVar => match ast.decls.get(o).ctx() {
             Some(f) if info(ast.decls.get(f).kind()).function => Ok(w.entity(f)),
@@ -375,7 +399,14 @@ fn param_templates(w: &mut Walk<'_>) {
     }
     let ast = w.ast;
     let mut m = HashMap::new();
+    let mut blocks = HashMap::new();
     for d in ast.decls.ids() {
+        if ast.decls.get(d).kind() == DeclKind::ConstevalBlock {
+            blocks
+                .entry(ast.decls.get(d).loc())
+                .and_modify(|b: &mut Option<DeclId>| *b = None)
+                .or_insert(Some(d));
+        }
         let list = ast
             .template_info(d)
             .map(|i| i.params)
@@ -387,20 +418,27 @@ fn param_templates(w: &mut Walk<'_>) {
         }
     }
     w.local.param_templates = Some(m);
+    w.local.blocks = blocks;
+}
+
+/// The consteval block whose synthesized lambda ([dcl.pre], P3289R1)
+/// closure `r` is, when Kiln gives it the block's scope as its owner:
+/// both of the lambda's brackets are at the block's `consteval`
+/// (`Sema::consteval_block_closure`), and the block is in scope `o`.
+fn consteval_block(w: &Walk<'_>, r: DeclId, o: DeclId) -> Option<DeclId> {
+    let ast = w.ast;
+    let l = ast.decls.record(r)?.lambda?;
+    let data = ast.exprs.lambdas.get(l);
+    if !data.lbracket.is_valid() || data.lbracket != data.rbracket {
+        return None;
+    }
+    let b = (*w.local.blocks.get(&data.lbracket)?)?;
+    (ast.decls.get(b).ctx() == Some(o) && !w.is_local(b)).then_some(b)
 }
 
 /// [`owner_res`], with what it needs built first.
 fn owner_of(w: &mut Walk<'_>, d: DeclId) -> Result<DeclId, Cause> {
-    let ast = w.ast;
-    if w.local.param_templates.is_none()
-        && is_closure(w, d)
-        && ast.closure_owner(ast.first(d)).is_some_and(|o| {
-            let k = ast.decls.get(o).kind();
-            k == DeclKind::TemplateTypeParm
-                || k == DeclKind::NonTypeTemplateParm
-                || k == DeclKind::TemplateTemplateParm
-        })
-    {
+    if w.local.param_templates.is_none() && is_closure(w, d) {
         param_templates(w);
     }
     owner_res(w, d)
@@ -412,6 +450,14 @@ pub(crate) fn local_parent(
     e: DeclId,
 ) -> Result<(Parent, Option<Cause>), Option<Cause>> {
     let o = owner_of(w, e).map_err(Some)?;
+    if w.content_in_progress.contains(&o) {
+        // Inside the owner's own content digest, which is its key (a
+        // consteval block's closure): the owner is `SELF_KEY`, which
+        // means the unit being digested; what depends on it is not
+        // memoised (`LocalState::self_rooted`).
+        w.local.self_rooted += 1;
+        return Ok((Parent::Unit(SELF_KEY), None));
+    }
     match w.key(o) {
         KeyRes::Key { id, cause, .. } => Ok((Parent::Unit(id), cause)),
         KeyRes::None(c) => Err(Some(c.unwrap_or(BAD_OWNER))),
@@ -845,7 +891,131 @@ fn local_type(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         w.local.written.push((o, t));
     }
     let from = crate::units::read_decl(w, t);
+    let named = is_named_local(w, t);
+    if named {
+        w.unit.local.scopes.push(t);
+    }
     w.decl_stream(s, from, t);
+    if named {
+        w.unit.local.scopes.pop();
+    }
+}
+
+/// `t` is a local class or enumeration with a name of its own (not a
+/// closure, not unnamed): what a printed name shows of it.
+fn is_named_local(w: &Walk<'_>, t: DeclId) -> bool {
+    !is_closure(w, t) && !w.ast.decls.get(t).name().is_empty()
+}
+
+/// The names of the named local types around the code being written,
+/// outermost first: those around the unit's entity (a unit under a local
+/// type, such as a generic call operator's specialisation), then those
+/// whose streams are being written in place. What a function name a
+/// program reads (`__func__`, `__PRETTY_FUNCTION__`,
+/// `source_location::function_name`) prints of them, and no rule maps,
+/// since a local entity has no key (digest §4.3 "Names a program reads").
+pub(crate) fn write_scope_names(w: &mut Walk<'_>, s: &mut Stream) {
+    let ast = w.ast;
+    let mut around = Vec::new();
+    let mut c = w.unit.local.holder.and_then(|h| ast.decls.get(h).ctx());
+    for _ in 0..CHAIN_LIMIT {
+        let Some(x) = c else { break };
+        if !w.is_local(x) && !is_local_type(w, x) {
+            break;
+        }
+        if is_local_type(w, x) && is_named_local(w, x) {
+            around.push(x);
+        }
+        c = ast.decls.get(x).ctx();
+    }
+    around.reverse();
+    let all: Vec<DeclId> = around.into_iter().chain(w.unit.local.scopes.iter().copied()).collect();
+    s.count(all.len());
+    for t in all {
+        w.write_name(s, t);
+    }
+}
+
+/// The names of the named local types the type `q` mentions (itself, a
+/// pointee, an element, a parameter or return type, a template argument),
+/// each with the named local types around it, outermost first, in the
+/// order met: what `typeid(q).name()` prints of them (digest §4.3 "Names
+/// a program reads").
+pub(crate) fn write_type_names(w: &mut Walk<'_>, s: &mut Stream, q: QualType) {
+    let ast = w.ast;
+    let mut found: Vec<DeclId> = Vec::new();
+    let mut stack = vec![ast.types.canonical(q)];
+    let mut steps = 0u32;
+    let mut cut = false;
+    while let Some(q) = stack.pop() {
+        steps += 1;
+        if steps > CHAIN_LIMIT {
+            cut = true;
+            break;
+        }
+        match ast.types.view(q.ty()) {
+            TypeView::Pointer(p)
+            | TypeView::LValueRef(p)
+            | TypeView::RValueRef(p)
+            | TypeView::IncompleteArray(p)
+            | TypeView::Paren(p)
+            | TypeView::Complex(p)
+            | TypeView::Atomic(p) => stack.push(ast.types.canonical(p)),
+            TypeView::MemberPointer { pointee, class } => {
+                stack.push(QualType::unqual(class));
+                stack.push(ast.types.canonical(pointee));
+            }
+            TypeView::ConstantArray(a) => stack.push(ast.types.canonical(a.elem)),
+            TypeView::Function(p) => {
+                for &t in ast.types.params(&p).iter().rev() {
+                    stack.push(ast.types.canonical(t));
+                }
+                stack.push(ast.types.canonical(p.ret()));
+            }
+            TypeView::Record(d) | TypeView::Enum(d) => {
+                let d = ast.first(d);
+                // Around it, outermost first, then itself.
+                let mut chain = Vec::new();
+                let mut x = Some(d);
+                for _ in 0..CHAIN_LIMIT {
+                    let Some(y) = x else { break };
+                    if is_local_type(w, y) && is_named_local(w, y) {
+                        chain.push(ast.first(y));
+                    } else if !w.is_local(y) && !is_local_type(w, y) {
+                        break;
+                    }
+                    x = ast.decls.get(y).ctx();
+                }
+                for t in chain.into_iter().rev() {
+                    if !found.contains(&t) {
+                        found.push(t);
+                    }
+                }
+                if let Some((_, si)) = ast.spec_info(d) {
+                    let args: Vec<QualType> = ast
+                        .types
+                        .args(ast.types.canonical_args(si.args))
+                        .iter()
+                        .filter_map(|a| match a.view() {
+                            ArgView::Type(t) => Some(ast.types.canonical(t)),
+                            _ => None,
+                        })
+                        .collect();
+                    for t in args.into_iter().rev() {
+                        stack.push(t);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    s.count(found.len());
+    for t in found {
+        w.write_name(s, t);
+    }
+    if cut {
+        s.indeterminate(TOO_DEEP);
+    }
 }
 
 /// A member of a local type written in place (digest §4.3: it has an
@@ -855,6 +1025,7 @@ fn local_type(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 /// members.
 fn member(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     if numbering_mode(w) {
+        call_op_prototype(w, d);
         return;
     }
     let e = w.entity(d);
@@ -873,6 +1044,38 @@ fn member(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         | Role::Unsupported(_) => {
             s.uv(0).indeterminate(Cause::Unaccounted("local/member"));
         }
+    }
+}
+
+/// While numbering, at member `d` of a local type: if `d` is a closure's
+/// call operator (or its template), what of its prototype Kiln gives the
+/// owner of the closure rather than the call operator (digest §4.3): its
+/// parameters' default arguments, walked as its stream walks them. Its
+/// body is the call operator's own; a lambda in its trailing
+/// requires-clause is in its key (`LAMBDA_IN_KEY`), and one in a
+/// noexcept operand is written as the operand's value only.
+fn call_op_prototype(w: &mut Walk<'_>, d: DeclId) {
+    let ast = w.ast;
+    let f = match ast.decls.get(d).kind() {
+        DeclKind::FunctionTemplate => match ast.template_info(d).and_then(|i| i.pattern) {
+            Some(f) => f,
+            None => return,
+        },
+        DeclKind::CXXMethod => d,
+        _ => return,
+    };
+    if ast.call_op_lambda(f).is_none() {
+        return;
+    }
+    let params: Vec<DeclId> = ast
+        .decls
+        .function(f)
+        .map(|x| ast.lists.iter::<DeclId>(x.params).collect())
+        .unwrap_or_default();
+    let mut scratch = Stream::new();
+    for p in params {
+        let (_, default) = crate::decl_func::written_default(w, p);
+        crate::expr::child_opt(w, &mut scratch, default);
     }
 }
 
@@ -995,6 +1198,7 @@ mod tests {
     use slip_kiln::kiln::ast::decl::DeclKind;
 
     use crate::decl_func::tests::{named, of_kind, with_walk};
+    use crate::keys::KeyRes;
     use crate::stream::Stream;
 
     fn write(w: &mut Walk<'_>, d: DeclId) -> Stream {
@@ -1119,6 +1323,34 @@ mod tests {
             assert_ne!(got.cause(), Some(super::NOT_IN_BLOCK));
             assert_eq!(w.unit.next_local, 0);
         });
+    }
+
+    // digest §4.3 "An owner keyed by its content": a namespace-scope
+    // consteval block owns its closure; the key of the closure's call
+    // operator is the same whether it or the block's is asked for first,
+    // and has no cause (inside the block's content it is under
+    // `SELF_KEY`, never memoised).
+    #[test]
+    fn a_consteval_block_owns_its_closure() {
+        let src = "consteval { int a = 1; (void)a; }";
+        let key = |first_block: bool| {
+            with_walk(src, |w| {
+                let b = of_kind(w, DeclKind::ConstevalBlock)[0];
+                let op = of_kind(w, DeclKind::CXXMethod)[0];
+                let r = w.ast.decls.get(op).ctx().expect("the closure");
+                assert_eq!(super::owner_of(w, r), Ok(b));
+                if first_block {
+                    let _ = w.key(b);
+                }
+                match w.key(op) {
+                    KeyRes::Key { id, cause, .. } => (id, cause),
+                    KeyRes::None(c) => panic!("no key: {c:?}"),
+                }
+            })
+        };
+        let (a, b) = (key(true), key(false));
+        assert_eq!(a, b);
+        assert_eq!(a.1, None);
     }
 
     // digest-kinds §2.4, §9: a static_assert in a block writes its stream

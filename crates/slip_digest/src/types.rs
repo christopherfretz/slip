@@ -108,6 +108,7 @@ impl Walk<'_> {
         }
         let aborts = self.aborts;
         let uses = self.unit.local_uses;
+        let rooted = self.local.self_rooted;
         let left_out = self.left_out;
         let mut s = Stream::new();
         // The expression state is the unit's: a memoised type must not
@@ -124,7 +125,7 @@ impl Walk<'_> {
         let h = s.finish(TYPE_TAG);
         let h = self.hashed(h);
         let t = TypeRef { digest: h.digest, cause: h.cause, spelling: self.left_out != left_out };
-        let local = self.unit.local_uses != uses;
+        let local = self.unit.local_uses != uses || self.local.self_rooted != rooted;
         if self.aborts == aborts {
             if local {
                 self.unit.types.insert(unit_key, t);

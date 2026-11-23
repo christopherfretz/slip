@@ -59,8 +59,14 @@ impl Walk<'_> {
         let saved = self.take_unit();
         let types = self.take_types();
         let in_key = std::mem::take(&mut self.in_key);
+        // Nor inside the keys being computed: a key under `e` (its
+        // closure's call operator, asked for first) is computed again
+        // inside, under `local::SELF_KEY`; `content_in_progress` ends a
+        // real cycle.
+        let keys = std::mem::take(&mut self.keys_in_progress);
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);
+        self.keys_in_progress = keys;
         self.in_key = in_key;
         self.restore_types(types);
         self.unit = saved;
@@ -171,7 +177,8 @@ impl Walk<'_> {
     /// is the resolved unit `exception_spec` (`demand.rs`). A member of a
     /// local class has no key, so no resolved unit can hold it: its stream
     /// holds the specification as Kiln holds it, indeterminate
-    /// (`Pending(Local)`) only while that is still `Deferred`.
+    /// (`local::DEFERRED_EXCEPTION_SPEC`) only while that is still
+    /// `Deferred`.
     fn own_exception_spec(&mut self, s: &mut Stream, d: DeclId) {
         let ast = self.ast;
         let local = self.is_local(d);
@@ -186,7 +193,7 @@ impl Walk<'_> {
                 let deferred = matches!(e, ExcSpec::Deferred(_));
                 self.write_exc_spec(s, e, !local);
                 if local && deferred {
-                    s.indeterminate(Cause::Pending(crate::Area::Local));
+                    s.indeterminate(crate::local::DEFERRED_EXCEPTION_SPEC);
                 }
             }
             None => {
@@ -290,7 +297,7 @@ mod tests {
     use crate::stream::{FlagWord, Stream};
     use crate::tables::{Decision, Row, decl_kind};
     use crate::walk::Walk;
-    use crate::{Area, Cause};
+    use crate::Cause;
 
     /// The bytes and cause `own_exception_spec` writes for the only
     /// declaration of `kind` inside `k` (a member of a local class).
@@ -338,7 +345,7 @@ mod tests {
             "struct M { M() noexcept(false); };\nvoid k() { struct L { M m; L() = default; }; }\n",
             DeclKind::CXXConstructor,
         );
-        assert_eq!(cause, Some(Cause::Pending(Area::Local)));
+        assert_eq!(cause, Some(crate::local::DEFERRED_EXCEPTION_SPEC));
     }
 
     /// The tag `spec/digest-kinds.md` §5.3 gives a declaration of kind

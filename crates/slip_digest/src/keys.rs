@@ -234,6 +234,7 @@ impl Walk<'_> {
             return KeyRes::None(Some(TOO_DEEP));
         }
         let aborts = self.aborts;
+        let rooted = self.local.self_rooted;
         self.keys_in_progress.insert(e);
         // A key does not depend on the unit that asks for it: the unit's
         // local state is put aside (`Walk::in_key`).
@@ -258,7 +259,7 @@ impl Walk<'_> {
         };
         self.keys_in_progress.remove(&e);
         self.leave();
-        if self.aborts == aborts {
+        if self.aborts == aborts && self.local.self_rooted == rooted {
             self.keys.insert(e, res);
         }
         res
