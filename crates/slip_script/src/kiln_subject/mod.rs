@@ -67,6 +67,9 @@ pub struct KilnSubject<'u> {
     /// unit is not kept); a reference is numbered by its index here, plus
     /// one (`calls.rs`).
     refs: Vec<slip_kiln::written::WrittenRef>,
+    /// The indexes in `refs` of the entries whose name starts at a
+    /// location, by the location (`calls.rs`).
+    ref_names: OnceLock<HashMap<u32, Vec<u32>>>,
     /// The calls of the unit (`calls.rs`).
     calls: OnceLock<calls::Index>,
     /// The tiers of each extent of a live expression (`calls.rs`).
@@ -128,6 +131,7 @@ impl<'u> KilnSubject<'u> {
             scopes: Mutex::new(HashMap::new()),
             tokens: unit.tokens(),
             refs: slip_kiln::written::written_refs(unit),
+            ref_names: OnceLock::new(),
             calls: OnceLock::new(),
             call_tiers: OnceLock::new(),
         }

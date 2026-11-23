@@ -34,7 +34,7 @@ use slip_kiln::kiln::ast::types::{Nns, TypeKind};
 use slip_kiln::kiln::ast::{DeclId, ExprId, StmtId};
 use slip_kiln::kiln::source::{Loc, Span};
 use slip_kiln::ranges::{self, Tier};
-use slip_kiln::written::Role;
+use slip_kiln::written::{Role, WrittenRef};
 
 use super::KilnSubject;
 use super::entities::function_kind;
@@ -161,11 +161,6 @@ impl KilnSubject<'_> {
         let mut stack = vec![Item::Decl(ast.tu, None)];
         let mut found: Vec<(Call, DeclId)> = Vec::new();
         let mut without_reference = 0u64;
-        // Written references by the start of their name, for the callee.
-        let mut by_name: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (i, r) in self.refs.iter().enumerate() {
-            by_name.entry(r.name.lo.to_raw()).or_default().push(i as u32);
-        }
         while let Some(item) = stack.pop() {
             match item {
                 Item::Decl(d, holder) => {
@@ -186,7 +181,7 @@ impl KilnSubject<'_> {
                     if !seen_expr.insert(e.index()) {
                         continue;
                     }
-                    match self.call_of(e, &by_name) {
+                    match self.call_of(e) {
                         Ok(Some(c)) => found.push((c, holder)),
                         Ok(None) => {}
                         Err(()) => without_reference += 1,
@@ -449,7 +444,7 @@ impl KilnSubject<'_> {
 
     /// The call `e` is, `Ok(None)` when it is none, `Err(())` when it has
     /// rule 1's shape but its callee's name is in no table entry.
-    fn call_of(&self, e: ExprId, by_name: &HashMap<u32, Vec<u32>>) -> Result<Option<Call>, ()> {
+    fn call_of(&self, e: ExprId) -> Result<Option<Call>, ()> {
         let ast = self.ast;
         let exprs = &ast.exprs;
         let n = exprs.get(e);
@@ -468,7 +463,7 @@ impl KilnSubject<'_> {
         if !function_kind(self.kind(decl)) {
             return Ok(None);
         }
-        let Some(reference) = self.reference_of(callee, by_name) else { return Err(()) };
+        let Some(reference) = self.reference_index(callee) else { return Err(()) };
         let mut args: Vec<ExprId> = ast
             .lists
             .iter::<ExprId>(exprs.call_args(e))
@@ -493,38 +488,33 @@ impl KilnSubject<'_> {
         exprs.end_loc(e).is_some_and(|close| self.order(exprs.get(callee).loc(), close).is_lt())
     }
 
-    /// The table entry of the name of `callee` (a `DeclRefExpr` or a
-    /// `MemberExpr`): the entry whose name starts at the expression's
-    /// location, in the role of an expression or member name, that denotes
-    /// the expression's declaration.
-    fn reference_of(&self, callee: ExprId, by_name: &HashMap<u32, Vec<u32>>) -> Option<u32> {
-        let exprs = &self.ast.exprs;
-        let at = exprs.get(callee).loc().to_raw();
-        let decl = exprs.decl(callee);
-        by_name.get(&at)?.iter().copied().find(|&i| {
-            let r = &self.refs[i as usize];
-            matches!(r.role, Role::Expr | Role::Member) && r.referent == decl
-        })
+    /// The table entries whose name starts at `at`.
+    fn refs_named_at(&self, at: Loc) -> impl Iterator<Item = (u32, &WrittenRef)> + '_ {
+        let names = self.ref_names.get_or_init(|| {
+            let mut m: HashMap<u32, Vec<u32>> = HashMap::new();
+            for (i, r) in self.refs.iter().enumerate() {
+                m.entry(r.name.lo.to_raw()).or_default().push(i as u32);
+            }
+            m
+        });
+        names.get(&at.to_raw()).into_iter().flatten().map(|&i| (i, &self.refs[i as usize]))
     }
 
-    /// The reference entry of `x` (a `DeclRefExpr` or `MemberExpr`), by a
-    /// search of the table (for extents: the index is not needed).
-    fn reference_at(&self, x: ExprId) -> Option<&slip_kiln::written::WrittenRef> {
+    /// The table entry of the name of `x` (a `DeclRefExpr` or a
+    /// `MemberExpr`), as an index in `refs`: the entry whose name starts
+    /// at the expression's location, in the role of an expression or
+    /// member name, that denotes the expression's declaration.
+    fn reference_index(&self, x: ExprId) -> Option<u32> {
         let exprs = &self.ast.exprs;
-        let at = exprs.get(x).loc();
         let decl = exprs.decl(x);
-        let i = self.refs.partition_point(|r| r.name.lo.to_raw() < at.to_raw());
-        let found = self.refs[i..]
-            .iter()
-            .take_while(|r| r.name.lo == at)
-            .find(|r| matches!(r.role, Role::Expr | Role::Member) && r.referent == decl);
-        found.or_else(|| {
-            // The table's order is not by location at this pin
-            // (`slip_kiln::written`, "Order"): search it all.
-            self.refs.iter().find(|r| {
-                r.name.lo == at && matches!(r.role, Role::Expr | Role::Member) && r.referent == decl
-            })
-        })
+        self.refs_named_at(exprs.get(x).loc())
+            .find(|(_, r)| matches!(r.role, Role::Expr | Role::Member) && r.referent == decl)
+            .map(|(i, _)| i)
+    }
+
+    /// The table entry of the name of `x`.
+    fn reference_at(&self, x: ExprId) -> Option<&WrittenRef> {
+        self.reference_index(x).map(|i| &self.refs[i as usize])
     }
 
     /// Whether call `e` names a function with an explicit object

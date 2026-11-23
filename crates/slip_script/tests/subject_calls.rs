@@ -539,3 +539,252 @@ int g(S s) { return k(1 == s) + k(s == 1) + k(s != 1); }
         assert_eq!(a, vec![None, Some("s == 1".to_owned()), None]);
     });
 }
+
+// ---------------------------------------------------------------------------
+// Depth: the walk and the extent rule keep their own stacks.
+
+/// A 10,000-deep `a + a + … + a` as an argument: its extent is the whole
+/// sum, its first and last token found by loops.
+#[test]
+fn depth_a_sum_ten_thousand_deep() {
+    let n = 10_000;
+    let sum = vec!["a"; n].join("+");
+    let src = format!("int f(int);\nint g(int a) {{ return f({sum}); }}\n");
+    with(&[("main.cpp", src.as_str())], |_, s| {
+        let xs = calls_of(s, one(s, "f"));
+        assert_eq!(args(s, xs[0]), vec![Some(sum.clone())]);
+    });
+}
+
+/// A 10,000-deep nest of parentheses as an argument, and calls nested as
+/// arguments of calls: every call is found once, with its extent.
+#[test]
+fn depth_parentheses_and_calls_ten_thousand_deep() {
+    let n = 10_000;
+    let parens = format!("{}a{}", "(".repeat(n), ")".repeat(n));
+    let nest = format!("{}a{}", "f(".repeat(n), ")".repeat(n));
+    let src = format!("int f(int);\nint g(int a) {{ return f({parens}) + {nest}; }}\n");
+    with(&[("main.cpp", src.as_str())], |_, s| {
+        let xs = calls_of(s, one(s, "f"));
+        assert_eq!(xs.len(), n + 1);
+        assert_eq!(args(s, xs[0]), vec![Some(parens.clone())]);
+        assert_eq!(ext(s, xs[1]), Some(nest.clone()));
+        assert_eq!(ext(s, xs[n]).as_deref(), Some("f(a)"));
+    });
+}
+
+// ---------------------------------------------------------------------------
+// What a consumer of `slip_kiln::ranges` must not assume
+// (`spec/landed/api/WP-084.md`), points 1, 2, 3, 6 and 7; points 4 and 5
+// are sentences of `spec/landed/api/WP-086.md`.
+
+/// Point 1: implicit nodes have ranges in `ranges`; here they have none
+/// of their own. Kiln's calls (a conversion function's, a range-for's
+/// `begin` and `end`) are no calls, and an implicit `this` is not where a
+/// member call begins.
+#[test]
+fn wp084_point1_implicit_nodes_are_no_calls_and_have_no_extent() {
+    let src = "\
+struct T { operator int() const; };
+struct R { int* begin(); int* end(); };
+int i(int);
+struct M { int m(int); int k() { return m(1); } };
+int g(T t, R r) { for (int x : r) i(x); return i(t); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        assert!(calls(s, "R::begin").is_empty() && calls(s, "R::end").is_empty());
+        assert_eq!(calls(s, "i"), some(&["i(x)", "i(t)"]));
+        assert_eq!(calls(s, "M::m"), some(&["m(1)"]));
+        assert_eq!(call_count(s), 3);
+    });
+}
+
+/// Point 2: a header entered twice gives one range for the calls of both
+/// entries; each entry's call is a call of its own, and the range is
+/// reached at tier 0 by both.
+#[test]
+fn wp084_point2_a_header_entered_twice() {
+    let h = "int y = f(1);\n";
+    let main = "int f(int);\nnamespace a {\n#include \"h.h\"\n}\nnamespace b {\n#include \"h.h\"\n}\n";
+    with(&[("main.cpp", main), ("h.h", h)], |_, s| {
+        let xs = calls_of(s, one(s, "f"));
+        assert_eq!(xs.len(), 2);
+        assert_ne!(xs[0], xs[1]);
+        assert_eq!(range(s, xs[0]), range(s, xs[1]));
+        assert_eq!(ext(s, xs[0]).as_deref(), Some("f(1)"));
+        assert_eq!(s.tiers(range(s, xs[0]).unwrap()), Some([true, false]));
+    });
+}
+
+/// Point 3: a tier 1 range stands for every use of the argument: a call
+/// in an argument used twice is two calls with one range.
+#[test]
+fn wp084_point3_an_argument_used_twice() {
+    let src = "\
+int f(int);
+int g(int);
+#define TWICE(x) (f(x) + f(x))
+int y = TWICE(g(1));
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let xs = calls_of(s, one(s, "g"));
+        assert_eq!(xs.len(), 2);
+        assert_eq!(ext(s, xs[0]).as_deref(), Some("g(1)"));
+        assert_eq!(range(s, xs[0]), range(s, xs[1]));
+        assert_eq!(s.tiers(range(s, xs[0]).unwrap()), Some([false, true]));
+        // `f(x)`'s tokens are the replacement list's: no extent, and the
+        // place is the invocation.
+        let fs = calls_of(s, one(s, "f"));
+        assert_eq!(ext(s, fs[0]), None);
+        let PlaceOf::Nearest(r) = s.place(Value::Expression(fs[0])) else { panic!("nearest") };
+        assert_eq!(s.text(r), b"TWICE(g(1))");
+        // Its argument `x` came from the argument: tier 1.
+        assert_eq!(args(s, fs[0]), some(&["g(1)"]));
+    });
+}
+
+/// Point 6: an extent is offsets in Kiln's text, the file's bytes only
+/// when Kiln changed nothing; a file that is not valid UTF-8 gives no
+/// extent (`spec/edits.md` §2.3 `file_recoded`). Through a real parse of a
+/// tree on disk.
+#[test]
+fn wp084_point6_a_recoded_file_gives_no_extent() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp086-recoded");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.cpp"), b"int f(int);\n// \xff\nint y = f(1);\n").unwrap();
+    std::fs::write(dir.join("ok.cpp"), b"int f(int);\n// ok\nint y = f(1);\n").unwrap();
+    for (file, want) in [("main.cpp", None), ("ok.cpp", Some("f(1)".to_owned()))] {
+        let got = on_disk(&dir, file, |s| {
+            let xs = calls_of(s, one(s, "f"));
+            assert_eq!(xs.len(), 1);
+            ext(s, xs[0])
+        });
+        assert_eq!(got, want, "{file}");
+    }
+}
+
+/// Point 7: begin and end out of order (a reversed rewritten comparison)
+/// give no range in `ranges`; the extent of the written form is none
+/// either (test `s6_6_rule4_a_rewritten_comparison_has_none`), never one
+/// computed from the semantic form.
+#[test]
+fn wp084_point7_out_of_order_has_no_extent() {
+    let src = "\
+struct S { bool operator==(int) const; };
+int k(bool);
+int g(S s) { return k(1 == s); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let xs = calls_of(s, one(s, "k"));
+        let a = s.arguments(xs[0]).unwrap()[0];
+        assert_eq!(ext(s, a), None);
+        assert_eq!(format!("{:?}", s.no_extent(a).unwrap().kind), "CXXRewrittenBinaryOperator");
+        assert_eq!(ext(s, xs[0]).as_deref(), Some("k(1 == s)"));
+    });
+}
+
+/// Parses `file` in `dir` as a unit of a run (with the tables) and calls
+/// `f` with the subject over it.
+fn on_disk<R: Send>(
+    dir: &std::path::Path,
+    file: &str,
+    f: impl FnOnce(&KilnSubject<'_>) -> R + Send,
+) -> R {
+    use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase};
+    let argv = ["clang++", "-std=c++20", "-c", file];
+    let observer = Observer {
+        id: Digest([5; 32]),
+        command: Command {
+            directory: dir.to_str().unwrap().as_bytes().to_vec(),
+            argv: argv.iter().map(|a| a.as_bytes().to_vec()).collect(),
+            env: Vec::new(),
+        },
+        language: Language::Cxx,
+        main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
+        cost_hint: 1,
+        origins: vec![Origin { configuration: 0, entry: 0 }],
+    };
+    let mut options = slip_kiln::ParseOptions::default();
+    options.written = true;
+    slip_kiln::parse_observer_with(&observer, Phase::Map, 0, options, |unit| {
+        let owned = |_: &[u8]| true;
+        f(&KilnSubject::new(unit, &owned))
+    })
+    .expect("the tree parses")
+    .1
+    .expect("the closure ran")
+}
+
+// ---------------------------------------------------------------------------
+// §7.4 rule 3 and §5.4: place and tiers.
+
+/// The place of an expression with an extent is its extent; of one whose
+/// tokens a macro's replacement list wrote, the invocation; of one with
+/// no extent and no macro, unnamed.
+#[test]
+fn s7_4_rule3_the_place_of_an_expression() {
+    let src = "\
+int f(int);
+#define CALL f(2)
+int a = f(1) + CALL + f(new int(3) != nullptr);
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let xs = calls_of(s, one(s, "f"));
+        let place = |x| s.place(Value::Expression(x));
+        let PlaceOf::Own(r) = place(xs[0]) else { panic!("own") };
+        assert_eq!(s.text(r), b"f(1)");
+        // `CALL` is the whole expansion: the call's extent is the
+        // invocation, its own place.
+        assert_eq!(ext(s, xs[1]).as_deref(), Some("CALL"));
+        // Its argument `2` is of no tier: its place is the invocation.
+        let two = s.arguments(xs[1]).unwrap()[0];
+        assert_eq!(ext(s, two), None);
+        let PlaceOf::Nearest(r) = place(two) else { panic!("nearest") };
+        assert_eq!(s.text(r), b"CALL");
+        let a = s.arguments(xs[2]).unwrap()[0];
+        assert_eq!(s.place(Value::Expression(a)), PlaceOf::Unnamed);
+        assert!(s.display(Value::Expression(xs[0])).starts_with("a call at main.cpp:3:"));
+    });
+}
+
+/// §5.4: `tiers` answers for exactly the extents given out; a range
+/// inside one, or one of no live expression, is `None`.
+#[test]
+fn s5_4_tiers_only_for_extents_given() {
+    let src = "int f(int, int);\nint a = f(1, 22);\n";
+    with(&[("main.cpp", src)], |_, s| {
+        let x = calls_of(s, one(s, "f"))[0];
+        let r = range(s, x).unwrap();
+        assert_eq!(s.tiers(r), Some([true, false]));
+        assert_eq!(s.tiers(Range { lo: r.lo + 1, ..r }), None);
+        assert_eq!(s.tiers(Range { hi: r.hi - 1, ..r }), None);
+        for a in s.arguments(x).unwrap() {
+            assert_eq!(s.tiers(range(s, a).unwrap()), Some([true, false]));
+        }
+        // `22`'s first byte: no expression has it for extent.
+        let b = range(s, s.arguments(x).unwrap()[1]).unwrap();
+        assert_eq!(s.tiers(Range { hi: b.lo + 1, ..b }), None);
+    });
+}
+
+/// Only calls and their arguments are live expressions; the trait's
+/// numbers of other expressions are not.
+#[test]
+fn s5_1_only_calls_and_arguments_are_live() {
+    let src = "int f(int);\nint a = f(1 + 2) * 3;\n";
+    with(&[("main.cpp", src)], |p, s| {
+        let x = calls_of(s, one(s, "f"))[0];
+        let a = s.arguments(x).unwrap()[0];
+        let live: Vec<u32> = (1..=p.ast.exprs.len() as u32)
+            .filter(|&n| s.is_live(Value::Expression(Expression(n))))
+            .collect();
+        let mut want = vec![x.0, a.0];
+        want.sort_unstable();
+        assert_eq!(live, want);
+        assert!(!s.is_live(Value::Expression(Expression(0))));
+        assert_eq!(s.callee(a), None);
+        assert_eq!(s.arguments(a), None);
+        assert_eq!(s.callee_reference(a), None);
+        assert_eq!(s.kind_bits(Value::Expression(a)), wire::KIND_EXPRESSION);
+    });
+}
