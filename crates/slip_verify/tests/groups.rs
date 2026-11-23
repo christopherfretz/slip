@@ -254,6 +254,42 @@ fn kind_index(kind: FindingKind) -> usize {
 
 type Id<'a> = (GroupClass, &'a [u8]);
 
+/// Coverage only: `derived_indeterminate` keys on one side, removed/added
+/// findings for keys both images have, and step-4 findings.
+fn coverage(pre: &Digests, post: &Digests, full: &Comparison, cov: &mut Coverage) {
+    let keys_of = |d: &Digests, derived: bool| -> BTreeSet<Digest> {
+        d.groups
+            .iter()
+            .filter(|gr| (gr.class == GroupClass::Derived) == derived)
+            .flat_map(|gr| gr.units.as_deref().unwrap_or_default())
+            .map(|u| u.key)
+            .collect()
+    };
+    let (vp, vq) = (keys_of(pre, true), keys_of(post, true));
+    let (dp, dq) = (keys_of(pre, false), keys_of(post, false));
+    let has = |set: &BTreeSet<Digest>, k: &Option<Digest>| k.is_some_and(|k| set.contains(&k));
+    cov.derived_indeterminate_one_sided += u64::from(full.findings.iter().any(|f| {
+        f.kind == FindingKind::DerivedIndeterminate && has(&vp, &f.key) != has(&vq, &f.key)
+    }));
+    cov.one_sided_kind_on_shared_key += u64::from(full.findings.iter().any(|f| {
+        matches!(f.kind, FindingKind::Removed | FindingKind::Added)
+            && has(&dp, &f.key)
+            && has(&dq, &f.key)
+    }));
+    let step4: Vec<Digest> = full
+        .findings
+        .iter()
+        .filter(|f| f.kind == FindingKind::Changed && has(&dp, &f.key) != has(&dq, &f.key))
+        .filter_map(|f| f.key)
+        .collect();
+    cov.step4 += u64::from(!step4.is_empty());
+    cov.v_on_both_sides += u64::from(full.findings.iter().any(|f| match f.kind {
+        FindingKind::Removed => has(&vq, &f.key),
+        FindingKind::Added => has(&vp, &f.key),
+        _ => false,
+    }));
+}
+
 /// The property of §4.1 for one pair; `Err` says what failed.
 fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> Result<(), String> {
     comparable(pre, post)?;
@@ -299,39 +335,7 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
     cov.indeterminate_unchanged +=
         u64::from(ids.iter().any(|&i| find(pre, i) == find(post, i) && flagged(pre, i)));
 
-    // Coverage only: derived_indeterminate keys on one side, and
-    // removed/added findings for keys both images have.
-    let keys_of = |d: &Digests, derived: bool| -> BTreeSet<Digest> {
-        d.groups
-            .iter()
-            .filter(|gr| (gr.class == GroupClass::Derived) == derived)
-            .flat_map(|gr| gr.units.as_deref().unwrap_or_default())
-            .map(|u| u.key)
-            .collect()
-    };
-    let (vp, vq) = (keys_of(pre, true), keys_of(post, true));
-    let (dp, dq) = (keys_of(pre, false), keys_of(post, false));
-    let has = |set: &BTreeSet<Digest>, k: &Option<Digest>| k.is_some_and(|k| set.contains(&k));
-    cov.derived_indeterminate_one_sided += u64::from(full.findings.iter().any(|f| {
-        f.kind == FindingKind::DerivedIndeterminate && has(&vp, &f.key) != has(&vq, &f.key)
-    }));
-    cov.one_sided_kind_on_shared_key += u64::from(full.findings.iter().any(|f| {
-        matches!(f.kind, FindingKind::Removed | FindingKind::Added)
-            && has(&dp, &f.key)
-            && has(&dq, &f.key)
-    }));
-    let step4: Vec<Digest> = full
-        .findings
-        .iter()
-        .filter(|f| f.kind == FindingKind::Changed && has(&dp, &f.key) != has(&dq, &f.key))
-        .filter_map(|f| f.key)
-        .collect();
-    cov.step4 += u64::from(!step4.is_empty());
-    cov.v_on_both_sides += u64::from(full.findings.iter().any(|f| match f.kind {
-        FindingKind::Removed => has(&vq, &f.key),
-        FindingKind::Added => has(&vp, &f.key),
-        _ => false,
-    }));
+    coverage(pre, post, &full, cov);
 
     match at_sums(pre, post) {
         AtSums::Equal => {
@@ -499,65 +503,67 @@ fn finding(kind: FindingKind, k: u64, file: &[u8], pre: Option<u64>, post: Optio
 // the full one: `changed`, prevented by `changed` only, not counted.
 #[test]
 fn s4_4_through_groups() {
-    let (a, b, d) = (FILES[0], FILES[1], FILES[3]);
+    let (ah, bh, dc) = (FILES[0], FILES[1], FILES[3]);
     let same: [(GroupClass, &[u8], Unit); 3] = [
-        (GroupClass::Declared, b, unit(5, 5, 0)),
+        (GroupClass::Declared, bh, unit(5, 5, 0)),
         (GroupClass::Tu, b"", unit(6, 6, 0)),
-        (GroupClass::Derived, d, unit(7, 7, 0)),
+        (GroupClass::Derived, dc, unit(7, 7, 0)),
     ];
     let with = |extra: &[(GroupClass, &[u8], Unit)]| {
         let mut v = same.to_vec();
         v.extend_from_slice(extra);
         image(&v)
     };
-    let declared = with(&[(GroupClass::Declared, a, unit(1, 1, 0))]);
-    let derived = with(&[(GroupClass::Derived, d, unit(1, 2, 0))]);
-    let g = vec![(GroupClass::Declared, a), (GroupClass::Derived, d)];
+    let declared = with(&[(GroupClass::Declared, ah, unit(1, 1, 0))]);
+    let derived = with(&[(GroupClass::Derived, dc, unit(1, 2, 0))]);
+    let g_ids = vec![(GroupClass::Declared, ah), (GroupClass::Derived, dc)];
     let none = Exemptions::none();
     let only_changed = Exemptions::new(vec![key(1)], vec![], vec![]).unwrap();
     let not_changed = Exemptions::new(vec![], vec![key(1)], vec![key(1)]).unwrap();
     for (pre, post, dp, dq) in
         [(&declared, &derived, Some(1), None), (&derived, &declared, None, Some(1))]
     {
-        let (c, ids) = through_groups(pre, post, &none);
-        assert_eq!(ids, g);
+        let (cmp, ids) = through_groups(pre, post, &none);
+        assert_eq!(ids, g_ids);
         let found = Comparison {
-            findings: vec![finding(FindingKind::Changed, 1, a, dp, dq)],
+            findings: vec![finding(FindingKind::Changed, 1, ah, dp, dq)],
             only_pre: 0,
             only_post: 0,
             used: vec![],
         };
-        assert_eq!(c, found);
+        assert_eq!(cmp, found);
         assert_eq!(through_groups(pre, post, &not_changed).0, found);
-        let (c, _) = through_groups(pre, post, &only_changed);
-        assert_eq!(c, Comparison { findings: vec![], used: vec![key(1)], ..found.clone() });
+        let (cmp, _) = through_groups(pre, post, &only_changed);
+        assert_eq!(cmp, Comparison { findings: vec![], used: vec![key(1)], ..found.clone() });
     }
     // The derived unit indeterminate: its group is in `G` for that reason
     // too; `derived_indeterminate` beside the `changed`.
-    let derived = with(&[(GroupClass::Derived, d, unit(1, 2, Unit::INDETERMINATE))]);
-    let (c, ids) = through_groups(&declared, &derived, &none);
-    assert_eq!(ids, g);
+    let derived = with(&[(GroupClass::Derived, dc, unit(1, 2, Unit::INDETERMINATE))]);
+    let (cmp, ids) = through_groups(&declared, &derived, &none);
+    assert_eq!(ids, g_ids);
     assert_eq!(
-        c.findings,
+        cmp.findings,
         vec![
-            finding(FindingKind::Changed, 1, a, Some(1), None),
-            finding(FindingKind::DerivedIndeterminate, 1, d, None, Some(2)),
+            finding(FindingKind::Changed, 1, ah, Some(1), None),
+            finding(FindingKind::DerivedIndeterminate, 1, dc, None, Some(2)),
         ]
     );
     // A multiplicity: the derived unit in two groups of the post-image, one
     // of them a header's that the pre-image has unchanged for another key.
-    let declared =
-        with(&[(GroupClass::Declared, a, unit(1, 1, 0)), (GroupClass::Derived, b, unit(8, 8, 0))]);
-    let derived = with(&[
-        (GroupClass::Derived, d, unit(1, 2, 0)),
-        (GroupClass::Derived, b, unit(8, 8, 0)),
-        (GroupClass::Derived, b, unit(1, 2, 0)),
+    let declared = with(&[
+        (GroupClass::Declared, ah, unit(1, 1, 0)),
+        (GroupClass::Derived, bh, unit(8, 8, 0)),
     ]);
-    let (c, ids) = through_groups(&declared, &derived, &none);
+    let derived = with(&[
+        (GroupClass::Derived, dc, unit(1, 2, 0)),
+        (GroupClass::Derived, bh, unit(8, 8, 0)),
+        (GroupClass::Derived, bh, unit(1, 2, 0)),
+    ]);
+    let (cmp, ids) = through_groups(&declared, &derived, &none);
     assert_eq!(
         ids,
-        vec![(GroupClass::Declared, a), (GroupClass::Derived, b), (GroupClass::Derived, d)]
+        vec![(GroupClass::Declared, ah), (GroupClass::Derived, bh), (GroupClass::Derived, dc)]
     );
-    assert_eq!(c.findings, vec![finding(FindingKind::Changed, 1, a, Some(1), None)]);
-    assert_eq!((c.only_pre, c.only_post), (0, 0));
+    assert_eq!(cmp.findings, vec![finding(FindingKind::Changed, 1, ah, Some(1), None)]);
+    assert_eq!((cmp.only_pre, cmp.only_post), (0, 0));
 }
