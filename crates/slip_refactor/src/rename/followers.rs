@@ -173,7 +173,6 @@ fn is_friend_in_pattern(ast: &Ast, d: DeclId) -> bool {
     for _ in 0..CTX_LIMIT {
         let Some(x) = at else { return false };
         if ast.described_template(x).is_some()
-            || ast.partial_spec_info(x).is_some()
             || ast.decls.get(x).kind() == DeclKind::ClassTemplatePartialSpecialization
         {
             return true;
