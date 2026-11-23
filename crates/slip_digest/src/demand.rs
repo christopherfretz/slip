@@ -904,12 +904,13 @@ mod tests {
 
     // digest-kinds §11.1 property 7: the values of a written default are
     // found by a second walk into a dropped stream; its cause is kept, as
-    // a list an indeterminate walk found may be short (a lambda is
-    // `Pending(Local)` today).
+    // a list an indeterminate walk found may be short (a local class
+    // that `struct Q *` declares with no declaration statement is
+    // `UndeclaredLocal`, digest §4.3).
     #[test]
     fn immediates_keep_the_walks_cause() {
         let src = "consteval int id(int x) { return x; }\n\
-                   void f(int a = id(3) + [] { return 0; }());\n\
+                   void f(int a = id(3) + [] { struct Q *p = nullptr; return p ? 1 : 0; }());\n\
                    void h() { f(); }\n";
         crate::decl_func::tests::with_walk(src, |w| {
             let ast = w.ast;
@@ -918,7 +919,7 @@ mod tests {
             let (_, x) = crate::decl_func::written_default(w, p.expect("a"));
             let (values, cause) = super::immediates(w, x.expect("the default"));
             assert_eq!(values.len(), 1);
-            assert_eq!(cause, Some(crate::Cause::Pending(crate::Area::Local)));
+            assert_eq!(cause, Some(crate::Cause::UndeclaredLocal));
         });
     }
 

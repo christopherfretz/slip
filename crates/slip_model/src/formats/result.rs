@@ -124,14 +124,22 @@ enum Loc {
     Scheme,
     Declared,
     Overlay,
+    State,
     Verdict,
     Tally(usize),
     Agreement(usize),
     Unused(usize),
+    Unchecked(usize),
     Obligations,
     Failed(usize),
+    FailedObservers(usize),
+    FailedFirst(usize),
+    FailedFound(usize),
     Residue(usize),
     ResidueFile(usize),
+    ResidueLo(usize),
+    ResidueLine(usize),
+    ResidueColumn(usize),
     Exempt(usize),
 }
 
@@ -175,21 +183,31 @@ impl Loc {
             Loc::Scheme => format!("{S}.scheme"),
             Loc::Declared => format!("{S}.declared"),
             Loc::Overlay => format!("{S}.overlay"),
+            Loc::State => format!("{S}.state"),
             Loc::Verdict => format!("{S}.verdict"),
             Loc::Tally(i) => format!("{S}.tally.{}", TALLY[i]),
             Loc::Agreement(i) => format!("{S}.agreement[{i}]"),
             Loc::Unused(i) => format!("{S}.unused[{i}]"),
+            Loc::Unchecked(i) => format!("{S}.unchecked[{i}]"),
             Loc::Obligations => format!("{S}.spellings.obligations"),
             Loc::Failed(i) => format!("{S}.spellings.failed[{i}]"),
+            Loc::FailedObservers(i) => format!("{S}.spellings.failed[{i}].observers"),
+            Loc::FailedFirst(i) => format!("{S}.spellings.failed[{i}].first"),
+            Loc::FailedFound(i) => format!("{S}.spellings.failed[{i}].found"),
             Loc::Residue(i) => format!("{S}.residue[{i}]"),
             Loc::ResidueFile(i) => format!("{S}.residue[{i}].file"),
+            Loc::ResidueLo(i) => format!("{S}.residue[{i}].lo"),
+            Loc::ResidueLine(i) => format!("{S}.residue[{i}].line"),
+            Loc::ResidueColumn(i) => format!("{S}.residue[{i}].column"),
             Loc::Exempt(i) => format!("{S}.exempt[{i}]"),
         }
     }
 }
 
 /// The first violation: `scheme`, then the invariants of §8.5 in its order
-/// (`spec/landed/edits/WP-061.md` §4).
+/// (`spec/landed/edits/WP-061.md` §4, rows 6a, 8a, 13 and 14 from
+/// `spec/landed/verify/WP-070.md` §1).
+#[allow(clippy::too_many_lines, reason = "one statement per invariant of spec/edits.md §8.5")]
 fn violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
     if x.scheme != SCHEME {
         return Some((Loc::Scheme, "unknown result scheme"));
@@ -206,6 +224,9 @@ fn violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
     if let Some(i) = ascending(&x.unused) {
         return Some((Loc::Unused(i), "unused is not strictly ascending"));
     }
+    if let Some(i) = ascending(&x.unchecked) {
+        return Some((Loc::Unchecked(i), "unchecked is not strictly ascending"));
+    }
     if let Some(i) = ascending(&x.exempt) {
         return Some((Loc::Exempt(i), "exempt is not strictly ascending"));
     }
@@ -220,6 +241,27 @@ fn violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
             "passed and the failed spellings do not add up to obligations",
         ));
     }
+    // Row 6a: what `why` alone decides of a failed spelling (§8.5): an
+    // `unseen` obligation was checked by no observer, a `denotes_other`
+    // one failed in at least one, the first of which is named.
+    for (i, s) in f.iter().enumerate() {
+        let unseen = s.why == Why::Unseen;
+        if (s.observers == 0) != unseen {
+            return Some((
+                Loc::FailedObservers(i),
+                "observers is not 0 for unseen or is 0 for denotes_other",
+            ));
+        }
+        if s.first.is_none() != unseen {
+            return Some((
+                Loc::FailedFirst(i),
+                "first is present for unseen or absent for denotes_other",
+            ));
+        }
+        if unseen && s.found.is_some() {
+            return Some((Loc::FailedFound(i), "found is present for unseen"));
+        }
+    }
     let r = &x.residue;
     if let Some(i) = r.iter().position(|e| !is_file_path(&e.file)) {
         return Some((Loc::ResidueFile(i), super::editset::path_what(&r[i].file)));
@@ -227,6 +269,19 @@ fn violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
     if let Some(i) = (1..r.len()).find(|&i| (&r[i - 1].file, r[i - 1].lo) >= (&r[i].file, r[i].lo))
     {
         return Some((Loc::Residue(i), "residue is not strictly ascending by (file, lo)"));
+    }
+    // Row 8a: a residue entry is a token or a mention, never empty; line
+    // and column are 1-based (§8.4).
+    for (i, e) in r.iter().enumerate() {
+        if e.lo >= e.hi {
+            return Some((Loc::ResidueLo(i), "a residue's range is empty"));
+        }
+        if e.line == 0 {
+            return Some((Loc::ResidueLine(i), "a residue's line is 0: lines are 1-based"));
+        }
+        if e.column == 0 {
+            return Some((Loc::ResidueColumn(i), "a residue's column is 0: columns are 1-based"));
+        }
     }
     let refused = x.state == State::Refused;
     if x.overlay.is_none() != refused {
@@ -248,6 +303,73 @@ fn violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
         if let Some(i) = (TALLY_ZERO..TALLY.len()).find(|&i| tally_fields(&x.tally)[i] != 0) {
             return Some((Loc::Tally(i), "a refused result has a count of observers verified"));
         }
+    }
+    // Rows 13 and 14: the tally adds up (§8.5). The seven states are those
+    // of the observers the verify phase selected, which are the run's
+    // selected observers less the unparsed ones; with no verdict there was
+    // no finished verify phase and no state.
+    let t = tally_fields(&x.tally);
+    let Some(parsed) = x.tally.selected.checked_sub(x.tally.unparsed) else {
+        return Some((Loc::Tally(1), "unparsed is more than selected"));
+    };
+    if x.verdict.is_some() {
+        let sum = t[TALLY_ZERO..].iter().try_fold(0u64, |a, &v| a.checked_add(v));
+        if sum != Some(parsed) {
+            return Some((
+                Loc::Tally(TALLY_ZERO),
+                "the states of the tally do not add up to selected less unparsed",
+            ));
+        }
+    } else if let Some(i) = (TALLY_ZERO..TALLY.len()).find(|&i| t[i] != 0) {
+        return Some((
+            Loc::Tally(i),
+            "a result without a verdict has a count of observers verified",
+        ));
+    }
+    verdict_violation(x)
+}
+
+/// Rows 15 to 17 (`spec/landed/verify/WP-070.md` §1): what the file alone
+/// decides of the verdict and the state (§8.5, `verify.md` §9.2, §9.3).
+fn verdict_violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
+    // Row 15: a stale pair is one with `direct` not 0 (verify.md §9.2).
+    if let Some(i) = x.agreement.iter().position(|s| s.direct == 0) {
+        return Some((Loc::Agreement(i), "a stale pair has direct 0"));
+    }
+    // Row 16: the verdict `verified` has no stale pair and no failed
+    // obligation (verify.md §9.3); without a verdict no rule is unchecked.
+    match x.verdict {
+        Some(RunVerdict::Verified) => {
+            if !x.agreement.is_empty() {
+                return Some((Loc::Agreement(0), "a verified verdict has a stale pair"));
+            }
+            if !x.spellings.failed.is_empty() {
+                return Some((Loc::Failed(0), "a verified verdict has a failed spelling"));
+            }
+        }
+        None if !x.unchecked.is_empty() => {
+            return Some((Loc::Unchecked(0), "a result without a verdict has an unchecked rule"));
+        }
+        _ => {}
+    }
+    // Row 17: the state against the verdict (rows 2 to 5 of §8.5).
+    let unparsed_bars = x.tally.unparsed != 0 && !x.allow_unparsed;
+    let barred = unparsed_bars || !x.unchecked.is_empty();
+    let verified = x.verdict == Some(RunVerdict::Verified);
+    let contradicts = match x.state {
+        State::Verified | State::VerifiedWithResidue => !verified || barred,
+        State::NotVerified => x.verdict != Some(RunVerdict::NotVerified),
+        State::Incomplete => x.verdict == Some(RunVerdict::NotVerified) || (verified && !barred),
+        State::Refused => false,
+    };
+    if contradicts {
+        return Some((Loc::State, "the state is not the one the verdict and the tally give"));
+    }
+    let residue = x.residue.iter().any(|r| r.category != Category::Mention);
+    if x.state == State::Verified
+        && (residue || x.tally.failed_runs != 0 || x.tally.error_reports != 0)
+    {
+        return Some((Loc::State, "a verified result has residue, a failed run or an error"));
     }
     None
 }
@@ -282,6 +404,10 @@ pub(super) fn encode(x: &TransformResult, extras: &[Extra<'_>]) -> Vec<u8> {
     for &u in &x.unused {
         e.uv(u);
     }
+    e.count(x.unchecked.len());
+    for &u in &x.unchecked {
+        e.uv(u);
+    }
     let s = &x.spellings;
     e.uv(s.obligations).uv(s.passed).count(s.failed.len());
     for f in &s.failed {
@@ -313,13 +439,18 @@ struct Offsets {
     scheme: usize,
     declared: usize,
     overlay: usize,
+    state: usize,
     verdict: usize,
     tally: Vec<usize>,
     agreement: Vec<usize>,
     unused: Vec<usize>,
+    unchecked: Vec<usize>,
     obligations: usize,
     failed: Vec<usize>,
-    residue: Vec<[usize; 2]>,
+    /// Per failed spelling: `observers`, `first`, `found`.
+    failed_fields: Vec<[usize; 3]>,
+    /// Per residue entry: its start, `file`, `lo`, `line`, `column`.
+    residue: Vec<[usize; 5]>,
     exempt: Vec<usize>,
 }
 
@@ -329,14 +460,22 @@ impl Offsets {
             Loc::Scheme => self.scheme,
             Loc::Declared => self.declared,
             Loc::Overlay => self.overlay,
+            Loc::State => self.state,
             Loc::Verdict => self.verdict,
             Loc::Tally(i) => self.tally[i],
             Loc::Agreement(i) => self.agreement[i],
             Loc::Unused(i) => self.unused[i],
+            Loc::Unchecked(i) => self.unchecked[i],
             Loc::Obligations => self.obligations,
             Loc::Failed(i) => self.failed[i],
+            Loc::FailedObservers(i) => self.failed_fields[i][0],
+            Loc::FailedFirst(i) => self.failed_fields[i][1],
+            Loc::FailedFound(i) => self.failed_fields[i][2],
             Loc::Residue(i) => self.residue[i][0],
             Loc::ResidueFile(i) => self.residue[i][1],
+            Loc::ResidueLo(i) => self.residue[i][2],
+            Loc::ResidueLine(i) => self.residue[i][3],
+            Loc::ResidueColumn(i) => self.residue[i][4],
             Loc::Exempt(i) => self.exempt[i],
         }
     }
@@ -347,6 +486,7 @@ fn dec_opt_digest(d: &mut Decoder<'_>) -> Result<Option<Digest>> {
 }
 
 /// The result, its unknown ignorable sections and its content id.
+#[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §8.5")]
 pub(super) fn decode(bytes: &[u8]) -> Result<(TransformResult, Vec<Extra<'_>>, Digest)> {
     let opened = open(bytes, TransformResult::KIND, TransformResult::VERSION, [RESULT])?;
     let [section] = opened.sections;
@@ -362,6 +502,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(TransformResult, Vec<Extra<'_>>, D
     let declared = dec_opt_digest(d)?;
     o.overlay = d.offset();
     let overlay = dec_opt_digest(d)?;
+    o.state = d.offset();
     let state = dec_enum(d)?;
     let partial = d.bool()?;
     let allow_unparsed = d.bool()?;
@@ -402,26 +543,38 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(TransformResult, Vec<Extra<'_>>, D
         Ok(Stale { rule: d.uv()?, observer: d.digest()?, direct: d.uv()? })
     })?;
     let unused = dec_list(d, Some(&mut o.unused), Decoder::uv)?;
+    let unchecked = dec_list(d, Some(&mut o.unchecked), Decoder::uv)?;
     o.obligations = d.offset();
     let obligations = d.uv()?;
     let passed = d.uv()?;
+    let mut failed_fields = Vec::new();
     let failed = dec_list(d, Some(&mut o.failed), |d| {
-        Ok(FailedSpelling {
-            obligation: d.uv()?,
-            why: dec_enum(d)?,
-            observers: d.uv()?,
-            first: dec_opt_digest(d)?,
-            found: dec_opt_digest(d)?,
-            name: d.str()?.to_owned(),
-        })
+        let obligation = d.uv()?;
+        let why = dec_enum(d)?;
+        let at_observers = d.offset();
+        let observers = d.uv()?;
+        let at_first = d.offset();
+        let first = dec_opt_digest(d)?;
+        let at_found = d.offset();
+        let found = dec_opt_digest(d)?;
+        failed_fields.push([at_observers, at_first, at_found]);
+        Ok(FailedSpelling { obligation, why, observers, first, found, name: d.str()?.to_owned() })
     })?;
+    o.failed_fields = failed_fields;
     let residue = dec_list(d, None, |d| {
         let start = d.offset();
         let category = dec_enum(d)?;
         let file_at = d.offset();
         let file = d.bytes()?.to_vec();
-        o.residue.push([start, file_at]);
-        Ok(Residue { category, file, lo: d.uv()?, hi: d.uv()?, line: d.uv()?, column: d.uv()? })
+        let lo_at = d.offset();
+        let lo = d.uv()?;
+        let hi = d.uv()?;
+        let line_at = d.offset();
+        let line = d.uv()?;
+        let column_at = d.offset();
+        let column = d.uv()?;
+        o.residue.push([start, file_at, lo_at, line_at, column_at]);
+        Ok(Residue { category, file, lo, hi, line, column })
     })?;
     let exempt = dec_list(d, Some(&mut o.exempt), Decoder::digest)?;
     section.finish()?;
@@ -440,6 +593,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(TransformResult, Vec<Extra<'_>>, D
         tally,
         agreement,
         unused,
+        unchecked,
         spellings: Spellings { obligations, passed, failed },
         residue,
         exempt,
@@ -455,7 +609,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(TransformResult, Vec<Extra<'_>>, D
 
 const NAMES: [SectionName; 1] = [SectionName { id: RESULT, name: "result", required: true }];
 
-const FIELDS: [&str; 17] = [
+const FIELDS: [&str; 18] = [
     "scheme",
     "plan",
     "round",
@@ -470,6 +624,7 @@ const FIELDS: [&str; 17] = [
     "tally",
     "agreement",
     "unused",
+    "unchecked",
     "spellings",
     "residue",
     "exempt",
@@ -525,6 +680,7 @@ pub(super) fn render(x: &TransformResult, extras: &[Extra<'_>]) -> Value {
                     .collect(),
             ),
             Value::Array(x.unused.iter().map(|&u| json_uv(u)).collect()),
+            Value::Array(x.unchecked.iter().map(|&u| json_uv(u)).collect()),
             record(SPELLINGS, [json_uv(s.obligations), json_uv(s.passed), Value::Array(failed)]),
             Value::Array(
                 x.residue
@@ -580,6 +736,7 @@ pub(super) fn read(v: &Value) -> JResult<(TransformResult, OwnedExtras)> {
         tally,
         agreement,
         unused,
+        unchecked,
         spellings,
         residue,
         exempt,
@@ -639,6 +796,7 @@ pub(super) fn read(v: &Value) -> JResult<(TransformResult, OwnedExtras)> {
             })
         })?,
         unused: read_list(unused, &at.key("unused"), read_uv)?,
+        unchecked: read_list(unchecked, &at.key("unchecked"), read_uv)?,
         spellings: Spellings {
             obligations: read_uv(obligations, &sp_at.key("obligations"))?,
             passed: read_uv(passed, &sp_at.key("passed"))?,

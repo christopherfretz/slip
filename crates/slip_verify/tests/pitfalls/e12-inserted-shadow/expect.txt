@@ -7,3 +7,10 @@
 # expected in bad: added inner::limit(), the inserted declaration itself.
 good: verified
 bad:  mismatch changed inner::f(int) @ main.cpp:5
+
+# pre-2 (WP-109): the block scope. A declaration of limit inserted in f's
+# block hides the global limit from the use below it ([basic.scope.block]);
+# the local constant is 5. good-2 is none: any declaration statement in the
+# block changes f. declared-2.txt is empty.
+good-2: none any declaration statement inserted into a block changes its function
+bad-2:  mismatch changed f(int) @ main.cpp:3

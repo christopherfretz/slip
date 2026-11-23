@@ -1,5 +1,4 @@
-# pending
-# needs: local
-# a closure is Pending(Area::Local) until WP-040
 removed h
 added g
+changed p
+changed <order>

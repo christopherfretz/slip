@@ -1,0 +1,11 @@
+# N43: a literal operator moved. Owned code declares the cooked
+# operator""_m(unsigned long long) in legacy and uses 5_m through using
+# namespace legacy;; the dependency declares a global raw operator""_m(const
+# char *). For an integer literal, lookup that finds the cooked form calls
+# it; one that finds only the raw form calls that with "5" ([lex.ext]/3).
+# good adds using namespace acme; on line 7 (as N08); bad leaves the
+# directive, and 5_m is 2, not 1. A use of a literal operator cannot be
+# qualified, so the directive is the only correct edit at the use. Against a
+# verifier that follows calls by name: no call names operator""_m.
+good: verified
+bad:  mismatch changed caller() @ main.cpp:8
