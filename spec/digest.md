@@ -523,6 +523,63 @@ of a `decltype` in a signature, a template argument) would need the
 key that is being written. The key or type that holds it is
 indeterminate.
 
+**Names a program reads.** A local entity has no key that a rule can
+map, and no spelled-entity record can report it, so a rename of a
+local type is invisible to the digest unless the stream writes the
+name where the program reads it. The symbolic form of a value derived
+from a name therefore includes the written names of the local types it
+would print:
+
+- A function name (`__func__`, `__FUNCTION__`, `__PRETTY_FUNCTION__`,
+  and `__builtin_FUNCTION()` or `__builtin_source_location()`, a
+  `SourceLocExpr` of the function-name kinds) lexically inside a member
+  of a named local class, at any depth (through nested local classes
+  and lambdas), writes the names of the named local types around it, up
+  to the owner, outermost first. A unit under a local type (a generic
+  lambda's specialisation) writes those around its entity; a stream
+  that writes a local type in place, those it is inside.
+- A `typeid` whose operand mentions a named local type (the type
+  operand, or the static type of an expression operand, through
+  pointers, references, arrays, member pointers, function types and
+  template arguments) writes, after the operand, the names of those
+  types with the named local types around each, in the order met.
+- An unnamed local type or a closure has no written name: nothing is
+  written for it. A rename that nothing reads stays equal.
+- A reflection of a local entity can read its name; every reflection
+  is indeterminate today, and the package that writes reflections owes
+  the same rule.
+- A template instantiated with a local type prints it too (`f<X>` in a
+  specialisation's `__PRETTY_FUNCTION__`); its instantiated body is
+  `Pending(Demand)` today, and the package that walks instantiated
+  bodies owes the same rule.
+
+**An owner keyed by its content.** A `consteval` block is the call of
+a lambda (P3289R1) that Kiln gives the block's scope as owner; its
+closure is owned by the block, whose key is its own content digest
+(§3.3). Inside that digest the key of the block is not yet known: the
+local types under it have the parent `SELF_KEY`, which can only mean
+the unit being digested, and nothing computed with it is memoised for
+another unit.
+
+**What these rules do not yet show.**
+
+- "In an instantiated body the specialisation" is vacuous until
+  instantiated bodies are walked (§11, `Pending(Demand)`): no stream
+  numbers a local type of a specialisation today, so whatever needs one
+  is pending (the implicit constructor of a local class of a function
+  template's specialisation, a closure an instantiated body passes to
+  another template, a lambda in a variable template's initialiser, a
+  lambda returned from a generic lambda's body).
+- Kiln's owner of a lambda in the default argument of a lambda's
+  parameter is the function whose body holds the outer lambda, not the
+  call operator whose stream walks the default: the numbering of that
+  function enters the call operator's parameters' default arguments
+  (and nothing else of its members) so that it finds the closure.
+- A local class's other members (`members-other`, digest-kinds §5.6)
+  are written sorted by key, as a namespace-scope class's are: their
+  order in the class is not semantic, and their keys under the local
+  type are as stable as the type's number.
+
 - A value computed once and used at several places (Kiln's opaque values)
   is numbered in the same way as a local object, in a sequence of its
   own: the first use writes the number and the expression, later uses

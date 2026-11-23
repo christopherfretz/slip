@@ -38,6 +38,9 @@
 //!   function's or field's name and `::<default_argument n>`
 //!   (`X<int>::f(int)::<default_argument 0>`), before the property of a
 //!   resolved unit of it;
+//! - under a local type, the type as its key, its owner's name and
+//!   `local(n)` (`mk()::local(0)::operator()<int>(int) const`, `?` for a
+//!   number not known; `spec/landed/digest/WP-040.md`);
 //! - the order unit as `<order>`.
 
 use std::collections::BTreeMap;
@@ -450,6 +453,12 @@ impl<'n, 'w> Names<'n, 'w> {
     fn qualified(&self, d: DeclId, out: &mut String, depth: u32) {
         let mut kiln = String::new();
         self.kiln.write_qualified_spec_name(d, &mut kiln);
+        if depth < DEPTH
+            && let Some(rest) = self.local_scope(d, &kiln)
+        {
+            out.push_str(&rest);
+            return;
+        }
         if depth < DEPTH && self.is_unnamed_tag(d) {
             // Kiln's last component is `(anonymous struct)` or the typedef
             // name; the scope before it is that of `d`.
@@ -482,12 +491,85 @@ impl<'n, 'w> Names<'n, 'w> {
         if k == DeclKind::TranslationUnit {
             return;
         }
+        if depth < DEPTH && self.local_type_around(d).is_some() {
+            let mut kiln = String::new();
+            self.kiln.write_qualified_spec_name(ctx, &mut kiln);
+            if let Some(rest) = self.local_scope(ctx, &kiln) {
+                out.push_str(&rest);
+                out.push_str("::");
+                return;
+            }
+        }
         if depth < DEPTH && (self.is_unnamed_tag(ctx) || self.unnamed_scope(ctx).is_some()) {
             self.qualified(ctx, out, depth + 1);
             out.push_str("::");
             return;
         }
         self.kiln.write_scope_prefix(d, true, out);
+    }
+
+    /// The nearest local type around `d` (digest §4.3), through the
+    /// classes nested in it; `None` outside one.
+    fn local_type_around(&self, d: DeclId) -> Option<DeclId> {
+        let ast = self.ast;
+        let mut c = ast.decls.get(d).ctx();
+        for _ in 0..DEPTH {
+            let x = c?;
+            if crate::local::is_local_type(self.w, x) {
+                return Some(x);
+            }
+            if !self.w.is_local(x) {
+                return None;
+            }
+            c = ast.decls.get(x).ctx();
+        }
+        None
+    }
+
+    /// `kiln`, Kiln's qualified name of `d`, with the scope it prints for
+    /// the nearest local type around `d` replaced by that type's key: its
+    /// owner's name and `local(n)` (`?` for a number not known), then the
+    /// classes between it and `d` and `d`'s own component as Kiln prints
+    /// them. `None` outside a local type.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "the names of digest-kinds: s stream, d declaration, e entity, n number, o owner, t type"
+    )]
+    fn local_scope(&self, d: DeclId, kiln: &str) -> Option<String> {
+        let ast = self.ast;
+        let t = self.local_type_around(d)?;
+        // Kiln prints a closure as `(lambda)` in a component, as
+        // `(anonymous class)` in a scope: cut at the scope it prints for
+        // `d`'s nearest local type, whatever it calls it.
+        let mut scope_of_d = String::new();
+        self.kiln.write_scope_prefix(d, true, &mut scope_of_d);
+        let rest = kiln.strip_prefix(&scope_of_d)?;
+        let mut inner = String::new();
+        let mut x = ast.decls.get(d).ctx();
+        while let Some(c) = x {
+            if c == t {
+                break;
+            }
+            let mut one = String::new();
+            self.kiln.write_name(c, &mut one);
+            inner = format!("{one}::{inner}");
+            x = ast.decls.get(c).ctx();
+        }
+        let (owner, n) = match crate::local::known_number(self.w, t) {
+            Some((o, n)) => (o, n.to_string()),
+            None => (crate::local::owner(self.w, t)?, "?".to_owned()),
+        };
+        let kind = match info(ast.decls.get(owner).kind()).role {
+            Role::Entity(k) | Role::Content(k) => k,
+            Role::Nothing
+            | Role::Transparent
+            | Role::Root
+            | Role::Local
+            | Role::InParent
+            | Role::Unsupported(_) => KeyKind::Function,
+        };
+        let owner_name = self.unit(owner, self.w.entity(owner), kind);
+        Some(format!("{owner_name}::local({n})::{inner}{rest}"))
     }
 
     /// `d` is a class or enumeration without a name of its own.

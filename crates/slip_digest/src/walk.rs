@@ -59,6 +59,9 @@ pub(crate) struct UnitState {
     pub types: HashMap<u64, TypeRef>,
     /// The expression walk's state.
     pub expr: ExprState,
+    /// The stream's holder and the local types it declared
+    /// (`local::UnitLocals`).
+    pub local: crate::local::UnitLocals,
 }
 
 /// The state of the expression walk in a unit (`expr.rs`): put aside with
@@ -242,6 +245,8 @@ pub(crate) struct Walk<'a> {
     pub abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
     /// `digest.bytes` (`spec/digest.md` §12).
     pub bytes: u64,
+    /// Numberings of owners and the numbering mode (`local.rs`).
+    pub local: crate::local::LocalState,
     /// The temporaries each variable extends, by its first declaration,
     /// built when a `value` unit first needs it (`demand.rs`).
     pub lets: Option<HashMap<DeclId, Vec<(u32, DeclId)>>>,
@@ -288,6 +293,7 @@ impl<'a> Walk<'a> {
             type_nesting: 0,
             abort_memo: HashMap::new(),
             bytes: 0,
+            local: crate::local::LocalState::default(),
             lets: None,
         }
     }
@@ -490,6 +496,7 @@ pub(crate) fn run_with<R>(
 ) -> R {
     let mut w = Walk::new(input, options.rules);
     crate::units::collect(&mut w);
+    crate::local::number_all(&mut w);
     let mut written: Vec<Written> = Vec::new();
     let mut i = 0;
     while i < w.queue.len() {
