@@ -1667,14 +1667,45 @@ enclose its declaration.
   across classes that no single observer need see together; reduce closes
   the seeds under the links (§5.2), so a rename of one virtual function
   renames its whole family and no other.
-- **Followers**, each with `of` the subjects it follows:
+  What a function overrides is read from the front end's record of the
+  functions each one overrides directly, never from names and
+  signatures; the functions looked at are every declaration named like
+  the old identifier and every function of that record so named (a
+  member of an instantiated class included), each taken to its origin
+  (`api.md` §5.5) as a reference to it is. A function of a family that
+  has no key cannot be a subject, so its link cannot be recorded: the
+  function at the other end is `unsupported`, and the family is refused
+  rather than split. A destructor, an operator or a conversion function
+  never arises (overriding keeps the name; a destructor is not named by
+  an identifier); were one reached, the function reaching it would be
+  `unsupported`. A covariant return or `final` changes nothing.
+- **Followers**, each with `of` the entities it follows:
   - a using-declaration that names subjects, and each using-shadow it
-    introduces (`of`: the entities named);
+    introduces whose target is a subject (`of`: the entities named). The
+    using-declaration's `of` is **every** entity it names, subject or
+    not, so that an overload set partly selected is `mixed_follower`
+    (§5.2); its name is claimed with it as the subject. A
+    using-declaration that has no key (one at block scope is no unit)
+    is no follower: its name is claimed for the subjects it names, or
+    `refuse(mixed_set)` when it also names an entity that is not one. A
+    using-declaration that introduces no shadow of its own (it repeats
+    one of its scope) is taken through the declaration it redeclares,
+    and claimed `unresolved` where the front end links none. A reference
+    found through a shadow denotes its referent (§9.3);
   - a member of a class template specialisation instantiated from a
     subject, when its key has the old name (`of`: the member of the
     template);
   - an unnamed class or enumeration that the subject names (`digest.md`
-    §3.3, `unnamed_by`).
+    §3.3, `unnamed_by`): the class or enumeration a declaration of the
+    subject declares an object of (through pointers, references and
+    arrays), whose key is named `unnamed_by` the old identifier and has
+    the subject's parent. One whose key `Keys::key` refuses makes the
+    subject `unsupported`: whether the subject names it cannot be told.
+
+  A candidate or follower declared in a template's pattern (a class
+  template, a partial specialisation, a local class of a function
+  template) is `unsupported` until the package that adds followers of
+  specialisations lands, as a seed member of a class template is (§9.5).
 
   Entities whose keys hold a subject's key as parent or in a
   discriminator (a function template's specialisations, local types,
@@ -1687,8 +1718,10 @@ now: `Keys::rename_rule(entity, new_name)`. For the one follower whose
 key does not hold the identifier as its name (an unnamed class's name is
 `unnamed_by` the variable's), the rule is made from the entity's `Key`
 (`Keys::key`, §9.7) with the inner name replaced: found as the key with
-`unnamed_by(new_name)`, to be called by the name it has now. A follower
-for which `Keys::key` refuses has the flag `unsupported` (§9.5).
+`unnamed_by(new_name)`, with the parent, kind and discriminator the key
+has, to be called by the name it has now. A follower for which
+`Keys::key` refuses has no key and cannot be listed: the subject it
+would follow has the flag `unsupported` instead (§9.5).
 
 ### 9.3 Written references
 
@@ -1791,7 +1824,7 @@ Rename sets a subject's flags (§4.1), which refuse the run (§5.2):
 | Flag | When |
 |---|---|
 | `read_only` | a declaration of the entity is in a read-only file. A function that overrides one of a library is refused this way, through its link |
-| `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a member of a class template, until the package that adds followers of specialisations lands; a follower whose rule cannot be made (§9.2); a subject whose key follows a pattern member (a function defined as a friend in an instantiated class template, `digest.md` §3.4): its rule is kept (§4.1), but a rule on an instantiated member's key makes it indeterminate |
+| `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a member of a class template, and a candidate or follower declared in a template's pattern, until the package that adds followers of specialisations lands; a function of a virtual family linked to one that has no key (§9.2); a subject whose type is an unnamed class whose key cannot be computed (§9.2); a follower whose rule cannot be made (§9.2); a subject whose key follows a pattern member (a function defined as a friend in an instantiated class template, `digest.md` §3.4): its rule is kept (§4.1), but a rule on an instantiated member's key makes it indeterminate |
 | `name_taken` | a scope the entity's name enters declares an entity named `new_name`, or a macro named `new_name` is defined in the unit (the rename reads the unit's preprocessing record, and `run` refuses a unit parsed without it, §9.7). The scopes a name enters are its semantic scope and, outwards from it, every transparent one: an unscoped enumeration, an anonymous union or struct, a linkage specification, `export`, an inline namespace (in both directions: a name in an inline namespace enters the enclosing one, and an entity declared there is taken for one in the inline namespace). A block-scope `extern` declaration enters its innermost enclosing namespace. For a namespace, every part of it the observer sees; for a class, the class and its bases at any depth, read from each class's definition; and a class derived from the entity's class that declares `new_name` (it hides the renamed member). A template parameter enters no scope: one named `new_name` takes nothing. `name_taken` is what one observer sees; it is set only where the unit sees both. A declaration of `new_name` of the same kind and signature in a unit that does not see the target is caught by verification, not by the rename: the run's rules apply in every observer (`verify.md` §2.1), so there it takes the target's key and the digest shows it removed and added (`crates/slip_digest/tests/rules/verify/name-taken-in-another-unit`). One of another signature, kind or class there is no clash (an overload, or a name no unit sees with the target) and verifies equal (`name-taken-in-another-unit-overload`) |
 | `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator; a dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln) |
 

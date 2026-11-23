@@ -1,0 +1,10 @@
+subjects:
+  36cceb9c seed - rule=yes n::B::f(int)
+  780d98a2 follower - rule=yes n::D::f of=36cceb9c
+  8e22d4a6 follower - rule=yes n::D::f of=36cceb9c
+links:
+claims:
+  main.cpp:2:28+1 replace "g" t0 votes=1 none [36cceb9c]
+  main.cpp:3:33+1 replace "g" t0 votes=1 none [8e22d4a6]
+  main.cpp:5:21+1 replace spell(36cceb9c, "g") t0 votes=1 none [36cceb9c]
+changed:

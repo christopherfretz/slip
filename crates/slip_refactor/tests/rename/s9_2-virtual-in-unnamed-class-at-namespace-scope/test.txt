@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (an override in an unnamed class at namespace scope: keyed, linked)
+from: n::B::f
+to: g
+kind: function

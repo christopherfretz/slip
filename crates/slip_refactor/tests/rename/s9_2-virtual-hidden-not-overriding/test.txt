@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (a virtual function that hides one of another signature does not override it: two candidates, no link; WP-072 out of scope: hidden virtual functions are unrelated)
+from: n::B::f
+to: g
+kind: function

@@ -1,0 +1,9 @@
+subjects:
+  599ef791 seed - rule=yes n::B::f()
+  cc7adbf7 candidate - rule=yes O::(anonymous struct)::f()
+links:
+  599ef791 cc7adbf7
+claims:
+  main.cpp:1:39+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:2:33+1 replace "g" t0 votes=1 none [cc7adbf7]
+changed:

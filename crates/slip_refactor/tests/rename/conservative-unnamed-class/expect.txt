@@ -1,7 +1,0 @@
-subjects:
-  6368f0f9 seed unsupported rule=yes n::v
-links:
-claims:
-  main.cpp:1:33+1 replace "w" t0 votes=1 none [6368f0f9]
-  main.cpp:2:21+1 replace spell(6368f0f9, "w") t0 votes=1 none [6368f0f9]
-changed:

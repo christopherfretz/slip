@@ -1,0 +1,4 @@
+spec: edits.md §9.3 rows 2-4 for a virtual family (a call through a base pointer, through this->, qualified Base::f(), a pointer to member)
+from: n::B::f
+to: g
+kind: function

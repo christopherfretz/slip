@@ -1,0 +1,14 @@
+subjects:
+  1415dcb3 seed - rule=yes n::D::f(int)
+  36cceb9c candidate - rule=yes n::B::f(int)
+  afab29cf follower - rule=yes n::E::f of=36cceb9c
+  f4bb2203 follower - rule=yes n::E::f of=36cceb9c,5b18502f
+links:
+  1415dcb3 36cceb9c
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [36cceb9c]
+  main.cpp:2:38+1 keep t0 votes=1 none
+  main.cpp:3:21+1 replace "g" t0 votes=1 none [1415dcb3]
+  main.cpp:4:25+1 replace "g" t0 votes=1 none [f4bb2203]
+  main.cpp:6:21+1 replace spell(36cceb9c, "g") t0 votes=1 none [36cceb9c]
+changed:

@@ -1,0 +1,9 @@
+subjects:
+  0c083ef3 seed - rule=yes n::A::f()
+links:
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [0c083ef3]
+  main.cpp:3:17+1 keep t0 votes=1 none
+  main.cpp:5:30+1 replace spell(0c083ef3, "g") t0 votes=1 none [0c083ef3]
+  main.cpp:5:37+1 keep t0 votes=1 none
+changed:

@@ -1,0 +1,10 @@
+subjects:
+  0c0ea3d4 candidate unsupported rule=yes n::D::f()
+  599ef791 seed - rule=yes n::B::f()
+links:
+  0c0ea3d4 599ef791
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:3:40+1 replace "g" t0 votes=1 none [0c0ea3d4]
+  main.cpp:5:26+1 replace spell(0c0ea3d4, "g") t0 votes=1 none [0c0ea3d4]
+changed:

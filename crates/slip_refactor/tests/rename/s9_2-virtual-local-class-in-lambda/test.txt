@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (an override in a local class of a lambda in a function: keyed, linked)
+from: n::B::f
+to: g
+kind: function
