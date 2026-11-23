@@ -23,7 +23,7 @@ use slip_model::Digest;
 use slip_model::overlay::Overlay;
 
 pub use build::{POST_MAX, build, build_into, plan};
-pub use patch::{CONTEXT, MYERS_WORK, patch};
+pub use patch::{CONTEXT, MYERS_CELLS, MYERS_WORK, patch};
 pub use splice::splice;
 pub use write::{
     Blobs, JOURNAL_PATH, JournalStore, Recovered, Refused, Stat, Tree, WriteError, recover, write,

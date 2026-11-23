@@ -44,12 +44,18 @@ enum Mode {
 
 const MODES: [Mode; 4] = [Mode::Fail, Mode::FailAfter, Mode::Lose, Mode::LoseAfter];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct Node {
     bytes: Vec<u8>,
     mode: u32,
     links: u64,
     regular: bool,
+    uid: u32,
+    gid: u32,
+    dev: u64,
+    ino: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
 }
 
 type Hook = Rc<dyn Fn(&mut State)>;
@@ -69,6 +75,10 @@ struct State {
     hook: Option<(u64, Hook)>,
     /// `put` names its bytes by a wrong digest.
     lying_put: bool,
+    /// The owner and group a create gives.
+    creator: (u32, u32),
+    /// The inode the next create gives.
+    next_ino: u64,
 }
 
 #[derive(Clone)]
@@ -145,6 +155,13 @@ impl Tree for World {
                 links: n.links,
                 mode: n.mode,
                 dir_writable: !s.readonly_dirs.contains(&parent(p)),
+                uid: n.uid,
+                gid: n.gid,
+                dev: n.dev,
+                ino: n.ino,
+                size: n.bytes.len() as u64,
+                mtime: n.mtime,
+                ctime: n.ctime,
             }))
         })
     }
@@ -156,16 +173,30 @@ impl Tree for World {
                 .ok_or_else(|| err(io::ErrorKind::NotFound, "none"))
         })
     }
-    fn create(&self, p: &[u8], mode: u32, bytes: &[u8], exclusive: bool) -> io::Result<()> {
+    fn create(&self, p: &[u8], mode: u32, bytes: &[u8]) -> io::Result<()> {
         self.op("create", p, |s| {
-            if exclusive && s.files.contains_key(p) {
+            if s.files.contains_key(p) {
                 return Err(err(io::ErrorKind::AlreadyExists, "exists"));
             }
             if s.readonly_dirs.contains(&parent(p)) {
                 return Err(err(io::ErrorKind::PermissionDenied, "read-only"));
             }
-            s.files
-                .insert(p.to_vec(), Node { bytes: bytes.to_vec(), mode, links: 1, regular: true });
+            let (uid, gid) = s.creator;
+            s.next_ino += 1;
+            let ino = 1000 + s.next_ino;
+            s.files.insert(
+                p.to_vec(),
+                Node {
+                    bytes: bytes.to_vec(),
+                    mode,
+                    links: 1,
+                    regular: true,
+                    uid,
+                    gid,
+                    ino,
+                    ..Node::default()
+                },
+            );
             Ok(())
         })
     }
@@ -204,6 +235,9 @@ impl Blobs for World {
 impl JournalStore for World {
     fn publish(&self, bytes: &[u8]) -> io::Result<()> {
         self.op("publish", b"", |s| {
+            if s.journal.is_some() {
+                return Err(err(io::ErrorKind::AlreadyExists, "a journal exists"));
+            }
             s.journal = Some(bytes.to_vec());
             Ok(())
         })
@@ -258,13 +292,15 @@ fn case() -> Case {
     let id = formats::content_id(&overlay.to_bytes()).unwrap();
     let mut s = State::default();
     for (p, a, b, mode) in &files {
-        s.files
-            .insert(p.to_vec(), Node { bytes: a.to_vec(), mode: *mode, links: 1, regular: true });
+        s.files.insert(
+            p.to_vec(),
+            Node { bytes: a.to_vec(), mode: *mode, links: 1, regular: true, ..Node::default() },
+        );
         s.blobs.insert(content_digest(b), b.to_vec());
     }
     s.files.insert(
         OTHER.to_vec(),
-        Node { bytes: b"other".to_vec(), mode: 0o644, links: 1, regular: true },
+        Node { bytes: b"other".to_vec(), mode: 0o644, links: 1, regular: true, ..Node::default() },
     );
     let changed = files.iter().filter(|f| f.1 != f.2);
     Case {
@@ -278,6 +314,11 @@ fn case() -> Case {
 
 fn owned(entries: &[&str]) -> Ownership {
     Ownership { owned: entries.iter().map(|e| e.as_bytes().to_vec()).collect(), readonly: vec![] }
+}
+
+/// The ownership of the in-memory tree's writes.
+fn own_w() -> Ownership {
+    owned(&["/w"])
 }
 
 fn run_write(c: &Case, w: &World) -> Result<u64, WriteError> {
@@ -325,13 +366,13 @@ fn image(c: &Case, w: &World) -> bool {
 /// `recover` on a healthy world returns the tree to the pre-image and
 /// removes the journal and staged files; a second run does nothing.
 fn recover_fully(c: &Case, w: &World) {
-    let r = recover(w, w, w).expect("recover");
+    let r = recover(&own_w(), w, w, w).expect("recover");
     let r = r.expect("a journal");
     assert!(r.reported.is_empty(), "{r:?}");
     assert!(w.0.borrow().journal.is_none());
     assert!(!image(c, w));
     let before = w.0.borrow().ops;
-    assert_eq!(recover(w, w, w), Ok(None));
+    assert_eq!(recover(&own_w(), w, w, w), Ok(None));
     assert_eq!(w.0.borrow().ops, before + 1, "the second recover only reads the journal");
 }
 
@@ -362,7 +403,7 @@ fn s7_3_write_replaces_every_file() {
     for (_, pre) in &c.pre {
         assert_eq!(w.0.borrow().blobs.get(&content_digest(pre)), Some(pre));
     }
-    assert_eq!(recover(&w, &w, &w), Ok(None));
+    assert_eq!(recover(&own_w(), &w, &w, &w), Ok(None));
 }
 
 /// The number of operations of a run without failures.
@@ -435,25 +476,25 @@ fn s7_3_crash_sweep_over_recover() {
         let start = w.healthy();
         let m = {
             let probe = start.healthy();
-            recover(&probe, &probe, &probe).unwrap().unwrap();
+            recover(&own_w(), &probe, &probe, &probe).unwrap().unwrap();
             probe.0.borrow().ops
         };
         for mode in MODES {
             for k in 0..m {
                 let r = start.with_fault(k, mode);
-                let _ = recover(&r, &r, &r);
+                let _ = recover(&own_w(), &r, &r, &r);
                 assert!(r.0.borrow().ops > k);
                 visited += 1;
                 image(&c, &r);
                 let again = r.healthy();
-                match recover(&again, &again, &again) {
+                match recover(&own_w(), &again, &again, &again) {
                     Ok(Some(rec)) => assert!(rec.reported.is_empty(), "{rec:?}"),
                     Ok(None) => {}
                     Err(e) => panic!("{e:?}"),
                 }
                 assert!(again.0.borrow().journal.is_none());
                 assert!(!image(&c, &again));
-                assert_eq!(recover(&again, &again, &again), Ok(None));
+                assert_eq!(recover(&own_w(), &again, &again, &again), Ok(None));
             }
         }
     }
@@ -516,12 +557,25 @@ fn s7_3_refusals_touch_nothing() {
         &|s| {
             s.files.insert(
                 staged.clone(),
-                Node { bytes: vec![], mode: 0o644, links: 1, regular: true },
+                Node { bytes: vec![], mode: 0o644, links: 1, regular: true, ..Node::default() },
             );
         },
         &["/w"],
         Refused::StagedExists(staged.clone()),
     );
+    // Any node at the staged name: a link, a directory, a device.
+    check(
+        &|s| {
+            s.files.insert(
+                staged.clone(),
+                Node { mode: 0o777, links: 1, regular: false, ..Node::default() },
+            );
+        },
+        &["/w"],
+        Refused::StagedExists(staged.clone()),
+    );
+    // Its owner's write bit clear (a file not opened for edit).
+    check(&|s| s.files.get_mut(&b).unwrap().mode = 0o444, &["/w"], Refused::ReadOnly(b.clone()));
     // A readonly entry carves a file out of an owned directory.
     let c = case();
     let w = c.world.healthy();
@@ -602,16 +656,16 @@ fn s7_3_file_changed_after_the_commit_is_reported_and_left() {
         left: vec![],
         reported: vec![b"/w/b.h".to_vec()],
     };
-    assert_eq!(recover(&w, &w, &w), Ok(Some(want)));
+    assert_eq!(recover(&own_w(), &w, &w, &w), Ok(Some(want)));
     assert!(w.0.borrow().journal.is_some());
     assert_eq!(w.bytes(b"/w/b.h").unwrap(), b"edited by hand");
     assert_eq!(w.bytes(b"/w/a.cc").unwrap(), c.pre[0].1);
-    let again = recover(&w, &w, &w).unwrap().unwrap();
+    let again = recover(&own_w(), &w, &w, &w).unwrap().unwrap();
     assert_eq!(again.reported, vec![b"/w/b.h".to_vec()]);
     assert_eq!(again.left, vec![b"/w/a.cc".to_vec(), b"/w/sub/c.sh".to_vec()]);
     // A file that is gone, or became a link, is reported too.
     w.0.borrow_mut().files.remove(b"/w/b.h".as_slice());
-    assert_eq!(recover(&w, &w, &w).unwrap().unwrap().reported, vec![b"/w/b.h".to_vec()]);
+    assert_eq!(recover(&own_w(), &w, &w, &w).unwrap().unwrap().reported, vec![b"/w/b.h".to_vec()]);
 }
 
 /// The index of the `nth` operation named `op` in a run without failures.
@@ -685,7 +739,13 @@ fn s7_3_staged_name_taken_by_someone_else() {
     let w = hooked(&c, at, move |s: &mut State| {
         s.files.insert(
             st.clone(),
-            Node { bytes: b"theirs".to_vec(), mode: 0o644, links: 1, regular: true },
+            Node {
+                bytes: b"theirs".to_vec(),
+                mode: 0o644,
+                links: 1,
+                regular: true,
+                ..Node::default()
+            },
         );
     });
     assert!(matches!(run_write(&c, &w), Err(WriteError::Io { journal_left: false, .. })));
@@ -718,8 +778,305 @@ fn s7_3_directories_synced_before_the_journal_is_removed() {
     let w = c.world.with_fault(last, Mode::Lose);
     let _ = run_write(&c, &w);
     let r = w.healthy();
-    recover(&r, &r, &r).unwrap().unwrap();
+    recover(&own_w(), &r, &r, &r).unwrap().unwrap();
     synced(&r.0.borrow().log);
+}
+
+/// Whether a world holds no journal, no staged file and the pre-image.
+fn untouched(c: &Case, w: &World) {
+    assert!(w.0.borrow().journal.is_none());
+    assert!(!image(c, w));
+}
+
+// §7.3 step 4: the file itself is checked again: a hard link, a node that
+// is no longer a regular file, a directory no longer writable, an owner
+// write bit cleared, after step 3, each refuse and undo.
+#[test]
+fn s7_3_step_4_rechecks_the_file_itself() {
+    let c = case();
+    let after = op_index(&c, "create", 2) + 1;
+    let b = b"/w/b.h".to_vec();
+    let cases: Vec<(Box<dyn Fn(&mut State)>, Refused)> = vec![
+        (
+            Box::new(|s| s.files.get_mut(b"/w/b.h".as_slice()).unwrap().links = 2),
+            Refused::HardLinked(b.clone()),
+        ),
+        (
+            Box::new(|s| s.files.get_mut(b"/w/b.h".as_slice()).unwrap().regular = false),
+            Refused::NotRegular(b.clone()),
+        ),
+        (
+            Box::new(|s| s.files.get_mut(b"/w/b.h".as_slice()).unwrap().mode = 0o400),
+            Refused::ReadOnly(b.clone()),
+        ),
+        (
+            Box::new(|s| {
+                s.readonly_dirs.insert(b"/w".to_vec());
+            }),
+            Refused::NotWritable(b"/w/a.cc".to_vec()),
+        ),
+    ];
+    for (change, want) in cases {
+        let change = Rc::new(change);
+        let w = hooked(&c, after, move |s: &mut State| change(s));
+        assert_eq!(run_write(&c, &w), Err(WriteError::Refused(want)));
+        let mut s = w.0.borrow_mut();
+        s.readonly_dirs.clear();
+        let n = s.files.get_mut(b"/w/b.h".as_slice()).unwrap();
+        (n.links, n.regular, n.mode) = (1, true, 0o600);
+        drop(s);
+        untouched(&c, &w);
+    }
+}
+
+// §7.3 step 4: a staged file whose owner or group is not the file's (a
+// create by another user, or in a setgid directory) refuses and undoes.
+#[test]
+fn s7_3_staged_owner_or_group_differs() {
+    for creator in [(0, 7), (7, 0)] {
+        let c = case();
+        let w = c.world.healthy();
+        w.0.borrow_mut().creator = creator;
+        assert_eq!(
+            run_write(&c, &w),
+            Err(WriteError::Refused(Refused::OwnerChanged(b"/w/a.cc".to_vec())))
+        );
+        untouched(&c, &w);
+    }
+}
+
+// §7.3 step 5: the re-check just before each rename. Every field it
+// compares, changed between step 4 and the rename of /w/b.h (after /w/a.cc
+// was renamed), refuses it; the write rolls back to the pre-image and the
+// refusal names the file, or its staged file.
+#[test]
+fn s7_3_each_rename_is_preceded_by_a_recheck() {
+    let c = case();
+    // Before the re-check of /w/b.h: just after the rename of /w/a.cc.
+    let at = op_index(&c, "rename", 0) + 1;
+    let b = b"/w/b.h".to_vec();
+    let sb = staged_name(&b, c.id);
+    let fields: [(&str, fn(&mut Node)); 9] = [
+        ("dev", |n| n.dev += 1),
+        ("ino", |n| n.ino += 1),
+        ("size", |n| n.bytes.push(b'!')),
+        ("mtime", |n| n.mtime.0 += 1),
+        ("mtime ns", |n| n.mtime.1 += 1),
+        ("ctime", |n| n.ctime.0 += 1),
+        ("ctime ns", |n| n.ctime.1 += 1),
+        ("regular", |n| n.regular = false),
+        ("links", |n| n.links = 2),
+    ];
+    for (target, name) in [(&b, &b), (&sb, &sb)] {
+        for (field, change) in fields {
+            let t = target.clone();
+            let w = hooked(&c, at, move |s: &mut State| change(s.files.get_mut(&t).unwrap()));
+            let got = run_write(&c, &w);
+            if target == &b && matches!(field, "size" | "regular") {
+                // A save that changed the bytes, or a node that is no
+                // longer a file: the rollback reports it, keeps it, and
+                // leaves the journal.
+                assert!(matches!(got, Err(WriteError::Io { journal_left: true, .. })), "{got:?}");
+                let want = if field == "size" {
+                    [&c.pre[1].1[..], b"!"].concat()
+                } else {
+                    c.pre[1].1.clone()
+                };
+                assert_eq!(w.bytes(&b).unwrap(), want);
+                assert_eq!(w.bytes(b"/w/a.cc").unwrap(), c.pre[0].1);
+                continue;
+            }
+            let want = if target == &b && field == "links" {
+                Refused::HardLinked(b.clone())
+            } else {
+                Refused::StaleFile(name.clone())
+            };
+            assert_eq!(got, Err(WriteError::Refused(want)), "{field} of {}", text(target));
+            let s = w.0.borrow();
+            assert!(s.journal.is_none());
+            assert_eq!(s.files[b"/w/a.cc".as_slice()].bytes, c.pre[0].1, "{field}");
+            assert!(s.files.keys().all(|p| !p.windows(6).any(|x| x == b".slip-")));
+            assert_eq!(s.log.iter().filter(|(o, _)| *o == "rename").count(), 2, "{field}");
+        }
+    }
+}
+
+fn text(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}
+
+/// A world after an interrupted commit: every file post, the journal left.
+fn after_commit(c: &Case) -> World {
+    let w = c.world.with_fault(op_index(c, "unjournal", 0), Mode::Lose);
+    let _ = run_write(c, &w);
+    let w = w.healthy();
+    assert!(w.0.borrow().journal.is_some() && image(c, &w));
+    w
+}
+
+// §7.3 recovery: a file that is no longer a regular file is reported,
+// whatever its bytes (never read through a link and called left).
+#[test]
+fn s7_3_recover_reports_a_file_no_longer_regular() {
+    let c = case();
+    // /w/a.cc renamed (post), /w/b.h still pre.
+    let w = c.world.with_fault(op_index(&c, "rename", 0), Mode::LoseAfter);
+    let _ = run_write(&c, &w);
+    let w = w.healthy();
+    w.0.borrow_mut().files.get_mut(b"/w/b.h".as_slice()).unwrap().regular = false;
+    let got = recover(&own_w(), &w, &w, &w).unwrap().unwrap();
+    assert_eq!(got.reported, vec![b"/w/b.h".to_vec()]);
+    assert_eq!(got.restored, vec![b"/w/a.cc".to_vec()]);
+    assert!(w.0.borrow().journal.is_some());
+    assert!(w.0.borrow().log.iter().all(|(op, p)| *op != "read" || p != b"/w/b.h"));
+}
+
+// §7.3 recovery: the staged name is created exclusively: a file that
+// appears there before recover's create is neither replaced nor removed,
+// recover fails and the journal stays.
+#[test]
+fn s7_3_recover_creates_the_staged_name_exclusively() {
+    let c = case();
+    let start = after_commit(&c);
+    let probe = start.healthy();
+    recover(&own_w(), &probe, &probe, &probe).unwrap().unwrap();
+    let first_create =
+        probe.0.borrow().log.iter().position(|(o, _)| *o == "create").unwrap() as u64;
+    let w = start.healthy();
+    let st = staged_name(b"/w/a.cc", c.id);
+    let s2 = st.clone();
+    w.0.borrow_mut().hook = Some((
+        first_create,
+        Rc::new(move |s: &mut State| {
+            s.files.insert(
+                s2.clone(),
+                Node {
+                    bytes: b"theirs".to_vec(),
+                    mode: 0o644,
+                    links: 1,
+                    regular: true,
+                    ..Node::default()
+                },
+            );
+        }),
+    ));
+    assert!(matches!(
+        recover(&own_w(), &w, &w, &w),
+        Err(WriteError::Io { journal_left: true, .. })
+    ));
+    assert_eq!(w.bytes(&st).unwrap(), b"theirs");
+    assert_eq!(w.bytes(b"/w/a.cc").unwrap(), c.post[0].1);
+    assert!(w.0.borrow().journal.is_some());
+}
+
+// §7.3 step 5: a rollback that reports a file (changed by someone after
+// its rename) leaves the journal: `journal_left` is true.
+#[test]
+fn s7_3_rollback_with_a_reported_file_leaves_the_journal() {
+    let c = case();
+    let at = op_index(&c, "rename", 1);
+    let w = c.world.with_fault(at, Mode::Fail);
+    w.0.borrow_mut().hook = Some((
+        at,
+        Rc::new(|s: &mut State| {
+            s.files.get_mut(b"/w/a.cc".as_slice()).unwrap().bytes = b"theirs".to_vec();
+        }),
+    ));
+    assert!(matches!(run_write(&c, &w), Err(WriteError::Io { journal_left: true, .. })));
+    assert!(w.0.borrow().journal.is_some());
+    assert_eq!(w.bytes(b"/w/a.cc").unwrap(), b"theirs");
+}
+
+// §7.3 step 4: a refusal whose undo fails leaves the journal
+// (`journal_left` true); an undo that runs syncs both directories before
+// it removes the journal.
+#[test]
+fn s7_3_undo_of_a_refusal() {
+    let c = case();
+    let after = op_index(&c, "create", 2) + 1;
+    let stale = |s: &mut State| {
+        s.files.get_mut(b"/w/b.h".as_slice()).unwrap().bytes = b"someone's".to_vec();
+    };
+    let w = hooked(&c, after, stale);
+    assert_eq!(run_write(&c, &w), Err(WriteError::Refused(Refused::StaleFile(b"/w/b.h".to_vec()))));
+    let log = w.0.borrow().log.clone();
+    let first_remove = log.iter().position(|(o, _)| *o == "remove").unwrap();
+    let gone = log.iter().position(|(o, _)| *o == "unjournal").unwrap();
+    let synced: BTreeSet<Vec<u8>> = log[first_remove..gone]
+        .iter()
+        .filter(|(o, _)| *o == "sync_dir")
+        .map(|(_, p)| p.clone())
+        .collect();
+    assert_eq!(synced, BTreeSet::from([b"/w".to_vec(), b"/w/sub".to_vec()]));
+    for target in [first_remove, gone] {
+        let w = c.world.with_fault(target as u64, Mode::Fail);
+        w.0.borrow_mut().hook = Some((after, Rc::new(stale)));
+        assert!(
+            matches!(run_write(&c, &w), Err(WriteError::Io { journal_left: true, .. })),
+            "fault at {}",
+            log[target].0
+        );
+        assert!(w.0.borrow().journal.is_some());
+    }
+}
+
+// §7.3 and §7.4: `recover` takes the write's ownership and refuses, before
+// touching anything, a journal naming a path it does not own (outside it,
+// or under a readonly entry); the journal is kept.
+#[test]
+fn s7_3_recover_refuses_a_journal_outside_its_ownership() {
+    let c = case();
+    let start = after_commit(&c);
+    let narrow = owned(&["/w/sub"]);
+    let carved = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/b.h".to_vec()] };
+    for (own, path) in [(narrow, b"/w/a.cc".to_vec()), (carved, b"/w/b.h".to_vec())] {
+        let w = start.healthy();
+        assert_eq!(
+            recover(&own, &w, &w, &w),
+            Err(WriteError::Refused(Refused::JournalNotOwned(path)))
+        );
+        let s = w.0.borrow();
+        assert!(s.journal.is_some());
+        assert!(s.log.iter().all(|(op, _)| *op == "journal"), "{:?}", s.log);
+    }
+}
+
+// §7.3: an ownership that is not canonical (`""` would cover every path)
+// or has no owned entry is `Invalid`, for `write` and for `recover`.
+#[test]
+fn s7_3_ownership_is_validated() {
+    let c = case();
+    let bad = [
+        Ownership { owned: vec![b"".to_vec()], readonly: vec![] },
+        Ownership { owned: vec![b"w".to_vec()], readonly: vec![] },
+        Ownership { owned: vec![b"/w/".to_vec()], readonly: vec![] },
+        Ownership { owned: vec![], readonly: vec![] },
+        Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/../x".to_vec()] },
+        Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w".to_vec()] },
+    ];
+    for own in bad {
+        let w = c.world.healthy();
+        assert!(
+            matches!(write(&c.overlay, c.id, &own, &w, &w, &w), Err(WriteError::Invalid(_))),
+            "{own:?}"
+        );
+        assert!(matches!(recover(&own, &w, &w, &w), Err(WriteError::Invalid(_))), "{own:?}");
+        assert_eq!(w.0.borrow().ops, 0);
+    }
+}
+
+// §7.3 step 2: the journal is published exclusively; a journal that
+// appears after step 0's read (another write) is the unfinished-write
+// refusal, and it is not removed.
+#[test]
+fn s7_3_publish_is_exclusive() {
+    let c = case();
+    let at = op_index(&c, "publish", 0);
+    let w = hooked(&c, at, |s: &mut State| s.journal = Some(b"theirs".to_vec()));
+    assert!(matches!(run_write(&c, &w), Err(WriteError::Journal(_))));
+    let s = w.0.borrow();
+    assert_eq!(s.journal.as_deref(), Some(&b"theirs"[..]));
+    assert!(s.log.iter().all(|(op, _)| !matches!(*op, "create" | "rename" | "unjournal")));
 }
 
 // §7.3: an unfinished write blocks another; a malformed overlay or a wrong
@@ -755,7 +1112,7 @@ fn s7_3_recover_refuses_a_malformed_journal() {
     let w = c.world.healthy();
     for bytes in [&b""[..], b"garbage", &[0u8; 33]] {
         w.0.borrow_mut().journal = Some(bytes.to_vec());
-        assert!(matches!(recover(&w, &w, &w), Err(WriteError::Journal(_))));
+        assert!(matches!(recover(&own_w(), &w, &w, &w), Err(WriteError::Journal(_))));
     }
     assert!(w.0.borrow().log.iter().all(|(op, _)| *op == "journal"));
 }
@@ -833,10 +1190,13 @@ mod disk {
 
     impl JournalStore for Store {
         fn publish(&self, bytes: &[u8]) -> io::Result<()> {
+            // Exclusive: a hard link fails if the journal exists.
             let tmp = self.0.join("write.journal.tmp");
             std::fs::write(&tmp, bytes)?;
             std::fs::File::open(&tmp)?.sync_all()?;
-            std::fs::rename(&tmp, self.0.join("write.journal"))?;
+            let linked = std::fs::hard_link(&tmp, self.0.join("write.journal"));
+            std::fs::remove_file(&tmp)?;
+            linked?;
             std::fs::File::open(&self.0)?.sync_all()
         }
         fn read(&self) -> io::Result<Option<Vec<u8>>> {
@@ -874,9 +1234,9 @@ mod disk {
             self.go()?;
             DiskTree.read(p)
         }
-        fn create(&self, p: &[u8], mode: u32, b: &[u8], x: bool) -> io::Result<()> {
+        fn create(&self, p: &[u8], mode: u32, b: &[u8]) -> io::Result<()> {
             self.go()?;
-            DiskTree.create(p, mode, b, x)
+            DiskTree.create(p, mode, b)
         }
         fn rename(&self, a: &[u8], b: &[u8]) -> io::Result<()> {
             self.go()?;
@@ -942,6 +1302,73 @@ mod disk {
     pub fn link(target: &Path, at: &Path) {
         symlink(target, at).unwrap();
     }
+
+    /// `DiskTree` that logs its operations and runs a closure just before
+    /// the one of index `at`.
+    pub struct Hooked {
+        pub log: RefCell<Vec<&'static str>>,
+        pub hook: RefCell<Option<(usize, Box<dyn Fn()>)>>,
+    }
+
+    impl Hooked {
+        pub fn new(hook: Option<(usize, Box<dyn Fn()>)>) -> Hooked {
+            Hooked { log: RefCell::new(Vec::new()), hook: RefCell::new(hook) }
+        }
+        fn go(&self, op: &'static str) {
+            let n = {
+                let mut log = self.log.borrow_mut();
+                log.push(op);
+                log.len() - 1
+            };
+            if let Some((at, f)) = &*self.hook.borrow()
+                && *at == n
+            {
+                f();
+            }
+        }
+        /// The index of the `nth` operation named `op`.
+        pub fn index(&self, op: &str, nth: usize) -> usize {
+            self.log.borrow().iter().enumerate().filter(|(_, o)| **o == op).nth(nth).unwrap().0
+        }
+    }
+
+    impl Tree for Hooked {
+        fn stat(&self, p: &[u8]) -> io::Result<Option<Stat>> {
+            self.go("stat");
+            DiskTree.stat(p)
+        }
+        fn read(&self, p: &[u8]) -> io::Result<Vec<u8>> {
+            self.go("read");
+            DiskTree.read(p)
+        }
+        fn create(&self, p: &[u8], mode: u32, b: &[u8]) -> io::Result<()> {
+            self.go("create");
+            DiskTree.create(p, mode, b)
+        }
+        fn rename(&self, a: &[u8], b: &[u8]) -> io::Result<()> {
+            self.go("rename");
+            DiskTree.rename(a, b)
+        }
+        fn remove(&self, p: &[u8]) -> io::Result<()> {
+            self.go("remove");
+            DiskTree.remove(p)
+        }
+        fn sync_dir(&self, d: &[u8]) -> io::Result<()> {
+            self.go("sync_dir");
+            DiskTree.sync_dir(d)
+        }
+    }
+
+    /// The operation indices of a clean write over a fresh tree.
+    pub fn clean_log(name: &str) -> Hooked {
+        let r = root(name);
+        let (o, id) = setup(&r);
+        let store = Store(r.join("store"));
+        let h = Hooked::new(None);
+        assert_eq!(write(&o, id, &own(&r), &h, &store, &store), Ok(3));
+        std::fs::remove_dir_all(&r).unwrap();
+        h
+    }
 }
 
 // §7.3 over the disk: the files replaced, permission bits and the
@@ -967,7 +1394,7 @@ fn s7_3_disk_write() {
         std::fs::read_dir(r.join("tree")).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert_eq!(names.len(), 4, "{names:?}");
     assert!(!r.join("store/write.journal").exists());
-    assert_eq!(recover(&slip_apply::fs::DiskTree, &store, &store), Ok(None));
+    assert_eq!(recover(&disk::own(&r), &slip_apply::fs::DiskTree, &store, &store), Ok(None));
     std::fs::remove_dir_all(&r).unwrap();
 }
 
@@ -991,7 +1418,9 @@ fn s7_3_disk_interrupted_write_and_recover() {
         assert!(write(&o, id, &disk::own(&r), &flaky, &store, &store).is_err());
         if r.join("store/write.journal").exists() {
             journals += 1;
-            let got = recover(&slip_apply::fs::DiskTree, &store, &store).unwrap().unwrap();
+            let got = recover(&disk::own(&r), &slip_apply::fs::DiskTree, &store, &store)
+                .unwrap()
+                .unwrap();
             assert!(got.reported.is_empty());
         }
         for (p, a, _, mode) in disk::FILES {
@@ -1043,5 +1472,140 @@ fn s7_3_disk_refusals() {
     }
     assert!(!r.join("store/write.journal").exists());
     assert_eq!(try_write(), Ok(3));
+    std::fs::remove_dir_all(&r).unwrap();
+}
+
+// §7.3 step 3 on disk: the staged name of /tree/a.cc appears between
+// step 1 and its create, as a file and as a link to a victim: the create
+// is exclusive, nothing is written through it, it is not removed, the
+// write fails with nothing left.
+#[test]
+fn s7_3_disk_staged_name_appears_before_the_create() {
+    let probe = disk::clean_log("excl-probe");
+    let at = probe.index("create", 0);
+    for as_link in [false, true] {
+        let r = disk::root(if as_link { "excl-link" } else { "excl-file" });
+        let (o, id) = disk::setup(&r);
+        let store = disk::Store(r.join("store"));
+        let a = r.join(disk::FILES[0].0);
+        let staged = std::path::PathBuf::from(
+            <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&staged_name(
+                &disk::bytes(&a),
+                id,
+            )),
+        );
+        let victim = r.join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let (s2, v2) = (staged.clone(), victim.clone());
+        let h = disk::Hooked::new(Some((
+            at,
+            Box::new(move || {
+                if as_link {
+                    disk::link(&v2, &s2);
+                } else {
+                    std::fs::write(&s2, b"theirs").unwrap();
+                }
+            }),
+        )));
+        let got = write(&o, id, &disk::own(&r), &h, &store, &store);
+        assert!(matches!(got, Err(WriteError::Io { journal_left: false, .. })), "{got:?}");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert_eq!(disk::mode(&victim), 0o600);
+        let m = std::fs::symlink_metadata(&staged).unwrap();
+        assert_eq!(m.file_type().is_symlink(), as_link);
+        if !as_link {
+            assert_eq!(std::fs::read(&staged).unwrap(), b"theirs");
+        }
+        for (p, pre, _, mode) in disk::FILES {
+            assert_eq!(std::fs::read(r.join(p)).unwrap(), pre);
+            assert_eq!(disk::mode(&r.join(p)), mode);
+        }
+        assert!(!r.join("store/write.journal").exists());
+        std::fs::remove_dir_all(&r).unwrap();
+    }
+}
+
+// §7.3 step 5 on disk: the file rewritten in place with bytes of the same
+// size between step 4 and its rename (an editor's save) is found by its
+// times: refused, the save kept and reported, the journal left; the other
+// file already renamed is restored.
+#[test]
+fn s7_3_disk_save_in_place_before_the_rename() {
+    let probe = disk::clean_log("save-probe");
+    // Just after the first rename: before the re-check of the second file.
+    let at = probe.index("rename", 0) + 1;
+    let r = disk::root("save");
+    let (o, id) = disk::setup(&r);
+    let store = disk::Store(r.join("store"));
+    let second = r.join(disk::FILES[1].0);
+    let saved: Vec<u8> = disk::FILES[1].1.iter().map(u8::to_ascii_uppercase).collect();
+    assert_eq!(saved.len(), disk::FILES[1].1.len());
+    let (p2, b2) = (second.clone(), saved.clone());
+    let h = disk::Hooked::new(Some((
+        at,
+        Box::new(move || {
+            use std::io::Write as _;
+            let mut f = std::fs::OpenOptions::new().write(true).open(&p2).unwrap();
+            f.write_all(&b2).unwrap();
+        }),
+    )));
+    let got = write(&o, id, &disk::own(&r), &h, &store, &store);
+    assert!(matches!(got, Err(WriteError::Io { journal_left: true, .. })), "{got:?}");
+    assert_eq!(std::fs::read(&second).unwrap(), saved);
+    assert_eq!(std::fs::read(r.join(disk::FILES[0].0)).unwrap(), disk::FILES[0].1);
+    assert_eq!(std::fs::read(r.join(disk::FILES[2].0)).unwrap(), disk::FILES[2].1);
+    assert!(r.join("store/write.journal").exists());
+    let again =
+        recover(&disk::own(&r), &slip_apply::fs::DiskTree, &store, &store).unwrap().unwrap();
+    assert_eq!(again.reported, vec![disk::bytes(&second)]);
+    std::fs::remove_dir_all(&r).unwrap();
+}
+
+// §7.3 on disk: `DiskTree::create` with its staged name swapped for a link
+// to a victim by another thread, as often as the race can be won: the
+// victim's bytes and mode never change, and a create that found the swap
+// fails. The race is not won every run; the test counts the swaps seen.
+#[test]
+fn s7_3_disk_create_does_not_follow_a_swapped_name() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let r = disk::root("race");
+    let victim = r.join("victim");
+    std::fs::write(&victim, b"precious").unwrap();
+    std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let staged = r.join("tree/.f.slip-0000000000000000");
+    let stop = Arc::new(AtomicBool::new(false));
+    let (s2, st2, v2) = (stop.clone(), staged.clone(), victim.clone());
+    let attacker = std::thread::spawn(move || {
+        let tmp = st2.with_extension("lnk");
+        while !s2.load(Ordering::Relaxed) {
+            if std::fs::symlink_metadata(&st2).is_ok_and(|m| m.file_type().is_file()) {
+                let _ = std::fs::remove_file(&tmp);
+                let _ = std::os::unix::fs::symlink(&v2, &tmp);
+                let _ = std::fs::rename(&tmp, &st2);
+            }
+        }
+    });
+    let (mut swapped, mut failed) = (0, 0);
+    for _ in 0..1500 {
+        let _ = std::fs::remove_file(&staged);
+        let got = slip_apply::fs::DiskTree.create(&disk::bytes(&staged), 0o4755, b"post");
+        assert_eq!(disk::mode(&victim), 0o600);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        let link = std::fs::symlink_metadata(&staged).is_ok_and(|m| m.file_type().is_symlink());
+        if got.is_err() {
+            failed += 1;
+        }
+        if link && got.is_ok() {
+            // The swap came after the create had finished.
+            swapped += 1;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    attacker.join().unwrap();
+    eprintln!(
+        "race: {failed} creates failed (a swap found, or the name taken), {swapped} swaps after a create"
+    );
     std::fs::remove_dir_all(&r).unwrap();
 }

@@ -38,33 +38,49 @@ impl Tree for DiskTree {
         let real_dir = fs::canonicalize(path(dir))?;
         let regular = m.file_type().is_file() && real_dir.as_os_str().as_bytes() == dir;
         let dir_writable = !fs::metadata(path(dir))?.permissions().readonly();
-        Ok(Some(Stat { regular, links: m.nlink(), mode: m.mode() & 0o7777, dir_writable }))
+        Ok(Some(Stat {
+            regular,
+            links: m.nlink(),
+            mode: m.mode() & 0o7777,
+            dir_writable,
+            uid: m.uid(),
+            gid: m.gid(),
+            dev: m.dev(),
+            ino: m.ino(),
+            size: m.size(),
+            mtime: (m.mtime(), m.mtime_nsec()),
+            ctime: (m.ctime(), m.ctime_nsec()),
+        }))
     }
 
     fn read(&self, p: &[u8]) -> io::Result<Vec<u8>> {
         fs::read(path(p))
     }
 
-    /// Opened with `create_new` when `exclusive`, written and synced;
-    /// then opened again for reading and given exactly `mode` (not masked
-    /// by the umask), synced, and the bits read back: a file system that
-    /// does not keep them fails the create. The bits are set through a
-    /// handle not open for writing because some file systems clear setuid
-    /// and setgid on a change made through a writable one.
-    fn create(&self, p: &[u8], mode: u32, bytes: &[u8], exclusive: bool) -> io::Result<()> {
+    /// Opened with `create_new` (nothing at the name is followed or
+    /// truncated), written and synced; then opened again for reading, and
+    /// that handle checked to be the same file (device and inode) as the
+    /// one written, so that a name swapped for a link in between is found
+    /// and its target untouched; given exactly `mode` through the checked
+    /// handle (not masked by the umask), synced, and the bits read back: a
+    /// file system that does not keep them fails the create. The bits are
+    /// set through a handle not open for writing because some file systems
+    /// clear setuid and setgid on a change made through a writable one.
+    fn create(&self, p: &[u8], mode: u32, bytes: &[u8]) -> io::Result<()> {
         let mode = mode & 0o7777;
-        let mut o = OpenOptions::new();
-        o.write(true).mode(mode & 0o777);
-        if exclusive {
-            o.create_new(true);
-        } else {
-            o.create(true).truncate(true);
-        }
-        let mut f = o.open(path(p))?;
+        let mut f =
+            OpenOptions::new().write(true).create_new(true).mode(mode & 0o777).open(path(p))?;
         f.write_all(bytes)?;
         f.sync_all()?;
+        let written = f.metadata()?;
         drop(f);
         let f = File::open(path(p))?;
+        let reopened = f.metadata()?;
+        if (reopened.dev(), reopened.ino()) != (written.dev(), written.ino()) {
+            return Err(io::Error::other(
+                "the staged name was replaced while it was being created",
+            ));
+        }
         f.set_permissions(Permissions::from_mode(mode))?;
         f.sync_all()?;
         let kept = f.metadata()?.mode() & 0o7777;

@@ -133,7 +133,7 @@ fn s7_2_relative_to_and_names() {
     for bad in [&b"/t/sr"[..], b"/u", b"/t/src/a.cc", b"t", b"/t/"] {
         assert!(matches!(diff(f, Some(bad)), Err(ApplyError::Invalid(_))), "{}", text(bad));
     }
-    for p in [&b"/t/a\nb"[..], b"/t/a\tb", b"/t/a\rb", b"/t/\"q"] {
+    for p in [&b"/t/a\nb"[..], b"/t/a\tb", b"/t/a\rb", b"/t/\"q", b"/t/ lead", b"/t/trail "] {
         let (o, mem, blobs) = overlay(&[(b"/t/ok", b"1\n", b"2\n"), (p, b"x\n", b"y\n")]);
         let mut out = Vec::new();
         let get = |d: Digest| Ok(blobs[&d].clone());

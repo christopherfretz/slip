@@ -26,6 +26,13 @@ pub const CONTEXT: usize = 3;
 /// region before the region is written whole.
 pub const MYERS_WORK: usize = 1 << 26;
 
+/// The most cells (one `isize` each, so 32 MiB) Myers' search may hold
+/// for one region: its frontier and the rows it keeps to trace the script
+/// back. A region that would need more is written whole, as past
+/// [`MYERS_WORK`]. With `d` the edit distance reached, the cells held are
+/// at most `(d + 1)^2 + 2d + 3`.
+pub const MYERS_CELLS: usize = 1 << 22;
+
 /// The lines of `bytes`, each with its `\n`; the last may have none.
 fn lines(bytes: &[u8]) -> Vec<&[u8]> {
     let mut out = Vec::new();
@@ -120,19 +127,32 @@ fn unique_anchors(a: &[u32], b: &[u32]) -> Vec<(usize, usize)> {
 }
 
 /// Myers' greedy shortest edit script, as the matched pairs; empty when
-/// the search would pass [`MYERS_WORK`].
-#[allow(clippy::many_single_char_names, reason = "the names of the definitions")]
+/// the search would pass [`MYERS_WORK`] or [`MYERS_CELLS`].
 fn myers(a: &[u32], b: &[u32]) -> Vec<(usize, usize)> {
+    myers_counted(a, b).0
+}
+
+/// [`myers`], and the most cells it held at once.
+#[allow(clippy::many_single_char_names, reason = "the names of the definitions")]
+fn myers_counted(a: &[u32], b: &[u32]) -> (Vec<(usize, usize)>, usize) {
     let (n, m) = (a.len() as isize, b.len() as isize);
     let max = n + m;
-    let off = max + 1;
-    let mut v = vec![0isize; 2 * max as usize + 3];
+    // The greatest edit distance searched: the bound of the work, and the
+    // one of the cells (the rows kept up to `d` are `(d + 1)^2` cells,
+    // the frontier `2d + 3`).
+    let by_work = MYERS_WORK / (n + m).max(1) as usize;
+    let mut by_cells = 0usize;
+    while (by_cells + 2) * (by_cells + 2) + 2 * (by_cells + 1) + 3 <= MYERS_CELLS {
+        by_cells += 1;
+    }
+    let dlim = (max as usize).min(by_work).min(by_cells) as isize;
+    let off = dlim + 1;
+    let mut v = vec![0isize; 2 * dlim as usize + 3];
     let mut trace: Vec<Vec<isize>> = Vec::new();
+    let mut kept = v.len();
+    let mut peak = kept;
     let mut done = None;
-    'search: for d in 0..=max {
-        if (d as usize).saturating_mul((n + m) as usize) > MYERS_WORK {
-            return Vec::new();
-        }
+    'search: for d in 0..=dlim {
         for k in (-d..=d).step_by(2) {
             let i = (k + off) as usize;
             let mut x =
@@ -144,14 +164,20 @@ fn myers(a: &[u32], b: &[u32]) -> Vec<(usize, usize)> {
             }
             v[i] = x;
             if x >= n && y >= m {
-                trace.push(v[(off - d) as usize..=(off + d) as usize].to_vec());
                 done = Some(d);
-                break 'search;
+            }
+            if done.is_some() {
+                break;
             }
         }
         trace.push(v[(off - d) as usize..=(off + d) as usize].to_vec());
+        kept += 2 * d as usize + 1;
+        peak = peak.max(kept);
+        if done.is_some() {
+            break 'search;
+        }
     }
-    let Some(dmax) = done else { unreachable!("Myers' search ends by d = n + m") };
+    let Some(dmax) = done else { return (Vec::new(), peak) };
     let mut out = Vec::new();
     let (mut x, mut y) = (n, m);
     for d in (1..=dmax).rev() {
@@ -175,7 +201,7 @@ fn myers(a: &[u32], b: &[u32]) -> Vec<(usize, usize)> {
         out.push((x as usize, y as usize));
     }
     out.reverse();
-    out
+    (out, peak)
 }
 
 /// One run of changed lines: `a[alo..ahi]` replaced by `b[blo..bhi]`.
@@ -286,8 +312,9 @@ pub(crate) fn file_diff(
 /// The name a file section gives a path: the path, or under `relative_to`
 /// the rest of it after that directory. `Invalid` for a path outside the
 /// directory, and for a name with a tab, a carriage return or a newline,
-/// or that starts with `"` (which both tools read as a quoted name): a
-/// unified diff's header cannot carry them.
+/// that starts with `"` (which both tools read as a quoted name), or that
+/// starts or ends with a space (GNU `patch` drops it): a unified diff's
+/// header cannot carry them.
 fn name_of<'p>(path: &'p [u8], relative_to: Option<&[u8]>) -> Result<&'p [u8], ApplyError> {
     let name = match relative_to {
         None => path,
@@ -302,10 +329,14 @@ fn name_of<'p>(path: &'p [u8], relative_to: Option<&[u8]>) -> Result<&'p [u8], A
             }
         },
     };
-    if name.iter().any(|b| matches!(b, b'\t' | b'\r' | b'\n')) || name.first() == Some(&b'"') {
+    if name.iter().any(|b| matches!(b, b'\t' | b'\r' | b'\n'))
+        || name.first() == Some(&b'"')
+        || name.first() == Some(&b' ')
+        || name.last() == Some(&b' ')
+    {
         return Err(ApplyError::Invalid(format!(
-            "{:?}: a name with a tab, a carriage return or a newline, or that starts with a \
-             quote, cannot be written in a patch's header",
+            "{:?}: a name with a tab, a carriage return or a newline, that starts with a \
+             quote, or that starts or ends with a space, cannot be written in a patch's header",
             String::from_utf8_lossy(path)
         )));
     }
@@ -357,4 +388,31 @@ pub fn patch(
         file_diff(name, &a, &b, out).map_err(|e| ApplyError::Io(f.path.clone(), e.to_string()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MYERS_CELLS, myers_counted};
+
+    // spec/landed/edits/WP-063.md §3: the cells Myers holds are bounded by
+    // MYERS_CELLS, the case of the review (4096 lines against 4096 other
+    // lines) included; within the bound the script is still found.
+    #[test]
+    fn myers_memory_is_bounded() {
+        for n in [16usize, 1000, 2047, 4096, 20_000] {
+            let a = vec![1u32; n];
+            let b = vec![2u32; n];
+            let (pairs, peak) = myers_counted(&a, &b);
+            assert!(pairs.is_empty());
+            assert!(peak <= MYERS_CELLS, "{n} lines: {peak} cells");
+        }
+        // Repeated lines with a few differences: found, and bounded.
+        let a: Vec<u32> = (0..3000).map(|i| i % 2).collect();
+        let mut b = a.clone();
+        b.remove(1500);
+        b.insert(10, 7);
+        let (pairs, peak) = myers_counted(&a, &b);
+        assert_eq!(pairs.len(), 2999);
+        assert!(peak <= MYERS_CELLS);
+    }
 }
