@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use common::Side;
-use slip_digest::query::{Keys, NoKey, walk_units};
+use slip_digest::query::{Keys, NoKey, WalkUnit, walk_units};
 use slip_digest::{Cause, Detail, Input, Options, Output};
 use slip_kiln::kiln::ast::Ast;
 use slip_kiln::kiln::ast::decl::DeclKind;
@@ -169,6 +169,13 @@ struct Tally {
     content: u64,
     indeterminate: u64,
     decls: u64,
+    /// Property (a): keys `derived` gave, every one the walk's.
+    derived_given: u64,
+    /// Property (b): units of the walk's derived groups, and those no
+    /// `derived(d)` with `d` in a declared unit lists (with their names).
+    derived_units: u64,
+    uncovered_compiler: u64,
+    uncovered_param_object: u64,
     failures: Vec<String>,
 }
 
@@ -177,6 +184,80 @@ struct Tally {
 /// template for a template's pattern.
 fn entity_oracle(ast: &Ast, d: DeclId) -> DeclId {
     ast.described_template(d).map_or_else(|| ast.first(d), |t| ast.first(t))
+}
+
+/// Whether the compiler declared entity `e`: it is a builtin, or no
+/// declaration of it, nor of a class it is a member of, has a location in
+/// the source.
+fn compiler_declared(input: &Input<'_>, e: DeclId) -> bool {
+    let ast = input.ast;
+    let located =
+        |d: DeclId| input.sm.offset_of(input.sm.expansion_loc(ast.decls.get(d).loc())).is_some();
+    let mut x = Some(e);
+    while let Some(c) = x {
+        if ast.decls.builtin_id(c).is_some() {
+            return true;
+        }
+        if ast.redecls_of(c).any(located) {
+            return false;
+        }
+        x = ast.decls.get(c).ctx().filter(|&p| ast.decls.record(p).is_some());
+    }
+    true
+}
+
+/// Properties (a) and (b) of `derived` over one side, into `t`.
+fn derived_properties(
+    input: &Input<'_>,
+    keys: &mut Keys<'_>,
+    all_units: &[WalkUnit],
+    out: &Output,
+    t: &mut Tally,
+) {
+    let ast = input.ast;
+    // Properties (a) and (b) of `derived` (the fix round of WP-087):
+    // (a) every key `derived(d)` gives, for any declaration `d`, is a
+    // key of a unit the walk writes; (b) every unit of the walk's
+    // derived groups is listed by `derived(d)` for at least one `d`
+    // whose unit is a declared unit of the walk.
+    let walk_keys: BTreeSet<Digest> = all_units.iter().map(|u| u.key).collect();
+    let declared: BTreeSet<DeclId> =
+        all_units.iter().filter(|u| !u.part && !u.derived).map(|u| u.entity).collect();
+    let mut covered: BTreeSet<Digest> = BTreeSet::new();
+    for d in ast.decls.ids() {
+        let given = keys.derived(d);
+        t.derived_given += given.len() as u64;
+        for k in &given {
+            if !walk_keys.contains(k) {
+                t.failures.push(format!("derived({d:?}) gives {k}, a key of no unit of the walk"));
+            }
+        }
+        if keys.unit_of(d).is_some_and(|u| declared.contains(&u)) {
+            covered.extend(given);
+        }
+    }
+    // The exceptions to (b), each with its reason
+    // (`spec/landed/digest/WP-087.md`): an entity the compiler
+    // declares, which no declaration of the source declares (a
+    // builtin, an implicit global allocation function,
+    // `std::align_val_t`, `__va_list_tag` and its members); and a
+    // template parameter object, which every specialisation whose
+    // arguments name it shares and none is the origin of.
+    let names_of = names(out);
+    for u in all_units.iter().filter(|u| u.derived) {
+        t.derived_units += 1;
+        if covered.contains(&u.key) {
+            continue;
+        }
+        let name = names_of.get(&u.key).cloned().unwrap_or_else(|| format!("{}", u.key));
+        if ast.decls.get(u.entity).kind() == DeclKind::TemplateParamObject {
+            t.uncovered_param_object += 1;
+        } else if compiler_declared(input, u.entity) {
+            t.uncovered_compiler += 1;
+        } else {
+            t.failures.push(format!("{name}: no derived(d), d in a declared unit, lists it"));
+        }
+    }
 }
 
 /// One side of one pair test: tests 1, 6 and 8.
@@ -198,32 +279,49 @@ fn sweep_side(dir: &Path, side: Side) -> Result<Tally, String> {
     let got = with_input(&files, &head.std, &args, head.target.as_deref(), |input| {
         let mut t = Tally { sides: 1, ..Tally::default() };
         let empty = RuleTable::empty();
-        let units = walk_units(input, &empty);
+        let all_units = walk_units(input, &empty);
+        let units: Vec<(DeclId, Digest, Option<Cause>)> =
+            all_units.iter().filter(|u| !u.part).map(|u| (u.entity, u.key, u.key_cause)).collect();
         let out = digest(input, &empty);
         let indeterminate: BTreeSet<Digest> = out.causes.iter().map(|(k, _)| *k).collect();
         let ast = input.ast;
-        // Test 1: `key_id` of every unit is the walk's key.
+        // Test 1: `key_id` of every unit is the walk's key. The rule: when
+        // the walk's own `Walk::key` gives the unit's key with a cause,
+        // `key_id` is `Indeterminate` with that cause, and `Ok` (equal to
+        // the walk's key) is a failure; else it is `Ok` with the walk's
+        // key, `ContentKeyed` for a content kind, or `Indeterminate` for
+        // a unit the walk's output gives a cause.
         let mut keys = Keys::new(input);
-        for &(e, k) in &units {
+        for &(e, k, cause) in &units {
             t.units += 1;
             let kind = ast.decls.get(e).kind();
-            match keys.key_id(e) {
-                Ok(id) if id == k => t.keyed += 1,
-                Ok(id) => t.failures.push(format!("{e:?} ({kind:?}): key_id {id}, walk {k}")),
-                Err(NoKey::ContentKeyed) if CONTENT_KINDS.contains(&kind) => t.content += 1,
-                Err(NoKey::Indeterminate(_)) if indeterminate.contains(&k) => {
+            let got = keys.key_id(e);
+            match (got, cause) {
+                // A content-keyed unit's key is its digest: the cause is
+                // its stream's.
+                (Err(NoKey::ContentKeyed), _) if CONTENT_KINDS.contains(&kind) => t.content += 1,
+                (Err(NoKey::Indeterminate(c)), Some(walk)) if c == walk => t.indeterminate += 1,
+                (got, Some(walk)) => t.failures.push(format!(
+                    "{e:?} ({kind:?}): key_id {got:?}, the walk's key has cause {walk:?}"
+                )),
+                (Ok(id), None) if id == k => t.keyed += 1,
+                (Ok(id), None) => {
+                    t.failures.push(format!("{e:?} ({kind:?}): key_id {id}, walk {k}"));
+                }
+                (Err(NoKey::Indeterminate(_)), None) if indeterminate.contains(&k) => {
                     t.indeterminate += 1;
                 }
-                Err(n) => t.failures.push(format!(
+                (Err(n), None) => t.failures.push(format!(
                     "{e:?} ({kind:?}, {}): key_id {n:?}, walk {k}",
                     names(&out).get(&k).cloned().unwrap_or_default()
                 )),
             }
         }
+        derived_properties(input, &mut keys, &all_units, &out, &mut t);
         // Test 8: `key` and `key_id` refuse alike, and `key`'s id is the
         // key id; asked first, on a fresh `Keys`, and after `key_id`.
         let mut fresh = Keys::new(input);
-        for &(e, _) in &units {
+        for &(e, _, _) in &units {
             let first = fresh.key(e);
             let id = fresh.key_id(e);
             let again = keys.key(e);
@@ -240,7 +338,7 @@ fn sweep_side(dir: &Path, side: Side) -> Result<Tally, String> {
         // Test 6: `entity` agrees with the walk on every declaration: the
         // walk's tables (`entity_oracle`), and every declaration of a
         // unit's entity has that entity.
-        let unit_entities: BTreeSet<DeclId> = units.iter().map(|&(e, _)| e).collect();
+        let unit_entities: BTreeSet<DeclId> = units.iter().map(|&(e, _, _)| e).collect();
         for d in ast.decls.ids() {
             t.decls += 1;
             let e = keys.entity(d);
@@ -288,6 +386,10 @@ fn keys_agree_with_the_walk_on_every_pair_test() {
                 total.content += t.content;
                 total.indeterminate += t.indeterminate;
                 total.decls += t.decls;
+                total.derived_given += t.derived_given;
+                total.derived_units += t.derived_units;
+                total.uncovered_compiler += t.uncovered_compiler;
+                total.uncovered_param_object += t.uncovered_param_object;
                 total.failures.extend(t.failures.into_iter().map(|f| format!("{name}: {f}")));
             }
             Ok(Err(e)) => total.failures.push(format!("{name}: {e}")),
@@ -303,6 +405,13 @@ fn keys_agree_with_the_walk_on_every_pair_test() {
         total.content,
         total.indeterminate,
         total.decls
+    );
+    eprintln!(
+        "api_keys: derived gave {} keys; {} units of derived groups, not listed from a declared unit: {} declared by the compiler, {} template parameter objects",
+        total.derived_given,
+        total.derived_units,
+        total.uncovered_compiler,
+        total.uncovered_param_object
     );
     assert!(total.failures.is_empty(), "{} failures:\n{}", total.failures.len(), {
         total.failures.truncate(60);
@@ -399,7 +508,16 @@ fn derived_lists_instantiations_and_resolved_units() {
                template <class T> constexpr T vt = T(1);\n\
                int vx = vt<int>;\n\
                struct I { int x = 1; };\n\
-               I ii;\n";
+               I ii;\n\
+               int gl() { auto b = [](auto y) { return y; }; return b(1); }\n\
+               template <class T> struct FT { friend void ftf(FT) {} friend void ftd(FT); };\n\
+               FT<int> fti;\n\
+               void usefr() { ftf(fti); }\n\
+               template <class T> struct Sp { T t; };\n\
+               template <class T> struct Sp<T *> { T *p; };\n\
+               Sp<long *> spl;\n\
+               template <class T> struct TD { int m = [] { return 8; }(); void h(int z = [] { return 9; }()) {} };\n\
+               void usetd() { TD<int> x; x.h(); }\n";
     snippet(src, |input| {
         let ast = input.ast;
         let out = digest(input, &RuleTable::empty());
@@ -422,28 +540,57 @@ fn derived_lists_instantiations_and_resolved_units() {
         assert_eq!(tf, set(&["tf<int>(int)", "tf<long>(long)"]), "{tf:?}");
         // A class template whose member is instantiated: the class
         // specialisation and its members; of the member, its own.
-        let c = of(one(ast, "C", DeclKind::ClassTemplate));
-        assert!(c.contains("C<int>") && c.contains("C<int>::m()"), "{c:?}");
-        let m = of(one(ast, "m", DeclKind::CXXMethod));
-        assert!(m.contains("C<int>::m()"), "{m:?}");
-        assert!(!m.contains("C<int>") && !m.iter().any(|n| n.contains("::n()")), "{m:?}");
+        let cls = of(one(ast, "C", DeclKind::ClassTemplate));
+        assert!(cls.contains("C<int>") && cls.contains("C<int>::m()"), "{cls:?}");
+        let meth = of(one(ast, "m", DeclKind::CXXMethod));
+        assert!(meth.contains("C<int>::m()"), "{meth:?}");
+        assert!(!meth.contains("C<int>") && !meth.iter().any(|n| n.contains("::n()")), "{meth:?}");
         // A function with a deduced return type: its instantiation.
         let ded = of(one(ast, "ded", DeclKind::FunctionTemplate));
         assert!(ded.iter().any(|n| n.starts_with("ded<int>")), "{ded:?}");
         // A resolved property: the value of a constant.
-        let k = of(one(ast, "k", DeclKind::Var));
-        assert_eq!(k, set(&["k::<value>"]), "{k:?}");
+        let konst = of(one(ast, "k", DeclKind::Var));
+        assert_eq!(konst, set(&["k::<value>"]), "{konst:?}");
         // A member template of a class that is no template: of the class.
-        let p = of(one(ast, "P", DeclKind::CXXRecord));
-        assert!(!p.is_empty() && p.iter().all(|n| n.contains("pm<char>")), "{p:?}");
-        // A class's implicit members are derived units of the walk, but
-        // not instantiations: none is derived from the class
-        // (`spec/landed/digest/WP-087.md`).
+        let pclass = of(one(ast, "P", DeclKind::CXXRecord));
         assert!(
-            derived_units.iter().any(|k| names.get(k).is_some_and(|n| n.starts_with("I::I("))),
-            "I's implicit constructor is a derived unit"
+            pclass.iter().any(|n| n.contains("pm<char>")) && pclass.contains("P::P()"),
+            "{pclass:?}"
         );
-        assert!(of(one(ast, "I", DeclKind::CXXRecord)).is_empty());
+        // A class's implicit members the walk writes are derived from the
+        // class (`spec/landed/digest/WP-087.md`).
+        let icls = of(one(ast, "I", DeclKind::CXXRecord));
+        assert!(icls.iter().any(|n| n.starts_with("I::I(")), "{icls:?}");
+        // The call operator a generic lambda instantiates, a derived unit
+        // of the walk though on demand: of the function that owns the
+        // closure.
+        let gl = of(one(ast, "gl", DeclKind::Function));
+        assert!(gl.iter().any(|n| n.contains("operator()<int>")), "{gl:?}");
+        // The friends a class template's instantiation defines: of the
+        // template.
+        let ft = of(one(ast, "FT", DeclKind::ClassTemplate));
+        // (the functions themselves, not only the content-keyed friend
+        // declarations: their semantic context is the namespace, their
+        // lexical one the instantiation)
+        assert!(ft.contains("ftf(FT<int>)") && ft.contains("ftd(FT<int>)"), "{ft:?}");
+        // An instantiation of a partial specialisation: of the partial
+        // specialisation (and of the template).
+        let partial =
+            ast.decls.ids().find(|&d| ast.partial_spec_info(d).is_some()).expect("Sp<T *>");
+        let sp = of(partial);
+        assert!(sp.contains("Sp<long *>"), "{sp:?}");
+        assert!(of(one(ast, "Sp", DeclKind::ClassTemplate)).contains("Sp<long *>"));
+        // The default arguments of an instantiated member: of the
+        // template, and of the member (a field's default member
+        // initialiser is its `<default_argument 0>`).
+        let td = of(one(ast, "TD", DeclKind::ClassTemplate));
+        for want in ["TD<int>::m::<default_argument 0>", "TD<int>::h(int)::<default_argument 0>"] {
+            assert!(td.contains(want), "{want}: {td:?}");
+        }
+        // (Kiln records no member link for an instantiated field: the
+        // pattern's is the first of the two.)
+        let field = of(written(ast, "m", DeclKind::Field)[0]);
+        assert!(field.contains("TD<int>::m::<default_argument 0>"), "{field:?}");
         // A variable template: its instantiation, and the instantiation's
         // own resolved unit (its value).
         let vt = of(one(ast, "vt", DeclKind::VarTemplate));
@@ -482,6 +629,10 @@ fn each_refusal() {
         assert_eq!(k.key_id(sa), Err(NoKey::ContentKeyed));
         assert_eq!(k.key(sa), Err(NoKey::ContentKeyed));
         assert_eq!(k.rename_rule(sa, b"x"), Err(NoKey::ContentKeyed));
+        // A new name that is no identifier is `invalid_argument` whatever
+        // the entity (`spec/api.md` §7.5 rule 3 lists it first).
+        assert_eq!(k.rename_rule(sa, b"1x"), Err(NoKey::BadName));
+        assert_eq!(k.rename_rule(one(ast, "p", DeclKind::ParmVar), b"a b"), Err(NoKey::BadName));
         // A parameter, a local variable, a linkage specification.
         for d in [
             one(ast, "p", DeclKind::ParmVar),
@@ -563,6 +714,7 @@ struct Pre {
     wrong: Rule,
     key: Key,
     id: Digest,
+    derived: Vec<Digest>,
     digests: slip_model::digests::Digests,
 }
 
@@ -580,6 +732,7 @@ fn check_rename(r: &Rename) -> Result<(), String> {
             wrong: k.rename_rule(e, b"other_name").expect("a rule"),
             key: k.key(e).expect("a key"),
             id: k.key_id(e).expect("a key id"),
+            derived: k.derived(e),
             digests: digest(input, &RuleTable::empty()).digests,
         }
     });
@@ -590,8 +743,9 @@ fn check_rename(r: &Rename) -> Result<(), String> {
         let same = digest(input, &table).digests == pre.digests;
         let differs = digest(input, &wrong).digests != pre.digests;
         let mut k = Keys::with_rules(input, &table);
-        (same, differs, k.key_id(e), k.key(e))
+        (same, differs, k.key_id(e), (k.key(e), k.derived(e)))
     });
+    let (key, derived) = key;
     let mut errs = Vec::new();
     if !same {
         errs.push("test 4: the digests differ under the rule");
@@ -604,6 +758,12 @@ fn check_rename(r: &Rename) -> Result<(), String> {
     }
     if key.as_ref().ok() != Some(&pre.key) {
         errs.push("test 8: with_rules gives the renamed entity another key");
+    }
+    if derived != pre.derived {
+        errs.push("test 7: with_rules gives the renamed entity other derived units");
+    }
+    if r.what == "a class" && pre.derived.is_empty() {
+        errs.push("test 7: the class's implicit copy constructor is not derived from it");
     }
     if errs.is_empty() { Ok(()) } else { Err(format!("{}: {}", r.what, errs.join("; "))) }
 }
@@ -635,8 +795,8 @@ const RENAMES: [Rename; 9] = [
     },
     Rename {
         what: "a class",
-        pre: "struct S { S(); int x; };\nS::S() : x(1) {}\nS s;\nint use(S *p) { return p->x; }\n",
-        post: "struct T { T(); int x; };\nT::T() : x(1) {}\nT s;\nint use(T *p) { return p->x; }\n",
+        pre: "struct S { S(); int x; };\nS::S() : x(1) {}\nS s;\nint use(S *p) { return p->x; }\nS copy(S c) { return c; }\n",
+        post: "struct T { T(); int x; };\nT::T() : x(1) {}\nT s;\nint use(T *p) { return p->x; }\nT copy(T c) { return c; }\n",
         name: "S",
         kind: DeclKind::CXXRecord,
         new: "T",
@@ -701,7 +861,7 @@ fn rename_rule_undoes_a_rename() {
 // member's rule, and a decomposition takes its first binding's mapped
 // name): on today's main the digests are not equal.
 
-const PENDING: [Rename; 3] = [
+const PENDING: [Rename; 8] = [
     Rename {
         what: "a class template with an instantiation",
         pre: "template <class T> struct S { T t; };\nS<int> s;\nint use() { return s.t; }\n",
@@ -726,6 +886,46 @@ const PENDING: [Rename; 3] = [
         kind: DeclKind::Binding,
         new: "z",
     },
+    Rename {
+        what: "a function template with an instantiation",
+        pre: "template <class T> T tf(T t) { return t; }\nint use() { return tf(1); }\n",
+        post: "template <class T> T tg(T t) { return t; }\nint use() { return tg(1); }\n",
+        name: "tf",
+        kind: DeclKind::FunctionTemplate,
+        new: "tg",
+    },
+    Rename {
+        what: "a variable template with an instantiation",
+        pre: "template <class T> constexpr T vt = T(1);\nint use() { return vt<int>; }\n",
+        post: "template <class T> constexpr T vu = T(1);\nint use() { return vu<int>; }\n",
+        name: "vt",
+        kind: DeclKind::VarTemplate,
+        new: "vu",
+    },
+    Rename {
+        what: "a function template with an explicit specialisation",
+        pre: "template <class T> int ft(T) { return 1; }\ntemplate <> int ft(char) { return 2; }\n",
+        post: "template <class T> int fu(T) { return 1; }\ntemplate <> int fu(char) { return 2; }\n",
+        name: "ft",
+        kind: DeclKind::FunctionTemplate,
+        new: "fu",
+    },
+    Rename {
+        what: "a member function template of a class that is no template",
+        pre: "struct P { template <class U> int pm(U) { return 1; } };\nint use() { return P().pm(1); }\n",
+        post: "struct P { template <class U> int pn(U) { return 1; } };\nint use() { return P().pn(1); }\n",
+        name: "pm",
+        kind: DeclKind::FunctionTemplate,
+        new: "pn",
+    },
+    Rename {
+        what: "a class template used through class template argument deduction",
+        pre: "template <class T> struct S { S(T) {} };\nS s(1);\n",
+        post: "template <class T> struct R { R(T) {} };\nR s(1);\n",
+        name: "S",
+        kind: DeclKind::ClassTemplate,
+        new: "R",
+    },
 ];
 
 // # pending WP-103: tests 4, 7 and 8 for a renamed class template with an
@@ -749,6 +949,46 @@ fn pending_rename_member_of_class_template_with_instantiation() {
 #[ignore = "pending WP-103: a decomposition takes its first binding's mapped name"]
 fn pending_rename_structured_binding() {
     check_rename(&PENDING[2]).unwrap_or_else(|e| panic!("{e}"));
+}
+
+// # pending WP-103: the same for a function template with an
+// instantiation.
+#[test]
+#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
+fn pending_rename_function_template_with_instantiation() {
+    check_rename(&PENDING[3]).unwrap_or_else(|e| panic!("{e}"));
+}
+
+// # pending WP-103: the same for a variable template with an
+// instantiation.
+#[test]
+#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
+fn pending_rename_variable_template_with_instantiation() {
+    check_rename(&PENDING[4]).unwrap_or_else(|e| panic!("{e}"));
+}
+
+// # pending WP-103: the same for a function template with an explicit
+// specialisation.
+#[test]
+#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
+fn pending_rename_function_template_with_explicit_specialisation() {
+    check_rename(&PENDING[5]).unwrap_or_else(|e| panic!("{e}"));
+}
+
+// # pending WP-103: the same for a member function template of a class
+// that is no template.
+#[test]
+#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
+fn pending_rename_member_function_template() {
+    check_rename(&PENDING[6]).unwrap_or_else(|e| panic!("{e}"));
+}
+
+// # pending WP-103: the same for a class template used through class
+// template argument deduction (its implicit deduction guides).
+#[test]
+#[ignore = "pending WP-103: a specialisation's key takes its template's mapped name"]
+fn pending_rename_class_template_with_deduction() {
+    check_rename(&PENDING[7]).unwrap_or_else(|e| panic!("{e}"));
 }
 
 // verify §2.3 "An entity with C language linkage": the rule of a function
@@ -800,7 +1040,8 @@ fn rule_fields() {
 // table may not contain): a specialisation and a partial specialisation
 // only follow their template, a decomposition its first binding; a name
 // that is no identifier; a new name that is no identifier or is the old
-// one. Each is `NotRenamable` (`spec/landed/digest/WP-087.md`).
+// one. The first are `NotRenamable` (`unsupported`), the last `BadName`
+// (`invalid_argument`) (`spec/landed/digest/WP-087.md`).
 #[test]
 fn rename_rule_refusals() {
     let src = "template <class T> struct S {};\n\
@@ -851,12 +1092,24 @@ fn rename_rule_refusals() {
             .find(|&d| ident(ast, d).is_none_or(str::is_empty))
             .expect("the unnamed namespace");
         assert_eq!(k.rename_rule(anonymous, b"r"), Err(NoKey::NotRenamable));
-        // New names that are no identifier, or the old one.
+        // New names that are no identifier, or the old one: `BadName`
+        // (`invalid_argument`), judged before the entity (§7.5 rule 3).
         let f = one(ast, "f", DeclKind::Function);
-        for bad in [&b""[..], b"1f", b"a-b", b"a b", b"f", "é".as_bytes()] {
-            assert_eq!(k.rename_rule(f, bad), Err(NoKey::NotRenamable), "{bad:?}");
+        for bad in [&b""[..], b"1f", b"a-b", b"a b", b"f"] {
+            assert_eq!(k.rename_rule(f, bad), Err(NoKey::BadName), "{bad:?}");
         }
+        assert_eq!(k.rename_rule(ctor, b"1r"), Err(NoKey::BadName));
         assert!(k.rename_rule(f, b"_g9").is_ok());
+        // The limits of the identifier check, as seen today, both failing
+        // closed (`spec/landed/digest/WP-087.md`): a keyword is taken (the
+        // post-image does not parse, so nothing verifies), and an
+        // identifier with a universal character name or a code point
+        // outside ASCII is refused.
+        assert!(k.rename_rule(f, b"class").is_ok());
+        assert!(k.rename_rule(f, b"and").is_ok());
+        for refused in ["é", "aé", r"a\u00e9", r"\U000000e9"] {
+            assert_eq!(k.rename_rule(f, refused.as_bytes()), Err(NoKey::BadName), "{refused}");
+        }
     });
 }
 

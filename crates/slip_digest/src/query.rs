@@ -6,9 +6,10 @@
 //! declaration, the unit that holds it, its key and key id, the units
 //! derived from it and the rule that undoes a rename. Every answer comes
 //! from the functions the walk itself calls (`Walk::entity`,
-//! `Walk::key`, `Walk::key_bytes`, `units::unit_class`, `units::write`,
-//! `demand::resolved_units`, `local::unit_of`), on a `Walk` of its own:
-//! nothing here derives a key's field a second way, and nothing here is
+//! `Walk::key`, `Walk::key_bytes`, `units::unit_class`,
+//! `local::unit_of`), on a `Walk` of its own, or from the walk itself:
+//! `derived` lists units the walk writes, and runs it once to know them.
+//! Nothing here derives a key's field a second way, and nothing here is
 //! called by the walk, so no digest depends on this module.
 //!
 //! # What it does not see
@@ -35,11 +36,12 @@ use std::sync::LazyLock;
 
 use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::ids::DeclId;
+use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_model::Digest;
+use slip_model::digests::GroupClass;
 use slip_model::keys::{Key, KeyKind, Name, Rule, RuleTable};
 
 use crate::keys::{KeyRes, Role, info};
-use crate::units::UnitClass;
 use crate::walk::Walk;
 use crate::{Cause, Input};
 
@@ -58,13 +60,19 @@ pub enum NoKey {
     /// with a pending area): the unit is indeterminate (digest §10), and
     /// a key it has may not tell it from another entity.
     Indeterminate(Cause),
-    /// `rename_rule` only: the entity has a key, but no rule can rename
-    /// it: its name is no identifier (an operator, a constructor, an
-    /// unnamed class, the unnamed namespace), its key only follows
-    /// another entity's (a specialisation, a partial specialisation, a
-    /// decomposition: `spec/landed/digest/WP-087.md`), or the new name is
-    /// no identifier or is the name it has.
+    /// `rename_rule` only (`spec/api.md` §7.5 rule 3, `unsupported`): the
+    /// entity has a key, but it is no unit keyed by name: its name is no
+    /// identifier (an operator, a constructor, an unnamed class, the
+    /// unnamed namespace), or its key only follows another entity's (a
+    /// specialisation, a partial specialisation, a decomposition:
+    /// `spec/landed/digest/WP-087.md`).
     NotRenamable,
+    /// `rename_rule` only (`spec/api.md` §7.5 rule 3, `invalid_argument`):
+    /// the new name is no identifier as this module reads one
+    /// (`[A-Za-z_][A-Za-z0-9_]*`; a keyword passes, a universal character
+    /// name or a code point outside ASCII does not: limits of
+    /// `spec/landed/digest/WP-087.md`), or it is the entity's own name.
+    BadName,
 }
 
 /// The cause `Walk::key` gives a local entity that is not a local type
@@ -87,10 +95,15 @@ static NO_RULES: LazyLock<RuleTable> = LazyLock::new(RuleTable::empty);
 /// demand and memoised (the walk's own memo of keys, and the units
 /// [`Keys::unit_of`] found).
 pub struct Keys<'a> {
+    input: &'a Input<'a>,
+    rules: &'a RuleTable,
     w: Walk<'a>,
     units: HashMap<DeclId, Option<DeclId>>,
     /// The edges [`Keys::derived`] follows, built on first use.
-    origins: Option<HashMap<DeclId, Vec<(DeclId, bool)>>>,
+    origins: Option<HashMap<DeclId, Vec<DeclId>>>,
+    /// The units the walk writes, by entity, run on first use of
+    /// [`Keys::derived`].
+    written: Option<HashMap<DeclId, Vec<WalkUnit>>>,
 }
 
 impl std::fmt::Debug for Keys<'_> {
@@ -110,7 +123,14 @@ impl<'a> Keys<'a> {
     /// are then mapped, in the pre-image's key space (`spec/verify.md`
     /// §2.1). Runs nothing.
     pub fn with_rules(input: &'a Input<'a>, rules: &'a RuleTable) -> Keys<'a> {
-        Keys { w: Walk::new(input, rules), units: HashMap::new(), origins: None }
+        Keys {
+            input,
+            rules,
+            w: Walk::new(input, rules),
+            units: HashMap::new(),
+            origins: None,
+            written: None,
+        }
     }
 
     /// The declaration the digest treats as the entity of `d`
@@ -127,6 +147,15 @@ impl<'a> Keys<'a> {
     /// place); a template parameter's is its template's. `None` for the
     /// translation unit, a lifetime-extended temporary, and a declaration
     /// no unit holds.
+    ///
+    /// The unit is the one whose stream holds the declaration, not the
+    /// one whose bytes may hold what it says: a closure in the default
+    /// member initialiser of a field of an implicit instantiation is
+    /// held by the field, and its bytes are in the field's
+    /// `<default_argument 0>` unit (digest-kinds §11.4), which
+    /// [`Keys::derived`] of the field lists. An implicit member nothing
+    /// uses is its own unit, though the walk never writes it
+    /// (`spec/landed/digest/WP-087.md`).
     pub fn unit_of(&mut self, d: DeclId) -> Option<DeclId> {
         if let Some(&u) = self.units.get(&d) {
             return u;
@@ -217,55 +246,48 @@ impl<'a> Keys<'a> {
 
     /// The key ids of the units of this translation unit that digest
     /// §2.2 derives from `e`, sorted, without duplicates: the resolved
-    /// and `default_argument` units of `e` (if it is a unit), the
-    /// implicit instantiations of it and of its members (at any depth of
-    /// classes, and of the local types it owns), and their own resolved
-    /// and `default_argument` units. A unit is listed only if it is
-    /// written whatever the other units refer to: a derived unit on
-    /// demand (an implicit member nothing defines) is not.
+    /// and `default_argument` units of `e`, and the units of the derived
+    /// groups whose entity is reached from `e` through an instantiation
+    /// (of `e`, of its members at any depth of classes, of the local
+    /// types it owns, of their members), with their resolved and
+    /// `default_argument` units. Only units the walk writes are listed:
+    /// an on-demand unit is listed when, and only when, this translation
+    /// unit refers to it.
     ///
-    /// The first call builds an index of every declaration's origins; a
-    /// call writes the streams of `e` and of each unit it lists, as the
-    /// walk does, to find their resolved units.
+    /// The first call builds an index of every declaration's origins and
+    /// runs the walk over the translation unit, as `digest` does, to know
+    /// which units it writes.
     pub fn derived(&mut self, e: DeclId) -> Vec<Digest> {
         let e = self.w.entity(e);
         let mut found: Vec<DeclId> = Vec::new();
         {
             let origins = self.origins.get_or_insert_with(|| build_origins(&self.w));
-            let mut seen: HashSet<(DeclId, bool)> = HashSet::new();
-            let mut stack = vec![(e, false)];
-            seen.insert((e, false));
-            while let Some((x, through)) = stack.pop() {
-                for &(y, inst) in origins.get(&x).map_or(&[][..], Vec::as_slice) {
-                    let t = through || inst;
-                    if seen.insert((y, t)) {
-                        stack.push((y, t));
-                        if t && y != e {
-                            found.push(y);
-                        }
+            let mut seen: HashSet<DeclId> = HashSet::new();
+            let mut stack = vec![e];
+            seen.insert(e);
+            while let Some(x) = stack.pop() {
+                for &y in origins.get(&x).map_or(&[][..], Vec::as_slice) {
+                    if seen.insert(y) {
+                        stack.push(y);
+                        found.push(y);
                     }
                 }
             }
         }
-        found.sort_unstable();
-        found.dedup();
-        let mut out = Vec::new();
-        let mut parts = Vec::new();
-        if let Some(class) = crate::units::unit_class(&self.w, e)
-            && let Some(u) = crate::units::write(&mut self.w, e, class)
-        {
-            crate::demand::resolved_units(&mut self.w, e, &u, &mut parts);
-        }
+        let (input, rules) = (self.input, self.rules);
+        let written = self.written.get_or_insert_with(|| {
+            let mut by: HashMap<DeclId, Vec<WalkUnit>> = HashMap::new();
+            for u in walk_units(input, rules) {
+                by.entry(u.entity).or_default().push(u);
+            }
+            by
+        });
+        let mut out: Vec<Digest> = Vec::new();
+        let of = |x: DeclId| written.get(&x).map_or(&[][..], Vec::as_slice);
+        out.extend(of(e).iter().filter(|u| u.part).map(|u| u.key));
         for y in found {
-            if crate::units::unit_class(&self.w, y) != Some(UnitClass::Derived) {
-                continue;
-            }
-            if let Some(u) = crate::units::write(&mut self.w, y, UnitClass::Derived) {
-                out.push(u.key);
-                crate::demand::resolved_units(&mut self.w, y, &u, &mut parts);
-            }
+            out.extend(of(y).iter().filter(|u| u.derived).map(|u| u.key));
         }
-        out.extend(parts.iter().map(|u| u.key));
         out.sort_unstable();
         out.dedup();
         out
@@ -282,6 +304,11 @@ impl<'a> Keys<'a> {
     /// `new_name` must be an identifier as `slip declare` reads one
     /// (`[A-Za-z_][A-Za-z0-9_]*`, verify §2.3) and not the name `e` has.
     pub fn rename_rule(&mut self, e: DeclId, new_name: &[u8]) -> Result<Rule, NoKey> {
+        // `invalid_argument` is judged first, as §7.5 rule 3 lists it,
+        // from the text alone.
+        if !is_identifier(new_name) {
+            return Err(NoKey::BadName);
+        }
         let k = self.key(e)?;
         match k.kind {
             KeyKind::Specialisation | KeyKind::PartialSpecialisation | KeyKind::Decomposition => {
@@ -290,8 +317,8 @@ impl<'a> Keys<'a> {
             _ => {}
         }
         let Name::Identifier(old) = &k.name else { return Err(NoKey::NotRenamable) };
-        if !is_identifier(new_name) || old.as_slice() == new_name {
-            return Err(NoKey::NotRenamable);
+        if old.as_slice() == new_name {
+            return Err(NoKey::BadName);
         }
         Ok(Rule {
             parent: k.parent,
@@ -315,65 +342,105 @@ fn is_identifier(n: &[u8]) -> bool {
     }
 }
 
-/// For every entity, the entities whose origin it is, each with whether
-/// the edge is an instantiation's: a specialisation from its template
-/// (and from the pattern it was instantiated from), a member of a
-/// specialisation from the member it was instantiated from, anything
-/// Kiln records an `instantiated_from` for from that; and (not an
-/// instantiation's) a member from its class, semantic and lexical, and a
-/// local type from its owner.
-fn build_origins(w: &Walk<'_>) -> HashMap<DeclId, Vec<(DeclId, bool)>> {
+/// For every entity, the entities whose origin it is: a specialisation
+/// from its template (and from the pattern it was instantiated from), a
+/// member of a specialisation from the member it was instantiated from,
+/// anything Kiln records an `instantiated_from` for from that; a member
+/// from its class, semantic and lexical; a local type from its owner;
+/// the holding variable of a tuple-like binding from the binding; and
+/// the unnamed object of an anonymous class from the class.
+fn build_origins(w: &Walk<'_>) -> HashMap<DeclId, Vec<DeclId>> {
     let ast = w.ast;
-    let mut edges: HashMap<DeclId, Vec<(DeclId, bool)>> = HashMap::new();
-    let mut add = |from: DeclId, to: DeclId, inst: bool| {
+    let mut edges: HashMap<DeclId, Vec<DeclId>> = HashMap::new();
+    let mut add = |from: DeclId, to: DeclId| {
         let from = w.entity(from);
         if from != to {
             let v = edges.entry(from).or_default();
-            if !v.contains(&(to, inst)) {
-                v.push((to, inst));
+            if !v.contains(&to) {
+                v.push(to);
             }
         }
     };
     for d in ast.decls.ids() {
         let x = w.entity(d);
         if let Some((_, s)) = ast.spec_info(d) {
-            add(s.template, x, true);
-            add(s.from, x, true);
+            add(s.template, x);
+            add(s.from, x);
         }
         if let Some((_, m)) = ast.member_spec_info(d) {
-            add(m.instantiated_from, x, true);
+            add(m.instantiated_from, x);
         }
         if let Some(p) = ast.templates.instantiated_from_map(d) {
-            add(p, x, true);
+            add(p, x);
         }
         let n = ast.decls.get(d);
         for c in [n.ctx(), ast.decls.lexical_ctx(d)].into_iter().flatten() {
             if ast.decls.record(c).is_some() {
-                add(c, x, false);
+                add(c, x);
             }
         }
         if crate::local::is_local_type(w, d)
             && let Some(o) = crate::local::owner(w, d)
         {
-            add(o, x, false);
+            add(o, x);
+        }
+        if let Some(&h) = ast.decls.cold.binding_var.get(d) {
+            add(d, w.entity(h));
+        }
+        if matches!(n.kind(), DeclKind::Var | DeclKind::Field)
+            && !matches!(ast.names.view(n.name()), DeclNameView::Identifier(s) if !ast.symbols().as_str(s).is_empty())
+            && let Some(r) = n.ty().and_then(|q| ast.types.as_record(ast.types.canonical(q)))
+        {
+            add(r, x);
         }
     }
     edges
 }
 
-/// Every unit of the walk of `input` under `rules` that is an entity's
-/// own (not the order unit, a resolved or a `default_argument` unit),
-/// as `(entity, key)`, in the order the walk wrote them. The oracle of
-/// `tests/api_keys.rs` (test 1): the walk's `Written` records, which are
-/// not public otherwise. Runs the whole walk; changes no digest.
+/// One unit the walk writes (the order unit left out), as
+/// [`walk_units`] gives it.
 #[doc(hidden)]
-pub fn walk_units(input: &Input<'_>, rules: &RuleTable) -> Vec<(DeclId, Digest)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalkUnit {
+    /// The entity (for a resolved or `default_argument` unit, its owner).
+    pub entity: DeclId,
+    pub key: Digest,
+    /// In a derived group (digest §2.2).
+    pub derived: bool,
+    /// A resolved or `default_argument` unit.
+    pub part: bool,
+    /// For an entity's own unit, the cause the walk's `Walk::key` gives
+    /// its key (`KeyRes::Key { cause }`), read from the walk's own memo
+    /// once it has written every unit.
+    pub key_cause: Option<Cause>,
+}
+
+/// Every unit of the walk of `input` under `rules` but the order unit,
+/// in the order the walk wrote them. The oracle of `tests/api_keys.rs`
+/// (tests 1 and 3), and what [`Keys::derived`] lists from: the walk's
+/// `Written` records, which are not public otherwise. Runs the whole
+/// walk; changes no digest.
+#[doc(hidden)]
+pub fn walk_units(input: &Input<'_>, rules: &RuleTable) -> Vec<WalkUnit> {
     let options = crate::Options { rules, detail: crate::Detail::None, names: false };
-    crate::walk::run_with(input, &options, |_, written, _| {
+    crate::walk::run_with(input, &options, |w, written, _| {
         written
             .iter()
-            .filter(|u| u.resolved.is_none() && u.default_argument.is_none())
-            .filter_map(|u| u.entity.map(|e| (e, u.key)))
+            .filter_map(|u| {
+                let entity = u.entity?;
+                let part = u.resolved.is_some() || u.default_argument.is_some();
+                let key_cause = match (part, w.key(entity)) {
+                    (false, KeyRes::Key { cause, .. }) => cause,
+                    _ => None,
+                };
+                Some(WalkUnit {
+                    entity,
+                    key: u.key,
+                    derived: u.class == GroupClass::Derived,
+                    part,
+                    key_cause,
+                })
+            })
             .collect()
     })
 }
