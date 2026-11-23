@@ -229,6 +229,7 @@ mod other;
 pub mod query;
 pub mod records;
 mod refs;
+mod rule_use;
 pub mod spelling;
 mod stmt;
 mod stream;
@@ -277,6 +278,8 @@ pub struct Options<'a> {
     pub detail: Detail<'a>,
     /// Fill `Output::names`.
     pub names: bool,
+    /// Fill `Output::rule_use` (`spec/verify.md` §9.1, §9.5).
+    pub rule_use: bool,
 }
 
 /// What a walk produces.
@@ -291,6 +294,10 @@ pub struct Output {
     /// For every unit, the entity as a person would write it
     /// (`verify.md` §6 `name`); sorted by key; empty unless asked.
     pub names: Vec<(Digest, String)>,
+    /// How each rule was used (`spec/verify.md` §9.1): sorted by rule,
+    /// only rules with `via` or `direct` not 0; empty unless asked for
+    /// under a table that is not empty (`rule_use.rs`).
+    pub rule_use: Vec<slip_model::agreement::Use>,
 }
 
 /// Why a unit is indeterminate (`spec/digest.md` §10).

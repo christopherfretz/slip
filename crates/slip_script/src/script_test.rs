@@ -553,6 +553,7 @@ fn key_names(p: &slip_kiln::snippet::Parsed<'_>) -> BTreeMap<Digest, String> {
                     rules: &rules,
                     detail: slip_digest::Detail::None,
                     names: true,
+                    rule_use: false,
                 };
                 slip_digest::digest(&input, &options).names
             })

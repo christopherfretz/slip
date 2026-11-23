@@ -353,7 +353,7 @@ const NAME_LIMIT: usize = 4096;
 /// and the mapped collisions are marked again (the units' other marks on
 /// the copy are not read).
 fn collisions(input: &Input<'_>, rules: &RuleTable) -> Collisions {
-    let options = Options { rules, detail: Detail::None, names: true };
+    let options = Options { rules, detail: Detail::None, names: true, rule_use: false };
     crate::walk::run_with(input, &options, |w, written, output| {
         let mut keys = HashSet::new();
         let mut with_unit = HashSet::new();
@@ -438,7 +438,8 @@ mod tests {
                 let mut keys = Keys::with_rules(&input, rules);
                 let origins: HashSet<Digest> =
                     p.ast.decls.ids().filter_map(|d| keys.key_id(d).ok()).collect();
-                let options = Options { rules, detail: Detail::None, names: false };
+                let options =
+                    Options { rules, detail: Detail::None, names: false, rule_use: false };
                 let parts = crate::walk::run_with(&input, &options, |_, written, _| {
                     written.iter().filter(|u| u.owner.is_some()).map(|u| u.key).collect::<Vec<_>>()
                 });

@@ -436,7 +436,8 @@ pub struct WalkUnit {
 /// walk; changes no digest.
 #[doc(hidden)]
 pub fn walk_units(input: &Input<'_>, rules: &RuleTable) -> Vec<WalkUnit> {
-    let options = crate::Options { rules, detail: crate::Detail::None, names: false };
+    let options =
+        crate::Options { rules, detail: crate::Detail::None, names: false, rule_use: false };
     crate::walk::run_with(input, &options, |w, written, _| {
         written
             .iter()

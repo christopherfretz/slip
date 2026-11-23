@@ -1,0 +1,3 @@
+# WP-069: the pattern member left under its old name: direct 1, the pattern member only; the
+# instantiated member S<int>::f has a parent no rule produces.
+relocate S::f() => S :: g
