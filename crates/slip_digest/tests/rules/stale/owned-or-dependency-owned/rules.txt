@@ -1,0 +1,2 @@
+# WP-111 item 5, observer 2 of 2 (with owned-or-dependency-dep): the owned declaration of the same function, moved: via 1, not stale. Both observers verify and neither is stale: docs/wp/WP-116.md closes it.
+relocate legacy => :: acme

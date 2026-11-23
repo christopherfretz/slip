@@ -18,6 +18,7 @@ mod common;
 
 use common::{
     DECLARED, OVERLAY, ROUND, Run, d, file, golden, key, overlay, post_input, rule, section, used,
+    used_kept,
 };
 use slip_model::agreement::Binding;
 use slip_model::json;
@@ -37,7 +38,7 @@ fn count(r: &slip_verify::run::Report, st: State) -> u64 {
 }
 
 fn stale(rule: u64, obs: u8, direct: u64) -> Stale {
-    Stale { rule, observer: d(obs), direct }
+    Stale { rule, observer: d(obs), direct, kept_via: 0 }
 }
 
 /// `add` with the observer's own digest, main file `/m/<obs>.cc` and an
@@ -79,24 +80,174 @@ fn s9_2_one_observer_stale_for_two_rules() {
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
 }
 
-// §9.2: a rule whose kind is `namespace` is never stale, whatever its
-// `direct`; it is used.
+// §9.2 "Stale for a namespace rule" (WP-111): a namespace rule is stale
+// in an observer whose `direct` or `kept_via` is not 0, each alone; `via`
+// alone (the namespace moved, its members with it) is a use, not stale.
+// The pair carries both counts.
 #[test]
-fn s9_2_namespace_rule_with_direct_is_not_stale() {
+fn s9_2_namespace_rule_stale_by_either_count() {
     let run = Run::new(vec![rule(KeyKind::Namespace, "n", "m")], None);
+    let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
+    for (u, stale_pair) in [
+        (used_kept(0, 1, 0, 0), None),
+        (used_kept(0, 0, 7, 0), Some((7, 0))),
+        (used_kept(0, 1, 0, 2), Some((0, 2))),
+        (used_kept(0, 0, 0, 3), Some((0, 3))),
+        (used_kept(0, 4, 1, 5), Some((1, 5))),
+    ] {
+        let mut r = run.report();
+        add(&mut r, &run.ok(0xa0, v.clone(), &[], &[]));
+        add(&mut r, &run.ok(0xa1, v.clone(), &[], &[u]));
+        assert!(r.unused().is_empty(), "{u:?}");
+        match stale_pair {
+            None => {
+                assert!(r.stale().is_empty(), "{u:?}");
+                assert_eq!(r.verdict(), RunVerdict::Verified, "{u:?}");
+            }
+            Some((direct, kept_via)) => {
+                let want = Stale { rule: 0, observer: d(0xa1), direct, kept_via };
+                assert_eq!(r.stale(), [want], "{u:?}");
+                assert_eq!(r.verdict(), RunVerdict::NotVerified, "{u:?}");
+                let text = r.to_text();
+                let line = format!("stale rule 0 direct {direct} kept_via {kept_via} /m/a1.cc\n");
+                assert!(text.contains(&line), "{text}");
+                let json = json::write_compact(&r.to_json()).unwrap();
+                let member = format!(r#""direct":{direct},"kept_via":{kept_via}}}"#);
+                assert!(json.contains(&member), "{json}");
+            }
+        }
+    }
+}
+
+// Fail closed (WP-111): a `kept_via` not 0 for a rule that is not of kind
+// `namespace` (the walk never writes one) is stale too.
+#[test]
+fn s9_2_kept_via_of_another_kind_is_stale() {
+    let run = two_rules();
     let mut r = run.report();
-    add(
-        &mut r,
-        &run.ok(
-            0xa0,
-            run.verdict(slip_model::verdict::VerdictKind::Verified),
-            &[],
-            &[used(0, 0, 7)],
-        ),
-    );
-    assert!(r.stale().is_empty());
-    assert!(r.unused().is_empty());
-    assert_eq!(r.verdict(), RunVerdict::Verified);
+    let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
+    add(&mut r, &run.ok(0xa0, v, &[], &[used_kept(0, 1, 0, 1)]));
+    assert_eq!(r.stale(), [Stale { rule: 0, observer: d(0xa0), direct: 0, kept_via: 1 }]);
+    assert_eq!(r.verdict(), RunVerdict::NotVerified);
+}
+
+// WP-111 item 5, the attack list: each case is two observers whose
+// `rule_use` is what the walk counts for the case's fixtures under
+// `crates/slip_digest/tests/rules/stale/` (named per case; the counts are
+// pinned there), and the run's stale pairs and verdict. Every observer is
+// `verified`. `kept` is the indices of `Declared.kept` the shard says
+// some entity has. `right` says whether the run's verdict is the right
+// one for the program; the one case where it is not is WP-116's.
+#[test]
+fn s9_2_attack_list_two_observers() {
+    use slip_model::agreement::Use;
+    use slip_model::verdict::VerdictKind;
+    struct Case {
+        name: &'static str,
+        fixtures: &'static str,
+        a0: (Option<Use>, &'static [u64]),
+        a1: (Option<Use>, &'static [u64]),
+        stale: &'static [(u8, u64, u64)],
+        right: bool,
+    }
+    let u = |via, direct, kept_via| Some(used_kept(0, via, direct, kept_via));
+    let cases = [
+        Case {
+            name: "a function in two owned headers, one edited",
+            fixtures: "two-headers-edited, two-headers-unedited",
+            a0: (u(1, 0, 0), &[]),
+            a1: (u(1, 1, 0), &[]),
+            stale: &[(0xa1, 1, 0)],
+            right: true,
+        },
+        Case {
+            name: "an owned overload that stays, kept",
+            fixtures: "overload-kept (both observers)",
+            a0: (u(1, 0, 0), &[0]),
+            a1: (u(1, 0, 0), &[0]),
+            stale: &[],
+            right: true,
+        },
+        Case {
+            name: "an owned overload that stays, not kept",
+            fixtures: "overload-not-kept, overload-kept",
+            a0: (u(1, 1, 0), &[]),
+            a1: (u(1, 0, 0), &[]),
+            stale: &[(0xa0, 1, 0)],
+            right: true,
+        },
+        Case {
+            name: "kept, and moved in one observer (the same key reached through the rule there and directly here)",
+            fixtures: "overload-kept, overload-kept-moved",
+            a0: (u(1, 0, 0), &[0]),
+            a1: (u(1, 0, 1), &[0]),
+            stale: &[(0xa1, 0, 1)],
+            right: true,
+        },
+        Case {
+            name: "a compatibility using in kept and created",
+            fixtures: "compat-using (both observers)",
+            a0: (u(1, 0, 0), &[0]),
+            a1: (u(1, 0, 0), &[0]),
+            stale: &[],
+            right: true,
+        },
+        Case {
+            name: "an owned explicit specialisation of a dependency template",
+            fixtures: "explicit-spec-of-dependency (both observers)",
+            a0: (u(1, 0, 0), &[]),
+            a1: (u(1, 0, 0), &[]),
+            stale: &[],
+            right: true,
+        },
+        Case {
+            name: "owned in one observer, a dependency entity in the other",
+            fixtures: "owned-or-dependency-dep, owned-or-dependency-owned",
+            a0: (u(1, 0, 0), &[]),
+            a1: (u(1, 0, 0), &[]),
+            stale: &[],
+            // Verified, and the program declares legacy::f in a dependency
+            // and acme::f in owned code: closed by docs/wp/WP-116.md.
+            right: false,
+        },
+        Case {
+            name: "a namespace only one observer sees",
+            // The first observer's files declare no `legacy`: no rules
+            // fixture can say so (`rules.txt` resolves in the pre-image).
+            fixtures: "(no fixture), two-headers-edited",
+            a0: (None, &[]),
+            a1: (u(1, 0, 0), &[]),
+            stale: &[],
+            right: true,
+        },
+    ];
+    let mut run = Run::new(vec![rule(KeyKind::Namespace, "legacy", "acme")], None);
+    run.declared = run.declared.clone().with_kept(vec![key(5)]).unwrap();
+    let v = run.verdict(VerdictKind::Verified);
+    let mut rights = 0;
+    for c in &cases {
+        let mut r = run.report();
+        for (obs, (u, kept)) in [(0xa0, &c.a0), (0xa1, &c.a1)] {
+            let mut s = run.ok(obs, v.clone(), &[], u.as_slice());
+            s.rule_use.as_mut().unwrap().kept = kept.to_vec();
+            add(&mut r, &s);
+        }
+        let want: Vec<Stale> = c
+            .stale
+            .iter()
+            .map(|&(o, direct, kept_via)| Stale { rule: 0, observer: d(o), direct, kept_via })
+            .collect();
+        assert_eq!(r.stale(), want, "{} ({})", c.name, c.fixtures);
+        let verdict = if want.is_empty() { RunVerdict::Verified } else { RunVerdict::NotVerified };
+        assert_eq!(r.verdict(), verdict, "{}", c.name);
+        // The rule is used in every case: some observer has a count.
+        assert!(r.unused().is_empty(), "{}", c.name);
+        // `kept` key 0 is seen exactly where some shard names it.
+        let seen = !c.a0.1.is_empty() || !c.a1.1.is_empty();
+        assert_eq!(r.unseen_kept().is_empty(), seen, "{}", c.name);
+        rights += usize::from(c.right);
+    }
+    assert_eq!(rights, cases.len() - 1, "one case is wrong, and it is WP-116's");
 }
 
 // §9.2: a rule used by `via` in one observer only is used, not stale;
@@ -356,10 +507,13 @@ fn m2_report() -> slip_verify::run::Report {
     let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
     let o = overlay();
     let mut r = run.report();
-    let mut s = run.ok(0xa0, v.clone(), &[0], &sorted(vec![used(f, 1, 2), used(n, 0, 1)]));
+    // The namespace rule: stale in a0 by `kept_via` (WP-111), used and not
+    // stale in a1 (`via` only); kept key 0 seen by a0, key 1 by none.
+    let mut s = run.ok(0xa0, v.clone(), &[0], &sorted(vec![used(f, 1, 2), used_kept(n, 0, 0, 1)]));
     s.spellings = Some(section(&o, s.inputs.as_ref().unwrap(), &[0], &[(1, 0x77)]));
+    s.rule_use.as_mut().unwrap().kept = vec![0];
     add(&mut r, &s);
-    let mut s = run.ok(0xa1, v.clone(), &[0], &[used(f, 0, 1)]);
+    let mut s = run.ok(0xa1, v.clone(), &[0], &sorted(vec![used(f, 0, 1), used(n, 2, 0)]));
     s.spellings = Some(section(&o, s.inputs.as_ref().unwrap(), &[], &[(1, 0x78)]));
     add(&mut r, &s);
     add(&mut r, &run.ok(0xa2, v, &[], &[]));
@@ -367,14 +521,16 @@ fn m2_report() -> slip_verify::run::Report {
 }
 
 fn m2_run() -> Run {
-    Run::new(
+    let mut run = Run::new(
         vec![
             rule(KeyKind::Function, "f", "g"),
             rule(KeyKind::Function, "h", "i"),
             rule(KeyKind::Namespace, "n", "m"),
         ],
         Some(overlay()),
-    )
+    );
+    run.declared = run.declared.clone().with_kept(vec![key(5), key(6)]).unwrap();
+    run
 }
 
 /// The index in the run's (sorted) rule table of the rule renaming `from`.
@@ -393,9 +549,13 @@ fn s9_4_s10_5_report_golden() {
     let r = m2_report();
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
     let run = m2_run();
-    let f = ix(&run, "f");
-    assert_eq!(r.stale(), [stale(f, 0xa0, 2), stale(f, 0xa1, 1)]);
+    let (f, n) = (ix(&run, "f"), ix(&run, "n"));
+    let by_kept = Stale { rule: n, observer: d(0xa0), direct: 0, kept_via: 1 };
+    let mut want = vec![stale(f, 0xa0, 2), stale(f, 0xa1, 1), by_kept];
+    want.sort_by_key(|s| s.rule);
+    assert_eq!(r.stale(), want);
     assert_eq!(r.unused(), [ix(&run, "h")]);
+    assert_eq!(r.unseen_kept(), [key(6)]);
     golden("agreement", "report.json", &json::write_pretty(&r.to_json()).unwrap());
     let text = format!("{}{}\n", r.to_text(), r.verdict_line());
     golden("agreement", "report.txt", &text);
@@ -811,8 +971,11 @@ fn s9_4_m1_run_report_unchanged() {
 fn s9_3_rule_use_without_rules_even_empty() {
     let run = Run::new(vec![], None);
     let mut s = run.verified(0xa0);
-    s.rule_use =
-        Some(slip_model::agreement::RuleUse { rules: run.declared.rules().id(), uses: vec![] });
+    s.rule_use = Some(slip_model::agreement::RuleUse {
+        rules: run.declared.rules().id(),
+        uses: vec![],
+        kept: vec![],
+    });
     s.validate().unwrap();
     assert_eq!(state_of(&run, &s), State::Failed);
 }
@@ -874,7 +1037,8 @@ fn s9_3_refused_shard_says_why() {
     cases.push((&rules, s, "the shard has no rule_use"));
     let none = Run::new(vec![], None);
     let mut s = verified(&none);
-    s.rule_use = Some(slip_model::agreement::RuleUse { rules: d(0x33), uses: vec![] });
+    s.rule_use =
+        Some(slip_model::agreement::RuleUse { rules: d(0x33), uses: vec![], kept: vec![] });
     cases.push((&none, s, "the shard has a rule_use and the run has no rule"));
     let mut s = verified(&rules);
     s.rule_use.as_mut().unwrap().rules = d(0x33);

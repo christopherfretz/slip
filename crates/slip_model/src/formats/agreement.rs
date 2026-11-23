@@ -24,6 +24,7 @@ pub(super) enum Loc {
     Binding,
     RuleUse,
     Use(usize),
+    Kept(usize),
 }
 
 impl Loc {
@@ -32,6 +33,7 @@ impl Loc {
             Loc::Binding => "sections.binding".to_owned(),
             Loc::RuleUse => "sections.rule_use".to_owned(),
             Loc::Use(i) => format!("sections.rule_use.uses[{i}]"),
+            Loc::Kept(i) => format!("sections.rule_use.kept[{i}]"),
         }
     }
 }
@@ -49,7 +51,8 @@ pub(super) fn binding_violation(phase: Phase, status: Status) -> Option<(Loc, &'
 
 /// `rule_use` (`spec/model.md` §8, `spec/verify.md` §9.1): phase `verify`,
 /// status `ok`; then `uses` strictly ascending by `rule` over the whole
-/// list, then no `Use` with both counts 0.
+/// list, then no `Use` with all three counts 0, then `kept` strictly
+/// ascending (WP-111).
 pub(super) fn rule_use_violation(
     r: &RuleUse,
     phase: Phase,
@@ -65,8 +68,11 @@ pub(super) fn rule_use_violation(
     if let Some(i) = (1..uses.len()).find(|&i| uses[i - 1].rule >= uses[i].rule) {
         return Some((Loc::Use(i), "uses are not strictly ascending by rule"));
     }
-    if let Some(i) = uses.iter().position(|u| u.via == 0 && u.direct == 0) {
-        return Some((Loc::Use(i), "a use has via and direct both 0"));
+    if let Some(i) = uses.iter().position(|u| u.via == 0 && u.direct == 0 && u.kept_via == 0) {
+        return Some((Loc::Use(i), "a use has via, direct and kept_via all 0"));
+    }
+    if let Some(i) = (1..r.kept.len()).find(|&i| r.kept[i - 1] >= r.kept[i]) {
+        return Some((Loc::Kept(i), "kept is not strictly ascending"));
     }
     None
 }
@@ -85,7 +91,11 @@ pub(super) fn encode_binding(e: &mut Encoder, b: &Binding) {
 pub(super) fn encode_rule_use(e: &mut Encoder, r: &RuleUse) {
     e.digest(&r.rules).count(r.uses.len());
     for u in &r.uses {
-        e.uv(u.rule).uv(u.via).uv(u.direct);
+        e.uv(u.rule).uv(u.via).uv(u.direct).uv(u.kept_via);
+    }
+    e.count(r.kept.len());
+    for k in &r.kept {
+        e.uv(*k);
     }
 }
 
@@ -101,6 +111,7 @@ pub(super) fn decode_binding(d: &mut Decoder<'_>) -> Result<(Binding, usize)> {
 pub(super) struct Offsets {
     section: usize,
     uses: Vec<usize>,
+    kept: Vec<usize>,
 }
 
 impl Offsets {
@@ -108,6 +119,7 @@ impl Offsets {
         match l {
             Loc::Binding | Loc::RuleUse => self.section,
             Loc::Use(i) => self.uses[i],
+            Loc::Kept(i) => self.kept[i],
         }
     }
 }
@@ -116,9 +128,10 @@ pub(super) fn decode_rule_use(d: &mut Decoder<'_>) -> Result<(RuleUse, Offsets)>
     let mut o = Offsets { section: d.offset(), ..Offsets::default() };
     let rules = d.digest()?;
     let uses = dec_list(d, Some(&mut o.uses), |d| {
-        Ok(Use { rule: d.uv()?, via: d.uv()?, direct: d.uv()? })
+        Ok(Use { rule: d.uv()?, via: d.uv()?, direct: d.uv()?, kept_via: d.uv()? })
     })?;
-    Ok((RuleUse { rules, uses }, o))
+    let kept = dec_list(d, Some(&mut o.kept), Decoder::uv)?;
+    Ok((RuleUse { rules, uses, kept }, o))
 }
 
 // ---------------------------------------------------------------------------
@@ -141,10 +154,16 @@ pub(super) fn render_rule_use(r: &RuleUse) -> Value {
                 ("rule", json_uv(u.rule)),
                 ("via", json_uv(u.via)),
                 ("direct", json_uv(u.direct)),
+                ("kept_via", json_uv(u.kept_via)),
             ])
         })
         .collect();
-    object(vec![("rules", json_digest(&r.rules)), ("uses", Value::Array(uses))])
+    let kept = r.kept.iter().map(|&k| json_uv(k)).collect();
+    object(vec![
+        ("rules", json_digest(&r.rules)),
+        ("uses", Value::Array(uses)),
+        ("kept", Value::Array(kept)),
+    ])
 }
 
 pub(super) fn read_binding(v: &Value, at: &At<'_>) -> JResult<Binding> {
@@ -157,16 +176,19 @@ pub(super) fn read_binding(v: &Value, at: &At<'_>) -> JResult<Binding> {
 }
 
 pub(super) fn read_rule_use(v: &Value, at: &At<'_>) -> JResult<RuleUse> {
-    let [rules, uses] = read_record(v, at, ["rules", "uses"])?;
+    let [rules, uses, kept] = read_record(v, at, ["rules", "uses", "kept"])?;
     Ok(RuleUse {
         rules: read_digest(rules, &at.key("rules"))?,
         uses: read_list(uses, &at.key("uses"), |v, at| {
-            let [rule, via, direct] = read_record(v, at, ["rule", "via", "direct"])?;
+            let [rule, via, direct, kept_via] =
+                read_record(v, at, ["rule", "via", "direct", "kept_via"])?;
             Ok(Use {
                 rule: read_uv(rule, &at.key("rule"))?,
                 via: read_uv(via, &at.key("via"))?,
                 direct: read_uv(direct, &at.key("direct"))?,
+                kept_via: read_uv(kept_via, &at.key("kept_via"))?,
             })
         })?,
+        kept: read_list(kept, &at.key("kept"), read_uv)?,
     })
 }

@@ -1512,7 +1512,6 @@ Result := scheme:    uv               1
           tally:     Tally
           agreement: list<Stale>      verify.md §9.2; sorted by (rule, observer)
           unused:    list<uv>         indices of rules no observer reached an entity through
-          unchecked: list<uv>         namespace rules an observer used (verify.md §9.2); until WP-111
           spellings: Spellings        verify.md §10.3
           residue:   list<Residue>
           exempt:    list<KeyId>      Declared.changed, repeated here for the report
@@ -1523,7 +1522,7 @@ Tally := selected: uv, unparsed: uv, failed_runs: uv, error_reports: uv,
 
 RunVerdict := verified = 0 | not_verified = 1 | incomplete = 2
 
-Stale := rule: uv, observer: digest, direct: uv
+Stale := rule: uv, observer: digest, direct: uv, kept_via: uv     kept_via: WP-111 (verify.md §9.2)
 
 Spellings := obligations: uv, passed: uv
              failed: list<FailedSpelling>     in the obligations' order
@@ -1541,13 +1540,13 @@ The seven states of `Tally` are those of `verify.md` §7, over the
 observers the verify phase selected (§8.2); they add up to `selected`
 less `unparsed`. `failed_runs` and `error_reports` are the counts of
 `ok` shards with a failure and of joined reports of severity `error`
-(§6). `verdict`, `agreement`, `unused`, `unchecked` and `spellings` are
+(§6). `verdict`, `agreement`, `unused` and `spellings` are
 what the trusted run report computed (`slip_verify::run::Report`, `verify.md`
 §9.5, §10.6); conclude copies them and decides none.
 
 Invariants, checked in this order: `scheme` is 1; `agreement` strictly
 ascending by `(rule, observer)`;
-`unused`, `unchecked` and `exempt` strictly ascending; `spellings.failed` strictly
+`unused` and `exempt` strictly ascending; `spellings.failed` strictly
 ascending by `obligation`, and `passed` plus its length is `obligations`;
 for each failed spelling, `observers` is 0 and `first` and `found` are
 absent if it is `unseen`, and `observers` is not 0 and `first` is
@@ -1559,15 +1558,15 @@ tally of 0 in every field but `selected`, `unparsed`, `failed_runs` and
 `error_reports`; `unparsed` at most `selected`; with a `verdict`, the
 seven states add up to `selected` less `unparsed`, and without one each
 of them is 0 (no verify phase finished, so no observer has a state);
-every `agreement` entry's `direct` not 0 (a stale pair, `verify.md`
-§9.2); with the verdict `verified`, `agreement` and `spellings.failed`
-empty (`verify.md` §9.3), and without a verdict `unchecked` empty; the
+every `agreement` entry's `direct` or `kept_via` not 0 (a stale pair,
+`verify.md` §9.2); with the verdict `verified`, `agreement` and
+`spellings.failed` empty (`verify.md` §9.3); the
 state the one rows 2 to 5 below give as far as the file decides them:
-`verified` and `verified_with_residue` only with the verdict `verified`,
-`unchecked` empty and `unparsed` 0 or `allow_unparsed`; `not_verified`
-only with the verdict `not_verified`; `incomplete` never with it, and
-with the verdict `verified` only when `unchecked` is not empty or
-`unparsed` is not 0 without `allow_unparsed`; and a `verified` result
+`verified` and `verified_with_residue` only with the verdict `verified`
+and `unparsed` 0 or `allow_unparsed`; `not_verified` only with the
+verdict `not_verified`; `incomplete` never with it, and with the verdict
+`verified` only when `unparsed` is not 0 without `allow_unparsed`; and a
+`verified` result
 with no residue entry that is not a `mention` and `failed_runs` and
 `error_reports` 0. The format checks nothing else: not a residue's range
 against its file, nor whether a `verified_with_residue` has a reason (a
@@ -1584,9 +1583,9 @@ The state is the first that applies:
    obligation failed or was seen by no observer (`verify.md` §9.3).
 3. `incomplete`: the verdict is `incomplete` or absent (the run was
    cancelled); or `unparsed` is not 0 and the run was not given
-   `--allow-unparsed`; or (temporary, until WP-111 removes it) the run
-   has an unchecked namespace rule (`unchecked` not empty, `verify.md`
-   §9.2), whatever `--allow-*` is given.
+   `--allow-unparsed`. (The temporary condition on unchecked namespace
+   rules was removed by WP-111: a namespace rule is checked by §9.2's
+   counts.)
 4. `verified_with_residue`: everything that was applied is verified, and
    something that was asked or found was not done: the residue has an
    entry that is not a `mention`; or the edit set has a refusal (a group
@@ -1613,7 +1612,7 @@ verification. They
 never act on a `partial` result unless `--allow-partial` is given, nor
 on a result its edit set contradicts: its `edits`, `plan`, `round` and
 `transform` must be the set's, its verdict `verified` with no stale
-pair, failed spelling or unchecked rule, and its counts the set's
+pair or failed spelling, and its counts the set's
 (`slip_verify::conclude::permits`, `spec/landed/verify/WP-070.md` §5). Under
 `--allow-unparsed` the main file of every unparsed observer is scanned as
 a file no observer read.

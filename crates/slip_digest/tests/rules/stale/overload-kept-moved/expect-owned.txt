@@ -1,0 +1,2 @@
+# Every file owned: legacy::D counts direct.
+use 2 via 1 direct 1 kept_via 1

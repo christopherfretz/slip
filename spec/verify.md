@@ -544,30 +544,60 @@ id, replaces its parent by `m(k.parent)`, applies the rules of the
 `unit` of the id of the result. A discriminator on the way is not mapped:
 a new parent whose own discriminator mentions a relocated entity gets a
 rule that does not match, which verification then reports as differences.
-So a line whose new parent another line relocates comes after that line.
+So a line whose new parent another line relocates comes after that line,
+and `slip declare` refuses the other order (`Order`, below).
+
+**Order.** Each level of the chain `m(P')` looks up in the rules above
+(the `Key` of the level, its parent already mapped) is a **probe** of the
+line. A `relocate` line one of whose rules matches a probe of a line
+above it, `(parent, kind, name, disc)` equal, is the error `Order`,
+reported at that later line and naming the earlier: the earlier line's
+parent was resolved without the later rule. With this check every file
+`slip declare` accepts gives one rule table, and so one `rules_id`,
+whatever the order of its lines: a rule that matches no probe of a line
+above it changes no level of that line's chain, so the line's `m(P')` is
+the one the whole table gives; the other lines' rules do not depend on
+order; and `Duplicate` is a property of the set of rules. (Tested by
+permuting the lines of each case into every order: each is either
+refused with `Order` or gives the one table, `crates/slip_cli/tests/
+declare.rs`.)
+
+**A function a class template befriends without defining it.** A friend
+declaration of a function (or function template) in a class template's
+pattern that does not define it is its own entity, keyed in that class,
+and is not followed to the function's rule (`spec/landed/digest/
+WP-103.md`, fix round 3, finding 2). For a `relocate` line whose entity
+is such a function and whose `<name>` changes the name, `slip declare`
+also writes, for each such friend declaration of the pre-images (same
+kind and name, in a class whose nearest enclosing namespace is the
+function's parent, named `<class>::friend ` followed by the function's
+unqualified name),
+
+```
+Rule { parent: m(F.parent), kind, name: N', disc: F.disc,  to_parent: F.parent, to_name: F.name }
+```
+
+with `F` the friend declaration's `Key`. The friend stays in its class,
+so a line with `=` writes none. A line that gives one of these rules
+again (`relocate A::friend f(int) => A :: g`) is accepted, in either
+order; one that gives another rule with its match is `Duplicate`.
 
 **An entity with C language linkage.** Its key's parent is `c_linkage`
 whatever namespace declares it (`digest.md` §3), so moving it between
-namespaces changes no key and needs no line. Renaming it does: for an
-`<entity>` whose `Key` has the parent `c_linkage`, the line's `<parent>`
-is resolved and checked like any other (it says where the declaration
-is, and a name that resolves to nothing is an error), and the rule is
-
-```
-Rule { parent: c_linkage, kind, name: N', disc,  to_parent: c_linkage, to_name: name }
-```
-
-So `relocate legacy::c_fn(int) => legacy :: c_fn2` and `=> :: c_fn2`
-give one rule. The row that needs it is the rename of a C function to a
-builtin's name (`docs/wp/WP-109.md`, sketch 11): the front end then
-treats the calls as the builtin's, which the callers' units show. What
-C sources and the linker see of such a rename is §8's.
+namespaces changes no key and needs no line, and its name is what the
+linker sees. A `relocate` line whose `<entity>` has a `Key` with the
+parent `c_linkage` is the error `CLinkage` (WP-111, "Added after the
+reviews of WP-069 and WP-110"): `slip declare` writes no rule for such
+an entity. (A rule `{ parent: c_linkage, … }` for a rename was the
+earlier text of this section; the package's brief asked for the error,
+and the rename of a C function stays undeclarable until that is
+decided again: `spec/landed/verify/WP-111.md`.)
 
 **Errors**, each naming the line number. One error is reported: the
 first `Syntax` error in file order if the text has one; else the first
 error in file order among the `relocate`, `changed` and `removed` lines;
-else the first among the `created` lines, which are resolved last because
-they need the rules the file gives:
+else the first among the `created` and `kept` lines, which are resolved
+last because they need the rules the file gives:
 
 | Error | When |
 |---|---|
@@ -577,6 +607,9 @@ they need the rules the file gives:
 | `Fallback` | the unit has a fallback key: there is no `Key` to make a rule from, and no stable key to exempt |
 | `NotRenamable` | `relocate` with an identifier for an entity whose `Name` is not an identifier |
 | `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)` (one entity relocated twice to one place, or two entities of one kind and discriminator relocated to one place; two overloads to one name have two discriminators and are not); two lines of one exemption list give one key. Reported at the later line |
+| `DependencyEntity` | `relocate` whose entity is not a namespace and is a dependency entity (§2.1, rule 1) in some selected observer's pre-image under the run's files: no rule renames it. A namespace is not refused: its rule applies in the owned view (§2.1, rule 2) |
+| `CLinkage` | `relocate` whose entity's `Key` has the parent `c_linkage` |
+| `Order` | `relocate` one of whose rules matches a probe of a line above it (**Order** above); the message names that line |
 | `Refused` | `relocate` whose rule §2.1 refuses (`Rule::refusal`): of kind `specialisation` or `partial_specialisation` (rename the template), or `resolved` or `default_argument` (a part follows its owner). A namespace rule across the unnamed namespace, the third form §2.1 refuses, is never made by a line: the unnamed namespace's name is not an identifier (`NotRenamable`), and no identifier names it. The walk keys nothing under a table that holds such a rule, however it was made; this error is where its reason is given |
 
 A file with no line gives `Declared::none()`.
@@ -588,9 +621,12 @@ subject paths. A `relocate` line needs them: a text with one and no
 `--owned` is a usage error, with no default (knowing less never accepts
 more, and "the roots" by default would make a dependency's entity
 renamable by accident). The `created` lines are resolved in records
-walked with these files. Until `docs/wp/WP-111.md` lands, a `relocate`
-line whose entity is a dependency entity is accepted, and its rule
-matches nothing.
+walked with these files, and so are the `kept` lines. Whether an entity
+is a dependency entity is decided on the pre-images, each file by the
+subject path of its real path, as the verify job decides it on the
+post-image; an entity that is one in any selected observer is one. An
+`--owned` entry that covers no file a selected pre-image read is a
+warning (`spec/exec.md` §8.8).
 
 **Interface.** The records come from the walk (`slip_digest::records`,
 which is trusted base only in that it must not disturb the walk); the
@@ -613,18 +649,27 @@ pub struct Record {
 /// `read_only` is the run's read-only files, as `Options::read_only`
 /// (`digest.md` §11); not read when `rules` is empty.
 pub fn records(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Result<Vec<Record>, String>;
+/// By unit KeyId under the empty table: the units of dependency entities
+/// under `read_only`, and of friend declarations in a templated class that
+/// do not define their function. `merge` is the union of each set.
+pub struct Facts { pub dependency: BTreeSet<Digest>, pub undefined_friends: BTreeSet<Digest> }
+pub fn facts(input: &Input<'_>, read_only: ReadOnly<'_>) -> Facts;
 
 // slip_cli::declare
 pub struct Entity { pub kind: Option<KeyKind>, pub text: String }
 pub enum Line { Relocate { entity: Entity, parent: Option<Entity>, name: Option<String> },   // None: the global namespace; `=`
-                Changed(Entity), Created(Entity), Removed(Entity) }
-pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate, Refused }
+                Changed(Entity), Created(Entity), Removed(Entity), Kept(Entity) }
+pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate, Refused,
+                     DependencyEntity, CLinkage, Order }
 pub struct LineError { pub line: u64, pub kind: ErrorKind, pub detail: String }
 pub fn read(text: &str) -> Result<Vec<(u64, Line)>, LineError>;            // line numbers from 1
 pub struct Needs { pub post: bool, pub post_mapped: bool }                 // which post-image parses the table asks for
 pub fn needs(lines: &[(u64, Line)]) -> Needs;
 pub struct Resolved { pub rules: RuleTable, pub changed: Vec<Digest>, pub removed: Vec<Digest> }
-pub fn resolve(lines: &[(u64, Line)], pre: &[Record], post: &[Record]) -> Result<Resolved, LineError>;
+pub fn resolve(lines: &[(u64, Line)], pre: &[Record], post: &[Record]) -> Result<Resolved, LineError>;   // no facts
+/// `facts`: the pre-images' (`slip_digest::records::facts`, merged), for
+/// `DependencyEntity` and the rules of undefined friends.
+pub fn resolve_with(lines: &[(u64, Line)], pre: &[Record], post: &[Record], facts: &Facts) -> Result<Resolved, LineError>;
 /// `post_mapped`: the post-images' records under `resolved.rules`.
 pub fn finish(lines: &[(u64, Line)], resolved: Resolved, post_mapped: &[Record]) -> Result<Declared, LineError>;
 ```
@@ -2038,12 +2083,14 @@ entity's mapped name (a specialisation, a member of an instantiation, a
 decomposition) is counted by its own key only. An entity with no key is
 counted for no rule; an entity whose key is formed but carries a cause is
 counted. Where two rules produce one key, an entity with that key that no
-rule matched counts in `direct` of each.
+rule matched counts in `direct` of each. For a rule of kind `namespace`
+`direct` is §9.2's, and a third count, `kept_via`, is added there.
 
 ```
 RuleUse := rules: digest            rules_id
-           uses:  list<Use>         sorted by `rule`; only rules with `via` or `direct` not 0
-Use     := rule: uv, via: uv, direct: uv
+           uses:  list<Use>         sorted by `rule`; only rules with a count not 0
+           kept:  list<uv>          WP-111: indices into Declared.kept of the keys some entity has, ascending
+Use     := rule: uv, via: uv, direct: uv, kept_via: uv
 
 Binding := overlay:  opt<digest>    content id of the OVLY container, for an image of the overlay form; absent for a tree
            declared: digest         content id of the DECL container the job was given
@@ -2062,7 +2109,9 @@ is `spellings`, §10.4.)
   `binding`.
 - `rule_use` is present when the outcome is `ok` and the rule table is
   not empty, and absent otherwise. Invariants: `uses` strictly ascending
-  by `rule`; no `Use` with both counts 0.
+  by `rule`; no `Use` with its three counts 0; `kept` strictly ascending.
+  (`kept` and `kept_via` are WP-111's; a shard is read only by the
+  version that wrote it: `spec/landed/verify/WP-111.md` "Format".)
 
 With the binding a verify shard says which declared changes, which
 overlay and which pre shards it was made with; M1's shards did not
@@ -2070,24 +2119,14 @@ overlay and which pre shards it was made with; M1's shards did not
 
 ### 9.2 Stale observers and unused rules
 
-**Stale.** An observer is **stale** for a rule `r` whose kind is not
-`namespace` if its `direct(r)` is not 0. (For a namespace, an entity that
-keeps the key a rule maps another onto is the merge of §2.1.) A stale
-observer is one finding of the run, `stale`, with the rule and the
-observer.
+**Stale.** An observer is **stale** for a rule `r` if its `direct(r)` or
+its `kept_via(r)` is not 0, whatever the rule's kind (`kept_via` is only
+ever counted for a namespace rule; one not 0 for another kind is stale
+too: fail closed). For a namespace rule both counts are the ones below.
+A stale observer is one finding of the run, `stale`, with the rule, the
+observer and both counts.
 
-**Unchecked namespace rules (temporary, until WP-111).** Until the counts
-below are implemented a namespace rule has no stale check. So that the
-hole cannot pass for agreement, a run in which an observer used a rule of
-kind `namespace` (a `Use` of it with `via` or `direct` not 0, in a shard
-whose `rule_use` is read, §9.3) records the rule as **unchecked**: the
-report lists it (§9.4) and conclude permits no write for the run
-(`spec/edits.md` §8.5: state `incomplete` unless a worse one applies).
-The report's verdict is not changed by it. WP-111 removes this paragraph
-and the `unchecked` member, line and field with it.
-
-**Stale for a namespace rule** (WP-111; until it is on main a namespace
-rule has no stale check, which is the hole this closes). The namespace
+**Stale for a namespace rule** (WP-111). The namespace
 itself merges, but its members do not: if one observer sees an owned
 entity in `acme` and another still sees it in `legacy` (a second
 declaration in a header that was not edited), each verifies, since under
@@ -2120,6 +2159,43 @@ observer needed (§2.2).
 `Use` gets the field `kept_via: uv` (0 for a rule that is not of kind
 `namespace`); a `Use` is present when any of its three counts is not 0.
 
+**What "inside" and "member" mean** (WP-111's decisions,
+`spec/landed/verify/WP-111.md`):
+
+- *Lexically, at every depth*: an entity is counted for each namespace of
+  the chain of namespaces around it (its parent, keyed from its own view,
+  §2.1 rule 2, and that namespace's parents), up to the global namespace.
+  A level whose own key no rule matched and that `r` produces adds `r` to
+  the entity's `direct` set; a level a rule `r` matched adds `r` to its
+  `via` set. A kept entity counts `kept_via` for its `via` set; any other
+  counts `direct` for its `direct` set. Each rule at most once per entity
+  and count.
+- *An inline namespace and the unnamed namespace* are namespaces of the
+  chain like any other: a member of `legacy::v1` or of `legacy::(anonymous)`
+  is inside `legacy`.
+- *A nested namespace that a second rule maps elsewhere*: a member left in
+  it is inside both: `direct` for the rule that produces the nested
+  namespace's key and for the outer rule. Fail closed: the outer rule
+  still counts it. The cost: an edit that leaves an owned entity in
+  `legacy::detail` while `legacy` moves, which is not wrong if it is
+  meant, must list it in `kept`.
+- *A namespace reached through two rules* (two rules that produce its
+  key, or one per level): each rule gets the count, once.
+- *Who is a member*: an entity keyed directly under a namespace, not a
+  namespace, and owned (a dependency entity is keyed in the dependency
+  view, and no rule reaches it). A class member follows its class; a
+  specialisation and a member of one are keyed under their template, and
+  a friend under its class, so neither is counted; an entity with C
+  language linkage has the parent `c_linkage` and is not counted. A
+  namespace's own key is not counted in `direct` (the merge of §2.1);
+  a namespace a rule matched counts in `via`, as before.
+- *`Declared.kept`* is compared with the entity's mapped key, the key it
+  has under the rules, as the walk gives it. The walk records which
+  indices of `kept` some entity had (`RuleUse.kept`); a kept key that no
+  read shard of the run has is listed in the report as an exemption of
+  list `kept` with 0 observers (§7.1, after `removed`), and changes no
+  verdict.
+
 **Why this is the condition.** The claim of §1, for a rule, is that the
 entity it names has the new name. Two observers disagree about an entity
 when one reaches its key through the rule and the other has it without.
@@ -2129,7 +2205,7 @@ has it at all. In an observer that has the entity both ways the two
 collide and both are indeterminate (§2.1), so that case was already a
 finding; the count catches the observer that has only the old one.
 
-**Unused rules.** A rule with `via` and `direct` 0 in every observer names
+**Unused rules.** A rule with every count 0 in every observer names
 an entity no observer has. It is reported with the run, like an exemption
 no observer needed (§2.2), and changes no verdict.
 
@@ -2143,7 +2219,8 @@ one, the same `pre`); and if it is `ok` and the run's rules are not
 empty, it has a `rule_use` whose `rules` is the run's `rules_id`. A shard
 that fails either is not this run's: the observer is `failed` (§7), as
 for any shard another run left. So is an `ok` shard with a `rule_use`
-under no rule or naming a rule past the table, and one whose `spellings`
+under no rule or naming a rule past the table or a `kept` index past
+`Declared.kept`, and one whose `spellings`
 is absent although the overlay has obligations, present although it has
 none, or refused by the fold (§10.4). A run with a tree image and no
 rule is M1's: its shards need no `binding`, and one that has a binding
@@ -2184,16 +2261,13 @@ the M1 document. Members added, each present only when it applies:
 ```
 "overlay": <id of the OVLY container>                      for an image of the overlay form; "image" is then []
 "agreement": { "rules": <n>,                               when Declared.rules is not empty
-               "stale": [ { "rule": <index>, "observer": <id>, "main": <path>, "direct": <n> }, … ],
-               "unused": [ <index>, … ],
-               "unchecked": [ <index>, … ] }                 until WP-111 (§9.2)
+               "stale": [ { "rule": <index>, "observer": <id>, "main": <path>, "direct": <n>, "kept_via": <n> }, … ],
+               "unused": [ <index>, … ] }
 "spellings": …                                             §10.5
 ```
 
 `stale` is sorted by `(rule, the observer's position in the plan)` and
-holds every stale pair; `unused` and `unchecked` are ascending.
-`unchecked` lists the namespace rules an observer used (§9.2; temporary,
-removed by WP-111). `"overlay"` follows
+holds every stale pair; `unused` is ascending. `"overlay"` follows
 `"image"`; `"agreement"` and then `"spellings"` follow `"exemptions"`
 and precede `"run"`. An `unseen` entry of `spellings` has `observers`
 0, `first` and `found` null and an empty `name`
@@ -2204,9 +2278,8 @@ Lines added to the text, after the `exemption` lines and before `wall`:
 ```
 image overlay <overlay id>                       in place of the `image` lines of §7.1, for the overlay form
 agreement rules <n> stale <n> unused <n>         when there are rules; `stale <n>` counts pairs
-stale rule <index> direct <n> <main file>        at most 100, then `stale: <n> more (see the report)`
+stale rule <index> direct <n> kept_via <n> <main file>    at most 100, then `stale: <n> more (see the report)`
 unused rule <index>
-not checked: agreement between observers for namespace rule <index>     until WP-111 (§9.2)
 ```
 
 Nothing is added to the lines on standard error: those list observers by
@@ -2218,6 +2291,8 @@ The walk's half, in `slip_digest` (trusted base):
 
 ```rust
 // Options gains `rule_use: bool`; Output gains `rule_use: Vec<slip_model::Use>`  (empty when off or when there is no rule)
+// WP-111: Output gains `kept: Vec<u64>` (RuleUse.kept); `Declared.kept` is given by
+pub fn digest_kept(input: &Input<'_>, options: &Options<'_>, kept: &[Digest]) -> Output;   // `digest` is `digest_kept` with none
 ```
 
 `RuleTable::map` must then say whether a rule was applied; how
@@ -2235,7 +2310,7 @@ that matches nothing: the rule is unused and the entity's unit is
 The run's half, in `slip_verify::run` (trusted base), added to §7.3:
 
 ```rust
-pub struct Stale { pub rule: u64, pub observer: Digest, pub direct: u64 }
+pub struct Stale { pub rule: u64, pub observer: Digest, pub direct: u64, pub kept_via: u64 }
 
 /// §9.3: the verdict of the states, with the two conditions over all observers.
 pub fn combine(states: RunVerdict, stale: usize, obligations_not_passed: usize) -> RunVerdict;
@@ -2248,8 +2323,8 @@ impl Report {
     pub fn pre_round(&mut self, pre: u64);
     pub fn stale(&self) -> &[Stale];                       // sorted by (rule, plan position)
     pub fn unused(&self) -> Vec<u64>;
-    /// §9.2, until WP-111: the namespace rules an observer used, ascending.
-    pub fn unchecked(&self) -> Vec<u64>;
+    /// §9.2: the keys of `Declared.kept` no read shard of the run has, in its order.
+    pub fn unseen_kept(&self) -> Vec<Digest>;
     pub fn spellings(&self) -> &[spelling::Outcome];       // §10.6; one per obligation of the overlay
 }
 ```

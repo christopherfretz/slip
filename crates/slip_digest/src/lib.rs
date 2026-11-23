@@ -307,10 +307,14 @@ pub struct Output {
     /// For every unit, the entity as a person would write it
     /// (`verify.md` §6 `name`); sorted by key; empty unless asked.
     pub names: Vec<(Digest, String)>,
-    /// How each rule was used (`spec/verify.md` §9.1): sorted by rule,
-    /// only rules with `via` or `direct` not 0; empty unless asked for
-    /// under a table that is not empty (`rule_use.rs`).
+    /// How each rule was used (`spec/verify.md` §9.1, §9.2): sorted by
+    /// rule, only rules with a count not 0; empty unless asked for under a
+    /// table that is not empty (`rule_use.rs`).
     pub rule_use: Vec<slip_model::agreement::Use>,
+    /// The keys of `Declared.kept` given to [`digest_kept`] that some
+    /// entity of the walk has, as indices into that list, ascending
+    /// (`spec/verify.md` §9.2); empty when `rule_use` is.
+    pub kept: Vec<u64>,
 }
 
 /// Why a unit is indeterminate (`spec/digest.md` §10).
@@ -420,4 +424,13 @@ impl Area {
 /// Never fails: what cannot be digested is an indeterminate unit.
 pub fn digest(input: &Input<'_>, options: &Options<'_>) -> Output {
     walk::run(input, options)
+}
+
+/// [`digest`], counting rule use (when `options.rule_use`) with
+/// `Declared.kept`: `kept` ascending, as `Declared::kept` gives it
+/// (`spec/verify.md` §9.2, §9.5). An entity whose key is in `kept` counts
+/// in a namespace rule's `kept_via`, not its `direct`; `Output::kept` says
+/// which of the keys some entity has. With `kept` empty, [`digest`].
+pub fn digest_kept(input: &Input<'_>, options: &Options<'_>, kept: &[Digest]) -> Output {
+    walk::run_kept(input, options, kept, |_, _, o| o)
 }

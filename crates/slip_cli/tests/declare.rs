@@ -13,9 +13,9 @@
 //! `Fallback`, and a rule is what verification then checks.
 
 use slip_cli::declare::{
-    Entity, ErrorKind, Line, LineError, Needs, Resolved, finish, needs, read, resolve,
+    Entity, ErrorKind, Line, LineError, Needs, Resolved, finish, needs, read, resolve, resolve_with,
 };
-use slip_digest::records::{Record, records};
+use slip_digest::records::{Facts, Record, facts, records};
 use slip_digest::{Detail, Input, Options, Output};
 use slip_model::Digest;
 use slip_model::declared::Declared;
@@ -72,6 +72,12 @@ fn read_every_line_form() {
         (9, Line::Removed(ent(None, "b::c()"))),
     ];
     assert_eq!(lines, want);
+    // WP-111: `kept`.
+    assert_eq!(
+        read("kept  [class] a::B ").unwrap(),
+        [(1, Line::Kept(ent(Some(KeyKind::Class), "a::B")))]
+    );
+    assert_eq!(read("kept").unwrap_err().kind, ErrorKind::Syntax);
     assert_eq!(read("").unwrap(), vec![]);
     // A parent with `::` in it: the name is after the last one.
     let l = read("relocate x => a::b :: y").unwrap();
@@ -130,6 +136,7 @@ fn what_lines_need() {
     assert_eq!(n("relocate a => x :: b"), Needs { post: true, post_mapped: false });
     assert_eq!(n("created a"), Needs { post: false, post_mapped: true });
     assert_eq!(n("created a\nrelocate a => x :: ="), Needs { post: true, post_mapped: true });
+    assert_eq!(n("kept a"), Needs { post: false, post_mapped: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -262,15 +269,16 @@ fn a_parent_mapped_by_the_lines_above() {
     assert_eq!(fresh_mapped, p.n);
     let c_post = key(KeyKind::Class, Parent::Unit(fresh_mapped.id()), ident("C"), None);
     assert_eq!(r.rules.map(c_post), p.c);
-    // The order of the lines matters: the parent first, it is not mapped.
-    let r = resolve(
-        &read("relocate n::C => fresh :: =\nrelocate n => :: fresh").unwrap(),
-        &p.recs,
-        &post,
-    )
-    .unwrap();
-    let second = r.rules.rules().iter().find(|x| x.kind == KeyKind::Class).unwrap();
-    assert_eq!(second.parent, Parent::Unit(fresh.id()));
+    // WP-111: the other order is refused (`Order`), at the later line,
+    // naming the earlier: the first line's parent would not be mapped and
+    // its rule would match nothing.
+    let e = err("relocate n::C => fresh :: =\nrelocate n => :: fresh", &p.recs, &post);
+    assert_eq!((e.line, e.kind), (2, ErrorKind::Order), "{e}");
+    assert_eq!(
+        e.detail,
+        "the rule of `n` relocates `fresh`, or a namespace or class around it, which line 1 \
+         resolved as a new parent without it: this line must come before line 1"
+    );
 }
 
 // `m` up a chain: a parent whose own parent is relocated, two levels up;
@@ -515,6 +523,198 @@ fn finish_resolves_created_in_the_mapped_post_image() {
     assert_eq!(e.line, if mapped[0].name == "D::fresh" { 4 } else { 3 });
     let twice = read("created D::fresh\ncreated D::fresh").unwrap();
     assert_eq!(finish(&twice, r, &mapped).unwrap_err().line, 2);
+}
+
+// WP-111 item 4: `kept` resolves as `created` does, in the post-images
+// under the file's rules (`post_mapped`), into `Declared.kept`, sorted; a
+// name no unit has is `NoUnit` and a second line for one key `Duplicate`,
+// at its line; a key both `created` and `kept` is in both lists.
+#[test]
+fn s2_3_kept_resolves_in_the_mapped_post_image() {
+    let p = pre();
+    let lines = read(
+        "relocate n => :: fresh\nkept fresh::stay\ncreated fresh::add\nkept fresh::other\nkept fresh::add\n",
+    )
+    .unwrap();
+    let r = resolve(&lines, &p.recs, &[]).unwrap();
+    let var = |name: &str| key(KeyKind::Variable, Parent::Unit(p.n.id()), ident(name), None);
+    let (stay, other, add) = (var("stay"), var("other"), var("add"));
+    let mapped = sorted(vec![
+        rec(&stay, "fresh::stay"),
+        rec(&other, "fresh::other"),
+        rec(&add, "fresh::add"),
+    ]);
+    let d = finish(&lines, r.clone(), &mapped).unwrap();
+    let mut kept = vec![stay.id(), other.id(), add.id()];
+    kept.sort_unstable();
+    assert_eq!(d.kept(), kept);
+    assert_eq!(d.created(), [add.id()]);
+    let e =
+        finish(&read("kept fresh::stay\nkept nothing").unwrap(), r.clone(), &mapped).unwrap_err();
+    assert_eq!((e.line, e.kind), (2, ErrorKind::NoUnit), "{e}");
+    let e = finish(&read("kept fresh::stay\n\nkept fresh::stay").unwrap(), r, &mapped).unwrap_err();
+    assert_eq!((e.line, e.kind), (3, ErrorKind::Duplicate), "{e}");
+    assert_eq!(e.detail, "a second `kept` line for `fresh::stay`");
+}
+
+// WP-111 item 4, spec/verify.md §2.1 rule 1: a `relocate` line whose entity
+// is a dependency entity (the pre-images' `Facts`) and not a namespace is
+// `DependencyEntity`, at its line, in file order with the other errors;
+// a namespace that is one is accepted (its rule applies in the owned
+// view); an exemption of a dependency entity is accepted.
+#[test]
+fn s2_3_dependency_entity() {
+    let p = pre();
+    let facts = Facts {
+        dependency: [p.c.id(), p.n.id(), p.f_char.id()].into_iter().collect(),
+        ..Facts::default()
+    };
+    let go = |text: &str| resolve_with(&read(text).unwrap(), &p.recs, &[], &facts);
+    let e = go("changed n::C\nrelocate n::C => :: D").unwrap_err();
+    assert_eq!((e.line, e.kind), (2, ErrorKind::DependencyEntity), "{e}");
+    assert!(e.detail.starts_with("`n::C` is a dependency entity"), "{e}");
+    let e = go("relocate [function] n::f(char) => n :: g\nchanged nothing").unwrap_err();
+    assert_eq!((e.line, e.kind), (1, ErrorKind::DependencyEntity), "{e}");
+    assert!(go("relocate n => :: fresh\nchanged n::C\nremoved n::C").is_ok());
+    assert!(go("relocate [function] n::f(int) => :: g").is_ok());
+    // Without facts (records written by hand), accepted.
+    assert!(resolve(&read("relocate n::C => :: D").unwrap(), &p.recs, &[]).is_ok());
+}
+
+// WP-111, "Added after the reviews of WP-069 and WP-110": a `relocate` line
+// for an entity with C language linkage is `CLinkage`, whatever its new
+// parent and name.
+#[test]
+fn s2_3_c_linkage() {
+    let p = pre();
+    let c_fn = key(KeyKind::Function, Parent::CLinkage, ident("c_fn"), None);
+    let mut recs = p.recs.clone();
+    recs.push(rec(&c_fn, "n::c_fn(int)"));
+    let post = sorted(vec![rec(&p.n, "n")]);
+    for text in [
+        "relocate n::c_fn(int) => :: c_fn2",
+        "relocate n::c_fn(int) => n :: =",
+        "changed n::C\nrelocate n::c_fn(int) => n :: c_fn2",
+    ] {
+        let e = err(text, &recs, &post);
+        assert_eq!(
+            (e.line, e.kind),
+            (text.lines().count() as u64, ErrorKind::CLinkage),
+            "{text}: {e}"
+        );
+        assert!(e.detail.starts_with("`n::c_fn(int)` has C language linkage"), "{e}");
+    }
+}
+
+// WP-111, "Added after the review of WP-103": a line whose new parent, or a
+// namespace or class around it, a later line relocates is refused at the
+// later line (`Order`), naming the earlier; in the other order both lines
+// are accepted (`a_parent_mapped_by_the_lines_above`,
+// `a_parent_mapped_up_its_chain`). A later line that relocates something
+// else is accepted.
+#[test]
+fn s2_3_order_of_lines() {
+    let p = pre();
+    let top = key(KeyKind::Namespace, Parent::Root, ident("top"), None);
+    let mid = key(KeyKind::Namespace, Parent::Unit(top.id()), ident("mid"), None);
+    let post = sorted(vec![rec(&top, "top"), rec(&mid, "top::mid")]);
+    // An enclosing namespace of the new parent, two lines apart.
+    let e =
+        err("relocate n::C => top::mid :: =\nchanged n::C\nrelocate m => :: top", &p.recs, &post);
+    assert_eq!((e.line, e.kind), (3, ErrorKind::Order), "{e}");
+    assert!(e.detail.contains("`top::mid`") && e.detail.contains("before line 1"), "{e}");
+    // The parent itself.
+    let e = err("relocate n::C => top::mid :: =\nrelocate m => top :: mid", &p.recs, &post);
+    assert_eq!((e.line, e.kind), (2, ErrorKind::Order), "{e}");
+    for ok in [
+        "relocate m => :: top\nrelocate n::C => top::mid :: =",
+        "relocate n::C => top::mid :: =\nrelocate [function] n::f(int) => top :: g",
+        "relocate n::C => top::mid :: =\nrelocate n => :: top2",
+    ] {
+        assert!(resolve(&read(ok).unwrap(), &p.recs, &post).is_ok(), "{ok}");
+    }
+}
+
+/// Every order of `lines` (renumbered from 1): each is either refused with
+/// `Order` or gives `want`'s table; at least one is accepted.
+fn every_order(
+    lines: &[(u64, Line)],
+    go: &dyn Fn(&[(u64, Line)]) -> Result<RuleTable, LineError>,
+) -> Digest {
+    let n = lines.len();
+    assert!(n <= 6, "{n} lines: too many orders");
+    let mut idx: Vec<usize> = (0..n).collect();
+    let mut ids = std::collections::BTreeSet::new();
+    let (mut accepted, mut refused) = (0, 0);
+    // Heap's algorithm, iterative.
+    let mut c = vec![0usize; n];
+    let mut visit = |idx: &[usize]| {
+        let order: Vec<(u64, Line)> =
+            idx.iter().enumerate().map(|(i, &j)| (i as u64 + 1, lines[j].1.clone())).collect();
+        match go(&order) {
+            Ok(t) => {
+                ids.insert(t.id());
+                accepted += 1;
+            }
+            Err(e) => {
+                assert_eq!(e.kind, ErrorKind::Order, "{order:?}: {e}");
+                refused += 1;
+            }
+        }
+    };
+    visit(&idx);
+    let mut i = 0;
+    while i < n {
+        if c[i] < i {
+            if i % 2 == 0 {
+                idx.swap(0, i)
+            } else {
+                idx.swap(c[i], i)
+            }
+            visit(&idx);
+            c[i] += 1;
+            i = 0;
+        } else {
+            c[i] = 0;
+            i += 1;
+        }
+    }
+    assert!(accepted > 0, "no order accepted");
+    assert_eq!(ids.len(), 1, "{accepted} accepted orders, {refused} refused, {} tables", ids.len());
+    ids.into_iter().next().unwrap()
+}
+
+// WP-111, "Added after the review of WP-103", and spec/verify.md §2.3: every
+// order of a file's lines that `declare` accepts gives one rule table (one
+// `rules_id`), the others are `Order`. Over hand-written records; the
+// rules suite's cases are permuted in `the_rules_suite_resolves_alike`.
+#[test]
+fn s2_3_every_accepted_order_gives_one_table() {
+    let p = pre();
+    let fresh = key(KeyKind::Namespace, Parent::Root, ident("fresh"), None);
+    let deep = key(KeyKind::Namespace, Parent::Unit(fresh.id()), ident("deep"), None);
+    let top = key(KeyKind::Namespace, Parent::Root, ident("top"), None);
+    let mid = key(KeyKind::Namespace, Parent::Unit(top.id()), ident("mid"), None);
+    let post = sorted(vec![
+        rec(&fresh, "fresh"),
+        rec(&deep, "fresh::deep"),
+        rec(&top, "top"),
+        rec(&mid, "top::mid"),
+    ]);
+    for text in [
+        "relocate n => :: fresh\nrelocate n::C => fresh::deep :: =\nchanged n::C",
+        "relocate m => :: top\nrelocate n::C => top::mid :: =\nrelocate [function] n::f(char) => top::mid :: h\nrelocate n => :: fresh",
+        "relocate n => :: fresh\nrelocate m => fresh :: deep\nrelocate n::C => fresh::deep :: D",
+        "relocate [function] n::f(int) => top :: g\nrelocate n::C => top::mid :: =\nremoved n::C",
+    ] {
+        let lines = read(text).unwrap();
+        let go = |l: &[(u64, Line)]| resolve(l, &p.recs, &post).map(|r| r.rules);
+        let id = every_order(&lines, &go);
+        // `rules_id` of the `Declared` is a function of the table.
+        let r = resolve(&lines, &p.recs, &post).unwrap_or_else(|e| panic!("{text}: {e}"));
+        let d = finish(&lines, r, &[]).unwrap();
+        assert_eq!(d.rules().id(), id, "{text}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -873,8 +1073,80 @@ fn the_rules_suite_resolves_alike() {
             digest_rules::table(&ours, &pre, &post).unwrap_or_else(|e| panic!("{case}: {e}"));
         assert_eq!(declared.rules.rules().len(), suite.table.rules().len(), "{case}");
         assert_eq!(declared.rules.id(), suite.table.id(), "{case}");
+        // WP-111: every accepted order of the lines gives this table.
+        let go = |l: &[(u64, Line)]| resolve(l, &pre, &post).map(|r| r.rules);
+        assert_eq!(every_order(&lines, &go), declared.rules.id(), "{case}");
         let with =
             findings(&digest_of(&a, &empty), &digest_of(&b, &declared.rules), &Exemptions::none());
         assert!(!with.iter().copied().any(real), "{case}: {with:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// WP-111: a function a class template befriends without defining it
+
+const FRIEND_PRE: &str = "template <class T> struct A { friend int f(int); };\nint f(int) { return 1; }\nA<int> a;\nint u() { return f(1); }\n";
+const FRIEND_POST: &str = "template <class T> struct A { friend int g(int); };\nint g(int) { return 1; }\nA<int> a;\nint u() { return g(1); }\n";
+
+/// `relocate` lines over `FRIEND_PRE`/`FRIEND_POST` with `facts` (or none):
+/// the table, and the real findings of the post-image digested under it.
+fn friend_case(text: &str, facts: &Facts) -> (RuleTable, Vec<(FindingKind, String)>) {
+    let empty = RuleTable::empty();
+    let (pre, post) = (records_of(FRIEND_PRE, &empty), records_of(FRIEND_POST, &empty));
+    let r =
+        resolve_with(&read(text).unwrap(), &pre, &post, facts).unwrap_or_else(|e| panic!("{e}"));
+    let with = named_findings(
+        &digest_of(FRIEND_PRE, &empty),
+        &digest_of(FRIEND_POST, &r.rules),
+        &Exemptions::none(),
+    );
+    (r.rules, with.into_iter().filter(|(k, _)| real(*k)).collect())
+}
+
+// `docs/wp/WP-071.md` "Added after the review of WP-103" (the rules suite's
+// `kinds/function-first-declared-as-friend`): `relocate f(int) => :: g`
+// alone writes the friend declaration's rule too, and verifies. The pair:
+// the same line without the second rule (no facts) is a mismatch, `A`
+// changed; the suite's two lines give the same table, in either order.
+// A friend defined in the template is no undefined friend (it is followed).
+#[test]
+fn s2_3_undefined_friend_gets_its_rule() {
+    let f = with_input(FRIEND_PRE, |i| facts(i, slip_digest::ReadOnly::NO_FILE));
+    assert_eq!(f.undefined_friends.len(), 1, "{f:?}");
+    assert!(f.dependency.is_empty());
+    let (table, real_findings) = friend_case("relocate f(int) => :: g\n", &f);
+    assert_eq!(table.rules().len(), 2, "{table:?}");
+    assert_eq!(real_findings, [], "with the friend's rule");
+    let (one, without) = friend_case("relocate f(int) => :: g\n", &Facts::default());
+    assert_eq!(one.rules().len(), 1);
+    assert!(without.iter().any(|(_, n)| n.starts_with('A')), "{without:?}");
+    let both = "relocate f(int) => :: g\nrelocate A::friend f(int) => A :: g\n";
+    let reversed = "relocate A::friend f(int) => A :: g\nrelocate f(int) => :: g\n";
+    for text in [both, reversed] {
+        assert_eq!(friend_case(text, &f).0, table, "{text}");
+        assert_eq!(friend_case(text, &Facts::default()).0, table, "{text}");
+    }
+    // `=`: the name is kept, so the friend needs no rule.
+    assert_eq!(friend_case("relocate f(int) => :: =\n", &f).0.rules().len(), 1);
+    let defined = "template <class T> struct S { friend int f(int) { return 1; } };\nint f(int);\nS<int> s;\nint u() { return f(1); }\n";
+    let f = with_input(defined, |i| facts(i, slip_digest::ReadOnly::NO_FILE));
+    assert!(f.undefined_friends.is_empty(), "{f:?}");
+}
+
+// `Facts::dependency` over a parse: every entity of a read-only file (here
+// every file) is one, an owned file's none; `merge` is the union.
+#[test]
+fn facts_of_a_parse() {
+    let src = "namespace n { struct S {}; int f(int); }\n";
+    let all = with_input(src, |i| facts(i, slip_digest::ReadOnly::EVERY_FILE));
+    let none = with_input(src, |i| facts(i, slip_digest::ReadOnly::NO_FILE));
+    assert!(none.dependency.is_empty());
+    let recs = records_of(src, &RuleTable::empty());
+    for name in ["n", "n::S", "n::f(int)"] {
+        let r = recs.iter().find(|r| r.name == name).unwrap();
+        assert!(all.dependency.contains(&r.id), "{name}");
+    }
+    let mut m = none.clone();
+    m.merge(all.clone());
+    assert_eq!(m, all);
 }

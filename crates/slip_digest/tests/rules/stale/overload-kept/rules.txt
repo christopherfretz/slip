@@ -1,0 +1,2 @@
+# WP-111 item 5: an owned overload for a dependency type (legacy::D, read-only), left in legacy so that argument-dependent lookup finds it, listed in kept: not stale (direct 0, kept_via 0).
+relocate legacy => :: acme

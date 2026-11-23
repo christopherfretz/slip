@@ -152,6 +152,10 @@ pub(crate) struct OwnedState {
     /// Cycles met (an entity asked again while its ownership is being
     /// decided): what is decided while one is met is not memoised.
     cycles: u64,
+    /// Set by `records::facts` (`slip declare`), which asks ownership
+    /// after a walk under the empty table: ownership does not depend on
+    /// the table, and that walk's keys are not read for it.
+    pub query: bool,
     /// The key of a namespace (its entity) under the view `.1` (`true`:
     /// owned, rules apply along the chain) when that is not the
     /// namespace's own ownership.
@@ -175,7 +179,10 @@ impl Walk<'_> {
     /// `d`'s entity is owned (`spec/verify.md` §2.1, the three bullets).
     /// Once per entity. A cycle is a dependency entity, not memoised.
     pub(crate) fn owned(&mut self, d: DeclId) -> bool {
-        debug_assert!(!self.rules.is_empty(), "ownership is not consulted under no rule");
+        debug_assert!(
+            !self.rules.is_empty() || self.owned_state.query,
+            "ownership is not consulted under no rule"
+        );
         let e = self.entity(d);
         if let Some(&o) = self.owned_state.memo.get(&e) {
             return o;

@@ -240,16 +240,23 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
     out
 }
 
-/// The payload of a `rule_use` section, and the offset in it of each use.
-fn raw_rule_use(r: &RuleUse) -> (Vec<u8>, Vec<usize>) {
+/// The payload of a `rule_use` section, the offset in it of each use, and
+/// of each element of `kept`.
+fn raw_rule_use(r: &RuleUse) -> (Vec<u8>, Vec<usize>, Vec<usize>) {
     let mut e = Encoder::new();
     e.digest(&r.rules).count(r.uses.len());
     let mut at = Vec::new();
     for u in &r.uses {
         at.push(e.as_bytes().len());
-        e.uv(u.rule).uv(u.via).uv(u.direct);
+        e.uv(u.rule).uv(u.via).uv(u.direct).uv(u.kept_via);
     }
-    (e.into_bytes(), at)
+    e.count(r.kept.len());
+    let mut kept = Vec::new();
+    for &k in &r.kept {
+        kept.push(e.as_bytes().len());
+        e.uv(k);
+    }
+    (e.into_bytes(), at, kept)
 }
 
 /// The payload of a spellings section, and the offsets in it of each
@@ -1528,10 +1535,12 @@ fn rule_use() -> RuleUse {
     RuleUse {
         rules: d(0x83),
         uses: vec![
-            Use { rule: 0, via: 2, direct: 0 },
-            Use { rule: 1, via: 0, direct: 1 },
-            Use { rule: 300, via: 1 << 60, direct: 1 << 53 },
+            Use { rule: 0, via: 2, direct: 0, kept_via: 0 },
+            Use { rule: 1, via: 0, direct: 1, kept_via: 0 },
+            Use { rule: 7, via: 0, direct: 0, kept_via: 3 },
+            Use { rule: 300, via: 1 << 60, direct: 1 << 53, kept_via: 1 << 40 },
         ],
+        kept: vec![0, 2, 1 << 33],
     }
 }
 
@@ -1617,9 +1626,9 @@ fn m2_sections_round_trip() {
         ]
     );
     assert_eq!(names(sections.get("binding").unwrap()), ["overlay", "declared", "pre"]);
-    assert_eq!(names(sections.get("rule_use").unwrap()), ["rules", "uses"]);
-    let u = &sections.get("rule_use").unwrap().get("uses").unwrap().as_array().unwrap()[2];
-    assert_eq!(names(u), ["rule", "via", "direct"]);
+    assert_eq!(names(sections.get("rule_use").unwrap()), ["rules", "uses", "kept"]);
+    let u = &sections.get("rule_use").unwrap().get("uses").unwrap().as_array().unwrap()[3];
+    assert_eq!(names(u), ["rule", "via", "direct", "kept_via"]);
     assert_eq!(u.get("via").unwrap().as_str(), Some("1152921504606846976"));
     let sp = sections.get("spellings").unwrap();
     assert_eq!(names(sp), ["seen", "held", "failed"]);
@@ -1728,13 +1737,14 @@ fn m2_sections_phase_and_status() {
     rejected_at(&s, "sections.binding", 24, 0);
 }
 
-// spec/verify.md §9.1: uses strictly ascending by rule; no use with via
-// and direct both 0. Each rule over the whole list.
+// spec/verify.md §9.1, §9.2: uses strictly ascending by rule; no use with
+// all three counts 0; kept strictly ascending. Each rule over the whole
+// list.
 #[test]
 fn rule_use_invariants() {
     let with =
         |uses: Vec<Use>| Shard { rule_use: Some(RuleUse { uses, ..rule_use() }), ..m2_shard() };
-    let u = |rule, via, direct| Use { rule, via, direct };
+    let u = |rule, via, direct| Use { rule, via, direct, kept_via: 0 };
     for uses in [
         vec![u(1, 1, 0), u(0, 1, 0)],
         vec![u(1, 1, 0), u(1, 0, 1)],
@@ -1749,7 +1759,17 @@ fn rule_use_invariants() {
     }
     let s = with(vec![u(0, 1, 0), u(1, 0, 0)]);
     let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[1];
-    assert!(rejected_at(&s, "sections.rule_use.uses[1]", 25, rel).contains("both 0"));
+    assert!(rejected_at(&s, "sections.rule_use.uses[1]", 25, rel).contains("all 0"));
+    // kept_via alone is a use (WP-111).
+    let s = with(vec![u(0, 1, 0), Use { kept_via: 1, ..u(1, 0, 0) }]);
+    assert_eq!(Shard::from_bytes(&s.to_bytes()).unwrap(), s);
+    for kept in [vec![1, 0], vec![2, 2], vec![0, 4, 3]] {
+        let n = kept.len() - 1;
+        let s = Shard { rule_use: Some(RuleUse { kept, ..rule_use() }), ..m2_shard() };
+        let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).2[n];
+        let got = rejected_at(&s, &format!("sections.rule_use.kept[{n}]"), 25, rel);
+        assert!(got.contains("kept is not strictly ascending"), "{got}");
+    }
     // The order rule over the whole list first.
     let s = with(vec![u(0, 0, 0), u(2, 1, 0), u(1, 1, 0)]);
     let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[2];

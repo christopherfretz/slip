@@ -531,10 +531,21 @@ pub(crate) fn run_with<R>(
     options: &Options<'_>,
     f: impl FnOnce(&mut Walk<'_>, &[Written], Output) -> R,
 ) -> R {
+    run_kept(input, options, &[], f)
+}
+
+/// [`run_with`], counting rule use with `Declared.kept` (`kept`,
+/// ascending; `spec/verify.md` §9.2).
+pub(crate) fn run_kept<R>(
+    input: &Input<'_>,
+    options: &Options<'_>,
+    kept: &[Digest],
+    f: impl FnOnce(&mut Walk<'_>, &[Written], Output) -> R,
+) -> R {
     let mut w = Walk::new(input, options.rules);
     w.read_only = options.read_only;
     if options.rule_use && !options.rules.is_empty() {
-        w.rule_use = Some(crate::rule_use::Counting::default());
+        w.rule_use = Some(crate::rule_use::Counting::new(kept));
     }
     crate::units::collect(&mut w);
     crate::local::number_all(&mut w);
@@ -560,8 +571,8 @@ pub(crate) fn run_with<R>(
     let (digests, totals) = crate::groups::build(&written, &options.detail);
     let causes = causes(&written);
     let counters = crate::groups::counters(&totals, collisions, w.bytes, &causes);
-    let rule_use = crate::rule_use::finish(w.rule_use.take());
-    f(&mut w, &written, Output { digests, counters, causes, names, rule_use })
+    let (rule_use, kept) = crate::rule_use::finish(w.rule_use.take());
+    f(&mut w, &written, Output { digests, counters, causes, names, rule_use, kept })
 }
 
 /// One cause per indeterminate key: of the unit first in `(key, digest)`

@@ -434,16 +434,11 @@ fn raw_result(x: &TransformResult) -> Raw {
     r.e.count(x.agreement.len());
     for (i, a) in x.agreement.iter().enumerate() {
         r.mark(format!("{S}.agreement[{i}]"));
-        r.e.uv(a.rule).digest(&a.observer).uv(a.direct);
+        r.e.uv(a.rule).digest(&a.observer).uv(a.direct).uv(a.kept_via);
     }
     r.e.count(x.unused.len());
     for (i, &u) in x.unused.iter().enumerate() {
         r.mark(format!("{S}.unused[{i}]"));
-        r.e.uv(u);
-    }
-    r.e.count(x.unchecked.len());
-    for (i, &u) in x.unchecked.iter().enumerate() {
-        r.mark(format!("{S}.unchecked[{i}]"));
         r.e.uv(u);
     }
     r.mark(format!("{S}.spellings.obligations"));
@@ -833,8 +828,8 @@ fn overlay() -> Overlay {
     }
 }
 
-/// A result with every record: a verdict, the tally, stale rules, unused
-/// and unchecked rules, failed spellings of both kinds, residue of every
+/// A result with every record: a verdict, the tally, stale rules (by
+/// `direct` and by `kept_via`), unused rules, failed spellings of both kinds, residue of every
 /// category.
 fn result() -> TransformResult {
     TransformResult {
@@ -863,11 +858,10 @@ fn result() -> TransformResult {
             failed: 2,
         },
         agreement: vec![
-            Stale { rule: 0, observer: d(0xa1), direct: 2 },
-            Stale { rule: 1, observer: d(0xa0), direct: 1 },
+            Stale { rule: 0, observer: d(0xa1), direct: 2, kept_via: 0 },
+            Stale { rule: 1, observer: d(0xa0), direct: 0, kept_via: 3 },
         ],
         unused: vec![1, 4],
-        unchecked: vec![0, 3],
         spellings: Spellings {
             obligations: 5,
             passed: 3,
@@ -945,7 +939,6 @@ fn refused_result() -> TransformResult {
         },
         agreement: Vec::new(),
         unused: Vec::new(),
-        unchecked: Vec::new(),
         spellings: Spellings::default(),
         residue: Vec::new(),
         ..result()
@@ -961,7 +954,6 @@ fn result_in(s: State) -> TransformResult {
         State::Verified | State::VerifiedWithResidue => {
             x.verdict = Some(RunVerdict::Verified);
             x.agreement.clear();
-            x.unchecked.clear();
             x.spellings = Spellings { obligations: 5, passed: 5, failed: Vec::new() };
             x.allow_unparsed = true;
             if s == State::Verified {
@@ -1121,7 +1113,6 @@ fn small_result() -> TransformResult {
         tally: Tally { selected: 2, unparsed: 1, ..Tally::default() },
         agreement: Vec::new(),
         unused: Vec::new(),
-        unchecked: Vec::new(),
         spellings: Spellings::default(),
         residue: Vec::new(),
         exempt: Vec::new(),
@@ -1131,7 +1122,7 @@ fn small_result() -> TransformResult {
 fn small_result_bytes() -> Vec<u8> {
     reseal(hex(&[
         HEADER_RSLT,
-        "01 7b",                            // section result, 123 bytes
+        "01 7a",                            // section result, 122 bytes
         "01",                               //   scheme 1                          @18
         &rep("11", 32),                     //   plan
         "00",                               //   round 0
@@ -1142,7 +1133,7 @@ fn small_result_bytes() -> Vec<u8> {
         "00 00",                            //   partial false, allow_unparsed false
         "00",                               //   no verdict                        @121
         "02 01 00 00 00 00 00 00 00 00 00", // tally: selected 2, unparsed 1, the rest 0
-        "00 00 00",                         //   agreement [], unused [], unchecked []
+        "00 00",                            //   agreement [], unused []
         "00 00 00",                         //   spellings: 0 obligations, 0 passed, failed []
         "00 00",                            //   residue [], exempt []
         "00",                               // end
@@ -1205,7 +1196,7 @@ fn bytes_exact() {
     assert_eq!(Overlay::from_bytes(&ov).unwrap(), small_overlay());
 
     let res = small_result_bytes();
-    assert_eq!(res.len(), 16 + 2 + 123 + 1 + 32);
+    assert_eq!(res.len(), 16 + 2 + 122 + 1 + 32);
     assert_eq!(small_result().to_bytes(), res);
     assert_eq!(raw_file(&small_result()), res);
     assert_eq!(TransformResult::from_bytes(&res).unwrap(), small_result());
@@ -1557,7 +1548,6 @@ fn json_members() {
             "tally",
             "agreement",
             "unused",
-            "unchecked",
             "spellings",
             "residue",
             "exempt"
@@ -1566,7 +1556,7 @@ fn json_members() {
     assert_eq!(keys(r.get("tally").unwrap()), TALLY);
     assert_eq!(
         keys(&r.get("agreement").unwrap().as_array().unwrap()[0]),
-        ["rule", "observer", "direct"]
+        ["rule", "observer", "direct", "kept_via"]
     );
     let sp = r.get("spellings").unwrap();
     assert_eq!(keys(sp), ["obligations", "passed", "failed"]);
@@ -2727,21 +2717,21 @@ fn result_invariants() {
     let what = broken_result(|x| x.agreement.swap(0, 1), "sections.result.agreement[1]");
     assert_eq!(what, "agreement is not strictly ascending by (rule, observer)");
     broken_result(
-        |x| x.agreement[1] = Stale { direct: 9, ..x.agreement[0] },
+        |x| x.agreement[1] = Stale { kept_via: 9, ..x.agreement[0] },
         "sections.result.agreement[1]",
     );
-    // Row 15: a stale pair has `direct` not 0 (verify.md §9.2).
+    // Row 15: a stale pair has `direct` or `kept_via` not 0 (verify.md
+    // §9.2, WP-111).
     let what = broken_result(
-        |x| x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct: 0 },
+        |x| x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct: 0, kept_via: 0 },
         "sections.result.agreement[1]",
     );
-    assert_eq!(what, "a stale pair has direct 0");
-    let mut x = result();
-    x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct: 1 };
-    x.validate().unwrap();
-    let what = broken_result(|x| x.unchecked = vec![3, 0], "sections.result.unchecked[1]");
-    assert_eq!(what, "unchecked is not strictly ascending");
-    broken_result(|x| x.unchecked = vec![3, 3], "sections.result.unchecked[1]");
+    assert_eq!(what, "a stale pair has direct and kept_via both 0");
+    for (direct, kept_via) in [(1, 0), (0, 1), (2, 5)] {
+        let mut x = result();
+        x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct, kept_via };
+        x.validate().unwrap();
+    }
     let what = broken_result(|x| x.unused = vec![4, 1], "sections.result.unused[1]");
     assert_eq!(what, "unused is not strictly ascending");
     broken_result(|x| x.unused = vec![1, 1], "sections.result.unused[1]");
@@ -2967,7 +2957,6 @@ fn result_tally_adds_up() {
     let mut x = result();
     x.verdict = None;
     x.state = State::Incomplete;
-    x.unchecked.clear();
     x.tally = Tally { selected: 12, unparsed: 1, failed_runs: 2, ..Tally::default() };
     x.validate().unwrap();
     // A run over no observer: 0 of 0.
@@ -2993,11 +2982,9 @@ fn result_state_against_verdict() {
             match v {
                 None => {
                     x.tally = Tally { selected: 12, unparsed: 1, ..Tally::default() };
-                    x.unchecked.clear();
                 }
                 Some(Verified) => {
                     x.agreement.clear();
-                    x.unchecked.clear();
                     x.spellings = Spellings { obligations: 5, passed: 5, failed: Vec::new() };
                     x.allow_unparsed = true;
                 }
@@ -3019,7 +3006,6 @@ fn result_state_against_verdict() {
     // Row 16: a verified verdict has no stale pair, no failed spelling.
     let mut x = result_in(State::Incomplete);
     x.verdict = Some(Verified);
-    x.unchecked.clear();
     x.spellings = Spellings { obligations: 5, passed: 5, failed: Vec::new() };
     let what = rejected(&x, "sections.result.agreement[0]");
     assert_eq!(what, "a verified verdict has a stale pair");
@@ -3027,27 +3013,17 @@ fn result_state_against_verdict() {
     x.spellings = result().spellings;
     let what = rejected(&x, "sections.result.spellings.failed[0]");
     assert_eq!(what, "a verified verdict has a failed spelling");
-    // Without a verdict, no rule is unchecked.
-    let mut x = result_in(State::Incomplete);
-    x.verdict = None;
-    x.tally = Tally { selected: 12, unparsed: 1, ..Tally::default() };
-    let what = rejected(&x, "sections.result.unchecked[0]");
-    assert_eq!(what, "a result without a verdict has an unchecked rule");
-    // Row 17: an unchecked rule, or unparsed observers without
-    // --allow-unparsed, bar both verified states and give incomplete.
+    // Row 17: unparsed observers without --allow-unparsed bar both
+    // verified states and give incomplete. (An unchecked namespace rule
+    // barred them too until WP-111 removed `unchecked`.)
     for s in [State::Verified, State::VerifiedWithResidue, State::Incomplete] {
-        let mut by_rule = result_in(State::Verified);
-        by_rule.state = s;
-        by_rule.unchecked = vec![2];
-        let mut by_unparsed = result_in(State::Verified);
-        by_unparsed.state = s;
-        by_unparsed.allow_unparsed = false;
-        for x in [by_rule, by_unparsed] {
-            if s == State::Incomplete {
-                x.validate().unwrap();
-            } else {
-                assert_eq!(rejected(&x, at), STATE, "{s:?}");
-            }
+        let mut x = result_in(State::Verified);
+        x.state = s;
+        x.allow_unparsed = false;
+        if s == State::Incomplete {
+            x.validate().unwrap();
+        } else {
+            assert_eq!(rejected(&x, at), STATE, "{s:?}");
         }
         // With nothing barring: incomplete contradicts a verified verdict.
         let mut x = result_in(State::Verified);
@@ -3101,7 +3077,6 @@ fn result_order_of_checks() {
         (|x| x.scheme = 2, "sections.result.scheme"),
         (|x| x.agreement.swap(0, 1), "sections.result.agreement[1]"),
         (|x| x.unused = vec![4, 1], "sections.result.unused[1]"),
-        (|x| x.unchecked = vec![3, 0], "sections.result.unchecked[1]"),
         (|x| x.exempt.swap(0, 1), "sections.result.exempt[1]"),
         (|x| x.spellings.failed.swap(0, 1), "sections.result.spellings.failed[1]"),
         (|x| x.spellings.passed = 2, "sections.result.spellings.obligations"),

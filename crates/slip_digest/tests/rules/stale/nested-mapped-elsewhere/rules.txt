@@ -1,0 +1,3 @@
+# WP-111 item 1: a nested namespace a second rule maps elsewhere. det::d moved with its rule (via, line 3). legacy::detail::e, left behind, is inside legacy::detail (whose key line 3 produces) and inside legacy (line 2): direct for both. Fail closed: the outer rule counts it although the inner rule names its namespace.
+relocate legacy => :: acme
+relocate legacy::detail => :: det

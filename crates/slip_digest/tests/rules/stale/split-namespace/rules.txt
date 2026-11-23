@@ -1,0 +1,3 @@
+# WP-111 item 1: a namespace reached through two rules (legacy split into acme and acme2: both rules produce its key). legacy::c, left behind, counts direct for each rule once.
+relocate legacy => :: acme
+relocate legacy => :: acme2

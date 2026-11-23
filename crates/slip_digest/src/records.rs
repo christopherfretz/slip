@@ -10,6 +10,8 @@
 //! hashed into no unit. A `Key` computed again is checked against the
 //! unit's `KeyId`: a record is never guessed.
 
+use std::collections::BTreeSet;
+
 use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::ids::DeclId;
 use slip_model::Digest;
@@ -54,6 +56,72 @@ pub fn records(
 ) -> Result<Vec<Record>, String> {
     let options = Options { rules, read_only, detail: Detail::None, names: true, rule_use: false };
     walk::run_with(input, &options, |w, written, output| collect(w, written, &output))
+}
+
+/// What `slip declare` checks its `relocate` lines with
+/// (`spec/verify.md` §2.3, WP-111), by unit `KeyId` under the empty table
+/// (the ids [`records`] gives with no rule).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Facts {
+    /// Units whose entity is a dependency entity under the run's files
+    /// (`spec/verify.md` §2.1, rule 1: no rule matches it).
+    pub dependency: BTreeSet<Digest>,
+    /// Units of a friend declaration of a function, or function template,
+    /// in a templated class (its own entity, keyed in that class) that
+    /// does not define it: such a declaration is not followed to the
+    /// function's rule and needs one of its own (`spec/landed/digest/
+    /// WP-103.md`, fix round 3, finding 2).
+    pub undefined_friends: BTreeSet<Digest>,
+}
+
+impl Facts {
+    /// The facts of several images as one: each set the union, so that
+    /// an entity that is a dependency entity in any observer is one
+    /// (knowing less never accepts more).
+    pub fn merge(&mut self, other: Facts) {
+        self.dependency.extend(other.dependency);
+        self.undefined_friends.extend(other.undefined_friends);
+    }
+}
+
+/// The [`Facts`] of `input` under the run's files `read_only`. The walk
+/// is the one [`records`] runs under the empty table; ownership, which
+/// does not depend on the table, is asked after it.
+pub fn facts(input: &Input<'_>, read_only: crate::ReadOnly<'_>) -> Facts {
+    let empty = RuleTable::empty();
+    let options =
+        Options { rules: &empty, read_only, detail: Detail::None, names: false, rule_use: false };
+    walk::run_with(input, &options, |w, written, _| {
+        w.owned_state.query = true;
+        let mut out = Facts::default();
+        for u in written {
+            let Some(e) = u.entity else { continue };
+            if !w.owned(e) {
+                out.dependency.insert(u.key);
+            }
+            if w.friend_class(e).is_some()
+                && !crate::units::instantiated_outside_class(w, e)
+                && !defines(w, e)
+            {
+                out.undefined_friends.insert(u.key);
+            }
+        }
+        out
+    })
+}
+
+/// Whether a declaration of the function `e` (for a function template,
+/// of its pattern) has a body.
+fn defines(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    let f = if ast.decls.get(e).kind() == DeclKind::FunctionTemplate {
+        ast.template_info(e).and_then(|i| i.pattern)
+    } else {
+        Some(e)
+    };
+    f.and_then(|f| ast.definition(f))
+        .and_then(|d| ast.decls.function(d))
+        .is_some_and(|x| x.body.is_some())
 }
 
 /// A property of the walk under ownership (WP-110, `spec/verify.md`
@@ -314,6 +382,7 @@ mod tests {
             causes: Vec::new(),
             names,
             rule_use: Vec::new(),
+            kept: Vec::new(),
         }
     }
 
@@ -377,6 +446,7 @@ mod tests {
                 causes: Vec::new(),
                 names,
                 rule_use: Vec::new(),
+                kept: Vec::new(),
             };
             let recs = collect(&mut w, &written, &output).expect("records");
             assert_eq!(recs.len(), 2, "{recs:#?}");

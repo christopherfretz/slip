@@ -22,12 +22,13 @@
 //!   keys are left out of the other lines (an indeterminate unit is
 //!   unequal to everything, `spec/digest.md` §10); the `derived-*` lines
 //!   are as in a `differ` pair (§14.1 rule 3).
-//! - `use <n> via <v> direct <d>`: the rule of line `<n>` of `rules.txt`
-//!   counts `via(r) = v` and `direct(r) = d` in the post-image
-//!   (`spec/verify.md` §9.1). Not a line of §14.1: it is read here and
-//!   says nothing of equality. The counts are the walk's
-//!   (`Output::rule_use`, WP-069; `tests/rule_use.rs` has the cases of
-//!   §9.1 itself).
+//! - `use <n> via <v> direct <d> [kept_via <k>]`: the rule of line `<n>`
+//!   of `rules.txt` counts `via(r) = v`, `direct(r) = d` and `kept_via(r)
+//!   = k` (0 when the word is absent) in the post-image
+//!   (`spec/verify.md` §9.1, §9.2). Not a line of §14.1: it is read here
+//!   and says nothing of equality. The counts are the walk's
+//!   (`Output::rule_use`, WP-069, WP-111; `tests/rule_use.rs` has the
+//!   cases of §9.1 itself).
 //! - `collisions <n>`: the post-image's counter `digest.collisions`
 //!   (`spec/digest.md` §12) is `n`. Without the line it must be 0.
 //! - `refused <text>`: the table cannot be made: the resolver or
@@ -36,6 +37,15 @@
 //!   same table made without the refusal keys nothing: every unit of the
 //!   post-image under it but the order unit is indeterminate. Nothing
 //!   else is checked.
+//!
+//! # `kept.txt` (WP-111)
+//!
+//! `Declared.kept` (`spec/verify.md` §2.3, §9.2): one display name per
+//! line (`#` starts a comment), each the name of exactly one record of the
+//! post-image under the table and the case's ownership, as `slip declare`
+//! resolves a `kept` line; their keys are walked as `kept`. The walk must
+//! then say every one of them is seen (`Output::kept`). Absent: `kept` is
+//! empty.
 //!
 //! # What every case also checks
 //!
@@ -93,7 +103,7 @@ enum Own {
 
 /// The files of a case that are the runner's, not the parse's sources.
 const CONTROL: &[&str] =
-    &["expect.txt", "expect-owned.txt", "rules.txt", "readonly.txt", "relocate.txt"];
+    &["expect.txt", "expect-owned.txt", "rules.txt", "readonly.txt", "relocate.txt", "kept.txt"];
 
 /// `readonly.txt` (absent: `None`): each line a header of the case or
 /// `main.cpp` (the main file of both sides).
@@ -163,8 +173,8 @@ fn with_own<R>(input: &Input<'_>, own: &Own, f: impl FnOnce(ReadOnly<'_>) -> R) 
 struct Expected {
     lines: BTreeSet<Expect>,
     exact: bool,
-    /// `use` lines: the rule's line, `via`, `direct`.
-    uses: Vec<(usize, u64, u64)>,
+    /// `use` lines: the rule's line, `via`, `direct`, `kept_via`.
+    uses: Vec<Count>,
     /// `collisions <n>` (absent: 0).
     collisions: u64,
     /// `refused <text>`.
@@ -191,17 +201,22 @@ fn expected(dir: &Path, file: &str) -> Result<Expected, String> {
             continue;
         }
         let w: Vec<&str> = l.split_whitespace().collect();
-        let parsed = match w.as_slice() {
-            ["use", line, "via", v, "direct", d] => line
-                .parse()
-                .ok()
-                .zip(v.parse().ok())
-                .zip(d.parse().ok())
-                .map(|((a, b), c)| (a, b, c)),
-            _ => None,
-        };
+        let parsed =
+            match w.as_slice() {
+                ["use", line, "via", v, "direct", d, rest @ ..] => {
+                    let k = match rest {
+                        [] => Some(0),
+                        ["kept_via", k] => k.parse().ok(),
+                        _ => None,
+                    };
+                    line.parse().ok().zip(v.parse().ok()).zip(d.parse().ok()).zip(k).map(
+                        |(((line, via), direct), kept_via)| Count { line, via, direct, kept_via },
+                    )
+                }
+                _ => None,
+            };
         uses.push(parsed.ok_or_else(|| {
-            format!("expect.txt:{n}: `{l}` is not `use <line> via <n> direct <n>`")
+            format!("expect.txt:{n}: `{l}` is not `use <line> via <n> direct <n> [kept_via <n>]`")
         })?);
     }
     Ok(Expected { lines, exact, uses, collisions, refused })
@@ -215,8 +230,44 @@ fn lines_of(dir: &Path) -> Result<Vec<(usize, Line)>, String> {
     }
 }
 
+/// One `use` line: the rule's line in `rules.txt` and its three counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Count {
+    line: usize,
+    via: u64,
+    direct: u64,
+    kept_via: u64,
+}
+
+/// `kept.txt` (absent: none): the display names, in order.
+fn kept_names(dir: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(dir.join("kept.txt")).unwrap_or_default();
+    text.lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The keys of `names` among `recs`, ascending: each the name of exactly
+/// one record.
+fn kept_keys(names: &[String], recs: &[Record]) -> Result<Vec<slip_model::Digest>, String> {
+    let mut out = Vec::new();
+    for n in names {
+        let ids: BTreeSet<_> = recs.iter().filter(|r| &r.name == n).map(|r| r.id).collect();
+        match ids.len() {
+            1 => out.extend(ids),
+            0 => return Err(format!("kept.txt: `{n}` names no record of the post-image")),
+            _ => return Err(format!("kept.txt: `{n}` names {} keys", ids.len())),
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 fn digest_under(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Output {
-    digest_with(input, rules, read_only, false)
+    digest_with(input, rules, read_only, false, &[])
 }
 
 fn digest_with(
@@ -224,10 +275,12 @@ fn digest_with(
     rules: &RuleTable,
     read_only: ReadOnly<'_>,
     rule_use: bool,
+    kept: &[slip_model::Digest],
 ) -> Output {
-    slip_digest::digest(
+    slip_digest::digest_kept(
         input,
         &Options { rules, read_only, detail: Detail::All, names: true, rule_use },
+        kept,
     )
 }
 
@@ -235,20 +288,26 @@ fn digest_with(
 struct Post {
     table: Table,
     digested: Digested,
-    /// `(line, via, direct)` for each `use` line.
-    uses: Vec<(usize, u64, u64)>,
+    /// The counts of each `use` line's rule.
+    uses: Vec<Count>,
     /// The post-image under no rule, when the table is not empty.
     unruled: Option<Output>,
 }
 
-/// `via` and `direct` of the rule of line `n` in the walk's `rule_use`
-/// (0 for a rule with no `Use`).
-fn rule_use(out: &Output, t: &Table, n: usize) -> Result<(u64, u64), String> {
+/// The counts of the rule of line `n` in the walk's `rule_use` (0 for a
+/// rule with no `Use`).
+fn rule_use(out: &Output, t: &Table, n: usize) -> Result<Count, String> {
     let Some((_, rule)) = t.rules.iter().find(|(l, _)| *l == n) else {
         return Err(format!("`use {n}`: no rule on line {n} of rules.txt"));
     };
     let index = t.table.rules().iter().position(|r| r == rule).map(|i| i as u64);
-    Ok(out.rule_use.iter().find(|u| Some(u.rule) == index).map_or((0, 0), |u| (u.via, u.direct)))
+    let u = out.rule_use.iter().find(|u| Some(u.rule) == index);
+    Ok(Count {
+        line: n,
+        via: u.map_or(0, |u| u.via),
+        direct: u.map_or(0, |u| u.direct),
+        kept_via: u.map_or(0, |u| u.kept_via),
+    })
 }
 
 /// The table of a case whose `expect.txt` says `refused <text>`: it must
@@ -307,7 +366,7 @@ fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
 fn post_side(
     dir: &Path,
     pre: &[Record],
-    uses: &[(usize, u64, u64)],
+    uses: &[Count],
     own: &Own,
     properties: bool,
 ) -> Result<Post, String> {
@@ -316,22 +375,26 @@ fn post_side(
         let plain = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)?;
         let t = table(&lines, pre, &plain)?;
         with_own(input, own, move |ro| -> Result<Post, String> {
-            let first = digest_with(input, &t.table, ro, true);
-            if digest_with(input, &t.table, ro, true) != first {
+            let recs = records(input, &t.table, ro)
+                .map_err(|e| format!("records under the table: {e}"))?;
+            let kept = kept_keys(&kept_names(dir), &recs)?;
+            let first = digest_with(input, &t.table, ro, true, &kept);
+            if digest_with(input, &t.table, ro, true, &kept) != first {
                 return Err("the post-image under its table: two walks differ".into());
             }
+            if first.kept != (0..kept.len() as u64).collect::<Vec<_>>() {
+                return Err(format!("kept: {} keys, the walk saw {:?}", kept.len(), first.kept));
+            }
             let off = digest_under(input, &t.table, ro);
-            if !off.rule_use.is_empty() || (Output { rule_use: Vec::new(), ..first.clone() }) != off
-            {
+            let cleared = Output { rule_use: Vec::new(), kept: Vec::new(), ..first.clone() };
+            if !off.rule_use.is_empty() || !off.kept.is_empty() || cleared != off {
                 return Err("the post-image under its table: rule_use on and off differ".into());
             }
-            records(input, &t.table, ro).map_err(|e| format!("records under the table: {e}"))?;
             slip_digest::records::key_agreement(input, &t.table, ro)
                 .map_err(|e| format!("key agreement ({own:?}): {e}"))?;
             let mut got = Vec::new();
-            for &(n, _, _) in uses {
-                let (v, d) = rule_use(&first, &t, n)?;
-                got.push((n, v, d));
+            for c in uses {
+                got.push(rule_use(&first, &t, c.line)?);
             }
             let unruled = (!t.table.is_empty())
                 .then(|| digest_under(input, &RuleTable::empty(), ReadOnly::EVERY_FILE));
@@ -515,10 +578,12 @@ fn one(
     {
         problems.push("vacuous: the post-image without its rules is equal already".into());
     }
-    for (&(n, v, d), &(_, gv, gd)) in e.uses.iter().zip(&post.uses) {
-        if (v, d) != (gv, gd) {
+    for (w, g) in e.uses.iter().zip(&post.uses) {
+        if w != g {
             problems.push(format!(
-                "use {n}: expected via {v} direct {d}, counted via {gv} direct {gd}"
+                "use {}: expected via {} direct {} kept_via {}, counted via {} direct {} \
+                 kept_via {}",
+                w.line, w.via, w.direct, w.kept_via, g.via, g.direct, g.kept_via
             ));
         }
     }

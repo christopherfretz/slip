@@ -23,6 +23,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use common::{
     Rng, Run, SetFacts, d, key, overlay, overlay_for, residue, result_of, rule, section, set, used,
+    used_kept,
 };
 use slip_model::Overlay;
 use slip_model::editset::EditSet;
@@ -417,7 +418,7 @@ fn s7_3_add_at_refuses_a_caller_defect() {
     // The last position of the plan is accepted.
     r.add_at(9, &b.observer, b"/m/b", Some(&b), Some(Status::Ok));
     assert_eq!(r.states()[0], 2);
-    assert_eq!(r.stale(), [Stale { rule: 0, observer: d(0xa0), direct: 1 }]);
+    assert_eq!(r.stale(), [Stale { rule: 0, observer: d(0xa0), direct: 1, kept_via: 0 }]);
 }
 
 /// A mismatch over `run` reading overlay file 0, with one finding named
@@ -500,8 +501,8 @@ fn s7_3_report_independent_of_call_order() {
     let c0 = "c0".repeat(32);
     assert!(json.contains(&format!(r#""stale":[{{"rule":0,"observer":"{c0}""#)), "{json}");
     assert!(json.contains(r#""name":"f","observers":3,"first":"/m/c0.cc""#), "{json}");
-    let one = text.find("stale rule 0 direct 1 /m/c0.cc").unwrap();
-    let two = text.find("stale rule 0 direct 2 /m/c1.cc").unwrap();
+    let one = text.find("stale rule 0 direct 1 kept_via 0 /m/c0.cc").unwrap();
+    let two = text.find("stale rule 0 direct 2 kept_via 0 /m/c1.cc").unwrap();
     assert!(one < two, "{text}");
     assert!(errors.lines().next().unwrap().contains("/m/c0.cc"), "{errors}");
     let k3 = format!("1003{}", "00".repeat(30));
@@ -536,8 +537,8 @@ fn s8_5_conclude_copies_the_report() {
     assert_eq!(
         c.agreement,
         [
-            Stale { rule: 0, observer: d(0xb1), direct: 4 },
-            Stale { rule: 0, observer: d(0xb2), direct: 1 }
+            Stale { rule: 0, observer: d(0xb1), direct: 4, kept_via: 0 },
+            Stale { rule: 0, observer: d(0xb2), direct: 1, kept_via: 0 }
         ]
     );
     assert_eq!(c.unused, [1]);
@@ -647,12 +648,11 @@ fn permitted() -> (slip_model::result::TransformResult, EditSet) {
 fn s8_5_permits_refuses_inconsistent_results() {
     let (good, set0) = permitted();
     type Break = fn(&mut slip_model::result::TransformResult, &mut EditSet);
-    let breaks: [(&str, Break); 25] = [
+    let breaks: [(&str, Break); 24] = [
         ("another set", |_, s| s.basis = d(0x77)),
         ("another plan", |r, _| r.plan = d(0x77)),
         ("another round", |r, _| r.round += 1),
         ("another transform", |r, _| r.transform = d(0x77)),
-        ("an unchecked namespace rule", |r, _| r.unchecked = vec![0]),
         ("the set refused", |_, s| {
             *s = set(SetFacts { refused: true, ..SetFacts::default() });
         }),
@@ -663,7 +663,9 @@ fn s8_5_permits_refuses_inconsistent_results() {
             r.verdict = None;
             r.tally = Tally { selected: r.tally.selected, ..Tally::default() };
         }),
-        ("a stale pair", |r, _| r.agreement = vec![Stale { rule: 0, observer: d(1), direct: 1 }]),
+        ("a stale pair", |r, _| {
+            r.agreement = vec![Stale { rule: 0, observer: d(1), direct: 1, kept_via: 0 }];
+        }),
         ("a failed spelling", |r, _| {
             r.spellings = slip_model::result::Spellings {
                 obligations: 1,
@@ -768,8 +770,8 @@ fn s8_5_unchanged_counts() {
 
 // ---------------------------------------------------------------------------
 // The property: no write from a run with a finding, a stale observer, a
-// failed guard, an obligation that did not pass, an unchecked namespace
-// rule, a report not over the set's own overlay, or a caller defect.
+// failed guard, an obligation that did not pass, a report not over the
+// set's own overlay, or a caller defect.
 
 /// What a random run had that keeps it from being verified.
 #[derive(Debug, Default)]
@@ -779,9 +781,6 @@ struct Bad {
     guard: bool,
     state: bool,
     spelling: bool,
-    /// A namespace rule used (`via` or `direct` not 0): not checked until
-    /// WP-111.
-    unchecked: bool,
     /// The report and the overlay are another set's.
     foreign: bool,
     /// A tree report (no overlay) for an accepted set.
@@ -797,7 +796,6 @@ impl Bad {
             || self.guard
             || self.state
             || self.spelling
-            || self.unchecked
             || self.foreign
             || self.tree
             || self.empty
@@ -903,19 +901,22 @@ fn random_run(g: &mut Rng, set: &EditSet) -> (Option<Report>, u64, Bad, Option<O
         }
         inputs.sort_by(|a, b| a.path.cmp(&b.path));
         let mut uses = Vec::new();
+        // WP-111: a namespace rule is stale by `direct` or `kept_via` like
+        // any rule by `direct`; `via` alone is a use.
         for (i, kind) in kinds.iter().enumerate() {
             let namespace = *kind == KeyKind::Namespace;
-            match g.below(3) {
+            match g.below(4) {
                 0 => {}
-                1 => {
-                    uses.push(used(i as u64, 1 + g.below(3), 0));
-                    bad.unchecked |= namespace;
+                1 => uses.push(used(i as u64, 1 + g.below(3), 0)),
+                2 if namespace => {
+                    let kept_via = 1 + g.below(3);
+                    uses.push(used_kept(i as u64, g.below(2), g.below(2), kept_via));
+                    bad.stale = true;
                 }
                 _ => {
                     let direct = 1 + g.below(3);
                     uses.push(used(i as u64, g.below(2), direct));
-                    bad.stale |= !namespace;
-                    bad.unchecked |= namespace;
+                    bad.stale = true;
                 }
             }
         }
@@ -968,7 +969,7 @@ fn random_run(g: &mut Rng, set: &EditSet) -> (Option<Report>, u64, Bad, Option<O
 
 // §8.5, §9.3, §10.3: over random runs, a result permits a write (with
 // everything allowed) exactly when the run had no finding, no stale
-// observer, no failed guard, no unchecked namespace rule, every observer
+// observer, no failed guard, every observer
 // verified and every obligation passed, was made over the set's own
 // overlay, and had an observer (and the set is accepted, and `unparsed`
 // is 0 or allowed). A run whose caller added an observer twice stops and
@@ -1027,9 +1028,6 @@ fn s8_5_property_no_write_from_a_bad_run() {
                 let allow =
                     Allow { residue: bits & 1 != 0, errors: bits & 2 != 0, partial: bits & 4 != 0 };
                 assert!(!permits(&result, &b.set, allow), "round {round}");
-            }
-            if bad.unchecked && !sf.refused && !bad.tree && !bad.foreign && !bad.empty {
-                assert!(!c.unchecked.is_empty(), "round {round}");
             }
         } else {
             good_runs += 1;
@@ -1106,14 +1104,13 @@ fn s8_5_permits_refuses_a_refused_set() {
     }
 }
 
-// §9.2, §9.4, §8.5 (until WP-111): a namespace rule an observer used,
-// through `via` or `direct`, is listed in `agreement.unchecked` and on a
-// text line of its own; the report's verdict is not changed by it; and
-// conclude makes the run `incomplete` (unless something worse applies),
-// so nothing permits a write, whatever is allowed. Unused, or used only
-// by a shard that is not read, it is not listed.
+// §9.2, §9.3, §8.5 (WP-111, which removed `unchecked`): a namespace rule
+// an observer used through `via` only permits the write; one stale in an
+// observer (`direct` or `kept_via` not 0) makes the run not verified and
+// permits nothing, whatever is allowed. A shard that is not read says
+// nothing either way.
 #[test]
-fn s9_2_namespace_rule_use_is_unchecked_and_permits_nothing() {
+fn s9_2_namespace_rule_stale_permits_nothing() {
     let s = set(SetFacts::default());
     let o = overlay_for(&s);
     let run = Run::new(
@@ -1121,12 +1118,14 @@ fn s9_2_namespace_rule_use_is_unchecked_and_permits_nothing() {
         Some(o.clone()),
     );
     let ns = (0..2).find(|&i| run.declared.rules().rules()[i].kind == KeyKind::Namespace).unwrap();
+    let ns = ns as u64;
     let v = run.verdict(VerdictKind::Verified);
-    for (uses, listed) in [
+    for (uses, stale) in [
         (vec![], false),
-        (vec![used(ns as u64, 1, 0)], true),
-        (vec![used(ns as u64, 0, 2)], true),
-        (vec![used(ns as u64, 3, 1)], true),
+        (vec![used(ns, 1, 0)], false),
+        (vec![used(ns, 0, 2)], true),
+        (vec![used_kept(ns, 3, 0, 1)], true),
+        (vec![used_kept(ns, 3, 1, 1)], true),
     ] {
         let mut r = run.report();
         for obs in [0xa0, 0xa1] {
@@ -1134,58 +1133,33 @@ fn s9_2_namespace_rule_use_is_unchecked_and_permits_nothing() {
             let sh = run.ok(obs, v.clone(), &[], &u);
             r.add(&sh.observer, b"/m.cc", Some(&sh), Some(Status::Ok));
         }
-        // An observer whose shard is not read (another round) says
-        // nothing either way.
-        let mut stray = run.ok(0xa2, v.clone(), &[], &[used(ns as u64, 1, 1)]);
+        // An observer whose shard is not read (another round): its use is
+        // not read either.
+        let mut r2 = r.clone();
+        let mut stray = run.ok(0xa2, v.clone(), &[], &[used(ns, 1, 1)]);
         stray.round += 1;
-        r.add(&stray.observer, b"/m2.cc", Some(&stray), Some(Status::Ok));
-        let want: Vec<u64> = if listed { vec![ns as u64] } else { vec![] };
-        assert_eq!(r.unchecked(), want);
-        assert!(r.stale().is_empty(), "a namespace rule is never stale");
-        assert_eq!(r.verdict(), RunVerdict::Incomplete, "the stray shard is failed");
+        r2.add(&stray.observer, b"/m2.cc", Some(&stray), Some(Status::Ok));
+        assert_eq!(r2.stale().len(), usize::from(stale));
+        assert_eq!(r.stale().len(), usize::from(stale));
+        assert_eq!(
+            r.verdict(),
+            if stale { RunVerdict::NotVerified } else { RunVerdict::Verified },
+            "{uses:?}"
+        );
         let json = slip_model::json::write_compact(&r.to_json()).unwrap();
-        let line = format!("not checked: agreement between observers for namespace rule {ns}\n");
-        assert_eq!(r.to_text().contains(&line), listed);
-        let member =
-            format!(r#""unchecked":[{}]"#, if listed { ns.to_string() } else { String::new() });
-        assert!(json.contains(&member), "{json}");
-        // Without the stray observer: verified, and the verdict is so
-        // whether or not a rule is unchecked.
-        let mut r = run.report();
-        for obs in [0xa0, 0xa1] {
-            let u = if obs == 0xa1 { uses.clone() } else { vec![] };
-            let sh = run.ok(obs, v.clone(), &[], &u);
-            r.add(&sh.observer, b"/m.cc", Some(&sh), Some(Status::Ok));
-        }
-        assert_eq!(r.verdict(), RunVerdict::Verified);
+        assert!(!json.contains("unchecked"), "{json}");
+        assert!(!r.to_text().contains("not checked"));
         let f =
             Facts { set: &s, selected: 2, report: Some(&r), allow_unparsed: true, residue: &[] };
         let c = conclude(&f, Some(&o));
         assert_eq!(state(&f), c.state);
-        assert_eq!(c.unchecked, want);
-        assert_eq!(c.verdict, Some(RunVerdict::Verified));
         let result = result_of(&c, &s, false, true, &[]);
         assert_eq!(result.validate(), Ok(()));
-        if listed {
-            assert_eq!(c.state, State::Incomplete);
-        } else {
-            assert_eq!(c.state, State::Verified);
-        }
+        assert_eq!(c.state, if stale { State::NotVerified } else { State::Verified });
         for bits in 0u8..8 {
             let allow =
                 Allow { residue: bits & 1 != 0, errors: bits & 2 != 0, partial: bits & 4 != 0 };
-            assert_eq!(permits(&result, &s, allow), !listed, "{allow:?}");
+            assert_eq!(permits(&result, &s, allow), !stale, "{allow:?}");
         }
     }
-    // Something worse applies first: a mismatch makes it not verified.
-    let mut r = run.report();
-    let sh = run.ok(0xa0, v.clone(), &[], &[used(ns as u64, 1, 0)]);
-    r.add(&sh.observer, b"/m.cc", Some(&sh), Some(Status::Ok));
-    let mut m = run.mismatch(0xa1);
-    m.rule_use.as_mut().unwrap().uses.clear();
-    r.add(&m.observer, b"/m.cc", Some(&m), Some(Status::Ok));
-    let f = Facts { set: &s, selected: 2, report: Some(&r), allow_unparsed: false, residue: &[] };
-    let c = conclude(&f, Some(&o));
-    assert_eq!((c.state, c.unchecked.clone()), (State::NotVerified, vec![ns as u64]));
-    assert_eq!(result_of(&c, &s, false, false, &[]).validate(), Ok(()));
 }
