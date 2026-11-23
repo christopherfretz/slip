@@ -193,6 +193,10 @@ pub fn parse_observer_with<R: Send>(
             counters,
             digests: None,
             verdict: None,
+            edits: None,
+            binding: None,
+            rule_use: None,
+            spellings: None,
         }
     };
 
