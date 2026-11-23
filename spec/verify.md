@@ -971,6 +971,7 @@ say without recording where each node ends ("Open questions").
 |---|---|
 | `changed`, `derived_changed` with `pre` or `post` absent (several units of the key differ) | both sites from the units' first marks (below), `what` empty |
 | `removed` | `pre`: the unit's first mark; `post`: the empty site |
+| `changed` of §4 step 4 (declared in one image, derived in the other) | the first mark of the declared unit in its image, and in the other image the first mark of the derived unit (where the template's pattern is); `what` empty |
 | `added` | `post`: the unit's first mark; `pre`: the empty site |
 | `indeterminate`, `derived_indeterminate` | in each image that has an indeterminate unit of the key: the unit's first mark, with `what` the cause as the walk prints it (`unsupported ExprKind/CXXReflectExpr`, `collision`, `pending stmt`); the empty site in the other |
 

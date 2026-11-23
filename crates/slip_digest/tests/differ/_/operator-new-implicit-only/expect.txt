@@ -3,3 +3,5 @@ changed <order>
 exact derived
 derived-added operator new(unsigned long)
 derived-added operator delete(void *, unsigned long)
+derived-added operator new(unsigned long)::<exception_spec>
+derived-added operator delete(void *, unsigned long)::<exception_spec>

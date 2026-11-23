@@ -1,0 +1,6 @@
+# E14: using namespace lib moved from f to namespace scope. The call in f
+# still calls lib::g(int); the later call in later() now finds it too and
+# prefers it to ::g(long). Also expected: added <using_directive lib>, and
+# changed f() for its removed declaration statement.
+good: none moving the directive out of the function widens it to every later lookup in the file
+bad:  mismatch changed later() @ main.cpp:10
