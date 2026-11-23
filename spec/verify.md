@@ -398,10 +398,21 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    key that has a unit in `Vp`, the finding is `changed` instead, unless
    `k` is in `changed`. `removed` and `created` do not prevent it and
    are not used by it, and step 3 does not count the key in `only_post`
-   or `only_pre` (a `derived_indeterminate` of step 3 stands beside
-   it). The two units are not compared: one is what was written and the
-   other what the front end made, and their streams differ by
-   construction.
+   or `only_pre` (a `derived_indeterminate` or `derived_changed` of
+   step 3 stands beside it). The two units are not compared: one is
+   what was written and the other what the front end made, and their
+   streams differ by construction. "Has a unit in `Vq`" is read on the
+   differences, as steps 2 and 3 are: `Vq(k) − Vp(k)` is not empty (for
+   `added`, `Vp(k) − Vq(k)`), with `Vp(k)` and `Vq(k)` the multisets of
+   digests of the key in `Vp` and `Vq`, so that §4.1 holds for it. On
+   what the walk produces the two readings are one: a key with a
+   determinate declared unit has no derived unit in the same image,
+   since a second entity of one key is a collision (`digest.md` §3.4),
+   so `Vp(k)` is empty where step 2 gives `removed`. (WP-108: read as
+   "`Vq` has a unit of the key", step 4 gives `changed` over all groups
+   and `removed` through `G` for a key whose derived unit is the same in
+   a group outside `G`.) `pre`, `post` and `file` are those of §6 for a
+   finding about `D`: one of `pre` and `post` is present.
 
 Steps 1 and 2 are over `D` and step 3 over `V`, independently: a key set
 aside in one is not thereby set aside in the other. (A key is in both
@@ -495,6 +506,13 @@ all units.
   other key, leaving those groups out removes the same multiset `X` from
   `P(k)` and from `Q(k)`, and `(P − X) − (Q − X) = P − Q`: `R(k)` and
   `A(k)` do not change, and they are all that steps 2 and 3 look at.
+- Step 4 looks at `R(k)` and `A(k)` of `D` and of `V`, which do not
+  change either. The group shortcut cannot skip such a key: step 2 has a
+  finding for it, so a declared or `tu` group holding it differs and is
+  in `G`; and since the other image's `V` has a unit of it that this
+  image's has not, a derived group holding that unit differs too and is
+  in `G`. The derived groups of `G` are opened (their unit lists given)
+  for this as for step 3: to tell `removed` from `changed`.
 
 The second point is why §4 is stated on differences. A rule that asked
 "does the post-image have the key at all" would give a different answer
