@@ -2182,37 +2182,64 @@ In the parse of §5.2 step 1, after the walk, for every obligation whose
 file is in the parse's `inputs`:
 
 1. The **written references** of the unit are the entries of Kiln's
-   written-reference table: the names that were resolved while the unit
-   was parsed, in the roles expression name, member name, qualifier
-   component, type name, template name, base specifier and member
-   initialiser (the roles of `spec/api.md` §6.5 rule 3; a role Kiln adds
-   later takes part from the day `spec/api.md` announces it). Entries
-   equal in role, name range and referent are one reference.
-2. A reference's **name range** is the file range of its name: the bytes
+   written-reference table that have a referent: the names that were
+   resolved while the unit was parsed, **in every role Kiln records**
+   (at this pin expression name, member name, qualifier component, type
+   name, template name, base specifier, member initialiser and concept
+   name; a role Kiln adds takes part the day it records it). The check
+   asks what a name denotes, and a name denotes something whatever the
+   syntax around it: a concept name in one use of a macro argument
+   vetoes the argument as surely as an expression name in another.
+   (`spec/api.md` §6.5 rule 3 lists the roles a transform is given as
+   references, which is another question.) Entries equal in role, name
+   range and referent are one reference. The table's entries **without a
+   referent** (a dependent name, a name whose resolution failed) are
+   **unresolved names**; they have name ranges as references do.
+2. A reference's (or unresolved name's) **name range** is the file range
+   of its name: the bytes
    of one file that translation turned into exactly the name's tokens,
    at tier 0 or 1 (`spec/api.md` §5.4; `slip_kiln::ranges`, which is
    Kiln's `editable_file_range`, `spec/edits.md` §2.2). A reference
-   whose name has no such range takes no part.
-3. A reference **answers** the obligation if its name range is in the
-   obligation's file, ends at `hi` and starts at or after `lo`. (A
+   whose name has no such range takes no part. Neither does one whose
+   range lies in a file Kiln re-encoded when it loaded it (invalid
+   UTF-8, `spec/edits.md` §2.3 `file_recoded`: its offsets are not the
+   post-image's bytes), or in a buffer with no subject path (no file):
+   an obligation there is answered by nothing, so it is not seen, never
+   held.
+3. A reference or an unresolved name **answers** the obligation if its
+   name range is in the obligation's file, ends at `hi` and starts at or
+   after `lo`. (A
    spelling `::a::b::f` is answered by the reference `f`; `a` and `b`
    end before `hi`.)
 4. For each answering reference take the **origin** of its referent: the
    referent itself, or, for a specialisation of a template or a member
    of an instantiated class, the template or the member of the template
    it was made from. Take the origin's `KeyId` under the run's rules
-   (`Declared.rules`; mapped keys, `digest.md` §3.4), which is its key in
-   the pre-image's key space.
+   (`Declared.rules`; mapped keys, `digest.md` §3.4) **and the run's
+   ownership**: the read-only files the verify job decides from the
+   declared container's `files` (§2, §2.1 "Rules rename owned entities
+   only"), the same `ReadOnly` the walk of the same parse is given. That
+   is its key in the pre-image's key space. A name that denotes a
+   dependency entity is compared under the dependency's own key, never a
+   mapped one; whether a key collides (rule 5) is marked under the same
+   ownership.
 5. The obligation, in this observer:
-   - **holds** if at least one reference answers and every answering
-     reference's origin has the obligation's `key`;
+   - **holds** if at least one reference answers, no unresolved name
+     answers, and every answering reference's origin has the
+     obligation's `key`;
    - **fails** if some answering reference's origin has another key, or
      no key (it is not a unit, is keyed by content, or its key is
-     indeterminate);
-   - is **not seen** if no reference answers: the bytes are in a
-     conditional group the observer skips, in a macro argument the macro
-     does not use, in a place whose name is resolved only at
-     instantiation, or in a role the table does not record.
+     indeterminate or collides), or an unresolved name answers (`found`
+     is absent; what a dependent name denotes is decided per
+     instantiation, and the table does not say per instantiation);
+   - is **not seen** if nothing answers: the bytes are in a conditional
+     group the observer skips, in a macro argument the macro does not
+     use, or in a name the table does not record.
+
+   An answer covers the names the table records at the range, and no
+   other: a use of the same bytes that Kiln does not record, or records
+   with no name range, cannot make the obligation fail (§10.7, the named
+   hole).
 
 A name in a macro argument that is substituted twice gives two
 references with one name range; each must have the key.
@@ -2254,8 +2281,11 @@ Spellings := seen:   uv              obligations whose file is in this shard's `
 Span   := first: uv, count: uv       count at least 1
 Failed := index: uv
           found: opt<KeyId>          the key, under the rules, of the origin of the first answering reference
-                                     in unit order that does not have the obligation's key; absent if it has none
-          name:  str                 that entity as a person would write it (§6.1); for the report only
+                                     in unit order that does not have the obligation's key; absent if it has none,
+                                     or if the first that fails is an unresolved name (§10.2 rule 1)
+          name:  str                 that entity as a person would write it (§6.1), or, for an unresolved name,
+                                     `<unresolved name: dependent>` or `<unresolved name: resolution failed>`;
+                                     for the report only
 ```
 
 Invariants: no index is in `held` twice or in both lists; the number of
@@ -2298,13 +2328,19 @@ pub struct Obligation { pub file: Vec<u8> /* subject path */, pub lo: u32, pub h
 pub enum Spelling { Holds, NotSeen, Fails { found: Option<Digest>, found_name: String } }
 
 /// One observer of the post-image. `obligations` are those whose file the unit read;
-/// the result is parallel to it.
-pub fn check_spellings(input: &Input<'_>, rules: &slip_model::keys::RuleTable,
+/// the result is parallel to it. `input` is the digest's view of `unit`.
+pub fn check_spellings(unit: &slip_kiln::Unit<'_>, input: &Input<'_>,
+                       rules: &slip_model::keys::RuleTable,
+                       read_only: ReadOnly<'_>,           // the walk's `Options::read_only`
                        obligations: &[Obligation]) -> Vec<Spelling>;
 ```
 
-It gets keys from `Keys::with_rules` (§9.5), so the key it compares is
-the key the walk of the same parse gave the entity. The verify job
+It gets keys from `Keys::with_rules` (§9.5) under the same rules and
+read-only files as the walk of the same parse, so the key it compares is
+the key that walk gave the entity. It takes the unit
+because the written references and the origin are
+`slip_kiln::written`'s, which read a `Unit`
+(`spec/landed/verify/WP-096.md`). The verify job
 (`spec/exec.md` §8.6) calls it and writes the section.
 
 Over the run, in `slip_verify` (trusted base), naming no Kiln type:
@@ -2344,8 +2380,23 @@ the name where the piece landed, it denotes the entity whose key the
 piece carries, and at least one observer resolves it. It does not show
 that the edit was right to name that entity, and it shows nothing about
 a literal piece, a copy, or a name the front end does not record a
-reference for (a declaration's own name, a dependent name, a name in a
-using-declaration). Those are judged by the comparison of digests alone.
+reference for (a declaration's own name). Those are judged by the
+comparison of digests alone.
+
+**The named hole.** `Holds` covers the uses of the piece's bytes that the
+written-reference table records with a name range (§10.2 rule 5). A use
+of the same bytes elsewhere — the same macro argument substituted twice,
+or the same header entered twice — that the table does not record, or
+records without a range, cannot veto. At this pin those are: a
+designator (`.x = 1`); a using-declaration's name (`using a::x;`); a
+type-constraint's concept (`template <a::C T>`); a friend's elaborated
+name (`friend struct a::x;`); an explicit instantiation's or
+specialisation's target (`template int a::t<int>(int);`); and a use made
+by token pasting (`x##_`), which has no name range. (A plain elaborated
+name, `struct x s;`, is recorded as a type name and takes part.) Each
+shape has a pending test in `crates/slip_digest/tests/spelling.rs`
+(`s10_7_hole_*`); the hole closes as Kiln records them
+(`spec/landed/verify/WP-096.md`, "For Kiln").
 
 ## Tests
 

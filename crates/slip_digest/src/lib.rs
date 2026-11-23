@@ -231,6 +231,7 @@ pub mod query;
 pub mod records;
 mod refs;
 mod rule_use;
+pub mod spelling;
 mod stmt;
 mod stream;
 mod templ;
