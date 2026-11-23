@@ -75,8 +75,27 @@ impl Code {
     }
 }
 
+/// The one piece an edit narrowed to a name range records (§7.2 rule 1):
+/// a sibling's spelling, or, at a declaration's name, its identifier.
+enum Narrowed<'c> {
+    Spelled(Digest, &'c [u8]),
+    Identifier(&'c [u8]),
+}
+
+impl Narrowed<'_> {
+    fn text(&self) -> &[u8] {
+        match self {
+            Narrowed::Spelled(_, t) | Narrowed::Identifier(t) => t,
+        }
+    }
+}
+
 /// The empty code: the null handle.
 static EMPTY: Code = Code { pieces: Vec::new(), bytes: 0 };
+
+/// The origins of the referents named at a name range, each with its key
+/// (§7.2 rule 6).
+pub(crate) type Named = Vec<(Entity, Option<Digest>)>;
 
 /// What the host holds for the effects of a run, besides the record.
 #[derive(Clone, Debug, Default)]
@@ -97,7 +116,13 @@ pub(crate) struct Effects {
     /// Bytes of text arguments held: notes, messages, reasons, names.
     text: u64,
     /// The identifier each entity was declared renamed to (§7.5 rule 3).
-    renamed: BTreeMap<Entity, Vec<u8>>,
+    pub(crate) renamed: BTreeMap<Entity, Vec<u8>>,
+    /// For each recorded edit whose replacement is one identifier piece at
+    /// the name range of references: its index, and the origin of each
+    /// reference's referent with that origin's key (§7.2 rule 6). The
+    /// piece takes a key in `Host::finish`, from what was declared
+    /// renamed by then, so that the order of requests does not matter.
+    pub(crate) named: Vec<(usize, Named)>,
     /// What the run asked for, raw.
     pub(crate) record: Record,
 }
@@ -113,6 +138,9 @@ pub(crate) enum Effect {
         group: Option<usize>,
         pieces: u64,
         bytes: u64,
+        /// The referents' origins of an identifier piece put at a name
+        /// range (`Effects::named`); empty otherwise.
+        named: Named,
     },
     Report(Report),
     /// The declared changes not already recorded.
@@ -195,12 +223,15 @@ impl Host<'_> {
                 fx.record.groups.push(Vec::new());
                 wire::handle(wire::TAG_GROUP, fx.record.groups.len() as u64 - 1)
             }
-            Effect::Edit { edit, group, pieces, bytes } => {
+            Effect::Edit { edit, group, pieces, bytes, named } => {
                 fx.pieces += pieces;
                 fx.piece_bytes += bytes;
                 fx.text += edit.notes.iter().map(|n| n.len() as u64).sum::<u64>();
                 fx.record.edits.push(edit);
                 let index = fx.record.edits.len() - 1;
+                if !named.is_empty() {
+                    fx.named.push((index, named));
+                }
                 if let Some(g) = group
                     && let Some(members) = fx.record.groups.get_mut(g)
                 {
@@ -476,7 +507,7 @@ impl Host<'_> {
                             ));
                         };
                         let text = qualified.get(*identifier_at..).unwrap_or_default();
-                        Some((name, t, *key, text))
+                        Some((name, t, Narrowed::Spelled(*key, text)))
                     }
                     None => None,
                 }
@@ -490,21 +521,38 @@ impl Host<'_> {
             None => self.at_a_name(r, code)?,
         };
         // The limits, from the counts: nothing is copied before they pass.
-        let (count, bytes) = match narrowed {
-            Some((.., text)) => (1, text.len() as u64),
+        let (count, bytes) = match &narrowed {
+            Some((.., n)) => (1, n.text().len() as u64),
             None => (code.pieces.len() as u64, code.bytes),
         };
         self.pieces_fit(count, bytes)?;
         self.text_fits(note.len() as u64)?;
+        // §7.2 rule 6: an identifier piece that is the whole replacement
+        // of the name range of references may take the key of their
+        // referent in `Host::finish`.
+        let named = match code.pieces.as_slice() {
+            [HeldPiece::Identifier(_)] if narrowed.is_none() => {
+                let mut named = Vec::new();
+                for x in self.references_named(r)? {
+                    let origin = self.origin_of(x)?;
+                    named.push((origin, self.subject.entity_key(origin)));
+                }
+                named
+            }
+            _ => Vec::new(),
+        };
         let (range, tiers, pieces) = match narrowed {
-            Some((name, t, key, text)) => {
+            Some((name, t, Narrowed::Spelled(key, text))) => {
                 (name, t, vec![Piece::Spelled { key, text: text.to_vec() }])
+            }
+            Some((name, t, Narrowed::Identifier(text))) => {
+                (name, t, vec![Piece::Identifier { text: text.to_vec(), key: None }])
             }
             None => (r, tiers, code.pieces.iter().map(|p| self.piece(p)).collect()),
         };
         let notes = if note.is_empty() { Vec::new() } else { vec![note.to_vec()] };
         let edit = Edit { place: self.place_of(range), pieces, tiers, notes };
-        Ok(Effect::Edit { pieces: count, bytes, edit, group })
+        Ok(Effect::Edit { pieces: count, bytes, edit, group, named })
     }
 
     /// A held piece as recorded away from the sibling rule: a spelled
@@ -513,7 +561,7 @@ impl Host<'_> {
         match p {
             HeldPiece::Literal(b) => Piece::Literal(b.clone()),
             HeldPiece::Copy(r) => Piece::Copy(self.place_of(*r)),
-            HeldPiece::Identifier(b) => Piece::Identifier(b.clone()),
+            HeldPiece::Identifier(b) => Piece::Identifier { text: b.clone(), key: None },
             HeldPiece::Spelled { key, qualified, .. } => {
                 Piece::Spelled { key: *key, text: qualified.clone() }
             }
@@ -594,14 +642,16 @@ impl Host<'_> {
     /// origin of the referent; found directly), and every declaration
     /// with it must declare an entity whose parent is `E`'s: then the
     /// edit replaces `r` with `E`'s identifier, as the sibling form
-    /// records it. Otherwise `invalid_argument`: a qualified spelling
-    /// after the qualifier written is never recorded.
-    #[allow(clippy::type_complexity, reason = "the tuple `replace` takes from the sibling rule")]
+    /// records it where a reference is named, and as an identifier piece
+    /// with no key where only declarations are (a declaration's name is no
+    /// written reference, so a spelled piece there could never be checked:
+    /// `spec/verify.md` §10.7). Otherwise `invalid_argument`: a qualified
+    /// spelling after the qualifier written is never recorded.
     fn at_a_name<'c>(
         &self,
         r: Range,
         code: &'c Code,
-    ) -> Step<Option<(Range, Tiers, Digest, &'c [u8])>> {
+    ) -> Step<Option<(Range, Tiers, Narrowed<'c>)>> {
         if !code.pieces.iter().any(|p| matches!(p, HeldPiece::Spelled { .. })) {
             return Ok(None);
         }
@@ -609,8 +659,8 @@ impl Host<'_> {
         if !subject.references_at(r).is_empty() {
             return Ok(None);
         }
-        let refs = subject.references_named_at(r);
-        let decls = subject.declarations_named_at(r);
+        let refs = self.references_named(r)?;
+        let decls = self.declarations_named(r)?;
         if refs.is_empty() && decls.is_empty() {
             return Ok(None);
         }
@@ -628,52 +678,12 @@ impl Host<'_> {
             self.subject_value("parent", Value::Entity(p))?;
         }
         let mut holds = subject.identifier(Value::Entity(e)).is_some_and(|id| !id.is_empty());
-        let mut seen = BTreeSet::new();
         for &x in &refs {
-            let v = self.subject_value("references_named_at", Value::Reference(x))?;
-            if !seen.insert(x) {
-                return Err(Stop::Internal(
-                    "Subject::references_named_at gave a reference twice".to_owned(),
-                ));
-            }
-            match subject.name_range(v) {
-                Ok(Some(found)) if found == r => {}
-                Ok(_) => {
-                    return Err(Stop::Internal(
-                        "Subject::references_named_at gave a reference whose name range is not \
-                         the range"
-                            .to_owned(),
-                    ));
-                }
-                Err(errc) => {
-                    return Err(self.subject_status("name_range", v, errc, ALLOWED_NAME_RANGE));
-                }
-            }
             let origin = self.origin_of(x)?;
             holds &= subject.parent(origin) == parent;
             holds &= subject.found_directly(x);
         }
-        let mut seen: BTreeSet<Declaration> = BTreeSet::new();
         for &d in &decls {
-            let v = self.subject_value("declarations_named_at", Value::Declaration(d))?;
-            if !seen.insert(d) {
-                return Err(Stop::Internal(
-                    "Subject::declarations_named_at gave a declaration twice".to_owned(),
-                ));
-            }
-            match subject.name_range(v) {
-                Ok(Some(found)) if found == r => {}
-                Ok(_) => {
-                    return Err(Stop::Internal(
-                        "Subject::declarations_named_at gave a declaration whose name range is \
-                         not the range"
-                            .to_owned(),
-                    ));
-                }
-                Err(errc) => {
-                    return Err(self.subject_status("name_range", v, errc, ALLOWED_NAME_RANGE));
-                }
-            }
             let declared = subject.entity_of(d);
             self.subject_value("entity_of", Value::Entity(declared))?;
             holds &= subject.parent(declared) == parent;
@@ -692,7 +702,57 @@ impl Host<'_> {
             ));
         };
         let text = qualified.get(*identifier_at..).unwrap_or_default();
-        Ok(Some((r, t, *key, text)))
+        Ok(Some(if refs.is_empty() {
+            (r, t, Narrowed::Identifier(text))
+        } else {
+            (r, t, Narrowed::Spelled(*key, text))
+        }))
+    }
+
+    /// The references whose name range is `r` (`Subject::references_named_at`),
+    /// each checked: live, given once, with that name range.
+    fn references_named(&self, r: Range) -> Step<Vec<Reference>> {
+        let refs = self.subject.references_named_at(r);
+        let mut seen = BTreeSet::new();
+        for &x in &refs {
+            let v = self.subject_value("references_named_at", Value::Reference(x))?;
+            if !seen.insert(x) {
+                return Err(Stop::Internal(
+                    "Subject::references_named_at gave a reference twice".to_owned(),
+                ));
+            }
+            self.named_at(v, r, "references_named_at")?;
+        }
+        Ok(refs)
+    }
+
+    /// The declarations whose name range is `r`
+    /// (`Subject::declarations_named_at`), each checked as
+    /// [`Self::references_named`] checks references.
+    fn declarations_named(&self, r: Range) -> Step<Vec<Declaration>> {
+        let decls = self.subject.declarations_named_at(r);
+        let mut seen = BTreeSet::new();
+        for &d in &decls {
+            let v = self.subject_value("declarations_named_at", Value::Declaration(d))?;
+            if !seen.insert(d) {
+                return Err(Stop::Internal(
+                    "Subject::declarations_named_at gave a declaration twice".to_owned(),
+                ));
+            }
+            self.named_at(v, r, "declarations_named_at")?;
+        }
+        Ok(decls)
+    }
+
+    /// That the name range of `v`, which `method` gave for `r`, is `r`.
+    fn named_at(&self, v: Value, r: Range, method: &str) -> Step<()> {
+        match self.subject.name_range(v) {
+            Ok(Some(found)) if found == r => Ok(()),
+            Ok(_) => Err(Stop::Internal(format!(
+                "Subject::{method} gave a value whose name range is not the range"
+            ))),
+            Err(errc) => Err(self.subject_status("name_range", v, errc, ALLOWED_NAME_RANGE)),
+        }
     }
 
     /// The origin (§5.5) of the referent of `x`, both checked live.

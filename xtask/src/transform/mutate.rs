@@ -78,7 +78,7 @@ pub fn all(set: &EditSet) -> Vec<Mutation> {
             if keys == AT_MOST {
                 break 'edits;
             }
-            if let Piece::Spelled { .. } = p {
+            if let Piece::Spelled { .. } | Piece::Identifier { key: Some(_), .. } = p {
                 keys += 1;
                 out.push(Mutation {
                     label: format!("change key of edit {i} piece {j}"),
@@ -191,7 +191,9 @@ fn add_edit(set: &EditSet, first: &Edit, place: &Place) -> EditSet {
 
 fn complement_key(set: &EditSet, i: usize, j: usize) -> EditSet {
     let mut s = set.clone();
-    if let Piece::Spelled { key, .. } = &mut s.edits[i].pieces[j] {
+    if let Piece::Spelled { key, .. } | Piece::Identifier { key: Some(key), .. } =
+        &mut s.edits[i].pieces[j]
+    {
         for b in &mut key.0 {
             *b = !*b;
         }

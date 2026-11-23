@@ -333,6 +333,8 @@ Stance := replace = 0        these bytes become the text of `pieces`
 Piece := literal = 0: bytes                         not empty
        | copy    = 1: Place                         lo < hi
        | spelled = 2: (key: KeyId, text: bytes)     `text` not empty
+       | identifier = 3: (text: bytes, key: opt<KeyId>)
+                                                    `text` one plain identifier (WP-132)
 
 Reason := none = 0 | macro_body = 1 | pasted = 2 | crossing = 3 | not_a_file = 4 | not_owned = 5
         | file_recoded = 6 | not_plain = 7 | mixed_set = 8 | mixed_instances = 9
@@ -350,6 +352,19 @@ MacroSite := name_start: uv          offset, in the claim's file, of the name to
 | literal | its bytes |
 | copy | the text of the range in the result of the run: its bytes with every accepted edit that lies properly inside the range applied (§5.4, §7.1). Copy is by reference, not by value |
 | spelled | `text`, written as a name that is meant to denote the entity `key`. Verification checks that it does (`verify.md` §10); nothing else in this file reads `key` |
+| identifier | `text`, written as a name (`api.md` §7.1 rule 7). Without `key` it claims nothing about what the name denotes; with `key` it means what a spelled piece means and is checked as one (`api.md` §7.2 rule 6) |
+
+An identifier piece's `text` is not empty and is one *plain* identifier
+(`api.md` §6.1 rule 1: ASCII letters, digits and `_`, not starting with a
+digit, not a keyword or an alternative token); a reader refuses one that
+is not as Malformed (§4.7). Its JSON form is `{"identifier": bytes}`, with
+a second member `"key": id` after it only when the key is present.
+Identifier pieces were added by WP-132 without a change of format
+version (the scheme stays 1, the shard's version stays): a reader of
+before them lists tags 0 to 2 and refuses a shard with an identifier
+piece as Malformed at the unlisted tag (`spec/model.md` §2), rather than
+misreading it. The refusal of an unlisted tag is shown by
+`crates/slip_model/tests/edits.rs` `identifier_piece_unlisted_tag_is_refused`.
 
 No two literal pieces are adjacent. A `replace` with no piece deletes the
 bytes. A `KeyId` in a piece is in the key space of the pre-image
@@ -518,7 +533,7 @@ the job.
 | flag bits above 3 are 0 | the `flags` field | `sections.edits.subjects[i].flags` |
 | `links` strictly ascending; `a < b` | that link's first byte | `sections.edits.links[i]` |
 | a claim's `file` is an index of `files`; `lo <= hi <= size`; `lo < hi` for `replace` | the claim's first byte | `sections.edits.claims[i]` |
-| `pieces` empty unless `replace`; no empty literal or spelled text; no two literals adjacent; a copy's place is within its file and not empty | that piece's first byte, or the `pieces` field | `sections.edits.claims[i].pieces[j]` |
+| `pieces` empty unless `replace`; no empty literal or spelled text; an identifier piece's text one plain identifier; no two literals adjacent; a copy's place is within its file and not empty | that piece's first byte, or the `pieces` field | `sections.edits.claims[i].pieces[j]` |
 | `reason` is `none` iff the stance is not `refuse` | the `reason` field | `sections.edits.claims[i].reason` |
 | `subjects` and `notes` strictly ascending | the field | `sections.edits.claims[i].subjects`, `sections.edits.claims[i].notes` |
 | `tiers` not 0, bits above 4 are 0, bits 2 to 4 only for `refuse`; `macro` absent if `tiers` is 1 | the `tiers` field | `sections.edits.claims[i].tiers` |
@@ -1102,11 +1117,13 @@ own place: it appears wherever a copy carries it.
    no recursion on the call stack.
 4. Each post-image is published as a **blob**: a file of exactly those
    bytes, named by their content digest (§10.4).
-5. **Obligations.** Each time the text of a spelled piece is written into
-   a post-image, at its edit's own place or in a copy that carries the
-   edit, that is one obligation: the file, the byte range of the text in
-   the post-image, and the piece's `key` (`api.md` §7.6 rule 4). The same
-   piece carried to three places gives three.
+5. **Obligations.** Each time the text of a spelled piece, or of an
+   identifier piece with a key, is written into a post-image, at its
+   edit's own place or in a copy that carries the edit, that is one
+   obligation: the file, the byte range of the text in the post-image,
+   and the piece's `key` (`api.md` §7.6 rule 4). The same piece carried
+   to three places gives three. An identifier piece without a key gives
+   none.
 
 ```
 Overlay := edits:     digest                  the edit set id

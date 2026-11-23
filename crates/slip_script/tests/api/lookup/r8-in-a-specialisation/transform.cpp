@@ -3,10 +3,11 @@
 // (spec/api.md §6.1 rule 8), which `lookup` of a qualified name never
 // reaches (rule 5). The implicit instantiation `W<long>` is the parent of
 // the referent of `x.a`, a member of the instantiation (§5.5). It is a
-// scope (no `wrong_kind`), and its members are those written in its
-// definition: an instantiation has none written (rule 5, "no written
-// declaration"), so nothing is found in it, not even `a`; the primary
-// template's members are found in the template.
+// scope (no `wrong_kind`), and its members are those written in the
+// definition it was instantiated from, the primary template's: `a` and `c`
+// are found in it, and they are the template's own `a` and `c`, not
+// members of the instantiation. `b`, a member of the explicit
+// specialisation `W<int>`, is not.
 #include <slip/meta.h>
 
 using namespace slip;

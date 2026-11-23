@@ -19,7 +19,7 @@ use std::fmt;
 use slip_model::{Counter, Digest};
 
 use crate::effects::{Effect, Effects};
-use crate::output::{Changed, Edit, Report, RunOutput};
+use crate::output::{Changed, Edit, Piece, Report, RunOutput};
 use crate::subject::{Entity, File, PlaceOf, Range, Subject, Value};
 use crate::wire::{self, Errc, Operation};
 
@@ -317,7 +317,23 @@ impl<'s> Host<'s> {
     /// `api.peak_bytes` are the evaluator's and are added by the driver.
     /// The host is the only writer of counters, so no name occurs twice.
     pub fn finish(self) -> RunOutput {
-        let Record { edits, groups, reports, changed, renamed } = self.effects.record;
+        let Record { mut edits, groups, reports, changed, renamed } = self.effects.record;
+        // §7.2 rule 6: an identifier piece that is the whole replacement of
+        // the name range of references takes their referent's key when
+        // every one has the same origin's key and that origin is declared
+        // renamed to exactly the piece's identifier. Decided here, from
+        // every declaration of the run, so that order does not matter.
+        for (i, named) in &self.effects.named {
+            if let [Piece::Identifier { text, key }] = edits[*i].pieces.as_mut_slice() {
+                let first = named.first().and_then(|n| n.1);
+                let agree = named.iter().all(|(origin, k)| {
+                    *k == first && self.effects.renamed.get(origin) == Some(&*text)
+                });
+                if first.is_some() && agree {
+                    *key = first;
+                }
+            }
+        }
         let mut out = RunOutput {
             transform: self.transform,
             edits,

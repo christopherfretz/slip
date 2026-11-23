@@ -779,11 +779,29 @@ order of their first declarations. The second form is rule 8.
    unnamed class). A
    scope is what rule 4 walks into (a namespace, the global one
    included, a class, a class template, an enumeration, a typedef name
-   for linkage purposes), and also a specialisation of a class template,
-   whose members are those written in its own definition (rule 5 does not
-   find them by a qualified name; here the scope is given): an explicit
-   specialisation's, and none for an implicit instantiation, whose
-   members have no written declaration. Rules 5 to 7 hold otherwise. The checks, in order: `invalid_handle` for a null or
+   for linkage purposes), and also a specialisation of a class template
+   or a member class of one (rule 5 does not find these by a qualified
+   name; here the scope is given). Such a scope has the members **written
+   in the definition it comes from**:
+   - an explicit specialisation, and a partial specialisation: its own
+     definition;
+   - an instantiation, implicit or explicit (`template struct X<char>;`):
+     the definition it was instantiated from, which is the primary
+     template's, a partial specialisation's (for `W<int*>` from
+     `template <class T> struct W<T*>`, the partial's members, not the
+     primary's) or, for a member class of an instantiated class template
+     (`O<int>::I`), the member class of the template; repeated as §5.5's
+     origin is, so a member class of a member class comes from the
+     template's;
+   - a specialisation that is named and never instantiated (`N<int>*`)
+     has no definition, and nothing is found in it, as in a class
+     declared and not defined.
+
+   The entities found are the written ones (the template's members, not
+   the instantiation's), so that at a call `w.f()` with `W<int> w`,
+   `lookup(parent_of(referent_of(r)), "g")` is the template's `g`, and
+   `spell` of it at the call's name range is a sibling of the referent's
+   origin (§7.2 rule 1). Rules 5 to 7 hold otherwise. The checks, in order: `invalid_handle` for a null or
    forged `scope`; `wrong_kind` if `scope` is not an entity or is an
    entity that is no scope; for `identifier`, `limit_exceeded` above
    §7.7's bytes in one identifier argument, then rule 1 for one
@@ -1129,8 +1147,8 @@ kinds of piece:
    joined with a literal or another identifier beside it: the record
    says that a name was put there, and which (§7.6). `text(n)` writes the
    same bytes as a literal and stays the general form; a transform that
-   writes a name writes it with `identifier`. What verification checks
-   of an identifier piece is §7.5 rule 3.
+   writes a name writes it with `identifier`. What an identifier piece
+   claims, and what verification checks of it, is §7.2 rule 6.
 
 Why code values live in the host: a host call costs about as much as
 eight evaluator steps, and building the same text with `std::string` in
@@ -1165,7 +1183,15 @@ recorded. Version 0 has two spellings.
    reference `R` named at `n`, the last three conditions above; for each
    declaration `D` named at `n`, `parent_of(E)` equals the parent of
    `D`'s entity. The recorded edit replaces `n` with the identifier of
-   `E`, as above. Otherwise `replace` throws `invalid_argument`: a name
+   `E`, as above. When `n` names declarations only, the record is
+   `identifier(` the identifier of `E` `)` with no key (rule 6), not a
+   spelled piece: a declaration's own name is no written reference
+   (`spec/verify.md` §10.7), so an obligation there could never be
+   checked and would always be `unseen`; the digests judge what a
+   declaration's name declares. The record there does not say which
+   entity was meant. That changes when declarative references exist
+   (WP-133, under the feature test
+   `__slip_lib_meta_declarative_references`). Otherwise `replace` throws `invalid_argument`: a name
    range takes a sibling's identifier, and another entity is spelled at
    the extent, where its qualifier can be written. Rule 2 is never used
    at a name range (it would put `::n::g` after the qualifier written,
@@ -1200,6 +1226,26 @@ recorded. Version 0 has two spellings.
    record; nothing the transform does after `spell` affects it. The
    normative text of the check is `spec/verify.md` §10; this rule states
    what a transform's author may rely on.
+6. **What an identifier piece claims.** An identifier piece (§7.1 rule
+   7) claims nothing about what the name it writes denotes, with one
+   exception. When it is the whole replacement of the name range of a
+   reference (`replace(name_range_of(R), identifier(n))`, or the name
+   range of several references, §5.4 rule 3) and the origin of the
+   referent of that reference is declared renamed to exactly `n`
+   (§7.5 rule 3) by this run, the host records the piece with that
+   origin's `KeyId`, in the same terms as a spelled piece's key, and it
+   is checked as a spelling is: rule 5, also in a unit declared changed.
+   That is how a rename written with `identifier` keeps every reference
+   it rewrites checked. The host decides this when the run ends, from
+   every `expect_renamed` the run made, so the order of `replace` and
+   `expect_renamed` does not matter. There is no key when the referent's
+   origin is not declared renamed, or is declared renamed to another
+   identifier, when the range is a declaration's name or no name range
+   at all, when the piece is not the whole replacement, and when the
+   references named at the range have origins that do not all have the
+   one key (two references at one name range that disagree). A
+   transform that means an entity says `spell`: `identifier` is for a
+   name whose meaning the transform does not assert.
 
 ### 7.3 `replace` and groups
 
@@ -1337,7 +1383,10 @@ consteval void expect_renamed(info entity, std::string_view new_identifier);
    if `n` is not an identifier, is `e`'s identifier, or if this run
    already declared a different name for `e`, and `unsupported` if `e` is
    not a unit keyed by name. Two entities declared renamed to one name in
-   one scope are both recorded: verification is what refuses that.
+   one scope are both recorded: verification is what refuses that. An
+   identifier piece `identifier(n)` that is the whole replacement of the
+   name range of a reference whose referent's origin is `e` takes `e`'s
+   key and is checked as a spelling (§7.2 rule 6).
 4. Both are idempotent: declaring the same thing twice is declaring it
    once.
 5. **What a declaration does.** `expect_changed` becomes an entry of
@@ -1401,7 +1450,7 @@ Piece :=
     literal(bytes)
   | copy(file, lo, hi)
   | spelled(key: KeyId, text: bytes)      the entity meant, and the text chosen (§7.2)
-  | identifier(bytes)                     a name written by `identifier` (§7.1 rule 7)
+  | identifier(bytes, key: none | KeyId)  a name written by `identifier` (§7.1 rule 7); its key: §7.2 rule 6
 
 Report := place: none | (file, lo, hi);  severity;  message;  attached: bool   (§7.4 rule 3)
 
@@ -1433,7 +1482,8 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
    copy piece is known only once the edits inside the copied range are
    decided. Whoever composes the copies (apply) therefore derives, for
    each spelled piece of each accepted edit, its byte range in the
-   post-image, and hands it with the piece's `KeyId` to verification:
+   post-image, and hands it with the piece's `KeyId` to verification
+   (and the same for each identifier piece that has a key, §7.2 rule 6):
    these are the obligations of `spec/verify.md` §10.1, which travel in
    the overlay (`spec/edits.md` §7.1). The encoding of `spec/edits.md`
    §4 keeps the pieces as pieces. An encoding that flattened them to
@@ -1619,7 +1669,10 @@ place does not compile.
 The new name is written as an identifier piece (§7.1 rule 7), and a
 function already declared with it in the same scope is found by
 `lookup(parent_of(f), RENAME_TO)` (§6.1 rule 8): the example takes no
-string apart and builds none.
+string apart and builds none. At each reference the piece takes the
+function's key, since the function is declared renamed to that identifier
+(§7.2 rule 6), and so every reference rewritten is checked; at the
+declarations it has none, and the digests judge them.
 
 ## 11. The script test format
 

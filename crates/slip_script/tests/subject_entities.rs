@@ -293,6 +293,83 @@ fn s6_1_rule8_lookup_in_a_scope() {
     });
 }
 
+/// §6.1 rule 8 (WP-132 ruling on item 4): a specialisation as a scope has
+/// the members written in the definition it comes from, and the entities
+/// found are the written ones. An instantiation of the primary template,
+/// of a partial specialisation (the partial's members, not the
+/// primary's), a member class of an instantiated class template, and an
+/// explicit instantiation definition, each reached as `parent_of` the
+/// referent of a call in `use`; a partial specialisation as a scope: its
+/// own members. A specialisation named and never instantiated, and a
+/// class declared and not defined: nothing.
+#[test]
+fn s6_1_rule8_lookup_in_an_instantiation() {
+    let src = "template <class T> struct W {
+  void f();
+  void g();
+};
+template <class T> struct W<T*> {
+  void f();
+  void g();
+};
+template <class T> struct O {
+  struct I {
+    void f();
+    void g();
+  };
+};
+template <class T> struct X {
+  void f();
+  void g();
+};
+template struct X<char>;
+template <class T> struct N {
+  void g();
+};
+struct D;
+void use(W<int> w, W<int*> p, O<int>::I i, X<char> x, N<int>* n, D* d) {
+  w.f(); p.f(); i.f(); x.f();
+}
+";
+    with(&[("main.cpp", src)], |p, s| {
+        let in_ = |scope: Entity, id: &str| s.lookup_in(scope, id.as_bytes()).expect("a scope");
+        // The scope of the one call of `f` (an origin) in `use`.
+        let scope_of_call = |f: Entity| {
+            let refs = s.references_to(f);
+            assert_eq!(refs.len(), 1, "{f:?}: {refs:?}");
+            s.parent(s.referent(refs[0])).expect("a parent")
+        };
+        let partial =
+            find(p, DeclKind::CXXRecord, "W", |ast, d| ast.partial_spec_info(d).is_some());
+        let partial = s.entity_number(partial[0]);
+        for (template, f, line) in [
+            (one(s, "W"), one(s, "W::f"), "main.cpp:3"),
+            (partial, in_(partial, "f")[0], "main.cpp:7"),
+            (one(s, "O::I"), one(s, "O::I::f"), "main.cpp:12"),
+            (one(s, "X"), one(s, "X::f"), "main.cpp:17"),
+        ] {
+            let inst = scope_of_call(f);
+            assert_ne!(inst, template, "{line}: the scope is the instantiation");
+            let g = in_(inst, "g");
+            assert_eq!(at(p, s, &g), [line]);
+            assert_eq!(g, in_(template, "g"), "{line}: the written member");
+            assert_eq!(in_(inst, "f"), in_(template, "f"), "{line}");
+            assert!(in_(inst, "no_such_name").is_empty());
+        }
+        // The partial's members are its own, not the primary's.
+        assert_ne!(in_(partial, "g"), in_(one(s, "W"), "g"));
+        // N<int> is named (a pointer) and never instantiated; D is declared.
+        let named = find(p, DeclKind::ClassTemplateSpecialization, "N", |_, _| true)
+            .into_iter()
+            .chain(find(p, DeclKind::CXXRecord, "N", |ast, d| ast.spec_info(d).is_some()))
+            .collect::<Vec<_>>();
+        assert!(!named.is_empty(), "Kiln makes the specialisation N<int>");
+        assert!(in_(s.entity_number(named[0]), "g").is_empty(), "never instantiated");
+        assert!(in_(one(s, "D"), "g").is_empty(), "declared, not defined");
+        assert_eq!(at(p, s, &in_(one(s, "N"), "g")), ["main.cpp:21"]);
+    });
+}
+
 /// §6.1 head, §1: a name declared in two headers and in the main file is
 /// in the order of inclusion (a header's declarations before and after a
 /// nested include), not in the order of the files' buffers.

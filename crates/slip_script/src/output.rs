@@ -39,8 +39,15 @@ pub enum Piece {
         key: Digest,
         text: Vec<u8>,
     },
-    /// One identifier given as data (§7.1 `identifier`); not empty.
-    Identifier(Vec<u8>),
+    /// One identifier given as data (§7.1 rule 7); not empty. `key` is
+    /// present when the piece is the whole replacement of the name range
+    /// of references whose referents' origin is declared renamed to `text`
+    /// (§7.2 rule 6, §7.5 rule 3): then it is that entity's key, checked
+    /// as a spelled piece's is (§7.2 rule 5).
+    Identifier {
+        text: Vec<u8>,
+        key: Option<Digest>,
+    },
 }
 
 /// The tiers at which the requests that are one edit were made (§7.6
@@ -308,8 +315,8 @@ impl RunOutput {
     /// counter <name> <value>
     /// ```
     ///
-    /// A piece is `"<bytes>"`, `copy(<place>)`, `spell(<key> "<text>")` or
-    /// `identifier("<name>")`.
+    /// A piece is `"<bytes>"`, `copy(<place>)`, `spell(<key> "<text>")`,
+    /// `identifier("<name>")` or, with a key, `identifier(<key> "<name>")`.
     /// A name is its identifier quoted, or the form's name of
     /// `spec/digest-kinds.md` §3.2 with its operand in parentheses
     /// (`operator(3)`, `conversion(<digest>)`, `literal_operator("_km")`,
@@ -343,7 +350,17 @@ impl RunOutput {
                     Piece::Spelled { key, text } => {
                         write!(f, " spell({} {})", Rendered::Key(key, s), Rendered::Quoted(text))?;
                     }
-                    Piece::Identifier(b) => write!(f, " identifier({})", Rendered::Quoted(b))?,
+                    Piece::Identifier { text, key: None } => {
+                        write!(f, " identifier({})", Rendered::Quoted(text))?;
+                    }
+                    Piece::Identifier { text, key: Some(key) } => {
+                        write!(
+                            f,
+                            " identifier({} {})",
+                            Rendered::Key(key, s),
+                            Rendered::Quoted(text)
+                        )?;
+                    }
                 }
             }
             for n in &e.notes {

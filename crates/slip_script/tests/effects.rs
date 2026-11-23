@@ -466,6 +466,10 @@ fn lit(s: &str) -> Piece {
     Piece::Literal(s.as_bytes().to_vec())
 }
 
+fn ident(text: &str, key: Option<Digest>) -> Piece {
+    Piece::Identifier { text: text.as_bytes().to_vec(), key }
+}
+
 fn spelled(key: Digest, text: &str) -> Piece {
     Piece::Spelled { key, text: text.as_bytes().to_vec() }
 }
@@ -832,11 +836,13 @@ fn s7_2_rule_1_at_a_name_range() {
     let out = run.finish();
     let (lo, hi) = span(name_in(range(&w, "lib::foo", 0)));
     let d = w.fake.range_nth(w.t, "foo", 0);
+    // At a declaration's name the spelling is the identifier, with no key
+    // (§7.2 rule 1): a declaration's name is no written reference.
     assert_eq!(
         edits(&out),
         vec![
-            (d.lo, d.hi, vec![spelled(K_BAR, "bar")]),
-            (d.lo, d.hi, vec![Piece::Identifier(b"baz".to_vec())]),
+            (d.lo, d.hi, vec![ident("bar", None)]),
+            (d.lo, d.hi, vec![ident("baz", None)]),
             (lo, hi, vec![spelled(K_BAR, "bar")]),
         ]
     );
@@ -890,9 +896,118 @@ fn s7_1_rule_7_identifier() {
     let long = vec![b'a'; 4097];
     assert_eq!(run.status(wire::OP_CODE_IDENTIFIER, &[], &long), errc(Errc::LimitExceeded));
     let out = run.finish();
-    let id = |s: &str| Piece::Identifier(s.as_bytes().to_vec());
+    let id = |s: &str| ident(s, None);
     assert_eq!(out.edits[0].pieces, vec![id("a_1"), lit("+"), id("B"), id("a_1")]);
     assert_eq!(counter(&out, "api.op.code_identifier"), Some(2));
+}
+
+/// §7.5 rule 3 (WP-132): an identifier piece that is the whole
+/// replacement of the name range of references takes the key of their
+/// referent's origin when it is declared renamed to exactly that
+/// identifier, whatever the order of `replace` and `expect_renamed`.
+#[test]
+fn s7_5_rule_3_an_identifier_piece_takes_the_renamed_key() {
+    let w = world();
+    let (lo, hi) = span(name_in(range(&w, "lib::foo", 0)));
+    let (lo2, hi2) = span(name_in(range(&w, "lib::foo", 1)));
+    // `order`: 0 renames first, 1 replaces first, 2 renames between.
+    let run_in = |order: u8, also_bar: bool, new: &str, to: &str| {
+        let mut run = Run::new(&w, &w.fake);
+        let n1 = run.name_range(Value::Reference(w.r1));
+        let n2 = run.name_range(Value::Reference(w.r2));
+        let foo = run.entity(w.foo);
+        let bar = run.entity(w.bar);
+        let id = run.ok(wire::OP_CODE_IDENTIFIER, &[], new.as_bytes());
+        let rename = |run: &mut Run<'_, '_>| {
+            assert_eq!(renamed(run, foo, to), 0);
+            if also_bar {
+                assert_eq!(renamed(run, bar, "bar2"), 0);
+            }
+        };
+        if order == 0 {
+            rename(&mut run);
+        }
+        run.replace(n1, id, 0, "");
+        if order == 2 {
+            rename(&mut run);
+        }
+        run.replace(n2, id, 0, "");
+        if order == 1 {
+            rename(&mut run);
+        }
+        edits(&run.finish())
+    };
+    let keyed = vec![
+        (lo, hi, vec![ident("foo2", Some(K_FOO))]),
+        (lo2, hi2, vec![ident("foo2", Some(K_FOO))]),
+    ];
+    for order in 0..3 {
+        for also_bar in [false, true] {
+            assert_eq!(run_in(order, also_bar, "foo2", "foo2"), keyed, "{order} {also_bar}");
+        }
+    }
+    // Renamed to another identifier: no key.
+    let plain = vec![(lo, hi, vec![ident("foo2", None)]), (lo2, hi2, vec![ident("foo2", None)])];
+    assert_eq!(run_in(0, false, "foo2", "foo3"), plain);
+    assert_eq!(run_in(1, true, "foo2", "foo3"), plain);
+}
+
+/// §7.5 rule 3 (WP-132): where an identifier piece takes no key: the
+/// referent not declared renamed; the piece not the whole replacement;
+/// a declaration's name; a range no reference is named at; two
+/// references named at one range that do not agree.
+#[test]
+fn s7_5_rule_3_where_an_identifier_piece_has_no_key() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let n1 = run.name_range(Value::Reference(w.r1));
+    let id = run.ok(wire::OP_CODE_IDENTIFIER, &[], b"foo2");
+    run.replace(n1, id, 0, "");
+    let out = run.finish();
+    assert_eq!(out.edits[0].pieces, vec![ident("foo2", None)], "not declared renamed");
+
+    let mut run = Run::new(&w, &w.fake);
+    let n1 = run.name_range(Value::Reference(w.r1));
+    let foo = run.entity(w.foo);
+    assert_eq!(renamed(&mut run, foo, "foo2"), 0);
+    let id = run.ok(wire::OP_CODE_IDENTIFIER, &[], b"foo2");
+    let x = run.text("x");
+    let two = run.cat(&[id, x]);
+    run.replace(n1, two, 0, "");
+    let foo_decl = w.fake.declarations(w.foo).expect("declarations")[0];
+    let d = run.name_range(Value::Declaration(foo_decl));
+    run.replace(d, id, 0, "");
+    let arg = run.extent(Value::Expression(w.arg1));
+    run.replace(arg, id, 0, "");
+    let out = run.finish();
+    assert!(
+        out.edits
+            .iter()
+            .flat_map(|e| &e.pieces)
+            .all(|p| !matches!(p, Piece::Identifier { key: Some(_), .. })),
+        "{:?}",
+        out.edits
+    );
+    assert_eq!(out.edits.len(), 3);
+
+    // r_m1 and r_m2 share a name range; r_m2 is made a reference to bar.
+    let mut f = w.fake.clone();
+    f.references[w.r_m2.0 as usize].referent = w.bar;
+    let shared = |rename_bar: bool| {
+        let mut run = Run::new(&w, &f);
+        let m = run.name_range(Value::Reference(w.r_m1));
+        let foo = run.entity(w.foo);
+        let bar = run.entity(w.bar);
+        assert_eq!(renamed(&mut run, foo, "foo2"), 0);
+        if rename_bar {
+            assert_eq!(renamed(&mut run, bar, "foo2"), 0);
+        }
+        let id = run.ok(wire::OP_CODE_IDENTIFIER, &[], b"foo2");
+        run.replace(m, id, 0, "");
+        run.finish().edits[0].pieces.clone()
+    };
+    assert_eq!(shared(false), vec![ident("foo2", None)], "one renamed, one not");
+    assert_eq!(shared(true), vec![ident("foo2", None)], "two entities, two keys");
 }
 
 /// §6.1 rule 8 (WP-132): `lookup(scope, identifier)` on the fake: an

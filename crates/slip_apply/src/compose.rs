@@ -134,6 +134,16 @@ impl<'a, 'b> Work<'a, 'b> {
                     out.bytes.extend_from_slice(text);
                     out.spells.push((lo, out.bytes.len() as u64, *key));
                 }
+                // An identifier piece with a key is checked as a spelling
+                // (`spec/api.md` §7.2, `spec/edits.md` §4.2); without one it
+                // claims nothing about what it denotes.
+                Piece::Identifier { text, key } => {
+                    let lo = out.bytes.len() as u64;
+                    out.bytes.extend_from_slice(text);
+                    if let Some(key) = key {
+                        out.spells.push((lo, out.bytes.len() as u64, *key));
+                    }
+                }
                 Piece::Copy(_) => {
                     let c = lay.copies[copy];
                     copy += 1;

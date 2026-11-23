@@ -1,7 +1,8 @@
 transform <id>
 report - note "W's a: 1"
 report - note "W's b: 0"
-report - note "W<long>'s a is W::a: no"
-report - note "W<long>'s a: 0"
+report - note "W<long>'s a is W::a: yes"
+report - note "W<long>'s a: 1"
 report - note "W<long>'s b: 0"
-report - note "W<long>'s c: 0"
+report - note "W<long>'s c: 1"
+report t.cpp:4:7-4:8 note "found c"
