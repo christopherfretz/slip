@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 item 3: the overrider declared before the using-declaration: Kiln makes no shadow for B::f(), the using-declaration introduces B::f(int) only and is kept
+from: n::D::f
+to: g
+kind: function

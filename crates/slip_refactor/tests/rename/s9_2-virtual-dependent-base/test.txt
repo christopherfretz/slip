@@ -1,4 +1,4 @@
-spec: edits.md §9.2 candidates (an override through a dependent base is recorded on the instantiation; its origin, the member of the template, is the candidate: unsupported until docs/wp/WP-073.md)
+spec: edits.md §9.2 candidates (an override through a dependent base is recorded on the instantiation; its origin, the member of the template, is the candidate, not flagged; the instantiated member follows it, flagged until docs/wp/WP-119.md)
 from: n::B::f
 to: g
 kind: function

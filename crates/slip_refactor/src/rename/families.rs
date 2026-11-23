@@ -30,22 +30,23 @@
 //! instantiated class is the member of the template) and to the digest's
 //! entity, as a reference to it is (§9.3 "The pieces").
 //!
+//! **Templates' patterns** (`docs/wp/WP-120.md` item 1). A member of an
+//! instantiated class is taken to the member of the template
+//! (`written::origin`), so a family is linked through the pattern: an
+//! instantiated member's link is its pattern member's. Kiln records what a
+//! pattern's member overrides when the base is not dependent; with a
+//! dependent base (`template <class T> struct G : T { void f() override;
+//! };`) only an instantiation records it, so a pattern instantiated in no
+//! unit is linked to nothing and its name is a `keep` (`spec/edits.md`
+//! §9.5, what the rename does not see). Neither a candidate in a pattern
+//! nor a seed is flagged for it: the members of the instantiated
+//! specialisations of a class template are followers
+//! (`spec_members`), and a local class of a template has none
+//! ([`in_class_pattern`]).
+//!
 //! **Conservative rows that stay**, each a flag on the candidate (a flag
 //! is what one observer sees, §4.1; its rule is `Keys::rename_rule`'s
 //! whatever the flag):
-//!
-//! - a candidate declared in a template's pattern (a class template, a
-//!   partial specialisation, or a local class of a function template:
-//!   one of them in its parent chain) is `unsupported`: its followers in
-//!   the specialisations are `docs/wp/WP-073.md`'s;
-//! - a function of the family that has no key (`Keys::key_id` refuses)
-//!   cannot be a subject, so the link to it cannot be recorded: the
-//!   function at the other end is `unsupported`, so that the family is
-//!   refused rather than split;
-//! - a function the family reaches that the AST does not name like the
-//!   old name (a destructor, an operator or a conversion function cannot
-//!   arise: overriding keeps the name, and a destructor is not named by an
-//!   identifier) makes the function that reaches it `unsupported`.
 //!
 //! A candidate declared in a file that is not owned is `read_only`: that
 //! is `decls::claim`'s rule for any subject, and through its link it
@@ -108,16 +109,13 @@ pub(crate) fn collect(ctx: &mut Ctx<'_, '_, '_>) {
     }
 }
 
-/// Adds the entity of `d`'s origin as a candidate (a seed stays a seed)
-/// and flags it `unsupported` when it is declared in a template's
-/// pattern. `None` when it has no key.
+/// Adds the entity of `d`'s origin as a candidate (a seed stays a seed):
+/// a member of an instantiated class is the member of the template, so
+/// that the family is linked through the pattern. `None` when it has no
+/// key.
 fn candidate(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> Option<KeyId> {
     let o = written::origin(ctx.unit, d);
-    let id = ctx.subjects.add(ctx.keys, o, Role::Candidate, ctx.new, &[])?;
-    if in_pattern(ctx, o) {
-        ctx.subjects.flag(id, subject_flags::UNSUPPORTED);
-    }
-    Some(id)
+    ctx.subjects.add(ctx.keys, o, Role::Candidate, ctx.new, &[])
 }
 
 /// A member function (not a constructor, destructor or conversion
@@ -142,20 +140,34 @@ fn overridden(ast: &Ast, d: DeclId) -> impl Iterator<Item = DeclId> + '_ {
     ast.lists.iter::<DeclId>(list)
 }
 
-/// Whether an entity that encloses `d` is a template's pattern: its key
-/// is a class template, a partial specialisation or a function template
-/// (the last for a local class of a function template's pattern).
-pub(crate) fn in_pattern(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> bool {
+/// Whether `d` is declared in the pattern of a class template or of a
+/// partial specialisation, as a member of it or of a class nested in it:
+/// walking out through the entities that enclose `d`, one whose key is a
+/// class template or a partial specialisation is met before any function.
+///
+/// Its instantiated counterparts are members of the specialisations, which
+/// a declaration outside the pattern can name (an explicit instantiation
+/// or specialisation of the member): they are followers (`spec_members`).
+/// A local class is not in a class pattern for this purpose, whatever
+/// encloses its function (a function template, a generic lambda, a
+/// variable template's initialiser, a member function of a class
+/// template; `docs/wp/WP-120.md` item 4): Kiln links each instantiated
+/// local class's member to the pattern's (`instantiated_from`), the
+/// digest gives it the pattern member's name as the rules map it
+/// (`spec/digest.md` §3.4), and no declaration outside the pattern can
+/// name it ([temp.explicit], [temp.expl.spec] name no local class), so it
+/// needs no record (`spec/edits.md` §9.2).
+pub(crate) fn in_class_pattern(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> bool {
     let ast = ctx.unit.ast();
     let mut at = d;
     for _ in 0..CTX_LIMIT {
         let Some(s) = enclosing(ast, at) else { return false };
+        if ast.decls.function(s).is_some() {
+            return false;
+        }
         let s = ctx.keys.entity(s);
         if ctx.keys.key(s).is_ok_and(|k| {
-            matches!(
-                k.kind,
-                KeyKind::ClassTemplate | KeyKind::PartialSpecialisation | KeyKind::FunctionTemplate
-            )
+            matches!(k.kind, KeyKind::ClassTemplate | KeyKind::PartialSpecialisation)
         }) {
             return true;
         }

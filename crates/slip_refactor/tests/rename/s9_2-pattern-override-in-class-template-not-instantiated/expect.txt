@@ -1,0 +1,9 @@
+subjects:
+  94b9f15e candidate - rule=yes n::E::f()
+  bceee8a5 seed - rule=yes n::Base::f()
+links:
+  94b9f15e bceee8a5
+claims:
+  main.cpp:2:28+1 replace "g" t0 votes=1 none [bceee8a5]
+  main.cpp:3:43+1 replace "g" t0 votes=1 none [94b9f15e]
+changed:

@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 fix round F1: the shadow of B::f(int), hidden by D::f(int), follows its three parties (B::f(int), the using-declaration, D::f(int)) though its target is no subject: the using-declaration is renamed, the other two are not (mixed_follower in reduce)
+from: n::A::f
+to: g
+kind: function

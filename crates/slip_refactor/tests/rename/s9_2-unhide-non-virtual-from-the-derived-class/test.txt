@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 fix round F2: D::f() hides B::f() (not virtual); renamed alone, B::f() would become visible in D: the hidden shadow follows B::f(), the using-declaration and D::f() (mixed_follower in reduce)
+from: n::D::f
+to: g
+kind: function

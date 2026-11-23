@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 item 3: a second derived class whose using-declaration introduces B::f() (not hidden there) and B::f(int): of both, mixed_follower in reduce
+from: n::D::f
+to: g
+kind: function

@@ -1,0 +1,4 @@
+spec: edits.md §9.2, WP-120 item 4: a local class in a member function of a class template: a candidate, no follower and no flag (a local class is not in a class pattern)
+from: n::B::f
+to: g
+kind: function
