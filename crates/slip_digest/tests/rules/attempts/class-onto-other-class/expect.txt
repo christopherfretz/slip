@@ -1,0 +1,6 @@
+indeterminate f(n::A)
+indeterminate f(n::B)
+indeterminate n::A
+indeterminate n::B
+removed f(n::B)
+removed n::B

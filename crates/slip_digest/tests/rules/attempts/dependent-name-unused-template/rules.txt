@@ -1,0 +1,3 @@
+# Item 9 attempt: S::f and S::g swapped, with t.f() in a template nothing instantiates: the dependent name f is written as a name, which no rule maps. EQUAL, and NOT an isomorphism: call<S> calls the function returning 1 in A and the one returning 2 in B. This is the gap spec/verify.md §8 names (a template nothing instantiates).
+relocate S::f() => S :: g
+relocate S::g() => S :: f

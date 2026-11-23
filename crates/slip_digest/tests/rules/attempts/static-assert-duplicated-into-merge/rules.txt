@@ -1,0 +1,2 @@
+# Item 9 attempt: a static_assert duplicated into a namespace merged with legacy: a repeatable kind with one digest is one entity (spec/digest.md §3.4). Equal, and an isomorphism up to the repetition of a declaration that declares nothing.
+relocate legacy => :: acme

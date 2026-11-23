@@ -1,0 +1,3 @@
+# Item 9, from disc/overload-renamed-relocated-parameter: the target name replaced by another existing name, use.
+relocate acme => :: legacy
+rule function | root | id g | disc-of post g(legacy::S) | root | id use

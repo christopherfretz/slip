@@ -1,0 +1,3 @@
+indeterminate f()
+indeterminate g()
+use 2 via 1 direct 1
