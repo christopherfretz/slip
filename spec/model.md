@@ -620,7 +620,7 @@ in the encodings of §2: `GroupClass` is an enumeration, `units` an `opt`. A
 group is `class`, `file`, `count`, `indeterminate` (`uv`), `digest`,
 `units`. `tu_digest` hashes the `list<GroupSum>`: the count, then per group
 `uv(class)`, `bytes(file)`, `uv(count)`, `uv(indeterminate)`, `digest`.
-`scheme` is `slip_model::digests::SCHEME`, 1.
+`scheme` is `slip_model::digests::SCHEME`, 2.
 
 **Invariants.** The section's payload starts at offset `P` (the `scheme`
 field).
@@ -628,7 +628,7 @@ field).
 | # | Rule | Offset | JSON path |
 |---|---|---|---|
 | 1 | present only if the outcome's status is `ok` | `P` | `sections.digests` |
-| 2 | `scheme` = `digests::SCHEME` (1) | `P` | `sections.digests.scheme` |
+| 2 | `scheme` = `digests::SCHEME` (2) | `P` | `sections.digests.scheme` |
 | 3 | `groups` strictly ascending by `(class, file)` | the later group's first byte | `sections.digests.groups[i]` |
 | 4 | a `tu` group's `file` is empty; a `declared` group's is not | the `file` field | `sections.digests.groups[i].file` |
 | 5a | `count` ≥ 1 | the `count` field | `sections.digests.groups[i].count` |
@@ -638,7 +638,7 @@ field).
 | 6c | every `flags` is 0 or 1 | the `flags` field | `sections.digests.groups[i].units[j].flags` |
 | 6d | `indeterminate` is the number of `units` with flag bit 0 set | the `indeterminate` field | `sections.digests.groups[i].indeterminate` |
 | 6e | `digest` = `group_digest(units)` | the group's `digest` field | `sections.digests.groups[i].digest` |
-| 7 | `tu` = `tu_digest(groups)` | the `tu` field (`P` + 1 for scheme 1) | `sections.digests.tu` |
+| 7 | `tu` = `tu_digest(groups)` | the `tu` field (`P` + 1 while `scheme` < 128, one byte) | `sections.digests.tu` |
 
 Rules 5a and 5b are each checked over every group; rules 6a–6e are each
 checked over every group whose `units` is present, in turn (§5.4). Rule 5b
@@ -910,7 +910,7 @@ none; detail: `none`; names: not asked for.
 **Counters.** Those of the parse task; those of `digest.md` §12; the
 walk's count of indeterminate keys by cause, `digest.indeterminate.<cause>`
 (`error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`,
-and while the walk has areas not yet written `pending` and
+`visibility_by_use`, and while the walk has areas not yet written `pending` and
 `digest.indeterminate.pending.<area>`), each present only when not 0; and
 for the causes that carry a text (`unsupported`, `unaccounted`):
 

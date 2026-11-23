@@ -1,0 +1,5 @@
+# The specialisation is written in a plain opening on both sides; its template moved from a hidden
+# opening to a plain one. clang++-19: HIDDEN _ZTVN3lib1SIN2my1TEEE and _ZN3lib1SIN2my1TEE1fEv in a,
+# DEFAULT in b: the specialisation takes its template's opening, so its unit differs with it.
+changed lib::S
+changed lib::S<my::T>

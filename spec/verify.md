@@ -159,11 +159,17 @@ needs no map.
   renaming a namespace.** A rule of kind `namespace` whose `name` is the
   unnamed namespace's and whose `to_name` is not, or the reverse, is
   refused (`RULE_UNNAMED_NAMESPACE`): the namespace's members change
-  linkage, which no digest in the member's unit holds (below)
+  linkage (below)
   (`tests/rules/wrong/unnamed-namespace-renamed-to-named`,
   `named-namespace-renamed-to-unnamed`,
-  `named-namespace-merged-onto-unnamed`: before, all equal, with
-  internal symbols made external or the reverse).
+  `named-namespace-merged-onto-unnamed`: before WP-103, all equal, with
+  internal symbols made external or the reverse). Since WP-113 the
+  comparison finds every such relocation of a namespace with members
+  (each member's row `enclosing` differs); the refusal is kept because it
+  says why when the rule is declared, not after a run. The one correct
+  transform it refuses is the rename of a namespace with no member that
+  has a row (`namespace { }` to `namespace foo { }`), which changes no
+  symbol (`spec/landed/digest/WP-113.md`, item 6).
 
 The three are refused in one place, `Rule::refusal`
 (`crates/slip_model/src/keys.rs`), and every table records the first rule
@@ -388,36 +394,45 @@ does not declare:
   the linkage its declaration gives it (an inline function or a class's
   member functions become weak external symbols, a variable a global
   one), and moved in, internal;
-- **visibility**: `__attribute__((visibility(…)))` on a namespace sets
-  the default visibility of the symbols of its members.
+- **visibility**: `__attribute__((visibility(…)))` on a namespace
+  opening sets the default visibility of the symbols declared in that
+  opening and in the namespaces written inside it.
 
-Today's digest holds neither in the member's unit: the member's unit
-does not record the linkage or visibility it takes from its namespaces,
-and a namespace's unit is not part of its members'. So a relocation of a
-member between two namespaces that differ in either is compared equal
-although the object code differs (`tests/rules/needs-wp113/`, pending,
-with the symbols each case changes). The refusal above
-(`RULE_UNNAMED_NAMESPACE`) closes one form only: a rule of kind
-`namespace` whose own name changes between the unnamed namespace's and
-another (the unnamed namespace renamed to a named one, a named one renamed
-to it, a named one merged onto it). It sees the rule's two names and
-nothing else, so these stay open until WP-113 writes the effective linkage
-and visibility into each member's unit:
+**The rule: what an entity takes from its namespaces is in its own
+unit.** Every entity whose semantic context is a namespace (and every
+block-scope `extern` declaration, keyed in its namespace) has in its unit
+the row `enclosing` (`digest-kinds.md` §1.7, WP-113): the linkage of its
+name, whether an unnamed namespace encloses it, and the visibility its
+enclosing openings give its declarations, all computed on the parse the
+unit is written from. The visibility is found per declaration, from the
+opening it is written in or, for one written qualified outside its
+namespace, the latest opening of the namespace written before it; where
+the declarations' visibilities differ, a use's symbol takes that of the
+declaration most recent at the use, which no unit holds, and the unit is
+indeterminate (`visibility_by_use`, `digest.md` §10). Which declarations
+count is clang's: a specialisation of a class or variable template and
+an instantiation take the template's, wherever they are written; an
+explicit specialisation of a function template its own; a class or an
+enumeration its definition (`digest-kinds.md` §1.7 item 5). A key holds names only (`digest.md` §3), and the
+rules rewrite keys only, so the row is written as the post-image has it
+and is not mapped: a relocation that changes either property for any
+entity makes that entity's unit differ, whatever rule table is given. An
+entity in a class or a function has no row: what it takes from the
+namespaces it takes through that class or function, whose unit has the
+row, and with it differs (a member function's symbol is internal because
+its class is; a local class or a closure is the function's;
+`spec/landed/digest/WP-113.md`, "The chain", also for friends,
+specialisations and template arguments). A namespace has no row: it has
+no symbol, and a merged namespace's unit is shared.
 
-- an entity of any other kind relocated out of the unnamed namespace,
-  into it, or between namespaces of different visibility;
-- a named namespace relocated, under its own name or another, to or from
-  a parent within the unnamed namespace (`relocate (anonymous
-  namespace)::n => :: =`, `relocate n => (anonymous namespace) :: =`, a
-  namespace moved from under `o::(anonymous namespace)` into `p`): its
-  members change linkage although neither of the rule's names is the
-  unnamed namespace's (`tests/rules/needs-wp113/namespace-*`);
-- a namespace relocated between parents of different visibility.
-
-No second guard in the walk covers these: WP-113 closes them all at
-once. Until then the argument of this section holds for the post-image
-only where no relocated entity changes either property, and `slip
-verify` does not show that it does not.
+This closes the forms that WP-103 left open (`tests/rules/needs-wp113/`,
+`tests/rules/enclosing/`): an entity of any kind relocated out of the
+unnamed namespace, into it, or between namespace openings of different
+visibility; a named namespace relocated, under its own name or another,
+to or from a parent within the unnamed namespace; and a namespace
+relocated between parents of different visibility. A relocation between
+two named namespaces of the same visibility, or from an unnamed namespace
+to another unnamed namespace, compares equal, as it should.
 
 The argument is about one translation unit. The ownership rule above is
 what makes the declared isomorphism one that the rest of the program

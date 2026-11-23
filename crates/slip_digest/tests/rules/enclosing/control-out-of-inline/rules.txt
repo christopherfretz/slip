@@ -1,0 +1,1 @@
+relocate n::v1::f() => n::w :: =

@@ -1,7 +1,7 @@
 # KF5 — a named module imported from a source held in memory
 
-A request from Slip to Kiln. Status: **draft** (Slip WP-048), for the
-supervisor to send. Kiln owns the design of everything inside Kiln; this
+A request from Slip to Kiln. Status: **sent 2026-11-23** (Slip WP-048; drafted for the
+supervisor, sent on the operator's word). Kiln owns the design of everything inside Kiln; this
 states what Slip needs, proposes a shape, and gives acceptance tests.
 Names below are placeholders. It is a new row of
 [05-kiln-interface.md](../design/05-kiln-interface.md) §3 (front end,
