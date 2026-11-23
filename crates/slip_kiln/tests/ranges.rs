@@ -73,7 +73,8 @@ impl Source {
         let files: Vec<(&str, &str)> =
             self.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
         let include: Vec<&str> = self.include.iter().map(String::as_str).collect();
-        let snippet = Snippet { files: &files, main: &self.main, include: &include, std: &self.std };
+        let snippet =
+            Snippet { files: &files, main: &self.main, include: &include, std: &self.std };
         let args: Vec<&str> = self.args.iter().map(String::as_str).collect();
         let extra = Extra { args: &args, target: self.target.as_deref() };
         f(&snippet, &extra)
@@ -487,7 +488,9 @@ fn s1_test5_unit_order_invocation_and_include_come_first() {
     unit(src, &[("h.h", "int h1;\n")], |u| {
         let sm = u.sm();
         let main = u.p.unit().main_file().expect("a main file");
-        let off = |needle: &str| sm.loc(main, u32::try_from(sm.text(main).find(needle).unwrap()).unwrap());
+        let off = |needle: &str| {
+            sm.loc(main, u32::try_from(sm.text(main).find(needle).unwrap()).unwrap())
+        };
         let at = |t: &str, n: usize| u.toks[u.nth(t, n)].span.lo;
         let (open, inv, close) = (at("(", 0), off("E);"), at(")", 0));
         let (x, y) = (at("x", 1), at("y", 1));
@@ -598,8 +601,11 @@ impl Tally {
         let _ = writeln!(s, "spans with no range, by reason: {:?}", self.none);
         let _ = writeln!(s, "ranges not checked, by reason: {:?}", self.unchecked);
         let _ = writeln!(s, "units skipped, by reason: {:?}", self.skipped);
-        let _ =
-            writeln!(s, "test 6: references and names {}, unchecked {}", self.refs, self.refs_unchecked);
+        let _ = writeln!(
+            s,
+            "test 6: references and names {}, unchecked {}",
+            self.refs, self.refs_unchecked
+        );
         s
     }
 }
@@ -759,7 +765,10 @@ fn check_range(
                     && r.lo < b
                     && !(r.lo <= a && b <= r.hi)
                 {
-                    return Err(format!("tier 0 range {}..{} is inside the invocation {a}..{b}", r.lo, r.hi));
+                    return Err(format!(
+                        "tier 0 range {}..{} is inside the invocation {a}..{b}",
+                        r.lo, r.hi
+                    ));
                 }
             }
         }
@@ -772,13 +781,15 @@ fn check_range(
                 return Err("tier 1: the span is in no invocation".into());
             };
             if f != r.file || !(a <= r.lo && r.hi <= b && (a, b) != (r.lo, r.hi)) {
-                return Err(format!("tier 1 range {}..{} is not inside its invocation {a}..{b}", r.lo, r.hi));
+                return Err(format!(
+                    "tier 1 range {}..{} is not inside its invocation {a}..{b}",
+                    r.lo, r.hi
+                ));
             }
             // The expansion of that invocation is a run of the sequence;
             // nothing outside it changes.
-            let of_v = |t: &Token| {
-                t.span.lo.is_macro() && invocation(sm, t.span.lo) == Some((f, a, b))
-            };
+            let of_v =
+                |t: &Token| t.span.lo.is_macro() && invocation(sm, t.span.lo) == Some((f, a, b));
             let (mut x0, mut x1) = (i, j);
             while x0 > 0 && of_v(&u.toks[x0 - 1]) {
                 x0 -= 1;
@@ -920,7 +931,8 @@ fn property_of(
         // a time (one sequence of a whole unit is large), and check each.
         let size = threads * 16;
         for (b, batch) in pending.chunks(size).enumerate() {
-            let edits: Vec<Result<_, String>> = batch.iter().map(|&(_, r, _, _)| marking(u, r)).collect();
+            let edits: Vec<Result<_, String>> =
+                batch.iter().map(|&(_, r, _, _)| marking(u, r)).collect();
             let afters = if threads == 1 {
                 edits.iter().map(|m| marked_by(src, m.as_ref().map_err(Clone::clone)?)).collect()
             } else {
@@ -940,7 +952,11 @@ fn property_of(
             }
             if progress {
                 let done = b * size + batch.len();
-                eprintln!("{label}: {done} of {} ranges checked, {} failures", pending.len(), t.failures.len());
+                eprintln!(
+                    "{label}: {done} of {} ranges checked, {} failures",
+                    pending.len(),
+                    t.failures.len()
+                );
             }
         }
         // Test 6: file_range against file_range_of_span for every
@@ -1015,7 +1031,11 @@ fn s5_4_test4_property_on_macro_snippets() {
     assert!(tally.failures.is_empty(), "{}\n{}", tally.failures.join("\n"), tally.report());
     assert!(tally.skipped.is_empty(), "{}", tally.report());
     assert!(tally.ranges[0] > 40 && tally.ranges[1] > 40, "{}", tally.report());
-    assert!(tally.refs > 40 && tally.refs_unchecked == 0, "test 6 saw the tables: {}", tally.report());
+    assert!(
+        tally.refs > 40 && tally.refs_unchecked == 0,
+        "test 6 saw the tables: {}",
+        tally.report()
+    );
 }
 
 /// The checker of test 4 catches a wrong range: replacing one byte too
@@ -1029,17 +1049,32 @@ fn s5_4_test4_checker_catches_wrong_ranges() {
         let r = u.range(i, j).unwrap();
         assert_eq!(check_range(u, &before, &marked(&src, u, r), r, i, j), Ok(()));
         let long = FileRange { hi: r.hi + 1, ..r };
-        assert!(check_range(u, &before, &marked(&src, u, long), long, i, j).is_err(), "a byte too many");
+        assert!(
+            check_range(u, &before, &marked(&src, u, long), long, i, j).is_err(),
+            "a byte too many"
+        );
         let short = FileRange { hi: r.hi - 1, ..r };
-        assert!(check_range(u, &before, &marked(&src, u, short), short, i, j).is_err(), "a byte short");
+        assert!(
+            check_range(u, &before, &marked(&src, u, short), short, i, j).is_err(),
+            "a byte short"
+        );
         let tier0 = FileRange { tier: Tier::File, ..r };
-        assert!(check_range(u, &before, &marked(&src, u, tier0), tier0, i, j).is_err(), "tier 0 inside an argument");
+        assert!(
+            check_range(u, &before, &marked(&src, u, tier0), tier0, i, j).is_err(),
+            "tier 0 inside an argument"
+        );
         let k = u.nth("a", 2);
         let plain = u.range(k, k).unwrap();
         assert_eq!(check_range(u, &before, &marked(&src, u, plain), plain, k, k), Ok(()));
         let tier1 = FileRange { tier: Tier::MacroArgument, ..plain };
-        assert!(check_range(u, &before, &marked(&src, u, tier1), tier1, k, k).is_err(), "tier 1 outside a macro");
-        assert!(check_range(u, &before, &marked(&src, u, plain), plain, k - 1, k).is_err(), "more tokens");
+        assert!(
+            check_range(u, &before, &marked(&src, u, tier1), tier1, k, k).is_err(),
+            "tier 1 outside a macro"
+        );
+        assert!(
+            check_range(u, &before, &marked(&src, u, plain), plain, k - 1, k).is_err(),
+            "more tokens"
+        );
     })
     .unwrap();
 }
@@ -1093,7 +1128,8 @@ fn pair_sides(dir: &Path, support: &[(String, String)]) -> Vec<Source> {
     for side in ["a", "b"] {
         let mut files = Vec::new();
         let main = if let Some(t) = all.get("t.cpp") {
-            files.push(("side.h".to_owned(), if side == "a" { "" } else { "#define B 1\n" }.into()));
+            files
+                .push(("side.h".to_owned(), if side == "a" { "" } else { "#define B 1\n" }.into()));
             t.clone()
         } else if let Some(m) = all.get(&format!("{side}.cpp")) {
             m.clone()
@@ -1130,7 +1166,9 @@ fn pair_sides(dir: &Path, support: &[(String, String)]) -> Vec<Source> {
             };
             match key {
                 "std" => s.std = value.to_owned(),
-                "args" => s.args = value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect(),
+                "args" => {
+                    s.args = value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect()
+                }
                 "target" => s.target = Some(value.to_owned()),
                 "errors" => {}
                 _ => break,
@@ -1220,7 +1258,8 @@ fn snippet_path(path: &str) -> String {
 /// the unit is not in the database.
 fn llvm_source(corpus: &Path, unit: &str) -> Result<Source, String> {
     use kiln_driver::front_end::{FrontEndOptions, run_front_end};
-    let db = std::fs::read(corpus.join("build/compile_commands.json")).map_err(|e| e.to_string())?;
+    let db =
+        std::fs::read(corpus.join("build/compile_commands.json")).map_err(|e| e.to_string())?;
     let entries = slip_cdb::database::read_json(&db).map_err(|e| e.detail)?;
     let entry = entries
         .into_iter()
@@ -1328,7 +1367,10 @@ fn s5_4_test4_property_over_llvm_units() {
     for unit in units.to_string_lossy().split(',') {
         let src = llvm_source(&corpus, unit).unwrap_or_else(|e| panic!("{unit}: {e}"));
         let calls = |k: ExprKind| {
-            matches!(k, ExprKind::CallExpr | ExprKind::CXXMemberCallExpr | ExprKind::CXXOperatorCallExpr)
+            matches!(
+                k,
+                ExprKind::CallExpr | ExprKind::CXXMemberCallExpr | ExprKind::CXXOperatorCallExpr
+            )
         };
         let tally = property_of(&src, unit, Some(calls), test_threads());
         eprintln!("{unit}: {} files; call expressions:", src.files.len());

@@ -463,7 +463,8 @@ fn preprocess_only(
         .map_err(|_| "the source manager's location space is exhausted".to_owned())?;
     let loaded = std::rc::Rc::new(std::cell::RefCell::new(vec![(main_file, checked.main)]));
     let tokens = {
-        let engine = DiagEngine::new(&sm, &diag_opts, TextSink::new(SharedBuffer::new(), &diag_opts));
+        let engine =
+            DiagEngine::new(&sm, &diag_opts, TextSink::new(SharedBuffer::new(), &diag_opts));
         let mut pp = Preprocessor::new(&sm, &engine, &interner, lang.pp_options());
         configure(&mut pp, snippet, checked, lang, &loaded, features);
         pp.enter_main_file(main_file);
@@ -1467,9 +1468,10 @@ mod tests {
         text.push_str(";\nint after = 2;\n");
         let files = [("deep.cpp", text.as_str())];
         let s = Snippet { files: &files, main: "deep.cpp", include: &[], std: "c++20" };
-        let (errors, diags) =
-            parse_on(&s, &Extra::default(), Some(8 << 20), false, |p| (p.errors, p.diagnostics.clone()))
-                .unwrap();
+        let (errors, diags) = parse_on(&s, &Extra::default(), Some(8 << 20), false, |p| {
+            (p.errors, p.diagnostics.clone())
+        })
+        .unwrap();
         assert!(errors >= 1);
         assert!(
             diags.starts_with("deep.cpp:2:")

@@ -662,7 +662,11 @@ fn s1_unit_order_forced_include_comes_before_the_main_file() {
             .filter(|l| l.is_valid())
             .collect();
         let in_file = |f| -> Vec<_> {
-            firsts.iter().copied().filter(|&l| sm.offset_of(l).is_some_and(|(g, _)| g == f)).collect()
+            firsts
+                .iter()
+                .copied()
+                .filter(|&l| sm.offset_of(l).is_some_and(|(g, _)| g == f))
+                .collect()
         };
         let (p, q, mut m) = (in_file(pre), in_file(pre2), in_file(main));
         m.extend(firsts.iter().copied().filter(|l| l.is_macro()));
