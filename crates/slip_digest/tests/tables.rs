@@ -641,10 +641,14 @@ Prose between the property line and the table.
         assert_eq!(super::tables::screaming("ALIGNED"), "ALIGNED");
         assert_eq!(super::tables::screaming("class_template"), "CLASS_TEMPLATE");
         assert_eq!(
-            generate::rust_type("alloc::boxed::Box<[kiln_ast::types::args::TemplateArg]>"),
-            "Box<[kiln::ast::types::TemplateArg]>"
+            generate::rust_type("alloc::boxed::Box<[kiln_ast::types::nns::Nns]>"),
+            "Box<[kiln::ast::types::Nns]>"
         );
-        assert_eq!(generate::rust_type("kiln_ast::types::node::Store"), "kiln::ast::types::Store");
+        // `types::node` is public since Kiln `83566cc47`: no re-export.
+        assert_eq!(
+            generate::rust_type("kiln_ast::types::node::Store"),
+            "kiln::ast::types::node::Store"
+        );
         assert_eq!(generate::rust_type("(kiln_source::loc::Loc, u32)"), "(kiln::source::Loc, u32)");
     }
 

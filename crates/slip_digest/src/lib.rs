@@ -61,7 +61,7 @@
 //! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::requires_clause` (`expr.rs`) | `child`: one expression, its common rows, its kind's, `ColdExprData`'s and `templ::expr_maps` (§7); a kind not yet filled is pending (`Area::Expr`) |
 //! | `expr::child_keep_paren(w, s, e)` | `child`, an outermost `ParenExpr` written with its rows: for a `DependentDecltype` profile (§7 "Parentheses") |
 //! | `expr_dep::profile(w, s, p)`, `expr_dep::profile_expr(w, s, e)` | pending (`Area::Expr`) |
-//! | `stmt::child(w, s, st)` | pending (`Area::Stmt`) |
+//! | `stmt::child(w, s, st)`, `stmt::child_opt` (`stmt.rs`) | `child`: one statement, its rows in table order (§6), one level of `walk::NODE_LIMIT` for a chain of tails (`stmt.rs` "The walk") |
 //! | `value::value(w, s, v)`, `value::string(w, s, l)` (`value.rs`) | `value`: a constant in place by structure, a constant it points to by content digest (§8); `string`: a string literal by content (§10.3) |
 //! | `local::write_decl(w, s, d)` | `decl` (§2.4): a local entity's ordinal and stream, a block-scope variable with linkage a `ref`, a block-scope function a `ref` and its own default arguments; a local type pending (`Area::Local`) |
 //! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each; a function's and a variable's language linkage (§5.6 `ScopeData`) |
@@ -77,7 +77,7 @@
 //! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1), which brings in `SpecInfo`, `MemberSpecInfo` or `PartialSpecInfo` (§9.4) |
 //! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5), each in its empty form when absent |
 //! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4): pending (`Area::Local`) |
-//! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1): pending (`Area::Stmt`) |
+//! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1) |
 //! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
 //! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
 //! | `other::module_rows(w, s, d)` | the rows `points` and `explicit_defs` of `ModuleTable` (§10.7), from the first declaration; empty forms when ownership is not tracked |
@@ -110,7 +110,7 @@
 //! `expr_core.rs` write (`expr.rs` "The walk"): their children are items
 //! of one heap stack, so an operator, call, member or cast chain of any
 //! length takes one level (`tests/expr_chains.rs`: 20 000 operators and
-//! 20 000 member calls, linear). A level is entered by each `expr::child`
+//! 4 000 member calls, linear). A level is entered by each `expr::child`
 //! (a kind function of `expr_init.rs`, `expr_dep.rs`, `expr_misc.rs`
 //! calling it, a declaration or type reaching an expression) and is to be
 //! entered by each statement the statements package walks.
@@ -202,6 +202,7 @@ mod local;
 mod names;
 mod order;
 mod other;
+pub mod records;
 mod refs;
 mod stmt;
 mod stream;

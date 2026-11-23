@@ -46,7 +46,7 @@ re-implementable from the spec.
 | `spec/model.md` | Entity keys; the subject model; shard, plan and report formats (byte level, versioned) |
 | `spec/digest.md` | The semantic digest: for every Kiln AST node kind and field, included or excluded, and why |
 | `spec/api.md` | `<slip/meta.h>`: every function's signature, preconditions, result, errors; versioning rules |
-| `spec/reduce.md` | Reduce as a function from a set of shards to an edit set and report |
+| `spec/edits.md` | Claims, reduce as a function from a set of shards to an edit set, apply, the verify loop, native rename (planned as `spec/reduce.md`; written as one file because the formats run through all four) |
 | `spec/verify.md` | Comparison under declared changes; outcomes; localisation |
 | `spec/macros.md` | Token origin; tiers; coverage states |
 | `spec/exec.md` | Phases, the store and cache keys, admission, failure handling, exit codes |
@@ -108,7 +108,7 @@ Each ends with a demonstration on the corpora, not with a feature list.
 |---|---|---|---|
 | **M0 Foundations** | Workspace, harness, `slip_model` v0, compilation databases, coordinator and workers with jobserver and memory admission | `slip` parses every LLVM/clang TU and the libc++ test TUs inside the memory budget; per-phase baseline recorded | nothing (KF1 when available) |
 | **M1 Trusted base** | Entity keys, digest, verify, localisation | Corpus invariants (a) and (b) hold on the LLVM corpus, (b) with no exception (`spec/harness.md` §9.2); mutation suite v1 catches every catalogued wrong edit | nothing (KR5 helps) |
-| **M2 Edits** | Edit records, reduce, overlay apply, verify loop, native rename of functions and variables | Invariant (c) for a sample of LLVM functions including ones declared in widely shared headers; clang builds the post-image | KF2, KF3 |
+| **M2 Edits** | Edit records, reduce, overlay apply, verify loop, native rename of functions and variables | Invariant (c) for a sample of LLVM functions including ones declared in widely shared headers; clang builds the post-image | KF2 stage 1 (the overlay). KF3 is delivered by Kiln WP-2150 at `913a490bb`: Slip's pin must be at or after it, since file ranges and token ends are Kiln's functions ([05](05-kiln-interface.md) §3) |
 | **M3 Transforms** | Transform universe, `<slip/meta.h>` v0, rules, facts and guards | Example 9.1 of [01](01-transform-api.md) written as a transform and run on LLVM against a real API pair; API conformance suite | KS1, KS2 |
 | **M4 Namespace migration** | Written-reference model, `spell`, `relocate_namespace`, macro tiers 0–2, coverage report, repair | The stand-in for the motivating case: relocate the `llvm` namespace for an owned subset of LLVM while a chosen part (ADT and Support) plays the read-only dependency that keeps it. Verified; builds with clang; `check-llvm` passes. | **KR1**, KR3, KR4 |
 | **M5 Scale and hardening** | Shard and model caches, transform memoisation, multiple configurations, performance budgets, release-candidate process | First release candidate | KR2, KM1 |

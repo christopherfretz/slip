@@ -3,7 +3,10 @@
 //! Plain data. The binary and JSON forms are implemented in `formats`
 //! (work package WP-006).
 
+use crate::agreement::{Binding, RuleUse};
 use crate::digests::Digests;
+use crate::edits::Edits;
+use crate::spellings::Spellings;
 use crate::verdict::Verdict;
 use crate::{Digest, FileRef};
 
@@ -61,4 +64,16 @@ pub struct Shard {
     /// The verdict of a verify shard (`spec/verify.md` §6); only for phase
     /// `Verify`, status `Ok` and with `digests`.
     pub verdict: Option<Verdict>,
+    /// Section 17: what a transform's run over this observer produced
+    /// (`spec/edits.md` §4); only for phase `Map` and status `Ok`.
+    pub edits: Option<Edits>,
+    /// Section 24: what a verify shard was made with (`spec/verify.md`
+    /// §9.1); only for phase `Verify` and a status other than `Failed`.
+    pub binding: Option<Binding>,
+    /// Section 25: how the walk used each rule (`spec/verify.md` §9.1);
+    /// only for phase `Verify` and status `Ok`.
+    pub rule_use: Option<RuleUse>,
+    /// Section 26: the spelled-entity checks (`spec/verify.md` §10.4); only
+    /// for phase `Verify` and status `Ok`.
+    pub spellings: Option<Spellings>,
 }

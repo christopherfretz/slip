@@ -159,13 +159,7 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
                 return spec_class(info.kind);
             }
         }
-        Some((
-            TemplLinkKind::Pattern
-            | TemplLinkKind::PartialSpecialization
-            | TemplLinkKind::DependentFriend,
-            _,
-        ))
-        | None => {}
+        Some((TemplLinkKind::Pattern | TemplLinkKind::PartialSpecialization, _)) | None => {}
     }
     // Every member of an implicit instantiation is derived (digest §2.2),
     // whether or not Kiln gave it a `MemberSpecInfo`.

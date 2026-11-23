@@ -8,7 +8,10 @@
 //! directory and the `Debug` form of each side's `Output` between marker
 //! lines; the parent compares them with its own. One child serves every
 //! directory, so that every source is covered at the cost of one process;
-//! it walks while this process does.
+//! it walks while this process does. Both processes walk the directories
+//! on the runners' pool (`common::pool_map`); the order of the walks does
+//! not matter to what is asserted, and the failures are reported in
+//! directory order.
 //!
 //! The first walk of each source also serves the uniqueness test of keys
 //! and display names (`keys_and_names_are_unique`, WP-039), which covers
@@ -63,29 +66,42 @@ struct First {
 fn first() -> &'static [First] {
     static FIRST: OnceLock<Vec<First>> = OnceLock::new();
     FIRST.get_or_init(|| {
-        let mut out = Vec::new();
+        let mut dirs = Vec::new();
         for root in ["differ", "equal", "demand", "indeterminate"] {
-            for dir in common::dirs(root) {
-                let rel = common::rel(&dir);
-                let mut f = First {
-                    pending: common::is_pending(&dir),
-                    texts: Vec::new(),
-                    findings: Vec::new(),
-                    unparsed: Vec::new(),
-                    rel: rel.clone(),
-                };
-                for side in [Side::A, Side::B] {
-                    let r = common::digest_side(&dir, side);
-                    match &r {
-                        Ok(d) => f.findings.extend(keys::check(&rel, side, d)),
-                        Err(_) => f.unparsed.push(format!("{rel} side {side:?}")),
-                    }
-                    f.texts.push(text(&r));
-                }
-                out.push(f);
-            }
+            dirs.extend(common::dirs(root));
         }
-        out
+        let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));
+        let walks = common::pool_map(&dirs, threads, |dir| {
+            let rel = common::rel(dir);
+            let mut f = First {
+                pending: common::is_pending(dir),
+                texts: Vec::new(),
+                findings: Vec::new(),
+                unparsed: Vec::new(),
+                rel: rel.clone(),
+            };
+            for side in [Side::A, Side::B] {
+                let r = common::digest_side(dir, side);
+                match &r {
+                    Ok(d) => f.findings.extend(keys::check(&rel, side, d)),
+                    Err(_) => f.unparsed.push(format!("{rel} side {side:?}")),
+                }
+                f.texts.push(text(&r));
+            }
+            f
+        });
+        dirs.iter()
+            .zip(walks)
+            .map(|(dir, w)| {
+                w.unwrap_or_else(|p| First {
+                    rel: common::rel(dir),
+                    pending: common::is_pending(dir),
+                    texts: vec![format!("panicked: {p}")],
+                    findings: Vec::new(),
+                    unparsed: vec![format!("{}: panicked: {p}", common::rel(dir))],
+                })
+            })
+            .collect()
     })
 }
 
@@ -94,9 +110,12 @@ fn child() {
     if std::env::var_os("SLIP_DIGEST_CHILD").is_none() {
         return;
     }
-    for dir in all_dirs() {
-        let rel = common::rel(&dir);
-        for out in render(&dir) {
+    let dirs = all_dirs();
+    let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));
+    let renders = common::pool_map(&dirs, threads, |d| render(d));
+    for (dir, r) in dirs.iter().zip(renders) {
+        let rel = common::rel(dir);
+        for out in r.unwrap_or_else(|p| vec![format!("panicked: {p}")]) {
             println!("{BEGIN} {rel}\n{out}\n{END}");
         }
     }
@@ -131,15 +150,23 @@ fn determinism() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("the child runs");
+    // The first walk of a directory is the shared one ([`first`]); the
+    // second runs on the pool, the directories in any order, the failures
+    // in theirs.
     let firsts: BTreeMap<&str, &First> = first().iter().map(|f| (f.rel.as_str(), f)).collect();
+    let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));
+    let seconds = common::pool_map(&dirs, threads, |d| render(d));
     let mut ours = Vec::new();
-    for dir in &dirs {
+    for (dir, r) in dirs.iter().zip(seconds) {
         let rel = common::rel(dir);
         let Some(f) = firsts.get(rel.as_str()) else {
             failures.push(format!("{rel}: not walked"));
             continue;
         };
-        ours.push((rel, f.texts.clone(), render(dir)));
+        match r {
+            Ok(second) => ours.push((rel, f.texts.clone(), second)),
+            Err(p) => failures.push(format!("{rel}: panicked: {p}")),
+        }
     }
     let child = child.wait_with_output().expect("the child's output");
     let theirs = parse_child(&String::from_utf8_lossy(&child.stdout));

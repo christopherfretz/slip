@@ -315,7 +315,7 @@ impl Walk<'_> {
 
     /// The key of entity `e` before mapping, with the cause its
     /// discriminator carries; `Err` when it has none.
-    fn compute_key(&mut self, e: DeclId) -> Result<(Key, Option<Cause>), Option<Cause>> {
+    pub(crate) fn compute_key(&mut self, e: DeclId) -> Result<(Key, Option<Cause>), Option<Cause>> {
         let ast = self.ast;
         let n = ast.decls.get(e);
         let kind_info = info(n.kind());
@@ -331,9 +331,6 @@ impl Walk<'_> {
                     let (template, params, args) = (pi.template, pi.params, pi.canonical);
                     return self.spec_key(template, Some(params), args);
                 }
-            }
-            Some((TemplLinkKind::DependentFriend, _)) => {
-                return Err(Some(Cause::Unsupported("TemplLinkKind/DependentFriend")));
             }
             Some((TemplLinkKind::Pattern | TemplLinkKind::MemberOfSpecialization, _)) | None => {}
         }

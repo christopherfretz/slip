@@ -1,0 +1,6 @@
+changed f
+exact derived
+derived-added a
+derived-removed b
+derived-changed c
+# exact derived (a comment)

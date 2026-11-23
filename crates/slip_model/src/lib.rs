@@ -9,10 +9,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agreement;
 pub mod container;
 pub mod declared;
 mod digest;
 pub mod digests;
+pub mod edits;
 pub mod formats;
 pub mod hash;
 pub mod json;
@@ -20,12 +22,18 @@ pub mod keys;
 mod plan;
 mod run;
 mod shard;
+pub mod spellings;
+pub mod transform;
 pub mod verdict;
 pub mod wire;
 
+pub use agreement::{Binding, RuleUse};
 pub use digest::Digest;
+pub use edits::{Claim, Edits, Piece, Place};
 pub use plan::{
     Command, Configuration, EnvVar, Excluded, FileRef, Language, Observer, Origin, Plan, Reason,
 };
 pub use run::{End, Job, Run, RunRecord};
 pub use shard::{Counter, Outcome, Phase, Shard, Status};
+pub use spellings::Spellings;
+pub use transform::Transform;

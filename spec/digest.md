@@ -182,7 +182,15 @@ member).
 ### 2.3 Demand-driven state
 
 Kiln's account of what in the AST exists only because the translation unit
-used it (Kiln `62afe3289`), and where each goes:
+used it (Kiln `62afe3289`), and where each goes. At the pinned
+`913a490bb` (WP-101; its `kiln_ast` is that of `83566cc47`, WP-044) it
+still holds: what Kiln added since (the definition-context operator sets,
+the names of an overloaded member access, the shadows of a
+using-declaration, the owner of a closure, the checked mark of an
+attribute) is recorded where the source is parsed, whatever the unit
+uses, and the written-reference and declaration-extent tables exist only
+when a client turns them on, as does the preprocessing record, which is
+the preprocessor's and not the AST's.
 
 | State | In the digest as |
 |---|---|
@@ -307,7 +315,9 @@ Verification digests the post-image with the rules that undo the declared
 relocations, so that a relocated entity, every member of it, every type
 that mentions it and every signature that contains it get the keys they had
 before, and the two digests are compared for plain equality. Where the
-rules come from, and why this is sound, is `verify.md`.
+rules come from, and why this is sound, is `verify.md`. A walk under
+rules also counts how each rule was used, so that a run can check that no
+observer still has a renamed entity under its old name (`verify.md` §9).
 
 Two different entities of one translation unit with the same mapped `KeyId`
 are a **key collision**: every unit with that key is indeterminate (§10).
@@ -645,7 +655,7 @@ Digests are produced only for an observer whose shard is `ok`.
 Section 19 of the shard (`spec/model.md` §8).
 
 ```
-Digests := scheme: uv              1; changes whenever any stream, key or table of this spec changes
+Digests := scheme: uv              1; changes whenever any stream, key or table of this spec changes (rule below)
            tu:     digest          H("slip.tu.v1", list<GroupSum>), groups in the order below
            groups: list<Group>     sorted by (class, file)
 
@@ -661,6 +671,13 @@ GroupClass := declared = 0 | derived = 1 | tu = 2
 
 Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminate; other bits must be 0
 ```
+
+From the first release, `scheme` changes with every change to a stream,
+a key or a table of this spec, without exception. Before that release no
+shard outlives the build that wrote it (shards are stored by plan, and
+the cache keys of `spec/exec.md` that will replace the plan name the
+tool's version), so no shard of one scheme meets a reader of another, and
+`scheme` stays 1 until then.
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit. A derived unit belongs to the
@@ -817,6 +834,46 @@ true by mechanism, not by review alone.
   encoding is rejected (`crates/slip_model/tests/`).
 - **Completeness**: obligations 4 and 5 of §13.
 
+### 14.1 What a pair test's `expect.txt` says
+
+A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
+`expect.txt`. Its lines, each trimmed; a blank line and a line beginning
+`#` are none (`# pending` marks a test the runner skips and lists):
+
+| Line | Holds when |
+|---|---|
+| `changed <name>` | a key of the name has declared or `tu` units on both sides, and they differ |
+| `added <name>` | side B has declared or `tu` units under a key of the name and side A has none |
+| `removed <name>` | the other way round |
+| `indeterminate <name>` | a unit of the name is flagged for a cause other than `Pending` (§10) |
+| `derived-added <name>` | side B has a derived unit (§2.2) under a key of the name and side A has none |
+| `derived-removed <name>` | the other way round |
+| `derived-changed <name>` | the derived units under a key of the name differ in any way, presence included; under `exact derived`, both sides have one and they differ |
+| `exact derived` | a directive, not a line: the derived keys that differ between the sides are exactly the keys the `derived-*` lines name, each in the way its line says |
+
+1. Any other line is an error of the test, as is a line written twice
+   and a second `exact derived`. The directive is exactly the text
+   `exact derived`.
+2. A name is the name of the key's first unit, from side A when A has
+   the key. Lines are compared by name: a line names every key of its
+   name, and two keys of one name that differ the same way are one line.
+3. **`differ`** reads every line but `indeterminate`, and needs one
+   besides the directive. Over declared and `tu` units, the keys that
+   differ are exactly the `changed`, `added` and `removed` lines, whatever
+   the `derived-*` lines are. A `derived-added` or `derived-removed` line
+   that does not hold fails the test, with or without the directive.
+   Without the directive a derived difference no line names is free.
+4. **`demand`** reads `added` and `derived-added` lines and the
+   directive. Every unit both sides have is equal; the declared keys only
+   B has are exactly the `added` lines and A has none B lacks; every
+   `derived-added` line holds, and under the directive the derived
+   differences are exactly those lines, so that an unnamed instantiation
+   only B has, or any derived unit only A has, fails.
+5. **`equal`** reads no line and no directive: every unit both sides have
+   is equal already, and a unit only one side has, declared or derived,
+   fails the test (the derived groups are part of the `Digests`
+   compared). **`indeterminate`** reads `indeterminate` lines only.
+
 ## Tests
 
 - `crates/slip_digest/tests/equal.rs`, `differ.rs` — §14 pairs, one
@@ -824,6 +881,8 @@ true by mechanism, not by review alone.
 - `crates/slip_digest/tests/determinism.rs`, `demand.rs`,
   `indeterminate.rs` — §14.
 - `crates/slip_digest/tests/tables.rs` — §13 obligations 4 and 5.
+- `crates/slip_digest/tests/runner.rs` — §14.1, the runners' reading of
+  `expect.txt`, over the fixtures of `tests/runner/`.
 - `crates/slip_digest/tests/records.rs`, `trace.rs` — §4.4.
 - `frames_fit_the_stack` in `crates/slip_digest/src/expr.rs` and the
   tests each area adds to it — §12.1.

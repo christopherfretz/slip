@@ -122,6 +122,10 @@ fn check_valid(v: &Verdict) {
         counters: vec![],
         digests: Some(Digests { scheme: SCHEME, tu: tu_digest(&[]), groups: vec![] }),
         verdict: Some(v.clone()),
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     };
     if let Err(e) = shard.validate() {
         panic!("verdict rejected by slip_model: {e}\n{v:?}");
@@ -145,7 +149,9 @@ fn check_valid(v: &Verdict) {
     assert!(v.reason.len() <= REASON_MAX);
     assert!(v.findings.len() as u64 <= v.total);
     for w in v.findings.windows(2) {
-        assert!((w[0].kind, &w[0].file, w[0].key) <= (w[1].kind, &w[1].file, w[1].key));
+        assert!(
+            (w[0].kind.rank(), &w[0].file, w[0].key) <= (w[1].kind.rank(), &w[1].file, w[1].key)
+        );
         if w[0].key.is_some() {
             assert!((w[0].kind, w[0].key) != (w[1].kind, w[1].key), "one finding per kind and key");
         }
@@ -502,9 +508,10 @@ fn s4_declared_and_derived_of_one_key_are_compared_separately() {
     let post = [decl("/a.h", &[ui(1, 1)]), deriv("/a.h", &[u(1, 2)])];
     assert_eq!(
         plain(&pre, &post),
+        // In the order of findings by rank (§6): derived_changed first.
         only(vec![
-            f(Indeterminate, 1, "/a.h", Some(1), Some(1)),
             f(DerivedChanged, 1, "/a.h", Some(1), Some(2)),
+            f(Indeterminate, 1, "/a.h", Some(1), Some(1)),
         ])
     );
 }
@@ -600,7 +607,8 @@ fn s6_file_of_an_indeterminate_key() {
     assert_eq!(plain(&pre, &pre), only(vec![f(DerivedIndeterminate, 1, "/b.h", Some(2), Some(2))]));
 }
 
-// §6: findings ordered by kind, then file, then key.
+// §6: findings ordered by rank, then file, then key; `derived_changed`
+// (rank 3) before `indeterminate` (rank 4).
 #[test]
 fn s6_order_of_findings() {
     let pre = [
@@ -625,9 +633,9 @@ fn s6_order_of_findings() {
         (Removed, b"/b.h", 5),
         (Added, b"/a.h", 3),
         (Added, b"/b.h", 2),
-        (Indeterminate, b"/a.h", 6),
         (DerivedChanged, b"/a.h", 20),
         (DerivedChanged, b"/b.h", 21),
+        (Indeterminate, b"/a.h", 6),
         (DerivedIndeterminate, b"/b.h", 22),
     ];
     assert_eq!(kinds, expect);
@@ -636,6 +644,207 @@ fn s6_order_of_findings() {
     let c = plain(&pre, &[]);
     let keys: Vec<u8> = c.findings.iter().map(|x| x.key.unwrap().0[1]).collect();
     assert_eq!(keys, vec![1, 2, 3]);
+}
+
+/// A key of a wide range, apart from those of `key`.
+fn wide(n: u32) -> Digest {
+    let mut b = [0u8; 32];
+    b[0] = 0x30;
+    b[1..5].copy_from_slice(&n.to_be_bytes());
+    Digest(b)
+}
+
+/// Ten thousand indeterminate units, half declared and half derived, on
+/// both sides, all in the file `/a.h`, which sorts before `/z.h`.
+fn ten_thousand_indeterminate() -> (Vec<Unit>, Vec<Unit>) {
+    let ind = |n: u32| Unit { key: wide(n), digest: dg(1), flags: Unit::INDETERMINATE };
+    ((0..5000).map(ind).collect(), (5000..10_000).map(ind).collect())
+}
+
+// §6 "a `derived_changed` finding is within the first `limit` (and the
+// first `locate`) however many indeterminate units the observer has"
+// (verify.md "Tests": compare.rs, the order of findings by rank).
+#[test]
+fn derived_changed_is_within_the_limit() {
+    let (d, v) = ten_thousand_indeterminate();
+    // `z`: declared units of `/z.h`; `digest`: that of the derived unit.
+    let image = |z: &[Unit], digest: u8| {
+        let mut groups = vec![
+            decl("/a.h", &d),
+            deriv("/a.h", &v),
+            // The derived unit whose digest differs, in a file after `/a.h`.
+            deriv("/z.h", &[u(1, digest)]),
+        ];
+        if !z.is_empty() {
+            groups.push(decl("/z.h", z));
+        }
+        groups
+    };
+    let (pre, post) = (image(&[], 1), image(&[], 2));
+    let derived_changed = f(DerivedChanged, 1, "/z.h", Some(1), Some(2));
+    let c = plain(&pre, &post);
+    assert_eq!(c.findings.len(), 10_001);
+    let v64 = verdict(c.clone(), dg(100), dg(101), 64);
+    check_valid(&v64);
+    assert_eq!(v64.total, 10_001);
+    assert_eq!(v64.findings.len(), 64);
+    assert_eq!(v64.findings[0], derived_changed);
+    assert!(v64.findings[1..].iter().all(|x| x.kind == Indeterminate));
+    let v1 = verdict(c, dg(100), dg(101), 1);
+    check_valid(&v1);
+    assert_eq!(v1.findings, vec![derived_changed.clone()]);
+
+    // With one changed (2), one removed (3) and one added (4) unit beside
+    // it: those three, then it, then the indeterminate ones.
+    let pre = image(&[u(2, 1), u(3, 1)], 1);
+    let post = image(&[u(2, 2), u(4, 1)], 2);
+    let c = plain(&pre, &post);
+    let four = vec![
+        f(Changed, 2, "/z.h", Some(1), Some(2)),
+        f(Removed, 3, "/z.h", Some(1), None),
+        f(Added, 4, "/z.h", None, Some(1)),
+        derived_changed,
+    ];
+    let v64 = verdict(c.clone(), dg(100), dg(101), 64);
+    check_valid(&v64);
+    assert_eq!(v64.total, 10_004);
+    assert_eq!(v64.findings[..4], four[..]);
+    assert!(v64.findings[4..].iter().all(|x| x.kind == Indeterminate));
+    let v4 = verdict(c, dg(100), dg(101), 4);
+    check_valid(&v4);
+    assert_eq!(v4.findings, four);
+}
+
+/// xorshift64 with a fixed seed, as `tests/groups.rs`.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// One image of generated units: per key, up to two units, each in a
+/// declared, derived or `tu` group of one of three files, with one of
+/// three digests, indeterminate one time in eight. No group holds a key
+/// twice.
+fn generated(rng: &mut Rng, keys: u8) -> Vec<Group> {
+    const FILES: [&str; 3] = ["/a.h", "/b.h", "/c.h"];
+    let mut by_group: std::collections::BTreeMap<(GroupClass, &str), Vec<Unit>> =
+        std::collections::BTreeMap::new();
+    for k in 0..keys {
+        for _ in 0..rng.below(3) {
+            let class = [Declared, Derived, Tu][rng.below(3) as usize];
+            let file = if class == Tu { "" } else { FILES[rng.below(3) as usize] };
+            let units = by_group.entry((class, file)).or_default();
+            if units.iter().any(|x| x.key == key(k)) {
+                continue;
+            }
+            let digest = rng.below(3) as u8;
+            units.push(if rng.below(8) == 0 { ui(k, digest) } else { u(k, digest) });
+        }
+    }
+    by_group.into_iter().map(|((class, file), units)| group(class, file, &units)).collect()
+}
+
+/// §4 over all units, by key, without groups and without any order of
+/// findings: the `(kind, key)` of every finding, sorted by number. A
+/// reference for what the comparison finds, independent of how it sorts.
+fn reference(pre: &[Group], post: &[Group]) -> Vec<(FindingKind, Digest)> {
+    use std::collections::BTreeMap;
+    // key -> (declared?) -> [pre digests, post digests], and indeterminate.
+    type Sides = ([Vec<Digest>; 2], bool);
+    let mut d: BTreeMap<Digest, Sides> = BTreeMap::new();
+    let mut v: BTreeMap<Digest, Sides> = BTreeMap::new();
+    for (side, image) in [pre, post].into_iter().enumerate() {
+        for g in image {
+            let m = if g.class == Derived { &mut v } else { &mut d };
+            for x in g.units.as_ref().unwrap() {
+                let e = m.entry(x.key).or_default();
+                e.0[side].push(x.digest);
+                e.1 |= x.is_indeterminate();
+            }
+        }
+    }
+    let differences = |p: &[Digest], q: &[Digest]| {
+        let minus = |a: &[Digest], b: &[Digest]| {
+            let mut b = b.to_vec();
+            a.iter().any(|x| match b.iter().position(|y| y == x) {
+                Some(i) => {
+                    b.remove(i);
+                    false
+                }
+                None => true,
+            })
+        };
+        (minus(p, q), minus(q, p))
+    };
+    let mut out = Vec::new();
+    for (k, ([p, q], ind)) in d {
+        if ind {
+            out.push((Indeterminate, k));
+            continue;
+        }
+        match differences(&p, &q) {
+            (true, true) => out.push((Changed, k)),
+            (true, false) => out.push((Removed, k)),
+            (false, true) => out.push((Added, k)),
+            (false, false) => {}
+        }
+    }
+    for (k, ([p, q], ind)) in v {
+        if ind {
+            out.push((DerivedIndeterminate, k));
+        } else if differences(&p, &q) == (true, true) {
+            out.push((DerivedChanged, k));
+        }
+    }
+    out.sort();
+    out
+}
+
+// §6, the order of findings, over generated images (a fixed seed): the
+// findings are ascending by `(rank, file, key)`, and re-sorted by the
+// former order `(kind, file, key)` they are a permutation of the
+// comparison's findings by kind and key, none lost, none doubled, none
+// of another kind (checked against a reference that does not sort).
+#[test]
+fn s6_order_by_rank_is_a_permutation() {
+    let mut rng = Rng(0x5eed_0055_0000_0de5);
+    let mut ranks_together = 0;
+    for case in 0..2000 {
+        let keys = 1 + rng.below(24) as u8;
+        let (pre, post) = (generated(&mut rng, keys), generated(&mut rng, keys));
+        let c = plain(&pre, &post);
+        let order = |x: &Finding| (x.kind.rank(), x.file.clone(), x.key);
+        assert!(
+            c.findings.windows(2).all(|w| order(&w[0]) < order(&w[1])),
+            "case {case}: not strictly ascending by (rank, file, key)"
+        );
+        let mut former = c.findings.clone();
+        former.sort_by(|a, b| (a.kind, &a.file, a.key).cmp(&(b.kind, &b.file, b.key)));
+        let mut by_rank_again = former.clone();
+        by_rank_again.sort_by_key(order);
+        assert_eq!(by_rank_again, c.findings, "case {case}: one set of findings, two orders");
+        let mut found: Vec<(FindingKind, Digest)> =
+            former.iter().map(|x| (x.kind, x.key.unwrap())).collect();
+        found.sort();
+        assert_eq!(found, reference(&pre, &post), "case {case}");
+        let kinds: Vec<FindingKind> = c.findings.iter().map(|x| x.kind).collect();
+        if kinds.contains(&Indeterminate) && kinds.contains(&DerivedChanged) {
+            ranks_together += 1;
+        }
+        check_valid(&verdict(c, dg(100), dg(101), 64));
+    }
+    assert!(ranks_together >= 100, "too few cases with ranks 3 and 4 together: {ranks_together}");
 }
 
 // ---------------------------------------------------------------------------

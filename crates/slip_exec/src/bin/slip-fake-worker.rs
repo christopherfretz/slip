@@ -20,7 +20,7 @@
 //!
 //! | `argv[1]` | Behaviour |
 //! |---|---|
-//! | `ok` | a shard with status `ok`, `inputs = [main]`, counter `fake.jobs = 1`; `Done` |
+//! | `ok` | a shard with status `ok`, `inputs = [main]`, counter `fake.jobs = 1` and the echo below; `Done` |
 //! | `diagnosed` | a shard with status `diagnosed`, 1 error, message `fake diagnostic`; `Done` |
 //! | `fail:<message>` | the task returns `Err(<message>)`; `Failed` with that message |
 //! | `panic` | the task panics with `fake worker panic`; `Failed` with `panicked: fake worker panic`, then the worker ends (status 0) |
@@ -34,6 +34,14 @@
 //! | `no-shard` | answers `Done` with a shard id that is not in the store, without publishing, exits 0 |
 //! | `late-output` | as `ok`; after `serve` returns (on `Exit` or end of input) writes `late output\n` to standard output, exits 0 |
 //!
+//! The worker speaks protocol 2 (`spec/exec.md` §5.2). Every shard it makes
+//! echoes the job's two fields of protocol 2 in counters, each present
+//! only when its field is: `fake.transform` (the first byte of the
+//! transform's id); `fake.post.pre`, `fake.post.declared` (the first byte
+//! of its id), `fake.post.image` (0 tree, 1 overlay), and
+//! `fake.post.roots` (the number of root maps) or `fake.post.overlay` (the
+//! first byte of the overlay's id).
+//!
 //! Anything else (or no `argv[1]`) is `Err("unknown fake behaviour …")`.
 //! Every behaviour writes one line naming itself to standard error, which
 //! the coordinator captures to the attempt's log.
@@ -46,7 +54,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use slip_exec::store::{Access, Store};
-use slip_exec::worker::{Job, ServeOptions, Task, ToCoordinator, serve, write_frame};
+use slip_exec::worker::{Job, PostImage, ServeOptions, Task, ToCoordinator, serve, write_frame};
 use slip_model::hash::content_digest;
 use slip_model::{Counter, Outcome, Shard, Status};
 
@@ -85,10 +93,38 @@ fn ok_shard(job: &Job) -> Shard {
         round: job.round,
         outcome: Outcome { status: Status::Ok, errors: 0, warnings: 0, message: String::new() },
         inputs: Some(vec![job.observer.main.clone()]),
-        counters: vec![Counter { name: "fake.jobs".to_owned(), value: 1 }],
+        counters: echo(job),
         digests: None,
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
+}
+
+/// `fake.jobs = 1` and the job's protocol 2 fields, ascending by name.
+fn echo(job: &Job) -> Vec<Counter> {
+    let mut out = vec![("fake.jobs", 1)];
+    if let Some(post) = &job.post {
+        out.push(("fake.post.declared", u64::from(post.declared.0[0])));
+        match &post.image {
+            PostImage::Tree(maps) => {
+                out.push(("fake.post.image", 0));
+                out.push(("fake.post.pre", post.pre));
+                out.push(("fake.post.roots", maps.len() as u64));
+            }
+            PostImage::Overlay(id) => {
+                out.push(("fake.post.image", 1));
+                out.push(("fake.post.overlay", u64::from(id.0[0])));
+                out.push(("fake.post.pre", post.pre));
+            }
+        }
+    }
+    if let Some(t) = &job.transform {
+        out.push(("fake.transform", u64::from(t.0[0])));
+    }
+    out.into_iter().map(|(name, value)| Counter { name: name.to_owned(), value }).collect()
 }
 
 /// Writes one message straight to standard output and ends the process.

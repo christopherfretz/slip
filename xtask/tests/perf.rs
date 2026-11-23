@@ -106,6 +106,10 @@ fn shard(observer: Digest, round: u64, status: Status, counters: &[(&str, u64)])
         counters: counters.iter().map(|(n, v)| Counter { name: (*n).into(), value: *v }).collect(),
         digests: None,
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 

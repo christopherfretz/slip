@@ -20,10 +20,11 @@ use std::time::{Duration, Instant};
 
 use slip_exec::admission::{Config, GIB};
 use slip_exec::jobserver::{self, Pool};
-use slip_exec::pool::{self, Options, PoolError, Summary, WorkerCommand};
+use slip_exec::pool::{self, JobExtra, Options, PoolError, Summary, WorkerCommand};
 use slip_exec::process::{Sample, Sampler};
 use slip_exec::signals;
 use slip_exec::store::{Access, Store};
+use slip_exec::worker::{Post, PostImage};
 use slip_model::formats::content_id;
 use slip_model::{
     Command as Cmd, Digest, End, FileRef, Language, Observer, Origin, Phase, RunRecord, Shard,
@@ -422,6 +423,185 @@ fn s5_4_every_row_retry_and_logs() {
     drop(r.store);
 }
 
+/// [`pool::run_with`] on a thread at round 1, bounded as [`run_bounded`].
+fn run_bounded_with(
+    store: Store,
+    obs: &[Observer],
+    phase: Phase,
+    extra: &JobExtra,
+    worker: &WorkerCommand,
+    options: &Options,
+    sampler: &Arc<FakeSampler>,
+) -> Run {
+    let (obs, extra, worker, options, sampler) =
+        (obs.to_vec(), extra.clone(), worker.clone(), options.clone(), Arc::clone(sampler));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = pool::run_with(
+            &store,
+            &PLAN,
+            &obs,
+            phase,
+            1,
+            &extra,
+            &worker,
+            &options,
+            &Pool::none(),
+            &*sampler,
+        );
+        let _ = tx.send(Run { store, result });
+    });
+    rx.recv_timeout(DEADLINE).expect("pool::run_with did not return within the deadline")
+}
+
+/// §5.2 "Protocol 2", §5.7 `run_with`: the fields of `JobExtra` reach
+/// every job's worker (the fake worker echoes them into its shard's
+/// counters), for a map phase with a transform and for a verify phase
+/// with a post of each image form.
+#[test]
+fn s5_2_job_extra_reaches_the_worker() {
+    let dir = scratch("extra");
+    let obs = observers(&["ok", "ok"]);
+    let opts = options(2, config(0, None));
+    let sampler = FakeSampler::new(Mode::Real);
+    let counters = |store: &Store, phase: Phase, o: &Observer| {
+        let bytes = store.read_shard(&PLAN, phase, 1, &o.id).unwrap().expect("a shard");
+        let shard = Shard::from_bytes(&bytes).unwrap();
+        assert_eq!(shard.outcome.status, Status::Ok);
+        shard.counters.iter().map(|c| (c.name.clone(), c.value)).collect::<Vec<_>>()
+    };
+    let named = |pairs: &[(&str, u64)]| {
+        pairs.iter().map(|(n, v)| ((*n).to_owned(), *v)).collect::<Vec<_>>()
+    };
+    let cases = [
+        (Phase::Map, JobExtra::default(), named(&[("fake.jobs", 1)])),
+        (
+            Phase::Map,
+            JobExtra { transform: Some(Digest([0x31; 32])), post: None },
+            named(&[("fake.jobs", 1), ("fake.transform", 0x31)]),
+        ),
+        (
+            Phase::Verify,
+            JobExtra {
+                transform: None,
+                post: Some(Post {
+                    pre: 0,
+                    declared: Digest([0x32; 32]),
+                    image: PostImage::Tree(vec![
+                        (b"/a".to_vec(), b"/b".to_vec()),
+                        (b"/c".to_vec(), b"/d".to_vec()),
+                    ]),
+                }),
+            },
+            named(&[
+                ("fake.jobs", 1),
+                ("fake.post.declared", 0x32),
+                ("fake.post.image", 0),
+                ("fake.post.pre", 0),
+                ("fake.post.roots", 2),
+            ]),
+        ),
+        (
+            Phase::Verify,
+            JobExtra {
+                transform: None,
+                post: Some(Post {
+                    pre: 1,
+                    declared: Digest([0x32; 32]),
+                    image: PostImage::Overlay(Digest([0x33; 32])),
+                }),
+            },
+            named(&[
+                ("fake.jobs", 1),
+                ("fake.post.declared", 0x32),
+                ("fake.post.image", 1),
+                ("fake.post.overlay", 0x33),
+                ("fake.post.pre", 1),
+            ]),
+        ),
+    ];
+    let mut store = open(&dir);
+    for (phase, extra, want) in &cases {
+        let r = run_bounded_with(store, &obs, *phase, extra, &fake_worker(1), &opts, &sampler);
+        store = r.store;
+        let s = r.result.unwrap();
+        assert_eq!(s.statuses[Status::Ok as usize], 2, "{extra:?}");
+        assert_eq!((s.run.run.phase, s.run.run.round), (*phase, 1));
+        for o in &obs {
+            assert_eq!(&counters(&store, *phase, o), want, "{extra:?}");
+        }
+    }
+}
+
+/// §5.2, §5.7: `run_with` refuses, before any worker is started, a map
+/// phase with a `post`, a verify phase with a `transform`, and a verify
+/// phase without a `post` (so `run` refuses phase `verify`): `Refused`,
+/// no run record, no log, no shard.
+#[test]
+fn s5_2_run_with_refuses_what_the_task_refuses() {
+    let dir = scratch("refused");
+    let obs = observers(&["ok"]);
+    let opts = options(1, config(0, None));
+    let sampler = FakeSampler::new(Mode::Real);
+    let post = Post { pre: 0, declared: Digest([1; 32]), image: PostImage::Tree(vec![]) };
+    let cases = [
+        (Phase::Map, JobExtra { transform: None, post: Some(post.clone()) }, "a post"),
+        (
+            Phase::Verify,
+            JobExtra { transform: Some(Digest([2; 32])), post: Some(post) },
+            "a transform",
+        ),
+        (Phase::Verify, JobExtra::default(), "no post"),
+    ];
+    let mut store = open(&dir);
+    for (phase, extra, want) in &cases {
+        let r = run_bounded_with(store, &obs, *phase, extra, &fake_worker(1), &opts, &sampler);
+        store = r.store;
+        match r.result {
+            Err(e @ PoolError::Refused(m)) => {
+                assert!(m.contains(want), "{m}");
+                assert_eq!(e.to_string(), m, "the text alone");
+            }
+            other => panic!("{phase:?} {extra:?}: {other:?}"),
+        }
+    }
+    // `run` is `run_with` with neither field.
+    let r = run_bounded_round_phase(store, &obs, Phase::Verify, &opts, &sampler);
+    assert!(matches!(r.result, Err(PoolError::Refused(_))), "{:?}", r.result);
+    assert_eq!(sampler.pids(), 0, "no worker was started");
+    for sub in ["runs", "logs", "shards"] {
+        let d = r.store.root().join(sub).join(PLAN.to_string());
+        assert!(!d.exists(), "{} exists", d.display());
+    }
+}
+
+/// `pool::run` itself at `phase`, round 0, with the fake worker.
+fn run_bounded_round_phase(
+    store: Store,
+    obs: &[Observer],
+    phase: Phase,
+    options: &Options,
+    sampler: &Arc<FakeSampler>,
+) -> Run {
+    let (obs, options, sampler) = (obs.to_vec(), options.clone(), Arc::clone(sampler));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = pool::run(
+            &store,
+            &PLAN,
+            &obs,
+            phase,
+            0,
+            &fake_worker(1),
+            &options,
+            &Pool::none(),
+            &*sampler,
+        );
+        let _ = tx.send(Run { store, result });
+    });
+    rx.recv_timeout(DEADLINE).expect("pool::run did not return within the deadline")
+}
+
 /// §5.2 "protocol violation": a `Ready` for another protocol, and a worker
 /// that exits 0 without answering, are crashes; a worker that cannot be
 /// started is one too (§5.6).
@@ -437,11 +617,12 @@ fn s5_2_ready_protocol_and_silent_exit_are_crashes() {
                 program: "sh".into(),
                 args: vec![
                     "-c".into(),
-                    r"printf '\004\000\000\000\001\002\001t'; cat >/dev/null".into(),
+                    // A worker of protocol 1 (M0, M1 before the verify command).
+                    r"printf '\004\000\000\000\001\001\001t'; cat >/dev/null".into(),
                 ],
                 env_remove: vec![],
             },
-            "protocol violation: Ready for protocol 2, not 1",
+            "protocol violation: Ready for protocol 1, not 2",
         ),
         (
             WorkerCommand {

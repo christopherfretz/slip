@@ -1,0 +1,3 @@
+removed begin(const R &)
+changed f()
+added template <class> const int * begin(const type-parameter-0-0 &)

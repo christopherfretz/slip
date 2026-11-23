@@ -484,10 +484,13 @@ files, the front-end check, and the tool versions.
 - A launcher written as `env VAR=value compiler …` is not recognised; the
   entry is excluded as `malformed_entry` (several inputs).
 - Kiln's front-end library entry writes no side output
-  (`-ftime-trace`, `-fconstexpr-report=`, `-MD`, …: `spec/model.md` §8.4),
-  except a module-cache build inside the job (`import std`), which can
-  still write to the user's cache (`docs/requests/KF1-front-end-entry.md`).
-  `KilnCheck` does not refuse `import std`; no corpus of M1 uses modules.
+  (`-ftime-trace`, `-fconstexpr-report=`, `-MD`, …: `spec/model.md` §8.4):
+  its job runs with `no_side_outputs` (Kiln `kiln_driver/src/front_end.rs:547`,
+  `args.rs:747-751`), under which the `std` module cache is only read, a
+  valid entry used and nothing built or pruned. The parse of a unit that
+  does `import std` therefore depends on whether a cache entry already
+  exists on the host, which is not an input of the shard. `KilnCheck` does
+  not refuse `import std`; no corpus of M1 uses modules.
 - Entries with the same observer id whose main file or language differ can
   only arise if the file system changes while the plan is built. The first
   entry's are kept; the change is not detected.

@@ -12,14 +12,12 @@ use super::{Doc, Encoding, Kind, Number, Pin, Type, screaming, snake};
 /// outside. A wrong entry does not compile. A type at a private path that
 /// is not re-exported is listed in `pins.txt` instead.
 const REEXPORTS: &[(&str, &str)] = &[
-    ("kiln::ast::types::args::", "kiln::ast::types::"),
     ("kiln::ast::types::context::", "kiln::ast::types::"),
     ("kiln::ast::types::func::", "kiln::ast::types::"),
     ("kiln::ast::types::kinds::", "kiln::ast::types::"),
     ("kiln::ast::types::layout::", "kiln::ast::types::"),
     ("kiln::ast::types::names::", "kiln::ast::types::"),
     ("kiln::ast::types::nns::", "kiln::ast::types::"),
-    ("kiln::ast::types::node::", "kiln::ast::types::"),
     ("kiln::ast::consts::value::", "kiln::ast::consts::"),
     ("kiln::source::loc::", "kiln::source::"),
 ];

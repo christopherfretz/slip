@@ -1,0 +1,6 @@
+file llvm/include/llvm/ADT/Hashing.h
+replace
+static constexpr uint64_t k3 = 0xc949d7c7509e6557ULL;
+with
+static constexpr uint64_t k3 = 0xc949d7c7509e6577ULL;
+end

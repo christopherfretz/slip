@@ -7,13 +7,16 @@
 use std::fs;
 use std::path::Path;
 
+use slip_model::agreement::{Binding, RuleUse, Use};
 use slip_model::container::{TRAILER_LEN, Writer};
 use slip_model::digests::{
     Digests, GROUP_TAG, Group, GroupClass, SCHEME, TU_TAG, Unit, group_digest, tu_digest,
 };
+use slip_model::edits::Edits;
 use slip_model::formats::{JsonFormError, content_id, dump, undump};
 use slip_model::hash::content_digest;
 use slip_model::json::{self, Value};
+use slip_model::spellings::{Failed, Span, Spellings};
 use slip_model::verdict::{Finding, FindingKind, Site, Verdict, VerdictKind, Where};
 use slip_model::wire::{Encoder, Error, ErrorKind};
 use slip_model::{Counter, Digest, FileRef, Outcome, Phase, Shard, Status};
@@ -158,6 +161,18 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
         s4.str(&c.name).uv(c.value);
     }
     out.push((4, s4.into_bytes()));
+    if let Some(x) = &s.edits {
+        // Only an empty section: `tests/edits.rs` encodes the rest.
+        assert!(x.failure.is_none() && x.files.is_empty() && x.claims.is_empty());
+        assert!(x.subjects.is_empty() && x.links.is_empty() && x.groups.is_empty());
+        assert!(x.reports.is_empty() && x.changed.is_empty() && x.renamed.is_empty());
+        let mut e = Encoder::new();
+        e.uv(x.scheme).digest(&x.transform).u8(0);
+        for _ in 0..8 {
+            e.count(0);
+        }
+        out.push((17, e.into_bytes()));
+    }
     if let Some(ds) = &s.digests {
         let mut e = Encoder::new();
         e.uv(ds.scheme).digest(&ds.tu).count(ds.groups.len());
@@ -210,7 +225,79 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
         }
         out.push((21, e.into_bytes()));
     }
+    if let Some(b) = &s.binding {
+        let mut e = Encoder::new();
+        raw_opt_digest(&mut e, b.overlay);
+        e.digest(&b.declared).uv(b.pre);
+        out.push((24, e.into_bytes()));
+    }
+    if let Some(r) = &s.rule_use {
+        out.push((25, raw_rule_use(r).0));
+    }
+    if let Some(x) = &s.spellings {
+        out.push((26, raw_spellings(x).0));
+    }
     out
+}
+
+/// The payload of a `rule_use` section, and the offset in it of each use.
+fn raw_rule_use(r: &RuleUse) -> (Vec<u8>, Vec<usize>) {
+    let mut e = Encoder::new();
+    e.digest(&r.rules).count(r.uses.len());
+    let mut at = Vec::new();
+    for u in &r.uses {
+        at.push(e.as_bytes().len());
+        e.uv(u.rule).uv(u.via).uv(u.direct);
+    }
+    (e.into_bytes(), at)
+}
+
+/// The payload of a spellings section, and the offsets in it of each
+/// span, each span's count and each failed entry.
+fn raw_spellings(x: &Spellings) -> (Vec<u8>, Vec<usize>, Vec<usize>, Vec<usize>) {
+    let mut e = Encoder::new();
+    e.uv(x.seen).count(x.held.len());
+    let (mut held, mut counts, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+    for h in &x.held {
+        held.push(e.as_bytes().len());
+        e.uv(h.first);
+        counts.push(e.as_bytes().len());
+        e.uv(h.count);
+    }
+    e.count(x.failed.len());
+    for f in &x.failed {
+        failed.push(e.as_bytes().len());
+        e.uv(f.index);
+        raw_opt_digest(&mut e, f.found);
+        e.str(&f.name);
+    }
+    (e.into_bytes(), held, counts, failed)
+}
+
+/// The file offset of the payload of section `id`, read from the framing.
+fn payload_at(bytes: &[u8], id: u64) -> usize {
+    fn uv(bytes: &[u8], at: &mut usize) -> u64 {
+        let (mut v, mut shift) = (0u64, 0);
+        loop {
+            let b = bytes[*at];
+            *at += 1;
+            v |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                return v;
+            }
+            shift += 7;
+        }
+    }
+    let mut at = 16;
+    loop {
+        let this = uv(bytes, &mut at);
+        assert_ne!(this, 0, "no section {id}");
+        let len = uv(bytes, &mut at) as usize;
+        if this == id {
+            return at;
+        }
+        at += len;
+    }
 }
 
 fn raw(s: &Shard) -> Vec<u8> {
@@ -239,6 +326,10 @@ fn map_shard() -> Shard {
             summed(GroupClass::Tu, b"", 1, d(0x55)),
         ])),
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 
@@ -336,6 +427,10 @@ fn verify_shard() -> Shard {
                 },
             ],
         }),
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 
@@ -560,6 +655,10 @@ fn sample_map_shard(digests: Digests) -> Shard {
         counters: vec![Counter { name: "digest.groups".to_owned(), value: 5 }],
         digests: Some(digests),
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 
@@ -580,7 +679,9 @@ fn finding(kind: FindingKind, key: Option<u8>, file: &[u8]) -> Finding {
 }
 
 /// A mismatch with a finding of every kind, with and without `where`,
-/// non-UTF-8 files, an unnamed indeterminate finding, values above 2^53.
+/// non-UTF-8 files, an unnamed indeterminate finding, values above 2^53;
+/// in the order of findings, by rank (`derived_changed` before
+/// `indeterminate`, spec/verify.md §6).
 fn sample_mismatch() -> Verdict {
     let both = |pre: Site, post: Site| Some(Where { pre, post });
     let findings = vec![
@@ -607,17 +708,17 @@ fn sample_mismatch() -> Verdict {
             ..finding(FindingKind::Removed, Some(0x12), b"/s/a.h")
         },
         Finding { post: Some(d(0xa6)), ..finding(FindingKind::Added, Some(0x13), b"/s/a.h") },
+        Finding {
+            pre: Some(d(0xa8)),
+            post: Some(d(0xa9)),
+            ..finding(FindingKind::DerivedChanged, Some(0x15), b"")
+        },
         finding(FindingKind::Indeterminate, None, b""),
         finding(FindingKind::Indeterminate, None, b""),
         finding(FindingKind::Indeterminate, Some(0x14), b""),
         Finding {
             pre: Some(d(0xa7)),
             ..finding(FindingKind::Indeterminate, Some(0x17), b"/s/a.h")
-        },
-        Finding {
-            pre: Some(d(0xa8)),
-            post: Some(d(0xa9)),
-            ..finding(FindingKind::DerivedChanged, Some(0x15), b"")
         },
         finding(FindingKind::DerivedIndeterminate, Some(0x16), b"/s/a.h"),
     ];
@@ -638,6 +739,10 @@ fn sample_verify_shard(verdict: Verdict) -> Shard {
     Shard {
         phase: Phase::Verify,
         verdict: Some(verdict),
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
         ..sample_map_shard(sample_digests(&[0, 3]))
     }
 }
@@ -720,8 +825,9 @@ fn verdict_round_trip() {
     assert_eq!(w.get("pre").unwrap().get("file"), Some(&parse(r#"{"hex": "2f732fff622e68"}"#)));
     assert_eq!(f[3].get("where"), Some(&Value::Null));
     assert_eq!(f[3].get("pre"), Some(&Value::Null));
-    assert_eq!(f[4].get("key"), Some(&Value::Null));
-    assert_eq!(f[8].get("kind"), Some(&Value::Str("derived_changed".into())));
+    assert_eq!(f[4].get("kind"), Some(&Value::Str("derived_changed".into())));
+    assert_eq!(f[5].get("key"), Some(&Value::Null));
+    assert_eq!(f[5].get("kind"), Some(&Value::Str("indeterminate".into())));
     assert_eq!(f[9].get("kind"), Some(&Value::Str("derived_indeterminate".into())));
 }
 
@@ -1068,6 +1174,37 @@ fn verdict_3_kinds() {
     assert_eq!(rejected(&s, "sections.verdict.findings"), 309);
 }
 
+// verdict rule 3, `pre` (spec/model.md §8.3): a verified or mismatch
+// verdict compared against a pre shard, so its `pre` is not all zero; only
+// an unverifiable one may have none. Checked first, `pre` being the first
+// field after `kind`; binary (offset 207, the `pre` field) and JSON.
+#[test]
+fn verdict_3_pre_shard() {
+    let zero = Digest([0; 32]);
+    let mut s = verify_shard();
+    verdict(&mut s).pre = zero;
+    assert_eq!(rejected(&s, "sections.verdict.pre"), 207);
+    let e = Shard::from_bytes(&raw(&s)).unwrap_err();
+    assert_eq!(e.what, "a mismatch verdict without a pre shard");
+    // Before the reason of rule 3.
+    verdict(&mut s).reason = "x".into();
+    assert_eq!(rejected(&s, "sections.verdict.pre"), 207);
+    let mut s = verify_shard();
+    verdict(&mut s).kind = VerdictKind::Verified;
+    verdict(&mut s).total = 0;
+    verdict(&mut s).findings.clear();
+    verdict(&mut s).pre = zero;
+    // Without findings the section's length takes one byte less: `pre` is
+    // at 206.
+    assert_eq!(rejected(&s, "sections.verdict.pre"), 206);
+    let e = Shard::from_bytes(&raw(&s)).unwrap_err();
+    assert_eq!(e.what, "a verified verdict without a pre shard");
+    // Unverifiable: with or without a pre shard.
+    let with = |v: Verdict| Shard { verdict: Some(v), ..verify_shard() };
+    round_trip(&with(Verdict { pre: zero, ..unverifiable() }));
+    round_trip(&with(Verdict { pre: d(0x70), ..unverifiable() }));
+}
+
 // verdict rule 4 (spec/verify.md §6): no more findings than total.
 #[test]
 fn verdict_4_findings_within_total() {
@@ -1079,8 +1216,8 @@ fn verdict_4_findings_within_total() {
     round_trip(&s);
 }
 
-// verdict rule 4 (spec/verify.md §6): ascending by (kind, file, key), an
-// absent key first; at most one finding per (kind, key).
+// verdict rule 4b (spec/verify.md §6, spec/model.md §8.3): ascending by
+// (rank, file, key), an absent key first; at most one finding per (kind, key).
 #[test]
 fn verdict_4_findings_order_and_uniqueness() {
     // By kind.
@@ -1094,8 +1231,8 @@ fn verdict_4_findings_order_and_uniqueness() {
     assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
     // By key within a kind and file, an absent key first.
     let mut v = sample_mismatch();
-    v.findings.swap(5, 6);
-    rejected(&sample_verify_shard(v), "sections.verdict.findings[6]");
+    v.findings.swap(6, 7);
+    rejected(&sample_verify_shard(v), "sections.verdict.findings[7]");
     let mut v = sample_mismatch();
     v.findings.swap(0, 1);
     v.findings[0].file = b"/s/a.h".to_vec();
@@ -1108,15 +1245,80 @@ fn verdict_4_findings_order_and_uniqueness() {
     assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
     // The same kind and key in the same file, and in another file.
     let mut v = sample_mismatch();
-    v.findings[7].key = Some(d(0x14));
-    rejected(&sample_verify_shard(v.clone()), "sections.verdict.findings[7]");
-    v.findings[7].file.clear();
-    rejected(&sample_verify_shard(v), "sections.verdict.findings[7]");
+    v.findings[8].key = Some(d(0x14));
+    rejected(&sample_verify_shard(v.clone()), "sections.verdict.findings[8]");
+    v.findings[8].file.clear();
+    rejected(&sample_verify_shard(v), "sections.verdict.findings[8]");
     // Unnamed indeterminate findings may repeat; a key under two kinds is
     // two findings.
     let mut v = sample_mismatch();
     v.findings[9].key = Some(d(0x15));
     round_trip(&sample_verify_shard(v));
+}
+
+// verdict rule 4b (spec/model.md §8.3, spec/verify.md §6): the order is by
+// rank, not by the kind's number. A `derived_changed` finding (number 4,
+// rank 3) before an `indeterminate` one (number 3, rank 4) is accepted in
+// binary and JSON; the reverse, the former order by number, is rejected at
+// the later finding's first byte and path, by every reader.
+#[test]
+fn verdict_4b_order_by_rank() {
+    let kinds = |a: FindingKind, b: FindingKind| {
+        let mut s = verify_shard();
+        let v = verdict(&mut s);
+        v.findings[0].kind = a;
+        v.findings[1].kind = b;
+        v.findings[1].post = Some(d(0x48));
+        s
+    };
+    round_trip(&kinds(FindingKind::DerivedChanged, FindingKind::Indeterminate));
+    round_trip(&kinds(FindingKind::DerivedChanged, FindingKind::DerivedIndeterminate));
+    let mut s = kinds(FindingKind::Added, FindingKind::DerivedChanged);
+    verdict(&mut s).findings[0].pre = None;
+    round_trip(&s);
+    let s = kinds(FindingKind::Indeterminate, FindingKind::DerivedChanged);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
+    let e = Shard::from_bytes(&raw(&s)).unwrap_err();
+    assert_eq!(e.what, "findings are not ascending by (rank, file, key)");
+    // Across files, the rank decides first: an indeterminate finding of
+    // file "/a" is after a derived_changed one of file "/b".
+    let mut s = kinds(FindingKind::DerivedChanged, FindingKind::Indeterminate);
+    verdict(&mut s).findings[0].file = b"/b".to_vec();
+    round_trip(&s);
+    let mut s = kinds(FindingKind::Indeterminate, FindingKind::DerivedChanged);
+    verdict(&mut s).findings[1].file = b"/b".to_vec();
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
+}
+
+// spec/verify.md §6: `FindingKind::rank` is the table of §6, a bijection
+// onto 0..=5, and every kind's number in the format is what it was (the
+// kind byte of a finding in binary, its name in JSON).
+#[test]
+fn finding_kind_rank_and_number() {
+    use FindingKind::*;
+    let table = [
+        (Changed, 0u8, 0u8, "changed"),
+        (Removed, 1, 1, "removed"),
+        (Added, 2, 2, "added"),
+        (Indeterminate, 3, 4, "indeterminate"),
+        (DerivedChanged, 4, 3, "derived_changed"),
+        (DerivedIndeterminate, 5, 5, "derived_indeterminate"),
+    ];
+    let mut ranks: Vec<u8> = table.iter().map(|&(k, _, _, _)| k.rank()).collect();
+    ranks.sort_unstable();
+    assert_eq!(ranks, [0, 1, 2, 3, 4, 5]);
+    for (kind, number, rank, name) in table {
+        assert_eq!(kind.rank(), rank, "{kind:?}");
+        let mut s = verify_shard();
+        let v = verdict(&mut s);
+        v.findings.truncate(1);
+        v.findings[0].kind = kind;
+        // The first finding starts at byte 309 (verdict_4_findings_order_and_uniqueness).
+        assert_eq!(raw(&s)[309], number, "{kind:?}");
+        let json = s.to_json();
+        let f = &json.get("sections").unwrap().get("verdict").unwrap().get("findings").unwrap();
+        assert_eq!(f.as_array().unwrap()[0].get("kind"), Some(&Value::Str(name.into())));
+    }
 }
 
 // verdict rule 5 (spec/verify.md §6): a key is absent only for
@@ -1297,11 +1499,12 @@ fn json_members() {
     assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.digests");
 }
 
-// spec/model.md §5 rule 2, §8: sections 19 and 21 are known; 16, 17, 18 and
-// 20 stay reserved, UnknownSection.
+// spec/model.md §5 rule 2, §8: sections 19 and 21 are known (and 17, 24,
+// 25 and 26: `tests/edits.rs`, `known_sections_of_m2`); 16, 18 and 20 stay
+// reserved, UnknownSection.
 #[test]
 fn reserved_ids_still_unknown() {
-    for id in [16u64, 17, 18, 20] {
+    for id in [16u64, 18, 20] {
         let mut sections = raw_sections(&map_shard());
         sections.push((id, Vec::new()));
         sections.sort_by_key(|s| s.0);
@@ -1311,4 +1514,340 @@ fn reserved_ids_still_unknown() {
     }
     assert!(Shard::from_bytes(&map_shard_bytes()).unwrap().digests.is_some());
     assert!(Shard::from_bytes(&verify_shard_bytes()).unwrap().verdict.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// The sections of M2 in a verify shard: binding (24), rule_use (25) and
+// spellings (26) (spec/model.md §8, spec/verify.md §9.1, §10.4; WP-060).
+
+fn binding() -> Binding {
+    Binding { overlay: Some(d(0x81)), declared: d(0x82), pre: 3 }
+}
+
+fn rule_use() -> RuleUse {
+    RuleUse {
+        rules: d(0x83),
+        uses: vec![
+            Use { rule: 0, via: 2, direct: 0 },
+            Use { rule: 1, via: 0, direct: 1 },
+            Use { rule: 300, via: 1 << 60, direct: 1 << 53 },
+        ],
+    }
+}
+
+fn spellings() -> Spellings {
+    Spellings {
+        seen: 1000,
+        held: vec![Span { first: 0, count: 10 }, Span { first: 11, count: 200 }],
+        failed: vec![
+            Failed { index: 10, found: Some(d(0x84)), name: "::old::T".to_owned() },
+            Failed { index: 500, found: None, name: "f".to_owned() },
+        ],
+    }
+}
+
+fn m2_shard() -> Shard {
+    Shard {
+        binding: Some(binding()),
+        rule_use: Some(rule_use()),
+        spellings: Some(spellings()),
+        ..sample_verify_shard(verified())
+    }
+}
+
+/// `rejected`, checking also that the offset is `payload + rel` of
+/// section `id` in the test's encoding.
+fn rejected_at(s: &Shard, path: &str, id: u64, rel: usize) -> String {
+    let at = rejected(s, path);
+    assert_eq!(at, payload_at(&raw(s), id) + rel, "offset of {path}");
+    s.validate().unwrap_err()
+}
+
+// spec/model.md §8, §10: the three sections round-trip, alone and
+// together, with values at and above 2^53; JSON members in field order.
+#[test]
+fn m2_sections_round_trip() {
+    round_trip(&m2_shard());
+    round_trip(&Shard {
+        binding: Some(Binding { overlay: None, pre: u64::MAX, ..binding() }),
+        ..sample_verify_shard(verified())
+    });
+    round_trip(&Shard {
+        rule_use: Some(RuleUse { uses: Vec::new(), ..rule_use() }),
+        ..sample_verify_shard(verified())
+    });
+    round_trip(&Shard {
+        spellings: Some(Spellings { seen: 0, held: Vec::new(), failed: Vec::new() }),
+        ..sample_verify_shard(verified())
+    });
+    // The largest span and a span ending at 2^64.
+    let mut x = spellings();
+    x.held.push(Span { first: 1 << 60, count: u64::MAX - (1 << 60) + 1 });
+    x.seen = u64::MAX;
+    round_trip(&Shard { spellings: Some(x), ..sample_verify_shard(verified()) });
+    // A binding in a diagnosed shard with no digests or verdict.
+    round_trip(&Shard {
+        outcome: Outcome {
+            status: Status::Diagnosed,
+            errors: 1,
+            warnings: 0,
+            message: "e".to_owned(),
+        },
+        digests: None,
+        verdict: None,
+        ..Shard { binding: Some(binding()), ..sample_verify_shard(verified()) }
+    });
+    let v = m2_shard().to_json();
+    let names = |v: &Value| -> Vec<String> {
+        v.as_object().unwrap().iter().map(|(k, _)| k.clone()).collect()
+    };
+    let sections = v.get("sections").unwrap();
+    assert_eq!(
+        names(sections),
+        [
+            "header",
+            "outcome",
+            "inputs",
+            "counters",
+            "digests",
+            "verdict",
+            "binding",
+            "rule_use",
+            "spellings"
+        ]
+    );
+    assert_eq!(names(sections.get("binding").unwrap()), ["overlay", "declared", "pre"]);
+    assert_eq!(names(sections.get("rule_use").unwrap()), ["rules", "uses"]);
+    let u = &sections.get("rule_use").unwrap().get("uses").unwrap().as_array().unwrap()[2];
+    assert_eq!(names(u), ["rule", "via", "direct"]);
+    assert_eq!(u.get("via").unwrap().as_str(), Some("1152921504606846976"));
+    let sp = sections.get("spellings").unwrap();
+    assert_eq!(names(sp), ["seen", "held", "failed"]);
+    assert_eq!(names(&sp.get("held").unwrap().as_array().unwrap()[0]), ["first", "count"]);
+    assert_eq!(
+        names(&sp.get("failed").unwrap().as_array().unwrap()[0]),
+        ["index", "found", "name"]
+    );
+    for (path, new, at) in [
+        (&["sections", "binding", "overlay"][..], "0", "sections.binding.overlay"),
+        (&["sections", "rule_use", "uses", "1", "via"][..], "-1", "sections.rule_use.uses[1].via"),
+        (
+            &["sections", "spellings", "held", "0"][..],
+            "{\"first\": 0}",
+            "sections.spellings.held[0].count",
+        ),
+        (
+            &["sections", "spellings", "failed", "1", "name"][..],
+            "{\"hex\": \"ff\"}",
+            "sections.spellings.failed[1].name",
+        ),
+    ] {
+        let mut v = m2_shard().to_json();
+        set(&mut v, path, parse(new));
+        assert_eq!(Shard::from_json(&v).unwrap_err().path, at, "{at}");
+    }
+}
+
+// spec/model.md §5 rule 2, §8: 17, 24, 25 and 26 are known sections; their
+// opt tags are Malformed at their first byte.
+#[test]
+fn known_sections_of_m2() {
+    let bytes = m2_shard().to_bytes();
+    for id in [24, 25, 26] {
+        payload_at(&bytes, id);
+    }
+    let b = payload_at(&bytes, 24);
+    assert_eq!(error(Shard::from_bytes(&patch(&bytes, b, 1, 2))), (ErrorKind::Malformed, b));
+    let f = payload_at(&bytes, 26) + raw_spellings(&spellings()).3[0] + 1; // after the index 10
+    assert_eq!(error(Shard::from_bytes(&patch(&bytes, f, 1, 2))), (ErrorKind::Malformed, f));
+    // An empty edits section in a map shard.
+    let mut s = sample_map_shard(sample_digests(&[]));
+    s.edits = Some(Edits {
+        scheme: slip_model::edits::SCHEME,
+        transform: d(0x85),
+        failure: None,
+        files: Vec::new(),
+        subjects: Vec::new(),
+        links: Vec::new(),
+        claims: Vec::new(),
+        groups: Vec::new(),
+        reports: Vec::new(),
+        changed: Vec::new(),
+        renamed: Vec::new(),
+    });
+    round_trip(&s);
+}
+
+// spec/model.md §8: binding only in a verify shard whose status is not
+// failed; rule_use and spellings only in a verify shard whose status is ok.
+#[test]
+fn m2_sections_phase_and_status() {
+    let only = |b: bool, r: bool, sp: bool| Shard {
+        binding: b.then(binding),
+        rule_use: r.then(rule_use),
+        spellings: sp.then(spellings),
+        ..sample_verify_shard(verified())
+    };
+    for (s, path, id) in [
+        (only(true, false, false), "sections.binding", 24),
+        (only(false, true, false), "sections.rule_use", 25),
+        (only(false, false, true), "sections.spellings", 26),
+    ] {
+        // A map shard.
+        let mut m = Shard { phase: Phase::Map, verdict: None, ..s.clone() };
+        assert!(rejected_at(&m, path, id, 0).contains("phase is not verify"));
+        // A failed verify shard (which can have no digests).
+        m = Shard {
+            outcome: Outcome {
+                status: Status::Failed,
+                errors: 1,
+                warnings: 0,
+                message: "x".to_owned(),
+            },
+            digests: None,
+            verdict: None,
+            inputs: None,
+            counters: Vec::new(),
+            ..s.clone()
+        };
+        let what = rejected_at(&m, path, id, 0);
+        assert!(
+            what.contains(if id == 24 { "status is failed" } else { "status is not ok" }),
+            "{what}"
+        );
+        // Diagnosed: only the binding is allowed.
+        m.outcome.status = Status::Diagnosed;
+        if id == 24 {
+            m.validate().unwrap();
+        } else {
+            assert!(rejected_at(&m, path, id, 0).contains("status is not ok"));
+        }
+    }
+    // In id order: the binding's phase before the rule_use's.
+    let s = Shard { phase: Phase::Map, verdict: None, ..m2_shard() };
+    rejected_at(&s, "sections.binding", 24, 0);
+}
+
+// spec/verify.md §9.1: uses strictly ascending by rule; no use with via
+// and direct both 0. Each rule over the whole list.
+#[test]
+fn rule_use_invariants() {
+    let with =
+        |uses: Vec<Use>| Shard { rule_use: Some(RuleUse { uses, ..rule_use() }), ..m2_shard() };
+    let u = |rule, via, direct| Use { rule, via, direct };
+    for uses in [
+        vec![u(1, 1, 0), u(0, 1, 0)],
+        vec![u(1, 1, 0), u(1, 0, 1)],
+        vec![u(0, 1, 0), u(5, 1, 1), u(5, 1, 1)],
+    ] {
+        let n = uses.len() - 1;
+        let s = with(uses);
+        let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[n];
+        assert!(
+            rejected_at(&s, &format!("sections.rule_use.uses[{n}]"), 25, rel).contains("ascending")
+        );
+    }
+    let s = with(vec![u(0, 1, 0), u(1, 0, 0)]);
+    let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[1];
+    assert!(rejected_at(&s, "sections.rule_use.uses[1]", 25, rel).contains("both 0"));
+    // The order rule over the whole list first.
+    let s = with(vec![u(0, 0, 0), u(2, 1, 0), u(1, 1, 0)]);
+    let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[2];
+    rejected_at(&s, "sections.rule_use.uses[2]", 25, rel);
+}
+
+// spec/verify.md §10.4: no span of count 0 or running past 2^64 - 1;
+// spans ascending, not overlapping (an index held twice) or touching;
+// failed strictly ascending; no index both held and failed; no more
+// indices than seen.
+#[test]
+fn spellings_invariants() {
+    let with = |f: fn(&mut Spellings)| {
+        let mut x = spellings();
+        f(&mut x);
+        Shard { spellings: Some(x), ..m2_shard() }
+    };
+    let check = |s: Shard, path: &str, which: usize, i: usize, what: &str| {
+        let r = raw_spellings(s.spellings.as_ref().unwrap());
+        let rel = match which {
+            0 => 0,
+            1 => r.1[i],
+            2 => r.2[i],
+            _ => r.3[i],
+        };
+        let got = rejected_at(&s, path, 26, rel);
+        assert!(got.contains(what), "{path}: {got}");
+    };
+    check(with(|x| x.held[1].count = 0), "sections.spellings.held[1].count", 2, 1, "count of 0");
+    check(
+        with(|x| x.held.push(Span { first: u64::MAX, count: 2 })),
+        "sections.spellings.held[2].count",
+        2,
+        2,
+        "past the largest",
+    );
+    // An index held twice: overlapping spans, or the same span twice.
+    check(with(|x| x.held[1].first = 9), "sections.spellings.held[1]", 1, 1, "touch");
+    check(with(|x| x.held[1] = x.held[0]), "sections.spellings.held[1]", 1, 1, "touch");
+    // Touching spans; spans out of order.
+    check(with(|x| x.held[1].first = 10), "sections.spellings.held[1]", 1, 1, "touch");
+    check(with(|x| x.held.swap(0, 1)), "sections.spellings.held[1]", 1, 1, "touch");
+    // A span after the one ending at 2^64.
+    check(
+        with(|x| {
+            x.held.push(Span { first: u64::MAX, count: 1 });
+            x.held.push(Span { first: 5, count: 1 });
+        }),
+        "sections.spellings.held[3]",
+        1,
+        3,
+        "touch",
+    );
+    check(with(|x| x.failed.swap(0, 1)), "sections.spellings.failed[1]", 3, 1, "ascending");
+    check(with(|x| x.failed[1].index = 10), "sections.spellings.failed[1]", 3, 1, "ascending");
+    // An index in both lists: inside a span, at its first and last index.
+    for index in [11, 5, 0, 210] {
+        let mut x = spellings();
+        x.failed[0].index = index;
+        x.failed[0].name = format!("{index}");
+        let s = Shard { spellings: Some(x), ..m2_shard() };
+        check(s, "sections.spellings.failed[0]", 3, 0, "both held and failed");
+    }
+    check(with(|x| x.seen = 211), "sections.spellings.seen", 0, 0, "than seen");
+    // Exactly seen is allowed; overflow of the total is not wrapped.
+    let mut x = spellings();
+    x.seen = 212;
+    Shard { spellings: Some(x), ..m2_shard() }.validate().unwrap();
+    check(
+        with(|x| {
+            x.held = vec![Span { first: 0, count: u64::MAX }];
+            x.failed = vec![Failed { index: u64::MAX, found: None, name: String::new() }];
+            x.seen = u64::MAX;
+        }),
+        "sections.spellings.seen",
+        0,
+        0,
+        "than seen",
+    );
+    // The order of the rules: a count of 0 before an unordered failed.
+    check(
+        with(|x| {
+            x.failed.swap(0, 1);
+            x.held[1].count = 0;
+        }),
+        "sections.spellings.held[1].count",
+        2,
+        1,
+        "count of 0",
+    );
+    check(
+        with(|x| {
+            x.seen = 0;
+            x.failed[0].index = 5;
+        }),
+        "sections.spellings.failed[0]",
+        3,
+        0,
+        "both",
+    );
 }
