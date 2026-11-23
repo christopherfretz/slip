@@ -91,12 +91,13 @@ fn report_of<'a>(facts: &Facts<'a>) -> Option<&'a Report> {
     (sum == parsed).then_some(r)
 }
 
-/// [`report_of`], and the report was made over `overlay` (which is then
-/// present). Its stale pairs are one per `(rule, observer)`:
-/// `Report::add_at` refuses an observer added twice.
+/// [`report_of`], and the report was made over `overlay` (present, as
+/// `report_of` takes only a report of the overlay form). Its stale pairs
+/// are one per `(rule, observer)`: `Report::add_at` refuses an observer
+/// added twice.
 fn usable<'a>(facts: &Facts<'a>, overlay: Option<&Overlay>) -> Option<&'a Report> {
     let r = report_of(facts)?;
-    (overlay.is_some() && r.overlay_given() == overlay).then_some(r)
+    (r.overlay_given() == overlay).then_some(r)
 }
 
 fn tally_with(facts: &Facts<'_>, report: Option<&Report>) -> Tally {

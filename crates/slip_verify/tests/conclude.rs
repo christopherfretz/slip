@@ -448,11 +448,12 @@ fn mismatch_at(
 }
 
 // §7.3 (review F4): nothing a report holds depends on the order of the
-// `add_at` calls. Every permutation of three shards gives the same JSON,
+// `add_at` calls. Every permutation of four shards gives the same JSON,
 // text and error lines, byte for byte, and the same concluded result.
 // The shards exercise all that once followed the call order: two stale
 // pairs of one rule, a finding group whose name is only in the second
-// observer, `not_verified`, an obligation failed in two observers with
+// observer and another name in the fourth (the lower position's is
+// shown), `not_verified`, an obligation failed in two observers with
 // different `found`.
 #[test]
 fn s7_3_report_independent_of_call_order() {
@@ -463,8 +464,19 @@ fn s7_3_report_independent_of_call_order() {
         (0, mismatch_at(&run, 0xc0, "", &[used(0, 0, 1)], 3), &b"/m/c0.cc"[..]),
         (1, mismatch_at(&run, 0xc1, "f", &[used(0, 1, 2)], 4), b"/m/c1.cc"),
         (2, run.unverifiable(0xc2, "post-image: why"), b"/m/c2.cc"),
+        (3, mismatch_at(&run, 0xc3, "g", &[], 5), b"/m/c3.cc"),
     ];
-    let perms = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+    let mut perms = Vec::new();
+    for a in 0..4usize {
+        for b in 0..4 {
+            for c in 0..4 {
+                if a != b && a != c && b != c {
+                    perms.push([a, b, c, 6 - a - b - c]);
+                }
+            }
+        }
+    }
+    assert_eq!(perms.len(), 24);
     let mut seen = Vec::new();
     for p in perms {
         let mut r = run.report();
@@ -474,7 +486,7 @@ fn s7_3_report_independent_of_call_order() {
         }
         let json = slip_model::json::write_compact(&r.to_json()).unwrap();
         let f =
-            Facts { set: &s, selected: 3, report: Some(&r), allow_unparsed: false, residue: &[] };
+            Facts { set: &s, selected: 4, report: Some(&r), allow_unparsed: false, residue: &[] };
         let c = conclude(&f, Some(&o));
         assert_eq!(c.state, State::NotVerified);
         let result = result_of(&c, &s, false, false, &[]);
@@ -487,7 +499,7 @@ fn s7_3_report_independent_of_call_order() {
     let (json, text, errors, _) = &seen[0];
     let c0 = "c0".repeat(32);
     assert!(json.contains(&format!(r#""stale":[{{"rule":0,"observer":"{c0}""#)), "{json}");
-    assert!(json.contains(r#""name":"f","observers":2,"first":"/m/c0.cc""#), "{json}");
+    assert!(json.contains(r#""name":"f","observers":3,"first":"/m/c0.cc""#), "{json}");
     let one = text.find("stale rule 0 direct 1 /m/c0.cc").unwrap();
     let two = text.find("stale rule 0 direct 2 /m/c1.cc").unwrap();
     assert!(one < two, "{text}");
