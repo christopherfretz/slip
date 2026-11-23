@@ -828,7 +828,7 @@ form the walk makes (`crates/slip_digest/src/names.rs`):
 | a deduction guide | `<deduction guide for S>` and its parameters as a function: `<deduction guide for S>(char)`; a deduction guide template with its head and return type as a function template |
 | a friend function keyed in the class that befriends it (digest-kinds §3.3 `function`) | the class's name, `::friend `, then the function's: `A<int>::friend k(int)`, `C::friend template <class> void g(type-parameter-0-0)` |
 | a partial specialisation | as a specialisation, with its pattern for the arguments; if its head has a type-constraint or a requires-clause, the head first, which is what tells two partial specialisations of one pattern apart: `S<type-parameter-0-0 *>`, `template <class> requires C2<T> S<type-parameter-0-0 *>` |
-| a specialisation | the template's name and its canonical arguments as Kiln prints them, except that a null pointer argument whose type is not `std::nullptr_t` is written `(T)nullptr`: `ns::S<int>`, `N<(int *)nullptr>` |
+| a specialisation | the template's name and its canonical arguments as Kiln prints them, with every entity an argument names written by its qualified name (`ns::S<ns::T>`, never `ns::S<T>`: two classes `T` of two namespaces are two specialisations), and except that a null pointer argument whose type is not `std::nullptr_t` is written `(T)nullptr`: `ns::S<int>`, `N<(int *)nullptr>` |
 | an unnamed class or enumeration | its scope and `(anonymous K for n)` when it is named by a declarator, typedef or member (digest §3.3), else `(anonymous K N)`, `N` its ordinal among the unnamed types of its scope, else `(anonymous K)`; `K` the class-key or `enum`: `(anonymous struct for P)`, `ns::(anonymous enum 1)`; its members are named under it |
 | the unnamed object of an anonymous class (an anonymous union's member object) | its scope and `(object of ` the class's name `)`: `S::(object of (anonymous union 0))` |
 | any other entity Kiln prints no name for (an unnamed bit-field) | its scope and `(unnamed N)`, `N` its ordinal (digest §3.3), or `(unnamed)` |
@@ -1718,6 +1718,18 @@ using-declaration). Those are judged by the comparison of digests alone.
 
 ## Open questions
 
+- **Name-derived values that changed** (`digest.md` §9). A relocation
+  changes what `__func__`, `__PRETTY_FUNCTION__`,
+  `std::source_location` and `typeid(T).name()` yield for the entities
+  it renames, and the verdict does not count it. A program that
+  observes such a string (a parsed log, a registry keyed by a type's
+  name, a persisted identifier) should be told. Proposed: an
+  informational section of the report listing each unit that holds such
+  a builtin and whose name, or a name in whose scope it is, a rule
+  changes; no verdict depends on it. The walk would count them per unit
+  (a counter beside `rule_use`, §9.1). Open: whether a run may ask for
+  them to be findings (`--strict-names`), and whether
+  `typeid(T).name()`, whose value is the implementation's, is listed.
 - **Agreement costs a job per observer** (§9, §5): with rules, no
   observer is unchanged. `spec/edits.md` ("Open questions") proposes a
   filter of key ids in the map shard so that an observer that cannot have

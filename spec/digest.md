@@ -623,9 +623,29 @@ object is unspecified by the language and is not digested.
 `__func__`, `__PRETTY_FUNCTION__` and the fields of `std::source_location`
 are written **symbolically** (which builtin, not its value), as are literals
 that come from the expansion of `__LINE__`, `__FILE__`, `__COUNTER__`,
-`__DATE__`, `__TIME__` and their relatives. Where such a value determines a
-type or another constant (an array bound from `__LINE__`), that type or
-constant is written by value as always, so a real change is seen.
+`__DATE__`, `__TIME__` and their relatives.
+
+The expression's **own type** and the **constant it stands for** are
+symbolic with it. The array type of `__func__` and its kin (`const
+char[N]`, `N` the length of a name) is written as that builtin's type,
+without the bound. The object that an immediate invocation builds from
+such values and nothing else (`std::source_location::current()`, in a
+default argument as anywhere) is written as the builtins it was built
+from, not as its bytes.
+
+Whatever **consumes** such a value is written by value as always, so a
+real change is seen: an array bound from `__LINE__`, `sizeof(__func__)`,
+the length of a name deduced as a template argument, a variable declared
+with the array's type or a reference to it, a constant computed from the
+characters.
+
+Why the type goes with the value: a declared relocation says that names
+change, and a value that is a function of a name changes by exactly that,
+as a mangled name does. `assert` expands to `__PRETTY_FUNCTION__`; were
+its length a fact, no function that asserts could be relocated and
+verify. A program that observes such a string (a log that is parsed, a
+registry keyed by it) is told by the report, not by the verdict
+(`verify.md` "Open questions").
 
 ## 10. Indeterminate units
 
