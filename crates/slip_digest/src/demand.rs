@@ -432,7 +432,7 @@ fn default_immediates(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Ve
         return;
     }
     let d = subject(w, read_of(w, e, owner));
-    let mut found: Vec<(Option<u64>, (Vec<ConstValueId>, Option<Cause>))> = Vec::new();
+    let mut found: Vec<(Option<u64>, Immediates)> = Vec::new();
     if let Some(f) = ast.decls.function(d) {
         let params: Vec<DeclId> = ast.lists.iter::<DeclId>(f.params).collect();
         for (i, p) in params.into_iter().enumerate() {
@@ -453,6 +453,9 @@ fn default_immediates(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Ve
         }
     }
 }
+
+/// The values of the immediate invocations a walk found, and its cause.
+type Immediates = (Vec<ConstValueId>, Option<Cause>);
 
 /// The resolved unit `default_immediates` with discriminator `disc` under
 /// `owner`, holding `values`; none when there is no value. `cause` is that
@@ -481,7 +484,7 @@ fn immediates_unit(
 /// The `default_imm` values of the immediate invocations in `x`, in the
 /// order the expression walk meets them: `x` walked again, with a unit
 /// state of its own, into a stream that is dropped but for its cause.
-fn immediates(w: &mut Walk<'_>, x: ExprId) -> (Vec<ConstValueId>, Option<Cause>) {
+fn immediates(w: &mut Walk<'_>, x: ExprId) -> Immediates {
     let saved = w.take_unit();
     w.unit.expr.imms = Some(Vec::new());
     let mut scratch = Stream::new();
