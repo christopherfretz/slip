@@ -752,8 +752,8 @@ fn sourced(
     // unit being written, or a local function written in its stream.
     if let Some(h) = holder {
         for &(role, ctx, _) in &uses {
-            let own =
-                w.entity(ctx) == h || (w.is_local(ctx) && crate::local::unit_of(w, ctx) == Some(h));
+            let own = w.entity(ctx) == h
+                || (w.is_local(ctx) && crate::local::unit_holding(w, ctx) == Some(h));
             if own && is_kiln_name(w, ctx, role == Role::Pretty, bytes) {
                 return Some(NameString::SourceLoc(role, ctx));
             }
