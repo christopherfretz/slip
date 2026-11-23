@@ -1513,8 +1513,9 @@ Trace := key: KeyId, digest: digest
 Mark  := offset: uv                   the stream's length when the walk began to write the node
          node:   str                  the node's kind: the variant's name in Kiln's `ExprKind` or
                                       `StmtKind`; for a unit's first mark, the name of its key kind
-         file:   bytes, line: uv, column: uv      subject path and presumed line and column of the node's
-                                                  location; empty, 0, 0 if it has none
+         file:   bytes, line: uv, column: uv      subject path, line and column of the node's location in
+                                                  the physical file (a `#line` directive does not
+                                                  move it); empty, 0, 0 if it has none
 RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) whose value is
          key:   KeyId                 the key of a unit of this image: a reference to it
 ```
@@ -1535,6 +1536,12 @@ RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) wh
   which is also a defect of the walk to report: a unit's stream must not
   depend on when it is written. The walk that produced the digests is not
   touched by tracing.
+- A panic in the second writing withdraws places and nothing else: the
+  digests, the verdict and every finding stand; the traces made before it
+  are kept; the walk traces nothing more on that image (its state is not
+  trusted after the unwind), so the image's remaining wanted units have no
+  trace and their findings no `where` (counted:
+  `verify.traces.panicked`, §7.2, and not in `verify.traces.unstable`).
 - A content-keyed unit and the order unit have the first mark only.
 - The location of a node inside a macro expansion is that of the outermost
   expansion (as for a group's file, `digest.md` §11).
@@ -1615,7 +1622,7 @@ finding has a name.
 pub struct Mark  { pub offset: u64, pub node: &'static str, pub file: Vec<u8>, pub line: u64, pub column: u64 }
 pub struct RefAt { pub offset: u64, pub len: u64, pub key: Digest }
 pub struct Trace { pub key: Digest, pub digest: Digest, pub stream: Vec<u8>, pub marks: Vec<Mark>, pub refs: Vec<RefAt> }
-pub struct Traced { pub output: Output, pub traces: Vec<Trace> }           // traces sorted by (key, digest)
+pub struct Traced { pub output: Output, pub traces: Vec<Trace>, pub panicked: bool } // traces sorted by (key, digest)
 /// `output` is `digest(input, options)`, byte for byte; `traces` has one
 /// entry per unit whose key is in `keys` (sorted, no duplicates).
 pub fn trace(input: &Input<'_>, options: &Options<'_>, keys: &[Digest]) -> Traced;
@@ -1623,13 +1630,15 @@ pub fn trace(input: &Input<'_>, options: &Options<'_>, keys: &[Digest]) -> Trace
 // slip_cli::locate
 /// What localisation needs from one image, taken while its parse is in memory.
 pub struct Side { /* the `tu` digest; names, causes and traces of the wanted keys */ }
-impl Side { pub fn tu(&self) -> &Digest; }
+impl Side { pub fn tu(&self) -> &Digest; pub fn unstable(&self) -> u64; pub fn panicked(&self) -> bool; }
 /// One walk of `input` under `rules` for the keys of the findings to localise.
 pub fn take(input: &Input<'_>, rules: &RuleTable, keys: &[Digest]) -> Side;
 /// The keys of the first `locate` findings, sorted, no duplicates.
 pub fn wanted(findings: &[Finding], locate: usize) -> Vec<Digest>;
 /// Fills `name` and `location` of the first `locate` findings; changes no other field.
 pub fn fill(findings: &mut [Finding], locate: usize, pre: Option<&Side>, post: &Side);
+/// `verify.traces.unstable` and `verify.traces.panicked` (§7.2) of the two sides.
+pub fn unplaced(pre: Option<&Side>, post: &Side) -> (u64, u64);
 ```
 
 `pre` is `None` when step 4's parse was not reached with a finding to
@@ -1726,7 +1735,10 @@ FindingGroup := { "kind": <FindingKind by name>, "key": <id>, "name": <str>,
 - `not_verified` lists, in plan order, every selected observer that is
   neither `verified` nor `unchanged`: its state; the verdict's `reason`
   (`unverifiable`), the shard's message (`not_parsed`, `never_parsed`,
-  `failed`; empty if there is no shard) or the empty string (`mismatch`);
+  `failed`; empty if there is no shard; for a shard the report refuses
+  as not this run's, §7 and §9.3, the reason it refuses it, never the
+  shard's own message: `spec/landed/verify/WP-121.md` §4) or the empty
+  string (`mismatch`);
   and for a `mismatch` the verdict's `total`, how many of them are
   `indeterminate` or `derived_indeterminate` (from the counters of §7.2)
   and how many the verdict lists; three zeros otherwise. An observer is
@@ -1789,6 +1801,7 @@ Counters of a verify shard, added to those of the parse and of
 | `verify.exemptions.used` | exemptions that prevented a finding |
 | `verify.reparsed` | parses after the first: 0, 1 (the pre-image) or 2 (and the post-image again) |
 | `verify.traces.unstable` | units wanted for localisation whose stream, written again, did not hash to their digest (§6.1); present only when not 0 |
+| `verify.traces.panicked` | images (0, 1 or 2) whose second writing for localisation panicked: places withdrawn there, verdict and findings kept (§6.1); a defect of the walk to report; present only when not 0 |
 
 A shard without a verdict has none of them. The counters by kind are what
 `indeterminate_only` (§7) is computed from: a verdict lists only its first
@@ -1996,7 +2009,9 @@ Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
 is `spellings`, §10.4.)
 
 - `binding` is present in every shard a verify job writes, whatever the
-  parse's outcome, and is taken from `Job.post`. A shard the coordinator
+  parse's outcome, and is taken from `Job.post`. (Until the exception of
+  §9.3 is removed, a job of a tree image writes it only when the rules
+  are not empty: `spec/landed/verify/WP-121.md`.) A shard the coordinator
   wrote for a worker that produced none (status `failed`) has no
   `binding`.
 - `rule_use` is present when the outcome is `ok` and the rule table is
@@ -2086,8 +2101,10 @@ under no rule or naming a rule past the table, and one whose `spellings`
 is absent although the overlay has obligations, present although it has
 none, or refused by the fold (§10.4). A run with a tree image and no
 rule is M1's: its shards need no `binding`, and one that has a binding
-must have the run's (`spec/landed/verify/WP-070.md` §2.1). This
-exception is temporary: a verify job is to write `binding` in every
+must have the run's (`spec/landed/verify/WP-070.md` §2.1). The verify job keeps to
+it: with a tree image it writes `binding` and `rule_use` when the rules
+are not empty and neither when they are (`spec/landed/verify/WP-121.md`).
+This exception is temporary: a verify job is to write `binding` in every
 shard (§9.1), M1's `slip verify` included, after which a package of the
 coordinator's removes it and a shard without a binding is never this
 run's.

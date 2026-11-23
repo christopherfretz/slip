@@ -174,7 +174,8 @@ fn site<'t>(t: &'t Trace, other: &Trace) -> (u64, &'t slip_digest::trace::Mark) 
     (d, m)
 }
 
-/// The lines of `t.cpp` in the branch each side reads: side B's where `B`
+/// The lines of `t.cpp` (directives other than the conditionals included)
+/// in the branch each side reads: side B's where `B`
 /// is defined (`#ifdef B`, `#if defined(B)`, the `#else` of `#ifndef B`),
 /// side A's where it is not. A line under no such branch is in neither.
 fn branches(text: &str) -> (BTreeSet<u64>, BTreeSet<u64>) {
@@ -198,9 +199,13 @@ fn branches(text: &str) -> (BTreeSet<u64>, BTreeSet<u64>) {
                 ["endif", ..] => {
                     stack.pop();
                 }
+                // Another directive (`#pragma`, `#define`) is a line of the
+                // branch it is in: a site can be on it.
                 _ => {}
             }
-            continue;
+            if matches!(words.first(), Some(&("if" | "ifdef" | "ifndef" | "else" | "endif"))) {
+                continue;
+            }
         }
         let line_no = i as u64 + 1;
         match stack.iter().rev().find_map(|s| *s) {
@@ -298,7 +303,24 @@ enum Outside {
     /// declares (a use of a member the branch makes a bit-field, a call
     /// the branch makes immediate): the difference is where it is written.
     Elsewhere,
+    /// The difference is in a declaration's own rows, which the stream
+    /// writes after an expression of the unit (an initializer), so the
+    /// last mark before it is that expression, which did not change: the
+    /// pairs of [`DECLARATION_ROWS`]. A misleading place §6.1 allows until
+    /// declarations have marks of their own (see the handback).
+    DeclarationRows,
 }
+
+/// The pairs whose sites outside the branch are at an expression written
+/// before the declaration rows that differ ([`Outside::DeclarationRows`]).
+const DECLARATION_ROWS: &[&str] = &[
+    // An asm label on the first declaration (line 4); the site is the
+    // definition's initializer `1` (line 8).
+    "differ/ColdDeclData/asm_label",
+    // `weak` on the pattern's member (line 7); the site is the
+    // initializer `1` of the out-of-class definition (line 11).
+    "differ/_/weak-static-member-of-instantiation",
+];
 
 /// The pairs under the expression and statement tables whose sites are
 /// not all in their branches, with the classes of [`Outside`] they have.
@@ -436,6 +458,8 @@ fn differ_pair(dir: &Path) -> Result<Vec<String>, String> {
                     outside.push((Outside::EmptyBranch, at));
                 } else if m.offset == 0 {
                     outside.push((Outside::First, at));
+                } else if DECLARATION_ROWS.contains(&rel.as_str()) {
+                    outside.push((Outside::DeclarationRows, at));
                 } else {
                     outside.push((Outside::Elsewhere, at));
                 }
@@ -510,13 +534,14 @@ fn differ_sites() {
 
 /// Traces of every unit of `src` read as a snippet's `main.cpp`.
 fn snippet(src: &str) -> Sided {
+    snippet_std(src, "c++20")
+}
+
+/// [`snippet`] under the standard `std`.
+fn snippet_std(src: &str, std: &str) -> Sided {
     let files = [("main.cpp", src)];
-    let snippet = slip_kiln::snippet::Snippet {
-        files: &files,
-        main: "main.cpp",
-        include: &[""],
-        std: "c++20",
-    };
+    let snippet =
+        slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
     slip_kiln::snippet::parse(&snippet, |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let (ast, sm) = (p.ast, p.sm);
@@ -603,4 +628,43 @@ fn s6_1_site_of_a_changed_default_argument() {
         s.iter().any(|u| (u.1, u.2, u.3, u.4) == (3, "IntegerLiteral", 3, "IntegerLiteral")),
         "{s:?}"
     );
+}
+
+// A changed operand in parentheses: the site is the literal, not the
+// parentheses (the hook marks the node after `strip_parens`).
+#[test]
+fn s6_1_site_of_a_changed_operand_in_parentheses() {
+    let src = |n: u32| format!("int h(int x) {{\n  int y = x;\n  return y\n    * ({n});\n}}\n");
+    assert_site(&src(1), &src(2), "h(int)", 4, "IntegerLiteral");
+}
+
+// A place is in the physical file at its physical line: a `#line`
+// directive moves neither (§6.1).
+#[test]
+fn s6_1_site_under_a_line_directive() {
+    let src = |n: u32| {
+        format!(
+            "#line 500 \"elsewhere.cpp\"\nint h(int x) {{\n  int y = x;\n  return y\n    + {n};\n}}\n"
+        )
+    };
+    assert_site(&src(1), &src(2), "h(int)", 5, "IntegerLiteral");
+    let a = snippet(&src(1));
+    let h = a.traces.iter().find(|t| a.names.get(&t.key).is_some_and(|n| n == "h(int)")).unwrap();
+    assert_eq!((h.marks[0].file.as_slice(), h.marks[0].line), (&b"main.cpp"[..], 2));
+}
+
+// A statement written again as a back-reference (nested destructuring
+// expansions share their inner pattern: two of its compound statements
+// are written as back-references) has a mark each time: the hook is
+// before the back-reference. 11 marks on the inner line; 9 if the
+// back-referenced ones had none.
+#[test]
+fn s6_1_back_referenced_statement_is_marked() {
+    let src = "struct P { int a; int b; };\nint g(int);\nvoid f() {\n  P p{1, 2};\n  \
+               template for (auto e : p) {\n    template for (auto k : p) {\n      \
+               g(e + k);\n    }\n  }\n}\n";
+    let a = snippet_std(src, "c++26");
+    let f = a.traces.iter().find(|t| a.names.get(&t.key).is_some_and(|n| n == "f()")).unwrap();
+    let inner = f.marks.iter().filter(|m| m.node == "CompoundStmt" && m.line == 6).count();
+    assert_eq!(inner, 11, "{:#?}", f.marks);
 }

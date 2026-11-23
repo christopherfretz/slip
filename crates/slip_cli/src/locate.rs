@@ -55,6 +55,9 @@ pub struct Side {
     /// sorted by key.
     causes: Vec<(Digest, String)>,
     unstable: u64,
+    /// The second writing panicked: the walk stopped tracing there, and
+    /// the wanted units it had not traced have no trace.
+    panicked: bool,
 }
 
 impl Side {
@@ -69,6 +72,14 @@ impl Side {
     /// are one stream.
     pub fn unstable(&self) -> u64 {
         self.unstable
+    }
+
+    /// Whether the second writing panicked (`verify.traces.panicked`,
+    /// §7.2): the walk's state is not trusted after it, so nothing more
+    /// was traced on this side; its units with no trace are not counted
+    /// in [`Side::unstable`].
+    pub fn panicked(&self) -> bool {
+        self.panicked
     }
 
     /// The first name, in the order of its bytes, of a unit of `key`.
@@ -139,11 +150,15 @@ pub fn take(
     let mut streams: Vec<(Digest, Digest)> =
         units.iter().filter(|u| !u.indeterminate).map(|u| (u.key, u.digest)).collect();
     streams.dedup();
-    let traces = run.traces;
-    let unstable = streams
-        .iter()
-        .filter(|(k, d)| traces.binary_search_by(|t| (&t.key, &t.digest).cmp(&(k, d))).is_err())
-        .count() as u64;
+    let (traces, panicked) = (run.traces, run.panicked);
+    let unstable = if panicked {
+        0
+    } else {
+        streams
+            .iter()
+            .filter(|(k, d)| traces.binary_search_by(|t| (&t.key, &t.digest).cmp(&(k, d))).is_err())
+            .count() as u64
+    };
     let mut shown: Vec<Digest> = keys.to_vec();
     shown.extend(traces.iter().flat_map(|t| t.refs.iter().map(|r| r.key)));
     shown.sort_unstable();
@@ -153,13 +168,16 @@ pub fn take(
     names.sort();
     let causes =
         output.causes.iter().filter(|(k, _)| wanted(k)).map(|(k, c)| (*k, c.to_string())).collect();
-    Side { tu: output.digests.tu, names, units, traces, causes, unstable }
+    Side { tu: output.digests.tu, names, units, traces, causes, unstable, panicked }
 }
 
-/// `verify.traces.unstable` (§7.2) of a step 6: the units of the wanted
-/// keys with no trace, in the pre-image (if taken) and the post-image.
-pub fn unstable(pre: Option<&Side>, post: &Side) -> u64 {
-    pre.map_or(0, Side::unstable) + post.unstable()
+/// `verify.traces.unstable` and `verify.traces.panicked` (§7.2) of a
+/// step 6: the units of the wanted keys whose second writing did not hash
+/// to their digest, and the images whose second writing panicked, over
+/// the pre-image (if taken) and the post-image.
+pub fn unplaced(pre: Option<&Side>, post: &Side) -> (u64, u64) {
+    let sides = pre.into_iter().chain([post]);
+    sides.fold((0, 0), |(u, p), s| (u + s.unstable, p + u64::from(s.panicked)))
 }
 
 /// The keys of the first `locate` findings, sorted, no duplicates.
@@ -347,7 +365,18 @@ mod tests {
             traces: Vec::new(),
             causes: Vec::new(),
             unstable: 0,
+            panicked: false,
         }
+    }
+
+    // §7.2: `unstable` adds the units of both sides; `panicked` counts the
+    // sides whose second writing panicked; a side not taken counts nothing.
+    #[test]
+    fn s7_2_unplaced_counts_both_sides() {
+        let side_of = |unstable, panicked| Side { unstable, panicked, ..side(&[]) };
+        assert_eq!(unplaced(None, &side_of(0, false)), (0, 0));
+        assert_eq!(unplaced(Some(&side_of(2, false)), &side_of(1, true)), (3, 1));
+        assert_eq!(unplaced(Some(&side_of(0, true)), &side_of(0, true)), (0, 2));
     }
 
     fn mark(offset: u64, node: &'static str, line: u64) -> Mark {

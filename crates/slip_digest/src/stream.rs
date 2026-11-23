@@ -125,6 +125,15 @@ thread_local! {
     pub(crate) static MAX_LIVE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// Whether the stream module of this thread is at rest: not armed,
+/// nothing kept, no recorder open (`trace::tests`).
+#[cfg(test)]
+pub(crate) fn at_rest() -> bool {
+    ARMING.with(std::cell::Cell::get) == OFF
+        && KEPT.with(|k| k.borrow().is_empty())
+        && LIVE.with(std::cell::Cell::get) == 0
+}
+
 impl Default for Stream {
     fn default() -> Stream {
         let id = NEXT_ID.with(|n| {

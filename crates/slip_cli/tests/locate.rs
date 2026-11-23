@@ -20,6 +20,7 @@ use slip_cli::worker::MapTask;
 use slip_exec::store::{Access, Store};
 use slip_exec::worker::{Job, Task};
 use slip_model::declared::Declared;
+use slip_model::formats::content_id;
 use slip_model::verdict::{Finding, FindingKind, Site};
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard};
 
@@ -100,7 +101,9 @@ impl Tree {
         let image =
             Image::new(vec![RootMap { subject: bytes(&self.subject), post: bytes(&self.post) }])
                 .unwrap();
-        let params = Params { pre: 0, declared: Declared::none(), image, limit: 64, locate: 16 };
+        let declared = Declared::none();
+        let declared_id = content_id(&declared.to_bytes()).unwrap();
+        let params = Params { pre: 0, declared, declared_id, image, limit: 64, locate: 16 };
         let v = verify(&self.store, &self.job(&o, Phase::Verify, 1), &params).unwrap();
         v.validate().unwrap();
         // §7.2: every unit wanted had a trace.

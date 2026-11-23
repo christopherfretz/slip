@@ -55,7 +55,7 @@
 //! A unit's first mark is at offset 0, named by its key kind, at its
 //! place (§6.1 "A unit's place"). The hooks' marks follow, with the
 //! node's kind as Kiln's `Debug` prints it and its location taken to the
-//! outermost expansion and a presumed line. A [`RefAt`] is found
+//! outermost expansion and its physical line. A [`RefAt`] is found
 //! afterwards: a recorded `digest` field whose 32 bytes are the key of a
 //! unit of the image. Bytes another stream wrote and this one copied
 //! (`Stream::raw`, the elements of a `*sorted` list) and the streams of
@@ -122,6 +122,9 @@ pub struct Traced {
     pub output: Output,
     /// Sorted by `(key, digest)`.
     pub traces: Vec<Trace>,
+    /// The second writing panicked: the units not traced before it have
+    /// no trace (`spec/verify.md` §6.1, `verify.traces.panicked`).
+    pub panicked: bool,
 }
 
 /// `output` is `digest(input, options)`, byte for byte; `traces` has one
@@ -129,22 +132,36 @@ pub struct Traced {
 /// stream, written again, hashes to its digest. Units of one key with one
 /// digest are one unit (their streams are the same bytes): the first
 /// written gives the trace.
+///
+/// A panic in the second writing ends the tracing and nothing else:
+/// `output` is whole, the traces made before it are kept (each hashed to
+/// its unit's digest), the walk traces nothing more (its state is not
+/// trusted after the unwind) and `panicked` is set. The stream module's
+/// thread-locals are reset by the unwind (`Armed` and the recorders are
+/// dropped), so a walk on the same thread afterwards records nothing.
 pub fn trace(input: &Input<'_>, options: &Options<'_>, keys: &[Digest]) -> Traced {
     crate::walk::run_with(input, options, |w, written, output| {
-        let traces = traces(w, written, keys);
-        Traced { output, traces }
+        let mut traces = Vec::new();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            traces_into(w, written, keys, &mut traces);
+        }))
+        .is_err();
+        // Stable: of one key and digest, the first written is kept.
+        traces.sort_by_key(|t| (t.key, t.digest));
+        traces.dedup_by(|b, a| a.key == b.key && a.digest == b.digest);
+        Traced { output, traces, panicked }
     })
 }
 
-/// The traces of the units of `written` whose key is in `keys`.
-fn traces(w: &mut Walk<'_>, written: &[Written], keys: &[Digest]) -> Vec<Trace> {
+/// Pushes onto `out` the traces of the units of `written` whose key is in
+/// `keys`, in the order they were written.
+fn traces_into(w: &mut Walk<'_>, written: &[Written], keys: &[Digest], out: &mut Vec<Trace>) {
     if keys.is_empty() {
-        return Vec::new();
+        return;
     }
     let unit_keys: HashSet<Digest> = written.iter().map(|u| u.key).collect();
     // The second writing of the parts of one owner is one run of its arms.
     let mut parts: HashMap<DeclId, Vec<(Written, Recording)>> = HashMap::new();
-    let mut out: Vec<Trace> = Vec::new();
     for u in written {
         if keys.binary_search(&u.key).is_err() {
             continue;
@@ -164,11 +181,9 @@ fn traces(w: &mut Walk<'_>, written: &[Written], keys: &[Digest]) -> Vec<Trace> 
         }
         let first_only = u.entity.is_none() || (u.owner.is_none() && content(w, u.entity));
         out.push(made(w, u, again, first_only, &unit_keys));
+        #[cfg(test)]
+        tests::panic_at(tests::IN_THE_LOOP);
     }
-    // Stable: of one key and digest, the first written is kept.
-    out.sort_by_key(|t| (t.key, t.digest));
-    out.dedup_by(|b, a| a.key == b.key && a.digest == b.digest);
-    out
 }
 
 /// A unit of a content-keyed kind (`spec/digest.md` §3.3).
@@ -184,6 +199,8 @@ fn entity_unit(w: &mut Walk<'_>, u: &Written, e: DeclId) -> Recording {
     w.unit.local.holder = Some(e);
     let mut s = Stream::traced();
     w.decl_stream(&mut s, from, e);
+    #[cfg(test)]
+    tests::panic_at(tests::IN_A_TRACED_STREAM);
     crate::enclosing::write(w, &mut s, e);
     w.unit = saved;
     s.into_recording()
@@ -255,6 +272,8 @@ fn parts_again(w: &mut Walk<'_>, e: DeclId, owner: &Written) -> Vec<(Written, Re
     let armed = Armed::new();
     let mut again = Vec::new();
     crate::demand::resolved_units(w, e, owner, &mut again);
+    #[cfg(test)]
+    tests::panic_at(tests::WHILE_ARMED);
     let kept = armed.take();
     let mut by_digest: HashMap<Digest, Recording> = HashMap::new();
     for r in kept {
@@ -333,10 +352,11 @@ fn place(w: &Walk<'_>, u: &Written) -> Loc {
         .map_or(Loc::INVALID, |d| ast.decls.get(d).loc())
 }
 
-/// The subject path, presumed line and column of `loc` taken to its
-/// outermost expansion; empty, 0, 0 if it has none.
+/// The subject path, line and column of `loc` taken to its outermost
+/// expansion, in the physical file (a `#line` directive does not move it:
+/// the place is for opening the file); empty, 0, 0 if it has none.
 fn located(w: &Walk<'_>, loc: Loc) -> (Vec<u8>, u64, u64) {
-    match w.sm.presumed_line_col(loc) {
+    match w.sm.line_col(loc) {
         Some(p) => ((w.subject_path)(p.file), u64::from(p.line), u64::from(p.col)),
         None => (Vec::new(), 0, 0),
     }
@@ -390,6 +410,25 @@ mod tests {
         /// ([`perturb`]), as a stream that depends on when it is written
         /// would.
         static PERTURB: Cell<bool> = const { Cell::new(false) };
+        /// Where the second writing panics ([`panic_at`]): 0 nowhere.
+        static PANIC_AT: Cell<u8> = const { Cell::new(0) };
+    }
+
+    /// After a unit's trace is made, in [`traces_into`]'s loop.
+    pub(super) const IN_THE_LOOP: u8 = 1;
+    /// Inside an entity unit's second writing, its traced stream open and
+    /// the unit's state put aside.
+    pub(super) const IN_A_TRACED_STREAM: u8 = 2;
+    /// While the stream module is armed, after an owner's parts were
+    /// written again and before they are taken.
+    pub(super) const WHILE_ARMED: u8 = 3;
+
+    /// The panic hook of the second writing: panics at `here` if
+    /// [`PANIC_AT`] says so.
+    pub(super) fn panic_at(here: u8) {
+        if PANIC_AT.with(Cell::get) == here {
+            panic!("WP-054 test: the second writing panics at {here}");
+        }
     }
 
     /// The mutation hook of [`traces`]: a byte added to the second writing
@@ -474,6 +513,13 @@ int v = h(1);
             let traced = trace(input, &options(&rules), &keys);
             assert!(traced.output == out, "tracing changed the output");
             assert_eq!(MAX_LIVE.with(Cell::get), 1, "a sub-stream recorded");
+            // The module is at rest after a trace, and an ordinary walk on
+            // the same thread afterwards makes no recorder.
+            assert!(crate::stream::at_rest(), "tracing left the stream module armed");
+            let before = RECORDERS.with(Cell::get);
+            assert!(crate::digest(input, &options(&rules)) == out);
+            assert_eq!(RECORDERS.with(Cell::get), before, "a walk after a trace recorded");
+            assert!(!traced.panicked);
             let units: HashSet<(Digest, Digest)> = out
                 .digests
                 .groups
@@ -569,6 +615,42 @@ int v = h(1);
                 kind_name(&slip_kiln::kiln::ast::expr::ExprKind::CallExpr),
                 kind_name(&slip_kiln::kiln::ast::expr::ExprKind::CallExpr)
             ));
+        });
+    }
+
+    // §6.1: a panic in the second writing withdraws places and nothing
+    // else: the output is whole, the traces made before it stand (each
+    // hashing to its digest), nothing more is traced, `panicked` is set;
+    // the stream module is at rest after the unwind, and a walk on the
+    // same thread afterwards records nothing. At each of the three places
+    // a second writing can be: between units, inside a traced stream, and
+    // while armed for a unit's parts.
+    #[test]
+    fn s6_1_panic_in_the_second_writing() {
+        with(SRC, |input| {
+            let rules = RuleTable::empty();
+            let out = crate::digest(input, &options(&rules));
+            let keys = all_keys(&out);
+            let whole = trace(input, &options(&rules), &keys);
+            for at in [IN_THE_LOOP, IN_A_TRACED_STREAM, WHILE_ARMED] {
+                PANIC_AT.with(|p| p.set(at));
+                let traced = trace(input, &options(&rules), &keys);
+                PANIC_AT.with(|p| p.set(0));
+                assert!(traced.panicked, "no panic at {at}");
+                assert!(traced.output == out, "a panic at {at} changed the output");
+                assert!(traced.traces.len() < whole.traces.len(), "{at}: traced on after it");
+                for t in &traced.traces {
+                    assert_eq!(tagged_digest(UNIT_TAG, &t.stream), t.digest);
+                    assert!(whole.traces.contains(t), "{at}: a trace that differs");
+                }
+                if at == IN_THE_LOOP {
+                    assert_eq!(traced.traces.len(), 1, "the one made before the panic");
+                }
+                assert!(crate::stream::at_rest(), "{at}: the unwind left the module armed");
+                let before = RECORDERS.with(Cell::get);
+                assert!(crate::digest(input, &options(&rules)) == out);
+                assert_eq!(RECORDERS.with(Cell::get), before, "{at}: a walk after it recorded");
+            }
         });
     }
 }

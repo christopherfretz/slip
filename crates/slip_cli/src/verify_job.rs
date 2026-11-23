@@ -3,7 +3,10 @@
 //! verdict. Work package WP-052.
 //!
 //! [`verify`] does steps 0 to 6 of §5.2 with every guard of §5.3, writes
-//! the post shard of §5.4 and the counters of §7.2. It takes everything
+//! the post shard of §5.4 and the counters of §7.2; under a rule table
+//! that is not empty, the shard's `binding` and `rule_use` of §9.1 (work
+//! package WP-121; with an empty table the shard is M1's, without
+//! either). It takes everything
 //! it is parameterised by from [`Params`]; it reads neither the job's
 //! `post` nor the worker's arguments (`spec/exec.md` §8.6).
 //!
@@ -18,6 +21,7 @@ use slip_digest::{Detail, Options, Output, ReadOnly, ReadOnlyFiles, digest};
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_kiln::Lookups;
+use slip_model::agreement::{Binding, RuleUse};
 use slip_model::declared::Declared;
 use slip_model::digests::{Digests, Group, GroupClass, GroupSum};
 use slip_model::formats::content_id;
@@ -42,6 +46,10 @@ pub struct Params {
     /// without it `verify` would have to read the job's `post`.
     pub pre: u64,
     pub declared: Declared,
+    /// The content id of the `DECL` container `declared` was read from
+    /// (`Job.post.declared`): the `declared` of the shard's `binding`
+    /// (`spec/verify.md` §9.1).
+    pub declared_id: Digest,
     pub image: Image,
     /// The findings a verdict keeps.
     pub limit: usize,
@@ -109,16 +117,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     let Some((output, lookups)) = output else {
         return Err("the post-image parsed without error and the walk did not run".to_owned());
     };
-    let mut counters = std::mem::take(&mut shard.counters);
-    counters.extend(walk_counters(&output));
-    let mut post = Post {
-        counters,
-        digests: output.digests,
-        differing: 0,
-        reparsed: 0,
-        by_kind: [0; 6],
-        unstable: 0,
-    };
+    let mut post = Post::new(&mut shard, output, rules_id, !rules.is_empty());
     let unverifiable_now = |post: Post, mut shard: Shard, reason: &str| -> Result<Shard, String> {
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
@@ -187,7 +186,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         match post_side {
             Some(post_side) if same => {
                 locate::fill(&mut v.findings, locate_n, pre_side.as_ref(), &post_side);
-                post.unstable = locate::unstable(pre_side.as_ref(), &post_side);
+                (post.unstable, post.panicked) = locate::unplaced(pre_side.as_ref(), &post_side);
             }
             _ => {
                 post.by_kind = [0; 6];
@@ -202,6 +201,12 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
 /// rules, with the read-only files decided from each buffer's real path
 /// (`Input::subject_path` maps the real path, never the path as the front
 /// end spells it; `spec/verify.md` §2.1), and the lookups for L1.
+///
+/// §9.1: under a rule table that is not empty the shard has `binding`,
+/// whatever the parse's outcome (a `failed` one would be the
+/// coordinator's, which has none), and the walk counts the rule use. With
+/// an empty table the shard is M1's (§9.3's temporary exception), byte
+/// for byte.
 fn post_walk(
     params: &Params,
     observer: &Observer,
@@ -209,17 +214,32 @@ fn post_walk(
     detail: Detail<'_>,
 ) -> Result<(Shard, Option<(Output, Lookups)>), String> {
     let (rules, files) = (params.declared.rules(), params.declared.files());
-    params.image.parse_looking(observer, Side::Post, Phase::Verify, round, |input| {
-        let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
-        let options = Options {
-            rules,
-            read_only: ReadOnly::files(&read_only),
-            detail,
-            names: false,
-            rule_use: false,
-        };
-        digest(input, &options)
-    })
+    params
+        .image
+        .parse_looking(observer, Side::Post, Phase::Verify, round, |input| {
+            let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
+            let options = Options {
+                rules,
+                read_only: ReadOnly::files(&read_only),
+                detail,
+                names: false,
+                rule_use: !rules.is_empty(),
+            };
+            digest(input, &options)
+        })
+        .map(|(mut shard, output)| {
+            if !rules.is_empty() && shard.outcome.status != Status::Failed {
+                shard.binding = Some(binding(params));
+            }
+            (shard, output)
+        })
+}
+
+/// The `binding` of the job's shards (`spec/verify.md` §9.1), from its
+/// parameters, which are `Job.post`'s: no overlay (the image is a tree),
+/// the declared changes' content id, the round of the pre shard.
+fn binding(params: &Params) -> Binding {
+    Binding { overlay: None, declared: params.declared_id, pre: params.pre }
 }
 
 /// Step 4 (§5.2): the pre-image parsed with detail for the groups of `G`,
@@ -295,6 +315,8 @@ struct Post {
     counters: Vec<Counter>,
     /// Step 1's `digests`, with the unit lists of detail `differing`.
     digests: Digests,
+    /// Step 1's rule use (§9.1), when the rule table is not empty.
+    rule_use: Option<RuleUse>,
     /// `verify.groups.differing`.
     differing: u64,
     /// `verify.reparsed`.
@@ -303,14 +325,46 @@ struct Post {
     by_kind: [u64; 6],
     /// `verify.traces.unstable` (§7.2), present only when not 0.
     unstable: u64,
+    /// `verify.traces.panicked` (§7.2): the images whose second writing
+    /// panicked; present only when not 0.
+    panicked: u64,
 }
 
 impl Post {
+    /// After step 1: the parse's counters (taken from `shard`) and the
+    /// walk's, its `digests`, and its rule use. §9.1: `rule_use` in every
+    /// `ok` shard under a rule table that is not empty (`counted`: the
+    /// walk counted only then), from step 1's walk, the only walk that counts (step
+    /// 6's second parse is tied to it by G3).
+    fn new(shard: &mut Shard, output: Output, rules_id: Digest, counted: bool) -> Post {
+        let mut counters = std::mem::take(&mut shard.counters);
+        counters.extend(walk_counters(&output));
+        Post {
+            counters,
+            rule_use: counted.then_some(RuleUse { rules: rules_id, uses: output.rule_use }),
+            digests: output.digests,
+            differing: 0,
+            reparsed: 0,
+            by_kind: [0; 6],
+            unstable: 0,
+            panicked: 0,
+        }
+    }
+
     /// The post shard of §5.4: step 1's outcome and inputs (already in
     /// `shard`), its counters and those of §7.2, sorted by name; step 1's
     /// `digests` without unit lists; `v`.
     fn finish(self, shard: &mut Shard, v: Verdict) -> Shard {
-        let Post { mut counters, mut digests, differing, reparsed, by_kind, unstable } = self;
+        let Post {
+            mut counters,
+            mut digests,
+            rule_use,
+            differing,
+            reparsed,
+            by_kind,
+            unstable,
+            panicked,
+        } = self;
         let by_name = [
             ("verify.groups.differing", differing),
             ("verify.findings", v.total),
@@ -320,8 +374,12 @@ impl Post {
             ("verify.reparsed", reparsed),
         ];
         counters.extend(by_name.iter().map(|&(n, value)| Counter { name: n.to_owned(), value }));
-        if unstable > 0 {
-            counters.push(Counter { name: "verify.traces.unstable".to_owned(), value: unstable });
+        for (name, value) in
+            [("verify.traces.unstable", unstable), ("verify.traces.panicked", panicked)]
+        {
+            if value > 0 {
+                counters.push(Counter { name: name.to_owned(), value });
+            }
         }
         counters.extend(
             KINDS
@@ -337,6 +395,7 @@ impl Post {
         out.counters = counters;
         out.digests = Some(digests);
         out.verdict = Some(v);
+        out.rule_use = rule_use;
         out
     }
 }
