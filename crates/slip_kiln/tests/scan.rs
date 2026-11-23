@@ -237,3 +237,22 @@ fn s8_4_dollar() {
         vec![id("foo", 1, 15), mention("foo", 1, 33)]
     );
 }
+
+// A comment before `#` or between the directive's name and the header
+// name changes nothing: the header name holds no hit.
+#[test]
+fn s8_4_include_after_comments() {
+    let src =
+        b"/* c */ #include <foo>\n# /* c */ include /* c */ <foo>\n/* a\n */ #include <foo>\n";
+    assert_eq!(hits(src, "foo"), vec![]);
+    // A `#` that is not first on its line starts no directive.
+    assert_eq!(hits(b"x # include <foo>\n", "foo"), vec![id("foo", 1, 14)]);
+}
+
+// An invalid byte between `\` and a newline: Kiln's replacement is no
+// whitespace, so no line is spliced and no `foo` is formed.
+#[test]
+fn s8_4_invalid_byte_after_a_backslash_splices_nothing() {
+    assert_eq!(hits(b"int fo\\\xff\no;", "foo"), vec![]);
+    assert_eq!(hits(b"int fo\\ \no;", "foo"), vec![id("fo\\ \no", 1, 5)]);
+}
