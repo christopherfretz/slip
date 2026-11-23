@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use slip_kiln::snippet::{Extra, Parsed, Snippet, parse_with_tables};
+use slip_kiln::tree::Tree;
 use slip_script::host::parse_qualified_name;
 use slip_script::kiln_subject::KilnSubject;
 use slip_script::subject::{Declaration, Entity, PlaceOf, Range, Reference, Subject, Value};
@@ -343,19 +344,27 @@ fn s6_5_rule4_elaborated_type_specifier_is_a_type_name() {
 /// A Kiln hole of the K3 kind (`spec/landed/api/WP-085.md` "For Kiln"):
 /// a qualified elaborated type specifier in a declaration (`struct n::S
 /// *p;`) overwrites the row of the class's definition, with the
-/// specifier's qualifier as the row's. So today the qualifier `n` is
-/// taken for a declarator's (§6.5 rule 4) and not returned, and the
-/// definition's name range is the specifier's `S`.
+/// specifier's qualifier as the row's. The subject sees that the row's
+/// name is not at the declaration's location and refuses it: the
+/// definition has no name range, and the row's qualifier is not taken
+/// for a declarator's.
 #[test]
 fn kiln_hole_k3_a_qualified_elaborated_specifier_overwrites_the_row() {
     let src = "namespace n { struct S {}; }\nstruct n::S *p;\n";
     main_only(src, |_, s| {
+        // The specifier names a type: both names are references (its row
+        // is the definition's, overwritten, and is not a declarator's).
         assert_eq!(refs(s, one(s, "n::S")), ["main.cpp:S | main.cpp:n::S"]);
-        assert_eq!(refs(s, one(s, "n")), Vec::<String>::new());
+        assert_eq!(refs(s, one(s, "n")), ["main.cpp:n | main.cpp:n"]);
+        // The definition's row names line 2's `S`: refused, no name
+        // range; its place is its own token, marked not its own.
         let d = s.declarations(one(s, "n::S")).unwrap();
         let names: Vec<String> =
             d.iter().map(|&d| exact(s, s.name_range(Value::Declaration(d)).unwrap())).collect();
-        assert_eq!(names, [at(src, "n::S", 0, "S")]);
+        assert_eq!(names, ["-"]);
+        assert_eq!(place(s, Value::Declaration(d[0])), "nearest main.cpp:S");
+        let own = s.place(Value::Declaration(d[0]));
+        assert!(matches!(own, PlaceOf::Nearest(r) if r.lo == 21), "{own:?}");
     });
 }
 
@@ -613,12 +622,9 @@ fn s5_4_interim_begin_and_end_out_of_order() {
 /// parses files written under the test's temporary directory.
 #[test]
 fn s5_4_interim_embed_tokens_are_no_name() {
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp085-embed");
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("d.bin"), b"AB").unwrap();
     let main = "constexpr int c = 1;\nconst int d[] = {\n#embed \"d.bin\"\n, c};\nint u = c;\n";
-    std::fs::write(root.join("main.cpp"), main).unwrap();
-    let got = on_disk(&root, &["clang++", "-std=c++26", "-c", "main.cpp"], |s| {
+    let files: [(&str, &[u8]); 2] = [("main.cpp", main.as_bytes()), ("d.bin", b"AB")];
+    let got = on_disk("wp085-embed", &files, "c++26", |s| {
         let r = s.references_to(one(s, "c"));
         let shown: Vec<String> = r.iter().map(|&x| show(s, name(s, x))).collect();
         let bad = all(s)
@@ -632,35 +638,31 @@ fn s5_4_interim_embed_tokens_are_no_name() {
     assert_eq!(got.1, 0);
 }
 
-/// Parses `argv` in `dir` (a real parse, with the tables) and calls `f`
-/// with the subject.
-/// One parse at a time: the front end resolves the command's paths
-/// against the process's working directory.
-static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Writes `files` (the first is the main file) to a fresh directory,
+/// parses them as `-std=<std>` (a real parse, with the tables, by
+/// `slip_kiln::tree::Tree`, which serialises the parses of the process)
+/// and calls `f` with the subject.
+fn on_disk<R: Send>(
+    name: &str,
+    files: &[(&str, &[u8])],
+    std: &str,
+    f: impl FnOnce(&KilnSubject<'_>) -> R + Send,
+) -> R {
+    let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), name, files).unwrap();
+    let observer = tree.observer(files[0].0, std, &[]);
+    let (_, got) = tree
+        .parse(&observer, &written_options(), |unit| {
+            let owned = |_: &[u8]| true;
+            f(&KilnSubject::new(unit, &owned).expect("a unit with tables"))
+        })
+        .expect("the unit parses");
+    got.expect("the closure ran")
+}
 
-fn on_disk<R: Send>(dir: &Path, argv: &[&str], f: impl FnOnce(&KilnSubject<'_>) -> R + Send) -> R {
-    use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase};
-    let observer = Observer {
-        id: Digest([7; 32]),
-        command: Command {
-            directory: dir.display().to_string().into_bytes(),
-            argv: argv.iter().map(|a| a.as_bytes().to_vec()).collect(),
-            env: Vec::new(),
-        },
-        language: Language::Cxx,
-        main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
-        cost_hint: 1,
-        origins: vec![Origin { configuration: 0, entry: 0 }],
-    };
-    let _one = ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+fn written_options() -> slip_kiln::ParseOptions {
     let mut options = slip_kiln::ParseOptions::default();
     options.written = true;
-    let report = slip_kiln::parse_observer_with(&observer, Phase::Map, 0, options, |unit| {
-        let owned = |_: &[u8]| true;
-        f(&KilnSubject::new(unit, &owned).expect("a unit with tables"))
-    })
-    .expect("the unit parses");
-    report.1.expect("the closure ran")
+    options
 }
 
 // ---------------------------------------------------------------------------
@@ -961,8 +963,9 @@ fn s6_4_rule3_block_scope_and_template_parameters_are_written() {
 }
 
 /// Kiln hole K3 (`spec/landed/edits/WP-067.md`): a later friend
-/// declaration overwrites an earlier declaration's row, so the earlier
-/// declaration's name range is the friend's name today.
+/// declaration overwrites an earlier declaration's row, whose name is
+/// then the friend's: refused, so the earlier declaration has no name
+/// range, and its place is its own token, marked not its own.
 #[test]
 fn kiln_hole_k3_a_friend_overwrites_the_row() {
     let src = "struct S;\nstruct T { friend struct S; };\n";
@@ -971,7 +974,10 @@ fn kiln_hole_k3_a_friend_overwrites_the_row() {
         let ds = s.declarations(e).unwrap();
         let names: Vec<String> =
             ds.iter().map(|&d| exact(s, s.name_range(Value::Declaration(d)).unwrap())).collect();
-        assert_eq!(names, [at(src, "struct S;", 1, "S")]);
+        // The row names the friend's `S`: refused.
+        assert_eq!(names, ["-"]);
+        let own = s.place(Value::Declaration(ds[0]));
+        assert!(matches!(own, PlaceOf::Nearest(r) if r.lo == 7 && r.hi == 8), "{own:?}");
     });
 }
 
@@ -1163,11 +1169,11 @@ fn s6_5_rule4_using_directive_and_alias_whole() {
 /// written under the test's temporary directory.
 #[test]
 fn s5_4_a_recoded_file_gives_no_range() {
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp085-recoded");
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("bad.h"), b"// \xFF\xFE\nint u = c;\n").unwrap();
-    std::fs::write(root.join("main.cpp"), "int c;\n#include \"bad.h\"\nint v = c;\n").unwrap();
-    let got = on_disk(&root, &["clang++", "-std=c++20", "-c", "main.cpp"], |s| {
+    let files: [(&str, &[u8]); 2] = [
+        ("main.cpp", b"int c;\n#include \"bad.h\"\nint v = c;\n"),
+        ("bad.h", b"// \xFF\xFE\nint u = c;\n"),
+    ];
+    let got = on_disk("wp085-recoded", &files, "c++20", |s| {
         s.references_to(one(s, "c"))
             .into_iter()
             .map(|r| (show(s, name(s, r)), show(s, extent(s, r)), place(s, Value::Reference(r))))
@@ -1296,6 +1302,7 @@ impl Tally {
 /// The property of test 9 over one subject.
 fn property(s: &KilnSubject<'_>, label: &str) -> Tally {
     let mut t = Tally::default();
+    let mut names = std::collections::HashSet::new();
     for r in all(s) {
         t.references += 1;
         let id = s.identifier(Value::Entity(s.referent(r))).unwrap_or_default();
@@ -1334,6 +1341,13 @@ fn property(s: &KilnSubject<'_>, label: &str) -> Tally {
         }
         if !s.references_to(s.origin(s.referent(r))).contains(&r) {
             t.failures.push(format!("{label}: not among the references to its origin"));
+        }
+        // (8a) No two references one `references_to` returns have one
+        // name range.
+        if let Some(n) = n
+            && !names.insert((s.origin(s.referent(r)), n))
+        {
+            t.failures.push(format!("{label}: name range {} given twice", show(s, Some(n))));
         }
     }
     t
@@ -1460,6 +1474,9 @@ fn measure_references_on_a_unit() {
         let t4 = Instant::now();
         let tally = property(&s, "unit");
         let checked = t4.elapsed();
+        let t5 = Instant::now();
+        let (names, disagree) = name_rule_disagreements(unit, "unit");
+        let rule = t5.elapsed();
         let _ = (first, at);
         vec![
             format!("declarations {}, written-reference entries {written}", unit.ast().decls.len()),
@@ -1472,6 +1489,11 @@ fn measure_references_on_a_unit() {
             format!("index by origin, first query {by_origin:?}; index by extent {by_extent:?}"),
             format!("property over every reference {checked:?}"),
             format!(
+                "name rule against sites: {names} names, {} disagreements {:#?} ({rule:?})",
+                disagree.len(),
+                &disagree[..disagree.len().min(20)]
+            ),
+            format!(
                 "failures {}: {:#?}",
                 tally.failures.len(),
                 &tally.failures[..tally.failures.len().min(20)]
@@ -1482,4 +1504,335 @@ fn measure_references_on_a_unit() {
     for l in report.1.expect("the closure ran") {
         println!("{l}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// The review's findings (WP-085 fix round).
+
+/// `name | extent` of every reference of the unit, in number order.
+fn every(s: &KilnSubject<'_>) -> Vec<String> {
+    all(s)
+        .into_iter()
+        .map(|r| format!("{} | {}", show(s, name(s, r)), show(s, extent(s, r))))
+        .collect()
+}
+
+/// §6.6 rule 2 and rule 4 (A1): a qualifier the table does not link
+/// (`decltype(s)::`) ends Kiln's chain, so where the written name starts
+/// is not known: no extent, never one too short. The name range stays.
+#[test]
+fn s6_6_rule2_an_unlinked_decltype_qualifier_gives_no_extent() {
+    let src = "namespace a { struct S { static int m; using T = int; enum E { e }; }; }
+a::S s;
+int y1 = decltype(s)::m;
+decltype(s)::T y2 = 0;
+int y3 = decltype(s)::e;
+";
+    main_only(src, |_, s| {
+        assert_eq!(refs(s, one(s, "a::S::m")), ["main.cpp:m | -"]);
+        assert_eq!(refs(s, one(s, "a::S::T")), ["main.cpp:T | -"]);
+        assert_eq!(refs(s, one(s, "a::S::e")), ["main.cpp:e | -"]);
+        // §7.4 rule 3: the place is the written tokens the table gives.
+        let r = s.references_to(one(s, "a::S::m"))[0];
+        assert_eq!(place(s, Value::Reference(r)), "nearest main.cpp:m");
+    });
+}
+
+/// The same rule leaves a leading `::` alone (A1's other cases).
+#[test]
+fn s6_6_rule2_a_leading_global_still_starts_the_extent() {
+    let src = "struct T {};\nenum { e };\n::T t;\nint u = ::e;\n";
+    main_only(src, |_, s| {
+        assert_eq!(refs(s, one(s, "T")), ["main.cpp:T | main.cpp:::T"]);
+        assert_eq!(refs(s, one(s, "e")), ["main.cpp:e | main.cpp:::e"]);
+    });
+}
+
+/// A pack-index-specifier (`Ts...[0]::`) is the other unlinked qualifier;
+/// it needs a pack, so a template, where the name is dependent and not
+/// returned (§6.5 rule 4).
+#[test]
+fn s6_6_rule2_a_pack_index_qualifier_is_dependent() {
+    let src = "struct A { static int m; };
+template <class... Ts> int f() { return Ts...[0]::m; }
+int u = f<A>();
+";
+    let files = [("main.cpp", src)];
+    let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: "c++26" };
+    parse_with_tables(&snippet, &Extra::default(), |p| {
+        assert_eq!(p.errors, 0, "{}", p.diagnostics);
+        let owned = |_: &[u8]| true;
+        let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
+        assert_eq!(refs(&s, one(&s, "A::m")), Vec::<String>::new());
+    })
+    .expect("the snippet parses");
+}
+
+/// §6.6 rule 1 (A2): the row of a declaration named through a macro
+/// argument is its own (its location is the row's name start): the name
+/// range is kept.
+#[test]
+fn s6_6_rule1_a_declaration_named_through_a_macro_argument() {
+    let src = "#define D(x) struct x { ~x(); operator int(); };\nD(S)\n";
+    main_only(src, |_, s| {
+        let d = first_decl(s, one(s, "S"));
+        assert_eq!(show(s, s.name_range(Value::Declaration(d)).unwrap()), "main.cpp:S");
+        assert_eq!(place(s, Value::Declaration(d)), "own main.cpp:S");
+    });
+}
+
+/// §5.4, §7.3 rule 2 (A3): a parameter's name, and a function type's
+/// parameter's, are no range the subject gives (parameters are not
+/// declarations, §6.4 rule 3): `tiers` is `None` for them.
+#[test]
+fn s5_4_no_tiers_for_parameter_names() {
+    let src = "void h(int param);\nvoid (*fp)(int fparam);\n";
+    main_only(src, |_, s| {
+        let file =
+            s.name_range(Value::Declaration(first_decl(s, one(s, "h")))).unwrap().unwrap().file;
+        for word in ["param", "fparam"] {
+            let lo = src.find(&format!("int {word}")).unwrap() as u32 + 4;
+            let r = Range { file, lo, hi: lo + word.len() as u32 };
+            assert_eq!(s.text(r), word.as_bytes());
+            assert_eq!(s.tiers(r), None, "{word}");
+        }
+    });
+}
+
+/// §5.5 (B1): the origin is `slip_kiln::written::origin`: a use that
+/// resolves to an explicit specialisation of a function template, of a
+/// member of a class template, of a variable template is a reference to
+/// the template or the member.
+#[test]
+fn s5_5_uses_of_explicit_specialisations_are_references_to_the_template() {
+    let src = "namespace n { template <class T> void tf(T) {} template <> void tf<int>(int) {} }
+template <class T> struct S { void f() {} };
+template <> void S<int>::f() {}
+template <class T> int vt = 0;
+template <> int vt<int> = 1;
+void g() { n::tf(1); S<int>().f(); int v = vt<int>; (void)v; }
+";
+    main_only(src, |_, s| {
+        assert_eq!(
+            refs_exact(s, one(s, "n::tf")),
+            [format!("{} | {}", at(src, "n::tf(1)", 0, "tf"), at(src, "n::tf(1)", 0, "n::tf"))]
+        );
+        assert_eq!(
+            refs_exact(s, one(s, "S::f")),
+            [format!("{} | {}", at(src, ".f()", 0, "f"), at(src, ".f()", 0, "f"))]
+        );
+        assert_eq!(
+            refs_exact(s, one(s, "vt")),
+            [format!("{} | {}", at(src, "= vt<int>", 0, "vt"), at(src, "= vt<int>", 0, "vt"))]
+        );
+    });
+}
+
+/// §5.5 (B1): a member of an explicit specialisation of a class template
+/// that the primary template does not have is its own origin, and the
+/// references to it are its.
+#[test]
+fn s5_5_a_member_only_an_explicit_specialisation_has() {
+    let src = "template <class T> struct C {};
+template <> struct C<int> { void g(); };
+void h() { C<int>().g(); }
+";
+    main_only(src, |_, s| {
+        let r: Vec<Reference> = all(s)
+            .into_iter()
+            .filter(|&r| s.identifier(Value::Reference(r)).unwrap() == b"g")
+            .collect();
+        assert_eq!(r.len(), 1);
+        let g = s.referent(r[0]);
+        assert_eq!(s.origin(g), g);
+        assert_eq!(s.references_to(g), r);
+    });
+}
+
+/// §6.5 rule 4 (B2): a using-enum-declaration is declarative: neither
+/// `n` nor `E` is returned; a use of an enumerator it brings in is.
+#[test]
+fn s6_5_rule4_using_enum_declaration() {
+    let src = "namespace n { enum class E { x }; }
+void f() { using enum n::E; (void)x; }
+namespace m { using enum n::E; }
+";
+    main_only(src, |_, s| {
+        assert_eq!(refs(s, one(s, "n")), Vec::<String>::new());
+        assert_eq!(refs(s, one(s, "n::E")), Vec::<String>::new());
+        assert_eq!(refs(s, one(s, "n::E::x")), ["main.cpp:x | main.cpp:x"]);
+    });
+}
+
+/// §6.5 rule 4 (B3, decided): a template argument inside a declarator's
+/// qualifier is an ordinary type name and is returned; the qualifier's own
+/// components are not.
+#[test]
+fn s6_5_rule4_a_template_argument_inside_a_declarator_qualifier() {
+    let src = "namespace n { struct A {}; template <class T> struct W { static int k; }; }
+template <> int n::W<n::A>::k = 1;
+";
+    main_only(src, |_, s| {
+        assert_eq!(
+            refs_exact(s, one(s, "n::A")),
+            [format!("{} | {}", at(src, "<n::A>", 0, "A"), at(src, "<n::A>", 0, "n::A"))]
+        );
+        let lo = src.find("<n::A>").unwrap() + 1;
+        let n = format!("main.cpp:{lo}..{}:n", lo + 1);
+        assert_eq!(refs_exact(s, one(s, "n")), [format!("{n} | {n}")]);
+        assert_eq!(refs(s, one(s, "n::W")), Vec::<String>::new());
+    });
+}
+
+/// §6.5 rule 6 (8b): the counter compares identifiers: a name written
+/// with a universal-character-name or a line splice is the same name.
+#[test]
+fn s6_5_rule6_the_counter_compares_identifiers() {
+    let src = "template <class T> void h(T t) { caf\u{e9}(t); caf\\u00e9(t); ca\\\nf\u{e9}(t); }\n";
+    main_only(src, |_, s| {
+        assert_eq!(s.unresolved_named("café".as_bytes()), Some(3));
+    });
+}
+
+/// §6.6 rule 4 (B4): where the start of a written name is not exactly
+/// found, the extent is null, never too short or too long.
+#[test]
+fn s6_6_rule4_extents_that_are_not_found() {
+    let src = "namespace a { int c; }
+struct S { ~S(); };
+#define G ::
+#define GQ(x) :: x
+#define TL ~
+int u1 = G a::c;
+int u2 = ::
+a::c;
+int u3 = GQ(a)::c;
+void f(S *p) { p->TL S(); }
+";
+    main_only(src, |_, s| {
+        // `c` keeps its name range each time (in `GQ(a)::c` it is file
+        // text after the invocation); no extent is found.
+        assert_eq!(refs(s, one(s, "a::c")), ["main.cpp:c | -"; 3]);
+        // `a` after `G`, after a `::` ending the line, and after the
+        // `::` of `GQ`'s body: no extent.
+        assert_eq!(refs(s, one(s, "a")), ["main.cpp:a | -"; 3]);
+        let e = every(s);
+        assert!(!e.iter().any(|x| x.ends_with("main.cpp:~S") || x.ends_with("TL S")), "{e:#?}");
+    });
+}
+
+// ---------------------------------------------------------------------------
+// One rule for a name token (fix round, item 1): `kiln_subject::name_token`
+// against `slip_kiln::sites::Sites::name_token` (`spec/edits.md` §9.7: the
+// native rename and a transform see the same ranges). `Sites` takes a
+// snippet's in-memory buffers for no file, so both are asked over the
+// same files written to disk, with an ownership that owns everything
+// (`Sites` refuses an unowned file before it checks the bytes).
+
+/// The identifier the AST gives `d`, empty when it has none.
+fn decl_ident(ast: &slip_kiln::kiln::ast::Ast, d: slip_kiln::kiln::ast::DeclId) -> Vec<u8> {
+    use slip_kiln::kiln::ast::names::DeclNameView;
+    match ast.names.view(ast.decls.get(d).name()) {
+        DeclNameView::Identifier(s) => ast.symbols().as_str(s).as_bytes().to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+/// Every name of `unit` (each written-reference entry and each
+/// declaration name) by both rules: the number of names and the
+/// disagreements.
+fn name_rule_disagreements(unit: &slip_kiln::Unit<'_>, label: &str) -> (u64, Vec<String>) {
+    use slip_kiln::sites::{Located, Sites};
+    let ownership =
+        slip_model::transform::Ownership { owned: vec![b"/".to_vec()], readonly: Vec::new() };
+    let sites = Sites::new(unit, &ownership);
+    let ast = unit.ast();
+    let sm = unit.sm();
+    let mut names: Vec<(slip_kiln::kiln::source::Span, Vec<u8>)> = Vec::new();
+    for r in slip_kiln::written::written_refs(unit) {
+        names.push((r.name, decl_ident(ast, r.referent)));
+    }
+    for n in slip_kiln::written::decl_names(unit) {
+        names.push((n.name, decl_ident(ast, n.decl)));
+    }
+    let mut out = Vec::new();
+    for (span, ident) in &names {
+        // The subject's `given`: a file Kiln did not recode.
+        let mine = slip_script::kiln_subject::name_token(unit, *span, ident)
+            .filter(|fr| sm.load_report(fr.file).is_clean())
+            .map(|fr| (fr.file, u64::from(fr.lo), u64::from(fr.hi)));
+        let theirs = match sites.name_token(*span, ident) {
+            Located::At { file, lo, hi, .. } => Some((file, lo, hi)),
+            Located::Refused { .. } => None,
+        };
+        if mine != theirs {
+            out.push(format!(
+                "{label}: {:?} ({}): subject {mine:?}, sites {:?}",
+                sm.offset_of(sm.spelling_loc(span.lo)),
+                String::from_utf8_lossy(ident),
+                sites.name_token(*span, ident)
+            ));
+        }
+    }
+    (names.len() as u64, out)
+}
+
+#[test]
+fn wp085_one_name_rule_with_sites_over_digest_pair_tests() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("../slip_digest/tests");
+    let mut support: Vec<(String, String)> = Vec::new();
+    for e in std::fs::read_dir(tests.join("support")).into_iter().flatten().flatten() {
+        if let (Some(n), Ok(t)) =
+            (e.file_name().to_str().map(str::to_owned), std::fs::read_to_string(e.path()))
+        {
+            support.push((n, t));
+        }
+    }
+    support.sort();
+    let dirs: Vec<PathBuf> = PAIR_ROOTS.iter().flat_map(|r| pair_dirs(&tests.join(r))).collect();
+    assert!(dirs.len() > 1000, "found only {} pair-test directories", dirs.len());
+    let (mut names, mut units, mut skipped) = (0u64, 0u64, 0u64);
+    let mut failures = Vec::new();
+    for (k, dir) in dirs.iter().enumerate() {
+        let label = dir.strip_prefix(&tests).unwrap_or(dir).display().to_string();
+        for (i, side) in pair_sides(dir, &support).iter().enumerate() {
+            if side.target.is_some() {
+                skipped += 1;
+                continue;
+            }
+            let files: Vec<(&str, &[u8])> =
+                side.files.iter().map(|(p, t)| (p.as_str(), t.as_bytes())).collect();
+            let Ok(tree) = Tree::new(
+                Path::new(env!("CARGO_TARGET_TMPDIR")),
+                &format!("wp085-rule-{k}-{i}"),
+                &files,
+            ) else {
+                skipped += 1;
+                continue;
+            };
+            let args: Vec<&str> = side.args.iter().map(String::as_str).collect();
+            let observer = tree.observer("main.cpp", &side.std, &args);
+            let label = format!("{label} side {i}");
+            match tree.parse(&observer, &written_options(), |u| name_rule_disagreements(u, &label))
+            {
+                Ok((_, Some((n, bad)))) => {
+                    units += 1;
+                    names += n;
+                    failures.extend(bad);
+                }
+                _ => skipped += 1,
+            }
+        }
+    }
+    eprintln!(
+        "{units} units, {names} names, {skipped} sides not parsed or with a target, {} disagreements",
+        failures.len()
+    );
+    assert!(names > 30_000, "only {names} names");
+    assert!(
+        failures.is_empty(),
+        "{} disagreements: {:#?}",
+        failures.len(),
+        &failures[..failures.len().min(30)]
+    );
 }
