@@ -572,6 +572,31 @@ fn g1_absolute_include() {
     check_post_shard(&v);
 }
 
+/// §9.1: an `ok` shard of a job under a rule table that is not empty has
+/// the job's `binding` and a `rule_use` of the table's `rules_id`.
+fn check_sections_under_rules(v: &Shard, params: &Params) {
+    assert_eq!(v.outcome.status, Status::Ok);
+    let want = slip_model::Binding { overlay: None, declared: params.declared_id, pre: params.pre };
+    assert_eq!(v.binding, Some(want));
+    assert_eq!(v.rule_use.as_ref().map(|u| u.rules), Some(params.declared.rules_id()));
+}
+
+// §5.3 G1 and §9.1 (WP-121, review F2): an image guard's `unverifiable`
+// shard under a rule table that is not empty is an `ok` shard: it has
+// `binding` and `rule_use`.
+#[test]
+fn g1_under_rules_keeps_the_sections() {
+    let tree = Tree::new("g1rules", &[("a.cpp", "#include \"h.h\"\n"), ("h.h", "int a = 1;\n")]);
+    let h = tree.path("h.h");
+    write(&tree.post.join("a.cpp"), &format!("#include \"{h}\"\n"));
+    let o = tree.observer();
+    tree.map(&o);
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &[]));
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(reason(&v), format!("post-image: read {h}, a file of the subject"));
+    check_sections_under_rules(&v, &params);
+}
+
 // §5.3 G1: through an absolute include directory into the subject that
 // does not spell the subject root, in a word the rewrite does not resolve
 // (`-Wp,`), so the post command keeps it.
@@ -733,11 +758,19 @@ fn g3_post_image_changed_during_the_job() {
     for (case, one, two) in
         [("tu", "int a = 1;\n", "int a = 2;\n"), ("inputs", "int a = 1;\n", "int a = 1; \n")]
     {
-        g3_case(case, one, two);
+        g3_case(case, one, two, false);
     }
 }
 
-fn g3_case(case: &str, one: &'static str, two: &'static str) {
+// §5.3 G3 and §9.1 (WP-121, review F2): under a rule table that is not
+// empty, the `unverifiable` shard of G3 is an `ok` shard: it has
+// `binding` and `rule_use` (step 1's, under the table's `rules_id`).
+#[test]
+fn g3_under_rules_keeps_the_sections() {
+    g3_case("rules", "int a = 1;\n", "int a = 2;\n", true);
+}
+
+fn g3_case(case: &str, one: &'static str, two: &'static str, under_rules: bool) {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     let tree = Tree::new(&format!("g3-{case}"), &[("a.cpp", "int a = 0;\nint b = 0;\n")]);
@@ -757,12 +790,20 @@ fn g3_case(case: &str, one: &'static str, two: &'static str) {
             std::thread::sleep(std::time::Duration::from_micros(200));
         }
     });
+    let params = if under_rules {
+        tree.params(declared_of(&tree, rename_ns("fresh", "old"), &[]))
+    } else {
+        tree.params(Declared::none())
+    };
     let mut seen = None;
     for attempt in 0..200 {
-        let v = tree.verify(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
         assert_ne!(kind(&v), VerdictKind::Verified, "{case}");
         if kind(&v) == VerdictKind::Unverifiable {
             assert_eq!(reason(&v), "post-image: changed during the job", "{case}");
+            if under_rules {
+                check_sections_under_rules(&v, &params);
+            }
             assert_eq!(counter(&v, "verify.reparsed"), Some(2));
             check_post_shard(&v);
             seen = Some(attempt);
@@ -838,6 +879,34 @@ fn worker_phase_task() {
     assert_eq!(reason(&task.run(&job).unwrap()), "pre-image: no map shard");
     job.post = Some(Post { image: Image::identity().to_post(), ..post });
     assert_eq!(kind(&task.run(&job).unwrap()), VerdictKind::Verified);
+}
+
+// The worker (`spec/exec.md` §8.4, `spec/verify.md` §9.1; WP-121, review
+// F1): under a `DECL` container with a rule, the shard's `binding` is
+// made from the job's `post`: `declared` its content id, `pre` its round.
+#[test]
+fn worker_binding_from_the_post() {
+    let tree = Tree::new("worker-rules", &[("a.cpp", RELOCATE_PRE)]);
+    write(&tree.post.join("a.cpp"), RELOCATE_POST);
+    let o = tree.observer();
+    let mut task = PhaseTask::new(64, 0);
+    let map = tree.job(&o, Phase::Map, 0);
+    let shard = task.run(&map).unwrap();
+    tree.store.publish_shard(&map.plan, Phase::Map, 0, &o.id, &shard.to_bytes()).unwrap();
+    let declared = declared_of(&tree, rename_ns("fresh", "old"), &[]);
+    let declared_id = tree.store.publish_declared(&declared.to_bytes()).unwrap();
+    let post = Post { pre: 0, declared: declared_id, image: tree.image().to_post() };
+    let mut job = tree.job(&o, Phase::Verify, 1);
+    for pre in [0, 9] {
+        job.post = Some(Post { pre, ..post.clone() });
+        let v = task.run(&job).unwrap();
+        v.validate().unwrap();
+        let want = if pre == 0 { VerdictKind::Verified } else { VerdictKind::Unverifiable };
+        assert_eq!(kind(&v), want, "{}", reason(&v));
+        let binding = slip_model::Binding { overlay: None, declared: declared_id, pre };
+        assert_eq!(v.binding, Some(binding));
+        assert_eq!(v.rule_use.as_ref().map(|u| u.rules), Some(declared.rules_id()));
+    }
 }
 
 // §5.2: `verify` itself refuses a job of phase map and one with a

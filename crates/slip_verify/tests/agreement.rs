@@ -861,6 +861,14 @@ fn s9_3_refused_shard_says_why() {
     s.binding = Some(Binding { pre: 0, ..b });
     let pre = format!("the shard's binding is not this run's: its pre round 0, not {ROUND}");
     cases.push((&rules, s, &pre));
+    // Two fields differ: the first in the order overlay, declared, pre
+    // is named (review F5).
+    let mut s = verified(&rules);
+    s.binding = Some(Binding { overlay: Some(d(0xee)), declared: d(DECLARED + 1), ..b });
+    cases.push((&rules, s, "the shard's binding is not this run's: its overlay"));
+    let mut s = verified(&rules);
+    s.binding = Some(Binding { declared: d(DECLARED + 1), pre: 0, ..b });
+    cases.push((&rules, s, "the shard's binding is not this run's: its declared changes"));
     let mut s = verified(&rules);
     s.rule_use = None;
     cases.push((&rules, s, "the shard has no rule_use"));
@@ -910,8 +918,10 @@ fn s10_4_fold_refusal_says_why() {
             Some(Spellings { seen: 2, held: vec![Span { first: 2, count: 1 }], failed: vec![] });
         s.validate().unwrap();
         let (message, line) = refusal(&run, &s);
-        assert!(message.starts_with("the shard's spellings are refused: "), "{message}");
-        assert!(message.len() > "the shard's spellings are refused: ".len(), "{message}");
+        assert_eq!(
+            message,
+            "the shard's spellings are refused: obligation 2 is of /s/b.h, which the shard did not read"
+        );
         assert_eq!(line, format!("slip: failed: /m/a0.cc: {message}\n"));
     }
 }

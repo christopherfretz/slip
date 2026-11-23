@@ -692,10 +692,10 @@ impl Report {
                         self.firsts.insert(position, (*observer, main.to_vec()));
                     }
                     Ok(false) => {}
-                    Err(e) => return Err(format!("the shard's spellings are refused: {e}")),
+                    Err(e) => return Err(refused_spellings(&e)),
                 }
             } else if let Err(e) = o.fold.check(inputs, section) {
-                return Err(format!("the shard's spellings are refused: {e}"));
+                return Err(refused_spellings(&e));
             }
         }
         if let Some(u) = &s.rule_use {
@@ -1179,6 +1179,14 @@ impl Report {
         }
         out
     }
+}
+
+/// The message of a shard whose `spellings` the fold refuses (WP-121):
+/// the fold's reason, which names the section itself (`spellings: …`),
+/// after one prefix.
+fn refused_spellings(e: &str) -> String {
+    let e = e.strip_prefix("spellings: ").unwrap_or(e);
+    format!("the shard's spellings are refused: {e}")
 }
 
 /// A failed obligation as the report shows it (§10.5).
