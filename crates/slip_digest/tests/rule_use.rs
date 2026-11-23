@@ -58,7 +58,17 @@ use slip_model::declared::Declared;
 use slip_model::keys::{KeyKind, Name, Parent, Rule, RuleTable};
 
 fn walk(input: &Input<'_>, rules: &RuleTable, rule_use: bool) -> Output {
-    slip_digest::digest(input, &Options { rules, detail: Detail::All, names: true, rule_use })
+    slip_digest::digest(
+        input,
+        &Options {
+            rules,
+            // Every file owned (WP-110): §9.1's counts, as before ownership.
+            read_only: slip_digest::ReadOnly::NO_FILE,
+            detail: Detail::All,
+            names: true,
+            rule_use,
+        },
+    )
 }
 
 /// What a case's `expect.txt` says.
@@ -134,8 +144,14 @@ fn same_but_rule_use(on: &Output, off: &Output) -> Result<(), String> {
 /// `table` as a run reads it: in a `Declared`, written to bytes and read
 /// back (`RuleTable::from_sorted`, through the container reader).
 fn decoded(table: &RuleTable) -> Result<RuleTable, String> {
+    // A container with rules holds the run's files (WP-110); these own
+    // everything, as the walks of this file do.
     let declared = Declared::new(table.rules().to_vec(), vec![], vec![], vec![])
-        .map_err(|e| format!("Declared::new: {e}"))?;
+        .map_err(|e| format!("Declared::new: {e}"))?
+        .with_files(Some(slip_model::transform::Ownership {
+            owned: vec![b"/".to_vec()],
+            readonly: vec![],
+        }));
     let read = Declared::from_bytes(&declared.to_bytes())
         .map_err(|e| format!("the declared change read back: {e}"))?;
     Ok(read.rules().clone())
@@ -146,10 +162,12 @@ fn case(dir: &Path) -> Result<(), String> {
     let text =
         std::fs::read_to_string(dir.join("rules.txt")).map_err(|x| format!("rules.txt: {x}"))?;
     let lines = read(&text)?;
-    let pre = common::with_side(dir, Side::A, |input| records(input, &RuleTable::empty()))?
-        .map_err(|x| format!("records of the pre-image: {x}"))?;
+    let pre = common::with_side(dir, Side::A, |input| {
+        records(input, &RuleTable::empty(), slip_digest::ReadOnly::EVERY_FILE)
+    })?
+    .map_err(|x| format!("records of the pre-image: {x}"))?;
     common::with_side(dir, Side::B, |input| -> Result<(), String> {
-        let plain = records(input, &RuleTable::empty())?;
+        let plain = records(input, &RuleTable::empty(), slip_digest::ReadOnly::EVERY_FILE)?;
         if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
             for (side, recs) in [("A", &pre), ("B", &plain)] {
                 for r in recs {

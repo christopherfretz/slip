@@ -650,7 +650,7 @@ fn fallback_key(
         }
         c = ast.decls.get(x).ctx();
     }
-    let key = w.rules.map(Key { kind, parent, name: Name::Content, disc: Some(digest) });
+    let key = w.map_key(e, None, Key { kind, parent, name: Name::Content, disc: Some(digest) });
     w.bytes += key.to_bytes().len() as u64;
     Some((key.id(), kind, parent_cause))
 }
@@ -1326,6 +1326,7 @@ mod tests {
             let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
             let options = crate::Options {
                 rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
                 detail: crate::Detail::All,
                 names: true,
                 rule_use: false,

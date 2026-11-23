@@ -1007,6 +1007,9 @@ refused one has none.
 - **`changed`**: the keys of the `changed` entries that are in force: an
   edit of the set shares a byte with the entry's place.
 - **`created`, `removed`**: empty.
+- **`files`**: the request's `ownership` when `rules` is not empty, else
+  absent (`verify.md` §2: a container holds the run's files exactly when
+  it has rules).
 
 That `Declared` is derived by untrusted code is the design: a rule that is
 wrong or missing cannot make two different programs compare equal

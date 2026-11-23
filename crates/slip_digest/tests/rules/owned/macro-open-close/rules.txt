@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. A namespace opened by one owned macro and closed by another.
+relocate legacy => :: acme

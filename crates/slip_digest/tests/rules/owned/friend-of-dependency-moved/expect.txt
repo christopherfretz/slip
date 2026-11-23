@@ -1,0 +1,7 @@
+# The dependency befriends legacy::touch, which the post-image still declares
+# (the friend declaration in dep.h): the moved acme::touch is mapped onto it,
+# a collision; not verified. A correct refusal: the dependency's legacy::touch
+# lost its definition.
+collisions 1
+indeterminate acme::touch(legacy::Dep &)
+indeterminate legacy::touch(legacy::Dep &)

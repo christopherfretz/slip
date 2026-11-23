@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. A namespace opened by a dependency macro invoked in the owned file (before), and opened by hand and closed by the dependency's macro (after).
+relocate legacy => :: acme

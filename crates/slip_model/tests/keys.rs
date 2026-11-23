@@ -773,7 +773,14 @@ fn declared_and_read_tables_index_as_new() {
     use slip_model::declared::Declared;
     for rules in rule_sets() {
         let new = RuleTable::new(rules.clone()).unwrap();
-        let declared = Declared::new(new.rules().to_vec(), vec![], vec![], vec![]).unwrap();
+        // A container holds the run's files exactly when it has rules
+        // (WP-110).
+        let files = (!rules.is_empty()).then(|| slip_model::transform::Ownership {
+            owned: vec![b"/".to_vec()],
+            readonly: vec![],
+        });
+        let declared =
+            Declared::new(new.rules().to_vec(), vec![], vec![], vec![]).unwrap().with_files(files);
         let binary = Declared::from_bytes(&declared.to_bytes()).unwrap();
         let json = Declared::from_json(&declared.to_json()).unwrap();
         let tables =

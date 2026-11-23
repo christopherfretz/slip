@@ -1,0 +1,10 @@
+# user_types.h is read-only here (entered through dep.h): UserData is a
+# dependency entity and keeps its key legacy::UserData, so the moved
+# acme::UserData is added and the typedef and the handler differ.
+changed legacy_cfg::data_t
+changed user()
+added acme
+added acme::UserData
+added acme::UserData::v
+removed legacy::UserData
+removed legacy::UserData::v

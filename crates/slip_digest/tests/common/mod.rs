@@ -350,7 +350,7 @@ fn rename_rules(
     if renames.is_empty() {
         return Ok(base);
     }
-    let records = slip_digest::records::records(input, &base)
+    let records = slip_digest::records::records(input, &base, slip_digest::ReadOnly::NO_FILE)
         .map_err(|e| format!("relocate.txt: the records of side B: {e:?}"))?;
     let mut all = rules.to_vec();
     for (name, from) in renames {
@@ -447,7 +447,13 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
                     &made
                 }
             };
-            let options = Options { rules, detail: Detail::All, names: true, rule_use: false };
+            let options = Options {
+                rules,
+                read_only: slip_digest::ReadOnly::NO_FILE,
+                detail: Detail::All,
+                names: true,
+                rule_use: false,
+            };
             Ok::<_, String>(slip_digest::digest(&input, &options))
         });
         (output, p.errors, p.diagnostics.clone())

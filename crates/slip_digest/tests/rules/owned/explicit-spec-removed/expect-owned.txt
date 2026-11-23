@@ -1,0 +1,3 @@
+# Every file owned: the same.
+removed legacy::box<legacy::Mine>
+removed legacy::box<legacy::Mine>::get()

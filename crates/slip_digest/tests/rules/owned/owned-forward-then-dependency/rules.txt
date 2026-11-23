@@ -1,0 +1,5 @@
+# spec/verify.md §2.1, WP-110 item 5. An entity whose first declaration is owned (a forward declaration) and whose
+# definition is the dependency's, moved into acme by redefining the
+# dependency's macro: a dependency entity (one declaration is read-only), so
+# not mapped. Kills ownership by the first declaration only.
+relocate legacy => :: acme

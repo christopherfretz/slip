@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. A nested namespace only owned code opens.
+relocate legacy => :: acme

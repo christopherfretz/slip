@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. Pitfall row N06, good: store<Mine>::put, a member of a dependency template instantiated with an owned argument; the specialisation is the dependency's (its template is), its argument mapped by Mine's own ownership.
+relocate legacy => :: acme

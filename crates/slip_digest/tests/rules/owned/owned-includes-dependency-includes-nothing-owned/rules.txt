@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round. The other direction: an owned header that includes a read-only one stays owned (only a chain through a read-only file widens).
+relocate legacy => :: acme

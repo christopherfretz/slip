@@ -1,0 +1,5 @@
+# The dependency still declares legacy::f: the moved acme::f is mapped onto
+# it, a collision; not verified (correctly: legacy::f lost its definition).
+collisions 1
+indeterminate acme::f()
+indeterminate legacy::f()

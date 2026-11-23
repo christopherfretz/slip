@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round. F2 two levels down: dep.h (read-only) includes wrap.h (owned), which includes user_types.h (owned): the chain passes through a read-only file above the immediate includer.
+relocate legacy => :: acme

@@ -1,0 +1,4 @@
+# Every file owned: the dependency's acme is mapped onto legacy.
+added acme::g()
+removed acme
+removed acme::g()
