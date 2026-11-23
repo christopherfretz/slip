@@ -1,0 +1,4 @@
+spec: edits.md §9.4 row 1 (the declarations found at the definition are none of them subjects: keep), WP-073 part A
+from: n::f
+to: g
+kind: function

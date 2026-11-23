@@ -1,6 +1,8 @@
 //! The hidden `slip __worker` (`spec/exec.md` §8.4): `serve` over standard
-//! input and output with the map task (`spec/model.md` §8.5): the parse
-//! task with the semantic digest's walk run on the finished unit.
+//! input and output with [`PhaseTask`], which runs a job by its phase: the
+//! map task (`spec/model.md` §8.5: the parse task with the semantic
+//! digest's walk run on the finished unit) or the verify task
+//! (`spec/verify.md` §5, [`crate::verify_job`]).
 //!
 //! The worker changes its current directory during a parse
 //! (`slip_kiln::parse_observer`), so every path it uses is absolute: the
@@ -13,12 +15,33 @@ use std::process::ExitCode;
 use slip_digest::map::{counters, map_unit};
 use slip_digest::{Detail, Options};
 use slip_exec::store::{Access, Store};
-use slip_exec::worker::{Job, ServeOptions, Task, serve};
+use slip_exec::worker::{Job, Post, PostImage, ServeOptions, Task, serve};
 use slip_kiln::{ParseOptions, parse_observer_with};
+use slip_model::declared::Declared;
+use slip_model::formats::content_id;
 use slip_model::keys::RuleTable;
-use slip_model::{Observer, Phase, Shard, Status};
+use slip_model::{Digest, Observer, Phase, Shard, Status};
 
 use crate::args::WorkerArgs;
+use crate::image::Image;
+use crate::verify_job::{Params, verify};
+
+/// Opens the job's store shared into `slot`, unless `slot` holds that
+/// store already (`spec/exec.md` §8.4: kept for the task's lifetime; a
+/// job naming another store replaces it).
+fn open_store<'s>(slot: &'s mut Option<Store>, job: &Job) -> Result<&'s Store, String> {
+    let path = job.store_path();
+    if slot.as_ref().is_none_or(|store| store.root() != path) {
+        *slot = None;
+        let store = Store::open(path, Access::Shared)
+            .map_err(|e| format!("cannot open the store {}: {e}", path.display()))?;
+        *slot = Some(store);
+    }
+    match slot.as_ref() {
+        Some(store) => Ok(store),
+        None => unreachable!("the store was just opened"),
+    }
+}
 
 /// The map task (`spec/model.md` §8.5): one observer through Kiln's front
 /// end, the digest's walk run on the finished unit, its shard published in
@@ -35,18 +58,6 @@ pub struct MapTask {
 impl MapTask {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    fn open_store(&mut self, job: &Job) -> Result<(), String> {
-        let path = job.store_path();
-        if self.store.as_ref().is_some_and(|store| store.root() == path) {
-            return Ok(());
-        }
-        self.store = None;
-        let store = Store::open(path, Access::Shared)
-            .map_err(|e| format!("cannot open the store {}: {e}", path.display()))?;
-        self.store = Some(store);
-        Ok(())
     }
 }
 
@@ -68,7 +79,7 @@ impl Task for MapTask {
                         (spec/edits.md §8.1, M2)"
                 .to_owned());
         }
-        self.open_store(job)?;
+        open_store(&mut self.store, job)?;
         map_observer(&job.observer, job.round)
     }
 }
@@ -114,6 +125,123 @@ fn map_observer(observer: &Observer, round: u64) -> Result<Shard, String> {
     Ok(shard)
 }
 
+/// The verify task (`spec/verify.md` §5; `spec/exec.md` §8.4): makes a
+/// job's [`Params`] from `job.post` and the worker's `--findings` and
+/// `--locate`, then runs [`verify`].
+///
+/// The store is kept as the map task keeps it. The `Declared` (with its
+/// `RuleTable`) and the image are kept from one job to the next while the
+/// job's `post.declared` and `post.image` are the same.
+#[derive(Debug)]
+pub struct VerifyTask {
+    store: Option<Store>,
+    limit: usize,
+    locate: usize,
+    /// The parameters of the last job, by its `(declared, image)`.
+    kept: Option<(Digest, PostImage, Params)>,
+}
+
+impl VerifyTask {
+    /// A task whose jobs keep `limit` findings and name `locate`.
+    pub fn new(limit: u64, locate: u64) -> Self {
+        let size = |n: u64| usize::try_from(n).unwrap_or(usize::MAX);
+        VerifyTask { store: None, limit: size(limit), locate: size(locate), kept: None }
+    }
+}
+
+/// The one place a verify job's [`Params`] are made (`spec/exec.md` §8.6):
+/// from `post`, the job's store and the worker's `limit` and `locate`.
+/// `kept` is the previous job's, reused while `post.declared` and
+/// `post.image` are the same.
+///
+/// # Errors
+///
+/// The `Declared` is not in the store, is not a valid `DECL`, or has
+/// another content id than `post.declared`; the image is refused
+/// (`Image::from_post`).
+fn make_params(
+    store: &Store,
+    post: &Post,
+    limit: usize,
+    locate: usize,
+    kept: Option<(Digest, PostImage, Params)>,
+) -> Result<(Digest, PostImage, Params), String> {
+    if let Some((declared, image, mut params)) = kept
+        && declared == post.declared
+        && image == post.image
+    {
+        params.pre = post.pre;
+        return Ok((declared, image, params));
+    }
+    let id = post.declared;
+    let path = store.declared_path(&id);
+    let bytes = store
+        .read_declared(&id)
+        .map_err(|e| format!("cannot read the declared changes {id}: {e}"))?
+        .ok_or_else(|| {
+            format!("the declared changes {id} are not in the store ({})", path.display())
+        })?;
+    let declared = Declared::from_bytes(&bytes)
+        .map_err(|e| format!("{} is not a valid DECL file: {e}", path.display()))?;
+    let actual = content_id(&bytes)
+        .map_err(|e| format!("{} is not a valid DECL file: {e}", path.display()))?;
+    if actual != id {
+        return Err(format!("{} has the content id {actual}, not {id}", path.display()));
+    }
+    let image = Image::from_post(store, &post.image)?;
+    let params = Params { pre: post.pre, declared, declared_id: id, image, limit, locate };
+    Ok((id, post.image.clone(), params))
+}
+
+impl Task for VerifyTask {
+    fn run(&mut self, job: &Job) -> Result<Shard, String> {
+        if job.phase != Phase::Verify {
+            return Err(format!(
+                "the verify task runs phase verify only; the job is of phase {}",
+                phase_name(job.phase)
+            ));
+        }
+        // spec/exec.md §5.2, §8.4: a job that does not fit its phase.
+        if job.transform.is_some() {
+            return Err("a verify job with a transform".to_owned());
+        }
+        let Some(post) = &job.post else {
+            return Err("a verify job without a post".to_owned());
+        };
+        let store = open_store(&mut self.store, job)?;
+        let (declared, image, params) =
+            make_params(store, post, self.limit, self.locate, self.kept.take())?;
+        let shard = verify(store, job, &params);
+        self.kept = Some((declared, image, params));
+        shard
+    }
+}
+
+/// The worker's task (`spec/exec.md` §8.4): a job of phase `map` goes to
+/// the map task, one of phase `verify` to the verify task. Each refuses a
+/// job that does not fit its phase.
+#[derive(Debug)]
+pub struct PhaseTask {
+    map: MapTask,
+    verify: VerifyTask,
+}
+
+impl PhaseTask {
+    /// `limit` and `locate` are the worker's `--findings` and `--locate`.
+    pub fn new(limit: u64, locate: u64) -> Self {
+        PhaseTask { map: MapTask::new(), verify: VerifyTask::new(limit, locate) }
+    }
+}
+
+impl Task for PhaseTask {
+    fn run(&mut self, job: &Job) -> Result<Shard, String> {
+        match job.phase {
+            Phase::Map => self.map.run(job),
+            Phase::Verify => self.verify.run(job),
+        }
+    }
+}
+
 /// `slip __worker`: serves until the input ends, `--worker-jobs` jobs have
 /// run, or a job panicked. Status 0 then; 1 if the protocol failed (the
 /// coordinator sees a crash).
@@ -123,7 +251,8 @@ pub fn main(args: &WorkerArgs) -> ExitCode {
         stack_bytes: usize::try_from(args.worker_stack).unwrap_or(usize::MAX),
         max_jobs: args.worker_jobs,
     };
-    match serve(MapTask::new(), &options, std::io::stdin(), std::io::stdout()) {
+    let task = PhaseTask::new(args.findings, args.locate);
+    match serve(task, &options, std::io::stdin(), std::io::stdout()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             let _ = writeln!(std::io::stderr(), "slip __worker: {e}");

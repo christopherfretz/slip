@@ -512,7 +512,9 @@ digests, so it maps under relocation with everything else (digest §3.4).
 The type digest of a `QualType` `q` is `H("slip.type.v1", stream)` where
 the stream is, for `c = TypeContext::canonical(q)`: the rows of `Quals` for
 `c`'s qualifiers, then `enum TypeView` for `TypeContext::canonical_view(c)`.
-A bare `TypeId` is digested as the unqualified `QualType` of it.
+A bare `TypeId` is digested as the unqualified `QualType` of it. §4.2
+rule 9 is the one exception: a type through whose sugar layout reads a
+typedef carrying an alignment.
 
 The walk reads types only through `TypeView`, `FuncProto`'s accessors,
 `ArgView`, `Nns` and `TemplateName`: the decoded forms. The stored records
@@ -583,6 +585,90 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    `static_assert` condition and a block-scope variable's value read
    there, the operand of a `ConstantExpr` with no stored value), the type
    is written by value.
+9. **Typedefs carrying an alignment** (`spec/landed/digest/WP-107.md`).
+   Kiln's layout and `alignof` read the alignment of a typedef that
+   carries one (`Layouter::type_info`, `kiln_abi/src/layout/mod.rs:365`,
+   its `Typedef` arm), which the canonical type has lost. A typedef
+   *carries an alignment* when any of its declarations has an `ALIGNED`
+   attribute or an entry in `DeclArena::cold.alignment`
+   (`max_align_attr`, `kiln_abi/src/layout/props.rs:78`).
+
+   The typedefs of `q` that layout reads are found by `type_info`'s walk
+   from `q`:
+   - from a `Typedef`, its `underlying`;
+   - from a `QualifiedArray` or an `ExtQual`, the base;
+   - from an array of any of the four kinds, or a `Complex`, the element;
+   - from an `Atomic`, the value type;
+   - from an `LValueRef` or `RValueRef`, the referee. `alignof(T&)` is
+     `alignof(T)` ([expr.alignof]/3); Kiln reads the canonical referee
+     there, so this writes one fact more;
+   - from any other view, one step of `Ast::layout_desugar_once`.
+
+   The walk stops at a canonical type, whose parts are canonical, or when
+   a step returns its argument. Every typedef met that carries an
+   alignment is listed, in the walk's order. When the list is empty,
+   `q`'s digest is §4.1's. Otherwise the stream is:
+   1. the tag of `Typedef`;
+   2. the list, as `ref*`;
+   3. the digest of `TypeContext::canonical(q)` (`digest`).
+
+   After 4096 steps the walk stops, and the type is indeterminate:
+   `Unsupported("TypeView/Typedef-aligned-bound")`.
+
+   A listed typedef whose declarations do not all carry the same
+   alignment makes the type indeterminate:
+   `Unsupported("typedef/alignment-by-declaration")`. The typedef's own
+   unit is indeterminate for the same cause. The declarations disagree
+   when one carries an alignment and another none, or their requests
+   (each `ALIGNED` attribute's value, the target's biggest alignment
+   for one with no argument, the canonical type of `alignas(type-id)`,
+   and the `cold.alignment` value) differ as sets, or a request's value
+   is not a constant the AST holds (read as Kiln's layout reads it). A
+   single declaration agrees. Kiln's `alignof`
+   (`Ast::layout_attributed_typedef`, `kiln_ast/src/layout_sugar.rs:58`,
+   asked by the Oven and by codegen) reads only the declaration the
+   sugar node names, and its layout reads every declaration present
+   when a class is first laid out, then caches the layout. So the answer
+   depends on which declaration a use names and where a layout is first
+   asked for, facts no unit holds. The digest does not try to say which.
+   The cause goes when Kiln reads the declarations as clang does.
+
+   What is written depends on the sugar a typedef `I` carrying an
+   alignment is reached through.
+
+   The list holds `I` when `I` is reached through:
+   - a typedef or alias-declaration naming `I`;
+   - `decltype` of an entity of type `I`;
+   - an elaborated name, or `using`;
+   - a deduced type (`auto x = i;`, whose type keeps `I` in Kiln and in
+     clang);
+   - an alias template's argument (`A<I>`). Kiln keeps it, as clang 22
+     does; clang 19 makes it canonical;
+   - a cv-qualified type or an array of `I`, or an array typedef of `I`.
+
+   Nothing is written in these cases:
+   - A class, function or variable template's substituted argument
+     (`T` inside `X<I>` or `f<I>`): `layout_desugar_once` makes it
+     canonical, as clang instantiates from canonical arguments. A class
+     template's arguments are stored canonical; a function template
+     specialization keeps its first use's sugar in Kiln, which layout
+     does not read.
+   - A pointer, a member pointer, a function type and a vector are not
+     walked: their layout reads no typedef's alignment. Where a use reads
+     the pointee's or the result's alignment (`*p`, `decltype(f())`,
+     `p->*mp`), the expression's type, with the sugar Kiln gives it, is
+     written in the using unit, so the pointer and the function need not
+     be. (Kiln gives `.*` and `->*` the canonical pointee:
+     `spec/landed/digest/WP-107.md`, "For Kiln".)
+
+   Only the outermost listed typedef whose alignment is not 0 decides.
+   Listing the others is a false difference, never a wrong equal.
+
+   A typedef is written as its entity, so a rule maps it like any other
+   reference. The alignment it carries is a fact of its own unit (the
+   typedef's attributes). A class whose field is of type `I` holds `I`'s
+   `Ref`, and its layout follows from `I`'s unit, as from a field's class
+   type.
 
 ### 4.3 The type records
 
@@ -733,9 +819,9 @@ Derived from a node's operands by Kiln when the node is built.
 | `DependentAddrSpace` | type | in | tag 1047 |  |
 | `DependentAddrSpace.pointee` | type | in | type |  |
 | `DependentAddrSpace.space` | value | in | enum ExprOperand |  |
-| `Typedef` | written | out | - | sugar: the alias a type was reached through (digest §1 rule 2) |
-| `Typedef.decl` | written | out | - | sugar |
-| `Typedef.underlying` | written | out | - | sugar |
+| `Typedef` | type | in | tag 1048 | §4.2 rule 9 only: a type through whose sugar layout reads a typedef carrying an alignment; elsewhere sugar, the alias a type was reached through (digest §1 rule 2), not written |
+| `Typedef.decl` | entity | in | ref* | §4.2 rule 9: every typedef carrying an alignment that the walk meets, in its order |
+| `Typedef.underlying` | type | in | type | §4.2 rule 9: the canonical type of the whole type, not this field |
 | `Using` | written | out | - | sugar: the using-declaration a type was reached through |
 | `Using.shadow` | written | out | - | sugar |
 | `Using.underlying` | written | out | - | sugar |

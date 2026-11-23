@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (unreachable: an explicit instantiation of a member after its explicit specialisation is recorded nowhere at this pin), WP-073 fix round F3
+from: n::S::f
+to: g
+kind: function

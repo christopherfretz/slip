@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (an override in an explicit specialisation of a class template: a member of the specialisation, its own entity with its own rule, digest.md §3.4)
+from: n::B::f
+to: g
+kind: function

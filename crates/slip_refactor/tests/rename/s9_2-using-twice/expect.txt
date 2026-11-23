@@ -1,0 +1,11 @@
+subjects:
+  3378be67 follower - rule=yes m::f of=9f28e21c
+  7917ca8b follower - rule=yes m::f of=9f28e21c
+  9f28e21c seed - rule=yes n::f(int)
+links:
+claims:
+  main.cpp:1:20+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:2:24+1 replace "g" t0 votes=1 none [7917ca8b]
+  main.cpp:2:36+1 replace "g" t0 votes=1 none [7917ca8b]
+  main.cpp:3:15+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
+changed:

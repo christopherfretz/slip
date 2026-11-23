@@ -1,0 +1,11 @@
+subjects:
+  3b98ec8e candidate - rule=yes n::D::f()
+  599ef791 seed - rule=yes n::B::f()
+links:
+  3b98ec8e 599ef791
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:3:21+1 replace "g" t0 votes=1 none [3b98ec8e]
+  main.cpp:4:9+1 replace "g" t0 votes=1 none [3b98ec8e]
+  main.cpp:5:9+1 replace "g" t0 votes=1 none [599ef791]
+changed:

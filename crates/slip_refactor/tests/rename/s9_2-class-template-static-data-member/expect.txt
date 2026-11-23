@@ -1,0 +1,9 @@
+subjects:
+  622d051c seed - rule=yes n::S::v
+  e84a2c77 follower unsupported rule=yes n::S<int>::v of=622d051c
+links:
+claims:
+  main.cpp:1:56+1 replace "w" t0 votes=1 none [622d051c]
+  main.cpp:1:91+1 replace "w" t0 votes=1 none [622d051c]
+  main.cpp:2:29+1 replace spell(622d051c, "w") t0 votes=1 none [622d051c]
+changed:

@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (unsupported: the front end links S<int>::g, specialised as a template, to no pattern), WP-073 fix round F2
+from: n::S::g
+to: h
+kind: function

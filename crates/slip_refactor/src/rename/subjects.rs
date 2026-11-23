@@ -50,6 +50,23 @@ impl Subjects {
         new: &[u8],
         of: &[KeyId],
     ) -> Option<KeyId> {
+        self.add_ruled(keys, decl, role, of, &mut |keys, e| keys.rename_rule(e, new).ok())
+    }
+
+    /// As [`Subjects::add`], with the rule `make_rule` makes of the entity in
+    /// place of `Keys::rename_rule`'s (`None`: no rule, `unsupported`):
+    /// for the follower whose key does not hold the identifier as its
+    /// name (§9.2, an unnamed class or enumeration;
+    /// `docs/wp/WP-072.md`). The rule is still a function of the key and
+    /// the request.
+    pub fn add_ruled(
+        &mut self,
+        keys: &mut Keys<'_>,
+        decl: DeclId,
+        role: Role,
+        of: &[KeyId],
+        make_rule: &mut dyn FnMut(&mut Keys<'_>, DeclId) -> Option<Rule>,
+    ) -> Option<KeyId> {
         let e = keys.entity(decl);
         let id = if let Some(&id) = self.by_entity.get(&e) {
             id
@@ -57,9 +74,9 @@ impl Subjects {
             let id = keys.key_id(e).ok()?;
             self.by_entity.insert(e, id);
             if let std::collections::btree_map::Entry::Vacant(slot) = self.entries.entry(id) {
-                let (made, flags) = match keys.rename_rule(e, new) {
-                    Ok(r) => (Some(r), 0),
-                    Err(_) => (None, subject_flags::UNSUPPORTED),
+                let (made, flags) = match make_rule(keys, e) {
+                    Some(r) => (Some(r), 0),
+                    None => (None, subject_flags::UNSUPPORTED),
                 };
                 slot.insert(Entry { entity: e, rule: made, role, of: BTreeSet::new(), flags });
             }
@@ -85,7 +102,6 @@ impl Subjects {
     }
 
     /// The two subjects change together or not at all.
-    #[allow(dead_code, reason = "for docs/wp/WP-072.md (overriding functions)")]
     pub fn link(&mut self, a: KeyId, b: KeyId) {
         if a != b {
             self.links.insert((a.min(b), a.max(b)));

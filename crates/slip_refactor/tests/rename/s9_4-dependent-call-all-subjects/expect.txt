@@ -1,0 +1,12 @@
+# pending
+# needs: K-a, the join from a dependent entry to its unresolved-lookup expression and the declarations found at the definition (docs/requests/KR1-amendment-1.md §2; not in the pin: spec/landed/edits/WP-073.md, "Kiln at the pin"); until then unresolved
+subjects:
+  75693c92 seed - rule=yes n::f(long)
+  9f28e21c seed - rule=yes n::f(int)
+links:
+claims:
+  main.cpp:2:6+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:3:6+1 replace "g" t0 votes=1 none [75693c92]
+  main.cpp:4:34+1 replace "g" t0 votes=1 none [75693c92,9f28e21c]
+changed:
+  1e64a270 main.cpp:4:34+1 dependent name f
