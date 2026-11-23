@@ -1,3 +1,3 @@
 relocate legacy => :: acme
-created [using_declaration] acme::operator==
-created [using_shadow] acme::operator==
+created acme::<using legacy::operator==>
+created acme::<shadow template <class> bool legacy::operator==(const type-parameter-0-0 &, const type-parameter-0-0 &)>
