@@ -1708,3 +1708,74 @@ fn f4b_outside_header_added_after_the_map() {
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
 }
+
+// ---------------------------------------------------------------------------
+// WP-121: `binding` and `rule_use` under rules (spec/verify.md §9.1, §5.4)
+
+/// A golden of `crates/slip_cli/tests/golden/`; `SLIP_BLESS=1` rewrites it.
+fn golden(name: &str, actual: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden").join(name);
+    if std::env::var_os("SLIP_BLESS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, actual).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}; run with SLIP_BLESS=1 to create", path.display()));
+    assert_eq!(actual, expected, "{name} differs from its golden; SLIP_BLESS=1 rewrites it");
+}
+
+/// The JSON rendering of a verify shard with what does not depend on this
+/// crate taken out: the tree's directory is `<base>`, the map shard's
+/// content id `<pre>`, the observer's id (a hash of a command naming
+/// `<base>`) `<observer>`, the counters those of §7.2 only (the parse's and
+/// the walk's are Kiln's and `slip_digest`'s), and no `digests` (the
+/// walk's). Every section the shard has is in it, by name. A finding's
+/// key and unit digests are the walk's too: a change of the digest scheme
+/// moves them, and is re-blessed with it.
+fn shard_view(tree: &Tree, v: &Shard, pre: Option<Digest>) -> String {
+    let mut s = v.clone();
+    s.counters.retain(|c| c.name.starts_with("verify."));
+    s.digests = None;
+    let mut text = slip_model::json::write_pretty(&s.to_json()).unwrap();
+    text = text.replace(tree.base.to_str().unwrap(), "<base>");
+    text = text.replace(&v.observer.to_string(), "<observer>");
+    if let Some(pre) = pre {
+        text = text.replace(&pre.to_string(), "<pre>");
+    }
+    text
+}
+
+// §5.4, §9.1 (WP-121 item 3): a job whose rule table is empty writes the
+// shard it wrote before WP-121, byte for byte: neither `binding` nor
+// `rule_use`, for each outcome. The golden was blessed on `main` before
+// the package's code changed (spec/landed/verify/WP-121.md §3).
+#[test]
+fn s9_1_no_rules_shard_unchanged() {
+    const PRE: &str = "int f() { return 1; }\nint g() { return f(); }\n";
+    let cases: [(&str, Option<&str>, bool); 4] = [
+        ("verified", None, true),
+        ("mismatch", Some("int f() { return 2; }\nint g() { return f(); }\n"), true),
+        ("diagnosed", Some("int f( { return 1; }\n"), true),
+        ("unverifiable", None, false),
+    ];
+    let mut out = String::new();
+    for (name, post, map) in cases {
+        let tree = Tree::new(&format!("norules-{name}"), &[("a.cpp", PRE)]);
+        if let Some(post) = post {
+            write(&tree.post.join("a.cpp"), post);
+        }
+        let o = tree.observer();
+        let pre = map.then(|| {
+            tree.map(&o);
+            tree.stored_map(&o).1
+        });
+        for declared in [Declared::none(), Declared::none().with_files(Some(tree.files(&[])))] {
+            let v = tree.verify_with(&o, &tree.params(declared)).unwrap();
+            assert!(v.binding.is_none() && v.rule_use.is_none(), "{name}");
+        }
+        let v = tree.verify(&o);
+        out.push_str(&format!("{name}\n{}\n", shard_view(&tree, &v, pre)));
+    }
+    golden("verify-no-rules.txt", &out);
+}
