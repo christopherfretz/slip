@@ -190,10 +190,10 @@ pub fn kiln_boundary(repo: &Repo) -> Vec<Violation> {
 }
 
 /// `kiln-boundary`'s third rule: outside `crates/slip_kiln/`, the paths
-/// `slip_kiln::kiln`, `slip_kiln::snippet` and `slip_kiln::ranges` (or a
-/// `use slip_kiln::{…}` group naming one; `ranges` takes Kiln's source
-/// manager and locations, which a caller can reach without naming
-/// `kiln`, by inference) appear only in the `.rs` files that may name them.
+/// `slip_kiln::kiln`, `slip_kiln::snippet`, `slip_kiln::ranges` and
+/// `slip_kiln::sites` (or a `use slip_kiln::{…}` group naming one; `ranges`
+/// and `sites` take Kiln's source manager, spans and buffer ids, which a
+/// caller can reach without naming `kiln`, by inference) appear only in the `.rs` files that may name them.
 fn kiln_modules(repo: &Repo) -> Vec<Violation> {
     let mut out = Vec::new();
     for path in repo.files().filter(|f| {
@@ -226,13 +226,13 @@ fn kiln_modules(repo: &Repo) -> Vec<Violation> {
     out
 }
 
-/// Every `slip_kiln::kiln`, `slip_kiln::snippet` and `slip_kiln::ranges` in
-/// Rust source `text`, as the module named and the line of its name: the
+/// Every `slip_kiln::kiln`, `slip_kiln::snippet`, `slip_kiln::ranges` and
+/// `slip_kiln::sites` in Rust source `text`, as the module named and the line of its name: the
 /// path form, and the items of a `slip_kiln::{…}` group that start with
 /// one. Comments and
 /// literals are not code.
 fn kiln_module_paths(text: &str) -> Vec<(&'static str, usize)> {
-    let module = |t: &str| ["kiln", "snippet", "ranges"].into_iter().find(|&m| m == t);
+    let module = |t: &str| ["kiln", "snippet", "ranges", "sites"].into_iter().find(|&m| m == t);
     let toks = super::rust_tokens::tokens(text);
     let mut out = Vec::new();
     for (i, t) in toks.iter().enumerate() {

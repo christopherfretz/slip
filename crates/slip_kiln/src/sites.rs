@@ -21,9 +21,9 @@
 //! [`Reason::wire`] is `None` for it (`spec/landed/edits/WP-068.md`,
 //! "Decided where the spec was silent").
 
+use slip_model::FileRef;
 use slip_model::edits::{MacroSite, Reason as WireReason, tiers};
 use slip_model::transform::Ownership;
-use slip_model::FileRef;
 
 use crate::Unit;
 use crate::kiln::source::{ExpansionKind, FileId, FileOrigin, Loc, Span};
@@ -80,7 +80,12 @@ pub enum Located {
     /// It cannot be edited. `at` is the range a `refuse` claim carries
     /// (`spec/edits.md` §4.2); `None` is `[0, 0)` of the main file.
     /// `tier` is one bit of `slip_model::edits::tiers`.
-    Refused { reason: Reason, tier: u64, at: Option<(FileId, u64, u64)>, macro_site: Option<MacroSite> },
+    Refused {
+        reason: Reason,
+        tier: u64,
+        at: Option<(FileId, u64, u64)>,
+        macro_site: Option<MacroSite>,
+    },
 }
 
 /// The questions a native producer asks about the names of one unit.
@@ -92,8 +97,10 @@ pub struct Sites<'u, 'r> {
 /// Where rule 1 found the token written.
 #[derive(Clone, Copy, Debug)]
 enum Written {
-    /// In a file: tier 0 (`false`) or 1 (`true`).
-    File(bool),
+    /// At a file location: tier 0 (`false`) or 1 (`true`) when its buffer
+    /// is a file (the second field), tier X `not_a_file` otherwise, which
+    /// in §2.3's order comes after `crossing` (decided by rule 2).
+    File(bool, bool),
     /// Refused: the reason and its tier bit.
     Not(Reason, u64),
 }
@@ -117,14 +124,16 @@ impl<'u, 'r> Sites<'u, 'r> {
     /// 1. The location of the name's first character is followed to its
     ///    immediate spelling while it is in a macro-argument entry. A file
     ///    location is tier 0 if no step was taken and 1 otherwise, unless
-    ///    it is in `<scratch space>` (tier 3, `pasted`) or in a buffer that
-    ///    is not a file (X, `not_a_file`); a location in any other entry
-    ///    is spelled in scratch space (3, `pasted`), in a buffer that is
-    ///    not a file (X, `not_a_file`), or in a replacement list (2,
-    ///    `macro_body`).
-    /// 2. The range is `ranges::file_range_or_why(name)`: none is
-    ///    `directive` when `ranges` says so, else X `crossing`.
-    /// 3. The range's buffer is not a file: X `not_a_file`.
+    ///    it is in `<scratch space>` (tier 3, `pasted`); a location in any
+    ///    other entry is spelled in scratch space (3, `pasted`), in a
+    ///    buffer that is not a file (X, `not_a_file`), or in a
+    ///    replacement list (2, `macro_body`).
+    /// 2. The range is `ranges::file_range_or_why(name)`: none is X
+    ///    `crossing`, or, when `ranges` says the range holds a directive,
+    ///    `directive` (`not_a_file` if the token of rule 1 is written in a
+    ///    buffer that is not a file: that row comes first).
+    /// 3. The token of rule 1, or the range, is in a buffer that is not a
+    ///    file: X `not_a_file`.
     /// 4. The file is read-only: `not_owned`.
     /// 5. Its load report is not clean: `file_recoded`.
     /// 6. Its bytes in the range are not `spelling`, or the tier of rule 1
@@ -155,22 +164,26 @@ impl<'u, 'r> Sites<'u, 'r> {
                 macro_site: self.macro_site(invocation, at.map(|(f, ..)| f)),
             }
         };
-        let arg = match self.written(name.lo) {
-            Written::File(arg) => arg,
+        let (arg, in_file) = match self.written(name.lo) {
+            Written::File(arg, in_file) => (arg, in_file),
             Written::Not(Reason::MacroBody, tier) => {
                 let body = ranges::spelled_range(sm, name);
                 return refused(Reason::MacroBody, tier, body.or(invocation));
             }
             Written::Not(reason, tier) => return refused(reason, tier, invocation),
         };
-        let (tier, want) = if arg { (tiers::T1, Tier::MacroArgument) } else { (tiers::T0, Tier::File) };
+        let (tier, want) =
+            if arg { (tiers::T1, Tier::MacroArgument) } else { (tiers::T0, Tier::File) };
         let r = match ranges::file_range_or_why(sm, name) {
             Ok(r) => r,
-            Err(NoRange::Directive) => return refused(Reason::Directive, tier, invocation),
+            Err(NoRange::Directive) if in_file => {
+                return refused(Reason::Directive, tier, invocation);
+            }
+            Err(NoRange::Directive) => return refused(Reason::NotAFile, tiers::X, invocation),
             Err(_) => return refused(Reason::Crossing, tiers::X, invocation),
         };
         let range = Some((r.file, r.lo, r.hi));
-        if !self.is_file(r.file) {
+        if !in_file || !self.is_file(r.file) {
             return refused(Reason::NotAFile, tiers::X, invocation);
         }
         if !self.is_owned(r.file) {
@@ -208,8 +221,7 @@ impl<'u, 'r> Sites<'u, 'r> {
     /// Whether `file` is a file the transform may edit (`spec/edits.md`
     /// §2.1): a file whose real path the ownership owns.
     pub fn is_owned(&self, file: FileId) -> bool {
-        self.is_file(file)
-            && self.unit.real_path(file).is_some_and(|p| self.ownership.is_owned(p))
+        self.is_file(file) && self.unit.real_path(file).is_some_and(|p| self.ownership.is_owned(p))
     }
 
     /// Rule 1 (`name_token`).
@@ -234,13 +246,14 @@ impl<'u, 'r> Sites<'u, 'r> {
         if sm.is_written_in_scratch_space(at) {
             return Written::Not(Reason::Pasted, tiers::T3);
         }
-        if !sm.offset_of(at).is_some_and(|(f, _)| self.is_file(f)) {
+        let in_file = sm.offset_of(at).is_some_and(|(f, _)| self.is_file(f));
+        if !loc.is_macro() {
+            return Written::File(steps > 0, in_file);
+        }
+        if !in_file {
             return Written::Not(Reason::NotAFile, tiers::X);
         }
-        if loc.is_macro() {
-            return Written::Not(Reason::MacroBody, tiers::T2);
-        }
-        Written::File(steps > 0)
+        Written::Not(Reason::MacroBody, tiers::T2)
     }
 
     /// The range of the name token of the outermost invocation that
