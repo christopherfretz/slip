@@ -2802,7 +2802,14 @@ A local enumeration (§2.4) writes its enumerators in place as `decl*`.
 `kind=struct; pin=schema; selector=kiln_ast::decl::CtorInitKind`
 
 The list a constructor holds (`ColdDeclData` `ctor_inits`) is in
-initialisation order.
+initialisation order. Kiln stores it only for a definition it checks
+(`Sema::act_on_mem_initializers`, `check_mem_inits_of`); for a
+constructor definition that is `INVALID`, whose class is
+`DEPENDENT_CTX`, or that is `DEPENDENT_CTX` itself (made while a
+template head was open), the written list is kept outside the AST, and
+the stream that writes `ctor_inits` for it is indeterminate,
+`Unsupported("kiln/pattern-mem-initializers")`, with a ctor-initializer
+or without (`spec/landed/digest/WP-124.md`).
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|

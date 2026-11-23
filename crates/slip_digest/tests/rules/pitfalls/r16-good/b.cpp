@@ -1,7 +1,7 @@
 // std: c++20
 template <class T> struct Crate {
   T v;
-  Crate(T x) : v(x) {}
+  Crate(T x);
 };
 Crate(int) -> Crate<long>;
 template <class T> using Alias = Crate<T>;

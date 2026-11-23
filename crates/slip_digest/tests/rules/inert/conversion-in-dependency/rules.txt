@@ -1,0 +1,2 @@
+# WP-131 item 4 (owned.rs): the class template with the conversion function is a dependency's; the rule matches nothing of it under either ownership
+relocate a::detail => a :: impl

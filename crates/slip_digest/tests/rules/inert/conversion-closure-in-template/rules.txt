@@ -1,0 +1,2 @@
+# WP-131 item 2: a closure in a function template's instantiation converts to a function pointer of the instantiation's type
+relocate a::detail => a :: impl

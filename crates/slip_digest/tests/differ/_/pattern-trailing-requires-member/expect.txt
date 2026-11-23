@@ -1,0 +1,3 @@
+changed S
+added S::f() requires (sizeof(T) == 2)
+removed S::f() requires (sizeof(T) == 1)

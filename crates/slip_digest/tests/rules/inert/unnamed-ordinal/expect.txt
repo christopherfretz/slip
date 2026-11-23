@@ -1,0 +1,10 @@
+# The ordinal of an unnamed type of a class template is not found today
+# under any table (key/name: `ordinal_in_scope` reads the members of the
+# class template, not of its pattern; a follow-up of WP-131), so the case
+# shows only that the rule changes nothing: the same units are
+# indeterminate, with the same collision, on both sides.
+indeterminate W
+indeterminate W::(anonymous enum)
+indeterminate W<int>::(anonymous enum 0)
+indeterminate W<int>::(anonymous enum 1)
+collisions 1

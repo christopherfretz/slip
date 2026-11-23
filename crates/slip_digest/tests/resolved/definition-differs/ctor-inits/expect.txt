@@ -1,2 +1,4 @@
+# pending
+# needs: kiln (Kiln WP-3026: the pattern constructor A::A<T>() is indeterminate, kiln/pattern-mem-initializers, spec/landed/digest/WP-124.md). The resolved form refuses any indeterminate unit; differ/_/mem-initializer-seen-instantiated asserts the same change through the instantiation until then.
 # The pattern constructor's initialisers are pending (expressions).
 changed A<int>::A()::<definition>
