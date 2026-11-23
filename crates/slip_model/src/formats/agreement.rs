@@ -1,6 +1,7 @@
 //! The `binding` and `rule_use` sections, ids 24 and 25 of a verify shard
 //! (`spec/verify.md` §9.1). Work package WP-060; the order of checks,
-//! offsets, paths and the JSON form are `spec/landed/edits/WP-060.md` §3.
+//! offsets and paths are `spec/landed/edits/WP-060.md` §5, the JSON form
+//! its §2.
 
 use crate::agreement::{Binding, RuleUse, Use};
 use crate::json::Value;

@@ -1,11 +1,12 @@
 //! The transform request, kind `TRFM` (`spec/edits.md` §3, §2.1). Work
-//! package WP-060; the order of checks, offsets, paths and the JSON form
-//! are `spec/landed/edits/WP-060.md` §1.
+//! package WP-060; the order of checks, offsets and paths are
+//! `spec/landed/edits/WP-060.md` §3, the JSON form its §2.
 
 use crate::Digest;
 use crate::json::Value;
 use crate::transform::{
-    Ownership, Rename, Script, TargetKind, Transform, TransformKind, is_identifier, is_keyword,
+    Ownership, Rename, Script, TargetKind, Transform, TransformKind, is_canonical, is_identifier,
+    is_keyword,
 };
 use crate::wire::{Decoder, Encoder};
 
@@ -72,18 +73,26 @@ impl Loc {
     }
 }
 
+const NOT_CANONICAL: &str = "not a canonical absolute path";
+
 fn first_not_ascending(list: &[Vec<u8>]) -> Option<usize> {
     (1..list.len()).find(|&i| list[i - 1] >= list[i])
 }
 
-/// The first violation, in field order (`spec/landed/edits/WP-060.md` §1).
+/// The first violation, in field order (`spec/landed/edits/WP-060.md` §3).
 fn violation(t: &Transform) -> Option<(Loc, &'static str)> {
     let o = &t.ownership;
     if o.owned.is_empty() {
         return Some((Loc::Owned, "owned is empty"));
     }
+    if let Some(i) = o.owned.iter().position(|e| !is_canonical(e)) {
+        return Some((Loc::OwnedAt(i), NOT_CANONICAL));
+    }
     if let Some(i) = first_not_ascending(&o.owned) {
         return Some((Loc::OwnedAt(i), "owned is not strictly ascending"));
+    }
+    if let Some(i) = o.readonly.iter().position(|e| !is_canonical(e)) {
+        return Some((Loc::ReadonlyAt(i), NOT_CANONICAL));
     }
     if let Some(i) = first_not_ascending(&o.readonly) {
         return Some((Loc::ReadonlyAt(i), "readonly is not strictly ascending"));

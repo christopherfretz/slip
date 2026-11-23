@@ -1,6 +1,6 @@
 //! The `spellings` section, id 26 of a verify shard (`spec/verify.md`
-//! §10.4). Work package WP-060; the order of checks, offsets, paths and the
-//! JSON form are `spec/landed/edits/WP-060.md` §4.
+//! §10.4). Work package WP-060; the order of checks, offsets and paths are
+//! `spec/landed/edits/WP-060.md` §5, the JSON form its §2.
 
 use crate::json::Value;
 use crate::spellings::{Failed, Span, Spellings};

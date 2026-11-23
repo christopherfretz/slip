@@ -1,6 +1,7 @@
 //! The `edits` section, id 17 of a map shard (`spec/edits.md` §4). Work
-//! package WP-060; the invariants are `spec/edits.md` §4.7, and the binary
-//! form, the messages and the JSON form are `spec/landed/edits/WP-060.md` §2.
+//! package WP-060; the invariants are `spec/edits.md` §4.7, the order of
+//! checks and the messages `spec/landed/edits/WP-060.md` §4, the JSON form
+//! its §2.
 
 use std::collections::BTreeSet;
 
@@ -133,6 +134,7 @@ pub(super) enum Loc {
     Report(usize),
     Changed(usize),
     Renamed(usize),
+    RefusalSubject,
 }
 
 impl Loc {
@@ -140,6 +142,7 @@ impl Loc {
         const S: &str = "sections.edits";
         match self {
             Loc::Section => S.to_owned(),
+            Loc::RefusalSubject => format!("{S}.failure.refusal.subject"),
             Loc::Scheme => format!("{S}.scheme"),
             Loc::List(l) => format!("{S}.{}", LIST_NAMES[l as usize]),
             Loc::File(i) => format!("{S}.files[{i}]"),
@@ -229,6 +232,19 @@ pub(super) fn violation(e: &Edits, cx: Context) -> Option<(Loc, &'static str)> {
         ];
         if let Some(&(l, _)) = lens.iter().find(|(_, n)| *n != 0) {
             return Some((Loc::List(l), "a failed run has a list that is not empty"));
+        }
+        let subject = e.failure.as_ref().and_then(|f| f.refusal.as_ref()?.subject.as_ref());
+        match subject {
+            Some(p) if !within(&e.files, p) => {
+                return Some((Loc::RefusalSubject, "the refusal's subject is not within its file"));
+            }
+            None if !e.files.is_empty() => {
+                return Some((
+                    Loc::List(List::Files),
+                    "a failed run names a file but its refusal has no subject",
+                ));
+            }
+            _ => {}
         }
     }
     if let Some(i) = (1..e.files.len()).find(|&i| e.files[i - 1].path >= e.files[i].path) {
@@ -507,6 +523,7 @@ pub(super) struct Offsets {
     report: Vec<usize>,
     changed: Vec<usize>,
     renamed: Vec<usize>,
+    refusal_subject: usize,
 }
 
 #[derive(Debug, Default)]
@@ -545,6 +562,7 @@ impl Offsets {
             Loc::Report(i) => self.report[i],
             Loc::Changed(i) => self.changed[i],
             Loc::Renamed(i) => self.renamed[i],
+            Loc::RefusalSubject => self.refusal_subject,
         }
     }
 }
@@ -569,6 +587,7 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Edits, Offsets)> {
     let mut o = Offsets { section: d.offset(), ..Offsets::default() };
     let scheme = d.uv()?;
     let transform = d.digest()?;
+    let mut subject_at = 0;
     let failure = dec_opt(d, |d| {
         Ok(Failure {
             kind: dec_enum(d)?,
@@ -582,11 +601,15 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Edits, Offsets)> {
                     function: d.str()?.to_owned(),
                     errc: d.str()?.to_owned(),
                     message: d.str()?.to_owned(),
-                    subject: dec_opt(d, dec_place)?,
+                    subject: {
+                        subject_at = d.offset();
+                        dec_opt(d, dec_place)?
+                    },
                 })
             })?,
         })
     })?;
+    o.refusal_subject = subject_at;
     o.lists[List::Files as usize] = d.offset();
     let files = dec_list(d, Some(&mut o.file), dec_file_ref)?;
     o.lists[List::Subjects as usize] = d.offset();

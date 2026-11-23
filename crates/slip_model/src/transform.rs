@@ -9,21 +9,35 @@ use crate::Digest;
 /// The files Slip may edit (`spec/edits.md` §2.1).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Ownership {
-    /// Real paths of directories or files; sorted, no two equal, not empty.
+    /// Canonical absolute real paths ([`is_canonical`]) of directories or
+    /// files; sorted, no two equal, not empty.
     pub owned: Vec<Vec<u8>>,
     /// The same; sorted, no two equal, none also in `owned`.
     pub readonly: Vec<Vec<u8>>,
 }
 
-/// `entry` covers `path` (`spec/edits.md` §2.1): it equals `path`, or is a
-/// proper prefix of it that ends at a `/` of `path`, either because the
-/// byte of `path` after it is `/` (`/src` covers `/src/a.cc`) or because its
-/// own last byte is (`/` covers `/a.cc`). `/src/a` does not cover
-/// `/src/ab.cc`: the prefix ends inside a component.
+/// `entry` is a canonical absolute path (`spec/edits.md` §2.1): it starts
+/// with `/`, has no empty, `.` or `..` component, and has no trailing `/`
+/// unless it is `/` itself.
+pub fn is_canonical(entry: &[u8]) -> bool {
+    match entry.strip_prefix(b"/") {
+        None => false,
+        Some(b"") => true,
+        Some(rest) => rest.split(|&b| b == b'/').all(|c| !matches!(c, b"" | b"." | b"..")),
+    }
+}
+
+/// `entry` covers `path` (`spec/edits.md` §2.1): the entry `/` covers every
+/// absolute path; any other entry covers `path` iff `path` equals it or
+/// starts with it followed by `/`. `/src` covers `/src/a.cc`; `/src/a` does
+/// not cover `/src/ab.cc`.
 pub fn covers(entry: &[u8], path: &[u8]) -> bool {
+    if entry == b"/" {
+        return path.first() == Some(&b'/');
+    }
     match path.strip_prefix(entry) {
         None => false,
-        Some(rest) => rest.is_empty() || rest[0] == b'/' || entry.last() == Some(&b'/'),
+        Some(rest) => rest.is_empty() || rest[0] == b'/',
     }
 }
 

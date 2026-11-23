@@ -42,6 +42,7 @@ verdicts are already there (§8.2, §8.3).
 | `opt<T>` | `u8` 0 (absent), or `u8` 1 followed by `T`. |
 | `list<T>` | `uv` count, then that many `T`. |
 | enumeration | `uv` holding one of the listed values. An unlisted value is `Malformed`. |
+| tagged union | Written `T := a = 0: X \| b = 1 \| c = 2: Y, Z`: a `uv` tag holding one of the listed values, then the fields after that alternative's colon, as a record (nothing for an alternative without a colon). The tag is a `uv` like any other (a non-minimal one is `Malformed`); an unlisted tag is `Malformed`. `Parent` (`digest.md` §3) and `Piece` (`edits.md` §4.2) are tagged unions. |
 | record | Its fields in the order listed, with no padding and no terminator. |
 
 A list described as *sorted* must be in strictly ascending order of the stated
@@ -83,6 +84,7 @@ The offset an error carries is, by error:
 | `Malformed`, bytes left at the end of a payload or after `end` | the first leftover byte |
 | `Malformed`, section id not ascending (§5 rule 1) | the first byte of that section's id |
 | `Malformed`, unlisted enumeration value | the value's first byte |
+| `Malformed`, unlisted tag of a tagged union | the tag's first byte |
 | `Malformed`, `opt` tag other than 0 or 1 | the tag |
 | `TooLarge` | the first byte of the length or count |
 | `BadMagic` | the first byte of magic or kind that differs from the expected one |

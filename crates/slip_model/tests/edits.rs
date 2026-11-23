@@ -16,7 +16,9 @@ use slip_model::formats::{JsonFormError, content_id, dump, undump};
 use slip_model::hash::content_digest;
 use slip_model::json::{self, Value};
 use slip_model::keys::{KeyKind, Name, Parent, Rule};
-use slip_model::transform::{Ownership, Rename, Script, TargetKind, Transform, TransformKind};
+use slip_model::transform::{
+    Ownership, Rename, Script, TargetKind, Transform, TransformKind, covers, is_canonical,
+};
 use slip_model::wire::{Encoder, Error, ErrorKind};
 use slip_model::{Counter, Digest, FileRef, Outcome, Phase, Shard, Status};
 
@@ -180,6 +182,7 @@ fn raw_edits(x: &Edits) -> Raw {
         r.e.str(&f.rendered);
         r.opt(f.refusal.as_ref(), |r, h| {
             r.e.str(&h.function).str(&h.errc).str(&h.message);
+            r.mark("sections.edits.failure.refusal.subject".to_owned());
             r.opt(h.subject.as_ref(), Raw::place);
         });
     });
@@ -819,6 +822,18 @@ fn edits_json_members() {
     let mut v = map_shard(failed_run()).to_json();
     set(&mut v, &["sections", "edits", "failure", "kind"], parse("\"panic\""));
     assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.edits.failure.kind");
+    for (new, at) in [
+        ("5", "sections.edits.failure.place"),
+        (r#"{"file": "/t/x.cc", "line": -3, "column": 7}"#, "sections.edits.failure.place.line"),
+        (r#"{"file": 0, "line": 3, "column": 7}"#, "sections.edits.failure.place.file"),
+    ] {
+        let mut v = map_shard(failed_run()).to_json();
+        set(&mut v, &["sections", "edits", "failure", "place"], parse(new));
+        assert_eq!(Shard::from_json(&v).unwrap_err().path, at, "{new}");
+    }
+    let mut v = map_shard(failed_run()).to_json();
+    set(&mut v, &["sections", "edits", "failure", "refusal", "subject", "lo"], parse("\"x\""));
+    assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.edits.failure.refusal.subject.lo");
 }
 
 // spec/model.md §1 rule 6, §2: unlisted values of the section's
@@ -862,6 +877,17 @@ fn edits_unlisted_values() {
         w.finish()
     };
     assert_eq!(with(&payload), small_bytes());
+    // spec/model.md §2 (tagged union), §2.2: a piece's tag is a `uv`; a
+    // non-minimal one (80 00 for 0) is Malformed at its redundant byte, an
+    // unlisted one at its first byte, also when it takes two bytes.
+    let tag = 143 - 64;
+    assert_eq!(payload[tag], 0);
+    let mut long = payload.clone();
+    long.insert(tag, 0x80);
+    assert_eq!(error(Shard::from_bytes(&with(&long))), (ErrorKind::Malformed, 144));
+    let mut wide = payload.clone();
+    wide.splice(tag..=tag, [0x83, 0x01]);
+    assert_eq!(error(Shard::from_bytes(&with(&wide))), (ErrorKind::Malformed, 143));
     let short = &payload[..payload.len() - 1];
     assert_eq!(error(Shard::from_bytes(&with(short))).0, ErrorKind::Truncated);
     payload.push(0);
@@ -977,6 +1003,72 @@ fn edits_failure_lists() {
         },
         "sections.edits.subjects",
     );
+    // A link and a claim: the links (field order).
+    failed(
+        |x| {
+            x.claims.push(claim(0, 30, 31, Stance::Keep));
+            x.links = sample().links;
+        },
+        "sections.edits.links",
+    );
+    // A change and a rule: the changes.
+    failed(
+        |x| {
+            x.renamed = sample().renamed;
+            x.changed = sample().changed;
+        },
+        "sections.edits.changed",
+    );
+}
+
+// §4.7, the refusal row: a failed run's `refusal.subject` is within its
+// file, and `files` is empty unless the refusal has a subject.
+#[test]
+fn edits_failure_refusal_subject() {
+    let failed = |f: &dyn Fn(&mut Edits), path: &str| {
+        let mut x = failed_run();
+        f(&mut x);
+        rejected(&map_shard(x), path)
+    };
+    let subject = |x: &mut Edits, p: Option<Place>| {
+        x.failure.as_mut().unwrap().refusal.as_mut().unwrap().subject = p;
+    };
+    const AT: &str = "sections.edits.failure.refusal.subject";
+    for p in
+        [place(7, 5, 1), place(1, 0, 1), place(0, 5, 1), place(0, 0, 101), place(u64::MAX, 0, 0)]
+    {
+        let what = failed(&|x| subject(x, Some(p)), AT);
+        assert_eq!(what, "the refusal's subject is not within its file");
+    }
+    // A subject and no file.
+    failed(&|x| x.files.clear(), AT);
+    // A file and no subject; a file and no refusal.
+    let what = failed(&|x| subject(x, None), "sections.edits.files");
+    assert_eq!(what, "a failed run names a file but its refusal has no subject");
+    failed(&|x| x.failure.as_mut().unwrap().refusal = None, "sections.edits.files");
+    // Valid: an empty subject at the end of the file; no file, no subject.
+    let mut x = failed_run();
+    subject(&mut x, Some(place(0, 100, 100)));
+    map_shard(x).validate().unwrap();
+    let mut x = failed_run();
+    subject(&mut x, None);
+    x.files.clear();
+    round_trip(&map_shard(x));
+    // After the lists, and after the count of files.
+    failed(
+        &|x| {
+            subject(x, Some(place(7, 0, 0)));
+            x.claims.push(claim(0, 30, 31, Stance::Keep));
+        },
+        "sections.edits.claims",
+    );
+    failed(
+        &|x| {
+            subject(x, Some(place(7, 0, 0)));
+            x.files.push(file(b"/s/b.cc", 1, 9));
+        },
+        "sections.edits.files",
+    );
 }
 
 // §4.7 row 3: files strictly ascending by path.
@@ -1085,6 +1177,15 @@ fn edits_claim_subjects_and_notes() {
         |x| x.claims[2].notes = vec![b"a".to_vec(), b"a".to_vec()],
         "sections.edits.claims[2].notes",
     );
+    // Subjects before notes.
+    broken(
+        |x| {
+            x.claims[0].notes.reverse();
+            x.claims[1].subjects.reverse();
+            x.claims[0].subjects.push(d(0x10));
+        },
+        "sections.edits.claims[0].subjects",
+    );
 }
 
 // §4.7 row 12: tiers not 0, no bit above 4, bits 2 to 4 only for refuse;
@@ -1099,6 +1200,22 @@ fn edits_claim_tiers() {
         broken(|x| x.claims[5].tiers = t, "sections.edits.claims[5].tiers");
     }
     broken(|x| x.claims[0].macro_site = macro_site(1, b"M"), "sections.edits.claims[0].tiers");
+    // The bits by value, not by the crate's constants: 31 is every tier,
+    // 16 tier X alone.
+    for t in [31, 16, 4 | 16] {
+        let mut x = sample();
+        x.claims[3].tiers = t;
+        map_shard(x).validate().unwrap();
+    }
+    for t in [32, 33, 1 << 63] {
+        let what = broken(|x| x.claims[3].tiers = t, "sections.edits.claims[3].tiers");
+        assert_eq!(what, "tiers has a bit above 4 set");
+    }
+    assert_eq!(
+        broken(|x| x.claims[2].tiers = 16, "sections.edits.claims[2].tiers"),
+        "tiers has a bit of tier 2, 3 or X for a claim that is not a refuse"
+    );
+    assert_eq!(broken(|x| x.claims[0].tiers = 0, "sections.edits.claims[0].tiers"), "tiers is 0");
     // Every tier for a refuse; a macro with tier 1.
     let mut x = sample();
     x.claims[3].tiers = tiers::ALL;
@@ -1388,6 +1505,9 @@ fn normalise_joins_agreeing_derivations() {
     };
     let x = normalised(with_claims(vec![m(9, b"A"), m(3, b"Z"), m(3, b"Y")], Vec::new()));
     assert_eq!(x.claims[0].macro_site, macro_site(3, b"Y"));
+    // ... whatever its place among the derivations: the least first.
+    let x = normalised(with_claims(vec![m(3, b"Y"), m(9, b"A"), m(3, b"Z")], Vec::new()));
+    assert_eq!(x.claims[0].macro_site, macro_site(3, b"Y"));
     // The least reason other than none.
     let r =
         |reason: Reason| Claim { reason, subjects: vec![d(1)], ..claim(0, 1, 2, Stance::Refuse) };
@@ -1610,12 +1730,55 @@ fn is_owned() {
     assert!(o.is_owned(b"/s/a.cc"));
     assert!(!o.is_owned(b"/s/v/a.h"));
     assert!(o.is_owned(b"/s/v/ours/a.h"));
-    // The root covers every absolute path; an entry ending in `/` covers
-    // what is under it.
-    let o = ownership(&[b"/"], &[b"/usr/"]);
+    // The root covers every absolute path, and nothing relative.
+    let o = ownership(&[b"/"], &[b"/usr"]);
     assert!(o.is_owned(b"/a.cc"));
+    assert!(o.is_owned(b"/"));
     assert!(!o.is_owned(b"/usr/include/x.h"));
-    assert!(o.is_owned(b"/usr"));
+    assert!(!o.is_owned(b"/usr"));
+    assert!(o.is_owned(b"/usrx/a.h"));
+    assert!(!o.is_owned(b"a.cc"));
+    assert!(!o.is_owned(b""));
+    // An entry is a prefix followed by `/`, never a prefix of a component.
+    let o = ownership(&[b"/a/b"], &[]);
+    assert!(!o.is_owned(b"/a/bc/x"));
+    assert!(o.is_owned(b"/a/b/x"));
+    assert!(covers(b"/", b"/x") && !covers(b"/", b"x"));
+    assert!(covers(b"/a/b", b"/a/b") && covers(b"/a/b", b"/a/b/c/d"));
+    assert!(!covers(b"/a/b", b"/a/bc/x") && !covers(b"/a/b", b"/a"));
+    // A carve-out: readonly inside owned, with the file and the directory.
+    let o = ownership(&[b"/s"], &[b"/s/gen"]);
+    assert!(!o.is_owned(b"/s/gen/x.h"));
+    assert!(!o.is_owned(b"/s/gen"));
+    assert!(o.is_owned(b"/s/generated/x.h"));
+    assert!(o.is_owned(b"/s/x.h"));
+}
+
+// spec/edits.md §2.1: a canonical absolute path starts with `/`, has no
+// empty, `.` or `..` component, and no trailing `/` unless it is `/`.
+#[test]
+fn canonical_paths() {
+    for ok in [&b"/"[..], b"/s", b"/s/a.cc", b"/s/.x", b"/s/..x", b"/s/x..", b"/\xff/b", b"/a b"] {
+        assert!(is_canonical(ok), "{}", String::from_utf8_lossy(ok));
+    }
+    for bad in [
+        &b""[..],
+        b"s",
+        b"s/a",
+        b"./s",
+        b"//",
+        b"//s",
+        b"/s/",
+        b"/s//a",
+        b"/s/./a",
+        b"/s/.",
+        b"/.",
+        b"/..",
+        b"/s/../t",
+        b"/s/..",
+    ] {
+        assert!(!is_canonical(bad), "{}", String::from_utf8_lossy(bad));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1777,6 +1940,24 @@ fn transform_ownership_rules() {
         ..rename_request()
     };
     refused(&with(&[], &[]), "sections.transform.ownership.owned");
+    // Every refused form, in owned and in readonly.
+    for bad in [&b""[..], b"s", b"s/a", b"//s", b"/s/", b"/s//a", b"/s/./gen", b"/s/../t", b"/s/.."]
+    {
+        let what = refused(&with(&[b"/a", bad], &[]), "sections.transform.ownership.owned[1]");
+        assert_eq!(what, "not a canonical absolute path");
+        let what = refused(&with(&[b"/s"], &[bad]), "sections.transform.ownership.readonly[0]");
+        assert_eq!(what, "not a canonical absolute path");
+    }
+    // The root is canonical; it owns every absolute path.
+    let t = with(&[b"/"], &[b"/usr"]);
+    t.validate().unwrap();
+    assert_eq!(Transform::from_bytes(&t.to_bytes()).unwrap(), t);
+    // Canonical before ascending: the first bad entry, though entry 1 is
+    // out of order.
+    refused(&with(&[b"/t", b"/s", b"/u/"], &[]), "sections.transform.ownership.owned[2]");
+    refused(&with(&[b"/s"], &[b"/u", b"/t", b"x"]), "sections.transform.ownership.readonly[2]");
+    // Owned's rules before readonly's.
+    refused(&with(&[b"/s/"], &[b"x"]), "sections.transform.ownership.owned[0]");
     refused(&with(&[b"/t", b"/s"], &[]), "sections.transform.ownership.owned[1]");
     refused(&with(&[b"/s", b"/s"], &[]), "sections.transform.ownership.owned[1]");
     refused(&with(&[b"/s"], &[b"/u", b"/t"]), "sections.transform.ownership.readonly[1]");
