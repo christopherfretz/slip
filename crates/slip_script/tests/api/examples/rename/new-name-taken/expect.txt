@@ -1,0 +1,2 @@
+transform <id>
+report t.cpp:5:5-5:13 error "not renamed: the new name is already declared here"
