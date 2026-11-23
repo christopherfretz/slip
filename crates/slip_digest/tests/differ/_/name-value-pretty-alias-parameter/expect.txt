@@ -1,3 +1,8 @@
 # pending
-# needs: WP-041
+# needs: WP-112
+# The unit digests are equal by digest §9 (what a name-derived string
+# prints beyond names is content, not part of the unit digest); the names
+# digest of WP-112 must differ. WP-112 turns this pair into a test of
+# that digest (the unit line below is the unit whose names digest
+# differs); until then it is pending and the runner skips it.
 changed f(Widget)

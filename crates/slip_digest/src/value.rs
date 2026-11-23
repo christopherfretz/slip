@@ -283,17 +283,18 @@ fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, cx: &mut Ctx) -> 
     match base {
         PtrBase::Decl(d) | PtrBase::Function(d) => w.write_ref(s, d),
         PtrBase::Temporary(d) => write_temporary(w, s, d),
-        PtrBase::StringLit { lit, origin } if w.by_value == 0 => match name_string(w, origin) {
-            Some(which) => {
-                write_name_string(s, which);
-                return true;
+        PtrBase::StringLit { lit, origin } if w.by_value == 0 => {
+            match name_string(w, lit, origin) {
+                Some(which) => {
+                    write_name_string(w, s, which);
+                    return true;
+                }
+                None => string(w, s, lit),
             }
-            None => string(w, s, lit),
-        },
+        }
         PtrBase::StringLit { lit, origin: _ } => string(w, s, lit),
-        PtrBase::Const(c) if w.by_value == 0 && name_values(w).objects.contains(&c.index()) => {
-            let h = location_digest(w, c);
-            s.digest(&h.digest).absorb(h.cause);
+        PtrBase::Const(c) if w.by_value == 0 && name_values(w).objects.contains_key(&c.index()) => {
+            write_location(w, s, c);
             return true;
         }
         PtrBase::Const(c) => {
@@ -314,51 +315,83 @@ fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, cx: &mut Ctx) -> 
 
 // ---------------------------------------------------------------------
 // Values that come from names and positions (digest §9, WP-104).
+//
+// A symbolic value has the identity of the object it stands for: two are
+// written alike only if they are the same string (or `__impl` object) of
+// the same entity. A string is written as the entity whose name it holds
+// only where its bytes are what Kiln makes for that entity (checked here
+// by printing the name again with Kiln's own printer), so two strings
+// written alike hold the names of one entity (mapped by the rules), and
+// differ by nothing but what §9 leaves out of the digest. Anywhere else
+// the bytes are written.
 
 /// The objects of the constant store that hold the values of the
 /// source-location builtins (`kiln_sema/src/builtins.rs` `record_source_loc`,
 /// `srcloc_string`, `source_location_object`): Kiln makes one string
 /// object per content, whose `StringLiteral` has no parent
 /// (`frozen_string`), and one `std::source_location::__impl` object per
-/// value. They are found from the values Kiln records for every use
-/// (`ExprArena` `cold.source_loc`), once per walk.
+/// use. They are found from the values Kiln records for every use
+/// (`ExprArena` `cold.source_loc`), once per walk; so are the function
+/// bodies a `PredefinedExpr`'s string is looked up in.
 #[derive(Debug, Default)]
 pub(crate) struct NameValues {
-    /// The `ExprId`s (index) of the string objects' literals.
-    origins: HashSet<u32>,
-    /// The `ConstValueId`s (index) of the `__impl` objects.
-    objects: HashSet<u32>,
+    /// The `ExprId`s (index) of the source-location strings' literals:
+    /// each use that points to one, as `(role, context, use)`.
+    origins: HashMap<u32, Vec<(Role, DeclId, ExprId)>>,
+    /// The `ConstValueId`s (index) of the `__impl` objects: the function
+    /// the use that built it is in (`None` outside a function) and the
+    /// use's ordinal among the uses of that function, or of every context
+    /// that is not a function, that build one (`ExprId` order).
+    objects: HashMap<u32, (Option<DeclId>, u64)>,
+    /// Every function with a compound body: its `{` and `}` as file
+    /// locations (raw), sorted.
+    bodies: Vec<(u32, u32, DeclId)>,
+    /// The entity found for a `PredefinedExpr`'s string, by literal.
+    owners: HashMap<u32, Option<DeclId>>,
+}
+
+/// What a source-location string is to a use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// `file` or `file_name`, or the file of an `__impl` object.
+    File,
+    /// `function` (`__builtin_FUNCTION()`): the context's plain name.
+    Plain,
+    /// The function name of an `__impl` object: the context's pretty name.
+    Pretty,
 }
 
 /// Which name-derived string a `PtrBase::StringLit` is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NameString {
-    /// The value of a `PredefinedExpr` of this kind.
-    Predefined(slip_kiln::kiln::ast::expr::PredefinedKind),
-    /// A string of the source-location builtins (`file`, `file_name`,
-    /// `function`, or an `__impl` object's).
-    SourceLoc,
+    /// The value of a `PredefinedExpr` of this kind in this function.
+    Predefined(slip_kiln::kiln::ast::expr::PredefinedKind, DeclId),
+    /// A source-location function name (plain or pretty) of this context.
+    SourceLoc(Role, DeclId),
 }
 
 /// The [`NameValues`] of the walk, built on first use.
-fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w NameValues {
+fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
     let ast = w.ast;
+    let sm = w.sm;
     w.name_values.get_or_insert_with(|| {
         let mut nv = NameValues::default();
-        let string = |nv: &mut NameValues, c: ConstValueId| {
-            if let Some(Scalar::Pointer {
+        let origin_of = |c: ConstValueId| match ast.consts.scalar(c) {
+            Some(Scalar::Pointer {
                 ty: _,
                 base: PtrBase::StringLit { lit: _, origin },
                 offset: _,
                 designated: _,
                 past: _,
-            }) = ast.consts.scalar(c)
-            {
-                nv.origins.insert(origin.index());
-            }
+            }) => Some(origin),
+            _ => None,
         };
-        for (_, v) in ast.exprs.cold.source_loc.iter() {
-            let &slip_kiln::kiln::ast::expr::SourceLocValues {
+        let mut uses: Vec<(ExprId, slip_kiln::kiln::ast::expr::SourceLocValues)> =
+            ast.exprs.cold.source_loc.iter().map(|(e, v)| (e, *v)).collect();
+        uses.sort_unstable_by_key(|&(e, _)| e.index());
+        let mut ordinals: HashMap<Option<DeclId>, u64> = HashMap::new();
+        for (e, v) in uses {
+            let slip_kiln::kiln::ast::expr::SourceLocValues {
                 file,
                 file_name,
                 function,
@@ -366,11 +399,16 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w NameValues {
                 column: _,
                 location,
                 at: _,
-                ctx: _,
+                ctx,
             } = v;
-            string(&mut nv, file);
-            string(&mut nv, file_name);
-            string(&mut nv, function);
+            let add = |nv: &mut NameValues, c: ConstValueId, role: Role| {
+                if let Some(o) = origin_of(c) {
+                    nv.origins.entry(o.index()).or_default().push((role, ctx, e));
+                }
+            };
+            add(&mut nv, file, Role::File);
+            add(&mut nv, file_name, Role::File);
+            add(&mut nv, function, Role::Plain);
             let Some(l) = location else { continue };
             let Some(Scalar::Pointer {
                 ty: _,
@@ -390,70 +428,169 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w NameValues {
                 unions: _,
             }) = ast.consts.get(obj)
             {
-                nv.objects.insert(obj.index());
+                let group = ast.decls.get(ctx).kind().is_function().then_some(ctx);
+                let n = ordinals.entry(group).or_insert(0);
+                if nv.objects.insert(obj.index(), (group, *n)).is_none() {
+                    *n += 1;
+                }
+                let file_origin = origin_of(file);
                 for &Reloc { at: _, value } in relocs {
-                    string(&mut nv, value);
+                    let role =
+                        if origin_of(value) == file_origin { Role::File } else { Role::Pretty };
+                    add(&mut nv, value, role);
                 }
             }
         }
+        for d in ast.decls.ids() {
+            let Some(f) = ast.decls.function(d) else { continue };
+            let Some(b) = f.body else { continue };
+            let st = ast.stmts.get(b);
+            if st.kind() != slip_kiln::kiln::ast::stmt::StmtKind::CompoundStmt {
+                continue;
+            }
+            let lo = sm.expansion_loc(st.loc());
+            let hi = sm.expansion_loc(ast.stmts.rbrace(b));
+            if lo.is_file() && hi.is_file() && lo <= hi {
+                nv.bodies.push((lo.to_raw(), hi.to_raw(), d));
+            }
+        }
+        nv.bodies.sort_unstable_by_key(|&(lo, hi, d)| (lo, hi, d.index()));
         nv
     })
 }
 
-/// Whether string object `origin` holds a name-derived value: the
-/// literal of a `PredefinedExpr` (Kiln builds it immediately before its
-/// `PredefinedExpr`, `kiln_sema/src/predefined.rs:36-41`, and reads it so,
-/// `kiln_sema/src/templ/args.rs:2022`; the `PredefinedExpr`'s `a` names
-/// it, which is checked), or a source-location string.
-fn name_string(w: &mut Walk<'_>, origin: ExprId) -> Option<NameString> {
+/// Kiln's names of function `f` for a `PredefinedExpr` or a
+/// source-location builtin (`kiln_sema/src/predefined.rs`
+/// `compute_predefined_name`: the plain name, or `pretty_function`), with
+/// either spelling of a closure; whether `bytes` is one of them.
+fn is_kiln_name(w: &Walk<'_>, f: DeclId, pretty: bool, bytes: &[u8]) -> bool {
+    if !w.ast.decls.get(f).kind().is_function() {
+        return false;
+    }
+    [false, true].into_iter().any(|lambda| {
+        let mut names = slip_kiln::kiln::ast::dump::AstNames::with_sources(w.ast, w.sm);
+        names.closure_as_lambda = lambda;
+        names.scoped_spec_args = true;
+        let text = if pretty {
+            slip_kiln::kiln::ast::dump::pretty_function(&names, f, true)
+        } else {
+            let mut t = String::new();
+            names.write_name(f, &mut t);
+            t
+        };
+        text.as_bytes() == bytes
+    })
+}
+
+/// Whether string object `origin` (holding `lit`) holds a name-derived
+/// value, and whose: the literal of a `PredefinedExpr` (Kiln builds it
+/// immediately before its `PredefinedExpr`, `kiln_sema/src/predefined.rs:36-41`,
+/// and reads it so, `kiln_sema/src/templ/args.rs:2022`; the
+/// `PredefinedExpr`'s `a` names it, which is checked), in the innermost
+/// function whose body holds the expression and whose name the bytes
+/// are; or a source-location function name of the first use's context
+/// whose name the bytes are. `None` (the bytes are written) for a file
+/// name and wherever no such entity is found.
+fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<NameString> {
     use slip_kiln::kiln::ast::RawId;
+    use slip_kiln::kiln::ast::expr::PredefinedKind;
     let ast = w.ast;
+    let (_, bytes) = ast.strings.get(lit);
     let next = origin.raw().checked_add(1).and_then(ExprId::from_raw);
     if let Some(next) = next
         && (next.raw() as usize) <= ast.exprs.len()
         && ast.exprs.get(next).kind() == ExprKind::PredefinedExpr
         && ast.exprs.predefined_name(next) == Some(origin)
     {
-        return Some(NameString::Predefined(ast.exprs.predefined_kind(next)));
+        let kind = ast.exprs.predefined_kind(next);
+        let pretty = kind == PredefinedKind::PrettyFunction;
+        if let Some(&owner) = name_values(w).owners.get(&origin.index()) {
+            return owner.map(|f| NameString::Predefined(kind, f));
+        }
+        let at = w.sm.expansion_loc(ast.exprs.get(next).loc());
+        let mut best: Option<(u32, DeclId)> = None;
+        let mut tie = false;
+        if at.is_file() {
+            let at = at.to_raw();
+            let bodies = std::mem::take(&mut name_values(w).bodies);
+            for &(lo, hi, f) in bodies.iter().take_while(|&&(lo, _, _)| lo <= at) {
+                if at > hi || !is_kiln_name(w, f, pretty, bytes) {
+                    continue;
+                }
+                let span = hi - lo;
+                match best {
+                    Some((b, _)) if b < span => {}
+                    Some((b, g)) if b == span && ast.first(g) != ast.first(f) => tie = true,
+                    Some((b, _)) if b == span => {}
+                    _ => {
+                        best = Some((span, f));
+                        tie = false;
+                    }
+                }
+            }
+            name_values(w).bodies = bodies;
+        }
+        let owner = if tie { None } else { best.map(|(_, f)| f) };
+        name_values(w).owners.insert(origin.index(), owner);
+        return owner.map(|f| NameString::Predefined(kind, f));
     }
-    name_values(w).origins.contains(&origin.index()).then_some(NameString::SourceLoc)
+    let first = name_values(w)
+        .origins
+        .get(&origin.index())
+        .and_then(|uses| {
+            if uses.iter().any(|&(r, _, _)| r == Role::File) {
+                return None;
+            }
+            uses.iter().min_by_key(|&&(_, _, e)| e.index()).copied()
+        })?;
+    let (role, ctx, _) = first;
+    is_kiln_name(w, ctx, role == Role::Pretty, bytes).then_some(NameString::SourceLoc(role, ctx))
 }
 
 /// `PtrBase` `StringLit.lit` of a name-derived string (digest-kinds §8,
 /// the rule under `PtrBase`): `bytes` empty, `uv 0` where a literal's
 /// encoding tag stands (0 is no tag, so no literal is written so), then
-/// `uv 1` and the `PredefinedKind` tag for a `PredefinedExpr`'s value, or
-/// `uv 2` for a source-location string.
-fn write_name_string(s: &mut Stream, which: NameString) {
+/// `uv 1`, the `PredefinedKind` tag and the function, for a
+/// `PredefinedExpr`'s value; `uv 2`, `uv 0` (plain) or `uv 1` (pretty)
+/// and the context, for a source-location function name.
+fn write_name_string(w: &mut Walk<'_>, s: &mut Stream, which: NameString) {
     s.bytes(&[]).uv(0);
     match which {
-        NameString::Predefined(k) => {
+        NameString::Predefined(k, f) => {
             s.uv(1).tag(crate::tables::predefined_kind::row(&k));
+            w.write_ref(s, f);
         }
-        NameString::SourceLoc => {
-            s.uv(2);
+        NameString::SourceLoc(role, ctx) => {
+            s.uv(2).uv(u64::from(role == Role::Pretty));
+            w.write_ref(s, ctx);
         }
     }
 }
 
 /// `PtrBase` `Const.0` of a source-location `__impl` object: the digest
-/// `H("slip.value.v1", uv 0, uv 3, type)` of its type alone. A value's
-/// own stream begins with a `ValueKind` tag, never 0, so no constant
-/// written by content has this digest.
-fn location_digest(w: &mut Walk<'_>, obj: ConstValueId) -> Hashed {
+/// `H("slip.value.v1", uv 0, uv 3, type)` of its type (a value's own
+/// stream begins with a `ValueKind` tag, never 0, so no constant written
+/// by content has this digest), then the context of the use that built
+/// it (`Ref::none` outside a function) and the use's ordinal among
+/// that function's (among every other context's, outside one).
+fn write_location(w: &mut Walk<'_>, s: &mut Stream, obj: ConstValueId) {
     let ty = match w.ast.consts.get(obj) {
         ConstValue::Aggregate(img) => Some(img.ty),
         ConstValue::Scalar(_) => None,
     };
-    let mut s = Stream::new();
-    s.uv(0).uv(3);
+    let mut t = Stream::new();
+    t.uv(0).uv(3);
     match ty {
-        Some(t) => w.write_type(&mut s, t),
+        Some(ty) => w.write_type(&mut t, ty),
         None => {
-            s.indeterminate(Cause::Unaccounted("value/source-location"));
+            t.indeterminate(Cause::Unaccounted("value/source-location"));
         }
     }
-    w.hashed(s.finish(VALUE_TAG))
+    let h = w.hashed(t.finish(VALUE_TAG));
+    s.digest(&h.digest).absorb(h.cause);
+    let (ctx, n) = name_values(w).objects[&obj.index()];
+    w.write_ref_opt(s, ctx);
+    s.uv(n);
 }
 
 /// The memo of content digests for the walk's mode: one written with

@@ -1,6 +1,6 @@
-// WP-104 (digest §9), in an instantiated function template
+// WP-104 (digest §9), in an explicitly instantiated function template
 namespace acme {
 template <class T> const char *g(T) { return __PRETTY_FUNCTION__; }
 template const char *g<int>(int);
-const char *f() { return g(1L); }
+const char *f() { return g(1); }
 }

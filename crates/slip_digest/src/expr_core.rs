@@ -187,6 +187,38 @@ pub(crate) fn decl_ref(w: &Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &
         template_args
     });
     decl_ref_extra(w, DeclId::try_new(n.a), args, out);
+    out.push(Item::Exec(local_value, e));
+}
+
+/// After a `DeclRefExpr`, where name-derived values are read by value
+/// ([`Walk::by_value`]) and only there: `value?`, the evaluated value of
+/// the block-scope variable it names, by value; nothing for any other
+/// entity. Such a variable's own stream writes its value in the mode of
+/// the function (`decl_func::var_data`), which passes a name on; a
+/// `static_assert` condition, a key or a type that reads the variable
+/// reads its value (digest §9).
+fn local_value(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    if w.by_value == 0 {
+        return;
+    }
+    let ast = w.ast;
+    let Some(d) = DeclId::try_new(ast.exprs.get(e).a()) else { return };
+    let d = ast.strip_shadow(d);
+    if ast.decls.get(d).kind() != slip_kiln::kiln::ast::decl::DeclKind::Var
+        || !w.is_local(d)
+        || w.is_local_extern(d)
+    {
+        return;
+    }
+    match crate::decl_func::var_eval(w, d).state() {
+        slip_kiln::kiln::ast::decl::VarEvalState::Value(c) => {
+            s.opt(true);
+            crate::value::value(w, s, c);
+        }
+        _ => {
+            s.opt(false);
+        }
+    }
 }
 
 /// `record DeclRefExtra` (§7.3) of a name of `named`: `template_args`

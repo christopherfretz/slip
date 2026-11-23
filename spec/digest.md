@@ -679,21 +679,51 @@ object is unspecified by the language and is not digested.
 ## 9. Values that come from names and positions
 
 `__func__`, `__PRETTY_FUNCTION__` and the fields of `std::source_location`
-are written **symbolically** (which builtin, not its value), as are literals
-that come from the expansion of `__LINE__`, `__FILE__`, `__COUNTER__`,
-`__DATE__`, `__TIME__` and their relatives.
+are written **symbolically**: as the builtin and the entity they are of,
+not as their value. So, by the rules of the second list, are literals that
+come from the expansion of `__LINE__`, `__FILE__`, `__COUNTER__`,
+`__DATE__`, `__TIME__` and their relatives (not yet: Kiln does not say
+that a literal came from one, `digest-kinds.md` "Literals from builtin
+macros"; they are written by value).
 
-The expression's **own type** and the **constant it stands for** are
-symbolic with it where the value is passed on. The array type of
-`__func__` and its kin (`const char[N]`, `N` the length of a name) is
-written as that builtin's type, without the bound, where the array is
-converted to a pointer, which passes the value on and nothing of its
-length; anywhere else the array itself is read and its type is written by
-value. A constant that points to such a string is written as which
-builtin made it, and the object that an immediate invocation builds from
-such values and nothing else (`std::source_location::current()`, in a
-default argument as anywhere) as the builtins it was built from, not as
-its bytes (`digest-kinds.md` §4.2 rule 8, `PtrBase`).
+**What a name-derived string's digest holds.** Where such a string is only
+passed on, its content is not part of the unit's digest, whatever changes
+it: the declared rename, a requalification, a respelling of the enclosing
+function's signature. Where the program reads it at compile time, the
+content is written by value (below). `__PRETTY_FUNCTION__` and
+`std::source_location::function_name()` print more than names (the
+enclosing function's parameter and return types as written, an alias, an
+elaborated keyword, a qualifier as written, template parameters' names;
+Kiln's `kiln_ast/src/dump/pretty.rs` `pretty_function`): that is content,
+and equal in the unit digest by this rule. A second, informational digest
+of the bytes of every name-derived string a unit holds is compared by the
+verifier and reported (WP-112). `__func__`, `__FUNCTION__` and
+`__builtin_FUNCTION()` hold the unqualified name only; a conversion
+function's names its canonical type.
+
+**A symbolic value has the identity of the object it stands for**: two are
+written alike only if they are the same string, or the same
+`std::source_location::__impl` object, of the same entity. A string of a
+`PredefinedExpr` is written as its `PredefinedKind` and the function whose
+name it holds, as any reference to that entity is written (so a rule maps
+it); a function name of the source-location builtins as plain or pretty
+and its context; an `__impl` object as the function of the use that built
+it and that use's ordinal among the function's. A string is written so
+only where its bytes are what Kiln prints for that entity of that kind;
+anywhere else, and for a file name (which no declared rename changes), its
+bytes are written. A pointer into such a string keeps its offset by value.
+The local scope names of the entity (WP-040's `write_scope_names`) are part
+of a name string's identity, in both modes. So when a computation at
+compile time consumes a name or a line and returns one of two strings or
+objects, which one it returned is in the digest (`digest-kinds.md`
+`PtrBase`).
+
+The expression's **own type** is symbolic with it where the value is
+passed on. The array type of `__func__` and its kin (`const char[N]`, `N`
+the length of a name) is written as that builtin's type, without the
+bound, where the array is converted to a pointer, which passes the value
+on and nothing of its length; anywhere else the array itself is read and
+its type is written by value (`digest-kinds.md` §4.2 rule 8).
 
 Whatever **consumes** such a value is written by value as always, so a
 real change is seen: an array bound from `__LINE__`, `sizeof(__func__)`
@@ -707,9 +737,12 @@ enumerator, a variable's value, a `constexpr` function's result used as
 any of these. Where a constant is computed but not stored, what it reads
 is written by value: in a `static_assert` condition and in the operand of
 a constant expression whose value is not stored. So it is in a key and in
-a type, which name one entity of the parse whoever asks, and in the value
-of a block-scope variable, which has no `value` unit and which the
-function's uses read without writing (`digest-kinds.md` §11.3).
+a type, which name one entity of the parse whoever asks. A block-scope
+variable has no `value` unit and the function's uses read its value
+without writing it (`digest-kinds.md` §11.3): its value is written with
+its declaration in the function's mode (a pointer to a name passes it on),
+and a use read by value (in a `static_assert` condition, a key, a type)
+writes the variable's value by value.
 
 Why the type goes with the value: a declared relocation says that names
 change, and a value that is a function of a name changes by exactly that,
@@ -717,18 +750,7 @@ as a mangled name does. `assert` expands to `__PRETTY_FUNCTION__`; were
 its length a fact, no function that asserts could be relocated and
 verify. A program that observes such a string (a log that is parsed, a
 registry keyed by it) is told by the report, not by the verdict
-(`verify.md` "Open questions").
-
-`__PRETTY_FUNCTION__` and `std::source_location::function_name()` hold
-more than names: the enclosing function's parameter and return types as
-written, sugar included (Kiln's `kiln_ast/src/dump/pretty.rs`
-`pretty_function`). A respelling through an alias, which the digest calls
-spelling, changes them by more than a declared rename. Their symbolic
-form must hold those spellings, with the entities by key; until a unit
-writes its own spellings (`docs/wp/WP-041.md`) such a respelling is
-equal, a known wrong equal (`spec/landed/digest/WP-104.md`). `__func__`,
-`__FUNCTION__` and `__builtin_FUNCTION()` hold the unqualified name only;
-a conversion function's names its canonical type.
+(`verify.md` "Open questions", WP-112).
 
 ## 10. Indeterminate units
 
