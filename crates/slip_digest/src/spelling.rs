@@ -47,7 +47,7 @@ use slip_model::Digest;
 use slip_model::keys::{KeyKind, RuleTable};
 
 use crate::query::Keys;
-use crate::{Cause, Detail, Input, Options};
+use crate::{Cause, Detail, Input, Options, ReadOnly};
 
 /// One obligation of `spec/verify.md` §10.1 as the check takes it: the
 /// file by its subject path (digest §11), the bytes `[lo, hi)` of its
@@ -108,6 +108,15 @@ pub enum Spelling {
 /// (`Keys::with_rules`): an obligation some reference answers fails with
 /// `found` absent, one none answers is `NotSeen`. Never `Holds`.
 ///
+/// `read_only` is the run's ownership, the walk's own
+/// ([`Options::read_only`](crate::Options::read_only)): the read-only
+/// files the verify job decides from `Declared.files` for the walk of the
+/// same parse (`spec/verify.md` §2.1, §10.2 rule 4). Every key the check
+/// computes, the collision marking's included, is computed under it, so
+/// a name that denotes a dependency entity is compared under the
+/// dependency's own key, never a mapped one. [`crate::ReadOnly::NO_FILE`]
+/// is "every file owned"; [`crate::ReadOnly::EVERY_FILE`] maps nothing.
+///
 /// Runs on a thread of [`crate::STACK_SIZE`], as [`crate::digest`] does:
 /// it computes keys, and runs the walk once over the unit (to know which
 /// keys collide) when some obligation would hold.
@@ -115,6 +124,7 @@ pub fn check_spellings(
     unit: &Unit<'_>,
     input: &Input<'_>,
     rules: &RuleTable,
+    read_only: ReadOnly<'_>,
     obligations: &[Obligation],
 ) -> Vec<Spelling> {
     let not_seen = || vec![Spelling::NotSeen; obligations.len()];
@@ -132,8 +142,9 @@ pub fn check_spellings(
     let mut check = Check {
         unit,
         input,
-        keys: Keys::with_rules(input, rules),
+        keys: Keys::with_rules(input, rules, read_only),
         rules,
+        read_only,
         origins: HashMap::new(),
         walk: None,
     };
@@ -252,6 +263,7 @@ struct Check<'a, 'u> {
     input: &'a Input<'a>,
     keys: Keys<'a>,
     rules: &'a RuleTable,
+    read_only: ReadOnly<'a>,
     /// The key of each origin asked for, memoised: `None` when it has
     /// none or its key is not one entity's.
     origins: HashMap<DeclId, Option<Digest>>,
@@ -305,8 +317,8 @@ impl Check<'_, '_> {
 
     /// The walk's collisions and names, made on first use.
     fn walk(&mut self) -> &Collisions {
-        let (input, rules) = (self.input, self.rules);
-        self.walk.get_or_insert_with(|| collisions(input, rules))
+        let (input, rules, read_only) = (self.input, self.rules, self.read_only);
+        self.walk.get_or_insert_with(|| collisions(input, rules, read_only))
     }
 
     /// The name of the entity found (`spec/verify.md` §6.1): the walk's
@@ -335,8 +347,9 @@ impl Check<'_, '_> {
 /// A name is cut to this many bytes (`spec/verify.md` §6.1).
 const NAME_LIMIT: usize = 4096;
 
-/// The walk of `input` under `rules`, for which keys collide and the
-/// units' names.
+/// The walk of `input` under `rules` and the run's ownership `read_only`
+/// (the same the keys are computed under), for which keys collide and
+/// the units' names.
 ///
 /// A unit in a collision is the walk's own `collided` (WP-045), set
 /// whatever cause the unit keeps first (`units::merge`), by
@@ -352,8 +365,8 @@ const NAME_LIMIT: usize = 4096;
 /// cause; so on a copy of the units the order unit's cause is put aside
 /// and the mapped collisions are marked again (the units' other marks on
 /// the copy are not read).
-fn collisions(input: &Input<'_>, rules: &RuleTable) -> Collisions {
-    let options = Options { rules, detail: Detail::None, names: true, rule_use: false };
+fn collisions(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Collisions {
+    let options = Options { rules, read_only, detail: Detail::None, names: true, rule_use: false };
     crate::walk::run_with(input, &options, |w, written, output| {
         let mut keys = HashSet::new();
         let mut with_unit = HashSet::new();
@@ -435,11 +448,16 @@ mod tests {
             let rename = keys.rename_rule(f, b"g").expect("a rule");
             let renamed = RuleTable::new(vec![rename]).expect("a table");
             for rules in [&none, &renamed] {
-                let mut keys = Keys::with_rules(&input, rules);
+                let mut keys = Keys::with_rules(&input, rules, ReadOnly::NO_FILE);
                 let origins: HashSet<Digest> =
                     p.ast.decls.ids().filter_map(|d| keys.key_id(d).ok()).collect();
-                let options =
-                    Options { rules, detail: Detail::None, names: false, rule_use: false };
+                let options = Options {
+                    rules,
+                    read_only: ReadOnly::NO_FILE,
+                    detail: Detail::None,
+                    names: false,
+                    rule_use: false,
+                };
                 let parts = crate::walk::run_with(&input, &options, |_, written, _| {
                     written.iter().filter(|u| u.owner.is_some()).map(|u| u.key).collect::<Vec<_>>()
                 });

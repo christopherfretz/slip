@@ -10,16 +10,17 @@
 //! that undo the rename (`Keys::rename_rule`), as the native rename's run
 //! has (`spec/edits.md` §9.3).
 
-use slip_digest::Input;
 use slip_digest::query::Keys;
 use slip_digest::spelling::{
     Obligation, Spelling, UNRESOLVED_DEPENDENT, UNRESOLVED_FAILED, check_spellings,
 };
+use slip_digest::{Input, ReadOnly, ReadOnlyFiles};
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::source::FileId;
 use slip_model::Digest;
 use slip_model::keys::{Rule, RuleTable};
+use slip_model::transform::Ownership;
 
 /// The key an obligation carries.
 #[derive(Clone, Copy)]
@@ -47,10 +48,14 @@ struct Case<'a> {
     /// Parse with Kiln's written-reference tables (`ParseOptions::written`).
     tables: bool,
     std: &'a str,
+    /// The post-image's read-only files (`spec/verify.md` §2.1): the
+    /// run's ownership, as the verify job gives it to the walk and the
+    /// check. Empty: every file owned.
+    read_only: &'a [&'a str],
 }
 
 const fn case<'a>(post: &'a [(&'a str, &'a str)], wants: &'a [Want<'a>]) -> Case<'a> {
-    Case { post, pre: None, renames: &[], wants, tables: true, std: "c++20" }
+    Case { post, pre: None, renames: &[], wants, tables: true, std: "c++20", read_only: &[] }
 }
 
 /// A file without its marks, and the marks as `(lo, hi)`.
@@ -185,10 +190,36 @@ fn run_with(c: &Case<'_>, extra: &[Obligation]) -> (Vec<Obligation>, Vec<Spellin
     obligations.extend(extra.iter().cloned());
     let table = RuleTable::new(rules).expect("the rules make a table");
     let got = with_unit(&post, c.std, c.tables, |unit, input| {
-        check_spellings(unit, input, &table, &obligations)
+        let files = read_only_files(input, c.read_only);
+        let got = check_spellings(unit, input, &table, ReadOnly::files(&files), &obligations);
+        // WP-110: with an empty read-only list every answer is what it
+        // was before ownership, with every file owned.
+        if c.read_only.is_empty() {
+            let all = check_spellings(unit, input, &table, ReadOnly::NO_FILE, &obligations);
+            assert_eq!(got, all, "an empty read-only list is every file owned");
+        }
+        got
     });
     assert_eq!(got.len(), obligations.len(), "parallel to the obligations");
     (obligations, got)
+}
+
+/// The subject root of a case's files, for the run's ownership.
+const ROOT: &str = "/case";
+
+/// The read-only files of `input` as the verify job decides them
+/// (`ReadOnlyFiles::new` over an `Ownership` in subject paths): the
+/// case's files under [`ROOT`] owned, those of `listed` read-only.
+fn read_only_files(input: &Input<'_>, listed: &[&str]) -> ReadOnlyFiles {
+    let mut readonly: Vec<Vec<u8>> =
+        listed.iter().map(|n| format!("{ROOT}/{n}").into_bytes()).collect();
+    readonly.sort();
+    let o = Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly };
+    let subject = |f| {
+        let p = (input.subject_path)(f);
+        if p.is_empty() { p } else { [format!("{ROOT}/").as_bytes(), &p].concat() }
+    };
+    ReadOnlyFiles::new(Some(&o), input.sm, &subject)
 }
 
 fn run(c: &Case<'_>) -> Vec<Spelling> {
@@ -873,11 +904,12 @@ fn attack_a_refused_table() {
             Obligation { file: b"main.cpp".to_vec(), lo: call, hi: call + 1, key: k },
             Obligation { file: b"main.cpp".to_vec(), lo: call, hi: call + 2, key: k },
         ];
-        let got = check_spellings(unit, input, &table, &obs);
+        let got = check_spellings(unit, input, &table, ReadOnly::NO_FILE, &obs);
         assert_eq!(got[0], Spelling::Fails { found: None, found_name: "f(int)".into() });
         assert_eq!(got[1], NotSeen);
         // The same obligation holds under no rule.
-        assert_eq!(check_spellings(unit, input, &RuleTable::empty(), &obs[..1]), [Holds]);
+        let none = RuleTable::empty();
+        assert_eq!(check_spellings(unit, input, &none, ReadOnly::NO_FILE, &obs[..1]), [Holds]);
     });
 }
 
@@ -892,7 +924,7 @@ fn s10_6_unit_and_input_of_two_parses() {
     with_unit(&[("main.cpp", src)], "c++20", true, |unit, _| {
         with_unit(&[("main.cpp", src)], "c++20", true, |_, other| {
             let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                check_spellings(unit, other, &RuleTable::empty(), &ob)
+                check_spellings(unit, other, &RuleTable::empty(), ReadOnly::NO_FILE, &ob)
             }));
             // A debug build asserts; a release build answers `NotSeen`.
             let debug = cfg!(debug_assertions);
@@ -1266,7 +1298,7 @@ fn f3_a_recoded_file_on_disk_is_not_seen() {
         let ob = |lo, hi, key| Obligation { file: b"main.cpp".to_vec(), lo, hi, key };
         let obligations =
             [ob(call + 2, call + 3, gk), ob(call + 2, call + 3, fk), ob(call, call + 1, gk)];
-        check_spellings(unit, &input, &RuleTable::empty(), &obligations)
+        check_spellings(unit, &input, &RuleTable::empty(), ReadOnly::NO_FILE, &obligations)
     })
     .unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
@@ -1301,5 +1333,97 @@ fn s3_4_a_colliding_key_no_unit_has() {
     // Without the other `h` nothing collides, and `g` is the old `h`.
     let alone = [("main.cpp", "template <class T> int t() { extern int g(); return «g»(); }\n")];
     let c = Case { pre: Some(&pre), renames: &[("h()", "g")], ..case(&alone, &wants) };
+    assert_eq!(run(&c), [Holds]);
+}
+
+// ---------------------------------------------------------------------
+// Ownership (WP-110, `spec/verify.md` §2.1, §10.2 rule 4): keys are
+// computed under the run's read-only files.
+// ---------------------------------------------------------------------
+
+/// The dependency `dep.h` (read-only) keeps `legacy::f(long)` and opens
+/// `acme` with `g`; the owned `legacy` (`f(int)`, `g`) moved to `acme`
+/// (`relocate legacy => :: acme`, the rename that undoes it).
+const OWN_DEP: &str = "namespace legacy { int f(long); }\nnamespace acme { int g(); }\n";
+const OWN_PRE: &str = "#include \"dep.h\"\nnamespace legacy { int f(int); int g(); }\nint u() { return legacy::f(1) + legacy::g(); }\n";
+const OWN_POST: &str = "#include \"dep.h\"\nnamespace acme { int f(int); int g(); }\nint u() { return legacy::«f»(1) + acme::«f»(1) + acme::«g»(); }\n";
+
+fn own_case<'a>(
+    post: &'a [(&'a str, &'a str)],
+    wants: &'a [Want<'a>],
+    ro: &'a [&'a str],
+) -> Case<'a> {
+    const PRE: &[(&str, &str)] = &[("main.cpp", OWN_PRE), ("dep.h", OWN_DEP)];
+    Case { pre: Some(PRE), renames: &[("legacy", "acme")], read_only: ro, ..case(post, wants) }
+}
+
+// A use in an owned file that resolves, after the edit, to the
+// dependency's `legacy::f(long)`, with the key the owned `legacy::f(int)`
+// has mapped: fails, and found is the dependency's own key, unmapped.
+// `acme::f`, the owned entity the piece named: holds.
+#[test]
+fn s2_1_a_use_resolving_to_a_dependency_entity() {
+    let post = [("main.cpp", OWN_POST), ("dep.h", OWN_DEP)];
+    let dep_f = key_of(&post, "legacy::f(long)");
+    let wants = [Named("legacy::f(int)"), Named("legacy::f(int)"), Named("legacy::g()")];
+    let got = run(&own_case(&post, &wants, &["dep.h"]));
+    assert_eq!(fails(&got[0]), Some((Some(dep_f), "legacy::f(long)".to_owned())), "{got:?}");
+    assert_eq!(got[1], Holds);
+}
+
+// `acme::g` is declared in the owned file and in the read-only one: a
+// dependency entity (§2.1), which no rule maps. Its obligation under its
+// own (unmapped) key holds; under the mapped key of the owned
+// `legacy::g` it fails, found the unmapped key. With every file owned
+// (what a check not given the run's ownership would do) the mapped key
+// would hold: the wrong answer.
+#[test]
+fn s2_1_an_entity_declared_in_an_owned_and_a_read_only_file() {
+    let post = [("main.cpp", OWN_POST), ("dep.h", OWN_DEP)];
+    let dep_g = key_of(&post, "acme::g()");
+    let f = Named("legacy::f(int)");
+    let wants = [f, f, Want::Key(dep_g)];
+    let got = run(&own_case(&post, &wants, &["dep.h"]));
+    assert_eq!(got[2], Holds, "{got:?}");
+    let wants = [f, f, Named("legacy::g()")];
+    let got = run(&own_case(&post, &wants, &["dep.h"]));
+    assert_eq!(fails(&got[2]), Some((Some(dep_g), "acme::g()".to_owned())), "{got:?}");
+    // Every file owned: `acme::g` is mapped, and the mapped key holds.
+    let got = run(&own_case(&post, &wants, &[]));
+    assert_eq!(got[2], Holds, "{got:?}");
+}
+
+// The collision marking runs under the same ownership as the keys: here
+// a key no unit has collides (two block-scope `extern` functions, `g`
+// renamed from `h`, beside another `h`), so a key is colliding unless
+// some unit has it, and the dependency entity `acme::r` (declared in the
+// owned file and in the read-only one) has a unit under its own,
+// unmapped key. Marked with every file owned, its unit would have the
+// mapped key, and its own key would read as a collision.
+#[test]
+fn s2_1_collisions_are_marked_under_the_same_ownership() {
+    let dep = "namespace acme { int r(); }\n";
+    let pre = [
+        (
+            "main.cpp",
+            "#include \"dep.h\"\ntemplate <class T> int t() { extern int h(); return h(); }\nnamespace legacy { int r(); }\n",
+        ),
+        ("dep.h", dep),
+    ];
+    let post = [
+        (
+            "main.cpp",
+            "#include \"dep.h\"\ntemplate <class T> int t() { extern int g(); return g(); }\ntemplate <class T> int s() { extern int h(); return h(); }\nnamespace acme { int r(); }\nint v() { return acme::«r»(); }\n",
+        ),
+        ("dep.h", dep),
+    ];
+    let dep_r = key_of(&post, "acme::r()");
+    let wants = [Want::Key(dep_r)];
+    let c = Case {
+        pre: Some(&pre),
+        renames: &[("h()", "g"), ("legacy", "acme")],
+        read_only: &["dep.h"],
+        ..case(&post, &wants)
+    };
     assert_eq!(run(&c), [Holds]);
 }

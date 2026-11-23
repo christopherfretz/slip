@@ -2056,8 +2056,14 @@ file is in the parse's `inputs`:
    referent itself, or, for a specialisation of a template or a member
    of an instantiated class, the template or the member of the template
    it was made from. Take the origin's `KeyId` under the run's rules
-   (`Declared.rules`; mapped keys, `digest.md` §3.4), which is its key in
-   the pre-image's key space.
+   (`Declared.rules`; mapped keys, `digest.md` §3.4) **and the run's
+   ownership**: the read-only files the verify job decides from the
+   declared container's `files` (§2, §2.1 "Rules rename owned entities
+   only"), the same `ReadOnly` the walk of the same parse is given. That
+   is its key in the pre-image's key space. A name that denotes a
+   dependency entity is compared under the dependency's own key, never a
+   mapped one; whether a key collides (rule 5) is marked under the same
+   ownership.
 5. The obligation, in this observer:
    - **holds** if at least one reference answers, no unresolved name
      answers, and every answering reference's origin has the
@@ -2166,11 +2172,13 @@ pub enum Spelling { Holds, NotSeen, Fails { found: Option<Digest>, found_name: S
 /// the result is parallel to it. `input` is the digest's view of `unit`.
 pub fn check_spellings(unit: &slip_kiln::Unit<'_>, input: &Input<'_>,
                        rules: &slip_model::keys::RuleTable,
+                       read_only: ReadOnly<'_>,           // the walk's `Options::read_only`
                        obligations: &[Obligation]) -> Vec<Spelling>;
 ```
 
-It gets keys from `Keys::with_rules` (§9.5), so the key it compares is
-the key the walk of the same parse gave the entity. It takes the unit
+It gets keys from `Keys::with_rules` (§9.5) under the same rules and
+read-only files as the walk of the same parse, so the key it compares is
+the key that walk gave the entity. It takes the unit
 because the written references and the origin are
 `slip_kiln::written`'s, which read a `Unit`
 (`spec/landed/verify/WP-096.md`). The verify job
