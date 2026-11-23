@@ -283,8 +283,10 @@ says so in its note.
   unit of the namespace it belongs to. A function's `ref` is followed by a
   count and, for each parameter, what that declaration's parameter holds
   that the entity's unit leaves out: its default argument (`child?`), then
-  its attributes (`attrs`, §10.1) and its annotations (§10.5), its own
-  alone (`spec/landed/digest-kinds/WP-026.md`, `WP-100.md`);
+  its attributes, as one `attrs` list (§10.1: the count and the nodes of
+  its own `decl_attrs`, `inherited` copies left out; no `opt`, no
+  parts), and its annotations (§10.5), its own alone
+  (`spec/landed/digest-kinds/WP-026.md`, `WP-100.md`);
 - a local `static_assert` is written as its rows.
 
 ## 3. Keys
@@ -1825,12 +1827,14 @@ A function's stream also holds its language linkage (`ScopeData`,
 | `flags-static-array` | flag | in | bit |  |
 | `flags-scope-depth` | value | in | uv | high byte: the function-prototype scope depth, the `level` of `Ref::param` |
 
-A parameter has no redeclarations of its own. Where a rule reads "every
-declaration of the chain" of a parameter (its attributes, §10.1, and its
-annotations, §10.5), the chain is parameter *i* of every declaration of
-the function's chain except those at block scope, in chain order, the
-first declaration first; `default_arg` reads the same declarations,
-leaving out also the instantiated ones (§11.4).
+A parameter has no redeclarations of its own. Its attributes (§10.1) and
+its annotations (§10.5) are read from parameter *i* of each declaration
+of the function's chain as §10.1 defines it (Kiln's `redecls_of`, first
+declaration first, without the declarations in a templated body and,
+unless all are, those instantiated outside their class), leaving out the
+declarations at block scope; §10.1 keeps the defining declaration's
+parameter apart. `default_arg` reads the same declarations, leaving out
+also the instantiated ones (§11.4).
 
 ### `kiln_ast::decl::VarData`
 
@@ -4402,28 +4406,82 @@ The encoding `attrs` writes an attribute list: a count, then each node as
 
 - For a statement (`AttributedStmt`) the nodes are those of its list, in
   stored order.
-- For a declaration they are the nodes of `AttrArena` `decl_attrs` for
-  every declaration of the entity's chain, in chain order and within a
-  declaration in stored order, leaving out each node whose `inherited`
-  flag is set: it is a copy from an earlier declaration and says nothing
-  new. Kiln makes such a copy for an `ASM_LABEL` only; for every other
-  kind a later declaration has no node and Kiln reads the chain, as this
-  rule does. The order is kept because Kiln mangles the `enable_if`
-  conditions of a function in it.
-- For a parameter of a function, the chain is parameter *i* (its
-  `ParamData` `index`) of every declaration of the function's chain
-  except those at block scope, in chain order, the first declaration
-  first: the declarations whose defaults `ParamData` `default_arg` reads
-  (§5.4), instantiated declarations included. Within one parameter the
-  nodes are in stored order, and `inherited` copies are left out as for
-  any declaration. A declaration with no parameter *i* contributes
-  nothing. The attributes on a parameter of a block-scope declaration
+- For a declaration, the lists are read over the entity's **chain**: the
+  declarations of Kiln's `redecls_of` of the entity (for a template, the
+  templates its pattern's declarations describe), first declaration
+  first, leaving out a declaration in a templated body and, unless every
+  declaration is one, a declaration instantiated outside its class
+  (`spec/digest.md` §2.2; `Walk::redecls`). A declaration's **own list**
+  is the count and the nodes of its `AttrArena` `decl_attrs` in stored
+  order, leaving out each node whose `inherited` flag is set: it is a
+  copy from an earlier declaration and says nothing new (Kiln makes such
+  a copy for an `ASM_LABEL` only). The entity's **defining declaration**
+  is its definition (for a template, the template its pattern's
+  definition describes) when the chain holds it and the entity is not of
+  the definition class (§11.9); otherwise there is none.
+- For a declaration other than a parameter, `attrs` is three parts:
+  the own lists of the declarations before the defining one (all of them
+  when there is none), empty lists left out, preceded by their count;
+  `opt`, present when there is a defining declaration, with its own
+  list; the own lists of the declarations after it, as those before.
+  Which declaration holds a node is kept because Kiln's code generation
+  reads it:
+  - `annotate` with its multiplicity: `ann_attrs` (kiln_codegen
+    `annotate.rs:124`) walks the chain from the first declaration to the
+    emitted one (the definition), each declaration inheriting the
+    strings it does not have itself, so `annotate("a")` on each of two
+    declarations is one global annotation and twice on one declaration
+    two (Kiln keeps no `annotate` node on a declaration after the
+    definition, as clang 19, which warns "attribute declaration must
+    precede definition");
+  - `fn_attr` (kiln_codegen `new_delete.rs:169`) reads the first node of
+    a kind on the latest declaration that has one, so of two
+    `patchable_function_entry` nodes it reads the second when they are on
+    two declarations and the first when they are on one;
+  - `target_version` is read on the declarations up to the emitted one
+    (`target_version_so_far`, kiln_codegen `module.rs:2122`).
+
+  Other readers read the chain as a set or as one list
+  (`has_fn_attr`, `module.rs:2132`; `fn_attrs_of`, `class_b.rs:321`,
+  which sorts by location), and the `enable_if` lists of all
+  declarations are the same (differing lists declare overloads,
+  kiln_sema `enable_if.rs:75`); for them the parts say more than Kiln
+  reads, which makes a move between declarations a reported difference.
+  Within a list the order is kept: Kiln mangles the `enable_if`
+  conditions of a function in it (kiln_abi `mangle.rs:1904`).
+- For a parameter of a function, the lists are those of parameter *i*
+  (its `ParamData` `index`) of the declarations of the function's chain
+  except those at block scope (`decl_func::param_decls`), instantiated
+  declarations included: the declarations whose defaults `ParamData`
+  `default_arg` reads (§5.4). A declaration of a function has as many
+  parameters as every other, so each has a parameter *i*. `attrs` is two
+  parts: `opt`, present when the function has a defining declaration,
+  with the own list of its parameter *i*; then the own lists of the
+  other declarations' parameters *i*, in chain order, empty lists left
+  out, preceded by their count. The definition's is apart because Kiln's
+  function prolog reads `nonnull`, `align_value` and the parameter's
+  `annotate` on the definition's own parameter only (kiln_codegen
+  `class_b.rs:715`, `:718`, `annotate.rs:327`), while `noescape` and the
+  `nonnull` of the sanitiser read every declaration's
+  (`redecl_params`, `class_b.rs:591`; `ubsan.rs:2150`): a node moved
+  between two declarations that are not the definition says nothing
+  Kiln reads, and a node moved to or from the definition is a
+  difference. The attributes on a parameter of a block-scope declaration
   are that declaration's own: they are written with it in its block
-  (§2.4), not in the entity's unit. A parameter that is not at the
-  position its `index` names in its function's list makes the unit
-  `Unaccounted("ParamData/index")`, and a parameter of a declaration
-  (not at block scope) that is not in the function's chain
-  `Unaccounted("ParamData/chain")`.
+  (§2.4), not in the entity's unit ("Hazards accepted for now"). A
+  parameter that is not at the position its `index` names in its
+  function's list makes the unit `Unaccounted("ParamData/index")`, and a
+  parameter of a declaration (not at block scope) that is not in the
+  function's chain `Unaccounted("ParamData/chain")`.
+
+A function with no defining declaration writes every list among the
+others: a program in which it has a definition differs from one in which
+it has none in `DeclMisc` `0-definition` already. A function
+of the definition class is written as one with none, so its unit does
+not depend on a use; its definition's attributes are the pattern's,
+which the template's unit holds, or an implicit member's, which no one
+writes. A definition instantiated outside its class (a friend's) is the
+class specialisation's (`spec/digest.md` §2.2), not the entity's.
 
 An instantiated declaration carries the attributes Kiln instantiated from
 its pattern; they are written as found.
@@ -5051,8 +5109,12 @@ statement, and its initialiser is the corresponding entry of `inits`.
 ### 10.5 Annotations
 
 A declaration's stream holds the annotations of every declaration of its
-chain, in chain order (`of_decl`); a parameter's chain is the one §10.1
-gives it. A class's stream then holds one list
+chain (§10.1), in chain order, as one list (`of_decl`); a parameter's are
+those of its parameters *i* (§10.1), as one list, the definition's not
+apart. Reflection reads them so: `annotations_of` reads every
+declaration's, first first, for an entity and for parameter *i* alike
+(kiln_sema `meta/annot.rs:147`), and nothing else reads them. A class's
+stream then holds one list
 for each base specifier of its definition, in order (`of_base`).
 
 ### `kiln_ast::annot::Annotation`
@@ -5920,6 +5982,31 @@ of a reported difference.
   value that comes from a name is.
 - **Attribute order** (§10.1) is kept: reordering the attributes of one
   declaration is a reported difference.
+- **Parameter attributes of block-scope declarations** (§10.1, §2.4).
+  The entity's unit leaves out the declarations at block scope and the
+  block writes its own parameters' attributes, but Kiln's code generation
+  reads every redeclaration's, block scope included, for `noescape` and
+  the sanitiser's `nonnull` (kiln_codegen `class_b.rs:591`
+  `redecl_params`, `ubsan.rs:2150`), and reflection reads their
+  annotations (kiln_sema `meta/annot.rs:147`). A block-scope
+  redeclaration that adds `noescape` changes the calls after it and is
+  seen in the block's function only, not in the callers' units. Clang 19
+  rejects `noescape` that differs across declarations; Kiln accepts it.
+  Kiln is told (WP-100, "For Kiln").
+- **Parameters of nested declarators** (§10.1). An attribute on the
+  parameter of a function type that is itself a parameter's type
+  (`void f(void (*cb)(int *q __attribute__((noescape))))`) is kept
+  nowhere by Kiln: clang 19 mangles it into the type
+  (`_Z1fPFvU8noescapePiE`), Kiln's type has no node for it, and the
+  digest cannot see it. `differ/_/param-attr-nested-declarator` waits on
+  Kiln.
+- **A definition the chain leaves out** (§10.1). A function whose
+  definition is instantiated outside its class (a friend's), or of the
+  definition class, is written as having no defining declaration, so
+  the written declarations' lists are all "before". Kiln's `ann_attrs`
+  reads up to the emitted definition wherever the instantiation put it
+  in the chain; an `annotate` on a written declaration after that point
+  is then not emitted and the digest does not tell.
 - **Unchecked attribute nodes** (§10.1): a node without `CHECKED` makes
   its unit indeterminate. Kiln checks every attribute of a declaration's
   list and of an `AttributedStmt` by the end of the translation unit, so

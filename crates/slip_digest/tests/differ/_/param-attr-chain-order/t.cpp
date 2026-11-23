@@ -1,5 +1,5 @@
 #include "side.h"
-// §10.1 (WP-100): a parameter's attributes in chain order, then stored order: the second node moved to the next declaration keeps its place.
+// §10.1 (WP-100): a parameter's node moved from the first declaration to the definition is a difference, even where the nodes keep their order over the chain.
 #ifdef B
 void f(int *p __attribute__((nonnull)) [[clang::annotate("x")]]);
 void f(int *p) {}
