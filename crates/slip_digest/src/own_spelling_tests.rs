@@ -214,14 +214,19 @@ fn a_list_changes_only_the_units_that_write_one() {
         lists += written;
         changed += n;
         // A pair `# pending` on Kiln is one whose expectation waits for
-        // it (its `needs:` line): a spelling cause there is the cost the
-        // landed file records, not a stray.
-        let pending = std::fs::read_to_string(dir.join("expect.txt"))
-            .is_ok_and(|e| e.lines().any(|l| l.trim() == "# pending"));
-        for (name, u) in with.iter().filter(|_| !pending) {
+        // it: the spelling cause its `needs:` line names is the cost the
+        // landed file records, not a stray. Any other one is.
+        let expect = std::fs::read_to_string(dir.join("expect.txt")).unwrap_or_default();
+        let pending = expect.lines().any(|l| l.trim() == "# pending");
+        let named = |w: &str| {
+            pending
+                && expect.lines().any(|l| l.trim_start().starts_with("# needs:") && l.contains(w))
+        };
+        for (name, u) in &with {
             for c in &u.causes {
                 if let Cause::Unaccounted(w) = c
                     && w.starts_with("spelling/")
+                    && !named(w)
                 {
                     sites.entry((*w).to_owned()).or_default().push(format!(
                         "{} {name}",
