@@ -2,6 +2,7 @@
 //! §4.3, §4.5, §4.6): `Quals`, `TypeView`, function types, `Nns`,
 //! `TemplateName` and `ArgView`.
 
+use slip_kiln::kiln::ast::ids::DeclId;
 use slip_kiln::kiln::ast::types::{
     ArgView, ExcSpec, ExprOperand, FuncProto, Nns, NoexceptValue, ParamAbi, Quals, TemplateName,
     TypeFlags, TypeOfOperand, TypeView,
@@ -82,6 +83,9 @@ impl Walk<'_> {
         if crate::local::numbering_mode(self) {
             return TypeRef { digest: Digest([0; 32]), cause: None, spelling: false };
         }
+        if let Some(t) = self.aligned_sugar_digest(q, no_exc) {
+            return t;
+        }
         let c = self.ast.types.canonical(q);
         let raw = c.to_raw();
         let memo = if no_exc { &self.type_memo_no_exc } else { &self.type_memo };
@@ -145,6 +149,62 @@ impl Walk<'_> {
             self.abort_memo.clear();
         }
         t
+    }
+
+    /// The type digest of `q` when layout reads, through `q`'s sugar, a
+    /// typedef that carries an alignment (digest-kinds §4.2 rule 9): the
+    /// stream is the tag of `Typedef`, the typedefs met (`ref*`, in the
+    /// order of the walk), then the digest of the canonical type. `None`
+    /// when no such typedef is met: the canonical type is the digest.
+    fn aligned_sugar_digest(&mut self, q: QualType, no_exc: bool) -> Option<TypeRef> {
+        if self.ast.types.is_canonical(q.ty()) {
+            return None;
+        }
+        let raw = q.to_raw();
+        let found = if let Some(f) = self.aligned_sugar.get(&raw) {
+            f.clone()
+        } else {
+            let f = aligned_typedefs(self.ast, q);
+            self.aligned_sugar.insert(raw, f.clone());
+            f
+        };
+        if found.as_deref().is_some_and(<[DeclId]>::is_empty) {
+            return None;
+        }
+        let inner = self.type_digest(self.ast.types.canonical(q), no_exc);
+        if !self.enter() {
+            return Some(TypeRef {
+                digest: Digest([0; 32]),
+                cause: Some(TOO_DEEP),
+                spelling: false,
+            });
+        }
+        let mut s = Stream::new();
+        let expr = self.take_expr_state();
+        self.local.in_type += 1;
+        self.type_nesting += 1;
+        self.by_value += 1;
+        s.tag(type_view::TYPEDEF);
+        if let Some(ds) = &found {
+            s.count(ds.len());
+            for &d in ds.as_ref() {
+                self.write_ref(&mut s, d);
+            }
+        } else {
+            s.count(0).indeterminate(ALIGNED_SUGAR_BOUND);
+        }
+        s.digest(&inner.digest).absorb(inner.cause);
+        self.by_value -= 1;
+        self.type_nesting -= 1;
+        self.local.in_type -= 1;
+        self.unit.expr = expr;
+        self.leave();
+        let h = s.finish(TYPE_TAG);
+        let h = self.hashed(h);
+        if self.type_nesting == 0 {
+            self.abort_memo.clear();
+        }
+        Some(TypeRef { digest: h.digest, cause: h.cause, spelling: inner.spelling })
     }
 
     /// The type digest of a name-derived array (`spec/digest.md` §9,
@@ -734,4 +794,85 @@ impl Walk<'_> {
             }
         }
     }
+}
+
+/// The cause of a type whose sugar is deeper than [`SUGAR_LIMIT`]: what
+/// layout reads in it is not known.
+const ALIGNED_SUGAR_BOUND: Cause = Cause::Unsupported("TypeView/Typedef-aligned-bound");
+
+/// The bound of [`aligned_typedefs`]'s walk: more sugar than any source
+/// writes.
+const SUGAR_LIMIT: usize = 1 << 12;
+
+/// The typedefs carrying an alignment that Kiln's layout meets in `q`
+/// (digest-kinds §4.2 rule 9), in the order of its walk; `None` past
+/// [`SUGAR_LIMIT`] steps. The walk is `Layouter::type_info`'s
+/// (`kiln_abi/src/layout/mod.rs:365`): a typedef's underlying type; the
+/// base of a cv-qualified array and of an `ExtQual`; the element of an
+/// array of any kind and of a complex type; the value type of an atomic
+/// type; the referee of a reference (`alignof`); otherwise one step of
+/// `Ast::layout_desugar_once`, which makes a
+/// class or function template's substituted argument canonical. It ends
+/// at a canonical type, whose parts are canonical. A typedef is counted
+/// when any of its declarations has an `ALIGNED` attribute or an
+/// `alignment` entry (`max_align_attr`, `kiln_abi/src/layout/props.rs:78`).
+/// Every such typedef is listed, though the outermost one whose alignment
+/// is not 0 decides: one more is a false difference, never a wrong equal.
+fn aligned_typedefs(ast: &slip_kiln::kiln::ast::Ast, q: QualType) -> Option<Box<[DeclId]>> {
+    let types = &ast.types;
+    let mut out = Vec::new();
+    let mut x = q;
+    for _ in 0..SUGAR_LIMIT {
+        if types.is_canonical(x.ty()) {
+            return Some(out.into_boxed_slice());
+        }
+        let view = types.view(x.ty());
+        // `if let` rather than a `match`: every other view is one step of
+        // `layout_desugar_once`, as in `type_info`'s last arm.
+        let next = if let TypeView::Typedef { decl, underlying } = view {
+            if carries_alignment(ast, decl) {
+                out.push(decl);
+            }
+            underlying
+        } else if let TypeView::QualifiedArray { quals: _, base } = view {
+            QualType::unqual(base)
+        } else if let TypeView::ExtQual { base, word: _ } = view {
+            base
+        } else if let TypeView::ConstantArray(a) = view {
+            a.elem
+        } else if let TypeView::IncompleteArray(elem) | TypeView::Complex(elem) = view {
+            elem
+        } else if let TypeView::VariableArray { elem, size: _ }
+        | TypeView::DependentSizedArray { elem, size: _ } = view
+        {
+            elem
+        } else if let TypeView::Atomic(value) = view {
+            value
+        } else if let TypeView::LValueRef(r) | TypeView::RValueRef(r) = view {
+            // `alignof(T&)` is `alignof(T)` ([expr.alignof]/3). Kiln reads
+            // the canonical referee there (`decl_align`, `type_info`): one
+            // more fact written, never a wrong equal (`spec/landed/digest/
+            // WP-107.md`, "For Kiln").
+            r
+        } else {
+            ast.layout_desugar_once(x)
+        };
+        if next == x {
+            return Some(out.into_boxed_slice());
+        }
+        x = next;
+    }
+    None
+}
+
+/// Whether typedef `d` carries an alignment: an `ALIGNED` attribute or
+/// an `alignment` entry on any of its declarations.
+fn carries_alignment(ast: &slip_kiln::kiln::ast::Ast, d: DeclId) -> bool {
+    use slip_kiln::kiln::ast::attr::AttrKind;
+    ast.redecls_of(d).any(|r| {
+        ast.lists
+            .iter::<slip_kiln::kiln::ast::AttrId>(ast.attrs.of_decl(r))
+            .any(|a| ast.attrs.get(a).kind == AttrKind::ALIGNED)
+            || ast.decls.cold.alignment.get(r).is_some()
+    })
 }

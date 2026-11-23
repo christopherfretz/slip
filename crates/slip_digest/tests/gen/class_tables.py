@@ -258,63 +258,133 @@ pair("differ", "layout-tail-padding-of-base", "struct P { int i; char c; P() {} 
      "a defaulted constructor makes the base POD for layout, whose tail padding a derived class"
      " does not reuse (kiln_abi `layout/props.rs:252`).", post="struct S : P { char d; };")
 
-# The typedef-carried alignment (item 1's wrong equal): indeterminate
-# where the class is written, pending where it is not.
+# The typedef-carried alignment (item 1's wrong equal), written by
+# digest-kinds §4.2 rule 9. `static_assert`s hold on both sides in Kiln and
+# in clang 19 (x86_64 and aarch64 Linux) unless a note says otherwise.
 TD = "typedef int I __attribute__((aligned(8)));"
-pair("indeterminate", "layout-typedef-alignment-field", "", "struct S { char c; I i; };",
-     ["indeterminate S"],
-     "a field whose type is a typedef carrying `aligned`: the layout reads the typedef"
-     " (kiln_abi `layout/mod.rs:443`), the type digest is canonical.", pre=TD)
-pair("indeterminate", "layout-typedef-alignment-alias-template", "",
-     "template <class T> using A = T;\nstruct S { char c; A<I> i; };", ["indeterminate S"],
-     "an alias template keeps its argument's typedef for layout (kiln_ast `layout_sugar.rs:47`).", pre=TD)
-pair("indeterminate", "layout-typedef-alignment-pattern", "",
-     "template <class T> struct X { char c; I i; T t; };\nX<char> x;",
-     ["indeterminate X", "indeterminate X<char>::<definition>"],
-     "a class template's field typed by the typedef: the pattern and the instantiation's"
-     " `definition` (whose fields are derived, so the walk reads Kiln's fields, not the member list).",
-     pre=TD)
-pair("indeterminate", "layout-typedef-alignment-alignas-class", "",
-     "struct alignas(I) S { char c; };", ["indeterminate S"],
-     "`alignas(type-id)` naming the typedef: the alignment is the typedef's"
-     " (kiln_abi `layout/props.rs:90`), the attribute's type digest canonical.", pre=TD)
-pair("indeterminate", "layout-typedef-alignment-alignas-field", "",
-     "struct S { char c; alignas(I) char d; };", ["indeterminate S"],
-     "`alignas(type-id)` on a field naming the typedef.", pre=TD)
+TDJ = "typedef int J __attribute__((aligned(16)));"
+TDK = "typedef int K __attribute__((aligned(8)));"
 TDL = "typedef long L __attribute__((aligned(4)));"
-pair("indeterminate", "layout-typedef-alignment-array", "", "struct S { char c; L a[2]; };",
-     ["indeterminate S"],
-     "an array of a typedef that lowers alignment (an over-aligned element is an error): Kiln's"
-     " layout reads the element's typedef.", pre=TDL)
-pair("indeterminate", "layout-typedef-alignment-const-array", "",
-     "typedef const L CL;\nstruct S { char c; CL a[2]; };", ["indeterminate S"],
-     "an array of a cv-qualified typedef of the typedef.", pre=TDL)
-pair("indeterminate", "layout-typedef-alignment-qualified-array-typedef", "",
-     "typedef L LA[2];\nstruct S { char c; const LA a; };", ["indeterminate S"],
-     "a cv-qualified array typedef (Kiln's `QualifiedArray` sugar, kiln_ast `types/canon.rs:100`)"
-     " whose element is the typedef.", pre=TDL)
-pair("indeterminate", "layout-typedef-alignment-flexible-array", "",
-     "struct S { char c; L a[]; };", ["indeterminate S"],
-     "a flexible array member of the typedef.", pre=TDL)
-pair("indeterminate", "layout-typedef-alignment-redeclared", "",
-     "typedef int I2;\nstruct S { char c; I2 i; };", ["indeterminate S"],
-     "the field names a later redeclaration of a typedef whose first declaration carries"
-     " `aligned` (Kiln reads every redeclaration, kiln_abi `layout/props.rs:85`).",
-     pre="typedef int I2 __attribute__((aligned(8)));")
-pair("equal", "layout-typedef-alignment-template-argument",
-     "template <class T> struct X { char c; T t; };\nX<int> x;",
-     "template <class T> struct X { char c; T t; };\nX<I> x;", [],
-     "the typedef as a class template's argument is read canonical by Kiln's layout"
-     " (`layout_desugar_once`, kiln_ast `layout_sugar.rs:34`): no layout and no unit changes.",
-     pre=TD)
+R9 = "digest-kinds §4.2 rule 9"
+
+# The rows of `TypeView/Typedef` (§1.5: one test per row).
+pair("differ", "TypeView/Typedef", "struct S { char c; int i; };", "struct S { char c; I i; };",
+     ["changed S::i"],
+     f"a field of an aligned typedef against the type it names ({R9}): the field's type"
+     " digest holds the typedef.", pre=TD)
+pair("differ", "TypeView/Typedef.decl", "struct S { char c; I i; };", "struct S { char c; K i; };",
+     ["changed S::i"],
+     f"another aligned typedef of the same alignment ({R9}: the typedef's entity is written, so"
+     " a rename maps it by a rule; without one the field differs, a false difference).",
+     pre=TD + "\n" + TDK, post="static_assert(alignof(S) == 8 && sizeof(S) == 16);")
+pair("differ", "TypeView/Typedef.underlying", "struct S { char c; L a; };",
+     "struct S { char c; L a[2]; };", ["changed S::a"],
+     f"the same aligned typedef around another canonical type ({R9}).", pre=TDL)
+
+# The ten class pairs that were indeterminate under the class cause.
+pair("differ", "typedef-alignment-field", "struct S { char c; I i; };",
+     "struct S { char c; J i; };", ["changed S::i"],
+     "another aligned typedef of another alignment.", pre=TD + "\n" + TDJ)
+pair("differ", "typedef-alignment-alias-template", "struct S { char c; A<int> i; };",
+     "struct S { char c; A<I> i; };", ["changed S::i"],
+     "an alias template keeps its argument's typedef for layout in Kiln (clang 22; clang 19"
+     " makes it canonical, `kiln_ast/src/layout_sugar.rs:47`).",
+     pre=TD + "\ntemplate <class T> using A = T;")
+pair("differ", "typedef-alignment-pattern", "template <class T> struct X { char c; int i; T t; };",
+     "template <class T> struct X { char c; I i; T t; };",
+     ["changed X::i"],
+     "a class template's field of the typedef. `X<char>::<definition>` is equal: its layout"
+     " follows from the pattern's field `X::i`, as a class's layout from its fields.",
+     pre=TD, post="X<char> x;")
+pair("differ", "typedef-alignment-alignas-class", "struct alignas(int) S { char c; };",
+     "struct alignas(I) S { char c; };", ["changed S"],
+     "`alignas(type-id)` naming the typedef: the attribute's type holds it.", pre=TD,
+     post="static_assert(alignof(S) == (sizeof(S) == 8 ? 8 : 4));")
+pair("differ", "typedef-alignment-alignas-field", "struct S { char c; alignas(int) char d; };",
+     "struct S { char c; alignas(I) char d; };", ["changed S::d"],
+     "`alignas(type-id)` on a field naming the typedef.", pre=TD)
+pair("differ", "typedef-alignment-array", "struct S { char c; long a[2]; };",
+     "struct S { char c; L a[2]; };", ["changed S::a"],
+     "an array of a typedef that lowers alignment (an over-aligned element is an error).",
+     pre=TDL, post="static_assert(sizeof(S) == (alignof(S) == 4 ? 20 : 24));")
+pair("differ", "typedef-alignment-const-array", "typedef const long CL;\nstruct S { char c; CL a[2]; };",
+     "typedef const L CL;\nstruct S { char c; CL a[2]; };", ["changed CL", "changed S::a"],
+     "an array of a cv-qualified typedef of the typedef; the plain typedef `CL` holds it too.",
+     pre=TDL)
+pair("differ", "typedef-alignment-qualified-array-typedef", "typedef long LA[2];",
+     "typedef L LA[2];", ["changed LA", "changed S::a"],
+     "a cv-qualified array typedef (Kiln's `QualifiedArray` sugar, kiln_ast `types/canon.rs:100`).",
+     pre=TDL, post="struct S { char c; const LA a; };\nstatic_assert(sizeof(S) == (alignof(S) == 4 ? 20 : 24));")
+pair("differ", "typedef-alignment-flexible-array", "struct S { char c; long a[]; };",
+     "struct S { char c; L a[]; };", ["changed S::a"], "a flexible array member of the typedef.",
+     pre=TDL)
+pair("differ", "typedef-alignment-redeclared", "typedef int I2;", "typedef int I2 __attribute__((aligned(8)));",
+     ["changed I2", "changed S::i"],
+     "the field names a later plain redeclaration of a typedef whose first declaration carries"
+     " `aligned` (Kiln's layout reads every redeclaration, kiln_abi `layout/props.rs:85`).",
+     post="typedef int I2;\nstruct S { char c; I2 i; };\nstatic_assert(sizeof(S) == (alignof(S) == 8 ? 16 : 8));")
+pair("equal", "typedef-alignment-template-argument", "X<int> x;", "X<I> x;", [],
+     "the typedef as a class template's argument: the specialization is `X<int>` and its layout"
+     " reads the canonical argument (`layout_desugar_once`, kiln_ast `layout_sugar.rs:34`; clang 19"
+     " agrees).",
+     pre=TD + "\ntemplate <class T> struct X { char c; T t; };",
+     post="static_assert(alignof(X<I>) == 4 && sizeof(X<I>) == 8);")
+
+# Outside classes: the two that were pending, and the coordinator's list.
 pair("differ", "alignof-typedef-alignment", "unsigned long f() { return alignof(int); }",
      "unsigned long f() { return alignof(I); }", ["changed f()"],
-     "`alignof` of a typedef carrying `aligned` is the typedef's alignment; the operand's"
-     " type digest is canonical, so `f` is equal while its value differs (wrong equal).",
-     pre=TD)
+     "`alignof` of the typedef: the operand's type digest holds it.", pre=TD)
 pair("differ", "variable-typedef-alignment", "int v;", "I v;", ["changed v"],
-     "a variable of a typedef carrying `aligned` has the typedef's alignment (kiln_abi"
-     " `layout/mod.rs:518`, `decl_align`); its type digest is canonical (wrong equal).", pre=TD)
+     "a variable of the typedef (kiln_abi `layout/mod.rs:518`, `decl_align`).", pre=TD)
+pair("differ", "typedef-alignment-parameter", "void f(int p) { }", "void f(I p) { }",
+     ["changed f(int)"], "a parameter of the typedef (its `__alignof__` reads it).", pre=TD)
+pair("equal", "typedef-alignment-return-type", "int fr();", "I fr();", [],
+     "a return type of the typedef: no alignment is read from a function's type; a use of"
+     " the call's type (`alignof(decltype(fr()))`) writes it where it is used.", pre=TD)
+pair("differ", "typedef-alignment-new", "int *f() { return new int; }",
+     "I *f() { return new I; }", ["changed f()"],
+     "`new` of the typedef: the allocated type holds it.", pre=TD)
+pair("differ", "typedef-alignment-alignof-array", "unsigned long f() { return alignof(long[4]); }",
+     "unsigned long f() { return alignof(L[4]); }", ["changed f()"],
+     "`alignof` of an array of the typedef.", pre=TDL)
+pair("differ", "typedef-alignment-sizeof-class", "struct S { char c; int i; };",
+     "struct S { char c; I i; };", ["changed S::i"],
+     "`sizeof` of a class holding one: the field holds the typedef and `f` holds `sizeof(S)`,"
+     " which the class decides (item 2).",
+     pre=TD, post="unsigned long f() { return sizeof(S); }")
+pair("differ", "typedef-alignment-deduced", "int v;", "I v;", ["changed v", "changed av"],
+     "a deduced type keeps the typedef in Kiln and clang 19 (`alignof(decltype(av))` is 8).",
+     pre=TD, post="auto av = v;")
+pair("differ", "typedef-alignment-decltype", "int v;", "I v;", ["changed v", "changed S::d"],
+     "`decltype` of a variable of the typedef.", pre=TD,
+     post="struct S { char c; decltype(v) d; };\nstatic_assert(sizeof(S) == (alignof(S) == 8 ? 16 : 8));")
+pair("differ", "typedef-alignment-typedef-of-typedef", "typedef int T2;", "typedef I T2;",
+     ["changed T2", "changed S::i"], "a plain typedef of the typedef, and its use.", pre=TD,
+     post="struct S { char c; T2 i; };")
+pair("differ", "typedef-alignment-using", "using U = int;", "using U = I;",
+     ["changed U", "changed S::i"], "an alias-declaration of the typedef, and its use.", pre=TD,
+     post="struct S { char c; U i; };")
+pair("differ", "typedef-alignment-alias-declaration", "using T16 = int;",
+     "using T16 [[gnu::aligned(16)]] = int;", ["changed T16", "changed S::i"],
+     "the attribute on an alias-declaration.", post="struct S { char c; T16 i; };\n"
+     "static_assert(sizeof(S) == (alignof(S) == 16 ? 32 : 8));")
+pair("differ", "typedef-alignment-attribute-first", "typedef int T16;",
+     "[[gnu::aligned(16)]] typedef int T16;", ["changed T16", "changed S::i"],
+     "the attribute before `typedef` (no `alignas` form applies to a typedef).",
+     post="struct S { char c; T16 i; };\nstatic_assert(sizeof(S) == (alignof(S) == 16 ? 32 : 8));")
+pair("differ", "typedef-alignment-attribute-on-later-declaration", "typedef int R2;",
+     "typedef int R2 __attribute__((aligned(8)));", ["changed R2", "changed S::i"],
+     "the attribute on a later redeclaration of the typedef.",
+     pre="typedef int R2;", post="struct S { char c; R2 i; };\nstatic_assert(sizeof(S) == (alignof(S) == 8 ? 16 : 8));")
+pair("differ", "typedef-alignment-reference", "unsigned long f() { return alignof(long &); }",
+     "unsigned long f() { return alignof(L &); }", ["changed f()"],
+     "`alignof` of a reference to the typedef is the typedef's ([expr.alignof]/3; clang 19: 4;"
+     " Kiln: 8, \"For Kiln\").", pre=TDL)
+pair("differ", "typedef-alignment-value", "typedef int I __attribute__((aligned(8)));",
+     "typedef int I __attribute__((aligned(16)));", ["changed I"],
+     "another alignment on the typedef: its own unit; a class with a field of it holds the"
+     " typedef's entity and is decided by the typedef's unit, as by a field's class type.",
+     post="struct S { char c; I i; };")
 
 # Item 2: values computed from a layout, where they are used.
 PACKED_S = ("#ifdef B\n#pragma pack(push, 1)\n#endif\nstruct S { char c; int i; };\n"
@@ -379,10 +449,7 @@ pair("differ", "cmp-category-field-type",
      " strong_ordering::less{-1}, strong_ordering::equal{0}, strong_ordering::greater{1}; }\n"
      "int a = 1, b = 2;\nauto v = a <=> b;")
 
-PENDING = {
-    "alignof-typedef-alignment": "the type digest is canonical and loses a typedef's `aligned`",
-    "variable-typedef-alignment": "the type digest is canonical and loses a typedef's `aligned`",
-}
+PENDING = {}
 
 SECTION = {
     "RecordLayout": "§4.7", "LayoutCache": "§4.7", "Ast": "§10.9",
@@ -416,11 +483,12 @@ def write():
         write_file(os.path.join(d, "t.cpp"), "\n".join(lines) + "\n")
         write_file(os.path.join(d, "expect.txt"), "added y()\n")
     for root, slug, a, b, expect, note, pre, post, header in PAIRS:
-        key = (root, "_", slug)
+        sub = slug if "/" in slug else os.path.join("_", slug)
+        key = (root, sub)
         if key in names:
             sys.exit(f"duplicate {key}")
         names.add(key)
-        d = os.path.join(ROOT, root, "_", slug)
+        d = os.path.join(ROOT, root, sub)
         os.makedirs(d, exist_ok=True)
         lines = ['#include "side.h"', f"// WP-107 (spec/landed/digest/WP-107.md): {note}"]
         if pre:

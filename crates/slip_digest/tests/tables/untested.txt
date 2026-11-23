@@ -261,8 +261,6 @@ TypeView/TypeOf
 TypeView/TypeOf.operand
 TypeView/TypeOf.underlying
 TypeView/TypeOf.unqual
-TypeView/Typedef.decl
-TypeView/Typedef.underlying
 TypeView/UnaryTransform
 TypeView/UnaryTransform.base
 TypeView/UnaryTransform.kind

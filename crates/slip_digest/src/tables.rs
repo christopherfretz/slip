@@ -269,7 +269,7 @@ pub(crate) mod type_view {
     pub(crate) const DEPENDENT_VECTOR: Row = Row { tag: 1045, decision: Decision::In };
     pub(crate) const EXT_QUAL: Row = Row { tag: 1046, decision: Decision::In };
     pub(crate) const DEPENDENT_ADDR_SPACE: Row = Row { tag: 1047, decision: Decision::In };
-    pub(crate) const TYPEDEF: Row = Row { tag: 1048, decision: Decision::Out };
+    pub(crate) const TYPEDEF: Row = Row { tag: 1048, decision: Decision::In };
     pub(crate) const USING: Row = Row { tag: 1049, decision: Decision::Out };
     pub(crate) const ELABORATED: Row = Row { tag: 1050, decision: Decision::Out };
     pub(crate) const QUALIFIED_ARRAY: Row = Row { tag: 1051, decision: Decision::Out };

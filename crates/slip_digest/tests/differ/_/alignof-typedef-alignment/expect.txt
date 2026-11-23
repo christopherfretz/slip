@@ -1,3 +1,1 @@
-# pending
-# needs: the type digest is canonical and loses a typedef's `aligned` (WP-107 item 1: a wrong equal)
 changed f()
