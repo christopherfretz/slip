@@ -24,7 +24,9 @@ make them fail (§14).
    coding, decides.
 2. **Spelling is not meaning.** Excluded: source locations; whether and how
    a name is qualified; the alias, using-declaration or injected name a type
-   or entity was reached through; redundant parentheses; `struct` against
+   or entity was reached through; redundant parentheses (those around an
+   operand that is not instantiation-dependent, outside a canonical
+   operand: `digest-kinds.md` §7); `struct` against
    `class`; `override`; the names of parameters and of block-scope entities;
    comments, whitespace and macro structure. Where a written form *does*
    change what code generation reads, that effect is included as a fact of
@@ -535,7 +537,10 @@ rules common to all:
   and base path), materialised temporaries, bound temporaries, cleanups,
   implicit `this`, default arguments and default member initialisers at
   their point of use, and constant-expression wrappers (with their value)
-  are all written. Only a redundant parenthesis is skipped.
+  are all written. Only a redundant parenthesis is skipped: one around an
+  operand that is not instantiation-dependent, outside a canonical operand
+  (`digest-kinds.md` §7 "Parentheses"); in a dependent operand a
+  parenthesis can change the meaning (`decltype((x))`, `&(T::m)`).
 - **The selected entity is written wherever one was selected**: the callee
   of every call, the constructor of every construction, the conversion
   function of every user-defined conversion, the allocation and
