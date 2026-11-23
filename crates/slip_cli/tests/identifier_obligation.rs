@@ -215,7 +215,9 @@ fn wp132_a_keyed_identifier_piece_that_denotes_another_entity_fails_located() {
     assert_eq!(text, b"h");
     assert_eq!(out.renamed.len(), 1, "the rule of the rename");
     assert_eq!(out.changed.len(), 1, "the unit of the reference is declared changed");
-    let path = out.edits[0].place.file.path.clone();
+    assert!(out.edits.iter().all(|e| e.place.file.path == MAIN.as_bytes()));
+    // The edit set names files by canonical absolute paths.
+    let path = b"/src/main.cpp".to_vec();
     // Apply: the obligation, from the keyed identifier piece only, at the
     // bytes `h` of the call in the post-image.
     let set = edit_set(&out, &path);
