@@ -967,23 +967,7 @@ impl Report {
                 ])
             })
             .collect();
-        // Under `--strict-names`, each noted key is a finding group of
-        // kind `names_changed`, after every other kind.
-        if self.strict_names {
-            groups.extend(self.sorted_names().into_iter().map(|(k, g)| {
-                obj(vec![
-                    ("kind", Value::Str(NAMES_CHANGED.to_owned())),
-                    ("key", digest(k)),
-                    ("name", Value::Str(g.name.clone())),
-                    ("observers", uv(g.observers)),
-                    ("first", bytes(&g.first)),
-                    ("file", bytes(&g.file)),
-                    ("pre", Value::Null),
-                    ("post", Value::Null),
-                    ("where", Value::Null),
-                ])
-            }));
-        }
+        groups.extend(self.strict_names_groups());
         let not_verified = self
             .not_verified
             .values()
@@ -1048,6 +1032,30 @@ impl Report {
         }
         members.push(("run", bytes(&h.run)));
         obj(members)
+    }
+
+    /// Under `--strict-names`, each noted key is a finding group of kind
+    /// `names_changed`, after every other kind; without it, none.
+    fn strict_names_groups(&self) -> Vec<Value> {
+        if !self.strict_names {
+            return Vec::new();
+        }
+        self.sorted_names()
+            .into_iter()
+            .map(|(k, g)| {
+                obj(vec![
+                    ("kind", Value::Str(NAMES_CHANGED.to_owned())),
+                    ("key", digest(k)),
+                    ("name", Value::Str(g.name.clone())),
+                    ("observers", uv(g.observers)),
+                    ("first", bytes(&g.first)),
+                    ("file", bytes(&g.file)),
+                    ("pre", Value::Null),
+                    ("post", Value::Null),
+                    ("where", Value::Null),
+                ])
+            })
+            .collect()
     }
 
     /// §7.1 `names_changed` (WP-112): the count of keys and the first

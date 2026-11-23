@@ -407,6 +407,27 @@ fn names_no_note_without_a_string_change() {
     assert!(v.names.as_ref().unwrap().notes.is_empty());
 }
 
+// WP-112 (`spec/model.md` §8.6): the notes are computed before step 4;
+// when step 4 refuses (R1: the subject no longer parses) the verdict is
+// unverifiable and the shard keeps its names units but no note.
+#[test]
+fn names_no_note_beside_unverifiable() {
+    let tree = Tree::new("note-r1", &[("a.cpp", NOTE_PRE)]);
+    let post =
+        NOTE_PRE.replace("void f(ns::V)", "void f(::ns::V)").replace("return 1;", "return 2;");
+    write(&tree.post.join("a.cpp"), &post);
+    let o = tree.observer();
+    tree.map(&o);
+    write(&tree.subject.join("a.cpp"), "int a = ;\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert!(reason(&v).starts_with("pre-image: no longer parses"), "{}", reason(&v));
+    check_post_shard(&v);
+    let names = v.names.as_ref().expect("names");
+    assert_eq!(names.units.len(), 2);
+    assert!(names.notes.is_empty(), "{:?}", names.notes);
+}
+
 // §5.2 step 6 and §6.1: with `locate` 0 no finding is named and the
 // post-image is parsed once more only for step 4; with `locate` 1 only
 // the first finding is.

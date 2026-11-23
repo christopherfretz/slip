@@ -1146,33 +1146,33 @@ fn s7_1_strict_names_makes_notes_findings() {
     // The noted key is in `changed`: still a finding.
     let mut r = Report::new(header(vec![], 3), &declared(&[1], &[], &[]));
     r.strict_names();
-    let v = ok_shard(1, verified_verdict(&[1]), None);
-    r.add(&d(1), b"/a.cpp", Some(&with_notes(v, &[1])), Some(Status::Ok));
+    let shard = ok_shard(1, verified_verdict(&[1]), None);
+    r.add(&d(1), b"/a.cpp", Some(&with_notes(shard, &[1])), Some(Status::Ok));
     r.add(&d(2), b"/b.cpp", Some(&with_notes(verified(2), &[1])), Some(Status::Ok));
     r.add(&d(3), b"/c.cpp", Some(&verified(3)), Some(Status::Ok));
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
     assert_eq!(r.states()[at(State::Mismatch)], 2);
     assert_eq!(r.states()[at(State::Verified)], 1);
-    let j = r.to_json();
-    let f = j.get("findings").unwrap();
-    assert_eq!(f.get("total").unwrap().as_u64(), Some(2));
-    let g = f.get("groups").unwrap().as_array().unwrap();
-    assert_eq!(g.len(), 1);
-    assert_eq!(g[0].get("kind").unwrap().as_str(), Some("names_changed"));
-    assert_eq!(g[0].get("observers").unwrap().as_u64(), Some(2));
+    let json = r.to_json();
+    let findings = json.get("findings").unwrap();
+    assert_eq!(findings.get("total").unwrap().as_u64(), Some(2));
+    let groups = findings.get("groups").unwrap().as_array().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].get("kind").unwrap().as_str(), Some("names_changed"));
+    assert_eq!(groups[0].get("observers").unwrap().as_u64(), Some(2));
     // The exemption is still counted as used by the shard that used it.
-    let e = j.get("exemptions").unwrap().as_array().unwrap();
-    assert_eq!(e[0].get("observers").unwrap().as_u64(), Some(1));
-    let t = r.to_text();
+    let used = json.get("exemptions").unwrap().as_array().unwrap();
+    assert_eq!(used[0].get("observers").unwrap().as_u64(), Some(1));
+    let text = r.to_text();
     assert!(
-        t.contains(&format!(
+        text.contains(&format!(
             "finding names_changed {} observers 2 n001\n",
             &key(1).to_string()[..16]
         )),
-        "{t}"
+        "{text}"
     );
-    assert!(t.contains("findings 2 total, 2 listed, 1 group(s)\n"), "{t}");
-    assert!(t.contains("note: name-derived string changed: n001 @ /h1.h\n"), "{t}");
+    assert!(text.contains("findings 2 total, 2 listed, 1 group(s)\n"), "{text}");
+    assert!(text.contains("note: name-derived string changed: n001 @ /h1.h\n"), "{text}");
     assert_eq!(r.verdict_line(), "verdict not verified");
     // Without a note, the option changes nothing.
     let mut r = Report::new(header(vec![], 1), &Declared::none());

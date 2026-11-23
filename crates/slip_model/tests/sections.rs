@@ -139,6 +139,40 @@ fn raw_site(e: &mut Encoder, s: &Site) {
     e.bytes(&s.file).uv(s.line).uv(s.column).str(&s.node).str(&s.what);
 }
 
+fn raw_verdict(v: &Verdict) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.uv(v.kind as u64)
+        .digest(&v.pre)
+        .digest(&v.rules)
+        .str(&v.reason)
+        .uv(v.only_pre)
+        .uv(v.only_post)
+        .count(v.used.len());
+    for k in &v.used {
+        e.digest(k);
+    }
+    e.uv(v.total).count(v.findings.len());
+    for f in &v.findings {
+        e.uv(f.kind as u64);
+        raw_opt_digest(&mut e, f.key);
+        e.bytes(&f.file);
+        raw_opt_digest(&mut e, f.pre);
+        raw_opt_digest(&mut e, f.post);
+        e.str(&f.name);
+        match &f.location {
+            None => {
+                e.u8(0);
+            }
+            Some(w) => {
+                e.u8(1);
+                raw_site(&mut e, &w.pre);
+                raw_site(&mut e, &w.post);
+            }
+        }
+    }
+    e.into_bytes()
+}
+
 fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
     let mut s1 = Encoder::new();
     s1.digest(&s.observer).uv(s.phase as u64).uv(s.round);
@@ -194,37 +228,7 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
         out.push((19, e.into_bytes()));
     }
     if let Some(v) = &s.verdict {
-        let mut e = Encoder::new();
-        e.uv(v.kind as u64)
-            .digest(&v.pre)
-            .digest(&v.rules)
-            .str(&v.reason)
-            .uv(v.only_pre)
-            .uv(v.only_post)
-            .count(v.used.len());
-        for k in &v.used {
-            e.digest(k);
-        }
-        e.uv(v.total).count(v.findings.len());
-        for f in &v.findings {
-            e.uv(f.kind as u64);
-            raw_opt_digest(&mut e, f.key);
-            e.bytes(&f.file);
-            raw_opt_digest(&mut e, f.pre);
-            raw_opt_digest(&mut e, f.post);
-            e.str(&f.name);
-            match &f.location {
-                None => {
-                    e.u8(0);
-                }
-                Some(w) => {
-                    e.u8(1);
-                    raw_site(&mut e, &w.pre);
-                    raw_site(&mut e, &w.post);
-                }
-            }
-        }
-        out.push((21, e.into_bytes()));
+        out.push((21, raw_verdict(v)));
     }
     if let Some(b) = &s.binding {
         let mut e = Encoder::new();

@@ -75,6 +75,24 @@ fn unrelated_edit_names_equal() {
     }
 }
 
+/// A string passed on through an `initializer_list`'s backing array (a
+/// pointer to its first element, which holds `__PRETTY_FUNCTION__`): the
+/// entry exists on both sides and holds the new name. (Written to reach
+/// a constant's own names digest, the `uv 4` entry; it does not: Kiln
+/// gives this pointer no anonymous-constant base. See the landed file,
+/// mutation M8.)
+#[test]
+fn passed_through_a_constant_names_differ() {
+    let (a, b) = sides("equal/_/name-value-pointer-into-backing-array");
+    let k = key(&a, "legacy::f()");
+    let digests = |d: &Digested| d.units[&k].iter().map(|u| u.digest).collect::<Vec<_>>();
+    assert_eq!(digests(&a), digests(&b));
+    let names = |d: &Digested| d.output.name_strings.iter().find(|n| n.key == k).map(|n| n.names);
+    let (na, nb) = (names(&a), names(&b));
+    assert!(na.is_some() && nb.is_some(), "both sides have an entry: {na:?} {nb:?}");
+    assert_ne!(na, nb, "the string holds the new name");
+}
+
 #[test]
 fn read_at_compile_time_no_entry() {
     let (a, b) = sides("differ/_/name-value-static-assert-characters");
@@ -124,7 +142,10 @@ fn wp115_costs_note_beside_a_finding_or_a_real_change() {
         ("differ/_/name-value-cost-plain-added-earlier", &[("b::get()", false)]),
         // `f(int)` renamed to `q`: a real change, units equal; `f(long)`
         // beside its `changed`.
-        ("equal/_/name-value-cost-shared-plain-rename-other", &[("f(int)", true), ("f(long)", false)]),
+        (
+            "equal/_/name-value-cost-shared-plain-rename-other",
+            &[("f(int)", true), ("f(long)", false)],
+        ),
     ];
     for (rel, want) in cases {
         let (a, b) = sides(rel);
