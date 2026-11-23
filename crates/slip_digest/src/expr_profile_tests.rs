@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use slip_kiln::kiln::ast::ExprId;
+use slip_kiln::kiln::ast::{DeclId, ExprId};
 use slip_model::keys::RuleTable;
 
 use super::FULL;
@@ -123,16 +123,22 @@ fn causes_of(input: &Input<'_>, name: &str) -> Vec<Vec<crate::Cause>> {
         .collect()
 }
 
-/// The bytes of profile mode for `e` in a key (no unit ordinal), or
-/// `None` when the walk met a kind walked in full or carries a cause.
-pub(crate) fn key_bytes(w: &mut Walk<'_>, e: ExprId) -> Option<Vec<u8>> {
+/// The bytes of profile mode for `e` in a key (no unit ordinal), or why
+/// the nets leave it out: `full` when the walk met a kind walked in full,
+/// else the stream's cause.
+pub(crate) fn key_bytes(w: &mut Walk<'_>, e: ExprId) -> Result<Vec<u8>, String> {
     FULL.with(|c| c.set(0));
     w.in_key += 1;
     let mut s = Stream::new();
     crate::expr_dep::profile_expr(w, &mut s, e);
     w.in_key -= 1;
-    let full = FULL.with(std::cell::Cell::get);
-    (full == 0 && s.cause().is_none()).then(|| s.as_bytes().to_vec())
+    if FULL.with(std::cell::Cell::get) > 0 {
+        return Err("full".to_owned());
+    }
+    match s.cause() {
+        Some(c) => Err(format!("{c:?}")),
+        None => Ok(s.as_bytes().to_vec()),
+    }
 }
 
 /// A finding of a net: the test, the side, the two expressions' kinds.
@@ -148,15 +154,42 @@ fn finding(dir: &Path, side: usize, w: &Walk<'_>, a: ExprId, b: ExprId) -> Strin
     )
 }
 
-/// The tests whose two profiles of one byte string are references to
-/// two declarations of one entity, which Kiln's profile tells apart by
-/// `DeclId` (`D_DECL`, `first(d).raw()`) and the digest writes as the
-/// entity's one `Ref`: a block-scope `extern` and the declaration an
-/// instantiation of its function makes again (WP-032), equal by
-/// [basic.link]/8. Not a row to add: the digest is right and the
+/// The bytes of the `Ref` of `d`, as a key writes it.
+fn ref_bytes(w: &mut Walk<'_>, d: DeclId) -> Vec<u8> {
+    w.in_key += 1;
+    let mut s = Stream::new();
+    w.write_ref(&mut s, d);
+    w.in_key -= 1;
+    s.as_bytes().to_vec()
+}
+
+/// Whether two profiles of one byte string differ only in `D_DECL` words
+/// naming declarations of one entity (one `Ref`), which Kiln's profile tells apart by
+/// `DeclId` (`D_DECL`, `first(d).raw()`, `profile_expr.rs:370`) and the
+/// digest writes as the entity's one `Ref`: a block-scope `extern` and the
+/// declaration an instantiation of its function makes again (WP-032),
+/// equal by [basic.link]/8. Not a row to add: the digest is right and the
 /// profile is finer than equivalence there.
-fn one_entity(dir: &Path) -> bool {
-    dir.ends_with("demand/_/local-extern-in-instantiated-body")
+fn one_entity(w: &mut Walk<'_>, a: &[u32], b: &[u32]) -> bool {
+    const D_DECL: u32 = 4;
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut any = false;
+    for i in 0..a.len() {
+        if a[i] == b[i] {
+            continue;
+        }
+        let (Some(x), Some(y)) = (DeclId::try_new(a[i]), DeclId::try_new(b[i])) else {
+            return false;
+        };
+        if i == 0 || a[i - 1] != D_DECL || b[i - 1] != D_DECL || ref_bytes(w, x) != ref_bytes(w, y)
+        {
+            return false;
+        }
+        any = true;
+    }
+    any
 }
 
 /// What the nets found.
@@ -165,7 +198,10 @@ struct Nets {
     same: Vec<String>,
     collide: Vec<String>,
     compared: usize,
-    left_out: usize,
+    /// The expressions left out, by reason (`key_bytes`).
+    left_out: std::collections::BTreeMap<String, usize>,
+    /// The pairs `one_entity` excused.
+    one_entity: usize,
 }
 
 impl Nets {
@@ -177,9 +213,12 @@ impl Nets {
         for i in 1..=w.ast.exprs.len() {
             let Some(e) = u32::try_from(i).ok().and_then(ExprId::try_new) else { continue };
             let words = w.ast.expr_profile_words(e);
-            let Some(bytes) = key_bytes(w, e) else {
-                self.left_out += 1;
-                continue;
+            let bytes = match key_bytes(w, e) {
+                Ok(b) => b,
+                Err(why) => {
+                    *self.left_out.entry(why).or_default() += 1;
+                    continue;
+                }
             };
             self.compared += 1;
             match by_words.get(&words) {
@@ -190,8 +229,13 @@ impl Nets {
                 }
             }
             match by_bytes.get(&bytes) {
-                Some((k, first)) if *k != words && !one_entity(dir) => {
-                    self.collide.push(finding(dir, side, w, *first, e));
+                Some((k, first)) if *k != words => {
+                    let (k, first) = (k.clone(), *first);
+                    if one_entity(w, &k, &words) {
+                        self.one_entity += 1;
+                    } else {
+                        self.collide.push(finding(dir, side, w, first, e));
+                    }
                 }
                 Some(_) => {}
                 None => {
@@ -201,11 +245,17 @@ impl Nets {
         }
     }
 
-    fn check(&self, min: usize) {
+    /// Fails on a finding of either net, on fewer than `min` expressions
+    /// compared, and on more expressions left out for a reason than its
+    /// ceiling in `ceilings` (a reason not listed has ceiling 0), so a
+    /// change that turns rows into causes fails too.
+    fn check(&self, min: usize, ceilings: &[(&str, usize)], one_entity: usize) {
         eprintln!(
-            "{} expressions compared, {} left out; net 1: {} failures, net 2: {} failures",
+            "{} expressions compared, left out {:?}, {} excused (one entity); net 1: {} \
+             failures, net 2: {} failures",
             self.compared,
             self.left_out,
+            self.one_entity,
             self.same.len(),
             self.collide.len()
         );
@@ -217,6 +267,11 @@ impl Nets {
             self.same.join("\n"),
             self.collide.join("\n")
         );
+        for (why, &n) in &self.left_out {
+            let ceiling = ceilings.iter().find(|(c, _)| c == why).map_or(0, |&(_, c)| c);
+            assert!(n <= ceiling, "{n} expressions left out for {why}, ceiling {ceiling}");
+        }
+        assert!(self.one_entity <= one_entity, "{} pairs excused as one entity", self.one_entity);
     }
 }
 
@@ -237,7 +292,7 @@ fn the_bytes_are_a_function_of_kilns_profile() {
         });
     }
     eprintln!("{} tests", dirs.len());
-    nets.check(5_000);
+    nets.check(13_000, PAIR_CEILINGS, 2);
 }
 
 /// Sources of the nets beside the pair tests: several spellings of one
@@ -280,7 +335,55 @@ const OWN: &[&str] = &[
      template<class T> auto h(T a, T b) -> decltype(a.m);\n\
      template<class T> auto k(T a, T b) -> decltype(b.m);\n\
      template<class T> auto l(T* a, T* b) -> decltype(a->m);\n",
+    // Item 5 (WP-036 round 2): one fact apart each.
+    // A pack's depth: `sizeof...(T)` of the class against `sizeof...(U)`
+    // of the member template, both position 0.
+    "template<unsigned long N> struct Z {};\n\
+     template<class... T> struct S {\n\
+       template<class... U> auto f(U...) -> Z<sizeof...(T)>;\n\
+       template<class... U> auto g(U...) -> Z<sizeof...(U)>;\n\
+     };\n",
+    // A cast's kind, `new`'s initialisation style, `this` written or not.
+    "template<class T> auto f(T t) -> decltype(static_cast<int>(t));\n\
+     template<class T> auto g(T t) -> decltype((int)t);\n\
+     template<class T> auto h(T t) -> decltype(new T(t));\n\
+     template<class T> auto k(T t) -> decltype(new T{t});\n\
+     template<class T> auto l(T t) -> decltype(new T);\n\
+     template<class T> struct S { T m;\n\
+       auto f() -> decltype(m);\n  auto g() -> decltype(this->m);\n};\n",
+    // Explicit arguments of a variable template and a function template;
+    // a name found through a using-declaration against the qualified one.
+    "template<int> constexpr int v = 0;\ntemplate<int> int fn();\n\
+     template<class T> auto f(T t) -> decltype(t + v<1>);\n\
+     template<class T> auto g(T t) -> decltype(t + v<2>);\n\
+     template<class T> auto h(T t) -> decltype(t + fn<1>());\n\
+     template<class T> auto k(T t) -> decltype(t + fn<2>());\n\
+     namespace N { int w; }\nusing N::w;\n\
+     template<class T> auto l(T t) -> decltype(t + w);\n\
+     template<class T> auto m(T t) -> decltype(t + N::w);\n",
+    // Two non-type parameters of different types at one position.
+    "template<int N, class T> auto f(T t) -> decltype(t + N);\n\
+     template<long N, class T> auto g(T t) -> decltype(t + N);\n",
+    // One spelled qualifier naming two classes (the canonical qualifier is
+    // not in the profile behind an object of dependent type).
+    "struct A { int m; };\nstruct B { int m; };\n\
+     namespace P { using X = A; template<class T> auto f(T a) -> decltype(a.X::m); }\n\
+     namespace Q { using X = B; template<class T> auto f(T a) -> decltype(a.X::m); }\n",
 ];
+
+/// The expressions of the pair tests each reason leaves out, at most
+/// (measured; raise one only with the reason the new ones are left out).
+/// `full`: a kind walked in full (§4.4); `key/local-ref`: a function
+/// body's reference to a local entity, which a key cannot name;
+/// `Pending(Local)`: a lambda's closure.
+const PAIR_CEILINGS: &[(&str, usize)] = &[
+    ("full", 443),
+    ("Unaccounted(\"key/local-ref\")", 1056),
+    ("Pending(Local)", 20),
+];
+
+/// The same for `OWN`.
+const OWN_CEILINGS: &[(&str, usize)] = &[];
 
 #[test]
 fn the_nets_hold_on_their_own_sources() {
@@ -289,7 +392,7 @@ fn the_nets_hold_on_their_own_sources() {
         let label = PathBuf::from(format!("own[{i}]"));
         crate::decl_func::tests::with_walk(src, |w| nets.run(w, &label, 1));
     }
-    nets.check(50);
+    nets.check(50, OWN_CEILINGS, 0);
 }
 
 /// Digests `src` with names; the keys and causes of the units whose name
