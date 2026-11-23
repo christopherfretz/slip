@@ -663,14 +663,21 @@ closure on the finished unit:
 pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<Shard, String>;
 pub fn parse_observer_with<R: Send>(
     observer: &Observer, phase: Phase, round: u64,
+    options: ParseOptions,
     f: impl FnOnce(&Unit<'_>) -> R + Send,
 ) -> Result<(Shard, Option<R>), String>;
+
+/// What the front end keeps beyond what the parse task needs. Every option
+/// is off by default, and the shard is the same whatever they are.
+#[non_exhaustive]
+pub struct ParseOptions { pub pp_record: bool }
 
 pub struct Unit<'r> { /* … */ }        // the finished front end, valid inside the call
 impl<'r> Unit<'r> {
     pub fn ast(&self) -> &'r kiln::ast::Ast;
     pub fn sm(&self) -> &'r kiln::source::SourceManager;
     pub fn oven(&self) -> &'r kiln::oven::Oven;
+    pub fn pp_record(&self) -> Option<&'r kiln::pp::PpRecord>;   // when ParseOptions::pp_record asked
     pub fn main_file(&self) -> Option<kiln::source::FileId>;
     pub fn real_path(&self, file: kiln::source::FileId) -> Option<&'r [u8]>;
     pub fn errors(&self) -> u32;
