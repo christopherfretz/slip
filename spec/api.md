@@ -942,12 +942,28 @@ consteval std::vector<info> arguments_as_written(info call);
    `callee_reference_of(call)`: the reference of rule 1; never null.
 5. `arguments_as_written(call)`: the expressions written between the
    parentheses, in order. A default argument is not written and is not
-   included. The object of `a.f(x)` is not an argument. A pack expansion
+   included. The object of `a.f(x)` is not an argument, nor is the object
+   of a function with an explicit object parameter, written before the
+   callee or implicit (`f(x)` in a member function). A pack expansion
    `args...` is one written argument.
 6. These three throw `wrong_kind` for an `info` that is not a call.
 7. A reference to a function that is not the callee of a call (`&f`, `f`
    passed as an argument) is in `references_to(f)` and in no call. A
    transform that must handle every use compares the two (§10.1).
+8. Every expression of rule 1's shape in the subject unit is a call or is
+   counted (`api.calls_without_reference`, and the count of those not
+   written `callee ( … )`: a conversion function's implicit call, a
+   user-defined literal); no test of position drops one. The unit's
+   expressions include those of a template's head, of types as written
+   (`decltype`, template arguments, `noexcept`, bases, an alias's target,
+   an enumeration's base, `explicit(…)`) and of the attributes `alignas`,
+   `assume`, `enable_if` and `diagnose_if`. A member named after
+   `template` (`d.template t<int>()`) is a call. A destructor called by
+   name (`p->~D()`) is counted without a reference in version 0; a
+   pseudo-destructor call calls no function. Holes of version 0: a call
+   in an array bound written in a declarator (`int a[f(2)]`,
+   `sizeof(int[f(3)])`), whose expression Kiln does not keep, and a call
+   in the arguments of any other attribute.
 
 ### 6.8 What Kiln provides for each query
 
