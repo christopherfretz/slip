@@ -153,6 +153,9 @@ const BAD_PARENT: Cause = Cause::Unaccounted("key/parent");
 const BAD_NAME: Cause = Cause::Unaccounted("key/name");
 /// How far a chain of contexts is followed (an AST is far shallower).
 const CTX_LIMIT: u32 = 4096;
+/// A local entity that is not a local type (a block-scope typedef or
+/// using-declaration, a local variable asked for its key): it has none.
+const LOCAL_ENTITY: Cause = Cause::Unaccounted("key/local");
 
 impl Walk<'_> {
     /// The entity a declaration is a declaration of: its first
@@ -213,6 +216,10 @@ impl Walk<'_> {
 
     /// The key of `d`'s entity, mapped (`spec/digest.md` §3.4).
     pub(crate) fn key(&mut self, d: DeclId) -> KeyRes {
+        // Numbering an owner reads no key (`local.rs`).
+        if crate::local::numbering_mode(self) {
+            return KeyRes::None(Some(crate::local::IN_NUMBERING));
+        }
         let e = self.entity(d);
         if let Some(k) = self.keys.get(&e) {
             return *k;
@@ -227,6 +234,7 @@ impl Walk<'_> {
             return KeyRes::None(Some(TOO_DEEP));
         }
         let aborts = self.aborts;
+        let rooted = self.local.self_rooted;
         self.keys_in_progress.insert(e);
         // A key does not depend on the unit that asks for it: the unit's
         // local state is put aside (`Walk::in_key`).
@@ -251,7 +259,7 @@ impl Walk<'_> {
         };
         self.keys_in_progress.remove(&e);
         self.leave();
-        if self.aborts == aborts {
+        if self.aborts == aborts && self.local.self_rooted == rooted {
             self.keys.insert(e, res);
         }
         res
@@ -438,7 +446,8 @@ impl Walk<'_> {
             return Ok((Parent::Builtin, None));
         }
         if ast.decls.record(e).is_some_and(|r| r.lambda.is_some()) {
-            return Err(Some(Cause::Pending(crate::Area::Local)));
+            // A closure type: `local(n)` under its owner (digest §4.3).
+            return crate::local::local_parent(self, e);
         }
         if let Some(class) = self.friend_class(e) {
             return self.unit_parent(class);
@@ -475,7 +484,16 @@ impl Walk<'_> {
                     c = xn.ctx();
                     continue;
                 }
-                return Err(Some(Cause::Pending(crate::Area::Local)));
+                // A member of a closure type is keyed under it; a local
+                // class or enumeration under its owner; any other local
+                // entity has no key (digest §4.3).
+                if ast.decls.record(x).is_some_and(|r| r.lambda.is_some()) {
+                    return self.unit_parent(x);
+                }
+                if crate::local::is_local_type(self, e) {
+                    return crate::local::local_parent(self, e);
+                }
+                return Err(Some(LOCAL_ENTITY));
             }
             match xi.role {
                 Role::Root => return Ok((Parent::Root, None)),
@@ -695,6 +713,12 @@ impl Walk<'_> {
     /// A named entity's name, or for one without a name the forms of
     /// digest §3.3 (`Err` when none applies).
     fn entity_name(&mut self, e: DeclId) -> Result<(Name, Option<Cause>), Option<Cause>> {
+        // A local type is `local(n)`, whatever its name (digest §4.3).
+        if crate::local::is_local_type(self, e) {
+            return crate::local::type_number(self, e)
+                .map(|n| (Name::Local(n), None))
+                .map_err(Some);
+        }
         if let Some(named) = self.plain_name(e).map_err(Some)? {
             return Ok(named);
         }

@@ -26,7 +26,7 @@ use slip_kiln::kiln::ast::expr::{BinaryOp, ExprFlags};
 use slip_kiln::kiln::ast::names::{DeclName, DeclNameView};
 use slip_kiln::kiln::ast::stmt::ExpansionForm;
 use slip_kiln::kiln::ast::templates::Requirement;
-use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, LambdaId, ListId, NnsId, ProfileId};
+use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, ListId, NnsId, ProfileId};
 use slip_model::keys::Name;
 
 use crate::Cause;
@@ -343,17 +343,11 @@ pub(crate) fn concept_specialization_expr(w: &mut Walk<'_>, s: &mut Stream, e: E
     args_word(w, s, n.b);
 }
 
-/// `LambdaExpr`: `a` the closure type, written whole (§2.4).
+/// `LambdaExpr`: `a` the closure type, written whole (§2.4), by the local
+/// package (`local::lambda_expr`: rule 6 of digest §4.3 inside a key or a
+/// type).
 pub(crate) fn lambda_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    let n = expr::node(w, e);
-    check_bits(s, &n, 0, row("ExprNode/LambdaExpr.bits"));
-    check_aux(s, &n, 0, row("ExprNode/LambdaExpr.aux"));
-    let Some(lambda) = LambdaId::try_new(n.a) else {
-        s.uv(0).indeterminate(row("ExprNode/LambdaExpr.a"));
-        return;
-    };
-    let closure = w.ast.exprs.lambdas.get(lambda).closure;
-    crate::local::write_decl(w, s, closure);
+    crate::local::lambda_expr(w, s, e);
 }
 
 /// `PackExpansionExpr`: `a` the pattern.

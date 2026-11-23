@@ -5306,14 +5306,16 @@ operator of the lambda whose body holds it: Kiln's semantic context.
 For a closure outside a function body it is what Kiln's
 `Ast::closure_owner` answers (Kiln WP-2023), taken to the entity that
 has a key: a parameter's function, a template parameter's template, and
-otherwise the field, variable, alias, function or template itself. An
-owner that is a namespace, a class or the translation unit (a
-lambda-expression in a `static_assert`, in a base-specifier, in a
-bit-field width) has no stream that numbers the closure: the closure
-has no key, and what refers to it is indeterminate
-(`Unsupported("local/closure-owner")`). The pinned Kiln answers the
-query (`ColdDeclData` `closure_owner`); until `docs/wp/WP-040.md`
-implements this rule, a closure is `Pending(Area::Local)`.
+otherwise the field, variable, alias, function or template itself (a
+lambda-expression in a bit-field width is the field's: Kiln gives the
+field as owner, and the field's stream walks the width). A consteval
+block's synthesized lambda is the block's (digest §4.3 "An owner keyed
+by its content"). An owner that is a namespace, a class, an
+enumeration or the translation unit (a lambda-expression in a
+`static_assert`, in a base-specifier, in an enumerator's initialiser)
+has no stream that numbers the closure: the closure has no key, and
+what refers to it is indeterminate
+(`Unsupported("local/closure-owner")`).
 
 A capture's `var` is `Ref::local` in the stream that holds the
 lambda-expression. An init-capture declares its variable: the variable

@@ -1,5 +1,0 @@
-# pending
-# needs: WP-040
-# legacy::f() and its closure are Pending(Local) on both sides until WP-040
-# walks local entities, so the runner would compare nothing: the symbolic
-# write inside a lambda is not exercised yet (WP-104 review F4).

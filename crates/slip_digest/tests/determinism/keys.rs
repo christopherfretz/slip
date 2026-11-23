@@ -44,9 +44,19 @@ pub const SAME_KEY: &[(&str, &[&str], u64, &str)] = &[
     // the test is about it.
     (
         "indeterminate/_/lambda-in-signature-twice",
-        &["template <int> void foo(const char (*)[(... , N)])"],
+        &[],
         1,
         "a lambda in a signature: two templates, one key; the test is about it",
+    ),
+    // The two unnamed local structs of an instantiation have no number
+    // (its body is `Pending(Demand)`): their implicit constructors, and
+    // those constructors' exception specifications, share a key. The
+    // units are `UndeclaredLocal` first; the test is about it.
+    (
+        "indeterminate/_/inst-two-unnamed-local-structs",
+        &[],
+        2,
+        "two unnamed local structs of an instantiation: one key; the test is about it",
     ),
 ];
 
@@ -61,23 +71,8 @@ pub const SAME_NAME: &[(&str, &str, usize, &str)] = &[];
 /// which cannot check what it cannot see; an entry that digests fails
 /// too, so the list only shrinks.
 pub const UNPARSED: &[(&str, Side, &str)] = &[
-    // Three `# pending` tests of other packages whose sources do not
-    // compile (their runners skip them, so nothing else sees it).
-    (
-        "differ/DefinitionBits/0-lambda-captures",
-        Side::B,
-        "`[x]` captures a namespace-scope variable (WP-027's test)",
-    ),
-    (
-        "differ/_/local-class-of-instantiated-function",
-        Side::A,
-        "`f<int>()` used before `f` is declared (WP-027's test)",
-    ),
-    (
-        "differ/_/local-class-of-instantiated-function",
-        Side::B,
-        "`f<int>()` used before `f` is declared (WP-027's test)",
-    ),
+    // A `# pending` test of another package whose source does not
+    // compile (its runner skips it, so nothing else sees it).
     (
         "demand/_/friend-template-definition-instantiated-on-use",
         Side::B,
