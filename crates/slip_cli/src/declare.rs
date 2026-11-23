@@ -496,6 +496,108 @@ fn undefined_friends<'r>(r: &Record, k: &Key, pre: &Index<'r>, facts: &Facts) ->
     out
 }
 
+/// A `relocate` line's checks of its entity (`r`, with `Key` `k`) and its
+/// new name: `DependencyEntity` (§2.1 rule 1: no rule renames a dependency
+/// entity; a namespace's rule applies in the owned view) and
+/// `NotRenamable`.
+fn relocated_name(
+    n: u64,
+    entity: &Entity,
+    name: Option<&str>,
+    id: Digest,
+    k: &Key,
+    facts: &Facts,
+) -> Result<Name, LineError> {
+    if k.kind != KeyKind::Namespace && facts.dependency.contains(&id) {
+        return Err(error(
+            n,
+            ErrorKind::DependencyEntity,
+            format!(
+                "`{}` is a dependency entity (a declaration of it is in a read-only file, or it is a specialisation or an implicit member of one): no rule renames it",
+                entity.text
+            ),
+        ));
+    }
+    match name {
+        None => Ok(k.name.clone()),
+        Some(_) if !matches!(k.name, Name::Identifier(_)) => Err(error(
+            n,
+            ErrorKind::NotRenamable,
+            format!(
+                "`{}` has a name of the form `{}`, not an identifier: it can be relocated with `=` only",
+                entity.text,
+                k.name.form()
+            ),
+        )),
+        Some(id) => Ok(Name::Identifier(id.as_bytes().to_vec())),
+    }
+}
+
+/// The checks of one rule a `relocate` line gives (`of` names it in the
+/// message): `NotRenamable` for a name no reader accepts (it comes from no
+/// walk, but is an error, not a panic); `Refused` for a rule §2.1 refuses
+/// (the walk keys nothing under a table that holds one); `Order` when it
+/// matches a probe of a line above (`looked`).
+fn rule_checks(
+    n: u64,
+    rule: &Rule,
+    of: &str,
+    looked: &[(u64, String, Vec<Key>)],
+) -> Result<(), LineError> {
+    if let Err(what) = rule.name.validate().and_then(|()| rule.to_name.validate()) {
+        return Err(error(
+            n,
+            ErrorKind::NotRenamable,
+            format!("the rule of {of} cannot be in a rule table: {what}"),
+        ));
+    }
+    if let Some(what) = rule.refusal() {
+        return Err(error(n, ErrorKind::Refused, format!("the rule of {of} is refused: {what}")));
+    }
+    let hit = |q: &Key| {
+        (q.parent, q.kind, &q.name, q.disc) == (rule.parent, rule.kind, &rule.name, rule.disc)
+    };
+    if let Some((above, text, _)) = looked.iter().find(|(_, _, levels)| levels.iter().any(hit)) {
+        return Err(error(
+            n,
+            ErrorKind::Order,
+            format!(
+                "the rule of {of} relocates {text}, or a namespace or class around it, which line {above} resolved as a new parent without it: this line must come before line {above}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A line's rule `main` and, when it renames, one for each undefined friend
+/// declaration of the function (`friends`), which keeps its class: the
+/// class's chain is mapped as a new parent is, its levels added to
+/// `probes`.
+fn with_friends(
+    main: Rule,
+    friends: &[&Record],
+    post: &Index<'_>,
+    table: &RuleTable,
+    probes: &mut Vec<Key>,
+) -> Vec<Rule> {
+    let mut given = Vec::new();
+    if main.name != main.to_name {
+        for f in friends {
+            let Some(fk) = &f.key else { continue };
+            given.push(Rule {
+                parent: map_parent(fk.parent, post, table, probes),
+                kind: fk.kind,
+                name: main.name.clone(),
+                disc: fk.disc,
+                to_parent: fk.parent,
+                to_name: fk.name.clone(),
+            });
+        }
+    }
+    given.insert(0, main);
+    given
+}
+
 /// The lines `relocate`, `changed` and `removed`, in file order: names
 /// resolved in `pre` (an entity) and `post` (a non-empty parent), both the
 /// records of the images with no rules, in any order; `facts`, those of the
@@ -544,35 +646,7 @@ pub fn resolve_with(
                 let Some(k) = r.key.clone() else {
                     unreachable!("resolve_in gives a record with a Key")
                 };
-                // §2.1 rule 1: no rule renames a dependency entity; a
-                // namespace's rule applies in the owned view.
-                if k.kind != KeyKind::Namespace && facts.dependency.contains(&r.id) {
-                    return Err(error(
-                        n,
-                        ErrorKind::DependencyEntity,
-                        format!(
-                            "`{}` is a dependency entity (a declaration of it is in a read-only file, or it is a specialisation or an implicit member of one): no rule renames it",
-                            entity.text
-                        ),
-                    ));
-                }
-                let new_name = match name {
-                    None => k.name.clone(),
-                    Some(id) => {
-                        if !matches!(k.name, Name::Identifier(_)) {
-                            return Err(error(
-                                n,
-                                ErrorKind::NotRenamable,
-                                format!(
-                                    "`{}` has a name of the form `{}`, not an identifier: it can be relocated with `=` only",
-                                    entity.text,
-                                    k.name.form()
-                                ),
-                            ));
-                        }
-                        Name::Identifier(id.as_bytes().to_vec())
-                    }
-                };
+                let new_name = relocated_name(n, entity, name.as_deref(), r.id, &k, facts)?;
                 let friends = undefined_friends(r, &k, &pre, facts);
                 // The rule of this line is pushed below, so the table is
                 // stale again after it.
@@ -581,88 +655,31 @@ pub fn resolve_with(
                     stale = false;
                 }
                 let mut probes = Vec::new();
-                // §2.3 "An entity with C language linkage": its key's parent
-                // is `c_linkage` whatever namespace declares it, so its rule
-                // has that parent; the line's parent is still resolved (it
-                // says where the declaration is) and looks nothing up.
+                // §2.3: a C function's rule keeps `c_linkage`; its line's
+                // parent is resolved, and looks nothing up.
                 let c_linkage = k.parent == Parent::CLinkage;
-                let new_parent = match parent {
-                    None if c_linkage => Parent::CLinkage,
+                let p = parent.as_ref().map(|p| resolve_in(p, &post, "post-images"));
+                let new_parent = match p.transpose().map_err(|(k, d)| error(n, k, d))? {
+                    _ if c_linkage => Parent::CLinkage,
                     None => Parent::Root,
-                    Some(p) => {
-                        let r =
-                            resolve_in(p, &post, "post-images").map_err(|(k, d)| error(n, k, d))?;
-                        if c_linkage {
-                            Parent::CLinkage
-                        } else {
-                            map_parent(Parent::Unit(r.id), &post, &table, &mut probes)
-                        }
-                    }
+                    Some(r) => map_parent(Parent::Unit(r.id), &post, &table, &mut probes),
                 };
-                let mut given = vec![Rule {
+                let main = Rule {
                     parent: new_parent,
                     kind: k.kind,
-                    name: new_name.clone(),
+                    name: new_name,
                     disc: k.disc,
                     to_parent: k.parent,
                     to_name: k.name.clone(),
-                }];
-                // The friend declarations keep their class; only a new
-                // name needs a rule.
-                if new_name != k.name {
-                    for f in &friends {
-                        let Some(fk) = &f.key else { continue };
-                        given.push(Rule {
-                            parent: map_parent(fk.parent, &post, &table, &mut probes),
-                            kind: fk.kind,
-                            name: new_name.clone(),
-                            disc: fk.disc,
-                            to_parent: fk.parent,
-                            to_name: fk.name.clone(),
-                        });
-                    }
-                }
+                };
+                let given = with_friends(main, &friends, &post, &table, &mut probes);
                 for (i, rule) in given.into_iter().enumerate() {
                     let of = if i == 0 {
                         format!("`{}`", entity.text)
                     } else {
                         format!("`{}`'s undefined friend declaration", entity.text)
                     };
-                    // A name no reader accepts comes from no walk, but is
-                    // an error, not a panic.
-                    if let Err(what) = rule.name.validate().and_then(|()| rule.to_name.validate()) {
-                        return Err(error(
-                            n,
-                            ErrorKind::NotRenamable,
-                            format!("the rule of {of} cannot be in a rule table: {what}"),
-                        ));
-                    }
-                    // A rule §2.1 refuses: the walk keys nothing under a
-                    // table that holds one, so it is refused here, with
-                    // its reason.
-                    if let Some(what) = rule.refusal() {
-                        return Err(error(
-                            n,
-                            ErrorKind::Refused,
-                            format!("the rule of {of} is refused: {what}"),
-                        ));
-                    }
-                    // A line above whose new parent this rule relocates.
-                    let hit = |q: &Key| {
-                        (q.parent, q.kind, &q.name, q.disc)
-                            == (rule.parent, rule.kind, &rule.name, rule.disc)
-                    };
-                    if let Some((above, text, _)) =
-                        looked.iter().find(|(_, _, levels)| levels.iter().any(hit))
-                    {
-                        return Err(error(
-                            n,
-                            ErrorKind::Order,
-                            format!(
-                                "the rule of {of} relocates {text}, or a namespace or class around it, which line {above} resolved as a new parent without it: this line must come before line {above}"
-                            ),
-                        ));
-                    }
+                    rule_checks(n, &rule, &of, &looked)?;
                     if friend_rules.contains(&rule) {
                         // Given already for a friend: the same rule again.
                         continue;

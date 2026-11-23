@@ -673,12 +673,12 @@ fn s2_3_order_of_lines() {
     }
 }
 
+/// What [`every_order`] resolves each order with.
+type Resolver<'a> = dyn Fn(&[(u64, Line)]) -> Result<RuleTable, LineError> + 'a;
+
 /// Every order of `lines` (renumbered from 1): each is either refused with
 /// `Order` or gives `want`'s table; at least one is accepted.
-fn every_order(
-    lines: &[(u64, Line)],
-    go: &dyn Fn(&[(u64, Line)]) -> Result<RuleTable, LineError>,
-) -> Digest {
+fn every_order(lines: &[(u64, Line)], go: &Resolver) -> Digest {
     let n = lines.len();
     assert!(n <= 6, "{n} lines: too many orders");
     let mut idx: Vec<usize> = (0..n).collect();
@@ -705,9 +705,9 @@ fn every_order(
     while i < n {
         if c[i] < i {
             if i % 2 == 0 {
-                idx.swap(0, i)
+                idx.swap(0, i);
             } else {
-                idx.swap(c[i], i)
+                idx.swap(c[i], i);
             }
             visit(&idx);
             c[i] += 1;
