@@ -1,0 +1,10 @@
+subjects:
+  2a0d4b3e follower - rule=yes n::f(int) of=9f28e21c
+  9f28e21c seed - rule=yes n::f(int)
+links:
+claims:
+  main.cpp:2:6+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:3:42+1 replace "g" t0 votes=1 none [2a0d4b3e]
+  main.cpp:4:6+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:7:15+1 replace spell(2a0d4b3e, "g") t0 votes=1 none [2a0d4b3e]
+changed:

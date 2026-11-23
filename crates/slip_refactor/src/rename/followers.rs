@@ -12,10 +12,16 @@
 //! - A function or variable that a class template's pattern befriends
 //!   with a declaration that is its own entity (keyed in the template,
 //!   `spec/landed/digest/WP-103.md` finding 2) is a follower of the
-//!   subject it declares, with its own rule: same name, same kind and
-//!   discriminator, and declared in the subject's scope.
+//!   subject it declares, with its own rule: same name, same
+//!   kind, declared in the subject's scope.
+//! - A subject whose key follows a pattern (`spec/landed/digest/WP-103.md`
+//!   finding 2: a function a class template's pattern befriends with a
+//!   definition) changes by the pattern's rule, and a rule of its own
+//!   would make its key indeterminate (`key/rule-on-instantiated-member`):
+//!   its `rule` is absent when every pattern it follows is a subject, and
+//!   it is `unsupported` when one is not.
 
-use slip_kiln::kiln::ast::decl::DeclKind;
+use slip_kiln::kiln::ast::decl::{DeclKind, FriendKind, TemplLinkKind};
 use slip_kiln::kiln::ast::{Ast, DeclId};
 use slip_kiln::written::{self, DeclNameKind};
 use slip_model::edits::{Role, subject_flags};
@@ -28,6 +34,40 @@ pub(crate) fn collect(ctx: &mut Ctx<'_, '_, '_>) {
     using_declarations(ctx);
     unnamed_types(ctx);
     friends_in_patterns(ctx);
+    followed_patterns(ctx);
+}
+
+fn followed_patterns(ctx: &mut Ctx<'_, '_, '_>) {
+    let ast = ctx.unit.ast();
+    for (id, e) in ctx.subjects.entities() {
+        let mut patterns: Vec<DeclId> = Vec::new();
+        for d in ast.redecls_of(e) {
+            // As the digest asks (`instantiated_patterns`): a
+            // specialisation's link is to its template, not a pattern.
+            if matches!(
+                ast.templ_link(d).get(),
+                Some((TemplLinkKind::Specialization | TemplLinkKind::PartialSpecialization, _))
+            ) {
+                continue;
+            }
+            let Some(p) = ast.instantiated_from(d).map(|p| ctx.keys.entity(p)) else { continue };
+            if p != e
+                && (ast.decls.get(p).misc().friend() == FriendKind::None
+                    || ast.definition(p).is_some())
+                && !patterns.contains(&p)
+            {
+                patterns.push(p);
+            }
+        }
+        if patterns.is_empty() {
+            continue;
+        }
+        if patterns.iter().all(|&p| ctx.subjects.of_decl(ctx.keys, p).is_some()) {
+            ctx.subjects.drop_rule(id);
+        } else {
+            ctx.subjects.flag(id, subject_flags::UNSUPPORTED);
+        }
+    }
 }
 
 fn using_declarations(ctx: &mut Ctx<'_, '_, '_>) {
@@ -45,16 +85,16 @@ fn using_declarations(ctx: &mut Ctx<'_, '_, '_>) {
             ctx.settled.insert(d.decl);
             continue;
         }
-        let mut named = Vec::new();
+        let mut targets = Vec::new();
         for shadow in ast.using_shadows(d.decl) {
             if let Some(t) = ast.using_target(shadow)
                 && let Some(id) = ctx.subjects.of_decl(ctx.keys, written::origin(unit, t))
             {
-                named.push(id);
+                targets.push(id);
             }
         }
-        if !named.is_empty() {
-            for id in named {
+        if !targets.is_empty() {
+            for id in targets {
                 ctx.subjects.flag(id, subject_flags::UNREACHABLE);
             }
             ctx.settled.insert(d.decl);
@@ -86,7 +126,11 @@ fn friends_in_patterns(ctx: &mut Ctx<'_, '_, '_>) {
     if seeds.is_empty() {
         return;
     }
-    // Each seed's key and the entity of its scope.
+    // Each seed's key and the entity of its scope. A friend in a pattern
+    // has a key of its own (its parent is the template, its discriminator
+    // differs), so it is matched on scope, kind and name, and follows
+    // every seed it matches: all functions of that name in that scope are
+    // seeds (§9.1), so whichever it redeclares is among them.
     let mut wanted = Vec::new();
     for (id, e) in seeds {
         if let (Ok(k), Some(s)) = (ctx.keys.key(e), enclosing(ast, e)) {
@@ -106,7 +150,7 @@ fn friends_in_patterns(ctx: &mut Ctx<'_, '_, '_>) {
         let Ok(k) = ctx.keys.key(ctx.keys.entity(o)) else { continue };
         let of: Vec<_> = wanted
             .iter()
-            .filter(|(_, w, s)| *s == scope && w.kind == k.kind && w.disc == k.disc && w.name == k.name)
+            .filter(|(_, w, s)| *s == scope && w.kind == k.kind && w.name == k.name)
             .map(|(id, ..)| *id)
             .collect();
         if !of.is_empty() {

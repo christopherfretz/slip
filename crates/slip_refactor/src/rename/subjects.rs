@@ -50,23 +50,19 @@ impl Subjects {
         of: &[KeyId],
     ) -> Option<KeyId> {
         let e = keys.entity(decl);
-        let id = match self.by_entity.get(&e) {
-            Some(&id) => id,
-            None => {
-                let id = keys.key_id(e).ok()?;
-                self.by_entity.insert(e, id);
-                if !self.entries.contains_key(&id) {
-                    let (rule, flags) = match keys.rename_rule(e, new) {
-                        Ok(r) => (Some(r), 0),
-                        Err(_) => (None, subject_flags::UNSUPPORTED),
-                    };
-                    self.entries.insert(
-                        id,
-                        Entry { entity: e, rule, role, of: BTreeSet::new(), flags },
-                    );
-                }
-                id
+        let id = if let Some(&id) = self.by_entity.get(&e) {
+            id
+        } else {
+            let id = keys.key_id(e).ok()?;
+            self.by_entity.insert(e, id);
+            if let std::collections::btree_map::Entry::Vacant(slot) = self.entries.entry(id) {
+                let (made, flags) = match keys.rename_rule(e, new) {
+                    Ok(r) => (Some(r), 0),
+                    Err(_) => (None, subject_flags::UNSUPPORTED),
+                };
+                slot.insert(Entry { entity: e, rule: made, role, of: BTreeSet::new(), flags });
             }
+            id
         };
         if let Some(entry) = self.entries.get_mut(&id) {
             entry.role = entry.role.min(role);
@@ -87,6 +83,14 @@ impl Subjects {
         }
     }
 
+    /// Subject `id` changes by another subject's rule (its key follows
+    /// that one's) and carries none of its own.
+    pub fn drop_rule(&mut self, id: KeyId) {
+        if let Some(e) = self.entries.get_mut(&id) {
+            e.rule = None;
+        }
+    }
+
     /// The two subjects change together or not at all.
     #[allow(dead_code, reason = "for docs/wp/WP-072.md (overriding functions)")]
     pub fn link(&mut self, a: KeyId, b: KeyId) {
@@ -102,7 +106,11 @@ impl Subjects {
 
     /// Each seed's id and entity, by id.
     pub fn seeds(&self) -> Vec<(KeyId, DeclId)> {
-        self.entries.iter().filter(|(_, e)| e.role == Role::Seed).map(|(&id, e)| (id, e.entity)).collect()
+        self.entries
+            .iter()
+            .filter(|(_, e)| e.role == Role::Seed)
+            .map(|(&id, e)| (id, e.entity))
+            .collect()
     }
 
     /// The section's `subjects` and `links`. `of` is kept for a follower
@@ -133,24 +141,36 @@ impl Subjects {
 /// designator never names a function or a variable, and an attribute
 /// argument that is an expression is a written reference, so neither
 /// sets the flag here.
+///
+/// A specialisation is the record `ast.templates.specs_of` lists; what is
+/// written is a redeclaration of it (`ast.redecls_of`). An explicit
+/// instantiation is hidden when no declaration of its specialisation has
+/// an extent row of that kind; an explicit specialisation when one of its
+/// declarations has a row and no `decl_names` entry, or when none of them
+/// has an entry.
 pub(crate) fn flag_unreachable(ctx: &mut Ctx<'_, '_, '_>) {
     let unit = ctx.unit;
     let ast = unit.ast();
-    let named: HashSet<DeclId> = ctx
-        .named
-        .old
-        .iter()
-        .filter(|d| d.kind == DeclNameKind::ExplicitSpecialisation)
-        .map(|d| d.decl)
-        .collect();
+    let named: HashSet<DeclId> = ctx.named.old.iter().map(|d| d.decl).collect();
     for (id, e) in ctx.subjects.entities() {
         for &s in ast.templates.specs_of(e) {
             let hidden = match ast.spec_info(s).map(|(_, i)| i.kind) {
                 Some(
                     SpecKind::ExplicitInstantiationDeclaration
                     | SpecKind::ExplicitInstantiationDefinition,
-                ) => written::row(unit, s).is_none(),
-                Some(SpecKind::ExplicitSpecialization) => !named.contains(&s),
+                ) => !ast
+                    .redecls_of(s)
+                    .any(|x| written::row(unit, x) == Some(DeclNameKind::ExplicitInstantiation)),
+                Some(SpecKind::ExplicitSpecialization) => {
+                    let mut any = false;
+                    let mut lost = false;
+                    for x in ast.redecls_of(s) {
+                        let has = named.contains(&x);
+                        any |= has;
+                        lost |= !has && written::row(unit, x).is_some();
+                    }
+                    lost || !any
+                }
                 _ => false,
             };
             if hidden {

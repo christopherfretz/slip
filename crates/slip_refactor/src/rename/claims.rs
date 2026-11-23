@@ -72,7 +72,13 @@ impl Claims {
     /// The name token `name` denotes `subjects` and becomes the new name,
     /// written as `written` says; a `refuse` with `sites`' reason when it
     /// cannot be edited.
-    pub fn replace(&mut self, sites: &Sites<'_, '_>, name: Span, subjects: &[KeyId], written: Written) {
+    pub fn replace(
+        &mut self,
+        sites: &Sites<'_, '_>,
+        name: Span,
+        subjects: &[KeyId],
+        written: Written,
+    ) {
         match sites.name_token(name, &self.old) {
             Located::At { file, lo, hi, tier, macro_site } => self.add(
                 name,
@@ -118,9 +124,17 @@ impl Claims {
     /// `mixed_instances`). Its range is the token's when `sites` locates
     /// it, else the range of `sites`' own refusal.
     #[allow(dead_code, reason = "for docs/wp/WP-073.md (mixed_set, mixed_instances)")]
-    pub fn refuse(&mut self, sites: &Sites<'_, '_>, name: Span, subjects: &[KeyId], reason: Reason) {
+    pub fn refuse(
+        &mut self,
+        sites: &Sites<'_, '_>,
+        name: Span,
+        subjects: &[KeyId],
+        reason: Reason,
+    ) {
         let (at, tier, macro_site) = match sites.name_token(name, &self.old) {
-            Located::At { file, lo, hi, tier, macro_site } => (Some((file, lo, hi)), tier, macro_site),
+            Located::At { file, lo, hi, tier, macro_site } => {
+                (Some((file, lo, hi)), tier, macro_site)
+            }
             Located::Refused { tier, at, macro_site, .. } => (at, tier, macro_site),
         };
         self.add(
@@ -201,17 +215,16 @@ impl Claims {
         let mut claims = Vec::with_capacity(self.derivations.len());
         for d in self.derivations.into_values() {
             let (file, lo, hi) = d.at.unwrap_or((main, 0, 0));
-            let i = match index.get(&file) {
-                Some(&i) => i,
-                None => {
-                    let r = files(file).ok_or_else(|| {
-                        format!("a claim lies in buffer {} that is not one of the inputs", file.index())
-                    })?;
-                    refs.push(r);
-                    let i = (refs.len() - 1) as u64;
-                    index.insert(file, i);
-                    i
-                }
+            let i = if let Some(&i) = index.get(&file) {
+                i
+            } else {
+                let r = files(file).ok_or_else(|| {
+                    format!("a claim lies in buffer {} that is not one of the inputs", file.index())
+                })?;
+                refs.push(r);
+                let i = (refs.len() - 1) as u64;
+                index.insert(file, i);
+                i
             };
             let pieces = match (d.stance, pieces.get(&(file, lo, hi))) {
                 (Stance::Replace, Some(Written::Spelled(key))) => {

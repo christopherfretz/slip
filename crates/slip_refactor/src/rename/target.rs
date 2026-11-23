@@ -64,21 +64,23 @@ pub(crate) fn seeds(ctx: &mut Ctx<'_, '_, '_>) -> (Vec<WrittenRef>, u64) {
 /// Adds the entity of `origin` as a seed if it is one; `decl` is the
 /// declaration or referent it was reached by (for the C linkage case,
 /// whose scopes are each declaration's).
-fn consider(ctx: &mut Ctx<'_, '_, '_>, memo: &mut HashMap<DeclId, Class>, origin: DeclId, decl: DeclId) {
+fn consider(
+    ctx: &mut Ctx<'_, '_, '_>,
+    memo: &mut HashMap<DeclId, Class>,
+    origin: DeclId,
+    decl: DeclId,
+) {
     let e = ctx.keys.entity(origin);
-    let class = match memo.get(&e) {
-        Some(&c) => c,
-        None => {
-            let c = classify(ctx, e);
-            memo.insert(e, c);
-            c
-        }
+    let class = if let Some(&c) = memo.get(&e) {
+        c
+    } else {
+        let c = classify(ctx, e);
+        memo.insert(e, c);
+        c
     };
     let flags = match class {
         Class::Seed(flags) => flags,
-        Class::CLinkage
-            if scopes_are_target(ctx, decl) || scopes_are_target(ctx, origin) =>
-        {
+        Class::CLinkage if scopes_are_target(ctx, decl) || scopes_are_target(ctx, origin) => {
             subject_flags::UNSUPPORTED
         }
         Class::CLinkage | Class::No => return,

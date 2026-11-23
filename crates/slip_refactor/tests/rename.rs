@@ -30,12 +30,12 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use slip_digest::query::Keys;
+use slip_digest::query::{Keys, NoKey};
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::tree::Tree;
 use slip_kiln::written;
 use slip_kiln::{ParseOptions, Unit};
-use slip_model::edits::{Edits, Piece, Role, Stance, subject_flags, tiers};
+use slip_model::edits::{Edits, Piece, Reason, Role, Stance, subject_flags, tiers};
 use slip_model::keys::{Name, RuleTable};
 use slip_model::transform::{Ownership, Rename, TargetKind, TransformKind};
 use slip_model::{Digest, Status, Transform};
@@ -68,6 +68,10 @@ fn cases() -> Vec<Case> {
         .filter(|p| p.is_dir())
         .collect();
     dirs.sort();
+    // `SLIP_CASE=<name>` runs one directory.
+    if let Some(only) = std::env::var_os("SLIP_CASE") {
+        dirs.retain(|d| d.file_name() == Some(only.as_os_str()));
+    }
     dirs.into_iter().map(|d| read_case(&d)).collect()
 }
 
@@ -75,7 +79,8 @@ fn read_case(dir: &Path) -> Case {
     let name = dir.file_name().unwrap().to_string_lossy().into_owned();
     let text = std::fs::read_to_string(dir.join("test.txt"))
         .unwrap_or_else(|e| panic!("{name}: test.txt: {e}"));
-    let (mut target, mut kind, mut new_name, mut args, mut spec) = (None, None, None, Vec::new(), 0);
+    let (mut target, mut kind, mut new_name, mut args, mut spec) =
+        (None, None, None, Vec::new(), 0);
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let (k, v) = line.split_once(':').unwrap_or_else(|| panic!("{name}: bad line {line:?}"));
         let v = v.trim();
@@ -152,7 +157,7 @@ fn transform(case: &Case, root: &str) -> Transform {
 /// What a run of a case gave.
 enum Ran {
     Diagnosed,
-    Edits(Edits),
+    Edits(Box<Edits>),
 }
 
 /// Writes `files` as a tree, parses `main.cpp` with the written tables on
@@ -207,7 +212,7 @@ fn run_case(case: &Case) -> Ran {
         }
         edits
     });
-    out.map_or(Ran::Diagnosed, Ran::Edits)
+    out.map_or(Ran::Diagnosed, |e| Ran::Edits(Box::new(e)))
 }
 
 /// §4.7 through the shard's own check, and the rename's own promises
@@ -283,7 +288,13 @@ fn flags(f: u64) -> String {
 }
 
 fn tier_names(t: u64) -> String {
-    let names = [(tiers::T0, "t0"), (tiers::T1, "t1"), (tiers::T2, "t2"), (tiers::T3, "t3"), (tiers::X, "x")];
+    let names = [
+        (tiers::T0, "t0"),
+        (tiers::T1, "t1"),
+        (tiers::T2, "t2"),
+        (tiers::T3, "t3"),
+        (tiers::X, "x"),
+    ];
     names.iter().filter(|(b, _)| t & b != 0).map(|(_, n)| *n).collect::<Vec<_>>().join("|")
 }
 
@@ -293,7 +304,7 @@ fn place(case: &Case, path: &[u8], lo: u64, hi: u64) -> String {
     let bytes = case.files.iter().find(|(p, _)| *p == path).map(|(_, b)| b.as_slice());
     let (line, column) = bytes.map_or((0, 0), |b| {
         let before = &b[..(lo as usize).min(b.len())];
-        let line = before.iter().filter(|&&c| c == b'\n').count() + 1;
+        let line = before.split(|&c| c == b'\n').count();
         let start = before.iter().rposition(|&c| c == b'\n').map_or(0, |i| i + 1);
         (line, before.len() - start + 1)
     });
@@ -349,7 +360,7 @@ fn render(case: &Case, ran: &Ran) -> String {
             pieces.join(" "),
             tier_names(c.tiers),
             c.votes,
-            format!("{:?}", c.reason).to_lowercase(),
+            reason_name(c.reason),
         );
         if !c.subjects.is_empty() {
             let subs: Vec<String> = c.subjects.iter().map(short).collect();
@@ -396,7 +407,13 @@ fn directories() {
             }
         }
     }
-    assert!(failed.is_empty(), "{} of {} directories differ:\n{}", failed.len(), all.len(), failed.join("\n"));
+    assert!(
+        failed.is_empty(),
+        "{} of {} directories differ:\n{}",
+        failed.len(),
+        all.len(),
+        failed.join("\n")
+    );
 }
 
 /// Two parses of one tree give equal `Edits` (§9.7: `run` is a function
@@ -406,7 +423,9 @@ fn directories() {
 #[test]
 fn run_is_a_function_of_the_unit() {
     for case in cases() {
-        let (Ran::Edits(a), Ran::Edits(mut b)) = (run_case(&case), run_case(&case)) else { continue };
+        let (Ran::Edits(a), Ran::Edits(mut b)) = (run_case(&case), run_case(&case)) else {
+            continue;
+        };
         b.transform = a.transform;
         assert_eq!(a, b, "{}", case.name);
     }
@@ -423,8 +442,11 @@ fn rules_give_the_ids_in_the_post_image() {
     let mut checked = 0;
     for case in cases() {
         let Ran::Edits(e) = run_case(&case) else { continue };
-        let applicable = e.claims.iter().all(|c| matches!(c.stance, Stance::Replace | Stance::Keep))
-            && e.claims.windows(2).all(|w| (w[0].file, w[0].lo, w[0].hi) != (w[1].file, w[1].lo, w[1].hi));
+        let applicable =
+            e.claims.iter().all(|c| matches!(c.stance, Stance::Replace | Stance::Keep))
+                && e.claims
+                    .windows(2)
+                    .all(|w| (w[0].file, w[0].lo, w[0].hi) != (w[1].file, w[1].lo, w[1].hi));
         let want: Vec<Digest> =
             e.subjects.iter().filter(|s| s.rule.is_some() && s.flags == 0).map(|s| s.id).collect();
         if !applicable || want.is_empty() {
@@ -443,10 +465,16 @@ fn rules_give_the_ids_in_the_post_image() {
                 let mut ids = BTreeSet::new();
                 for d in written::decl_names(u) {
                     let e = written::origin(u, d.decl);
-                    if named(u, e, &new_name)
-                        && let Ok(id) = keys.key_id(e)
-                    {
-                        ids.insert(id);
+                    if named(u, e, &new_name) {
+                        match keys.key_id(e) {
+                            Ok(id) => {
+                                ids.insert(id);
+                            }
+                            Err(NoKey::Indeterminate(c)) => {
+                                panic!("{name}: a declaration's key is indeterminate: {c:?}")
+                            }
+                            Err(_) => {}
+                        }
                     }
                 }
                 ids
@@ -455,11 +483,33 @@ fn rules_give_the_ids_in_the_post_image() {
         })
         .unwrap_or_else(|| panic!("{}: the post-image has errors", case.name));
         for id in &want {
-            assert!(got.contains(id), "{}: no declaration in the post-image has {}", case.name, short(id));
+            assert!(
+                got.contains(id),
+                "{}: no declaration in the post-image has {}",
+                case.name,
+                short(id)
+            );
         }
         checked += 1;
     }
     assert!(checked > 0, "no directory was checked");
+}
+
+/// The wire name of a reason (`spec/edits.md` §4.2).
+fn reason_name(r: Reason) -> &'static str {
+    match r {
+        Reason::None => "none",
+        Reason::MacroBody => "macro_body",
+        Reason::Pasted => "pasted",
+        Reason::Crossing => "crossing",
+        Reason::NotAFile => "not_a_file",
+        Reason::NotOwned => "not_owned",
+        Reason::FileRecoded => "file_recoded",
+        Reason::NotPlain => "not_plain",
+        Reason::MixedSet => "mixed_set",
+        Reason::MixedInstances => "mixed_instances",
+        Reason::Directive => "directive",
+    }
 }
 
 /// Whether the AST names `d` (an identifier) `name`.
@@ -475,7 +525,9 @@ fn post_image(case: &Case, e: &Edits) -> Vec<(String, Vec<u8>)> {
         let mut edits: Vec<(usize, usize, Vec<u8>)> = e
             .claims
             .iter()
-            .filter(|c| c.stance == Stance::Replace && e.files[c.file as usize].path == p.as_bytes())
+            .filter(|c| {
+                c.stance == Stance::Replace && e.files[c.file as usize].path == p.as_bytes()
+            })
             .map(|c| {
                 let text: Vec<u8> = c
                     .pieces
@@ -488,7 +540,7 @@ fn post_image(case: &Case, e: &Edits) -> Vec<(String, Vec<u8>)> {
                 (c.lo as usize, c.hi as usize, text)
             })
             .collect();
-        edits.sort_by(|a, b| b.0.cmp(&a.0));
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
         for (lo, hi, text) in edits {
             bytes.splice(lo..hi, text);
         }
@@ -501,7 +553,8 @@ fn post_image(case: &Case, e: &Edits) -> Vec<(String, Vec<u8>)> {
 /// `run` returns without panicking.
 #[test]
 fn run_on_a_diagnosed_unit_does_not_panic() {
-    let files = [("main.cpp", &b"namespace n { void f(); }\nvoid g() { n::f(); undeclared(); }\n"[..])];
+    let files =
+        [("main.cpp", &b"namespace n { void f(); }\nvoid g() { n::f(); undeclared(); }\n"[..])];
     let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), "diagnosed-run", &files).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
     let obs = tree.observer("main.cpp", "c++20", &[]);
@@ -522,7 +575,8 @@ fn run_on_a_diagnosed_unit_does_not_panic() {
             slip_digest::map::with_input(u, &subject, |input| {
                 let mut keys = Keys::new(input);
                 let sites = slip_kiln::sites::Sites::new(u, &t.ownership);
-                slip_refactor::run(&t, u, &mut keys, &|f| sites.file_ref(f)).map(|e| e.subjects.len())
+                slip_refactor::run(&t, u, &mut keys, &|f| sites.file_ref(f))
+                    .map(|e| e.subjects.len())
             })
         })
         .unwrap();

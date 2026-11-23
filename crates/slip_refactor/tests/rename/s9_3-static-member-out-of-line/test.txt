@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 1 (a static data member defined out of line) and row 4 (C::v)
+from: n::C::v
+to: w
+kind: variable

@@ -1,0 +1,4 @@
+spec: edits.md §2.2, §2.3, §9.3 rows 10 and 11 (a reference at tiers 0, 1, 2 and 3)
+from: n::foo
+to: bar
+kind: function

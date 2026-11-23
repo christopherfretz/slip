@@ -1,0 +1,8 @@
+subjects:
+  34c1cd9c seed - rule=yes n::f(int)
+links:
+claims:
+  main.cpp:1:42+1 replace "g" t0 votes=1 none [34c1cd9c]
+  main.cpp:2:15+1 replace spell(34c1cd9c, "g") t0 votes=1 none [34c1cd9c]
+  main.cpp:2:28+1 replace spell(34c1cd9c, "g") t0 votes=1 none [34c1cd9c]
+changed:
