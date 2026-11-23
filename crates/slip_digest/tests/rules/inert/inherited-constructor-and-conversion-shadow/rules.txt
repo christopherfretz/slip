@@ -1,0 +1,2 @@
+# WP-134 item 3 (the review of WP-131): an inherited constructor and a using-shadow of a conversion function of a class template's base (D<int> of B<int>) beside the relocation (WP-124: the base's constructor is declared only: one defined in a template is indeterminate, kiln/pattern-mem-initializers, until the Kiln pin moves)
+relocate a::detail => a :: impl
