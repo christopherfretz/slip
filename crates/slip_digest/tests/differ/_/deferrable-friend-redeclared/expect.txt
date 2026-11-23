@@ -1,2 +1,2 @@
-changed g(int)
+changed A::friend g(int)
 derived-changed g(int)::<exception_spec>

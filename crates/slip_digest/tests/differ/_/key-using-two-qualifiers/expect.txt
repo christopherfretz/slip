@@ -1,0 +1,2 @@
+added <shadow b::f(int)>
+added <using b::f>

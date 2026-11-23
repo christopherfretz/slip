@@ -1,0 +1,2 @@
+# The decltype operand is profiled (WP-036): two keys.
+added template <class> decltype(t.b) f(type-parameter-0-0)

@@ -68,7 +68,11 @@ fn wp047_derived_differences() {
     // sides (digest-kinds §11.3).
     assert_eq!(
         common::derived_differences(&a, &b),
-        set(&[d_changed("X<int>::~X()"), d_changed("c<int>::<value>")])
+        set(&[
+            d_changed("X<int>::~X()"),
+            d_changed("X<int>::~X() requires c<T>"),
+            d_changed("c<int>::<value>"),
+        ])
     );
     let (a, b) = sides("derived/equal");
     assert!(common::derived_differences(&a, &b).is_empty());
@@ -125,8 +129,13 @@ fn wp047_differ_derived_both_sides_changes() {
     let base = changed("c");
     let value = d_changed("c<int>::<value>");
     for exact in [false, true] {
-        let lines = set(&[base.clone(), value.clone(), d_changed(x)]);
-        assert!(ok(judge_differ(&lines, exact, &a, &b)).is_empty());
+        let both = set(&[
+            base.clone(),
+            value.clone(),
+            d_changed(x),
+            d_changed("X<int>::~X() requires c<T>"),
+        ]);
+        assert!(ok(judge_differ(&both, exact, &a, &b)).is_empty());
         for wrong in [d_added(x), d_removed(x)] {
             let lines = set(&[base.clone(), value.clone(), wrong]);
             assert!(judge_differ(&lines, exact, &a, &b).is_err());
@@ -167,6 +176,7 @@ fn wp047_exact_derived_names_the_unnamed() {
     assert!(
         e.contains(
             "seen but not expected: [DerivedChanged(\"X<int>::~X()\"), \
+             DerivedChanged(\"X<int>::~X() requires c<T>\"), \
              DerivedChanged(\"c<int>::<value>\")]"
         ),
         "{e}"
@@ -188,7 +198,12 @@ fn wp047_derived_changed_as_before() {
     assert!(judge_differ(&set(&[changed("f()"), d_changed(G)]), false, &a, &b).is_ok());
     // Content.
     let (a, b) = sides("derived/changes");
-    let lines = set(&[changed("c"), d_changed("X<int>::~X()"), d_changed("c<int>::<value>")]);
+    let lines = set(&[
+        changed("c"),
+        d_changed("X<int>::~X()"),
+        d_changed("X<int>::~X() requires c<T>"),
+        d_changed("c<int>::<value>"),
+    ]);
     assert!(ok(judge_differ(&lines, false, &a, &b)).is_empty());
     // Neither.
     let (a, b) = sides("derived/equal");
@@ -457,16 +472,17 @@ fn wp047_report_mode() {
         text,
         "runner/file/differ-loose: unnamed derived-added g<int>() (written derived-changed)\n\
          runner/file/differ-report-changes: unnamed derived-changed X<int>::~X()\n\
+         runner/file/differ-report-changes: unnamed derived-changed X<int>::~X() requires c<T>\n\
          runner/file/differ-report-changes: unnamed derived-changed c<int>::<value>\n\
          report: 3 run, 0 skipped, 0 failed\n"
     );
     assert_eq!(
         report_summary(&outcome),
-        "SLIP_DIGEST_DERIVED=report: 3 unnamed derived differences in 2 directories\n\
+        "SLIP_DIGEST_DERIVED=report: 4 unnamed derived differences in 2 directories\n\
          \x20      1  derived-added (written derived-changed)\n\
-         \x20      2  derived-changed\n\
+         \x20      3  derived-changed\n\
          the directories with the most:\n\
-         \x20      2  runner/file/differ-report-changes\n\
+         \x20      3  runner/file/differ-report-changes\n\
          \x20      1  runner/file/differ-loose\n"
     );
     // Without report mode there are no notes.

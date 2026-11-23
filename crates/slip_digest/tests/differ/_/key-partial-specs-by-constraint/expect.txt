@@ -1,0 +1,3 @@
+# The head's requires-clause is in the key (WP-036); the display name of a
+# partial specialisation with a constrained head begins with the head.
+added template <class> requires C2<T> S<type-parameter-0-0 *>

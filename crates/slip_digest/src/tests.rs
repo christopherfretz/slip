@@ -286,7 +286,7 @@ fn names() {
         "n::C",
         "n::C::m(int, const char *) const &",
         "n::<static_assert>",
-        "n::id(type-parameter-0-0)",
+        "template <class> type-parameter-0-0 n::id(type-parameter-0-0)",
         "W",
         "W<int>",
         "<order>",

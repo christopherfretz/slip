@@ -30,6 +30,35 @@ pub struct ParseOptions {
     /// Kiln `spec/pp.md` "Preprocessing record"), which the closure reads
     /// as [`Unit::pp_record`].
     pub pp_record: bool,
+    /// Record Kiln's written-reference table (Kiln `spec/ast.md` §18) and
+    /// its declaration-extent table (§19), which the closure reads through
+    /// [`crate::written`]. How the front end is asked is
+    /// [`written_words`]'s to say.
+    pub written: bool,
+}
+
+/// The words `options` adds to the front end's command line, right after
+/// `-fsyntax-only` (so before any `--` of the command's own). They are
+/// words of the line the front end is given, never of the plan: the
+/// observer and its id do not change, and neither does the shard.
+///
+/// At Kiln `913a490bb` [`ParseOptions::written`] is two driver flags:
+///
+/// - `-fkiln-decl-extents`, which records the declaration extents and
+///   prints nothing (Kiln `kiln_driver/src/args.rs:2057`);
+/// - `-fkiln-dump-written-refs`, the only switch of the written-reference
+///   table (`args.rs:2056`; Kiln's `FrontEndOptions` has none until
+///   Kiln WP-2320, `docs/requests/KR1-amendment-1.md` §1). Through the
+///   front-end library entry it records the table and formats no dump:
+///   the entry returns before any dump is made
+///   (`kiln_driver/src/syntax_cmd.rs:692-696`; Kiln `spec/driver.md`
+///   "Front-end library entry": "no dumps"). So at this pin it is in
+///   effect a recording-only switch, spelled as the dump flag.
+///
+/// When Kiln gives the entry a recording switch, this function is the one
+/// place that changes.
+fn written_words(options: ParseOptions) -> &'static [&'static str] {
+    if options.written { &["-fkiln-dump-written-refs", "-fkiln-decl-extents"] } else { &[] }
 }
 
 /// The finished front end of one observer, as the closure of
@@ -207,7 +236,9 @@ pub fn parse_observer_with<R: Send>(
     std::env::set_current_dir(&directory)
         .map_err(|e| format!("cannot enter {}: {e}", directory.display()))?;
 
-    let line = front_end_line(&rest);
+    let mut line = front_end_line(&rest);
+    let words = written_words(options);
+    line.splice(1..1, words.iter().map(|&w| w.to_owned()));
     let program = program(&argv0);
     let dir: &Path = &directory;
     let see = move |fe: &FrontEnd<'_, '_>| -> Result<(Vec<FileRef>, u64, R), String> {
