@@ -7,6 +7,7 @@
 //!   VERSION                                   the text "1\n"
 //!   lock                                      "<pid>\n" while a phase runs (exclusive open)
 //!   plans/<plan id>.plan
+//!   declared/<declared id>.decl               DECL containers (spec/verify.md §2)
 //!   shards/<plan id>/<phase>.<round>/<observer id>.shard
 //!   runs/<plan id>/<phase>.<round>.<started_unix_ns>.run
 //!   logs/<plan id>/<phase>.<round>/<observer id>.<attempt>.log
@@ -43,6 +44,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use slip_model::container::{Reader, TRAILER_LEN};
 use slip_model::hash::content_digest;
+use slip_model::declared::Declared;
 use slip_model::{Digest, Phase, Plan, RunRecord, Shard, formats};
 
 /// The text of `VERSION`.
@@ -533,6 +535,34 @@ impl Store {
     /// nothing; the empty prefix matches every plan.
     pub fn find_plan(&self, hex_prefix: &str) -> Result<Vec<Digest>> {
         find_ids(&self.root().join("plans"), "plan", hex_prefix)
+    }
+
+    // -- declared changes (spec/verify.md §2) ---------------------------------
+
+    /// `declared/<id>.decl`.
+    pub fn declared_path(&self, id: &Digest) -> PathBuf {
+        self.root().join("declared").join(format!("{id}.decl"))
+    }
+
+    /// Publishes declared changes under their content id, which is
+    /// returned. The bytes must be a valid `DECL` file (kind `DECL`, decoded
+    /// and checked in full); anything else is `Invalid` and nothing is
+    /// written. The directory `declared/` is made if the store was
+    /// initialised before it existed.
+    pub fn publish_declared(&self, bytes: &[u8]) -> Result<Digest> {
+        if bytes.get(8..12) != Some(&Declared::KIND[..]) {
+            return Err(StoreError::Invalid("not a DECL file".into()));
+        }
+        let id = formats::content_id(bytes)
+            .map_err(|e| StoreError::Invalid(format!("not a valid DECL file: {e}")))?;
+        self.inner.publish(&self.declared_path(&id), bytes)?;
+        Ok(id)
+    }
+
+    /// The bytes of declared changes `id`, if the store has them (not
+    /// validated: a reader checks the kind and the content id).
+    pub fn read_declared(&self, id: &Digest) -> Result<Option<Vec<u8>>> {
+        read_optional(&self.declared_path(id))
     }
 
     // -- shards --------------------------------------------------------------
@@ -1094,7 +1124,7 @@ fn initialise(root: &Path) -> Result<()> {
         }
         Err(e) => return Err(StoreError::Io { path: root.to_path_buf(), error: e }),
     }
-    for sub in ["tmp", "plans", "shards", "runs", "logs"] {
+    for sub in ["tmp", "plans", "declared", "shards", "runs", "logs"] {
         let d = root.join(sub);
         fs::create_dir_all(&d).map_err(io_err(&d))?;
     }
