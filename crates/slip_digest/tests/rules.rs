@@ -112,6 +112,8 @@ struct Post {
     digested: Digested,
     /// `(line, via, direct)` for each `use` line.
     uses: Vec<(usize, u64, u64)>,
+    /// The post-image under no rule, when the table is not empty.
+    unruled: Option<Output>,
 }
 
 /// `via` and `direct` of the rule of line `n` (see the head of this file).
@@ -163,7 +165,8 @@ fn post_side(dir: &Path, pre: &[Record], uses: &[(usize, u64, u64)]) -> Result<P
             let (v, d) = rule_use(input, &t, n)?;
             got.push((n, v, d));
         }
-        Ok(Post { table: t, digested: common::digested(first), uses: got })
+        let unruled = (!t.table.is_empty()).then(|| digest_under(input, &RuleTable::empty()));
+        Ok(Post { table: t, digested: common::digested(first), uses: got, unruled })
     })?
 }
 
@@ -271,6 +274,16 @@ fn case(dir: &Path) -> Result<(), String> {
     let mut problems = Vec::new();
     if let Err(p) = judge(&e, &a, &post.digested) {
         problems.push(p);
+    }
+    // An equal case under rules that would be equal without them shows
+    // nothing of the rules, unless `rules.txt` says so (`# vacuous`).
+    let vacuous_ok = std::fs::read_to_string(dir.join("rules.txt"))
+        .is_ok_and(|t| t.lines().any(|l| l.trim() == "# vacuous"));
+    if e.lines.is_empty()
+        && !vacuous_ok
+        && post.unruled.as_ref().is_some_and(|u| u.digests == a.output.digests)
+    {
+        problems.push("vacuous: the post-image without its rules is equal already".into());
     }
     for (&(n, v, d), &(_, gv, gd)) in e.uses.iter().zip(&post.uses) {
         if (v, d) != (gv, gd) {
