@@ -69,6 +69,8 @@ pub(super) struct Index {
     /// the written-reference table: not calls (`docs/wp/WP-086.md` item
     /// 2). The counter `api.calls_without_reference`.
     without_reference: u64,
+    /// Expression index of every argument of a call.
+    arguments: std::collections::HashSet<u32>,
 }
 
 /// Why an expression has no extent: the kind of the expression where the
@@ -214,6 +216,7 @@ impl KilnSubject<'_> {
             index.holder.insert(c.expr.index(), h);
             for a in &c.args {
                 index.holder.entry(a.index()).or_insert(h);
+                index.arguments.insert(a.index());
             }
             index.calls.push(c);
         }
@@ -842,6 +845,12 @@ impl KilnSubject<'_> {
         if self.ast.exprs.decl_ref_extra(e).is_some_and(|x| x.template_args.is_some()) {
             return Err(NoExtent::new(kind, "template arguments"));
         }
+        // A specialisation named without template arguments Kiln records:
+        // its arguments may be written after the name (`d.twice<7>`, a
+        // member variable template: Kiln records none there).
+        if self.ast.spec_info(self.ast.exprs.decl(e)).is_some() {
+            return Err(NoExtent::new(kind, "specialisation"));
+        }
         let r = self.reference_at(e).ok_or(NoExtent::new(kind, "no reference"))?;
         if self.tokens.token_end(r.name.lo) != Some(r.name.hi) {
             return Err(NoExtent::new(kind, "name of several tokens"));
@@ -870,13 +879,33 @@ impl KilnSubject<'_> {
 
     /// The range of `e`'s tokens, or why there is none.
     pub(super) fn expr_range(&self, e: ExprId) -> Result<Range, NoExtent> {
+        self.expr_range_tier(e).map(|(r, _)| r)
+    }
+
+    /// The range of `e`'s tokens and its tier, or why there is none. The
+    /// range of an argument must be all that is written between a `(` or
+    /// `,` and a `,` or `)`: Kiln leaves no node for some written tokens
+    /// of an argument (the braces of `f({x})` when `x` alone initialises
+    /// the parameter), and a range inside them is too short.
+    fn expr_range_tier(&self, e: ExprId) -> Result<(Range, Tier), NoExtent> {
+        use slip_kiln::kiln::lex::{Punct, TokKind};
         let kind = self.ast.exprs.get(e).kind();
         let first = self.first_token(e)?;
         let last = self.last_token(e)?;
         let r = ranges::file_range_of_tokens(&self.tokens, first, last)
             .ok_or(NoExtent::new(kind, "no range of tier 0 or 1"))?;
-        self.subject_range(r.file, r.lo, r.hi)
-            .ok_or(NoExtent::new(kind, "not a file of the subject"))
+        let range = self
+            .subject_range(r.file, r.lo, r.hi)
+            .ok_or(NoExtent::new(kind, "not a file of the subject"))?;
+        if self.call_index().arguments.contains(&e.index()) {
+            let (before, after) = self.tokens.kinds_around(r.file, r.lo, r.hi);
+            let opens = matches!(before, Some(TokKind::Punct(Punct::LParen | Punct::Comma)));
+            let closes = matches!(after, Some(TokKind::Punct(Punct::Comma | Punct::RParen)));
+            if !(opens && closes) {
+                return Err(NoExtent::new(kind, "not all of the argument"));
+            }
+        }
+        Ok((range, r.tier))
     }
 
     /// The range of a file range, when its file is a file of the subject
@@ -894,10 +923,7 @@ impl KilnSubject<'_> {
 
     /// The tier of the range of `e`, with the range.
     fn expr_tier(&self, e: ExprId) -> Option<(Range, Tier)> {
-        let first = self.first_token(e).ok()?;
-        let last = self.last_token(e).ok()?;
-        let r = ranges::file_range_of_tokens(&self.tokens, first, last)?;
-        Some((self.subject_range(r.file, r.lo, r.hi)?, r.tier))
+        self.expr_range_tier(e).ok()
     }
 
     // ---- what the subject answers --------------------------------------------

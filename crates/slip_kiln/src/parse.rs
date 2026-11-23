@@ -112,6 +112,35 @@ impl<'u> Tokens<'u> {
         self.starts.of(file, || self.lex_starts(file)).binary_search(&pos).is_ok()
     }
 
+    /// The kinds of the tokens around bytes `lo..hi` of `file`, as Kiln's
+    /// lexer lexes the buffer from its start (comments skipped): the last
+    /// token that starts before `lo`, and the first that starts at or
+    /// after `hi`. `None` at either end of the buffer.
+    pub fn kinds_around(
+        &self,
+        file: FileId,
+        lo: u32,
+        hi: u32,
+    ) -> (Option<crate::kiln::lex::TokKind>, Option<crate::kiln::lex::TokKind>) {
+        let starts = self.starts.of(file, || self.lex_starts(file));
+        let before = starts.partition_point(|&s| s < lo).checked_sub(1).map(|i| starts[i]);
+        let after = starts.get(starts.partition_point(|&s| s < hi)).copied();
+        (before.map(|s| self.kind_at(file, s)), after.map(|s| self.kind_at(file, s)))
+    }
+
+    /// The kind of the token that starts at byte `at` of `file` (a start
+    /// of [`Tokens::lex_starts`]).
+    fn kind_at(&self, file: FileId, at: u32) -> crate::kiln::lex::TokKind {
+        use crate::kiln::lex::{LexMode, Lexer};
+        let len = u32::try_from(self.sm.text(file).len()).unwrap_or(u32::MAX);
+        let mut o = self.lex;
+        o.keep_comments = false;
+        let mut lx =
+            Lexer::new_in_range(self.sm, self.interner, file, at..len, self.sm.loc(file, 0), o);
+        lx.set_mode(LexMode::Normal);
+        lx.next().kind
+    }
+
     /// The offsets of the tokens of `file`, lexed from its start.
     fn lex_starts(&self, file: FileId) -> Vec<u32> {
         use crate::kiln::lex::{LexMode, Lexer, TokKind};

@@ -644,6 +644,59 @@ int g(P p) { return p->f(1) + k(p->x); }
     });
 }
 
+/// Rule 4: an argument whose written tokens Kiln keeps in no node has
+/// no extent. `f({x})`, when `x` of the class alone initialises the
+/// parameter, is `x` in Kiln's AST: the braces are in no node, and the
+/// range of `x` would be too short.
+#[test]
+fn s6_6_rule4_an_argument_is_all_of_what_is_written() {
+    let src = "\
+struct O { bool a = false; long b = 0; };
+int f(const O&);
+int g(O);
+int g2(int, O, int);
+int h(int);
+int use(O x) { return f({x}) + g({x}) + g2(1, {x}, 2) + f(x) + h(1 /* one */) + h((2)); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        assert_eq!(calls(s, "f"), some(&["f({x})", "f(x)"]));
+        let a: Vec<_> = ["f", "g", "g2", "h"]
+            .iter()
+            .flat_map(|f| calls_of(s, one(s, f)))
+            .map(|x| args(s, x))
+            .collect();
+        let none = vec![None];
+        let want = vec![
+            none.clone(),
+            some(&["x"]),
+            none,
+            vec![Some("1".to_owned()), None, Some("2".to_owned())],
+            some(&["1"]),
+            some(&["(2)"]),
+        ];
+        assert_eq!(a, want);
+        let x = calls_of(s, one(s, "g"))[0];
+        let why = s.no_extent(s.arguments(x).unwrap()[0]).unwrap();
+        assert_eq!(why.reason, "not all of the argument");
+    });
+}
+
+/// Rule 4: a member variable template named with template arguments
+/// (`d.twice<7>`): Kiln records no arguments on the member access, so
+/// its last token is not known.
+#[test]
+fn s6_6_rule4_a_member_variable_template() {
+    let src = "\
+struct V { template <int N> static constexpr int twice = 2 * N; static constexpr int one = 1; };
+int k(int);
+int use(V d, V* p) { return k(d.twice<7>) + k(p->twice<2>) + k(d.one) + k(V::twice<3>); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let a: Vec<_> = calls_of(s, one(s, "k")).into_iter().flat_map(|x| args(s, x)).collect();
+        assert_eq!(a, vec![None, None, Some("d.one".to_owned()), None]);
+    });
+}
+
 /// Rule 4 with a reversed rewritten comparison (WP-084 "must not
 /// assume" point 7: its begin and end are out of order): no extent.
 #[test]
@@ -1280,6 +1333,31 @@ fn clang_range(n: &Node) -> ClangRange {
 /// range and its arguments' ranges.
 type ClangCalls = std::collections::HashMap<(String, u32), Vec<(ClangRange, Vec<ClangRange>)>>;
 
+/// Clang 19 begins a call with an explicit object (`b.xobj()`) at its
+/// callee (`CallExpr::getBeginLoc`; clang 20 begins it at the object):
+/// the call's first token is the object's. Corrected bottom-up, so that
+/// such a call is right also where it is an argument or an operand.
+fn begin_explicit_object_calls(n: &mut Node) {
+    for c in &mut n.inner {
+        begin_explicit_object_calls(c);
+    }
+    if n.kind != "CallExpr" || n.inner.len() < 2 {
+        return;
+    }
+    let mut callee = &n.inner[0];
+    while matches!(callee.kind.as_str(), "ImplicitCastExpr" | "ParenExpr") && callee.inner.len() == 1 {
+        callee = &callee.inner[0];
+    }
+    let object = &n.inner[1];
+    if let (At::File(f, at, _), At::File(g, lo, _)) = (&callee.begin, &object.begin)
+        && f == g
+        && lo < at
+        && matches!(callee.kind.as_str(), "DeclRefExpr" | "MemberExpr")
+    {
+        n.begin = object.begin.clone();
+    }
+}
+
 fn clang_calls(n: &Node, out: &mut ClangCalls) {
     if matches!(n.kind.as_str(), "CallExpr" | "CXXMemberCallExpr") && !n.inner.is_empty() {
         let mut callee = &n.inner[0];
@@ -1298,16 +1376,7 @@ fn clang_calls(n: &Node, out: &mut ClangCalls) {
             };
             let written: Vec<&Node> =
                 n.inner[1..].iter().filter(|a| a.kind != "CXXDefaultArgExpr").collect();
-            let mut call = clang_range(n);
-            // Clang 19 begins a call with an explicit object at the
-            // callee (`CallExpr::getBeginLoc`; clang 20 begins it at the
-            // object): the call's first token is the object's.
-            if let (Some(o), Some((_, lo, _))) =
-                (written.first().filter(|o| object(o)), call.as_mut())
-                && let At::File(_, at, _) = &o.begin
-            {
-                *lo = *at;
-            }
+            let call = clang_range(n);
             let args = written.into_iter().filter(|a| !object(a)).map(clang_range).collect();
             out.entry((f.clone(), *close)).or_default().push((call, args));
         }
@@ -1379,7 +1448,9 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
     };
     let mut clang = ClangCalls::new();
     let root = Reader { b: &json, i: 0 }.value();
-    clang_calls(&Dump { file: None }.node(&root), &mut clang);
+    let mut tree = Dump { file: None }.node(&root);
+    begin_explicit_object_calls(&mut tree);
+    clang_calls(&tree, &mut clang);
     let files: Vec<(&str, &str)> =
         side.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
     let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: &side.std };
@@ -1468,6 +1539,8 @@ fn kiln_sides(dir: &std::path::Path, std: &str) -> Vec<(String, Vec<Side>)> {
         .collect();
     read(dir, "cpp")
         .into_iter()
+        // A test Kiln marks as one clang 19 hangs or crashes on.
+        .filter(|(_, t)| !t.contains("//@ skip(clang)"))
         .map(|(n, t)| {
             let mut files = vec![("main.cpp".to_owned(), t)];
             files.extend(inputs.iter().cloned());
@@ -1640,7 +1713,23 @@ fn measure_llvm_null_extents() {
             let s = KilnSubject::new(u, &owned);
             let t = std::time::Instant::now();
             let c = s.extent_census();
-            (c, t.elapsed())
+            let elapsed = t.elapsed();
+            // `SLIP_WP086_SAMPLE=n`: where the first n calls of each cause
+            // of a null extent are.
+            let n: usize =
+                std::env::var("SLIP_WP086_SAMPLE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+            let mut shown: std::collections::BTreeMap<String, usize> = Default::default();
+            for (x, _) in s.call_sites() {
+                if let Some(w) = s.no_extent(x) {
+                    let k = format!("{:?} {}", w.kind, w.reason);
+                    let seen = shown.entry(k.clone()).or_default();
+                    if *seen < n {
+                        *seen += 1;
+                        println!("  sample {k}: {}", s.display(Value::Expression(x)));
+                    }
+                }
+            }
+            (c, elapsed)
         })
         .expect("the unit parses");
         println!("{unit}: outcome {:?}", shard.outcome);

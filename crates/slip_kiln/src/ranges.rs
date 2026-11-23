@@ -29,8 +29,8 @@
 
 use std::cmp::Ordering;
 
-use crate::{Tokens, Unit};
 use crate::kiln::source::{FileId, FileOrigin, Loc, SourceManager, Span};
+use crate::{Tokens, Unit};
 
 /// The tier of a file range (`spec/api.md` §5.4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
