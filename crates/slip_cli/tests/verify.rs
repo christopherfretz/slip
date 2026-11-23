@@ -14,6 +14,7 @@
 //! about an indeterminate unit.
 
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -555,7 +556,6 @@ fn s8_7_report_replaced_whole() {
     // second name of the old file still names the old one. (Compared by
     // inode: the contents read back through the host's shared mount can
     // be stale for a moment after a rename.)
-    use std::os::unix::fs::MetadataExt;
     let ino = |name: &str| std::fs::metadata(f.path(name)).unwrap().ino();
     std::fs::hard_link(f.path("out/r.json"), f.path("out/old.json")).unwrap();
     let before = ino("out/r.json");
