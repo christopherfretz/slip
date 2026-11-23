@@ -2,3 +2,8 @@
 # constraint is another function (WP-036)
 added f(A<type-parameter-0-0>)
 removed f(A<type-parameter-0-0>)
+# the friend declaration in A is a unit of A (`A::<friend>`) keyed with the
+# clause as well, and A changes with it
+changed A
+added A::<friend>
+removed A::<friend>

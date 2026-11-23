@@ -4,3 +4,8 @@
 # is another key (WP-036)
 added g(type-parameter-1-0)
 removed g(type-parameter-1-0)
+# the friend declaration in A is a unit of A (`A::<friend>`) keyed with the
+# clause as well, and A changes with it
+changed A
+added A::<friend>
+removed A::<friend>

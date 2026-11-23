@@ -46,9 +46,9 @@ fn header<'t>(main: &'t str, key: &str) -> Option<&'t str> {
     main.lines().take(8).find_map(|l| l.strip_prefix(key)).map(str::trim)
 }
 
-/// Runs `f` on a walk over each side of the pair test in `dir` that
-/// parses (`side.h`, `// std:`, `// args:`, `// target:`).
-pub(crate) fn each_side(dir: &Path, mut f: impl FnMut(&mut Walk<'_>)) {
+/// Runs `f` on each side of the pair test in `dir` that parses
+/// (`side.h`, `// std:`, `// args:`, `// target:`).
+fn each_input(dir: &Path, mut f: impl FnMut(&Input<'_>)) {
     let mut all: Vec<(String, String)> = std::fs::read_dir(dir)
         .expect("the test")
         .filter_map(|d| {
@@ -91,11 +91,32 @@ pub(crate) fn each_side(dir: &Path, mut f: impl FnMut(&mut Walk<'_>)) {
         let _ = slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
             let path = |_| Vec::new();
             let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let rules = RuleTable::empty();
-            let mut w = Walk::new(&input, &rules);
-            f(&mut w);
+            f(&input);
         });
     }
+}
+
+/// Runs `f` on a walk over each side of the pair test in `dir`.
+pub(crate) fn each_side(dir: &Path, mut f: impl FnMut(&mut Walk<'_>)) {
+    each_input(dir, |input| {
+        let rules = RuleTable::empty();
+        let mut w = Walk::new(input, &rules);
+        f(&mut w);
+    });
+}
+
+/// The causes of the units named `name` (exactly) of `input`'s digest.
+fn causes_of(input: &Input<'_>, name: &str) -> Vec<Vec<crate::Cause>> {
+    let rules = RuleTable::empty();
+    let o = crate::digest(
+        input,
+        &crate::Options { rules: &rules, detail: crate::Detail::All, names: true },
+    );
+    o.names
+        .iter()
+        .filter(|(_, n)| n == name)
+        .map(|(k, _)| o.causes.iter().filter(|(c, _)| c == k).map(|(_, c)| *c).collect())
+        .collect()
 }
 
 /// The bytes of profile mode for `e` in a key (no unit ordinal), or
@@ -270,6 +291,20 @@ fn the_nets_hold_on_their_own_sources() {
 /// Digests `src` with names; the keys and causes of the units whose name
 /// starts with `name`.
 fn digest_named(src: &str, name: &str) -> Vec<(slip_model::Digest, Vec<crate::Cause>)> {
+    digest_filtered(src, |n| n.starts_with(name))
+}
+
+/// Digests `src` with names; the keys and causes of the units whose name
+/// passes `keep`.
+fn digest_filtered(
+    src: &str,
+    keep: impl Fn(&str) -> bool,
+) -> Vec<(slip_model::Digest, Vec<crate::Cause>)> {
+    digest_all(src).into_iter().filter(|(_, n, _)| keep(n)).map(|(k, _, c)| (k, c)).collect()
+}
+
+/// Digests `src` with names: each unit's key, name and causes.
+fn digest_all(src: &str) -> Vec<(slip_model::Digest, String, Vec<crate::Cause>)> {
     let files = [("main.cpp", src)];
     let snippet = slip_kiln::snippet::Snippet {
         files: &files,
@@ -288,10 +323,9 @@ fn digest_named(src: &str, name: &str) -> Vec<(slip_model::Digest, Vec<crate::Ca
         );
         o.names
             .iter()
-            .filter(|(_, n)| n.starts_with(name))
-            .map(|(k, _)| {
+            .map(|(k, n)| {
                 let causes = o.causes.iter().filter(|(c, _)| c == k).map(|(_, c)| *c).collect();
-                (*k, causes)
+                (*k, n.clone(), causes)
             })
             .collect()
     })
@@ -405,4 +439,75 @@ fn a_local_use_carries_out_of_nested_profiles() {
         assert!(!w.unit.types.is_empty(), "b's type is kept per unit");
         assert_eq!(s.cause(), None);
     });
+}
+
+const SPELLING: crate::Cause = crate::Cause::Pending(crate::Area::Spelling);
+
+/// The two sides of a pair whose found set differs: `g(T())` finds
+/// `g(long)` alone on side A and both `g` on side B (where `char g(int)`
+/// is declared before the use); for `T = int` side A means 4 and side B 1.
+fn found_set_sides(use_: &str) -> [String; 2] {
+    let head = "int g(long);\ntemplate<unsigned long N> constexpr int h() { return N; }\n\
+                template<unsigned long N> struct Z {};\n\
+                template<class T, unsigned long N> struct Y;\n\
+                template<class T, class U> struct W;\n";
+    [format!("{head}{use_}char g(int);\n"), format!("{head}char g(int);\n{use_}")]
+}
+
+/// The causes of the unit named `name`, its key, and every unit's name
+/// (for the message).
+fn unit_causes(src: &str, name: &str) -> (slip_model::Digest, Vec<crate::Cause>, String) {
+    let all = digest_all(src);
+    let list = all.iter().map(|(_, n, c)| format!("{n} {c:?}")).collect::<Vec<_>>().join("; ");
+    let (k, _, c) = all
+        .into_iter()
+        .find(|(_, n, _)| n == name)
+        .unwrap_or_else(|| panic!("no unit {name}: {list}"));
+    (k, c, list)
+}
+
+/// Item 1 (F-A, F-D): a profile written straight into a unit stream (a
+/// template argument of a call in a member's initialiser, a partial
+/// specialisation's argument) or through a type (an array bound, an
+/// argument type) whose found set was left out makes the unit
+/// `Pending(Spelling)`; the key is the same on both sides.
+#[test]
+fn a_left_out_found_set_in_a_unit_is_pending() {
+    let cases = [
+        ("template<class T> struct S { static constexpr int v = h<sizeof(g(T()))>(); };\n", "S::v"),
+        (
+            "template<class T> struct Y<T, sizeof(g(T()))> {};\n",
+            "Y<type-parameter-0-0, sizeof (g(T()))>",
+        ),
+        (
+            "template<class T> struct W<T, Z<sizeof(g(T()))>> {};\n",
+            "W<type-parameter-0-0, Z<sizeof (g(T()))>>",
+        ),
+        ("template<class T> struct A { char a[sizeof(g(T()))]; };\n", "A::a"),
+    ];
+    for (use_, name) in cases {
+        let [a, b] = found_set_sides(use_);
+        let (ka, ca, la) = unit_causes(&a, name);
+        let (kb, cb, _) = unit_causes(&b, name);
+        assert_eq!(ka, kb, "{name}: the key ignores the found set");
+        assert!(ca.contains(&SPELLING), "{name} side A: {ca:?} ({la})");
+        assert!(cb.contains(&SPELLING), "{name} side B: {cb:?}");
+    }
+}
+
+/// Item 7d: F1's two pair tests, pending until spellings are written,
+/// are `Pending(Spelling)` today on both sides (the unit `h`).
+#[test]
+fn the_f1_pairs_are_pending_spelling() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/differ/_");
+    for dir in ["dependent-decltype-own-lookup-set", "dependent-decltype-earlier-spelling-added"] {
+        let mut sides = 0;
+        each_input(&tests.join(dir), |input| {
+            sides += 1;
+            let h = causes_of(input, "h(type-parameter-0-0)");
+            assert_eq!(h.len(), 1, "{dir}");
+            assert!(h[0].contains(&SPELLING), "{dir} side {sides}: {:?}", h[0]);
+        });
+        assert_eq!(sides, 2, "{dir}");
+    }
 }

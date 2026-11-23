@@ -444,13 +444,22 @@ pub(crate) fn profile(w: &mut Walk<'_>, s: &mut Stream, p: ProfileId) {
 /// Whether a local entity took the unit's ordinal is read from
 /// `UnitState::local_uses`, which a nested profile or type digest raises
 /// too, so it carries to every enclosing frame and to the unit (F7).
+/// Whether the profile left out a fact (`Walk::left_out`) is read the same
+/// way: outside a type and a key the unit is `Pending(Area::Spelling)`.
 pub(crate) fn profile_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     let saved = w.take_expr_state();
     let uses = w.unit.local_uses;
+    let left_out = w.left_out;
     w.unit.expr.profile = Some(Frame::default());
     crate::expr_profile::walk(w, s, e);
     let frame = w.unit.expr.profile.take().unwrap_or_default();
     w.unit.expr = saved;
+    if w.left_out != left_out && w.type_nesting == 0 && w.in_key == 0 {
+        // Written straight into a unit stream (a template argument, a
+        // pattern's table row): the left-out fact is the unit's, as for a
+        // marked type (`Walk::absorb_type`).
+        s.absorb(Some(Cause::Pending(crate::Area::Spelling)));
+    }
     if w.unit.local_uses != uses && !frame.locals.is_empty() {
         // Two numberings in one stream: an ordinal of the frame and one of
         // the unit could be equal.

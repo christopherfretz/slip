@@ -219,6 +219,7 @@ pub(crate) fn requires_clause(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 fn walk(w: &mut Walk<'_>, s: &mut Stream, root: ExprId, keep_paren: bool) {
     #[cfg(test)]
     let start = capture::enter(s);
+    let keep_paren = keep_paren || reads_paren(w, root);
     walk_items(w, s, Item::Node(root, keep_paren));
     #[cfg(test)]
     capture::leave(s, start);
@@ -423,9 +424,10 @@ fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out
 }
 
 /// `e` with its redundant parentheses skipped (§7 "Parentheses"): a
-/// `ParenExpr` is skipped only outside a profile and when its operand is
+/// `ParenExpr` is skipped only outside a profile, when its operand is
 /// not instantiation-dependent (in a dependent operand a parenthesis can
-/// change the meaning: `decltype((x))`, `&(T::m)`). With `keep`, or
+/// change the meaning: `decltype((x))`, `&(T::m)`). With `keep` (the
+/// root of a walk that `reads_paren`), or
 /// while a profile or a key's numbering is installed, every one is kept.
 /// `None` when a skipped `ParenExpr` has no operand (a placeholder is
 /// written).
@@ -455,6 +457,47 @@ fn strip_parens(w: &Walk<'_>, s: &mut Stream, e: ExprId, keep: bool) -> Option<E
         }
         e = operand;
     }
+}
+
+/// Whether the parentheses at root `e` of a walk can be read: they
+/// enclose, through parentheses only, an id-expression or a class member
+/// access (`names`). `decltype(auto)` deduces from the whole expression of
+/// a `return` or an initialiser and a `decltype(auto)` template parameter
+/// from its whole argument ([dcl.type.auto.deduct]/5, [temp.arg.nontype]/1),
+/// and `decltype((x))` is not `decltype(x)` ([dcl.type.decltype]/1.3), so
+/// such a root keeps its outermost parenthesis (§7 "Parentheses"). Inside
+/// an operator the parenthesis is never read.
+fn reads_paren(w: &Walk<'_>, root: ExprId) -> bool {
+    let mut e = root;
+    loop {
+        let n = w.ast.exprs.get(e);
+        if n.kind() != ExprKind::ParenExpr {
+            return e != root && names(n.kind());
+        }
+        match ExprId::try_new(n.a()) {
+            Some(op) => e = op,
+            None => return false,
+        }
+    }
+}
+
+/// Whether an expression of kind `k` is an id-expression or a class
+/// member access, the operands whose parenthesis `decltype` reads
+/// ([dcl.type.decltype]/1.3), or the replacement of one naming a template
+/// parameter.
+const fn names(k: ExprKind) -> bool {
+    matches!(
+        k,
+        ExprKind::DeclRefExpr
+            | ExprKind::MemberExpr
+            | ExprKind::UnresolvedLookupExpr
+            | ExprKind::UnresolvedMemberExpr
+            | ExprKind::DependentScopeDeclRefExpr
+            | ExprKind::CXXDependentScopeMemberExpr
+            | ExprKind::SubstNonTypeTemplateParmExpr
+            | ExprKind::SubstNonTypeTemplateParmPackExpr
+            | ExprKind::FunctionParmPackExpr
+    )
 }
 
 /// Whether `e` has an entry in a map whose row is `in`.

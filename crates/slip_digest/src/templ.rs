@@ -337,8 +337,27 @@ fn member_spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &MemberSpecInfo) {
 /// `keyed`, `params` is the head as a unit writes it. The record has
 /// private fields (`shapes`, `shapes_len`), so it is read field by field
 /// and not destructured.
+///
+/// The arguments are in the key only, where a profile's left-out fact
+/// (`Walk::left_out`) is ignored; the unit, whose meaning is that of its
+/// arguments, is `Pending(Area::Spelling)` when one left a fact out
+/// (digest-kinds §4.4 "The mark"). They are written for that into a
+/// stream that is dropped, as in a key: with the unit state and the type
+/// digests' state put aside.
 fn partial_spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &PartialSpecInfo) {
     template_head_unit(w, s, x.params);
+    let saved = w.take_unit();
+    let types = w.take_types();
+    let before = w.left_out;
+    w.in_key += 1;
+    w.write_args(&mut Stream::new(), x.canonical);
+    w.in_key -= 1;
+    let left_out = w.left_out != before;
+    w.restore_types(types);
+    w.unit = saved;
+    if left_out {
+        s.absorb(Some(Cause::Pending(crate::Area::Spelling)));
+    }
 }
 
 /// `ref` to a declaration of a pattern (§9): `Ref::none` for one that has

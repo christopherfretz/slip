@@ -154,6 +154,13 @@ pub(crate) struct Walk<'a> {
     pub bytes: u64,
 }
 
+/// What [`Walk::take_types`] puts aside.
+pub(crate) struct TypeState {
+    left_out: u64,
+    type_nesting: u32,
+    abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
+}
+
 impl std::fmt::Debug for Walk<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Walk").field("queue", &self.queue.len()).finish_non_exhaustive()
@@ -232,6 +239,27 @@ impl<'a> Walk<'a> {
     /// leaving a fresh one; the caller puts it back.
     pub(crate) fn take_unit(&mut self) -> UnitState {
         std::mem::take(&mut self.unit)
+    }
+
+    /// The type digests' state, put aside for a key or a content digest
+    /// (memoised): what they compute neither depends on the enclosing
+    /// type digest nor raises its `left_out`, so whether a unit is
+    /// `Pending(Area::Spelling)` does not depend on which was computed
+    /// first (WP-036, F-G). The caller puts it back with
+    /// [`Walk::restore_types`].
+    pub(crate) fn take_types(&mut self) -> TypeState {
+        TypeState {
+            left_out: self.left_out,
+            type_nesting: std::mem::take(&mut self.type_nesting),
+            abort_memo: std::mem::take(&mut self.abort_memo),
+        }
+    }
+
+    /// Puts back what [`Walk::take_types`] put aside.
+    pub(crate) fn restore_types(&mut self, t: TypeState) {
+        self.left_out = t.left_out;
+        self.type_nesting = t.type_nesting;
+        self.abort_memo = t.abort_memo;
     }
 
     /// The expression walk's state alone, put aside for a type digest

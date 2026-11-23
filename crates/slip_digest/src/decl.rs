@@ -56,10 +56,12 @@ impl Walk<'_> {
         // A unit digest of its own: a fresh unit state, and not inside the
         // key computation that may have asked for it.
         let saved = self.take_unit();
+        let types = self.take_types();
         let in_key = std::mem::take(&mut self.in_key);
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);
         self.in_key = in_key;
+        self.restore_types(types);
         self.unit = saved;
         let h = s.finish(UNIT_TAG);
         let h = self.hashed(h);
