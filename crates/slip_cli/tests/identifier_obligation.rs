@@ -26,7 +26,6 @@ use std::path::{Path, PathBuf};
 use slip_apply::{Files, build};
 use slip_digest::spelling::{Obligation, Spelling, check_spellings};
 use slip_digest::{Input, ReadOnly};
-use slip_kiln::kiln::source::FileId;
 use slip_kiln::session::Cancel;
 use slip_kiln::snippet::{Extra, Parsed, Snippet, parse_with_tables};
 use slip_model::edits::{Piece, tiers};
@@ -189,8 +188,11 @@ fn check(post: &str, rules: &RuleTable, obligations: &[Obligation]) -> Vec<Spell
             p.sm.file_ids()
                 .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
                 .collect();
-        let path = |f: FileId| paths.get(f.index()).cloned().unwrap_or_default();
-        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+        let input = Input {
+            ast: p.ast,
+            sm: p.sm,
+            subject_path: &|f| paths.get(f.index()).cloned().unwrap_or_default(),
+        };
         check_spellings(p.unit(), &input, rules, ReadOnly::NO_FILE, obligations)
     })
     .expect("the post-image parses")
