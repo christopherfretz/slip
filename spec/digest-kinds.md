@@ -307,7 +307,7 @@ which is keyed in its namespace (§2.4): `tag 1538`, then
      attribute or default, never `-fvisibility`;
    - a declaration instantiated from a pattern (above) that is not the
      entity's definition (a friend declared in a class template) counts
-     only when the entity has another declaration (clang++-19: `int
+     only when the entity has no other declaration (clang++-19: `int
      h(int);` in a plain opening and `friend int h(int);` in an
      instantiated class template of a hidden one give `UND DEFAULT`;
      `enclosing/friend-declared-beside-namespace-declaration`).
