@@ -350,10 +350,11 @@ fn s7_a_verdict_under_other_rules_is_failed() {
     assert_eq!(j.get("findings").unwrap().get("total").unwrap().as_u64(), Some(0));
 }
 
-// §7.1 `not_verified`: a shard that is not this observer's, round's or
-// rules' result gives an empty message, not the foreign shard's.
+// §7.1 `not_verified` (WP-121 item 4): a shard that is not this
+// observer's, round's or rules' result gives the reason the report decides
+// as its message, never the foreign shard's own; one per cause.
 #[test]
-fn s7_a_foreign_shard_has_no_message() {
+fn s7_1_a_foreign_shard_says_why() {
     let mut r = Report::new(header(vec![], 3), &Declared::none());
     r.add(
         &d(9),
@@ -369,12 +370,31 @@ fn s7_a_foreign_shard_has_no_message() {
     r.add(&d(3), b"/c.cpp", Some(&other_rules), Some(Status::Ok));
     let j = r.to_json();
     let nv = j.get("not_verified").unwrap().as_array().unwrap();
-    assert_eq!(nv.len(), 3);
-    for e in nv {
-        assert_eq!(e.get("state").unwrap().as_str(), Some("failed"));
-        assert_eq!(e.get("message").unwrap().as_str(), Some(""));
-    }
+    let messages: Vec<&str> = nv
+        .iter()
+        .map(|e| {
+            assert_eq!(e.get("state").unwrap().as_str(), Some("failed"));
+            e.get("message").unwrap().as_str().unwrap()
+        })
+        .collect();
+    let round = format!("the shard is of round {}, not the run's {ROUND}", ROUND + 1);
+    assert_eq!(
+        messages,
+        [
+            "the shard is another observer's",
+            round.as_str(),
+            "the shard's verdict was made under other rules than the run's",
+        ]
+    );
     assert!(!r.error_lines().contains("foreign"), "{}", r.error_lines());
+    assert_eq!(
+        r.error_lines(),
+        format!(
+            "slip: failed: /a.cpp: the shard is another observer's\n\
+             slip: failed: /b.cpp: {round}\n\
+             slip: failed: /c.cpp: the shard's verdict was made under other rules than the run's\n"
+        )
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -816,3 +816,102 @@ fn s9_3_rule_use_without_rules_even_empty() {
     s.validate().unwrap();
     assert_eq!(state_of(&run, &s), State::Failed);
 }
+
+// ---------------------------------------------------------------------------
+// §7.1, §9.3 (WP-121 item 4): the message of a shard that is not this run's
+
+/// The observer's `not_verified` message and its line on standard error,
+/// for `s` as the only observer of `run`, with an `ok` map.
+fn refusal(run: &Run, s: &slip_model::Shard) -> (String, String) {
+    let mut r = run.report();
+    add(&mut r, s);
+    assert_eq!(count(&r, State::Failed), 1);
+    let j = r.to_json();
+    let nv = j.get("not_verified").unwrap().as_array().unwrap();
+    let message = nv[0].get("message").unwrap().as_str().unwrap().to_owned();
+    (message, r.error_lines())
+}
+
+// §9.3: each way a shard fails "this run's shard" from its own sections
+// has its reason, which is the observer's message and the text after the
+// main file on standard error. The shard's own message is never shown.
+#[test]
+fn s9_3_refused_shard_says_why() {
+    let rules = two_rules();
+    let with_overlay = Run::new(vec![], Some(overlay()));
+    let mut o = overlay();
+    o.spellings.clear();
+    let no_obligation = Run::new(vec![], Some(o));
+    let b = rules.binding();
+    let verified = |run: &Run| run.verified(0xa0);
+    let mut cases: Vec<(&Run, slip_model::Shard, &str)> = Vec::new();
+    let mut s = verified(&rules);
+    s.binding = None;
+    cases.push((&rules, s, "the shard has no binding"));
+    let mut s = rules.unparsed(0xa0, Status::Diagnosed, "own message");
+    s.binding = None;
+    cases.push((&rules, s, "the shard has no binding"));
+    let mut s = verified(&rules);
+    s.binding = Some(Binding { overlay: Some(d(0xee)), ..b });
+    cases.push((&rules, s, "the shard's binding is not this run's: its overlay"));
+    let mut s = verified(&rules);
+    s.binding = Some(Binding { declared: d(DECLARED + 1), ..b });
+    cases.push((&rules, s, "the shard's binding is not this run's: its declared changes"));
+    let mut s = verified(&rules);
+    s.binding = Some(Binding { pre: 0, ..b });
+    let pre = format!("the shard's binding is not this run's: its pre round 0, not {ROUND}");
+    cases.push((&rules, s, &pre));
+    let mut s = verified(&rules);
+    s.rule_use = None;
+    cases.push((&rules, s, "the shard has no rule_use"));
+    let none = Run::new(vec![], None);
+    let mut s = verified(&none);
+    s.rule_use = Some(slip_model::agreement::RuleUse { rules: d(0x33), uses: vec![] });
+    cases.push((&none, s, "the shard has a rule_use and the run has no rule"));
+    let mut s = verified(&rules);
+    s.rule_use.as_mut().unwrap().rules = d(0x33);
+    cases.push((&rules, s, "the shard's rule_use is under other rules than the run's"));
+    let mut s = verified(&rules);
+    s.rule_use.as_mut().unwrap().uses = vec![used(2, 1, 0)];
+    cases.push((&rules, s, "the shard's rule_use names rule 2; the run has 2"));
+    let mut s = verified(&with_overlay);
+    s.spellings = None;
+    cases.push((&with_overlay, s, "the shard has no spellings"));
+    let mut s = verified(&no_obligation);
+    s.spellings = Some(slip_model::spellings::Spellings { seen: 0, held: vec![], failed: vec![] });
+    cases.push((&no_obligation, s, "the shard has spellings and the run has no obligation"));
+    for (run, mut s, want) in cases {
+        if s.outcome.status == Status::Ok {
+            s.outcome.message.clear();
+        }
+        let (message, line) = refusal(run, &s);
+        assert_eq!(message, want);
+        assert_eq!(line, format!("slip: failed: /m/a0.cc: {want}\n"));
+    }
+}
+
+// §10.4 (WP-121 item 4): a section the fold refuses gives the fold's
+// reason, for a shard that is folded (`verified`) and one that is only
+// checked (`unverifiable`).
+#[test]
+fn s10_4_fold_refusal_says_why() {
+    use slip_model::spellings::{Span, Spellings};
+    let run = Run::new(vec![], Some(overlay()));
+    for kind in
+        [slip_model::verdict::VerdictKind::Verified, slip_model::verdict::VerdictKind::Unverifiable]
+    {
+        let mut v = run.verdict(kind);
+        if kind == slip_model::verdict::VerdictKind::Unverifiable {
+            v.reason = "post-image: x".to_owned();
+        }
+        let mut s = run.ok(0xa0, v, &[0], &[]);
+        // Obligation 2 is of /s/b.h, which this shard did not read.
+        s.spellings =
+            Some(Spellings { seen: 2, held: vec![Span { first: 2, count: 1 }], failed: vec![] });
+        s.validate().unwrap();
+        let (message, line) = refusal(&run, &s);
+        assert!(message.starts_with("the shard's spellings are refused: "), "{message}");
+        assert!(message.len() > "the shard's spellings are refused: ".len(), "{message}");
+        assert_eq!(line, format!("slip: failed: /m/a0.cc: {message}\n"));
+    }
+}

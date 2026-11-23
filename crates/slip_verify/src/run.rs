@@ -447,13 +447,20 @@ impl Report {
     /// run's `rules_id` and no rule index past the table, and `spellings`
     /// present exactly when the overlay has obligations. Status and section
     /// placement beyond that are `Shard::validate`'s (`judge`).
-    fn ours(&self, s: &Shard, observer: &Digest) -> bool {
+    ///
+    /// `Err` is the reason the shard is not this run's, in the order of
+    /// the checks: it is the observer's message in `not_verified` and on
+    /// standard error (§7.1; `spec/landed/verify/WP-121.md` §4).
+    fn ours(&self, s: &Shard, observer: &Digest) -> Result<(), String> {
         let h = &self.header;
-        if s.observer != *observer
-            || s.round != h.round
-            || s.verdict.as_ref().is_some_and(|v| v.rules != h.rules)
-        {
-            return false;
+        if s.observer != *observer {
+            return Err("the shard is another observer's".to_owned());
+        }
+        if s.round != h.round {
+            return Err(format!("the shard is of round {}, not the run's {}", s.round, h.round));
+        }
+        if s.verdict.as_ref().is_some_and(|v| v.rules != h.rules) {
+            return Err("the shard's verdict was made under other rules than the run's".to_owned());
         }
         if s.outcome.status != Status::Failed {
             let want = Binding {
@@ -463,28 +470,51 @@ impl Report {
             };
             let required = self.overlay.is_some() || self.has_rules();
             match &s.binding {
-                Some(b) if *b != want => return false,
-                None if required => return false,
+                Some(b) if *b != want => {
+                    let what = if b.overlay != want.overlay {
+                        "its overlay".to_owned()
+                    } else if b.declared != want.declared {
+                        "its declared changes".to_owned()
+                    } else {
+                        format!("its pre round {}, not {}", b.pre, want.pre)
+                    };
+                    return Err(format!("the shard's binding is not this run's: {what}"));
+                }
+                None if required => return Err("the shard has no binding".to_owned()),
                 _ => {}
             }
         }
         if s.outcome.status == Status::Ok {
             match &s.rule_use {
-                None if self.has_rules() => return false,
-                Some(_) if !self.has_rules() => return false,
+                None if self.has_rules() => return Err("the shard has no rule_use".to_owned()),
+                Some(_) if !self.has_rules() => {
+                    return Err("the shard has a rule_use and the run has no rule".to_owned());
+                }
                 Some(u) => {
                     let n = self.namespace.len() as u64;
-                    if u.rules != h.rules || u.uses.iter().any(|x| x.rule >= n) {
-                        return false;
+                    if u.rules != h.rules {
+                        return Err(
+                            "the shard's rule_use is under other rules than the run's".to_owned()
+                        );
+                    }
+                    if let Some(x) = u.uses.iter().find(|x| x.rule >= n) {
+                        return Err(format!(
+                            "the shard's rule_use names rule {}; the run has {n}",
+                            x.rule
+                        ));
                     }
                 }
                 None => {}
             }
-            if s.spellings.is_some() != self.has_obligations() {
-                return false;
+            match (&s.spellings, self.has_obligations()) {
+                (None, true) => return Err("the shard has no spellings".to_owned()),
+                (Some(_), false) => {
+                    return Err("the shard has spellings and the run has no obligation".to_owned());
+                }
+                _ => {}
             }
         }
-        true
+        Ok(())
     }
 
     /// [`Report::add_at`] at the next position: the number of `add` calls
@@ -512,8 +542,9 @@ impl Report {
     /// `verify` is this run's shard of the observer, as for [`state`]; a
     /// shard whose `observer` is not `observer`, whose `round` is not the
     /// header's, or whose verdict's `rules` is not the header's is not this
-    /// observer's result in this run: the observer is `Failed`, with an
-    /// empty message. Only a `Mismatch` contributes findings, and only a
+    /// observer's result in this run: the observer is `Failed`, and its
+    /// message says why (WP-121; never the foreign shard's own message).
+    /// Only a `Mismatch` contributes findings, and only a
     /// `Verified` or `Mismatch` verdict contributes used exemptions.
     ///
     /// M2 (§9.3, §10.4): so is a shard whose `binding` is not the run's
@@ -522,8 +553,8 @@ impl Report {
     /// a `rule_use` of the run's `rules_id` in a run with rules (or with
     /// one in a run without, or naming a rule past the table), an `ok`
     /// shard without `spellings` when the overlay has obligations (or with
-    /// one when it has none), and one whose `spellings` the fold refuses.
-    /// The `rule_use` and `spellings` of an `ok` shard the state table
+    /// one when it has none), and one whose `spellings` the fold refuses;
+    /// each with its reason as the message. The `rule_use` and `spellings` of an `ok` shard the state table
     /// accepts with a verdict (`verified`, `mismatch`, `unverifiable`) are
     /// read: a stale pair for every `direct` not 0 of a rule whose kind is
     /// not `namespace`; every rule with a use is used. The fold reads the
@@ -562,8 +593,11 @@ impl Report {
         self.selected += 1;
         self.stale_flat = OnceCell::new();
         self.outcomes = OnceCell::new();
-        let ours = verify.filter(|s| self.ours(s, observer));
-        let mut judged = if verify.is_some() && ours.is_none() {
+        // Why the shard is not this run's, when it is not: the message of
+        // the observer (§7.1), never the foreign shard's own.
+        let mut refused = verify.and_then(|s| self.ours(s, observer).err());
+        let ours = verify.filter(|_| refused.is_none());
+        let mut judged = if refused.is_some() {
             Judged { state: State::Failed, verdict: None }
         } else {
             judge(ours, map)
@@ -573,9 +607,10 @@ impl Report {
         // refusal makes the shard no shard of this run (§10.4).
         let accepted = judged.verdict.is_some();
         if let (Some(s), true) = (ours, accepted)
-            && !self.read_sections(index, observer, main, s, judged.state)
+            && let Err(e) = self.read_sections(index, observer, main, s, judged.state)
         {
             judged = Judged { state: State::Failed, verdict: None };
+            refused = Some(e);
         }
         let state = judged.state;
         self.states[state.index()] += 1;
@@ -611,9 +646,10 @@ impl Report {
                 State::Unverifiable => {
                     judged.verdict.map(|(v, _)| v.reason.clone()).unwrap_or_default()
                 }
-                State::NotParsed | State::NeverParsed | State::Failed => {
-                    ours.map(|s| s.outcome.message.clone()).unwrap_or_default()
-                }
+                State::NotParsed | State::NeverParsed | State::Failed => refused
+                    .take()
+                    .or_else(|| ours.map(|s| s.outcome.message.clone()))
+                    .unwrap_or_default(),
                 State::Mismatch | State::Verified | State::Unchanged => String::new(),
             };
             self.not_verified.insert(
@@ -632,9 +668,9 @@ impl Report {
     }
 
     /// The `spellings` and `rule_use` of an `ok` shard the state table
-    /// accepted as `state`, of the observer at plan position `index`; false
-    /// if the fold refuses the section (the shard is then not this run's,
-    /// and nothing of it is read). An unverifiable shard's post-image is
+    /// accepted as `state`, of the observer at plan position `index`; the
+    /// reason if the fold refuses the section (the shard is then not this
+    /// run's, and nothing of it is read). An unverifiable shard's post-image is
     /// not the run's (§10.6): its section is checked, not folded.
     fn read_sections(
         &mut self,
@@ -643,7 +679,7 @@ impl Report {
         main: &[u8],
         s: &Shard,
         state: State,
-    ) -> bool {
+    ) -> Result<(), String> {
         let position = usize::try_from(index).unwrap_or(usize::MAX);
         let fold = matches!(state, State::Verified | State::Mismatch);
         if let (Some(o), Some(section)) = (&mut self.overlay, &s.spellings)
@@ -656,10 +692,10 @@ impl Report {
                         self.firsts.insert(position, (*observer, main.to_vec()));
                     }
                     Ok(false) => {}
-                    Err(_) => return false,
+                    Err(e) => return Err(format!("the shard's spellings are refused: {e}")),
                 }
-            } else if o.fold.check(inputs, section).is_err() {
-                return false;
+            } else if let Err(e) = o.fold.check(inputs, section) {
+                return Err(format!("the shard's spellings are refused: {e}"));
             }
         }
         if let Some(u) = &s.rule_use {
@@ -677,7 +713,7 @@ impl Report {
                 }
             }
         }
-        true
+        Ok(())
     }
 
     /// Folds one listed finding of the observer at plan position `index`

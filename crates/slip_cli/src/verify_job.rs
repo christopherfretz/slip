@@ -3,7 +3,10 @@
 //! verdict. Work package WP-052.
 //!
 //! [`verify`] does steps 0 to 6 of §5.2 with every guard of §5.3, writes
-//! the post shard of §5.4 and the counters of §7.2. It takes everything
+//! the post shard of §5.4 and the counters of §7.2; under a rule table
+//! that is not empty, the shard's `binding` and `rule_use` of §9.1 (work
+//! package WP-121; with an empty table the shard is M1's, without
+//! either). It takes everything
 //! it is parameterised by from [`Params`]; it reads neither the job's
 //! `post` nor the worker's arguments (`spec/exec.md` §8.6).
 //!
@@ -18,6 +21,7 @@ use slip_digest::{Detail, Options, Output, ReadOnly, ReadOnlyFiles, digest};
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_kiln::Lookups;
+use slip_model::agreement::{Binding, RuleUse};
 use slip_model::declared::Declared;
 use slip_model::digests::{Digests, Group, GroupClass, GroupSum};
 use slip_model::formats::content_id;
@@ -42,6 +46,10 @@ pub struct Params {
     /// without it `verify` would have to read the job's `post`.
     pub pre: u64,
     pub declared: Declared,
+    /// The content id of the `DECL` container `declared` was read from
+    /// (`Job.post.declared`): the `declared` of the shard's `binding`
+    /// (`spec/verify.md` §9.1).
+    pub declared_id: Digest,
     pub image: Image,
     /// The findings a verdict keeps.
     pub limit: usize,
@@ -102,6 +110,13 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         pre_digests.map(|d| d.groups.iter().map(Group::sum).collect()).unwrap_or_default();
     let detail = if pre_digests.is_some() { Detail::Differing(&sums) } else { Detail::None };
     let (mut shard, output) = post_walk(params, observer, job.round, detail)?;
+    // §9.1: `binding` in every shard the job writes under a rule table that
+    // is not empty, whatever the parse's outcome (a `failed` one is the
+    // coordinator's, and has none). With an empty table the shard is M1's
+    // (§9.3's temporary exception), byte for byte.
+    if !rules.is_empty() && shard.outcome.status != Status::Failed {
+        shard.binding = Some(binding(params));
+    }
     if shard.outcome.status != Status::Ok {
         // `not_parsed`: the parse task's shard, no digests, no verdict.
         return Ok(shard);
@@ -111,8 +126,19 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     };
     let mut counters = std::mem::take(&mut shard.counters);
     counters.extend(walk_counters(&output));
-    let mut post =
-        Post { counters, digests: output.digests, differing: 0, reparsed: 0, by_kind: [0; 6] };
+    // §9.1: `rule_use` in every `ok` shard under a rule table that is not
+    // empty, from step 1's walk (the only walk that counts; step 6's
+    // second parse is tied to it by G3).
+    let rule_use =
+        (!rules.is_empty()).then(|| RuleUse { rules: rules_id, uses: output.rule_use.clone() });
+    let mut post = Post {
+        counters,
+        digests: output.digests,
+        rule_use,
+        differing: 0,
+        reparsed: 0,
+        by_kind: [0; 6],
+    };
     let unverifiable_now = |post: Post, mut shard: Shard, reason: &str| -> Result<Shard, String> {
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
@@ -209,10 +235,17 @@ fn post_walk(
             read_only: ReadOnly::files(&read_only),
             detail,
             names: false,
-            rule_use: false,
+            rule_use: !rules.is_empty(),
         };
         digest(input, &options)
     })
+}
+
+/// The `binding` of the job's shards (`spec/verify.md` §9.1), from its
+/// parameters, which are `Job.post`'s: no overlay (the image is a tree),
+/// the declared changes' content id, the round of the pre shard.
+fn binding(params: &Params) -> Binding {
+    Binding { overlay: None, declared: params.declared_id, pre: params.pre }
 }
 
 /// Step 4 (§5.2): the pre-image parsed with detail for the groups of `G`,
@@ -288,6 +321,8 @@ struct Post {
     counters: Vec<Counter>,
     /// Step 1's `digests`, with the unit lists of detail `differing`.
     digests: Digests,
+    /// Step 1's rule use (§9.1), when the rule table is not empty.
+    rule_use: Option<RuleUse>,
     /// `verify.groups.differing`.
     differing: u64,
     /// `verify.reparsed`.
@@ -301,7 +336,7 @@ impl Post {
     /// `shard`), its counters and those of §7.2, sorted by name; step 1's
     /// `digests` without unit lists; `v`.
     fn finish(self, shard: &mut Shard, v: Verdict) -> Shard {
-        let Post { mut counters, mut digests, differing, reparsed, by_kind } = self;
+        let Post { mut counters, mut digests, rule_use, differing, reparsed, by_kind } = self;
         let by_name = [
             ("verify.groups.differing", differing),
             ("verify.findings", v.total),
@@ -325,6 +360,7 @@ impl Post {
         out.counters = counters;
         out.digests = Some(digests);
         out.verdict = Some(v);
+        out.rule_use = rule_use;
         out
     }
 }
