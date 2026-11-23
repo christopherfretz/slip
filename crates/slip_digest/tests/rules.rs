@@ -164,7 +164,8 @@ fn rule_use(input: &Input<'_>, t: &Table, n: usize) -> Result<(u64, u64), String
 /// be refused, with `<text>` in the message. And the same table made
 /// without the refusal (as a container may hold it, `Rule::refusal`)
 /// must key nothing: every unit of the post-image under it but the
-/// order unit is indeterminate.
+/// order unit is indeterminate, under the table as a `Declared` container
+/// writes and reads it.
 fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
     let lines = lines_of(dir)?;
     common::with_side(dir, Side::B, |input| -> Result<(), String> {
@@ -178,7 +179,21 @@ fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
         if kept.table.refused().is_none() {
             return Err("the table made without the refusal holds no refused rule".into());
         }
-        let d = common::digested(digest_under(input, &kept.table));
+        // Through the container end to end, as `slip verify` reads it: a
+        // `Declared` holding the table, written and read back.
+        let declared = slip_model::declared::Declared::new(
+            kept.table.rules().to_vec(),
+            vec![],
+            vec![],
+            vec![],
+        )
+        .map_err(|e| format!("the container refuses the table: {e}"))?;
+        let read = slip_model::declared::Declared::from_bytes(&declared.to_bytes())
+            .map_err(|e| format!("the container cannot be read: {e}"))?;
+        if read.rules().refused().is_none() {
+            return Err("the table read from the container holds no refused rule".into());
+        }
+        let d = common::digested(digest_under(input, read.rules()));
         let keyed: Vec<&str> = d
             .units
             .values()

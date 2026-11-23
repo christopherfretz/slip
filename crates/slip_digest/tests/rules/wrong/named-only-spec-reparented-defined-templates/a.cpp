@@ -4,3 +4,4 @@ template <class> struct W3 {};
 struct A {};
 W3<A> w3;
 void g(W1<A> *);
+static_assert(sizeof(W1<A>) == sizeof(A));

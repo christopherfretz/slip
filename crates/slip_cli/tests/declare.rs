@@ -408,6 +408,49 @@ fn not_renamable() {
     assert_eq!(r.rules.rules()[0].to_name, Name::Operator(7));
 }
 
+// §2.3 `Refused`: a `relocate` line whose rule `Rule::refusal` refuses
+// (spec/verify.md §2.1), one per refused kind a `relocate` line can make.
+// A namespace rule across the unnamed namespace cannot be made by one: the
+// unnamed namespace's name is not an identifier, so renaming it is
+// `NotRenamable`, and no identifier names it.
+#[test]
+fn refused_rules() {
+    let w = key(KeyKind::ClassTemplate, Parent::Root, ident("W"), Some(Digest([1; 32])));
+    let f = key(KeyKind::Function, Parent::Root, ident("f"), Some(Digest([2; 32])));
+    let at = |kind, name| key(kind, Parent::Unit(f.id()), name, None);
+    let spec =
+        key(KeyKind::Specialisation, Parent::Unit(w.id()), ident("W"), Some(Digest([3; 32])));
+    let partial = key(
+        KeyKind::PartialSpecialisation,
+        Parent::Unit(w.id()),
+        ident("W"),
+        Some(Digest([4; 32])),
+    );
+    let recs = sorted(vec![
+        rec(&w, "W"),
+        rec(&f, "f()"),
+        rec(&spec, "W<int>"),
+        rec(&partial, "W<T *>"),
+        rec(&at(KeyKind::Resolved, Name::Property(1)), "f()::<resolved>"),
+        rec(&at(KeyKind::DefaultArgument, Name::Parameter(0)), "f()::<default argument 0>"),
+    ]);
+    for (text, what) in [
+        ("relocate W<int> => :: V", "a rule may not match a specialisation"),
+        ("relocate W<T *> => :: =", "a rule may not match a specialisation"),
+        ("relocate f()::<resolved> => :: =", "a rule may not match a resolved"),
+        ("relocate f()::<default argument 0> => :: =", "a rule may not match a resolved"),
+    ] {
+        let e = err(&format!("# x\n{text}"), &recs, &[]);
+        assert_eq!((e.line, e.kind), (2, ErrorKind::Refused), "{text}: {e}");
+        assert!(e.detail.contains(what), "{text}: {e}");
+    }
+    let anon = key(KeyKind::Namespace, Parent::Root, Name::Anonymous, None);
+    let recs = sorted(vec![rec(&anon, "(anonymous namespace)")]);
+    let e = err("relocate (anonymous namespace) => :: n", &recs, &[]);
+    assert_eq!(e.kind, ErrorKind::NotRenamable, "{e}");
+    assert!(resolve(&read("relocate (anonymous namespace) => :: =").unwrap(), &recs, &[]).is_ok());
+}
+
 // §2.3 `Duplicate`: two relocates whose rules match the same; a key twice
 // in one list (at the later line); in two lists is allowed.
 #[test]

@@ -152,6 +152,9 @@ const KEY_CYCLE: Cause = Cause::Unaccounted("key/cycle");
 const RULE_ON_INSTANTIATED_MEMBER: Cause = Cause::Unaccounted("key/rule-on-instantiated-member");
 /// A key under a table that holds a refused rule (`spec/verify.md` §2.1).
 const REFUSED_TABLE: Cause = Cause::Unaccounted("key/refused-rule");
+/// A member instantiated from two patterns whose mapped names differ
+/// (`spec/digest.md` §3.4).
+const PATTERNS_DISAGREE: Cause = Cause::Unaccounted("key/patterns-disagree");
 /// A scope no row of §5.2 says can hold an entity.
 const BAD_PARENT: Cause = Cause::Unaccounted("key/parent");
 /// A name form no rule of §3.2 or digest §3.3 gives.
@@ -406,40 +409,78 @@ impl Walk<'_> {
             None => None,
         };
         let key = Key { kind, parent, name, disc };
-        if !decomposition && let Some(pattern) = self.instantiated_pattern(e) {
-            return self.follow_pattern(pattern, key, cause);
+        if !decomposition && !self.rules.is_empty() {
+            let patterns = self.instantiated_patterns(e);
+            if !patterns.is_empty() {
+                return self.follow_patterns(&patterns, key, cause);
+            }
         }
         Ok((key, cause))
     }
 
-    /// The member of a pattern that `e` was instantiated from, through
-    /// Kiln's member link or its sparse map (`instantiated_from`): `e` is
-    /// a member of a specialisation, or of an instantiated member template.
-    /// A specialisation's own link is `spec_key`'s.
-    fn instantiated_pattern(&self, e: DeclId) -> Option<DeclId> {
+    /// The members of patterns that `e`'s entity was instantiated from,
+    /// through Kiln's member link or its sparse map (`instantiated_from`),
+    /// as entities, each once: `e` is a member of a specialisation, or of
+    /// an instantiated member template. Every declaration of the entity's
+    /// chain is asked, not the representative only: a friend defined in a
+    /// class template and declared again at namespace scope has the
+    /// namespace-scope declaration as its representative, which no
+    /// instantiation made (WP-103 round 3). A friend pattern with no
+    /// definition (a friend declaration of a function defined elsewhere)
+    /// is not followed: the function it names is defined by its own declaration,
+    /// and a rule renames it directly
+    /// (`kinds/function-first-declared-as-friend`). A specialisation's own
+    /// link is `spec_key`'s.
+    fn instantiated_patterns(&self, e: DeclId) -> Vec<DeclId> {
         let ast = self.ast;
-        match ast.templ_link(e).get() {
-            Some((TemplLinkKind::Specialization | TemplLinkKind::PartialSpecialization, _)) => None,
-            Some((TemplLinkKind::Pattern | TemplLinkKind::MemberOfSpecialization, _)) | None => {
-                ast.instantiated_from(e).map(|p| self.entity(p)).filter(|&p| p != e)
+        let own = self.entity(e);
+        let mut out: Vec<DeclId> = Vec::new();
+        for d in self.chain(own) {
+            let from = match ast.templ_link(d).get() {
+                Some((TemplLinkKind::Specialization | TemplLinkKind::PartialSpecialization, _)) => {
+                    None
+                }
+                Some((TemplLinkKind::Pattern | TemplLinkKind::MemberOfSpecialization, _))
+                | None => ast.instantiated_from(d),
+            };
+            if let Some(p) = from.map(|p| self.entity(p)).filter(|&p| p != own)
+                && (ast.decls.get(p).misc().friend() == FriendKind::None
+                    || ast.definition(p).is_some())
+                && !out.contains(&p)
+            {
+                out.push(p);
             }
         }
+        out
     }
 
-    /// The key of a member instantiated from `pattern` (`spec/digest.md`
+    /// The key of a member instantiated from `patterns` (`spec/digest.md`
     /// §3.4, WP-103): its name is the pattern member's as the rules map it,
     /// through the whole chain of patterns, so that a rule on a member of a
-    /// class template reaches the members of its instantiations. A rule
-    /// that matches the member itself, under either name, is not one the
-    /// source can carry out (an instantiation's member is renamed only by
-    /// renaming the pattern's): the key is indeterminate.
-    fn follow_pattern(
+    /// class template reaches the members of its instantiations. Two
+    /// patterns (a function befriended, and defined or declared, by two
+    /// class templates, each with a definition, are not one program: one
+    /// definition is the rule) whose mapped names differ leave no name to take:
+    /// the key is indeterminate (`key/patterns-disagree`). A rule that
+    /// matches the member itself, under either name, is not one the source
+    /// can carry out (an instantiation's member is renamed only by renaming
+    /// the pattern's): the key is indeterminate.
+    fn follow_patterns(
         &mut self,
-        pattern: DeclId,
+        patterns: &[DeclId],
         key: Key,
         cause: Option<Cause>,
     ) -> Result<(Key, Option<Cause>), Option<Cause>> {
-        let Some(name) = self.mapped_name(pattern) else {
+        let mut name: Option<Name> = None;
+        for &p in patterns {
+            let Some(n) = self.mapped_name(p) else { continue };
+            match &name {
+                Some(prev) if *prev != n => return Err(Some(PATTERNS_DISAGREE)),
+                Some(_) => {}
+                None => name = Some(n),
+            }
+        }
+        let Some(name) = name else {
             return Ok((key, cause));
         };
         let followed = Key { name, ..key.clone() };

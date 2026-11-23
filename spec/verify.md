@@ -261,11 +261,26 @@ does not record the linkage or visibility it takes from its namespaces,
 and a namespace's unit is not part of its members'. So a relocation of a
 member between two namespaces that differ in either is compared equal
 although the object code differs (`tests/rules/needs-wp113/`, pending,
-with the symbols each case changes). The rule above closes the one form
-that a rule of kind `namespace` makes; relocating a member out of the
-unnamed namespace, into it, or between namespaces of different
-visibility is open until WP-113 writes both properties into the member's
-unit. Until then the argument of this section holds for the post-image
+with the symbols each case changes). The refusal above
+(`RULE_UNNAMED_NAMESPACE`) closes one form only: a rule of kind
+`namespace` whose own name changes between the unnamed namespace's and
+another (the unnamed namespace renamed to a named one, a named one renamed
+to it, a named one merged onto it). It sees the rule's two names and
+nothing else, so these stay open until WP-113 writes the effective linkage
+and visibility into each member's unit:
+
+- an entity of any other kind relocated out of the unnamed namespace,
+  into it, or between namespaces of different visibility;
+- a named namespace relocated, under its own name or another, to or from
+  a parent within the unnamed namespace (`relocate (anonymous
+  namespace)::n => :: =`, `relocate n => (anonymous namespace) :: =`, a
+  namespace moved from under `o::(anonymous namespace)` into `p`): its
+  members change linkage although neither of the rule's names is the
+  unnamed namespace's (`tests/rules/needs-wp113/namespace-*`);
+- a namespace relocated between parents of different visibility.
+
+No second guard in the walk covers these: WP-113 closes them all at
+once. Until then the argument of this section holds for the post-image
 only where no relocated entity changes either property, and `slip
 verify` does not show that it does not.
 
@@ -399,6 +414,7 @@ they need the rules the file gives:
 | `Fallback` | the unit has a fallback key: there is no `Key` to make a rule from, and no stable key to exempt |
 | `NotRenamable` | `relocate` with an identifier for an entity whose `Name` is not an identifier |
 | `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)` (one entity relocated twice to one place, or two entities of one kind and discriminator relocated to one place; two overloads to one name have two discriminators and are not); two lines of one exemption list give one key. Reported at the later line |
+| `Refused` | `relocate` whose rule §2.1 refuses (`Rule::refusal`): of kind `specialisation` or `partial_specialisation` (rename the template), or `resolved` or `default_argument` (a part follows its owner). A namespace rule across the unnamed namespace, the third form §2.1 refuses, is never made by a line: the unnamed namespace's name is not an identifier (`NotRenamable`), and no identifier names it. The walk keys nothing under a table that holds such a rule, however it was made; this error is where its reason is given |
 
 A file with no line gives `Declared::none()`.
 
@@ -426,7 +442,7 @@ pub fn records(input: &Input<'_>, rules: &RuleTable) -> Result<Vec<Record>, Stri
 pub struct Entity { pub kind: Option<KeyKind>, pub text: String }
 pub enum Line { Relocate { entity: Entity, parent: Option<Entity>, name: Option<String> },   // None: the global namespace; `=`
                 Changed(Entity), Created(Entity), Removed(Entity) }
-pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate }
+pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate, Refused }
 pub struct LineError { pub line: u64, pub kind: ErrorKind, pub detail: String }
 pub fn read(text: &str) -> Result<Vec<(u64, Line)>, LineError>;            // line numbers from 1
 pub struct Needs { pub post: bool, pub post_mapped: bool }                 // which post-image parses the table asks for

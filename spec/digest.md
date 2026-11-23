@@ -333,6 +333,16 @@ Three kinds of key take another entity's name as the rules map it
   records as `instantiated_from`, is named by the pattern member, through
   the whole chain of patterns (a member of a nested class template's
   instantiation takes its pattern's name, which takes its own pattern's).
+  The link is asked of every declaration of the member's redeclaration
+  chain, not of its representative only: a friend defined in a class
+  template and declared again at namespace scope follows its pattern
+  whichever declaration comes first. A friend declaration in a pattern
+  that does not define the function (a function defined elsewhere and
+  befriended) is not followed: the function keeps its own name and its
+  own rule. Two patterns that define one function cannot both be
+  instantiated in a valid program (a redefinition), so a chain leads to
+  at most one pattern with a definition; were two to give different
+  mapped names, the key is indeterminate (`key/patterns-disagree`).
   A member of an explicit specialisation of the class is declared in that
   specialisation, has no such link, and keeps its own name: it needs its
   own rule. A rule that matches an instantiated member itself, under its
