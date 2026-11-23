@@ -364,3 +364,17 @@ fn s6_2_rejection_3_front_end_refusals() {
         assert_eq!(check(argv), Ok(Language::Cxx), "{argv:?}");
     }
 }
+
+// §6.1: the line checked is `argv[0] -fsyntax-only
+// -fkiln-reproducible-time argv[1..]`. The two come first, where no
+// argument of the command takes either as its value: a separate-value
+// option at the end of the command lacks its value whatever comes before
+// it; the command writing `-fkiln-reproducible-time` itself is accepted.
+#[test]
+fn s6_1_checked_line() {
+    assert_eq!(check(&["clang++", "-o"]), Err(Rejection::UnsupportedFlag("-o".into())));
+    assert_eq!(check(&["clang++", "a.cpp", "-x"]), Err(Rejection::UnsupportedFlag("-x".into())));
+    assert_eq!(check(&["clang++", "-fkiln-reproducible-time", "a.cpp"]), Ok(Language::Cxx));
+    // `-o` takes the input, which leaves none.
+    assert!(matches!(check(&["clang++", "-o", "a.cpp"]), Err(Rejection::UnsupportedLanguage(_))));
+}

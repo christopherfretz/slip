@@ -1,0 +1,2 @@
+present S::S()::<exception_spec>
+added h()

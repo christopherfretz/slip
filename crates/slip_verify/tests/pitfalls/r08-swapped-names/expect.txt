@@ -1,0 +1,4 @@
+# R08: f and g swapped, two rules; the call in two() is left spelling g,
+# which is now the old f. The text of two() is unchanged.
+good: verified
+bad:  mismatch changed two() @ main.cpp:5

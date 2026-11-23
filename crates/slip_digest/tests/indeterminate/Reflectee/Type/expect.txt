@@ -1,1 +1,2 @@
 indeterminate r
+indeterminate r::<value>

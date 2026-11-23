@@ -18,7 +18,9 @@
 //! `resolved` lines and A has none B lacks; the declared units only B has
 //! are exactly the `added` lines and A has none B lacks; no unit is
 //! indeterminate for a cause other than `Pending`. A resolved unit is told
-//! by its name, the owner's followed by `::<property>` (`names.rs`).
+//! by its name, the owner's followed by `::<property>` (`names.rs`); a
+//! `default_argument` unit (§11.4), named `<function>::<default_argument
+//! n>`, is read as one.
 
 mod common;
 
@@ -39,13 +41,15 @@ const PROPERTIES: [&str; 7] = [
 ];
 
 /// Whether `name` is a resolved unit's (`<owner>::<property>` or
-/// `<owner>::<property n>`).
+/// `<owner>::<property n>`) or a `default_argument` unit's
+/// (`<function>::<default_argument n>`, digest-kinds §11.4): the runner
+/// treats the two alike.
 fn is_resolved(name: &str) -> bool {
     let Some(rest) = name.strip_suffix('>') else { return false };
     let Some(at) = rest.rfind("::<") else { return false };
     let word = &rest[at + 3..];
     let word = word.split_once(' ').map_or(word, |(w, _)| w);
-    PROPERTIES.contains(&word)
+    PROPERTIES.contains(&word) || word == "default_argument"
 }
 
 /// One line of a `resolved` test's `expect.txt`.
@@ -186,6 +190,8 @@ fn resolved_names() {
     assert!(is_resolved("S::<key_function>"));
     assert!(is_resolved("f(int)::<default_immediates 0>"));
     assert!(is_resolved("X<int>::f()::<definition>"));
+    assert!(is_resolved("X<int>::f(int)::<default_argument 0>"));
+    assert!(is_resolved("X<int>::f(int)::<default_argument 0>::<default_immediates 0>"));
     assert!(!is_resolved("S::<static_assert>"));
     assert!(!is_resolved("operator<"));
     assert!(!is_resolved("S<int>"));

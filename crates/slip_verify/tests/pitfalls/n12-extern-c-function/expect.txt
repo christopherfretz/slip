@@ -1,0 +1,7 @@
+# N12: an extern "C" function declared inside legacy.
+good: verified
+bad:  mismatch removed legacy::c_hook(int) @ main.cpp:4
+# good-2 (on pre-2, declared by declared-2.txt): one rule per moved entity
+# and none for the C function, which moves to acme as well. Its key has the
+# parent c_linkage (spec/digest.md §3), so it is the same unit.
+good-2: verified

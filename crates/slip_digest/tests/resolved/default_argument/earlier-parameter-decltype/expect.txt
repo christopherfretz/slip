@@ -1,0 +1,3 @@
+resolved A<int>::f(int, long)::<default_argument 1>
+resolved A<int>::f(int, long)::<definition>
+added h()

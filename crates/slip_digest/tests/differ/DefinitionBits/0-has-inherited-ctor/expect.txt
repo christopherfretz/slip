@@ -1,2 +1,5 @@
 changed C
-added C::C
+added C::<shadow P::P(P &&)>
+added C::<shadow P::P(const P &)>
+added C::<shadow P::P(int)>
+added C::<using P::P>

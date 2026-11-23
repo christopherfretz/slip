@@ -1,0 +1,1 @@
+indeterminate template <int> void foo(const char (*)[(... , N)])

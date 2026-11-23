@@ -20,12 +20,12 @@ use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{DeclId, QualType};
 use slip_model::Digest;
 
+use crate::Cause;
 use crate::keys::{Role, info};
 use crate::stream::{FlagWord, Stream};
 use crate::tables::{access, ctor_init_kind, init_style, tag_kind};
 use crate::units::UnitClass;
 use crate::walk::Walk;
-use crate::{Area, Cause};
 
 /// The `in` rows of `DefinitionBits`, in table order (§5.5): bit 0 of the
 /// flag word is `0-complete`. `0-being-defined` (`out`) and
@@ -277,9 +277,10 @@ pub(crate) fn field_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     crate::expr::child_opt(w, s, bit_width);
     // init: §11.4, absent for a field instantiated from a pattern whatever
     // Kiln holds: Kiln instantiates it on use, under any kind of
-    // instantiation. Where it is read is the demand area's.
+    // instantiation, and the instantiated initialiser is the derived unit
+    // `default_argument` (`demand.rs`).
     if instantiated_field(w, d) {
-        s.opt(false).indeterminate(Cause::Pending(Area::Demand));
+        s.opt(false);
     } else {
         crate::expr::child_opt(w, s, init);
     }
@@ -510,7 +511,7 @@ fn definition_bits(s: &mut Stream, defn: DefinitionBits) {
 /// `spec/landed/digest-kinds/WP-027.md`). A field written in source (a
 /// primary template, a partial or explicit specialisation, a class that
 /// is not a template, a local class) is not.
-fn instantiated_field(w: &Walk<'_>, d: DeclId) -> bool {
+pub(crate) fn instantiated_field(w: &Walk<'_>, d: DeclId) -> bool {
     match crate::demand::effective_kind(w, d) {
         Some(
             SpecKind::ImplicitInstantiation
@@ -901,8 +902,9 @@ mod tests {
     }
 
     /// For every field named `m` with a default member initialiser: how
-    /// many write it (no cause of the field's own) and how many write it absent
-    /// (`Pending(Demand)`); Kiln holds it in each case it is counted.
+    /// many write it and how many write it absent (a field instantiated
+    /// from a pattern, whose initialiser is a `default_argument` unit's,
+    /// with no cause of its own); Kiln holds it in each case it is counted.
     fn field_inits(w: &mut Walk<'_>) -> (usize, usize) {
         let ms: Vec<DeclId> = named(w, "m", DeclKind::Field)
             .into_iter()
@@ -914,22 +916,21 @@ mod tests {
         for f in ms {
             let mut s = Stream::new();
             field_data(w, &mut s, f);
-            match s.cause() {
-                // Written: no cause, or a kind of expression still pending.
-                None | Some(Cause::Pending(Area::Expr)) => written += 1,
-                Some(Cause::Pending(Area::Demand)) => {
-                    // bit_width absent, then init absent.
-                    assert_eq!(&s.as_bytes()[..2], &[0, 0]);
-                    absent += 1;
-                }
-                other => panic!("{f:?}: {other:?}"),
+            // No cause, or a kind of expression still pending.
+            assert!(matches!(s.cause(), None | Some(Cause::Pending(Area::Expr))), "{f:?}");
+            if instantiated_field(w, f) {
+                // bit_width absent, then init absent.
+                assert_eq!(&s.as_bytes()[..2], &[0, 0]);
+                absent += 1;
+            } else {
+                written += 1;
             }
         }
         (written, absent)
     }
 
     // §11.4 `FieldData` `init` (with spec/landed/digest-kinds/WP-027.md):
-    // absent, `Pending(Demand)`, for a field instantiated from a pattern
+    // absent, with no cause, for a field instantiated from a pattern
     // under any kind of instantiation, even where Kiln has instantiated
     // it; written for a field written in source, a local class of an
     // instantiated function included.
@@ -1008,7 +1009,6 @@ mod tests {
                     } else {
                         record_data(w, &mut s, d);
                     }
-                    assert_ne!(s.cause(), Some(Cause::Pending(Area::Demand)), "{d:?}");
                     assert_ne!(s.as_bytes()[0], 0, "{d:?}: members written");
                 }
             });
@@ -1049,7 +1049,7 @@ mod tests {
                         seen.0 += 1;
                     }
                 } else {
-                    assert_ne!(s.cause(), Some(Cause::Pending(Area::Demand)), "{d:?}");
+                    assert!(!matches!(s.cause(), Some(Cause::Pending(_))), "{d:?}");
                     if is_enum { seen.3 += 1 } else { seen.2 += 1 }
                 }
             }

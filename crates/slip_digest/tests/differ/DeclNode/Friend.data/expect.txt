@@ -1,0 +1,5 @@
+changed S
+removed S::<friend f()>
+added S::<friend g()>
+removed f()
+added g()

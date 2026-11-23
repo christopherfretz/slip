@@ -4,7 +4,8 @@
 //! over a normalised compile command and turns what Kiln produced into
 //! Slip's own model types (`slip_model`).
 //!
-//! **No Kiln type outside [`kiln`], [`Unit`]'s methods and [`snippet`].**
+//! **No Kiln type outside [`kiln`], [`Unit`]'s methods, [`snippet`] and
+//! [`written`].**
 //! The public interface is:
 //!
 //! - the parse task (`spec/model.md` §8.4): [`parse_observer`] (an
@@ -13,11 +14,17 @@
 //!   (the same, with a closure called on the finished [`Unit`] before
 //!   anything is dropped: the production entry of the semantic digest),
 //!   whose [`ParseOptions`] ask for what the front end keeps only on
-//!   request (the preprocessing record);
+//!   request (the preprocessing record, the written-reference and
+//!   declaration-extent tables);
 //! - [`KilnCheck`] (`spec/cdb.md` §6) and [`kiln_version`];
+//! - the module [`session`]: the transform unit compiled once and run
+//!   many times (`spec/api.md` §2), whose types name no Kiln type;
 //! - the module [`kiln`] (re-exports of Kiln's crates), which [`Unit`]'s
 //!   methods name, and the module [`snippet`] (an in-memory front end for
-//!   tests, whose types name Kiln's).
+//!   tests, whose types name Kiln's);
+//! - the module [`written`]: a unit's names as written, from Kiln's
+//!   written-reference and declaration-extent tables (`spec/edits.md`
+//!   §9.7), whose types name Kiln's spans and declarations.
 //!
 //! So a Kiln API change touches this crate and the crates that may name
 //! those modules, and no other. Outside this crate only `slip_digest` and
@@ -52,7 +59,9 @@ pub mod kiln {
     pub use kiln_source as source;
 }
 
+pub mod session;
 pub mod snippet;
+pub mod written;
 
 pub use check::KilnCheck;
 pub use parse::{ParseOptions, Unit, parse_observer, parse_observer_with};

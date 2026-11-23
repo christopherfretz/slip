@@ -2,3 +2,4 @@ present S<char>::<key_function>
 added h()
 resolved S<int>::<definition>
 resolved S<int>::S()::<definition>
+resolved S<int>::S()::<exception_spec>

@@ -467,10 +467,10 @@ mod tests {
     use slip_kiln::kiln::ast::DeclId;
     use slip_kiln::kiln::ast::decl::DeclKind;
 
+    use crate::Cause;
     use crate::decl_func::tests::{named, of_kind, with_walk};
     use crate::stream::Stream;
     use crate::walk::Walk;
-    use crate::{Area, Cause};
 
     fn written(
         w: &mut Walk<'_>,
@@ -650,7 +650,7 @@ mod tests {
             assert!(!inst.is_empty());
             for c in inst {
                 let (_, cause) = written(w, |w, s| super::cold(w, s, c));
-                assert_ne!(cause, Some(Cause::Pending(Area::Demand)));
+                assert!(!matches!(cause, Some(Cause::Pending(_))), "{cause:?}");
                 let e = w.entity(c);
                 let def = crate::demand::defining_declaration(w, e).expect("A<int>::A() defined");
                 let (rows, _) =

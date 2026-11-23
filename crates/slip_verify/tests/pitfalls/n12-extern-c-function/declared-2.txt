@@ -1,0 +1,4 @@
+# The second shape: one rule per moved entity, and none for the C
+# function, which moves to acme as well (its key has the parent c_linkage).
+relocate legacy::Mine => acme :: =
+created acme

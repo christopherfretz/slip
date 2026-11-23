@@ -1,4 +1,4 @@
 changed X
 changed X<int>::<definition>
-added X::<friend>
-added z()
+added X::<friend z()>
+added X::friend z()

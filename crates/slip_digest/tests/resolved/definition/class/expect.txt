@@ -1,3 +1,4 @@
 resolved B0<int>::<definition>
 resolved X<int>::<definition>
+resolved X<int>::X()::<exception_spec>
 added h()

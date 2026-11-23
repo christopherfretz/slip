@@ -1,4 +1,5 @@
-# The own unit differs too: it reads every written declaration of f,
-# the friend's in A included (digest §2.2, WP-032 rule 4).
-changed f(int)
+# The friend's declaration in A differs too: since WP-039 it is a unit
+# of its own (A::friend f(int)), which f's own unit no longer reads
+# (Walk::redecls leaves out a pattern's friend).
+changed A::friend f(int)
 changed f(int)::<definition>

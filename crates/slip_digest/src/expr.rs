@@ -219,6 +219,7 @@ pub(crate) fn requires_clause(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 fn walk(w: &mut Walk<'_>, s: &mut Stream, root: ExprId, keep_paren: bool) {
     #[cfg(test)]
     let start = capture::enter(s);
+    let keep_paren = keep_paren || reads_paren(w, root);
     walk_items(w, s, Item::Node(root, keep_paren));
     #[cfg(test)]
     capture::leave(s, start);
@@ -422,12 +423,17 @@ fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out
     }
 }
 
-/// `e` with its parentheses skipped (§7 "Parentheses"); with `keep`, an
-/// outermost `ParenExpr` is kept. `None` when a `ParenExpr` has no
-/// operand (a placeholder is written).
+/// `e` with its redundant parentheses skipped (§7 "Parentheses"): a
+/// `ParenExpr` is skipped only outside a profile, when its operand is
+/// not instantiation-dependent (in a dependent operand a parenthesis can
+/// change the meaning: `decltype((x))`, `&(T::m)`). With `keep` (the
+/// root of a walk that `reads_paren`), or
+/// while a profile or a key's numbering is installed, every one is kept.
+/// `None` when a skipped `ParenExpr` has no operand (a placeholder is
+/// written).
 fn strip_parens(w: &Walk<'_>, s: &mut Stream, e: ExprId, keep: bool) -> Option<ExprId> {
     let mut e = e;
-    if keep {
+    if keep || w.unit.expr.profile.is_some() {
         return Some(e);
     }
     loop {
@@ -435,16 +441,63 @@ fn strip_parens(w: &Walk<'_>, s: &mut Stream, e: ExprId, keep: bool) -> Option<E
         if words.kind() != ExprKind::ParenExpr {
             return Some(e);
         }
+        let Some(operand) = ExprId::try_new(words.a()) else {
+            if cold_entry(w, e) {
+                s.indeterminate(Cause::Unaccounted("ExprNode/ParenExpr"));
+            }
+            s.uv(0).indeterminate(Cause::Unaccounted("ExprNode/ParenExpr.a"));
+            return None;
+        };
+        if w.ast.exprs.get(operand).deps().contains(ExprDeps::INSTANTIATION) {
+            return Some(e);
+        }
         if cold_entry(w, e) {
             // A map row of a skipped node would be lost.
             s.indeterminate(Cause::Unaccounted("ExprNode/ParenExpr"));
         }
-        let Some(operand) = ExprId::try_new(words.a()) else {
-            s.uv(0).indeterminate(Cause::Unaccounted("ExprNode/ParenExpr.a"));
-            return None;
-        };
         e = operand;
     }
+}
+
+/// Whether the parentheses at root `e` of a walk can be read: they
+/// enclose, through parentheses only, an id-expression or a class member
+/// access (`names`). `decltype(auto)` deduces from the whole expression of
+/// a `return` or an initialiser and a `decltype(auto)` template parameter
+/// from its whole argument ([dcl.type.auto.deduct]/5, [temp.arg.nontype]/1),
+/// and `decltype((x))` is not `decltype(x)` ([dcl.type.decltype]/1.3), so
+/// such a root keeps its outermost parenthesis (§7 "Parentheses"). Inside
+/// an operator the parenthesis is never read.
+fn reads_paren(w: &Walk<'_>, root: ExprId) -> bool {
+    let mut e = root;
+    loop {
+        let n = w.ast.exprs.get(e);
+        if n.kind() != ExprKind::ParenExpr {
+            return e != root && names(n.kind());
+        }
+        match ExprId::try_new(n.a()) {
+            Some(op) => e = op,
+            None => return false,
+        }
+    }
+}
+
+/// Whether an expression of kind `k` is an id-expression or a class
+/// member access, the operands whose parenthesis `decltype` reads
+/// ([dcl.type.decltype]/1.3), or the replacement of one naming a template
+/// parameter.
+const fn names(k: ExprKind) -> bool {
+    matches!(
+        k,
+        ExprKind::DeclRefExpr
+            | ExprKind::MemberExpr
+            | ExprKind::UnresolvedLookupExpr
+            | ExprKind::UnresolvedMemberExpr
+            | ExprKind::DependentScopeDeclRefExpr
+            | ExprKind::CXXDependentScopeMemberExpr
+            | ExprKind::SubstNonTypeTemplateParmExpr
+            | ExprKind::SubstNonTypeTemplateParmPackExpr
+            | ExprKind::FunctionParmPackExpr
+    )
 }
 
 /// Whether `e` has an entry in a map whose row is `in`.
@@ -717,7 +770,11 @@ fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
     if array_trait {
         out.push(Item::Exec(crate::expr_misc::array_trait_extra, e));
     }
-    // source_loc (symbolic) and default_imm (demand) write nothing.
+    // source_loc (symbolic) and default_imm (demand) write nothing; a
+    // `default_immediates` unit records the second (`demand.rs`).
+    if maps.default_imm.contains(e) {
+        out.push(Item::Exec(crate::demand::record_immediate, e));
+    }
     // union_field.
     out.push(Item::RefOpt(maps.union_field.get(e).copied()));
     // cast_written-unresolved-construct, cast_written-cast.

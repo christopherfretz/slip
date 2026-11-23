@@ -1,2 +1,2 @@
 added a::x(long)
-added x
+added <shadow a::x(long)>

@@ -1,0 +1,12 @@
+# N11: entities declared into the nearest enclosing namespace: a friend
+# function (good), an elaborated type specifier (good-2).
+good:   verified
+good-2: verified
+# good-3, bad-3 (on pre-3): the friend is defined outside its class. bad-3
+# leaves that definition in legacy: the friend declares acme::poke, which
+# nobody defines and which user() now calls, and the leftover
+# legacy::poke(acme::Mine) is another function. Under the rule both have the
+# key of legacy::poke(legacy::Mine): a collision (spec/digest.md §3.4), no
+# place (two units of the key).
+good-3: verified
+bad-3:  mismatch indeterminate legacy::poke(legacy::Mine)

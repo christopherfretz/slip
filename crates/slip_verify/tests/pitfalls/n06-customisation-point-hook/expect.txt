@@ -1,0 +1,10 @@
+# N06: legacy::store<T>::put calls prepare(t) unqualified; the hook for the moved Mine is owned.
+# In bad-2 no unit of the declared set differs (caller() is the same):
+# only the instantiation of the dependency's template does. The call is in
+# the instantiated member put, whose body is written in that member's
+# resolved unit `definition` (digest-kinds §11.9), not in the class
+# specialisation legacy::store<legacy::Mine> that spec/pitfalls.md §2 names.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch derived_changed legacy::store<legacy::Mine>::put(legacy::Mine &) @ dep/dep.h:4

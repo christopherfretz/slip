@@ -1,0 +1,8 @@
+# N28: o << t inside the dependency's legacy::log<T> finds the owned
+# operator for Mine at instantiation, by argument-dependent lookup through
+# Mine's namespace (o's namespace is legacy::io). In bad-2 no declared unit
+# differs: only the instantiated definition of legacy::log<legacy::Mine>.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch derived_changed legacy::log<legacy::Mine>(legacy::io::out &, const legacy::Mine &) @ dep/dep.h:4

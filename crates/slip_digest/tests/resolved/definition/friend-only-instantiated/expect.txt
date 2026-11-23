@@ -1,4 +1,5 @@
 present F<int>::<definition>
 resolved F<int>::F(const F<int> &)::<definition>
 resolved g(F<int>)::<definition>
+resolved F<int>::F(const F<int> &)::<exception_spec>
 added h()

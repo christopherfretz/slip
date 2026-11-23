@@ -1,0 +1,4 @@
+resolved D::B0(int)::<exception_spec>
+resolved D::B0(int)::<inherited_constructor>
+resolved D::B0(int)::<definition>
+added h()

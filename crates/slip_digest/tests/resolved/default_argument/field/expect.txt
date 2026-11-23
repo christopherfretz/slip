@@ -1,0 +1,4 @@
+resolved A<int>::m::<default_argument 0>
+resolved A<int>::A()::<exception_spec>
+resolved A<int>::A()::<definition>
+added h()

@@ -35,7 +35,16 @@ Declared := rules:   list<Rule>      digest.md §3.4; sorted by (parent, kind, n
             changed: list<KeyId>     units whose digest may differ
             created: list<KeyId>     units that may exist only in the post-image
             removed: list<KeyId>     units that may exist only in the pre-image
+            kept:    list<KeyId>     version 2: owned entities that are, on purpose, members of a namespace a rule maps onto (§9.2)
+            files:   opt<Ownership>  version 2: which files are read-only (`spec/edits.md` §2.1); required when `rules` is not empty
 ```
+
+`kept` and `files` are version 2 of the container (WP-110); a version 1
+`DECL` is read as one with `kept` empty and `files` absent, and a
+version 1 `DECL` with a rule is refused once WP-110 is on main. `kept`
+is sorted and has no duplicate, like the other lists. `files` is part
+of the rule table's identity: `rules_id` is then
+`H("slip.rules.v2", rules, files)`.
 
 Each list is sorted and has no duplicate (rules by the bytes of their
 encoded `(parent, kind, name, disc)`, keys by their bytes); a key may be in more than one of
@@ -81,6 +90,79 @@ needs no map.
   namespace has therefore collides, and is reported, although the edit may
   be correct ("Open questions").
 
+**Rules rename owned entities only.** A run has files it may edit and
+files it may not (`spec/edits.md` §2.1; `Declared.files`). A rule that
+says "`acme` is what `legacy` was" is a claim about the code the run
+owns; the dependency's code was not edited, its binaries were not
+rebuilt, and whatever it declares has the name it had. An entity of the
+post-image is a **dependency entity** if
+
+- one of its declarations lies in a read-only file. A declaration lies
+  in the file of its **expansion location**: the file it is written in,
+  and for a declaration that a macro expansion produces, wholly or in
+  part, the file that holds the outermost invocation. A declaration with
+  no location in a file (a builtin, an implicitly declared function)
+  lies in a read-only file;
+- or it is a specialisation of a template, implicit, explicit or
+  partial, or a deduction guide made from a template's constructors, and
+  the template is a dependency entity. A specialisation is keyed by its
+  template and its arguments, and the one a source writes has the key of
+  the one an instantiation makes (§4 step 4 depends on it);
+- or it is an implicitly declared member and its class is one.
+
+Every other entity is **owned**. The walk maps a key bottom-up as above,
+with two changes:
+
+1. **A rule matches an entity only if the entity is owned.**
+2. **The namespaces that enclose a member of a namespace are mapped from
+   the member's point of view.** For an owned member, the rules of kind
+   `namespace` apply along the chain of namespaces that enclose it,
+   whoever else opens them. For a dependency member, no rule applies to
+   any namespace of that chain. A parent that is not a namespace (a
+   class, a function, a specialisation) has one key, its own, and its
+   members have it as their parent. A namespace's own unit is a member
+   of the namespace that encloses it like any other entity: it is owned
+   if none of its openings lies in a read-only file.
+
+What a discriminator mentions (template arguments, parameter types) is
+mapped as that entity is, by its own ownership: with a dependency
+template `vec` and an owned `Mine`, `legacy::vec<acme::Mine>` is written
+`legacy::vec<legacy::Mine>`, and its member `size` under that key.
+
+So `acme` mapped to `legacy` says where the **owned** members of `acme`
+came from, and nothing about the rest:
+
+- A dependency's declaration that the edit moved into `acme` (a
+  dependency header included inside a moved block; a dependency macro
+  that opens the namespace, redefined by owned code) keeps `(acme, …)`;
+  the pre-image's `(legacy, …)` has no counterpart; both are findings.
+  Without this rule the two images are isomorphic and the edit verifies,
+  although the dependency's binary still defines the entity in `legacy`
+  (pitfall row N34).
+- A dependency that itself opens `acme`, before and after, has the same
+  keys in both images, and the owned members of `acme` are still mapped.
+- An owned declaration made through a dependency's macro
+  (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: the
+  expansion location decides, not the spelling location, or every owned
+  declaration behind a namespace macro of the dependency would be the
+  dependency's.
+- An owned explicit specialisation of a dependency template, an owned
+  definition of a function the dependency declares, a function a
+  dependency class befriends: dependency entities. They cannot move, and
+  moving one is two entities, a collision or a pair of findings.
+
+Ownership is read from the declarations the translation unit has. An
+entity that the dependency declares only in a header this observer does
+not include is owned here; an observer that includes both sees the
+entity declared in two namespaces and reports it; if no observer
+includes both, nothing shows it (§8).
+
+`slip declare` (§2.3) refuses a `relocate` line whose entity is a
+dependency entity and not a namespace (`DependencyEntity`).
+
+With an empty rule table nothing is mapped and ownership is not
+consulted: a digest of the map phase does not depend on `files`.
+
 **Why applying rules to the post-image is sound.** Let `φ` be the function
 from the entities of `B` to keys that the walk computes. If no unit is
 indeterminate, `φ` is injective except on merged namespaces. Equal unit
@@ -98,6 +180,12 @@ its members are units of their own with keys that do collide if two of
 them coincide, and no generated code depends on which namespace an entity
 is in except through names, which is what a relocation declares.
 
+The argument is about one translation unit. The ownership rule above is
+what makes the declared isomorphism one that the rest of the program
+(code that was not edited and is not an observer) can be party to: it
+fixes every dependency entity's key, so the isomorphism is the identity
+on everything the run does not own.
+
 A pre-existing entity that a rule would capture is caught by the same
 comparison: if the pre-image already had an entity with the key a rule
 matches, the post-image's entity of that key is mapped away, and the
@@ -109,6 +197,13 @@ pre-image's unit has no counterpart (`removed`).
   must still exist in both.
 - `created`: a unit with this key may be absent from the pre-image.
 - `removed`: a unit with this key may be absent from the post-image.
+
+Absent means that the image has no unit of the key at all, declared or
+derived. An entity that one image declares and the other derives (an
+explicit specialisation removed, whose uses now instantiate the primary
+template; or one added where the template was instantiated before) is
+in both images: it is neither created nor removed, it is `changed`
+(§4 step 4).
 
 Nothing else is weakened. A created entity that changes how an existing
 name resolves, or a removed one that something still referred to, changes
@@ -136,6 +231,7 @@ relocate <entity> => <parent> :: <name>
 changed  <entity>
 created  <entity>
 removed  <entity>
+kept     <entity>
 ```
 
 - The first word is the keyword; blanks (spaces and tabs) separate it from
@@ -163,7 +259,7 @@ the one `KeyId` that every unit of that name (and kind, if given) has.
 | `relocate`, its `<entity>` | the pre-images | none |
 | `relocate`, a non-empty `<parent>` | the post-images | none |
 | `changed`, `removed` | the pre-images | none |
-| `created` | the post-images | the rules this file gives |
+| `created`, `kept` | the post-images | the rules this file gives |
 
 **The rule of a `relocate` line.** Let `K = (parent, kind, name, disc)` be
 the `Key` of `<entity>`, and `P'` the new parent: `root` for an empty
@@ -297,13 +393,35 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    its multiplicity. No exemption applies to a derived key, so `changed`
    on a key does not prevent `derived_changed`.
 
+4. **Declared on one side, derived on the other.** Where step 2 would
+   give `removed` for a key that has a unit in `Vq`, or `added` for a
+   key that has a unit in `Vp`, the finding is `changed` instead, unless
+   `k` is in `changed`. `removed` and `created` do not prevent it and
+   are not used by it, and step 3 does not count the key in `only_post`
+   or `only_pre` (a `derived_indeterminate` of step 3 stands beside
+   it). The two units are not compared: one is what was written and the
+   other what the front end made, and their streams differ by
+   construction.
+
 Steps 1 and 2 are over `D` and step 3 over `V`, independently: a key set
 aside in one is not thereby set aside in the other. (A key is in both
 only if an entity is declared in one image and derived in the other, or
-by a collision.) A key declared in one image and derived in the other is
-in `D` on one side and in `V` on the other: step 2 gives `removed`
-(declared before) or `added` (declared after), which its exemption may
-prevent, and step 3 counts it in `only_post` or `only_pre`.
+by a collision.) Step 4 is the one place they meet.
+
+**Why step 4.** Every reference to an entity is written by its key. An
+explicit specialisation `template <> int pick<int>() { return 2; }` and
+the implicit instantiation of `template <class T> int pick() { return
+1; }` for `int` have one key. Remove the explicit specialisation and
+every caller of `pick<int>()` now calls another body, and no caller's
+digest moves: the key it wrote is the same. Without step 4 the declared
+unit would be `removed`, which a tool that deleted the specialisation
+on purpose declares, and the instantiation would be a derived unit on
+one side only, counted and not reported: `verified`, for a program that
+returns another value. The argument below ("a derived unit on one side
+only is not a difference") holds for a key that the other image does
+not have at all, and that is all it is used for now. The exemption that
+fits is `changed`, and it says the right thing: this entity is in both
+programs and is not the same.
 
 The observer is **verified** when there is no finding.
 
@@ -333,6 +451,18 @@ variable's initialiser are rows of the entity's resolved unit
 `definition`, a derived unit (`digest.md` §2.2), so a field or base that
 differs shows as a difference of a derived unit both parses have, not
 of the declared unit of the instantiation or of its class.
+
+One kind of derived unit exists without a demand: a resolved
+`exception_spec` (`digest-kinds.md` §11.2), which Kiln also resolves when
+it defines the function, so a destructor declared `noexcept(false)` on
+one side and with no specification on the other, never used, has the unit
+on one side only and no declared unit differs. It is safe to skip because
+every construct that reads a specification (a call, `noexcept`, forming
+the function's type or address, a definition) makes
+Kiln resolve it on both sides, so wherever the translation unit observes
+the difference the unit is on both sides and differs
+(`crates/slip_digest/tests/differ/_/resolved-spec-observed-both-sides`,
+`resolved-spec-addr-deferred`, `resolved-spec-addr-deferred-dtor-member`).
 
 This argument assumes the front end's demand is a function of the program.
 The demand-independence test of `digest.md` §14 is what checks it.
@@ -810,16 +940,56 @@ token is a defect of the report, not of the verification. They are made
 for the first `locate` findings of a verdict, in its order; the other
 findings keep an empty `name` and no `where`.
 
-**Names.** A unit's name is the entity as a person would write it:
+**Names.** A unit's name is the entity as a person would write it. Every
+form the walk makes (`crates/slip_digest/src/names.rs`):
 
 | Unit | Name |
 |---|---|
 | a namespace, class, enumeration, variable, alias, template, concept, member | its qualified name: `ns::C::m`, `(anonymous namespace)::x` |
-| a function | its qualified name and its parameter types as Kiln prints canonical types, then ` const`, ` volatile`, ` &` or ` &&` for a member's qualifiers: `ns::f(int, char *)`, `ns::C::m() const` |
-| a specialisation | the template's name and its arguments: `ns::S<int>` |
-| a content-keyed unit (`digest.md` §3.3) | its scope and `<kind>`: `ns::<static_assert>` |
+| a function | its qualified name and its parameter types as Kiln prints canonical types, with `this ` before an explicit object parameter, then ` const`, ` volatile`, ` &` or ` &&` for a member's qualifiers, then ` requires ` and the trailing requires-clause as written: `ns::f(int, char *)`, `ns::C::m() const`, `C::f(this C &)`, `A::f() requires true` |
+| a function template | its template head, its return type (none for a constructor, destructor or conversion function), then as a function, the parameter types as the pattern's: `template <class, int> void ns::f(type-parameter-0-0)` |
+| a template head (of a function template, a deduction guide template, a constrained partial specialisation) | `template <`, each parameter by its kind, `>`, then ` requires ` and the head's requires-clause as Kiln writes it if it has one. A type parameter is `class`, or its type-constraint in place of `class`: the concept and the arguments after the first, `C`, `C<int>`; a non-type parameter its type; a template template parameter its own head and ` class`, ` auto` or ` concept`; `...` after a pack: `template <C2> void f(type-parameter-0-0)`, `template <class> requires C<T> void f(type-parameter-0-0)` |
+| a deduction guide | `<deduction guide for S>` and its parameters as a function: `<deduction guide for S>(char)`; a deduction guide template with its head and return type as a function template |
+| a friend function keyed in the class that befriends it (digest-kinds §3.3 `function`) | the class's name, `::friend `, then the function's: `A<int>::friend k(int)`, `C::friend template <class> void g(type-parameter-0-0)` |
+| a partial specialisation | as a specialisation, with its pattern for the arguments; if its head has a type-constraint or a requires-clause, the head first, which is what tells two partial specialisations of one pattern apart: `S<type-parameter-0-0 *>`, `template <class> requires C2<T> S<type-parameter-0-0 *>` |
+| a function template specialisation | the template's qualified name, its template arguments as a specialisation's below, then the parameter types and qualifiers as for a function: `legacy::take<int>(int)`, `legacy::log<legacy::Mine>(legacy::io::out &, const legacy::Mine &)` |
+| a specialisation | the template's name and its canonical arguments as Kiln prints them, with every entity an argument names written by its qualified name (`ns::S<ns::T>`, never `ns::S<T>`: two classes `T` of two namespaces are two specialisations), and except that a null pointer argument whose type is not `std::nullptr_t` is written `(T)nullptr`: `ns::S<int>`, `N<(int *)nullptr>` |
+| an unnamed class or enumeration | its scope and `(anonymous K for n)` when it is named by a declarator, typedef or member (digest §3.3), else `(anonymous K N)`, `N` its ordinal among the unnamed types of its scope, else `(anonymous K)`; `K` the class-key or `enum`: `(anonymous struct for P)`, `ns::(anonymous enum 1)`; its members are named under it |
+| the unnamed object of an anonymous class (an anonymous union's member object) | its scope and `(object of ` the class's name `)`: `S::(object of (anonymous union 0))` |
+| any other entity Kiln prints no name for (an unnamed bit-field) | its scope and `(unnamed N)`, `N` its ordinal (digest §3.3), or `(unnamed)` |
+| the variable of a structured binding declaration | its scope and its bindings: `[a, b]`, `n::[a, b]`. The key is named by the first binding only (digest-kinds §5.2); the others are in the name for people |
+| the holding variable of a tuple-like binding `a` | `a (holding variable)` |
+| a name-independent non-static data member (digest-kinds §3.3 `field`) | its qualified name and ` (name-independent N)`, `N` its ordinal: `S::_ (name-independent 1)` |
+| a using-declaration | its scope and `<using ` its qualifier and name `>`: `<using B::f>`, `D::<using B::B>` for an inheriting constructor |
+| a using-shadow | its scope and `<shadow ` the plain name of its target `>`: `D::<shadow B::f(int)>` |
+| a friend declaration | its scope and `<friend ` what it names `>`: `C::<friend f(int)>`, `C::<friend D>` |
+| a using-directive, a using-enum | its scope and `<using_directive n>`, `<using_enum E>` |
+| a `static_assert`, file-scope `asm`, `consteval` block | its scope and `<static_assert>`, `<asm>`, `<consteval_block>`. These are content-keyed (digest §3.3): two of one scope have the same name and cannot be named one by one, only by their scope; a finding on one is told apart by its `where` |
+| a template parameter object | its scope and `<template_param_object>` |
+| a `default_argument` unit (digest-kinds §11.4) | its function's or field's name and `::<default_argument n>`, `n` the parameter's index: `X<int>::f(int)::<default_argument 0>` |
+| a resolved unit (digest-kinds §11.1) | its owner's name and `::<` the property `>`, with its discriminator after a space: `S::<key_function>`, `f(int)::<default_immediates 0>`, `X<int>::f(int)::<default_argument 0>::<default_immediates>` |
 | the order unit | `<order>` |
-| an entity Kiln prints no name for | the name of its scope and `(unnamed N)`, `N` its ordinal (`digest.md` §3.3), or `(unnamed)` |
+
+The plain name of an entity a unit refers to (a shadow's target, what a
+friend names) is its qualified name with a specialisation's arguments and
+a function's parameters, or a function template's name as above.
+
+A qualified name names every namespace on the way, an inline namespace
+too (`legacy::v2::Mine`, never `legacy::Mine`: both can exist in one
+image), although Kiln and other compilers leave inline namespaces out
+of what they print.
+
+Two units of one image with different keys have different names, except
+the units of one colliding key (digest §10) and the content-keyed kinds
+above: everything a key holds that the parts above would not show (a
+requires-clause, a type-constraint, a null pointer argument's type, an
+explicit object parameter) is printed. `crates/slip_digest/tests/determinism.rs`
+`keys_and_names_are_unique` checks it over every pair test.
+
+A requires-clause is printed as Kiln writes the expression of the
+declaration the name is read from; for a member of an implicit
+instantiation that is the pattern's, so its template parameters keep the
+pattern's names: `X<int>::~X() requires (sizeof(T) == 4)`.
 
 A finding's `name` is the name of the key's unit in the pre-image when the
 pre-image has one, else in the post-image, where it is the name written
@@ -902,6 +1072,7 @@ say without recording where each node ends ("Open questions").
 |---|---|
 | `changed`, `derived_changed` with `pre` or `post` absent (several units of the key differ) | both sites from the units' first marks (below), `what` empty |
 | `removed` | `pre`: the unit's first mark; `post`: the empty site |
+| `changed` of §4 step 4 (declared in one image, derived in the other) | the first mark of the declared unit in its image, and in the other image the first mark of the derived unit (where the template's pattern is); `what` empty |
 | `added` | `post`: the unit's first mark; `pre`: the empty site |
 | `indeterminate`, `derived_indeterminate` | in each image that has an indeterminate unit of the key: the unit's first mark, with `what` the cause as the walk prints it (`unsupported ExprKind/CXXReflectExpr`, `collision`, `pending stmt`); the empty site in the other |
 
@@ -1117,7 +1288,10 @@ impl State { pub const ALL: [State; 7]; pub fn name(self) -> &'static str; }
 /// it is not this run's); `map` the status of its map shard (None: absent).
 pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State;
 
-pub enum RunVerdict { Verified, NotVerified, Incomplete }
+/// Re-exported: `slip_model::result::RunVerdict` (spec/edits.md §8.5), the
+/// one type, `Verified = 0, NotVerified = 1, Incomplete = 2`.
+pub use slip_model::result::RunVerdict;
+impl RunVerdict { pub const ALL: [RunVerdict; 3]; pub fn name(self) -> &'static str; }
 pub fn run_verdict(states: &[State]) -> RunVerdict;
 
 pub struct Header { pub plan: Digest, pub round: u64, pub declared: Digest, pub rules: Digest,
@@ -1165,6 +1339,11 @@ observer `failed`, with an empty message.
   verdict. §9 adds the check that shows it, for the observers of the run.
   What remains outside is the first point above: a declaration in a file
   that no observer of the run reads.
+- **What a dependency declares where no observer looks.** Ownership is
+  read from the declarations an observer has (§2.1). An owned
+  declaration of an entity that the dependency also declares, in a
+  header that no observer includes together with the owned one, is
+  moved as owned, and the dependency's binary keeps the old name.
 - **Sums are believed.** A group's `count`, `indeterminate` and `digest`
   are checked against its unit list only where there is one. A shard
   whose sums were not computed from its units (a defect of the walk, or a
@@ -1260,6 +1439,40 @@ overlay and which pre shards it was made with; M1's shards did not
 keeps the key a rule maps another onto is the merge of §2.1.) A stale
 observer is one finding of the run, `stale`, with the rule and the
 observer.
+
+**Stale for a namespace rule** (WP-111; until it is on main a namespace
+rule has no stale check, which is the hole this closes). The namespace
+itself merges, but its members do not: if one observer sees an owned
+entity in `acme` and another still sees it in `legacy` (a second
+declaration in a header that was not edited), each verifies, since under
+the rule both have the key `(legacy, …)`, and the program does not link.
+For a rule `r` of kind `namespace` a walk counts instead:
+
+- `direct(r)`: the owned entities, not namespaces, that are members of a
+  namespace whose own, unmapped key is the key `r` produces, or of a
+  namespace inside it, and whose key is not in `Declared.kept`. These
+  still live where `r` says the owned members left.
+- `kept_via(r)`: the entities whose namespace chain was mapped by `r`
+  and whose key is in `Declared.kept`. These moved, and were declared to
+  stay.
+
+An observer is stale for `r` if either count is not 0. `kept` lists the
+owned entities that are members of the old namespace **on purpose**: one
+that stays (an overload that argument-dependent lookup must find through
+a dependency's type), and one the edit adds there (a compatibility
+declaration, which is also `created`). Dependency entities are not
+counted and are not listed: no rule reaches them (§2.1).
+
+Why this is the condition: two observers disagree about an entity with
+key `K` when one has it in the old namespace and the other reaches `K`
+through `r`. If `K` is in `kept`, the second is counted in `kept_via`;
+if it is not, the first is counted in `direct`. Either way one of them
+is stale, and neither count needs anything from another observer. A
+`kept` key that no observer has is reported like an exemption no
+observer needed (§2.2).
+
+`Use` gets the field `kept_via: uv` (0 for a rule that is not of kind
+`namespace`); a `Use` is present when any of its three counts is not 0.
 
 **Why this is the condition.** The claim of §1, for a rule, is that the
 entity it names has the new name. Two observers disagree about an entity
@@ -1678,15 +1891,34 @@ using-declaration). Those are judged by the comparison of digests alone.
 
 ## Open questions
 
+- **Name-derived values that changed** (`digest.md` §9). A relocation
+  changes what `__func__`, `__PRETTY_FUNCTION__`,
+  `std::source_location` and `typeid(T).name()` yield for the entities
+  it renames, and the verdict does not count it. A program that
+  observes such a string (a parsed log, a registry keyed by a type's
+  name, a persisted identifier) should be told. Proposed: an
+  informational section of the report listing each unit that holds such
+  a builtin and whose name, or a name in whose scope it is, a rule
+  changes; no verdict depends on it. The walk would count them per unit
+  (a counter beside `rule_use`, §9.1). Open: whether a run may ask for
+  them to be findings (`--strict-names`), and whether
+  `typeid(T).name()`, whose value is the implementation's, is listed.
 - **Agreement costs a job per observer** (§9, §5): with rules, no
   observer is unchanged. `spec/edits.md` ("Open questions") proposes a
   filter of key ids in the map shard so that an observer that cannot have
   a renamed entity is shown not to, without a parse.
-- **Agreement for namespaces** (§9). A relocated namespace merges with
-  the one that stays, so `direct` says nothing for it. The members that
-  move have rules of their own only if the transform declares each; how
-  a partial relocation is shown to agree is to be specified with the
-  namespace migration (M4).
+- **Agreement for namespaces** (§9.2, "Stale for a namespace rule").
+  A relocation that moves only part of a namespace's owned members under
+  a namespace rule lists every member that stays in `kept`, which for a
+  phased migration is most of the namespace. Whether a phase is better
+  declared with one rule per moved entity, or `kept` given as a set of
+  files, is to be decided with the namespace migration (M4).
+- **Ownership differs between observers** (§2.1). An entity the
+  dependency declares only in a header some observers do not include is
+  owned in those and a dependency entity in the others. Each comparison
+  is consistent with itself; whether the run should compare ownership
+  across observers (a count per key is too much; a count per rule of
+  entities reached both ways is not exact) is open.
 - **Indeterminate units cost a second parse.** Every group with an
   indeterminate unit is in `G` (§4.1), so an observer that has one needs
   unit lists even when nothing changed. Proposed: a map shard stores the

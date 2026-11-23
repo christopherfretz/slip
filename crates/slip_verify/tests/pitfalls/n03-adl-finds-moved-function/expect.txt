@@ -1,0 +1,5 @@
+# N03: use(d) finds the moved legacy::use by ADL through the staying legacy::Dep.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed caller() @ main.cpp:9

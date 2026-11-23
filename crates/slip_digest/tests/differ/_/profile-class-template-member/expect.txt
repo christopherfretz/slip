@@ -1,0 +1,2 @@
+changed S
+added template <class> decltype(u - T()) S::f(type-parameter-1-0)

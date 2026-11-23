@@ -1,0 +1,1 @@
+changed template <class> bool f(type-parameter-0-0)

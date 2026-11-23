@@ -1,0 +1,21 @@
+# N18: values derived from names in moved code: __PRETTY_FUNCTION__ (good),
+# typeid(T).name() (good-2), std::source_location (good-3).
+good:   verified
+good-2: verified
+good-3: verified
+# pre-4, pre-5: the value is consumed at compile time, sizeof as an array
+# bound (pre-4) and the length deduced as a template argument (pre-5). Moved
+# with nothing more declared, the function differs (spec/digest.md §9,
+# "Whatever consumes such a value"); its only correct edit declares it
+# changed. A declared file belongs to a subject and applies to its bad tree
+# too: with changed legacy::where() declared, bad-4 would verify. pre-6 is
+# that copy.
+good-4: none the only correct edit declares where() changed, which would make bad-4 verify
+bad-4:  mismatch changed legacy::where() @ main.cpp:5
+good-5: none the only correct edit declares where() changed, which would make bad-5 verify
+bad-5:  mismatch changed legacy::where() @ main.cpp:4
+# pre-6 is pre-4 and good-6 is bad-4, declared by declared-6.txt, which adds
+# changed legacy::where(): the change of the consumed length is exactly
+# what that line exempts. Against a declared changed that covers less (the
+# function's unit) or more (its callers).
+good-6: verified

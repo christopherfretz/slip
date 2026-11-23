@@ -3,7 +3,7 @@
 
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind, VarStorage};
 use slip_kiln::kiln::ast::ids::DeclId;
-use slip_kiln::kiln::ast::templates::SpecKind;
+use slip_kiln::kiln::ast::templates::{SpecKind, is_template_kind};
 use slip_model::Digest;
 use slip_model::digests::GroupClass;
 use slip_model::keys::{Key, KeyKind, Name, Parent};
@@ -48,6 +48,10 @@ pub(crate) struct Written {
     /// For a resolved unit, its property (`demand.rs`); its `entity` is
     /// the owner's.
     pub resolved: Option<crate::demand::Resolved>,
+    /// For a `default_argument` unit (digest-kinds §11.4), and for a
+    /// resolved unit of one, the parameter's index (0 for a field); its
+    /// `entity` is the function's or field's.
+    pub default_argument: Option<u64>,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -94,7 +98,23 @@ pub(crate) fn demand(w: &mut Walk<'_>, e: DeclId) {
 }
 
 /// Whether, and how, the entity `e` (a first declaration) is a unit.
+///
+/// An entity that would be declared but has no declaration with a
+/// location (Kiln's implicit global allocation functions, `__int128_t`,
+/// `std::align_val_t`) is derived on demand, as a builtin is
+/// (`spec/digest.md` §2.2), whatever its flags: what is not written
+/// anywhere has no declared group to be in.
 pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
+    match class_of(w, e) {
+        Some(UnitClass::Declared) if !w.chain(e).iter().any(|&d| w.has_location(d)) => {
+            Some(UnitClass::OnDemand)
+        }
+        class => class,
+    }
+}
+
+/// [`unit_class`] before the rule for entities without a location.
+fn class_of(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
     let ast = w.ast;
     let n = ast.decls.get(e);
     match info(n.kind()).role {
@@ -153,7 +173,9 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
     // The effective kind (§11.10, `demand::effective_kind`): an
     // implicit instantiation and its members are derived, an explicit
     // instantiation (declaration or definition) or specialisation and
-    // their members declared, whatever Kiln instantiated first.
+    // their members declared, whatever Kiln instantiated first. An
+    // explicitly specialised member template is an explicit
+    // specialisation there.
     if let Some(k) = crate::demand::effective_kind(w, e) {
         return spec_class(k);
     }
@@ -179,9 +201,32 @@ fn implicit_from(w: &Walk<'_>, mut c: Option<DeclId>) -> bool {
         if let Some(k) = crate::demand::effective_kind(w, x) {
             return k == SpecKind::ImplicitInstantiation;
         }
+        if specialised_member_template(w, x) {
+            return false;
+        }
         c = ast.decls.get(x).ctx();
     }
     false
+}
+
+/// `x`, or the template whose pattern `x` is, is a member template of an
+/// implicitly instantiated class that `template <> template <...>`
+/// explicitly specialises ([temp.expl.spec]/16), so that it and its
+/// members are written in source (`spec/digest.md` §2.2). Kiln keeps no
+/// `SpecInfo` for it: it drops the `instantiated_from` of the template's
+/// first declaration (`Sema::specialize_member_template`), which every
+/// member template an instantiation declares has.
+pub(crate) fn specialised_member_template(w: &Walk<'_>, x: DeclId) -> bool {
+    let ast = w.ast;
+    let t = if is_template_kind(ast.decls.get(x).kind()) {
+        x
+    } else {
+        match ast.described_template(x) {
+            Some(t) => t,
+            None => return false,
+        }
+    };
+    ast.templates.instantiated_from_map(ast.first(t)).is_none() && in_implicit_instantiation(w, t)
 }
 
 /// The kind of `x`'s own `SpecInfo`, else of its `MemberSpecInfo`.
@@ -340,6 +385,37 @@ fn in_builtin(w: &Walk<'_>, e: DeclId) -> bool {
     false
 }
 
+/// A declaration whose lexical context lies in a class template's
+/// pattern (or a partial specialisation) and whose semantic context is
+/// another: a friend the pattern declares. Kiln chains one to a later
+/// namespace-scope declaration only on its path for the global allocation
+/// functions (`kiln_sema/src/new_delete.rs` `act_on_global_new_delete_decl`
+/// finds it by `lookup_local`; ordinary redeclaration lookup does not),
+/// so such a chain reads, and takes its file from, the other declarations
+/// (`spec/landed/model/WP-050.md`).
+pub(crate) fn pattern_friend(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let lex = ast.decls.lexical_ctx(d);
+    if lex.is_none() || lex == ast.decls.get(d).ctx() {
+        return false;
+    }
+    let mut ctx = lex;
+    for _ in 0..4096 {
+        let Some(x) = ctx else { return false };
+        let kind = ast.decls.get(x).kind();
+        if kind == DeclKind::TranslationUnit || kind == DeclKind::Namespace {
+            return false;
+        }
+        if ast.described_template(x).is_some()
+            || kind == DeclKind::ClassTemplatePartialSpecialization
+        {
+            return true;
+        }
+        ctx = ast.decls.lexical_ctx(x);
+    }
+    false
+}
+
 /// Every declaration of the entity is implicit.
 fn all_implicit(w: &Walk<'_>, e: DeclId) -> bool {
     w.redecls(e).iter().all(|&d| w.ast.decls.get(d).has(DeclFlags::IMPLICIT))
@@ -489,7 +565,19 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         (GroupClass::Tu, Vec::new())
     } else {
         match class {
-            UnitClass::Declared => (GroupClass::Declared, declared_file(w, e)),
+            UnitClass::Declared => {
+                if let Some(file) = declared_file(w, e) {
+                    (GroupClass::Declared, file)
+                } else {
+                    // `unit_class` makes an entity without a location
+                    // on demand, so this is a defect of the walk: the
+                    // unit goes to the derived group with the empty
+                    // path, indeterminate, instead of making the shard
+                    // invalid (`spec/landed/model/WP-050.md`).
+                    cause = Some(merge(cause, Cause::Unaccounted("unit/file")));
+                    (GroupClass::Derived, Vec::new())
+                }
+            }
             UnitClass::Derived | UnitClass::OnDemand => (GroupClass::Derived, origin_file(w, read)),
         }
     };
@@ -504,6 +592,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         class,
         file,
         resolved: None,
+        default_argument: None,
     })
 }
 
@@ -594,6 +683,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         class: GroupClass::Tu,
         file: Vec::new(),
         resolved: None,
+        default_argument: None,
     }
 }
 
@@ -606,8 +696,9 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
 /// called at `kiln_sema/src/templ/class.rs:1597` and `:1700`), so its
 /// file is the file of the declaration it was instantiated from
 /// (`origin_file`), whether or not the definition was instantiated
-/// (digest-kinds §11.1).
-pub(crate) fn declared_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
+/// (digest-kinds §11.1). `None` when no declaration the walk may read
+/// has a location (`Walk::located`).
+pub(crate) fn declared_file(w: &Walk<'_>, e: DeclId) -> Option<Vec<u8>> {
     let ast = w.ast;
     let instantiated = matches!(
         crate::demand::effective_kind(w, e),
@@ -618,9 +709,9 @@ pub(crate) fn declared_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
         )
     );
     if instantiated && (ast.member_spec_info(e).is_some() || ast.decls.function(e).is_some()) {
-        return origin_file(w, e);
+        return Some(origin_file(w, e));
     }
-    w.file_of(w.representative(e))
+    w.located(w.representative(e)).map(|d| w.file_of(d))
 }
 
 /// The file whose derived group holds a derived unit: that of the first
@@ -652,10 +743,10 @@ pub(crate) fn origin_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
         };
         match next {
             Some(x) if x != d => d = w.entity(x),
-            Some(_) | None => return w.file_of(d),
+            Some(_) | None => return w.unit_file(d),
         }
     }
-    w.file_of(d)
+    w.unit_file(d)
 }
 
 /// Marks every unit whose key two different entities share
@@ -732,23 +823,44 @@ impl Walk<'_> {
         // data member when it is used is the resolved unit `definition`'s
         // (§11.9): the own unit does not read it.
         let definition = self.unit.definition;
-        chain
+        let chain: Vec<DeclId> = chain
             .into_iter()
             .filter(|&d| !instantiated_outside_class(self, d))
             .filter(|&d| definition || !instantiated_out_of_line(self, d))
-            .collect()
+            .collect();
+        if chain.iter().all(|&d| pattern_friend(self, d)) {
+            return chain;
+        }
+        chain.into_iter().filter(|&d| !pattern_friend(self, d)).collect()
     }
 
     /// The declaration an entity with a written declaration is classified
     /// from: its earliest declaration that is not instantiated outside its
-    /// class; `e` itself for an entity that has none.
+    /// class, not in a templated body, and not a [`pattern_friend`] (that
+    /// last only if another one is left); `e` itself for an entity that
+    /// has none.
     pub(crate) fn representative(&self, e: DeclId) -> DeclId {
         let mut chain = self.chain(e);
         chain.reverse();
-        chain
-            .into_iter()
-            .find(|&d| !instantiated_outside_class(self, d) && !in_templated_body(self, d))
-            .unwrap_or(e)
+        self.first_read(&chain, |_| true).unwrap_or(e)
+    }
+
+    /// The earliest declaration of `chain` (earliest first) that `keep`
+    /// holds of and that a unit is classified from (see
+    /// [`Walk::representative`]).
+    fn first_read(&self, chain: &[DeclId], keep: impl Fn(DeclId) -> bool) -> Option<DeclId> {
+        let read = |d: DeclId| !instantiated_outside_class(self, d) && !in_templated_body(self, d);
+        let pick = |friends: bool| {
+            chain
+                .iter()
+                .copied()
+                .find(|&d| read(d) && (friends || !pattern_friend(self, d)) && keep(d))
+        };
+        if chain.iter().any(|&d| read(d) && !pattern_friend(self, d)) {
+            pick(false)
+        } else {
+            pick(true)
+        }
     }
 
     /// Every declaration of entity `e`, in Kiln's chain order. A template
@@ -788,9 +900,39 @@ impl Walk<'_> {
         out
     }
 
+    /// Whether declaration `d` has a location in some buffer (Kiln makes
+    /// some implicit declarations with none).
+    pub(crate) fn has_location(&self, d: DeclId) -> bool {
+        let loc = self.ast.decls.get(d).loc();
+        self.sm.offset_of(self.sm.expansion_loc(loc)).is_some()
+    }
+
+    /// The file of a unit whose origin is declaration `d`
+    /// (`spec/digest.md` §11): that of `d` if it has a location, else of
+    /// the first declaration of its chain, in chain order (earliest
+    /// first), that has one; the empty path if none has.
+    pub(crate) fn unit_file(&self, d: DeclId) -> Vec<u8> {
+        self.located(d).map_or_else(Vec::new, |x| self.file_of(x))
+    }
+
+    /// The declaration [`Walk::unit_file`] reads the file of: `d` if it
+    /// has a location, else the earliest declaration of its chain that
+    /// has one among those [`Walk::representative`] may pick (so a friend
+    /// of a class template's pattern, or a declaration an instantiation
+    /// made outside its class, is not taken while another is left); `None`
+    /// if none has.
+    pub(crate) fn located(&self, d: DeclId) -> Option<DeclId> {
+        if self.has_location(d) {
+            return Some(d);
+        }
+        let mut chain = self.chain(d);
+        chain.reverse();
+        self.first_read(&chain, |x| self.has_location(x))
+    }
+
     /// The subject path of the file of `d`'s location, or of the
     /// outermost macro expansion that produced it (`spec/digest.md` §11).
-    pub(crate) fn file_of(&self, d: DeclId) -> Vec<u8> {
+    fn file_of(&self, d: DeclId) -> Vec<u8> {
         let loc = self.ast.decls.get(d).loc();
         let loc = self.sm.expansion_loc(loc);
         match self.sm.offset_of(loc) {
@@ -1129,7 +1271,8 @@ mod tests {
             units(src)
                 .into_iter()
                 .filter(|(class, name, _, _)| {
-                    *class == GroupClass::Derived && name.starts_with("m(type-parameter-0-0")
+                    *class == GroupClass::Derived
+                        && name.contains("::friend template <class> void m(")
                 })
                 .map(|(_, _, key, digest)| (key, digest))
                 .collect()

@@ -3,4 +3,5 @@
 present A<int>::<definition>
 resolved A<int>::c::<definition>
 resolved A<int>::s::<definition>
+resolved A<int>::c::<value>
 added h()
