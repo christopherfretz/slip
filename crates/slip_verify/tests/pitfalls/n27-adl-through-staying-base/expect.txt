@@ -1,0 +1,5 @@
+# N27: visit(d) finds the dependency's legacy::visit(Base &) through the
+# staying base of the moved Derived. Against false findings: the call left
+# unqualified (good) and the call qualified (good-2) both verify.
+good:   verified
+good-2: verified

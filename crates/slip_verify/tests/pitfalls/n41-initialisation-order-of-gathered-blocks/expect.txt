@@ -1,0 +1,9 @@
+# N41: legacy is opened twice around the global b, and the three
+# namespace-scope variables have dynamic initialisers, initialised in the
+# order of their definitions in the translation unit ([basic.start.dynamic]).
+# good moves each block in place; bad gathers the moved variables into one
+# namespace acme block, so c is initialised before b: sum() is 132, not 123.
+# No unit but the order unit differs: every variable's initialiser is the
+# same call (E09's fact, made by a relocation).
+good: verified
+bad:  mismatch changed <order>

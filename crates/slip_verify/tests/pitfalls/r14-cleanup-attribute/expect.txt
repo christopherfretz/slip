@@ -1,0 +1,10 @@
+# R14: app::release renamed drop. __attribute__((cleanup(release))) names the
+# function through ordinary lookup, unlike the names in strings of
+# spec/verify.md §8 (asm labels, alias and weakref targets): left, it no
+# longer finds app::release. pre-2 adds a global release(int *), which the
+# left attribute then finds: f() returns 10 instead of 1. Against a
+# verifier that leaves attributes out of its digest.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed app::f() @ main.cpp:6

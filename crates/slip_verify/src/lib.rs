@@ -15,11 +15,21 @@
 //! cannot read with certainty (a shard that breaks its format, a verdict
 //! whose counters are missing or disagree with it, a shard of another
 //! observer or round) is `verified`.
+//!
+//! M2 (WP-070): [`run`] also checks agreement between observers (§9.2 to
+//! §9.5) and folds the spelled entities over the run ([`spelling`], §10.3,
+//! §10.6); [`guards`] is the overlay's guards O1 and O2 (§5.3); and
+//! [`conclude`] is the state of a transform's result and what each state
+//! permits (`spec/edits.md` §8.5). Every function is pure over model types
+//! and fails closed: what it cannot read with certainty permits no write.
 
 #![forbid(unsafe_code)]
 
 pub mod compare;
+pub mod conclude;
+pub mod guards;
 pub mod run;
+pub mod spelling;
 
 pub use compare::{
     AtSums, CompareError, Comparison, Exemptions, at_sums, comparable, compare_groups,

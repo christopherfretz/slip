@@ -151,8 +151,8 @@ Kiln's discriminants.
   table's variant rows, from 1, whatever the rows' decisions. With
   `base=B` it is `B` plus that position: the node enumerations have
   disjoint ranges (`DeclKind` 256, `StmtKind` 512, `ExprKind` 768,
-  `TypeView` 1024, `ValueKind` 1280), so a statement can never be read as
-  an expression.
+  `TypeView` 1024, `ValueKind` 1280; the walk's own rows 1536, §1.7), so
+  a statement can never be read as an expression.
 - 0 is never a tag.
 - Rows are in Kiln's declaration order at the revision this file describes.
   That is how the numbers were first assigned and nothing more: a variant
@@ -201,6 +201,19 @@ a per-kind word, a bit of a flag word, or a value of a `consts` type. Every
 row with a `kind` prefix or a `fact` suffix is therefore outside
 obligations 3 and 4 of digest §13, and the words concerned are listed in
 "Open questions" as obligation 6 requires.
+
+### 1.7 Rows of the walk
+
+A few things the walk writes are no Kiln type's row: they are the walk's
+own. Their tags are the next range of §1.4 after the node enumerations',
+1536: a row's tag is 1536 plus its position in this table, from 1, so no
+statement, expression or other node can be read as one. The test checks
+the numbers and that no table's range reaches them, and `src/tables.rs`
+gives each as a constant of `walk_row`.
+
+| Tag | Row | Written |
+|---|---|---|
+| 1537 | `backref` | in place of a statement or expression node that the stream has written already in the same state: `tag 1537`, then `uv` the node's count (digest §4.3 "Back-references"); the node's rows and children are not written again |
 
 ## 2. Reading a table as a stream
 
@@ -2551,7 +2564,11 @@ declares; what a lookup found is in the node that used it.
 
 A statement is written as the rows of `StmtNode`: its tag, then the rows
 of its kind, which are in walk order. A kind with no rows (`NullStmt`,
-`BreakStmt`, `ContinueStmt`) is its tag alone.
+`BreakStmt`, `ContinueStmt`) is its tag alone. A statement the stream
+has written already, in the same state, is written as `backref` (§1.7):
+`tag 1537` and the count of its first writing (digest §4.3
+"Back-references"); statements and expressions are counted in one
+sequence.
 
 ### `kiln_ast::stmt::StmtKind`
 
@@ -2975,6 +2992,14 @@ Rules the rows refer to:
   unit. The node writes that number as `uv` and, the first time only, the
   source walked in place. A node without a source writes the next number
   and no source.
+- **Nodes reached twice.** An expression the stream has written already,
+  in the same state, is written as `backref` (§1.7): `tag 1537` and the
+  count of its first writing, in place of all its rows, those of its maps
+  included (digest §4.3 "Back-references"). An `OpaqueValueExpr`, and a
+  node numbered as an opaque value's source when the walk reaches it, are
+  written by the rule above and never as `backref`: the opaque rule
+  first. Nothing of this is written in profile mode (§4.4), whose walk
+  writes every node in full.
 - **Overloaded member access.** A `MemberExpr` whose type is the
   overloaded-function placeholder names the first candidate of its set.
   The first candidate is written; the rest of the set is the result of
@@ -5227,14 +5252,16 @@ operator of the lambda whose body holds it: Kiln's semantic context.
 For a closure outside a function body it is what Kiln's
 `Ast::closure_owner` answers (Kiln WP-2023), taken to the entity that
 has a key: a parameter's function, a template parameter's template, and
-otherwise the field, variable, alias, function or template itself. An
-owner that is a namespace, a class or the translation unit (a
-lambda-expression in a `static_assert`, in a base-specifier, in a
-bit-field width) has no stream that numbers the closure: the closure
-has no key, and what refers to it is indeterminate
-(`Unsupported("local/closure-owner")`). The pinned Kiln answers the
-query (`ColdDeclData` `closure_owner`); until `docs/wp/WP-040.md`
-implements this rule, a closure is `Pending(Area::Local)`.
+otherwise the field, variable, alias, function or template itself (a
+lambda-expression in a bit-field width is the field's: Kiln gives the
+field as owner, and the field's stream walks the width). A consteval
+block's synthesized lambda is the block's (digest §4.3 "An owner keyed
+by its content"). An owner that is a namespace, a class, an
+enumeration or the translation unit (a lambda-expression in a
+`static_assert`, in a base-specifier, in an enumerator's initialiser)
+has no stream that numbers the closure: the closure has no key, and
+what refers to it is indeterminate
+(`Unsupported("local/closure-owner")`).
 
 A capture's `var` is `Ref::local` in the stream that holds the
 lambda-expression. An init-capture declares its variable: the variable
@@ -5979,7 +6006,9 @@ first use that has no source-location values. The resolved unit
 function or field for one written in source, the `default_argument` unit
 for an instantiated one) lists the values of the argument's immediate
 invocations that have an entry, in the order the expression walk meets
-them, as `count` and then `value` for each; it exists when at least one
+them (a node it writes as `backref`, §1.7, it does not meet again: a
+shared node's invocations are listed once, at its first writing), as
+`count` and then `value` for each; it exists when at least one
 has an entry. Its discriminator is the parameter's index, absent for a
 field. A walk that meets a `default_imm` entry inside a type (a
 `decltype` operand) does not list it: type digests are written with an

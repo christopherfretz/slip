@@ -116,6 +116,11 @@ pub struct Header {
     /// `// target: T`; `None` is the snippet front end's default
     /// (`x86_64-unknown-linux-gnu`).
     pub target: Option<String>,
+    /// `// module: <name>=<file>`, once per module unit the main file may
+    /// import, in order (WP-048, `spec/landed/harness/WP-048.md`): the
+    /// module (`m`, `m.n`, a partition `m:p`) and the file of the test
+    /// directory that is its interface source.
+    pub modules: Vec<(String, String)>,
 }
 
 impl Header {
@@ -125,13 +130,30 @@ impl Header {
         let mut line = vec![format!("-std={}", self.std)];
         line.extend(self.target.iter().map(|t| format!("--target={t}")));
         line.extend(self.args.iter().cloned());
+        line.extend(self.modules.iter().map(|(n, f)| format!("-fmodule-file={n}={f}")));
         line.push("-fsyntax-only".to_owned());
         line.join(" ")
     }
 }
 
 /// The keys of the header lines.
-const HEADER_KEYS: [&str; 4] = ["std", "errors", "args", "target"];
+const HEADER_KEYS: [&str; 5] = ["std", "errors", "args", "target", "module"];
+
+/// Whether `name` is a module name as `// module:` gives it: identifiers
+/// (ASCII letters, digits and `_`, not beginning with a digit) joined by
+/// `.`, then optionally `:` and a partition name of the same form.
+fn module_name(name: &str) -> bool {
+    let dotted = |s: &str| {
+        s.split('.').all(|id| {
+            id.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    match name.split_once(':') {
+        Some((m, p)) => dotted(m) && dotted(p),
+        None => dotted(name),
+    }
+}
 
 /// Whether `line` looks like a header line: `//`, any blanks, a word of
 /// ASCII letters and `-`, any blanks, then `:`. A comment that reads so
@@ -164,11 +186,19 @@ fn is_header_line(line: &str) -> bool {
 /// A header line is exactly `// <key>: <value>` (one space after `//`
 /// and after the colon, the value not empty) with the key `std`,
 /// `errors` (value `yes`), `args` (split at spaces; no quoting) or
-/// `target`, each at most once. A line of the block that looks like a
+/// `target`, each at most once, and `module` (`<name>=<file>`, a module
+/// name and a file name, once per module unit; a name or a file twice is
+/// an error). A line of the block that looks like a
 /// header line ([`looks_like_header`]) but is not one (`// arg: x`,
 /// `//target: x`, `// errors: no`, a key twice) is an error of the test.
 pub fn header(main: &str) -> Result<Header, String> {
-    let mut h = Header { std: "c++20".to_owned(), errors: false, args: Vec::new(), target: None };
+    let mut h = Header {
+        std: "c++20".to_owned(),
+        errors: false,
+        args: Vec::new(),
+        target: None,
+        modules: Vec::new(),
+    };
     let mut seen: Vec<&str> = Vec::new();
     let mut lines = main.lines().enumerate();
     for (i, line) in lines.by_ref() {
@@ -185,7 +215,8 @@ pub fn header(main: &str) -> Result<Header, String> {
         let bad = || {
             format!(
                 "line {}: `{line}` looks like a header line but is not `// std: <std>`, \
-                 `// errors: yes`, `// args: <arguments>` or `// target: <triple>`",
+                 `// errors: yes`, `// args: <arguments>`, `// target: <triple>` or \
+                 `// module: <name>=<file>`",
                 i + 1
             )
         };
@@ -194,7 +225,7 @@ pub fn header(main: &str) -> Result<Header, String> {
         if !HEADER_KEYS.contains(&key) || value.is_empty() || value.starts_with(' ') {
             return Err(bad());
         }
-        if seen.contains(&key) {
+        if key != "module" && seen.contains(&key) {
             return Err(format!("line {}: a second `// {key}:` line", i + 1));
         }
         seen.push(key);
@@ -205,6 +236,19 @@ pub fn header(main: &str) -> Result<Header, String> {
                 h.args = value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect();
             }
             "target" if !value.contains(' ') => h.target = Some(value.to_owned()),
+            "module" => {
+                let Some((name, file)) = value.split_once('=') else { return Err(bad()) };
+                if !module_name(name) || file.is_empty() || file.contains([' ', '=']) {
+                    return Err(bad());
+                }
+                if h.modules.iter().any(|(n, _)| n == name) {
+                    return Err(format!("line {}: module `{name}` is given twice", i + 1));
+                }
+                if h.modules.iter().any(|(_, f)| f == file) {
+                    return Err(format!("line {}: file `{file}` is given twice", i + 1));
+                }
+                h.modules.push((name.to_owned(), file.to_owned()));
+            }
             _ => return Err(bad()),
         }
     }
@@ -229,6 +273,24 @@ pub fn digest_side(dir: &Path, side: Side) -> Result<Digested, String> {
 /// [`digest_side`] under the rules `rules`.
 pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Digested, String> {
     let (list, head) = side_files(&files(dir)?, side)?;
+    // `// module:` (WP-048): each file is another file of the snippet.
+    for (name, file) in &head.modules {
+        let main = matches!(file.as_str(), "main.cpp" | "t.cpp" | "a.cpp" | "b.cpp" | "side.h");
+        if main || !list.iter().any(|(n, _)| n == file) {
+            return Err(format!(
+                "side {side:?}: module `{name}`: `{file}` is not another file of the test"
+            ));
+        }
+    }
+    if let Some((name, file)) = head.modules.first() {
+        // `spec/landed/harness/WP-048.md`: Kiln imports a named module
+        // only from a file on disk, and a snippet has none.
+        return Err(format!(
+            "side {side:?} (`kiln {}`): module `{name}` (`{file}`): the snippet front end \
+             cannot import a named module from memory yet (docs/requests/KF5)",
+            head.line()
+        ));
+    }
     let refs: Vec<(&str, &str)> = list.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let snippet = slip_kiln::snippet::Snippet {
         files: &refs,
@@ -792,7 +854,50 @@ mod header_tests {
             errors,
             args: args.iter().map(|a| (*a).to_owned()).collect(),
             target: target.map(str::to_owned),
+            modules: Vec::new(),
         }
+    }
+
+    // WP-048: `// module: <name>=<file>`, once per module unit, in order;
+    // a name or a file twice, a name that is no module name and a value
+    // without `=` are errors of the test.
+    #[test]
+    fn wp048_module_header_lines() {
+        let two =
+            header("// module: m=m.cppm\n// std: c++23\n// module: m.n:p=part.cppm\nint x;\n")
+                .unwrap();
+        assert_eq!(
+            two.modules,
+            [("m".to_owned(), "m.cppm".to_owned()), ("m.n:p".to_owned(), "part.cppm".to_owned())]
+        );
+        assert_eq!(two.std, "c++23");
+        assert_eq!(
+            two.line(),
+            "-std=c++23 -fmodule-file=m=m.cppm -fmodule-file=m.n:p=part.cppm -fsyntax-only"
+        );
+        for bad in [
+            "// module: m\n",
+            "// module: =m.cppm\n",
+            "// module: m=\n",
+            "// module: 1m=m.cppm\n",
+            "// module: m.=m.cppm\n",
+            "// module: m:=m.cppm\n",
+            "// module: m:p:q=m.cppm\n",
+            "// module: m-n=m.cppm\n",
+            "// module: m=a b\n",
+            "// module: m=a=b\n",
+            "// modules: m=m.cppm\n",
+        ] {
+            assert!(header(bad).is_err(), "{bad:?}");
+        }
+        let name = header("// module: m=a.cppm\n// module: m=b.cppm\n").unwrap_err();
+        assert_eq!(name, "line 2: module `m` is given twice");
+        let file = header("// module: m=a.cppm\n// module: n=a.cppm\n").unwrap_err();
+        assert_eq!(file, "line 2: file `a.cppm` is given twice");
+        assert_eq!(
+            header("int x;\n// module: m=m.cppm\n").unwrap_err(),
+            "line 2: header line outside the header block"
+        );
     }
 
     #[test]

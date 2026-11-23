@@ -1,7 +1,7 @@
 #include "side.h"
-// §7 ExprKind `LambdaExpr`.
+// §7 ExprKind `LambdaExpr`: the kind on side B only.
 #ifdef B
-template<class T> auto lv = 1;
+int f() { return [] { return 1; }(); }
 #else
-template<class T> auto lv = [] { return 1; };
+int f() { return 1; }
 #endif
