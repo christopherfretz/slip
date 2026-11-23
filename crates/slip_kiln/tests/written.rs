@@ -1258,6 +1258,37 @@ fn s9_3_destructor_names() {
     });
 }
 
+const SPELLED: &str = "\
+int caf\\u00e9 = 0;
+int fo\\
+o = 0;
+void ba\\
+r();
+struct S\\u00e9 { ~S\\u00e9(); };
+int caf\u{e9}2 = 0;
+";
+
+// The WP-068 review's correction (`spec/landed/edits/WP-067.md`,
+// "Corrections"): a declaration whose name is written with a
+// universal-character-name or split by a line splice is given, with the
+// span of its name token as written, not left out; the identifier is
+// compared as Kiln's symbol. `slip_kiln::sites` refuses such a name
+// `not_plain` (`tests/sites.rs`, `s2_3_not_plain_a_declaration_split_by_a_splice`).
+#[test]
+fn s9_3_decl_names_written_with_a_ucn_or_a_splice() {
+    with_unit("spelled", SPELLED, |u| {
+        let s = SPELLED;
+        let d = DeclNameKind::Declaration;
+        assert_eq!(names_at(u, s, "int caf\\u00e9", "caf\\u00e9"), [(d, DeclKind::Var)]);
+        assert_eq!(names_at(u, s, "int fo\\\no", "fo\\\no"), [(d, DeclKind::Var)]);
+        assert_eq!(names_at(u, s, "void ba\\\nr", "ba\\\nr"), [(d, DeclKind::Function)]);
+        assert_eq!(names_at(u, s, "struct S\\u00e9", "S\\u00e9"), [(d, DeclKind::CXXRecord)]);
+        assert_eq!(names_at(u, s, "~S\\u00e9()", "S\\u00e9"), [(d, DeclKind::CXXDestructor)]);
+        assert_eq!(names_at(u, s, "int caf\u{e9}2", "caf\u{e9}2"), [(d, DeclKind::Var)]);
+        assert_eq!(decl_names(u).len(), 6, "every declaration, nothing else");
+    });
+}
+
 // Review item 3: the origin of a template's pattern is the template, for
 // class, function, variable and alias templates: the injected-class-name
 // `W` and `W<T>` have one origin.

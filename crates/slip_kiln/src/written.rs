@@ -50,7 +50,7 @@ use crate::kiln::ast::templates::SpecKind;
 use crate::kiln::ast::types::{Nns, TemplateName, TypeView};
 use crate::kiln::ast::written_refs::{QualLink, REF_UNRESOLVED, WrittenRef as Entry, WrittenRefs};
 use crate::kiln::ast::{Ast, DeclId, QualType};
-use crate::kiln::lex::{LexOptions, token_end};
+use crate::kiln::lex::{LexMode, LexOptions, Lexer, Punct, TokKind};
 use crate::kiln::source::symbol::Symbol;
 use crate::kiln::source::{Loc, Span};
 
@@ -381,31 +381,70 @@ fn written_template_name(ast: &Ast, n: TemplateNameId) -> Option<Symbol> {
 }
 
 /// The span of the identifier `ident` in `name` (a declaration's
-/// `DeclExtent::name`): `name` itself when it is the identifier; for a
-/// destructor (`~T`, `~ T`), its last `ident.len()` bytes when the text is
-/// `~`, blanks and `ident`, and Kiln's `token_end` ends the token there;
-/// else (a specialisation's template-id, `S<int>`) its first token as
-/// `token_end` ends it, when that token's text is `ident` byte for byte.
-/// `None` otherwise: nothing is guessed.
+/// `DeclExtent::name`), the token as written: the token that starts at
+/// `name.lo` when Kiln's lexer lexes it as the identifier `ident` (its
+/// symbol: universal-character-names resolved, line splices removed) and
+/// it ends at or before `name.hi` (`name` itself; or a specialisation's
+/// template-id, `S<int>`, whose first token it is); for a destructor
+/// (`~T`, `~ T`), the token after the `~` that starts `name`, when it is
+/// the identifier `ident` and ends at `name.hi`. `None` otherwise: nothing
+/// is guessed.
+///
+/// The identifier is compared as Kiln's symbol, not as the span's text,
+/// so that a name written `caf\u00e9` or split by a line splice is
+/// given with the span of its token; `slip_kiln::sites` refuses it
+/// `not_plain` (its bytes are not its spelling). Before the WP-068
+/// review such a declaration was left out without a word
+/// (`spec/landed/edits/WP-067.md`, "Corrections").
 fn identifier_span(unit: &Unit<'_>, name: Span, ident: &str, destructor: bool) -> Option<Span> {
-    let sm = unit.sm();
     let symbols = unit.ast().symbols();
-    let text = sm.span_text(name)?;
+    let is_ident = |t: TokKind| matches!(t, TokKind::Identifier(s) if symbols.as_str(s) == ident);
+    let (kind, lo, hi) = token_at(unit, name.lo)?;
+    if lo != name.lo {
+        return None;
+    }
     if destructor {
-        let rest = text.strip_prefix('~')?.trim_start();
-        let len = u32::try_from(ident.len()).ok()?;
-        let lo = Loc::from_raw(name.hi.to_raw().checked_sub(len)?);
-        let ok = rest == ident
-            && sm.same_entry_distance(lo, name.hi) == Some(len)
-            && token_end(sm, symbols, lo, LexOptions::default()) == Some(name.hi);
-        return ok.then(|| Span::new(lo, name.hi));
+        if kind != TokKind::Punct(Punct::Tilde) {
+            return None;
+        }
+        let (kind, lo, end) = token_at(unit, hi)?;
+        return (is_ident(kind) && end == name.hi).then_some(Span::new(lo, end));
     }
-    if text == ident {
-        return Some(name);
+    (is_ident(kind) && hi.to_raw() <= name.hi.to_raw()).then_some(Span::new(lo, hi))
+}
+
+/// The first token at or after `at` (blanks, splices and comments
+/// skipped) within `at`'s buffer or expansion entry, as Kiln's lexer lexes
+/// where `at` is spelled: its kind and its two ends, as locations of
+/// `at`'s buffer or entry. `None` for an invalid location, one spelled in
+/// no file, at the end of the buffer, or when the token does not lie
+/// within the entry.
+fn token_at(unit: &Unit<'_>, at: Loc) -> Option<(TokKind, Loc, Loc)> {
+    let sm = unit.sm();
+    let spelled = if at.is_macro() { sm.spelling_loc(at) } else { at };
+    if !spelled.is_valid() || spelled.is_macro() {
+        return None;
     }
-    let end = token_end(sm, symbols, name.lo, LexOptions::default())?;
-    let first = Span::new(name.lo, end);
-    (end.to_raw() < name.hi.to_raw() && sm.span_text(first) == Some(ident)).then_some(first)
+    let (file, pos) = sm.offset_of(spelled)?;
+    let len = u32::try_from(sm.text(file).len()).ok()?;
+    if pos >= len {
+        return None;
+    }
+    let base = Loc::from_raw(spelled.to_raw() - pos);
+    let mut lx =
+        Lexer::new_in_range(sm, unit.ast().symbols(), file, pos..len, base, LexOptions::default());
+    lx.set_mode(LexMode::Normal);
+    let t = lx.next();
+    if t.kind == TokKind::Eof {
+        return None;
+    }
+    // From the spelling back to `at`'s buffer or entry, by distance.
+    let move_to = |l: Loc| {
+        let d = sm.same_entry_distance(spelled, l)?;
+        let out = Loc::from_raw(at.to_raw().checked_add(d)?);
+        sm.same_entry_distance(at, out).map(|_| out)
+    };
+    Some((t.kind, move_to(t.span.lo)?, move_to(t.span.hi)?))
 }
 
 /// What kind of declaration `d` is, as far as a rename must tell.

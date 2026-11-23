@@ -853,7 +853,7 @@ fn edits_unlisted_values() {
         (97, 0, 2),   // failure opt tag
         (141, 0, 4),  // stance
         (143, 0, 3),  // piece tag
-        (187, 0, 10), // reason
+        (187, 0, 11), // reason
         (189, 0, 2),  // macro opt tag
         (196, 0, 2),  // report place opt tag
         (197, 0, 3),  // severity
@@ -911,6 +911,39 @@ fn edits_unlisted_values() {
     let bytes = s.to_bytes();
     let role = at(&s, "sections.edits.subjects[1].of") - 1;
     assert_eq!(error(Shard::from_bytes(&patch(&bytes, role, 2, 3))), (ErrorKind::Malformed, role));
+}
+
+// spec/edits.md §4.2: every value of `Reason` is written as its number
+// and read back, in binary and in JSON (by its name); the number after
+// the last, 11, is Malformed (`edits_unlisted_values`). `directive` (10)
+// was added by WP-068.
+#[test]
+fn edits_reason_values() {
+    let all = [
+        (Reason::MacroBody, 1, "macro_body"),
+        (Reason::Pasted, 2, "pasted"),
+        (Reason::Crossing, 3, "crossing"),
+        (Reason::NotAFile, 4, "not_a_file"),
+        (Reason::NotOwned, 5, "not_owned"),
+        (Reason::FileRecoded, 6, "file_recoded"),
+        (Reason::NotPlain, 7, "not_plain"),
+        (Reason::MixedSet, 8, "mixed_set"),
+        (Reason::MixedInstances, 9, "mixed_instances"),
+        (Reason::Directive, 10, "directive"),
+    ];
+    for (reason, n, name) in all {
+        assert_eq!(reason as u64, n, "{name}");
+        let s = map_shard(Edits {
+            files: vec![file(b"/s/a.cc", 100, 1)],
+            claims: vec![Claim { reason, ..claim(0, 1, 2, Stance::Refuse) }],
+            ..empty_edits()
+        });
+        round_trip(&s);
+        let v = s.to_json();
+        let c = &v.get("sections").unwrap().get("edits").unwrap().get("claims").unwrap();
+        let got = c.as_array().unwrap()[0].get("reason").unwrap();
+        assert_eq!(got, &Value::Str(name.to_owned()), "{name}");
+    }
 }
 
 // spec/model.md §5 rule 2, §8: section 17 is known; a reader of this crate
