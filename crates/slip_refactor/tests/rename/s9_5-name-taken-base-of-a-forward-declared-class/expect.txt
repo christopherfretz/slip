@@ -1,0 +1,7 @@
+subjects:
+  1415dcb3 seed name_taken rule=yes n::D::f(int)
+links:
+claims:
+  main.cpp:1:73+1 replace "g" t0 votes=1 none [1415dcb3]
+  main.cpp:2:22+1 replace spell(1415dcb3, "g") t0 votes=1 none [1415dcb3]
+changed:

@@ -1,0 +1,9 @@
+subjects:
+  3b98ec8e candidate - rule=yes n::D::f()
+  599ef791 seed - rule=yes n::B::f()
+links:
+  3b98ec8e 599ef791
+claims:
+  main.cpp:1:25+1 refuse t2 votes=1 macro_body [3b98ec8e] macro=OVERRIDE_F@98
+  main.cpp:3:25+1 replace "g" t0 votes=1 none [599ef791]
+changed:

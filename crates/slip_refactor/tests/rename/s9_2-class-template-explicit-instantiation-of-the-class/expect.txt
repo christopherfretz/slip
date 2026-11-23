@@ -1,0 +1,7 @@
+subjects:
+  017413ba follower unsupported rule=yes n::S<short>::f() of=32ae9afe
+  32ae9afe seed - rule=yes n::S::f()
+links:
+claims:
+  main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]
+changed:

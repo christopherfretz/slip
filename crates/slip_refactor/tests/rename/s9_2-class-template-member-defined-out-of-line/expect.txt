@@ -1,0 +1,9 @@
+subjects:
+  32ae9afe seed - rule=yes n::S::f()
+  fc2d99d6 follower unsupported rule=yes n::S<int>::f() of=32ae9afe
+links:
+claims:
+  main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]
+  main.cpp:2:31+1 replace "g" t0 votes=1 none [32ae9afe]
+  main.cpp:3:27+1 replace spell(32ae9afe, "g") t0 votes=1 none [32ae9afe]
+changed:

@@ -43,7 +43,7 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use crate::Unit;
-use crate::kiln::ast::decl::DeclKind;
+use crate::kiln::ast::decl::{DeclKind, FriendKind};
 use crate::kiln::ast::ids::TemplateNameId;
 use crate::kiln::ast::names::{DeclNameKind as NameKind, DeclNameView};
 use crate::kiln::ast::templates::SpecKind;
@@ -487,18 +487,34 @@ fn decl_name_kind(ast: &Ast, d: DeclId, kind: DeclKind) -> DeclNameKind {
 /// class, function, variable or alias template: the injected-class-name
 /// `W` inside `template <class T> struct W`, a function template's call
 /// to itself) the template, so that `W` and `W<T>` there have one origin.
+/// For a partial specialisation of a class or variable template, the
+/// template: its name token spells the template (`v<T*>`), and its key's
+/// parent is the template's (`spec/digest.md` §3.4).
 /// Repeated until none applies, so that a specialisation of a member
 /// template of an instantiated class has the member template of the
 /// class template as its origin. Anything else is its own origin. One
 /// function, so that the rename, the host and the check cannot disagree
 /// about it.
+///
+/// A friend declaration of an instantiated class is not taken to the
+/// friend declaration of the pattern when that one does not define the
+/// function: `spec/digest.md` §3.4 does not follow such a friend
+/// (`spec/landed/digest/WP-103.md`, finding 2), and the function it
+/// names is its own entity, so the origin of a call does not depend on
+/// whether the class template was instantiated before it.
 pub fn origin(unit: &Unit<'_>, referent: DeclId) -> DeclId {
     let ast = unit.ast();
     let mut d = referent;
     for _ in 0..ORIGIN_LIMIT {
-        let next = match ast.spec_info(d) {
-            Some((_, s)) => Some(s.template),
-            None => ast.described_template(d).or_else(|| ast.instantiated_from(d)),
+        let next = match (ast.spec_info(d), ast.partial_spec_info(d)) {
+            (Some((_, s)), _) => Some(s.template),
+            (None, Some((_, p))) => Some(p.template),
+            (None, None) => ast.described_template(d).or_else(|| {
+                ast.instantiated_from(d).filter(|&p| {
+                    ast.decls.get(p).misc().friend() == FriendKind::None
+                        || ast.definition(p).is_some()
+                })
+            }),
         };
         match next {
             Some(n) if n != d => d = n,

@@ -1,0 +1,4 @@
+spec: spec/edits.md §9.1 (a scope component is a namespace, a class or a class template: the enumerator n::f of a scoped enumeration n is no seed, keep)
+from: n::f
+to: g
+kind: function

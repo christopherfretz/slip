@@ -1,0 +1,4 @@
+spec: spec/edits.md §9.3 (a function template: its definition out of line, explicit specialisations, explicit instantiations, template-ids and an address)
+from: n::f
+to: g
+kind: function

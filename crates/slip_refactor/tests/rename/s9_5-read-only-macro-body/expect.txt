@@ -1,0 +1,8 @@
+subjects:
+  9f28e21c seed read_only rule=yes n::f(int)
+links:
+claims:
+  dep/lib.h:1:24+1 refuse t2 votes=1 macro_body [9f28e21c]
+  main.cpp:3:9+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:4:15+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
+changed:

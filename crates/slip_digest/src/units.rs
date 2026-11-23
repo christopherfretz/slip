@@ -554,6 +554,9 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         w.unit.local.holder = Some(e);
         let mut s = Stream::new();
         w.decl_stream(&mut s, from, e);
+        crate::enclosing::write(w, &mut s, e);
+        // The list comes after the unit stream, whose end is `enclosing`
+        // (digest-kinds §1.7, §4.4 "Spellings" item 6).
         crate::own_spelling::write_unit_list(w, &mut s);
         w.unit = saved;
         #[cfg(test)]
@@ -876,7 +879,7 @@ fn collides(written: &[Written], run: &[usize]) -> bool {
 
 /// The declarations a scope may repeat and Kiln does not join
 /// (`spec/digest.md` §3.4).
-fn repeatable(kind: KeyKind) -> bool {
+pub(crate) fn repeatable(kind: KeyKind) -> bool {
     matches!(
         kind,
         KeyKind::UsingDeclaration

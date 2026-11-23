@@ -303,6 +303,13 @@ The producer gets `id` and `rule` from `slip_digest::query::Keys`
 (`verify.md` §9.5): they are the key the walk gives the entity and the
 rule the walk will match, not a second computation of either.
 
+Whether a subject has a `rule`, and which, is a function of its key and
+the request, never of what else the observer saw: two observers that
+give one id give it the same rule or both none (reduce §5.2 rule 1 holds
+them to it). Where an observer shows something that makes the rule
+unsafe to use (a key that follows a pattern member, §9.5), the subject
+keeps its rule and carries a flag instead.
+
 ### 4.2 Claims
 
 ```
@@ -1660,14 +1667,69 @@ enclose its declaration.
   across classes that no single observer need see together; reduce closes
   the seeds under the links (§5.2), so a rename of one virtual function
   renames its whole family and no other.
-- **Followers**, each with `of` the subjects it follows:
+  What a function overrides is read from the front end's record of the
+  functions each one overrides directly, never from names and
+  signatures; the functions looked at are every declaration named like
+  the old identifier and every function of that record so named (a
+  member of an instantiated class included), each taken to its origin
+  (`api.md` §5.5) as a reference to it is. A function of a family that
+  has no key cannot be a subject, so its link cannot be recorded: the
+  function at the other end is `unsupported`, and the family is refused
+  rather than split. A destructor, an operator or a conversion function
+  never arises (overriding keeps the name; a destructor is not named by
+  an identifier); were one reached, the function reaching it would be
+  `unsupported`. A covariant return or `final` changes nothing.
+- **Followers**, each with `of` the entities it follows:
   - a using-declaration that names subjects, and each using-shadow it
-    introduces (`of`: the entities named);
+    introduces whose target is a subject (`of`: the entities named). The
+    using-declaration's `of` is **every** entity it names, subject or
+    not, so that an overload set partly selected is `mixed_follower`
+    (§5.2); its name is claimed with it as the subject. A
+    using-declaration that has no key (one at block scope is no unit)
+    is no follower: its name is claimed for the subjects it names, or
+    `refuse(mixed_set)` when it also names an entity that is not one. A
+    using-declaration that introduces no shadow of its own (it repeats
+    one of its scope) is taken through the declaration it redeclares,
+    and claimed `unresolved` where the front end links none. A reference
+    found through a shadow denotes its referent (§9.3);
   - a member of a class template specialisation instantiated from a
     subject, when its key has the old name (`of`: the member of the
-    template);
+    template). "Instantiated from" is the link the front end records
+    (`instantiated_from`), asked of every declaration of the member and
+    followed through the whole chain of patterns, as the digest follows
+    it (`digest.md` §3.4); `of` is the subject the member was
+    instantiated from directly. A member of an implicit or explicit
+    instantiation of the class, an explicit specialisation of a member
+    (`template <> void S<int>::f() {}`) included, is one; a member of an
+    explicit or partial specialisation of the class is not: it is
+    declared there and linked to nothing, another entity, and its names
+    are `keep`s. Such a follower's key follows the pattern member's, on
+    which the digest makes a rule indeterminate: it is `unsupported`
+    (§9.5). A name of an explicit specialisation of a member, and a
+    reference to it, are claimed for the seed (the member of the
+    template), for a static data member as for a member function: a
+    redeclaration the front end does not link is taken through its
+    entity, which it does link (`api.md` §5.5). A seed in a pattern is
+    unflagged only when every place the unit shows naming it is claimed,
+    or flags it: a friend of a member of a dependent specialisation,
+    which the front end records with no declaration, makes it
+    `unreachable`, and a member of an instantiated specialisation that
+    the front end links to no pattern makes it `unsupported` (§9.5);
   - an unnamed class or enumeration that the subject names (`digest.md`
-    §3.3, `unnamed_by`).
+    §3.3, `unnamed_by`): the class or enumeration a declaration of the
+    subject declares an object of (through pointers, references and
+    arrays), whose key is named `unnamed_by` the old identifier and has
+    the subject's parent. One whose key `Keys::key` refuses makes the
+    subject `unsupported`: whether the subject names it cannot be told.
+
+  A candidate or follower declared in a template's pattern (a class
+  template, a partial specialisation, a local class of a function
+  template) is `unsupported` until `docs/wp/WP-120.md` (§9.5). A seed
+  that is a member of a class template is not: its followers are the
+  members of the specialisations, above. A seed enclosed by a partial
+  specialisation is in a pattern too (its members are instantiated from
+  it as from a class template), as `families::in_pattern` reads it,
+  and its followers are found the same way.
 
   Entities whose keys hold a subject's key as parent or in a
   discriminator (a function template's specialisations, local types,
@@ -1680,8 +1742,10 @@ now: `Keys::rename_rule(entity, new_name)`. For the one follower whose
 key does not hold the identifier as its name (an unnamed class's name is
 `unnamed_by` the variable's), the rule is made from the entity's `Key`
 (`Keys::key`, §9.7) with the inner name replaced: found as the key with
-`unnamed_by(new_name)`, to be called by the name it has now. A follower
-for which `Keys::key` refuses has the flag `unsupported` (§9.5).
+`unnamed_by(new_name)`, with the parent, kind and discriminator the key
+has, to be called by the name it has now. A follower for which
+`Keys::key` refuses has no key and cannot be listed: the subject it
+would follow has the flag `unsupported` instead (§9.5).
 
 ### 9.3 Written references
 
@@ -1691,7 +1755,7 @@ replacement is:
 
 | Reference | Found from | Piece |
 |---|---|---|
-| Every declaration and the definition of the entity: its declarator-id's last name. Redeclarations in other files, friend declarations, block-scope `extern` declarations, out-of-line definitions (`void N::f() {}`: `f` only), a template's declarations, explicit specialisations and instantiations | Kiln's declaration extents (`kiln/spec/ast.md` §19) | literal |
+| Every declaration and the definition of the entity: its declarator-id's last name. Redeclarations in other files, friend declarations, block-scope `extern` declarations, out-of-line definitions (`void N::f() {}`: `f` only), a template's declarations, explicit specialisations and instantiations, partial specialisations of a variable template (`v<T*>`, whose key's parent is the template's, `digest.md` §3.4) | Kiln's declaration extents (`kiln/spec/ast.md` §19) | literal |
 | An id-expression: a call, `&f`, `&C::f`, a use of a variable; in evaluated and unevaluated operands, default arguments, default member initialisers, template arguments. The function overload resolution selected is the subject; a name that selects a non-subject overload of another scope is a `keep` | the written-reference table, role expression name | spelled |
 | A class member access `a.f`, `p->f`, `a.C::f` | role member name | spelled |
 | A qualified name: only the last component is the name. Qualifiers are not edited: a rename moves nothing | the same entries | spelled |
@@ -1759,6 +1823,31 @@ name token, `reason` `dependent name <old name>`. Reduce puts the key in
 key to exempt (it is keyed by content, or its key is indeterminate) gets
 no entry: the edit is claimed, and verification reports the unit.
 
+Read precisely (`docs/wp/WP-073.md`):
+
+- **Which entity a declaration or a resolution is** is decided as for a
+  written reference (§9.3): taken to its origin (`api.md` §5.5) and to
+  the digest's entity, then looked up among the observer's subjects. A
+  member of an instantiated class resolved to in row 2 is therefore the
+  member of the template, and a claim names that subject.
+- **"Every one", "none" and "mixed"** are over what this observer gives:
+  the set `S` in row 1, and in row 2 every instantiation of the pattern
+  the observer made. Two observers that instantiate differently make
+  different claims at one site, and reduce sees the disagreement (§5.4).
+- **`subjects` of the claim**: for a `replace` or a `refuse`, the subjects
+  among the entities of `S` (row 1) or among those resolved to (row 2);
+  none for a `keep` or an `unresolved`.
+- **The holder** is `Keys::unit_of` the entry's enclosing declaration
+  (the front end's innermost declaration whose extent holds the name);
+  its key is `Keys::key_id` of that unit. No entry when the name has no
+  enclosing declaration, no unit holds it, or the unit has no key. A
+  `replace` that `slip_kiln::sites` turns into a `refuse` (a name in a
+  macro body) edits nothing and gets no entry.
+- **At this pin** neither row has what it needs from the front end (the
+  join from a dependent entry to the declarations found at the
+  definition; per-specialisation entries): every dependent name spelled
+  like the old name is `unresolved` (`spec/landed/edits/WP-073.md`).
+
 This is where rename guesses, and where it leans on verification most:
 
 - A `replace` from the first row can be wrong for one instantiation: the
@@ -1784,16 +1873,18 @@ Rename sets a subject's flags (§4.1), which refuse the run (§5.2):
 | Flag | When |
 |---|---|
 | `read_only` | a declaration of the entity is in a read-only file. A function that overrides one of a library is refused this way, through its link |
-| `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a member of a class template, until the package that adds followers of specialisations lands; a follower whose rule cannot be made (§9.2) |
-| `name_taken` | the scope that declares the entity (for a namespace, every part of it the observer sees; for a class, the class and its bases) declares an entity named `new_name` |
-| `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator |
+| `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a function of a virtual family linked to one that has no key (§9.2); a subject whose type is an unnamed class whose key cannot be computed (§9.2); a follower whose rule cannot be made (§9.2); a subject whose key follows a pattern member (a member of an instantiated specialisation of a class template, a follower of §9.2; a function defined as a friend in an instantiated class template; `digest.md` §3.4): its rule is kept (§4.1), but a rule on an instantiated member's key makes it indeterminate (`key/rule-on-instantiated-member`); a virtual candidate or seed, a using-declaration follower or an unnamed-tag follower declared in a template's pattern (`families::in_pattern`: a class template, a partial specialisation or a function template encloses it; `spec/landed/edits/WP-072.md` decision 3), until `docs/wp/WP-120.md`; every seed in a pattern, when the unit has a member named like the old name in an instantiated specialisation of any class template (not an explicit specialisation of the class) that the front end declares and links to no pattern (a member template explicitly specialised as a template, `template <> template <class U> void S<int>::g() {}`: which member it specialises is not recorded at this pin, so neither is its class). Otherwise a seed that is a member of a class template or of a partial specialisation is not flagged: in an observer that does not instantiate the class it has no follower and nothing is refused, provided every place the observer shows naming it is claimed or flags it (§9.2) |
+| `name_taken` | a scope the entity's name enters declares an entity named `new_name`, or a macro named `new_name` is defined in the unit (the rename reads the unit's preprocessing record, and `run` refuses a unit parsed without it, §9.7). The scopes a name enters are its semantic scope and, outwards from it, every transparent one: an unscoped enumeration, an anonymous union or struct, a linkage specification, `export`, an inline namespace (in both directions: a name in an inline namespace enters the enclosing one, and an entity declared there is taken for one in the inline namespace). A block-scope `extern` declaration enters its innermost enclosing namespace. For a namespace, every part of it the observer sees; for a class, the class and its bases at any depth, read from each class's definition; and a class derived from the entity's class that declares `new_name` (it hides the renamed member). A template parameter enters no scope: one named `new_name` takes nothing. `name_taken` is what one observer sees; it is set only where the unit sees both. A declaration of `new_name` of the same kind and signature in a unit that does not see the target is caught by verification, not by the rename: the run's rules apply in every observer (`verify.md` §2.1), so there it takes the target's key and the digest shows it removed and added (`crates/slip_digest/tests/rules/verify/name-taken-in-another-unit`). One of another signature, kind or class there is no clash (an overload, or a name no unit sees with the target) and verifies equal (`name-taken-in-another-unit-overload`) |
+| `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator; a dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln); an explicit instantiation of a member of a class template (`template void S<long>::f();`), whose name the front end records in no table at this pin (no declaration extent; the written reference of role `SpecTarget` is Kiln's stage 3): the follower it instantiates is flagged; one that follows the member's explicit specialisation is recorded nowhere at this pin: **not detected** (refused today by the follower's `unsupported`; `spec/landed/edits/WP-073.md`, fix round F3); a friend whose declarator-id names a member of a dependent specialisation (`template <class T> friend void n::S<T>::f();`), which the front end records as a type with no declaration: its name is claimed `unresolved` and every seed in a pattern is flagged (which class it names is not recorded) |
 
 and claims `refuse` (§4.2) at a reference it found and cannot edit (§2.3).
 
 Not refused, and left to verification: a use that would resolve to
 another entity once renamed (the new name hides, or is hidden by, a
-declaration in another scope), which a spelled piece reports as
-`denotes_other` and a digest as a difference; a reference without a token
+declaration in another scope, or a local or a template parameter named
+`new_name` in a function that uses the subject), which a spelled piece
+reports as `denotes_other` (the verifier's spelled-entity check,
+`docs/wp/WP-096.md`) and a digest as a difference; a reference without a token
 (§9.3); a string that names the entity for the linker (`alias`, `ifunc`:
 "Open questions").
 
@@ -1822,7 +1913,7 @@ pub fn run(transform: &Transform, unit: &slip_kiln::Unit<'_>, keys: &mut slip_di
            files: &dyn Fn(kiln::source::FileId) -> Option<FileRef>) -> Result<Edits, String>;
 ```
 
-It reads the subject through four things and nothing else of the front
+It reads the subject through five things and nothing else of the front
 end's tables:
 
 | From | What |
@@ -1831,9 +1922,12 @@ end's tables:
 | `slip_kiln::written` (`docs/wp/WP-067.md`) | the written references of the unit, deduplicated, with role, name span and referent; the names of declarations from the declaration extents |
 | `slip_kiln::ranges` (`docs/wp/WP-084.md`) | the file range of a name's span, or none: Kiln's `editable_file_range` (§2.2), which needs Kiln at or after `913a490bb` |
 | `slip_kiln::sites` (`docs/wp/WP-068.md`) | why there is none, and where a person must look (§2.3) |
+| `Unit::pp_record` | the macros the unit defines, for `name_taken` (§9.5) |
 
 `run` is a function of the unit: two parses of the same inputs give equal
-`Edits`.
+`Edits`. It returns `Err` for a unit parsed without `ParseOptions::written`
+or without `ParseOptions::pp_record`: a guard does not depend on the caller
+remembering an option.
 
 ## 10. Commands
 

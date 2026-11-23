@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 10 and §2.2 (a name in a macro argument: tier 1, with the invocation)
+from: n::f
+to: g
+kind: function

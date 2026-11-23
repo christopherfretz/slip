@@ -211,6 +211,10 @@ pub(crate) struct Walk<'a> {
     /// Digests of function types written without their exception
     /// specification (`DeclNode` `ty-type`), by raw canonical `QualType`.
     pub type_memo_no_exc: HashMap<u32, TypeRef>,
+    /// The typedefs carrying an alignment that layout reads through a
+    /// sugared type (digest-kinds §4.2 rule 9), by raw `QualType`;
+    /// `None` past the bound of the walk.
+    pub aligned_sugar: HashMap<u32, Option<Box<[DeclId]>>>,
     /// Keys by entity (its first declaration).
     pub keys: HashMap<DeclId, KeyRes>,
     /// Entities whose key is being computed: a cycle is `Unaccounted`.
@@ -321,6 +325,7 @@ impl<'a> Walk<'a> {
             owned_state: crate::owned::OwnedState::default(),
             type_memo: HashMap::new(),
             type_memo_no_exc: HashMap::new(),
+            aligned_sugar: HashMap::new(),
             keys: HashMap::new(),
             keys_in_progress: HashSet::new(),
             content: HashMap::new(),

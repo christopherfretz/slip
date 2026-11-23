@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (a using-declaration that names a variable)
+from: n::v
+to: w
+kind: variable

@@ -1,0 +1,10 @@
+subjects:
+  0c083ef3 seed - rule=yes n::A::f()
+  41110bde candidate - rule=yes n::X::f()
+links:
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [0c083ef3]
+  main.cpp:3:25+1 replace "g" t0 votes=1 none [41110bde]
+  main.cpp:5:30+1 replace spell(0c083ef3, "g") t0 votes=1 none [0c083ef3]
+  main.cpp:5:37+1 replace spell(41110bde, "g") t0 votes=1 none [41110bde]
+changed:

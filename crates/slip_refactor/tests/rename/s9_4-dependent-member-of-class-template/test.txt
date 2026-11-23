@@ -1,0 +1,4 @@
+spec: edits.md §9.4 row 2 with §9.2 (x.f in a pattern instantiated with S<int>: the follower S<int>::f, a replace), WP-073 parts C and D
+from: n::S::f
+to: g
+kind: function

@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (unreachable: the friend of F1 whose name a macro body spells; sites refuses it before comparing bytes, so it may be the old name), WP-073 fix round F1
+from: n::S::f
+to: g
+kind: function

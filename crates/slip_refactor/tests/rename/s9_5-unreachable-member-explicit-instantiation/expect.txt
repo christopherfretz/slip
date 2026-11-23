@@ -1,0 +1,8 @@
+subjects:
+  32ae9afe seed - rule=yes n::S::f()
+  4fafa1b6 follower unsupported|unreachable rule=yes n::S<long>::f() of=32ae9afe
+  5e9f1f3e follower unsupported|unreachable rule=yes n::S<char>::f() of=32ae9afe
+links:
+claims:
+  main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]
+changed:

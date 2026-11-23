@@ -1,0 +1,7 @@
+subjects:
+  60c38504 seed - rule=yes n::_x(int)
+links:
+claims:
+  main.cpp:3:5+2 replace "_y" t0 votes=1 none [60c38504]
+  main.cpp:7:12+2 replace spell(60c38504, "_y") t0 votes=1 none [60c38504]
+changed:

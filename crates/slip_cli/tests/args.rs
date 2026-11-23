@@ -4,8 +4,9 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use slip_cli::args::{
-    self, DEFAULT_STORE, DEFAULT_WORKER_JOBS, DEFAULT_WORKER_STACK, Db, Invocation, ParseArgs,
-    PlanArgs, PlanSource, UsageError, WorkerArgs, parse_size,
+    self, DEFAULT_FINDINGS, DEFAULT_LOCATE, DEFAULT_STORE, DEFAULT_WORKER_JOBS,
+    DEFAULT_WORKER_STACK, Db, Invocation, ParseArgs, PlanArgs, PlanSource, UsageError, WorkerArgs,
+    parse_size,
 };
 
 fn os(words: &[&str]) -> Vec<OsString> {
@@ -150,18 +151,68 @@ fn s8_option_spellings() {
             worker_stack: DEFAULT_WORKER_STACK,
         }
     );
+}
 
+// §8.4: the worker's options `--findings` and `--locate` (`limit` and
+// `locate` of spec/verify.md §5; defaults 64 and 16, 0 allowed), and no
+// other: `--declared`, `--root` and `--post` reach a verify job in the
+// job (`Job.post`), never on a worker's command line.
+#[test]
+fn s8_4_worker_options() {
+    assert_eq!((DEFAULT_FINDINGS, DEFAULT_LOCATE), (64, 16));
     assert_eq!(
         parse(&["__worker", "--worker-jobs", "3", "--worker-stack=16M"]),
-        Ok(Invocation::Worker(WorkerArgs { worker_jobs: 3, worker_stack: 16 << 20 }))
+        Ok(Invocation::Worker(WorkerArgs {
+            worker_jobs: 3,
+            worker_stack: 16 << 20,
+            findings: DEFAULT_FINDINGS,
+            locate: DEFAULT_LOCATE,
+        }))
     );
     assert_eq!(
         parse(&["__worker"]),
         Ok(Invocation::Worker(WorkerArgs {
             worker_jobs: DEFAULT_WORKER_JOBS,
-            worker_stack: DEFAULT_WORKER_STACK
+            worker_stack: DEFAULT_WORKER_STACK,
+            findings: DEFAULT_FINDINGS,
+            locate: DEFAULT_LOCATE,
         }))
     );
+    assert_eq!(
+        parse(&["__worker", "--findings", "3", "--locate=0", "--worker-jobs", "2"]),
+        Ok(Invocation::Worker(WorkerArgs {
+            worker_jobs: 2,
+            worker_stack: DEFAULT_WORKER_STACK,
+            findings: 3,
+            locate: 0,
+        }))
+    );
+    assert_eq!(
+        parse(&["__worker", "--findings=0", "--locate", "100"]),
+        Ok(Invocation::Worker(WorkerArgs {
+            worker_jobs: DEFAULT_WORKER_JOBS,
+            worker_stack: DEFAULT_WORKER_STACK,
+            findings: 0,
+            locate: 100,
+        }))
+    );
+    for words in [
+        &["__worker", "--declared", "d.decl"][..],
+        &["__worker", "--root", "/s"],
+        &["__worker", "--post", "/p"],
+        &["__worker", "--findings", "x"],
+        &["__worker", "--locate", "-1"],
+        &["__worker", "--findings", "1", "--findings", "2"],
+        &["__worker", "--locate", "1", "--locate=1"],
+    ] {
+        let line = usage_error(words);
+        assert!(!line.is_empty(), "{words:?}");
+    }
+    assert!(usage_error(&["__worker", "--root", "/s"]).contains("--root"));
+    assert!(
+        usage_error(&["__worker", "--findings", "1", "--findings", "2"]).contains("more than once")
+    );
+    assert!(usage_error(&["__worker", "--findings", "x"]).contains("not a number"));
 }
 
 // §8: a value is the next argument even when it starts with `-`; `--`

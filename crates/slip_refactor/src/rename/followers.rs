@@ -1,0 +1,310 @@
+//! Followers (§9.2, `docs/wp/WP-072.md`), each with `of` the entities it
+//! follows:
+//!
+//! - **A using-declaration** named like the old name whose shadows name a
+//!   subject (at namespace, class or block scope). The using-declaration
+//!   is a follower whose `of` is every entity it names, subject or not, so
+//!   that an overload set partly selected is reduce's `mixed_follower`
+//!   (§5.2); each shadow whose target is a subject is a follower of that
+//!   subject (its key holds the plain name, `digest.md` §3.4, so it needs
+//!   a rule of its own). The using-declaration's name token
+//!   (`written::decl_names`, kind `UsingDeclaration`) is claimed `replace`
+//!   with a literal piece and the using-declaration as its subject (§9.3:
+//!   Kiln records no reference there; the follower's rule checks it). A
+//!   using-declaration with no key (one at block scope is no unit) cannot
+//!   be a follower: its name is claimed for the subjects it names, or
+//!   `refuse(mixed_set)` when it also names an entity that is not one. A
+//!   using-declaration that introduces no shadow (it names what an earlier
+//!   one of its scope already introduced) is followed through the
+//!   declaration it redeclares when Kiln links one, else claimed
+//!   `unresolved`: what it names is not recorded. A dependent
+//!   using-declaration (`using B<T>::f;`) names nothing until
+//!   instantiated: its name is claimed `unresolved`.
+//! - **A reference found through a shadow** (`via_using`): the token
+//!   denotes the referent and `refs::claim` claims it so; the shadow is a
+//!   follower by the row above, since the using-declaration that
+//!   introduced it is named like the old name.
+//! - **An unnamed class or enumeration** a subject names (`digest.md` §3.3:
+//!   its key's name is `unnamed_by` the old name, its parent the
+//!   subject's): a follower of the subject whose rule is made from its key
+//!   with the inner name replaced (§9.2). A subject whose type is such a
+//!   class without a key is `unsupported`.
+//! - A follower declared in a template's pattern (a class template, a
+//!   partial specialisation, a function template) is `unsupported`, as a
+//!   candidate is (`families`): its followers in the specialisations are
+//!   `docs/wp/WP-073.md`'s.
+//! - A function or variable that a class template's pattern befriends
+//!   with a declaration that is its own entity (keyed in the template,
+//!   `spec/landed/digest/WP-103.md` finding 2) is a follower of the
+//!   subject it declares, with its own rule: same name, same
+//!   kind, declared in the subject's scope.
+//! - A subject whose key follows a pattern in this observer
+//!   (`spec/landed/digest/WP-103.md` finding 2: a function a class
+//!   template's pattern befriends with a definition, the template
+//!   instantiated here) keeps the rule `Keys::rename_rule` gives for its
+//!   key, which the digest does not accept here
+//!   (`key/rule-on-instantiated-member`): it is `unsupported`. Whether a
+//!   subject has a rule is a function of its key and the request, never
+//!   of what else the observer saw (§4.1), so that two observers never
+//!   give one id two rules (reduce §5.2 rule 1).
+
+use slip_kiln::kiln::ast::decl::{DeclKind, FriendKind, TemplLinkKind};
+use slip_kiln::kiln::ast::types::TypeView;
+use slip_kiln::kiln::ast::{Ast, DeclId, QualType};
+use slip_kiln::written::{self, DeclName, DeclNameKind};
+use slip_model::edits::{KeyId, Reason, Role, subject_flags};
+use slip_model::keys::{Key, Name, Rule};
+
+use super::families::in_pattern;
+use super::{CTX_LIMIT, Ctx, Written, enclosing};
+
+/// Collects what the module documentation says.
+pub(crate) fn collect(ctx: &mut Ctx<'_, '_, '_>) {
+    using_declarations(ctx);
+    unnamed_types(ctx);
+    friends_in_patterns(ctx);
+    followed_patterns(ctx);
+}
+
+fn followed_patterns(ctx: &mut Ctx<'_, '_, '_>) {
+    let ast = ctx.unit.ast();
+    for (id, e) in ctx.subjects.entities() {
+        let mut patterns: Vec<DeclId> = Vec::new();
+        for d in ast.redecls_of(e) {
+            // As the digest asks (`instantiated_patterns`): a
+            // specialisation's link is to its template, not a pattern.
+            if matches!(
+                ast.templ_link(d).get(),
+                Some((TemplLinkKind::Specialization | TemplLinkKind::PartialSpecialization, _))
+            ) {
+                continue;
+            }
+            let Some(p) = ast.instantiated_from(d).map(|p| ctx.keys.entity(p)) else { continue };
+            if p != e
+                && (ast.decls.get(p).misc().friend() == FriendKind::None
+                    || ast.definition(p).is_some())
+                && !patterns.contains(&p)
+            {
+                patterns.push(p);
+            }
+        }
+        if patterns.is_empty() {
+            continue;
+        }
+        // The rule stays: whether a subject has one is a function of its
+        // key and the request, never of what else this observer saw.
+        ctx.subjects.flag(id, subject_flags::UNSUPPORTED);
+    }
+}
+
+fn using_declarations(ctx: &mut Ctx<'_, '_, '_>) {
+    let names = std::mem::take(&mut ctx.named.old);
+    for d in names.iter().filter(|d| d.kind == DeclNameKind::UsingDeclaration) {
+        using_declaration(ctx, d);
+    }
+    ctx.named.old = names;
+}
+
+/// One using-declaration named like the old name (module documentation).
+fn using_declaration(ctx: &mut Ctx<'_, '_, '_>, d: &DeclName) {
+    let unit = ctx.unit;
+    let ast = unit.ast();
+    let u = d.decl;
+    if matches!(
+        ast.decls.get(u).kind(),
+        DeclKind::UnresolvedUsingValue
+            | DeclKind::UnresolvedUsingTypename
+            | DeclKind::UnresolvedUsingIfExists
+    ) {
+        ctx.claims.unresolved(&ctx.sites, d.name);
+        ctx.settled.insert(u);
+        return;
+    }
+    // The shadows: its own, or those of the declaration it redeclares.
+    let mut shadows: Vec<DeclId> = ast.using_shadows(u).collect();
+    if shadows.is_empty() {
+        shadows = ast.redecls_of(u).flat_map(|x| ast.using_shadows(x)).collect();
+    }
+    if shadows.is_empty() {
+        ctx.claims.unresolved(&ctx.sites, d.name);
+        ctx.settled.insert(u);
+        return;
+    }
+    // What each shadow names: its origin's key id, and whether it is a
+    // subject (`None`: no key).
+    let mut named: Vec<(DeclId, Option<KeyId>, bool)> = Vec::new();
+    for &s in &shadows {
+        let Some(t) = ast.using_target(s) else {
+            named.push((s, None, false));
+            continue;
+        };
+        let o = written::origin(unit, t);
+        let subject = ctx.subjects.of_decl(ctx.keys, o);
+        let id = subject.or_else(|| ctx.keys.key_id(ctx.keys.entity(o)).ok());
+        named.push((s, id, subject.is_some()));
+    }
+    if !named.iter().any(|&(_, _, subject)| subject) {
+        // It names no subject: `decls::claim` keeps its name.
+        return;
+    }
+    ctx.settled.insert(u);
+    let complete = named.iter().all(|&(_, id, _)| id.is_some());
+    let mut of: Vec<KeyId> = named.iter().filter_map(|&(_, id, _)| id).collect();
+    of.sort_unstable();
+    of.dedup();
+    let pattern = in_pattern(ctx, u);
+    if let Some(f) = ctx.subjects.add(ctx.keys, u, Role::Follower, ctx.new, &of) {
+        if !complete || pattern {
+            ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
+        }
+        ctx.claims.replace(&ctx.sites, d.name, &[f], Written::Literal);
+    } else {
+        // No key: no follower. The name is claimed for what it names.
+        let subjects: Vec<KeyId> =
+            named.iter().filter(|&&(_, _, s)| s).filter_map(|&(_, id, _)| id).collect();
+        if named.iter().all(|&(_, _, s)| s) {
+            ctx.claims.replace(&ctx.sites, d.name, &subjects, Written::Literal);
+        } else {
+            ctx.claims.refuse(&ctx.sites, d.name, &subjects, Reason::MixedSet);
+        }
+    }
+    for &(s, id, subject) in &named {
+        if let (true, Some(t)) = (subject, id)
+            && let Some(f) = ctx.subjects.add(ctx.keys, s, Role::Follower, ctx.new, &[t])
+            && pattern
+        {
+            ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
+        }
+    }
+}
+
+fn unnamed_types(ctx: &mut Ctx<'_, '_, '_>) {
+    let ast = ctx.unit.ast();
+    for (id, e) in ctx.subjects.entities() {
+        let Some(t) = ast.decls.get(e).ty().and_then(|q| declared_tag(ast, q)) else { continue };
+        if !ast.decls.get(t).name().is_empty() {
+            continue;
+        }
+        let Ok(k) = ctx.keys.key(t) else {
+            // An unnamed class whose key the digest refuses: whether the
+            // subject names it cannot be told, nor a rule made.
+            ctx.subjects.flag(id, subject_flags::UNSUPPORTED);
+            continue;
+        };
+        let parent = ctx.keys.key(e).map(|s| s.parent);
+        if parent != Ok(k.parent) {
+            continue;
+        }
+        let (old, new) = (ctx.old, ctx.new);
+        if unnamed_rule(&k, old, new).is_none() {
+            continue;
+        }
+        let mut rule = |keys: &mut slip_digest::query::Keys<'_>, x: DeclId| {
+            keys.key(x).ok().and_then(|k| unnamed_rule(&k, old, new))
+        };
+        ctx.subjects.add_ruled(ctx.keys, t, Role::Follower, &[id], &mut rule);
+    }
+}
+
+/// The class or enumeration a declaration of type `q` declares an object
+/// of, through pointers, references, arrays and member pointers: the tag
+/// an unnamed class's first declarator names (`digest.md` §3.3). Which
+/// declaration names it is the key's to say; this only proposes it.
+fn declared_tag(ast: &Ast, q: QualType) -> Option<DeclId> {
+    let types = &ast.types;
+    let mut q = types.canonical(q);
+    for _ in 0..CTX_LIMIT {
+        match types.view(q.ty()) {
+            TypeView::Record(d) | TypeView::Enum(d) => return Some(ast.first(d)),
+            TypeView::Pointer(x)
+            | TypeView::LValueRef(x)
+            | TypeView::RValueRef(x)
+            | TypeView::IncompleteArray(x)
+            | TypeView::MemberPointer { pointee: x, .. } => q = types.canonical(x),
+            TypeView::ConstantArray(a) => q = types.canonical(a.elem),
+            TypeView::ExtQual { base, .. } => q = types.canonical(base),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// §9.2: the rule of an unnamed class or enumeration whose key `k` is
+/// named `unnamed_by(identifier(old))`: the key with the inner name
+/// `new`, called by the name it has now. `None` for any other key.
+fn unnamed_rule(k: &Key, old: &[u8], new: &[u8]) -> Option<Rule> {
+    let Name::UnnamedBy(inner) = &k.name else { return None };
+    if !matches!(inner.as_ref(), Name::Identifier(n) if n.as_slice() == old) {
+        return None;
+    }
+    Some(Rule {
+        parent: k.parent,
+        kind: k.kind,
+        name: Name::UnnamedBy(Box::new(Name::Identifier(new.to_vec()))),
+        disc: k.disc,
+        to_parent: k.parent,
+        to_name: k.name.clone(),
+    })
+}
+
+fn friends_in_patterns(ctx: &mut Ctx<'_, '_, '_>) {
+    let unit = ctx.unit;
+    let ast = unit.ast();
+    let seeds = ctx.subjects.seeds();
+    if seeds.is_empty() {
+        return;
+    }
+    // Each seed's key and the entity of its scope. A friend in a pattern
+    // has a key of its own (its parent is the template, its discriminator
+    // differs), so it is matched on scope, kind and name, and follows
+    // every seed it matches: all functions of that name in that scope are
+    // seeds (§9.1), so whichever it redeclares is among them.
+    let mut wanted = Vec::new();
+    for (id, e) in seeds {
+        if let (Ok(k), Some(s)) = (ctx.keys.key(e), enclosing(ast, e)) {
+            wanted.push((id, k, ctx.keys.entity(s)));
+        }
+    }
+    let names = std::mem::take(&mut ctx.named.old);
+    for d in &names {
+        if ctx.settled.contains(&d.decl) || !is_friend_in_pattern(ast, d.decl) {
+            continue;
+        }
+        let o = written::origin(unit, d.decl);
+        if ctx.subjects.of_decl(ctx.keys, o).is_some() {
+            continue;
+        }
+        let Some(scope) = enclosing(ast, d.decl).map(|s| ctx.keys.entity(s)) else { continue };
+        let Ok(k) = ctx.keys.key(ctx.keys.entity(o)) else { continue };
+        let of: Vec<_> = wanted
+            .iter()
+            .filter(|(_, w, s)| *s == scope && w.kind == k.kind && w.name == k.name)
+            .map(|(id, ..)| *id)
+            .collect();
+        if !of.is_empty() {
+            ctx.subjects.add(ctx.keys, o, Role::Follower, ctx.new, &of);
+        }
+    }
+    ctx.named.old = names;
+}
+
+/// `d` is declared as a friend (its lexical context is a class that is
+/// not its semantic one) in a class that is, or is inside, the pattern
+/// of a class template or a partial specialisation.
+fn is_friend_in_pattern(ast: &Ast, d: DeclId) -> bool {
+    let Some(lexical) = ast.decls.lexical_ctx(d) else { return false };
+    if Some(lexical) == ast.decls.get(d).ctx() || ast.decls.record(lexical).is_none() {
+        return false;
+    }
+    let mut at = Some(lexical);
+    for _ in 0..CTX_LIMIT {
+        let Some(x) = at else { return false };
+        if ast.described_template(x).is_some()
+            || ast.decls.get(x).kind() == DeclKind::ClassTemplatePartialSpecialization
+        {
+            return true;
+        }
+        at = ast.decls.get(x).ctx();
+    }
+    false
+}

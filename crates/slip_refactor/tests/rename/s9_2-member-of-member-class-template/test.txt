@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (a member of a member class template: S<int>::C<long>::f follows S::C::f, through the link Kiln records), WP-073 part C
+from: n::S::C::f
+to: g
+kind: function

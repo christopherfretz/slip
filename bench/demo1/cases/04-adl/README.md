@@ -14,8 +14,15 @@ bool has_root_directory(StringRef Path, sys::path::Style S) {
 }
 ```
 
-Declared: `created` the template. Nothing else; the finding the case
-expects is on a unit nobody declared.
+Declared: `created` the template, by its unit's name as
+`spec/verify.md` §6.1 renders it (`template <class> bool
+llvm::has_root_directory(llvm::StringRef, llvm::sys::path::Style)`).
+Nothing else; the finding the case expects is on a unit nobody declared.
+
+Ruling (supervisor, 2026-11-23): `declared.txt` first named the template
+`llvm::has_root_directory`, which `slip declare` refused (`no unit`),
+rightly: `spec/verify.md` §2.3 takes the text literally as a unit's
+name, and the refusal listed the name to write. The line is corrected.
 
 ## What it changes
 

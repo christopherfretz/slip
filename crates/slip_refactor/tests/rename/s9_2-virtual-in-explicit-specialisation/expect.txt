@@ -1,0 +1,10 @@
+subjects:
+  599ef791 seed - rule=yes n::B::f()
+  8e046f8d candidate - rule=yes n::D<int>::f()
+links:
+  599ef791 8e046f8d
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:4:38+1 replace "g" t0 votes=1 none [8e046f8d]
+  main.cpp:6:26+1 replace spell(8e046f8d, "g") t0 votes=1 none [8e046f8d]
+changed:

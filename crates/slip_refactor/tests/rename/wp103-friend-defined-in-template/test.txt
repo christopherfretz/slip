@@ -1,0 +1,4 @@
+spec: docs/wp/WP-071.md "Added after the review of WP-103" (the friend defined in the template is followed and needs no rule of its own)
+from: n::f
+to: g
+kind: function
