@@ -108,6 +108,10 @@ impl Ctx {
 
 /// `value`: the constant `v` by the rows of §8.
 pub(crate) fn value(w: &mut Walk<'_>, s: &mut Stream, v: ConstValueId) {
+    // Numbering an owner reads no value (`local.rs`).
+    if crate::local::numbering_mode(w) {
+        return;
+    }
     let mut cx = Ctx::new();
     write_value(w, s, v, &mut cx);
 }
@@ -349,11 +353,11 @@ fn compute(w: &mut Walk<'_>, cx: &mut Ctx, root: ConstValueId) -> bool {
     for v in todo {
         cx.budget = VALUE_BUDGET;
         cx.tainted = false;
-        let aborts = w.aborts;
+        let (aborts, rooted) = (w.aborts, w.local.self_rooted);
         let mut s = Stream::new();
         write_value(w, &mut s, v, cx);
         let h = w.hashed(s.finish(VALUE_TAG));
-        if cx.tainted || w.aborts != aborts {
+        if cx.tainted || w.aborts != aborts || w.local.self_rooted != rooted {
             cx.local.insert(v.index(), h);
         } else {
             w.const_memo.insert(v.index(), h);

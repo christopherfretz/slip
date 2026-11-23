@@ -1,0 +1,5 @@
+# pending
+# needs: demand
+# the specialisation's body is Pending(Demand): the names around its entity (`write_scope_names`, mutation N4) are written once instantiated bodies are walked
+changed f()
+derived-changed f()::local(0)::g()::local(0)::operator()<int>(int) const
