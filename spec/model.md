@@ -124,6 +124,7 @@ Two ways of using it:
 | `slip.tu.v1` | `list<GroupSum>` | `digest.md` §11 |
 | `slip.rules.v1` | `list<Rule>` | `verify.md` §2 |
 | `slip.basis.v1` | `list<Basis>`: the shards an edit set was reduced from | `edits.md` §6 |
+| `slip.transform.v0` | a transform's identity: API level, command line, target, files read | `api.md` §2.2 |
 
 `slip_model` implements BLAKE3 itself, in safe Rust, with an incremental
 interface (`new`, `update(&[u8])`, `finalize() -> Digest`) and a one-shot
