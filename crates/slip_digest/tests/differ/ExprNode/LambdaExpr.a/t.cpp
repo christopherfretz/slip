@@ -1,7 +1,7 @@
 #include "side.h"
-// §7 ExprNode `LambdaExpr.a`: the closure type.
+// §7 ExprNode `LambdaExpr.a`: the closure the expression makes.
 #ifdef B
-template<class T> auto lv = [] { return 2; };
+int f(int a, int b) { return [] { return 2; }(); }
 #else
-template<class T> auto lv = [] { return 1; };
+int f(int a, int b) { return [] { return 1; }(); }
 #endif

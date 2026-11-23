@@ -1,4 +1,1 @@
-# pending
-# needs: expr
-# LambdaExpr is pending (expr_dep.rs:64 lambda_expr): both sides write the same placeholder
 changed f(int)
