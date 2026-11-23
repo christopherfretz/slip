@@ -951,3 +951,29 @@ fn attack_a_class_template_instantiated_twice() {
     assert_eq!(one(src, &[Named("f()")]), [Holds]);
     assert!(fails(&one(src, &[Named("h()")])[0]).is_some());
 }
+
+// The same collision where both declarations are already indeterminate
+// for another cause (a reflection value as a template argument is
+// unsupported, digest §12): a unit keeps the first cause met, so the
+// collision is found only with the causes put aside
+// (`spec/landed/verify/WP-096.md` decision 1).
+#[test]
+fn attack_a_colliding_key_already_indeterminate() {
+    let a = "template <auto V> struct A;\n";
+    let body = "{ A<^^int> *x = nullptr; return x != nullptr; }";
+    let pre = format!("{a}namespace o {{ int f(int) {body} }}\nint u() {{ return o::f(1); }}\n");
+    let post = format!(
+        "{a}namespace o {{ int g(int) {body} int f(int) {body} }}\nint u() {{ return o::«f»(1); }}\n"
+    );
+    let pre = [("main.cpp", pre.as_str())];
+    let post = [("main.cpp", post.as_str())];
+    let wants = [Named("o::f(int)")];
+    let c = Case {
+        pre: Some(&pre),
+        renames: &[("o::f(int)", "g")],
+        std: "c++26",
+        ..case(&post, &wants)
+    };
+    let got = run(&c);
+    assert_eq!(fails(&got[0]).expect("fails").0, None, "{got:?}");
+}
