@@ -287,6 +287,24 @@ is that rule applied to names. The M4 design applies it to everything else:
   across translation units). They are written out, with what each
   demands, in [07](07-reference-transforms.md).
 
+Rulings of 2026-11-23, from the first conformance run of version 0
+(`spec/landed/api/WP-091-effects.md`), each a package:
+
+- A name given as data (the new name of a rename) enters code as an
+  **identifier piece**, `identifier(name)`, checked to be one identifier
+  and recorded as one; never as `text`. A scope is searched by
+  `lookup(scope, identifier)`; a transform does not take a qualified
+  name apart (`docs/wp/WP-132.md`).
+- A spelling is decided by the place: at a name range `spell` gives a
+  sibling's identifier or is refused; it never writes a qualified name
+  after a written qualifier (`docs/wp/WP-132.md`).
+- The names written in declarative contexts (a using-declaration, a
+  namespace alias, a declarator's qualifier) are references. What a
+  version does not yet return, it counts: a rename is never silent
+  about a place it did not reach (`docs/wp/WP-133.md`).
+- A wrap (`f(x)` to `g(f(x))`) is the first entry of the backlog of
+  primitives: it waits for fragments with holes.
+
 §9.2 as written predates the rule: `cat(spell(parent_of(target)), "::")`
 builds a qualifier by concatenation. The M4 design replaces it with a
 primitive that requalifies a use for its target.
