@@ -87,11 +87,10 @@ fn with_unit<R>(
     let extra = slip_kiln::snippet::Extra::default();
     let body = |p: &slip_kiln::snippet::Parsed<'_>| {
         assert_eq!(p.errors, 0, "{}\n{files:?}", p.diagnostics);
-        let paths: Vec<Vec<u8>> = p
-            .sm
-            .file_ids()
-            .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
-            .collect();
+        let paths: Vec<Vec<u8>> =
+            p.sm.file_ids()
+                .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                .collect();
         let path = |f: FileId| paths.get(f.index()).cloned().unwrap_or_default();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
         f(p.unit(), &input)
@@ -254,10 +253,8 @@ fn s10_2_holds_a_function_template_by_its_origin() {
 // §10.2 rule 4: the key tells overloads apart.
 #[test]
 fn s10_2_holds_an_overload_by_its_key() {
-    let post = [(
-        "main.cpp",
-        "int f(int);\nint f(double);\nint use() { return «f»(1) + «f»(1.0); }\n",
-    )];
+    let post =
+        [("main.cpp", "int f(int);\nint f(double);\nint use() { return «f»(1) + «f»(1.0); }\n")];
     assert_eq!(run(&case(&post, &[Named("f(int)"), Named("f(double)")])), [Holds, Holds]);
 }
 
@@ -336,7 +333,8 @@ fn s10_2_fails_in_a_unit_declared_changed() {
 fn s10_2_rename_a_function() {
     let pre = [("main.cpp", "int f(int);\nint use() { return f(1); }\n")];
     let post = [("main.cpp", "int g(int);\nint use() { return «g»(1); }\n")];
-    let c = Case { pre: Some(&pre), renames: &[("f(int)", "g")], ..case(&post, &[Named("f(int)")]) };
+    let c =
+        Case { pre: Some(&pre), renames: &[("f(int)", "g")], ..case(&post, &[Named("f(int)")]) };
     assert_eq!(run(&c), [Holds]);
     // Without the rules, the new name's key is another key: fails.
     let c = Case { pre: Some(&pre), ..case(&post, &[Named("f(int)")]) };
@@ -353,9 +351,12 @@ fn s10_2_rename_a_variable() {
 
 #[test]
 fn s10_2_rename_a_member_function_through_an_object() {
-    let pre = [("main.cpp", "struct S { int m(); };\nint use(S s, S *p) { return s.m() + p->m(); }\n")];
-    let post =
-        [("main.cpp", "struct S { int n(); };\nint use(S s, S *p) { return s.«n»() + p->«n»(); }\n")];
+    let pre =
+        [("main.cpp", "struct S { int m(); };\nint use(S s, S *p) { return s.m() + p->m(); }\n")];
+    let post = [(
+        "main.cpp",
+        "struct S { int n(); };\nint use(S s, S *p) { return s.«n»() + p->«n»(); }\n",
+    )];
     let c = Case {
         pre: Some(&pre),
         renames: &[("S::m()", "n")],
@@ -366,10 +367,19 @@ fn s10_2_rename_a_member_function_through_an_object() {
 
 #[test]
 fn s10_2_rename_a_qualified_name() {
-    let pre = [("main.cpp", "namespace a { namespace b { int f(); } }\nint use() { return a::b::f(); }\n")];
-    let post =
-        [("main.cpp", "namespace a { namespace b { int h(); } }\nint use() { return a::b::«h»(); }\n")];
-    let c = Case { pre: Some(&pre), renames: &[("a::b::f()", "h")], ..case(&post, &[Named("a::b::f()")]) };
+    let pre = [(
+        "main.cpp",
+        "namespace a { namespace b { int f(); } }\nint use() { return a::b::f(); }\n",
+    )];
+    let post = [(
+        "main.cpp",
+        "namespace a { namespace b { int h(); } }\nint use() { return a::b::«h»(); }\n",
+    )];
+    let c = Case {
+        pre: Some(&pre),
+        renames: &[("a::b::f()", "h")],
+        ..case(&post, &[Named("a::b::f()")])
+    };
     assert_eq!(run(&c), [Holds]);
 }
 
@@ -399,8 +409,12 @@ fn s10_2_rename_a_member_of_a_class_template() {
 // template, mapped.
 #[test]
 fn s10_2_rename_a_function_template() {
-    let pre = [("main.cpp", "template <class T> T tf(T t) { return t; }\nint use() { return tf(1); }\n")];
-    let post = [("main.cpp", "template <class T> T tg(T t) { return t; }\nint use() { return «tg»(1); }\n")];
+    let pre =
+        [("main.cpp", "template <class T> T tf(T t) { return t; }\nint use() { return tf(1); }\n")];
+    let post = [(
+        "main.cpp",
+        "template <class T> T tg(T t) { return t; }\nint use() { return «tg»(1); }\n",
+    )];
     let c = Case { pre: Some(&pre), renames: &[("tf", "tg")], ..case(&post, &[Named("tf")]) };
     assert_eq!(run(&c), [Holds]);
 }
@@ -411,7 +425,8 @@ fn s10_2_rename_a_function_template() {
 fn s10_2_rename_captured_by_an_existing_overload() {
     let pre = [("main.cpp", "int f(long);\nint g(int);\nint use() { return f(1); }\n")];
     let post = [("main.cpp", "int g(long);\nint g(int);\nint use() { return «g»(1); }\n")];
-    let c = Case { pre: Some(&pre), renames: &[("f(long)", "g")], ..case(&post, &[Named("f(long)")]) };
+    let c =
+        Case { pre: Some(&pre), renames: &[("f(long)", "g")], ..case(&post, &[Named("f(long)")]) };
     let got = run(&c);
     let (found, name) = fails(&got[0]).expect("fails");
     assert_eq!(found, Some(key_of(&pre, "g(int)")));
@@ -494,7 +509,8 @@ fn s10_6_two_in_one_file_one_in_a_header_one_unread() {
         ("main.cpp", "#include \"h.h\"\nint use() { return «f»(1) + «f»(2.0); }\n"),
         ("h.h", "int f(int);\nint f(double);\ninline int k() { return «f»(3); }\n"),
     ];
-    let unread = Obligation { file: b"other.h".to_vec(), lo: 0, hi: 1, key: key_of(&post, "f(int)") };
+    let unread =
+        Obligation { file: b"other.h".to_vec(), lo: 0, hi: 1, key: key_of(&post, "f(int)") };
     let c = case(&post, &[Named("f(int)"), Named("f(double)"), Named("f(int)")]);
     let (_, got) = run_with(&c, std::slice::from_ref(&unread));
     assert_eq!(got, [Holds, Holds, Holds, NotSeen]);
@@ -582,7 +598,8 @@ fn attack_argument_dependent_lookup() {
 // holds the parent.
 #[test]
 fn attack_same_signature_another_namespace() {
-    let src = "namespace a { int f(int); }\nnamespace b { int f(int); }\nint u() { return b::«f»(1); }\n";
+    let src =
+        "namespace a { int f(int); }\nnamespace b { int f(int); }\nint u() { return b::«f»(1); }\n";
     let got = one(src, &[Named("a::f(int)")]);
     assert_eq!(fails(&got[0]).expect("fails").0, Some(key(src, "b::f(int)")));
 }
@@ -603,7 +620,8 @@ fn attack_a_constructor() {
 #[test]
 fn attack_conversion_and_operators() {
     let src = "struct S { operator int(); };\nint operator+(S, S);\nint u(S s) { return s.«operator int»() + «operator+»(s, s) + (s «+» s); }\n";
-    let got = one(src, &[Named("S::operator int()"), Named("operator+(S, S)"), Named("operator+(S, S)")]);
+    let got =
+        one(src, &[Named("S::operator int()"), Named("operator+(S, S)"), Named("operator+(S, S)")]);
     assert_eq!(got, [Holds, Holds, NotSeen]);
 }
 
@@ -652,7 +670,8 @@ fn attack_unevaluated_operands() {
 // definition; a dependent one is not.
 #[test]
 fn attack_a_requires_expression() {
-    let src = "int f();\nint k(int);\ntemplate <class T> concept C = requires(T t) { «f»(); «k»(t); };\n";
+    let src =
+        "int f();\nint k(int);\ntemplate <class T> concept C = requires(T t) { «f»(); «k»(t); };\n";
     assert_eq!(one(src, &[Named("f()"), Named("k(int)")]), [Holds, NotSeen]);
     let wrong = one(src, &[Named("k(int)"), Named("f()")]);
     assert!(fails(&wrong[0]).is_some(), "{wrong:?}");
@@ -744,7 +763,8 @@ fn attack_a_file_entered_twice() {
 // macro expands to.
 #[test]
 fn attack_a_macro_spelled_as_the_name() {
-    let src = "namespace a { int f(); }\nint other();\n#define g other\nint u() { return «g»(); }\n";
+    let src =
+        "namespace a { int f(); }\nint other();\n#define g other\nint u() { return «g»(); }\n";
     let got = one(src, &[Named("a::f()")]);
     assert_eq!(fails(&got[0]).expect("fails").0, Some(key(src, "other()")));
     assert_eq!(one(src, &[Named("other()")]), [Holds]);
@@ -759,7 +779,8 @@ fn attack_a_name_in_a_macro_body() {
     let k = key(src, "f()");
     let files = [("main.cpp", src)];
     let c = case(&files, &[]);
-    let (_, got) = run_with(&c, &[Obligation { file: b"main.cpp".to_vec(), lo: call, hi: call + 6, key: k }]);
+    let (_, got) =
+        run_with(&c, &[Obligation { file: b"main.cpp".to_vec(), lo: call, hi: call + 6, key: k }]);
     assert_eq!(got, [NotSeen]);
 }
 
@@ -812,7 +833,8 @@ fn attack_a_colliding_key() {
 // seen; none holds (`spec/landed/verify/WP-096.md`).
 #[test]
 fn attack_a_refused_table() {
-    let src = "template <class T> struct S {};\nS<int> si;\nint f(int);\nint u() { return f(1); }\n";
+    let src =
+        "template <class T> struct S {};\nS<int> si;\nint f(int);\nint u() { return f(1); }\n";
     let call = src.rfind("f(1)").expect("f") as u32;
     with_unit(&[("main.cpp", src)], "c++20", true, |unit, input| {
         let ast = input.ast;
@@ -878,7 +900,10 @@ fn s10_6_unit_and_input_of_two_parses() {
 #[test]
 fn attack_names_in_other_roles() {
     let src = "namespace a { int f(); struct S { int x; }; template <class T> concept C = true; template <class T> int t(T) { return 0; } }\nnamespace b { using a::«f»; }\nnamespace al = «a»;\nusing namespace «a»;\ntemplate <a::«C» T> int k(T);\na::S s = { .«x» = 1 };\ntemplate int a::«t»<int>(int);\n";
-    let got = one(src, &[Named("a::f()"), Named("a"), Named("a"), Named("a::C"), Named("a::S::x"), Named("a::t")]);
+    let got = one(
+        src,
+        &[Named("a::f()"), Named("a"), Named("a"), Named("a::C"), Named("a::S::x"), Named("a::t")],
+    );
     assert_eq!(got, [NotSeen, NotSeen, NotSeen, NotSeen, NotSeen, NotSeen]);
 }
 

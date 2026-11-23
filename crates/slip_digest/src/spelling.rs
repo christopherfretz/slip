@@ -122,7 +122,14 @@ pub fn check_spellings(
         return not_seen();
     }
     let placed = placed_refs(unit, input);
-    let mut check = Check { unit, input, keys: Keys::with_rules(input, rules), rules, origins: HashMap::new(), walk: None };
+    let mut check = Check {
+        unit,
+        input,
+        keys: Keys::with_rules(input, rules),
+        rules,
+        origins: HashMap::new(),
+        walk: None,
+    };
     obligations.iter().map(|ob| check.one(&placed, ob)).collect()
 }
 
@@ -229,10 +236,8 @@ impl Check<'_, '_> {
         }
         // §10.2 rule 3: in the file, ending at `hi`, starting at or after
         // `lo`; in unit order.
-        let answering: Vec<&Placed> = placed
-            .iter()
-            .filter(|p| p.path == ob.file && p.hi == ob.hi && p.lo >= ob.lo)
-            .collect();
+        let answering: Vec<&Placed> =
+            placed.iter().filter(|p| p.path == ob.file && p.hi == ob.hi && p.lo >= ob.lo).collect();
         if answering.is_empty() {
             return Spelling::NotSeen;
         }
