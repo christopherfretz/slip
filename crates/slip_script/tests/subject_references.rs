@@ -1072,7 +1072,8 @@ fn s7_4_rule3_global_not_found_then_the_written_rest() {
 }
 
 /// §6.5 rule 1: one written name that resolves to two entities in two
-/// entries of a header is one reference to each.
+/// entries of a header is one reference to each; §7.2 rule 1: both at
+/// their one extent, in unit order.
 #[test]
 fn s6_5_rule1_a_header_resolving_differently_in_two_entries() {
     let files = [
@@ -1085,6 +1086,10 @@ fn s6_5_rule1_a_header_resolving_differently_in_two_entries() {
     with(&files, |_, s| {
         assert_eq!(refs(s, one(s, "A::c")), ["h.h:c | h.h:c"]);
         assert_eq!(refs(s, one(s, "B::c")), ["h.h:c | h.h:c"]);
+        // §7.2 rule 1: the two share one extent, and `references_at` gives
+        // them in unit order (the first entry's first).
+        let (a, b) = (s.references_to(one(s, "A::c"))[0], s.references_to(one(s, "B::c"))[0]);
+        assert_eq!(s.references_at(extent(s, a).unwrap()), [a, b]);
     });
 }
 
@@ -1650,7 +1655,8 @@ void h() { C<int>().g(); }
 }
 
 /// §6.5 rule 4 (B2): a using-enum-declaration is declarative: neither
-/// `n` nor `E` is returned; a use of an enumerator it brings in is.
+/// `n` nor `E` is returned, qualified or not; a use of an enumerator it
+/// brings in is.
 #[test]
 fn s6_5_rule4_using_enum_declaration() {
     let src = "namespace n { enum class E { x }; }
@@ -1659,6 +1665,14 @@ namespace m { using enum n::E; }
 ";
     main_only(src, |_, s| {
         assert_eq!(refs(s, one(s, "n")), Vec::<String>::new());
+        assert_eq!(refs(s, one(s, "n::E")), Vec::<String>::new());
+        assert_eq!(refs(s, one(s, "n::E::x")), ["main.cpp:x | main.cpp:x"]);
+    });
+    // Unqualified: the enumeration's name is the declaration's own (the
+    // row's name, with no qualifier).
+    let src = "namespace n { enum class E { x }; void g() { using enum E; (void)x; } }
+";
+    main_only(src, |_, s| {
         assert_eq!(refs(s, one(s, "n::E")), Vec::<String>::new());
         assert_eq!(refs(s, one(s, "n::E::x")), ["main.cpp:x | main.cpp:x"]);
     });
