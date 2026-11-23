@@ -43,7 +43,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use slip_model::container::{Reader, TRAILER_LEN};
 use slip_model::hash::content_digest;
-use slip_model::wire::Decoder;
 use slip_model::{Digest, Phase, Plan, RunRecord, Shard, formats};
 
 /// The text of `VERSION`.
@@ -763,9 +762,10 @@ impl Store {
 
     /// Publishes a transform run record (`RUNT`, `spec/edits.md` §10.6) and
     /// returns its path, `runs/<plan>/transform.<round>.<started_unix_ns>.run`.
-    /// The bytes must be a `RUNT` container whose section `run` names
-    /// `plan`, `round` and `started_unix_ns`; only those leading fields of
-    /// the record are read. Anything else is `Invalid`.
+    /// The bytes must be a valid `RUNT` file, the whole record checked as
+    /// `slip_model::formats::transform_run_names` checks it, whose section
+    /// `run` names `plan`, `round` and `started_unix_ns`. Anything else is
+    /// `Invalid`.
     pub fn publish_transform_run(
         &self,
         plan: &Digest,
@@ -773,7 +773,7 @@ impl Store {
         started_unix_ns: u64,
         bytes: &[u8],
     ) -> Result<PathBuf> {
-        let (p, r, ns) = transform_run_names(bytes)
+        let (p, r, ns) = formats::transform_run_names(bytes)
             .map_err(|e| StoreError::Invalid(format!("not a valid transform run record: {e}")))?;
         if p != *plan || r != round || ns != started_unix_ns {
             return Err(StoreError::Invalid(format!(
@@ -982,9 +982,6 @@ const OBJECT_VERSION: u32 = 1;
 /// The first component of a transform run record's name.
 const TRANSFORM: &str = "transform";
 
-/// The kind of a transform run record.
-const RUNT: [u8; 4] = *b"RUNT";
-
 /// The content id of a container of `kind`, version 1, checked as
 /// `spec/model.md` §5 rule 5 checks the frame (the sections are not
 /// decoded); `Invalid` otherwise.
@@ -993,40 +990,6 @@ fn container_id(bytes: &[u8], kind: [u8; 4]) -> Result<Digest> {
     Reader::open(bytes, kind, OBJECT_VERSION)
         .map(|r| r.content_id())
         .map_err(|e| StoreError::Invalid(format!("not a valid {name} container: {e}")))
-}
-
-/// `plan`, `round` and `started_unix_ns` of a `RUNT` container
-/// (`spec/edits.md` §10.6): the frame is checked and section `run` (id 1)
-/// decoded as far as `started_unix_ns`.
-fn transform_run_names(
-    bytes: &[u8],
-) -> std::result::Result<(Digest, u64, u64), slip_model::wire::Error> {
-    use slip_model::wire::{Error, ErrorKind};
-    let reader = Reader::open(bytes, RUNT, OBJECT_VERSION)?;
-    let Some(mut d) = reader.decoder(1) else {
-        return Err(Error::new(ErrorKind::Malformed, 0, "no section run"));
-    };
-    d.str()?; // tool_slip
-    d.str()?; // tool_kiln
-    let plan = d.digest()?;
-    let round = d.uv()?;
-    d.digest()?; // transform
-    for _ in 0..4 {
-        // edits, declared, overlay, result: opt<digest>
-        skip_opt_digest(&mut d)?;
-    }
-    let started = d.uv()?;
-    Ok((plan, round, started))
-}
-
-fn skip_opt_digest(d: &mut Decoder<'_>) -> std::result::Result<(), slip_model::wire::Error> {
-    use slip_model::wire::{Error, ErrorKind};
-    let at = d.offset();
-    match d.u8()? {
-        0 => Ok(()),
-        1 => d.digest().map(|_| ()),
-        _ => Err(Error::new(ErrorKind::Malformed, at, "opt tag is not 0 or 1")),
-    }
 }
 
 /// `transform.<round>.<started_unix_ns>.run`: (round, started).

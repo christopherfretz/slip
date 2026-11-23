@@ -410,6 +410,72 @@ fn s10_6_transform_run_record_path() {
     assert_eq!(all, vec![want]);
 }
 
+/// The payload of `transform_run(plan, round, started)` up to and
+/// including `started_unix_ns`, then `rest`.
+fn transform_run_payload(plan: Digest, round: u64, started: u64, rest: &[u8]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.str("s").str("k").digest(&plan).uv(round).digest(&d(0x77));
+    e.u8(1).digest(&d(0x78)).u8(0).u8(1).digest(&d(0x79)).u8(0);
+    e.uv(started);
+    let mut out = e.into_bytes();
+    out.extend_from_slice(rest);
+    out
+}
+
+/// Publishes `bytes` as the record of `plan`, round 4, started 123: it
+/// must be `Invalid` and leave no file.
+fn refused_transform_run(name: &str, plan: Digest, bytes: &[u8]) {
+    let dir = scratch(name);
+    let store = exclusive(&dir);
+    let r = store.publish_transform_run(&plan, 4, 123, bytes);
+    assert!(matches!(r, Err(StoreError::Invalid(_))), "{r:?}");
+    assert!(!store.root().join("runs").join(plan.to_string()).join("transform.4.123.run").exists());
+}
+
+/// `spec/exec.md` §2.2: the whole record is checked, not its three leading
+/// names: one that stops after `started_unix_ns` is refused.
+#[test]
+fn s10_6_transform_run_truncated_after_started() {
+    let plan = d(0x82);
+    // The three names read; wall_ns and steps missing.
+    let bytes = container(*b"RUNT", &transform_run_payload(plan, 4, 123, &[]));
+    refused_transform_run("runt-short", plan, &bytes);
+    // wall_ns present, steps missing.
+    let bytes = container(*b"RUNT", &transform_run_payload(plan, 4, 123, &[5]));
+    refused_transform_run("runt-short2", plan, &bytes);
+    // Complete: published.
+    let bytes = container(*b"RUNT", &transform_run_payload(plan, 4, 123, &[5, 0]));
+    assert_eq!(bytes, transform_run(plan, 4, 123));
+}
+
+/// `spec/exec.md` §2.2: a record with a byte after its last field
+/// (`steps`) is refused.
+#[test]
+fn s10_6_transform_run_trailing_bytes() {
+    let plan = d(0x83);
+    let bytes = container(*b"RUNT", &transform_run_payload(plan, 4, 123, &[5, 0, 0]));
+    refused_transform_run("runt-trailing", plan, &bytes);
+}
+
+/// `spec/exec.md` §2.2, `spec/model.md` §5 rule 5: a record with an
+/// unknown critical section (id 2) is refused; an unknown ignorable one
+/// (id 64) is published.
+#[test]
+fn s10_6_transform_run_unknown_critical_section() {
+    let plan = d(0x84);
+    let payload = transform_run_payload(plan, 4, 123, &[5, 0]);
+    let with = |id: u64| {
+        let mut w = Writer::new(*b"RUNT", 1);
+        w.section(1, &payload);
+        w.section(id, b"x");
+        w.finish()
+    };
+    refused_transform_run("runt-critical", plan, &with(2));
+    let dir = scratch("runt-ignorable");
+    let store = exclusive(&dir);
+    store.publish_transform_run(&plan, 4, 123, &with(64)).unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // The journal
 

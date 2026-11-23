@@ -758,7 +758,7 @@ EditSet := scheme:     uv                    1
            transform:  digest                the request id
            basis:      digest                H("slip.basis.v1", list<Basis>): the shards reduced
            state:      SetState
-           files:      list<FileRef>         sorted by path; every file a record below names
+           files:      list<FileRef>         canonical real paths, sorted by path; every file a record below names
            subjects:   list<Subject>         the selected subjects and followers, joined (§5.2); sorted by id
            rules:      list<Rule>            the `renamed` rules of the shards, joined (§6.2); a rule table
            edits:      list<Edit>            sorted by (file, lo, hi), no two with one range; empty unless accepted
@@ -778,10 +778,10 @@ SetState := accepted = 0 | refused = 1
 
 Edit := file: uv, lo: uv, hi: uv
         pieces:    list<Piece>       a copy's file is an index of this set's `files`
-        subjects:  list<KeyId>
-        tiers:     uv
+        subjects:  list<KeyId>       sorted, no two equal
+        tiers:     uv                the tier rules of a `replace` claim (§4.7)
         macro:     opt<MacroSite>
-        notes:     list<bytes>       at most 8
+        notes:     list<bytes>       sorted, no two equal; at most 8
         observers: uv
         votes:     uv
         first:     list<digest>      the observers of the least 8 indices that made the claim, in plan order
@@ -802,7 +802,7 @@ Failed   := failure: Failure         §4.6; `rendered` and `refusal` those of th
 Refusal := cause:     Cause
            file:      opt<uv>         absent for a refusal that is not of a site
            lo:        uv              0 when `file` is absent
-           hi:        uv
+           hi:        uv              0 when `file` is absent
            reason:    Reason          for `site_refused`; else `none`
            subject:   opt<KeyId>      the subject, for a refusal of a subject; else the least subject of the site, if any
            macro:     opt<MacroSite>
@@ -832,20 +832,37 @@ the report.
 
 ### 6.1 Invariants
 
+The rows are checked in order. Within a row, its lists in field order,
+the elements of each in order, and every rule of the row for one element
+before the next element (`spec/landed/edits/WP-061.md` §2 lists each
+row's rules and messages).
+
 | Rule | Offset | JSON path |
 |---|---|---|
 | `scheme` is 1 | the field | `sections.set.scheme` |
 | `basis` is the tagged digest of the list implied by `unparsed` and the reader's shards | not checked by the format | — |
+| every `files` path canonical (`transform::is_canonical`) | that `FileRef` | `sections.set.files[i]` |
 | `files` strictly ascending by path | that `FileRef` | `sections.set.files[i]` |
+| the subject rules of §4.7: ascending by id, then `of`, then the flags, each over the whole list | that subject, its `of`, its `flags` | `sections.set.subjects[i]`, `….of`, `….flags` |
 | `rules` strictly ascending as a rule table | that rule | `sections.set.rules[i]` |
-| `edits` and `groups` empty if `state` is `refused` | the first edit | `sections.set.edits[0]` |
+| `edits` and `groups` empty if `state` is `refused` | the first edit, else the first group | `sections.set.edits[0]`, `sections.set.groups[0]` |
 | `edits` strictly ascending by `(file, lo, hi)`; `lo < hi`; no two of one file cross, and none crosses a range an edit copies (§5.4) | that edit | `sections.set.edits[i]` |
 | the piece rules of §4.7 | that piece | `sections.set.edits[i].pieces[j]` |
+| an edit's `subjects` and `notes` strictly ascending; its `tiers` obey the tier rules of a `replace` claim (§4.7) | the field | `sections.set.edits[i].subjects`, `….notes`, `….tiers` |
 | the group rules of §4.7, over `edits` | that group | `sections.set.groups[i]` |
-| every place within its file's size | that record | its path |
+| every place within its file's size, and a `changed` place not empty; a refusal without `file` has `lo` and `hi` 0 | that record | its path |
 | `first` has at most 8 entries and at most `observers`; `notes` at most 8 | the field | its path |
 | `changed`, `kept`, `unresolved`, `refusals`, `reports`, `failures` strictly ascending in their keys | that record | its path |
+| a refusal's `reason` is not `none` iff its cause is `site_refused` | the field | `sections.set.refusals[i].reason` |
+| the counter rules of `model.md` §8.1: the name form, strictly ascending by name | that counter's name, that counter | `sections.set.counters[i].name`, `sections.set.counters[i]` |
 | `state` is `refused` if there is a refusal of a subject, `no_observer`, `rule_conflict`, or no edit | the `state` field | `sections.set.state` |
+
+Not checked by the format: the order of `unparsed` and of a `first`
+list (plan order, which needs the plan), the values of `observers` and
+`votes`, that a `no_subject`, `no_observer`, `no_edit` or
+`rule_conflict` refusal has `observers` 0 and `first` empty, and that
+`groups` is empty under an `indivisible` request (which needs the
+request).
 
 That copies are well-founded and every edit effective (§5.5) is not
 checked by the format: apply checks both and refuses a set that breaks
@@ -974,9 +991,11 @@ Content := size: uv, content: digest
 ```
 
 Kind `OVLY`, version 1, deterministic, one required section `overlay`
-(id 1). The **overlay id** is the container's content id. Invariants:
-`files` strictly ascending by path; `spellings` strictly ascending, each
-`file` an index of `files` and `lo < hi <= post.size`.
+(id 1). The **overlay id** is the container's content id. Invariants,
+checked in this order, each over its whole list: `files` not empty;
+every `path` canonical (`transform::is_canonical`); `files` strictly
+ascending by path; `spellings` strictly ascending; each `file` an index
+of `files`; `lo < hi <= post.size`.
 
 An overlay replaces the content of existing files. It creates and removes
 none (later versions). A file whose edits leave its bytes as they were is
@@ -1222,8 +1241,9 @@ Residue := category: Category, file: path, lo: uv, hi: uv, line: uv, column: uv
 Category := dependent = 0 | not_compiled = 1 | not_planned = 2 | mention = 3
 ```
 
-sorted by `(file, lo)`; line and column are 1-based, the column in
-bytes.
+sorted by `(file, lo)`, no two equal in that key; `file` a canonical
+real path (`transform::is_canonical`); line and column are 1-based, the
+column in bytes.
 
 The scan is made for a request of kind `rename`. A script has no old
 name to scan for: its result has no residue, and what its run did not
@@ -1283,13 +1303,17 @@ less `unparsed`. `failed_runs` and `error_reports` are the counts of
 trusted run report computed (`slip_verify::run::Report`, `verify.md`
 §9.5, §10.6); conclude copies them and decides none.
 
-Invariants: `agreement` strictly ascending by `(rule, observer)`;
+Invariants, checked in this order: `scheme` is 1; `agreement` strictly
+ascending by `(rule, observer)`;
 `unused` and `exempt` strictly ascending; `spellings.failed` strictly
 ascending by `obligation`, and `passed` plus its length is `obligations`;
-`residue` sorted by `(file, lo)`; `overlay` and `declared` are absent iff
+every `residue` file canonical, then `residue` strictly ascending by
+`(file, lo)`; `overlay`, then `declared`, absent iff
 `state` is `refused`, and a `refused` result has no `verdict` and a tally
 of 0 in every field but `selected`, `unparsed`, `failed_runs` and
-`error_reports`.
+`error_reports`. The format checks nothing else: not that the tally adds
+up, that `first` is absent for `unseen`, nor a residue's line, column or
+range, nor which state applies, which is conclude's (below).
 
 The state is the first that applies:
 

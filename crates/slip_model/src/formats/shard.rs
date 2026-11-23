@@ -63,7 +63,7 @@ impl Loc {
 }
 
 /// `[a-z0-9_]+(\.[a-z0-9_]+)*` (§8).
-fn is_counter_name(name: &str) -> bool {
+pub(super) fn is_counter_name(name: &str) -> bool {
     name.split('.').all(|word| {
         !word.is_empty()
             && word.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')

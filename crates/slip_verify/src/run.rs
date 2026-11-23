@@ -197,24 +197,10 @@ pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State {
     judge(verify, map).state
 }
 
-/// The run's verdict (§7).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum RunVerdict {
-    Verified,
-    NotVerified,
-    Incomplete,
-}
-
-impl RunVerdict {
-    /// Its name in the report.
-    fn name(self) -> &'static str {
-        match self {
-            RunVerdict::Verified => "verified",
-            RunVerdict::NotVerified => "not_verified",
-            RunVerdict::Incomplete => "incomplete",
-        }
-    }
-}
+/// The run's verdict (§7): the one type, defined in `slip_model` because
+/// the result (`spec/edits.md` §8.5) stores it and `slip_model` cannot
+/// depend on this crate. Its `name()` is the name in the report.
+pub use slip_model::result::RunVerdict;
 
 /// §7: `NotVerified` if some state is `Mismatch` or `NotParsed`; else
 /// `Verified` if there is at least one state and every one is `Verified`

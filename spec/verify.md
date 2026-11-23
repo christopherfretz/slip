@@ -1111,7 +1111,10 @@ impl State { pub const ALL: [State; 7]; pub fn name(self) -> &'static str; }
 /// it is not this run's); `map` the status of its map shard (None: absent).
 pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State;
 
-pub enum RunVerdict { Verified, NotVerified, Incomplete }
+/// Re-exported: `slip_model::result::RunVerdict` (spec/edits.md §8.5), the
+/// one type, `Verified = 0, NotVerified = 1, Incomplete = 2`.
+pub use slip_model::result::RunVerdict;
+impl RunVerdict { pub const ALL: [RunVerdict; 3]; pub fn name(self) -> &'static str; }
 pub fn run_verdict(states: &[State]) -> RunVerdict;
 
 pub struct Header { pub plan: Digest, pub round: u64, pub declared: Digest, pub rules: Digest,
