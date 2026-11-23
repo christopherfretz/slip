@@ -410,9 +410,7 @@ impl Walk<'_> {
     fn instantiated_pattern(&self, e: DeclId) -> Option<DeclId> {
         let ast = self.ast;
         match ast.templ_link(e).get() {
-            Some((TemplLinkKind::Specialization | TemplLinkKind::PartialSpecialization, _)) => {
-                None
-            }
+            Some((TemplLinkKind::Specialization | TemplLinkKind::PartialSpecialization, _)) => None,
             Some((TemplLinkKind::Pattern | TemplLinkKind::MemberOfSpecialization, _)) | None => {
                 ast.instantiated_from(e).map(|p| self.entity(p)).filter(|&p| p != e)
             }

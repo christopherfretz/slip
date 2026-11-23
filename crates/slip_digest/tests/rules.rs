@@ -311,10 +311,7 @@ fn case(dir: &Path) -> Result<(), String> {
         .find(|c| c.name == "digest.collisions")
         .map_or(0, |c| c.value);
     if collisions != e.collisions {
-        problems.push(format!(
-            "digest.collisions is {collisions}, expected {}",
-            e.collisions
-        ));
+        problems.push(format!("digest.collisions is {collisions}, expected {}", e.collisions));
     }
     if let Err(p) = judge(&e, &a, &post.digested) {
         problems.push(p);
