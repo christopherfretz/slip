@@ -1110,3 +1110,56 @@ impl KilnSubject<'_> {
         self.expr_range(self.expr(x.0)?).err()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use slip_kiln::kiln::ast::DeclId;
+    use slip_kiln::snippet::{Extra, Snippet, parse_with_tables};
+
+    use super::super::KilnSubject;
+    use crate::subject::Expression;
+
+    /// `holder`: the namespace- or class-scope declaration as written that
+    /// holds each call; a local class's, a lambda's and a local
+    /// variable's calls are their enclosing function's.
+    #[test]
+    fn holder_of_each_call() {
+        let src = "\
+int f(int);
+int a = f(1);
+struct S { int m() { struct L { int n() { return f(2); } }; int v = f(3); return [] { return f(4); }(); } int k = f(5); };
+namespace N { template <class T> int t() { return f(6); } }
+";
+        let files = [("main.cpp", src)];
+        let snippet = Snippet { files: &files, main: "main.cpp", include: &[], std: "c++20" };
+        parse_with_tables(&snippet, &Extra::default(), |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let owned = |_: &[u8]| true;
+            let s = KilnSubject::from_snippet(p, &owned);
+            let index = s.call_index();
+            let name = |d: DeclId| String::from_utf8(s.identifier_of(d)).unwrap();
+            let holders: Vec<(String, String)> = index
+                .calls
+                .iter()
+                .map(|c| {
+                    let arg = c.args[0];
+                    let h = s.holder(Expression(c.expr.index())).unwrap();
+                    assert_eq!(s.holder(Expression(arg.index())), Some(h));
+                    (format!("{:?}", s.kind(h)), name(h))
+                })
+                .collect();
+            let want = [
+                ("Var", "a"),
+                ("CXXMethod", "m"),
+                ("CXXMethod", "m"),
+                ("CXXMethod", "m"),
+                ("Field", "k"),
+                ("FunctionTemplate", "t"),
+            ];
+            let want: Vec<(String, String)> =
+                want.iter().map(|(k, n)| ((*k).to_owned(), (*n).to_owned())).collect();
+            assert_eq!(holders, want);
+        })
+        .unwrap();
+    }
+}

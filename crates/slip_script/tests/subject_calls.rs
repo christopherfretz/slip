@@ -184,6 +184,8 @@ int g() { return t(1) + t('c') + t<long>(2); }
 fn s6_7_rule2_what_is_not_a_call() {
     let src = "\
 struct Q { int bar(); };
+struct T { operator int() const; explicit operator bool() const; };
+int conv(T t) { int a = t; long b = static_cast<int>(t); if (t) {} return a + b + (int)t; }
 struct S {
   S(int);
   int operator+(S) const;
@@ -276,13 +278,27 @@ struct T { operator int() const; };
 int h(S);
 int i(int);
 int j(const S&);
-int g(S s, T t, short c) { return h(1) + h(s) + i(t) + i(c) + j(2) + j(s); }
+int g(S s, T t, short c) {
+  return h(1) + h(s) + i(t) + i(c) + j(2) + j(s) + h({3}) + i(t.operator int());
+}
 ";
-    with(&[("main.cpp", src)], |_, s| {
+    with(&[("main.cpp", src)], |p, s| {
         let a: Vec<_> = calls_of(s, one(s, "h")).into_iter().map(|x| args(s, x)).collect();
-        assert_eq!(a, vec![some(&["1"]), some(&["s"])]);
+        // `h({3})`: a construction at `{` from `3`; the braces are in no
+        // node, so the argument is the construction, which has no extent.
+        assert_eq!(a, vec![some(&["1"]), some(&["s"]), vec![None]]);
         let b: Vec<_> = calls_of(s, one(s, "i")).into_iter().map(|x| args(s, x)).collect();
-        assert_eq!(b, vec![some(&["t"]), some(&["c"])]);
+        // `t.operator int()` is written: the call, not the object `t`.
+        assert_eq!(b, vec![some(&["t"]), some(&["c"]), some(&["t.operator int()"])]);
+        // The argument is the written expression, not Kiln's conversion.
+        let kinds: Vec<String> = calls_of(s, one(s, "i"))
+            .into_iter()
+            .map(|x| {
+                let a = s.arguments(x).unwrap()[0];
+                format!("{:?}", p.ast.exprs.get(slip_kiln::kiln::ast::ExprId::new(a.0)).kind())
+            })
+            .collect();
+        assert_eq!(kinds, ["DeclRefExpr", "DeclRefExpr", "CXXMemberCallExpr"]);
         let c: Vec<_> = calls_of(s, one(s, "j")).into_iter().map(|x| args(s, x)).collect();
         assert_eq!(c, vec![some(&["2"]), some(&["s"])]);
     });
@@ -334,9 +350,14 @@ template <class T> int t(T x) { return f(1) + f(sizeof(T)); }
 template <class T> struct K { int m() { return f(2); } };
 int a = t(1) + t('c') + t(2.0);
 int b = K<int>().m() + K<char>().m();
+template int t<long>(long);
+template struct K<short>;
+struct E { int k = f(3); bool operator==(const E&) const = default; E() = default; };
+bool c = E() == E();
 ";
     with(&[("main.cpp", src)], |_, s| {
-        assert_eq!(calls(s, "f"), some(&["f(1)", "f(sizeof(T))", "f(2)"]));
+        assert_eq!(calls(s, "f"), some(&["f(1)", "f(sizeof(T))", "f(2)", "f(3)"]));
+        assert_eq!(call_count(s), 4 + 5);
     });
 }
 
@@ -407,6 +428,46 @@ int g(R r) {
         assert_eq!(calls(s, "f"), some(&want));
         assert!(calls(s, "R::begin").is_empty());
         assert!(calls(s, "R::end").is_empty());
+    });
+}
+
+/// A coroutine's calls are the ones written: the operand of `co_await`
+/// and the calls in it, not the awaiter's and the promise's calls Kiln
+/// makes.
+#[test]
+fn s6_7_calls_in_a_coroutine() {
+    let src = "\
+namespace std {
+template <class R, class... A> struct coroutine_traits { using promise_type = typename R::promise_type; };
+template <class P = void> struct coroutine_handle {
+  static coroutine_handle from_address(void*) noexcept; void* address() const noexcept;
+};
+template <> struct coroutine_handle<void> {
+  template <class P> coroutine_handle(coroutine_handle<P>) noexcept;
+  static coroutine_handle from_address(void*) noexcept; void* address() const noexcept;
+};
+}
+struct suspend {
+  bool await_ready() noexcept; void await_suspend(std::coroutine_handle<>) noexcept;
+  void await_resume() noexcept;
+};
+struct task {
+  struct promise_type {
+    task get_return_object(); suspend initial_suspend() noexcept; suspend final_suspend() noexcept;
+    void return_void(); void unhandled_exception();
+  };
+};
+int f(int);
+suspend aw(int);
+task co() { co_await aw(f(1)); co_return; }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        assert_eq!(calls(s, "aw"), some(&["aw(f(1))"]));
+        assert_eq!(calls(s, "f"), some(&["f(1)"]));
+        assert!(calls(s, "suspend::await_ready").is_empty());
+        assert!(calls(s, "task::promise_type::initial_suspend").is_empty());
+        assert_eq!(s.calls_without_reference(), 0);
+        assert_eq!(call_count(s), 2);
     });
 }
 
@@ -546,10 +607,16 @@ fn s6_6_rule4_null_where_the_last_token_is_unknown() {
     let src = "\
 template <class T> int k(T);
 template <class T> int t(T);
-struct S { int operator+(int) const; };
+struct S { int operator+(int) const; static int sx; int x; int m(); S(int); };
 int g(S s) { return k(t<int>) + t<long>(1) + k(&S::operator+) + s.operator+(1); }
+int S::m() { S o(1); return k(decltype(o)::x) + k(decltype(o)::sx) + k(::S(1)) + k(decltype(x)(2)); }
 ";
     with(&[("main.cpp", src)], |_, s| {
+        // A `decltype` qualifier ends the table's chain; `::S(1)` begins
+        // with a `::` the table does not place; a type named by
+        // `decltype` is not named by an entry.
+        let m: Vec<_> = calls_of(s, one(s, "k"))[2..].iter().flat_map(|&x| args(s, x)).collect();
+        assert_eq!(m, vec![None, None, None, None]);
         let xs = calls_of(s, one(s, "k"));
         assert_eq!(args(s, xs[0]), vec![None]);
         assert_eq!(calls(s, "t"), some(&["t<long>(1)"]));
@@ -643,6 +710,7 @@ int g(T t, R r) { for (int x : r) i(x); return i(t); }
 ";
     with(&[("main.cpp", src)], |_, s| {
         assert!(calls(s, "R::begin").is_empty() && calls(s, "R::end").is_empty());
+        assert_eq!(s.calls_without_reference(), 0);
         assert_eq!(calls(s, "i"), some(&["i(x)", "i(t)"]));
         assert_eq!(calls(s, "M::m"), some(&["m(1)"]));
         assert_eq!(call_count(s), 3);
