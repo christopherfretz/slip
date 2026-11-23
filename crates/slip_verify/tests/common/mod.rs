@@ -8,15 +8,17 @@
 use slip_model::agreement::{Binding, RuleUse, Use};
 use slip_model::declared::Declared;
 use slip_model::digests::{Digests, SCHEME, tu_digest};
+use slip_model::edits::{
+    Failure, FailureKind, Piece, Reason, Report as EditReport, Severity, tiers,
+};
+use slip_model::editset::{Cause, Edit, EditSet, Failed as SetFailed, Refusal, Reported, SetState};
+use slip_model::formats::content_id;
 use slip_model::keys::{KeyKind, Name, Parent, Rule, RuleTable};
 use slip_model::overlay::{Content, Obligation, OverlayFile};
+use slip_model::result::{Category, Residue, State, TransformResult};
 use slip_model::spellings::{Failed, Span, Spellings};
 use slip_model::verdict::{Finding, FindingKind, Verdict, VerdictKind};
 use slip_model::{Counter, Digest, FileRef, Outcome, Overlay, Phase, Shard, Status};
-use slip_model::edits::{Failure, FailureKind, Piece, Reason, Report as EditReport, Severity, tiers};
-use slip_model::editset::{Cause, Edit, EditSet, Failed as SetFailed, Refusal, Reported, SetState};
-use slip_model::formats::content_id;
-use slip_model::result::{Category, Residue, State, TransformResult};
 use slip_verify::conclude::Concluded;
 use slip_verify::run::{Header, Report};
 
@@ -184,7 +186,11 @@ impl Run {
     }
 
     pub fn binding(&self) -> Binding {
-        Binding { overlay: self.overlay.as_ref().map(|_| d(OVERLAY)), declared: d(DECLARED), pre: ROUND }
+        Binding {
+            overlay: self.overlay.as_ref().map(|_| d(OVERLAY)),
+            declared: d(DECLARED),
+            pre: ROUND,
+        }
     }
 
     fn base(&self, obs: u8, status: Status, message: &str) -> Shard {
@@ -199,7 +205,11 @@ impl Run {
                 warnings: 0,
                 message: message.to_owned(),
             },
-            inputs: if status == Status::Failed { None } else { Some(vec![file("/s/x.cpp", 1, 0x99)]) },
+            inputs: if status == Status::Failed {
+                None
+            } else {
+                Some(vec![file("/s/x.cpp", 1, 0x99)])
+            },
             counters: vec![],
             digests: None,
             verdict: None,
@@ -260,7 +270,7 @@ impl Run {
 
     pub fn unverifiable(&self, obs: u8, reason: &str) -> Shard {
         let mut v = self.verdict(VerdictKind::Unverifiable);
-        v.reason = reason.to_owned();
+        reason.clone_into(&mut v.reason);
         v.pre = Digest([0; 32]);
         self.ok(obs, v, &[], &[])
     }
@@ -298,7 +308,8 @@ pub fn used(rule: u64, via: u64, direct: u64) -> Use {
 /// Compares `actual` with `tests/golden/<dir>/<name>`; `SLIP_BLESS=1`
 /// writes it instead (as `tests/run.rs` does).
 pub fn golden(dir: &str, name: &str, actual: &str) {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden").join(dir).join(name);
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden").join(dir).join(name);
     if std::env::var_os("SLIP_BLESS").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, actual).unwrap();
@@ -380,6 +391,10 @@ pub fn set(f: SetFacts) -> EditSet {
         s.state = SetState::Refused;
         s.edits.clear();
         s.refusals.push(refusal(Cause::NoEdit, None, None));
+        if !f.refusal {
+            // No record names the file now.
+            s.files.clear();
+        }
     }
     if f.error_report {
         s.reports.push(Reported {
@@ -451,7 +466,8 @@ pub struct Rng(pub u64);
 
 impl Rng {
     pub fn from_env(default: u64) -> Rng {
-        let seed = std::env::var("SLIP_VERIFY_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(default);
+        let seed =
+            std::env::var("SLIP_VERIFY_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(default);
         eprintln!("seed {seed} (SLIP_VERIFY_SEED overrides)");
         Rng(seed.max(1))
     }

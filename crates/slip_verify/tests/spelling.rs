@@ -8,6 +8,8 @@
 //! passes only when some observer of this run held it and none failed it,
 //! and a section the fold cannot place changes nothing.
 
+#![allow(clippy::many_single_char_names, reason = "the overlay, the fold, its inputs and sections")]
+
 mod common;
 
 use common::{Run, file, key, overlay, post_input, section};
@@ -167,8 +169,15 @@ fn s10_4_refusals_leave_the_fold_unchanged() {
 #[test]
 fn s10_4_refusal_reasons() {
     let a = inputs(&[0]);
-    let s = Spellings { seen: 2, held: vec![], failed: vec![Failed { index: 7, found: None, name: String::new() }] };
-    assert_eq!(fold().add(0, &a, &s).unwrap_err(), "spellings: obligation 7 is not one of the overlay's 3");
+    let s = Spellings {
+        seen: 2,
+        held: vec![],
+        failed: vec![Failed { index: 7, found: None, name: String::new() }],
+    };
+    assert_eq!(
+        fold().add(0, &a, &s).unwrap_err(),
+        "spellings: obligation 7 is not one of the overlay's 3"
+    );
     let s = Spellings { seen: 2, held: vec![Span { first: 2, count: 1 }], failed: vec![] };
     assert_eq!(
         fold().add(0, &a, &s).unwrap_err(),
@@ -269,14 +278,18 @@ fn s10_3_deterministic_and_order_free() {
 // was.
 #[test]
 fn s10_4_fold_refusal_through_report_add() {
-    let run = Run::new(vec![common::rule(slip_model::keys::KeyKind::Function, "f", "g")], Some(overlay()));
+    let run = Run::new(
+        vec![common::rule(slip_model::keys::KeyKind::Function, "f", "g")],
+        Some(overlay()),
+    );
     let o = overlay();
     let mut r = run.report();
     let v = run.verdict(VerdictKind::Verified);
     let mut s = run.ok(0xa0, v.clone(), &[0], &[common::used(0, 0, 1)]);
     let i = s.inputs.clone().unwrap();
     // Obligation 2 is of /s/b.h, which this shard did not read.
-    s.spellings = Some(Spellings { seen: 2, held: vec![Span { first: 2, count: 1 }], failed: vec![] });
+    s.spellings =
+        Some(Spellings { seen: 2, held: vec![Span { first: 2, count: 1 }], failed: vec![] });
     s.validate().unwrap();
     r.add(&s.observer, b"/m/a0.cc", Some(&s), Some(Status::Ok));
     assert_eq!(r.states()[6], 1, "failed");

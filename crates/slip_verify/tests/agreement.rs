@@ -8,6 +8,12 @@
 //! observer, no shard of another run and no guard that should fail lets
 //! the run be `verified`.
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::match_same_arms,
+    reason = "short names of one table; the arms of §5.3's table written out one per row"
+)]
+
 mod common;
 
 use common::{
@@ -22,10 +28,7 @@ use slip_verify::guards::{OverlayGuard, overlay_inputs};
 use slip_verify::run::{RunVerdict, Stale, State, combine};
 
 fn two_rules() -> Run {
-    Run::new(
-        vec![rule(KeyKind::Function, "f", "g"), rule(KeyKind::Function, "h", "i")],
-        None,
-    )
+    Run::new(vec![rule(KeyKind::Function, "f", "g"), rule(KeyKind::Function, "h", "i")], None)
 }
 
 /// The number of observers in state `st`.
@@ -82,7 +85,15 @@ fn s9_2_one_observer_stale_for_two_rules() {
 fn s9_2_namespace_rule_with_direct_is_not_stale() {
     let run = Run::new(vec![rule(KeyKind::Namespace, "n", "m")], None);
     let mut r = run.report();
-    add(&mut r, &run.ok(0xa0, run.verdict(slip_model::verdict::VerdictKind::Verified), &[], &[used(0, 0, 7)]));
+    add(
+        &mut r,
+        &run.ok(
+            0xa0,
+            run.verdict(slip_model::verdict::VerdictKind::Verified),
+            &[],
+            &[used(0, 0, 7)],
+        ),
+    );
     assert!(r.stale().is_empty());
     assert!(r.unused().is_empty());
     assert_eq!(r.verdict(), RunVerdict::Verified);
@@ -214,7 +225,12 @@ fn s9_3_failed_shard_needs_no_binding() {
 #[test]
 fn s9_3_rule_use_must_be_the_runs() {
     let run = two_rules();
-    let good = run.ok(0xa0, run.verdict(slip_model::verdict::VerdictKind::Verified), &[], &[used(1, 1, 0)]);
+    let good = run.ok(
+        0xa0,
+        run.verdict(slip_model::verdict::VerdictKind::Verified),
+        &[],
+        &[used(1, 1, 0)],
+    );
     assert_eq!(state_of(&run, &good), State::Verified);
     let mut s = good.clone();
     s.rule_use = None;
@@ -263,7 +279,12 @@ fn s9_3_spellings_present_exactly_with_obligations() {
 #[test]
 fn s9_3_sections_of_another_runs_shard_are_not_read() {
     let run = two_rules();
-    let mut s = run.ok(0xa0, run.verdict(slip_model::verdict::VerdictKind::Verified), &[], &[used(0, 0, 3)]);
+    let mut s = run.ok(
+        0xa0,
+        run.verdict(slip_model::verdict::VerdictKind::Verified),
+        &[],
+        &[used(0, 0, 3)],
+    );
     s.binding = Some(Binding { pre: 0, ..run.binding() });
     let mut r = run.report();
     add(&mut r, &s);
@@ -307,7 +328,15 @@ fn s9_3_stale_overrides_incomplete() {
     let mut r = run.report();
     add(&mut r, &run.unverifiable(0xa0, "r"));
     assert_eq!(r.verdict(), RunVerdict::Incomplete);
-    add(&mut r, &run.ok(0xa1, run.verdict(slip_model::verdict::VerdictKind::Verified), &[], &[used(0, 0, 1)]));
+    add(
+        &mut r,
+        &run.ok(
+            0xa1,
+            run.verdict(slip_model::verdict::VerdictKind::Verified),
+            &[],
+            &[used(0, 0, 1)],
+        ),
+    );
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
     let mut r = run.report();
     assert_eq!(r.verdict(), RunVerdict::Incomplete, "no observer");
@@ -424,7 +453,9 @@ fn s9_4_members_only_when_they_apply() {
     assert!(n.contains(&"agreement".to_owned()));
     assert!(!n.contains(&"overlay".to_owned()) && !n.contains(&"spellings".to_owned()));
     assert!(r.to_text().contains("image identity\n"));
-    assert!(r.to_text().contains("agreement rules 2 stale 0 unused 2\nunused rule 0\nunused rule 1\n"));
+    assert!(
+        r.to_text().contains("agreement rules 2 stale 0 unused 2\nunused rule 0\nunused rule 1\n")
+    );
 
     let mut o = overlay();
     o.spellings.clear();
@@ -469,7 +500,9 @@ fn s9_4_stale_lines_at_most_100() {
 fn s10_5_spelling_lines_at_most_100() {
     for (n, more) in [(100u64, None), (101, Some(1)), (150, Some(50))] {
         let o = Overlay {
-            spellings: (0..n).map(|i| Obligation { file: 0, lo: i, hi: i + 1, key: key(1) }).collect(),
+            spellings: (0..n)
+                .map(|i| Obligation { file: 0, lo: i, hi: i + 1, key: key(1) })
+                .collect(),
             ..overlay()
         };
         let run = Run::new(vec![], Some(o));
@@ -670,12 +703,18 @@ fn s5_3_guards_duplicate_entries() {
     let p = b"/s/p.h";
     let a = entry(p, CONTENTS[0]);
     let b = entry(p, CONTENTS[1]);
-    assert_eq!(overlay_inputs(&[a.clone(), a.clone()], &[a.clone()], &o), Ok(()));
+    assert_eq!(overlay_inputs(&[a.clone(), a.clone()], std::slice::from_ref(&a), &o), Ok(()));
     for pre in [[a.clone(), b.clone()], [b.clone(), a.clone()]] {
-        assert_eq!(overlay_inputs(&pre, &[a.clone()], &o), Err(OverlayGuard::O2(p.to_vec())));
+        assert_eq!(
+            overlay_inputs(&pre, std::slice::from_ref(&a), &o),
+            Err(OverlayGuard::O2(p.to_vec()))
+        );
     }
     for post in [[a.clone(), b.clone()], [b.clone(), a.clone()]] {
-        assert_eq!(overlay_inputs(&[a.clone()], &post, &o), Err(OverlayGuard::O2(p.to_vec())));
+        assert_eq!(
+            overlay_inputs(std::slice::from_ref(&a), &post, &o),
+            Err(OverlayGuard::O2(p.to_vec()))
+        );
     }
     let named = Overlay {
         files: vec![OverlayFile {
@@ -709,7 +748,7 @@ fn s5_3_guards_named_cases() {
     let f = &o.files[0];
     let pre_read = FileRef { path: f.path.clone(), size: f.pre.size, content: f.pre.content };
     assert_eq!(
-        overlay_inputs(std::slice::from_ref(&pre_read), &[pre_read.clone()], &o),
+        overlay_inputs(std::slice::from_ref(&pre_read), std::slice::from_ref(&pre_read), &o),
         Err(OverlayGuard::O1(b"/s/a.h".to_vec()))
     );
 }
