@@ -407,10 +407,10 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    and printing. They are `out`: the profile is the fact (§4.4), and the
    bytes of a profile are a function of the profile, not of the spelling
    Kiln met first. A fact a spelling holds and the profile does not (the
-   declarations lookup found for an unresolved name) is not in the type;
-   a type that left one out is marked, and a unit that writes a marked
-   type is `Pending(Spelling)` until the unit writes its own spellings
-   (§4.4).
+   declarations lookup found for an unresolved name or a dependent
+   operator, the functions a resolved `new` or `delete` chose) is not in
+   the type: the unit that writes the type writes it, read from its own
+   spelling, in the list at the end of its stream (§4.4 "Spellings").
 2. **Alias template specialisations** are sugar; `alias_converted` holds
    their converted arguments and is `out`. The type the alias names is what
    is digested.
@@ -1069,21 +1069,97 @@ reflection facts (`:792-837`).
 The rest of profile mode:
 
 - **The mark.** When the walk leaves out a fact a spelling holds (a
-  non-empty found set of an `UnresolvedLookupExpr`), it counts it
-  (`Walk::left_out`). A type digest whose stream counted one is marked,
-  and a memo hit of a marked type counts again, so every enclosing type
-  is marked too. A key ignores the count and the mark. A unit stream is
-  indeterminate with `Pending(Spelling)` when, outside any key and type
-  (`in_key == 0`, `type_nesting == 0`), it writes a marked type, or a
-  profile that counted one is written into it directly (a template
-  argument, a table row), or it is a partial specialisation's whose
-  arguments, which only its key holds, count one (`templ.rs`
-  `partial_spec_info`). A key and a content digest are computed with the
-  type digests' state put aside (`Walk::take_types`): what they count is
-  not the enclosing type's, so a type's mark does not depend on whether a
-  key it names was computed first. The fact belongs to the unit that owns
-  the spelling, which writes it when spellings are written ("Hazards
-  accepted for now").
+  non-empty found set of an `UnresolvedLookupExpr`, a non-empty
+  `oper_lookups` set of a `UnaryOperator`, `BinaryOperator` or
+  `CompoundAssignOperator`, the chosen functions of a `CXXNewExpr` or
+  `CXXDeleteExpr`), it counts it (`Walk::left_out`). A type digest whose
+  stream counted one is marked, and a memo hit of a marked type counts
+  again, so every enclosing type is marked too. A key ignores the count
+  and the mark. A key and a content digest are computed with the type
+  digests' state put aside (`Walk::take_types`): what they count is not
+  the enclosing type's, so a type's mark does not depend on whether a key
+  it names was computed first. The mark is a fact of the profile's
+  first spelling only; it decides one thing: a unit that holds a canonical
+  operand and no spelling of its own is `Unaccounted("spelling/<site>")`
+  when the operand's type is marked ("Spellings", rule 5).
+- **Spellings** (WP-041). What a profile leaves out is written by the
+  unit that owns the spelling, from that spelling, not from the type's
+  first one (`spelling.rs`):
+  1. *The left-out facts of an expression*, in the order of profile
+     mode's walk of it (pre-order, children in the order of the table
+     above): per `UnresolvedLookupExpr` (not a template template
+     parameter's `V<args>`) a `Found` entry, the set of declarations
+     found (possibly empty); per expression with an `oper_lookups` set an
+     `Oper` entry (possibly empty); per resolved `CXXNewExpr` or
+     `CXXDeleteExpr` a `Chosen` entry. Types inside the expression are
+     read as written (rule 2), an argument list and a qualifier as
+     written; a parameter's and a template parameter's type are their
+     declarations'. A kind walked in full has its facts in its bytes; a
+     requires-expression without its body, and a kind walked in full, is
+     rule 5's site `spelling/full` when the type around it is marked.
+  2. *The spellings of a written type*, through sugar, in the order of its
+     structure, for a type that is instantiation-dependent: pointee,
+     referent, element, pointee and class of a member pointer, the
+     pattern of a pack expansion, a substituted parameter's replacement,
+     an attributed type's modified type; a dependent array or vector
+     bound, an address space and a pack index (each as written, `Profile`
+     operands are rule 5: `spelling/array-bound`, `vector-size`,
+     `addr-space`, `pack-index`); a function type's return type,
+     parameter types and exception specification (`noexcept(e)`,
+     `throw(T...)`; `spelling/noexcept` when canonical; not for a
+     function declaration's own type, whose exception specification its
+     unit walks in full); a `decltype`'s and a `typeof`'s operand
+     (`spelling/decltype`, `spelling/typeof` when canonical); the written
+     argument lists of a `TemplateSpecialization`, a dependent template
+     specialisation and a placeholder's constraint; the types of a
+     qualifier and of a template name's qualifier. A deduced type, a
+     resolved pack index, a computed unary transform and a substituted
+     parameter pack are `spelling/deduced` or `spelling/subst-pack`; a
+     dependent `_BitInt` (whose width Kiln keeps only canonically) is
+     `spelling/bit-int`.
+  3. *Where a unit reads them.* (a) `Walk::absorb_type` in a unit stream
+     (`in_key == 0`, `type_nesting == 0`, not inside a profile written
+     into the unit), from the written type its caller holds;
+     (b) `expr_dep::profile_expr` written straight into a unit stream
+     (a template argument, a table row), from that very expression;
+     `expr_dep::profile` of a `ProfileId` in a unit stream has only the
+     first spelling, and is `spelling/profile` when it counted a fact;
+     `Walk::write_args` in a unit stream, from the list as the unit holds
+     it, and a default template argument, from the argument as written;
+     (c) `templ::partial_spec_info`, from the partial specialisation's
+     arguments as written (`PartialSpecInfo::args`). A canonical argument
+     with no spelling is `spelling/arg`.
+  4. *Sugar that names another unit stops the walk.* A typedef or alias
+     (a `Typedef` type, a `Using` type naming one) and an alias template
+     specialisation are an `Alias` entry with the `Ref` of the
+     typedef-name, or of the alias template's pattern, when that one's own
+     aliased type as written holds a non-empty fact (or a cause); its
+     unit writes the facts. The walk does not descend into what it
+     aliases; an alias template specialisation's own arguments are the
+     unit's and are walked.
+  5. *What stays indeterminate.* A canonical operand where the unit has no
+     spelling of its own, whose type is marked, is
+     `Unaccounted("spelling/<site>")` with the sites named above
+     (`spec/landed/digest-kinds/WP-041.md` lists them and the sources
+     tried).
+  6. *The list.* The unit's facts are collected in walk order and
+     written once, after the unit stream (`UnitState::facts`,
+     `units::write`, `Walk::content_hash`): `count`, then per entry
+     `uv` kind (`1` `Found`, `2` `Oper`, `3` `Alias`, `4` `Chosen`) and
+     its payload: `ref*sorted` (sorted by the `Ref`'s bytes, duplicates
+     removed, a using-shadow written as its target, as the full walk
+     writes an `UnresolvedLookupExpr`) for `Found` and `Oper`, `ref` for
+     `Alias`, `count` and `ref?` each (allocation then deallocation
+     function) for `Chosen`. The list is written only when an entry is
+     due: a non-empty set, a chosen function, an alias. A unit with no
+     such entry writes nothing more, so its bytes are those it had before
+     spellings were written. The trigger is the unit's own spelling, not
+     the mark: a unit whose own spelling found declarations where the
+     profile's first spelling found none writes its list too (the mark
+     alone would have hidden it, a wrong `equal`).
+  A key reads no spelling: two declarations are one entity by
+  [temp.over.link] whatever their found sets, and a difference in the
+  sets is a difference of the units.
 - **Kinds Kiln profiles as unique.** Kiln gives such a node a word of its
   own id, so two declarations whose signatures hold one (a lambda:
   `template<int N> void foo(const char(*)[([]{}, N)]);` twice) are two
@@ -6158,12 +6234,26 @@ of a reported difference.
 
 - **First spellings** (§4.4). A profile's bytes are a function of the
   profile, so which of two equivalent spellings Kiln meets first does not
-  change them. What a spelling holds beyond its profile (the declarations
-  lookup found for an unresolved name in a dependent type or argument) is
-  in no row yet: a unit that writes a type which left such a fact out, or
-  such a profile directly, or whose key's arguments left one out, is
-  `Pending(Spelling)` until units write their own spellings (WP-041), so
-  the gap is reported, never hidden ("The mark", §4.4).
+  change them. What a spelling holds beyond its profile is written by
+  the unit from its own spelling ("Spellings", §4.4). Accepted:
+  - a canonical operand the unit holds without a spelling of its own is
+    `Unaccounted("spelling/<site>")` only when the operand's type is
+    marked, and the mark is the first spelling's: when that spelling's
+    sets were empty and another's are not, such a unit is determinate
+    and writes no list. No caller in the pair-test corpus nor in the
+    sources tried (`spelling_tests.rs` `RULE_5_TRIED`) holds such an
+    operand in a unit stream; Kiln substitutes a `DependentDecltype` or a
+    `Profile` operand from the first spelling's expression
+    (`kiln_sema` `templ/subst/types.rs`), which then reads as the unit's
+    own;
+  - a type nested inside a kind walked in full is read in full there,
+    and the kind itself, inside a marked type, is `spelling/full`;
+  - an alias's facts are read once per walk, from its own aliased type
+    as written (`Walk::alias_due`);
+  - the floating-point rounding state where a non-dependent floating
+    operation of a profile was written (`ColdExprData::fp_round`) is in
+    neither Kiln's profile nor the list: two spellings of one profile
+    under different `#pragma STDC FENV_ROUND` states are one type.
 - **Literals from builtin macros** (§7) are written by value: moving a
   line that uses `__LINE__` as a value is a reported difference.
 - **Overloaded member access** (§7): of the candidate set only the
