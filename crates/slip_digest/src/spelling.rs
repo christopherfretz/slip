@@ -66,10 +66,10 @@ pub struct Obligation {
 /// rule 5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Spelling {
-    /// At least one reference answers, and every answering reference's
-    /// origin has the obligation's key.
+    /// At least one name answers, and every answering name is a
+    /// reference whose origin has the obligation's key.
     Holds,
-    /// No reference answers.
+    /// No name Kiln records answers.
     NotSeen,
     /// Some answering reference's origin has another key, or none, or
     /// some answering name has no referent.

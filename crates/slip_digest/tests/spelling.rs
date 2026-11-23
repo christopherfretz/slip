@@ -1289,6 +1289,15 @@ fn s3_4_a_colliding_key_no_unit_has() {
     let wants = [Named("h()")];
     let c = Case { pre: Some(&pre), renames: &[("h()", "g")], ..case(&post, &wants) };
     assert_eq!(fails(&run(&c)[0]).expect("fails").0, None);
+    // The same with the order unit already indeterminate for another
+    // cause (namespaces nested past the order walk's depth limit,
+    // `order/depth`): the order unit keeps its first cause, so the
+    // collision is seen only with that cause put aside.
+    let deep = format!("namespace {} {{}}\n", vec!["n"; 1100].join("::"));
+    let other = format!("{deep}{}", post[0].1);
+    let other = [("main.cpp", other.as_str())];
+    let c = Case { pre: Some(&pre), renames: &[("h()", "g")], ..case(&other, &wants) };
+    assert_eq!(fails(&run(&c)[0]).expect("fails").0, None);
     // Without the other `h` nothing collides, and `g` is the old `h`.
     let alone = [("main.cpp", "template <class T> int t() { extern int g(); return «g»(); }\n")];
     let c = Case { pre: Some(&pre), renames: &[("h()", "g")], ..case(&alone, &wants) };
