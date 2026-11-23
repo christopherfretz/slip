@@ -47,22 +47,7 @@ fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8
 
     let (plan, plan_id) = commands::load_plan(&store, &a.plan)?;
 
-    // The declared changes: read, validated, published.
-    let declared_bytes = match &a.declared {
-        Some(path) => {
-            let bytes = std::fs::read(path)
-                .map_err(|e| Failure::Input(format!("{}: {e}", path.display())))?;
-            Declared::from_bytes(&bytes)
-                .map_err(|e| Failure::Input(format!("{}: {e}", path.display())))?;
-            bytes
-        }
-        None => Declared::none().to_bytes(),
-    };
-    let declared_id = store
-        .publish_declared(&declared_bytes)
-        .map_err(|e| commands::store_failure(store.root(), &e))?;
-    let declared = Declared::from_bytes(&declared_bytes)
-        .unwrap_or_else(|e| unreachable!("the declared changes were validated: {e}"));
+    let (declared_id, declared) = publish_declared(&store, a.declared.as_deref())?;
     // WP-103 (`RuleTable::refused`): a table holding a rule the tool cannot
     // honour is an input error here, before any job runs, naming the rule
     // and the reason. Not on this base; the check belongs in this spot.
@@ -158,25 +143,58 @@ fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8
         write_report(path, &report.to_json())?;
     }
 
-    let _ = out.write_all(report.to_text().as_bytes());
-    let (wall, peak) = commands::wall_and_peak(&summary, &selected);
-    let _ = writeln!(out, "wall {wall}");
-    if let Some((bytes, main)) = peak {
-        let _ = writeln!(out, "peak_rss {bytes} {}", escape(main));
-    }
-    let _ = writeln!(out, "run {}", escape(&args::os_bytes(summary.run_path.as_os_str())));
-    if let Some(path) = &a.report {
-        let _ = writeln!(out, "report {}", escape(&args::os_bytes(path.as_os_str())));
-    }
-    let _ = writeln!(out, "{}", report.verdict_line());
-    let _ = out.flush();
-    let _ = err.write_all(report.error_lines().as_bytes());
-
+    print(&report, &summary, &selected, a.report.as_deref(), out, err);
     Ok(match report.verdict() {
         RunVerdict::Verified => status::OK,
         RunVerdict::NotVerified => status::FINDINGS,
         RunVerdict::Incomplete => status::INCOMPLETE,
     })
+}
+
+/// The declared changes of `--declared` (or none): read, validated and
+/// published to the store; their content id and their decoding.
+fn publish_declared(store: &Store, path: Option<&Path>) -> Result<(Digest, Declared)> {
+    let bytes = match path {
+        Some(path) => {
+            let bytes = std::fs::read(path)
+                .map_err(|e| Failure::Input(format!("{}: {e}", path.display())))?;
+            Declared::from_bytes(&bytes)
+                .map_err(|e| Failure::Input(format!("{}: {e}", path.display())))?;
+            bytes
+        }
+        None => Declared::none().to_bytes(),
+    };
+    let id =
+        store.publish_declared(&bytes).map_err(|e| commands::store_failure(store.root(), &e))?;
+    let declared = Declared::from_bytes(&bytes)
+        .unwrap_or_else(|e| unreachable!("the declared changes were validated: {e}"));
+    Ok((id, declared))
+}
+
+/// Standard output (§8.7): the report's text, the run's `wall`, `peak_rss`
+/// and `run` lines, the `report` line, the verdict line; standard error:
+/// the report's error lines.
+fn print(
+    report: &Report,
+    summary: &pool::Summary,
+    selected: &[Observer],
+    path: Option<&Path>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
+    let _ = out.write_all(report.to_text().as_bytes());
+    let (wall, peak) = commands::wall_and_peak(summary, selected);
+    let _ = writeln!(out, "wall {wall}");
+    if let Some((bytes, main)) = peak {
+        let _ = writeln!(out, "peak_rss {bytes} {}", escape(main));
+    }
+    let _ = writeln!(out, "run {}", escape(&args::os_bytes(summary.run_path.as_os_str())));
+    if let Some(path) = path {
+        let _ = writeln!(out, "report {}", escape(&args::os_bytes(path.as_os_str())));
+    }
+    let _ = writeln!(out, "{}", report.verdict_line());
+    let _ = out.flush();
+    let _ = err.write_all(report.error_lines().as_bytes());
 }
 
 /// What `verify` appends to the worker command of `parse` (§8.7): both
@@ -266,6 +284,7 @@ pub(crate) fn beside(path: &Path) -> PathBuf {
 /// byte of a C1 control (U+0080 to U+009F) is `\xNN`. The rule of
 /// `slip_verify::run`'s own lines, for the lines this command adds.
 pub(crate) fn escape(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut out = String::new();
     for chunk in bytes.utf8_chunks() {
         for c in chunk.valid().chars() {
@@ -273,14 +292,14 @@ pub(crate) fn escape(bytes: &[u8]) -> String {
             if n < 0x20 || n == 0x7f || c == '\\' || (0x80..=0x9f).contains(&n) {
                 let mut buf = [0u8; 4];
                 for b in c.encode_utf8(&mut buf).bytes() {
-                    out.push_str(&format!("\\x{b:02x}"));
+                    let _ = write!(out, "\\x{b:02x}");
                 }
             } else {
                 out.push(c);
             }
         }
         for b in chunk.invalid() {
-            out.push_str(&format!("\\x{b:02x}"));
+            let _ = write!(out, "\\x{b:02x}");
         }
     }
     out
