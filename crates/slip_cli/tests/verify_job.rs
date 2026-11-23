@@ -506,6 +506,7 @@ fn p2_map_shard_not_ok() {
     let mut failed = m;
     failed.outcome.status = Status::Failed;
     failed.inputs = None;
+    failed.negatives = None;
     failed.counters.clear();
     tree.put_map(&o, &failed);
     let v = tree.verify(&o);
@@ -561,6 +562,7 @@ fn s5_2_pre_shard_altered_fails_the_job() {
     assert!(e.contains(&format!("is for observer {} Map round 3", o.id)), "{e}");
     let mut phase = m;
     phase.phase = Phase::Verify;
+    phase.negatives = None;
     std::fs::write(&path, phase.to_bytes()).unwrap();
     let e = tree.verify_with(&o, &tree.params(Declared::none())).unwrap_err();
     assert!(e.contains(&format!("is for observer {} Verify round 0", o.id)), "{e}");
