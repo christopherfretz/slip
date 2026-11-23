@@ -1,0 +1,2 @@
+present A<long>::f(long, int)::<default_argument 1>
+added h()

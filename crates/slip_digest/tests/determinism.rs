@@ -32,7 +32,7 @@ const END: &str = "=== slip-digest-output-end";
 
 fn all_dirs() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    for root in ["differ", "equal", "demand", "indeterminate"] {
+    for root in ["differ", "equal", "demand", "indeterminate", "resolved"] {
         v.extend(common::dirs(root).into_iter().filter(|d| !common::is_pending(d)));
     }
     v
@@ -66,7 +66,7 @@ fn first() -> &'static [First] {
     static FIRST: OnceLock<Vec<First>> = OnceLock::new();
     FIRST.get_or_init(|| {
         let mut dirs = Vec::new();
-        for root in ["differ", "equal", "demand", "indeterminate"] {
+        for root in ["differ", "equal", "demand", "indeterminate", "resolved"] {
             dirs.extend(common::dirs(root));
         }
         let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));

@@ -1,0 +1,3 @@
+changed k
+derived-changed k::<value>
+derived-changed r::<value>
