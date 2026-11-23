@@ -146,7 +146,7 @@ fn s2_open_initialises_absent_directory() {
     let root = s.join("a").join("b");
     let store = Store::open(&root, Access::Shared).unwrap();
     assert_eq!(fs::read_to_string(root.join("VERSION")).unwrap(), "1\n");
-    assert_eq!(names(&root), ["VERSION", "logs", "plans", "runs", "shards", "tmp"]);
+    assert_eq!(names(&root), ["VERSION", "declared", "logs", "plans", "runs", "shards", "tmp"]);
     assert!(names(&root.join("tmp")).is_empty());
     assert_eq!(store.root(), root);
 }
@@ -317,6 +317,51 @@ fn s2_publish_refuses_invalid_files() {
     assert!(names(&s.join("shards")).is_empty());
     assert!(names(&s.join("runs")).is_empty());
     assert!(names(&s.join("tmp")).is_empty());
+}
+
+// §2 `declared/`, §2.1 "Publishing validates": a valid `DECL` is published
+// under its content id and read back; anything else is `Invalid` and
+// nothing is written; a store initialised before `declared/` existed gets
+// the directory from the first publish.
+#[test]
+fn s2_declared_publish_read_and_refuse() {
+    use slip_model::declared::Declared;
+    let s = scratch("declared");
+    let store = Store::open(&s, Access::Shared).unwrap();
+    let none = Declared::none().to_bytes();
+    let other = Declared::new(vec![], vec![d(3)], vec![], vec![d(4)]).unwrap().to_bytes();
+    let id = store.publish_declared(&none).unwrap();
+    assert_eq!(id, slip_model::formats::content_id(&none).unwrap());
+    assert_eq!(store.declared_path(&id), s.join(format!("declared/{id}.decl")));
+    assert_eq!(fs::read(store.declared_path(&id)).unwrap(), none);
+    assert_eq!(store.read_declared(&id).unwrap(), Some(none.clone()));
+    // Another file, another name; publishing again replaces with the same bytes.
+    let id2 = store.publish_declared(&other).unwrap();
+    assert_ne!(id, id2);
+    assert_eq!(store.publish_declared(&other).unwrap(), id2);
+    assert_eq!(store.read_declared(&id2).unwrap(), Some(other.clone()));
+    assert_eq!(store.read_declared(&d(9)).unwrap(), None);
+    assert_eq!(names(&s.join("declared")).len(), 2);
+    // Refused: a shard (another kind), a plan, garbage, a corrupted DECL.
+    let mut bad = none.clone();
+    let n = bad.len();
+    bad[n - 1] ^= 1;
+    let sh = shard(d(1), Phase::Map, 0).to_bytes();
+    for bytes in [&sh[..], &plan("x").to_bytes()[..], b"nope", &bad[..], &[][..]] {
+        assert!(matches!(store.publish_declared(bytes), Err(StoreError::Invalid(_))), "{bytes:?}");
+    }
+    assert_eq!(names(&s.join("declared")).len(), 2);
+    assert!(names(&s.join("tmp")).is_empty());
+    drop(store);
+
+    // A store initialised without `declared/`.
+    let s = scratch("declared-old");
+    drop(Store::open(&s, Access::Shared).unwrap());
+    fs::remove_dir(s.join("declared")).unwrap();
+    let store = Store::open(&s, Access::Shared).unwrap();
+    assert_eq!(store.read_declared(&id).unwrap(), None);
+    assert_eq!(store.publish_declared(&none).unwrap(), id);
+    assert_eq!(store.read_declared(&id).unwrap(), Some(none));
 }
 
 #[test]
