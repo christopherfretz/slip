@@ -35,8 +35,10 @@
 //!   `RuleTable::new` refuses it with a message that contains `<text>`
 //!   (a rule `Rule::refusal` refuses, `spec/verify.md` §2.1); and the
 //!   same table made without the refusal keys nothing: every unit of the
-//!   post-image under it but the order unit is indeterminate. Nothing
-//!   else is checked.
+//!   post-image under it but the order unit is indeterminate. A table
+//!   `RuleTable::new` itself refuses (two rules that produce one key,
+//!   `spec/verify.md` §2.1, WP-111 review F1) cannot be made without the
+//!   refusal: that it is not made is the check. Nothing else is checked.
 //!
 //! # `kept.txt` (WP-111)
 //!
@@ -325,7 +327,13 @@ fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
             Err(e) if e.contains(text) => {}
             Err(e) => return Err(format!("refused, but not with `{text}`: {e}")),
         }
-        let kept = common::rules::table_with(&lines, pre, &plain, false)?;
+        let kept = match common::rules::table_with(&lines, pre, &plain, false) {
+            Ok(t) => t,
+            // No door makes it (`RuleTable::new`, and `from_sorted` behind a
+            // container: `crates/slip_model/tests/keys.rs`).
+            Err(e) if e.contains("not a table") => return Ok(()),
+            Err(e) => return Err(e),
+        };
         if kept.table.refused().is_none() {
             return Err("the table made without the refusal holds no refused rule".into());
         }

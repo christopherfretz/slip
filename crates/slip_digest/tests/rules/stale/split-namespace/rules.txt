@@ -1,3 +1,6 @@
-# WP-111 item 1: a namespace reached through two rules (legacy split into acme and acme2: both rules produce its key). legacy::c, left behind, counts direct for each rule once.
+# WP-111 review F1: a namespace split in two (legacy's members to acme and acme2) by two
+# namespace rules is no table: both rules produce legacy's key, and an entity reaching it
+# through one is never counted for the other. It is declared per member
+# (split-per-member) or per nested namespace (spec/verify.md §2.3).
 relocate legacy => :: acme
 relocate legacy => :: acme2

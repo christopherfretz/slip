@@ -249,20 +249,66 @@ impl Walk<'_> {
     /// The template an implicit deduction guide (or the function template
     /// of one) is made from; `None` for any other entity.
     fn implicit_guide_template(&self, e: DeclId) -> Option<DeclId> {
+        self.guide(e)
+            .filter(|&g| self.ast.decls.get(g).has(DeclFlags::IMPLICIT))
+            .and_then(|g| self.template_of_guide(g))
+    }
+
+    /// The template a deduction guide (or the function template of one),
+    /// implicit or written, deduces; `None` for any other entity.
+    pub(crate) fn guide_template(&self, e: DeclId) -> Option<DeclId> {
+        self.guide(e).and_then(|g| self.template_of_guide(g))
+    }
+
+    /// `e` as a deduction guide: itself, or the pattern of a function
+    /// template that is one.
+    fn guide(&self, e: DeclId) -> Option<DeclId> {
         let ast = self.ast;
         let guide = match ast.decls.get(e).kind() {
             DeclKind::CXXDeductionGuide => e,
             DeclKind::FunctionTemplate => ast.template_info(e).and_then(|i| i.pattern)?,
             _ => return None,
         };
-        let n = ast.decls.get(guide);
-        if n.kind() != DeclKind::CXXDeductionGuide || !n.has(DeclFlags::IMPLICIT) {
-            return None;
-        }
-        match ast.names.view(n.name()) {
+        (ast.decls.get(guide).kind() == DeclKind::CXXDeductionGuide).then_some(guide)
+    }
+
+    fn template_of_guide(&self, guide: DeclId) -> Option<DeclId> {
+        match self.ast.names.view(self.ast.decls.get(guide).name()) {
             DeclNameView::DeductionGuide(t) => Some(t),
             _ => None,
         }
+    }
+
+    /// `d`'s entity is a dependency entity only by the per-inclusion rule
+    /// (WP-111 review F2, `spec/verify.md` §9.2): it is not owned, yet
+    /// every declaration is in a file (its expansion location; a name
+    /// token spelled in a file, in that file too) that is not read-only by
+    /// its own path. So some declaration was entered through an include
+    /// chain that passes through a read-only file. Asked only to count a
+    /// namespace rule's use.
+    pub(crate) fn only_by_inclusion(&mut self, d: DeclId) -> bool {
+        let e = self.entity(d);
+        if self.owned(e) {
+            return false;
+        }
+        let chain = self.chain(e);
+        if chain.len() > REDECL_LIMIT {
+            return false;
+        }
+        for d in chain {
+            let loc = self.ast.decls.get(d).loc();
+            match self.buffer_of(self.sm.expansion_loc(loc)) {
+                Some(f) if !self.file_read_only(f) => {}
+                _ => return false,
+            }
+            if self.has_name_token(d)
+                && let Some(f) = self.buffer_of(self.sm.spelling_loc(loc))
+                && self.file_read_only(f)
+            {
+                return false;
+            }
+        }
+        true
     }
 
     /// Declaration `d` lies in a file the run owns (`spec/verify.md`

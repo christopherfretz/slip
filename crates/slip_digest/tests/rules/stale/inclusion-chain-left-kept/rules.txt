@@ -1,0 +1,4 @@
+# WP-111 review F2: inclusion-chain-left with legacy::f(int) kept: not direct. The observer that
+# moved it (inclusion-chain-moved-kept) is then stale by kept_via: the dependency's binary
+# holds the name, which cannot move.
+relocate legacy => :: acme

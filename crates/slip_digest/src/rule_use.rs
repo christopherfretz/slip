@@ -9,7 +9,8 @@
 //!   and discriminator mapped, matched `r` ([`RuleTable::map_traced`]);
 //! - `direct(r)`: the entities no rule matched whose key is the key `r`
 //!   produces, `(r.to_parent, r.kind, r.to_name, r.disc)`
-//!   ([`RuleTable::producers`]: every rule that produces it, when two do);
+//!   ([`RuleTable::produces`]: at most one rule does, `spec/verify.md`
+//!   §2.1);
 //!   for a namespace rule, see below.
 //!
 //! **One place.** An entity's key is mapped in one place,
@@ -55,8 +56,9 @@
 //! in `Counting::views`). [`finish`] climbs the chain of namespaces of
 //! each such entity, **all** of it:
 //!
-//! - a level no rule matched whose key some rules produce (its own,
-//!   unmapped key is `T(r)`): the entity is inside the namespace `r` says
+//! - a level no rule matched whose key a rule `r` produces (its own,
+//!   unmapped key is `T(r)`; with no two producers of one key, §2.1, this
+//!   is the level being left in the old namespace): the entity is inside the namespace `r` says
 //!   the owned members left; it counts in `direct(r)` unless its key is
 //!   kept;
 //! - a level a rule `r` matched: the entity's namespace chain was mapped
@@ -89,8 +91,8 @@ const CHAIN_LIMIT: usize = 4096;
 enum Trace {
     /// The rule that matched its own key.
     Via(usize),
-    /// No rule matched; the rules that produce its key (not empty).
-    Direct(Vec<usize>),
+    /// No rule matched; the rule that produces its key.
+    Direct(usize),
 }
 
 /// What the walk keeps of one entity's last key.
@@ -101,8 +103,9 @@ struct Entry {
     kept: Option<usize>,
     /// Its key is of kind `namespace`.
     namespace: bool,
-    /// Owned and not a namespace: counted for namespace rules if its
-    /// parent is a namespace.
+    /// Owned (or a dependency entity by the per-inclusion rule alone), not
+    /// a namespace and not a guide of a dependency template: counted for
+    /// namespace rules if its parent is a namespace.
     member: bool,
 }
 
@@ -163,14 +166,12 @@ impl Counting {
 }
 
 /// The trace of a key under the table: the rule that matched it, or the
-/// rules that produce it.
+/// rule that produces it.
 fn traced(w: &Walk<'_>, key: Key) -> (Key, Option<Trace>) {
     let (mapped, via) = w.rules.map_traced(key);
-    let trace = if let Some(r) = via {
-        Some(Trace::Via(r))
-    } else {
-        let direct: Vec<usize> = w.rules.producers(&mapped).collect();
-        (!direct.is_empty()).then_some(Trace::Direct(direct))
+    let trace = match via {
+        Some(r) => Some(Trace::Via(r)),
+        None => w.rules.produces(&mapped).map(Trace::Direct),
     };
     (mapped, trace)
 }
@@ -182,32 +183,52 @@ pub(crate) fn map(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
         return w.rules.map(key);
     }
     let (mapped, trace) = traced(w, key);
+    let namespace = mapped.kind == KeyKind::Namespace;
+    let member = !namespace && !guide_of_dependency(w, e, &mapped);
     if let Some(c) = w.rule_use.as_mut() {
-        let namespace = mapped.kind == KeyKind::Namespace;
-        // A deduction guide must be in its template's scope
-        // ([temp.deduct.guide]), as a specialisation is keyed under its
-        // template: left with it, it is not counted (WP-111).
-        let member = !namespace && mapped.kind != KeyKind::DeductionGuide;
         let entry = Entry { trace, kept: c.kept_index(&mapped), namespace, member };
         c.set(e, entry);
     }
     mapped
 }
 
+/// `e` is a deduction guide whose template is a dependency entity (N29
+/// `good-5`): keyed beside a template the run cannot move, it is not a
+/// member a namespace rule counts. A guide of an owned template is
+/// counted like any owned member, whatever scope it is in (Kiln accepts a
+/// guide left in another scope than its template's, which clang 19
+/// rejects: `spec/landed/verify/WP-111.md`, For Kiln). A guide whose
+/// template is not found is counted.
+fn guide_of_dependency(w: &mut Walk<'_>, e: DeclId, key: &Key) -> bool {
+    if key.kind != KeyKind::DeductionGuide {
+        return false;
+    }
+    match w.guide_template(e) {
+        Some(t) => !w.owned(t),
+        None => false,
+    }
+}
+
 /// Entity `e`'s key is `key`, which no rule maps (a dependency entity,
-/// `spec/verify.md` §2.1 rule 1): counted only as `direct` for the rules
-/// that produce it, as [`map`] counts a key no rule matches, and never for
-/// a namespace rule's `direct` or `kept_via` (§9.2).
+/// `spec/verify.md` §2.1 rule 1): counted as `direct` for the rule that
+/// produces it, as [`map`] counts a key no rule matches. For a namespace
+/// rule's `direct` and `kept_via` (§9.2) it is counted only when it is a
+/// dependency entity by the per-inclusion rule alone
+/// (`Walk::only_by_inclusion`, WP-111 review F2): every declaration in a
+/// file the run's files own, one entered through a read-only file. Such an
+/// entity is counted as an owned member is (the observer that leaves it
+/// behind is stale unless its key is kept; kept, an observer that moved
+/// it is stale by `kept_via`). An entity the dependency itself declares is
+/// not counted.
 pub(crate) fn unmapped(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
-    let rules = w.rules;
+    if w.rule_use.is_none() {
+        return key;
+    }
+    let namespace = key.kind == KeyKind::Namespace;
+    let member = !namespace && w.only_by_inclusion(e) && !guide_of_dependency(w, e, &key);
+    let trace = w.rules.produces(&key).map(Trace::Direct);
     if let Some(c) = w.rule_use.as_mut() {
-        let direct: Vec<usize> = rules.producers(&key).collect();
-        let entry = Entry {
-            trace: (!direct.is_empty()).then_some(Trace::Direct(direct)),
-            kept: c.kept_index(&key),
-            namespace: key.kind == KeyKind::Namespace,
-            member: false,
-        };
+        let entry = Entry { trace, kept: c.kept_index(&key), namespace, member };
         c.set(e, entry);
     }
     key
@@ -242,12 +263,22 @@ pub(crate) fn namespace_parent(w: &mut Walk<'_>, e: DeclId, ns: DeclId) {
 /// entity's.
 pub(crate) fn forget(w: &mut Walk<'_>, e: DeclId, view: Option<bool>) {
     if let Some(c) = w.rule_use.as_mut() {
+        c.forget(e, view);
+    }
+}
+
+impl Counting {
+    /// [`forget`]'s change: the entity's entry, or its level in the owned
+    /// view, is gone (a level forgotten is `None`, not absent, so that
+    /// [`Counting::level`] does not fall back to the namespace's own
+    /// entry).
+    fn forget(&mut self, e: DeclId, view: Option<bool>) {
         match view {
             None => {
-                c.entries.remove(&e);
+                self.entries.remove(&e);
             }
             Some(true) => {
-                c.views.insert(e, None);
+                self.views.insert(e, None);
             }
             Some(false) => {}
         }
@@ -274,7 +305,9 @@ pub(crate) fn finish(c: Option<Counting>) -> (Vec<Use>, Vec<u64>) {
             }
             // A namespace that keeps the key a rule maps another onto is
             // the merge of §2.1; its members are counted below.
-            Some(Trace::Direct(rs)) if !entry.namespace => direct.extend(rs.iter().copied()),
+            Some(Trace::Direct(r)) if !entry.namespace => {
+                direct.insert(*r);
+            }
             Some(Trace::Direct(_)) | None => {}
         }
         if entry.member
@@ -304,9 +337,9 @@ fn at(by_rule: &mut BTreeMap<usize, Use>, r: usize) -> &mut Use {
     by_rule.entry(r).or_insert(Use { rule: r as u64, via: 0, direct: 0, kept_via: 0 })
 }
 
-/// For an entity whose parent is a namespace: the rules that produce the
-/// own key of a namespace around it no rule matched, and the rules that
-/// matched one; each once, ascending. `None` when its parent is not a
+/// For an entity whose parent is a namespace: the rule that produces the
+/// own key of each namespace around it no rule matched, and the rule that
+/// matched each other one; each once, ascending. `None` when its parent is not a
 /// namespace.
 fn chain(c: &Counting, e: DeclId) -> Option<(BTreeSet<usize>, BTreeSet<usize>)> {
     let mut ns = *c.parents.get(&e)?;
@@ -316,7 +349,9 @@ fn chain(c: &Counting, e: DeclId) -> Option<(BTreeSet<usize>, BTreeSet<usize>)> 
             Some(Trace::Via(r)) => {
                 via.insert(*r);
             }
-            Some(Trace::Direct(rs)) => direct.extend(rs.iter().copied()),
+            Some(Trace::Direct(r)) => {
+                direct.insert(*r);
+            }
             None => {}
         }
         match c.parents.get(&ns) {
@@ -329,7 +364,7 @@ fn chain(c: &Counting, e: DeclId) -> Option<(BTreeSet<usize>, BTreeSet<usize>)> 
 
 #[cfg(test)]
 mod tests {
-    use super::{Counting, Trace, finish};
+    use super::{Counting, Entry, Trace, finish};
     use slip_kiln::kiln::ast::ids::DeclId;
     use slip_model::agreement::Use;
 
@@ -342,11 +377,10 @@ mod tests {
         let mut c = Counting::default();
         c.record(e, Some(Trace::Via(0)));
         c.record(e, Some(Trace::Via(1)));
-        c.record(f, Some(Trace::Direct(vec![0, 2])));
+        c.record(f, Some(Trace::Direct(2)));
         assert_eq!(
             finish(Some(c)),
             [
-                Use { rule: 0, via: 0, direct: 1, kept_via: 0 },
                 Use { rule: 1, via: 1, direct: 0, kept_via: 0 },
                 Use { rule: 2, via: 0, direct: 1, kept_via: 0 },
             ]
@@ -354,7 +388,7 @@ mod tests {
 
         let mut c = Counting::default();
         c.record(e, Some(Trace::Via(0)));
-        c.record(e, Some(Trace::Direct(vec![1])));
+        c.record(e, Some(Trace::Direct(1)));
         assert_eq!(finish(Some(c)), [Use { rule: 1, via: 0, direct: 1, kept_via: 0 }]);
 
         let mut c = Counting::default();
@@ -367,5 +401,28 @@ mod tests {
         c.record(e, None);
         assert_eq!(finish(Some(c)), []);
         assert_eq!(finish(None), []);
+    }
+
+    // A namespace's level in the owned view, forgotten, is no level: not
+    // the trace it had, and not its own entry's (WP-111 review, mutant D3:
+    // forgetting a view did nothing).
+    #[test]
+    fn a_forgotten_view_is_no_level() {
+        let (ns, member) = (DeclId::new(1), DeclId::new(2));
+        let mut c = Counting::default();
+        c.set(ns, Entry { trace: Some(Trace::Direct(3)), namespace: true, ..Entry::default() });
+        c.views.insert(ns, Some(Trace::Direct(0)));
+        c.set(member, Entry { member: true, ..Entry::default() });
+        c.parents.insert(member, ns);
+        assert_eq!(c.level(ns), Some(&Trace::Direct(0)));
+        c.forget(ns, Some(true));
+        assert_eq!(c.level(ns), None);
+        c.forget(ns, Some(false));
+        assert_eq!(c.level(ns), None);
+        assert_eq!(finish(Some(c)).0, []);
+        let mut c = Counting::default();
+        c.set(member, Entry { trace: Some(Trace::Via(1)), member: true, ..Entry::default() });
+        c.forget(member, None);
+        assert_eq!(finish(Some(c)).0, []);
     }
 }

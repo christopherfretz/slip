@@ -1493,8 +1493,11 @@ rule 6), which the edit set sums (§6.3).
 
 ### 8.5 The result
 
-Kind `RSLT`, version 1, deterministic. One required section `result`
-(id 1). The **result id** is the content id.
+Kind `RSLT`, version 2, deterministic. One required section `result`
+(id 1). The **result id** is the content id. Version 2 (WP-111) added
+`kept_via` to a stale pair and dropped `unchecked`; version 1 is refused,
+`UnsupportedVersion` at offset 12 (JSON: `version`), as a version newer
+than the reader's is: no reader of version 1 is kept before a release.
 
 ```
 Result := scheme:    uv               1

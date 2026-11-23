@@ -10,7 +10,7 @@ use crate::editset::{
     Cause, Edit, EditSet, Exempt, FIRST_MAX, Failed, Refusal, Reported, SCHEME, SetState, cross,
 };
 use crate::json::Value;
-use crate::keys::{DUPLICATE_RULE, RuleTable, SortError, UNSORTED_RULES};
+use crate::keys::{DUPLICATE_RULE, RuleTable, SAME_PRODUCED_RULE, SortError, UNSORTED_RULES};
 use crate::transform::{is_canonical, is_file_path};
 use crate::wire::{Decoder, Encoder};
 use crate::{Counter, Digest};
@@ -188,6 +188,7 @@ fn sort_what(e: SortError) -> &'static str {
         SortError::Invalid(what) => what,
         SortError::Duplicate => DUPLICATE_RULE,
         SortError::Unsorted => UNSORTED_RULES,
+        SortError::SameProduced { .. } => SAME_PRODUCED_RULE,
     }
 }
 

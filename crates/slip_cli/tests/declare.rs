@@ -254,8 +254,11 @@ fn a_parent_mapped_by_the_lines_above() {
     let p = pre();
     let fresh = key(KeyKind::Namespace, Parent::Root, ident("fresh"), None);
     let post = sorted(vec![rec(&fresh, "fresh")]);
+    // `n::C => fresh :: =` after the first line would change no key (it
+    // moves with `n`): an identity rule, refused (WP-111 review F1); so the
+    // class is renamed too.
     let r = resolve(
-        &read("relocate n => :: fresh\nrelocate n::C => fresh :: =").unwrap(),
+        &read("relocate n => :: fresh\nrelocate n::C => fresh :: D").unwrap(),
         &p.recs,
         &post,
     )
@@ -264,15 +267,15 @@ fn a_parent_mapped_by_the_lines_above() {
     assert_eq!(rules.len(), 2);
     let second = rules.iter().find(|x| x.kind == KeyKind::Class).unwrap();
     assert_eq!(second.parent, Parent::Unit(p.n.id()), "the parent mapped: fresh is n");
-    // `fresh::C` of the post-image, its parent mapped first, is `n::C`.
+    // `fresh::D` of the post-image, its parent mapped first, is `n::C`.
     let fresh_mapped = r.rules.map(fresh.clone());
     assert_eq!(fresh_mapped, p.n);
-    let c_post = key(KeyKind::Class, Parent::Unit(fresh_mapped.id()), ident("C"), None);
+    let c_post = key(KeyKind::Class, Parent::Unit(fresh_mapped.id()), ident("D"), None);
     assert_eq!(r.rules.map(c_post), p.c);
     // WP-111: the other order is refused (`Order`), at the later line,
     // naming the earlier: the first line's parent would not be mapped and
     // its rule would match nothing.
-    let e = err("relocate n::C => fresh :: =\nrelocate n => :: fresh", &p.recs, &post);
+    let e = err("relocate n::C => fresh :: D\nrelocate n => :: fresh", &p.recs, &post);
     assert_eq!((e.line, e.kind), (2, ErrorKind::Order), "{e}");
     assert_eq!(
         e.detail,
@@ -324,7 +327,10 @@ fn exemptions_resolve_in_the_pre_image() {
     .unwrap();
     let mut changed = vec![p.c.id(), p.f_char.id()];
     changed.sort_unstable();
-    assert_eq!(r, Resolved { rules: RuleTable::empty(), changed, removed: vec![p.c.id()] });
+    assert_eq!(
+        r,
+        Resolved { rules: RuleTable::empty(), changed, removed: vec![p.c.id()], unwritten: vec![] }
+    );
 }
 
 // §2.3 `NoUnit`: nothing of that name (or that kind), with the names that
@@ -456,7 +462,10 @@ fn refused_rules() {
     let recs = sorted(vec![rec(&anon, "(anonymous namespace)")]);
     let e = err("relocate (anonymous namespace) => :: n", &recs, &[]);
     assert_eq!(e.kind, ErrorKind::NotRenamable, "{e}");
-    assert!(resolve(&read("relocate (anonymous namespace) => :: =").unwrap(), &recs, &[]).is_ok());
+    // Relocated to where it is: a rule that changes nothing, refused
+    // (WP-111 review, F1).
+    let e = err("relocate (anonymous namespace) => :: =", &recs, &[]);
+    assert_eq!(e.kind, ErrorKind::Refused, "{e}");
 }
 
 // §2.3 `Duplicate`: two relocates whose rules match the same; a key twice
@@ -477,12 +486,19 @@ fn duplicates() {
     assert_eq!((e.line, e.kind), (3, ErrorKind::Duplicate));
     let e = err("removed n::C\nremoved n::C", &p.recs, &[]);
     assert_eq!((e.line, e.kind), (2, ErrorKind::Duplicate));
-    // The same entity relocated to two places is two rules, which
-    // verification then judges.
-    assert!(
-        resolve(&read("relocate n::C => :: D\nrelocate n::C => :: E").unwrap(), &p.recs, &[])
-            .is_ok()
-    );
+    // The same entity relocated to two places: two rules would produce
+    // its key, which no table holds (WP-111 review, F1): the later line is
+    // the error, naming the earlier.
+    let e = err("relocate n::C => :: D\n\nrelocate n::C => :: E", &p.recs, &[]);
+    assert_eq!((e.line, e.kind), (3, ErrorKind::Duplicate), "{e}");
+    assert!(e.detail.contains("the rule of line 1 produces"), "{e}");
+    // A namespace split in two by two namespace rules, likewise.
+    let e = err("relocate n => :: x\nrelocate n => :: y", &p.recs, &[]);
+    assert_eq!((e.line, e.kind), (2, ErrorKind::Duplicate), "{e}");
+    assert!(e.detail.contains("line 1"), "{e}");
+    // A rule that changes nothing is refused (§2.1).
+    let e = err("changed n::C\nrelocate n::C => n :: =", &p.recs, &sorted(vec![rec(&p.n, "n")]));
+    assert_eq!((e.line, e.kind), (2, ErrorKind::Refused), "{e}");
 }
 
 // §2.3: the first error in file order, whatever its kind.
@@ -605,16 +621,33 @@ fn s2_3_c_linkage() {
     };
     let (a, b) =
         (table("relocate n::c_fn(int) => n :: c_fn2"), table("relocate n::c_fn(int) => :: c_fn2"));
-    assert_eq!(a.rules(), [want]);
+    assert_eq!(a.rules(), [want.clone()]);
     assert_eq!((a.rules(), a.id()), (b.rules(), b.id()));
     // The parent is resolved in the post-images like any other.
     let e = err("changed n::C\nrelocate n::c_fn(int) => nowhere :: c_fn2", &recs, &post);
     assert_eq!((e.line, e.kind), (2, ErrorKind::NoUnit), "{e}");
-    // Moved, not renamed: the rule maps the key to itself (§9.2: it is
-    // `via` for the function, so used and not stale).
-    let same = table("relocate n::c_fn(int) => n :: =");
-    assert_eq!(same.rules().len(), 1);
-    assert_eq!(same.map(c_fn.clone()), c_fn);
+    // Moved, not renamed: no key changes, so the line is accepted and
+    // writes no rule (WP-111 review, F1: an identity rule is refused, and
+    // beside a rename it would hide the rename); `unwritten` names it.
+    for text in ["relocate n::c_fn(int) => n :: =", "relocate n::c_fn(int) => :: c_fn"] {
+        let r = resolve(&read(&format!("changed n::C\n{text}")).unwrap(), &recs, &post).unwrap();
+        assert!(r.rules.is_empty(), "{text}");
+        assert_eq!(r.unwritten, [2], "{text}");
+    }
+    let r = resolve(
+        &read("relocate n::c_fn(int) => n :: =\nrelocate n::c_fn(int) => n :: c_fn2").unwrap(),
+        &recs,
+        &post,
+    )
+    .unwrap();
+    assert_eq!(
+        (r.rules.rules(), r.unwritten.as_slice()),
+        ([want.clone()].as_slice(), [1].as_slice())
+    );
+    assert_eq!(r.rules.map(c_fn.clone()), c_fn);
+    // Its parent is still resolved.
+    let e = err("relocate n::c_fn(int) => nowhere :: =", &recs, &post);
+    assert_eq!((e.line, e.kind), (1, ErrorKind::NoUnit), "{e}");
     // A C function's rule looks nothing up: no `Order` with a later line
     // that relocates the namespace it names.
     assert!(
@@ -885,6 +918,29 @@ fn loop_namespace_to_the_global_namespace() {
     assert_eq!(d.rules().rules().len(), 1);
 }
 
+// §2.3, WP-111 review F1: a namespace split in two (`legacy`'s members
+// partly to `acme`, partly to `acme2`) is declared per member: it verifies,
+// and a member moved to the wrong half is a finding. Two namespace rules
+// for it are no table (`duplicates`).
+#[test]
+fn loop_namespace_split_per_member() {
+    let pre = "namespace legacy { struct A; struct B; struct C; }\n\
+               void u(legacy::A *, legacy::B *, legacy::C *);\n";
+    let post = "namespace acme { struct A; }\nnamespace acme2 { struct B; }\n\
+                namespace legacy { struct C; }\n\
+                void u(acme::A *, acme2::B *, legacy::C *);\n";
+    let text = "relocate legacy::A => acme :: =\nrelocate legacy::B => acme2 :: =\n\
+                created acme\ncreated acme2\n";
+    let d = verified(pre, post, text);
+    assert_eq!(d.rules().rules().len(), 2);
+    // The halves swapped: each member is where the other's line says.
+    let wrong = "namespace acme { struct B; }\nnamespace acme2 { struct A; }\n\
+                 namespace legacy { struct C; }\n\
+                 void u(acme2::A *, acme::B *, legacy::C *);\n";
+    let (_, with, _) = round_trip(pre, wrong, text);
+    assert!(with.iter().copied().any(real), "{with:?}");
+}
+
 // A namespace into an existing namespace.
 #[test]
 fn loop_namespace_into_an_existing_one() {
@@ -917,9 +973,13 @@ fn loop_class_renamed() {
     let pre = "struct C { void m(int); };\nvoid use(C *);\n";
     let post = "struct D { void m(int); };\nvoid use(D *);\n";
     verified(pre, post, "relocate C => :: D\n");
-    let d = verified(pre, post, "relocate C => :: D\nrelocate C::m(int) => D :: =\n");
-    let identity = d.rules().rules().iter().find(|r| r.kind != KeyKind::Class).unwrap();
-    assert_eq!((identity.parent, &identity.name), (identity.to_parent, &identity.to_name));
+    // The member's line beside its class's is a rule that changes nothing
+    // (`D::m` maps to `C::m` through the class's rule already): refused
+    // (WP-111 review F1; before, accepted as an identity rule).
+    let empty = RuleTable::empty();
+    let lines = read("relocate C => :: D\nrelocate C::m(int) => D :: =\n").unwrap();
+    let e = resolve(&lines, &records_of(pre, &empty), &records_of(post, &empty)).unwrap_err();
+    assert_eq!((e.line, e.kind), (2, ErrorKind::Refused), "{e}");
 }
 
 // One overload renamed, named with its kind.
@@ -1054,7 +1114,8 @@ fn records_in_any_order() {
     let f = key(KeyKind::Variable, Parent::Root, ident("fresh"), None);
     let o = key(KeyKind::Variable, Parent::Root, ident("other"), None);
     let mut mapped = vec![rec(&f, "D::fresh"), rec(&o, "D::other")];
-    let r = Resolved { rules: RuleTable::empty(), changed: vec![], removed: vec![] };
+    let r =
+        Resolved { rules: RuleTable::empty(), changed: vec![], removed: vec![], unwritten: vec![] };
     let want = finish(&lines, r.clone(), &mapped).unwrap();
     mapped.reverse();
     assert_eq!(finish(&lines, r, &mapped).unwrap(), want);
@@ -1164,11 +1225,102 @@ fn s2_3_undefined_friend_gets_its_rule() {
         assert_eq!(friend_case(text, &f).0, table, "{text}");
         assert_eq!(friend_case(text, &Facts::default()).0, table, "{text}");
     }
-    // `=`: the name is kept, so the friend needs no rule.
-    assert_eq!(friend_case("relocate f(int) => :: =\n", &f).0.rules().len(), 1);
+    // `=` where it is: a rule that changes nothing, refused (WP-111 review
+    // F1). With the name kept the friend would need no rule.
+    let empty = RuleTable::empty();
+    let (pre, post) = (records_of(FRIEND_PRE, &empty), records_of(FRIEND_POST, &empty));
+    let e = resolve_with(&read("relocate f(int) => :: =\n").unwrap(), &pre, &post, &f).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Refused, "{e}");
     let defined = "template <class T> struct S { friend int f(int) { return 1; } };\nint f(int);\nS<int> s;\nint u() { return f(1); }\n";
     let f = with_input(defined, |i| facts(i, slip_digest::ReadOnly::NO_FILE));
     assert!(f.undefined_friends.is_empty(), "{f:?}");
+}
+
+// WP-111 review, mutant C11, and the friend rule of a function in a
+// namespace (which matched no friend record before: their names are
+// qualified, `n::A::friend n::f(int)`). Renaming `n::f` gives a rule for
+// `n::A`'s friend declaration. `m::B`'s unqualified friend befriends
+// `m::f`, another function, and gets none: its record's name says so. (C11,
+// the class's nearest namespace not checked, survives this test: with the
+// record's qualified name matched, an undefined friend named `n::f` is
+// one an unqualified friend declaration in a class of `n` made, and
+// `m::B`'s qualified friend of `n::f` is no undefined friend:
+// `spec/landed/verify/WP-111.md` §6.)
+#[test]
+fn s2_3_undefined_friend_of_another_namespace() {
+    let side = |f: &str| {
+        format!(
+            "namespace n {{ int {f}(int); template <class T> struct A {{ friend int {f}(int); }}; int {f}(int) {{ return 1; }} A<int> a; }}\n\
+             namespace m {{ int f(int); template <class T> struct B {{ friend int f(int); friend int n::{f}(int); }}; int f(int) {{ return 2; }} B<int> b; }}\n"
+        )
+    };
+    let (pre, post) = (side("f"), side("g"));
+    let f = with_input(&pre, |i| facts(i, slip_digest::ReadOnly::NO_FILE));
+    let empty = RuleTable::empty();
+    let pre_r = records_of(&pre, &empty);
+    let friends: Vec<&str> = pre_r
+        .iter()
+        .filter(|r| f.undefined_friends.contains(&r.id))
+        .map(|r| r.name.as_str())
+        .collect();
+    assert!(friends.contains(&"n::A::friend n::f(int)"), "{friends:?}");
+    assert!(friends.contains(&"m::B::friend m::f(int)"), "{friends:?}");
+    let r = resolve_with(
+        &read("relocate n::f(int) => n :: g\n").unwrap(),
+        &pre_r,
+        &records_of(&post, &empty),
+        &f,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let rules = r.rules.rules();
+    assert_eq!(rules.len(), 2, "{rules:?}");
+    let a = pre_r.iter().find(|r| r.name == "n::A").unwrap();
+    assert!(rules.iter().any(|x| x.to_parent == Parent::Unit(a.id)), "{rules:?}");
+}
+
+// WP-111 review, mutants C7 and C10: a friend's class whose namespace
+// another line merges onto (`x => :: n`: every post-image member of `n`,
+// the class too, maps into `x`). The friend rule's parent is the class
+// mapped under the lines above (C7: the table built again for it), and a
+// later line that maps a level of the class's chain is `Order` (C10: the
+// class's levels are probes).
+#[test]
+fn s2_3_friend_class_in_a_merged_namespace() {
+    let pre = "namespace x { int k; }\nnamespace p { }\n\
+               namespace n { template <class T> struct A { friend int f(int); }; int f(int) { return 1; } A<int> a; }\n";
+    let post_root = "int g(int) { return 1; }\nnamespace p { }\n\
+                     namespace n { template <class T> struct A { friend int g(int); }; A<int> a; int k; }\n";
+    let post_p = "namespace p { int g(int) { return 1; } }\n\
+                  namespace n { template <class T> struct A { friend int g(int); }; A<int> a; int k; }\n";
+    let f = with_input(pre, |i| facts(i, slip_digest::ReadOnly::NO_FILE));
+    assert_eq!(f.undefined_friends.len(), 1, "{f:?}");
+    let empty = RuleTable::empty();
+    let pre_r = records_of(pre, &empty);
+    let a = pre_r.iter().find(|r| r.name == "n::A").unwrap();
+    // C7: the merge above, then the rename with no new parent.
+    let post_r = records_of(post_root, &empty);
+    let r = resolve_with(
+        &read("relocate x => :: n\nrelocate n::f(int) => :: g\n").unwrap(),
+        &pre_r,
+        &post_r,
+        &f,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let rules = r.rules.rules();
+    let friend = rules.iter().find(|x| x.to_parent == Parent::Unit(a.id)).expect("a friend rule");
+    let key_of = |name: &str| post_r.iter().find(|x| x.name == name).unwrap().key.clone().unwrap();
+    let n = r.rules.map(key_of("n"));
+    let class = r.rules.map(Key { parent: Parent::Unit(n.id()), ..key_of("n::A") });
+    assert_eq!(friend.parent, Parent::Unit(class.id()), "the class as the merge maps it");
+    // C10: the merge below the line that looked the class up.
+    let e = resolve_with(
+        &read("relocate n::f(int) => p :: g\nrelocate x => :: n\n").unwrap(),
+        &pre_r,
+        &records_of(post_p, &empty),
+        &f,
+    )
+    .unwrap_err();
+    assert_eq!((e.line, e.kind), (2, ErrorKind::Order), "{e}");
 }
 
 // `Facts::dependency` over a parse: every entity of a read-only file (here

@@ -9,7 +9,7 @@ use crate::result::{
     TransformResult, Why,
 };
 use crate::transform::is_file_path;
-use crate::wire::{Decoder, Encoder};
+use crate::wire::{Decoder, Encoder, Error, ErrorKind};
 
 use super::common::{
     Enumeration, JResult, Result, dec_enum, dec_list, dec_opt, enc_enum, json_bytes, json_digest,
@@ -469,10 +469,21 @@ fn dec_opt_digest(d: &mut Decoder<'_>) -> Result<Option<Digest>> {
     dec_opt(d, Decoder::digest)
 }
 
+/// The first version read: version 2 (WP-111) added `kept_via` to a
+/// stale pair and dropped `unchecked`, and no reader of version 1 is kept
+/// before a release (`spec/edits.md` §8.5).
+const SINCE: u32 = 2;
+
+/// The message of a version this reader no longer reads.
+const OLD_VERSION: &str = "container version older than supported";
+
 /// The result, its unknown ignorable sections and its content id.
 #[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §8.5")]
 pub(super) fn decode(bytes: &[u8]) -> Result<(TransformResult, Vec<Extra<'_>>, Digest)> {
     let opened = open(bytes, TransformResult::KIND, TransformResult::VERSION, [RESULT])?;
+    if opened.version < SINCE {
+        return Err(Error::new(ErrorKind::UnsupportedVersion, 12, OLD_VERSION));
+    }
     let [section] = opened.sections;
     let mut section = super::required(section, opened.end, "result has no result section")?;
     let d = &mut section;
@@ -700,6 +711,13 @@ pub(super) fn render(x: &TransformResult, extras: &[Extra<'_>]) -> Value {
 #[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §8.5")]
 pub(super) fn read(v: &Value) -> JResult<(TransformResult, OwnedExtras)> {
     let s = read_container(v, TransformResult::KIND, TransformResult::VERSION, &NAMES)?;
+    if s.version < SINCE {
+        let have = s.version;
+        return Err(At::Root.key("version").error(format!(
+            "unsupported version {have}; this reader supports {SINCE} to {}",
+            TransformResult::VERSION
+        )));
+    }
     let [Some(section)] = s.known else {
         unreachable!("read_container returns every required section")
     };

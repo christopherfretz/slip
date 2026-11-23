@@ -209,10 +209,16 @@ impl Raw {
     }
 
     fn file(self, kind: [u8; 4]) -> Vec<u8> {
-        let mut w = Writer::new(kind, 1);
+        let mut w = Writer::new(kind, version_of(kind));
         w.section(1, self.e.as_bytes());
         w.finish()
     }
+}
+
+/// The version this crate writes of a kind of this file: `RSLT` is at 2
+/// (WP-111), the others at 1.
+fn version_of(kind: [u8; 4]) -> u32 {
+    if kind == *b"RSLT" { 2 } else { 1 }
 }
 
 #[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §6")]
@@ -1004,7 +1010,7 @@ fn run() -> TransformRun {
 
 const HEADER_EDTS: &str = "53 4c 49 50 1a 0a 00 00  45 44 54 53  01 00 00 00"; // magic, EDTS, version 1
 const HEADER_OVLY: &str = "53 4c 49 50 1a 0a 00 00  4f 56 4c 59  01 00 00 00"; // magic, OVLY, version 1
-const HEADER_RSLT: &str = "53 4c 49 50 1a 0a 00 00  52 53 4c 54  01 00 00 00"; // magic, RSLT, version 1
+const HEADER_RSLT: &str = "53 4c 49 50 1a 0a 00 00  52 53 4c 54  02 00 00 00"; // magic, RSLT, version 2
 const HEADER_RUNT: &str = "53 4c 49 50 1a 0a 00 00  52 55 4e 54  01 00 00 00"; // magic, RUNT, version 1
 const TRAILER: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -1304,6 +1310,31 @@ fn goldens() {
     one("transform-run.json", &run());
 }
 
+// spec/edits.md §8.5 (WP-111): `RSLT` is at version 2, and version 1 is
+// refused, from bytes (`UnsupportedVersion` at the version field) and from
+// JSON (at `version`); version 3 is newer than supported.
+#[test]
+fn result_version_1_is_refused() {
+    let bytes = small_result_bytes();
+    assert_eq!(&bytes[12..16], &[2, 0, 0, 0]);
+    TransformResult::from_bytes(&bytes).unwrap();
+    let payload = &bytes[payload_at(&bytes, 1)..bytes.len() - 33];
+    for v in [1u32, 3] {
+        let mut w = Writer::new(*b"RSLT", v);
+        w.section(1, payload);
+        let old = w.finish();
+        assert_eq!(
+            error(TransformResult::from_bytes(&old)),
+            (ErrorKind::UnsupportedVersion, 12),
+            "{v}"
+        );
+    }
+    let mut j = small_result().to_json();
+    set(&mut j, &["version"], Value::Int(1));
+    let e = TransformResult::from_json(&j).unwrap_err();
+    assert_eq!(e.path, "version", "{e}");
+}
+
 // spec/model.md §5.4: dump, undump and content_id know the four kinds; an
 // unknown ignorable section survives dump → undump.
 #[test]
@@ -1316,7 +1347,10 @@ fn dump_undump_content_id() {
         assert_eq!(content_id(&bytes).unwrap().as_bytes(), &bytes[bytes.len() - 32..]);
         // The same payload with an ignorable section 64 after it.
         let payload = &bytes[payload_at(&bytes, 1)..bytes.len() - 33];
-        let mut w = Writer::new(bytes[8..12].try_into().unwrap(), 1);
+        let mut w = Writer::new(
+            bytes[8..12].try_into().unwrap(),
+            version_of(bytes[8..12].try_into().unwrap()),
+        );
         w.section(1, payload);
         w.section(64, b"\x01\x02");
         let with = w.finish();
@@ -1325,14 +1359,20 @@ fn dump_undump_content_id() {
         assert_eq!(undump(&parse(&text)).unwrap(), with);
         assert_eq!(content_id(&with).unwrap().as_bytes(), &with[with.len() - 32..]);
         // An unknown critical section is refused by all three.
-        let mut w = Writer::new(bytes[8..12].try_into().unwrap(), 1);
+        let mut w = Writer::new(
+            bytes[8..12].try_into().unwrap(),
+            version_of(bytes[8..12].try_into().unwrap()),
+        );
         w.section(1, payload);
         w.section(2, b"\x01");
         let bad = w.finish();
         assert_eq!(error(content_id(&bad)).0, ErrorKind::UnknownSection);
         assert_eq!(error(dump(&bad)).0, ErrorKind::UnknownSection);
         // No section at all: Malformed at the end byte.
-        let w = Writer::new(bytes[8..12].try_into().unwrap(), 1);
+        let w = Writer::new(
+            bytes[8..12].try_into().unwrap(),
+            version_of(bytes[8..12].try_into().unwrap()),
+        );
         let empty = w.finish();
         assert_eq!(error(content_id(&empty)), (ErrorKind::Malformed, 16));
     }
@@ -1411,7 +1451,7 @@ fn unlisted_values() {
         let start = payload_at(&bytes, 1);
         let mut payload = bytes[start..bytes.len() - 33].to_vec();
         payload.push(0);
-        let mut w = Writer::new(kind, 1);
+        let mut w = Writer::new(kind, version_of(kind));
         w.section(1, &payload);
         let long = w.finish();
         assert_eq!(

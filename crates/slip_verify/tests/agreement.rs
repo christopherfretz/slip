@@ -1048,6 +1048,13 @@ fn s9_3_refused_shard_says_why() {
     let mut s = verified(&rules);
     s.rule_use.as_mut().unwrap().uses = vec![used(2, 1, 0)];
     cases.push((&rules, s, "the shard's rule_use names rule 2; the run has 2"));
+    // A kept index equal to the number of kept keys is out of range
+    // (WP-111 review, mutant R2: `>` for `>=`); one below it is a key.
+    let mut kept_two = two_rules();
+    kept_two.declared = kept_two.declared.clone().with_kept(vec![key(5), key(6)]).unwrap();
+    let mut s = verified(&kept_two);
+    s.rule_use.as_mut().unwrap().kept = vec![1, 2];
+    cases.push((&kept_two, s, "the shard's rule_use names kept key 2; the run has 2"));
     let mut s = verified(&with_overlay);
     s.spellings = None;
     cases.push((&with_overlay, s, "the shard has no spellings"));
@@ -1062,6 +1069,11 @@ fn s9_3_refused_shard_says_why() {
         assert_eq!(message, want);
         assert_eq!(line, format!("slip: failed: /m/a0.cc: {want}\n"));
     }
+    let mut s = verified(&kept_two);
+    s.rule_use.as_mut().unwrap().kept = vec![1];
+    let mut r = kept_two.report();
+    add(&mut r, &s);
+    assert_eq!(count(&r, State::Failed), 0);
 }
 
 // §10.4 (WP-121 item 4): a section the fold refuses gives the fold's

@@ -1509,6 +1509,14 @@ removed <n>
 kept <n>
 ```
 
+A `relocate` line that writes no rule (`spec/verify.md` §2.3: an entity
+with C language linkage moved without a new name) is said on standard
+error, one line per such `relocate` line in file order, before the
+standard output, the status unchanged: `slip: note: <text file>:<line>:
+the entity has C language linkage and keeps its name: the move changes
+no key, and the line writes no rule`. It adds nothing to the count
+`rules`.
+
 An error of §2.3 is `slip: <text file>:<line>: <error>: <detail>` on
 standard error, status 1, and nothing is written. An unreadable text
 file, a text that is not UTF-8 and an unwritable `--out` are input

@@ -2465,6 +2465,46 @@ fn s2_1_rule_on_a_dependency_entity_not_verified() {
     assert_eq!(exit_status(r.verdict()), 1);
 }
 
+// WP-111 review, mutant R5: the job walks with `Declared.kept` (§9.2). An
+// owned member left in `old` counts `direct` unless its key is kept; kept,
+// it counts none and its key is seen. A job that passed no kept key would
+// count `direct` 1 in both, and the kept run would be stale.
+#[test]
+fn s9_2_the_job_walks_with_kept() {
+    use slip_model::keys::Key;
+    let pre =
+        "namespace old { int f() { return 1; } int g; }\nint u0() { return old::f() + old::g; }\n";
+    let tree = Tree::new("kept-job", &[("u0.cpp", pre)]);
+    write(
+        &tree.post.join("u0.cpp"),
+        "namespace fresh { int f() { return 1; } }\nnamespace old { int g; }\nint u0() { return fresh::f() + old::g; }\n",
+    );
+    let old =
+        Key { parent: Parent::Root, kind: KeyKind::Namespace, name: ident("old"), disc: None };
+    let g = Key {
+        parent: Parent::Unit(old.id()),
+        kind: KeyKind::Variable,
+        name: ident("g"),
+        disc: None,
+    };
+    for kept in [false, true] {
+        let mut declared = declared_of(&tree, rename_ns("fresh", "old"), &[]);
+        if kept {
+            declared = declared.with_kept(vec![g.id()]).unwrap();
+        }
+        let params = tree.params(declared);
+        let o = tree.observer_of("u0.cpp", &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+        let u = v.rule_use.as_ref().unwrap();
+        let want =
+            slip_model::agreement::Use { rule: 0, via: 1, direct: u64::from(!kept), kept_via: 0 };
+        assert_eq!(u.uses, [want], "kept {kept}");
+        assert_eq!(u.kept, if kept { vec![0] } else { vec![] }, "kept {kept}");
+    }
+}
+
 /// The rule renaming the class `from_post` at the root of the post-image
 /// to `to_pre` of the pre-image.
 fn rename_class(from_post: &str, to_pre: &str) -> Rule {

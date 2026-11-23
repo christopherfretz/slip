@@ -1087,6 +1087,37 @@ fn s2_3_declare_errors() {
         "slip: t.txt:2: order: the rule of `S` relocates `C`, or a namespace or class around it, \
          which line 1 resolved as a new parent without it: this line must come before line 1"
     );
+    // WP-111 review F1: two lines whose rules produce one key, the
+    // message naming the earlier line; an identity rule, refused.
+    assert_eq!(
+        line_error(
+            &f,
+            &plan,
+            "relocate k(int) => :: k2\nchanged S\nrelocate k(int) => :: k3\n",
+            &["--owned", "s"]
+        ),
+        "slip: t.txt:3: duplicate: the rule of `k(int)` produces the key the rule of line 1 \
+         produces: two entities of the post-image cannot both be this one of the pre-image (a \
+         namespace split in two is declared per member or per nested namespace)"
+    );
+    assert_eq!(
+        line_error(&f, &plan, "relocate S => :: =\n", &["--owned", "s"]),
+        "slip: t.txt:1: refused: the rule of `S` is refused: a rule may not produce the key it \
+         matches: it changes nothing"
+    );
+    // §2.3, §8.8: a C function moved without a new name writes no rule,
+    // and a note says so; the status is 0.
+    f.write("t.txt", "changed k(int)\nrelocate cfn(int) => :: =\n");
+    let _ = std::fs::remove_file(f.path("d.decl"));
+    let out = declare(&f, &plan, "t.txt", &["--owned", "s"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(
+        out.stderr,
+        "slip: note: t.txt:2: the entity has C language linkage and keeps its name: the move \
+         changes no key, and the line writes no rule\n"
+    );
+    assert!(out.stdout.contains("\nchanged 1\n"), "{out:?}");
+    assert!(out.stdout.lines().nth(1).is_some_and(|l| l.ends_with(" 0")), "{out:?}");
     // `Fallback` has no source that makes it (`slip_digest` records:
     // no walk gives a fallback key today); it is tested over records in
     // `tests/declare.rs`.

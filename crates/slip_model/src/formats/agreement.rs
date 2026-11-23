@@ -1,4 +1,4 @@
-//! The `binding` and `rule_use` sections, ids 24 and 25 of a verify shard
+//! The `binding` and `rule_use` sections, ids 24 and 29 of a verify shard
 //! (`spec/verify.md` §9.1). Work package WP-060; the order of checks,
 //! offsets and paths are `spec/landed/edits/WP-060.md` §5, the JSON form
 //! its §2.
@@ -16,7 +16,10 @@ use super::common::{
 
 /// The section ids (`spec/model.md` §8).
 pub(super) const BINDING: u64 = 24;
-pub(super) const RULE_USE: u64 = 25;
+/// `rule_use` with `kept_via` and `kept` (WP-111). Id 25, its payload
+/// before them, is retired: no writer writes it, and a shard with it is
+/// `UnknownSection`, as a reserved id is.
+pub(super) const RULE_USE: u64 = 29;
 
 /// Where an invariant is violated.
 #[derive(Clone, Copy, Debug)]

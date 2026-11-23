@@ -275,7 +275,7 @@ fn rule_use() {
 
 /// A table of one rule on a function no pair test declares: not empty,
 /// so the walk counts (every key is looked up in `map_traced` and
-/// `producers`), and it matches nothing.
+/// `produces`), and it matches nothing.
 fn unmatched_table() -> RuleTable {
     let name = |s: &str| Name::Identifier(s.as_bytes().to_vec());
     RuleTable::new(vec![Rule {

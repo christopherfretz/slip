@@ -12,7 +12,7 @@
 //! resolves only when every unit of that name (and kind) has one `KeyId`:
 //! nothing is chosen among candidates.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
@@ -246,6 +246,10 @@ pub struct Resolved {
     /// Sorted, no two equal.
     pub changed: Vec<Digest>,
     pub removed: Vec<Digest>,
+    /// The `relocate` lines, ascending, that are accepted and write no
+    /// rule: an entity with C language linkage moved without a new name,
+    /// which changes no key (`spec/verify.md` §2.3).
+    pub unwritten: Vec<u64>,
 }
 
 /// How many unit names a `NoUnit` message lists.
@@ -433,38 +437,19 @@ pub fn resolve(
     resolve_with(lines, pre, post, &Facts::default())
 }
 
-/// What follows the last `::` of `text` outside parentheses, the
-/// parameters kept: `f(n::C)` of `n::f(n::C)`.
-fn unqualified(text: &str) -> &str {
-    let (mut depth, mut start) = (0i64, 0);
-    let b = text.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'(' => depth += 1,
-            b')' => depth -= 1,
-            b':' if depth == 0 && b.get(i + 1) == Some(&b':') => {
-                start = i + 2;
-                i += 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    &text[start..]
-}
-
 /// The friend declarations of the pre-images that the function of `r`
 /// (key `k`) needs a second rule for (`docs/wp/WP-071.md` "Added after the
 /// review of WP-103"): undefined friend declarations ([`Facts`]) of the
 /// same kind and name, in a class whose nearest enclosing namespace is the
 /// function's parent, whose name is that class's `::friend ` and the
-/// function's own unqualified name. Sorted by id, each once.
+/// function's name as its record gives it, qualified (`n::A::friend
+/// n::f(int)`; before WP-111's review the unqualified name was matched, so
+/// a function in a namespace got no friend rule). Sorted by id, each once.
 fn undefined_friends<'r>(r: &Record, k: &Key, pre: &Index<'r>, facts: &Facts) -> Vec<&'r Record> {
     if facts.undefined_friends.is_empty() {
         return Vec::new();
     }
-    let suffix = format!("::friend {}", unqualified(&r.name));
+    let suffix = format!("::friend {}", r.name);
     let mut out: Vec<&Record> = pre
         .all
         .iter()
@@ -625,6 +610,9 @@ pub fn resolve_with(
     let (pre, post) = (Index::new(pre), Index::new(post));
     let mut rules: Vec<Rule> = Vec::new();
     let mut matches: BTreeSet<(Parent, KeyKind, Name, Option<Digest>)> = BTreeSet::new();
+    // The key each rule produces, and the line that gave it.
+    let mut produced: BTreeMap<(Parent, KeyKind, Name, Option<Digest>), u64> = BTreeMap::new();
+    let mut unwritten = Vec::new();
     // The rules a line gave for an undefined friend.
     let mut friend_rules: HashSet<Rule> = HashSet::new();
     // Each line's new parent as it looked it up: (line, text, levels).
@@ -672,6 +660,12 @@ pub fn resolve_with(
                     to_parent: k.parent,
                     to_name: k.name.clone(),
                 };
+                if c_linkage && main.name == main.to_name {
+                    // §2.3: the move changes no key; the line writes none
+                    // (and, keeping the name, no friend's).
+                    unwritten.push(n);
+                    continue;
+                }
                 let given = with_friends(main, &friends, &post, &table, &mut probes);
                 for (i, rule) in given.into_iter().enumerate() {
                     let of = if i == 0 {
@@ -696,6 +690,17 @@ pub fn resolve_with(
                             ),
                         ));
                     }
+                    let to = (rule.to_parent, rule.kind, rule.to_name.clone(), rule.disc);
+                    if let Some(&m) = produced.get(&to) {
+                        return Err(error(
+                            n,
+                            ErrorKind::Duplicate,
+                            format!(
+                                "the rule of {of} produces the key the rule of line {m} produces: two entities of the post-image cannot both be this one of the pre-image (a namespace split in two is declared per member or per nested namespace)"
+                            ),
+                        ));
+                    }
+                    produced.insert(to, n);
                     if i > 0 {
                         friend_rules.insert(rule.clone());
                     }
@@ -723,6 +728,7 @@ pub fn resolve_with(
         rules: table,
         changed: changed.into_iter().collect(),
         removed: removed.into_iter().collect(),
+        unwritten,
     })
 }
 
@@ -745,7 +751,7 @@ pub fn finish(
             _ => {}
         }
     }
-    let Resolved { rules, changed, removed } = resolved;
+    let Resolved { rules, changed, removed, .. } = resolved;
     match Declared::new(rules.rules().to_vec(), changed, created.into_iter().collect(), removed)
         .and_then(|d| d.with_kept(kept.into_iter().collect()))
     {
@@ -1001,6 +1007,13 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
         Ok(r) => r,
         Err(e) => return Ok(line_error(&e, err)),
     };
+    for n in &resolved.unwritten {
+        let _ = writeln!(
+            err,
+            "slip: note: {}:{n}: the entity has C language linkage and keeps its name: the move changes no key, and the line writes no rule",
+            a.from.display()
+        );
+    }
 
     // The post-images under the rules the file gives, for `created` and
     // `kept` lines.

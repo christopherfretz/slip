@@ -785,8 +785,11 @@ impl Walk<'_> {
             Some(b) => b,
             None => self.owned(member),
         };
-        if b {
-            // The chain a namespace rule's counts climb (WP-111).
+        // The chain a namespace rule's counts climb (WP-111): of an owned
+        // member, and of one a dependency entity by the per-inclusion rule
+        // alone (WP-111 review F2), whose parent is then keyed in its own,
+        // dependency, view.
+        if b || (self.rule_use.is_some() && self.only_by_inclusion(member)) {
             let (e, n) = (self.entity(member), self.entity(ns));
             crate::rule_use::namespace_parent(self, e, n);
         }

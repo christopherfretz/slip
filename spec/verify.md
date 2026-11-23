@@ -69,7 +69,10 @@ reader reports `Malformed` at the offset named, a JSON reader at the path
 
 1. The rules are strictly ascending and admissible (WP-022: an invalid
    name, `two rules with one (parent, kind, name, disc)`,
-   `rules are not strictly ascending`; at the later rule).
+   `rules are not strictly ascending`; at the later rule), and no two
+   produce one key (WP-111 review F1: `two rules produce one (parent,
+   kind, name, disc)`, at the later rule of the pair whose produced key
+   is least, after the order of every rule is checked).
 2. `changed`, `created`, `removed`, in that order:
    `<list> is not strictly ascending`, at the later key.
 3. `kept is not strictly ascending`, at the later key.
@@ -120,6 +123,23 @@ needs no map.
 
 - A rule is applied to an entity at most once; rules do not chain. Renaming
   `f` to `g` and `g` to `f` in one run is two rules.
+- **One way to each key** (WP-111 review F1). No two rules of a table
+  produce one key, `(to_parent, kind, to_name, disc)`, and no rule
+  produces the key it matches (`parent == to_parent`, `name == to_name`:
+  it changes nothing). Two producers of `K` say that two entities of the
+  post-image are both the pre-image's `K` (one entity renamed twice, a
+  namespace split in two by two namespace rules); with them an entity
+  that reaches `K` through one rule is `via` of that rule and is counted
+  in no count of the other, so two observers that disagree about it are
+  both silent (§9.2). An identity rule beside a rule that produces its
+  key is the same case. So `RuleTable::new` refuses a table with two
+  producers of one key (`RuleError::SameProduced`, naming both), and so
+  does the reader of every container that holds a table (row 1 above),
+  in the trusted base, since a table also comes from a transform's
+  `expect_renamed` and not only from `slip declare`; `Rule::refusal`
+  refuses an identity rule (`RULE_IDENTITY`). A table has at most one
+  rule that produces a key (`RuleTable::produces`). A namespace split in
+  two is declared per member or per nested namespace (§2.3).
 - **Namespaces merge.** A rule of kind `namespace` may give its entity the
   key that another namespace of the post-image has: `acme` mapped to
   `legacy` while `legacy` still exists for the entities that stay in it.
@@ -171,7 +191,8 @@ needs no map.
   has a row (`namespace { }` to `namespace foo { }`), which changes no
   symbol (`spec/landed/digest/WP-113.md`, item 6).
 
-The three are refused in one place, `Rule::refusal`
+These, and the identity rule of "One way to each key" above, are
+refused in one place, `Rule::refusal`
 (`crates/slip_model/src/keys.rs`), and every table records the first rule
 it refuses when it is made (`RuleTable::refused`), whichever way: by
 `RuleTable::new` or by the reader of the declared container. The
@@ -571,7 +592,10 @@ is such a function and whose `<name>` changes the name, `slip declare`
 also writes, for each such friend declaration of the pre-images (same
 kind and name, in a class whose nearest enclosing namespace is the
 function's parent, named `<class>::friend ` followed by the function's
-unqualified name),
+name as its record gives it, qualified (`n::A::friend n::f(int)`, the
+display name of a friend function below; before WP-111's review the
+unqualified name was matched, and a function of a namespace got no such
+rule)),
 
 ```
 Rule { parent: m(F.parent), kind, name: N', disc: F.disc,  to_parent: F.parent, to_name: F.name }
@@ -584,7 +608,8 @@ order; one that gives another rule with its match is `Duplicate`.
 
 **An entity with C language linkage.** Its key's parent is `c_linkage`
 whatever namespace declares it (`digest.md` §3), so moving it between
-namespaces changes no key and needs no line. Renaming it does: for an
+namespaces changes no key: it needs no line; a line given is accepted and
+writes none. Renaming it does: for an
 `<entity>` whose `Key` has the parent `c_linkage`, the line's `<parent>`
 is resolved and checked like any other (it says where the declaration
 is, and a name that resolves to nothing is an error), and the rule is
@@ -601,9 +626,24 @@ C sources and the linker see of such a rename is §8's. Such a line's
 parent looks nothing up in the rules above (its rule does not depend on
 it), so it has no probe (**Order**). A line that moves the function
 without renaming it (`relocate legacy::c_fn(int) => acme :: c_fn`, or
-`=`) is accepted and gives the rule that maps the key to itself: it
-changes no key, and the function's key is matched by it, so it counts
-in `via` (§9.1) and the rule is used, not stale (WP-111).
+`=`) is the one that needs none: its parent is still resolved and
+checked, and it writes no rule (the rule would be an identity rule,
+which §2.1 refuses, and beside a rename of the function it would hide
+the rename, WP-111 review F1). `slip declare` says so on standard error,
+one note per such line (`spec/exec.md` §8.8); `Resolved.unwritten`
+lists their line numbers.
+
+**A namespace split in two.** A namespace rule says that the owned
+members of the namespace moved together. A namespace whose members went
+partly to `acme` and partly to `acme2` is not declared by two namespace
+rules (`relocate legacy => :: acme` and `relocate legacy => :: acme2`
+produce one key, which no table holds, §2.1: `Duplicate`); it is
+declared per member (`relocate legacy::a => acme :: =`) or per nested
+namespace. The per-member declaration verifies, and a member moved to the
+other half than its line says is a finding (`crates/slip_cli/tests/
+declare.rs`, `loop_namespace_split_per_member`;
+`crates/slip_digest/tests/rules/stale/split-per-member`,
+`split-per-member-wrong-half`).
 
 **Errors**, each naming the line number. One error is reported: the
 first `Syntax` error in file order if the text has one; else the first
@@ -618,10 +658,10 @@ last because they need the rules the file gives:
 | `Ambiguous` | units of that name have more than one `KeyId`; the message lists their kinds |
 | `Fallback` | the unit has a fallback key: there is no `Key` to make a rule from, and no stable key to exempt |
 | `NotRenamable` | `relocate` with an identifier for an entity whose `Name` is not an identifier |
-| `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)` (one entity relocated twice to one place, or two entities of one kind and discriminator relocated to one place; two overloads to one name have two discriminators and are not); two lines of one exemption list give one key. Reported at the later line |
+| `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)` (one entity relocated twice to one place, or two entities of one kind and discriminator relocated to one place; two overloads to one name have two discriminators and are not); two `relocate` lines give rules that produce one key (one entity relocated to two places, a namespace split by two namespace rules: §2.1, "One way to each key"), the message naming the earlier line; two lines of one exemption list give one key. Reported at the later line |
 | `DependencyEntity` | `relocate` whose entity is not a namespace and is a dependency entity (§2.1, rule 1) in some selected observer's pre-image under the run's files: no rule renames it. A namespace is not refused: its rule applies in the owned view (§2.1, rule 2) |
 | `Order` | `relocate` one of whose rules matches a probe of a line above it (**Order** above); the message names that line |
-| `Refused` | `relocate` whose rule §2.1 refuses (`Rule::refusal`): of kind `specialisation` or `partial_specialisation` (rename the template), or `resolved` or `default_argument` (a part follows its owner). A namespace rule across the unnamed namespace, the third form §2.1 refuses, is never made by a line: the unnamed namespace's name is not an identifier (`NotRenamable`), and no identifier names it. The walk keys nothing under a table that holds such a rule, however it was made; this error is where its reason is given |
+| `Refused` | `relocate` whose rule §2.1 refuses (`Rule::refusal`): of kind `specialisation` or `partial_specialisation` (rename the template), or `resolved` or `default_argument` (a part follows its owner), or an identity rule (`relocate n::C => n :: =`: the entity relocated to where it is; but for C language linkage, above, where such a line writes no rule). A namespace rule across the unnamed namespace, the third form §2.1 refuses, is never made by a line: the unnamed namespace's name is not an identifier (`NotRenamable`), and no identifier names it. The walk keys nothing under a table that holds such a rule, however it was made; this error is where its reason is given |
 
 A file with no line gives `Declared::none()`.
 
@@ -2093,8 +2133,9 @@ still is what `r` says was renamed. An entity whose name follows another
 entity's mapped name (a specialisation, a member of an instantiation, a
 decomposition) is counted by its own key only. An entity with no key is
 counted for no rule; an entity whose key is formed but carries a cause is
-counted. Where two rules produce one key, an entity with that key that no
-rule matched counts in `direct` of each. For a rule of kind `namespace`
+counted. At most one rule produces a key (§2.1, "One way to each key"),
+so an entity no rule matched is in the `direct` of one rule at most. For
+a rule of kind `namespace`
 `direct` is §9.2's, and a third count, `kept_via`, is added there.
 
 ```
@@ -2109,8 +2150,8 @@ Binding := overlay:  opt<digest>    content id of the OVLY container, for an ima
 ```
 
 Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
-`binding`** and **25, `rule_use`**. (Ids 22 and 23 are not assigned; 26
-is `spellings`, §10.4.)
+`binding`** and **29, `rule_use`**. (Ids 22 and 23 are not assigned; 26
+is `spellings`, §10.4; 25 is retired, below.)
 
 - `binding` is present in every shard a verify job writes, whatever the
   parse's outcome, and is taken from `Job.post`. (Until the exception of
@@ -2121,8 +2162,14 @@ is `spellings`, §10.4.)
 - `rule_use` is present when the outcome is `ok` and the rule table is
   not empty, and absent otherwise. Invariants: `uses` strictly ascending
   by `rule`; no `Use` with its three counts 0; `kept` strictly ascending.
-  (`kept` and `kept_via` are WP-111's; a shard is read only by the
-  version that wrote it: `spec/landed/verify/WP-111.md` "Format".)
+  (`kept` and `kept_via` are WP-111's, and with them the payload took a
+  new id: id 25, the payload before them, is retired. No writer writes
+  it, and a shard with a section 25 is `UnknownSection`, as one with a
+  reserved id is. What the format checks of a shard's age is its
+  version (`SHRD` 1) and its section ids, critical ones refused when
+  unknown: a shard written before WP-111 is refused by its section 25,
+  not read with a payload it does not have. `spec/landed/verify/
+  WP-111.md` §5.)
 
 With the binding a verify shard says which declared changes, which
 overlay and which pre shards it was made with; M1's shards did not
@@ -2145,9 +2192,13 @@ the rule both have the key `(legacy, …)`, and the program does not link.
 For a rule `r` of kind `namespace` a walk counts instead:
 
 - `direct(r)`: the owned entities, not namespaces, that are members of a
-  namespace whose own, unmapped key is the key `r` produces, or of a
-  namespace inside it, and whose key is not in `Declared.kept`. These
-  still live where `r` says the owned members left.
+  namespace that no rule matched and whose own key is the key `r`
+  produces, or of a namespace inside it, and whose key is not in
+  `Declared.kept`. These still live where `r` says the owned members
+  left. (With no two producers of a key and no identity rule, §2.1, a
+  namespace whose key `r` produces and that no rule matched is the one
+  namespace left with the old key: "its own, unmapped key is `T(r)`" and
+  "a level no rule matched" are one condition.)
 - `kept_via(r)`: the entities whose namespace chain was mapped by `r`
   and whose key is in `Declared.kept`. These moved, and were declared to
   stay.
@@ -2157,7 +2208,39 @@ owned entities that are members of the old namespace **on purpose**: one
 that stays (an overload that argument-dependent lookup must find through
 a dependency's type), and one the edit adds there (a compatibility
 declaration, which is also `created`). Dependency entities are not
-counted and are not listed: no rule reaches them (§2.1).
+counted and are not listed: no rule reaches them (§2.1), but for those
+of the next paragraph.
+
+**A dependency entity by the per-inclusion rule alone** (WP-111 review
+F2). An owned header (`own2.h`, under an owned root, not edited) that an
+observer includes only through a read-only file (`dep.h`) makes its
+entities dependency entities in that observer (§2.1, the include-chain
+rule), and so no rule reaches them there; another observer that includes
+it directly, or defines the entity in owned code, may move it. Counted
+as a dependency entity it would count for nothing, and a run in which
+one observer moved `legacy::f` and the dependency's binary still refers
+to it would verify. So for a namespace rule's counts, an entity that is
+a dependency entity **only by the per-inclusion rule**, every
+declaration of it in a file the run's files say is owned (its expansion
+location in a file, a name token spelled in a file in one too), none in
+a file read-only by its own path and none of the kinds that are in no
+file, is counted as an owned member is: `direct(r)` unless its key is in
+`kept`. It cannot be `via` (its key is not mapped). Not kept, the
+observer that left it is stale; kept, an observer that moved it is stale
+by `kept_via`: both are right, since the dependency's binary holds the
+name and it cannot move. An entity the dependency itself declares in
+`legacy` (one declaration in a file read-only by its own path) stays
+uncounted (`crates/slip_digest/tests/rules/stale/inclusion-chain-left`,
+`-left-kept`, `-moved`, `-moved-kept`, `-readonly-declaration`,
+`-readonly-expansion`). Its
+namespace is keyed in its own view, the dependency view, as its key is;
+the chain of levels is climbed as for an owned member. *The cost*,
+beside "The cost of the include-chain rule" (§2.1): an observer whose
+owned code is behind a generated read-only includer (a precompiled
+header, a unity-build main file) counts every owned member it reaches
+through it that was left in the old namespace, so a correct migration
+that leaves members in `legacy` on purpose lists them in `kept` for that
+observer as for any other.
 
 Why this is the condition: two observers disagree about an entity with
 key `K` when one has it in the old namespace and the other reaches `K`
@@ -2190,16 +2273,25 @@ observer needed (§2.2).
   still counts it. The cost: an edit that leaves an owned entity in
   `legacy::detail` while `legacy` moves, which is not wrong if it is
   meant, must list it in `kept`.
-- *A namespace reached through two rules* (two rules that produce its
-  key, or one per level): each rule gets the count, once.
+- *A namespace reached through two rules*: one rule per level (a nested
+  namespace mapped by its own rule inside one mapped by another); each
+  rule gets the count, once. Two rules that produce one key are no table
+  (§2.1).
 - *Who is a member*: an entity keyed directly under a namespace, not a
   namespace, and owned (a dependency entity is keyed in the dependency
-  view, and no rule reaches it). A class member follows its class; a
+  view, and no rule reaches it), or a dependency entity by the
+  per-inclusion rule alone (above). A class member follows its class; a
   specialisation and a member of one are keyed under their template, and
-  a friend under its class, so neither is counted; a deduction guide,
-  which must be in its template's scope ([temp.deduct.guide]), is not
-  counted either (left with its template it is right, and left without
-  it the post-image does not parse); an entity with C
+  a friend under its class, so neither is counted; a deduction guide is
+  not counted **only when its template is a dependency entity** (pitfall
+  N29 `good-5`: an owned guide beside a dependency's template, which
+  [temp.deduct.guide] keeps in the template's scope, which the run cannot
+  move); a guide of an owned template is counted like any owned member,
+  left behind `direct` (`tests/rules/stale/deduction-guide-of-dependency`,
+  `guide-of-owned-template-left`, `guide-of-owned-template-moved`). That
+  a guide left in another scope than its template's does not parse is
+  not relied on: Kiln accepts one at this pin, where clang 19 rejects it
+  (`spec/landed/verify/WP-111.md`, For Kiln). An entity with C
   language linkage has the parent `c_linkage` and is not counted. A
   namespace's own key is not counted in `direct` (the merge of §2.1);
   a namespace a rule matched counts in `via`, as before.
@@ -2218,6 +2310,19 @@ observer that has the entity reached it through the rule, or no observer
 has it at all. In an observer that has the entity both ways the two
 collide and both are indeterminate (§2.1), so that case was already a
 finding; the count catches the observer that has only the old one.
+
+**A stated limit: TU-local entities of one name** (WP-111 review F3).
+Two translation units may each have their own entity of one name and
+key in `legacy` with internal linkage (`static int helper()`, or one in
+an unnamed namespace inside `legacy`). If the edit moves one and leaves
+the other, the program is correct (no symbol is shared), yet one observer
+is stale whether or not the key is kept: not kept, the one that left it
+counts `direct`; kept, the one that moved it counts `kept_via`. The run
+fails closed: such an edit cannot be declared at this version (a rule
+for the moved one alone, of any kind, produces the key the other still
+has, which counts in that rule's `direct`; with no rule the moved one is
+a difference). Pinned by `tests/rules/stale/tu-local-left`,
+`tu-local-moved-kept` and `unnamed-member-left`; "Open questions".
 
 **Unused rules.** A rule with every count 0 in every observer names
 an entity no observer has. It is reported with the run, like an exemption
@@ -2783,6 +2888,12 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   phased migration is most of the namespace. Whether a phase is better
   declared with one rule per moved entity, or `kept` given as a set of
   files, is to be decided with the namespace migration (M4).
+- **TU-local entities of one name in two units** (§9.2, "A stated
+  limit"). One left in the old namespace and one moved is correct, and
+  one observer is stale either way. A `kept` key that holds for one
+  translation unit only (a `kept` given per file, as above, or an entity
+  of internal linkage told apart by its unit) would let it be declared
+  with a namespace rule; until then it fails closed.
 - **Ownership differs between observers** (§2.1). An entity the
   dependency declares only in a header some observers do not include is
   owned in those and a dependency entity in the others. Each comparison
