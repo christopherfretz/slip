@@ -371,3 +371,30 @@ fn buried_then_carried_by_one_more_shard() {
     assert_eq!(with.state, SetState::Accepted, "{:?}", with.refusals);
     assert_eq!(edits(&with), vec![e(A, 0, 10), e(A, 2, 3), e(A, 20, 30), e(A, 900, 901)]);
 }
+
+/// §5.4 `contested` by another range: the kept range of a site the table
+/// rejected still contests. A site refused with `refuse` and `keep` and no
+/// `replace` is no claimed site: only its kept range blocks the edit
+/// inside it. A live site crossing a `contested` site is `contested` too,
+/// the cause the kept range gives before `overlap` (review mutation M03).
+#[test]
+fn a_rejected_sites_kept_range_contests() {
+    let refused = each(
+        vec![refuse(A, 10, 20), keep(A, 10, 20), replace(A, 12, 13, vec![lit("z")])],
+        "kept-of-refused",
+    );
+    refusal_at(&refused, Cause::SiteRefused, A, 10, 20);
+    assert_eq!(other_of(&refused, Cause::Contested, 12, 13), Some((10, 20)));
+    assert_eq!(edits(&refused), vec![e(A, 900, 901)]);
+    let crossing = each(
+        vec![
+            replace(A, 10, 20, vec![lit("x")]),
+            keep(A, 10, 20),
+            replace(A, 15, 25, vec![lit("z")]),
+        ],
+        "kept-of-contested",
+    );
+    refusal_at(&crossing, Cause::Contested, A, 10, 20);
+    assert_eq!(other_of(&crossing, Cause::Contested, 15, 25), Some((10, 20)));
+    assert_eq!(edits(&crossing), vec![e(A, 900, 901)]);
+}

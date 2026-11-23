@@ -589,6 +589,25 @@ fn declared_changes() {
     assert_eq!(counter(set, "reduce.changed.in_force"), 1);
 }
 
+/// §6.2: a `changed` entry is in force where an edit shares a byte with
+/// its place; a place that only touches the edit, before or after it, is
+/// not (review mutation M09).
+#[test]
+fn changed_in_force_shares_a_byte() {
+    let r = reduce_set(vec![
+        ShardB::new(0)
+            .claim(the_edit(A, 5, 6, "g"))
+            .changed(d(0x20), A, 3, 5, "before")
+            .changed(d(0x21), A, 6, 8, "after")
+            .changed(d(0x22), A, 4, 6, "over"),
+    ]);
+    let set = &r.edits;
+    assert_eq!(set.state, SetState::Accepted);
+    let ins: Vec<_> = set.changed.iter().map(|c| (c.key, c.in_force)).collect();
+    assert_eq!(ins, vec![(d(0x20), false), (d(0x21), false), (d(0x22), true)]);
+    assert_eq!(counter(set, "reduce.changed.in_force"), 1);
+}
+
 fn reduce_set(shards: Vec<ShardB>) -> slip_reduce::Reduced {
     run(&script(), &Store::of(shards), "declared").unwrap()
 }
