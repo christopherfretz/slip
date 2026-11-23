@@ -5,6 +5,4 @@ template <class T> struct A { enum F { f0 }; };
 A<int> a;
 #ifdef B
 void use() { (void)A<int>::f0; }
-#else
-void use() {}
 #endif
