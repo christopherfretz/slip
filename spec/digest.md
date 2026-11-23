@@ -315,6 +315,10 @@ the first use of a rule. `parent` is in mapped terms (`verify.md` §2.1).
 and the mapped id of an entity is computed bottom-up: map its parent and
 everything in its discriminator first; if a rule matches the resulting
 (parent, kind, name, disc), replace parent and name by the rule's; hash.
+A key whose name is another entity's takes that entity's mapped name: a
+specialisation and a partial specialisation are named by their template
+(§3.2), so a rule that renames a template renames them with it, as their
+parent, the template's key, already is (WP-103).
 With `R` empty this is the identity, which is what the map phase uses.
 Verification digests the post-image with the rules that undo the declared
 relocations, so that a relocated entity, every member of it, every type
@@ -326,6 +330,14 @@ observer still has a renamed entity under its old name (`verify.md` §9).
 
 Two different entities of one translation unit with the same mapped `KeyId`
 are a **key collision**: every unit with that key is indeterminate (§10).
+That holds of every entity the walk gives a key, not of units only: an
+entity with no unit (a specialisation that is only named, a function that
+only a block-scope `extern` declaration in a templated function declares,
+§2.2) is still written into references by its key, so two entities the
+rules give one key are a collision even if one of them, or neither, has a
+unit; if no unit has the key, the order unit is marked, so that the
+collision is a finding. Entities whose keys are equal under no rule are
+one entity, not a collision (WP-103).
 Declarations that the language lets a scope repeat and that Kiln does not
 join into one entity (a using-declaration and its using-shadows, a
 namespace alias, and every declaration keyed by content) are the same

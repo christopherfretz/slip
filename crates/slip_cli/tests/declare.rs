@@ -779,3 +779,45 @@ fn a_byte_order_mark_is_skipped() {
     assert_eq!(l, vec![(2, Line::Removed(ent(None, "b")))]);
     assert_eq!(read("changed a\n\u{feff}changed b").unwrap_err().line, 2);
 }
+
+// ---------------------------------------------------------------------------
+// WP-103: `declare` and the resolver of `slip_digest`'s `tests/rules.rs`
+// agree
+
+/// The resolver of the rules suite, a second implementation of the same
+/// names on purpose (`docs/wp/WP-103.md`).
+#[path = "../../slip_digest/tests/common/rules.rs"]
+#[allow(dead_code, reason = "only `read` and `table` are used here")]
+mod digest_rules;
+
+// For three cases of `crates/slip_digest/tests/rules/` whose `rules.txt`
+// has only `relocate` lines, each line's parent mapped by the lines above
+// it (where the two resolvers agree by construction: `declare` maps a
+// parent under the lines above, the suite under the whole table), the
+// `RuleTable` `declare::resolve` makes from the case's two images is the
+// one the suite's resolver makes, by `id()`; and the table verifies.
+#[test]
+fn the_rules_suite_resolves_alike() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../slip_digest/tests/rules");
+    for case in [
+        "verify/relocated-namespace",
+        "parents/mapped-parent",
+        "disc/overload-renamed-relocated-parameter",
+    ] {
+        let dir = root.join(case);
+        let file = |f: &str| {
+            std::fs::read_to_string(dir.join(f)).unwrap_or_else(|e| panic!("{case}/{f}: {e}"))
+        };
+        let (a, b, text) = (file("a.cpp"), file("b.cpp"), file("rules.txt"));
+        let empty = RuleTable::empty();
+        let (pre, post) = (records_of(&a, &empty), records_of(&b, &empty));
+        let lines = read(&text).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let declared = resolve(&lines, &pre, &post).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let ours = digest_rules::read(&text).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let suite = digest_rules::table(&ours, &pre, &post).unwrap_or_else(|e| panic!("{case}: {e}"));
+        assert_eq!(declared.rules.rules().len(), suite.table.rules().len(), "{case}");
+        assert_eq!(declared.rules.id(), suite.table.id(), "{case}");
+        let with = findings(&digest_of(&a, &empty), &digest_of(&b, &declared.rules), &Exemptions::none());
+        assert!(!with.iter().copied().any(real), "{case}: {with:?}");
+    }
+}

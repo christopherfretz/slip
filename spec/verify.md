@@ -80,6 +80,15 @@ needs no map.
   renames a relocated member to a name that a staying member of the old
   namespace has therefore collides, and is reported, although the edit may
   be correct ("Open questions").
+- **An unnamed class is named by the plain name.** An unnamed class or
+  enumeration named for linkage by a typedef, or by its first declarator
+  (`digest.md` §3.3), has `unnamed_by` the name as written in the
+  post-image, not as a rule maps it: a rule that renames the typedef does
+  not rename the class, which needs a rule of its own, from `unnamed_by`
+  the new name to `unnamed_by` the old one
+  (`crates/slip_digest/tests/rules/unnamed/typedef-renamed-no-class-rule`,
+  `typedef-renamed-with-class-rule`; native rename makes that rule,
+  `edits.md` §9.2).
 
 **Why applying rules to the post-image is sound.** Let `φ` be the function
 from the entities of `B` to keys that the walk computes. If no unit is
@@ -91,6 +100,20 @@ mapped keys. That is an isomorphism of the two resolved programs; the rules
 only choose which isomorphism is tried. A wrong or missing rule cannot make
 two different programs compare equal: it changes which keys the post-image
 gets, and any key that then fails to line up is a reported difference.
+
+`φ` is over every entity the walk gives a key, not over units only: an
+entity with no unit is still written into the references to it by its
+mapped key, so if it shares that key with another entity, a reference to
+one reads as a reference to the other. The collision of `digest.md` §3.4
+is therefore counted over keys, whether or not a unit has them
+(`crates/slip_digest/tests/rules/wrong/named-only-specialisations`,
+`merged-local-extern`: before WP-103 both compared equal). A dependent
+name in a template's definition is written as a name, which no rule maps:
+the definition is compared by its names, and what such a name resolves to
+is compared in the instantiations, derived units both images have (§4);
+a template nothing instantiates is outside what is shown (§8;
+`tests/rules/attempts/dependent-name-unused-template` compares equal
+though the programs differ).
 
 Two namespaces sharing a key is the one place `φ` is not injective. A
 namespace's unit holds only what the namespace itself is (`digest.md` §5),
