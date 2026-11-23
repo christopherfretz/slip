@@ -1,0 +1,2 @@
+# clang++-19: GLOBAL DEFAULT _ZN1n1vIcEE on both sides: an explicit specialisation of a variable
+# template takes its template's opening.

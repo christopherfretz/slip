@@ -1,0 +1,6 @@
+# Friends of a class template written in a hidden opening of n: one defined, a friend function
+# template defined, one declared only. b adds an empty plain opening of n between the class template
+# and the instantiation. clang++-19 (with and without -fvisibility=hidden): GLOBAL HIDDEN
+# _ZN1n1fENS_1SIiEE, _ZN1n1gIiEEiNS_1SIiEET_ and UND _ZN1n1kENS_1SIiEE on both sides: an instantiated
+# friend takes the opening its pattern is written in, not the latest opening before the
+# instantiation. Equal (the reviewer's zz2-friend-inst).

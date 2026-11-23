@@ -1,0 +1,10 @@
+# A new-expression makes Kiln declare std::align_val_t itself (IMPLICIT, in an implicit opening of
+# std with no attribute) before the source writes `enum class align_val_t` in a hidden opening (a)
+# or a plain one (b). clang++-19: no symbol of std::align_val_t; `::operator new(n,
+# std::align_val_t(16))` is UND DEFAULT _ZnwmSt11align_val_t on both sides, with and without
+# -fvisibility=hidden. The closest shape to a compiler-made declaration beside a written one at
+# namespace scope (WP-113 re-check 2, R2-07): Kiln's chain of std::align_val_t holds the implicit
+# declaration alone, so std::align_val_t is equal and determinate on both sides; only the namespace
+# (its attribute) differs. The global operator new/delete Kiln declares are beside written ones in
+# <new>, at file scope (no pair either way).
+changed std

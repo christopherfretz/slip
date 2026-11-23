@@ -545,7 +545,9 @@ impl Rule {
     /// `resolved` or `default_argument`, a part whose key follows its
     /// owner's; one of kind `namespace` whose `name` and `to_name` differ
     /// in being the unnamed namespace's (the linkage of every member would
-    /// change, which no unit holds).
+    /// change; each member's row `enclosing` would then differ, and the
+    /// refusal says so when the rule is declared rather than after a run,
+    /// `spec/landed/digest/WP-113.md`, item 6).
     ///
     /// Not a check of the encoding: a container may hold such a rule
     /// (`spec/landed/model/WP-022.md`'s golden has every kind). It is

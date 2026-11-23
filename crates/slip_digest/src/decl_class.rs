@@ -115,8 +115,13 @@ pub(crate) fn typedef_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(Cause::Unaccounted("TypedefData/missing"));
         return;
     };
-    // underlying: canonical, like every type.
+    // underlying: canonical, like every type (but digest-kinds §4.2 rule 9).
     w.write_type(s, underlying);
+    // Rule 9: Kiln's `alignof` of this typedef depends on which declaration
+    // a use names when the declarations disagree.
+    if crate::types::alignment_by_declaration(w.ast, d) {
+        s.indeterminate(crate::types::ALIGNMENT_BY_DECLARATION);
+    }
     crate::templ::templ_link(w, s, d, templ);
 }
 

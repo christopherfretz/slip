@@ -1,0 +1,3 @@
+# As libstdc++'s <cwchar> repeats `using ::mbstate_t;` in plain and visibility("default")
+# openings of std: a using-declaration declares no symbol and has no row, so the repeated
+# declarations stay one entity (with the row they collided: digest §3.4).
