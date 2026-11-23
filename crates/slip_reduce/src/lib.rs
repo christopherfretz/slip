@@ -547,6 +547,6 @@ fn run(
     });
     set.validate()
         .map_err(|e| ReduceError::Io(format!("reduce made an edit set its reader refuses: {e}")))?;
-    let declared = declared(&set).map_err(ReduceError::Io)?;
+    let declared = declared(&set, &request.ownership).map_err(ReduceError::Io)?;
     Ok(Reduced { edits: set, declared })
 }
