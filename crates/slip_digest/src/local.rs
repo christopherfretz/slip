@@ -630,14 +630,14 @@ pub(crate) fn ordinal(w: &mut Walk<'_>, d: DeclId) -> u64 {
     n
 }
 
+/// What `Ref::outer` writes: the owner's key, the index, the key's cause.
+pub(crate) type Outer = (Digest, u64, Option<Cause>);
+
 /// What a reference to the local object `d` is in the stream being
 /// written: `None` for `Ref::local` (the stream is its unit's, or no
 /// unit's), else `Ref::outer`'s owner key, index and the key's cause
 /// (digest §4.3 "Local objects of another unit").
-pub(crate) fn outer(
-    w: &mut Walk<'_>,
-    d: DeclId,
-) -> Option<Result<(Digest, u64, Option<Cause>), Cause>> {
+pub(crate) fn outer(w: &mut Walk<'_>, d: DeclId) -> Option<Result<Outer, Cause>> {
     let holder = w.unit.local.holder?;
     let u = unit_of(w, d)?;
     if u == w.entity(holder) {
@@ -664,6 +664,10 @@ pub(crate) fn outer(
 /// specialisation's unit names of its pattern (a parameter, in an
 /// expansion statement's pattern) without its owner numbered by
 /// [`number_all`]: an owner without local types.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the names of digest-kinds: s stream, d declaration, e entity, n number, o owner, t type"
+)]
 fn direct_param(w: &Walk<'_>, o: DeclId, d: DeclId) -> Option<u64> {
     let ast = w.ast;
     if ast.decls.get(d).kind() != DeclKind::ParmVar {
@@ -797,6 +801,10 @@ fn record_object(w: &mut Walk<'_>, d: DeclId, param: bool) {
 /// its members' through its lists; met again in the same stream, the
 /// number alone. While numbering: recorded if the owner being numbered
 /// declares it, and its stream walked, which enters none of its members.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the names of digest-kinds: s stream, d declaration, e entity, n number, o owner, t type"
+)]
 fn local_type(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let t = w.ast.first(d);
     if numbering_mode(w) {
@@ -977,7 +985,13 @@ pub(crate) fn lambda_data(w: &mut Walk<'_>, s: &mut Stream, l: LambdaId) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the names of digest-kinds: s stream, d declaration, e entity, n number, o owner, t type"
+)]
 mod tests {
+    use std::fmt::Write as _;
+
     use slip_kiln::kiln::ast::decl::DeclKind;
 
     use crate::decl_func::tests::{named, of_kind, with_walk};
@@ -1387,7 +1401,7 @@ mod tests {
                     let n = super::numbering(w, o);
                     let want = n.types.clone();
                     let ok = !want.is_empty()
-                        && got.len() % want.len() == 0
+                        && got.len().is_multiple_of(want.len())
                         && got.chunks(want.len()).all(|c| c == want.as_slice());
                     if !ok && n.cut.is_none() {
                         problems
@@ -1430,8 +1444,8 @@ mod tests {
         let mut src = String::new();
         let mut body = String::from("void g() {\n");
         for i in 0..10 {
-            src.push_str(&format!("auto f{i}() {{ struct L {{ int m; }}; return L{{{i}}}; }}\n"));
-            body.push_str(&format!("  decltype(f{i}()) x{i} = f{i}(); int y{i} = x{i}.m;\n"));
+            let _ = writeln!(src, "auto f{i}() {{ struct L {{ int m; }}; return L{{{i}}}; }}");
+            let _ = writeln!(body, "  decltype(f{i}()) x{i} = f{i}(); int y{i} = x{i}.m;");
         }
         body.push_str("  struct Own {};\n}\n");
         src.push_str(&body);
@@ -1745,7 +1759,8 @@ mod tests {
             let ast = w.ast;
             let b = named(w, "b", DeclKind::ParmVar)[0];
             let c = named(w, "c", DeclKind::ParmVar)[0];
-            let depth = |d| ast.decls.param(d).map(|p| p.scope_depth());
+            let depth =
+                |d| ast.decls.param(d).map(slip_kiln::kiln::ast::decl::ParamData::scope_depth);
             assert_eq!((depth(b), depth(c)), (Some(1), Some(0)));
             let mut sb = Stream::new();
             w.decl_stream(&mut sb, b, b);

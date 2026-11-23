@@ -7,6 +7,7 @@
 
 mod common;
 
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use slip_digest::{Cause, Detail, Input, Options, Output};
@@ -17,9 +18,9 @@ use slip_model::keys::RuleTable;
 fn chained(n: usize) -> String {
     let mut s = String::from("int f() {\n  auto l0 = [] { return 0; };\n");
     for i in 1..n {
-        s.push_str(&format!("  auto l{i} = [&] {{ return l{}() + 1; }};\n", i - 1));
+        let _ = writeln!(s, "  auto l{i} = [&] {{ return l{}() + 1; }};", i - 1);
     }
-    s.push_str(&format!("  return l{}();\n}}\n", n - 1));
+    let _ = write!(s, "  return l{}();\n}}\n", n - 1);
     s
 }
 
@@ -28,10 +29,7 @@ fn chained(n: usize) -> String {
 fn returning(n: usize) -> String {
     let mut s = String::from("auto f0() { return [] { return 0; }; }\n");
     for i in 1..n {
-        s.push_str(&format!(
-            "auto f{i}() {{ return [p = f{}()] {{ return p() + 1; }}; }}\n",
-            i - 1
-        ));
+        let _ = writeln!(s, "auto f{i}() {{ return [p = f{}()] {{ return p() + 1; }}; }}", i - 1);
     }
     s
 }

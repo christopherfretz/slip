@@ -26,7 +26,7 @@ use slip_kiln::kiln::ast::expr::{BinaryOp, ExprFlags};
 use slip_kiln::kiln::ast::names::{DeclName, DeclNameView};
 use slip_kiln::kiln::ast::stmt::ExpansionForm;
 use slip_kiln::kiln::ast::templates::Requirement;
-use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, LambdaId, ListId, NnsId, ProfileId};
+use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, ListId, NnsId, ProfileId};
 use slip_model::keys::Name;
 
 use crate::Cause;

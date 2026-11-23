@@ -143,6 +143,10 @@ fn content_word(kind: KeyKind) -> &'static str {
 /// `name`, the name of `e`, with the scope Kiln prints for the nearest
 /// local type around `e` replaced by that type's key: its owner's name
 /// and `local(n)` (`?` for a number not known).
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the names of digest-kinds: s stream, d declaration, e entity, n number, o owner, t type"
+)]
 fn local_scoped(w: &Walk<'_>, e: DeclId, name: String) -> String {
     let ast = w.ast;
     let mut a = ast.decls.get(e).ctx();
