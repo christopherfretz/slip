@@ -32,8 +32,9 @@
 use std::collections::HashMap;
 
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, Defaulted, VarEvalState};
-use slip_kiln::kiln::ast::types::{ExcSpec, NoexceptValue};
-use slip_kiln::kiln::ast::{ConstValueId, DeclId, ExprId};
+use slip_kiln::kiln::ast::templates::SpecKind;
+use slip_kiln::kiln::ast::types::{ExcSpec, NoexceptValue, TypeView};
+use slip_kiln::kiln::ast::{ConstValueId, DeclId, ExprId, QualType};
 use slip_model::digests::GroupClass;
 use slip_model::keys::{DISC_TAG, Key, KeyKind, Name, Parent};
 
@@ -124,7 +125,7 @@ pub(crate) fn resolved_units(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: 
             Property::DtorDelete => dtor_delete(w, e, owner, out),
             Property::InheritedConstructor => inherited_constructor(w, e, owner, out),
             Property::DefaultImmediates => default_immediates(w, e, owner, out),
-            Property::Definition => {}
+            Property::Definition => definition(w, e, owner, out),
         }
     }
     default_arguments(w, e, owner, out);
@@ -219,6 +220,8 @@ fn write_part(
         file,
         resolved: None,
         default_argument: owner.default_argument,
+        owner: Some(owner.key),
+        collided: false,
     }
 }
 
@@ -276,6 +279,370 @@ fn key_function(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Writ
     out.push(u);
 }
 
+/// Property 8, `definition` (§11.9): the rows of the definition of an
+/// entity of the definition class, or of a definition an instantiation
+/// added outside its class for an entity with a written declaration,
+/// present when Kiln holds the definition ([`defining_declaration`]).
+fn definition(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
+    let Some(def) = defining_declaration(w, e) else { return };
+    let u = write_resolved(w, e, owner, Property::Definition, None, |w, s| {
+        definition_stream(w, s, e, def);
+    });
+    out.push(u);
+}
+
+/// What the numbering of owner `e` walks after `e`'s own stream
+/// (`local::compute`, digest §4.3 "Numbering an owner"), into the sink
+/// `s`: the streams of the units of `e` that hold what its own stream
+/// leaves out, each with a fresh unit state, as they are written. The
+/// resolved unit `definition` (§11.9), which holds the body or
+/// initialiser of an entity of the definition class: what the own stream
+/// declared is met again there first, in the same order (the
+/// parameters), and recorded once. Then, for a field an instantiation
+/// made, its `default_argument` unit (§11.4), whose initialiser the own
+/// stream writes empty.
+pub(crate) fn number_parts(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
+    let ast = w.ast;
+    if let Some(def) = defining_declaration(w, e) {
+        drop(w.take_unit());
+        definition_stream(w, s, e, def);
+    }
+    let d = crate::units::read_decl(w, e);
+    if let Some(f) = ast.decls.field(d)
+        && let Some(x) = f.init
+        && crate::decl_class::instantiated_field(w, d)
+    {
+        drop(w.take_unit());
+        w.unit.local.holder = Some(e);
+        crate::expr::child(w, s, x);
+    }
+}
+
+/// The stream of the resolved unit `definition` of entity `e`, read from
+/// its defining declaration `def` (`defining_declaration`), into `s`,
+/// whose unit state is fresh: what `definition` writes, and what the
+/// numbering of `e` walks after `e`'s own stream (`local::compute`), since
+/// the local types and objects of a body `definition` holds are `e`'s
+/// (digest §4.3 "Numbering an owner").
+pub(crate) fn definition_stream(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: DeclId) {
+    let ast = w.ast;
+    // Every declaration of the entity is read, an out-of-line one an
+    // instantiation made included (`Walk::redecls`).
+    w.unit.definition = true;
+    // The stream is `e`'s: its local objects are referred to as its own,
+    // and the names around a unit under a local type are written
+    // (`local::outer`, `local::write_scope_names`).
+    w.unit.local.holder = Some(e);
+    crate::templ::spec_definition(w, s, e);
+    if ast.decls.function(def).is_some() {
+        crate::decl_func::function_definition(w, s, e, def);
+    } else if ast.decls.var(def).is_some() {
+        crate::decl_func::var_definition(w, s, e, def);
+    } else if ast.decls.record(def).is_some() {
+        crate::decl_class::record_definition(w, s, def);
+        crate::attrs::definition_attrs(w, s, e);
+    } else if ast.decls.enumeration(def).is_some() {
+        crate::decl_class::enum_definition(w, s, def);
+    }
+}
+
+/// The declaration the resolved unit `definition` of entity `e` is read
+/// from, if it exists (§11.9): what Kiln holds at the end of the
+/// translation unit.
+///
+/// - For an entity of the definition class: a function's `Ast::definition`
+///   when it has a body (a function deleted on its first declaration is
+///   not defined by that: `= delete` is a fact of the declaration); a
+///   variable's first declaration, over every declaration Kiln chained,
+///   that is a definition (`units::is_var_definition`), else the one that
+///   holds an initialiser (an in-class `static const int x = 1;` whose
+///   initialiser an instantiation substituted); a class's or an
+///   enumeration's `Ast::definition`. Any other entity has none.
+/// - For any other function or variable: the definition an instantiation
+///   added outside its class (`units::instantiated_outside_class`), a
+///   friend defined in a class template, read from `Ast::definition`
+///   (WP-032 rule 4).
+pub(crate) fn defining_declaration(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
+    let ast = w.ast;
+    let rep = w.representative(e);
+    let with_body =
+        |d: DeclId| ast.decls.function(d).is_some_and(|f| f.body.is_some()).then_some(d);
+    if !definition_class(w, e) {
+        ast.decls.function(rep)?;
+        return ast
+            .definition(rep)
+            .filter(|&d| crate::units::instantiated_outside_class(w, d))
+            .and_then(with_body);
+    }
+    if ast.decls.function(rep).is_some() {
+        return ast.definition(rep).and_then(with_body);
+    }
+    if ast.decls.var(rep).is_some() {
+        let mut chain: Vec<DeclId> = w
+            .chain(e)
+            .into_iter()
+            .filter(|&d| !w.is_local_extern(d) && !crate::units::in_templated_body(w, d))
+            .collect();
+        chain.reverse();
+        let has_init = |d: DeclId| ast.decls.var(d).is_some_and(|v| v.init.is_some());
+        // A variable whose pattern has an initialiser is defined once Kiln
+        // has instantiated the initialiser, not before: Kiln makes the
+        // declaration of a specialisation or of an inline static member
+        // before its initialiser (`kiln_sema/src/templ/var.rs:229`,
+        // `templ/class.rs:2061`).
+        if pattern_has_init(w, e) && !chain.iter().copied().any(has_init) {
+            return None;
+        }
+        return chain
+            .iter()
+            .copied()
+            .find(|&d| crate::units::is_var_definition(w, d))
+            .or_else(|| chain.iter().copied().find(|&d| has_init(d)));
+    }
+    if ast.decls.record(rep).is_some() || ast.decls.enumeration(rep).is_some() {
+        return ast.definition(rep);
+    }
+    None
+}
+
+/// Whether the declared type of the pattern that entity `e` is
+/// instantiated from holds a placeholder (`auto`, `decltype(auto)`, a
+/// class template to deduce): its return type for a function, its type
+/// for a variable, on any declaration of the pattern. The type of the
+/// instantiation is then deduced with its definition, and is the
+/// resolved unit `definition`'s (§11.9). `false` for an entity that is
+/// not instantiated from a pattern.
+pub(crate) fn pattern_holds_placeholder(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    let Some(p) = instantiated_pattern(w, e) else { return false };
+    ast.redecls_of(p).any(|r| ast.decls.get(r).ty().is_some_and(|q| holds_placeholder(w, q)))
+}
+
+/// The pattern entity `e` is instantiated from: for a variable
+/// specialisation, the declaration `SpecInfo` `from` names (the primary's
+/// or a partial specialisation's declaration that holds the initialiser,
+/// else its definition: Kiln sets it when it declares the specialisation,
+/// `kiln_sema/src/templ/var.rs:109-161`, and moves it later only for an
+/// explicit instantiation, `templ/var.rs:289-298`); for another
+/// specialisation, the pattern of its template (not what `from` names: a
+/// function's is moved to a friend's definition when the definition is
+/// instantiated, `templ/class.rs:1578`, a class's is set at its
+/// definition); for a member of a specialisation, the member it was
+/// instantiated from.
+fn instantiated_pattern(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
+    let ast = w.ast;
+    let e = w.entity(e);
+    match ast.spec_info(e) {
+        Some((_, i)) if ast.decls.var(e).is_some() => Some(i.from),
+        Some((_, i)) => ast.template_info(i.template).and_then(|t| t.pattern),
+        None => ast.member_spec_info(e).map(|(_, i)| i.instantiated_from),
+    }
+}
+
+/// Whether a declaration of the pattern of variable `e` (`instantiated_pattern`)
+/// holds an initialiser. Without one, the initialisation Kiln adds when
+/// it instantiates the definition is default-initialisation, which the
+/// variable's type and the units of its class determine, and which
+/// `definition` does not write (§11.9).
+pub(crate) fn pattern_has_init(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    instantiated_pattern(w, e).is_some_and(|p| {
+        ast.redecls_of(p).any(|d| ast.decls.var(d).is_some_and(|v| v.init.is_some()))
+    })
+}
+
+/// Whether type `q` holds a placeholder, walked as Kiln's
+/// `Sema::contains_placeholder` walks it
+/// (`kiln_sema/src/templ/auto.rs:588-619`: through pointers, references,
+/// member pointers, a function's return type and arrays' elements),
+/// looking through sugar at each step.
+fn holds_placeholder(w: &Walk<'_>, q: QualType) -> bool {
+    let types = &w.ast.types;
+    let mut cur = q;
+    for _ in 0..PLACEHOLDER_LIMIT {
+        let mut c = cur;
+        for _ in 0..PLACEHOLDER_LIMIT {
+            match types.view(c.ty()) {
+                TypeView::Auto { .. } | TypeView::DeducedTemplateSpecialization { .. } => {
+                    return true;
+                }
+                _ => {}
+            }
+            let next = types.desugar_once(c);
+            if next == c {
+                break;
+            }
+            c = next;
+        }
+        cur = match types.view(c.ty()) {
+            TypeView::Pointer(p) | TypeView::LValueRef(p) | TypeView::RValueRef(p) => p,
+            TypeView::MemberPointer { pointee, .. } => pointee,
+            TypeView::Function(f) => f.ret(),
+            TypeView::ConstantArray(a) => a.elem,
+            TypeView::IncompleteArray(x)
+            | TypeView::DependentSizedArray { elem: x, .. }
+            | TypeView::VariableArray { elem: x, .. } => x,
+            _ => return false,
+        };
+    }
+    false
+}
+
+/// Steps [`holds_placeholder`] takes at most, as Kiln's walk.
+const PLACEHOLDER_LIMIT: usize = 256;
+
+/// Contexts deeper than this are not climbed by [`effective_kind`].
+const KIND_LIMIT: usize = 256;
+
+/// The rank of a kind in the order of decision 1 of
+/// `docs/wp/WP-045.md`: `ImplicitInstantiation` <
+/// `ExplicitInstantiationDeclaration` < `ExplicitInstantiationDefinition`,
+/// with `Undeclared` and no kind least. `ExplicitSpecialization` is never
+/// compared (it decides before any comparison).
+fn rank(k: Option<SpecKind>) -> u8 {
+    match k {
+        None | Some(SpecKind::Undeclared) => 0,
+        Some(SpecKind::ImplicitInstantiation) => 1,
+        Some(SpecKind::ExplicitInstantiationDeclaration) => 2,
+        Some(SpecKind::ExplicitInstantiationDefinition | SpecKind::ExplicitSpecialization) => 3,
+    }
+}
+
+/// The *effective kind* of entity `e` (`spec/digest-kinds.md` §11.10):
+/// the one specialisation kind the digest reads for it, from facts no use
+/// moves.
+///
+/// - An entity with its own `SpecInfo` (a specialisation of a template)
+///   has that kind.
+/// - A member whose `MemberSpecInfo` kind is `ExplicitSpecialization` has
+///   that kind, and so has a member template of an implicit instantiation
+///   that `template <> template <...>` specialises (Kiln gives it no
+///   `SpecInfo`: `units::specialised_member_template`).
+/// - Any other member of a class or enumeration that has an effective
+///   kind of an instantiation has the greater of its own `MemberSpecInfo`
+///   kind (none counts as least) and that of its class: Kiln leaves a
+///   member class defined before an explicit instantiation of its class
+///   `ImplicitInstantiation` (`kiln_sema/src/templ/spec.rs:1366-1398`), a
+///   member function too, and gives a field none.
+/// - A member of an explicit specialisation, or of a class that is not
+///   made by instantiation, has none: it is written in source.
+/// - A declaration that is no member (a friend an instantiation
+///   declared) has none, whatever its `MemberSpecInfo` says: a friend's
+///   class is decided by `units::outside_only`, and it can be written in
+///   source as well.
+/// - A local entity has none: anything declared in a function body is
+///   written in full, in the stream of what holds the body.
+///
+/// `MemberSpecInfo` and `SpecInfo` are keyed by the entity's first
+/// declaration.
+pub(crate) fn effective_kind(w: &Walk<'_>, e: DeclId) -> Option<SpecKind> {
+    let ast = w.ast;
+    let e = w.entity(e);
+    if w.is_local(e) {
+        return None;
+    }
+    // The members' own kinds, innermost first, up to the context that
+    // decides.
+    let mut owns: Vec<Option<SpecKind>> = Vec::new();
+    let mut x = e;
+    let mut base = None;
+    for _ in 0..KIND_LIMIT {
+        if let Some((_, i)) = ast.spec_info(x) {
+            base = Some(i.kind);
+            break;
+        }
+        // A member template of an implicit instantiation that
+        // `template <> template <...>` specialises is written in source,
+        // and Kiln gives it no `SpecInfo` (`units::specialised_member_template`).
+        if crate::units::specialised_member_template(w, x) {
+            base = Some(SpecKind::ExplicitSpecialization);
+            break;
+        }
+        let own = ast.member_spec_info(x).map(|(_, i)| i.kind);
+        if own == Some(SpecKind::ExplicitSpecialization) {
+            base = own;
+            break;
+        }
+        let class = ast
+            .decls
+            .get(x)
+            .ctx()
+            .filter(|&c| ast.decls.record(c).is_some() || ast.decls.enumeration(c).is_some());
+        match class {
+            Some(c) => {
+                owns.push(own);
+                x = w.entity(c);
+            }
+            // No member (a friend an instantiation declared): its kind
+            // is not the entity's, which `units::outside_only` decides.
+            None => break,
+        }
+    }
+    let mut kind = base;
+    for own in owns.into_iter().rev() {
+        kind = match kind {
+            Some(
+                c @ (SpecKind::ImplicitInstantiation
+                | SpecKind::ExplicitInstantiationDeclaration
+                | SpecKind::ExplicitInstantiationDefinition),
+            ) => {
+                if rank(own) > rank(Some(c)) {
+                    own
+                } else {
+                    Some(c)
+                }
+            }
+            Some(SpecKind::ExplicitSpecialization | SpecKind::Undeclared) | None => None,
+        };
+    }
+    kind
+}
+
+/// Whether entity `e` is of the *definition class* (§11.9): Kiln makes
+/// its definition on use, so the own unit writes the rows of the
+/// definition in their empty form and the resolved unit `definition`
+/// holds them.
+///
+/// - A specialisation whose `SpecInfo` kind is `ImplicitInstantiation` or
+///   `ExplicitInstantiationDeclaration` (not `ExplicitInstantiationDefinition`:
+///   its definition is made at the explicit instantiation, used or not).
+/// - A member with an effective kind other than `ExplicitSpecialization`.
+/// - A function or deduction guide every declaration of which is
+///   implicit (a special member, a comparison, a deduction guide, a
+///   closure's conversion function), or explicitly defaulted on its
+///   first declaration.
+/// - An entity every declaration of which an instantiation made outside
+///   its class (`units::outside_only`).
+pub(crate) fn definition_class(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    let e = w.entity(e);
+    if let Some((_, i)) = ast.spec_info(e) {
+        return matches!(
+            i.kind,
+            SpecKind::ImplicitInstantiation | SpecKind::ExplicitInstantiationDeclaration
+        );
+    }
+    match effective_kind(w, e) {
+        Some(
+            SpecKind::ImplicitInstantiation
+            | SpecKind::ExplicitInstantiationDeclaration
+            | SpecKind::ExplicitInstantiationDefinition,
+        ) => return true,
+        Some(SpecKind::ExplicitSpecialization | SpecKind::Undeclared) | None => {}
+    }
+    let kind = ast.decls.get(e).kind();
+    if crate::keys::info(kind).function || kind == DeclKind::CXXDeductionGuide {
+        let all_implicit = w.redecls(e).iter().all(|&x| ast.decls.get(x).has(DeclFlags::IMPLICIT));
+        let first = w.representative(e);
+        let defaulted_first =
+            ast.decls.function(first).is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
+        if all_implicit || defaulted_first {
+            return true;
+        }
+    }
+    crate::units::outside_only(w, e)
+}
+
 /// The declaration the unit of entity `e` was read from (`units::write`):
 /// a resolved arm reads its facts where the owner's stream did.
 fn read_of(w: &Walk<'_>, e: DeclId, owner: &Written) -> DeclId {
@@ -330,7 +697,16 @@ fn value(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
     if ast.decls.var(v).is_none() {
         return;
     }
-    let own = match crate::decl_func::var_eval(w, v).state() {
+    // The evaluation is read over every declaration of the variable, the
+    // out-of-line definition an instantiation made for a static data
+    // member included, as `definition` reads its initialiser: Kiln
+    // records the evaluation on the declaration that holds the
+    // initialiser (`decl_func::var_eval`), which the own unit's chain
+    // leaves out (`Walk::redecls`).
+    let in_definition = std::mem::replace(&mut w.unit.definition, true);
+    let eval = crate::decl_func::var_eval(w, v);
+    w.unit.definition = in_definition;
+    let own = match eval.state() {
         VarEvalState::Value(c) => Some(c),
         VarEvalState::NotConstant => None,
         VarEvalState::NotEvaluated | VarEvalState::Evaluating => return,
@@ -649,15 +1025,17 @@ fn deferrable_at(w: &Walk<'_>, f: DeclId, depth: u32) -> bool {
         || deferrable_at(w, pattern, depth + 1)
 }
 
-/// Whether the declaration `x` was made by instantiation, of any form: the
-/// one call to switch to WP-045's effective kind when it lands. Kiln
-/// defers the specification under every form
-/// (`kiln_sema/src/templ/subst/decls.rs:766-770`, `:1170-1195`) and
+/// Whether the declaration `x` was made by instantiation, of any form
+/// (`templ::made_by_instantiation`, WP-045's test): Kiln defers the
+/// specification of the declarations it makes, under every form
+/// (`kiln_sema/src/templ/subst/decls.rs:766-770`, `:1170-1195`), and
 /// resolves it when it defines the function
 /// (`kiln_sema/src/decl.rs:9670-9676`), so an explicit instantiation
-/// definition resolves it only for the members it defines.
+/// definition resolves it only for the members it defines. A friend
+/// written in source that redeclares a member of an instantiation was
+/// not made by one, and its specification is not deferred.
 fn instantiated(w: &Walk<'_>, x: DeclId) -> bool {
-    crate::decl_func::instantiated_decl(w, x)
+    crate::templ::made_by_instantiation(w, x)
 }
 
 /// The pattern the instantiated declaration `x` was made from: for a

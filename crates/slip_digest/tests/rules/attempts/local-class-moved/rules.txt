@@ -1,0 +1,3 @@
+# Item 9 attempt: the local classes of f and g exchanged, with rules that map each one to the other function's: the bodies reference them by key, under the other function, so they differ.
+rule class | post f() | id L | none | pre g() | id L
+rule class | post g() | id L | none | pre f() | id L

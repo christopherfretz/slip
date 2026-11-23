@@ -1,0 +1,3 @@
+added acme::(anonymous namespace)::other
+changed legacy::f()
+changed <order>

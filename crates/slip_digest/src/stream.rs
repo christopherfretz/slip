@@ -10,8 +10,10 @@ use slip_model::Digest;
 use slip_model::hash::tagged_digest;
 use slip_model::wire::Encoder;
 
+#[cfg(test)]
+use crate::Area;
+use crate::Cause;
 use crate::tables::Row;
-use crate::{Area, Cause};
 
 /// `H("slip.unit.v1", stream)`: a unit's digest (`spec/model.md` §3,
 /// `spec/digest.md` §4).
@@ -21,7 +23,10 @@ pub(crate) const TYPE_TAG: &str = "slip.type.v1";
 
 /// What a pending area writes in place of its rows (WP-024): a `uv` 0,
 /// which no tag is (`spec/digest-kinds.md` §1.4), so the placeholder is
-/// fixed and the stream stays well formed.
+/// fixed and the stream stays well formed. No area is pending since
+/// WP-045 removed `Area::Demand`, so only the tests below write it; a
+/// package that adds a pending area removes the `cfg`.
+#[cfg(test)]
 const PENDING_PLACEHOLDER: u64 = 0;
 
 /// The bytes of one stream and the first cause that makes it
@@ -168,6 +173,7 @@ impl Stream {
 
     /// An area of the walk that is not written yet (WP-024): a fixed
     /// placeholder, and the stream is indeterminate with `Pending(area)`.
+    #[cfg(test)]
     pub(crate) fn pending(&mut self, area: Area) -> &mut Self {
         self.enc.uv(PENDING_PLACEHOLDER);
         self.indeterminate(Cause::Pending(area))

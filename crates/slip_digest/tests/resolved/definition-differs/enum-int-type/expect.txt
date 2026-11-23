@@ -1,0 +1,4 @@
+# The enumerator's own unit holds its type.
+changed X::E
+changed X<int>::E::<definition>
+changed X<int>::e0

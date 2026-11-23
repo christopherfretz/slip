@@ -117,6 +117,14 @@ impl Walk<'_> {
         } else {
             n.ty()
         };
+        // A function or variable of the definition class whose pattern's
+        // declared type holds a placeholder: the type is deduced with the
+        // definition, and is the resolved unit `definition`'s (§11.9);
+        // its empty form here.
+        let moved = (function || ast.decls.var(d).is_some())
+            && crate::demand::definition_class(self, e)
+            && crate::demand::pattern_holds_placeholder(self, e);
+        let ty = if moved { None } else { ty };
         match ty {
             Some(q) => {
                 s.opt(true);
@@ -174,7 +182,7 @@ impl Walk<'_> {
         // In `definition` for the definition class (§11.9), whose
         // definition Kiln makes on use: its empty form here
         // (`spec/landed/digest-kinds/WP-026.md`).
-        let definition = !crate::decl_func::definition_class(self, e)
+        let definition = !crate::demand::definition_class(self, e)
             && crate::units::defining_decl(self, e).is_some();
         s.tag(access::row(&misc.access()));
         s.tag(friend_kind::row(&friend));

@@ -32,8 +32,9 @@ use std::collections::{HashMap, HashSet};
 
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind};
 use slip_kiln::kiln::ast::lambda::{LambdaCapture, LambdaData, LambdaMangling};
+use slip_kiln::kiln::ast::stmt::StmtKind;
 use slip_kiln::kiln::ast::types::{ArgView, TypeView};
-use slip_kiln::kiln::ast::{DeclId, ExprId, LambdaId, QualType};
+use slip_kiln::kiln::ast::{DeclId, ExprId, LambdaId, QualType, StmtId};
 use slip_model::Digest;
 use slip_model::keys::Parent;
 
@@ -387,13 +388,13 @@ fn scope_owner(w: &Walk<'_>, c: DeclId) -> Result<DeclId, Cause> {
 /// The template whose head declares template parameter `p` (Kiln gives a
 /// template parameter the template's context, not the template), from
 /// the map [`param_templates`] builds.
-fn param_template(w: &Walk<'_>, p: DeclId) -> Option<DeclId> {
+pub(crate) fn param_template(w: &Walk<'_>, p: DeclId) -> Option<DeclId> {
     w.local.param_templates.as_ref().and_then(|m| m.get(&p).copied())
 }
 
 /// Builds the map [`param_template`] reads, once per walk, when the
 /// first closure owned by a template parameter needs it.
-fn param_templates(w: &mut Walk<'_>) {
+pub(crate) fn param_templates(w: &mut Walk<'_>) {
     if w.local.param_templates.is_some() {
         return;
     }
@@ -518,6 +519,23 @@ pub(crate) fn number_all(w: &mut Walk<'_>) {
             let _ = numbering(w, e);
         }
     }
+    // The owner of the variable of each expanded expansion statement:
+    // Kiln keeps the statement's pattern parts in an instantiated body
+    // (`ExpansionData`), so the resolved unit `definition` of a function
+    // template's specialisation names its pattern's variable by
+    // `Ref::outer`, the pattern's template being its owner.
+    for i in 1..=u32::try_from(ast.stmts.len()).unwrap_or(0) {
+        let st = StmtId::new(i);
+        if ast.stmts.get(st).kind() != StmtKind::CXXExpansionStmt
+            || !ast.stmts.expansion_expanded(st)
+        {
+            continue;
+        }
+        let v = ast.stmts.expansion_data(st).decl;
+        if let Ok(o) = owner_of(w, ast.first(v)) {
+            let _ = numbering(w, o);
+        }
+    }
     w.local.sealed = true;
 }
 
@@ -553,6 +571,9 @@ fn compute(w: &mut Walk<'_>, owner: DeclId) -> Numbering {
     w.local.record = Record { owner: Some(owner), ..Record::default() };
     let mut sink = Stream::new();
     w.decl_stream(&mut sink, from, owner);
+    // Then the streams of its units that hold what the own stream leaves
+    // out (`demand::number_parts`).
+    crate::demand::number_parts(w, &mut sink, owner);
     let record = std::mem::take(&mut w.local.record);
     let cut = (w.aborts != aborts).then_some(TOO_DEEP);
     w.unit = saved;
@@ -938,6 +959,31 @@ pub(crate) fn write_scope_names(w: &mut Walk<'_>, s: &mut Stream) {
     let all: Vec<DeclId> = around.into_iter().chain(w.unit.local.scopes.iter().copied()).collect();
     s.count(all.len());
     for t in all {
+        w.write_name(s, t);
+    }
+}
+
+/// The names of the named local types around entity `d`, outermost
+/// first: what a function name of `d` prints of them, and a reference to
+/// `d` does not hold, since a local entity has no key (digest §9: they
+/// are part of a name-derived value's identity, in both modes).
+pub(crate) fn write_names_around(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let ast = w.ast;
+    let mut around = Vec::new();
+    let mut next = ast.decls.get(d).ctx();
+    for _ in 0..CHAIN_LIMIT {
+        let Some(x) = next else { break };
+        if !w.is_local(x) && !is_local_type(w, x) {
+            break;
+        }
+        if is_local_type(w, x) && is_named_local(w, x) {
+            around.push(x);
+        }
+        next = ast.decls.get(x).ctx();
+    }
+    around.reverse();
+    s.count(around.len());
+    for t in around {
         w.write_name(s, t);
     }
 }
@@ -1747,7 +1793,11 @@ mod tests {
             let (e, class) = w.queue[i];
             i += 1;
             if let Some(u) = crate::units::write(w, e, class) {
+                // Its resolved units after it, as `run_with` writes them.
+                let mut resolved = Vec::new();
+                crate::demand::resolved_units(w, e, &u, &mut resolved);
                 written.push(u);
+                written.append(&mut resolved);
             }
         }
         written.push(crate::units::order_unit(w));
@@ -2087,9 +2137,9 @@ mod tests {
     }
 
     // digest §4.3 "Local objects of another unit": a specialisation names
-    // a parameter of its pattern (an expansion statement's pattern) whose
-    // template has no local types and so no numbering: `Ref::outer` with
-    // the parameter's position, which is what the numbering gives.
+    // a parameter of its pattern (an expansion statement's pattern):
+    // `Ref::outer` with the parameter's position (`direct_param`), which is
+    // what the numbering gives.
     #[test]
     fn a_pattern_parameter_named_by_a_specialisation() {
         let src = "struct P { int x, y; };\n\
@@ -2116,7 +2166,10 @@ mod tests {
             let late = w.local.late;
             let causes: Vec<Cause> = out.causes.iter().map(|(_, c)| *c).collect();
             let direct = super::direct_param(w, o, t);
-            assert!(!w.local.numberings.contains_key(&o), "not numbered by number_all");
+            // Since WP-045 `number_all` numbers the owner of an expanded
+            // expansion statement's variable (the specialisation's
+            // `definition` names it): `direct_param` agrees with it.
+            assert!(w.local.numberings.contains_key(&o), "numbered by number_all");
             w.local.sealed = false;
             let numbered = super::numbering(w, o).object_of(t).ok();
             (late, causes, direct, numbered)

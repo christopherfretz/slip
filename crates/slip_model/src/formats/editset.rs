@@ -64,6 +64,7 @@ impl Enumeration for Cause {
         (Cause::Buried, 14, "buried"),
         (Cause::RuleConflict, 15, "rule_conflict"),
         (Cause::NoEdit, 16, "no_edit"),
+        (Cause::WithGroup, 17, "with_group"),
     ];
     const UNLISTED: &'static str = "unlisted Cause value";
     const EXPECTED: &'static str = "expected a Cause of spec/edits.md §6";
@@ -671,7 +672,7 @@ fn order_violation(x: &EditSet) -> Violation {
 /// (§6): `file` present iff of a site; a refusal of a subject but
 /// `no_subject` has a `subject`, and `no_subject`, `no_observer`, `no_edit`
 /// and `rule_conflict` have none; no `macro` but of a site; `other` only
-/// for `contested`, `overlap` and `buried`; `observers` 0 for the four
+/// for `contested`, `overlap`, `buried` and `with_group`; `observers` 0 for the four
 /// without a subject (row 14 then makes `first` empty); a `no_edit`
 /// refusal only in a set with no edit, and beside no refusal that needs a
 /// `replace` claim (§5.5: "with `no_edit` if no observer claimed a
@@ -686,6 +687,7 @@ fn refusal_violation(x: &EditSet) -> Violation {
                 | Cause::FileDiffers
                 | Cause::Cyclic
                 | Cause::Buried
+                | Cause::WithGroup
         )
     };
     for (i, r) in x.refusals.iter().enumerate() {
@@ -707,11 +709,11 @@ fn refusal_violation(x: &EditSet) -> Violation {
         } else if !c.is_of_site() && r.macro_site.is_some() {
             Some((Loc::RefusalMacro(i), "a refusal that is not of a site has a macro"))
         } else if r.other.is_some()
-            && !matches!(c, Cause::Contested | Cause::Overlap | Cause::Buried)
+            && !matches!(c, Cause::Contested | Cause::Overlap | Cause::Buried | Cause::WithGroup)
         {
             Some((
                 Loc::RefusalOther(i),
-                "other is present for a cause other than contested, overlap or buried",
+                "other is present for a cause other than contested, overlap, buried or with_group",
             ))
         } else if alone && r.observers != 0 {
             Some((
@@ -723,7 +725,7 @@ fn refusal_violation(x: &EditSet) -> Violation {
         } else if c == Cause::NoEdit && x.refusals.iter().any(|r| of_replace(r.cause)) {
             Some((
                 Loc::Refusal(i),
-                "a no_edit refusal is beside a contested, divergent, overlap, file_differs, cyclic or buried refusal",
+                "a no_edit refusal is beside a contested, divergent, overlap, file_differs, cyclic, buried or with_group refusal",
             ))
         } else {
             None

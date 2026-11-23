@@ -1,0 +1,4 @@
+# Fix round 2, F3: a member instantiated from a pattern member takes the pattern member's mapped name (spec/digest.md §3.4).
+# The equal form of the case beside it: the call follows the swap (u() calls q, which was p).
+relocate template <class> int O::p(type-parameter-1-0) => O :: q
+relocate template <class> int O::q(type-parameter-1-0) => O :: p

@@ -66,9 +66,16 @@ A relocation "the entity with key `K = (parent, kind, name, disc)` is now
 Rule { parent: map(parent'), kind, name: name', disc,  to_parent: parent, to_name: name }
 ```
 
-where `map(parent')` is the new parent as the walk maps it under the same
-rule table (`parent'` itself if no rule reaches it; `root`, `c_linkage` and
-`builtin` map to themselves). Both parents of a rule are `Parent`s
+where `map(parent')` is the new parent as the walk maps it under the rules
+that undo the relocations made before this one (`parent'` itself if no
+rule reaches it; `root`, `c_linkage` and `builtin` map to themselves). The
+walk applies each rule to a key whose parent is already mapped, so a rule
+for a member of a relocated parent names the parent as the parent's own
+rule maps it; `slip declare` makes it so by mapping a `relocate` line's new
+parent under the lines above it (§2.3): a line whose new parent another
+line relocates comes after that line
+(`crates/slip_digest/tests/rules/parents/mapped-parent`, and
+`mapped-parent-reversed`, whose lines in the other order give differences). Both parents of a rule are `Parent`s
 (`digest.md` §3.4). The walk of the
 post-image applies the rules bottom-up (`digest.md` §3.4), so the relocated
 entity, its members, and every type and signature that mentions it are
@@ -89,6 +96,48 @@ needs no map.
   renames a relocated member to a name that a staying member of the old
   namespace has therefore collides, and is reported, although the edit may
   be correct ("Open questions").
+- **An unnamed class is named by the plain name.** An unnamed class or
+  enumeration named for linkage by a typedef, or by its first declarator
+  (`digest.md` §3.3), has `unnamed_by` the name as written in the
+  post-image, not as a rule maps it: a rule that renames the typedef does
+  not rename the class, which needs a rule of its own, from `unnamed_by`
+  the new name to `unnamed_by` the old one
+  (`crates/slip_digest/tests/rules/unnamed/typedef-renamed-no-class-rule`,
+  `typedef-renamed-with-class-rule`; native rename makes that rule,
+  `edits.md` §9.2).
+- **No rule matches a specialisation.** A rule of kind `specialisation`
+  or `partial_specialisation` is refused (`RULE_ON_SPECIALISATION`): a
+  specialisation's key follows its template's (`digest.md` §3.4), and the
+  rule would key it apart from its template, saying that a use of one
+  template's specialisation is a use of another's
+  (`tests/rules/wrong/named-only-spec-reparented-defined-templates`,
+  `named-only-spec-reparented-relocate-form`: before, both equal). A
+  member of a class template's implicit instantiation is the same: its
+  key follows the pattern member's, and a rule that matches the member
+  itself makes its key indeterminate (`tests/rules/instantiated/`).
+  And a part of a unit: a rule of kind `resolved` or `default_argument`
+  is refused (`RULE_ON_PART`): its key's parent is its owner's mapped
+  key, and its name a property or a parameter index, which no edit
+  renames apart from the owner.
+- **No rule moves an entity into or out of the unnamed namespace by
+  renaming a namespace.** A rule of kind `namespace` whose `name` is the
+  unnamed namespace's and whose `to_name` is not, or the reverse, is
+  refused (`RULE_UNNAMED_NAMESPACE`): the namespace's members change
+  linkage, which no digest in the member's unit holds (below)
+  (`tests/rules/wrong/unnamed-namespace-renamed-to-named`,
+  `named-namespace-renamed-to-unnamed`,
+  `named-namespace-merged-onto-unnamed`: before, all equal, with
+  internal symbols made external or the reverse).
+
+The three are refused in one place, `Rule::refusal`
+(`crates/slip_model/src/keys.rs`), and every table records the first rule
+it refuses when it is made (`RuleTable::refused`), whichever way: by
+`RuleTable::new` or by the reader of the declared container. The
+container's encoding still admits such a rule (it is a well-formed
+`Rule`); what refuses it is the use: a resolver (`slip declare`, §2.3)
+must not make a table that holds one, and the walk keys nothing under
+such a table, so every unit of the post-image is indeterminate
+(`key/refused-rule`) and nothing verifies.
 
 **Rules rename owned entities only.** A run has files it may edit and
 files it may not (`spec/edits.md` §2.1; `Declared.files`). A rule that
@@ -169,16 +218,71 @@ indeterminate, `φ` is injective except on merged namespaces. Equal unit
 sets then say that `φ` is a bijection between the entities of `B` and those
 of `A` (namespaces aside) under which every unit's content is the same,
 every reference inside a unit included, because references are written as
-mapped keys. That is an isomorphism of the two resolved programs; the rules
-only choose which isomorphism is tried. A wrong or missing rule cannot make
-two different programs compare equal: it changes which keys the post-image
-gets, and any key that then fails to line up is a reported difference.
+mapped keys. That is an isomorphism of the two resolved programs, as far
+as the units hold them (not the linkage and visibility an entity takes
+from its namespaces, below; nor what §8 lists); the rules only choose
+which isomorphism is tried. Within that, a wrong or missing rule cannot
+make two different programs compare equal: it changes which keys the
+post-image gets, and any key that then fails to line up is a reported
+difference.
+
+`φ` is over every entity the walk gives a key, not over units only: an
+entity with no unit is still written into the references to it by its
+mapped key, so if it shares that key with another entity, a reference to
+one reads as a reference to the other. The collision of `digest.md` §3.4
+is therefore counted over keys, whether or not a unit has them
+(`crates/slip_digest/tests/rules/wrong/named-only-specialisations`,
+`merged-local-extern`: before WP-103 both compared equal). A dependent
+name in a template's definition is written as a name, which no rule maps:
+the definition is compared by its names, and what such a name resolves to
+is compared in the instantiations, derived units both images have (§4);
+a template nothing instantiates is outside what is shown (§8;
+`tests/rules/attempts/dependent-name-unused-template` compares equal
+though the programs differ).
 
 Two namespaces sharing a key is the one place `φ` is not injective. A
 namespace's unit holds only what the namespace itself is (`digest.md` §5),
-its members are units of their own with keys that do collide if two of
-them coincide, and no generated code depends on which namespace an entity
-is in except through names, which is what a relocation declares.
+and its members are units of their own with keys that do collide if two
+of them coincide. Generated code depends on which namespace an entity is
+in through names, which is what a relocation declares, and **through two
+properties the member takes from its enclosing namespaces**, which it
+does not declare:
+
+- **linkage**: a member of the unnamed namespace, or of a namespace
+  within it, has internal linkage ([basic.link]/4); moved out, it has
+  the linkage its declaration gives it (an inline function or a class's
+  member functions become weak external symbols, a variable a global
+  one), and moved in, internal;
+- **visibility**: `__attribute__((visibility(…)))` on a namespace sets
+  the default visibility of the symbols of its members.
+
+Today's digest holds neither in the member's unit: the member's unit
+does not record the linkage or visibility it takes from its namespaces,
+and a namespace's unit is not part of its members'. So a relocation of a
+member between two namespaces that differ in either is compared equal
+although the object code differs (`tests/rules/needs-wp113/`, pending,
+with the symbols each case changes). The refusal above
+(`RULE_UNNAMED_NAMESPACE`) closes one form only: a rule of kind
+`namespace` whose own name changes between the unnamed namespace's and
+another (the unnamed namespace renamed to a named one, a named one renamed
+to it, a named one merged onto it). It sees the rule's two names and
+nothing else, so these stay open until WP-113 writes the effective linkage
+and visibility into each member's unit:
+
+- an entity of any other kind relocated out of the unnamed namespace,
+  into it, or between namespaces of different visibility;
+- a named namespace relocated, under its own name or another, to or from
+  a parent within the unnamed namespace (`relocate (anonymous
+  namespace)::n => :: =`, `relocate n => (anonymous namespace) :: =`, a
+  namespace moved from under `o::(anonymous namespace)` into `p`): its
+  members change linkage although neither of the rule's names is the
+  unnamed namespace's (`tests/rules/needs-wp113/namespace-*`);
+- a namespace relocated between parents of different visibility.
+
+No second guard in the walk covers these: WP-113 closes them all at
+once. Until then the argument of this section holds for the post-image
+only where no relocated entity changes either property, and `slip
+verify` does not show that it does not.
 
 The argument is about one translation unit. The ownership rule above is
 what makes the declared isomorphism one that the rest of the program
@@ -310,6 +414,7 @@ they need the rules the file gives:
 | `Fallback` | the unit has a fallback key: there is no `Key` to make a rule from, and no stable key to exempt |
 | `NotRenamable` | `relocate` with an identifier for an entity whose `Name` is not an identifier |
 | `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)` (one entity relocated twice to one place, or two entities of one kind and discriminator relocated to one place; two overloads to one name have two discriminators and are not); two lines of one exemption list give one key. Reported at the later line |
+| `Refused` | `relocate` whose rule §2.1 refuses (`Rule::refusal`): of kind `specialisation` or `partial_specialisation` (rename the template), or `resolved` or `default_argument` (a part follows its owner). A namespace rule across the unnamed namespace, the third form §2.1 refuses, is never made by a line: the unnamed namespace's name is not an identifier (`NotRenamable`), and no identifier names it. The walk keys nothing under a table that holds such a rule, however it was made; this error is where its reason is given |
 
 A file with no line gives `Declared::none()`.
 
@@ -337,7 +442,7 @@ pub fn records(input: &Input<'_>, rules: &RuleTable) -> Result<Vec<Record>, Stri
 pub struct Entity { pub kind: Option<KeyKind>, pub text: String }
 pub enum Line { Relocate { entity: Entity, parent: Option<Entity>, name: Option<String> },   // None: the global namespace; `=`
                 Changed(Entity), Created(Entity), Removed(Entity) }
-pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate }
+pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate, Refused }
 pub struct LineError { pub line: u64, pub kind: ErrorKind, pub detail: String }
 pub fn read(text: &str) -> Result<Vec<(u64, Line)>, LineError>;            // line numbers from 1
 pub struct Needs { pub post: bool, pub post_mapped: bool }                 // which post-image parses the table asks for
@@ -485,6 +590,12 @@ both have and that differs: the same specialisation instantiated to
 something else is exactly how a dependent name that resolves differently
 shows up ([03](../docs/design/03-equivalence.md) §7 row 6), and no declared
 unit need differ then.
+The same holds of what an instantiation's definition adds: the fields,
+bases and other members of an instantiated class, a function's body, a
+variable's initialiser are rows of the entity's resolved unit
+`definition`, a derived unit (`digest.md` §2.2), so a field or base that
+differs shows as a difference of a derived unit both parses have, not
+of the declared unit of the instantiation or of its class.
 
 One kind of derived unit exists without a demand: a resolved
 `exception_spec` (`digest-kinds.md` §11.2), which Kiln also resolves when

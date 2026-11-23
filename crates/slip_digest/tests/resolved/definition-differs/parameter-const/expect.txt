@@ -1,0 +1,5 @@
+# The friend's declaration in A differs too: since WP-039 it is a unit
+# of its own (A::friend f(int)), which f's own unit no longer reads
+# (Walk::redecls leaves out a pattern's friend).
+changed A::friend f(int)
+changed f(int)::<definition>

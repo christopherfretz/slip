@@ -1,0 +1,2 @@
+# spec/verify.md "Tests": a rule that captures a pre-existing entity: f is renamed g, and the old g is gone.
+relocate f() => :: g

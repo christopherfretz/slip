@@ -602,6 +602,198 @@ fn s8_4_with_closure_sees_the_unit() {
     assert_eq!(errors, 0);
 }
 
+// §8.4 `Unit::token_end`: Kiln's end of a token with the unit's own
+// interner and lexer options. In C++03 `u8"x"` is the identifier `u8` and
+// a string (one token in C++11 and later, and in Kiln's default options);
+// a token spliced over a line ends after the splice.
+#[test]
+fn s8_4_with_token_end_uses_the_unit_lexer_options() {
+    let f = Fixture::new("token-end");
+    f.write("main.cpp", "const char *s = u8\"x\";\nint ab\\\ncd;\n");
+    let o = f.observer(".", &["c++", "-std=c++03", "main.cpp"]);
+    let (_, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        let sm = unit.sm();
+        let main = unit.main_file().expect("a main file");
+        let text = sm.text(main);
+        let at = |needle: &str| {
+            let k = text.find(needle).expect("in the text");
+            sm.loc(main, u32::try_from(k).unwrap())
+        };
+        let len = |needle: &str| {
+            let lo = at(needle);
+            unit.token_end(lo).and_then(|e| sm.same_entry_distance(lo, e))
+        };
+        (len("u8"), len("ab"), unit.token_end(at(" =")))
+    })
+    .unwrap();
+    assert_eq!(seen, Some((Some(2), Some(6), None)), "`u8`; `ab\\\ncd`; a blank is no token");
+}
+
+// `spec/api.md` §1 unit order through a real `-include` (WP-084): Kiln
+// writes the forced include as an `#include` line in `<built-in>`, a root
+// it creates after the main file and reads before it. The predefines and
+// every location of a forced header (and of a header it includes) come
+// before every location of the main file. The tree is under the target
+// directory.
+#[test]
+fn s1_unit_order_forced_include_comes_before_the_main_file() {
+    use slip_kiln::kiln::ast::ids::ExprId;
+    use slip_kiln::kiln::source::Loc;
+    use slip_kiln::ranges::unit_order;
+    use std::cmp::Ordering;
+    let _lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("slip-kiln-wp084-forced-include-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    std::fs::write(dir.join("pre.h"), "int p1 = 11;\n#include \"pre2.h\"\nint p2 = 12;\n").unwrap();
+    std::fs::write(dir.join("pre2.h"), "int q1 = 21;\n").unwrap();
+    std::fs::write(dir.join("main.cpp"), "#define E 31\nint m0 = 30;\nint m1 = E;\n").unwrap();
+    let o = observer(&dir, &["c++", "-include", "pre.h", "main.cpp"]);
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        let sm = unit.sm();
+        let ast = unit.ast();
+        let main = unit.main_file().expect("a main file");
+        let named = |n: &str| sm.file_ids().find(|&f| sm.file_name(f).ends_with(n)).expect(n);
+        let (builtin, pre, pre2) = (named("<built-in>"), named("/pre.h"), named("/pre2.h"));
+        assert!(builtin.index() > main.index(), "Kiln creates <built-in> after the main file");
+        // The first token of every expression (the integer literals), by
+        // the file it is in; a forced header's tokens are in the range of
+        // its inclusion, not in the buffer's own range.
+        let firsts: Vec<_> = (1..=ast.exprs.len())
+            .filter_map(|k| ExprId::try_new(u32::try_from(k).ok()?))
+            .map(|e| ast.begin_loc(e))
+            .filter(|l| l.is_valid())
+            .collect();
+        let in_file = |f| -> Vec<_> {
+            firsts
+                .iter()
+                .copied()
+                .filter(|&l| sm.offset_of(l).is_some_and(|(g, _)| g == f))
+                .collect()
+        };
+        let (forced, nested, mut written) = (in_file(pre), in_file(pre2), in_file(main));
+        written.extend(firsts.iter().copied().filter(|l| l.is_macro()));
+        // Every byte of each inclusion range of a forced header, every
+        // byte of <built-in> (the `#include` line), and those tokens;
+        // against every byte of the main file and its tokens, `E`'s
+        // expansion included.
+        let range_of = |l: Loc| {
+            let (f, off) = sm.offset_of(l).unwrap();
+            let base = l.to_raw() - off;
+            let len = u32::try_from(sm.text(f).len()).unwrap();
+            (0..=len).map(move |o| Loc::from_raw(base + o))
+        };
+        let bytes = |f| {
+            let len = u32::try_from(sm.text(f).len()).unwrap();
+            (0..=len).map(move |o| sm.loc(f, o))
+        };
+        let mut before: Vec<_> = bytes(builtin).collect();
+        before.extend(range_of(forced[0]).chain(range_of(nested[0])));
+        before.push(sm.include_loc(forced[0]));
+        let after: Vec<_> = bytes(main).chain(written.iter().copied()).collect();
+        let mut wrong = 0;
+        for &a in &before {
+            for &b in &after {
+                wrong += usize::from(unit_order(sm, a, b) != Ordering::Less);
+                wrong += usize::from(unit_order(sm, b, a) != Ordering::Greater);
+            }
+        }
+        // Translation order: 11, 21, 12, 30, 31.
+        let order = [forced[0], nested[0], forced[1], written[0], written[1]];
+        assert!(written[1].is_macro(), "31 comes from `E`");
+        for w in order.windows(2) {
+            wrong += usize::from(unit_order(sm, w[0], w[1]) != Ordering::Less);
+        }
+        (wrong, (forced.len(), nested.len(), written.len()), unit.errors())
+    })
+    .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok);
+    let (wrong, counts, errors) = seen.unwrap();
+    assert_eq!((counts, errors), ((2, 1, 2), 0));
+    assert_eq!(wrong, 0, "every forced location before every main location");
+}
+
+/// The literals `#embed` gives in a C23 unit, as `(locations of the
+/// embedded literals, the location of the `9` after them)`, and what
+/// `f` answers for them.
+fn with_embed<R: Send>(
+    f: impl FnOnce(&Unit<'_>, &[slip_kiln::kiln::source::Loc], slip_kiln::kiln::source::Loc) -> R + Send,
+) -> R {
+    use slip_kiln::kiln::ast::ids::ExprId;
+    use slip_kiln::kiln::source::Span;
+    let fx = Fixture::new("embed");
+    fx.write_bytes("d.bin", &[2, 3]);
+    fx.write("main.c", "const unsigned char d[] = {\n#embed \"d.bin\"\n, 9 };\n");
+    let o = fx.observer(".", &["cc", "-std=c23", "main.c"]);
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        let (sm, ast) = (unit.sm(), unit.ast());
+        let firsts: Vec<_> = (1..=ast.exprs.len())
+            .filter_map(|k| ExprId::try_new(u32::try_from(k).ok()?))
+            .map(|e| ast.begin_loc(e))
+            .filter(|l| l.is_valid())
+            .collect();
+        let mut embedded: Vec<_> =
+            firsts.iter().copied().filter(|&l| sm.is_written_in_scratch_space(l)).collect();
+        // A literal and its implicit conversion begin at one location.
+        embedded.sort();
+        embedded.dedup();
+        let nine = firsts
+            .iter()
+            .copied()
+            .find(|&l| unit.token_end(l).and_then(|e| sm.span_text(Span::new(l, e))) == Some("9"))
+            .expect("the 9");
+        f(unit, &embedded, nine)
+    })
+    .unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    seen.expect("the closure ran")
+}
+
+// `spec/landed/api/WP-084.md`: the tokens of `#embed` are file locations
+// in a fresh `<scratch space>` buffer, which the unit did not enter. They
+// get no range, and unit order ranks that buffer as it ranks every root
+// that is neither `<built-in>` nor invalid: by raw order, after the main
+// file. So they come after the `9` that follows them (wrong, and
+// pinned; the right order is the ignored test below).
+#[test]
+fn s1_embed_tokens_have_no_range_and_rank_after_the_main_file() {
+    use slip_kiln::ranges::{file_range, unit_order};
+    use std::cmp::Ordering;
+    let (n, ranges, after_nine, after_main) = with_embed(|unit, embedded, nine| {
+        let sm = unit.sm();
+        let main = unit.main_file().expect("a main file");
+        let len = u32::try_from(sm.text(main).len()).unwrap();
+        let ranges = embedded.iter().filter(|&&l| file_range(unit, l, l).is_some()).count();
+        let after_nine =
+            embedded.iter().filter(|&&l| unit_order(sm, l, nine) == Ordering::Greater).count();
+        let after_main = embedded
+            .iter()
+            .filter(|&&l| (0..=len).all(|o| unit_order(sm, sm.loc(main, o), l) == Ordering::Less))
+            .count();
+        (embedded.len(), ranges, after_nine, after_main)
+    });
+    assert_eq!(n, 2, "two embedded literals");
+    assert_eq!(ranges, 0, "no range for an embedded literal");
+    assert_eq!((after_nine, after_main), (2, 2), "the documented rank: after the main file");
+}
+
+// The right order of `#embed`'s tokens: before the `9` after the
+// directive. Pending a parent location for Kiln's `<scratch space>`
+// buffers of `#embed` (`spec/landed/api/WP-084.md` "Until Kiln answers").
+#[test]
+#[ignore = "pending Kiln: an `#embed` buffer has no parent location (spec/landed/api/WP-084.md)"]
+fn s1_pending_embed_tokens_order_before_what_follows_the_directive() {
+    use slip_kiln::ranges::unit_order;
+    use std::cmp::Ordering;
+    let wrong = with_embed(|unit, embedded, nine| {
+        embedded.iter().filter(|&&l| unit_order(unit.sm(), l, nine) != Ordering::Less).count()
+    });
+    assert_eq!(wrong, 0);
+}
+
 // §8.4 `parse_observer_with`: the closure runs for a `diagnosed` unit and
 // not for a `rejected` one.
 #[test]

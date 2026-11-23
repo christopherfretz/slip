@@ -1,4 +1,3 @@
-# pending
-# needs: demand
-# the instantiation T<1>::v is written when demand lands
-changed T<1>::v
+# the instantiation's initialiser is in T<1>::v's resolved unit `definition` (WP-045)
+changed T::v
+derived-changed T<1>::v::<definition>

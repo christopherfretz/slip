@@ -1,0 +1,2 @@
+# digest-kinds §3.1 function, renamed.
+relocate f(int) => :: g
