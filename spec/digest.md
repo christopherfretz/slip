@@ -404,7 +404,8 @@ Three kinds of key take another entity's name as the rules map it
   name-independent, named by its first member, a conversion function,
   P2169), of a `local` number (it counts the instantiation's own local
   types: a discarded `if constexpr` branch of the instantiation declares
-  none) and of an `unnamed_ordinal` (it counts the scope's own unnamed
+  none, and one expansion statement instantiates its local class once
+  per element, each a distinct entity) and of an `unnamed_ordinal` (it counts the scope's own unnamed
   types). Such a member is keyed as an entity that follows no pattern:
   a rule that matches its plain key applies to it as to any key, and the
   checks above are not made. A rule whose name is a conversion name comes

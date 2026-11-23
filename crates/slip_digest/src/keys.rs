@@ -1631,4 +1631,36 @@ mod tests {
             (1..=u8::MAX).filter_map(OverloadedOperator::from_u8).map(|op| op as u8).collect();
         assert_eq!(seen, every, "every row is declared");
     }
+
+    /// `spec/digest.md` §3.4 (WP-131): the name forms that follow their
+    /// pattern. `unnamed_by` follows as the name it wraps; with today's
+    /// Kiln an instantiated unnamed class has no pattern link, so
+    /// `unnamed_by(conversion)` reaches no walk's following branch and is
+    /// pinned here.
+    #[test]
+    fn wp131_names_that_follow_their_pattern() {
+        use super::follows_pattern;
+        use slip_model::Digest;
+        let conversion = || Name::Conversion(Digest([7; 32]));
+        let by = |n: Name| Name::UnnamedBy(Box::new(n));
+        for n in [
+            Name::Identifier(b"f".to_vec()),
+            Name::Constructor,
+            Name::Destructor,
+            Name::DeductionGuide,
+            Name::LiteralOperator(b"_w".to_vec()),
+            by(Name::Identifier(b"x".to_vec())),
+        ] {
+            assert!(follows_pattern(&n), "{n:?} follows");
+        }
+        for n in [
+            conversion(),
+            by(conversion()),
+            by(by(conversion())),
+            Name::Local(0),
+            Name::UnnamedOrdinal(0),
+        ] {
+            assert!(!follows_pattern(&n), "{n:?} keeps its own name");
+        }
+    }
 }

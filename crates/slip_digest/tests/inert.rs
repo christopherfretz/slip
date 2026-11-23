@@ -52,7 +52,9 @@ fn id(s: &str) -> Name {
 /// A parent no source declares: the key of a class of that name at the
 /// global namespace.
 fn absent_class() -> Parent {
-    Parent::Unit(Key { kind: KeyKind::Class, parent: Parent::Root, name: id("class"), disc: None }.id())
+    Parent::Unit(
+        Key { kind: KeyKind::Class, parent: Parent::Root, name: id("class"), disc: None }.id(),
+    )
 }
 
 /// A discriminator no function has (a digest is not chosen by hand in
@@ -79,8 +81,20 @@ fn every_kind_table() -> RuleTable {
         rule(Parent::Root, KeyKind::Namespace, id("ns"), None, "ns_old"),
         rule(Parent::Root, KeyKind::Class, id("class"), None, "class_old"),
         rule(Parent::Root, KeyKind::Function, id("fn"), Some(ABSENT_DISC), "fn_old"),
-        rule(absent_class(), KeyKind::Function, Name::Identifier(b"f".to_vec()), Some(ABSENT_DISC), "f_old"),
-        rule(absent_class(), KeyKind::Function, Name::Conversion(ABSENT_DISC), Some(ABSENT_DISC), "conv_old"),
+        rule(
+            absent_class(),
+            KeyKind::Function,
+            Name::Identifier(b"f".to_vec()),
+            Some(ABSENT_DISC),
+            "f_old",
+        ),
+        rule(
+            absent_class(),
+            KeyKind::Function,
+            Name::Conversion(ABSENT_DISC),
+            Some(ABSENT_DISC),
+            "conv_old",
+        ),
         rule(Parent::Root, KeyKind::Variable, id("var"), None, "var_old"),
     ])
     .expect("a table")
@@ -218,7 +232,8 @@ fn all_dirs() -> Vec<PathBuf> {
 /// `spec/digest.md` §3.4 "Inert rules": every source, both tables.
 #[test]
 fn a_rule_that_matches_nothing_changes_nothing() {
-    let tables = [("namespace rule", namespace_table()), ("a rule of each kind", every_kind_table())];
+    let tables =
+        [("namespace rule", namespace_table()), ("a rule of each kind", every_kind_table())];
     let dirs = all_dirs();
     let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));
     let start = std::time::Instant::now();
@@ -237,5 +252,11 @@ fn a_rule_that_matches_nothing_changes_nothing() {
         failures.len(),
         start.elapsed().as_millis()
     );
-    assert!(failures.is_empty(), "{} of {} differ:\n{}", failures.len(), dirs.len(), failures.join("\n\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {} differ:\n{}",
+        failures.len(),
+        dirs.len(),
+        failures.join("\n\n")
+    );
 }
