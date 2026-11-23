@@ -329,6 +329,19 @@ rules come from, and why this is sound, is `verify.md`. A walk under
 rules also counts how each rule was used, so that a run can check that no
 observer still has a renamed entity under its old name (`verify.md` §9).
 
+**Ownership.** With rules the walk is also given which files are
+read-only (`verify.md` §2, `Declared.files`). A rule matches only an
+**owned** entity, and the namespaces that enclose a namespace member are
+mapped only when the member is owned; a dependency entity (one with a
+declaration in a read-only file, by its expansion location; a
+specialisation of such a template; an implicit member of such a class)
+keeps its own name and its namespaces theirs, with only what its
+discriminators mention mapped. The definition and the reason are
+`verify.md` §2.1 "Rules rename owned entities only". "Map its parent"
+above is therefore: a parent that is not a namespace has its own key; a
+namespace parent is mapped from the point of view of the entity being
+keyed. With `R` empty none of this is consulted.
+
 Two different entities of one translation unit with the same mapped `KeyId`
 are a **key collision**: every unit with that key is indeterminate (§10).
 Declarations that the language lets a scope repeat and that Kiln does not

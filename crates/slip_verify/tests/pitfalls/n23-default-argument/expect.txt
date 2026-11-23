@@ -6,3 +6,16 @@ good:   verified
 bad:    not_parsed
 good-2: verified
 bad-2:  mismatch changed legacy::take(int) @ main.cpp:4
+# pre-3: a default member initialiser, written in the field's unit
+# (FieldData init). pre-4: a function template's default argument. It
+# changes twice, and both findings are required: the pattern's unit
+# (spec/verify.md §4 step 2), against a verifier that compares only what is
+# instantiated (as one working on object code or IR would: it has no
+# templates); and the instantiated default argument, a derived unit
+# (digest-kinds §11.4, §4 step 3), against a verifier that compares only
+# written units and never the instantiations they give.
+good-3: verified
+bad-3:  mismatch changed legacy::Box::n @ main.cpp:4
+good-4: verified
+bad-4:  mismatch changed template <class> type-parameter-0-0 legacy::take(type-parameter-0-0) @ main.cpp:4
+bad-4:  mismatch derived_changed legacy::take<int>(int)::<default_argument 0> @ main.cpp:4

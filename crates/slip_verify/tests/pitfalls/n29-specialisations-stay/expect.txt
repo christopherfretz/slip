@@ -1,0 +1,21 @@
+# N29: owned specialisations of the dependency's templates, which must stay
+# in legacy: a partial specialisation on the moved Box (bad), a variable
+# template's explicit specialisation (bad-2), a function template's (bad-3),
+# one in the dependency's nested namespace legacy::lib (bad-4). Each bad tree
+# moves one of them into acme.
+# Caught only by a failed parse (spec/pitfalls.md §5).
+good:  verified
+bad:   not_parsed
+bad-2: not_parsed
+bad-3: not_parsed
+bad-4: not_parsed
+# pre-5: a deduction guide for the dependency's wrap, which must be in
+# wrap's scope ([temp.deduct.guide]). pre-6, pre-7: an explicit
+# instantiation definition and declaration of vec<Mine>, which must be in a
+# namespace enclosing vec ([temp.explicit]). Each bad tree moves it.
+good-5: verified
+bad-5:  not_parsed
+good-6: verified
+bad-6:  not_parsed
+good-7: verified
+bad-7:  not_parsed
