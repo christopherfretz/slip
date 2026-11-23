@@ -1954,11 +1954,12 @@ fn clang_calls(
             _ => None,
         };
         if let Some(key) = key {
-            // An explicit object argument precedes the callee; an
-            // implicit one (made from an implicit `this`) has no place.
-            let object = |a: &&Node| match (first_at(a).spelled(), callee.begin.spelled()) {
-                (Some((g, lo, _)), Some((h, at, _))) => g == h && lo < at,
-                (None, _) => matches!(first_at(a), At::None),
+            // An explicit object argument precedes the callee in a file
+            // (spellings through a macro have no order); an implicit one
+            // (made from an implicit `this`) has no place.
+            let object = |a: &&Node| match (first_at(a), &callee.begin) {
+                (At::File(g, lo, _), At::File(h, at, _)) => g == h && lo < at,
+                (At::None, _) => true,
                 _ => false,
             };
             let written: Vec<&Node> =
@@ -2225,6 +2226,61 @@ fn kiln_sides(dir: &std::path::Path, std: &str) -> Vec<(String, Vec<Side>)> {
             (format!("{}/{n}", dir.display()), vec![side])
         })
         .collect()
+}
+
+/// Item 7 on the review's programs (findings 1, 2 and 4): the forward
+/// direction compares the arguments of `M(x)` through the macro (finding
+/// 1: a wrong range would differ from where clang's tokens were
+/// spelled), and the reverse direction finds every call clang has with
+/// its `)` written, also through a macro (finding 2) and in a template
+/// head, an `alignas` and an alias (finding 4, the forms clang's dump
+/// holds). Skipped visibly without clang.
+#[test]
+fn review086_differential_on_the_review_programs() {
+    if std::process::Command::new(CLANG).arg("--version").output().is_err() {
+        assert!(std::env::var_os("SLIP_REQUIRE_ALL").is_none_or(|v| v != "1"), "no {CLANG}");
+        eprintln!(
+            "SKIP subject_calls.rs review086_differential_on_the_review_programs: no {CLANG}"
+        );
+        return;
+    }
+    let src = "\
+struct O { bool a = false; long b = 0; };
+int f(const O&);
+int g(O);
+int h(int);
+int handle_a();
+struct Q2 { int mm(int); };
+#define M(a) f({a})
+#define N(a) g({a})
+#define P(a) h((a))
+#define R(a) h(a)
+#define CALL1(fn) fn(1)
+#define CALL(fn, x) fn(x)
+#define X(n) handle_##n()
+#define MEM(o, m) o.m(3)
+int use(O x, int a, Q2 q) {
+  return M(x) + N(x) + P(a) + R(a) + CALL1(h) + CALL(h, 2) + X(a) + MEM(q, mm);
+}
+constexpr int k(int v) { return v; }
+template <int V> struct A { static constexpr int v = V; };
+template <int V = k(1)> struct TD {};
+struct alignas(k(8)) AL {};
+using AT = A<k(9)>;
+";
+    let side = Side {
+        files: vec![("main.cpp".to_owned(), src.to_owned())],
+        std: "c++23".to_owned(),
+        args: Vec::new(),
+        target: None,
+    };
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp086-review");
+    let d = differential(&side, &dir, "review");
+    assert_eq!((d.kiln_errors, d.clang_errors), (0, 0));
+    assert!(d.differences.is_empty(), "{}", d.differences.join("\n"));
+    assert!(d.missing.is_empty(), "{:?}\n{}", d.missing, d.missing_at.join("\n"));
+    assert!(d.compared_through_macro >= 4, "{} through a macro", d.compared_through_macro);
+    assert_eq!(d.clang_calls, 11, "clang calls");
 }
 
 /// Item 7: the extents of calls and arguments against clang 19, over
