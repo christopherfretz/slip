@@ -70,6 +70,10 @@ pub(super) struct Names {
     sorted: Mutex<HashMap<u32, Arc<[Reference]>>>,
     /// Extent → the references that have it.
     by_extent: OnceLock<HashMap<Range, Vec<Reference>>>,
+    /// The entries (indexes in `KilnSubject::refs`) joined into a
+    /// reference after its first ([`Ref::entry`]), by reference (WP-095:
+    /// the holder of a reference is that of all its entries).
+    more_entries: HashMap<u32, Vec<u32>>,
 }
 
 impl std::fmt::Debug for Names {
@@ -95,6 +99,7 @@ impl Names {
             + self.tiers.capacity() * (size_of::<Range>() + 2 + 8)
             + self.at_loc.capacity() * (8 + 8)
             + self.origins.capacity() * (8 + 8)
+            + self.more_entries.values().map(|v| v.capacity() * 4 + 40).sum::<usize>()
             + self.unresolved.keys().map(|k| k.len() + 40).sum::<usize>()
     }
 }
@@ -118,6 +123,10 @@ struct Ref {
     nearest: Option<Range>,
     /// Lookup did not go through a using-declaration (§7.2 rule 1).
     direct: bool,
+    /// The first entry joined into this reference: its index in
+    /// `KilnSubject::refs` (the same list, in the same order, as
+    /// `written::written_refs` gives [`Names::add_references`]).
+    entry: u32,
 }
 
 /// The name range of a declaration, or the nearest place.
@@ -194,7 +203,8 @@ impl Names {
         let sm = unit.sm();
         let declarative = Declarative::build(unit);
         let mut keys: HashMap<Key, u32> = HashMap::new();
-        for r in written::written_refs(unit) {
+        for (j, r) in written::written_refs(unit).into_iter().enumerate() {
+            let j = j as u32;
             if !returned_role(r.role) || declarative.holds(&r) {
                 continue;
             }
@@ -203,6 +213,7 @@ impl Names {
                 continue;
             }
             let mut x = s.make_ref(unit, &r, referent);
+            x.entry = j;
             x.origin = origin_of(s, unit, referent);
             let key = Key {
                 origin: x.origin.index(),
@@ -216,6 +227,7 @@ impl Names {
             // first token: Kiln records the entries of one written name in
             // the order of their preprocessing, which is unit order.
             let at = if let Some(&i) = keys.get(&key) {
+                self.more_entries.entry(i).or_default().push(j);
                 i
             } else {
                 let i = self.refs.len() as u32;
@@ -579,6 +591,7 @@ impl KilnSubject<'_> {
             extent,
             nearest,
             direct: !r.via_using,
+            entry: 0,
         }
     }
 
@@ -599,6 +612,16 @@ impl KilnSubject<'_> {
     pub(super) fn written_by_table(&self, d: DeclId) -> bool {
         let i = d.index() as usize;
         self.names().written.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 == 1)
+    }
+
+    /// The entries of reference `r` (indexes in `self.refs`), the first
+    /// first: one written name may be several entries of Kiln's table (a
+    /// header entered twice, a macro argument used twice).
+    pub(super) fn reference_entries(&self, r: Reference) -> Vec<u32> {
+        let Some(x) = self.reference(r) else { return Vec::new() };
+        let mut out = vec![x.entry];
+        out.extend(self.names().more_entries.get(&r.0).into_iter().flatten());
+        out
     }
 
     pub(super) fn reference_is_live(&self, r: Reference) -> bool {
