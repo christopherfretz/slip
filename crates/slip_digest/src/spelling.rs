@@ -31,12 +31,13 @@
 //! `Unaccounted("spelling/<site>")`.
 
 use slip_kiln::kiln::ast::decl::DeclKind;
-use slip_kiln::kiln::ast::expr::{Designator, ExprFlags, ExprKind as K, TypeidOperand};
+use slip_kiln::kiln::ast::expr::{Designator, ExprDeps, ExprFlags, ExprKind as K, TypeidOperand};
 use slip_kiln::kiln::ast::templates::Requirement;
 use slip_kiln::kiln::ast::types::{
     ArgView, ExcSpec, ExprOperand, Nns, NoexceptValue, TemplateArg, TemplateName, TypeFlags,
     TypeOfOperand, TypeView,
 };
+use slip_kiln::kiln::ast::fp::FpRound;
 use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, ListId, NnsId, QualType, TemplateNameId};
 
 use crate::Cause;
@@ -59,6 +60,16 @@ pub(crate) enum Fact {
     /// A typedef, alias or alias template whose own spelling holds a
     /// left-out fact: written by its unit.
     Alias(DeclId),
+    /// The profile bytes of an expression the written type holds that is
+    /// instantiation-dependent and neither type- nor value-dependent: the
+    /// canonical type holds its value, not the expression (an array bound,
+    /// a template argument, a resolved `noexcept` operand).
+    Profile(Vec<u8>),
+    /// The rounding modes where the operations of one expression the unit
+    /// reads were written, where one is not the default (`fp_round`): the
+    /// expression's position among the expressions the unit reads, then
+    /// each node's position in that expression's reading and its mode.
+    Round(u64, Vec<(u64, FpRound)>),
 }
 
 /// The kind tags of a list entry (§4.4 "Spellings").
@@ -66,6 +77,8 @@ pub(crate) const FACT_FOUND: u64 = 1;
 pub(crate) const FACT_OPER: u64 = 2;
 pub(crate) const FACT_ALIAS: u64 = 3;
 pub(crate) const FACT_CHOSEN: u64 = 4;
+pub(crate) const FACT_PROFILE: u64 = 5;
+pub(crate) const FACT_ROUND: u64 = 6;
 
 impl Fact {
     /// Whether the fact makes a list due: a non-empty set, or an alias
@@ -74,7 +87,7 @@ impl Fact {
         match self {
             Fact::Found(ds) | Fact::Oper(ds) => !ds.is_empty(),
             Fact::Chosen(ds) => ds.iter().any(Option::is_some),
-            Fact::Alias(_) => true,
+            Fact::Alias(_) | Fact::Profile(_) | Fact::Round(_, _) => true,
         }
     }
 }
@@ -142,10 +155,17 @@ pub(crate) fn left_out_of_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, mark
 }
 
 /// The left-out facts of written type `written`, added to the unit's list.
-/// `own_fn`: `written` is a function declaration's own type, whose
-/// exception specification its unit walks in full (`DeclNode`
-/// `ty-exception-spec`), so it is not read here.
-pub(crate) fn left_out_of_type(w: &mut Walk<'_>, s: &mut Stream, written: QualType, own_fn: bool) {
+/// `own_fn`: `written` is the own type of function declaration `d`, whose
+/// unit walks a dependent exception specification in full (`DeclNode`
+/// `ty-exception-spec`) and writes each parameter's declaration, with
+/// the parameter's type as written (`ParamData` `original_ty` for an
+/// adjusted one): neither is read here.
+pub(crate) fn left_out_of_type(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    written: QualType,
+    own_fn: Option<DeclId>,
+) {
     ty(w, s, written, own_fn);
 }
 
@@ -198,6 +218,15 @@ pub(crate) fn write_unit_list(w: &mut Walk<'_>, s: &mut Stream) {
                 s.uv(FACT_ALIAS);
                 w.write_ref(s, d);
             }
+            Fact::Profile(bytes) => {
+                s.uv(FACT_PROFILE).bytes(&bytes);
+            }
+            Fact::Round(root, modes) => {
+                s.uv(FACT_ROUND).uv(root).count(modes.len());
+                for (at, mode) in modes {
+                    s.uv(at).tag(crate::tables::fp_round::row(&mode));
+                }
+            }
         }
     }
 }
@@ -218,20 +247,32 @@ fn alias_due(w: &mut Walk<'_>, d: DeclId) -> bool {
     w.alias_due.insert(d, false);
     let facts = std::mem::take(&mut w.unit.facts);
     let due = std::mem::take(&mut w.unit.facts_due);
+    let roots = std::mem::take(&mut w.unit.roots);
     let depth = std::mem::take(&mut w.depth);
     let node_depth = std::mem::take(&mut w.node_depth);
     let mut scratch = Stream::new();
-    ty(w, &mut scratch, underlying, false);
+    ty(w, &mut scratch, underlying, None);
     w.depth = depth;
     w.node_depth = node_depth;
     let mine = w.unit.facts_due || scratch.cause().is_some();
     w.unit.facts = facts;
     w.unit.facts_due = due;
+    w.unit.roots = roots;
     w.alias_due.insert(d, mine);
     mine
 }
 
-fn alias(w: &mut Walk<'_>, d: DeclId) {
+fn alias(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    // A block-scope typedef or alias has no unit of its own: its
+    // declaration writes its aliased type into the enclosing unit
+    // (`local::write_decl`), and a use reads that type again here, so
+    // which of two such aliases a use names is in the list.
+    if w.is_local(d) {
+        if let Some(underlying) = w.ast.decls.typedef(d).map(|t| t.underlying) {
+            ty(w, s, underlying, None);
+        }
+        return;
+    }
     if alias_due(w, d) {
         push(w, Fact::Alias(w.ast.first(d)));
     }
@@ -243,10 +284,16 @@ fn alias(w: &mut Walk<'_>, d: DeclId) {
     clippy::many_single_char_names,
     reason = "s stream, q type, n qualifier, l list, p prototype"
 )]
-fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: bool) {
+fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: Option<DeclId>) {
     let types = &w.ast.types;
-    if !types.flags(q.ty()).intersects(TypeFlags::DEPENDENT_INSTANTIATION) {
-        // No profile in it.
+    if !types.flags(q.ty()).intersects(TypeFlags::DEPENDENT_INSTANTIATION)
+        && types.canonical(q) == q
+    {
+        // No profile in it, and no sugar: Kiln's flags do not hold the
+        // instantiation dependence of a constant array's bound as written
+        // or of a resolved `noexcept` operand (`ConstArray::size_expr`,
+        // `TypeContext::constant_array`: the element's flags), so a type
+        // with sugar is walked whatever its flags (rule 7).
         return;
     }
     if !w.enter() {
@@ -259,7 +306,6 @@ fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: bool) {
     match types.view(q.ty()) {
         TypeView::Invalid
         | TypeView::Builtin(_)
-        | TypeView::BitInt { signed: _, width: _ }
         | TypeView::Record(_)
         | TypeView::Enum(_)
         | TypeView::UnresolvedUsing(_)
@@ -269,7 +315,13 @@ fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: bool) {
         | TypeView::InjectedClassName { pattern: _, injected: _ }
         | TypeView::Splice { operand: _, designated: _ } => {}
         TypeView::DependentBitInt { signed: _, width: _ } => {
+            // Kiln interns the node with the first spelling's operand.
             no_spelling(w, s, here, "spelling/bit-int");
+        }
+        TypeView::BitInt { signed: _, width: _ } => {
+            // An instantiation-dependent width Kiln computed: the written
+            // expression is not held.
+            unreachable_operand(w, s, q, "spelling/bit-int-width");
         }
         TypeView::Pointer(x)
         | TypeView::LValueRef(x)
@@ -285,55 +337,67 @@ fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: bool) {
             associated: _,
             index: _,
             pack_index: _,
-        } => ty(w, s, x, false),
-        TypeView::QualifiedArray { quals: _, base } => ty(w, s, QualType::unqual(base), false),
+        } => ty(w, s, x, None),
+        TypeView::QualifiedArray { quals: _, base } => ty(w, s, QualType::unqual(base), None),
         TypeView::Paren(x) => ty(w, s, x, own_fn),
         TypeView::Attributed { kind: _, modified, equivalent: _ } => ty(w, s, modified, own_fn),
         TypeView::ConstantArray(a) => {
-            let slip_kiln::kiln::ast::types::ConstArray { elem, size: _, size_expr: _ } = a;
-            ty(w, s, elem, false);
+            let slip_kiln::kiln::ast::types::ConstArray { elem, size: _, size_expr } = a;
+            ty(w, s, elem, None);
+            match size_expr {
+                Some(e) => written_expr(w, s, e, here),
+                None => {
+                    if !types.flags(elem.ty()).intersects(TypeFlags::DEPENDENT_INSTANTIATION) {
+                        unreachable_operand(w, s, q, "spelling/array-size");
+                    }
+                }
+            }
         }
         TypeView::MemberPointer { pointee, class } => {
-            ty(w, s, pointee, false);
-            ty(w, s, QualType::unqual(class), false);
+            ty(w, s, pointee, None);
+            ty(w, s, QualType::unqual(class), None);
         }
         TypeView::DependentSizedArray { elem, size } => {
-            ty(w, s, elem, false);
+            ty(w, s, elem, None);
             operand(w, s, size, here, "spelling/array-bound");
         }
         TypeView::DependentVector { elem, size, kind: _ } => {
-            ty(w, s, elem, false);
+            ty(w, s, elem, None);
             operand(w, s, size, here, "spelling/vector-size");
         }
         TypeView::DependentAddrSpace { pointee, space } => {
-            ty(w, s, pointee, false);
+            ty(w, s, pointee, None);
             operand(w, s, space, here, "spelling/addr-space");
         }
         TypeView::Function(p) => {
-            ty(w, s, p.ret(), false);
+            ty(w, s, p.ret(), None);
             let params = w.ast.types.params(&p).to_vec();
-            for x in params {
-                ty(w, s, x, false);
+            // The parameters an own type's declaration writes, each with
+            // its type as written (`decl_func::function_data`): an
+            // adjusted parameter type holds the canonical element type.
+            let declared = own_fn
+                .and_then(|d| w.ast.decls.function(d))
+                .map_or(0, |f| w.ast.lists.iter::<DeclId>(f.params).count());
+            for x in params.into_iter().skip(declared) {
+                ty(w, s, x, None);
             }
-            if !own_fn {
-                let e = w.ast.types.exc_spec(&p);
-                exc(w, s, e, here);
-            }
+            let e = w.ast.types.exc_spec(&p);
+            exc(w, s, e, here, own_fn.is_some());
         }
-        TypeView::Typedef { decl, underlying: _ } => alias(w, decl),
+        TypeView::Typedef { decl, underlying: _ } => alias(w, s, decl),
         TypeView::Using { shadow, underlying } => {
             let target = w.ast.strip_shadow(shadow);
             if w.ast.decls.typedef(target).is_some() {
-                alias(w, target);
+                alias(w, s, target);
             } else {
-                ty(w, s, underlying, false);
+                ty(w, s, underlying, None);
             }
         }
         TypeView::Elaborated { keyword: _, nns: n, named } => {
             if let Some(n) = n {
                 nns(w, s, n);
             }
-            ty(w, s, named, false);
+            ty(w, s, named, None);
         }
         TypeView::SubstTemplateTypeParmPack { associated: _, index: _, pack: _ } => {
             no_spelling(w, s, here, "spelling/subst-pack");
@@ -345,10 +409,15 @@ fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: bool) {
                 if let Some(t) = alias_template(w, name)
                     && let Some(pattern) = w.ast.template_info(t).and_then(|i| i.pattern)
                 {
-                    alias(w, pattern);
+                    alias(w, s, pattern);
                 }
                 args(w, s, l, here);
-            } else if underlying.is_none() {
+            } else {
+                // With `underlying` (a specialisation that is not
+                // dependent), the canonical type holds the arguments'
+                // values: an instantiation-dependent one is read as
+                // written, its profile with it (`written_expr`).
+                let _ = underlying;
                 template_name(w, s, name);
                 args(w, s, l, here);
             }
@@ -362,7 +431,7 @@ fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: bool) {
             if selected.is_some() {
                 no_spelling(w, s, here, "spelling/deduced");
             } else {
-                ty(w, s, pattern, false);
+                ty(w, s, pattern, None);
                 operand(w, s, index, here, "spelling/pack-index");
             }
         }
@@ -370,11 +439,11 @@ fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: bool) {
         TypeView::DependentDecltype(_) => no_spelling(w, s, here, "spelling/decltype"),
         TypeView::TypeOf { operand: op, underlying: _, unqual: _ } => match op {
             TypeOfOperand::Expr(e) => expr(w, s, e, here),
-            TypeOfOperand::Type(t) => ty(w, s, t, false),
+            TypeOfOperand::Type(t) => ty(w, s, t, None),
             TypeOfOperand::Profile(_) => no_spelling(w, s, here, "spelling/typeof"),
         },
         TypeView::UnaryTransform { kind: _, base, result } => match result {
-            None => ty(w, s, base, false),
+            None => ty(w, s, base, None),
             Some(_) => no_spelling(w, s, here, "spelling/deduced"),
         },
         TypeView::Auto { keyword: _, deduced, concept: _, args: l, pack: _ } => {
@@ -420,6 +489,50 @@ fn alias_template(w: &Walk<'_>, mut n: TemplateNameId) -> Option<DeclId> {
     None
 }
 
+/// Whether expression `e` is instantiation-dependent and neither type- nor
+/// value-dependent: a type holding it is canonical by its value, and not
+/// by a profile (digest-kinds §4.4 "Spellings", rule 7).
+fn instantiation_only(w: &Walk<'_>, e: ExprId) -> bool {
+    let d = w.ast.exprs.get(e).deps();
+    d.contains(ExprDeps::INSTANTIATION)
+        && !d.intersects(ExprDeps::TYPE)
+        && !d.intersects(ExprDeps::VALUE)
+}
+
+/// An expression a written type holds where the canonical type holds a
+/// value (an array bound, a non-dependent specialisation's argument, a
+/// resolved `noexcept` operand): read as written, and, when it is
+/// instantiation-dependent, its profile bytes added to the list first
+/// (rule 7). A dependent one is read as any written operand.
+fn written_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx) {
+    if !instantiation_only(w, e) {
+        expr(w, s, e, ctx);
+        return;
+    }
+    let mut p = Stream::new();
+    let left_out = w.left_out;
+    // Not the unit's own reading of `e`: that follows, below.
+    w.spelling_off += 1;
+    crate::expr_dep::profile_expr(w, &mut p, e);
+    w.spelling_off -= 1;
+    let marked = w.left_out != left_out;
+    w.left_out = left_out;
+    s.absorb(p.cause());
+    push(w, Fact::Profile(p.as_bytes().to_vec()));
+    expr(w, s, e, Ctx::Known(marked));
+}
+
+/// A type that is instantiation-dependent through an operand Kiln does
+/// not keep as written (a value it computed): `Unaccounted(site)` when the
+/// type is instantiation-dependent and not dependent, the operand then
+/// being the only source of that.
+fn unreachable_operand(w: &Walk<'_>, s: &mut Stream, q: QualType, site: &'static str) {
+    let f = w.ast.types.flags(q.ty());
+    if f.intersects(TypeFlags::INSTANTIATION_DEPENDENT) && !f.intersects(TypeFlags::DEPENDENT) {
+        s.indeterminate(Cause::Unaccounted(site));
+    }
+}
+
 /// An expression operand of a type: its expression as written, or rule 5
 /// for a canonical one.
 fn operand(w: &mut Walk<'_>, s: &mut Stream, op: ExprOperand, ctx: Ctx, site: &'static str) {
@@ -429,21 +542,27 @@ fn operand(w: &mut Walk<'_>, s: &mut Stream, op: ExprOperand, ctx: Ctx, site: &'
     }
 }
 
-/// A function type's exception specification as written.
-fn exc(w: &mut Walk<'_>, s: &mut Stream, e: ExcSpec, ctx: Ctx) {
+/// A function type's exception specification as written. `own`: the
+/// declaration's own, whose dependent operand its unit walks in full.
+fn exc(w: &mut Walk<'_>, s: &mut Stream, e: ExcSpec, ctx: Ctx, own: bool) {
     match e {
         ExcSpec::NoexceptExpr { expr: x, value: NoexceptValue::Dependent(_) } => {
-            expr(w, s, x, ctx);
+            if !own {
+                expr(w, s, x, ctx);
+            }
         }
         ExcSpec::DependentNoexcept(_) => no_spelling(w, s, ctx, "spelling/noexcept"),
         ExcSpec::Dynamic(list) => {
             let ts = w.ast.types.type_list_types(list).to_vec();
             for t in ts {
-                ty(w, s, t, false);
+                ty(w, s, t, None);
             }
         }
-        ExcSpec::NoexceptExpr { expr: _, value: NoexceptValue::False | NoexceptValue::True }
-        | ExcSpec::None
+        // A resolved operand: the type holds its value only.
+        ExcSpec::NoexceptExpr { expr: x, value: NoexceptValue::False | NoexceptValue::True } => {
+            written_expr(w, s, x, ctx);
+        }
+        ExcSpec::None
         | ExcSpec::Nothrow
         | ExcSpec::DynamicNone
         | ExcSpec::NothrowAttr
@@ -472,7 +591,7 @@ fn nns(w: &mut Walk<'_>, s: &mut Stream, n: NnsId) {
     }
     for &n in levels.iter().rev() {
         if let Nns::Type { prefix: _, ty: t, template_kw: _ } = w.ast.types.nns_view(n) {
-            ty(w, s, t, false);
+            ty(w, s, t, None);
         }
     }
 }
@@ -513,11 +632,11 @@ fn args(w: &mut Walk<'_>, s: &mut Stream, l: ArgListId, ctx: Ctx) {
 fn arg(w: &mut Walk<'_>, s: &mut Stream, a: TemplateArg, ctx: Ctx) {
     match a.view() {
         ArgView::Null | ArgView::Value { ty: _, value: _ } => {}
-        ArgView::Type(q) => ty(w, s, q, false),
+        ArgView::Type(q) => ty(w, s, q, None),
         ArgView::Template(n) | ArgView::TemplateExpansion { name: n, num_expansions: _ } => {
             template_name(w, s, n);
         }
-        ArgView::Expr { expr: e, profile: _ } => expr(w, s, e, ctx),
+        ArgView::Expr { expr: e, profile: _ } => written_expr(w, s, e, ctx),
         ArgView::Profile(_) => no_spelling(w, s, ctx, "spelling/arg"),
         ArgView::Pack(p) => args(w, s, p, ctx),
     }
@@ -548,18 +667,30 @@ fn expr(w: &mut Walk<'_>, s: &mut Stream, root: ExprId, ctx: Ctx) {
         s.indeterminate(TOO_DEEP);
         return;
     }
+    // Rule 8: the rounding modes of this reading, by node position.
+    let at = w.unit.roots;
+    w.unit.roots += 1;
+    let mut nodes = 0u64;
+    let mut modes = Vec::new();
     let mut stack = vec![I::E(root)];
     while let Some(i) = stack.pop() {
         match i {
             I::E(e) => {
+                nodes += 1;
+                if let Some(r) = w.ast.exprs.fp_round(e).filter(|&r| r != FpRound::Dynamic) {
+                    modes.push((nodes, r));
+                }
                 let mut kids = Vec::new();
                 node(w, s, e, ctx, &mut kids);
                 stack.extend(kids.into_iter().rev());
             }
-            I::T(q) => ty(w, s, q, false),
+            I::T(q) => ty(w, s, q, None),
             I::A(l) => args(w, s, l, ctx),
             I::N(n) => nns(w, s, n),
         }
+    }
+    if !modes.is_empty() {
+        push(w, Fact::Round(at, modes));
     }
     w.leave_node();
 }
@@ -579,7 +710,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
     // (`oper_lookups`, digest-kinds §9.5): left out of every profile.
     if let Some(cands) = ast.templates.oper_lookups.of(e) {
         let ds: Vec<DeclId> = cands.iter().map(|c| c.decl).collect();
-        record(e, !ds.is_empty());
+        record(e);
         push(w, Fact::Oper(ds));
     }
     let cast_written = || x.cast_written_type(e);
@@ -622,7 +753,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
                 .first()
                 .is_some_and(|&d| ast.decls.get(d).kind() == DeclKind::TemplateTemplateParm);
             if !ttp {
-                record(e, !found.is_empty());
+                record(e);
                 push(w, Fact::Found(found));
             }
             kids.extend(ast.templates.expr_nns.get(e).copied().map(I::N));
@@ -649,7 +780,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
         | K::IntegerPackExpr => opt(kids, id(n.a())),
         K::CXXDeleteExpr => {
             if let Some(d) = DeclId::try_new(n.b()) {
-                record(e, true);
+                record(e);
                 push(w, Fact::Chosen(vec![Some(d)]));
             }
             opt(kids, id(n.a()));
@@ -726,7 +857,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
             let ne = *x.new_extra(e);
             let chosen = vec![ne.operator_new, ne.operator_delete];
             if chosen.iter().any(Option::is_some) {
-                record(e, true);
+                record(e);
                 push(w, Fact::Chosen(chosen));
             }
             kids.push(I::T(ne.allocated_ty));
@@ -812,11 +943,11 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
     }
 }
 
-/// Tests only: an expression whose non-empty set was read directly.
+/// Tests only: an expression whose fact was read directly.
 #[allow(unused_variables, reason = "tests only")]
-fn record(e: ExprId, non_empty: bool) {
+fn record(e: ExprId) {
     #[cfg(test)]
-    if non_empty && IN_TYPE.with(std::cell::Cell::get) == 0 {
+    if IN_TYPE.with(std::cell::Cell::get) == 0 {
         DIRECT.with(|d| d.borrow_mut().push(e));
     }
 }

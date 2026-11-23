@@ -288,9 +288,12 @@ says so in its note.
   Implicit members and the specialisations of member templates are not
   written here: one that is used is a derived unit. A closure met a
   second time writes `n` alone;
-- a local typedef or alias, a using-declaration, a using-directive and an
-  empty declaration write nothing: their effect is in the references
-  resolved through them;
+- a local typedef or alias is written as its rows (its aliased type with
+  the list that type's spelling holds, §4.4 "Spellings", rule 4): it has no
+  unit of its own, and what lookup found in its aliased type is the
+  function's meaning even when nothing uses the alias;
+- a using-declaration, a using-directive and an empty declaration write
+  nothing: their effect is in the references resolved through them;
 - a block-scope declaration of a function or of a variable with linkage
   (`DeclMisc` `misc-local-extern`) is written as a `ref`: the entity is a
   unit of the namespace it belongs to. A function's `ref` is followed by a
@@ -434,10 +437,16 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    non-canonical function node. A type digest is taken from the canonical
    type in every language mode. The exception specification of a
    *function declaration* is a field of the function's unit (§5.3,
-   `DeclNode`, `ty-exception-spec`), read from the declared type with
-   `TypeContext::proto` and `exc_spec`, which answer with the written
-   specification in every language mode, so it is compared whether or not
-   the type holds it.
+   `DeclNode`, `ty-exception-spec`), read from the declaration's own
+   written function node (`Walk::own_proto`): before C++17
+   `TypeContext::proto` of the declared type answers with that node's
+   written specification; from C++17 on it answers with the canonical
+   prototype, whose dependent `noexcept` is the profile of the first
+   spelling (`ExcSpec::DependentNoexcept`), so `own_proto` takes the first
+   function node met along the declared type's sugar
+   (`TypeContext::proto_of`, `desugar_once`), which holds the operand as
+   written (`ExcSpec::NoexceptExpr`). The specification is compared in
+   every language mode, whether or not the type holds it.
 4. **Deferred exception specifications.** `ExcSpec::Deferred(d)` is
    canonical and distinct per declaration, and Kiln re-points the
    declaration's type when the specification is resolved. Whether it has
@@ -1082,20 +1091,27 @@ reflection facts (`:792-837`).
 
 The rest of profile mode:
 
-- **The mark.** When the walk leaves out a fact a spelling holds (a
-  non-empty found set of an `UnresolvedLookupExpr`, a non-empty
-  `oper_lookups` set of a `UnaryOperator`, `BinaryOperator` or
-  `CompoundAssignOperator`, the chosen functions of a `CXXNewExpr` or
-  `CXXDeleteExpr`), it counts it (`Walk::left_out`). A type digest whose
+- **The mark.** When the walk leaves out a fact a spelling may hold, it
+  counts it (`Walk::left_out`), whatever the first spelling's value: every
+  `UnresolvedLookupExpr` (an empty found set too), every expression with an
+  `oper_lookups` entry (an empty set too), every `CXXNewExpr` and
+  `CXXDeleteExpr`, a fold over an operator other than `.*` (rule 9), and an
+  operation that may round (a `BinaryOperator`, `CompoundAssignOperator`,
+  `UnaryOperator` or cast whose node has an `fp_round`, or whose type is
+  floating or dependent: rule 8). The mark is so a function of the
+  profile, not of the spelling Kiln met first. A type digest whose
   stream counted one is marked, and a memo hit of a marked type counts
   again, so every enclosing type is marked too. A key ignores the count
   and the mark. A key and a content digest are computed with the type
   digests' state put aside (`Walk::take_types`): what they count is not
   the enclosing type's, so a type's mark does not depend on whether a key
-  it names was computed first. The mark is a fact of the profile's
-  first spelling only; it decides one thing: a unit that holds a canonical
-  operand and no spelling of its own is `Unaccounted("spelling/<site>")`
-  when the operand's type is marked ("Spellings", rule 5).
+  it names was computed first. It decides three things: a unit that holds
+  a canonical operand and no spelling of its own is
+  `Unaccounted("spelling/<site>")` when the operand's type is marked
+  ("Spellings", rule 5); so is a profile written by `ProfileId` into a
+  unit stream (`spelling/profile`); and a conversion function's name whose
+  type is marked is `spelling/conversion-name` (Kiln interns the name by
+  the canonical type, so the name holds the first spelling only).
 - **Spellings** (WP-041). What a profile leaves out is written by the
   unit that owns the spelling, from that spelling, not from the type's
   first one (`spelling.rs`):
@@ -1118,19 +1134,29 @@ The rest of profile mode:
      an attributed type's modified type; a dependent array or vector
      bound, an address space and a pack index (each as written, `Profile`
      operands are rule 5: `spelling/array-bound`, `vector-size`,
-     `addr-space`, `pack-index`); a function type's return type,
+     `addr-space`, `pack-index`); a constant array's bound as written
+     (`ConstArray::size_expr`, rule 7); a function type's return type,
      parameter types and exception specification (`noexcept(e)`,
-     `throw(T...)`; `spelling/noexcept` when canonical; not for a
-     function declaration's own type, whose exception specification its
-     unit walks in full); a `decltype`'s and a `typeof`'s operand
-     (`spelling/decltype`, `spelling/typeof` when canonical); the written
-     argument lists of a `TemplateSpecialization`, a dependent template
-     specialisation and a placeholder's constraint; the types of a
-     qualifier and of a template name's qualifier. A deduced type, a
-     resolved pack index, a computed unary transform and a substituted
-     parameter pack are `spelling/deduced` or `spelling/subst-pack`; a
-     dependent `_BitInt` (whose width Kiln keeps only canonically) is
-     `spelling/bit-int`.
+     `throw(T...)`; `spelling/noexcept` when canonical; a resolved
+     `noexcept(e)` by rule 7). For a function declaration's own type the
+     exception specification is not read (its unit walks it in full, read
+     from the written node: §4.2 rule 3), and the declared parameters are
+     not read from the type: each `ParmVarDecl`'s unit writes its type as
+     written (`ParamData::original_ty`), since an adjusted parameter type
+     holds the canonical element type; a `decltype`'s and a `typeof`'s
+     operand (`spelling/decltype`, `spelling/typeof` when canonical); the
+     template name and written argument lists of a `TemplateSpecialization`
+     (with or without `underlying`), a dependent template specialisation
+     and a placeholder's constraint; the types of a qualifier and of a
+     template name's qualifier. A deduced type, a resolved pack index, a
+     computed unary transform and a substituted parameter pack are
+     `spelling/deduced` or `spelling/subst-pack`; a dependent `_BitInt`
+     (whose width Kiln keeps only from the first spelling) is
+     `spelling/bit-int`. A type that is instantiation-dependent and not
+     dependent through an operand Kiln computed and does not keep as
+     written (a `_BitInt` width, a constant array bound with no
+     `size_expr`) is `Unaccounted("spelling/bit-int-width")` or
+     `spelling/array-size`, marked or not.
   3. *Where a unit reads them.* (a) `Walk::absorb_type` in a unit stream
      (`in_key == 0`, `type_nesting == 0`, not inside a profile written
      into the unit), from the written type its caller holds;
@@ -1150,30 +1176,62 @@ The rest of profile mode:
      aliased type as written holds a non-empty fact (or a cause); its
      unit writes the facts. The walk does not descend into what it
      aliases; an alias template specialisation's own arguments are the
-     unit's and are walked.
+     unit's and are walked. A block-scope typedef or alias has no unit of
+     its own: its declaration writes its aliased type, profile and list,
+     into the enclosing unit (`local::write_decl`), and a use descends
+     into the aliased type as written instead of an `Alias` entry.
   5. *What stays indeterminate.* A canonical operand where the unit has no
      spelling of its own, whose type is marked, is
      `Unaccounted("spelling/<site>")` with the sites named above
-     (`spec/landed/digest-kinds/WP-041.md` lists them and the sources
-     tried).
+     (`spec/landed/digest-kinds/WP-041.md` lists them, a pair test for
+     each site a source reaches, and the attempts at the others).
   6. *The list.* The unit's facts are collected in walk order and
      written once, after the unit stream (`UnitState::facts`,
      `units::write`, `Walk::content_hash`): `count`, then per entry
-     `uv` kind (`1` `Found`, `2` `Oper`, `3` `Alias`, `4` `Chosen`) and
-     its payload: `ref*sorted` (sorted by the `Ref`'s bytes, duplicates
-     removed, a using-shadow written as its target, as the full walk
-     writes an `UnresolvedLookupExpr`) for `Found` and `Oper`, `ref` for
-     `Alias`, `count` and `ref?` each (allocation then deallocation
-     function) for `Chosen`. The list is written only when an entry is
-     due: a non-empty set, a chosen function, an alias. A unit with no
+     `uv` kind (`1` `Found`, `2` `Oper`, `3` `Alias`, `4` `Chosen`,
+     `5` `Profile`, `6` `Round`) and its payload: `ref*sorted` (sorted by
+     the `Ref`'s bytes, duplicates removed, a using-shadow written as its
+     target, as the full walk writes an `UnresolvedLookupExpr`) for `Found`
+     and `Oper`, `ref` for `Alias`, `count` and `ref?` each (allocation
+     then deallocation function) for `Chosen`, `bytes` for `Profile`, and
+     for `Round` `uv` the reading's ordinal in the unit, `count`, then per
+     node `uv` its pre-order ordinal in the reading and `tag` its
+     `FpRound`. The list is written only when an entry is due: a non-empty
+     set, a chosen function, an alias, a profile, a rounding. A unit with no
      such entry writes nothing more, so its bytes are those it had before
      spellings were written. The trigger is the unit's own spelling, not
      the mark: a unit whose own spelling found declarations where the
      profile's first spelling found none writes its list too (the mark
      alone would have hidden it, a wrong `equal`).
+  7. *Instantiation-dependent values.* An expression a written type holds
+     where the canonical type holds only its value (a constant array's
+     `size_expr`, an argument of a `TemplateSpecialization` with
+     `underlying`, a resolved `noexcept(e)`) that is
+     instantiation-dependent and neither type- nor value-dependent has
+     meaning the value does not hold (`sizeof(f(T()))` is `1` whatever `f`
+     names). Its profile bytes are a `Profile` entry (taken with the
+     spelling reading off, its cause absorbed), then the expression is read
+     as written (rule 1).
+  8. *Rounding.* Each reading of an expression by rule 1 has an ordinal
+     in the unit (`UnitState::roots`); the nodes of the reading whose
+     `fp_round` is not `FpRound::Dynamic` (Kiln's default) are a `Round`
+     entry, by pre-order position. Every node of an expression in a unit is
+     either in its bytes (walked in full) or read by rule 1, so every
+     rounding mode a unit's spellings were written under is in its digest.
+  9. *Folds.* A `CXXFoldExpr` over an operator other than `.*` finds its
+     operator's candidates at instantiation, from the operands' types and
+     the definition context; Kiln keeps no `oper_lookups` set for it
+     (`For Kiln` in `spec/landed/digest-kinds/WP-041.md`). In profile mode
+     and in the full walk it is `Unaccounted("spelling/fold-operator")`,
+     and it raises the mark.
   A key reads no spelling: two declarations are one entity by
   [temp.over.link] whatever their found sets, and a difference in the
-  sets is a difference of the units.
+  sets is a difference of the units. No hazard of first spellings is
+  accepted: where a unit's meaning depends on a fact its digest does not
+  hold, the unit is indeterminate with a named cause (rule 5, rule 7's
+  `spelling/array-size` and `spelling/bit-int-width`, rule 9,
+  `spelling/profile`, `spelling/conversion-name`), and the mark that
+  decides rule 5 is a function of the profile.
 - **Kinds Kiln profiles as unique.** Kiln gives such a node a word of its
   own id, so two declarations whose signatures hold one (a lambda:
   `template<int N> void foo(const char(*)[([]{}, N)]);` twice) are two
@@ -6354,28 +6412,6 @@ of a reported difference.
 
 ### Hazards accepted for now
 
-- **First spellings** (§4.4). A profile's bytes are a function of the
-  profile, so which of two equivalent spellings Kiln meets first does not
-  change them. What a spelling holds beyond its profile is written by
-  the unit from its own spelling ("Spellings", §4.4). Accepted:
-  - a canonical operand the unit holds without a spelling of its own is
-    `Unaccounted("spelling/<site>")` only when the operand's type is
-    marked, and the mark is the first spelling's: when that spelling's
-    sets were empty and another's are not, such a unit is determinate
-    and writes no list. No caller in the pair-test corpus nor in the
-    sources tried (`spelling_tests.rs` `RULE_5_TRIED`) holds such an
-    operand in a unit stream; Kiln substitutes a `DependentDecltype` or a
-    `Profile` operand from the first spelling's expression
-    (`kiln_sema` `templ/subst/types.rs`), which then reads as the unit's
-    own;
-  - a type nested inside a kind walked in full is read in full there,
-    and the kind itself, inside a marked type, is `spelling/full`;
-  - an alias's facts are read once per walk, from its own aliased type
-    as written (`Walk::alias_due`);
-  - the floating-point rounding state where a non-dependent floating
-    operation of a profile was written (`ColdExprData::fp_round`) is in
-    neither Kiln's profile nor the list: two spellings of one profile
-    under different `#pragma STDC FENV_ROUND` states are one type.
 - **Literals from builtin macros** (§7) are written by value: moving a
   line that uses `__LINE__` as a value is a reported difference.
 - **Overloaded member access** (§7): of the candidate set only the

@@ -742,8 +742,8 @@ fn direct_param(w: &Walk<'_>, o: DeclId, d: DeclId) -> Option<u64> {
 /// block-scope function a `ref` and what its parameters hold; a
 /// `static_assert`, a `consteval` block, a template parameter and a
 /// lifetime-extended temporary their stream, with no ordinal (§9, §5.2
-/// "parent"); a typedef, alias, using-declaration, using-directive or
-/// empty declaration nothing. A local class, enumeration or closure type
+/// "parent"); a typedef or alias its stream, with no ordinal; a
+/// using-declaration, using-directive or empty declaration nothing. A local class, enumeration or closure type
 /// its number and its stream ([`local_type`]); a member of one its key
 /// and its stream ([`member`]). A kind §2.4 does not name is
 /// `Unaccounted`.
@@ -775,9 +775,11 @@ pub(crate) fn write_decl(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         | DeclKind::NonTypeTemplateParm
         | DeclKind::TemplateTemplateParm
         | DeclKind::LifetimeExtendedTemporary => w.decl_stream(s, d, d),
-        DeclKind::Typedef
-        | DeclKind::TypeAlias
-        | DeclKind::NamespaceAlias
+        // Its aliased type, with what its spelling holds beyond the
+        // profile (digest-kinds §4.4 "Spellings", rule 4): an unused
+        // alias's lookup is still the function's.
+        DeclKind::Typedef | DeclKind::TypeAlias => w.decl_stream(s, d, d),
+        DeclKind::NamespaceAlias
         | DeclKind::Using
         | DeclKind::UsingShadow
         | DeclKind::ConstructorUsingShadow
@@ -1281,18 +1283,21 @@ mod tests {
         assert_ne!(with, without);
     }
 
-    // digest-kinds §2.4: a typedef, alias, using-declaration or
-    // using-directive writes nothing.
+    // digest-kinds §2.4: a using-declaration or using-directive writes
+    // nothing; a typedef or alias writes its rows (its aliased type).
     #[test]
     fn a_name_only_declaration_writes_nothing() {
         let src = "namespace n { int i; } void g() { typedef int T; using U = int; using n::i; using namespace n; }";
         with_walk(src, |w| {
-            for kind in
-                [DeclKind::Typedef, DeclKind::TypeAlias, DeclKind::Using, DeclKind::UsingDirective]
-            {
+            for (kind, empty) in [
+                (DeclKind::Typedef, false),
+                (DeclKind::TypeAlias, false),
+                (DeclKind::Using, true),
+                (DeclKind::UsingDirective, true),
+            ] {
                 let d = of_kind(w, kind)[0];
                 let s = write(w, d);
-                assert!(s.as_bytes().is_empty(), "{kind:?}");
+                assert_eq!(s.as_bytes().is_empty(), empty, "{kind:?}");
                 assert_eq!(s.cause(), None, "{kind:?}");
             }
         });

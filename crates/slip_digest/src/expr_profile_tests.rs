@@ -411,6 +411,11 @@ const PAIR_CEILINGS: &[(&str, usize)] = &[
     ("UndeclaredLocal", 5),
     ("Unsupported(\"local/closure-owner\")", 5),
     ("Unsupported(\"local/lambda-in-type\")", 1),
+    // WP-041's fix round: `indeterminate/_/spelling-conversion-name-*`
+    // and `spelling-fold-operator-*` (a conversion name of a marked type;
+    // a fold over an operator some declaration names).
+    ("Unaccounted(\"spelling/conversion-name\")", 1),
+    ("Unaccounted(\"spelling/fold-operator\")", 1),
 ];
 
 /// The same for `OWN`.
@@ -496,7 +501,10 @@ fn a_left_out_found_set_marks_the_unit() {
     for (src, marked, sets) in [
         (a, true, 2),
         (b, true, 1),
-        ("template<class T> auto h(T t) -> decltype(t + 1);\n", false, 0),
+        // An empty operator set raises the mark too: the mark is a
+        // function of the profile.
+        ("template<class T> auto h(T t) -> decltype(t + 1);\n", true, 0),
+        ("template<class T> auto h(T t) -> decltype(t.m);\n", false, 0),
     ] {
         crate::decl_func::tests::with_walk(src, |w| {
             let h = crate::decl_func::tests::named(
@@ -508,7 +516,7 @@ fn a_left_out_found_set_marks_the_unit() {
             let t = w.type_digest(q, false);
             assert_eq!(t.spelling, marked, "{src}");
             let mut s = Stream::new();
-            w.absorb_type(&mut s, t, q, false);
+            w.absorb_type(&mut s, t, q, None);
             assert_eq!(s.cause(), None, "{src}");
             assert_eq!(w.unit.facts_due, sets > 0, "{src}");
             let found: Vec<usize> = w
@@ -524,7 +532,7 @@ fn a_left_out_found_set_marks_the_unit() {
             w.unit = crate::walk::UnitState::default();
             w.in_key += 1;
             let mut s = Stream::new();
-            w.absorb_type(&mut s, t, q, false);
+            w.absorb_type(&mut s, t, q, None);
             w.in_key -= 1;
             assert_eq!(s.cause(), None, "a key ignores the mark");
             assert!(w.unit.facts.is_empty(), "a key reads no spelling");

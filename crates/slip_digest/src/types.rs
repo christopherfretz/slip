@@ -40,22 +40,22 @@ impl Walk<'_> {
     /// `type`: the type digest of `q`.
     pub(crate) fn write_type(&mut self, s: &mut Stream, q: QualType) {
         let t = self.type_digest(q, false);
-        self.absorb_type(s, t, q, false);
+        self.absorb_type(s, t, q, None);
     }
 
     /// Writes type digest `t` of written type `written`: its digest and
     /// cause, and, in a unit stream (outside any key, type and profile
     /// written straight into the unit), adds the left-out facts of
     /// `written` to the unit's list (`spelling::left_out_of_type`, digest-
-    /// kinds §4.4 "Spellings"). `own_fn`: `written` is a function
-    /// declaration's own type, digested without its exception
+    /// kinds §4.4 "Spellings"). `own_fn`: `written` is the own type of
+    /// function declaration `d`, digested without its exception
     /// specification.
     pub(crate) fn absorb_type(
         &mut self,
         s: &mut Stream,
         t: TypeRef,
         written: QualType,
-        own_fn: bool,
+        own_fn: Option<slip_kiln::kiln::ast::DeclId>,
     ) {
         s.digest(&t.digest).absorb(t.cause);
         if self.unit_level() {

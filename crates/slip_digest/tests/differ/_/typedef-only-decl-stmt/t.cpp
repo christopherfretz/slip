@@ -1,5 +1,5 @@
 #include "side.h"
-// WP-034 (§6): a typedef writes nothing (§2.4): a declaration statement of one unused typedef writes its tag and its count.
+// WP-041 (§2.4, §4.4 "Spellings", rule 4): a block-scope typedef writes its aliased type, used or not (was equal under WP-034, when a typedef wrote nothing).
 #ifdef B
 void f() { typedef long I; }
 #else

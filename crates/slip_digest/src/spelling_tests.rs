@@ -186,13 +186,25 @@ fn a_list_changes_only_the_units_that_write_one() {
             .iter()
             .filter(|(name, u)| without.get(*name).is_some_and(|v| v.digest != u.digest))
             .count();
-        assert_eq!(
-            with.iter().map(|(n, u)| (n, u.key)).collect::<Vec<_>>(),
-            without.iter().map(|(n, u)| (n, u.key)).collect::<Vec<_>>(),
-            "{}: a key moved",
+        // A content-keyed unit's key is its digest (`spec/digest.md`
+        // §3.3): its list moves it, and the units that hold the key
+        // change with it. No other key moves.
+        let moved: Vec<&String> = with
+            .iter()
+            .filter(|(name, u)| without.get(*name).is_none_or(|v| v.key != u.key))
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(with.len(), without.len(), "{}", dir.display());
+        assert!(
+            moved.iter().all(|m| m.contains("<static_assert>")),
+            "{}: a key moved: {moved:?}",
             dir.display()
         );
-        assert_eq!(n, written, "{}: {n} units changed, {written} lists", dir.display());
+        if moved.is_empty() {
+            assert_eq!(n, written, "{}: {n} units changed, {written} lists", dir.display());
+        } else {
+            assert!(n >= written, "{}: {n} units changed, {written} lists", dir.display());
+        }
         lists += written;
         changed += n;
         for (name, u) in &with {
@@ -210,9 +222,14 @@ fn a_list_changes_only_the_units_that_write_one() {
     });
     eprintln!("{lists} lists, {changed} units changed; rule 5: {sites:#?}");
     assert!(lists > 10, "{lists} lists over the corpus");
-    // Rule 5's ceiling: more than a handful stops the package.
-    let n: usize = sites.values().map(Vec::len).sum();
-    assert!(n <= 5, "{n} pair-test units are Unaccounted(\"spelling/...\"): {sites:#?}");
+    // Rule 5 and its kin end only in `indeterminate/` tests, one at least
+    // per site a source reaches (the landed file's table).
+    let stray: Vec<&String> =
+        sites.values().flatten().filter(|u| !u.starts_with("tests/indeterminate/")).collect();
+    assert!(stray.is_empty(), "units Unaccounted(\"spelling/...\") outside indeterminate/: {stray:#?}");
+    for site in REACHED {
+        assert!(sites.contains_key(*site), "no pair test reaches {site}");
+    }
 }
 
 /// Rule 6: `Walk::left_out` is raised at exactly the expressions where the
@@ -307,6 +324,34 @@ fn an_instantiated_member_reads_the_patterns_found_set() {
     });
 }
 
+/// Rule 4 with a cause (N3): an alias whose own aliased type as written
+/// is indeterminate (a fold over `+`, with an `operator+` declared, in an
+/// instantiation-dependent argument: rule 7's profile) is an `Alias` entry
+/// of its user, whose own type holds only the argument's value.
+#[test]
+fn an_alias_whose_spelling_is_indeterminate_is_listed() {
+    let src = format!(
+        "{PRELUDE}template<class... T> using R = Z<sizeof(sizeof((T() + ...)))>;\n\
+         template<class... T> void u(R<T...> r);\n"
+    );
+    crate::decl_func::tests::with_walk(&src, |w| {
+        let alias_r = crate::decl_func::tests::named(w, "R", DeclKind::TypeAliasTemplate)[0];
+        let pattern = w.ast.template_info(alias_r).and_then(|i| i.pattern).expect("R's pattern");
+        let under = w.ast.decls.typedef(pattern).expect("R").underlying;
+        w.unit = crate::walk::UnitState::default();
+        let mut s = Stream::new();
+        super::left_out_of_type(w, &mut s, under, None);
+        assert_eq!(s.cause(), Some(Cause::Unaccounted("spelling/fold-operator")));
+        let d = crate::decl_func::tests::named(w, "u", DeclKind::Function)[0];
+        let q = w.ast.decls.get(d).ty().expect("a type");
+        w.unit = crate::walk::UnitState::default();
+        w.alias_due.clear();
+        super::left_out_of_type(w, &mut Stream::new(), q, None);
+        assert_eq!(w.unit.facts, vec![Fact::Alias(w.ast.first(pattern))]);
+        assert!(w.unit.facts_due);
+    });
+}
+
 /// Rule 4: a use through an alias writes the alias's `Ref`, not its set:
 /// adding a declaration the alias finds changes the alias's unit and not
 /// its user's.
@@ -327,48 +372,117 @@ fn an_alias_holds_its_set_and_its_user_the_ref() {
     assert!(changed[0].starts_with('R'), "{changed:?}");
 }
 
-/// The sources tried for rule 5 through the digest (none reaches a
-/// `spelling/` cause: every caller holds a written type); the landed file
-/// lists them.
-const RULE_5_TRIED: &[&str] = &[
-    "template<class T> struct S { S(T, char(*)[sizeof(f(T()))]); };\nS s(1, nullptr);\n",
-    "template<class T> struct S { operator decltype(f(T()))(); };\n",
-    "template<class T> void k(T t) { using V = decltype(f(t)); V* p; }\n",
-    "template<class T> void k(T t) { auto p = (char(*)[sizeof(f(T()))])nullptr; }\n",
-    "template<class T> struct B { B(decltype(f(T()))); };\n\
-     template<class T> struct D : B<T> { using B<T>::B; };\n",
-    "template<class T> struct S { template<class U> auto m(U u) -> decltype(f(u)); };\n\
-     template struct S<int>;\n",
-    "template<class T> auto g(T t) -> decltype(f(t));\n\
-     template<class T> void k(T t) { g(t); decltype(g(t)) *p; }\n",
-    "template<class T> struct S { static constexpr auto v = sizeof(f(T())); char a[v]; };\n",
-    "template<class T> auto g(T t) -> decltype(f(t));\n\
-     template<class T> struct S { decltype(g(T())) m; };\n",
-    "template<class T> constexpr auto v = sizeof(f(T()));\n\
-     template<class T> struct S { char a[v<T>]; };\n",
-    "template<class T> auto g(T t) { return Z<sizeof(f(t))>(); }\n",
-    "template<class T, unsigned long N = sizeof(f(T()))> struct Q {};\n\
-     template<class T> void k(Q<T>);\n",
-    "template<class T> struct S { void m(char(*)[sizeof(f(T()))]); };\n\
-     template<class T> void S<T>::m(char(*)[sizeof(f(T()))]) {}\n",
+/// The sites of rule 5 (and its kin) a pair test in `indeterminate/_/`
+/// ends at (`a_list_changes_only_the_units_that_write_one`); the landed
+/// file names the test of each.
+const REACHED: &[&str] = &[
+    "spelling/decltype",
+    "spelling/array-bound",
+    "spelling/noexcept",
+    "spelling/arg",
+    "spelling/vector-size",
+    "spelling/addr-space",
+    "spelling/pack-index",
+    "spelling/bit-int",
+    "spelling/profile",
+    "spelling/conversion-name",
+    "spelling/fold-operator",
 ];
 
-/// Rule 5 through the digest: none of the sources tried reaches a
-/// `spelling/` cause.
+/// The sources tried for rule 5 through the digest, aimed at a caller
+/// that holds only a canonical type, and the `spelling/` causes each
+/// reaches; the first thirteen are those of the first round, the rest aim
+/// at the sites no pair test reaches (`typeof`, `deduced`, `subst-pack`,
+/// `full`). The landed file counts them.
+const RULE_5_TRIED: &[(&str, &[&str])] = &[
+    ("template<class T> struct S { S(T, char(*)[sizeof(f(T()))]); };\nS s(1, nullptr);\n", &[]),
+    ("template<class T> struct S { operator decltype(f(T()))(); };\n", &[]),
+    ("template<class T> void k(T t) { using V = decltype(f(t)); V* p; }\n", &[]),
+    ("template<class T> void k(T t) { auto p = (char(*)[sizeof(f(T()))])nullptr; }\n", &[]),
+    (
+        "template<class T> struct B { B(decltype(f(T()))); };\n\
+         template<class T> struct D : B<T> { using B<T>::B; };\n",
+        &[],
+    ),
+    (
+        "template<class T> struct S { template<class U> auto m(U u) -> decltype(f(u)); };\n\
+         template struct S<int>;\n",
+        &[],
+    ),
+    (
+        "template<class T> auto g(T t) -> decltype(f(t));\n\
+         template<class T> void k(T t) { g(t); decltype(g(t)) *p; }\n",
+        &[],
+    ),
+    ("template<class T> struct S { static constexpr auto v = sizeof(f(T())); char a[v]; };\n", &[]),
+    (
+        "template<class T> auto g(T t) -> decltype(f(t));\n\
+         template<class T> struct S { decltype(g(T())) m; };\n",
+        &[],
+    ),
+    (
+        "template<class T> constexpr auto v = sizeof(f(T()));\n\
+         template<class T> struct S { char a[v<T>]; };\n",
+        &[],
+    ),
+    ("template<class T> auto g(T t) { return Z<sizeof(f(t))>(); }\n", &[]),
+    (
+        "template<class T, unsigned long N = sizeof(f(T()))> struct Q {};\n\
+         template<class T> void k(Q<T>);\n",
+        &[],
+    ),
+    (
+        "template<class T> struct S { void m(char(*)[sizeof(f(T()))]); };\n\
+         template<class T> void S<T>::m(char(*)[sizeof(f(T()))]) {}\n",
+        &[],
+    ),
+    // typeof
+    ("template<class T> void k(T, void (*)(__typeof__(f(T())) [2]));\n", &[]),
+    ("template<class T> void k(T, void (*)(__typeof__(f(T())) [2][3]));\n", &[]),
+    ("template<class T> void k(T t) { __typeof__(f(t)) a[2]; }\n", &[]),
+    // deduced
+    ("template<class T> auto k(T t) { auto x = f(t); return x; }\n", &[]),
+    ("template<class T> void k(T t) { auto (*p)(T) = &k<T>; decltype(auto) y = f(t); }\n", &[]),
+    ("template<class... T> void k(void (*)(T...[0] [2]), T...);\n", &[]),
+    ("template<class T> void k(T, void (*)(__underlying_type(decltype(f(T()))) [2]));\n", &[]),
+    // subst-pack
+    (
+        "template<class... T> struct P { template<class U> void m(U, void (*)(T [2]...)); };\n\
+         template struct P<int, long>;\n",
+        &[],
+    ),
+    (
+        "template<class... T> struct P { template<class... U> void m(void (*)(decltype(f(U())) [2]...)); };\n\
+         template struct P<int>;\n",
+        &[],
+    ),
+    // full
+    ("template<class T> void k(T, void (*)(Z<sizeof(f(T()) + 1_x)> [2]));\n", &[]),
+    ("template<class T> void k(T, void (*)(Z<sizeof([] { return 0; }, f(T()))> [2]));\n", &[]),
+];
+
+/// Rule 5 through the digest: each source tried reaches the causes listed
+/// for it, and no other.
 #[test]
-fn no_source_tried_reaches_rule_5() {
-    for c in RULE_5_TRIED {
-        let u = units(&format!("{PRELUDE}{c}"));
-        for (n, u) in &u {
-            assert!(
-                !u.causes
-                    .iter()
-                    .any(|c| matches!(c, Cause::Unaccounted(w) if w.starts_with("spelling/"))),
-                "{c}: {n} {:?}",
-                u.causes
-            );
+fn the_sources_tried_for_rule_5_reach_what_is_listed() {
+    let mut bad = Vec::new();
+    for (c, want) in RULE_5_TRIED {
+        let u = units(&format!("{PRELUDE}long operator\"\"_x(unsigned long long);\n{c}"));
+        let mut got: Vec<&str> = u
+            .values()
+            .flat_map(|u| u.causes.iter())
+            .filter_map(|c| match c {
+                Cause::Unaccounted(w) if w.starts_with("spelling/") => Some(*w),
+                _ => None,
+            })
+            .collect();
+        got.sort_unstable();
+        got.dedup();
+        if got != *want {
+            bad.push(format!("{c:?}: {got:?}"));
         }
     }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
 /// Rule 5 at the walk: a canonical type handed to the reading (a caller
@@ -382,7 +496,7 @@ fn a_marked_canonical_operand_is_unaccounted() {
                template<class T> void b(T t, char (*p)[sizeof(f(T()))]);\n\
                template<class T> void c(T t, void (*p)() noexcept(noexcept(f(T()))));\n\
                template<class T> void d(T t, Z<sizeof(f(T()))> z);\n\
-               template<class T> auto e(T t) -> decltype(t + 1);\n";
+               template<class T> auto e(T t) -> decltype(t.m);\n";
     crate::decl_func::tests::with_walk(src, |w| {
         for (name, site) in [
             ("a", Some("spelling/decltype")),
@@ -396,11 +510,11 @@ fn a_marked_canonical_operand_is_unaccounted() {
             let canon = w.ast.types.canonical(q);
             let mut s = Stream::new();
             w.unit = crate::walk::UnitState::default();
-            super::left_out_of_type(w, &mut s, canon, false);
+            super::left_out_of_type(w, &mut s, canon, None);
             assert_eq!(s.cause(), site.map(Cause::Unaccounted), "{name}");
             let mut s = Stream::new();
             w.unit = crate::walk::UnitState::default();
-            super::left_out_of_type(w, &mut s, q, false);
+            super::left_out_of_type(w, &mut s, q, None);
             assert_eq!(s.cause(), None, "{name}: its written type");
             assert_eq!(w.unit.facts_due, site.is_some(), "{name}");
         }
@@ -426,7 +540,9 @@ fn a_use_through_an_alias_lists_the_alias() {
             let q = w.ast.decls.get(d).ty().expect("a type");
             w.unit = crate::walk::UnitState::default();
             let mut s = Stream::new();
-            super::left_out_of_type(w, &mut s, q, true);
+            // As a type, not as `u`'s own (whose parameters their
+            // declarations' units read).
+            super::left_out_of_type(w, &mut s, q, None);
             assert_eq!(s.cause(), None);
             assert_eq!(w.unit.facts, vec![Fact::Alias(w.ast.first(alias))], "{kind:?}");
             assert!(w.unit.facts_due);
@@ -434,7 +550,7 @@ fn a_use_through_an_alias_lists_the_alias() {
         // The alias's own unit reads its aliased type.
         let under = w.ast.decls.typedef(member).expect("M").underlying;
         w.unit = crate::walk::UnitState::default();
-        super::left_out_of_type(w, &mut Stream::new(), under, false);
+        super::left_out_of_type(w, &mut Stream::new(), under, None);
         assert!(matches!(w.unit.facts.as_slice(), [Fact::Found(ds)] if ds.len() == 1));
     });
 }

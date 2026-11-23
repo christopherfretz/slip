@@ -122,8 +122,14 @@ pub(crate) fn decl_name(w: &mut Walk<'_>, raw: u32) -> Option<(Name, Option<Caus
         DeclNameView::Constructor(_) => (Name::Constructor, None),
         DeclNameView::Destructor(_) => (Name::Destructor, None),
         DeclNameView::Conversion(q) => {
+            // Kiln interns a conversion name by its canonical type: no
+            // spelling of the type is held, so a marked one is the first
+            // spelling's (digest-kinds §4.4 "Spellings", rule 5).
             let t = w.type_digest(q, false);
-            (Name::Conversion(t.digest), t.cause)
+            let cause = t
+                .cause
+                .or(t.spelling.then_some(Cause::Unaccounted("spelling/conversion-name")));
+            (Name::Conversion(t.digest), cause)
         }
         DeclNameView::LiteralOperator(sym) => {
             (Name::LiteralOperator(ast.symbols().as_str(sym).as_bytes().to_vec()), None)
@@ -367,6 +373,13 @@ pub(crate) fn cxx_fold_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     match BinaryOp::from_u8(n.aux) {
         Some(op) => {
             s.tag(binary_op::row(&op));
+            // Kiln records no definition-context operator set for a fold
+            // (`oper_lookups`): what an overloadable operator finds at
+            // instantiation is not in the digest (digest-kinds §4.4
+            // "Spellings", rule 9).
+            if crate::expr_profile::fold_left_out(w, op) {
+                s.indeterminate(Cause::Unaccounted("spelling/fold-operator"));
+            }
         }
         None => {
             s.uv(0).indeterminate(row("ExprNode/CXXFoldExpr.aux"));
