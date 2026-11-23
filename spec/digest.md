@@ -963,6 +963,13 @@ this spec says:
   (`Unsupported("typedef/alignment-by-declaration")`, `digest-kinds.md`
   §4.2 rule 9: Kiln's `alignof` and its cached layout read different
   declarations);
+- it holds a constructor definition whose mem-initializers the AST does
+  not hold: one Kiln did not check because its class or the definition
+  itself is in a template (`DEPENDENT_CTX`) or it is invalid, with a
+  ctor-initializer or without, since the AST does not say which
+  (`Unsupported("kiln/pattern-mem-initializers")`,
+  `spec/landed/digest/WP-124.md`); an instantiation's constructor holds
+  its own list and is not one;
 - its key collides with another entity's (§3.4);
 - it holds demand-driven state that `digest-kinds.md` could not assign to a
   derived unit;
