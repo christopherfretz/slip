@@ -27,7 +27,7 @@ pub(crate) fn ordinal(w: &mut Walk<'_>, d: DeclId) -> u64 {
 ///
 /// A variable, parameter, binding or label writes its ordinal and then
 /// its stream (§5.1); a block-scope variable with linkage a `ref`, and a
-/// block-scope function a `ref` and the default arguments it holds; a
+/// block-scope function a `ref` and what its parameters hold; a
 /// `static_assert`, a `consteval` block, a template parameter and a
 /// lifetime-extended temporary their stream, with no ordinal (§9, §5.2
 /// "parent"); a
@@ -122,10 +122,12 @@ fn unsupported(s: &mut Stream, row: &'static str) {
     s.uv(0).indeterminate(Cause::Unsupported(row));
 }
 
-/// The default arguments a block-scope function declaration `d` holds,
-/// after its `ref`: `count`, then one `child?` per parameter. They are
-/// that declaration's own ([dcl.fct.default]/4), which the entity's unit
-/// leaves out (`spec/landed/digest-kinds/WP-026.md`, an addition to §2.4).
+/// What the parameters of a block-scope function declaration `d` hold,
+/// after its `ref`: `count`, then per parameter one `child?`, its default
+/// argument, and its attributes and annotations (`attrs::own_attrs`).
+/// They are that declaration's own ([dcl.fct.default]/4), which the
+/// entity's unit leaves out (`spec/landed/digest-kinds/WP-026.md` and
+/// `WP-100.md`, additions to §2.4).
 fn block_defaults(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let ast = w.ast;
     let params: Vec<DeclId> = ast
@@ -137,6 +139,9 @@ fn block_defaults(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     for p in params {
         let default = ast.decls.param(p).and_then(|x| x.default_arg);
         crate::expr::child_opt(w, s, default);
+        // Its attributes and annotations, which are not the entity's
+        // either (`spec/landed/digest-kinds/WP-100.md`).
+        crate::attrs::own_attrs(w, s, p);
     }
 }
 
@@ -183,7 +188,8 @@ mod tests {
 
     // digest-kinds §2.4: a block-scope extern variable writes a `ref`; a
     // block-scope function a `ref`, then a count and one `child?` per
-    // parameter: the defaults that declaration holds (WP-026).
+    // parameter, then its attributes and annotations: what that
+    // declaration holds (WP-026, WP-100).
     #[test]
     fn a_block_scope_entity_with_linkage_is_a_ref() {
         let src = "void h(int, int); extern int v;\n\
@@ -205,13 +211,31 @@ mod tests {
             w.write_ref(&mut want, h);
             want.count(2);
             crate::expr::child_opt(w, &mut want, None);
+            crate::attrs::own_attrs(w, &mut want, params[0]);
             crate::expr::child_opt(w, &mut want, second);
+            crate::attrs::own_attrs(w, &mut want, params[1]);
             assert_eq!(write(w, h).as_bytes(), want.as_bytes());
             // The namespace-scope declaration holds no default.
             let outer = named(w, "h", DeclKind::Function)[0];
             assert_ne!(write(w, outer).as_bytes(), want.as_bytes());
             assert_eq!(w.unit.next_local, 0);
         });
+    }
+
+    // digest-kinds §2.4 (WP-100): a block-scope function declaration
+    // writes the attributes on its parameters, which the entity's unit
+    // leaves out (`attrs::tests::s10_1_param_chain_leaves_out_block_scope`).
+    #[test]
+    fn a_block_scope_parameter_writes_its_attributes() {
+        let block = |src: &str| {
+            with_walk(src, |w| {
+                let h = *named(w, "h", DeclKind::Function).last().expect("the block-scope h");
+                write(w, h).as_bytes().to_vec()
+            })
+        };
+        let with = block("void h(int *);\nvoid g() { void h(int *p __attribute__((nonnull))); }");
+        let without = block("void h(int *);\nvoid g() { void h(int *p); }");
+        assert_ne!(with, without);
     }
 
     // digest-kinds §2.4: a typedef, alias, using-declaration or
