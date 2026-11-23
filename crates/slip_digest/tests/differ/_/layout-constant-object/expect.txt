@@ -1,0 +1,2 @@
+changed S
+derived-changed s::<value>

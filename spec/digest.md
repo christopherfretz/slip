@@ -930,6 +930,11 @@ this spec says:
 - it contains an invalid declaration, an error-recovery expression or a
   type that contains an error;
 - it contains a kind or a value that `digest-kinds.md` marks `unsupported`;
+- it holds a type whose sugar meets a typedef whose declarations do not
+  all carry the same alignment, or it is that typedef
+  (`Unsupported("typedef/alignment-by-declaration")`, `digest-kinds.md`
+  §4.2 rule 9: Kiln's `alignof` and its cached layout read different
+  declarations);
 - its key collides with another entity's (§3.4);
 - it holds demand-driven state that `digest-kinds.md` could not assign to a
   derived unit;
@@ -997,8 +1002,13 @@ the cache keys of `spec/exec.md` that will replace the plan name the
 tool's version), so no shard of one scheme meets a reader of another, and
 `scheme` changes before then only when a change makes units differ that
 compared equal under some rule table (a wrong equal closed): a recorded
-baseline of the earlier scheme must then be recorded again. It is 2 since
-WP-113 (the row `enclosing`, `spec/digest-kinds.md` §1.7).
+baseline of the earlier scheme must then be recorded again. Such changes
+that land before any baseline of the current scheme is recorded share its
+number: the number exists to void recorded baselines, and there is none
+to void. It is 2 since WP-113 (the row `enclosing`, `spec/digest-kinds.md`
+§1.7); WP-107's rule 9 (an aligned typedef is written as sugar,
+`spec/digest-kinds.md` §4.2) landed in it the same day, before a baseline
+of scheme 2 was recorded.
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit that has a location (below). A derived unit belongs to the
