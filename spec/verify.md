@@ -308,6 +308,22 @@ defined in an owned file by some observer.
   (every inclusion directive recorded, skipped ones included) would let
   the walk close it per translation unit.
 
+**The cost of the include-chain rule.** It errs in the safe direction
+in one common shape: a read-only file that the build generates and that
+includes owned code. A CMake precompiled-header file (`cmake_pch.hxx`,
+in the build tree, itself entered by `-include`) and a unity-build main
+file (`unity_0_cxx.cxx`, which `#include`s owned `.cpp` files) are
+read-only, since they lie outside every subject root, so every owned
+entity behind them is a dependency entity for that observer: no rule
+renames it, and a correct migration is reported as a difference in every
+such observer (`tests/rules/owned/generated-includer-of-owned`, a
+read-only `pch.h` including an owned `src.h`;
+`main-file-read-only`, a read-only main file). That stays: knowing
+less never accepts more. The answer is a third class of file, **not
+edited, and rebuilt from source**, whose names no binary outside the run
+holds; it is an open question below and a package of its own
+(`docs/wp/WP-118.md`).
+
 `slip declare` (§2.3) refuses a `relocate` line whose entity is a
 dependency entity and not a namespace (`DependencyEntity`).
 
@@ -1658,6 +1674,12 @@ observer `failed`, with an empty message.
   compiled against it (a moved exception type is no longer caught, a
   function taking a moved type no longer links). WP-116's run-level
   check is to close all three.
+- **What a generated includer hides** (the safe direction). A read-only
+  file the build generates that includes owned code (a precompiled
+  header, a unity-build main file) makes that code read-only for the
+  observer (§2.1): a correct migration is reported as a difference there,
+  not shown correct. The third class of file of "Open questions"
+  (WP-118) is to answer it.
 - **Sums are believed.** A group's `count`, `indeterminate` and `digest`
   are checked against its unit list only where there is one. A shard
   whose sums were not computed from its units (a defect of the walk, or a
@@ -2278,6 +2300,15 @@ using-declaration). Those are judged by the comparison of digests alone.
   observer with and without rules (§5.5).
 
 ## Open questions
+
+- **A third class of file: not edited, and rebuilt from source.**
+  `spec/edits.md` §2.1 has owned and read-only files; a file the build
+  writes and compiles with the rest (a precompiled header, a unity-build
+  main file, a generator's `.inc` or `config.h`) is not edited by Slip,
+  but no binary outside the run holds its names. Read-only today, it
+  costs false differences (§2.1, "The cost of the include-chain rule").
+  The class `rebuilt`, the user's statement about a path, is
+  `docs/wp/WP-118.md`.
 
 - **A literal operator as a rule's new name.** `relocate` moves a literal
   operator with `=` and cannot rename its suffix (`NotRenamable`: `<name>`

@@ -1,2 +1,6 @@
 indeterminate u()
 indeterminate S<int>::g()
+# WP-045: the resolved unit `definition` of S<int>::g() carries its owner's
+# cause (demand.rs write_part), so it is indeterminate with it. Moved in
+# the merge into WP-110; 069's own head 3c0c318a gives the same.
+indeterminate S<int>::g()::<definition>

@@ -51,7 +51,10 @@
 //! # Ownership (WP-110, `spec/verify.md` §2.1)
 //!
 //! - `readonly.txt`: the case's read-only files, one name per line (`#`
-//!   starts a comment). The post-image is then digested with those files
+//!   starts a comment): a header of the case, or `main.cpp` for the main
+//!   file of both sides (the runner parses `a.cpp`, `b.cpp` and `t.cpp`
+//!   as `main.cpp`, so those names, the runner's own files and a name
+//!   that is no file are refused). The post-image is then digested with those files
 //!   read-only, as the verify job gives them (`ReadOnlyFiles` over an
 //!   `Ownership` in subject paths, the case's directory as the root
 //!   `/case`), and judged by `expect.txt`; and with every file owned,
@@ -88,7 +91,12 @@ enum Own {
     Listed(Vec<String>),
 }
 
-/// `readonly.txt` (absent: `None`).
+/// The files of a case that are the runner's, not the parse's sources.
+const CONTROL: &[&str] =
+    &["expect.txt", "expect-owned.txt", "rules.txt", "readonly.txt", "relocate.txt"];
+
+/// `readonly.txt` (absent: `None`): each line a header of the case or
+/// `main.cpp` (the main file of both sides).
 fn readonly_of(dir: &Path) -> Result<Option<Vec<String>>, String> {
     let Ok(text) = std::fs::read_to_string(dir.join("readonly.txt")) else {
         return Ok(None);
@@ -99,8 +107,19 @@ fn readonly_of(dir: &Path) -> Result<Option<Vec<String>>, String> {
         if l.is_empty() {
             continue;
         }
-        if !dir.join(l).is_file() {
-            return Err(format!("readonly.txt:{}: `{l}` is no file of the case", n + 1));
+        // The runner parses each side's main file (`a.cpp`, `b.cpp`, or
+        // `t.cpp`) as `main.cpp`: that is the name that makes it
+        // read-only. A line that names no file the parse has is refused:
+        // it would have no effect.
+        if matches!(l, "a.cpp" | "b.cpp" | "t.cpp") {
+            return Err(format!(
+                "readonly.txt:{}: `{l}` is parsed as `main.cpp`; name `main.cpp` for the main \
+                 file of both sides",
+                n + 1
+            ));
+        }
+        if CONTROL.contains(&l) || (l != "main.cpp" && !dir.join(l).is_file()) {
+            return Err(format!("readonly.txt:{}: `{l}` is no file the case parses", n + 1));
         }
         out.push(l.to_owned());
     }
@@ -534,6 +553,36 @@ fn rules() {
 
 /// The reader of `rules.txt` (`common/rules.rs`): every form, and the
 /// errors of the text.
+/// WP-110 (the re-check): `readonly.txt` refuses a line that would have
+/// no effect, with a message; `main.cpp` and a header are accepted.
+#[test]
+fn readonly_txt_refuses_lines_with_no_effect() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rules-readonly-txt");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, text) in [("a.cpp", ""), ("b.cpp", ""), ("dep.h", ""), ("rules.txt", "")] {
+        std::fs::write(dir.join(name), text).unwrap();
+    }
+    let with = |lines: &str| {
+        std::fs::write(dir.join("readonly.txt"), lines).unwrap();
+        readonly_of(&dir)
+    };
+    assert_eq!(
+        with("dep.h\nmain.cpp # both mains\n"),
+        Ok(Some(vec!["dep.h".into(), "main.cpp".into()]))
+    );
+    for (line, says) in [
+        ("b.cpp", "is parsed as `main.cpp`"),
+        ("a.cpp", "is parsed as `main.cpp`"),
+        ("t.cpp", "is parsed as `main.cpp`"),
+        ("rules.txt", "is no file the case parses"),
+        ("nothere.h", "is no file the case parses"),
+    ] {
+        let e = with(&format!("dep.h\n{line}\n")).unwrap_err();
+        assert!(e.starts_with("readonly.txt:2: ") && e.contains(says), "{line}: {e}");
+    }
+    assert_eq!(with("# nothing\n"), Err("readonly.txt names no file".into()));
+}
+
 #[test]
 fn rules_txt_forms() {
     use common::rules::{DiscRef, Entity, Image, NameRef, ParentRef};
