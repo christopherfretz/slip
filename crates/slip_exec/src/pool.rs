@@ -1155,6 +1155,7 @@ impl Coordinator<'_> {
             rule_use: None,
             spellings: None,
             negatives: None,
+            found: None,
         };
         Ok(self.store.publish_shard(
             &self.plan,

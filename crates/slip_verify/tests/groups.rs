@@ -314,6 +314,7 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
         rule_use: None,
         spellings: None,
         negatives: None,
+        found: None,
     };
     shard.validate()?;
     cov.used += u64::from(!full.used.is_empty());
