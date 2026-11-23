@@ -1,0 +1,10 @@
+# R21: a local class renamed (Local to Item). A local type is no unit and
+# its name is not digested (spec/digest.md §4.3), so nothing is declared
+# and good verifies. In pre-2 the program reads the name: who()'s
+# __PRETTY_FUNCTION__ is "const char *f()::Local::who()". The value is
+# symbolic (digest §9) and refers to who(), whose key does not hold the
+# local class's name, but no declared rule accounts for the change: the
+# string is not what it was, so f() differs.
+good:   verified
+good-2: none the program holds the local class's name; every rename changes it
+bad-2:  mismatch changed f() @ main.cpp:4

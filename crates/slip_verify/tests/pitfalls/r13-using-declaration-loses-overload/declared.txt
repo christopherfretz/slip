@@ -1,0 +1,5 @@
+relocate Base::f(int) => Base :: g
+# using Base::f; in Derived no longer brings in the renamed overload: its
+# shadow is gone, and Derived's members are not what they were.
+removed Derived::<shadow Base::f(int)>
+changed Derived

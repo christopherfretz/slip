@@ -1,0 +1,11 @@
+# R20: app::cap renamed limit, which hides the global limit from a default
+# inside app: in pre a default member initialiser (the field's unit holds
+# it, FieldData init; no function differs: Box's constructor is implicit),
+# in pre-2 a default template argument (the template's unit, and the
+# caller, which names take<8> instead of take<4>). The rename analogue of
+# N23. Against a verifier that redoes the lookups of function bodies only.
+good:   none the new name is the one the default looks up; every rename to limit changes it
+bad:    mismatch changed app::Box::n @ main.cpp:6
+good-2: none as good
+bad-2:  mismatch changed template <int> int app::take() @ main.cpp:5
+bad-2:  mismatch changed user() @ main.cpp:8
