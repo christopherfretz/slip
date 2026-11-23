@@ -1,0 +1,3 @@
+# Fix round 2, F3: a rule that matches an instantiation's member under its followed name (the pattern's mapped name, f), not its plain one (g), makes its key indeterminate too.
+relocate S::f() => S :: g
+rule function | mapped S<int> | id f | disc-of post S<int>::g() | pre S<int> | id h

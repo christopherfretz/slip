@@ -1,0 +1,2 @@
+# digest-kinds §3.1 deduction_guide: named `deduction_guide`, no rule of its own; its discriminator refers to the template, which is renamed.
+relocate W => :: V

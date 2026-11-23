@@ -1,0 +1,2 @@
+# Item 9, from kinds/function_template-renamed: the target name replaced by another existing name, use.
+rule function_template | root | id g | disc-of post template <class> int g(type-parameter-0-0) | root | id use

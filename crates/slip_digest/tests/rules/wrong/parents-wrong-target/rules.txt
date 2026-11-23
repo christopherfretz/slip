@@ -1,0 +1,3 @@
+# Item 9, from parents/mapped-parent: the target of the outer rule replaced by another existing namespace, a::b.
+relocate a::b => :: x
+relocate a::b => x :: y

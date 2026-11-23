@@ -1,0 +1,2 @@
+# Item 9 attempt: a namespace-scope variable mapped onto a static data member.
+rule variable | root | id v | none | pre S | id v

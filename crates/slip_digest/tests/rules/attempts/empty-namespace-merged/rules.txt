@@ -1,0 +1,3 @@
+# Item 9 attempt: two namespaces of B, x and an empty y, both mapped onto a: they merge. Equal. Not a bijection of entities, which §2.1 allows for namespaces alone; the program differs by the declaration of an empty namespace, which changes no reference.
+relocate a => :: x
+relocate a => :: y

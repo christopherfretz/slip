@@ -1,0 +1,2 @@
+# Item 5: acme carries an attribute legacy lacks: two digests under one key.
+relocate legacy => :: acme

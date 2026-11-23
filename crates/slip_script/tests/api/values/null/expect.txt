@@ -1,0 +1,9 @@
+transform <id>
+report - note "yes: a default info is null"
+report - note "yes: a found entity is not null"
+report - note "yes: a name that names nothing gives an empty sequence"
+report - note "yes: every predicate is false for null"
+report - note "yes: identifier_of(null) throws invalid_handle"
+report - note "yes: null is not an entity"
+report - note "yes: the global namespace has a null parent"
+report - note "yes: two nulls are equal"

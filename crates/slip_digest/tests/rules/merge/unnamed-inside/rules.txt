@@ -1,0 +1,2 @@
+# Item 5: an unnamed namespace in each of two merged namespaces: the two unnamed namespaces merge as well, and their members are told apart by name.
+relocate legacy => :: acme

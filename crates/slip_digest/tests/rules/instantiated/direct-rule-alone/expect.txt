@@ -1,0 +1,5 @@
+indeterminate u()
+indeterminate S<int>::g()
+changed S
+added S::g()
+removed S::f()

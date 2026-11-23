@@ -1,0 +1,2 @@
+# digest-kinds §3.1 enumerator, renamed; its parent is the enumeration.
+relocate E::B => E :: Z

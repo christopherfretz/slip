@@ -118,7 +118,6 @@ Nns/Type.prefix
 Nns/Type.template_kw
 Nns/Type.ty
 NonOdrUse/Discarded
-Owner/unit
 ParamData/flags-static-array
 ProfileEntry/first_expr
 PtrBase/Absolute
@@ -330,9 +329,6 @@ UnaryTransformKind/RemoveReference
 UnaryTransformKind/RemoveRestrict
 UnaryTransformKind/RemoveVolatile
 UnaryTransformKind/UnderlyingType
-UnitInfo/imports
-UnitKind/Header
-UnitKind/Implementation
 VTableComponent/CompleteDtor
 VTableComponent/CompleteDtor.0
 VTableComponent/DeletingDtor

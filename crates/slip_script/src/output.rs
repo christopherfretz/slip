@@ -292,8 +292,9 @@ impl RunOutput {
         self.clone().canonical() == *self
     }
 
-    /// One line per item, places as `path:lo-hi`; the form the script
-    /// tests of WP-090 render and that `slip dump` will print.
+    /// One line per item, places as `path:lo-hi`; the form that `slip
+    /// dump` will print. It is [`RunOutput::render_styled`] with
+    /// [`Style::default`].
     ///
     /// ```text
     /// transform <digest>
@@ -316,15 +317,28 @@ impl RunOutput {
     /// in the order of the output, so the canonical output renders
     /// canonically.
     pub fn render(&self, f: &mut dyn fmt::Write) -> fmt::Result {
-        writeln!(f, "transform {}", self.transform)?;
+        self.render_styled(f, &Style::default())
+    }
+
+    /// [`RunOutput::render`] with the transform id, the positions of places
+    /// and the keys written as `style` says (the script tests of WP-090,
+    /// `spec/landed/api/WP-090.md`). A key `style` names is written as its
+    /// name, quoted; any other as its digest. A key is the `<key>` of a
+    /// spelled piece and of `changed`, and a parent that is a unit.
+    pub fn render_styled(&self, f: &mut dyn fmt::Write, style: &Style<'_>) -> fmt::Result {
+        let s = style;
+        match s.transform {
+            Some(t) => writeln!(f, "transform {t}")?,
+            None => writeln!(f, "transform {}", self.transform)?,
+        }
         for (i, e) in self.edits.iter().enumerate() {
-            write!(f, "edit {i} {} tiers {} =", Rendered::Place(&e.place), e.tiers)?;
+            write!(f, "edit {i} {} tiers {} =", Rendered::Place(&e.place, s), e.tiers)?;
             for p in &e.pieces {
                 match p {
                     Piece::Literal(b) => write!(f, " {}", Rendered::Quoted(b))?,
-                    Piece::Copy(at) => write!(f, " copy({})", Rendered::Place(at))?,
+                    Piece::Copy(at) => write!(f, " copy({})", Rendered::Place(at, s))?,
                     Piece::Spelled { key, text } => {
-                        write!(f, " spell({key} {})", Rendered::Quoted(text))?;
+                        write!(f, " spell({} {})", Rendered::Key(key, s), Rendered::Quoted(text))?;
                     }
                 }
             }
@@ -342,7 +356,7 @@ impl RunOutput {
         }
         for r in &self.reports {
             match &r.place {
-                Some(p) => write!(f, "report {}", Rendered::Place(p))?,
+                Some(p) => write!(f, "report {}", Rendered::Place(p, s))?,
                 None => write!(f, "report -")?,
             }
             let severity = match r.severity {
@@ -357,8 +371,8 @@ impl RunOutput {
             writeln!(
                 f,
                 "changed {} {} {}",
-                c.key,
-                Rendered::Place(&c.place),
+                Rendered::Key(&c.key, s),
+                Rendered::Place(&c.place, s),
                 Rendered::Quoted(&c.reason)
             )?;
         }
@@ -367,13 +381,18 @@ impl RunOutput {
                 f,
                 "renamed {} {} {}",
                 r.kind.name(),
-                Rendered::Parent(&r.parent),
+                Rendered::Parent(&r.parent, s),
                 Rendered::Name(&r.name)
             )?;
             if let Some(d) = &r.disc {
                 write!(f, " disc {d}")?;
             }
-            writeln!(f, " -> {} {}", Rendered::Parent(&r.to_parent), Rendered::Name(&r.to_name))?;
+            writeln!(
+                f,
+                " -> {} {}",
+                Rendered::Parent(&r.to_parent, s),
+                Rendered::Name(&r.to_name)
+            )?;
         }
         for c in &self.counters {
             writeln!(f, "counter {} {}", c.name, c.value)?;
@@ -382,11 +401,42 @@ impl RunOutput {
     }
 }
 
+/// What [`Style::position`] holds: what follows a place's path.
+pub type PositionFn<'a> = dyn Fn(&Place) -> String + 'a;
+
+/// What [`Style::key_name`] holds: the name of a key, if it has one.
+pub type KeyNameFn<'a> = dyn Fn(&Digest) -> Option<Vec<u8>> + 'a;
+
+/// How [`RunOutput::render_styled`] writes what is not the same on every
+/// machine or is not for people as a number. `Default` is
+/// [`RunOutput::render`]'s.
+#[derive(Clone, Copy, Default)]
+pub struct Style<'a> {
+    /// The text of the `transform` line; `None`: the id's digest.
+    pub transform: Option<&'a str>,
+    /// What follows a place's path; `None`: `:<lo>-<hi>`.
+    pub position: Option<&'a PositionFn<'a>>,
+    /// The name of a key, when it has one; `None`, or a key it gives no
+    /// name: the key's digest.
+    pub key_name: Option<&'a KeyNameFn<'a>>,
+}
+
+impl fmt::Debug for Style<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Style")
+            .field("transform", &self.transform)
+            .field("position", &self.position.is_some())
+            .field("key_name", &self.key_name.is_some())
+            .finish()
+    }
+}
+
 /// The pieces of a rendered line.
 enum Rendered<'a> {
     Quoted(&'a [u8]),
-    Place(&'a Place),
-    Parent(&'a Parent),
+    Place(&'a Place, &'a Style<'a>),
+    Key(&'a Digest, &'a Style<'a>),
+    Parent(&'a Parent, &'a Style<'a>),
     Name(&'a Name),
 }
 
@@ -412,15 +462,22 @@ impl fmt::Display for Rendered<'_> {
                 escaped(f, b)?;
                 f.write_str("\"")
             }
-            Rendered::Place(p) => {
+            Rendered::Place(p, s) => {
                 escaped(f, &p.file.path)?;
-                write!(f, ":{}-{}", p.lo, p.hi)
+                match s.position {
+                    Some(position) => f.write_str(&position(p)),
+                    None => write!(f, ":{}-{}", p.lo, p.hi),
+                }
             }
-            Rendered::Parent(p) => match p {
+            Rendered::Key(k, s) => match s.key_name.and_then(|name| name(k)) {
+                Some(name) => write!(f, "{}", Rendered::Quoted(&name)),
+                None => write!(f, "{k}"),
+            },
+            Rendered::Parent(p, s) => match p {
                 Parent::Root => f.write_str("root"),
                 Parent::CLinkage => f.write_str("c_linkage"),
                 Parent::Builtin => f.write_str("builtin"),
-                Parent::Unit(d) => write!(f, "{d}"),
+                Parent::Unit(d) => write!(f, "{}", Rendered::Key(d, s)),
             },
             Rendered::Name(n) => match n {
                 Name::Identifier(b) => write!(f, "{}", Rendered::Quoted(b)),

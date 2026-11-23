@@ -1,0 +1,6 @@
+# pending
+# needs: demand
+# g<long>(long), the implicit instantiation, is Pending(Demand) on both
+# sides until the package that walks implicitly instantiated bodies lands:
+# the runner would compare nothing (WP-104 review F4). The explicit
+# instantiation is equal/_/name-value-template-instantiation.

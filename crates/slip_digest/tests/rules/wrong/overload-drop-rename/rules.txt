@@ -1,0 +1,2 @@
+# Item 9, from disc/overload-renamed-relocated-parameter: the rename of the overload dropped.
+relocate acme => :: legacy
