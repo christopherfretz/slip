@@ -191,10 +191,11 @@ impl<'a> Keys<'a> {
         }
         match self.w.key(e) {
             KeyRes::Key { id, cause: None, .. } => Ok(id),
-            KeyRes::Key { cause: Some(c), .. } => Err(NoKey::Indeterminate(c)),
             KeyRes::None(None) => Err(NoKey::NotAUnit),
             KeyRes::None(Some(c)) if c == LOCAL_ENTITY => Err(NoKey::NotAUnit),
-            KeyRes::None(Some(c)) => Err(NoKey::Indeterminate(c)),
+            KeyRes::Key { cause: Some(c), .. } | KeyRes::None(Some(c)) => {
+                Err(NoKey::Indeterminate(c))
+            }
         }
     }
 

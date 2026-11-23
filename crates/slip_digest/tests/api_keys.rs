@@ -231,7 +231,9 @@ fn sweep_side(dir: &Path, side: Side) -> Result<Tally, String> {
                 match (k, &id) {
                     (Ok(k), Ok(id)) if k.id() == *id => {}
                     (Err(a), Err(b)) if a == b => {}
-                    (k, id) => t.failures.push(format!("{e:?}: key ({which}) {k:?}, key_id {id:?}")),
+                    (k, id) => {
+                        t.failures.push(format!("{e:?}: key ({which}) {k:?}, key_id {id:?}"));
+                    }
                 }
             }
         }
@@ -324,55 +326,57 @@ fn unit_of_is_the_innermost_unit() {
                struct Out { struct In { int w; }; };\n";
     snippet(src, |input| {
         let ast = input.ast;
-        let mut k = Keys::new(input);
-        let f = one(ast, "f", DeclKind::Function);
+        let mut keys = Keys::new(input);
+        let fun = one(ast, "f", DeclKind::Function);
         // An expression's holder that is a function: the function.
-        assert_eq!(k.unit_of(f), Some(f));
+        assert_eq!(keys.unit_of(fun), Some(fun));
         // A parameter and a local variable: the function.
-        assert_eq!(k.unit_of(one(ast, "p", DeclKind::ParmVar)), Some(f));
-        assert_eq!(k.unit_of(one(ast, "local", DeclKind::Var)), Some(f));
+        assert_eq!(keys.unit_of(one(ast, "p", DeclKind::ParmVar)), Some(fun));
+        assert_eq!(keys.unit_of(one(ast, "local", DeclKind::Var)), Some(fun));
         // A variable's initialiser: the closure there is the variable's.
-        let v = one(ast, "v", DeclKind::Var);
-        assert_eq!(k.unit_of(call_op(ast, 0)), Some(v));
+        let var = one(ast, "v", DeclKind::Var);
+        assert_eq!(keys.unit_of(call_op(ast, 0)), Some(var));
         // A member function defined in class, and what its body declares.
-        let m = one(ast, "m", DeclKind::CXXMethod);
-        assert_eq!(k.unit_of(m), Some(m));
-        assert_eq!(k.unit_of(one(ast, "q", DeclKind::Var)), Some(m));
+        let meth = one(ast, "m", DeclKind::CXXMethod);
+        assert_eq!(keys.unit_of(meth), Some(meth));
+        assert_eq!(keys.unit_of(one(ast, "q", DeclKind::Var)), Some(meth));
         // A default member initialiser: the field's stream holds it
         // (digest-kinds §5.5 `FieldData`), and a field is a unit.
-        let d = one(ast, "d", DeclKind::Field);
-        assert_eq!(k.unit_of(d), Some(d));
+        let field = one(ast, "d", DeclKind::Field);
+        assert_eq!(keys.unit_of(field), Some(field));
         // A lambda's call operator inside a function, its parameter and
         // its local: the function.
-        let g = one(ast, "g", DeclKind::Function);
-        assert_eq!(k.unit_of(call_op(ast, 1)), Some(g));
+        let gfun = one(ast, "g", DeclKind::Function);
+        assert_eq!(keys.unit_of(call_op(ast, 1)), Some(gfun));
         // The closure's static invoker repeats the parameter: the invoker
         // is implicit and has a body, so it is a derived unit though its
         // class is local (digest §4.3), and holds its own.
-        let [a, invoker_a] = written(ast, "a", DeclKind::ParmVar)[..] else { panic!("two `a`") };
-        assert_eq!(k.unit_of(a), Some(g));
+        let [param, invoker_a] = written(ast, "a", DeclKind::ParmVar)[..] else {
+            panic!("two `a`")
+        };
+        assert_eq!(keys.unit_of(param), Some(gfun));
         let invoker = nth(ast, "__invoke", DeclKind::CXXMethod, 1, 2);
-        assert_eq!(k.unit_of(invoker), Some(invoker));
-        assert_eq!(k.unit_of(invoker_a), Some(invoker));
-        assert_eq!(k.unit_of(one(ast, "z", DeclKind::Var)), Some(g));
+        assert_eq!(keys.unit_of(invoker), Some(invoker));
+        assert_eq!(keys.unit_of(invoker_a), Some(invoker));
+        assert_eq!(keys.unit_of(one(ast, "z", DeclKind::Var)), Some(gfun));
         // An enumerator is a unit.
         let e1 = one(ast, "e1", DeclKind::EnumConstant);
-        assert_eq!(k.unit_of(e1), Some(e1));
+        assert_eq!(keys.unit_of(e1), Some(e1));
         // A function template's parameter, and its template parameter:
         // the template.
         let tf = one(ast, "tf", DeclKind::FunctionTemplate);
-        assert_eq!(k.unit_of(one(ast, "t", DeclKind::ParmVar)), Some(tf));
+        assert_eq!(keys.unit_of(one(ast, "t", DeclKind::ParmVar)), Some(tf));
         let tp = decls(ast, "T", DeclKind::TemplateTypeParm);
         assert!(!tp.is_empty());
-        for p in tp {
-            assert_eq!(k.unit_of(p), Some(tf));
+        for tparam in tp {
+            assert_eq!(keys.unit_of(tparam), Some(tf));
         }
         // A member of a nested class is its own unit.
-        let w = one(ast, "w", DeclKind::Field);
-        assert_eq!(k.unit_of(w), Some(w));
+        let inner = one(ast, "w", DeclKind::Field);
+        assert_eq!(keys.unit_of(inner), Some(inner));
         // The translation unit is in no unit.
         let tu = of_kind(ast, DeclKind::TranslationUnit)[0];
-        assert_eq!(k.unit_of(tu), None);
+        assert_eq!(keys.unit_of(tu), None);
     });
 }
 
@@ -512,18 +516,28 @@ fn a_key_with_a_cause_is_indeterminate() {
         let spec = ast
             .decls
             .ids()
-            .find(|&d| ast.spec_info(d).is_some_and(|(_, s)| s.kind == SpecKind::ExplicitSpecialization))
+            .find(|&d| {
+                ast.spec_info(d).is_some_and(|(_, s)| s.kind == SpecKind::ExplicitSpecialization)
+            })
             .expect("S<closure>");
         for e in [f, spec] {
             // Asked first, and after the closures.
             let mut k = Keys::new(input);
-            assert!(matches!(k.key_id(e), Err(NoKey::Indeterminate(_))), "{e:?}: {:?}", k.key_id(e));
+            assert!(
+                matches!(k.key_id(e), Err(NoKey::Indeterminate(_))),
+                "{e:?}: {:?}",
+                k.key_id(e)
+            );
             assert_eq!(k.key(e), k.key_id(e).map(|_| unreachable!()));
             let mut k = Keys::new(input);
             for d in ast.decls.ids() {
                 let _ = k.key_id(d);
             }
-            assert!(matches!(k.key_id(e), Err(NoKey::Indeterminate(_))), "{e:?}: {:?}", k.key_id(e));
+            assert!(
+                matches!(k.key_id(e), Err(NoKey::Indeterminate(_))),
+                "{e:?}: {:?}",
+                k.key_id(e)
+            );
         }
     });
 }
@@ -803,9 +817,12 @@ fn rename_rule_refusals() {
         let spec = ast
             .decls
             .ids()
-            .find(|&d| ast.spec_info(d).is_some_and(|(_, s)| s.kind == SpecKind::ExplicitSpecialization))
+            .find(|&d| {
+                ast.spec_info(d).is_some_and(|(_, s)| s.kind == SpecKind::ExplicitSpecialization)
+            })
             .expect("S<int>");
-        let partial = ast.decls.ids().find(|&d| ast.partial_spec_info(d).is_some()).expect("S<T *>");
+        let partial =
+            ast.decls.ids().find(|&d| ast.partial_spec_info(d).is_some()).expect("S<T *>");
         assert_eq!(k.key(spec).map(|k| k.kind), Ok(KeyKind::Specialisation));
         assert_eq!(k.rename_rule(spec, b"R"), Err(NoKey::NotRenamable));
         assert_eq!(k.key(partial).map(|k| k.kind), Ok(KeyKind::PartialSpecialisation));
@@ -920,9 +937,9 @@ fn answers_do_not_depend_on_order() {
         let mut fwd = Keys::new(input);
         let mut back = Keys::new(input);
         let one: Vec<_> = all.iter().map(|&d| (fwd.key_id(d), fwd.unit_of(d))).collect();
-        let mut two: Vec<_> = all.iter().rev().map(|&d| (back.key_id(d), back.unit_of(d))).collect();
+        let mut two: Vec<_> =
+            all.iter().rev().map(|&d| (back.key_id(d), back.unit_of(d))).collect();
         two.reverse();
         assert_eq!(one, two);
     });
 }
-
