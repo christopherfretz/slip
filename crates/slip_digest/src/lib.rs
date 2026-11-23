@@ -215,6 +215,7 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
+pub use names::display_name;
 pub use walk::STACK_SIZE;
 
 /// A finished translation unit (`spec/digest.md` §1 rule 4).
