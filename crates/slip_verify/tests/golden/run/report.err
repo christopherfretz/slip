@@ -1,0 +1,4 @@
+slip: mismatch: /src/app/main.cpp: 4 finding(s), 1 indeterminate
+slip: mismatch: /src/app/other.cpp: 2 finding(s), 1 indeterminate
+slip: not_parsed: /src/app/bad.cpp: bad.cpp:3:1: error: expected ';'
+slip: unverifiable: /src/app/odd.cpp: pre-image: no map shard

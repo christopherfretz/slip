@@ -13,7 +13,9 @@ pub enum VerdictKind {
     Unverifiable = 2,
 }
 
-/// What a finding says about a unit. The order is the order of findings.
+/// What a finding says about a unit. The derived order is that of the
+/// kinds' numbers in the format, not the order of findings: findings are
+/// ordered by [`FindingKind::rank`] (`spec/verify.md` §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FindingKind {
     /// In both images with different digests.
@@ -28,6 +30,23 @@ pub enum FindingKind {
     DerivedChanged = 4,
     /// A derived unit both images have, indeterminate in either.
     DerivedIndeterminate = 5,
+}
+
+impl FindingKind {
+    /// The place of the kind in the order of findings (`spec/verify.md` §6):
+    /// `changed` 0, `removed` 1, `added` 2, `derived_changed` 3,
+    /// `indeterminate` 4, `derived_indeterminate` 5. Not the kind's number
+    /// in the format.
+    pub fn rank(self) -> u8 {
+        match self {
+            FindingKind::Changed => 0,
+            FindingKind::Removed => 1,
+            FindingKind::Added => 2,
+            FindingKind::DerivedChanged => 3,
+            FindingKind::Indeterminate => 4,
+            FindingKind::DerivedIndeterminate => 5,
+        }
+    }
 }
 
 /// A place in one image.
@@ -85,6 +104,6 @@ pub struct Verdict {
     pub used: Vec<Digest>,
     /// The number of findings, of which `findings` holds the first ones.
     pub total: u64,
-    /// Ordered by `(kind, file, key)`.
+    /// Ordered by `(rank, file, key)`, the rank of [`FindingKind::rank`].
     pub findings: Vec<Finding>,
 }

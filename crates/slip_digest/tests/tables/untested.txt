@@ -83,7 +83,6 @@ ColdDeclData/alignment
 ColdDeclData/conversion_spec_target
 ColdDeclData/deprecation
 ColdDeclData/gnu_lib_twin
-ColdDeclData/instantiated_from
 ColdExprData/member_extra-record
 ConstArray/size_expr
 CoroutineBodyData/allocate

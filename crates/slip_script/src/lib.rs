@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod effects;
 pub mod fake;
 pub mod host;
 pub mod output;

@@ -220,7 +220,7 @@ fn runs<'t, T, K: Ord>(
 /// The outcome of §4 over the groups given.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Comparison {
-    /// Every finding, ordered by `(kind, file, key)` (§6).
+    /// Every finding, ordered by `(rank, file, key)` (§6, `FindingKind::rank`).
     pub findings: Vec<Finding>,
     /// Derived keys only the pre-image has (§4 step 3).
     pub only_pre: u64,
@@ -568,7 +568,7 @@ pub fn compare_groups(
         },
     );
 
-    findings.sort_by(|a, b| (a.kind, &a.file, a.key).cmp(&(b.kind, &b.file, b.key)));
+    findings.sort_by(|a, b| (a.kind.rank(), &a.file, a.key).cmp(&(b.kind.rank(), &b.file, b.key)));
     // Each key is visited once in D, so `used` has no two equal; it is in
     // key order already, sorted again to make that independent of `runs`.
     used.sort_unstable();

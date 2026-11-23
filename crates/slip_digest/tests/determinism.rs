@@ -8,6 +8,9 @@
 //! directory and the `Debug` form of each side's `Output` between marker
 //! lines; the parent compares them with its own. One child serves every
 //! directory, so that every source is covered at the cost of one process.
+//! Both processes walk the directories on the runners' pool
+//! (`common::pool_map`); the order of the walks does not matter to what
+//! is asserted, and the failures are reported in directory order.
 
 mod common;
 
@@ -44,9 +47,12 @@ fn child() {
     if std::env::var_os("SLIP_DIGEST_CHILD").is_none() {
         return;
     }
-    for dir in all_dirs() {
-        let rel = common::rel(&dir);
-        for out in render(&dir) {
+    let dirs = all_dirs();
+    let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));
+    let renders = common::pool_map(&dirs, threads, |d| render(d));
+    for (dir, r) in dirs.iter().zip(renders) {
+        let rel = common::rel(dir);
+        for out in r.unwrap_or_else(|p| vec![format!("panicked: {p}")]) {
             println!("{BEGIN} {rel}\n{out}\n{END}");
         }
     }
@@ -79,10 +85,19 @@ fn determinism() {
         .output()
         .expect("the child runs");
     let theirs = parse_child(&String::from_utf8_lossy(&child.stdout));
-    for dir in &dirs {
+    // The two walks of a directory run one after the other on one thread
+    // of the pool; the directories in any order, the failures in theirs.
+    let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));
+    let ours = common::pool_map(&dirs, threads, |d| (render(d), render(d)));
+    for (dir, r) in dirs.iter().zip(ours) {
         let rel = common::rel(dir);
-        let first = render(dir);
-        let second = render(dir);
+        let (first, second) = match r {
+            Ok(pair) => pair,
+            Err(p) => {
+                failures.push(format!("{rel}: panicked: {p}"));
+                continue;
+            }
+        };
         if first != second {
             failures.push(format!("{rel}: two walks in one process differ"));
             continue;

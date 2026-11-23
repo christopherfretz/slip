@@ -642,3 +642,69 @@ fn s8_4_inputs_directory_embed_resource_is_not_found() {
     assert_eq!(s.outcome.status, Status::Ok, "{:?}", s.outcome);
     assert_eq!(s.inputs, Some(vec![file_ref(&main)]));
 }
+
+// §8.4 outcome, at the Kiln pin `83566cc47` (WP-044): the smallest
+// reproducers of the Oven panics Slip reported (docs/requests/KD1, KD2),
+// which failed at the old pin `62d190007`, parse `ok`.
+#[test]
+fn s8_4_outcome_kd1_kd2_reproducers_are_ok() {
+    let f = Fixture::new("kd");
+    let cases = [
+        // KD1 §1: an assignment of an array new with a bound that is not
+        // a constant, of a class with a default member initialiser.
+        (
+            "kd1_new.cpp",
+            "struct S { unsigned x = 0; };\nS *p;\n\
+             void f(unsigned long n) { p = new S[n]; }\n",
+        ),
+        // KD1 §2: a bit-field of an anonymous union through `->`, in an
+        // instantiated body.
+        (
+            "kd1_union.cpp",
+            "struct T { union { unsigned a : 2; int other; }; };\n\
+             template <class P> void ensure(T *t, T *ct) { t->a = ct->a; }\n\
+             void g(T *t) { ensure<int>(t, t); }\n",
+        ),
+        // KD2: a parenthesised `std::min` call as a shift count.
+        (
+            "kd2_minmax.cpp",
+            "namespace std {\n\
+             template <class T> constexpr const T &min(const T &a, const T &b) \
+             { return b < a ? b : a; }\n}\n\
+             unsigned long long f(unsigned long n) \
+             { return 1ull << (std::min((unsigned long)31, n)); }\n",
+        ),
+    ];
+    for (name, text) in cases {
+        f.write(name, text);
+        let s = f.parse(".", &["clang++", "-std=c++17", name]);
+        assert_eq!(s.outcome.status, Status::Ok, "{name}: {:?}", s.outcome);
+        assert_eq!((s.outcome.errors, s.outcome.warnings), (0, 0), "{name}");
+    }
+}
+
+// §8.4 the run (WP-044): the entry leaves Kiln's written-reference and
+// declaration-extent tables off (`spec/ast.md` §18, §19 at Kiln
+// `83566cc47`), so a unit full of uses has both empty.
+#[test]
+fn s8_4_run_written_refs_and_decl_extents_are_off() {
+    let f = Fixture::new("written-refs-off");
+    f.write(
+        "main.cpp",
+        "namespace n { struct A { int v; }; int g(A); }\n\
+         int use(n::A a) { return n::g(a) + a.v; }\n",
+    );
+    let o = f.observer(".", &["c++", "main.cpp"]);
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, |unit| {
+        let ast = unit.ast();
+        (
+            ast.written_refs.is_on(),
+            ast.written_refs.len(),
+            ast.decl_extents.is_on(),
+            ast.decl_extents.len(),
+        )
+    })
+    .unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    assert_eq!(seen, Some((false, 0, false, 0)));
+}

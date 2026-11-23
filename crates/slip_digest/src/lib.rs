@@ -110,7 +110,7 @@
 //! `expr_core.rs` write (`expr.rs` "The walk"): their children are items
 //! of one heap stack, so an operator, call, member or cast chain of any
 //! length takes one level (`tests/expr_chains.rs`: 20 000 operators and
-//! 20 000 member calls, linear). A level is entered by each `expr::child`
+//! 4 000 member calls, linear). A level is entered by each `expr::child`
 //! (a kind function of `expr_init.rs`, `expr_dep.rs`, `expr_misc.rs`
 //! calling it, a declaration or type reaching an expression) and is to be
 //! entered by each statement the statements package walks.
@@ -202,6 +202,7 @@ mod local;
 mod names;
 mod order;
 mod other;
+pub mod records;
 mod refs;
 mod stmt;
 mod stream;
