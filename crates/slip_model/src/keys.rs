@@ -642,10 +642,10 @@ impl RuleTable {
         if let Some(w) = order.windows(2).find(|w| w[0].0 == w[1].0) {
             return Err(RuleError::Duplicate { first: w[0].1, second: w[1].1 });
         }
-        let (matches, rules): (Vec<_>, Vec<_>) = order.into_iter().map(|(m, _, r)| (m, r)).unzip();
-        let refused = first_refused(&rules);
-        let produced = produced_index(&rules);
-        Ok(RuleTable { rules, matches, refused, produced })
+        // Valid, ascending and without a duplicate: `from_sorted`, the one
+        // builder of the index, accepts it.
+        let rules: Vec<Rule> = order.into_iter().map(|(_, _, r)| r).collect();
+        Ok(RuleTable::from_sorted(rules).expect("valid names, sorted, no duplicate"))
     }
 
     /// The table of `rules` already in order, with valid names and no two

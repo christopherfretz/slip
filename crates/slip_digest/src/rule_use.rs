@@ -18,20 +18,24 @@
 //! key is asked for, and whether it is declared in the unit's files or
 //! only reached through a reference. A key computed again (one not
 //! memoised, below a depth limit or a cycle) replaces the trace it gave
-//! before: the trace is that of the entity's last key, which once
-//! memoised is its only one.
+//! before, and a computation that forms no key, or stops at the depth
+//! limit, removes it ([`forget`]): the trace is that of the entity's last
+//! key, which once memoised is its only one.
 //!
 //! **What is not counted** (`spec/landed/verify/WP-069.md`): the names a
 //! key takes from another entity's mapped key without a rule matching it
 //! are not a rule's use. A specialisation (its name is its template's,
 //! mapped, `spec_key`) and a member of an instantiation (its name is its
 //! pattern member's, mapped, `follow_patterns`) are counted by their own
-//! mapped key only, which no rule matches and none produces (a rule of
-//! kind `specialisation` is refused; an instantiated member's parent is
-//! a specialisation, never a rule's `to_parent`). An entity with no key
-//! (its key is indeterminate with no key formed: under a refused table,
-//! a cycle, `key/rule-on-instantiated-member`) is not counted; one whose
-//! key is formed and carries a cause is.
+//! mapped key only. No rule matches it (a rule of kind `specialisation`
+//! is refused; one on an instantiated member is
+//! `key/rule-on-instantiated-member`), and it is in `direct(r)` only if
+//! `r` produces that key: never for a member of a class's instantiation,
+//! whose parent is a specialisation, which is no rule's `to_parent`, but
+//! possibly for an instantiated friend, whose parent is a namespace. An
+//! entity with no key (its key is indeterminate with no key formed: under
+//! a refused table, a cycle, `key/rule-on-instantiated-member`) is not
+//! counted; one whose key is formed and carries a cause is.
 //!
 //! **No extra work when off.** With the option off, or an empty table,
 //! `Walk::rule_use` is `None` and [`map`] is `RuleTable::map`.
@@ -59,6 +63,20 @@ pub(crate) struct Counting {
     traces: HashMap<DeclId, Trace>,
 }
 
+impl Counting {
+    /// `e`'s trace is now `t`; `None` removes the one it had.
+    fn record(&mut self, e: DeclId, t: Option<Trace>) {
+        match t {
+            Some(t) => {
+                self.traces.insert(e, t);
+            }
+            None => {
+                self.traces.remove(&e);
+            }
+        }
+    }
+}
+
 /// The last step of mapping entity `e`'s key (`RuleTable::map`), with the
 /// trace kept when the walk counts rule use.
 pub(crate) fn map(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
@@ -73,15 +91,17 @@ pub(crate) fn map(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
         let direct: Vec<usize> = rules.producers(&mapped).collect();
         (!direct.is_empty()).then_some(Trace::Direct(direct))
     };
-    match trace {
-        Some(t) => {
-            c.traces.insert(e, t);
-        }
-        None => {
-            c.traces.remove(&e);
-        }
-    }
+    c.record(e, trace);
     mapped
+}
+
+/// Entity `e`'s key was computed again and formed none (or stopped at the
+/// depth limit): it is counted for no rule, whatever an earlier
+/// computation said.
+pub(crate) fn forget(w: &mut Walk<'_>, e: DeclId) {
+    if let Some(c) = w.rule_use.as_mut() {
+        c.record(e, None);
+    }
 }
 
 /// `Output::rule_use`: one `Use` per rule with a count that is not 0,
@@ -100,4 +120,46 @@ pub(crate) fn finish(c: Option<Counting>) -> Vec<Use> {
         }
     }
     by_rule.into_iter().map(|(r, (via, direct))| Use { rule: r as u64, via, direct }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Counting, Trace, finish};
+    use slip_kiln::kiln::ast::ids::DeclId;
+    use slip_model::agreement::Use;
+
+    // The trace is the entity's last: a later one replaces it, `None`
+    // removes it (WP-069 review, F3; mutation D: the first trace wins).
+    #[test]
+    fn last_trace_wins() {
+        let (e, f) = (DeclId::new(1), DeclId::new(2));
+        let mut c = Counting::default();
+        c.record(e, Some(Trace::Via(0)));
+        c.record(e, Some(Trace::Via(1)));
+        c.record(f, Some(Trace::Direct(vec![0, 2])));
+        assert_eq!(
+            finish(Some(c)),
+            [
+                Use { rule: 0, via: 0, direct: 1 },
+                Use { rule: 1, via: 1, direct: 0 },
+                Use { rule: 2, via: 0, direct: 1 },
+            ]
+        );
+
+        let mut c = Counting::default();
+        c.record(e, Some(Trace::Via(0)));
+        c.record(e, Some(Trace::Direct(vec![1])));
+        assert_eq!(finish(Some(c)), [Use { rule: 1, via: 0, direct: 1 }]);
+
+        let mut c = Counting::default();
+        c.record(e, Some(Trace::Via(0)));
+        c.record(f, Some(Trace::Via(0)));
+        c.record(e, None);
+        assert_eq!(finish(Some(c)), [Use { rule: 0, via: 1, direct: 0 }]);
+
+        let mut c = Counting::default();
+        c.record(e, None);
+        assert_eq!(finish(Some(c)), []);
+        assert_eq!(finish(None), []);
+    }
 }

@@ -725,3 +725,76 @@ fn produces_and_producers() {
     assert_eq!(merge.produces(&ns("legacy")), Some(0));
     assert_eq!(merge.producers(&ns("a")).count(), 0);
 }
+
+/// Every rule set of the rule tests above, in the order given.
+fn rule_sets() -> Vec<Vec<Rule>> {
+    let p = Parent::Unit(d(0xac));
+    vec![
+        Vec::new(),
+        vec![f_rule()],
+        vec![Rule { disc: None, ..f_rule() }],
+        vec![
+            rule(p, KeyKind::Function, id("g"), None, (p, id("f"))),
+            rule(p, KeyKind::Function, id("f"), None, (p, id("g"))),
+        ],
+        table_rules(),
+        {
+            let mut r = table_rules();
+            r.reverse();
+            r
+        },
+        vec![
+            rule(Parent::Root, KeyKind::Namespace, id("b"), None, (Parent::Root, id("legacy"))),
+            rule(Parent::Root, KeyKind::Namespace, id("a"), None, (Parent::Root, id("legacy"))),
+        ],
+    ]
+}
+
+/// The rules of `t` whose (to_parent, kind, to_name, disc) is `k`'s, by a
+/// scan: what `producers` must give.
+fn producers_by_scan(t: &RuleTable, k: &Key) -> Vec<usize> {
+    t.rules()
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            (r.to_parent, r.kind, &r.to_name, r.disc) == (k.parent, k.kind, &k.name, k.disc)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+// verify §9.1, §9.5: a run's table is built from a declared change
+// (`Declared::new`) or read from a container (binary or JSON), never by
+// `RuleTable::new`. Each gives the same `producers` for every key the rules
+// produce, and the same `map_traced` for every key they match and produce,
+// as `RuleTable::new` and as a scan of the rules (WP-069 review, F1).
+#[test]
+fn declared_and_read_tables_index_as_new() {
+    use slip_model::declared::Declared;
+    for rules in rule_sets() {
+        let new = RuleTable::new(rules.clone()).unwrap();
+        let declared = Declared::new(new.rules().to_vec(), vec![], vec![], vec![]).unwrap();
+        let binary = Declared::from_bytes(&declared.to_bytes()).unwrap();
+        let json = Declared::from_json(&declared.to_json()).unwrap();
+        let tables =
+            [("declared", declared.rules()), ("binary", binary.rules()), ("json", json.rules())];
+        let mut subjects: Vec<Key> = Vec::new();
+        for r in new.rules() {
+            subjects.push(key(r.kind, r.parent, r.name.clone(), r.disc));
+            subjects.push(key(r.kind, r.to_parent, r.to_name.clone(), r.disc));
+        }
+        subjects.push(f_key());
+        for k in &subjects {
+            let want = producers_by_scan(&new, k);
+            assert_eq!(new.producers(k).collect::<Vec<_>>(), want, "new {k:?}");
+            for (how, t) in tables {
+                assert_eq!(t.rules(), new.rules(), "{how}");
+                assert_eq!(t.producers(k).collect::<Vec<_>>(), want, "{how} {k:?}");
+                assert_eq!(t.map_traced(k.clone()), new.map_traced(k.clone()), "{how} {k:?}");
+            }
+        }
+        for (how, t) in tables {
+            assert_eq!(t, &new, "{how}");
+        }
+    }
+}

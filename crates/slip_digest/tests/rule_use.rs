@@ -35,10 +35,13 @@
 //! - The post-image with `rule_use` off is the same `Output` with an
 //!   empty `rule_use`: nothing else moves (§9.5).
 //! - Two walks with `rule_use` on give one `Output`.
+//! - The table walked is the one a run reads: written in a `Declared` and
+//!   decoded. The table `RuleTable::new` builds gives the same `Output`.
 //!
 //! Beside the cases, [`pair_tests_on_and_off`] walks every source of the
-//! pair tests with `rule_use` on and off and finds the outputs equal
-//! (they have no rule, so `rule_use` stays empty), and `tests/rules.rs`
+//! pair tests with `rule_use` on and off, under a table of one rule that
+//! matches nothing there (so the counting runs on every key), and finds
+//! the outputs equal but for `rule_use`, which is empty; `tests/rules.rs`
 //! does the same for the post-image of each of its cases, under its
 //! table.
 
@@ -51,7 +54,8 @@ use common::rules::{read, table_with};
 use slip_digest::records::records;
 use slip_digest::{Cause, Detail, Input, Options, Output};
 use slip_model::agreement::Use;
-use slip_model::keys::RuleTable;
+use slip_model::declared::Declared;
+use slip_model::keys::{KeyKind, Name, Parent, Rule, RuleTable};
 
 fn walk(input: &Input<'_>, rules: &RuleTable, rule_use: bool) -> Output {
     slip_digest::digest(input, &Options { rules, detail: Detail::All, names: true, rule_use })
@@ -127,6 +131,16 @@ fn same_but_rule_use(on: &Output, off: &Output) -> Result<(), String> {
     Ok(())
 }
 
+/// `table` as a run reads it: in a `Declared`, written to bytes and read
+/// back (`RuleTable::from_sorted`, through the container reader).
+fn decoded(table: &RuleTable) -> Result<RuleTable, String> {
+    let declared = Declared::new(table.rules().to_vec(), vec![], vec![], vec![])
+        .map_err(|e| format!("Declared::new: {e}"))?;
+    let read = Declared::from_bytes(&declared.to_bytes())
+        .map_err(|e| format!("the declared change read back: {e}"))?;
+    Ok(read.rules().clone())
+}
+
 fn case(dir: &Path) -> Result<(), String> {
     let e = expected(dir)?;
     let text =
@@ -151,11 +165,18 @@ fn case(dir: &Path) -> Result<(), String> {
                 t.table.refused()
             ));
         }
-        let on = walk(input, &t.table, true);
-        if walk(input, &t.table, true) != on {
+        // A run's table is read from a container, not built by
+        // `RuleTable::new`: walk the one decoded from a `Declared` written
+        // out, and require `RuleTable::new`'s to count the same.
+        let decoded = decoded(&t.table)?;
+        let on = walk(input, &decoded, true);
+        if walk(input, &decoded, true) != on {
             return Err("two walks with rule_use on differ".into());
         }
-        same_but_rule_use(&on, &walk(input, &t.table, false))?;
+        if walk(input, &t.table, true) != on {
+            return Err("RuleTable::new's table and the decoded one give two outputs".into());
+        }
+        same_but_rule_use(&on, &walk(input, &decoded, false))?;
         invariants(&on.rule_use, t.table.rules().len())?;
         let mut want: Vec<Use> = Vec::new();
         for &(n, via, direct) in &e.uses {
@@ -217,9 +238,26 @@ fn rule_use() {
     common::run_all("rule_use", case);
 }
 
+/// A table of one rule on a function no pair test declares: not empty,
+/// so the walk counts (every key is looked up in `map_traced` and
+/// `producers`), and it matches nothing.
+fn unmatched_table() -> RuleTable {
+    let name = |s: &str| Name::Identifier(s.as_bytes().to_vec());
+    RuleTable::new(vec![Rule {
+        parent: Parent::Root,
+        kind: KeyKind::Function,
+        name: name("slip_rule_use_unmatched"),
+        disc: None,
+        to_parent: Parent::Root,
+        to_name: name("slip_rule_use_unmatched_old"),
+    }])
+    .expect("a valid rule")
+}
+
 /// §9.5 (`spec/verify.md` "Tests"): every source of every pair test,
-/// walked with `rule_use` on and off, gives one output but for an empty
-/// `rule_use`. They have no rule: the counting is not even set up.
+/// walked with `rule_use` on and off under [`unmatched_table`], gives one
+/// output but for `rule_use`, which is empty; and its digests, causes
+/// and names are those the empty table gives.
 #[test]
 fn pair_tests_on_and_off() {
     let mut dirs = Vec::new();
@@ -227,11 +265,24 @@ fn pair_tests_on_and_off() {
         dirs.extend(common::dirs(root).into_iter().filter(|d| !common::is_pending(d)));
     }
     let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));
+    let table = unmatched_table();
     let outcome = common::run_dirs("pairs", &dirs, threads, |dir| {
         for side in [Side::A, Side::B] {
-            let r = common::with_side(dir, side, |input| {
-                let empty = RuleTable::empty();
-                same_but_rule_use(&walk(input, &empty, true), &walk(input, &empty, false))
+            let r = common::with_side(dir, side, |input| -> Result<(), String> {
+                let on = walk(input, &table, true);
+                same_but_rule_use(&on, &walk(input, &table, false))?;
+                if !on.rule_use.is_empty() {
+                    return Err(format!("a rule no pair declares was counted: {:?}", on.rule_use));
+                }
+                // The digests, causes and names are the empty table's. The
+                // counters are not: under a table that is not empty the
+                // walk also reads the keys of instantiated members' pattern
+                // members (`follow_patterns`), which `digest.bytes` counts.
+                let e = walk(input, &RuleTable::empty(), false);
+                if (&on.digests, &on.causes, &on.names) != (&e.digests, &e.causes, &e.names) {
+                    return Err("the unmatched rule changed a digest, cause or name".into());
+                }
+                Ok(())
             });
             // A side that does not parse is the pair runner's to report.
             if let Ok(r) = r {

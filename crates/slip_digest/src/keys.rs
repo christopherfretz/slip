@@ -239,6 +239,7 @@ impl Walk<'_> {
             return KeyRes::None(Some(KEY_CYCLE));
         }
         if !self.enter() {
+            crate::rule_use::forget(self, e);
             return KeyRes::None(Some(TOO_DEEP));
         }
         let aborts = self.aborts;
@@ -263,7 +264,10 @@ impl Walk<'_> {
                 self.bytes += key.to_bytes().len() as u64;
                 KeyRes::Key { id: key.id(), kind, cause }
             }
-            Err(cause) => KeyRes::None(cause),
+            Err(cause) => {
+                crate::rule_use::forget(self, e);
+                KeyRes::None(cause)
+            }
         };
         self.keys_in_progress.remove(&e);
         self.leave();
