@@ -80,7 +80,7 @@ impl Task for MapTask {
                 .to_owned());
         }
         open_store(&mut self.store, job)?;
-        map_observer(&job.observer, job.round)
+        map_observer(&job.observer, job.round, true)
     }
 }
 
@@ -98,7 +98,17 @@ fn phase_name(phase: Phase) -> &'static str {
 /// that is not `ok` drops the walk's result. A walk that reported an error
 /// (too little stack, a buffer that is not an input) is `Err`: the job
 /// fails.
-fn map_observer(observer: &Observer, round: u64) -> Result<Shard, String> {
+///
+/// With `negatives` (the map task's, always) the parse records Kiln's
+/// lookup log and a shard with `inputs` gets its negative inputs
+/// (`spec/model.md` §8.6, work package WP-117). Without, it is the parse
+/// of before WP-117: what the measurement of the log's cost compares
+/// against (`spec/landed/verify/WP-117.md`).
+///
+/// # Errors
+///
+/// The parse task's, and the walk's (above).
+pub fn map_observer(observer: &Observer, round: u64, negatives: bool) -> Result<Shard, String> {
     let rules = RuleTable::empty();
     let options = Options {
         rules: &rules,
@@ -108,11 +118,18 @@ fn map_observer(observer: &Observer, round: u64) -> Result<Shard, String> {
         rule_use: false,
     };
     let identity = |path: &[u8]| path.to_vec();
-    let (mut shard, walked) =
-        parse_observer_with(observer, Phase::Map, round, ParseOptions::default(), |unit| {
-            map_unit(unit, &options, &identity)
-        })?;
-    let output = match walked.flatten() {
+    let mut parse = ParseOptions::default();
+    parse.lookups = negatives;
+    let directory = &observer.command.directory;
+    let (mut shard, ran) = parse_observer_with(observer, Phase::Map, round, parse, |unit| {
+        let places = unit.lookups().map(|l| crate::negatives::places(directory, l));
+        (map_unit(unit, &options, &identity), places)
+    })?;
+    let (walked, places) = ran.map_or((None, None), |(w, p)| (w, p));
+    if negatives && shard.inputs.is_some() {
+        shard.negatives = places;
+    }
+    let output = match walked {
         Some(Ok(output)) => output,
         Some(Err(e)) => return Err(e),
         None => return Ok(shard),
@@ -304,7 +321,7 @@ mod tests {
             cost_hint: 1,
             origins: vec![Origin { configuration: 0, entry: 0 }],
         };
-        let shard = map_observer(&observer, 2);
+        let shard = map_observer(&observer, 2, true);
         let _ = std::fs::remove_dir_all(&dir);
         shard
     }
