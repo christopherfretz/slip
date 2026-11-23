@@ -82,6 +82,10 @@ fn shard(observer: Digest, phase: Phase, round: u64) -> Shard {
         counters: vec![],
         digests: None,
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 

@@ -265,6 +265,10 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
         counters: vec![],
         digests: Some(post.clone()),
         verdict: Some(verdict(full.clone(), dg(2), dg(3), 8)),
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     };
     shard.validate()?;
     cov.used += u64::from(!full.used.is_empty());
