@@ -74,24 +74,23 @@ fn nested_lists(n: usize) -> String {
 
 /// `return s;` of a class type in a constexpr function, `n` times.
 fn returns(n: usize) -> String {
-    let mut src = String::from("struct S { constexpr S() {} constexpr S(const S &) {} };\n");
-    for i in 0..n {
-        src.push_str(&format!("constexpr S f{i}() {{ S s; return s; }}\n"));
-    }
-    src
+    let fs: Vec<String> =
+        (0..n).map(|i| format!("constexpr S f{i}() {{ S s; return s; }}\n")).collect();
+    let fs = fs.concat();
+    format!("struct S {{ constexpr S() {{}} constexpr S(const S &) {{}} }};\n{fs}")
 }
 
 /// `return s;` where the move fails and the copy is tried again with `s`
 /// as an lvalue (C++20 `kiln_sema` stmt.rs:1917 `return_operand`), each
 /// function evaluated in a constant.
 fn returns_lvalue(n: usize) -> String {
-    let mut src = String::from("struct S { constexpr S() {} constexpr S(S &) {} int v = 1; };\n");
-    for i in 0..n {
-        src.push_str(&format!(
-            "constexpr S f{i}() {{ S s; return s; }}\nstatic_assert(f{i}().v == 1);\n"
-        ));
-    }
-    src
+    let fs: Vec<String> = (0..n)
+        .map(|i| {
+            format!("constexpr S f{i}() {{ S s; return s; }}\nstatic_assert(f{i}().v == 1);\n")
+        })
+        .collect();
+    let fs = fs.concat();
+    format!("struct S {{ constexpr S() {{}} constexpr S(S &) {{}} int v = 1; }};\n{fs}")
 }
 
 /// `d` nested expansion statements over `{1}`, in a function.
@@ -160,6 +159,9 @@ fn measure_shapes() {
     }
 }
 
+/// A shape, its language mode, a size `n`, and whether it shares a node.
+type Linear = (&'static str, fn(usize) -> String, &'static str, usize, bool);
+
 /// Each shape of WP-049's table, at sizes `n` and `4n`: the bytes grow at
 /// most 4.5 times, and the shape writes back-references (`return s;`
 /// shares no node in this Kiln: linear without one). The nested
@@ -167,7 +169,7 @@ fn measure_shapes() {
 /// `nested_designated_lists`.
 #[test]
 fn the_shapes_are_linear() {
-    let shapes: [(&str, fn(usize) -> String, &str, usize, bool); 6] = [
+    let shapes: [Linear; 6] = [
         ("range", range, "c++20", 10, true),
         ("expansions", expansions, "c++26", 4, true),
         ("expansions-in-template", expansions_in_template, "c++26", 4, true),
