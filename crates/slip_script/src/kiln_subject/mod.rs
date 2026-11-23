@@ -15,9 +15,8 @@
 //! `lookup` reaches (`lookup.rs`), each file's bytes.
 
 use std::borrow::Cow;
-use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use slip_kiln::kiln::ast::{Ast, DeclId};
 use slip_kiln::kiln::source::{FileId, Loc, SourceManager};
@@ -42,60 +41,79 @@ type SubjectFile<'u> = (Vec<u8>, Cow<'u, [u8]>);
 pub struct KilnSubject<'u> {
     ast: &'u Ast,
     sm: &'u SourceManager,
-    /// The subject path of a buffer (its real path for a unit of the
-    /// run); `None` for a buffer that is no file of the subject.
-    path: Box<dyn Fn(FileId) -> Option<Vec<u8>> + 'u>,
-    owned: &'u dyn Fn(&[u8]) -> bool,
+    /// Per buffer (in `SourceManager::file_ids` order), its subject path
+    /// (its real path for a unit of the run); `None` for a buffer that is
+    /// no file of the subject. Copied out when the subject is made.
+    paths: Vec<Option<Cow<'u, [u8]>>>,
+    owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
     /// Per buffer: its path and its bytes, once asked.
-    files: Vec<OnceCell<Option<SubjectFile<'u>>>>,
+    files: Vec<OnceLock<Option<SubjectFile<'u>>>>,
     /// The declarations reached through member lists (`entities.rs`).
-    listed: OnceCell<Vec<u64>>,
+    listed: OnceLock<Vec<u64>>,
     /// Template parameter → its template (`entities.rs`).
-    parm_owner: OnceCell<HashMap<u32, u32>>,
-    /// The name index of each scope `lookup` reached (`lookup.rs`).
-    scopes: RefCell<HashMap<u32, Rc<lookup::Index>>>,
+    parm_owner: OnceLock<HashMap<u32, u32>>,
+    /// The name index of each scope `lookup` reached (`lookup.rs`). The
+    /// lock is held only to read or insert, never while an index is
+    /// built: two threads may build one index twice, to the same value.
+    scopes: Mutex<HashMap<u32, Arc<lookup::Index>>>,
 }
 
 impl std::fmt::Debug for KilnSubject<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KilnSubject")
             .field("declarations", &self.ast.decls.len())
-            .field("scopes_indexed", &self.scopes.borrow().len())
+            .field("scopes_indexed", &self.scopes().len())
             .finish_non_exhaustive()
     }
 }
 
 impl<'u> KilnSubject<'u> {
     /// `owned`: the run's ownership, by subject file (its real path).
-    pub fn new(unit: &'u slip_kiln::Unit<'u>, owned: &'u dyn Fn(&[u8]) -> bool) -> KilnSubject<'u> {
+    /// The subject keeps the unit's AST, source manager and real paths,
+    /// not the unit (which holds the Oven, and is not `Sync`).
+    pub fn new(
+        unit: &slip_kiln::Unit<'u>,
+        owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
+    ) -> KilnSubject<'u> {
         KilnSubject::from_parts(
             unit.ast(),
             unit.sm(),
-            Box::new(move |f| unit.real_path(f).map(<[u8]>::to_vec)),
+            |f| unit.real_path(f).map(Cow::Borrowed),
             owned,
         )
     }
 
     /// The subject over an AST and its source manager, with `path` the
-    /// subject path of each buffer that is a file of the subject: for a
-    /// unit that is not a [`slip_kiln::Unit`] (a snippet's,
-    /// `slip_kiln::snippet`).
+    /// subject path of each buffer that is a file of the subject (asked
+    /// once per buffer, here): for a unit that is not a
+    /// [`slip_kiln::Unit`] (a snippet's, `slip_kiln::snippet`).
     pub fn from_parts(
         ast: &'u Ast,
         sm: &'u SourceManager,
-        path: Box<dyn Fn(FileId) -> Option<Vec<u8>> + 'u>,
-        owned: &'u dyn Fn(&[u8]) -> bool,
+        path: impl Fn(FileId) -> Option<Cow<'u, [u8]>>,
+        owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
     ) -> KilnSubject<'u> {
         KilnSubject {
             ast,
             sm,
-            path,
+            paths: sm.file_ids().map(path).collect(),
             owned,
-            files: (0..sm.file_count()).map(|_| OnceCell::new()).collect(),
-            listed: OnceCell::new(),
-            parm_owner: OnceCell::new(),
-            scopes: RefCell::new(HashMap::new()),
+            files: (0..sm.file_count()).map(|_| OnceLock::new()).collect(),
+            listed: OnceLock::new(),
+            parm_owner: OnceLock::new(),
+            scopes: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The scope indexes (a poisoned lock is as good: an index is inserted
+    /// whole or not at all).
+    fn scopes(&self) -> MutexGuard<'_, HashMap<u32, Arc<lookup::Index>>> {
+        self.scopes.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The subject path of buffer `id`.
+    fn path(&self, id: FileId) -> Option<&[u8]> {
+        self.paths.get(id.index()).and_then(|p| p.as_deref())
     }
 
     /// The subject's number for entity `e`'s declaration that is the
@@ -111,7 +129,7 @@ impl<'u> KilnSubject<'u> {
         let cell = self.files.get(i)?;
         cell.get_or_init(|| {
             let id = self.sm.file_ids().nth(i)?;
-            let path = (self.path)(id)?;
+            let path = self.path(id)?.to_vec();
             let bytes = self.sm.original_bytes(id)?;
             u32::try_from(bytes.len()).ok()?;
             Some((path, bytes))
@@ -134,9 +152,9 @@ impl<'u> KilnSubject<'u> {
     fn describe_loc(&self, loc: Loc) -> String {
         match self.sm.line_col(loc) {
             Some(lc) => {
-                let name = (self.path)(lc.file).map_or_else(
+                let name = self.path(lc.file).map_or_else(
                     || self.sm.file_name(lc.file).to_owned(),
-                    |p| String::from_utf8_lossy(&p).into_owned(),
+                    |p| String::from_utf8_lossy(p).into_owned(),
                 );
                 format!("{name}:{}:{}", lc.line, lc.col)
             }
@@ -297,7 +315,7 @@ impl Subject for KilnSubject<'_> {
         None
     }
 
-    fn tier(&self, _r: Range) -> Option<u8> {
+    fn tiers(&self, _r: Range) -> Option<[bool; 2]> {
         None
     }
 

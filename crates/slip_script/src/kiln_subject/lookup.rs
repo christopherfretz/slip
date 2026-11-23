@@ -15,7 +15,7 @@
 //! member of the scope that names it, not of the one it is written in.
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::DeclKind;
@@ -66,13 +66,13 @@ impl KilnSubject<'_> {
     }
 
     /// The index of `scope`, built on first use.
-    fn index(&self, scope: DeclId) -> Rc<Index> {
-        if let Some(i) = self.scopes.borrow().get(&scope.index()) {
-            return Rc::clone(i);
-        }
-        let built = Rc::new(self.build_index(scope, 0));
-        self.scopes.borrow_mut().insert(scope.index(), Rc::clone(&built));
-        built
+    fn index(&self, scope: DeclId) -> Arc<Index> {
+        let cached = self.scopes().get(&scope.index()).map(Arc::clone);
+        cached.unwrap_or_else(|| {
+            let built = Arc::new(self.build_index(scope, 0));
+            self.scopes().insert(scope.index(), Arc::clone(&built));
+            built
+        })
     }
 
     fn build_index(&self, scope: DeclId, depth: u32) -> Index {
@@ -151,10 +151,10 @@ impl KilnSubject<'_> {
         transparent.retain(|&t| t != scope);
         if depth < LIMIT {
             for t in transparent {
-                let cached = self.scopes.borrow().get(&t.index()).map(Rc::clone);
+                let cached = self.scopes().get(&t.index()).map(Arc::clone);
                 let inner = cached.unwrap_or_else(|| {
-                    let built = Rc::new(self.build_index(t, depth + 1));
-                    self.scopes.borrow_mut().insert(t.index(), Rc::clone(&built));
+                    let built = Arc::new(self.build_index(t, depth + 1));
+                    self.scopes().insert(t.index(), Arc::clone(&built));
                     built
                 });
                 for (s, es) in &inner.names {

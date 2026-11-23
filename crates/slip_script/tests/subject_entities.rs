@@ -7,6 +7,7 @@
 //! tests say which entity they mean by the place of its first
 //! declaration (`file:line`).
 
+use std::borrow::Cow;
 use std::time::Instant;
 
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
@@ -34,7 +35,7 @@ fn with<R>(files: &[(&str, &str)], f: impl FnOnce(&Parsed<'_>, &KilnSubject<'_>)
         let s = KilnSubject::from_parts(
             p.ast,
             p.sm,
-            Box::new(move |id| p.path(id).map(|x| x.as_bytes().to_vec())),
+            |id| p.path(id).map(|x| Cow::Owned(x.as_bytes().to_vec())),
             &owned,
         );
         f(p, &s)
@@ -838,6 +839,17 @@ fn liveness() {
     });
 }
 
+/// The subject is `Sync` (a run's handler, `slip_script::Host`, holds it
+/// by reference and must be `Send` at this Kiln pin), so a reference to
+/// it is `Send`. Checked at compile time.
+#[test]
+fn subject_is_sync() {
+    fn assert_sync<T: Sync>() {}
+    fn assert_send<T: Send>() {}
+    assert_sync::<KilnSubject<'_>>();
+    assert_send::<&KilnSubject<'_>>();
+}
+
 // ---------------------------------------------------------------------------
 // Measurement (`docs/wp/WP-083.md`, "Done when"): not part of the gate.
 
@@ -862,33 +874,39 @@ fn measure_lookup_absent() {
         cost_hint: 1,
         origins: vec![Origin { configuration: 0, entry: 0 }],
     };
-    let report = slip_kiln::parse_observer_with(&observer, Phase::Map, 0, |unit| {
-        let owned = |_: &[u8]| false;
-        let s = KilnSubject::new(unit, &owned);
-        let names: [&[&[u8]]; 4] = [
-            &[b"absent_name_wp083"],
-            &[b"llvm", b"absent_name_wp083"],
-            &[b"std", b"absent_name_wp083"],
-            &[b"llvm", b"SmallVector", b"absent_name_wp083"],
-        ];
-        let mut lines = vec![format!("declarations {}", unit.ast().decls.len())];
-        for n in names {
-            let t0 = Instant::now();
-            let first = s.lookup(true, n);
-            let cold = t0.elapsed();
-            let reps = 1000u32;
-            let t1 = Instant::now();
-            for _ in 0..reps {
-                assert_eq!(s.lookup(true, n), first);
+    let report = slip_kiln::parse_observer_with(
+        &observer,
+        Phase::Map,
+        0,
+        slip_kiln::ParseOptions::default(),
+        |unit| {
+            let owned = |_: &[u8]| false;
+            let s = KilnSubject::new(unit, &owned);
+            let names: [&[&[u8]]; 4] = [
+                &[b"absent_name_wp083"],
+                &[b"llvm", b"absent_name_wp083"],
+                &[b"std", b"absent_name_wp083"],
+                &[b"llvm", b"SmallVector", b"absent_name_wp083"],
+            ];
+            let mut lines = vec![format!("declarations {}", unit.ast().decls.len())];
+            for n in names {
+                let t0 = Instant::now();
+                let first = s.lookup(true, n);
+                let cold = t0.elapsed();
+                let reps = 1000u32;
+                let t1 = Instant::now();
+                for _ in 0..reps {
+                    assert_eq!(s.lookup(true, n), first);
+                }
+                let warm = t1.elapsed() / reps;
+                lines.push(format!("{n:?}: first {cold:?}, then {warm:?} per call"));
             }
-            let warm = t1.elapsed() / reps;
-            lines.push(format!("{n:?}: first {cold:?}, then {warm:?} per call"));
-        }
-        let t2 = Instant::now();
-        let fs = s.lookup(true, &[b"llvm", b"errs"]);
-        lines.push(format!("llvm::errs: {} entities, first {:?}", fs.len(), t2.elapsed()));
-        lines
-    })
+            let t2 = Instant::now();
+            let fs = s.lookup(true, &[b"llvm", b"errs"]);
+            lines.push(format!("llvm::errs: {} entities, first {:?}", fs.len(), t2.elapsed()));
+            lines
+        },
+    )
     .expect("the unit parses");
     for l in report.1.expect("the closure ran") {
         println!("{l}");
