@@ -1718,6 +1718,7 @@ mod tests {
         struct BF { int b : sizeof([] {}); };\n\
         enum EN { e1 = sizeof([] {}) };\n\
         struct BS : decltype([] {}) {};\n\
+        template <class T> struct BT : decltype([] {}) {};\n\
         template <class T> void fdi(int a = [] { return 1; }()) {}\n\
         void ud() { fdi<int>(); }\n\
         template <class U, int N = sizeof([] { return 1; }())> void tf(U) {}\n\
@@ -1749,22 +1750,25 @@ mod tests {
             // An enumerator and a base-specifier: no owner with a stream.
             (4, closure_owner, format!("Err({closure_owner:?})")),
             (5, closure_owner, format!("Err({closure_owner:?})")),
+            // A class template's base-specifier: the pattern is the
+            // closure's context, not an owner.
+            (6, closure_owner, format!("Err({closure_owner:?})")),
             // A default argument of a template: the pattern's closure is
             // the template's; the one Kiln instantiates for `fdi<int>` is
             // the specialisation's, whose stream does not walk it.
-            (6, "FunctionTemplate fdi", "Ok(0)".into()),
-            (6, "Function fdi spec", unnumbered.clone()),
+            (7, "FunctionTemplate fdi", "Ok(0)".into()),
+            (7, "Function fdi spec", unnumbered.clone()),
             // A default template argument: one closure for the pattern and
             // one per use, none walked by the template's stream.
-            (8, "FunctionTemplate tf", unnumbered.clone()),
-            (8, "FunctionTemplate tf", unnumbered.clone()),
-            (8, "FunctionTemplate tf", unnumbered),
+            (9, "FunctionTemplate tf", unnumbered.clone()),
+            (9, "FunctionTemplate tf", unnumbered.clone()),
+            (9, "FunctionTemplate tf", unnumbered),
             // An init-capture's initialiser and a block-scope
             // `static_assert`: the function.
-            (10, "Function k", "Ok(1)".into()),
-            (10, "Function k", "Ok(0)".into()),
-            (10, "Function k", "Ok(2)".into()),
-            (11, "Var pv", "Ok(0)".into()),
+            (11, "Function k", "Ok(1)".into()),
+            (11, "Function k", "Ok(0)".into()),
+            (11, "Function k", "Ok(2)".into()),
+            (12, "Var pv", "Ok(0)".into()),
         ];
         assert_eq!(got, want);
     }
@@ -1802,5 +1806,27 @@ mod tests {
         assert!(causes.iter().all(|c| matches!(c, Cause::Pending(_))), "{causes:?}");
         assert_eq!(direct, Some(1));
         assert_eq!(numbered, Some(1));
+    }
+
+    // `direct_param` answers for the owner's own prototype only: not for a
+    // parameter of a function type in it (scope depth 1).
+    #[test]
+    fn a_nested_prototype_parameter_is_not_direct() {
+        let got = run("void f(int a, void (*g)(int b)) {}\n", |w, _, _| {
+            let ast = w.ast;
+            let p = |n: &str| {
+                ast.decls
+                    .ids()
+                    .find(|&d| {
+                        ast.decls.get(d).kind() == DeclKind::ParmVar
+                            && ast.decls.get(d).name().as_ident().is_some_and(|s| ast.symbols().as_str(s) == n)
+                    })
+                    .expect("the parameter")
+            };
+            let f = ast.decls.ids().find(|&d| ast.decls.get(d).kind() == DeclKind::Function).expect("f");
+            let f = w.entity(f);
+            [p("a"), p("g"), p("b")].map(|d| super::direct_param(w, f, d))
+        });
+        assert_eq!(got, [Some(0), Some(1), None]);
     }
 }

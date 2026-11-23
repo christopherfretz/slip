@@ -125,3 +125,20 @@ fn nested_lambdas_reach_the_depth_limit() {
     let (other, _, _) = digest(&src);
     assert!(hard(&other).iter().all(|c| *c == Cause::Unaccounted("walk/depth")), "{:?}", hard(&other));
 }
+
+/// `auto f() { return [] { return [] { … return [] {}; }(); }(); }`: `f`
+/// returns the innermost of `n` nested closures, which `g` names through
+/// `f`'s type: past the depth limit `f`'s numbering is cut, and the
+/// closure's number carries `walk/depth`, not "undeclared".
+#[test]
+fn the_innermost_closure_named_from_another_unit() {
+    let n = 150;
+    let src = format!(
+        "auto f() {{ return {}[] {{}}{}; }}\nauto g() {{ return f(); }}\n",
+        "[] { return ".repeat(n),
+        "; }()".repeat(n)
+    );
+    let (out, _, _) = digest(&src);
+    let hard = hard(&out);
+    assert!(!hard.is_empty() && hard.iter().all(|c| *c == Cause::Unaccounted("walk/depth")), "{hard:?}");
+}
