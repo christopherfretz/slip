@@ -253,8 +253,11 @@ fn s10_3_link_tree_and_apply_edit() {
     // editing the new tree leaves the base's file alone.
     let next = f.path("trees/02");
     demo::link_tree(&tree.join("lib"), &next.join("lib")).unwrap();
-    demo::apply_edit(&next, &read_edit(b"file lib/a.h\nreplace\nint z;\nwith\nint w;\nend\n").unwrap())
-        .unwrap();
+    demo::apply_edit(
+        &next,
+        &read_edit(b"file lib/a.h\nreplace\nint z;\nwith\nint w;\nend\n").unwrap(),
+    )
+    .unwrap();
     assert_eq!(read(next.join("lib/a.h")), "long x;\n  g();\nint w;\n  g();\n");
     assert_eq!(read(tree.join("lib/a.h")), "long x;\n  g();\nint z;\n  g();\n");
 }
@@ -273,9 +276,18 @@ fn s10_1_apply_edit_errors() {
         (b"create lib/b.cpp\nend\n", "line 1: `lib/b.cpp` exists"),
         (b"file lib/a.h\nreplace\nnope\nwith\nend\n", "line 2: the old text is not found"),
         (b"file lib/a.h\nreplace\n  f();\nwith\nend\n", "line 2: the old text is found 2 times"),
-        (b"file lib/a.h\nreplace\nint x;\nwith\nint y;\nend\nreplace\nint x;\nwith\nend\n", "line 7: the old text is not found"),
-        (b"file lib/link/c.h\nreplace\n// c\nwith\nend\n", "line 2: `lib/link/c.h` goes through the symbolic link `link`"),
-        (b"create lib/a.h/x\nend\n", "line 1: `lib/a.h/x` goes through `a.h`, which is not a directory"),
+        (
+            b"file lib/a.h\nreplace\nint x;\nwith\nint y;\nend\nreplace\nint x;\nwith\nend\n",
+            "line 7: the old text is not found",
+        ),
+        (
+            b"file lib/link/c.h\nreplace\n// c\nwith\nend\n",
+            "line 2: `lib/link/c.h` goes through the symbolic link `link`",
+        ),
+        (
+            b"create lib/a.h/x\nend\n",
+            "line 1: `lib/a.h/x` goes through `a.h`, which is not a directory",
+        ),
     ] {
         let e = demo::apply_edit(&tree, &read_edit(bad).unwrap()).unwrap_err();
         assert!(e.starts_with(msg), "{:?}: {e}", String::from_utf8_lossy(bad));
@@ -370,7 +382,10 @@ fn clean_is_never_printed_as_verified() {
     assert_eq!(run_check(&Expect::Verified, "different.json").0, CaseResult::Different);
     let mut v = golden("clean.json");
     set_path(&mut v, &["observers", "indeterminate_only"], Value::Int(1));
-    assert_eq!(check(&Expect::Verified, &v, Path::new(SRC), &none(), &none()).0, CaseResult::Different);
+    assert_eq!(
+        check(&Expect::Verified, &v, Path::new(SRC), &none(), &none()).0,
+        CaseResult::Different
+    );
 }
 
 // §10.3: `DIFFERENT` when an observer has another finding.
@@ -407,8 +422,7 @@ fn s10_3_found() {
     assert_eq!(r, CaseResult::Found);
     assert_eq!(lines, [Line::Found, Line::Found, Line::Found]);
     // A line without a place is found by kind and name.
-    let (r, lines) =
-        run_check(&mismatch(vec![wanted("changed", "f(int)", None)]), "found.json");
+    let (r, lines) = run_check(&mismatch(vec![wanted("changed", "f(int)", None)]), "found.json");
     assert_eq!((r, lines), (CaseResult::Found, vec![Line::Found]));
     // `removed` reads `where.pre`: its post site is empty, and a line for
     // the post site's place would be no place, not found.
@@ -417,10 +431,8 @@ fn s10_3_found() {
         "found.json",
     );
     assert_eq!(lines, [Line::Found]);
-    let (_, lines) = run_check(
-        &mismatch(vec![wanted("changed", "f(int)", Some(("lib/a.h", 3)))]),
-        "found.json",
-    );
+    let (_, lines) =
+        run_check(&mismatch(vec![wanted("changed", "f(int)", Some(("lib/a.h", 3)))]), "found.json");
     assert_eq!(lines, [Line::Found]);
 }
 
@@ -461,7 +473,10 @@ fn missing_fails_the_demo() {
     assert_eq!((r, &got[3]), (CaseResult::Missed, &Line::Missing));
     // The missed row: a line missing, the file `missed.json`.
     let (r, _) = run_check(
-        &mismatch(vec![wanted("changed", "f(int)", Some(("lib/a.h", 3))), wanted("changed", "k()", None)]),
+        &mismatch(vec![
+            wanted("changed", "f(int)", Some(("lib/a.h", 3))),
+            wanted("changed", "k()", None),
+        ]),
         "missed.json",
     );
     assert_eq!(r, CaseResult::Missed);
@@ -493,10 +508,22 @@ fn blocked_needs_the_indeterminate_flag() {
     let (r, got) = run_check(&mismatch(lines.clone()), "partly.json");
     assert_eq!((r, got[1].clone()), (CaseResult::Missed, Line::Missing));
     // Flagged in the post-image only, for a `changed` line: missing.
-    let (r, _) = check(&mismatch(lines.clone()), &golden("partly.json"), Path::new(SRC), &none(), &set(&["h(long)"]));
+    let (r, _) = check(
+        &mismatch(lines.clone()),
+        &golden("partly.json"),
+        Path::new(SRC),
+        &none(),
+        &set(&["h(long)"]),
+    );
     assert_eq!(r, CaseResult::Missed);
     // Flagged in the pre-image: blocked, and the case is partly.
-    let (r, got) = check(&mismatch(lines.clone()), &golden("partly.json"), Path::new(SRC), &set(&["h(long)"]), &none());
+    let (r, got) = check(
+        &mismatch(lines.clone()),
+        &golden("partly.json"),
+        Path::new(SRC),
+        &set(&["h(long)"]),
+        &none(),
+    );
     assert_eq!((r, got), (CaseResult::Partly, vec![Line::Found, Line::Blocked]));
     // Its cause is the report's indeterminate group of that name.
     let w = &lines[1];
@@ -504,13 +531,32 @@ fn blocked_needs_the_indeterminate_flag() {
         demo::blocked_cause(w, &golden("partly.json"), Path::new(SRC)).as_deref(),
         Some("unsupported ExprKind/CXXReflectExpr")
     );
-    assert_eq!(demo::blocked_cause(&wanted("changed", "q()", None), &golden("partly.json"), Path::new(SRC)), None);
+    assert_eq!(
+        demo::blocked_cause(
+            &wanted("changed", "q()", None),
+            &golden("partly.json"),
+            Path::new(SRC)
+        ),
+        None
+    );
     // `added` is blocked by the post-image's flag, not the pre-image's;
     // its cause is the post site's.
     let added = vec![wanted("added", "ns::later", Some(("lib/b.cpp", 9)))];
-    let (r, got) = check(&mismatch(added.clone()), &golden("partly.json"), Path::new(SRC), &set(&["ns::later"]), &none());
+    let (r, got) = check(
+        &mismatch(added.clone()),
+        &golden("partly.json"),
+        Path::new(SRC),
+        &set(&["ns::later"]),
+        &none(),
+    );
     assert_eq!((r, got), (CaseResult::Missed, vec![Line::Missing]));
-    let (r, got) = check(&mismatch(added.clone()), &golden("partly.json"), Path::new(SRC), &none(), &set(&["ns::later"]));
+    let (r, got) = check(
+        &mismatch(added.clone()),
+        &golden("partly.json"),
+        Path::new(SRC),
+        &none(),
+        &set(&["ns::later"]),
+    );
     assert_eq!((r, got), (CaseResult::Partly, vec![Line::Blocked]));
     assert_eq!(
         demo::blocked_cause(&added[0], &golden("partly.json"), Path::new(SRC)).as_deref(),
@@ -528,8 +574,10 @@ fn s10_3_partly_no_place() {
     let (r, got) = run_check(&mismatch(lines), "partly.json");
     assert_eq!((r, got), (CaseResult::Partly, vec![Line::Found, Line::NoPlace]));
     // A group whose site on the line's side is the empty site is no place.
-    let (_, got) =
-        run_check(&mismatch(vec![wanted("added", "ns::fresh", Some(("lib/b.cpp", 5)))]), "partly.json");
+    let (_, got) = run_check(
+        &mismatch(vec![wanted("added", "ns::fresh", Some(("lib/b.cpp", 5)))]),
+        "partly.json",
+    );
     assert_eq!(got, [Line::Missing]);
 }
 
@@ -550,7 +598,10 @@ fn not_parsed_is_error() {
     }
     let mut v = golden("verified.json");
     set_path(&mut v, &["report"], Value::Str("other".into()));
-    assert!(matches!(check(&Expect::Verified, &v, Path::new(SRC), &none(), &none()).0, CaseResult::Error(_)));
+    assert!(matches!(
+        check(&Expect::Verified, &v, Path::new(SRC), &none(), &none()).0,
+        CaseResult::Error(_)
+    ));
     let mut v = golden("verified.json");
     set_path(&mut v, &["observers", "selected"], Value::Int(0));
     assert_eq!(
@@ -638,7 +689,11 @@ fn plan(src: &Path) -> Plan {
         tool_kiln: "1.3.0".into(),
         configurations: vec![Configuration {
             name: "default".into(),
-            database: FileRef { path: b"/build/compile_commands.json".to_vec(), size: 1, content: d(9) },
+            database: FileRef {
+                path: b"/build/compile_commands.json".to_vec(),
+                size: 1,
+                content: d(9),
+            },
         }],
         observers: mains.iter().enumerate().map(|(i, m)| observer(m, i as u64)).collect(),
         excluded: vec![],
@@ -806,9 +861,11 @@ impl World {
 
     /// Round `round` answers with the golden `name` and the status.
     fn report(&self, round: u64, name: &str, status: i32) {
-        let text = golden_text(name, &self.src().display().to_string(), &self.plan_id.to_string(), round);
+        let text =
+            golden_text(name, &self.src().display().to_string(), &self.plan_id.to_string(), round);
         std::fs::write(self.f.path(&format!("fake/report.{round}.json")), text).unwrap();
-        std::fs::write(self.f.path(&format!("fake/verify.{round}.status")), status.to_string()).unwrap();
+        std::fs::write(self.f.path(&format!("fake/verify.{round}.status")), status.to_string())
+            .unwrap();
     }
 
     fn env(&self) -> Env {
@@ -852,8 +909,16 @@ fn job(s: &Shard, rss: u64) -> Job {
     }
 }
 
-fn expected(name: &str) -> String {
-    std::fs::read_to_string(Path::new(GOLDEN).join(name)).unwrap()
+/// Compares `got` with the golden `name` under `xtask/tests/demo/`; with
+/// `SLIP_BLESS=1` in the environment, writes it instead.
+fn assert_golden(name: &str, got: &str) {
+    let path = Path::new(GOLDEN).join(name);
+    if std::env::var_os("SLIP_BLESS").is_some_and(|v| v == "1") {
+        std::fs::write(&path, got).unwrap();
+        return;
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_default();
+    assert_eq!(got, want, "{} differs (SLIP_BLESS=1 writes it)", path.display());
 }
 
 // §10.3: the whole table of a PARTIAL run (a verified control, a found
@@ -869,7 +934,7 @@ fn s10_3_partial_table() {
     .unwrap();
     let (r, out) = w.run(&["1", "-j", "3"]);
     assert_eq!(r, Ok(DemoOutcome::Partial), "{out}");
-    assert_eq!(out, expected("partial.txt"));
+    assert_golden("partial.txt", &out);
     let src = w.src().display().to_string();
     let tree = |c: &str| w.dir().join("demo1/trees").join(c).join("lib").display().to_string();
     let store = w.dir().join("demo1/store").display().to_string();
@@ -911,7 +976,7 @@ fn s10_3_partial_table() {
     assert!(!w.dir().join("demo1/trees").exists());
     assert!(w.dir().join("demo1/01-change.json").is_file());
     let json = std::fs::read_to_string(w.dir().join("demo1/demo1.json")).unwrap();
-    assert_eq!(w.norm(&json), expected("partial.json"));
+    assert_golden("partial.json", &w.norm(&json));
     assert!(!json.contains(&w.dir().display().to_string()), "no absolute corpus path");
 
     // A second run prints the same table and writes the same document.
@@ -948,7 +1013,10 @@ fn s10_3_failed() {
     w.report(2, "missed.json", 1);
     let (r, out) = w.run(&["1"]);
     assert_eq!(r, Ok(DemoOutcome::Failed), "{out}");
-    assert!(out.contains("00-control  DIFFERENT observers verified 1 indeterminate_only 1 other 1"), "{out}");
+    assert!(
+        out.contains("00-control  DIFFERENT observers verified 1 indeterminate_only 1 other 1"),
+        "{out}"
+    );
     assert!(out.contains("\n  changed f(int) observers 3\n"), "{out}");
     assert!(out.contains("01-change   ERROR     "), "{out}");
     assert!(out.contains("\n  error 1 observer(s) not_parsed\n"), "{out}");
@@ -958,7 +1026,10 @@ fn s10_3_failed() {
     std::fs::write(w.f.path("fake/verify.0.status"), "3").unwrap();
     let (r, out) = w.run(&["1", "--case", "00-control"]);
     assert_eq!(r, Ok(DemoOutcome::Failed));
-    assert!(out.contains("00-control  ERROR\n  error `slip verify` exited with status 3\n"), "{out}");
+    assert!(
+        out.contains("00-control  ERROR\n  error `slip verify` exited with status 3\n"),
+        "{out}"
+    );
     // A report of another round is an error of the case.
     w.report(0, "verified.json", 0);
     let text = std::fs::read_to_string(w.f.path("fake/report.1.json")).unwrap();
@@ -1020,13 +1091,17 @@ fn s10_usage_and_errors() {
     assert_eq!(
         r,
         Err(Failure::Error(
-            "bench/demo1/cases/01-change/edit.txt: line 2: `src/a.h` is not under a root (lib)".into()
+            "bench/demo1/cases/01-change/edit.txt: line 2: `src/a.h` is not under a root (lib)"
+                .into()
         ))
     );
     assert_eq!(w.log(), "", "slip is not run on an input error");
     // A corpus that is not configured.
     std::fs::remove_file(w.dir().join("generate.stamp")).unwrap();
-    w.f.write("repo/bench/demo1/cases/01-change/edit.txt", "file lib/a.h\nreplace\nint x;\nwith\nend\n");
+    w.f.write(
+        "repo/bench/demo1/cases/01-change/edit.txt",
+        "file lib/a.h\nreplace\nint x;\nwith\nend\n",
+    );
     let (r, _) = w.run(&["1"]);
     assert_eq!(
         r,

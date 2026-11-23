@@ -1,0 +1,23 @@
+demo 1: tiny v1.0, 3 observers, 2 determinate, units 300 indeterminate 4
+map         wall_s 2.500 cpu_s 3.750 peak_rss_max 1152921504606846976
+00-control  verified  observers verified 3 indeterminate_only 0 other 0  units 303 indeterminate 4
+            findings 0  reparsed 0  wall_s 2.500 cpu_s 3.750 peak_rss_max 3145728
+01-change   found     observers verified 0 indeterminate_only 0 other 3  units 303 indeterminate 4
+            findings 3  reparsed 6  wall_s 2.501 cpu_s 3.750 peak_rss_max 3145728
+  found    changed f(int) @ lib/a.h:3
+  pre  lib/a.h:3:10 CallExpr refers to g(long)
+  post lib/a.h:3:10 CallExpr refers to g(int)
+  found    removed ns::old @ lib/b.cpp:5
+  pre  lib/b.cpp:5:1 namespace
+  post -
+02-blocked  partly    observers verified 0 indeterminate_only 1 other 2  units 303 indeterminate 4
+            findings 2  reparsed 6  wall_s 2.502 cpu_s 3.750 peak_rss_max 3145728
+  found    changed f(int) @ lib/a.h:3
+  pre  lib/a.h:3:10 CallExpr refers to g(long)
+  post lib/a.h:3:10 CallExpr refers to g(int)
+  blocked  changed h(long) @ lib/a.h:7: unsupported ExprKind/CXXReflectExpr
+indeterminate digest.indeterminate.pending 2
+indeterminate digest.indeterminate.unsupported 4
+indeterminate digest.cause.unsupported.expr.x 4
+indeterminate digest.cause.pending.stmt 2
+demo 1: PARTIAL (0 clean, 1 partly)

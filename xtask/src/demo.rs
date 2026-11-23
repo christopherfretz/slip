@@ -28,11 +28,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str =
-    "usage: cargo xtask demo 1 [--slip <path>] [-j <n>] [--case <name>]… [--keep]";
+const USAGE: &str = "usage: cargo xtask demo 1 [--slip <path>] [-j <n>] [--case <name>]… [--keep]";
 
 /// The inputs of Demo 1, relative to the repository root.
 pub const INPUTS: &str = "bench/demo1";
@@ -76,12 +76,18 @@ pub fn read_config(text: &str) -> Result<Config, String> {
     let (mut corpus, mut roots, mut only) = (None, None, None);
     for e in &entries {
         if let Some(first) = seen.insert(e.key.as_str(), e.line) {
-            return Err(format!("line {}: `{}` is given twice (first at line {first})", e.line, e.key));
+            return Err(format!(
+                "line {}: `{}` is given twice (first at line {first})",
+                e.line, e.key
+            ));
         }
         match e.key.as_str() {
-            "corpus" => corpus = Some(one_string(&e.value).ok_or_else(|| {
-                format!("line {}: `corpus` must be one string", e.line)
-            })?),
+            "corpus" => {
+                corpus = Some(
+                    one_string(&e.value)
+                        .ok_or_else(|| format!("line {}: `corpus` must be one string", e.line))?,
+                )
+            }
             "roots" | "only" => {
                 let items = string_array(&e.value).ok_or_else(|| {
                     format!("line {}: `{}` must be an array of strings", e.line, e.key)
@@ -313,13 +319,12 @@ pub fn apply_edit(root: &Path, entries: &[Entry]) -> Result<Vec<PathBuf>, String
                     }
                     let bytes = std::fs::read(&path)
                         .map_err(|err| format!("line {n}: `{shown}`: cannot read: {err}"))?;
-                    use std::os::unix::fs::PermissionsExt as _;
                     files.insert(path.clone(), (bytes, Some(m.permissions().mode())));
                     order.push(path.clone());
                 }
-                let (content, _) = files.get_mut(&path).unwrap_or_else(|| {
-                    unreachable!("the file was inserted above")
-                });
+                let (content, _) = files
+                    .get_mut(&path)
+                    .unwrap_or_else(|| unreachable!("the file was inserted above"));
                 let at = occurrences(content, old);
                 match (at.len(), all) {
                     (0, _) => {
@@ -359,7 +364,6 @@ pub fn apply_edit(root: &Path, entries: &[Entry]) -> Result<Vec<PathBuf>, String
             .map_err(|e| format!("{}: cannot create: {e}", path.display()))?;
         f.write_all(content).map_err(|e| format!("{}: cannot write: {e}", path.display()))?;
         if let Some(mode) = mode {
-            use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode))
                 .map_err(|e| format!("{}: cannot set its mode: {e}", path.display()))?;
         }
@@ -449,8 +453,7 @@ fn link_dir(from: &Path, to: &Path, n: &mut u64) -> Result<(), String> {
         if kind.is_dir() {
             link_dir(&src, &dst, n)?;
         } else if kind.is_symlink() {
-            let target =
-                std::fs::read_link(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+            let target = std::fs::read_link(&src).map_err(|e| format!("{}: {e}", src.display()))?;
             std::os::unix::fs::symlink(&target, &dst)
                 .map_err(|e| format!("{}: cannot create: {e}", dst.display()))?;
             *n += 1;
@@ -857,7 +860,10 @@ pub fn check(
                 if r.verdict == "not_verified" {
                     CaseResult::Found
                 } else {
-                    CaseResult::Error(format!("every line is found, and the verdict is {}", r.verdict))
+                    CaseResult::Error(format!(
+                        "every line is found, and the verdict is {}",
+                        r.verdict
+                    ))
                 }
             } else {
                 CaseResult::Partly
@@ -932,9 +938,8 @@ pub fn read_cases(dir: &Path, roots: &[String]) -> Result<Vec<Case>, String> {
                 Err(e) => Err(format!("{}: cannot read: {e}", at(f))),
             }
         };
-        let utf8 = |f: &str, b: Vec<u8>| {
-            String::from_utf8(b).map_err(|_| format!("{}: not UTF-8", at(f)))
-        };
+        let utf8 =
+            |f: &str, b: Vec<u8>| String::from_utf8(b).map_err(|_| format!("{}: not UTF-8", at(f)));
         let edit = match read("edit.txt")? {
             Some(b) => {
                 let e = read_edit(&b).map_err(|e| format!("{}: {e}", at("edit.txt")))?;
@@ -947,10 +952,7 @@ pub fn read_cases(dir: &Path, roots: &[String]) -> Result<Vec<Case>, String> {
             Some(b) => {
                 let b = utf8("base", b)?.trim().to_owned();
                 if !cases.iter().any(|c| c.name == b) {
-                    return Err(format!(
-                        "{}: `{b}` is not a case before this one",
-                        at("base")
-                    ));
+                    return Err(format!("{}: `{b}` is not a case before this one", at("base")));
                 }
                 Some(b)
             }
@@ -1211,60 +1213,9 @@ impl Ctx<'_> {
         std::fs::create_dir_all(&demo1)
             .map_err(|e| format!("{}: cannot create: {e}", demo1.display()))?;
 
-        // Steps 1 and 2: the plan and the map run.
-        let mut args: Vec<OsString> = vec![
-            "plan".into(),
-            "--db".into(),
-            self.layout.database().into(),
-            "--store".into(),
-            self.store().into(),
-        ];
-        let ran = self.slip(&args, &[0, 1])?;
-        let plan = slip_run::line(&ran.stdout, "plan")
-            .and_then(Digest::from_hex)
-            .ok_or_else(|| "`slip plan` printed no `plan <id>` line".to_owned())?;
-        args = vec![
-            "parse".into(),
-            "--plan".into(),
-            plan.to_string().into(),
-            "--store".into(),
-            self.store().into(),
-        ];
-        args.extend(self.only_args());
-        args.extend(self.jobs_args());
-        let ran = self.slip(&args, &[0, 1])?;
-        let map = load_printed(&ran, "parse", &plan)?;
-        let map_counters = perf::shard_counters(&map)?;
-        let s = map.shards.len() as u64;
-        let d = map
-            .shards
-            .iter()
-            .filter(|(id, shard)| {
-                invariants::side(&map, id).status() == Some(Status::Ok)
-                    && shard.as_ref().is_some_and(|sh| {
-                        sh.counters.iter().any(|c| c.name == "digest.indeterminate" && c.value == 0)
-                    })
-            })
-            .count() as u64;
-        let units = map_counters.get("digest.units").copied().unwrap_or(0);
-        let indet = map_counters.get("digest.indeterminate").copied().unwrap_or(0);
-        let mm = perf::measured(&map.record)?;
+        let map = self.map_run()?;
         let width = selected.iter().map(|c| c.name.len()).max().unwrap_or(0).max(10) + 2;
-        let mut head = String::new();
-        let _ = writeln!(
-            head,
-            "demo 1: {} {}, {s} observers, {d} determinate, units {units} indeterminate {indet}",
-            self.corpus.name, self.corpus.tag
-        );
-        let _ = writeln!(
-            head,
-            "{:<width$}wall_s {} cpu_s {} peak_rss_max {}",
-            "map",
-            seconds(mm.wall_ns),
-            seconds(mm.cpu_ns),
-            mm.peak_rss_max
-        );
-        emit(out, &head)?;
+        emit(out, &map.head(self.corpus, width))?;
 
         // Step 3: the cases.
         let mut done: Vec<(&Case, Done)> = Vec::new();
@@ -1288,7 +1239,7 @@ impl Ctx<'_> {
                     report: None,
                     numbers: None,
                 },
-                Ok(()) => self.run_case(case, &plan),
+                Ok(()) => self.run_case(case, &map.plan),
             };
             emit(out, &self.render_case(case, &result, width))?;
             done.push((case, result));
@@ -1300,50 +1251,54 @@ impl Ctx<'_> {
             slip_run::remove_tree(&self.layout.dir, &demo1.join("trees"))?;
         }
 
-        let mut tail = String::new();
-        if indet != 0 {
-            let mut causes: Vec<(&String, &u64)> = map_counters
-                .iter()
-                .filter(|(k, _)| k.starts_with("digest.indeterminate."))
-                .collect();
-            let mut largest: Vec<(&String, &u64)> =
-                map_counters.iter().filter(|(k, _)| k.starts_with("digest.cause.")).collect();
-            largest.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-            largest.truncate(LISTED);
-            causes.extend(largest);
-            for (k, n) in causes {
-                let _ = writeln!(tail, "indeterminate {k} {n}");
-            }
-        }
-        let failed: Vec<&str> =
-            done.iter().filter(|(_, d)| d.result.fails()).map(|(c, _)| c.name.as_str()).collect();
-        let (outcome, last) = if !through.is_empty() {
-            (Outcome::Failed, format!("FAILED (an edit went through a link: {})", through.join(", ")))
-        } else if !failed.is_empty() {
-            (Outcome::Failed, format!("FAILED ({})", failed.join(", ")))
-        } else if done.iter().all(|(_, d)| d.result.ok()) {
-            (Outcome::Ok, "ok".to_owned())
-        } else {
-            let n = |r: CaseResult| done.iter().filter(|(_, d)| d.result == r).count();
-            (
-                Outcome::Partial,
-                format!("PARTIAL ({} clean, {} partly)", n(CaseResult::Clean), n(CaseResult::Partly)),
-            )
-        };
+        let mut tail = map.causes();
+        let (outcome, last) = verdict(&done, &through);
         let _ = writeln!(tail, "demo 1: {last}");
-        let json = self.json(&JsonInputs {
-            plan: &plan,
-            tools: (&version_slip, &version_kiln),
-            header: [s, d, units, indet],
-            map: &mm,
-            counters: &map_counters,
-            done: &done,
-            last: &last,
-        })?;
+        let json = self.json(&map, (&version_slip, &version_kiln), &done, &last)?;
         let path = demo1.join("demo1.json");
-        std::fs::write(&path, json).map_err(|e| format!("{}: cannot write: {e}", path.display()))?;
+        std::fs::write(&path, json)
+            .map_err(|e| format!("{}: cannot write: {e}", path.display()))?;
         emit(out, &tail)?;
         Ok(outcome)
+    }
+
+    /// Steps 1 and 2 of §10.3: the plan, the map run over the selection,
+    /// and its numbers.
+    fn map_run(&self) -> Result<MapRun, String> {
+        let store = || -> [OsString; 2] { ["--store".into(), self.store().into()] };
+        let mut args: Vec<OsString> =
+            vec!["plan".into(), "--db".into(), self.layout.database().into()];
+        args.extend(store());
+        let ran = self.slip(&args, &[0, 1])?;
+        let plan = slip_run::line(&ran.stdout, "plan")
+            .and_then(Digest::from_hex)
+            .ok_or_else(|| "`slip plan` printed no `plan <id>` line".to_owned())?;
+        args = vec!["parse".into(), "--plan".into(), plan.to_string().into()];
+        args.extend(store());
+        args.extend(self.only_args());
+        args.extend(self.jobs_args());
+        let ran = self.slip(&args, &[0, 1])?;
+        let map = load_printed(&ran, "parse", &plan)?;
+        let counters = perf::shard_counters(&map)?;
+        let determinate = map
+            .shards
+            .iter()
+            .filter(|(id, shard)| {
+                invariants::side(&map, id).status() == Some(Status::Ok)
+                    && shard.as_ref().is_some_and(|sh| {
+                        sh.counters.iter().any(|c| c.name == "digest.indeterminate" && c.value == 0)
+                    })
+            })
+            .count() as u64;
+        Ok(MapRun {
+            plan,
+            observers: map.shards.len() as u64,
+            determinate,
+            units: counters.get("digest.units").copied().unwrap_or(0),
+            indeterminate: counters.get("digest.indeterminate").copied().unwrap_or(0),
+            measured: perf::measured(&map.record)?,
+            counters,
+        })
     }
 
     /// `slip --version`: `slip <version> (kiln <version>)`.
@@ -1380,7 +1335,10 @@ impl Ctx<'_> {
 
     /// The files of `before` whose hash changed: an edit went through a
     /// link (§10.3 step 4).
-    fn check_pristine(&self, before: &BTreeMap<String, Option<Digest>>) -> Result<Vec<String>, String> {
+    fn check_pristine(
+        &self,
+        before: &BTreeMap<String, Option<Digest>>,
+    ) -> Result<Vec<String>, String> {
         let mut changed = Vec::new();
         for (rel, h) in before {
             if self.hash_pristine(rel)? != *h {
@@ -1406,102 +1364,49 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// `<cmd> --plan <id> --store <store>`.
+    fn plan_args(&self, cmd: &str, plan: &Digest) -> Vec<OsString> {
+        vec![
+            cmd.into(),
+            "--plan".into(),
+            plan.to_string().into(),
+            "--store".into(),
+            self.store().into(),
+        ]
+    }
+
     /// The `slip` runs of one case (§10.3 step 3), after its tree.
     fn run_case(&self, case: &Case, plan: &Digest) -> Done {
         let mut report = None;
         let mut numbers = None;
         let result = (|| -> Result<(CaseResult, Vec<Line>), String> {
-            let demo1 = self.demo1();
-            let plan_args = |cmd: &str| -> Vec<OsString> {
-                vec![
-                    cmd.into(),
-                    "--plan".into(),
-                    plan.to_string().into(),
-                    "--store".into(),
-                    self.store().into(),
-                ]
-            };
-            let decl = demo1.join(format!("{}.decl", case.name));
+            let decl = self.demo1().join(format!("{}.decl", case.name));
             if let Some(from) = &case.declared {
-                let mut a = plan_args("declare");
+                let mut a = self.plan_args("declare", plan);
                 a.extend(["--from".into(), from.into(), "--out".into(), decl.clone().into()]);
-                a.extend(self.image_args(&case.name));
                 for r in &self.config.roots {
                     a.extend(["--owned".into(), self.layout.src.join(r).into()]);
                 }
+                a.extend(self.image_args(&case.name));
                 a.extend(self.observer_args(case));
                 self.slip(&a, &[0])?;
             }
-            let path = demo1.join(format!("{}.json", case.name));
-            let mut a = plan_args("verify");
-            a.extend(["--round".into(), case.round.to_string().into()]);
-            a.extend(self.image_args(&case.name));
-            if case.declared.is_some() {
-                a.extend(["--declared".into(), decl.into()]);
-            }
-            a.extend([
-                "--findings".into(),
-                FINDINGS.into(),
-                "--locate".into(),
-                LOCATE.into(),
-                "--report".into(),
-                path.clone().into(),
-            ]);
-            a.extend(self.only_args());
-            a.extend(self.jobs_args());
-            let ran = self.slip(&a, &[0, 1, 4])?;
-            let bytes = std::fs::read(&path)
-                .map_err(|e| format!("{}: cannot read the report: {e}", path.display()))?;
-            let value = json::parse(&bytes)
-                .map_err(|e| format!("{}: the report is not JSON: {e}", path.display()))?;
-            let rplan = value.get("plan").and_then(Value::as_str);
-            let rround = value.get("round").and_then(Value::as_u64);
-            if rplan != Some(&plan.to_string()) || rround != Some(case.round) {
-                return Err(format!(
-                    "{}: the report is not of plan {plan}, round {}",
-                    path.display(),
-                    case.round
-                ));
-            }
-            let run = load_printed(&ran, "verify", plan)?;
-            let sums = perf::shard_counters(&run)?;
-            let m = perf::measured(&run.record)?;
-            let get = |k: &str| sums.get(k).copied().unwrap_or(0);
-            numbers = Some(Numbers {
-                units: get("digest.units"),
-                indeterminate: get("digest.indeterminate"),
-                reparsed: get("verify.reparsed"),
-                wall_ns: m.wall_ns,
-                cpu_ns: m.cpu_ns,
-                peak_rss_max: m.peak_rss_max,
-            });
+            let (value, n) = self.verify(case, plan, case.declared.is_some().then_some(&decl))?;
+            numbers = Some(n);
             let src = &self.layout.src;
             let none = BTreeSet::new();
             let (mut result, mut lines) = check(&case.expect, &value, src, &none, &none);
-            if lines.iter().any(|l| matches!(l, Line::Blocked | Line::Missing)) {
-                let Expect::Mismatch(wanted) = &case.expect else {
-                    unreachable!("only a mismatch has lines")
-                };
+            if let Expect::Mismatch(wanted) = &case.expect {
                 let unfound: BTreeSet<&str> = wanted
                     .iter()
                     .zip(&lines)
                     .filter(|(_, l)| matches!(l, Line::Blocked | Line::Missing))
                     .map(|(w, _)| w.name.as_str())
                     .collect();
-                let mut flags = [BTreeSet::new(), BTreeSet::new()];
-                for (i, post) in [false, true].into_iter().enumerate() {
-                    let mut a = plan_args("units");
-                    if post {
-                        a.push("--post-image".into());
-                    }
-                    a.extend(self.image_args(&case.name));
-                    a.extend(self.observer_args(case));
-                    for n in &unfound {
-                        a.extend(["--match".into(), (*n).into()]);
-                    }
-                    flags[i] = indeterminate_units(&self.slip(&a, &[0])?.stdout);
+                if !unfound.is_empty() {
+                    let [pre, post] = self.unit_flags(case, plan, &unfound)?;
+                    (result, lines) = check(&case.expect, &value, src, &pre, &post);
                 }
-                (result, lines) = check(&case.expect, &value, src, &flags[0], &flags[1]);
             }
             report = Some(value);
             Ok((result, lines))
@@ -1512,199 +1417,360 @@ impl Ctx<'_> {
         }
     }
 
+    /// `slip verify` of the case: its report, which must be of `plan` and
+    /// the case's round, and the numbers of its run record.
+    fn verify(
+        &self,
+        case: &Case,
+        plan: &Digest,
+        declared: Option<&PathBuf>,
+    ) -> Result<(Value, Numbers), String> {
+        let path = self.demo1().join(format!("{}.json", case.name));
+        let mut a = self.plan_args("verify", plan);
+        a.extend(["--round".into(), case.round.to_string().into()]);
+        a.extend(self.image_args(&case.name));
+        if let Some(d) = declared {
+            a.extend(["--declared".into(), d.into()]);
+        }
+        a.extend([
+            "--findings".into(),
+            FINDINGS.into(),
+            "--locate".into(),
+            LOCATE.into(),
+            "--report".into(),
+            path.clone().into(),
+        ]);
+        a.extend(self.only_args());
+        a.extend(self.jobs_args());
+        let ran = self.slip(&a, &[0, 1, 4])?;
+        let shown = path.display();
+        let bytes =
+            std::fs::read(&path).map_err(|e| format!("{shown}: cannot read the report: {e}"))?;
+        let value =
+            json::parse(&bytes).map_err(|e| format!("{shown}: the report is not JSON: {e}"))?;
+        let of_plan = value.get("plan").and_then(Value::as_str) == Some(&plan.to_string());
+        if !of_plan || value.get("round").and_then(Value::as_u64) != Some(case.round) {
+            return Err(format!("{shown}: the report is not of plan {plan}, round {}", case.round));
+        }
+        let run = load_printed(&ran, "verify", plan)?;
+        let sums = perf::shard_counters(&run)?;
+        let m = perf::measured(&run.record)?;
+        let get = |k: &str| sums.get(k).copied().unwrap_or(0);
+        let numbers = Numbers {
+            units: get("digest.units"),
+            indeterminate: get("digest.indeterminate"),
+            reparsed: get("verify.reparsed"),
+            wall_ns: m.wall_ns,
+            cpu_ns: m.cpu_ns,
+            peak_rss_max: m.peak_rss_max,
+        };
+        Ok((value, numbers))
+    }
+
+    /// `slip units` with the case's image and observers, without and with
+    /// `--post-image`, kept to the `names` (`--match`): the names flagged
+    /// indeterminate in the pre- and the post-image.
+    fn unit_flags(
+        &self,
+        case: &Case,
+        plan: &Digest,
+        names: &BTreeSet<&str>,
+    ) -> Result<[BTreeSet<String>; 2], String> {
+        let mut flags = [BTreeSet::new(), BTreeSet::new()];
+        for (i, post) in [false, true].into_iter().enumerate() {
+            let mut a = self.plan_args("units", plan);
+            if post {
+                a.push("--post-image".into());
+            }
+            a.extend(self.image_args(&case.name));
+            a.extend(self.observer_args(case));
+            for n in names {
+                a.extend(["--match".into(), (*n).into()]);
+            }
+            flags[i] = indeterminate_units(&self.slip(&a, &[0])?.stdout);
+        }
+        Ok(flags)
+    }
+
     /// The lines of the table for one case (§10.3).
-    fn render_case(&self, case: &Case, d: &Done, width: usize) -> String {
+    fn render_case(&self, case: &Case, done: &Done, width: usize) -> String {
         let src = &self.layout.src;
         let mut o = String::new();
-        let word = d.result.word();
-        match (&d.report, &d.numbers) {
-            (Some(r), Some(n)) => {
+        let word = done.result.word();
+        match (&done.report, &done.numbers) {
+            (Some(report), Some(numbers)) => {
                 let count = |k: &str| {
-                    r.get("observers").and_then(|o| o.get(k)).and_then(Value::as_u64).unwrap_or(0)
+                    report
+                        .get("observers")
+                        .and_then(|v| v.get(k))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
                 };
-                let (sel, v, i) =
-                    (count("selected"), count("verified"), count("indeterminate_only"));
-                let other = sel.saturating_sub(v + i);
+                let (verified, only) = (count("verified"), count("indeterminate_only"));
+                let other = count("selected").saturating_sub(verified + only);
                 let _ = writeln!(
                     o,
-                    "{:<width$}{word:<10}observers verified {v} indeterminate_only {i} other \
-                     {other}  units {} indeterminate {}",
-                    case.name, n.units, n.indeterminate
+                    "{:<width$}{word:<10}observers verified {verified} indeterminate_only {only} \
+                     other {other}  units {} indeterminate {}",
+                    case.name, numbers.units, numbers.indeterminate
                 );
                 let _ = writeln!(
                     o,
                     "{:<width$}findings {}  reparsed {}  wall_s {} cpu_s {} peak_rss_max {}",
                     "",
-                    determinate_groups(r).len(),
-                    n.reparsed,
-                    seconds(n.wall_ns),
-                    seconds(n.cpu_ns),
-                    n.peak_rss_max
+                    determinate_groups(report).len(),
+                    numbers.reparsed,
+                    seconds(numbers.wall_ns),
+                    seconds(numbers.cpu_ns),
+                    numbers.peak_rss_max
                 );
             }
             _ => {
                 let _ = writeln!(o, "{:<width$}{word}", case.name);
             }
         }
-        if let CaseResult::Error(why) = &d.result {
+        if let CaseResult::Error(why) = &done.result {
             let _ = writeln!(o, "  error {}", text(why.as_bytes()));
         }
-        if let (Expect::Mismatch(wanted), Some(r)) = (&case.expect, &d.report) {
-            for (w, l) in wanted.iter().zip(&d.lines) {
-                let t = text(w.text().as_bytes());
-                match l {
-                    Line::Found => {
-                        let _ = writeln!(o, "  found    {t}");
-                        for g in groups_of(r, w) {
-                            for side in ["pre", "post"] {
-                                let s = site(g, side, src);
-                                let _ = writeln!(o, "  {}", site_line(side, s.as_ref()));
-                            }
-                        }
-                    }
-                    Line::NoPlace => {
-                        let _ = writeln!(o, "  no-place {t}");
-                    }
-                    Line::Blocked => {
-                        let cause = blocked_cause(w, r, src)
-                            .unwrap_or_else(|| "no indeterminate group of that name in the report".to_owned());
-                        let _ = writeln!(o, "  blocked  {t}: {}", text(cause.as_bytes()));
-                    }
-                    Line::Missing => {
-                        let _ = writeln!(o, "  MISSING  {t}");
-                    }
-                    Line::WrongPlace { file, line } => {
-                        let _ = writeln!(o, "  WRONG    {t}: at {}:{line}", text(file.as_bytes()));
-                    }
-                }
+        if let (Expect::Mismatch(wanted), Some(report)) = (&case.expect, &done.report) {
+            for (w, l) in wanted.iter().zip(&done.lines) {
+                o.push_str(&render_line(w, l, report, src));
             }
         }
-        if let (CaseResult::Different, Some(r)) = (&d.result, &d.report) {
-            for g in determinate_groups(r).into_iter().take(LISTED) {
-                let (k, n) = kind_name(g);
-                let obs = g.get("observers").and_then(Value::as_u64).unwrap_or(0);
-                let _ = writeln!(o, "  {k} {} observers {obs}", text(n.as_bytes()));
+        if let (CaseResult::Different, Some(report)) = (&done.result, &done.report) {
+            for g in determinate_groups(report).into_iter().take(LISTED) {
+                let (kind, name) = kind_name(g);
+                let n = g.get("observers").and_then(Value::as_u64).unwrap_or(0);
+                let _ = writeln!(o, "  {kind} {} observers {n}", text(name.as_bytes()));
             }
         }
         o
     }
 
-    fn json(&self, j: &JsonInputs<'_>) -> Result<String, String> {
-        let src = &self.layout.src;
-        let int = |n: u64| Value::Int(i128::from(n));
+    /// `demo1/demo1.json`: the numbers of the table, the plan id, the
+    /// tool versions, and each case's groups that are not indeterminate,
+    /// with paths under `src/` written relative to it.
+    fn json(
+        &self,
+        map: &MapRun,
+        tools: (&str, &str),
+        done: &[(&Case, Done)],
+        last: &str,
+    ) -> Result<String, String> {
         let s = |t: &str| Value::Str(t.to_owned());
-        let mut cases = Vec::new();
-        for (case, d) in j.done {
-            let mut lines = Vec::new();
-            if let Expect::Mismatch(wanted) = &case.expect {
-                for (w, l) in wanted.iter().zip(&d.lines) {
-                    let (word, at) = match l {
-                        Line::Found => ("found", Value::Null),
-                        Line::NoPlace => ("no-place", Value::Null),
-                        Line::Blocked => ("blocked", Value::Null),
-                        Line::Missing => ("missing", Value::Null),
-                        Line::WrongPlace { file, line } => ("wrong", s(&format!("{file}:{line}"))),
-                    };
-                    let cause = match (l, &d.report) {
-                        (Line::Blocked, Some(r)) => blocked_cause(w, r, src).map_or(Value::Null, Value::Str),
-                        _ => Value::Null,
-                    };
-                    lines.push(Value::Object(vec![
-                        ("line".into(), s(&w.text())),
-                        ("result".into(), s(word)),
-                        ("at".into(), at),
-                        ("cause".into(), cause),
-                    ]));
-                }
-            }
-            let count = |k: &str| {
-                d.report
-                    .as_ref()
-                    .and_then(|r| r.get("observers"))
-                    .and_then(|o| o.get(k))
-                    .and_then(Value::as_u64)
-                    .map_or(Value::Null, int)
-            };
-            let numbers = d.numbers.as_ref().map_or(Value::Null, |n| {
-                Value::Object(vec![
-                    ("units".into(), int(n.units)),
-                    ("indeterminate".into(), int(n.indeterminate)),
-                    ("reparsed".into(), int(n.reparsed)),
-                    ("wall_ns".into(), int(n.wall_ns)),
-                    ("cpu_ns".into(), int(n.cpu_ns)),
-                    ("peak_rss_max".into(), int(n.peak_rss_max)),
-                ])
-            });
-            let groups = d.report.as_ref().map_or(Value::Null, |r| {
-                Value::Array(determinate_groups(r).into_iter().map(|g| relative_group(g, src)).collect())
-            });
-            cases.push(Value::Object(vec![
-                ("name".into(), s(&case.name)),
-                ("round".into(), int(case.round)),
-                ("result".into(), s(d.result.word())),
-                (
-                    "error".into(),
-                    match &d.result {
-                        CaseResult::Error(e) => s(e),
-                        _ => Value::Null,
-                    },
-                ),
-                ("verdict".into(), d.report.as_ref().and_then(|r| r.get("verdict")).cloned().unwrap_or(Value::Null)),
-                ("selected".into(), count("selected")),
-                ("verified".into(), count("verified")),
-                ("indeterminate_only".into(), count("indeterminate_only")),
-                ("mismatch".into(), count("mismatch")),
-                ("run".into(), numbers),
-                ("lines".into(), Value::Array(lines)),
-                ("groups".into(), groups),
-            ]));
-        }
         let counters = Value::Object(
-            j.counters
+            map.counters
                 .iter()
                 .filter(|(k, _)| k.starts_with("digest."))
                 .map(|(k, v)| (k.clone(), int(*v)))
                 .collect(),
         );
-        let [obs, det, units, indet] = j.header;
+        let m = &map.measured;
         let doc = Value::Object(vec![
             ("demo".into(), int(1)),
             ("corpus".into(), s(&self.corpus.name)),
             ("pin".into(), s(&self.corpus.tag)),
-            ("plan".into(), s(&j.plan.to_string())),
-            ("tool_slip".into(), s(j.tools.0)),
-            ("tool_kiln".into(), s(j.tools.1)),
+            ("plan".into(), s(&map.plan.to_string())),
+            ("tool_slip".into(), s(tools.0)),
+            ("tool_kiln".into(), s(tools.1)),
             ("roots".into(), Value::Array(self.config.roots.iter().map(|r| s(r)).collect())),
             ("only".into(), Value::Array(self.config.only.iter().map(|r| s(r)).collect())),
-            ("observers".into(), int(obs)),
-            ("determinate".into(), int(det)),
-            ("units".into(), int(units)),
-            ("indeterminate".into(), int(indet)),
+            ("observers".into(), int(map.observers)),
+            ("determinate".into(), int(map.determinate)),
+            ("units".into(), int(map.units)),
+            ("indeterminate".into(), int(map.indeterminate)),
             (
                 "map".into(),
                 Value::Object(vec![
-                    ("wall_ns".into(), int(j.map.wall_ns)),
-                    ("cpu_ns".into(), int(j.map.cpu_ns)),
-                    ("peak_rss_max".into(), int(j.map.peak_rss_max)),
+                    ("wall_ns".into(), int(m.wall_ns)),
+                    ("cpu_ns".into(), int(m.cpu_ns)),
+                    ("peak_rss_max".into(), int(m.peak_rss_max)),
                     ("counters".into(), counters),
                 ]),
             ),
-            ("cases".into(), Value::Array(cases)),
-            ("result".into(), s(j.last)),
+            (
+                "cases".into(),
+                Value::Array(done.iter().map(|(c, d)| case_json(c, d, &self.layout.src)).collect()),
+            ),
+            ("result".into(), s(last)),
         ]);
         json::write_pretty(&doc).map_err(|e| format!("demo1.json: {e}"))
     }
 }
 
-struct JsonInputs<'a> {
-    plan: &'a Digest,
-    tools: (&'a str, &'a str),
-    /// `s`, `d`, units, indeterminate.
-    header: [u64; 4],
-    map: &'a perf::Measured,
-    counters: &'a BTreeMap<String, u64>,
-    done: &'a [(&'a Case, Done)],
-    last: &'a str,
+fn int(n: u64) -> Value {
+    Value::Int(i128::from(n))
+}
+
+/// One case of `demo1.json`.
+fn case_json(case: &Case, d: &Done, src: &Path) -> Value {
+    let s = |t: &str| Value::Str(t.to_owned());
+    let mut lines = Vec::new();
+    if let Expect::Mismatch(wanted) = &case.expect {
+        for (w, l) in wanted.iter().zip(&d.lines) {
+            let (word, at) = match l {
+                Line::Found => ("found", Value::Null),
+                Line::NoPlace => ("no-place", Value::Null),
+                Line::Blocked => ("blocked", Value::Null),
+                Line::Missing => ("missing", Value::Null),
+                Line::WrongPlace { file, line } => ("wrong", s(&format!("{file}:{line}"))),
+            };
+            let cause = match (l, &d.report) {
+                (Line::Blocked, Some(r)) => {
+                    blocked_cause(w, r, src).map_or(Value::Null, Value::Str)
+                }
+                _ => Value::Null,
+            };
+            lines.push(Value::Object(vec![
+                ("line".into(), s(&w.text())),
+                ("result".into(), s(word)),
+                ("at".into(), at),
+                ("cause".into(), cause),
+            ]));
+        }
+    }
+    let report = d.report.as_ref();
+    let count = |k: &str| {
+        report
+            .and_then(|r| r.get("observers"))
+            .and_then(|o| o.get(k))
+            .and_then(Value::as_u64)
+            .map_or(Value::Null, int)
+    };
+    let numbers = d.numbers.as_ref().map_or(Value::Null, |n| {
+        Value::Object(vec![
+            ("units".into(), int(n.units)),
+            ("indeterminate".into(), int(n.indeterminate)),
+            ("reparsed".into(), int(n.reparsed)),
+            ("wall_ns".into(), int(n.wall_ns)),
+            ("cpu_ns".into(), int(n.cpu_ns)),
+            ("peak_rss_max".into(), int(n.peak_rss_max)),
+        ])
+    });
+    let groups = report.map_or(Value::Null, |r| {
+        Value::Array(determinate_groups(r).into_iter().map(|g| relative_group(g, src)).collect())
+    });
+    let error = match &d.result {
+        CaseResult::Error(e) => s(e),
+        _ => Value::Null,
+    };
+    Value::Object(vec![
+        ("name".into(), s(&case.name)),
+        ("round".into(), int(case.round)),
+        ("result".into(), s(d.result.word())),
+        ("error".into(), error),
+        ("verdict".into(), report.and_then(|r| r.get("verdict")).cloned().unwrap_or(Value::Null)),
+        ("selected".into(), count("selected")),
+        ("verified".into(), count("verified")),
+        ("indeterminate_only".into(), count("indeterminate_only")),
+        ("mismatch".into(), count("mismatch")),
+        ("run".into(), numbers),
+        ("lines".into(), Value::Array(lines)),
+        ("groups".into(), groups),
+    ])
+}
+
+/// The map run of §10.3 step 2.
+struct MapRun {
+    plan: Digest,
+    /// `s`: the selected observers.
+    observers: u64,
+    /// `d`: those whose map shard is `ok` with `digest.indeterminate` 0.
+    determinate: u64,
+    /// `digest.units` and `digest.indeterminate` summed.
+    units: u64,
+    indeterminate: u64,
+    measured: perf::Measured,
+    counters: BTreeMap<String, u64>,
+}
+
+impl MapRun {
+    /// The first two lines of the table.
+    fn head(&self, c: &Corpus, width: usize) -> String {
+        let mut o = String::new();
+        let _ = writeln!(
+            o,
+            "demo 1: {} {}, {} observers, {} determinate, units {} indeterminate {}",
+            c.name, c.tag, self.observers, self.determinate, self.units, self.indeterminate
+        );
+        let m = &self.measured;
+        let _ = writeln!(
+            o,
+            "{:<width$}wall_s {} cpu_s {} peak_rss_max {}",
+            "map",
+            seconds(m.wall_ns),
+            seconds(m.cpu_ns),
+            m.peak_rss_max
+        );
+        o
+    }
+
+    /// The `indeterminate` lines: when a unit is indeterminate, every
+    /// `digest.indeterminate.*` counter, then the ten largest
+    /// `digest.cause.*` (by value, then name).
+    fn causes(&self) -> String {
+        let mut o = String::new();
+        if self.indeterminate == 0 {
+            return o;
+        }
+        let mut lines: Vec<(&String, &u64)> =
+            self.counters.iter().filter(|(k, _)| k.starts_with("digest.indeterminate.")).collect();
+        let mut largest: Vec<(&String, &u64)> =
+            self.counters.iter().filter(|(k, _)| k.starts_with("digest.cause.")).collect();
+        largest.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        largest.truncate(LISTED);
+        lines.extend(largest);
+        for (k, n) in lines {
+            let _ = writeln!(o, "indeterminate {k} {n}");
+        }
+        o
+    }
+}
+
+/// The run's outcome and the text after `demo 1: ` (§10.3), from the
+/// cases' results and the pristine files an edit changed.
+fn verdict(done: &[(&Case, Done)], through: &[String]) -> (Outcome, String) {
+    let failed: Vec<&str> =
+        done.iter().filter(|(_, d)| d.result.fails()).map(|(c, _)| c.name.as_str()).collect();
+    if !through.is_empty() {
+        (Outcome::Failed, format!("FAILED (an edit went through a link: {})", through.join(", ")))
+    } else if !failed.is_empty() {
+        (Outcome::Failed, format!("FAILED ({})", failed.join(", ")))
+    } else if done.iter().all(|(_, d)| d.result.ok()) {
+        (Outcome::Ok, "ok".to_owned())
+    } else {
+        let n = |r: CaseResult| done.iter().filter(|(_, d)| d.result == r).count();
+        (
+            Outcome::Partial,
+            format!("PARTIAL ({} clean, {} partly)", n(CaseResult::Clean), n(CaseResult::Partly)),
+        )
+    }
+}
+
+/// The table's lines for one finding line `w` that became `l` (§10.3).
+fn render_line(w: &Wanted, l: &Line, report: &Value, src: &Path) -> String {
+    let t = text(w.text().as_bytes());
+    match l {
+        Line::Found => {
+            let mut o = format!("  found    {t}\n");
+            for g in groups_of(report, w) {
+                for side in ["pre", "post"] {
+                    let _ = writeln!(o, "  {}", site_line(side, site(g, side, src).as_ref()));
+                }
+            }
+            o
+        }
+        Line::NoPlace => format!("  no-place {t}\n"),
+        Line::Blocked => {
+            let why = blocked_cause(w, report, src)
+                .unwrap_or_else(|| "no indeterminate group of that name in the report".to_owned());
+            format!("  blocked  {t}: {}\n", text(why.as_bytes()))
+        }
+        Line::Missing => format!("  MISSING  {t}\n"),
+        Line::WrongPlace { file, line } => {
+            format!("  WRONG    {t}: at {}:{line}\n", text(file.as_bytes()))
+        }
+    }
 }
 
 /// The groups of the report's findings of `w`'s kind and name.
@@ -1761,7 +1827,10 @@ fn relative_group(g: &Value, src: &Path) -> Value {
                                     Value::Object(f) => Value::Object(
                                         f.iter()
                                             .map(|(fk, fv)| {
-                                                (fk.clone(), if fk == "file" { rel(fv) } else { fv.clone() })
+                                                (
+                                                    fk.clone(),
+                                                    if fk == "file" { rel(fv) } else { fv.clone() },
+                                                )
                                             })
                                             .collect(),
                                     ),
@@ -1786,7 +1855,9 @@ fn load_printed(ran: &Ran, what: &str, plan: &Digest) -> Result<Loaded, String> 
         .ok_or_else(|| format!("`slip {what}` printed no `run <path>` line"))?;
     let loaded = perf::load(Path::new(printed))?;
     if loaded.path.plan != *plan {
-        return Err(format!("`slip {what}` printed the run {printed}, which is not of plan {plan}"));
+        return Err(format!(
+            "`slip {what}` printed the run {printed}, which is not of plan {plan}"
+        ));
     }
     Ok(loaded)
 }
