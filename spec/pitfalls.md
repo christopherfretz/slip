@@ -35,6 +35,9 @@ expect.txt      what each tree must give
   `bad-<k>` (N11, N18): what it must be is what its row says.
 - A directory under a subject named `dep/` is read-only code: every tree
   of that subject must contain it unchanged, and the runner checks that.
+  It is what the runner gives as read-only, and the rest of the tree as
+  owned (`verify.md` §2.1 "Rules rename owned entities only"): a rule
+  renames nothing that `dep/` declares.
 - Sources are self-contained: no system header. A row that needs a library
   facility declares the few lines of it that it uses.
 - Every tree is one observer: the command `clang++ -std=c++20 -I. -Idep
@@ -73,6 +76,10 @@ expect.txt      what each tree must give
     `removed`, and for a `changed` of `verify.md` §4 step 4 whose
     entity the subject declares and the tree derives) must be that
     file, relative to the tree, and that line ("Places" below).
+    A tree may have several such lines (`bad-4:` twice): every one must
+    be met. A wrong edit that the comparison is bound to report in two
+    ways (the template's unit and an instantiation's, N23) lists both,
+    because a verifier blind to either passes the other line.
   - `mismatch` alone: the state is `mismatch` and at least one finding is
     neither `indeterminate` nor `derived_indeterminate`. A tree whose
     findings are all indeterminate has not shown the hazard caught; it
@@ -105,6 +112,13 @@ Per tree:
 | `XFAIL` | the line is not met and there is an `xfail` (and the tree is not a `bad` one that verified) |
 | `XPASS` | the line is met and there is an `xfail` |
 | `ERROR` | the row is malformed, a `slip` command failed in a way that is no verdict (status 2, 3 or 70; an observer `failed`), or `dep/` differs |
+
+A row is malformed, among other things, when: a `declared-<k>.txt` has
+no `pre-<k>/`; a `good-<k>: none` line stands beside a `good-<k>/`
+directory; a `pre-<k>/` has neither a `good-<k>/` nor a `good-<k>: none`
+line. `declared-<k>.txt` replaces `declared.txt` for every tree of
+`pre-<k>/`, good and bad: a declared file belongs to a subject, never to
+one tree, or a `bad` tree could carry weaker rules than its `good`.
 
 The test fails on any `FAIL`, `XPASS` or `ERROR`. A `bad` tree that
 verifies is a hole in the trusted base and blocks a release. A `good`
