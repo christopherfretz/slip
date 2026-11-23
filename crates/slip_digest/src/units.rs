@@ -1323,7 +1323,12 @@ mod tests {
             assert_eq!(p.errors, 0, "{}", p.diagnostics);
             let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
             let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let options = crate::Options { rules: &rules, detail: crate::Detail::All, names: true };
+            let options = crate::Options {
+                rules: &rules,
+                detail: crate::Detail::All,
+                names: true,
+                rule_use: false,
+            };
             let t = std::time::Instant::now();
             let o = crate::digest(&input, &options);
             let took = t.elapsed();

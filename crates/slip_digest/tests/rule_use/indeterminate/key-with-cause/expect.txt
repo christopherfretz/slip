@@ -1,0 +1,3 @@
+use 3 via 1 direct 0
+indeterminate g(A<^^int> *)
+indeterminate use()

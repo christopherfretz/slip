@@ -25,15 +25,9 @@
 //! - `use <n> via <v> direct <d>`: the rule of line `<n>` of `rules.txt`
 //!   counts `via(r) = v` and `direct(r) = d` in the post-image
 //!   (`spec/verify.md` §9.1). Not a line of §14.1: it is read here and
-//!   says nothing of equality. The walk does not count rule use yet
-//!   (WP-069), so the counts are this runner's own, from the records of
-//!   the post-image: under the table with that rule's `to_name` replaced
-//!   by a name no C++ entity has (`slip probe <n>`), `via` is the number
-//!   of records with the key the rule then produces, and `direct` the
-//!   number with the key it produces under the table itself
-//!   (`(to_parent, kind, to_name, disc)`). An entity counted is a record:
-//!   a unit, declared or derived, once whatever number of declarations it
-//!   has.
+//!   says nothing of equality. The counts are the walk's
+//!   (`Output::rule_use`, WP-069; `tests/rule_use.rs` has the cases of
+//!   §9.1 itself).
 //! - `collisions <n>`: the post-image's counter `digest.collisions`
 //!   (`spec/digest.md` §12) is `n`. Without the line it must be 0.
 //! - `refused <text>`: the table cannot be made: the resolver or
@@ -46,7 +40,8 @@
 //! # What every case also checks
 //!
 //! - The post-image digested under the table twice gives the same
-//!   `Output` (item 11). (A table made from the lines in another order
+//!   `Output` (item 11), and digested with `rule_use` off the same
+//!   `Output` but for an empty `rule_use` (`spec/verify.md` §9.5). (A table made from the lines in another order
 //!   is not a second check of the walk: `RuleTable::new` sorts its rules,
 //!   and under `spec/verify.md` §2.3 the order of `relocate` lines is not
 //!   free.)
@@ -63,7 +58,7 @@ use common::{Digested, Expect, Side};
 use slip_digest::records::{Record, records};
 use slip_digest::{Cause, Detail, Input, Options, Output};
 use slip_model::digests::GroupClass;
-use slip_model::keys::{Key, Name, Rule, RuleTable};
+use slip_model::keys::RuleTable;
 
 /// What a case's `expect.txt` says.
 struct Expected {
@@ -122,18 +117,11 @@ fn lines_of(dir: &Path) -> Result<Vec<(usize, Line)>, String> {
 }
 
 fn digest_under(input: &Input<'_>, rules: &RuleTable) -> Output {
-    slip_digest::digest(input, &Options { rules, detail: Detail::All, names: true })
+    digest_with(input, rules, false)
 }
 
-/// The name no C++ entity has that replaces rule `n`'s target in its
-/// probe table.
-fn probe_name(n: usize) -> Name {
-    Name::Identifier(format!("slip probe {n}").into_bytes())
-}
-
-/// The key a rule gives an entity it matches.
-fn produced(r: &Rule) -> Key {
-    Key { kind: r.kind, parent: r.to_parent, name: r.to_name.clone(), disc: r.disc }
+fn digest_with(input: &Input<'_>, rules: &RuleTable, rule_use: bool) -> Output {
+    slip_digest::digest(input, &Options { rules, detail: Detail::All, names: true, rule_use })
 }
 
 /// What the post-image gives, from one parse.
@@ -146,18 +134,14 @@ struct Post {
     unruled: Option<Output>,
 }
 
-/// `via` and `direct` of the rule of line `n` (see the head of this file).
-fn rule_use(input: &Input<'_>, t: &Table, n: usize) -> Result<(u64, u64), String> {
+/// `via` and `direct` of the rule of line `n` in the walk's `rule_use`
+/// (0 for a rule with no `Use`).
+fn rule_use(out: &Output, t: &Table, n: usize) -> Result<(u64, u64), String> {
     let Some((_, rule)) = t.rules.iter().find(|(l, _)| *l == n) else {
         return Err(format!("`use {n}`: no rule on line {n} of rules.txt"));
     };
-    let probe = Rule { to_name: probe_name(n), ..rule.clone() };
-    let probed: Vec<Rule> =
-        t.rules.iter().map(|(l, r)| if *l == n { probe.clone() } else { r.clone() }).collect();
-    let probed = RuleTable::new(probed).map_err(|e| e.to_string())?;
-    let recs = records(input, &probed)?;
-    let count = |k: &Key| recs.iter().filter(|r| r.id == k.id()).count() as u64;
-    Ok((count(&produced(&probe)), count(&produced(rule))))
+    let index = t.table.rules().iter().position(|r| r == rule).map(|i| i as u64);
+    Ok(out.rule_use.iter().find(|u| Some(u.rule) == index).map_or((0, 0), |u| (u.via, u.direct)))
 }
 
 /// The table of a case whose `expect.txt` says `refused <text>`: it must
@@ -213,14 +197,18 @@ fn post_side(dir: &Path, pre: &[Record], uses: &[(usize, u64, u64)]) -> Result<P
     common::with_side(dir, Side::B, |input| -> Result<Post, String> {
         let plain = records(input, &RuleTable::empty())?;
         let t = table(&lines, pre, &plain)?;
-        let first = digest_under(input, &t.table);
-        if digest_under(input, &t.table) != first {
+        let first = digest_with(input, &t.table, true);
+        if digest_with(input, &t.table, true) != first {
             return Err("the post-image under its table: two walks differ".into());
+        }
+        let off = digest_under(input, &t.table);
+        if !off.rule_use.is_empty() || (Output { rule_use: Vec::new(), ..first.clone() }) != off {
+            return Err("the post-image under its table: rule_use on and off differ".into());
         }
         records(input, &t.table).map_err(|e| format!("records under the table: {e}"))?;
         let mut got = Vec::new();
         for &(n, _, _) in uses {
-            let (v, d) = rule_use(input, &t, n)?;
+            let (v, d) = rule_use(&first, &t, n)?;
             got.push((n, v, d));
         }
         let unruled = (!t.table.is_empty()).then(|| digest_under(input, &RuleTable::empty()));

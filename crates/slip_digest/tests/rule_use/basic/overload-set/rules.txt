@@ -1,0 +1,4 @@
+# spec/verify.md §9.1 "Tests": an overload set with one rule per overload, each used once.
+relocate f(int) => :: g
+relocate f(long) => :: g
+relocate f(char) => :: h

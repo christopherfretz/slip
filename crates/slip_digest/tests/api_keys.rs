@@ -61,7 +61,10 @@ fn snippet<R: Send>(source: &str, f: impl FnOnce(&Input<'_>) -> R + Send) -> R {
 }
 
 fn digest(input: &Input<'_>, rules: &RuleTable) -> Output {
-    slip_digest::digest(input, &Options { rules, detail: Detail::All, names: true })
+    slip_digest::digest(
+        input,
+        &Options { rules, detail: Detail::All, names: true, rule_use: false },
+    )
 }
 
 /// The identifier `d` is declared with, if it has one.
