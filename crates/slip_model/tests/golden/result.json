@@ -1,0 +1,110 @@
+{
+  "kind": "RSLT",
+  "version": 1,
+  "sections": {
+    "result": {
+      "scheme": 1,
+      "plan": "0101010101010101010101010101010101010101010101010101010101010101",
+      "round": 2,
+      "transform": "0202020202020202020202020202020202020202020202020202020202020202",
+      "edits": "0505050505050505050505050505050505050505050505050505050505050505",
+      "declared": "0606060606060606060606060606060606060606060606060606060606060606",
+      "overlay": "0707070707070707070707070707070707070707070707070707070707070707",
+      "state": "verified_with_residue",
+      "partial": true,
+      "allow_unparsed": false,
+      "verdict": "not_verified",
+      "tally": {
+        "selected": 12,
+        "unparsed": 1,
+        "failed_runs": 2,
+        "error_reports": 3,
+        "verified": 4,
+        "unchanged": 1,
+        "mismatch": 1,
+        "not_parsed": 1,
+        "unverifiable": 1,
+        "never_parsed": 1,
+        "failed": 2
+      },
+      "agreement": [
+        {
+          "rule": 0,
+          "observer": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "direct": 2
+        },
+        {
+          "rule": 1,
+          "observer": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+          "direct": 1
+        }
+      ],
+      "unused": [
+        1,
+        4
+      ],
+      "spellings": {
+        "obligations": 5,
+        "passed": 3,
+        "failed": [
+          {
+            "obligation": 1,
+            "why": "denotes_other",
+            "observers": 2,
+            "first": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+            "found": "1313131313131313131313131313131313131313131313131313131313131313",
+            "name": "n::g"
+          },
+          {
+            "obligation": 4,
+            "why": "unseen",
+            "observers": 0,
+            "first": null,
+            "found": null,
+            "name": "n::h"
+          }
+        ]
+      },
+      "residue": [
+        {
+          "category": "dependent",
+          "file": "/s/a.cc",
+          "lo": 3,
+          "hi": 4,
+          "line": 1,
+          "column": 4
+        },
+        {
+          "category": "mention",
+          "file": "/s/a.cc",
+          "lo": 9,
+          "hi": 10,
+          "line": 2,
+          "column": 1
+        },
+        {
+          "category": "not_compiled",
+          "file": "/s/a.h",
+          "lo": 0,
+          "hi": 1,
+          "line": 1,
+          "column": 1
+        },
+        {
+          "category": "not_planned",
+          "file": {
+            "hex": "2f732fff7a2e68"
+          },
+          "lo": 5,
+          "hi": 6,
+          "line": 1,
+          "column": 6
+        }
+      ],
+      "exempt": [
+        "2020202020202020202020202020202020202020202020202020202020202020",
+        "2121212121212121212121212121212121212121212121212121212121212121"
+      ]
+    }
+  }
+}

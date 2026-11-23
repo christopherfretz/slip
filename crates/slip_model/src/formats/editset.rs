@@ -119,6 +119,7 @@ enum Loc {
     ReportFirst(usize),
     Failure(usize),
     FailureFirst(usize),
+    FailureSubject(usize),
     CounterName(usize),
     Counter(usize),
 }
@@ -153,6 +154,7 @@ impl Loc {
             Loc::ReportFirst(i) => format!("{S}.reports[{i}].first"),
             Loc::Failure(i) => format!("{S}.failures[{i}]"),
             Loc::FailureFirst(i) => format!("{S}.failures[{i}].first"),
+            Loc::FailureSubject(i) => format!("{S}.failures[{i}].failure.refusal.subject"),
             Loc::CounterName(i) => format!("{S}.counters[{i}].name"),
             Loc::Counter(i) => format!("{S}.counters[{i}]"),
         }
@@ -467,6 +469,12 @@ fn place_violation(x: &EditSet) -> Violation {
     {
         return Some((Loc::Report(i), "a report's place is not within its file"));
     }
+    let outside = |x: &Failed| {
+        x.failure.refusal.as_ref().and_then(|r| r.subject.as_ref()).is_some_and(|p| !within(f, p))
+    };
+    if let Some(i) = x.failures.iter().position(outside) {
+        return Some((Loc::FailureSubject(i), "the refusal's subject is not within its file"));
+    }
     None
 }
 
@@ -715,7 +723,7 @@ struct Offsets {
     unresolved: Vec<usize>,
     refusal: Vec<[usize; 3]>,
     report: Vec<[usize; 2]>,
-    failure: Vec<[usize; 2]>,
+    failure: Vec<[usize; 3]>,
     counter: Vec<usize>,
 }
 
@@ -758,6 +766,7 @@ impl Offsets {
             Loc::ReportFirst(i) => self.report[i][1],
             Loc::Failure(i) => self.failure[i][0],
             Loc::FailureFirst(i) => self.failure[i][1],
+            Loc::FailureSubject(i) => self.failure[i][2],
             Loc::CounterName(i) | Loc::Counter(i) => self.counter[i],
         }
     }
@@ -868,10 +877,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(EditSet, Vec<Extra<'_>>, Digest)> 
     })?;
     let failures = dec_list(d, None, |d| {
         let start = d.offset();
-        let (failure, _) = dec_failure(d)?;
+        let (failure, subject_at) = dec_failure(d)?;
         let mut first_at = 0;
         let (observers, first) = dec_counts(d, &mut first_at)?;
-        o.failure.push([start, first_at]);
+        o.failure.push([start, first_at, subject_at]);
         Ok(Failed { failure, observers, first })
     })?;
     let unparsed = dec_digests(d)?;

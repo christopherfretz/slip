@@ -1,0 +1,84 @@
+{
+  "kind": "RUNT",
+  "version": 1,
+  "sections": {
+    "run": {
+      "tool_slip": "slip 0.1",
+      "tool_kiln": "kiln 0.2",
+      "plan": "0101010101010101010101010101010101010101010101010101010101010101",
+      "round": 2,
+      "transform": "0202020202020202020202020202020202020202020202020202020202020202",
+      "edits": "0505050505050505050505050505050505050505050505050505050505050505",
+      "declared": null,
+      "overlay": "0707070707070707070707070707070707070707070707070707070707070707",
+      "result": null,
+      "started_unix_ns": "1700000000000000000",
+      "wall_ns": 99,
+      "steps": [
+        {
+          "name": "load",
+          "wall_ns": 7,
+          "cpu_ns": 6,
+          "peak_rss": 1048576,
+          "run": null
+        },
+        {
+          "name": "plan",
+          "wall_ns": 7,
+          "cpu_ns": 6,
+          "peak_rss": 1048576,
+          "run": null
+        },
+        {
+          "name": "map",
+          "wall_ns": 7,
+          "cpu_ns": 6,
+          "peak_rss": 1048576,
+          "run": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+        },
+        {
+          "name": "reduce",
+          "wall_ns": 7,
+          "cpu_ns": 6,
+          "peak_rss": 1048576,
+          "run": null
+        },
+        {
+          "name": "apply",
+          "wall_ns": 7,
+          "cpu_ns": 6,
+          "peak_rss": 1048576,
+          "run": null
+        },
+        {
+          "name": "verify",
+          "wall_ns": 7,
+          "cpu_ns": 6,
+          "peak_rss": 1048576,
+          "run": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+        },
+        {
+          "name": "scan",
+          "wall_ns": 7,
+          "cpu_ns": 6,
+          "peak_rss": 1048576,
+          "run": null
+        },
+        {
+          "name": "conclude",
+          "wall_ns": 7,
+          "cpu_ns": 6,
+          "peak_rss": 1048576,
+          "run": null
+        },
+        {
+          "name": "write",
+          "wall_ns": 7,
+          "cpu_ns": 6,
+          "peak_rss": 1048576,
+          "run": null
+        }
+      ]
+    }
+  }
+}

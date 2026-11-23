@@ -1,0 +1,341 @@
+{
+  "kind": "EDTS",
+  "version": 1,
+  "sections": {
+    "set": {
+      "scheme": 1,
+      "plan": "0101010101010101010101010101010101010101010101010101010101010101",
+      "round": 2,
+      "transform": "0202020202020202020202020202020202020202020202020202020202020202",
+      "basis": "0303030303030303030303030303030303030303030303030303030303030303",
+      "state": "accepted",
+      "files": [
+        {
+          "path": "/s/a.cc",
+          "size": 100,
+          "content": "5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        {
+          "path": "/s/a.h",
+          "size": 60,
+          "content": "5252525252525252525252525252525252525252525252525252525252525252"
+        },
+        {
+          "path": {
+            "hex": "2f732fff622e68"
+          },
+          "size": 40,
+          "content": "5353535353535353535353535353535353535353535353535353535353535353"
+        }
+      ],
+      "subjects": [
+        {
+          "id": "1010101010101010101010101010101010101010101010101010101010101010",
+          "rule": {
+            "parent": "root",
+            "kind": "function",
+            "name": {
+              "identifier": "f"
+            },
+            "disc": null,
+            "to_parent": "root",
+            "to_name": {
+              "identifier": "g"
+            }
+          },
+          "role": "seed",
+          "of": [],
+          "flags": 0,
+          "display": "n::f"
+        },
+        {
+          "id": "1111111111111111111111111111111111111111111111111111111111111111",
+          "rule": null,
+          "role": "follower",
+          "of": [
+            "1010101010101010101010101010101010101010101010101010101010101010"
+          ],
+          "flags": 1,
+          "display": "n::f2"
+        }
+      ],
+      "rules": [
+        {
+          "parent": "root",
+          "kind": "function",
+          "name": {
+            "identifier": "f"
+          },
+          "disc": null,
+          "to_parent": "root",
+          "to_name": {
+            "identifier": "g"
+          }
+        },
+        {
+          "parent": "root",
+          "kind": "function",
+          "name": {
+            "identifier": "h"
+          },
+          "disc": null,
+          "to_parent": "root",
+          "to_name": {
+            "identifier": "i"
+          }
+        }
+      ],
+      "edits": [
+        {
+          "file": 0,
+          "lo": 10,
+          "hi": 20,
+          "pieces": [
+            {
+              "literal": "x"
+            },
+            {
+              "copy": {
+                "file": 1,
+                "lo": 0,
+                "hi": 5
+              }
+            },
+            {
+              "spelled": {
+                "key": "1010101010101010101010101010101010101010101010101010101010101010",
+                "text": "g"
+              }
+            }
+          ],
+          "subjects": [
+            "1010101010101010101010101010101010101010101010101010101010101010",
+            "1111111111111111111111111111111111111111111111111111111111111111"
+          ],
+          "tiers": 1,
+          "macro": null,
+          "notes": [
+            "a",
+            "b"
+          ],
+          "observers": 2,
+          "votes": 2,
+          "first": [
+            "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          ]
+        },
+        {
+          "file": 0,
+          "lo": 12,
+          "hi": 14,
+          "pieces": [
+            {
+              "literal": "y"
+            }
+          ],
+          "subjects": [],
+          "tiers": 3,
+          "macro": {
+            "name_start": 11,
+            "name": "M"
+          },
+          "notes": [],
+          "observers": 1,
+          "votes": 1,
+          "first": []
+        },
+        {
+          "file": 1,
+          "lo": 0,
+          "hi": 5,
+          "pieces": [],
+          "subjects": [],
+          "tiers": 1,
+          "macro": null,
+          "notes": [],
+          "observers": 1,
+          "votes": 1,
+          "first": []
+        }
+      ],
+      "groups": [
+        [
+          0,
+          2
+        ]
+      ],
+      "changed": [
+        {
+          "key": "2020202020202020202020202020202020202020202020202020202020202020",
+          "place": {
+            "file": 0,
+            "lo": 10,
+            "hi": 20
+          },
+          "reason": "r",
+          "in_force": true,
+          "observers": 1,
+          "first": [
+            "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+          ]
+        }
+      ],
+      "kept": [
+        {
+          "file": 0,
+          "lo": 30,
+          "hi": 33
+        },
+        {
+          "file": 1,
+          "lo": 6,
+          "hi": 7
+        }
+      ],
+      "unresolved": [
+        {
+          "file": 2,
+          "lo": 1,
+          "hi": 4
+        }
+      ],
+      "refusals": [
+        {
+          "cause": "mixed_set",
+          "file": null,
+          "lo": 0,
+          "hi": 0,
+          "reason": "none",
+          "subject": "1212121212121212121212121212121212121212121212121212121212121212",
+          "macro": null,
+          "other": null,
+          "observers": 0,
+          "first": []
+        },
+        {
+          "cause": "site_refused",
+          "file": 0,
+          "lo": 40,
+          "hi": 45,
+          "reason": "macro_body",
+          "subject": "1010101010101010101010101010101010101010101010101010101010101010",
+          "macro": {
+            "name_start": 40,
+            "name": "N"
+          },
+          "other": null,
+          "observers": 1,
+          "first": [
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          ]
+        },
+        {
+          "cause": "contested",
+          "file": 1,
+          "lo": 10,
+          "hi": 12,
+          "reason": "none",
+          "subject": null,
+          "macro": null,
+          "other": {
+            "file": 1,
+            "lo": 11,
+            "hi": 13
+          },
+          "observers": 1,
+          "first": [
+            "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+          ]
+        }
+      ],
+      "reports": [
+        {
+          "report": {
+            "place": null,
+            "severity": "note",
+            "message": "m",
+            "attached": false
+          },
+          "observers": 1,
+          "first": [
+            "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+          ]
+        },
+        {
+          "report": {
+            "place": {
+              "file": 0,
+              "lo": 1,
+              "hi": 2
+            },
+            "severity": "review",
+            "message": "w",
+            "attached": true
+          },
+          "observers": 2,
+          "first": [
+            "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          ]
+        }
+      ],
+      "failures": [
+        {
+          "failure": {
+            "kind": "uncaught",
+            "message": "boom",
+            "place": null,
+            "rendered": "boom\n",
+            "refusal": {
+              "function": "slip::rename",
+              "errc": "not_owned",
+              "message": "no",
+              "subject": {
+                "file": 2,
+                "lo": 0,
+                "hi": 3
+              }
+            }
+          },
+          "observers": 1,
+          "first": [
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          ]
+        },
+        {
+          "failure": {
+            "kind": "step_budget",
+            "message": "steps",
+            "place": {
+              "file": "/t/x.cc",
+              "line": 3,
+              "column": 4
+            },
+            "rendered": "",
+            "refusal": null
+          },
+          "observers": 3,
+          "first": [
+            "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+          ]
+        }
+      ],
+      "unparsed": [
+        "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+      ],
+      "counters": [
+        {
+          "name": "api.unresolved_spelling_matches",
+          "value": 3
+        },
+        {
+          "name": "reduce.edits",
+          "value": 3
+        }
+      ]
+    }
+  }
+}
