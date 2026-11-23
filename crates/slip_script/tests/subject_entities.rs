@@ -1204,6 +1204,122 @@ fn review_f9_closure_call_operator() {
     });
 }
 
+/// Second review, item 3: everything a lambda-expression declares climbs to
+/// the implicit closure, so the structural rule finds no declaration. Each
+/// assertion below pins today's answer (landed decision 19); WP-085, reading
+/// the extent table, turns every `[]` into the line given beside it. A
+/// lambda's explicit template parameters are written already.
+#[test]
+fn review2_lambda_declares() {
+    let src = "struct P { int a, b; };
+void lam(int v, P pr) {
+  auto c1 = [ic = v] { return ic; };
+  auto c2 = [] { struct LL { int lm; }; return LL{1}.lm; };
+  auto c3 = [pr] { auto [b1, b2] = pr; return b1 + b2; };
+  auto c4 = []<class LT>(LT t) { return t; };
+  (void)c1(); (void)c2(); (void)c3(); (void)c4(1);
+}
+struct N { int n = [] { int nz = 1; return nz; }(); };
+int da(int x = [] { int dz = 2; return dz; }());
+";
+    with(&[("main.cpp", src)], |p, s| {
+        let at_of = |kind: DeclKind, name: &str| {
+            let d = find(p, kind, name, |_, _| true);
+            assert_eq!(d.len(), 1, "{name}: {d:?}");
+            decls_at(p, s, s.entity_number(d[0]))
+        };
+        let none = Vec::<String>::new();
+        assert_eq!(at_of(DeclKind::Var, "ic"), none, "init-capture: WP-085 gives main.cpp:3");
+        assert_eq!(at_of(DeclKind::CXXRecord, "LL"), none, "local class: main.cpp:4");
+        assert_eq!(at_of(DeclKind::Field, "lm"), none, "its member: main.cpp:4");
+        assert_eq!(at_of(DeclKind::Binding, "b1"), none, "binding: main.cpp:5");
+        assert_eq!(at_of(DeclKind::Binding, "b2"), none, "binding: main.cpp:5");
+        assert_eq!(at_of(DeclKind::Var, "nz"), none, "in a member initialiser: main.cpp:9");
+        assert_eq!(at_of(DeclKind::Var, "dz"), none, "in a default argument: main.cpp:10");
+        assert_eq!(at_of(DeclKind::TemplateTypeParm, "LT"), ["main.cpp:6"], "written today");
+    });
+}
+
+/// Second review, mutant Ma: an enum is a local context, so an enumerator of
+/// a local enum is written.
+#[test]
+fn review2_ma_local_enum() {
+    with(&[("main.cpp", "void f() { enum LE { lx }; (void)lx; }\n")], |p, s| {
+        let d = find(p, DeclKind::EnumConstant, "lx", |_, _| true);
+        assert_eq!(decls_at(p, s, s.entity_number(d[0])), ["main.cpp:1"], "Ma");
+    });
+}
+
+/// Second review, mutant Mf: the template parameters of a member template
+/// are written.
+#[test]
+fn review2_mf_member_template_parameter() {
+    with(&[("main.cpp", "struct A { template <class MT> void m(MT); };\n")], |p, s| {
+        let d = find(p, DeclKind::TemplateTypeParm, "MT", |_, _| true);
+        assert_eq!(decls_at(p, s, s.entity_number(d[0])), ["main.cpp:1"], "Mf");
+    });
+}
+
+/// Second review, mutant Mg: the class walk of a namespace reaches the
+/// pattern of a class template, so its hidden friends are found.
+#[test]
+fn review2_mg_friend_of_class_template() {
+    let src = "namespace w { template <class T> struct W { friend void wf(W) {} }; }\n";
+    with(&[("main.cpp", src)], |p, s| {
+        assert_eq!(found_at(p, s, "w::wf"), ["main.cpp:1"], "Mg");
+    });
+}
+
+/// Second review, mutant Mh: only an anonymous class is transparent (§6.1
+/// rule 3), not every unnamed one.
+#[test]
+fn review2_mh_unnamed_class_not_transparent() {
+    let src = "struct { int un; } uv;\nnamespace q { struct H { struct { int hn; } hv; }; }\n";
+    with(&[("main.cpp", src)], |p, s| {
+        assert!(look(s, "un").is_empty(), "Mh");
+        assert!(look(s, "q::H::hn").is_empty(), "Mh");
+        assert_eq!(found_at(p, s, "uv"), ["main.cpp:1"]);
+        assert_eq!(found_at(p, s, "q::H::hv"), ["main.cpp:2"]);
+    });
+}
+
+/// Second review, mutant Mi: a member of a partial specialisation has no
+/// qualified spelling.
+#[test]
+fn review2_mi_member_of_partial_specialisation() {
+    let src = "namespace o { template <class T> struct C { int pm0; };\n\
+               template <class T> struct C<T*> { int pm; }; }\n";
+    with(&[("main.cpp", src)], |p, s| {
+        let d = find(p, DeclKind::Field, "pm", |_, _| true);
+        assert_eq!(s.qualified(s.entity_number(d[0])), None, "Mi");
+    });
+}
+
+/// Second review, mutant Mj: a member of an explicit specialisation has no
+/// qualified spelling.
+#[test]
+fn review2_mj_member_of_explicit_specialisation() {
+    let src = "template <class T> struct C { int x; };\ntemplate <> struct C<int> { int sx; };\n";
+    with(&[("main.cpp", src)], |p, s| {
+        let d = find(p, DeclKind::Field, "sx", |_, _| true);
+        assert_eq!(s.qualified(s.entity_number(d[0])), None, "Mj");
+    });
+}
+
+/// Second review, mutant M24: Kiln parses default member initialisers late,
+/// so the class `Q` (line 2) has a higher declaration number than the friend
+/// function `Q` (line 3). Lookup's sort by unit order is needed.
+#[test]
+fn review2_m24_delayed_parse_order() {
+    let src = "struct S {\n  int x = sizeof(struct Q*);\n  friend void Q(S);\n};\n";
+    with(&[("main.cpp", src)], |p, s| {
+        let found = look(s, "Q");
+        assert_eq!(found.len(), 2);
+        assert!(found[0].0 > found[1].0, "the premise: Kiln numbers line 2 after line 3");
+        assert_eq!(at(p, s, &found), ["main.cpp:2", "main.cpp:3"], "M24");
+    });
+}
+
 /// The surviving mutant M10: `export` is seen through.
 #[test]
 fn review_export_is_seen_through() {
