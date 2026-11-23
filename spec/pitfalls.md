@@ -211,7 +211,7 @@ layout only.
 | E01 | Qualifying a member call suppresses virtual dispatch | `this->f()` | `Base::f()` | `mismatch changed` the caller |
 | E02 | Qualifying a call disables argument-dependent lookup (`using std::swap; swap(a, b);` with a user `swap`) | left unqualified | `std::swap(a, b)` | `mismatch changed` the caller |
 | E03 | Parentheses that are not redundant: `decltype((x))`; `(f)(x)` | `((x) + 1)` | `decltype((x))`, `(f)(x)` | `mismatch changed`; the first `good` tree adds only redundant ones |
-| E04 | Reordering `#include`s changes what a non-dependent call inside a template sees at its definition | an order that keeps it | the other order | `mismatch changed` the template |
+| E04 | Reordering `#include`s changes what a non-dependent call inside a template sees at its definition, or which operator functions a dependent operator expression finds there ([temp.dep.candidate]; `digest-kinds.md` §9.5 `oper_lookups`) | an order that keeps it | the other order | `mismatch changed` the template |
 | E05 | Moving a function definition past a later, better overload (`h(long)`, caller, `h(int)`) | moved, call qualified by a cast that keeps `h(long)` — or not moved | moved | `mismatch changed` the caller |
 | E06 | Respelling through a namespace alias, a using-declaration, an injected class name, a typedef of the same type | any of them | a typedef that adds `const` | `mismatch changed` |
 | E07 | `struct` to `class` on a redeclaration; `override` added; a parameter renamed; a redundant `this->` | each | — | `good` only |

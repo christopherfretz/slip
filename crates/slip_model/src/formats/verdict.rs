@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use crate::json::Value;
 use crate::verdict::{Finding, FindingKind, Site, Verdict, VerdictKind, Where};
 use crate::wire::{Decoder, Encoder};
-use crate::{Phase, Status};
+use crate::{Digest, Phase, Status};
 
 use super::At;
 use super::MESSAGE_MAX;
@@ -66,6 +66,7 @@ pub(super) enum SiteField {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Loc {
     Section,
+    Pre,
     Reason,
     Used(usize),
     Total,
@@ -83,6 +84,7 @@ impl Loc {
         const S: &str = "sections.verdict";
         match self {
             Loc::Section => S.to_owned(),
+            Loc::Pre => format!("{S}.pre"),
             Loc::Reason => format!("{S}.reason"),
             Loc::Used(j) => format!("{S}.used[{j}]"),
             Loc::Total => format!("{S}.total"),
@@ -116,9 +118,10 @@ pub(super) struct Context {
     pub digests: bool,
 }
 
-/// The order of findings: by kind, then file, then key (absent first).
-fn order(f: &Finding) -> (FindingKind, &[u8], Option<crate::Digest>) {
-    (f.kind, &f.file, f.key)
+/// The order of findings: by the kind's rank (`spec/verify.md` §6), then
+/// file, then key (absent first).
+fn order(f: &Finding) -> (u8, &[u8], Option<Digest>) {
+    (f.kind.rank(), &f.file, f.key)
 }
 
 fn sites(w: &Where) -> [(Side, &Site); 2] {
@@ -129,6 +132,49 @@ const LONG: &str = "longer than 4096 bytes";
 
 /// The first violation of the section's invariants. Each rule is checked
 /// over the whole section, in field and element order, before the next.
+/// Rule 3: what each kind of verdict holds, in field order.
+fn by_kind(v: &Verdict) -> Option<(Loc, &'static str)> {
+    match v.kind {
+        VerdictKind::Verified => {
+            if v.pre == Digest([0; 32]) {
+                return Some((Loc::Pre, "a verified verdict without a pre shard"));
+            }
+            if !v.reason.is_empty() {
+                return Some((Loc::Reason, "a verified verdict has a reason"));
+            }
+            if v.total != 0 {
+                return Some((Loc::Total, "a verified verdict has a total other than 0"));
+            }
+            if !v.findings.is_empty() {
+                return Some((Loc::Findings, "a verified verdict has findings"));
+            }
+        }
+        VerdictKind::Mismatch => {
+            if v.pre == Digest([0; 32]) {
+                return Some((Loc::Pre, "a mismatch verdict without a pre shard"));
+            }
+            if !v.reason.is_empty() {
+                return Some((Loc::Reason, "a mismatch verdict has a reason"));
+            }
+            if v.total == 0 {
+                return Some((Loc::Total, "a mismatch verdict has a total of 0"));
+            }
+        }
+        VerdictKind::Unverifiable => {
+            if v.reason.is_empty() {
+                return Some((Loc::Reason, "an unverifiable verdict has no reason"));
+            }
+            if v.total != 0 {
+                return Some((Loc::Total, "an unverifiable verdict has a total other than 0"));
+            }
+            if !v.findings.is_empty() {
+                return Some((Loc::Findings, "an unverifiable verdict has findings"));
+            }
+        }
+    }
+    None
+}
+
 pub(super) fn violation(v: &Verdict, cx: Context) -> Option<(Loc, &'static str)> {
     // 1.
     if cx.phase != Phase::Verify {
@@ -158,37 +204,8 @@ pub(super) fn violation(v: &Verdict, cx: Context) -> Option<(Loc, &'static str)>
         }
     }
     // 3.
-    match v.kind {
-        VerdictKind::Verified => {
-            if !v.reason.is_empty() {
-                return Some((Loc::Reason, "a verified verdict has a reason"));
-            }
-            if v.total != 0 {
-                return Some((Loc::Total, "a verified verdict has a total other than 0"));
-            }
-            if !v.findings.is_empty() {
-                return Some((Loc::Findings, "a verified verdict has findings"));
-            }
-        }
-        VerdictKind::Mismatch => {
-            if !v.reason.is_empty() {
-                return Some((Loc::Reason, "a mismatch verdict has a reason"));
-            }
-            if v.total == 0 {
-                return Some((Loc::Total, "a mismatch verdict has a total of 0"));
-            }
-        }
-        VerdictKind::Unverifiable => {
-            if v.reason.is_empty() {
-                return Some((Loc::Reason, "an unverifiable verdict has no reason"));
-            }
-            if v.total != 0 {
-                return Some((Loc::Total, "an unverifiable verdict has a total other than 0"));
-            }
-            if !v.findings.is_empty() {
-                return Some((Loc::Findings, "an unverifiable verdict has findings"));
-            }
-        }
+    if let Some(found) = by_kind(v) {
+        return Some(found);
     }
     // 4.
     if v.findings.len() as u64 > v.total {
@@ -198,7 +215,7 @@ pub(super) fn violation(v: &Verdict, cx: Context) -> Option<(Loc, &'static str)>
     let mut seen = BTreeSet::new();
     for (i, f) in v.findings.iter().enumerate() {
         if i > 0 && order(&v.findings[i - 1]) > order(f) {
-            return Some((Loc::Finding(i), "findings are not ascending by (kind, file, key)"));
+            return Some((Loc::Finding(i), "findings are not ascending by (rank, file, key)"));
         }
         if let Some(key) = f.key
             && !seen.insert((f.kind, key))
@@ -239,7 +256,7 @@ pub(super) fn violation(v: &Verdict, cx: Context) -> Option<(Loc, &'static str)>
 // ---------------------------------------------------------------------------
 // Binary
 
-fn enc_opt_digest(e: &mut Encoder, v: Option<&crate::Digest>) {
+fn enc_opt_digest(e: &mut Encoder, v: Option<&Digest>) {
     match v {
         None => e.u8(0),
         Some(d) => e.u8(1).digest(d),
@@ -286,6 +303,7 @@ pub(super) fn encode(e: &mut Encoder, v: &Verdict) {
 #[derive(Debug, Default)]
 pub(super) struct Offsets {
     section: usize,
+    pre: usize,
     reason: usize,
     used: Vec<usize>,
     total: usize,
@@ -316,6 +334,7 @@ impl Offsets {
         let f = |i: usize| &self.finding[i];
         match l {
             Loc::Section => self.section,
+            Loc::Pre => self.pre,
             Loc::Reason => self.reason,
             Loc::Used(j) => self.used[j],
             Loc::Total => self.total,
@@ -353,6 +372,7 @@ fn dec_site(d: &mut Decoder<'_>, o: &mut SiteOffsets) -> Result<Site> {
 pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Verdict, Offsets)> {
     let mut o = Offsets { section: d.offset(), ..Offsets::default() };
     let kind = dec_enum(d)?;
+    o.pre = d.offset();
     let pre = d.digest()?;
     let rules = d.digest()?;
     o.reason = d.offset();

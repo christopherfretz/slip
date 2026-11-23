@@ -17,7 +17,7 @@ use slip_script::fake::{
     FakeCall, FakeDeclaration, FakeEntity, FakeExpression, FakeOut, FakeReference, FakeSubject,
 };
 use slip_script::host::{Host, KEYWORDS, Limits, check_identifier, parse_qualified_name};
-use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity};
+use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity, Tiers};
 use slip_script::subject::{
     Declaration, Entity, Expression, File, Range, Reference, Subject, Value,
 };
@@ -1148,38 +1148,16 @@ fn s3_2_arguments_as_written() {
     assert_eq!(status(&mut h, wire::OP_ARGUMENTS_AS_WRITTEN, &[foo], &[]), errc(Errc::WrongKind));
 }
 
-/// §3.2, operations 64 to 84: dispatched, shape-checked, and `unsupported`
-/// until the effects land (WP-088).
-#[test]
-fn s3_2_effects_are_unsupported_for_now() {
-    let w = world();
-    let mut h = host(&w.fake);
-    for o in wire::OPERATIONS.iter().filter(|o| o.effect) {
-        let n = match o.ints {
-            Arity::Exactly(n) => n,
-            Arity::Any => 3,
-        };
-        let text: &[u8] = if o.text { b"t" } else { b"" };
-        assert_eq!(status(&mut h, o.op, &vec![0; n], text), errc(Errc::Unsupported), "{}", o.name);
-        if o.text {
-            assert_eq!(
-                status(&mut h, o.op, &vec![0; n], &[]),
-                errc(Errc::Unsupported),
-                "{}",
-                o.name
-            );
-        }
-    }
-    let out = h.finish();
-    assert!(out.edits.is_empty() && out.reports.is_empty());
-}
-
 // ---------------------------------------------------------------------------
 // Rule 6: the canonical form (§7.6).
 
 fn place(path: &str, lo: u32, hi: u32) -> Place {
     Place {
-        file: FileRef { path: path.as_bytes().to_vec(), size: 100, content: Digest([3; 32]) },
+        file: std::sync::Arc::new(FileRef {
+            path: path.as_bytes().to_vec(),
+            size: 100,
+            content: Digest([3; 32]),
+        }),
         lo,
         hi,
     }
@@ -1189,7 +1167,7 @@ fn edit(path: &str, lo: u32, hi: u32, pieces: Vec<Piece>, notes: &[&str]) -> Edi
     Edit {
         place: place(path, lo, hi),
         pieces,
-        tier: 0,
+        tiers: Tiers::ZERO,
         notes: notes.iter().map(|n| n.as_bytes().to_vec()).collect(),
     }
 }
@@ -1222,7 +1200,7 @@ fn raw() -> RunOutput {
         edit("a", 1, 3, vec![Piece::Spelled { key: Digest([1; 32]), text: b"::f".to_vec() }], &[]), // 6
         edit("c", 0, 1, vec![], &[]), // 7
     ];
-    out.edits[2].tier = 1;
+    out.edits[2].tiers = Tiers::ONE;
     out.groups = vec![
         vec![0, 2],    // one edit twice: a group of one
         vec![],        // a group never used
@@ -1296,7 +1274,7 @@ fn s7_6_canonical_form() {
     );
     assert_eq!(c.edits[0].notes, vec![b"z".to_vec()]);
     assert_eq!(c.edits[4].notes, vec![b"n1".to_vec(), b"n2".to_vec()]);
-    assert_eq!(c.edits[4].tier, 1, "joined edits keep the higher tier");
+    assert_eq!(c.edits[4].tiers, Tiers::BOTH, "joined edits union their tiers (§7.6 rule 1)");
     // raw 1 -> 3, raw 3/4 -> 0, raw 5 -> 1: one group {0, 1, 3}.
     assert_eq!(c.groups, vec![vec![0, 1, 3]]);
     assert_eq!(c.reports.len(), 4);
@@ -1617,8 +1595,8 @@ impl Subject for Liar<'_> {
     fn unresolved_named(&self, identifier: &[u8]) -> Option<u64> {
         self.fake.unresolved_named(identifier)
     }
-    fn tier(&self, r: Range) -> Option<u8> {
-        self.fake.tier(r)
+    fn tiers(&self, r: Range) -> Option<[bool; 2]> {
+        self.fake.tiers(r)
     }
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
         self.fake.qualified(e)
@@ -1638,7 +1616,7 @@ impl Subject for Liar<'_> {
     fn rename_rule(&self, e: Entity, new_identifier: &[u8]) -> Result<Rule, Errc> {
         self.fake.rename_rule(e, new_identifier)
     }
-    fn place(&self, v: Value) -> Option<(Range, bool)> {
+    fn place(&self, v: Value) -> slip_script::subject::PlaceOf {
         self.fake.place(v)
     }
     fn file_ref(&self, f: File) -> FileRef {

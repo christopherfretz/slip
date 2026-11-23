@@ -14,6 +14,16 @@
 //!   tmp/<pid>.d/                              scratch directory of process <pid>
 //! ```
 //!
+//! A transform's run (M2, `spec/edits.md` §10.4) adds `transforms/`,
+//! `edits/`, `overlays/`, `results/` ([`Object`]), `blobs/`, the transform
+//! run records `runs/<plan id>/transform.<round>.<started_unix_ns>.run` and
+//! `write.journal`. Their directories are made by the first publish into
+//! each, so a store initialised before them is a valid store. Objects and
+//! blobs are named by their content: a file is left untouched when it
+//! already holds that content, and replaced otherwise. An exclusive [`Store::open`] of a store that
+//! holds `write.journal` is refused ([`StoreError::UnfinishedWrite`]);
+//! [`Store::open_for_recovery`] is the one opener that accepts it.
+//!
 //! Every file is published by writing it under `tmp/` and renaming it to its
 //! final name, so a reader never sees a partial file. An exclusive [`Store`]
 //! holds `lock`; a shared one only reads and publishes. A `Store` removes
@@ -31,7 +41,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use slip_model::container::TRAILER_LEN;
+use slip_model::container::{Reader, TRAILER_LEN};
+use slip_model::hash::content_digest;
+use slip_model::wire::Decoder;
 use slip_model::{Digest, Phase, Plan, RunRecord, Shard, formats};
 
 /// The text of `VERSION`.
@@ -63,6 +75,9 @@ pub enum StoreError {
     Invalid(String),
     /// A file system operation failed.
     Io { path: PathBuf, error: io::Error },
+    /// An exclusive open found `write.journal` (this path): the store has
+    /// an unfinished write of the working tree (`spec/edits.md` §7.3).
+    UnfinishedWrite(PathBuf),
 }
 
 impl fmt::Display for StoreError {
@@ -81,6 +96,12 @@ impl fmt::Display for StoreError {
             }
             StoreError::Invalid(what) => write!(f, "refusing to publish: {what}"),
             StoreError::Io { path, error } => write!(f, "{}: {error}", path.display()),
+            StoreError::UnfinishedWrite(journal) => write!(
+                f,
+                "the store has an unfinished write of the working tree ({}); \
+                 run `slip apply --recover`",
+                journal.display()
+            ),
         }
     }
 }
@@ -268,7 +289,23 @@ impl Store {
     /// Opens (initialising if absent or empty) the store at `dir` (§2
     /// "Opening", "Locking", "Cleaning"). The root is made absolute against
     /// the current directory.
+    ///
+    /// An exclusive open of a store that holds `write.journal` is
+    /// [`StoreError::UnfinishedWrite`] (after the lock was taken, before
+    /// stale entries are cleaned; the lock is released). A shared open is
+    /// not refused.
     pub fn open(dir: &Path, access: Access) -> Result<Store> {
+        Store::open_inner(dir, access, false)
+    }
+
+    /// Opens the store at `dir` exclusively, as [`Store::open`], but
+    /// accepting a store that holds `write.journal`: the one opener for
+    /// `slip apply --recover` (`spec/edits.md` §7.3).
+    pub fn open_for_recovery(dir: &Path) -> Result<Store> {
+        Store::open_inner(dir, Access::Exclusive, true)
+    }
+
+    fn open_inner(dir: &Path, access: Access, recovery: bool) -> Result<Store> {
         let root = std::path::absolute(dir).map_err(io_err(dir))?;
         let version = root.join("VERSION");
         match fs::read(&version) {
@@ -298,6 +335,14 @@ impl Store {
                 unreachable!("a store being opened has no other reference")
             };
             inner.lock = Some(lock);
+            if !recovery {
+                let journal = store.journal_path();
+                match fs::symlink_metadata(&journal) {
+                    Ok(_) => return Err(StoreError::UnfinishedWrite(journal)),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(StoreError::Io { path: journal, error: e }),
+                }
+            }
             store.clean_stale()?;
         }
         Ok(store)
@@ -488,22 +533,7 @@ impl Store {
     /// that is not lower-case hexadecimal of at most 64 digits matches
     /// nothing; the empty prefix matches every plan.
     pub fn find_plan(&self, hex_prefix: &str) -> Result<Vec<Digest>> {
-        if hex_prefix.len() > 64
-            || !hex_prefix.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
-        {
-            return Ok(Vec::new());
-        }
-        let dir = self.root().join("plans");
-        let mut out = Vec::new();
-        for name in list_names(&dir)? {
-            let Some(hex) = name.strip_suffix(".plan") else { continue };
-            let Some(id) = Digest::from_hex(hex) else { continue };
-            if hex.starts_with(hex_prefix) {
-                out.push(id);
-            }
-        }
-        out.sort();
-        Ok(out)
+        find_ids(&self.root().join("plans"), "plan", hex_prefix)
     }
 
     // -- shards --------------------------------------------------------------
@@ -600,6 +630,192 @@ impl Store {
         }
     }
 
+    /// `runs/<plan>/transform.<round>.<started_unix_ns>.run`.
+    fn transform_run_path(&self, plan: &Digest, round: u64, started_unix_ns: u64) -> PathBuf {
+        self.root()
+            .join("runs")
+            .join(plan.to_string())
+            .join(format!("{TRANSFORM}.{round}.{started_unix_ns}.run"))
+    }
+
+    /// The bytes of the run record of `plan`, `phase` and `round` with the
+    /// greatest `started_unix_ns`; `None` if there is none. Not validated.
+    /// A transform run record is never taken for a phase's.
+    pub fn latest_run_of_round(
+        &self,
+        plan: &Digest,
+        phase: Phase,
+        round: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let dir = self.root().join("runs").join(plan.to_string());
+        let mut best: Option<(u64, String)> = None;
+        for name in list_names(&dir)? {
+            let Some((r, ns)) = parse_run_name(&name, phase) else { continue };
+            if r == round && best.as_ref().is_none_or(|b| ns > b.0) {
+                best = Some((ns, name));
+            }
+        }
+        match best {
+            None => Ok(None),
+            Some((_, name)) => read_optional(&dir.join(name)),
+        }
+    }
+
+    // -- a transform's run (spec/edits.md §10.4) -----------------------------
+
+    /// `<dir>/<id>.<extension>` of `object`.
+    pub fn object_path(&self, object: Object, id: &Digest) -> PathBuf {
+        self.root().join(object.dir()).join(format!("{id}.{}", object.extension()))
+    }
+
+    /// Publishes a container of `object`'s kind under its content id, which
+    /// is returned. `Invalid` (nothing written) if `bytes` is not a
+    /// container of that kind (`spec/model.md` §5: magic, kind, version 1,
+    /// trailer, section framing; the sections are not decoded). The file
+    /// is left untouched when it already holds that content.
+    pub fn publish_object(&self, object: Object, bytes: &[u8]) -> Result<Digest> {
+        let id = container_id(bytes, object.kind())?;
+        self.publish_once(&self.object_path(object, &id), bytes)?;
+        Ok(id)
+    }
+
+    /// The bytes of `object` `id`, if the store has it (not validated).
+    pub fn read_object(&self, object: Object, id: &Digest) -> Result<Option<Vec<u8>>> {
+        read_optional(&self.object_path(object, id))
+    }
+
+    /// Every `object` whose id starts with `hex_prefix`, ascending; as
+    /// [`Store::find_plan`].
+    pub fn find_object(&self, object: Object, hex_prefix: &str) -> Result<Vec<Digest>> {
+        find_ids(&self.root().join(object.dir()), object.extension(), hex_prefix)
+    }
+
+    /// `blobs/<content digest>`: a file's bytes, no container.
+    pub fn blob_path(&self, id: &Digest) -> PathBuf {
+        self.root().join("blobs").join(id.to_string())
+    }
+
+    /// Publishes a file's bytes under their content digest
+    /// (`spec/model.md` §6), which is returned. The file is left untouched
+    /// when it already holds that content.
+    pub fn publish_blob(&self, bytes: &[u8]) -> Result<Digest> {
+        let id = content_digest(bytes);
+        self.publish_once(&self.blob_path(&id), bytes)?;
+        Ok(id)
+    }
+
+    /// The bytes of blob `id`, if the store has it; `Invalid` if they do
+    /// not hash to `id` (`spec/edits.md` §10.4).
+    pub fn read_blob(&self, id: &Digest) -> Result<Option<Vec<u8>>> {
+        let path = self.blob_path(id);
+        let Some(bytes) = read_optional(&path)? else { return Ok(None) };
+        let actual = content_digest(&bytes);
+        if actual != *id {
+            return Err(StoreError::Invalid(format!(
+                "the blob {} does not hash to its name (its content digest is {actual})",
+                path.display()
+            )));
+        }
+        Ok(Some(bytes))
+    }
+
+    /// The round a transform's run of `plan` takes (`spec/edits.md` §8,
+    /// `spec/exec.md` §2): one more than the greatest round the plan has
+    /// taken, and at least 1. A round is taken by a shard directory
+    /// `map.<r>` or `verify.<r>` (a directory: a file of that name takes
+    /// nothing) or a transform run record `transform.<r>.<ns>.run`, with
+    /// `r` and `ns` canonical decimal. `Invalid` if the greatest round
+    /// taken is `u64::MAX`.
+    pub fn next_round(&self, plan: &Digest) -> Result<u64> {
+        let mut greatest: Option<u64> = None;
+        let mut take = |r: u64| greatest = Some(greatest.map_or(r, |g| g.max(r)));
+        let shards = self.root().join("shards").join(plan.to_string());
+        for (name, is_dir) in list_entries(&shards)? {
+            let round = [Phase::Map, Phase::Verify].into_iter().find_map(|phase| {
+                name.strip_prefix(phase_name(phase))?.strip_prefix('.').and_then(decimal)
+            });
+            if let (Some(r), true) = (round, is_dir) {
+                take(r);
+            }
+        }
+        let runs = self.root().join("runs").join(plan.to_string());
+        for name in list_names(&runs)? {
+            if let Some((r, _)) = parse_transform_run_name(&name) {
+                take(r);
+            }
+        }
+        match greatest {
+            None => Ok(1),
+            Some(g) => g.checked_add(1).map(|r| r.max(1)).ok_or_else(|| {
+                StoreError::Invalid(format!("plan {plan} has taken the last round, {g}"))
+            }),
+        }
+    }
+
+    /// Whether a transform's run took `round` of `plan`: it has a transform
+    /// run record (`transform.<round>.<ns>.run`).
+    pub fn is_transform_round(&self, plan: &Digest, round: u64) -> Result<bool> {
+        let runs = self.root().join("runs").join(plan.to_string());
+        Ok(list_names(&runs)?
+            .iter()
+            .any(|name| parse_transform_run_name(name).is_some_and(|(r, _)| r == round)))
+    }
+
+    /// Publishes a transform run record (`RUNT`, `spec/edits.md` §10.6) and
+    /// returns its path, `runs/<plan>/transform.<round>.<started_unix_ns>.run`.
+    /// The bytes must be a `RUNT` container whose section `run` names
+    /// `plan`, `round` and `started_unix_ns`; only those leading fields of
+    /// the record are read. Anything else is `Invalid`.
+    pub fn publish_transform_run(
+        &self,
+        plan: &Digest,
+        round: u64,
+        started_unix_ns: u64,
+        bytes: &[u8],
+    ) -> Result<PathBuf> {
+        let (p, r, ns) = transform_run_names(bytes)
+            .map_err(|e| StoreError::Invalid(format!("not a valid transform run record: {e}")))?;
+        if p != *plan || r != round || ns != started_unix_ns {
+            return Err(StoreError::Invalid(format!(
+                "the transform run record is for plan {p}, round {r}, started {ns}, not plan \
+                 {plan}, round {round}, started {started_unix_ns}"
+            )));
+        }
+        let path = self.transform_run_path(plan, round, started_unix_ns);
+        self.inner.publish(&path, bytes)?;
+        Ok(path)
+    }
+
+    /// `<store>/write.journal` (`spec/edits.md` §7.3): present only during a
+    /// write of the working tree.
+    pub fn journal_path(&self) -> PathBuf {
+        self.root().join("write.journal")
+    }
+
+    /// Publishes content-addressed `bytes` at `dest`, leaving `dest`
+    /// untouched when it already holds that content: a regular file (not a
+    /// symbolic link) whose bytes are `bytes`. Anything else at the name (other
+    /// bytes, a symbolic link, dangling or not) is replaced by the publish of
+    /// §2.1; a directory there makes the rename fail (`Io`).
+    ///
+    /// Comparing the bytes is the check of the content's name: for a blob,
+    /// the file hashes to the id; for an object, it passes the frame check
+    /// and its content id is the id (two files with one valid trailer
+    /// differ only by a collision of the digest).
+    fn publish_once(&self, dest: &Path, bytes: &[u8]) -> Result<()> {
+        match fs::symlink_metadata(dest) {
+            Ok(m) if m.is_file() => match fs::read(dest) {
+                Ok(have) if have == bytes => Ok(()),
+                Ok(_) => self.inner.publish(dest, bytes),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => self.inner.publish(dest, bytes),
+                Err(e) => Err(StoreError::Io { path: dest.to_path_buf(), error: e }),
+            },
+            Ok(_) => self.inner.publish(dest, bytes),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => self.inner.publish(dest, bytes),
+            Err(e) => Err(StoreError::Io { path: dest.to_path_buf(), error: e }),
+        }
+    }
+
     // -- logs ----------------------------------------------------------------
 
     /// The log file of one attempt, `logs/<plan>/<phase>.<round>/<observer>.<attempt>.log`.
@@ -692,6 +908,134 @@ pub(crate) fn remove_entries_of(dir: &Path, pid: u32) -> Result<()> {
     first.map_or(Ok(()), Err)
 }
 
+/// The ids of the `<64 hex>.<extension>` files of `dir` that start with
+/// `hex_prefix`, ascending (§2.1 `find_plan`).
+fn find_ids(dir: &Path, extension: &str, hex_prefix: &str) -> Result<Vec<Digest>> {
+    if hex_prefix.len() > 64 || !hex_prefix.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for name in list_names(dir)? {
+        let Some(hex) = name.strip_suffix(extension).and_then(|n| n.strip_suffix('.')) else {
+            continue;
+        };
+        let Some(id) = Digest::from_hex(hex) else { continue };
+        if hex.starts_with(hex_prefix) {
+            out.push(id);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// A file of a transform's run (`spec/edits.md` §10.4), published under its
+/// content id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Object {
+    /// `transforms/<request id>.trfm`, kind `TRFM`.
+    Transform,
+    /// `edits/<edit set id>.edts`, kind `EDTS`.
+    EditSet,
+    /// `overlays/<overlay id>.ovly`, kind `OVLY`.
+    Overlay,
+    /// `results/<result id>.rslt`, kind `RSLT`.
+    Result,
+}
+
+impl Object {
+    /// The directory under the store's root.
+    pub fn dir(self) -> &'static str {
+        match self {
+            Object::Transform => "transforms",
+            Object::EditSet => "edits",
+            Object::Overlay => "overlays",
+            Object::Result => "results",
+        }
+    }
+
+    /// The file name's extension.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Object::Transform => "trfm",
+            Object::EditSet => "edts",
+            Object::Overlay => "ovly",
+            Object::Result => "rslt",
+        }
+    }
+
+    /// The container kind (`spec/model.md` §5.1).
+    pub fn kind(self) -> [u8; 4] {
+        match self {
+            Object::Transform => *b"TRFM",
+            Object::EditSet => *b"EDTS",
+            Object::Overlay => *b"OVLY",
+            Object::Result => *b"RSLT",
+        }
+    }
+}
+
+/// The version of every container of a transform's run (`spec/edits.md`
+/// §3, §6, §7.1, §8.5, §10.6).
+const OBJECT_VERSION: u32 = 1;
+
+/// The first component of a transform run record's name.
+const TRANSFORM: &str = "transform";
+
+/// The kind of a transform run record.
+const RUNT: [u8; 4] = *b"RUNT";
+
+/// The content id of a container of `kind`, version 1, checked as
+/// `spec/model.md` §5 rule 5 checks the frame (the sections are not
+/// decoded); `Invalid` otherwise.
+fn container_id(bytes: &[u8], kind: [u8; 4]) -> Result<Digest> {
+    let name = String::from_utf8_lossy(&kind).into_owned();
+    Reader::open(bytes, kind, OBJECT_VERSION)
+        .map(|r| r.content_id())
+        .map_err(|e| StoreError::Invalid(format!("not a valid {name} container: {e}")))
+}
+
+/// `plan`, `round` and `started_unix_ns` of a `RUNT` container
+/// (`spec/edits.md` §10.6): the frame is checked and section `run` (id 1)
+/// decoded as far as `started_unix_ns`.
+fn transform_run_names(
+    bytes: &[u8],
+) -> std::result::Result<(Digest, u64, u64), slip_model::wire::Error> {
+    use slip_model::wire::{Error, ErrorKind};
+    let reader = Reader::open(bytes, RUNT, OBJECT_VERSION)?;
+    let Some(mut d) = reader.decoder(1) else {
+        return Err(Error::new(ErrorKind::Malformed, 0, "no section run"));
+    };
+    d.str()?; // tool_slip
+    d.str()?; // tool_kiln
+    let plan = d.digest()?;
+    let round = d.uv()?;
+    d.digest()?; // transform
+    for _ in 0..4 {
+        // edits, declared, overlay, result: opt<digest>
+        skip_opt_digest(&mut d)?;
+    }
+    let started = d.uv()?;
+    Ok((plan, round, started))
+}
+
+fn skip_opt_digest(d: &mut Decoder<'_>) -> std::result::Result<(), slip_model::wire::Error> {
+    use slip_model::wire::{Error, ErrorKind};
+    let at = d.offset();
+    match d.u8()? {
+        0 => Ok(()),
+        1 => d.digest().map(|_| ()),
+        _ => Err(Error::new(ErrorKind::Malformed, at, "opt tag is not 0 or 1")),
+    }
+}
+
+/// `transform.<round>.<started_unix_ns>.run`: (round, started).
+fn parse_transform_run_name(name: &str) -> Option<(u64, u64)> {
+    let rest = name.strip_suffix(".run")?.strip_prefix(TRANSFORM)?.strip_prefix('.')?;
+    let (round, started) = rest.split_once('.')?;
+    Some((decimal(round)?, decimal(started)?))
+}
+
 /// The content id of a file already validated: its trailer.
 fn trailer(bytes: &[u8]) -> Digest {
     let mut out = [0u8; 32];
@@ -719,6 +1063,25 @@ fn parse_run_name(name: &str, phase: Phase) -> Option<(u64, u64)> {
     let rest = name.strip_suffix(".run")?.strip_prefix(phase_name(phase))?.strip_prefix('.')?;
     let (round, started) = rest.split_once('.')?;
     Some((decimal(round)?, decimal(started)?))
+}
+
+/// The UTF-8 names in `dir`, each with whether it is a directory (not
+/// following a symbolic link); none if `dir` does not exist.
+fn list_entries(dir: &Path) -> Result<Vec<(String, bool)>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(StoreError::Io { path: dir.to_path_buf(), error: e }),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(io_err(dir))?;
+        let is_dir = entry.file_type().map_err(io_err(&entry.path()))?.is_dir();
+        if let Ok(name) = entry.file_name().into_string() {
+            out.push((name, is_dir));
+        }
+    }
+    Ok(out)
 }
 
 /// The UTF-8 names in `dir`; none if it does not exist.

@@ -66,17 +66,23 @@ result independent of what was evaluated before it.
 
 ## 2. The state of Slip's Kiln revision
 
-Slip pins Kiln at `62d190007`, the head of Kiln's branch `slip/kf1`. That
-commit is not an ancestor of Kiln main. The front-end entry Slip uses
-(`run_front_end`, request KF1) exists only on that branch:
-`crates/kiln_driver/src/front_end.rs` is present at the pin and absent on
-main. Kiln's WP-2120 is the package that lands it on main.
+(Since WP-044 Slip pins Kiln's `main` at `83566cc47`, which has WP-2120;
+this section is the state when the note was written.)
 
-So "move Slip's Kiln revision to main" has a precondition, WP-2120, and until
-then no Slip code can use the host call, the session or the stage 2 entries
-together with `run_front_end`. Work that needs none of Kiln (the operation
-table and wire encoding against a fake subject, the header text) is not
-blocked.
+Slip pinned Kiln at `62d190007`, the head of Kiln's branch `slip/kf1`. That
+commit is not an ancestor of Kiln main. At the commit this note was read
+against (`0295475a3`) the front-end entry Slip uses (`run_front_end`,
+request KF1) existed only on that branch.
+
+**Since then (2026-11-22):** Kiln's WP-2120 has landed the entry on main.
+At Kiln main `83566cc47` (the merge of WP-2120, `e3eab97ef`) it is
+`kiln/crates/kiln_driver/src/front_end.rs`, with `FrontEndOptions` at
+line 41. So "move Slip's Kiln revision to main" has no precondition left
+on Kiln's side: it is Slip's `docs/wp/WP-044.md`, and until that package
+merges no Slip code can use the host call, the session or the stage 2
+entries together with `run_front_end`. Work that needs none of Kiln (the
+operation table and wire encoding against a fake subject, the header
+text) is not blocked.
 
 ## 3. WP-1990: the host call (`6d052b07a`)
 
@@ -390,7 +396,8 @@ leaves no entry.
    (`kiln/crates/kiln_sema/src/written_refs.rs:284`) is a method of the
    semantic analyser. `WrittenRef.range` already holds both ends for names;
    for expressions Slip needs the end of the last token from the source
-   manager alone.
+   manager alone. (Delivered since this reading: `kiln_lex::token_end`,
+   Kiln WP-2150 at `913a490bb`; §6.)
 5. **Expression extents are best effort.** `Ast::end_loc`
    (`kiln/crates/kiln_ast/src/ast.rs:122`) falls back to the node's own
    location when no closing token was stored (comment at `:116-121`). A call
@@ -419,14 +426,14 @@ leaves no entry.
 
 | Need | For | State |
 |---|---|---|
-| `run_front_end` on Kiln main | everything that touches a subject unit | Kiln WP-2120, in progress |
+| `run_front_end` on Kiln main | everything that touches a subject unit | landed (Kiln WP-2120, main `83566cc47`); Slip's pin moves in `docs/wp/WP-044.md` |
 | Recording switch on `FrontEndOptions` | references, calls | KR1 amendment 1; implementation |
 | Entry-to-expression location guarantee | calls | KR1 amendment 1; a sentence and a test |
 | `Ast: Sync` or a non-`Send` handler | the host | KS1 amendment 1; implementation |
 | Refusal reasons of `with_eval_session`; pinned `__TIMESTAMP__`; a diagnostic renderer | author diagnostics, transform identity | KS2 amendment 1; implementation |
 | Nested evaluations stay away from the host | isolation | KS2 amendment 1; design, with Kiln's WP-2073 |
 | Exact-or-absent expression extents | arguments of a call | KE1; implementation, with one design question |
-| Token end and file range after the unit | every range | request KF3 (already planned); implementation |
+| Token end and file range after the unit | every range | **delivered by Kiln WP-2150 at `913a490bb`** (after this note's reading): `kiln_lex::token_end`, `SourceManager::editable_file_range`, with the expansion entries and chained preprocessor observers. It is what request KF3 was to ask and what KE1 §2.2 asked. `slip_kiln::ranges` calls them (`docs/wp/WP-084.md`); Slip's pin must be at or after that commit |
 | Macro provenance of a range: argument or body | tier 1 edits | request KR4 (sent); not needed for Demo 3's sites |
 | Stages 3 to 5 of the table | rename completeness, namespace migration | Kiln WP-1932 to WP-1934 |
 | Entries with parameters, class results | nothing in v0 | Kiln WP-2070, WP-2071; not asked |

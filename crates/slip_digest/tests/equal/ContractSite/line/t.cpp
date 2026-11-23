@@ -1,9 +1,10 @@
-#include "side.h"
 // std: c++26
-// §6 ContractSite `line`: the assertion on another line.
+#include "side.h"
+// §6 ContractSite `line`.
 #ifdef B
-void f(int x)
-    pre(x > 0);
+
+
+void f() { contract_assert(true); }
 #else
-void f(int x) pre(x > 0);
+void f() { contract_assert(true); }
 #endif

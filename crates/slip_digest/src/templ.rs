@@ -259,9 +259,6 @@ pub(crate) fn templ_link(w: &mut Walk<'_>, s: &mut Stream, d: DeclId, l: TemplLi
                     .indeterminate(Cause::Unaccounted("TemplLink/MemberOfSpecialization.0-index"));
             }
         },
-        TemplLinkKind::DependentFriend => {
-            s.indeterminate(Cause::Unsupported("TemplLinkKind/DependentFriend"));
-        }
         TemplLinkKind::PartialSpecialization => match templates.partial(index).copied() {
             Some(info) => partial_spec_info(w, s, &info),
             None => {
@@ -423,6 +420,17 @@ pub(crate) fn expr_maps(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     s.opt(nns.is_some());
     if let Some(n) = nns {
         w.write_nns(s, n);
+    }
+    // oper_lookups: record OperLookups, whose one `in` row `by_expr` is
+    // `ref*sorted?`: the declarations of the candidates (`decl`; `found`
+    // is `out`), absent when the expression has no set. Kiln's
+    // instantiation tells absent (a new lookup) from empty (none):
+    // `Sema::oper_rebuild_set`.
+    let decls: Option<Vec<DeclId>> =
+        tables.oper_lookups.of(e).map(|cands| cands.iter().map(|c| c.decl).collect());
+    s.opt(decls.is_some());
+    if let Some(decls) = decls {
+        w.write_refs_sorted(s, &decls);
     }
     // size_of_pack_origin: ref.
     match tables.size_of_pack_origin.get(e).copied() {

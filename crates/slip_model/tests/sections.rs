@@ -580,7 +580,9 @@ fn finding(kind: FindingKind, key: Option<u8>, file: &[u8]) -> Finding {
 }
 
 /// A mismatch with a finding of every kind, with and without `where`,
-/// non-UTF-8 files, an unnamed indeterminate finding, values above 2^53.
+/// non-UTF-8 files, an unnamed indeterminate finding, values above 2^53;
+/// in the order of findings, by rank (`derived_changed` before
+/// `indeterminate`, spec/verify.md §6).
 fn sample_mismatch() -> Verdict {
     let both = |pre: Site, post: Site| Some(Where { pre, post });
     let findings = vec![
@@ -607,17 +609,17 @@ fn sample_mismatch() -> Verdict {
             ..finding(FindingKind::Removed, Some(0x12), b"/s/a.h")
         },
         Finding { post: Some(d(0xa6)), ..finding(FindingKind::Added, Some(0x13), b"/s/a.h") },
+        Finding {
+            pre: Some(d(0xa8)),
+            post: Some(d(0xa9)),
+            ..finding(FindingKind::DerivedChanged, Some(0x15), b"")
+        },
         finding(FindingKind::Indeterminate, None, b""),
         finding(FindingKind::Indeterminate, None, b""),
         finding(FindingKind::Indeterminate, Some(0x14), b""),
         Finding {
             pre: Some(d(0xa7)),
             ..finding(FindingKind::Indeterminate, Some(0x17), b"/s/a.h")
-        },
-        Finding {
-            pre: Some(d(0xa8)),
-            post: Some(d(0xa9)),
-            ..finding(FindingKind::DerivedChanged, Some(0x15), b"")
         },
         finding(FindingKind::DerivedIndeterminate, Some(0x16), b"/s/a.h"),
     ];
@@ -720,8 +722,9 @@ fn verdict_round_trip() {
     assert_eq!(w.get("pre").unwrap().get("file"), Some(&parse(r#"{"hex": "2f732fff622e68"}"#)));
     assert_eq!(f[3].get("where"), Some(&Value::Null));
     assert_eq!(f[3].get("pre"), Some(&Value::Null));
-    assert_eq!(f[4].get("key"), Some(&Value::Null));
-    assert_eq!(f[8].get("kind"), Some(&Value::Str("derived_changed".into())));
+    assert_eq!(f[4].get("kind"), Some(&Value::Str("derived_changed".into())));
+    assert_eq!(f[5].get("key"), Some(&Value::Null));
+    assert_eq!(f[5].get("kind"), Some(&Value::Str("indeterminate".into())));
     assert_eq!(f[9].get("kind"), Some(&Value::Str("derived_indeterminate".into())));
 }
 
@@ -1068,6 +1071,37 @@ fn verdict_3_kinds() {
     assert_eq!(rejected(&s, "sections.verdict.findings"), 309);
 }
 
+// verdict rule 3, `pre` (spec/model.md §8.3): a verified or mismatch
+// verdict compared against a pre shard, so its `pre` is not all zero; only
+// an unverifiable one may have none. Checked first, `pre` being the first
+// field after `kind`; binary (offset 207, the `pre` field) and JSON.
+#[test]
+fn verdict_3_pre_shard() {
+    let zero = Digest([0; 32]);
+    let mut s = verify_shard();
+    verdict(&mut s).pre = zero;
+    assert_eq!(rejected(&s, "sections.verdict.pre"), 207);
+    let e = Shard::from_bytes(&raw(&s)).unwrap_err();
+    assert_eq!(e.what, "a mismatch verdict without a pre shard");
+    // Before the reason of rule 3.
+    verdict(&mut s).reason = "x".into();
+    assert_eq!(rejected(&s, "sections.verdict.pre"), 207);
+    let mut s = verify_shard();
+    verdict(&mut s).kind = VerdictKind::Verified;
+    verdict(&mut s).total = 0;
+    verdict(&mut s).findings.clear();
+    verdict(&mut s).pre = zero;
+    // Without findings the section's length takes one byte less: `pre` is
+    // at 206.
+    assert_eq!(rejected(&s, "sections.verdict.pre"), 206);
+    let e = Shard::from_bytes(&raw(&s)).unwrap_err();
+    assert_eq!(e.what, "a verified verdict without a pre shard");
+    // Unverifiable: with or without a pre shard.
+    let with = |v: Verdict| Shard { verdict: Some(v), ..verify_shard() };
+    round_trip(&with(Verdict { pre: zero, ..unverifiable() }));
+    round_trip(&with(Verdict { pre: d(0x70), ..unverifiable() }));
+}
+
 // verdict rule 4 (spec/verify.md §6): no more findings than total.
 #[test]
 fn verdict_4_findings_within_total() {
@@ -1079,8 +1113,8 @@ fn verdict_4_findings_within_total() {
     round_trip(&s);
 }
 
-// verdict rule 4 (spec/verify.md §6): ascending by (kind, file, key), an
-// absent key first; at most one finding per (kind, key).
+// verdict rule 4b (spec/verify.md §6, spec/model.md §8.3): ascending by
+// (rank, file, key), an absent key first; at most one finding per (kind, key).
 #[test]
 fn verdict_4_findings_order_and_uniqueness() {
     // By kind.
@@ -1094,8 +1128,8 @@ fn verdict_4_findings_order_and_uniqueness() {
     assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
     // By key within a kind and file, an absent key first.
     let mut v = sample_mismatch();
-    v.findings.swap(5, 6);
-    rejected(&sample_verify_shard(v), "sections.verdict.findings[6]");
+    v.findings.swap(6, 7);
+    rejected(&sample_verify_shard(v), "sections.verdict.findings[7]");
     let mut v = sample_mismatch();
     v.findings.swap(0, 1);
     v.findings[0].file = b"/s/a.h".to_vec();
@@ -1108,15 +1142,80 @@ fn verdict_4_findings_order_and_uniqueness() {
     assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
     // The same kind and key in the same file, and in another file.
     let mut v = sample_mismatch();
-    v.findings[7].key = Some(d(0x14));
-    rejected(&sample_verify_shard(v.clone()), "sections.verdict.findings[7]");
-    v.findings[7].file.clear();
-    rejected(&sample_verify_shard(v), "sections.verdict.findings[7]");
+    v.findings[8].key = Some(d(0x14));
+    rejected(&sample_verify_shard(v.clone()), "sections.verdict.findings[8]");
+    v.findings[8].file.clear();
+    rejected(&sample_verify_shard(v), "sections.verdict.findings[8]");
     // Unnamed indeterminate findings may repeat; a key under two kinds is
     // two findings.
     let mut v = sample_mismatch();
     v.findings[9].key = Some(d(0x15));
     round_trip(&sample_verify_shard(v));
+}
+
+// verdict rule 4b (spec/model.md §8.3, spec/verify.md §6): the order is by
+// rank, not by the kind's number. A `derived_changed` finding (number 4,
+// rank 3) before an `indeterminate` one (number 3, rank 4) is accepted in
+// binary and JSON; the reverse, the former order by number, is rejected at
+// the later finding's first byte and path, by every reader.
+#[test]
+fn verdict_4b_order_by_rank() {
+    let kinds = |a: FindingKind, b: FindingKind| {
+        let mut s = verify_shard();
+        let v = verdict(&mut s);
+        v.findings[0].kind = a;
+        v.findings[1].kind = b;
+        v.findings[1].post = Some(d(0x48));
+        s
+    };
+    round_trip(&kinds(FindingKind::DerivedChanged, FindingKind::Indeterminate));
+    round_trip(&kinds(FindingKind::DerivedChanged, FindingKind::DerivedIndeterminate));
+    let mut s = kinds(FindingKind::Added, FindingKind::DerivedChanged);
+    verdict(&mut s).findings[0].pre = None;
+    round_trip(&s);
+    let s = kinds(FindingKind::Indeterminate, FindingKind::DerivedChanged);
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
+    let e = Shard::from_bytes(&raw(&s)).unwrap_err();
+    assert_eq!(e.what, "findings are not ascending by (rank, file, key)");
+    // Across files, the rank decides first: an indeterminate finding of
+    // file "/a" is after a derived_changed one of file "/b".
+    let mut s = kinds(FindingKind::DerivedChanged, FindingKind::Indeterminate);
+    verdict(&mut s).findings[0].file = b"/b".to_vec();
+    round_trip(&s);
+    let mut s = kinds(FindingKind::Indeterminate, FindingKind::DerivedChanged);
+    verdict(&mut s).findings[1].file = b"/b".to_vec();
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
+}
+
+// spec/verify.md §6: `FindingKind::rank` is the table of §6, a bijection
+// onto 0..=5, and every kind's number in the format is what it was (the
+// kind byte of a finding in binary, its name in JSON).
+#[test]
+fn finding_kind_rank_and_number() {
+    use FindingKind::*;
+    let table = [
+        (Changed, 0u8, 0u8, "changed"),
+        (Removed, 1, 1, "removed"),
+        (Added, 2, 2, "added"),
+        (Indeterminate, 3, 4, "indeterminate"),
+        (DerivedChanged, 4, 3, "derived_changed"),
+        (DerivedIndeterminate, 5, 5, "derived_indeterminate"),
+    ];
+    let mut ranks: Vec<u8> = table.iter().map(|&(k, _, _, _)| k.rank()).collect();
+    ranks.sort_unstable();
+    assert_eq!(ranks, [0, 1, 2, 3, 4, 5]);
+    for (kind, number, rank, name) in table {
+        assert_eq!(kind.rank(), rank, "{kind:?}");
+        let mut s = verify_shard();
+        let v = verdict(&mut s);
+        v.findings.truncate(1);
+        v.findings[0].kind = kind;
+        // The first finding starts at byte 309 (verdict_4_findings_order_and_uniqueness).
+        assert_eq!(raw(&s)[309], number, "{kind:?}");
+        let json = s.to_json();
+        let f = &json.get("sections").unwrap().get("verdict").unwrap().get("findings").unwrap();
+        assert_eq!(f.as_array().unwrap()[0].get("kind"), Some(&Value::Str(name.into())));
+    }
 }
 
 // verdict rule 5 (spec/verify.md §6): a key is absent only for

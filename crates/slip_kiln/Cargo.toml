@@ -13,6 +13,7 @@ slip_cdb.workspace = true
 kiln_driver.workspace = true
 kiln_sema.workspace = true
 kiln_diag.workspace = true
+kiln_lex.workspace = true
 kiln_pp.workspace = true
 kiln_parse.workspace = true
 kiln_oven.workspace = true

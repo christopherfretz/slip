@@ -1,4 +1,5 @@
 # pending
-# needs: stmt
+# needs: demand
+# the defaulted operator<=> is defined on use: its body is Pending(Demand)
 changed X
 changed X::operator<=>(const X &) const
