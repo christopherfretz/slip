@@ -1,0 +1,7 @@
+# pending
+# needs: known-cost
+# Known cost G3 (spec/landed/digest/WP-104.md "Known costs (spurious differences)"): differs today, should be only the line below.
+# g2 changes too: the ordinal of g2's __impl object counts g1's use, one
+# counter for every non-function context of the unit. Repair: number the
+# objects per holder.
+changed g1

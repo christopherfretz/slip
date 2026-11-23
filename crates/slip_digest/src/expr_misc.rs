@@ -137,6 +137,35 @@ pub(crate) fn predefined_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     crate::local::write_scope_names(w, s);
 }
 
+/// `ExprNode` `ty` of a `PredefinedExpr` `n` (digest §9, digest-kinds §7
+/// "Values that come from names"): its type is `const char[N]`, `N` the
+/// length of the name plus one. As the operand of an array-to-pointer
+/// conversion (`decayed`), which passes the value on and nothing of its
+/// length, the type is written without the bound
+/// ([`Walk::unbounded_array`]); anywhere else (`sizeof`, `decltype`, a
+/// reference bound to it, a deduction, a parenthesis the walk keeps) the
+/// array's type is what is read, and it is written by value; so it is
+/// where [`Walk::by_value`] is raised (a `static_assert` condition, a
+/// constant whose value is not stored).
+pub(crate) fn name_type(w: &mut Walk<'_>, s: &mut Stream, n: &Node, decayed: bool) {
+    let symbolic = if decayed && w.by_value == 0 && name_literal(w, n).is_some() {
+        w.unbounded_array(n.ty)
+    } else {
+        None
+    };
+    match symbolic {
+        Some(t) => w.absorb_type(s, t),
+        None => w.write_type(s, n.ty),
+    }
+}
+
+/// The `StringLiteral` that holds a `PredefinedExpr`'s value (`a`;
+/// absent in a dependent context, `kiln_sema/src/predefined.rs:26-28`).
+fn name_literal(w: &Walk<'_>, n: &Node) -> Option<ExprId> {
+    let lit = ExprId::try_new(n.a)?;
+    (w.ast.exprs.get(lit).kind() == ExprKind::StringLiteral).then_some(lit)
+}
+
 /// `SourceLocExpr`: `aux` (`SourceLocKind`); `a`, the context, is
 /// `symbolic`, and so are its `SourceLocValues` (§7.4 `source_loc`).
 pub(crate) fn source_loc_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
