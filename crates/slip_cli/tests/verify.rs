@@ -1426,7 +1426,11 @@ fn declared_run(
     for (rel, t) in files {
         f.both(rel, t);
     }
-    let mains: Vec<&str> = files.iter().map(|(r, _)| *r).filter(|r| r.ends_with(".cpp")).collect();
+    let mains: Vec<&str> = files
+        .iter()
+        .map(|(r, _)| *r)
+        .filter(|r| Path::new(r).extension() == Some("cpp".as_ref()))
+        .collect();
     f.db(&mains);
     let plan = f.parse();
     for (rel, t) in post {
