@@ -499,7 +499,9 @@ fn run_one(l: &mut Loaded<'_>, script: &Script) -> Ran {
             Ok(s) => s,
             Err(e) => return Ran::Error(e),
         };
-        match l.run(&subject, script.budgets, &Cancel::new()) {
+        // The keys of §7.5 from one `Keys` for the run (`docs/wp/WP-095.md`).
+        let ran = subject.with_keys(|subject| l.run(subject, script.budgets, &Cancel::new()));
+        match ran {
             Ok((Outcome::Completed(out), _)) => {
                 let names = if has_keys(&out) { key_names(p) } else { BTreeMap::new() };
                 Ran::Rendered(render_completed(&out, &files, &names, &script.counters))

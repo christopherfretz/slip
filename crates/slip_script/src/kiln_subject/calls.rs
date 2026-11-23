@@ -78,6 +78,11 @@ pub(super) struct Index {
     not_written: u64,
     /// Expression index of every argument of a call.
     arguments: std::collections::HashSet<u32>,
+    /// The holder of each written-reference entry the walk passed as the
+    /// name of an expression (a `DeclRefExpr`, a `MemberExpr`), by its
+    /// index in `KilnSubject::refs` (WP-095); `None` when the walk
+    /// reached one entry from two holders.
+    ref_holder: HashMap<u32, Option<DeclId>>,
 }
 
 /// Why an expression has no extent: the kind of the expression where the
@@ -199,6 +204,7 @@ impl KilnSubject<'_> {
         let mut found: Vec<(Call, DeclId)> = Vec::new();
         let mut without_reference = 0u64;
         let mut not_written = 0u64;
+        let mut ref_holder: HashMap<u32, Option<DeclId>> = HashMap::new();
         while let Some(item) = stack.pop() {
             match item {
                 Item::Decl(d, holder) => {
@@ -230,6 +236,16 @@ impl KilnSubject<'_> {
                         Shape::NoReference => without_reference += 1,
                         Shape::NotWritten => not_written += 1,
                     }
+                    if matches!(
+                        ast.exprs.get(e).kind(),
+                        ExprKind::DeclRefExpr | ExprKind::MemberExpr
+                    ) && let Some(j) = self.reference_index(e)
+                    {
+                        let held = ref_holder.entry(j).or_insert(Some(holder));
+                        if *held != Some(holder) {
+                            *held = None;
+                        }
+                    }
                     self.push_expr(e, holder, &mut stack);
                 }
             }
@@ -245,7 +261,7 @@ impl KilnSubject<'_> {
         keyed.sort_by(|(ka, a, _), (kb, b, _)| {
             self.order(ka.0, kb.0).then_with(|| self.order(ka.1, kb.1)).then(a.expr.cmp(&b.expr))
         });
-        let mut index = Index { without_reference, not_written, ..Index::default() };
+        let mut index = Index { without_reference, not_written, ref_holder, ..Index::default() };
         for (_, c, h) in keyed {
             let i = index.calls.len() as u32;
             index.by_expr.insert(c.expr.index(), i);
@@ -1455,9 +1471,24 @@ impl KilnSubject<'_> {
     /// expression): the declaration at namespace or class scope, as
     /// written (a template for its pattern), that the walk entered to
     /// reach it. WP-095 turns it into a unit key.
-    #[allow(dead_code, reason = "WP-095 is its caller")]
     pub(crate) fn holder(&self, x: Expression) -> Option<DeclId> {
         self.call_index().holder.get(&x.0).copied()
+    }
+
+    /// The holder the walk gives written-reference entry `j` (an index in
+    /// `self.refs`) when it passed it as the name of an expression:
+    /// `Some(Some(h))`; `Some(None)` when it reached it from two holders;
+    /// `None` when it did not pass it (WP-095).
+    pub(super) fn entry_holder(&self, j: u32) -> Option<Option<DeclId>> {
+        self.call_index().ref_holder.get(&j).copied()
+    }
+
+    /// How many entries the walk recorded a holder for, and the capacity
+    /// of that map (the measurement of `tests/subject_keys.rs`).
+    #[doc(hidden)]
+    pub fn entry_holder_census(&self) -> (usize, usize) {
+        let m = &self.call_index().ref_holder;
+        (m.len(), m.capacity())
     }
 
     /// How many expressions of §6.7 rule 1's shape were not made calls
