@@ -62,8 +62,11 @@ pub mod kiln {
     pub use kiln_source as source;
 }
 
+pub mod scan;
 pub mod session;
+pub mod sites;
 pub mod snippet;
+pub mod tree;
 pub mod written;
 
 pub use check::KilnCheck;
