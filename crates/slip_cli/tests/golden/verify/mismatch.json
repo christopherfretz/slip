@@ -1,0 +1,73 @@
+{
+  "report": "slip.verify.v1",
+  "plan": "<id>",
+  "round": 0,
+  "declared": "<id>",
+  "rules": "<id>",
+  "image": [
+    {
+      "subject": "<root>/s",
+      "post": "<root>/post"
+    }
+  ],
+  "limit": 64,
+  "locate": 16,
+  "verdict": "not_verified",
+  "observers": {
+    "plan": 2,
+    "selected": 2,
+    "verified": 1,
+    "unchanged": 0,
+    "mismatch": 1,
+    "not_parsed": 0,
+    "unverifiable": 0,
+    "never_parsed": 0,
+    "failed": 0,
+    "indeterminate_only": 0
+  },
+  "findings": {
+    "total": 1,
+    "listed": 1,
+    "groups": [
+      {
+        "kind": "changed",
+        "key": "<id>",
+        "name": "f0(old::S *)",
+        "observers": 1,
+        "first": "<root>/s/u0.cpp",
+        "file": "<root>/s/u0.cpp",
+        "pre": "<id>",
+        "post": "<id>",
+        "where": {
+          "pre": {
+            "file": "<root>/s/u0.cpp",
+            "line": 2,
+            "column": 40,
+            "node": "ImplicitCastExpr",
+            "what": ""
+          },
+          "post": {
+            "file": "<root>/s/u0.cpp",
+            "line": 2,
+            "column": 40,
+            "node": "ImplicitCastExpr",
+            "what": ""
+          }
+        }
+      }
+    ]
+  },
+  "not_verified": [
+    {
+      "observer": "<id>",
+      "main": "<root>/s/u0.cpp",
+      "state": "mismatch",
+      "message": "",
+      "findings": 1,
+      "indeterminate": 0,
+      "listed": 1
+    }
+  ],
+  "exemptions": [],
+  "run": "<root>/store/runs/<id>/verify.0.<ns>.run"
+}
