@@ -1,0 +1,1 @@
+indeterminate template <class> decltype(__builtin_choose_expr(1, (T *)0, (T *)decltype(Bq<sizeof (sizeof (f(T())))>{})::value)) g(type-parameter-0-0)

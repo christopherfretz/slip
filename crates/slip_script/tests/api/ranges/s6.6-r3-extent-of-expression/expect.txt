@@ -1,0 +1,7 @@
+transform <id>
+report t.cpp:3:9-3:27 note "call #0"
+report t.cpp:3:11-3:17 note "call #0 argument #0"
+report t.cpp:3:19-3:26 note "call #0 argument #1"
+report t.cpp:4:9-4:16 note "call #1"
+report t.cpp:4:11-4:12 note "call #1 argument #0"
+report t.cpp:4:14-4:15 note "call #1 argument #1"

@@ -1,0 +1,2 @@
+changed template <class> int g(type-parameter-0-0, DD)
+added f(long)

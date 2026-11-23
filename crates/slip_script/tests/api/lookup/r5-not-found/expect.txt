@@ -1,0 +1,13 @@
+transform <id>
+report - note "C: 1"
+report - note "C::T: 0"
+report - note "C::p: 0"
+report - note "C::s: 0"
+report - note "C::t: 1"
+report - note "L: 0"
+report - note "f: 1"
+report - note "f::L: 0"
+report - note "f::L::k: 0"
+report - note "f::local: 0"
+report - note "local: 0"
+report - note "v: 1"

@@ -1252,7 +1252,9 @@ impl Walk<'_> {
                 let q = ast.using_qualifier(e);
                 s.opt(q.is_some());
                 if let Some(q) = q {
-                    self.write_nns(&mut s, q);
+                    // A key reads no spelling; the unit's stream reads
+                    // the written qualifier (`own_spelling::using_qualifier`).
+                    self.write_canonical_nns(&mut s, q);
                 }
             }
             KeyKind::UsingShadow => {

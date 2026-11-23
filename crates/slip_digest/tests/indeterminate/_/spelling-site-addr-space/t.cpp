@@ -1,0 +1,4 @@
+#include "side.h"
+// §4.4 "Spellings", rule 5: `spelling/addr-space`, an adjusted array parameter of a function type that is not a declaration's own holds the canonical element type, whose operand has no spelling of its own.
+int f(int);
+template<class T> void g(T, void (*)(int __attribute__((address_space(sizeof(f(T()))))) * [2]));

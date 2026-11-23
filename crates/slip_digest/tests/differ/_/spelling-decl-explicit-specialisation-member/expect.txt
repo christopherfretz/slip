@@ -1,0 +1,3 @@
+added S<int>::h<8>()
+added f(long)
+removed S<int>::h<4>()

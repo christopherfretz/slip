@@ -1,0 +1,7 @@
+transform <id>
+report - note "a declaration: wrong_kind"
+report - note "an entity: wrong_kind"
+report - note "an expression: wrong_kind"
+report t.cpp:3:9-3:10 note "f(int)"
+report t.cpp:3:16-3:17 note "f(double)"
+report t.cpp:3:25-3:26 note "f(int)"

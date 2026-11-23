@@ -1,0 +1,7 @@
+transform <id>
+report t.cpp:10:29-10:33 note "a call of f"
+report t.cpp:13:3-13:22 note "a call of D::t"
+report t.cpp:14:12-14:16 note "a call of f"
+report t.cpp:15:5-15:9 note "a call of c"
+report t.cpp:16:11-16:15 note "a call of c"
+counter api.calls_without_reference 1

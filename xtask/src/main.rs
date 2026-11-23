@@ -22,7 +22,11 @@ commands:
   transform [--only <s>]… [--bless] [-j <n>] [--no-clang] [--slip <path>]
                                                the transform tests (§6)
   invariants a|b <corpus> [--slip <path>] [--only <substring>]… [--limit <n>] [-j <n>]
-                                               the corpus invariants (§9)";
+                                               the corpus invariants (§9)
+  demo 1 [--slip <path>] [-j <n>] [--case <name>]… [--keep]
+                                               Demo 1 (§10)
+  api-table [§N[.M]]…                          the rules-to-directories table of the
+                                               script tests (docs/wp/WP-091.md)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -37,6 +41,8 @@ fn main() -> ExitCode {
         Some("perf") => xtask::perf::main(&root, rest),
         Some("transform") => xtask::transform::main(&root, rest),
         Some("invariants") => xtask::invariants::main(&root, rest),
+        Some("demo") => xtask::demo::main(&root, rest),
+        Some("api-table") => xtask::api_table::main(&root, rest),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
             ExitCode::SUCCESS

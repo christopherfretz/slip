@@ -1,0 +1,9 @@
+transform <id>
+report - note "name range of reference #1: null"
+report t.cpp:4:9-4:31 note "call #0"
+report t.cpp:4:20-4:21 note "argument of call #0"
+report t.cpp:4:20-4:21 note "extent of reference #0"
+report t.cpp:4:20-4:21 note "name range of reference #0"
+report t.cpp:5:9-5:17 note "call #1"
+report t.cpp:5:11-5:16 note "argument of call #1"
+report t.cpp:5:11-5:16 note "extent of reference #1"

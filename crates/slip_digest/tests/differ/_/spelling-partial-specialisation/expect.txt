@@ -1,0 +1,2 @@
+added f(long)
+changed H<type-parameter-0-0, sizeof (f(T()))>

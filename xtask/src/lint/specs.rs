@@ -115,13 +115,29 @@ pub fn spec_shape(repo: &Repo) -> Vec<Violation> {
 }
 
 /// `landed`: each listed file under `spec/landed/`.
+/// The work package of a landed file's stem: `WP-NNN`, or `WP-NNN-<part>`
+/// for one brief of a package split in several (`WP-091-queries`), the
+/// part lower-case ASCII letters, digits and inner `-`.
+fn landed_id(stem: &str) -> Option<String> {
+    if let Some(id) = parse_id(stem) {
+        return Some(id);
+    }
+    let digits = stem.strip_prefix("WP-")?;
+    let n = digits.bytes().take_while(u8::is_ascii_digit).count();
+    let part = digits[n..].strip_prefix('-')?;
+    let part_ok = !part.is_empty()
+        && !part.ends_with('-')
+        && part.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    part_ok.then(|| parse_id(&stem[..3 + n])).flatten()
+}
+
 pub fn landed(repo: &Repo) -> Vec<Violation> {
     const LINT: &str = "landed";
     let mut out = Vec::new();
     for file in repo.files().filter(|f| f.starts_with("spec/landed/")) {
         let rest = &file["spec/landed/".len()..];
         let parts: Vec<&str> = rest.split('/').collect();
-        let id = parts.get(1).and_then(|n| n.strip_suffix(".md")).and_then(parse_id);
+        let id = parts.get(1).and_then(|n| n.strip_suffix(".md")).and_then(landed_id);
         let ([spec, _], Some(id)) = (parts.as_slice(), id) else {
             out.push(Violation::new(file, None, LINT, "is not `spec/landed/<spec>/WP-NNN.md`"));
             continue;

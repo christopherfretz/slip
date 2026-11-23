@@ -18,17 +18,20 @@
 //! takes one Rust frame.
 //!
 //! What Kiln's profile does not hold is not written: the declarations
-//! lookup found for an unresolved name (`UnresolvedLookupExpr.b`), the
+//! lookup found for an unresolved name (`UnresolvedLookupExpr.b`) and for
+//! a dependent operator (`oper_lookups`), the allocation and deallocation
+//! functions a resolved `new` or `delete` chose (`NewExtra`,
+//! `CXXDeleteExpr.b`), the
 //! types, value categories and dependence bits of nodes, implicit
 //! conversions, temporaries and cleanups (transparent), the parameter a
 //! `SubstNonTypeTemplateParmExpr` replaced (it is its replacement), the
 //! stored result of a requires-expression or concept-id, a qualifier and
 //! the declaration found through it (`DeclRefExtra`), non-dependent
 //! explicit template arguments of a reference to a specialisation. A
-//! left-out found set that held a declaration is counted in
-//! `Walk::left_out`: a type digest whose stream left one out is marked
-//! (`TypeRef::spelling`), and a unit stream that writes a marked type is
-//! pending (`Area::Spelling`).
+//! left-out set that held a declaration is counted in `Walk::left_out`:
+//! a type digest whose stream left one out is marked
+//! (`TypeRef::spelling`). A unit writes the sets of its own spellings
+//! (`own_spelling.rs`); the mark decides only where it has none.
 //!
 //! A kind Kiln profiles as unique (equal only to itself: a lambda, a
 //! statement expression, a pack of substituted parameters, ...) has no
@@ -85,6 +88,86 @@ thread_local! {
     static FULL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// The kinds profile mode met (`expr_profile_tests::the_bytes_are_pinned`).
     static VISITED: std::cell::RefCell<Vec<K>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The expressions whose left-out set raised `Walk::left_out`, with
+    /// the type nesting plus the key nesting then (`own_spelling_tests`,
+    /// rule 6's count).
+    pub(crate) static RAISED: std::cell::RefCell<Vec<(ExprId, u32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Raises `Walk::left_out` for a fact left out of the profile at `e` that
+/// the unit's list holds (a found set, possibly empty, an operator set,
+/// a chosen function). The mark is a function of the profile: every
+/// spelling of one profile raises it at the same nodes.
+fn raise(w: &mut Walk<'_>, e: ExprId) {
+    w.left_out += 1;
+    #[cfg(test)]
+    RAISED.with(|r| r.borrow_mut().push((e, w.type_nesting + w.in_key)));
+    #[cfg(not(test))]
+    let _ = e;
+}
+
+/// Raises `Walk::left_out` for a fact left out of the profile at `e` that
+/// no list holds, the unit of a spelling being indeterminate for it (a
+/// fold over an overloadable operator, the rounding mode of an operation
+/// that may be floating): marks the type for rule 5.
+fn raise_unlisted(w: &mut Walk<'_>) {
+    w.left_out += 1;
+}
+
+/// Whether the rounding mode where `e` was written may decide its value:
+/// an operation that rounds (Kiln's `may_round`) whose type is floating or
+/// dependent. A function of the profile (not of whether this spelling has
+/// a mode: the unit's own modes are its list's, rule 8).
+fn may_round_here(w: &Walk<'_>, e: ExprId) -> bool {
+    let n = w.ast.exprs.get(e);
+    if !n.kind().may_round() {
+        return false;
+    }
+    let q = n.ty();
+    w.ast.types.is_floating(q) || w.ast.types.is_dependent(q)
+}
+
+/// Whether a fold over `op` may find a candidate at instantiation that
+/// Kiln did not record (rule 9): `op` is overloadable and some declaration
+/// in the translation unit that is not a member function is named for it
+/// (for a comparison, for any comparison: C++20 rewrites them into one
+/// another). With no such declaration the definition context finds no
+/// operator in every spelling. A function of the profile within one
+/// translation unit.
+pub(crate) fn fold_left_out(w: &mut Walk<'_>, op: BinaryOp) -> bool {
+    const COMPARISONS: [&str; 7] = ["==", "!=", "<", "<=", ">", ">=", "<=>"];
+    if op == BinaryOp::PtrMemD {
+        return false;
+    }
+    let ast = w.ast;
+    let declared = w.declared_operators.get_or_insert_with(|| {
+        let mut set = std::collections::HashSet::new();
+        for d in ast.decls.ids() {
+            let n = ast.decls.get(d);
+            let mut k = n.kind();
+            if k == DeclKind::FunctionTemplate {
+                k = ast
+                    .template_info(d)
+                    .and_then(|i| i.pattern)
+                    .map_or(k, |p| ast.decls.get(p).kind());
+            }
+            if k == DeclKind::CXXMethod {
+                continue;
+            }
+            if let slip_kiln::kiln::ast::names::DeclNameView::Operator(o) = ast.names.view(n.name())
+            {
+                set.insert(o.spelling());
+            }
+        }
+        set
+    });
+    let spelling = op.spelling();
+    if COMPARISONS.contains(&spelling) {
+        COMPARISONS.iter().any(|c| declared.contains(c))
+    } else {
+        declared.contains(spelling)
+    }
 }
 
 /// The kinds met since the last call (tests only).
@@ -169,11 +252,18 @@ fn push_list_raw(w: &Walk<'_>, raw: u32, stack: &mut Vec<P>) {
     }
 }
 
-/// The canonical qualifier, or absent (Kiln's `nns_word`).
+/// The canonical qualifier, or absent (Kiln's `nns_word`). A qualifier
+/// with a level that names a type raises the mark: its written form can
+/// hold more than the canonical one (rule 11, `own_spelling::nns_left_out`).
 fn nns_opt(w: &mut Walk<'_>, s: &mut Stream, n: Option<NnsId>) {
     s.opt(n.is_some());
     if let Some(n) = n {
-        w.write_nns(s, n);
+        // Profile mode mirrors Kiln's profile, which is canonical; the
+        // written form is rule 1's, and the mark is raised below.
+        w.write_canonical_nns(s, n);
+        if crate::own_spelling::nns_left_out(w, n) {
+            raise_unlisted(w);
+        }
     }
 }
 
@@ -292,6 +382,11 @@ fn push_args(w: &mut Walk<'_>, s: &mut Stream, l: Option<ArgListId>, stack: &mut
 /// The qualifier of a member access on an object of dependent type, each
 /// level by name (Kiln's `spelled_nns_words`).
 fn spelled_nns(w: &mut Walk<'_>, s: &mut Stream, nns: NnsId) {
+    // A type named by its alias holds what the alias's spelling holds
+    // (rule 11, as `nns_opt`).
+    if crate::own_spelling::nns_left_out(w, nns) {
+        raise_unlisted(w);
+    }
     let ast = w.ast;
     let types = &ast.types;
     let mut chain = Vec::new();
@@ -332,7 +427,9 @@ fn spelled_nns(w: &mut Walk<'_>, s: &mut Stream, nns: NnsId) {
             }
             Nns::Type { prefix: _, ty: _, template_kw: _ } | Nns::Splice(_) => {
                 s.uv(6);
-                w.write_nns(s, n);
+                // As `nns_opt`: canonical in the profile, the mark raised
+                // by `spelled_nns` (`nns_left_out`).
+                w.write_canonical_nns(s, n);
             }
         }
     }
@@ -410,6 +507,15 @@ fn aux_tag(s: &mut Stream, row: Option<crate::tables::Row>, cause: &'static str)
     }
 }
 
+/// A dependent operator's definition-context lookup set
+/// (`TemplateTables` `oper_lookups`, which Kiln's profile does not read):
+/// left out, and counted when it holds a declaration (WP-041, rule 6).
+fn oper_left_out(w: &mut Walk<'_>, e: ExprId) {
+    if w.ast.templates.oper_lookups.of(e).is_some() {
+        raise(w, e);
+    }
+}
+
 /// Writes the header of `e` and pushes the rest (Kiln's `profile_node`).
 #[allow(clippy::too_many_lines, reason = "one arm per expression kind, as Kiln's profiler")]
 #[allow(
@@ -427,6 +533,9 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
     let aux = n.aux();
     let id = ExprId::try_new;
     let mark = stack.len();
+    if may_round_here(w, e) {
+        raise_unlisted(w);
+    }
     match k {
         // ----- transparent
         K::ImplicitCastExpr
@@ -504,6 +613,9 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             decl_words(w, s, d);
             let l = x.decl_ref_extra(e).and_then(|r| r.template_args);
             ref_args(w, s, d, l, stack);
+            if crate::own_spelling::name_parts_left_out(w, d) {
+                raise_unlisted(w);
+            }
         }
         K::MemberExpr => {
             tag(s, k);
@@ -512,6 +624,19 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             decl_words(w, s, d);
             let l = x.decl_ref_extra(e).and_then(|r| r.template_args);
             ref_args(w, s, d, l, stack);
+            if crate::own_spelling::name_parts_left_out(w, d) {
+                raise_unlisted(w);
+            }
+            // A destructor named as written (rule 11).
+            if crate::own_spelling::is_destructor(w, d) {
+                raise_unlisted(w);
+            }
+            // An overloaded member's qualifier (rule 11).
+            if let Some(q) = x.cold.member_overload.get(e).and_then(|m| m.qualifier)
+                && crate::own_spelling::nns_left_out(w, q)
+            {
+                raise_unlisted(w);
+            }
             stack.push(P::Opt(id(n.a())));
         }
         K::CXXThisExpr => {
@@ -544,11 +669,9 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
                 _ => {
                     s.uv(0);
                     crate::expr_dep::name_of(w, s, n.a());
-                    if !found.is_empty() {
-                        // The set found at the definition: not in the
-                        // profile, held by the spelling (WP-041).
-                        w.left_out += 1;
-                    }
+                    // The set found at the definition (possibly empty):
+                    // not in the profile, held by the spelling (WP-041).
+                    raise(w, e);
                 }
             }
             nns_opt(w, s, ast.templates.expr_nns.get(e).copied());
@@ -601,6 +724,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
                 UnaryOp::from_u8(aux).map(|o| unary_op::row(&o)),
                 "profile/UnaryOperator.aux",
             );
+            oper_left_out(w, e);
             stack.push(P::Opt(id(n.a())));
         }
         K::ParenExpr | K::PackExpansionExpr | K::CXXNoexceptExpr | K::IntegerPackExpr => {
@@ -614,6 +738,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
                 BinaryOp::from_u8(aux).map(|o| binary_op::row(&o)),
                 "profile/BinaryOperator.aux",
             );
+            oper_left_out(w, e);
             stack.extend([P::Opt(id(n.a())), P::Opt(id(n.b()))]);
         }
         K::ArraySubscriptExpr
@@ -630,6 +755,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
                 BinaryOp::from_u8(aux).map(|o| binary_op::row(&o)),
                 "profile/CompoundAssignOperator.aux",
             );
+            oper_left_out(w, e);
             stack.extend([P::Opt(id(n.a())), P::Expr(x.compound_assign(e).rhs)]);
         }
         K::ConditionalOperator => {
@@ -638,6 +764,13 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             stack.extend([P::Opt(id(n.a())), P::Expr(t), P::Expr(f)]);
         }
         K::CXXFoldExpr => {
+            // Kiln records no definition-context operator set for a fold
+            // (`oper_lookups`): what an overloadable operator finds at
+            // instantiation is not in the digest (rule 9).
+            if BinaryOp::from_u8(aux).is_some_and(|o| fold_left_out(w, o)) {
+                s.indeterminate(Cause::Unaccounted("spelling/fold-operator"));
+                raise_unlisted(w);
+            }
             tag(s, k);
             aux_tag(
                 s,
@@ -743,6 +876,11 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
         K::CXXNewExpr => {
             let ne = *x.new_extra(e);
             let style = x.new_init_style(e);
+            if ne.operator_new.is_some() || ne.operator_delete.is_some() {
+                // The functions a resolved allocation chose where it was
+                // written: not in the profile (WP-041, rule 6).
+                raise(w, e);
+            }
             tag(s, k);
             s.flags(
                 FlagWord::new().bit(n.has(ExprFlags::GLOBAL)).bit(n.has(ExprFlags::ARRAY_FORM)),
@@ -756,6 +894,10 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             }
         }
         K::CXXDeleteExpr => {
+            if n.b() != 0 {
+                // The deallocation function chosen where it was written.
+                raise(w, e);
+            }
             tag(s, k);
             s.flags(
                 FlagWord::new().bit(n.has(ExprFlags::GLOBAL)).bit(n.has(ExprFlags::ARRAY_FORM)),
@@ -771,6 +913,10 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             tag(s, k);
             s.bool(arrow);
             w.write_type(s, destroyed);
+            // Rule 11: the qualifier Kiln does not keep.
+            if x.pseudo_destructor_qualified(e) {
+                raise_unlisted(w);
+            }
             stack.push(P::Expr(base));
         }
         K::CXXTypeidExpr => {
@@ -942,4 +1088,4 @@ fn literal_value(w: &mut Walk<'_>, s: &mut Stream, v: Option<slip_kiln::kiln::as
 
 #[cfg(test)]
 #[path = "expr_profile_tests.rs"]
-mod tests;
+pub(crate) mod tests;

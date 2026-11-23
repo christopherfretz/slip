@@ -1,0 +1,169 @@
+{
+  "report": "slip.verify.v1",
+  "plan": "@PLAN@",
+  "round": @ROUND@,
+  "declared": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "rules": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "image": [
+    {
+      "subject": "@SRC@/lib",
+      "post": "@TREE@/lib"
+    }
+  ],
+  "limit": 100000,
+  "locate": 1024,
+  "verdict": "not_verified",
+  "observers": {
+    "plan": 3,
+    "selected": 3,
+    "verified": 0,
+    "unchanged": 0,
+    "mismatch": 3,
+    "not_parsed": 0,
+    "unverifiable": 0,
+    "never_parsed": 0,
+    "failed": 0,
+    "indeterminate_only": 0
+  },
+  "findings": {
+    "total": 4,
+    "listed": 4,
+    "groups": [
+      {
+        "kind": "changed",
+        "key": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "name": "f(int)",
+        "observers": 3,
+        "first": "@SRC@/lib/b.cpp",
+        "file": "@SRC@/lib/a.h",
+        "pre": "1111111111111111111111111111111111111111111111111111111111111111",
+        "post": "2222222222222222222222222222222222222222222222222222222222222222",
+        "where": {
+          "pre": {
+            "file": "@SRC@/lib/a.h",
+            "line": 3,
+            "column": 10,
+            "node": "CallExpr",
+            "what": "refers to g(long)"
+          },
+          "post": {
+            "file": "@SRC@/lib/a.h",
+            "line": 3,
+            "column": 10,
+            "node": "CallExpr",
+            "what": "refers to g(int)"
+          }
+        }
+      },
+      {
+        "kind": "removed",
+        "key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "name": "ns::old",
+        "observers": 3,
+        "first": "@SRC@/lib/b.cpp",
+        "file": "@SRC@/lib/a.h",
+        "pre": "1111111111111111111111111111111111111111111111111111111111111111",
+        "post": null,
+        "where": {
+          "pre": {
+            "file": "@SRC@/lib/b.cpp",
+            "line": 5,
+            "column": 1,
+            "node": "namespace",
+            "what": ""
+          },
+          "post": {
+            "file": "",
+            "line": 0,
+            "column": 0,
+            "node": "",
+            "what": ""
+          }
+        }
+      },
+      {
+        "kind": "added",
+        "key": "7777777777777777777777777777777777777777777777777777777777777777",
+        "name": "ns::fresh",
+        "observers": 3,
+        "first": "@SRC@/lib/b.cpp",
+        "file": "@SRC@/lib/a.h",
+        "pre": null,
+        "post": "2222222222222222222222222222222222222222222222222222222222222222",
+        "where": {
+          "pre": {
+            "file": "",
+            "line": 0,
+            "column": 0,
+            "node": "",
+            "what": ""
+          },
+          "post": {
+            "file": "@SRC@/lib/b.cpp",
+            "line": 5,
+            "column": 1,
+            "node": "namespace",
+            "what": ""
+          }
+        }
+      },
+      {
+        "kind": "indeterminate",
+        "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "h(long)",
+        "observers": 2,
+        "first": "@SRC@/lib/b.cpp",
+        "file": "@SRC@/lib/a.h",
+        "pre": "1111111111111111111111111111111111111111111111111111111111111111",
+        "post": "2222222222222222222222222222222222222222222222222222222222222222",
+        "where": {
+          "pre": {
+            "file": "@SRC@/lib/a.h",
+            "line": 7,
+            "column": 1,
+            "node": "function",
+            "what": "unsupported ExprKind/CXXReflectExpr"
+          },
+          "post": {
+            "file": "@SRC@/lib/a.h",
+            "line": 7,
+            "column": 1,
+            "node": "function",
+            "what": "unsupported ExprKind/CXXReflectExpr"
+          }
+        }
+      }
+    ]
+  },
+  "not_verified": [
+    {
+      "observer": "9999999999999999999999999999999999999999999999999999999999999999",
+      "main": "@SRC@/lib/b.cpp",
+      "state": "mismatch",
+      "message": "",
+      "findings": 4,
+      "indeterminate": 1,
+      "listed": 4
+    },
+    {
+      "observer": "9999999999999999999999999999999999999999999999999999999999999999",
+      "main": "@SRC@/lib/c.cpp",
+      "state": "mismatch",
+      "message": "",
+      "findings": 3,
+      "indeterminate": 0,
+      "listed": 3
+    },
+    {
+      "observer": "9999999999999999999999999999999999999999999999999999999999999999",
+      "main": "@SRC@/lib/d.cpp",
+      "state": "mismatch",
+      "message": "",
+      "findings": 3,
+      "indeterminate": 0,
+      "listed": 3
+    }
+  ],
+  "exemptions": [],
+  "run": "@RUN@"
+}

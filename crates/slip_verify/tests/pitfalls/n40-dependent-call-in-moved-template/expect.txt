@@ -15,4 +15,4 @@ good:   verified
 bad:    not_parsed
 good-2: verified
 bad-2:  mismatch changed template <class> int legacy::use(type-parameter-0-0) @ main.cpp:5
-bad-2:  mismatch derived_changed legacy::use<int>(int) @ main.cpp:5
+bad-2:  mismatch derived_changed legacy::use<int>(int)::<definition> @ main.cpp:5

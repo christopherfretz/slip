@@ -1,0 +1,240 @@
+{
+  "demo": 1,
+  "corpus": "tiny",
+  "pin": "v1.0",
+  "plan": "<plan>",
+  "tool_slip": "0.0.0",
+  "tool_kiln": "1.3.0",
+  "roots": [
+    "lib"
+  ],
+  "only": [
+    "/lib/"
+  ],
+  "observers": 3,
+  "determinate": 2,
+  "units": 300,
+  "indeterminate": 4,
+  "map": {
+    "wall_ns": 2500000000,
+    "cpu_ns": 3750000000,
+    "peak_rss_max": 4194304,
+    "counters": {
+      "digest.cause.pending.stmt": 2,
+      "digest.cause.unsupported.expr.x": 4,
+      "digest.indeterminate": 4,
+      "digest.indeterminate.pending": 2,
+      "digest.indeterminate.unsupported": 4,
+      "digest.units": 300
+    }
+  },
+  "cases": [
+    {
+      "name": "00-control",
+      "round": 0,
+      "result": "verified",
+      "error": null,
+      "verdict": "verified",
+      "selected": 3,
+      "verified": 3,
+      "indeterminate_only": 0,
+      "mismatch": 0,
+      "run": {
+        "units": 303,
+        "indeterminate": 4,
+        "reparsed": 0,
+        "wall_ns": 2500000000,
+        "cpu_ns": 3750000000,
+        "peak_rss_max": 3145728
+      },
+      "lines": [],
+      "groups": []
+    },
+    {
+      "name": "01-change",
+      "round": 1,
+      "result": "found",
+      "error": null,
+      "verdict": "not_verified",
+      "selected": 3,
+      "verified": 0,
+      "indeterminate_only": 0,
+      "mismatch": 3,
+      "run": {
+        "units": 303,
+        "indeterminate": 4,
+        "reparsed": 6,
+        "wall_ns": 2501000000,
+        "cpu_ns": 3750000000,
+        "peak_rss_max": 3145728
+      },
+      "lines": [
+        {
+          "line": "changed f(int) @ lib/a.h:3",
+          "result": "found",
+          "at": null,
+          "cause": null
+        },
+        {
+          "line": "removed ns::old @ lib/b.cpp:5",
+          "result": "found",
+          "at": null,
+          "cause": null
+        }
+      ],
+      "groups": [
+        {
+          "kind": "changed",
+          "key": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "name": "f(int)",
+          "observers": 3,
+          "first": "lib/b.cpp",
+          "file": "lib/a.h",
+          "pre": "1111111111111111111111111111111111111111111111111111111111111111",
+          "post": "2222222222222222222222222222222222222222222222222222222222222222",
+          "where": {
+            "pre": {
+              "file": "lib/a.h",
+              "line": 3,
+              "column": 10,
+              "node": "CallExpr",
+              "what": "refers to g(long)"
+            },
+            "post": {
+              "file": "lib/a.h",
+              "line": 3,
+              "column": 10,
+              "node": "CallExpr",
+              "what": "refers to g(int)"
+            }
+          }
+        },
+        {
+          "kind": "removed",
+          "key": "6666666666666666666666666666666666666666666666666666666666666666",
+          "name": "ns::old",
+          "observers": 3,
+          "first": "lib/b.cpp",
+          "file": "lib/a.h",
+          "pre": "1111111111111111111111111111111111111111111111111111111111111111",
+          "post": null,
+          "where": {
+            "pre": {
+              "file": "lib/b.cpp",
+              "line": 5,
+              "column": 1,
+              "node": "namespace",
+              "what": ""
+            },
+            "post": {
+              "file": "",
+              "line": 0,
+              "column": 0,
+              "node": "",
+              "what": ""
+            }
+          }
+        },
+        {
+          "kind": "added",
+          "key": "7777777777777777777777777777777777777777777777777777777777777777",
+          "name": "ns::fresh",
+          "observers": 3,
+          "first": "lib/b.cpp",
+          "file": "lib/a.h",
+          "pre": null,
+          "post": "2222222222222222222222222222222222222222222222222222222222222222",
+          "where": {
+            "pre": {
+              "file": "",
+              "line": 0,
+              "column": 0,
+              "node": "",
+              "what": ""
+            },
+            "post": {
+              "file": "lib/b.cpp",
+              "line": 5,
+              "column": 1,
+              "node": "namespace",
+              "what": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "02-blocked",
+      "round": 2,
+      "result": "partly",
+      "error": null,
+      "verdict": "not_verified",
+      "selected": 3,
+      "verified": 0,
+      "indeterminate_only": 1,
+      "mismatch": 3,
+      "run": {
+        "units": 303,
+        "indeterminate": 4,
+        "reparsed": 6,
+        "wall_ns": 2502000000,
+        "cpu_ns": 3750000000,
+        "peak_rss_max": 3145728
+      },
+      "lines": [
+        {
+          "line": "changed f(int) @ lib/a.h:3",
+          "result": "found",
+          "at": null,
+          "cause": null
+        },
+        {
+          "line": "changed h(long) @ lib/a.h:7",
+          "result": "blocked",
+          "at": null,
+          "cause": "unsupported ExprKind/CXXReflectExpr"
+        }
+      ],
+      "groups": [
+        {
+          "kind": "changed",
+          "key": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "name": "f(int)",
+          "observers": 3,
+          "first": "lib/b.cpp",
+          "file": "lib/a.h",
+          "pre": "1111111111111111111111111111111111111111111111111111111111111111",
+          "post": "2222222222222222222222222222222222222222222222222222222222222222",
+          "where": {
+            "pre": {
+              "file": "lib/a.h",
+              "line": 3,
+              "column": 10,
+              "node": "CallExpr",
+              "what": "refers to g(long)"
+            },
+            "post": {
+              "file": "lib/a.h",
+              "line": 3,
+              "column": 10,
+              "node": "CallExpr",
+              "what": "refers to g(int)"
+            }
+          }
+        },
+        {
+          "kind": "changed",
+          "key": "5555555555555555555555555555555555555555555555555555555555555555",
+          "name": "g()",
+          "observers": 1,
+          "first": "lib/b.cpp",
+          "file": "lib/a.h",
+          "pre": "1111111111111111111111111111111111111111111111111111111111111111",
+          "post": "2222222222222222222222222222222222222222222222222222222222222222",
+          "where": null
+        }
+      ]
+    }
+  ],
+  "result": "PARTIAL (0 clean, 1 partly)"
+}

@@ -28,11 +28,13 @@
 //!   from (`Written::read` for an entity declared only by instantiations
 //!   outside their class, else `units::read_decl`), a fresh unit state
 //!   with the entity as the holder, `Walk::decl_stream`,
-//!   `enclosing::write`;
+//!   `enclosing::write`, `own_spelling::write_unit_list`;
 //! - a content-keyed unit (`Walk::content_hash`): its memo entry taken
 //!   out and the entity marked in progress for the time of the writing,
 //!   as it was the first time, with the unit state, the type state,
-//!   `in_key` and `keys_in_progress` put aside; the first mark only;
+//!   `in_key` and `keys_in_progress` put aside, the entity as the
+//!   content entity, `Walk::decl_stream`, `own_spelling::write_unit_list`;
+//!   the first mark only;
 //! - the order unit (`units::order_unit`): `order::write`; the first mark
 //!   only;
 //! - a resolved or `default_argument` unit (`demand.rs`): its owner's
@@ -207,6 +209,7 @@ fn entity_unit(w: &mut Walk<'_>, u: &Written, e: DeclId) -> Recording {
     #[cfg(test)]
     tests::panic_at(tests::IN_A_TRACED_STREAM);
     crate::enclosing::write(w, &mut s, e);
+    crate::own_spelling::write_unit_list(w, &mut s);
     w.unit = saved;
     s.into_recording()
 }
@@ -222,8 +225,10 @@ fn content_unit(w: &mut Walk<'_>, e: DeclId) -> Recording {
     let types = w.take_types();
     let in_key = std::mem::take(&mut w.in_key);
     let keys = std::mem::take(&mut w.keys_in_progress);
+    w.unit.local.content = Some(e);
     let mut s = Stream::traced();
     w.decl_stream(&mut s, read, e);
+    crate::own_spelling::write_unit_list(w, &mut s);
     w.keys_in_progress = keys;
     w.in_key = in_key;
     w.restore_types(types);

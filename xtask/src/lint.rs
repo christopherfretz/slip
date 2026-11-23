@@ -6,7 +6,7 @@
 //! ordered by path and line. The exit status is 0 if there is none, 1 if
 //! there is any or the files cannot be listed, 2 for a usage error.
 
-mod api_tests;
+pub(crate) mod api_tests;
 mod crates;
 mod doc_links;
 mod local_paths;

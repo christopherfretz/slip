@@ -3,4 +3,4 @@
 # lib::prepare. No declared unit differs: only the instantiated member's
 # resolved unit `definition` (spec/digest-kinds.md §11.9), as N06.
 good: none the dependency's template calls the hook by its name; no rename of it keeps the call
-bad:  mismatch derived_changed lib::store<app::Mine>::put(app::Mine &) @ dep/dep.h:4
+bad:  mismatch derived_changed lib::store<app::Mine>::put(app::Mine &)::<definition> @ dep/dep.h:4

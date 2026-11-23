@@ -92,7 +92,13 @@ expect.txt      what each tree must give
     functional cast), the reason says that, not that none exists.
   - `xfail <tree>: <reason>` says the tree's line is not met yet and
     why, naming the defect or the package. It changes the outcome as
-    below. **It never excuses a `bad` tree that verifies.**
+    below. **It never excuses a `bad` tree that verifies.** It may
+    also cover an `ERROR` from `slip declare` refusing the declared
+    file (status 1, an error of `verify.md` §2.3), but only when the
+    reason quotes, in backquotes, the error's class (`` `syntax` ``,
+    `` `no unit` ``) or a word the error quotes (the keyword
+    `` `kept` ``): an unrelated error is never hidden. The tree is
+    then `XFAIL`. No other `ERROR` is covered.
 
 **The runner** (`crates/slip_cli/tests/pitfalls.rs`; the rows stay with
 the trusted base they test) drives the `slip` executable, as a user
@@ -270,7 +276,7 @@ layout only.
 | E03 | Parentheses that are not redundant: `decltype((x))`; `(f)(x)` | `((x) + 1)`; a second tree with redundant parentheses around operands of `+` | `decltype((x))` (`bad`), `(f)(x)` (`bad-2`) | `mismatch changed` the function, in each `bad` tree |
 | E04 | Reordering `#include`s changes what a non-dependent call inside a template sees at its definition | an order that keeps it | the other order | `mismatch changed` the template Subject 2: a partial specialisation's header moved after a use that instantiates the class (ill-formed, no diagnostic required, [temp.class.spec]/1; clang and Kiln both keep the primary's instantiation): `good-2: none`; `mismatch derived_changed` the specialisation and its member |
 | E05 | Moving a function definition past a later, better overload (`h(long)`, caller, `h(int)`) | moved past another function only, still before `h(int)` (a cast that keeps `h(long)` is another expression: "Open questions") | moved past `h(int)` | `mismatch changed` the caller |
-| E06 | Respelling through a namespace alias, a using-declaration, an injected class name, a typedef of the same type | any of them | a typedef that adds `const` | `mismatch changed` Subject 5: a parameter respelled through an alias in a function that returns `__PRETTY_FUNCTION__`, which prints the type as written: `mismatch changed` the function; respelled where nothing prints it, `verified` |
+| E06 | Respelling through a namespace alias, a using-declaration, an injected class name, a typedef of the same type | any of them | a typedef that adds `const` | `mismatch changed` Subject 5: a parameter respelled through an alias, in a function that returns `__PRETTY_FUNCTION__` (which prints the type as written) and in one where nothing prints it: `verified`, because a name-derived string only passed on is equal in the unit digest whatever changes its content (`digest.md` §9); the names report (WP-112) is what tells the user. The same respelling in a function that consumes the string (`return sizeof(__PRETTY_FUNCTION__);`, through an alias of another length): `mismatch changed` the function, the consumer is written by value |
 | E07 | `struct` to `class` on a redeclaration; `override` added; a parameter renamed; a redundant `this->` | each | — | `good` only |
 | E08 | An initialiser respelled so that `auto` deduces another type (`auto x = 1;` to `auto x = 1u;`) | `auto x = (1);` | `1u` | `mismatch changed` |
 | E09 | Two namespace-scope variable definitions with dynamic initialisers exchanged | two functions exchanged | the variables | `mismatch changed` the order unit |
