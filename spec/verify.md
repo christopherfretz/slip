@@ -328,6 +328,18 @@ something else is exactly how a dependent name that resolves differently
 shows up ([03](../docs/design/03-equivalence.md) §7 row 6), and no declared
 unit need differ then.
 
+One kind of derived unit exists without a demand: a resolved
+`exception_spec` (`digest-kinds.md` §11.2), which Kiln also resolves when
+it defines the function, so a destructor declared `noexcept(false)` on
+one side and with no specification on the other, never used, has the unit
+on one side only and no declared unit differs. It is safe to skip because
+every construct that reads a specification (a call, `noexcept`, forming
+the function's type or address, a definition) makes
+Kiln resolve it on both sides, so wherever the translation unit observes
+the difference the unit is on both sides and differs
+(`crates/slip_digest/tests/differ/_/resolved-spec-observed-both-sides`,
+`resolved-spec-addr-deferred`, `resolved-spec-addr-deferred-dtor-member`).
+
 This argument assumes the front end's demand is a function of the program.
 The demand-independence test of `digest.md` §14 is what checks it.
 

@@ -5548,6 +5548,14 @@ specification is resolved. For a function of the class:
   the resolved unit `exception_spec` holds it; if not, there is no such
   unit.
 
+A member of a local class is the exception: it has no key, so no
+resolved unit can hold its specification. Its own stream (in the stream
+of the local class, inside its enclosing unit) writes the specification
+as Kiln holds it whenever Kiln holds a written or resolved one, and is
+indeterminate (`Pending(Local)`) only while Kiln still holds it
+`Deferred` (`tests/differ/_/local-class-destructor-noexcept`,
+`local-class-defaulted-noexcept`).
+
 A type digest that meets `Deferred(d)` writes the tag of `Deferred` and
 the `Ref` of `d`. A declaration outside the class whose type holds
 `Deferred` makes its unit indeterminate: the predicate above was derived
@@ -5562,6 +5570,17 @@ survives resolution marks such a function, so it is outside the class:
 resolved, its own unit writes the specification; still deferred, its
 unit is indeterminate by the rule above ("Open questions" has what
 would bring it into the class).
+
+Kiln resolves a specification when something reads it and when it
+defines the function, so a resolved `exception_spec` unit can exist on
+one side only with no demand behind it (a destructor declared
+`noexcept(false)` against one declared without, neither used). That is
+safe: whatever reads the specification (a call, `noexcept`, the
+function's type or address, a definition) resolves it on both sides, so
+where the translation unit observes the difference both sides have the
+unit and it differs (`tests/differ/_/resolved-spec-observed-both-sides`,
+`resolved-spec-addr-deferred`, `resolved-spec-addr-deferred-dtor-member`,
+`resolved-spec-addr-deferred-differs`; `spec/verify.md` §4).
 
 A specification is not always resolved before a type that holds it is
 formed: naming a function leaves a late `noexcept` that is not parsed
@@ -5600,8 +5619,14 @@ first is a reported difference in this unit, never an unreported one.
 At the pin Kiln writes `eval` when it checks a declaration's initialiser
 (a `constexpr` variable, a `const` variable of integral or enumeration
 type initialised where it is declared, a static data member initialised
-out of line), not on a later use: a use does not make the unit appear.
-An in-class `static const int x = 1;` is never evaluated, used or not, so
+out of line). For a declaration made by instantiation (a static data
+member of a class template's instantiation, initialised in class or out
+of line, and a variable template's specialisation) that check runs when
+Kiln instantiates the initialiser, which a use causes: there a use makes
+the unit appear, as for any resolved unit
+(`tests/resolved/value/instantiated-static-member`, `variable-template`,
+`instantiated-out-of-line`). For any other variable the check runs with
+the declaration and a later use does not make the unit appear. An in-class `static const int x = 1;` is never evaluated, used or not, so
 it has no `value` unit, while the same constant initialised on its
 out-of-line definition has one ("Open questions").
 

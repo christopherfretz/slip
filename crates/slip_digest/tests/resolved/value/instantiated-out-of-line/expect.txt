@@ -1,0 +1,7 @@
+# pending
+# needs: demand
+# WP-045 (F3 of the WP-046 review): A<int>::v is of the definition class;
+# its own unit holds its init under Pending(Demand) and changes when the
+# use instantiates the definition.
+resolved A<int>::v::<value>
+added h()

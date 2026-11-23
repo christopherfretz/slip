@@ -1,0 +1,2 @@
+resolved A<int>::v::<value>
+added h()
