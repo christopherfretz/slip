@@ -2,8 +2,9 @@
 //! member of a class template specialisation"; `docs/wp/WP-073.md` parts
 //! B and C).
 //!
-//! A seed that is a member of a class template (a class template
-//! anywhere in its scopes) is renamed as any seed is: its declarations
+//! A seed in a pattern (`families::in_pattern`: a class template, a
+//! partial specialisation or a function template among its enclosing
+//! entities, as WP-072 reads it) is renamed as any seed is: its declarations
 //! and the references to it and to its instantiations are claimed by
 //! `decls` and `refs` (`written::origin` takes a member of an
 //! instantiated class to the member of the template). What this file
@@ -43,61 +44,133 @@
 //!   as `subjects::flag_unreachable` decides for a function template's
 //!   specialisation.
 //!
-//! **Cost.** Nothing unless a seed is a member of a class template; then
-//! one pass over the unit's declarations, comparing each one's
-//! identifier with the old name; keys are computed only along chains
-//! that reach a seed.
+//! - **Names in no table flag the seeds** (fix round; a seed in a
+//!   pattern is unflagged only when every place the unit shows naming it
+//!   is claimed or flags it, `spec/edits.md` §9.2):
+//!   - a friend of a member of a dependent specialisation
+//!     (`template <class T> friend void n::S<T>::f();`), which Kiln
+//!     records as a `Friend` of a function **type**, with no declaration:
+//!     its name, located through the friend's extent row, is claimed
+//!     `unresolved`, and every seed in a pattern is `unreachable`;
+//!   - a member named like the old name in an instantiated
+//!     specialisation (not an explicit specialisation of the class) that
+//!     no declaration links to a pattern (`template <> template <class U>
+//!     void S<int>::g() {}`): Kiln does not record which member it
+//!     specialises, so every seed in a pattern is `unsupported`.
+//!
+//!   An explicit instantiation of a member after the member's explicit
+//!   specialisation is recorded nowhere at the pin, so nothing here can
+//!   see it (`spec/landed/edits/WP-073.md`, fix round F3).
+//!
+//! **Cost.** Nothing unless a seed is in a pattern; then one pass over
+//! the unit's declarations, comparing each one's identifier with the old
+//! name (and locating each function-type friend's name); keys are
+//! computed only along chains that reach a seed.
 
 use std::collections::{HashMap, HashSet};
 
-use slip_kiln::kiln::ast::decl::{FriendKind, TemplLinkKind};
+use slip_kiln::kiln::ast::decl::{DeclKind, FriendKind, FriendTarget, TemplLinkKind};
 use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{Ast, DeclId};
+use slip_kiln::sites::{Located, Reason};
 use slip_kiln::written;
 use slip_model::edits::{KeyId, Role, subject_flags};
-use slip_model::keys::{KeyKind, Name};
+use slip_model::keys::Name;
 
-use super::{CTX_LIMIT, Ctx, enclosing};
+use super::families::in_pattern;
+use super::{CTX_LIMIT, Ctx};
 
 /// Collects the followers of the seeds that are members of class
-/// templates (module documentation).
+/// templates, and flags those seeds where a name of theirs is in no table
+/// or in no link (module documentation).
 pub(crate) fn collect(ctx: &mut Ctx<'_, '_, '_>) {
     let ast = ctx.unit.ast();
-    // What each entity resolved to: the subject it is (a seed of a class
-    // template, or a follower), or `None`, not one.
+    // What each entity resolved to: the subject it is (a seed in a
+    // pattern, or a follower), or `None`, not one.
     let mut memo: HashMap<DeclId, Option<KeyId>> = HashMap::new();
+    let mut seeds = Vec::new();
     for (id, e) in ctx.subjects.seeds() {
-        if in_class_template(ctx, e) {
+        if in_pattern(ctx, e) {
             memo.insert(e, Some(id));
+            seeds.push(id);
         }
     }
-    if memo.is_empty() {
+    if seeds.is_empty() {
         return;
     }
     let named: HashSet<DeclId> = ctx.named.old.iter().map(|d| d.decl).collect();
+    let mut friend = false;
+    let mut unlinked = false;
     for d in ast.decls.ids() {
-        if !named_old(ast, d, ctx.old) || !follows_a_pattern(ast, d) {
+        if ast.decls.get(d).kind() == DeclKind::Friend {
+            friend |= friend_of_dependent_member(ctx, d);
             continue;
         }
-        let e = ctx.keys.entity(d);
-        resolve(ctx, &mut memo, &named, e, 0);
+        if !named_old(ast, d, ctx.old) {
+            continue;
+        }
+        if follows_a_pattern(ast, d) {
+            let e = ctx.keys.entity(d);
+            resolve(ctx, &mut memo, &named, e, 0);
+        } else {
+            unlinked |= unlinked_member(ast, d);
+        }
+    }
+    for id in seeds {
+        if friend {
+            ctx.subjects.flag(id, subject_flags::UNREACHABLE);
+        }
+        if unlinked {
+            ctx.subjects.flag(id, subject_flags::UNSUPPORTED);
+        }
     }
 }
 
-/// A class template encloses `e`: one of its scopes, at any depth, has a
-/// key of kind `class_template`.
-fn in_class_template(ctx: &mut Ctx<'_, '_, '_>, e: DeclId) -> bool {
+/// `d`, a `Friend` declaration, befriends a function the front end
+/// records only as a type, with no declaration (a member of a dependent
+/// specialisation, `template <class T> friend void n::S<T>::f();`), and
+/// its declarator-id may be the old name: then the name is claimed
+/// `unresolved`, and the caller flags the seeds `unreachable`. "May be":
+/// `Sites::name_token` locates the name and its bytes are the old name's,
+/// or it refuses the name before comparing them (a macro's body, a pasted
+/// token, a file that is not owned); `not_plain` is a name spelled
+/// otherwise.
+fn friend_of_dependent_member(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> bool {
     let ast = ctx.unit.ast();
-    let mut at = e;
-    for _ in 0..CTX_LIMIT {
-        let Some(s) = enclosing(ast, at) else { return false };
-        let s = ctx.keys.entity(s);
-        if ctx.keys.key(s).is_ok_and(|k| k.kind == KeyKind::ClassTemplate) {
-            return true;
-        }
-        at = s;
+    let FriendTarget::Type { ty, owned_tag: None } = ast.decls.friend_target(d) else {
+        return false;
+    };
+    if !ast.types.is_function(ty) {
+        return false;
     }
-    false
+    let Some(name) = ast.decl_extents.get(d).map(|e| e.name).filter(|n| n.lo.is_valid()) else {
+        return false;
+    };
+    match ctx.sites.name_token(name, ctx.old) {
+        Located::At { .. } => {
+            ctx.claims.unresolved(&ctx.sites, name);
+            true
+        }
+        Located::Refused { reason, .. } => reason != Reason::NotPlain,
+    }
+}
+
+/// `d`, named like the old name, no declaration of it linked to a
+/// template or a pattern, is a member of an instantiated specialisation
+/// of a class template (one that is not an explicit specialisation of
+/// the class): the front end declared it there without recording what it
+/// specialises (a member template explicitly specialised as a template,
+/// `template <> template <class U> void S<int>::g() {}`). A
+/// redeclaration without a link of its own (`template <> int S<int>::v =
+/// 1;`) is not one: another declaration of its entity has the link.
+fn unlinked_member(ast: &Ast, d: DeclId) -> bool {
+    let linked =
+        |x: DeclId| ast.templ_link(x).get().is_some() || ast.instantiated_from(x).is_some();
+    if linked(d) || ast.redecls_of(d).any(linked) {
+        return false;
+    }
+    let Some(c) = ast.decls.get(d).ctx() else { return false };
+    ast.spec_info(c).is_some_and(|(_, s)| s.kind != SpecKind::ExplicitSpecialization)
 }
 
 /// The AST names `d` by the identifier `old`.

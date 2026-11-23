@@ -173,5 +173,19 @@ pub(crate) fn enclosing(ast: &Ast, d: DeclId) -> Option<DeclId> {
     None
 }
 
+/// `written::origin` of `d`, or, when `d` has no link of its own (origin
+/// takes no step), of its entity: a redeclaration that the front end did
+/// not link (`template <> int S<int>::v = 1;`, whose entity is the
+/// member of the instantiation) is taken through the declaration that
+/// has the link, so that its claim names what a member function's
+/// explicit specialisation names (`spec/edits.md` §9.3).
+pub(crate) fn origin_of(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> DeclId {
+    let o = written::origin(ctx.unit, d);
+    if o != d {
+        return o;
+    }
+    written::origin(ctx.unit, ctx.keys.entity(d))
+}
+
 /// How far a chain of contexts is followed.
 pub(crate) const CTX_LIMIT: u32 = 4096;

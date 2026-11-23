@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (unreachable: the friend of F1 with no definition of the member), WP-073 fix round F1
+from: n::S::f
+to: g
+kind: function
