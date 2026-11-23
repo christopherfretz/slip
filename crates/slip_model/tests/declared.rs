@@ -400,8 +400,8 @@ fn rejects_version_1_with_a_rule() {
 #[test]
 fn rejects_files_absent_with_rules_and_present_without() {
     let (a, _) = two_rules();
-    let (payload, at) = raw_payload_v2(&[a.clone()], [&[], &[], &[]], &[], None);
-    let mut json = json_with("rules", json_rules(&[a.clone()]));
+    let (payload, at) = raw_payload_v2(std::slice::from_ref(&a), [&[], &[], &[]], &[], None);
+    let mut json = json_with("rules", json_rules(std::slice::from_ref(&a)));
     set(&mut json, &["sections", "declared", "files"], Value::Null);
     rejected(&decl2(&payload), base(&payload) + at.files, &json, "sections.declared.files");
     assert_eq!(Declared::from_bytes(&decl2(&payload)).unwrap_err().what, "rules without files");
@@ -445,6 +445,9 @@ fn rejects_kept_unsorted_or_duplicated() {
     round_trip(&x);
 }
 
+/// One bad `files`: (owned, readonly, message, which list, index).
+type BadOwnership<'a> = (Vec<Vec<u8>>, Vec<Vec<u8>>, &'a str, u8, usize);
+
 // verify §2 (row 4): `files` is checked as a transform request's ownership
 // (edits §2.1), in that order and with those messages.
 #[test]
@@ -452,7 +455,7 @@ fn rejects_each_bad_ownership() {
     let p = |s: &str| s.as_bytes().to_vec();
     let rules = golden_rules();
     // (owned, readonly, message, which: 0 owned list, 1 owned[i], 2 readonly[i], index)
-    let cases: [(Vec<Vec<u8>>, Vec<Vec<u8>>, &str, u8, usize); 8] = [
+    let cases: [BadOwnership<'_>; 8] = [
         (vec![], vec![], "owned is empty", 0, 0),
         (vec![p("/a"), p("b")], vec![], "not a canonical absolute path", 1, 1),
         (vec![p("/a/")], vec![], "not a canonical absolute path", 1, 0),

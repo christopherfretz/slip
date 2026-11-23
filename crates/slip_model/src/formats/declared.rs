@@ -104,10 +104,10 @@ fn violation(x: &Declared, version: u32) -> Option<(Loc, &'static str)> {
     if let Some(i) = first_not_ascending(x.kept()) {
         return Some((Loc::KeptAt(i), KEPT_UNSORTED));
     }
-    if let Some(o) = x.files() {
-        if let Some(v) = ownership_violation(o) {
-            return Some(v);
-        }
+    if let Some(o) = x.files()
+        && let Some(v) = ownership_violation(o)
+    {
+        return Some(v);
     }
     let rules = !x.rules().rules().is_empty();
     if version == 1 && rules {
