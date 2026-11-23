@@ -302,6 +302,28 @@ fn s6_1_locate() {
     assert_eq!(named, ["a", "b", "c"]);
 }
 
+// §6.1: a finding of a unit the post-image no longer has is named from
+// the pre-image.
+#[test]
+fn s6_1_removed_named_from_the_pre_image() {
+    let tree = Tree::new("removed", &[("a.cpp", "int gone = 1;\nint kept = 1;\n")]);
+    write(&tree.post.join("a.cpp"), "int kept = 1;\n");
+    let o = tree.observer();
+    tree.map(&o);
+    let v = tree.verify(&o);
+    let verdict = v.verdict.as_ref().unwrap();
+    assert_eq!(verdict.kind, VerdictKind::Mismatch);
+    // `kept` is unchanged; any other finding is not a removal.
+    let removed: Vec<&str> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.kind == FindingKind::Removed)
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(removed, ["gone"], "{:?}", verdict.findings);
+    assert_eq!(counter(&v, "verify.findings.removed"), Some(1));
+}
+
 // §6: `limit` keeps the first findings; `total` and the counters count
 // them all.
 #[test]
@@ -451,6 +473,18 @@ fn s5_2_pre_shard_altered_fails_the_job() {
     std::fs::write(&path, theirs.to_bytes()).unwrap();
     let e = tree.verify_with(&o, &tree.params(Declared::none())).unwrap_err();
     assert!(e.contains(&format!("is for observer {}", other.id)), "{e}");
+
+    // Ours, but of another round or phase, at the path of round 0.
+    let mut round = m.clone();
+    round.round = 3;
+    std::fs::write(&path, round.to_bytes()).unwrap();
+    let e = tree.verify_with(&o, &tree.params(Declared::none())).unwrap_err();
+    assert!(e.contains(&format!("is for observer {} Map round 3", o.id)), "{e}");
+    let mut phase = m;
+    phase.phase = Phase::Verify;
+    std::fs::write(&path, phase.to_bytes()).unwrap();
+    let e = tree.verify_with(&o, &tree.params(Declared::none())).unwrap_err();
+    assert!(e.contains(&format!("is for observer {} Verify round 0", o.id)), "{e}");
 }
 
 // §5.3 G1: the post-image read a file of the subject by an absolute path.
@@ -592,14 +626,26 @@ fn r2_digests_not_those_of_the_map_shard() {
 // §5.3 G3, from real parses: a header of the post tree replaced, again
 // and again, by a writer outside the job. Each attempt is a mismatch
 // (the same post-image at both parses) or G3 (another one at step 6);
-// never `verified`. G3 has to be seen within the attempts.
+// never `verified`. G3 has to be seen within the attempts. In the second
+// case the two contents differ in a space only: the `tu` digest is the
+// same and the `inputs` are not, which G3 refuses too (WP-052's reading,
+// spec/landed/verify/WP-052.md).
 #[test]
 fn g3_post_image_changed_during_the_job() {
+    for (case, one, two) in [
+        ("tu", "int a = 1;\n", "int a = 2;\n"),
+        ("inputs", "int a = 1;\n", "int a = 1; \n"),
+    ] {
+        g3_case(case, one, two);
+    }
+}
+
+fn g3_case(case: &str, one: &'static str, two: &'static str) {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
-    let tree = Tree::new("g3", &[("a.cpp", "int a = 0;\nint b = 0;\n")]);
+    let tree = Tree::new(&format!("g3-{case}"), &[("a.cpp", "int a = 0;\nint b = 0;\n")]);
     write(&tree.post.join("a.cpp"), "#include \"f.h\"\nint b = 1;\n");
-    write(&tree.post.join("f.h"), "int a = 1;\n");
+    write(&tree.post.join("f.h"), one);
     let o = tree.observer();
     tree.map(&o);
     let stop = Arc::new(AtomicBool::new(false));
@@ -609,7 +655,7 @@ fn g3_post_image_changed_during_the_job() {
         while !flag.load(Ordering::SeqCst) {
             n += 1;
             let tmp = dir.join("f.h.tmp");
-            std::fs::write(&tmp, format!("int a = {};\n", 1 + n % 2)).unwrap();
+            std::fs::write(&tmp, if n % 2 == 0 { one } else { two }).unwrap();
             std::fs::rename(&tmp, &target).unwrap();
             std::thread::sleep(std::time::Duration::from_micros(200));
         }
@@ -617,19 +663,19 @@ fn g3_post_image_changed_during_the_job() {
     let mut seen = None;
     for attempt in 0..200 {
         let v = tree.verify(&o);
-        assert_ne!(kind(&v), VerdictKind::Verified);
+        assert_ne!(kind(&v), VerdictKind::Verified, "{case}");
         if kind(&v) == VerdictKind::Unverifiable {
-            assert_eq!(reason(&v), "post-image: changed during the job");
+            assert_eq!(reason(&v), "post-image: changed during the job", "{case}");
             assert_eq!(counter(&v, "verify.reparsed"), Some(2));
             check_post_shard(&v);
             seen = Some(attempt);
             break;
         }
-        assert_eq!(kind(&v), VerdictKind::Mismatch);
+        assert_eq!(kind(&v), VerdictKind::Mismatch, "{case}");
     }
     stop.store(true, Ordering::SeqCst);
     writer.join().unwrap();
-    assert!(seen.is_some(), "G3 never seen");
+    assert!(seen.is_some(), "{case}: G3 never seen");
 }
 
 // The worker (`spec/exec.md` §8.4): `PhaseTask` by the job's phase;
@@ -688,10 +734,13 @@ fn worker_phase_task() {
     assert_eq!(verdict.kind, VerdictKind::Mismatch);
     assert!(verdict.findings.len() <= 1 && verdict.findings.iter().all(|f| f.name.is_empty()));
     assert_eq!(counter(&v, "verify.reparsed"), Some(1));
-    // Again, with the params kept, and with another pre round.
+    // Again, with the params kept; with another pre round; with another
+    // image (the identity: the subject against itself), not the kept one.
     assert_eq!(task.run(&job).unwrap(), v);
-    job.post = Some(Post { pre: 9, ..post });
+    job.post = Some(Post { pre: 9, ..post.clone() });
     assert_eq!(reason(&task.run(&job).unwrap()), "pre-image: no map shard");
+    job.post = Some(Post { image: Image::identity().to_post(), ..post });
+    assert_eq!(kind(&task.run(&job).unwrap()), VerdictKind::Verified);
 }
 
 // §5.2: `verify` itself refuses a job of phase map and one with a

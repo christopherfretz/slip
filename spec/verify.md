@@ -663,7 +663,7 @@ only withdraws: guard G3.
 | R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
 | G2 | step 4: its `inputs` are the pre shard's `inputs`, entry for entry | `pre-image: <path> changed since the map phase` (the first path, in path order, whose entry is not the same in both lists or is in one only) |
 | R2 | step 4: its `digests`, unit lists apart, equal the pre shard's | `pre-image: its digests are not those of the map shard` |
-| G3 | step 6: the second parse of the post-image gives the `tu` digest of the first | `post-image: changed during the job` |
+| G3 | step 6: the second parse of the post-image is `ok` and gives the `inputs` and the `tu` digest of the first | `post-image: changed during the job` |
 
 `<status>` is the name of the status (`diagnosed`, `rejected`, `failed`);
 `<message>` the outcome's message; a path is written as its bytes where
