@@ -1057,14 +1057,29 @@ overlay and the pre-image bytes:
   their context touches or overlaps.
 - `<path>` is the real path, or, under `--relative-to <dir>`, the path
   relative to that directory's real path (an overlay file outside it is a
-  usage error). Paths are written as their bytes.
+  usage error). Paths are written as their bytes; a name with a space
+  is ended by a tab, and one with a tab, `\r` or `\n`, starting with
+  `"`, or starting or ending with a space (GNU `patch` drops it) cannot
+  be written and is refused before anything is
+  (`spec/landed/edits/WP-063.md` §3).
 - A line ends at `\n`. A `\r` before it is part of the line. A last line
   without `\n` is followed by `\ No newline at end of file`. Bytes are
   copied as they are.
 
 `patch -p0` applied to the pre-image must give the post-image byte for
 byte, for every file whose lines `patch` can represent; the test of
-"Tests" is that property.
+"Tests" is that property. (For relative names; absolute names apply
+with `-p1` from `/`, since `patch` and `git apply` refuse absolute
+names.)
+
+Which lines are matched only changes the patch's size, never what it
+does. The search is bounded per region of unmatched lines (between
+unique lines, `spec/landed/edits/WP-063.md` §3): at most `MYERS_WORK` =
+2^26 cells of work (edit distance times lines) and at most `MYERS_CELLS`
+= 2^22 cells of memory (32 MiB: the frontier and the rows kept to trace
+the script back). A region that would pass either is written as removed
+and added whole. So the patch of one file holds at most 32 MiB beyond
+its two images.
 
 ### 7.3 Writing the tree
 
@@ -1075,10 +1090,15 @@ The **staged name** of an overlay file is, in the file's own directory,
 
 1. **Check.** For every overlay file whose `post` differs from its `pre`
    (the others take no part in the write): it is owned (§2.1), it is a regular
-   file with one hard link, its directory is writable, no file has its
-   staged name, and its bytes have the `pre` size and digest. Any failure
-   refuses the write (`not_owned`, `hard_linked`, `not_writable`,
-   `stale_file`) and nothing is touched.
+   file with one hard link, its owner's write bit is set, its directory is
+   writable, nothing has its staged name, and its bytes have the `pre`
+   size and digest. Any failure refuses the write (`not_owned`,
+   `not_regular`, `hard_linked`, `read_only`, `not_writable`,
+   `staged_exists`, `stale_file`) and nothing is touched. A store with an
+   unfinished write is refused first, and an ownership that is not valid
+   (§2.1: an entry not a canonical absolute path, none owned) is
+   `Invalid`. A file whose owner write bit is clear (a file not opened for
+   edit in Perforce, a file protected on purpose) is not replaced.
 2. **Journal.** The pre-image bytes of every file are published as blobs.
    Then `<store>/write.journal` is published:
 
@@ -1088,27 +1108,88 @@ The **staged name** of an overlay file is, in the file's own directory,
    ```
 
    one record in the encoding of `model.md` §2, with no container; it is
-   not addressed by content and never leaves the store.
+   not addressed by content and never leaves the store. The publish is
+   exclusive: it fails if a journal exists, which is the unfinished-write
+   refusal (two writes on one store cannot both proceed).
 3. **Stage.** For every file, in path order: the post-image blob is
    copied to the staged name (created exclusively, with the original's
    permission bits) and synced.
-4. **Check again** as in step 1, except that the staged files exist. A
-   failure removes the staged files and the journal; nothing was
-   replaced.
+4. **Check again** as in step 1, except that the staged files exist and
+   must be what step 3 wrote (else `stale_file` naming the staged file),
+   with the original's owner and group (else `owner_changed`: the rename
+   would change them; a create by another user, or in a setgid directory
+   whose group is not the file's, gives a file of another owner or
+   group). A failure removes the staged files and the journal; nothing
+   was replaced.
 5. **Commit.** Each staged file is renamed over its original, in path
-   order, and the directories are synced. Then the journal is removed.
+   order, each just after a re-check of its two names, and the
+   directories are synced. Then the journal is removed. The re-check
+   `lstat`s the file and its staged file (and checks the directory's
+   real path) and compares device, size, modification and change time
+   (with nanoseconds) and inode with what step 4 saw; any difference
+   refuses
+   the write, which is rolled back as for any failure of this step, and
+   the refusal names the file. It catches a save by replace-and-rename
+   and any in-place write that changes the size or advances the times
+   between step 4 and the rename (an editor or a build step saving the
+   file): without it, the rename would overwrite the save. It cannot
+   catch a write within the times' granularity of step 4's `lstat` (on
+   common file systems, under a millisecond), nor a writer that restores
+   the times. A file changed so before the rollback's re-check of it is
+   reported by the rollback and kept, with the journal (the rollback is
+   the restore of `recover`, below).
+   One exception: when step 4's times both have a nanosecond part, a
+   different inode number alone is not a difference. Some volumes
+   (FUSE-backed host mounts) give a file a new inode number on a later
+   lookup after it or its directory was renamed; a replacement of the
+   same size with the same modification and change time to the
+   nanosecond is not realistic (the change time cannot be set). With
+   coarse times (a zero nanosecond part) the inode is compared, as it is
+   then the one field that tells a same-size replacement.
+
+   **Decided (2026-11-23): the window before each rename stays a
+   documented limit.** `write` checks a path and then renames by path;
+   std has no `openat`/`renameat` on an opened directory, so between a
+   file's re-check and its rename (two `lstat`s and a `canonicalize`) a
+   concurrent writer of the tree can still change the file within the
+   times' granularity, or replace a directory on the path by a symbolic
+   link, which the rename would follow (possibly out of the owned tree).
+   Safe directory-relative operations exist (`rustix`, `cap-std`); the
+   operator decided against the dependency because Slip is an
+   interactive tool run on a tree its user controls. What holds
+   regardless: every file is at every moment wholly its old or wholly
+   its new bytes, and the journal rolls the write back.
 
 From step 2 on, a failure that the command cannot undo, or an
 interruption, leaves a journal, and the journal names every file the
 write may have created. Every Slip command that opens the store
 exclusively finds it and refuses to run (`Input`: the store has an
-unfinished write). `slip apply --recover` finishes it: every file whose
-bytes have the `pre` digest is left; every file with the `post` digest is
-restored from its pre-image blob (written to the staged name and renamed
-over the file); any other content is reported and left; staged files are
-removed; the journal is removed if no file was reported. So a file is at
-every moment wholly the pre-image or wholly the post-image, and an
+unfinished write). `slip apply --recover` finishes it. It is given the
+ownership the write was given; a journal naming a path that ownership
+does not own (outside it, or under a `readonly` entry) is refused
+(`journal_not_owned`) before anything is touched, and kept. Otherwise,
+for each file, first its `lstat` and the real path of its directory: a
+file that is missing, not a regular file, or under a directory that is
+a link is reported, and nothing is removed under it. Then its bytes: a
+file with the `pre` digest is left (its staged name removed); a file
+with the `post` digest is restored from its pre-image blob, written to
+the staged name and renamed over the file just after a re-check of the
+file as in step 5 (device, inode, size, modification and change time,
+against the `lstat` before the read); a file that changed since is
+reported and kept, its staged file (the pre-image) left beside it; any
+other content is reported and left. The journal is removed if no file
+was reported. A change between that re-check and the rename is the
+window of step 5. So a file is
+at every moment wholly the pre-image or wholly the post-image, and an
 interrupted write returns to the pre-image.
+
+Staged names are reserved for Slip inside an owned tree: `recover` may
+remove a file it finds at one.
+
+What is kept of a replaced file: its bytes, and its permission bits
+(all twelve). Not kept: owner and group beyond the check of step 4
+(the write is refused rather than changing them), extended attributes,
+ACLs, and timestamps (a replaced or restored file has the current time).
 
 A symbolic link that names an overlay file is not touched: the file at
 the real path is replaced. A file is never written outside the owned set.
@@ -1143,11 +1224,13 @@ The write of §7.3 is over traits for the tree, the blobs and the journal,
 so that a failure at every operation of steps 1 to 5 is tested:
 
 ```rust
-pub struct Stat { pub regular: bool, pub links: u64, pub mode: u32, pub dir_writable: bool }
+pub struct Stat { pub regular: bool, pub links: u64, pub mode: u32, pub dir_writable: bool,
+                  pub uid: u32, pub gid: u32, pub dev: u64, pub ino: u64, pub size: u64,
+                  pub mtime: (i64, i64), pub ctime: (i64, i64) }           // times: seconds, nanoseconds
 pub trait Tree {
     fn stat(&self, path: &[u8]) -> std::io::Result<Option<Stat>>;           // None: no such file
     fn read(&self, path: &[u8]) -> std::io::Result<Vec<u8>>;
-    fn create(&self, path: &[u8], mode: u32, bytes: &[u8], exclusive: bool) -> std::io::Result<()>;   // written and synced
+    fn create(&self, path: &[u8], mode: u32, bytes: &[u8]) -> std::io::Result<()>;   // exclusive, written and synced
     fn rename(&self, from: &[u8], to: &[u8]) -> std::io::Result<()>;
     fn remove(&self, path: &[u8]) -> std::io::Result<()>;
     fn sync_dir(&self, dir: &[u8]) -> std::io::Result<()>;
@@ -1157,21 +1240,27 @@ pub trait Blobs {
     fn put(&self, bytes: &[u8]) -> std::io::Result<Digest>;
 }
 pub trait JournalStore {
-    fn publish(&self, bytes: &[u8]) -> std::io::Result<()>;
+    fn publish(&self, bytes: &[u8]) -> std::io::Result<()>;              // atomic, durable; AlreadyExists if one exists
     fn read(&self) -> std::io::Result<Option<Vec<u8>>>;
     fn remove(&self) -> std::io::Result<()>;
 }
-pub enum Refused { NotOwned(Vec<u8>), HardLinked(Vec<u8>), NotWritable(Vec<u8>), StaleFile(Vec<u8>) }
-pub enum WriteError { Refused(Refused), Io { path: Vec<u8>, message: String, journal_left: bool }, Journal(String) }
+pub enum Refused { NotOwned(Vec<u8>), HardLinked(Vec<u8>), NotWritable(Vec<u8>), StaleFile(Vec<u8>),
+                   NotRegular(Vec<u8>), StagedExists(Vec<u8>), ReadOnly(Vec<u8>), OwnerChanged(Vec<u8>),
+                   JournalNotOwned(Vec<u8>) }
+pub enum WriteError { Refused(Refused), Io { path: Vec<u8>, message: String, journal_left: bool }, Journal(String),
+                      Invalid(String) }   // the overlay or the ownership is malformed, or the id is wrong
 pub struct Recovered { pub restored: Vec<Vec<u8>>, pub left: Vec<Vec<u8>>, pub reported: Vec<Vec<u8>> }
 
 pub fn write(overlay: &Overlay, overlay_id: Digest, ownership: &Ownership,
              tree: &dyn Tree, blobs: &dyn Blobs, journal: &dyn JournalStore) -> Result<u64, WriteError>;
-pub fn recover(tree: &dyn Tree, blobs: &dyn Blobs, journal: &dyn JournalStore) -> Result<Option<Recovered>, WriteError>;
+pub fn recover(ownership: &Ownership, tree: &dyn Tree, blobs: &dyn Blobs, journal: &dyn JournalStore)
+    -> Result<Option<Recovered>, WriteError>;   // the ownership the write was given
 ```
 
 `write` returns the number of files replaced; `recover` returns `None`
-when there is no journal.
+when there is no journal. The order of operations, what an interruption
+at each leaves, and what depends on the file system are
+`spec/landed/edits/WP-063.md` §5.
 
 ## 8. The verify loop
 
@@ -1921,6 +2010,15 @@ and nothing under it.
   a run output to the section and back loses nothing.
 
 ## Open questions
+
+- **Case-insensitive volumes against `readonly` entries** (§2.1).
+  Ownership is decided on path bytes; on a case-insensitive volume
+  `/src/Gen` and `/src/gen` are one directory, so a `readonly` entry
+  spelled in another case than the overlay's real path does not carve
+  the file out. Real paths come from the front end's canonical spelling,
+  which makes this unlikely but not impossible; settling it needs the
+  volume's case rule (or a check that every ownership entry exists with
+  that exact spelling).
 
 - **What `api.md` lacks that a native producer has** (§4.8): a way to
   say `keep` (`api.md` §7.3 rule 7), to say `refuse` with a
