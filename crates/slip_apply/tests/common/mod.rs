@@ -136,3 +136,28 @@ impl Rng {
         (0..len).map(|_| alphabet[self.below(alphabet.len() as u64) as usize]).collect()
     }
 }
+
+/// Removes a scratch tree. The workspace's file system, under load, has
+/// answered "directory not empty" for a directory just emptied and "not
+/// found" for an entry it had just listed; neither is the test's
+/// subject, so the removal is retried for a second before it fails.
+pub fn remove_tree(path: impl AsRef<std::path::Path>) {
+    let path = path.as_ref();
+    let mut tries = 0;
+    loop {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return,
+            Err(e) if e.kind() == io::ErrorKind::NotFound && !path.exists() => return,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::DirectoryNotEmpty | io::ErrorKind::NotFound
+                ) && tries < 20 =>
+            {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => panic!("{}: cannot remove: {e}", path.display()),
+        }
+    }
+}
