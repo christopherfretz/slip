@@ -258,6 +258,22 @@ pair("indeterminate", "layout-typedef-alignment-alignas-class", "",
 pair("indeterminate", "layout-typedef-alignment-alignas-field", "",
      "struct S { char c; alignas(I) char d; };", ["indeterminate S"],
      "`alignas(type-id)` on a field naming the typedef.", pre=TD)
+TDL = "typedef long L __attribute__((aligned(4)));"
+pair("indeterminate", "layout-typedef-alignment-array", "", "struct S { char c; L a[2]; };",
+     ["indeterminate S"],
+     "an array of a typedef that lowers alignment (an over-aligned element is an error): Kiln's"
+     " layout reads the element's typedef.", pre=TDL)
+pair("indeterminate", "layout-typedef-alignment-const-array", "",
+     "typedef const L CL;\nstruct S { char c; CL a[2]; };", ["indeterminate S"],
+     "an array of a cv-qualified typedef of the typedef.", pre=TDL)
+pair("indeterminate", "layout-typedef-alignment-flexible-array", "",
+     "struct S { char c; L a[]; };", ["indeterminate S"],
+     "a flexible array member of the typedef.", pre=TDL)
+pair("indeterminate", "layout-typedef-alignment-redeclared", "",
+     "typedef int I2;\nstruct S { char c; I2 i; };", ["indeterminate S"],
+     "the field names a later redeclaration of a typedef whose first declaration carries"
+     " `aligned` (Kiln reads every redeclaration, kiln_abi `layout/props.rs:85`).",
+     pre="typedef int I2 __attribute__((aligned(8)));")
 pair("equal", "layout-typedef-alignment-template-argument",
      "template <class T> struct X { char c; T t; };\nX<int> x;",
      "template <class T> struct X { char c; T t; };\nX<I> x;", [],
