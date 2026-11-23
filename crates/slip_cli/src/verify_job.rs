@@ -22,13 +22,13 @@ use slip_model::digests::{Digests, Group, GroupClass, GroupSum};
 use slip_model::formats::content_id;
 use slip_model::keys::RuleTable;
 use slip_model::verdict::{FindingKind, Verdict};
-use slip_model::{Counter, Digest, FileRef, Observer, Phase, Shard, Status};
+use slip_model::{Command, Counter, Digest, FileRef, Observer, Phase, Shard, Status};
 use slip_verify::compare::{
     AtSums, CompareError, Comparison, Exemptions, at_sums, comparable, compare_groups,
     unverifiable, verdict, verified,
 };
 
-use crate::image::{Image, Side};
+use crate::image::{Image, Resolver, Side, show_path};
 use crate::locate;
 
 /// A verify job's parameters (`spec/verify.md` §5; `spec/exec.md` §8.6).
@@ -101,14 +101,14 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     let detail = if pre_digests.is_some() { Detail::Differing(&sums) } else { Detail::None };
     let options = Options { rules, detail, names: false };
     let (mut shard, output) =
-        params.image.parse(observer, Side::Post, Phase::Verify, job.round, |input| {
+        params.image.parse_looking(observer, Side::Post, Phase::Verify, job.round, |input| {
             digest(input, &options)
         })?;
     if shard.outcome.status != Status::Ok {
         // `not_parsed`: the parse task's shard, no digests, no verdict.
         return Ok(shard);
     }
-    let Some(output) = output else {
+    let Some((output, lookups)) = output else {
         return Err("the post-image parsed without error and the walk did not run".to_owned());
     };
     let mut counters = std::mem::take(&mut shard.counters);
@@ -119,7 +119,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
 
-    // Step 2: P1 to P3, G1, C.
+    // Step 2: P1 to P3, G1, L1, G4, O2, C.
     let Some(pre) = pre else {
         return unverifiable_now(post, shard, "pre-image: no map shard");
     };
@@ -133,8 +133,26 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     let Some(post_inputs) = shard.inputs.as_ref() else {
         return Err("the post-image parsed without error and has no inputs".to_owned());
     };
-    if let Some(read) = post_inputs.iter().find(|f| params.image.under_subject(&f.path)) {
+    let mut resolver = params.image.resolver();
+    if let Some(read) = post_inputs.iter().find(|f| resolver.under_subject(&f.path)) {
         let reason = format!("post-image: read {}, a file of the subject", show_path(&read.path));
+        return unverifiable_now(post, shard, &reason);
+    }
+    let post_command = params.image.command(&observer.command);
+    if let Some(reason) = resolver.looked_in_subject(&post_command.directory, &lookups) {
+        return unverifiable_now(post, shard, &reason);
+    }
+    if let Some(word) = response_file(&post_command) {
+        let reason = format!(
+            "post-image: the command names the response file {}, whose words slip cannot examine",
+            show_path(word)
+        );
+        return unverifiable_now(post, shard, &reason);
+    }
+    let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
+    let tree = !params.image.is_identity();
+    if let Some(path) = drifted(&mut resolver, post_inputs, pre_inputs).filter(|_| tree) {
+        let reason = format!("pre-image: {} changed since the map phase", show_path(path));
         return unverifiable_now(post, shard, &reason);
     }
     if let Some(reason) = not_comparable(pre_digests, &post.digests) {
@@ -402,18 +420,31 @@ fn without_units(d: &Digests) -> Digests {
     }
 }
 
-/// A path in a reason (§5.3): its bytes where they are UTF-8, each other
-/// byte as `\xNN`.
-fn show_path(path: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(path.len());
-    for chunk in path.utf8_chunks() {
-        out.push_str(chunk.valid());
-        for b in chunk.invalid() {
-            let _ = write!(out, "\\x{b:02x}");
-        }
-    }
-    out
+/// Guard G4 (§5.3): the first word after `argv[0]` that Kiln's driver
+/// reads as a response file (`@` and a name; `kiln_driver/src/rsp.rs`).
+fn response_file(command: &Command) -> Option<&[u8]> {
+    command.argv.iter().skip(1).map(Vec::as_slice).find(|w| w.len() > 1 && w[0] == b'@')
+}
+
+/// Guard O2 of the tree form other than the identity (§5.3; with the
+/// identity every change since the map phase is the edit compared): the
+/// first entry of the post-image
+/// parse's `inputs`, in path order, that is under no post root (nor, after
+/// G1, under a subject root), that the pre shard's `inputs` also list, and
+/// whose size or digest is not the one listed there. Both lists are sorted
+/// by path.
+fn drifted<'a>(
+    resolver: &mut Resolver<'_>,
+    post: &'a [FileRef],
+    pre: &[FileRef],
+) -> Option<&'a [u8]> {
+    post.iter()
+        .filter(|f| match pre.binary_search_by(|p| p.path.cmp(&f.path)) {
+            Ok(i) => pre[i] != **f,
+            Err(_) => false,
+        })
+        .find(|f| !resolver.under_post(&f.path))
+        .map(|f| f.path.as_slice())
 }
 
 #[cfg(test)]

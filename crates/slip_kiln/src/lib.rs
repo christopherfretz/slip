@@ -36,6 +36,7 @@
 #![forbid(unsafe_code)]
 
 mod check;
+mod lookups;
 mod parse;
 
 /// Kiln's own crates, for the Slip crates whose subject is Kiln's AST.
@@ -64,6 +65,7 @@ pub mod snippet;
 pub mod written;
 
 pub use check::KilnCheck;
+pub use lookups::Lookups;
 pub use parse::{ParseOptions, Unit, parse_observer, parse_observer_with};
 
 /// The version of the Kiln front end this build of Slip links

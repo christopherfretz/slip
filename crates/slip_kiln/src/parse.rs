@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use kiln_driver::args::Args;
 use kiln_driver::front_end::{FrontEnd, FrontEndError, FrontEndOptions, run_front_end};
 use slip_model::formats::clip_message;
 use slip_model::hash::content_digest;
@@ -15,6 +16,7 @@ use crate::kiln::ast::Ast;
 use crate::kiln::oven::Oven;
 use crate::kiln::pp::PpRecord;
 use crate::kiln::source::{FileId, FileOrigin, SourceManager};
+use crate::lookups::Lookups;
 
 /// What the front end of [`parse_observer_with`] keeps beyond what the
 /// parse task needs. Every option is off by default, and the shard does not
@@ -35,6 +37,10 @@ pub struct ParseOptions {
     /// [`crate::written`]. How the front end is asked is
     /// [`written_words`]'s to say.
     pub written: bool,
+    /// Record Kiln's lookup log (Kiln `FrontEndOptions::record_lookups`,
+    /// Kiln `spec/pp.md` "Lookup log"), which the closure reads as
+    /// [`Unit::lookups`] (`spec/verify.md` §5.3, guard L1).
+    pub lookups: bool,
 }
 
 /// The words `options` adds to the front end's command line, right after
@@ -72,6 +78,7 @@ pub struct Unit<'r> {
     sm: &'r SourceManager,
     oven: &'r Oven,
     pp_record: Option<&'r PpRecord>,
+    lookups: Option<&'r Lookups>,
     main_file: Option<FileId>,
     /// Each buffer that is one of `inputs`, and the index of its entry.
     buffers: &'r [(FileId, usize)],
@@ -107,6 +114,13 @@ impl<'r> Unit<'r> {
     /// of the AST's interner ([`Ast::symbols`]).
     pub fn pp_record(&self) -> Option<&'r PpRecord> {
         self.pp_record
+    }
+
+    /// What header search looked at ([`Lookups`]), when
+    /// [`ParseOptions::lookups`] asked for it; `None` otherwise. Names no
+    /// Kiln type: any crate may call it.
+    pub fn lookups(&self) -> Option<&'r Lookups> {
+        self.lookups
     }
 
     /// The main file, once the front end entered it.
@@ -251,13 +265,21 @@ pub fn parse_observer_with<R: Send>(
     line.splice(1..1, words.iter().map(|&w| w.to_owned()));
     let program = program(&argv0);
     let dir: &Path = &directory;
+    let embed_line = (&program, &line);
     let see = move |fe: &FrontEnd<'_, '_>| -> Result<(Vec<FileRef>, u64, R), String> {
         let (inputs, buffers) = collect_inputs(fe, dir)?;
+        // The `--embed-dir` directories as Kiln's driver parses them (the
+        // log does not name them): the line as `run_front_end` reads it.
+        let lookups = Lookups::of(fe, || {
+            let (program, line) = embed_line;
+            Args::parse_as(program, &kiln_driver::rsp::expand(line)).embed_dirs
+        });
         let unit = Unit {
             ast: fe.ast,
             sm: fe.sm,
             oven: fe.oven,
             pp_record: fe.pp.record(),
+            lookups: lookups.as_ref(),
             main_file: fe.main_file,
             buffers: &buffers,
             inputs: &inputs,
@@ -268,6 +290,7 @@ pub fn parse_observer_with<R: Send>(
     };
     let mut fe_options = FrontEndOptions::default();
     fe_options.pp_record = options.pp_record;
+    fe_options.record_lookups = options.lookups;
     let report = match run_front_end(&program, &line, fe_options, see) {
         Ok(report) => report,
         Err(e @ (FrontEndError::NotSyntaxOnly | FrontEndError::NotOneInput)) => {

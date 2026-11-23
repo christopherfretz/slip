@@ -18,6 +18,7 @@ use slip_exec::worker::{Job, Post, PostImage, Task};
 use slip_model::declared::Declared;
 use slip_model::digests::tu_digest;
 use slip_model::formats::content_id;
+use slip_model::keys::{KeyKind, Name, Parent, Rule, RuleTable};
 use slip_model::verdict::{FindingKind, VerdictKind};
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard, Status};
 
@@ -178,6 +179,63 @@ impl Tree {
 
     fn params_with(&self, limit: usize, locate: usize) -> Params {
         Params { limit, locate, ..self.params(Declared::none()) }
+    }
+
+    /// The observer compiling `s/a.cpp`, by absolute path, from
+    /// `directory`, with `flags` verbatim.
+    fn observer_in(&self, directory: &Path, flags: &[String]) -> Observer {
+        std::fs::create_dir_all(directory).unwrap();
+        let mut o = self.observer();
+        let mut argv: Vec<Vec<u8>> = vec![b"c++".to_vec(), b"-std=c++20".to_vec()];
+        argv.extend(flags.iter().map(|f| f.as_bytes().to_vec()));
+        argv.push(bytes(&self.subject.join("a.cpp")));
+        o.command = Command { directory: bytes(directory), argv, env: Vec::new() };
+        o.id = o.command.observer_id();
+        o
+    }
+
+    /// The truth of a case (the reviewer's check): the subject with the
+    /// edit applied (the post tree copied over it), mapped with the
+    /// observer's own command; whether its digests differ from `m`'s, the
+    /// pre-image's. The subject is changed: call it last.
+    fn truth_differs(&self, o: &Observer, m: &Shard) -> bool {
+        fn copy(from: &Path, to: &Path) {
+            for e in std::fs::read_dir(from).unwrap() {
+                let e = e.unwrap();
+                let t = to.join(e.file_name());
+                if e.file_type().unwrap().is_dir() {
+                    std::fs::create_dir_all(&t).unwrap();
+                    copy(&e.path(), &t);
+                } else {
+                    std::fs::copy(e.path(), &t).unwrap();
+                }
+            }
+        }
+        copy(&self.post, &self.subject);
+        let now = MapTask::new().run(&self.job(o, Phase::Map, 0)).unwrap();
+        assert_eq!(now.outcome.status, Status::Ok, "{:?}", now.outcome);
+        now.digests != m.digests
+    }
+}
+
+fn arg(prefix: &str, p: &Path) -> String {
+    format!("{prefix}{}", p.to_str().unwrap())
+}
+
+fn ident(s: &str) -> Name {
+    Name::Identifier(s.as_bytes().to_vec())
+}
+
+/// The rule renaming the namespace `from_post` of the post-image to
+/// `to_pre` of the pre-image.
+fn rename_ns(from_post: &str, to_pre: &str) -> Rule {
+    Rule {
+        parent: Parent::Root,
+        kind: KeyKind::Namespace,
+        name: ident(from_post),
+        disc: None,
+        to_parent: Parent::Root,
+        to_name: ident(to_pre),
     }
 }
 
@@ -500,12 +558,13 @@ fn g1_absolute_include() {
     check_post_shard(&v);
 }
 
-// §5.3 G1: through an absolute `-I` into the subject that does not spell
-// the subject root, so the post command keeps it.
+// §5.3 G1: through an absolute include directory into the subject that
+// does not spell the subject root, in a word the rewrite does not resolve
+// (`-Wp,`), so the post command keeps it.
 #[test]
 fn g1_absolute_include_directory() {
     let tree = Tree::new("g1absi", &[("a.cpp", "#include \"h.h\"\n"), ("inc/h.h", "int a = 1;\n")]);
-    let dir = format!("-I{}/./s/inc", tree.base.to_str().unwrap());
+    let dir = format!("-Wp,-I{}/./s/inc", tree.base.to_str().unwrap());
     let o = tree.observer_of("a.cpp", &[&dir]);
     tree.map(&o);
     let v = tree.verify(&o);
@@ -513,12 +572,12 @@ fn g1_absolute_include_directory() {
     assert_eq!(reason(&v), format!("post-image: read {h}, a file of the subject"));
 }
 
-// §5.3 G1: through an include directory relative to the post root,
-// which the post command does not rewrite.
+// §5.3 G1: through an include directory relative to the post root, in a
+// word the rewrite does not resolve (`-Wp,`).
 #[test]
 fn g1_relative_include_directory() {
     let tree = Tree::new("g1rel", &[("a.cpp", "#include \"h.h\"\n"), ("inc/h.h", "int a = 1;\n")]);
-    let o = tree.observer_of("a.cpp", &["-I../s/inc"]);
+    let o = tree.observer_of("a.cpp", &["-Wp,-I../s/inc"]);
     tree.map(&o);
     let v = tree.verify(&o);
     let h = tree.path("inc/h.h");
@@ -867,4 +926,270 @@ fn sweep_no_wrong_verified() {
         }
     }
     assert_eq!(verified, SWEEP_VERIFIES, "edits that verify");
+}
+
+// §5.2 step 1 (A7): the post-image is digested under the declared rules.
+// A renamed namespace under its rule is verified; without it, mismatch.
+#[test]
+fn s5_2_rules_applied_to_the_post_image() {
+    let pre = "namespace old { int f() { return 1; } }\nint g() { return old::f(); }\n";
+    let post = "namespace fresh { int f() { return 1; } }\nint g() { return fresh::f(); }\n";
+    let tree = Tree::new("rules-post", &[("a.cpp", pre)]);
+    write(&tree.post.join("a.cpp"), post);
+    let o = tree.observer();
+    tree.map(&o);
+    let declared = Declared::new(vec![rename_ns("fresh", "old")], vec![], vec![], vec![]).unwrap();
+    let with = tree.verify_with(&o, &tree.params(declared.clone())).unwrap();
+    assert_eq!(kind(&with), VerdictKind::Verified);
+    assert_eq!(with.verdict.as_ref().unwrap().rules, declared.rules().id());
+    assert_eq!(kind(&tree.verify(&o)), VerdictKind::Mismatch);
+}
+
+// §5.2 step 4 (B6): the pre-image is digested with no rules. Two
+// namespaces swapped under rules and one real difference: one finding.
+// Rules applied to the pre-image would swap it too (R2, or more findings).
+#[test]
+fn s5_2_pre_image_without_rules_at_step_4() {
+    let pre = "namespace aa { int f() { return 1; } }\nnamespace bb { int h() { return 2; } }\n\
+               int g() { return aa::f() + bb::h(); }\nint k() { return 1; }\n";
+    let post = "namespace bb { int f() { return 1; } }\nnamespace aa { int h() { return 2; } }\n\
+                int g() { return bb::f() + aa::h(); }\nint k() { return 2; }\n";
+    let tree = Tree::new("rules-pre", &[("a.cpp", pre)]);
+    write(&tree.post.join("a.cpp"), post);
+    let o = tree.observer();
+    tree.map(&o);
+    let rules = RuleTable::new(vec![rename_ns("bb", "aa"), rename_ns("aa", "bb")]).unwrap();
+    let declared = Declared::new(rules.rules().to_vec(), vec![], vec![], vec![]).unwrap();
+    let v = tree.verify_with(&o, &tree.params(declared)).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+    assert_eq!(v.verdict.as_ref().unwrap().total, 1);
+}
+
+// §5.1 (B4): `directory` is rewritten. An include directory relative to
+// it, in a word the rewrite does not resolve (`-Wp,`), then names the
+// post tree: the edited header is compared (with `directory` kept, the
+// post parse would read the subject's, and G1 refuse).
+#[test]
+fn s5_1_directory_rewritten() {
+    let tree = Tree::new("dir", &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", "const int k = 1;\n")]);
+    write(&tree.post.join("inc/h.h"), "const int k = 2;\n");
+    let o = tree.observer_of("a.cpp", &["-Wp,-Iinc"]);
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+}
+
+// F1 (review): a failed `__has_include` into the subject through `-I`
+// relative to a `directory` outside every root. The rewrite resolves the
+// word to the post tree, where the edit added the header: mismatch, as the
+// truth is.
+#[test]
+fn f1_failed_probe_into_the_subject() {
+    let main = "#if __has_include(<x.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+    let tree = Tree::new("f1", &[("a.cpp", main)]);
+    std::fs::create_dir_all(tree.subject.join("inc")).unwrap();
+    write(&tree.post.join("inc/x.h"), "\n");
+    let o = tree.observer_in(&tree.base.join("build"), &["-I../s/inc".to_owned()]);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+    assert!(tree.truth_differs(&o, &m));
+}
+
+// F1b (review): the same word, shadowing: the edit adds `inc/x.h`, which in
+// the post-image comes before `ext/x.h`.
+#[test]
+fn f1b_shadowing_header_added() {
+    let tree = Tree::new("f1b", &[("a.cpp", "#include <x.h>\nint f() { return X; }\n")]);
+    std::fs::create_dir_all(tree.subject.join("inc")).unwrap();
+    write(&tree.base.join("ext/x.h"), "#define X 1\n");
+    write(&tree.post.join("inc/x.h"), "#define X 2\n");
+    let ext = arg("-I", &tree.base.join("ext"));
+    let o = tree.observer_in(&tree.base.join("build"), &["-I../s/inc".to_owned(), ext]);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+    assert!(tree.truth_differs(&o, &m));
+}
+
+// §5.3 L1: F1 through a word the rewrite does not resolve (`-Wp,`): the
+// failed probe looked in a directory of the subject; refused, naming it.
+#[test]
+fn l1_failed_probe_through_a_word_not_resolved() {
+    let main = "#if __has_include(<x.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+    let tree = Tree::new("l1-probe", &[("a.cpp", main)]);
+    std::fs::create_dir_all(tree.subject.join("inc")).unwrap();
+    write(&tree.post.join("inc/x.h"), "\n");
+    let o = tree.observer_in(&tree.base.join("build"), &["-Wp,-I../s/inc".to_owned()]);
+    tree.map(&o);
+    let v = tree.verify(&o);
+    let s = tree.subject.to_str().unwrap();
+    assert_eq!(reason(&v), format!("post-image: searches ../s/inc: {s} is a directory of the subject"));
+    check_post_shard(&v);
+}
+
+// §5.3 L1: a lookup that succeeded, after trying a place in the subject
+// reached through a symbolic link of an include directory outside both
+// roots (`a/sub` -> `s/x`). The list's directories are outside the
+// subject; only the place tried shows it. The edit adds `x/q.h`, which in
+// the post-image is found first.
+#[test]
+fn l1_successful_lookup_tried_the_subject() {
+    let tree = Tree::new("l1-tried", &[("a.cpp", "#include <sub/q.h>\nint f() { return Q; }\n")]);
+    std::fs::create_dir_all(tree.subject.join("x")).unwrap();
+    std::fs::create_dir_all(tree.post.join("x")).unwrap();
+    std::fs::create_dir_all(tree.base.join("a")).unwrap();
+    std::os::unix::fs::symlink(tree.subject.join("x"), tree.base.join("a/sub")).unwrap();
+    write(&tree.base.join("b/sub/q.h"), "#define Q 1\n");
+    write(&tree.post.join("x/q.h"), "#define Q 2\n");
+    let flags = [arg("-I", &tree.base.join("a")), arg("-I", &tree.base.join("b"))];
+    let o = tree.observer_in(&tree.subject, &flags);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    let a = tree.base.join("a");
+    assert_eq!(
+        reason(&v),
+        format!(
+            "post-image: looked for sub/q.h in {}: {} is a directory of the subject",
+            a.display(),
+            tree.subject.display()
+        )
+    );
+    assert!(tree.truth_differs(&o, &m));
+}
+
+// §5.3 L1: a lookup from a header outside both roots (`ext/e.h`) into the
+// subject by a relative name; the search list is outside the subject, the
+// includer's directory is where the name is looked for.
+#[test]
+fn l1_lookup_from_a_file_outside_both_roots() {
+    let main = "#include <e.h>\nint f() { return E; }\n";
+    let tree = Tree::new("l1-outside", &[("a.cpp", main)]);
+    std::fs::create_dir_all(tree.subject.join("inc")).unwrap();
+    write(
+        &tree.base.join("ext/e.h"),
+        "#if __has_include(\"../s/inc/z.h\")\n#define E 2\n#else\n#define E 1\n#endif\n",
+    );
+    write(&tree.post.join("inc/z.h"), "\n");
+    let ext = tree.base.join("ext");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &ext)]);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(
+        reason(&v),
+        format!(
+            "post-image: looked for ../s/inc/z.h in {}: {} is a directory of the subject",
+            ext.display(),
+            tree.subject.display()
+        )
+    );
+    assert!(tree.truth_differs(&o, &m));
+}
+
+// F2 (review), §5.3 G4: a response file the driver would read is a word
+// slip cannot examine; refused, the map job unchanged. Relative from a
+// directory outside the roots, and absolute in the subject.
+#[test]
+fn g4_response_file() {
+    let tree = Tree::new("g4", &[("a.cpp", "int f() { return V; }\n"), ("flags.rsp", "-DV=1\n")]);
+    write(&tree.post.join("flags.rsp"), "-DV=2\n");
+    for (dir, word) in [
+        (tree.base.join("build"), "@../s/flags.rsp".to_owned()),
+        (tree.subject.clone(), arg("@", &tree.subject.join("flags.rsp"))),
+    ] {
+        let o = tree.observer_in(&dir, std::slice::from_ref(&word));
+        let m = tree.map(&o);
+        assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+        let v = tree.verify(&o);
+        let shown = image_word(&tree, &word);
+        assert_eq!(
+            reason(&v),
+            format!("post-image: the command names the response file {shown}, whose words slip cannot examine")
+        );
+    }
+}
+
+/// `word` as the post command writes it (the textual rule).
+fn image_word(tree: &Tree, word: &str) -> String {
+    word.replace(tree.subject.to_str().unwrap(), tree.post.to_str().unwrap())
+}
+
+// F3 (review): an include directory spelled with another case than the
+// subject root, on a file system that ignores case. The rewrite resolves
+// it by identity: mismatch, as the truth is. Skipped, visibly, where the
+// file system is case-sensitive.
+#[test]
+fn f3_case_insensitive_spelling() {
+    let tree = Tree::new("f3", &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", "const int k = 1;\n")]);
+    write(&tree.post.join("inc/h.h"), "const int k = 2;\n");
+    let upper = tree.base.join("S").join("inc");
+    if std::fs::metadata(&upper).is_err() {
+        eprintln!("f3_case_insensitive_spelling: SKIPPED, the file system is case-sensitive");
+        return;
+    }
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &upper)]);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+    // Through a word the rewrite does not resolve: G1, by identity.
+    let o2 = tree.observer_in(&tree.subject, &[arg("-Wp,-I", &upper)]);
+    tree.map(&o2);
+    let v2 = tree.verify(&o2);
+    assert!(reason(&v2).starts_with("post-image: read "), "{}", reason(&v2));
+    assert!(reason(&v2).ends_with("/inc/h.h, a file of the subject"), "{}", reason(&v2));
+    assert!(tree.truth_differs(&o, &m));
+}
+
+// F3, the symbolic-link form (runs everywhere): `link` -> `s`. Resolved by
+// the rewrite: mismatch; through a word it does not resolve: L1.
+#[test]
+fn f3_symbolic_link_to_the_subject() {
+    let tree = Tree::new("f3link", &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", "const int k = 1;\n")]);
+    write(&tree.post.join("inc/h.h"), "const int k = 2;\n");
+    std::os::unix::fs::symlink(&tree.subject, tree.base.join("link")).unwrap();
+    let inc = tree.base.join("link/inc");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &inc)]);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+    let o2 = tree.observer_in(&tree.subject, &[arg("-Wp,-I", &inc)]);
+    tree.map(&o2);
+    let v2 = tree.verify(&o2);
+    assert_eq!(kind(&v2), VerdictKind::Unverifiable);
+    assert!(tree.truth_differs(&o, &m));
+}
+
+// §5.1: a word the rewrite resolved keeps its spelling: `__FILE__` in a
+// header found through `-I../s/inc` from outside the roots is `../s/inc/h.h`
+// in the post-image too (the added `-fmacro-prefix-map=` word). No edit:
+// verified at the sums.
+#[test]
+fn s5_1_resolved_word_keeps_its_spelling() {
+    let h = "static_assert(sizeof(__FILE__) == sizeof(\"../s/inc/h.h\"));\nconst int k = 1;\n";
+    let tree = Tree::new("spelling", &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", h)]);
+    let o = tree.observer_in(&tree.base.join("build"), &["-I../s/inc".to_owned()]);
+    let m = tree.map(&o);
+    assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+    let v = tree.verify(&o);
+    assert_eq!(v.outcome.status, Status::Ok, "{:?}", v.outcome);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+}
+
+// F4 (review), §5.3 O2 for the tree form: a header outside both roots
+// changed between the map phase and the job (same size), with a post edit
+// that compensates. Refused as G2 refuses a changed input, before the sums.
+#[test]
+fn o2_outside_drift_at_the_sums() {
+    let pre = "#include <cfg.h>\n#if USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+    let post = "#include <cfg.h>\n#if !USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+    let tree = Tree::new("o2", &[("a.cpp", pre)]);
+    write(&tree.post.join("a.cpp"), post);
+    let cfg = tree.base.join("ext/cfg.h");
+    write(&cfg, "#define USE_NEW 0\n");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &tree.base.join("ext"))]);
+    tree.map(&o);
+    write(&cfg, "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), format!("pre-image: {} changed since the map phase", cfg.display()));
+    check_post_shard(&v);
 }

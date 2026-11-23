@@ -100,9 +100,14 @@ fn s5_1_refused_roots() {
             "/p is a root of the image twice",
         ),
         (
-            vec![map("/s", "/s/p")],
+            vec![map("/s/p", "/s")],
             ImageError::Nested { inner: b"/s/p".to_vec(), outer: b"/s".to_vec() },
             "/s/p lies under /s",
+        ),
+        (
+            vec![map("/s", "/p"), map("/t", "/p/q")],
+            ImageError::Nested { inner: b"/p/q".to_vec(), outer: b"/p".to_vec() },
+            "/p/q lies under /p",
         ),
         (
             vec![map("/a/b", "/p"), map("/a", "/q")],
@@ -119,6 +124,9 @@ fn s5_1_refused_roots() {
     assert!(Image::new(vec![map("/s=t", "/p")]).is_ok());
     assert!(Image::new(vec![map("/a", "/p"), map("/ab", "/q")]).is_ok());
     assert!(Image::new(vec![map("/a/bc", "/a/b")]).is_ok());
+    // A post root may lie under a subject root, its own or another's.
+    assert!(Image::new(vec![map("/s", "/s/p")]).is_ok());
+    assert!(Image::new(vec![map("/a", "/p"), map("/b", "/a/q")]).is_ok());
 }
 
 // §5.1: the maps sorted by `subject`; no map is the identity.

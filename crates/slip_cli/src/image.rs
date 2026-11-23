@@ -13,14 +13,16 @@
 //! Every path here is absolute: a parse changes the process's current
 //! directory (`slip_kiln::parse_observer_with`).
 
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use slip_digest::Input;
 use slip_digest::map::with_input;
 use slip_exec::store::Store;
 use slip_exec::worker::PostImage;
-use slip_kiln::{ParseOptions, parse_observer_with};
+use slip_kiln::{Lookups, ParseOptions, parse_observer_with};
 use slip_model::{Command, Observer, Phase, Shard, Status};
 
 use crate::args::ImageArgs;
@@ -158,17 +160,21 @@ impl Image {
             check_root(&m.subject, false)?;
             check_root(&m.post, true)?;
         }
-        let roots: Vec<&[u8]> =
-            maps.iter().flat_map(|m| [m.subject.as_slice(), m.post.as_slice()]).collect();
-        for (i, a) in roots.iter().enumerate() {
-            for b in &roots[i + 1..] {
+        // Each root with whether it is a post root.
+        let roots: Vec<(&[u8], bool)> = maps
+            .iter()
+            .flat_map(|m| [(m.subject.as_slice(), false), (m.post.as_slice(), true)])
+            .collect();
+        for (i, &(a, a_post)) in roots.iter().enumerate() {
+            for &(b, b_post) in &roots[i + 1..] {
                 if a == b {
                     return Err(ImageError::Duplicate(a.to_vec()));
                 }
-                if at_or_under(a, b) {
+                // A post root may lie under a subject root (§5.1).
+                if at_or_under(a, b) && !(a_post && !b_post) {
                     return Err(ImageError::Nested { inner: a.to_vec(), outer: b.to_vec() });
                 }
-                if at_or_under(b, a) {
+                if at_or_under(b, a) && !(b_post && !a_post) {
                     return Err(ImageError::Nested { inner: b.to_vec(), outer: a.to_vec() });
                 }
             }
@@ -243,22 +249,67 @@ impl Image {
         self.maps.is_empty()
     }
 
-    /// The post command of §5.1: `directory` rewritten if it is a subject
-    /// root or lies under one; `argv[0]` kept; in every other word each
-    /// occurrence of a subject root followed by `/` or the end of the word
-    /// replaced by its post root, from the left, not overlapping; one
-    /// `-fmacro-prefix-map=<post>/=<subject>/` per map after the last
-    /// word; `env` kept. The identity's is the command itself.
+    /// The post command of §5.1. `argv[0]` and `env` are kept. Every
+    /// path-bearing word (§5.1, "Path-bearing words") is resolved against
+    /// the command's `directory`, by identity, and rewritten to the same
+    /// place in the post tree when it reaches the subject
+    /// ([`Resolver::resolve_part`]), with one
+    /// `-fmacro-prefix-map=<new>=<as written>` word so that the paths under
+    /// it keep their spelling; `directory` is resolved the same way. Every
+    /// other word, and a path that cannot be resolved (a root that is not
+    /// there), takes the textual rule: each occurrence of a subject root
+    /// followed by `/` or the end of the word replaced by its post root,
+    /// from the left, not overlapping. Then one
+    /// `-fmacro-prefix-map=<post>/=<subject>/` per map. The identity's is
+    /// the command itself.
     pub fn command(&self, command: &Command) -> Command {
-        let directory = match self.maps.iter().find(|m| at_or_under(&command.directory, &m.subject))
-        {
-            Some(m) => [&m.post[..], &command.directory[m.subject.len()..]].concat(),
-            None => command.directory.clone(),
-        };
-        let mut argv: Vec<Vec<u8>> = Vec::with_capacity(command.argv.len() + self.maps.len());
-        for (i, word) in command.argv.iter().enumerate() {
-            argv.push(if i == 0 { word.clone() } else { self.rewrite(word) });
+        if self.maps.is_empty() {
+            return command.clone();
         }
+        let mut r = self.resolver();
+        let root = Path::new("/");
+        let directory = match r.resolve_part(&command.directory, root, root) {
+            Part::Rewrite(new) => new,
+            Part::Keep => command.directory.clone(),
+            Part::Textual => match self.maps.iter().find(|m| at_or_under(&command.directory, &m.subject)) {
+                Some(m) => [&m.post[..], &command.directory[m.subject.len()..]].concat(),
+                None => command.directory.clone(),
+            },
+        };
+        let (from, to) = (bytes_path(&command.directory), bytes_path(&directory));
+        let mut argv: Vec<Vec<u8>> = Vec::with_capacity(command.argv.len() + self.maps.len());
+        let mut back: Vec<Vec<u8>> = Vec::new();
+        let mut next = Next::None;
+        for (i, word) in command.argv.iter().enumerate() {
+            if i == 0 {
+                argv.push(word.clone());
+                continue;
+            }
+            let Some((at, kind)) = path_part(word, &mut next).filter(|&(at, _)| at < word.len())
+            else {
+                argv.push(self.rewrite(word));
+                continue;
+            };
+            let part = &word[at..];
+            match r.resolve_part(part, &from, &to) {
+                Part::Rewrite(new) => {
+                    let slash: &[u8] = match kind {
+                        PathKind::Dir if !new.ends_with(b"/") && !part.ends_with(b"/") => b"/",
+                        _ => b"",
+                    };
+                    if !new.contains(&b'=') {
+                        let map = [b"-fmacro-prefix-map=", &new[..], slash, b"=", part, slash].concat();
+                        if !back.contains(&map) {
+                            back.push(map);
+                        }
+                    }
+                    argv.push([&word[..at], &new[..]].concat());
+                }
+                Part::Keep => argv.push(word.clone()),
+                Part::Textual => argv.push(self.rewrite(word)),
+            }
+        }
+        argv.extend(back);
         for m in &self.maps {
             argv.push([b"-fmacro-prefix-map=", &m.post[..], b"/=", &m.subject[..], b"/"].concat());
         }
@@ -296,9 +347,27 @@ impl Image {
         }
     }
 
-    /// Guard G1's test (§5.3): `real` is a subject root or lies under one.
+    /// Guard G1's test (§5.3) for one path: [`Resolver::under_subject`].
     pub fn under_subject(&self, real: &[u8]) -> bool {
-        self.maps.iter().any(|m| at_or_under(real, &m.subject))
+        self.resolver().under_subject(real)
+    }
+
+    /// A [`Resolver`] for this image's roots: each root's identity read
+    /// now, and empty caches.
+    pub fn resolver(&self) -> Resolver<'_> {
+        let id = |root: &[u8]| {
+            std::fs::metadata(bytes_path(root))
+                .ok()
+                .filter(std::fs::Metadata::is_dir)
+                .map(|m| (m.dev(), m.ino()))
+        };
+        Resolver {
+            maps: &self.maps,
+            ids: self.maps.iter().map(|m| (id(&m.subject), id(&m.post))).collect(),
+            regions: HashMap::new(),
+            kinds: HashMap::new(),
+            walks: HashMap::new(),
+        }
     }
 
     /// One parse of an observer's image with the walk's input. `Pre` is
@@ -322,6 +391,42 @@ impl Image {
         round: u64,
         f: impl FnOnce(&Input<'_>) -> R + Send,
     ) -> Result<(Shard, Option<R>), String> {
+        let (shard, value) = self.parse_with(observer, side, phase, round, false, f)?;
+        Ok((shard, value.map(|(value, _)| value)))
+    }
+
+    /// [`Image::parse`], with what header search looked at
+    /// (`slip_kiln::Lookups`, for guard L1 of §5.3) beside `f`'s result.
+    ///
+    /// # Errors
+    ///
+    /// As [`Image::parse`].
+    pub fn parse_looking<R: Send>(
+        &self,
+        observer: &Observer,
+        side: Side,
+        phase: Phase,
+        round: u64,
+        f: impl FnOnce(&Input<'_>) -> R + Send,
+    ) -> Result<(Shard, Option<(R, Lookups)>), String> {
+        let (shard, value) = self.parse_with(observer, side, phase, round, true, f)?;
+        let value = match value {
+            Some((value, Some(lookups))) => Some((value, lookups)),
+            Some((_, None)) => return Err("the front end recorded no lookup log".to_owned()),
+            None => None,
+        };
+        Ok((shard, value))
+    }
+
+    fn parse_with<R: Send>(
+        &self,
+        observer: &Observer,
+        side: Side,
+        phase: Phase,
+        round: u64,
+        lookups: bool,
+        f: impl FnOnce(&Input<'_>) -> R + Send,
+    ) -> Result<(Shard, Option<(R, Option<Lookups>)>), String> {
         let post;
         let parsed = match side {
             Side::Pre => observer,
@@ -334,16 +439,500 @@ impl Image {
             Side::Pre => real.to_vec(),
             Side::Post => self.to_subject(real),
         };
-        let (shard, walked) =
-            parse_observer_with(parsed, phase, round, ParseOptions::default(), |unit| {
-                (unit.errors() == 0).then(|| with_input(unit, &subject, f))
-            })?;
+        let mut options = ParseOptions::default();
+        options.lookups = lookups;
+        let (shard, walked) = parse_observer_with(parsed, phase, round, options, |unit| {
+            (unit.errors() == 0).then(|| (with_input(unit, &subject, f), unit.lookups().cloned()))
+        })?;
         let value = match walked.flatten() {
-            Some(Ok(value)) => Some(value),
-            Some(Err(e)) => return Err(e),
+            Some((Ok(value), looked)) => Some((value, looked)),
+            Some((Err(e), _)) => return Err(e),
             None => None,
         };
         let value = value.filter(|_| shard.outcome.status == Status::Ok);
         Ok((shard, value))
     }
+}
+
+/// How a path-bearing word's path is to be rewritten
+/// ([`Resolver::resolve_part`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Part {
+    /// To this path.
+    Rewrite(Vec<u8>),
+    /// As written: it names the same place from the post command.
+    Keep,
+    /// By the textual rule.
+    Textual,
+}
+
+/// What a path-bearing word names (§5.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathKind {
+    Dir,
+    File,
+}
+
+/// What the next word of the command is, after an option word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Next {
+    None,
+    /// The value of a path option.
+    Path(PathKind),
+    /// The value of another option, which is not a path.
+    Skip,
+}
+
+/// Options whose value is a path, joined (`-Ifoo`) or separate (`-I
+/// foo`), longest first where one is a prefix of another (Kiln's
+/// `JOINED_OR_SEPARATE`, `kiln_driver/src/args.rs:1290`, the path ones).
+const JOINED_OR_SEPARATE_PATHS: &[(&[u8], PathKind)] = &[
+    (b"-cxx-isystem", PathKind::Dir),
+    (b"-idirafter", PathKind::Dir),
+    (b"-isysroot", PathKind::Dir),
+    (b"-isystem", PathKind::Dir),
+    (b"-include", PathKind::File),
+    (b"-iquote", PathKind::Dir),
+    (b"-B", PathKind::Dir),
+    (b"-F", PathKind::Dir),
+    (b"-I", PathKind::Dir),
+];
+
+/// Path options with a separate value or an `=` (Kiln's `SEPARATE_OR_EQ`).
+const EQ_OR_SEPARATE_PATHS: &[(&[u8], PathKind)] =
+    &[(b"--sysroot", PathKind::Dir), (b"-resource-dir", PathKind::Dir)];
+
+/// Path options joined by `=` only (Kiln `args.rs:2176`, `:2271`).
+const EQ_PATHS: &[(&[u8], PathKind)] =
+    &[(b"--embed-dir=", PathKind::Dir), (b"--gcc-toolchain=", PathKind::Dir)];
+
+/// Options with a separate value that is not a path (Kiln's
+/// `JOINED_OR_SEPARATE`, `SEPARATE_OR_EQ` and `SEPARATE`, the others, and
+/// the pass-through options): the value is not an input.
+const SEPARATE_OTHER: &[&[u8]] = &[
+    b"-D", b"-U", b"-MF", b"-MJ", b"-MQ", b"-MT", b"-L", b"-l", b"-o", b"-x", b"-target-feature",
+    b"-target", b"--target", b"-std", b"--std", b"-dumpdir", b"-ftrapv-handler", b"-Xclang",
+    b"-mllvm", b"-Xlinker", b"-Xpreprocessor", b"-Xassembler", b"-arch",
+];
+
+/// The path in `word`, as the offset where it starts and what it names:
+/// the value of a path option, or an input (a word that does not start
+/// with `-` or `@` and is no option's value). `next` carries an option
+/// whose value is the next word.
+fn path_part(word: &[u8], next: &mut Next) -> Option<(usize, PathKind)> {
+    match std::mem::replace(next, Next::None) {
+        Next::Path(kind) => return Some((0, kind)),
+        Next::Skip => return None,
+        Next::None => {}
+    }
+    match word.first() {
+        None | Some(b'@') => return None,
+        Some(b'-') => {}
+        Some(_) => return Some((0, PathKind::File)),
+    }
+    if word == b"-include-pch" {
+        *next = Next::Path(PathKind::File);
+        return None;
+    }
+    for &(opt, kind) in EQ_OR_SEPARATE_PATHS {
+        if word == opt {
+            *next = Next::Path(kind);
+            return None;
+        }
+        if word.strip_prefix(opt).is_some_and(|rest| rest.first() == Some(&b'=')) {
+            return Some((opt.len() + 1, kind));
+        }
+    }
+    for &(opt, kind) in EQ_PATHS {
+        if word.starts_with(opt) {
+            return Some((opt.len(), kind));
+        }
+    }
+    for &(opt, kind) in JOINED_OR_SEPARATE_PATHS {
+        if word == opt {
+            *next = Next::Path(kind);
+            return None;
+        }
+        if word.starts_with(opt) {
+            return Some((opt.len(), kind));
+        }
+    }
+    if SEPARATE_OTHER.contains(&word) {
+        *next = Next::Skip;
+    }
+    None
+}
+
+/// Where a directory is, by identity (§5.1): its nearest ancestor (itself
+/// included) that is a root of the image, a post root or a subject root,
+/// with the number of components of that root; or neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Region {
+    Subject { map: usize, depth: usize },
+    Post { depth: usize },
+    Neither,
+}
+
+/// What `lstat` says of a path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Kind {
+    Missing,
+    Dir,
+    File,
+    Link(PathBuf),
+}
+
+/// Symbolic links a walk follows before it stops (Linux's `MAXSYMLINKS`).
+const MAX_LINKS: u32 = 40;
+
+/// What [`Resolver::walk`] saw.
+#[derive(Debug, Default)]
+struct Walked {
+    /// The first directory of the subject the walk looked up a name in.
+    subject: Option<PathBuf>,
+    /// In rewrite mode: the place in the post tree, when the walk entered
+    /// the subject with no `..` left.
+    entered: Option<PathBuf>,
+    /// A symbolic link was followed in a directory of the subject.
+    link_in_subject: bool,
+    /// Where the walk stopped, and the components it did not resolve.
+    end: PathBuf,
+    tail: Vec<std::ffi::OsString>,
+}
+
+/// "Under a root" by identity (§5.1), with caches: one per job's checks.
+///
+/// A directory is under a root when it or one of its ancestors is the
+/// root's directory, compared by device and inode, the nearest root
+/// winning (so a post root under a subject root is not under the
+/// subject). A path is walked component by component, as the kernel
+/// resolves it (symbolic links followed): every directory a name is looked
+/// up in is visited, and a walk stops at the first component that does
+/// not exist, since what does not exist cannot change where it leads.
+/// Only directories are compared, never a file's own inode: a post tree
+/// made of hard links is legitimate.
+#[derive(Debug)]
+pub struct Resolver<'i> {
+    maps: &'i [RootMap],
+    /// Each map's subject and post root identity; `None` when it cannot be
+    /// read (the root then falls back to the textual rule and bytes).
+    ids: Vec<(Option<(u64, u64)>, Option<(u64, u64)>)>,
+    regions: HashMap<PathBuf, Region>,
+    kinds: HashMap<PathBuf, Kind>,
+    walks: HashMap<PathBuf, Option<PathBuf>>,
+}
+
+impl Resolver<'_> {
+    /// The region of the directory `dir` (absolute, no symbolic link,
+    /// `.` or `..` in it).
+    fn region(&mut self, dir: &Path) -> Region {
+        if let Some(&r) = self.regions.get(dir) {
+            return r;
+        }
+        let id = std::fs::metadata(dir).ok().filter(std::fs::Metadata::is_dir);
+        let id = id.map(|m| (m.dev(), m.ino()));
+        let depth = dir.components().count().saturating_sub(1);
+        let r = if id.is_some() && self.ids.iter().any(|ids| ids.1 == id) {
+            Region::Post { depth }
+        } else if let Some(map) = id.and_then(|id| self.ids.iter().position(|ids| ids.0 == Some(id)))
+        {
+            Region::Subject { map, depth }
+        } else {
+            match dir.parent() {
+                Some(parent) => self.region(parent),
+                None => Region::Neither,
+            }
+        };
+        self.regions.insert(dir.to_path_buf(), r);
+        r
+    }
+
+    fn kind(&mut self, path: &Path) -> Kind {
+        if let Some(k) = self.kinds.get(path) {
+            return k.clone();
+        }
+        let k = match std::fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_symlink() => {
+                std::fs::read_link(path).map_or(Kind::Missing, Kind::Link)
+            }
+            Ok(m) if m.is_dir() => Kind::Dir,
+            Ok(_) => Kind::File,
+            Err(_) => Kind::Missing,
+        };
+        self.kinds.insert(path.to_path_buf(), k.clone());
+        k
+    }
+
+    /// `dir` is a post root.
+    fn is_post_root(&mut self, dir: &Path) -> bool {
+        let depth = dir.components().count().saturating_sub(1);
+        self.region(dir) == Region::Post { depth }
+    }
+
+    /// The walk of the absolute path `start` (see [`Resolver`]). Stops at
+    /// the first directory of the subject it looks a name up in, unless
+    /// `rewrite`; then it also stops where it enters the subject with no
+    /// `..` left, giving the same place in the post tree.
+    fn walk(&mut self, start: &Path, rewrite: bool) -> Walked {
+        let mut todo: VecDeque<std::ffi::OsString> = VecDeque::new();
+        components(start, &mut todo);
+        let mut cur = PathBuf::from("/");
+        let mut out = Walked::default();
+        let mut links = 0;
+        loop {
+            let region = self.region(&cur);
+            let in_subject = matches!(region, Region::Subject { .. });
+            let Some(c) = todo.pop_front() else {
+                if in_subject {
+                    out.subject.get_or_insert_with(|| cur.clone());
+                }
+                break;
+            };
+            if c == "." {
+                continue;
+            }
+            if c == ".." {
+                if in_subject {
+                    out.subject.get_or_insert_with(|| cur.clone());
+                    if !rewrite {
+                        break;
+                    }
+                }
+                cur.pop();
+                continue;
+            }
+            let next = cur.join(&c);
+            let kind = self.kind(&next);
+            // Looking up a post root's name in its subject is how the post
+            // tree is reached, not a look at the subject.
+            if in_subject && !(kind == Kind::Dir && self.is_post_root(&next)) {
+                if let (true, None, Region::Subject { map, depth }) =
+                    (rewrite, &out.subject, region)
+                    && !todo.iter().any(|t| t == "..")
+                {
+                    let mut target = bytes_path(&self.maps[map].post);
+                    target.extend(cur.components().skip(1 + depth));
+                    target.push(&c);
+                    target.extend(todo.iter());
+                    out.entered = Some(target);
+                    return out;
+                }
+                out.subject.get_or_insert_with(|| cur.clone());
+                if !rewrite {
+                    break;
+                }
+            }
+            match kind {
+                Kind::Dir => cur = next,
+                Kind::Link(target) if links < MAX_LINKS => {
+                    links += 1;
+                    out.link_in_subject |= in_subject;
+                    if target.is_absolute() {
+                        cur = PathBuf::from("/");
+                    }
+                    let mut front = VecDeque::new();
+                    components(&target, &mut front);
+                    for t in front.into_iter().rev() {
+                        todo.push_front(t);
+                    }
+                }
+                _ => {
+                    todo.push_front(c);
+                    break;
+                }
+            }
+        }
+        out.end = cur;
+        out.tail = todo.into();
+        out
+    }
+
+    /// The first directory of the subject the walk of `start` looks a name
+    /// up in, if any (cached).
+    fn subject_dir(&mut self, start: &Path) -> Option<PathBuf> {
+        if let Some(r) = self.walks.get(start) {
+            return r.clone();
+        }
+        let r = self.walk(start, false).subject;
+        self.walks.insert(start.to_path_buf(), r.clone());
+        r
+    }
+
+    /// How the path `part` of a word of the post command is written
+    /// (§5.1): resolved against `from` (the command's `directory`) by a
+    /// walk; when it reaches the subject, the same place in the post tree
+    /// ([`Part::Keep`] if `part`, relative, already names that place from
+    /// `to`, the post command's `directory`). A path that reaches the
+    /// subject only to leave it by `..` is rewritten to where it ends
+    /// (written through the subject when it followed a symbolic link
+    /// there, which guard L1 then refuses if the front end looks there).
+    /// One that never reaches the subject, or that cannot be resolved
+    /// (`from` not absolute), takes the textual rule.
+    fn resolve_part(&mut self, part: &[u8], from: &Path, to: &Path) -> Part {
+        let relative = !part.starts_with(b"/");
+        if part.is_empty() || (relative && !from.is_absolute()) {
+            return Part::Textual;
+        }
+        let written = bytes_path(part);
+        let start = if relative { from.join(&written) } else { written.clone() };
+        let walked = self.walk(&start, true);
+        let target = if let Some(target) = walked.entered {
+            target
+        } else if walked.subject.is_none() {
+            return Part::Textual;
+        } else if walked.link_in_subject {
+            if relative && start != lexical(&to.join(&written)) {
+                return Part::Rewrite(path_bytes(&start));
+            }
+            return Part::Keep;
+        } else {
+            let mut end = walked.end;
+            let mut tail: Vec<std::ffi::OsString> = Vec::new();
+            for c in walked.tail {
+                if c == ".." {
+                    if tail.pop().is_none() {
+                        end.pop();
+                    }
+                } else if c != "." {
+                    tail.push(c);
+                }
+            }
+            if let Region::Subject { map, depth } = self.region(&end) {
+                let mut target = bytes_path(&self.maps[map].post);
+                target.extend(end.components().skip(1 + depth));
+                end = target;
+            }
+            end.extend(tail);
+            end
+        };
+        if relative && lexical(&to.join(&written)) == lexical(&target) {
+            return Part::Keep;
+        }
+        if !relative && written == target {
+            return Part::Keep;
+        }
+        Part::Rewrite(path_bytes(&target))
+    }
+
+    /// Guard G1's test (§5.3) for the real path of a file read: its
+    /// directory is under a subject root and under no post root, by
+    /// identity. A root whose identity cannot be read is compared as bytes.
+    pub fn under_subject(&mut self, real: &[u8]) -> bool {
+        match self.region(file_dir(real).as_path()) {
+            Region::Subject { .. } => true,
+            Region::Post { .. } => false,
+            Region::Neither => {
+                self.maps
+                    .iter()
+                    .zip(&self.ids)
+                    .any(|(m, ids)| ids.0.is_none() && at_or_under(real, &m.subject))
+                    && !self.maps.iter().any(|m| at_or_under(real, &m.post))
+            }
+        }
+    }
+
+    /// The real path of a file read is under a post root, by identity
+    /// (bytes for a root whose identity cannot be read).
+    pub fn under_post(&mut self, real: &[u8]) -> bool {
+        match self.region(file_dir(real).as_path()) {
+            Region::Post { .. } => true,
+            Region::Subject { .. } => false,
+            Region::Neither => self
+                .maps
+                .iter()
+                .zip(&self.ids)
+                .any(|(m, ids)| ids.1.is_none() && at_or_under(real, &m.post)),
+        }
+    }
+
+    /// Guard L1 (§5.3): the reason when a place `lookups` names, walked
+    /// from `directory` (the post command's), looks a name up in a
+    /// directory of the subject; `None` when none does. In this order:
+    /// each directory of the search list; each location tried, by the
+    /// directory that would hold it; each file read, by its directory as
+    /// spelled.
+    pub fn looked_in_subject(&mut self, directory: &[u8], lookups: &Lookups) -> Option<String> {
+        let base = bytes_path(directory);
+        let at = |p: &str| base.join(p);
+        let show = |p: &Path| show_path(&path_bytes(p));
+        for d in &lookups.list {
+            if let Some(hit) = self.subject_dir(&at(d)) {
+                return Some(format!(
+                    "post-image: searches {d}: {} is a directory of the subject",
+                    show(&hit)
+                ));
+            }
+        }
+        for (d, name) in &lookups.tried {
+            let place = at(d).join(name);
+            let holder = place.parent().map_or_else(|| PathBuf::from("/"), Path::to_path_buf);
+            if let Some(hit) = self.subject_dir(&holder) {
+                return Some(format!(
+                    "post-image: looked for {name} in {d}: {} is a directory of the subject",
+                    show(&hit)
+                ));
+            }
+        }
+        for name in &lookups.read {
+            let place = at(name);
+            let holder = place.parent().map_or_else(|| PathBuf::from("/"), Path::to_path_buf);
+            if let Some(hit) = self.subject_dir(&holder) {
+                return Some(format!(
+                    "post-image: read {name}: {} is a directory of the subject",
+                    show(&hit)
+                ));
+            }
+        }
+        None
+    }
+}
+
+/// The components of `path` other than its root, as names (`.` and `..`
+/// kept), appended to `out`.
+fn components(path: &Path, out: &mut VecDeque<std::ffi::OsString>) {
+    use std::path::Component;
+    for c in path.components() {
+        match c {
+            Component::Normal(n) => out.push_back(n.to_owned()),
+            Component::CurDir => out.push_back(".".into()),
+            Component::ParentDir => out.push_back("..".into()),
+            Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+}
+
+/// `path` with `.` and `..` taken lexically.
+fn lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The directory of the file whose real path is `real`.
+fn file_dir(real: &[u8]) -> PathBuf {
+    let p = bytes_path(real);
+    p.parent().map_or_else(|| PathBuf::from("/"), Path::to_path_buf)
+}
+
+/// A path in a reason: its bytes where they are UTF-8, each other byte as
+/// `\xNN` (`spec/verify.md` §5.3).
+pub fn show_path(path: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(path.len());
+    for chunk in path.utf8_chunks() {
+        out.push_str(chunk.valid());
+        for b in chunk.invalid() {
+            let _ = write!(out, "\\x{b:02x}");
+        }
+    }
+    out
 }
