@@ -4,6 +4,8 @@
 //! calling the trait directly. Each test names its section and rule, or
 //! the item of the package's test list.
 
+use std::collections::HashSet;
+
 use slip_kiln::snippet::{Extra, Parsed, Snippet, parse_with_tables};
 use slip_script::host::parse_qualified_name;
 use slip_script::kiln_subject::{KilnSubject, NoExtent};
@@ -970,6 +972,16 @@ call_in_type!(
     "template <int N> constexpr int vt = N;\nint g() { return vt<f(1)>; }"
 );
 call_in_type!(
+    s6_7_rule3_in_assume,
+    "A statement's `assume` attribute: its expression.",
+    "void g(int x) { [[assume(f(1) == x)]]; }"
+);
+call_in_type!(
+    s6_7_rule3_in_enable_if,
+    "A function's `enable_if` attribute: its condition.",
+    "int g(int x) __attribute__((enable_if(f(1) == 1, \"\")));"
+);
+call_in_type!(
     s6_7_rule3_in_a_lambda_return_type,
     "A lambda's call operator's type.",
     "auto lam = []() -> decltype(f(1)) { return 0; };"
@@ -1449,6 +1461,7 @@ enum J {
     Arr(Vec<J>),
     Str(String),
     Num(i64),
+    Bool(bool),
     Other,
 }
 
@@ -1523,10 +1536,14 @@ impl Reader<'_> {
                 {
                     self.i += 1;
                 }
-                std::str::from_utf8(&self.b[start..self.i])
-                    .ok()
-                    .and_then(|t| t.parse().ok())
-                    .map_or(J::Other, J::Num)
+                match &self.b[start..self.i] {
+                    b"true" => J::Bool(true),
+                    b"false" => J::Bool(false),
+                    t => std::str::from_utf8(t)
+                        .ok()
+                        .and_then(|t| t.parse().ok())
+                        .map_or(J::Other, J::Num),
+                }
             }
         }
     }
@@ -1571,20 +1588,58 @@ impl Reader<'_> {
 }
 
 /// A location of clang's dump: a file, a byte offset and the length of
-/// the token there; or one through a macro; or none.
+/// the token there; or one through a macro (where its token was spelled,
+/// and the start of the outermost invocation, each as a file location);
+/// or none.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum At {
     File(String, u32, u32),
-    Macro,
+    Macro(Option<(String, u32, u32)>, Option<(String, u32, u32)>),
     None,
 }
 
-/// A node of clang's dump: its kind, range and children.
+impl At {
+    fn file(self) -> Option<(String, u32, u32)> {
+        match self {
+            At::File(f, o, l) => Some((f, o, l)),
+            _ => None,
+        }
+    }
+
+    /// Where the token was spelled: its file location, or where a macro's
+    /// token was written.
+    fn spelled(&self) -> Option<(&str, u32, u32)> {
+        match self {
+            At::File(f, o, l) | At::Macro(Some((f, o, l)), _) => Some((f, *o, *l)),
+            _ => None,
+        }
+    }
+
+    /// Its file location, or the start of the outermost invocation.
+    fn outer(&self) -> Option<(&str, u32, u32)> {
+        match self {
+            At::File(f, o, l) | At::Macro(_, Some((f, o, l))) => Some((f, *o, *l)),
+            _ => None,
+        }
+    }
+}
+
+/// A node of clang's dump: its kind, range, children, and what the
+/// reverse direction needs: an implicit cast's kind, the kind of the
+/// declaration a name refers to, a member's name, whether a declaration
+/// is implicit or explicitly defaulted.
 struct Node {
     kind: String,
     begin: At,
     end: At,
     inner: Vec<Node>,
+    cast: String,
+    decl_kind: String,
+    name: String,
+    implicit: bool,
+    defaulted: bool,
+    id: String,
+    member: String,
 }
 
 /// A path as a snippet path: `.` and `..` resolved by their spelling.
@@ -1613,12 +1668,15 @@ impl Dump {
     fn bare(&mut self, j: &J) -> At {
         let J::Obj(kv) = j else { return At::None };
         if j.get("spellingLoc").is_some() || j.get("expansionLoc").is_some() {
+            let (mut spelled, mut outer) = (None, None);
             for (k, v) in kv {
-                if k == "spellingLoc" || k == "expansionLoc" {
-                    self.bare(v);
+                match k.as_str() {
+                    "spellingLoc" => spelled = self.bare(v).file(),
+                    "expansionLoc" => outer = self.bare(v).file(),
+                    _ => {}
                 }
             }
-            return At::Macro;
+            return At::Macro(spelled, outer);
         }
         let (mut off, mut len) = (None, None);
         for (k, v) in kv {
@@ -1648,7 +1706,19 @@ impl Dump {
     }
 
     fn node(&mut self, j: &J) -> Node {
-        let mut n = Node { kind: String::new(), begin: At::None, end: At::None, inner: Vec::new() };
+        let mut n = Node {
+            kind: String::new(),
+            begin: At::None,
+            end: At::None,
+            inner: Vec::new(),
+            cast: String::new(),
+            decl_kind: String::new(),
+            name: String::new(),
+            implicit: false,
+            defaulted: false,
+            id: String::new(),
+            member: String::new(),
+        };
         let J::Obj(kv) = j else { return n };
         for (k, v) in kv {
             match (k.as_str(), v) {
@@ -1663,6 +1733,18 @@ impl Dump {
                     }
                 }
                 ("inner", J::Arr(v)) => n.inner = v.iter().map(|c| self.node(c)).collect(),
+                ("castKind", J::Str(s)) => n.cast.clone_from(s),
+                ("name", J::Str(s)) => n.name.clone_from(s),
+                ("id", J::Str(s)) => n.id.clone_from(s),
+                ("referencedMemberDecl", J::Str(s)) => n.member.clone_from(s),
+                ("isImplicit", J::Bool(b)) => n.implicit = *b,
+                ("explicitlyDefaulted", J::Str(_)) => n.defaulted = true,
+                ("referencedDecl", v) => {
+                    if let Some(J::Str(s)) = v.get("kind") {
+                        n.decl_kind.clone_from(s);
+                    }
+                    self.scan(v);
+                }
                 _ => self.scan(v),
             }
         }
@@ -1674,16 +1756,47 @@ impl Dump {
 /// are in one file.
 type ClangRange = Option<(String, u32, u32)>;
 
-fn clang_range(n: &Node) -> ClangRange {
-    match (&n.begin, &n.end) {
+/// Clang's range of a node three ways: in a file (both ends written in
+/// one file, outside any macro); spelled (where its first and last
+/// tokens were written, in one file, macro bodies included); and outer
+/// (from the start of the outermost invocation of its first token to the
+/// end of the token, or of the macro's name, where its last token was
+/// expanded: the dump gives no invocation's end).
+#[derive(Clone, Debug)]
+struct ClangSpan {
+    file: ClangRange,
+    spelled: ClangRange,
+    outer: ClangRange,
+}
+
+fn clang_span(n: &Node) -> ClangSpan {
+    let join = |a: Option<(&str, u32, u32)>, b: Option<(&str, u32, u32)>| match (a, b) {
+        (Some((f, lo, _)), Some((g, e, len))) if f == g => Some((f.to_owned(), lo, e + len)),
+        _ => None,
+    };
+    let file = match (&n.begin, &n.end) {
         (At::File(f, lo, _), At::File(g, e, len)) if f == g => Some((f.clone(), *lo, e + len)),
         _ => None,
+    };
+    ClangSpan {
+        file,
+        spelled: join(n.begin.spelled(), n.end.spelled()),
+        outer: join(n.begin.outer(), n.end.outer()),
     }
 }
 
-/// Clang's calls of a unit by (file, offset of the `)`): the call's
-/// range and its arguments' ranges.
-type ClangCalls = std::collections::HashMap<(String, u32), Vec<(ClangRange, Vec<ClangRange>)>>;
+/// Clang's calls of a unit by their `)`: the call's range and its
+/// arguments' ranges.
+type ClangCalls = std::collections::HashMap<Close, Vec<(ClangSpan, Vec<ClangSpan>)>>;
+
+/// Where a call's `)` is, for the reverse direction: written in a file,
+/// or produced by a macro (where it was spelled, and the start of the
+/// outermost invocation).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Close {
+    File(String, u32),
+    Macro((String, u32), (String, u32)),
+}
 
 /// Clang 19 begins a call with an explicit object (`b.xobj()`) at its
 /// callee (`CallExpr::getBeginLoc`; clang 20 begins it at the object):
@@ -1722,31 +1835,173 @@ fn first_at(n: &Node) -> &At {
     }
 }
 
-fn clang_calls(n: &Node, out: &mut ClangCalls) {
-    if matches!(n.kind.as_str(), "CallExpr" | "CXXMemberCallExpr") && !n.inner.is_empty() {
-        let mut callee = &n.inner[0];
-        while matches!(callee.kind.as_str(), "ImplicitCastExpr" | "ParenExpr")
-            && callee.inner.len() == 1
-        {
-            callee = &callee.inner[0];
+/// The callee of call `n` without parentheses and the decay of a
+/// function to a pointer, when it is a name (`DeclRefExpr`) or a member
+/// access (`MemberExpr`) of a function: not a variable of function
+/// pointer type (an lvalue-to-rvalue conversion), not a reference to a
+/// function (a name of a variable).
+fn clang_callee<'n>(n: &'n Node, kinds: &Kinds<'_>) -> Option<&'n Node> {
+    let mut callee = n.inner.first()?;
+    loop {
+        match callee.kind.as_str() {
+            "ParenExpr" if callee.inner.len() == 1 => {}
+            "ImplicitCastExpr"
+                if callee.inner.len() == 1
+                    && matches!(
+                        callee.cast.as_str(),
+                        "FunctionToPointerDecay" | "BuiltinFnToFnPtr"
+                    ) => {}
+            _ => break,
         }
-        if matches!(callee.kind.as_str(), "DeclRefExpr" | "MemberExpr")
-            && let At::File(f, close, _) = &n.end
-        {
-            // An explicit object argument precedes the callee.
-            let object = |a: &&Node| {
-                matches!((first_at(a), &callee.begin), (At::File(g, lo, _), At::File(h, at, _))
-                    if g == f && h == f && lo < at)
+        callee = &callee.inner[0];
+    }
+    let function = match callee.kind.as_str() {
+        "DeclRefExpr" => {
+            callee.decl_kind.ends_with("FunctionDecl")
+                || matches!(
+                    callee.decl_kind.as_str(),
+                    "CXXMethodDecl"
+                        | "CXXConversionDecl"
+                        | "CXXDestructorDecl"
+                        | "CXXConstructorDecl"
+                )
+        }
+        // A member function (a member of the dump whose kind is not
+        // known is taken for one); not a data member of a reference to a
+        // function, or of a class type with `operator()` in a pattern.
+        "MemberExpr" => kinds.get(callee.member.as_str()).is_none_or(|k| {
+            matches!(*k, "CXXMethodDecl" | "CXXConversionDecl" | "CXXDestructorDecl")
+        }),
+        _ => false,
+    };
+    function.then_some(callee)
+}
+
+/// The kind of each declaration of the dump, by id.
+type Kinds<'a> = std::collections::HashMap<&'a str, &'a str>;
+
+/// The ids of the dump's declarations: their kinds, and the ones
+/// dumped as an instantiation (after a template's pattern), which the
+/// dump may repeat outside the template (a variable template's).
+fn clang_decls<'a>(n: &'a Node, kinds: &mut Kinds<'a>, instances: &mut HashSet<&'a str>) {
+    if !n.id.is_empty() && n.kind.ends_with("Decl") {
+        kinds.insert(&n.id, &n.kind);
+    }
+    let pattern = template_pattern(n);
+    for (i, c) in n.inner.iter().enumerate() {
+        if pattern.is_some_and(|p| i > p) && !c.id.is_empty() {
+            instances.insert(&c.id);
+        }
+        clang_decls(c, kinds, instances);
+    }
+}
+
+/// A template's children: its parameters (and requires-clause), the
+/// pattern, then its instantiations (`ASTNodeTraverser::dumpTemplateDecl`):
+/// the index of the pattern.
+fn template_pattern(n: &Node) -> Option<usize> {
+    if !matches!(n.kind.as_str(), "FunctionTemplateDecl" | "ClassTemplateDecl" | "VarTemplateDecl")
+    {
+        return None;
+    }
+    n.inner.iter().position(|c| {
+        c.kind.ends_with("Decl")
+            && !matches!(
+                c.kind.as_str(),
+                "TemplateTypeParmDecl" | "NonTypeTemplateParmDecl" | "TemplateTemplateParmDecl"
+            )
+    })
+}
+
+/// What `clang_calls` reads besides the tree.
+struct ClangContext<'a> {
+    texts: &'a Texts<'a>,
+    kinds: Kinds<'a>,
+    instances: HashSet<&'a str>,
+}
+
+/// What the reverse direction keeps of a clang call: what it is (the
+/// call's kind, the callee's, and where it is), keyed by its `)`.
+type ClangSites = std::collections::HashMap<Close, String>;
+
+/// The text of each file of a side, by snippet path.
+type Texts<'a> = std::collections::HashMap<String, &'a [u8]>;
+
+/// The calls of the dump under `n`. `within` says where `n` is: written
+/// (empty), or in an instantiation, an implicit declaration, a defaulted
+/// function (the places §6.7 rule 2 leaves out). `converted`: `n` is the
+/// operand of a user-defined conversion (the conversion function's call
+/// is Kiln's and clang's, not written).
+fn clang_calls(
+    n: &Node,
+    within: &'static str,
+    converted: bool,
+    cx: &ClangContext<'_>,
+    out: &mut ClangCalls,
+    sites: &mut ClangSites,
+) {
+    if matches!(n.kind.as_str(), "CallExpr" | "CXXMemberCallExpr")
+        && !converted
+        && let Some(callee) = clang_callee(n, &cx.kinds)
+    {
+        let closes =
+            |f: &str, o: u32| cx.texts.get(f).and_then(|t| t.get(o as usize)) == Some(&b')');
+        let key = match &n.end {
+            At::File(f, o, _) => Some(Close::File(f.clone(), *o)),
+            At::Macro(Some((f, o, _)), Some((g, x, _))) => {
+                Some(Close::Macro((f.clone(), *o), (g.clone(), *x)))
+            }
+            _ => None,
+        };
+        if let Some(key) = key {
+            // An explicit object argument precedes the callee; an
+            // implicit one (made from an implicit `this`) has no place.
+            let object = |a: &&Node| match (first_at(a).spelled(), callee.begin.spelled()) {
+                (Some((g, lo, _)), Some((h, at, _))) => g == h && lo < at,
+                (None, _) => matches!(first_at(a), At::None),
+                _ => false,
             };
             let written: Vec<&Node> =
                 n.inner[1..].iter().filter(|a| a.kind != "CXXDefaultArgExpr").collect();
-            let call = clang_range(n);
-            let args = written.into_iter().filter(|a| !object(a)).map(clang_range).collect();
-            out.entry((f.clone(), *close)).or_default().push((call, args));
+            let call = clang_span(n);
+            let args = written.into_iter().filter(|a| !object(a)).map(clang_span).collect();
+            out.entry(key.clone()).or_default().push((call, args));
+            let written_close = match &key {
+                Close::File(f, o) | Close::Macro((f, o), _) => closes(f, *o),
+            };
+            if written_close {
+                let what = if callee.name.starts_with('~') { " (a destructor)" } else { "" };
+                let through =
+                    if matches!(key, Close::Macro(..)) { ", `)` from a macro" } else { "" };
+                let kind = format!("{} of a {}{what}{through}{within}", n.kind, callee.kind);
+                // A call dumped twice (a lambda's body, under its class
+                // and under the expression) is written if one of them is.
+                let e = sites.entry(key).or_insert_with(|| kind.clone());
+                if within.is_empty() {
+                    *e = kind;
+                }
+            }
         }
     }
-    for c in &n.inner {
-        clang_calls(c, out);
+    let here = if !within.is_empty() {
+        within
+    } else if cx.instances.contains(n.id.as_str()) {
+        " in an instantiation"
+    } else if n.implicit && n.kind.ends_with("Decl") {
+        " in an implicit declaration"
+    } else if n.defaulted {
+        " in a defaulted function"
+    } else {
+        ""
+    };
+    let pattern = template_pattern(n);
+    for (i, c) in n.inner.iter().enumerate() {
+        let w = if here.is_empty() && pattern.is_some_and(|p| i > p) {
+            " in an instantiation"
+        } else {
+            here
+        };
+        clang_calls(c, w, n.cast == "UserDefinedConversion", cx, out, sites);
     }
 }
 
@@ -1760,10 +2015,16 @@ struct Diff {
     closed_by_macro: u64,
     unmatched: u64,
     compared: u64,
+    compared_through_macro: u64,
     null: u64,
     clang_macro: u64,
     differences: Vec<String>,
     unmatched_at: Vec<String>,
+    /// The reverse direction: clang's calls whose `)` is written, and
+    /// those the subject has no call for, by kind.
+    clang_calls: u64,
+    missing: std::collections::BTreeMap<String, u64>,
+    missing_at: Vec<String>,
 }
 
 impl Diff {
@@ -1775,10 +2036,16 @@ impl Diff {
         self.closed_by_macro += o.closed_by_macro;
         self.unmatched += o.unmatched;
         self.compared += o.compared;
+        self.compared_through_macro += o.compared_through_macro;
         self.null += o.null;
         self.clang_macro += o.clang_macro;
         self.differences.extend(o.differences);
         self.unmatched_at.extend(o.unmatched_at);
+        self.clang_calls += o.clang_calls;
+        for (k, n) in o.missing {
+            *self.missing.entry(k).or_default() += n;
+        }
+        self.missing_at.extend(o.missing_at);
     }
 }
 
@@ -1810,11 +2077,16 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
         d.clang_errors = 1;
         return d;
     };
+    let texts: Texts<'_> =
+        side.files.iter().map(|(p, t)| (snippet_path(p), t.as_bytes())).collect();
     let mut clang = ClangCalls::new();
+    let mut sites = ClangSites::new();
     let root = Reader { b: &json, i: 0 }.value();
     let mut tree = Dump { file: None }.node(&root);
     begin_explicit_object_calls(&mut tree);
-    clang_calls(&tree, &mut clang);
+    let mut cx = ClangContext { texts: &texts, kinds: Kinds::new(), instances: HashSet::new() };
+    clang_decls(&tree, &mut cx.kinds, &mut cx.instances);
+    clang_calls(&tree, "", false, &cx, &mut clang, &mut sites);
     let files: Vec<(&str, &str)> =
         side.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
     let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: &side.std };
@@ -1830,48 +2102,89 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
         let ours = |r: Option<Range>| {
             r.map(|r| {
                 let path = String::from_utf8_lossy(s.file_path(r.file).unwrap()).into_owned();
-                (path, r.lo, r.hi)
+                (path, r.lo, r.hi, s.tiers(r).unwrap_or([false, false]))
             })
         };
-        for (x, named) in s.call_sites() {
+        let text = |p: &[u8]| String::from_utf8_lossy(p).into_owned();
+        let mut ours_closed = HashSet::new();
+        for site in s.call_sites() {
+            let x = site.call;
             d.calls += 1;
-            let Some((path, at)) = named else {
-                d.closed_by_macro += 1;
-                continue;
+            let key = match (site.close, site.close_in_macro) {
+                (Some((path, at)), _) => Close::File(text(path), at),
+                (None, Some((spelled, outer))) => {
+                    d.closed_by_macro += 1;
+                    Close::Macro((text(spelled.0), spelled.1), (text(outer.0), outer.1))
+                }
+                (None, None) => {
+                    d.closed_by_macro += 1;
+                    continue;
+                }
             };
-            let key = (String::from_utf8_lossy(path).into_owned(), at);
+            ours_closed.insert(key.clone());
             let Some(cands) = clang.get(&key) else {
                 d.unmatched += 1;
-                d.unmatched_at.push(format!("{label}: {}:{at}", key.0));
+                d.unmatched_at.push(format!("{label}: {key:?}"));
                 continue;
             };
             let args = s.arguments(x).unwrap();
             if !cands.iter().any(|(_, a)| a.len() == args.len()) {
                 d.differences.push(format!(
-                    "{label}: {}:{at}: {} arguments, clang {:?}",
-                    key.0,
+                    "{label}: {key:?}: {} arguments, clang {:?}",
                     args.len(),
                     cands.iter().map(|(_, a)| a.len()).collect::<Vec<_>>()
                 ));
                 continue;
             }
-            let mut check = |mine: ClangRange, theirs: Vec<&ClangRange>, what: &str| {
-                let Some(m) = mine else {
+            // An extent is clang's range of the node in a file. Where
+            // clang's range comes through a macro: a range of tier 1 (the
+            // tokens of a macro argument) is where clang's first and last
+            // tokens were spelled; a range of tier 0 (an invocation) begins
+            // where clang's outermost invocation begins and covers its
+            // last token's.
+            let mut check = |mine: Option<(String, u32, u32, [bool; 2])>,
+                             theirs: Vec<&ClangSpan>,
+                             what: &str| {
+                let Some((f, lo, hi, [t0, t1])) = mine else {
                     d.null += 1;
                     return;
                 };
-                if theirs.iter().any(|t| t.as_ref() == Some(&m)) {
+                let m = Some((f.clone(), lo, hi));
+                if theirs.iter().any(|t| t.file == m) {
                     d.compared += 1;
-                } else if theirs.iter().all(|t| t.is_none()) {
+                    return;
+                }
+                if theirs.iter().any(|t| t.file.is_some()) {
+                    d.differences.push(format!("{label}: {what} {m:?}, clang {theirs:?}"));
+                    return;
+                }
+                let spelled = t1 && theirs.iter().any(|t| t.spelled == m);
+                let outer = t0
+                    && theirs.iter().any(|t| {
+                        t.outer.as_ref().is_some_and(|(g, a, b)| *g == f && *a == lo && *b <= hi)
+                    });
+                if spelled || outer {
+                    d.compared_through_macro += 1;
+                } else if theirs.iter().all(|t| t.spelled.is_none() && t.outer.is_none()) {
                     d.clang_macro += 1;
                 } else {
-                    d.differences.push(format!("{label}: {what} {m:?}, clang {theirs:?}"));
+                    d.differences.push(format!(
+                        "{label}: {what} {m:?} (tiers {t0} {t1}), clang through a macro {theirs:?}"
+                    ));
                 }
             };
             check(ours(range(&s, x)), cands.iter().map(|(c, _)| c).collect(), "call");
             for (i, &a) in args.iter().enumerate() {
                 let theirs = cands.iter().filter_map(|(_, v)| v.get(i)).collect();
-                check(ours(range(&s, a)), theirs, &format!("argument {i} of {}:{at}", key.0));
+                check(ours(range(&s, a)), theirs, &format!("argument {i} of {key:?}"));
+            }
+        }
+        // The reverse direction: clang's calls the subject has not.
+        for (close, kind) in &sites {
+            d.clang_calls += 1;
+            if !ours_closed.contains(close) {
+                *d.missing.entry(kind.clone()).or_default() += 1;
+                d.missing_at.push(format!("{label}: {kind}: {close:?}"));
             }
         }
     });
@@ -1998,10 +2311,11 @@ fn item7_differential_against_clang() {
     }
     d.differences.sort();
     d.unmatched_at.sort();
+    d.missing_at.sort();
     eprintln!(
         "item 7 against {}: {} tests, {} units ({} with a Kiln error, {} with a clang \
-         error); {} calls ({} closed by a macro's `)`, {} with no clang call); extents: {} equal, {} \
-         null, {} clang's through a macro, {} different",
+         error); {} calls ({} closed by a macro's `)`, {} with no clang call); extents: {} equal, \
+         {} equal through a macro, {} null, {} clang's through a macro not comparable, {} different",
         version.lines().next().unwrap_or(CLANG),
         jobs.len(),
         d.units,
@@ -2011,12 +2325,26 @@ fn item7_differential_against_clang() {
         d.closed_by_macro,
         d.unmatched,
         d.compared,
+        d.compared_through_macro,
         d.null,
         d.clang_macro,
         d.differences.len()
     );
     for u in d.unmatched_at.iter().take(100) {
         eprintln!("no clang call: {u}");
+    }
+    eprintln!(
+        "item 7, reverse: {} clang calls whose `)` is written, {} the subject has not, by kind:",
+        d.clang_calls,
+        d.missing.values().sum::<u64>()
+    );
+    for (kind, n) in &d.missing {
+        eprintln!("  {n:>6}  {kind}");
+    }
+    let shown: usize =
+        std::env::var("SLIP_WP086_SHOW").ok().and_then(|v| v.parse().ok()).unwrap_or(100);
+    for u in d.missing_at.iter().filter(|u| !u.contains(" in an ")).take(shown) {
+        eprintln!("no subject call: {u}");
     }
     assert!(d.compared > 1000, "only {} extents compared", d.compared);
     assert!(d.differences.is_empty(), "{}", d.differences.join("\n"));
@@ -2083,7 +2411,7 @@ fn measure_llvm_null_extents() {
             let sample: usize =
                 std::env::var("SLIP_WP086_SAMPLE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
             let mut shown = std::collections::BTreeMap::<String, usize>::new();
-            for (x, _) in s.call_sites() {
+            for x in s.call_sites().into_iter().map(|c| c.call) {
                 if let Some(w) = s.no_extent(x) {
                     let cause = format!("{:?} {}", w.kind, w.reason);
                     let seen = shown.entry(cause.clone()).or_default();

@@ -106,9 +106,22 @@ impl Ord for NoExtent {
     }
 }
 
-/// A call and where its `)` is: the subject path and byte offset
-/// ([`KilnSubject::call_sites`]).
-pub type CallSite<'a> = (Expression, Option<(&'a [u8], u32)>);
+/// A place in a file: its subject path and byte offset.
+pub type FilePlace<'a> = (&'a [u8], u32);
+
+/// A call and where its `)` is ([`KilnSubject::call_sites`]).
+#[derive(Clone, Copy, Debug)]
+pub struct CallSite<'a> {
+    /// The call.
+    pub call: Expression,
+    /// Where the `)` was spelled, when a file holds it outside any macro
+    /// expansion.
+    pub close: Option<FilePlace<'a>>,
+    /// When a macro expansion produced the `)`: where it was spelled (a
+    /// macro's body or a macro argument), and the start of the outermost
+    /// invocation that produced it (`SourceManager::expansion_loc`).
+    pub close_in_macro: Option<(FilePlace<'a>, FilePlace<'a>)>,
+}
 
 /// The census of extents over the live expressions of a subject
 /// ([`KilnSubject::extent_census`]): for tests, and for the hand-back's
@@ -275,16 +288,7 @@ impl KilnSubject<'_> {
             stack.push(Item::Type(q, h));
         }
         for a in ast.lists.iter::<AttrId>(ast.attrs.of_decl(d)) {
-            let a = ast.attrs.get(a);
-            if a.kind != AttrKind::ALIGNED || a.flags & AttrNode::IMPLICIT != 0 {
-                continue;
-            }
-            // `alignas(T)` holds its type in `b`; otherwise `a` is the
-            // expression, if any (Kiln's `requested_align`).
-            match QualType::from_raw(a.b) {
-                Some(q) => stack.push(Item::Type(q, h)),
-                None => expr(ExprId::try_new(a.a), stack),
-            }
+            self.push_attr(a, h, stack);
         }
         if let Some(t) = ast.template_info(d) {
             let list = ast.templates.param_list(t.params);
@@ -413,7 +417,11 @@ impl KilnSubject<'_> {
                 st(Some(c.sub), &mut items);
             }
             StmtKind::DefaultStmt => st(Some(stmts.default_sub(s)), &mut items),
-            StmtKind::LabelStmt | StmtKind::AttributedStmt => {
+            StmtKind::LabelStmt => st(Some(stmts.sub_stmt(s)), &mut items),
+            StmtKind::AttributedStmt => {
+                for a in lists.iter::<AttrId>(stmts.stmt_attrs(s)) {
+                    self.push_attr(a, h, &mut items);
+                }
                 st(Some(stmts.sub_stmt(s)), &mut items);
             }
             StmtKind::WhileStmt | StmtKind::ForStmt | StmtKind::DoStmt => {
@@ -464,6 +472,28 @@ impl KilnSubject<'_> {
             | StmtKind::GotoStmt => {}
         }
         stack.extend(items.into_iter().rev());
+    }
+
+    /// The expressions of attribute `a` as written: `alignas`'s or
+    /// `aligned`'s (or its type), `assume`'s, and the condition of
+    /// `enable_if` and `diagnose_if`. Not an attribute Kiln adds; not the
+    /// arguments of other attributes (§6.7: a hole of version 0).
+    fn push_attr(&self, a: AttrId, h: DeclId, items: &mut Vec<Item>) {
+        let a = self.ast.attrs.get(a);
+        if a.flags & AttrNode::IMPLICIT != 0 {
+            return;
+        }
+        let expr = ExprId::try_new(a.a).map(|e| Item::Expr(e, h));
+        match a.kind {
+            // `alignas(T)` holds its type in `b`; otherwise `a` is the
+            // expression, if any (Kiln's `requested_align`).
+            AttrKind::ALIGNED => match QualType::from_raw(a.b) {
+                Some(q) => items.push(Item::Type(q, h)),
+                None => items.extend(expr),
+            },
+            AttrKind::ASSUME | AttrKind::ENABLE_IF | AttrKind::DIAGNOSE_IF => items.extend(expr),
+            _ => {}
+        }
     }
 
     /// The parts of type `q` as written that hold expressions or other
@@ -1427,20 +1457,26 @@ impl KilnSubject<'_> {
         c
     }
 
-    /// Every call in unit order, with the subject path and byte offset of
-    /// the `)` Kiln stores for it when that token was spelled in a file
-    /// rather than produced by a macro. For tests: the differential
-    /// against another front end keys calls by their `)`.
+    /// Every call in unit order, with where the `)` Kiln stores for it is
+    /// (`CallSite`). For tests: the differential against another front
+    /// end keys calls by their `)`.
     pub fn call_sites(&self) -> Vec<CallSite<'_>> {
+        let place = |l: Loc| {
+            let (f, o) = self.sm.offset_of(l)?;
+            Some((self.path(f)?, o))
+        };
         self.call_index()
             .calls
             .iter()
             .map(|c| {
-                let close = self.ast.exprs.end_loc(c.expr).filter(|l| !l.is_macro());
-                let at = close
-                    .and_then(|l| self.sm.offset_of(l))
-                    .and_then(|(f, o)| Some((self.path(f)?, o)));
-                (Expression(c.expr.index()), at)
+                let close = self.ast.exprs.end_loc(c.expr);
+                CallSite {
+                    call: Expression(c.expr.index()),
+                    close: close.filter(|l| !l.is_macro()).and_then(place),
+                    close_in_macro: close.filter(|l| l.is_macro()).and_then(|l| {
+                        Some((place(self.sm.spelling_loc(l))?, place(self.sm.expansion_loc(l))?))
+                    }),
+                }
             })
             .collect()
     }
