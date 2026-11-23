@@ -96,6 +96,10 @@ fn ok_shard(job: &Job) -> Shard {
         counters: echo(job),
         digests: None,
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 

@@ -1,0 +1,27 @@
+{
+  "kind": "TRFM",
+  "version": 1,
+  "sections": {
+    "transform": {
+      "kind": "rename",
+      "ownership": {
+        "owned": [
+          "/s"
+        ],
+        "readonly": [
+          "/s/gen"
+        ]
+      },
+      "indivisible": true,
+      "rename": {
+        "target": [
+          "n",
+          "f"
+        ],
+        "kind": "function",
+        "new_name": "g"
+      },
+      "script": null
+    }
+  }
+}
