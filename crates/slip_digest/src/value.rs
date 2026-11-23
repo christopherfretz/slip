@@ -52,7 +52,7 @@ use slip_kiln::kiln::ast::consts::{
     UnionMember,
 };
 use slip_kiln::kiln::ast::decl::LetData;
-use slip_kiln::kiln::ast::expr::ExprKind;
+use slip_kiln::kiln::ast::expr::{ExprKind, PredefinedKind};
 use slip_kiln::kiln::ast::{ConstValueId, DeclId, ExprId, StringLitId};
 use slip_model::Digest;
 
@@ -344,19 +344,57 @@ pub(crate) struct NameValues {
     /// The `ExprId`s (index) of the source-location strings' literals:
     /// each use that points to one, as `(role, context, use)`.
     origins: HashMap<u32, Vec<(Role, DeclId, ExprId)>>,
-    /// The `ConstValueId`s (index) of the `__impl` objects: the function
-    /// the use that built it is in (`None` outside a function) and the
-    /// use's ordinal among the uses of that function, or of every context
-    /// that is not a function, that build one (`ExprId` order); and the
-    /// literal of the file name it points to.
-    objects: HashMap<u32, (Option<DeclId>, u64, Option<StringLitId>)>,
+    /// The `ConstValueId`s (index) of the `__impl` objects, each claimed
+    /// by its first use (`ExprId` order; Kiln shares one object between
+    /// uses of equal values).
+    objects: HashMap<u32, Impl>,
     /// Every function definition's extent, as file locations (raw),
     /// sorted: the first written mem-initializer, or the `try` of a
     /// function-try-block, or the body's `{`, to the body's `}` or the
     /// last handler's.
     bodies: Vec<(u32, u32, DeclId)>,
+    /// The definitions whose extent's ends are in two inclusions (a body
+    /// that ends in an included file): where one of them has a name
+    /// string's name, the string's bytes are written.
+    split: Vec<DeclId>,
     /// The entity found for a `PredefinedExpr`'s string, by literal.
     owners: HashMap<u32, Option<DeclId>>,
+    /// What a source-location string object is (by its literal's
+    /// `ExprId` index).
+    sourced: HashMap<u32, Option<NameString>>,
+}
+
+/// What identifies an `__impl` object (digest §9, WP-115 item 2).
+#[derive(Clone, Copy, Debug)]
+struct Impl {
+    /// Where its first use is numbered.
+    group: Group,
+    /// That use's ordinal among the uses of its group that build an
+    /// `__impl` object, in `ExprId` order (the holder's own order: Kiln
+    /// numbers a holder's expressions as it builds them). Every use is
+    /// counted, also one whose object an earlier use built (Kiln shares
+    /// one object between uses of one file, function, line and column),
+    /// so an object's ordinal does not depend on the layout the digest
+    /// drops (WP-115 fix round, F1).
+    n: u64,
+    /// The literal of the file name it points to (always one: below,
+    /// [`impl_file`]).
+    file: Option<StringLitId>,
+}
+
+/// The group an `__impl` object's use is numbered in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Group {
+    /// The use's context is this function.
+    Function(DeclId),
+    /// The use's context is no function (a namespace or a class: the
+    /// initializer of a variable or of a field, a default argument):
+    /// numbered among the uses of the declaration whose initializer or
+    /// default argument holds it ([`holders`]), by its entity; `None`
+    /// where no such declaration holds it (an enumerator, a template
+    /// argument, a bound), numbered among every such use of the
+    /// translation unit.
+    Holder(Option<DeclId>),
 }
 
 /// What a source-location string is to a use.
@@ -374,7 +412,7 @@ enum Role {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NameString {
     /// The value of a `PredefinedExpr` of this kind in this function.
-    Predefined(slip_kiln::kiln::ast::expr::PredefinedKind, DeclId),
+    Predefined(PredefinedKind, DeclId),
     /// A source-location function name (plain or pretty) of this context.
     SourceLoc(Role, DeclId),
 }
@@ -408,7 +446,8 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
         let mut uses: Vec<(ExprId, slip_kiln::kiln::ast::expr::SourceLocValues)> =
             ast.exprs.cold.source_loc.iter().map(|(e, v)| (e, *v)).collect();
         uses.sort_unstable_by_key(|&(e, _)| e.index());
-        let mut ordinals: HashMap<Option<DeclId>, u64> = HashMap::new();
+        let held = holders(ast, &uses);
+        let mut ordinals: HashMap<Group, u64> = HashMap::new();
         for (e, v) in uses {
             let slip_kiln::kiln::ast::expr::SourceLocValues {
                 file,
@@ -447,11 +486,19 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 unions: _,
             }) = ast.consts.get(obj)
             {
-                let group = ast.decls.get(ctx).kind().is_function().then_some(ctx);
+                let group = if ast.decls.get(ctx).kind().is_function() {
+                    Group::Function(ctx)
+                } else {
+                    Group::Holder(held.get(&e.index()).copied())
+                };
                 let n = ordinals.entry(group).or_insert(0);
-                if nv.objects.insert(obj.index(), (group, *n, lit_of(file))).is_none() {
-                    *n += 1;
-                }
+                let this = *n;
+                *n += 1;
+                nv.objects.entry(obj.index()).or_insert(Impl {
+                    group,
+                    n: this,
+                    file: lit_of(file),
+                });
                 let file_origin = origin_of(file);
                 for &Reloc { at: _, value } in relocs {
                     let role =
@@ -460,21 +507,74 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 }
             }
         }
-        nv.bodies = definition_extents(ast, sm);
+        (nv.bodies, nv.split) = definition_extents(ast, sm);
         nv
     })
+}
+
+/// The declaration that holds each use of `uses` that builds an `__impl`
+/// object outside a function (by the use's `ExprId` index): the
+/// variable or field whose initializer, or the function whose
+/// parameter's default argument, holds the use's expression, as its
+/// entity's first declaration. Found by walking those expressions in
+/// declaration order; the first declaration met holds a use met twice (a
+/// shared expression). A use no such expression holds has none.
+fn holders(
+    ast: &slip_kiln::kiln::ast::Ast,
+    uses: &[(ExprId, slip_kiln::kiln::ast::expr::SourceLocValues)],
+) -> HashMap<u32, DeclId> {
+    let wanted: HashSet<u32> = uses
+        .iter()
+        .filter(|(_, v)| v.location.is_some() && !ast.decls.get(v.ctx).kind().is_function())
+        .map(|(e, _)| e.index())
+        .collect();
+    let mut out = HashMap::new();
+    if wanted.is_empty() {
+        return out;
+    }
+    let mut stack = Vec::new();
+    for d in ast.decls.ids() {
+        let (root, holder) = if let Some(v) = ast.decls.var(d) {
+            (v.init, d)
+        } else if let Some(f) = ast.decls.field(d) {
+            (f.init, d)
+        } else if let Some(p) = ast.decls.param(d) {
+            match ast.decls.get(d).ctx() {
+                Some(f) if ast.decls.get(f).kind().is_function() => (p.default_arg, f),
+                Some(_) | None => (None, d),
+            }
+        } else {
+            continue;
+        };
+        let Some(root) = root else { continue };
+        let holder = ast.first(holder);
+        stack.clear();
+        stack.push(root);
+        while let Some(x) = stack.pop() {
+            if wanted.contains(&x.index()) {
+                out.entry(x.index()).or_insert(holder);
+            }
+            ast.exprs.children_into(x, &ast.lists, &mut stack);
+        }
+        if out.len() == wanted.len() {
+            break;
+        }
+    }
+    out
 }
 
 /// Every function definition's extent ([`NameValues`] `bodies`), sorted:
 /// the first written mem-initializer, or the `try` of a function-try-block,
 /// or the body's `{`, to the body's `}` or the last handler's, as file
 /// locations (raw).
+#[allow(clippy::type_complexity, reason = "two lists, built together")]
 fn definition_extents(
     ast: &slip_kiln::kiln::ast::Ast,
     sm: &slip_kiln::kiln::source::SourceManager,
-) -> Vec<(u32, u32, DeclId)> {
+) -> (Vec<(u32, u32, DeclId)>, Vec<DeclId>) {
     use slip_kiln::kiln::ast::stmt::StmtKind;
     let mut out = Vec::new();
+    let mut split = Vec::new();
     for d in ast.decls.ids() {
         let Some(f) = ast.decls.function(d) else { continue };
         let Some(b) = f.body else { continue };
@@ -504,13 +604,43 @@ fn definition_extents(
                 lo = at;
             }
         }
-        if lo.is_file() && hi.is_file() && lo <= hi {
+        if !lo.is_file() || !hi.is_file() {
+            continue;
+        }
+        // One inclusion of one file holds both ends: raw locations of a
+        // range are ordered as its text, and a nested inclusion's range
+        // lies outside it. Else the extent crosses an inclusion.
+        let one = sm.offset_of(lo).map(|(f, _)| f) == sm.offset_of(hi).map(|(f, _)| f)
+            && sm.include_loc(lo) == sm.include_loc(hi);
+        if one && lo <= hi {
             out.push((lo.to_raw(), hi.to_raw(), d));
+        } else {
+            split.push(d);
         }
     }
     out.sort_unstable_by_key(|&(lo, hi, d)| (lo, hi, d.index()));
+    split.sort_unstable_by_key(|d| d.index());
+    (out, split)
+}
+
+/// The file location `at` and the `#include` locations of the inclusions
+/// around it, innermost first, as raw locations (at most [`INCLUDE_DEPTH`]).
+fn inclusion_chain(
+    sm: &slip_kiln::kiln::source::SourceManager,
+    at: slip_kiln::kiln::source::Loc,
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut x = at;
+    while x.is_file() && out.len() < INCLUDE_DEPTH {
+        out.push(x.to_raw());
+        x = sm.expansion_loc(sm.include_loc(x));
+    }
     out
 }
+
+/// How many inclusions around a name string are looked through (Kiln's
+/// own limit on nested inclusions is lower).
+const INCLUDE_DEPTH: usize = 512;
 
 /// Kiln's names of function `f` for a `PredefinedExpr` or a
 /// source-location builtin (`kiln_sema/src/predefined.rs`
@@ -541,12 +671,14 @@ fn is_kiln_name(w: &Walk<'_>, f: DeclId, pretty: bool, bytes: &[u8]) -> bool {
 /// and reads it so, `kiln_sema/src/templ/args.rs:2022`; the
 /// `PredefinedExpr`'s `a` names it, which is checked), in the innermost
 /// function whose body holds the expression and whose name the bytes
-/// are; or a source-location function name of the first use's context
-/// whose name the bytes are. `None` (the bytes are written) for a file
-/// name and wherever no such entity is found.
+/// are; or a source-location function name (Kiln makes one object per
+/// content, shared by every use that has these bytes): of the one entity
+/// every use of the object in the translation unit is in, whose name the
+/// bytes are (WP-115 item 1). `None` (the bytes are written) for a file
+/// name, where the uses are in several entities, and wherever no such
+/// entity is found.
 fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<NameString> {
     use slip_kiln::kiln::ast::RawId;
-    use slip_kiln::kiln::ast::expr::PredefinedKind;
     let ast = w.ast;
     let (_, bytes) = ast.strings.get(lit);
     let next = origin.raw().checked_add(1).and_then(ExprId::from_raw);
@@ -563,9 +695,13 @@ fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<Nam
         let at = w.sm.expansion_loc(ast.exprs.get(next).loc());
         let mut best: Option<(u32, DeclId)> = None;
         let mut tie = false;
-        if at.is_file() {
-            let at = at.to_raw();
-            let bodies = std::mem::take(&mut name_values(w).bodies);
+        // The expression's location, then the `#include` of each
+        // inclusion around it (a body may come from an included file,
+        // WP-115 item 5, C2): the functions whose extent holds the first
+        // of these that any extent holds are the innermost; among them,
+        // the shortest extent (extents of one inclusion nest).
+        let bodies = std::mem::take(&mut name_values(w).bodies);
+        for at in inclusion_chain(w.sm, at) {
             for &(lo, hi, f) in bodies.iter().take_while(|&&(lo, _, _)| lo <= at) {
                 if at > hi || !is_kiln_name(w, f, pretty, bytes) {
                     continue;
@@ -581,19 +717,49 @@ fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<Nam
                     }
                 }
             }
-            name_values(w).bodies = bodies;
+            if best.is_some() {
+                break;
+            }
         }
+        name_values(w).bodies = bodies;
+        let split = std::mem::take(&mut name_values(w).split);
+        if split.iter().any(|&f| is_kiln_name(w, f, pretty, bytes)) {
+            tie = true;
+        }
+        name_values(w).split = split;
         let owner = if tie { None } else { best.map(|(_, f)| f) };
         name_values(w).owners.insert(origin.index(), owner);
         return owner.map(|f| NameString::Predefined(kind, f));
     }
-    let first = name_values(w).origins.get(&origin.index()).and_then(|uses| {
-        if uses.iter().any(|&(r, _, _)| r == Role::File) {
-            return None;
-        }
-        uses.iter().min_by_key(|&&(_, _, e)| e.index()).copied()
-    })?;
-    let (role, ctx, _) = first;
+    if let Some(&found) = name_values(w).sourced.get(&origin.index()) {
+        return found;
+    }
+    let found = sourced(w, bytes, origin);
+    name_values(w).sourced.insert(origin.index(), found);
+    found
+}
+
+/// [`name_string`] for a source-location string object `origin` holding
+/// `bytes`: the context of its uses where every use of the object in the
+/// translation unit is of one role and one entity (the function itself:
+/// a use in a lambda or a local class of it is another entity's) and the
+/// bytes are that entity's name of the role; else `None`, the bytes. A
+/// pointer to the object can only have been made by one of these uses
+/// (Kiln's `srcloc_string`; but see the landed file's named hole for
+/// reflection strings), so where they are all of one entity the string is
+/// certainly that entity's name.
+fn sourced(w: &mut Walk<'_>, bytes: &[u8], origin: ExprId) -> Option<NameString> {
+    let nv = name_values(w);
+    let uses = nv.origins.get(&origin.index())?;
+    let &(role, ctx, _) = uses.iter().min_by_key(|&&(_, _, e)| e.index())?;
+    if role == Role::File {
+        return None;
+    }
+    let uses = uses.clone();
+    let one = w.entity(ctx);
+    if uses.iter().any(|&(r, c, _)| r != role || w.entity(c) != one) {
+        return None;
+    }
     is_kiln_name(w, ctx, role == Role::Pretty, bytes).then_some(NameString::SourceLoc(role, ctx))
 }
 
@@ -604,7 +770,9 @@ fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<Nam
 /// `PredefinedExpr`'s value; `uv 2`, `uv 0` (plain) or `uv 1` (pretty)
 /// and the context, for a source-location function name; then the names
 /// of the named local types around that function
-/// ([`crate::local::write_names_around`]).
+/// ([`crate::local::write_names_around`]), and for a pretty name those
+/// its printed signature mentions ([`crate::local::write_signature_names`],
+/// WP-115 item 5, H1).
 fn write_name_string(w: &mut Walk<'_>, s: &mut Stream, which: NameString) {
     s.bytes(&[]).uv(0);
     match which {
@@ -612,11 +780,19 @@ fn write_name_string(w: &mut Walk<'_>, s: &mut Stream, which: NameString) {
             s.uv(1).tag(crate::tables::predefined_kind::row(&k));
             w.write_ref(s, f);
             crate::local::write_names_around(w, s, f);
+            match k {
+                PredefinedKind::PrettyFunction => crate::local::write_signature_names(w, s, f),
+                PredefinedKind::Func | PredefinedKind::Function => {}
+            }
         }
         NameString::SourceLoc(role, ctx) => {
             s.uv(2).uv(u64::from(role == Role::Pretty));
             w.write_ref(s, ctx);
             crate::local::write_names_around(w, s, ctx);
+            match role {
+                Role::Pretty => crate::local::write_signature_names(w, s, ctx),
+                Role::Plain | Role::File => {}
+            }
         }
     }
 }
@@ -624,13 +800,20 @@ fn write_name_string(w: &mut Walk<'_>, s: &mut Stream, which: NameString) {
 /// `PtrBase` `Const.0` of a source-location `__impl` object: the digest
 /// `H("slip.value.v1", uv 0, uv 3, type)` of its type (a value's own
 /// stream begins with a `ValueKind` tag, never 0, so no constant written
-/// by content has this digest), then the context of the use that built
-/// it (`Ref::none` outside a function) and the names of the named local
-/// types around it, the use's ordinal among
-/// that function's (among every other context's, outside one), then the
-/// file name it points to: `opt`, and the literal as `string` writes a
-/// `__FILE__` literal's (§9: the file is not dropped, the line and
-/// column are).
+/// by content has this digest), then where its use is numbered and its
+/// ordinal there, then the file name it points to: `opt`, and the
+/// literal as `string` writes a `__FILE__` literal's (§9: the file is not
+/// dropped, the line and column are).
+///
+/// Where it is numbered: a use in a function is the function's (`ref`),
+/// the names of the named local types around it and those its printed
+/// signature mentions (the object holds its pretty name), and the use's
+/// ordinal among the function's; a use outside every function is
+/// `Ref::none`, `count 0`, then the declaration that holds it (`ref?`,
+/// [`holders`]) with the names of the named local types around it, and
+/// the use's ordinal among that declaration's (among every use no
+/// declaration holds, where none does): numbered per holder, so a use
+/// added to another holder does not renumber it (WP-115 item 2).
 fn write_location(w: &mut Walk<'_>, s: &mut Stream, obj: ConstValueId) {
     let ty = match w.ast.consts.get(obj) {
         ConstValue::Aggregate(img) => Some(img.ty),
@@ -646,12 +829,22 @@ fn write_location(w: &mut Walk<'_>, s: &mut Stream, obj: ConstValueId) {
     }
     let hashed = w.hashed(inner.finish(VALUE_TAG));
     s.digest(&hashed.digest).absorb(hashed.cause);
-    let (ctx, n, file) = name_values(w).objects[&obj.index()];
-    w.write_ref_opt(s, ctx);
-    match ctx {
-        Some(f) => crate::local::write_names_around(w, s, f),
-        None => {
-            s.count(0);
+    let Impl { group, n, file } = name_values(w).objects[&obj.index()];
+    match group {
+        Group::Function(f) => {
+            w.write_ref(s, f);
+            crate::local::write_names_around(w, s, f);
+            crate::local::write_signature_names(w, s, f);
+        }
+        Group::Holder(h) => {
+            s.uv(REF_NONE).count(0);
+            w.write_ref_opt(s, h);
+            match h {
+                Some(h) => crate::local::write_names_around(w, s, h),
+                None => {
+                    s.count(0);
+                }
+            }
         }
     }
     s.uv(n);
@@ -1581,5 +1774,175 @@ mod tests {
             all.dedup();
             assert_eq!(all.len(), encs.len(), "ordinary is not UTF-8, nor Wide16 UTF-16");
         });
+    }
+}
+
+#[cfg(test)]
+mod name_value_tests {
+    //! The identity of the source-location objects (digest §9, WP-115).
+
+    use slip_kiln::kiln::ast::DeclId;
+    use slip_model::keys::RuleTable;
+
+    use super::{Group, name_values};
+    use crate::Input;
+    use crate::walk::Walk;
+
+    const SRCLOC: &str = "namespace std {
+struct source_location {
+  struct __impl { const char *_M_file_name; const char *_M_function_name; unsigned _M_line; unsigned _M_column; };
+  static consteval source_location current(const void *p = __builtin_source_location()) noexcept {
+    source_location s; s.impl = static_cast<const __impl *>(p); return s; }
+  constexpr unsigned line() const noexcept { return impl ? impl->_M_line : 0; }
+  const __impl *impl = nullptr;
+};
+}
+";
+
+    /// Runs `f` on a walk over `src` after [`SRCLOC`], C++20.
+    fn with_walk<R>(src: &str, f: impl FnOnce(&mut Walk<'_>) -> R) -> R {
+        let text = format!("{SRCLOC}{src}");
+        let files = [("main.cpp", text.as_str())];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        let rules = RuleTable::empty();
+        slip_kiln::snippet::parse(&snippet, |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let mut w = Walk::new(&input, &rules);
+            f(&mut w)
+        })
+        .expect("the snippet parses")
+    }
+
+    /// The name of `d` as Kiln prints it.
+    fn name(w: &Walk<'_>, d: DeclId) -> String {
+        let names = slip_kiln::kiln::ast::dump::AstNames::with_sources(w.ast, w.sm);
+        let mut t = String::new();
+        names.write_name(d, &mut t);
+        t
+    }
+
+    /// Every `__impl` object's group and ordinal, sorted, as text.
+    fn objects(w: &mut Walk<'_>) -> Vec<String> {
+        let all: Vec<_> = name_values(w).objects.values().copied().collect();
+        let mut out: Vec<String> = all
+            .into_iter()
+            .map(|o| {
+                let g = match o.group {
+                    Group::Function(f) => format!("fn {}", name(w, f)),
+                    Group::Holder(Some(h)) => format!("holder {}", name(w, h)),
+                    Group::Holder(None) => "none".to_owned(),
+                };
+                format!("{g} {} file={}", o.n, o.file.is_some())
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    // Item 4: every `__impl` object a use built points to a file name
+    // that is a string literal, so `write_location`'s `opt(false)` is
+    // never written: `record_source_loc` (kiln_sema/src/builtins.rs)
+    // returns before recording anything when `srcloc_string` of the file
+    // fails, and the `__impl` object's `_M_file_name` is that pointer; a
+    // deduced return type's refresh (`finish_source_locs`) keeps it.
+    #[test]
+    fn wp115_every_impl_object_has_its_file() {
+        let got = with_walk(
+            "struct S { std::source_location l = std::source_location::current(); };
+constexpr S s{};
+constexpr std::source_location g = std::source_location::current();
+auto f() { return std::source_location::current(); }
+void h(std::source_location = std::source_location::current());
+void k() { h(); S t; (void)t; (void)f(); }
+template <int N> constexpr std::source_location V = std::source_location::current();
+constexpr auto v = V<1>;
+",
+            objects,
+        );
+        assert!(got.len() >= 6, "{got:?}");
+        assert!(got.iter().all(|o| o.ends_with("file=true")), "{got:?}");
+    }
+
+    // Item 2: the holder of each kind of use outside a function.
+    #[test]
+    fn wp115_impl_objects_by_holder() {
+        let got = with_walk(
+            "struct S { std::source_location l = std::source_location::current(); };
+constexpr S s2[2] = {S{}, S{}};
+constexpr std::source_location g2[2] = {std::source_location::current(), std::source_location::current()};
+template <int N> constexpr std::source_location V = std::source_location::current();
+constexpr auto v = V<1>;
+constexpr auto l = [x = std::source_location::current()] { return x; };
+void k() { constexpr S t{}; (void)t; }
+enum E : unsigned { X = std::source_location::current().line() };
+",
+            objects,
+        );
+        let want = [
+            "fn k 0 file=true",
+            "holder V 0 file=true",
+            "holder current 0 file=true",
+            "holder g2 0 file=true",
+            "holder g2 1 file=true",
+            // The lambda's variable `l`, and the field `S::l`'s own use.
+            "holder l 0 file=true",
+            "holder l 0 file=true",
+            "holder s2 0 file=true",
+            "holder s2 1 file=true",
+            "none 0 file=true",
+        ];
+        assert_eq!(got, want);
+    }
+
+    // Item 5: two overloads one macro invocation makes share an extent,
+    // so a `__func__` string, which both could hold, is its bytes; a
+    // `__PRETTY_FUNCTION__` string, which only one holds, is that one's.
+    #[test]
+    fn wp115_overloads_of_one_macro_fall_back_to_the_bytes() {
+        let got = with_walk(
+            "void take(const char *);
+#define TWO void f(int) { constexpr const char *p = __func__, *q = __PRETTY_FUNCTION__; take(p); take(q); } \\
+  void f(long) { constexpr const char *p = __func__, *q = __PRETTY_FUNCTION__; take(p); take(q); }
+TWO
+",
+            |w| {
+                use slip_kiln::kiln::ast::{ExprId, RawId};
+                use slip_kiln::kiln::ast::expr::ExprKind;
+                let mut out = Vec::new();
+                for i in 0..w.ast.exprs.len() {
+                    let Some(e) = ExprId::from_raw(u32::try_from(i + 1).expect("fits")) else {
+                        continue;
+                    };
+                    if w.ast.exprs.get(e).kind() != ExprKind::PredefinedExpr {
+                        continue;
+                    }
+                    let Some(origin) = w.ast.exprs.predefined_name(e) else { continue };
+                    let lit = w.ast.exprs.string_lit(origin);
+                    let found = super::name_string(w, lit, origin).map(|n| match n {
+                        super::NameString::Predefined(_, f) => format!("{f:?}"),
+                        super::NameString::SourceLoc(_, f) => format!("loc {f:?}"),
+                    });
+                    let (_, bytes) = w.ast.strings.get(lit);
+                    out.push((String::from_utf8_lossy(bytes).into_owned(), found.is_some()));
+                }
+                out
+            },
+        );
+        assert_eq!(
+            got,
+            [
+                ("f".to_owned(), false),
+                ("void f(int)".to_owned(), true),
+                ("f".to_owned(), false),
+                ("void f(long)".to_owned(), true),
+            ]
+        );
     }
 }

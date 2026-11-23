@@ -1,0 +1,5 @@
+// WP-115 item 1 (digest §9): a __builtin_FUNCTION() in a default argument evaluated at a call is the caller's use; the string "h" has uses in x::h() and h(), so its bytes are written: a cost under a rename of h()
+void take(const char *);
+consteval const char *fn(const char *f = __builtin_FUNCTION()) { return f; }
+namespace x { void h() { constexpr const char *p = __builtin_FUNCTION(); take(p); } }
+void k() { constexpr const char *p = fn(); take(p); }

@@ -189,7 +189,7 @@ fn make_params(
         return Err(format!("{} has the content id {actual}, not {id}", path.display()));
     }
     let image = Image::from_post(store, &post.image)?;
-    let params = Params { pre: post.pre, declared, image, limit, locate };
+    let params = Params { pre: post.pre, declared, declared_id: id, image, limit, locate };
     Ok((id, post.image.clone(), params))
 }
 
