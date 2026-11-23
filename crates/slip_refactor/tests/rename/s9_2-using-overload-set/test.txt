@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (a using-declaration naming an overload set of two subjects: one follower of both, a shadow for each)
+from: n::f
+to: g
+kind: function

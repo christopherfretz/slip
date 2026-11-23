@@ -1,0 +1,10 @@
+subjects:
+  599ef791 seed - rule=yes n::B::f()
+  a6b7f566 candidate - rule=yes k()::L::f()
+links:
+  599ef791 a6b7f566
+claims:
+  main.cpp:1:39+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:3:26+1 replace "g" t0 votes=1 none [a6b7f566]
+  main.cpp:5:5+1 replace spell(a6b7f566, "g") t0 votes=1 none [a6b7f566]
+changed:

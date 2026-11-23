@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (two unrelated classes with a virtual function of the same name: two candidates, no link; reduce keeps the other's names)
+from: n::A::f
+to: g
+kind: function

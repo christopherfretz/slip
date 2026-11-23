@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (a pure virtual seed with no override in this observer: a seed, no link)
+from: n::B::f
+to: g
+kind: function
