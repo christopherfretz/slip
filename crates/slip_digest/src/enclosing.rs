@@ -34,7 +34,7 @@
 //! unit holds this row, and does not get it.
 
 use slip_kiln::kiln::ast::attr::{AttrKind, AttrNode};
-use slip_kiln::kiln::ast::decl::{DeclKind, TemplLinkKind};
+use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
 use slip_kiln::kiln::ast::linkage::Linkage;
 use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{AttrId, DeclId};
@@ -114,9 +114,15 @@ pub(crate) fn write(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
         Governs::Own(Some(t)) => {
             // Kiln's chain of a function template's explicit
             // specialisation holds the declaration it instantiated from
-            // the template, at the template's location: not one written
-            // for the specialisation, and clang has no such declaration.
-            let made: Vec<_> = ast.redecls_of(t).map(|d| ast.decls.get(d).loc()).collect();
+            // the template, at the location of a declaration of the
+            // template or of its pattern: not one written for the
+            // specialisation, and clang has no such declaration.
+            let made: Vec<_> = std::iter::once(t)
+                .chain(ast.redecls_of(t))
+                .flat_map(|d| [Some(d), ast.template_info(d).and_then(|i| i.pattern)])
+                .flatten()
+                .map(|d| ast.decls.get(d).loc())
+                .collect();
             chain_pair(w, s, e, |d| !made.contains(&ast.decls.get(d).loc()))
         }
         // A variable template itself: what its specialisations take.
@@ -179,16 +185,27 @@ fn chain_pair(w: &Walk<'_>, s: &mut Stream, e: DeclId, keep: impl Fn(DeclId) -> 
     if chain.iter().any(|&d| keep(d)) {
         chain.retain(|&d| keep(d));
     }
+    // A declaration the compiler makes (`std::type_info`,
+    // `std::align_val_t`, `std::terminate`) is in no opening; where the
+    // entity is also written, the written declarations decide.
+    let implicit = |d: DeclId| w.ast.decls.get(d).has(DeclFlags::IMPLICIT);
+    if chain.iter().any(|&d| !implicit(d)) {
+        chain.retain(|&d| !implicit(d));
+    }
     let pairs: Vec<Pair> = chain.iter().map(|&d| namespace_visibility(w, s, d)).collect();
     let pair = pairs.first().copied().unwrap_or((None, None));
     if pairs.iter().any(|&p| p != pair) {
-        if std::env::var_os("TMP_VBU").is_some() {
-            eprintln!(
-                "TMP_VBU {} {:?} {:?}",
+        if let Some(path) = std::env::var_os("TMP_VBU_LOG") {
+            use std::io::Write as _;
+            let line = format!(
+                "{}\t{:?}\t{:?}\n",
                 crate::names::display_name(w.ast, e),
                 w.ast.decls.get(e).kind(),
                 pairs
             );
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = f.write_all(line.as_bytes());
+            }
         }
         s.indeterminate(Cause::VisibilityByUse);
     }
