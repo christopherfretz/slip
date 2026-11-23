@@ -1,0 +1,17 @@
+# E06: one type respelled. good: through the namespace alias L; good-2:
+# through the using-declaration; good-3: the injected class name inside
+# lib::Item; good-4: through the typedef ItemT. bad: through ItemC, which
+# adds const: copy is const and peek(copy) calls peek(const lib::Item &).
+good:   verified
+good-2: verified
+good-3: verified
+good-4: verified
+bad:    mismatch changed take(lib::Item *) @ main.cpp:16
+
+# pre-5 (WP-109): __PRETTY_FUNCTION__ prints the parameter types as written
+# (clang prints the sugar): the parameter of name respelled from Int to
+# int, the same length, changes the string name returns from
+# "const char *name(Int)" to "const char *name(int)". good-5 respells
+# plain's parameter, which nothing prints.
+good-5: verified
+bad-5:  mismatch changed name(int) @ main.cpp:4

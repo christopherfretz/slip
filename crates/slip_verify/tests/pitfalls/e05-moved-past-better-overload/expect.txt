@@ -1,0 +1,4 @@
+# E05: caller moved. good moves it past other() only, still before h(int);
+# bad moves it past h(int), which its call h(1) then prefers to h(long).
+good: verified
+bad:  mismatch changed caller() @ main.cpp:7

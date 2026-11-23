@@ -1,0 +1,20 @@
+# E16: [=] captures n by copy at the lambda-expression, before n = 5; [&]
+# reads it at the call. f() returns 1 instead of 5. bad changes the capture
+# default and the kind of the capture; pre-2 writes the capture explicitly,
+# and bad-2 ([n] for [&n]) changes its kind alone.
+# No good tree, by design: the capture default and each capture's implicit
+# bit are written (spec/digest-kinds.md LambdaData `default`, LambdaCapture
+# `implicit`), because in a template, for this, for unevaluated uses and for
+# constants that are not odr-used the default decides what is captured.
+good:   none no correct edit is digest-equal, by design: the capture default and the implicit bit are written
+bad:    mismatch changed f() @ main.cpp:3
+good-2: none as good: no other capture list is digest-equal, by design
+bad-2:  mismatch changed f() @ main.cpp:3
+
+# pre-3 (WP-109): the capture default in a template. n is a constant: the
+# use of n in the body is not an odr-use ([basic.def.odr]/5), so [&]
+# captures nothing and the closure is empty; [&n] captures it by
+# reference. closure_size<int>() returns 1, then 8.
+good-3: none as good
+bad-3:  mismatch changed template <class> int closure_size() @ main.cpp:3
+bad-3:  mismatch derived_changed closure_size<int>() @ main.cpp:3

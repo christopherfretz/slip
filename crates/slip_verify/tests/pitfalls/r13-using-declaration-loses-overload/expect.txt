@@ -1,0 +1,10 @@
+# R13: Base::f(int) renamed g. Derived's using Base::f; named both overloads
+# of Base::f, so d.f(1), spelled through Derived, chose Base::f(int) over
+# Derived::f(long). good renames that call too (d.g(1)); bad leaves it, as a
+# tool does that renames only the uses whose lookup names Base::f(int)
+# directly and not through Derived's using-shadow: the shadow is gone and
+# d.f(1) silently takes Derived::f(long). declared.txt has what the correct
+# edit changes besides the rename (Derived and its shadow), so that bad is
+# caught by caller() alone.
+good: verified
+bad:  mismatch changed caller() @ main.cpp:10
