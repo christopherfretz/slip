@@ -1094,6 +1094,31 @@ fn l1_lookup_from_a_file_outside_both_roots() {
     assert!(tree.truth_differs(&o, &m));
 }
 
+// §5.3 L1: the includer's directory, on its own. The probe is in
+// `ext/sub/y.h`; `ext/sub` is not in the search list, and the name from
+// `ext` (the list) is outside both roots: only the includer's directory
+// reaches the subject.
+#[test]
+fn l1_includer_directory_only() {
+    let main = "#include <e.h>\nint f() { return E; }\n";
+    let tree = Tree::new("l1-includer", &[("a.cpp", main)]);
+    std::fs::create_dir_all(tree.subject.join("inc")).unwrap();
+    write(&tree.base.join("ext/e.h"), "#include \"sub/y.h\"\n");
+    write(
+        &tree.base.join("ext/sub/y.h"),
+        "#if __has_include(\"../../s/inc/z.h\")\n#define E 2\n#else\n#define E 1\n#endif\n",
+    );
+    write(&tree.post.join("inc/z.h"), "\n");
+    let ext = tree.base.join("ext");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &ext)]);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    let r = reason(&v);
+    assert!(r.starts_with("post-image: looked for ../../s/inc/z.h in "), "{r}");
+    assert!(r.ends_with(&format!("sub: {} is a directory of the subject", tree.subject.display())));
+    assert!(tree.truth_differs(&o, &m));
+}
+
 // F2 (review), §5.3 G4: a response file the driver would read is a word
 // slip cannot examine; refused, the map job unchanged. Relative from a
 // directory outside the roots, and absolute in the subject.
