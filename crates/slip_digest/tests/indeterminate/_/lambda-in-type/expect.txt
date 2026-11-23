@@ -2,3 +2,4 @@ indeterminate x
 indeterminate X<(lambda)>
 indeterminate X<(lambda)>::X()
 indeterminate X<(lambda)>::X()::<exception_spec>
+indeterminate X<(lambda)>::<definition>

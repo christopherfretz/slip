@@ -79,6 +79,37 @@ pub(crate) fn instantiated_declaration(w: &Walk<'_>, x: DeclId) -> bool {
     }
 }
 
+/// Whether declaration `x` itself was made by instantiation, for what
+/// Kiln writes onto it (§11.9, `attrs::moved_kinds`): its own `SpecInfo`
+/// or `MemberSpecInfo` (Kiln links only the declarations it makes for a
+/// specialisation or a member of one) has an instantiation kind; or it
+/// has none, or `ExplicitSpecialization`, and its lexical context is
+/// governed by an instantiation (`governing_kind`: a friend or member
+/// Kiln declared in an instantiated class). Unlike
+/// [`instantiated_declaration`] it does not read the entity's kind for a
+/// declaration with none of its own: a friend written in a class that is
+/// no instantiation, redeclaring a member of one (`friend void
+/// X<int>::f();`), was written in source.
+pub(crate) fn made_by_instantiation(w: &Walk<'_>, x: DeclId) -> bool {
+    let ast = w.ast;
+    let own = ast
+        .spec_info(x)
+        .map(|(_, i)| i.kind)
+        .or_else(|| ast.member_spec_info(x).map(|(_, i)| i.kind));
+    let kind = match own {
+        Some(k) if k != SpecKind::ExplicitSpecialization => Some(k),
+        Some(_) | None => ast.decls.lexical_ctx(x).and_then(|c| governing_kind(w, c)),
+    };
+    matches!(
+        kind,
+        Some(
+            SpecKind::ImplicitInstantiation
+                | SpecKind::ExplicitInstantiationDeclaration
+                | SpecKind::ExplicitInstantiationDefinition
+        )
+    )
+}
+
 /// The template head of a discriminator (§9, §3.3): `record
 /// TemplateParamList` with each parameter as its `DeclNode` rows (which
 /// bring in its `TemplateParmInfo`) and nothing else, so that a key does
@@ -235,12 +266,11 @@ pub(crate) fn template_info(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     crate::expr::child_opt(w, s, constraint);
 }
 
-/// `record TemplLink` (§9.1): the `templ` row of a payload record.
-/// `0-kind` is `enum TemplLinkKind?` (absent for the word 0), then the row
-/// of the kind's index: nothing for a pattern (`Pattern.0-index` is
-/// `out`), else the record it indexes.
-#[allow(dead_code, reason = "called by the payload records (decl_func.rs, decl_class.rs)")]
-pub(crate) fn templ_link(w: &mut Walk<'_>, s: &mut Stream, l: TemplLink) {
+/// `record TemplLink` (§9.1): the `templ` row of the payload record of
+/// declaration `d`. `0-kind` is `enum TemplLinkKind?` (absent for the
+/// word 0), then the row of the kind's index: nothing for a pattern
+/// (`Pattern.0-index` is `out`), else the record it indexes.
+pub(crate) fn templ_link(w: &mut Walk<'_>, s: &mut Stream, d: DeclId, l: TemplLink) {
     let Some((kind, index)) = l.get() else {
         s.opt(false);
         if !l.is_none() {
@@ -260,7 +290,7 @@ pub(crate) fn templ_link(w: &mut Walk<'_>, s: &mut Stream, l: TemplLink) {
             }
         },
         TemplLinkKind::MemberOfSpecialization => match templates.member_spec(index).copied() {
-            Some(info) => member_spec_info(w, s, &info),
+            Some(info) => member_spec_info(w, s, d, &info),
             None => {
                 s.uv(0)
                     .indeterminate(Cause::Unaccounted("TemplLink/MemberOfSpecialization.0-index"));
@@ -291,10 +321,12 @@ fn write_spec_kind(s: &mut Stream, k: SpecKind) {
     }
 }
 
-/// `record SpecInfo` (§9.4). `template` and `args` are `keyed`. For an
-/// implicit instantiation `from` and `from_args` are written in their
-/// empty form: they are the resolved unit `definition`'s (§11.9), which
-/// the demand area writes.
+/// `record SpecInfo` (§9.4). `template` and `args` are `keyed`. For a
+/// specialisation of the definition class (kind `ImplicitInstantiation`
+/// or `ExplicitInstantiationDeclaration`), `from` and `from_args` are
+/// written in their empty form: Kiln chooses the pattern when it
+/// instantiates the definition, and they are the resolved unit
+/// `definition`'s (§11.9, [`spec_definition`]).
 fn spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &SpecInfo) {
     let SpecInfo {
         template: _,
@@ -308,28 +340,49 @@ fn spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &SpecInfo) {
     } = *x;
     write_spec_kind(s, kind);
     let moved = match kind {
-        SpecKind::ImplicitInstantiation => true,
+        SpecKind::ImplicitInstantiation | SpecKind::ExplicitInstantiationDeclaration => true,
         SpecKind::Undeclared
         | SpecKind::ExplicitSpecialization
-        | SpecKind::ExplicitInstantiationDeclaration
         | SpecKind::ExplicitInstantiationDefinition => false,
     };
     if moved {
-        s.uv(REF_NONE).opt(false).pending(Area::Demand);
+        s.uv(REF_NONE).opt(false);
     } else {
-        write_pattern_ref(w, s, from);
-        s.opt(from_args.is_some());
-        if let Some(l) = from_args {
-            w.write_args(s, l);
-        }
+        spec_from(w, s, from, from_args);
     }
     s.uv(defaulted);
 }
 
-/// `record MemberSpecInfo` (§9.4).
-fn member_spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &MemberSpecInfo) {
+/// `SpecInfo` `from` and `from_args`.
+fn spec_from(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    from: DeclId,
+    from_args: Option<slip_kiln::kiln::ast::ArgListId>,
+) {
+    write_pattern_ref(w, s, from);
+    s.opt(from_args.is_some());
+    if let Some(l) = from_args {
+        w.write_args(s, l);
+    }
+}
+
+/// The rows of `SpecInfo` that open the resolved unit `definition` of a
+/// specialisation (§11.9): `from` and `from_args`. Nothing for an entity
+/// with no `SpecInfo`.
+pub(crate) fn spec_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
+    if let Some((_, &SpecInfo { from, from_args, .. })) = w.ast.spec_info(e) {
+        spec_from(w, s, from, from_args);
+    }
+}
+
+/// `record MemberSpecInfo` (§9.4) of declaration `d`. `kind` is the
+/// member's effective kind (§11.10, `demand::effective_kind`), not the
+/// one Kiln holds, which depends on what was instantiated first.
+fn member_spec_info(w: &mut Walk<'_>, s: &mut Stream, d: DeclId, x: &MemberSpecInfo) {
     let MemberSpecInfo { instantiated_from, kind, point_of_instantiation: _ } = *x;
     write_pattern_ref(w, s, instantiated_from);
+    let kind = crate::demand::effective_kind(w, d).unwrap_or(kind);
     write_spec_kind(s, kind);
 }
 

@@ -1390,7 +1390,7 @@ fn unlisted_values() {
     let bytes = raw_file(&x);
     let off = at(&x, "sections.set.refusals[0]");
     assert_eq!(
-        error(EditSet::from_bytes(&patch(&bytes, off, 0x00, 17))),
+        error(EditSet::from_bytes(&patch(&bytes, off, 0x00, 18))),
         (ErrorKind::Malformed, off)
     );
     let x = result();
@@ -2330,16 +2330,16 @@ fn set_refusal_fields() {
             assert_eq!(what, "a refusal that is not of a site has a macro");
         }
     }
-    // `other` only for contested, overlap and buried.
+    // `other` only for contested, overlap, buried and with_group.
     for c in Cause::ALL {
         let x = one(Refusal { other: Some(place(0, 5, 6)), ..valid(c) });
-        if matches!(c, Cause::Contested | Cause::Overlap | Cause::Buried) {
+        if matches!(c, Cause::Contested | Cause::Overlap | Cause::Buried | Cause::WithGroup) {
             x.validate().unwrap();
         } else {
             let what = rejected(&x, "sections.set.refusals[0].other");
             assert_eq!(
                 what,
-                "other is present for a cause other than contested, overlap or buried"
+                "other is present for a cause other than contested, overlap, buried or with_group"
             );
         }
     }
@@ -2365,7 +2365,11 @@ fn set_refusal_fields() {
         broken(|x| x.refusals.push(refusal(Cause::NoEdit, None, 0, 0)), "sections.set.refusals[3]");
     assert_eq!(what, "a no_edit refusal is in a set with an edit");
     for c in Cause::ALL.into_iter().filter(|&c| c != Cause::NoEdit) {
-        let x = EditSet { refusals: vec![valid(c), valid(Cause::NoEdit)], ..refused() };
+        // In cause order: with_group (17) sorts after no_edit (16).
+        let mut refusals = vec![valid(c), valid(Cause::NoEdit)];
+        refusals.sort_by_key(|r| r.cause as u8);
+        let at = refusals.iter().position(|r| r.cause == Cause::NoEdit).unwrap();
+        let x = EditSet { refusals, ..refused() };
         if matches!(
             c,
             Cause::Contested
@@ -2374,11 +2378,12 @@ fn set_refusal_fields() {
                 | Cause::FileDiffers
                 | Cause::Cyclic
                 | Cause::Buried
+                | Cause::WithGroup
         ) {
-            let what = rejected(&x, "sections.set.refusals[1]");
+            let what = rejected(&x, &format!("sections.set.refusals[{at}]"));
             assert_eq!(
                 what,
-                "a no_edit refusal is beside a contested, divergent, overlap, file_differs, cyclic or buried refusal",
+                "a no_edit refusal is beside a contested, divergent, overlap, file_differs, cyclic, buried or with_group refusal",
                 "{c:?}"
             );
         } else {

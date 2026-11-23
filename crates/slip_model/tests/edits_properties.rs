@@ -105,7 +105,13 @@ fn gen_claim(r: &mut Lcg, files: u64) -> Claim {
         vec![]
     };
     let reason = if stance == Stance::Refuse {
-        [Reason::MacroBody, Reason::Pasted, Reason::NotOwned, Reason::MixedInstances][r.index(4)]
+        [
+            Reason::MacroBody,
+            Reason::Pasted,
+            Reason::NotOwned,
+            Reason::MixedInstances,
+            Reason::Directive,
+        ][r.index(5)]
     } else {
         Reason::None
     };
