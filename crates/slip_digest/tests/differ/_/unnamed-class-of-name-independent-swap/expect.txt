@@ -1,0 +1,2 @@
+changed S::_ (name-independent 0)
+changed S::_ (name-independent 1)

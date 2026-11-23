@@ -151,6 +151,11 @@ fn errors_of(unit: &Unit<'_>) -> u32 {
     unit.errors()
 }
 
+/// The closure of `parse_observer_with` that returns the stack left.
+fn stack_of(unit: &Unit<'_>) -> Option<usize> {
+    unit.stack_remaining()
+}
+
 fn counter(shard: &Shard, name: &str) -> Option<u64> {
     shard.counters.iter().find(|c| c.name == name).map(|c| c.value)
 }
@@ -763,6 +768,76 @@ fn s8_4_inputs_directory_embed_resource_is_not_found() {
     let s = f.parse(".", &["c++", "-std=c++26", "main.cpp"]);
     assert_eq!(s.outcome.status, Status::Ok, "{:?}", s.outcome);
     assert_eq!(s.inputs, Some(vec![file_ref(&main)]));
+}
+
+// §8.4 `stack_remaining`: inside the closure the calling thread is the
+// front end's, under Kiln's stack guard, with most of Kiln's 1 GiB left;
+// `-fkiln-stack-size=` sets it. Outside, no guard: `None`.
+#[test]
+fn s8_4_with_closure_stack_remaining() {
+    let f = Fixture::new("stack");
+    f.write("main.cpp", "int x;\n");
+    let left = |argv: &[&str]| {
+        let o = f.observer(".", argv);
+        let (shard, seen) =
+            parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), stack_of).unwrap();
+        assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+        seen.unwrap().expect("a guard on the front end's thread")
+    };
+    let default = left(&["c++", "main.cpp"]);
+    assert!(default > 1000 << 20 && default <= 1 << 30, "{default}");
+    let small = left(&["c++", "-fkiln-stack-size=32M", "main.cpp"]);
+    assert!(small > 16 << 20 && small <= 32 << 20, "{small}");
+}
+
+/// The child of [`s8_4_run_reproducible_time`]: set in its environment.
+const TIME_CHILD: &str = "SLIP_KILN_TIME_CHILD";
+
+/// A unit that is `ok` exactly when `__DATE__`, `__TIME__` and
+/// `__TIMESTAMP__` are those of the Unix epoch.
+const EPOCH_CHECK: &str = "\
+constexpr bool same(const char *a, const char *b) {
+  while (*a && *a == *b) { ++a; ++b; }
+  return *a == *b;
+}
+static_assert(same(__DATE__, \"Jan  1 1970\"), \"date\");
+static_assert(same(__TIME__, \"00:00:00\"), \"time\");
+static_assert(same(__TIMESTAMP__, \"Thu Jan  1 00:00:00 1970\"), \"timestamp\");
+";
+
+// §8.4 the run: `-fkiln-reproducible-time` fixes `__DATE__`, `__TIME__`
+// and `__TIMESTAMP__` at the epoch whatever `SOURCE_DATE_EPOCH` (and
+// Kiln's `KILN_REPRODUCIBLE_TIME`) hold. The front end reads the
+// process's environment, which the tests of this binary share, so the
+// parse runs in a child: this binary again, with both set to 14 November
+// 2023 and only this test selected.
+#[test]
+fn s8_4_run_reproducible_time() {
+    if std::env::var_os(TIME_CHILD).is_some() {
+        assert_eq!(std::env::var("SOURCE_DATE_EPOCH").as_deref(), Ok("1700000000"));
+        let f = Fixture::new("time");
+        f.write("main.cpp", EPOCH_CHECK);
+        let s = f.parse(".", &["c++", "-std=c++17", "main.cpp"]);
+        assert_eq!(s.outcome.status, Status::Ok, "{:?}", s.outcome);
+        // The check itself fails on another date.
+        f.write("other.cpp", &EPOCH_CHECK.replace("1970", "2023"));
+        let s = f.parse(".", &["c++", "-std=c++17", "other.cpp"]);
+        assert_eq!(s.outcome.status, Status::Diagnosed, "{:?}", s.outcome);
+        return;
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["s8_4_run_reproducible_time", "--exact", "--test-threads=1", "--nocapture"])
+        .env(TIME_CHILD, "1")
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .env("KILN_REPRODUCIBLE_TIME", "1700000000")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "the child failed:\n{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 // §8.4 outcome, at the Kiln pin `83566cc47` (WP-044): the smallest

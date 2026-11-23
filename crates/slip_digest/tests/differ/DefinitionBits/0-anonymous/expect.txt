@@ -1,7 +1,7 @@
 changed S
-added S::(anonymous struct)
-added S::(anonymous struct)::a
 added S::a
-removed S::(anonymous struct)
-removed S::(anonymous struct)::a
 removed S::x
+added S::(anonymous struct for a)
+added S::(anonymous struct for a)::a
+removed S::(anonymous struct for x)
+removed S::(anonymous struct for x)::a

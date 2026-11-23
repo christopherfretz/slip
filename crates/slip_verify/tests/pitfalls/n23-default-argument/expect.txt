@@ -1,0 +1,8 @@
+# N23: the moved take's default argument names the staying legacy::limit.
+# The default argument is written in take's unit, not at the caller that
+# uses it (digest-kinds §7 "Shared nodes", §11.4): caller() is the same in
+# bad-2, take is not. spec/pitfalls.md §2 asks for the caller.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed legacy::take(int) @ main.cpp:4

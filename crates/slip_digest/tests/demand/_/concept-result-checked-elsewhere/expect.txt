@@ -1,0 +1,4 @@
+# the stored result is a demand-driven fact (digest-kinds §11): a unit
+# written before or after the same check elsewhere must not move
+added j()
+added k()

@@ -1,0 +1,7 @@
+# R07: Box::count renamed size satisfies the requires-expression of the
+# second measure, which becomes viable and more constrained. The call in
+# caller names the specialisation it selected, and a specialisation's key
+# holds its template (spec/digest.md §6 "the selected entity is written"):
+# measure<Box> of the second template against measure<Box> of the first.
+good: none the probe tests for the new name; any rename to size makes the constrained overload viable
+bad:  mismatch changed caller() @ main.cpp:12

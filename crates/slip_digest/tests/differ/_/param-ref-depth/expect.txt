@@ -1,0 +1,2 @@
+added template <class> int f(type-parameter-0-0, decltype(b + b) (*)(type-parameter-0-0))
+removed template <class> int f(type-parameter-0-0, decltype(a + b) (*)(type-parameter-0-0))

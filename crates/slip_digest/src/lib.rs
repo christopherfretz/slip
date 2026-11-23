@@ -57,11 +57,13 @@
 //! | `templ::template_head_unit(w, s, l)` | `record TemplateParamList` as a unit writes it: each parameter's whole stream, defaults included |
 //! | `templ::template_parm_info(w, s, d)`, `templ::template_info(w, s, d)` | `record TemplateParmInfo`, `record TemplateInfo` (the pattern written whole) |
 //! | `local::ordinal(w, d)` | the ordinal of a local entity of the unit (digest §4.3), first met first |
-//! | `demand::deferrable(w, f)` | whether a function is of the deferrable class (§11.2); `None` where the demand area decides |
+//! | `demand::deferrable(w, f)` | whether a function is of the deferrable class (§11.2) |
 //! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::requires_clause` (`expr.rs`) | `child`: one expression, its common rows, its kind's, `ColdExprData`'s and `templ::expr_maps` (§7); a kind not yet filled is pending (`Area::Expr`) |
 //! | `expr::child_keep_paren(w, s, e)` | `child`, an outermost `ParenExpr` written with its rows: for a `DependentDecltype` profile (§7 "Parentheses") |
-//! | `expr_dep::profile(w, s, p)`, `expr_dep::profile_expr(w, s, e)` | pending (`Area::Expr`) |
-//! | `stmt::child(w, s, st)` | pending (`Area::Stmt`) |
+//! | `expr_dep::profile(w, s, p)`, `expr_dep::profile_expr(w, s, e)` | `profile`: a canonical expression operand (§4.4), walked with the stream's expression state put aside and a fresh numbering frame (`walk::ExprState::profile`), both restored after; the outermost parenthesis kept |
+//! | `expr_dep::profile_local(w, s, d)` | `ref` of a local object while a profile is walked (`Walk::write_ref`): declared inside it, the frame's `Ref::local`; a function parameter, `Ref::param` (scope depth, position); else the unit's ordinal |
+//! | `expr_dep::decl_name(w, raw)` | nothing: the `Name` (§3.2) of a raw `DeclName` word, as `Walk::plain_name` names a declaration, with its cause |
+//! | `stmt::child(w, s, st)`, `stmt::child_opt` (`stmt.rs`) | `child`: one statement, its rows in table order (§6), one level of `walk::NODE_LIMIT` for a chain of tails (`stmt.rs` "The walk") |
 //! | `value::value(w, s, v)`, `value::string(w, s, l)` (`value.rs`) | `value`: a constant in place by structure, a constant it points to by content digest (§8); `string`: a string literal by content (§10.3) |
 //! | `local::write_decl(w, s, d)` | `decl` (§2.4): a local entity's ordinal and stream, a block-scope variable with linkage a `ref`, a block-scope function a `ref` and its own default arguments; a local type pending (`Area::Local`) |
 //! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each; a function's and a variable's language linkage (§5.6 `ScopeData`) |
@@ -77,8 +79,8 @@
 //! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1), which brings in `SpecInfo`, `MemberSpecInfo` or `PartialSpecInfo` (§9.4) |
 //! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5), each in its empty form when absent |
 //! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4): pending (`Area::Local`) |
-//! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1): pending (`Area::Stmt`) |
-//! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
+//! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1) |
+//! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, a list per declaration, the definition's apart (a parameter's: parameter i of its function's declarations), then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
 //! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
 //! | `other::module_rows(w, s, d)` | the rows `points` and `explicit_defs` of `ModuleTable` (§10.7), from the first declaration; empty forms when ownership is not tracked |
 //! | `order::write(w, s)` | the order unit's stream (digest §2.1): the keys of the variable definitions at namespace and class scope in order, then the translation unit's imports (§10.7) |
@@ -195,10 +197,12 @@ mod expr_core;
 mod expr_dep;
 mod expr_init;
 mod expr_misc;
+mod expr_profile;
 mod fp;
 mod groups;
 mod keys;
 mod local;
+pub mod map;
 mod names;
 mod order;
 mod other;
@@ -215,6 +219,7 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
+pub use names::display_name;
 pub use walk::STACK_SIZE;
 
 /// A finished translation unit (`spec/digest.md` §1 rule 4).
@@ -338,6 +343,11 @@ pub enum Area {
     Demand,
     /// The order unit (digest §2.1).
     Order,
+    /// A fact a canonical profile leaves out but its first spelling
+    /// holds: the declarations lookup found for an unresolved name in a
+    /// dependent type (digest-kinds §4.4, WP-036). Written by the unit
+    /// stream when the spelling is (WP-041).
+    Spelling,
 }
 
 impl Area {
@@ -354,6 +364,7 @@ impl Area {
             Area::Other => "other",
             Area::Demand => "demand",
             Area::Order => "order",
+            Area::Spelling => "spelling",
         }
     }
 }

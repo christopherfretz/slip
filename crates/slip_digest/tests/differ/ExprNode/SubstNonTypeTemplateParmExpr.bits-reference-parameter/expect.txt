@@ -1,0 +1,5 @@
+added A
+removed A
+added template <class> decltype(u + N) A::g(type-parameter-1-0)
+removed template <class> decltype(u + N) A::g(type-parameter-1-0)
+changed p

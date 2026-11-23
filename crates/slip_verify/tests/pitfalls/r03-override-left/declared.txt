@@ -1,0 +1,3 @@
+relocate B::f() => B :: g
+relocate D1::f() => D1 :: g
+relocate D2::f() => D2 :: g

@@ -1,0 +1,3 @@
+changed std::coroutine_traits<void>::promise_type
+removed std::coroutine_traits<void>::promise_type::get_return_object()
+changed f()

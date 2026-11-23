@@ -1,0 +1,5 @@
+# N05: a == b finds the dependency's legacy::operator== through the moved operand type.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed caller(legacy::Mine, legacy::Mine) @ main.cpp:8

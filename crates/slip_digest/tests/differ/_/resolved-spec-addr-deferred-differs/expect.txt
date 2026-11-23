@@ -1,0 +1,3 @@
+changed P
+changed A::f()
+derived-changed A<int>::f()::<exception_spec>

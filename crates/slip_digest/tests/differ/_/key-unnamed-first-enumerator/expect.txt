@@ -1,0 +1,6 @@
+added (anonymous enum for E3)
+added E2
+added E3
+removed (anonymous enum for E1)
+removed E1
+removed E2

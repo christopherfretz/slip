@@ -9,7 +9,7 @@
 
 use slip_kiln::kiln::ast::decl::{
     ConstexprKind, DeclFlags, Defaulted, FnSpec, FnStorage, FunctionData, InitStyle, LetData,
-    ParamData, ScopeData, VarData, VarEvalState, VarSpec,
+    ParamData, ScopeData, VarData, VarEval, VarEvalState, VarSpec,
 };
 use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::types::TypeKind;
@@ -212,24 +212,24 @@ fn rebuild_fn_spec(spec: FnSpec) -> FnSpec {
 /// `VarData` (§5.4), then the language linkage (§5.6).
 pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let ast = w.ast;
-    let Some(&VarData { redecl: _, init, spec, eval, templ }) = ast.decls.var(d) else {
+    let Some(&VarData { redecl: _, init, spec, eval: _, templ }) = ast.decls.var(d) else {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
     };
     let e = w.representative(ast.first(d));
     let definition_class = var_definition_class(w, e);
-    // `init`, `0-init-style` and `eval` belong to the declaration that
-    // holds the initialiser, which need not be the one read (an in-class
+    // `init` and `0-init-style` belong to the declaration that holds the
+    // initialiser, which need not be the one read (an in-class
     // `static const int x = 1;` defined by `const int S::x;`).
-    let (init, style, eval) = match init_holder(w, e) {
+    let (init, style) = match init_holder(w, e) {
         Ok(Some(holder)) => ast
             .decls
             .var(holder)
-            .map_or((init, spec.init_style(), eval), |v| (v.init, v.spec.init_style(), v.eval)),
-        Ok(None) => (init, spec.init_style(), eval),
+            .map_or((init, spec.init_style()), |v| (v.init, v.spec.init_style())),
+        Ok(None) => (init, spec.init_style()),
         Err(()) => {
             s.indeterminate(TWO_INITS);
-            (init, spec.init_style(), eval)
+            (init, spec.init_style())
         }
     };
     // init: child?; in `definition` for the definition class (§11.9).
@@ -249,25 +249,11 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         spec
     };
     var_spec(w, s, e, spec, style, definition_class);
-    // eval: demand, the resolved unit `value` (§11.3). Only a state that
-    // cannot outlive the translation unit is read here.
-    match eval.state() {
-        VarEvalState::Evaluating => {
-            s.indeterminate(EVALUATING);
-        }
-        // What Kiln found is the resolved unit's, not yet written.
-        VarEvalState::NotConstant | VarEvalState::Value(_) => {
-            s.pending(Area::Demand);
-        }
-        // Not evaluated yet: with an initialiser, the value is still the
-        // resolved unit's, whenever Kiln evaluates it (it evaluates an
-        // out-of-line `const int S::x = 1;` at once, the in-class
-        // `static const int x = 1;` later).
-        VarEvalState::NotEvaluated => {
-            if init.is_some() && !definition_class {
-                s.pending(Area::Demand);
-            }
-        }
+    // eval: demand, the resolved unit `value` (§11.3), which exists when
+    // Kiln evaluated the variable; this stream never says whether it did.
+    // Only a state that cannot outlive the translation unit is read here.
+    if var_eval(w, d).state() == VarEvalState::Evaluating {
+        s.indeterminate(EVALUATING);
     }
     // templ: record TemplLink.
     crate::templ::templ_link(w, s, templ);
@@ -287,6 +273,20 @@ fn init_holder(w: &Walk<'_>, e: DeclId) -> Result<Option<DeclId>, ()> {
         .filter(|&x| ast.decls.var(x).is_some_and(|v| v.init.is_some()));
     let first = holders.next();
     if holders.next().is_some() { Err(()) } else { Ok(first) }
+}
+
+/// What Kiln found when it evaluated the variable whose declaration `d`
+/// a unit reads (`VarData` `eval`, §11.3): the state of the declaration
+/// that holds the initialiser, as `init` is read (`init_holder`); `d`'s
+/// own when none does or two do.
+pub(crate) fn var_eval(w: &Walk<'_>, d: DeclId) -> VarEval {
+    let ast = w.ast;
+    let own = ast.decls.var(d).map(|v| v.eval).unwrap_or_default();
+    let e = w.representative(ast.first(d));
+    match init_holder(w, e) {
+        Ok(Some(holder)) => ast.decls.var(holder).map_or(own, |v| v.eval),
+        Ok(None) | Err(()) => own,
+    }
 }
 
 /// The type a variable's unit holds: the type of the declaration read,
@@ -375,7 +375,7 @@ pub(crate) fn param_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
     };
-    let ParamData { default_arg, original_ty, index, flags } = *data;
+    let ParamData { default_arg: _, original_ty, index: _, flags } = *data;
     let known = ParamData::EXPLICIT_OBJECT
         | ParamData::PACK
         | ParamData::DEFAULT_ARG_PENDING
@@ -384,20 +384,12 @@ pub(crate) fn param_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     if flags & !known != 0 {
         s.indeterminate(PARAM_FLAGS_UNACCOUNTED);
     }
-    // The function whose parameter `d` is, if it is one's.
-    let function = ast.decls.get(d).ctx().filter(|&f| ast.decls.function(f).is_some());
-    let instantiated = function.is_some_and(|f| instantiated_decl(w, f));
     // default_arg: child?. A parameter of an instantiated declaration
     // writes an absent child whatever Kiln holds: its default is the
     // `default_argument` derived unit's (§11.4). Else the default a
     // declaration of the function that is not instantiated and not at
     // block scope gives (§2.3).
-    let default = if instantiated {
-        None
-    } else {
-        let own = default_arg.filter(|_| function.is_none_or(|f| !w.is_local_extern(f)));
-        own.or_else(|| function.and_then(|f| merged_default(w, f, index)))
-    };
+    let (instantiated, default) = written_default(w, d);
     if !instantiated && default.is_none() && flags & ParamData::DEFAULT_ARG_PENDING != 0 {
         s.indeterminate(DEFAULT_ARG_MISSING);
     }
@@ -416,34 +408,67 @@ pub(crate) fn param_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     s.uv(u64::from(data.scope_depth()));
 }
 
+/// The default argument the unit of parameter `p`'s function writes for
+/// it (`ParamData` `default_arg`), and whether `p` belongs to an
+/// instantiated declaration (`instantiated_decl`), which writes none
+/// whatever Kiln holds: its default is the `default_argument` unit's
+/// (§11.4). Else the default a declaration of the function that is not
+/// instantiated and not at block scope gives, `p`'s own first (§2.3).
+pub(crate) fn written_default(
+    w: &Walk<'_>,
+    p: DeclId,
+) -> (bool, Option<slip_kiln::kiln::ast::ExprId>) {
+    let ast = w.ast;
+    let Some(&ParamData { default_arg, index, .. }) = ast.decls.param(p) else {
+        return (false, None);
+    };
+    // The function whose parameter `p` is, if it is one's.
+    let function = ast.decls.get(p).ctx().filter(|&f| ast.decls.function(f).is_some());
+    if function.is_some_and(|f| instantiated_decl(w, f)) {
+        return (true, None);
+    }
+    let own = default_arg.filter(|_| function.is_none_or(|f| !w.is_local_extern(f)));
+    (false, own.or_else(|| function.and_then(|f| merged_default(w, f, index))))
+}
+
 /// The default argument of parameter `index` given by a declaration of
 /// function `f`'s entity, the first declaration first (§2.3), leaving out
 /// block-scope declarations ([dcl.fct.default]/4: theirs are their own,
 /// `local::write_decl`) and instantiated ones.
 fn merged_default(w: &Walk<'_>, f: DeclId, index: u16) -> Option<slip_kiln::kiln::ast::ExprId> {
     let ast = w.ast;
-    let mut chain = w.redecls(ast.first(f));
-    chain.reverse();
-    chain.iter().filter(|&&x| !w.is_local_extern(x) && !instantiated_decl(w, x)).find_map(|&x| {
+    param_decls(w, f).iter().filter(|&&x| !instantiated_decl(w, x)).find_map(|&x| {
         let data = ast.decls.function(x)?;
         let p = ast.lists.iter::<DeclId>(data.params).nth(usize::from(index))?;
         ast.decls.param(p)?.default_arg
     })
 }
 
+/// The declarations of function `f`'s entity whose parameter i the rules
+/// of a parameter read for parameter i (§5.4 `ParamData`, §10.1): in
+/// chain order, the first declaration first, block-scope declarations
+/// left out ([dcl.fct.default]/4; theirs are written with the
+/// declaration in its block, `local::write_decl`). Default arguments
+/// also leave out instantiated declarations (`merged_default`);
+/// attributes and annotations do not (`attrs::decl_attrs`).
+pub(crate) fn param_decls(w: &Walk<'_>, f: DeclId) -> Vec<DeclId> {
+    let mut chain = w.redecls(w.ast.first(f));
+    chain.reverse();
+    chain.retain(|&x| !w.is_local_extern(x));
+    chain
+}
+
 /// `LetData` (§5.4).
 pub(crate) fn let_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
-    let Some(&LetData { extending, mangling_index, value }) = w.ast.decls.lifetime_extended(d)
+    let Some(&LetData { extending, mangling_index, value: _ }) = w.ast.decls.lifetime_extended(d)
     else {
         s.uv(0).indeterminate(NO_PAYLOAD);
         return;
     };
-    // extending: ref; mangling_index: uv; value: demand (§11.3).
+    // extending: ref; mangling_index: uv; value: demand, in the resolved
+    // unit `value` of the variable it extends (§11.3).
     w.write_ref(s, extending);
     s.uv(u64::from(mangling_index));
-    if value.is_some() {
-        s.pending(Area::Demand);
-    }
 }
 
 /// The language linkage a function's or variable's stream holds
@@ -539,7 +564,7 @@ pub(crate) fn instantiated_on_use(w: &Walk<'_>, e: DeclId) -> bool {
 /// Whether the declaration `x` was made by instantiation
 /// (`templ::instantiated_declaration`). A declaration written in source (an explicit
 /// specialisation, or the out-of-line definition of one) is not.
-fn instantiated_decl(w: &Walk<'_>, x: DeclId) -> bool {
+pub(crate) fn instantiated_decl(w: &Walk<'_>, x: DeclId) -> bool {
     crate::templ::instantiated_declaration(w, x)
 }
 
@@ -966,13 +991,14 @@ pub(crate) mod tests {
 
     // §2.3, landed WP-026 "The declaration read": an in-class initialiser
     // of a member defined out of line is the unit's `init` child (the
-    // first byte, `opt`), and its value is pending the resolved unit.
+    // first byte, `opt`), and its value is the resolved unit's: the unit
+    // is not indeterminate for it (§11.3).
     #[test]
     fn the_initialiser_comes_from_its_holder() {
         let (held, cause) =
             var_bytes("struct S { static const int x = 1; };\nconst int S::x;", "x");
         assert_eq!(held[0], 1);
-        assert_eq!(cause, Some(Cause::Pending(crate::Area::Demand)));
+        assert_eq!(cause, None);
         let (none, _) = var_bytes("struct S { static int x; };\nint S::x;", "x");
         assert_eq!(none[0], 0);
         let (out_of_line, _) =

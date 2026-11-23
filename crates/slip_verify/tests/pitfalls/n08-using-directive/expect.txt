@@ -1,0 +1,5 @@
+# N08: using namespace legacy; then make(1) names the moved legacy::make unqualified.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed user() @ main.cpp:11

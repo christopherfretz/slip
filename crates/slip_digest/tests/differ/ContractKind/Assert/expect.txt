@@ -1,6 +1,2 @@
-# pending
-# needs: decl_data
-# f is Pending(DeclData) first (ColdDeclData `contracts`, decl_scope::cold); stmt follows:
-# `contract_assert` is a statement of the body (StmtKind `ContractAssertStmt`, FunctionData `body`).
-# <order> is Pending(Order), as in every test; it does not block one.
+# a precondition is ColdDeclData `contracts` (WP-033); an assertion is a statement of the body.
 changed f(int)

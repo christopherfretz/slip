@@ -123,7 +123,7 @@ function. Of those 42:
 | Occurrences | Where | What a run on this corpus does |
 |---|---|---|
 | 14 | compiled text: `Alignment.h:145`, `:151`; `TargetLowering.h:183`, `:186`; ten in source files | found, edited, verified |
-| 1 | `llvm/unittests/Support/AlignmentTest.cpp:154`, an argument of `EXPECT_EQ`, which also stringises it | found and edited at tier 1; the string literal the macro makes changes, so the unit that holds it differs and is not declared: **verification reports a mismatch**, correctly (`spec/api.md` "Open questions" 5) |
+| 1 | `llvm/unittests/Support/AlignmentTest.cpp:154`, an argument of `EXPECT_EQ`, which also stringises it | found and edited at tier 1; the string literal the macro makes changes, so the unit that holds it differs and is not declared: **verification reports a mismatch**, correctly (`spec/api.md` "Open questions" 3) |
 | 5 | the argument of `assert(...)` in files the corpus compiles | **not seen**: the corpus is Release (`spec/harness.md` §8.7), `NDEBUG` is defined, the argument is never parsed |
 | 22 | `llvm/lib/Target/` for PowerPC, Hexagon, LoongArch, Mips, AMDGPU, ARM and CSKY (five of them also inside `assert`) | **not seen**: the corpus builds the X86 and AArch64 targets only, so no observer compiles these files |
 

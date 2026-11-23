@@ -1,0 +1,307 @@
+{
+  "kind": "SHRD",
+  "version": 1,
+  "sections": {
+    "header": {
+      "observer": "3333333333333333333333333333333333333333333333333333333333333333",
+      "phase": "map",
+      "round": 0
+    },
+    "outcome": {
+      "status": "ok",
+      "errors": 0,
+      "warnings": 0,
+      "message": ""
+    },
+    "inputs": [
+      {
+        "path": "/s/a.cc",
+        "size": 100,
+        "content": "0101010101010101010101010101010101010101010101010101010101010101"
+      },
+      {
+        "path": "/s/a.h",
+        "size": 60,
+        "content": "0202020202020202020202020202020202020202020202020202020202020202"
+      }
+    ],
+    "counters": [
+      {
+        "name": "map.claims",
+        "value": 6
+      }
+    ],
+    "edits": {
+      "scheme": 1,
+      "transform": "4444444444444444444444444444444444444444444444444444444444444444",
+      "failure": null,
+      "files": [
+        {
+          "path": "/s/a.cc",
+          "size": 100,
+          "content": "0101010101010101010101010101010101010101010101010101010101010101"
+        },
+        {
+          "path": "/s/a.h",
+          "size": 60,
+          "content": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        {
+          "path": {
+            "hex": "2f732fff622e68"
+          },
+          "size": 40,
+          "content": "0303030303030303030303030303030303030303030303030303030303030303"
+        }
+      ],
+      "subjects": [
+        {
+          "id": "1010101010101010101010101010101010101010101010101010101010101010",
+          "rule": {
+            "parent": "root",
+            "kind": "function",
+            "name": {
+              "identifier": "f"
+            },
+            "disc": null,
+            "to_parent": "root",
+            "to_name": {
+              "identifier": "g"
+            }
+          },
+          "role": "seed",
+          "of": [],
+          "flags": 0,
+          "display": "n::f"
+        },
+        {
+          "id": "1111111111111111111111111111111111111111111111111111111111111111",
+          "rule": null,
+          "role": "follower",
+          "of": [
+            "1010101010101010101010101010101010101010101010101010101010101010"
+          ],
+          "flags": 5,
+          "display": "n::f<int>"
+        },
+        {
+          "id": "1212121212121212121212121212121212121212121212121212121212121212",
+          "rule": null,
+          "role": "candidate",
+          "of": [],
+          "flags": 10,
+          "display": "m::f"
+        }
+      ],
+      "links": [
+        {
+          "a": "1010101010101010101010101010101010101010101010101010101010101010",
+          "b": "1212121212121212121212121212121212121212121212121212121212121212"
+        }
+      ],
+      "claims": [
+        {
+          "file": 0,
+          "lo": 10,
+          "hi": 11,
+          "stance": "replace",
+          "pieces": [
+            {
+              "literal": "g"
+            },
+            {
+              "copy": {
+                "file": 1,
+                "lo": 0,
+                "hi": 4
+              }
+            },
+            {
+              "spelled": {
+                "key": "1010101010101010101010101010101010101010101010101010101010101010",
+                "text": "::n::g"
+              }
+            }
+          ],
+          "subjects": [
+            "1010101010101010101010101010101010101010101010101010101010101010"
+          ],
+          "reason": "none",
+          "tiers": 1,
+          "macro": null,
+          "votes": 1,
+          "notes": [
+            "note a",
+            {
+              "hex": "6e6f746520ff"
+            }
+          ]
+        },
+        {
+          "file": 0,
+          "lo": 20,
+          "hi": 21,
+          "stance": "replace",
+          "pieces": [
+            {
+              "literal": "g"
+            }
+          ],
+          "subjects": [
+            "1010101010101010101010101010101010101010101010101010101010101010",
+            "1111111111111111111111111111111111111111111111111111111111111111"
+          ],
+          "reason": "none",
+          "tiers": 3,
+          "macro": {
+            "name_start": 15,
+            "name": "ID"
+          },
+          "votes": 2,
+          "notes": []
+        },
+        {
+          "file": 0,
+          "lo": 30,
+          "hi": 31,
+          "stance": "keep",
+          "pieces": [],
+          "subjects": [],
+          "reason": "none",
+          "tiers": 1,
+          "macro": null,
+          "votes": 1,
+          "notes": []
+        },
+        {
+          "file": 1,
+          "lo": 5,
+          "hi": 6,
+          "stance": "refuse",
+          "pieces": [],
+          "subjects": [
+            "1212121212121212121212121212121212121212121212121212121212121212"
+          ],
+          "reason": "macro_body",
+          "tiers": 4,
+          "macro": {
+            "name_start": 2,
+            "name": "M"
+          },
+          "votes": 1,
+          "notes": []
+        },
+        {
+          "file": 2,
+          "lo": 1,
+          "hi": 2,
+          "stance": "refuse",
+          "pieces": [],
+          "subjects": [
+            "1010101010101010101010101010101010101010101010101010101010101010"
+          ],
+          "reason": "not_owned",
+          "tiers": 1,
+          "macro": null,
+          "votes": 1,
+          "notes": []
+        },
+        {
+          "file": 2,
+          "lo": 3,
+          "hi": 4,
+          "stance": "unresolved",
+          "pieces": [],
+          "subjects": [
+            "1212121212121212121212121212121212121212121212121212121212121212"
+          ],
+          "reason": "none",
+          "tiers": 2,
+          "macro": {
+            "name_start": 1,
+            "name": "X"
+          },
+          "votes": 1,
+          "notes": []
+        }
+      ],
+      "groups": [
+        [
+          0,
+          1
+        ]
+      ],
+      "reports": [
+        {
+          "place": null,
+          "severity": "review",
+          "message": "whole unit",
+          "attached": false
+        },
+        {
+          "place": {
+            "file": 0,
+            "lo": 10,
+            "hi": 11
+          },
+          "severity": "note",
+          "message": {
+            "hex": "ff6279746573"
+          },
+          "attached": true
+        },
+        {
+          "place": {
+            "file": 0,
+            "lo": 10,
+            "hi": 11
+          },
+          "severity": "error",
+          "message": "e",
+          "attached": false
+        }
+      ],
+      "changed": [
+        {
+          "key": "2020202020202020202020202020202020202020202020202020202020202020",
+          "place": {
+            "file": 0,
+            "lo": 10,
+            "hi": 11
+          },
+          "reason": "renamed callee"
+        }
+      ],
+      "renamed": [
+        {
+          "parent": "root",
+          "kind": "function",
+          "name": {
+            "identifier": "f"
+          },
+          "disc": null,
+          "to_parent": "root",
+          "to_name": {
+            "identifier": "g"
+          }
+        },
+        {
+          "parent": {
+            "unit": "0505050505050505050505050505050505050505050505050505050505050505"
+          },
+          "kind": "function",
+          "name": {
+            "identifier": "h"
+          },
+          "disc": null,
+          "to_parent": {
+            "unit": "0505050505050505050505050505050505050505050505050505050505050505"
+          },
+          "to_name": {
+            "identifier": "i"
+          }
+        }
+      ]
+    }
+  }
+}

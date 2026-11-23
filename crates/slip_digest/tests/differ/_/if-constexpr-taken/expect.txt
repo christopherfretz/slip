@@ -1,0 +1,2 @@
+changed f<int>(int)
+changed template <class> void f(type-parameter-0-0)

@@ -1,3 +1,2 @@
-changed f
-# pending
-# needs: stmt
+changed v
+changed template <class> int f(type-parameter-0-0)

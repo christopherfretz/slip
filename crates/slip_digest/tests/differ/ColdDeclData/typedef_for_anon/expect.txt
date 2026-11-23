@@ -1,6 +1,6 @@
-removed T
-removed T::i
-added (anonymous struct)
-added (anonymous struct)::i
 changed T
 changed P
+added (anonymous struct for P)
+added (anonymous struct for P)::i
+removed (anonymous struct for T)
+removed (anonymous struct for T)::i
