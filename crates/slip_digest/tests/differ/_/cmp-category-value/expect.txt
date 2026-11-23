@@ -1,0 +1,3 @@
+changed std::strong_ordering::less
+derived-changed std::strong_ordering::less::<value>
+derived-changed w::<value>

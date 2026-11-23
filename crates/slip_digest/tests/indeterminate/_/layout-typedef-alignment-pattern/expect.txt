@@ -1,0 +1,2 @@
+indeterminate X
+indeterminate X<char>::<definition>
