@@ -32,8 +32,9 @@ use std::collections::{HashMap, HashSet};
 
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind};
 use slip_kiln::kiln::ast::lambda::{LambdaCapture, LambdaData, LambdaMangling};
+use slip_kiln::kiln::ast::stmt::StmtKind;
 use slip_kiln::kiln::ast::types::{ArgView, TypeView};
-use slip_kiln::kiln::ast::{DeclId, ExprId, LambdaId, QualType};
+use slip_kiln::kiln::ast::{DeclId, ExprId, LambdaId, QualType, StmtId};
 use slip_model::Digest;
 use slip_model::keys::Parent;
 
@@ -518,6 +519,23 @@ pub(crate) fn number_all(w: &mut Walk<'_>) {
             let _ = numbering(w, e);
         }
     }
+    // The owner of the variable of each expanded expansion statement:
+    // Kiln keeps the statement's pattern parts in an instantiated body
+    // (`ExpansionData`), so the resolved unit `definition` of a function
+    // template's specialisation names its pattern's variable by
+    // `Ref::outer`, the pattern's template being its owner.
+    for i in 1..=u32::try_from(ast.stmts.len()).unwrap_or(0) {
+        let st = StmtId::new(i);
+        if ast.stmts.get(st).kind() != StmtKind::CXXExpansionStmt
+            || !ast.stmts.expansion_expanded(st)
+        {
+            continue;
+        }
+        let v = ast.stmts.expansion_data(st).decl;
+        if let Ok(o) = owner_of(w, ast.first(v)) {
+            let _ = numbering(w, o);
+        }
+    }
     w.local.sealed = true;
 }
 
@@ -553,6 +571,9 @@ fn compute(w: &mut Walk<'_>, owner: DeclId) -> Numbering {
     w.local.record = Record { owner: Some(owner), ..Record::default() };
     let mut sink = Stream::new();
     w.decl_stream(&mut sink, from, owner);
+    // Then the streams of its units that hold what the own stream leaves
+    // out (`demand::number_parts`).
+    crate::demand::number_parts(w, &mut sink, owner);
     let record = std::mem::take(&mut w.local.record);
     let cut = (w.aborts != aborts).then_some(TOO_DEEP);
     w.unit = saved;
@@ -1436,7 +1457,13 @@ mod tests {
                         let path = |_| Vec::new();
                         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
                         let rules = RuleTable::empty();
-                        let options = Options { rules: &rules, detail: Detail::None, names: true };
+                        let options = Options {
+                            rules: &rules,
+                            read_only: crate::ReadOnly::NO_FILE,
+                            detail: Detail::None,
+                            names: true,
+                            rule_use: false,
+                        };
                         Some(crate::walk::run_with(&input, &options, |w, u, o| f(w, u, &o)))
                     })
                     .ok()
@@ -1767,7 +1794,11 @@ mod tests {
             let (e, class) = w.queue[i];
             i += 1;
             if let Some(u) = crate::units::write(w, e, class) {
+                // Its resolved units after it, as `run_with` writes them.
+                let mut resolved = Vec::new();
+                crate::demand::resolved_units(w, e, &u, &mut resolved);
                 written.push(u);
+                written.append(&mut resolved);
             }
         }
         written.push(crate::units::order_unit(w));
@@ -1808,7 +1839,13 @@ mod tests {
                         let path = |_| Vec::new();
                         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
                         let rules = RuleTable::empty();
-                        let options = Options { rules: &rules, detail: Detail::None, names: false };
+                        let options = Options {
+                            rules: &rules,
+                            read_only: crate::ReadOnly::NO_FILE,
+                            detail: Detail::None,
+                            names: false,
+                            rule_use: false,
+                        };
                         let normal =
                             crate::walk::run_with(&input, &options, |_, u, _| keys_and_digests(u));
                         let mut w = Walk::new(&input, &rules);
@@ -2107,9 +2144,9 @@ mod tests {
     }
 
     // digest §4.3 "Local objects of another unit": a specialisation names
-    // a parameter of its pattern (an expansion statement's pattern) whose
-    // template has no local types and so no numbering: `Ref::outer` with
-    // the parameter's position, which is what the numbering gives.
+    // a parameter of its pattern (an expansion statement's pattern):
+    // `Ref::outer` with the parameter's position (`direct_param`), which is
+    // what the numbering gives.
     #[test]
     fn a_pattern_parameter_named_by_a_specialisation() {
         let src = "struct P { int x, y; };\n\
@@ -2136,7 +2173,10 @@ mod tests {
             let late = w.local.late;
             let causes: Vec<Cause> = out.causes.iter().map(|(_, c)| *c).collect();
             let direct = super::direct_param(w, o, t);
-            assert!(!w.local.numberings.contains_key(&o), "not numbered by number_all");
+            // Since WP-045 `number_all` numbers the owner of an expanded
+            // expansion statement's variable (the specialisation's
+            // `definition` names it): `direct_param` agrees with it.
+            assert!(w.local.numberings.contains_key(&o), "numbered by number_all");
             w.local.sealed = false;
             let numbered = super::numbering(w, o).object_of(t).ok();
             (late, causes, direct, numbered)

@@ -1,0 +1,2 @@
+# spec/verify.md §9.1 "Tests": the rename never reached this observer: f is left alone, direct only.
+relocate f() => :: g

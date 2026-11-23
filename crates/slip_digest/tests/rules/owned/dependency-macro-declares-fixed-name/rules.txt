@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round (was item 5). A declaration made wholly by a dependency macro (its name too is spelled in dep.h) invoked in an owned file: a dependency entity, by the name token's spelling location (it was owned, by the expansion location, before the fix round). Kills dropping the spelling test.
+relocate legacy => :: acme

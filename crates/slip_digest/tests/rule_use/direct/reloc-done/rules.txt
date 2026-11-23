@@ -1,0 +1,2 @@
+# WP-069 review (F2): a::f relocated to b, and the post-image declares it there.
+relocate a::f() => b :: =

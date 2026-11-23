@@ -1,0 +1,4 @@
+# The name token is spelled in dep.h's DEP_NAME: a dependency entity.
+changed user()
+added acme::legacy_init()
+removed legacy::legacy_init()

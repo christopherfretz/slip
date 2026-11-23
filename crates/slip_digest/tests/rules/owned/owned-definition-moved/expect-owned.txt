@@ -1,0 +1,8 @@
+# Every file owned: the same collision, and the dependency's acme mapped onto
+# legacy besides.
+collisions 1
+indeterminate acme::f()
+indeterminate legacy::f()
+added acme::g()
+removed acme
+removed acme::g()

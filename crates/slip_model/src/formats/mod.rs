@@ -147,6 +147,8 @@ pub(super) struct Opened<'a, const N: usize> {
     pub extras: Vec<Extra<'a>>,
     pub end: usize,
     pub content_id: Digest,
+    /// The file's format version, `1..=` the reader's.
+    pub version: u32,
 }
 
 /// Opens `bytes` (§5 rule 5) and checks that every critical section present
@@ -165,8 +167,9 @@ pub(super) fn open<const N: usize>(
         .filter_map(|id| reader.section(id).map(|p| (id, p)))
         .collect();
     let content_id = reader.content_id();
+    let version = reader.version();
     reader.finish()?;
-    Ok(Opened { sections, extras, end: bytes.len() - TRAILER_LEN - 1, content_id })
+    Ok(Opened { sections, extras, end: bytes.len() - TRAILER_LEN - 1, content_id, version })
 }
 
 /// A section a format marks required (§5 rule 6): `Malformed` at the `end`
@@ -229,6 +232,8 @@ pub(super) fn render_container(
 pub(super) struct JsonSections<'v, const N: usize> {
     pub known: [Option<&'v Value>; N],
     pub extras: OwnedExtras,
+    /// The rendering's format version, `1..=` the reader's.
+    pub version: u32,
 }
 
 /// Reads `{ "kind", "version", "sections" }` for a format whose sections
@@ -276,7 +281,9 @@ pub(super) fn read_container<'v, const N: usize>(
             return Err(at.key(n.name).error("missing member"));
         }
     }
-    Ok(JsonSections { known, extras })
+    // `have` is in `1..=version`, a `u32`.
+    let version = u32::try_from(have).unwrap_or(version);
+    Ok(JsonSections { known, extras, version })
 }
 
 /// The id of `"#<id>"`: canonical decimal, 64 or above (an unknown critical
@@ -304,12 +311,13 @@ fn pretty(v: &Value) -> String {
 // The typed interface
 
 macro_rules! format_impl {
-    ($ty:ident, $module:ident, $kind:literal) => {
+    ($ty:ident, $module:ident, $kind:literal, $version:literal) => {
         impl $ty {
             /// The container kind (§5.1).
             pub const KIND: [u8; 4] = *$kind;
-            /// The format version this crate reads and writes.
-            pub const VERSION: u32 = 1;
+            /// The format version this crate writes; it reads every
+            /// version from 1 to this one.
+            pub const VERSION: u32 = $version;
 
             /// The file. The value must satisfy [`Self::validate`]; that is
             /// only debug-asserted, and a release build writes an invalid
@@ -351,15 +359,15 @@ macro_rules! format_impl {
     };
 }
 
-format_impl!(Plan, plan, b"PLAN");
-format_impl!(Shard, shard, b"SHRD");
-format_impl!(RunRecord, run, b"RUNR");
-format_impl!(Declared, declared, b"DECL");
-format_impl!(Transform, transform, b"TRFM");
-format_impl!(EditSet, editset, b"EDTS");
-format_impl!(Overlay, overlay, b"OVLY");
-format_impl!(TransformResult, result, b"RSLT");
-format_impl!(TransformRun, transform_run, b"RUNT");
+format_impl!(Plan, plan, b"PLAN", 1);
+format_impl!(Shard, shard, b"SHRD", 1);
+format_impl!(RunRecord, run, b"RUNR", 1);
+format_impl!(Declared, declared, b"DECL", 2);
+format_impl!(Transform, transform, b"TRFM", 1);
+format_impl!(EditSet, editset, b"EDTS", 1);
+format_impl!(Overlay, overlay, b"OVLY", 1);
+format_impl!(TransformResult, result, b"RSLT", 1);
+format_impl!(TransformRun, transform_run, b"RUNT", 1);
 
 /// The kinds [`dump`], [`undump`] and [`content_id`] know.
 const KINDS: [[u8; 4]; 9] = [
@@ -394,8 +402,8 @@ pub fn dump(bytes: &[u8]) -> std::result::Result<String, Error> {
             run::render(&r, &extras)
         }
         Some(k) if k == Declared::KIND => {
-            let (x, extras, _) = declared::decode(bytes)?;
-            declared::render(&x, &extras)
+            let (x, extras, _, version) = declared::decode_versioned(bytes)?;
+            declared::render_as(&x, &extras, version)
         }
         Some(k) if k == Transform::KIND => {
             let (t, extras, _) = transform::decode(bytes)?;
@@ -447,8 +455,8 @@ pub fn undump(value: &Value) -> std::result::Result<Vec<u8>, JsonFormError> {
             Ok(run::encode(&r, &extras_ref(&extras)))
         }
         "DECL" => {
-            let (x, extras) = declared::read(value)?;
-            Ok(declared::encode(&x, &extras_ref(&extras)))
+            let (x, extras, version) = declared::read_versioned(value)?;
+            Ok(declared::encode_as(&x, &extras_ref(&extras), version))
         }
         "TRFM" => {
             let (t, extras) = transform::read(value)?;

@@ -48,16 +48,6 @@ pub const SAME_KEY: &[(&str, &[&str], u64, &str)] = &[
         1,
         "a lambda in a signature: two templates, one key; the test is about it",
     ),
-    // The two unnamed local structs of an instantiation have no number
-    // (its body is `Pending(Demand)`): their implicit constructors, and
-    // those constructors' exception specifications, share a key. The
-    // units are `UndeclaredLocal` first; the test is about it.
-    (
-        "indeterminate/_/inst-two-unnamed-local-structs",
-        &[],
-        2,
-        "two unnamed local structs of an instantiation: one key; the test is about it",
-    ),
 ];
 
 /// Display names two different units of one output are known to share:
@@ -71,13 +61,6 @@ pub const SAME_NAME: &[(&str, &str, usize, &str)] = &[];
 /// which cannot check what it cannot see; an entry that digests fails
 /// too, so the list only shrinks.
 pub const UNPARSED: &[(&str, Side, &str)] = &[
-    // A `# pending` test of another package whose source does not
-    // compile (its runner skips it, so nothing else sees it).
-    (
-        "demand/_/friend-template-definition-instantiated-on-use",
-        Side::B,
-        "`use` defined twice on side B (WP-032/033's test)",
-    ),
     // WP-048's `# pending` tests of module units: a side whose header
     // names one (`// module:`) is refused until the snippet front end can
     // import a named module from memory (docs/requests/KF5).

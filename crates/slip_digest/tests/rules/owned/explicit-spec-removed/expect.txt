@@ -1,0 +1,4 @@
+# The declared explicit specialisation is gone; the post-image's implicit
+# box<Mine> is a derived unit with the same key (spec/verify.md §4 step 4).
+removed legacy::box<legacy::Mine>
+removed legacy::box<legacy::Mine>::get()

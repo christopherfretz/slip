@@ -1,0 +1,3 @@
+resolved S::operator==(const S &) const::<definition>
+resolved S::operator==(const S &) const::<exception_spec>
+added h(const S &)

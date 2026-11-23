@@ -1,5 +1,3 @@
-# pending
-# needs: demand
-# `Ref::outer` is reached only from an instantiated body (the specialisation of the generic call operator), which is Pending(Demand): no pair test reaches it at the pin (lib test `outer_references_by_owner_and_index` kills R09 and R10)
+# `Ref::outer` is reached from an instantiated body: the specialisation of the generic call operator, in its resolved unit `definition` (WP-045)
 changed f()
-derived-changed f()::local(0)::operator()<int>(int) const
+derived-changed f()::local(0)::operator()<int>(int) const::<definition>

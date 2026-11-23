@@ -1,0 +1,3 @@
+resolved S::S(const S &)::<definition>
+resolved S::S(const S &)::<exception_spec>
+added h()

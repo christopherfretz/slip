@@ -1,0 +1,2 @@
+# The owned explicit specialisation removed: the implicit one the post-image makes has the key the explicit one had (spec/verify.md §4 step 4 needs one key for the declared and the derived unit).
+relocate legacy => :: acme

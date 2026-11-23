@@ -1,0 +1,10 @@
+# pending
+# needs: WP-2111 (Kiln: every inclusion directive recorded) or WP-116
+# Equal today (verified, wrongly). Right: as eh-through-dependency-first.
+changed legacy_cfg::data_t
+changed user()
+added acme
+added acme::UserData
+added acme::UserData::v
+removed legacy::UserData
+removed legacy::UserData::v

@@ -8,19 +8,18 @@
 //! cited where it is applied.
 
 use slip_kiln::kiln::ast::decl::{
-    ConstexprKind, DeclFlags, Defaulted, FnSpec, FnStorage, FunctionData, InitStyle, LetData,
-    ParamData, ScopeData, VarData, VarEval, VarEvalState, VarSpec,
+    ConstexprKind, FnSpec, FnStorage, FunctionData, InitStyle, LetData, ParamData, ScopeData,
+    VarData, VarEval, VarEvalState, VarSpec,
 };
-use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::types::TypeKind;
-use slip_kiln::kiln::ast::{DeclId, QualType};
+use slip_kiln::kiln::ast::{DeclId, QualType, StmtId};
 
+use crate::Cause;
 use crate::stream::{FlagWord, Stream};
 use crate::tables::{
     constexpr_kind, defaulted, fn_storage, init_style, linkage_lang, tls_kind, var_storage,
 };
 use crate::walk::Walk;
-use crate::{Area, Cause};
 
 /// A bit or a value of `FnSpec` that no row accounts for.
 const FN_SPEC_UNACCOUNTED: Cause = Cause::Unaccounted("FnSpec/0");
@@ -53,7 +52,7 @@ pub(crate) fn function_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         return;
     };
     let e = w.representative(ast.first(d));
-    let definition_class = function_definition_class(w, e);
+    let definition_class = crate::demand::definition_class(w, e);
     // params: decl*, in order. A default argument taken from another
     // declaration names that declaration's parameters: parameter i of
     // every declaration of the chain is one local entity, with the
@@ -66,19 +65,16 @@ pub(crate) fn function_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         crate::local::write_decl(w, s, p);
     }
     // body: child?; in `definition` for the definition class (§11.9),
-    // which the demand package writes.
+    // its empty form here.
     if definition_class {
-        s.opt(false).pending(Area::Demand);
+        s.opt(false);
     } else {
-        s.opt(body.is_some());
-        if let Some(b) = body {
-            crate::stmt::child(w, s, b);
-        }
+        write_body(w, s, body);
     }
     // spec: record FnSpec.
     fn_spec(w, s, e, spec, definition_class);
     // templ: record TemplLink.
-    crate::templ::templ_link(w, s, templ);
+    crate::templ::templ_link(w, s, d, templ);
     linkage(w, s, e);
 }
 
@@ -117,8 +113,11 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
     let any = |f: fn(FnSpec) -> bool| specs.iter().any(|&x| f(x));
     let inline = any(FnSpec::is_inline);
     // A declaration after an `inline` one is marked implicitly inline by
-    // Kiln: that mark says nothing a written `inline` does not.
-    let implicit_inline = !inline && any(FnSpec::implicit_inline);
+    // Kiln: that mark says nothing a written `inline` does not. For the
+    // definition class, Kiln sets it when it instantiates the definition
+    // (`enter_definition_scopes`, `kiln_sema/src/class/members.rs:902-907`):
+    // `definition`'s, its empty form here (§11.9).
+    let implicit_inline = !inline && any(FnSpec::implicit_inline) && !definition_class;
     let (mut any_constexpr, mut any_consteval) = (false, false);
     for x in &specs {
         match x.constexpr_kind() {
@@ -143,7 +142,7 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
         FnStorage::Static => FnStorage::Static,
         FnStorage::None | FnStorage::Extern => {
             let any_extern = specs.iter().any(|x| x.storage() == FnStorage::Extern);
-            if any_extern && (inline || any(FnSpec::implicit_inline)) {
+            if any_extern && (inline || (!definition_class && any(FnSpec::implicit_inline))) {
                 FnStorage::Extern
             } else {
                 FnStorage::None
@@ -153,11 +152,14 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
     s.tag(fn_storage::row(&storage));
     // In `definition` for the definition class (§11.9), their empty form
     // here: `0-escalated` and `0-is-coroutine`, which the analysis of the
-    // body sets; `0-return-deduced` for an instantiation, whose return
+    // body sets; `0-has-contracts`, which Kiln sets when it instantiates
+    // the definition's contracts (`install_instantiated_contracts`,
+    // `kiln_sema/src/contracts.rs:681-687`); `0-return-deduced` for an instantiation, whose return
     // type is deduced when its body is instantiated (a function defaulted
     // on its first declaration deduces at the class's end).
     let from_body = |v: bool| v && !definition_class;
-    let return_deduced = any(FnSpec::return_deduced) && !instantiated_on_use(w, e);
+    let return_deduced = any(FnSpec::return_deduced)
+        && !(definition_class && crate::demand::pattern_holds_placeholder(w, e));
     s.flags(
         FlagWord::new()
             .bit(inline)
@@ -168,7 +170,7 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
             .bit(any(FnSpec::is_explicit))
             .bit(any(FnSpec::is_trivial))
             .bit(any(FnSpec::immediate_escalating))
-            .bit(any(FnSpec::has_contracts))
+            .bit(from_body(any(FnSpec::has_contracts)))
             .bit(from_body(any(FnSpec::is_coroutine)))
             .bit(from_body(any(FnSpec::escalated)))
             .bit(any(FnSpec::is_variadic))
@@ -217,7 +219,7 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         return;
     };
     let e = w.representative(ast.first(d));
-    let definition_class = var_definition_class(w, e);
+    let definition_class = crate::demand::definition_class(w, e);
     // `init` and `0-init-style` belong to the declaration that holds the
     // initialiser, which need not be the one read (an in-class
     // `static const int x = 1;` defined by `const int S::x;`).
@@ -232,9 +234,10 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
             (init, spec.init_style())
         }
     };
-    // init: child?; in `definition` for the definition class (§11.9).
+    // init: child?; in `definition` for the definition class (§11.9),
+    // its empty form here.
     if definition_class {
-        s.opt(false).pending(Area::Demand);
+        s.opt(false);
     } else {
         crate::expr::child_opt(w, s, init);
     }
@@ -278,7 +281,7 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         }
     }
     // templ: record TemplLink.
-    crate::templ::templ_link(w, s, templ);
+    crate::templ::templ_link(w, s, d, templ);
     linkage(w, s, e);
 }
 
@@ -517,70 +520,127 @@ fn linkage(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
     }
 }
 
-/// Whether the entity `e` (a first declaration) is an implicit
-/// instantiation: its own `SpecInfo` or `MemberSpecInfo` kind, else an
-/// enclosing implicit instantiation, as `units::unit_class` reads it.
-pub(crate) fn implicit_instantiation(w: &Walk<'_>, e: DeclId) -> bool {
+/// The rows of a function's resolved unit `definition` (§11.9), read
+/// from its defining declaration `def`, in this order: the parameters of
+/// `def` as the own unit writes them (so that the body's local entities
+/// are numbered in this stream), `FunctionData` `body`, `ColdDeclData`
+/// `ctor_inits`, the flag word `FnSpec` `0-is-coroutine`, `0-escalated`
+/// (set if any declaration sets them), and, when the pattern's declared
+/// return type holds a placeholder (`demand::pattern_holds_placeholder`),
+/// `DeclNode` `ty-type` and the flag word `FnSpec` `0-return-deduced`.
+pub(crate) fn function_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: DeclId) {
     let ast = w.ast;
-    let own = ast
-        .spec_info(e)
-        .map(|(_, i)| i.kind)
-        .or_else(|| ast.member_spec_info(e).map(|(_, i)| i.kind));
-    match own {
-        Some(SpecKind::ImplicitInstantiation) => true,
-        Some(
-            SpecKind::Undeclared
-            | SpecKind::ExplicitSpecialization
-            | SpecKind::ExplicitInstantiationDeclaration
-            | SpecKind::ExplicitInstantiationDefinition,
-        ) => false,
-        None => crate::units::in_implicit_instantiation(w, e),
+    let Some(&FunctionData { params, body, .. }) = ast.decls.function(def) else {
+        s.uv(0).indeterminate(NO_PAYLOAD);
+        return;
+    };
+    let params: Vec<DeclId> = ast.lists.iter::<DeclId>(params).collect();
+    alias_params(w, e, &params);
+    s.count(params.len());
+    for p in params {
+        crate::local::write_decl(w, s, p);
     }
-}
-
-/// Every declaration of `e` is implicit.
-fn all_implicit(w: &Walk<'_>, e: DeclId) -> bool {
-    w.redecls(e).iter().all(|&x| w.ast.decls.get(x).has(DeclFlags::IMPLICIT))
-}
-
-/// Whether the kind says the entity is defined only when used: an
-/// implicit instantiation, or the subject of an explicit instantiation
-/// declaration.
-fn on_use(kind: SpecKind) -> bool {
-    match kind {
-        SpecKind::ImplicitInstantiation | SpecKind::ExplicitInstantiationDeclaration => true,
-        SpecKind::Undeclared
-        | SpecKind::ExplicitSpecialization
-        | SpecKind::ExplicitInstantiationDefinition => false,
+    write_body(w, s, body);
+    let inits: Vec<_> = ast.ctor_inits(def).copied().collect();
+    s.count(inits.len());
+    for init in &inits {
+        crate::decl_class::ctor_init(w, s, init);
     }
-}
-
-/// Whether the function or variable `e` (a first declaration) is defined
-/// only when used: its own `SpecInfo` or `MemberSpecInfo` kind is an
-/// implicit instantiation or an explicit instantiation declaration, or,
-/// with no kind of its own, that of the nearest enclosing context that
-/// has one.
-///
-/// One with a written declaration is read from it, not from a
-/// declaration an instantiation added first. An entity declared only by
-/// instantiations outside their class is read from Kiln's first
-/// declaration, the friend function an instantiation made, whose own
-/// `MemberSpecInfo` is `ImplicitInstantiation` (WP-032 rule 2).
-pub(crate) fn instantiated_on_use(w: &Walk<'_>, e: DeclId) -> bool {
-    let ast = w.ast;
-    let mut c = Some(w.representative(e));
-    for _ in 0..64 {
-        let Some(x) = c else { return false };
-        let kind = ast
-            .spec_info(x)
-            .map(|(_, i)| i.kind)
-            .or_else(|| ast.member_spec_info(x).map(|(_, i)| i.kind));
-        if let Some(k) = kind {
-            return on_use(k);
+    let mut specs: Vec<FnSpec> =
+        w.redecls(e).iter().filter_map(|&x| ast.decls.function(x).map(|f| f.spec)).collect();
+    if let Some(f) = ast.decls.function(def) {
+        specs.push(f.spec);
+    }
+    let any = |f: fn(FnSpec) -> bool| specs.iter().any(|&x| f(x));
+    let inline = any(FnSpec::is_inline);
+    s.flags(
+        FlagWord::new()
+            .bit(!inline && any(FnSpec::implicit_inline))
+            .bit(any(FnSpec::has_contracts))
+            .bit(any(FnSpec::is_coroutine))
+            .bit(any(FnSpec::escalated)),
+    );
+    crate::decl_scope::contracts(w, s, def);
+    crate::attrs::definition_attrs(w, s, e);
+    if crate::demand::pattern_holds_placeholder(w, e) {
+        match ast.decls.get(def).ty() {
+            Some(ty) => {
+                s.opt(true);
+                let td = w.type_digest(ty, true);
+                s.digest(&td.digest).absorb(td.cause);
+            }
+            None => {
+                s.opt(false);
+            }
         }
-        c = ast.decls.get(x).ctx();
+        s.flags(FlagWord::new().bit(any(FnSpec::return_deduced)));
     }
-    false
+}
+
+/// The rows of a variable's resolved unit `definition` (§11.9), for the
+/// defining declaration `def`, in this order: `VarData` `init` (of the
+/// declaration that holds it, as the own unit reads it otherwise),
+/// `VarSpec` `0-init-style`, the flag word `0-inline`, `0-inline-implied`
+/// (merged over the declarations as the own unit merges them), and,
+/// when the pattern's declared type holds a placeholder, `DeclNode`
+/// `ty-type`.
+pub(crate) fn var_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: DeclId) {
+    let ast = w.ast;
+    let Some(var) = ast.decls.var(def) else {
+        s.uv(0).indeterminate(NO_PAYLOAD);
+        return;
+    };
+    let (init, style) = match init_holder(w, e) {
+        Ok(Some(holder)) => ast
+            .decls
+            .var(holder)
+            .map_or((var.init, var.spec.init_style()), |h| (h.init, h.spec.init_style())),
+        Ok(None) => (var.init, var.spec.init_style()),
+        Err(()) => {
+            s.indeterminate(TWO_INITS);
+            (var.init, var.spec.init_style())
+        }
+    };
+    // Without an initialiser in the pattern, what Kiln adds on use is
+    // default-initialisation (`kiln_sema/src/templ/var.rs:212-221`): not
+    // written (§11.9).
+    let (init, style) =
+        if crate::demand::pattern_has_init(w, e) { (init, style) } else { (None, InitStyle::C) };
+    crate::expr::child_opt(w, s, init);
+    s.tag(init_style::row(&style));
+    let mut specs: Vec<VarSpec> =
+        w.redecls(e).iter().filter_map(|&x| ast.decls.var(x).map(|xv| xv.spec)).collect();
+    specs.push(var.spec);
+    let inline = specs.iter().any(|x| x.is_inline());
+    let inline_implied = inline && specs.iter().all(|x| !x.is_inline() || x.is_inline_implied());
+    s.flags(FlagWord::new().bit(inline).bit(inline_implied));
+    // The type: when the pattern's declared type holds a placeholder, or
+    // when the own unit's is an array of unknown bound (the in-class
+    // declaration of a static data member, completed by the instantiated
+    // out-of-line definition, which the own unit does not read).
+    let rep_ty = ast.decls.get(w.representative(e)).ty();
+    let incomplete =
+        rep_ty.is_some_and(|q| ast.types.canonical_kind(q) == TypeKind::IncompleteArray);
+    if crate::demand::pattern_holds_placeholder(w, e) || incomplete {
+        match var_type(w, def, e) {
+            Some(ty) => {
+                s.opt(true);
+                let td = w.type_digest(ty, false);
+                s.digest(&td.digest).absorb(td.cause);
+            }
+            None => {
+                s.opt(false);
+            }
+        }
+    }
+}
+
+/// `FunctionData` `body`: `child?`.
+fn write_body(w: &mut Walk<'_>, s: &mut Stream, body: Option<StmtId>) {
+    s.opt(body.is_some());
+    if let Some(b) = body {
+        crate::stmt::child(w, s, b);
+    }
 }
 
 /// Whether the declaration `x` was made by instantiation
@@ -588,41 +648,6 @@ pub(crate) fn instantiated_on_use(w: &Walk<'_>, e: DeclId) -> bool {
 /// specialisation, or the out-of-line definition of one) is not.
 pub(crate) fn instantiated_decl(w: &Walk<'_>, x: DeclId) -> bool {
     crate::templ::instantiated_declaration(w, x)
-}
-
-/// A function of the definition class (§11.9): defined only when used
-/// (`instantiated_on_use`), or an implicitly declared member, comparison
-/// or deduction guide (and the conversion functions of a closure type,
-/// which Kiln declares implicitly). Also a function explicitly defaulted
-/// on its first declaration, which Kiln defines on odr-use as it does an
-/// implicit member (`spec/landed/digest-kinds/WP-026.md`).
-fn function_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
-    let first = w.representative(e);
-    let defaulted_first =
-        w.ast.decls.function(first).is_some_and(|f| f.spec.defaulted() == Defaulted::Explicit);
-    instantiated_on_use(w, e) || all_implicit(w, e) || defaulted_first
-}
-
-/// A variable of the definition class (§11.9): defined only when used.
-fn var_definition_class(w: &Walk<'_>, e: DeclId) -> bool {
-    instantiated_on_use(w, e)
-}
-
-/// Whether the entity `e` (a first declaration) is of the definition
-/// class of §11.9, whose definition, and with it `DeclMisc`
-/// `0-definition`, Kiln makes on use: a function or variable as above,
-/// and any other entity that is an implicit instantiation or declared
-/// only by instantiations outside their class (a friend's definition is
-/// instantiated on use; WP-032 rule 2).
-pub(crate) fn definition_class(w: &Walk<'_>, e: DeclId) -> bool {
-    let ast = w.ast;
-    if ast.decls.function(e).is_some() {
-        function_definition_class(w, e)
-    } else if ast.decls.var(e).is_some() {
-        var_definition_class(w, e)
-    } else {
-        crate::units::outside_only(w, e) || implicit_instantiation(w, w.representative(e))
-    }
 }
 
 #[cfg(test)]
@@ -910,25 +935,25 @@ pub(crate) mod tests {
             // S::S() defaulted on its first declaration; T::T() not.
             let s = w.ast.first(user[0]);
             let t = w.ast.first(user[1]);
-            assert!(super::function_definition_class(w, s));
-            assert!(!super::function_definition_class(w, t));
+            assert!(crate::demand::definition_class(w, s));
+            assert!(!crate::demand::definition_class(w, t));
             // An implicitly declared member.
             let implicit = ctors
                 .iter()
                 .copied()
                 .find(|&c| w.ast.decls.get(c).has(slip_kiln::kiln::ast::decl::DeclFlags::IMPLICIT))
                 .expect("an implicit constructor");
-            assert!(super::function_definition_class(w, w.ast.first(implicit)));
+            assert!(crate::demand::definition_class(w, w.ast.first(implicit)));
             // Q<int>::g is an instantiation; Q::g (the pattern), Q<char>::g
             // (a member of an explicit specialisation) and h are not.
             let gs = named(w, "g", DeclKind::CXXMethod);
             let classes: Vec<bool> =
-                gs.iter().map(|&g| super::implicit_instantiation(w, w.ast.first(g))).collect();
+                gs.iter().map(|&g| crate::demand::definition_class(w, w.ast.first(g))).collect();
             assert_eq!(classes.iter().filter(|&&b| b).count(), 1, "{classes:?}");
             let h = named(w, "h", DeclKind::Function)[0];
-            assert!(!super::function_definition_class(w, h));
+            assert!(!crate::demand::definition_class(w, h));
             let ss = named(w, "s", DeclKind::Var);
-            let vs: Vec<bool> = ss.iter().map(|&v| super::var_definition_class(w, v)).collect();
+            let vs: Vec<bool> = ss.iter().map(|&v| crate::demand::definition_class(w, v)).collect();
             assert_eq!(vs.iter().filter(|&&b| b).count(), 1, "{vs:?}");
         });
     }
@@ -947,14 +972,15 @@ pub(crate) mod tests {
             let e = w.entity(written);
             assert_ne!(e, written, "Kiln's first declaration is the instantiation's");
             assert_eq!(w.representative(e), written);
-            assert!(super::function_definition_class(w, e));
+            assert!(crate::demand::definition_class(w, e));
         });
     }
 
-    // digest-kinds §11.9: for the definition class the body is absent and
-    // the unit `Pending(Demand)` until resolved units exist.
+    // digest-kinds §11.9: for the definition class the body is absent from
+    // the own unit, without a cause, whether or not Kiln made it; the
+    // resolved unit `definition` holds it.
     #[test]
-    fn definition_class_body_is_pending_demand() {
+    fn definition_class_body_is_in_definition() {
         with_walk(
             "template <class U> struct Q { void g() {} };\nQ<int> q;\nvoid h() { q.g(); }\n",
             |w| {
@@ -962,11 +988,16 @@ pub(crate) mod tests {
                 let inst = gs
                     .iter()
                     .copied()
-                    .find(|&g| super::implicit_instantiation(w, w.ast.first(g)))
+                    .find(|&g| crate::demand::definition_class(w, w.ast.first(g)))
                     .expect("Q<int>::g");
                 assert!(w.ast.decls.function(inst).is_some_and(|f| f.body.is_some()));
-                let (_, cause) = written(w, |w, s| super::function_data(w, s, inst));
-                assert_eq!(cause, Some(Cause::Pending(crate::Area::Demand)));
+                let (bytes, cause) = written(w, |w, s| super::function_data(w, s, inst));
+                assert_eq!(cause, None);
+                let e = w.entity(inst);
+                assert_eq!(crate::demand::defining_declaration(w, e), Some(inst));
+                let (def, cause) = written(w, |w, s| super::function_definition(w, s, e, inst));
+                assert!(!matches!(cause, Some(Cause::Pending(_))), "{cause:?}");
+                assert_ne!(bytes, def);
             },
         );
     }

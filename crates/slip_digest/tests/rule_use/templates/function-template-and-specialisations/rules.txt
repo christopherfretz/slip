@@ -1,0 +1,4 @@
+# WP-069 "Tests": a function template and its specialisations (one explicit, two implicit).
+# Only the template is counted: a specialisation takes its template's mapped name (spec_key), and
+# its own key is matched by no rule.
+relocate template <class> int f(type-parameter-0-0) => :: g

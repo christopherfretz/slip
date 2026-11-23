@@ -1,0 +1,2 @@
+resolved f<int>(int)::<definition>
+added h()

@@ -1,0 +1,3 @@
+# WP-069: a key formed with a cause (a reflection in the signature, an unsupported row, digest §10):
+# the entity is counted by the key it has; its unit is indeterminate, which keeps the observer from verifying.
+relocate f(A<^^int> *) => :: g

@@ -73,9 +73,11 @@
 //! | `local::stream_source(w, e)` | nothing: the declaration whose stream the unit of `e` writes, which the numbering walks |
 //! | `local::lambda_expr(w, s, e)` | `LambdaExpr.a` (§7): the closure's `decl`, rule 6's causes inside a key or a type |
 //! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each; a function's and a variable's language linkage (§5.6 `ScopeData`) |
-//! | `decl_func::implicit_instantiation(w, e)` | nothing: whether the entity is an implicit instantiation (its own kind, else an enclosing one), the first rule of §11.9 |
-//! | `decl_func::definition_class(w, e)` | nothing: whether the entity is of the §11.9 definition class (defined on use, implicit, or defaulted on its first declaration) |
-//! | `decl_func::instantiated_on_use(w, e)` | nothing: whether a function or variable is an implicit instantiation or named by `extern template` (its own kind, else an enclosing one) |
+//! | `demand::effective_kind(w, e)` | nothing: the one specialisation kind the digest reads for an entity (§11.10), from its own `SpecInfo`, an explicitly specialised member's own kind, or the greater of a member's own kind and its class's |
+//! | `demand::definition_class(w, e)` | nothing: whether the entity is of the §11.9 definition class, whose definition is the resolved unit `definition` |
+//! | `demand::pattern_holds_placeholder(w, e)` | nothing: whether the declared type of the pattern an instantiation comes from holds a placeholder (§11.9: the type is then `definition`'s) |
+//! | `demand::write_resolved(w, e, owner, p, disc, body)` | a resolved unit of `owner` (§11.1): its key, class, file and cause; `body` writes its stream |
+//! | `decl_func::{function_definition, var_definition}(w, s, e, def)`, `decl_class::{record_definition, enum_definition}(w, s, def)`, `templ::spec_definition(w, s, e)` | the rows of the resolved unit `definition` (§11.9) |
 //! | `decl_func::var_type(w, d, e)` | nothing: the type a variable's unit holds, an array of unknown bound completed by another declaration |
 //! | `units::defining_decl(w, e)` | nothing: the defining declaration of a variable ([basic.def]) or Kiln's `definition` of another entity |
 //! | `Walk::linkage_spec(d, all)` (`keys.rs`) | nothing: the innermost `LinkageSpec` around `d` and its language (`None` for an unknown byte), through namespaces only unless `all` |
@@ -224,9 +226,11 @@ pub mod map;
 mod names;
 mod order;
 mod other;
+mod owned;
 pub mod query;
 pub mod records;
 mod refs;
+mod rule_use;
 mod stmt;
 mod stream;
 mod templ;
@@ -239,6 +243,7 @@ mod walk;
 mod tests;
 
 pub use names::display_name;
+pub use owned::{ReadOnly, ReadOnlyFiles};
 pub use walk::STACK_SIZE;
 
 /// A finished translation unit (`spec/digest.md` §1 rule 4).
@@ -271,9 +276,19 @@ pub enum Detail<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct Options<'a> {
     pub rules: &'a slip_model::keys::RuleTable,
+    /// Which files of the image are read-only (`spec/verify.md` §2.1):
+    /// under a non-empty `rules`, a rule matches an entity none of whose
+    /// declarations lies in one, and the namespaces around a member are
+    /// mapped from the member's point of view (`owned.rs`). Not read when
+    /// `rules` is empty. [`ReadOnly::EVERY_FILE`] where the run's files
+    /// are not known; [`ReadOnly::files`] of [`ReadOnlyFiles`] for the verify
+    /// job.
+    pub read_only: ReadOnly<'a>,
     pub detail: Detail<'a>,
     /// Fill `Output::names`.
     pub names: bool,
+    /// Fill `Output::rule_use` (`spec/verify.md` §9.1, §9.5).
+    pub rule_use: bool,
 }
 
 /// What a walk produces.
@@ -288,6 +303,10 @@ pub struct Output {
     /// For every unit, the entity as a person would write it
     /// (`verify.md` §6 `name`); sorted by key; empty unless asked.
     pub names: Vec<(Digest, String)>,
+    /// How each rule was used (`spec/verify.md` §9.1): sorted by rule,
+    /// only rules with `via` or `direct` not 0; empty unless asked for
+    /// under a table that is not empty (`rule_use.rs`).
+    pub rule_use: Vec<slip_model::agreement::Use>,
 }
 
 /// Why a unit is indeterminate (`spec/digest.md` §10).
@@ -358,8 +377,6 @@ pub enum Area {
     Attrs,
     /// The other tables of `Ast` (§10): `other.rs`.
     Other,
-    /// Demand-driven fields and resolved units (§11): `demand.rs`.
-    Demand,
     /// The order unit (digest §2.1).
     Order,
     /// A fact a canonical profile leaves out but its first spelling
@@ -381,7 +398,6 @@ impl Area {
             Area::Templ => "templ",
             Area::Attrs => "attrs",
             Area::Other => "other",
-            Area::Demand => "demand",
             Area::Order => "order",
             Area::Spelling => "spelling",
         }

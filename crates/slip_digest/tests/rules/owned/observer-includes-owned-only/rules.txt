@@ -1,0 +1,2 @@
+# Observer 2 of 2: the same edit, an observer that does not include dep.h. Ownership is read from the declarations the translation unit has: here Both is owned (spec/verify.md §2.1, §8).
+relocate legacy => :: acme

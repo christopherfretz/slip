@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round. A hole (spec/verify.md §2.1, §8): the name is made by ## from tokens of the dependency's body, so it is spelled in scratch space and decided by the expansion location alone (owned). Kiln cannot say at this pin which operands of ## came from an argument (gtest's TEST(A, B) must stay renamable). Verified today, wrongly; the run-level check of WP-116 is to close it.
+relocate legacy => :: acme
