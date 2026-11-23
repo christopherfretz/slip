@@ -240,7 +240,14 @@ which is keyed in its namespace (§2.4): `tag 1538`, then
    is around the declaration, or none around it has the attribute.
    "Around" is the walk clang makes for the declaration's semantic
    context: it starts at an opening of the declaration's namespace,
-   which is
+   which is, for a declaration instantiated from a pattern (a friend
+   defined or declared in a class template, a friend function template:
+   `Ast::instantiated_from`, through every level, for a template its
+   pattern's), that of the pattern, never one found by the position of
+   the instantiation (clang++-19 gives such a friend the opening its
+   class template is written in, whatever openings of the namespace come
+   between; `enclosing/friend-instantiated-after-plain-reopening`), and
+   for any other declaration
    - the opening the declaration is written in (its lexical context,
      through linkage specifications and `export`), when that is an
      opening of its semantic namespace;
@@ -274,7 +281,12 @@ which is keyed in its namespace (§2.4): `tag 1538`, then
 5. the declarations whose pairs are compared and written are those of
    the chain (`Walk::redecls`) of the entity that governs the symbol's
    visibility, as clang++-19 gives it (`spec/landed/digest/WP-113.md`,
-   "Specialisations"):
+   "Specialisations"), each filter below applied only when it keeps at
+   least one declaration (when it would keep none, all the declarations
+   it was given count: a chain made only of declarations a filter drops,
+   such as an explicit specialisation known only through the declaration
+   Kiln made for it, or an entity declared only as an instantiated
+   friend):
    - a specialisation of a class template or of a variable template, of
      any kind (explicit, partial, implicit or explicit instantiation),
      a member of one, and an instantiation of a function template take
@@ -293,9 +305,17 @@ which is keyed in its namespace (§2.4): `tag 1538`, then
      an absent visibility is read as 0 (default) before the pairs are
      compared and written: an undefined reference takes an opening's
      attribute or default, never `-fvisibility`;
-   - a declaration the compiler makes (`IMPLICIT`: `std::type_info`,
-     `std::align_val_t`, `std::terminate`) counts only when the entity
-     has no written declaration.
+   - a declaration instantiated from a pattern (above) that is not the
+     entity's definition (a friend declared in a class template) counts
+     only when the entity has another declaration (clang++-19: `int
+     h(int);` in a plain opening and `friend int h(int);` in an
+     instantiated class template of a hidden one give `UND DEFAULT`;
+     `enclosing/friend-declared-beside-namespace-declaration`).
+     A declaration the compiler makes (`IMPLICIT`) counts as any other:
+     Kiln makes none at namespace scope that is chained with a written
+     one in an opening of another pair (the global allocation functions
+     are at file scope; `enclosing/implicit-align-val-t-beside-written`),
+     and one would make the unit indeterminate, never a wrong equal.
 
 A namespace's unit has no such row: a namespace has no symbol, its own
 linkage is read by reflection alone (`has_internal_linkage(^^n)`), whose

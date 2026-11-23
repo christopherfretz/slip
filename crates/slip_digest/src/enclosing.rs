@@ -34,7 +34,7 @@
 //! unit holds this row, and does not get it.
 
 use slip_kiln::kiln::ast::attr::{AttrKind, AttrNode};
-use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
+use slip_kiln::kiln::ast::decl::{DeclKind, TemplLinkKind};
 use slip_kiln::kiln::ast::linkage::Linkage;
 use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{AttrId, DeclId};
@@ -223,14 +223,11 @@ fn chain_pair(w: &Walk<'_>, s: &mut Stream, e: DeclId, keep: impl Fn(DeclId) -> 
 }
 
 /// Whether declarations of kind `kind` declare a class or an enumeration.
+/// A class template's specialisations (`ClassTemplateSpecialization`,
+/// `ClassTemplatePartialSpecialization`) never ask: their template
+/// governs them ([`governing_template`]).
 fn is_tag(kind: DeclKind) -> bool {
-    matches!(
-        kind,
-        DeclKind::CXXRecord
-            | DeclKind::Enum
-            | DeclKind::ClassTemplateSpecialization
-            | DeclKind::ClassTemplatePartialSpecialization
-    )
+    matches!(kind, DeclKind::CXXRecord | DeclKind::Enum)
 }
 
 /// [`chain_pair`]; with `undefined`, an absent visibility is read as
@@ -247,12 +244,16 @@ fn chain_pair_with(
     if chain.iter().any(|&d| keep(d)) {
         chain.retain(|&d| keep(d));
     }
-    // A declaration the compiler makes (`std::type_info`,
-    // `std::align_val_t`, `std::terminate`) is in no opening; where the
-    // entity is also written, the written declarations decide.
-    let implicit = |d: DeclId| w.ast.decls.get(d).has(DeclFlags::IMPLICIT);
-    if chain.iter().any(|&d| !implicit(d)) {
-        chain.retain(|&d| !implicit(d));
+    // A friend declaration (not a definition) instantiated from a class
+    // template counts only when the entity has no other declaration
+    // (clang++-19: `int h(int);` in a plain opening, `friend int h(int);`
+    // in a class template of a hidden one, instantiated, then a use gives
+    // `UND DEFAULT`, and the reverse `UND HIDDEN`;
+    // `rules/enclosing/friend-declared-beside-namespace-declaration`).
+    let definition = crate::units::defining_decl(w, e);
+    let instantiated = |d: DeclId| written(w, d) != d && Some(d) != definition;
+    if chain.iter().any(|&d| !instantiated(d)) {
+        chain.retain(|&d| !instantiated(d));
     }
     let pairs: Vec<Pair> = chain
         .iter()
@@ -316,6 +317,7 @@ fn namespace_visibility(w: &Walk<'_>, s: &mut Stream, d: DeclId) -> Pair {
 /// context.
 fn opening(w: &Walk<'_>, d: DeclId) -> Result<Option<DeclId>, ()> {
     let ast = w.ast;
+    let d = written(w, d);
     let node = ast.decls.get(d);
     let Some(sem) = ast.semantic_parent(d) else { return Ok(None) };
     match ast.decls.get(sem).kind() {
@@ -340,6 +342,31 @@ fn opening(w: &Walk<'_>, d: DeclId) -> Result<Option<DeclId>, ()> {
         }
         _ => Ok(ast.decls.lexical_ctx(d).or_else(|| node.ctx())),
     }
+}
+
+/// The declaration `d` was instantiated from, through every level
+/// (`Ast::instantiated_from`; for a template, its pattern's): a
+/// declaration made when a class template is instantiated (a friend
+/// defined or declared in it, a friend function template) is in no
+/// opening, and its `DeclId` is where the instantiation happened. clang
+/// gives it the opening its pattern is written in (clang++-19, with and
+/// without `-fvisibility=hidden`: `HIDDEN _ZN1n1fENS_1SIiEE` for a friend
+/// defined in a class template of a hidden opening, whether or not a
+/// plain opening of `n` comes before the instantiation;
+/// `rules/enclosing/friend-instantiated-after-plain-reopening`). `d`
+/// itself for a declaration that is written.
+fn written(w: &Walk<'_>, mut d: DeclId) -> DeclId {
+    let ast = w.ast;
+    for _ in 0..CTX_LIMIT {
+        let from = ast.instantiated_from(d).or_else(|| {
+            ast.template_info(d).and_then(|i| i.pattern).and_then(|p| ast.instantiated_from(p))
+        });
+        match from {
+            Some(p) if p != d => d = p,
+            Some(_) | None => return d,
+        }
+    }
+    d
 }
 
 /// The two visibilities from context `c` outwards; `None` when the chain
