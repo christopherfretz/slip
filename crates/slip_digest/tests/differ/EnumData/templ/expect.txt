@@ -1,6 +1,9 @@
-# what this pair shows is RecordData `templ` of X<int>: the member
-# enumeration's own record is the same on both sides (Kiln keeps its
-# MemberSpecInfo `ImplicitInstantiation` under an explicit instantiation,
-# kiln_ast/src/templates.rs:2031-2036). The row itself is checked by the
-# unit test decl_class::tests::templ_ends_the_typedef_and_enum_records.
+# RecordData `templ` of X<int> differs (its SpecInfo kind). The member
+# enumeration's MemberSpecInfo `kind` is its effective kind (digest-kinds
+# §11.10, WP-045), the explicit instantiation's: so X<int>::E differs too,
+# though Kiln keeps its own MemberSpecInfo `ImplicitInstantiation` under
+# an explicit instantiation (kiln_ast/src/templates.rs:2031-2036). The
+# row itself is checked by the unit test
+# decl_class::tests::templ_ends_the_typedef_and_enum_records.
 changed X<int>
+changed X<int>::E

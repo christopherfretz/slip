@@ -119,6 +119,7 @@ fn causes_of(input: &Input<'_>, name: &str) -> Vec<Vec<crate::Cause>> {
             read_only: crate::ReadOnly::NO_FILE,
             detail: crate::Detail::All,
             names: true,
+            rule_use: false,
         },
     );
     o.names
@@ -474,6 +475,7 @@ fn digest_all(src: &str) -> Vec<(slip_model::Digest, String, Vec<crate::Cause>)>
                 read_only: crate::ReadOnly::NO_FILE,
                 detail: crate::Detail::All,
                 names: true,
+                rule_use: false,
             },
         );
         o.names

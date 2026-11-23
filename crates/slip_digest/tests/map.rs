@@ -96,6 +96,7 @@ fn walk(
         read_only: slip_digest::ReadOnly::NO_FILE,
         detail: Detail::All,
         names: true,
+        rule_use: false,
     };
     let (shard, walked) = parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {
         map_unit(unit, &options, subject)
@@ -114,6 +115,7 @@ fn map_shard(o: &Observer) -> Result<Shard, String> {
         read_only: slip_digest::ReadOnly::NO_FILE,
         detail: Detail::None,
         names: false,
+        rule_use: false,
     };
     let identity = |p: &[u8]| p.to_vec();
     let (mut shard, walked) =
@@ -312,6 +314,7 @@ fn s8_5_cause_counters() {
             (k(6), Cause::Collision),
         ],
         names: Vec::new(),
+        rule_use: Vec::new(),
     };
     let got: Vec<(String, u64)> =
         counters(&output).into_iter().map(|c| (c.name, c.value)).collect();
@@ -633,4 +636,54 @@ fn s8_5_earliest_located_redeclaration() {
     let shape: Vec<(GroupClass, &str, u64)> =
         units.iter().map(|(c, f, _, fl)| (*c, f.as_str(), *fl)).collect();
     assert_eq!(shape, vec![(GroupClass::Declared, "a.h", 0)]);
+}
+
+// `spec/verify.md` §9.5 (WP-069): `map_unit` passes `Options` through, so
+// a caller that asks for `rule_use` gets it; with it off, the same output
+// but for an empty `rule_use`.
+#[test]
+fn s9_5_map_unit_passes_rule_use_through() {
+    let f = Fixture::new("rule-use");
+    f.write("main.cpp", "int g();\nint g() { return 1; }\nint k = g();\n");
+    let o = f.observer(&["c++", "main.cpp"]);
+    let identity = |p: &[u8]| p.to_vec();
+    let (_, walked) = parse_observer_with(&o, Phase::Map, 0, ParseOptions::default(), |unit| {
+        // The rule that undoes `f` renamed to `g`: its discriminator is g's.
+        let recs = with_input(unit, &identity, |input| {
+            slip_digest::records::records(
+                input,
+                &RuleTable::empty(),
+                slip_digest::ReadOnly::EVERY_FILE,
+            )
+        })
+        .unwrap()
+        .unwrap();
+        let g = recs.iter().find(|r| r.name == "g()").expect("a record of g()");
+        let key = g.key.clone().expect("g() has a Key");
+        let rules = RuleTable::new(vec![slip_model::keys::Rule {
+            parent: key.parent,
+            kind: key.kind,
+            name: key.name.clone(),
+            disc: key.disc,
+            to_parent: key.parent,
+            to_name: slip_model::keys::Name::Identifier(b"f".to_vec()),
+        }])
+        .unwrap();
+        // Every file owned (WP-110): the rule applies to g.
+        let on = Options {
+            rules: &rules,
+            read_only: slip_digest::ReadOnly::NO_FILE,
+            detail: Detail::None,
+            names: false,
+            rule_use: true,
+        };
+        let off = Options { rule_use: false, ..on };
+        (map_unit(unit, &on, &identity), map_unit(unit, &off, &identity))
+    })
+    .unwrap();
+    let (on, off) = walked.unwrap();
+    let (on, off) = (on.unwrap().unwrap(), off.unwrap().unwrap());
+    assert_eq!(on.rule_use, [slip_model::agreement::Use { rule: 0, via: 1, direct: 0 }]);
+    assert!(off.rule_use.is_empty());
+    assert_eq!(Output { rule_use: Vec::new(), ..on }, off);
 }

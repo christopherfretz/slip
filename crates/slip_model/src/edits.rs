@@ -113,6 +113,9 @@ pub enum Reason {
     NotPlain = 7,
     MixedSet = 8,
     MixedInstances = 9,
+    /// The range holds a directive or part of a skipped group (§2.3).
+    /// Added by WP-068.
+    Directive = 10,
 }
 
 /// The bits of `Claim::tiers` (§2.2, §4.2): bit t for tier t, bit 4 for X.

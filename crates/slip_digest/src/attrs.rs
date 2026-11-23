@@ -559,6 +559,82 @@ fn kind_row(kind: AttrKind) -> Option<&'static KindRow> {
     KINDS.iter().find(|r| r.kind == kind)
 }
 
+/// The attribute kinds Kiln copies onto a function from the pattern's
+/// definition when it instantiates the definition: `weak` from an
+/// out-of-line member definition (`kiln_sema/src/templ/class.rs:1603-1615`),
+/// `#pragma clang section` from any definition (`clone_clang_sections`,
+/// `kiln_sema/src/section.rs:204`, called at `templ/class.rs:2313` and
+/// `templ/funcs.rs:365`). Kiln does not mark the copies.
+const COPIED_AT_DEFINITION: [AttrKind; 2] = [AttrKind::WEAK, AttrKind::PRAGMA_CLANG_SECTION];
+
+/// Which attribute nodes of declaration `x` of entity `e` are
+/// `definition`'s rather than the own unit's (§11.9), for an entity of
+/// the definition class: none on a declaration written in source; on a
+/// declaration made by instantiation (`templ::made_by_instantiation`),
+/// every node for a class (Kiln copies the attributes and annotations of
+/// the pattern's definition when it instantiates the class's definition,
+/// `Substituter::class_attrs`, `kiln_sema/src/templ/subst/anon.rs:140`,
+/// from `templ/class.rs:2530`), the kinds of [`COPIED_AT_DEFINITION`]
+/// for a function, none otherwise. `None`: the entity is not of the
+/// class, or is of a kind none of whose nodes move.
+fn moved_kinds(w: &Walk<'_>, e: DeclId) -> Option<Moved> {
+    let ast = w.ast;
+    if !crate::demand::definition_class(w, e) {
+        return None;
+    }
+    if ast.decls.record(e).is_some() {
+        Some(Moved::All)
+    } else if ast.decls.function(e).is_some() {
+        Some(Moved::Copied)
+    } else {
+        None
+    }
+}
+
+/// What [`moved_kinds`] moves of a declaration made by instantiation.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Moved {
+    /// Every attribute node and annotation (a class).
+    All,
+    /// The nodes of the kinds of [`COPIED_AT_DEFINITION`] (a function).
+    Copied,
+}
+
+impl Moved {
+    fn node(self, n: &AttrNode) -> bool {
+        match self {
+            Moved::All => true,
+            Moved::Copied => COPIED_AT_DEFINITION.contains(&n.kind),
+        }
+    }
+}
+
+/// The attribute nodes (and, for a class, the annotations) of entity
+/// `e` that [`moved_kinds`] moves, for the resolved unit `definition`
+/// (§11.9): over the declarations made by instantiation, in chain order
+/// (first to last), each one's moved nodes in stored order without the
+/// `inherited` copies, as a list; the non-empty lists, preceded by their
+/// count, as `attrs` writes them (§10.1); then, for a class, the
+/// annotations of those declarations as one list.
+pub(crate) fn definition_attrs(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
+    let moved = moved_kinds(w, e);
+    let mut chain = w.redecls(e);
+    chain.reverse();
+    let made: Vec<DeclId> =
+        chain.into_iter().filter(|&x| crate::templ::made_by_instantiation(w, x)).collect();
+    let lists: Vec<Vec<AttrNode>> = match moved {
+        Some(m) => made
+            .iter()
+            .map(|&x| own_nodes(w, s, x).into_iter().filter(|n| m.node(n)).collect())
+            .collect(),
+        None => Vec::new(),
+    };
+    groups(w, s, &lists);
+    if moved == Some(Moved::All) {
+        chain_annotations(w, s, &made);
+    }
+}
+
 /// The position of a parameter that is not where its `ParamData` `index`
 /// says in its function's parameter list.
 const PARAM_INDEX_UNACCOUNTED: Cause = Cause::Unaccounted("ParamData/index");
@@ -575,7 +651,12 @@ pub(crate) fn decl_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         let mut chain = w.redecls(d);
         chain.reverse();
         let def = defining(w, d, &chain);
-        entity_attrs(w, s, &chain, def);
+        // For an entity of the definition class, what Kiln writes onto a
+        // declaration made by instantiation when it instantiates the
+        // definition is `definition`'s (`moved_kinds`, §11.9); a node on
+        // a declaration written in source stays here.
+        let moved = if w.unit.definition { None } else { moved_kinds(w, w.entity(d)) };
+        entity_attrs(w, s, &chain, def, moved);
     }
     // AnnotArena `of_base`: a list per base-specifier of the definition.
     let bases = match ast.definition(d) {
@@ -613,8 +694,7 @@ fn defining(w: &Walk<'_>, d: DeclId, chain: &[DeclId]) -> Option<DeclId> {
         }
         Some(_) | None => ast.definition(d),
     };
-    def.filter(|x| chain.contains(x))
-        .filter(|_| !crate::decl_func::definition_class(w, ast.first(d)))
+    def.filter(|x| chain.contains(x)).filter(|_| !crate::demand::definition_class(w, ast.first(d)))
 }
 
 /// The nodes of declaration `x`'s own list, in stored order, without the
@@ -662,9 +742,31 @@ fn chain_annotations(w: &mut Walk<'_>, s: &mut Stream, chain: &[DeclId]) {
 /// before `def` (all of them when `def` is not in `chain`), empty lists
 /// left out, preceded by their count; `opt`, present when `def` is in
 /// `chain`, with its own list; the lists of the declarations after it as
-/// those before; then the annotations as one list.
-fn entity_attrs(w: &mut Walk<'_>, s: &mut Stream, chain: &[DeclId], def: Option<DeclId>) {
-    let lists: Vec<Vec<AttrNode>> = chain.iter().map(|&x| own_nodes(w, s, x)).collect();
+/// those before; then the annotations as one list. What `moved` names
+/// ([`moved_kinds`]) is left out of a declaration made by instantiation
+/// (`templ::made_by_instantiation`).
+fn entity_attrs(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    chain: &[DeclId],
+    def: Option<DeclId>,
+    moved: Option<Moved>,
+) {
+    let made: Vec<bool> = chain
+        .iter()
+        .map(|&x| moved.is_some() && crate::templ::made_by_instantiation(w, x))
+        .collect();
+    let lists: Vec<Vec<AttrNode>> = chain
+        .iter()
+        .zip(&made)
+        .map(|(&x, &mx)| {
+            let nodes = own_nodes(w, s, x);
+            match moved.filter(|_| mx) {
+                Some(m) => nodes.into_iter().filter(|n| !m.node(n)).collect(),
+                None => nodes,
+            }
+        })
+        .collect();
     let at = def.and_then(|x| chain.iter().position(|&y| y == x));
     let (before, rest) = lists.split_at(at.unwrap_or(lists.len()));
     groups(w, s, before);
@@ -677,7 +779,13 @@ fn entity_attrs(w: &mut Walk<'_>, s: &mut Stream, chain: &[DeclId], def: Option<
         None => rest,
     };
     groups(w, s, after);
-    chain_annotations(w, s, chain);
+    let kept: Vec<DeclId> = chain
+        .iter()
+        .zip(&made)
+        .filter(|&(_, &mx)| !(moved == Some(Moved::All) && mx))
+        .map(|(&x, _)| x)
+        .collect();
+    chain_annotations(w, s, &kept);
 }
 
 /// `attrs` of parameter `d` of a function (§10.1), or `false` when `d` is
@@ -703,7 +811,14 @@ fn param_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) -> bool {
         chain_annotations(w, s, &[d]);
         return true;
     }
-    let decls = crate::decl_func::param_decls(w, f);
+    let mut decls = crate::decl_func::param_decls(w, f);
+    // The resolved unit `definition` reads the parameters of its defining
+    // declaration, which the chain leaves out when an instantiation made
+    // it outside its class (a friend's definition, §11.9): it is the last
+    // declaration Kiln chained.
+    if w.unit.definition && !decls.contains(&f) && crate::units::instantiated_outside_class(w, f) {
+        decls.push(f);
+    }
     if !decls.contains(&f) && !w.is_local_extern(f) {
         // The declaration whose parameter is written is not in the chain
         // read: its own nodes would be lost.

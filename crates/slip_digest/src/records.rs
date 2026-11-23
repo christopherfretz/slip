@@ -52,7 +52,7 @@ pub fn records(
     rules: &RuleTable,
     read_only: crate::ReadOnly<'_>,
 ) -> Result<Vec<Record>, String> {
-    let options = Options { rules, read_only, detail: Detail::None, names: true };
+    let options = Options { rules, read_only, detail: Detail::None, names: true, rule_use: false };
     walk::run_with(input, &options, |w, written, output| collect(w, written, &output))
 }
 
@@ -79,7 +79,7 @@ pub fn key_agreement(
     rules: &RuleTable,
     read_only: crate::ReadOnly<'_>,
 ) -> Result<usize, String> {
-    let options = Options { rules, read_only, detail: Detail::None, names: false };
+    let options = Options { rules, read_only, detail: Detail::None, names: false, rule_use: false };
     let (memo, views) = walk::run_with(input, &options, |w, _, _| {
         let mut memo: Vec<(DeclId, KeyRes)> = w.keys.iter().map(|(&e, &r)| (e, r)).collect();
         memo.sort_by_key(|&(e, _)| e.index());
@@ -313,6 +313,7 @@ mod tests {
             counters: Vec::new(),
             causes: Vec::new(),
             names,
+            rule_use: Vec::new(),
         }
     }
 
@@ -375,6 +376,7 @@ mod tests {
                 counters: Vec::new(),
                 causes: Vec::new(),
                 names,
+                rule_use: Vec::new(),
             };
             let recs = collect(&mut w, &written, &output).expect("records");
             assert_eq!(recs.len(), 2, "{recs:#?}");

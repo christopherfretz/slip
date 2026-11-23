@@ -75,6 +75,7 @@ fn digest(src: &str) -> (Output, Duration, u64) {
                 read_only: slip_digest::ReadOnly::NO_FILE,
                 detail: Detail::All,
                 names: true,
+                rule_use: false,
             };
             let mut best = Duration::MAX;
             let mut out = None;

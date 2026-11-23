@@ -63,7 +63,13 @@ fn snippet<R: Send>(source: &str, f: impl FnOnce(&Input<'_>) -> R + Send) -> R {
 fn digest(input: &Input<'_>, rules: &RuleTable) -> Output {
     slip_digest::digest(
         input,
-        &Options { rules, read_only: ReadOnly::NO_FILE, detail: Detail::All, names: true },
+        &Options {
+            rules,
+            read_only: ReadOnly::NO_FILE,
+            detail: Detail::All,
+            names: true,
+            rule_use: false,
+        },
     )
 }
 
@@ -538,9 +544,20 @@ fn derived_lists_instantiations_and_resolved_units() {
                 .collect()
         };
         let set = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<BTreeSet<String>>();
-        // A function template with two instantiations.
+        // A function template with two instantiations, and each
+        // instantiation's definition (WP-045: an implicit instantiation's
+        // body is written in its resolved unit).
         let tf = of(one(ast, "tf", DeclKind::FunctionTemplate));
-        assert_eq!(tf, set(&["tf<int>(int)", "tf<long>(long)"]), "{tf:?}");
+        assert_eq!(
+            tf,
+            set(&[
+                "tf<int>(int)",
+                "tf<int>(int)::<definition>",
+                "tf<long>(long)",
+                "tf<long>(long)::<definition>"
+            ]),
+            "{tf:?}"
+        );
         // A class template whose member is instantiated: the class
         // specialisation and its members; of the member, its own.
         let cls = of(one(ast, "C", DeclKind::ClassTemplate));

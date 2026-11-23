@@ -73,6 +73,7 @@ fn wp067_written_changes_no_digest() {
                             read_only: slip_digest::ReadOnly::NO_FILE,
                             detail: Detail::All,
                             names: true,
+                            rule_use: false,
                         };
                         (slip_digest::digest(&input, &options), ast.decls.len())
                     })

@@ -1,0 +1,4 @@
+# WP-069, after the review of WP-103: f and g swapped. Each rule maps one entity onto the key the
+# other produces; neither is direct, since a rule gave each its key.
+relocate f() => :: g
+relocate g() => :: f

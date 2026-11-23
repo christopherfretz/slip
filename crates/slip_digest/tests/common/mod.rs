@@ -452,6 +452,7 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
                 read_only: slip_digest::ReadOnly::NO_FILE,
                 detail: Detail::All,
                 names: true,
+                rule_use: false,
             };
             Ok::<_, String>(slip_digest::digest(&input, &options))
         });

@@ -571,6 +571,7 @@ fn digest_of(source: &str, rules: &RuleTable) -> Output {
                 read_only: slip_digest::ReadOnly::NO_FILE,
                 detail: Detail::All,
                 names: true,
+                rule_use: false,
             },
         )
     })

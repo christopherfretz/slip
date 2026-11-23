@@ -1,5 +1,8 @@
 # pending
-# needs: demand
-# expr_maps is called by the expression area (expr.rs); the instantiated body is the resolved unit `definition`
-changed f()
-derived-changed f<1>
+# needs: expr_maps
+# the instantiated body is f<1>'s resolved unit `definition` (WP-045), walked; it is
+# equal on both sides because no expression calls `templ::expr_maps` yet
+# (templ.rs, `allow(dead_code)`: "called by the expression area"), so the
+# row is never written: waits for the expressions package that calls it
+changed template <int...> int f()
+derived-changed f<1>()::<definition>

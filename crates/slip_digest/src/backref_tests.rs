@@ -39,6 +39,7 @@ fn digest_with(src: &str, std: &str, rules: RuleTable) -> (Output, u64) {
                         read_only: crate::ReadOnly::NO_FILE,
                         detail: Detail::All,
                         names: true,
+                        rule_use: false,
                     },
                 );
                 (o, BACKREFS.with(std::cell::Cell::get) - before)

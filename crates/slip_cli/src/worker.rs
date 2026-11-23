@@ -94,6 +94,7 @@ fn map_observer(observer: &Observer, round: u64) -> Result<Shard, String> {
         read_only: slip_digest::ReadOnly::EVERY_FILE,
         detail: Detail::None,
         names: false,
+        rule_use: false,
     };
     let identity = |path: &[u8]| path.to_vec();
     let (mut shard, walked) =

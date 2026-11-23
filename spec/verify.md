@@ -720,6 +720,12 @@ both have and that differs: the same specialisation instantiated to
 something else is exactly how a dependent name that resolves differently
 shows up ([03](../docs/design/03-equivalence.md) §7 row 6), and no declared
 unit need differ then.
+The same holds of what an instantiation's definition adds: the fields,
+bases and other members of an instantiated class, a function's body, a
+variable's initialiser are rows of the entity's resolved unit
+`definition`, a derived unit (`digest.md` §2.2), so a field or base that
+differs shows as a difference of a derived unit both parses have, not
+of the declared unit of the instantiation or of its class.
 
 One kind of derived unit exists without a demand: a resolved
 `exception_spec` (`digest-kinds.md` §11.2), which Kiln also resolves when
@@ -1738,7 +1744,12 @@ rule `r` (by its index in `Declared.rules`):
 
 Entities are counted once each, declared or derived, whatever number of
 declarations they have. An entity counted in `direct(r)` is one that
-still is what `r` says was renamed.
+still is what `r` says was renamed. An entity whose name follows another
+entity's mapped name (a specialisation, a member of an instantiation, a
+decomposition) is counted by its own key only. An entity with no key is
+counted for no rule; an entity whose key is formed but carries a cause is
+counted. Where two rules produce one key, an entity with that key that no
+rule matched counts in `direct` of each.
 
 ```
 RuleUse := rules: digest            rules_id

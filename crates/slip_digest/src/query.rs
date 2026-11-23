@@ -446,7 +446,13 @@ pub fn walk_units(
     rules: &RuleTable,
     read_only: crate::ReadOnly<'_>,
 ) -> Vec<WalkUnit> {
-    let options = crate::Options { rules, read_only, detail: crate::Detail::None, names: false };
+    let options = crate::Options {
+        rules,
+        read_only,
+        detail: crate::Detail::None,
+        names: false,
+        rule_use: false,
+    };
     crate::walk::run_with(input, &options, |w, written, _| {
         written
             .iter()

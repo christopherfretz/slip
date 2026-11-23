@@ -555,6 +555,7 @@ fn key_names(p: &slip_kiln::snippet::Parsed<'_>) -> BTreeMap<Digest, String> {
                     read_only: slip_digest::ReadOnly::EVERY_FILE,
                     detail: slip_digest::Detail::None,
                     names: true,
+                    rule_use: false,
                 };
                 slip_digest::digest(&input, &options).names
             })

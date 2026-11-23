@@ -1,0 +1,3 @@
+# spec/verify.md §9.1 "Tests": acme is merged onto legacy, which still exists: via 1 (acme, once
+# though opened twice), direct 1 (legacy). Not stale: the rule is of kind namespace (§9.2).
+relocate legacy => :: acme

@@ -61,6 +61,7 @@ fn snippet(source: &str, rules: &RuleTable) -> (Vec<Record>, Output) {
                 read_only: slip_digest::ReadOnly::NO_FILE,
                 detail: Detail::All,
                 names: true,
+                rule_use: false,
             },
         );
         (recs, out)
@@ -305,6 +306,7 @@ fn sweep_side(dir: &Path, side: Side, t: &mut Tally) {
                     read_only: slip_digest::ReadOnly::NO_FILE,
                     detail: Detail::All,
                     names: true,
+                    rule_use: false,
                 },
             );
             (recs, out)

@@ -253,6 +253,7 @@ impl Walk<'_> {
             return KeyRes::None(Some(KEY_CYCLE));
         }
         if !self.enter() {
+            crate::rule_use::forget(self, e);
             return KeyRes::None(Some(TOO_DEEP));
         }
         let aborts = self.aborts;
@@ -273,11 +274,21 @@ impl Walk<'_> {
         let res = match computed {
             Ok((key, cause)) => {
                 let kind = key.kind;
-                let key = self.map_key(e, view, key);
+                // An entity's own key is counted for rule use (WP-069),
+                // a dependency entity's unmapped (WP-110 rule 1); a
+                // namespace's key in a member's view is no entity's.
+                let key = match view {
+                    None if self.rule_applies(e, None) => crate::rule_use::map(self, e, key),
+                    None => crate::rule_use::unmapped(self, e, key),
+                    Some(_) => self.map_key(e, view, key),
+                };
                 self.bytes += key.to_bytes().len() as u64;
                 KeyRes::Key { id: key.id(), kind, cause }
             }
-            Err(cause) => KeyRes::None(cause),
+            Err(cause) => {
+                crate::rule_use::forget(self, e);
+                KeyRes::None(cause)
+            }
         };
         self.keys_in_progress.remove(&e);
         self.leave();
@@ -1470,7 +1481,7 @@ pub(crate) fn mark_mapped_collisions(
         let already = written.iter().any(|u| u.key == id && u.cause == Some(Cause::Collision));
         let mut marked = false;
         for u in written.iter_mut().filter(|u| u.key == id) {
-            u.cause = Some(crate::units::merge(u.cause, Cause::Collision));
+            crate::units::collide(u);
             marked = true;
         }
         if !marked && let Some(u) = written.iter_mut().find(|u| u.kind == KeyKind::Order) {

@@ -988,6 +988,7 @@ mod tests {
                 read_only: crate::ReadOnly::NO_FILE,
                 detail: Detail::All,
                 names: false,
+                rule_use: false,
             };
             STACK_LOW.with(|l| l.set(usize::MAX));
             let base = here();
