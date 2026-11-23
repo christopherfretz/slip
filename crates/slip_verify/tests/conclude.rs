@@ -789,11 +789,7 @@ fn s8_5_each_residue_category() {
         let c = conclude(&f, None);
         let r = result_of(&c, &b.set, false, false, &residue);
         assert_eq!(permits(&r, &b.set, Allow::default()), want == State::Verified, "{cat:?}");
-        assert_eq!(
-            permits(&r, &b.set, Allow { residue: true, ..Allow::default() }),
-            true,
-            "{cat:?}"
-        );
+        assert!(permits(&r, &b.set, Allow { residue: true, ..Allow::default() }), "{cat:?}");
     }
 }
 
