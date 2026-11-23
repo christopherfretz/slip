@@ -12,7 +12,7 @@
 use std::cmp::Ordering;
 
 use slip_kiln::kiln::ast::decl::{
-    DeclFlags, DeclKind, DefinitionBits, EnumData, FriendTarget, NamespaceData, TagKind,
+    DeclFlags, DeclKind, DefinitionBits, EnumData, FriendTarget, NamespaceData,
     TemplLinkKind, VarStorage,
 };
 use slip_kiln::kiln::ast::names::DeclNameView;
@@ -22,9 +22,6 @@ use slip_kiln::kiln::ast::{Ast, DeclId};
 use super::KilnSubject;
 use crate::wire;
 
-/// How far a chain of contexts or of origins is followed (an AST is far
-/// shallower; the bound only keeps a malformed one from looping).
-pub(super) const LIMIT: u32 = 4096;
 
 /// Whether a declaration of this kind is a value of the subject: an entity
 /// (§5.1, "a namespace, type, function, variable, template, parameter, or
@@ -157,32 +154,47 @@ impl<'u> KilnSubject<'u> {
     // ---- written declarations --------------------------------------------
 
     /// Whether `d` is a declaration written in the unit (§6.4 rule 3), not
-    /// one Kiln made: not implicit, not an instantiation, not a
-    /// declaration of a specialisation made before its explicit
-    /// specialisation was seen.
+    /// one Kiln made. **The one place the subject decides it**: WP-085
+    /// replaces this body by a read of Kiln's declaration-extent table
+    /// (Kiln `spec/ast.md` §19.1, one row per declaration the parser
+    /// parsed, on with `ParseOptions.written`), keeping the tests of
+    /// `tests/subject_entities.rs`. An explicit instantiation has a row
+    /// there and is still no declaration of the subject (landed
+    /// decision 2), so `instantiated` stays first.
     ///
-    /// Kiln links every declaration it parsed outside a function body into
-    /// the member list of its lexical context, and none it made (an
-    /// implicit member, an instantiation, the declaration deduction makes
-    /// of `f<char>` before `template <> void f<char>(char)` is read:
-    /// `kiln_ast/src/decl.rs:2161`, "does not link it into any member
-    /// list"). So a declaration outside function bodies is written when it
-    /// is reached from the translation unit through member lists (with a
-    /// template's pattern and a friend's befriended declaration), and one
-    /// inside a body (a parameter, a local entity, a template parameter)
-    /// when its context is written and it is not an instantiation.
+    /// Until then the rule is structural (landed decision 1):
+    ///
+    /// 1. never an implicit declaration, the translation unit, or an
+    ///    instantiation: an implicit or explicit instantiation, a member of
+    ///    one, the declaration deduction makes of a specialisation before
+    ///    its explicit specialisation is read (`instantiated`);
+    /// 2. a declaration reached from the translation unit through member
+    ///    lists (`listed`: Kiln links every declaration it parsed outside
+    ///    a function body into its lexical context's member list, and
+    ///    none it made, `kiln_ast/src/decl.rs:2161`);
+    /// 3. a template parameter whose context (the template's scope, Kiln
+    ///    `TemplateParamList`) is the translation unit or listed;
+    /// 4. a declaration that is not listed is written only when it is
+    ///    declared in a block (its lexical context is a function, a
+    ///    deduction guide, a requires-expression, or a variable or data
+    ///    member whose initialiser holds it) or in a local class or
+    ///    enumeration (one that is not listed itself), and that context is
+    ///    written. A class that is listed lists every member the parser
+    ///    parsed, so a declaration it does not list (the one deduction
+    ///    makes for `template <> void A::mt<int>(int)`, whose lexical
+    ///    context is `A`) is not written.
     pub(super) fn written(&self, d: DeclId) -> bool {
         let mut d = d;
-        for _ in 0..LIMIT {
+        for _ in 0..self.chain_bound() {
             let n = self.ast.decls.get(d);
             if n.has(DeclFlags::IMPLICIT) || n.kind() == DeclKind::TranslationUnit {
                 return false;
             }
-            if self.listed(d) {
-                return true;
-            }
             if self.instantiated(d) {
                 return false;
+            }
+            if self.listed(d) {
+                return true;
             }
             let k = n.kind();
             let up = if template_parm_kind(k) { n.ctx() } else { self.ast.decls.lexical_ctx(d) };
@@ -191,25 +203,34 @@ impl<'u> KilnSubject<'u> {
             if template_parm_kind(k) && (uk == DeclKind::TranslationUnit || self.listed(up)) {
                 return true;
             }
-            // Only a function or a class or enumeration declared in one
-            // (a local class, a closure type) holds declarations that are
-            // not listed.
-            let local_holder = function_kind(uk)
+            let block = function_kind(uk)
                 || matches!(
                     uk,
-                    DeclKind::CXXRecord
-                        | DeclKind::Enum
-                        | DeclKind::CXXDeductionGuide
+                    DeclKind::CXXDeductionGuide
                         | DeclKind::RequiresExprBody
                         | DeclKind::Var
                         | DeclKind::Field
                 );
-            if !local_holder && !template_parm_kind(k) {
+            let local_class = matches!(uk, DeclKind::CXXRecord | DeclKind::Enum) && !self.listed(up);
+            if !block && !local_class {
                 return false;
             }
             d = up;
         }
         false
+    }
+
+    /// How many steps a walk up a chain of contexts or origins may take: a
+    /// chain longer than the arena has a cycle, which Kiln's AST does not
+    /// make. No answer of the subject is cut short by it on a well-formed
+    /// AST (landed decision 18).
+    pub(super) fn chain_bound(&self) -> usize {
+        self.ast.decls.len() + 2
+    }
+
+    /// Implicit, or made by instantiation: never written, never walked.
+    pub(super) fn instantiated_or_implicit(&self, d: DeclId) -> bool {
+        self.ast.decls.get(d).has(DeclFlags::IMPLICIT) || self.instantiated(d)
     }
 
     /// Made by instantiation or before an explicit specialisation.
@@ -228,7 +249,10 @@ impl<'u> KilnSubject<'u> {
     }
 
     /// Whether `d` is reached from the translation unit through member
-    /// lists. The set is built once, on first use.
+    /// lists, not descending into an implicit declaration (a builtin record
+    /// such as `__va_list_tag`) or an instantiation (an explicit
+    /// instantiation is in its context's member list; its members are
+    /// Kiln's). The set is built once, on first use.
     fn listed(&self, d: DeclId) -> bool {
         let bits = self.listed.get_or_init(|| self.build_listed());
         let i = d.index() as usize;
@@ -249,6 +273,9 @@ impl<'u> KilnSubject<'u> {
         while let Some(c) = stack.pop() {
             for m in ast.decls.members(c) {
                 let add = |x: DeclId, bits: &mut Vec<u64>, stack: &mut Vec<DeclId>| {
+                    if ast.decls.get(x).has(DeclFlags::IMPLICIT) || self.instantiated(x) {
+                        return;
+                    }
                     if set(x, bits) {
                         stack.push(x);
                         if let Some(p) = ast.template_info(x).and_then(|t| t.pattern)
@@ -336,6 +363,12 @@ impl<'u> KilnSubject<'u> {
 
     /// Kind bits 8 to 13 of entity `e` (§3.4, §6.2 rule 3).
     pub(super) fn entity_kinds(&self, e: DeclId) -> u64 {
+        // A partial specialisation is a template ([temp.spec.partial]);
+        // Kiln makes it a `CXXRecord` or a `Var` with a partial
+        // specialisation link, never a `…PartialSpecialization` kind.
+        if self.ast.partial_spec_info(e).is_some() {
+            return wire::KIND_TEMPLATE;
+        }
         match self.kind(e) {
             DeclKind::TranslationUnit | DeclKind::Namespace => wire::KIND_NAMESPACE,
             DeclKind::CXXRecord
@@ -348,15 +381,12 @@ impl<'u> KilnSubject<'u> {
             | DeclKind::Field
             | DeclKind::IndirectField
             | DeclKind::VarTemplateSpecialization => wire::KIND_VARIABLE,
-            // A partial specialisation is a template ([temp.spec.partial]);
-            // a concept is not counted one (§6.2 rule 3).
+            // A concept is not counted a template (§6.2 rule 3).
             DeclKind::ClassTemplate
             | DeclKind::FunctionTemplate
             | DeclKind::VarTemplate
             | DeclKind::TypeAliasTemplate
-            | DeclKind::BuiltinTemplate
-            | DeclKind::ClassTemplatePartialSpecialization
-            | DeclKind::VarTemplatePartialSpecialization => wire::KIND_TEMPLATE,
+            | DeclKind::BuiltinTemplate => wire::KIND_TEMPLATE,
             DeclKind::ParmVar => wire::KIND_PARAMETER,
             _ => 0,
         }
@@ -381,13 +411,10 @@ impl<'u> KilnSubject<'u> {
                 Some(p) => self.is_definition(p),
                 None => false,
             },
-            DeclKind::Var
-            | DeclKind::VarTemplateSpecialization
-            | DeclKind::VarTemplatePartialSpecialization => self.is_var_definition(d),
-            DeclKind::CXXRecord
-            | DeclKind::ClassTemplateSpecialization
-            | DeclKind::ClassTemplatePartialSpecialization
-            | DeclKind::Enum => ast.definition(d) == Some(d),
+            DeclKind::Var | DeclKind::VarTemplateSpecialization => self.is_var_definition(d),
+            DeclKind::CXXRecord | DeclKind::ClassTemplateSpecialization | DeclKind::Enum => {
+                ast.definition(d) == Some(d)
+            }
             k if function_kind(k) => ast.definition(d) == Some(d),
             _ => false,
         }
@@ -437,7 +464,7 @@ impl<'u> KilnSubject<'u> {
     pub(super) fn scope_of(&self, d: DeclId) -> Option<DeclId> {
         let ast = self.ast;
         let mut c = ast.decls.get(d).ctx()?;
-        for _ in 0..LIMIT {
+        for _ in 0..self.chain_bound() {
             if !see_through(self.kind(c)) {
                 return Some(self.entity(c));
             }
@@ -520,7 +547,7 @@ impl<'u> KilnSubject<'u> {
     pub(super) fn origin_decl(&self, e: DeclId) -> DeclId {
         let ast = self.ast;
         let mut x = e;
-        for _ in 0..LIMIT {
+        for _ in 0..self.chain_bound() {
             if self.first_written(x).is_some() {
                 return x;
             }
@@ -550,7 +577,8 @@ impl<'u> KilnSubject<'u> {
 
     /// Whether the members of `d` are members of the scope around it for
     /// `lookup` (§6.1 rule 3): an inline or unnamed namespace, an unscoped
-    /// enumeration, an anonymous union.
+    /// enumeration, an anonymous union or anonymous struct (Kiln gives
+    /// both the enclosing class `IndirectField`s).
     pub(super) fn is_transparent(&self, d: DeclId) -> bool {
         let ast = self.ast;
         match self.kind(d) {
@@ -561,24 +589,30 @@ impl<'u> KilnSubject<'u> {
             DeclKind::Enum => {
                 ast.decls.enumeration(d).is_some_and(|x| x.flags & EnumData::SCOPED == 0)
             }
-            DeclKind::CXXRecord => self.is_anonymous_union(d),
+            DeclKind::CXXRecord => {
+                ast.decls.record(d).is_some_and(|r| r.defn.contains(DefinitionBits::ANONYMOUS))
+            }
             _ => false,
         }
     }
 
-    fn is_anonymous_union(&self, d: DeclId) -> bool {
-        self.ast
-            .decls
-            .record(d)
-            .is_some_and(|r| r.tag == TagKind::Union && r.defn.contains(DefinitionBits::ANONYMOUS))
+    /// An unnamed class (§7.1 rule 4: "declared in an unnamed class"); an
+    /// unnamed enumeration is not one (it is unscoped, so its enumerators
+    /// are named without it).
+    fn is_unnamed_class(&self, d: DeclId) -> bool {
+        self.kind(d) == DeclKind::CXXRecord && self.identifier_of(d).is_empty()
     }
 
-    /// An unnamed class or enumeration, or anything else with no
-    /// identifier that is not a namespace (§7.1 rule 4: "declared in an
-    /// unnamed class").
-    fn is_unnamed_class(&self, d: DeclId) -> bool {
-        matches!(self.kind(d), DeclKind::CXXRecord | DeclKind::Enum)
-            && self.identifier_of(d).is_empty()
+    /// Whether written declaration `d` is a friend declaration's: declared
+    /// in a class (its lexical context) as a member of a namespace (its
+    /// semantic context).
+    fn is_friend_declaration(&self, d: DeclId) -> bool {
+        let ast = self.ast;
+        let n = ast.decls.get(d);
+        ast.decls.lexical_ctx(d).is_some_and(|l| {
+            self.kind(l) == DeclKind::CXXRecord
+                && n.ctx().is_some_and(|c| c != l && !matches!(self.kind(c), DeclKind::CXXRecord))
+        })
     }
 
     /// §7.2 rule 2 and §7.1 rule 4: the identifiers from the outermost
@@ -601,13 +635,17 @@ impl<'u> KilnSubject<'u> {
             )
             || ast.spec_info(e).is_some()
             || ast.partial_spec_info(e).is_some()
-            || self.first_written(e).is_none();
+            || self.first_written(e).is_none()
+            // A hidden friend, or a class only a friend declaration
+            // declares, is not found by qualified lookup until a
+            // declaration at namespace scope exists ([namespace.memdef]/3).
+            || self.written_declarations(e).iter().all(|&d| self.is_friend_declaration(d));
         if not_nameable {
             return None;
         }
         let mut names = vec![id];
         let mut p = self.parent_decl(e)?;
-        for _ in 0..LIMIT {
+        for _ in 0..self.chain_bound() {
             let pk = self.kind(p);
             if pk == DeclKind::TranslationUnit {
                 names.reverse();
@@ -624,8 +662,9 @@ impl<'u> KilnSubject<'u> {
                 return None;
             }
             let pid = self.identifier_of(p);
-            match (pid.is_empty(), pk == DeclKind::Namespace) {
-                // An unnamed namespace is skipped.
+            match (pid.is_empty(), matches!(pk, DeclKind::Namespace | DeclKind::Enum)) {
+                // An unnamed namespace is skipped, and so is an unnamed
+                // enumeration (always unscoped).
                 (true, true) => {}
                 (true, false) => return None,
                 (false, _) => names.push(pid),

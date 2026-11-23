@@ -83,11 +83,27 @@ impl<'u> KilnSubject<'u> {
         )
     }
 
-    /// The subject over an AST and its source manager, with `path` the
-    /// subject path of each buffer that is a file of the subject (asked
-    /// once per buffer, here): for a unit that is not a
-    /// [`slip_kiln::Unit`] (a snippet's, `slip_kiln::snippet`).
-    pub fn from_parts(
+    /// The subject over a snippet's unit (`slip_kiln::snippet`, for tests):
+    /// a snippet's path is its subject path; a buffer the front end made
+    /// itself is no file of the subject.
+    pub fn from_snippet(
+        p: &slip_kiln::snippet::Parsed<'u>,
+        owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
+    ) -> KilnSubject<'u> {
+        KilnSubject::from_parts(
+            p.ast,
+            p.sm,
+            |id| p.path(id).map(|x| Cow::Owned(x.as_bytes().to_vec())),
+            owned,
+        )
+    }
+
+    /// The subject over an AST, the source manager **of the same unit**,
+    /// and `path`, the subject path of each of that unit's buffers that is
+    /// a file of the subject (asked once per buffer, here). Private so that
+    /// no caller can join the parts of two units: [`Self::new`] and
+    /// [`Self::from_snippet`] take them from one.
+    fn from_parts(
         ast: &'u Ast,
         sm: &'u SourceManager,
         path: impl Fn(FileId) -> Option<Cow<'u, [u8]>>,

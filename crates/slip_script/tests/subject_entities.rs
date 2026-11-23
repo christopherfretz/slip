@@ -7,7 +7,6 @@
 //! tests say which entity they mean by the place of its first
 //! declaration (`file:line`).
 
-use std::borrow::Cow;
 use std::time::Instant;
 
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
@@ -32,12 +31,7 @@ fn with<R>(files: &[(&str, &str)], f: impl FnOnce(&Parsed<'_>, &KilnSubject<'_>)
     parse(&snippet, |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let owned = |path: &[u8]| path.starts_with(b"own/");
-        let s = KilnSubject::from_parts(
-            p.ast,
-            p.sm,
-            |id| p.path(id).map(|x| Cow::Owned(x.as_bytes().to_vec())),
-            &owned,
-        );
+        let s = KilnSubject::from_snippet(p, &owned);
         f(p, &s)
     })
     .expect("the snippet parses")
@@ -851,6 +845,347 @@ fn subject_is_sync() {
 }
 
 // ---------------------------------------------------------------------------
+// The review of WP-083: each finding's regression test.
+
+/// The entity of the declaration of kind `kind` named `name` in context
+/// `ctx` (by its context's name and spec kind), for the tests below.
+fn member_of(
+    p: &Parsed<'_>,
+    s: &KilnSubject<'_>,
+    kind: DeclKind,
+    name: &str,
+    ctx: DeclId,
+) -> Entity {
+    let ds = find(p, kind, name, |ast, d| ast.decls.get(d).ctx() == Some(ctx));
+    assert_eq!(ds.len(), 1, "{name} in {ctx:?}: {ds:?}");
+    s.entity_number(ds[0])
+}
+
+const XI: &str = "template <class T> struct C { void m() {} int d; };
+template struct C<long>;
+extern template struct C<short>;
+template <class T> void ft(T) {}
+template void ft<int>(int);
+void use(C<short>& c) { c.m(); }
+";
+
+/// F1, §5.5, landed decision 2: an explicit instantiation (a definition,
+/// `extern template`) and its members are no written declarations; their
+/// origins are the template and its members.
+#[test]
+fn review_f1_explicit_instantiations_are_not_written() {
+    with(&[("main.cpp", XI)], |p, s| {
+        let c = one(s, "C");
+        let cm = one(s, "C::m");
+        let cd = one(s, "C::d");
+        for kind in [SpecKind::ExplicitInstantiationDefinition, SpecKind::ExplicitInstantiationDeclaration]
+        {
+            let ci = find(p, DeclKind::CXXRecord, "C", |ast, d| spec_kind(ast, d) == Some(kind));
+            assert!(!ci.is_empty(), "{kind:?}");
+            for &d in &ci {
+                assert!(!s.is_live(Value::Declaration(Declaration(d.index()))), "{kind:?}");
+            }
+            let e = s.entity_number(ci[0]);
+            assert_eq!(s.declarations(e), Ok(vec![]), "{kind:?}");
+            assert_eq!(s.origin(e), c, "{kind:?}");
+            let ctx = DeclId::new(e.0);
+            let m = member_of(p, s, DeclKind::CXXMethod, "m", ctx);
+            assert_eq!(s.declarations(m), Ok(vec![]), "{kind:?} m");
+            assert_eq!(s.origin(m), cm, "{kind:?}: what references_to(C::m) matches by");
+            let d = member_of(p, s, DeclKind::Field, "d", ctx);
+            assert_eq!(s.declarations(d), Ok(vec![]));
+            assert_eq!(s.origin(d), cd);
+        }
+        let fi = find(p, DeclKind::Function, "ft", |ast, d| {
+            spec_kind(ast, d) == Some(SpecKind::ExplicitInstantiationDefinition)
+        });
+        assert!(!fi.is_empty());
+        let e = s.entity_number(fi[0]);
+        assert_eq!(s.declarations(e), Ok(vec![]));
+        assert_eq!(s.origin(e), one(s, "ft"));
+        assert_eq!(look(s, "C"), [c]);
+        assert_eq!(look(s, "ft").len(), 1);
+    });
+}
+
+const PS: &str = "namespace o {
+template <class T> struct C { int pm0; };
+template <class T> struct C<T*> { int pm; };
+template <class T> T vt = T();
+template <class T> T* vt<T*> = nullptr;
+}
+";
+
+/// F2, §6.1 rules 4 and 5, landed decision 8: a partial specialisation is
+/// not found, nor its members, and it is a template.
+#[test]
+fn review_f2_partial_specialisations() {
+    with(&[("main.cpp", PS)], |p, s| {
+        let c = look(s, "o::C");
+        assert_eq!(at(p, s, &c), ["main.cpp:2"]);
+        assert_eq!(found_at(p, s, "o::vt"), ["main.cpp:4"]);
+        assert!(look(s, "o::C::pm").is_empty());
+        assert_eq!(found_at(p, s, "o::C::pm0"), ["main.cpp:2"]);
+        let pc = find(p, DeclKind::CXXRecord, "C", |ast, d| ast.partial_spec_info(d).is_some());
+        let pv = find(p, DeclKind::Var, "vt", |ast, d| ast.partial_spec_info(d).is_some());
+        assert_eq!((pc.len(), pv.len()), (1, 1), "Kiln's kinds for partial specialisations");
+        for d in [pc[0], pv[0]] {
+            let e = s.entity_number(d);
+            assert_eq!(kinds(s, e), wire::KIND_ENTITY | wire::KIND_TEMPLATE);
+            assert_eq!(s.qualified(e), None);
+        }
+    });
+}
+
+/// F3, §6.4 rules 2 and 3: the declaration Kiln makes by deduction for an
+/// explicit specialisation of a member template is not written; the
+/// entity's declarations are the one written, and its parameters that
+/// one's.
+#[test]
+fn review_f3_member_template_explicit_specialisation() {
+    let src = "struct A { template <class T> void mt(T); };
+template <> void A::mt<int>(int x) {}
+";
+    with(&[("main.cpp", src)], |p, s| {
+        let ds = find(p, DeclKind::CXXMethod, "mt", |ast, d| {
+            spec_kind(ast, d) == Some(SpecKind::ExplicitSpecialization)
+        });
+        assert!(!ds.is_empty());
+        let e = s.entity_number(ds[0]);
+        assert_eq!(decls_at(p, s, e), ["main.cpp:2"]);
+        let ps = s.parameters(Value::Entity(e)).unwrap();
+        assert_eq!(ps.iter().map(|&x| ident(s, Value::Entity(x))).collect::<Vec<_>>(), ["x"]);
+        assert_eq!(s.origin(e), e, "an explicit specialisation is written");
+        assert_eq!(found_at(p, s, "A::mt"), ["main.cpp:1"]);
+    });
+}
+
+/// F4, §1: a forced include (`-include x.h`) is read before the main
+/// file, so its declarations come first in unit order. Through a real
+/// parse of a tree on disk.
+#[test]
+fn review_f4_forced_include_orders_first() {
+    use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase};
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp083-forced-include");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.cpp"), "namespace q { void h(int); }\n").unwrap();
+    std::fs::write(dir.join("x.h"), "namespace q { void h(char); }\n").unwrap();
+    let argv = ["clang++", "-std=c++20", "-include", "x.h", "-c", "main.cpp"];
+    let observer = Observer {
+        id: Digest([3; 32]),
+        command: Command {
+            directory: dir.to_str().unwrap().as_bytes().to_vec(),
+            argv: argv.iter().map(|a| a.as_bytes().to_vec()).collect(),
+            env: Vec::new(),
+        },
+        language: Language::Cxx,
+        main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
+        cost_hint: 1,
+        origins: vec![Origin { configuration: 0, entry: 0 }],
+    };
+    let order = slip_kiln::parse_observer_with(
+        &observer,
+        Phase::Map,
+        0,
+        slip_kiln::ParseOptions::default(),
+        |unit| {
+            let owned = |_: &[u8]| true;
+            let s = KilnSubject::new(unit, &owned);
+            let hs = s.lookup(false, &[b"q", b"h"]);
+            hs.iter()
+                .map(|&e| {
+                    let d = s.declarations(e).unwrap()[0];
+                    let text = s.display(Value::Declaration(d));
+                    if text.contains("x.h") { "x.h" } else { "main.cpp" }
+                })
+                .collect::<Vec<_>>()
+        },
+    )
+    .expect("the tree parses")
+    .1
+    .expect("the closure ran");
+    assert_eq!(order, ["x.h", "main.cpp"]);
+}
+
+/// F5, §7.1 rule 4, §7.2 rule 2: no qualified spelling for a hidden
+/// friend or a class only a friend declares; an unnamed enumeration is
+/// left out of a spelling.
+#[test]
+fn review_f5_qualified() {
+    let src = "namespace n {
+struct A { friend void hf(A); friend void decl_too(A); friend struct FS; };
+void decl_too(A);
+}
+namespace e {
+enum { Anon1 };
+struct H { enum { HA }; };
+}
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let q = |name: &str| {
+            s.qualified(one(s, name)).map(|v| {
+                v.into_iter().map(|x| String::from_utf8(x).unwrap()).collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(q("n::hf"), None, "a hidden friend");
+        assert_eq!(q("n::FS"), None, "a class only a friend declaration declares");
+        assert_eq!(q("n::decl_too").unwrap(), ["n", "decl_too"], "declared at namespace scope too");
+        assert_eq!(q("e::Anon1").unwrap(), ["e", "Anon1"]);
+        assert_eq!(q("e::H::HA").unwrap(), ["e", "H", "HA"]);
+    });
+}
+
+/// F6, §6.1 rule 3 with [namespace.memdef]/3: the friends of a class
+/// defined outside its namespace's body, and of a nested class defined
+/// so, are members of the namespace.
+#[test]
+fn review_f6_friends_of_classes_defined_elsewhere() {
+    let src = "namespace n { struct Out; struct Nest { struct In; }; }
+struct n::Out { friend void outf(Out); };
+struct n::Nest::In { friend void inf(In); };
+namespace t2 { struct O { struct I { friend void nf(I); }; }; }
+";
+    with(&[("main.cpp", src)], |p, s| {
+        assert_eq!(found_at(p, s, "n::outf"), ["main.cpp:2"]);
+        assert_eq!(found_at(p, s, "n::inf"), ["main.cpp:3"]);
+        assert!(look(s, "outf").is_empty() && look(s, "n::Out::outf").is_empty());
+        assert_eq!(s.parent(one(s, "n::inf")), Some(one(s, "n")));
+        assert_eq!(found_at(p, s, "t2::nf"), ["main.cpp:4"], "a friend of a nested class (M2)");
+    });
+}
+
+/// F7, §6.1 rule 3 as amended: an anonymous struct is transparent like an
+/// anonymous union, and a typedef name for linkage purposes names its
+/// unnamed class as a scope; no other typedef does.
+#[test]
+fn review_f7_anonymous_struct_and_linkage_typedef() {
+    let src = "namespace e {
+struct H {
+  union { int hu; struct { int hs; }; };
+  struct { int as2; };
+};
+typedef struct { int tdm; } TD;
+typedef H TI;
+}
+";
+    with(&[("main.cpp", src)], |p, s| {
+        assert_eq!(found_at(p, s, "e::H::hu"), ["main.cpp:3"]);
+        assert_eq!(found_at(p, s, "e::H::hs"), ["main.cpp:3"]);
+        assert_eq!(found_at(p, s, "e::H::as2"), ["main.cpp:4"]);
+        let td = one(s, "e::TD");
+        assert!(is(s, td, wire::KIND_TYPE));
+        assert_eq!(ident(s, Value::Entity(td)), "TD", "still the typedef");
+        assert_eq!(found_at(p, s, "e::TD::tdm"), ["main.cpp:6"]);
+        assert!(look(s, "e::TI::hu").is_empty(), "another typedef is not followed");
+    });
+}
+
+/// F8: the members of an implicit builtin record are not written.
+#[test]
+fn review_f8_builtin_record_members() {
+    let src = "void f(int n, ...) { __builtin_va_list ap; (void)ap; }\n";
+    with(&[("main.cpp", src)], |p, s| {
+        let rec = find(p, DeclKind::CXXRecord, "__va_list_tag", |_, _| true);
+        assert!(!rec.is_empty(), "the target declares __va_list_tag");
+        let fields: Vec<DeclId> = p
+            .ast
+            .decls
+            .ids()
+            .filter(|&d| p.ast.decls.get(d).ctx().is_some_and(|c| rec.contains(&c)))
+            .collect();
+        assert!(!fields.is_empty());
+        for d in fields {
+            assert!(!s.is_live(Value::Declaration(Declaration(d.index()))), "{d:?}");
+            assert_eq!(s.declarations(s.entity_number(d)), Ok(vec![]));
+        }
+    });
+}
+
+/// The surviving mutants of the review: M1 (transparency at depth), M3 (a
+/// name in a scope and in its inline namespace), M4 and M5 (a class or
+/// class template defined after a forward declaration).
+#[test]
+fn review_lookup_scopes() {
+    let src = "namespace t1 { inline namespace a { namespace { inline namespace b { int deep; } } } }
+namespace t3 { void f(int); inline namespace v { void f(char); } }
+template <class T> struct FT;
+template <class T> struct FT { int m4; };
+struct Fw;
+struct Fw { int m5; };
+";
+    with(&[("main.cpp", src)], |p, s| {
+        assert_eq!(found_at(p, s, "t1::deep"), ["main.cpp:1"], "M1");
+        assert_eq!(found_at(p, s, "t1::a::deep"), ["main.cpp:1"]);
+        assert_eq!(found_at(p, s, "t3::f"), ["main.cpp:2", "main.cpp:2"], "M3");
+        assert_eq!(found_at(p, s, "FT::m4"), ["main.cpp:4"], "M4");
+        assert_eq!(found_at(p, s, "Fw::m5"), ["main.cpp:6"], "M5");
+    });
+}
+
+/// The surviving mutants of the review: M8 (a global template's
+/// parameter is written), M9 (block-scope declarations and the members of
+/// a local class are written), M11 (an indirect field is a variable),
+/// M20 (a member specialisation is not found under its template).
+#[test]
+fn review_written_and_kinds() {
+    let src = "template <class T> void g8(T);
+void lf() { int lx; struct LC { int lcm; }; (void)lx; }
+struct U { union { int u1; }; };
+template <class T> struct MS { void cm(); };
+template <> void MS<int>::cm() {}
+";
+    with(&[("main.cpp", src)], |p, s| {
+        let t = find(p, DeclKind::TemplateTypeParm, "T", |ast, d| {
+            ast.decls.get(d).ctx().is_some_and(|c| ast.decls.get(c).kind() == DeclKind::TranslationUnit)
+                && !ast.decls.get(d).has(DeclFlags::IMPLICIT)
+        });
+        assert!(!t.is_empty());
+        let t = s.entity_number(t[0]);
+        assert_eq!(decls_at(p, s, t), ["main.cpp:1"], "M8");
+        for (kind, name, line) in [
+            (DeclKind::Var, "lx", "main.cpp:2"),
+            (DeclKind::CXXRecord, "LC", "main.cpp:2"),
+            (DeclKind::Field, "lcm", "main.cpp:2"),
+        ] {
+            let d = find(p, kind, name, |_, _| true);
+            assert_eq!(d.len(), 1, "{name}");
+            assert_eq!(decls_at(p, s, s.entity_number(d[0])), [line], "M9: {name}");
+        }
+        let ind = find(p, DeclKind::IndirectField, "u1", |_, _| true);
+        assert!(!ind.is_empty());
+        assert_eq!(kinds(s, s.entity_number(ind[0])), wire::KIND_ENTITY | wire::KIND_VARIABLE, "M11");
+        assert_eq!(found_at(p, s, "MS::cm"), ["main.cpp:4"], "M20");
+    });
+}
+
+/// The surviving mutant M10: `export` is seen through.
+#[test]
+fn review_export_is_seen_through() {
+    let src = "export module m;\nexport namespace xm { int xv; }\nexport { int xw; }\n";
+    with(&[("main.cpp", src)], |p, s| {
+        assert_eq!(found_at(p, s, "xm::xv"), ["main.cpp:2"]);
+        assert_eq!(found_at(p, s, "xw"), ["main.cpp:3"]);
+        assert_eq!(s.parent(one(s, "xw")), Some(one(s, "::")), "M10");
+    });
+}
+
+/// The surviving mutant M17: an invalid location sorts after every valid
+/// one.
+#[test]
+fn review_unit_order_invalid_last() {
+    use slip_kiln::kiln::source::Loc;
+    use slip_script::kiln_subject::unit_order;
+    use std::cmp::Ordering;
+    with(&[("main.cpp", "int a;\n")], |p, s| {
+        let a = one(s, "a");
+        let loc = p.ast.decls.get(DeclId::new(a.0)).loc();
+        assert_eq!(unit_order(p.sm, loc, Loc::INVALID), Ordering::Less);
+        assert_eq!(unit_order(p.sm, Loc::INVALID, loc), Ordering::Greater);
+        assert_eq!(unit_order(p.sm, Loc::INVALID, Loc::INVALID), Ordering::Equal);
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Measurement (`docs/wp/WP-083.md`, "Done when"): not part of the gate.
 
 /// `lookup` of an absent name, after the first call, on a unit given by
@@ -899,7 +1234,8 @@ fn measure_lookup_absent() {
                     assert_eq!(s.lookup(true, n), first);
                 }
                 let warm = t1.elapsed() / reps;
-                lines.push(format!("{n:?}: first {cold:?}, then {warm:?} per call"));
+                let shown: Vec<String> = n.iter().map(|c| String::from_utf8_lossy(c).into_owned()).collect();
+            lines.push(format!("{}: first {cold:?}, then {warm:?} per call", shown.join("::")));
             }
             let t2 = Instant::now();
             let fs = s.lookup(true, &[b"llvm", b"errs"]);

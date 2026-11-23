@@ -10,17 +10,24 @@
 //! of an included file stand where its `#include` was. A macro location
 //! is ordered at its outermost invocation (`expansion_loc`), and two
 //! locations of the same invocation by their raw value (Kiln allocates an
-//! expansion's locations in the order of its tokens). Two root buffers
-//! (the main file, the predefines, a virtual buffer) are ordered by their
-//! `FileId`, which is creation order: a declaration in the predefines is
-//! implicit, so no answer of the subject depends on that rank.
+//! expansion's locations in the order of its tokens). A unit has two root
+//! buffers: the main file and the predefines buffer, `<built-in>`, which
+//! Kiln creates after the main file but reads first (it pushes it on top
+//! of the main file, `kiln_pp/src/preprocessor.rs` `enter_main_file`).
+//! A forced include (`-include x.h`) is an `#include` line of that buffer,
+//! so the predefines root is ordered before every other; other roots (a
+//! buffer Kiln adds for itself) by `FileId`, which is creation order.
 
 use std::cmp::Ordering;
 
 use slip_kiln::kiln::source::{FileId, Loc, SourceManager};
 
-/// How many `#include` levels are followed (a unit is far shallower).
-const DEPTH: usize = 4096;
+/// How many `#include` levels are followed: past the bound a chain has a
+/// cycle, which Kiln's include stack does not make.
+const DEPTH: usize = 1 << 20;
+
+/// The name of the predefines buffer (`kiln_pp/src/predef.rs`).
+const PREDEFINES: &str = "<built-in>";
 
 /// The order of `a` and `b` in the unit's token sequence after phase 4.
 /// An invalid location sorts after every valid one.
@@ -53,5 +60,6 @@ fn chain(sm: &SourceManager, loc: Loc) -> Option<(u64, Vec<u32>)> {
     }
     offsets.reverse();
     let root = root?;
-    Some((root.index() as u64, offsets))
+    let rank = if sm.file_name(root) == PREDEFINES { 0 } else { root.index() as u64 + 1 };
+    Some((rank, offsets))
 }
