@@ -47,7 +47,9 @@ use crate::jobserver::{self, Token};
 use crate::process::{self, Child, Io, Killed, Limits, Sampler};
 use crate::signals;
 use crate::store::{Store, StoreError};
-use crate::worker::{FRAME_MAX, Job, PROTOCOL, ToCoordinator, ToWorker, read_frame, write_frame};
+use crate::worker::{
+    FRAME_MAX, Job, PROTOCOL, Post, ToCoordinator, ToWorker, read_frame, write_frame,
+};
 
 /// `--observer-timeout` by default (§5.4).
 pub const DEFAULT_OBSERVER_TIMEOUT: Duration = Duration::from_hours(1);
@@ -148,6 +150,10 @@ pub struct ObserverOutcome {
 pub enum PoolError {
     Store(StoreError),
     Io(io::Error),
+    /// [`run_with`] was given a phase and a [`JobExtra`] that the task
+    /// refuses (§5.2): a mistake of the caller, not bad input. Nothing was
+    /// started. The text says which combination.
+    Refused(&'static str),
     /// Interrupted by `SIGINT` or `SIGTERM` (§7). The run record with the
     /// remaining jobs `cancelled` was published (best effort).
     Cancelled,
@@ -158,6 +164,7 @@ impl fmt::Display for PoolError {
         match self {
             PoolError::Store(e) => write!(f, "{e}"),
             PoolError::Io(e) => write!(f, "{e}"),
+            PoolError::Refused(what) => f.write_str(what),
             PoolError::Cancelled => write!(f, "interrupted"),
         }
     }
@@ -168,7 +175,7 @@ impl std::error::Error for PoolError {
         match self {
             PoolError::Store(e) => Some(e),
             PoolError::Io(e) => Some(e),
-            PoolError::Cancelled => None,
+            PoolError::Refused(_) | PoolError::Cancelled => None,
         }
     }
 }
@@ -387,6 +394,7 @@ struct Coordinator<'a> {
     observers: &'a [Observer],
     phase: Phase,
     round: u64,
+    extra: &'a JobExtra,
     worker: &'a WorkerCommand,
     options: &'a Options,
     tokens: &'a jobserver::Pool,
@@ -412,13 +420,18 @@ struct Coordinator<'a> {
     peak_rss_sum: u64,
 }
 
-/// Runs `phase`, round `round`, of plan `plan_id` over `observers` (in plan
-/// order) and publishes the run record (§5.3, §5.4, §6, §7). Every observer
-/// ends with a shard in the store, unless the run is cancelled. A
-/// `PoolError::Store` or `Io` is an error of the store's file system (a log
-/// or a coordinator-written shard that cannot be written); the workers are
-/// killed and a run record with the remaining jobs `cancelled` is
-/// published (best effort) before it is returned.
+/// The two fields of protocol 2 (§5.2), the same for every job of a run:
+/// what [`run_with`] puts in each [`Job`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JobExtra {
+    /// Only for phase `map`: the content id of a `TRFM` container in the store.
+    pub transform: Option<Digest>,
+    /// Required for phase `verify`, refused for `map`.
+    pub post: Option<Post>,
+}
+
+/// [`run_with`] with neither field of [`JobExtra`]: a map phase of
+/// `spec/model.md` §8.5. (Phase `verify` needs a `post` and is refused.)
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &Store,
@@ -431,6 +444,50 @@ pub fn run(
     tokens: &jobserver::Pool,
     sampler: &dyn Sampler,
 ) -> Result<Summary, PoolError> {
+    let extra = JobExtra::default();
+    run_with(store, plan_id, observers, phase, round, &extra, worker, options, tokens, sampler)
+}
+
+/// What the task would refuse in every job of the run (§5.2): a map job
+/// with a `post`, a verify job with a `transform`, a verify job without a
+/// `post`.
+fn refused_extra(phase: Phase, extra: &JobExtra) -> Option<&'static str> {
+    match phase {
+        Phase::Map if extra.post.is_some() => Some("a map phase whose jobs carry a post"),
+        Phase::Verify if extra.transform.is_some() => {
+            Some("a verify phase whose jobs carry a transform")
+        }
+        Phase::Verify if extra.post.is_none() => Some("a verify phase whose jobs carry no post"),
+        _ => None,
+    }
+}
+
+/// Runs `phase`, round `round`, of plan `plan_id` over `observers` (in plan
+/// order), every job carrying `extra`, and publishes the run record (§5.3,
+/// §5.4, §6, §7). A combination of `phase` and `extra` that the task
+/// refuses (§5.2) is [`PoolError::Refused`] before anything is started or
+/// read. Every observer
+/// ends with a shard in the store, unless the run is cancelled. A
+/// `PoolError::Store` or `Io` is an error of the store's file system (a log
+/// or a coordinator-written shard that cannot be written); the workers are
+/// killed and a run record with the remaining jobs `cancelled` is
+/// published (best effort) before it is returned.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with(
+    store: &Store,
+    plan_id: &Digest,
+    observers: &[Observer],
+    phase: Phase,
+    round: u64,
+    extra: &JobExtra,
+    worker: &WorkerCommand,
+    options: &Options,
+    tokens: &jobserver::Pool,
+    sampler: &dyn Sampler,
+) -> Result<Summary, PoolError> {
+    if let Some(what) = refused_extra(phase, extra) {
+        return Err(PoolError::Refused(what));
+    }
     let t0 = Instant::now();
     let started_unix_ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -444,6 +501,7 @@ pub fn run(
         observers,
         phase,
         round,
+        extra,
         worker,
         options,
         tokens,
@@ -600,6 +658,8 @@ impl Coordinator<'_> {
             phase: self.phase,
             round: self.round,
             observer: observer.clone(),
+            transform: self.extra.transform,
+            post: self.extra.post.clone(),
         };
         let frame = ToWorker::Job(Box::new(job)).encode();
         let now = Instant::now();

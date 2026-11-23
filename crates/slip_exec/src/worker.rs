@@ -19,8 +19,9 @@ use slip_model::{Digest, Observer, Phase, Shard};
 
 use crate::store::{Access, Store};
 
-/// The protocol version sent in `Ready`.
-pub const PROTOCOL: u64 = 1;
+/// The protocol version sent in `Ready`: 2 since M2, which added
+/// [`Job::transform`] and [`Job::post`] (§5.2 "Protocol 2").
+pub const PROTOCOL: u64 = 2;
 
 /// The largest frame either side accepts (64 MiB).
 pub const FRAME_MAX: usize = 64 << 20;
@@ -35,6 +36,32 @@ pub struct Job {
     pub phase: Phase,
     pub round: u64,
     pub observer: Observer,
+    /// A map job that runs a transform: the content id of a `TRFM`
+    /// container in the job's store (`spec/edits.md` §8.1).
+    pub transform: Option<Digest>,
+    /// Every verify job: the round's parameters (§5.2).
+    pub post: Option<Post>,
+}
+
+/// A verify job's parameters (§5.2, `spec/verify.md` §5.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Post {
+    /// The round of the map shards the job compares against.
+    pub pre: u64,
+    /// Content id of a `DECL` container in the job's store.
+    pub declared: Digest,
+    pub image: PostImage,
+}
+
+/// The post-image of a verify job (`spec/verify.md` §5.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostImage {
+    /// Tag 0: root maps `(subject, post)`, strictly ascending by `subject`;
+    /// empty is the identity.
+    Tree(Vec<(Vec<u8>, Vec<u8>)>),
+    /// Tag 1: the content id of an `OVLY` container in the job's store
+    /// (`spec/edits.md` §7.1).
+    Overlay(Digest),
 }
 
 impl Job {
@@ -85,6 +112,23 @@ impl ToWorker {
                 encode_phase(job.phase, &mut e);
                 e.uv(job.round);
                 encode_observer(&job.observer, &mut e);
+                match &job.transform {
+                    None => {
+                        e.u8(0);
+                    }
+                    Some(t) => {
+                        e.u8(1).digest(t);
+                    }
+                }
+                match &job.post {
+                    None => {
+                        e.u8(0);
+                    }
+                    Some(post) => {
+                        e.u8(1);
+                        encode_post(post, &mut e);
+                    }
+                }
             }
             ToWorker::Exit => {
                 e.uv(2);
@@ -104,13 +148,86 @@ impl ToWorker {
                 let phase = decode_phase(&mut d)?;
                 let round = d.uv()?;
                 let observer = decode_observer(&mut d)?;
-                ToWorker::Job(Box::new(Job { store, plan, phase, round, observer }))
+                let transform = decode_opt(&mut d, Decoder::digest)?;
+                let post = decode_opt(&mut d, decode_post)?;
+                ToWorker::Job(Box::new(Job {
+                    store,
+                    plan,
+                    phase,
+                    round,
+                    observer,
+                    transform,
+                    post,
+                }))
             }
             2 => ToWorker::Exit,
             _ => return Err(unknown_tag(at)),
         };
         d.finish()?;
         Ok(msg)
+    }
+}
+
+/// `Post` (§5.2).
+fn encode_post(post: &Post, e: &mut Encoder) {
+    e.uv(post.pre).digest(&post.declared);
+    match &post.image {
+        PostImage::Tree(maps) => {
+            e.uv(0).count(maps.len());
+            for (subject, post) in maps {
+                e.bytes(subject).bytes(post);
+            }
+        }
+        PostImage::Overlay(id) => {
+            e.uv(1).digest(id);
+        }
+    }
+}
+
+/// `Post` (§5.2, §5.5): a `PostImage` tag other than 0 and 1 is
+/// `Malformed` at the tag; root maps not strictly ascending by `subject`
+/// are `Malformed` at the first out of order (`spec/model.md` §2: a sorted
+/// list in another order).
+fn decode_post(d: &mut Decoder<'_>) -> Result<Post, wire::Error> {
+    let pre = d.uv()?;
+    let declared = d.digest()?;
+    let at = d.offset();
+    let image = match d.uv()? {
+        0 => {
+            let n = d.count()?;
+            let mut maps: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(n.min(1 << 10));
+            for _ in 0..n {
+                let map_at = d.offset();
+                let subject = d.bytes()?.to_vec();
+                let post = d.bytes()?.to_vec();
+                if maps.last().is_some_and(|(last, _)| *last >= subject) {
+                    return Err(wire::Error::new(
+                        ErrorKind::Malformed,
+                        map_at,
+                        "root maps not strictly ascending by subject",
+                    ));
+                }
+                maps.push((subject, post));
+            }
+            PostImage::Tree(maps)
+        }
+        1 => PostImage::Overlay(d.digest()?),
+        _ => return Err(wire::Error::new(ErrorKind::Malformed, at, "unknown post image tag")),
+    };
+    Ok(Post { pre, declared, image })
+}
+
+/// `opt<T>` (`spec/model.md` §2): `Malformed` at the tag byte unless it is
+/// 0 or 1.
+fn decode_opt<'a, T>(
+    d: &mut Decoder<'a>,
+    value: impl FnOnce(&mut Decoder<'a>) -> Result<T, wire::Error>,
+) -> Result<Option<T>, wire::Error> {
+    let at = d.offset();
+    match d.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(value(d)?)),
+        _ => Err(wire::Error::new(ErrorKind::Malformed, at, "opt tag is not 0 or 1")),
     }
 }
 
