@@ -16,7 +16,7 @@ use slip_script::fake::{
     FakeCall, FakeDeclaration, FakeEntity, FakeExpression, FakeOut, FakeReference, FakeSubject,
 };
 use slip_script::host::{Host, Limits};
-use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity};
+use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity, Tiers};
 use slip_script::subject::{
     Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
 };
@@ -518,7 +518,7 @@ fn s7_1_each_piece_kind() {
             ]
         )]
     );
-    assert_eq!(out.edits[0].tier, 0);
+    assert_eq!(out.edits[0].tiers, Tiers::ZERO);
     assert_eq!(*out.edits[0].place.file, w.fake.file_ref(w.t));
     assert!(out.is_canonical());
 }
@@ -620,8 +620,48 @@ fn s7_1_rule_2_copy_refusals() {
     assert_eq!(run.status(wire::OP_CODE_COPY, &[file + 1, span], &[]), ih);
     assert_eq!(run.status(wire::OP_CODE_COPY, &[file, 1 << 32 | 1 << 20], &[]), ih);
     assert_eq!(run.status(wire::OP_CODE_COPY, &[file, 5 << 32 | 4], &[]), ih, "lo > hi");
-    // An empty range is a range: its copy is a piece.
-    assert_ne!(run.ok(wire::OP_CODE_COPY, &[file, 4 << 32 | 4], &[]), 0);
+    // An empty range is a range: its copy is not refused (and is the empty
+    // code, `s7_1_rule_2_a_copy_of_an_empty_range_is_the_empty_code`).
+    assert_eq!(run.ok(wire::OP_CODE_COPY, &[file, 4 << 32 | 4], &[]), 0);
+}
+
+/// §7.1 rule 2: the copy of an empty range is the empty code, the value
+/// `code()` gives: the bytes of an empty range are none. `cat` with it adds
+/// no piece, `replace` with it is a deletion (§7.3 rule 1), and the output
+/// holds no copy piece with `lo == hi` (`spec/edits.md` §4.2). It counts
+/// as one operation and holds nothing.
+#[test]
+fn s7_1_rule_2_a_copy_of_an_empty_range_is_the_empty_code() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let [file, sp] = run.extent(Value::Reference(w.r1));
+    let (lo, hi) = (sp >> 32, sp & 0xffff_ffff);
+    let empty_at = |at: u64| [file, at << 32 | at];
+    let starts = run.copy(empty_at(lo));
+    let ends = run.copy(empty_at(hi));
+    assert_eq!((starts, ends), (0, 0), "the empty code: the null handle");
+    // `cat` with it: no piece.
+    let x = run.text("x");
+    let cat = run.cat(&[starts, x, ends]);
+    let target = run.extent(Value::Expression(w.call1));
+    run.replace(target, cat, 0, "");
+    // `replace` with it: a deletion.
+    let arg = run.extent(Value::Expression(w.arg1));
+    run.replace(arg, starts, 0, "");
+    let out = run.finish();
+    let c = range(&w, "lib::foo(1, 2)", 0);
+    let a = range(&w, "1", 0);
+    assert_eq!(edits(&out), vec![(c.lo, c.hi, vec![lit("x")]), (a.lo, a.hi, vec![])]);
+    assert!(no_empty_copy(&out));
+    assert_eq!(counter(&out, "api.op.code_copy"), Some(2), "each counts as one operation");
+}
+
+/// `spec/edits.md` §4.2: a copy piece's place is not empty.
+fn no_empty_copy(out: &RunOutput) -> bool {
+    out.edits
+        .iter()
+        .flat_map(|e| &e.pieces)
+        .all(|p| !matches!(p, Piece::Copy(at) if at.lo == at.hi))
 }
 
 /// §7.1 rule 4: `spell` of a non-entity is `wrong_kind`; of a
@@ -734,7 +774,7 @@ fn s7_2_rule_1_only_one_spelled_piece_at_an_extent() {
 
 /// §7.2 rule 1, last sentence: two references with one extent (two uses
 /// of a macro argument, tier 1): the rule holds for both, and the edit is
-/// recorded once, at tier 1; if it fails for one, it is fully qualified.
+/// recorded once, at tiers {1}; if it fails for one, it is fully qualified.
 #[test]
 fn s7_2_two_references_with_one_extent() {
     let w = world();
@@ -752,7 +792,7 @@ fn s7_2_two_references_with_one_extent() {
     };
     let out = run_with(&w.fake);
     assert_eq!(edits(&out), vec![(lo, hi, vec![spelled(K_BAR, "bar")])]);
-    assert_eq!(out.edits[0].tier, 1);
+    assert_eq!(out.edits[0].tiers, Tiers::ONE, "every request at tier 1: tiers 1");
     assert_eq!(out.edits[0].notes, vec![b"a".to_vec(), b"b".to_vec()]);
     // One of the two found indirectly: no narrowing for either.
     let mut f = w.fake.clone();
@@ -817,7 +857,7 @@ fn s7_3_each_throw() {
 /// §7.3 rule 2, §5.2 rule 2: `replace` takes only a range that
 /// `name_range_of` or `extent_of` returns. A range built inside one (part
 /// of a macro invocation, half a token) is forged and refused, and records
-/// nothing; a forged range equal to a real one is that one, with its tier.
+/// nothing; a forged range equal to a real one is that one, with its tiers.
 #[test]
 fn s7_3_rule_2_a_range_no_query_returns_is_forged() {
     let mut f = FakeSubject::new();
@@ -866,8 +906,8 @@ fn s7_3_rule_2_a_range_no_query_returns_is_forged() {
     assert_eq!(replace(&mut h, 10, 13), 0, "the name range");
     assert_eq!(replace(&mut h, 17, 20), 0, "the other name range");
     let out = h.finish();
-    let got: Vec<_> = out.edits.iter().map(|e| (e.place.lo, e.place.hi, e.tier)).collect();
-    assert_eq!(got, vec![(8, 20, 0), (10, 13, 1), (17, 20, 0)]);
+    let got: Vec<_> = out.edits.iter().map(|e| (e.place.lo, e.place.hi, e.tiers)).collect();
+    assert_eq!(got, vec![(8, 20, Tiers::ZERO), (10, 13, Tiers::ONE), (17, 20, Tiers::ZERO)]);
     assert_eq!(counter(&out, "api.op.replace"), Some(3));
 }
 
@@ -1129,7 +1169,11 @@ enum Lie {
     Qualified(Option<Vec<Vec<u8>>>),
     UnitKeys(Result<Vec<Digest>, Errc>),
     RenameRule(Result<Rule, Errc>),
-    Tier(Option<u8>),
+    Tiers(Option<[bool; 2]>),
+    /// For a range the fake gives out: these answers, one per question, in
+    /// turn (one range reached at tier 0 by one request and at tier 1 by
+    /// another).
+    TiersInTurn(std::cell::RefCell<Vec<[bool; 2]>>),
     Place(PlaceOf),
     ReferencesAt(Vec<Reference>),
 }
@@ -1207,8 +1251,12 @@ impl Subject for Liar<'_> {
     fn unresolved_named(&self, identifier: &[u8]) -> Option<u64> {
         self.fake.unresolved_named(identifier)
     }
-    fn tier(&self, r: Range) -> Option<u8> {
-        if let Lie::Tier(t) = self.lie { t } else { self.fake.tier(r) }
+    fn tiers(&self, r: Range) -> Option<[bool; 2]> {
+        match &self.lie {
+            Lie::Tiers(t) => *t,
+            Lie::TiersInTurn(turns) => self.fake.tiers(r).map(|_| turns.borrow_mut().remove(0)),
+            _ => self.fake.tiers(r),
+        }
     }
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
         if let Lie::Qualified(q) = &self.lie { q.clone() } else { self.fake.qualified(e) }
@@ -1336,14 +1384,17 @@ fn s7_5_subject_rename_rule_statuses() {
     host_failure(under(&w, Lie::RenameRule(Ok(wrong)), "renamed"), &["Subject::rename_rule"]);
 }
 
-/// The other answers the effects check: a tier other than 0 or 1, a
+/// The other answers the effects check: the empty set of tiers, a
 /// place outside its file, a reference at a range whose extent is not
 /// that range.
 #[test]
 fn s7_subject_answers_the_effects_check() {
     let w = world();
-    host_failure(under(&w, Lie::Tier(Some(2)), "replace"), &["Subject::tier"]);
-    assert_eq!(under(&w, Lie::Tier(None), "replace"), Ok(errc(Errc::InvalidHandle)));
+    host_failure(under(&w, Lie::Tiers(Some([false, false])), "replace"), &["Subject::tiers"]);
+    assert_eq!(under(&w, Lie::Tiers(None), "replace"), Ok(errc(Errc::InvalidHandle)));
+    for t in [[true, false], [false, true], [true, true]] {
+        assert_eq!(under(&w, Lie::Tiers(Some(t)), "replace"), Ok(0), "{t:?}");
+    }
     let outside = Range { file: w.t, lo: 0, hi: 1 << 20 };
     host_failure(under(&w, Lie::Place(PlaceOf::Own(outside)), "report"), &["Subject::place"]);
     host_failure(
@@ -1354,6 +1405,84 @@ fn s7_subject_answers_the_effects_check() {
         under(&w, Lie::ReferencesAt(vec![w.r1, w.r1]), "replace"),
         &["Subject::references_at"],
     );
+}
+
+// ---------------------------------------------------------------------------
+// §7.6 rule 1: the tiers of an edit.
+
+/// §7.6 `Edit.tiers`: a set of 0 and 1, never empty, bit `t` for tier
+/// `t` (`spec/edits.md` §4.2), iterated in ascending order.
+#[test]
+fn s7_6_tiers_is_a_set() {
+    assert_eq!(Tiers::from_reached([false, false]), None, "never empty");
+    let sets =
+        [(Tiers::ZERO, [true, false]), (Tiers::ONE, [false, true]), (Tiers::BOTH, [true, true])];
+    for (t, reached) in sets {
+        assert_eq!(Tiers::from_reached(reached), Some(t));
+        assert_eq!([t.contains(0), t.contains(1)], reached);
+        assert!(!t.contains(2));
+        assert_eq!(
+            t.iter().collect::<Vec<_>>(),
+            (0..2).filter(|&i| reached[i as usize]).collect::<Vec<u8>>()
+        );
+        assert_eq!(t.union(t), t);
+        assert_eq!(t.union(Tiers::BOTH), Tiers::BOTH);
+    }
+    assert_eq!([Tiers::ZERO.bits(), Tiers::ONE.bits(), Tiers::BOTH.bits()], [1, 2, 3]);
+    assert_eq!(Tiers::ZERO.union(Tiers::ONE), Tiers::BOTH);
+    assert_eq!(Tiers::ONE.union(Tiers::ZERO), Tiers::BOTH);
+    assert_eq!(Tiers::BOTH.to_string(), "0,1");
+}
+
+/// Two requests of one run with one file, range and pieces, one reached
+/// at tier 0 and one at tier 1, are one edit with tiers 0 and 1, in either
+/// order: tiers are joined by union and are no part of the identity.
+#[test]
+fn s7_6_rule_1_tiers_are_joined_by_union() {
+    let w = world();
+    let e = range(&w, "lib::foo", 0);
+    for turns in [[[true, false], [false, true]], [[false, true], [true, false]]] {
+        let liar = Liar { fake: &w.fake, lie: Lie::TiersInTurn(turns.to_vec().into()) };
+        let mut run = Run::new(&w, &liar);
+        let r = run.extent(Value::Reference(w.r1));
+        let x = run.text("x");
+        run.replace(r, x, 0, "a");
+        run.replace(r, x, 0, "b");
+        let out = run.finish();
+        assert_eq!(edits(&out), vec![(e.lo, e.hi, vec![lit("x")])], "{turns:?}: one edit");
+        assert_eq!(out.edits[0].tiers, Tiers::BOTH, "{turns:?}");
+        assert_eq!(out.edits[0].notes, vec![b"a".to_vec(), b"b".to_vec()]);
+        assert!(out.is_canonical());
+    }
+    // Requests all at tier 1: tiers 1 (`s7_2_two_references_with_one_extent`
+    // through the sibling rule; here a literal at the extent).
+    let liar = Liar { fake: &w.fake, lie: Lie::TiersInTurn(vec![[false, true]; 2].into()) };
+    let mut run = Run::new(&w, &liar);
+    let r = run.extent(Value::Reference(w.r1));
+    let x = run.text("x");
+    run.replace(r, x, 0, "");
+    run.replace(r, x, 0, "");
+    assert_eq!(run.finish().edits[0].tiers, Tiers::ONE);
+}
+
+/// §7.6 rule 1: a range the subject reaches at both tiers at once (the
+/// fake's `both`) is recorded with tiers 0 and 1, and an edit narrowed by
+/// the sibling rule takes the tiers of the name range (WP-088 decision 5).
+#[test]
+fn s7_6_rule_1_a_range_reached_at_both_tiers() {
+    let w = world();
+    let e = range(&w, "lib::foo", 0);
+    let mut f = w.fake.clone();
+    f.both.push(name_in(e));
+    let mut run = Run::new(&w, &f);
+    let r = run.extent(Value::Reference(w.r1));
+    let x = run.text("x");
+    run.replace(r, x, 0, "");
+    let s = run.spell(w.bar);
+    run.replace(r, s, 0, "");
+    let out = run.finish();
+    let got: Vec<_> = out.edits.iter().map(|d| (d.place.lo, d.place.hi, d.tiers)).collect();
+    assert_eq!(got, vec![(e.lo, e.hi, Tiers::ZERO), (e.hi - 3, e.hi, Tiers::BOTH)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1381,6 +1510,8 @@ impl Rng {
 enum At {
     Extent(Value),
     Name(Value),
+    /// The empty range at the start of the value's extent (a copy only).
+    Empty(Value),
 }
 
 #[derive(Clone, Debug)]
@@ -1408,7 +1539,12 @@ fn random_requests(w: &World, rng: &mut Rng, n: usize) -> Vec<Request> {
         At::Extent(Value::Expression(w.call1)),
         At::Extent(Value::Expression(w.arg1)),
     ];
-    let copyable = [At::Extent(Value::Reference(w.r_h)), At::Extent(Value::Expression(w.arg1))];
+    let copyable = [
+        At::Extent(Value::Reference(w.r_h)),
+        At::Extent(Value::Expression(w.arg1)),
+        At::Empty(Value::Reference(w.r1)),
+        At::Empty(Value::Reference(w.r_h)),
+    ];
     let spellable = [w.foo, w.bar, w.hidden, w.other_foo];
     let texts = ["", "x", "yy", "(", ")"];
     let values = [
@@ -1471,11 +1607,15 @@ impl Exec<'_, '_> {
 
     fn range(&mut self, at: At) -> [u64; 2] {
         let (op, v) = match at {
-            At::Extent(v) => (wire::OP_EXTENT_OF, v),
+            At::Extent(v) | At::Empty(v) => (wire::OP_EXTENT_OF, v),
             At::Name(v) => (wire::OP_NAME_RANGE_OF, v),
         };
         let h = self.handle(v);
-        self.run.range_of(op, h)
+        let [file, sp] = self.run.range_of(op, h);
+        match at {
+            At::Empty(_) => [file, sp & !0xffff_ffff | sp >> 32],
+            _ => [file, sp],
+        }
     }
 }
 
@@ -1569,6 +1709,8 @@ fn s7_6_rule_1_the_output_is_independent_of_order_and_handles() {
         let requests = random_requests(&w, &mut rng, n);
         let expected = run_requests(&w, &requests, &values, true);
         assert!(expected.is_canonical());
+        // §7.1 rule 2, `spec/edits.md` §4.2: no copy piece is empty.
+        assert!(no_empty_copy(&expected), "round {round}");
         let mut shuffled = requests.clone();
         for i in (1..shuffled.len()).rev() {
             shuffled.swap(i, rng.below(i + 1));
@@ -1831,6 +1973,7 @@ fn s4_a_failed_operation_leaves_the_output_as_without_it() {
         assert_eq!(b.failure_count(), 0);
         let out = a.finish();
         assert!(out.is_canonical());
+        assert!(no_empty_copy(&out), "round {round}: §7.1 rule 2");
         assert_eq!(out, b.finish(), "round {round}");
     }
 }
@@ -1851,10 +1994,11 @@ fn s7_6_render() {
                 Piece::Copy(at(5, 6)),
                 spelled(Digest([0xcd; 32]), "::f"),
             ],
-            tier: 1,
+            tiers: Tiers::BOTH,
             notes: vec![b"n1".to_vec(), b"n2".to_vec()],
         },
-        Edit { place: at(7, 8), pieces: vec![], tier: 0, notes: vec![] },
+        Edit { place: at(7, 8), pieces: vec![], tiers: Tiers::ZERO, notes: vec![] },
+        Edit { place: at(8, 9), pieces: vec![], tiers: Tiers::ONE, notes: vec![] },
     ];
     out.groups = vec![vec![0, 1]];
     out.reports = vec![
@@ -1882,8 +2026,9 @@ fn s7_6_render() {
     let d = |b: u8| Digest([b; 32]).to_string();
     let expected = format!(
         "transform {}\n\
-         edit 0 /src/a b.cpp:1-4 tier 1 = \"g(\\\"\\\\\\n\\t\\x01\" copy(/src/a b.cpp:5-6) spell({} \"::f\") note \"n1\" note \"n2\"\n\
-         edit 1 /src/a b.cpp:7-8 tier 0 =\n\
+         edit 0 /src/a b.cpp:1-4 tiers 0,1 = \"g(\\\"\\\\\\n\\t\\x01\" copy(/src/a b.cpp:5-6) spell({} \"::f\") note \"n1\" note \"n2\"\n\
+         edit 1 /src/a b.cpp:7-8 tiers 0 =\n\
+         edit 2 /src/a b.cpp:8-9 tiers 1 =\n\
          group 0 1\n\
          report - note \"m\"\n\
          report /src/a b.cpp:0-1 error \"e\" attached\n\

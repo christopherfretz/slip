@@ -174,7 +174,7 @@ is the first thing to discuss.
 | Who | Requests |
 |---|---|
 | **Kiln designs and implements** | KF4 (being fixed; it has a Kiln backlog row), KR1, KR3, KR4, KS1, KS2, KM1 (the facade) |
-| **Slip prototypes on a Kiln branch; Kiln reviews and lands it as a work package** | KF1 (landed, Kiln WP-2120), KF2, KR5 (a generated or exhaustive visitor, with the test that fails when a field is added), KS3. KF3 was in this row: Kiln delivered it itself (WP-2150, `913a490bb`) and no branch was cut for it |
+| **Slip prototypes on a Kiln branch; Kiln reviews and lands it as a work package** | KF1 (landed, Kiln WP-2120), KR5 (a generated or exhaustive visitor, with the test that fails when a field is added), KS3. KF3 and KF2 were in this row: Kiln delivered KF3 itself (WP-2150, `913a490bb`) and implements KF2 itself (its WP-2390), and no branch was cut for either; a branch from outside goes through Kiln's screening, so ask before cutting one |
 | **Later** | KR2, KM2, KS4 |
 
 ## 8. How requests are made
