@@ -116,6 +116,7 @@ line. Nothing is printed when there is none. With any, standard error gets
 | `wp` | Every `docs/wp/WP-*.md` follows `docs/wp/README.md`: the title line with the same id as the file name; `Status`, `Milestone`, `Track`, `Needs`, `Size` lines with allowed values; `Needs` names existing files. |
 | `local-paths` | No committed text file contains an absolute path into a home directory or this host's workspace (`/home/`, `/Users/`, `/root/`, `/Volumes/`). |
 | `doc-links` | Every relative Markdown link in `docs/`, `spec/` and `README.md` points at an existing file. |
+| `api-tests` | Every directory under `crates/slip_script/tests/api/` with a `transform.cpp` has `t.cpp` and `expect.txt`, lies in no other, and its `// spec:` line names a heading of `spec/api.md`; no other file lies there (`spec/api.md` §11). |
 
 Lints read the files tracked by git, so build output and worktrees are
 never scanned. If the root holds `.git` (a directory, or a file as in a

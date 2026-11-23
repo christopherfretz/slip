@@ -1,0 +1,4 @@
+transform <id>
+report - note "a declaration of lib::f(int) at lib.h:2:5"
+report - note "a declaration of lib::g(int) at inc/deep.h:2:7"
+report - note "a declaration of lib::h(int) at t.cpp:4:5"
