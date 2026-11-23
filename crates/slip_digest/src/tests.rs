@@ -19,7 +19,10 @@ fn walk_with(files: &[(&str, &str)], rules: &RuleTable, detail: Detail<'_>) -> O
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-        crate::digest(&input, &Options { rules, detail, names: true })
+        crate::digest(
+            &input,
+            &Options { rules, read_only: crate::ReadOnly::NO_FILE, detail, names: true },
+        )
     })
     .expect("the snippet parses")
 }
@@ -510,7 +513,15 @@ fn a_key_keeps_its_parents_cause() {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-        crate::digest(&input, &Options { rules: &rules, detail: Detail::All, names: true })
+        crate::digest(
+            &input,
+            &Options {
+                rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail: Detail::All,
+                names: true,
+            },
+        )
     })
     .expect("the snippet parses");
     let g: Vec<_> = o.names.iter().filter(|(_, n)| n.starts_with("g(")).collect();

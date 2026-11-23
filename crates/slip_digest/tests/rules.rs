@@ -52,6 +52,24 @@
 //!   free.)
 //! - Every record of the post-image under the table has a `Key` whose id
 //!   is its `KeyId` (`records` is `Ok`: `spec/digest.md` §4.4).
+//!
+//! # Ownership (WP-110, `spec/verify.md` §2.1)
+//!
+//! - `readonly.txt`: the case's read-only files, one name per line (`#`
+//!   starts a comment). The post-image is then digested with those files
+//!   read-only, as the verify job gives them (`ReadOnlyFiles` over an
+//!   `Ownership` in subject paths, the case's directory as the root
+//!   `/case`), and judged by `expect.txt`; and with every file owned,
+//!   judged by `expect-owned.txt`, which such a case must have: the pair
+//!   shows what ownership changes.
+//! - A case without `readonly.txt` is digested with every file owned and
+//!   judged by `expect.txt`, as before WP-110.
+//! - Every case not refused: under its table with every file read-only,
+//!   the post-image's digests are those under no rule (every key is the
+//!   key of the empty table, rule 1 and rule 2 together).
+//! - Every case, under each of its ownerships: `key_agreement` holds (a
+//!   key the walk memoised for a reference is the key the entity gets
+//!   alone, in a fresh walk, in another order).
 
 mod common;
 
@@ -61,9 +79,71 @@ use std::path::Path;
 use common::rules::{Line, Table, read, table};
 use common::{Digested, Expect, Side};
 use slip_digest::records::{Record, records};
-use slip_digest::{Cause, Detail, Input, Options, Output};
+use slip_digest::{Cause, Detail, Input, Options, Output, ReadOnly, ReadOnlyFiles};
 use slip_model::digests::GroupClass;
 use slip_model::keys::{Key, Name, Rule, RuleTable};
+use slip_model::transform::Ownership;
+
+/// Which files of a case's post-image are read-only.
+#[derive(Clone, Debug)]
+enum Own {
+    /// Every file owned (WP-103's behaviour).
+    All,
+    /// The files of `readonly.txt`.
+    Listed(Vec<String>),
+}
+
+/// `readonly.txt` (absent: `None`).
+fn readonly_of(dir: &Path) -> Result<Option<Vec<String>>, String> {
+    let Ok(text) = std::fs::read_to_string(dir.join("readonly.txt")) else {
+        return Ok(None);
+    };
+    let mut out = Vec::new();
+    for (n, l) in text.lines().enumerate() {
+        let l = l.split('#').next().unwrap_or("").trim();
+        if l.is_empty() {
+            continue;
+        }
+        if !dir.join(l).is_file() {
+            return Err(format!("readonly.txt:{}: `{l}` is no file of the case", n + 1));
+        }
+        out.push(l.to_owned());
+    }
+    if out.is_empty() {
+        return Err("readonly.txt names no file".into());
+    }
+    Ok(Some(out))
+}
+
+/// The case's subject root.
+const ROOT: &str = "/case";
+
+/// The read-only files of `input` as the verify job decides them
+/// (`ReadOnlyFiles::new`): an `Ownership` in subject paths, the case's
+/// files under [`ROOT`], the listed ones read-only; a buffer that is no
+/// file has the empty path.
+fn listed_files(input: &Input<'_>, listed: &[String]) -> ReadOnlyFiles {
+    let mut readonly: Vec<Vec<u8>> =
+        listed.iter().map(|n| format!("{ROOT}/{n}").into_bytes()).collect();
+    readonly.sort();
+    let o = Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly };
+    let subject = |f| {
+        let p = (input.subject_path)(f);
+        if p.is_empty() { p } else { [format!("{ROOT}/").as_bytes(), &p].concat() }
+    };
+    ReadOnlyFiles::new(Some(&o), input.sm, &subject)
+}
+
+/// Runs `f` with the `ReadOnly` of `own` over `input`.
+fn with_own<R>(input: &Input<'_>, own: &Own, f: impl FnOnce(ReadOnly<'_>) -> R) -> R {
+    match own {
+        Own::All => f(ReadOnly::NO_FILE),
+        Own::Listed(l) => {
+            let files = listed_files(input, l);
+            f(ReadOnly::files(&files))
+        }
+    }
+}
 
 /// What a case's `expect.txt` says.
 struct Expected {
@@ -77,8 +157,8 @@ struct Expected {
     refused: Option<String>,
 }
 
-fn expected(dir: &Path) -> Result<Expected, String> {
-    let text = std::fs::read_to_string(dir.join("expect.txt")).unwrap_or_default();
+fn expected(dir: &Path, file: &str) -> Result<Expected, String> {
+    let text = std::fs::read_to_string(dir.join(file)).unwrap_or_default();
     let (lines, exact, own) = common::expect_text(&text, |l| {
         l.starts_with("use ") || l.starts_with("collisions ") || l.starts_with("refused ")
     })?;
@@ -121,8 +201,8 @@ fn lines_of(dir: &Path) -> Result<Vec<(usize, Line)>, String> {
     }
 }
 
-fn digest_under(input: &Input<'_>, rules: &RuleTable) -> Output {
-    slip_digest::digest(input, &Options { rules, detail: Detail::All, names: true })
+fn digest_under(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Output {
+    slip_digest::digest(input, &Options { rules, read_only, detail: Detail::All, names: true })
 }
 
 /// The name no C++ entity has that replaces rule `n`'s target in its
@@ -138,7 +218,8 @@ fn produced(r: &Rule) -> Key {
 
 /// What the post-image gives, from one parse.
 struct Post {
-    table: Table,
+    /// How many rules the table has.
+    rules: usize,
     digested: Digested,
     /// `(line, via, direct)` for each `use` line.
     uses: Vec<(usize, u64, u64)>,
@@ -147,7 +228,12 @@ struct Post {
 }
 
 /// `via` and `direct` of the rule of line `n` (see the head of this file).
-fn rule_use(input: &Input<'_>, t: &Table, n: usize) -> Result<(u64, u64), String> {
+fn rule_use(
+    input: &Input<'_>,
+    t: &Table,
+    n: usize,
+    ro: ReadOnly<'_>,
+) -> Result<(u64, u64), String> {
     let Some((_, rule)) = t.rules.iter().find(|(l, _)| *l == n) else {
         return Err(format!("`use {n}`: no rule on line {n} of rules.txt"));
     };
@@ -155,7 +241,7 @@ fn rule_use(input: &Input<'_>, t: &Table, n: usize) -> Result<(u64, u64), String
     let probed: Vec<Rule> =
         t.rules.iter().map(|(l, r)| if *l == n { probe.clone() } else { r.clone() }).collect();
     let probed = RuleTable::new(probed).map_err(|e| e.to_string())?;
-    let recs = records(input, &probed)?;
+    let recs = records(input, &probed, ro)?;
     let count = |k: &Key| recs.iter().filter(|r| r.id == k.id()).count() as u64;
     Ok((count(&produced(&probe)), count(&produced(rule))))
 }
@@ -169,7 +255,7 @@ fn rule_use(input: &Input<'_>, t: &Table, n: usize) -> Result<(u64, u64), String
 fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
     let lines = lines_of(dir)?;
     common::with_side(dir, Side::B, |input| -> Result<(), String> {
-        let plain = records(input, &RuleTable::empty())?;
+        let plain = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)?;
         match table(&lines, pre, &plain) {
             Ok(t) => return Err(format!("the table is not refused: {:#?}", t.table.rules())),
             Err(e) if e.contains(text) => {}
@@ -180,20 +266,22 @@ fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
             return Err("the table made without the refusal holds no refused rule".into());
         }
         // Through the container end to end, as `slip verify` reads it: a
-        // `Declared` holding the table, written and read back.
+        // `Declared` holding the table (and, as it must, the run's files),
+        // written and read back.
         let declared = slip_model::declared::Declared::new(
             kept.table.rules().to_vec(),
             vec![],
             vec![],
             vec![],
         )
-        .map_err(|e| format!("the container refuses the table: {e}"))?;
+        .map_err(|e| format!("the container refuses the table: {e}"))?
+        .with_files(Some(Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly: vec![] }));
         let read = slip_model::declared::Declared::from_bytes(&declared.to_bytes())
             .map_err(|e| format!("the container cannot be read: {e}"))?;
         if read.rules().refused().is_none() {
             return Err("the table read from the container holds no refused rule".into());
         }
-        let d = common::digested(digest_under(input, read.rules()));
+        let d = common::digested(digest_under(input, read.rules(), ReadOnly::NO_FILE));
         let keyed: Vec<&str> = d
             .units
             .values()
@@ -208,23 +296,48 @@ fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
     })?
 }
 
-fn post_side(dir: &Path, pre: &[Record], uses: &[(usize, u64, u64)]) -> Result<Post, String> {
+/// The post-image under the case's table with the files of `own`
+/// read-only; and, once per case (`properties`), the two properties of
+/// the head of this file.
+fn post_side(
+    dir: &Path,
+    pre: &[Record],
+    uses: &[(usize, u64, u64)],
+    own: &Own,
+    properties: bool,
+) -> Result<Post, String> {
     let lines = lines_of(dir)?;
     common::with_side(dir, Side::B, |input| -> Result<Post, String> {
-        let plain = records(input, &RuleTable::empty())?;
+        let plain = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)?;
         let t = table(&lines, pre, &plain)?;
-        let first = digest_under(input, &t.table);
-        if digest_under(input, &t.table) != first {
-            return Err("the post-image under its table: two walks differ".into());
-        }
-        records(input, &t.table).map_err(|e| format!("records under the table: {e}"))?;
-        let mut got = Vec::new();
-        for &(n, _, _) in uses {
-            let (v, d) = rule_use(input, &t, n)?;
-            got.push((n, v, d));
-        }
-        let unruled = (!t.table.is_empty()).then(|| digest_under(input, &RuleTable::empty()));
-        Ok(Post { table: t, digested: common::digested(first), uses: got, unruled })
+        with_own(input, own, |ro| -> Result<Post, String> {
+            let first = digest_under(input, &t.table, ro);
+            if digest_under(input, &t.table, ro) != first {
+                return Err("the post-image under its table: two walks differ".into());
+            }
+            records(input, &t.table, ro).map_err(|e| format!("records under the table: {e}"))?;
+            slip_digest::records::key_agreement(input, &t.table, ro)
+                .map_err(|e| format!("key agreement ({own:?}): {e}"))?;
+            let mut got = Vec::new();
+            for &(n, _, _) in uses {
+                let (v, d) = rule_use(input, &t, n, ro)?;
+                got.push((n, v, d));
+            }
+            let unruled = (!t.table.is_empty())
+                .then(|| digest_under(input, &RuleTable::empty(), ReadOnly::EVERY_FILE));
+            if properties && let Some(u) = &unruled {
+                // Every file read-only: every key is the empty table's.
+                let none = digest_under(input, &t.table, ReadOnly::EVERY_FILE);
+                if none.digests != u.digests || none.causes != u.causes {
+                    return Err(
+                        "every file read-only: the digests are not those under no rule".into()
+                    );
+                }
+                slip_digest::records::key_agreement(input, &t.table, ReadOnly::EVERY_FILE)
+                    .map_err(|e| format!("key agreement (every file read-only): {e}"))?;
+            }
+            Ok(Post { digested: common::digested(first), uses: got, unruled, rules: t.rules.len() })
+        })
     })?
 }
 
@@ -325,19 +438,49 @@ fn judge(e: &Expected, a: &Digested, b: &Digested) -> Result<(), String> {
     Err(format!("expected but not seen: {missing:?}\nseen but not expected: {extra:?}"))
 }
 
-/// One case: its table, its two sides, the judgment and the counts.
+/// One case: its table, its two sides, the judgment and the counts, under
+/// each of its ownerships (`readonly.txt`: the listed files read-only by
+/// `expect.txt`, every file owned by `expect-owned.txt`; else every file
+/// owned by `expect.txt`).
 fn case(dir: &Path) -> Result<(), String> {
-    let e = expected(dir)?;
     let (pre, a) = common::with_side(dir, Side::A, |input| {
-        let recs = records(input, &RuleTable::empty());
-        (recs, digest_under(input, &RuleTable::empty()))
+        let recs = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE);
+        (recs, digest_under(input, &RuleTable::empty(), ReadOnly::EVERY_FILE))
     })?;
     let pre = pre.map_err(|x| format!("records of the pre-image: {x}"))?;
     let a = common::digested(a);
-    if let Some(text) = &e.refused {
-        return refused_side(dir, &pre, text);
+    let runs: Vec<(Own, &str)> = match readonly_of(dir)? {
+        None => vec![(Own::All, "expect.txt")],
+        Some(l) => {
+            if !dir.join("expect-owned.txt").is_file() {
+                return Err("a case with readonly.txt has an expect-owned.txt".into());
+            }
+            vec![(Own::Listed(l), "expect.txt"), (Own::All, "expect-owned.txt")]
+        }
+    };
+    let mut problems = Vec::new();
+    for (i, (own, file)) in runs.iter().enumerate() {
+        let e = expected(dir, file)?;
+        if let Some(text) = &e.refused {
+            return refused_side(dir, &pre, text);
+        }
+        if let Err(p) = one(dir, &pre, &a, &e, own, i == 0) {
+            problems.push(format!("[{file}, {own:?}] {p}"));
+        }
     }
-    let post = post_side(dir, &pre, &e.uses)?;
+    if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
+}
+
+/// One ownership of a case, judged by `e`.
+fn one(
+    dir: &Path,
+    pre: &[Record],
+    a: &Digested,
+    e: &Expected,
+    own: &Own,
+    properties: bool,
+) -> Result<(), String> {
+    let post = post_side(dir, pre, &e.uses, own, properties)?;
     let mut problems = Vec::new();
     let collisions = post
         .digested
@@ -349,7 +492,7 @@ fn case(dir: &Path) -> Result<(), String> {
     if collisions != e.collisions {
         problems.push(format!("digest.collisions is {collisions}, expected {}", e.collisions));
     }
-    if let Err(p) = judge(&e, &a, &post.digested) {
+    if let Err(p) = judge(e, a, &post.digested) {
         problems.push(p);
     }
     // An equal case under rules that would be equal without them shows
@@ -370,11 +513,8 @@ fn case(dir: &Path) -> Result<(), String> {
         }
     }
     if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
-        eprintln!("--- {}: {} rules", common::rel(dir), post.table.rules.len());
-        for (n, r) in &post.table.rules {
-            eprintln!("  line {n}: {r:?}");
-        }
-        for (side, d) in [("A", &a), ("B", &post.digested)] {
+        eprintln!("--- {}: {} rules, {own:?}", common::rel(dir), post.rules);
+        for (side, d) in [("A", a), ("B", &post.digested)] {
             for (k, v) in &d.units {
                 for u in v {
                     eprintln!(

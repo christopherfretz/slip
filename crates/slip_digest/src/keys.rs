@@ -224,12 +224,26 @@ impl Walk<'_> {
 
     /// The key of `d`'s entity, mapped (`spec/digest.md` §3.4).
     pub(crate) fn key(&mut self, d: DeclId) -> KeyRes {
+        self.key_in(d, None)
+    }
+
+    /// The key of `d`'s entity, mapped; for a namespace seen from a member
+    /// whose ownership is not the namespace's (`view`, rule 2 of
+    /// `spec/verify.md` §2.1, `namespace_parent`), mapped in that view:
+    /// rules along the chain if `view` is `Some(true)`, none if
+    /// `Some(false)`. `None` is the entity's own key, mapped if it is
+    /// owned (rule 1).
+    fn key_in(&mut self, d: DeclId, view: Option<bool>) -> KeyRes {
         // Numbering an owner reads no key (`local.rs`).
         if crate::local::numbering_mode(self) {
             return KeyRes::None(Some(crate::local::IN_NUMBERING));
         }
         let e = self.entity(d);
-        if let Some(k) = self.keys.get(&e) {
+        let memo = match view {
+            None => self.keys.get(&e),
+            Some(b) => self.owned_state.views.get(&(e, b)),
+        };
+        if let Some(k) = memo {
             return *k;
         }
         if self.keys_in_progress.contains(&e) {
@@ -252,14 +266,14 @@ impl Walk<'_> {
         // Read from the representative: Kiln's first declaration may be
         // one an instantiation made outside its class, whose template head
         // is the instantiation's (WP-032).
-        let computed = self.compute_key(self.representative(e));
+        let computed = self.compute_key_in(self.representative(e), view);
         self.in_key -= 1;
         self.restore_types(types);
         self.unit = saved;
         let res = match computed {
             Ok((key, cause)) => {
                 let kind = key.kind;
-                let key = self.rules.map(key);
+                let key = self.map_key(e, view, key);
                 self.bytes += key.to_bytes().len() as u64;
                 KeyRes::Key { id: key.id(), kind, cause }
             }
@@ -268,9 +282,19 @@ impl Walk<'_> {
         self.keys_in_progress.remove(&e);
         self.leave();
         if self.aborts == aborts && self.local.self_rooted == rooted {
-            self.keys.insert(e, res);
+            match view {
+                None => self.keys.insert(e, res),
+                Some(b) => self.owned_state.views.insert((e, b), res),
+            };
         }
         res
+    }
+
+    /// `key` of `d`'s entity under the rules if one may apply to it
+    /// (rule 1: the entity is owned, or `view` says so), else as it is.
+    /// Every place that applies the rules to an entity's key calls this.
+    pub(crate) fn map_key(&mut self, d: DeclId, view: Option<bool>, key: Key) -> Key {
+        if self.rule_applies(d, view) { self.rules.map(key) } else { key }
     }
 
     /// The bytes of the mapped key of `d`'s entity, which `canonical_decl`
@@ -294,7 +318,7 @@ impl Walk<'_> {
         self.unit = saved;
         self.bytes = bytes;
         self.leave();
-        computed.ok().map(|(key, _)| self.rules.map(key).to_bytes())
+        computed.ok().map(|(key, _)| self.map_key(e, None, key).to_bytes())
     }
 
     /// `key`: the mapped `KeyId` as a `digest` (digest-kinds §1.3).
@@ -336,6 +360,16 @@ impl Walk<'_> {
     /// The key of entity `e` before mapping, with the cause its
     /// discriminator carries; `Err` when it has none.
     pub(crate) fn compute_key(&mut self, e: DeclId) -> Result<(Key, Option<Cause>), Option<Cause>> {
+        self.compute_key_in(e, None)
+    }
+
+    /// [`Walk::compute_key`], with the parent of a namespace taken in
+    /// `view` (see [`Walk::key_in`]).
+    fn compute_key_in(
+        &mut self,
+        e: DeclId,
+        view: Option<bool>,
+    ) -> Result<(Key, Option<Cause>), Option<Cause>> {
         let ast = self.ast;
         let n = ast.decls.get(e);
         let kind_info = info(n.kind());
@@ -364,7 +398,7 @@ impl Walk<'_> {
         let kind = match kind_info.role {
             Role::Entity(kind) => kind,
             Role::Content(kind) => {
-                let (parent, parent_cause) = self.parent_of(e)?;
+                let (parent, parent_cause) = self.parent_in(e, view)?;
                 let h = self.content_hash(e);
                 let key = Key { kind, parent, name: Name::Content, disc: Some(h.digest) };
                 return Ok((key, merge(parent_cause, h.cause)));
@@ -376,7 +410,7 @@ impl Walk<'_> {
         };
         let decomposition = kind == KeyKind::Variable && ast.decls.is_decomposition(e);
         let kind = if decomposition { KeyKind::Decomposition } else { kind };
-        let (parent, parent_cause) = self.parent_of(e)?;
+        let (parent, parent_cause) = self.parent_in(e, view)?;
         let mut cause;
         let name = if decomposition {
             let first =
@@ -412,7 +446,7 @@ impl Walk<'_> {
         if !decomposition && !self.rules.is_empty() {
             let patterns = self.instantiated_patterns(e);
             if !patterns.is_empty() {
-                return self.follow_patterns(&patterns, key, cause);
+                return self.follow_patterns(e, &patterns, key, cause);
             }
         }
         Ok((key, cause))
@@ -465,8 +499,14 @@ impl Walk<'_> {
     /// matches the member itself, under either name, is not one the source
     /// can carry out (an instantiation's member is renamed only by renaming
     /// the pattern's): the key is indeterminate.
+    ///
+    /// Under ownership (WP-110) the name is the pattern's as its own
+    /// ownership maps it (`mapped_name`), and the check of a rule on the
+    /// member is made only for an owned member: a rule matches no
+    /// dependency entity (rule 1).
     fn follow_patterns(
         &mut self,
+        e: DeclId,
         patterns: &[DeclId],
         key: Key,
         cause: Option<Cause>,
@@ -484,7 +524,9 @@ impl Walk<'_> {
             return Ok((key, cause));
         };
         let followed = Key { name, ..key.clone() };
-        if self.rules.map(key.clone()) != key || self.rules.map(followed.clone()) != followed {
+        if self.rule_applies(e, None)
+            && (self.rules.map(key.clone()) != key || self.rules.map(followed.clone()) != followed)
+        {
             return Err(Some(RULE_ON_INSTANTIATED_MEMBER));
         }
         Ok((followed, cause))
@@ -525,22 +567,27 @@ impl Walk<'_> {
 
     /// The name of `d`'s entity in its mapped key: `None` under no rule
     /// (the plain name), and where the key cannot be formed (the caller
-    /// has the error already).
+    /// has the error already). Mapped as the entity's own key is
+    /// (`map_key`): a dependency entity's name is its plain name.
     fn mapped_name(&mut self, d: DeclId) -> Option<Name> {
         if self.rules.is_empty() {
             return None;
         }
         let e = self.entity(d);
         let (key, _) = self.compute_key(self.representative(e)).ok()?;
-        Some(self.rules.map(key).name)
+        Some(self.map_key(e, None, key).name)
     }
 
     /// The parent of entity `e` (`spec/digest.md` §3), with the cause its
     /// key carries: `Err` for a local entity, whose key is `local(n)` and
     /// needs the statement walk.
-    pub(crate) fn parent_of(
+    ///
+    /// An enclosing namespace is keyed in `view` (`None`: in `e`'s own;
+    /// rule 2, [`Walk::namespace_parent`]).
+    fn parent_in(
         &mut self,
         e: DeclId,
+        view: Option<bool>,
     ) -> Result<(Parent, Option<Cause>), Option<Cause>> {
         let ast = self.ast;
         let n = ast.decls.get(e);
@@ -567,7 +614,7 @@ impl Walk<'_> {
             if to_namespace {
                 match xi.role {
                     Role::Root => return Ok((Parent::Root, None)),
-                    Role::Entity(KeyKind::Namespace) => return self.unit_parent(x),
+                    Role::Entity(KeyKind::Namespace) => return self.namespace_parent(x, e, view),
                     Role::Nothing
                     | Role::Transparent
                     | Role::Entity(_)
@@ -600,9 +647,9 @@ impl Walk<'_> {
             match xi.role {
                 Role::Root => return Ok((Parent::Root, None)),
                 Role::Transparent => c = xn.ctx(),
+                Role::Entity(KeyKind::Namespace) => return self.namespace_parent(x, e, view),
                 Role::Entity(
-                    KeyKind::Namespace
-                    | KeyKind::Class
+                    KeyKind::Class
                     | KeyKind::Enumeration
                     | KeyKind::Specialisation
                     | KeyKind::PartialSpecialisation
@@ -685,6 +732,35 @@ impl Walk<'_> {
             c = ast.decls.lexical_ctx(x);
         }
         false
+    }
+
+    /// The parent of `member` that is the namespace `ns`, keyed from the
+    /// member's point of view (rule 2 of `spec/verify.md` §2.1): with the
+    /// rules along the chain of namespaces if the member is owned, with
+    /// none if it is a dependency entity, whoever else opens them. The
+    /// namespace's own key when the views agree (the namespace's own unit
+    /// is a member of the namespace around it like any other entity), so
+    /// that every member of one ownership has one parent key. `view` is
+    /// the view already chosen when `member` is itself a namespace keyed
+    /// in one. Under no rule, the namespace's key.
+    fn namespace_parent(
+        &mut self,
+        ns: DeclId,
+        member: DeclId,
+        view: Option<bool>,
+    ) -> Result<(Parent, Option<Cause>), Option<Cause>> {
+        if self.rules.is_empty() {
+            return self.unit_parent(ns);
+        }
+        let b = match view {
+            Some(b) => b,
+            None => self.owned(member),
+        };
+        let res = if b == self.owned(ns) { self.key(ns) } else { self.key_in(ns, Some(b)) };
+        match res {
+            KeyRes::Key { id, cause, .. } => Ok((Parent::Unit(id), cause)),
+            KeyRes::None(c) => Err(Some(c.unwrap_or(BAD_PARENT))),
+        }
     }
 
     fn unit_parent(&mut self, x: DeclId) -> Result<(Parent, Option<Cause>), Option<Cause>> {

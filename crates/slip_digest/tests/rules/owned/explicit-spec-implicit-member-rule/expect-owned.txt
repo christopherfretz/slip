@@ -1,0 +1,10 @@
+# Every file owned: the constructor is owned and rule 4 renames it: the
+# derived constructor of box<Mine> is another one, and use() calls it.
+exact derived
+changed use()
+derived-added legacy::box<Mine>::box()
+derived-added legacy::box<Mine>::box()::<exception_spec>
+derived-removed legacy::box<Mine>::box()
+derived-removed legacy::box<Mine>::box()::<exception_spec>
+use 2 via 1 direct 1
+use 4 via 1 direct 0

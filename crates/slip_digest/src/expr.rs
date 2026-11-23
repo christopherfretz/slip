@@ -956,7 +956,12 @@ mod tests {
             let path = |_| Vec::new();
             let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
             let rules = RuleTable::empty();
-            let options = Options { rules: &rules, detail: Detail::All, names: false };
+            let options = Options {
+                rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail: Detail::All,
+                names: false,
+            };
             STACK_LOW.with(|l| l.set(usize::MAX));
             let base = here();
             let out = crate::digest(&input, &options);

@@ -648,7 +648,7 @@ fn fallback_key(
         }
         c = ast.decls.get(x).ctx();
     }
-    let key = w.rules.map(Key { kind, parent, name: Name::Content, disc: Some(digest) });
+    let key = w.map_key(e, None, Key { kind, parent, name: Name::Content, disc: Some(digest) });
     w.bytes += key.to_bytes().len() as u64;
     Some((key.id(), kind, parent_cause))
 }
@@ -1183,7 +1183,12 @@ mod tests {
             assert_eq!(p.errors, 0, "{}", p.diagnostics);
             let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
             let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let options = crate::Options { rules: &rules, detail: crate::Detail::All, names: true };
+            let options = crate::Options {
+                rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail: crate::Detail::All,
+                names: true,
+            };
             let t = std::time::Instant::now();
             let o = crate::digest(&input, &options);
             let took = t.elapsed();

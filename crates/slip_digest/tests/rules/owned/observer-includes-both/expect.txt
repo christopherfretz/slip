@@ -1,0 +1,6 @@
+# Observer 1: it sees dep.h's declaration of legacy::Both, so the moved Both
+# collides with it: not verified (correctly: the dependency still declares
+# legacy::Both). Observer 2 (observer-includes-owned-only) verifies.
+collisions 1
+indeterminate acme::Both
+indeterminate legacy::Both

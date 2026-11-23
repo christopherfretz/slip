@@ -43,9 +43,63 @@ pub struct Record {
 /// two equal namespaces merged by a rule) are one record; units of one key
 /// with different names or kinds (a collision) are a record each, sorted
 /// further by class, kind, the flag and the `Key`.
-pub fn records(input: &Input<'_>, rules: &RuleTable) -> Result<Vec<Record>, String> {
-    let options = Options { rules, detail: Detail::None, names: true };
+///
+/// `read_only` is the walk's ([`Options::read_only`]): under a non-empty
+/// table the records are the units of the walk that has it.
+pub fn records(
+    input: &Input<'_>,
+    rules: &RuleTable,
+    read_only: crate::ReadOnly<'_>,
+) -> Result<Vec<Record>, String> {
+    let options = Options { rules, read_only, detail: Detail::None, names: true };
     walk::run_with(input, &options, |w, written, output| collect(w, written, &output))
+}
+
+/// A property of the walk under ownership (WP-110, `spec/verify.md`
+/// §2.1 rule 2): a reference to an entity from another unit's stream and
+/// the entity's own key agree. Every key the walk memoised (each written
+/// by some stream that refers to the entity, or by the entity's own unit)
+/// is computed again in a fresh walk, set up as `walk::run_with` sets it
+/// up, in the reverse order of entities, so that no memo of the first
+/// walk is reused and a key that depended on which reference asked first
+/// would differ. And the namespace views of the first walk are the other
+/// ownership's only (a view equal to the namespace's own is its key, not
+/// a second memo). `Ok` is the number of keys compared.
+pub fn key_agreement(
+    input: &Input<'_>,
+    rules: &RuleTable,
+    read_only: crate::ReadOnly<'_>,
+) -> Result<usize, String> {
+    let options = Options { rules, read_only, detail: Detail::None, names: false };
+    let (memo, views) = walk::run_with(input, &options, |w, _, _| {
+        let mut memo: Vec<(DeclId, KeyRes)> = w.keys.iter().map(|(&e, &r)| (e, r)).collect();
+        memo.sort_by_key(|&(e, _)| e.index());
+        let views: Vec<(DeclId, bool)> = w.owned_state.views.keys().copied().collect();
+        let mut bad = Vec::new();
+        for &(n, b) in &views {
+            if w.owned(n) == b {
+                bad.push(n);
+            }
+        }
+        (memo, if bad.is_empty() { Ok(views.len()) } else { Err(bad) })
+    });
+    if let Err(bad) = views {
+        return Err(format!("namespace views memoised under their own ownership: {bad:?}"));
+    }
+    let mut w = Walk::new(input, rules);
+    w.read_only = read_only;
+    crate::units::collect(&mut w);
+    crate::local::number_all(&mut w);
+    for &(e, r) in memo.iter().rev() {
+        let again = w.key(e);
+        if again != r {
+            return Err(format!(
+                "the key of {} ({e:?}) is {r:?} in the walk and {again:?} alone",
+                crate::names::entity_name(input.ast, e, KeyKind::Class)
+            ));
+        }
+    }
+    Ok(memo.len())
 }
 
 fn collect(w: &mut Walk<'_>, written: &[Written], output: &Output) -> Result<Vec<Record>, String> {
@@ -151,7 +205,7 @@ fn key_again(w: &mut Walk<'_>, d: DeclId) -> Option<Key> {
         w.keys_in_progress.remove(&e);
     }
     w.leave();
-    computed.ok().map(|(key, _)| w.rules.map(key))
+    computed.ok().map(|(key, _)| w.map_key(e, None, key))
 }
 
 #[cfg(test)]

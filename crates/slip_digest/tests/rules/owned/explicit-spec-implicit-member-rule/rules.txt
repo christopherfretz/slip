@@ -1,0 +1,4 @@
+# spec/verify.md §2.1, WP-110 item 5. The mutation `a specialisation owned by its own declaration`: only an implicitly declared member shows it (a specialisation's key follows its template's, and no rule matches a specialisation). The rule's parent is the pre-image's box<Mine>: `mapped` leaves the argument, a discriminator, unmapped (common/rules.rs).
+relocate legacy => :: acme
+# A rule on the implicit default constructor of the owned explicit specialisation box<Mine> (an implicitly declared member of a dependency entity: bullet 3). It matches no owned entity, so it changes nothing; were the specialisation owned by its own declaration, the constructor would be owned and renamed.
+rule function | pre legacy::box<Mine> | name-of post legacy::box<Mine>::box() | disc-of post legacy::box<Mine>::box() | pre legacy::box<Mine> | id renamed

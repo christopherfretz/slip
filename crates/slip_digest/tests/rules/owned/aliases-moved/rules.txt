@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. An owned namespace alias, using-declaration and using-directive in the old namespace, moved with it.
+relocate legacy => :: acme

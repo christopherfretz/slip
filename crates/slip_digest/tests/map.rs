@@ -91,7 +91,12 @@ fn walk(
     subject: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
 ) -> (Shard, Option<Result<Output, String>>) {
     let rules = rules();
-    let options = Options { rules: &rules, detail: Detail::All, names: true };
+    let options = Options {
+        rules: &rules,
+        read_only: slip_digest::ReadOnly::NO_FILE,
+        detail: Detail::All,
+        names: true,
+    };
     let (shard, walked) = parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {
         map_unit(unit, &options, subject)
     })
@@ -104,7 +109,12 @@ fn walk(
 /// an `ok` shard gets its `digests` and counters.
 fn map_shard(o: &Observer) -> Result<Shard, String> {
     let rules = rules();
-    let options = Options { rules: &rules, detail: Detail::None, names: false };
+    let options = Options {
+        rules: &rules,
+        read_only: slip_digest::ReadOnly::NO_FILE,
+        detail: Detail::None,
+        names: false,
+    };
     let identity = |p: &[u8]| p.to_vec();
     let (mut shard, walked) =
         parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {

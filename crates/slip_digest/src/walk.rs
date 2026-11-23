@@ -190,6 +190,11 @@ pub(crate) struct Walk<'a> {
     pub sm: &'a SourceManager,
     pub subject_path: &'a dyn Fn(slip_kiln::kiln::source::FileId) -> Vec<u8>,
     pub rules: &'a RuleTable,
+    /// Which files are read-only, read under a non-empty table only
+    /// (`owned.rs`, WP-110).
+    pub read_only: crate::ReadOnly<'a>,
+    /// Ownership of entities and namespace views (`owned.rs`).
+    pub owned_state: crate::owned::OwnedState,
     /// Type digests by the raw canonical `QualType`.
     pub type_memo: HashMap<u32, TypeRef>,
     /// Digests of function types written without their exception
@@ -272,6 +277,8 @@ impl<'a> Walk<'a> {
             sm: input.sm,
             subject_path: input.subject_path,
             rules,
+            read_only: crate::ReadOnly::EVERY_FILE,
+            owned_state: crate::owned::OwnedState::default(),
             type_memo: HashMap::new(),
             type_memo_no_exc: HashMap::new(),
             keys: HashMap::new(),
@@ -495,6 +502,7 @@ pub(crate) fn run_with<R>(
     f: impl FnOnce(&mut Walk<'_>, &[Written], Output) -> R,
 ) -> R {
     let mut w = Walk::new(input, options.rules);
+    w.read_only = options.read_only;
     crate::units::collect(&mut w);
     crate::local::number_all(&mut w);
     let mut written: Vec<Written> = Vec::new();

@@ -70,7 +70,12 @@ fn digest(src: &str) -> (Output, Duration, u64) {
             let path = |_| Vec::new();
             let input = Input { ast, sm, subject_path: &path };
             let rules = RuleTable::empty();
-            let options = Options { rules: &rules, detail: Detail::All, names: true };
+            let options = Options {
+                rules: &rules,
+                read_only: slip_digest::ReadOnly::NO_FILE,
+                detail: Detail::All,
+                names: true,
+            };
             let mut best = Duration::MAX;
             let mut out = None;
             for _ in 0..3 {

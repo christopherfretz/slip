@@ -68,7 +68,12 @@ fn wp067_written_changes_no_digest() {
                     .stack_size(slip_digest::STACK_SIZE)
                     .spawn_scoped(scope, || {
                         let input = Input { ast, sm, subject_path: &path };
-                        let options = Options { rules: &rules, detail: Detail::All, names: true };
+                        let options = Options {
+                            rules: &rules,
+                            read_only: slip_digest::ReadOnly::NO_FILE,
+                            detail: Detail::All,
+                            names: true,
+                        };
                         (slip_digest::digest(&input, &options), ast.decls.len())
                     })
                     .unwrap()
