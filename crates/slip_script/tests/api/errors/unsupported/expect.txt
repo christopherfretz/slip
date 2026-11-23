@@ -1,0 +1,4 @@
+transform <id>
+report - note "declarations_of(parameter): unsupported = 5, a message"
+report - note "extent_of(declaration): unsupported = 5, a message"
+report - note "lookup(\"a$\"): unsupported = 5, a message"

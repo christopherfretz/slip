@@ -1,0 +1,2 @@
+changed template <class> decltype(x.k(t)) g(type-parameter-0-0, DD)
+added f(long)

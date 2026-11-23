@@ -1,0 +1,4 @@
+# pending
+# needs: kiln (as differ/_/mem-initializer-in-template)
+added f(long)
+changed S::S<T>()

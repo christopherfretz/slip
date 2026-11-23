@@ -1,0 +1,7 @@
+transform <id>
+report t.cpp:6:7-6:8 note "N::S"
+report t.cpp:6:12-6:13 note "N::S"
+report t.cpp:6:27-6:28 note "the parameter a"
+report t.cpp:6:29-6:30 note "N::S::m"
+report t.cpp:6:33-6:34 note "the parameter p"
+report t.cpp:6:36-6:37 note "N::S::f"

@@ -302,8 +302,9 @@ fn s3_spec_shape() {
     );
 }
 
-// §3 `landed`: the path shape, an existing spec, the title line, an
-// existing work package.
+// §3 `landed`: the path shape (`WP-NNN.md`, or `WP-NNN-<part>.md` for one
+// brief of a split package), an existing spec, the title line, an existing
+// work package.
 #[test]
 fn s3_landed() {
     let f = Fixture::new("la");
@@ -312,10 +313,15 @@ fn s3_landed() {
     f.write("spec/landed/nosuch/WP-001.md", "# WP-001 — x\n");
     f.write("spec/landed/model/WP-002.md", "# WP-001 — wrong id\n");
     f.write("spec/landed/model/WP-007.md", "# WP-007 — no work package\n");
+    f.write("spec/landed/model/WP-001-part-2.md", "# WP-001 — one brief\n");
+    f.write("spec/landed/model/WP-001-Part.md", "# WP-001 — x\n");
+    f.write("spec/landed/model/WP-001-.md", "# WP-001 — x\n");
     assert_eq!(
         lint(&f),
         [
             "spec/landed/model.md: landed: is not `spec/landed/<spec>/WP-NNN.md`",
+            "spec/landed/model/WP-001-.md: landed: is not `spec/landed/<spec>/WP-NNN.md`",
+            "spec/landed/model/WP-001-Part.md: landed: is not `spec/landed/<spec>/WP-NNN.md`",
             "spec/landed/model/WP-002.md:1: landed: does not start with `# WP-002 — `",
             "spec/landed/model/WP-007.md: landed: docs/wp/WP-007.md does not exist",
             "spec/landed/model/notes.md: landed: is not `spec/landed/<spec>/WP-NNN.md`",

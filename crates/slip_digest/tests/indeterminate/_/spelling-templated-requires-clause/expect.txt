@@ -1,0 +1,1 @@
+indeterminate template <class> requires requires { p->~I(); } void g()

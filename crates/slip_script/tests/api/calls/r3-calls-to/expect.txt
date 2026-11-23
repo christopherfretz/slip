@@ -1,0 +1,10 @@
+transform <id>
+report - note "a declaration: wrong_kind"
+report - note "a namespace: wrong_kind"
+report - note "a variable: wrong_kind"
+report h.h:1:16-1:23 note "n::f #1"
+report t.cpp:9:9-9:16 note "n::f #0"
+report t.cpp:11:9-11:22 note "n::f #2"
+report t.cpp:11:14-11:21 note "n::f #3"
+report t.cpp:11:25-11:33 note "n::tf #0"
+report t.cpp:11:36-11:46 note "n::tf #1"

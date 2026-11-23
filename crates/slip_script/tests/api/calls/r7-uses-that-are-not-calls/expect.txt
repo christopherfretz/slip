@@ -1,0 +1,4 @@
+transform <id>
+report t.cpp:3:18-3:19 note "in no call"
+report t.cpp:4:11-4:12 note "in no call"
+report t.cpp:4:16-4:17 note "the callee of a call"

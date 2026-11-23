@@ -1,0 +1,13 @@
+transform <id>
+report t.cpp:8:10-8:11 note "its callee's reference, N::f"
+report t.cpp:8:10-8:14 note "a call of N::f"
+report t.cpp:8:17-8:21 note "its callee's reference, N::f"
+report t.cpp:8:17-8:24 note "a call of N::f"
+report t.cpp:8:27-8:33 note "a call of N::f"
+report t.cpp:8:28-8:29 note "its callee's reference, N::f"
+report t.cpp:8:36-8:42 note "a call of N::C::m"
+report t.cpp:8:38-8:39 note "its callee's reference, N::C::m"
+report t.cpp:8:45-8:52 note "a call of N::C::m"
+report t.cpp:8:48-8:49 note "its callee's reference, N::C::m"
+report t.cpp:8:55-8:59 note "its callee's reference, N::C::s"
+report t.cpp:8:55-8:62 note "a call of N::C::s"

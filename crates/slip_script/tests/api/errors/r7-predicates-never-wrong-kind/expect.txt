@@ -1,0 +1,7 @@
+transform <id>
+report - note "a call: 12 answered, 0 threw"
+report - note "a declaration: 12 answered, 0 threw"
+report - note "a reference: 12 answered, 0 threw"
+report - note "an argument: 12 answered, 0 threw"
+report - note "an entity: 12 answered, 0 threw"
+report - note "null: 12 answered, 0 threw"

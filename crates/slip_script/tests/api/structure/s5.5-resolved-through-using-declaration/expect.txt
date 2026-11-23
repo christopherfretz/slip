@@ -1,0 +1,3 @@
+transform <id>
+report t.cpp:6:18-6:19 note "referent: a::f"
+report t.cpp:6:18-6:22 note "callee: a::f"

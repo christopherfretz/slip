@@ -672,7 +672,9 @@ fn exception_spec(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Wr
     if ast.decls.function(f).is_none() || !deferrable(w, f) {
         return;
     }
-    let Some(proto) = ast.decls.get(f).ty().and_then(|q| ast.types.proto(q)).copied() else {
+    // The declaration's own specification, not the canonical prototype's
+    // (the first spelling's operand, `Walk::own_proto`).
+    let Some(proto) = w.own_proto(f) else {
         return;
     };
     let spec = ast.types.exc_spec(&proto);

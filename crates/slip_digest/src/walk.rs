@@ -59,6 +59,13 @@ pub(crate) struct UnitState {
     pub types: HashMap<u64, TypeRef>,
     /// The expression walk's state.
     pub expr: ExprState,
+    /// The left-out facts of the unit's own spellings, in walk order
+    /// (`own_spelling.rs`), and whether one of them makes the list due.
+    pub facts: Vec<crate::own_spelling::Fact>,
+    pub facts_due: bool,
+    /// How many expressions the unit's reading of its spellings has met
+    /// (`own_spelling::Fact::Round`).
+    pub roots: u64,
     /// The unit is a resolved unit `definition` (`demand.rs`), whose
     /// stream reads every declaration of its entity, those an
     /// instantiation made out of line included (`Walk::redecls`).
@@ -258,11 +265,22 @@ pub(crate) struct Walk<'a> {
     pub abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
     /// `digest.bytes` (`spec/digest.md` §12).
     pub bytes: u64,
+    /// Whether the own spelling of a typedef-name holds a left-out fact
+    /// (`own_spelling.rs`), by its first declaration.
+    pub alias_due: HashMap<DeclId, bool>,
+    /// How many profiles the unit writes straight into its stream are
+    /// being walked (`expr_dep::profile_expr`): their facts are read by
+    /// that site, not by `absorb_type` for the types inside them.
+    pub spelling_off: u32,
     /// Numberings of owners and the numbering mode (`local.rs`).
     pub local: crate::local::LocalState,
     /// The temporaries each variable extends, by its first declaration,
     /// built when a `value` unit first needs it (`demand.rs`).
     pub lets: Option<HashMap<DeclId, Vec<(u32, DeclId)>>>,
+    /// The spellings of the operators some declaration that is not a
+    /// member function names (`operator+`), built when a fold first needs
+    /// it (`expr_profile::fold_left_out`).
+    pub declared_operators: Option<HashSet<&'static str>>,
     /// The objects of the store that hold values of digest §9 (the
     /// source-location strings and objects), built when a constant first
     /// needs it (`value.rs`, WP-104).
@@ -286,6 +304,7 @@ pub(crate) struct Walk<'a> {
 pub(crate) struct TypeState {
     left_out: u64,
     type_nesting: u32,
+    spelling_off: u32,
     abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
 }
 
@@ -326,8 +345,11 @@ impl<'a> Walk<'a> {
             type_nesting: 0,
             abort_memo: HashMap::new(),
             bytes: 0,
+            alias_due: HashMap::new(),
+            spelling_off: 0,
             local: crate::local::LocalState::default(),
             lets: None,
+            declared_operators: None,
             name_values: None,
             by_value: 0,
             const_memo_by_value: HashMap::new(),
@@ -381,13 +403,14 @@ impl<'a> Walk<'a> {
     /// The type digests' state, put aside for a key or a content digest
     /// (memoised): what they compute neither depends on the enclosing
     /// type digest nor raises its `left_out`, so whether a unit is
-    /// `Pending(Area::Spelling)` does not depend on which was computed
+    /// marked does not depend on which was computed
     /// first (WP-036, F-G). The caller puts it back with
     /// [`Walk::restore_types`].
     pub(crate) fn take_types(&mut self) -> TypeState {
         TypeState {
             left_out: self.left_out,
             type_nesting: std::mem::take(&mut self.type_nesting),
+            spelling_off: std::mem::take(&mut self.spelling_off),
             abort_memo: std::mem::take(&mut self.abort_memo),
         }
     }
@@ -396,6 +419,7 @@ impl<'a> Walk<'a> {
     pub(crate) fn restore_types(&mut self, t: TypeState) {
         self.left_out = t.left_out;
         self.type_nesting = t.type_nesting;
+        self.spelling_off = t.spelling_off;
         self.abort_memo = t.abort_memo;
     }
 
@@ -404,6 +428,13 @@ impl<'a> Walk<'a> {
     /// name one (§4.2). The caller puts it back.
     pub(crate) fn take_expr_state(&mut self) -> ExprState {
         std::mem::take(&mut self.unit.expr)
+    }
+
+    /// Whether what is written now goes straight into a unit stream: not
+    /// inside a key, a type digest or a profile written into the unit
+    /// (the places a unit reads its own spellings, `own_spelling.rs`).
+    pub(crate) fn unit_level(&self) -> bool {
+        self.in_key == 0 && self.type_nesting == 0 && self.spelling_off == 0
     }
 
     /// `spec/digest.md` §4.3 "Back-references": the count of `node` when

@@ -1,0 +1,9 @@
+transform <id>
+report - note "f: 2: [a] [b]"
+report - note "g: wrong_kind"
+report - note "none: 0:"
+report - note "t: 1: [x]"
+report - note "the declaration of g: wrong_kind"
+report - note "the first declaration of f: 2: [a] [b]"
+report - note "the second declaration of f: 2: [c] [d]"
+report - note "v: 1: []"
