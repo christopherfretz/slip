@@ -1131,6 +1131,29 @@ fn s8_8_declare_warning_for_an_image_that_does_not_parse() {
     let out = declare(&f, &plan, "t.txt", &[]);
     assert_eq!(out.code(), Some(1), "{out:?}");
     assert!(out.stderr.contains("slip: t.txt:1: no unit: "), "{out:?}");
+
+    // Post-images, which a `relocate` with a parent and a `created` line
+    // both need: one that does not parse is warned about once, and the
+    // second pass does not parse it again; the others give the records.
+    f.write("post/u0.cpp", "#include \"a.h\"\nint f0(old::S *s) { return +; }\n");
+    f.write("post/u1.cpp", U1);
+    f.write("t.txt", "relocate old::S => old :: S2\ncreated h(int)\n");
+    let mut s = Vec::new();
+    let out = declare(&f, &plan, "t.txt", &image(&f, &mut s));
+    let u0 = Fixture::text(&f.path("s/u0.cpp"));
+    assert_eq!(
+        out.stderr_lines().iter().filter(|l| l.starts_with("slip: warning: ")).collect::<Vec<_>>(),
+        [
+            &format!("slip: warning: declare: {u0}: the post-image is diagnosed").as_str(),
+            &format!("slip: warning: declare: {u1}: the pre-image is diagnosed").as_str(),
+        ],
+        "{out:?}"
+    );
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(
+        (out.value("created"), out.value("rules").map(|r| &r[65..])),
+        (Some("1"), Some("1"))
+    );
 }
 
 // ----- units (spec/exec.md §8.9) ------------------------------------------------------
