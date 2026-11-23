@@ -1,5 +1,5 @@
 demo 1: tiny v1.0, 3 observers, 2 determinate, units 300 indeterminate 4
-map         wall_s 2.500 cpu_s 3.750 peak_rss_max 1152921504606846976
+map         wall_s 2.500 cpu_s 3.750 peak_rss_max 4194304
 00-control  verified  observers verified 3 indeterminate_only 0 other 0  units 303 indeterminate 4
             findings 0  reparsed 0  wall_s 2.500 cpu_s 3.750 peak_rss_max 3145728
 01-change   found     observers verified 0 indeterminate_only 0 other 3  units 303 indeterminate 4

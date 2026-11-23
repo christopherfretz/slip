@@ -13,7 +13,7 @@
 //! [`slip_run`]. [`check`] is "the result of a case": pure, so that the
 //! tests need neither `slip` nor a corpus. Reports are read as
 //! [`json::parse`] reads them and runs as [`perf::load`] reads them; xtask
-//! links neither `slip_cli` nor `slip_verify` for this.
+//! uses neither `slip_cli` nor `slip_verify` for this.
 //!
 //! Decisions where §10 is silent are in `spec/landed/harness/WP-059.md`.
 
@@ -86,7 +86,7 @@ pub fn read_config(text: &str) -> Result<Config, String> {
                 corpus = Some(
                     one_string(&e.value)
                         .ok_or_else(|| format!("line {}: `corpus` must be one string", e.line))?,
-                )
+                );
             }
             "roots" | "only" => {
                 let items = string_array(&e.value).ok_or_else(|| {
@@ -540,7 +540,6 @@ fn read_wanted(line: &str) -> Result<Wanted, String> {
     if !KINDS.contains(&kind) {
         return Err(format!("`{kind}` is not a kind ({})", KINDS.join(", ")));
     }
-    let rest = rest.trim();
     let (name, at) = match rest.rsplit_once(" @ ") {
         Some((name, place)) => {
             let (file, l) = place
@@ -556,7 +555,7 @@ fn read_wanted(line: &str) -> Result<Wanted, String> {
             }
             (name.trim(), Some((file.to_owned(), line_no)))
         }
-        None => (rest, None),
+        None => (rest.trim(), None),
     };
     if name.is_empty() {
         return Err(format!("`{line}` has no name"));
@@ -1615,7 +1614,7 @@ fn case_json(case: &Case, d: &Done, src: &Path) -> Value {
                 Line::Missing => ("missing", Value::Null),
                 Line::WrongPlace { file, line } => ("wrong", s(&format!("{file}:{line}"))),
             };
-            let cause = match (l, &d.report) {
+            let why = match (l, &d.report) {
                 (Line::Blocked, Some(r)) => {
                     blocked_cause(w, r, src).map_or(Value::Null, Value::Str)
                 }
@@ -1625,7 +1624,7 @@ fn case_json(case: &Case, d: &Done, src: &Path) -> Value {
                 ("line".into(), s(&w.text())),
                 ("result".into(), s(word)),
                 ("at".into(), at),
-                ("cause".into(), cause),
+                ("cause".into(), why),
             ]));
         }
     }

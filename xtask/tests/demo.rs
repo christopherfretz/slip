@@ -228,7 +228,7 @@ fn s10_3_link_tree_and_apply_edit() {
     assert!(demo::link_tree(&src.join("lib"), &tree.join("lib")).unwrap_err().ends_with("exists"));
 
     let edit = read_edit(
-        b"file lib/a.h\nreplace\nint x;\nwith\nlong x;\nend\nreplace all\n  f();\nwith\n  g();\nend\nfile lib/b.cpp\nreplace\n#include\nwith\n#import\nend\ncreate lib/new/d.h\nnew\nend\n",
+        b"file lib/a.h\nreplace\nint x;\nwith\nlong x;\nend\nreplace all\n  f();\nwith\n  g();\nend\nfile lib/b.cpp\nreplace\n#include \"a.h\"\nwith\n#import \"a.h\"\nend\ncreate lib/new/d.h\nnew\nend\n",
     )
     .unwrap();
     let written = demo::apply_edit(&tree, &edit).unwrap();
@@ -834,7 +834,7 @@ impl World {
             ]);
             let s = shard(o.id, Phase::Map, 0, c);
             st.publish_shard(&id, Phase::Map, 0, &o.id, &s.to_bytes()).unwrap();
-            jobs.push(job(&s, 1 << 20 * (i + 1)));
+            jobs.push(job(&s, 1 << (20 + i)));
         }
         let r = record(id, Phase::Map, 0, jobs);
         let p = st.publish_run(&id, Phase::Map, 0, r.run.started_unix_ns, &r.to_bytes()).unwrap();
@@ -962,7 +962,7 @@ fn s10_3_partial_table() {
         w.log(),
         format!(
             "--version \nplan --db {db} --store {store}\nparse --plan {p} --store {store} --only /lib/ -j 3\n{}{}\
-             declare --plan {p} --store {store} --from {from} --out {decl} {} --owned {src}/lib \
+             declare --plan {p} --store {store} --from {from} --out {decl} --owned {src}/lib {} \
              --only /lib/b.cpp --only /lib/c.cpp\n{}{}{}",
             verify("00-control", 0, ""),
             verify("01-change", 1, ""),
@@ -997,6 +997,7 @@ fn s10_3_ok() {
     assert!(w.dir().join("demo1/trees/01-change/lib/a.h").is_file());
     // 02 alone, its round 2, answered found: its base 01's tree is made, 01 is not run.
     w.report(2, "found.json", 1);
+    std::fs::write(w.f.path("fake/log"), "").unwrap();
     let (r, out) = w.run(&["1", "--case", "02-blocked"]);
     assert!(matches!(r, Ok(DemoOutcome::Failed)), "{out}"); // its lines are not those of found.json
     assert!(!w.log().contains("--round 1 "), "{}", w.log());
