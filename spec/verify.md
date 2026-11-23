@@ -110,6 +110,13 @@ pre-image's unit has no counterpart (`removed`).
 - `created`: a unit with this key may be absent from the pre-image.
 - `removed`: a unit with this key may be absent from the post-image.
 
+Absent means that the image has no unit of the key at all, declared or
+derived. An entity that one image declares and the other derives (an
+explicit specialisation removed, whose uses now instantiate the primary
+template; or one added where the template was instantiated before) is
+in both images: it is neither created nor removed, it is `changed`
+(§4 step 4).
+
 Nothing else is weakened. A created entity that changes how an existing
 name resolves, or a removed one that something still referred to, changes
 the digest of the unit holding that reference, which is not exempt. An
@@ -297,13 +304,35 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    its multiplicity. No exemption applies to a derived key, so `changed`
    on a key does not prevent `derived_changed`.
 
+4. **Declared on one side, derived on the other.** Where step 2 would
+   give `removed` for a key that has a unit in `Vq`, or `added` for a
+   key that has a unit in `Vp`, the finding is `changed` instead, unless
+   `k` is in `changed`. `removed` and `created` do not prevent it and
+   are not used by it, and step 3 does not count the key in `only_post`
+   or `only_pre` (a `derived_indeterminate` of step 3 stands beside
+   it). The two units are not compared: one is what was written and the
+   other what the front end made, and their streams differ by
+   construction.
+
 Steps 1 and 2 are over `D` and step 3 over `V`, independently: a key set
 aside in one is not thereby set aside in the other. (A key is in both
 only if an entity is declared in one image and derived in the other, or
-by a collision.) A key declared in one image and derived in the other is
-in `D` on one side and in `V` on the other: step 2 gives `removed`
-(declared before) or `added` (declared after), which its exemption may
-prevent, and step 3 counts it in `only_post` or `only_pre`.
+by a collision.) Step 4 is the one place they meet.
+
+**Why step 4.** Every reference to an entity is written by its key. An
+explicit specialisation `template <> int pick<int>() { return 2; }` and
+the implicit instantiation of `template <class T> int pick() { return
+1; }` for `int` have one key. Remove the explicit specialisation and
+every caller of `pick<int>()` now calls another body, and no caller's
+digest moves: the key it wrote is the same. Without step 4 the declared
+unit would be `removed`, which a tool that deleted the specialisation
+on purpose declares, and the instantiation would be a derived unit on
+one side only, counted and not reported: `verified`, for a program that
+returns another value. The argument below ("a derived unit on one side
+only is not a difference") holds for a key that the other image does
+not have at all, and that is all it is used for now. The exemption that
+fits is `changed`, and it says the right thing: this entity is in both
+programs and is not the same.
 
 The observer is **verified** when there is no finding.
 
