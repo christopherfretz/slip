@@ -1561,8 +1561,10 @@ mod tests {
             let files = [("main.cpp", src.as_str())];
             let (lists, bytes) = with_walk(&files, "c++20", |w| {
                 let all = exprs(w);
-                let lists =
-                    all.iter().filter(|&&e| w.ast.exprs.get(e).kind() == ExprKind::InitListExpr).count();
+                let lists = all
+                    .iter()
+                    .filter(|&&e| w.ast.exprs.get(e).kind() == ExprKind::InitListExpr)
+                    .count();
                 let root = all
                     .into_iter()
                     .filter(|&e| w.ast.exprs.syntactic_list(e).is_some())

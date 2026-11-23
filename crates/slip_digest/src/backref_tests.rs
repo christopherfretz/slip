@@ -21,8 +21,12 @@ fn digest_with(src: &str, std: &str, rules: RuleTable) -> (Output, u64) {
         .stack_size(crate::STACK_SIZE)
         .spawn(move || {
             let files = [("main.cpp", src.as_str())];
-            let snippet =
-                slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std: &std };
+            let snippet = slip_kiln::snippet::Snippet {
+                files: &files,
+                main: "main.cpp",
+                include: &[""],
+                std: &std,
+            };
             slip_kiln::snippet::parse(&snippet, |p| {
                 assert_eq!(p.errors, 0, "{}", p.diagnostics);
                 let path = |_| Vec::new();
@@ -83,7 +87,9 @@ fn returns(n: usize) -> String {
 fn returns_lvalue(n: usize) -> String {
     let mut src = String::from("struct S { constexpr S() {} constexpr S(S &) {} int v = 1; };\n");
     for i in 0..n {
-        src.push_str(&format!("constexpr S f{i}() {{ S s; return s; }}\nstatic_assert(f{i}().v == 1);\n"));
+        src.push_str(&format!(
+            "constexpr S f{i}() {{ S s; return s; }}\nstatic_assert(f{i}().v == 1);\n"
+        ));
     }
     src
 }
@@ -181,7 +187,8 @@ fn the_shapes_are_linear() {
 /// Parses `src` and runs `f` on a fresh walk over it.
 fn with_walk<T>(src: &str, std: &str, f: impl FnOnce(&mut Walk<'_>) -> T) -> T {
     let files = [("main.cpp", src)];
-    let snippet = slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
+    let snippet =
+        slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
     slip_kiln::snippet::parse(&snippet, |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let path = |_| Vec::new();
@@ -319,6 +326,11 @@ fn a_node_in_another_state_is_written_again() {
         w.in_key = 0;
         w.unit.expr.profile = Some(crate::expr_dep::Frame::default());
         let profiled = appended(w, &mut s, this);
+        let alone = {
+            let mut t = Stream::new();
+            appended(w, &mut t, this)
+        };
+        assert_eq!(profiled, alone, "profile mode: a node written before is written in full");
         assert_eq!(appended(w, &mut s, this), profiled, "profile mode: neither counted nor named");
         w.unit.expr.profile = None;
         assert_eq!(appended(w, &mut s, this), backref(0));
@@ -399,6 +411,10 @@ fn inner_streams_neither_see_nor_lose_the_memo() {
         let t = w.type_digest(long, false);
         assert_eq!(t.cause, None);
         assert_eq!(appended(w, &mut s, e), backref(0), "the memo is back after a type digest");
+        // A canonical operand written into the same stream (profile mode,
+        // with the expression state put aside): the memo is back after it.
+        crate::expr_dep::profile_expr(w, &mut s, e);
+        assert_eq!(appended(w, &mut s, e), backref(0), "the memo is back after a profile");
         let mut alone = Stream::new();
         assert_eq!(appended(w, &mut alone, e), first, "another stream writes the node in full");
     });
@@ -407,36 +423,41 @@ fn inner_streams_neither_see_nor_lose_the_memo() {
 /// §4.4: a unit whose stream is written inside another's, with a shared
 /// node, has the digest it has when written first: the memo starts empty
 /// at the head of the inner unit and the outer one's is back after it.
+/// The inner unit is a `static_assert`, keyed by its content digest
+/// (`Walk::content_hash`), written while another stream is open; the
+/// first digest is from a walk that writes nothing before it.
 #[test]
 fn a_unit_written_inside_another_is_the_same() {
-    let src = "int g(int);\nstatic_assert(sizeof((long[3]){[0 ... 2] = 1 + 2}) == 3 * sizeof(long));\n\
+    let src = "static_assert(sizeof((long[3]){[0 ... 2] = 1 + 2}) == 3 * sizeof(long));\n\
                long v[3] = {[0 ... 2] = 1 + 2};\n";
-    with_walk(src, "c++20", |w| {
+    let assertion = |w: &Walk<'_>| {
         let ast = w.ast;
-        let sa = (1..=ast.decls.len())
+        (1..=ast.decls.len())
             .filter_map(|i| slip_kiln::kiln::ast::DeclId::try_new(u32::try_from(i).ok()?))
-            .find(|&d| ast.decls.get(d).kind() == slip_kiln::kiln::ast::decl::DeclKind::StaticAssert)
-            .expect("the static_assert");
-        let lone = {
-            let saved = w.take_unit();
-            let mut s = Stream::new();
-            w.decl_stream(&mut s, sa, sa);
-            w.unit = saved;
-            s.as_bytes().to_vec()
-        };
+            .find(|&d| {
+                ast.decls.get(d).kind() == slip_kiln::kiln::ast::decl::DeclKind::StaticAssert
+            })
+            .expect("the static_assert")
+    };
+    let lone = with_walk(src, "c++20", |w| {
+        let sa = assertion(w);
+        w.content_hash(sa)
+    });
+    // (`CompoundLiteralExpr.aux` is `unsupported`: the unit is
+    // indeterminate, and its digest is still the hash of its stream.)
+    with_walk(src, "c++20", |w| {
+        let sa = assertion(w);
         let list = last_expr(w, ExprKind::InitListExpr);
         let mut outer = Stream::new();
         let first = appended(w, &mut outer, list);
         let refs = BACKREFS.with(std::cell::Cell::get);
-        let inner = {
-            let saved = w.take_unit();
-            let mut s = Stream::new();
-            w.decl_stream(&mut s, sa, sa);
-            w.unit = saved;
-            s.as_bytes().to_vec()
-        };
+        let inner = w.content_hash(sa);
         assert!(BACKREFS.with(std::cell::Cell::get) > refs, "the inner unit has a shared node");
-        assert_eq!(inner, lone, "written inside another stream, the same bytes");
+        assert_eq!(
+            (inner.digest, inner.cause),
+            (lone.digest, lone.cause),
+            "written inside another stream, the same digest"
+        );
         assert_eq!(appended(w, &mut outer, list), backref(0), "the outer memo is back");
         assert!(first.len() > backref(0).len());
     });
@@ -484,4 +505,3 @@ fn shared_nodes_under_a_relocation_rule() {
     let (unmapped, _) = digest_with(&src("old"), "c++26", RuleTable::empty());
     assert_ne!(keys(&unmapped), keys(&plain));
 }
-

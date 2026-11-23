@@ -354,13 +354,16 @@ Prose between the property line and the table.
     /// outside every enumeration's range.
     #[test]
     fn s1_7_the_walks_rows() {
-        let walk = |rows: &str| format!("### 1.7 Rows of the walk\n\n| Tag | Row | Written |\n|---|---|---|\n{rows}\n");
+        let walk = |rows: &str| {
+            format!("### 1.7 Rows of the walk\n\n| Tag | Row | Written |\n|---|---|---|\n{rows}\n")
+        };
         let doc = parse(&format!("{SLIP}\n{}\n{TYPES}", walk("| 1537 | `backref` | |")));
         assert_eq!(doc.walk.len(), 1);
         assert_eq!(check::grammar(&doc), Vec::<String>::new());
         let doc = parse(&format!("{SLIP}\n{}\n{TYPES}", walk("| 1538 | `backref` | |")));
         has(&check::grammar(&doc), "out of order: 1537 expected");
-        let doc = parse(&format!("{SLIP}\n{}\n{TYPES}", walk("| 1537 | `a` | |\n| 1538 | `a` | |")));
+        let doc =
+            parse(&format!("{SLIP}\n{}\n{TYPES}", walk("| 1537 | `a` | |\n| 1538 | `a` | |")));
         has(&check::grammar(&doc), "listed twice");
         // A table of variants whose range reaches the walk's.
         let types = edit("`kind=view; pin=none; base=1024`", "`kind=view; pin=none; base=1536`")
