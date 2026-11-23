@@ -338,11 +338,15 @@ whole file. The order of checks is:
    `binding`, `rule_use` and `spellings` (§8). Within `digests` and
    `verdict` the rules are checked in the order of their tables, **each
    rule over the whole section, in field and element order, before the
-   next rule**; `edits.md` §4.7 states its own order.
+   next rule**; `edits.md` §4.7 states its own order. The edit set's
+   are checked in the order of `edits.md` §6.1's table, the overlay's
+   and the result's in the order §7.1 and §8.5 list them
+   (`spec/landed/edits/WP-061.md` gives the order within each); the
+   transform run record has none.
 
 `dump` and `content_id` dispatch on bytes 8–11 of the file; a file whose kind
 is none of those `slip_model::formats` reads (`PLAN`, `SHRD`, `RUNR`,
-`DECL`, `TRFM`) is opened as a plan, which reports `BadMagic` (or
+`DECL`, `TRFM`, `EDTS`, `OVLY`, `RSLT`, `RUNT`) is opened as a plan, which reports `BadMagic` (or
 `Truncated` for a short prefix of a valid header). `content_id` returns the
 trailer only once the file has been fully validated as by `from_bytes`.
 
@@ -378,6 +382,8 @@ impl Plan {
 pub fn dump(bytes: &[u8]) -> Result<String, wire::Error>;      // any kind → pretty JSON, for `slip dump`
 pub fn undump(value: &json::Value) -> Result<Vec<u8>, JsonFormError>;
 pub fn content_id(bytes: &[u8]) -> Result<Digest, wire::Error>;
+/// (plan, round, started_unix_ns) of a RUNT file, validated as by TransformRun::from_bytes.
+pub fn transform_run_names(bytes: &[u8]) -> Result<(Digest, u64, u64), wire::Error>;
 pub fn encode_observer(observer: &Observer, out: &mut Encoder);
 pub fn decode_observer(input: &mut Decoder<'_>) -> Result<Observer, wire::Error>;
 pub fn encode_phase(phase: Phase, out: &mut Encoder);
@@ -392,7 +398,7 @@ impl Status { pub const ALL: [Status; 4]; pub fn name(self) -> &'static str; }
 impl End    { pub const ALL: [End; 5];    pub fn name(self) -> &'static str; }
 ```
 
-- `undump` is the inverse of `dump`, for any of the three kinds. It is the
+- `undump` is the inverse of `dump`, for any of the nine kinds. It is the
   only JSON → binary path that keeps unknown ignorable sections (§5.4).
 - `encode_observer`, `decode_observer`, `encode_phase` and `decode_phase`
   are the §7 `Observer` record and the §8 `Phase` enumeration on their own,
@@ -411,8 +417,13 @@ impl End    { pub const ALL: [End; 5];    pub fn name(self) -> &'static str; }
   `binding: Option<Binding>` and `rule_use: Option<RuleUse>`
   (`slip_model::agreement`) and `spellings: Option<Spellings>`
   (`slip_model::spellings`), in that order; an absent section is `None`.
-- `Transform` (`slip_model::transform`, kind `TRFM`, `edits.md` §3) has
-  the same interface as the three above.
+- `Transform` (`slip_model::transform`, kind `TRFM`, `edits.md` §3),
+  `EditSet` (`slip_model::editset`, `EDTS`, §6), `Overlay`
+  (`slip_model::overlay`, `OVLY`, §7.1), `TransformResult`
+  (`slip_model::result`, `RSLT`, §8.5) and `TransformRun`
+  (`slip_model::transform_run`, `RUNT`, §10.6) have the same interface
+  as the three above. `transform_run_names` is for the store
+  (`exec.md` §2.2), which may not name the type.
 - `ALL` lists every value of the enumeration once, in code order; `name()`
   is its name in §7–§9, the one the JSON rendering uses (§10).
 

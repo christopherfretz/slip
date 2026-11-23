@@ -18,6 +18,7 @@ use slip_model::json::{self, Value};
 use slip_model::keys::{KeyKind, Name, Parent, Rule};
 use slip_model::transform::{
     Ownership, Rename, Script, TargetKind, Transform, TransformKind, covers, is_canonical,
+    is_file_path,
 };
 use slip_model::wire::{Encoder, Error, ErrorKind};
 use slip_model::{Counter, Digest, FileRef, Outcome, Phase, Shard, Status};
@@ -1764,7 +1765,8 @@ fn is_owned() {
 }
 
 // spec/edits.md §2.1: a canonical absolute path starts with `/`, has no
-// empty, `.` or `..` component, and no trailing `/` unless it is `/`.
+// empty, `.` or `..` component, no NUL byte, and no trailing `/` unless it
+// is `/`; a path of a file is one that is not `/`.
 #[test]
 fn canonical_paths() {
     for ok in [&b"/"[..], b"/s", b"/s/a.cc", b"/s/.x", b"/s/..x", b"/s/x..", b"/\xff/b", b"/a b"] {
@@ -1785,9 +1787,15 @@ fn canonical_paths() {
         b"/..",
         b"/s/../t",
         b"/s/..",
+        b"/s/a\0b",
+        b"/\0",
+        b"\0",
     ] {
         assert!(!is_canonical(bad), "{}", String::from_utf8_lossy(bad));
+        assert!(!is_file_path(bad), "{}", String::from_utf8_lossy(bad));
     }
+    assert!(!is_file_path(b"/"));
+    assert!(is_file_path(b"/s") && is_file_path(b"/s/a.cc"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1950,8 +1958,18 @@ fn transform_ownership_rules() {
     };
     refused(&with(&[], &[]), "sections.transform.ownership.owned");
     // Every refused form, in owned and in readonly.
-    for bad in [&b""[..], b"s", b"s/a", b"//s", b"/s/", b"/s//a", b"/s/./gen", b"/s/../t", b"/s/.."]
-    {
+    for bad in [
+        &b""[..],
+        b"s",
+        b"s/a",
+        b"//s",
+        b"/s/",
+        b"/s//a",
+        b"/s/./gen",
+        b"/s/../t",
+        b"/s/..",
+        b"/s\0",
+    ] {
         let what = refused(&with(&[b"/a", bad], &[]), "sections.transform.ownership.owned[1]");
         assert_eq!(what, "not a canonical absolute path");
         let what = refused(&with(&[b"/s"], &[bad]), "sections.transform.ownership.readonly[0]");
