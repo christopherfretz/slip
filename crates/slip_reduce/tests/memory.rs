@@ -83,16 +83,19 @@ fn one_site(i: usize) -> Shard {
 /// level. With `fan_in` 2 and one thread, reduce holds two shards' `edits`
 /// sections, one record per open temporary file and its buffer (two read,
 /// one written: 8 KiB each), the joined state (nothing here) and the edit
-/// set (one edit, eight `first` digests). The bound below, 4 MiB of
-/// growth, is that plus the allocator's and the standard library's slack
-/// (thread stacks are not used with one thread); and the growth from a
-/// thousand shards to ten thousand stays within 1 MiB, since nothing held
-/// grows with the observers.
+/// set (one edit, eight `first` digests): well under 100 KiB. The bound
+/// below, 1 MiB of growth, is that plus the allocator's slack (thread
+/// stacks are not used with one thread); and the growth from a thousand
+/// shards to ten thousand stays within 256 KiB, since nothing held grows
+/// with the observers or the runs. (A state kept per run, 5,000 runs of
+/// 2 shards, grew it by about 1 MiB.)
 #[test]
 fn one_site_ten_thousand_shards_fan_in_two() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut growth = Vec::new();
-    for n in [1_000, 10_000] {
+    // The first call of the process warms the allocator and the standard
+    // library; it is not compared.
+    for n in [1_000, 1_000, 10_000] {
         let store = Lazy { n, make: one_site };
         let o = Options { fan_in: 2, threads: 1, scratch: scratch("one-site") };
         let start = Instant::now();
@@ -109,11 +112,11 @@ fn one_site_ten_thousand_shards_fan_in_two() {
         eprintln!("one site, {n} shards, fan_in 2: {took:?}, peak growth {g:?} KiB");
         growth.push(g);
     }
-    match (growth[0], growth[1]) {
+    match (growth[1], growth[2]) {
         (Some(small), Some(large)) => {
-            assert!(large <= 4 * 1024, "one site of 10000 shards grew the peak by {large} KiB");
+            assert!(large <= 1024, "one site of 10000 shards grew the peak by {large} KiB");
             assert!(
-                large <= small + 1024,
+                large <= small + 256,
                 "the peak grows with the shards: {small} KiB for 1000, {large} KiB for 10000"
             );
         }

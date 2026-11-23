@@ -145,16 +145,12 @@ impl Least {
 }
 
 /// Runs `job(0..count)` on up to `threads` threads, each taking the next
-/// index. Stops handing out work after the first `Err`; returns the
-/// results in index order, or that error.
-fn pool<T: Send>(
-    threads: usize,
-    count: usize,
-    job: &(dyn Fn(usize) -> Result<T, String> + Sync),
-) -> Result<Vec<T>, String> {
+/// index. Stops handing out work after the first `Err` and returns it.
+/// Nothing is kept per job: a job folds its result into shared state, so
+/// that memory does not grow with the number of runs (§5.6).
+fn pool(threads: usize, count: usize, job: &(dyn Fn(usize) -> Result<(), String> + Sync)) -> Result<(), String> {
     let next = AtomicUsize::new(0);
     let failed = Mutex::new(None::<String>);
-    let out: Mutex<Vec<(usize, T)>> = Mutex::new(Vec::new());
     let work = || {
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
@@ -162,7 +158,7 @@ fn pool<T: Send>(
                 break;
             }
             match job(i) {
-                Ok(t) => out.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((i, t)),
+                Ok(()) => {}
                 Err(e) => {
                     next.store(count, Ordering::Relaxed);
                     let mut f = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -182,12 +178,10 @@ fn pool<T: Send>(
             }
         });
     }
-    if let Some(e) = failed.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
-        return Err(e);
+    match failed.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        Some(e) => Err(e),
+        None => Ok(()),
     }
-    let mut out = out.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
-    out.sort_by_key(|x| x.0);
-    Ok(out.into_iter().map(|x| x.1).collect())
 }
 
 /// A run of the first pass: its shards' joined state.
@@ -432,16 +426,21 @@ fn run(
             files.iter().map(|&pid| (builder.paths[pid as usize].as_slice(), pid)).collect();
         let n_runs = n.div_ceil(fan_in);
         let least = Least::new();
-        let parts = pool(options.threads, n_runs, &|r| second_pass_run(shards, scratch, fan_in, r, &wanted, &least))
-            .map_err(ReduceError::Io)?;
+        // A union: the order in which runs finish does not matter.
+        let joined_seen = Mutex::new(BTreeMap::<u32, BTreeSet<(u64, Digest)>>::new());
+        pool(options.threads, n_runs, &|r| {
+            let part = second_pass_run(shards, scratch, fan_in, r, &wanted, &least)?;
+            let mut all = joined_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (pid, s) in part {
+                all.entry(pid).or_default().extend(s);
+            }
+            Ok(())
+        })
+        .map_err(ReduceError::Io)?;
         if let Some((i, m)) = least.take() {
             return Err(input(i, m));
         }
-        for p in parts {
-            for (pid, s) in p {
-                seen.entry(pid).or_default().extend(s);
-            }
-        }
+        seen = joined_seen.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     builder.file_agreement(&seen);
     builder.groups(request.indivisible, &refused_subjects, !selection.refusals.is_empty());
