@@ -922,3 +922,32 @@ fn s10_4_found_is_the_first_other_reference() {
     let got = one(src, &[Named("c::f()")]);
     assert_eq!(fails(&got[0]).expect("fails"), (Some(key(src, "a::f()")), "a::f()".into()));
 }
+
+// A user-defined literal: the call of the literal operator has no entry
+// (and `ranges` gives no range beginning inside a token): not seen,
+// whatever the obligation covers.
+#[test]
+fn attack_a_user_defined_literal() {
+    let src = "unsigned long long operator\"\"_k(unsigned long long);\nunsigned long long x = «12_k» + 12«_k»;\n";
+    let n = "operator\"\"_k(unsigned long long)";
+    assert_eq!(one(src, &[Named(n), Named(n)]), [NotSeen, NotSeen]);
+}
+
+// An operator function named explicitly whose last token is `>>`: the
+// name span is Kiln's, ending where its token ends (the split-`>`
+// refusal is `ranges::file_range`'s, which the check does not call).
+#[test]
+fn attack_operator_shift() {
+    let src = "struct S {};\nint operator>>(S, int);\nint operator<<(S, int);\nint u(S s) { return «operator>>»(s, 1); }\n";
+    assert_eq!(one(src, &[Named("operator>>(S, int)")]), [Holds]);
+    assert!(fails(&one(src, &[Named("operator<<(S, int)")])[0]).is_some());
+}
+
+// Inside a class template, a non-dependent name is resolved once at the
+// definition; two instantiations add no second reference at its range.
+#[test]
+fn attack_a_class_template_instantiated_twice() {
+    let src = "int f();\nint h();\ntemplate <class T> struct W { int m() { return «f»(); } };\nint u() { return W<int>().m() + W<long>().m(); }\n";
+    assert_eq!(one(src, &[Named("f()")]), [Holds]);
+    assert!(fails(&one(src, &[Named("h()")])[0]).is_some());
+}
