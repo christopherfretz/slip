@@ -1,0 +1,3 @@
+# R10: Widget renamed Gadget; read names it only through the alias Handle,
+# whose target is respelled. Types are written canonically.
+good: verified

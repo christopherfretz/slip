@@ -126,6 +126,11 @@ and **derived** otherwise. Derived units are:
 - an entity every declaration of which an instantiation made outside its
   class (below), such as a friend declared only by a class template;
 - a builtin function or type Kiln declares on first use;
+- an entity that would be declared but **no declaration of which has a
+  location** (Kiln's implicit global allocation and deallocation
+  functions while no source redeclares them, `__int128_t`, an implicit
+  `std::align_val_t`), whatever flags its declarations carry: a unit
+  only if referenced, as a builtin (`spec/landed/model/WP-050.md`);
 - the object of a class-type constant used as a template argument, keyed
   by its content;
 - a **resolved property** of a declared unit (kind `resolved`, parent the
@@ -731,7 +736,7 @@ tool's version), so no shard of one scheme meets a reader of another, and
 `scheme` stays 1 until then.
 
 - A declared unit belongs to the group of the file that holds the entity's
-  first declaration in the translation unit. A derived unit belongs to the
+  first declaration in the translation unit that has a location (below). A derived unit belongs to the
   derived group of the file that holds the first declaration of what it
   derives from (the template, the class, the function). The single `tu`
   group holds the order unit and every namespace: a namespace is reopened
@@ -750,14 +755,20 @@ tool's version), so no shard of one scheme meets a reader of another, and
   manager and refuses any other buffer that is not one of the shard's
   inputs (`spec/model.md` §8.5 "Subject paths"); the snippet runner of
   the tests gives the snippet's path.
-- A declared unit whose first declaration has **no location** (the walk
-  finds no file for it) is written with the empty path. The walk does not
-  invent a file and does not drop the unit; a shard that holds such a
-  group breaks `spec/model.md` §8.2 and is refused where it is written
-  (`spec/model.md` §8.5). An entity that Kiln declares without a
-  location and that §2.1 makes a declared unit is therefore a defect of
-  the tables to be decided (derived, as builtins are, or `tu`), not a
-  case this section covers: none is known.
+- A declaration Kiln makes with **no location** (an implicit global
+  `operator new`, `__int128_t`, an implicit `std::align_val_t`) has no
+  file. The **origin file** of a unit is the file of its origin
+  declaration if that has a location, else of the first declaration of
+  its chain, in chain order (earliest first), that has one: a
+  redeclaration in source (`<new>`'s `operator new`) puts the entity in
+  that file's group. The declaration without a location stays in the
+  chain and is read like any other; only the file is taken elsewhere.
+  An entity no declaration of which has a location is derived (§2.2), so
+  no declared unit has the empty path. Should the walk find none all the
+  same, the unit is written in the derived group with the empty path and
+  is indeterminate, `Unaccounted("unit/file")`; a shard holding a
+  declared group with the empty path still breaks `spec/model.md` §8.2
+  and is refused where it is written (`spec/model.md` §8.5).
 - Two units of one group with the same key and digest are one unit.
 - **Detail** is a parameter of the walk: `none` (no `units` lists), `all`,
   a list of groups by `(class, file)`, or `differing` from a list of

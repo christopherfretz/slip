@@ -1,0 +1,7 @@
+# R05: the inner local b renamed. A local is not a unit and its name is not
+# digested (spec/digest.md §4.3): nothing is declared. good renames it to a
+# fresh name, good-2 renames the outer local; bad gives it the name of the
+# outer local that the block also uses.
+good:   verified
+good-2: verified
+bad:    mismatch changed f() @ main.cpp:5

@@ -338,11 +338,15 @@ whole file. The order of checks is:
    `binding`, `rule_use` and `spellings` (§8). Within `digests` and
    `verdict` the rules are checked in the order of their tables, **each
    rule over the whole section, in field and element order, before the
-   next rule**; `edits.md` §4.7 states its own order.
+   next rule**; `edits.md` §4.7 states its own order. The edit set's
+   are checked in the order of `edits.md` §6.1's table, the overlay's
+   and the result's in the order §7.1 and §8.5 list them
+   (`spec/landed/edits/WP-061.md` gives the order within each); the
+   transform run record has none.
 
 `dump` and `content_id` dispatch on bytes 8–11 of the file; a file whose kind
 is none of those `slip_model::formats` reads (`PLAN`, `SHRD`, `RUNR`,
-`DECL`, `TRFM`) is opened as a plan, which reports `BadMagic` (or
+`DECL`, `TRFM`, `EDTS`, `OVLY`, `RSLT`, `RUNT`) is opened as a plan, which reports `BadMagic` (or
 `Truncated` for a short prefix of a valid header). `content_id` returns the
 trailer only once the file has been fully validated as by `from_bytes`.
 
@@ -378,6 +382,8 @@ impl Plan {
 pub fn dump(bytes: &[u8]) -> Result<String, wire::Error>;      // any kind → pretty JSON, for `slip dump`
 pub fn undump(value: &json::Value) -> Result<Vec<u8>, JsonFormError>;
 pub fn content_id(bytes: &[u8]) -> Result<Digest, wire::Error>;
+/// (plan, round, started_unix_ns) of a RUNT file, validated as by TransformRun::from_bytes.
+pub fn transform_run_names(bytes: &[u8]) -> Result<(Digest, u64, u64), wire::Error>;
 pub fn encode_observer(observer: &Observer, out: &mut Encoder);
 pub fn decode_observer(input: &mut Decoder<'_>) -> Result<Observer, wire::Error>;
 pub fn encode_phase(phase: Phase, out: &mut Encoder);
@@ -392,7 +398,7 @@ impl Status { pub const ALL: [Status; 4]; pub fn name(self) -> &'static str; }
 impl End    { pub const ALL: [End; 5];    pub fn name(self) -> &'static str; }
 ```
 
-- `undump` is the inverse of `dump`, for any of the three kinds. It is the
+- `undump` is the inverse of `dump`, for any of the nine kinds. It is the
   only JSON → binary path that keeps unknown ignorable sections (§5.4).
 - `encode_observer`, `decode_observer`, `encode_phase` and `decode_phase`
   are the §7 `Observer` record and the §8 `Phase` enumeration on their own,
@@ -411,8 +417,13 @@ impl End    { pub const ALL: [End; 5];    pub fn name(self) -> &'static str; }
   `binding: Option<Binding>` and `rule_use: Option<RuleUse>`
   (`slip_model::agreement`) and `spellings: Option<Spellings>`
   (`slip_model::spellings`), in that order; an absent section is `None`.
-- `Transform` (`slip_model::transform`, kind `TRFM`, `edits.md` §3) has
-  the same interface as the three above.
+- `Transform` (`slip_model::transform`, kind `TRFM`, `edits.md` §3),
+  `EditSet` (`slip_model::editset`, `EDTS`, §6), `Overlay`
+  (`slip_model::overlay`, `OVLY`, §7.1), `TransformResult`
+  (`slip_model::result`, `RSLT`, §8.5) and `TransformRun`
+  (`slip_model::transform_run`, `RUNT`, §10.6) have the same interface
+  as the three above. `transform_run_names` is for the store
+  (`exec.md` §2.2), which may not name the type.
 - `ALL` lists every value of the enumeration once, in code order; `name()`
   is its name in §7–§9, the one the JSON rendering uses (§10).
 
@@ -824,6 +835,11 @@ on the finished unit. It is what `slip parse` runs (`spec/exec.md` §8.2).
 
 ```rust
 // slip_digest::map
+/// The map task's walk: `None` when `unit.errors()` is not 0 (the walk is
+/// not run), else `Some(digest_unit(unit, options, subject))`. The worker
+/// calls this and no method of `Unit` (§8.4).
+pub fn map_unit(unit: &slip_kiln::Unit<'_>, options: &Options<'_>,
+                subject: &dyn Fn(&[u8]) -> Vec<u8>) -> Option<Result<Output, String>>;
 /// The walk over a finished unit. `subject` maps the real path of an
 /// input to its subject path (`spec/verify.md` §5.1); the identity for
 /// the map phase.
@@ -842,8 +858,9 @@ pub fn cause_word(text: &str) -> String;
 ```
 
 **The walk** runs inside the closure of `parse_observer_with`, on the
-front end's thread, when `unit.errors()` is 0; with errors it does not
-run and the shard is the parse task's (`diagnosed`, no `digests`). Rules:
+front end's thread, when `unit.errors()` is 0 (`map_unit`); with errors
+it does not run, so neither do its checks, and the shard is the parse
+task's (`diagnosed`, no `digests`). Rules:
 none; detail: `none`; names: not asked for.
 
 - **The stack.** The walk bounds its own recursion and needs
@@ -872,10 +889,15 @@ none; detail: `none`; names: not asked for.
   error when the closure ran (an error the driver reported, a count
   raised by `-Werror` after it), the walk's result is dropped: `digests`
   are for `ok` shards only (§8.2 rule 1).
-- A shard that breaks §8.2 (a declared unit whose file is empty: a
-  declaration without a location) fails the job through the worker's
-  validation (`spec/exec.md` §5.5). It is not repaired by dropping the
-  unit or inventing a file.
+- A shard that breaks §8.2 fails the job through the worker's
+  validation (`spec/exec.md` §5.5). The walk gives no declared unit the
+  empty path for want of a location (`digest.md` §11: the file of the
+  earliest declaration that has one; an entity with none is derived; a
+  declared unit that should still have none is written in the derived
+  group, `Unaccounted("unit/file")`). A declared group with the empty
+  path can still come from a caller's `subject` that answers the empty
+  path for an input; that shard is refused, not repaired by dropping
+  the unit or inventing a file.
 
 **Counters.** Those of the parse task; those of `digest.md` §12; the
 walk's count of indeterminate keys by cause, `digest.indeterminate.<cause>`
@@ -1045,11 +1067,15 @@ form as it has one binary form (§1 rule 1):
   `stack_remaining` inside the closure, and `__DATE__` and `__TIME__`
   fixed with `SOURCE_DATE_EPOCH` set in the test's environment.
 - `crates/slip_digest/tests/map.rs` — §8.5 on observers the test writes
-  to a directory of its own: the walk skipped on a unit with errors;
-  subject paths of inputs, of the predefines, and through a `subject`
+  to a directory of its own: subject paths of inputs, of the predefines, and through a `subject`
   that maps a root; too little stack (`-fkiln-stack-size=`) as `Err`;
   the cause counters and `cause_word` on every cause text of the crate;
-  the same shard bytes from two runs.
+  the same shard bytes from two runs; the group files of the
+  declarations Kiln makes without a location (`digest.md` §11).
+- The unit tests of `crates/slip_cli/src/worker.rs` — the map task: an
+  `ok` shard gets `digests` and counters; the walk skipped on a unit with
+  errors (also with a stack too small for the walk: `diagnosed`, not
+  `Err`); too little stack fails the job; the jobs it refuses.
 - `crates/slip_cli/tests/cli.rs` — §8.5 through the executable: `slip
   parse` gives every `ok` shard a `digests` section and the counters; a
   `diagnosed` shard has neither.
