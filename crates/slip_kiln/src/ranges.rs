@@ -72,6 +72,22 @@ pub fn file_range_of_span(sm: &SourceManager, span: Span) -> Option<FileRange> {
         return None;
     }
     let (file, lo, hi) = sm.editable_file_range(span)?;
+    // An AST node's end may lie before its begin (a structured binding's
+    // member reference begins at its name and ends at the `[`): such a
+    // span, or one Kiln maps to an empty or reversed range, is no range.
+    if lo >= hi {
+        return None;
+    }
+    // Not a file the unit entered: `#embed`'s tokens, a `##` result.
+    if sm.is_written_in_scratch_space(sm.loc(file, lo)) {
+        return None;
+    }
+    // INTERIM (until Kiln records directive lines and skipped groups,
+    // `spec/landed/api/WP-084.md` "Until Kiln answers"): a range that holds
+    // a directive or part of a skipped group is no range.
+    if touches_directive(sm.text(file).as_bytes(), lo as usize, hi as usize) {
+        return None;
+    }
     // Kiln's rules 1 to 3 on the span as given: each end that is a macro
     // location passes its rule (both rules are the identity on a file
     // location). Otherwise Kiln answered through rule 4.
@@ -85,11 +101,63 @@ pub fn file_range_of_span(sm: &SourceManager, span: Span) -> Option<FileRange> {
 /// `last` (the locations of their first characters, as an expression's
 /// `begin_loc` and `end_loc` are), or `None`.
 ///
-/// The span ends at Kiln's end of the last token ([`Unit::token_end`]);
-/// `None` when that has none, else [`file_range_of_span`].
+/// `None` unless `first` and `last` are each the start of a token as
+/// Kiln's lexer lexes the buffer ([`Unit::is_token_start`]: an AST node
+/// can begin inside a token, as a call of a user-defined literal begins
+/// at its suffix). The span ends at Kiln's end of the last token
+/// ([`Unit::token_end`]); `None` when that has none, else
+/// [`file_range_of_span`].
+///
+/// INTERIM (`spec/landed/api/WP-084.md` "Until Kiln answers"): `None`
+/// when the last token, as `token_end` lexes it, begins with `>` and is
+/// longer than one byte (`>>`, `>=`, `>>=`). The parser may have split
+/// it (`B<vt<1>> y;` ends `vt<1>` at the first `>` of `>>`), which
+/// `token_end` cannot know, and the end would be a byte too far.
 pub fn file_range(unit: &Unit<'_>, first: Loc, last: Loc) -> Option<FileRange> {
+    if !unit.is_token_start(first) || !unit.is_token_start(last) {
+        return None;
+    }
     let end = unit.token_end(last)?;
+    if may_be_split(unit.sm(), last, end) {
+        return None;
+    }
     file_range_of_span(unit.sm(), Span::new(first, end))
+}
+
+/// Whether the token `last..end` is one the parser can split at its
+/// first `>` (INTERIM, [`file_range`]).
+fn may_be_split(sm: &SourceManager, last: Loc, end: Loc) -> bool {
+    sm.span_text(Span::new(last, end)).is_some_and(|t| t.len() > 1 && t.starts_with('>'))
+}
+
+/// INTERIM: whether the bytes `lo..hi` of `text` hold a directive line or
+/// lie in one: the line `lo` is on, or a line that starts inside
+/// `lo..hi`, whose first byte after blanks, line splices and comments is
+/// `#` or `%:`. Every skipped group is bounded by such lines. It can only
+/// refuse: a raw string or a comment holding such a line is refused too.
+fn touches_directive(text: &[u8], lo: usize, hi: usize) -> bool {
+    let first = text[..lo].iter().rposition(|&c| c == b'\n').map_or(0, |k| k + 1);
+    std::iter::once(first)
+        .chain((lo..hi).filter(|&k| text[k] == b'\n').map(|k| k + 1))
+        .any(|start| starts_with_hash(text, start))
+}
+
+/// Whether the line at `k` begins, after blanks, splices and comments,
+/// with `#` or `%:`.
+fn starts_with_hash(text: &[u8], mut k: usize) -> bool {
+    loop {
+        match text.get(k..).unwrap_or_default() {
+            [b' ' | b'\t' | b'\x0b' | b'\x0c' | b'\r', ..] => k += 1,
+            [b'\\', b'\n', ..] => k += 2,
+            [b'\\', b'\r', b'\n', ..] => k += 3,
+            [b'/', b'*', rest @ ..] => match rest.windows(2).position(|w| w == b"*/") {
+                Some(p) => k += 2 + p + 2,
+                None => return false,
+            },
+            [b'#', ..] | [b'%', b':', ..] => return true,
+            _ => return false,
+        }
+    }
 }
 
 /// Bound on a walk to the root (`spec/landed/api/WP-084.md`): every step
@@ -123,7 +191,18 @@ const MAX_DEPTH: usize = 1 << 16;
 /// file although it creates it after: it holds the command line's macros
 /// and the `#include` lines of `-include`, so every location of a forced
 /// header comes before every location of the main file. Then the other
-/// roots (the main file, a buffer never included) in raw order.
+/// roots (the main file, a buffer never included, the `<scratch space>`
+/// buffer of an `#embed`) in raw order. That is wrong for `#embed`: its
+/// tokens are written in a fresh scratch buffer, a root Kiln links to no
+/// directive, so they sort after the main file (`spec/landed/api/WP-084.md`
+/// "Until Kiln answers").
+///
+/// Each call walks both chains (two allocations); a large sort pays that
+/// per comparison.
+///
+/// # Panics
+/// When a chain is longer than 2^16 locations, which only a malformed
+/// location table makes.
 pub fn unit_order(sm: &SourceManager, a: Loc, b: Loc) -> Ordering {
     if a == b {
         return Ordering::Equal;
@@ -163,6 +242,11 @@ fn root_rank(sm: &SourceManager, raw: u32) -> u8 {
 }
 
 /// The chain of `loc` to its root, `loc` first, as raw locations.
+///
+/// # Panics
+/// When the chain is longer than `MAX_DEPTH`, which only a malformed
+/// location table makes (every step goes to an older entry or an
+/// enclosing inclusion).
 fn chain(sm: &SourceManager, mut loc: Loc) -> Vec<u32> {
     let mut out = Vec::new();
     for _ in 0..MAX_DEPTH {
@@ -173,9 +257,9 @@ fn chain(sm: &SourceManager, mut loc: Loc) -> Vec<u32> {
             sm.include_loc(loc)
         };
         if !parent.is_valid() {
-            break;
+            return out;
         }
         loc = parent;
     }
-    out
+    panic!("unit_order: a chain of locations longer than {MAX_DEPTH} from {loc:?}");
 }

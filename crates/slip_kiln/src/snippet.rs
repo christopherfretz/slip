@@ -391,6 +391,8 @@ pub struct Preprocessed<'r> {
     /// Every token the preprocessor delivered, in order, without the end
     /// of file.
     pub tokens: &'r [kiln::lex::Token],
+    /// The errors the preprocessor reported.
+    pub errors: u32,
     paths: &'r HashMap<FileId, &'r str>,
 }
 
@@ -431,6 +433,7 @@ pub fn preprocess<R>(
         sm: &done.sm,
         main_file: done.main_file,
         tokens: &done.tokens,
+        errors: done.errors,
         paths: &paths,
     };
     catch_unwind(AssertUnwindSafe(|| f(&pre)))
@@ -442,6 +445,7 @@ struct PpDone {
     sm: SourceManager,
     main_file: FileId,
     tokens: Vec<kiln::lex::Token>,
+    errors: u32,
     loaded: Vec<(FileId, usize)>,
 }
 
@@ -462,7 +466,7 @@ fn preprocess_only(
         .add_virtual(main_path, main_text.to_owned())
         .map_err(|_| "the source manager's location space is exhausted".to_owned())?;
     let loaded = std::rc::Rc::new(std::cell::RefCell::new(vec![(main_file, checked.main)]));
-    let tokens = {
+    let (tokens, errors) = {
         let engine =
             DiagEngine::new(&sm, &diag_opts, TextSink::new(SharedBuffer::new(), &diag_opts));
         let mut pp = Preprocessor::new(&sm, &engine, &interner, lang.pp_options());
@@ -476,10 +480,11 @@ fn preprocess_only(
             }
             tokens.push(t);
         }
-        tokens
+        drop(pp);
+        (tokens, engine.error_count())
     };
     let loaded = loaded.borrow().clone();
-    Ok(PpDone { sm, main_file, tokens, loaded })
+    Ok(PpDone { sm, main_file, tokens, errors, loaded })
 }
 
 /// What [`front_end`] and [`preprocess_only`] set on their preprocessor

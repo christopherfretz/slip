@@ -80,13 +80,60 @@ impl Source {
         f(&snippet, &extra)
     }
 
-    /// The spellings of the tokens after phase 4.
-    fn spellings(&self) -> Result<Vec<String>, String> {
+    /// The token sequence after phase 4.
+    fn spellings(&self) -> Result<Seq, String> {
         self.with(|s, e| {
             snippet::preprocess(s, e, |pre| {
-                pre.tokens.iter().map(|t| spelling(pre.sm, t)).collect::<Vec<_>>()
+                Seq::of(pre.sm, pre.tokens, |f| pre.path(f).map(str::to_owned), pre.errors)
             })
         })
+    }
+}
+
+/// Which entry of a file produced a token: the snippet path of the file
+/// whose bytes produced it ([`producer_loc`]) and, outward, the path and
+/// line of each `#include` that entered it. Two entries of one file (a
+/// header without a guard, an X-macro `.def`) differ in the `#include`
+/// lines, and a marker moves no line ([`marker`]), so an entry is the
+/// same before and after a marking.
+type Entry = std::sync::Arc<(String, Vec<(String, u32)>)>;
+
+/// A token sequence after phase 4: each token's spelling and entry, and
+/// the errors the preprocessor reported.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Seq {
+    text: Vec<String>,
+    entry: Vec<Entry>,
+    errors: u32,
+}
+
+impl Seq {
+    fn of(
+        sm: &SourceManager,
+        toks: &[Token],
+        path: impl Fn(FileId) -> Option<String>,
+        errors: u32,
+    ) -> Seq {
+        let name = |f: Option<FileId>| f.and_then(&path).unwrap_or_else(|| "<?>".to_owned());
+        let mut cache: HashMap<(Option<FileId>, Loc), Entry> = HashMap::new();
+        let mut entry = Vec::with_capacity(toks.len());
+        for t in toks {
+            let at = producer_loc(sm, t.span.lo);
+            let file = at.and_then(|l| sm.offset_of(l)).map(|(f, _)| f);
+            let inc = at.map_or(Loc::INVALID, |l| sm.include_loc(l));
+            let e = cache.entry((file, inc)).or_insert_with(|| {
+                let mut chain = Vec::new();
+                let mut l = inc;
+                while l.is_valid() && chain.len() < 10_000 {
+                    let line = sm.line_col(l).map_or(0, |c| c.line);
+                    chain.push((name(sm.offset_of(l).map(|(f, _)| f)), line));
+                    l = sm.include_loc(l);
+                }
+                std::sync::Arc::new((name(file), chain))
+            });
+            entry.push(e.clone());
+        }
+        Seq { text: toks.iter().map(|t| spelling(sm, t)).collect(), entry, errors }
     }
 }
 
@@ -101,6 +148,8 @@ struct Seen<'a, 'r> {
     p: &'a Parsed<'r>,
     toks: &'a [Token],
     paths: &'a HashMap<FileId, String>,
+    /// The errors the preprocessor reported.
+    pp_errors: u32,
 }
 
 impl Seen<'_, '_> {
@@ -181,7 +230,7 @@ fn with_unit<R>(src: &Source, f: impl FnOnce(&Seen<'_, '_>) -> R) -> Result<R, S
                     .file_ids()
                     .filter_map(|f| pre.path(f).map(|s| (f, s.to_owned())))
                     .collect();
-                Ok(f(&Seen { p, toks: pre.tokens, paths: &paths }))
+                Ok(f(&Seen { p, toks: pre.tokens, paths: &paths, pp_errors: pre.errors }))
             })
         })
     })
@@ -548,9 +597,6 @@ struct Tally {
     ranges: [u64; 2],
     /// Spans (distinct first and last token) given no range, by reason.
     none: BTreeMap<&'static str, u64>,
-    /// Spans with a range the property could not be checked for, by
-    /// reason.
-    unchecked: BTreeMap<&'static str, u64>,
     /// Expressions seen.
     exprs: u64,
     /// Errors the front end reported for the units.
@@ -559,7 +605,12 @@ struct Tally {
     skipped: BTreeMap<String, u64>,
     /// References and declaration names of test 6.
     refs: u64,
+    /// The declaration names among them.
+    names: u64,
+    /// Those whose end is the end of no token of the sequence.
     refs_unchecked: u64,
+    /// Those `file_range` refuses because their last token may be split.
+    refs_split: u64,
     failures: Vec<String>,
     /// With `SLIP_RANGES_DETAIL` set: each span with no range or not
     /// checked, and why.
@@ -574,16 +625,15 @@ impl Tally {
         for (k, v) in o.none {
             *self.none.entry(k).or_default() += v;
         }
-        for (k, v) in o.unchecked {
-            *self.unchecked.entry(k).or_default() += v;
-        }
         for (k, v) in o.skipped {
             *self.skipped.entry(k).or_default() += v;
         }
         self.exprs += o.exprs;
         self.errors += o.errors;
         self.refs += o.refs;
+        self.names += o.names;
         self.refs_unchecked += o.refs_unchecked;
+        self.refs_split += o.refs_split;
         self.failures.extend(o.failures);
         self.notes.extend(o.notes);
     }
@@ -600,12 +650,11 @@ impl Tally {
             self.failures.len()
         );
         let _ = writeln!(s, "spans with no range, by reason: {:?}", self.none);
-        let _ = writeln!(s, "ranges not checked, by reason: {:?}", self.unchecked);
         let _ = writeln!(s, "units skipped, by reason: {:?}", self.skipped);
         let _ = writeln!(
             s,
-            "test 6: references and names {}, unchecked {}",
-            self.refs, self.refs_unchecked
+            "test 6: references and names {} (names {}), unchecked {}, refused as a possibly split `>` {}",
+            self.refs, self.names, self.refs_unchecked, self.refs_split
         );
         s
     }
@@ -616,10 +665,15 @@ impl Tally {
 /// the invocation (so a token of a macro invoked inside an argument is
 /// produced by the bytes of that invocation). An oracle of this test,
 /// not a rule of `ranges`.
-fn producer(sm: &SourceManager, mut loc: Loc) -> Option<(FileId, u32)> {
+fn producer(sm: &SourceManager, loc: Loc) -> Option<(FileId, u32)> {
+    sm.offset_of(producer_loc(sm, loc)?)
+}
+
+/// [`producer`] as a location (in the inclusion that holds it).
+fn producer_loc(sm: &SourceManager, mut loc: Loc) -> Option<Loc> {
     for _ in 0..10_000 {
         if !loc.is_macro() {
-            return sm.offset_of(loc);
+            return loc.is_valid().then_some(loc);
         }
         let e = sm.expansion_info(loc)?;
         loc = match e.kind {
@@ -667,7 +721,7 @@ fn marker(replaced: &str) -> (String, String) {
 
 /// The token spellings of `src` with the bytes of `r` replaced by the
 /// marker ([`marker`]): what [`check_range`] compares with.
-fn marked(src: &Source, u: &Seen<'_, '_>, r: FileRange) -> Result<Vec<String>, String> {
+fn marked(src: &Source, u: &Seen<'_, '_>, r: FileRange) -> Result<Seq, String> {
     marked_by(src, &marking(u, r)?)
 }
 
@@ -678,7 +732,7 @@ fn marking(u: &Seen<'_, '_>, r: FileRange) -> Result<(String, usize, usize, Stri
     Ok((path.clone(), r.lo as usize, r.hi as usize, with))
 }
 
-fn marked_by(src: &Source, m: &(String, usize, usize, String)) -> Result<Vec<String>, String> {
+fn marked_by(src: &Source, m: &(String, usize, usize, String)) -> Result<Seq, String> {
     src.replaced(&m.0, m.1, m.2, &m.3).spellings()
 }
 
@@ -719,8 +773,23 @@ fn none_reason(u: &Seen<'_, '_>, first: Loc, last: Loc) -> &'static str {
     if !first.is_valid() || !last.is_valid() {
         return "invalid location";
     }
-    if u.p.unit().token_end(last).is_none() {
-        return "no token ends the span";
+    let unit = u.p.unit();
+    if !unit.is_token_start(first) || !unit.is_token_start(last) {
+        return "an end inside a token";
+    }
+    let Some(end) = unit.token_end(last) else { return "no token ends the span" };
+    if u.sm().span_text(Span::new(last, end)).is_some_and(|x| x.len() > 1 && x.starts_with('>')) {
+        return "interim: the last token may be a split `>`";
+    }
+    // Kiln gave a range that `file_range_of_span` refused.
+    if let Some((f, lo, hi)) = u.sm().editable_file_range(Span::new(first, end)) {
+        if lo >= hi {
+            return "an empty or reversed span";
+        }
+        if u.sm().is_written_in_scratch_space(u.sm().loc(f, lo)) {
+            return "a scratch buffer";
+        }
+        return "interim: the range holds or is in a directive line";
     }
     match (first.is_macro(), last.is_macro()) {
         (false, false) => "kiln: file to file (two buffers, or out of order)",
@@ -731,23 +800,66 @@ fn none_reason(u: &Seen<'_, '_>, first: Loc, last: Loc) -> &'static str {
 }
 
 /// Checks the property of test 4 for one range `r` of tokens `i..=j` of
-/// `u`, whose source is `src`; `Err` says how it fails.
+/// `u`; `Err` says how it fails. The marked source reports the same
+/// preprocessing errors; the tokens of every other file are unchanged;
+/// and the property holds in the entry of the file that holds the span
+/// ([`Entry`]). Other entries of the same file are not checked: what an
+/// edit of a file entered twice does is for the votes (`spec/edits.md`
+/// §4.3).
+fn check_range(
+    u: &Seen<'_, '_>,
+    before: &Seq,
+    after: &Result<Seq, String>,
+    r: FileRange,
+    i: usize,
+    j: usize,
+) -> Result<(), String> {
+    let after = after.as_ref().map_err(Clone::clone)?;
+    if after.errors != before.errors {
+        return Err(format!(
+            "the marked source has {} preprocessing errors, the source {}",
+            after.errors, before.errors
+        ));
+    }
+    let file = u.paths.get(&r.file).map_or("<?>", String::as_str);
+    let outside = |q: &Seq| -> Vec<String> {
+        q.text.iter().zip(&q.entry).filter(|(_, e)| e.0 != file).map(|(t, _)| t.clone()).collect()
+    };
+    let (b, a) = (outside(before), outside(after));
+    if a != b {
+        return Err(diff("the tokens of other files", &b, &a));
+    }
+    let entry = &before.entry[i];
+    if before.entry[j] != *entry {
+        return Err("the span is in two entries".into());
+    }
+    let sel: Vec<usize> = (0..before.text.len()).filter(|&k| before.entry[k] == *entry).collect();
+    let toks: Vec<Token> = sel.iter().map(|&k| u.toks[k]).collect();
+    let b: Vec<String> = sel.iter().map(|&k| before.text[k].clone()).collect();
+    let a: Vec<String> =
+        after.text.iter().zip(&after.entry).filter(|(_, e)| *e == entry).map(|(t, _)| t.clone()).collect();
+    let at = |k: usize| sel.binary_search(&k).expect("a token of the entry");
+    check_entry(u, &toks, &b, &a, r, at(i), at(j))
+}
+
+/// [`check_range`] within one entry: `toks` its tokens, `before` and
+/// `after` their spellings before and after the marking, `i..=j` the span.
 #[allow(
     clippy::too_many_lines,
     clippy::many_single_char_names,
     reason = "one oracle, tier by tier; `i..=j` the span, `(f, a, b)` its invocation"
 )]
-fn check_range(
+fn check_entry(
     u: &Seen<'_, '_>,
+    toks: &[Token],
     before: &[String],
-    after: &Result<Vec<String>, String>,
+    after: &[String],
     r: FileRange,
     i: usize,
     j: usize,
 ) -> Result<(), String> {
     let sm = u.sm();
     let (name, _) = marker(&sm.text(r.file)[r.lo as usize..r.hi as usize]);
-    let after = after.as_ref().map_err(Clone::clone)?.as_slice();
     let in_r = |t: &Token| {
         producer(sm, t.span.lo).is_some_and(|(f, o)| f == r.file && r.lo <= o && o < r.hi)
     };
@@ -761,7 +873,7 @@ fn check_range(
                 return Err(diff("tier 0", &want, after));
             }
             // Outside every argument: no invocation holds part of it.
-            for t in u.toks {
+            for t in toks {
                 if !t.span.lo.is_macro() {
                     continue;
                 }
@@ -779,7 +891,7 @@ fn check_range(
             }
         }
         Tier::MacroArgument => {
-            let s = &u.toks[i..=j];
+            let s = &toks[i..=j];
             if !s.iter().all(|t| t.span.lo.is_macro() && in_r(t)) {
                 return Err("tier 1: a token of the span is not produced by the range".into());
             }
@@ -797,10 +909,10 @@ fn check_range(
             let of_v =
                 |t: &Token| t.span.lo.is_macro() && invocation(sm, t.span.lo) == Some((f, a, b));
             let (mut x0, mut x1) = (i, j);
-            while x0 > 0 && of_v(&u.toks[x0 - 1]) {
+            while x0 > 0 && of_v(&toks[x0 - 1]) {
                 x0 -= 1;
             }
-            while x1 + 1 < u.toks.len() && of_v(&u.toks[x1 + 1]) {
+            while x1 + 1 < toks.len() && of_v(&toks[x1 + 1]) {
                 x1 += 1;
             }
             let tail = before.len() - x1 - 1;
@@ -816,7 +928,7 @@ fn check_range(
             let mut prev: Option<Option<Loc>> = None;
             let mut span_is_a_use = false;
             let key = |t: &Token| use_key(sm, t.span.lo);
-            for (k, t) in u.toks.iter().enumerate().take(x1 + 1).skip(x0) {
+            for (k, t) in toks.iter().enumerate().take(x1 + 1).skip(x0) {
                 if in_r(t) {
                     let new_use = prev != Some(key(t));
                     if new_use {
@@ -835,7 +947,7 @@ fn check_range(
                     }
                 }
             }
-            if u.toks.get(j + 1).is_some_and(|n| in_r(n) && key(n) == key(&u.toks[j])) {
+            if toks.get(j + 1).is_some_and(|n| in_r(n) && key(n) == key(&toks[j])) {
                 return Err("tier 1: the span ends inside a use of the argument".into());
             }
             if !span_is_a_use {
@@ -891,7 +1003,7 @@ fn property_of(
         let index: HashMap<Loc, usize> =
             u.toks.iter().enumerate().map(|(k, t)| (t.span.lo, k)).collect();
         let mut seen: HashSet<(Loc, Loc)> = HashSet::new();
-        let before: Vec<String> = u.toks.iter().map(|t| spelling(sm, t)).collect();
+        let before = Seq::of(sm, u.toks, |f| u.paths.get(&f).cloned(), u.pp_errors);
         let progress = only.is_some();
         let mut pending: Vec<(ExprId, FileRange, usize, usize)> = Vec::new();
         let exprs = (1..=ast.exprs.len())
@@ -917,11 +1029,13 @@ fn property_of(
                 }
                 continue;
             };
+            // A range is given only for tokens: one the property cannot
+            // check is a failure.
             let (Some(&i), Some(&j)) = (index.get(&first), index.get(&last)) else {
-                *t.unchecked.entry("a token of the span is not in the sequence").or_default() += 1;
-                if detail {
-                    t.notes.push(format!("{label}: not in the sequence: {kind:?} `{}`", u.text(r)));
-                }
+                t.failures.push(format!(
+                    "{label}: a range for a span whose ends are no tokens of the sequence: {kind:?} `{}`",
+                    u.text(r)
+                ));
                 continue;
             };
             if i > j {
@@ -972,17 +1086,20 @@ fn property_of(
         let spans = ast
             .written_refs
             .iter()
-            .map(|(_, w)| w.range)
-            .chain(ast.decl_extents.iter().map(|(_, d)| d.name))
-            .filter(|s| s.lo.is_valid());
-        for s in spans {
+            .map(|(_, w)| (w.range, false))
+            .chain(ast.decl_extents.iter().map(|(_, d)| (d.name, true)))
+            .filter(|(s, _)| s.lo.is_valid());
+        for (s, name) in spans {
             t.refs += 1;
+            t.names += u64::from(name);
             let Some(&last) = ends.get(&s.hi) else {
                 t.refs_unchecked += 1;
                 continue;
             };
             let a = file_range(u.p.unit(), s.lo, last);
-            let b = file_range_of_span(sm, s);
+            let split = sm.span_text(Span::new(last, s.hi)).is_some_and(|x| x.len() > 1 && x.starts_with('>'));
+            let b = if split { None } else { file_range_of_span(sm, s) };
+            t.refs_split += u64::from(split);
             if a != b {
                 t.failures.push(format!("{label}: test 6: {a:?} != {b:?} for {s:?}"));
             }
@@ -1051,7 +1168,7 @@ fn s5_4_test4_property_on_macro_snippets() {
 fn s5_4_test4_checker_catches_wrong_ranges() {
     let src = Source::new("#define F(x) (x)\nint a, b;\nint v = F(a + b) + a;\n", &[]);
     with_unit(&src, |u| {
-        let before: Vec<String> = u.toks.iter().map(|t| spelling(u.sm(), t)).collect();
+        let before = Seq::of(u.sm(), u.toks, |f| u.paths.get(&f).cloned(), u.pp_errors);
         let (i, j) = (u.nth("a", 1), u.nth("b", 1));
         let r = u.range(i, j).unwrap();
         assert_eq!(check_range(u, &before, &marked(&src, u, r), r, i, j), Ok(()));
