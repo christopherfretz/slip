@@ -682,8 +682,15 @@ impl<'r> Unit<'r> {
     pub fn real_path(&self, file: kiln::source::FileId) -> Option<&'r [u8]>;
     pub fn errors(&self) -> u32;
     pub fn stack_remaining(&self) -> Option<usize>;
+    pub fn token_end(&self, at: kiln::source::Loc) -> Option<kiln::source::Loc>;
 }
 ```
+
+`token_end(at)` is Kiln's `kiln_lex::token_end` with the unit's interner
+and lexer options (`Preprocessor::lex_options`): the end of the token
+that starts at `at`, or `None` (Kiln `spec/lex.md` "End of a token").
+It is the only holder in Slip of either; `slip_kiln::ranges` reaches the
+end of a token through it (`spec/landed/api/WP-084.md`).
 
 `stack_remaining()` is the stack left on the calling thread under Kiln's
 stack guard (`kiln_sema::stack_guard::StackGuard::current().remaining()`):
