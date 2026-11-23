@@ -680,6 +680,21 @@ fn s7_3_journal_record() {
     bad(&|x| x.files.reverse(), "ascending");
     bad(&|x| x.files[0].staged = b"/etc/passwd".to_vec(), "staged name");
     bad(&|x| x.files[0].post = x.files[0].pre, "pre and post");
+    // Untrusted bytes: every prefix and every byte changed, never a panic;
+    // a change is either refused or read as a journal that writes back to
+    // the same bytes.
+    for n in 0..bytes.len() {
+        assert!(Journal::from_bytes(&bytes[..n]).is_err());
+    }
+    for i in 0..bytes.len() {
+        for v in [0u8, 1, 0x7f, 0x80, 0xff, bytes[i] ^ 1] {
+            let mut x = bytes.clone();
+            x[i] = v;
+            if let Ok(r) = Journal::from_bytes(&x) {
+                assert_eq!(r.to_bytes(), x);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
