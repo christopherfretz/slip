@@ -258,7 +258,9 @@ fn push_list_raw(w: &Walk<'_>, raw: u32, stack: &mut Vec<P>) {
 fn nns_opt(w: &mut Walk<'_>, s: &mut Stream, n: Option<NnsId>) {
     s.opt(n.is_some());
     if let Some(n) = n {
-        w.write_nns(s, n);
+        // Profile mode mirrors Kiln's profile, which is canonical; the
+        // written form is rule 1's, and the mark is raised below.
+        w.write_canonical_nns(s, n);
         if crate::own_spelling::nns_left_out(w, n) {
             raise_unlisted(w);
         }
@@ -425,7 +427,9 @@ fn spelled_nns(w: &mut Walk<'_>, s: &mut Stream, nns: NnsId) {
             }
             Nns::Type { prefix: _, ty: _, template_kw: _ } | Nns::Splice(_) => {
                 s.uv(6);
-                w.write_nns(s, n);
+                // As `nns_opt`: canonical in the profile, the mark raised
+                // by `spelled_nns` (`nns_left_out`).
+                w.write_canonical_nns(s, n);
             }
         }
     }
@@ -621,6 +625,16 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             let l = x.decl_ref_extra(e).and_then(|r| r.template_args);
             ref_args(w, s, d, l, stack);
             if crate::own_spelling::name_parts_left_out(w, d) {
+                raise_unlisted(w);
+            }
+            // A destructor named as written (rule 11).
+            if crate::own_spelling::is_destructor(w, d) {
+                raise_unlisted(w);
+            }
+            // An overloaded member's qualifier (rule 11).
+            if let Some(q) = x.cold.member_overload.get(e).and_then(|m| m.qualifier)
+                && crate::own_spelling::nns_left_out(w, q)
+            {
                 raise_unlisted(w);
             }
             stack.push(P::Opt(id(n.a())));

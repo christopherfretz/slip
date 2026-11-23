@@ -710,18 +710,37 @@ fn qualifier_lost(w: &Walk<'_>, e: ExprId) -> bool {
 }
 
 /// The stream being written can hold an instantiation-dependent operand
-/// (rule 11): its holder is a template, a template's pattern, a partial
-/// specialisation or lexically inside one, or the walk is inside a
-/// generic lambda or an instantiation-dependent expression. A stream that
-/// is no unit's own (a content digest) counts as one: nothing says
-/// otherwise. Outside these, a qualifier names what it names at its
-/// point of use, which the node's other fields already write.
+/// (rule 11): its holder is templated ([`templated`]), or the walk is
+/// inside a generic lambda's body, whose call operator is a template
+/// (`local::lambda_expr`). A stream that is no unit's own (a content
+/// digest) counts as one: nothing says otherwise.
 pub(crate) fn templated_stream(w: &Walk<'_>) -> bool {
     let Some(h) = w.unit.local.holder else { return true };
-    w.unit.local.generic > 0
-        || w.unit.expr.dependent > 0
-        || templated_decl(w, h)
-        || templated_context(w, h)
+    w.unit.local.generic > 0 || templated(w, h)
+}
+
+/// A destructor named by member access as written (`q->~X<..>()`): Kiln
+/// resolves it to the destructor and keeps neither the type-name nor its
+/// arguments, which can hold an instantiation-dependent operand.
+pub(crate) const DESTRUCTOR_NAME: Cause = Cause::Unaccounted("spelling/destructor-name");
+
+/// `d` is a destructor.
+pub(crate) fn is_destructor(w: &Walk<'_>, d: DeclId) -> bool {
+    w.ast.decls.get(d).kind() == DeclKind::CXXDestructor
+}
+
+/// A destructor named by member access in the full walk (rule 11), in a
+/// templated stream: in a unit stream `spelling/destructor-name`;
+/// elsewhere the mark.
+pub(crate) fn destructor_name(w: &mut Walk<'_>, s: &mut Stream, _: ExprId) {
+    if !templated_stream(w) {
+        return;
+    }
+    if w.unit_level() {
+        s.indeterminate(DESTRUCTOR_NAME);
+    } else {
+        w.left_out += 1;
+    }
 }
 
 /// A using-declaration's qualifier as written (rule 11): its key writes
@@ -736,19 +755,55 @@ pub(crate) fn using_qualifier(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     }
 }
 
-/// A `using enum` in a templated context (rule 11): Kiln keeps the
-/// enumeration and not the qualifier or alias it was named through
-/// (`Sema::act_on_using_enum`, `kiln_sema/src/using.rs`), which can hold
-/// an instantiation-dependent operand only there, so the unit is
+/// A `using enum` in a templated declaration (rule 11, [`templated`]):
+/// Kiln keeps the enumeration and not the qualifier or alias it was named
+/// through (`Sema::act_on_using_enum`, `kiln_sema/src/using.rs`), which
+/// can hold an instantiation-dependent operand only there, so the unit is
 /// indeterminate rather than equal.
 pub(crate) fn using_enum(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
-    if w.unit_level() && templated_context(w, d) {
+    if w.unit_level() && templated(w, d) {
         s.indeterminate(Cause::Unaccounted("spelling/using-enum"));
     }
 }
 
+/// Rule 11's one notion of code that can hold an instantiation-dependent
+/// operand: `d` is templated when it, or a declaration on its semantic
+/// or its lexical context chain (each step taking either context, so an
+/// out-of-line definition is reached through its class and a friend
+/// defined in a class through the class it is written in), is a
+/// template, a template's pattern or a partial specialisation. Kiln
+/// records no template parameter lists on an out-of-line member
+/// (`template<class T> void S<T>::h()` is a `CXXMethod` whose semantic
+/// context is the pattern of `S`), so the semantic chain is what tells
+/// it. A chain that does not end within the bound is templated: what
+/// cannot be decided is never taken as not templated.
+pub(crate) fn templated(w: &Walk<'_>, d: DeclId) -> bool {
+    let decls = &w.ast.decls;
+    let mut todo = vec![d];
+    let mut seen: Vec<DeclId> = Vec::new();
+    while let Some(x) = todo.pop() {
+        if seen.contains(&x) {
+            continue;
+        }
+        if seen.len() >= 4096 {
+            return true;
+        }
+        seen.push(x);
+        if templated_decl(w, x) {
+            return true;
+        }
+        if matches!(decls.get(x).kind(), DeclKind::TranslationUnit | DeclKind::Namespace) {
+            continue;
+        }
+        todo.extend(decls.get(x).ctx());
+        todo.extend(decls.lexical_ctx(x));
+    }
+    false
+}
+
 /// `d` is a template (the declaration a unit of one is held by), a
-/// template's pattern or a partial specialisation.
+/// template's pattern (`described_template`) or a partial
+/// specialisation (`partial_spec_info`).
 fn templated_decl(w: &Walk<'_>, d: DeclId) -> bool {
     matches!(
         w.ast.decls.get(d).kind(),
@@ -760,25 +815,9 @@ fn templated_decl(w: &Walk<'_>, d: DeclId) -> bool {
             | DeclKind::ClassTemplatePartialSpecialization
             | DeclKind::VarTemplatePartialSpecialization
     ) || w.ast.described_template(d).is_some()
-}
-
-/// `d` is lexically inside a template's pattern or a partial
-/// specialisation, up to the nearest namespace.
-fn templated_context(w: &Walk<'_>, d: DeclId) -> bool {
-    let ast = w.ast;
-    let mut c = ast.decls.lexical_ctx(d);
-    for _ in 0..4096 {
-        let Some(x) = c else { return false };
-        let kind = ast.decls.get(x).kind();
-        if matches!(kind, DeclKind::TranslationUnit | DeclKind::Namespace) {
-            return false;
-        }
-        if templated_decl(w, x) {
-            return true;
-        }
-        c = ast.decls.lexical_ctx(x);
-    }
-    true
+        // Kiln gives a partial specialisation the kind `CXXRecord` or
+        // `Var`; its template link says what it is.
+        || w.ast.partial_spec_info(d).is_some()
 }
 
 /// Whether a qualifier in a profile may hold more than its canonical form
@@ -955,6 +994,17 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
             }
             if let Some(l) = x.decl_ref_extra(e).and_then(|r| r.template_args) {
                 kids.push(I::A(l));
+            }
+            // An overloaded member's qualifier and arguments (rule 11).
+            if let Some(m) = x.cold.member_overload.get(e) {
+                kids.extend(m.qualifier.map(I::N));
+                kids.extend(m.template_args.map(I::A));
+            }
+            if k == K::MemberExpr
+                && DeclId::try_new(n.b()).is_some_and(|d| is_destructor(w, d))
+                && templated_stream(w)
+            {
+                s.indeterminate(DESTRUCTOR_NAME);
             }
             if k == K::MemberExpr {
                 opt(kids, id(n.a()));

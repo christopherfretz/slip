@@ -448,12 +448,15 @@ impl Walk<'_> {
             }
             TypeView::DependentName { keyword, nns, name } => {
                 s.tag(type_view::DEPENDENT_NAME).tag(tag_keyword::row(&keyword));
-                self.write_nns(s, nns);
+                // A canonical type's own row: the written type is read by
+                // rule 2 (`own_spelling::ty`, `DependentName`) or marks.
+                self.write_canonical_nns(s, nns);
                 self.write_sym(s, name);
             }
             TypeView::DependentTemplateSpecialization { keyword, nns, name, args } => {
                 s.tag(type_view::DEPENDENT_TEMPLATE_SPECIALIZATION).tag(tag_keyword::row(&keyword));
-                self.write_nns(s, nns);
+                // As `DependentName`: rule 2 reads the written type.
+                self.write_canonical_nns(s, nns);
                 self.write_sym(s, name);
                 self.write_args(s, args);
             }
@@ -659,8 +662,13 @@ impl Walk<'_> {
         }
     }
 
-    /// `enum Nns`, canonical (digest-kinds §4.6).
-    pub(crate) fn write_nns(&mut self, s: &mut Stream, n: NnsId) {
+    /// `enum Nns`, canonical (digest-kinds §4.6): what the qualifier holds
+    /// beyond its canonical form is NOT written. A qualifier an
+    /// expression the full walk writes holds goes through
+    /// [`Walk::write_written_nns`]; every caller of this one says why the
+    /// canonical form loses nothing there (`spec/landed/digest-kinds/WP-041.md`,
+    /// "Fix round 4", the table of callers).
+    pub(crate) fn write_canonical_nns(&mut self, s: &mut Stream, n: NnsId) {
         if !self.enter() {
             s.uv(0).indeterminate(TOO_DEEP);
             return;
@@ -674,12 +682,14 @@ impl Walk<'_> {
                 let ns = self.ast.resolve_alias(ns);
                 self.write_ref(s, ns);
             }
+            // The prefix of a canonical level is canonical: its caller's
+            // reason covers it.
             Nns::Type { prefix, ty, template_kw: _ } => {
-                self.write_nns_opt(s, prefix);
+                self.write_canonical_nns_opt(s, prefix);
                 self.write_type(s, ty);
             }
             Nns::Identifier { prefix, name } => {
-                self.write_nns_opt(s, prefix);
+                self.write_canonical_nns_opt(s, prefix);
                 self.write_sym(s, name);
             }
             Nns::Splice(_) => {
@@ -697,23 +707,25 @@ impl Walk<'_> {
     /// profile walked in full) they are left out, and the mark is raised
     /// as profile mode raises it (`own_spelling::nns_left_out`).
     pub(crate) fn write_written_nns(&mut self, s: &mut Stream, n: NnsId) {
+        // The canonical form, and the written one read into the list or
+        // the mark raised: this is rule 11 itself.
         if self.unit_level() {
             self.spelling_off += 1;
-            self.write_nns(s, n);
+            self.write_canonical_nns(s, n);
             self.spelling_off -= 1;
             crate::own_spelling::left_out_of_nns(self, s, n);
         } else {
-            self.write_nns(s, n);
+            self.write_canonical_nns(s, n);
             if crate::own_spelling::nns_left_out(self, n) {
                 self.left_out += 1;
             }
         }
     }
 
-    fn write_nns_opt(&mut self, s: &mut Stream, n: Option<NnsId>) {
+    fn write_canonical_nns_opt(&mut self, s: &mut Stream, n: Option<NnsId>) {
         s.opt(n.is_some());
         if let Some(n) = n {
-            self.write_nns(s, n);
+            self.write_canonical_nns(s, n);
         }
     }
 
@@ -732,7 +744,9 @@ impl Walk<'_> {
                 s.indeterminate(sugar("TemplateName/Qualified"));
             }
             TemplateName::DependentIdentifier { nns, name } => {
-                self.write_nns(s, nns);
+                // A canonical template name inside a type: rule 2 reads
+                // the written one (`DependentTemplateSpecialization`).
+                self.write_canonical_nns(s, nns);
                 self.write_sym(s, name);
             }
             TemplateName::DependentOperator { nns: _, op: _ } => {

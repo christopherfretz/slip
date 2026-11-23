@@ -765,7 +765,9 @@ fn member_overload(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     s.opt(true);
     s.opt(qualifier.is_some());
     if let Some(q) = qualifier {
-        w.write_nns(s, q);
+        // Rule 11 (digest-kinds §4.4 "Spellings"): the qualifier as
+        // written, `x.Bk<sizeof(f(t))>::k(t)`.
+        w.write_written_nns(s, q);
     }
     s.opt(template_args.is_some());
     if let Some(l) = template_args {
@@ -794,6 +796,13 @@ fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
         out.push(Item::Bool(false));
         let member = if tail == Tail::Member { DeclId::try_new(n.b) } else { None };
         crate::expr_core::decl_ref_extra(w, member, None, out);
+    }
+    // A destructor named by member access (rule 11): Kiln keeps the
+    // destructor, not the name as written (`~X<..>`).
+    if tail == Tail::Member
+        && DeclId::try_new(n.b).is_some_and(|d| crate::own_spelling::is_destructor(w, d))
+    {
+        out.push(Item::Exec(crate::own_spelling::destructor_name, e));
     }
     // member_overload: record OverloadedMember?, on an overloaded
     // `MemberExpr` only (Kiln's `ExprArena::set_member_overload` asserts

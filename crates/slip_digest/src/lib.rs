@@ -46,7 +46,8 @@
 //! | `Walk::write_type_opt(s, q)` | `type?` |
 //! | `Walk::write_types(s, qs)` | `type*` |
 //! | `Walk::write_exc_spec(s, e)` | `enum ExcSpec` in normal form (§4.5) |
-//! | `Walk::write_nns(s, n)` | `enum Nns`, canonical (§4.6) |
+//! | `Walk::write_canonical_nns(s, n)` | `enum Nns`, canonical (§4.6); only where the canonical form loses nothing (WP-041 "Fix round 4") |
+//! | `Walk::write_written_nns(s, n)` | a qualifier an expression the full walk writes holds: canonical, the written form read (rule 11) |
 //! | `Walk::write_template_name(s, n)` | `enum TemplateName`, canonical |
 //! | `Walk::write_args(s, l)` | `enum ArgView*` of a canonical list |
 //! | `Walk::write_func_proto(s, p, exc)` | `record FuncProto` |
