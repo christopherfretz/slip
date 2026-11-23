@@ -30,6 +30,7 @@
 
 mod check;
 mod parse;
+pub mod ranges;
 
 /// Kiln's own crates, for the Slip crates whose subject is Kiln's AST.
 ///

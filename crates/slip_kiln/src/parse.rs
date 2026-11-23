@@ -12,9 +12,10 @@ use slip_model::{Counter, Digest, FileRef, Observer, Outcome, Phase, Shard, Stat
 
 use crate::check::{front_end_line, program, utf8_command};
 use crate::kiln::ast::Ast;
+use crate::kiln::lex::{Interner, LexOptions};
 use crate::kiln::oven::Oven;
 use crate::kiln::pp::PpRecord;
-use crate::kiln::source::{FileId, FileOrigin, SourceManager};
+use crate::kiln::source::{FileId, FileOrigin, Loc, SourceManager};
 
 /// What the front end of [`parse_observer_with`] keeps beyond what the
 /// parse task needs. Every option is off by default, and the shard does not
@@ -43,6 +44,11 @@ pub struct Unit<'r> {
     sm: &'r SourceManager,
     oven: &'r Oven,
     pp_record: Option<&'r PpRecord>,
+    /// The interner of the unit's identifiers and the lexer options of
+    /// its preprocessor: what `kiln_lex::token_end` needs, and read by
+    /// [`Unit::token_end`] alone (`docs/wp/WP-084.md`).
+    interner: &'r Interner,
+    lex: LexOptions,
     main_file: Option<FileId>,
     /// Each buffer that is one of `inputs`, and the index of its entry.
     buffers: &'r [(FileId, usize)],
@@ -51,6 +57,32 @@ pub struct Unit<'r> {
 }
 
 impl<'r> Unit<'r> {
+    /// The unit of a parsed snippet (`snippet::Parsed::unit`): no
+    /// preprocessing record, no inputs (so [`Unit::real_path`] is `None`
+    /// for every buffer).
+    pub(crate) fn of_snippet(
+        ast: &'r Ast,
+        sm: &'r SourceManager,
+        oven: &'r Oven,
+        interner: &'r Interner,
+        lex: LexOptions,
+        main_file: FileId,
+        errors: u32,
+    ) -> Unit<'r> {
+        Unit {
+            ast,
+            sm,
+            oven,
+            pp_record: None,
+            interner,
+            lex,
+            main_file: Some(main_file),
+            buffers: &[],
+            inputs: &[],
+            errors,
+        }
+    }
+
     /// The AST.
     pub fn ast(&self) -> &'r Ast {
         self.ast
@@ -78,6 +110,15 @@ impl<'r> Unit<'r> {
     /// of the AST's interner ([`Ast::symbols`]).
     pub fn pp_record(&self) -> Option<&'r PpRecord> {
         self.pp_record
+    }
+
+    /// Kiln's `kiln_lex::token_end` with this unit's interner and lexer
+    /// options: the end of the token that starts at `at`, or `None`
+    /// (Kiln `spec/lex.md` "End of a token": `None` when no token starts
+    /// at `at`, and for a macro location whose token would end outside
+    /// its own expansion entry).
+    pub fn token_end(&self, at: Loc) -> Option<Loc> {
+        crate::kiln::lex::token_end(self.sm, self.interner, at, self.lex)
     }
 
     /// The main file, once the front end entered it.
@@ -207,6 +248,8 @@ pub fn parse_observer_with<R: Send>(
             sm: fe.sm,
             oven: fe.oven,
             pp_record: fe.pp.record(),
+            interner: fe.interner,
+            lex: *fe.pp.lex_options(),
             main_file: fe.main_file,
             buffers: &buffers,
             inputs: &inputs,
