@@ -1,0 +1,5 @@
+spec: edits.md §9.3 row 1 (a declaration and the definition: literal pieces)
+spec: edits.md §9.1 (a seed in a namespace)
+from: n::f
+to: g
+kind: function

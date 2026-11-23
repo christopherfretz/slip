@@ -1,0 +1,4 @@
+spec: edits.md §9.5 name_taken (a macro named like the new name is defined in the unit; WP-071 review)
+from: n::f
+to: g
+kind: function

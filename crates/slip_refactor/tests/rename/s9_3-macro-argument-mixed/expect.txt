@@ -1,0 +1,9 @@
+subjects:
+  9f28e21c seed - rule=yes n::f(int)
+links:
+claims:
+  main.cpp:1:20+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:2:20+1 keep t0 votes=1 none
+  main.cpp:4:20+1 replace spell(9f28e21c, "g") t1 votes=1 none [9f28e21c] macro=IN_BOTH@105
+  main.cpp:4:20+1 keep t1 votes=1 none macro=IN_BOTH@105
+changed:

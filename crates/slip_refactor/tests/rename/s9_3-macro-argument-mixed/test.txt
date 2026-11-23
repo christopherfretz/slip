@@ -1,0 +1,4 @@
+spec: edits.md §4.2, §4.3 (an argument substituted into a call of a subject and of another scope's function: a replace and a keep at one range)
+from: n::f
+to: g
+kind: function

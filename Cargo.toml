@@ -5,7 +5,8 @@ members = ["crates/*", "xtask"]
 # through path dependencies of `slip_kiln` (docs/design/05-kiln-interface.md).
 exclude = ["kiln"]
 # `cargo build`/`cargo test` without `-p` or `--workspace` leave out the
-# crates that link Kiln (slip_kiln, slip_digest, slip_script, slip_cli), so
+# crates that link Kiln (slip_kiln, slip_digest, slip_script, slip_refactor,
+# slip_cli), so
 # work on the Kiln-free crates never pays for building the front end.
 default-members = [
     "crates/slip_model",
@@ -36,6 +37,7 @@ slip_script = { path = "crates/slip_script" }
 slip_reduce = { path = "crates/slip_reduce" }
 slip_apply  = { path = "crates/slip_apply" }
 slip_exec   = { path = "crates/slip_exec" }
+slip_refactor = { path = "crates/slip_refactor" }
 # Kiln, at the revision the `kiln` submodule pins. ONLY `slip_kiln` may name
 # these (enforced by `cargo xtask lint`, spec/harness.md "Lints").
 kiln_driver = { path = "kiln/crates/kiln_driver" }

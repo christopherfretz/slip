@@ -208,6 +208,7 @@ dependencies = [
  "slip_kiln",
  "slip_model",
  "slip_reduce",
+ "slip_refactor",
  "slip_script",
  "slip_verify",
 ]
@@ -255,6 +256,16 @@ name = "slip_reduce"
 version = "0.0.0"
 dependencies = [
  "slip_model",
+]
+
+[[package]]
+name = "slip_refactor"
+version = "0.0.0"
+dependencies = [
+ "slip_digest",
+ "slip_kiln",
+ "slip_model",
+ "slip_reduce",
 ]
 
 [[package]]

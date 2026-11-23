@@ -2073,9 +2073,13 @@ file is in the parse's `inputs`:
    spelling `::a::b::f` is answered by the reference `f`; `a` and `b`
    end before `hi`.)
 4. For each answering reference take the **origin** of its referent: the
-   referent itself, or, for a specialisation of a template or a member
-   of an instantiated class, the template or the member of the template
-   it was made from. Take the origin's `KeyId` under the run's rules
+   referent itself, or, for a specialisation or a partial
+   specialisation of a template or a member of an instantiated class,
+   the template or the member of the template it was made from (a member
+   of a partial specialisation keeps its own origin: it is not a member
+   of the template; and a friend declaration that does not define the
+   function is not followed to the pattern's, `digest.md` §3.4;
+   `slip_kiln::written::origin`). Take the origin's `KeyId` under the run's rules
    (`Declared.rules`; mapped keys, `digest.md` §3.4) **and the run's
    ownership**: the read-only files the verify job decides from the
    declared container's `files` (§2, §2.1 "Rules rename owned entities

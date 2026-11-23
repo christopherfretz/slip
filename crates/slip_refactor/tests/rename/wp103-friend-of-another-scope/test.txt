@@ -1,0 +1,4 @@
+spec: docs/wp/WP-071.md "Added after the review of WP-103" (a friend in a class template of another namespace befriends that namespace's function: no follower, keep)
+from: n::f
+to: g
+kind: function

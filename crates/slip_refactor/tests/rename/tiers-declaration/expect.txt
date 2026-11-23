@@ -1,0 +1,8 @@
+subjects:
+  9f28e21c seed - rule=yes n::f(int)
+links:
+claims:
+  main.cpp:2:24+1 refuse t2 votes=1 macro_body [9f28e21c] macro=DECLARE_F@107
+  main.cpp:4:6+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:5:9+1 replace "g" t1 votes=1 none [9f28e21c] macro=DECLARE@96
+changed:

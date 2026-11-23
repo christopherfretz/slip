@@ -1,0 +1,4 @@
+spec: spec/edits.md §2.3 (an explicit specialisation a macro body writes whole is given by decl_names and refused macro_body by sites)
+from: n::f
+to: g
+kind: function
