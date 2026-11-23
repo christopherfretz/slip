@@ -37,7 +37,13 @@
 //!   kinds' rows never know whether they are a first writing.
 //! - Overloaded member access: `MemberExpr.b` is the first candidate, and
 //!   is written like any member.
-//! - Literals from builtin macros: written by value, like any literal.
+//! - Literals from builtin macros: written by value, like any literal
+//!   (`__LINE__` as a value is pitfall row E13's).
+//! - Values that come from names (digest §9): `PredefinedExpr.a` and
+//!   `SourceLocExpr.a` are symbolic; a `PredefinedExpr` reached as the
+//!   operand of an array-to-pointer conversion ([`Item::Decayed`]) writes
+//!   its type without the bound (`expr_misc::name_type`), unless
+//!   `Walk::by_value` is raised.
 //!
 //! # What a kind's function may use
 //!
@@ -69,6 +75,10 @@ pub(crate) enum Item {
     /// The node, its rows and the rows of its maps; `true`: an outermost
     /// `ParenExpr` is written, not skipped.
     Node(ExprId, bool),
+    /// The operand of an `ArrayToPointerDecay`, a node as `Node(e,
+    /// false)`: a `PredefinedExpr` there writes its type without the
+    /// bound (digest §9, `expr_misc::name_type`).
+    Decayed(ExprId),
     Uv(u64),
     Bool(bool),
     Tag(Row),
@@ -282,7 +292,11 @@ fn walk_items(w: &mut Walk<'_>, s: &mut Stream, first: Item) {
     while let Some(item) = stack.pop() {
         match item {
             Item::Node(e, keep) => {
-                write_node(w, s, e, keep, &mut items);
+                write_node(w, s, e, keep, false, &mut items);
+                stack.extend(items.drain(..).rev());
+            }
+            Item::Decayed(e) => {
+                write_node(w, s, e, false, true, &mut items);
                 stack.extend(items.drain(..).rev());
             }
             Item::Opaque(e) => {
@@ -389,7 +403,16 @@ pub(crate) enum Tail {
 
 /// Writes the common rows of `e` now and puts the rest of its rows in
 /// `out`: its kind's, then `ColdExprData`'s, then `templ::expr_maps`.
-fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out: &mut Vec<Item>) {
+/// `decayed`: `e` is the operand of an `ArrayToPointerDecay`
+/// ([`Item::Decayed`]).
+fn write_node(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    e: ExprId,
+    keep_paren: bool,
+    decayed: bool,
+    out: &mut Vec<Item>,
+) {
     crate::walk::stack_probe();
     let Some(e) = strip_parens(w, s, e, keep_paren) else {
         return;
@@ -418,7 +441,11 @@ fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out
     if dependent {
         w.unit.expr.dependent += 1;
     }
-    w.write_type(s, n.ty);
+    if n.kind == ExprKind::PredefinedExpr {
+        crate::expr_misc::name_type(w, s, &n, decayed);
+    } else {
+        w.write_type(s, n.ty);
+    }
     let tail = dispatch(w, s, e, &n, out);
     cold(w, e, &n, tail, out);
     out.push(Item::Exec(crate::templ::expr_maps, e));
@@ -620,7 +647,7 @@ fn dispatch(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec
         ExprKind::CXXBindTemporaryExpr => core::bind_temporary(s, n, out),
         ExprKind::ExprWithCleanups => core::cleanups(s, n, out),
         ExprKind::OpaqueValueExpr => core::opaque_value(s, e, n, out),
-        ExprKind::ConstantExpr => core::constant(s, n, out),
+        ExprKind::ConstantExpr => core::constant(s, e, n, out),
         // `unsupported` (§7 ExprKind).
         ExprKind::UserDefinedLiteral => {
             s.indeterminate(Cause::Unsupported("ExprKind/UserDefinedLiteral"));

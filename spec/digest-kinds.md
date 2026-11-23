@@ -454,6 +454,19 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    `DependentDecltype` the operand is walked in profile mode (§4.4),
    where every `ParenExpr` is written (§7 "Parentheses", `ExprNode`,
    `ParenExpr.a`).
+8. **Name-derived arrays** (digest §9). The `ty` of a `PredefinedExpr`
+   that holds its value (`a` present) is `const char[N]`, `N` the length
+   of a name plus one. As the operand of an implicit `ArrayToPointerDecay`
+   it is written as the type `const char[]`: the stream `Quals`, tag
+   `IncompleteArray`, the element type, which is the digest that type
+   has, so no program can tell the two apart and none needs to (an array
+   of unknown bound is never a `PredefinedExpr`'s type). A pointer value
+   into such a string designates the array the same way (`Scalar`
+   `Pointer.designated`, `PtrBase` below). Anywhere else, and where the
+   walk writes name-derived values by value (digest §9: a key, a type, a
+   `static_assert` condition and a block-scope variable's value read
+   there, the operand of a `ConstantExpr` with no stored value), the type
+   is written by value.
 
 ### 4.3 The type records
 
@@ -2060,7 +2073,7 @@ also the instantiated ones (§11.4).
 | `redecl` | bookkeeping | out | - |  |
 | `init` | child | in | child? |  |
 | `spec` | flag | in | record VarSpec |  |
-| `eval` | value | demand | - | §11.3: the `resolved` unit `value` |
+| `eval` | value | demand | - | §11.3: the `resolved` unit `value`; a block-scope variable's in place |
 | `templ` | entity | in | record TemplLink |  |
 
 A variable's stream also holds its language linkage (`ScopeData`,
@@ -3156,7 +3169,7 @@ Rules the rows refer to:
 | `DeclRefExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: the entity chosen is the fact (digest §6) |
 | `DeclRefExpr.bits-immediate-escalating` | flag | in | bit | bit 7 |
 | `DeclRefExpr.aux` | flag | in | enum NonOdrUse |  |
-| `DeclRefExpr.a` | entity | in | ref | the entity named, not the declaration it was found through |
+| `DeclRefExpr.a` | entity | in | ref | the entity named, not the declaration it was found through; where name-derived values are written by value, a block-scope variable's `value?` follows (§11.3) |
 | `DeclRefExpr.b` | written | in | record DeclRefExtra | index into `ExprArena` `declref_extras`; 0 is written as a record with nothing present |
 | `MemberExpr.bits-arrow` | flag | in | bit | bit 4 |
 | `MemberExpr.bits-spliced` | flag | unsupported | - | bit 5: written as a member splice; reflection (§12) |
@@ -3166,7 +3179,7 @@ Rules the rows refer to:
 | `MemberExpr.b` | entity | in | ref | the member; for an overloaded access the first candidate (rule above) |
 | `CXXThisExpr.aux-implicit` | flag | in | bit | bit 0, written only for an instantiation-dependent node: Kiln's template substitution, its mangling of dependent expressions and its profiles read it; elsewhere nothing but diagnostics does (pitfalls E07) |
 | `PredefinedExpr.aux` | flag | in | enum PredefinedKind |  |
-| `PredefinedExpr.a` | value | symbolic | - | the string literal holding the enclosing function's name; absent in a dependent context |
+| `PredefinedExpr.a` | value | symbolic | - | the string literal holding the enclosing function's name; absent in a dependent context. The node's `ty` is written as §4.2 rule 8 says |
 | `SourceLocExpr.aux` | flag | in | enum SourceLocKind |  |
 | `SourceLocExpr.a` | entity | symbolic | - | the declaration the builtin is evaluated in, which follows from where the expression is |
 | `UnresolvedLookupExpr.aux` | flag | in | bool | the name is subject to argument-dependent lookup at instantiation (digest §8) |
@@ -4165,6 +4178,59 @@ value (digest §7): a temporary can hold a pointer to itself, and its value
 is already written, with its `LetData`, at the `MaterializeTemporaryExpr`
 in the unit of the declaration that extends it. The pair written here
 names the temporary within that declaration.
+
+A name-derived object (digest §9) is written as the object it is: the
+entity whose name it holds and which builtin, so that two are written
+alike only if they are the same string (or `__impl` object) of the same
+entity. A string is written so only where its bytes are what Kiln prints
+for that entity (the walk prints the name again with Kiln's printer,
+`kiln_sema/src/predefined.rs` `compute_predefined_name`, and compares);
+anywhere else, and for a file name, its bytes are written as the table
+says. The offset into the string is written by value (`Pointer.offset`).
+
+- `StringLit.lit` of a string a `PredefinedExpr` holds (its literal, the
+  expression before the `PredefinedExpr` that names it in `a`): `bytes`
+  empty, `uv 0` where a string's encoding tag stands (no encoding has tag
+  0), `uv 1`, the `PredefinedKind` tag, then `ref` of the function whose
+  name it is: of the functions whose definition holds the
+  `PredefinedExpr` (expansion locations; a definition extends from its
+  first written mem-initializer, or the `try` of a function-try-block,
+  or its body's `{`, to its body's `}` or its last handler's) and whose
+  name of that kind the bytes are, the innermost; none, or two of one
+  extent that are not one entity, and the bytes are written. Then the
+  local scope names around that function (below).
+- `StringLit.lit` of a function name of the source-location builtins
+  (`SourceLocValues` `function`, the plain name, or the function name an
+  `__impl` object points to, the pretty name; one object per content):
+  `bytes` empty, `uv 0`, `uv 2`, `uv 0` (plain) or `uv 1` (pretty), then
+  `ref` of the context of the first use (by `ExprId`) that points to it,
+  if the bytes are that context's name of that kind, then the local
+  scope names around it (below). A string some use
+  points to as its file (`file`, `file_name`, an `__impl` object's file)
+  is written by its bytes.
+- `Const.0` of an `__impl` object (`SourceLocValues` `location`): the
+  digest `H("slip.value.v1", uv 0, uv 3, type)` of its type (a value's
+  own stream begins with a `ValueKind` tag, never 0, so no value written
+  by content has it), then `ref?` of the function of the use that built
+  it (`Ref::none` outside a function), the local scope names around that
+  function (`count` 0 outside one), `uv` its ordinal among the uses of
+  that function (of every context that is not a function) that build
+  one, in `ExprId` order, then the file name it points to (the use's
+  `SourceLocValues` `file`): `opt`, and the literal's entry as `string`
+  writes any literal's, bytes then encoding tag, the treatment a
+  `__FILE__` literal's bytes get. Its line and column are not written.
+  Kiln builds one object per use
+  (`kiln_sema/src/builtins.rs:3752` `source_location_object`); an object
+  no recorded use names (one a deduced return type replaced, `:3660`) is
+  written by content.
+
+The local scope names of the entity a `ref` names (WP-040,
+`write_scope_names`) are part of a name string's identity and are
+written in both modes: `count`, then the name of each named local class
+or enumeration around the entity, outermost first (`local.rs`
+`write_names_around`), since a reference to a local entity holds no
+name. Where the walk writes such values by value (§4.2
+rule 8) the rows are written as the table says.
 
 ### `kiln_ast::consts::value::ByteImage`
 
@@ -6032,6 +6098,16 @@ initialiser
 the declaration and a later use does not make the unit appear. An in-class `static const int x = 1;` is never evaluated, used or not, so
 it has no `value` unit, while the same constant initialised on its
 out-of-line definition has one ("Open questions").
+
+A block-scope variable (not a block-scope `extern`) has no unit, and its
+uses read its value without writing it (`DeclRefExpr` `non_odr_use_constant`).
+Kiln evaluates it with its declaration, so its stream holds the value in
+place, after `spec`: `value?`, present in state `Value`, written in the
+function's mode (digest §9: `constexpr auto n = len(__func__)` is the
+number, `constexpr const char *p = __func__` passes the name on). Where
+name-derived values are written by value (§4.2 rule 8: a `static_assert`
+condition, a key, a type), a `DeclRefExpr` that names such a variable is
+followed by `value?` of its value, by value; elsewhere nothing follows it.
 
 ### 11.4 Default arguments and default member initialisers
 

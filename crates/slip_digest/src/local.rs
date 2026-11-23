@@ -961,6 +961,31 @@ pub(crate) fn write_scope_names(w: &mut Walk<'_>, s: &mut Stream) {
     }
 }
 
+/// The names of the named local types around entity `d`, outermost
+/// first: what a function name of `d` prints of them, and a reference to
+/// `d` does not hold, since a local entity has no key (digest §9: they
+/// are part of a name-derived value's identity, in both modes).
+pub(crate) fn write_names_around(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let ast = w.ast;
+    let mut around = Vec::new();
+    let mut next = ast.decls.get(d).ctx();
+    for _ in 0..CHAIN_LIMIT {
+        let Some(x) = next else { break };
+        if !w.is_local(x) && !is_local_type(w, x) {
+            break;
+        }
+        if is_local_type(w, x) && is_named_local(w, x) {
+            around.push(x);
+        }
+        next = ast.decls.get(x).ctx();
+    }
+    around.reverse();
+    s.count(around.len());
+    for t in around {
+        w.write_name(s, t);
+    }
+}
+
 /// The names of the named local types the type `q` mentions (itself, a
 /// pointee, an element, a parameter or return type, a template argument),
 /// each with the named local types around it, outermost first, in the

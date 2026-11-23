@@ -336,6 +336,17 @@ impl Walk<'_> {
     /// The key of entity `e` before mapping, with the cause its
     /// discriminator carries; `Err` when it has none.
     pub(crate) fn compute_key(&mut self, e: DeclId) -> Result<(Key, Option<Cause>), Option<Cause>> {
+        // A key names one entity of the parse: a name-derived value in it
+        // (a `std::source_location` template argument) is its bytes, or
+        // two specializations would have one key (digest §9).
+        self.by_value += 1;
+        let r = self.compute_key_by_value(e);
+        self.by_value -= 1;
+        r
+    }
+
+    /// [`Walk::compute_key`], with [`Walk::by_value`] raised.
+    fn compute_key_by_value(&mut self, e: DeclId) -> Result<(Key, Option<Cause>), Option<Cause>> {
         let ast = self.ast;
         let n = ast.decls.get(e);
         let kind_info = info(n.kind());
