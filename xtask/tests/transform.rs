@@ -1956,17 +1956,22 @@ fn s6_timeout() {
     assert!(matches!(c.run(), Outcome::Killed(m) if m.ends_with("its process group was killed")));
     assert!(start.elapsed() < std::time::Duration::from_secs(20));
     let pid = std::fs::read_to_string(c.tree().join("pid.txt")).unwrap();
-    // The grandchild was in the group: it is gone (or a zombie no one has
-    // reaped yet).
+    // The grandchild was in the group: it is gone, or a zombie no one has
+    // reaped yet (`Z`), or one being reaped (`X`: the kernel's dead state,
+    // seen between a zombie and no entry at all). The answer that ends the
+    // wait is the one asserted: a second look could meet `X` after `Z`.
     let gone = || {
-        std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .map_or(true, |s| s.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with('Z')))
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| {
+            s.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with(['Z', 'X', 'x']))
+        })
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !gone() && std::time::Instant::now() < deadline {
+    let mut ended = gone();
+    while !ended && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
+        ended = gone();
     }
-    assert!(gone(), "the grandchild {pid} still runs");
+    assert!(ended, "the grandchild {pid} still runs");
     // The default.
     assert_eq!(standard("default-timeout", TEST_TXT, |g| g).0.test().timeout, 600);
 }

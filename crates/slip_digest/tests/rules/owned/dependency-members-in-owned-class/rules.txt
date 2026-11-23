@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round. Review finding F3, kept as it is: dep_get is a dependency entity (declared in a read-only file) whose parent, the owned class Thing, has one key, its own, mapped; so dep_get's key is mapped with it. Harmful only if the dependency's binary defines legacy::Thing::dep_get, which needs the dependency compiled against the owned class (F2).
+relocate legacy => :: acme

@@ -185,16 +185,36 @@ post-image is a **dependency entity** if
 - one of its declarations lies in a read-only file. A declaration lies
   in the file of its **expansion location**: the file it is written in,
   and for a declaration that a macro expansion produces, wholly or in
-  part, the file that holds the outermost invocation. A declaration with
+  part, the file that holds the outermost invocation. It also lies in a
+  read-only file if its **name token** (the token that spells its name;
+  an implicit declaration and one with no name have none) is spelled in
+  a read-only file: a dependency macro's body that spells the name. A
+  name token spelled in no file (made by `##`, in scratch space) is
+  decided by the expansion location alone. A declaration with
   no location in a file (a builtin, an implicitly declared function)
   lies in a read-only file; so does one whose expansion location is in
   a buffer that is not a file (`<built-in>`, the command line, a
   buffer whose name begins with `<`, scratch space), in a file the
   image cannot map to a subject path (§5.1), or in a file read after
-  the walk was given its files. An entity with more declarations than
+  the walk was given its files. This holds under every ownership, a
+  walk with every file owned included: such a declaration is never
+  owned (`tests/rules/owned/builtin-declarations-read-only`). An entity
+  with more declarations than
   the walk follows (`digest.md` §2, the redeclaration limit) is a
   dependency entity: an unread declaration might be in a read-only
   file;
+- where a file is read-only, it is so **per inclusion**: a file entered
+  through an include chain that passes through a read-only file (it, or
+  a file that includes it, or one further up, is read-only) is
+  read-only for that inclusion in that translation unit, whatever the
+  run's files say of it. The dependency was compiled against what it
+  includes, so its binary bakes in the types, typedefs, exception types
+  and RTTI of an owned header it includes: moving them breaks it
+  (`tests/rules/owned/dependency-built-against-owned-*`). Kiln has one
+  buffer per file and one location range per inclusion, so each
+  inclusion is decided on its own; an includer that is no file (the
+  command line) does not make a file read-only. An owned file that
+  includes a read-only one stays owned;
 - or it is a specialisation of a template, implicit, explicit or
   partial, or a deduction guide made from a template's constructors, and
   the template is a dependency entity. A specialisation is keyed by its
@@ -237,10 +257,19 @@ came from, and nothing about the rest:
 - A dependency that itself opens `acme`, before and after, has the same
   keys in both images, and the owned members of `acme` are still mapped.
 - An owned declaration made through a dependency's macro
-  (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: the
-  expansion location decides, not the spelling location, or every owned
-  declaration behind a namespace macro of the dependency would be the
-  dependency's.
+  (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: its
+  expansion location is owned, and its name `Mine` is spelled in the
+  owned file, as an argument. The name token's spelling decides, not the
+  spelling of the whole declaration, or every owned declaration behind a
+  namespace macro of the dependency would be the dependency's. A
+  dependency macro whose body spells the name (`#define LEGACY_API_DECLS
+  void legacy_init(); int legacy_count();`) declares dependency
+  entities wherever it is invoked: the dependency fixes those names, and
+  its binary may define them (`dependency-macro-fixed-functions`,
+  `dependency-macro-declares-fixed-name`). So does a name spelled in a
+  dependency's body and passed on through an owned macro's argument
+  (`dependency-macro-name-through-owned-macro`): the token is still the
+  dependency's text.
 - An owned explicit specialisation of a dependency template, an owned
   definition of a function the dependency declares, a function a
   dependency class befriends: dependency entities. They cannot move, and
@@ -252,6 +281,33 @@ not include is owned here; an observer that includes both sees the
 entity declared in two namespaces and reports it; if no observer
 includes both, nothing shows it (§8).
 
+Three holes remain where ownership reads as owned what the dependency's
+binary fixes. Each verifies wrongly today; each is pinned by a pending
+case beside the case it is the pair of, and the planned answer for all
+three is the run-level check of WP-116: an entity a rule renames is
+defined in an owned file by some observer.
+
+- **Two observers.** As above: the owned declaration and the
+  dependency's are never in one translation unit
+  (`observer-includes-owned-only`, equal; its pair
+  `observer-includes-both`, a finding).
+- **A pasted name.** A name made by `##` from tokens of a dependency's
+  body (`#define DECL_INIT() void legacy_##init();`) is spelled in
+  scratch space and decided by its expansion location: owned
+  (`dependency-macro-name-pasted`, pending; its pair
+  `dependency-macro-fixed-functions`). At this pin Kiln does not say
+  which operands of `##` came from an argument, and a pasted name made
+  from an owned argument (`TEST(Suite, Name)`) must stay renamable.
+- **A guard-skipped inclusion.** A file entered first directly, then
+  included by a read-only file whose `#include` the include guard or
+  `#pragma once` skips, is owned for its only inclusion: the skipped one
+  makes no location range, and nothing the walk reads at this pin
+  records it (`dependency-built-against-owned-eh-direct-first`,
+  `dependency-built-against-owned-type-direct-first`, pending; their
+  pairs, the `-through-dependency-first` cases). Kiln's WP-2111
+  (every inclusion directive recorded, skipped ones included) would let
+  the walk close it per translation unit.
+
 `slip declare` (§2.3) refuses a `relocate` line whose entity is a
 dependency entity and not a namespace (`DependencyEntity`).
 
@@ -260,6 +316,14 @@ consulted: a digest of the map phase does not depend on `files`. A walk under
 rules that is not given the run's files treats every file as read-only:
 every key is then the key of the empty table (knowing less never
 accepts more).
+
+The run's files are in subject paths, and ownership is of **real
+paths** (`spec/edits.md` §2.1). The job decides each buffer by the
+subject path of the buffer's real path, its symbolic links resolved, and
+never by the path as the front end spells it: a read-only file reached
+through a symbolic link under an owned root is read-only. `ReadOnlyFiles`
+decides on the path it is given and normalises nothing
+(`owned.rs`, `read_only_files_needs_the_real_path`).
 
 Two kinds of key are not an entity's and are not decided by ownership:
 the key of a `resolved` or `default_argument` unit has its entity's
@@ -341,9 +405,18 @@ verify` does not show that it does not.
 
 The argument is about one translation unit. The ownership rule above is
 what makes the declared isomorphism one that the rest of the program
-(code that was not edited and is not an observer) can be party to: it
-fixes every dependency entity's key, so the isomorphism is the identity
-on everything the run does not own.
+(code that was not edited and is not an observer) can be party to. It
+fixes the key of every dependency entity whose parents are namespaces,
+or dependency entities themselves, so the isomorphism is the identity on
+those. It does not fix the key of a dependency member of an owned class
+(a read-only file included inside the class body): the class has one
+key, its own, and it is mapped, so the member's key is mapped with it
+(`tests/rules/owned/dependency-members-in-owned-class`, equal). That is
+harmless unless the dependency's binary defines the member under the
+class's old name, which needs the dependency compiled against the owned
+class: the include-chain rule above makes such a class read-only where
+an observer sees the dependency include it, and otherwise it is the
+guard-skipped or two-observer hole.
 
 A pre-existing entity that a rule would capture is caught by the same
 comparison: if the pre-image already had an entity with the key a rule
@@ -1569,7 +1642,16 @@ observer `failed`, with an empty message.
   read from the declarations an observer has (§2.1). An owned
   declaration of an entity that the dependency also declares, in a
   header that no observer includes together with the owned one, is
-  moved as owned, and the dependency's binary keeps the old name.
+  moved as owned, and the dependency's binary keeps the old name. Two
+  more forms of the same thing (§2.1, the three holes): a name a
+  dependency macro makes by `##` (`#define DECL_INIT() void
+  legacy_##init();`, invoked in owned code), which is owned; and an
+  owned header that a read-only file includes, where every observer
+  enters it directly first and the read-only file's `#include` is
+  skipped by its guard, which is owned there although the dependency was
+  compiled against it (a moved exception type is no longer caught, a
+  function taking a moved type no longer links). WP-116's run-level
+  check is to close all three.
 - **Sums are believed.** A group's `count`, `indeterminate` and `digest`
   are checked against its unit list only where there is one. A shard
   whose sums were not computed from its units (a defect of the walk, or a

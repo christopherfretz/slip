@@ -1,1 +1,8 @@
-# Thing is owned (its expansion location is b.cpp): equal.
+# Flipped in the WP-110 fix round: Thing's name is spelled in dep.h, so Thing
+# is a dependency entity, keyed as declared (legacy::Thing in A, acme::Thing
+# in B): the dependency's binary may define it.
+changed use()
+added acme::Thing
+added acme::Thing::v
+removed legacy::Thing
+removed legacy::Thing::v

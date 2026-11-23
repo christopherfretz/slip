@@ -5,8 +5,10 @@
 //! Under a non-empty rule table the walk is given [`ReadOnly`], a
 //! predicate over the image's files. An entity is a **dependency entity**
 //! if one of its declarations lies in a read-only file (by its expansion
-//! location; no location in a file is read-only), if it is a
-//! specialisation, or an implicit deduction guide, of a dependency
+//! location; no location in a file is read-only; a file entered through
+//! an include chain that passes through a read-only file is read-only)
+//! or has its name token spelled in one (a dependency macro's body), if
+//! it is a specialisation, or an implicit deduction guide, of a dependency
 //! template, or if it is an implicitly declared member of a dependency
 //! class; otherwise it is **owned** ([`Walk::owned`], once per entity).
 //! A rule matches an owned entity only (`Walk::rule_applies`, rule 1),
@@ -21,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
 use slip_kiln::kiln::ast::names::DeclNameView;
-use slip_kiln::kiln::source::{FileId, SourceManager};
+use slip_kiln::kiln::source::{FileId, Loc, SourceManager};
 use slip_model::transform::Ownership;
 
 use crate::keys::KeyRes;
@@ -144,6 +146,9 @@ pub(crate) struct OwnedState {
     in_progress: HashSet<DeclId>,
     /// Files by whether they are read-only, as `ReadOnly` answered.
     files: HashMap<FileId, bool>,
+    /// Inclusions, by the location of the `#include` that entered them,
+    /// by whether a file of their include chain is read-only.
+    inclusions: HashMap<Loc, bool>,
     /// Cycles met (an entity asked again while its ownership is being
     /// decided): what is decided while one is met is not memoised.
     cycles: u64,
@@ -253,27 +258,116 @@ impl Walk<'_> {
         }
     }
 
-    /// Declaration `d` lies in a file the run owns: its expansion location
-    /// (the outermost macro invocation that produced it, else where it is
-    /// written) is in a buffer that is a file (not `<built-in>`, the
-    /// command line or scratch space) and the file is not read-only.
+    /// Declaration `d` lies in a file the run owns (`spec/verify.md`
+    /// §2.1, bullet 1): its expansion location (the outermost macro
+    /// invocation that produced it, else where it is written) is in an
+    /// owned file, and its name token, if it has one, is not spelled in a
+    /// read-only file (a dependency macro's body that spells the name). A
+    /// name spelled in no file (made by `##`, in scratch space) is decided
+    /// by the expansion location alone.
     pub(crate) fn in_owned_file(&mut self, d: DeclId) -> bool {
-        let loc = self.sm.expansion_loc(self.ast.decls.get(d).loc());
+        let loc = self.ast.decls.get(d).loc();
+        if self.read_only_at(self.sm.expansion_loc(loc)) != Some(false) {
+            return false;
+        }
+        if self.has_name_token(d) && self.read_only_at(self.sm.spelling_loc(loc)) == Some(true) {
+            return false;
+        }
+        true
+    }
+
+    /// Whether `d` has a name token of its own: not an implicit
+    /// declaration, and its name is not empty.
+    fn has_name_token(&self, d: DeclId) -> bool {
+        let n = self.ast.decls.get(d);
+        if n.has(DeclFlags::IMPLICIT) {
+            return false;
+        }
+        match self.ast.names.view(n.name()) {
+            DeclNameView::Empty => false,
+            DeclNameView::Identifier(_)
+            | DeclNameView::Operator(_)
+            | DeclNameView::Constructor(_)
+            | DeclNameView::Destructor(_)
+            | DeclNameView::Conversion(_)
+            | DeclNameView::LiteralOperator(_)
+            | DeclNameView::DeductionGuide(_) => true,
+        }
+    }
+
+    /// For a file location: `None` if it is in no file (invalid, scratch
+    /// space, a buffer whose name begins with `<`); else whether its file
+    /// is read-only or it was entered through an include chain that
+    /// passes through a read-only file. Kiln has one buffer per file but
+    /// one location range per inclusion (`SourceManager::add_inclusion`,
+    /// `include_loc`), so this is decided per inclusion.
+    fn read_only_at(&mut self, loc: Loc) -> Option<bool> {
+        let file = self.buffer_of(loc)?;
+        if self.file_read_only(file) {
+            return Some(true);
+        }
+        Some(self.chain_read_only(self.sm.include_loc(loc)))
+    }
+
+    /// The buffer of file location `loc`, if it is a file.
+    fn buffer_of(&self, loc: Loc) -> Option<FileId> {
         if self.sm.is_written_in_scratch_space(loc) {
-            return false;
+            return None;
         }
-        let Some((file, _)) = self.sm.offset_of(loc) else { return false };
+        let (file, _) = self.sm.offset_of(loc)?;
         if self.sm.file_name(file).starts_with('<') {
-            return false;
+            return None;
         }
+        Some(file)
+    }
+
+    /// Whether `file` is read-only, as `ReadOnly` answers, once per file.
+    fn file_read_only(&mut self, file: FileId) -> bool {
         if let Some(&r) = self.owned_state.files.get(&file) {
-            return !r;
+            return r;
         }
         let r = self.read_only.read_only(file);
         self.owned_state.files.insert(file, r);
-        !r
+        r
+    }
+
+    /// Whether the inclusion entered by the `#include` at `inc` has a
+    /// read-only file on its include chain: the file holding `inc`, or
+    /// one further up. An includer that is no file (the command line)
+    /// does not make it read-only. Memoised per inclusion.
+    fn chain_read_only(&mut self, inc: Loc) -> bool {
+        let mut path = Vec::new();
+        let mut at = inc;
+        let mut found = false;
+        while at.is_valid() {
+            if let Some(&r) = self.owned_state.inclusions.get(&at) {
+                found = r;
+                break;
+            }
+            path.push(at);
+            if self.buffer_of(at).is_some_and(|f| self.file_read_only(f)) {
+                found = true;
+                break;
+            }
+            // A chain longer than any the preprocessor allows is taken as
+            // passing through a read-only file.
+            if path.len() > INCLUDE_CHAIN_LIMIT {
+                found = true;
+                break;
+            }
+            at = self.sm.include_loc(at);
+        }
+        for p in path {
+            self.owned_state.inclusions.insert(p, found);
+        }
+        found
     }
 }
+
+/// Past this many inclusions an include chain is taken as passing
+/// through a read-only file (the conservative answer; Kiln's include
+/// depth limit is far below it).
+const INCLUDE_CHAIN_LIMIT: usize = 4096;
 
 #[cfg(test)]
 mod tests {
@@ -337,6 +431,33 @@ mod tests {
         // No files given: every file is read-only.
         let none = ReadOnlyFiles::new(None, &sm, &subject);
         assert!(ids.iter().all(|&f| none.read_only(f)));
+    }
+
+    /// `spec/verify.md` §2.1 (what the verify job must do): the subject
+    /// path is the file's real path. `ReadOnlyFiles` decides on exactly
+    /// the path it is given and normalises nothing, so a read-only file
+    /// reached through a symbolic link under an owned root is read-only
+    /// only when the job resolves the link. The link is modelled here
+    /// (`/post/src/vendor` -> `/post/dep`); the job resolves real ones.
+    #[test]
+    fn read_only_files_needs_the_real_path() {
+        let files = Ownership { owned: vec![p("/subject")], readonly: vec![p("/subject/dep")] };
+        let (sm, ids) = buffers(&["/post/dep/d.h", "/post/src/vendor/d.h", "/post/src/a.h"]);
+        let spelled = |f: FileId| -> Vec<u8> {
+            p(&sm.file_name(f).replacen("/post/", "/subject/", 1))
+        };
+        let real = |f: FileId| -> Vec<u8> {
+            let name = sm.file_name(f).replacen("/post/src/vendor/", "/post/dep/", 1);
+            p(&name.replacen("/post/", "/subject/", 1))
+        };
+        let by_real = ReadOnlyFiles::new(Some(&files), &sm, &real);
+        assert_eq!(ids.iter().map(|&f| by_real.read_only(f)).collect::<Vec<_>>(), [true, true, false]);
+        // The spelling as the subject path: the same file, two answers.
+        let by_spelling = ReadOnlyFiles::new(Some(&files), &sm, &spelled);
+        assert_eq!(
+            ids.iter().map(|&f| by_spelling.read_only(f)).collect::<Vec<_>>(),
+            [true, false, false]
+        );
     }
 
     #[test]

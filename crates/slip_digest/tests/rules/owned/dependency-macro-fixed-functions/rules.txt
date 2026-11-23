@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round. Review finding F1: a dependency macro whose body spells the declared names, invoked in an owned namespace. The names are spelled in a read-only file: dependency entities (the dependency's binary defines legacy::legacy_init); the move is two findings each.
+relocate legacy => :: acme

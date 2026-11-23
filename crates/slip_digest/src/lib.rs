@@ -225,6 +225,7 @@ mod names;
 mod order;
 mod other;
 mod owned;
+pub mod query;
 pub mod records;
 mod refs;
 mod stmt;

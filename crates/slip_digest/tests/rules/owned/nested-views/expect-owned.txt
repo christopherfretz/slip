@@ -1,0 +1,9 @@
+# Every file owned: the dependency's acme is mapped as in
+# dependency-opens-destination.
+changed user()
+added acme::mid::D
+added acme::mid::D::d
+removed acme
+removed acme::mid
+removed acme::mid::D
+removed acme::mid::D::d
