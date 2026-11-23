@@ -360,7 +360,7 @@ fn member_lookup(
     let def = ast.definition(c).unwrap_or(c);
     let mut got: Option<Vec<DeclId>> = None;
     for b in ast.decls.bases(def, &ast.lists) {
-        let Some(base) = ast.types.as_record(ast.types.canonical(b.ty)) else { return None };
+        let base = ast.types.as_record(ast.types.canonical(b.ty))?;
         let mut set = member_lookup(ast, base, name, depth + 1)?;
         if set.is_empty() {
             continue;

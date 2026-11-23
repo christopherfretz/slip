@@ -1740,7 +1740,8 @@ fn wp127_dependent_name_two_observers_one_instantiates() {
     // The observer that does not instantiate alone: accepted, and it
     // verifies (no observer makes the instantiation that would differ:
     // what the rename does not see, `spec/edits.md` §9.4).
-    let r = end_to_end("wp127-dep-two-alone", &files, &["pattern.cpp"], &["n", "S", "f"], "g", &right);
+    let r =
+        end_to_end("wp127-dep-two-alone", &files, &["pattern.cpp"], &["n", "S", "f"], "g", &right);
     assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
 }
 
