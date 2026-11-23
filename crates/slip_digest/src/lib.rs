@@ -60,7 +60,9 @@
 //! | `demand::deferrable(w, f)` | whether a function is of the deferrable class (§11.2); `None` where the demand area decides |
 //! | `expr::child(w, s, e)`, `expr::child_opt`, `expr::requires_clause` (`expr.rs`) | `child`: one expression, its common rows, its kind's, `ColdExprData`'s and `templ::expr_maps` (§7); a kind not yet filled is pending (`Area::Expr`) |
 //! | `expr::child_keep_paren(w, s, e)` | `child`, an outermost `ParenExpr` written with its rows: for a `DependentDecltype` profile (§7 "Parentheses") |
-//! | `expr_dep::profile(w, s, p)`, `expr_dep::profile_expr(w, s, e)` | pending (`Area::Expr`) |
+//! | `expr_dep::profile(w, s, p)`, `expr_dep::profile_expr(w, s, e)` | `profile`: a canonical expression operand (§4.4), walked with the stream's expression state put aside and a fresh numbering frame (`walk::ExprState::profile`), both restored after; the outermost parenthesis kept |
+//! | `expr_dep::profile_local(w, s, d)` | `ref` of a local object while a profile is walked (`Walk::write_ref`): declared inside it, the frame's `Ref::local`; a function parameter, `Ref::param` (scope depth, position); else the unit's ordinal |
+//! | `expr_dep::decl_name(w, raw)` | nothing: the `Name` (§3.2) of a raw `DeclName` word, as `Walk::plain_name` names a declaration, with its cause |
 //! | `stmt::child(w, s, st)`, `stmt::child_opt` (`stmt.rs`) | `child`: one statement, its rows in table order (§6), one level of `walk::NODE_LIMIT` for a chain of tails (`stmt.rs` "The walk") |
 //! | `value::value(w, s, v)`, `value::string(w, s, l)` (`value.rs`) | `value`: a constant in place by structure, a constant it points to by content digest (§8); `string`: a string literal by content (§10.3) |
 //! | `local::write_decl(w, s, d)` | `decl` (§2.4): a local entity's ordinal and stream, a block-scope variable with linkage a `ref`, a block-scope function a `ref` and its own default arguments; a local type pending (`Area::Local`) |
@@ -195,6 +197,7 @@ mod expr_core;
 mod expr_dep;
 mod expr_init;
 mod expr_misc;
+mod expr_profile;
 mod fp;
 mod groups;
 mod keys;
@@ -339,6 +342,11 @@ pub enum Area {
     Demand,
     /// The order unit (digest §2.1).
     Order,
+    /// A fact a canonical profile leaves out but its first spelling
+    /// holds: the declarations lookup found for an unresolved name in a
+    /// dependent type (digest-kinds §4.4, WP-036). Written by the unit
+    /// stream when the spelling is (WP-041).
+    Spelling,
 }
 
 impl Area {
@@ -355,6 +363,7 @@ impl Area {
             Area::Other => "other",
             Area::Demand => "demand",
             Area::Order => "order",
+            Area::Spelling => "spelling",
         }
     }
 }

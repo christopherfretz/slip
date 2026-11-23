@@ -74,13 +74,19 @@ pub(crate) struct ExprState {
     /// expression walk is writing, itself included
     /// (`expr_core::this`).
     pub dependent: u32,
+    /// The numbering of the profile being walked (`expr_dep::profile_expr`,
+    /// digest-kinds §4.4); `None` outside one.
+    pub profile: Option<crate::expr_dep::Frame>,
 }
 
 impl ExprState {
     /// Nothing numbered and nothing around: the state a type digest
     /// starts from.
     pub(crate) fn is_fresh(&self) -> bool {
-        self.opaques.is_empty() && self.next_opaque == 0 && self.dependent == 0
+        self.opaques.is_empty()
+            && self.next_opaque == 0
+            && self.dependent == 0
+            && self.profile.is_none()
     }
 }
 
@@ -131,8 +137,28 @@ pub(crate) struct Walk<'a> {
     /// result computed below such a hit (its cause depends on the path
     /// that reached it).
     pub aborts: u64,
+    /// How many facts a profile walk left out that its spelling holds
+    /// (`expr_profile.rs`): a type digest whose stream raised it is
+    /// marked (`TypeRef::spelling`).
+    pub left_out: u64,
+    /// How many `type_digest` calls are under way.
+    pub type_nesting: u32,
+    /// Type digests computed below a depth-limit hit or a cycle, by raw
+    /// canonical `QualType` and whether the exception specification was
+    /// left out, with whether they used a local entity: kept only for the
+    /// outermost `type_digest` call (their cause depends on the path that
+    /// reached them, which within one call is the same), so a type met
+    /// again at the limit is not walked again (WP-036, F4).
+    pub abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
     /// `digest.bytes` (`spec/digest.md` §12).
     pub bytes: u64,
+}
+
+/// What [`Walk::take_types`] puts aside.
+pub(crate) struct TypeState {
+    left_out: u64,
+    type_nesting: u32,
+    abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
 }
 
 impl std::fmt::Debug for Walk<'_> {
@@ -165,6 +191,9 @@ impl<'a> Walk<'a> {
             depth: 0,
             node_depth: 0,
             aborts: 0,
+            left_out: 0,
+            type_nesting: 0,
+            abort_memo: HashMap::new(),
             bytes: 0,
         }
     }
@@ -210,6 +239,27 @@ impl<'a> Walk<'a> {
     /// leaving a fresh one; the caller puts it back.
     pub(crate) fn take_unit(&mut self) -> UnitState {
         std::mem::take(&mut self.unit)
+    }
+
+    /// The type digests' state, put aside for a key or a content digest
+    /// (memoised): what they compute neither depends on the enclosing
+    /// type digest nor raises its `left_out`, so whether a unit is
+    /// `Pending(Area::Spelling)` does not depend on which was computed
+    /// first (WP-036, F-G). The caller puts it back with
+    /// [`Walk::restore_types`].
+    pub(crate) fn take_types(&mut self) -> TypeState {
+        TypeState {
+            left_out: self.left_out,
+            type_nesting: std::mem::take(&mut self.type_nesting),
+            abort_memo: std::mem::take(&mut self.abort_memo),
+        }
+    }
+
+    /// Puts back what [`Walk::take_types`] put aside.
+    pub(crate) fn restore_types(&mut self, t: TypeState) {
+        self.left_out = t.left_out;
+        self.type_nesting = t.type_nesting;
+        self.abort_memo = t.abort_memo;
     }
 
     /// The expression walk's state alone, put aside for a type digest

@@ -1,0 +1,2 @@
+added f(type-parameter-0-0, decltype(b + b) (*)(type-parameter-0-0))
+removed f(type-parameter-0-0, decltype(a + b) (*)(type-parameter-0-0))
