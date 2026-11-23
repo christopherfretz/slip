@@ -6004,7 +6004,9 @@ first use that has no source-location values. The resolved unit
 function or field for one written in source, the `default_argument` unit
 for an instantiated one) lists the values of the argument's immediate
 invocations that have an entry, in the order the expression walk meets
-them, as `count` and then `value` for each; it exists when at least one
+them (a node it writes as `backref`, §1.7, it does not meet again: a
+shared node's invocations are listed once, at its first writing), as
+`count` and then `value` for each; it exists when at least one
 has an entry. Its discriminator is the parameter's index, absent for a
 field. A walk that meets a `default_imm` entry inside a type (a
 `decltype` operand) does not list it: type digests are written with an
