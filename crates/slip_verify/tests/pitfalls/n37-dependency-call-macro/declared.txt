@@ -1,0 +1,3 @@
+relocate legacy => :: acme
+created legacy::<using acme::run>
+created legacy::<shadow acme::run(int)>

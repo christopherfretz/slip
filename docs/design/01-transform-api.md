@@ -284,7 +284,8 @@ is that rule applied to names. The M4 design applies it to everything else:
   `bool` member initialised from `sw.isOn()` and branched on in member
   functions, which needs a fold under an assumption, the classification
   of each reference as a read, a write or an escape, and a fact joined
-  across translation units).
+  across translation units). They are written out, with what each
+  demands, in [07](07-reference-transforms.md).
 
 §9.2 as written predates the rule: `cat(spell(parent_of(target)), "::")`
 builds a qualifier by concatenation. The M4 design replaces it with a
