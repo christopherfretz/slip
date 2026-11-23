@@ -1,0 +1,3 @@
+changed ta::promise_type
+added ta::promise_type::operator new(unsigned long)
+changed f()
