@@ -128,6 +128,104 @@ impl<'u> Tokens<'u> {
         (before.map(|s| self.kind_at(file, s)), after.map(|s| self.kind_at(file, s)))
     }
 
+    /// The kind of the token at `at`, a token's location (a macro
+    /// location is lexed where it is spelled). `None` when `at` is not
+    /// the start of a token Kiln's lexer finds.
+    pub fn kind_of(&self, at: Loc) -> Option<crate::kiln::lex::TokKind> {
+        if !self.is_token_start(at) {
+            return None;
+        }
+        let at = if at.is_macro() { self.sm.spelling_loc(at) } else { at };
+        let (file, pos) = self.sm.offset_of(at)?;
+        Some(self.kind_at(file, pos))
+    }
+
+    /// The kinds of the tokens just before `first` and just after `end`
+    /// (a token's location and a token's exclusive end) in the token
+    /// stream the parser read, after macro expansion: Kiln's expansion
+    /// entries (`SourceManager::expansion_info`) are followed outward
+    /// from a location that begins (or an end that ends) its entry, as
+    /// Kiln's `file_loc_at_macro_start` and `file_loc_at_macro_end` do,
+    /// to the parameter an argument replaced or the invocation a body
+    /// replaced; elsewhere the neighbour is the token beside the spelled
+    /// token. `None` at an end where that cannot be known: a neighbour
+    /// that is a macro parameter's replacement (the spelled neighbour in
+    /// the body is then the parameter's name, an identifier, which no
+    /// caller takes for punctuation), an argument split over several
+    /// entries, an unknown location, a buffer's end.
+    pub fn expanded_kinds_around(
+        &self,
+        first: Loc,
+        end: Loc,
+    ) -> (Option<crate::kiln::lex::TokKind>, Option<crate::kiln::lex::TokKind>) {
+        (self.expanded_before(first), self.expanded_after(end))
+    }
+
+    /// The bound on macro nesting the two walks follow.
+    const EXPANSION_DEPTH: usize = 1024;
+
+    /// [`Tokens::expanded_kinds_around`] before `at`.
+    fn expanded_before(&self, mut at: Loc) -> Option<crate::kiln::lex::TokKind> {
+        use crate::kiln::source::ExpansionKind;
+        for _ in 0..Self::EXPANSION_DEPTH {
+            if !at.is_macro() {
+                let (file, pos) = self.sm.offset_of(at)?;
+                return self.kinds_around(file, pos, pos).0;
+            }
+            let e = self.sm.expansion_info(at)?;
+            if at != e.base {
+                // Inside the entry: the token spelled before it, which the
+                // entry holds too (its spelling is one run).
+                let (file, pos) = self.sm.offset_of(self.sm.spelling_loc(at))?;
+                let lo = pos.checked_sub(at.to_raw() - e.base.to_raw())?;
+                let starts = self.starts.of(file, || self.lex_starts(file));
+                let i = starts.partition_point(|&s| s < pos).checked_sub(1)?;
+                return (starts[i] >= lo).then(|| self.kind_at(file, starts[i]));
+            }
+            if e.kind == ExpansionKind::MacroArg
+                && let Some(prev) = e.base.to_raw().checked_sub(1).map(Loc::from_raw)
+                && self.sm.expansion_info(prev).is_some_and(|p| p.expansion.lo == e.expansion.lo)
+            {
+                // An argument continued from the previous entry.
+                return None;
+            }
+            // The first token of an argument stands where its parameter
+            // was; of a body, where its invocation was.
+            at = e.expansion.lo;
+        }
+        None
+    }
+
+    /// [`Tokens::expanded_kinds_around`] after `end`.
+    fn expanded_after(&self, mut end: Loc) -> Option<crate::kiln::lex::TokKind> {
+        use crate::kiln::source::ExpansionKind;
+        for _ in 0..Self::EXPANSION_DEPTH {
+            if !end.is_macro() {
+                let (file, pos) = self.sm.offset_of(end)?;
+                return self.kinds_around(file, pos, pos).1;
+            }
+            // An exclusive end belongs to the entry of its last byte.
+            let e = self.sm.expansion_info(Loc::from_raw(end.to_raw().checked_sub(1)?))?;
+            let last = e.base.with_offset(e.len);
+            if end != last {
+                let (file, pos) = self.sm.offset_of(self.sm.spelling_loc(end))?;
+                let hi = pos + (last.to_raw() - end.to_raw());
+                let starts = self.starts.of(file, || self.lex_starts(file));
+                let next = *starts.get(starts.partition_point(|&s| s < pos))?;
+                return (next < hi).then(|| self.kind_at(file, next));
+            }
+            if e.kind == ExpansionKind::MacroArg
+                && let Some(next) = last.to_raw().checked_add(1).map(Loc::from_raw)
+                && self.sm.expansion_info(next).is_some_and(|n| n.expansion.lo == e.expansion.lo)
+            {
+                // An argument continued in the next entry.
+                return None;
+            }
+            end = e.expansion.hi;
+        }
+        None
+    }
+
     /// The kind of the token that starts at byte `at` of `file` (a start
     /// of [`Tokens::lex_starts`]).
     fn kind_at(&self, file: FileId, at: u32) -> crate::kiln::lex::TokKind {
