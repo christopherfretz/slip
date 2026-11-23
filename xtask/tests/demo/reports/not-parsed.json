@@ -1,0 +1,46 @@
+{
+  "report": "slip.verify.v1",
+  "plan": "@PLAN@",
+  "round": @ROUND@,
+  "declared": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "rules": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "image": [
+    {
+      "subject": "@SRC@/lib",
+      "post": "@TREE@/lib"
+    }
+  ],
+  "limit": 100000,
+  "locate": 1024,
+  "verdict": "not_verified",
+  "observers": {
+    "plan": 3,
+    "selected": 3,
+    "verified": 2,
+    "unchanged": 0,
+    "mismatch": 0,
+    "not_parsed": 1,
+    "unverifiable": 0,
+    "never_parsed": 0,
+    "failed": 0,
+    "indeterminate_only": 0
+  },
+  "findings": {
+    "total": 0,
+    "listed": 0,
+    "groups": []
+  },
+  "not_verified": [
+    {
+      "observer": "9999999999999999999999999999999999999999999999999999999999999999",
+      "main": "@SRC@/lib/b.cpp",
+      "state": "not_parsed",
+      "message": "lib/a.h:3:1: error: expected ';'",
+      "findings": 0,
+      "indeterminate": 0,
+      "listed": 0
+    }
+  ],
+  "exemptions": [],
+  "run": "@RUN@"
+}
