@@ -3,12 +3,13 @@
 
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, FriendKind};
+use slip_kiln::kiln::ast::types::ExcSpec;
 
+use crate::Cause;
 use crate::keys::info;
 use crate::stream::{FlagWord, Hashed, Stream, UNIT_TAG};
 use crate::tables::{Decision, access, decl_kind, friend_kind, module_ownership};
 use crate::walk::{TOO_DEEP, Walk};
-use crate::{Area, Cause};
 
 /// A content-keyed entity whose key needs its own digest
 /// (`spec/digest.md` §3.3).
@@ -167,30 +168,29 @@ impl Walk<'_> {
 
     /// `DeclNode` `ty-exception-spec` (§5.3, §11.2): `enum ExcSpec?`,
     /// absent for a function of the deferrable class, whose specification
-    /// is the resolved unit `exception_spec`. Until resolved units are
-    /// written, the absence carries `Pending(Demand)`: what the unit leaves
-    /// out is not yet anywhere.
+    /// is the resolved unit `exception_spec` (`demand.rs`). A member of a
+    /// local class has no key, so no resolved unit can hold it: its stream
+    /// holds the specification as Kiln holds it, indeterminate
+    /// (`Pending(Local)`) only while that is still `Deferred`.
     fn own_exception_spec(&mut self, s: &mut Stream, d: DeclId) {
         let ast = self.ast;
-        match crate::demand::deferrable(self, d) {
-            Some(true) => {
-                s.opt(false).pending(Area::Demand);
-            }
-            Some(false) => {
-                let proto = ast.decls.get(d).ty().and_then(|q| ast.types.proto(q)).copied();
-                match proto {
-                    Some(p) => {
-                        s.opt(true);
-                        let e = ast.types.exc_spec(&p);
-                        self.write_exc_spec(s, e, true);
-                    }
-                    None => {
-                        s.opt(false);
-                    }
+        let local = self.is_local(d);
+        if !local && crate::demand::deferrable(self, d) {
+            s.opt(false);
+            return;
+        }
+        match ast.decls.get(d).ty().and_then(|q| ast.types.proto(q)).copied() {
+            Some(p) => {
+                s.opt(true);
+                let e = ast.types.exc_spec(&p);
+                let deferred = matches!(e, ExcSpec::Deferred(_));
+                self.write_exc_spec(s, e, !local);
+                if local && deferred {
+                    s.indeterminate(Cause::Pending(crate::Area::Local));
                 }
             }
             None => {
-                s.opt(true).pending(Area::Demand);
+                s.opt(false);
             }
         }
     }
@@ -276,5 +276,336 @@ impl Walk<'_> {
             | DeclKind::ImplicitParam
             | DeclKind::ImplicitConceptSpecialization => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use slip_kiln::kiln::ast::DeclId;
+    use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind};
+
+    use crate::decl_func::tests::{named, of_kind, with_walk};
+    use crate::stream::{FlagWord, Stream};
+    use crate::tables::{Decision, Row, decl_kind};
+    use crate::walk::Walk;
+    use crate::{Area, Cause};
+
+    /// The bytes and cause `own_exception_spec` writes for the only
+    /// declaration of `kind` inside `k` (a member of a local class).
+    fn local_spec(src: &str, kind: DeclKind) -> (Vec<u8>, Option<Cause>) {
+        with_walk(src, |w| {
+            let ds: Vec<DeclId> = of_kind(w, kind).into_iter().filter(|&d| w.is_local(d)).collect();
+            assert_eq!(ds.len(), 1, "{src}");
+            let mut s = Stream::new();
+            w.own_exception_spec(&mut s, ds[0]);
+            (s.as_bytes().to_vec(), s.cause())
+        })
+    }
+
+    // digest-kinds §11.2 (WP-046 review S2): a member of a local class has
+    // no resolved unit; its own stream holds the specification Kiln
+    // resolved or was given, and is indeterminate only while Kiln still
+    // holds it deferred.
+    #[test]
+    fn a_local_class_member_holds_its_specification() {
+        let dtor = |spec: &str| {
+            local_spec(
+                &format!("void k() {{ struct L {{ ~L() {spec} {{}} }}; L l; }}\n"),
+                DeclKind::CXXDestructor,
+            )
+        };
+        let (thrown, c1) = dtor("noexcept(false)");
+        let (none, c2) = dtor("");
+        assert_eq!((c1, c2), (None, None));
+        assert_ne!(thrown, none);
+        let ctor = |spec: &str| {
+            local_spec(
+                &format!(
+                    "struct M {{ M() noexcept(false); }};\n\
+                     void k() {{ struct L {{ M m; L() {spec} = default; }}; L l; }}\n"
+                ),
+                DeclKind::CXXConstructor,
+            )
+        };
+        let (written, c1) = ctor("noexcept");
+        let (computed, c2) = ctor("");
+        assert_eq!((c1, c2), (None, None));
+        assert_ne!(written, computed);
+        // Never used: Kiln still holds it deferred.
+        let (_, cause) = local_spec(
+            "struct M { M() noexcept(false); };\nvoid k() { struct L { M m; L() = default; }; }\n",
+            DeclKind::CXXConstructor,
+        );
+        assert_eq!(cause, Some(Cause::Pending(Area::Local)));
+    }
+
+    /// The tag `spec/digest-kinds.md` §5.3 gives a declaration of kind
+    /// `k` (`TypeAlias` is written as `Typedef`), written out here rather
+    /// than read from the generated table, so that a table or a writer
+    /// that disagrees with the spec fails; `None` for a kind that makes
+    /// no unit (`out`) or that Kiln never builds (`unsupported`).
+    fn spec_tag(k: DeclKind) -> Option<u32> {
+        match k {
+            DeclKind::TranslationUnit
+            | DeclKind::LinkageSpec
+            | DeclKind::Export
+            | DeclKind::Empty
+            | DeclKind::AccessSpec
+            | DeclKind::RequiresExprBody
+            | DeclKind::UsingPack
+            | DeclKind::FriendTemplate
+            | DeclKind::ImplicitParam
+            | DeclKind::ImplicitConceptSpecialization => None,
+            DeclKind::Namespace => Some(258),
+            DeclKind::NamespaceAlias => Some(259),
+            DeclKind::FileScopeAsm => Some(263),
+            DeclKind::UsingDirective => Some(264),
+            DeclKind::Using => Some(265),
+            DeclKind::UsingEnum => Some(266),
+            DeclKind::UsingShadow => Some(267),
+            DeclKind::ConstructorUsingShadow => Some(268),
+            DeclKind::UnresolvedUsingValue => Some(270),
+            DeclKind::UnresolvedUsingTypename => Some(271),
+            DeclKind::UnresolvedUsingIfExists => Some(272),
+            DeclKind::Typedef | DeclKind::TypeAlias => Some(273),
+            DeclKind::Enum => Some(275),
+            DeclKind::EnumConstant => Some(276),
+            DeclKind::CXXRecord => Some(277),
+            DeclKind::ClassTemplateSpecialization => Some(278),
+            DeclKind::ClassTemplatePartialSpecialization => Some(279),
+            DeclKind::Field => Some(280),
+            DeclKind::IndirectField => Some(281),
+            DeclKind::Friend => Some(283),
+            DeclKind::Function => Some(285),
+            DeclKind::CXXMethod => Some(286),
+            DeclKind::CXXConstructor => Some(287),
+            DeclKind::CXXDestructor => Some(288),
+            DeclKind::CXXConversion => Some(289),
+            DeclKind::CXXDeductionGuide => Some(290),
+            DeclKind::Var => Some(291),
+            DeclKind::ParmVar => Some(292),
+            DeclKind::Binding => Some(294),
+            DeclKind::VarTemplateSpecialization => Some(295),
+            DeclKind::VarTemplatePartialSpecialization => Some(296),
+            DeclKind::ClassTemplate => Some(297),
+            DeclKind::FunctionTemplate => Some(298),
+            DeclKind::VarTemplate => Some(299),
+            DeclKind::TypeAliasTemplate => Some(300),
+            DeclKind::Concept => Some(301),
+            DeclKind::BuiltinTemplate => Some(302),
+            DeclKind::TemplateTypeParm => Some(303),
+            DeclKind::NonTypeTemplateParm => Some(304),
+            DeclKind::TemplateTemplateParm => Some(305),
+            DeclKind::LifetimeExtendedTemporary => Some(308),
+            DeclKind::TemplateParamObject => Some(309),
+            DeclKind::StaticAssert => Some(310),
+            DeclKind::Label => Some(311),
+            DeclKind::ContractResultName => Some(312),
+            DeclKind::ConstevalBlock => Some(313),
+        }
+    }
+
+    /// Every kind [`spec_tag`] gives a tag: the 46 `in` rows of §5.3 and
+    /// `TypeAlias`.
+    const TAGGED: [DeclKind; 47] = [
+        DeclKind::Namespace,
+        DeclKind::NamespaceAlias,
+        DeclKind::FileScopeAsm,
+        DeclKind::UsingDirective,
+        DeclKind::Using,
+        DeclKind::UsingEnum,
+        DeclKind::UsingShadow,
+        DeclKind::ConstructorUsingShadow,
+        DeclKind::UnresolvedUsingValue,
+        DeclKind::UnresolvedUsingTypename,
+        DeclKind::UnresolvedUsingIfExists,
+        DeclKind::Typedef,
+        DeclKind::TypeAlias,
+        DeclKind::Enum,
+        DeclKind::EnumConstant,
+        DeclKind::CXXRecord,
+        DeclKind::ClassTemplateSpecialization,
+        DeclKind::ClassTemplatePartialSpecialization,
+        DeclKind::Field,
+        DeclKind::IndirectField,
+        DeclKind::Friend,
+        DeclKind::Function,
+        DeclKind::CXXMethod,
+        DeclKind::CXXConstructor,
+        DeclKind::CXXDestructor,
+        DeclKind::CXXConversion,
+        DeclKind::CXXDeductionGuide,
+        DeclKind::Var,
+        DeclKind::ParmVar,
+        DeclKind::Binding,
+        DeclKind::VarTemplateSpecialization,
+        DeclKind::VarTemplatePartialSpecialization,
+        DeclKind::ClassTemplate,
+        DeclKind::FunctionTemplate,
+        DeclKind::VarTemplate,
+        DeclKind::TypeAliasTemplate,
+        DeclKind::Concept,
+        DeclKind::BuiltinTemplate,
+        DeclKind::TemplateTypeParm,
+        DeclKind::NonTypeTemplateParm,
+        DeclKind::TemplateTemplateParm,
+        DeclKind::LifetimeExtendedTemporary,
+        DeclKind::TemplateParamObject,
+        DeclKind::StaticAssert,
+        DeclKind::Label,
+        DeclKind::ContractResultName,
+        DeclKind::ConstevalBlock,
+    ];
+
+    /// The kinds with a tag ([`spec_tag`]) that no snippet below makes,
+    /// with the reason.
+    const UNREACHED: &[(DeclKind, &str)] = &[
+        (DeclKind::ClassTemplateSpecialization, KILN_RECORD),
+        (DeclKind::ClassTemplatePartialSpecialization, KILN_RECORD),
+        (DeclKind::VarTemplateSpecialization, KILN_VAR),
+        (DeclKind::VarTemplatePartialSpecialization, KILN_VAR),
+    ];
+
+    /// Why a class template specialisation kind is never made.
+    const KILN_RECORD: &str = "Kiln builds every class template specialisation, partial or not, \
+        as a `CXXRecord` with a `SpecInfo`; no builder of `kiln_ast` makes the kind";
+    /// Why a variable template specialisation kind is never made.
+    const KILN_VAR: &str = "Kiln builds every variable template specialisation, partial or not, \
+        as a `Var` with a `SpecInfo`; no builder of `kiln_ast` makes the kind";
+
+    /// A declaration of every kind a snippet can make.
+    const EVERY_KIND: &str = r#"
+namespace N { int x; }
+namespace NA = N;
+asm("nop");
+using namespace N;
+namespace M { void g(); void g(int); }
+using M::g;
+namespace Q {}
+using Q::absent __attribute__((using_if_exists));
+enum class E { a, b };
+using enum E;
+typedef int T;
+using U = int;
+struct B { B(int); };
+struct D : B { using B::B; };
+template <class X> struct Dep : X { using X::v; using typename X::t; };
+struct S { int f; union { int u; }; friend void fr(); S(); ~S(); operator int(); void m(); };
+template <class X> struct CT { CT(X); };
+CT(int) -> CT<int>;
+template <> struct CT<char> { CT(char); };
+template <class X> struct CT<X *> { CT(X *); };
+template <class X> void ft(X);
+template <class X> X vt = X();
+template <> int vt<int> = 1;
+template <class X> int vt<X *> = 2;
+template <class X> using AT = X *;
+template <class X> concept C = requires (X t) { t; };
+template <int I> struct NT {};
+template <template <class> class P> struct TT {};
+struct P2 { int a, b; };
+auto [p, q] = P2{};
+static_assert(true);
+const int &r = 1;
+struct V { int a; };
+template <V v> struct NV {};
+NV<V{1}> nv;
+void lab() { l:; }
+int post_(int x) post (res: res > 0);
+consteval {}
+"#;
+
+    /// The stream of declaration `d` as `decl_node` writes it.
+    fn node(w: &mut Walk<'_>, d: DeclId) -> Stream {
+        let mut s = Stream::new();
+        let e = w.entity(d);
+        w.decl_node(&mut s, d, e);
+        s
+    }
+
+    fn tag(t: u32) -> Row {
+        Row { tag: t, decision: Decision::In }
+    }
+
+    // WP-039 fix round item 6 (mutant D5): a declaration's stream begins
+    // with the spec's tag of its kind, for every kind a snippet makes; no
+    // pair test can see that tag, since two declarations of different
+    // kinds have different keys.
+    #[test]
+    fn a_declaration_begins_with_its_kind() {
+        let seen = with_walk(EVERY_KIND, |w| {
+            let mut seen = BTreeSet::new();
+            for d in w.ast.decls.ids() {
+                let kind = w.ast.decls.get(d).kind();
+                let Some(t) = spec_tag(kind) else { continue };
+                let mut want = Stream::new();
+                want.tag(tag(t));
+                let s = node(w, d);
+                assert!(s.as_bytes().starts_with(want.as_bytes()), "{kind:?}: not tag {t}");
+                seen.insert(format!("{kind:?}"));
+            }
+            seen
+        });
+        let tagged: BTreeSet<String> = TAGGED.iter().map(|k| format!("{k:?}")).collect();
+        assert_eq!(tagged.len(), TAGGED.len(), "TAGGED repeats a kind");
+        for k in TAGGED {
+            assert!(spec_tag(k).is_some(), "{k:?} is in TAGGED without a tag");
+        }
+        let mut covered = seen.clone();
+        for (k, why) in UNREACHED {
+            assert!(covered.insert(format!("{k:?}")), "{k:?} is listed unreached ({why}) but made");
+        }
+        assert_eq!(covered, tagged, "every kind with a tag is made or listed unreached");
+    }
+
+    // Mutant D1: `DeclNode` `flags` bit 0 (§5.3 `0-implicit`) is set when
+    // every declaration of the entity is implicit, and right after the
+    // kind. No pair can flip it alone: an entity all of whose declarations
+    // are implicit is a derived or on-demand unit, a written one a
+    // declared unit (`units::unit_class`), so the bit follows the unit's
+    // class, except for an indirect field, which Kiln always makes
+    // implicit. It stays because the row is `in` and a unit class rule
+    // may change.
+    #[test]
+    fn the_implicit_bit_is_written() {
+        with_walk("struct S {}; S s; struct W { W(); };", |w| {
+            let ctors: Vec<DeclId> = w
+                .ast
+                .decls
+                .ids()
+                .filter(|&d| w.ast.decls.get(d).kind() == DeclKind::CXXConstructor)
+                .collect();
+            let mut checked = [false; 2];
+            for d in ctors {
+                let implicit = w.ast.decls.get(d).has(DeclFlags::IMPLICIT);
+                let mut want = Stream::new();
+                want.tag(decl_kind::CXX_CONSTRUCTOR)
+                    .flags(FlagWord::new().bit(implicit).bit(false));
+                assert!(node(w, d).as_bytes().starts_with(want.as_bytes()), "implicit {implicit}");
+                checked[usize::from(implicit)] = true;
+            }
+            assert_eq!(checked, [true, true], "a written and an implicit constructor");
+        });
+    }
+
+    // Mutant D3: `DeclMisc` `0-name-independent` (§5.3) is written. It is
+    // redundant with the key: Kiln marks a member name-independent from
+    // its name `_` and its kind alone (`is_placeholder_name`, in every
+    // language mode), and both are in the key (§3.2, and the ordinal of
+    // §3.3 `field`), so no pair flips it alone. It stays because the row
+    // is `in`, and so that a future Kiln that tells `_` members apart by
+    // mode or context changes the digest with it.
+    #[test]
+    fn the_name_independent_bit_is_written() {
+        with_walk("struct S { int _; int a; int b; };", |w| {
+            let field = |w: &Walk<'_>, n: &str| named(w, n, DeclKind::Field)[0];
+            let (u, a, b) = (field(w, "_"), field(w, "a"), field(w, "b"));
+            assert!(w.ast.decls.get(u).misc().name_independent());
+            let (u, a, b) = (node(w, u), node(w, a), node(w, b));
+            assert_eq!(a.as_bytes(), b.as_bytes(), "two fields alike but for their names");
+            assert_ne!(u.as_bytes(), a.as_bytes(), "the bit is in the stream");
+        });
     }
 }

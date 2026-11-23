@@ -1,0 +1,3 @@
+changed S
+added S::operator delete(void *)
+derived-changed S::~S()::<dtor_delete>

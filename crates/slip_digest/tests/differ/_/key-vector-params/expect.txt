@@ -1,0 +1,1 @@
+added f(__attribute__((__vector_size__(8 * sizeof(int)))) int)

@@ -204,8 +204,8 @@ the preprocessor's and not the AST's.
 | The value of an immediate invocation inside a default argument, computed at its first use | `resolved` unit |
 | A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
 | A deduced return type of a template member | part of the instantiation's derived unit |
-| A variable's evaluated constant value (`eval`), default-argument immediate values | `resolved` unit |
-| A class's key function; `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
+| A variable's evaluated constant value (`eval`), default-argument immediate values. At Kiln `913a490bb` `eval` is written when Kiln checks the declaration's initialiser: with the declaration, or, for one made by instantiation, when a use instantiates it (`digest-kinds.md` §11.3) | `resolved` unit |
+| A class's key function; `dtor_delete`, `dtor_delete_this` (set when a virtual destructor is defined, which for an implicit or defaulted one is on use), `inheriting_ctor`, `inherited_ctor` (set when Kiln declares the inheriting constructor, on use) cold maps | `resolved` unit of the class or function |
 | The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |
 | "vtable used" marks | not in the AST: nothing to digest |
 | "A complete definition was required" marks; the lists of classes completed and of function definitions instantiated; the tables that record which specialisations exist and in what order they were made | not digested |
@@ -289,7 +289,10 @@ with everything else.
   the first name its declaration introduces: the typedef name it is given
   for linkage, else its first declarator, else its first enumerator, else
   (an anonymous union) its first member. Failing all of those it is named
-  by its ordinal among the unnamed types of its scope.
+  by its ordinal among the unnamed types of its scope. A name-independent
+  declarator or member (`struct { int a; } _;`, `union { int _; };`,
+  P2169) names nothing, since a scope may hold several: it is skipped, and
+  the rules after it apply.
 - A declaration that introduces no name at all (§2.1) is **keyed by
   content**: `name` is `content` and `disc` is the unit's own digest. Two
   identical `static_assert`s in one scope are one unit. Adding or removing
@@ -646,6 +649,17 @@ the nearest enclosing entity indeterminate, the order unit at the top
 level. A key built from an indeterminate key (its parent's, its
 template's, one in its discriminator) is indeterminate for the same
 cause.
+
+**A collision does not travel.** Collisions are found after the walk,
+when the keys of the whole translation unit are known: the mark is put
+on the units that share the key, and only on them. A unit that refers to
+one of them wrote the shared key in its stream during the walk and stays
+determinate. This is sound because a collision is never silent: each
+colliding key is an `indeterminate` finding (`verify.md` §4 rule 1, or
+`derived_indeterminate` for derived units), so an observer with a
+collision is never `verified`. The per-unit "unchanged" of a referrer is
+then one line of a report that already fails; it is not a claim Slip
+makes on its own.
 
 Its digest is still computed and recorded, with the `indeterminate` flag.
 Verification treats an indeterminate unit as different from every unit.

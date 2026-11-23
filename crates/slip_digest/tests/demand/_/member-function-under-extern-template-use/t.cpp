@@ -5,6 +5,4 @@ template <class T> struct X { void f() {} };
 extern template struct X<int>;
 #ifdef B
 void use(X<int>& x) { x.f(); }
-#else
-void use(X<int>& x) {}
 #endif

@@ -1,0 +1,7 @@
+# pending
+# needs: demand
+# WP-046: Kiln evaluates `const int S::x = 1;` at its declaration and never
+# records an evaluation of the in-class `static const int x = 1;` (not even
+# for a constant-expression use), so S::x::<value> (digest-kinds §11.3) is
+# on side B only. Not a use: the two written forms. Open question (WP-046
+# handback): Kiln evaluating both alike, or §11.3 writing no unit for one.

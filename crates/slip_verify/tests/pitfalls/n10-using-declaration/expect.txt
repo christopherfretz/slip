@@ -1,0 +1,4 @@
+# N10: using legacy::Mine; names a moved entity.
+# Caught only by a failed parse (spec/pitfalls.md §5).
+good: verified
+bad:  not_parsed
