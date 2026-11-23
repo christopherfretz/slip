@@ -166,7 +166,7 @@ fn traces(w: &mut Walk<'_>, written: &[Written], keys: &[Digest]) -> Vec<Trace> 
         out.push(made(w, u, again, first_only, &unit_keys));
     }
     // Stable: of one key and digest, the first written is kept.
-    out.sort_by(|a, b| (a.key, a.digest).cmp(&(b.key, b.digest)));
+    out.sort_by_key(|t| (t.key, t.digest));
     out.dedup_by(|b, a| a.key == b.key && a.digest == b.digest);
     out
 }
@@ -233,12 +233,11 @@ fn part(
     u: &Written,
     e: DeclId,
 ) -> Option<Recording> {
-    if !parts.contains_key(&e) {
+    if let std::collections::hash_map::Entry::Vacant(slot) = parts.entry(e) {
         let owner = written
             .iter()
             .find(|o| o.entity == Some(e) && o.owner.is_none() && o.kind != KeyKind::Order)?;
-        let again = parts_again(w, e, owner);
-        parts.insert(e, again);
+        slot.insert(parts_again(w, e, owner));
     }
     let again = parts.get(&e)?;
     again
@@ -257,7 +256,6 @@ fn parts_again(w: &mut Walk<'_>, e: DeclId, owner: &Written) -> Vec<(Written, Re
     let mut again = Vec::new();
     crate::demand::resolved_units(w, e, owner, &mut again);
     let kept = armed.take();
-    drop(armed);
     let mut by_digest: HashMap<Digest, Recording> = HashMap::new();
     for r in kept {
         by_digest.entry(tagged_digest(UNIT_TAG, &r.bytes)).or_insert(r);
@@ -277,7 +275,7 @@ fn parts_again(w: &mut Walk<'_>, e: DeclId, owner: &Written) -> Vec<(Written, Re
 fn made(
     w: &Walk<'_>,
     u: &Written,
-    r: Recording,
+    rec: Recording,
     first_only: bool,
     unit_keys: &HashSet<Digest>,
 ) -> Trace {
@@ -285,32 +283,32 @@ fn made(
     let mut marks = vec![Mark { offset: 0, node: u.kind.name(), file, line, column }];
     if !first_only {
         let mut names = Names::default();
-        for &(offset, node) in &r.marks {
+        for &(offset, node) in &rec.marks {
             let (node, loc) = match node {
-                NodeRef::Expr(x) => {
-                    let n = w.ast.exprs.get(x);
-                    (names.expr(n.kind()), n.loc())
+                NodeRef::Expr(id) => {
+                    let expr = w.ast.exprs.get(id);
+                    (names.expr(expr.kind()), expr.loc())
                 }
-                NodeRef::Stmt(st) => {
-                    let n = w.ast.stmts.get(st);
-                    (names.stmt(n.kind()), n.loc())
+                NodeRef::Stmt(id) => {
+                    let stmt = w.ast.stmts.get(id);
+                    (names.stmt(stmt.kind()), stmt.loc())
                 }
             };
             let (file, line, column) = located(w, loc);
             marks.push(Mark { offset, node, file, line, column });
         }
     }
-    let refs = r
+    let refs = rec
         .digests
         .iter()
         .filter_map(|&offset| {
             let at = usize::try_from(offset).ok()?;
-            let bytes: [u8; 32] = r.bytes.get(at..at + 32)?.try_into().ok()?;
+            let bytes: [u8; 32] = rec.bytes.get(at..at + 32)?.try_into().ok()?;
             let key = Digest(bytes);
             unit_keys.contains(&key).then_some(RefAt { offset, len: 32, key })
         })
         .collect();
-    Trace { key: u.key, digest: u.digest, stream: r.bytes, marks, refs }
+    Trace { key: u.key, digest: u.digest, stream: rec.bytes, marks, refs }
 }
 
 /// A unit's place (§6.1): the location of the first declaration of its

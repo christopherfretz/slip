@@ -187,8 +187,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         match post_side {
             Some(post_side) if same => {
                 locate::fill(&mut v.findings, locate_n, pre_side.as_ref(), &post_side);
-                post.unstable =
-                    pre_side.as_ref().map_or(0, locate::Side::unstable) + post_side.unstable();
+                post.unstable = locate::unstable(pre_side.as_ref(), &post_side);
             }
             _ => {
                 post.by_kind = [0; 6];

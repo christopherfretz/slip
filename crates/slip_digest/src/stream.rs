@@ -132,7 +132,11 @@ impl Default for Stream {
             n.set(id + 1);
             id
         });
-        let rec = if ARMING.with(std::cell::Cell::get) == ARMED { armed_recorder() } else { None };
+        let rec = if ARMING.with(std::cell::Cell::get) == ARMED {
+            Some(Box::new(armed_recorder()))
+        } else {
+            None
+        };
         Stream { enc: Encoder::default(), cause: None, id, nodes: 0, rec }
     }
 }
@@ -140,15 +144,15 @@ impl Default for Stream {
 /// The recorder of the stream an armed module makes next ([`Armed`]).
 #[cold]
 #[inline(never)]
-fn armed_recorder() -> Option<Box<Recorder>> {
+fn armed_recorder() -> Recorder {
     ARMING.with(|a| a.set(BUSY));
     let mut r = recorder();
     r.armed = true;
-    Some(r)
+    r
 }
 
 /// A new recorder.
-fn recorder() -> Box<Recorder> {
+fn recorder() -> Recorder {
     #[cfg(test)]
     {
         RECORDERS.with(|c| c.set(c.get() + 1));
@@ -156,7 +160,7 @@ fn recorder() -> Box<Recorder> {
         let live = LIVE.with(std::cell::Cell::get);
         MAX_LIVE.with(|m| m.set(m.get().max(live)));
     }
-    Box::default()
+    Recorder::default()
 }
 
 /// While it lives, the stream module of this thread is armed: each stream
@@ -172,9 +176,11 @@ impl Armed {
         Armed(())
     }
 
-    /// The streams kept so far, in the order they were hashed.
-    pub(crate) fn take(&self) -> Vec<Recording> {
-        KEPT.with(|k| std::mem::take(&mut *k.borrow_mut()))
+    /// The streams kept, in the order they were hashed; disarms.
+    pub(crate) fn take(self) -> Vec<Recording> {
+        let kept = KEPT.with(|k| std::mem::take(&mut *k.borrow_mut()));
+        drop(self);
+        kept
     }
 }
 
@@ -204,7 +210,7 @@ impl Stream {
     pub(crate) fn traced() -> Stream {
         let mut s = Stream::default();
         if s.rec.is_none() {
-            s.rec = Some(recorder());
+            s.rec = Some(Box::new(recorder()));
         }
         s
     }

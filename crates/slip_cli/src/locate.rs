@@ -118,9 +118,9 @@ pub fn take(
         names: true,
         rule_use: false,
     };
-    let traced = trace(input, &options, keys);
+    let run = trace(input, &options, keys);
     let wanted = |k: &Digest| keys.binary_search(k).is_ok();
-    let output = traced.output;
+    let output = run.output;
     let mut units: Vec<UnitAt> = Vec::new();
     for g in &output.digests.groups {
         for u in g.units.iter().flatten().filter(|u| wanted(&u.key)) {
@@ -139,21 +139,27 @@ pub fn take(
     let mut streams: Vec<(Digest, Digest)> =
         units.iter().filter(|u| !u.indeterminate).map(|u| (u.key, u.digest)).collect();
     streams.dedup();
-    let traces = traced.traces;
+    let traces = run.traces;
     let unstable = streams
         .iter()
         .filter(|(k, d)| traces.binary_search_by(|t| (&t.key, &t.digest).cmp(&(k, d))).is_err())
         .count() as u64;
-    let mut named: Vec<Digest> = keys.to_vec();
-    named.extend(traces.iter().flat_map(|t| t.refs.iter().map(|r| r.key)));
-    named.sort_unstable();
-    named.dedup();
+    let mut shown: Vec<Digest> = keys.to_vec();
+    shown.extend(traces.iter().flat_map(|t| t.refs.iter().map(|r| r.key)));
+    shown.sort_unstable();
+    shown.dedup();
     let mut names: Vec<(Digest, String)> =
-        output.names.into_iter().filter(|(k, _)| named.binary_search(k).is_ok()).collect();
+        output.names.into_iter().filter(|(k, _)| shown.binary_search(k).is_ok()).collect();
     names.sort();
     let causes =
         output.causes.iter().filter(|(k, _)| wanted(k)).map(|(k, c)| (*k, c.to_string())).collect();
     Side { tu: output.digests.tu, names, units, traces, causes, unstable }
+}
+
+/// `verify.traces.unstable` (§7.2) of a step 6: the units of the wanted
+/// keys with no trace, in the pre-image (if taken) and the post-image.
+pub fn unstable(pre: Option<&Side>, post: &Side) -> u64 {
+    pre.map_or(0, Side::unstable) + post.unstable()
 }
 
 /// The keys of the first `locate` findings, sorted, no duplicates.
@@ -368,7 +374,7 @@ mod tests {
             marks,
             refs,
         });
-        s.traces.sort_by(|a, b| (a.key, a.digest).cmp(&(b.key, b.digest)));
+        s.traces.sort_by_key(|t| (t.key, t.digest));
         s
     }
 
@@ -460,26 +466,27 @@ mod tests {
     // every reference it is empty.
     #[test]
     fn s6_1_what_names_the_reference_at_the_difference() {
-        let mut a = vec![0u8; 40];
-        a[0] = 7;
+        let mut pre = vec![0u8; 40];
+        pre[0] = 7;
         let marks = || vec![mark(0, "function", 1), mark(1, "CallExpr", 2)];
-        let r = |key: u8| vec![RefAt { offset: 4, len: 32, key: d(key) }];
+        let refs = |key: u8| vec![RefAt { offset: 4, len: 32, key: d(key) }];
         for (at, inside) in [(4usize, true), (35, true), (3, false), (36, false)] {
-            let mut b = a.clone();
-            b[at] = 1;
+            let mut post = pre.clone();
+            post[at] = 1;
             let pre_side = with_unit(
                 side(&[(20, "lib::f(long)")]),
                 1,
                 10,
                 GroupClass::Declared,
-                &a,
+                &pre,
                 marks(),
-                r(20),
+                refs(20),
             );
-            let post_side = with_unit(side(&[]), 1, 11, GroupClass::Declared, &b, marks(), r(21));
-            let mut f = vec![changed(1, 10, 11)];
-            fill(&mut f, 1, Some(&pre_side), &post_side);
-            let w = f[0].location.clone().expect("a location");
+            let post_side =
+                with_unit(side(&[]), 1, 11, GroupClass::Declared, &post, marks(), refs(21));
+            let mut found = vec![changed(1, 10, 11)];
+            fill(&mut found, 1, Some(&pre_side), &post_side);
+            let w = found[0].location.clone().expect("a location");
             if inside {
                 assert_eq!(w.pre.what, "refers to lib::f(long)", "byte {at}");
                 assert_eq!(w.post.what, format!("refers to {}", d(21)), "byte {at}");
