@@ -820,6 +820,8 @@ fn s7_3_step_4_rechecks_the_file_itself() {
         let change = Rc::new(change);
         let w = hooked(&c, after, move |s: &mut State| change(s));
         assert_eq!(run_write(&c, &w), Err(WriteError::Refused(want)));
+        // Refused at step 4 itself, not later by the re-check before a rename.
+        assert!(w.0.borrow().log.iter().all(|(o, _)| *o != "rename"));
         let mut s = w.0.borrow_mut();
         s.readonly_dirs.clear();
         let n = s.files.get_mut(b"/w/b.h".as_slice()).unwrap();
@@ -940,8 +942,11 @@ fn s7_3_recover_creates_the_staged_name_exclusively() {
     let start = after_commit(&c);
     let probe = start.healthy();
     recover(&own_w(), &probe, &probe, &probe).unwrap().unwrap();
+    // Before the stat that follows recover's own clearing of the staged
+    // name: the name appears after recover last removed it, so a create
+    // that cleared the name again (not exclusive) would overwrite it.
     let first_create =
-        probe.0.borrow().log.iter().position(|(o, _)| *o == "create").unwrap() as u64;
+        probe.0.borrow().log.iter().position(|(o, _)| *o == "remove").unwrap() as u64 + 1;
     let w = start.healthy();
     let st = staged_name(b"/w/a.cc", c.id);
     let s2 = st.clone();
@@ -1587,15 +1592,17 @@ fn s7_3_disk_create_does_not_follow_a_swapped_name() {
             }
         }
     });
-    let (mut swapped, mut failed) = (0, 0);
+    let (mut swapped, mut failed, mut caught) = (0, 0, 0);
     for _ in 0..1500 {
         let _ = std::fs::remove_file(&staged);
         let got = slip_apply::fs::DiskTree.create(&disk::bytes(&staged), 0o4755, b"post");
         assert_eq!(disk::mode(&victim), 0o600);
         assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
         let link = std::fs::symlink_metadata(&staged).is_ok_and(|m| m.file_type().is_symlink());
-        if got.is_err() {
-            failed += 1;
+        match &got {
+            Err(e) if e.to_string().contains("replaced while") => caught += 1,
+            Err(_) => failed += 1,
+            Ok(()) => {}
         }
         if link && got.is_ok() {
             // The swap came after the create had finished.
@@ -1605,7 +1612,7 @@ fn s7_3_disk_create_does_not_follow_a_swapped_name() {
     stop.store(true, Ordering::Relaxed);
     attacker.join().unwrap();
     eprintln!(
-        "race: {failed} creates failed (a swap found, or the name taken), {swapped} swaps after a create"
+        "race: {caught} swaps caught, {failed} creates failed (the name taken), {swapped} swaps after a create"
     );
     std::fs::remove_dir_all(&r).unwrap();
 }
