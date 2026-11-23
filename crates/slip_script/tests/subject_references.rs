@@ -480,6 +480,38 @@ fn s5_4_tier2_a_name_in_a_macro_body() {
     });
 }
 
+/// §6.5 rule 1 (decision 3): two names written in one macro body, with
+/// no ranges and one invocation, are two references.
+#[test]
+fn s6_5_rule1_two_names_in_one_macro_body() {
+    let src = "int x;\n#define TWICE x + x\nint u = TWICE;\n";
+    main_only(src, |_, s| {
+        assert_eq!(refs(s, one(s, "x")), ["- | -", "- | -"]);
+    });
+}
+
+/// §6.5 rule 3: a written name whose referent is not an entity (a label,
+/// a contract's result name) is no reference.
+#[test]
+fn s6_5_rule3_referents_that_are_not_entities() {
+    let src = "int f(int a) post (r: r > 0) { l: if (a) goto l; return 1; }\n";
+    let snippet =
+        Snippet { files: &[("main.cpp", src)], main: "main.cpp", include: &[""], std: "c++26" };
+    parse_with_tables(&snippet, &Extra::default(), |p| {
+        assert_eq!(p.errors, 0, "{}", p.diagnostics);
+        let owned = |_: &[u8]| true;
+        let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
+        let shown: Vec<String> = all(&s)
+            .into_iter()
+            .map(|r| {
+                format!("{}:{}", show(&s, name(&s, r)), s.is_live(Value::Entity(s.referent(r))))
+            })
+            .collect();
+        assert_eq!(shown, ["main.cpp:a:true"]);
+    })
+    .expect("the snippet parses");
+}
+
 /// §5.4 rule 6 (decision 3 of WP-084): a reference that is the whole
 /// expansion has the invocation as extent, at tier 0, and no name range.
 #[test]
@@ -1089,6 +1121,27 @@ fn s6_5_rule4_a_declarator_qualifier_from_a_macro() {
     main_only(src, |_, s| {
         assert_eq!(refs(s, one(s, "a")), Vec::<String>::new());
         assert_eq!(refs(s, one(s, "a::T")), Vec::<String>::new());
+    });
+}
+
+/// §6.5 rule 4: a macro in the middle of a declarator's qualifier, whose
+/// two ends are file text: the names it produces are not returned.
+#[test]
+fn s6_5_rule4_a_macro_inside_a_declarator_qualifier() {
+    let src = "namespace a { namespace b { struct T { void f(); }; } }\n#define M b\nvoid a::M::T::f() {}\nint u = sizeof(a::b::T);\n";
+    main_only(src, |_, s| {
+        assert_eq!(refs(s, one(s, "a::b")), ["main.cpp:b | main.cpp:a::b"]);
+    });
+}
+
+/// §6.5 rule 4: a declarator's qualifier that starts in the file and ends
+/// inside a macro invocation holding the name.
+#[test]
+fn s6_5_rule4_a_declarator_qualifier_ending_in_a_macro() {
+    let src = "namespace a { struct T { void f(); }; }\n#define QN T::f\nvoid a::QN() {}\nint u = sizeof(a::T);\n";
+    main_only(src, |_, s| {
+        assert_eq!(refs(s, one(s, "a")), ["main.cpp:a | main.cpp:a"]);
+        assert_eq!(refs(s, one(s, "a::T")), ["main.cpp:T | main.cpp:a::T"]);
     });
 }
 

@@ -194,12 +194,10 @@ impl Names {
                 extent: x.extent.map(|g| g.0),
                 direct: x.direct,
             };
+            // A later entry of one written name keeps the first entry's
+            // first token: Kiln records the entries of one written name in
+            // the order of their preprocessing, which is unit order.
             let at = if let Some(&i) = keys.get(&key) {
-                let y = &mut self.refs[i as usize];
-                if super::unit_order(sm, x.first, y.first) == Ordering::Less {
-                    y.first = x.first;
-                    y.end = x.end;
-                }
                 i
             } else {
                 let i = self.refs.len() as u32;
@@ -280,8 +278,11 @@ struct Declarative {
     /// sorted and joined. A name is in one when its own outermost file
     /// location is.
     by_file: HashMap<FileId, Vec<(u32, u32)>>,
-    /// Spans whose ends are in different files, compared by unit order:
-    /// none was seen.
+    /// The part, inside a macro invocation, of a span that ends there: by
+    /// the raw location of the invocation's start, the spans, compared by
+    /// unit order with the names that invocation produced.
+    ending_in: HashMap<u32, Vec<Span>>,
+    /// Spans whose ends are in different files, compared by unit order.
     other: Vec<Span>,
 }
 
@@ -329,23 +330,28 @@ impl Declarative {
         }
         let mut raw = Vec::new();
         let mut by_file: HashMap<FileId, Vec<(u32, u32)>> = HashMap::new();
+        let mut ending_in: HashMap<u32, Vec<Span>> = HashMap::new();
         let mut other = Vec::new();
         for s in spans {
             if sm.same_entry_distance(s.lo, s.hi).is_some() {
                 raw.push((s.lo.to_raw(), s.hi.to_raw()));
                 continue;
             }
+            let end = sm.expansion_loc(s.hi);
             let lo = sm.offset_of(sm.expansion_loc(s.lo));
-            let hi = sm.offset_of(sm.expansion_loc(s.hi));
+            let hi = sm.offset_of(end);
             match (lo, hi) {
                 (Some((f, lo)), Some((g, hi))) if f == g && lo <= hi => {
                     by_file.entry(f).or_default().push((lo, hi));
+                    if end != s.hi {
+                        ending_in.entry(end.to_raw()).or_default().push(s);
+                    }
                 }
                 _ => other.push(s),
             }
         }
         let by_file = by_file.into_iter().map(|(f, v)| (f, joined(v))).collect();
-        Declarative { raw: joined(raw), by_file, other }
+        Declarative { raw: joined(raw), by_file, ending_in, other }
     }
 
     /// Whether the name of `r` is in one of the spans: its first token,
@@ -363,26 +369,28 @@ impl Declarative {
         {
             return true;
         }
-        self.other.iter().any(|s| {
+        let within = |s: &Span| {
             super::unit_order(sm, s.lo, at) != Ordering::Greater
                 && super::unit_order(sm, at, s.hi) == Ordering::Less
-        })
+        };
+        if self.ending_in.get(&outer.to_raw()).is_some_and(|v| v.iter().any(within)) {
+            return true;
+        }
+        self.other.iter().any(within)
     }
 }
 
 /// §6.6 rule 1: `fr`, the range of the span `name`, is the identifier
-/// token itself: it starts where the name's token is spelled, Kiln's end
-/// of the token there is its end, and its text is the identifier
-/// `ident` (empty: the name is not an identifier). Not so for a name that
-/// is a whole macro expansion (`ID(foo)`, `#define N n`), whose range is
-/// the invocation, nor for a name written with a line splice or a
-/// universal-character-name.
+/// token itself: it starts where the name's token is spelled and its text
+/// is the identifier `ident` (empty: the name is not an identifier, and
+/// no range is empty). Then it is one token: `ranges` never ends a range
+/// inside a token, and an identifier's bytes hold no token boundary. Not
+/// so for a name that is a whole macro expansion (`ID(foo)`, `#define N
+/// n`), whose range is the invocation, nor for a name written with a line
+/// splice or a universal-character-name.
 fn identifier_token(unit: &Unit<'_>, fr: FileRange, name: Span, ident: &[u8]) -> bool {
     let sm = unit.sm();
-    let start = sm.loc(fr.file, fr.lo);
-    !ident.is_empty()
-        && sm.offset_of(sm.spelling_loc(name.lo)) == Some((fr.file, fr.lo))
-        && unit.token_end(start) == Some(sm.loc(fr.file, fr.hi))
+    sm.offset_of(sm.spelling_loc(name.lo)) == Some((fr.file, fr.lo))
         && sm.text(fr.file).as_bytes().get(fr.lo as usize..fr.hi as usize) == Some(ident)
 }
 
