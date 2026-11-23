@@ -100,8 +100,5 @@ pub(crate) fn finish(c: Option<Counting>) -> Vec<Use> {
             }
         }
     }
-    by_rule
-        .into_iter()
-        .map(|(r, (via, direct))| Use { rule: r as u64, via, direct })
-        .collect()
+    by_rule.into_iter().map(|(r, (via, direct))| Use { rule: r as u64, via, direct }).collect()
 }

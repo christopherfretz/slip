@@ -564,7 +564,10 @@ fn records_of(source: &str, rules: &RuleTable) -> Vec<Record> {
 
 fn digest_of(source: &str, rules: &RuleTable) -> Output {
     with_input(source, |i| {
-        slip_digest::digest(i, &Options { rules, detail: Detail::All, names: true, rule_use: false })
+        slip_digest::digest(
+            i,
+            &Options { rules, detail: Detail::All, names: true, rule_use: false },
+        )
     })
 }
 

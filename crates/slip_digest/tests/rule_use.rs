@@ -69,8 +69,8 @@ struct Expected {
 }
 
 fn expected(dir: &Path) -> Result<Expected, String> {
-    let text = std::fs::read_to_string(dir.join("expect.txt"))
-        .map_err(|e| format!("expect.txt: {e}"))?;
+    let text =
+        std::fs::read_to_string(dir.join("expect.txt")).map_err(|e| format!("expect.txt: {e}"))?;
     let mut e = Expected::default();
     for (i, l) in text.lines().enumerate() {
         let l = l.trim();
@@ -128,8 +128,8 @@ fn same_but_rule_use(on: &Output, off: &Output) -> Result<(), String> {
 
 fn case(dir: &Path) -> Result<(), String> {
     let e = expected(dir)?;
-    let text = std::fs::read_to_string(dir.join("rules.txt"))
-        .map_err(|x| format!("rules.txt: {x}"))?;
+    let text =
+        std::fs::read_to_string(dir.join("rules.txt")).map_err(|x| format!("rules.txt: {x}"))?;
     let lines = read(&text)?;
     let pre = common::with_side(dir, Side::A, |input| records(input, &RuleTable::empty()))?
         .map_err(|x| format!("records of the pre-image: {x}"))?;
@@ -144,7 +144,11 @@ fn case(dir: &Path) -> Result<(), String> {
         }
         let t = table_with(&lines, &pre, &plain, !e.refused)?;
         if e.refused != t.table.refused().is_some() {
-            return Err(format!("`refused` is {}, the table's refusal {:?}", e.refused, t.table.refused()));
+            return Err(format!(
+                "`refused` is {}, the table's refusal {:?}",
+                e.refused,
+                t.table.refused()
+            ));
         }
         let on = walk(input, &t.table, true);
         if walk(input, &t.table, true) != on {
@@ -157,9 +161,12 @@ fn case(dir: &Path) -> Result<(), String> {
             let Some((_, rule)) = t.rules.iter().find(|(l, _)| *l == n) else {
                 return Err(format!("`use {n}`: no rule on line {n} of rules.txt"));
             };
-            let index = t.table.rules().iter().position(|r| r == rule).ok_or_else(|| {
-                format!("`use {n}`: the rule is not in the table")
-            })?;
+            let index = t
+                .table
+                .rules()
+                .iter()
+                .position(|r| r == rule)
+                .ok_or_else(|| format!("`use {n}`: the rule is not in the table"))?;
             if via != 0 || direct != 0 {
                 want.push(Use { rule: index as u64, via, direct });
             }
@@ -176,17 +183,10 @@ fn case(dir: &Path) -> Result<(), String> {
                     .map(|x| format!("use {} via {} direct {}", line(x.rule), x.via, x.direct))
                     .collect()
             };
-            problems.push(format!(
-                "expected {:?}\ncounted  {:?}",
-                show(&want),
-                show(&on.rule_use)
-            ));
+            problems.push(format!("expected {:?}\ncounted  {:?}", show(&want), show(&on.rule_use)));
         }
-        let collisions = on
-            .counters
-            .iter()
-            .find(|c| c.name == "digest.collisions")
-            .map_or(0, |c| c.value);
+        let collisions =
+            on.counters.iter().find(|c| c.name == "digest.collisions").map_or(0, |c| c.value);
         if collisions != e.collisions {
             problems.push(format!("digest.collisions is {collisions}, expected {}", e.collisions));
         }
@@ -202,10 +202,8 @@ fn case(dir: &Path) -> Result<(), String> {
             indet.sort();
             indet.dedup();
             if indet != e.indeterminate {
-                problems.push(format!(
-                    "indeterminate units {indet:?}, expected {:?}",
-                    e.indeterminate
-                ));
+                problems
+                    .push(format!("indeterminate units {indet:?}, expected {:?}", e.indeterminate));
             }
         }
         if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }

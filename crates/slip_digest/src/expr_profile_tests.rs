@@ -464,7 +464,12 @@ fn digest_all(src: &str) -> Vec<(slip_model::Digest, String, Vec<crate::Cause>)>
         let rules = RuleTable::empty();
         let o = crate::digest(
             &input,
-            &crate::Options { rules: &rules, detail: crate::Detail::All, names: true, rule_use: false },
+            &crate::Options {
+                rules: &rules,
+                detail: crate::Detail::All,
+                names: true,
+                rule_use: false,
+            },
         );
         o.names
             .iter()

@@ -54,7 +54,10 @@ fn with_input<R: Send>(
 fn snippet(source: &str, rules: &RuleTable) -> (Vec<Record>, Output) {
     let ((recs, out), errors) = with_input(&[("main.cpp", source)], "c++20", &[], |input| {
         let recs = records(input, rules);
-        let out = slip_digest::digest(input, &Options { rules, detail: Detail::All, names: true, rule_use: false });
+        let out = slip_digest::digest(
+            input,
+            &Options { rules, detail: Detail::All, names: true, rule_use: false },
+        );
         (recs, out)
     })
     .expect("the snippet parses");
