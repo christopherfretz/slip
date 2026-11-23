@@ -1,0 +1,5 @@
+# A class declared in a hidden opening and defined in a plain one (a) or a hidden one (b).
+# clang++-19: DEFAULT _Z1gIPN1n1SEEvv, _ZTVN1n1SE in a, HIDDEN in b: a class takes its
+# definition's opening, even for a use before the definition. Determinate.
+changed n::S
+changed n

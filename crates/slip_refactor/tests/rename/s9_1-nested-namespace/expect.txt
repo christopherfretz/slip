@@ -1,0 +1,11 @@
+subjects:
+  920eb057 seed - rule=yes a::b::f(int)
+links:
+claims:
+  main.cpp:1:23+1 replace "g" t0 votes=1 none [920eb057]
+  main.cpp:2:20+1 keep t0 votes=1 none
+  main.cpp:3:34+1 keep t0 votes=1 none
+  main.cpp:4:18+1 replace spell(920eb057, "g") t0 votes=1 none [920eb057]
+  main.cpp:4:27+1 keep t0 votes=1 none
+  main.cpp:4:39+1 keep t0 votes=1 none
+changed:

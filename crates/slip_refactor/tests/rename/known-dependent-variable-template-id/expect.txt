@@ -1,0 +1,9 @@
+# pending
+# needs: Kiln to give the entry of n::v<T> (a non-dependent template name with dependent arguments) its referent, the variable template (Kiln KR1 stage 4); until then unresolved, a known over-refusal (spec/landed/edits/WP-071.md, For Kiln)
+subjects:
+  361bc504 seed - rule=yes n::v
+links:
+claims:
+  main.cpp:1:49+1 replace "w" t0 votes=1 none [361bc504]
+  main.cpp:2:41+1 replace spell(361bc504, "w") t0 votes=1 none [361bc504]
+changed:

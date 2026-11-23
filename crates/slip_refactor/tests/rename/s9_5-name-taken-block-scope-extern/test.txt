@@ -1,0 +1,4 @@
+spec: edits.md §9.5 name_taken (a block-scope extern declares a member of the namespace; WP-071 review A3)
+from: n::f
+to: g
+kind: function

@@ -1,0 +1,4 @@
+spec: edits.md §9.1 (a member of an unnamed namespace: no seed, the request cannot name it)
+from: n::f
+to: g
+kind: function

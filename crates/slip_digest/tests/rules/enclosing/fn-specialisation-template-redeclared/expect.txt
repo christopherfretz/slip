@@ -1,0 +1,8 @@
+# The template declared and then defined in two openings (as libstdc++'s std::swap is), its
+# explicit specialisation in a hidden opening (a) or a plain one (b).
+# clang++-19 (default visibility): HIDDEN _ZN3lib2swIN2my1TEEENS_6enableIT_E4typeERS4_S7_ in a,
+# DEFAULT in b; with -fvisibility=hidden HIDDEN in both. The specialisation takes its own opening;
+# the declaration Kiln instantiated from the template (at the template's first declaration) is
+# left out.
+changed lib::sw<my::T>(my::T &, my::T &)
+changed lib

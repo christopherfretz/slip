@@ -1,0 +1,4 @@
+spec: edits.md §9.1, §4.2 (a function of the same name in a sibling namespace and in the global namespace: not seeds, keep)
+from: n::f
+to: g
+kind: function

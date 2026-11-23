@@ -1,0 +1,11 @@
+subjects:
+  27394c7f seed - rule=yes n::C::f()
+links:
+claims:
+  main.cpp:3:8+1 replace "g" t0 votes=1 none [27394c7f]
+  main.cpp:6:9+1 replace "g" t0 votes=1 none [27394c7f]
+  main.cpp:9:5+1 replace spell(27394c7f, "g") t0 votes=1 none [27394c7f]
+  main.cpp:10:6+1 replace spell(27394c7f, "g") t0 votes=1 none [27394c7f]
+  main.cpp:11:8+1 replace spell(27394c7f, "g") t0 votes=1 none [27394c7f]
+  main.cpp:12:11+1 replace spell(27394c7f, "g") t0 votes=1 none [27394c7f]
+changed:

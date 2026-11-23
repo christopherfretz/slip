@@ -1,0 +1,4 @@
+spec: docs/wp/WP-071.md Tests (a source with errors: the unit is diagnosed and run is not called)
+from: n::f
+to: g
+kind: function

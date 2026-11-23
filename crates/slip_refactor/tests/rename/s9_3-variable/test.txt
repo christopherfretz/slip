@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 2 (a use of a variable)
+from: n::v
+to: w
+kind: variable

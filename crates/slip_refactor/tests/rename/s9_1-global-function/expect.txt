@@ -1,0 +1,10 @@
+subjects:
+  cdd29b74 seed - rule=yes f(int)
+links:
+claims:
+  main.cpp:1:6+1 replace "g" t0 votes=1 none [cdd29b74]
+  main.cpp:2:20+1 keep t0 votes=1 none
+  main.cpp:3:12+1 replace spell(cdd29b74, "g") t0 votes=1 none [cdd29b74]
+  main.cpp:3:20+1 replace spell(cdd29b74, "g") t0 votes=1 none [cdd29b74]
+  main.cpp:3:29+1 keep t0 votes=1 none
+changed:

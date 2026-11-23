@@ -17,13 +17,15 @@ pub const KILN_ADAPTER_MANIFEST: &str = "crates/slip_kiln/Cargo.toml";
 
 /// The crates that may depend on `slip_kiln` (and `slip_kiln` itself): the
 /// crates that link Kiln.
-pub const KILN_LINKING: &[&str] = &["slip_kiln", "slip_digest", "slip_script", "slip_cli"];
+pub const KILN_LINKING: &[&str] =
+    &["slip_kiln", "slip_digest", "slip_script", "slip_refactor", "slip_cli"];
 
 /// The modules of `slip_kiln` that name Kiln's types, and the files
 /// outside `crates/slip_kiln/` that may name them (`kiln-boundary`, third
 /// rule): the prefixes of the paths allowed, and for `snippet` also the
 /// `tests/` of every crate in [`KILN_LINKING`].
-pub const KILN_MODULE_USERS: &[&str] = &["crates/slip_digest/", "crates/slip_script/"];
+pub const KILN_MODULE_USERS: &[&str] =
+    &["crates/slip_digest/", "crates/slip_script/", "crates/slip_refactor/"];
 
 /// §3.1: the third-party crates allowed in `Cargo.lock`, any version.
 pub const ALLOWED_CRATES: &[&str] = &["signal-hook", "libc", "signal-hook-registry"];
@@ -178,8 +180,8 @@ pub fn kiln_boundary(repo: &Repo) -> Vec<Violation> {
                 line,
                 LINT,
                 format!(
-                    "`{name}` depends on `slip_kiln` ({}); only slip_digest, slip_script and \
-                     slip_cli may",
+                    "`{name}` depends on `slip_kiln` ({}); only slip_digest, slip_script, \
+                     slip_refactor and slip_cli may",
                     path.join(" -> ")
                 ),
             ));
@@ -211,10 +213,10 @@ fn kiln_modules(repo: &Repo) -> Vec<Violation> {
                 continue;
             }
             let allowed = if module == "snippet" {
-                "crates/slip_digest/, crates/slip_script/ and the tests/ of slip_kiln, \
-                 slip_digest, slip_script and slip_cli may"
+                "crates/slip_digest/, crates/slip_script/, crates/slip_refactor/ and the tests/ \
+                 of slip_kiln, slip_digest, slip_script, slip_refactor and slip_cli may"
             } else {
-                "crates/slip_digest/ and crates/slip_script/ may"
+                "crates/slip_digest/, crates/slip_script/ and crates/slip_refactor/ may"
             };
             out.push(Violation::new(
                 path,

@@ -1,0 +1,3 @@
+# clang++-19: DEFAULT _ZTVN1n1PIPiEE and _ZN1n1PIPiE1fEv on both sides: an instantiation of a
+# partial specialisation takes the primary template's opening, and so does the partial
+# specialisation's own row.

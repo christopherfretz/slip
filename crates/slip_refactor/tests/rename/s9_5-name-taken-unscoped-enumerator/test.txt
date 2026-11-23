@@ -1,0 +1,4 @@
+spec: edits.md §9.5 name_taken (an unscoped enumerator enters the enclosing namespace; WP-071 review A3)
+from: n::f
+to: g
+kind: function

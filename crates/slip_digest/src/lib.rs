@@ -90,6 +90,7 @@
 //! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1) |
 //! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, a list per declaration, the definition's apart (a parameter's: parameter i of its function's declarations), then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
 //! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
+//! | `enclosing::write(w, s, e)` | the walk's row `enclosing` (§1.7) at the end of the unit of `e` when it is at namespace scope: its linkage, whether an unnamed namespace encloses it, and the visibility each declaration takes from its namespaces (WP-113) |
 //! | `other::module_rows(w, s, d)` | the rows `points` and `explicit_defs` of `ModuleTable` (§10.7), from the first declaration; empty forms when ownership is not tracked |
 //! | `order::write(w, s)` | the order unit's stream (digest §2.1): the keys of the variable definitions at namespace and class scope in order, then the translation unit's imports (§10.7) |
 //! | `templ::decl_maps(w, s, d)` | the `in` rows of `TemplateTables` keyed by `DeclId` (§9.5), each in its empty form when absent |
@@ -212,6 +213,7 @@ mod decl_class;
 mod decl_func;
 mod decl_scope;
 mod demand;
+mod enclosing;
 mod expr;
 mod expr_core;
 mod expr_dep;
@@ -231,6 +233,7 @@ pub mod query;
 pub mod records;
 mod refs;
 mod rule_use;
+pub mod spelling;
 mod stmt;
 mod stream;
 mod templ;
@@ -323,6 +326,10 @@ pub enum Cause {
     Collision,
     /// A local type no unit's walk declares (digest §4.3).
     UndeclaredLocal,
+    /// An entity at namespace scope whose declarations take different
+    /// visibilities from their namespace openings: which one a use's
+    /// symbol takes depends on where the use is (digest §10, WP-113).
+    VisibilityByUse,
     /// An area of the walk that is not written yet. Removed from this
     /// enumeration, with `Area`, when the last area lands.
     Pending(Area),
@@ -337,6 +344,7 @@ impl Cause {
             Cause::Unaccounted(_) => "unaccounted",
             Cause::Collision => "collision",
             Cause::UndeclaredLocal => "undeclared_local",
+            Cause::VisibilityByUse => "visibility_by_use",
             Cause::Pending(_) => "pending",
         }
     }
@@ -349,7 +357,9 @@ impl std::fmt::Display for Cause {
                 write!(f, "{} {what}", self.name())
             }
             Cause::Pending(area) => write!(f, "pending {}", area.name()),
-            Cause::Error | Cause::Collision | Cause::UndeclaredLocal => f.write_str(self.name()),
+            Cause::Error | Cause::Collision | Cause::UndeclaredLocal | Cause::VisibilityByUse => {
+                f.write_str(self.name())
+            }
         }
     }
 }

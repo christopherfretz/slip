@@ -1,0 +1,8 @@
+subjects:
+  361bc504 seed - rule=yes n::v
+links:
+claims:
+  main.cpp:2:32+1 replace "w" t0 votes=1 none [361bc504]
+  main.cpp:4:21+1 replace spell(361bc504, "w") t0 votes=1 none [361bc504]
+  main.cpp:4:37+1 replace spell(361bc504, "w") t0 votes=1 none [361bc504]
+changed:

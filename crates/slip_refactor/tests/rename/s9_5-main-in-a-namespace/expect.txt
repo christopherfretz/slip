@@ -1,0 +1,7 @@
+subjects:
+  739c4a0a seed - rule=yes n::main(int)
+links:
+claims:
+  main.cpp:1:19+4 replace "start" t0 votes=1 none [739c4a0a]
+  main.cpp:2:21+4 replace spell(739c4a0a, "start") t0 votes=1 none [739c4a0a]
+changed:

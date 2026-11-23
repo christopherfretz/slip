@@ -75,10 +75,16 @@ fn s3_kiln_boundary_kiln_crates() {
 }
 
 // §3 `kiln-boundary`, second rule: dependents of slip_kiln, directly or
-// indirectly, are only the four crates that link Kiln.
+// indirectly, are only the five crates that link Kiln (slip_refactor
+// since docs/wp/WP-071.md: allowed, directly and through slip_digest).
 #[test]
 fn s3_kiln_boundary_dependents() {
     let f = Fixture::new("kb2");
+    f.write(
+        "crates/slip_refactor/Cargo.toml",
+        "[package]\nname = \"slip_refactor\"\n\n[dependencies]\nslip_kiln.workspace = true\n\
+         slip_digest = { path = \"x\" }\n",
+    );
     // Direct.
     f.write(
         "crates/slip_cdb/Cargo.toml",
@@ -93,9 +99,10 @@ fn s3_kiln_boundary_dependents() {
         lint(&f),
         [
             "crates/slip_cdb/Cargo.toml:5: kiln-boundary: `slip_cdb` depends on `slip_kiln` \
-             (slip_cdb -> slip_kiln); only slip_digest, slip_script and slip_cli may",
+             (slip_cdb -> slip_kiln); only slip_digest, slip_script, slip_refactor and slip_cli may",
             "xtask/Cargo.toml:5: kiln-boundary: `xtask` depends on `slip_kiln` \
-             (xtask -> slip_digest -> slip_kiln); only slip_digest, slip_script and slip_cli may",
+             (xtask -> slip_digest -> slip_kiln); only slip_digest, slip_script, slip_refactor and \
+             slip_cli may",
         ]
     );
 }
@@ -120,6 +127,11 @@ fn s3_kiln_boundary_kiln_modules() {
     f.write(
         "crates/slip_kiln/src/x.rs",
         "use crate::kiln;\nfn f() { slip_kiln::kiln::ast::dump(); }\n",
+    );
+    // slip_refactor names `kiln`, `sites` and `written` (docs/wp/WP-071.md).
+    f.write(
+        "crates/slip_refactor/src/rename/refs.rs",
+        "use slip_kiln::kiln::ast::ids::DeclId;\nuse slip_kiln::{sites::Sites, written};\n",
     );
     // `snippet` in the tests of a crate that links Kiln.
     f.write("crates/slip_cli/tests/walk.rs", "use slip_kiln::snippet::{Snippet, parse};\n");
@@ -149,25 +161,25 @@ fn s3_kiln_boundary_kiln_modules() {
         lint(&f),
         [
             "crates/slip_cli/src/a.rs:2: kiln-boundary: names `slip_kiln::kiln`; only \
-             crates/slip_digest/ and crates/slip_script/ may",
+             crates/slip_digest/, crates/slip_script/ and crates/slip_refactor/ may",
             "crates/slip_cli/src/a.rs:4: kiln-boundary: names `slip_kiln::snippet`; only \
-             crates/slip_digest/, crates/slip_script/ and the tests/ of slip_kiln, slip_digest, \
-             slip_script and slip_cli may",
+             crates/slip_digest/, crates/slip_script/, crates/slip_refactor/ and the tests/ of \
+             slip_kiln, slip_digest, slip_script, slip_refactor and slip_cli may",
             "crates/slip_cli/src/a.rs:7: kiln-boundary: names `slip_kiln::snippet`; only \
-             crates/slip_digest/, crates/slip_script/ and the tests/ of slip_kiln, slip_digest, \
-             slip_script and slip_cli may",
+             crates/slip_digest/, crates/slip_script/, crates/slip_refactor/ and the tests/ of \
+             slip_kiln, slip_digest, slip_script, slip_refactor and slip_cli may",
             "crates/slip_cli/src/a.rs:8: kiln-boundary: names `slip_kiln::kiln`; only \
-             crates/slip_digest/ and crates/slip_script/ may",
+             crates/slip_digest/, crates/slip_script/ and crates/slip_refactor/ may",
             "crates/slip_cli/src/c.rs:2: kiln-boundary: names `slip_kiln::ranges`; only \
-             crates/slip_digest/ and crates/slip_script/ may",
+             crates/slip_digest/, crates/slip_script/ and crates/slip_refactor/ may",
             "crates/slip_cli/src/c.rs:4: kiln-boundary: names `slip_kiln::ranges`; only \
-             crates/slip_digest/ and crates/slip_script/ may",
+             crates/slip_digest/, crates/slip_script/ and crates/slip_refactor/ may",
             "crates/slip_cli/src/c.rs:5: kiln-boundary: names `slip_kiln::sites`; only \
-             crates/slip_digest/ and crates/slip_script/ may",
+             crates/slip_digest/, crates/slip_script/ and crates/slip_refactor/ may",
             "crates/slip_cli/src/c.rs:6: kiln-boundary: names `slip_kiln::written`; only \
-             crates/slip_digest/ and crates/slip_script/ may",
+             crates/slip_digest/, crates/slip_script/ and crates/slip_refactor/ may",
             "crates/slip_cli/tests/t.rs:1: kiln-boundary: names `slip_kiln::kiln`; only \
-             crates/slip_digest/ and crates/slip_script/ may",
+             crates/slip_digest/, crates/slip_script/ and crates/slip_refactor/ may",
         ]
     );
 }

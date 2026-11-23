@@ -1,0 +1,4 @@
+spec: edits.md §9.5 unreachable (friend void f<>(T) in a class template never instantiated; WP-071 review A2)
+from: n::f
+to: g
+kind: function

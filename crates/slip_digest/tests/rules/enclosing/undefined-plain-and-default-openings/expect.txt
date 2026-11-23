@@ -1,0 +1,4 @@
+# As libstdc++ declares std::terminate: in a plain opening and in a visibility("default") one,
+# never defined here. clang++-19 gives GLOBAL DEFAULT UND _ZN1s1fEv with and without
+# -fvisibility=hidden, whichever declaration is most recent at the use: an undefined reference
+# takes no -fvisibility. The pairs (none, default) agree: determinate, equal.

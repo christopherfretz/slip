@@ -1,0 +1,4 @@
+spec: docs/wp/WP-071.md "Added after the review of WP-103"; spec/digest.md §3.4 (a friend that does not define the function is not followed: the use spells the seed whatever the order of instantiation; paired with wp103-friend-not-defining-instantiated-after-use, rename.rs a_friend_that_does_not_define_gives_one_piece)
+from: n::f
+to: g
+kind: function

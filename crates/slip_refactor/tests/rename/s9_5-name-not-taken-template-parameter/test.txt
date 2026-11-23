@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (a template parameter named like the new name enters no scope: not name_taken; WP-071 review B1)
+from: n::f
+to: g
+kind: function

@@ -1,0 +1,7 @@
+subjects:
+  6368f0f9 seed - rule=yes n::v
+links:
+claims:
+  main.cpp:1:19+1 replace "w" t0 votes=1 none [6368f0f9]
+  main.cpp:1:54+1 replace spell(6368f0f9, "w") t0 votes=1 none [6368f0f9]
+changed:

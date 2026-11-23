@@ -1,0 +1,4 @@
+spec: edits.md §9.1 last paragraph, §9.5 (a function with C language linkage declared in the target's namespace: a seed with unsupported)
+from: n::f
+to: g
+kind: function

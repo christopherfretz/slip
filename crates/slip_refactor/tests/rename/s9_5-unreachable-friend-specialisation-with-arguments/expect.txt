@@ -1,0 +1,10 @@
+# pending
+# needs: Kiln to record the name of a dependent friend specialisation (friend void f<>(T)) in a table: today a Friend with a function type only, its name in Sema's friend_specs (spec/landed/edits/WP-071.md, For Kiln)
+subjects:
+  f596a52a seed unreachable rule=yes n::eq
+links:
+claims:
+  main.cpp:1:67+2 replace "same" t0 votes=1 none [f596a52a]
+  main.cpp:1:199+2 replace "same" t0 votes=1 none [f596a52a]
+  main.cpp:2:38+2 replace spell(f596a52a, "same") t0 votes=1 none [f596a52a]
+changed:

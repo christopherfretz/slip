@@ -1,0 +1,4 @@
+spec: edits.md §9.3 rows 1 and 2 in a header included twice (§4.3: two votes)
+from: n::f
+to: g
+kind: function

@@ -1,0 +1,2 @@
+indeterminate n::f(n::S)
+changed n
