@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 1 (a template's declarations and an explicit specialisation: literal) and row 5 (a use with explicit arguments: the template's key)
+from: n::f
+to: g
+kind: function

@@ -1,0 +1,7 @@
+subjects:
+  95010aba seed unreachable rule=yes n::f
+links:
+claims:
+  main.cpp:3:25+1 replace "g" t0 votes=1 none [95010aba]
+  main.cpp:6:15+1 replace spell(95010aba, "g") t0 votes=1 none [95010aba]
+changed:

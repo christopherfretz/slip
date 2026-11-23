@@ -1,0 +1,4 @@
+spec: edits.md §9.5 unreachable (friend bool eq<T>(const Xspec: review probe, const Xspec: review probe) in a class template; WP-071 review A2)
+from: n::eq
+to: same
+kind: function

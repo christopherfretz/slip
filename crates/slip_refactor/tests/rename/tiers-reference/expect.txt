@@ -1,0 +1,10 @@
+subjects:
+  4434032f seed - rule=yes n::foo(int)
+links:
+claims:
+  main.cpp:1:20+3 replace "bar" t0 votes=1 none [4434032f]
+  main.cpp:3:17+3 refuse t2 votes=1 macro_body [4434032f] macro=BODY@138
+  main.cpp:6:6+3 replace spell(4434032f, "bar") t0 votes=1 none [4434032f]
+  main.cpp:7:10+3 replace spell(4434032f, "bar") t1 votes=1 none [4434032f] macro=ARG@123
+  main.cpp:9:6+3 refuse t3 votes=1 pasted [4434032f] macro=CAT@149
+changed:

@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 3 (a.f, p->f, a.C::f) and §9.1 (a member of a class in a namespace)
+from: n::C::f
+to: g
+kind: function

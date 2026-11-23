@@ -1,0 +1,8 @@
+subjects:
+  36cceb9c seed name_taken rule=yes n::B::f(int)
+links:
+claims:
+  main.cpp:1:31+1 replace "g" t0 votes=1 none [36cceb9c]
+  main.cpp:1:82+1 replace spell(36cceb9c, "g") t0 votes=1 none [36cceb9c]
+  main.cpp:2:22+1 replace spell(36cceb9c, "g") t0 votes=1 none [36cceb9c]
+changed:

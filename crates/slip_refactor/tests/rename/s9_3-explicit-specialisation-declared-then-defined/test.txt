@@ -1,0 +1,4 @@
+spec: spec/edits.md §9.3 row 1 (an explicit specialisation declared and then defined: each declaration has its row, unlike the class case of spec/landed/edits/WP-067.md K3)
+from: n::f
+to: g
+kind: function

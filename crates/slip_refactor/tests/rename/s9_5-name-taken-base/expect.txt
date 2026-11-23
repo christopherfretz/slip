@@ -1,0 +1,7 @@
+subjects:
+  5348ad58 seed name_taken rule=yes C::f()
+links:
+claims:
+  main.cpp:2:21+1 replace "g" t0 votes=1 none [5348ad58]
+  main.cpp:3:17+1 replace spell(5348ad58, "g") t0 votes=1 none [5348ad58]
+changed:

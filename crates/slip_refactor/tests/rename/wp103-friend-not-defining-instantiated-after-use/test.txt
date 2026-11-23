@@ -1,0 +1,4 @@
+spec: docs/wp/WP-071.md "Added after the review of WP-103"; spec/digest.md §3.4 (the pair of wp103-friend-not-defining-instantiated-before-use)
+from: n::f
+to: g
+kind: function

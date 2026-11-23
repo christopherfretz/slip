@@ -1,0 +1,4 @@
+spec: docs/wp/WP-071.md "Added after the review of WP-103" (befriended by two class templates: two followers)
+from: n::f
+to: g
+kind: function

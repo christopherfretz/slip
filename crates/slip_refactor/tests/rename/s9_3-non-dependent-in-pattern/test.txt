@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 8 (a non-dependent name in a template pattern, resolved at the definition)
+from: n::f
+to: g
+kind: function
