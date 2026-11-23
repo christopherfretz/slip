@@ -1116,6 +1116,10 @@ The **staged name** of an overlay file is, in the file's own directory,
    catch a write within the times' granularity of step 4's `lstat` (on
    common file systems, under a millisecond), nor a writer that restores
    the times. A file changed so is reported by the rollback and kept.
+   On a volume whose inode numbers change without a replacement (some
+   FUSE-backed host mounts renumber the files under a renamed
+   directory) it can refuse a write nobody touched; that refusal is
+   rolled back like any other and running the write again succeeds.
 
    **Decided (2026-11-23): the window before each rename stays a
    documented limit.** `write` checks a path and then renames by path;

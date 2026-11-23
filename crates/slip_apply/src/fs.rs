@@ -73,9 +73,13 @@ impl Tree for DiskTree {
         f.write_all(bytes)?;
         f.sync_all()?;
         let written = f.metadata()?;
+        // The write handle stays open across the reopen: some file systems
+        // (FUSE-backed host mounts) number a file anew once nothing holds
+        // it, which would read as a swap.
+        let reopened_file = File::open(path(p))?;
+        let reopened = reopened_file.metadata()?;
         drop(f);
-        let f = File::open(path(p))?;
-        let reopened = f.metadata()?;
+        let f = reopened_file;
         if (reopened.dev(), reopened.ino()) != (written.dev(), written.ino()) {
             return Err(io::Error::other(
                 "the staged name was replaced while it was being created",

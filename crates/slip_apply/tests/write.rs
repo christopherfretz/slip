@@ -1476,7 +1476,21 @@ fn s7_3_disk_refusals() {
         assert_eq!(std::fs::read(r.join(p)).unwrap(), pre);
     }
     assert!(!r.join("store/write.journal").exists());
-    assert_eq!(try_write(), Ok(3));
+    // On a volume that numbers files by path (Docker Desktop's host mounts),
+    // the directory renames above give the files under it new inode numbers,
+    // possibly between step 4 and the renames: the re-check then refuses a
+    // write nobody touched (§7.3 step 5), rolled back, and the next succeeds.
+    match try_write() {
+        Ok(n) => assert_eq!(n, 3),
+        Err(WriteError::Refused(Refused::StaleFile(p))) => {
+            eprintln!("inode numbers changed under {}", String::from_utf8_lossy(&p));
+            for (p, pre, _, _) in disk::FILES {
+                assert_eq!(std::fs::read(r.join(p)).unwrap(), pre);
+            }
+            assert_eq!(try_write(), Ok(3));
+        }
+        Err(e) => panic!("{e:?}"),
+    }
     std::fs::remove_dir_all(&r).unwrap();
 }
 
@@ -1593,9 +1607,11 @@ fn s7_3_disk_create_does_not_follow_a_swapped_name() {
         }
     });
     let (mut swapped, mut failed, mut caught) = (0, 0, 0);
-    for _ in 0..1500 {
+    // A long enough write that the swap often lands inside the create.
+    let post = vec![b'p'; 1 << 18];
+    for _ in 0..600 {
         let _ = std::fs::remove_file(&staged);
-        let got = slip_apply::fs::DiskTree.create(&disk::bytes(&staged), 0o4755, b"post");
+        let got = slip_apply::fs::DiskTree.create(&disk::bytes(&staged), 0o4755, &post);
         assert_eq!(disk::mode(&victim), 0o600);
         assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
         let link = std::fs::symlink_metadata(&staged).is_ok_and(|m| m.file_type().is_symlink());
