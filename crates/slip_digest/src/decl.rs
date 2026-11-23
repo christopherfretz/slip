@@ -64,6 +64,7 @@ impl Walk<'_> {
         // inside, under `local::SELF_KEY`; `content_in_progress` ends a
         // real cycle.
         let keys = std::mem::take(&mut self.keys_in_progress);
+        self.unit.local.content = Some(e);
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);
         crate::own_spelling::write_unit_list(self, &mut s);
@@ -148,6 +149,9 @@ impl Walk<'_> {
         if function {
             self.own_exception_spec(s, d);
         }
+        // Arguments written in a template's explicit specialisation
+        // (digest-kinds §4.4 "Spellings", rule 11).
+        crate::own_spelling::explicit_specialisation(self, s, d);
         self.decl_data(s, d, kind);
     }
 

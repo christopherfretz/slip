@@ -1,0 +1,4 @@
+# pending
+# needs: kiln (a template's mem-initializers are not in the AST: kiln_sema/src/class/ctorinit.rs `act_on_mem_initializers`; spec/landed/digest-kinds/WP-041.md "For Kiln" 10)
+added f(long)
+changed S::S<T>()

@@ -1,3 +1,5 @@
+# pending
+# needs: kiln (a qualified friend in a class template is indeterminate, spelling/friend-name, until Kiln keeps the friend's written qualifier: spec/landed/digest-kinds/WP-041.md "For Kiln" 8)
 exact derived
 derived-changed C<int>::m()
 changed A

@@ -30,10 +30,10 @@
 //! canonical argument list) and the operand's type is marked, the unit is
 //! `Unaccounted("spelling/<site>")`.
 
-use slip_kiln::kiln::ast::decl::DeclKind;
+use slip_kiln::kiln::ast::decl::{DeclKind, FriendTarget};
 use slip_kiln::kiln::ast::expr::{Designator, ExprDeps, ExprFlags, ExprKind as K, TypeidOperand};
 use slip_kiln::kiln::ast::fp::FpRound;
-use slip_kiln::kiln::ast::templates::Requirement;
+use slip_kiln::kiln::ast::templates::{Requirement, SpecKind};
 use slip_kiln::kiln::ast::types::{
     ArgView, ExcSpec, ExprOperand, Nns, NoexceptValue, TemplateArg, TemplateName, TypeFlags,
     TypeOfOperand, TypeView,
@@ -680,7 +680,7 @@ pub(crate) const PSEUDO_DESTRUCTOR_QUALIFIER: Cause =
     Cause::Unaccounted("spelling/pseudo-destructor-qualifier");
 
 /// A qualified pseudo-destructor in the full walk (rule 11), in a
-/// templated stream ([`templated_stream`]): in a unit stream
+/// templated stream ([`templated_at`]): in a unit stream
 /// `spelling/pseudo-destructor-qualifier`; elsewhere the mark.
 pub(crate) fn pseudo_destructor(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     if !qualifier_lost(w, e) {
@@ -706,16 +706,31 @@ fn qualifier_lost(w: &Walk<'_>, e: ExprId) -> bool {
     w.ast.exprs.pseudo_destructor_qualified(e)
         && t.expr_nns.get(e).is_none()
         && t.pseudo_dtor_first.get(e).is_none()
-        && templated_stream(w)
+        && templated_at(w, None)
 }
 
-/// The stream being written can hold an instantiation-dependent operand
-/// (rule 11): its holder is templated ([`templated`]), or the walk is
-/// inside a generic lambda's body, whose call operator is a template
-/// (`local::lambda_expr`). A stream that is no unit's own (a content
-/// digest) counts as one: nothing says otherwise.
-pub(crate) fn templated_stream(w: &Walk<'_>) -> bool {
-    let Some(h) = w.unit.local.holder else { return true };
+/// Rule 11's one question, asked by every check that decides between
+/// reading a form as written and making it indeterminate: can the form,
+/// written in the stream being written (and, when it is a declaration's,
+/// as the declaration `d`), hold an instantiation-dependent operand? It
+/// can when the stream is templated or `d` is ([`templated`]); neither
+/// half alone is asked anywhere. A lambda's or a local class's
+/// declaration chain ends at the namespace its closure lives in while
+/// its stream's holder is the variable template, the default argument's
+/// function template or the concept it is written in; an out-of-line
+/// member's stream holder is itself, reached through its class.
+pub(crate) fn templated_at(w: &Walk<'_>, d: Option<DeclId>) -> bool {
+    templated_stream(w) || d.is_some_and(|d| templated(w, d))
+}
+
+/// The stream being written can hold an instantiation-dependent operand:
+/// its holder is templated ([`templated`]), or the walk is inside a
+/// generic lambda's body, whose call operator is a template
+/// (`local::lambda_expr`). A content digest's stream asks it of the
+/// content entity; a stream with neither counts as one: nothing says
+/// otherwise. Asked only through [`templated_at`].
+fn templated_stream(w: &Walk<'_>) -> bool {
+    let Some(h) = w.unit.local.holder.or(w.unit.local.content) else { return true };
     w.unit.local.generic > 0 || templated(w, h)
 }
 
@@ -733,7 +748,7 @@ pub(crate) fn is_destructor(w: &Walk<'_>, d: DeclId) -> bool {
 /// templated stream: in a unit stream `spelling/destructor-name`;
 /// elsewhere the mark.
 pub(crate) fn destructor_name(w: &mut Walk<'_>, s: &mut Stream, _: ExprId) {
-    if !templated_stream(w) {
+    if !templated_at(w, None) {
         return;
     }
     if w.unit_level() {
@@ -755,14 +770,103 @@ pub(crate) fn using_qualifier(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     }
 }
 
-/// A `using enum` in a templated declaration (rule 11, [`templated`]):
+/// A `using enum` in a templated stream or declaration (rule 11,
+/// [`templated_at`]):
 /// Kiln keeps the enumeration and not the qualifier or alias it was named
 /// through (`Sema::act_on_using_enum`, `kiln_sema/src/using.rs`), which
 /// can hold an instantiation-dependent operand only there, so the unit is
 /// indeterminate rather than equal.
 pub(crate) fn using_enum(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
-    if w.unit_level() && templated(w, d) {
-        s.indeterminate(Cause::Unaccounted("spelling/using-enum"));
+    if templated_at(w, Some(d)) {
+        lost_form(w, s, USING_ENUM);
+    }
+}
+
+/// `spelling/using-enum` (rule 11).
+pub(crate) const USING_ENUM: Cause = Cause::Unaccounted("spelling/using-enum");
+
+/// A friend declaration naming a function or class through a qualifier
+/// or with template arguments (`friend void Bq<..>::g();`, `friend
+/// struct Bq<..>::Y;`, `friend void h<..>();`): Kiln resolves a qualified
+/// one to the befriended declaration or its unsugared type and keeps no
+/// qualifier, and keeps only the function type of a specialisation's.
+pub(crate) const FRIEND_NAME: Cause = Cause::Unaccounted("spelling/friend-name");
+
+/// A friend whose written name Kiln did not keep (rule 11, [`FRIEND_NAME`]),
+/// in a templated stream or declaration ([`templated_at`]):
+/// `spelling/friend-name` in a unit stream; elsewhere the mark. Lost:
+/// a befriended declaration that is a class member (named through a
+/// qualifier, which can be a specialisation, an alias or a `decltype`)
+/// or a template specialisation (named with arguments); a befriended
+/// class or enumeration type with no sugar that is either; a befriended
+/// function type (Kiln's `Type` target for `friend void h<..>();`). A
+/// friend found by an unqualified name, or a namespace member named
+/// through namespaces only, holds no operand; a type with sugar is read
+/// as written (rule 2).
+pub(crate) fn friend_name(w: &mut Walk<'_>, s: &mut Stream, d: DeclId, target: FriendTarget) {
+    let ast = w.ast;
+    let named = |x: DeclId| {
+        ast.spec_info(x).is_some()
+            || ast.decls.get(x).ctx().is_some_and(|c| {
+                !matches!(
+                    ast.decls.get(c).kind(),
+                    DeclKind::TranslationUnit
+                        | DeclKind::Namespace
+                        | DeclKind::LinkageSpec
+                        | DeclKind::Export
+                )
+            })
+    };
+    let lost = match target {
+        FriendTarget::Decl(x) => named(x),
+        FriendTarget::Type { ty, owned_tag: _ } => {
+            // An elaborated-type-specifier Kiln built without its
+            // qualifier (`friend struct Bq<..>::Y;`) is the class itself.
+            let mut view = ast.types.view(ty.ty());
+            if let TypeView::Elaborated { nns: None, named, .. } = view {
+                view = ast.types.view(named.ty());
+            }
+            match view {
+                TypeView::Record(x) | TypeView::Enum(x) => named(x),
+                TypeView::Function(_) => true,
+                _ => false,
+            }
+        }
+    };
+    if lost && templated_at(w, Some(d)) {
+        lost_form(w, s, FRIEND_NAME);
+    }
+}
+
+/// An explicit specialisation declared in a template (`template<> void
+/// h<..>()`, `template<> struct Z<..> {}` inside a class template): Kiln
+/// keeps its converted arguments, with an argument's value in place of
+/// the expression written, which can hold an instantiation-dependent
+/// operand.
+pub(crate) const SPECIALISATION_ARGUMENTS: Cause =
+    Cause::Unaccounted("spelling/specialisation-arguments");
+
+/// An explicit specialisation (rule 11) whose declaration is templated
+/// ([`templated_at`], so a member of a template's pattern): its written
+/// arguments are lost, `spelling/specialisation-arguments` in a unit
+/// stream; elsewhere the mark. One at namespace scope of a specialised
+/// class is no template's: Kiln resolves its arguments where written.
+pub(crate) fn explicit_specialisation(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let ast = w.ast;
+    let explicit =
+        ast.spec_info(d).is_some_and(|(_, i)| i.kind == SpecKind::ExplicitSpecialization);
+    if explicit && templated_at(w, Some(d)) {
+        lost_form(w, s, SPECIALISATION_ARGUMENTS);
+    }
+}
+
+/// A form whose written spelling Kiln did not keep, in a templated
+/// stream: `cause` in a unit stream; elsewhere the mark.
+fn lost_form(w: &mut Walk<'_>, s: &mut Stream, cause: Cause) {
+    if w.unit_level() {
+        s.indeterminate(cause);
+    } else {
+        w.left_out += 1;
     }
 }
 
@@ -777,7 +881,7 @@ pub(crate) fn using_enum(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 /// context is the pattern of `S`), so the semantic chain is what tells
 /// it. A chain that does not end within the bound is templated: what
 /// cannot be decided is never taken as not templated.
-pub(crate) fn templated(w: &Walk<'_>, d: DeclId) -> bool {
+fn templated(w: &Walk<'_>, d: DeclId) -> bool {
     let decls = &w.ast.decls;
     let mut todo = vec![d];
     let mut seen: Vec<DeclId> = Vec::new();
@@ -1002,7 +1106,7 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
             }
             if k == K::MemberExpr
                 && DeclId::try_new(n.b()).is_some_and(|d| is_destructor(w, d))
-                && templated_stream(w)
+                && templated_at(w, None)
             {
                 s.indeterminate(DESTRUCTOR_NAME);
             }

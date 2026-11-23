@@ -1,0 +1,4 @@
+added S::<friend Bq<sizeof (sizeof (f(T())))>>
+added f(long)
+changed S
+removed S::<friend Bq<sizeof (sizeof (f(T())))>>

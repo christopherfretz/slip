@@ -541,11 +541,7 @@ pub(crate) fn function_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, d
         crate::local::write_decl(w, s, p);
     }
     write_body(w, s, body);
-    let inits: Vec<_> = ast.ctor_inits(def).copied().collect();
-    s.count(inits.len());
-    for init in &inits {
-        crate::decl_class::ctor_init(w, s, init);
-    }
+    crate::decl_class::ctor_inits(w, s, def);
     let mut specs: Vec<FnSpec> =
         w.redecls(e).iter().filter_map(|&x| ast.decls.function(x).map(|f| f.spec)).collect();
     if let Some(f) = ast.decls.function(def) {

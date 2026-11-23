@@ -172,6 +172,9 @@ pub(crate) struct UnitLocals {
     /// The unit whose stream this is (`Ref::outer`): `None` for a stream
     /// that is no unit's own (a content digest).
     pub holder: Option<DeclId>,
+    /// The content entity whose digest this stream is (`Walk::content_hash`),
+    /// which has no holder: what `own_spelling::templated_at` asks of it.
+    pub content: Option<DeclId>,
     /// The local types this stream declared: met again, `n` alone.
     written: HashSet<DeclId>,
     /// Per owner, the number the next local type it declares must have.
@@ -181,7 +184,7 @@ pub(crate) struct UnitLocals {
     scopes: Vec<DeclId>,
     /// How many generic lambdas' closure types are being written in
     /// place ([`lambda_expr`]): their bodies are templated whatever the
-    /// holder is (`own_spelling::templated_stream`).
+    /// holder is (`own_spelling::templated_at`).
     pub generic: u32,
 }
 

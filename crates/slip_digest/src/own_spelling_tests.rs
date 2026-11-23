@@ -213,7 +213,12 @@ fn a_list_changes_only_the_units_that_write_one() {
         }
         lists += written;
         changed += n;
-        for (name, u) in &with {
+        // A pair `# pending` on Kiln is one whose expectation waits for
+        // it (its `needs:` line): a spelling cause there is the cost the
+        // landed file records, not a stray.
+        let pending = std::fs::read_to_string(dir.join("expect.txt"))
+            .is_ok_and(|e| e.lines().any(|l| l.trim() == "# pending"));
+        for (name, u) in with.iter().filter(|_| !pending) {
             for c in &u.causes {
                 if let Cause::Unaccounted(w) = c
                     && w.starts_with("spelling/")
@@ -431,6 +436,8 @@ const REACHED: &[&str] = &[
     "spelling/using-enum",
     "spelling/pseudo-destructor-qualifier",
     "spelling/destructor-name",
+    "spelling/friend-name",
+    "spelling/specialisation-arguments",
 ];
 
 /// The sources tried for rule 5 through the digest, aimed at a caller

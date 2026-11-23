@@ -1,0 +1,1 @@
+indeterminate S::h<sizeof (sizeof (f(T())))>()

@@ -1,0 +1,2 @@
+added f(long)
+changed S::<using Bq<sizeof (sizeof (f(T())))>::g>

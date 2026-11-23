@@ -1493,10 +1493,17 @@ The rest of profile mode:
      written in), is a template, a template's pattern or a partial
      specialisation. Kiln records no template parameter lists on an
      out-of-line member: its semantic context is what tells it. A stream
-     is templated when its unit is, or while the walk is inside a
-     generic lambda's body (its call operator is a template). A
+     is templated when its unit (a content digest: its content entity)
+     is, or while the walk is inside a generic lambda's body (its call
+     operator is a template); a stream with neither is templated. A
      declaration whose chain cannot be followed to its end is
-     templated. Only templated code can hold an instantiation-dependent
+     templated. A form is in templated code when its stream is
+     templated or, for a declaration's form, the declaration is: one
+     question (`own_spelling::templated_at`), asked by every check
+     below; no check asks either half alone (a lambda's or a local
+     class's chain ends at the namespace its closure lives in, while its
+     stream is the variable template's, the default argument's or the
+     concept's). Only templated code can hold an instantiation-dependent
      operand, and there, where Kiln keeps no written form, the unit is
      indeterminate:
      - a `using enum` (`spelling/using-enum`): Kiln keeps the
@@ -1505,7 +1512,16 @@ The rest of profile mode:
        (neither `expr_nns` nor `pseudo_dtor_first`):
        `spelling/pseudo-destructor-qualifier`;
      - a destructor named by member access (`q->~X<..>()`): Kiln keeps
-       the destructor, not the name as written: `spelling/destructor-name`.
+       the destructor, not the name as written: `spelling/destructor-name`,
+       in the full walk and in rule 1's reading;
+     - a friend whose befriended declaration, or unsugared class or
+       enumeration type, is a class member or a template
+       specialisation, or whose target is a function type (Kiln's form
+       of `friend void h<..>();`): Kiln keeps no qualifier and no
+       arguments: `spelling/friend-name`;
+     - an explicit specialisation declared in a template (a member of a
+       pattern): Kiln keeps its converted arguments, not the expressions
+       written: `spelling/specialisation-arguments`.
      Off unit level each raises the mark instead.
   A key reads no spelling: two declarations are one entity by
   [temp.over.link] whatever their found sets, and a difference in the
