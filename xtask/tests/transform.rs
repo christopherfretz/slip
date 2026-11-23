@@ -34,7 +34,8 @@ use std::process::Command;
 use xtask::transform::mutate::{self, mutations};
 use xtask::transform::oracles::parse_depfile;
 use xtask::transform::run::{
-    Lines, check_output, cmdline, first_line_difference, normalise, read_commands,
+    Bounded, Lines, check_output, cmdline, first_line_difference, normalise, read_commands,
+    run_bounded_with,
 };
 use xtask::transform::{
     Allow, Expected, Note, Oracle, Outcome, Report, Test, discover, find_clang, parse_args,
@@ -220,6 +221,12 @@ fn tree_set(c: &Case) -> EditSet {
 /// for one byte): `a.cpp` from `PRE` to `POST`, an obligation at each
 /// spelled piece's place, of its key.
 fn overlay_of(c: &Case, set: &EditSet) -> Overlay {
+    overlay_with(c, set, &[("a.cpp", PRE, POST)])
+}
+
+/// The overlay of `set` with the files `(path, pre, post)`, in path order
+/// (the first `a.cpp`, which the obligations are of).
+fn overlay_with(c: &Case, set: &EditSet, files: &[(&str, &str, &str)]) -> Overlay {
     let id = formats::content_id(&set.to_bytes()).unwrap();
     let mut spellings: Vec<Obligation> = set
         .edits
@@ -237,11 +244,14 @@ fn overlay_of(c: &Case, set: &EditSet) -> Overlay {
     spellings.dedup();
     let o = Overlay {
         edits: id,
-        files: vec![OverlayFile {
-            path: c.tree_path("a.cpp"),
-            pre: Content { size: PRE.len() as u64, content: content_digest(PRE.as_bytes()) },
-            post: Content { size: POST.len() as u64, content: content_digest(POST.as_bytes()) },
-        }],
+        files: files
+            .iter()
+            .map(|(path, pre, post)| OverlayFile {
+                path: c.tree_path(path),
+                pre: Content { size: pre.len() as u64, content: content_digest(pre.as_bytes()) },
+                post: Content { size: post.len() as u64, content: content_digest(post.as_bytes()) },
+            })
+            .collect(),
         spellings,
     };
     assert_eq!(o.validate(), Ok(()));
@@ -322,11 +332,22 @@ impl Case {
         state: State,
         tweak: impl FnOnce(&mut TransformResult),
     ) -> Records {
+        self.records_ov(tag, set, state, tweak, &overlay_of(self, set))
+    }
+
+    /// [`Case::records`] with the overlay `ov`.
+    fn records_ov(
+        &self,
+        tag: &str,
+        set: &EditSet,
+        state: State,
+        tweak: impl FnOnce(&mut TransformResult),
+        ov: &Overlay,
+    ) -> Records {
         let set_bytes = set.to_bytes();
         let set_id = formats::content_id(&set_bytes).unwrap();
         let decl = Declared::none().to_bytes();
         let decl_id = formats::content_id(&decl).unwrap();
-        let ov = overlay_of(self, set);
         let ov_bytes = ov.to_bytes();
         let ov_id = formats::content_id(&ov_bytes).unwrap();
         let mut r = result_of(state, set_id, decl_id, ov_id, ov.spellings.len() as u64);
@@ -420,8 +441,19 @@ const TEST_TXT: &str = "spec: harness §6.3\nrun: rename --from a::f --to g\nsta
 /// The standard passing test: `verified` records, `script` made from
 /// [`good_script`] by `edit`.
 fn standard(name: &str, test_txt: &str, edit: impl FnOnce(String) -> String) -> (Case, Records) {
+    standard_ov(name, test_txt, &[("a.cpp", PRE, POST)], edit)
+}
+
+/// [`standard`] with a verified overlay of the files `(path, pre, post)`.
+fn standard_ov(
+    name: &str,
+    test_txt: &str,
+    files: &[(&str, &str, &str)],
+    edit: impl FnOnce(String) -> String,
+) -> (Case, Records) {
     let c = Case::new(name);
-    let r = c.tree_records(State::Verified, |_| {});
+    let set = tree_set(&c);
+    let r = c.records_ov("run", &set, State::Verified, |_| {}, &overlay_with(&c, &set, files));
     let script = edit(good_script(&r));
     c.write("test.txt", test_txt);
     c.write("pre/a.cpp", PRE);
@@ -911,21 +943,21 @@ fn s6_3_each_difference_fails() {
         (
             "different",
             Box::new(|g: String| g.replace(&esc(POST), &esc(&POST.replace("g()", "h()")))),
-            "tree: file a.cpp differs (first at byte 18)",
+            "tree differs from the verified overlay: file a.cpp has size 41 digest ",
         ),
         (
             "added",
             Box::new(|g: String| {
                 g.replace(&post_write(), &format!("{}\nwrite b.cpp new", post_write()))
             }),
-            "tree: file b.cpp added",
+            "tree differs from the verified overlay: file b.cpp added",
         ),
         (
             "missing",
             Box::new(|g: String| {
                 g.replace(&post_write(), &format!("{}\nremove a.cpp", post_write()))
             }),
-            "tree: file a.cpp missing",
+            "tree differs from the verified overlay: file a.cpp missing",
         ),
         // F5 (P02): the mode is compared.
         (
@@ -933,7 +965,7 @@ fn s6_3_each_difference_fails() {
             Box::new(|g: String| {
                 g.replace(&post_write(), &format!("{}\nchmod a.cpp 755", post_write()))
             }),
-            "tree: file a.cpp mode 755, expected 644",
+            "tree differs from the verified overlay: file a.cpp mode 755, pre/'s 644",
         ),
         // F5 (P04a): a new directory, even an empty one.
         (
@@ -941,7 +973,7 @@ fn s6_3_each_difference_fails() {
             Box::new(|g: String| {
                 g.replace(&post_write(), &format!("{}\nmkdir new/sub", post_write()))
             }),
-            "tree: directory new added",
+            "tree differs from the verified overlay: directory new added",
         ),
         // F5 (P04b): a symbolic link in place of a file is a FAIL, not an
         // ERROR.
@@ -953,7 +985,7 @@ fn s6_3_each_difference_fails() {
                     &format!("{}\nremove a.cpp\nsymlink b a.cpp", post_write()),
                 )
             }),
-            "tree: file a.cpp is now a symbolic link",
+            "tree differs from the verified overlay: a.cpp is a symbolic link, pre/'s is a file",
         ),
     ];
     for (name, edit, want) in cases {
@@ -961,6 +993,40 @@ fn s6_3_each_difference_fails() {
         let o = c.run();
         assert!(fail_message(&o).starts_with(want), "{name}: {o:?}");
     }
+    // The same shapes against the expected post-image: a result that does
+    // not permit writing expects pre/, so each shape is first a
+    // difference of the tree.
+    let nv = "spec: harness §6.3\nrun: rename --from a::f --to g\nstate: not_verified\nexit: 0\n";
+    for (name, extra, want) in [
+        (
+            "nv-different",
+            format!("write a.cpp {}", esc(POST)),
+            "file a.cpp differs (first at byte 18)",
+        ),
+        ("nv-added", "write b.cpp new".into(), "file b.cpp added"),
+        ("nv-missing", "remove a.cpp".into(), "file a.cpp missing"),
+        ("nv-mode", "chmod a.cpp 755".into(), "file a.cpp mode 755, expected 644"),
+        ("nv-emptydir", "mkdir new/sub".into(), "directory new added"),
+        ("nv-symlink", "remove a.cpp\nsymlink b a.cpp".into(), "file a.cpp is now a symbolic link"),
+    ] {
+        let (c, r) = unwritten(name, nv, State::NotVerified);
+        let script = c.read("pre/fake.txt").unwrap();
+        let main = outs(&main_out(&r));
+        c.write(
+            "pre/fake.txt",
+            &script.replacen(
+                &format!("{}{main}", r.publish),
+                &format!("{}{main}{extra}\n", r.publish),
+                1,
+            ),
+        );
+        let o = c.run();
+        assert!(fail_message(&o).starts_with(&format!("tree: {want}")), "{name}: {o:?}");
+    }
+    // A post/ that is not the overlay's post-image, the tree that is.
+    let (c, _) = standard("post-wrong", TEST_TXT, |g| g);
+    c.write("post/a.cpp", &POST.replace("g()", "h()"));
+    assert_eq!(fail_message(&c.run()), "tree: file a.cpp differs (first at byte 18)");
     // A state needs a result line; its absence shows standard error.
     let (c, r) = standard("noresult", TEST_TXT, |s| s);
     let script = c.read("pre/fake.txt").unwrap();
@@ -1291,6 +1357,91 @@ fn s6_3_the_store_is_the_output() {
     }
 }
 
+// H3 of the second review (N3): the records are of this tree. Every file
+// of the edit set and of the overlay is a file of pre/ under the tree's
+// path, with pre/'s size and digest; and the overlay is of the result's
+// edit set.
+#[test]
+fn s6_3_the_records_are_of_the_tree() {
+    type Change = Box<dyn Fn(&Case, &mut EditSet, &mut Overlay)>;
+    let cases: Vec<(&str, Change, String)> = vec![
+        (
+            "set-elsewhere",
+            Box::new(|_, s, _| s.files[0].path = b"/elsewhere/a.cpp".to_vec()),
+            "store: the edit set names /elsewhere/a.cpp, not a file of the test's tree".into(),
+        ),
+        (
+            // The tree's path as a prefix of another directory's.
+            "set-sibling",
+            Box::new(|c, s, _| {
+                s.files[0].path = format!("{}2/a.cpp", c.tree().display()).into_bytes();
+            }),
+            "store: the edit set names @T@2/a.cpp, not a file of the test's tree".into(),
+        ),
+        (
+            "set-pre",
+            Box::new(|_, s, _| s.files[0].content = d(9)),
+            format!(
+                "store: the edit set gives a.cpp the pre-image of size 41 digest {}, not pre/'s \
+                 (size 41, digest {})",
+                hex(9),
+                content_digest(PRE.as_bytes())
+            ),
+        ),
+        (
+            "set-not-in-pre",
+            Box::new(|c, s, _| s.files[0].path = c.tree_path("gone.cpp")),
+            "store: the edit set names gone.cpp, which is not a file of pre/".into(),
+        ),
+        (
+            "overlay-elsewhere",
+            Box::new(|_, _, o| o.files[0].path = b"/elsewhere/a.cpp".to_vec()),
+            "store: the overlay names /elsewhere/a.cpp, not a file of the test's tree".into(),
+        ),
+        (
+            "overlay-pre",
+            Box::new(|_, _, o| o.files[0].pre.size = 40),
+            format!(
+                "store: the overlay gives a.cpp the pre-image of size 40 digest {}, not pre/'s \
+                 (size 41, digest {})",
+                content_digest(PRE.as_bytes()),
+                content_digest(PRE.as_bytes())
+            ),
+        ),
+        (
+            // N3 of the mutations: the overlay of another edit set.
+            "overlay-other-set",
+            Box::new(|_, _, o| o.edits = d(0x77)),
+            format!("store: the overlay @O@ is of the edit set {}, the result's is @E@", hex(0x77)),
+        ),
+    ];
+    for (name, change, want) in cases {
+        let c = Case::new(name);
+        let mut set = tree_set(&c);
+        let mut ov = overlay_of(&c, &set);
+        change(&c, &mut set, &mut ov);
+        if !name.starts_with("overlay") {
+            ov = overlay_of(&c, &set);
+        }
+        assert_eq!((set.validate(), ov.validate()), (Ok(()), Ok(())), "{name}");
+        let r = c.records_ov("run", &set, State::Verified, |_| {}, &ov);
+        c.write("test.txt", TEST_TXT);
+        c.write("pre/a.cpp", PRE);
+        c.write("pre/fake.txt", &good_script(&r));
+        c.write("post/a.cpp", POST);
+        c.write("expect.txt", &golden(&main_out(&r)));
+        let want = want
+            .replace("@T@", &c.tree().display().to_string())
+            .replace("@E@", &r.edits)
+            .replace("@O@", r.overlay.as_ref().unwrap());
+        let o = c.run();
+        assert!(fail_message(&o).starts_with(&want), "{name}: {o:?}");
+        c.write("expect.txt", "stale\n");
+        assert!(fail_message(&c.run_with(None, true)).starts_with("cannot bless: "), "{name}");
+        assert_eq!(c.read("expect.txt").unwrap(), "stale\n", "{name}");
+    }
+}
+
 // §6.3: --bless rewrites expect.txt and post/ and not test.txt; it refuses
 // when the state or the exit status differ.
 #[test]
@@ -1316,19 +1467,43 @@ fn s6_3_bless() {
     assert_eq!(c.run_with(None, true), Outcome::Pass);
     assert_eq!(c.read("expect.txt").unwrap(), expect);
 
-    // A post/ file the run no longer changes is removed; a mode is blessed.
-    let txt = format!("{TEST_TXT}oracle: no-back the inverse keeps the mode\n");
-    let (c, _) = standard("bless-remove", &txt, |g| {
-        g.replace(&post_write(), &format!("{}\nchmod a.cpp 755", post_write()))
-    });
+    // A post/ file the run no longer changes is removed.
+    let (c, _) = standard("bless-remove", TEST_TXT, |g| g);
     c.write("pre/b.cpp", "b\n");
     c.write("post/b.cpp", "b changed\n");
     assert_eq!(c.run_with(None, true), Outcome::Pass);
     assert!(!c.dir().join("post/b.cpp").exists());
     assert_eq!(c.read("post/a.cpp").unwrap(), POST);
-    let mode = std::fs::metadata(c.dir().join("post/a.cpp")).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o755);
     assert_eq!(c.run(), Outcome::Pass);
+    // H2 of the second review (N2): a run that writes other bytes than the
+    // overlay's post-image is not blessed into post/, though post/ was
+    // made from the run; a mode the overlay does not give is not either.
+    for (name, edit, want) in [
+        (
+            "bless-other",
+            Box::new(|g: String| g.replace(&esc(POST), &esc(&POST.replace("g()", "h()"))))
+                as ScriptEdit,
+            "file a.cpp has size 41 digest ",
+        ),
+        (
+            "bless-mode",
+            Box::new(|g: String| {
+                g.replace(&post_write(), &format!("{}\nchmod a.cpp 755", post_write()))
+            }),
+            "file a.cpp mode 755, pre/'s 644",
+        ),
+    ] {
+        let (c, _) = standard(name, TEST_TXT, edit);
+        c.write("post/a.cpp", "old post\n");
+        let o = c.run_with(None, true);
+        assert!(
+            fail_message(&o).starts_with(&format!(
+                "cannot bless: tree differs from the verified overlay: {want}"
+            )),
+            "{name}: {o:?}"
+        );
+        assert_eq!(c.read("post/a.cpp").unwrap(), "old post\n", "{name}");
+    }
 
     for (name, edit, want) in [
         (
@@ -1352,12 +1527,12 @@ fn s6_3_bless() {
             Box::new(|g: String| {
                 g.replace(&post_write(), &format!("{}\nwrite new.cpp x", post_write()))
             }),
-            "cannot bless: post/ cannot hold the written tree: file new.cpp added",
+            "cannot bless: tree differs from the verified overlay: file new.cpp added",
         ),
         (
             "bless-dir",
             Box::new(|g: String| g.replace(&post_write(), &format!("{}\nmkdir e", post_write()))),
-            "cannot bless: post/ cannot hold the written tree: directory e added",
+            "cannot bless: tree differs from the verified overlay: directory e added",
         ),
         (
             "bless-link",
@@ -1367,12 +1542,12 @@ fn s6_3_bless() {
                     &format!("{}\nremove a.cpp\nsymlink x a.cpp", post_write()),
                 )
             }),
-            "cannot bless: post/ cannot hold the written tree: file a.cpp is now a symbolic link",
+            "cannot bless: tree differs from the verified overlay: a.cpp is a symbolic link, pre/'s is a file",
         ),
         (
             "bless-nothing",
             Box::new(|g: String| g.replace(&post_write(), "out state verified")),
-            "cannot bless: the run wrote nothing: say `post: none` in test.txt",
+            "cannot bless: tree differs from the verified overlay: permitted and not written: the overlay changes a.cpp, the tree is pre/",
         ),
     ] {
         let (c, _) = standard(name, TEST_TXT, edit);
@@ -1382,15 +1557,49 @@ fn s6_3_bless() {
         assert_eq!(c.read("expect.txt").unwrap(), "stale\n", "{name}: nothing rewritten");
         assert_eq!(c.read("post/a.cpp").unwrap(), POST);
     }
-    // `post: none` and a run that writes.
-    let (c, _) = standard("bless-none", &format!("{TEST_TXT}post: none\n"), |g| g);
-    std::fs::remove_dir_all(c.dir().join("post")).unwrap();
+    // H1 (N1): `post: none` under a result that permits a change, the run
+    // writing or not.
+    for (name, edit) in [
+        ("bless-none", Box::new(|g: String| g) as ScriptEdit),
+        (
+            "bless-none-unwritten",
+            Box::new(|g: String| g.replace(&post_write(), "out state verified")),
+        ),
+    ] {
+        let (c, _) = standard(name, &format!("{TEST_TXT}post: none\n"), edit);
+        std::fs::remove_dir_all(c.dir().join("post")).unwrap();
+        c.write("expect.txt", "stale\n");
+        assert_eq!(
+            fail_message(&c.run_with(None, true)),
+            "cannot bless: test.txt says `post: none`, and the result permits writing the \
+             overlay's change to a.cpp: the test is malformed against its own record",
+            "{name}"
+        );
+        assert!(!c.dir().join("post").exists());
+        assert_eq!(c.read("expect.txt").unwrap(), "stale\n", "{name}");
+    }
+    // A result that does not permit writing, and a run that writes
+    // nothing: bless asks for `post: none` (an `allow: errors` test may
+    // write; its record, with residue, does not permit it).
+    let vwr = "spec: harness §6.3\nrun: rename --from a::f --to g\n\
+               state: verified_with_residue\nexit: 0\nallow: errors\noracle: no-mutation none\n";
+    let c = Case::new("bless-ask-none");
+    let path = c.tree_path("a.cpp");
+    let r = c.tree_records(State::VerifiedWithResidue, |r| {
+        r.residue = vec![residue_at(path, Category::NotCompiled, 0, 9)];
+    });
+    c.write("test.txt", vwr);
+    c.write("pre/a.cpp", PRE);
+    c.write("post/a.cpp", POST);
+    c.write(
+        "pre/fake.txt",
+        &good_script(&r).replace(&format!("\nwrite a.cpp {}\n", esc(POST)), "\n"),
+    );
     c.write("expect.txt", "stale\n");
     assert_eq!(
         fail_message(&c.run_with(None, true)),
-        "cannot bless: the test says `post: none`, and the run wrote"
+        "cannot bless: the run wrote nothing: say `post: none` in test.txt"
     );
-    assert!(!c.dir().join("post").exists());
 }
 
 // F2 of the review (P01, R22): whether the run may write is
@@ -1481,16 +1690,146 @@ fn s6_3_write_without_permission() {
     assert_eq!(c.run(), Outcome::Pass);
 }
 
+// 4(c) of the second review: what the runner needs of
+// `slip_verify::conclude::permits`, the rule it shares with `slip`, as a
+// table written from `spec/edits.md` §8.5 ("`--write` and `--patch` act
+// only on ..."), not from the function.
+#[test]
+fn s6_3_permission_table() {
+    use slip_model::edits::{Report as EditReport, Severity};
+    use slip_model::editset::Reported;
+    use slip_verify::conclude::{Allow as A, permits};
+    type Make = Box<dyn Fn(&mut EditSet, &mut TransformResult)>;
+    type Row = (&'static str, State, Make, Vec<(A, bool)>);
+    let c = Case::new("permits");
+    let none = A { residue: false, errors: false, partial: false };
+    let residue = A { residue: true, ..none };
+    let errors = A { errors: true, ..none };
+    let partial = A { partial: true, ..none };
+    let all = A { residue: true, errors: true, partial: true };
+    let non_mention = residue_at(c.tree_path("a.cpp"), Category::NotCompiled, 0, 9);
+    let mention = residue_at(c.tree_path("a.cpp"), Category::Mention, 0, 9);
+    let rows: Vec<Row> = vec![
+        ("verified", State::Verified, Box::new(|_, _| {}), vec![(none, true), (all, true)]),
+        (
+            "residue",
+            State::VerifiedWithResidue,
+            Box::new(move |_, r| r.residue = vec![non_mention.clone()]),
+            vec![(none, false), (errors, false), (residue, true), (all, true)],
+        ),
+        (
+            // Row 4 needs a reason; a mention is none.
+            "mention only",
+            State::VerifiedWithResidue,
+            Box::new(move |_, r| r.residue = vec![mention.clone()]),
+            vec![(residue, false), (all, false)],
+        ),
+        (
+            "error report",
+            State::VerifiedWithResidue,
+            Box::new(|s, r| {
+                s.reports = vec![Reported {
+                    report: EditReport {
+                        place: None,
+                        severity: Severity::Error,
+                        message: b"x".to_vec(),
+                        attached: false,
+                    },
+                    observers: 1,
+                    first: vec![d(0xa0)],
+                }];
+                r.tally.error_reports = 1;
+            }),
+            vec![(none, false), (residue, false), (errors, true), (all, true)],
+        ),
+        ("not_verified", State::NotVerified, Box::new(|_, _| {}), vec![(all, false)]),
+        ("incomplete", State::Incomplete, Box::new(|_, _| {}), vec![(all, false)]),
+        (
+            "partial",
+            State::Verified,
+            Box::new(|_, r| r.partial = true),
+            vec![(none, false), (residue, false), (partial, true)],
+        ),
+        (
+            "another set",
+            State::Verified,
+            Box::new(|_, r| r.edits = d(0x44)),
+            vec![(none, false), (all, false)],
+        ),
+        (
+            "another round",
+            State::Verified,
+            Box::new(|s, _| s.round = 2),
+            vec![(none, false), (all, false)],
+        ),
+        (
+            "a refused set",
+            State::Refused,
+            Box::new(|s, _| {
+                use slip_model::edits::Reason;
+                use slip_model::editset::{Cause, Refusal};
+                s.state = SetState::Refused;
+                s.edits.clear();
+                s.refusals.push(Refusal {
+                    cause: Cause::NoEdit,
+                    file: None,
+                    lo: 0,
+                    hi: 0,
+                    reason: Reason::None,
+                    subject: None,
+                    macro_site: None,
+                    other: None,
+                    observers: 0,
+                    first: Vec::new(),
+                });
+            }),
+            vec![(all, false)],
+        ),
+    ];
+    for (name, state, make, expect) in rows {
+        let mut set = tree_set(&c);
+        let mut r = result_of(state, d(0), d(1), d(2), 2);
+        make(&mut set, &mut r);
+        if r.edits == d(0) {
+            r.edits = formats::content_id(&set.to_bytes()).unwrap();
+        }
+        assert_eq!(r.validate(), Ok(()), "{name}");
+        for (allow, want) in expect {
+            assert_eq!(permits(&r, &set, allow), want, "{name}: {allow:?}");
+        }
+    }
+}
+
 // F3 of the review (P05): a run that may write and writes nothing fails
 // against its post/; with `post: none` it passes, and the oracles that
 // need a written tree are skipped and counted.
 #[test]
 fn s6_3_a_run_that_writes_nothing() {
+    // H2, H1 of the second review (N1): a result that permits writing a
+    // change, and a run that writes nothing, fails against the overlay,
+    // with `post: none` or without.
     let (c, _) = standard("nothing", TEST_TXT, |g| g.replace(&post_write(), "out state verified"));
-    assert_eq!(fail_message(&c.run()), "tree: file a.cpp differs (first at byte 18)");
-    let (c, _) = standard("nothing-none", &format!("{TEST_TXT}post: none\n"), |g| {
+    assert_eq!(
+        fail_message(&c.run()),
+        "tree differs from the verified overlay: permitted and not written: the overlay changes \
+         a.cpp, the tree is pre/"
+    );
+    let (c, _) = standard("nothing-none-changed", &format!("{TEST_TXT}post: none\n"), |g| {
         g.replace(&post_write(), "out state verified")
     });
+    std::fs::remove_dir_all(c.dir().join("post")).unwrap();
+    assert_eq!(
+        fail_message(&c.run()),
+        "test.txt says `post: none`, and the result permits writing the overlay's change to \
+         a.cpp: the test is malformed against its own record"
+    );
+    // An overlay that changes no file: `post: none` is the test's word.
+    let (c, _) = standard_ov(
+        "nothing-none",
+        &format!("{TEST_TXT}post: none\n"),
+        &[("a.cpp", PRE, PRE)],
+        |g| g.replace(&post_write(), "out state verified"),
+    );
     std::fs::remove_dir_all(c.dir().join("post")).unwrap();
     let r = c.report(None);
     assert_eq!(r.outcome, Outcome::Pass);
@@ -1503,10 +1842,37 @@ fn s6_3_a_run_that_writes_nothing() {
         ]
     );
     assert!(c.log("back/store").is_empty());
-    // `post: none` and a run that writes: the tree differs from pre/.
-    let (c, _) = standard("nothing-wrote", &format!("{TEST_TXT}post: none\n"), |g| g);
+    // `post: none`, an overlay that changes nothing, and a run that
+    // writes: the tree differs from the overlay.
+    let (c, _) = standard_ov(
+        "nothing-wrote",
+        &format!("{TEST_TXT}post: none\n"),
+        &[("a.cpp", PRE, PRE)],
+        |g| g,
+    );
     std::fs::remove_dir_all(c.dir().join("post")).unwrap();
-    assert_eq!(fail_message(&c.run()), "tree: file a.cpp differs (first at byte 18)");
+    assert_eq!(
+        fail_message(&c.run()),
+        "tree differs from the verified overlay: file a.cpp differs from pre/, and the overlay \
+         does not change it"
+    );
+    // A result that does not permit writing: `post: none` (or no post/) is
+    // all a test that may write can say.
+    let vwr = "spec: harness §6.3\nrun: rename --from a::f --to g\n\
+               state: verified_with_residue\nexit: 0\nallow: errors\npost: none\noracle: no-mutation none\n";
+    let c = Case::new("nothing-unpermitted");
+    let path = c.tree_path("a.cpp");
+    let r = c.tree_records(State::VerifiedWithResidue, |r| {
+        r.residue = vec![residue_at(path, Category::NotCompiled, 0, 9)];
+    });
+    c.write("test.txt", vwr);
+    c.write("pre/a.cpp", PRE);
+    c.write(
+        "pre/fake.txt",
+        &good_script(&r).replace(&format!("\nwrite a.cpp {}\n", esc(POST)), "\n"),
+    );
+    c.write("expect.txt", &golden(&main_out(&r)));
+    assert_eq!(c.run(), Outcome::Pass);
 }
 
 // §6: usage and input tests compare the status and the output; no state.
@@ -1598,6 +1964,31 @@ fn s6_timeout() {
     assert!(gone(), "the grandchild {pid} still runs");
     // The default.
     assert_eq!(standard("default-timeout", TEST_TXT, |g| g).0.test().timeout, 600);
+}
+
+// 4(a) of the second review: with no `kill` program (or one that fails),
+// the child alone is killed, the wait ends, and the timeout says the group
+// was not killed.
+#[test]
+fn s6_timeout_without_a_kill_program() {
+    for kill in ["/nonexistent/kill", "/bin/false"] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("30");
+            let _ = tx.send(run_bounded_with(
+                cmd,
+                std::time::Duration::from_millis(200),
+                Path::new(kill),
+            ));
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(20)).expect("the wait ended");
+        assert!(matches!(got, Err(Bounded::TimedOut { group: false })), "{kill}: {got:?}");
+    }
+    let mut cmd = Command::new("sleep");
+    cmd.arg("30");
+    let got = run_bounded_with(cmd, std::time::Duration::from_millis(200), Path::new("/bin/kill"));
+    assert!(matches!(got, Err(Bounded::TimedOut { group: true })), "{got:?}");
 }
 
 // §6: xfail turns FAIL into XFAIL and PASS into XPASS; an ERROR stays.
@@ -1933,7 +2324,9 @@ fn s6_4_clang() {
     assert_eq!(c.read("expect.txt").unwrap(), "stale\n");
 
     let post = format!("{POST}// CLANG_REJECTS\n");
-    let (c, _) = standard("clang-post", TEST_TXT, |g| g.replace(&esc(POST), &esc(&post)));
+    let (c, _) = standard_ov("clang-post", TEST_TXT, &[("a.cpp", PRE, &post)], |g| {
+        g.replace(&esc(POST), &esc(&post))
+    });
     c.write("post/a.cpp", &post);
     let clang = fake_clang(&c);
     let o = c.run_with(Some(&clang), false);
@@ -1942,9 +2335,12 @@ fn s6_4_clang() {
 
     // P08: a changed file that no command read.
     let txt = format!("{TEST_TXT}oracle: no-back the inverse keeps b.h\n");
-    let (c, _) = standard("clang-unread", &txt, |g| {
-        g.replace(&post_write(), &format!("{}\nwrite b.h changed", post_write()))
-    });
+    let (c, _) = standard_ov(
+        "clang-unread",
+        &txt,
+        &[("a.cpp", PRE, POST), ("b.h", "b\n", "changed")],
+        |g| g.replace(&post_write(), &format!("{}\nwrite b.h changed", post_write())),
+    );
     c.write("pre/b.h", "b\n");
     c.write("post/b.h", "changed");
     let clang = fake_clang(&c);

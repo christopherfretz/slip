@@ -12,7 +12,7 @@ use slip_model::declared::Declared;
 use slip_model::editset::{EditSet, SetState};
 use slip_model::formats;
 use slip_model::json::{self, Value};
-use slip_model::overlay::Overlay;
+use slip_model::overlay::{Content, Overlay};
 use slip_model::result::{State, TransformResult};
 use slip_verify::conclude;
 use std::ffi::OsString;
@@ -188,10 +188,16 @@ impl Ctx<'_> {
             Err(Bounded::Spawn(e)) => {
                 return Err(Outcome::Error(format!("cannot run `{}`: {e}", self.slip.display())));
             }
-            Err(Bounded::TimedOut) => {
+            Err(Bounded::TimedOut { group }) => {
                 return Err(Outcome::Killed(format!(
-                    "`slip {shown}` did not end within {} s; its process group was killed",
-                    self.test.timeout
+                    "`slip {shown}` did not end within {} s; {}",
+                    self.test.timeout,
+                    if group {
+                        "its process group was killed"
+                    } else {
+                        "its process group could not be killed (no kill program), the child was: \
+                         the group may have survivors"
+                    }
                 )));
             }
         };
@@ -264,9 +270,12 @@ pub struct Finished {
 pub enum Bounded {
     Spawn(std::io::Error),
     /// The child, or a process that kept its standard output or error open,
-    /// was still running at the deadline; the child's process group was
-    /// killed.
-    TimedOut,
+    /// was still running at the deadline. `group`: the child's process
+    /// group was killed; else the kill program failed and only the child
+    /// was killed (its group may have survivors).
+    TimedOut {
+        group: bool,
+    },
 }
 
 /// Runs `cmd` with standard input closed and its output captured, in a
@@ -274,7 +283,18 @@ pub enum Bounded {
 /// pipes are closed (a grandchild that holds one open holds the run); at
 /// `timeout` the group is killed (`kill -KILL -- -<pgid>`: the standard
 /// library has no call for a group, and `xtask` has no `unsafe`).
-pub fn run_bounded(mut cmd: Command, timeout: Duration) -> Result<Finished, Bounded> {
+pub fn run_bounded(cmd: Command, timeout: Duration) -> Result<Finished, Bounded> {
+    run_bounded_with(cmd, timeout, Path::new(kill_program()))
+}
+
+/// [`run_bounded`] with the `kill` program `kill`. When it cannot be run
+/// or fails, the child alone is killed (`Child::kill`), so the wait for
+/// it ends.
+pub fn run_bounded_with(
+    mut cmd: Command,
+    timeout: Duration,
+    kill: &Path,
+) -> Result<Finished, Bounded> {
     use std::io::Read as _;
     use std::os::unix::process::CommandExt as _;
     cmd.process_group(0).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -315,16 +335,20 @@ pub fn run_bounded(mut cmd: Command, timeout: Duration) -> Result<Finished, Boun
         }
         let now = Instant::now();
         if now >= deadline {
-            let _ = Command::new(kill_program())
+            let group = Command::new(kill)
                 .args(["-KILL", "--", &format!("-{pid}")])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status();
+                .status()
+                .is_ok_and(|s| s.success());
             if status.is_none() {
+                if !group {
+                    let _ = child.kill();
+                }
                 let _ = child.wait();
             }
-            return Err(Bounded::TimedOut);
+            return Err(Bounded::TimedOut { group });
         }
         let step = (deadline - now).min(Duration::from_millis(10));
         match rx.recv_timeout(step) {
@@ -703,7 +727,121 @@ pub fn read_record(ctx: &Ctx<'_>, ran: &Ran) -> Result<Record, String> {
             if ctx.test.allows(Allow::Unparsed) { "" } else { " not" }
         ));
     }
+    of_the_tree(&ctx.tree, &ctx.pre, &set, overlay.as_ref())?;
     Ok(Record { id, bytes, result, set_id: set_digest(&set), set, declared, overlay })
+}
+
+/// `path` (a record's real path) as a path of the tree rooted at `root`:
+/// under it, every component a plain name (none empty, `.` or `..`).
+pub fn tree_relative(root: &Path, path: &[u8]) -> Option<String> {
+    let root = root.to_str()?.as_bytes();
+    let rest = path.strip_prefix(root)?.strip_prefix(b"/")?;
+    let rel = std::str::from_utf8(rest).ok()?;
+    rel.split('/').all(|c| !c.is_empty() && c != "." && c != "..").then(|| rel.to_owned())
+}
+
+/// H3 of the review's second round: the records are of this tree. Every
+/// file of the edit set and of the overlay is a regular file of `pre/`
+/// (by its path under the tree), whose size and content digest are those
+/// the record gives for its pre-image.
+pub fn of_the_tree(
+    root: &Path,
+    pre: &Files,
+    set: &EditSet,
+    overlay: Option<&Overlay>,
+) -> Result<(), String> {
+    let files = set.files.iter().map(|f| ("edit set", &f.path, f.size, f.content));
+    let ov = overlay
+        .into_iter()
+        .flat_map(|o| o.files.iter().map(|f| ("overlay", &f.path, f.pre.size, f.pre.content)));
+    for (what, path, size, content) in files.chain(ov) {
+        let shown = String::from_utf8_lossy(path);
+        let Some(rel) = tree_relative(root, path) else {
+            return Err(format!("the {what} names {shown}, not a file of the test's tree"));
+        };
+        let Some(Entry::File { bytes, .. }) = pre.get(&rel) else {
+            return Err(format!("the {what} names {rel}, which is not a file of pre/"));
+        };
+        if bytes.len() as u64 != size || slip_model::hash::content_digest(bytes) != content {
+            return Err(format!(
+                "the {what} gives {rel} the pre-image of size {size} digest {content}, \
+                 not pre/'s (size {}, digest {})",
+                bytes.len(),
+                slip_model::hash::content_digest(bytes)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The relative paths the overlay changes (`post` not `pre`), with their
+/// post-image (a path outside the tree is left out: [`of_the_tree`] has
+/// refused it already).
+fn overlay_changes(root: &Path, overlay: &Overlay) -> std::collections::BTreeMap<String, Content> {
+    overlay
+        .files
+        .iter()
+        .filter(|f| f.post != f.pre)
+        .filter_map(|f| Some((tree_relative(root, &f.path)?, f.post)))
+        .collect()
+}
+
+/// H2 of the review's second round: a written tree permitted by its
+/// result is exactly the overlay's post-image. Every file the overlay
+/// changes has the overlay's `post` size and digest (and `pre/`'s mode);
+/// every other entry is `pre/`'s; nothing else exists. The first
+/// difference, in byte order of paths.
+pub fn overlay_difference(
+    root: &Path,
+    pre: &Files,
+    got: &Files,
+    overlay: &Overlay,
+) -> Option<String> {
+    let changes = overlay_changes(root, overlay);
+    let say = |d: String| Some(format!("tree differs from the verified overlay: {d}"));
+    if got == pre
+        && let Some(p) = changes.keys().next()
+    {
+        return say(format!(
+            "permitted and not written: the overlay changes {p}, the tree is pre/"
+        ));
+    }
+    let paths: std::collections::BTreeSet<&String> = pre.keys().chain(got.keys()).collect();
+    for p in paths {
+        match (pre.get(p), got.get(p), changes.get(p)) {
+            (Some(Entry::File { mode, .. }), Some(Entry::File { mode: m, bytes }), Some(post)) => {
+                let digest = slip_model::hash::content_digest(bytes);
+                if bytes.len() as u64 != post.size || digest != post.content {
+                    return say(format!(
+                        "file {p} has size {} digest {digest}, the overlay's post-image size {} \
+                         digest {}",
+                        bytes.len(),
+                        post.size,
+                        post.content
+                    ));
+                }
+                if m != mode {
+                    return say(format!("file {p} mode {m:o}, pre/'s {mode:o}"));
+                }
+            }
+            (Some(e), Some(g), None) if e == g => {}
+            (Some(e), Some(g), _) => {
+                return say(match (e, g) {
+                    (Entry::File { mode, .. }, Entry::File { mode: m, .. }) if m != mode => {
+                        format!("file {p} mode {m:o}, pre/'s {mode:o}")
+                    }
+                    (Entry::File { .. }, Entry::File { .. }) => {
+                        format!("file {p} differs from pre/, and the overlay does not change it")
+                    }
+                    _ => format!("{p} is a {}, pre/'s is a {}", g.kind(), e.kind()),
+                });
+            }
+            (Some(e), None, _) => return say(format!("{} {p} missing", e.kind())),
+            (None, Some(g), _) => return say(format!("{} {p} added", g.kind())),
+            (None, None, _) => {}
+        }
+    }
+    None
 }
 
 fn set_digest(set: &EditSet) -> Digest {
@@ -820,6 +958,12 @@ fn judge(
         None => (None, None),
     };
     let permits = permitted(test, record.as_ref());
+    // The tree against the overlay the result verified (H1, H2 of the
+    // review's second round), before post/ and before a bless.
+    if let Some(r) = record.as_ref().filter(|_| permits) {
+        tied_to_overlay(&ctx, r, &got)
+            .map_err(|e| Outcome::Fail(if bless { format!("cannot bless: {e}") } else { e }))?;
+    }
 
     // Step 3: the goldens.
     if bless {
@@ -843,6 +987,28 @@ fn judge(
     // Step 4: the oracles.
     let failures = oracles::run_all(&ctx, &ran, record.as_ref(), &got, clang, report)?;
     if failures.is_empty() { Ok(()) } else { Err(Outcome::Fail(failures.join("; "))) }
+}
+
+/// For a result that permits writing (every run is asked to write): a
+/// test that says `post: none` has an overlay that changes no file (H1),
+/// and the written tree is the overlay's post-image (H2,
+/// [`overlay_difference`]).
+fn tied_to_overlay(ctx: &Ctx<'_>, record: &Record, got: &Files) -> Result<(), String> {
+    let Some(ov) = &record.overlay else {
+        return Err("the result permits writing and names no overlay".into());
+    };
+    if ctx.test.post_none
+        && let Some(p) = overlay_changes(&ctx.tree, ov).keys().next()
+    {
+        return Err(format!(
+            "test.txt says `post: none`, and the result permits writing the overlay's change \
+             to {p}: the test is malformed against its own record"
+        ));
+    }
+    match overlay_difference(&ctx.tree, &ctx.pre, got, ov) {
+        Some(d) => Err(d),
+        None => Ok(()),
+    }
 }
 
 /// A write the result does not permit: the tree differs from `pre/` and

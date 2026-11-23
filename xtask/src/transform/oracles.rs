@@ -121,7 +121,7 @@ pub fn clang(ctx: &Ctx<'_>, clang: &Path, deps: Option<&Path>) -> Result<Vec<Pat
         let out = match run_bounded(cmd, ctx.timeout()) {
             Ok(o) => o,
             Err(Bounded::Spawn(e)) => return Err(format!("cannot run `{}`: {e}", clang.display())),
-            Err(Bounded::TimedOut) => {
+            Err(Bounded::TimedOut { .. }) => {
                 return Err(format!("{shown} did not end within {} s", ctx.test.timeout));
             }
         };
