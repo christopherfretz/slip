@@ -147,6 +147,9 @@ pub(crate) enum KeyRes {
 
 /// The cause of an entity that refers to itself through its own key.
 const KEY_CYCLE: Cause = Cause::Unaccounted("key/cycle");
+/// A rule that matches a member of an instantiation, not its pattern's
+/// (`spec/digest.md` §3.4).
+const RULE_ON_INSTANTIATED_MEMBER: Cause = Cause::Unaccounted("key/rule-on-instantiated-member");
 /// A scope no row of §5.2 says can hold an entity.
 const BAD_PARENT: Cause = Cause::Unaccounted("key/parent");
 /// A name form no rule of §3.2 or digest §3.3 gives.
@@ -358,12 +361,15 @@ impl Walk<'_> {
         let name = if decomposition {
             let first =
                 ast.decls.decomp_bindings(e).and_then(|l| ast.lists.iter::<DeclId>(l).next());
-            match first.map(|b| self.plain_name(b)) {
-                Some(Ok(Some((name, c)))) => {
+            match first.map(|b| (b, self.plain_name(b))) {
+                // The first binding's name as the rules map it (`spec/digest.md`
+                // §3.4, WP-103): a rule that renames the binding renames the
+                // decomposition with it.
+                Some((b, Ok(Some((name, c))))) => {
                     cause = c;
-                    name
+                    self.mapped_name(b).unwrap_or(name)
                 }
-                Some(Ok(None) | Err(_)) | None => return Err(Some(BAD_NAME)),
+                Some((_, Ok(None) | Err(_))) | None => return Err(Some(BAD_NAME)),
             }
         } else {
             let (name, c) = self.entity_name(e)?;
@@ -382,7 +388,50 @@ impl Walk<'_> {
             }
             None => None,
         };
-        Ok((Key { kind, parent, name, disc }, cause))
+        let key = Key { kind, parent, name, disc };
+        if !decomposition && let Some(pattern) = self.instantiated_pattern(e) {
+            return self.follow_pattern(pattern, key, cause);
+        }
+        Ok((key, cause))
+    }
+
+    /// The member of a pattern that `e` was instantiated from, through
+    /// Kiln's member link or its sparse map (`instantiated_from`): `e` is
+    /// a member of a specialisation, or of an instantiated member template.
+    /// A specialisation's own link is `spec_key`'s.
+    fn instantiated_pattern(&self, e: DeclId) -> Option<DeclId> {
+        let ast = self.ast;
+        match ast.templ_link(e).get() {
+            Some((TemplLinkKind::Specialization | TemplLinkKind::PartialSpecialization, _)) => {
+                None
+            }
+            Some((TemplLinkKind::Pattern | TemplLinkKind::MemberOfSpecialization, _)) | None => {
+                ast.instantiated_from(e).map(|p| self.entity(p)).filter(|&p| p != e)
+            }
+        }
+    }
+
+    /// The key of a member instantiated from `pattern` (`spec/digest.md`
+    /// §3.4, WP-103): its name is the pattern member's as the rules map it,
+    /// through the whole chain of patterns, so that a rule on a member of a
+    /// class template reaches the members of its instantiations. A rule
+    /// that matches the member itself, under either name, is not one the
+    /// source can carry out (an instantiation's member is renamed only by
+    /// renaming the pattern's): the key is indeterminate.
+    fn follow_pattern(
+        &mut self,
+        pattern: DeclId,
+        key: Key,
+        cause: Option<Cause>,
+    ) -> Result<(Key, Option<Cause>), Option<Cause>> {
+        let Some(name) = self.mapped_name(pattern) else {
+            return Ok((key, cause));
+        };
+        let followed = Key { name, ..key.clone() };
+        if self.rules.map(key.clone()) != key || self.rules.map(followed.clone()) != followed {
+            return Err(Some(RULE_ON_INSTANTIATED_MEMBER));
+        }
+        Ok((followed, cause))
     }
 
     /// The key of a specialisation (`params` absent) or of a partial
