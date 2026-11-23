@@ -1,0 +1,4 @@
+spec: spec/edits.md §9.1, last sentence (a function with C language linkage whose scopes end in the target's name but are not the target's: m::n is not ::n; not a seed, keep)
+from: n::f
+to: g
+kind: function

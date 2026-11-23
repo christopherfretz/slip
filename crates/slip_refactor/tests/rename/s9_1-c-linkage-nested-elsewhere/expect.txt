@@ -1,0 +1,9 @@
+subjects:
+  75693c92 seed - rule=yes n::f(long)
+links:
+claims:
+  main.cpp:1:45+1 keep t0 votes=1 none
+  main.cpp:2:20+1 replace "g" t0 votes=1 none [75693c92]
+  main.cpp:3:18+1 keep t0 votes=1 none
+  main.cpp:3:27+1 replace spell(75693c92, "g") t0 votes=1 none [75693c92]
+changed:

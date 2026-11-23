@@ -1,0 +1,9 @@
+subjects:
+  95010aba seed - rule=yes n::f
+links:
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [95010aba]
+  main.cpp:3:18+1 replace "g" t0 votes=1 none [95010aba]
+  main.cpp:4:18+1 replace "g" t0 votes=1 none [95010aba]
+  main.cpp:6:15+1 replace spell(95010aba, "g") t0 votes=1 none [95010aba]
+changed:
