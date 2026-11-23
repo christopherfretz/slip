@@ -39,7 +39,10 @@ pub struct Lookups {
 impl Lookups {
     /// The lookups of `fe`, whose log Kiln recorded (`None` without one).
     /// `embed_dirs` is called only when the log has an `#embed` form.
-    pub(crate) fn of(fe: &FrontEnd<'_, '_>, embed_dirs: impl FnOnce() -> Vec<String>) -> Option<Self> {
+    pub(crate) fn of(
+        fe: &FrontEnd<'_, '_>,
+        embed_dirs: impl FnOnce() -> Vec<String>,
+    ) -> Option<Self> {
         let log = fe.lookups?;
         let mut out = Lookups {
             list: log.list.iter().map(|&d| dir(log, d).to_owned()).collect(),
@@ -62,7 +65,8 @@ impl Lookups {
                 if !l.angled {
                     push(&mut out, ".", &l.name);
                 }
-                let dirs = embeds.get_or_insert_with(|| embed_dirs.take().map_or_else(Vec::new, |f| f()));
+                let dirs =
+                    embeds.get_or_insert_with(|| embed_dirs.take().map_or_else(Vec::new, |f| f()));
                 for d in dirs.iter() {
                     push(&mut out, d, &l.name);
                 }

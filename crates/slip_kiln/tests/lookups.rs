@@ -7,6 +7,7 @@
 //! The parse changes the process's current directory: every test holds
 //! [`LOCK`] and uses absolute paths only.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -64,13 +65,20 @@ impl Dir {
         argv.push(self.at("a.cpp").into_bytes());
         let directory = self.root.join(dir);
         std::fs::create_dir_all(&directory).unwrap();
-        let command =
-            Command { directory: directory.to_str().unwrap().as_bytes().to_vec(), argv, env: vec![] };
+        let command = Command {
+            directory: directory.to_str().unwrap().as_bytes().to_vec(),
+            argv,
+            env: vec![],
+        };
         let observer = Observer {
             id: command.observer_id(),
             command,
             language: Language::Cxx,
-            main: FileRef { path: self.at("a.cpp").into_bytes(), size: 0, content: Digest([0; 32]) },
+            main: FileRef {
+                path: self.at("a.cpp").into_bytes(),
+                size: 0,
+                content: Digest([0; 32]),
+            },
             cost_hint: 1,
             origins: vec![Origin { configuration: 0, entry: 0 }],
         };
@@ -165,10 +173,7 @@ fn has_include_and_next_failed() {
 fn include_next_continues_after() {
     let d = Dir::new("next");
     d.write("a.cpp", "#include <h.h>\n");
-    d.write(
-        "one/h.h",
-        "#if __has_include_next(<m.h>)\n#endif\n#include_next <h.h>\n",
-    );
+    d.write("one/h.h", "#if __has_include_next(<m.h>)\n#endif\n#include_next <h.h>\n");
     d.write("two/h.h", "\n");
     let (one, two, three) = (d.at("one"), d.at("two"), d.at("three"));
     std::fs::create_dir_all(&three).unwrap();
@@ -232,7 +237,7 @@ fn dash_imacros_is_not_accepted() {
     assert_eq!((status, l), (Status::Rejected, None));
 }
 
-// An absolute name is not recorded (Kiln `kiln_pp/src/resolver.rs:134`):
+// An absolute name is not recorded (Kiln `kiln_pp/src/resolver.rs:132`):
 // a failed `__has_include` of one is invisible to guard L1. Pinned so
 // that the day Kiln records it, this says so (`spec/verify.md` §5.3).
 #[test]
@@ -251,7 +256,7 @@ fn lookup_after_thousands() {
     let d = Dir::new("many");
     let mut text = String::new();
     for i in 0..5000 {
-        text.push_str(&format!("#if __has_include(<n{i}.h>)\n#endif\n"));
+        writeln!(text, "#if __has_include(<n{i}.h>)\n#endif").unwrap();
     }
     d.write("a.cpp", &text);
     let inc = d.at("inc");

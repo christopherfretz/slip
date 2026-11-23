@@ -971,7 +971,10 @@ fn s5_2_pre_image_without_rules_at_step_4() {
 // post parse would read the subject's, and G1 refuse).
 #[test]
 fn s5_1_directory_rewritten() {
-    let tree = Tree::new("dir", &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", "const int k = 1;\n")]);
+    let tree = Tree::new(
+        "dir",
+        &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", "const int k = 1;\n")],
+    );
     write(&tree.post.join("inc/h.h"), "const int k = 2;\n");
     let o = tree.observer_of("a.cpp", &["-Wp,-Iinc"]);
     tree.map(&o);
@@ -985,7 +988,8 @@ fn s5_1_directory_rewritten() {
 // truth is.
 #[test]
 fn f1_failed_probe_into_the_subject() {
-    let main = "#if __has_include(<x.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+    let main =
+        "#if __has_include(<x.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
     let tree = Tree::new("f1", &[("a.cpp", main)]);
     std::fs::create_dir_all(tree.subject.join("inc")).unwrap();
     write(&tree.post.join("inc/x.h"), "\n");
@@ -1016,7 +1020,8 @@ fn f1b_shadowing_header_added() {
 // failed probe looked in a directory of the subject; refused, naming it.
 #[test]
 fn l1_failed_probe_through_a_word_not_resolved() {
-    let main = "#if __has_include(<x.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+    let main =
+        "#if __has_include(<x.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
     let tree = Tree::new("l1-probe", &[("a.cpp", main)]);
     std::fs::create_dir_all(tree.subject.join("inc")).unwrap();
     write(&tree.post.join("inc/x.h"), "\n");
@@ -1024,7 +1029,10 @@ fn l1_failed_probe_through_a_word_not_resolved() {
     tree.map(&o);
     let v = tree.verify(&o);
     let s = tree.subject.to_str().unwrap();
-    assert_eq!(reason(&v), format!("post-image: searches ../s/inc: {s} is a directory of the subject"));
+    assert_eq!(
+        reason(&v),
+        format!("post-image: searches ../s/inc: {s} is a directory of the subject")
+    );
     check_post_shard(&v);
 }
 
@@ -1104,7 +1112,9 @@ fn g4_response_file() {
         let shown = image_word(&tree, &word);
         assert_eq!(
             reason(&v),
-            format!("post-image: the command names the response file {shown}, whose words slip cannot examine")
+            format!(
+                "post-image: the command names the response file {shown}, whose words slip cannot examine"
+            )
         );
     }
 }
@@ -1120,7 +1130,10 @@ fn image_word(tree: &Tree, word: &str) -> String {
 // file system is case-sensitive.
 #[test]
 fn f3_case_insensitive_spelling() {
-    let tree = Tree::new("f3", &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", "const int k = 1;\n")]);
+    let tree = Tree::new(
+        "f3",
+        &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", "const int k = 1;\n")],
+    );
     write(&tree.post.join("inc/h.h"), "const int k = 2;\n");
     let upper = tree.base.join("S").join("inc");
     if std::fs::metadata(&upper).is_err() {
@@ -1144,7 +1157,10 @@ fn f3_case_insensitive_spelling() {
 // the rewrite: mismatch; through a word it does not resolve: L1.
 #[test]
 fn f3_symbolic_link_to_the_subject() {
-    let tree = Tree::new("f3link", &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", "const int k = 1;\n")]);
+    let tree = Tree::new(
+        "f3link",
+        &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", "const int k = 1;\n")],
+    );
     write(&tree.post.join("inc/h.h"), "const int k = 2;\n");
     std::os::unix::fs::symlink(&tree.subject, tree.base.join("link")).unwrap();
     let inc = tree.base.join("link/inc");
@@ -1166,7 +1182,10 @@ fn f3_symbolic_link_to_the_subject() {
 #[test]
 fn s5_1_resolved_word_keeps_its_spelling() {
     let h = "static_assert(sizeof(__FILE__) == sizeof(\"../s/inc/h.h\"));\nconst int k = 1;\n";
-    let tree = Tree::new("spelling", &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", h)]);
+    let tree = Tree::new(
+        "spelling",
+        &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", h)],
+    );
     let o = tree.observer_in(&tree.base.join("build"), &["-I../s/inc".to_owned()]);
     let m = tree.map(&o);
     assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);

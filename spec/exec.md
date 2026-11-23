@@ -1289,15 +1289,28 @@ impl Image {
     pub fn is_identity(&self) -> bool;
     pub fn command(&self, command: &Command) -> Command;             // the post command
     pub fn to_subject(&self, real: &[u8]) -> Vec<u8>;                // the subject path of a real path
-    pub fn under_subject(&self, real: &[u8]) -> bool;                // guard G1
+    pub fn under_subject(&self, real: &[u8]) -> bool;                // guard G1 (by identity)
+    pub fn resolver(&self) -> Resolver<'_>;                          // "under a root" by identity, with caches
     /// One parse of an observer's image with the walk's input: `Pre` is the observer's command and
     /// real paths, `Post` the post command and subject paths. `f` runs on the front end's thread when
     /// the unit has no error (`slip_digest::map::with_input`, whose `Err` is this function's). The
     /// shard is the parse task's, with the plan's observer id on either side.
     pub fn parse<R: Send>(&self, observer: &Observer, side: Side, phase: Phase, round: u64,
                           f: impl FnOnce(&slip_digest::Input<'_>) -> R + Send) -> Result<(Shard, Option<R>), String>;
+    /// `parse`, with the unit's `slip_kiln::Lookups` (guard L1) beside `f`'s result.
+    pub fn parse_looking<R: Send>(&self, observer: &Observer, side: Side, phase: Phase, round: u64,
+                                  f: impl FnOnce(&slip_digest::Input<'_>) -> R + Send)
+                                  -> Result<(Shard, Option<(R, slip_kiln::Lookups)>), String>;
 }
 pub enum Side { Pre, Post }
+/// spec/verify.md §5.1 "Under a root", one job's checks.
+pub struct Resolver<'i> { /* the roots' identities; caches by directory */ }
+impl Resolver<'_> {
+    pub fn under_subject(&mut self, real: &[u8]) -> bool;                              // G1
+    pub fn under_post(&mut self, real: &[u8]) -> bool;                                 // O2, tree form
+    pub fn looked_in_subject(&mut self, directory: &[u8], lookups: &slip_kiln::Lookups) -> Option<String>;   // L1's reason
+}
+pub fn show_path(path: &[u8]) -> String;                             // a path in a reason (spec/verify.md §5.3)
 
 // worker.rs
 pub struct MapTask;     impl Task for MapTask;                       // spec/model.md §8.5

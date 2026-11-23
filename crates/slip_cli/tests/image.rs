@@ -339,3 +339,108 @@ fn s5_1_file_spelling_in_a_post_root() {
         Image::identity().parse(&own, Side::Post, Phase::Verify, 1, |_| 1).unwrap();
     assert_eq!((shard.outcome.status, value), (Status::Diagnosed, None));
 }
+
+// §5.1 "Path-bearing words": resolved against `directory` by identity and
+// rewritten to the same place in the post tree, whatever their spelling,
+// with a `-fmacro-prefix-map=` word that keeps the spelling; values of
+// other options and words that are not paths keep the textual rule.
+#[test]
+fn s5_1_post_command_resolves() {
+    let dir = Dir::new("resolve");
+    let (s, p) = (dir.mkdir("s"), dir.mkdir("x/post-tree"));
+    dir.mkdir("s/inc");
+    dir.mkdir("s/build");
+    dir.mkdir("build");
+    dir.mkdir("ext");
+    std::os::unix::fs::symlink(&s, dir.0.join("link")).unwrap();
+    let image = Image::new(vec![RootMap { subject: bytes(&s), post: bytes(&p) }]).unwrap();
+    let (b, sp, pp) = (dir.0.to_str().unwrap(), s.to_str().unwrap(), p.to_str().unwrap());
+    let outside = Command {
+        directory: bytes(&dir.0.join("build")),
+        argv: words(&[
+            "c++",
+            "-I../s/inc",
+            "-isystem",
+            "../s/sys",
+            &format!("-I{b}/link/inc"),
+            "-I../ext",
+            "-D",
+            "../s/inc",
+            "-o",
+            "../s/a.o",
+            "-Wp,-I../s/inc",
+            "../s/a.cpp",
+        ]),
+        env: Vec::new(),
+    };
+    let post = image.command(&outside);
+    assert_eq!(post.directory, outside.directory);
+    assert_eq!(
+        post.argv,
+        words(&[
+            "c++",
+            &format!("-I{pp}/inc"),
+            "-isystem",
+            &format!("{pp}/sys"),
+            &format!("-I{pp}/inc"),
+            "-I../ext",
+            "-D",
+            "../s/inc",
+            "-o",
+            "../s/a.o",
+            "-Wp,-I../s/inc",
+            &format!("{pp}/a.cpp"),
+            &format!("-fmacro-prefix-map={pp}/inc/=../s/inc/"),
+            &format!("-fmacro-prefix-map={pp}/sys/=../s/sys/"),
+            &format!("-fmacro-prefix-map={pp}/inc/={b}/link/inc/"),
+            &format!("-fmacro-prefix-map={pp}/a.cpp=../s/a.cpp"),
+            &format!("-fmacro-prefix-map={pp}/={sp}/"),
+        ])
+    );
+    // From a directory of the subject: a relative word that stays inside
+    // names the same place from the post directory and is kept; one that
+    // leaves the subject by `..` is written where it ends, since the post
+    // root is not at the subject root's depth.
+    let inside = Command {
+        directory: bytes(&s.join("build")),
+        argv: words(&["c++", "-Iinc", "-I../../ext", "a.cpp"]),
+        env: Vec::new(),
+    };
+    let post = image.command(&inside);
+    assert_eq!(post.directory, bytes(&p.join("build")));
+    assert_eq!(
+        post.argv,
+        words(&[
+            "c++",
+            "-Iinc",
+            &format!("-I{b}/ext"),
+            "a.cpp",
+            &format!("-fmacro-prefix-map={b}/ext/=../../ext/"),
+            &format!("-fmacro-prefix-map={pp}/={sp}/"),
+        ])
+    );
+    // `directory` by identity: through the link.
+    let linked = Command { directory: bytes(&dir.0.join("link/build")), ..inside };
+    assert_eq!(image.command(&linked).directory, bytes(&p.join("build")));
+}
+
+// §5.1, guard G1's test by identity: a post root under its subject root
+// is not under the subject; another spelling of the subject root is.
+#[test]
+fn s5_1_under_subject_by_identity() {
+    let dir = Dir::new("identity");
+    let s = dir.mkdir("s");
+    let p = dir.mkdir("s/post");
+    dir.mkdir("s/inc");
+    let image = Image::new(vec![RootMap { subject: bytes(&s), post: bytes(&p) }]).unwrap();
+    assert!(image.under_subject(&bytes(&s.join("inc/h.h"))));
+    assert!(image.under_subject(&bytes(&s.join("gone/h.h"))));
+    assert!(!image.under_subject(&bytes(&p.join("h.h"))));
+    assert!(!image.under_subject(&bytes(&dir.0.join("h.h"))));
+    let upper = dir.0.join("S");
+    if std::fs::metadata(&upper).is_ok() {
+        assert!(image.under_subject(&bytes(&upper.join("inc/h.h"))));
+    } else {
+        eprintln!("s5_1_under_subject_by_identity: case: SKIPPED, the file system is case-sensitive");
+    }
+}

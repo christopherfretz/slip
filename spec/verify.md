@@ -633,7 +633,7 @@ the `Declared` and the round of the pre shard travel in the job
 
 A post-image has one of two forms. The **tree form** (M1) is a set of
 directory trees beside the subject; it is specified first, and what it
-says about roots, the post command and guard G1 is about that form only.
+says about roots, the post command and guards G1 and L1 is about that form only.
 The **overlay form** (M2; the overlay of
 [02](../docs/design/02-pipeline.md), which needs Kiln's request KF2) is
 specified at the end of this section. The steps of §5.2 are the same for
@@ -646,13 +646,25 @@ RootMap := subject: path, post: path
 
 - Each `subject` and each `post` is the real path of an existing directory
   other than `/`. No root of an image, subject or post, equals another
-  root of it or lies under one (`/a/b` lies under `/a`; `/a/bc` does not).
-  Every root is UTF-8, since it becomes part of a command line Kiln
-  reads, and no `post` contains `=` (the post command below). An image
-  that breaks one of these is refused before any job runs
+  root of it or lies under one (`/a/b` lies under `/a`; `/a/bc` does not),
+  except that a post root may lie under a subject root (its own or
+  another's). Every root is UTF-8, since it becomes part of a command line
+  Kiln reads, and no `post` contains `=` (the post command below). An
+  image that breaks one of these is refused before any job runs
   (`spec/exec.md` §8.7).
 - An image with no root map is the **identity**: the post-image is the
   subject as it is on disk now.
+- **Under a root** is decided by file identity, never by spelling. A
+  directory is under a root when it, or one of its ancestors, is the
+  root's directory, compared by device and inode; the nearest such
+  ancestor decides, so a directory under a post root that lies under a
+  subject root is under the post root and not under the subject. A file
+  is under a root when its directory is: a file's own inode is never
+  compared (a post tree made of hard links to the subject's files is
+  legitimate). A path is resolved as the kernel resolves it, component
+  by component, symbolic links followed; it stops at the first component
+  that does not exist, since what does not exist cannot change where the
+  path leads. A root whose identity cannot be read is compared as bytes.
 - The file whose real path is `s/x`, for a subject root `s` with post root
   `p`, is in the post-image the file `p/x`. A post root holds the whole
   tree: a file that is not in it is a file the edit deleted. A file under
@@ -661,19 +673,39 @@ RootMap := subject: path, post: path
   any other real path, the path itself.
 
 **The post command** is the observer's `Command` (`spec/model.md` §7)
-with:
+with `argv[0]` and `env` kept and:
 
-- `directory` (a path as the database gave it, compared as bytes) replaced
-  by its image if it is a subject root or starts with one followed by `/`,
-  else kept;
-- `argv[0]` kept;
-- in every other word of `argv`, each occurrence of a subject root that is
-  followed by `/` or by the end of the word replaced by its post root.
-  Occurrences are taken from the left and do not overlap; no two roots
-  match at one place, since none lies under another;
-- then, after the last word, one word `-fmacro-prefix-map=<post>/=<subject>/`
-  per root map, in the image's order;
-- `env` kept.
+- **Path-bearing words** resolved. A path-bearing word is an input (a
+  word that does not start with `-` or `@` and is no option's value), or
+  the path in the value of `-I`, `-iquote`, `-isystem`, `-idirafter`,
+  `-cxx-isystem`, `-include`, `-include-pch`, `-isysroot`, `-F`, `-B`
+  (joined or separate), `--sysroot` and `-resource-dir` (separate or after
+  `=`), `--embed-dir=` and `--gcc-toolchain=`. The value of any other
+  option (`-D`, `-o`, `-x`, `-Xclang` and the rest of Kiln's options that
+  take a separate value) is not one. The path is resolved against
+  `directory`: when its resolution enters a directory of the subject (it
+  looks a name up there), with no `..` left, it is rewritten to the same
+  place under that subject root's post root, whatever its spelling
+  (`-I../s/inc` from a directory outside every root, another letter case
+  on a file system that ignores case, a symbolic link to the subject); it
+  is kept as written when, relative, it already names that place from the
+  post command's `directory`. A path that enters the subject only to
+  leave it by `..` is rewritten to where it ends (kept as written, through
+  the subject, when it followed a symbolic link there). Each path so
+  rewritten adds one word `-fmacro-prefix-map=<new>=<as written>`
+  (`/`-terminated for a directory), so that the spelling of every file
+  found through it is the one it has in the post-image parsed with the
+  observer's own command; a new path with `=` in it adds none.
+- `directory` resolved the same way.
+- In every other word, and in a path-bearing word that does not reach
+  the subject, the **textual rule**: each occurrence of a subject root
+  that is followed by `/` or by the end of the word replaced by its post
+  root. Occurrences are taken from the left and do not overlap; no two
+  roots match at one place, since no subject root lies under another.
+- Then, after the last word, the words added for rewritten paths, in the
+  order of the words, each once; then one word
+  `-fmacro-prefix-map=<post>/=<subject>/` per root map, in the image's
+  order.
 
 With the identity image the post command is the observer's command.
 
@@ -689,16 +721,53 @@ trailing `/` keeps `/p` from matching `/pq`. The mapping cannot make two
 different files spell alike: it is one to one on the paths under the post
 roots, and G1 (§5.3) excludes a post-image parse that read the subject.
 
-The rule is textual because a command line is text: `-I/s/include`,
-`--sysroot=/s/x` and `-DROOT="/s/"` are all rewritten (`-DROOT="/s"` is
-not: the root is followed by `"`). So is a subject root
-that happens to occur inside a longer path (`/mnt/s/x` for the root `/s`),
-which then names nothing, or something else; and a path that reaches the
-subject without spelling a root (a relative `-I../src` from a directory
-outside every root, a symbolic link) is not rewritten at all. Neither can
-give a wrong `verified`: guard G1 (§5.3) refuses a post-image parse that
-read any file of the subject, so what was compared is the post-image or
-nothing. They cost a failed parse, a difference or an `unverifiable`.
+The textual rule rewrites what is not resolved: `-DROOT="/s/"` becomes
+`-DROOT="/p/"`, and `-DROOT="/s"` is kept (the root is followed by `"`);
+so is a subject root that happens to occur inside a longer path
+(`/mnt/s/x` for the root `/s`), which then names nothing, or something
+else. A word whose path the rewrite does not see (`-Wp,-I../s/inc`, an
+option Slip does not list) is not resolved at all.
+
+**Why a wrong `verified` cannot come of it.** What the tree form
+establishes, for the parse of step 1, is: *the post-image parse neither
+read a file nor looked for one in any directory under a subject root (and
+not under a post root), "under" decided by identity; and every file
+outside every root that both images read is the same bytes in both.* The
+parse then saw exactly what a parse of the subject with the edit applied,
+run with the observer's own command, would see: under the post roots the
+post tree, which is that subject's tree; elsewhere the files the pre-image
+saw. Each half is one guard of §5.3:
+
+| Guard | What it establishes | Pinned by (`crates/slip_cli/tests/`) |
+|---|---|---|
+| G1 | no file the parse read (`inputs`, real paths) is under a subject root, by identity | `verify_job.rs` `g1_*`, `f3_case_insensitive_spelling`; `image.rs` `s5_1_under_subject_by_identity` |
+| L1 | no directory of the search list, no directory that would hold a place a lookup tried (found or not, `#include` and `__has_include` in every form, `#embed` and `__has_embed`, `-include`), and no directory of a file read, as spelled, has its resolution look a name up under a subject root | `verify_job.rs` `l1_*`, `f3_symbolic_link_to_the_subject`; `crates/slip_kiln/tests/lookups.rs` for what the log holds |
+| G4 | no word is a response file, whose words Kiln's driver would read without Slip seeing them | `verify_job.rs` `g4_response_file` |
+| O2 | every file outside every root that both images read has the pre shard's size and digest (an image other than the identity) | `verify_job.rs` `o2_outside_drift_at_the_sums` |
+| G2, R2, G3 | the pre-image parsed at step 4 is the map phase's, and the post-image did not change during the job | `verify_job.rs` `g2_*`, `r2_*`, `g3_*` |
+
+The rewrite is what makes a verdict possible, not what makes it safe: a
+word it misses or spells wrongly leads the parse into the subject, and G1
+or L1 refuses; a path that leads somewhere else outside every root (a
+miss of the rewrite) names files that are the same in both images (O2).
+So `-DROOT="/s"` is safe not because G1 refuses something but because a
+string becomes a file name only by naming a directory or a file to the
+front end, which a lookup or a read then shows (L1, G1).
+
+**What remains outside.** A post tree written while step 1 runs is not
+seen until G3, which runs only when there is a finding to localise. Kiln's
+lookup log does not record a lookup of an absolute name
+(`kiln_pp/src/resolver.rs:132`, `:161`): a failed `__has_include` or
+`__has_embed` of an absolute name under a subject root is not seen (one
+that succeeds is a read, which G1 sees). The log does not name the
+`--embed-dir` directories; L1 takes them from Kiln's driver
+(`Args::embed_dirs`) and treats every one as tried. The driver's own
+probes of the toolchain (the GCC installation, the resource directory)
+are not lookups; the directories they give are in the search list, where
+L1 sees them, and a toolchain under a subject root is refused through
+them. A file system that ignores case can let O2 miss a file the two
+images spell differently. The command itself is the plan's (§8, "The
+command").
 
 **The overlay form.** The image is an overlay (`spec/edits.md` §7.1,
 kind `OVLY`): for each file it names, by real path, the size and content
@@ -729,10 +798,10 @@ post-image's bytes being a blob in the store.
   depend on it. A blob is checked against its digest when it is read; one
   that is absent or does not hash to its name fails the job
   (`spec/exec.md` §5.4).
-- **What guards it.** G1 guards the textual rewrite and has no meaning
-  here: there is no subject root, and reading a subject file that the
+- **What guards it.** G1 and L1 guard the tree form's rewrite and have
+  no meaning here: there is no subject root, and reading a subject file that the
   overlay does not name is reading the post-image. In its place are the
-  two guards O1 and O2 of §5.3, over the `inputs` of step 1: an overlaid
+  two guards O1 and O2 of §5.3 (with G4), over the `inputs` of step 1: an overlaid
   file was read with the overlay's content, and a file that is not
   overlaid has the content the map phase saw. A file in only one of the
   two `inputs` lists is not an error: an edit can change what is
@@ -757,10 +826,12 @@ post-image's bytes being a blob in the store.
    (§7), and the job ends. In the same parse, after the walk: the rule
    use of §9.1 when `Declared.rules` is not empty, and the checks of
    §10.2 when the overlay has obligations.
-2. Check, in this order: the pre shard is usable; guard G1 (tree form)
-   or guards O1 then O2 (overlay form); `comparable` (§3). The first
-   that fails makes the verdict `unverifiable` with the reason of §5.3,
-   and the job ends.
+2. Check, in this order: the pre shard is usable; guards G1, L1, G4 and,
+   with an image other than the identity, O2 (tree form), or guards O1
+   then O2 (overlay form); `comparable` (§3). The first that fails makes
+   the verdict `unverifiable` with the reason of §5.3, and the job ends.
+   L1 reads the lookups of the step 1 parse (Kiln's lookup log, asked for
+   by `slip_kiln::ParseOptions::lookups`).
 3. Compare group sums (`at_sums`, §4.1). If they are equal and no group
    has an indeterminate unit, the verdict is `verified` and the job ends.
 4. Otherwise, with `G` as §4.1 gives it, parse the **pre-image**: the
@@ -792,9 +863,11 @@ only withdraws: guard G3.
 | P1 | step 2: the pre shard is in the store | `pre-image: no map shard` |
 | P2 | step 2: it is `ok` | `pre-image: the map shard is <status>` |
 | P3 | step 2: it has a `digests` section | `pre-image: the map shard has no digests` |
-| G1 | step 2, tree form: no entry of the post-image parse's `inputs` is a subject root or lies under one | `post-image: read <path>, a file of the subject` (the first such entry) |
+| G1 | step 2, tree form: no entry of the post-image parse's `inputs` is under a subject root (§5.1, by identity) | `post-image: read <path>, a file of the subject` (the first such entry) |
+| L1 | step 2, tree form: the resolution from the post command's `directory` (§5.1) of each directory of the search list, of the directory that would hold each place a lookup tried, and of the directory of each file read as the front end spelled it, looks no name up in a directory under a subject root, except the name of a post root in it | `post-image: searches <dir>: <subject dir> is a directory of the subject`; `post-image: looked for <name> in <dir>: <subject dir> is …`; `post-image: read <name>: <subject dir> is …` (the first, in that order; `<subject dir>` the first directory of the subject the resolution looked in) |
+| G4 | step 2: no word of the post command after `argv[0]` is a response file (`@` and a name, as Kiln's driver reads one) | `post-image: the command names the response file <word>, whose words slip cannot examine` |
 | O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
-| O2 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay does not name and the pre shard's `inputs` also list has the size and content digest the pre shard gives it | `pre-image: <path> changed since the map phase` (the first such path, in path order) |
+| O2 | step 2, overlay form, and tree form other than the identity: every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it | `pre-image: <path> changed since the map phase` (the first such path, in path order) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
 | R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
 | G2 | step 4: its `inputs` are the pre shard's `inputs`, entry for entry | `pre-image: <path> changed since the map phase` (the first path, in path order, whose entry is not the same in both lists or is in one only) |
@@ -806,8 +879,14 @@ only withdraws: guard G3.
 they are UTF-8, else with each other byte as `\xNN`. The reason is then
 cut as §6 says.
 
-- **G1** is what makes the textual rule of §5.1 safe. With the identity
-  image there is no subject root and it holds trivially.
+- **G1, L1, G4 and O2** are the tree form's safety argument (§5.1, "Why
+  a wrong `verified` cannot come of it"). With the identity image there
+  is no root: G1 and L1 hold trivially, and O2 is not checked, since
+  every change since the map phase is then the edit compared. G4 is
+  checked with every image: Kiln's driver reads a response file from the
+  disk as it is when the job runs, and nothing records what it read
+  (`kiln_driver/src/rsp.rs`). A command from a plan names none (the plan
+  expands them, `spec/cdb.md` §4).
 - **O1 and O2** say that what was parsed is the post-image the overlay
   describes over the pre-image the map phase saw: the overlay reached
   the front end for every overlaid file it read, and no other file
@@ -1451,7 +1530,10 @@ observer `failed`, with an empty message.
   that reads it.
 - **The command.** Both images are parsed with one command, up to the
   roots (§5.1). An edit to the build (a flag, a definition, an include
-  path) is not an edit to the subject and is not verified.
+  path) is not an edit to the subject and is not verified. Nor is an edit
+  to a response file: the plan expanded it when it was made
+  (`spec/cdb.md` §4), so the observer's command holds the words it had
+  then, in both images.
 - **The environment and the clock.** `Command.env` is not applied
   (`spec/model.md` §8.4), and `__DATE__`, `__TIME__` and `__TIMESTAMP__`
   are those of one fixed instant in every parse. A program whose meaning
@@ -1973,7 +2055,19 @@ using-declaration). Those are judged by the comparison of digests alone.
   §5.3, each with its reason, G1 by an absolute `-I` into the subject and
   by a symbolic link, G2 by editing a header between the map phase and
   the job; the post shard without unit lists; the counters; `limit` and
-  `locate`; a `CompareError` as a failed job.
+  `locate`; a `CompareError` as a failed job; the five reproducers of the
+  WP-052 review (a failed probe and a shadowing header through a relative
+  `-I` from outside the roots, a response file, another letter case and a
+  symbolic link to the subject, drift outside the roots), each against the
+  truth (the subject with the edit applied, mapped); L1 by a failed probe,
+  a successful lookup and a lookup from outside both roots; the rules
+  applied to the post-image and not to the pre-image.
+- `crates/slip_kiln/tests/lookups.rs` — what Kiln's lookup log holds, each
+  form through a real parse: `#include` both forms, `#include_next`,
+  `__has_include`, `__has_include_next`, `#embed`, `__has_embed`,
+  `-include`; `-imacros` not accepted; an absolute name not recorded; a
+  lookup after five thousand; a lookup from another directory; the
+  toolchain's directories in the list.
 - `crates/slip_cli/tests/locate.rs` — §6.1 through the task: names from
   each image, the site of each planted difference at its line, the
   `what` of a reference and of an indeterminate unit, G3.
@@ -2140,9 +2234,12 @@ using-declaration). Those are judged by the comparison of digests alone.
   the report only, and a later `slip verify` with the same round number
   replaces the shards. Proposed: the run record's `run` section gains
   them.
-- **The tree image rewrites text** (§5.1). G1 makes it safe; how often it
-  costs an `unverifiable` on real build trees is to be seen on the
-  corpus. The overlay (KF2) rewrites nothing.
+- **The tree image rewrites commands** (§5.1). G1, L1, G4 and O2 make it
+  safe; how often a word it does not resolve costs an `unverifiable` on
+  real build trees is to be seen on the corpus. The overlay (KF2)
+  rewrites nothing. Kiln could close the two gaps L1 has: record
+  lookups of absolute names, and name the `--embed-dir` directories in
+  the log.
 - **In place.** The identity image compares the tree as it is with the
   map shards, and can only answer `verified` or, through G2,
   `unverifiable`. A copy of the pre-image kept at map time (or the

@@ -100,6 +100,12 @@ fn at_or_under(a: &[u8], b: &[u8]) -> bool {
     a.strip_prefix(b).is_some_and(|rest| rest.is_empty() || rest[0] == b'/')
 }
 
+/// A root may lie under another only when it is a post root and the other
+/// a subject root (§5.1).
+fn may_nest(inner_post: bool, outer_post: bool) -> bool {
+    inner_post && !outer_post
+}
+
 /// The checks of one root (§5.1), in the order of the variants.
 fn check_root(root: &[u8], post: bool) -> Result<(), ImageError> {
     if root.first() != Some(&b'/') {
@@ -171,10 +177,10 @@ impl Image {
                     return Err(ImageError::Duplicate(a.to_vec()));
                 }
                 // A post root may lie under a subject root (§5.1).
-                if at_or_under(a, b) && !(a_post && !b_post) {
+                if at_or_under(a, b) && !may_nest(a_post, b_post) {
                     return Err(ImageError::Nested { inner: a.to_vec(), outer: b.to_vec() });
                 }
-                if at_or_under(b, a) && !(b_post && !a_post) {
+                if at_or_under(b, a) && !may_nest(b_post, a_post) {
                     return Err(ImageError::Nested { inner: b.to_vec(), outer: a.to_vec() });
                 }
             }
@@ -271,10 +277,12 @@ impl Image {
         let directory = match r.resolve_part(&command.directory, root, root) {
             Part::Rewrite(new) => new,
             Part::Keep => command.directory.clone(),
-            Part::Textual => match self.maps.iter().find(|m| at_or_under(&command.directory, &m.subject)) {
-                Some(m) => [&m.post[..], &command.directory[m.subject.len()..]].concat(),
-                None => command.directory.clone(),
-            },
+            Part::Textual => {
+                match self.maps.iter().find(|m| at_or_under(&command.directory, &m.subject)) {
+                    Some(m) => [&m.post[..], &command.directory[m.subject.len()..]].concat(),
+                    None => command.directory.clone(),
+                }
+            }
         };
         let (from, to) = (bytes_path(&command.directory), bytes_path(&directory));
         let mut argv: Vec<Vec<u8>> = Vec::with_capacity(command.argv.len() + self.maps.len());
@@ -298,7 +306,8 @@ impl Image {
                         _ => b"",
                     };
                     if !new.contains(&b'=') {
-                        let map = [b"-fmacro-prefix-map=", &new[..], slash, b"=", part, slash].concat();
+                        let map =
+                            [b"-fmacro-prefix-map=", &new[..], slash, b"=", part, slash].concat();
                         if !back.contains(&map) {
                             back.push(map);
                         }
@@ -426,7 +435,7 @@ impl Image {
         round: u64,
         lookups: bool,
         f: impl FnOnce(&Input<'_>) -> R + Send,
-    ) -> Result<(Shard, Option<(R, Option<Lookups>)>), String> {
+    ) -> Result<Parsed<R>, String> {
         let post;
         let parsed = match side {
             Side::Pre => observer,
@@ -453,6 +462,13 @@ impl Image {
         Ok((shard, value))
     }
 }
+
+/// A parse's shard, and `f`'s result with the lookups when they were asked
+/// for.
+type Parsed<R> = (Shard, Option<(R, Option<Lookups>)>);
+
+/// A directory's device and inode, when it can be read.
+type Identity = Option<(u64, u64)>;
 
 /// How a path-bearing word's path is to be rewritten
 /// ([`Resolver::resolve_part`]).
@@ -510,9 +526,29 @@ const EQ_PATHS: &[(&[u8], PathKind)] =
 /// `JOINED_OR_SEPARATE`, `SEPARATE_OR_EQ` and `SEPARATE`, the others, and
 /// the pass-through options): the value is not an input.
 const SEPARATE_OTHER: &[&[u8]] = &[
-    b"-D", b"-U", b"-MF", b"-MJ", b"-MQ", b"-MT", b"-L", b"-l", b"-o", b"-x", b"-target-feature",
-    b"-target", b"--target", b"-std", b"--std", b"-dumpdir", b"-ftrapv-handler", b"-Xclang",
-    b"-mllvm", b"-Xlinker", b"-Xpreprocessor", b"-Xassembler", b"-arch",
+    b"-D",
+    b"-U",
+    b"-MF",
+    b"-MJ",
+    b"-MQ",
+    b"-MT",
+    b"-L",
+    b"-l",
+    b"-o",
+    b"-x",
+    b"-target-feature",
+    b"-target",
+    b"--target",
+    b"-std",
+    b"--std",
+    b"-dumpdir",
+    b"-ftrapv-handler",
+    b"-Xclang",
+    b"-mllvm",
+    b"-Xlinker",
+    b"-Xpreprocessor",
+    b"-Xassembler",
+    b"-arch",
 ];
 
 /// The path in `word`, as the offset where it starts and what it names:
@@ -616,7 +652,7 @@ pub struct Resolver<'i> {
     maps: &'i [RootMap],
     /// Each map's subject and post root identity; `None` when it cannot be
     /// read (the root then falls back to the textual rule and bytes).
-    ids: Vec<(Option<(u64, u64)>, Option<(u64, u64)>)>,
+    ids: Vec<(Identity, Identity)>,
     regions: HashMap<PathBuf, Region>,
     kinds: HashMap<PathBuf, Kind>,
     walks: HashMap<PathBuf, Option<PathBuf>>,
@@ -634,7 +670,8 @@ impl Resolver<'_> {
         let depth = dir.components().count().saturating_sub(1);
         let r = if id.is_some() && self.ids.iter().any(|ids| ids.1 == id) {
             Region::Post { depth }
-        } else if let Some(map) = id.and_then(|id| self.ids.iter().position(|ids| ids.0 == Some(id)))
+        } else if let Some(map) =
+            id.and_then(|id| self.ids.iter().position(|ids| ids.0 == Some(id)))
         {
             Region::Subject { map, depth }
         } else {

@@ -265,15 +265,10 @@ pub fn parse_observer_with<R: Send>(
     line.splice(1..1, words.iter().map(|&w| w.to_owned()));
     let program = program(&argv0);
     let dir: &Path = &directory;
-    let embed_line = (&program, &line);
+    let (program_ref, line_ref) = (&program, &line);
     let see = move |fe: &FrontEnd<'_, '_>| -> Result<(Vec<FileRef>, u64, R), String> {
         let (inputs, buffers) = collect_inputs(fe, dir)?;
-        // The `--embed-dir` directories as Kiln's driver parses them (the
-        // log does not name them): the line as `run_front_end` reads it.
-        let lookups = Lookups::of(fe, || {
-            let (program, line) = embed_line;
-            Args::parse_as(program, &kiln_driver::rsp::expand(line)).embed_dirs
-        });
+        let lookups = Lookups::of(fe, || embed_dirs(program_ref, line_ref));
         let unit = Unit {
             ast: fe.ast,
             sm: fe.sm,
@@ -288,10 +283,7 @@ pub fn parse_observer_with<R: Send>(
         let value = f(&unit);
         Ok((inputs, fe.tokens, value))
     };
-    let mut fe_options = FrontEndOptions::default();
-    fe_options.pp_record = options.pp_record;
-    fe_options.record_lookups = options.lookups;
-    let report = match run_front_end(&program, &line, fe_options, see) {
+    let report = match run_front_end(&program, &line, fe_options(options), see) {
         Ok(report) => report,
         Err(e @ (FrontEndError::NotSyntaxOnly | FrontEndError::NotOneInput)) => {
             return Ok((shard(rejected(&e.to_string()), None), None));
@@ -331,6 +323,21 @@ pub fn parse_observer_with<R: Send>(
         Some((inputs, tokens, value)) => Ok((shard(outcome, Some((inputs, tokens))), Some(value))),
         None => Ok((shard(outcome, None), None)),
     }
+}
+
+/// Kiln's options for `options`.
+fn fe_options(options: ParseOptions) -> FrontEndOptions {
+    let mut fe = FrontEndOptions::default();
+    fe.pp_record = options.pp_record;
+    fe.record_lookups = options.lookups;
+    fe
+}
+
+/// The `--embed-dir` directories of the front end's line as Kiln's driver
+/// parses them (the lookup log does not name them), from the line as
+/// `run_front_end` reads it.
+fn embed_dirs(program: &str, line: &[String]) -> Vec<String> {
+    Args::parse_as(program, &kiln_driver::rsp::expand(line)).embed_dirs
 }
 
 fn rejected(message: &str) -> Outcome {
