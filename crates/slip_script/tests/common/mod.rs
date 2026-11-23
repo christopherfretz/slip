@@ -133,24 +133,24 @@ pub fn subject() -> FakeSubject {
     let g = FakeSubject::GLOBAL;
     let t = f.file("/src/t.cpp", SUBJECT, true);
     let lib = f.entity(FakeEntity::namespace("lib", g));
-    let foo = f.entity(FakeEntity {
+    let lib_foo = f.entity(FakeEntity {
         key: Some(Digest([7; 32])),
         ..FakeEntity::function("foo", lib, Vec::new())
     });
-    let fa = f.entity(FakeEntity::parameter("a", foo));
-    let fb = f.entity(FakeEntity::parameter("b", foo));
-    f.entities[foo.0 as usize].parameters = Some(vec![fa, fb]);
-    let bar = f.entity(FakeEntity {
+    let fa = f.entity(FakeEntity::parameter("a", lib_foo));
+    let fb = f.entity(FakeEntity::parameter("b", lib_foo));
+    f.entities[lib_foo.0 as usize].parameters = Some(vec![fa, fb]);
+    let lib_bar = f.entity(FakeEntity {
         key: Some(Digest([8; 32])),
         ..FakeEntity::function("bar", lib, Vec::new())
     });
-    let ba = f.entity(FakeEntity::parameter("a", bar));
-    let bb = f.entity(FakeEntity::parameter("b", bar));
-    f.entities[bar.0 as usize].parameters = Some(vec![ba, bb]);
+    let ba = f.entity(FakeEntity::parameter("a", lib_bar));
+    let bb = f.entity(FakeEntity::parameter("b", lib_bar));
+    f.entities[lib_bar.0 as usize].parameters = Some(vec![ba, bb]);
     let main = f.entity(FakeEntity::function("main", g, Vec::new()));
     let n = |f: &FakeSubject, needle, nth| Some(f.range_nth(t, needle, nth));
     for (entity, needle, nth) in
-        [(lib, "lib", 0), (foo, "foo", 0), (bar, "bar", 0), (main, "main", 0)]
+        [(lib, "lib", 0), (lib_foo, "foo", 0), (lib_bar, "bar", 0), (main, "main", 0)]
     {
         let name = n(&f, needle, nth);
         f.declaration(FakeDeclaration {
@@ -162,12 +162,12 @@ pub fn subject() -> FakeSubject {
     let callee = f.reference(FakeReference {
         name: n(&f, "foo", 1),
         extent: n(&f, "lib::foo", 0),
-        ..FakeReference::to(foo, "foo")
+        ..FakeReference::to(lib_foo, "foo")
     });
     let first = f.expressions.len() as u32;
     f.expression(FakeExpression {
         call: Some(FakeCall {
-            callee: foo,
+            callee: lib_foo,
             reference: callee,
             arguments: vec![Expression(first + 1), Expression(first + 2)],
         }),

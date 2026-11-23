@@ -20,6 +20,7 @@ const Q: &str = "slip::lookup(\"lib::foo\").size()";
 
 /// The contexts of §2.6 rules 2 and 3: (name, text, Kiln's diagnostic).
 /// `{q}` is the host call.
+#[allow(clippy::too_many_lines, reason = "one row per context of §2.6")]
 fn contexts() -> Vec<(&'static str, String, &'static str)> {
     let t = |s: &str| s.replace("{q}", Q);
     vec![

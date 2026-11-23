@@ -129,14 +129,14 @@ fn s2_2_the_encoding_is_pinned() {
     assert_eq!(TRANSFORM_ID_TAG, "slip.transform.v0");
     let files = [ReadFile { path: b"/t.cpp".to_vec(), digest: content_digest(b"t") }];
     let id = transform_id(
-        202611,
+        202_611,
         &words(&["-std=c++26", "/t.cpp"]),
         "x86_64-unknown-linux-gnu",
         b"P",
         &files,
     );
     let mut e = slip_model::wire::Encoder::new();
-    e.uv(202611).count(2).str("-std=c++26").str("/t.cpp").str("x86_64-unknown-linux-gnu");
+    e.uv(202_611).count(2).str("-std=c++26").str("/t.cpp").str("x86_64-unknown-linux-gnu");
     e.digest(&content_digest(b"P")).count(1).bytes(b"/t.cpp").digest(&content_digest(b"t"));
     assert_eq!(id, slip_model::hash::tagged_digest("slip.transform.v0", e.as_bytes()));
     assert_eq!(id.to_string(), PINNED);
