@@ -30,7 +30,7 @@
 //! class or function (`spec/landed/digest/WP-113.md`, "The chain"), whose
 //! unit holds this row, and does not get it.
 
-use slip_kiln::kiln::ast::attr::AttrKind;
+use slip_kiln::kiln::ast::attr::{AttrKind, AttrNode};
 use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::linkage::Linkage;
 use slip_kiln::kiln::ast::{AttrId, DeclId};
@@ -67,10 +67,9 @@ fn at_namespace_scope(w: &Walk<'_>, e: DeclId) -> bool {
     }
     match ast.semantic_parent(rep) {
         None => true,
-        Some(c) => matches!(
-            ast.decls.get(c).kind(),
-            DeclKind::TranslationUnit | DeclKind::Namespace
-        ),
+        Some(c) => {
+            matches!(ast.decls.get(c).kind(), DeclKind::TranslationUnit | DeclKind::Namespace)
+        }
     }
 }
 
@@ -201,5 +200,5 @@ fn attr_of(w: &Walk<'_>, x: DeclId, kind: AttrKind) -> Option<u32> {
         .iter::<AttrId>(ast.attrs.of_decl(x))
         .map(|a| ast.attrs.get(a))
         .find(|a| a.kind == kind)
-        .map(|a| a.visibility())
+        .map(AttrNode::visibility)
 }
