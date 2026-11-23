@@ -656,7 +656,7 @@ int f(const O&);
 int g(O);
 int g2(int, O, int);
 int h(int);
-int use(O x) { return f({x}) + g({x}) + g2(1, {x}, 2) + f(x) + h(1 /* one */) + h((2)); }
+int use(O x) { return f({x}) + g({x}) + g({x,}) + g2(1, {x}, 2) + f(x) + h(1 /* one */) + h((2)); }
 ";
     with(&[("main.cpp", src)], |_, s| {
         assert_eq!(calls(s, "f"), some(&["f({x})", "f(x)"]));
@@ -669,6 +669,7 @@ int use(O x) { return f({x}) + g({x}) + g2(1, {x}, 2) + f(x) + h(1 /* one */) + 
         let want = vec![
             none.clone(),
             some(&["x"]),
+            none.clone(),
             none,
             vec![Some("1".to_owned()), None, Some("2".to_owned())],
             some(&["1"]),
@@ -694,6 +695,9 @@ int use(V d, V* p) { return k(d.twice<7>) + k(p->twice<2>) + k(d.one) + k(V::twi
     with(&[("main.cpp", src)], |_, s| {
         let a: Vec<_> = calls_of(s, one(s, "k")).into_iter().flat_map(|x| args(s, x)).collect();
         assert_eq!(a, vec![None, None, Some("d.one".to_owned()), None]);
+        let x = calls_of(s, one(s, "k"))[0];
+        let why = s.no_extent(s.arguments(x).unwrap()[0]).unwrap();
+        assert_eq!(why.reason, "specialisation");
     });
 }
 
@@ -1345,16 +1349,28 @@ fn begin_explicit_object_calls(n: &mut Node) {
         return;
     }
     let mut callee = &n.inner[0];
-    while matches!(callee.kind.as_str(), "ImplicitCastExpr" | "ParenExpr") && callee.inner.len() == 1 {
+    while matches!(callee.kind.as_str(), "ImplicitCastExpr" | "ParenExpr")
+        && callee.inner.len() == 1
+    {
         callee = &callee.inner[0];
     }
-    let object = &n.inner[1];
-    if let (At::File(f, at, _), At::File(g, lo, _)) = (&callee.begin, &object.begin)
+    let object = first_at(&n.inner[1]).clone();
+    if let (At::File(f, at, _), At::File(g, lo, _)) = (&callee.begin, &object)
         && f == g
         && lo < at
         && matches!(callee.kind.as_str(), "DeclRefExpr" | "MemberExpr")
     {
-        n.begin = object.begin.clone();
+        n.begin = object;
+    }
+}
+
+/// Where clang begins `n`: its begin, or, for a node clang gives none
+/// (the implicit `*p` of an explicit object called through `p->`), its
+/// first child's. A default argument's children are written elsewhere.
+fn first_at(n: &Node) -> &At {
+    match (&n.begin, n.inner.first()) {
+        (At::None, Some(c)) if n.kind != "CXXDefaultArgExpr" => first_at(c),
+        (b, _) => b,
     }
 }
 
@@ -1371,7 +1387,7 @@ fn clang_calls(n: &Node, out: &mut ClangCalls) {
         {
             // An explicit object argument precedes the callee.
             let object = |a: &&Node| {
-                matches!((&a.begin, &callee.begin), (At::File(g, lo, _), At::File(h, at, _))
+                matches!((first_at(a), &callee.begin), (At::File(g, lo, _), At::File(h, at, _))
                     if g == f && h == f && lo < at)
             };
             let written: Vec<&Node> =
@@ -1651,7 +1667,7 @@ fn item7_differential_against_clang() {
         d.clang_macro,
         d.differences.len()
     );
-    for u in d.unmatched_at.iter().take(40) {
+    for u in d.unmatched_at.iter().take(100) {
         eprintln!("no clang call: {u}");
     }
     assert!(d.compared > 1000, "only {} extents compared", d.compared);
@@ -1711,25 +1727,25 @@ fn measure_llvm_null_extents() {
         let (shard, run) = slip_kiln::parse_observer_with(&observer, Phase::Map, 0, options, |u| {
             let owned = |_: &[u8]| true;
             let s = KilnSubject::new(u, &owned);
-            let t = std::time::Instant::now();
-            let c = s.extent_census();
-            let elapsed = t.elapsed();
+            let started = std::time::Instant::now();
+            let census = s.extent_census();
+            let elapsed = started.elapsed();
             // `SLIP_WP086_SAMPLE=n`: where the first n calls of each cause
             // of a null extent are.
-            let n: usize =
+            let sample: usize =
                 std::env::var("SLIP_WP086_SAMPLE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-            let mut shown: std::collections::BTreeMap<String, usize> = Default::default();
+            let mut shown = std::collections::BTreeMap::<String, usize>::new();
             for (x, _) in s.call_sites() {
                 if let Some(w) = s.no_extent(x) {
-                    let k = format!("{:?} {}", w.kind, w.reason);
-                    let seen = shown.entry(k.clone()).or_default();
-                    if *seen < n {
+                    let cause = format!("{:?} {}", w.kind, w.reason);
+                    let seen = shown.entry(cause.clone()).or_default();
+                    if *seen < sample {
                         *seen += 1;
-                        println!("  sample {k}: {}", s.display(Value::Expression(x)));
+                        println!("  sample {cause}: {}", s.display(Value::Expression(x)));
                     }
                 }
             }
-            (c, elapsed)
+            (census, elapsed)
         })
         .expect("the unit parses");
         println!("{unit}: outcome {:?}", shard.outcome);
