@@ -790,12 +790,13 @@ fn a_byte_order_mark_is_skipped() {
 #[allow(dead_code, reason = "only `read` and `table` are used here")]
 mod digest_rules;
 
-// For three cases of `crates/slip_digest/tests/rules/` whose `rules.txt`
-// has only `relocate` lines, each line's parent mapped by the lines above
-// it (where the two resolvers agree by construction: `declare` maps a
-// parent under the lines above, the suite under the whole table), the
-// `RuleTable` `declare::resolve` makes from the case's two images is the
-// one the suite's resolver makes, by `id()`; and the table verifies.
+// For cases of `crates/slip_digest/tests/rules/` whose `rules.txt` has
+// only `relocate` lines (both resolvers map a line's new parent under the
+// lines above it, `spec/verify.md` §2.3), the `RuleTable`
+// `declare::resolve` makes from the case's two images is the one the
+// suite's resolver makes, by `id()`; and the table verifies. Among them
+// pitfall row R16's good tree (`pitfalls/r16-good`) and a member of a
+// class template's instantiation (`instantiated/`).
 #[test]
 fn the_rules_suite_resolves_alike() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../slip_digest/tests/rules");
@@ -803,6 +804,8 @@ fn the_rules_suite_resolves_alike() {
         "verify/relocated-namespace",
         "parents/mapped-parent",
         "disc/overload-renamed-relocated-parameter",
+        "pitfalls/r16-good",
+        "instantiated/member-of-class-template-renamed",
     ] {
         let dir = root.join(case);
         let file = |f: &str| {

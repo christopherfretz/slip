@@ -66,9 +66,16 @@ A relocation "the entity with key `K = (parent, kind, name, disc)` is now
 Rule { parent: map(parent'), kind, name: name', disc,  to_parent: parent, to_name: name }
 ```
 
-where `map(parent')` is the new parent as the walk maps it under the same
-rule table (`parent'` itself if no rule reaches it; `root`, `c_linkage` and
-`builtin` map to themselves). Both parents of a rule are `Parent`s
+where `map(parent')` is the new parent as the walk maps it under the rules
+that undo the relocations made before this one (`parent'` itself if no
+rule reaches it; `root`, `c_linkage` and `builtin` map to themselves). The
+walk applies each rule to a key whose parent is already mapped, so a rule
+for a member of a relocated parent names the parent as the parent's own
+rule maps it; `slip declare` makes it so by mapping a `relocate` line's new
+parent under the lines above it (§2.3): a line whose new parent another
+line relocates comes after that line
+(`crates/slip_digest/tests/rules/parents/mapped-parent`, and
+`mapped-parent-reversed`, whose lines in the other order give differences). Both parents of a rule are `Parent`s
 (`digest.md` §3.4). The walk of the
 post-image applies the rules bottom-up (`digest.md` §3.4), so the relocated
 entity, its members, and every type and signature that mentions it are
@@ -98,6 +105,30 @@ needs no map.
   (`crates/slip_digest/tests/rules/unnamed/typedef-renamed-no-class-rule`,
   `typedef-renamed-with-class-rule`; native rename makes that rule,
   `edits.md` §9.2).
+- **No rule matches a specialisation.** A rule of kind `specialisation`
+  or `partial_specialisation` is refused (`RULE_ON_SPECIALISATION`): a
+  specialisation's key follows its template's (`digest.md` §3.4), and the
+  rule would key it apart from its template, saying that a use of one
+  template's specialisation is a use of another's
+  (`tests/rules/wrong/named-only-spec-reparented-defined-templates`,
+  `named-only-spec-reparented-relocate-form`: before, both equal). A
+  member of a class template's implicit instantiation is the same: its
+  key follows the pattern member's, and a rule that matches the member
+  itself makes its key indeterminate (`tests/rules/instantiated/`).
+- **No rule moves an entity into or out of the unnamed namespace by
+  renaming a namespace.** A rule of kind `namespace` whose `name` is the
+  unnamed namespace's and whose `to_name` is not, or the reverse, is
+  refused (`RULE_UNNAMED_NAMESPACE`): the namespace's members change
+  linkage, which no digest in the member's unit holds (below)
+  (`tests/rules/wrong/unnamed-namespace-renamed-to-named`,
+  `named-namespace-renamed-to-unnamed`,
+  `named-namespace-merged-onto-unnamed`: before, all equal, with
+  internal symbols made external or the reverse).
+
+`Rule::validate` refuses both, so every table does, whichever way it is
+made: `RuleTable::new` and the reader of the declared container
+(`RuleTable::from_sorted`) call it on every rule (`RuleError::InvalidName`,
+`SortError::Invalid`).
 
 **Rules rename owned entities only.** A run has files it may edit and
 files it may not (`spec/edits.md` §2.1; `Declared.files`). A rule that
@@ -178,10 +209,13 @@ indeterminate, `φ` is injective except on merged namespaces. Equal unit
 sets then say that `φ` is a bijection between the entities of `B` and those
 of `A` (namespaces aside) under which every unit's content is the same,
 every reference inside a unit included, because references are written as
-mapped keys. That is an isomorphism of the two resolved programs; the rules
-only choose which isomorphism is tried. A wrong or missing rule cannot make
-two different programs compare equal: it changes which keys the post-image
-gets, and any key that then fails to line up is a reported difference.
+mapped keys. That is an isomorphism of the two resolved programs, as far
+as the units hold them (not the linkage and visibility an entity takes
+from its namespaces, below; nor what §8 lists); the rules only choose
+which isomorphism is tried. Within that, a wrong or missing rule cannot
+make two different programs compare equal: it changes which keys the
+post-image gets, and any key that then fails to line up is a reported
+difference.
 
 `φ` is over every entity the walk gives a key, not over units only: an
 entity with no unit is still written into the references to it by its
@@ -199,9 +233,32 @@ though the programs differ).
 
 Two namespaces sharing a key is the one place `φ` is not injective. A
 namespace's unit holds only what the namespace itself is (`digest.md` §5),
-its members are units of their own with keys that do collide if two of
-them coincide, and no generated code depends on which namespace an entity
-is in except through names, which is what a relocation declares.
+and its members are units of their own with keys that do collide if two
+of them coincide. Generated code depends on which namespace an entity is
+in through names, which is what a relocation declares, and **through two
+properties the member takes from its enclosing namespaces**, which it
+does not declare:
+
+- **linkage**: a member of the unnamed namespace, or of a namespace
+  within it, has internal linkage ([basic.link]/4); moved out, it has
+  the linkage its declaration gives it (an inline function or a class's
+  member functions become weak external symbols, a variable a global
+  one), and moved in, internal;
+- **visibility**: `__attribute__((visibility(…)))` on a namespace sets
+  the default visibility of the symbols of its members.
+
+Today's digest holds neither in the member's unit: the member's unit
+does not record the linkage or visibility it takes from its namespaces,
+and a namespace's unit is not part of its members'. So a relocation of a
+member between two namespaces that differ in either is compared equal
+although the object code differs (`tests/rules/needs-wp113/`, pending,
+with the symbols each case changes). The rule above closes the one form
+that a rule of kind `namespace` makes; relocating a member out of the
+unnamed namespace, into it, or between namespaces of different
+visibility is open until WP-113 writes both properties into the member's
+unit. Until then the argument of this section holds for the post-image
+only where no relocated entity changes either property, and `slip
+verify` does not show that it does not.
 
 The argument is about one translation unit. The ownership rule above is
 what makes the declared isomorphism one that the rest of the program

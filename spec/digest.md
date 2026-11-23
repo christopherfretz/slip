@@ -320,10 +320,34 @@ the first use of a rule. `parent` is in mapped terms (`verify.md` §2.1).
 and the mapped id of an entity is computed bottom-up: map its parent and
 everything in its discriminator first; if a rule matches the resulting
 (parent, kind, name, disc), replace parent and name by the rule's; hash.
-A key whose name is another entity's takes that entity's mapped name: a
-specialisation and a partial specialisation are named by their template
-(§3.2), so a rule that renames a template renames them with it, as their
-parent, the template's key, already is (WP-103).
+Three kinds of key take another entity's name as the rules map it
+(WP-103), so that one rule renames what the source cannot rename apart:
+
+- a specialisation and a partial specialisation are named by their
+  template (§3.2): a rule that renames a template renames them with it,
+  as their parent, the template's key, already is. No rule matches a
+  specialisation itself (`verify.md` §2.1);
+- a member instantiated from a pattern member (a member of an implicit or
+  explicit instantiation of a class template, a member template's
+  instantiation, an explicit specialisation of a member), the link Kiln
+  records as `instantiated_from`, is named by the pattern member, through
+  the whole chain of patterns (a member of a nested class template's
+  instantiation takes its pattern's name, which takes its own pattern's).
+  A member of an explicit specialisation of the class is declared in that
+  specialisation, has no such link, and keeps its own name: it needs its
+  own rule. A rule that matches an instantiated member itself, under its
+  plain or its followed name, makes its key indeterminate
+  (`key/rule-on-instantiated-member`): no source renames an
+  instantiation's member apart from its pattern's;
+- a decomposition is named by its first binding (digest-kinds §5.2),
+  as the rules map the binding.
+
+Every other name made from another entity's holds the plain name, as
+written in the post-image: `unnamed_by` (an unnamed class or enumeration
+named by a typedef or a declarator, `verify.md` §2.1), an unnamed field
+or variable named by its anonymous class, and a using-shadow, which has
+the name it is written with (its discriminator, the key of the entity it
+stands for, is mapped as any key is).
 With `R` empty this is the identity, which is what the map phase uses.
 Verification digests the post-image with the rules that undo the declared
 relocations, so that a relocated entity, every member of it, every type

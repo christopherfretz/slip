@@ -271,6 +271,10 @@ pub const RULE_ON_SPECIALISATION: &str =
 /// and a named one (`spec/verify.md` §2.1).
 pub const RULE_UNNAMED_NAMESPACE: &str =
     "a rule may not rename the unnamed namespace to a named one or a named one to it";
+/// The `what` of a rule of kind `resolved` or `default_argument`
+/// (`spec/verify.md` §2.1).
+pub const RULE_ON_PART: &str =
+    "a rule may not match a resolved or default argument unit: its key follows its owner's";
 
 impl Name {
     /// Its number in digest-kinds §3.2.
@@ -534,7 +538,9 @@ impl Rule {
     /// or `partial_specialisation`, whose key follows its template's and
     /// is never matched directly; one of kind `namespace` whose `name`
     /// and `to_name` differ in being the unnamed namespace's (the linkage
-    /// of every member would change, which no unit holds).
+    /// of every member would change, which no unit holds); one of kind
+    /// `resolved` or `default_argument`, a part whose key follows its
+    /// owner's (`Parent::Unit` of the owner's mapped key).
     ///
     /// Every table passes here: [`RuleTable::new`], and the reader of a
     /// container's rules (`RuleTable::from_sorted`), so a table no tool
@@ -549,6 +555,9 @@ impl Rule {
             && (self.name == Name::Anonymous) != (self.to_name == Name::Anonymous)
         {
             return Err(RULE_UNNAMED_NAMESPACE);
+        }
+        if matches!(self.kind, KeyKind::Resolved | KeyKind::DefaultArgument) {
+            return Err(RULE_ON_PART);
         }
         Ok(())
     }
@@ -720,6 +729,8 @@ mod tests {
             (rule(KeyKind::PartialSpecialisation, id("W"), id("W")), RULE_ON_SPECIALISATION),
             (rule(KeyKind::Namespace, id("detail"), Name::Anonymous), RULE_UNNAMED_NAMESPACE),
             (rule(KeyKind::Namespace, Name::Anonymous, id("detail")), RULE_UNNAMED_NAMESPACE),
+            (rule(KeyKind::DefaultArgument, Name::Parameter(0), Name::Parameter(0)), RULE_ON_PART),
+            (rule(KeyKind::Resolved, Name::Property(1), Name::Property(1)), RULE_ON_PART),
         ];
         for (r, what) in refused {
             assert_eq!(
