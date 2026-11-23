@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::kiln::{Descs, From, UNTABLED};
-use super::{Base, Class, Decision, Doc, Encoding, Kind, Number, Pin, Row, Type};
+use super::{Base, Class, Decision, Doc, Encoding, Kind, Number, Pin, Row, Type, WALK_BASE};
 
 fn at(line: usize, what: impl std::fmt::Display) -> String {
     format!("digest-kinds.md:{line}: {what}")
@@ -39,6 +39,10 @@ pub fn grammar(doc: &Doc) -> Vec<String> {
             ranges.push((b + 1, b + n.max(1), t.line, &t.short));
         }
     }
+    if !doc.walk.is_empty() {
+        let n = u32::try_from(doc.walk.len()).unwrap_or(u32::MAX);
+        ranges.push((WALK_BASE + 1, WALK_BASE + n, doc.walk[0].line, "the walk"));
+    }
     ranges.sort_unstable();
     for w in ranges.windows(2) {
         if w[1].0 <= w[0].1 {
@@ -56,7 +60,27 @@ pub fn grammar(doc: &Doc) -> Vec<String> {
     {
         numbers(what, list, &mut e);
     }
+    walk(&doc.walk, &mut e);
     e
+}
+
+/// §1.7: tags from `WALK_BASE + 1` in order, names unique.
+fn walk(list: &[Number], e: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    for (k, n) in list.iter().enumerate() {
+        let want = WALK_BASE + 1 + u32::try_from(k).unwrap_or(u32::MAX - WALK_BASE - 1);
+        if n.value != want {
+            e.push(at(
+                n.line,
+                format!("the walk's tag {} is out of order: {want} expected", n.value),
+            ));
+        }
+        if let Some(name) = &n.name
+            && !seen.insert(name)
+        {
+            e.push(at(n.line, format!("the walk's row `{name}` is listed twice")));
+        }
+    }
 }
 
 /// §3.1, §3.2 and §11.1: numbers from 1 in order, names unique.
