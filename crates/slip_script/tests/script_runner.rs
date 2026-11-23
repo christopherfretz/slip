@@ -586,7 +586,7 @@ fn wp090_a_host_failure_is_never_rendered() {
 // Each group's thread has the stack the driver requires (WP-089).
 #[test]
 fn wp090_a_group_thread_has_the_drivers_stack() {
-    assert!(script_test::GROUP_STACK >= driver::STACK);
+    const { assert!(script_test::GROUP_STACK >= driver::STACK) };
 }
 
 // libtest's filter rule: in the name, or with --exact the name.
