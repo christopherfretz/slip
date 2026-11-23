@@ -1,0 +1,3 @@
+# WP-131 item 1: a rule whose name is a conversion name (a relocate of a conversion function with `=`, the one declared change that gives one) matches the member's own key, as for an entity that follows no pattern; before WP-131 it matched the plain key and gave another key than following (operator T), key/rule-on-instantiated-member.
+relocate a::detail => a :: impl
+relocate [function] W<bool>::operator bool() const => W<bool> :: =

@@ -1,0 +1,2 @@
+# WP-131 item 2: a conversion function template of a class template: the member template's instantiation keeps its own conversion name
+relocate a::detail => a :: impl
