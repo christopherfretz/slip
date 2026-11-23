@@ -1,0 +1,2 @@
+# WP-134 item 3 (the review of WP-131): explicit specialisations of members of an instantiation (a member function, a conversion function, a member class with its own conversion function, a member class template with a conversion function template) beside the relocation
+relocate a::detail => a :: impl

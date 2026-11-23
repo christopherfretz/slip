@@ -1,0 +1,2 @@
+# WP-134 item 3 (the review of WP-131): conversion functions of a class template to a pointer to member, to a function pointer type that mentions a relocated class, to a specialisation of a relocated class template and to a pointer to the class itself, beside the relocation
+relocate a::detail => a :: impl
