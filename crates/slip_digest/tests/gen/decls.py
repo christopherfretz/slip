@@ -451,6 +451,27 @@ differ("NoexceptValue", "Dependent.0", "template <class T> void f() noexcept(siz
        needs="expr", why="the operand's profile is Pending(Expr)")
 
 
+# ---------------------------------------------------------------------------
+# digest §2.2, WP-039 fix round item 1: an explicit specialisation of a
+# member of an implicitly instantiated class is written in source, so it
+# is a declared unit (`added`, not `derived added`), whatever the member.
+
+SPEC_PRE = "template <class T> struct A {"
+for row, member, spec, expect in [
+    ("member-spec-class-template", "template <class U> struct C;",
+     "template <> template <class U> struct A<long>::C { void m(); };", ["added A<long>::C", "added A<long>::C::m()"]),
+    ("member-spec-variable-template", "template <class U> static int v;",
+     "template <> template <class U> int A<long>::v = 1;", ["added A<long>::v"]),
+    ("member-spec-enumeration", "enum E : int;",
+     "template <> enum A<long>::E : int { x };", ["added A<long>::E", "added A<long>::x"]),
+    ("member-spec-static-data-member", "static int s;",
+     "template <> int A<long>::s = 1;", ["changed <order>", "added A<long>::s"]),
+]:
+    differ("_", row, "", spec, expect,
+           note=f"§2.2: `{spec}` is written in source, so a declared unit.",
+           pre=f"{SPEC_PRE} {member} }};")
+
+
 def write():
     names = set()
     for root, short, row, a, b, expect, opts in TESTS:
