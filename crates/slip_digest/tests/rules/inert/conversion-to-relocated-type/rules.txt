@@ -1,0 +1,2 @@
+# WP-131 item 1: conversions to a type the relocation moves: the member's own conversion name is a type digest in mapped terms, so the rule on the namespace reaches it there
+relocate a::detail => a :: impl

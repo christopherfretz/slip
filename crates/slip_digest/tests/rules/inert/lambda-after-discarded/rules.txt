@@ -1,0 +1,2 @@
+# WP-131 item 2: a closure of a function template's instantiation after a discarded branch that holds another
+relocate a::detail => a :: impl
