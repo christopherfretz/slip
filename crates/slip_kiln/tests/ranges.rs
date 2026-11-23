@@ -390,6 +390,22 @@ fn s5_4_unit_token_end() {
     });
 }
 
+/// `Unit::token_end` lexes with the unit's options, not Kiln's defaults:
+/// in C++26 with reflection (the snippet's default there) `^^` is one
+/// token, and two (`^` `^`) in Kiln's default lexer options.
+#[test]
+fn s5_4_unit_token_end_uses_the_unit_lexer_options() {
+    let mut src = Source::new("constexpr auto r = ^^int;\n", &[]);
+    src.std = "c++26".to_owned();
+    with_unit(&src, |u| {
+        let k = u.nth("^^", 0);
+        assert_eq!(u.p.unit().token_end(u.toks[k].span.lo), Some(u.toks[k].span.hi));
+        let r = file_range(u.p.unit(), u.toks[k].span.lo, u.toks[k].span.lo).expect("a range");
+        assert_eq!((r.hi - r.lo, r.tier), (2, T0));
+    })
+    .unwrap_or_else(|e| panic!("{e}"));
+}
+
 // ---------------------------------------------------------------------
 // Test 5: unit order.
 
@@ -596,6 +612,55 @@ fn marker(replaced: &str) -> (String, String) {
     (name, with)
 }
 
+/// The token spellings of `src` with the bytes of `r` replaced by the
+/// marker ([`marker`]): what [`check_range`] compares with.
+fn marked(src: &Source, u: &Seen<'_, '_>, r: FileRange) -> Result<Vec<String>, String> {
+    marked_by(src, &marking(u, r)?)
+}
+
+/// The edit [`marked`] makes: the snippet path, the bytes, the marker.
+fn marking(u: &Seen<'_, '_>, r: FileRange) -> Result<(String, usize, usize, String), String> {
+    let path = u.paths.get(&r.file).ok_or("the range is in no snippet file")?;
+    let (_, with) = marker(&u.sm().text(r.file)[r.lo as usize..r.hi as usize]);
+    Ok((path.clone(), r.lo as usize, r.hi as usize, with))
+}
+
+fn marked_by(src: &Source, m: &(String, usize, usize, String)) -> Result<Vec<String>, String> {
+    src.replaced(&m.0, m.1, m.2, &m.3).spellings()
+}
+
+/// The number of threads of a test that runs many units:
+/// `SLIP_TEST_THREADS`, else at most 4.
+fn test_threads() -> usize {
+    match std::env::var("SLIP_TEST_THREADS") {
+        Ok(v) => v.parse::<usize>().expect("SLIP_TEST_THREADS: a positive number").max(1),
+        Err(_) => std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(4),
+    }
+}
+
+/// `f` of each item, on `threads` threads, in order.
+fn par_map<T: Sync, R: Send>(items: &[T], threads: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut out: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.min(items.len()).max(1))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(x) = items.get(k) else { break };
+                        mine.push((k, f(x)));
+                    }
+                    mine
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
+    });
+    out.sort_by_key(|(k, _)| *k);
+    out.into_iter().map(|(_, r)| r).collect()
+}
+
 /// Why a span was given no range.
 fn none_reason(u: &Seen<'_, '_>, first: Loc, last: Loc) -> &'static str {
     if !first.is_valid() || !last.is_valid() {
@@ -615,24 +680,16 @@ fn none_reason(u: &Seen<'_, '_>, first: Loc, last: Loc) -> &'static str {
 /// Checks the property of test 4 for one range `r` of tokens `i..=j` of
 /// `u`, whose source is `src`; `Err` says how it fails.
 fn check_range(
-    src: &Source,
     u: &Seen<'_, '_>,
-    cache: &mut HashMap<(FileId, u32, u32), Result<Vec<String>, String>>,
+    before: &[String],
+    after: &Result<Vec<String>, String>,
     r: FileRange,
     i: usize,
     j: usize,
 ) -> Result<(), String> {
     let sm = u.sm();
-    let path = u.paths.get(&r.file).ok_or("the range is in no snippet file")?;
-    let text = sm.text(r.file);
-    let (name, with) = marker(&text[r.lo as usize..r.hi as usize]);
-    let after = cache
-        .entry((r.file, r.lo, r.hi))
-        .or_insert_with(|| {
-            src.replaced(path, r.lo as usize, r.hi as usize, &with).spellings()
-        })
-        .clone()?;
-    let before: Vec<String> = u.toks.iter().map(|t| spelling(sm, t)).collect();
+    let (name, _) = marker(&sm.text(r.file)[r.lo as usize..r.hi as usize]);
+    let after = after.as_ref().map_err(Clone::clone)?.as_slice();
     let in_r = |t: &Token| {
         producer(sm, t.span.lo).is_some_and(|(f, o)| f == r.file && r.lo <= o && o < r.hi)
     };
@@ -642,7 +699,7 @@ fn check_range(
             let mut want: Vec<String> = before[..i].to_vec();
             want.push(name.clone());
             want.extend_from_slice(&before[j + 1..]);
-            if after != want {
+            if after != want.as_slice() {
                 return Err(diff("tier 0", &want, &after));
             }
             // Outside every argument: no invocation holds part of it.
@@ -688,7 +745,7 @@ fn check_range(
                 || after[..x0] != before[..x0]
                 || after[after.len() - tail..] != before[x1 + 1..]
             {
-                return Err(diff("tier 1, outside the invocation", &before, &after));
+                return Err(diff("tier 1, outside the invocation", before, after));
             }
             // Inside it: each use of the argument became the marker; a
             // `#` or `##` result may change; nothing else does.
@@ -751,12 +808,17 @@ fn diff(what: &str, want: &[String], got: &[String]) -> String {
 /// token, `Ast::begin_loc`, `Ast::end_loc`), each distinct span once; and
 /// test 6 over every written reference and declaration name.
 fn property(src: &Source, label: &str) -> Tally {
-    property_of(src, label, None)
+    property_of(src, label, None, 1)
 }
 
 /// [`property`] over the expressions of the kinds `only` accepts when
 /// given, else every expression.
-fn property_of(src: &Source, label: &str, only: Option<fn(ExprKind) -> bool>) -> Tally {
+fn property_of(
+    src: &Source,
+    label: &str,
+    only: Option<fn(ExprKind) -> bool>,
+    threads: usize,
+) -> Tally {
     let mut tally = Tally::default();
     let res = with_unit(src, |u| {
         let mut t = Tally { errors: u64::from(u.p.errors), ..Tally::default() };
@@ -765,7 +827,9 @@ fn property_of(src: &Source, label: &str, only: Option<fn(ExprKind) -> bool>) ->
         let index: HashMap<Loc, usize> =
             u.toks.iter().enumerate().map(|(k, t)| (t.span.lo, k)).collect();
         let mut seen: HashSet<(Loc, Loc)> = HashSet::new();
-        let mut cache = HashMap::new();
+        let before: Vec<String> = u.toks.iter().map(|t| spelling(sm, t)).collect();
+        let progress = only.is_some();
+        let mut pending: Vec<(ExprId, FileRange, usize, usize)> = Vec::new();
         let exprs = (1..=ast.exprs.len())
             .filter_map(|k| ExprId::try_new(u32::try_from(k).ok()?))
             .filter(|&e| only.is_none_or(|f| f(ast.exprs.get(e).kind())));
@@ -804,15 +868,33 @@ fn property_of(src: &Source, label: &str, only: Option<fn(ExprKind) -> bool>) ->
                 continue;
             }
             t.ranges[r.tier as usize] += 1;
-            if let Err(why) = check_range(src, u, &mut cache, r, i, j) {
-                let toks: Vec<String> = u.toks[i..=j].iter().map(|t| spelling(sm, t)).collect();
-                t.failures.push(format!(
-                    "{label}: expression {} `{}`, range `{}` tier {:?}: {why}",
-                    e.index(),
-                    toks.join(" "),
-                    u.text(r),
-                    r.tier
-                ));
+            pending.push((e, r, i, j));
+        }
+        // Re-preprocess the marked sources `threads` at a time, a batch at
+        // a time (one sequence of a whole unit is large), and check each.
+        let size = threads * 16;
+        for (b, batch) in pending.chunks(size).enumerate() {
+            let edits: Vec<Result<_, String>> = batch.iter().map(|&(_, r, _, _)| marking(u, r)).collect();
+            let afters = if threads == 1 {
+                edits.iter().map(|m| marked_by(src, m.as_ref().map_err(Clone::clone)?)).collect()
+            } else {
+                par_map(&edits, threads, |m| marked_by(src, m.as_ref().map_err(Clone::clone)?))
+            };
+            for (&(e, r, i, j), after) in batch.iter().zip(&afters) {
+                if let Err(why) = check_range(u, &before, after, r, i, j) {
+                    let toks: Vec<String> = u.toks[i..=j].iter().map(|t| spelling(sm, t)).collect();
+                    t.failures.push(format!(
+                        "{label}: expression {} `{}`, range `{}` tier {:?}: {why}",
+                        e.index(),
+                        toks.join(" "),
+                        u.text(r),
+                        r.tier
+                    ));
+                }
+            }
+            if progress {
+                let done = b * size + batch.len();
+                eprintln!("{label}: {done} of {} ranges checked, {} failures", pending.len(), t.failures.len());
             }
         }
         // Test 6: file_range against file_range_of_span for every
@@ -887,6 +969,7 @@ fn s5_4_test4_property_on_macro_snippets() {
     assert!(tally.failures.is_empty(), "{}\n{}", tally.failures.join("\n"), tally.report());
     assert!(tally.skipped.is_empty(), "{}", tally.report());
     assert!(tally.ranges[0] > 40 && tally.ranges[1] > 40, "{}", tally.report());
+    assert!(tally.refs > 40 && tally.refs_unchecked == 0, "test 6 saw the tables: {}", tally.report());
 }
 
 /// The checker of test 4 catches a wrong range: replacing one byte too
@@ -895,22 +978,22 @@ fn s5_4_test4_property_on_macro_snippets() {
 fn s5_4_test4_checker_catches_wrong_ranges() {
     let src = Source::new("#define F(x) (x)\nint a, b;\nint v = F(a + b) + a;\n", &[]);
     with_unit(&src, |u| {
-        let mut cache = HashMap::new();
+        let before: Vec<String> = u.toks.iter().map(|t| spelling(u.sm(), t)).collect();
         let (i, j) = (u.nth("a", 1), u.nth("b", 1));
         let r = u.range(i, j).unwrap();
-        assert_eq!(check_range(&src, u, &mut cache, r, i, j), Ok(()));
+        assert_eq!(check_range(u, &before, &marked(&src, u, r), r, i, j), Ok(()));
         let long = FileRange { hi: r.hi + 1, ..r };
-        assert!(check_range(&src, u, &mut cache, long, i, j).is_err(), "a byte too many");
+        assert!(check_range(u, &before, &marked(&src, u, long), long, i, j).is_err(), "a byte too many");
         let short = FileRange { hi: r.hi - 1, ..r };
-        assert!(check_range(&src, u, &mut cache, short, i, j).is_err(), "a byte short");
+        assert!(check_range(u, &before, &marked(&src, u, short), short, i, j).is_err(), "a byte short");
         let tier0 = FileRange { tier: Tier::File, ..r };
-        assert!(check_range(&src, u, &mut cache, tier0, i, j).is_err(), "tier 0 inside an argument");
+        assert!(check_range(u, &before, &marked(&src, u, tier0), tier0, i, j).is_err(), "tier 0 inside an argument");
         let k = u.nth("a", 2);
         let plain = u.range(k, k).unwrap();
-        assert_eq!(check_range(&src, u, &mut cache, plain, k, k), Ok(()));
+        assert_eq!(check_range(u, &before, &marked(&src, u, plain), plain, k, k), Ok(()));
         let tier1 = FileRange { tier: Tier::MacroArgument, ..plain };
-        assert!(check_range(&src, u, &mut cache, tier1, k, k).is_err(), "tier 1 outside a macro");
-        assert!(check_range(&src, u, &mut cache, plain, k - 1, k).is_err(), "more tokens");
+        assert!(check_range(u, &before, &marked(&src, u, tier1), tier1, k, k).is_err(), "tier 1 outside a macro");
+        assert!(check_range(u, &before, &marked(&src, u, plain), plain, k - 1, k).is_err(), "more tokens");
     })
     .unwrap();
 }
@@ -1029,10 +1112,7 @@ fn s5_4_test4_property_over_digest_pair_tests() {
     support.sort();
     let dirs: Vec<PathBuf> = PAIR_ROOTS.iter().flat_map(|r| pair_dirs(&tests.join(r))).collect();
     assert!(dirs.len() > 1000, "found only {} pair-test directories", dirs.len());
-    let threads = match std::env::var("SLIP_TEST_THREADS") {
-        Ok(v) => v.parse::<usize>().expect("SLIP_TEST_THREADS: a positive number").max(1),
-        Err(_) => std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(4),
-    };
+    let threads = test_threads();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let tallies: Vec<Tally> = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..threads)
@@ -1204,7 +1284,7 @@ fn s5_4_test4_property_over_llvm_units() {
         let calls = |k: ExprKind| {
             matches!(k, ExprKind::CallExpr | ExprKind::CXXMemberCallExpr | ExprKind::CXXOperatorCallExpr)
         };
-        let tally = property_of(&src, unit, Some(calls));
+        let tally = property_of(&src, unit, Some(calls), test_threads());
         eprintln!("{unit}: {} files; call expressions:", src.files.len());
         eprint!("{}", tally.report());
         for f in tally.failures.iter().take(20) {

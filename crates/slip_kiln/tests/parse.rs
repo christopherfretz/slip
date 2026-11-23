@@ -597,6 +597,33 @@ fn s8_4_with_closure_sees_the_unit() {
     assert_eq!(errors, 0);
 }
 
+// §8.4 `Unit::token_end`: Kiln's end of a token with the unit's own
+// interner and lexer options. In C++03 `u8"x"` is the identifier `u8` and
+// a string (one token in C++11 and later, and in Kiln's default options);
+// a token spliced over a line ends after the splice.
+#[test]
+fn s8_4_with_token_end_uses_the_unit_lexer_options() {
+    let f = Fixture::new("token-end");
+    f.write("main.cpp", "const char *s = u8\"x\";\nint ab\\\ncd;\n");
+    let o = f.observer(".", &["c++", "-std=c++03", "main.cpp"]);
+    let (_, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        let sm = unit.sm();
+        let main = unit.main_file().expect("a main file");
+        let text = sm.text(main);
+        let at = |needle: &str| {
+            let k = text.find(needle).expect("in the text");
+            sm.loc(main, u32::try_from(k).unwrap())
+        };
+        let len = |needle: &str| {
+            let lo = at(needle);
+            unit.token_end(lo).and_then(|e| sm.same_entry_distance(lo, e))
+        };
+        (len("u8"), len("ab"), unit.token_end(at(" =")))
+    })
+    .unwrap();
+    assert_eq!(seen, Some((Some(2), Some(6), None)), "`u8`; `ab\\\ncd`; a blank is no token");
+}
+
 // §8.4 `parse_observer_with`: the closure runs for a `diagnosed` unit and
 // not for a `rejected` one.
 #[test]
