@@ -1,0 +1,15 @@
+# R17: a member the language itself looks up, renamed. pre: app::Seq::begin
+# renamed first. A range-based for takes range.begin() and range.end() only
+# if both members are found ([stmt.ranged]/1, C++20); with end alone, the
+# loop calls begin(s) and end(s) found by argument-dependent lookup, the
+# generic app::begin, which starts one later: sum() is 2 instead of 3.
+# pre-2: app::Pair::get renamed fetch. A structured binding uses the member
+# get only if the class has one that is a template whose first parameter
+# is a non-type parameter ([dcl.struct.bind]/4); else get<i>(p) by
+# argument-dependent lookup, app::get, which returns the members the other
+# way round: first() is 2 instead of 1. Against a verifier that looks only
+# at calls written in the source.
+good:   none the loop needs a member begin; every rename of it changes the loop
+bad:    mismatch changed sum(app::Seq &) @ main.cpp:13
+good-2: none the binding needs a member get; every rename of it changes the binding
+bad-2:  mismatch changed first(const app::Pair &) @ main.cpp:16

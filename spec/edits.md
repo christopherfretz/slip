@@ -156,6 +156,7 @@ programmable transform sees a null range or `is_editable` false
 | Reason | Condition |
 |---|---|
 | `macro_body`, `pasted`, `crossing`, `not_a_file` | the tier (§2.2); `crossing` also when the token is written at tier 0 or 1 and Kiln gives no range for it |
+| `directive` | the range holds a preprocessing directive or any part of a group that was skipped: replacing it would delete another configuration's text, or leave a conditional unbalanced, and no observer's verification sees either. `slip_kiln::ranges` gives no range for such a span, at any tier (`api.md` §5.4) |
 | `not_owned` | the file is read-only (§2.1) |
 | `file_recoded` | the front end's text of the file is not the file's bytes: Kiln replaced invalid UTF-8 when it loaded the file (its load report is not clean), so offsets in the text are not offsets in the file |
 | `not_plain` | the bytes of the range are not the token's spelling: the name is written with a universal-character-name, a line splice or a trigraph, or the range is a macro invocation that expands to the name (§2.2) |

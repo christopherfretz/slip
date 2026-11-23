@@ -1,0 +1,18 @@
+# N40: helper(t) in the moved template depends on T; lookup at the
+# definition found legacy::helper(int) through the enclosing legacy, and
+# argument-dependent lookup on int adds nothing at the instantiation. Moved,
+# the definition no longer sees legacy: bad fails at the instantiation;
+# with the global helper(long) of pre-2 the lookup at the definition finds
+# it, and use<int> calls it. N33 is the non-dependent case, N01 the
+# non-template one. The correct edit is a using-declaration in acme, so
+# that the lookup at the definition finds the same function and the call
+# keeps its argument-dependent lookup (legacy::helper(t) would drop it).
+# bad-2 changes twice, both required: the pattern's unit, which holds the
+# declarations found at the definition (digest-kinds UnresolvedLookupExpr.b),
+# against a verifier that compares only instantiations; and the
+# instantiation, against one that compares written units only.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed template <class> int legacy::use(type-parameter-0-0) @ main.cpp:5
+bad-2:  mismatch derived_changed legacy::use<int>(int) @ main.cpp:5

@@ -1,0 +1,5 @@
+# pre-4: widget.h replaced by struct Widget;: Widget is declared, no longer
+# defined, and its members are gone.
+changed Widget
+removed Widget::~Widget()
+removed Widget::n

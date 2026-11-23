@@ -1,0 +1,3 @@
+# R02: D::x renamed D::y hides Base::y, which D::use calls unqualified.
+good: verified
+bad:  mismatch changed D::use() @ main.cpp:7

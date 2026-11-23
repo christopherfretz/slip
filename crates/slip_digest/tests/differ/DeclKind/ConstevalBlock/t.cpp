@@ -1,8 +1,10 @@
 #include "side.h"
 // std: c++26
-// §5.6 DeclKind `ConstevalBlock`: against a `static_assert`.
+// §5.6 DeclKind `ConstevalBlock`: against a `static_assert`, in a block. A
+// namespace-scope `consteval` block is indeterminate: its closure's owner
+// is the namespace (digest §4.3; indeterminate/_/consteval-block-at-namespace-scope).
 #ifdef B
-static_assert(true);
+void f() { static_assert(true); }
 #else
-consteval {}
+void f() { consteval {} }
 #endif

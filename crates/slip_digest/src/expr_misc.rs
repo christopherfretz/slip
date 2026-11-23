@@ -134,12 +134,17 @@ pub(crate) fn predefined_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         predefined(n.aux).map(|k| predefined_kind::row(&k)),
         Cause::Unaccounted("ExprNode/PredefinedExpr.aux"),
     );
+    crate::local::write_scope_names(w, s);
 }
 
 /// `SourceLocExpr`: `aux` (`SourceLocKind`); `a`, the context, is
 /// `symbolic`, and so are its `SourceLocValues` (§7.4 `source_loc`).
 pub(crate) fn source_loc_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
-    source_loc_expr_of(s, &node(w, e));
+    let n = node(w, e);
+    source_loc_expr_of(s, &n);
+    if matches!(source_loc(n.aux), Some(SourceLocKind::Function | SourceLocKind::SourceLocStruct)) {
+        crate::local::write_scope_names(w, s);
+    }
 }
 
 /// [`source_loc_expr`] of the words `n`: those of `e`, or changed by a test.
@@ -187,6 +192,11 @@ pub(crate) fn cxx_typeid_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
                 TypeidOperand::Type(ty) => w.write_type(s, ty),
                 TypeidOperand::Expr(operand) => child(w, s, operand),
             }
+            let ty = match op {
+                TypeidOperand::Type(ty) => ty,
+                TypeidOperand::Expr(operand) => node(w, operand).ty,
+            };
+            crate::local::write_type_names(w, s, ty);
         }
         None => {
             s.uv(0).indeterminate(Cause::Unaccounted("ExprNode/CXXTypeidExpr.a"));
@@ -881,13 +891,13 @@ mod tests {
                    const char *h(const char *s = __func__);\n";
         let k = ExprKind::PredefinedExpr;
         rows(src, k, 0, predefined_expr, |_, s, _| {
-            s.tag(predefined_kind::FUNCTION);
+            s.tag(predefined_kind::FUNCTION).count(0);
         });
         rows(src, k, 1, predefined_expr, |_, s, _| {
-            s.tag(predefined_kind::PRETTY_FUNCTION);
+            s.tag(predefined_kind::PRETTY_FUNCTION).count(0);
         });
         rows(src, k, 2, predefined_expr, |_, s, _| {
-            s.tag(predefined_kind::FUNC);
+            s.tag(predefined_kind::FUNC).count(0);
         });
     }
 
@@ -928,12 +938,14 @@ mod tests {
             let n = node(w, e);
             s.flags(FlagWord::new().bit(false)).tag(typeid_operand::TYPE);
             w.write_type(s, ty(n.a));
+            s.count(0);
         });
         for (nth, evaluated) in [(1, true), (2, false)] {
             rows(src, k, nth, cxx_typeid_expr, |w, s, e| {
                 let n = node(w, e);
                 s.flags(FlagWord::new().bit(evaluated)).tag(typeid_operand::EXPR);
                 child(w, s, expr(n.a));
+                s.count(0);
             });
         }
     }
@@ -1317,12 +1329,16 @@ mod tests {
         with(CORO, "c++20", |input, rules| {
             for e in of_kind(input, ExprKind::CoawaitExpr) {
                 let (got, _) = written(input, rules, e, coawait_expr);
-                let (naive, _) = written(input, rules, e, |w, s, e| {
-                    let n = node(w, e);
-                    let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
-                    s.flags(FlagWord::new().bit(n.aux & 1 != 0));
-                    s.tag(suspend(n.aux).map(|k| suspend_kind::row(&k)).expect("a kind"));
-                    children(w, s, &es[1..5]);
+                // Without back-references (WP-049), which would name the
+                // operands of `common` at its second writing.
+                let (naive, _) = crate::walk::without_back_refs(|| {
+                    written(input, rules, e, |w, s, e| {
+                        let n = node(w, e);
+                        let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+                        s.flags(FlagWord::new().bit(n.aux & 1 != 0));
+                        s.tag(suspend(n.aux).map(|k| suspend_kind::row(&k)).expect("a kind"));
+                        children(w, s, &es[1..5]);
+                    })
                 });
                 let common = expr(list_of(input, e)[1]);
                 let (once, _) = written(input, rules, common, child);
@@ -1725,11 +1741,15 @@ mod tests {
             assert!(!all.is_empty());
             for e in all {
                 let (got, _) = written(input, rules, e, pseudo_object_expr);
-                let (naive, _) = written(input, rules, e, |w, s, e| {
-                    let n = node(w, e);
-                    let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
-                    children(w, s, &es);
-                    s.uv(u64::from(n.b));
+                // Without back-references (WP-049), which would name the
+                // operands' own operands at their second writing.
+                let (naive, _) = crate::walk::without_back_refs(|| {
+                    written(input, rules, e, |w, s, e| {
+                        let n = node(w, e);
+                        let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+                        children(w, s, &es);
+                        s.uv(u64::from(n.b));
+                    })
                 });
                 let es: Vec<ExprId> = list_of(input, e).into_iter().map(expr).collect();
                 let w = Walk::new(input, rules);

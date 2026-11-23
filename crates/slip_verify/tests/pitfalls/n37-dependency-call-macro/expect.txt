@@ -1,0 +1,4 @@
+# N37: the dependency's macro LEGACY_CALL(f, x) spells legacy::f(x); used on
+# the moved run, it silently takes the dependency's run(long).
+good: verified
+bad:  mismatch changed caller() @ main.cpp:7

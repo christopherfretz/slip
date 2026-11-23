@@ -1,0 +1,8 @@
+# N32: the dependency's client::use() reaches the owned make through its own
+# using namespace legacy. The fallback is the global ::make(long): the
+# directive's names are found as if declared in the global namespace, so a
+# fallback in client would hide legacy::make in the subject as well.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed client::use() @ dep/client.h:3

@@ -1,0 +1,4 @@
+# R01: f(int) renamed g(int) joins the set of g(long); the call g(1), which
+# chose g(long), now chooses the renamed function. Its text is unchanged.
+good: none the new name joins an overload set that a call chose from; every rename to g changes that call
+bad:  mismatch changed caller() @ main.cpp:5

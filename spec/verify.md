@@ -35,7 +35,16 @@ Declared := rules:   list<Rule>      digest.md §3.4; sorted by (parent, kind, n
             changed: list<KeyId>     units whose digest may differ
             created: list<KeyId>     units that may exist only in the post-image
             removed: list<KeyId>     units that may exist only in the pre-image
+            kept:    list<KeyId>     version 2: owned entities that are, on purpose, members of a namespace a rule maps onto (§9.2)
+            files:   opt<Ownership>  version 2: which files are read-only (`spec/edits.md` §2.1); required when `rules` is not empty
 ```
+
+`kept` and `files` are version 2 of the container (WP-110); a version 1
+`DECL` is read as one with `kept` empty and `files` absent, and a
+version 1 `DECL` with a rule is refused once WP-110 is on main. `kept`
+is sorted and has no duplicate, like the other lists. `files` is part
+of the rule table's identity: `rules_id` is then
+`H("slip.rules.v2", rules, files)`.
 
 Each list is sorted and has no duplicate (rules by the bytes of their
 encoded `(parent, kind, name, disc)`, keys by their bytes); a key may be in more than one of
@@ -81,6 +90,79 @@ needs no map.
   namespace has therefore collides, and is reported, although the edit may
   be correct ("Open questions").
 
+**Rules rename owned entities only.** A run has files it may edit and
+files it may not (`spec/edits.md` §2.1; `Declared.files`). A rule that
+says "`acme` is what `legacy` was" is a claim about the code the run
+owns; the dependency's code was not edited, its binaries were not
+rebuilt, and whatever it declares has the name it had. An entity of the
+post-image is a **dependency entity** if
+
+- one of its declarations lies in a read-only file. A declaration lies
+  in the file of its **expansion location**: the file it is written in,
+  and for a declaration that a macro expansion produces, wholly or in
+  part, the file that holds the outermost invocation. A declaration with
+  no location in a file (a builtin, an implicitly declared function)
+  lies in a read-only file;
+- or it is a specialisation of a template, implicit, explicit or
+  partial, or a deduction guide made from a template's constructors, and
+  the template is a dependency entity. A specialisation is keyed by its
+  template and its arguments, and the one a source writes has the key of
+  the one an instantiation makes (§4 step 4 depends on it);
+- or it is an implicitly declared member and its class is one.
+
+Every other entity is **owned**. The walk maps a key bottom-up as above,
+with two changes:
+
+1. **A rule matches an entity only if the entity is owned.**
+2. **The namespaces that enclose a member of a namespace are mapped from
+   the member's point of view.** For an owned member, the rules of kind
+   `namespace` apply along the chain of namespaces that enclose it,
+   whoever else opens them. For a dependency member, no rule applies to
+   any namespace of that chain. A parent that is not a namespace (a
+   class, a function, a specialisation) has one key, its own, and its
+   members have it as their parent. A namespace's own unit is a member
+   of the namespace that encloses it like any other entity: it is owned
+   if none of its openings lies in a read-only file.
+
+What a discriminator mentions (template arguments, parameter types) is
+mapped as that entity is, by its own ownership: with a dependency
+template `vec` and an owned `Mine`, `legacy::vec<acme::Mine>` is written
+`legacy::vec<legacy::Mine>`, and its member `size` under that key.
+
+So `acme` mapped to `legacy` says where the **owned** members of `acme`
+came from, and nothing about the rest:
+
+- A dependency's declaration that the edit moved into `acme` (a
+  dependency header included inside a moved block; a dependency macro
+  that opens the namespace, redefined by owned code) keeps `(acme, …)`;
+  the pre-image's `(legacy, …)` has no counterpart; both are findings.
+  Without this rule the two images are isomorphic and the edit verifies,
+  although the dependency's binary still defines the entity in `legacy`
+  (pitfall row N34).
+- A dependency that itself opens `acme`, before and after, has the same
+  keys in both images, and the owned members of `acme` are still mapped.
+- An owned declaration made through a dependency's macro
+  (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: the
+  expansion location decides, not the spelling location, or every owned
+  declaration behind a namespace macro of the dependency would be the
+  dependency's.
+- An owned explicit specialisation of a dependency template, an owned
+  definition of a function the dependency declares, a function a
+  dependency class befriends: dependency entities. They cannot move, and
+  moving one is two entities, a collision or a pair of findings.
+
+Ownership is read from the declarations the translation unit has. An
+entity that the dependency declares only in a header this observer does
+not include is owned here; an observer that includes both sees the
+entity declared in two namespaces and reports it; if no observer
+includes both, nothing shows it (§8).
+
+`slip declare` (§2.3) refuses a `relocate` line whose entity is a
+dependency entity and not a namespace (`DependencyEntity`).
+
+With an empty rule table nothing is mapped and ownership is not
+consulted: a digest of the map phase does not depend on `files`.
+
 **Why applying rules to the post-image is sound.** Let `φ` be the function
 from the entities of `B` to keys that the walk computes. If no unit is
 indeterminate, `φ` is injective except on merged namespaces. Equal unit
@@ -97,6 +179,12 @@ namespace's unit holds only what the namespace itself is (`digest.md` §5),
 its members are units of their own with keys that do collide if two of
 them coincide, and no generated code depends on which namespace an entity
 is in except through names, which is what a relocation declares.
+
+The argument is about one translation unit. The ownership rule above is
+what makes the declared isomorphism one that the rest of the program
+(code that was not edited and is not an observer) can be party to: it
+fixes every dependency entity's key, so the isomorphism is the identity
+on everything the run does not own.
 
 A pre-existing entity that a rule would capture is caught by the same
 comparison: if the pre-image already had an entity with the key a rule
@@ -143,6 +231,7 @@ relocate <entity> => <parent> :: <name>
 changed  <entity>
 created  <entity>
 removed  <entity>
+kept     <entity>
 ```
 
 - The first word is the keyword; blanks (spaces and tabs) separate it from
@@ -170,7 +259,7 @@ the one `KeyId` that every unit of that name (and kind, if given) has.
 | `relocate`, its `<entity>` | the pre-images | none |
 | `relocate`, a non-empty `<parent>` | the post-images | none |
 | `changed`, `removed` | the pre-images | none |
-| `created` | the post-images | the rules this file gives |
+| `created`, `kept` | the post-images | the rules this file gives |
 
 **The rule of a `relocate` line.** Let `K = (parent, kind, name, disc)` be
 the `Key` of `<entity>`, and `P'` the new parent: `root` for an empty
@@ -189,6 +278,23 @@ id, replaces its parent by `m(k.parent)`, applies the rules of the
 a new parent whose own discriminator mentions a relocated entity gets a
 rule that does not match, which verification then reports as differences.
 So a line whose new parent another line relocates comes after that line.
+
+**An entity with C language linkage.** Its key's parent is `c_linkage`
+whatever namespace declares it (`digest.md` §3), so moving it between
+namespaces changes no key and needs no line. Renaming it does: for an
+`<entity>` whose `Key` has the parent `c_linkage`, the line's `<parent>`
+is resolved and checked like any other (it says where the declaration
+is, and a name that resolves to nothing is an error), and the rule is
+
+```
+Rule { parent: c_linkage, kind, name: N', disc,  to_parent: c_linkage, to_name: name }
+```
+
+So `relocate legacy::c_fn(int) => legacy :: c_fn2` and `=> :: c_fn2`
+give one rule. The row that needs it is the rename of a C function to a
+builtin's name (`docs/wp/WP-109.md`, sketch 11): the front end then
+treats the calls as the builtin's, which the callers' units show. What
+C sources and the linker see of such a rename is §8's.
 
 **Errors**, each naming the line number. One error is reported: the
 first `Syntax` error in file order if the text has one; else the first
@@ -309,10 +415,33 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    key that has a unit in `Vp`, the finding is `changed` instead, unless
    `k` is in `changed`. `removed` and `created` do not prevent it and
    are not used by it, and step 3 does not count the key in `only_post`
-   or `only_pre` (a `derived_indeterminate` of step 3 stands beside
-   it). The two units are not compared: one is what was written and the
-   other what the front end made, and their streams differ by
-   construction.
+   or `only_pre` (a `derived_indeterminate` or `derived_changed` of
+   step 3 stands beside it). The two units are not compared: one is
+   what was written and the other what the front end made, and their
+   streams differ by construction. "Has a unit in `Vq`" is read on the
+   differences, as steps 2 and 3 are: `Vq(k) − Vp(k)` is not empty (for
+   `added`, `Vp(k) − Vq(k)`), with `Vp(k)` and `Vq(k)` the multisets of
+   digests of the key in `Vp` and `Vq`, so that §4.1 holds for it. On
+   what the walk produces the two readings are one: a key with a
+   determinate declared unit has no derived unit in the same image,
+   since a second entity of one key is a collision (`digest.md` §3.4),
+   so `Vp(k)` is empty where step 2 gives `removed`. The walk does not
+   mark two runs as a collision (`crates/slip_digest/src/units.rs`
+   `collides`), and neither breaks this: a run made only of namespace
+   units, since a namespace is always in the `tu` group (`digest.md`
+   §11), so a namespace key is never in `V`; and a run of the kinds a
+   scope may repeat (a using-declaration, a `static_assert`, a friend
+   and the others of §3.4) whose digests are all equal, since such a
+   unit is keyed by its content under its parent, and a derived one has
+   an implicit instantiation for its parent, which no declared unit has
+   (an explicit specialisation makes its members declared). Were such a
+   key in `D` and `V` of one image all the same, the reading on the
+   differences is still the one that holds through groups, and a unit
+   of `V` that both images have equally is no difference to report. (WP-108: read as
+   "`Vq` has a unit of the key", step 4 gives `changed` over all groups
+   and `removed` through `G` for a key whose derived unit is the same in
+   a group outside `G`.) `pre`, `post` and `file` are those of §6 for a
+   finding about `D`: one of `pre` and `post` is present.
 
 Steps 1 and 2 are over `D` and step 3 over `V`, independently: a key set
 aside in one is not thereby set aside in the other. (A key is in both
@@ -406,6 +535,13 @@ all units.
   other key, leaving those groups out removes the same multiset `X` from
   `P(k)` and from `Q(k)`, and `(P − X) − (Q − X) = P − Q`: `R(k)` and
   `A(k)` do not change, and they are all that steps 2 and 3 look at.
+- Step 4 looks at `R(k)` and `A(k)` of `D` and of `V`, which do not
+  change either. The group shortcut cannot skip such a key: step 2 has a
+  finding for it, so a declared or `tu` group holding it differs and is
+  in `G`; and since the other image's `V` has a unit of it that this
+  image's has not, a derived group holding that unit differs too and is
+  in `G`. The derived groups of `G` are opened (their unit lists given)
+  for this as for step 3: to tell `removed` from `changed`.
 
 The second point is why §4 is stated on differences. A rule that asked
 "does the post-image have the key at all" would give a different answer
@@ -857,6 +993,7 @@ form the walk makes (`crates/slip_digest/src/names.rs`):
 | a deduction guide | `<deduction guide for S>` and its parameters as a function: `<deduction guide for S>(char)`; a deduction guide template with its head and return type as a function template |
 | a friend function keyed in the class that befriends it (digest-kinds §3.3 `function`) | the class's name, `::friend `, then the function's: `A<int>::friend k(int)`, `C::friend template <class> void g(type-parameter-0-0)` |
 | a partial specialisation | as a specialisation, with its pattern for the arguments; if its head has a type-constraint or a requires-clause, the head first, which is what tells two partial specialisations of one pattern apart: `S<type-parameter-0-0 *>`, `template <class> requires C2<T> S<type-parameter-0-0 *>` |
+| a function template specialisation | the template's qualified name, its template arguments as a specialisation's below, then the parameter types and qualifiers as for a function: `legacy::take<int>(int)`, `legacy::log<legacy::Mine>(legacy::io::out &, const legacy::Mine &)` |
 | a specialisation | the template's name and its canonical arguments as Kiln prints them, with every entity an argument names written by its qualified name (`ns::S<ns::T>`, never `ns::S<T>`: two classes `T` of two namespaces are two specialisations), and except that a null pointer argument whose type is not `std::nullptr_t` is written `(T)nullptr`: `ns::S<int>`, `N<(int *)nullptr>` |
 | an unnamed class or enumeration | its scope and `(anonymous K for n)` when it is named by a declarator, typedef or member (digest §3.3), else `(anonymous K N)`, `N` its ordinal among the unnamed types of its scope, else `(anonymous K)`; `K` the class-key or `enum`: `(anonymous struct for P)`, `ns::(anonymous enum 1)`; its members are named under it |
 | the unnamed object of an anonymous class (an anonymous union's member object) | its scope and `(object of ` the class's name `)`: `S::(object of (anonymous union 0))` |
@@ -877,6 +1014,11 @@ form the walk makes (`crates/slip_digest/src/names.rs`):
 The plain name of an entity a unit refers to (a shadow's target, what a
 friend names) is its qualified name with a specialisation's arguments and
 a function's parameters, or a function template's name as above.
+
+A qualified name names every namespace on the way, an inline namespace
+too (`legacy::v2::Mine`, never `legacy::Mine`: both can exist in one
+image), although Kiln and other compilers leave inline namespaces out
+of what they print.
 
 Two units of one image with different keys have different names, except
 the units of one colliding key (digest §10) and the content-keyed kinds
@@ -915,8 +1057,8 @@ RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) wh
          key:   KeyId                 the key of a unit of this image: a reference to it
 ```
 
-- A mark is made where the walk begins a unit (offset 0, the location of
-  the unit's first declaration) and where it begins a statement or an
+- A mark is made where the walk begins a unit (offset 0, at the unit's
+  **place**, below) and where it begins a statement or an
   expression inside one. A declaration's own rows (its type, its
   specifiers, each redeclaration) have no mark: a difference there is at
   the unit's mark or at the last expression before it. Types and constant
@@ -971,6 +1113,7 @@ say without recording where each node ends ("Open questions").
 |---|---|
 | `changed`, `derived_changed` with `pre` or `post` absent (several units of the key differ) | both sites from the units' first marks (below), `what` empty |
 | `removed` | `pre`: the unit's first mark; `post`: the empty site |
+| `changed` of §4 step 4 (declared in one image, derived in the other) | the first mark of the declared unit in its image, and in the other image the first mark of the derived unit (where the template's pattern is); `what` empty |
 | `added` | `post`: the unit's first mark; `pre`: the empty site |
 | `indeterminate`, `derived_indeterminate` | in each image that has an indeterminate unit of the key: the unit's first mark, with `what` the cause as the walk prints it (`unsupported ExprKind/CXXReflectExpr`, `collision`, `pending stmt`); the empty site in the other |
 
@@ -978,6 +1121,22 @@ The empty site is an empty `file`, line and column 0, an empty `node` and
 an empty `what`. A unit's first mark is the mark at offset 0. Where an
 image has several units of the key, the one with the smallest digest is
 taken.
+
+A unit's **place**, the location of its first mark, is that of the first
+declaration of its chain, in chain order, that the source wrote. A
+declaration the front end made, by instantiation or implicitly, has no
+place of its own and is skipped, also when it comes first in the chain:
+an explicit specialisation `template <> int pick<int>()` in `pick_int.h`
+whose chain begins with the declaration Kiln instantiated from the
+template in `pick.h` has its place in `pick_int.h`. When no declaration
+of the chain is written (a derived unit, an implicit member), the place
+is that of the first declaration of the chain that has a location, which
+for an instantiation is where its pattern is (the row for step 4 above).
+This is not the finding's `file` (§6): that is the unit's group, the file
+of the entity's first declaration including one Kiln made
+(`digest.md` §11), and the two differ for such a specialisation
+(`file` `pick.h`, place `pick_int.h:1`). Localisation reads the place
+from the chain and not from `file`.
 
 **When they are made.** The pre-image's names, traces and causes are taken
 while the parse of step 4 is in memory, after the comparison (which needs
@@ -1237,6 +1396,11 @@ observer `failed`, with an empty message.
   verdict. §9 adds the check that shows it, for the observers of the run.
   What remains outside is the first point above: a declaration in a file
   that no observer of the run reads.
+- **What a dependency declares where no observer looks.** Ownership is
+  read from the declarations an observer has (§2.1). An owned
+  declaration of an entity that the dependency also declares, in a
+  header that no observer includes together with the owned one, is
+  moved as owned, and the dependency's binary keeps the old name.
 - **Sums are believed.** A group's `count`, `indeterminate` and `digest`
   are checked against its unit list only where there is one. A shard
   whose sums were not computed from its units (a defect of the walk, or a
@@ -1244,6 +1408,32 @@ observer `failed`, with an empty message.
   The walk that writes sums is as much trusted base as the comparison.
 - **Text.** Strings, comments and anything else that spells a name without
   referring to it ([03](../docs/design/03-equivalence.md) §7 rows 14, 15).
+- **Names in strings the toolchain resolves.** A name or a mangled name
+  that the program spells as a string for the compiler's back end or the
+  linker: an `asm` label (`int f() __asm__("_ZN6legacy1gEv");`), the
+  target of an `alias`, `ifunc` or `weakref` attribute, a `symver`
+  attribute, the text of a file-scope `asm` (`.symver`, `.globl`, `.set`
+  directives). The string is the same in both images, and
+  nothing in the translation unit looks it up (clang resolves an `alias`
+  target only when it emits code: `-fsyntax-only` accepts one that names
+  nothing), so the unit that holds it is the same too. A rename or a
+  relocation of the entity the string names verifies, and the program
+  then fails to link or binds another symbol. No row pins this: a `good`
+  tree for such an edit would state that a wrong edit is correct. A name
+  the front end does look up is not text and has its row:
+  `__attribute__((cleanup(fn)))` (R14); `#pragma weak` and `#pragma
+  redefine_extname`, whose identifier the front end resolves to the
+  declaration it then gives the attribute (R23); and the values of
+  `__func__` and `__PRETTY_FUNCTION__` (R12, N18, R21).
+- **Other languages and build files.** A name held in a file that is not
+  a C++ translation unit of the run: a renamed `extern "C"` function
+  called from `.c` files the run does not parse, a linker or version
+  script, a `.def` export list, a symbol list in a build rule,
+  `dlsym("f")` or `GetProcAddress` with the name as a string. These are
+  outside both images. The rename verifies, and the binary no longer
+  links, exports the name or finds it at run time. A transform that
+  renames an entity with C language linkage, or one a binary exports,
+  owes its user the list of such files to edit; Slip reads none of them.
 - **Derived inputs.** A file the build generated from the subject (a
   table, a configuration header, a module file) lies in the build tree,
   outside every subject root, and is the same file in both images: the
@@ -1332,6 +1522,40 @@ overlay and which pre shards it was made with; M1's shards did not
 keeps the key a rule maps another onto is the merge of §2.1.) A stale
 observer is one finding of the run, `stale`, with the rule and the
 observer.
+
+**Stale for a namespace rule** (WP-111; until it is on main a namespace
+rule has no stale check, which is the hole this closes). The namespace
+itself merges, but its members do not: if one observer sees an owned
+entity in `acme` and another still sees it in `legacy` (a second
+declaration in a header that was not edited), each verifies, since under
+the rule both have the key `(legacy, …)`, and the program does not link.
+For a rule `r` of kind `namespace` a walk counts instead:
+
+- `direct(r)`: the owned entities, not namespaces, that are members of a
+  namespace whose own, unmapped key is the key `r` produces, or of a
+  namespace inside it, and whose key is not in `Declared.kept`. These
+  still live where `r` says the owned members left.
+- `kept_via(r)`: the entities whose namespace chain was mapped by `r`
+  and whose key is in `Declared.kept`. These moved, and were declared to
+  stay.
+
+An observer is stale for `r` if either count is not 0. `kept` lists the
+owned entities that are members of the old namespace **on purpose**: one
+that stays (an overload that argument-dependent lookup must find through
+a dependency's type), and one the edit adds there (a compatibility
+declaration, which is also `created`). Dependency entities are not
+counted and are not listed: no rule reaches them (§2.1).
+
+Why this is the condition: two observers disagree about an entity with
+key `K` when one has it in the old namespace and the other reaches `K`
+through `r`. If `K` is in `kept`, the second is counted in `kept_via`;
+if it is not, the first is counted in `direct`. Either way one of them
+is stale, and neither count needs anything from another observer. A
+`kept` key that no observer has is reported like an exemption no
+observer needed (§2.2).
+
+`Use` gets the field `kept_via: uv` (0 for a rule that is not of kind
+`namespace`); a `Use` is present when any of its three counts is not 0.
 
 **Why this is the condition.** The claim of §1, for a rule, is that the
 entity it names has the new name. Two observers disagree about an entity
@@ -1750,6 +1974,13 @@ using-declaration). Those are judged by the comparison of digests alone.
 
 ## Open questions
 
+- **A literal operator as a rule's new name.** `relocate` moves a literal
+  operator with `=` and cannot rename its suffix (`NotRenamable`: `<name>`
+  is an identifier). A rename of `_km` to `_m` is a refactoring a tool
+  makes; it needs a `<name>` form for `operator""_m` and nothing else of
+  §2.1. Not urgent: such a rename is reported today, never silent
+  (`spec/landed/pitfalls/WP-109.md`).
+
 - **Name-derived values that changed** (`digest.md` §9). A relocation
   changes what `__func__`, `__PRETTY_FUNCTION__`,
   `std::source_location` and `typeid(T).name()` yield for the entities
@@ -1766,11 +1997,18 @@ using-declaration). Those are judged by the comparison of digests alone.
   observer is unchanged. `spec/edits.md` ("Open questions") proposes a
   filter of key ids in the map shard so that an observer that cannot have
   a renamed entity is shown not to, without a parse.
-- **Agreement for namespaces** (§9). A relocated namespace merges with
-  the one that stays, so `direct` says nothing for it. The members that
-  move have rules of their own only if the transform declares each; how
-  a partial relocation is shown to agree is to be specified with the
-  namespace migration (M4).
+- **Agreement for namespaces** (§9.2, "Stale for a namespace rule").
+  A relocation that moves only part of a namespace's owned members under
+  a namespace rule lists every member that stays in `kept`, which for a
+  phased migration is most of the namespace. Whether a phase is better
+  declared with one rule per moved entity, or `kept` given as a set of
+  files, is to be decided with the namespace migration (M4).
+- **Ownership differs between observers** (§2.1). An entity the
+  dependency declares only in a header some observers do not include is
+  owned in those and a dependency entity in the others. Each comparison
+  is consistent with itself; whether the run should compare ownership
+  across observers (a count per key is too much; a count per rule of
+  entities reached both ways is not exact) is open.
 - **Indeterminate units cost a second parse.** Every group with an
   indeterminate unit is in `G` (§4.1), so an observer that has one needs
   unit lists even when nothing changed. Proposed: a map shard stores the
@@ -1893,3 +2131,26 @@ using-declaration). Those are judged by the comparison of digests alone.
   units of one derived key in one image are a collision and so
   indeterminate (`digest.md` §3.4), which is a finding; the case left is a
   content-keyed derived unit, of which `digest-kinds.md` has none yet.
+- **A partial specialisation equal to the primary, removed or added**
+  (WP-108, item 3, attempts 3b and 3c). Removing
+  `template <class T> struct S<T *> { int a; };` where the primary also
+  has `int a` leaves the program the same, and the members of `S<int *>`
+  differ: each writes the pattern it was instantiated from, `S<T *>::a`
+  on one side and `S<T>::a` on the other (`crates/slip_digest/src/templ.rs`
+  `decl_maps`, `instantiated_from`, `:557-562`, for a field and an
+  enumerator; `member_spec_info`, `MemberSpecInfo.instantiated_from`,
+  `:330-333`, for a member enumeration). The finding is
+  `derived_changed`, which nothing can declare: a correct edit the
+  verifier rejects. It is kept for now: the verifier errs on the side
+  that cannot verify a wrong program. Two ways out are rejected. A
+  declared `changed K` must not exempt a derived finding of `K` (step
+  3): exemptions are per run, so a `changed box<Mine>::found` would make
+  row E11 `bad-6` verify and hide an argument-dependent lookup that
+  resolves otherwise in that specialisation in every observer.
+  Dropping the pattern's identity from an instantiation's unit needs an
+  audit of `digest-kinds.md` §11.4 first: that reference carries the
+  facts the instantiated declaration leaves out on purpose (whether a
+  default argument exists, initialisers still pending, definitions not
+  instantiated), and it is safe to drop only where each such fact, when
+  it matters, shows in a derived unit made on use. That would be a
+  package of the digest with that audit as its obligation.

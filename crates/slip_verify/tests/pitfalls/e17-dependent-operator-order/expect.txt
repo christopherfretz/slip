@@ -1,0 +1,10 @@
+# E17: l == r in same is dependent. Its unqualified operator lookup is done
+# where same is defined, and argument-dependent lookup for a::X looks only
+# in a. With eq.h before same.h the instantiation calls ::operator==; with
+# it after, nothing is found and the built-in == compares the two values
+# converted to int. The operators found at the definition are in the
+# pattern (spec/digest-kinds.md §9.5 `oper_lookups`). good moves extra.h,
+# eq.h still before same.h. Also expected: derived_changed
+# same<a::X>(a::X, a::X).
+good: verified
+bad:  mismatch changed template <class> bool same(type-parameter-0-0, type-parameter-0-0) @ same.h:1
