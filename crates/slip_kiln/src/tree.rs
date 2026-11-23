@@ -46,11 +46,22 @@ impl Tree {
     ///
     /// # Errors
     ///
-    /// A path that is absolute, empty or has a `..` or `.` component
+    /// A `name` that is not one normal path component (empty, `.`, `..`,
+    /// or holding a `/`: the tree would not be a directory of `base`), or a
+    /// path that is absolute, empty or has a `..` or `.` component
     /// (`InvalidInput`); two files with one path (`AlreadyExists`); any
     /// failure to create a directory or write a file. What was written
     /// before the failure is removed.
     pub fn new(base: &Path, name: &str, files: &[(&str, &[u8])]) -> std::io::Result<Tree> {
+        let mut parts = Path::new(name).components();
+        let one = matches!(parts.next(), Some(Component::Normal(c)) if c == name)
+            && parts.next().is_none();
+        if !one {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("not one normal path component: {name:?}"),
+            ));
+        }
         std::fs::create_dir_all(base)?;
         let root = loop {
             let n = NEXT.fetch_add(1, Ordering::Relaxed);

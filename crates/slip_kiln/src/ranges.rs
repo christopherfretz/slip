@@ -97,6 +97,10 @@ pub enum NoRange {
     /// `spec/landed/api/WP-084.md`; a line of a raw string or a comment
     /// that begins with `#` counts too, until Kiln records directives).
     Directive,
+    /// The span is not one token: its range is not the range of the one
+    /// token at its first location ([`token_range_or_why`]; added by the
+    /// WP-068 review, finding F1).
+    NotOneToken,
 }
 
 /// [`file_range_of_span`], with the reason when there is no range.
@@ -132,6 +136,30 @@ pub fn file_range_or_why(sm: &SourceManager, span: Span) -> Result<FileRange, No
         && sm.file_loc_at_macro_end(span.hi).is_some();
     let tier = if whole { Tier::File } else { Tier::MacroArgument };
     Ok(FileRange { file, lo, hi, tier })
+}
+
+/// [`file_range_or_why`] of a span that must be **one token** (a name
+/// token, `slip_kiln::sites`): the range of `span` when it is the range of
+/// the one token at `span.lo` ([`file_range`]`(unit, span.lo, span.lo)`,
+/// Kiln's end of that token), else [`NoRange::NotOneToken`].
+///
+/// A span of several tokens can have a range that is good for each of its
+/// ends (`n::m` with `#define m m`: Kiln's range over two file-location
+/// ends holds the whole invocation `m`), so the tokens between are not
+/// looked at by the range alone. When `span` itself has no range, that
+/// reason is given (a span of several tokens that [`file_range_or_why`]
+/// refuses is refused for that reason).
+///
+/// # Errors
+///
+/// [`NoRange`]: [`file_range_or_why`]'s, or [`NoRange::NotOneToken`].
+pub fn token_range_or_why(unit: &Unit<'_>, span: Span) -> Result<FileRange, NoRange> {
+    let whole = file_range_or_why(unit.sm(), span)?;
+    if file_range(unit, span.lo, span.lo) == Some(whole) {
+        Ok(whole)
+    } else {
+        Err(NoRange::NotOneToken)
+    }
 }
 
 /// Where the characters of `span` are written, for a person to look at:

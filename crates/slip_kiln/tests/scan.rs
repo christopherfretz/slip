@@ -262,3 +262,88 @@ fn s8_4_invalid_byte_after_a_backslash_splices_nothing() {
 fn s8_4_ud_suffix() {
     assert_eq!(hits(b"auto a = \"x\"_foo; auto b = 12_foo;", "_foo"), vec![mention("_foo", 1, 13)]);
 }
+
+// F4 of the review: a header name is lexed only on the line of its
+// directive. `import` with nothing after it on its line is not a
+// directive, and the next line's tokens are code; `#include` at the end
+// of a line does not swallow the next line's string.
+#[test]
+fn s8_4_header_name_only_on_its_line() {
+    assert_eq!(hits(b"import\n<foo> x;", "foo"), vec![id("foo", 2, 2)]);
+    assert_eq!(hits(b"#include\n\"foo\" foo\n", "foo"), vec![mention("foo", 2, 2), id("foo", 2, 7)]);
+    assert_eq!(hits(b"#include // c\n<foo>\n", "foo"), vec![id("foo", 2, 2)]);
+    assert_eq!(hits(b"export import\n<foo>;", "foo"), vec![id("foo", 2, 2)]);
+    assert_eq!(hits(b"__has_include(\n<foo>)", "foo"), vec![id("foo", 2, 2)]);
+    // On its line, after a comment that spans lines, it is a header name.
+    assert_eq!(hits(b"#include /* foo\n */ <foo> foo\n", "foo"), vec![mention("foo", 1, 13), id("foo", 2, 11)]);
+}
+
+// F5 of the review: a mention that overlaps an occurrence which is not a
+// word (the `n` of the escape `\n` begins `nn` too).
+#[test]
+fn s8_4_mention_overlapping_an_escape() {
+    assert_eq!(hits(b"\"\\nnn\"", "nn"), vec![mention("nn", 1, 4)]);
+    assert_eq!(hits(b"\"aaa a\"", "aa"), vec![]);
+    assert_eq!(hits(b"// nnn nn", "nn"), vec![mention("nn", 1, 8)]);
+}
+
+/// A small deterministic generator (xorshift64*).
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        (self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 33) as usize % n
+    }
+}
+
+/// The starts of the whole-word occurrences of `name` in `text`, by
+/// brute force (`text` is ASCII without `\`).
+fn words(text: &[u8], name: &[u8]) -> Vec<usize> {
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+    (0..=text.len().saturating_sub(name.len()))
+        .filter(|&i| text[i..].starts_with(name))
+        .filter(|&i| i == 0 || !word(text[i - 1]))
+        .filter(|&i| text.get(i + name.len()).is_none_or(|&c| !word(c)))
+        .collect()
+}
+
+/// The starts of the mentions of `name` in the literal `"text"`, as
+/// offsets in `text`.
+fn mention_starts(text: &[u8], name: &str) -> Vec<usize> {
+    let mut src = b"\"".to_vec();
+    src.extend_from_slice(text);
+    src.push(b'"');
+    scan(&src, name.as_bytes()).iter().map(|h| (h.lo - 1) as usize).collect()
+}
+
+// F5, the general property: in a literal with no escape every whole-word
+// occurrence of the name is a mention; and an escape put before a word
+// removes no mention that starts after its last character.
+#[test]
+fn s8_4_mentions_are_every_word_and_escapes_remove_none() {
+    let mut r = Rng(0x9e37_79b9_7f4a_7c15);
+    for _ in 0..4000 {
+        let len = r.below(12);
+        let text: Vec<u8> = (0..len).map(|_| b"na _$"[r.below(5)]).collect();
+        let name = ["n", "nn", "na", "an", "a_n"][r.below(5)];
+        let want = words(&text, name.as_bytes());
+        assert_eq!(mention_starts(&text, name), want, "{:?} {name}", String::from_utf8_lossy(&text));
+        // An escape `\x` at `p`: every mention starting at or after `p`
+        // is one at its place plus two.
+        let p = r.below(len + 1);
+        let mut escaped = text[..p].to_vec();
+        escaped.extend_from_slice(&[b'\\', b"nat0"[r.below(4)]]);
+        escaped.extend_from_slice(&text[p..]);
+        let got = mention_starts(&escaped, name);
+        for &w in want.iter().filter(|&&w| w >= p) {
+            assert!(
+                got.contains(&(w + 2)),
+                "{:?} {name}: lost {w}: {got:?}",
+                String::from_utf8_lossy(&escaped)
+            );
+        }
+    }
+}

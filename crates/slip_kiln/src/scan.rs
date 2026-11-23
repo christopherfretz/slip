@@ -16,7 +16,9 @@
 //!   `#include_next`, `#import`, `#embed` at the start of a line, after a
 //!   `(` that follows `__has_include`, `__has_include_next` or
 //!   `__has_embed`, and after `import` (or `export import`) at the start
-//!   of a line. No hit is inside a header name;
+//!   of a line, when it is on the same line (a header name cannot follow
+//!   on the next one: the lexer is told it is in a directive line, and
+//!   the end of the line ends the wait). No hit is inside a header name;
 //! - **what a mention is**: a whole word equal to the name inside the
 //!   spelling (line splices removed, Kiln `kiln_lex::clean`) of a comment,
 //!   a string literal, a raw string literal, a character literal, or an
@@ -91,10 +93,21 @@ pub fn scan(bytes: &[u8], name: &[u8]) -> Vec<Hit> {
     loop {
         if header.next_is_header_name() {
             lx.set_mode(LexMode::HeaderName);
+            lx.set_in_directive(true);
         }
         let t = lx.next();
         if t.kind == TokKind::Eof {
             break;
+        }
+        // The line ended before a header name: none is lexed on the next
+        // line (`import` newline `<foo>`, `#include` newline `"foo"`).
+        if t.kind == TokKind::Eod {
+            lx.set_mode(LexMode::Normal);
+            header.line_ended();
+            continue;
+        }
+        if t.kind != TokKind::Comment {
+            lx.set_in_directive(false);
         }
         let Some(lo) = sm.same_entry_distance(base, t.span.lo) else { continue };
         let Some(hi) = sm.same_entry_distance(base, t.span.hi) else { continue };
@@ -154,6 +167,11 @@ impl HeaderState {
         self.header_next
     }
 
+    /// The line ended where a header name was awaited.
+    fn line_ended(&mut self) {
+        self.header_next = false;
+    }
+
     fn see(&mut self, t: &Token, w: &Words) {
         if t.has(TokFlags::START_OF_LINE) {
             self.code_on_line = false;
@@ -181,12 +199,18 @@ impl HeaderState {
 }
 
 /// The whole-word occurrences of `name` in the token whose source text
-/// is `src`, as byte ranges of `src`.
+/// is `src`, as byte ranges of `src`. Occurrences may overlap (`"\nnn"`
+/// with the name `nn`: the one at the escape's `n` is not a word, the
+/// next one is), so every start is tried.
 fn mentions(src: &str, kind: TokKind, name: &str) -> Vec<(usize, usize)> {
     let s = clean(src, kind, false);
     let literal = !matches!(kind, TokKind::Comment | TokKind::RawStringLit(_));
+    let step = name.chars().next().map_or(1, char::len_utf8);
     let mut out = Vec::new();
-    for (a, _) in s.match_indices(name) {
+    let mut from = 0;
+    while let Some(k) = s[from..].find(name) {
+        let a = from + k;
+        from = a + step;
         let b = a + name.len();
         let before = s[..a].chars().next_back();
         let after = s[b..].chars().next();

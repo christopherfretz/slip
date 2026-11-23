@@ -368,8 +368,11 @@ fn s2_2_tierx_a_name_from_the_command_line() {
     );
 }
 
-// Tier X: a name whose qualifier and last component come from different
-// expansions (two arguments): Kiln gives no range for the span.
+// Tier X: a qualified name is more than one token, and `name_token`
+// answers for one (finding F1 of the review): the span from the
+// qualifier to the name is `crossing`, here also because its qualifier
+// and last component come from different expansions (two arguments) and
+// Kiln gives no range for it. The last component alone is tier 1.
 #[test]
 fn s2_2_tierx_qualifier_and_name_from_different_expansions() {
     let src = "namespace n { int m; }\n#define F(a, b) int y = a::b + 0;\nF(n, m)\n";
@@ -383,9 +386,170 @@ fn s2_2_tierx_qualifier_and_name_from_different_expansions() {
             })
             .expect("the reference to m");
         assert_ne!(r.first, r.name.lo, "qualified");
-        describe(u, s, root, Span::new(r.first, r.name.hi), "n::m")
+        (describe(u, s, root, Span::new(r.first, r.name.hi), "n::m"), describe(u, s, root, r.name, "m"))
     });
-    assert_eq!(got, refused(Reason::Crossing, X, Some(("main.cpp", lo, "F")), Some((lo, "F"))));
+    assert_eq!(got.0, refused(Reason::Crossing, X, Some(("main.cpp", lo, "F")), Some((lo, "F"))));
+    assert_eq!(got.1, at("main.cpp", lo + 5, "m", T1, Some((lo, "F"))));
+}
+
+/// The answers for the written references whose name's first character
+/// is written at the word `word` of `ctx` in `main.cpp`, for the span
+/// from the start of the whole written name (`first`) to the name's end,
+/// with `spelling`.
+fn qualified(name: &str, src: &str, ctx: &str, word: &str, spelling: &str) -> Vec<Got> {
+    let lo = off(src, ctx, word);
+    with_tree(name, &[("main.cpp", src.as_bytes())], &[], |u, s, root| {
+        let sm = u.sm();
+        written_refs(u)
+            .into_iter()
+            .filter(|r| sm.offset_of(sm.expansion_loc(r.first)).is_some_and(|(_, o)| o as usize == lo))
+            .filter(|r| r.first != r.name.lo)
+            .map(|r| describe(u, s, root, Span::new(r.first, r.name.hi), spelling))
+            .collect()
+    })
+}
+
+// F1 of the review: `n::m` with `#define m m`. Kiln's range of the span
+// is the bytes `n::m` (its two ends are file locations), but `m` is
+// written in a replacement list. The span is not one token: `crossing`.
+// The token `m` alone is `macro_body`.
+#[test]
+fn s2_3_crossing_a_qualified_name_ending_in_a_macro() {
+    let src = "namespace n { int m; }\n#define m m\nint g() { return n::m; }\n";
+    let got = qualified("f1", src, "return n::m", "n", "n::m");
+    assert_eq!(one(got), refused(Reason::Crossing, X, None, None));
+    let use_ = off(src, "return n::m", "m");
+    let got = with_tree("f1m", &[("main.cpp", src.as_bytes())], &[], |u, s, root| {
+        let sm = u.sm();
+        let names: Vec<Span> = written_refs(u)
+            .iter()
+            .map(|r| r.name)
+            .filter(|n| sm.offset_of(sm.expansion_loc(n.lo)).is_some_and(|(_, o)| o as usize == use_))
+            .collect();
+        names.into_iter().map(|n| describe(u, s, root, n, "m")).collect::<Vec<_>>()
+    });
+    let got = one(got);
+    assert_eq!(
+        got,
+        refused(Reason::MacroBody, T2, Some(("main.cpp", off(src, "m m", "m") + 2, "m")), Some((use_, "m")))
+    );
+}
+
+// F1 of the review: the macro in the middle, `a::B::c` with `#define B B`.
+#[test]
+fn s2_3_crossing_a_qualified_name_through_a_macro() {
+    let src = "namespace a { namespace B { int c; } }\n#define B B\nint g() { return a::B::c; }\n";
+    let got = qualified("f1b", src, "return a::B::c", "a", "a::B::c");
+    // Two references start at `a`: `B` qualified by `a`, and `c`.
+    assert_eq!(got, vec![refused(Reason::Crossing, X, None, None); got.len()]);
+    assert!(!got.is_empty());
+}
+
+// ---------------------------------------------------------------------
+// What `slip_kiln::written` gives as the name of each form of name
+// (`spec/landed/edits/WP-068.md`, "Name forms"), and the answer for it.
+
+/// The declarations and the references of `main.cpp` whose name's span
+/// starts at the word `word` of `ctx`: the span's text and the answer
+/// for that text.
+fn forms(name: &str, src: &str, ctx: &str, word: &str) -> (Vec<(String, Got)>, Vec<(String, Got)>) {
+    let lo = off(src, ctx, word);
+    with_tree(name, &[("main.cpp", src.as_bytes())], &[], |u, s, root| {
+        let sm = u.sm();
+        let at_lo = |sp: &Span| sm.offset_of(sp.lo).is_some_and(|(_, o)| o as usize == lo);
+        let answer = |sp: Span| {
+            let t = sm.span_text(sp).unwrap().to_owned();
+            let g = describe(u, s, root, sp, &t);
+            (t, g)
+        };
+        let decls = decl_names(u).iter().map(|d| d.name).filter(at_lo).map(answer).collect();
+        let refs = written_refs(u).iter().map(|r| r.name).filter(at_lo).map(answer).collect();
+        (decls, refs)
+    })
+}
+
+#[test]
+fn names_of_a_destructor() {
+    let src = "struct S { ~S(); };\nS::~S() {}\nvoid g(S *p) { p->~S(); }\n";
+    for ctx in ["{ ~S(); }", "~S() {}", "p->~S()"] {
+        let lo = off(src, ctx, "S");
+        let (decls, refs) = forms("dtor", src, ctx, "S");
+        let want = vec![("S".to_owned(), at("main.cpp", lo, "S", T0, None))];
+        if ctx == "p->~S()" {
+            assert_eq!((decls, refs), (vec![], want), "{ctx}");
+        } else {
+            assert_eq!((decls, refs), (want, vec![]), "{ctx}");
+        }
+    }
+}
+
+#[test]
+fn names_of_an_operator_function() {
+    let src = "struct S { S operator+(S) const; };\nS S::operator+(S) const { return *this; }\n\
+               S g(S a) { return a.operator+(a); }\nS h(S a) { return a + a; }\n";
+    let (decls, refs) = forms("op", src, "operator+(S) const;", "operator");
+    assert_eq!((decls, refs), (vec![], vec![]), "a declaration of an operator has no name");
+    let (decls, refs) = forms("op", src, "a.operator+(a)", "operator");
+    let crossing = refused(Reason::Crossing, X, None, None);
+    assert_eq!((decls, refs), (vec![], vec![("operator+".to_owned(), crossing)]));
+}
+
+#[test]
+fn names_of_a_conversion_function() {
+    let src = "struct S { operator int() const; };\nS::operator int() const { return 0; }\n\
+               int g(S a) { return a.operator int(); }\n";
+    let (decls, refs) = forms("conv", src, "operator int() const;", "operator");
+    assert_eq!((decls, refs), (vec![], vec![]));
+    let (decls, refs) = forms("conv", src, "a.operator int()", "operator");
+    let crossing = refused(Reason::Crossing, X, None, None);
+    assert_eq!((decls, refs), (vec![], vec![("operator int".to_owned(), crossing)]));
+}
+
+#[test]
+fn names_of_a_literal_operator() {
+    let src = "unsigned long long operator\"\"_k(unsigned long long v) { return v; }\n\
+               unsigned long long x = operator\"\"_k(1);\nunsigned long long y = 12_k;\n";
+    let (decls, refs) = forms("lit", src, "operator\"\"_k(unsigned", "operator");
+    assert_eq!((decls, refs), (vec![], vec![]));
+    let (decls, refs) = forms("lit", src, "operator\"\"_k(1)", "operator");
+    let crossing = refused(Reason::Crossing, X, None, None);
+    assert_eq!((decls, refs), (vec![], vec![("operator\"\"_k".to_owned(), crossing)]));
+    let (decls, refs) = forms("lit", src, "12_k", "12_k");
+    assert_eq!((decls, refs), (vec![], vec![]), "a use as a literal is no name");
+}
+
+#[test]
+fn names_of_a_template_id() {
+    let src = "template <class T> void f(T) {}\ntemplate <> void f<int>(int) {}\n\
+               void g() { f<int>(1); }\n";
+    for (ctx, decl) in [("f<int>(int)", true), ("f<int>(1)", false)] {
+        let lo = off(src, ctx, "f");
+        let (decls, refs) = forms("tid", src, ctx, "f");
+        let want = vec![("f".to_owned(), at("main.cpp", lo, "f", T0, None))];
+        if decl {
+            assert_eq!((decls, refs), (want, vec![]), "{ctx}");
+        } else {
+            assert_eq!((decls, refs), (vec![], want), "{ctx}");
+        }
+    }
+}
+
+#[test]
+fn names_of_a_qualified_declarator() {
+    let src = "namespace n { void f(); }\nvoid n::f() {}\nvoid g() { n::f(); }\n";
+    for (ctx, decl) in [("::f() {}", true), ("g() { n::f", false)] {
+        let lo = off(src, ctx, "f");
+        let (decls, refs) = forms("qual", src, ctx, "f");
+        let want = vec![("f".to_owned(), at("main.cpp", lo, "f", T0, None))];
+        if decl {
+            assert_eq!((decls, refs), (want, vec![]), "{ctx}");
+        } else {
+            assert_eq!((decls, refs), (vec![], want), "{ctx}");
+        }
+    }
+    // The whole written name of the reference, `n::f`, is two tokens.
+    let got = qualified("qualn", src, "n::f(); }", "n", "n::f");
+    assert_eq!(one(got), refused(Reason::Crossing, X, None, None));
 }
 
 // ---------------------------------------------------------------------
@@ -430,16 +594,40 @@ fn s2_3_file_recoded() {
     assert_eq!(one(got), refused(Reason::FileRecoded, T0, None, None));
 }
 
-// `é` written as a universal-character-name: the bytes are not the name.
+// `é` written as a universal-character-name, in the declaration and in a
+// reference: the bytes are not the name.
 #[test]
 fn s2_3_not_plain_a_universal_character_name() {
-    let src = "int café = 0;\nint g() { return caf\\u00e9; }\n";
-    let lo = off(src, "return caf", "caf");
-    let got = with_tree("ucn", &[("main.cpp", src.as_bytes())], &[], |u, s, root| {
+    let src = "int caf\\u00e9 = 0;\nint g() { return caf\\u00e9; }\n";
+    for ctx in ["int caf", "return caf"] {
+        let lo = off(src, ctx, "caf");
+        let got = with_tree("ucn", &[("main.cpp", src.as_bytes())], &[], |u, s, root| {
+            let spans = spelled_at(u, root, "main.cpp", lo);
+            spans.into_iter().map(|sp| describe(u, s, root, sp, "café")).collect::<Vec<_>>()
+        });
+        assert_eq!(
+            one(got),
+            refused(Reason::NotPlain, T0, Some(("main.cpp", lo, "caf\\u00e9")), None),
+            "{ctx}"
+        );
+    }
+}
+
+// WP-067's correction (`spec/landed/edits/WP-067.md`, "Corrections"): a
+// declaration whose name is split by a line splice, or a class named with
+// a universal-character-name, is a declaration name; `name_token`
+// refuses it `not_plain`, a refusal the user sees, not a silent skip.
+#[test]
+fn s2_3_not_plain_a_declaration_split_by_a_splice() {
+    let src = "int fo\\\no = 0;\nstruct S\\u00e9 {};\nint g() { return fo\\\no; }\n";
+    let got = one(main_names("splice", src, &[], "int fo", "fo"));
+    assert_eq!(got, refused(Reason::NotPlain, T0, Some(("main.cpp", 4, "fo\\\no")), None));
+    let lo = off(src, "struct S", "S");
+    let got = with_tree("sucn", &[("main.cpp", src.as_bytes())], &[], |u, s, root| {
         let spans = spelled_at(u, root, "main.cpp", lo);
-        spans.into_iter().map(|sp| describe(u, s, root, sp, "café")).collect::<Vec<_>>()
+        spans.into_iter().map(|sp| describe(u, s, root, sp, "Sé")).collect::<Vec<_>>()
     });
-    assert_eq!(one(got), refused(Reason::NotPlain, T0, Some(("main.cpp", lo, "caf\\u00e9")), None));
+    assert_eq!(one(got), refused(Reason::NotPlain, T0, Some(("main.cpp", lo, "S\\u00e9")), None));
 }
 
 // A name that is a whole expansion: `ID(foo)` is tier 1, and Kiln's
@@ -584,19 +772,20 @@ fn s2_3_order_file_recoded_before_not_plain() {
     assert_eq!(one(got), refused(Reason::FileRecoded, T0, None, None));
 }
 
-// The wire has no `directive` (`spec/edits.md` §4.2).
+// Each reason's value on the wire (`spec/edits.md` §4.2), in the table's
+// order.
 #[test]
 fn s2_3_reason_wire_values() {
     use slip_model::edits::Reason as W;
     let all = [
-        (Reason::MacroBody, Some(W::MacroBody)),
-        (Reason::Pasted, Some(W::Pasted)),
-        (Reason::Crossing, Some(W::Crossing)),
-        (Reason::NotAFile, Some(W::NotAFile)),
-        (Reason::Directive, None),
-        (Reason::NotOwned, Some(W::NotOwned)),
-        (Reason::FileRecoded, Some(W::FileRecoded)),
-        (Reason::NotPlain, Some(W::NotPlain)),
+        (Reason::MacroBody, W::MacroBody),
+        (Reason::Pasted, W::Pasted),
+        (Reason::Crossing, W::Crossing),
+        (Reason::NotAFile, W::NotAFile),
+        (Reason::Directive, W::Directive),
+        (Reason::NotOwned, W::NotOwned),
+        (Reason::FileRecoded, W::FileRecoded),
+        (Reason::NotPlain, W::NotPlain),
     ];
     for (r, w) in all {
         assert_eq!(r.wire(), w, "{r:?}");
@@ -724,6 +913,17 @@ fn tree_refuses_paths_outside_it() {
     assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
 }
 
+// Review finding F7: a tree's name is one normal path component.
+#[test]
+fn tree_refuses_names_that_are_not_one_component() {
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("trees");
+    for bad in ["", ".", "..", "a/b", "/abs", "a/", "../x", "./a"] {
+        let e = Tree::new(&base, bad, &[("m.cpp", b"")]).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{bad:?}");
+    }
+    assert!(Tree::new(&base, "a.b-c", &[("m.cpp", b"")]).is_ok());
+}
+
 #[test]
 fn tree_observer_is_the_default_command() {
     let tree = Tree::new(
@@ -772,6 +972,24 @@ fn s2_3_not_plain_by_tiers_alone() {
     );
 }
 
+// F3 of the review: a paste whose other operand is empty makes nothing:
+// the token is the argument's own, tier 1 (`spec/edits.md` §2.2).
+#[test]
+fn s2_2_tier1_a_paste_with_an_empty_right_operand() {
+    let src = "#define CAT(a, b) int a##b = 0;\nCAT(foo, )\nint g() { return foo; }\n";
+    let got = one(main_names("catr", src, &[], "CAT(foo, )", "foo"));
+    let site = Some((off(src, "CAT(foo", "CAT"), "CAT"));
+    assert_eq!(got, at("main.cpp", off(src, "CAT(foo, )", "foo"), "foo", T1, site));
+}
+
+#[test]
+fn s2_2_tier1_a_paste_with_an_empty_left_operand() {
+    let src = "#define CAT(a, b) int a##b = 0;\nCAT(, bar)\nint g() { return bar; }\n";
+    let got = one(main_names("catl", src, &[], "CAT(, bar)", "bar"));
+    let site = Some((off(src, "CAT(, bar)", "CAT"), "CAT"));
+    assert_eq!(got, at("main.cpp", off(src, "CAT(, bar)", "bar"), "bar", T1, site));
+}
+
 // KF3 §3 edge rows 3, 5 and 6 (`docs/requests/KF3-location-utilities.md`).
 #[test]
 fn s2_2_kf3_edge_rows() {
@@ -811,7 +1029,12 @@ fn s2_2_kf3_edge_rows() {
         )
     );
     // Row 6: one argument both substituted and stringised: the name is
-    // tier 1 (the string is `pasted`, `s2_2_tier3_stringised`).
+    // tier 1 (the string is `pasted`, `s2_2_tier3_stringised`). Editing
+    // it changes the string too; that is as designed
+    // (`docs/design/04-macros-and-configurations.md`, "Stringised
+    // arguments"; `spec/edits.md` §2.2): verification reports the unit
+    // that holds the string as changed, the verdict of pitfall rows N17
+    // and R15 (`spec/pitfalls.md`), `mismatch changed`.
     let src = "#define SS(x) int x = 0; const char *s_##x = #x;\nSS(foo)\n";
     let got = one(main_names("row6", src, &[], "SS(foo)", "foo"));
     assert_eq!(
@@ -825,3 +1048,4 @@ fn s2_2_kf3_edge_rows() {
         )
     );
 }
+

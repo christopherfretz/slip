@@ -5,7 +5,7 @@
 //! **The range is `slip_kiln::ranges`'.** This module computes no range
 //! and no end of a token. Every range it gives is an answer of
 //! [`ranges`](crate::ranges) for a span Kiln gave (a name's span, the one
-//! token of an invocation's name): [`ranges::file_range_or_why`],
+//! token of an invocation's name): [`ranges::token_range_or_why`],
 //! [`ranges::file_range`], and for a `macro_body` refusal, which points
 //! into a `#define` line, [`ranges::spelled_range`]. What `sites` adds is
 //! read from Kiln's source manager as facts: where the token is written
@@ -16,10 +16,8 @@
 //! shard's `inputs`, through [`Unit::real_path`]).
 //!
 //! **Reasons.** [`Reason`] is the table of `spec/edits.md` §2.3, in its
-//! order, which has one row the wire's `Reason` (§4.2,
-//! `slip_model::edits::Reason`) has no value for: `directive`.
-//! [`Reason::wire`] is `None` for it (`spec/landed/edits/WP-068.md`,
-//! "Decided where the spec was silent").
+//! order; [`Reason::wire`] is its value on the wire (§4.2,
+//! `slip_model::edits::Reason`).
 
 use slip_model::FileRef;
 use slip_model::edits::{MacroSite, Reason as WireReason, tiers};
@@ -37,7 +35,8 @@ pub enum Reason {
     MacroBody,
     /// Tier 3: made by `##` or `#`, or by a builtin macro.
     Pasted,
-    /// Tier X: not one token of one place, or Kiln gives no range.
+    /// Tier X: the span is not one token, or not of one place, or Kiln
+    /// gives no range.
     Crossing,
     /// Tier X: written in a buffer that is not a file (the predefines,
     /// the command line's macros).
@@ -55,19 +54,18 @@ pub enum Reason {
 }
 
 impl Reason {
-    /// The wire's value (`spec/edits.md` §4.2); `None` for
-    /// [`Reason::Directive`], which the wire has no value for.
-    pub fn wire(self) -> Option<WireReason> {
-        Some(match self {
+    /// The wire's value (`spec/edits.md` §4.2).
+    pub fn wire(self) -> WireReason {
+        match self {
             Reason::MacroBody => WireReason::MacroBody,
             Reason::Pasted => WireReason::Pasted,
             Reason::Crossing => WireReason::Crossing,
             Reason::NotAFile => WireReason::NotAFile,
-            Reason::Directive => return None,
+            Reason::Directive => WireReason::Directive,
             Reason::NotOwned => WireReason::NotOwned,
             Reason::FileRecoded => WireReason::FileRecoded,
             Reason::NotPlain => WireReason::NotPlain,
-        })
+        }
     }
 }
 
@@ -115,9 +113,10 @@ impl<'u, 'r> Sites<'u, 'r> {
     }
 
     /// Where the name token `name` is written, and whether it may be
-    /// edited (`spec/edits.md` §2.2, §2.3). `name` is the span of a name
-    /// as `slip_kiln::written` gives it; `spelling` the identifier the
-    /// caller expects there.
+    /// edited (`spec/edits.md` §2.2, §2.3). `name` is the span of one
+    /// name token as `slip_kiln::written` gives it; `spelling` the
+    /// identifier the caller expects there. A span of more than one token
+    /// (a qualified name, `operator+`) is refused `crossing` (rule 2).
     ///
     /// The rules, in the order of §2.3's table:
     ///
@@ -128,8 +127,9 @@ impl<'u, 'r> Sites<'u, 'r> {
     ///    other entry is spelled in scratch space (3, `pasted`), in a
     ///    buffer that is not a file (X, `not_a_file`), or in a
     ///    replacement list (2, `macro_body`).
-    /// 2. The range is `ranges::file_range_or_why(name)`: none is X
-    ///    `crossing`, or, when `ranges` says the range holds a directive,
+    /// 2. The range is `ranges::token_range_or_why(name)`: none, or a span
+    ///    that is not one token, is X `crossing`, or, when `ranges` says
+    ///    the range holds a directive,
     ///    `directive` (`not_a_file` if the token of rule 1 is written in a
     ///    buffer that is not a file: that row comes first).
     /// 3. The token of rule 1, or the range, is in a buffer that is not a
@@ -174,7 +174,7 @@ impl<'u, 'r> Sites<'u, 'r> {
         };
         let (tier, want) =
             if arg { (tiers::T1, Tier::MacroArgument) } else { (tiers::T0, Tier::File) };
-        let r = match ranges::file_range_or_why(sm, name) {
+        let r = match ranges::token_range_or_why(self.unit, name) {
             Ok(r) => r,
             Err(NoRange::Directive) if in_file => {
                 return refused(Reason::Directive, tier, invocation);
