@@ -20,7 +20,6 @@ pub(crate) const REF_LOCAL: u64 = 2;
 /// `Ref::template_param`, then depth and index.
 pub(crate) const REF_TEMPLATE_PARAM: u64 = 3;
 /// `Ref::param`, then level and index: written by the expression area.
-#[allow(dead_code, reason = "the interface of an area that lands later (lib.rs)")]
 pub(crate) const REF_PARAM: u64 = 4;
 
 impl Walk<'_> {
@@ -60,6 +59,11 @@ impl Walk<'_> {
             | Role::Unsupported(_) => false,
         };
         if local_object {
+            if self.unit.expr.profile.is_some() {
+                // Inside a profile (digest-kinds §4.4).
+                crate::expr_dep::profile_local(self, s, d);
+                return;
+            }
             if self.in_key > 0 {
                 // A key holds no local entity of a unit: a parameter in a
                 // signature is `Ref::param`, written by the expression
