@@ -1,0 +1,2 @@
+# WP-131 item 2: an unnamed class of a class template named by its declarator, and an anonymous union's member
+relocate a::detail => a :: impl

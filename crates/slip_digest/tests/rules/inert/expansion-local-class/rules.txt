@@ -1,0 +1,2 @@
+# WP-131 item 2 (found by WP-124): the local classes instantiated from one expansion statement (C++26) are distinct entities; under a rule table they must not follow their one pattern onto one key
+relocate a::detail => a :: impl

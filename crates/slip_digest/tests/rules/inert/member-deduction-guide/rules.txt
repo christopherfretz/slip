@@ -1,0 +1,2 @@
+# WP-131 item 2: a deduction guide of a member class template of a class template
+relocate a::detail => a :: impl
