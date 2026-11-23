@@ -1411,6 +1411,60 @@ fn g6_link_in_subject_directory_in_post_end_to_end() {
     );
 }
 
+// G6 (iii) through the executable (the review's G6-F1 and G6-F2): the
+// post tree at `b/post`, a level below the subject `s`; `../ext` from each
+// is another directory, whose `k.h` defines another macro. Through a link
+// `inc -> ../ext` in both trees, then by `#include "../ext/k.h"`: each
+// shard `unverifiable`, the run `incomplete` (status 4), and `slip
+// declare` refuses the post-image it parses for a `created` line (status
+// 3).
+#[test]
+fn g6_route_leaving_the_root_end_to_end() {
+    for (n, include) in [(0, "inc/k.h"), (1, "../ext/k.h")] {
+        let f = Fixture::new(&format!("g6-leave-{n}"));
+        let main = format!("#include \"{include}\"\nnamespace old {{ int f() {{ return K; }} }}\n");
+        f.write("ext/k.h", "#pragma once\n#define K 1\n");
+        f.write("b/ext/k.h", "#pragma once\n#define K 1\n#define K2 1\n");
+        f.write("s/u0.cpp", &main);
+        f.write("b/post/u0.cpp", &main.replace("return K;", "return K2;").replace("old", "fresh"));
+        if n == 0 {
+            std::os::unix::fs::symlink("../ext", f.path("s/inc")).unwrap();
+            std::os::unix::fs::symlink("../ext", f.path("b/post/inc")).unwrap();
+        }
+        f.db(&["u0.cpp"]);
+        let plan = f.parse();
+        let img = ["--root", "s", "--post", "b/post"];
+        let reason = format!(
+            "post-image: looks for {include} in ., which leaves the post root: {} here, {} from \
+             the subject",
+            Fixture::text(&f.path("b/ext/k.h")),
+            Fixture::text(&f.path("ext/k.h"))
+        );
+        let (out, report) = f.verify_report(&plan, &img);
+        assert_eq!(out.code(), Some(4), "{out:?}");
+        assert_eq!(out.last_line(), "verdict incomplete", "{out:?}");
+        assert_eq!(states(&report), [0, 0, 0, 0, 1, 0, 0], "{out:?}");
+        for (o, main) in &f.observers(&plan) {
+            let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
+            assert_eq!(
+                (v.kind, v.reason.as_str()),
+                (VerdictKind::Unverifiable, reason.as_str()),
+                "{main}"
+            );
+        }
+        // A `created` line: the post-image parsed under the rules.
+        f.write("t.txt", "relocate old => :: fresh\ncreated fresh::f\n");
+        let mut extra = img.to_vec();
+        extra.extend(["--owned", "s"]);
+        let out = declare(&f, &plan, "t.txt", &extra);
+        assert_eq!(out.code(), Some(3), "{out:?}");
+        assert_eq!(
+            out.stderr,
+            format!("slip: declare: {}: {reason}\n", Fixture::text(&f.path("s/u0.cpp")))
+        );
+    }
+}
+
 // WP-121 item 5 through the executable: `slip declare` + `slip verify`.
 
 /// A fixture of `files` (the same in both trees), parsed, with `post`

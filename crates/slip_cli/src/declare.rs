@@ -620,21 +620,26 @@ impl InProcess {
             let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
             slip_digest::records::records(input, rules, ReadOnly::files(&read_only))
         };
-        // Guard G6 (`spec/verify.md` §5.3) on a post-image of the tree
-        // form, as the verify job checks it: without it a file's subject
-        // path need not be a real path, and ownership decided on it can
-        // give a wrong rule parent or a wrong `created` key. A failure is
-        // an input error: no record is guessed.
+        // The guards of the post-image parse (`spec/verify.md` §5.3: G1,
+        // L1, G4, G5, G6) on a post-image of the tree form, as the verify
+        // job checks them: without them the parse need not be the real
+        // post-image's, and a file's subject path need not be a real path
+        // (ownership decided on it can give a wrong rule parent or a wrong
+        // `created` key). A failure is an input error: no record is
+        // guessed. O2 holds by construction here (`spec/exec.md` §8.8).
         let (shard, records) = if side == Side::Post && !self.image.is_identity() {
             let (shard, looked) =
                 self.image.parse_looking(o, side, Phase::Map, 0, walk).map_err(fail)?;
             if let Some((_, lookups)) = &looked {
-                let directory = self.image.post_command(&o.command).command.directory;
                 let inputs = shard.inputs.as_deref().unwrap_or_default();
                 let mut resolver = self.image.resolver();
-                if let Some(reason) =
-                    crate::verify_job::g6(&mut resolver, &directory, inputs, lookups)
-                {
+                if let Some(reason) = crate::verify_job::post_parse_guards(
+                    &self.image,
+                    &mut resolver,
+                    &o.command,
+                    inputs,
+                    lookups,
+                ) {
                     return Err(fail(reason));
                 }
             }

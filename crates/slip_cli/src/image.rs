@@ -763,6 +763,23 @@ struct Walked {
     tail: Vec<std::ffi::OsString>,
 }
 
+/// What [`Resolver::route`] saw.
+#[derive(Debug, Default)]
+struct Route {
+    /// The first directory under a post root the walk was in, its region
+    /// `(map, depth)`, and the components still to walk from it.
+    entry: Option<(PathBuf, usize, usize, Vec<std::ffi::OsString>)>,
+    /// After `entry`, the walk was in a directory under no post root.
+    left: bool,
+    /// The walk stopped at more than [`MAX_LINKS`] symbolic links.
+    looped: bool,
+    /// The last directory reached, or the file the walk ended at; and the
+    /// components it did not resolve (from a missing one, or one under a
+    /// file).
+    end: PathBuf,
+    tail: Vec<std::ffi::OsString>,
+}
+
 /// "Under a root" by identity (§5.1), with caches: one per job's checks.
 ///
 /// A directory is under a root when it or one of its ancestors is the
@@ -1265,6 +1282,137 @@ impl Resolver<'_> {
         let mut target = bytes_path(&self.maps[map].subject);
         target.extend(real.components().skip(1 + depth));
         target
+    }
+
+    /// The walk of the absolute path `start` as the kernel resolves it,
+    /// component by component, symbolic links followed (see [`Route`]).
+    fn route(&mut self, start: &Path) -> Route {
+        let mut todo: VecDeque<std::ffi::OsString> = VecDeque::new();
+        components(start, &mut todo);
+        let mut cur = PathBuf::from("/");
+        let mut out = Route::default();
+        let mut links = 0;
+        loop {
+            match self.region(&cur) {
+                Region::Post { map, depth } => {
+                    if out.entry.is_none() {
+                        out.entry = Some((cur.clone(), map, depth, todo.iter().cloned().collect()));
+                    }
+                }
+                Region::Subject { .. } | Region::Neither => out.left |= out.entry.is_some(),
+            }
+            let Some(c) = todo.pop_front() else {
+                break;
+            };
+            if c == "." {
+                continue;
+            }
+            if c == ".." {
+                cur.pop();
+                continue;
+            }
+            let next = cur.join(&c);
+            match self.kind(&next) {
+                Kind::Dir => cur = next,
+                Kind::File if todo.iter().all(|t| t == ".") => {
+                    todo.clear();
+                    cur = next;
+                    break;
+                }
+                Kind::Link(target) => {
+                    if links == MAX_LINKS {
+                        out.looped = true;
+                        todo.push_front(c);
+                        break;
+                    }
+                    links += 1;
+                    if target.is_absolute() {
+                        cur = PathBuf::from("/");
+                    }
+                    let mut front = VecDeque::new();
+                    components(&target, &mut front);
+                    for t in front.into_iter().rev() {
+                        todo.push_front(t);
+                    }
+                }
+                Kind::File | Kind::Missing => {
+                    todo.push_front(c);
+                    break;
+                }
+            }
+        }
+        out.end = cur;
+        out.tail = todo.into();
+        out
+    }
+
+    /// The place a walk ended at: its end with the components it did not
+    /// resolve, the end taken to the subject first when `to_subject` and
+    /// it is under a post root.
+    fn ended_at(&mut self, end: &Path, tail: &[std::ffi::OsString], to_subject: bool) -> PathBuf {
+        let mut place = end.to_path_buf();
+        if to_subject && let Region::Post { map, depth } = self.place(end) {
+            place = self.subject_counterpart(end, map, depth);
+        }
+        place.extend(tail);
+        place
+    }
+
+    /// Guard G6 (§5.3), its third part: the reason when a place the
+    /// post-image parse looked at (`lookups`, as spelled from `directory`,
+    /// the post command's: each directory of the search list, each
+    /// location tried, each file read, in this order), walked in the file
+    /// system, is under a post root and then under none (it leaves the
+    /// post root), and the same route walked from the subject (from the
+    /// subject's counterpart of the first directory under a post root the
+    /// walk was in, with the components left there) ends elsewhere. The
+    /// two ends are compared as real paths with the components the walk
+    /// could not resolve (a missing component, a file), the post end taken
+    /// to the subject when it is under a post root. A walk that follows
+    /// more than [`MAX_LINKS`] links cannot be decided and is refused.
+    pub fn leaves_elsewhere(&mut self, directory: &[u8], lookups: &Lookups) -> Option<String> {
+        let base = bytes_path(directory);
+        let routes = lookups
+            .list
+            .iter()
+            .map(|d| (base.join(d), format!("searches {d}")))
+            .chain(
+                lookups
+                    .tried
+                    .iter()
+                    .map(|(d, n)| (base.join(d).join(n), format!("looks for {n} in {d}"))),
+            )
+            .chain(lookups.read.iter().map(|n| (base.join(n), format!("reads {n}"))));
+        for (start, what) in routes {
+            let here = self.route(&start);
+            let Some((dir, map, depth, rest)) = &here.entry else {
+                continue;
+            };
+            if !here.left && !here.looped {
+                continue;
+            }
+            let mut from = self.subject_counterpart(dir, *map, *depth);
+            from.extend(rest);
+            let there = self.route(&from);
+            if here.looped || there.looped {
+                return Some(format!(
+                    "post-image: {what}, which leaves the post root: more than {MAX_LINKS} \
+                     symbolic links {}",
+                    if here.looped { "here" } else { "from the subject" }
+                ));
+            }
+            let ours = self.ended_at(&here.end, &here.tail, true);
+            let theirs = self.ended_at(&there.end, &there.tail, false);
+            if ours != theirs {
+                let shown = self.ended_at(&here.end, &here.tail, false);
+                return Some(format!(
+                    "post-image: {what}, which leaves the post root: {} here, {} from the subject",
+                    show_path(&path_bytes(&shown)),
+                    show_path(&path_bytes(&theirs))
+                ));
+            }
+        }
+        None
     }
 
     /// Guard L1 (§5.3): the reason when a place `lookups` names, walked

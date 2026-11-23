@@ -501,8 +501,8 @@ fn without_units(d: &Digests) -> Digests {
 }
 
 /// Step 2's guards on what the post-image parse read and looked at, in
-/// this order (§5.3): G1, L1, G4, G5, then G6 and O2 of the tree form (not with the
-/// identity, where every change since the map phase is the edit
+/// this order (§5.3): [`post_parse_guards`], then O2 of the tree form (not
+/// with the identity, where every change since the map phase is the edit
 /// compared). The reason of the first that fails.
 fn image_guards(
     params: &Params,
@@ -512,10 +512,34 @@ fn image_guards(
     lookups: &Lookups,
 ) -> Option<String> {
     let mut resolver = params.image.resolver();
+    if let Some(reason) =
+        post_parse_guards(&params.image, &mut resolver, &observer.command, post_inputs, lookups)
+    {
+        return Some(reason);
+    }
+    if params.image.is_identity() {
+        return None;
+    }
+    let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
+    drifted(&mut resolver, post_inputs, pre_inputs)
+        .map(|path| format!("pre-image: {} changed since the map phase", show_path(path)))
+}
+
+/// The guards of §5.3 that need only the post-image parse, in this order:
+/// G1, L1, G4, G5, then G6 of the tree form (not with the identity). The
+/// reason of the first that fails. `slip declare` and `slip units
+/// --post-image` check them too (`spec/exec.md` §8.8).
+pub(crate) fn post_parse_guards(
+    image: &Image,
+    resolver: &mut Resolver<'_>,
+    command: &Command,
+    post_inputs: &[FileRef],
+    lookups: &Lookups,
+) -> Option<String> {
     if let Some(read) = post_inputs.iter().find(|f| resolver.under_subject(&f.path)) {
         return Some(format!("post-image: read {}, a file of the subject", show_path(&read.path)));
     }
-    let post = params.image.post_command(&observer.command);
+    let post = image.post_command(command);
     if let Some(reason) = resolver.looked_in_subject(&post.command.directory, lookups) {
         return Some(reason);
     }
@@ -534,24 +558,15 @@ fn image_guards(
             show_path(prefix)
         ));
     }
-    if params.image.is_identity() {
+    if image.is_identity() {
         return None;
     }
-    if let Some(reason) = g6(&mut resolver, &post.command.directory, post_inputs, lookups) {
-        return Some(reason);
-    }
-    let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
-    drifted(&mut resolver, post_inputs, pre_inputs)
-        .map(|path| format!("pre-image: {} changed since the map phase", show_path(path)))
+    g6(resolver, &post.command.directory, post_inputs, lookups)
 }
 
-/// Guard G6 (§5.3, tree form): the links the post-image parse followed
-/// under a post root are the subject's (same name, same target bytes), and
-/// the subject path of every file read under a post root is reached in the
-/// subject through no link; so each such subject path is a real path of
-/// the subject, or a created path under real directories, as `Ownership`
-/// and `ReadOnlyFiles` take it. The reason of the first that fails.
-pub(crate) fn g6(
+/// Guard G6 (§5.3): its three parts in order, (i) over every file read
+/// before (ii), then (iii).
+fn g6(
     resolver: &mut Resolver<'_>,
     directory: &[u8],
     inputs: &[FileRef],
@@ -560,6 +575,7 @@ pub(crate) fn g6(
     resolver
         .link_differs(directory, lookups)
         .or_else(|| inputs.iter().find_map(|f| resolver.subject_route_link(&f.path)))
+        .or_else(|| resolver.leaves_elsewhere(directory, lookups))
 }
 
 /// Guard G5's second part (§5.3): the first `#line` name of the post
