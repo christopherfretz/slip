@@ -1,0 +1,3 @@
+# The second subject: one rule per moved entity, no merged namespace.
+relocate legacy::Mine => acme :: =
+created acme

@@ -1329,12 +1329,16 @@ mod tests {
         with(CORO, "c++20", |input, rules| {
             for e in of_kind(input, ExprKind::CoawaitExpr) {
                 let (got, _) = written(input, rules, e, coawait_expr);
-                let (naive, _) = written(input, rules, e, |w, s, e| {
-                    let n = node(w, e);
-                    let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
-                    s.flags(FlagWord::new().bit(n.aux & 1 != 0));
-                    s.tag(suspend(n.aux).map(|k| suspend_kind::row(&k)).expect("a kind"));
-                    children(w, s, &es[1..5]);
+                // Without back-references (WP-049), which would name the
+                // operands of `common` at its second writing.
+                let (naive, _) = crate::walk::without_back_refs(|| {
+                    written(input, rules, e, |w, s, e| {
+                        let n = node(w, e);
+                        let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+                        s.flags(FlagWord::new().bit(n.aux & 1 != 0));
+                        s.tag(suspend(n.aux).map(|k| suspend_kind::row(&k)).expect("a kind"));
+                        children(w, s, &es[1..5]);
+                    })
                 });
                 let common = expr(list_of(input, e)[1]);
                 let (once, _) = written(input, rules, common, child);
@@ -1737,11 +1741,15 @@ mod tests {
             assert!(!all.is_empty());
             for e in all {
                 let (got, _) = written(input, rules, e, pseudo_object_expr);
-                let (naive, _) = written(input, rules, e, |w, s, e| {
-                    let n = node(w, e);
-                    let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
-                    children(w, s, &es);
-                    s.uv(u64::from(n.b));
+                // Without back-references (WP-049), which would name the
+                // operands' own operands at their second writing.
+                let (naive, _) = crate::walk::without_back_refs(|| {
+                    written(input, rules, e, |w, s, e| {
+                        let n = node(w, e);
+                        let es: Vec<ExprId> = list(w, n.a).into_iter().map(expr).collect();
+                        children(w, s, &es);
+                        s.uv(u64::from(n.b));
+                    })
                 });
                 let es: Vec<ExprId> = list_of(input, e).into_iter().map(expr).collect();
                 let w = Walk::new(input, rules);

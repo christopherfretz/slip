@@ -27,8 +27,8 @@ use slip_kiln::kiln::ast::{DeclId, ExprId, ListId, RawId, StmtId, StringLitId};
 use crate::Cause;
 use crate::expr;
 use crate::stream::{FlagWord, Stream};
-use crate::tables::{contract_kind, expansion_form, if_kind, stmt_kind};
-use crate::walk::{TOO_DEEP, Walk};
+use crate::tables::{contract_kind, expansion_form, if_kind, stmt_kind, walk_row};
+use crate::walk::{NodeRef, TOO_DEEP, Walk};
 
 /// `child`: the statement `st`, walked here (§6).
 pub(crate) fn child(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) {
@@ -132,6 +132,12 @@ fn required_expr(w: &mut Walk<'_>, s: &mut Stream, raw: u32, cause: Cause) {
 )]
 fn node(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
     crate::walk::stack_probe();
+    // A statement this stream wrote already in this state: a
+    // back-reference (§6, `Walk::back_ref`), and no tail.
+    if let Some(count) = w.back_ref(s, NodeRef::Stmt(st)) {
+        s.uv(u64::from(walk_row::BACKREF)).uv(count);
+        return None;
+    }
     let n = *w.ast.stmts.get(st);
     let kind = n.kind();
     // kind: enum StmtKind, the node's tag.

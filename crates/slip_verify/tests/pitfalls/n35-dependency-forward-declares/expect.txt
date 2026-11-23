@@ -1,0 +1,9 @@
+# N35: the dependency forward-declares the owned Mine; Mine stays, Other
+# moves. bad moves Mine's definition: rejected where owned code passes it to
+# the dependency (pre); in bad-2 (on pre-2, no such call) the staying
+# incomplete legacy::Mine and the moved class have one key under the rule: a
+# collision (spec/digest.md §3.4), no place.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch indeterminate legacy::Mine
