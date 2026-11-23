@@ -153,15 +153,15 @@ impl<'u> KilnSubject<'u> {
     // ---- written declarations --------------------------------------------
 
     /// Whether `d` is a declaration written in the unit (§6.4 rule 3), not
-    /// one Kiln made. **The one place the subject decides it**: WP-085
-    /// replaces this body by a read of Kiln's declaration-extent table
-    /// (Kiln `spec/ast.md` §19.1, one row per declaration the parser
-    /// parsed, on with `ParseOptions.written`), keeping the tests of
-    /// `tests/subject_entities.rs`. An explicit instantiation has a row
-    /// there and is still no declaration of the subject (landed
-    /// decision 2), so `instantiated` stays first.
-    ///
-    /// Until then the rule is structural (landed decision 1):
+    /// one Kiln made: Kiln's declaration-extent table's answer
+    /// (`references.rs`, `written_by_table`; WP-085).
+    pub(super) fn written(&self, d: DeclId) -> bool {
+        self.written_by_table(d)
+    }
+
+    /// WP-083's structural rule, kept only for the comparison with the
+    /// table (`references.rs` tests) and deleted after it (landed
+    /// decision 1 of WP-083):
     ///
     /// 1. never an implicit declaration, the translation unit, or an
     ///    instantiation: an implicit or explicit instantiation, a member of
@@ -182,7 +182,8 @@ impl<'u> KilnSubject<'u> {
     ///    parsed, so a declaration it does not list (the one deduction
     ///    makes for `template <> void A::mt<int>(int)`, whose lexical
     ///    context is `A`) is not written.
-    pub(super) fn written(&self, d: DeclId) -> bool {
+    #[cfg_attr(not(test), allow(dead_code, reason = "compared with the table in tests"))]
+    pub(super) fn written_structural(&self, d: DeclId) -> bool {
         let mut d = d;
         for _ in 0..self.chain_bound() {
             let n = self.ast.decls.get(d);

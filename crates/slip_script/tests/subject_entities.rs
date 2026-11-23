@@ -13,7 +13,7 @@ use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
 use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{Ast, DeclId};
-use slip_kiln::snippet::{Parsed, Snippet, parse};
+use slip_kiln::snippet::{Extra, Parsed, Snippet, parse_with_tables};
 use slip_model::hash::content_digest;
 use slip_script::fake::FakeOut;
 use slip_script::host::{Host, Limits, parse_qualified_name};
@@ -28,13 +28,20 @@ use slip_script::wire::{self, Errc};
 /// subject over it. A file whose path starts with `own/` is owned.
 fn with<R>(files: &[(&str, &str)], f: impl FnOnce(&Parsed<'_>, &KilnSubject<'_>) -> R) -> R {
     let snippet = Snippet { files, main: files[0].0, include: &["lib"], std: "c++23" };
-    parse(&snippet, |p| {
+    parse_with_tables(&snippet, &Extra::default(), |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let owned = |path: &[u8]| path.starts_with(b"own/");
-        let s = KilnSubject::from_snippet(p, &owned);
+        let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
         f(p, &s)
     })
     .expect("the snippet parses")
+}
+
+/// Options of a real parse with Kiln's two tables, which the subject needs.
+fn written_options() -> slip_kiln::ParseOptions {
+    let mut o = slip_kiln::ParseOptions::default();
+    o.written = true;
+    o
 }
 
 fn look(s: &KilnSubject<'_>, name: &str) -> Vec<Entity> {
@@ -984,14 +991,10 @@ fn review_f4_forced_include_orders_first() {
         cost_hint: 1,
         origins: vec![Origin { configuration: 0, entry: 0 }],
     };
-    let order = slip_kiln::parse_observer_with(
-        &observer,
-        Phase::Map,
-        0,
-        slip_kiln::ParseOptions::default(),
-        |unit| {
+    let order =
+        slip_kiln::parse_observer_with(&observer, Phase::Map, 0, written_options(), |unit| {
             let owned = |_: &[u8]| true;
-            let s = KilnSubject::new(unit, &owned);
+            let s = KilnSubject::new(unit, &owned).expect("a unit with tables");
             let hs = s.lookup(false, &[b"q", b"h"]);
             hs.iter()
                 .map(|&e| {
@@ -1000,11 +1003,10 @@ fn review_f4_forced_include_orders_first() {
                     if text.contains("x.h") { "x.h" } else { "main.cpp" }
                 })
                 .collect::<Vec<_>>()
-        },
-    )
-    .expect("the tree parses")
-    .1
-    .expect("the closure ran");
+        })
+        .expect("the tree parses")
+        .1
+        .expect("the closure ran");
     assert_eq!(order, ["x.h", "main.cpp"]);
 }
 
@@ -1196,19 +1198,17 @@ fn review_f9_closure_call_operator() {
         }
         let z = find(p, DeclKind::Var, "z", |_, _| true);
         assert_eq!(z.len(), 1);
-        // Known gap of the structural rule (landed decision 19): `z` is
-        // written, but its context chain is the implicit call operator, so
-        // it has no declaration until WP-085 reads the extent table. Then
-        // this becomes `["main.cpp:1"]`.
-        assert_eq!(decls_at(p, s, s.entity_number(z[0])), Vec::<String>::new());
+        // The structural rule's gap (landed decision 19) is closed by the
+        // extent table (WP-085): `z` is written.
+        assert_eq!(decls_at(p, s, s.entity_number(z[0])), ["main.cpp:1"]);
     });
 }
 
 /// Second review, item 3: everything a lambda-expression declares climbs to
-/// the implicit closure, so the structural rule finds no declaration. Each
-/// assertion below pins today's answer (landed decision 19); WP-085, reading
-/// the extent table, turns every `[]` into the line given beside it. A
-/// lambda's explicit template parameters are written already.
+/// the implicit closure, so the structural rule found no declaration
+/// (landed decision 19). WP-085 reads the extent table, which has a row for
+/// each, except an init-capture (a Kiln hole, `spec/landed/edits/WP-067.md`,
+/// pinned here and in `tests/subject_references.rs`).
 #[test]
 fn review2_lambda_declares() {
     let src = "struct P { int a, b; };
@@ -1229,14 +1229,14 @@ int da(int x = [] { int dz = 2; return dz; }());
             decls_at(p, s, s.entity_number(d[0]))
         };
         let none = Vec::<String>::new();
-        assert_eq!(at_of(DeclKind::Var, "ic"), none, "init-capture: WP-085 gives main.cpp:3");
-        assert_eq!(at_of(DeclKind::CXXRecord, "LL"), none, "local class: main.cpp:4");
-        assert_eq!(at_of(DeclKind::Field, "lm"), none, "its member: main.cpp:4");
-        assert_eq!(at_of(DeclKind::Binding, "b1"), none, "binding: main.cpp:5");
-        assert_eq!(at_of(DeclKind::Binding, "b2"), none, "binding: main.cpp:5");
-        assert_eq!(at_of(DeclKind::Var, "nz"), none, "in a member initialiser: main.cpp:9");
-        assert_eq!(at_of(DeclKind::Var, "dz"), none, "in a default argument: main.cpp:10");
-        assert_eq!(at_of(DeclKind::TemplateTypeParm, "LT"), ["main.cpp:6"], "written today");
+        assert_eq!(at_of(DeclKind::Var, "ic"), none, "init-capture: no row (Kiln hole)");
+        assert_eq!(at_of(DeclKind::CXXRecord, "LL"), ["main.cpp:4"], "local class");
+        assert_eq!(at_of(DeclKind::Field, "lm"), ["main.cpp:4"], "its member");
+        assert_eq!(at_of(DeclKind::Binding, "b1"), ["main.cpp:5"], "binding");
+        assert_eq!(at_of(DeclKind::Binding, "b2"), ["main.cpp:5"], "binding");
+        assert_eq!(at_of(DeclKind::Var, "nz"), ["main.cpp:9"], "in a member initialiser");
+        assert_eq!(at_of(DeclKind::Var, "dz"), ["main.cpp:10"], "in a default argument");
+        assert_eq!(at_of(DeclKind::TemplateTypeParm, "LT"), ["main.cpp:6"], "template parameter");
     });
 }
 
@@ -1371,14 +1371,10 @@ fn measure_lookup_absent() {
         cost_hint: 1,
         origins: vec![Origin { configuration: 0, entry: 0 }],
     };
-    let report = slip_kiln::parse_observer_with(
-        &observer,
-        Phase::Map,
-        0,
-        slip_kiln::ParseOptions::default(),
-        |unit| {
+    let report =
+        slip_kiln::parse_observer_with(&observer, Phase::Map, 0, written_options(), |unit| {
             let owned = |_: &[u8]| false;
-            let s = KilnSubject::new(unit, &owned);
+            let s = KilnSubject::new(unit, &owned).expect("a unit with tables");
             // The last component of the first four is interned nowhere in
             // the unit, so the walk stops at the symbol table; that of the
             // last three is interned (`errs`, `size`) and absent from the
@@ -1411,9 +1407,8 @@ fn measure_lookup_absent() {
             let fs = s.lookup(true, &[b"llvm", b"errs"]);
             lines.push(format!("llvm::errs: {} entities, first {:?}", fs.len(), t2.elapsed()));
             lines
-        },
-    )
-    .expect("the unit parses");
+        })
+        .expect("the unit parses");
     for l in report.1.expect("the closure ran") {
         println!("{l}");
     }
