@@ -1,0 +1,4 @@
+# Fix round 3, finding 2: every declaration of the entity's chain is asked for its pattern, not the representative only (spec/digest.md §3.4).
+# The review's B32b: a rule for the redeclared friend itself, beside the pattern's: key/rule-on-instantiated-member, as for a friend not redeclared.
+relocate S::friend f(S<type-parameter-0-0>) => S :: g
+relocate f(S<int>) => :: g

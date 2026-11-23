@@ -1,0 +1,4 @@
+indeterminate u()
+indeterminate g(S<int>)
+indeterminate S<int>::<friend g(S<int>)>
+removed f(S<int>)

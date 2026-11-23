@@ -1,0 +1,5 @@
+# Item 3 and spec/verify.md §2.3: the two lines of parents/mapped-parent in the wrong order. The
+# parent x of the first line is mapped under the lines above it, none, so the rule matches y under
+# x's own id, which nothing has once x maps to a: y keeps its name, and all under it differs.
+relocate a::b => x :: y
+relocate a => :: x

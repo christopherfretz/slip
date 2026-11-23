@@ -1,0 +1,2 @@
+# Item 9, from verify/renamed-member: the rule given the kind field.
+rule field | post S | id g | disc-of post S::g() | pre S | id f

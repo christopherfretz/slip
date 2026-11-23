@@ -1,0 +1,2 @@
+# Fix round 2, F2 (the review's case): a rule of kind specialisation is refused (spec/verify.md §2.1).
+relocate W1<A> => W2 :: W2

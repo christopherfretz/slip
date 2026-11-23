@@ -1,0 +1,3 @@
+# Fix round 2, F3: a member instantiated from a pattern member takes the pattern member's mapped name (spec/digest.md §3.4).
+# Through the chain: O<int>::I<char>::g from O<int>::I<U>::g from O::I::g.
+relocate O::I::f() => O::I :: g

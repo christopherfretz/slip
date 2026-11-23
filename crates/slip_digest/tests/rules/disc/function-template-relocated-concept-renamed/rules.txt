@@ -1,0 +1,3 @@
+# Item 2: the overload constrained by a relocated concept renamed, the other kept: the rule tells them apart by the discriminator, mapped.
+relocate acme => :: legacy
+relocate template <acme::C> int f(type-parameter-0-0) => :: g

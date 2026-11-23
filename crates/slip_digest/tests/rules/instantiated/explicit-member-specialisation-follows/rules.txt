@@ -1,0 +1,3 @@
+# Fix round 2, F3: a member instantiated from a pattern member takes the pattern member's mapped name (spec/digest.md §3.4).
+# An explicit specialisation of a member is a specialisation of the pattern member, and is spelled with its name: it follows, as a specialisation follows its template.
+relocate S::f() => S :: g

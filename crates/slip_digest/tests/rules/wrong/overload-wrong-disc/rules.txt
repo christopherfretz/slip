@@ -1,0 +1,3 @@
+# Item 9, from disc/overload-renamed-relocated-parameter: the rule given the discriminator of the other overload, f(int).
+relocate acme => :: legacy
+rule function | root | id g | disc-of post f(int) | root | id f

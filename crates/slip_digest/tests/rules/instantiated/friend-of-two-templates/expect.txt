@@ -1,0 +1,5 @@
+changed V
+added V::<friend g(int)>
+added V::friend g(int)
+removed V::<friend f(int)>
+removed V::friend f(int)

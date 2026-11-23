@@ -1,0 +1,36 @@
+# Item 8: the same pair with no rules.txt: every entity of the namespace is another key, so
+# every unit that mentions one differs (user()), and nothing outside it (Out) does.
+changed <order>
+added legacy
+added legacy::Box
+added legacy::Box::t
+added legacy::E
+added legacy::F
+added legacy::F::f0
+added legacy::F::f1
+added legacy::S
+added legacy::S::get() const
+added legacy::S::v
+added legacy::e0
+added legacy::e1
+added legacy::f(int)
+added legacy::f(legacy::S)
+added legacy::var
+added template <class> type-parameter-0-0 legacy::id(type-parameter-0-0)
+removed acme
+removed acme::Box
+removed acme::Box::t
+removed acme::E
+removed acme::F
+removed acme::F::f0
+removed acme::F::f1
+removed acme::S
+removed acme::S::get() const
+removed acme::S::v
+removed acme::e0
+removed acme::e1
+removed acme::f(acme::S)
+removed acme::f(int)
+removed acme::var
+removed template <class> type-parameter-0-0 acme::id(type-parameter-0-0)
+changed user()

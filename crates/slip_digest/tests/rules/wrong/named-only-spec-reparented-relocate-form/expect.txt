@@ -1,0 +1,2 @@
+# The relocate form makes the same kind of rule.
+refused a rule may not match a specialisation

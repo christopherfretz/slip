@@ -1,0 +1,2 @@
+# Item 9 attempt: f(int) renamed g with the caller unchanged: f(1) now resolves to f(long).
+relocate f(int) => :: g

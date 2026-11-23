@@ -1,0 +1,7 @@
+# pending
+# The definition of call<S>, a derived unit both sides have, is written by the demand package
+# (spec/digest-kinds.md §11.9; today Pending(Demand), the same placeholder on both sides, which the pair
+# test tolerates and spec/verify.md reports as derived_indeterminate, so verify does not call it
+# verified). Once written, its body references S::f by key, which in B maps to g: it must differ.
+exact derived
+derived-changed call<S>(S)

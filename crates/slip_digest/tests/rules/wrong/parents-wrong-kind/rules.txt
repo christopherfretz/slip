@@ -1,0 +1,3 @@
+# Item 9, from parents/mapped-parent: the outer rule given the kind class.
+rule class | root | id x | none | root | id a
+relocate a::b => x :: y
