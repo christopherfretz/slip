@@ -393,6 +393,12 @@ pair("differ", "typedef-alignment-dependent-array",
 pair("differ", "typedef-alignment-address-space", "__attribute__((address_space(1))) long v;",
      "__attribute__((address_space(1))) L v;", ["changed v"],
      "an address-space-qualified type of the typedef (Kiln's `ExtQual`).", pre=TDL)
+pair("differ", "typedef-alignment-nested", "typedef I J __attribute__((aligned(16)));",
+     "typedef K J __attribute__((aligned(16)));", ["changed J", "changed x"],
+     "an aligned typedef of another aligned typedef, `I` or `K` (same alignment): every"
+     " typedef met is listed (rule 9), not only the outermost, which decides the alignment.",
+     pre="typedef int I __attribute__((aligned(8)));\ntypedef int K __attribute__((aligned(8)));",
+     post="J x;")
 pair("differ", "typedef-alignment-value", "typedef int I __attribute__((aligned(8)));",
      "typedef int I __attribute__((aligned(16)));", ["changed I"],
      "another alignment on the typedef: its own unit; a class with a field of it holds the"
