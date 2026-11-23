@@ -452,7 +452,7 @@ the job.
 | a claim's `file` is an index of `files`; `lo <= hi <= size`; `lo < hi` for `replace` | the claim's first byte | `sections.edits.claims[i]` |
 | `pieces` empty unless `replace`; no empty literal or spelled text; no two literals adjacent; a copy's place is within its file and not empty | that piece's first byte, or the `pieces` field | `sections.edits.claims[i].pieces[j]` |
 | `reason` is `none` iff the stance is not `refuse` | the `reason` field | `sections.edits.claims[i].reason` |
-| `subjects` and `notes` strictly ascending | the field | `sections.edits.claims[i].subjects` |
+| `subjects` and `notes` strictly ascending | the field | `sections.edits.claims[i].subjects`, `sections.edits.claims[i].notes` |
 | `tiers` not 0, bits above 4 are 0, bits 2 to 4 only for `refuse`; `macro` absent if `tiers` is 1 | the `tiers` field | `sections.edits.claims[i].tiers` |
 | `votes` at least 1 | the `votes` field | `sections.edits.claims[i].votes` |
 | `claims` strictly ascending in the sort key | that claim's first byte | `sections.edits.claims[i]` |

@@ -323,7 +323,7 @@ whole file. The order of checks is:
 1. The container (§5.3): `BadMagic`, `UnsupportedVersion`, `Truncated`,
    `Corrupt`, section framing.
 2. `UnknownSection` for any critical section id the format does not define
-   (for the shard this includes the reserved ids 16, 17, 18 and 20), before
+   (for the shard this includes the reserved ids 16, 18 and 20), before
    any section is interpreted.
 3. Each defined section in ascending id order: absent and required is
    `Malformed` at the offset of the `end` byte (file length − 33); otherwise
@@ -332,12 +332,15 @@ whole file. The order of checks is:
    each observer of the plan is decoded.
 4. The format's invariants, the first violation in section and element
    order: the plan's (§7.1); the shard's (§8.1), then those of `digests`
-   (§8.2), then those of `verdict` (§8.3). Within `digests` and `verdict`
-   the rules are checked in the order of their tables, **each rule over the
-   whole section, in field and element order, before the next rule**.
+   (§8.2), then those of `verdict` (§8.3), then those of `edits`,
+   `binding`, `rule_use` and `spellings` (§8). Within `digests` and
+   `verdict` the rules are checked in the order of their tables, **each
+   rule over the whole section, in field and element order, before the
+   next rule**; `edits.md` §4.7 states its own order.
 
 `dump` and `content_id` dispatch on bytes 8–11 of the file; a file whose kind
-is none of the three is opened as a plan, which reports `BadMagic` (or
+is none of those `slip_model::formats` reads (`PLAN`, `SHRD`, `RUNR`,
+`DECL`, `TRFM`) is opened as a plan, which reports `BadMagic` (or
 `Truncated` for a short prefix of a valid header). `content_id` returns the
 trailer only once the file has been fully validated as by `from_bytes`.
 
@@ -401,8 +404,13 @@ impl End    { pub const ALL: [End; 5];    pub fn name(self) -> &'static str; }
   returns `<path>: <message>`, with the same path and message as
   `from_json` gives for the same violation.
 - `Shard` has, besides the fields of §8, `digests: Option<Digests>`
-  (`slip_model::digests`) and `verdict: Option<Verdict>`
-  (`slip_model::verdict`); an absent section is `None`.
+  (`slip_model::digests`), `verdict: Option<Verdict>`
+  (`slip_model::verdict`), `edits: Option<Edits>` (`slip_model::edits`),
+  `binding: Option<Binding>` and `rule_use: Option<RuleUse>`
+  (`slip_model::agreement`) and `spellings: Option<Spellings>`
+  (`slip_model::spellings`), in that order; an absent section is `None`.
+- `Transform` (`slip_model::transform`, kind `TRFM`, `edits.md` §3) has
+  the same interface as the three above.
 - `ALL` lists every value of the enumeration once, in code order; `name()`
   is its name in §7–§9, the one the JSON rendering uses (§10).
 
@@ -569,11 +577,13 @@ one is `UnknownSection`. Ids 22 and 23 are not assigned. Sections 17, 24,
 reader that predates them refuses a shard that has one (the ids are
 critical), and a shard without them reads as before. An `edits` section
 in a shard of phase `verify`, or a `binding`, `rule_use` or `spellings`
-section in a shard of phase `map`, is `Invalid`. `edits`, `rule_use` and
-`spellings` are `Invalid` in a shard whose status is not `ok`; `binding`
-is `Invalid` only in one whose status is `failed`. Their own invariants
-are `edits.md` §4.7 and `verify.md` §9.1 and §10.4, checked after those
-of §8.1 to §8.3 in the order of the section ids.
+section in a shard of phase `map`, is `Malformed` at the first byte of
+the section's payload, JSON path `sections.<name>`. So are `edits`,
+`rule_use` and `spellings` in a shard whose status is not `ok`, and
+`binding` in one whose status is `failed` (only). The phase is checked
+before the status. Their own invariants are `edits.md` §4.7 and
+`verify.md` §9.1 and §10.4, checked after those of §8.1 to §8.3 in the
+order of the section ids, each section's phase and status first.
 
 ### 8.1 Invariants
 
