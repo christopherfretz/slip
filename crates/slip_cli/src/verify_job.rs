@@ -111,8 +111,14 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     };
     let mut counters = std::mem::take(&mut shard.counters);
     counters.extend(walk_counters(&output));
-    let mut post =
-        Post { counters, digests: output.digests, differing: 0, reparsed: 0, by_kind: [0; 6] };
+    let mut post = Post {
+        counters,
+        digests: output.digests,
+        differing: 0,
+        reparsed: 0,
+        by_kind: [0; 6],
+        unstable: 0,
+    };
     let unverifiable_now = |post: Post, mut shard: Shard, reason: &str| -> Result<Shard, String> {
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
@@ -181,6 +187,8 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         match post_side {
             Some(post_side) if same => {
                 locate::fill(&mut v.findings, locate_n, pre_side.as_ref(), &post_side);
+                post.unstable =
+                    pre_side.as_ref().map_or(0, locate::Side::unstable) + post_side.unstable();
             }
             _ => {
                 post.by_kind = [0; 6];
@@ -294,6 +302,8 @@ struct Post {
     reparsed: u64,
     /// The findings of each kind, by [`kind_index`].
     by_kind: [u64; 6],
+    /// `verify.traces.unstable` (§7.2), present only when not 0.
+    unstable: u64,
 }
 
 impl Post {
@@ -301,7 +311,7 @@ impl Post {
     /// `shard`), its counters and those of §7.2, sorted by name; step 1's
     /// `digests` without unit lists; `v`.
     fn finish(self, shard: &mut Shard, v: Verdict) -> Shard {
-        let Post { mut counters, mut digests, differing, reparsed, by_kind } = self;
+        let Post { mut counters, mut digests, differing, reparsed, by_kind, unstable } = self;
         let by_name = [
             ("verify.groups.differing", differing),
             ("verify.findings", v.total),
@@ -311,6 +321,9 @@ impl Post {
             ("verify.reparsed", reparsed),
         ];
         counters.extend(by_name.iter().map(|&(n, value)| Counter { name: n.to_owned(), value }));
+        if unstable > 0 {
+            counters.push(Counter { name: "verify.traces.unstable".to_owned(), value: unstable });
+        }
         counters.extend(
             KINDS
                 .iter()
