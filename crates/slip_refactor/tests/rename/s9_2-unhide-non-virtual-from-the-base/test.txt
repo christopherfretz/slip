@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 fix round F2: from the base, B::f() and B::f(int) and the using-declaration are renamed, the hider D::f() is not (mixed_follower on the hidden shadow)
+from: n::B::f
+to: g
+kind: function

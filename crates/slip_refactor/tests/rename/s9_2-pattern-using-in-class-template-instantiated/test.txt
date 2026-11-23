@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 item 1 (c): the using-declaration of F<int> follows the pattern's (unsupported until WP-119); its shadow, which Kiln does not link to the pattern's, follows Base::f with a rule of its own
+from: n::Base::f
+to: g
+kind: function

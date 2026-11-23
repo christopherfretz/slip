@@ -417,6 +417,7 @@ fn write_node(
     let Some(e) = strip_parens(w, s, e, keep_paren) else {
         return;
     };
+    s.mark(NodeRef::Expr(e));
     let ast = w.ast;
     let words = ast.exprs.get(e);
     if let Some(count) = written_before(w, s, e, words.kind()) {

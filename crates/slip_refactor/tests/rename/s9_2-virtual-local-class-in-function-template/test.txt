@@ -1,4 +1,4 @@
-spec: edits.md §9.2 candidates (an override in a local class of a function template's pattern: unsupported until docs/wp/WP-073.md)
+spec: edits.md §9.2 candidates (an override in a local class of a function template's pattern: a candidate, not flagged; a local class is in no class pattern, so no followers)
 from: n::B::f
 to: g
 kind: function

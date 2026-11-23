@@ -1,4 +1,4 @@
-spec: edits.md §9.2 followers (a using-declaration in a class template's pattern: a follower, unsupported until docs/wp/WP-073.md)
+spec: edits.md §9.2 followers (a using-declaration in a class template's pattern: a follower, not flagged; the instantiated one follows it and carries WP-073's flag until docs/wp/WP-119.md, its shadow follows the target)
 from: n::B::f
 to: g
 kind: function

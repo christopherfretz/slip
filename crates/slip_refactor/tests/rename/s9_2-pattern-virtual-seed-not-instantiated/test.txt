@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (a virtual seed that is a member of a class template is not flagged), WP-120 item 2; WP-120 item 1 (a), an observer that sees the base only
+from: n::B::f
+to: g
+kind: function

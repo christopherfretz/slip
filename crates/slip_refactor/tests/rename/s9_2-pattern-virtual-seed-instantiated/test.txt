@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (a virtual seed that is a member of a class template is not flagged; its follower in B<int> is, until WP-119), WP-120 item 2
+from: n::B::f
+to: g
+kind: function

@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 fix round: a using-declaration naming a class and a function of one name: its of holds both, the class no subject (mixed_follower in reduce)
+from: n::B::f
+to: g
+kind: function

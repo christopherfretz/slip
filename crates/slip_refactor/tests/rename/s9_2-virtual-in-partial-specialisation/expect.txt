@@ -1,6 +1,7 @@
 subjects:
-  34817475 candidate unsupported rule=yes n::D<type-parameter-0-0 *>::f()
+  34817475 candidate - rule=yes n::D<type-parameter-0-0 *>::f()
   599ef791 seed - rule=yes n::B::f()
+  e47e1b88 follower unsupported rule=yes n::D<int *>::f() of=34817475
 links:
   34817475 599ef791
 claims:

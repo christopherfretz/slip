@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use slip_cli::args::{
     self, DEFAULT_FINDINGS, DEFAULT_LOCATE, DEFAULT_STORE, DEFAULT_WORKER_JOBS,
-    DEFAULT_WORKER_STACK, Db, Invocation, ParseArgs, PlanArgs, PlanSource, UsageError, WorkerArgs,
-    parse_size,
+    DEFAULT_WORKER_STACK, Db, DeclareArgs, ImageArgs, Invocation, ParseArgs, PlanArgs, PlanSource,
+    RunArgs, UnitsArgs, UsageError, VerifyArgs, WorkerArgs, parse_size,
 };
 
 fn os(words: &[&str]) -> Vec<OsString> {
@@ -38,6 +38,23 @@ fn usage_error(words: &[&str]) -> String {
             line
         }
         other => panic!("{words:?}: expected a usage error, got {other:?}"),
+    }
+}
+
+/// The options of `RunArgs` when none is given.
+fn default_run() -> RunArgs {
+    RunArgs {
+        store: DEFAULT_STORE.into(),
+        jobs: None,
+        only: vec![],
+        limit: None,
+        memory: None,
+        observer_memory: None,
+        observer_timeout: None,
+        estimate_base: None,
+        estimate_per_byte: None,
+        worker_jobs: DEFAULT_WORKER_JOBS,
+        worker_stack: DEFAULT_WORKER_STACK,
     }
 }
 
@@ -118,17 +135,19 @@ fn s8_option_spellings() {
     ]);
     let expected = ParseArgs {
         source: PlanSource::Plan("abcd".into()),
-        store: "s".into(),
-        jobs: Some(3),
-        only: vec![b"lib/".to_vec()],
-        limit: Some(7),
-        memory: Some(8 << 30),
-        observer_memory: Some(2 << 30),
-        observer_timeout: Some(60),
-        estimate_base: Some(256 << 20),
-        estimate_per_byte: Some(32),
-        worker_jobs: 2,
-        worker_stack: 64 << 20,
+        run: RunArgs {
+            store: "s".into(),
+            jobs: Some(3),
+            only: vec![b"lib/".to_vec()],
+            limit: Some(7),
+            memory: Some(8 << 30),
+            observer_memory: Some(2 << 30),
+            observer_timeout: Some(60),
+            estimate_base: Some(256 << 20),
+            estimate_per_byte: Some(32),
+            worker_jobs: 2,
+            worker_stack: 64 << 20,
+        },
     };
     assert_eq!(separate, expected);
     assert_eq!(joined, expected);
@@ -136,20 +155,7 @@ fn s8_option_spellings() {
     let defaults = parse_args(&["parse", "--db", "c.json"]);
     assert_eq!(
         defaults,
-        ParseArgs {
-            source: PlanSource::Db(vec![db(None, "c.json")]),
-            store: DEFAULT_STORE.into(),
-            jobs: None,
-            only: vec![],
-            limit: None,
-            memory: None,
-            observer_memory: None,
-            observer_timeout: None,
-            estimate_base: None,
-            estimate_per_byte: None,
-            worker_jobs: DEFAULT_WORKER_JOBS,
-            worker_stack: DEFAULT_WORKER_STACK,
-        }
+        ParseArgs { source: PlanSource::Db(vec![db(None, "c.json")]), run: default_run() }
     );
 }
 
@@ -220,7 +226,7 @@ fn s8_4_worker_options() {
 #[test]
 fn s8_values_and_double_dash() {
     let a = parse_args(&["parse", "--db", "c.json", "--only", "-fno"]);
-    assert_eq!(a.only, vec![b"-fno".to_vec()]);
+    assert_eq!(a.run.only, vec![b"-fno".to_vec()]);
     assert_eq!(parse(&["dump", "--", "--store"]), Ok(Invocation::Dump { file: "--store".into() }));
     // After `--` an option name is an argument, which `plan` does not take.
     let line = usage_error(&["plan", "--db", "c.json", "--", "--store", "x"]);
@@ -234,7 +240,7 @@ fn s8_repetition() {
     let a = plan(&["plan", "--db", "a=x.json", "--db=b=y.json"]);
     assert_eq!(a.dbs, vec![db(Some("a"), "x.json"), db(Some("b"), "y.json")]);
     let a = parse_args(&["parse", "--db", "c.json", "--only", "a", "--only=b"]);
-    assert_eq!(a.only, vec![b"a".to_vec(), b"b".to_vec()]);
+    assert_eq!(a.run.only, vec![b"a".to_vec(), b"b".to_vec()]);
     for words in [
         &["plan", "--db", "c.json", "--store", "x", "--store", "y"][..],
         &["plan", "--db", "c.json", "-j1", "-j", "2"],
@@ -322,8 +328,8 @@ fn s8_malformed_numbers_and_sizes() {
     // Zero is a value where it means something: no admission, no timeout,
     // an empty selection.
     let a = parse_args(&["parse", "--db", "c.json", "--memory", "0", "--observer-timeout", "0"]);
-    assert_eq!((a.memory, a.observer_timeout), (Some(0), Some(0)));
-    assert_eq!(parse_args(&["parse", "--db", "c.json", "--limit", "0"]).limit, Some(0));
+    assert_eq!((a.run.memory, a.run.observer_timeout), (Some(0), Some(0)));
+    assert_eq!(parse_args(&["parse", "--db", "c.json", "--limit", "0"]).run.limit, Some(0));
 }
 
 // §8.2: exactly one of `--plan` and `--db`.
@@ -385,8 +391,8 @@ fn s8_byte_strings() {
             path: PathBuf::from(raw(b"caf\xe9.json"))
         }])
     );
-    assert_eq!(a.store, PathBuf::from(raw(b"st\xff")));
-    assert_eq!(a.only, vec![b"\xfe".to_vec()]);
+    assert_eq!(a.run.store, PathBuf::from(raw(b"st\xff")));
+    assert_eq!(a.run.only, vec![b"\xfe".to_vec()]);
 }
 
 // §8 `<size>`: decimal, suffixes K M G T in powers of 1024, zero; `None` on
@@ -433,6 +439,12 @@ fn s8_usage_text() {
         "slip parse",
         "slip dump",
         "slip resource --write",
+        "slip verify --plan",
+        "slip declare --plan",
+        "slip units --plan",
+        "--post-image",
+        "--declared <file>",
+        "--match <substring>",
         "slip --version",
         "slip --help",
         "--worker-stack",
@@ -440,4 +452,282 @@ fn s8_usage_text() {
         assert!(args::USAGE.contains(word), "{word}");
     }
     assert!(!args::USAGE.contains("__worker") && !args::USAGE.contains("__panic"));
+}
+
+fn verify_args(words: &[&str]) -> VerifyArgs {
+    match parse(words) {
+        Ok(Invocation::Verify(a)) => a,
+        other => panic!("{words:?}: {other:?}"),
+    }
+}
+
+fn declare_args(words: &[&str]) -> DeclareArgs {
+    match parse(words) {
+        Ok(Invocation::Declare(a)) => a,
+        other => panic!("{words:?}: {other:?}"),
+    }
+}
+
+fn units_args(words: &[&str]) -> UnitsArgs {
+    match parse(words) {
+        Ok(Invocation::Units(a)) => a,
+        other => panic!("{words:?}: {other:?}"),
+    }
+}
+
+fn image(pairs: &[(&str, &str)]) -> ImageArgs {
+    ImageArgs {
+        roots: pairs.iter().map(|(r, _)| PathBuf::from(r)).collect(),
+        posts: pairs.iter().map(|(_, p)| PathBuf::from(p)).collect(),
+    }
+}
+
+// §8.7: every option of `verify`, its defaults, and the options it shares
+// with `parse` (`RunArgs`) parsed as `parse` parses them.
+#[test]
+fn s8_7_verify_options() {
+    let all = verify_args(&[
+        "verify",
+        "--plan",
+        "abcd",
+        "--round=3",
+        "--declared",
+        "d.decl",
+        "--root",
+        "/s",
+        "--post=/p",
+        "--root=/t",
+        "--post",
+        "/q",
+        "--findings",
+        "5",
+        "--locate=0",
+        "--report",
+        "r.json",
+        "--store=s",
+        "-j3",
+        "--only",
+        "lib/",
+        "--only=x",
+        "--limit=7",
+        "--memory=8G",
+        "--observer-memory=2G",
+        "--observer-timeout=60",
+        "--estimate-base=256M",
+        "--estimate-per-byte=32",
+        "--worker-jobs=2",
+        "--worker-stack=64M",
+    ]);
+    assert_eq!(
+        all,
+        VerifyArgs {
+            plan: "abcd".into(),
+            round: 3,
+            declared: Some("d.decl".into()),
+            image: image(&[("/s", "/p"), ("/t", "/q")]),
+            findings: 5,
+            locate: 0,
+            report: Some("r.json".into()),
+            run: RunArgs {
+                store: "s".into(),
+                jobs: Some(3),
+                only: vec![b"lib/".to_vec(), b"x".to_vec()],
+                limit: Some(7),
+                memory: Some(8 << 30),
+                observer_memory: Some(2 << 30),
+                observer_timeout: Some(60),
+                estimate_base: Some(256 << 20),
+                estimate_per_byte: Some(32),
+                worker_jobs: 2,
+                worker_stack: 64 << 20,
+            },
+        }
+    );
+    assert_eq!(
+        verify_args(&["verify", "--plan", "p.plan"]),
+        VerifyArgs {
+            plan: "p.plan".into(),
+            round: 0,
+            declared: None,
+            image: ImageArgs::default(),
+            findings: DEFAULT_FINDINGS,
+            locate: DEFAULT_LOCATE,
+            report: None,
+            run: default_run(),
+        }
+    );
+    // `--round`, `--findings`, `--locate` may be 0.
+    let z = verify_args(&["verify", "--plan", "p", "--round", "0", "--findings", "0"]);
+    assert_eq!((z.round, z.findings), (0, 0));
+}
+
+// §8.7: `verify` needs `--plan`, has no `--db`, and refuses what is not its
+// own; single options given twice; malformed numbers.
+#[test]
+fn s8_7_verify_usage_errors() {
+    assert_eq!(usage_error(&["verify"]), "`verify` needs `--plan`");
+    assert_eq!(usage_error(&["verify", "--store", "s"]), "`verify` needs `--plan`");
+    assert!(usage_error(&["verify", "--plan", "p", "--db", "c.json"]).contains("unknown option"));
+    assert!(usage_error(&["verify", "--plan", "p", "--from", "x"]).contains("unknown option"));
+    assert!(usage_error(&["verify", "--plan", "p", "--post-image"]).contains("unknown option"));
+    assert!(usage_error(&["verify", "--plan", "p", "extra"]).contains("unexpected argument"));
+    for twice in ["--round", "--declared", "--findings", "--locate", "--report", "--plan"] {
+        let line = usage_error(&["verify", "--plan", "p", twice, "1", twice, "1"]);
+        assert!(line.contains("more than once"), "{twice}: {line}");
+    }
+    for (opt, bad) in [("--round", "x"), ("--findings", "-1"), ("--locate", "1K"), ("-j", "0")] {
+        let line = usage_error(&["verify", "--plan", "p", opt, bad]);
+        assert!(line.contains("not a number") || line.contains("at least"), "{opt}: {line}");
+    }
+}
+
+// §8 "Images": the k-th `--root` and the k-th `--post` are one root map;
+// different numbers of the two are a usage error, for each command that
+// takes them.
+#[test]
+fn s8_unpaired_root_and_post() {
+    for command in [&["verify", "--plan", "p"][..], &["units", "--plan", "p"]] {
+        let mut words = command.to_vec();
+        words.extend(["--root", "/s"]);
+        assert_eq!(
+            usage_error(&words),
+            "`--root` and `--post` come in pairs: 1 `--root` and 0 `--post` given",
+            "{command:?}"
+        );
+        let mut words = command.to_vec();
+        words.extend(["--post", "/p", "--root", "/s", "--post", "/q"]);
+        assert_eq!(
+            usage_error(&words),
+            "`--root` and `--post` come in pairs: 1 `--root` and 2 `--post` given",
+            "{command:?}"
+        );
+    }
+    let line =
+        usage_error(&["declare", "--plan", "p", "--from", "f", "--out", "o", "--post", "/p"]);
+    assert_eq!(line, "`--root` and `--post` come in pairs: 0 `--root` and 1 `--post` given");
+    // Paired in the order given, whatever the interleaving.
+    let a = verify_args(&["verify", "--plan", "p", "--post", "/p", "--root", "/s"]);
+    assert_eq!(a.image, image(&[("/s", "/p")]));
+}
+
+// §8.8: the options of `declare`; `--plan`, `--from` and `--out` required;
+// no option of the pool.
+#[test]
+fn s8_8_declare_options() {
+    assert_eq!(
+        declare_args(&[
+            "declare",
+            "--plan",
+            "abcd",
+            "--from",
+            "t.txt",
+            "--out=d.decl",
+            "--owned",
+            "/s/a",
+            "--readonly=/s/a/dep",
+            "--owned",
+            "/s/b",
+            "--root",
+            "/s",
+            "--post",
+            "/p",
+            "--store",
+            "s",
+            "--only",
+            "a",
+            "--only",
+            "b",
+            "--limit",
+            "2",
+        ]),
+        DeclareArgs {
+            plan: "abcd".into(),
+            from: "t.txt".into(),
+            out: "d.decl".into(),
+            owned: vec!["/s/a".into(), "/s/b".into()],
+            readonly: vec!["/s/a/dep".into()],
+            image: image(&[("/s", "/p")]),
+            store: "s".into(),
+            only: vec![b"a".to_vec(), b"b".to_vec()],
+            limit: Some(2),
+        }
+    );
+    let d = declare_args(&["declare", "--plan", "p", "--from", "t", "--out", "o"]);
+    assert_eq!(
+        (d.store, d.image, d.limit),
+        (PathBuf::from(DEFAULT_STORE), ImageArgs::default(), None)
+    );
+    assert!(d.owned.is_empty() && d.readonly.is_empty());
+    // `--readonly` carves out of what `--owned` gives (`spec/edits.md` §2.1).
+    assert_eq!(
+        usage_error(&["declare", "--plan", "p", "--from", "t", "--out", "o", "--readonly", "/d"]),
+        "`--readonly` needs `--owned`"
+    );
+    assert_eq!(usage_error(&["declare", "--from", "t", "--out", "o"]), "`declare` needs `--plan`");
+    assert_eq!(usage_error(&["declare", "--plan", "p", "--out", "o"]), "`declare` needs `--from`");
+    assert_eq!(usage_error(&["declare", "--plan", "p", "--from", "t"]), "`declare` needs `--out`");
+    for other in ["-j", "--memory", "--declared", "--report", "--match", "--round"] {
+        let line =
+            usage_error(&["declare", "--plan", "p", "--from", "t", "--out", "o", other, "1"]);
+        assert!(line.contains("unknown option"), "{other}: {line}");
+    }
+    let line = usage_error(&["declare", "--plan", "p", "--from", "t", "--from", "u", "--out", "o"]);
+    assert!(line.contains("more than once"), "{line}");
+}
+
+// §8.9: the options of `units`; `--post-image` takes no value; `--match`
+// repeats.
+#[test]
+fn s8_9_units_options() {
+    assert_eq!(
+        units_args(&[
+            "units",
+            "--plan",
+            "abcd",
+            "--post-image",
+            "--root",
+            "/s",
+            "--post",
+            "/p",
+            "--store",
+            "s",
+            "--only",
+            "a",
+            "--limit",
+            "1",
+            "--match",
+            "f(",
+            "--match=g",
+        ]),
+        UnitsArgs {
+            plan: "abcd".into(),
+            post_image: true,
+            image: image(&[("/s", "/p")]),
+            store: "s".into(),
+            only: vec![b"a".to_vec()],
+            limit: Some(1),
+            matches: vec![b"f(".to_vec(), b"g".to_vec()],
+        }
+    );
+    let u = units_args(&["units", "--plan", "p"]);
+    assert!(!u.post_image && u.matches.is_empty() && u.image == ImageArgs::default());
+    // The flag before another option: it takes nothing from it.
+    let u = units_args(&["units", "--post-image", "--plan", "p"]);
+    assert!(u.post_image);
+    assert_eq!(u.plan, OsString::from("p"));
+    assert_eq!(usage_error(&["units"]), "`units` needs `--plan`");
+    assert_eq!(
+        usage_error(&["units", "--plan", "p", "--post-image=1"]),
+        "`--post-image` takes no value"
+    );
+    assert!(
+        usage_error(&["units", "--plan", "p", "--post-image", "--post-image"])
+            .contains("more than once")
+    );
+    for other in ["-j", "--from", "--declared", "--worker-jobs"] {
+        let line = usage_error(&["units", "--plan", "p", other, "1"]);
+        assert!(line.contains("unknown option"), "{other}: {line}");
+    }
+    // `--post-image` is no option of the other commands.
+    assert!(usage_error(&["parse", "--db", "c", "--post-image"]).contains("unknown option"));
 }

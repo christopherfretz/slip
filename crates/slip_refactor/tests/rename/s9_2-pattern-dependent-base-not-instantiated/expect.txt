@@ -1,0 +1,7 @@
+subjects:
+  599ef791 seed - rule=yes n::B::f()
+links:
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:3:40+1 keep t0 votes=1 none
+changed:

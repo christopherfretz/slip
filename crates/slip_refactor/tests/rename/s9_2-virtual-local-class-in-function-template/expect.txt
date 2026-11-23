@@ -1,6 +1,6 @@
 subjects:
   599ef791 seed - rule=yes n::B::f()
-  63de0986 candidate unsupported rule=yes k()::L::f()
+  63de0986 candidate - rule=yes k()::L::f()
 links:
   599ef791 63de0986
 claims:

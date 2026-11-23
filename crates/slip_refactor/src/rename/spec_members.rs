@@ -2,21 +2,25 @@
 //! member of a class template specialisation"; `docs/wp/WP-073.md` parts
 //! B and C).
 //!
-//! A seed in a pattern (`families::in_pattern`: a class template, a
-//! partial specialisation or a function template among its enclosing
-//! entities, as WP-072 reads it) is renamed as any seed is: its declarations
-//! and the references to it and to its instantiations are claimed by
-//! `decls` and `refs` (`written::origin` takes a member of an
-//! instantiated class to the member of the template). What this file
-//! adds is the followers:
+//! A subject in a class pattern (`families::in_class_pattern`: a class
+//! template or a partial specialisation encloses it, no function in
+//! between) is renamed as any subject is: its declarations and the
+//! references to it and to its instantiations are claimed by `decls` and
+//! `refs` (`written::origin` takes a member of an instantiated class to
+//! the member of the template). That is a seed, a virtual candidate, and
+//! a using-declaration follower or a shadow (`docs/wp/WP-120.md` item 1).
+//! What this file adds is the followers:
 //!
 //! - **Followers.** Every member of an instantiated specialisation that
-//!   Kiln links to the seed (`instantiated_from`, through the whole chain
+//!   Kiln links to the subject (`instantiated_from`, through the whole chain
 //!   of patterns, asked of every declaration of the member as
 //!   `spec/digest.md` §3.4 asks it), whose key has the old name, is a
 //!   follower with `of` the subject it was instantiated from: the member
 //!   of the template, or the follower in between for a member of a
-//!   member template's specialisation. A specialisation's own link (a
+//!   member template's specialisation. The using-declaration of an
+//!   instantiated class is one (Kiln links it to the pattern's); its
+//!   shadows, which Kiln does not link, are followers of their targets
+//!   (`followers::instantiated_using`). A specialisation's own link (a
 //!   specialisation of a member function template) is not followed: its
 //!   key is named by its template (`digest.md` §3.4) and needs no record
 //!   (§9.2). Members of an explicit or a partial specialisation of the
@@ -44,28 +48,31 @@
 //!   as `subjects::flag_unreachable` decides for a function template's
 //!   specialisation.
 //!
-//! - **Names in no table flag the seeds** (fix round; a seed in a
-//!   pattern is unflagged only when every place the unit shows naming it
-//!   is claimed or flags it, `spec/edits.md` §9.2):
+//! - **Names in no table flag the subjects in class patterns** (fix
+//!   round; a subject in a pattern is unflagged only when every place the
+//!   unit shows naming it is claimed or flags it, `spec/edits.md` §9.2;
+//!   every such subject, not only the seeds, since WP-120):
 //!   - a friend of a member of a dependent specialisation
 //!     (`template <class T> friend void n::S<T>::f();`), which Kiln
 //!     records as a `Friend` of a function **type**, with no declaration:
 //!     its name, located through the friend's extent row, is claimed
-//!     `unresolved`, and every seed in a pattern is `unreachable`;
+//!     `unresolved`, and every subject in a class pattern is
+//!     `unreachable`;
 //!   - a member named like the old name in an instantiated
 //!     specialisation (not an explicit specialisation of the class) that
 //!     no declaration links to a pattern (`template <> template <class U>
 //!     void S<int>::g() {}`): Kiln does not record which member it
-//!     specialises, so every seed in a pattern is `unsupported`.
+//!     specialises, so every subject in a class pattern is
+//!     `unsupported`.
 //!
 //!   An explicit instantiation of a member after the member's explicit
 //!   specialisation is recorded nowhere at the pin, so nothing here can
 //!   see it (`spec/landed/edits/WP-073.md`, fix round F3).
 //!
-//! **Cost.** Nothing unless a seed is in a pattern; then one pass over
+//! **Cost.** Nothing unless a subject is in a class pattern; then one pass over
 //! the unit's declarations, comparing each one's identifier with the old
 //! name (and locating each function-type friend's name); keys are
-//! computed only along chains that reach a seed.
+//! computed only along chains that reach such a subject.
 
 use std::collections::{HashMap, HashSet};
 
@@ -77,25 +84,26 @@ use slip_kiln::written;
 use slip_model::edits::{KeyId, Role, subject_flags};
 use slip_model::keys::Name;
 
-use super::families::in_pattern;
+use super::families::in_class_pattern;
+use super::followers;
 use super::{CTX_LIMIT, Ctx};
 
-/// Collects the followers of the seeds that are members of class
-/// templates, and flags those seeds where a name of theirs is in no table
-/// or in no link (module documentation).
+/// Collects the followers of the subjects in class patterns, and flags
+/// those subjects where a name of theirs is in no table or in no link
+/// (module documentation).
 pub(crate) fn collect(ctx: &mut Ctx<'_, '_, '_>) {
     let ast = ctx.unit.ast();
-    // What each entity resolved to: the subject it is (a seed in a
+    // What each entity resolved to: the subject it is (one in a class
     // pattern, or a follower), or `None`, not one.
     let mut memo: HashMap<DeclId, Option<KeyId>> = HashMap::new();
-    let mut seeds = Vec::new();
-    for (id, e) in ctx.subjects.seeds() {
-        if in_pattern(ctx, e) {
+    let mut in_patterns = Vec::new();
+    for (id, e) in ctx.subjects.entities() {
+        if in_class_pattern(ctx, e) {
             memo.insert(e, Some(id));
-            seeds.push(id);
+            in_patterns.push(id);
         }
     }
-    if seeds.is_empty() {
+    if in_patterns.is_empty() {
         return;
     }
     let named: HashSet<DeclId> = ctx.named.old.iter().map(|d| d.decl).collect();
@@ -111,12 +119,18 @@ pub(crate) fn collect(ctx: &mut Ctx<'_, '_, '_>) {
         }
         if follows_a_pattern(ast, d) {
             let e = ctx.keys.entity(d);
-            resolve(ctx, &mut memo, &named, e, 0);
+            let id = resolve(ctx, &mut memo, &named, e, 0);
+            if ast.decls.get(d).kind() == DeclKind::Using {
+                match id {
+                    Some(id) => followers::instantiated_using(ctx, d, id),
+                    None => followers::instantiated_unfollowed_using(ctx, d),
+                }
+            }
         } else {
             unlinked |= unlinked_member(ast, d);
         }
     }
-    for id in seeds {
+    for id in in_patterns {
         if friend {
             ctx.subjects.flag(id, subject_flags::UNREACHABLE);
         }
@@ -130,7 +144,8 @@ pub(crate) fn collect(ctx: &mut Ctx<'_, '_, '_>) {
 /// records only as a type, with no declaration (a member of a dependent
 /// specialisation, `template <class T> friend void n::S<T>::f();`), and
 /// its declarator-id may be the old name: then the name is claimed
-/// `unresolved`, and the caller flags the seeds `unreachable`. "May be":
+/// `unresolved`, and the caller flags the subjects in class patterns
+/// `unreachable`. "May be":
 /// `Sites::name_token` locates the name and its bytes are the old name's,
 /// or it refuses the name before comparing them (a macro's body, a pasted
 /// token, a file that is not owned); `not_plain` is a name spelled
@@ -164,6 +179,12 @@ fn friend_of_dependent_member(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> bool {
 /// redeclaration without a link of its own (`template <> int S<int>::v =
 /// 1;`) is not one: another declaration of its entity has the link.
 fn unlinked_member(ast: &Ast, d: DeclId) -> bool {
+    // A using-shadow is never linked (Kiln links its using-declaration),
+    // and nothing can specialise one: the shadows of an instantiated
+    // using-declaration are `followers::instantiated_using`'s.
+    if matches!(ast.decls.get(d).kind(), DeclKind::UsingShadow | DeclKind::ConstructorUsingShadow) {
+        return false;
+    }
     let linked =
         |x: DeclId| ast.templ_link(x).get().is_some() || ast.instantiated_from(x).is_some();
     if linked(d) || ast.redecls_of(d).any(linked) {
@@ -211,7 +232,7 @@ fn patterns(ctx: &Ctx<'_, '_, '_>, e: DeclId) -> Vec<DeclId> {
 }
 
 /// The subject entity `e` is, adding it as a follower when a pattern it
-/// was instantiated from is a subject (a seed of a class template, or a
+/// was instantiated from is a subject (one in a class pattern, or a
 /// follower of one) and its key has the old name. `depth` bounds the
 /// chain (each step leaves an instantiation for what it was made from).
 fn resolve(

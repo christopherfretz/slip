@@ -479,8 +479,16 @@ fn rules_give_the_ids_in_the_post_image() {
             && e.claims
                 .windows(2)
                 .all(|w| (w[0].file, w[0].lo, w[0].hi) != (w[1].file, w[1].lo, w[1].hi));
-        let want: Vec<Digest> =
-            e.subjects.iter().filter(|s| s.rule.is_some() && s.flags == 0).map(|s| s.id).collect();
+        // Reduce's selection (§5.2) over this one observer: a run with a
+        // follower partly selected (`mixed_follower`) is refused, and only
+        // the selected subjects are renamed.
+        let Some(selected) = selection(&e) else { continue };
+        let want: Vec<Digest> = e
+            .subjects
+            .iter()
+            .filter(|s| s.rule.is_some() && s.flags == 0 && selected.contains(&s.id))
+            .map(|s| s.id)
+            .collect();
         if !applicable || want.is_empty() {
             continue;
         }
@@ -539,6 +547,36 @@ fn rules_give_the_ids_in_the_post_image() {
         checked += 1;
     }
     assert!(checked > 0, "no directory was checked");
+}
+
+/// The subjects reduce selects in one observer's `e` (§5.2: the seeds,
+/// closed under the links, and every follower all of whose `of` is
+/// selected), or `None` when a follower is partly selected
+/// (`mixed_follower`).
+fn selection(e: &Edits) -> Option<BTreeSet<Digest>> {
+    let mut selected: BTreeSet<Digest> =
+        e.subjects.iter().filter(|s| s.role == Role::Seed).map(|s| s.id).collect();
+    loop {
+        let before = selected.len();
+        for l in &e.links {
+            if selected.contains(&l.a) || selected.contains(&l.b) {
+                selected.insert(l.a);
+                selected.insert(l.b);
+            }
+        }
+        for s in e.subjects.iter().filter(|s| s.role == Role::Follower) {
+            if !s.of.is_empty() && s.of.iter().all(|o| selected.contains(o)) {
+                selected.insert(s.id);
+            }
+        }
+        if selected.len() == before {
+            break;
+        }
+    }
+    let mixed = e.subjects.iter().filter(|s| s.role == Role::Follower).any(|s| {
+        s.of.iter().any(|o| selected.contains(o)) && !s.of.iter().all(|o| selected.contains(o))
+    });
+    if mixed { None } else { Some(selected) }
 }
 
 /// The wire name of a reason (`spec/edits.md` §4.2).
@@ -1027,4 +1065,594 @@ fn an_unrelated_family_is_not_selected_and_kept() {
     assert_eq!(claimed, 2, "X::f's declaration and its call");
     let rules = r.declared.as_ref().map(|d| d.rules().rules().len());
     assert_eq!(rules, Some(3), "the three functions of the family, and no other");
+}
+
+// ---------------------------------------------------------------------
+// End to end (`docs/wp/WP-120.md` "Tests"): the shards of every observer
+// reduced, the accepted edits applied, and each observer's pre-image
+// (digested with no rule) compared with its post-image (digested under
+// the run's rules), unit by unit, as verification compares them
+// (`spec/verify.md` §1, `spec/digest.md` §3.4).
+
+/// What one end-to-end run gave.
+#[derive(Debug)]
+struct EndToEnd {
+    /// Reduce's refusals of subjects (`cause display`) and of sites
+    /// (`cause`), sorted.
+    refusals: Vec<String>,
+    /// Per observer (`main: kind name`): the units whose digest differs,
+    /// is only on one side, or is indeterminate on either. Empty: the
+    /// rename verifies.
+    differences: Vec<String>,
+}
+
+/// How [`end_to_end`] treats WP-073's flag on the members of instantiated
+/// specialisations (`spec/edits.md` §9.5: a rule on an instantiated
+/// member's key is `key/rule-on-instantiated-member` until
+/// `docs/wp/WP-119.md`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wp119 {
+    /// As the shards are: such a follower refuses the run.
+    Now,
+    /// The refusal lifted, no more: the flag taken off those followers
+    /// (only where it is their only flag) and their rules **deleted**
+    /// from the post-image's table, so that the instantiated member
+    /// follows its pattern's rule
+    /// (`followers_of_class_template_members_map_with_their_seed` shows
+    /// that this gives each follower's id). This is not WP-119 item 1,
+    /// which keeps those rules and accepts each only when it agrees with
+    /// the pattern's: a test run `Simulated` shows what the rename does
+    /// once the refusal is lifted, and does **not** cover that agreement
+    /// check. The digest's treatment of hidden shadows is not simulated.
+    Simulated,
+}
+
+/// A tree's files: path and bytes.
+type Image = Vec<(String, Vec<u8>)>;
+
+/// The shards of `mains` over `files`, reduced, applied, and verified;
+/// `wrong` changes the post-image before it is digested (the wrong edit
+/// beside a right one).
+fn end_to_end(
+    name: &str,
+    files: &[(&str, &[u8])],
+    mains: &[&str],
+    target: &[&str],
+    new: &str,
+    wp119: Wp119,
+    wrong: &dyn Fn(&mut Image),
+) -> EndToEnd {
+    let request = |root: &str| {
+        let c = Case {
+            name: name.into(),
+            dir: PathBuf::new(),
+            target: target.iter().map(|c| c.as_bytes().to_vec()).collect(),
+            kind: TargetKind::Function,
+            new_name: new.as_bytes().to_vec(),
+            args: Vec::new(),
+            files: Vec::new(),
+        };
+        transform(&c, root)
+    };
+    let (t, mut shards) = map_shards(name, files, mains, &request);
+    // The followers WP-073 flags because their key follows a pattern
+    // member: a member of an instantiated specialisation (displayed with
+    // its template arguments).
+    let mut instantiated: BTreeSet<Digest> = BTreeSet::new();
+    if wp119 == Wp119::Simulated {
+        for shard in &mut shards {
+            for s in &mut shard.edits.as_mut().unwrap().subjects {
+                if s.role == Role::Follower
+                    && s.display.contains('<')
+                    && s.flags == subject_flags::UNSUPPORTED
+                {
+                    s.flags = 0;
+                    instantiated.insert(s.id);
+                }
+            }
+        }
+    }
+    let r = reduced(name, &t, shards);
+    let set = &r.edits;
+    let display = |id: &Digest| {
+        set.subjects.iter().find(|s| s.id == *id).map_or_else(|| short(id), |s| s.display.clone())
+    };
+    let mut refusals: Vec<String> = set
+        .refusals
+        .iter()
+        .map(|x| match &x.subject {
+            Some(id) => format!("{:?} {}", x.cause, display(id)),
+            None => format!("{:?}", x.cause),
+        })
+        .collect();
+    refusals.sort();
+    refusals.dedup();
+    if set.state != slip_model::editset::SetState::Accepted {
+        return EndToEnd { refusals, differences: Vec::new() };
+    }
+    let mut post = applied(name, set, files);
+    wrong(&mut post);
+    let rules: Vec<_> = set
+        .subjects
+        .iter()
+        .filter(|s| !instantiated.contains(&s.id))
+        .filter_map(|s| s.rule.clone())
+        .collect();
+    let table = RuleTable::new(rules).expect("a rule table");
+    let none = RuleTable::new(Vec::new()).unwrap();
+    let pre: Vec<(String, Vec<u8>)> =
+        files.iter().map(|(p, b)| ((*p).to_owned(), b.to_vec())).collect();
+    let mut differences = Vec::new();
+    for main in mains {
+        let a = digest_units(&format!("{name}-pre"), &pre, main, &none);
+        let b = digest_units(&format!("{name}-post"), &post, main, &table);
+        for (key, (digest, indeterminate, n)) in &a {
+            match b.get(key) {
+                None => differences.push(format!("{main}: removed {n}")),
+                Some((d2, i2, _)) if d2 != digest || *indeterminate || *i2 => {
+                    differences.push(format!("{main}: changed {n}"));
+                }
+                Some(_) => {}
+            }
+        }
+        for (key, (_, _, n)) in &b {
+            if !a.contains_key(key) {
+                differences.push(format!("{main}: added {n}"));
+            }
+        }
+    }
+    EndToEnd { refusals, differences }
+}
+
+/// Every unit of observer `main` of the tree `files`, digested under
+/// `rules` (every file owned): key to digest, whether it is
+/// indeterminate, and its name.
+fn digest_units(
+    name: &str,
+    files: &[(String, Vec<u8>)],
+    main: &str,
+    rules: &RuleTable,
+) -> std::collections::BTreeMap<Digest, (Digest, bool, String)> {
+    let refs: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+    let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), name, &refs).unwrap();
+    let root = tree.root().to_str().unwrap().to_owned();
+    let obs = tree.observer(main, "c++20", &[]);
+    let (_, r) = tree
+        .parse(&obs, &written_options(), |u| {
+            assert_eq!(u.errors(), 0, "{name}: {main} has errors");
+            let prefix = format!("{root}/");
+            let subject = |p: &[u8]| p.strip_prefix(prefix.as_bytes()).unwrap_or(p).to_vec();
+            slip_digest::map::with_input(u, &subject, |input| {
+                let out = slip_digest::digest(
+                    input,
+                    &slip_digest::Options {
+                        rules,
+                        read_only: slip_digest::ReadOnly::NO_FILE,
+                        detail: slip_digest::Detail::All,
+                        names: true,
+                        rule_use: false,
+                    },
+                );
+                let names: std::collections::BTreeMap<Digest, String> =
+                    out.names.into_iter().collect();
+                let mut units = std::collections::BTreeMap::new();
+                for g in &out.digests.groups {
+                    for unit in g.units.as_deref().unwrap_or(&[]) {
+                        let n = names.get(&unit.key).cloned().unwrap_or_else(|| short(&unit.key));
+                        units.insert(unit.key, (unit.digest, unit.is_indeterminate(), n));
+                    }
+                }
+                units
+            })
+            .expect("with_input")
+        })
+        .unwrap();
+    r.expect("parsed")
+}
+
+/// The post-image: every accepted edit of `set` spliced into its file.
+fn applied(name: &str, set: &slip_model::editset::EditSet, files: &[(&str, &[u8])]) -> Image {
+    let mut post: Image = files.iter().map(|(p, b)| ((*p).to_owned(), b.to_vec())).collect();
+    for (path, bytes) in &mut post {
+        let suffix = format!("/{path}");
+        let mut edits: Vec<(usize, usize, Vec<u8>)> = set
+            .edits
+            .iter()
+            .filter(|e| set.files[e.file as usize].path.ends_with(suffix.as_bytes()))
+            .map(|e| {
+                let text: Vec<u8> = e
+                    .pieces
+                    .iter()
+                    .flat_map(|p| match p {
+                        Piece::Literal(b) | Piece::Spelled { text: b, .. } => b.clone(),
+                        Piece::Copy(_) => panic!("{name}: a copy piece"),
+                    })
+                    .collect();
+                (e.lo as usize, e.hi as usize, text)
+            })
+            .collect();
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+        for (lo, hi, text) in edits {
+            bytes.splice(lo..hi, text);
+        }
+    }
+    post
+}
+
+/// No change to the post-image.
+fn right(_: &mut Image) {}
+
+/// In `path` of the post-image, `from` (once) replaced by `to`.
+fn edit_back(post: &mut [(String, Vec<u8>)], path: &str, from: &str, to: &str) {
+    let (_, bytes) = post.iter_mut().find(|(p, _)| p == path).expect(path);
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(text.contains(from), "{path}: no {from:?} in {text}");
+    *bytes = text.replacen(from, to, 1).into_bytes();
+}
+
+/// `docs/wp/WP-120.md` item 1 (a), end to end: `struct D : B<int>` and an
+/// observer that sees the base only. The run is refused by WP-073's flag on
+/// the member of `B<int>` alone; with that flag as WP-119 will make it, the
+/// rename verifies in both observers; and the overrider left behind (the
+/// wrong edit) is a difference: the digest writes what a function
+/// overrides (`spec/digest-kinds.md` `overrides`).
+#[test]
+fn wp120_override_of_an_instantiated_member_end_to_end() {
+    let files: [(&str, &[u8]); 3] = [
+        ("b.h", b"namespace n { template <class T> struct B { virtual void f(); }; }\n"),
+        ("d.cpp", b"#include \"b.h\"\nnamespace n { struct D : B<int> { void f() override; }; }\nvoid h(n::D& d, n::B<int>& b) { d.f(); b.f(); }\n"),
+        ("base.cpp", b"#include \"b.h\"\nvoid k(n::B<long>* b) { b->f(); }\n"),
+    ];
+    let run = |name: &str, wp119, wrong: &dyn Fn(&mut Image)| {
+        end_to_end(name, &files, &["d.cpp", "base.cpp"], &["n", "D", "f"], "g", wp119, wrong)
+    };
+    let now = run("wp120-a-now", Wp119::Now, &right);
+    assert_eq!(
+        now.refusals,
+        ["SubjectUnsupported n::B<int>::f()", "SubjectUnsupported n::B<long>::f()"],
+        "{now:?}"
+    );
+    let r = run("wp120-a-right", Wp119::Simulated, &right);
+    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
+    let w = run("wp120-a-wrong", Wp119::Simulated, &|post| {
+        edit_back(post, "d.cpp", "void g() override;", "void f();");
+    });
+    assert!(w.differences.iter().any(|d| d.contains("n::D")), "{w:?}");
+}
+
+/// Item 1 (b), end to end: an overrider in a class template with a base
+/// that is not dependent; one observer instantiates it, one sees the base
+/// only. Not instantiated, it verifies as the shards are.
+#[test]
+fn wp120_override_in_a_class_template_end_to_end() {
+    let base: (&str, &[u8]) = ("base.h", b"namespace n { struct Base { virtual void f(); }; }\n");
+    let e: (&str, &[u8]) = ("e.h", b"#include \"base.h\"\nnamespace n { template <class T> struct E : Base { void f() override; }; }\n");
+    let files = [
+        base,
+        e,
+        ("use.cpp", b"#include \"e.h\"\nvoid h(n::E<int>& x, n::Base& b) { x.f(); b.f(); }\n"),
+        ("only.cpp", b"#include \"base.h\"\nvoid k(n::Base& b) { b.f(); }\n"),
+        ("pattern.cpp", b"#include \"e.h\"\n"),
+    ];
+    let target = ["n", "Base", "f"];
+    let not = end_to_end(
+        "wp120-b-not",
+        &files,
+        &["pattern.cpp", "only.cpp"],
+        &target,
+        "g",
+        Wp119::Now,
+        &right,
+    );
+    assert!(not.refusals.is_empty() && not.differences.is_empty(), "{not:?}");
+    let now = end_to_end(
+        "wp120-b-now",
+        &files,
+        &["use.cpp", "only.cpp"],
+        &target,
+        "g",
+        Wp119::Now,
+        &right,
+    );
+    assert_eq!(now.refusals, ["SubjectUnsupported n::E<int>::f()"], "{now:?}");
+    let r = end_to_end(
+        "wp120-b-right",
+        &files,
+        &["use.cpp", "only.cpp"],
+        &target,
+        "g",
+        Wp119::Simulated,
+        &right,
+    );
+    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
+    let w =
+        end_to_end("wp120-b-wrong", &files, &["pattern.cpp"], &target, "g", Wp119::Now, &|post| {
+            edit_back(post, "e.h", "void g() override;", "void f();");
+        });
+    assert!(!w.differences.is_empty(), "{w:?}");
+}
+
+/// Item 1 (c), end to end: a using-declaration in a class template's
+/// pattern. Instantiated, the using-declaration of `F<int>` follows the
+/// pattern's (WP-073's flag) and its shadow, not linked by Kiln, has a rule
+/// of its own; the shadow left without one is a difference.
+#[test]
+fn wp120_using_declaration_in_a_class_template_end_to_end() {
+    let files: [(&str, &[u8]); 3] = [
+        ("f.h", b"namespace n { struct Base { void f(); }; template <class T> struct F : Base { using Base::f; }; }\n"),
+        ("use.cpp", b"#include \"f.h\"\nvoid h(n::F<int>& x) { x.f(); }\n"),
+        ("pattern.cpp", b"#include \"f.h\"\n"),
+    ];
+    let target = ["n", "Base", "f"];
+    let not = end_to_end("wp120-c-not", &files, &["pattern.cpp"], &target, "g", Wp119::Now, &right);
+    assert!(not.refusals.is_empty() && not.differences.is_empty(), "{not:?}");
+    let now = end_to_end(
+        "wp120-c-now",
+        &files,
+        &["use.cpp", "pattern.cpp"],
+        &target,
+        "g",
+        Wp119::Now,
+        &right,
+    );
+    assert_eq!(now.refusals, ["SubjectUnsupported n::F<int>::f"], "{now:?}");
+    let r = end_to_end(
+        "wp120-c-right",
+        &files,
+        &["use.cpp", "pattern.cpp"],
+        &target,
+        "g",
+        Wp119::Simulated,
+        &right,
+    );
+    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
+}
+
+/// Item 1, the dependent base: one observer instantiates `G<B>` (the
+/// pattern's name replaced), one sees the pattern only (kept): reduce sees
+/// the disagreement (`contested`). The exact list holds under
+/// `Wp119::Simulated` only; as the shards are (`Wp119::Now`), the member
+/// of `G<n::B>` adds its WP-073 flag:
+/// `["Contested n::G::f()", "SubjectUnsupported n::G<n::B>::f()"]`.
+#[test]
+fn wp120_dependent_base_over_two_observers_is_contested_simulated() {
+    let files: [(&str, &[u8]); 3] = [
+        ("g.h", b"namespace n { struct B { virtual void f(); }; template <class T> struct G : T { void f() override; }; }\n"),
+        ("use.cpp", b"#include \"g.h\"\nvoid h(n::G<n::B>& x) { x.f(); }\n"),
+        ("pattern.cpp", b"#include \"g.h\"\n"),
+    ];
+    let r = end_to_end(
+        "wp120-g",
+        &files,
+        &["use.cpp", "pattern.cpp"],
+        &["n", "B", "f"],
+        "g",
+        Wp119::Simulated,
+        &right,
+    );
+    assert_eq!(r.refusals, ["Contested n::G::f()"], "{r:?}");
+    let now = end_to_end(
+        "wp120-g-now",
+        &files,
+        &["use.cpp", "pattern.cpp"],
+        &["n", "B", "f"],
+        "g",
+        Wp119::Now,
+        &right,
+    );
+    assert_eq!(
+        now.refusals,
+        ["Contested n::G::f()", "SubjectUnsupported n::G<n::B>::f()"],
+        "{now:?}"
+    );
+}
+
+/// The refusals of a run as their causes, sorted, without subjects.
+fn causes(r: &EndToEnd) -> Vec<&str> {
+    let mut c: Vec<&str> =
+        r.refusals.iter().map(|x| x.split(' ').next().unwrap_or_default()).collect();
+    c.dedup();
+    c
+}
+
+/// WP-120 fix round, F1 and F2: a hidden shadow follows its target, its
+/// using-declaration and the member that hides it; any mix of the three
+/// renamed is refused (`mixed_follower`), where the shards alone would
+/// otherwise be accepted and the digest would show the shadow removed
+/// (F1) or a hidden declaration made visible (F2).
+#[test]
+fn wp120_hidden_shadow_three_parties_end_to_end() {
+    let f1: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct A { virtual void f(); };\nstruct B : A { void f() override; void f(int); };\nstruct D : B { using B::f; void f(int); };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
+    )];
+    let r = end_to_end("wp120-f1", &f1, &["main.cpp"], &["n", "A", "f"], "g", Wp119::Now, &right);
+    assert_eq!(causes(&r), ["MixedFollower"], "{r:?}");
+    let f2: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct B { void f(); void f(int); };\nstruct D : B { using B::f; void f(); };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
+    )];
+    for (name, target) in
+        [("wp120-f2-derived", ["n", "D", "f"]), ("wp120-f2-base", ["n", "B", "f"])]
+    {
+        let r = end_to_end(name, &f2, &["main.cpp"], &target, "g", Wp119::Now, &right);
+        assert_eq!(causes(&r), ["MixedFollower"], "{name}: {r:?}");
+    }
+}
+
+/// WP-120 fix round, question 3: a dependent using-declaration
+/// instantiated with a base whose `f()` hides `X::f(int)`. Renamed alone,
+/// the kept `using Base<T>::f;` (its name `unresolved`) would name
+/// `X::f(int)`. Refused as `mixed_follower` on the instantiated
+/// using-declaration (it follows the pattern's, which is not renamed),
+/// also with WP-073's flag lifted (`Wp119::Simulated`), where the review
+/// saw it accepted and the digest show the shadow changed.
+#[test]
+fn wp120_dependent_using_partly_selected_end_to_end() {
+    let files: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct X { void f(int); };\ntemplate <class U> struct Base : X { void f(); };\ntemplate <class T> struct F : Base<T> { using Base<T>::f; };\n}\nvoid h(n::F<int>& x) { x.f(); }\n",
+    )];
+    for wp119 in [Wp119::Now, Wp119::Simulated] {
+        let r =
+            end_to_end("wp120-q3", &files, &["main.cpp"], &["n", "Base", "f"], "g", wp119, &right);
+        assert!(causes(&r).contains(&"MixedFollower"), "{r:?}");
+    }
+}
+
+/// WP-120 fix round, F4: a local class deriving from `T`, in a function
+/// template and in a member function of an instantiated class template,
+/// instantiated with a base in the family in one observer and not in the
+/// other: kept in one, replaced in the other (`contested`).
+#[test]
+fn wp120_local_class_dependent_base_over_two_observers_is_contested() {
+    let ft: [(&str, &[u8]); 3] = [
+        ("t.h", b"namespace n { struct B { virtual void f(); }; }\ntemplate <class T> int t() { struct L : T { void f() override {} }; L l; l.f(); return 0; }\n"),
+        ("use.cpp", b"#include \"t.h\"\nint u = t<n::B>();\n"),
+        ("pattern.cpp", b"#include \"t.h\"\n"),
+    ];
+    let mt: [(&str, &[u8]); 3] = [
+        ("t.h", b"namespace n { struct B { virtual void f(); }; }\ntemplate <class T> struct S { int t() { struct L : T { void f() override {} }; L l; l.f(); return 0; } };\n"),
+        ("use.cpp", b"#include \"t.h\"\nint u = S<n::B>().t();\n"),
+        ("pattern.cpp", b"#include \"t.h\"\nS<n::B> s;\n"),
+    ];
+    for (name, files) in [("wp120-f4-ft", &ft), ("wp120-f4-mt", &mt)] {
+        let r = end_to_end(
+            name,
+            files,
+            &["use.cpp", "pattern.cpp"],
+            &["n", "B", "f"],
+            "g",
+            Wp119::Now,
+            &right,
+        );
+        assert_eq!(causes(&r), ["Contested"], "{name}: {r:?}");
+        let one = end_to_end(
+            &format!("{name}-one"),
+            files,
+            &["pattern.cpp"],
+            &["n", "B", "f"],
+            "g",
+            Wp119::Now,
+            &right,
+        );
+        assert!(one.refusals.is_empty() && one.differences.is_empty(), "{name}: {one:?}");
+    }
+}
+
+/// Item 3, end to end: the unhide idiom renamed from the base verifies,
+/// and the overrider left behind is a difference; renamed from the derived
+/// class it is refused (the hidden shadow follows `B::f()` and the kept
+/// using-declaration: `mixed_follower`), and, with the override declared
+/// before the using-declaration (no shadow for `B::f()`), it verifies.
+#[test]
+fn wp120_unhide_idiom_end_to_end() {
+    let idiom: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct B { virtual void f(); void f(int); };\nstruct D : B { using B::f; void f() override; };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
+    )];
+    let base = end_to_end(
+        "wp120-u-base",
+        &idiom,
+        &["main.cpp"],
+        &["n", "B", "f"],
+        "g",
+        Wp119::Now,
+        &right,
+    );
+    assert!(base.refusals.is_empty() && base.differences.is_empty(), "{base:?}");
+    let wrong = end_to_end(
+        "wp120-u-wrong",
+        &idiom,
+        &["main.cpp"],
+        &["n", "B", "f"],
+        "g",
+        Wp119::Now,
+        &|post| {
+            edit_back(post, "main.cpp", "void g() override;", "void f();");
+        },
+    );
+    assert!(!wrong.differences.is_empty(), "{wrong:?}");
+    let derived = end_to_end(
+        "wp120-u-derived",
+        &idiom,
+        &["main.cpp"],
+        &["n", "D", "f"],
+        "g",
+        Wp119::Now,
+        &right,
+    );
+    // The hidden shadow (no subject of the reduced set: shown by its id).
+    assert!(
+        derived.refusals.len() == 1 && derived.refusals[0].starts_with("MixedFollower "),
+        "{derived:?}"
+    );
+    let before: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct B { virtual void f(); void f(int); };\nstruct D : B { void f() override; using B::f; };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
+    )];
+    let b = end_to_end(
+        "wp120-u-before",
+        &before,
+        &["main.cpp"],
+        &["n", "D", "f"],
+        "g",
+        Wp119::Now,
+        &right,
+    );
+    assert!(b.refusals.is_empty() && b.differences.is_empty(), "{b:?}");
+    // A second derived class in which B::f() is not hidden: refused.
+    let second: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct B { virtual void f(); void f(int); };\nstruct D : B { void f() override; using B::f; };\nstruct E : B { using B::f; };\n}\nvoid h(n::E& e) { e.f(); e.f(1); }\n",
+    )];
+    let s = end_to_end(
+        "wp120-u-second",
+        &second,
+        &["main.cpp"],
+        &["n", "D", "f"],
+        "g",
+        Wp119::Now,
+        &right,
+    );
+    assert!(s.refusals.len() == 1 && s.refusals[0].starts_with("MixedFollower "), "{s:?}");
+}
+
+/// Item 4, the pair under the digest: a local class of a variable
+/// template's initialiser, one of a function template and one of a
+/// member function of a class template, each instantiated twice, are renamed with the pattern's candidate alone and
+/// verify (the instantiated local classes' members follow the pattern
+/// member, `spec/digest.md` §3.4); leaving the local class's name behind is
+/// a difference.
+#[test]
+fn wp120_local_classes_of_templates_end_to_end() {
+    let vt: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n { struct B { virtual void f(); }; }\ntemplate <class T> int v = [] { struct L : n::B { void f() override {} }; L l; l.f(); return 0; }();\nint x = v<int> + v<long>;\n",
+    )];
+    let ft: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n { struct B { virtual void f(); }; }\ntemplate <class T> int t() { struct L : n::B { void f() override {} }; L l; l.f(); return 0; }\nint u = t<int>() + t<long>();\n",
+    )];
+    let mt: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n { struct B { virtual void f(); }; }\ntemplate <class T> struct S { int t() { struct L : n::B { void f() override {} }; L l; l.f(); return 0; } };\nint u = S<int>().t() + S<long>().t();\n",
+    )];
+    for (name, files) in [("wp120-vt", &vt), ("wp120-ft", &ft), ("wp120-mt", &mt)] {
+        let r = end_to_end(name, files, &["main.cpp"], &["n", "B", "f"], "g", Wp119::Now, &right);
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{name}: {r:?}");
+        let w = end_to_end(
+            &format!("{name}-wrong"),
+            files,
+            &["main.cpp"],
+            &["n", "B", "f"],
+            "g",
+            Wp119::Now,
+            &|post| {
+                edit_back(post, "main.cpp", "void g() override {}", "void f() {}");
+                edit_back(post, "main.cpp", "l.g()", "l.f()");
+            },
+        );
+        assert!(!w.differences.is_empty(), "{name}: {w:?}");
+    }
 }

@@ -122,7 +122,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
 
-    // Step 2: P1 to P3, G1, L1, G4, O2, C.
+    // Step 2: P1 to P3, G1, L1, G4, G5, G6, O2, C.
     let Some(pre) = pre else {
         return unverifiable_now(post, shard, "pre-image: no map shard");
     };
@@ -186,6 +186,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         match post_side {
             Some(post_side) if same => {
                 locate::fill(&mut v.findings, locate_n, pre_side.as_ref(), &post_side);
+                (post.unstable, post.panicked) = locate::unplaced(pre_side.as_ref(), &post_side);
             }
             _ => {
                 post.by_kind = [0; 6];
@@ -322,6 +323,11 @@ struct Post {
     reparsed: u64,
     /// The findings of each kind, by [`kind_index`].
     by_kind: [u64; 6],
+    /// `verify.traces.unstable` (§7.2), present only when not 0.
+    unstable: u64,
+    /// `verify.traces.panicked` (§7.2): the images whose second writing
+    /// panicked; present only when not 0.
+    panicked: u64,
 }
 
 impl Post {
@@ -340,6 +346,8 @@ impl Post {
             differing: 0,
             reparsed: 0,
             by_kind: [0; 6],
+            unstable: 0,
+            panicked: 0,
         }
     }
 
@@ -347,7 +355,16 @@ impl Post {
     /// `shard`), its counters and those of §7.2, sorted by name; step 1's
     /// `digests` without unit lists; `v`.
     fn finish(self, shard: &mut Shard, v: Verdict) -> Shard {
-        let Post { mut counters, mut digests, rule_use, differing, reparsed, by_kind } = self;
+        let Post {
+            mut counters,
+            mut digests,
+            rule_use,
+            differing,
+            reparsed,
+            by_kind,
+            unstable,
+            panicked,
+        } = self;
         let by_name = [
             ("verify.groups.differing", differing),
             ("verify.findings", v.total),
@@ -357,6 +374,13 @@ impl Post {
             ("verify.reparsed", reparsed),
         ];
         counters.extend(by_name.iter().map(|&(n, value)| Counter { name: n.to_owned(), value }));
+        for (name, value) in
+            [("verify.traces.unstable", unstable), ("verify.traces.panicked", panicked)]
+        {
+            if value > 0 {
+                counters.push(Counter { name: name.to_owned(), value });
+            }
+        }
         counters.extend(
             KINDS
                 .iter()
@@ -477,8 +501,8 @@ fn without_units(d: &Digests) -> Digests {
 }
 
 /// Step 2's guards on what the post-image parse read and looked at, in
-/// this order (§5.3): G1, L1, G4, G5, then O2 of the tree form (not with the
-/// identity, where every change since the map phase is the edit
+/// this order (§5.3): [`post_parse_guards`], then O2 of the tree form (not
+/// with the identity, where every change since the map phase is the edit
 /// compared). The reason of the first that fails.
 fn image_guards(
     params: &Params,
@@ -488,10 +512,34 @@ fn image_guards(
     lookups: &Lookups,
 ) -> Option<String> {
     let mut resolver = params.image.resolver();
+    if let Some(reason) =
+        post_parse_guards(&params.image, &mut resolver, &observer.command, post_inputs, lookups)
+    {
+        return Some(reason);
+    }
+    if params.image.is_identity() {
+        return None;
+    }
+    let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
+    drifted(&mut resolver, post_inputs, pre_inputs)
+        .map(|path| format!("pre-image: {} changed since the map phase", show_path(path)))
+}
+
+/// The guards of §5.3 that need only the post-image parse, in this order:
+/// G1, L1, G4, G5, then G6 of the tree form (not with the identity). The
+/// reason of the first that fails. `slip declare` and `slip units
+/// --post-image` check them too (`spec/exec.md` §8.8).
+pub(crate) fn post_parse_guards(
+    image: &Image,
+    resolver: &mut Resolver<'_>,
+    command: &Command,
+    post_inputs: &[FileRef],
+    lookups: &Lookups,
+) -> Option<String> {
     if let Some(read) = post_inputs.iter().find(|f| resolver.under_subject(&f.path)) {
         return Some(format!("post-image: read {}, a file of the subject", show_path(&read.path)));
     }
-    let post = params.image.post_command(&observer.command);
+    let post = image.post_command(command);
     if let Some(reason) = resolver.looked_in_subject(&post.command.directory, lookups) {
         return Some(reason);
     }
@@ -510,12 +558,24 @@ fn image_guards(
             show_path(prefix)
         ));
     }
-    if params.image.is_identity() {
+    if image.is_identity() {
         return None;
     }
-    let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
-    drifted(&mut resolver, post_inputs, pre_inputs)
-        .map(|path| format!("pre-image: {} changed since the map phase", show_path(path)))
+    g6(resolver, &post.command.directory, post_inputs, lookups)
+}
+
+/// Guard G6 (§5.3): its three parts in order, (i) over every file read
+/// before (ii), then (iii).
+fn g6(
+    resolver: &mut Resolver<'_>,
+    directory: &[u8],
+    inputs: &[FileRef],
+    lookups: &Lookups,
+) -> Option<String> {
+    resolver
+        .link_differs(directory, lookups)
+        .or_else(|| inputs.iter().find_map(|f| resolver.subject_route_link(&f.path)))
+        .or_else(|| resolver.leaves_elsewhere(directory, lookups))
 }
 
 /// Guard G5's second part (§5.3): the first `#line` name of the post
