@@ -135,7 +135,8 @@ fn s3_kiln_boundary_kiln_modules() {
     f.write(
         "crates/slip_cli/src/c.rs",
         "fn f(u: &slip_kiln::Unit<'_>) {\n    let _ = slip_kiln::ranges::unit_order;\n}\n\
-         use slip_kiln::{ranges::file_range, ParseOptions};\n",
+         use slip_kiln::{ranges::file_range, ParseOptions};\nuse slip_kiln::sites::Sites;\n\
+         use slip_kiln::written::decl_names;\n",
     );
     // Ignored: in comments and literals, and other paths.
     f.write(
@@ -160,6 +161,10 @@ fn s3_kiln_boundary_kiln_modules() {
             "crates/slip_cli/src/c.rs:2: kiln-boundary: names `slip_kiln::ranges`; only \
              crates/slip_digest/ and crates/slip_script/ may",
             "crates/slip_cli/src/c.rs:4: kiln-boundary: names `slip_kiln::ranges`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+            "crates/slip_cli/src/c.rs:5: kiln-boundary: names `slip_kiln::sites`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+            "crates/slip_cli/src/c.rs:6: kiln-boundary: names `slip_kiln::written`; only \
              crates/slip_digest/ and crates/slip_script/ may",
             "crates/slip_cli/tests/t.rs:1: kiln-boundary: names `slip_kiln::kiln`; only \
              crates/slip_digest/ and crates/slip_script/ may",
