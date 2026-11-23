@@ -174,19 +174,19 @@ pub(super) struct Context {
     pub status: Status,
 }
 
-fn ascending<T: Ord>(list: &[T]) -> Option<usize> {
+pub(super) fn ascending<T: Ord>(list: &[T]) -> Option<usize> {
     (1..list.len()).find(|&i| list[i - 1] >= list[i])
 }
 
 /// `place` is a range of one of `files`: `lo <= hi <=` its size.
-fn within(files: &[FileRef], place: &Place) -> bool {
+pub(super) fn within(files: &[FileRef], place: &Place) -> bool {
     usize::try_from(place.file)
         .ok()
         .and_then(|i| files.get(i))
         .is_some_and(|f| place.lo <= place.hi && place.hi <= f.size)
 }
 
-fn rule_names(r: &Rule) -> std::result::Result<(), &'static str> {
+pub(super) fn rule_names(r: &Rule) -> std::result::Result<(), &'static str> {
     r.name.validate()?;
     r.to_name.validate()
 }
@@ -250,22 +250,13 @@ pub(super) fn violation(e: &Edits, cx: Context) -> Option<(Loc, &'static str)> {
     if let Some(i) = (1..e.files.len()).find(|&i| e.files[i - 1].path >= e.files[i].path) {
         return Some((Loc::File(i), "files are not strictly ascending by path"));
     }
-    if let Some(i) = (1..e.subjects.len()).find(|&i| e.subjects[i - 1].id >= e.subjects[i].id) {
-        return Some((Loc::Subject(i), "subjects are not strictly ascending by id"));
-    }
-    for (i, s) in e.subjects.iter().enumerate() {
-        if (s.role == Role::Follower) == s.of.is_empty() {
-            return Some((
-                Loc::SubjectOf(i),
-                "of is empty for a follower or not empty for another role",
-            ));
-        }
-        if ascending(&s.of).is_some() {
-            return Some((Loc::SubjectOf(i), "of is not strictly ascending"));
-        }
-    }
-    if let Some(i) = e.subjects.iter().position(|s| s.flags & !subject_flags::ALL != 0) {
-        return Some((Loc::SubjectFlags(i), "subject flags have a bit above 3 set"));
+    if let Some((field, i, what)) = subject_violation(&e.subjects) {
+        let l = match field {
+            SubjectField::Record => Loc::Subject(i),
+            SubjectField::Of => Loc::SubjectOf(i),
+            SubjectField::Flags => Loc::SubjectFlags(i),
+        };
+        return Some((l, what));
     }
     for (i, l) in e.links.iter().enumerate() {
         if i > 0 && e.links[i - 1] >= *l {
@@ -340,6 +331,83 @@ pub(super) fn violation(e: &Edits, cx: Context) -> Option<(Loc, &'static str)> {
     None
 }
 
+/// The field of a subject an invariant names.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum SubjectField {
+    Record,
+    Of,
+    Flags,
+}
+
+/// The subject rules of §4.7, each over the whole list: ascending by id,
+/// then `of` for every subject, then the flags for every subject.
+pub(super) fn subject_violation(
+    subjects: &[Subject],
+) -> Option<(SubjectField, usize, &'static str)> {
+    if let Some(i) = (1..subjects.len()).find(|&i| subjects[i - 1].id >= subjects[i].id) {
+        return Some((SubjectField::Record, i, "subjects are not strictly ascending by id"));
+    }
+    for (i, s) in subjects.iter().enumerate() {
+        if (s.role == Role::Follower) == s.of.is_empty() {
+            return Some((
+                SubjectField::Of,
+                i,
+                "of is empty for a follower or not empty for another role",
+            ));
+        }
+        if ascending(&s.of).is_some() {
+            return Some((SubjectField::Of, i, "of is not strictly ascending"));
+        }
+    }
+    if let Some(i) = subjects.iter().position(|s| s.flags & !subject_flags::ALL != 0) {
+        return Some((SubjectField::Flags, i, "subject flags have a bit above 3 set"));
+    }
+    None
+}
+
+/// The piece rules of §4.7 over `pieces`, in order: the first piece that
+/// breaks one, and the rule.
+pub(super) fn piece_violation(
+    files: &[FileRef],
+    pieces: &[Piece],
+) -> Option<(usize, &'static str)> {
+    for (j, p) in pieces.iter().enumerate() {
+        let what = match p {
+            Piece::Literal(b) if b.is_empty() => Some("a literal piece is empty"),
+            Piece::Literal(_) if j > 0 && matches!(pieces[j - 1], Piece::Literal(_)) => {
+                Some("two literal pieces are adjacent")
+            }
+            Piece::Spelled { text, .. } if text.is_empty() => {
+                Some("a spelled piece's text is empty")
+            }
+            Piece::Copy(place) if !within(files, place) || place.lo == place.hi => {
+                Some("a copy piece's place is empty or not within its file")
+            }
+            _ => None,
+        };
+        if let Some(what) = what {
+            return Some((j, what));
+        }
+    }
+    None
+}
+
+/// The tier rules of §4.7 for a claim of stance `stance` with or without a
+/// macro, in the table's order.
+pub(super) fn tier_violation(t: u64, stance: Stance, has_macro: bool) -> Option<&'static str> {
+    if t == 0 {
+        Some("tiers is 0")
+    } else if t & !tiers::ALL != 0 {
+        Some("tiers has a bit above 4 set")
+    } else if t & !(tiers::T0 | tiers::T1) != 0 && stance != Stance::Refuse {
+        Some("tiers has a bit of tier 2, 3 or X for a claim that is not a refuse")
+    } else if t == tiers::T0 && has_macro {
+        Some("a claim of tier 0 alone has a macro")
+    } else {
+        None
+    }
+}
+
 /// The claim rules of §4.7 for claim `i`, in the table's order.
 fn claim_violation(e: &Edits, i: usize, c: &Claim) -> Option<(Loc, &'static str)> {
     let replace = c.stance == Stance::Replace;
@@ -352,23 +420,8 @@ fn claim_violation(e: &Edits, i: usize, c: &Claim) -> Option<(Loc, &'static str)
     if !replace && !c.pieces.is_empty() {
         return Some((Loc::Pieces(i), "a claim that is not a replace has pieces"));
     }
-    for (j, p) in c.pieces.iter().enumerate() {
-        let what = match p {
-            Piece::Literal(b) if b.is_empty() => Some("a literal piece is empty"),
-            Piece::Literal(_) if j > 0 && matches!(c.pieces[j - 1], Piece::Literal(_)) => {
-                Some("two literal pieces are adjacent")
-            }
-            Piece::Spelled { text, .. } if text.is_empty() => {
-                Some("a spelled piece's text is empty")
-            }
-            Piece::Copy(place) if !within(&e.files, place) || place.lo == place.hi => {
-                Some("a copy piece's place is empty or not within its file")
-            }
-            _ => None,
-        };
-        if let Some(what) = what {
-            return Some((Loc::Piece(i, j), what));
-        }
+    if let Some((j, what)) = piece_violation(&e.files, &c.pieces) {
+        return Some((Loc::Piece(i, j), what));
     }
     if (c.reason == Reason::None) == (c.stance == Stance::Refuse) {
         return Some((Loc::Reason(i), "reason is none for a refuse claim or not none for another"));
@@ -379,18 +432,7 @@ fn claim_violation(e: &Edits, i: usize, c: &Claim) -> Option<(Loc, &'static str)
     if ascending(&c.notes).is_some() {
         return Some((Loc::Notes(i), "a claim's notes are not strictly ascending"));
     }
-    let what = if c.tiers == 0 {
-        Some("tiers is 0")
-    } else if c.tiers & !tiers::ALL != 0 {
-        Some("tiers has a bit above 4 set")
-    } else if c.tiers & !(tiers::T0 | tiers::T1) != 0 && c.stance != Stance::Refuse {
-        Some("tiers has a bit of tier 2, 3 or X for a claim that is not a refuse")
-    } else if c.tiers == tiers::T0 && c.macro_site.is_some() {
-        Some("a claim of tier 0 alone has a macro")
-    } else {
-        None
-    };
-    if let Some(what) = what {
+    if let Some(what) = tier_violation(c.tiers, c.stance, c.macro_site.is_some()) {
         return Some((Loc::Tiers(i), what));
     }
     if c.votes == 0 {
@@ -405,11 +447,11 @@ fn claim_violation(e: &Edits, i: usize, c: &Claim) -> Option<(Loc, &'static str)
 // ---------------------------------------------------------------------------
 // Binary
 
-fn enc_place(e: &mut Encoder, p: &Place) {
+pub(super) fn enc_place(e: &mut Encoder, p: &Place) {
     e.uv(p.file).uv(p.lo).uv(p.hi);
 }
 
-fn enc_opt<T>(e: &mut Encoder, v: Option<&T>, value: impl FnOnce(&mut Encoder, &T)) {
+pub(super) fn enc_opt<T>(e: &mut Encoder, v: Option<&T>, value: impl FnOnce(&mut Encoder, &T)) {
     match v {
         None => {
             e.u8(0);
@@ -421,34 +463,65 @@ fn enc_opt<T>(e: &mut Encoder, v: Option<&T>, value: impl FnOnce(&mut Encoder, &
     }
 }
 
+pub(super) fn enc_failure(e: &mut Encoder, f: &Failure) {
+    enc_enum(e, f.kind);
+    e.str(&f.message);
+    enc_opt(e, f.place.as_ref(), |e, p| {
+        e.bytes(&p.file).uv(p.line).uv(p.column);
+    });
+    e.str(&f.rendered);
+    enc_opt(e, f.refusal.as_ref(), |e, r| {
+        e.str(&r.function).str(&r.errc).str(&r.message);
+        enc_opt(e, r.subject.as_ref(), enc_place);
+    });
+}
+
+pub(super) fn enc_subject(e: &mut Encoder, s: &Subject) {
+    e.digest(&s.id);
+    enc_opt(e, s.rule.as_ref(), |e, r| r.encode(e));
+    enc_enum(e, s.role);
+    e.count(s.of.len());
+    for k in &s.of {
+        e.digest(k);
+    }
+    e.uv(s.flags).str(&s.display);
+}
+
+pub(super) fn enc_piece(e: &mut Encoder, p: &Piece) {
+    e.uv(p.tag());
+    match p {
+        Piece::Literal(b) => {
+            e.bytes(b);
+        }
+        Piece::Copy(place) => enc_place(e, place),
+        Piece::Spelled { key, text } => {
+            e.digest(key).bytes(text);
+        }
+    }
+}
+
+pub(super) fn enc_macro(e: &mut Encoder, m: Option<&MacroSite>) {
+    enc_opt(e, m, |e, m| {
+        e.uv(m.name_start).bytes(&m.name);
+    });
+}
+
+pub(super) fn enc_report(e: &mut Encoder, r: &Report) {
+    enc_opt(e, r.place.as_ref(), enc_place);
+    enc_enum(e, r.severity);
+    e.bytes(&r.message).bool(r.attached);
+}
+
 pub(super) fn encode(e: &mut Encoder, x: &Edits) {
     e.uv(x.scheme).digest(&x.transform);
-    enc_opt(e, x.failure.as_ref(), |e, f| {
-        enc_enum(e, f.kind);
-        e.str(&f.message);
-        enc_opt(e, f.place.as_ref(), |e, p| {
-            e.bytes(&p.file).uv(p.line).uv(p.column);
-        });
-        e.str(&f.rendered);
-        enc_opt(e, f.refusal.as_ref(), |e, r| {
-            e.str(&r.function).str(&r.errc).str(&r.message);
-            enc_opt(e, r.subject.as_ref(), enc_place);
-        });
-    });
+    enc_opt(e, x.failure.as_ref(), enc_failure);
     e.count(x.files.len());
     for f in &x.files {
         enc_file_ref(e, f);
     }
     e.count(x.subjects.len());
     for s in &x.subjects {
-        e.digest(&s.id);
-        enc_opt(e, s.rule.as_ref(), |e, r| r.encode(e));
-        enc_enum(e, s.role);
-        e.count(s.of.len());
-        for k in &s.of {
-            e.digest(k);
-        }
-        e.uv(s.flags).str(&s.display);
+        enc_subject(e, s);
     }
     e.count(x.links.len());
     for l in &x.links {
@@ -460,16 +533,7 @@ pub(super) fn encode(e: &mut Encoder, x: &Edits) {
         enc_enum(e, c.stance);
         e.count(c.pieces.len());
         for p in &c.pieces {
-            e.uv(p.tag());
-            match p {
-                Piece::Literal(b) => {
-                    e.bytes(b);
-                }
-                Piece::Copy(place) => enc_place(e, place),
-                Piece::Spelled { key, text } => {
-                    e.digest(key).bytes(text);
-                }
-            }
+            enc_piece(e, p);
         }
         e.count(c.subjects.len());
         for k in &c.subjects {
@@ -477,9 +541,7 @@ pub(super) fn encode(e: &mut Encoder, x: &Edits) {
         }
         enc_enum(e, c.reason);
         e.uv(c.tiers);
-        enc_opt(e, c.macro_site.as_ref(), |e, m| {
-            e.uv(m.name_start).bytes(&m.name);
-        });
+        enc_macro(e, c.macro_site.as_ref());
         e.uv(c.votes).count(c.notes.len());
         for n in &c.notes {
             e.bytes(n);
@@ -494,9 +556,7 @@ pub(super) fn encode(e: &mut Encoder, x: &Edits) {
     }
     e.count(x.reports.len());
     for r in &x.reports {
-        enc_opt(e, r.place.as_ref(), enc_place);
-        enc_enum(e, r.severity);
-        e.bytes(&r.message).bool(r.attached);
+        enc_report(e, r);
     }
     e.count(x.changed.len());
     for c in &x.changed {
@@ -567,17 +627,72 @@ impl Offsets {
     }
 }
 
-fn dec_place(d: &mut Decoder<'_>) -> Result<Place> {
+pub(super) fn dec_place(d: &mut Decoder<'_>) -> Result<Place> {
     Ok(Place { file: d.uv()?, lo: d.uv()?, hi: d.uv()? })
 }
 
-fn dec_piece(d: &mut Decoder<'_>) -> Result<Piece> {
+pub(super) fn dec_piece(d: &mut Decoder<'_>) -> Result<Piece> {
     let at = d.offset();
     Ok(match d.uv()? {
         0 => Piece::Literal(d.bytes()?.to_vec()),
         1 => Piece::Copy(dec_place(d)?),
         2 => Piece::Spelled { key: d.digest()?, text: d.bytes()?.to_vec() },
         _ => return Err(malformed(at, "unlisted Piece value")),
+    })
+}
+
+/// A `Failure` (§4.6) and the offset of its refusal's `subject` (0 if it
+/// has no refusal).
+pub(super) fn dec_failure(d: &mut Decoder<'_>) -> Result<(Failure, usize)> {
+    let mut subject_at = 0;
+    let f = Failure {
+        kind: dec_enum(d)?,
+        message: d.str()?.to_owned(),
+        place: dec_opt(d, |d| {
+            Ok(SourcePlace { file: d.bytes()?.to_vec(), line: d.uv()?, column: d.uv()? })
+        })?,
+        rendered: d.str()?.to_owned(),
+        refusal: dec_opt(d, |d| {
+            Ok(HostRefusal {
+                function: d.str()?.to_owned(),
+                errc: d.str()?.to_owned(),
+                message: d.str()?.to_owned(),
+                subject: {
+                    subject_at = d.offset();
+                    dec_opt(d, dec_place)?
+                },
+            })
+        })?,
+    };
+    Ok((f, subject_at))
+}
+
+/// A `Subject` (§4.1) and the offsets of its first byte, `rule`, `of` and
+/// `flags`.
+pub(super) fn dec_subject(d: &mut Decoder<'_>) -> Result<(Subject, [usize; 4])> {
+    let start = d.offset();
+    let id = d.digest()?;
+    let rule_at = d.offset();
+    let subject_rule = dec_opt(d, Rule::decode)?;
+    let role = dec_enum(d)?;
+    let of_at = d.offset();
+    let of = dec_list(d, None, Decoder::digest)?;
+    let flags_at = d.offset();
+    let flags = d.uv()?;
+    let s = Subject { id, rule: subject_rule, role, of, flags, display: d.str()?.to_owned() };
+    Ok((s, [start, rule_at, of_at, flags_at]))
+}
+
+pub(super) fn dec_macro(d: &mut Decoder<'_>) -> Result<Option<MacroSite>> {
+    dec_opt(d, |d| Ok(MacroSite { name_start: d.uv()?, name: d.bytes()?.to_vec() }))
+}
+
+pub(super) fn dec_report(d: &mut Decoder<'_>) -> Result<Report> {
+    Ok(Report {
+        place: dec_opt(d, dec_place)?,
+        severity: dec_enum(d)?,
+        message: d.bytes()?.to_vec(),
+        attached: d.bool()?,
     })
 }
 
@@ -589,42 +704,18 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Edits, Offsets)> {
     let transform = d.digest()?;
     let mut subject_at = 0;
     let failure = dec_opt(d, |d| {
-        Ok(Failure {
-            kind: dec_enum(d)?,
-            message: d.str()?.to_owned(),
-            place: dec_opt(d, |d| {
-                Ok(SourcePlace { file: d.bytes()?.to_vec(), line: d.uv()?, column: d.uv()? })
-            })?,
-            rendered: d.str()?.to_owned(),
-            refusal: dec_opt(d, |d| {
-                Ok(HostRefusal {
-                    function: d.str()?.to_owned(),
-                    errc: d.str()?.to_owned(),
-                    message: d.str()?.to_owned(),
-                    subject: {
-                        subject_at = d.offset();
-                        dec_opt(d, dec_place)?
-                    },
-                })
-            })?,
-        })
+        let (f, at) = dec_failure(d)?;
+        subject_at = at;
+        Ok(f)
     })?;
     o.refusal_subject = subject_at;
     o.lists[List::Files as usize] = d.offset();
     let files = dec_list(d, Some(&mut o.file), dec_file_ref)?;
     o.lists[List::Subjects as usize] = d.offset();
     let subjects = dec_list(d, None, |d| {
-        let start = d.offset();
-        let id = d.digest()?;
-        let rule_at = d.offset();
-        let subject_rule = dec_opt(d, Rule::decode)?;
-        let role = dec_enum(d)?;
-        let of_at = d.offset();
-        let of = dec_list(d, None, Decoder::digest)?;
-        let flags_at = d.offset();
-        let flags = d.uv()?;
-        o.subject.push([start, rule_at, of_at, flags_at]);
-        Ok(Subject { id, rule: subject_rule, role, of, flags, display: d.str()?.to_owned() })
+        let (s, at) = dec_subject(d)?;
+        o.subject.push(at);
+        Ok(s)
     })?;
     o.lists[List::Links as usize] = d.offset();
     let links = dec_list(d, Some(&mut o.link), |d| Ok(Link { a: d.digest()?, b: d.digest()? }))?;
@@ -643,8 +734,7 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Edits, Offsets)> {
         let reason = dec_enum(d)?;
         co.tiers = d.offset();
         let tiers = d.uv()?;
-        let macro_site =
-            dec_opt(d, |d| Ok(MacroSite { name_start: d.uv()?, name: d.bytes()?.to_vec() }))?;
+        let macro_site = dec_macro(d)?;
         co.votes = d.offset();
         let votes = d.uv()?;
         co.notes = d.offset();
@@ -667,14 +757,7 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Edits, Offsets)> {
     o.lists[List::Groups as usize] = d.offset();
     let groups = dec_list(d, Some(&mut o.group), |d| dec_list(d, None, Decoder::uv))?;
     o.lists[List::Reports as usize] = d.offset();
-    let reports = dec_list(d, Some(&mut o.report), |d| {
-        Ok(Report {
-            place: dec_opt(d, dec_place)?,
-            severity: dec_enum(d)?,
-            message: d.bytes()?.to_vec(),
-            attached: d.bool()?,
-        })
-    })?;
+    let reports = dec_list(d, Some(&mut o.report), dec_report)?;
     o.lists[List::Changed as usize] = d.offset();
     let changed = dec_list(d, Some(&mut o.changed), |d| {
         Ok(Changed { key: d.digest()?, place: dec_place(d)?, reason: d.bytes()?.to_vec() })
@@ -728,19 +811,19 @@ const SPELLED: [&str; 2] = ["key", "text"];
 const REPORT: [&str; 4] = ["place", "severity", "message", "attached"];
 const CHANGED: [&str; 3] = ["key", "place", "reason"];
 
-fn record<const N: usize>(fields: [&str; N], values: [Value; N]) -> Value {
+pub(super) fn record<const N: usize>(fields: [&str; N], values: [Value; N]) -> Value {
     object(fields.into_iter().zip(values).collect())
 }
 
-fn json_place(p: &Place) -> Value {
+pub(super) fn json_place(p: &Place) -> Value {
     record(PLACE, [json_uv(p.file), json_uv(p.lo), json_uv(p.hi)])
 }
 
-fn json_digests(list: &[crate::Digest]) -> Value {
+pub(super) fn json_digests(list: &[crate::Digest]) -> Value {
     Value::Array(list.iter().map(json_digest).collect())
 }
 
-fn json_piece(p: &Piece) -> Value {
+pub(super) fn json_piece(p: &Piece) -> Value {
     match p {
         Piece::Literal(b) => object(vec![("literal", json_bytes(b))]),
         Piece::Copy(place) => object(vec![("copy", json_place(place))]),
@@ -750,49 +833,64 @@ fn json_piece(p: &Piece) -> Value {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "one member per field of spec/edits.md §4")]
+pub(super) fn json_failure(f: &Failure) -> Value {
+    record(
+        FAILURE,
+        [
+            json_enum(f.kind),
+            Value::Str(f.message.clone()),
+            json_opt(f.place.as_ref(), |p| {
+                record(SOURCE_PLACE, [json_bytes(&p.file), json_uv(p.line), json_uv(p.column)])
+            }),
+            Value::Str(f.rendered.clone()),
+            json_opt(f.refusal.as_ref(), |r| {
+                record(
+                    REFUSAL,
+                    [
+                        Value::Str(r.function.clone()),
+                        Value::Str(r.errc.clone()),
+                        Value::Str(r.message.clone()),
+                        json_opt(r.subject.as_ref(), json_place),
+                    ],
+                )
+            }),
+        ],
+    )
+}
+
+pub(super) fn json_subject(s: &Subject) -> Value {
+    record(
+        SUBJECT,
+        [
+            json_digest(&s.id),
+            json_opt(s.rule.as_ref(), json_rule),
+            json_enum(s.role),
+            json_digests(&s.of),
+            json_uv(s.flags),
+            Value::Str(s.display.clone()),
+        ],
+    )
+}
+
+pub(super) fn json_macro(m: Option<&MacroSite>) -> Value {
+    json_opt(m, |m| record(MACRO, [json_uv(m.name_start), json_bytes(&m.name)]))
+}
+
+pub(super) fn json_report(r: &Report) -> Value {
+    record(
+        REPORT,
+        [
+            json_opt(r.place.as_ref(), json_place),
+            json_enum(r.severity),
+            json_bytes(&r.message),
+            Value::Bool(r.attached),
+        ],
+    )
+}
+
 pub(super) fn render(x: &Edits) -> Value {
-    let failure = json_opt(x.failure.as_ref(), |f| {
-        record(
-            FAILURE,
-            [
-                json_enum(f.kind),
-                Value::Str(f.message.clone()),
-                json_opt(f.place.as_ref(), |p| {
-                    record(SOURCE_PLACE, [json_bytes(&p.file), json_uv(p.line), json_uv(p.column)])
-                }),
-                Value::Str(f.rendered.clone()),
-                json_opt(f.refusal.as_ref(), |r| {
-                    record(
-                        REFUSAL,
-                        [
-                            Value::Str(r.function.clone()),
-                            Value::Str(r.errc.clone()),
-                            Value::Str(r.message.clone()),
-                            json_opt(r.subject.as_ref(), json_place),
-                        ],
-                    )
-                }),
-            ],
-        )
-    });
-    let subjects = x
-        .subjects
-        .iter()
-        .map(|s| {
-            record(
-                SUBJECT,
-                [
-                    json_digest(&s.id),
-                    json_opt(s.rule.as_ref(), json_rule),
-                    json_enum(s.role),
-                    json_digests(&s.of),
-                    json_uv(s.flags),
-                    Value::Str(s.display.clone()),
-                ],
-            )
-        })
-        .collect();
+    let failure = json_opt(x.failure.as_ref(), json_failure);
+    let subjects = x.subjects.iter().map(json_subject).collect();
     let links =
         x.links.iter().map(|l| record(LINK, [json_digest(&l.a), json_digest(&l.b)])).collect();
     let claims = x
@@ -810,9 +908,7 @@ pub(super) fn render(x: &Edits) -> Value {
                     json_digests(&c.subjects),
                     json_enum(c.reason),
                     json_uv(c.tiers),
-                    json_opt(c.macro_site.as_ref(), |m| {
-                        record(MACRO, [json_uv(m.name_start), json_bytes(&m.name)])
-                    }),
+                    json_macro(c.macro_site.as_ref()),
                     json_uv(c.votes),
                     Value::Array(c.notes.iter().map(|n| json_bytes(n)).collect()),
                 ],
@@ -821,21 +917,7 @@ pub(super) fn render(x: &Edits) -> Value {
         .collect();
     let groups =
         x.groups.iter().map(|g| Value::Array(g.iter().map(|&m| json_uv(m)).collect())).collect();
-    let reports = x
-        .reports
-        .iter()
-        .map(|r| {
-            record(
-                REPORT,
-                [
-                    json_opt(r.place.as_ref(), json_place),
-                    json_enum(r.severity),
-                    json_bytes(&r.message),
-                    Value::Bool(r.attached),
-                ],
-            )
-        })
-        .collect();
+    let reports = x.reports.iter().map(json_report).collect();
     let changed = x
         .changed
         .iter()
@@ -861,7 +943,7 @@ pub(super) fn render(x: &Edits) -> Value {
     )
 }
 
-fn read_place(v: &Value, at: &At<'_>) -> JResult<Place> {
+pub(super) fn read_place(v: &Value, at: &At<'_>) -> JResult<Place> {
     let [file, lo, hi] = read_record(v, at, PLACE)?;
     Ok(Place {
         file: read_uv(file, &at.key("file"))?,
@@ -870,13 +952,13 @@ fn read_place(v: &Value, at: &At<'_>) -> JResult<Place> {
     })
 }
 
-fn read_string(v: &Value, at: &At<'_>) -> JResult<String> {
+pub(super) fn read_string(v: &Value, at: &At<'_>) -> JResult<String> {
     Ok(read_str(v, at)?.to_owned())
 }
 
 const PIECE_EXPECTED: &str = "a Piece is an object with one member: literal, copy or spelled";
 
-fn read_piece(v: &Value, at: &At<'_>) -> JResult<Piece> {
+pub(super) fn read_piece(v: &Value, at: &At<'_>) -> JResult<Piece> {
     let Some([(form, value)]) = v.as_object() else {
         return Err(at.error(PIECE_EXPECTED));
     };
@@ -895,8 +977,65 @@ fn read_piece(v: &Value, at: &At<'_>) -> JResult<Piece> {
     })
 }
 
+pub(super) fn read_failure(v: &Value, at: &At<'_>) -> JResult<Failure> {
+    let [kind, message, place, rendered, refusal] = read_record(v, at, FAILURE)?;
+    Ok(Failure {
+        kind: read_enum(kind, &at.key("kind"))?,
+        message: read_string(message, &at.key("message"))?,
+        place: read_opt(place, &at.key("place"), |v, at| {
+            let [file, line, column] = read_record(v, at, SOURCE_PLACE)?;
+            Ok(SourcePlace {
+                file: read_bytes(file, &at.key("file"))?,
+                line: read_uv(line, &at.key("line"))?,
+                column: read_uv(column, &at.key("column"))?,
+            })
+        })?,
+        rendered: read_string(rendered, &at.key("rendered"))?,
+        refusal: read_opt(refusal, &at.key("refusal"), |v, at| {
+            let [function, errc, message, subject] = read_record(v, at, REFUSAL)?;
+            Ok(HostRefusal {
+                function: read_string(function, &at.key("function"))?,
+                errc: read_string(errc, &at.key("errc"))?,
+                message: read_string(message, &at.key("message"))?,
+                subject: read_opt(subject, &at.key("subject"), read_place)?,
+            })
+        })?,
+    })
+}
+
+pub(super) fn read_subject(v: &Value, at: &At<'_>) -> JResult<Subject> {
+    let [id, subject_rule, role, of, flags, display] = read_record(v, at, SUBJECT)?;
+    Ok(Subject {
+        id: read_digest(id, &at.key("id"))?,
+        rule: read_opt(subject_rule, &at.key("rule"), read_rule)?,
+        role: read_enum(role, &at.key("role"))?,
+        of: read_list(of, &at.key("of"), read_digest)?,
+        flags: read_uv(flags, &at.key("flags"))?,
+        display: read_string(display, &at.key("display"))?,
+    })
+}
+
+pub(super) fn read_macro(v: &Value, at: &At<'_>) -> JResult<Option<MacroSite>> {
+    read_opt(v, at, |v, at| {
+        let [name_start, name] = read_record(v, at, MACRO)?;
+        Ok(MacroSite {
+            name_start: read_uv(name_start, &at.key("name_start"))?,
+            name: read_bytes(name, &at.key("name"))?,
+        })
+    })
+}
+
+pub(super) fn read_report(v: &Value, at: &At<'_>) -> JResult<Report> {
+    let [place, severity, message, attached] = read_record(v, at, REPORT)?;
+    Ok(Report {
+        place: read_opt(place, &at.key("place"), read_place)?,
+        severity: read_enum(severity, &at.key("severity"))?,
+        message: read_bytes(message, &at.key("message"))?,
+        attached: read_bool(attached, &at.key("attached"))?,
+    })
+}
+
 /// The section's JSON, without checking the invariants (`violation`).
-#[allow(clippy::too_many_lines, reason = "one member per field of spec/edits.md §4")]
 pub(super) fn read(v: &Value, at: &At<'_>) -> JResult<Edits> {
     let [
         scheme,
@@ -913,47 +1052,13 @@ pub(super) fn read(v: &Value, at: &At<'_>) -> JResult<Edits> {
     ] = read_record(v, at, FIELDS)?;
     let scheme = read_uv(scheme, &at.key("scheme"))?;
     let transform = read_digest(transform, &at.key("transform"))?;
-    let failure = read_opt(failure, &at.key("failure"), |v, at| {
-        let [kind, message, place, rendered, refusal] = read_record(v, at, FAILURE)?;
-        Ok(Failure {
-            kind: read_enum(kind, &at.key("kind"))?,
-            message: read_string(message, &at.key("message"))?,
-            place: read_opt(place, &at.key("place"), |v, at| {
-                let [file, line, column] = read_record(v, at, SOURCE_PLACE)?;
-                Ok(SourcePlace {
-                    file: read_bytes(file, &at.key("file"))?,
-                    line: read_uv(line, &at.key("line"))?,
-                    column: read_uv(column, &at.key("column"))?,
-                })
-            })?,
-            rendered: read_string(rendered, &at.key("rendered"))?,
-            refusal: read_opt(refusal, &at.key("refusal"), |v, at| {
-                let [function, errc, message, subject] = read_record(v, at, REFUSAL)?;
-                Ok(HostRefusal {
-                    function: read_string(function, &at.key("function"))?,
-                    errc: read_string(errc, &at.key("errc"))?,
-                    message: read_string(message, &at.key("message"))?,
-                    subject: read_opt(subject, &at.key("subject"), read_place)?,
-                })
-            })?,
-        })
-    })?;
+    let failure = read_opt(failure, &at.key("failure"), read_failure)?;
     Ok(Edits {
         scheme,
         transform,
         failure,
         files: read_list(files, &at.key("files"), read_file_ref)?,
-        subjects: read_list(subjects, &at.key("subjects"), |v, at| {
-            let [id, subject_rule, role, of, flags, display] = read_record(v, at, SUBJECT)?;
-            Ok(Subject {
-                id: read_digest(id, &at.key("id"))?,
-                rule: read_opt(subject_rule, &at.key("rule"), read_rule)?,
-                role: read_enum(role, &at.key("role"))?,
-                of: read_list(of, &at.key("of"), read_digest)?,
-                flags: read_uv(flags, &at.key("flags"))?,
-                display: read_string(display, &at.key("display"))?,
-            })
-        })?,
+        subjects: read_list(subjects, &at.key("subjects"), read_subject)?,
         links: read_list(links, &at.key("links"), |v, at| {
             let [a, b] = read_record(v, at, LINK)?;
             Ok(Link { a: read_digest(a, &at.key("a"))?, b: read_digest(b, &at.key("b"))? })
@@ -970,27 +1075,13 @@ pub(super) fn read(v: &Value, at: &At<'_>) -> JResult<Edits> {
                 subjects: read_list(subjects, &at.key("subjects"), read_digest)?,
                 reason: read_enum(reason, &at.key("reason"))?,
                 tiers: read_uv(tiers, &at.key("tiers"))?,
-                macro_site: read_opt(macro_site, &at.key("macro"), |v, at| {
-                    let [name_start, name] = read_record(v, at, MACRO)?;
-                    Ok(MacroSite {
-                        name_start: read_uv(name_start, &at.key("name_start"))?,
-                        name: read_bytes(name, &at.key("name"))?,
-                    })
-                })?,
+                macro_site: read_macro(macro_site, &at.key("macro"))?,
                 votes: read_uv(votes, &at.key("votes"))?,
                 notes: read_list(notes, &at.key("notes"), read_bytes)?,
             })
         })?,
         groups: read_list(groups, &at.key("groups"), |v, at| read_list(v, at, read_uv))?,
-        reports: read_list(reports, &at.key("reports"), |v, at| {
-            let [place, severity, message, attached] = read_record(v, at, REPORT)?;
-            Ok(Report {
-                place: read_opt(place, &at.key("place"), read_place)?,
-                severity: read_enum(severity, &at.key("severity"))?,
-                message: read_bytes(message, &at.key("message"))?,
-                attached: read_bool(attached, &at.key("attached"))?,
-            })
-        })?,
+        reports: read_list(reports, &at.key("reports"), read_report)?,
         changed: read_list(changed, &at.key("changed"), |v, at| {
             let [key, place, reason] = read_record(v, at, CHANGED)?;
             Ok(Changed {

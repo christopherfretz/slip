@@ -249,6 +249,47 @@ Planned sugar, once Kiln has token-sequence literals (the P4380 value model
 without injection): `^^{ \(spell(e)):: }` constructs the same `code` value.
 The library form above is the durable interface; the literal is convenience.
 
+### The rule: a transform does not manipulate code as strings
+
+The operator's rule for this API (2026-11-22): any time a user's transform
+performs string-level manipulation of C++ code, the API has failed. `spell`
+is that rule applied to names. The M4 design applies it to everything else:
+
+- **Every common edit has a structural primitive** that takes nodes, not
+  text: remove a statement; remove an element of a list together with its
+  separator (an argument, a parameter, a base, a mem-initialiser, an
+  enumerator, a capture, a template argument); unwrap a block; replace a
+  node by a node or by a copy of one; reorder the elements of a list.
+  A primitive carries the checks its edit needs. Unwrapping a block: every
+  name inside the block and after it in the enclosing scope resolves as
+  before, and no object with a non-trivial destructor changes lifetime
+  unless the block was the last statement of its scope; a failed check is
+  a diagnostic at the site, not an edit.
+- **New code is a parsed fragment with typed holes**, not concatenated
+  text. The fragment is parsed as what it claims to be (an expression, a
+  statement, a declaration, a type) when the transform is compiled, so a
+  transform that would build ill-formed code does not compile. A hole
+  takes an `info` (filled by `spell`), a `code` (filled by `copy`) or a
+  value (written as a literal of its type).
+- **`text()` and `cat()` remain as an escape hatch** for what no primitive
+  covers yet. Each use is visible in the transform's source and counted in
+  the run's report. A count above zero in a reference transform or in an
+  example of this document is a defect of the API, and the list of uses
+  is the backlog of primitives.
+- **Acceptance test of the design**: the reference transforms are written
+  with no string operation on code. They are the namespace migration of
+  §9.2 and the removal of a feature flag in its three forms (a local
+  switch object tested by `if (sw.isOn())`; the switch held in a data
+  member set by a mem-initialiser and used across translation units; a
+  `bool` member initialised from `sw.isOn()` and branched on in member
+  functions, which needs a fold under an assumption, the classification
+  of each reference as a read, a write or an escape, and a fact joined
+  across translation units).
+
+§9.2 as written predates the rule: `cat(spell(parent_of(target)), "::")`
+builds a qualifier by concatenation. The M4 design replaces it with a
+primitive that requalifies a use for its target.
+
 ## 7. Effects: edits, facts, reports
 
 A transform's only effects are records appended to the observer's output
@@ -427,4 +468,6 @@ value types; Slip does not depend on it.
   Order of evaluation, of TUs and of transforms therefore cannot matter.
 - No I/O, no clock, no randomness.
 - No string-built qualified names in the L2 library; `spell` only.
+- No string manipulation of code in a transform (§6 "The rule"): `text` and
+  `cat` are a counted escape hatch, not the way to build code.
 - No direct access to Kiln node ids or to L0.

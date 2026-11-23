@@ -24,7 +24,9 @@ make them fail (§14).
    coding, decides.
 2. **Spelling is not meaning.** Excluded: source locations; whether and how
    a name is qualified; the alias, using-declaration or injected name a type
-   or entity was reached through; redundant parentheses; `struct` against
+   or entity was reached through; redundant parentheses (those around an
+   operand that is not instantiation-dependent, outside a canonical
+   operand: `digest-kinds.md` §7); `struct` against
    `class`; `override`; the names of parameters and of block-scope entities;
    comments, whitespace and macro structure. Where a written form *does*
    change what code generation reads, that effect is included as a fact of
@@ -202,8 +204,8 @@ the preprocessor's and not the AST's.
 | The value of an immediate invocation inside a default argument, computed at its first use | `resolved` unit |
 | A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
 | A deduced return type of a template member | part of the instantiation's derived unit |
-| A variable's evaluated constant value (`eval`), default-argument immediate values | `resolved` unit |
-| A class's key function; `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
+| A variable's evaluated constant value (`eval`), default-argument immediate values. At Kiln `913a490bb` `eval` is written when Kiln checks the declaration's initialiser: with the declaration, or, for one made by instantiation, when a use instantiates it (`digest-kinds.md` §11.3) | `resolved` unit |
+| A class's key function; `dtor_delete`, `dtor_delete_this` (set when a virtual destructor is defined, which for an implicit or defaulted one is on use), `inheriting_ctor`, `inherited_ctor` (set when Kiln declares the inheriting constructor, on use) cold maps | `resolved` unit of the class or function |
 | The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |
 | "vtable used" marks | not in the AST: nothing to digest |
 | "A complete definition was required" marks; the lists of classes completed and of function definitions instantiated; the tables that record which specialisations exist and in what order they were made | not digested |
@@ -287,7 +289,10 @@ with everything else.
   the first name its declaration introduces: the typedef name it is given
   for linkage, else its first declarator, else its first enumerator, else
   (an anonymous union) its first member. Failing all of those it is named
-  by its ordinal among the unnamed types of its scope.
+  by its ordinal among the unnamed types of its scope. A name-independent
+  declarator or member (`struct { int a; } _;`, `union { int _; };`,
+  P2169) names nothing, since a scope may hold several: it is skipped, and
+  the rules after it apply.
 - A declaration that introduces no name at all (§2.1) is **keyed by
   content**: `name` is `content` and `disc` is the unit's own digest. Two
   identical `static_assert`s in one scope are one unit. Adding or removing
@@ -535,7 +540,10 @@ rules common to all:
   and base path), materialised temporaries, bound temporaries, cleanups,
   implicit `this`, default arguments and default member initialisers at
   their point of use, and constant-expression wrappers (with their value)
-  are all written. Only a redundant parenthesis is skipped.
+  are all written. Only a redundant parenthesis is skipped: one around an
+  operand that is not instantiation-dependent, outside a canonical operand
+  (`digest-kinds.md` §7 "Parentheses"); in a dependent operand a
+  parenthesis can change the meaning (`decltype((x))`, `&(T::m)`).
 - **The selected entity is written wherever one was selected**: the callee
   of every call, the constructor of every construction, the conversion
   function of every user-defined conversion, the allocation and
@@ -615,9 +623,29 @@ object is unspecified by the language and is not digested.
 `__func__`, `__PRETTY_FUNCTION__` and the fields of `std::source_location`
 are written **symbolically** (which builtin, not its value), as are literals
 that come from the expansion of `__LINE__`, `__FILE__`, `__COUNTER__`,
-`__DATE__`, `__TIME__` and their relatives. Where such a value determines a
-type or another constant (an array bound from `__LINE__`), that type or
-constant is written by value as always, so a real change is seen.
+`__DATE__`, `__TIME__` and their relatives.
+
+The expression's **own type** and the **constant it stands for** are
+symbolic with it. The array type of `__func__` and its kin (`const
+char[N]`, `N` the length of a name) is written as that builtin's type,
+without the bound. The object that an immediate invocation builds from
+such values and nothing else (`std::source_location::current()`, in a
+default argument as anywhere) is written as the builtins it was built
+from, not as its bytes.
+
+Whatever **consumes** such a value is written by value as always, so a
+real change is seen: an array bound from `__LINE__`, `sizeof(__func__)`,
+the length of a name deduced as a template argument, a variable declared
+with the array's type or a reference to it, a constant computed from the
+characters.
+
+Why the type goes with the value: a declared relocation says that names
+change, and a value that is a function of a name changes by exactly that,
+as a mangled name does. `assert` expands to `__PRETTY_FUNCTION__`; were
+its length a fact, no function that asserts could be relocated and
+verify. A program that observes such a string (a log that is parsed, a
+registry keyed by it) is told by the report, not by the verdict
+(`verify.md` "Open questions").
 
 ## 10. Indeterminate units
 
@@ -641,6 +669,17 @@ the nearest enclosing entity indeterminate, the order unit at the top
 level. A key built from an indeterminate key (its parent's, its
 template's, one in its discriminator) is indeterminate for the same
 cause.
+
+**A collision does not travel.** Collisions are found after the walk,
+when the keys of the whole translation unit are known: the mark is put
+on the units that share the key, and only on them. A unit that refers to
+one of them wrote the shared key in its stream during the walk and stays
+determinate. This is sound because a collision is never silent: each
+colliding key is an `indeterminate` finding (`verify.md` §4 rule 1, or
+`derived_indeterminate` for derived units), so an observer with a
+collision is never `verified`. The per-unit "unchanged" of a referrer is
+then one line of a report that already fails; it is not a claim Slip
+makes on its own.
 
 Its digest is still computed and recorded, with the `indeterminate` flag.
 Verification treats an indeterminate unit as different from every unit.

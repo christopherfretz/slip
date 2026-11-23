@@ -17,14 +17,23 @@ pub struct Ownership {
 }
 
 /// `entry` is a canonical absolute path (`spec/edits.md` §2.1): it starts
-/// with `/`, has no empty, `.` or `..` component, and has no trailing `/`
-/// unless it is `/` itself.
+/// with `/`, has no empty, `.` or `..` component, no NUL byte, and has no
+/// trailing `/` unless it is `/` itself.
 pub fn is_canonical(entry: &[u8]) -> bool {
+    if entry.contains(&0) {
+        return false;
+    }
     match entry.strip_prefix(b"/") {
         None => false,
         Some(b"") => true,
         Some(rest) => rest.split(|&b| b == b'/').all(|c| !matches!(c, b"" | b"." | b"..")),
     }
+}
+
+/// `path` is a canonical absolute path that can name a file
+/// (`spec/edits.md` §2.1): [`is_canonical`], and not `/`.
+pub fn is_file_path(path: &[u8]) -> bool {
+    path != b"/" && is_canonical(path)
 }
 
 /// `entry` covers `path` (`spec/edits.md` §2.1): the entry `/` covers every

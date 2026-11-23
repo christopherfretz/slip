@@ -1,1 +1,1 @@
-changed f(type-parameter-0-0, type-parameter-0-0)
+changed template <class> Task f(type-parameter-0-0, type-parameter-0-0)

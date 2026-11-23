@@ -1,0 +1,4 @@
+# pending
+# needs: local
+# the closure of a lambda is the local area's (WP-040); the call operator's body is walked since WP-034
+changed l

@@ -3,7 +3,7 @@
 
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind, VarStorage};
 use slip_kiln::kiln::ast::ids::DeclId;
-use slip_kiln::kiln::ast::templates::SpecKind;
+use slip_kiln::kiln::ast::templates::{SpecKind, is_template_kind};
 use slip_model::Digest;
 use slip_model::digests::GroupClass;
 use slip_model::keys::{Key, KeyKind, Name, Parent};
@@ -45,6 +45,13 @@ pub(crate) struct Written {
     pub cause: Option<Cause>,
     pub class: GroupClass,
     pub file: Vec<u8>,
+    /// For a resolved unit, its property (`demand.rs`); its `entity` is
+    /// the owner's.
+    pub resolved: Option<crate::demand::Resolved>,
+    /// For a `default_argument` unit (digest-kinds §11.4), and for a
+    /// resolved unit of one, the parameter's index (0 for a field); its
+    /// `entity` is the function's or field's.
+    pub default_argument: Option<u64>,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -161,6 +168,10 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
         }
         Some((TemplLinkKind::Pattern | TemplLinkKind::PartialSpecialization, _)) | None => {}
     }
+    // An explicitly specialised member template is written in source.
+    if specialised_member_template(w, e) {
+        return Some(UnitClass::Declared);
+    }
     // Every member of an implicit instantiation is derived (digest §2.2),
     // whether or not Kiln gave it a `MemberSpecInfo`.
     if in_implicit_instantiation(w, e) {
@@ -177,11 +188,15 @@ pub(crate) fn in_implicit_instantiation(w: &Walk<'_>, e: DeclId) -> bool {
     let mut c = ast.decls.get(e).ctx();
     for _ in 0..64 {
         let Some(x) = c else { return false };
-        let kind = if let Some((_, info)) = ast.spec_info(x) {
-            Some(info.kind)
-        } else {
-            ast.member_spec_info(x).map(|(_, info)| info.kind)
-        };
+        // The definition of an explicitly specialised member enumeration
+        // has no `MemberSpecInfo` of its own: its first declaration does.
+        // (Only an enumeration: a function's first declaration may be one
+        // an instantiation added: `demand/_/friend-instantiated-then-written`.)
+        let kind = own_spec_kind(w, x).or_else(|| {
+            (ast.decls.get(x).kind() == DeclKind::Enum)
+                .then(|| own_spec_kind(w, ast.first(x)))
+                .flatten()
+        });
         match kind {
             Some(SpecKind::ImplicitInstantiation) => return true,
             Some(
@@ -192,9 +207,32 @@ pub(crate) fn in_implicit_instantiation(w: &Walk<'_>, e: DeclId) -> bool {
             ) => return false,
             None => {}
         }
+        if specialised_member_template(w, x) {
+            return false;
+        }
         c = ast.decls.get(x).ctx();
     }
     false
+}
+
+/// `x`, or the template whose pattern `x` is, is a member template of an
+/// implicitly instantiated class that `template <> template <...>`
+/// explicitly specialises ([temp.expl.spec]/16), so that it and its
+/// members are written in source (`spec/digest.md` §2.2). Kiln keeps no
+/// `SpecInfo` for it: it drops the `instantiated_from` of the template's
+/// first declaration (`Sema::specialize_member_template`), which every
+/// member template an instantiation declares has.
+pub(crate) fn specialised_member_template(w: &Walk<'_>, x: DeclId) -> bool {
+    let ast = w.ast;
+    let t = if is_template_kind(ast.decls.get(x).kind()) {
+        x
+    } else {
+        match ast.described_template(x) {
+            Some(t) => t,
+            None => return false,
+        }
+    };
+    ast.templates.instantiated_from_map(ast.first(t)).is_none() && in_implicit_instantiation(w, t)
 }
 
 /// The kind of `x`'s own `SpecInfo`, else of its `MemberSpecInfo`.
@@ -490,7 +528,18 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         }
     };
     let entity = Some(e);
-    Some(Written { entity, read: Some(read), key, kind, digest: hashed.digest, cause, class, file })
+    Some(Written {
+        entity,
+        read: Some(read),
+        key,
+        kind,
+        digest: hashed.digest,
+        cause,
+        class,
+        file,
+        resolved: None,
+        default_argument: None,
+    })
 }
 
 /// The fallback key of a unit whose key cannot be formed: its own key
@@ -579,6 +628,8 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         cause: h.cause,
         class: GroupClass::Tu,
         file: Vec::new(),
+        resolved: None,
+        default_argument: None,
     }
 }
 
@@ -589,7 +640,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
     clippy::many_single_char_names,
     reason = "the names of digest-kinds: s stream, d declaration, e entity, n node, q type"
 )]
-fn origin_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
+pub(crate) fn origin_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
     let ast = w.ast;
     let mut d = e;
     for _ in 0..64 {
@@ -1051,7 +1102,8 @@ mod tests {
             units(src)
                 .into_iter()
                 .filter(|(class, name, _, _)| {
-                    *class == GroupClass::Derived && name.starts_with("m(type-parameter-0-0")
+                    *class == GroupClass::Derived
+                        && name.contains("::friend template <class> void m(")
                 })
                 .map(|(_, _, key, digest)| (key, digest))
                 .collect()

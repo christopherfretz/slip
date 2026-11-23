@@ -1,0 +1,2 @@
+added A<long>::E
+added A<long>::x

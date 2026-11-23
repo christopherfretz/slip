@@ -138,7 +138,13 @@ fn head(w: &mut Walk<'_>, s: &mut Stream, l: TemplateParamListId, how: Head<'_>)
     }
     s.opt(requires.is_some());
     if let Some(r) = requires {
-        crate::expr::requires_clause(w, s, r);
+        match how {
+            // A key's head holds the requires-clause's canonical operand,
+            // as a trailing one's (§3.3, §4.4): two spellings of one
+            // constraint are one key.
+            Head::Key => crate::expr_dep::profile_expr(w, s, r),
+            Head::Unit(_) => crate::expr::requires_clause(w, s, r),
+        }
     }
     w.leave();
 }
@@ -331,8 +337,27 @@ fn member_spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &MemberSpecInfo) {
 /// `keyed`, `params` is the head as a unit writes it. The record has
 /// private fields (`shapes`, `shapes_len`), so it is read field by field
 /// and not destructured.
+///
+/// The arguments are in the key only, where a profile's left-out fact
+/// (`Walk::left_out`) is ignored; the unit, whose meaning is that of its
+/// arguments, is `Pending(Area::Spelling)` when one left a fact out
+/// (digest-kinds §4.4 "The mark"). They are written for that into a
+/// stream that is dropped, as in a key: with the unit state and the type
+/// digests' state put aside.
 fn partial_spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &PartialSpecInfo) {
     template_head_unit(w, s, x.params);
+    let saved = w.take_unit();
+    let types = w.take_types();
+    let before = w.left_out;
+    w.in_key += 1;
+    w.write_args(&mut Stream::new(), x.canonical);
+    w.in_key -= 1;
+    let left_out = w.left_out != before;
+    w.restore_types(types);
+    w.unit = saved;
+    if left_out {
+        s.absorb(Some(Cause::Pending(Area::Spelling)));
+    }
 }
 
 /// `ref` to a declaration of a pattern (§9): `Ref::none` for one that has
@@ -489,20 +514,27 @@ pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let default = default_of(w, d);
     s.opt(default.is_some());
     if let Some(a) = default {
-        match ast.types.canonical_arg(a).view() {
-            // A default written as an expression stays one in canonical
-            // form: it is the canonical operand of that expression.
-            ArgView::Expr { expr, profile: _ } => {
+        match (a.view(), ast.types.canonical_arg(a).view()) {
+            // A default written as an expression is the declaration's own:
+            // walked in full (§7), as a default function argument is.
+            (ArgView::Expr { expr, profile: _ }, _) => {
+                s.tag(arg_view::EXPR);
+                crate::expr::child(w, s, expr);
+            }
+            (_, ArgView::Expr { expr, profile: _ }) => {
                 s.tag(arg_view::PROFILE);
                 crate::expr_dep::profile_expr(w, s, expr);
             }
-            v @ (ArgView::Null
-            | ArgView::Type(_)
-            | ArgView::Value { .. }
-            | ArgView::Template(_)
-            | ArgView::TemplateExpansion { .. }
-            | ArgView::Profile(_)
-            | ArgView::Pack(_)) => w.write_arg(s, v),
+            (
+                _,
+                v @ (ArgView::Null
+                | ArgView::Type(_)
+                | ArgView::Value { .. }
+                | ArgView::Template(_)
+                | ArgView::TemplateExpansion { .. }
+                | ArgView::Profile(_)
+                | ArgView::Pack(_)),
+            ) => w.write_arg(s, v),
         }
     }
     // trailing_requires: child?
@@ -528,4 +560,73 @@ pub(crate) fn decl_maps(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         .instantiated_from_map(d)
         .filter(|&p| !crate::units::instantiated_friend_link(w, d, p));
     write_pattern_ref_opt(w, s, from);
+}
+
+#[cfg(test)]
+mod tests {
+    use slip_kiln::kiln::ast::DeclId;
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    use slip_model::keys::RuleTable;
+
+    use crate::Input;
+    use crate::stream::Stream;
+    use crate::walk::Walk;
+
+    /// The `param_object` stream of every template parameter object of
+    /// `src`, in arena order, with whether Kiln holds its value.
+    fn param_objects(src: &str) -> Vec<(bool, Vec<u8>)> {
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        let rules = RuleTable::empty();
+        slip_kiln::snippet::parse(&snippet, |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let mut w = Walk::new(&input, &rules);
+            let objects: Vec<DeclId> = p
+                .ast
+                .decls
+                .ids()
+                .filter(|&d| p.ast.decls.get(d).kind() == DeclKind::TemplateParamObject)
+                .collect();
+            objects
+                .into_iter()
+                .map(|d| {
+                    let held = p.ast.templates.param_object_value(d).is_some();
+                    let mut s = Stream::new();
+                    super::param_object(&mut w, &mut s, d);
+                    assert_eq!(s.cause(), None, "a plain class constant is determinate");
+                    (held, s.as_bytes().to_vec())
+                })
+                .collect()
+        })
+        .expect("the snippet parses")
+    }
+
+    /// digest-kinds §5.3 (`TemplateParamObject` stores 0 in `data`; its
+    /// value is read with `TemplateTables::param_object_value`, §9): the
+    /// row is `opt` then the value. Kiln makes one object per value, so
+    /// two arguments that differ in one member are two objects whose
+    /// streams differ, and the same value written twice is one object.
+    #[test]
+    fn param_object_writes_the_value() {
+        let objects = param_objects(
+            "struct V { int a, b; };\ntemplate <V> struct N {};\n\
+             N<V{1, 2}> x;\nN<V{1, 3}> y;\nN<V{1, 2}> z;\n",
+        );
+        assert_eq!(objects.len(), 2, "one object per value: {objects:?}");
+        let mut present = Stream::new();
+        present.opt(true);
+        for (held, bytes) in &objects {
+            assert!(held, "Kiln holds the value of a used object");
+            assert!(bytes.starts_with(present.as_bytes()), "the option is present: {bytes:?}");
+            assert!(bytes.len() > present.as_bytes().len(), "the value follows the option");
+        }
+        assert_ne!(objects[0].1, objects[1].1, "the objects differ in `b`");
+    }
 }

@@ -1,2 +1,4 @@
-removed x
-added x
+added <shadow b::x>
+added <using b::x>
+removed <shadow a::x>
+removed <using a::x>

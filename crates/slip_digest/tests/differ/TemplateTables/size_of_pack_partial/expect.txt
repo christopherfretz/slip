@@ -1,7 +1,2 @@
-# pending
-# needs: expr
-# expr_maps is called by the expression area (expr.rs)
-# the operand is in the key (a function template's return type or
-# parameter): the row changes only together with the key (landed WP-029)
-removed g
-added g
+added template <class...> void g(Z<2UL + sizeof...(U)>)
+removed template <class...> void g(Z<1UL + sizeof...(U)>)

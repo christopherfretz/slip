@@ -1,0 +1,1 @@
+added template <class, class> void f(type-parameter-0-1, type-parameter-0-0)

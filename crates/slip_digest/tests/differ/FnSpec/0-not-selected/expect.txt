@@ -1,2 +1,2 @@
 derived-changed X<int>::~X()
-changed X::~X<T>()
+changed c

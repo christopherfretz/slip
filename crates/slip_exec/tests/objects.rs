@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use slip_exec::store::{Access, Object, Store, StoreError};
 use slip_model::container::Writer;
+use slip_model::formats::undump;
 use slip_model::hash::content_digest;
+use slip_model::json;
 use slip_model::wire::Encoder;
 use slip_model::{Digest, Phase, Run, RunRecord};
 
@@ -49,6 +51,69 @@ fn d(n: u8) -> Digest {
 }
 
 const ALL: [Object; 4] = [Object::Transform, Object::EditSet, Object::Overlay, Object::Result];
+
+/// A valid file of `kind` (`TRFM`, `EDTS`, `OVLY` or `RSLT`), one for each
+/// `n`, from its JSON rendering (`spec/model.md` §10): the store validates
+/// an object in full (`spec/exec.md` §2.2).
+fn valid(kind: [u8; 4], n: u8) -> Vec<u8> {
+    let h = |b: u8| format!("\"{}\"", Digest([b; 32]));
+    let (k, section) = match &kind {
+        b"TRFM" => (
+            "TRFM",
+            format!(
+                "\"transform\": {{\"kind\": \"rename\", \"ownership\": {{\"owned\": [\"/s\"], \
+                 \"readonly\": []}}, \"indivisible\": true, \"rename\": {{\"target\": [\"f\"], \
+                 \"kind\": \"function\", \"new_name\": \"g{n}\"}}, \"script\": null}}"
+            ),
+        ),
+        b"EDTS" => (
+            "EDTS",
+            format!(
+                "\"set\": {{\"scheme\": 1, \"plan\": {}, \"round\": {n}, \"transform\": {}, \
+                 \"basis\": {}, \"state\": \"refused\", \"files\": [], \"subjects\": [], \
+                 \"rules\": [], \"edits\": [], \"groups\": [], \"changed\": [], \"kept\": [], \
+                 \"unresolved\": [], \"refusals\": [{{\"cause\": \"no_observer\", \"file\": null, \
+                 \"lo\": 0, \"hi\": 0, \"reason\": \"none\", \"subject\": null, \"macro\": null, \
+                 \"other\": null, \"observers\": 0, \"first\": []}}], \"reports\": [], \
+                 \"failures\": [], \"unparsed\": [], \"counters\": []}}",
+                h(1),
+                h(2),
+                h(3)
+            ),
+        ),
+        b"OVLY" => (
+            "OVLY",
+            format!(
+                "\"overlay\": {{\"edits\": {}, \"files\": [{{\"path\": \"/s/a\", \
+                 \"pre\": {{\"size\": 1, \"content\": {}}}, \
+                 \"post\": {{\"size\": {n}, \"content\": {}}}}}], \"spellings\": []}}",
+                h(4),
+                h(5),
+                h(6)
+            ),
+        ),
+        b"RSLT" => (
+            "RSLT",
+            format!(
+                "\"result\": {{\"scheme\": 1, \"plan\": {}, \"round\": {n}, \"transform\": {}, \
+                 \"edits\": {}, \"declared\": null, \"overlay\": null, \"state\": \"refused\", \
+                 \"partial\": false, \"allow_unparsed\": false, \"verdict\": null, \
+                 \"tally\": {{\"selected\": 1, \"unparsed\": 1, \"failed_runs\": 0, \
+                 \"error_reports\": 0, \"verified\": 0, \"unchanged\": 0, \"mismatch\": 0, \
+                 \"not_parsed\": 0, \"unverifiable\": 0, \"never_parsed\": 0, \"failed\": 0}}, \
+                 \"agreement\": [], \"unused\": [], \
+                 \"spellings\": {{\"obligations\": 0, \"passed\": 0, \"failed\": []}}, \
+                 \"residue\": [], \"exempt\": []}}",
+                h(1),
+                h(2),
+                h(5)
+            ),
+        ),
+        _ => panic!("no object of this kind"),
+    };
+    let text = format!("{{\"kind\": \"{k}\", \"version\": 1, \"sections\": {{{section}}}}}");
+    undump(&json::parse(text.as_bytes()).unwrap()).unwrap()
+}
 
 /// A container of `kind`, version 1, with one section holding `payload`.
 fn container(kind: [u8; 4], payload: &[u8]) -> Vec<u8> {
@@ -121,7 +186,7 @@ fn s10_4_objects_published_read_and_found() {
         // Seventeen containers: two of them share a first digit.
         let mut ids = Vec::new();
         for i in 0..17u8 {
-            let bytes = container(kind, &[i]);
+            let bytes = valid(kind, i);
             let id = store.publish_object(object, &bytes).unwrap();
             assert_eq!(id, content_digest(&bytes[..bytes.len() - 32]));
             let path = store.object_path(object, &id);
@@ -158,12 +223,12 @@ fn s10_4_objects_published_read_and_found() {
         let path = store.object_path(object, &ids[0]);
         let before = identity(&path);
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let again = store.publish_object(object, &container(kind, &[0])).unwrap();
+        let again = store.publish_object(object, &valid(kind, 0)).unwrap();
         assert_eq!(again, ids[0]);
         assert_eq!(identity(&path), before);
     }
     // Each kind is found only in its own directory.
-    let trfm = store.publish_object(Object::Transform, &container(*b"TRFM", b"x")).unwrap();
+    let trfm = store.publish_object(Object::Transform, &valid(*b"TRFM", 99)).unwrap();
     assert_eq!(store.read_object(Object::EditSet, &trfm).unwrap(), None);
     // Nothing is left under tmp/.
     assert_eq!(fs::read_dir(store.root().join("tmp")).unwrap().count(), 0);
@@ -201,6 +266,36 @@ fn s2_1_object_of_another_kind_refused() {
         }
         assert!(!store.root().join(object.dir()).exists(), "{object:?}");
     }
+    assert_eq!(fs::read_dir(store.root().join("tmp")).unwrap().count(), 0);
+}
+
+/// `spec/exec.md` §2.2: an object is validated in full. A container of the
+/// right kind and frame whose section is not a valid file of the kind (an
+/// edit set, an overlay, a result, a request), and a valid file but for
+/// one invariant (an overlay with no file), are `Invalid`; nothing is
+/// written.
+#[test]
+fn s2_2_object_validated_in_full() {
+    let dir = scratch("full");
+    let store = exclusive(&dir);
+    for object in [Object::EditSet, Object::Overlay, Object::Result, Object::Transform] {
+        match store.publish_object(object, &container(object.kind(), b"x")) {
+            Err(StoreError::Invalid(m)) => {
+                let kind = String::from_utf8_lossy(&object.kind()).into_owned();
+                assert!(m.contains(&format!("not a valid {kind} file")), "{m}");
+            }
+            other => panic!("{object:?}: {other:?}"),
+        }
+        assert!(!store.root().join(object.dir()).exists(), "{object:?}");
+    }
+    // An overlay's section, well formed, with no file (`spec/edits.md` §7.1).
+    let mut e = Encoder::new();
+    e.digest(&d(4)).count(0).count(0);
+    match store.publish_object(Object::Overlay, &container(*b"OVLY", e.as_bytes())) {
+        Err(StoreError::Invalid(m)) => assert!(m.contains("an overlay has no file"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(!store.root().join("overlays").exists());
     assert_eq!(fs::read_dir(store.root().join("tmp")).unwrap().count(), 0);
 }
 
@@ -410,6 +505,72 @@ fn s10_6_transform_run_record_path() {
     assert_eq!(all, vec![want]);
 }
 
+/// The payload of `transform_run(plan, round, started)` up to and
+/// including `started_unix_ns`, then `rest`.
+fn transform_run_payload(plan: Digest, round: u64, started: u64, rest: &[u8]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.str("s").str("k").digest(&plan).uv(round).digest(&d(0x77));
+    e.u8(1).digest(&d(0x78)).u8(0).u8(1).digest(&d(0x79)).u8(0);
+    e.uv(started);
+    let mut out = e.into_bytes();
+    out.extend_from_slice(rest);
+    out
+}
+
+/// Publishes `bytes` as the record of `plan`, round 4, started 123: it
+/// must be `Invalid` and leave no file.
+fn refused_transform_run(name: &str, plan: Digest, bytes: &[u8]) {
+    let dir = scratch(name);
+    let store = exclusive(&dir);
+    let r = store.publish_transform_run(&plan, 4, 123, bytes);
+    assert!(matches!(r, Err(StoreError::Invalid(_))), "{r:?}");
+    assert!(!store.root().join("runs").join(plan.to_string()).join("transform.4.123.run").exists());
+}
+
+/// `spec/exec.md` §2.2: the whole record is checked, not its three leading
+/// names: one that stops after `started_unix_ns` is refused.
+#[test]
+fn s10_6_transform_run_truncated_after_started() {
+    let plan = d(0x82);
+    // The three names read; wall_ns and steps missing.
+    let bytes = container(*b"RUNT", &transform_run_payload(plan, 4, 123, &[]));
+    refused_transform_run("runt-short", plan, &bytes);
+    // wall_ns present, steps missing.
+    let bytes = container(*b"RUNT", &transform_run_payload(plan, 4, 123, &[5]));
+    refused_transform_run("runt-short2", plan, &bytes);
+    // Complete: published.
+    let bytes = container(*b"RUNT", &transform_run_payload(plan, 4, 123, &[5, 0]));
+    assert_eq!(bytes, transform_run(plan, 4, 123));
+}
+
+/// `spec/exec.md` §2.2: a record with a byte after its last field
+/// (`steps`) is refused.
+#[test]
+fn s10_6_transform_run_trailing_bytes() {
+    let plan = d(0x83);
+    let bytes = container(*b"RUNT", &transform_run_payload(plan, 4, 123, &[5, 0, 0]));
+    refused_transform_run("runt-trailing", plan, &bytes);
+}
+
+/// `spec/exec.md` §2.2, `spec/model.md` §5 rule 5: a record with an
+/// unknown critical section (id 2) is refused; an unknown ignorable one
+/// (id 64) is published.
+#[test]
+fn s10_6_transform_run_unknown_critical_section() {
+    let plan = d(0x84);
+    let payload = transform_run_payload(plan, 4, 123, &[5, 0]);
+    let with = |id: u64| {
+        let mut w = Writer::new(*b"RUNT", 1);
+        w.section(1, &payload);
+        w.section(id, b"x");
+        w.finish()
+    };
+    refused_transform_run("runt-critical", plan, &with(2));
+    let dir = scratch("runt-ignorable");
+    let store = exclusive(&dir);
+    store.publish_transform_run(&plan, 4, 123, &with(64)).unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // The journal
 
@@ -458,7 +619,7 @@ fn s2_2_publish_repairs_what_is_not_the_content() {
     assert_eq!(store.publish_blob(b"pre-image").unwrap(), id);
     assert_eq!(store.read_blob(&id).unwrap().as_deref(), Some(&b"pre-image"[..]));
     // An object replaced by junk.
-    let bytes = container(*b"OVLY", b"overlay");
+    let bytes = valid(*b"OVLY", 7);
     let ov = store.publish_object(Object::Overlay, &bytes).unwrap();
     let path = store.object_path(Object::Overlay, &ov);
     fs::write(&path, b"junk").unwrap();

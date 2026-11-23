@@ -1,0 +1,3 @@
+# N14: the unnamed namespace inside legacy, hoisted out of it by the wrong edit.
+good: verified
+bad:  mismatch removed legacy::(anonymous namespace)::helper() @ main.cpp:5

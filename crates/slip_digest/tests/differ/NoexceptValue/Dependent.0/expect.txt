@@ -1,0 +1,4 @@
+# pending
+# needs: expr
+# the operand's profile is Pending(Expr)
+changed template <class> void f()
