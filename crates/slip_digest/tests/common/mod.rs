@@ -863,8 +863,9 @@ mod header_tests {
     // without `=` are errors of the test.
     #[test]
     fn wp048_module_header_lines() {
-        let two = header("// module: m=m.cppm\n// std: c++23\n// module: m.n:p=part.cppm\nint x;\n")
-            .unwrap();
+        let two =
+            header("// module: m=m.cppm\n// std: c++23\n// module: m.n:p=part.cppm\nint x;\n")
+                .unwrap();
         assert_eq!(
             two.modules,
             [("m".to_owned(), "m.cppm".to_owned()), ("m.n:p".to_owned(), "part.cppm".to_owned())]
