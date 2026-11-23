@@ -503,6 +503,27 @@ fn s1_test5_unit_order_invocation_and_include_come_first() {
     });
 }
 
+/// Test 5, the predefines in a snippet, whose main file is an in-memory
+/// buffer like `<built-in>` (a snippet takes no `-include`; the worker's
+/// forced include is `tests/parse.rs`
+/// `s1_unit_order_forced_include_comes_before_the_main_file`): every
+/// location of `<built-in>` comes before every location of the main file.
+#[test]
+fn s1_test5_unit_order_predefines_before_the_main_file() {
+    unit("int m0;\n", &[], |u| {
+        let sm = u.sm();
+        let main = u.p.unit().main_file().expect("a main file");
+        let builtin = sm.file_ids().find(|&f| sm.file_name(f) == "<built-in>").expect("<built-in>");
+        assert!(builtin.index() > main.index());
+        let bytes = |f| (0..=u32::try_from(sm.text(f).len()).unwrap()).map(move |o| sm.loc(f, o));
+        for a in bytes(builtin) {
+            for b in bytes(main) {
+                assert_eq!(unit_order(sm, a, b), Ordering::Less, "{a:?} {b:?}");
+            }
+        }
+    });
+}
+
 /// Test 5: the order is total over a source with includes, expansions,
 /// arguments split by expansions, `#` and `##`.
 #[test]
