@@ -559,7 +559,8 @@ pub fn compare_groups(
             // not), so that it too is unchanged by leaving out the groups
             // outside `G` (§4.1); on what the walk produces the two readings
             // are one, since a key with a determinate declared unit has no
-            // derived unit in the same image (digest.md §3.4, §10).
+            // derived unit in the same image (digest.md §3.4, §10; the two
+            // runs `collides` does not mark are in spec/verify.md §4 step 4).
             if kind != FindingKind::Changed {
                 let (vp, vq) = derived_runs(key);
                 let (rv, av) = differences(vp, vq);

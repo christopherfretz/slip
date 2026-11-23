@@ -34,3 +34,6 @@ bad-3:  mismatch changed pick<int>() @ pick_int.h:1
 good-4: verified
 good-5: verified
 bad-5:  mismatch derived_changed box<Mine>::found @ traits.h:7
+xfail good: width<Mine>()'s instantiated body is Pending(Demand): derived_indeterminate until WP-045
+xfail good-4: pick<int>()'s instantiated body is Pending(Demand): derived_indeterminate until WP-045
+xfail good-5: box::found's decltype of a dependent call is Pending(Spelling) (WP-041), and box<Mine>'s instantiation Pending(Demand) (WP-045)

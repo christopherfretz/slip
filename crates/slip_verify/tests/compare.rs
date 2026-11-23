@@ -610,6 +610,27 @@ fn s4_4_with_the_key_under_a_collision() {
     );
 }
 
+// Step 1 comes before step 4: a declared unit that is indeterminate (one
+// unit, no collision: a pending one), the key derived in the other image,
+// and `changed` declared for it. The finding is `indeterminate`, which no
+// exemption prevents; `changed` is not used; the derived unit is counted
+// by step 3, since step 4 did not take the key. Not verified, either way.
+#[test]
+fn s4_4_step_1_comes_first() {
+    let d = [decl("/a.h", &[ui(1, 1)])];
+    let v = [deriv("/t.cpp", &[u(1, 3)])];
+    let changed = ex(&[1], &[], &[]);
+    let found = run(&d, &v, &changed);
+    assert_eq!(found, counts(vec![f(Indeterminate, 1, "/a.h", Some(1), None)], 0, 1, &[]));
+    assert_eq!(verdict(found, dg(2), dg(3), 8).kind, VerdictKind::Mismatch);
+    let found = run(&v, &d, &changed);
+    assert_eq!(found, counts(vec![f(Indeterminate, 1, "/a.h", None, Some(1))], 1, 0, &[]));
+    assert_eq!(verdict(found, dg(2), dg(3), 8).kind, VerdictKind::Mismatch);
+    // With every exemption: still not verified.
+    let all = ex(&[1], &[1], &[1]);
+    assert_eq!(verdict(run(&d, &v, &all), dg(2), dg(3), 8).kind, VerdictKind::Mismatch);
+}
+
 // §4 step 4 is read on the differences of V, as steps 2 and 3 are (§4.1):
 // a derived unit of the key that both images have equally does not make a
 // `removed` a `changed`; one the post-image has besides does. (Not an input

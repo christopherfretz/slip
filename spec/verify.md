@@ -408,7 +408,19 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    what the walk produces the two readings are one: a key with a
    determinate declared unit has no derived unit in the same image,
    since a second entity of one key is a collision (`digest.md` §3.4),
-   so `Vp(k)` is empty where step 2 gives `removed`. (WP-108: read as
+   so `Vp(k)` is empty where step 2 gives `removed`. The walk does not
+   mark two runs as a collision (`crates/slip_digest/src/units.rs`
+   `collides`), and neither breaks this: a run made only of namespace
+   units, since a namespace is always in the `tu` group (`digest.md`
+   §11), so a namespace key is never in `V`; and a run of the kinds a
+   scope may repeat (a using-declaration, a `static_assert`, a friend
+   and the others of §3.4) whose digests are all equal, since such a
+   unit is keyed by its content under its parent, and a derived one has
+   an implicit instantiation for its parent, which no declared unit has
+   (an explicit specialisation makes its members declared). Were such a
+   key in `D` and `V` of one image all the same, the reading on the
+   differences is still the one that holds through groups, and a unit
+   of `V` that both images have equally is no difference to report. (WP-108: read as
    "`Vq` has a unit of the key", step 4 gives `changed` over all groups
    and `removed` through `G` for a key whose derived unit is the same in
    a group outside `G`.) `pre`, `post` and `file` are those of §6 for a
@@ -1028,8 +1040,8 @@ RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) wh
          key:   KeyId                 the key of a unit of this image: a reference to it
 ```
 
-- A mark is made where the walk begins a unit (offset 0, the location of
-  the unit's first declaration) and where it begins a statement or an
+- A mark is made where the walk begins a unit (offset 0, at the unit's
+  **place**, below) and where it begins a statement or an
   expression inside one. A declaration's own rows (its type, its
   specifiers, each redeclaration) have no mark: a difference there is at
   the unit's mark or at the last expression before it. Types and constant
@@ -1092,6 +1104,22 @@ The empty site is an empty `file`, line and column 0, an empty `node` and
 an empty `what`. A unit's first mark is the mark at offset 0. Where an
 image has several units of the key, the one with the smallest digest is
 taken.
+
+A unit's **place**, the location of its first mark, is that of the first
+declaration of its chain, in chain order, that the source wrote. A
+declaration the front end made, by instantiation or implicitly, has no
+place of its own and is skipped, also when it comes first in the chain:
+an explicit specialisation `template <> int pick<int>()` in `pick_int.h`
+whose chain begins with the declaration Kiln instantiated from the
+template in `pick.h` has its place in `pick_int.h`. When no declaration
+of the chain is written (a derived unit, an implicit member), the place
+is that of the first declaration of the chain that has a location, which
+for an instantiation is where its pattern is (the row for step 4 above).
+This is not the finding's `file` (§6): that is the unit's group, the file
+of the entity's first declaration including one Kiln made
+(`digest.md` §11), and the two differ for such a specialisation
+(`file` `pick.h`, place `pick_int.h:1`). Localisation reads the place
+from the chain and not from `file`.
 
 **When they are made.** The pre-image's names, traces and causes are taken
 while the parse of step 4 is in memory, after the comparison (which needs
@@ -2053,3 +2081,26 @@ using-declaration). Those are judged by the comparison of digests alone.
   units of one derived key in one image are a collision and so
   indeterminate (`digest.md` §3.4), which is a finding; the case left is a
   content-keyed derived unit, of which `digest-kinds.md` has none yet.
+- **A partial specialisation equal to the primary, removed or added**
+  (WP-108, item 3, attempts 3b and 3c). Removing
+  `template <class T> struct S<T *> { int a; };` where the primary also
+  has `int a` leaves the program the same, and the members of `S<int *>`
+  differ: each writes the pattern it was instantiated from, `S<T *>::a`
+  on one side and `S<T>::a` on the other (`crates/slip_digest/src/templ.rs`
+  `decl_maps`, `instantiated_from`, `:557-562`, for a field and an
+  enumerator; `member_spec_info`, `MemberSpecInfo.instantiated_from`,
+  `:330-333`, for a member enumeration). The finding is
+  `derived_changed`, which nothing can declare: a correct edit the
+  verifier rejects. It is kept for now: the verifier errs on the side
+  that cannot verify a wrong program. Two ways out are rejected. A
+  declared `changed K` must not exempt a derived finding of `K` (step
+  3): exemptions are per run, so a `changed box<Mine>::found` would make
+  row E11 `bad-5` verify and hide an argument-dependent lookup that
+  resolves otherwise in that specialisation in every observer.
+  Dropping the pattern's identity from an instantiation's unit needs an
+  audit of `digest-kinds.md` §11.4 first: that reference carries the
+  facts the instantiated declaration leaves out on purpose (whether a
+  default argument exists, initialisers still pending, definitions not
+  instantiated), and it is safe to drop only where each such fact, when
+  it matters, shows in a derived unit made on use. That would be a
+  package of the digest with that audit as its obligation.
