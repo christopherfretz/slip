@@ -653,7 +653,10 @@ fn global_members(ast: &Ast, name: &str) -> Vec<DeclId> {
                 DeclKind::LinkageSpec | DeclKind::Export => walk(ast, d, name, scopes, out),
                 DeclKind::Namespace
                     if ast.is_anonymous_namespace(d)
-                        || ast.decls.namespace(d).is_some_and(|n| n.is_inline()) =>
+                        || ast
+                            .decls
+                            .namespace(d)
+                            .is_some_and(kiln_ast::decl::NamespaceData::is_inline) =>
                 {
                     let primary = ast.primary_context(d);
                     if !scopes.contains(&primary) {
