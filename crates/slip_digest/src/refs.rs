@@ -22,12 +22,19 @@ pub(crate) const REF_TEMPLATE_PARAM: u64 = 3;
 /// `Ref::param`, then level and index: written by the expression area.
 #[allow(dead_code, reason = "the interface of an area that lands later (lib.rs)")]
 pub(crate) const REF_PARAM: u64 = 4;
+/// `Ref::outer`, then the owner's `KeyId` and the index (digest §4.3).
+pub(crate) const REF_OUTER: u64 = 5;
 
 impl Walk<'_> {
     /// `ref`: `d` resolved to its entity (through a using-shadow), as
     /// `Ref::template_param`, `Ref::local` or the mapped key. Writing the
     /// key of an implicit entity makes it a derived unit (digest §2.2).
     pub(crate) fn write_ref(&mut self, s: &mut Stream, d: DeclId) {
+        // Numbering an owner reads no reference (`local.rs`).
+        if crate::local::numbering_mode(self) {
+            s.uv(REF_NONE);
+            return;
+        }
         let ast = self.ast;
         let d = ast.strip_shadow(d);
         let kind = ast.decls.get(d).kind();
@@ -67,9 +74,20 @@ impl Walk<'_> {
                 s.uv(REF_NONE).indeterminate(Cause::Unaccounted("key/local-ref"));
                 return;
             }
-            let n = crate::local::ordinal(self, d);
+            // Either form depends on the unit (digest §4.2).
             self.unit.local_uses += 1;
-            s.uv(REF_LOCAL).uv(n);
+            match crate::local::outer(self, d) {
+                None => {
+                    let n = crate::local::ordinal(self, d);
+                    s.uv(REF_LOCAL).uv(n);
+                }
+                Some(Ok((owner, index, cause))) => {
+                    s.uv(REF_OUTER).digest(&owner).uv(index).absorb(cause);
+                }
+                Some(Err(cause)) => {
+                    s.uv(REF_NONE).indeterminate(cause);
+                }
+            }
             return;
         }
         match self.key(d) {

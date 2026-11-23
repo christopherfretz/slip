@@ -353,6 +353,22 @@ fn members(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
             }
         }
     }
+    // members-other of a local class: sorted by key, each written in
+    // place in that order (§2.4, `spec/landed/digest/WP-040.md`), so that
+    // the ordinals its members' streams take do not follow the order of
+    // declaration.
+    if local && !crate::local::numbering_mode(w) {
+        let mut keyed: Vec<(Vec<u8>, usize, DeclId)> = Vec::with_capacity(others.len());
+        for (i, &m) in others.iter().enumerate() {
+            keyed.push((w.key_bytes(m).unwrap_or_default(), i, m));
+        }
+        keyed.sort();
+        s.count(keyed.len());
+        for (_, _, m) in keyed {
+            crate::local::write_decl(w, s, m);
+        }
+        return;
+    }
     // members-other: sorted by encoded bytes, duplicates removed.
     let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(others.len());
     for &m in &others {

@@ -57,6 +57,9 @@ pub(crate) struct UnitState {
     pub types: HashMap<u64, TypeRef>,
     /// The expression walk's state.
     pub expr: ExprState,
+    /// The stream's holder and the local types it declared
+    /// (`local::UnitLocals`).
+    pub local: crate::local::UnitLocals,
 }
 
 /// The state of the expression walk in a unit (`expr.rs`): put aside with
@@ -133,6 +136,8 @@ pub(crate) struct Walk<'a> {
     pub aborts: u64,
     /// `digest.bytes` (`spec/digest.md` §12).
     pub bytes: u64,
+    /// Numberings of owners and the numbering mode (`local.rs`).
+    pub local: crate::local::LocalState,
 }
 
 impl std::fmt::Debug for Walk<'_> {
@@ -166,6 +171,7 @@ impl<'a> Walk<'a> {
             node_depth: 0,
             aborts: 0,
             bytes: 0,
+            local: crate::local::LocalState::default(),
         }
     }
 

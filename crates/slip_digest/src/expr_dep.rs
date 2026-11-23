@@ -61,9 +61,10 @@ pub(crate) fn concept_specialization_expr(_w: &mut Walk<'_>, s: &mut Stream, _e:
     s.pending(Area::Expr);
 }
 
-/// `LambdaExpr` (`spec/digest-kinds.md` §7, `ExprNode` rows `LambdaExpr.*`): pending.
-pub(crate) fn lambda_expr(_w: &mut Walk<'_>, s: &mut Stream, _e: ExprId) {
-    s.pending(Area::Expr);
+/// `LambdaExpr` (`spec/digest-kinds.md` §7, `ExprNode` rows `LambdaExpr.*`): the
+/// closure type, written by the local package (`local::lambda_expr`).
+pub(crate) fn lambda_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    crate::local::lambda_expr(w, s, e);
 }
 
 /// `PackExpansionExpr` (`spec/digest-kinds.md` §7, `ExprNode` rows `PackExpansionExpr.*`): pending.

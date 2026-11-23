@@ -1,4 +1,1 @@
-# pending
-# needs: local
-# a local class is written by local::write_decl, which is pending
 changed f()

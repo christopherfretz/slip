@@ -7,7 +7,9 @@
 //! (`ns::f(int, char *)`), and ` const`, ` volatile`, ` &`, ` &&` after
 //! them for a method's qualifiers; a specialisation with its arguments
 //! (`ns::S<int>`); a content-keyed unit as its scope and `<kind>`
-//! (`ns::<static_assert>`); the order unit as `<order>`.
+//! (`ns::<static_assert>`); the order unit as `<order>`. Under a local
+//! type the scope is the type's key, `owner::local(n)`
+//! (`mk()::local(0)::operator()<int>(int) const`; `spec/landed/digest/WP-040.md`).
 
 use slip_kiln::kiln::ast::Ast;
 use slip_kiln::kiln::ast::DeclId;
@@ -28,7 +30,7 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
         .map(|u| {
             let name = match u.entity {
                 Some(e) => {
-                    let mut name = entity_name(w.ast, u.read.unwrap_or(e), u.kind);
+                    let mut name = local_scoped(w, u.read.unwrap_or(e), entity_name(w.ast, u.read.unwrap_or(e), u.kind));
                     // An entity Kiln prints without a name: its ordinal
                     // (digest §3.3) when it has one.
                     if name.is_empty() || name.ends_with("::") {
@@ -132,4 +134,62 @@ fn content_word(kind: KeyKind) -> &'static str {
         KeyKind::TemplateParamObject => "template_param_object",
         _ => "content",
     }
+}
+
+/// `name`, the name of `e`, with the scope Kiln prints for the nearest
+/// local type around `e` replaced by that type's key: its owner's name
+/// and `local(n)` (`?` for a number not known).
+fn local_scoped(w: &Walk<'_>, e: DeclId, name: String) -> String {
+    let ast = w.ast;
+    let mut a = ast.decls.get(e).ctx();
+    let mut steps = 0;
+    while let Some(c) = a {
+        if crate::local::is_local_type(w, c) {
+            break;
+        }
+        steps += 1;
+        if steps > 64 || !w.is_local(c) {
+            return name;
+        }
+        a = ast.decls.get(c).ctx();
+    }
+    let Some(t) = a else { return name };
+    let names = AstNames::new(ast);
+    // What Kiln prints before `e`'s own component: its scope, which ends
+    // with the local type's.
+    let mut kiln = String::new();
+    names.write_scope_prefix(e, true, &mut kiln);
+    let Some(rest) = name.strip_prefix(&kiln) else { return name };
+    // The scopes between the local type and `e` (a class nested in a local
+    // class), as Kiln prints them.
+    let mut inner = String::new();
+    let mut x = ast.decls.get(e).ctx();
+    while let Some(c) = x {
+        if c == t {
+            break;
+        }
+        let mut one = String::new();
+        names.write_name(c, &mut one);
+        inner = format!("{one}::{inner}");
+        x = ast.decls.get(c).ctx();
+    }
+    let rest = format!("{inner}{rest}");
+    let (owner, n) = match crate::local::known_number(w, t) {
+        Some((o, n)) => (o, n.to_string()),
+        None => match crate::local::owner(w, t) {
+            Some(o) => (o, "?".to_owned()),
+            None => return name,
+        },
+    };
+    let kind = match info(ast.decls.get(owner).kind()).role {
+        Role::Entity(k) | Role::Content(k) => k,
+        Role::Nothing
+        | Role::Transparent
+        | Role::Root
+        | Role::Local
+        | Role::InParent
+        | Role::Unsupported(_) => KeyKind::Function,
+    };
+    let owner_name = local_scoped(w, owner, entity_name(ast, owner, kind));
+    format!("{owner_name}::local({n})::{rest}")
 }

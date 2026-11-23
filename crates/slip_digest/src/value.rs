@@ -108,6 +108,10 @@ impl Ctx {
 
 /// `value`: the constant `v` by the rows of §8.
 pub(crate) fn value(w: &mut Walk<'_>, s: &mut Stream, v: ConstValueId) {
+    // Numbering an owner reads no value (`local.rs`).
+    if crate::local::numbering_mode(w) {
+        return;
+    }
     let mut cx = Ctx::new();
     write_value(w, s, v, &mut cx);
 }

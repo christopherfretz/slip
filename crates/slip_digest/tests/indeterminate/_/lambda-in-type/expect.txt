@@ -1,0 +1,3 @@
+indeterminate x
+indeterminate X<(lambda)>
+indeterminate X<(lambda)>::X()

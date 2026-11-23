@@ -1,2 +1,5 @@
+# pending
+# needs: local
+# a namespace-scope consteval block's closure is owned by the namespace: no key (digest §4.3; WP-040 out of scope), the block is indeterminate
 changed S
 changed S::e

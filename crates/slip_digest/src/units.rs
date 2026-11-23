@@ -103,7 +103,9 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
         | Role::InParent
         | Role::Unsupported(_) => return None,
     }
-    if w.is_local(e) && !w.is_local_extern(e) {
+    // A local entity is no unit, but for what would be a derived unit
+    // were its local type not local (digest §4.3).
+    if w.is_local(e) && !w.is_local_extern(e) && !crate::local::derived_under_local(w, e) {
         return None;
     }
     if let Some((TemplLinkKind::Pattern, _)) = ast.templ_link(e).get() {
@@ -389,6 +391,7 @@ pub(crate) fn canonical_decl(w: &mut Walk<'_>, e: DeclId) -> DeclId {
         #[cfg(test)]
         tests::count_candidate(true);
         let saved = w.take_unit();
+        w.unit.local.holder = Some(e);
         let mut s = Stream::new();
         w.decl_stream(&mut s, d, e);
         w.unit = saved;
@@ -459,8 +462,10 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
     let hashed = if content {
         w.content_hash(e)
     } else {
+        // `local::stream_source`, which numbering an owner reads from.
         let from = if outside { read } else { read_decl(w, e) };
         let saved = w.take_unit();
+        w.unit.local.holder = Some(e);
         let mut s = Stream::new();
         w.decl_stream(&mut s, from, e);
         w.unit = saved;
