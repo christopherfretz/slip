@@ -18,6 +18,67 @@ use crate::tables::{arg_view, spec_kind, templ_link_kind, ttp_kind};
 use crate::walk::{TOO_DEEP, Walk};
 use crate::{Area, Cause};
 
+/// The specialisation kind that governs declaration `d`: the first kind
+/// found climbing from `d` through its lexical contexts, where each step
+/// reads the declaration's own `SpecInfo` or `MemberSpecInfo` and else its
+/// entity's (Kiln keys a member specialisation by the entity's first
+/// declaration, not by an out-of-line definition of it). The climb stops
+/// at the first kind found, so an explicit specialisation and what is
+/// written in it are governed by `ExplicitSpecialization` whatever
+/// encloses them (digest §2.1), and a friend defined in an instantiation
+/// by the instantiation. `None`: nothing on the way has a kind.
+pub(crate) fn governing_kind(w: &Walk<'_>, d: DeclId) -> Option<SpecKind> {
+    let ast = w.ast;
+    let own = |x: DeclId| {
+        ast.spec_info(x)
+            .map(|(_, i)| i.kind)
+            .or_else(|| ast.member_spec_info(x).map(|(_, i)| i.kind))
+    };
+    let mut c = Some(d);
+    for _ in 0..GOVERNING_LIMIT {
+        let x = c?;
+        if let Some(k) = own(x).or_else(|| own(w.entity(x))) {
+            return Some(k);
+        }
+        c = ast.decls.lexical_ctx(x);
+    }
+    None
+}
+
+/// Contexts deeper than this are not climbed by `governing_kind`.
+const GOVERNING_LIMIT: u32 = 1024;
+
+/// Whether the declaration `x` was made by instantiation, of any form.
+/// Decided by, in turn: its own `SpecInfo` kind; else the
+/// `MemberSpecInfo` kind of `x` or of its entity, unless that is
+/// `ExplicitSpecialization` (Kiln puts the definition it instantiates for
+/// a member defined outside its class template, `A<int>::s`, at namespace
+/// scope: only the kind says it is an instantiation); else the kind that
+/// governs its lexical context (`governing_kind`). An explicitly
+/// specialised member thus answers by where the declaration is: the one
+/// Kiln made in the implicit instantiation of its class (`template <>
+/// void Q<int>::g(int) {}` keeps it in the chain) was made by
+/// instantiation, the specialisation written in source was not.
+pub(crate) fn instantiated_declaration(w: &Walk<'_>, x: DeclId) -> bool {
+    let ast = w.ast;
+    let member = |y: DeclId| ast.member_spec_info(y).map(|(_, i)| i.kind);
+    let kind = match ast.spec_info(x) {
+        Some((_, i)) => Some(i.kind),
+        None => match member(x).or_else(|| member(w.entity(x))) {
+            Some(k) if k != SpecKind::ExplicitSpecialization => Some(k),
+            Some(_) | None => ast.decls.lexical_ctx(x).and_then(|c| governing_kind(w, c)),
+        },
+    };
+    match kind {
+        Some(
+            SpecKind::ImplicitInstantiation
+            | SpecKind::ExplicitInstantiationDeclaration
+            | SpecKind::ExplicitInstantiationDefinition,
+        ) => true,
+        Some(SpecKind::ExplicitSpecialization | SpecKind::Undeclared) | None => false,
+    }
+}
+
 /// The template head of a discriminator (§9, §3.3): `record
 /// TemplateParamList` with each parameter as its `DeclNode` rows (which
 /// bring in its `TemplateParmInfo`) and nothing else, so that a key does
@@ -205,9 +266,6 @@ pub(crate) fn templ_link(w: &mut Walk<'_>, s: &mut Stream, l: TemplLink) {
                     .indeterminate(Cause::Unaccounted("TemplLink/MemberOfSpecialization.0-index"));
             }
         },
-        TemplLinkKind::DependentFriend => {
-            s.indeterminate(Cause::Unsupported("TemplLinkKind/DependentFriend"));
-        }
         TemplLinkKind::PartialSpecialization => match templates.partial(index).copied() {
             Some(info) => partial_spec_info(w, s, &info),
             None => {
@@ -346,6 +404,17 @@ pub(crate) fn expr_maps(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     s.opt(nns.is_some());
     if let Some(n) = nns {
         w.write_nns(s, n);
+    }
+    // oper_lookups: record OperLookups, whose one `in` row `by_expr` is
+    // `ref*sorted?`: the declarations of the candidates (`decl`; `found`
+    // is `out`), absent when the expression has no set. Kiln's
+    // instantiation tells absent (a new lookup) from empty (none):
+    // `Sema::oper_rebuild_set`.
+    let decls: Option<Vec<DeclId>> =
+        tables.oper_lookups.of(e).map(|cands| cands.iter().map(|c| c.decl).collect());
+    s.opt(decls.is_some());
+    if let Some(decls) = decls {
+        w.write_refs_sorted(s, &decls);
     }
     // size_of_pack_origin: ref.
     match tables.size_of_pack_origin.get(e).copied() {

@@ -6,5 +6,5 @@ consteval int g() { return 1; }
 int fd(int x = g());
 int u = fd();
 #ifdef B
-int w = fd();
+void w() { fd(); }
 #endif

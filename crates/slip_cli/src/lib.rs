@@ -1,11 +1,13 @@
 //! The `slip` command-line tool (`spec/exec.md` §8): `plan`, `parse`,
-//! `dump`, `--version`, and the hidden worker. Work package WP-012; the
-//! interface is §8.6.
+//! `dump`, `resource`, `--version`, and the hidden worker. Work package
+//! WP-012 (`resource`: WP-082); the interface is §8.6.
 //!
 //! The binary is a thin `main` over [`run`]; [`args`] is pure, so the
 //! command line is tested without starting a process.
 
 #![forbid(unsafe_code)]
+
+pub mod declare;
 
 pub mod args;
 pub mod commands;

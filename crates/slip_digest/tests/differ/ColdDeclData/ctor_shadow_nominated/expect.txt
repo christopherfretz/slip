@@ -1,0 +1,7 @@
+# the shadows' keys change with what they were made from; the stream holds `ctor_shadow_nominated`
+added B2::B2
+added C::C
+removed B2::B2(int)
+removed C::C
+changed B2
+changed C

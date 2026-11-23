@@ -3,7 +3,7 @@
 #ifdef B
 int h();
 const int x = h();
-int y = x;
+int y() { return x; }
 #else
 int h();
 const int x = h();

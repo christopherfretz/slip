@@ -1,5 +1,5 @@
 #include "side.h"
-// digest §2.2 (WP-032, check 3): on side B the constant initialiser of `u`
+// digest §2.2 (WP-032, check 3): on side B the constant initialiser of `u` (in `use`)
 // instantiates `t<int>` at once, whose body declares `g` and `ext` first,
 // at block scope, and `g` again as a local class's friend; Kiln chains the
 // namespace declarations after them. The units `g` and `ext` are
@@ -12,7 +12,7 @@ template <class T> constexpr int t() {
   return 0;
 }
 #ifdef B
-constexpr int u = t<int>();
+int use() { constexpr int u = t<int>(); return u; }
 #endif
 void g(int) {}
 int ext = 1;

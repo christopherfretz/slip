@@ -72,8 +72,8 @@ enum Enc {
     Out(Word),
     /// An `out` row on the bits `mask` of the word.
     OutBits(Word, u32),
-    /// An `unsupported` row: the unit is indeterminate.
-    Unsupported(Word),
+    /// `ref`: the word is a raw `DeclId`.
+    Ref(Word),
     /// `child`: the word is a raw `ExprId`.
     Child(Word),
     /// `child?`: a raw `ExprId`, 0 when absent.
@@ -120,8 +120,8 @@ impl Enc {
     fn decision(self) -> Decision {
         match self {
             Enc::OutBit(_) | Enc::Out(_) | Enc::OutBits(..) => Decision::Out,
-            Enc::Unsupported(_) => Decision::Unsupported,
             Enc::Bit(_)
+            | Enc::Ref(_)
             | Enc::Child(_)
             | Enc::ChildOpt(_)
             | Enc::Children(..)
@@ -152,7 +152,7 @@ impl Enc {
             | Enc::ChildIfFlag(..)
             | Enc::Out(_)
             | Enc::OutBits(..)
-            | Enc::Unsupported(_)
+            | Enc::Ref(_)
             | Enc::Child(_)
             | Enc::ChildOpt(_)
             | Enc::Children(..)
@@ -186,7 +186,7 @@ impl Enc {
             // `a` and the set bits of `b`; those bits are also `b-set`'s.
             Enc::Sanitizers => (u32::MAX, NO_SANITIZE_B_SET),
             Enc::Out(w)
-            | Enc::Unsupported(w)
+            | Enc::Ref(w)
             | Enc::Child(w)
             | Enc::ChildOpt(w)
             | Enc::Children(w, _)
@@ -251,7 +251,7 @@ macro_rules! two_children {
 const KINDS: &[KindRow] = {
     use Enc::{
         Bit, BoolBits, Child, ChildIfFlag, ChildOpt, Children, Out, OutBit, OutBits,
-        Sanitizers, String, StringOpt, Sym, Type, TypeIfFlag, TypeOpt, Unsupported, Uv, UvIn,
+        Sanitizers, String, StringOpt, Sym, Type, TypeIfFlag, TypeOpt, Uv, UvIn,
         UvUnlessFlag, Uvs,
     };
     use Word::{A, B};
@@ -412,7 +412,7 @@ const KINDS: &[KindRow] = {
             op("AttrNode/DESTRUCTOR.a-expression", ChildIfFlag(A, PRIO)),
         ]),
         k(AttrKind::CLEANUP, attr_kind::CLEANUP, "AttrKind/CLEANUP", &[
-            op("AttrNode/CLEANUP.a", Unsupported(A)),
+            op("AttrNode/CLEANUP.a", Enc::Ref(A)),
             op("AttrNode/CLEANUP.b", Out(B)),
         ]),
         k(AttrKind::COMMON, attr_kind::COMMON, "AttrKind/COMMON", &[]),
@@ -551,8 +551,8 @@ const KINDS: &[KindRow] = {
 };
 
 /// The flag bits every kind accounts for: `flags-implicit` (`in`),
-/// `flags-inherited` and `flags-gnu-scoped` (`out`).
-const COMMON_FLAGS: u8 = AttrNode::IMPLICIT | INHERITED | AttrNode::GNU_SCOPED;
+/// `flags-inherited`, `flags-gnu-scoped` and `flags-checked` (`out`).
+const COMMON_FLAGS: u8 = AttrNode::IMPLICIT | INHERITED | AttrNode::GNU_SCOPED | AttrNode::CHECKED;
 
 /// The row of `kind`, if the table has one.
 fn kind_row(kind: AttrKind) -> Option<&'static KindRow> {
@@ -718,6 +718,13 @@ fn attr_node(w: &mut Walk<'_>, s: &mut Stream, n: &AttrNode) {
     if flags & !flag_mask != 0 {
         s.indeterminate(Cause::Unaccounted("AttrNode/flags"));
     }
+    // `flags-checked` (bit 6): every attribute Kiln leaves in a list is
+    // checked once the translation unit is done (Kiln `spec/ast.md` §7
+    // "Checked marker"); one that is not holds its words as written,
+    // which no row describes.
+    if flags & AttrNode::CHECKED == 0 {
+        s.indeterminate(Cause::Unaccounted("AttrNode/flags-checked"));
+    }
     if a & !a_mask != 0 {
         s.indeterminate(Cause::Unaccounted("AttrNode/a"));
     }
@@ -762,9 +769,12 @@ fn operand(w: &mut Walk<'_>, s: &mut Stream, o: Operand, flags: u8, a: u32, b: u
                 s.indeterminate(bad);
             }
         }
-        Enc::Unsupported(_) => {
-            s.indeterminate(Cause::Unsupported(o.name));
-        }
+        Enc::Ref(x) => match decl_word(w, word(x)) {
+            Some(d) => w.write_ref(s, d),
+            None => {
+                s.uv(crate::refs::REF_NONE).indeterminate(bad);
+            }
+        },
         Enc::Child(x) => match expr_id(w, word(x)) {
             Some(e) => crate::expr::child(w, s, e),
             None => {
@@ -901,6 +911,11 @@ fn type_opt_word(w: &mut Walk<'_>, s: &mut Stream, raw: u32, bad: Cause) {
             }
         }
     }
+}
+
+/// The declaration with raw index `raw`, if the arena has it.
+fn decl_word(w: &Walk<'_>, raw: u32) -> Option<DeclId> {
+    DeclId::try_new(raw).filter(|_| raw as usize <= w.ast.decls.len())
 }
 
 /// The expression with raw index `raw`, if the arena has it.
@@ -1093,7 +1108,15 @@ mod tests {
             attr_node::ROWS.iter().map(|(r, _)| *r).filter(|r| !r.contains('.')).collect();
         assert_eq!(
             unprefixed,
-            ["kind", "syntax", "flags-implicit", "flags-inherited", "flags-gnu-scoped", "loc"]
+            [
+                "kind",
+                "syntax",
+                "flags-implicit",
+                "flags-inherited",
+                "flags-gnu-scoped",
+                "flags-checked",
+                "loc"
+            ]
         );
         let mut seen = 0;
         for k in KINDS {
@@ -1206,7 +1229,12 @@ mod tests {
         })
     }
 
+    /// A node as Kiln leaves it in a list: checked (`flags-checked`).
     fn node(kind: AttrKind, flags: u8, a: u32, b: u32) -> AttrNode {
+        unchecked(kind, flags | AttrNode::CHECKED, a, b)
+    }
+
+    fn unchecked(kind: AttrKind, flags: u8, a: u32, b: u32) -> AttrNode {
         AttrNode {
             kind,
             syntax: slip_kiln::kiln::ast::attr::AttrSyntax::Gnu,
@@ -1625,12 +1653,39 @@ mod tests {
         assert_eq!(decl_bytes(src, "c++20", "f"), (want, None));
     }
 
-    // §10.1 `CLEANUP.a` is `unsupported`: the unit is indeterminate.
+    // §10.1 `CLEANUP.a`: once checked (Kiln `AttrNode::CHECKED`) the
+    // word is the cleanup function's `DeclId`, written as its `ref`.
     #[test]
-    fn s10_1_cleanup_is_unsupported() {
-        let src = "void c(int *); void f() { int x __attribute__((cleanup(c))); }";
-        let (_, cause) = decl_bytes(src, "c++20", "x");
-        assert_eq!(cause, Some(Cause::Unsupported("AttrNode/CLEANUP.a")));
+    fn s10_1_cleanup_is_the_function() {
+        let one = "void c(int *); void d(int *); void f() { int x __attribute__((cleanup(c))); }";
+        let two = "void c(int *); void d(int *); void f() { int x __attribute__((cleanup(d))); }";
+        let (a, ca) = decl_bytes(one, "c++20", "x");
+        let (b, cb) = decl_bytes(two, "c++20", "x");
+        assert_eq!((ca, cb), (None, None));
+        assert_ne!(a, b);
+        // The word is written as the `ref` of the function it names, not of
+        // another declaration: `x`'s bytes hold the `ref` of `c` (or `d`)
+        // and not that of the other.
+        let refs = |src: &str| {
+            with_walk(src, "c++20", |w| {
+                let mut out = Vec::new();
+                for n in ["c", "d"] {
+                    let d = named(w, n);
+                    let mut s = Stream::new();
+                    w.write_ref(&mut s, d);
+                    out.push(s.as_bytes().to_vec());
+                }
+                out
+            })
+        };
+        let holds = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|x| x == needle);
+        let (rc, rd) = match refs(one).as_slice() {
+            [c, d] => (c.clone(), d.clone()),
+            _ => unreachable!("two names"),
+        };
+        assert_ne!(rc, rd);
+        assert!(holds(&a, &rc) && !holds(&a, &rd), "cleanup(c) writes the ref of c");
+        assert!(holds(&b, &rd) && !holds(&b, &rc), "cleanup(d) writes the ref of d");
     }
 
     // §10.1 (and §2.1): every word is accounted for. A flag bit, an `a` or
@@ -1643,7 +1698,12 @@ mod tests {
         assert_eq!(node_cause(node(AttrKind::NORETURN, 0, 0, 0)), None);
         assert_eq!(node_cause(node(AttrKind::NORETURN, INHERITED | 8 | 1, 0, 0)), None);
         assert_eq!(node_cause(node(AttrKind::NORETURN, 4, 0, 0)), un("AttrNode/flags"));
-        assert_eq!(node_cause(node(AttrKind::NORETURN, 0x40, 0, 0)), un("AttrNode/flags"));
+        assert_eq!(node_cause(node(AttrKind::NORETURN, 0x80, 0, 0)), un("AttrNode/flags"));
+        // `flags-checked` clear: a node as written.
+        assert_eq!(
+            node_cause(unchecked(AttrKind::NORETURN, 0, 0, 0)),
+            un("AttrNode/flags-checked")
+        );
         assert_eq!(node_cause(node(AttrKind::NORETURN, 0, 1, 0)), un("AttrNode/a"));
         assert_eq!(node_cause(node(AttrKind::NORETURN, 0, 0, 1)), un("AttrNode/b"));
         assert_eq!(node_cause(node(AttrKind::X86_INTERRUPT, 0, 1, 0)), un("AttrNode/a"));
@@ -1705,10 +1765,9 @@ mod tests {
             node_cause(node(AttrKind::ANNOTATION, 0, 0, 0)),
             Some(Cause::Unsupported("AttrKind/ANNOTATION"))
         );
-        assert_eq!(
-            node_cause(node(AttrKind::CLEANUP, 0, 5, 0)),
-            Some(Cause::Unsupported("AttrNode/CLEANUP.a"))
-        );
+        // `CLEANUP.a`, checked: a `DeclId` the arena has.
+        assert_eq!(node_cause(node(AttrKind::CLEANUP, 0, big, 0)), un("AttrNode/CLEANUP.a"));
+        assert_eq!(node_cause(node(AttrKind::CLEANUP, 0, 0, 0)), un("AttrNode/CLEANUP.a"));
     }
 
     // §10.1 `NO_SANITIZE.a`, `SanitizerSet` `0`: the names of the set,

@@ -13,6 +13,8 @@
 
 #![allow(dead_code, reason = "each runner uses a part")]
 
+pub mod pairs;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -386,33 +388,137 @@ pub enum Expect {
     Added(String),
     Removed(String),
     Indeterminate(String),
+    /// The derived units under a key of the name differ in any way,
+    /// presence included; under `exact derived` (and in
+    /// [`derived_differences`]), both sides have one and they differ.
     DerivedChanged(String),
+    /// Side B has a derived unit under a key of the name, side A none.
+    DerivedAdded(String),
+    /// Side A has a derived unit under a key of the name, side B none.
+    DerivedRemoved(String),
 }
 
-/// The lines of `expect.txt` (absent: none).
-pub fn expect(dir: &Path) -> Result<BTreeSet<Expect>, String> {
+impl Expect {
+    /// The name the line holds.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Changed(n)
+            | Self::Added(n)
+            | Self::Removed(n)
+            | Self::Indeterminate(n)
+            | Self::DerivedChanged(n)
+            | Self::DerivedAdded(n)
+            | Self::DerivedRemoved(n) => n,
+        }
+    }
+
+    /// The line as `expect.txt` writes it.
+    pub fn line(&self) -> String {
+        let word = match self {
+            Self::Changed(_) => "changed",
+            Self::Added(_) => "added",
+            Self::Removed(_) => "removed",
+            Self::Indeterminate(_) => "indeterminate",
+            Self::DerivedChanged(_) => "derived-changed",
+            Self::DerivedAdded(_) => "derived-added",
+            Self::DerivedRemoved(_) => "derived-removed",
+        };
+        format!("{word} {}", self.name())
+    }
+
+    /// Whether it is a `derived-*` line.
+    pub fn is_derived(&self) -> bool {
+        matches!(self, Self::DerivedChanged(_) | Self::DerivedAdded(_) | Self::DerivedRemoved(_))
+    }
+}
+
+/// The directive `exact derived` (`spec/landed/harness/WP-047.md`).
+const EXACT_DERIVED: &str = "exact derived";
+
+/// `expect.txt` read: its lines, and whether it has `exact derived`.
+fn read_expect(dir: &Path) -> Result<(BTreeSet<Expect>, bool), String> {
     let Ok(text) = std::fs::read_to_string(dir.join("expect.txt")) else {
-        return Ok(BTreeSet::new());
+        return Ok((BTreeSet::new(), false));
     };
     let mut out = BTreeSet::new();
+    let mut exact = false;
     for (i, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        if line == EXACT_DERIVED {
+            if exact {
+                return Err(format!("expect.txt:{}: a second `{EXACT_DERIVED}`", i + 1));
+            }
+            exact = true;
+            continue;
+        }
         let (word, name) =
             line.split_once(' ').ok_or_else(|| format!("expect.txt:{}: no name", i + 1))?;
         let name = name.trim().to_owned();
-        out.insert(match word {
+        let e = match word {
             "changed" => Expect::Changed(name),
             "added" => Expect::Added(name),
             "removed" => Expect::Removed(name),
             "indeterminate" => Expect::Indeterminate(name),
             "derived-changed" => Expect::DerivedChanged(name),
+            "derived-added" => Expect::DerivedAdded(name),
+            "derived-removed" => Expect::DerivedRemoved(name),
             _ => return Err(format!("expect.txt:{}: unknown word `{word}`", i + 1)),
+        };
+        if out.contains(&e) {
+            return Err(format!("expect.txt:{}: `{}` a second time", i + 1, e.line()));
+        }
+        out.insert(e);
+    }
+    Ok((out, exact))
+}
+
+/// The lines of `expect.txt` (absent: none); the directive
+/// `exact derived` is not one of them ([`exact_derived`]).
+pub fn expect(dir: &Path) -> Result<BTreeSet<Expect>, String> {
+    read_expect(dir).map(|(lines, _)| lines)
+}
+
+/// Whether `expect.txt` has the directive `exact derived` (at most once).
+pub fn exact_derived(dir: &Path) -> Result<bool, String> {
+    read_expect(dir).map(|(_, exact)| exact)
+}
+
+/// The derived units of `d` under `key`.
+fn derived_units(d: &Digested, key: &Digest) -> Vec<(Digest, u64)> {
+    d.units
+        .get(key)
+        .into_iter()
+        .flatten()
+        .filter(|u| u.class == GroupClass::Derived)
+        .map(|u| (u.digest, u.flags))
+        .collect()
+}
+
+/// The derived keys that differ between the sides, each as the line that
+/// names it under `exact derived`: `derived-added` (only B has a derived
+/// unit under it), `derived-removed` (only A), `derived-changed` (both,
+/// and they differ). A key is named by [`Digested::name`], from side A
+/// when A has the key; two keys of one name that differ the same way are
+/// one line, as in the other lines.
+pub fn derived_differences(a: &Digested, b: &Digested) -> BTreeSet<Expect> {
+    let keys: BTreeSet<_> = a.units.keys().chain(b.units.keys()).copied().collect();
+    let mut out = BTreeSet::new();
+    for k in &keys {
+        let (da, db) = (derived_units(a, k), derived_units(b, k));
+        if da == db {
+            continue;
+        }
+        let name = if a.units.contains_key(k) { a.name(k) } else { b.name(k) };
+        out.insert(match (da.is_empty(), db.is_empty()) {
+            (true, _) => Expect::DerivedAdded(name),
+            (_, true) => Expect::DerivedRemoved(name),
+            _ => Expect::DerivedChanged(name),
         });
     }
-    Ok(out)
+    out
 }
 
 /// The units of a side that are indeterminate for a cause other than
@@ -435,18 +541,211 @@ pub fn hard_indeterminate(d: &Digested) -> Vec<String> {
     out
 }
 
-/// Runs `f` on every directory of `root`, collects every failure with its
-/// directory, and panics with all of them; lists the skipped ones.
-///
-/// With `SLIP_DIGEST_ONLY=<text>` in the environment, only the directories
-/// whose path relative to `tests/` contains the text, to look at a few
-/// with `SLIP_DIGEST_DUMP`; it says so. Nothing else narrows: the
-/// determinism and tables tests use every directory, and `cargo xtask ci`
-/// removes the variable from what it runs.
-pub fn run_all(root: &str, f: impl Fn(&Path) -> Result<(), String>) {
-    let mut failures = Vec::new();
-    let mut skipped = Vec::new();
-    let mut ran = 0;
+/// The size of the runners' pool (`spec/landed/harness/WP-047.md`):
+/// `SLIP_TEST_THREADS` if set, else the smaller of 4 and the available
+/// parallelism.
+pub fn pool_size() -> Result<usize, String> {
+    pool_size_from(std::env::var_os("SLIP_TEST_THREADS").as_deref())
+}
+
+/// [`pool_size`] for the value `var` of `SLIP_TEST_THREADS` (`None`:
+/// unset). A value that is not a positive decimal number is an error
+/// naming the variable.
+pub fn pool_size_from(var: Option<&std::ffi::OsStr>) -> Result<usize, String> {
+    let Some(v) = var else {
+        return Ok(std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(4));
+    };
+    v.to_str()
+        .filter(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("SLIP_TEST_THREADS={}: not a positive number", v.to_string_lossy()))
+}
+
+/// The text of a panic's payload.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic whose payload is not text".to_owned())
+}
+
+/// The stack of a pool thread, 8 MiB. The parse and the walk have threads
+/// of their own (`slip_kiln::snippet`, [`on_walk_stack`]); a pool thread
+/// runs the rest of a directory's work, which ran on libtest's test
+/// thread before WP-047: the comparison of the sides, `index`, and
+/// whatever a caller's closure does (`tests/resolved.rs`,
+/// `tests/records.rs` on open branches). libtest gives its threads
+/// 2 MiB, or `RUST_MIN_STACK`; 8 MiB, the main thread's usual limit on
+/// Linux, keeps that work from depending on either. It is address space,
+/// not memory, until it is touched.
+const POOL_STACK: usize = 8 << 20;
+
+/// `f` over every item on `threads` threads (at least one), the results
+/// in the items' order. A panic in `f` is that item's `Err`, with the
+/// panic's text; the other items still run.
+pub fn pool_map<T: Sync, R: Send>(
+    items: &[T],
+    threads: usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<Result<R, String>> {
+    pool_map_timed(items, threads, f).into_iter().map(|(r, _)| r).collect()
+}
+
+/// [`pool_map`], each result beside the time its item took, a panicking
+/// one's included.
+pub fn pool_map_timed<T: Sync, R: Send>(
+    items: &[T],
+    threads: usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<(Result<R, String>, std::time::Duration)> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        for i in 0..threads.max(1).min(items.len()) {
+            let (tx, next, f) = (tx.clone(), &next, &f);
+            std::thread::Builder::new()
+                .name(format!("pool-{i}"))
+                .stack_size(POOL_STACK)
+                .spawn_scoped(scope, move || {
+                    loop {
+                        let n = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(n) else { break };
+                        let start = std::time::Instant::now();
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(item)))
+                            .map_err(|p| panic_text(&*p));
+                        if tx.send((n, (r, start.elapsed()))).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .expect("a thread for the pool");
+        }
+    });
+    drop(tx);
+    let mut out: Vec<Option<(Result<R, String>, std::time::Duration)>> =
+        items.iter().map(|_| None).collect();
+    for (n, r) in rx {
+        out[n] = Some(r);
+    }
+    out.into_iter()
+        .map(|r| r.unwrap_or_else(|| unreachable!("every item of the pool has a result")))
+        .collect()
+}
+
+/// What a run of a pair runner over its directories found, in directory
+/// order whatever the pool's size.
+#[derive(Debug)]
+pub struct Outcome {
+    pub root: String,
+    pub ran: usize,
+    /// The pending directories (relative to `tests/`).
+    pub skipped: Vec<String>,
+    /// `<dir>: <error>` for each failing directory.
+    pub failures: Vec<String>,
+    /// `<dir>: <note>` for each note of a passing directory.
+    pub notes: Vec<String>,
+    /// Each directory run and the time its work took.
+    pub times: Vec<(String, std::time::Duration)>,
+}
+
+impl Outcome {
+    /// What the run prints, then the failure, if any, it panics with:
+    /// the notes, the `skipped (pending)` lines and the count line; the
+    /// failures joined in order. The times are no part of it.
+    pub fn report(&self) -> (String, Option<String>) {
+        let mut lines: Vec<String> = self.notes.clone();
+        lines.extend(self.skipped.iter().map(|s| format!("skipped (pending): {s}")));
+        lines.push(format!(
+            "{}: {} run, {} skipped, {} failed",
+            self.root,
+            self.ran,
+            self.skipped.len(),
+            self.failures.len()
+        ));
+        let mut text = lines.join("\n");
+        text.push('\n');
+        let failure = (!self.failures.is_empty()).then(|| {
+            format!(
+                "{} of {} failed:\n{}",
+                self.failures.len(),
+                self.ran,
+                self.failures.join("\n\n")
+            )
+        });
+        (text, failure)
+    }
+
+    /// The `n` slowest directories, slowest first (ties by directory).
+    pub fn slowest(&self, n: usize) -> Vec<(String, std::time::Duration)> {
+        let mut t = self.times.clone();
+        t.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        t.truncate(n);
+        t
+    }
+
+    /// Prints the report (and, with `SLIP_DIGEST_TIMES=1`, the twenty
+    /// slowest directories) and panics with the failures, if any.
+    pub fn finish(&self) {
+        let (text, failure) = self.report();
+        eprint!("{text}");
+        if std::env::var_os("SLIP_DIGEST_TIMES").is_some_and(|v| v == "1") {
+            eprintln!("{}: the twenty slowest directories", self.root);
+            for (d, t) in self.slowest(20) {
+                eprintln!("  {:>7} ms  {d}", t.as_millis());
+            }
+        }
+        if let Some(f) = failure {
+            panic!("{f}");
+        }
+    }
+}
+
+/// Runs `f` on each of `dirs` (a runner's directories, in order) on a
+/// pool of `threads` threads: the pending ones are skipped and listed, a
+/// failure or a panic is that directory's, the notes of a passing one
+/// are kept, everything in directory order.
+pub fn run_dirs(
+    root: &str,
+    dirs: &[PathBuf],
+    threads: usize,
+    f: impl Fn(&Path) -> Result<Vec<String>, String> + Sync,
+) -> Outcome {
+    let mut out = Outcome {
+        root: root.to_owned(),
+        ran: 0,
+        skipped: Vec::new(),
+        failures: Vec::new(),
+        notes: Vec::new(),
+        times: Vec::new(),
+    };
+    let mut work = Vec::new();
+    for dir in dirs {
+        if is_pending(dir) {
+            out.skipped.push(rel(dir));
+        } else {
+            work.push(dir.clone());
+        }
+    }
+    out.ran = work.len();
+    let results = pool_map_timed(&work, threads, |dir| f(dir));
+    for (dir, (r, t)) in work.iter().zip(results) {
+        let rel = rel(dir);
+        match r {
+            Ok(Ok(notes)) => out.notes.extend(notes.into_iter().map(|n| format!("{rel}: {n}"))),
+            Ok(Err(e)) => out.failures.push(format!("{rel}: {e}")),
+            Err(panic) => out.failures.push(format!("{rel}: panicked: {panic}")),
+        }
+        out.times.push((rel, t));
+    }
+    out
+}
+
+/// The directories of `root`, narrowed by `SLIP_DIGEST_ONLY=<text>` to
+/// those whose path relative to `tests/` contains the text (it says so).
+fn run_dirs_of(root: &str) -> Vec<PathBuf> {
     let mut dirs = dirs(root);
     if let Some(only) = std::env::var_os("SLIP_DIGEST_ONLY") {
         let only = only.to_string_lossy().into_owned();
@@ -454,21 +753,30 @@ pub fn run_all(root: &str, f: impl Fn(&Path) -> Result<(), String>) {
         dirs.retain(|d| rel(d).contains(&only));
         eprintln!("SLIP_DIGEST_ONLY={only}: {} of {all} directories", dirs.len());
     }
-    for dir in dirs {
-        if is_pending(&dir) {
-            skipped.push(rel(&dir));
-            continue;
-        }
-        ran += 1;
-        if let Err(e) = f(&dir) {
-            failures.push(format!("{}: {e}", rel(&dir)));
-        }
-    }
-    for s in &skipped {
-        eprintln!("skipped (pending): {s}");
-    }
-    eprintln!("{root}: {ran} run, {} skipped, {} failed", skipped.len(), failures.len());
-    assert!(failures.is_empty(), "{} of {ran} failed:\n{}", failures.len(), failures.join("\n\n"));
+    dirs
+}
+
+/// [`run_all`] keeping the notes `f` gives a passing directory, and
+/// returning the outcome without printing it or failing: the caller
+/// ends with [`Outcome::finish`].
+pub fn run_collect(root: &str, f: impl Fn(&Path) -> Result<Vec<String>, String> + Sync) -> Outcome {
+    let threads = pool_size().unwrap_or_else(|e| panic!("{e}"));
+    run_dirs(root, &run_dirs_of(root), threads, f)
+}
+
+/// Runs `f` on every directory of `root`, collects every failure with its
+/// directory, and panics with all of them; lists the skipped ones. The
+/// directories run on a pool of [`pool_size`] threads; what is reported
+/// is in directory order whatever the pool (`spec/landed/harness/WP-047.md`).
+///
+/// With `SLIP_DIGEST_ONLY=<text>` in the environment, only the directories
+/// whose path relative to `tests/` contains the text, to look at a few
+/// with `SLIP_DIGEST_DUMP`; it says so. Nothing else narrows: the
+/// determinism and tables tests use every directory, and `cargo xtask ci`
+/// removes the variable from what it runs. With `SLIP_DIGEST_TIMES=1`,
+/// the twenty slowest directories and their milliseconds.
+pub fn run_all(root: &str, f: impl Fn(&Path) -> Result<(), String> + Sync) {
+    run_collect(root, |d| f(d).map(|()| Vec::new())).finish();
 }
 
 #[cfg(test)]

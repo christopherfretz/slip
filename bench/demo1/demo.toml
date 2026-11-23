@@ -1,0 +1,4 @@
+# Demo 1 (spec/harness.md §10): the corpus, the subject roots, the selection.
+corpus = "llvm"
+roots = ["llvm"]
+only = ["/llvm/lib/Support/"]

@@ -6,9 +6,9 @@
 template <class T> struct A { template <class U> friend void g(U); };
 template <class T> struct O { template <class V> struct I { template <class U> friend void g(U); }; };
 #ifdef B
-O<int>::I<int> o;
-A<int> a;
+void use_o() { O<int>::I<int> o; }
+void use_a() { A<int> a; }
 #else
-A<int> a;
-O<int>::I<int> o;
+void use_a() { A<int> a; }
+void use_o() { O<int>::I<int> o; }
 #endif

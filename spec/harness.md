@@ -13,7 +13,9 @@ workspace crates `slip_model` and `slip_exec` (path dependencies through
 
 M0 defines the gate (§2), the lints (§3), the work-package table (§4), the
 jobserver commands (§5), performance records (§7) and corpora (§8).
-Transform tests (§6) are outlined here and specified with M2.
+Transform tests (§6) are outlined here and specified with M2. M1 adds the
+corpus invariants (§9) and the first demonstration (§10); the pitfall
+tests are specified in `spec/pitfalls.md` §1.
 
 ## 1. Principles
 
@@ -64,9 +66,11 @@ exit status 2, nothing runs.
 - `fmt`, `clippy` and `test` run the commands of the table without `-p`,
   so cargo takes the default members.
 - `kiln` runs the same clippy and test with
-  `-p slip_kiln -p slip_digest -p slip_script -p slip_cli`, the test only
-  if clippy passed.
-- `transform` prints
+  `-p slip_kiln -p slip_digest -p slip_script -p slip_refactor -p slip_cli`,
+  the test only if clippy passed.
+- `transform` runs `cargo xtask transform` (§6.3) over every transform
+  test and fails if any outcome is `FAIL`, `XPASS`, `ERROR` or `KILLED`.
+  Until the runner exists it prints
   `transform: no transform tests yet (spec/harness.md §6)` and passes.
 
 Cargo is `$CARGO` if set and non-empty, else `cargo` on `PATH`, run in the
@@ -81,7 +85,9 @@ ends. The gate's exit status is 0 only if every step that ran passed, else
 joined by `, ` in gate order.
 
 Three gating tiers use this command (`docs/design/06-engineering-plan.md`
-§3): *commit* is `ci --quick`; *merge* is `ci` plus the corpus slice of §8;
+§3): *commit* is `ci --quick`; *merge* is `ci` plus the corpus slice
+(`perf check` of §7.3 on a map run of the corpus, and from M1 the
+invariants of §9);
 *release candidate* adds full corpora, oracles and performance budgets, and
 is specified with M5.
 
@@ -97,7 +103,7 @@ line. Nothing is printed when there is none. With any, standard error gets
 
 | Lint | Rule |
 |---|---|
-| `kiln-boundary` | Only `crates/slip_kiln/Cargo.toml` names a `kiln_*` dependency. Only `slip_kiln`, `slip_digest`, `slip_script` and `slip_cli` depend on `slip_kiln`, directly or indirectly. |
+| `kiln-boundary` | Only `crates/slip_kiln/Cargo.toml` names a `kiln_*` dependency. Only `slip_kiln`, `slip_digest`, `slip_script`, `slip_refactor` and `slip_cli` depend on `slip_kiln`, directly or indirectly. |
 | `forbid-unsafe` | Every crate root (`src/lib.rs`, `src/main.rs`, each `.rs` file under `src/bin/`) of every workspace member contains `#![forbid(unsafe_code)]`. |
 | `dependencies` | Every third-party crate in `Cargo.lock` is in the allow list in this spec (§3.1). |
 | `spec-index` | `spec/README.md`'s index: every `spec/*.md` other than `README.md` has a row; every row whose status is not `not written` names an existing file; the status is `not written`, `draft` or `stable`. |
@@ -144,7 +150,8 @@ in both places.
   ``names Kiln crate `<crate>`; only crates/slip_kiln/Cargo.toml may`` at the
   dependency's line, and
   `` `<crate>` depends on `slip_kiln` (<a> -> … -> slip_kiln); only
-  slip_digest, slip_script and slip_cli may`` at the line of the first hop.
+  slip_digest, slip_script, slip_refactor and slip_cli may`` at the line of
+  the first hop.
 - **`forbid-unsafe`.** A root passes when a line, after leading spaces,
   starts with `#![forbid(unsafe_code)]`. Every `.rs` file under `src/bin/`,
   at any depth, counts as a root. A `[lib]` or `[[bin]]` `path` outside
@@ -268,14 +275,15 @@ pub fn inspect(request: &Request) -> Result<String, String>;
 
 The environment is a parameter, so tests never read the host's own.
 
-## 6. Transform tests (outline; specified with M2)
+## 6. Transform tests
 
-A transform test is a directory: an input tree, compile commands, a
-transform, and the expected result (post-image, report, exit status) as
-golden files. Outcomes follow Kiln's model: `PASS`, `FAIL`, `XFAIL`
-(`xfail: <reason>` required), `XPASS` (fails the gate), `SKIP`, `ERROR`,
-`KILLED` (never masked by `xfail`). Unknown directives are errors. Every test
-names the spec section it covers.
+A transform test is a directory: an input tree, a transform, and the
+expected result (post-image, report, exit status) as golden files; §6.2
+gives the format. Outcomes follow Kiln's model: `PASS`, `FAIL`, `XFAIL`
+(`xfail: <reason>` required), `XPASS` (fails the gate), `SKIP`, `ERROR`
+(the test itself is wrong: a bad directive, a pre-image the front end or
+clang rejects), `KILLED` (never masked by `xfail`). Unknown directives are
+errors. Every test names the spec section it covers.
 
 **Golden files.** A golden is the JSON rendering (`spec/model.md` §10) or the
 exact bytes of an output. `--bless` rewrites goldens and prints each path it
@@ -333,9 +341,171 @@ lines, in any order, among its leading lines:
   and the units; `SLIP_DIGEST_ONLY=<text>` makes the four pair runners
   run only the directories whose path contains `<text>`, and they print
   `SLIP_DIGEST_ONLY=<text>: <n> of <m> directories`. Nothing else
-  narrows (the determinism and tables tests use every directory), and
-  `cargo xtask ci` removes the variable from the environment of what it
-  runs.
+  narrows (the determinism and tables tests use every directory). The
+  runners work on a pool (`SLIP_TEST_THREADS`, `SLIP_DIGEST_TIMES`,
+  `SLIP_DIGEST_DERIVED`: `spec/landed/harness/WP-047.md`), and
+  `cargo xtask ci` removes these variables and `SLIP_DIGEST_ONLY` from
+  the environment of what it runs.
+
+### 6.2 A transform test
+
+```
+tests/transform/<area>/<name>/
+  test.txt        directives
+  pre/            the input tree
+  post/           the files of the expected post-image that differ from pre/, at the same relative paths
+  expect.txt      the expected standard output of the run (§6.3)
+  cdb.json        optional: the compilation database, with @ROOT@ for the tree's directory
+```
+
+`<area>` is the transform (`rename`). Sources are self-contained: no
+system header. A directory `pre/dep/` is read-only code, as in
+`spec/pitfalls.md`.
+
+`test.txt` holds one directive per line, `<name>: <value>`; blank lines
+and lines starting with `#` are skipped:
+
+| Directive | Meaning | Default |
+|---|---|---|
+| `spec` | the section covered, as `edits §9.3`; may repeat | required |
+| `run` | the transform command and its own options: `rename --from a::f --to g` | required, once |
+| `state` | the expected `State` of the result (`spec/edits.md` §8.5), or `usage` or `input` for a run that must end with status 2 or 3 | required |
+| `exit` | the expected exit status | 0 for `verified`, 2 for `usage`, 3 for `input`, 4 for `incomplete`, else 1 |
+| `std` | the language standard | `c++20` |
+| `args` | arguments added to every default command | none |
+| `tu` | the main files, relative to the tree | every `*.cpp` not under `dep/`, in byte order of paths |
+| `owned`, `readonly` | paths relative to the tree; may repeat | `owned: .`, and `readonly: dep` if `pre/dep` exists |
+| `allow` | `residue`, `unparsed`, `partial` or `errors`: the run is given `--allow-<value>`; may repeat | none |
+| `oracle` | `no-<oracle> <reason>` turns one oracle of §6.4 off for this test | all on |
+| `xfail` | the reason the test is expected to fail | absent |
+
+Without `cdb.json`, each main file has the command
+`kiln -std=<std> <args> -I@ROOT@ -I@ROOT@/dep -c <file>`, with directory
+`@ROOT@`, in the order of `tu`.
+
+The expected post-image is `pre/` with the files of `post/` laid over it.
+A `post/` file equal to its `pre/` file, or with no `pre/` file, is an
+error of the test. A test whose state does not permit writing has no
+`post/`.
+
+### 6.3 Running
+
+```
+cargo xtask transform [--only <substring>]… [--bless] [-j <n>] [--no-clang] [--slip <path>]
+```
+
+`--slip` names the executable under test (default: the workspace's
+`slip`, which the runner builds first); the runner's own tests give it a
+scripted stand-in. `--no-clang` is §6.4's.
+
+For each test, in byte order of paths:
+
+1. `pre/` is copied to a fresh **tree** under the target directory, and a
+   fresh store is made beside it. Nothing is written into the test's own
+   directory except by `--bless`.
+2. `slip <run> --db <database> --owned … --readonly … --store <store>
+   --relative-to <tree> --write -j 2` and the `allow` options. `--write` is
+   always given: a state that does not permit it must leave the tree
+   untouched, and the test checks that.
+3. **Compared**: the exit status; the state; standard output with
+   `expect.txt`, after replacing every 64-digit id by `<id>` and the
+   tree's path by `@ROOT@`; the tree, file by file, with the expected
+   post-image (a file added, missing or different fails). The first
+   difference of each is printed.
+4. The oracles of §6.4.
+
+The runner takes job tokens as every harness command does (§5). It runs
+tests in parallel, each with `-j 2`, and prints one line per outcome that
+is not `PASS`, then `transform: <n> passed, <n> failed, …` with every
+outcome that occurred. Exit status 1 if the gate would fail.
+
+`--bless` rewrites `expect.txt` and `post/` from the run, for tests whose
+state and exit status are as `test.txt` says; it never changes
+`test.txt`.
+
+### 6.4 Oracles
+
+Checks that hold for every transform test, beyond its golden files. Each
+is a way the untrusted parts (transform, reduce, apply) and the trusted
+ones (digest, verify) are tested against something other than
+themselves.
+
+| Oracle | Runs when | Passes when |
+|---|---|---|
+| `determinism` | always | a second run in a fresh store with `-j 1` gives the same transform, edit set, declared, overlay and result ids, and the same standard output |
+| `verify` | the state is `verified` or `verified_with_residue` | this is corpus invariant (c): the run itself verified the post-image. The oracle adds that `slip check` over the run's own edit set, in the same store, gives the same result id |
+| `back` | the tree was written | the inverse transform (for `rename --from a::f --to g`: `rename --from a::g --to f`) on the written tree, with a fresh store, ends in the same state and leaves the tree byte-identical to `pre/` |
+| `clang` | the tree was written, and a clang is available | every command of the test, with the compiler replaced by clang and `-fsyntax-only`, exits 0 on the pre-image (else `ERROR`) and on the written tree |
+| `mutation` | the edit set is accepted | each mutated edit set, given to `slip check`, does **not** verify (below) |
+
+**Clang.** The compiler is `$SLIP_CLANG` if set, else `clang++-19`, else
+`clang++` on `PATH`. If there is none the oracle is skipped, the runner
+counts it (`clang oracle skipped: <n>`), and `cargo xtask ci` fails unless
+it was given `--no-clang`.
+
+**Mutation.** The trusted base must reject what the untrusted parts get
+wrong, so the harness gets it wrong on purpose. From the run's edit set
+it makes, one at a time:
+
+- the edit set without edit `i`, for every `i` if there are at most 8
+  edits, else for `i = ⌊k·n/8⌋`, `k = 0..7`;
+- the edit set with one more edit: the pieces of the first edit, at a
+  `kept` range (the first 4 in order);
+- the edit set with the `key` of one spelled piece replaced by its
+  bitwise complement (the first 4 spelled pieces in order): the name is
+  the same and the entity meant is not.
+
+Each is published as a new `EDTS` (the harness links `slip_model`) and
+given to `slip check` with the declared changes of the original. The
+outcome must be `not_verified` (for a changed key: by a failed spelling
+obligation, `spec/verify.md` §10.3), or, for a dropped edit only,
+`verified_with_residue` with the dropped range in the residue. `verified`
+fails the test: an edit was lost or invented and nothing noticed. That is
+a hole in the trusted base and blocks a release, like a `bad` tree that
+verifies (`spec/pitfalls.md`). A dropped edit that provably changes
+nothing observable is turned off per test with `oracle: no-mutation
+<reason>`.
+
+### 6.5 Transforms on a corpus
+
+```
+cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kind <k>]
+        [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>]
+```
+
+runs `slip rename` over the corpus's database (§8) with a store under the
+corpus's build directory, `--allow-unparsed`, `--allow-residue`, and
+`--patch` (never `--write`: the corpus's source tree is shared and stays
+as fetched). `--owned` defaults to the corpus's source directory. It then
+checks, in order:
+
+1. the state is `--expect` (default `verified_with_residue` or
+   `verified`);
+2. **determinism**: `slip reduce` run again over the same shards gives the
+   same edit set id;
+3. with `--accept`: every command of the plan, run by clang with
+   `-fsyntax-only` and a clang VFS overlay file that maps each overlay
+   path to its blob, exits as it does on the pre-image (the two units
+   clang rejects in `llvm`, §8.7, must be rejected the same way);
+4. with `--build`: the patch is applied to a copy of the source
+   directory under the corpus's build directory; the copy is configured
+   and generated as the corpus is (§8.3) and built with clang (`all`);
+   the build succeeds;
+5. with `--build`, **back**: the inverse rename over the copy's database,
+   with `--write`, leaves every file of the copy byte-identical to the
+   corpus's source.
+
+The copy and its build tree are removed when the checks pass, and kept,
+with their path printed, when one fails.
+
+It prints the lines of `slip rename`, then one line per check, and writes
+`bench/results/<corpus>.rename.<target>.json`: the counters of the edit
+set (`spec/edits.md` §6.3), the tally, the residue counts, and from the
+transform run record (`spec/edits.md` §10.6) and the two phase records it
+names: wall time per step, the coordinator's peak resident size per step,
+and the phases' `peak_rss_max` and `peak_rss_sum` (§7.1). Counters are
+compared exactly with the file already there, if any; times and sizes
+are reported and not gated ("Open questions").
 
 ## 7. Performance records
 
@@ -660,6 +830,8 @@ in the repository. A relative `$SLIP_CORPUS_DIR` is an error. Corpus
 | `fetch.stamp`, `configure.stamp`, `generate.stamp` | §8.4 |
 | `fetch.log`, `build/configure.log`, `build/generate.log` | the output of `git clone`, `cmake`, `make` |
 | `lock` | §8.5 |
+| `stores/<name>/` | stores of the runs xtask makes over the corpus (§9, §10) |
+| `demo1/` | the trees, declared files and reports of §10 |
 
 ### 8.3 Steps
 
@@ -823,13 +995,452 @@ counts):
   `llvm/lib/DWARFLinker/Parallel`, two unit tests) include
   `llvm/ADT/ConcurrentHashtable.h`, whose parenthesised `std::min` call
   as a shift count panics a fast path Kiln added between Slip's two pins
-  (`docs/requests/KD2-oven-minmax-paren.md`). They become `ok` when
-  Slip's pin moves past the fixes, and the baseline is recorded again
-  then.
+  (`docs/requests/KD2-oven-minmax-paren.md`). Slip's pin moved to
+  `83566cc47` (Kiln's `main`, WP-044), which has both fixes: the
+  reproducers of KD1 and KD2 parse `ok` (`crates/slip_kiln/tests/
+  parse.rs`); it is now `913a490bb` (Kiln's `main`, WP-101), which adds
+  the preprocessing record and the editable ranges, both off for the
+  parse task, and leaves the AST as it was. The counts in this section
+  and in `bench/baselines/llvm.json` are still those of `62d190007`
+  until the corpus is run again at the new pin.
 - The parse task on Kiln's front-end entry (WP-025) gives every unit
   that is not `failed` the shard the dependency-file flow of WP-010 gave
   it at `4bfd999da`: 4040 `ok` and 2 `diagnosed` shards with the same
   outcome and the same inputs, entry for entry. `pp.tokens` is 2 787 822 931.
+
+## 9. Corpus invariants
+
+The two invariants of `docs/design/06-engineering-plan.md` §3, as far as
+M1 can state them: there is no transform yet, so "the identity transform
+gives zero edits" is "the identity image verifies with nothing declared".
+
+```
+cargo xtask invariants a <corpus> [--slip <path>] [--only <substring>]… [--limit <n>] [-j <n>]
+cargo xtask invariants b <corpus> [--slip <path>] [--only <substring>]… [--limit <n>] [-j <n>]
+```
+
+- The corpus must be configured (§8.3); otherwise the command fails with
+  one line saying to run `cargo xtask corpus configure <corpus>`.
+- `--slip` is the `slip` executable. Without it: `$CARGO_TARGET_DIR`, or
+  `target` in the repository, then `release/slip`; if that file does not
+  exist the command fails saying to run `cargo build --release -p
+  slip_cli`. xtask does not build it.
+- `--only`, `--limit` and `-j` are passed to `slip` unchanged. A run over
+  a selection says so in its last line (`… (selection)`), and is not the
+  invariant on the corpus.
+- `slip` runs with the inherited environment and standard error; its
+  standard output is read. A `slip` status other than 0, 1 or (for
+  `verify`) 4 fails the command with the status.
+- Exit status: 0 when the invariant holds, 1 when it does not, 2 for a
+  usage error.
+
+### 9.1 Invariant (a): parsing twice gives equal shards
+
+`invariants a` makes two stores, `stores/a1` and `stores/a2` under the
+corpus directory (each removed first if it exists, by walking it: xtask
+deletes nothing outside the corpus directory), and in each runs
+`slip parse --db <database> --store <store>` with the options above. The
+two plans must have one id. It then reads the latest map run record of
+each store and, for every observer of the plan that was selected, the
+`shard` of its last `Job` entry (`spec/model.md` §9) and that shard's
+status.
+
+An observer is **equal** when both runs wrote a shard, neither is
+`failed`, and the two content ids are equal: the whole shard, so the
+outcome, the inputs, the counters and the `digests`. It is **failed in
+both** when both shards are `failed` (nothing about a failed observer is
+deterministic; it is counted and not compared). Anything else is
+**different**.
+
+```
+invariant a <corpus>
+plan <plan id>
+observers <n>
+equal <n>
+failed_both <n>
+different <n>
+  <main file>: <status 1> <shard id 1> | <status 2> <shard id 2>       at most 50, in plan order
+run <path of the first run record>
+run <path of the second run record>
+invariant a: holds                              or: FAILED (<n> observer(s) differ)
+```
+
+The invariant holds when `different` is 0. It does not need a single
+determinate unit: an indeterminate unit has a digest and a flag like any
+other, and both must come out the same twice.
+
+### 9.2 Invariant (b): the identity verifies
+
+`invariants b` uses `stores/a1` if it holds a map run of the corpus's
+plan made by this `slip` (the run record's `tool_slip` and `tool_kiln`
+are those of `slip --version`), and otherwise makes it as §9.1 does. It
+then runs
+
+```
+slip verify --plan <plan id> --store <store> --round 0 --report <corpus dir>/stores/b.json
+```
+
+with the options above: the identity image, nothing declared
+(`spec/verify.md` §2, §5.1). From the report and the map run it prints
+
+```
+invariant b <corpus>
+plan <plan id>
+observers <n>                       selected
+map_ok <n>                          of them, with an `ok` map shard
+verified <n>
+indeterminate_only <n>              mismatch, every finding indeterminate (spec/verify.md §7)
+different <n>                       mismatch with another finding
+not_parsed <n>
+unverifiable <n>
+failed <n>                          of the map_ok observers
+never_parsed <n>                    not counted against the invariant
+  <state>: <main file>: <message>   every map_ok observer not verified, at most 50, in plan order
+run <path of the verify run record>
+report <path>
+invariant b: holds                              or: FAILED (<n> of <map_ok> observer(s) not verified)
+```
+
+The invariant holds when every selected observer whose map shard is `ok`
+is `verified`. An observer that is `indeterminate_only` is not verified
+and counts against it: (b) cannot hold on a corpus that has an
+indeterminate unit, which is the form `digest.md` §10 gives the same
+requirement. `different` above 0 is a defect of the walk (two parses of
+one tree disagree, which (a) would also show) or a tree that changed
+between the two phases (then G2 makes it `unverifiable`).
+
+**At M1's exit** (`docs/design/06-engineering-plan.md` §5) both
+invariants hold on the LLVM corpus, the whole plan, with no selection:
+
+- (b) is clean: every `map_ok` observer is `verified`. There is no list
+  of excepted observers and no list of excepted causes.
+- So no unit of the corpus is indeterminate. A cause the corpus run shows
+  (`digest.indeterminate.<cause>`, `digest.cause.*`, §9.3) is removed
+  from the walk, whichever it is: `pending` by the package that writes
+  the area, `unsupported` and `unaccounted` by a row of
+  `spec/digest-kinds.md` and its code, `collision` by the key. A cause
+  that is not removed keeps the exit waiting; it is not waived.
+- "The corpora" of M1's exit is the LLVM corpus (the row `llvm` of
+  `bench/corpora.toml`). A libc++ corpus is not M1's ("Open questions").
+
+### 9.3 What a corpus run records
+
+A map run of a corpus with digests is measured with the commands of §7:
+`perf summarize` prints wall and CPU time, the peak resident sizes, and
+every counter summed, which now includes `digest.*`
+(`spec/model.md` §8.5): units, groups, bytes hashed, indeterminate units,
+indeterminate keys by cause (`digest.indeterminate.<cause>`) and by cause
+text (`digest.cause.*`). `digest.cause.unaccounted.walk.depth` is the
+number of keys the walk's depth bound cut off.
+
+- The **map overhead** of a corpus is the ratio of `cpu_s` of a map run
+  with digests to `cpu_s` of the baseline that was recorded without them,
+  both on one host, and the same ratio for `peak_rss_max` and
+  `peak_rss_p50`. It is recorded where the run is recorded
+  (`spec/landed/harness/`); the budget of
+  `docs/design/06-engineering-plan.md` §4 is set from the first.
+- The baseline of the corpus (§7.3) is recorded again from a map run with
+  digests: its `counters` then hold every `digest.*` counter, compared
+  exactly from then on. A change of the walk changes them; the commit
+  that does says why.
+- **The walk's stack.** `slip_digest::STACK_SIZE` must hold the walk's
+  recursion bound with the margin its test asserts
+  (`expr::tests::frames_fit_the_stack`) in the profile `slip` is shipped
+  in: the test is run with `cargo test --release -p slip_digest --lib
+  frames_fit_the_stack` and its figures recorded beside the debug ones.
+  The gate's `kiln` step runs it in the test profile only.
+
+### 9.4 Interface
+
+`xtask::invariants`, with the helper `xtask::slip_run` that §10 shares:
+
+```rust
+// slip_run
+pub fn find_slip(repo: &Path, given: Option<&Path>, target_dir: Option<&OsStr>) -> Result<PathBuf, String>;
+pub struct Ran { pub status: i32, pub stdout: String }
+pub fn run(slip: &Path, args: &[OsString]) -> Result<Ran, String>;
+pub fn line<'a>(stdout: &'a str, key: &str) -> Option<&'a str>;       // the rest of the line `<key> …`
+pub fn remove_tree(under: &Path, dir: &Path) -> Result<(), String>;   // refuses a `dir` not under `under`
+
+// invariants
+pub struct A { pub observers: u64, pub equal: u64, pub failed_both: u64, pub different: Vec<Different> }
+pub fn compare_runs(plan: &Plan, first: &Loaded, second: &Loaded, selected: &[Digest]) -> A;
+pub struct B { /* the numbers of §9.2 */ }
+pub fn check_identity(map: &Loaded, report: &json::Value) -> Result<B, String>;
+pub fn main(repo: &Path, args: &[String]) -> ExitCode;
+```
+
+`compare_runs` and `check_identity` are pure, so that the tests need no
+`slip` and no corpus.
+
+## 10. Demo 1
+
+The first demonstration of the trusted base on real code: a correct
+mechanical change to headers that every translation unit of a library
+shares is **verified**, and each of a catalogue of small wrong edits to
+the same code is **found**, with the entity, the file and the line.
+
+```
+cargo xtask demo 1 [--slip <path>] [-j <n>] [--case <name>]… [--keep]
+```
+
+It is scripted and repeatable: the inputs are committed, the corpus is
+pinned (§8), every step is a `slip` command a person could type, and two
+runs print the same table up to the times.
+
+### 10.1 Inputs
+
+`bench/demo1/`:
+
+```
+demo.toml             corpus, roots, selection
+cases/<nn>-<name>/    one directory per case, run in the order of their names
+  edit.txt            the edit, as below; absent for the control
+  base                optional: the name of a case whose tree this one starts from
+  declared.txt        the declared changes (spec/verify.md §2.3); may be absent (nothing declared)
+  observers           optional: the observers in which this case's names are resolved, one `--only`
+                      substring per line (for `slip declare` and `slip units`); default: the first selected
+  expect.txt          what the case must give, as below
+  README.md           what the edit is and why it is right, or wrong
+```
+
+`demo.toml` (read with the line reader of the lints): `corpus` (a row of
+`bench/corpora.toml`), `roots` (an array of directories relative to the
+corpus's `src/`: the subject roots), `only` (an array of substrings: the
+selection, the `--only` of every `slip` run).
+
+**`edit.txt`** is a list of exact replacements, so that an edit is small,
+reviewable and fails loudly when the corpus is not the one it was written
+for:
+
+```
+file <path relative to src/>
+replace [all]
+<lines of old text>
+with
+<lines of new text>
+end
+create <path relative to src/>
+<lines of the file>
+end
+```
+
+A `replace` applies to the `file` line above it; its old text must occur
+in the file exactly once, or at least once with `all`; texts are compared
+as bytes and end at the line before `with` or `end` (so a text cannot
+hold a line that is exactly `with` or `end`; no edit of the catalogue
+needs one). A path that leaves the roots, a `file` that does not exist, a
+`create` of one that does, an old text not found or found twice, and an
+`edit.txt` with no entry are errors that name the line.
+
+**`expect.txt`** is one line: `verified`, or `mismatch` followed by the
+findings the case must have, one per further line:
+
+```
+mismatch
+  changed llvm::StringRef::find(char, unsigned long) const @ llvm/include/llvm/ADT/StringRef.h:282
+  changed <name> @ <file>:<line>
+```
+
+A finding line is a kind (`changed`, `removed`, `added` or
+`derived_changed`), a unit name, and optionally ` @ ` and a file relative
+to `src/` with a line. The **image of a line** is the post-image for
+`added` and the pre-image otherwise. A line is
+
+- **found** when the report has a finding group (`spec/verify.md` §7.1)
+  of that kind and name and, where a place is given, the group's
+  `where.post` (for `removed`: `where.pre`) is that file and line;
+  **found, no place** when the group has no `where` (localisation is not
+  there yet);
+- **wrong place** when the group has a `where` and it is another file or
+  line;
+- **blocked** when there is no such group and `slip units` shows, in the
+  line's image and the case's `observers`, a unit of that name with the
+  indeterminate flag: the walk could not digest the unit, so the edit
+  cannot be shown to have changed it, and the report has it as
+  `indeterminate`;
+- **missing** otherwise: the unit was digested in full and the wrong edit
+  went through.
+
+### 10.2 The cases
+
+The subset is the translation units of `llvm/lib/Support/` in the `llvm`
+corpus (151 observers on the pin of `bench/corpora.toml`); the one
+subject root is `llvm`. Every
+header named below is included by most of them.
+
+| Case | What is edited | Declared | Expect |
+|---|---|---|---|
+| `00-control` | nothing: the post-image is a copy | — | `verified` |
+| `01-relocate` | the namespace `llvm::hashing::detail` is renamed `llvm::hashing::impl`: both blocks of `llvm/include/llvm/ADT/Hashing.h`, and every use in `llvm/` (`Hashing.h`, `StableHashing.h`, `lib/IR/StructuralHash.cpp`, `unittests/ADT/HashingTest.cpp`) | `relocate llvm::hashing::detail => llvm::hashing :: impl` | `verified` |
+| `02-default-argument` | `StringRef::find(char C, size_t From = 0)` gets the default `1` | — | `mismatch`: `changed` the member at its line, and `changed` one named caller that relies on the default |
+| `03-overload` | `StringRef` gains `bool starts_with(const char *) const`, which a call with a string literal now prefers to `starts_with(StringRef)` | `created` the new member | `mismatch`: `changed` one named caller in `lib/Support`, at the call |
+| `04-adl` | a function template of the name of an `llvm::sys::path` function, taking `StringRef` exactly, is added to namespace `llvm`; a call in `lib/Support/Path.cpp` that converted a `StringRef` to `const Twine &` now reaches it through argument-dependent lookup | `created` the template | `mismatch`: `changed` the caller in `Path.cpp`, at the call |
+| `05-shadow` | a declaration inserted in a function body of one `lib/Support` file gives a name used later in that body another meaning (the pattern of `spec/pitfalls.md` E12) | — | `mismatch`: `changed` that function, at the use |
+| `06-relocate-and-change` | `01-relocate` (`base`), and one constant inside the relocated namespace changed | as `01-relocate` | `mismatch`: `changed` the unit that holds the constant, under its **old** name, at its line in the post-image |
+| `07-relocate-undeclared` | `01-relocate` (`base`), nothing declared | — | `mismatch`: `removed llvm::hashing::detail` and `added llvm::hashing::impl` among others |
+
+- Cases 02 to 05 are the hazards of the brief: a changed default
+  argument, an overload that now wins, argument-dependent lookup, a name
+  that now finds another entity. 06 is the reason the tool exists: a
+  semantic change riding on a mechanical one. 07 shows that the declared
+  changes are not taken on trust in either direction.
+- Every wrong edit must be **silent**: the tree parses for every selected
+  observer. A case one of whose observers is `not_parsed` fails. The
+  package that writes the cases also compiles each tree's affected
+  translation units with the corpus's compiler and records that in the
+  case's `README.md` (tier T2).
+- The hazards are fixed; the exact sites are what the package finds to be
+  silent on this pin. A site that cannot be made silent is replaced by
+  another of the same hazard, and this table is amended with it.
+- A wrong edit's `created` line exempts only the added entity. The
+  finding the case expects is on a unit nobody declared.
+
+### 10.3 The run
+
+In the corpus directory, under `demo1/` (removed first; `--keep` leaves
+the trees of a finished run in place, otherwise they are removed at the
+end and the reports stay):
+
+1. `slip plan --db <database> --store demo1/store`, then
+   `slip parse --plan <id>` with the selection.
+2. From the map run: the selected observers `s`; those whose map shard
+   is `ok` and has `digest.indeterminate` 0, `d` (the **determinate**
+   observers); and the sums of `digest.units` and `digest.indeterminate`
+   over the selection. Every verify run is over the whole selection: an
+   observer with an indeterminate unit cannot be `verified`
+   (`spec/verify.md` §4.1), and the demo shows that rather than hide it.
+3. For each case, in order, with round `k` = its position:
+   - the tree `demo1/trees/<case>/<root>` is made for every root: a copy
+     of the root in which each file is a hard link to the pristine file
+     (a copy where linking fails), or of the `base` case's tree; then
+     `edit.txt` is applied, each edited file **written as a new file**
+     (the link removed first), never opened for writing in place;
+   - if `declared.txt` has a line: `slip declare --plan <id> --from
+     declared.txt --out demo1/<case>.decl --root <src>/<root> --post
+     <tree>` with the case's `observers`;
+   - `slip verify --plan <id> --round <k> --root … --post … [--declared
+     …] --findings 100000 --locate 1024 --report demo1/<case>.json`, with
+     the selection;
+   - for a case with finding lines that are not found: `slip units`, with
+     the same image and the case's `observers`, once without and once
+     with `--post-image`, for the indeterminate flags;
+   - the report is checked against `expect.txt` (below).
+4. Last, every pristine file an edit touched is hashed and compared with
+   its hash before the run; a difference is an error of the demo (an edit
+   went through a link).
+
+**The result of a case.** No result is given when an observer is
+`not_parsed`, `unverifiable`, `never_parsed` or `failed`: the case is
+then `ERROR` (the edit is not silent, or the run is broken).
+
+| `expect.txt` | Result | When |
+|---|---|---|
+| `verified` | `verified` | the run's verdict is `verified` |
+| | `clean` | every observer is `verified`, or `mismatch` with only `indeterminate` and `derived_indeterminate` findings (`indeterminate_only`, `spec/verify.md` §7): no unit that was digested differs, and the run is not verified |
+| | `DIFFERENT` | an observer has another finding |
+| `mismatch` | `found` | every line is found, and the run's verdict is `not_verified` |
+| | `partly` | no line is missing or at a wrong place, and at least one is blocked or found with no place |
+| | `MISSED` | a line is missing or at a wrong place; or the run's verdict is `verified` |
+
+`demo 1: ok` admits no `blocked` line and no line found without its
+place: one of either makes its case `partly` and the run `PARTIAL`. The
+latitude of a blocked line (a name several units share is blocked if any
+of them is indeterminate, §10.1) exists in the `PARTIAL` form only.
+
+Standard output:
+
+```
+demo 1: <corpus> <pin>, <s> observers, <d> determinate, units <n> indeterminate <m>
+map         wall_s <s> cpu_s <s> peak_rss_max <bytes>
+<case>      <result>  observers verified <v> indeterminate_only <i> other <o>  units <n> indeterminate <m>
+            findings <groups not indeterminate>  reparsed <n>  wall_s <s> cpu_s <s> peak_rss_max <bytes>
+  found    <finding line>                                one per finding line of expect.txt:
+  no-place <finding line>                                found, no place
+  blocked  <finding line>: <cause, from the report's indeterminate group of that name if it has one>
+  MISSING  <finding line>
+  WRONG    <finding line>: at <file>:<line>
+  pre  <file>:<line>:<column> <node> <what>              the `where` of each found finding
+  post <file>:<line>:<column> <node> <what>
+  <kind> <name> observers <n>                            DIFFERENT: its first ten groups that are not indeterminate
+indeterminate <cause counter> <n>                        if m is not 0: the summed `digest.indeterminate.*` and the
+                                                         ten largest `digest.cause.*` of the map run
+demo 1: ok                       every case `verified` or `found`
+     or: PARTIAL (<n> clean, <n> partly)                 no case DIFFERENT, MISSED or ERROR
+     or: FAILED (<cases>)
+```
+
+The times and sizes are those of the run record of each `slip` run
+(§7.1); `units` and `indeterminate` of a case are the sums of
+`digest.units` and `digest.indeterminate` over its verify shards (the
+post-image), and `reparsed` the sum of `verify.reparsed`. The same
+numbers, the plan id, the tool versions and each case's finding groups
+that are not indeterminate are written to `demo1/demo1.json`. Exit
+status: 0 for `ok`, 4 for `PARTIAL`, 1 for `FAILED`.
+
+### 10.4 What it shows, and what it does not
+
+It may be said of a run that printed `demo 1: ok`:
+
+- for the `s` translation units named, Slip showed that the relocation
+  left every entity, type, overload choice and instantiation as it was
+  under one declared rule, in the time and memory printed;
+- each planted change of meaning was reported, at the entity and line
+  printed, and none of the wrong trees was reported verified.
+
+Of a run that printed `PARTIAL`, only this:
+
+- for a `clean` case: of the `n` units of the selection, the `n − m`
+  that Slip digests in full are the same in both images under the
+  declared rule. The other `m` were not compared, for the causes printed,
+  and **the change is not verified**: `slip verify` said so, with exit
+  status 1. A unit digested in full says nothing about the units it
+  refers to;
+- for a `partly` case: the lines printed `found` were found; a `blocked`
+  line is a hazard Slip cannot yet show either way, and a `no-place`
+  line was found without its line;
+- no wrong tree was reported verified.
+
+A `PARTIAL` run is a statement of how far the walk has come, not a
+weaker kind of verification. It is the earliest form of the demo, and it
+becomes `ok` without any change to the demo when the walk leaves no unit
+of the selection indeterminate and localisation has landed.
+
+It may not be said of either that:
+
+- Slip made the edits. They were written by hand; the demo is of
+  verification, not of transformation;
+- LLVM verifies. The claim is about the selection;
+- nothing else can be wrong with an edit that verifies: one front end,
+  one configuration, per-observer agreement, generated files and text
+  are the limits of `spec/verify.md` §8;
+- the catalogue is complete. `spec/pitfalls.md` is the catalogue; these
+  are five of its hazards on real code;
+- the times are those of a full-corpus run.
+
+### 10.5 Interface
+
+`xtask::demo`:
+
+```rust
+pub struct Config { pub corpus: String, pub roots: Vec<String>, pub only: Vec<String> }
+pub fn read_config(text: &str) -> Result<Config, String>;
+pub enum Entry { Replace { file: String, all: bool, old: Vec<u8>, new: Vec<u8> }, Create { file: String, content: Vec<u8> } }
+pub fn read_edit(text: &[u8]) -> Result<Vec<Entry>, String>;                 // errors name the line
+pub fn apply_edit(root: &Path, entries: &[Entry]) -> Result<Vec<PathBuf>, String>;   // the files written
+pub fn link_tree(from: &Path, to: &Path) -> Result<u64, String>;             // files linked or copied
+pub enum Expect { Verified, Mismatch(Vec<Wanted>) }
+pub struct Wanted { pub kind: String, pub name: String, pub at: Option<(String, u64)> }
+pub fn read_expect(text: &str) -> Result<Expect, String>;
+/// The names `slip units` printed with the indeterminate flag (spec/exec.md §8.9).
+pub fn indeterminate_units(stdout: &str) -> BTreeSet<String>;
+pub enum Line { Found, NoPlace, WrongPlace { file: String, line: u64 }, Blocked, Missing }
+pub enum CaseResult { Verified, Clean, Different, Found, Partly, Missed, Error(String) }
+/// §10.3 "The result of a case"; `pre` and `post` are `indeterminate_units` of the two images.
+pub fn check(expect: &Expect, report: &json::Value, src: &Path,
+             pre: &BTreeSet<String>, post: &BTreeSet<String>) -> (CaseResult, Vec<Line>);
+pub fn main(repo: &Path, args: &[String]) -> ExitCode;
+```
 
 ## Tests
 
@@ -857,6 +1468,16 @@ counts):
   refused, `record` then `check`, every kind of check difference, malformed
   baselines, and the executable's usage, unknown-corpus and
   unreadable-record errors.
+- `xtask/tests/transform.rs` — §6.2 to §6.4 with a fake `slip`: every
+  directive and its default, each malformed-test error, each outcome, the
+  normalisation of ids and paths, `--bless`, the post-image comparison (a
+  file added, missing, different), each oracle passing and failing, the
+  mutation sample for 1, 8 and 100 edits, a skipped clang.
+- `tests/transform/` — the transform tests themselves, run by the
+  `transform` step of the gate.
+- `xtask/tests/corpus_rename.rs` — §6.5 over the local three-file corpus
+  of the §8 tests: the checks in order, the result file, a failing check
+  keeping the copy.
 - `xtask/tests/corpus.rs` — §8: rows and their Kiln pins, every
   malformed-row error, the committed `llvm` row (§8.1); root and layout
   (§8.2); `path`, `list` and usage errors through the binary (§8.3); the
@@ -867,9 +1488,71 @@ counts):
   (reported `SKIP` without `git`, `cmake`, `make` and a compiler). Unit
   tests in `xtask/src/corpus/build_tree.rs`: the database entry count and a
   target's outputs.
+- `xtask/tests/invariants.rs` — §9, over stores and reports the test
+  writes and a fake `slip` (a script that prints fixed lines and writes
+  fixed files): `find_slip`; `compare_runs` for equal, different,
+  failed in one, failed in both, an observer missing from a run; the
+  output of `a` and `b` and their exit statuses; `check_identity` for
+  each state; a `slip` that exits 3; a corpus that is not configured;
+  `remove_tree` refusing a path outside the corpus directory.
+- `xtask/tests/demo.rs` — §10 without a corpus: `demo.toml`; every form
+  and every error of `edit.txt`; `apply_edit` and `link_tree` on a tree
+  the test makes, with the pristine file unchanged after an edit of its
+  link; `expect.txt`; `check` against report goldens: every row of the
+  result table, each kind of line (found, no place, a place that is one
+  line off, blocked, missing, `removed` taking the pre site, `added`
+  blocked by the post-image), a `clean` run never printed as `verified`,
+  an observer `not_parsed`; the table and the three last lines with a
+  fake `slip`, and the three exit statuses.
+- The corpus runs themselves (`invariants a llvm`, `invariants b llvm`,
+  `demo 1`) are not in the gate: they need the corpus, and are run and
+  recorded by the packages that land them and by the merge tier (§2).
 
 ## Open questions
 
+- **`back` on a corpus needs a second tree** (§6.5): the inverse run has
+  to parse the post-image as a pre-image, and a run cannot yet take an
+  overlay as its subject. With that (wanted anyway for running one
+  transform after another, M3), `back` and `--accept` would need no copy.
+- **`--build` is expensive**: a copy of the source directory, a configured
+  tree and a full clang build, per target renamed. Whether a release
+  needs it for every sample of invariant (c), or for one target per run
+  with `--accept` for the rest.
+- **An independent equivalence oracle** for transforms (tier T3 of
+  `docs/design/03-equivalence.md`): compiling both images with clang and
+  comparing the objects' symbols and code modulo the declared renames.
+  Not specified.
+- The baseline of a corpus holds every `digest.*` counter once §9.3's
+  run is recorded, so each change of the walk changes the baseline. A
+  second file per corpus for the counters that are expected to move, or
+  a check that compares only the `inputs.*`, `pp.*`, `plan.*` and
+  `shard.*` families exactly, would keep `perf check` useful while the
+  walk is being written.
+- Invariant (a) costs two map runs of the corpus (§9.1). Reusing the run
+  of the baseline as the first would halve it; it needs the baseline run's
+  store kept.
+- Demo 1 (§10) has a `PARTIAL` form for a walk that is not finished.
+  `blocked` trusts `slip units` for the indeterminate flag of a name,
+  and a name that several units share is blocked if any of them is
+  indeterminate; a hazard hidden behind such a name would be `blocked`
+  where it should be `MISSING`. Accepted for `PARTIAL` only: `ok` admits
+  no blocked line (§10.3).
+- A libc++ corpus: a row of `bench/corpora.toml` for libc++'s own
+  headers and tests under its own build, with its baseline and the two
+  invariants of §9. It is a later package and not part of M1's exit,
+  which is stated on the LLVM corpus (§9.2). The LLVM corpus is built
+  against the host's standard library, so it says little about libc++'s
+  headers as a subject.
+- Whether a `PARTIAL` run is something to show outside the project is
+  the operator's call; §10.4 says what it may be said to show.
+- `edit.txt` (§10.1) is one more small format. A unified diff would be
+  the obvious one; it was not chosen because applying one faithfully
+  (fuzz, offsets, file modes) is more than the demo needs, and `patch`
+  is one more tool on `PATH`.
+- The demo does not compile the trees with the corpus's compiler itself
+  (§10.2): doing so needs the tree image's command rewriting
+  (`spec/verify.md` §5.1) a second time in xtask, or a `slip` command
+  that prints the post command.
 - The `inputs.*` counters include system headers, so a baseline is exact
   only for one set of installed headers (the host compiler's and the
   standard library's). The baseline does not record which; a change of the

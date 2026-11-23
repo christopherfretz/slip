@@ -121,6 +121,7 @@ Two ways of using it:
 | `slip.group.v1` | `list<Unit>` | `digest.md` §11 |
 | `slip.tu.v1` | `list<GroupSum>` | `digest.md` §11 |
 | `slip.rules.v1` | `list<Rule>` | `verify.md` §2 |
+| `slip.basis.v1` | `list<Basis>`: the shards an edit set was reduced from | `edits.md` §6 |
 
 `slip_model` implements BLAKE3 itself, in safe Rust, with an incremental
 interface (`new`, `update(&[u8])`, `finalize() -> Digest`) and a one-shot
@@ -271,6 +272,12 @@ its final name.
 | `PLAN` | The plan | yes | §7 |
 | `SHRD` | A shard: one observer's output for one phase | yes | §8 |
 | `RUNR` | A run record: what happened and what it cost | no | §9 |
+| `DECL` | Declared changes | yes | `verify.md` §2 |
+| `TRFM` | A transform request | yes | `edits.md` §3 |
+| `EDTS` | An edit set: what reduce accepted and refused | yes | `edits.md` §6 |
+| `OVLY` | An overlay: the files of a post-image and its spelling obligations | yes | `edits.md` §7.1 |
+| `RSLT` | The result of one run of a transform | yes | `edits.md` §8.5 |
+| `RUNT` | A transform run record | no | `edits.md` §10.6 |
 
 ### 5.2 Interface
 
@@ -519,12 +526,15 @@ the same bytes.
 | 2 | outcome | yes | `Outcome` |
 | 3 | inputs | no | `list<FileRef>` sorted by `path`: every file the front end read, the main file included |
 | 4 | counters | yes | `list<Counter>` sorted by `name` |
-| 16 | coverage | — | reserved (M2) |
-| 17 | edits | — | reserved (M2) |
+| 16 | coverage | — | reserved (M4, with the preprocessing record) |
+| 17 | edits | no | `Edits` (`edits.md` §4): what a transform's run over this observer produced (claims, groups, reports, declarations, or its failure); phase `map` |
 | 18 | facts | — | reserved (M3) |
 | 19 | digests | no | `Digests` (`digest.md` §11; §8.2) |
-| 20 | reports | — | reserved (M2) |
+| 20 | reports | — | reserved and not planned: a transform's reports are part of `edits` (17) |
 | 21 | verdict | no | `Verdict` (`verify.md` §6; §8.3) |
+| 24 | binding | no | `Binding` (`verify.md` §9.1): the declared changes, the overlay and the pre round a verify shard was made with; phase `verify` |
+| 25 | rule_use | no | `RuleUse` (`verify.md` §9.1); phase `verify` |
+| 26 | spellings | no | `Spellings` (`verify.md` §10.4): the spelled-entity checks of this observer; phase `verify` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -553,8 +563,17 @@ harness gates on counters exactly (`spec/harness.md`).
 A shard with status `failed` has no `inputs` section and an empty `counters`
 list: nothing about a failed observer is deterministic.
 
-A reserved id (16, 17, 18, 20) is a critical id no reader knows: a file with
-one is `UnknownSection`.
+A reserved id (16, 18, 20) is a critical id no reader knows: a file with
+one is `UnknownSection`. Ids 22 and 23 are not assigned. Sections 17, 24,
+25 and 26 were added by M2 without a change of the shard's version: a
+reader that predates them refuses a shard that has one (the ids are
+critical), and a shard without them reads as before. An `edits` section
+in a shard of phase `verify`, or a `binding`, `rule_use` or `spellings`
+section in a shard of phase `map`, is `Invalid`. `edits`, `rule_use` and
+`spellings` are `Invalid` in a shard whose status is not `ok`; `binding`
+is `Invalid` only in one whose status is `failed`. Their own invariants
+are `edits.md` §4.7 and `verify.md` §9.1 and §10.4, checked after those
+of §8.1 to §8.3 in the order of the section ids.
 
 ### 8.1 Invariants
 
@@ -620,9 +639,9 @@ field).
 |---|---|---|---|
 | 1 | present only if the phase is `verify`, then only if the status is `ok`, then only if `digests` is present (three messages, in that order) | `V` | `sections.verdict` |
 | 2 | `reason`; each finding's `name`, then `where.pre.node`, `where.pre.what`, `where.post.node`, `where.post.what`: at most 4096 bytes | the field | `sections.verdict.reason`, `….findings[i].name`, `….findings[i].where.<pre\|post>.<node\|what>` |
-| 3 | by `kind`, checking in field order: `verified`: `reason` empty, `total` 0, `findings` empty; `mismatch`: `reason` empty, `total` ≥ 1; `unverifiable`: `reason` non-empty, `total` 0, `findings` empty | the `reason` field, the `total` field, the `findings` list's count | `sections.verdict.reason`, `.total`, `.findings` |
+| 3 | by `kind`, checking in field order: `verified`: `pre` not all zero, `reason` empty, `total` 0, `findings` empty; `mismatch`: `pre` not all zero, `reason` empty, `total` ≥ 1; `unverifiable`: `reason` non-empty, `total` 0, `findings` empty (only `unverifiable` may have no pre shard: `pre` all zero) | the `pre` field, the `reason` field, the `total` field, the `findings` list's count | `sections.verdict.pre`, `.reason`, `.total`, `.findings` |
 | 4a | `findings` has at most `total` elements | the first finding beyond `total` | `sections.verdict.findings[total]` |
-| 4b | for each finding in turn: ascending by `(kind, file, key)`, an absent key first (not strictly: findings with no key may tie); then, if it has a key, no earlier finding has the same `(kind, key)` | that finding's first byte | `sections.verdict.findings[i]` |
+| 4b | for each finding in turn: ascending by `(rank, file, key)`, where `rank` is that of the finding's kind (`verify.md` §6: `changed` 0, `removed` 1, `added` 2, `derived_changed` 3, `indeterminate` 4, `derived_indeterminate` 5; not the kind's number), an absent key first (not strictly: findings with no key may tie); then, if it has a key, no earlier finding has the same `(kind, key)` | that finding's first byte | `sections.verdict.findings[i]` |
 | 5 | for each finding in turn: `key` absent only for `indeterminate`; an `added` finding has no `pre`; a `removed` finding has no `post` | the `opt` tag of `key`, `pre`, `post` | `sections.verdict.findings[i].key`, `.pre`, `.post` |
 | 6 | `used` strictly ascending | the later element | `sections.verdict.used[j]` |
 | 7 | in each `Site` (pre, then post), `line` is 0 exactly when `column` is 0 | the `line` field | `sections.verdict.findings[i].where.<pre\|post>.line` |
@@ -644,19 +663,32 @@ closure on the finished unit:
 pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<Shard, String>;
 pub fn parse_observer_with<R: Send>(
     observer: &Observer, phase: Phase, round: u64,
+    options: ParseOptions,
     f: impl FnOnce(&Unit<'_>) -> R + Send,
 ) -> Result<(Shard, Option<R>), String>;
+
+/// What the front end keeps beyond what the parse task needs. Every option
+/// is off by default, and the shard is the same whatever they are.
+#[non_exhaustive]
+pub struct ParseOptions { pub pp_record: bool }
 
 pub struct Unit<'r> { /* … */ }        // the finished front end, valid inside the call
 impl<'r> Unit<'r> {
     pub fn ast(&self) -> &'r kiln::ast::Ast;
     pub fn sm(&self) -> &'r kiln::source::SourceManager;
     pub fn oven(&self) -> &'r kiln::oven::Oven;
+    pub fn pp_record(&self) -> Option<&'r kiln::pp::PpRecord>;   // when ParseOptions::pp_record asked
     pub fn main_file(&self) -> Option<kiln::source::FileId>;
     pub fn real_path(&self, file: kiln::source::FileId) -> Option<&'r [u8]>;
     pub fn errors(&self) -> u32;
+    pub fn stack_remaining(&self) -> Option<usize>;
 }
 ```
+
+`stack_remaining()` is the stack left on the calling thread under Kiln's
+stack guard (`kiln_sema::stack_guard::StackGuard::current().remaining()`):
+`None` where no guard is installed. Inside the closure the calling thread
+is the front end's.
 
 `Err` is a failure of the worker itself, not of the subject; the
 coordinator records `failed` (`spec/exec.md`). `parse_observer` is
@@ -673,13 +705,20 @@ coordinator records `failed` (`spec/exec.md`). `parse_observer` is
   that is `Err`) and not restored: Kiln has no working-directory parameter.
   Callers that parse on several threads of one process must serialise.
 - The command line is the one of `spec/cdb.md` §6.1, `argv[0]
-  -fsyntax-only argv[1..]`, given to `run_front_end` with
+  -fsyntax-only -fkiln-reproducible-time argv[1..]`, given to
+  `run_front_end` with
   `FrontEndOptions::default()`: a thread of the front end's own, whose stack
   is the command's `-fkiln-stack-size=`, else Kiln's default, with Kiln's
   stack guard installed; no lookup log; nothing rendered. The entry writes
   no file whatever the command asks (`-o`, `-MD`, `-MF`, `-MJ`,
   `-fconstexpr-report=`, …) and reads no standard input.
 - `Command.env` is not applied: the front end sees the worker's environment.
+- `-fkiln-reproducible-time` fixes `__DATE__`, `__TIME__` and
+  `__TIMESTAMP__` at the Unix epoch whatever the clock and whatever
+  `SOURCE_DATE_EPOCH` holds, so that a constant computed from one of them
+  is the same in every parse and a shard's content is a function of its
+  inputs (§8). The digest writes the macros themselves symbolically
+  (`digest.md` §9).
 - When a parse happened, the entry calls the closure once the AST is final,
   with errors or without (a fatal error included): the parse task first
   computes the inputs (below) from the unit, then calls `f` on a `Unit`
@@ -765,6 +804,92 @@ headers included), this is the same list
   count: the tokens before it and the one returned with it.
 
 The parse task writes neither `digests` nor `verdict`.
+
+### 8.5 The map task
+
+The task of phase `map` is the parse task with the walk of `digest.md` run
+on the finished unit. It is what `slip parse` runs (`spec/exec.md` §8.2).
+
+```rust
+// slip_digest::map
+/// The walk over a finished unit. `subject` maps the real path of an
+/// input to its subject path (`spec/verify.md` §5.1); the identity for
+/// the map phase.
+pub fn digest_unit(unit: &slip_kiln::Unit<'_>, options: &Options<'_>,
+                   subject: &dyn Fn(&[u8]) -> Vec<u8>) -> Result<Output, String>;
+/// The same checks and the same `Input`, for another use of the walk
+/// (`spec/verify.md` §2.3 records, §6.1 traces): `digest_unit` is
+/// `with_input(unit, subject, |input| digest(input, options))`.
+pub fn with_input<R>(unit: &slip_kiln::Unit<'_>, subject: &dyn Fn(&[u8]) -> Vec<u8>,
+                     f: impl FnOnce(&Input<'_>) -> R) -> Result<R, String>;
+/// The counters of a walk as a shard carries them: `output.counters` and
+/// the cause counters below, sorted by name.
+pub fn counters(output: &Output) -> Vec<slip_model::Counter>;
+/// The counter word of a cause's text.
+pub fn cause_word(text: &str) -> String;
+```
+
+**The walk** runs inside the closure of `parse_observer_with`, on the
+front end's thread, when `unit.errors()` is 0; with errors it does not
+run and the shard is the parse task's (`diagnosed`, no `digests`). Rules:
+none; detail: `none`; names: not asked for.
+
+- **The stack.** The walk bounds its own recursion and needs
+  `slip_digest::STACK_SIZE` bytes of stack for it (`digest.md`; the walk
+  marks a unit indeterminate rather than go deeper). `digest_unit`
+  compares `unit.stack_remaining()` with it first: less is
+  `Err("the front end's thread has <n> bytes of stack left; the digest
+  needs <STACK_SIZE>")`, and so is `None`
+  (`Err("no stack guard on the front end's thread")`). The front end's
+  thread has the command's `-fkiln-stack-size=`, else Kiln's default of
+  1 GiB; a command that asks for less than the walk needs fails its job
+  instead of overflowing. That `STACK_SIZE` covers the walk's bound is
+  shown by a test built in the release profile (`spec/harness.md` §9.3).
+- **Subject paths.** The subject path of a buffer that is one of the
+  shard's `inputs` is `subject(unit.real_path(file))`. A buffer that is
+  not an input and whose name in the source manager starts with `<` (the
+  predefines `<built-in>`, the command line's macros) has that name as
+  its subject path. Any other buffer is `Err("a declaration lies in
+  <name>, which is not an input")`: nothing can be said about a file
+  that was not read.
+- **`Err`** is returned from the closure and makes the job fail
+  (`spec/exec.md` §5.4), as any failure of the worker does. A shard with
+  `digests` is never written from a walk that reported one.
+- **The shard.** If the parse task's shard is `ok`, it gets the walk's
+  `digests` and counters. If it is not `ok` although the unit had no
+  error when the closure ran (an error the driver reported, a count
+  raised by `-Werror` after it), the walk's result is dropped: `digests`
+  are for `ok` shards only (§8.2 rule 1).
+- A shard that breaks §8.2 (a declared unit whose file is empty: a
+  declaration without a location) fails the job through the worker's
+  validation (`spec/exec.md` §5.5). It is not repaired by dropping the
+  unit or inventing a file.
+
+**Counters.** Those of the parse task; those of `digest.md` §12; the
+walk's count of indeterminate keys by cause, `digest.indeterminate.<cause>`
+(`error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`,
+and while the walk has areas not yet written `pending` and
+`digest.indeterminate.pending.<area>`), each present only when not 0; and
+for the causes that carry a text (`unsupported`, `unaccounted`):
+
+```
+digest.cause.<cause>.<word>          indeterminate keys whose first cause is this one
+```
+
+`<word>` is the cause's text (`ExprKind/CXXReflectExpr`, `walk/depth`)
+with ASCII upper-case letters made lower-case, `/` made `.`, every other
+byte outside `[a-z0-9_]` made `_`, and an empty word between two `.`, or
+at either end, made `_`: `digest.cause.unsupported.exprkind.cxxreflectexpr`,
+`digest.cause.unaccounted.walk.depth`. Two texts with one word add up.
+`cargo xtask perf summarize` sums every counter over a run
+(`spec/harness.md` §7.2), so a corpus run lists, per cause, how many keys
+it makes indeterminate; `digest.cause.unaccounted.walk.depth` is the
+number of keys cut off by the walk's depth bound.
+
+**Readers.** A shard of phase `map` that is `ok` and has no `digests` was
+written before this section (or by the parse task alone); verification
+treats it as an unusable pre shard (`spec/verify.md` §5.3, P3). The
+format still does not require the section ("Open questions").
 
 ## 9. The run record
 
@@ -904,7 +1029,18 @@ form as it has one binary form (§1 rule 1):
   `shard-verdict.json`.
 - `crates/slip_kiln/tests/parse.rs` and the unit tests of
   `crates/slip_kiln/src/parse.rs` — §8.4; the parity test's oracle (the
-  parse task of WP-010) is `crates/slip_kiln/tests/support/`.
+  parse task of WP-010) is `crates/slip_kiln/tests/support/`. Also
+  `stack_remaining` inside the closure, and `__DATE__` and `__TIME__`
+  fixed with `SOURCE_DATE_EPOCH` set in the test's environment.
+- `crates/slip_digest/tests/map.rs` — §8.5 on observers the test writes
+  to a directory of its own: the walk skipped on a unit with errors;
+  subject paths of inputs, of the predefines, and through a `subject`
+  that maps a root; too little stack (`-fkiln-stack-size=`) as `Err`;
+  the cause counters and `cause_word` on every cause text of the crate;
+  the same shard bytes from two runs.
+- `crates/slip_cli/tests/cli.rs` — §8.5 through the executable: `slip
+  parse` gives every `ok` shard a `digests` section and the counters; a
+  `diagnosed` shard has neither.
 
 Running the tests with `SLIP_BLESS=1` rewrites the golden files (until
 `cargo xtask` owns blessing, `spec/harness.md` §6).
@@ -935,9 +1071,13 @@ Running the tests with `SLIP_BLESS=1` rewrites the golden files (until
   zero-width element type would need its own bound.
 - Whether a section must be present: `digests` on every `ok` shard
   (`digest.md` §10) and `verdict` on every `ok` verify shard (`verify.md`
-  §6, "present when the outcome is ok"). Not required today because no
-  writer produces them yet (§8.4); becomes a rule with the package that
-  writes them (the walk, the verify job). The same package decides the
+  §6). The map task (§8.5) and the verify job (`verify.md` §5.4) write
+  them; the format does not require them, because a verify shard of an
+  observer whose post-image does not parse has neither and the readers
+  that matter treat absence as "not usable" or `failed` (`verify.md`
+  §5.3, §7). Making `digests` required on an `ok` map shard would reject
+  every store written before §8.5; decide when the store gets a version
+  2. The package that writes verdicts decides the
   consistency rules of a verdict that the format does not check:
   `unverifiable` with `only_pre`, `only_post` or `used` non-zero, or with a
   non-zero `pre`; `verified` with `only_pre`/`only_post` non-zero; `pre` or
@@ -947,3 +1087,16 @@ Running the tests with `SLIP_BLESS=1` rewrites the golden files (until
 - `findings` longer than the default limit of 64, or more than 16 findings
   with a `where` (`verify.md` §6.1), are not rejected: the limit is a
   parameter of the job, not of the format.
+- **For Kiln.** `-fkiln-reproducible-time` is on every parse (§8.4), and
+  nobody has verified it together with precompiled headers and module
+  files. Kiln records the flag in a precompiled header's and a module
+  file's snapshot (`kiln_driver/src/pch_snapshot.rs`), so a file the
+  build made without it may be refused, or accepted with the build's
+  `__DATE__` and `__TIME__` inside it. The flag stays: the LLVM corpus
+  uses neither. The question for Kiln, before the first corpus that does:
+  what a parse with the flag does with a snapshot made without it, and
+  whether a snapshot can carry time-dependent tokens at all.
+- The counter namespace `digest.cause.*` (§8.5) is as wide as the walk's
+  list of cause texts (about 170 today). It shrinks as rows are decided;
+  a baseline that gates on counters exactly (`spec/harness.md` §7.3)
+  lists every one that occurs.
