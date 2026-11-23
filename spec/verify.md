@@ -2196,7 +2196,10 @@ observer needed (§2.2).
   namespace, and owned (a dependency entity is keyed in the dependency
   view, and no rule reaches it). A class member follows its class; a
   specialisation and a member of one are keyed under their template, and
-  a friend under its class, so neither is counted; an entity with C
+  a friend under its class, so neither is counted; a deduction guide,
+  which must be in its template's scope ([temp.deduct.guide]), is not
+  counted either (left with its template it is right, and left without
+  it the post-image does not parse); an entity with C
   language linkage has the parent `c_linkage` and is not counted. A
   namespace's own key is not counted in `direct` (the merge of §2.1);
   a namespace a rule matched counts in `via`, as before.

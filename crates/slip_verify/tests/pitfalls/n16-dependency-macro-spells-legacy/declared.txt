@@ -1,3 +1,5 @@
 relocate legacy => :: acme
 created legacy::<using acme::Mine>
 created legacy::<shadow acme::Mine>
+kept legacy::<using acme::Mine>
+kept legacy::<shadow acme::Mine>

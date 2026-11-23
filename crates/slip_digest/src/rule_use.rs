@@ -184,7 +184,11 @@ pub(crate) fn map(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
     let (mapped, trace) = traced(w, key);
     if let Some(c) = w.rule_use.as_mut() {
         let namespace = mapped.kind == KeyKind::Namespace;
-        let entry = Entry { trace, kept: c.kept_index(&mapped), namespace, member: !namespace };
+        // A deduction guide must be in its template's scope
+        // ([temp.deduct.guide]), as a specialisation is keyed under its
+        // template: left with it, it is not counted (WP-111).
+        let member = !namespace && mapped.kind != KeyKind::DeductionGuide;
+        let entry = Entry { trace, kept: c.kept_index(&mapped), namespace, member };
         c.set(e, entry);
     }
     mapped
