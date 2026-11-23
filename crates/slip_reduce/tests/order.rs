@@ -103,15 +103,16 @@ fn some_notes(r: &mut Rng) -> Vec<&'static str> {
 }
 
 /// What one observer makes of a pool claim: the same site, stance and
-/// pieces (the same collapsed claim), with subjects, notes and a macro
-/// name of its own at times. The subjects then join by union (§5.3, and
+/// pieces (the same collapsed claim), with a part of its subjects, notes
+/// and a macro name of its own at times. The subjects then join by union (§5.3, and
 /// `mixed_set` may follow), the notes keep the least eight, the macro the
 /// least (§4.3: a tie on `name_start` broken by the name).
 fn as_seen(r: &mut Rng, c: &C) -> C {
     let mut c = c.clone();
-    if r.chance(20) {
-        let n = r.below(3);
-        let s: Vec<Digest> = (0..n).map(|_| d(1 + r.below(6) as u8)).collect();
+    if r.chance(25) {
+        // A part of the claim's subjects: two observers may each see one
+        // of two (mutation M38).
+        let s: Vec<Digest> = c.subjects.iter().copied().filter(|_| r.chance(50)).collect();
         c = c.subjects(&s);
     }
     if r.chance(35) {
@@ -145,6 +146,22 @@ fn generate(seed: u64) -> (Transform, Vec<(Digest, Option<Shard>)>) {
         && r.chance(30)
     {
         pool.push(C { pieces: vec![lit("z")], ..c });
+    }
+    // Disagreement around other edits (landed WP-062 §5): a replacement of
+    // a range some claim replaces, and a replacement inside one, so that a
+    // site some observers do not see is `divergent` around or across the
+    // others.
+    // Half the cases, so that enough sets are accepted.
+    let replaces: Vec<C> = pool.iter().filter(|c| c.stance == Stance::Replace).cloned().collect();
+    let disagree = r.chance(50);
+    for c in replaces.into_iter().filter(|_| disagree) {
+        if r.chance(12) {
+            pool.push(C { pieces: vec![lit("w")], ..c.clone() });
+        }
+        if c.hi - c.lo >= 3 && r.chance(20) {
+            let lo = c.lo + 1 + r.below(c.hi - c.lo - 2);
+            pool.push(C { lo, hi: lo + 1, pieces: vec![lit("i")], ..c });
+        }
     }
     let mut out = Vec::new();
     for i in 0..n {
@@ -453,9 +470,39 @@ fn selection_of(set: &EditSet) -> (Vec<Digest>, Vec<String>, Vec<SiteP>) {
 }
 
 /// An edit `reduce(S)` refuses that `reduce(S ∪ {s})` accepts: `s` the
-/// shard at `k` of the case, the site, its causes in `reduce(S)`, and
-/// whether §5.2 made something else of the two (`selection_of`).
-type Exception = (usize, SiteP, Vec<String>, bool);
+/// shard at `k` of the case, the site, its causes in `reduce(S)`, whether
+/// §5.2 made something else of the two (`selection_of`), and whether `s`
+/// carries it: a `replace` of `s` copies a range the site is properly
+/// inside, and an edit of `reduce(S ∪ {s})` does.
+type Exception = (usize, SiteP, Vec<String>, bool, bool);
+
+fn inside(x: &SiteP, r: &SiteP) -> bool {
+    x.0 == r.0 && r.1 <= x.1 && x.2 <= r.2 && (x.1, x.2) != (r.1, r.2)
+}
+
+/// Whether shard `s` and the set `whole` both copy a range `x` is
+/// properly inside.
+fn carries(s: &Shard, whole: &EditSet, x: &SiteP) -> bool {
+    let by_shard = s.edits.iter().any(|e| {
+        e.claims.iter().filter(|c| c.stance == Stance::Replace).any(|c| {
+            c.pieces.iter().any(|p| match p {
+                slip_model::edits::Piece::Copy(r) => {
+                    inside(x, &(e.files[r.file as usize].path.clone(), r.lo, r.hi))
+                }
+                _ => false,
+            })
+        })
+    });
+    let by_set = whole.edits.iter().any(|e| {
+        e.pieces.iter().any(|p| match p {
+            slip_model::edits::Piece::Copy(r) => {
+                inside(x, &(whole.files[r.file as usize].path.clone(), r.lo, r.hi))
+            }
+            _ => false,
+        })
+    });
+    by_shard && by_set
+}
 
 /// Monotone refusal (landed WP-062 §5): for the shards `S` of a case less
 /// one, `s`, every edit `reduce(S)` refuses is refused or absent in
@@ -479,7 +526,8 @@ fn monotone(
         let selection = selection_of(&part.edits) != selection_of(whole);
         for (site, causes) in refused_sites(&part.edits) {
             if accepted.contains(&site) {
-                out.push((k, site, causes, selection));
+                let carried = shards[k].1.as_ref().is_some_and(|s| carries(s, whole, &site));
+                out.push((k, site, causes, selection, carried));
             }
         }
     }
@@ -520,7 +568,7 @@ fn without_subjects(shards: &[(Digest, Option<Shard>)]) -> Vec<(Digest, Option<S
 fn more_shards_refuse_no_less() {
     let base: u64 =
         std::env::var("SLIP_REDUCE_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0x062_5eed);
-    let show = |what: &str, seed: u64, (k, site, causes, selection): &Exception| {
+    let show = |what: &str, seed: u64, (k, site, causes, selection, carried): &Exception| {
         eprintln!(
             "monotone {what}: seed {seed}: without shard {k}, {} [{}, {}) is {causes:?}; \
              accepted with it{}",
@@ -529,6 +577,9 @@ fn more_shards_refuse_no_less() {
             site.2,
             if *selection { " (§5.2 differs)" } else { "" }
         );
+        if *carried {
+            eprintln!("  carried by the shard's copy");
+        }
     };
     let (mut effect, mut selection, mut reductions) = (0, 0, 0);
     for case in 0..CASES {
@@ -539,8 +590,10 @@ fn more_shards_refuse_no_less() {
             reductions += shards.len();
             for x in monotone(&request, &shards, &whole.edits) {
                 show(what, seed, &x);
-                let buried = x.2.iter().any(|c| c == "Buried");
-                if buried {
+                // The effect: buried in S, or taken down with a group by a
+                // buried member, and carried by s's copy in S ∪ {s}.
+                let buried = x.2.iter().any(|c| c == "Buried" || c == "WithGroup");
+                if buried && x.4 {
                     effect += 1;
                 } else if x.3 && what == "as generated" {
                     selection += 1;
