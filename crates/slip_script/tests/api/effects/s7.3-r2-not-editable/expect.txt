@@ -1,0 +1,3 @@
+transform <id>
+report - note "replace(extent): not_editable"
+report - note "replace(name range): not_editable"

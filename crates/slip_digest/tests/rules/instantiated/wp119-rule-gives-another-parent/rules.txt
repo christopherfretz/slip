@@ -1,0 +1,5 @@
+# WP-119 item 1 (spec/digest.md §3.4): a rule on the instantiated member's plain key that gives
+# the pattern's name (f) under another parent (the global namespace, not S<int>): not the key
+# following gives, key/rule-on-instantiated-member. Killed the mutation "the names agree".
+relocate S::f() => S :: g
+rule function | mapped S<int> | id g | disc-of post S<int>::g() | root | id f

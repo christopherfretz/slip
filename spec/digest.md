@@ -372,10 +372,22 @@ Three kinds of key take another entity's name as the rules map it
   mapped names, the key is indeterminate (`key/patterns-disagree`).
   A member of an explicit specialisation of the class is declared in that
   specialisation, has no such link, and keeps its own name: it needs its
-  own rule. A rule that matches an instantiated member itself, under its
-  plain or its followed name, makes its key indeterminate
-  (`key/rule-on-instantiated-member`): no source renames an
-  instantiation's member apart from its pattern's;
+  own rule. No source renames an instantiation's member apart from its
+  pattern's, so a rule on an instantiated member is accepted only where
+  it says what the pattern says (WP-119): a rule that matches the
+  member's **plain** key (its own name, parent and discriminator mapped)
+  and produces exactly the key following gives (the patterns' mapped
+  name, with the plain key's parent, kind and discriminator) gives the
+  member that key, and the member is counted in that rule's `via`
+  (`verify.md` §9.1); a rule on the followed key is then not applied
+  after it (a table maps a key once). Any other rule on the plain key
+  (another name, or the pattern's name under another parent), and a rule
+  that matches the followed key when none matches the plain key, makes
+  the key indeterminate (`key/rule-on-instantiated-member`). Such a rule
+  is how a function defined as a friend in a class template and declared
+  at namespace scope is renamed: a unit that does not instantiate the
+  class keys the function by its own declaration, which needs the rule,
+  and a unit that does accepts the same rule;
 - a decomposition is named by its first binding (digest-kinds §5.2),
   as the rules map the binding.
 

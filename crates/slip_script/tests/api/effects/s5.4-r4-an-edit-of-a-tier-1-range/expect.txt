@@ -1,0 +1,4 @@
+transform <id>
+edit 0 t.cpp:5:15-5:16 tiers 1 = spell("h(int)" "h")
+edit 1 t.cpp:6:23-6:24 tiers 1 = spell("h(int)" "h")
+report - note "calls: 3"
