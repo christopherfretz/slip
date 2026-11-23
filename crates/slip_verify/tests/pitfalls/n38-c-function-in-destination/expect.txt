@@ -1,0 +1,15 @@
+# N38: the owned extern "C" c_fn moves into acme, which already declares it
+# with the same type: the two declarations are of one function
+# ([dcl.link]), so the move is no collision. Against false findings.
+# pre-2: acme declares c_fn(int) with C++ linkage. Moved, the C function's
+# declaration conflicts with it (different language linkage).
+# pre-3: acme has c_fn(long) with C++ linkage, and other() calls
+# acme::c_fn(1). Moved, the C function c_fn(int) overloads it and other()
+# silently takes it. The reverse of N21: there the destination captures a
+# call in moved code, here moved code captures a call in existing code.
+# Against a verifier that checks only the moved code and its uses.
+good: verified
+good-2: verified
+bad-2:  not_parsed
+good-3: verified
+bad-3:  mismatch changed other() @ main.cpp:10

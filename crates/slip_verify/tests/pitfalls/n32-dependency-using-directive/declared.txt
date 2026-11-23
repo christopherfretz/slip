@@ -1,0 +1,3 @@
+relocate legacy => :: acme
+created legacy::<using acme::make>
+created legacy::<shadow acme::make(int)>
