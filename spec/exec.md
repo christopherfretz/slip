@@ -1287,7 +1287,8 @@ impl Image {
     pub fn to_post(&self) -> PostImage;                                           // what the coordinator puts in the job
     pub fn maps(&self) -> &[RootMap];
     pub fn is_identity(&self) -> bool;
-    pub fn command(&self, command: &Command) -> Command;             // the post command
+    pub fn command(&self, command: &Command) -> Command;             // the post command: `post_command(..).command`
+    pub fn post_command(&self, command: &Command) -> PostCommand;    // with the prefix maps and G5's conflict
     pub fn to_subject(&self, real: &[u8]) -> Vec<u8>;                // the subject path of a real path
     pub fn under_subject(&self, real: &[u8]) -> bool;                // guard G1 (by identity)
     pub fn resolver(&self) -> Resolver<'_>;                          // "under a root" by identity, with caches
@@ -1303,6 +1304,10 @@ impl Image {
                                   -> Result<(Shard, Option<(R, slip_kiln::Lookups)>), String>;
 }
 pub enum Side { Pre, Post }
+/// spec/verify.md §5.1: the post command; `maps` the (post prefix, prefix as written) pairs it ends
+/// with as `-fmacro-prefix-map=` words, longest post prefix first; `conflict` G5's reason when the
+/// pairs, or a prefix map of the command's own, cannot give every spelling back (§5.3).
+pub struct PostCommand { pub command: Command, pub maps: Vec<(Vec<u8>, Vec<u8>)>, pub conflict: Option<String> }
 /// spec/verify.md §5.1 "Under a root", one job's checks.
 pub struct Resolver<'i> { /* the roots' identities; caches by directory */ }
 impl Resolver<'_> {

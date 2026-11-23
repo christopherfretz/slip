@@ -1143,7 +1143,9 @@ post-image's bytes being a blob in the store.
    `digests` section.
 1. Parse the post-image: the parse of `spec/model.md` §8.4 with the post
    command, digested as `spec/model.md` §8.5 says with `Declared.rules`,
-   the subject paths of §5.1, and detail `differing` from the pre shard's
+   the read-only files of §2.1 (`ReadOnlyFiles` of `Declared.files`, each
+   buffer decided by the subject path of its real path; step 6's walk the
+   same), the subject paths of §5.1, and detail `differing` from the pre shard's
    group sums (`digest.md` §11; detail `none` if the pre shard is not
    usable). With an image of the overlay form this is the last parse of
    "Loading" (§5.1). If the parse is not `ok`, the shard has that

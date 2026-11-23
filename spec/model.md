@@ -703,6 +703,7 @@ pub struct Lookups {
     pub list: Vec<String>,                 // the search list's directories
     pub tried: Vec<(String, String)>,      // (directory, name): each place a lookup tried, unique
     pub read: Vec<String>,                 // each input's name as spelled when read
+    pub line_names: Vec<String>,           // each name a `#line` directive gave, as written (guard G5)
 }
 
 pub struct Unit<'r> { /* … */ }        // the finished front end, valid inside the call
@@ -731,6 +732,10 @@ directory and `.` for `"..."`, then every `--embed-dir` directory (Kiln's
 log does not say which were tried; they are taken from Kiln's driver,
 `Args::embed_dirs`). A lookup of an absolute name is not in Kiln's log
 and so not here (`spec/verify.md` §5.1, "What remains outside").
+`Lookups::line_names` lists the file names of the `#line` directives of
+every file the unit read (Kiln's `SourceManager::line_directives`), as
+written: guard G5 of `spec/verify.md` §5.3 refuses one that begins with a
+prefix the post command maps.
 `Lookups` is a function of the unit; the shard does not depend on it.
 
 `token_end(at)` is Kiln's `kiln_lex::token_end` with the unit's interner
