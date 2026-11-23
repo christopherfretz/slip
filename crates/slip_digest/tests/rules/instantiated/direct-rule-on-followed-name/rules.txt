@@ -1,3 +1,4 @@
 # Fix round 2, F3: a rule that matches an instantiation's member under its followed name (the pattern's mapped name, f), not its plain one (g), makes its key indeterminate too.
 relocate S::f() => S :: g
 rule function | mapped S<int> | id f | disc-of post S<int>::g() | pre S<int> | id h
+# WP-119 item 2: stays indeterminate: no rule matches the plain key g, and a rule on the followed key alone would be a second step after the pattern's, which no source carries out apart from the pattern.

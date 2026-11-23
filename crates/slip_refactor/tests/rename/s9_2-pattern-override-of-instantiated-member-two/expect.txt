@@ -1,7 +1,7 @@
 subjects:
   3b98ec8e seed - rule=yes n::D::f()
-  5bcd1a5e follower unsupported rule=yes n::B<int>::f() of=fa8fdd44
-  b52ded01 follower unsupported rule=yes n::B<long>::f() of=fa8fdd44
+  5bcd1a5e follower - rule=yes n::B<int>::f() of=fa8fdd44
+  b52ded01 follower - rule=yes n::B<long>::f() of=fa8fdd44
   c5839518 candidate - rule=yes n::E::f()
   fa8fdd44 candidate - rule=yes n::B::f()
 links:

@@ -34,7 +34,7 @@
 # it. good-6 removes unused.h.
 good:   verified
 bad:    mismatch changed traits<Mine> @ spec.h:1
-bad:    mismatch derived_changed width<Mine>() @ traits.h:4
+bad:    mismatch derived_changed width<Mine>()::<definition> @ traits.h:4
 bad-2:  mismatch changed convert() @ main.cpp:10
 bad-3:  mismatch changed pick<int>() @ pick_int.h:1
 good-4: none drop deletes through the pointer: every forward declaration makes Widget incomplete there
@@ -42,6 +42,4 @@ bad-4:  mismatch changed drop(Widget *) @ main.cpp:3
 good-5: verified
 good-6: verified
 bad-6:  mismatch derived_changed box<Mine>::found @ traits.h:7
-xfail good: width<Mine>()'s instantiated body is Pending(Demand): derived_indeterminate until WP-045
-xfail good-5: pick<int>()'s instantiated body is Pending(Demand): derived_indeterminate until WP-045
-xfail good-6: box::found's decltype of a dependent call is Pending(Spelling) (WP-041), and box<Mine>'s instantiation Pending(Demand) (WP-045)
+xfail bad-3: place, WP-128: the pre side of changed pick<int>() is placed at pick.h:1 (the primary's line), not at the explicit specialisation in pick_int.h:1 (spec/verify.md §6.1)

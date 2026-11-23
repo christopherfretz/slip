@@ -1,0 +1,2 @@
+transform <id>
+report t.cpp:4:8-4:16 error "not renamed: the name also denotes something that is not a function at namespace scope"

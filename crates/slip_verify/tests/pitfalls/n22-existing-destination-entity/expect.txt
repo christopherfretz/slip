@@ -2,4 +2,5 @@
 # bad: both defined; bad-2 (on pre-2): the existing acme::g() is only declared.
 good:  none the destination already has acme::g(): the move is refused, there is no correct edit
 bad:   not_parsed
+good-2: none as good: the destination already has acme::g(), the move is refused
 bad-2: mismatch removed acme::g() @ acme.h:2

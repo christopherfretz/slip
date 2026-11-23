@@ -1,0 +1,8 @@
+transform <id>
+edit 0 t.cpp:1:5-1:7 tiers 0 = copy(t.cpp:2:9-2:14)
+report - note "a forged code: invalid_handle"
+report - note "a forged group: invalid_handle"
+report - note "null range: invalid_handle"
+report - note "the bits of a live range: returned"
+report - note "the call and the `;` after it: invalid_handle"
+report - note "the name without its first byte: invalid_handle"

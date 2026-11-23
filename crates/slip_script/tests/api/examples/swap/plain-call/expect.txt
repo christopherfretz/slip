@@ -1,0 +1,6 @@
+transform <id>
+edit 0 t.cpp:8:37-8:40 tiers 0 = spell("lib::bar(int, int)" "bar")
+edit 1 t.cpp:8:41-8:42 tiers 0 = copy(t.cpp:8:44-8:45)
+edit 2 t.cpp:8:44-8:45 tiers 0 = copy(t.cpp:8:41-8:42)
+group 0 1 2
+changed "use(int, int)" t.cpp:8:32-8:46 "lib::foo(a, b) -> lib::bar(b, a)"

@@ -1,0 +1,6 @@
+# WP-119 item 1 (spec/digest.md §3.4): the chain of patterns, with a rule on the last instantiated
+# member as well as the pattern's: O<int>::I<char>::g follows O<int>::I<U>::g (no unit, no rule),
+# which follows O::I::g, mapped to f; the rule on O<int>::I<char>::g gives f under the same parent:
+# what following gives, so accepted and equal.
+relocate O::I::f() => O::I :: g
+relocate O<int>::I<char>::f() => O<int>::I<char> :: g

@@ -68,6 +68,7 @@ brief (`code/`, `effects/`, `examples/`, `tests/isolation.rs`,
 | §5.4 rule 1 | `ranges/s5.4-r1-tiers` |  |
 | §5.4 rule 2 | `ranges/s5.4-r2-invocation-inside-tier-0` |  |
 | §5.4 rule 3 | `ranges/s5.4-r3-argument-used-twice` |  |
+| §5.4 rule 4 | `effects/s5.4-r4-an-edit-of-a-tier-1-range` |  |
 | §5.4 rule 5 | `ranges/s5.4-r5-null-is-not-an-error` |  |
 | §5.4 rule 6 | `ranges/s5.4-r6-first-to-last-token` |  |
 | §5.5 | `structure/s5.5-explicit-specialisation` |  |
@@ -126,7 +127,7 @@ brief (`code/`, `effects/`, `examples/`, `tests/isolation.rs`,
 | §6.7 rule 7 | `calls/r7-uses-that-are-not-calls` |  |
 | §6.7 rule 8 | `calls/r8-every-call-is-returned-or-counted` | the host does not put api.calls_without_reference in the run output (spec/landed/api/WP-086.md decision 7 makes it a method of the subject); spec/api.md §6.7 rule 8 names the counter, and §7.6 rule 6 does not list it |
 
-74 directories, 2 xfail.
+75 directories, 2 xfail.
 <!-- /api-table -->
 
 ## Rules with no directory

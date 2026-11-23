@@ -1,0 +1,3 @@
+# WP-119 tests: two instantiations, a rule on one instantiated friend only (the one declared at namespace scope, as unit A's table would hold it). g(S<int>): its rule gives what following gives, accepted. g(S<long>): no rule on it, it follows the pattern. Equal.
+relocate S::friend f(S<type-parameter-0-0>) => S :: g
+relocate f(S<int>) => :: g

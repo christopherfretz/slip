@@ -1,6 +1,6 @@
 subjects:
   32ae9afe seed - rule=yes n::S::f()
-  fc2d99d6 follower unsupported rule=yes n::S<int>::f() of=32ae9afe
+  fc2d99d6 follower - rule=yes n::S<int>::f() of=32ae9afe
 links:
 claims:
   main.cpp:1:19+1 refuse t2 votes=1 macro_body [32ae9afe] macro=Q@96

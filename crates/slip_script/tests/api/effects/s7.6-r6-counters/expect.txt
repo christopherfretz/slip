@@ -1,0 +1,15 @@
+transform <id>
+edit 0 t.cpp:2:11-2:12 tiers 0 = "a"
+edit 1 t.cpp:2:14-2:15 tiers 0 = "b"
+report - note "one"
+report - note "two"
+counter api.edits 2
+counter api.op.code_text 2
+counter api.op.lookup 1
+counter api.op.replace 2
+counter api.op.report 2
+counter api.reports 2
+counter api.unresolved_spelling_matches 0
+counter api.one_shot_key_servers absent
+counter api.op.new_group absent
+counter api.op.expect_renamed absent

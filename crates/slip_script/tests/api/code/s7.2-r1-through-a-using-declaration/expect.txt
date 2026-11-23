@@ -1,0 +1,2 @@
+transform <id>
+edit 0 t.cpp:6:9-6:10 tiers 0 = spell("n::g(int)" "::n::g")

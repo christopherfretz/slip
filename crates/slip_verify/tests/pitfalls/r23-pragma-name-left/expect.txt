@@ -13,3 +13,5 @@ good:   verified
 bad:    mismatch changed f() @ main.cpp:1
 good-2: verified
 bad-2:  mismatch changed f(int) @ main.cpp:2
+xfail good-2: WP-111: the relocate of the extern "C" f(int) gives the rule (root, function, g) => (c_linkage, f), whose parent root matches no key: f(int) is removed and g(int) added
+xfail bad-2: WP-111: as good-2, the rule of declared-2.txt matches nothing

@@ -2,7 +2,7 @@ subjects:
   0c083ef3 seed - rule=yes n::A::f()
   498ae399 follower - rule=yes n::D::f of=599ef791
   599ef791 candidate - rule=yes n::B::f()
-  780d98a2 follower - rule=yes n::D::f of=1415dcb3,36cceb9c,8e22d4a6
+  780d98a2 follower - rule=yes n::D::f of=1415dcb3,36cceb9c
   8e22d4a6 follower - rule=yes n::D::f of=599ef791
 links:
   0c083ef3 599ef791

@@ -1,0 +1,8 @@
+transform <id>
+report - note "in an unnamed class: unsupported"
+report - note "member of a class template: unsupported"
+report - note "member of a specialisation: unsupported"
+report - note "no identifier: unsupported"
+report - note "only friend declarations: unsupported"
+report - note "parameter: unsupported"
+report - note "specialisation: unsupported"
