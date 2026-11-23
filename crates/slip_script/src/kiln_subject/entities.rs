@@ -424,30 +424,13 @@ impl<'u> KilnSubject<'u> {
             .unwrap_or_default()
     }
 
-    /// §5.5: the written entity `e` comes from. A written entity is its own
-    /// origin; a specialisation's is its template's; a member of an
-    /// instantiation's is the member it was instantiated from; followed
-    /// until a written entity (the member specialisation of a member
-    /// template: the specialisation, its template in the instantiation,
-    /// the member template of the class template). An entity Kiln made
-    /// that comes from nothing (an implicit member) is its own origin.
+    /// §5.5: `slip_kiln::written::origin` of `e` (the one function the
+    /// rename, the host and the check share), as an entity, read when the
+    /// subject was made: a specialisation's is its template, an explicit
+    /// specialisation's included; a member of an instantiation's is the
+    /// member it was instantiated from.
     pub(super) fn origin_decl(&self, e: DeclId) -> DeclId {
-        let ast = self.ast;
-        let mut x = e;
-        for _ in 0..self.chain_bound() {
-            if self.first_written(x).is_some() {
-                return x;
-            }
-            let next = match ast.spec_info(x) {
-                Some((_, s)) => Some(s.template),
-                None => ast.instantiated_from(x),
-            };
-            match next.map(|n| self.entity(n)) {
-                Some(n) if n != x && self.is_entity(n) => x = n,
-                _ => return x,
-            }
-        }
-        x
+        self.names.origin(e)
     }
 
     /// Whether `e` is a scope `lookup` walks into (§6.1 rule 4).

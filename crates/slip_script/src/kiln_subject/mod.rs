@@ -34,6 +34,8 @@ mod entities;
 mod lookup;
 mod references;
 
+pub use references::name_token;
+
 /// Unit order (§1): `slip_kiln::ranges`' comparator (WP-084), which
 /// replaced WP-083's own, except that an invalid location (a declaration
 /// Kiln made, with no place) sorts after every valid one, as WP-083's did
@@ -134,6 +136,11 @@ impl<'u> KilnSubject<'u> {
             names: references::Names::default(),
         };
         s.names = references::Names::build(&s, unit);
+        let live: std::collections::HashSet<u32> = (1..=u32::try_from(ast.decls.len())
+            .unwrap_or(u32::MAX))
+            .filter(|&n| s.decl(n).is_some_and(|d| s.is_declaration(d)))
+            .collect();
+        s.names.add_declaration_tiers(|d| live.contains(&d));
         Ok(s)
     }
 

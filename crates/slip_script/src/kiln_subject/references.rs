@@ -26,7 +26,6 @@
 //! when they give one name to edit (`spec/landed/api/WP-085.md`
 //! decision 3).
 
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -62,6 +61,9 @@ pub(super) struct Names {
     unresolved: HashMap<Vec<u8>, u64>,
     /// The reference of each entry, by the raw start of its name.
     at_loc: HashMap<u32, u32>,
+    /// The origin (§5.5, `slip_kiln::written::origin`, as an entity) of
+    /// each declaration that is not its own.
+    origins: HashMap<u32, DeclId>,
     /// Origin (an entity's number) → its references, in table order.
     by_origin: OnceLock<HashMap<u32, Vec<u32>>>,
     /// `references_to` answers already sorted into unit order.
@@ -92,6 +94,7 @@ impl Names {
             + self.decls.capacity() * (size_of::<u32>() + size_of::<Place>() + 8)
             + self.tiers.capacity() * (size_of::<Range>() + 2 + 8)
             + self.at_loc.capacity() * (8 + 8)
+            + self.origins.capacity() * (8 + 8)
             + self.unresolved.keys().map(|k| k.len() + 40).sum::<usize>()
     }
 }
@@ -101,6 +104,8 @@ struct Ref {
     /// The entity the name denotes (Kiln's referent, as the subject
     /// numbers entities).
     referent: DeclId,
+    /// The referent's origin (§5.5).
+    origin: DeclId,
     /// The first token of the written name (its outermost qualifier
     /// component; a leading `::` is just before it), for unit order: the
     /// earliest of the entries joined into this reference.
@@ -121,11 +126,13 @@ struct Place {
     nearest: Option<Range>,
 }
 
-/// What makes two entries one reference (module documentation).
+/// What makes two entries one reference (module documentation): not the
+/// role nor the referent, so that a name Kiln records twice (a template's
+/// name as a template and as the type its arguments make: `S` and
+/// `S<int>`) is one reference to their origin.
 #[derive(PartialEq, Eq, Hash)]
 struct Key {
-    role: u8,
-    referent: u32,
+    origin: u32,
     spelled: Option<(FileId, u32)>,
     invocation: Option<Range>,
     name: Option<Range>,
@@ -159,15 +166,26 @@ impl Names {
             written: written_bits(unit),
             decls: decl_places(s, unit),
             unresolved: unresolved_counts(unit),
+            origins: origins(s, unit),
             ..Names::default()
         };
         names.add_references(s, unit);
-        for p in names.decls.values() {
-            if let Some(g) = p.name {
-                names.tiers.entry(g.0).or_insert([false, false])[g.1 as usize] = true;
+        names
+    }
+
+    /// The origin of `d` (an entity).
+    pub(super) fn origin(&self, d: DeclId) -> DeclId {
+        self.origins.get(&d.index()).copied().unwrap_or(d)
+    }
+
+    /// §5.4, §7.3 rule 2: the tiers of the name range of each live
+    /// declaration (`live`), once the subject can tell which are.
+    pub(super) fn add_declaration_tiers(&mut self, live: impl Fn(u32) -> bool) {
+        for (&d, p) in &self.decls {
+            if let Some(g) = p.name.filter(|_| live(d)) {
+                self.tiers.entry(g.0).or_insert([false, false])[g.1 as usize] = true;
             }
         }
-        names
     }
 
     /// The references of §6.5 rule 3, one per written name (module
@@ -177,17 +195,17 @@ impl Names {
         let declarative = Declarative::build(unit);
         let mut keys: HashMap<Key, u32> = HashMap::new();
         for r in written::written_refs(unit) {
-            if !returned_role(r.role) || declarative.holds(unit, &r) {
+            if !returned_role(r.role) || declarative.holds(&r) {
                 continue;
             }
             let referent = s.entity(r.referent);
             if !s.is_entity(referent) {
                 continue;
             }
-            let x = s.make_ref(unit, &r, referent);
+            let mut x = s.make_ref(unit, &r, referent);
+            x.origin = origin_of(s, unit, referent);
             let key = Key {
-                role: r.role as u8,
-                referent: referent.index(),
+                origin: x.origin.index(),
                 spelled: sm.offset_of(sm.spelling_loc(r.name.lo)),
                 invocation: s.invocation(r.name.lo),
                 name: x.name.map(|g| g.0),
@@ -213,6 +231,28 @@ impl Names {
     }
 }
 
+/// §5.5: `slip_kiln::written::origin` of `d`, as an entity of the subject
+/// (`d` itself when that is none).
+fn origin_of(s: &KilnSubject<'_>, unit: &Unit<'_>, d: DeclId) -> DeclId {
+    let o = s.entity(written::origin(unit, d));
+    if s.is_entity(o) { o } else { d }
+}
+
+/// The origin of every entity that is not its own.
+fn origins(s: &KilnSubject<'_>, unit: &Unit<'_>) -> HashMap<u32, DeclId> {
+    let mut out = HashMap::new();
+    for n in 1..=u32::try_from(unit.ast().decls.len()).unwrap_or(u32::MAX) {
+        let Some(d) = s.decl(n) else { break };
+        if s.entity(d) == d && s.is_entity(d) {
+            let o = origin_of(s, unit, d);
+            if o != d {
+                out.insert(n, o);
+            }
+        }
+    }
+    out
+}
+
 /// Written declarations: a row that is not an explicit instantiation's
 /// (WP-083 decision 2), one bit per declaration.
 fn written_bits(unit: &Unit<'_>) -> Vec<u64> {
@@ -234,12 +274,22 @@ fn written_bits(unit: &Unit<'_>) -> Vec<u64> {
 fn decl_places(s: &KilnSubject<'_>, unit: &Unit<'_>) -> HashMap<u32, Place> {
     let mut out = HashMap::new();
     for n in written::decl_names(unit) {
+        let loc = unit.ast().decls.get(n.decl).loc();
+        if loc != n.name.lo {
+            // Kiln K3: a later declaration overwrote the row, whose name is
+            // then another declaration's token. Refused: no name range,
+            // and the nearest place is the declaration's own token.
+            out.insert(n.decl.index(), Place { name: None, nearest: s.own_token(unit, loc) });
+            continue;
+        }
         let ident = s.identifier_of(n.decl);
-        let fr = ranges::file_range_of_span(unit.sm(), n.name);
-        let name = s.given(fr.filter(|&fr| identifier_token(unit, fr, n.name, &ident)));
+        let name = s.given(name_token(unit, n.name, &ident));
         let nearest = match name {
             Some(_) => None,
-            None => s.given(fr).map(|g| g.0).or_else(|| s.invocation(n.name.lo)),
+            None => s
+                .given(ranges::file_range_of_span(unit.sm(), n.name))
+                .map(|g| g.0)
+                .or_else(|| s.invocation(n.name.lo)),
         };
         out.insert(n.decl.index(), Place { name, nearest });
     }
@@ -257,141 +307,148 @@ fn unresolved_counts(unit: &Unit<'_>) -> HashMap<Vec<u8>, u64> {
         if !seen.insert(spelled) {
             continue;
         }
-        if let Some(t) = sm.span_text(n.name) {
-            *out.entry(t.as_bytes().to_vec()).or_insert(0) += 1;
+        if let Some(t) = identifier_at(unit, n.name.lo) {
+            *out.entry(t).or_insert(0) += 1;
         }
     }
     out
 }
 
-/// The spans of the declarative contexts of §6.5 rule 4 whose names Kiln
-/// records in a role of rule 3: the qualifier of a declarator-id (and of
-/// a using-declaration, a using-directive's namespace, an explicit
-/// specialisation's name: `DeclExtent::qual` to the name), and the whole
-/// of a using-declaration, a using-directive and a namespace alias.
+/// The identifier of the token spelled where `at` is, as Kiln's lexer
+/// reads it (line splices removed, universal-character-names decoded:
+/// `caf\u00e9` is `café`), so that names are compared as identifiers, not
+/// as bytes. `None` when that token is no identifier.
+fn identifier_at(unit: &Unit<'_>, at: Loc) -> Option<Vec<u8>> {
+    use slip_kiln::kiln::lex::{LexMode, LexOptions, Lexer, TokKind};
+    let sm = unit.sm();
+    let spelled = sm.spelling_loc(at);
+    let (file, pos) = sm.offset_of(spelled)?;
+    let len = u32::try_from(sm.text(file).len()).ok()?;
+    if pos >= len {
+        return None;
+    }
+    let base = Loc::from_raw(spelled.to_raw() - pos);
+    let symbols = unit.ast().symbols();
+    let mut lx = Lexer::new_in_range(sm, symbols, file, pos..len, base, LexOptions::default());
+    lx.set_mode(LexMode::Normal);
+    match lx.next().kind {
+        TokKind::Identifier(s) => Some(symbols.as_str(s).as_bytes().to_vec()),
+        _ => None,
+    }
+}
+
+/// The declarative contexts of §6.5 rule 4 whose names Kiln records in a
+/// role of rule 3: the qualifier of a declarator-id, of a class head, of
+/// an explicit specialisation's name, of a using-declaration, of a
+/// using-enum-declaration's enumeration (and that enumeration's own name),
+/// of a using-directive's or namespace alias's namespace. Each is a
+/// qualifier chain, and every component of a chain has the chain's first
+/// token as its `first` (`slip_kiln::written`), so a context is that first
+/// token: the row's `qual` (a using-enum-declaration's `name` when it has
+/// none), and the `first` of an entry in a role of rule 4. A name inside
+/// the chain that is not a component of it (a template argument,
+/// `n::W<n::A>::k`'s `n::A`) has a `first` of its own, and is returned.
+/// A namespace alias's target has no row `qual` and no entry of its own
+/// (Kiln records only its qualifiers), so a using-directive and a
+/// namespace alias are taken whole: every name in them, as raw locations
+/// of one entry (a namespace name has no template arguments).
 struct Declarative {
-    /// Spans within one entry, as raw `[lo, hi)`, sorted and joined.
-    raw: Vec<(u32, u32)>,
-    /// Spans whose ends are in different entries (a qualifier from a
-    /// macro, a declaration holding an invocation), as the file offsets
-    /// `[lo, hi)` of their ends' outermost file locations, per file,
-    /// sorted and joined. A name is in one when its own outermost file
-    /// location is.
-    by_file: HashMap<FileId, Vec<(u32, u32)>>,
-    /// The part, inside a macro invocation, of a span that ends there: by
-    /// the raw location of the invocation's start, the spans, compared by
-    /// unit order with the names that invocation produced.
-    ending_in: HashMap<u32, Vec<Span>>,
-    /// Spans whose ends are in different files, compared by unit order.
-    other: Vec<Span>,
-}
-
-/// `spans` sorted and joined.
-fn joined(mut spans: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
-    spans.sort_unstable();
-    let mut out: Vec<(u32, u32)> = Vec::with_capacity(spans.len());
-    for (lo, hi) in spans {
-        match out.last_mut() {
-            Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
-            _ => out.push((lo, hi)),
-        }
-    }
-    out
-}
-
-/// Whether `at` is in one of the joined spans `spans`.
-fn in_joined(spans: &[(u32, u32)], at: u32) -> bool {
-    let k = spans.partition_point(|&(lo, _)| lo <= at);
-    k > 0 && at < spans[k - 1].1
+    /// The raw locations of the first tokens of the chains.
+    starts: HashSet<u32>,
+    /// The using-directives and namespace aliases, as raw `[lo, hi)`,
+    /// sorted and joined.
+    whole: Vec<(u32, u32)>,
 }
 
 impl Declarative {
     fn build(unit: &Unit<'_>) -> Declarative {
         let ast = unit.ast();
         let sm = unit.sm();
-        let mut spans = Vec::new();
+        let mut starts = HashSet::new();
+        let mut whole = Vec::new();
+        // A friend's elaborated specifier (`friend struct a::S;`) records
+        // no entry, and overwrites the class's row (Kiln K3): its
+        // qualifier is reached through that row, whose name is then inside
+        // the friend.
+        let friends: Vec<(u32, u32)> = ast
+            .decl_extents
+            .iter()
+            .filter(|&(d, row)| {
+                ast.decls.get(d).kind() == DeclKind::Friend
+                    && sm.same_entry_distance(row.full.lo, row.full.hi).is_some()
+            })
+            .map(|(_, row)| (row.full.lo.to_raw(), row.full.hi.to_raw()))
+            .collect();
+        let in_friend = |at: Loc| {
+            let at = at.to_raw();
+            friends.iter().any(|&(lo, hi)| lo <= at && at < hi)
+        };
         for (d, row) in ast.decl_extents.iter() {
-            if row.qual.is_valid() && row.name.lo.is_valid() {
-                spans.push(Span::new(row.qual, row.name.lo));
+            let kind = ast.decls.get(d).kind();
+            if matches!(kind, DeclKind::UsingDirective | DeclKind::NamespaceAlias)
+                && sm.same_entry_distance(row.full.lo, row.full.hi).is_some()
+            {
+                whole.push((row.full.lo.to_raw(), row.full.hi.to_raw()));
             }
-            let whole = matches!(
-                ast.decls.get(d).kind(),
-                DeclKind::Using
-                    | DeclKind::UsingPack
-                    | DeclKind::UnresolvedUsingValue
-                    | DeclKind::UnresolvedUsingTypename
-                    | DeclKind::UnresolvedUsingIfExists
-                    | DeclKind::UsingDirective
-                    | DeclKind::NamespaceAlias
-            );
-            if whole && row.full.is_valid() {
-                spans.push(row.full);
-            }
-        }
-        let mut raw = Vec::new();
-        let mut by_file: HashMap<FileId, Vec<(u32, u32)>> = HashMap::new();
-        let mut ending_in: HashMap<u32, Vec<Span>> = HashMap::new();
-        let mut other = Vec::new();
-        for s in spans {
-            if sm.same_entry_distance(s.lo, s.hi).is_some() {
-                raw.push((s.lo.to_raw(), s.hi.to_raw()));
-                continue;
-            }
-            let end = sm.expansion_loc(s.hi);
-            let lo = sm.offset_of(sm.expansion_loc(s.lo));
-            let hi = sm.offset_of(end);
-            match (lo, hi) {
-                (Some((f, lo)), Some((g, hi))) if f == g && lo <= hi => {
-                    by_file.entry(f).or_default().push((lo, hi));
-                    if end != s.hi {
-                        ending_in.entry(end.to_raw()).or_default().push(s);
-                    }
-                }
-                _ => other.push(s),
+            // A row whose name is not at its declaration's location is
+            // another declaration's (Kiln K3): its qualifier is a
+            // declarator's only when that declaration is a friend.
+            let own = row.name.lo == ast.decls.get(d).loc() || in_friend(row.name.lo);
+            if row.qual.is_valid() && own {
+                starts.insert(row.qual.to_raw());
+            } else if kind == DeclKind::UsingEnum && row.name.lo.is_valid() {
+                starts.insert(row.name.lo.to_raw());
             }
         }
-        let by_file = by_file.into_iter().map(|(f, v)| (f, joined(v))).collect();
-        Declarative { raw: joined(raw), by_file, ending_in, other }
+        for r in written::written_refs(unit) {
+            if matches!(
+                r.role,
+                Role::UsingDecl
+                    | Role::UsingDirective
+                    | Role::NamespaceAlias
+                    | Role::Elaborated
+                    | Role::SpecTarget
+            ) {
+                starts.insert(r.first.to_raw());
+            }
+        }
+        whole.sort_unstable();
+        let mut joined: Vec<(u32, u32)> = Vec::with_capacity(whole.len());
+        for (lo, hi) in whole {
+            match joined.last_mut() {
+                Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
+                _ => joined.push((lo, hi)),
+            }
+        }
+        Declarative { starts, whole: joined }
     }
 
-    /// Whether the name of `r` is in one of the spans: its first token,
-    /// or the macro invocation it came from.
-    fn holds(&self, unit: &Unit<'_>, r: &WrittenRef) -> bool {
-        let sm = unit.sm();
-        let at = r.name.lo;
-        let outer = sm.expansion_loc(at);
-        let in_raw = |l: Loc| in_joined(&self.raw, l.to_raw());
-        if in_raw(at) || (outer != at && in_raw(outer)) {
-            return true;
-        }
-        if let Some((f, off)) = sm.offset_of(outer)
-            && self.by_file.get(&f).is_some_and(|v| in_joined(v, off))
-        {
-            return true;
-        }
-        let within = |s: &Span| {
-            super::unit_order(sm, s.lo, at) != Ordering::Greater
-                && super::unit_order(sm, at, s.hi) == Ordering::Less
-        };
-        if self.ending_in.get(&outer.to_raw()).is_some_and(|v| v.iter().any(within)) {
-            return true;
-        }
-        self.other.iter().any(within)
+    /// Whether the name of `r` is a component of a declarative chain, or
+    /// in a using-directive or namespace alias.
+    fn holds(&self, r: &WrittenRef) -> bool {
+        let at = r.name.lo.to_raw();
+        let k = self.whole.partition_point(|&(lo, _)| lo <= at);
+        self.starts.contains(&r.first.to_raw()) || (k > 0 && at < self.whole[k - 1].1)
     }
 }
 
-/// §6.6 rule 1: `fr`, the range of the span `name`, is the identifier
-/// token itself: it starts where the name's token is spelled and its text
-/// is the identifier `ident` (empty: the name is not an identifier, and
-/// no range is empty). Then it is one token: `ranges` never ends a range
-/// inside a token, and an identifier's bytes hold no token boundary. Not
-/// so for a name that is a whole macro expansion (`ID(foo)`, `#define N
-/// n`), whose range is the invocation, nor for a name written with a line
-/// splice or a universal-character-name.
-fn identifier_token(unit: &Unit<'_>, fr: FileRange, name: Span, ident: &[u8]) -> bool {
+/// §6.6 rule 1, the one rule for a name token, for references and
+/// declarations alike: the range of the span `name` when it is the one
+/// identifier token `ident`. It is `slip_kiln::ranges::token_range_or_why`
+/// (the range of the one token at `name.lo`, the rule
+/// `slip_kiln::sites::Sites::name_token` uses), kept when the token is the
+/// one spelled where the name's first character is (not an invocation
+/// holding it: `ID(foo)`, `#define c c`) and its bytes are `ident` (not
+/// written with a line splice or a universal-character-name; never an
+/// operator, constructor, destructor or conversion function, whose
+/// identifier is empty and whose range is not). `tests/subject_references.rs`
+/// checks it against `Sites::name_token` over the pair corpus.
+pub fn name_token(unit: &Unit<'_>, name: Span, ident: &[u8]) -> Option<FileRange> {
     let sm = unit.sm();
-    sm.offset_of(sm.spelling_loc(name.lo)) == Some((fr.file, fr.lo))
-        && sm.text(fr.file).as_bytes().get(fr.lo as usize..fr.hi as usize) == Some(ident)
+    let fr = ranges::token_range_or_why(unit, name).ok()?;
+    let at = sm.offset_of(sm.spelling_loc(name.lo)) == Some((fr.file, fr.lo));
+    (at && sm.text(fr.file).as_bytes().get(fr.lo as usize..fr.hi as usize) == Some(ident))
+        .then_some(fr)
 }
 
 /// §6.6 rule 2: the range of the written name of `r`, from its first token
@@ -407,6 +464,13 @@ fn extent_span(unit: &Unit<'_>, r: &WrittenRef, destructor: bool) -> Option<File
             _ => return None,
         }
     } else {
+        // A qualifier the table does not link (`decltype(s)::m`, a
+        // pack-index-specifier) ends the chain, so `first` is the component
+        // after its `::`: the start of the written name is not known, and
+        // an extent from `first` would be too short (§6.6 rule 4).
+        if let Some((_, "::")) = token_before(unit, r.first) {
+            return None;
+        }
         r.first
     };
     ranges::file_range_of_span(unit.sm(), Span::new(start, r.name.hi))
@@ -475,6 +539,13 @@ impl KilnSubject<'_> {
         Some((Range { file: Self::file_number(fr.file), lo: fr.lo, hi: fr.hi }, fr.tier))
     }
 
+    /// The nearest place of a declaration whose row is another's (Kiln
+    /// K3): the token at its own location, or the invocation that produced
+    /// it.
+    fn own_token(&self, unit: &Unit<'_>, loc: Loc) -> Option<Range> {
+        self.given(ranges::file_range(unit, loc, loc)).map(|g| g.0).or_else(|| self.invocation(loc))
+    }
+
     /// The outermost macro invocation that produced `at`, written in a
     /// file (§7.4 rule 3, "the nearest place"); `None` for a file
     /// location.
@@ -489,8 +560,7 @@ impl KilnSubject<'_> {
     /// The reference an entry gives, before it is joined with others.
     fn make_ref(&self, unit: &Unit<'_>, r: &WrittenRef, referent: DeclId) -> Ref {
         let ident = self.identifier_of(referent);
-        let fr = ranges::file_range_of_span(self.sm, r.name);
-        let mut name = self.given(fr.filter(|&fr| identifier_token(unit, fr, r.name, &ident)));
+        let mut name = self.given(name_token(unit, r.name, &ident));
         let destructor = self.kind(referent) == DeclKind::CXXDestructor;
         let extent = self.given(extent_span(unit, r, destructor));
         if let (Some(n), Some(x)) = (name, extent)
@@ -511,6 +581,7 @@ impl KilnSubject<'_> {
         };
         Ref {
             referent,
+            origin: referent,
             first: r.first,
             end: r.name.hi,
             name,
@@ -570,7 +641,7 @@ impl KilnSubject<'_> {
         let by_origin = names.by_origin.get_or_init(|| {
             let mut map: HashMap<u32, Vec<u32>> = HashMap::new();
             for (i, x) in names.refs.iter().enumerate() {
-                map.entry(self.origin_decl(x.referent).index()).or_default().push(i as u32);
+                map.entry(x.origin.index()).or_default().push(i as u32);
             }
             map
         });
@@ -615,6 +686,15 @@ impl KilnSubject<'_> {
                 if let Some(g) = x.extent {
                     map.entry(g.0).or_default().push(Reference(i as u32));
                 }
+            }
+            // Unit order (§5.3 rule 2), as `references_to`.
+            for v in map.values_mut() {
+                v.sort_by(|a, b| {
+                    let (x, y) = (&names.refs[a.0 as usize], &names.refs[b.0 as usize]);
+                    super::unit_order(self.sm, x.first, y.first)
+                        .then_with(|| super::unit_order(self.sm, y.end, x.end))
+                        .then(a.0.cmp(&b.0))
+                });
             }
             map
         });
@@ -661,10 +741,13 @@ impl KilnSubject<'_> {
         // A declaration `decl_names` does not give (an operator, a
         // conversion function, an unnamed declaration): its name's tokens
         // as the extent table records them, or its location's invocation.
-        let named = self.ast.decl_extent(d).map(|x| x.name).filter(|n| n.lo.is_valid());
+        // A row whose name does not start at the declaration's own
+        // location is another declaration's (Kiln K3): not looked at.
+        let loc = self.ast.decls.get(d).loc();
+        let named = self.ast.decl_extent(d).map(|x| x.name).filter(|n| n.lo == loc);
         let nearest = named
             .and_then(|n| self.given(ranges::file_range_of_span(self.sm, n)).map(|g| g.0))
-            .or_else(|| self.invocation(self.ast.decls.get(d).loc()));
+            .or_else(|| self.invocation(loc));
         place(None, nearest)
     }
 }

@@ -683,8 +683,9 @@ fn s5_5_origin_of_function_template_specialisation() {
     });
 }
 
-/// §5.5: an explicit specialisation is written: its own origin, with its
-/// declaration (and not the one Kiln made of it before reading it).
+/// §5.5: an explicit specialisation is written, with its declaration (and
+/// not the one Kiln made of it before reading it). Its origin is its
+/// template (`slip_kiln::written::origin`, WP-085 fix round, ruling 5).
 #[test]
 fn s5_5_explicit_specialisation_is_written() {
     with(&[("main.cpp", O)], |p, s| {
@@ -694,7 +695,7 @@ fn s5_5_explicit_specialisation_is_written() {
         assert!(!ps.is_empty());
         let e = s.entity_number(ps[0]);
         assert_eq!(decls_at(p, s, e), ["main.cpp:7"]);
-        assert_eq!(s.origin(e), e);
+        assert_eq!(s.origin(e), one(s, "tf"));
         assert!(look(s, "tf").iter().all(|&x| x != e), "§6.1 rule 5");
     });
 }
@@ -963,7 +964,7 @@ template <> void A::mt<int>(int x) {}
         assert_eq!(decls_at(p, s, e), ["main.cpp:2"]);
         let ps = s.parameters(Value::Entity(e)).unwrap();
         assert_eq!(ps.iter().map(|&x| ident(s, Value::Entity(x))).collect::<Vec<_>>(), ["x"]);
-        assert_eq!(s.origin(e), e, "an explicit specialisation is written");
+        assert_eq!(s.origin(e), one(s, "A::mt"), "its origin is the member template");
         assert_eq!(found_at(p, s, "A::mt"), ["main.cpp:1"]);
     });
 }
