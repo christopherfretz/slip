@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (a using-declaration and a hidden shadow), WP-120 item 3: the unhide idiom renamed from the base: every overload is a seed, the using-declaration is renamed
+from: n::B::f
+to: g
+kind: function

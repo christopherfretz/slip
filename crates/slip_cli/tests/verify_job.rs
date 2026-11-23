@@ -48,6 +48,12 @@ fn bytes(p: &Path) -> Vec<u8> {
 
 impl Tree {
     fn new(name: &str, files: &[(&str, &str)]) -> Tree {
+        Tree::new_in(name, "s", "post-tree", files)
+    }
+
+    /// A tree whose subject is `<base>/<subject>` and post tree
+    /// `<base>/<post>`.
+    fn new_in(name: &str, subject: &str, post: &str, files: &[(&str, &str)]) -> Tree {
         static N: AtomicUsize = AtomicUsize::new(0);
         let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
@@ -56,8 +62,8 @@ impl Tree {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();
-        let subject = base.join("s");
-        let post = base.join("post-tree");
+        let subject = base.join(subject);
+        let post = base.join(post);
         std::fs::create_dir_all(&subject).unwrap();
         std::fs::create_dir_all(&post).unwrap();
         for (rel, text) in files {
@@ -344,7 +350,8 @@ fn s5_2_mismatch_on_a_changed_callee() {
     check_post_shard(&v);
     let f = verdict.findings.iter().find(|f| f.kind == FindingKind::Changed).unwrap();
     assert!(f.name.contains('f'), "{:?}", f.name);
-    assert!(verdict.findings.iter().all(|f| f.location.is_none()));
+    // WP-054: the finding is placed (the site is `tests/locate.rs`'s).
+    assert!(f.location.is_some());
 }
 
 const NOTE_PRE: &str = "void take(const char *);\nnamespace ns { struct V {}; }\n\
@@ -1864,6 +1871,384 @@ fn f4b_outside_header_added_after_the_map() {
     write(&tree.base.join("ext2/cfg.h"), "#define USE_NEW 1\n");
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+}
+
+// ----- G6 (§5.3): the links along the post parse's routes are the subject's
+
+const G6_DEP: &str = "#pragma once\nnamespace old { struct D { int a; }; }\n";
+const G6_MAIN: &str = "#include \"inc/d.h\"\nint f(old::D *d) { return d->a; }\n";
+
+fn link(target: &str, at: &Path) {
+    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(target, at).unwrap();
+}
+
+/// A tree whose `a.cpp` includes `inc/d.h`; the subject's `inc` is made by
+/// `subject`, the post tree's by `post`. The map shard is published.
+fn g6_tree(name: &str, subject: impl Fn(&Path), post: impl Fn(&Path)) -> (Tree, Observer) {
+    let tree = Tree::new(name, &[("a.cpp", G6_MAIN)]);
+    subject(&tree.subject);
+    post(&tree.post);
+    let o = tree.observer();
+    tree.map(&o);
+    (tree, o)
+}
+
+fn dep_through_link(root: &Path) {
+    write(&root.join("dep/d.h"), G6_DEP);
+    link("dep", &root.join("inc"));
+}
+
+fn dep_as_directory(root: &Path) {
+    write(&root.join("dep/d.h"), G6_DEP);
+    write(&root.join("inc/d.h"), G6_DEP);
+}
+
+fn show(p: &Path) -> String {
+    p.to_str().unwrap().to_owned()
+}
+
+// The review's probe (F1): `inc` a link in the subject, a real directory in
+// the post tree (a copy that dereferenced links). The post file
+// `post/inc/d.h` stands for `s/inc/d.h`, which is no real path of the
+// subject: refused by G6 (ii), under rules and without.
+#[test]
+fn g6_link_in_subject_directory_in_post() {
+    let (tree, o) = g6_tree("g6-probe", dep_through_link, dep_as_directory);
+    let want = format!(
+        "post-image: {} stands for {}, which the subject reaches through the link {}",
+        show(&tree.post.join("inc/d.h")),
+        show(&tree.subject.join("inc/d.h")),
+        show(&tree.subject.join("inc"))
+    );
+    let v = tree.verify(&o);
+    assert_eq!((kind(&v), reason(&v)), (VerdictKind::Unverifiable, want.as_str()));
+    // The dependency's namespace relocated too, under a rule with `dep`
+    // read-only: the shard that said `verified` before G6.
+    write(&tree.post.join("inc/d.h"), &G6_DEP.replace("old", "fresh"));
+    write(&tree.post.join("a.cpp"), &G6_MAIN.replace("old::", "fresh::"));
+    let declared = Declared::new(vec![rename_ns("fresh", "old")], vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(tree.files(&["dep"])));
+    let v = tree.verify_with(&o, &tree.params(declared)).unwrap();
+    assert_eq!((kind(&v), reason(&v)), (VerdictKind::Unverifiable, want.as_str()));
+}
+
+// The mirror: a real directory in the subject, a link in the post tree:
+// the post parse follows `post/inc`, which is a directory in the subject.
+#[test]
+fn g6_directory_in_subject_link_in_post() {
+    let (tree, o) = g6_tree("g6-mirror", dep_as_directory, dep_through_link);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    let r = reason(&v);
+    assert!(r.starts_with("post-image: "), "{r}");
+    assert!(
+        r.ends_with(&format!(
+            " follows the link {}, which is a directory in the subject",
+            show(&tree.post.join("inc"))
+        )),
+        "{r}"
+    );
+}
+
+// One link in both trees, with one target: verified (no refusal).
+#[test]
+fn g6_same_link_in_both() {
+    let (tree, o) = g6_tree("g6-same", dep_through_link, dep_through_link);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+}
+
+// One link name, another target.
+#[test]
+fn g6_same_link_other_target() {
+    let (tree, o) = g6_tree("g6-target", dep_through_link, |p: &Path| {
+        write(&p.join("dep2/d.h"), G6_DEP);
+        link("dep2", &p.join("inc"));
+    });
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    let r = reason(&v);
+    assert!(
+        r.ends_with(&format!(
+            " follows the link {}, which is a link to dep in the subject",
+            show(&tree.post.join("inc"))
+        )),
+        "{r}"
+    );
+}
+
+// A link the post tree adds where the subject has nothing: the subject
+// includes `dep/d.h`, the post tree `inc/d.h` through a new link.
+#[test]
+fn g6_link_only_in_post() {
+    let tree = Tree::new("g6-added", &[("a.cpp", &G6_MAIN.replace("inc/", "dep/"))]);
+    write(&tree.subject.join("dep/d.h"), G6_DEP);
+    dep_through_link(&tree.post);
+    write(&tree.post.join("a.cpp"), G6_MAIN);
+    let o = tree.observer();
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    let r = reason(&v);
+    assert!(
+        r.ends_with(&format!(
+            " follows the link {}, which is missing in the subject",
+            show(&tree.post.join("inc"))
+        )),
+        "{r}"
+    );
+}
+
+// A link at the file itself: `inc/d.h -> ../dep/d.h`. The same link in
+// both trees verifies; the post tree's real file at `inc/d.h` stands for a
+// subject path that is the link: refused by (ii).
+#[test]
+fn g6_file_level_link() {
+    let file_link = |root: &Path| {
+        write(&root.join("dep/d.h"), G6_DEP);
+        link("../dep/d.h", &root.join("inc/d.h"));
+    };
+    let (tree, o) = g6_tree("g6-file", file_link, file_link);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+    // One `Tree` at a time: each holds the tests' lock.
+    drop(tree);
+    let (tree, o) = g6_tree("g6-file-copy", file_link, dep_as_directory);
+    let v = tree.verify(&o);
+    assert_eq!(
+        reason(&v),
+        format!(
+            "post-image: {} stands for {}, which the subject reaches through the link {}",
+            show(&tree.post.join("inc/d.h")),
+            show(&tree.subject.join("inc/d.h")),
+            show(&tree.subject.join("inc/d.h"))
+        )
+    );
+}
+
+// A link on the main file's route: the observer compiles `s/src/a.cpp`,
+// `src` a link to `real` in the subject and a real directory in the post
+// tree.
+#[test]
+fn g6_link_on_the_main_route() {
+    let main = "int f() { return 1; }\n";
+    let tree = Tree::new("g6-main", &[]);
+    write(&tree.subject.join("real/a.cpp"), main);
+    link("real", &tree.subject.join("src"));
+    write(&tree.post.join("real/a.cpp"), main);
+    write(&tree.post.join("src/a.cpp"), main);
+    let o = tree.observer_of("src/a.cpp", &[]);
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let r = reason(&v);
+    assert!(r.contains(&show(&tree.subject.join("src"))), "{r}");
+}
+
+// A link outside both roots (an include directory reached through a link,
+// as system and build trees have them) is not G6's: the post parse follows
+// it as the pre parse did, and the image verifies.
+#[test]
+fn g6_link_outside_the_roots() {
+    let tree = Tree::new("g6-outside", &[("a.cpp", "#include <e.h>\nint f() { return E; }\n")]);
+    write(&tree.base.join("ext-real/e.h"), "#define E 1\n");
+    link("ext-real", &tree.base.join("ext"));
+    let o = tree.observer_of("a.cpp", &[&arg("-I", &tree.base.join("ext"))]);
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+}
+
+// A created file in a created directory: no refusal (its subject path does
+// not exist, under real directories).
+#[test]
+fn g6_created_file_in_a_created_directory() {
+    let tree = Tree::new("g6-created", &[("a.cpp", "int f() { return 1; }\n")]);
+    write(&tree.post.join("new/dir/n.h"), "#pragma once\nint n();\n");
+    write(&tree.post.join("a.cpp"), "#include \"new/dir/n.h\"\nint f() { return 1; }\n");
+    let o = tree.observer();
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_ne!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+}
+
+// WP-121 with G6: a G6 `unverifiable` shard under rules carries `binding`
+// and `rule_use`, as G1's does (`g1_under_rules_keeps_the_sections`).
+#[test]
+fn g6_under_rules_keeps_the_sections() {
+    let (tree, o) = g6_tree("g6-rules", dep_through_link, dep_as_directory);
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert!(reason(&v).contains(" which the subject reaches through the link "), "{}", reason(&v));
+    check_sections_under_rules(&v, &params);
+}
+
+// ----- G6 (iii) (§5.3): a route that leaves a post root ends where the
+// subject's does
+
+/// The reviewer's layout (G6-F1, G6-F2): the subject `a/s`, the post tree
+/// `b/post`, each with an outside directory `ext` beside it whose `k.h`
+/// defines another macro; `a.cpp` is `main`.
+fn g6_apart(name: &str, main: &str, flags: &[&str]) -> (Tree, Observer) {
+    let tree = Tree::new_in(name, "a/s", "b/post", &[("a.cpp", main)]);
+    write(&tree.base.join("a/ext/k.h"), "#pragma once\n#define K 1\n");
+    write(&tree.base.join("b/ext/k.h"), "#pragma once\n#define K 1\n#define K2 1\n");
+    let o = tree.observer_of("a.cpp", flags);
+    (tree, o)
+}
+
+fn leaves_at(tree: &Tree, what: &str, here: &str, there: &str) -> String {
+    format!(
+        "post-image: {what}, which leaves the post root: {} here, {} from the subject",
+        show(&tree.base.join(here)),
+        show(&tree.base.join(there))
+    )
+}
+
+// G6-F1: `inc -> ../ext` in both trees, the same bytes, two places.
+#[test]
+fn g6_relative_link_leaving_the_root() {
+    let (tree, o) = g6_apart("g6-leave-link", "#include \"inc/k.h\"\nint f() { return K; }\n", &[]);
+    link("../ext", &tree.subject.join("inc"));
+    link("../ext", &tree.post.join("inc"));
+    tree.map(&o);
+    write(&tree.post.join("a.cpp"), "#include \"inc/k.h\"\nint f() { return K2; }\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let what = format!("looks for inc/k.h in {}", show(&tree.post));
+    assert_eq!(reason(&v), leaves_at(&tree, &what, "b/ext/k.h", "a/ext/k.h"));
+}
+
+// G6-F2: the same without a link: `#include "../ext/k.h"`.
+#[test]
+fn g6_relative_include_leaving_the_root() {
+    let (tree, o) =
+        g6_apart("g6-leave-inc", "#include \"../ext/k.h\"\nint f() { return K; }\n", &[]);
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let what = format!("looks for ../ext/k.h in {}", show(&tree.post));
+    assert_eq!(reason(&v), leaves_at(&tree, &what, "b/ext/k.h", "a/ext/k.h"));
+}
+
+// The sibling layout: `s` and `post-tree` side by side reach one `ext` by
+// `../ext`, through a link and by an `#include`: one real path, verified.
+#[test]
+fn g6_sibling_reaches_the_same_outside() {
+    let main = "#include \"inc/k.h\"\n#include \"../ext/j.h\"\nint f() { return K + J; }\n";
+    let tree = Tree::new("g6-sibling", &[("a.cpp", main)]);
+    write(&tree.base.join("ext/k.h"), "#pragma once\n#define K 1\n");
+    write(&tree.base.join("ext/j.h"), "#pragma once\n#define J 1\n");
+    link("../ext", &tree.subject.join("inc"));
+    link("../ext", &tree.post.join("inc"));
+    let o = tree.observer_of("a.cpp", &["-I../ext"]);
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+}
+
+// A location tried and missing, which exists beside the subject only
+// (`__has_include` reads nothing), then beside the post tree only: the
+// place differs either way.
+#[test]
+fn g6_tried_location_beside_one_tree() {
+    let main = "#if __has_include(\"../opt/o.h\")\nint f() { return 1; }\n#else\nint f() { return 2; }\n#endif\n";
+    for (n, beside) in [(0, "a/opt/o.h"), (1, "b/opt/o.h")] {
+        let (tree, o) = g6_apart(&format!("g6-tried-{n}"), main, &[]);
+        write(&tree.base.join(beside), "#define O 1\n");
+        tree.map(&o);
+        let v = tree.verify(&o);
+        assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+        let what = format!("looks for ../opt/o.h in {}", show(&tree.post));
+        assert_eq!(reason(&v), leaves_at(&tree, &what, "b/opt/o.h", "a/opt/o.h"));
+    }
+}
+
+// A directory of the search list that leaves the root through a link
+// (`-Iinc`, `inc -> ../ext`), which no lookup reaches: `k.h` is found in
+// `.` first. (A word of the command that leaves by `..` is rewritten to
+// the subject's place, §5.1, and does not leave.)
+#[test]
+fn g6_search_directory_leaving_the_root() {
+    let main = "#include <k.h>\nint f() { return K; }\n";
+    let (tree, o) = g6_apart("g6-list", main, &["-I.", "-Iinc"]);
+    for root in [&tree.subject, &tree.post] {
+        write(&root.join("k.h"), "#define K 1\n");
+        link("../ext", &root.join("inc"));
+    }
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), leaves_at(&tree, "searches inc", "b/ext", "a/ext"));
+}
+
+// A link chain that leaves the root and comes back in: `inc -> ../ext/back`
+// and `ext/back -> ../<root>/real` beside each tree. Back into its own
+// tree on each side: verified. Back into the post tree's name from the
+// subject's side (where no such directory is): refused.
+#[test]
+fn g6_link_chain_leaves_and_comes_back() {
+    for (n, back) in [(0, None), (1, Some("../post/real"))] {
+        let main = "#include \"inc/k.h\"\nint f() { return K; }\n";
+        let (tree, o) = g6_apart(&format!("g6-back-{n}"), main, &[]);
+        for (root, name) in [(&tree.subject, "s"), (&tree.post, "post")] {
+            write(&root.join("real/k.h"), "#pragma once\n#define K 1\n");
+            link("../ext/back", &root.join("inc"));
+            let outside = root.parent().unwrap().join("ext/back");
+            link(back.unwrap_or(&format!("../{name}/real")), &outside);
+        }
+        // What the subject's chain reaches when it names the post tree.
+        write(&tree.base.join("a/post/real/k.h"), "#pragma once\n#define K 1\n");
+        tree.map(&o);
+        let v = tree.verify(&o);
+        if back.is_none() {
+            assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+        } else {
+            assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+            let what = format!("looks for inc/k.h in {}", show(&tree.post));
+            assert_eq!(reason(&v), leaves_at(&tree, &what, "b/post/real/k.h", "a/post/real/k.h"));
+        }
+    }
+}
+
+// A header in a subdirectory leaves through `..`: `sub/h.h` includes
+// `../../ext/k.h`.
+#[test]
+fn g6_header_leaves_through_dot_dot() {
+    let main = "#include \"sub/h.h\"\nint f() { return K; }\n";
+    let (tree, o) = g6_apart("g6-sub", main, &[]);
+    write(&tree.subject.join("sub/h.h"), "#include \"../../ext/k.h\"\n");
+    write(&tree.post.join("sub/h.h"), "#include \"../../ext/k.h\"\n");
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let r = reason(&v);
+    assert!(r.contains("../../ext/k.h"), "{r}");
+    assert!(
+        r.ends_with(&format!(
+            " which leaves the post root: {} here, {} from the subject",
+            show(&tree.base.join("b/ext/k.h")),
+            show(&tree.base.join("a/ext/k.h"))
+        )),
+        "{r}"
+    );
+}
+
+// Under rules, a G6 (iii) refusal keeps `binding` and `rule_use`.
+#[test]
+fn g6_leaving_under_rules_keeps_the_sections() {
+    let main = "#include \"../ext/k.h\"\nnamespace old { int f() { return K; } }\n";
+    let (tree, o) = g6_apart("g6-leave-rules", main, &[]);
+    tree.map(&o);
+    write(&tree.post.join("a.cpp"), &main.replace("old", "fresh"));
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &[]));
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert!(reason(&v).contains(", which leaves the post root: "), "{}", reason(&v));
+    check_sections_under_rules(&v, &params);
 }
 
 // ---------------------------------------------------------------------------

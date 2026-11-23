@@ -10,7 +10,10 @@
 //! - [`perf`]: `cargo xtask perf summarize|record|check` (§7),
 //! - [`transform`]: `cargo xtask transform` (§6.2 to §6.4),
 //! - [`invariants`]: `cargo xtask invariants a|b <corpus>` (§9), running
-//!   `slip` through [`slip_run`].
+//!   `slip` through [`slip_run`],
+//! - [`demo`]: `cargo xtask demo 1` (§10), Demo 1 on the `llvm` corpus,
+//! - [`api_table`]: `cargo xtask api-table [§N[.M]…]`, the table of rules
+//!   to script test directories (`docs/wp/WP-091.md`).
 //!
 //! Every command takes the repository root as a parameter so the tests can
 //! point it at fixture trees; [`repo_root`] is the root of the checkout this
@@ -18,8 +21,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod api_table;
 pub mod ci;
 pub mod corpus;
+pub mod demo;
 pub mod invariants;
 pub mod jobserver;
 pub mod lint;

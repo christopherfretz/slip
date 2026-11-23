@@ -1,5 +1,8 @@
 //! `plan`, `parse`, `dump` and `resource` (`spec/exec.md` §8.1–§8.3,
-//! §8.10), each over its parsed options and the two output streams.
+//! §8.10), each over its parsed options and the two output streams, and
+//! the pieces `verify` (`crate::verify_cmd`), `declare` and `units` share
+//! with them: the store, the plan, the selection, the pool's options, the
+//! worker command and the summary lines.
 //!
 //! Every write to standard output or standard error ignores its error
 //! (`let _ = …`): a closed pipe must not become a panic and status 70.
@@ -21,12 +24,12 @@ use slip_exec::store::{Access, Store, StoreError};
 use slip_kiln::KilnCheck;
 use slip_model::{Digest, End, Observer, Phase, Plan, Reason, Status, formats};
 
-use crate::args::{self, Db, Invocation, ParseArgs, PlanArgs, PlanSource};
+use crate::args::{self, Db, Invocation, ParseArgs, PlanArgs, PlanSource, RunArgs};
 use crate::status;
 
 /// Why a command stopped early: the line to print and the status.
 #[derive(Debug)]
-enum Failure {
+pub(crate) enum Failure {
     /// Status 2; the usage text follows the line.
     Usage(String),
     /// Status 3; the line is `slip: <what>: <why>`.
@@ -35,7 +38,7 @@ enum Failure {
     Interrupted,
 }
 
-type Result<T> = std::result::Result<T, Failure>;
+pub(crate) type Result<T> = std::result::Result<T, Failure>;
 
 /// Runs `invocation` (anything but the worker).
 pub fn dispatch(invocation: Invocation, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
@@ -52,9 +55,18 @@ pub fn dispatch(invocation: Invocation, out: &mut dyn Write, err: &mut dyn Write
         Invocation::Parse(a) => parse(&a, out, err),
         Invocation::Dump { file } => dump(&file, out),
         Invocation::Resource { write } => write_resource(&write),
+        Invocation::Verify(a) => return crate::verify_cmd::main(&a, out, err),
+        Invocation::Declare(a) => return crate::declare::main(&a, out, err),
+        Invocation::Units(a) => return crate::units::main(&a, out, err),
         Invocation::Panic => panic!("slip __panic: a deliberate panic"),
         Invocation::Worker(_) => unreachable!("the worker is run by `run`, not dispatched"),
     };
+    finish(result, out, err)
+}
+
+/// A command's result as its exit status (§8.5): the line of a failure on
+/// standard error (with the usage text for status 2).
+pub(crate) fn finish(result: Result<u8>, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
     let _ = out.flush();
     match result {
         Ok(code) => ExitCode::from(code),
@@ -75,17 +87,17 @@ pub fn dispatch(invocation: Invocation, out: &mut dyn Write, err: &mut dyn Write
 
 // ----- shared pieces -----------------------------------------------------------
 
-fn tool() -> Tool {
+pub(crate) fn tool() -> Tool {
     Tool { slip: env!("CARGO_PKG_VERSION").to_owned(), kiln: slip_kiln::kiln_version().to_owned() }
 }
 
-fn open_store(dir: &Path, access: Access) -> Result<Store> {
+pub(crate) fn open_store(dir: &Path, access: Access) -> Result<Store> {
     Store::open(dir, access).map_err(|e| store_failure(dir, &e))
 }
 
 /// `slip: <what>: <why>` for a store error: the errors that name a path
 /// already start with it.
-fn store_failure(dir: &Path, e: &StoreError) -> Failure {
+pub(crate) fn store_failure(dir: &Path, e: &StoreError) -> Failure {
     match e {
         StoreError::Unrecognised(_) | StoreError::Io { .. } => Failure::Input(e.to_string()),
         _ => Failure::Input(format!("{}: {e}", dir.display())),
@@ -141,7 +153,7 @@ fn build_and_publish(
 }
 
 /// The jobserver pool, bounded by `-j` (default: the cores available).
-fn token_pool(jobs: Option<usize>) -> Pool {
+pub(crate) fn token_pool(jobs: Option<usize>) -> Pool {
     let pool = Pool::from_env();
     match jobs {
         Some(j) => pool.with_jobs(j),
@@ -160,14 +172,14 @@ fn plan(a: &PlanArgs, out: &mut dyn Write, _err: &mut dyn Write) -> Result<u8> {
 // ----- parse (§8.2) -----------------------------------------------------------
 
 fn parse(a: &ParseArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8> {
-    let store = open_store(&a.store, Access::Exclusive)?;
+    let store = open_store(&a.run.store, Access::Exclusive)?;
     // From here an interruption kills the workers, returns the tokens,
     // publishes the run record, removes the workers' `tmp/` entries and
     // removes the lock (§7).
     signals::install(Box::new(pool::cleanup_on_signal(&store)));
 
     let (plan, id, plan_code) = match &a.source {
-        PlanSource::Db(dbs) => build_and_publish(dbs, a.jobs, &store, out)?,
+        PlanSource::Db(dbs) => build_and_publish(dbs, a.run.jobs, &store, out)?,
         PlanSource::Plan(x) => {
             let (plan, id) = load_plan(&store, x)?;
             let _ = writeln!(out, "plan {id}");
@@ -175,19 +187,10 @@ fn parse(a: &ParseArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8> 
         }
     };
 
-    let selected = select(&plan.observers, &a.only, a.limit);
-    if selected.is_empty() && !plan.observers.is_empty() {
-        let _ = writeln!(
-            err,
-            "slip: warning: the selection keeps none of the plan's {} observer(s); the phase \
-             runs over nothing",
-            plan.observers.len()
-        );
-    }
-
-    let tokens = token_pool(a.jobs);
-    let options = pool_options(a, tokens.jobs(), err);
-    let worker = worker_command(a)?;
+    let selected = select_for_phase(&plan, &a.run, err);
+    let tokens = token_pool(a.run.jobs);
+    let options = pool_options(&a.run, tokens.jobs(), err);
+    let worker = worker_command(&a.run)?;
 
     let run =
         pool::run(&store, &id, &selected, Phase::Map, 0, &worker, &options, &tokens, &ProcSampler);
@@ -208,8 +211,23 @@ fn parse(a: &ParseArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8> 
     Ok(plan_code.max(parse_code))
 }
 
+/// The selection of a phase (§8.2): [`select`], with the warning when a
+/// non-empty plan is left with no observer.
+pub(crate) fn select_for_phase(plan: &Plan, a: &RunArgs, err: &mut dyn Write) -> Vec<Observer> {
+    let selected = select(&plan.observers, &a.only, a.limit);
+    if selected.is_empty() && !plan.observers.is_empty() {
+        let _ = writeln!(
+            err,
+            "slip: warning: the selection keeps none of the plan's {} observer(s); the phase \
+             runs over nothing",
+            plan.observers.len()
+        );
+    }
+    selected
+}
+
 /// The pool's parameters from the options (§6, §8.2).
-fn pool_options(a: &ParseArgs, jobs: usize, err: &mut dyn Write) -> Options {
+pub(crate) fn pool_options(a: &RunArgs, jobs: usize, err: &mut dyn Write) -> Options {
     let budget = if let Some(b) = a.memory {
         b
     } else {
@@ -253,8 +271,29 @@ fn print_summary(summary: &Summary, selected: &[Observer], out: &mut dyn Write) 
     for e in End::ALL {
         let _ = writeln!(out, "job {} {}", e.name(), summary.ends[e as usize]);
     }
+    let (wall, peak) = wall_and_peak(summary, selected);
+    let _ = writeln!(out, "wall {wall}");
+    if let Some((bytes, main)) = peak {
+        let _ = write!(out, "peak_rss {bytes} ");
+        let _ = out.write_all(main);
+        let _ = writeln!(out);
+    }
+    let _ = out.write_all(b"run ");
+    let _ = out.write_all(&args::os_bytes(summary.run_path.as_os_str()));
+    let _ = writeln!(out);
+    let _ = out.flush();
+}
+
+/// `wall` (the run record's `wall_ns` in seconds, truncated to
+/// milliseconds) and `peak_rss` (the largest `peak_rss` of the run
+/// record's jobs, the first such job on a tie, and its observer's main
+/// file; `None` when every job's is 0 or there is no job) of §8.2.
+pub(crate) fn wall_and_peak<'a>(
+    summary: &Summary,
+    selected: &'a [Observer],
+) -> (String, Option<(u64, &'a [u8])>) {
     let ms = summary.run.run.wall_ns / 1_000_000;
-    let _ = writeln!(out, "wall {}.{:03}", ms / 1000, ms % 1000);
+    let wall = format!("{}.{:03}", ms / 1000, ms % 1000);
     let mains: HashMap<Digest, &[u8]> =
         selected.iter().map(|o| (o.id, o.main.path.as_slice())).collect();
     let mut peak: Option<(u64, Digest)> = None;
@@ -263,15 +302,8 @@ fn print_summary(summary: &Summary, selected: &[Observer], out: &mut dyn Write) 
             peak = Some((job.peak_rss, job.observer));
         }
     }
-    if let Some((bytes, observer)) = peak {
-        let _ = write!(out, "peak_rss {bytes} ");
-        let _ = out.write_all(mains.get(&observer).copied().unwrap_or_default());
-        let _ = writeln!(out);
-    }
-    let _ = out.write_all(b"run ");
-    let _ = out.write_all(&args::os_bytes(summary.run_path.as_os_str()));
-    let _ = writeln!(out);
-    let _ = out.flush();
+    let peak = peak.map(|(bytes, o)| (bytes, mains.get(&o).copied().unwrap_or_default()));
+    (wall, peak)
 }
 
 /// One line on standard error per observer whose shard is not `ok`, in
@@ -295,7 +327,7 @@ fn report_not_ok(summary: &Summary, selected: &[Observer], err: &mut dyn Write) 
 /// `--plan <x>` (§8.2): an id prefix of 4 to 64 hexadecimal digits, which
 /// must match exactly one plan of the store, or else a plan file, which is
 /// read, validated and published.
-fn load_plan(store: &Store, x: &OsString) -> Result<(Plan, Digest)> {
+pub(crate) fn load_plan(store: &Store, x: &OsString) -> Result<(Plan, Digest)> {
     if let Some(prefix) = x
         .to_str()
         .filter(|t| (4..=64).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -338,7 +370,11 @@ fn load_plan(store: &Store, x: &OsString) -> Result<(Plan, Digest)> {
 }
 
 /// `--only` (any substring of the main file's path), then `--limit` (§8.2).
-fn select(observers: &[Observer], only: &[Vec<u8>], limit: Option<u64>) -> Vec<Observer> {
+pub(crate) fn select(
+    observers: &[Observer],
+    only: &[Vec<u8>],
+    limit: Option<u64>,
+) -> Vec<Observer> {
     let limit = limit.map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
     observers
         .iter()
@@ -348,14 +384,54 @@ fn select(observers: &[Observer], only: &[Vec<u8>], limit: Option<u64>) -> Vec<O
         .collect()
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+pub(crate) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     needle.is_empty() || haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// The run's files from `--owned` and `--readonly` (`spec/edits.md` §2.1,
+/// §10.1 step 2: "made real paths"; `spec/verify.md` §2.1: ownership is
+/// of real paths, which are the subject paths). Each entry is made a real
+/// path (`std::fs::canonicalize`, so a symbolic link is resolved and the
+/// result is canonical); an entry that does not exist, or one that is
+/// both owned and read-only once resolved, is an input error. Sorted, no
+/// two equal. `None` when neither option is given; the caller has
+/// refused `--readonly` without `--owned` (a usage error).
+pub(crate) fn ownership(
+    owned: &[PathBuf],
+    readonly: &[PathBuf],
+) -> Result<Option<slip_model::transform::Ownership>> {
+    use std::os::unix::ffi::OsStrExt;
+    if owned.is_empty() {
+        return Ok(None);
+    }
+    let real = |list: &[PathBuf]| -> Result<Vec<Vec<u8>>> {
+        let mut v = list
+            .iter()
+            .map(|p| {
+                std::fs::canonicalize(p)
+                    .map(|r| r.as_os_str().as_bytes().to_vec())
+                    .map_err(|e| Failure::Input(format!("{}: {e}", p.display())))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        v.sort();
+        v.dedup();
+        Ok(v)
+    };
+    let (owned, readonly) = (real(owned)?, real(readonly)?);
+    if let Some(both) = readonly.iter().find(|r| owned.binary_search(r).is_ok()) {
+        return Err(Failure::Input(format!(
+            "{}: given as --owned and as --readonly",
+            String::from_utf8_lossy(both)
+        )));
+    }
+    Ok(Some(slip_model::transform::Ownership { owned, readonly }))
 }
 
 /// The worker command (§8.2): this executable, `__worker` with the same
 /// `--worker-jobs` the pool is given and `--worker-stack`, without the
-/// coordinator's `KILN_*` variables.
-fn worker_command(a: &ParseArgs) -> Result<WorkerCommand> {
+/// coordinator's `KILN_*` variables. `verify` appends its own two options
+/// (§8.7).
+pub(crate) fn worker_command(a: &RunArgs) -> Result<WorkerCommand> {
     let program = std::env::current_exe()
         .map_err(|e| Failure::Input(format!("cannot find the slip executable: {e}")))?;
     let env_remove = std::env::vars_os()

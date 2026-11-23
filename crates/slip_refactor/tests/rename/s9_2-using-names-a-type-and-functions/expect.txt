@@ -1,0 +1,13 @@
+subjects:
+  498ae399 follower - rule=yes n::D::f of=599ef791
+  599ef791 seed - rule=yes n::B::f()
+  625eda96 seed unsupported rule=yes n::B::f
+  8e22d4a6 follower - rule=yes n::D::f of=599ef791,625eda96
+  a299e4fb follower - rule=yes n::D::f of=625eda96
+links:
+claims:
+  main.cpp:2:19+1 replace "g" t0 votes=1 none [625eda96]
+  main.cpp:2:30+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:3:25+1 replace "g" t0 votes=1 none [8e22d4a6]
+  main.cpp:5:21+1 replace spell(599ef791, "g") t0 votes=1 none [599ef791]
+changed:

@@ -1,6 +1,7 @@
 subjects:
-  0c0ea3d4 candidate unsupported rule=yes n::D::f()
+  0c0ea3d4 candidate - rule=yes n::D::f()
   599ef791 seed - rule=yes n::B::f()
+  e94137f3 follower unsupported rule=yes n::D<n::B>::f() of=0c0ea3d4
 links:
   0c0ea3d4 599ef791
 claims:

@@ -2,20 +2,34 @@
 //! `slip declare`: the text ([`read`]), which parses it needs ([`needs`]),
 //! names resolved to keys and `relocate` lines turned into rules
 //! ([`resolve`]), and the `Declared` ([`finish`]). Work package WP-055;
-//! `main` is WP-053's.
+//! [`main`], the command (`spec/exec.md` §8.8), and the in-process parses
+//! it shares with `slip units` are WP-053's.
 //!
 //! Every function is over records (`slip_digest::records`), not parses, so
 //! that the resolution is tested on records written by hand. A name
 //! resolves only when every unit of that name (and kind) has one `KeyId`:
 //! nothing is chosen among candidates.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fmt;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use slip_digest::records::Record;
-use slip_model::Digest;
+use slip_digest::{ReadOnly, ReadOnlyFiles};
+use slip_exec::store::{Access, Store};
 use slip_model::declared::Declared;
+use slip_model::formats::content_id;
 use slip_model::keys::{Key, KeyKind, Name, Parent, Rule, RuleTable};
+use slip_model::transform::Ownership;
+use slip_model::{Digest, Observer, Phase};
+
+use crate::args::{DeclareArgs, ImageArgs};
+use crate::commands::{self, Failure};
+use crate::image::{Image, Side};
+use crate::status;
 
 /// An entity as a line names it: `[<kind>] <text>` or `<text>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -530,4 +544,251 @@ pub fn finish(
             unreachable!("the lists of resolved lines are sorted and without duplicates: {e}")
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The command (spec/exec.md §8.8), and what `slip units` shares with it
+
+/// The most observers `declare` and `units` parse (§8.8): each is parsed
+/// in this process, one after another.
+pub(crate) const MAX_SELECTED: usize = 64;
+
+/// What `declare` and `units` work over: the store (opened shared), the
+/// plan's selected observers and the image, every path made absolute
+/// first (a parse changes the current directory).
+pub(crate) struct InProcess {
+    /// Kept open (shared) while the command runs.
+    _store: Store,
+    pub(crate) observers: Vec<Observer>,
+    pub(crate) image: Image,
+}
+
+impl InProcess {
+    /// §8.8: the store opened shared, the plan resolved as for `parse`, the
+    /// image made as for `verify`, and the selection, which must keep from
+    /// 1 to [`MAX_SELECTED`] observers. `command` names the command in the
+    /// input errors.
+    pub(crate) fn open(
+        command: &str,
+        plan: &OsString,
+        image: &ImageArgs,
+        store: &Path,
+        only: &[Vec<u8>],
+        limit: Option<u64>,
+    ) -> commands::Result<InProcess> {
+        let store = commands::open_store(&absolute(store)?, Access::Shared)?;
+        // A plan given as a file is read here, before any parse changes the
+        // current directory.
+        let (plan, _) = commands::load_plan(&store, plan)?;
+        let image =
+            Image::from_args(image).map_err(|e| Failure::Input(format!("{command}: {e}")))?;
+        let observers = commands::select(&plan.observers, only, limit);
+        if observers.is_empty() || observers.len() > MAX_SELECTED {
+            return Err(Failure::Input(format!(
+                "{command}: the selection keeps {} of the plan's {} observer(s); {command} \
+                 parses every one in this process and needs from 1 to {MAX_SELECTED}",
+                observers.len(),
+                plan.observers.len()
+            )));
+        }
+        Ok(InProcess { _store: store, observers, image })
+    }
+
+    /// The unit records (`slip_digest::records`) of `side` of `o` under
+    /// `rules`, with the run's files `files` (`spec/verify.md` §2.1: each
+    /// buffer decided by the subject path of its real path, as the verify
+    /// job decides it; `None` makes every file read-only; not read when
+    /// `rules` is empty); `None`, after the warning of §8.8 on `err`, when
+    /// that image does not parse `ok`. A failure of the parse itself, or of
+    /// the records, is an input error naming the main file: no record is
+    /// guessed, and none is left out silently.
+    pub(crate) fn records(
+        &self,
+        command: &str,
+        o: &Observer,
+        side: Side,
+        rules: &RuleTable,
+        files: Option<&Ownership>,
+        err: &mut dyn Write,
+    ) -> commands::Result<Option<Vec<Record>>> {
+        let main = String::from_utf8_lossy(&o.main.path).into_owned();
+        let fail = |e: String| Failure::Input(format!("{command}: {main}: {e}"));
+        let walk = |input: &slip_digest::Input<'_>| {
+            if rules.rules().is_empty() {
+                return slip_digest::records::records(input, rules, ReadOnly::EVERY_FILE);
+            }
+            let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
+            slip_digest::records::records(input, rules, ReadOnly::files(&read_only))
+        };
+        // The guards of the post-image parse (`spec/verify.md` §5.3: G1,
+        // L1, G4, G5, G6) on a post-image of the tree form, as the verify
+        // job checks them: without them the parse need not be the real
+        // post-image's, and a file's subject path need not be a real path
+        // (ownership decided on it can give a wrong rule parent or a wrong
+        // `created` key). A failure is an input error: no record is
+        // guessed. O2 holds by construction here (`spec/exec.md` §8.8).
+        let (shard, records) = if side == Side::Post && !self.image.is_identity() {
+            let (shard, looked) =
+                self.image.parse_looking(o, side, Phase::Map, 0, walk).map_err(fail)?;
+            if let Some((_, lookups)) = &looked {
+                let inputs = shard.inputs.as_deref().unwrap_or_default();
+                let mut resolver = self.image.resolver();
+                if let Some(reason) = crate::verify_job::post_parse_guards(
+                    &self.image,
+                    &mut resolver,
+                    &o.command,
+                    inputs,
+                    lookups,
+                ) {
+                    return Err(fail(reason));
+                }
+            }
+            (shard, looked.map(|(records, _)| records))
+        } else {
+            self.image.parse(o, side, Phase::Map, 0, walk).map_err(fail)?
+        };
+        match records {
+            Some(Ok(records)) => Ok(Some(records)),
+            Some(Err(e)) => Err(fail(e)),
+            None => {
+                let which = match side {
+                    Side::Pre => "pre",
+                    Side::Post => "post",
+                };
+                let _ = write!(err, "slip: warning: {command}: ");
+                let _ = err.write_all(&o.main.path);
+                let _ = writeln!(err, ": the {which}-image is {}", shard.outcome.status.name());
+                Ok(None)
+            }
+        }
+    }
+}
+
+/// `path` made absolute against the current directory.
+pub(crate) fn absolute(path: &Path) -> commands::Result<PathBuf> {
+    std::path::absolute(path).map_err(|e| Failure::Input(format!("{}: {e}", path.display())))
+}
+
+/// Records of several observers as one set (§8.8): a record given by more
+/// than one observer once, in the order first seen.
+#[derive(Default)]
+pub(crate) struct Merged {
+    seen: HashSet<Record>,
+    pub(crate) records: Vec<Record>,
+}
+
+impl Merged {
+    pub(crate) fn add(&mut self, records: Vec<Record>) {
+        for r in records {
+            if !self.seen.contains(&r) {
+                self.seen.insert(r.clone());
+                self.records.push(r);
+            }
+        }
+    }
+}
+
+/// `slip declare` (`spec/exec.md` §8.8).
+pub fn main(args: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
+    let result = declare(args, out, err);
+    commands::finish(result, out, err)
+}
+
+fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> commands::Result<u8> {
+    let from = absolute(&a.from)?;
+    let target = absolute(&a.out)?;
+    let bytes =
+        std::fs::read(&from).map_err(|e| Failure::Input(format!("{}: {e}", a.from.display())))?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| {
+        Failure::Input(format!("{}: the text is not UTF-8 ({e})", a.from.display()))
+    })?;
+    let line_error = |e: &LineError, err: &mut dyn Write| {
+        let _ =
+            writeln!(err, "slip: {}:{}: {}: {}", a.from.display(), e.line, e.kind.name(), e.detail);
+        status::FINDINGS
+    };
+    let lines = match read(text) {
+        Ok(lines) => lines,
+        Err(e) => return Ok(line_error(&e, err)),
+    };
+    // The run's files (`spec/verify.md` §2.1, §2.3): a rule renames owned
+    // entities only, so a `relocate` line needs them, and there is no
+    // default (knowing less never accepts more; "the roots" by default
+    // would make a dependency's entity renamable by accident). Checked
+    // before anything is parsed.
+    if a.owned.is_empty() && lines.iter().any(|(_, l)| matches!(l, Line::Relocate { .. })) {
+        return Err(Failure::Usage("a relocate line needs the run's files: --owned".to_owned()));
+    }
+    let files = commands::ownership(&a.owned, &a.readonly)?;
+    let run = InProcess::open("declare", &a.plan, &a.image, &a.store, &a.only, a.limit)?;
+    let need = needs(&lines);
+
+    // The images with no rules: every pre-image; the post-images when a
+    // `relocate` names a parent.
+    let none = RuleTable::empty();
+    let (mut pre, mut post) = (Merged::default(), Merged::default());
+    let mut post_ok = vec![false; run.observers.len()];
+    for (i, o) in run.observers.iter().enumerate() {
+        if let Some(r) = run.records("declare", o, Side::Pre, &none, None, err)? {
+            pre.add(r);
+        }
+        if need.post
+            && let Some(r) = run.records("declare", o, Side::Post, &none, None, err)?
+        {
+            post.add(r);
+            post_ok[i] = true;
+        }
+    }
+    let resolved = match resolve(&lines, &pre.records, &post.records) {
+        Ok(r) => r,
+        Err(e) => return Ok(line_error(&e, err)),
+    };
+
+    // The post-images under the rules the file gives, for `created` lines.
+    let mut mapped = Merged::default();
+    if need.post_mapped {
+        for (i, o) in run.observers.iter().enumerate() {
+            // A post-image that did not parse has been warned about once.
+            if need.post && !post_ok[i] {
+                continue;
+            }
+            if let Some(r) =
+                run.records("declare", o, Side::Post, &resolved.rules, files.as_ref(), err)?
+            {
+                mapped.add(r);
+            }
+        }
+    }
+    let declared = match finish(&lines, resolved, &mapped.records) {
+        Ok(d) => d,
+        Err(e) => return Ok(line_error(&e, err)),
+    };
+
+    // `files` is present exactly when there is a rule (`spec/verify.md`
+    // §2 rule 6: a second encoding of the empty table is refused). Without
+    // a rule the options were checked above and are not written.
+    let files = if declared.rules().rules().is_empty() { None } else { files };
+    let declared = declared.with_files(files);
+    let bytes = declared.to_bytes();
+    let id = content_id(&bytes)
+        .unwrap_or_else(|e| unreachable!("a Declared encodes as a valid DECL: {e}"));
+    write_beside(&target, &bytes)
+        .map_err(|e| Failure::Input(format!("{}: {e}", a.out.display())))?;
+    let _ = writeln!(out, "declared {id}");
+    let _ = writeln!(out, "rules {} {}", declared.rules_id(), declared.rules().rules().len());
+    let _ = writeln!(out, "changed {}", declared.changed().len());
+    let _ = writeln!(out, "created {}", declared.created().len());
+    let _ = writeln!(out, "removed {}", declared.removed().len());
+    Ok(status::OK)
+}
+
+/// `bytes` written to a file beside `path` and renamed over it: `path` is
+/// the old file or the whole new one, never part of it.
+fn write_beside(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = crate::verify_cmd::beside(path);
+    let written = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }

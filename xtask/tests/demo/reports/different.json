@@ -1,0 +1,108 @@
+{
+  "report": "slip.verify.v1",
+  "plan": "@PLAN@",
+  "round": @ROUND@,
+  "declared": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "rules": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "image": [
+    {
+      "subject": "@SRC@/lib",
+      "post": "@TREE@/lib"
+    }
+  ],
+  "limit": 100000,
+  "locate": 1024,
+  "verdict": "not_verified",
+  "observers": {
+    "plan": 3,
+    "selected": 3,
+    "verified": 1,
+    "unchanged": 0,
+    "mismatch": 2,
+    "not_parsed": 0,
+    "unverifiable": 0,
+    "never_parsed": 0,
+    "failed": 0,
+    "indeterminate_only": 1
+  },
+  "findings": {
+    "total": 2,
+    "listed": 2,
+    "groups": [
+      {
+        "kind": "changed",
+        "key": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "name": "f(int)",
+        "observers": 3,
+        "first": "@SRC@/lib/b.cpp",
+        "file": "@SRC@/lib/a.h",
+        "pre": "1111111111111111111111111111111111111111111111111111111111111111",
+        "post": "2222222222222222222222222222222222222222222222222222222222222222",
+        "where": {
+          "pre": {
+            "file": "@SRC@/lib/a.h",
+            "line": 3,
+            "column": 10,
+            "node": "CallExpr",
+            "what": "refers to g(long)"
+          },
+          "post": {
+            "file": "@SRC@/lib/a.h",
+            "line": 3,
+            "column": 10,
+            "node": "CallExpr",
+            "what": "refers to g(int)"
+          }
+        }
+      },
+      {
+        "kind": "indeterminate",
+        "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "h(long)",
+        "observers": 2,
+        "first": "@SRC@/lib/b.cpp",
+        "file": "@SRC@/lib/a.h",
+        "pre": "1111111111111111111111111111111111111111111111111111111111111111",
+        "post": "2222222222222222222222222222222222222222222222222222222222222222",
+        "where": {
+          "pre": {
+            "file": "@SRC@/lib/a.h",
+            "line": 7,
+            "column": 1,
+            "node": "function",
+            "what": "unsupported ExprKind/CXXReflectExpr"
+          },
+          "post": {
+            "file": "@SRC@/lib/a.h",
+            "line": 7,
+            "column": 1,
+            "node": "function",
+            "what": "unsupported ExprKind/CXXReflectExpr"
+          }
+        }
+      }
+    ]
+  },
+  "not_verified": [
+    {
+      "observer": "9999999999999999999999999999999999999999999999999999999999999999",
+      "main": "@SRC@/lib/b.cpp",
+      "state": "mismatch",
+      "message": "",
+      "findings": 3,
+      "indeterminate": 2,
+      "listed": 3
+    },
+    {
+      "observer": "9999999999999999999999999999999999999999999999999999999999999999",
+      "main": "@SRC@/lib/c.cpp",
+      "state": "mismatch",
+      "message": "",
+      "findings": 1,
+      "indeterminate": 1,
+      "listed": 1
+    }
+  ],
+  "exemptions": [],
+  "run": "@RUN@"
+}

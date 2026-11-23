@@ -1,7 +1,9 @@
 subjects:
-  1be1d190 follower unsupported rule=yes n::D::f of=36cceb9c
+  1be1d190 follower - rule=yes n::D::f of=36cceb9c
   36cceb9c seed - rule=yes n::B::f(int)
-  75a70dd7 follower unsupported rule=yes n::D::f of=36cceb9c
+  75a70dd7 follower - rule=yes n::D::f of=36cceb9c
+  9490abe2 follower unsupported rule=yes n::D<int>::f of=1be1d190
+  f862b918 follower - rule=yes n::D<int>::f of=36cceb9c
 links:
 claims:
   main.cpp:2:17+1 replace "g" t0 votes=1 none [36cceb9c]

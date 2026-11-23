@@ -1,0 +1,4 @@
+spec: edits.md §9.5 read_only, WP-120 item 3: the unhide idiom in a read-only file: the family reaches D::f in it (read_only), and the using-declaration there is claimed nothing
+from: n::C::f
+to: g
+kind: function

@@ -1,0 +1,73 @@
+{
+  "report": "slip.verify.v1",
+  "plan": "@PLAN@",
+  "round": @ROUND@,
+  "declared": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "rules": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "image": [
+    {
+      "subject": "@SRC@/lib",
+      "post": "@TREE@/lib"
+    }
+  ],
+  "limit": 100000,
+  "locate": 1024,
+  "verdict": "not_verified",
+  "observers": {
+    "plan": 3,
+    "selected": 3,
+    "verified": 2,
+    "unchanged": 0,
+    "mismatch": 1,
+    "not_parsed": 0,
+    "unverifiable": 0,
+    "never_parsed": 0,
+    "failed": 0,
+    "indeterminate_only": 0
+  },
+  "findings": {
+    "total": 1,
+    "listed": 1,
+    "groups": [
+      {
+        "kind": "changed",
+        "key": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "name": "f(int)",
+        "observers": 3,
+        "first": "@SRC@/lib/b.cpp",
+        "file": "@SRC@/lib/a.h",
+        "pre": "1111111111111111111111111111111111111111111111111111111111111111",
+        "post": "2222222222222222222222222222222222222222222222222222222222222222",
+        "where": {
+          "pre": {
+            "file": "@SRC@/lib/a.h",
+            "line": 3,
+            "column": 10,
+            "node": "CallExpr",
+            "what": "refers to g(long)"
+          },
+          "post": {
+            "file": "@SRC@/lib/a.h",
+            "line": 3,
+            "column": 10,
+            "node": "CallExpr",
+            "what": "refers to g(int)"
+          }
+        }
+      }
+    ]
+  },
+  "not_verified": [
+    {
+      "observer": "9999999999999999999999999999999999999999999999999999999999999999",
+      "main": "@SRC@/lib/b.cpp",
+      "state": "mismatch",
+      "message": "",
+      "findings": 1,
+      "indeterminate": 0,
+      "listed": 1
+    }
+  ],
+  "exemptions": [],
+  "run": "@RUN@"
+}

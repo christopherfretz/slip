@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 item 1 (c): a using-declaration in a class template's pattern, not instantiated: a follower, its shadow a follower, neither flagged
+from: n::Base::f
+to: g
+kind: function

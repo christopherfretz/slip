@@ -1,0 +1,9 @@
+transform <id>
+report - note "a declaration: wrong_kind"
+report - note "a parameter: unsupported"
+report - note "the specialisation tf<int>: 0 declarations"
+report h.h:1:6-1:7 note "f #0"
+report t.cpp:2:6-2:7 note "f #1"
+report t.cpp:3:11-3:12 note "n #0"
+report t.cpp:6:11-6:12 note "n #1"
+report t.cpp:9:6-9:7 note "f #2"

@@ -1,0 +1,12 @@
+subjects:
+  1c6a9d44 seed - rule=yes n::Base::f()
+  924284d2 follower unsupported rule=yes n::F<int>::f of=1c6a9d44,417ccff8
+  9e786d6e follower - rule=yes n::F<int>::f of=1c6a9d44
+  a591495d follower unsupported rule=yes n::Base<int>::f() of=1c6a9d44
+links:
+claims:
+  main.cpp:2:17+1 keep t0 votes=1 none
+  main.cpp:3:43+1 replace "g" t0 votes=1 none [1c6a9d44]
+  main.cpp:4:56+1 unresolved t0 votes=1 none
+  main.cpp:6:26+1 replace spell(1c6a9d44, "g") t0 votes=1 none [1c6a9d44]
+changed:

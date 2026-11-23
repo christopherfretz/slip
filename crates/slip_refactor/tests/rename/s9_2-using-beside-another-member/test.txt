@@ -1,0 +1,4 @@
+spec: edits.md §9.1 (a using-declaration in the target's scope is no seed), WP-120 item 3: D::f(double) is renamed alone; the using-declaration names no subject and is kept
+from: n::D::f
+to: g
+kind: function

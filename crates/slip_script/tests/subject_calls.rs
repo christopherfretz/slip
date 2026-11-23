@@ -2186,6 +2186,25 @@ enum Dumped {
     TooLarge,
 }
 
+/// Removes a side's scratch directory. The host's shared file system has
+/// answered "directory not empty" for a directory whose entries were just
+/// removed (seen under load, on a side with a subdirectory): that answer
+/// is retried for a second; any other error, or the same one after that,
+/// fails the test.
+fn remove_scratch(dir: &std::path::Path) {
+    let mut tries = 0;
+    loop {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => panic!("{}: cannot remove: {e}", dir.display()),
+        }
+    }
+}
+
 /// Clang's dump of a side, read up to [`dump_limit`] bytes.
 fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
     use std::io::Read as _;
@@ -2217,7 +2236,7 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
         let _ = child.kill();
     }
     let status = child.wait().unwrap();
-    std::fs::remove_dir_all(dir).unwrap();
+    remove_scratch(dir);
     if too_large {
         Dumped::TooLarge
     } else if status.success() {

@@ -1,0 +1,9 @@
+transform <id>
+report - note "call #0 argument: null"
+report - note "call #0 callee extent: null"
+report - note "call #0 callee name range: null"
+report - note "call #0 extent: null"
+report - note "call #1 callee extent: null"
+report - note "call #1 callee name range: null"
+report - note "call #1 extent: null"
+report t.cpp:5:11-5:12 note "call #1 argument"

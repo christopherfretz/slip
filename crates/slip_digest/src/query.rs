@@ -266,7 +266,9 @@ impl<'a> Keys<'a> {
     /// groups whose entity is reached from `e` through an instantiation
     /// (of `e`, of its members at any depth of classes, of the local
     /// types it owns, of their members), with their resolved and
-    /// `default_argument` units. Only units the walk writes are listed:
+    /// `default_argument` units, and every unit of such an entity that is
+    /// explicitly instantiated (written in source, so its group is a
+    /// declared one). Only units the walk writes are listed:
     /// an on-demand unit is listed when, and only when, this translation
     /// unit refers to it.
     ///
@@ -295,6 +297,7 @@ impl<'a> Keys<'a> {
             }
         }
         let (input, rules, read_only) = (self.input, self.rules, self.read_only);
+        let ast = self.w.ast;
         let written = self.written.get_or_insert_with(|| {
             let mut by: HashMap<DeclId, Vec<WalkUnit>> = HashMap::new();
             for u in walk_units(input, rules, read_only) {
@@ -306,7 +309,13 @@ impl<'a> Keys<'a> {
         let of = |x: DeclId| written.get(&x).map_or(&[][..], Vec::as_slice);
         out.extend(of(e).iter().filter(|u| u.part).map(|u| u.key));
         for y in found {
-            out.extend(of(y).iter().filter(|u| u.derived).map(|u| u.key));
+            // An explicit instantiation (`template int t<long>(long);`,
+            // `extern template`, a member of an explicitly instantiated
+            // class) is written in source, so the walk groups its units as
+            // declared; it is still instantiated from `e` and changes with
+            // it (`spec/landed/api/WP-095.md`, F3).
+            let explicit = ast.governing_explicit_inst_kind(y).is_some();
+            out.extend(of(y).iter().filter(|u| u.derived || explicit).map(|u| u.key));
         }
         out.sort_unstable();
         out.dedup();

@@ -1,0 +1,4 @@
+spec: edits.md §9.5 unreachable, WP-120 item 1 (a): an explicit instantiation of the member of the template a candidate is (no name in either table) flags its follower unreachable
+from: n::D::f
+to: g
+kind: function

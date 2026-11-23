@@ -1,0 +1,13 @@
+transform <id>
+report - note "a declaration, arguments_as_written: wrong_kind"
+report - note "a declaration, callee_of: wrong_kind"
+report - note "a declaration, callee_reference_of: wrong_kind"
+report - note "a reference, arguments_as_written: wrong_kind"
+report - note "a reference, callee_of: wrong_kind"
+report - note "a reference, callee_reference_of: wrong_kind"
+report - note "an argument, arguments_as_written: wrong_kind"
+report - note "an argument, callee_of: wrong_kind"
+report - note "an argument, callee_reference_of: wrong_kind"
+report - note "an entity, arguments_as_written: wrong_kind"
+report - note "an entity, callee_of: wrong_kind"
+report - note "an entity, callee_reference_of: wrong_kind"

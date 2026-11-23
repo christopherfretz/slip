@@ -29,6 +29,7 @@ impl Walk<'_> {
             return;
         }
         self.decl_node(s, d, e);
+        s.mark_decls(e);
         crate::decl_scope::cold(self, s, d);
         crate::attrs::decl_attrs(self, s, d);
         crate::templ::decl_maps(self, s, d);
