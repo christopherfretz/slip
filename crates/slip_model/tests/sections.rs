@@ -337,7 +337,7 @@ fn map_shard() -> Shard {
 const MAP_GROUP: &str = "db3248c61386d5aa2e494aa55c9b780e301275eacc26c569cfd147b39300323d";
 /// `tu_digest` of `map_shard`'s groups.
 const MAP_TU: &str = "8ce2bbe9792bff3bfd8902d2ef50daaf4db1fbac564d05c70e26959a3cf88ec4";
-const MAP_TRAILER: &str = "5a220ec189c5ab62b5c42a4dd7e828e747dd64440a2fde2de3dd0b63048cdfb0";
+const MAP_TRAILER: &str = "982cb92548bfb71f9a17c28c0b4af8106af98abb82a485c2a4231ecd1b1a12d7";
 
 fn map_shard_bytes() -> Vec<u8> {
     hex(&[
@@ -348,7 +348,7 @@ fn map_shard_bytes() -> Vec<u8> {
         "02 04  00 00 00 00", // outcome: ok, 0, 0, ""
         "04 0f  01  0c 64 69 67 65 73 74 2e 75 6e 69 74 73  03", // counters: digest.units = 3
         "13 96 02",           // digests, 278 bytes:
-        "01",                 //   scheme 1      @78
+        "02",                 //   scheme 2      @78
         MAP_TU,               //   tu            @79
         "03",                 //   3 groups      @111
         "00  02 2f 61  02  01", //   declared "/a" count 2 (@116), indeterminate 1 (@117)   @112
@@ -436,7 +436,7 @@ fn verify_shard() -> Shard {
 
 const VERIFY_GROUP: &str = "16616ca8c602bc6c8ebe3c4e0dcd9c1659ee02809421d7d815b05b0176c69cd6";
 const VERIFY_TU: &str = "7caedd7cdd53009ed0e15c4fac970a603d974936dd94351078141828b4ecaadc";
-const VERIFY_TRAILER: &str = "f4c8c71984041cea8d223b639da4c27dcf39b1e91d730a7231ed742e44e0ed07";
+const VERIFY_TRAILER: &str = "987491e0b22bfbb556631932a8535aa537ae5b1e9238946b57a57c108bb23071";
 
 fn verify_shard_bytes() -> Vec<u8> {
     hex(&[
@@ -447,7 +447,7 @@ fn verify_shard_bytes() -> Vec<u8> {
         "02 04  00 00 00 00",   // outcome: ok, 0, 0, ""
         "04 01  00",            // counters: []
         "13 8b 01",             // digests, 139 bytes:
-        "01",                   //   scheme 1                 @64
+        "02",                   //   scheme 2                 @64
         VERIFY_TU,              //   tu                       @65
         "01",                   //   1 group
         "00  02 2f 61  01  00", //   declared "/a" count 1, indeterminate 0   @98
@@ -880,7 +880,7 @@ fn digests_1_only_for_status_ok() {
 // digests rule 2 (spec/digest.md §11): the scheme is SCHEME.
 #[test]
 fn digests_2_scheme() {
-    for scheme in [0, 2] {
+    for scheme in [0, 1, 3] {
         let mut s = map_shard();
         s.digests.as_mut().unwrap().scheme = scheme;
         assert_eq!(rejected(&s, "sections.digests.scheme"), 78);
