@@ -52,6 +52,12 @@ pub(crate) struct Written {
     /// resolved unit of one, the parameter's index (0 for a field); its
     /// `entity` is the function's or field's.
     pub default_argument: Option<u64>,
+    /// For a part (a resolved or `default_argument` unit), the key of the
+    /// unit it is keyed under.
+    pub owner: Option<Digest>,
+    /// Whether the unit's key is in a collision (§3.4), whatever cause
+    /// `cause` keeps first.
+    pub collided: bool,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -598,6 +604,8 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         file,
         resolved: None,
         default_argument: None,
+        owner: None,
+        collided: false,
     })
 }
 
@@ -679,6 +687,8 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
     let bytes = key.to_bytes();
     w.bytes += bytes.len() as u64;
     Written {
+        owner: None,
+        collided: false,
         entity: None,
         read: None,
         key: key.id(),
@@ -757,33 +767,96 @@ pub(crate) fn origin_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
 /// Marks every unit whose key two different entities share
 /// (`spec/digest.md` §3.4); returns how many keys collide. Namespaces are
 /// merged, and declarations a scope may repeat are one entity when their
-/// digests are equal too. A part of a unit (a resolved or
-/// `default_argument` unit, keyed under its owner's key) collides exactly
-/// when its owners do: its units are marked, and the collision is its
-/// owners', counted once under their key, so that the count does not
-/// depend on which uses made the parts (§12, `digest.collisions`).
+/// digests are equal too. A run made only of parts (resolved or
+/// `default_argument` units, keyed under their owner's key) is left to
+/// [`mark_part_collisions`], which runs once every owner is marked.
 pub(crate) fn mark_collisions(written: &mut [Written]) -> u64 {
-    let mut order: Vec<usize> = (0..written.len()).collect();
-    order.sort_by(|&a, &b| written[a].key.cmp(&written[b].key).then(a.cmp(&b)));
     let mut collisions = 0;
-    let mut i = 0;
-    while i < order.len() {
-        let mut j = i + 1;
-        while j < order.len() && written[order[j]].key == written[order[i]].key {
-            j += 1;
-        }
-        let run = &order[i..j];
-        if run.len() > 1 && collides(written, run) {
-            if !run.iter().all(|&k| is_part(written[k].kind)) {
-                collisions += 1;
-            }
-            for &k in run {
-                written[k].cause = Some(merge(written[k].cause, Cause::Collision));
+    for run in runs(written) {
+        if run.len() > 1
+            && collides(written, &run)
+            && !run.iter().all(|&k| is_part(written[k].kind))
+        {
+            collisions += 1;
+            for &k in &run {
+                collide(&mut written[k]);
             }
         }
-        i = j;
     }
     collisions
+}
+
+/// Marks `u` as in a collision: `collided`, and `Collision` merged into
+/// its cause.
+pub(crate) fn collide(u: &mut Written) {
+    u.collided = true;
+    u.cause = Some(merge(u.cause, Cause::Collision));
+}
+
+/// The parts of colliding owners (`spec/digest.md` §3.4, §12), after
+/// [`mark_collisions`] and the mapped collisions: every part of an owner
+/// marked `Collision` is marked `Collision` (a part follows its owner's
+/// key and key cause), whether or not another part shares its key. A run
+/// of parts sharing a key is counted unless every pair in it is explained
+/// by its owners' collision: the two parts are under one owner key, that
+/// key is marked `Collision`, and their owners are different entities.
+/// Returns how many part keys are counted.
+pub(crate) fn mark_part_collisions(written: &mut [Written]) -> u64 {
+    follow_owners(written);
+    let marked: std::collections::HashSet<Digest> =
+        written.iter().filter(|u| u.collided).map(|u| u.key).collect();
+    let mut collisions = 0;
+    for run in runs(written) {
+        if run.len() < 2
+            || !run.iter().all(|&k| is_part(written[k].kind))
+            || !collides(written, &run)
+        {
+            continue;
+        }
+        let explained = run.iter().enumerate().all(|(i, &a)| {
+            run[i + 1..].iter().all(|&b| {
+                let (a, b) = (&written[a], &written[b]);
+                a.owner.is_some()
+                    && a.owner == b.owner
+                    && a.owner.is_some_and(|o| marked.contains(&o))
+                    && a.entity != b.entity
+            })
+        });
+        if !explained {
+            collisions += 1;
+        }
+        for &k in &run {
+            collide(&mut written[k]);
+        }
+    }
+    follow_owners(written);
+    collisions
+}
+
+/// Marks `Collision` every part whose owner key is marked, to a fixed
+/// point (a part may be keyed under a part).
+fn follow_owners(written: &mut [Written]) {
+    loop {
+        let marked: std::collections::HashSet<Digest> =
+            written.iter().filter(|u| u.collided).map(|u| u.key).collect();
+        let mut changed = false;
+        for u in written.iter_mut() {
+            if !u.collided && u.owner.is_some_and(|o| marked.contains(&o)) {
+                collide(u);
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
+/// The indices of `written` grouped by key, each run in index order.
+fn runs(written: &[Written]) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..written.len()).collect();
+    order.sort_by(|&a, &b| written[a].key.cmp(&written[b].key).then(a.cmp(&b)));
+    order.chunk_by(|&a, &b| written[a].key == written[b].key).map(<[usize]>::to_vec).collect()
 }
 
 /// A unit keyed under another unit's key (digest-kinds §11.1, §11.4).

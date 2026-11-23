@@ -220,6 +220,8 @@ fn write_part(
         file,
         resolved: None,
         default_argument: owner.default_argument,
+        owner: Some(owner.key),
+        collided: false,
     }
 }
 
