@@ -1,0 +1,4 @@
+# The pattern is indeterminate; the instantiation Bs<int>::Bs(int) is determinate on both sides and the same, its definition differs.
+exact derived
+indeterminate Bs::Bs<T>(int) (unsupported kiln/pattern-mem-initializers)
+derived-changed Bs<int>::Bs(int)::<definition>

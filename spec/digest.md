@@ -981,7 +981,14 @@ this spec says:
   ctor-initializer or without, since the AST does not say which
   (`Unsupported("kiln/pattern-mem-initializers")`,
   `spec/landed/digest/WP-124.md`); an instantiation's constructor holds
-  its own list and is not one;
+  its own list and is not one. A local class is in the unit of what
+  holds it, so the unit is the constructor's own only for a class
+  member; for a local class it is the holder's: a function or member
+  function (its body, or a lambda in it), a friend's body, a data
+  member (a lambda in its default member initialiser), a member function
+  (a lambda in a default argument), a class template (a lambda in a
+  default template argument), a concept, a variable template, and a
+  function that is not a template whose expansion statement holds one;
 - its key collides with another entity's (§3.4);
 - it holds demand-driven state that `digest-kinds.md` could not assign to a
   derived unit;
@@ -1241,8 +1248,14 @@ A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
 2. A name is the name of the key's first unit, from side A when A has
    the key. Lines are compared by name: a line names every key of its
    name, and two keys of one name that differ the same way are one line.
-3. **`differ`** reads every line but `indeterminate`, and needs one
-   besides the directive. Over declared and `tu` units, the keys that
+3. **`differ`** reads every line, and needs one besides the directive
+   and the `indeterminate` lines. An `indeterminate` line there is
+   `indeterminate <name>` or `indeterminate <name> (<cause>)`, the cause
+   as §10 writes it: the units flagged for a cause other than `Pending`
+   are, on each side, exactly those the lines name, and their keys are
+   left out of what follows (WP-124: a pattern indeterminate while its
+   instantiation shows the change). Over the other declared and `tu`
+   units, the keys that
    differ are exactly the `changed`, `added` and `removed` lines, whatever
    the `derived-*` lines are. A `derived-added` or `derived-removed` line
    that does not hold fails the test, with or without the directive.

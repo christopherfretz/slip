@@ -19,4 +19,7 @@ good-6: verified
 bad-6:  not_parsed
 good-7: verified
 bad-7:  not_parsed
-xfail good-5: WP-124: the dependency constructor template wrap(U) {} is indeterminate (unsupported kiln/pattern-mem-initializers) until Kiln WP-3026 puts a pattern's mem-initializers on the AST
+xfail good-5: WP-124: the dependency constructor template wrap(U) {} is indeterminate (unsupported kiln/pattern-mem-initializers) until Kiln WP-3026 and WP-3200 put a pattern's mem-initializers on the AST
+# pre-8, good-8: pre-5 and good-5 with wrap(U) declared only, so that the
+# row's check against false findings stays live while good-5 is xfail (WP-124).
+good-8: verified
