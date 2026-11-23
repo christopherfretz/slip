@@ -1,0 +1,12 @@
+# R12: f renamed start; its own name is observed through __func__. Three
+# independent subjects. pre: __func__ as a value, which is symbolic and
+# changes by exactly the declared rename (spec/digest.md §9). pre-2: its
+# length as an array bound, a type written by value. pre-3: its length
+# through sizeof, no stored constant: sizeof consumes the name-derived
+# operand (WP-104). bad-2 and bad-3 are the same rename as good: in pre-2
+# and pre-3 the rename has no correct form, it changes the program.
+good:   verified
+good-2: none the array's bound is the name's length; every rename to another length changes the type
+bad-2:  mismatch changed f(int) @ main.cpp:2
+good-3: none the function returns the name's length; every rename to another length changes the value
+bad-3:  mismatch changed f(int) @ main.cpp:1

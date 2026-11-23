@@ -1,8 +1,9 @@
 # good removes unused.h: what it declared is removed.
 removed spare()
-# What spec.h and better.h declared, as a tool that removes them would
-# declare it: so that bad and bad-2 are caught by the change they make to
+# What spec.h, better.h and pick_int.h declared, as a tool that removes
+# them would declare it: so that bad, bad-2 and bad-3 are caught by the change they make to
 # the program, not by the removal they declare.
 removed traits<Mine>
 removed traits<Mine>::type
 removed conv(int)
+removed pick<int>()

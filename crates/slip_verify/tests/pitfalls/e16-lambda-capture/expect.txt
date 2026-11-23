@@ -1,8 +1,12 @@
 # E16: [=] captures n by copy at the lambda-expression, before n = 5; [&]
-# reads it at the call. f() returns 1 instead of 5.
-# No good tree: the table's "the same captures" ([&n] for [&]) is not
-# digest-equal by design: LambdaData `default` and LambdaCapture `implicit`
-# are written (spec/digest-kinds.md, kiln_ast::lambda), because in a
-# template the default decides what an instantiation captures.
-good: none an explicit capture list for a default one changes the closure's written capture default and implicit bits
-bad:  mismatch changed f() @ main.cpp:3
+# reads it at the call. f() returns 1 instead of 5. bad changes the capture
+# default and the kind of the capture; pre-2 writes the capture explicitly,
+# and bad-2 ([n] for [&n]) changes its kind alone.
+# No good tree, by design: the capture default and each capture's implicit
+# bit are written (spec/digest-kinds.md LambdaData `default`, LambdaCapture
+# `implicit`), because in a template, for this, for unevaluated uses and for
+# constants that are not odr-used the default decides what is captured.
+good:   none no correct edit is digest-equal, by design: the capture default and the implicit bit are written
+bad:    mismatch changed f() @ main.cpp:3
+good-2: none as good: no other capture list is digest-equal, by design
+bad-2:  mismatch changed f() @ main.cpp:3

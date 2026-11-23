@@ -1,11 +1,5 @@
 # R11: f renamed start; bad keeps the block-scope declaration of f in g, which
 # declares ::f(int) again: the stale f and the renamed start are two entities
 # with one key (spec/digest.md §3.4). No place: a collision has two sites.
-# pre-2 and pre-3 are independent subjects (the supervisor's ruling 3 on
-# WP-057): the value of __func__ is symbolic and changes by exactly the
-# declared rename (good-2); its length, consumed at compile time as an array
-# bound, is written by value (bad-3).
-good:   verified
-bad:    mismatch indeterminate f(int)
-good-2: verified
-bad-3:  mismatch changed f(int) @ main.cpp:2
+good: verified
+bad:  mismatch indeterminate f(int)

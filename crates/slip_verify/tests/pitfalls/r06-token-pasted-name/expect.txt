@@ -1,5 +1,8 @@
-# R06: the call to audio_init is made by pasting the macro argument audio to
-# _init. bad renames the definition and leaves the argument.
-# Caught only by a failed parse (spec/pitfalls.md §5).
-good: verified
-bad:  not_parsed
+# R06: the call to app::audio_init is made by pasting the macro argument
+# audio to _init. bad renames the definition and leaves the argument: the
+# pasted name is undeclared. pre-2 adds a global ::audio_init, which the
+# pasted call in app then finds: bad-2 compiles and calls it.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed app::start() @ main.cpp:7

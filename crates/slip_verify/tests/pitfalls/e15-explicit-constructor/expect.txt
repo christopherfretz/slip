@@ -1,9 +1,9 @@
 # E15: T x = y is copy-initialisation and considers only the converting
 # constructor T(const Y &); T x(y) is direct-initialisation and prefers the
 # explicit T(Y &) for the non-const lvalue y.
-# No good tree: the table's T x = T(y) is direct-initialisation too and here
+# No good tree, by design: the table's T x = T(y) is direct-initialisation too and here
 # selects T(Y &) as bad does; where it is equivalent it is still a written
 # CXXFunctionalCastExpr against an implicit ConstructorConversion
 # (spec/digest-kinds.md ExprKind), a different unit by design.
-good: none every explicit form of the conversion is a written cast or a direct-initialisation, not the same unit
+good: none no correct edit is digest-equal, by design: a written functional cast is not the implicit conversion
 bad:  mismatch changed make(Y &) @ main.cpp:10
