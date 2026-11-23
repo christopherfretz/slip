@@ -319,6 +319,33 @@ fn tiers_are_joined() {
     assert!(set.edits[0].macro_site.is_some());
 }
 
+/// §5.3: the joined `macro_site` of a claim is the least the observers
+/// give, whatever their order.
+#[test]
+fn macro_site_is_the_least() {
+    let set = ok(
+        &script(),
+        vec![
+            ShardB::new(0).claim(the_edit(A, 4, 5, "x").in_macro(3, "M")),
+            ShardB::new(1).claim(the_edit(A, 4, 5, "x").in_macro(2, "ID")),
+        ],
+        "least-macro",
+    );
+    let m = set.edits[0].macro_site.as_ref().expect("a macro site");
+    assert_eq!((m.name_start, m.name.as_slice()), (2, b"ID".as_slice()));
+}
+
+/// §5.3: a claim's notes are the union of the observers', at most eight,
+/// the least eight kept.
+#[test]
+fn at_most_eight_notes() {
+    let names: Vec<String> = (0..10).map(|i| format!("n{i}")).collect();
+    let shards = names.iter().enumerate().map(|(i, n)| ShardB::new(i).claim(the_edit(A, 4, 5, "x").notes(&[n]))).collect();
+    let set = ok(&script(), shards, "notes");
+    let want: Vec<Vec<u8>> = names[..8].iter().map(|n| n.as_bytes().to_vec()).collect();
+    assert_eq!(set.edits[0].notes, want);
+}
+
 /// §5.4 first geometry row: a kept range of another site that shares a
 /// byte with a live site contests it; `other` names the kept range.
 #[test]
