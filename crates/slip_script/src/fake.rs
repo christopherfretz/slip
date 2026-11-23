@@ -179,10 +179,15 @@ pub struct FakeSubject {
     /// Ranges inside a macro argument (§5.4 tier 1): a range given out that
     /// lies in one of these has tier 1.
     pub tier1: Vec<Range>,
+    /// Ranges reached at both tiers (§7.6 rule 1: a header included twice,
+    /// a name that is a macro in one inclusion and a function in the
+    /// other): a range given out that lies in one of these has tiers 0 and
+    /// 1, whatever `tier1` says.
+    pub both: Vec<Range>,
     /// `Subject::place` for a value with no place of its own: the nearest
     /// place the host can name (§7.4 rule 3). A value with no place of its
     /// own and none here is `PlaceOf::Unnamed`; an entity with no
-    /// declaration is `PlaceOf::Nowhere`. `Subject::tier` answers only for
+    /// declaration is `PlaceOf::Nowhere`. `Subject::tiers` answers only for
     /// a range exactly given out (`name` or `extent` of a value).
     pub nearest: Vec<(Value, Range)>,
     /// `Subject::unresolved_named` (§6.5 rule 6): the count of unresolved
@@ -215,6 +220,7 @@ impl FakeSubject {
             references: Vec::new(),
             expressions: Vec::new(),
             tier1: Vec::new(),
+            both: Vec::new(),
             nearest: Vec::new(),
             unresolved: Some(std::collections::BTreeMap::new()),
         }
@@ -500,11 +506,15 @@ impl Subject for FakeSubject {
         self.unresolved.as_ref().map(|m| m.get(identifier).copied().unwrap_or(0))
     }
 
-    fn tier(&self, r: Range) -> Option<u8> {
+    fn tiers(&self, r: Range) -> Option<[bool; 2]> {
         if !self.given_out().any(|g| g == r) {
             return None;
         }
-        Some(u8::from(self.tier1.iter().any(|&t| within(r, t))))
+        if self.both.iter().any(|&t| within(r, t)) {
+            return Some([true, true]);
+        }
+        let one = self.tier1.iter().any(|&t| within(r, t));
+        Some([!one, one])
     }
 
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
