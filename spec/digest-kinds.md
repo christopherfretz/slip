@@ -5540,8 +5540,11 @@ re-implementer:
   class (digest §2.2).
 
 **A unit's file and instantiation.** The file of the declared unit of
-an entity whose effective kind (§11.10) is an instantiation and which is
-a member of a specialisation or a function is the origin file as above,
+an entity whose effective kind (§11.10) is an instantiation and which
+has a `MemberSpecInfo` of its own (a member function, static data
+member, member class or enumeration of a specialisation; a field has
+none, and Kiln does not move one) or is a function is the origin file
+as above,
 never the file of the location the instantiation holds now: Kiln moves
 such a function to the pattern's definition when it instantiates the
 definition (`relocate_to_pattern_definition`,
@@ -5766,9 +5769,9 @@ in the resolved unit `definition` (§11.1):
 | Entity | Rows of `definition`, in order |
 |---|---|
 | every entity with a `SpecInfo` | `SpecInfo` `from`, `from_args` |
-| a function | its parameters (`FunctionData` `params`), as the own unit writes them, so that the body's local entities are numbered in this stream; `FunctionData` `body`; `ColdDeclData` `ctor_inits`; one flag word: `FnSpec` `0-implicit-inline` (clear if any declaration is `inline`), `0-has-contracts`, `0-is-coroutine`, `0-escalated`; `ColdDeclData` `contracts` of the defining declaration (a count, then each as `child`); the attributes of kinds `WEAK` and `PRAGMA_CLANG_SECTION` over the declarations, last first, not inherited (a count, then each as the own unit writes an attribute); and, when the pattern's declared return type holds a placeholder, `DeclNode` `ty-type` and one flag word: `FnSpec` `0-return-deduced` |
-| a variable | `VarData` `init`; `VarSpec` `0-init-style`; one flag word: `0-inline`, `0-inline-implied`; and, when the pattern's declared type holds a placeholder or the own unit's type (of the earliest written declaration) is an array of unknown bound, `DeclNode` `ty-type` of the defining declaration |
-| a class | `RecordData` `members-fields`, `members-virtual`, `members-other`, `bases`, `defn`; `ColdDeclData` `friends`, `record_pack` |
+| a function | its parameters (`FunctionData` `params`), as the own unit writes them, so that the body's local entities are numbered in this stream; `FunctionData` `body`; `ColdDeclData` `ctor_inits`; one flag word: `FnSpec` `0-implicit-inline` (clear if any declaration is `inline`), `0-has-contracts`, `0-is-coroutine`, `0-escalated`; `ColdDeclData` `contracts` of the defining declaration (a count, then each as `child`); the attributes of kinds `WEAK` and `PRAGMA_CLANG_SECTION` on the declarations made by instantiation, first to last in chain order and in stored order within one, not inherited (a count, then each as the own unit writes an attribute); and, when the pattern's declared return type holds a placeholder, `DeclNode` `ty-type` and one flag word: `FnSpec` `0-return-deduced` |
+| a variable | `VarData` `init` and `VarSpec` `0-init-style` when the pattern has an initialiser, else absent and `C` (see below); one flag word: `0-inline`, `0-inline-implied`; and, when the pattern's declared type holds a placeholder or the own unit's type (of the earliest written declaration) is an array of unknown bound, `DeclNode` `ty-type` of the defining declaration |
+| a class | `RecordData` `members-fields`, `members-virtual`, `members-other`, `bases`, `defn`; `ColdDeclData` `friends`, `record_pack`; every attribute on the declarations made by instantiation, as for a function, then their annotations (`AnnotArena` `of_decl`) |
 | an enumeration | `EnumData` `members`, `int_type`, `promotion_type`; one flag word: `flags-fixed`, `flags-complete` |
 
 Each row is written as the own unit would write it for an entity not of
@@ -5794,11 +5797,28 @@ holds the definition at the end of the translation unit.
   (`decltype(v<int>)`) and instantiates its initialiser only when it is
   used (`instantiate_var_spec_init`, `kiln_sema/src/templ/var.rs:229`;
   `instantiate_static_member_init`, `kiln_sema/src/templ/class.rs:2061`),
-  and only then is the declaration a definition. Otherwise the first
+  and only then is the declaration a definition. The pattern of a
+  variable specialisation is the declaration `SpecInfo` `from` names
+  (the primary's or a partial specialisation's declaration with the
+  initialiser, else its definition: Kiln sets it when it declares the
+  specialisation, `kiln_sema/src/templ/var.rs:109-161`), of a member
+  the declaration `MemberSpecInfo` `instantiated_from` names; the
+  pattern "has an initialiser" if one of its declarations holds one
+  (`demand::pattern_has_init`). Otherwise the first
   declaration, over every declaration Kiln chained, that is a definition (`units::is_var_definition`, Kiln's
   `Sema::is_var_definition`), else the one that holds an initialiser (an
   in-class `static const int x = 1;` of an instantiation, whose
   initialiser Kiln substitutes on use, `subst_static_member_init`).
+  When the pattern has no initialiser, the variable is default-initialised
+  and Kiln adds that initialisation (a constructor call for a class
+  type) only when it instantiates the definition, on use
+  (`kiln_sema/src/templ/var.rs:212-221`, `instantiate_var_spec_init`).
+  `definition` does not write it: its `init` is absent and its
+  `0-init-style` `C` whatever Kiln holds. Nothing is lost: which
+  constructor default-initialisation calls is a function of the
+  variable's type, which the own unit holds, and of the units of that
+  type's class; two programs whose default-initialisations differ
+  differ in one of those units.
 - A class or an enumeration: `Ast::definition`, recorded when the
   definition begins (`begin_record_definition`,
   `begin_enum_definition`, `kiln_ast/src/builder.rs:585`, `:665`).
@@ -5813,8 +5833,11 @@ holds the definition at the end of the translation unit.
 **The placeholder.** Whether the pattern's declared type holds a
 placeholder (`auto`, `decltype(auto)`, a constrained placeholder, a
 class template to deduce) is a fact of the pattern: the declaration
-`MemberSpecInfo` `instantiated_from` names, or the pattern of the
-template `SpecInfo` `template` names, on any of its declarations, walked
+`MemberSpecInfo` `instantiated_from` names, for a variable
+specialisation the declaration `SpecInfo` `from` names (above), for
+another specialisation the pattern of the template `SpecInfo`
+`template` names (a function's `from` is moved at definition), on any
+of its declarations, walked
 through pointers, references, member pointers, a function's return type
 and arrays' elements, sugar included (`demand::pattern_holds_placeholder`,
 as Kiln's `Sema::contains_placeholder`,
@@ -5839,10 +5862,31 @@ whose value Kiln sets both when it instantiates the declaration and when
 it instantiates the definition, without recording which, is read only by
 `definition` for the class, and the own unit writes it clear: that is
 `FnSpec` `0-implicit-inline`, set by `function_decl`
-(`templ/subst/decls.rs:1044`) and by `enter_definition_scopes`. Where
-Kiln copies onto the declaration something a written declaration could
-also carry (an attribute), and does not mark the copy, every node of
-that kind is `definition`'s. The writes, at
+(`templ/subst/decls.rs:1044`) and by `enter_definition_scopes`. What Kiln copies onto a declaration
+at definition, without marking the copy, is told apart by the
+declaration that carries it: a node on a declaration **made by
+instantiation** is `definition`'s for the kinds Kiln copies there (for
+a function `WEAK` and `PRAGMA_CLANG_SECTION`; for a class every
+attribute and annotation, which `Substituter::class_attrs` copies from
+the pattern's definition), and a node on a declaration written in
+source stays in the own unit (`attrs::moved_kinds`). A declaration is
+made by instantiation (`templ::made_by_instantiation`) when its own
+`SpecInfo` or `MemberSpecInfo` (Kiln links only the declarations it
+makes for a specialisation or a member of one, `Ast::templ_link`) has
+an instantiation kind, or, having none or `ExplicitSpecialization`, its
+lexical context is governed by an instantiation (`templ::governing_kind`
+of the lexical context: a member or friend Kiln declared in an
+instantiated class). A written friend that redeclares a member of an
+instantiation (`struct A { friend void X<int>::f(); };`), and a
+function defaulted on its first declaration, are written in source. A
+node on a declaration made by instantiation is Kiln's: instantiated
+from a declaration of the pattern, which the pattern's own unit holds,
+with operands substituted from the arguments, which are in the key, or
+copied from the pattern's definition, which the pattern's unit holds
+too; nothing written in source puts a node on it (an attribute written
+on an explicit instantiation is recorded nowhere by Kiln). So leaving
+it out of the own unit loses nothing, and `definition` writes it when
+the definition exists. The writes, at
 Kiln's pin (`kiln_sema/src/` unless a crate is named):
 
 | Write at definition instantiation | Where | Read by |
@@ -5866,6 +5910,8 @@ Kiln's pin (`kiln_sema/src/` unless a crate is named):
 | a variable's `eval` state | `var_init`, and every constant evaluation | no own unit of the class: see below |
 | a static data member's namespace-scope definition | `templ/class.rs:1943` | `definition` only (left out by `instantiated_out_of_line`) |
 | a class's members, bases, `defn`, friends, record pack; `point_of_instantiation` | `instantiate_class_as`, `templ/class.rs:1198`, `:1294-1295`; `DeclFlags` `0-invalid` at `:1229` | `definition`; the location in no unit |
+| a class's attributes and annotations, from the pattern's definition | `Substituter::class_attrs`, `templ/subst/anon.rs:140`, from `class_final_and_attrs`, `templ/class.rs:2530` | `definition` (attributes of declarations made by instantiation); left out of the own unit |
+| a variable's default-initialisation when the pattern has no initialiser | `templ/var.rs:212-221` | not written (above) |
 
 The `FnSpec::LATE` bits (`kiln_ast/src/decl.rs:818`) that are not in
 this table are not definition writes: `0-not-selected` is set when the
@@ -5891,9 +5937,11 @@ Reading `eval` in the own unit would make it depend on whether some use
 had evaluated the initialiser (a constant expression, a `static_assert`,
 a template argument).
 
-A class template specialisation of the class that has no definition
-(the instantiation failed, or it was only named) has a unit and no
-`definition`, like a function declared and not defined.
+A class template specialisation whose instantiation failed has a unit
+and no `definition`, like a function declared and not defined. One
+that was only named has `SpecInfo` kind `Undeclared` and no unit at all
+(§11.10, `units::unit_class`): its unit and its `definition` appear
+together when Kiln instantiates it.
 
 The split costs one more unit for each defined instantiation. Without it
 a use added to one function, which is the first to need the body of some

@@ -564,29 +564,85 @@ fn kind_row(kind: AttrKind) -> Option<&'static KindRow> {
 /// out-of-line member definition (`kiln_sema/src/templ/class.rs:1603-1615`),
 /// `#pragma clang section` from any definition (`clone_clang_sections`,
 /// `kiln_sema/src/section.rs:204`, called at `templ/class.rs:2313` and
-/// `templ/funcs.rs:365`). Kiln does not mark the copies, so for the
-/// definition class every node of these kinds is `definition`'s.
+/// `templ/funcs.rs:365`). Kiln does not mark the copies.
 const COPIED_AT_DEFINITION: [AttrKind; 2] = [AttrKind::WEAK, AttrKind::PRAGMA_CLANG_SECTION];
 
-/// The nodes of the kinds of [`COPIED_AT_DEFINITION`] over the chain of
-/// function `e` (every declaration, `definition`'s state), for the
-/// resolved unit `definition` (§11.9): `count`, then each node.
+/// Which attribute nodes of declaration `x` of entity `e` are
+/// `definition`'s rather than the own unit's (§11.9), for an entity of
+/// the definition class: none on a declaration written in source; on a
+/// declaration made by instantiation (`templ::made_by_instantiation`),
+/// every node for a class (Kiln copies the attributes and annotations of
+/// the pattern's definition when it instantiates the class's definition,
+/// `Substituter::class_attrs`, `kiln_sema/src/templ/subst/anon.rs:140`,
+/// from `templ/class.rs:2530`), the kinds of [`COPIED_AT_DEFINITION`]
+/// for a function, none otherwise. `None`: the entity is not of the
+/// class, or is of a kind none of whose nodes move.
+fn moved_kinds(w: &Walk<'_>, e: DeclId) -> Option<Moved> {
+    let ast = w.ast;
+    if !crate::demand::definition_class(w, e) {
+        return None;
+    }
+    if ast.decls.record(e).is_some() {
+        Some(Moved::All)
+    } else if ast.decls.function(e).is_some() {
+        Some(Moved::Copied)
+    } else {
+        None
+    }
+}
+
+/// What [`moved_kinds`] moves of a declaration made by instantiation.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Moved {
+    /// Every attribute node and annotation (a class).
+    All,
+    /// The nodes of the kinds of [`COPIED_AT_DEFINITION`] (a function).
+    Copied,
+}
+
+impl Moved {
+    fn node(self, n: &AttrNode) -> bool {
+        match self {
+            Moved::All => true,
+            Moved::Copied => COPIED_AT_DEFINITION.contains(&n.kind),
+        }
+    }
+}
+
+/// The attribute nodes (and, for a class, the annotations) of entity
+/// `e` that [`moved_kinds`] moves, over every declaration (in chain
+/// order, first to last, stored order within one, without `inherited`
+/// copies), for the resolved unit `definition` (§11.9): `count`, then
+/// each node; then, for a class, the annotations as `decl_attrs` writes
+/// them.
 pub(crate) fn definition_attrs(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
     let ast = w.ast;
+    let moved = moved_kinds(w, e);
     let mut chain = w.redecls(e);
     chain.reverse();
+    let made: Vec<DeclId> =
+        chain.into_iter().filter(|&x| crate::templ::made_by_instantiation(w, x)).collect();
     let mut nodes: Vec<AttrNode> = Vec::new();
-    for &x in &chain {
-        for a in attr_ids(w, s, ast.attrs.of_decl(x)) {
-            let n = *ast.attrs.get(a);
-            if n.flags & INHERITED == 0 && COPIED_AT_DEFINITION.contains(&n.kind) {
-                nodes.push(n);
+    if let Some(m) = moved {
+        for &x in &made {
+            for a in attr_ids(w, s, ast.attrs.of_decl(x)) {
+                let n = *ast.attrs.get(a);
+                if n.flags & INHERITED == 0 && m.node(&n) {
+                    nodes.push(n);
+                }
             }
         }
     }
     s.count(nodes.len());
     for n in &nodes {
         attr_node(w, s, n);
+    }
+    if moved == Some(Moved::All) {
+        let mut anns: Vec<AnnId> = Vec::new();
+        for &x in &made {
+            anns.extend(ann_ids(w, s, ast.annots.of_decl(x)));
+        }
+        annotations(w, s, &anns);
     }
 }
 
@@ -599,17 +655,21 @@ pub(crate) fn decl_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     chain.reverse();
     // AttrArena `decl_attrs`: the nodes of every declaration, in chain
     // order and stored order, without the `inherited` copies.
-    // For a function of the definition class, the kinds Kiln copies
-    // from the pattern's definition when it instantiates the definition
-    // are `definition`'s (`definition_attrs`, §11.9).
-    let moved = !w.unit.definition
-        && ast.decls.function(d).is_some()
-        && crate::demand::definition_class(w, w.entity(d));
+    // For an entity of the definition class, what Kiln writes onto a
+    // declaration made by instantiation when it instantiates the
+    // definition is `definition`'s (`moved_kinds`, §11.9); a node on a
+    // declaration written in source stays here.
+    let moved = if w.unit.definition { None } else { moved_kinds(w, w.entity(d)) };
+    let made: Vec<bool> = chain
+        .iter()
+        .map(|&x| moved.is_some() && crate::templ::made_by_instantiation(w, x))
+        .collect();
     let mut nodes: Vec<AttrNode> = Vec::new();
-    for &x in &chain {
+    for (&x, &mx) in chain.iter().zip(&made) {
+        let here = if mx { moved } else { None };
         for a in attr_ids(w, s, ast.attrs.of_decl(x)) {
             let n = *ast.attrs.get(a);
-            if n.flags & INHERITED == 0 && !(moved && COPIED_AT_DEFINITION.contains(&n.kind)) {
+            if n.flags & INHERITED == 0 && !here.is_some_and(|k| k.node(&n)) {
                 nodes.push(n);
             }
         }
@@ -620,8 +680,10 @@ pub(crate) fn decl_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     }
     // AnnotArena `of_decl`: one list over the chain.
     let mut anns: Vec<AnnId> = Vec::new();
-    for &x in &chain {
-        anns.extend(ann_ids(w, s, ast.annots.of_decl(x)));
+    for (&x, &mx) in chain.iter().zip(&made) {
+        if !(moved == Some(Moved::All) && mx) {
+            anns.extend(ann_ids(w, s, ast.annots.of_decl(x)));
+        }
     }
     annotations(w, s, &anns);
     // AnnotArena `of_base`: a list per base-specifier of the definition.

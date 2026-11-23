@@ -559,6 +559,11 @@ pub(crate) fn var_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: D
             (var.init, var.spec.init_style())
         }
     };
+    // Without an initialiser in the pattern, what Kiln adds on use is
+    // default-initialisation (`kiln_sema/src/templ/var.rs:212-221`): not
+    // written (§11.9).
+    let (init, style) =
+        if crate::demand::pattern_has_init(w, e) { (init, style) } else { (None, InitStyle::C) };
     crate::expr::child_opt(w, s, init);
     s.tag(init_style::row(&style));
     let mut specs: Vec<VarSpec> =

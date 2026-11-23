@@ -247,6 +247,7 @@ fn definition(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Writte
             crate::decl_func::var_definition(w, s, e, def);
         } else if ast.decls.record(def).is_some() {
             crate::decl_class::record_definition(w, s, def);
+            crate::attrs::definition_attrs(w, s, e);
         } else if ast.decls.enumeration(def).is_some() {
             crate::decl_class::enum_definition(w, s, def);
         }
@@ -298,9 +299,7 @@ pub(crate) fn defining_declaration(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
         // declaration of a specialisation or of an inline static member
         // before its initialiser (`kiln_sema/src/templ/var.rs:229`,
         // `templ/class.rs:2061`).
-        if pattern_of(w, e).is_some_and(|p| ast.redecls_of(p).any(has_init))
-            && !chain.iter().copied().any(has_init)
-        {
+        if pattern_has_init(w, e) && !chain.iter().copied().any(has_init) {
             return None;
         }
         return chain
@@ -328,17 +327,37 @@ pub(crate) fn pattern_holds_placeholder(w: &Walk<'_>, e: DeclId) -> bool {
     ast.redecls_of(p).any(|r| ast.decls.get(r).ty().is_some_and(|q| holds_placeholder(w, q)))
 }
 
-/// The pattern entity `e` is instantiated from: the pattern of its
-/// template for a specialisation (not the partial specialisation or the
-/// definition `SpecInfo` `from` names, which Kiln sets on use), the
-/// member it was instantiated from for a member of a specialisation.
+/// The pattern entity `e` is instantiated from: for a variable
+/// specialisation, the declaration `SpecInfo` `from` names (the primary's
+/// or a partial specialisation's declaration that holds the initialiser,
+/// else its definition: Kiln sets it when it declares the specialisation,
+/// `kiln_sema/src/templ/var.rs:109-161`, and moves it later only for an
+/// explicit instantiation, `templ/var.rs:289-298`); for another
+/// specialisation, the pattern of its template (not what `from` names: a
+/// function's is moved to a friend's definition when the definition is
+/// instantiated, `templ/class.rs:1578`, a class's is set at its
+/// definition); for a member of a specialisation, the member it was
+/// instantiated from.
 fn pattern_of(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
     let ast = w.ast;
     let e = w.entity(e);
     match ast.spec_info(e) {
+        Some((_, i)) if ast.decls.var(e).is_some() => Some(i.from),
         Some((_, i)) => ast.template_info(i.template).and_then(|t| t.pattern),
         None => ast.member_spec_info(e).map(|(_, i)| i.instantiated_from),
     }
+}
+
+/// Whether a declaration of the pattern of variable `e` (`pattern_of`)
+/// holds an initialiser. Without one, the initialisation Kiln adds when
+/// it instantiates the definition is default-initialisation, which the
+/// variable's type and the units of its class determine, and which
+/// `definition` does not write (§11.9).
+pub(crate) fn pattern_has_init(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    pattern_of(w, e).is_some_and(|p| {
+        ast.redecls_of(p).any(|d| ast.decls.var(d).is_some_and(|v| v.init.is_some()))
+    })
 }
 
 /// Whether type `q` holds a placeholder, walked as Kiln's

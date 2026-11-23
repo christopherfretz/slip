@@ -79,6 +79,37 @@ pub(crate) fn instantiated_declaration(w: &Walk<'_>, x: DeclId) -> bool {
     }
 }
 
+/// Whether declaration `x` itself was made by instantiation, for what
+/// Kiln writes onto it (§11.9, `attrs::moved_kinds`): its own `SpecInfo`
+/// or `MemberSpecInfo` (Kiln links only the declarations it makes for a
+/// specialisation or a member of one) has an instantiation kind; or it
+/// has none, or `ExplicitSpecialization`, and its lexical context is
+/// governed by an instantiation (`governing_kind`: a friend or member
+/// Kiln declared in an instantiated class). Unlike
+/// [`instantiated_declaration`] it does not read the entity's kind for a
+/// declaration with none of its own: a friend written in a class that is
+/// no instantiation, redeclaring a member of one (`friend void
+/// X<int>::f();`), was written in source.
+pub(crate) fn made_by_instantiation(w: &Walk<'_>, x: DeclId) -> bool {
+    let ast = w.ast;
+    let own = ast
+        .spec_info(x)
+        .map(|(_, i)| i.kind)
+        .or_else(|| ast.member_spec_info(x).map(|(_, i)| i.kind));
+    let kind = match own {
+        Some(k) if k != SpecKind::ExplicitSpecialization => Some(k),
+        Some(_) | None => ast.decls.lexical_ctx(x).and_then(|c| governing_kind(w, c)),
+    };
+    matches!(
+        kind,
+        Some(
+            SpecKind::ImplicitInstantiation
+                | SpecKind::ExplicitInstantiationDeclaration
+                | SpecKind::ExplicitInstantiationDefinition
+        )
+    )
+}
+
 /// The template head of a discriminator (§9, §3.3): `record
 /// TemplateParamList` with each parameter as its `DeclNode` rows (which
 /// bring in its `TemplateParmInfo`) and nothing else, so that a key does
