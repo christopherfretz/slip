@@ -279,6 +279,23 @@ a new parent whose own discriminator mentions a relocated entity gets a
 rule that does not match, which verification then reports as differences.
 So a line whose new parent another line relocates comes after that line.
 
+**An entity with C language linkage.** Its key's parent is `c_linkage`
+whatever namespace declares it (`digest.md` §3), so moving it between
+namespaces changes no key and needs no line. Renaming it does: for an
+`<entity>` whose `Key` has the parent `c_linkage`, the line's `<parent>`
+is resolved and checked like any other (it says where the declaration
+is, and a name that resolves to nothing is an error), and the rule is
+
+```
+Rule { parent: c_linkage, kind, name: N', disc,  to_parent: c_linkage, to_name: name }
+```
+
+So `relocate legacy::c_fn(int) => legacy :: c_fn2` and `=> :: c_fn2`
+give one rule. The row that needs it is the rename of a C function to a
+builtin's name (`docs/wp/WP-109.md`, sketch 11): the front end then
+treats the calls as the builtin's, which the callers' units show. What
+C sources and the linker see of such a rename is §8's.
+
 **Errors**, each naming the line number. One error is reported: the
 first `Syntax` error in file order if the text has one; else the first
 error in file order among the `relocate`, `changed` and `removed` lines;
@@ -1907,6 +1924,13 @@ using-declaration). Those are judged by the comparison of digests alone.
   observer with and without rules (§5.5).
 
 ## Open questions
+
+- **A literal operator as a rule's new name.** `relocate` moves a literal
+  operator with `=` and cannot rename its suffix (`NotRenamable`: `<name>`
+  is an identifier). A rename of `_km` to `_m` is a refactoring a tool
+  makes; it needs a `<name>` form for `operator""_m` and nothing else of
+  §2.1. Not urgent: such a rename is reported today, never silent
+  (`spec/landed/pitfalls/WP-109.md`).
 
 - **Name-derived values that changed** (`digest.md` §9). A relocation
   changes what `__func__`, `__PRETTY_FUNCTION__`,
