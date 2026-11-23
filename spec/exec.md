@@ -1277,12 +1277,14 @@ pub struct WorkerArgs { pub worker_jobs: u64, pub worker_stack: u64, pub finding
 // image.rs — spec/verify.md §5.1
 pub struct RootMap { pub subject: Vec<u8>, pub post: Vec<u8> }
 pub struct Image { /* root maps, sorted */ }
-pub enum ImageError { NotAbsolute(Vec<u8>), IsRoot, Nested { inner: Vec<u8>, outer: Vec<u8> }, Duplicate(Vec<u8>),
-                      NotUtf8(Vec<u8>), EqualsInPost(Vec<u8>) }
+pub enum ImageError { NotAbsolute(Vec<u8>), IsRoot, NotNormal(Vec<u8>) /* a trailing `/`, an empty, `.` or `..` component */,
+                      Nested { inner: Vec<u8>, outer: Vec<u8> }, Duplicate(Vec<u8>), NotUtf8(Vec<u8>), EqualsInPost(Vec<u8>) }
 impl Image {
     pub fn identity() -> Image;
     pub fn new(maps: Vec<RootMap>) -> Result<Image, ImageError>;     // the checks of §5.1 that need no file system
     pub fn from_args(args: &ImageArgs) -> Result<Image, String>;     // each directory made a real path, then `new`
+    pub fn from_post(store: &Store, post: &PostImage) -> Result<Image, String>;   // a job's image (tree form; the overlay is `Err` until M2)
+    pub fn to_post(&self) -> PostImage;                                           // what the coordinator puts in the job
     pub fn maps(&self) -> &[RootMap];
     pub fn is_identity(&self) -> bool;
     pub fn command(&self, command: &Command) -> Command;             // the post command
@@ -1299,9 +1301,12 @@ pub enum Side { Pre, Post }
 
 // worker.rs
 pub struct MapTask;     impl Task for MapTask;                       // spec/model.md §8.5
+pub struct VerifyTask;  impl Task for VerifyTask;                    // spec/verify.md §5; makes the `Params`
 pub struct PhaseTask;   impl Task for PhaseTask;                     // §8.4: by `job.phase`
+impl PhaseTask { pub fn new(limit: u64, locate: u64) -> PhaseTask; } // the worker's `--findings`, `--locate`
 // verify_job.rs
-pub struct Params { pub declared: Declared, pub image: Image, pub limit: usize, pub locate: usize }
+pub struct Params { pub pre: u64 /* Job.post.pre */, pub declared: Declared, pub image: Image, pub limit: usize,
+                    pub locate: usize }
 pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String>;   // spec/verify.md §5.2
 // locate.rs — spec/verify.md §6.1 "Interface"
 // declare.rs — spec/verify.md §2.3 "Interface", and the command:
@@ -1316,8 +1321,9 @@ pub fn main(args: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Exit
 `ParseArgs` becomes `{ source: PlanSource, run: RunArgs }`.
 
 `worker.rs` has one function that makes the `Params` of a verify job,
-from `job.post`, the job's store and the worker's `findings` and
-`locate`. `verify_job::verify` and everything under it take their
+from `job.post` (`pre`, the `Declared` read from the store by its id,
+the image by `Image::from_post`), the job's store and the worker's
+`findings` and `locate`. `verify_job::verify` and everything under it take their
 parameters from `Params` and read neither the job's `post` nor the
 worker's arguments.
 
@@ -1333,8 +1339,6 @@ pub type Blobs = std::sync::Arc<dyn Fn(&Digest) -> std::io::Result<Vec<u8>> + Se
 impl Image {
     pub fn overlay(id: Digest, overlay: slip_model::Overlay, blobs: Blobs) -> Image;
     pub fn overlay_id(&self) -> Option<&Digest>;
-    pub fn from_post(store: &Store, post: &PostImage) -> Result<Image, String>;   // a job's image; a tree goes through `new`
-    pub fn to_post(&self) -> PostImage;                                           // what the coordinator puts in the job
 }
 // worker.rs
 pub struct TransformTask;   impl Task for TransformTask;             // a map job with `transform`; PhaseTask dispatches to it

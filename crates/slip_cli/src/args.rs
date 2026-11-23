@@ -460,11 +460,8 @@ fn parse_resource(args: &[OsString]) -> Result<Invocation, UsageError> {
 }
 
 fn parse_worker(args: &[OsString]) -> Result<Invocation, UsageError> {
-    let values = options_only(
-        args,
-        &["--worker-jobs", "--worker-stack", "--findings", "--locate"],
-        &[],
-    )?;
+    let values =
+        options_only(args, &["--worker-jobs", "--worker-stack", "--findings", "--locate"], &[])?;
     Ok(Invocation::Worker(WorkerArgs {
         worker_jobs: values.number("--worker-jobs", 1)?.unwrap_or(DEFAULT_WORKER_JOBS),
         worker_stack: values.size("--worker-stack", 1)?.unwrap_or(DEFAULT_WORKER_STACK),

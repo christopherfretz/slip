@@ -43,8 +43,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use slip_model::container::{Reader, TRAILER_LEN};
-use slip_model::hash::content_digest;
 use slip_model::declared::Declared;
+use slip_model::hash::content_digest;
 use slip_model::{Digest, Phase, Plan, RunRecord, Shard, formats};
 
 /// The text of `VERSION`.

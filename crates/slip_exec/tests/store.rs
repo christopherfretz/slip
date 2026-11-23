@@ -348,10 +348,7 @@ fn s2_declared_publish_read_and_refuse() {
     bad[n - 1] ^= 1;
     let sh = shard(d(1), Phase::Map, 0).to_bytes();
     for bytes in [&sh[..], &plan("x").to_bytes()[..], b"nope", &bad[..], &[][..]] {
-        assert!(
-            matches!(store.publish_declared(bytes), Err(StoreError::Invalid(_))),
-            "{bytes:?}"
-        );
+        assert!(matches!(store.publish_declared(bytes), Err(StoreError::Invalid(_))), "{bytes:?}");
     }
     assert_eq!(names(&s.join("declared")).len(), 2);
     assert!(names(&s.join("tmp")).is_empty());

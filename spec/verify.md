@@ -554,7 +554,8 @@ different files spell alike: it is one to one on the paths under the post
 roots, and G1 (§5.3) excludes a post-image parse that read the subject.
 
 The rule is textual because a command line is text: `-I/s/include`,
-`--sysroot=/s/x` and `-DROOT="/s"` are all rewritten. So is a subject root
+`--sysroot=/s/x` and `-DROOT="/s/"` are all rewritten (`-DROOT="/s"` is
+not: the root is followed by `"`). So is a subject root
 that happens to occur inside a longer path (`/mnt/s/x` for the root `/s`),
 which then names nothing, or something else; and a path that reaches the
 subject without spelling a root (a relative `-I../src` from a directory

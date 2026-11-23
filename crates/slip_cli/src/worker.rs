@@ -31,7 +31,7 @@ use crate::verify_job::{Params, verify};
 /// job naming another store replaces it).
 fn open_store<'s>(slot: &'s mut Option<Store>, job: &Job) -> Result<&'s Store, String> {
     let path = job.store_path();
-    if !slot.as_ref().is_some_and(|store| store.root() == path) {
+    if slot.as_ref().is_none_or(|store| store.root() != path) {
         *slot = None;
         let store = Store::open(path, Access::Shared)
             .map_err(|e| format!("cannot open the store {}: {e}", path.display()))?;
@@ -59,7 +59,6 @@ impl MapTask {
     pub fn new() -> Self {
         Self::default()
     }
-
 }
 
 impl Task for MapTask {
@@ -178,8 +177,8 @@ fn make_params(
         })?;
     let declared = Declared::from_bytes(&bytes)
         .map_err(|e| format!("{} is not a valid DECL file: {e}", path.display()))?;
-    let actual =
-        content_id(&bytes).map_err(|e| format!("{} is not a valid DECL file: {e}", path.display()))?;
+    let actual = content_id(&bytes)
+        .map_err(|e| format!("{} is not a valid DECL file: {e}", path.display()))?;
     if actual != id {
         return Err(format!("{} has the content id {actual}, not {id}", path.display()));
     }

@@ -18,13 +18,13 @@ use slip_digest::{Detail, Options, digest};
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_model::declared::Declared;
-use slip_model::digests::{Digests, Group, GroupSum};
+use slip_model::digests::{Digests, Group, GroupClass, GroupSum};
 use slip_model::formats::content_id;
 use slip_model::keys::RuleTable;
 use slip_model::verdict::{FindingKind, Verdict};
-use slip_model::{Counter, Digest, FileRef, Phase, Shard, Status};
+use slip_model::{Counter, Digest, FileRef, Observer, Phase, Shard, Status};
 use slip_verify::compare::{
-    AtSums, Comparison, CompareError, Exemptions, at_sums, comparable, compare_groups,
+    AtSums, CompareError, Comparison, Exemptions, at_sums, comparable, compare_groups,
     unverifiable, verdict, verified,
 };
 
@@ -59,6 +59,10 @@ struct Pre {
 /// digests, the comparison, and the pre side of localisation when the
 /// comparison has a finding to name.
 type PreParse = (Digests, Result<Comparison, CompareError>, Option<locate::Side>);
+
+/// What step 4 gives when its guards hold: the comparison, and the pre
+/// side of step 6.
+type Compared = (Result<Comparison, CompareError>, Option<locate::Side>);
 
 /// `spec/verify.md` §5.2: the verify job of `job` with `params`, reading
 /// the pre shard from `store`. The shard returned is for `job`'s observer,
@@ -111,10 +115,9 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     counters.extend(walk_counters(&output));
     let mut post =
         Post { counters, digests: output.digests, differing: 0, reparsed: 0, by_kind: [0; 6] };
-    let unverifiable_now =
-        |post: Post, mut shard: Shard, reason: &str| -> Result<Shard, String> {
-            Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
-        };
+    let unverifiable_now = |post: Post, mut shard: Shard, reason: &str| -> Result<Shard, String> {
+        Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
+    };
 
     // Step 2: P1 to P3, G1, C.
     let Some(pre) = pre else {
@@ -134,16 +137,13 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         let reason = format!("post-image: read {}, a file of the subject", show_path(&read.path));
         return unverifiable_now(post, shard, &reason);
     }
-    if let Err(e) = comparable(pre_digests, &post.digests) {
-        return unverifiable_now(post, shard, &format!("digests: {e}"));
+    if let Some(reason) = not_comparable(pre_digests, &post.digests) {
+        return unverifiable_now(post, shard, &reason);
     }
 
     // Step 3: the sums.
     let g = match at_sums(pre_digests, &post.digests) {
-        AtSums::Equal => {
-            let v = verified(pre.id, rules_id);
-            return Ok(post.finish(&mut shard, v));
-        }
+        AtSums::Equal => return Ok(post.finish(&mut shard, verified(pre.id, rules_id))),
         AtSums::Differing(g) => g,
     };
     if g.is_empty() {
@@ -154,64 +154,23 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     }
     post.differing = g.len() as u64;
 
-    // Step 4: the pre-image, with detail for the groups of `G`; the
-    // comparison (and the pre side of step 6) inside the same parse.
-    let in_g = |grp: &&Group| g.binary_search_by(|(c, f)| (*c, f.as_slice()).cmp(&(grp.class, &grp.file))).is_ok();
-    let post_g: Vec<&Group> = post.digests.groups.iter().filter(in_g).collect();
-    let exemptions = Exemptions::from_declared(&params.declared);
-    let (limit, locate_n) = (params.limit, params.locate);
-    let no_rules = RuleTable::empty();
-    let pre_options = Options { rules: &no_rules, detail: Detail::Groups(&g), names: false };
-    let parsed = params.image.parse(observer, Side::Pre, Phase::Map, params.pre, |input| {
-        let out = digest(input, &pre_options);
-        let pre_g: Vec<&Group> = out.digests.groups.iter().filter(in_g).collect();
-        let comparison = compare_groups(&pre_g, &post_g, &exemptions);
-        let side = match &comparison {
-            Ok(c) if !c.findings.is_empty() && locate_n > 0 => {
-                let keys = locate::wanted(&c.findings[..c.findings.len().min(limit)], locate_n);
-                Some(locate::take(input, &no_rules, &keys))
-            }
-            _ => None,
-        };
-        (out.digests, comparison, side)
-    });
+    // Step 4: the pre-image, and R1, G2, R2.
+    let parsed = pre_image(observer, params, &pre, &g, &post.digests)?;
     post.reparsed += 1;
-    let (pre_shard, pre_parse): (Shard, Option<PreParse>) = parsed?;
-    // R1.
-    if pre_shard.outcome.status != Status::Ok {
-        let reason = format!(
-            "pre-image: no longer parses ({}): {}",
-            pre_shard.outcome.status.name(),
-            pre_shard.outcome.message
-        );
-        return unverifiable_now(post, shard, &reason);
-    }
-    let Some((pre_parsed, comparison, pre_side)) = pre_parse else {
-        return Err("the pre-image parsed without error and the walk did not run".to_owned());
+    let (comparison, pre_side) = match parsed {
+        Ok(parsed) => parsed,
+        Err(reason) => return unverifiable_now(post, shard, &reason),
     };
-    // G2.
-    if let Some(path) = first_difference(
-        pre_shard.inputs.as_deref().unwrap_or_default(),
-        pre.shard.inputs.as_deref().unwrap_or_default(),
-    ) {
-        let reason = format!("pre-image: {} changed since the map phase", show_path(path));
-        return unverifiable_now(post, shard, &reason);
-    }
-    // R2.
-    if without_units(&pre_parsed) != without_units(pre_digests) {
-        return unverifiable_now(post, shard, "pre-image: its digests are not those of the map shard");
-    }
 
     // Step 5: the verdict from the comparison.
-    let comparison = comparison.map_err(|e| {
-        format!("{e} (observer {}, main file {})", observer.id, show_path(&observer.main.path))
-    })?;
+    let comparison = compared(comparison, observer)?;
     for f in &comparison.findings {
         post.by_kind[kind_index(f.kind)] += 1;
     }
-    let mut v = verdict(comparison, pre.id, rules_id, limit);
+    let mut v = verdict(comparison, pre.id, rules_id, params.limit);
 
     // Step 6: names, from a second parse of the post-image; G3.
+    let locate_n = params.locate;
     if v.total > 0 && locate_n > 0 {
         let keys = locate::wanted(&v.findings, locate_n);
         let again = params.image.parse(observer, Side::Post, Phase::Verify, job.round, |input| {
@@ -233,6 +192,67 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         }
     }
     Ok(post.finish(&mut shard, v))
+}
+
+/// Step 4 (§5.2): the pre-image parsed with detail for the groups of `G`,
+/// with the comparison (step 5's `compare_groups`) and the pre side of
+/// step 6 done inside the same parse, then guards R1, G2 and R2 in that
+/// order. `Ok(Err(reason))` is the first guard that fails; `Err` a failure
+/// of the job (the parse failed, or the walk did not run after a parse
+/// without error).
+fn pre_image(
+    observer: &Observer,
+    params: &Params,
+    pre: &Pre,
+    g: &[(GroupClass, Vec<u8>)],
+    post_digests: &Digests,
+) -> Result<Result<Compared, String>, String> {
+    let in_g = |grp: &&Group| {
+        g.binary_search_by(|(c, f)| (*c, f.as_slice()).cmp(&(grp.class, &grp.file))).is_ok()
+    };
+    let post_g: Vec<&Group> = post_digests.groups.iter().filter(in_g).collect();
+    let exemptions = Exemptions::from_declared(&params.declared);
+    let (limit, locate_n) = (params.limit, params.locate);
+    let no_rules = RuleTable::empty();
+    let options = Options { rules: &no_rules, detail: Detail::Groups(g), names: false };
+    let (pre_shard, parsed): (Shard, Option<PreParse>) =
+        params.image.parse(observer, Side::Pre, Phase::Map, params.pre, |input| {
+            let out = digest(input, &options);
+            let pre_g: Vec<&Group> = out.digests.groups.iter().filter(in_g).collect();
+            let comparison = compare_groups(&pre_g, &post_g, &exemptions);
+            let side = match &comparison {
+                Ok(c) if !c.findings.is_empty() && locate_n > 0 => {
+                    let keys = locate::wanted(&c.findings[..c.findings.len().min(limit)], locate_n);
+                    Some(locate::take(input, &no_rules, &keys))
+                }
+                _ => None,
+            };
+            (out.digests, comparison, side)
+        })?;
+    // R1.
+    if pre_shard.outcome.status != Status::Ok {
+        return Ok(Err(format!(
+            "pre-image: no longer parses ({}): {}",
+            pre_shard.outcome.status.name(),
+            pre_shard.outcome.message
+        )));
+    }
+    let Some((pre_parsed, comparison, pre_side)) = parsed else {
+        return Err("the pre-image parsed without error and the walk did not run".to_owned());
+    };
+    // G2.
+    if let Some(path) = first_difference(
+        pre_shard.inputs.as_deref().unwrap_or_default(),
+        pre.shard.inputs.as_deref().unwrap_or_default(),
+    ) {
+        return Ok(Err(format!("pre-image: {} changed since the map phase", show_path(path))));
+    }
+    // R2.
+    let stored = pre.shard.digests.as_ref().map(without_units);
+    if stored.as_ref() != Some(&without_units(&pre_parsed)) {
+        return Ok(Err("pre-image: its digests are not those of the map shard".to_owned()));
+    }
+    Ok(Ok((comparison, pre_side)))
 }
 
 /// What the post shard is made of, gathered along the steps.
@@ -264,10 +284,12 @@ impl Post {
             ("verify.reparsed", reparsed),
         ];
         counters.extend(by_name.iter().map(|&(n, value)| Counter { name: n.to_owned(), value }));
-        counters.extend(KINDS.iter().zip(by_kind).map(|(&(_, n), value)| Counter {
-            name: format!("verify.findings.{n}"),
-            value,
-        }));
+        counters.extend(
+            KINDS
+                .iter()
+                .zip(by_kind)
+                .map(|(&(_, n), value)| Counter { name: format!("verify.findings.{n}"), value }),
+        );
         counters.sort_by(|a, b| a.name.cmp(&b.name));
         for grp in &mut digests.groups {
             grp.units = None;
@@ -291,7 +313,31 @@ const KINDS: [(FindingKind, &str); 6] = [
 ];
 
 fn kind_index(kind: FindingKind) -> usize {
-    KINDS.iter().position(|&(k, _)| k == kind).unwrap_or_else(|| unreachable!("every kind is listed"))
+    KINDS
+        .iter()
+        .position(|&(k, _)| k == kind)
+        .unwrap_or_else(|| unreachable!("every kind is listed"))
+}
+
+/// Guard C (§5.3): the reason of the `unverifiable` verdict when `pre`
+/// and `post` cannot be compared. Both have been validated by then (the
+/// pre shard by its decoder, the post digests by the walk that made
+/// them), so this is reached only by a defect; it is kept, and tested
+/// below, because §4.1 trusts what it checks.
+fn not_comparable(pre: &Digests, post: &Digests) -> Option<String> {
+    comparable(pre, post).err().map(|e| format!("digests: {e}"))
+}
+
+/// Step 5: a `CompareError` fails the job, naming the observer and its
+/// main file. Both lists come from walks this job ran with detail for the
+/// groups of `G`, so this too is reached only by a defect.
+fn compared(
+    comparison: Result<Comparison, CompareError>,
+    observer: &Observer,
+) -> Result<Comparison, String> {
+    comparison.map_err(|e| {
+        format!("{e} (observer {}, main file {})", observer.id, show_path(&observer.main.path))
+    })
 }
 
 /// Step 0: the observer's shard of phase `map` and round `round`. `None`
@@ -327,10 +373,10 @@ fn read_pre(store: &Store, job: &Job, round: u64) -> Result<Option<Pre>, String>
 /// Guard G2: the first path, in path order, whose entry is not the same
 /// (path, size and digest) in both lists or is in one only. Both lists
 /// are sorted by path, as a shard's `inputs` are.
-fn first_difference<'a>(a: &'a [FileRef], b: &'a [FileRef]) -> Option<&'a [u8]> {
+fn first_difference<'a>(left: &'a [FileRef], right: &'a [FileRef]) -> Option<&'a [u8]> {
     let (mut i, mut j) = (0, 0);
     loop {
-        match (a.get(i), b.get(j)) {
+        match (left.get(i), right.get(j)) {
             (None, None) => return None,
             (Some(x), None) => return Some(&x.path),
             (None, Some(y)) => return Some(&y.path),
@@ -359,12 +405,82 @@ fn without_units(d: &Digests) -> Digests {
 /// A path in a reason (§5.3): its bytes where they are UTF-8, each other
 /// byte as `\xNN`.
 fn show_path(path: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(path.len());
     for chunk in path.utf8_chunks() {
         out.push_str(chunk.valid());
         for b in chunk.invalid() {
-            out.push_str(&format!("\\x{b:02x}"));
+            let _ = write!(out, "\\x{b:02x}");
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use slip_model::digests::{GroupClass, SCHEME, tu_digest};
+    use slip_model::{Command, Language, Origin};
+
+    use super::*;
+
+    fn digests(scheme: u64) -> Digests {
+        let groups = vec![Group {
+            class: GroupClass::Tu,
+            file: Vec::new(),
+            count: 0,
+            indeterminate: 0,
+            digest: Digest([1; 32]),
+            units: None,
+        }];
+        Digests { scheme, tu: tu_digest(&groups), groups }
+    }
+
+    // §5.3 C: the reason is `digests: ` and `comparable`'s message, for
+    // either image; none when both can be compared. Unit level: no
+    // validated shard and no walk gives digests that fail it.
+    #[test]
+    fn c_digests_not_comparable() {
+        let good = digests(SCHEME);
+        assert_eq!(not_comparable(&good, &good), None);
+        let other = digests(SCHEME + 1);
+        let expect = |image: &str| {
+            format!(
+                "digests: the {image}-image digests have scheme {}; this build implements scheme {SCHEME}",
+                SCHEME + 1
+            )
+        };
+        assert_eq!(not_comparable(&other, &good), Some(expect("pre")));
+        assert_eq!(not_comparable(&good, &other), Some(expect("post")));
+        let mut bad_tu = digests(SCHEME);
+        bad_tu.tu = Digest([9; 32]);
+        assert_eq!(
+            not_comparable(&good, &bad_tu).as_deref(),
+            Some("digests: the post-image tu digest is not the digest of its groups")
+        );
+    }
+
+    // §5.2 step 5: a `CompareError` fails the job, with the observer and
+    // its main file; a comparison passes through.
+    #[test]
+    fn s5_2_compare_error_fails_the_job() {
+        let command =
+            Command { directory: b"/d".to_vec(), argv: vec![b"c++".to_vec()], env: Vec::new() };
+        let observer = Observer {
+            id: command.observer_id(),
+            command,
+            language: Language::Cxx,
+            main: FileRef { path: b"/d/a\xff.cpp".to_vec(), size: 0, content: Digest([0; 32]) },
+            cost_hint: 1,
+            origins: vec![Origin { configuration: 0, entry: 0 }],
+        };
+        let e = CompareError::MissingUnits {
+            class: GroupClass::Declared,
+            file: b"/d/h.h".to_vec(),
+            post: true,
+        };
+        let err = compared(Err(e.clone()), &observer).unwrap_err();
+        assert_eq!(err, format!("{e} (observer {}, main file /d/a\\xff.cpp)", observer.id));
+        let ok = compare_groups(&[], &[], &Exemptions::from_declared(&Declared::none()));
+        assert!(compared(ok, &observer).is_ok());
+    }
 }

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use slip_cli::args::{
     self, DEFAULT_FINDINGS, DEFAULT_LOCATE, DEFAULT_STORE, DEFAULT_WORKER_JOBS,
-    DEFAULT_WORKER_STACK, Db, Invocation, ParseArgs,
-    PlanArgs, PlanSource, UsageError, WorkerArgs, parse_size,
+    DEFAULT_WORKER_STACK, Db, Invocation, ParseArgs, PlanArgs, PlanSource, UsageError, WorkerArgs,
+    parse_size,
 };
 
 fn os(words: &[&str]) -> Vec<OsString> {
@@ -151,7 +151,15 @@ fn s8_option_spellings() {
             worker_stack: DEFAULT_WORKER_STACK,
         }
     );
+}
 
+// §8.4: the worker's options `--findings` and `--locate` (`limit` and
+// `locate` of spec/verify.md §5; defaults 64 and 16, 0 allowed), and no
+// other: `--declared`, `--root` and `--post` reach a verify job in the
+// job (`Job.post`), never on a worker's command line.
+#[test]
+fn s8_4_worker_options() {
+    assert_eq!((DEFAULT_FINDINGS, DEFAULT_LOCATE), (64, 16));
     assert_eq!(
         parse(&["__worker", "--worker-jobs", "3", "--worker-stack=16M"]),
         Ok(Invocation::Worker(WorkerArgs {
@@ -170,15 +178,6 @@ fn s8_option_spellings() {
             locate: DEFAULT_LOCATE,
         }))
     );
-}
-
-// §8.4: the worker's options `--findings` and `--locate` (`limit` and
-// `locate` of spec/verify.md §5; defaults 64 and 16, 0 allowed), and no
-// other: `--declared`, `--root` and `--post` reach a verify job in the
-// job (`Job.post`), never on a worker's command line.
-#[test]
-fn s8_4_worker_options() {
-    assert_eq!((DEFAULT_FINDINGS, DEFAULT_LOCATE), (64, 16));
     assert_eq!(
         parse(&["__worker", "--findings", "3", "--locate=0", "--worker-jobs", "2"]),
         Ok(Invocation::Worker(WorkerArgs {
@@ -210,8 +209,9 @@ fn s8_4_worker_options() {
         assert!(!line.is_empty(), "{words:?}");
     }
     assert!(usage_error(&["__worker", "--root", "/s"]).contains("--root"));
-    assert!(usage_error(&["__worker", "--findings", "1", "--findings", "2"])
-        .contains("more than once"));
+    assert!(
+        usage_error(&["__worker", "--findings", "1", "--findings", "2"]).contains("more than once")
+    );
     assert!(usage_error(&["__worker", "--findings", "x"]).contains("not a number"));
 }
 

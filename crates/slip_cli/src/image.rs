@@ -190,8 +190,7 @@ impl Image {
                 args.posts.len()
             ));
         }
-        let real =
-            |p: &PathBuf| real_dir(p).map_err(|e| format!("image: {}: {e}", p.display()));
+        let real = |p: &PathBuf| real_dir(p).map_err(|e| format!("image: {}: {e}", p.display()));
         let mut maps = Vec::with_capacity(args.roots.len());
         for (subject, post) in args.roots.iter().zip(&args.posts) {
             maps.push(RootMap { subject: real(subject)?, post: real(post)? });
@@ -277,15 +276,12 @@ impl Image {
                 rest.strip_prefix(&m.subject[..])
                     .is_some_and(|after| after.is_empty() || after[0] == b'/')
             });
-            match hit {
-                Some(m) => {
-                    out.extend_from_slice(&m.post);
-                    at += m.subject.len();
-                }
-                None => {
-                    out.push(word[at]);
-                    at += 1;
-                }
+            if let Some(m) = hit {
+                out.extend_from_slice(&m.post);
+                at += m.subject.len();
+            } else {
+                out.push(word[at]);
+                at += 1;
             }
         }
         out

@@ -66,7 +66,7 @@ pub fn fill(findings: &mut [Finding], locate: usize, pre: Option<&Side>, post: &
         let Some(key) = f.key else { continue };
         let name = pre.and_then(|p| p.name(&key)).or_else(|| post.name(&key));
         if let Some(name) = name {
-            f.name = cut(name).to_owned();
+            cut(name).clone_into(&mut f.name);
         }
     }
 }
