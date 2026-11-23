@@ -500,7 +500,9 @@ unit in which no node is reached twice is what it is without the rule.
   rule above, are not counted, and are never written as `backref`.
 - Nodes walked while a canonical operand is written (profile mode,
   `digest-kinds.md` §4.4) are not counted and never written as
-  `backref`.
+  `backref`. A requires-expression inside a key is also written in
+  profile mode (it numbers its own parameters), so its nodes are not
+  counted either.
 - A back-reference names a node of its own stream only. A type digest, a
   key, a discriminator, a content digest, a unit and each element of a
   `*sorted` list (encoded alone before the list is sorted) is a stream

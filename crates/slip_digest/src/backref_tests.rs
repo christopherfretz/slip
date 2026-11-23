@@ -339,12 +339,14 @@ fn a_node_in_another_state_is_written_again() {
     });
 }
 
-/// The pair WP-049 asks for, as a unit test (no source reaches one node
-/// both outside and inside an instantiation-dependent expression): an
-/// implicit `this` against an explicit one, each written once outside a
-/// dependent expression (where `aux-implicit` is not written) and once
-/// inside one: the streams differ (mutation: the state left out of the
-/// key makes them equal).
+/// The pair WP-049 asks for, as a unit test: an implicit `this` against
+/// an explicit one, each written once outside a dependent expression
+/// (where `aux-implicit` is not written) and once inside one: the streams
+/// differ (mutation: the state left out of the key makes them equal).
+/// Sources do reach one node in both states
+/// (`a_node_shared_by_a_dependent_pattern_and_its_expansions`), but there
+/// the dependent reach comes first, so a pair of sources cannot be made
+/// equal by the mutation: this order is reached only here.
 #[test]
 fn shared_node_in_two_states() {
     let stream = |src: &str| {
@@ -426,29 +428,23 @@ fn inner_streams_neither_see_nor_lose_the_memo() {
 /// node, has the digest it has when written first: the memo starts empty
 /// at the head of the inner unit and the outer one's is back after it.
 /// The inner unit is a `static_assert`, keyed by its content digest
-/// (`Walk::content_hash`), written while another stream is open; the
-/// first digest is from a walk that writes nothing before it.
+/// (`Walk::content_hash`), determinate, written while another stream is
+/// open; the first digest is from a walk that writes nothing before it.
 #[test]
 fn a_unit_written_inside_another_is_the_same() {
-    let src = "static_assert(sizeof((long[3]){[0 ... 2] = 1 + 2}) == 3 * sizeof(long));\n\
+    let src = "struct A { long v[3]; };\n\
+               static_assert(A{{[0 ... 2] = 1 + 2}}.v[2] == 3);\n\
                long v[3] = {[0 ... 2] = 1 + 2};\n";
-    let assertion = |w: &Walk<'_>| {
-        let ast = w.ast;
-        (1..=ast.decls.len())
-            .filter_map(|i| slip_kiln::kiln::ast::DeclId::try_new(u32::try_from(i).ok()?))
-            .find(|&d| {
-                ast.decls.get(d).kind() == slip_kiln::kiln::ast::decl::DeclKind::StaticAssert
-            })
-            .expect("the static_assert")
-    };
     let lone = with_walk(src, "c++20", |w| {
-        let sa = assertion(w);
-        w.content_hash(sa)
+        let sa = static_assert(w);
+        let refs = BACKREFS.with(std::cell::Cell::get);
+        let h = w.content_hash(sa);
+        assert!(BACKREFS.with(std::cell::Cell::get) > refs, "the unit has a shared node");
+        h
     });
-    // (`CompoundLiteralExpr.aux` is `unsupported`: the unit is
-    // indeterminate, and its digest is still the hash of its stream.)
+    assert_eq!(lone.cause, None, "the unit is determinate");
     with_walk(src, "c++20", |w| {
-        let sa = assertion(w);
+        let sa = static_assert(w);
         let list = last_expr(w, ExprKind::InitListExpr);
         let mut outer = Stream::new();
         let first = appended(w, &mut outer, list);
@@ -463,6 +459,169 @@ fn a_unit_written_inside_another_is_the_same() {
         assert_eq!(appended(w, &mut outer, list), backref(0), "the outer memo is back");
         assert!(first.len() > backref(0).len());
     });
+}
+
+/// The first `static_assert`.
+fn static_assert(w: &Walk<'_>) -> slip_kiln::kiln::ast::DeclId {
+    let ast = w.ast;
+    (1..=ast.decls.len())
+        .filter_map(|i| slip_kiln::kiln::ast::DeclId::try_new(u32::try_from(i).ok()?))
+        .find(|&d| ast.decls.get(d).kind() == slip_kiln::kiln::ast::decl::DeclKind::StaticAssert)
+        .expect("the static_assert")
+}
+
+/// The source of `equal/_/backref-content-unit`, side A and side B (the
+/// shared clause in redundant parentheses): a `static_assert` in a class,
+/// content-keyed, whose digest is computed inside the class's stream.
+const CONTENT_UNIT: [&str; 2] = [
+    "struct A { long v[3]; };\nstruct S { static_assert(A{{[0 ... 2] = 1 + 2}}.v[2] == 3); };\n",
+    "struct A { long v[3]; };\nstruct S { static_assert(A{{[0 ... 2] = (1 + 2)}}.v[2] == 3); };\n",
+];
+
+/// `equal/_/backref-content-unit` shows what it says: on each side every
+/// unit is determinate and the walk writes back-references (the
+/// conversions of the three slots share the clause), and the two sides'
+/// units are equal.
+#[test]
+fn the_content_unit_pair_shares_nodes() {
+    let units = |src: &str| {
+        let (o, refs) = digest_with(src, "c++20", RuleTable::empty());
+        let units: Vec<slip_model::digests::Unit> =
+            o.digests.groups.iter().flat_map(|g| g.units.iter().flatten().cloned()).collect();
+        assert!(refs > 0, "{refs} back-references: {src}");
+        assert!(units.iter().all(|u| !u.is_indeterminate()), "{src}");
+        units.iter().map(|u| (u.key, u.digest)).collect::<Vec<_>>()
+    };
+    assert_eq!(units(CONTENT_UNIT[0]), units(CONTENT_UNIT[1]));
+}
+
+/// §4.3: a back-reference's count is the node's number in its stream,
+/// counted from 0 at the first node, whatever bytes come before it
+/// (mutation: the count started at the stream's length). The unit stream
+/// of a `static_assert` writes its rows and then the condition, which
+/// holds a shared node: the condition written alone, from a stream's
+/// head, is the same bytes, back-reference and all.
+#[test]
+fn a_back_reference_in_a_unit_stream_counts_from_its_first_node() {
+    let src = "struct A { long v[3]; };\nstatic_assert(A{{[0 ... 2] = 1 + 2}}.v[2] == 3);\n";
+    with_walk(src, "c++20", |w| {
+        let sa = static_assert(w);
+        let Some(&slip_kiln::kiln::ast::decl::StaticAssertData { cond, .. }) =
+            w.ast.decls.static_assert(sa)
+        else {
+            panic!("no condition")
+        };
+        let lone = {
+            let saved = w.take_expr_state();
+            let mut t = Stream::new();
+            let b = appended(w, &mut t, cond);
+            w.unit.expr = saved;
+            b
+        };
+        let saved = w.take_expr_state();
+        let mut u = Stream::new();
+        let refs = BACKREFS.with(std::cell::Cell::get);
+        w.decl_stream(&mut u, sa, sa);
+        w.unit.expr = saved;
+        assert!(BACKREFS.with(std::cell::Cell::get) > refs, "the unit has a shared node");
+        let unit = u.as_bytes();
+        let at = unit.windows(lone.len()).position(|x| x == lone.as_slice());
+        assert!(matches!(at, Some(at) if at > 0), "the condition, after the unit's rows: {at:?}");
+        // The clause `1 + 2` is the shared node: written with the first
+        // slot, then named by the other two.
+        let clause = (1..=w.ast.exprs.len())
+            .filter_map(|i| ExprId::try_new(u32::try_from(i).ok()?))
+            .find(|&e| w.ast.exprs.get(e).kind() == ExprKind::BinaryOperator)
+            .expect("the clause");
+        let named = {
+            let saved = w.take_expr_state();
+            let mut t = Stream::new();
+            crate::expr::child(w, &mut t, cond);
+            let b = appended(w, &mut t, clause);
+            w.unit.expr = saved;
+            b
+        };
+        assert_eq!(named[..2], backref(0)[..2], "the clause is a back-reference");
+        let hits = unit.windows(named.len()).filter(|x| *x == named.as_slice()).count();
+        assert_eq!(hits, 2, "the other two slots name the clause by its count");
+    });
+}
+
+/// §4.3, §7 "Parentheses": the memo's key is the node after its redundant
+/// parentheses are skipped (mutation: the `ParenExpr` keyed as itself).
+/// One `ParenExpr` reached kept (a root that reads it) and then skipped:
+/// the second reach names its operand, written inside the first.
+#[test]
+fn a_skipped_paren_is_keyed_as_its_operand() {
+    with_walk("int a;\nint v = (a + 1) * 2;\n", "c++20", |w| {
+        let paren = last_expr(w, ExprKind::ParenExpr);
+        let kept = {
+            let mut t = Stream::new();
+            crate::expr::child_keep_paren(w, &mut t, paren);
+            t.as_bytes().to_vec()
+        };
+        let skipped = {
+            let mut t = Stream::new();
+            appended(w, &mut t, paren)
+        };
+        assert_ne!(kept, skipped, "the root keeps its parentheses");
+        let mut s = Stream::new();
+        crate::expr::child_keep_paren(w, &mut s, paren);
+        assert_eq!(s.as_bytes(), kept.as_slice());
+        // The `ParenExpr` is 0, its operand `a + 1` is 1.
+        assert_eq!(appended(w, &mut s, paren), backref(1), "skipped: its operand's count");
+        let mut s = Stream::new();
+        assert_eq!(appended(w, &mut s, paren), skipped);
+        let at = s.as_bytes().len();
+        crate::expr::child_keep_paren(w, &mut s, paren);
+        let tail = &s.as_bytes()[at..];
+        assert!(tail.windows(3).any(|x| x == backref(0).as_slice()), "kept: its operand named");
+        assert_ne!(s.as_bytes()[at..].to_vec(), backref(0));
+    });
+}
+
+/// §4.3 "the state": one node reached both inside and outside an
+/// instantiation-dependent expression, in a real source. An expansion
+/// statement writes its dependent pattern and then its expansions, which
+/// share nodes with it: the implicit `this` and its member access of
+/// `g(m + e)`, and the call `g(1)` of `g(g(1) + e)`, are first written
+/// inside the dependent pattern and reached again outside it, where they
+/// are written in full and counted again (mutation: the dependent bit
+/// left out of the key makes the second reach a back-reference to the
+/// first).
+#[test]
+fn a_node_shared_by_a_dependent_pattern_and_its_expansions() {
+    let cases = [
+        (
+            "int g(int);\nstruct S { int m; void k() { template for (auto e : {1, 2}) { g(m + e); } } };\n",
+            ExprKind::MemberExpr,
+        ),
+        (
+            "int g(int);\nvoid k() { template for (auto e : {1, 2}) { g(g(1) + e); } }\n",
+            ExprKind::CallExpr,
+        ),
+    ];
+    for (src, kind) in cases {
+        with_walk(src, "c++26", |w| {
+            let expansion = first_stmt(w, StmtKind::CXXExpansionStmt);
+            let mut s = Stream::new();
+            crate::stmt::child(w, &mut s, expansion);
+            let both = (1..=w.ast.exprs.len())
+                .filter_map(|i| ExprId::try_new(u32::try_from(i).ok()?))
+                .filter(|&e| w.ast.exprs.get(e).kind() == kind)
+                .filter(|&e| {
+                    w.unit.expr.dependent = 0;
+                    let outside = appended(w, &mut s, e);
+                    w.unit.expr.dependent = 1;
+                    let inside = appended(w, &mut s, e);
+                    w.unit.expr.dependent = 0;
+                    let named = |b: &[u8]| b[..2] == backref(0)[..2];
+                    named(&outside) && named(&inside) && outside != inside
+                })
+                .count();
+            assert!(both > 0, "a {kind:?} written in both states: {src}");
+        });
+    }
 }
 
 fn rename_rule(from: &str, to: &str) -> Rule {
