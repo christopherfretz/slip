@@ -1,0 +1,2 @@
+# Item 5: a member of each namespace with one mapped key: a collision, both indeterminate, never equal.
+relocate legacy => :: acme

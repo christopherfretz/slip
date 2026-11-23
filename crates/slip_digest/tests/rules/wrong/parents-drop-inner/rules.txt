@@ -1,0 +1,2 @@
+# Item 9, from parents/mapped-parent: the inner rename dropped.
+relocate a => :: x

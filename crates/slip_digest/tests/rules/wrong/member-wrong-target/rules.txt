@@ -1,0 +1,2 @@
+# Item 9, from verify/renamed-member: the target name replaced by another existing name, use.
+rule function | post S | id g | disc-of post S::g() | pre S | id use

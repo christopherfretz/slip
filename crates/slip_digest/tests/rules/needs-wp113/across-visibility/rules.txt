@@ -1,0 +1,2 @@
+# Fix round 2, F1: a wrong equal no unit shows today (spec/verify.md §2.1).
+relocate h::f() => d :: =

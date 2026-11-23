@@ -1,0 +1,3 @@
+# digest-kinds §3.1 default_argument: the instantiated default argument of a specialisation of a relocated template.
+# The rule is on the namespace only: every key under it maps through its parent.
+relocate acme => :: legacy

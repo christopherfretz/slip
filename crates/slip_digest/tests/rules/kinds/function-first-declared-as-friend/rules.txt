@@ -1,0 +1,4 @@
+# Fix round 3, X8: a function first declared as a friend of a class template.
+relocate f(int) => :: g
+# The friend declaration in the pattern is its own entity, keyed in A; it carries no definition, so f(int) is not instantiated from it and keeps the direct rule above.
+relocate A::friend f(int) => A :: g

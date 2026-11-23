@@ -1,0 +1,4 @@
+# Fix round 3, finding 2: every declaration of the entity's chain is asked for its pattern, not the representative only (spec/digest.md §3.4).
+# The review's B34: two friends swapped, both declared again at namespace scope; u() still calls f, which is now the body that was g's (the programs return 1 and 2). Before: equal.
+relocate S::friend f(S<type-parameter-0-0>) => S :: g
+relocate S::friend g(S<type-parameter-0-0>) => S :: f

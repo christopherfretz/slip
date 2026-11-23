@@ -1,0 +1,7 @@
+# pending
+# needs: WP-113
+# n moved out of the unnamed namespace: its inline f() becomes a weak external symbol. clang++-19 -std=c++20 -c, nm: `t _ZN12_GLOBAL__N_11n1fEv` in a.o, `W _ZN1n1fEv` in b.o.
+# Equal today: Rule::refusal sees a namespace rule's two names only, and neither is the unnamed namespace's; no
+# unit holds the linkage a member takes from its enclosing namespaces. WP-113 writes it into the
+# member's unit (one gap with an entity moved across the unnamed namespace; no second guard here).
+changed (anonymous namespace)::n::f()
