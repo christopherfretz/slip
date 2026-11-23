@@ -30,7 +30,13 @@ fn units_of(input: &Input<'_>) -> BTreeMap<String, U> {
     let rules = RuleTable::empty();
     let o = crate::digest(
         input,
-        &crate::Options { rules: &rules, detail: crate::Detail::All, names: true },
+        &crate::Options {
+            rules: &rules,
+            read_only: crate::ReadOnly::NO_FILE,
+            detail: crate::Detail::All,
+            names: true,
+            rule_use: false,
+        },
     );
     let mut digests = BTreeMap::new();
     for g in &o.digests.groups {

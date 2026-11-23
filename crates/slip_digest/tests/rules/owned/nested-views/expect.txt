@@ -1,0 +1,5 @@
+# The member S is keyed in its own (owned) view all the way up: mid and acme
+# are the dependency's in B, so only the namespace units only owned code
+# opened are gone (declarable removals).
+removed legacy
+removed legacy::mid

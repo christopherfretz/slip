@@ -1,0 +1,7 @@
+# pending
+# needs: WP-116 (an entity a rule renames is defined in an owned file by some observer)
+# Equal today (verified, wrongly: the pasted name is decided by its expansion
+# location). Right: a dependency entity, as dependency-macro-fixed-functions.
+changed user()
+added acme::legacy_init()
+removed legacy::legacy_init()

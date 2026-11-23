@@ -114,7 +114,13 @@ fn causes_of(input: &Input<'_>, name: &str) -> Vec<Vec<crate::Cause>> {
     let rules = RuleTable::empty();
     let o = crate::digest(
         input,
-        &crate::Options { rules: &rules, detail: crate::Detail::All, names: true },
+        &crate::Options {
+            rules: &rules,
+            read_only: crate::ReadOnly::NO_FILE,
+            detail: crate::Detail::All,
+            names: true,
+            rule_use: false,
+        },
     );
     o.names
         .iter()
@@ -469,7 +475,13 @@ fn digest_all(src: &str) -> Vec<(slip_model::Digest, String, Vec<crate::Cause>)>
         let rules = RuleTable::empty();
         let o = crate::digest(
             &input,
-            &crate::Options { rules: &rules, detail: crate::Detail::All, names: true },
+            &crate::Options {
+                rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail: crate::Detail::All,
+                names: true,
+                rule_use: false,
+            },
         );
         o.names
             .iter()
@@ -679,7 +691,13 @@ fn unit_digest(src: &str, name: &str) -> slip_model::Digest {
         let rules = RuleTable::empty();
         let o = crate::digest(
             &input,
-            &crate::Options { rules: &rules, detail: crate::Detail::All, names: true },
+            &crate::Options {
+                rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail: crate::Detail::All,
+                names: true,
+                rule_use: false,
+            },
         );
         let key = o.names.iter().find(|(_, n)| n == name).map(|(k, _)| *k).expect("the unit");
         o.digests

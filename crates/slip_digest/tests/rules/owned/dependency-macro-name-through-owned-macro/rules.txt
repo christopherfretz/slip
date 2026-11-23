@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round. A name spelled in a read-only macro body (DEP_NAME) and passed down through an owned macro's argument: the name token's spelling location is the dependency's body, so the function is a dependency entity. Decided so because the token is the dependency's text: a name the dependency fixes is a name its binary may define, whoever passes it on.
+relocate legacy => :: acme

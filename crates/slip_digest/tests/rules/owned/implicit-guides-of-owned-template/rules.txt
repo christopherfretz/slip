@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. The implicit deduction guides of an owned class template that moves: they follow their template.
+relocate legacy => :: acme

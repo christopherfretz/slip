@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. N34 good: only the owned Mine moves; legacy is opened by the dependency's macro in dep.h and, before, in the owned file.
+relocate legacy => :: acme

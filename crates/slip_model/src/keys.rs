@@ -606,6 +606,21 @@ pub struct RuleTable {
     matches: Vec<Vec<u8>>,
     /// The first rule, in this order, that `Rule::refusal` refuses.
     refused: Option<(usize, &'static str)>,
+    /// For each rule, the match bytes of the key it produces,
+    /// `(to_parent, kind, to_name, disc)`, with its index: ascending by
+    /// bytes, then index (`RuleTable::producers`).
+    produced: Vec<(Vec<u8>, usize)>,
+}
+
+/// [`RuleTable::produced`] of `rules`.
+fn produced_index(rules: &[Rule]) -> Vec<(Vec<u8>, usize)> {
+    let mut out: Vec<(Vec<u8>, usize)> = rules
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (match_bytes(&r.to_parent, r.kind, &r.to_name, r.disc.as_ref()), i))
+        .collect();
+    out.sort();
+    out
 }
 
 impl RuleTable {
@@ -627,9 +642,10 @@ impl RuleTable {
         if let Some(w) = order.windows(2).find(|w| w[0].0 == w[1].0) {
             return Err(RuleError::Duplicate { first: w[0].1, second: w[1].1 });
         }
-        let (matches, rules): (Vec<_>, Vec<_>) = order.into_iter().map(|(m, _, r)| (m, r)).unzip();
-        let refused = first_refused(&rules);
-        Ok(RuleTable { rules, matches, refused })
+        // Valid, ascending and without a duplicate: `from_sorted`, the one
+        // builder of the index, accepts it.
+        let rules: Vec<Rule> = order.into_iter().map(|(_, _, r)| r).collect();
+        Ok(RuleTable::from_sorted(rules).expect("valid names, sorted, no duplicate"))
     }
 
     /// The table of `rules` already in order, with valid names and no two
@@ -650,7 +666,8 @@ impl RuleTable {
             matches.push(m);
         }
         let refused = first_refused(&rules);
-        Ok(RuleTable { rules, matches, refused })
+        let produced = produced_index(&rules);
+        Ok(RuleTable { rules, matches, refused, produced })
     }
 
     /// The rules, ascending by the bytes of their `(parent, kind, name,
@@ -675,17 +692,46 @@ impl RuleTable {
     /// replaced by those of the rule that matches it, if one does; else
     /// `key` unchanged. Rules do not chain: this is one step.
     pub fn map(&self, key: Key) -> Key {
+        self.map_traced(key).0
+    }
+
+    /// [`RuleTable::map`], and the index (in [`RuleTable::rules`]) of the
+    /// rule that gave `key` its mapped key, if one did (`spec/verify.md`
+    /// §9.5). That is the rule that matches `key`'s own `(parent, kind,
+    /// name, disc)`: a rule applied to an ancestor or inside a
+    /// discriminator, before `key` was formed, is not reported here.
+    pub fn map_traced(&self, key: Key) -> (Key, Option<usize>) {
         if self.rules.is_empty() {
-            return key;
+            return (key, None);
         }
         let probe = match_bytes(&key.parent, key.kind, &key.name, key.disc.as_ref());
         match self.matches.binary_search_by(|m| m.as_slice().cmp(&probe)) {
             Ok(i) => {
                 let rule = &self.rules[i];
-                Key { parent: rule.to_parent, name: rule.to_name.clone(), ..key }
+                (Key { parent: rule.to_parent, name: rule.to_name.clone(), ..key }, Some(i))
             }
-            Err(_) => key,
+            Err(_) => (key, None),
         }
+    }
+
+    /// The index of the first rule that produces `key`: `(r.to_parent,
+    /// r.kind, r.to_name, r.disc)` is `key`'s four fields
+    /// (`spec/verify.md` §9.1 `direct`). [`RuleTable::producers`] gives
+    /// every such rule: two may produce one key (two namespaces merged
+    /// onto a third).
+    pub fn produces(&self, key: &Key) -> Option<usize> {
+        self.producers(key).next()
+    }
+
+    /// The indices of every rule that produces `key`, ascending.
+    pub fn producers(&self, key: &Key) -> impl Iterator<Item = usize> + '_ {
+        let probe = if self.rules.is_empty() {
+            Vec::new()
+        } else {
+            match_bytes(&key.parent, key.kind, &key.name, key.disc.as_ref())
+        };
+        let start = self.produced.partition_point(|(m, _)| m.as_slice() < probe.as_slice());
+        self.produced[start..].iter().take_while(move |(m, _)| *m == probe).map(|&(_, i)| i)
     }
 
     /// `H("slip.rules.v1", list<Rule>)` over the sorted rules: the table's

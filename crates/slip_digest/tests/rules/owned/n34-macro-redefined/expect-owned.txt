@@ -1,0 +1,2 @@
+# Every file owned (the old behaviour): equal, the wrong `verified` of the
+# review (docs/wp/WP-105.md, row N34).
