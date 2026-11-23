@@ -58,7 +58,8 @@
 //! Names resolve as `spec/verify.md` §2.3 "Records" says: to the one
 //! `KeyId` every record of that name (and kind) has. No record, two ids,
 //! or a fallback key is an error of the case; so is a table
-//! `RuleTable::new` refuses.
+//! `RuleTable::new` refuses, and a rule `Rule::refusal` refuses
+//! (`spec/verify.md` §2.1), as a resolver must.
 
 use slip_digest::records::Record;
 use slip_model::keys::{Key, KeyKind, Name, Parent, Rule, RuleTable};
@@ -369,10 +370,25 @@ fn rule_of(
 /// each line's rule is made under the table of the lines above it
 /// (`spec/verify.md` §2.3), then joins the table.
 pub fn table(lines: &[(usize, Line)], pre: &[Record], post: &[Record]) -> Result<Table, String> {
+    table_with(lines, pre, post, true)
+}
+
+/// [`table`], but with `refuse` false a rule `Rule::refusal` refuses is
+/// kept: the table a resolver must not make, for showing what the walk
+/// does with it.
+pub fn table_with(
+    lines: &[(usize, Line)],
+    pre: &[Record],
+    post: &[Record],
+    refuse: bool,
+) -> Result<Table, String> {
     let mut table = RuleTable::empty();
     let mut rules: Vec<(usize, Rule)> = Vec::with_capacity(lines.len());
     for (n, line) in lines {
         let rule = rule_of(line, &table, pre, post).map_err(|e| format!("rules.txt:{n}: {e}"))?;
+        if let Some(what) = rule.refusal().filter(|_| refuse) {
+            return Err(format!("rules.txt:{n}: refused: {what}"));
+        }
         rules.push((*n, rule));
         table = RuleTable::new(rules.iter().map(|(_, r)| r.clone()).collect())
             .map_err(|e| format!("rules.txt:{n}: not a table: {e}"))?;

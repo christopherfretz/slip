@@ -159,16 +159,35 @@ fn rule_use(input: &Input<'_>, t: &Table, n: usize) -> Result<(u64, u64), String
 }
 
 /// The table of a case whose `expect.txt` says `refused <text>`: it must
-/// be refused, with `<text>` in the message.
+/// be refused, with `<text>` in the message. And the same table made
+/// without the refusal (as a container may hold it, `Rule::refusal`)
+/// must key nothing: every unit of the post-image under it but the
+/// order unit is indeterminate.
 fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
     let lines = lines_of(dir)?;
     common::with_side(dir, Side::B, |input| -> Result<(), String> {
         let plain = records(input, &RuleTable::empty())?;
         match table(&lines, pre, &plain) {
-            Ok(t) => Err(format!("the table is not refused: {:#?}", t.table.rules())),
-            Err(e) if e.contains(text) => Ok(()),
-            Err(e) => Err(format!("refused, but not with `{text}`: {e}")),
+            Ok(t) => return Err(format!("the table is not refused: {:#?}", t.table.rules())),
+            Err(e) if e.contains(text) => {}
+            Err(e) => return Err(format!("refused, but not with `{text}`: {e}")),
         }
+        let kept = common::rules::table_with(&lines, pre, &plain, false)?;
+        if kept.table.refused().is_none() {
+            return Err("the table made without the refusal holds no refused rule".into());
+        }
+        let d = common::digested(digest_under(input, &kept.table));
+        let keyed: Vec<&str> = d
+            .units
+            .values()
+            .flatten()
+            .filter(|u| u.flags & 1 == 0 && u.name != "<order>")
+            .map(|u| u.name.as_str())
+            .collect();
+        if !keyed.is_empty() {
+            return Err(format!("units keyed under a refused table: {keyed:?}"));
+        }
+        Ok(())
     })?
 }
 

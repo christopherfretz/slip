@@ -533,34 +533,45 @@ impl Rule {
         match_bytes(&self.parent, self.kind, &self.name, self.disc.as_ref())
     }
 
-    /// Its names as a reader checks them ([`Name::validate`]), and the
-    /// rules `spec/verify.md` §2.1 refuses: one of kind `specialisation`
-    /// or `partial_specialisation`, whose key follows its template's and
-    /// is never matched directly; one of kind `namespace` whose `name`
-    /// and `to_name` differ in being the unnamed namespace's (the linkage
-    /// of every member would change, which no unit holds); one of kind
-    /// `resolved` or `default_argument`, a part whose key follows its
-    /// owner's (`Parent::Unit` of the owner's mapped key).
-    ///
-    /// Every table passes here: [`RuleTable::new`], and the reader of a
-    /// container's rules (`RuleTable::from_sorted`), so a table no tool
-    /// may give cannot be applied whatever made it.
+    /// Its names as a reader checks them ([`Name::validate`]).
     fn validate(&self) -> Result<(), &'static str> {
         self.name.validate()?;
-        self.to_name.validate()?;
+        self.to_name.validate()
+    }
+
+    /// Why `spec/verify.md` §2.1 refuses this rule, if it does: one of
+    /// kind `specialisation` or `partial_specialisation`, whose key
+    /// follows its template's and is never matched directly; one of kind
+    /// `resolved` or `default_argument`, a part whose key follows its
+    /// owner's; one of kind `namespace` whose `name` and `to_name` differ
+    /// in being the unnamed namespace's (the linkage of every member would
+    /// change, which no unit holds).
+    ///
+    /// Not a check of the encoding: a container may hold such a rule
+    /// (`spec/landed/model/WP-022.md`'s golden has every kind). It is
+    /// checked once, where a table is made ([`RuleTable::refused`]), and
+    /// a table that holds one maps nothing to an equal: the walk gives no
+    /// entity a key under it (`crates/slip_digest/src/keys.rs`,
+    /// `compute_key`), and a resolver refuses to make it.
+    pub fn refusal(&self) -> Option<&'static str> {
         if matches!(self.kind, KeyKind::Specialisation | KeyKind::PartialSpecialisation) {
-            return Err(RULE_ON_SPECIALISATION);
+            return Some(RULE_ON_SPECIALISATION);
+        }
+        if matches!(self.kind, KeyKind::Resolved | KeyKind::DefaultArgument) {
+            return Some(RULE_ON_PART);
         }
         if self.kind == KeyKind::Namespace
             && (self.name == Name::Anonymous) != (self.to_name == Name::Anonymous)
         {
-            return Err(RULE_UNNAMED_NAMESPACE);
+            return Some(RULE_UNNAMED_NAMESPACE);
         }
-        if matches!(self.kind, KeyKind::Resolved | KeyKind::DefaultArgument) {
-            return Err(RULE_ON_PART);
-        }
-        Ok(())
+        None
     }
+}
+
+/// The first of `rules` that [`Rule::refusal`] refuses.
+fn first_refused(rules: &[Rule]) -> Option<(usize, &'static str)> {
+    rules.iter().enumerate().find_map(|(i, r)| r.refusal().map(|what| (i, what)))
 }
 
 /// A list of rules that cannot be a rule table.
@@ -569,9 +580,7 @@ pub enum RuleError {
     /// Rules `first` and `second` (indices as given, `first < second`)
     /// have the same `(parent, kind, name, disc)`.
     Duplicate { first: usize, second: usize },
-    /// Rule `index` has a name no reader accepts ([`Name::validate`]),
-    /// or is a rule `spec/verify.md` §2.1 refuses ([`RULE_ON_SPECIALISATION`],
-    /// [`RULE_UNNAMED_NAMESPACE`]); `what` says which.
+    /// Rule `index` has a name no reader accepts ([`Name::validate`]).
     InvalidName { index: usize, what: &'static str },
 }
 
@@ -595,6 +604,8 @@ pub struct RuleTable {
     rules: Vec<Rule>,
     /// `rules[i].match_bytes()`, ascending.
     matches: Vec<Vec<u8>>,
+    /// The first rule, in this order, that `Rule::refusal` refuses.
+    refused: Option<(usize, &'static str)>,
 }
 
 impl RuleTable {
@@ -616,8 +627,9 @@ impl RuleTable {
         if let Some(w) = order.windows(2).find(|w| w[0].0 == w[1].0) {
             return Err(RuleError::Duplicate { first: w[0].1, second: w[1].1 });
         }
-        let (matches, rules) = order.into_iter().map(|(m, _, r)| (m, r)).unzip();
-        Ok(RuleTable { rules, matches })
+        let (matches, rules): (Vec<_>, Vec<_>) = order.into_iter().map(|(m, _, r)| (m, r)).unzip();
+        let refused = first_refused(&rules);
+        Ok(RuleTable { rules, matches, refused })
     }
 
     /// The table of `rules` already in order, with valid names and no two
@@ -637,7 +649,8 @@ impl RuleTable {
             }
             matches.push(m);
         }
-        Ok(RuleTable { rules, matches })
+        let refused = first_refused(&rules);
+        Ok(RuleTable { rules, matches, refused })
     }
 
     /// The rules, ascending by the bytes of their `(parent, kind, name,
@@ -648,6 +661,13 @@ impl RuleTable {
 
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty()
+    }
+
+    /// The first rule (its index in [`RuleTable::rules`]) that
+    /// `spec/verify.md` §2.1 refuses, and why ([`Rule::refusal`]). A
+    /// table with one is not applied: the walk keys nothing under it.
+    pub fn refused(&self) -> Option<(usize, &'static str)> {
+        self.refused
     }
 
     /// The last step of mapping (`spec/digest.md` §3.4): `key`, whose
@@ -733,20 +753,18 @@ mod tests {
             (rule(KeyKind::Resolved, Name::Property(1), Name::Property(1)), RULE_ON_PART),
         ];
         for (r, what) in refused {
-            assert_eq!(
-                RuleTable::new(vec![r.clone()]),
-                Err(RuleError::InvalidName { index: 0, what }),
-                "{r:?}"
-            );
-            assert_eq!(RuleTable::from_sorted(vec![r]).unwrap_err().0, 0);
+            assert_eq!(r.refusal(), Some(what), "{r:?}");
+            assert_eq!(RuleTable::new(vec![r.clone()]).unwrap().refused(), Some((0, what)));
+            assert_eq!(RuleTable::from_sorted(vec![r]).unwrap().refused(), Some((0, what)));
         }
+        assert_eq!(RuleTable::empty().refused(), None);
         for ok in [
             rule(KeyKind::Namespace, Name::Anonymous, Name::Anonymous),
             rule(KeyKind::Namespace, id("acme"), id("legacy")),
             rule(KeyKind::ClassTemplate, id("W2"), id("W1")),
             rule(KeyKind::Class, id("Impl"), id("Impl")),
         ] {
-            assert!(RuleTable::new(vec![ok.clone()]).is_ok(), "{ok:?}");
+            assert_eq!(RuleTable::new(vec![ok.clone()]).unwrap().refused(), None, "{ok:?}");
         }
     }
 }

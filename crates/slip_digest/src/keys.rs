@@ -150,6 +150,8 @@ const KEY_CYCLE: Cause = Cause::Unaccounted("key/cycle");
 /// A rule that matches a member of an instantiation, not its pattern's
 /// (`spec/digest.md` §3.4).
 const RULE_ON_INSTANTIATED_MEMBER: Cause = Cause::Unaccounted("key/rule-on-instantiated-member");
+/// A key under a table that holds a refused rule (`spec/verify.md` §2.1).
+const REFUSED_TABLE: Cause = Cause::Unaccounted("key/refused-rule");
 /// A scope no row of §5.2 says can hold an entity.
 const BAD_PARENT: Cause = Cause::Unaccounted("key/parent");
 /// A name form no rule of §3.2 or digest §3.3 gives.
@@ -334,6 +336,13 @@ impl Walk<'_> {
         let ast = self.ast;
         let n = ast.decls.get(e);
         let kind_info = info(n.kind());
+        // A table with a rule `spec/verify.md` §2.1 refuses keys nothing
+        // (`RuleTable::refused`): every unit is indeterminate under it.
+        if self.rules.refused().is_some()
+            && matches!(kind_info.role, Role::Entity(_) | Role::Content(_))
+        {
+            return Err(Some(REFUSED_TABLE));
+        }
         match ast.templ_link(e).get() {
             Some((TemplLinkKind::Specialization, _)) => {
                 if let Some((_, si)) = ast.spec_info(e) {
