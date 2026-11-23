@@ -1392,8 +1392,7 @@ fn typedef_alignment(w: &Walk<'_>, q: QualType) -> bool {
         let view = ast.types.view(x.ty());
         if let TypeView::Typedef { decl, underlying: _ } = view
             && ast.redecls_of(decl).any(|r| {
-                alignment_attrs(w, r).next().is_some()
-                    || ast.decls.cold.alignment.get(r).is_some()
+                alignment_attrs(w, r).next().is_some() || ast.decls.cold.alignment.get(r).is_some()
             })
         {
             return true;
