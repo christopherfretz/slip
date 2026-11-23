@@ -1,0 +1,6 @@
+transform <id>
+report t.cpp:11:10-11:14 note "callee f(int), its reference's referent"
+report t.cpp:11:17-11:23 note "callee f(double), its reference's referent"
+report t.cpp:11:26-11:31 note "callee D::g, its reference's referent"
+report t.cpp:11:34-11:39 note "callee B::g, its reference's referent"
+report t.cpp:11:42-11:50 note "callee B::g, its reference's referent"

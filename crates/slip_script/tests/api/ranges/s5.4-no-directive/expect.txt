@@ -1,0 +1,6 @@
+transform <id>
+report - note "the call across the conditional: null"
+report t.cpp:2:11-2:12 note "its first argument"
+report t.cpp:10:9-10:16 note "the call inside one group"
+report t.cpp:10:11-10:12 note "an argument of the call inside one group"
+report t.cpp:10:14-10:15 note "an argument of the call inside one group"

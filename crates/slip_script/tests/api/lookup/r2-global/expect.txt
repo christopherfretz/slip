@@ -1,0 +1,6 @@
+transform <id>
+report - note "yes: it has no parent"
+report - note "yes: it is a namespace"
+report - note "yes: it is the parent of n"
+report - note "yes: it is the parent of y"
+report - note "yes: lookup(\"::\") gives one entity"

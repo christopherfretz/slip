@@ -1,0 +1,9 @@
+transform <id>
+report - note "a conversion function: []"
+report - note "an assignment operator: []"
+report - note "an expression: wrong_kind"
+report - note "an unnamed namespace: []"
+report - note "its declaration: [m]"
+report - note "its reference: []"
+report - note "its reference: [m]"
+report - note "the entity n::S::m: [m]"

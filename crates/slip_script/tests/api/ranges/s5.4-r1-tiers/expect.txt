@@ -1,0 +1,7 @@
+transform <id>
+report - note "#2 extent: null"
+report - note "#2 name range: null"
+report t.cpp:4:9-4:10 note "#0 extent"
+report t.cpp:4:9-4:10 note "#0 name range"
+report t.cpp:5:13-5:14 note "#1 extent"
+report t.cpp:5:13-5:14 note "#1 name range"

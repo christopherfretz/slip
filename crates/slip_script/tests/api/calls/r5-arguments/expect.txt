@@ -1,0 +1,8 @@
+transform <id>
+report t.cpp:6:20-6:24 note "n::S::m: [1]"
+report t.cpp:6:27-6:31 note "n::S::x: [3]"
+report t.cpp:11:10-11:14 note "n::f: [1]"
+report t.cpp:11:17-11:24 note "n::f: [1] [2]"
+report t.cpp:11:27-11:36 note "n::S::m: [3] [4]"
+report t.cpp:11:39-11:45 note "n::S::x: [5]"
+report t.cpp:11:48-11:51 note "n::g:"

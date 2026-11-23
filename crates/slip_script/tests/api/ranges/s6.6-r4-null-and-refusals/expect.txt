@@ -1,0 +1,5 @@
+transform <id>
+report - note "a declaration: unsupported"
+report - note "an entity: wrong_kind"
+report - note "the call from the macro: null"
+report - note "the call in the file: a range"

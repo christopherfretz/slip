@@ -1,0 +1,7 @@
+transform <id>
+report - note "a reference: wrong_kind"
+report - note "an entity: wrong_kind"
+report - note "an expression: wrong_kind"
+report t.cpp:1:11-1:12 note "the entity"
+report t.cpp:2:5-2:6 note "the entity"
+report t.cpp:3:5-3:6 note "the entity"

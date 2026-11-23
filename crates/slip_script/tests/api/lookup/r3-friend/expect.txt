@@ -1,0 +1,8 @@
+transform <id>
+report - note "Hidden: 0"
+report - note "n::Hidden: 1"
+report - note "n::In::inf: 0"
+report - note "n::Out::outf: 0"
+report - note "n::inf: 1"
+report - note "n::outf: 1"
+report - note "outf: 0"

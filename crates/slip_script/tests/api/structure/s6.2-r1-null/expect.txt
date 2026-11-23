@@ -1,0 +1,13 @@
+transform <id>
+report - note "is_call: false"
+report - note "is_declaration: false"
+report - note "is_definition: false"
+report - note "is_entity: false"
+report - note "is_expression: false"
+report - note "is_function: false"
+report - note "is_namespace: false"
+report - note "is_parameter: false"
+report - note "is_reference: false"
+report - note "is_template: false"
+report - note "is_type: false"
+report - note "is_variable: false"

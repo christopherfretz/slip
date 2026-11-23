@@ -1,0 +1,3 @@
+transform <id>
+report - note "caught as slip::error: invalid_argument"
+report - note "error is not derived from std::exception"

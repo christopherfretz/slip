@@ -1,0 +1,7 @@
+transform <id>
+report - note "declarations_of(specialisation): 0"
+report - note "lookup(\"absent\"): 0"
+report - note "name_range_of(a name from a macro body): null"
+report - note "parameters_of(none): 0"
+report - note "parent_of(::): returned, null"
+report - note "references_to(unreferenced): 0"
