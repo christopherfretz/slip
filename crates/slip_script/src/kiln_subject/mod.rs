@@ -11,7 +11,7 @@
 //! written-reference and declaration-extent tables (`slip_kiln::written`),
 //! which the unit must have recorded. What needs the unit is read when
 //! the subject is made; what is costly otherwise is built on first use
-//! and kept for the life of the subject: the set of listed declarations
+//! and kept for the life of the subject: the template parameters' owners
 //! (`entities.rs`), one name index per scope that `lookup` reaches
 //! (`lookup.rs`), the references by origin and by extent
 //! (`references.rs`), each file's bytes.
@@ -59,8 +59,6 @@ pub struct KilnSubject<'u> {
     owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
     /// Per buffer: its path and its bytes, once asked.
     files: Vec<OnceLock<Option<SubjectFile<'u>>>>,
-    /// The declarations reached through member lists (`entities.rs`).
-    listed: OnceLock<Vec<u64>>,
     /// Template parameter → its template (`entities.rs`).
     parm_owner: OnceLock<HashMap<u32, u32>>,
     /// The name index of each scope `lookup` reached (`lookup.rs`). The
@@ -131,7 +129,6 @@ impl<'u> KilnSubject<'u> {
             paths: sm.file_ids().map(path).collect(),
             owned,
             files: (0..sm.file_count()).map(|_| OnceLock::new()).collect(),
-            listed: OnceLock::new(),
             parm_owner: OnceLock::new(),
             scopes: Mutex::new(HashMap::new()),
             names: references::Names::default(),

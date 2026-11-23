@@ -159,68 +159,6 @@ impl<'u> KilnSubject<'u> {
         self.written_by_table(d)
     }
 
-    /// WP-083's structural rule, kept only for the comparison with the
-    /// table (`references.rs` tests) and deleted after it (landed
-    /// decision 1 of WP-083):
-    ///
-    /// 1. never an implicit declaration, the translation unit, or an
-    ///    instantiation: an implicit or explicit instantiation, a member of
-    ///    one, the declaration deduction makes of a specialisation before
-    ///    its explicit specialisation is read (`instantiated`);
-    /// 2. a declaration reached from the translation unit through member
-    ///    lists (`listed`: Kiln links every declaration it parsed outside
-    ///    a function body into its lexical context's member list, and
-    ///    none it made, `kiln_ast/src/decl.rs:2161`);
-    /// 3. a template parameter whose context (the template's scope, Kiln
-    ///    `TemplateParamList`) is the translation unit or listed;
-    /// 4. a declaration that is not listed is written only when it is
-    ///    declared in a block (its lexical context is a function, a
-    ///    deduction guide, a requires-expression, or a variable or data
-    ///    member whose initialiser holds it) or in a local class or
-    ///    enumeration (one that is not listed itself), and that context is
-    ///    written. A class that is listed lists every member the parser
-    ///    parsed, so a declaration it does not list (the one deduction
-    ///    makes for `template <> void A::mt<int>(int)`, whose lexical
-    ///    context is `A`) is not written.
-    #[cfg_attr(not(test), allow(dead_code, reason = "compared with the table in tests"))]
-    pub(super) fn written_structural(&self, d: DeclId) -> bool {
-        let mut d = d;
-        for _ in 0..self.chain_bound() {
-            let n = self.ast.decls.get(d);
-            if n.has(DeclFlags::IMPLICIT) || n.kind() == DeclKind::TranslationUnit {
-                return false;
-            }
-            if self.instantiated(d) {
-                return false;
-            }
-            if self.listed(d) {
-                return true;
-            }
-            let k = n.kind();
-            let up = if template_parm_kind(k) { n.ctx() } else { self.ast.decls.lexical_ctx(d) };
-            let Some(up) = up else { return false };
-            let uk = self.kind(up);
-            if template_parm_kind(k) && (uk == DeclKind::TranslationUnit || self.listed(up)) {
-                return true;
-            }
-            let block = function_kind(uk)
-                || matches!(
-                    uk,
-                    DeclKind::CXXDeductionGuide
-                        | DeclKind::RequiresExprBody
-                        | DeclKind::Var
-                        | DeclKind::Field
-                );
-            let local_class =
-                matches!(uk, DeclKind::CXXRecord | DeclKind::Enum) && !self.listed(up);
-            if !block && !local_class {
-                return false;
-            }
-            d = up;
-        }
-        false
-    }
-
     /// How many steps a walk up a chain of contexts or origins may take: a
     /// chain longer than the arena has a cycle, which Kiln's AST does not
     /// make. No answer of the subject is cut short by it on a well-formed
@@ -247,58 +185,6 @@ impl<'u> KilnSubject<'u> {
                 .is_none_or(|s| s.kind != SpecKind::ExplicitSpecialization),
             _ => ast.templates.instantiated_from_map(d).is_some(),
         }
-    }
-
-    /// Whether `d` is reached from the translation unit through member
-    /// lists, not descending into an implicit declaration (a builtin record
-    /// such as `__va_list_tag`) or an instantiation (an explicit
-    /// instantiation is in its context's member list; its members are
-    /// Kiln's). The set is built once, on first use.
-    fn listed(&self, d: DeclId) -> bool {
-        let bits = self.listed.get_or_init(|| self.build_listed());
-        let i = d.index() as usize;
-        bits.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 == 1)
-    }
-
-    fn build_listed(&self) -> Vec<u64> {
-        let ast = self.ast;
-        let mut bits = vec![0u64; ast.decls.len() / 64 + 2];
-        let set = |d: DeclId, bits: &mut Vec<u64>| -> bool {
-            let i = d.index() as usize;
-            let (w, b) = (i / 64, 1u64 << (i % 64));
-            let fresh = bits[w] & b == 0;
-            bits[w] |= b;
-            fresh
-        };
-        let mut stack = vec![ast.tu];
-        while let Some(c) = stack.pop() {
-            for m in ast.decls.members(c) {
-                let add = |x: DeclId, bits: &mut Vec<u64>, stack: &mut Vec<DeclId>| {
-                    if ast.decls.get(x).has(DeclFlags::IMPLICIT) || self.instantiated(x) {
-                        return;
-                    }
-                    if set(x, bits) {
-                        stack.push(x);
-                        if let Some(p) = ast.template_info(x).and_then(|t| t.pattern)
-                            && set(p, bits)
-                        {
-                            stack.push(p);
-                        }
-                    }
-                };
-                add(m, &mut bits, &mut stack);
-                if self.kind(m) == DeclKind::Friend {
-                    match ast.decls.friend_target(m) {
-                        FriendTarget::Decl(x) => add(x, &mut bits, &mut stack),
-                        FriendTarget::Type { owned_tag: Some(x), .. } => {
-                            add(x, &mut bits, &mut stack);
-                        }
-                        FriendTarget::Type { owned_tag: None, .. } => {}
-                    }
-                }
-            }
-        }
-        bits
     }
 
     /// The written declarations of entity `e`, in unit order.
