@@ -314,25 +314,25 @@ fn reach(
 /// argument absent (its default) or itself a source-location builtin.
 fn is_source_location_current(w: &Walk<'_>, e: ExprId) -> bool {
     let ast = w.ast;
-    let x = &ast.exprs;
-    let mut call = x.operand(e);
-    if x.get(call).kind() == ExprKind::ExprWithCleanups {
-        call = x.operand(call);
+    let exprs = &ast.exprs;
+    let mut call = exprs.operand(e);
+    if exprs.get(call).kind() == ExprKind::ExprWithCleanups {
+        call = exprs.operand(call);
     }
-    if x.get(call).kind() != ExprKind::CallExpr {
+    if exprs.get(call).kind() != ExprKind::CallExpr {
         return false;
     }
-    let callee = strip_implicit(w, x.callee(call));
-    if x.get(callee).kind() != ExprKind::DeclRefExpr {
+    let callee = strip_implicit(w, exprs.callee(call));
+    if exprs.get(callee).kind() != ExprKind::DeclRefExpr {
         return false;
     }
-    let f = x.decl(callee);
-    let decl = ast.decls.get(f);
+    let method = exprs.decl(callee);
+    let decl = ast.decls.get(method);
     let is_static = ast
         .decls
-        .function(f)
-        .is_some_and(|d| d.spec.storage() == slip_kiln::kiln::ast::decl::FnStorage::Static);
-    let named = decl.name().as_ident().is_some_and(|s| ast.symbols().as_str(s) == "current");
+        .function(method)
+        .is_some_and(|fd| fd.spec.storage() == slip_kiln::kiln::ast::decl::FnStorage::Static);
+    let named = decl.name().as_ident().is_some_and(|id| ast.symbols().as_str(id) == "current");
     let class = decl.ctx().is_some_and(|r| ast.is_std_named(r, "source_location"));
     if decl.kind() != slip_kiln::kiln::ast::decl::DeclKind::CXXMethod
         || !is_static
@@ -341,9 +341,9 @@ fn is_source_location_current(w: &Walk<'_>, e: ExprId) -> bool {
     {
         return false;
     }
-    ast.lists.iter::<ExprId>(x.call_args(call)).all(|a| {
-        let a = strip_implicit(w, a);
-        matches!(x.get(a).kind(), ExprKind::CXXDefaultArgExpr | ExprKind::SourceLocExpr)
+    ast.lists.iter::<ExprId>(exprs.call_args(call)).all(|arg| {
+        let arg = strip_implicit(w, arg);
+        matches!(exprs.get(arg).kind(), ExprKind::CXXDefaultArgExpr | ExprKind::SourceLocExpr)
     })
 }
 
@@ -373,12 +373,12 @@ pub(crate) fn default_use_names(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         return;
     }
     let ast = w.ast;
-    let Some(&v) = ast.exprs.cold.source_loc.get(e) else { return };
+    let Some(&values) = ast.exprs.cold.source_loc.get(e) else { return };
     let reached = default_reach(w, e);
     if reached.is_empty() {
         return;
     }
-    let consumed = reached.iter().filter(|r| r.1 == Reach::Consumed).count();
+    let consumed = reached.iter().filter(|item| item.1 == Reach::Consumed).count();
     s.count(consumed);
     let mut passed = false;
     for (kind, how) in reached {
@@ -388,20 +388,23 @@ pub(crate) fn default_use_names(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         // false where Kiln built neither (nothing is fed, as at a
         // `SourceLocExpr`).
         let (known, bytes) = if pretty {
-            match v.location.map(|l| crate::value::impl_function_name(w, l)) {
-                Some(crate::value::ImplObject::Impl(p)) => (true, p.map(|l| ast.strings.get(l).1)),
+            match values.location.map(|loc| crate::value::impl_function_name(w, loc)) {
+                Some(crate::value::ImplObject::Impl(p)) => {
+                    (true, p.map(|lit| ast.strings.get(lit).1))
+                }
                 Some(crate::value::ImplObject::Other) | None => (false, None),
             }
         } else {
-            let b = crate::value::string_of(w, v.function).map(|l| ast.strings.get(l).1);
-            (b.is_some(), b)
+            let plain =
+                crate::value::string_of(w, values.function).map(|lit| ast.strings.get(lit).1);
+            (plain.is_some(), plain)
         };
         match how {
             Reach::Passed => {
                 passed = true;
                 match (known, pretty, bytes) {
-                    (true, true, b) => crate::value::feed_impl(w, b),
-                    (true, false, Some(b)) => crate::value::feed_source_loc(w, false, b),
+                    (true, true, name) => crate::value::feed_impl(w, name),
+                    (true, false, Some(name)) => crate::value::feed_source_loc(w, false, name),
                     _ => {}
                 }
             }
