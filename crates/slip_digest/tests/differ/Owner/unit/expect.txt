@@ -1,0 +1,4 @@
+# pending
+# needs: kiln
+# a named module from memory: docs/requests/KF5-module-sources-in-memory.md (WP-048)
+changed f()
