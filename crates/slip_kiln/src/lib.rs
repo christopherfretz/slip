@@ -4,7 +4,8 @@
 //! over a normalised compile command and turns what Kiln produced into
 //! Slip's own model types (`slip_model`).
 //!
-//! **No Kiln type outside [`kiln`], [`Unit`]'s methods and [`snippet`].**
+//! **No Kiln type outside [`kiln`], [`Unit`]'s methods, [`ranges`] and
+//! [`snippet`].**
 //! The public interface is:
 //!
 //! - the parse task (`spec/model.md` §8.4): [`parse_observer`] (an
@@ -16,7 +17,9 @@
 //!   request (the preprocessing record);
 //! - [`KilnCheck`] (`spec/cdb.md` §6) and [`kiln_version`];
 //! - the module [`kiln`] (re-exports of Kiln's crates), which [`Unit`]'s
-//!   methods name, and the module [`snippet`] (an in-memory front end for
+//!   methods name, the module [`ranges`] (the file range of a token span
+//!   and its tier, and unit order: `spec/api.md` §1 and §5.4, over Kiln's
+//!   locations) and the module [`snippet`] (an in-memory front end for
 //!   tests, whose types name Kiln's).
 //!
 //! So a Kiln API change touches this crate and the crates that may name
