@@ -1,0 +1,4 @@
+# pending
+# needs: expr
+# the dependent decltype is Pending(Expr) in the type digest before the walk reaches the lambda
+indeterminate Y::m

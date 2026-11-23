@@ -1,0 +1,3 @@
+# v<int> is a specialisation, whose initialiser is not walked: its closure has no number
+indeterminate v<int>
+indeterminate x
