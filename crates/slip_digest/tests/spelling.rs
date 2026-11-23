@@ -1015,3 +1015,282 @@ fn attack_a_colliding_key_already_indeterminate() {
     let got = run(&c);
     assert_eq!(fails(&got[0]).expect("fails").0, None, "{got:?}");
 }
+
+// ---------------------------------------------------------------------
+// Fix round 1 (`spec/landed/verify/WP-096.md`).
+// ---------------------------------------------------------------------
+
+use slip_kiln::written::Role;
+
+/// The roles of the names Kiln records whose range is exactly `[lo, hi)`
+/// of `main.cpp` in `src` (marks removed).
+fn roles_at(src: &str, lo: u32, hi: u32) -> Vec<Role> {
+    let text = unmark(src).0;
+    with_unit(&[("main.cpp", text.as_str())], "c++20", true, |unit, _| {
+        slip_kiln::written::written_refs(unit)
+            .into_iter()
+            .filter(|r| {
+                slip_kiln::ranges::file_range_of_span(unit.sm(), r.name)
+                    .is_some_and(|f| (f.lo, f.hi) == (lo, hi))
+            })
+            .map(|r| r.role)
+            .collect()
+    })
+}
+
+/// One role Kiln records: `role_use` (with `@` for the name) names `a`
+/// in role `role`; `b` is another entity of the same name, named by
+/// `int o = b::@;`. The use alone **answers** (holds for `a`'s key, fails
+/// for `b`'s), and one macro argument used in both places **vetoes**
+/// `b`'s key with `a` found (§10.2 rules 1 and 5).
+fn role_answers_and_vetoes(role: Role, prelude: &str, role_use: &str, a: &str, b: &str) {
+    let alone = format!("{prelude}{}\n", role_use.replace('@', "«N»"));
+    let (lo, hi) = unmark(&alone).1[0];
+    assert_eq!(roles_at(&alone, lo, hi), [role], "{alone}");
+    let a_key = key(&alone, a);
+    assert_eq!(one(&alone, &[Named(a)]), [Holds], "{alone}");
+    assert_eq!(fails(&one(&alone, &[Named(b)])[0]), Some((Some(a_key), a.to_owned())), "{alone}");
+    let both =
+        format!("{prelude}#define M(x) {} int o = b::x;\nM(«N»)\n", role_use.replace('@', "x"));
+    let got = one(&both, &[Named(b)]);
+    assert_eq!(fails(&got[0]), Some((Some(a_key), a.to_owned())), "{both}");
+}
+
+const B_N: &str = "namespace b { int N; }\n";
+
+#[test]
+fn s10_2_rule1_role_expr() {
+    let p = format!("namespace a {{ int N; }}\n{B_N}");
+    role_answers_and_vetoes(Role::Expr, &p, "int r = a::@;", "a::N", "b::N");
+}
+
+#[test]
+fn s10_2_rule1_role_member() {
+    let p = format!("struct A {{ int N; }};\n{B_N}");
+    role_answers_and_vetoes(Role::Member, &p, "int r(A s) { return s.@; }", "A::N", "b::N");
+}
+
+#[test]
+fn s10_2_rule1_role_nns() {
+    let p = format!("namespace a {{ struct N {{ static int i; }}; }}\n{B_N}");
+    role_answers_and_vetoes(Role::Nns, &p, "int r = a::@::i;", "a::N", "b::N");
+}
+
+#[test]
+fn s10_2_rule1_role_type() {
+    let p = format!("namespace a {{ struct N {{}}; }}\n{B_N}");
+    role_answers_and_vetoes(Role::Type, &p, "a::@ r;", "a::N", "b::N");
+}
+
+#[test]
+fn s10_2_rule1_role_template() {
+    let p = format!("namespace a {{ template <class T> struct N {{}}; }}\n{B_N}");
+    role_answers_and_vetoes(Role::Template, &p, "a::@<int> r;", "a::N", "b::N");
+}
+
+#[test]
+fn s10_2_rule1_role_base() {
+    let p = format!("namespace a {{ struct N {{}}; }}\n{B_N}");
+    role_answers_and_vetoes(Role::Base, &p, "struct R : a::@ {};", "a::N", "b::N");
+}
+
+#[test]
+fn s10_2_rule1_role_mem_init() {
+    role_answers_and_vetoes(
+        Role::MemInit,
+        B_N,
+        "struct R { int N; R() : @(1) {} };",
+        "R::N",
+        "b::N",
+    );
+}
+
+// Kiln re-roles a name whose target is a concept to `Concept`
+// (`kiln_sema/src/written_refs.rs:54-55`): it takes part (F1).
+#[test]
+fn s10_2_rule1_role_concept() {
+    let p = format!("namespace a {{ template <class T> concept N = true; }}\n{B_N}");
+    role_answers_and_vetoes(Role::Concept, &p, "static_assert(a::@<int>);", "a::N", "b::N");
+}
+
+// F1, the reviewer's P1: one macro argument names the concept `a::C` and
+// the variable template `b::C`; the concept's name vetoes `b::C`.
+#[test]
+fn f1_a_concept_name_vetoes_through_a_macro_argument() {
+    let src = "namespace a { template <class T> concept C = sizeof(T) == 4; }\nnamespace b { template <class T> constexpr bool C = true; }\n#define M(x) static_assert(a::x<int>); static_assert(b::x<int>);\nM(«C»)\n";
+    let got = one(src, &[Named("b::C")]);
+    assert_eq!(fails(&got[0]), Some((Some(key(src, "a::C")), "a::C".to_owned())), "{got:?}");
+}
+
+// F1, the reviewer's P2: a header without a guard included in two
+// namespaces, where `C` is a concept in one and a variable template in
+// the other.
+#[test]
+fn f1_a_concept_name_vetoes_in_a_header_entered_twice() {
+    let post = [
+        (
+            "main.cpp",
+            "namespace a { template <class T> concept C = sizeof(T) == 4;\n#include \"x.h\"\n}\nnamespace b { template <class T> constexpr bool C = true;\n#include \"x.h\"\n}\n",
+        ),
+        ("x.h", "inline bool g() { return «C»<int>; }\n"),
+    ];
+    let got = run(&case(&post, &[Named("b::C")]));
+    let found = fails(&got[0]).expect("fails");
+    assert_eq!(found.1, "a::C", "{got:?}");
+    assert!(found.0.is_some(), "{got:?}");
+}
+
+// F4, the reviewer's P14: a concept named in an expression and in a
+// requires-clause, with the concept's key, holds (it was a false alarm).
+#[test]
+fn f4_a_concept_name_holds() {
+    let src = "namespace a { template <class T> concept C = true; }\nstatic_assert(a::«C»<int>);\ntemplate <class T> requires a::«C»<T> void f(T);\n";
+    assert_eq!(one(src, &[Named("a::C"), Named("a::C")]), [Holds, Holds]);
+}
+
+// Item 3: an elaborated name (`struct X s;`) is recorded today, as
+// `Type` (the reviewer's P8), so it vetoes: covered by rule 1.
+#[test]
+fn f2_an_elaborated_name_is_recorded_as_a_type() {
+    let src = "struct X {};\nint X();\n#define M(x) struct x s; int k = x();\nM(«X»)\n";
+    let got = one(src, &[Named("X()")]);
+    assert_eq!(fails(&got[0]), Some((Some(key(src, "X")), "X".to_owned())), "{got:?}");
+}
+
+// F2, the reviewer's P4: one macro argument is a dependent call in a
+// template (which, instantiated with `a::A`, calls `a::f` by ADL) and a
+// resolved call of `::f(int)`. The dependent name has no referent: it
+// fails, though the resolved call has the key.
+#[test]
+fn f2_a_dependent_use_of_a_macro_argument_fails() {
+    let src = "namespace a { struct A {}; int f(A); }\nint f(int);\n#define M(x) template <class T> int g(T t) { return x(t); } int h() { return x(1); }\nM(«f»)\nint k = g(a::A{});\n";
+    assert_eq!(fails(&one(src, &[Named("f(int)")])[0]), Some(dependent()));
+}
+
+// F2: a name whose resolution failed is not in a program that compiles;
+// the constant is distinct from the dependent one, so a report can say
+// which.
+#[test]
+fn f2_the_two_unresolved_names_differ() {
+    assert_ne!(UNRESOLVED_DEPENDENT, UNRESOLVED_FAILED);
+}
+
+// The named hole (§10.2 rule 5, §10.7): a use Kiln does not record, or
+// records with no range, cannot veto. Each program below is a wrong
+// `Holds` today; each expects `Fails` and waits for Kiln.
+
+#[test]
+#[ignore = "needs: Kiln, a range for a pasted use of a macro argument (WP-096 For Kiln)"]
+fn s10_7_hole_a_pasted_use() {
+    let src =
+        "int f();\nnamespace b { int f_(); }\n#define M(x) (x() + b::x##_())\nint z = M(«f»);\n";
+    assert!(fails(&one(src, &[Named("f()")])[0]).is_some());
+}
+
+#[test]
+#[ignore = "needs: Kiln, the designator role (stage 3; WP-096 For Kiln)"]
+fn s10_7_hole_a_designator() {
+    let src = "struct S { int n; };\nint n = 2;\n#define M(x) S s{.x = 1}; int k = x;\nM(«n»)\n";
+    assert!(fails(&one(src, &[Named("n")])[0]).is_some());
+}
+
+#[test]
+#[ignore = "needs: Kiln, the using-declaration role (stage 3; WP-096 For Kiln)"]
+fn s10_7_hole_a_using_declaration() {
+    let src = "namespace a { int f(); }\nnamespace b { int f(); }\n#define M(x) namespace c { using a::x; } int k = b::x();\nM(«f»)\n";
+    assert!(fails(&one(src, &[Named("b::f()")])[0]).is_some());
+}
+
+#[test]
+#[ignore = "needs: Kiln, a type-constraint's concept name (WP-096 For Kiln)"]
+fn s10_7_hole_a_type_constraint() {
+    let src = "namespace a { template <class T> concept C = true; }\nnamespace b { template <class T> struct C {}; }\n#define M(x) template <a::x T> void f(T); b::x<int> v;\nM(«C»)\n";
+    assert!(fails(&one(src, &[Named("b::C")])[0]).is_some());
+}
+
+#[test]
+#[ignore = "needs: Kiln, the elaborated role for a friend (stage 3; WP-096 For Kiln)"]
+fn s10_7_hole_a_friend_declaration() {
+    let src = "namespace a { struct F; }\nnamespace b { int F(); }\n#define M(x) struct S { friend struct a::x; }; int k = b::x();\nM(«F»)\n";
+    assert!(fails(&one(src, &[Named("b::F()")])[0]).is_some());
+}
+
+#[test]
+#[ignore = "needs: Kiln, the explicit-instantiation target role (stage 3; WP-096 For Kiln)"]
+fn s10_7_hole_an_explicit_instantiation() {
+    let src = "namespace a { template <class T> int t(T) { return 0; } }\nnamespace b { int t(int); }\n#define M(x) template int a::x<int>(int); int k = b::x(1);\nM(«t»)\n";
+    assert!(fails(&one(src, &[Named("b::t(int)")])[0]).is_some());
+}
+
+// F3, the reviewer's P12: a real file whose comment holds an invalid
+// byte, which Kiln replaces (three bytes for one): Kiln's offsets after it
+// are not the file's. The reference of `g` at Kiln's offset would land on
+// the bytes of `f`; the file is not clean, so nothing answers.
+#[test]
+fn f3_a_recoded_file_on_disk_is_not_seen() {
+    use slip_kiln::{ParseOptions, parse_observer_with};
+    use slip_model::{Command, FileRef, Language, Observer, Origin, Phase, Status};
+    let bytes = b"// \xff\nint g(int);\nint f;\nint u() { return g(f); }\n";
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("wp096-recoded-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    std::fs::write(dir.join("main.cpp"), bytes).unwrap();
+    let call = bytes.windows(4).position(|w| w == b"g(f)").unwrap() as u32;
+    let argv =
+        ["clang++", "-std=c++20", "main.cpp"].iter().map(|s| s.as_bytes().to_vec()).collect();
+    let observer = Observer {
+        id: Digest([7; 32]),
+        command: Command {
+            directory: dir.to_str().unwrap().as_bytes().to_vec(),
+            argv,
+            env: Vec::new(),
+        },
+        language: Language::Cxx,
+        main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
+        cost_hint: 1,
+        origins: vec![Origin { configuration: 0, entry: 0 }],
+    };
+    let mut options = ParseOptions::default();
+    options.written = true;
+    let (shard, out) = parse_observer_with(&observer, Phase::Map, 1, options, |unit| {
+        let sm = unit.sm();
+        let path = |f: FileId| -> Vec<u8> {
+            if sm.file_name(f).ends_with("main.cpp") { b"main.cpp".to_vec() } else { Vec::new() }
+        };
+        let input = Input { ast: unit.ast(), sm, subject_path: &path };
+        let mut keys = Keys::new(&input);
+        let g = entity(&keys, &input, "g(int)");
+        let f = entity(&keys, &input, "f");
+        let (gk, fk) = (keys.key_id(g).unwrap(), keys.key_id(f).unwrap());
+        let ob = |lo, hi, key| Obligation { file: b"main.cpp".to_vec(), lo, hi, key };
+        let obligations =
+            [ob(call + 2, call + 3, gk), ob(call + 2, call + 3, fk), ob(call, call + 1, gk)];
+        check_spellings(unit, &input, &RuleTable::empty(), &obligations)
+    })
+    .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    assert_eq!(out.unwrap(), [NotSeen, NotSeen, NotSeen]);
+}
+
+// A collision of a key no unit has (`keys::mark_mapped_collisions` marks
+// the order unit): two functions declared only by block-scope `extern`
+// declarations in templates never instantiated (no unit, digest §2.2),
+// which the rename's rule gives one key: `g`, renamed from `h`, and an
+// `h` the post-image declares. The obligation has that key.
+#[test]
+fn s3_4_a_colliding_key_no_unit_has() {
+    let pre = [("main.cpp", "template <class T> int t() { extern int h(); return h(); }\n")];
+    let post = [(
+        "main.cpp",
+        "template <class T> int t() { extern int g(); return «g»(); }\ntemplate <class T> int s() { extern int h(); return h(); }\n",
+    )];
+    let wants = [Named("h()")];
+    let c = Case { pre: Some(&pre), renames: &[("h()", "g")], ..case(&post, &wants) };
+    assert_eq!(fails(&run(&c)[0]).expect("fails").0, None);
+    // Without the other `h` nothing collides, and `g` is the old `h`.
+    let alone = [("main.cpp", "template <class T> int t() { extern int g(); return «g»(); }\n")];
+    let c = Case { pre: Some(&pre), renames: &[("h()", "g")], ..case(&alone, &wants) };
+    assert_eq!(run(&c), [Holds]);
+}
