@@ -226,6 +226,7 @@ pub mod map;
 mod names;
 mod order;
 mod other;
+mod owned;
 pub mod query;
 pub mod records;
 mod refs;
@@ -243,6 +244,7 @@ mod walk;
 mod tests;
 
 pub use names::display_name;
+pub use owned::{ReadOnly, ReadOnlyFiles};
 pub use walk::STACK_SIZE;
 
 /// A finished translation unit (`spec/digest.md` §1 rule 4).
@@ -275,6 +277,14 @@ pub enum Detail<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct Options<'a> {
     pub rules: &'a slip_model::keys::RuleTable,
+    /// Which files of the image are read-only (`spec/verify.md` §2.1):
+    /// under a non-empty `rules`, a rule matches an entity none of whose
+    /// declarations lies in one, and the namespaces around a member are
+    /// mapped from the member's point of view (`owned.rs`). Not read when
+    /// `rules` is empty. [`ReadOnly::EVERY_FILE`] where the run's files
+    /// are not known; [`ReadOnly::files`] of [`ReadOnlyFiles`] for the verify
+    /// job.
+    pub read_only: ReadOnly<'a>,
     pub detail: Detail<'a>,
     /// Fill `Output::names`.
     pub names: bool,

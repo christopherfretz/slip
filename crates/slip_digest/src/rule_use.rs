@@ -95,6 +95,18 @@ pub(crate) fn map(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
     mapped
 }
 
+/// Entity `e`'s key is `key`, which no rule maps (a dependency entity,
+/// `spec/verify.md` §2.1 rule 1): counted only as `direct` for the rules
+/// that produce it, as [`map`] counts a key no rule matches.
+pub(crate) fn unmapped(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
+    let rules = w.rules;
+    if let Some(c) = w.rule_use.as_mut() {
+        let direct: Vec<usize> = rules.producers(&key).collect();
+        c.record(e, (!direct.is_empty()).then_some(Trace::Direct(direct)));
+    }
+    key
+}
+
 /// Entity `e`'s key was computed again and formed none (or stopped at the
 /// depth limit): it is counted for no rule, whatever an earlier
 /// computation said.

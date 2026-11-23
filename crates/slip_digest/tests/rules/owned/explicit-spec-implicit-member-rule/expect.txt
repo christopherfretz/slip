@@ -1,0 +1,4 @@
+# box<Mine> is the dependency's (its template is), so its implicit default
+# constructor is too (bullet 3): rule 4 matches nothing. Equal.
+use 2 via 1 direct 1
+use 4 via 0 direct 0

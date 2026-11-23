@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. An owned explicit specialisation of a dependency template, with members: a dependency entity (its template is), keyed by the template and the mapped argument.
+relocate legacy => :: acme

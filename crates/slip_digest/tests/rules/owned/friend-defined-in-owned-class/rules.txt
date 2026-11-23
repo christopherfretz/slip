@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. A friend function defined in an owned class: owned, moves with it.
+relocate legacy => :: acme

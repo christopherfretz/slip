@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use slip_model::declared::Declared;
 use slip_model::editset::{EditSet, SetState};
 use slip_model::keys::{KeyKind, Rule, RuleTable};
+use slip_model::transform::Ownership;
 
 /// §6.2's `rule_conflict`: two rules with one `(parent, kind, name, disc)`
 /// and different targets, or two rules of a kind other than `namespace`
@@ -61,9 +62,12 @@ pub(crate) fn union_of(set: &EditSet) -> BTreeSet<Rule> {
     set.rules.iter().cloned().chain(set.subjects.iter().filter_map(|s| s.rule.clone())).collect()
 }
 
-/// §6.2, from an edit set alone: `None` for a refused one. `Err` if the set
-/// does not validate, or its rules conflict (reduce refuses such a set).
-pub fn declared(set: &EditSet) -> Result<Option<Declared>, String> {
+/// §6.2, from an edit set and the request's `ownership`: `None` for a
+/// refused one. `Err` if the set does not validate, or its rules conflict
+/// (reduce refuses such a set). A `Declared` with rules holds the run's
+/// files, which are the request's ownership (`spec/verify.md` §2,
+/// WP-110); one without rules holds none.
+pub fn declared(set: &EditSet, ownership: &Ownership) -> Result<Option<Declared>, String> {
     set.validate()?;
     if set.state == SetState::Refused {
         return Ok(None);
@@ -74,7 +78,8 @@ pub fn declared(set: &EditSet) -> Result<Option<Declared>, String> {
     }
     let table = RuleTable::new(rules.into_iter().collect()).map_err(|e| e.to_string())?;
     let changed: BTreeSet<_> = set.changed.iter().filter(|c| c.in_force).map(|c| c.key).collect();
+    let files = (!table.is_empty()).then(|| ownership.clone());
     Declared::new(table.rules().to_vec(), changed.into_iter().collect(), Vec::new(), Vec::new())
-        .map(Some)
+        .map(|d| Some(d.with_files(files)))
         .map_err(|e| e.to_string())
 }

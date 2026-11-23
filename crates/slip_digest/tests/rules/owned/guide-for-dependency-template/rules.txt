@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. A deduction guide written by owned code for a dependency template (it must stay in the template's namespace), and the implicit guides of the dependency template.
+relocate legacy => :: acme

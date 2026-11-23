@@ -1,0 +1,3 @@
+# spec/verify.md §2.1, WP-110 fix round. Declarations with no location in a file (the implicit global operator new, a builtin) are read-only under every ownership, "every file owned" included: a rule that names one matches nothing. Kills mutation M3 (no location treated as owned).
+# vacuous
+rule function | root | name-of post operator new(unsigned long) | disc-of post operator new(unsigned long) | root | id renamed_new
