@@ -15,7 +15,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use slip_cdb::check::FrontEndCheck;
 use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::source::FileOrigin;
-use slip_kiln::{KilnCheck, Unit, parse_observer, parse_observer_with};
+use slip_kiln::{KilnCheck, ParseOptions, Unit, parse_observer, parse_observer_with};
 use slip_model::hash::content_digest;
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard, Status};
 
@@ -570,7 +570,7 @@ fn s8_4_with_closure_sees_the_unit() {
     let header = f.write("h.h", "int helper(int);\n");
     let main = f.write("main.cpp", "#include \"h.h\"\nint wanted(int x) { return helper(x); }\n");
     let o = f.observer(".", &["c++", "main.cpp"]);
-    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, |unit| {
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
         let ast = unit.ast();
         let found = ast.decls.ids().any(|d| {
             let node = ast.decls.get(d);
@@ -609,13 +609,17 @@ fn s8_4_with_closure_runs_when_a_parse_happened() {
     let f = Fixture::new("with-status");
     f.write("bad.cpp", "int x = nope;\n");
     let o = f.observer(".", &["c++", "bad.cpp"]);
-    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, errors_of).unwrap();
+    let (shard, seen) =
+        parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), errors_of).unwrap();
     assert_eq!(shard.outcome.status, Status::Diagnosed);
     assert_eq!(seen, Some(1));
     for argv in [&["c++", "-std=c++99x", "bad.cpp"][..], &["c++", "-E", "bad.cpp"][..]] {
         let o = f.observer(".", argv);
         let (shard, seen) =
-            parse_observer_with(&o, Phase::Map, 3, |_| -> u8 { panic!("not called") }).unwrap();
+            parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |_| -> u8 {
+                panic!("not called")
+            })
+            .unwrap();
         assert_eq!(shard.outcome.status, Status::Rejected, "{argv:?}");
         assert_eq!(seen, None, "{argv:?}");
     }
@@ -627,9 +631,13 @@ fn s8_4_with_panicking_closure_is_err() {
     let f = Fixture::new("with-panic");
     f.write("main.cpp", "int x;\n");
     let o = f.observer(".", &["c++", "main.cpp"]);
-    let e = parse_observer_with(&o, Phase::Map, 3, |_| -> u8 { panic!("boom {}", 7) }).unwrap_err();
+    let e = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |_| -> u8 {
+        panic!("boom {}", 7)
+    })
+    .unwrap_err();
     assert_eq!(e, "the front end panicked: boom 7");
-    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, errors_of).unwrap();
+    let (shard, seen) =
+        parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), errors_of).unwrap();
     assert_eq!((shard.outcome.status, seen), (Status::Ok, Some(0)));
 }
 
@@ -657,7 +665,8 @@ fn s8_4_with_closure_stack_remaining() {
     f.write("main.cpp", "int x;\n");
     let left = |argv: &[&str]| {
         let o = f.observer(".", argv);
-        let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, stack_of).unwrap();
+        let (shard, seen) =
+            parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), stack_of).unwrap();
         assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
         seen.unwrap().expect("a guard on the front end's thread")
     };
@@ -715,4 +724,185 @@ fn s8_4_run_reproducible_time() {
         "the child failed:\n{stdout}\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+// §8.4 outcome, at the Kiln pin `83566cc47` (WP-044): the smallest
+// reproducers of the Oven panics Slip reported (docs/requests/KD1, KD2),
+// which failed at the old pin `62d190007`, parse `ok`.
+#[test]
+fn s8_4_outcome_kd1_kd2_reproducers_are_ok() {
+    let f = Fixture::new("kd");
+    let cases = [
+        // KD1 §1: an assignment of an array new with a bound that is not
+        // a constant, of a class with a default member initialiser.
+        (
+            "kd1_new.cpp",
+            "struct S { unsigned x = 0; };\nS *p;\n\
+             void f(unsigned long n) { p = new S[n]; }\n",
+        ),
+        // KD1 §2: a bit-field of an anonymous union through `->`, in an
+        // instantiated body.
+        (
+            "kd1_union.cpp",
+            "struct T { union { unsigned a : 2; int other; }; };\n\
+             template <class P> void ensure(T *t, T *ct) { t->a = ct->a; }\n\
+             void g(T *t) { ensure<int>(t, t); }\n",
+        ),
+        // KD2: a parenthesised `std::min` call as a shift count.
+        (
+            "kd2_minmax.cpp",
+            "namespace std {\n\
+             template <class T> constexpr const T &min(const T &a, const T &b) \
+             { return b < a ? b : a; }\n}\n\
+             unsigned long long f(unsigned long n) \
+             { return 1ull << (std::min((unsigned long)31, n)); }\n",
+        ),
+    ];
+    for (name, text) in cases {
+        f.write(name, text);
+        let s = f.parse(".", &["clang++", "-std=c++17", name]);
+        assert_eq!(s.outcome.status, Status::Ok, "{name}: {:?}", s.outcome);
+        assert_eq!((s.outcome.errors, s.outcome.warnings), (0, 0), "{name}");
+    }
+}
+
+// §8.4 the run (WP-044): the entry leaves Kiln's written-reference and
+// declaration-extent tables off (`spec/ast.md` §18, §19 at Kiln
+// `83566cc47`), so a unit full of uses has both empty.
+#[test]
+fn s8_4_run_written_refs_and_decl_extents_are_off() {
+    let f = Fixture::new("written-refs-off");
+    f.write(
+        "main.cpp",
+        "namespace n { struct A { int v; }; int g(A); }\n\
+         int use(n::A a) { return n::g(a) + a.v; }\n",
+    );
+    let o = f.observer(".", &["c++", "main.cpp"]);
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        let ast = unit.ast();
+        (
+            ast.written_refs.is_on(),
+            ast.written_refs.len(),
+            ast.decl_extents.is_on(),
+            ast.decl_extents.len(),
+        )
+    })
+    .unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    assert_eq!(seen, Some((false, 0, false, 0)));
+}
+
+/// A source with one object-like and one function-like macro, and a
+/// string literal with a suffix (`docs/wp/WP-101.md`, "Tests").
+const MACROS: &str = "#define ONE 1\n#define F(x) (x)\n\
+                      unsigned long long operator\"\"_x(const char *, decltype(sizeof 0));\n\
+                      int bar = ONE;\nint b = F(bar) + 2;\nauto s = \"ab\"_x;\n";
+
+/// The offset in `MACROS` of the first `needle`.
+fn at(needle: &str) -> u32 {
+    u32::try_from(MACROS.find(needle).unwrap()).unwrap()
+}
+
+// §8.4 the run (WP-101): with `ParseOptions::pp_record` the closure reads
+// Kiln's preprocessing record, which has each expansion of the main file
+// naming its macro; without it there is no record.
+#[test]
+fn s8_4_run_pp_record_on_request() {
+    let f = Fixture::new("pp-record");
+    f.write("main.cpp", MACROS);
+    let o = f.observer(".", &["c++", "-std=c++17", "main.cpp"]);
+    let mut on = ParseOptions::default();
+    on.pp_record = true;
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, on, |unit| {
+        let (sm, ast) = (unit.sm(), unit.ast());
+        let main = unit.main_file().unwrap();
+        let rec = unit.pp_record()?;
+        let names: Vec<(String, String)> = rec
+            .exps()
+            .iter()
+            .filter(|e| sm.offset_of(e.name).is_some_and(|(file, _)| file == main))
+            .map(|e| {
+                let by_def = rec.def(e.def).def.name().as_str(ast.symbols()).to_owned();
+                let (_, lo) = sm.offset_of(e.name).unwrap();
+                let written = sm.text(main)[lo as usize..].split(['(', ';']).next().unwrap();
+                (by_def, written.trim().to_owned())
+            })
+            .collect();
+        Some(names)
+    })
+    .unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    let both = |n: &str| (n.to_owned(), n.to_owned());
+    assert_eq!(seen, Some(Some(vec![both("ONE"), both("F")])));
+
+    let (off, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        unit.pp_record().is_none()
+    })
+    .unwrap();
+    assert_eq!(seen, Some(true), "the record is off by default");
+    assert_eq!(off, shard, "the shard does not depend on the record");
+}
+
+// WP-101 decision 1: Kiln's editable ranges (`SourceManager::
+// editable_file_range`) and `kiln::lex::token_end`, reached through
+// `slip_kiln` and read as Kiln means them. The expected answers are those
+// of Kiln's `kiln_pp/tests/editable_range.rs` (`file_tokens_and_bad_ranges`,
+// `cpp_replace_whole_expansions_only`, `cpp_subst_argument_ranges`) and
+// `kiln_lex/tests/token_end.rs`.
+#[test]
+fn s8_4_run_editable_ranges_and_token_end_through_slip_kiln() {
+    use slip_kiln::kiln::lex::{Interner, LexOptions, Std, token_end};
+    use slip_kiln::kiln::source::{ExpansionKind, Span};
+
+    let f = Fixture::new("editable");
+    f.write("main.cpp", MACROS);
+    let o = f.observer(".", &["c++", "-std=c++17", "main.cpp"]);
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        let sm = unit.sm();
+        let main = unit.main_file().unwrap();
+        let text = |r: Option<(_, u32, u32)>| {
+            r.map(|(file, lo, hi)| {
+                assert_eq!(file, main);
+                sm.text(main)[lo as usize..hi as usize].to_owned()
+            })
+        };
+        // A range wholly in the file is that range.
+        let file_range = Span::new(sm.loc(main, at("int bar")), sm.loc(main, at(" = ONE")));
+        let whole = (sm.editable_range(file_range) == Some(file_range))
+            .then(|| text(sm.editable_file_range(file_range)));
+        // `bar` as `F`'s argument: the macro-argument entry spelled where
+        // the argument is written.
+        let written = sm.loc(main, at("bar) + 2"));
+        let arg = sm
+            .expansion_entries(0)
+            .find(|e| e.info.kind == ExpansionKind::MacroArg && e.info.spelling == written)
+            .expect("the argument's entry")
+            .info
+            .base;
+        // Begins inside `F`'s expansion (after its `(`), ends outside it.
+        let across = Span::new(arg, sm.loc(main, at(";\nauto")));
+        // The argument's tokens: its bytes in the file.
+        let in_arg = Span::new(arg, arg.with_offset(3));
+        let lex = LexOptions::new(Std::Cxx17);
+        let interner = Interner::new();
+        let end = |needle: &str| {
+            let lo = sm.loc(main, at(needle));
+            token_end(sm, &interner, lo, lex).and_then(|e| sm.same_entry_distance(lo, e))
+        };
+        (
+            whole,
+            text(sm.editable_file_range(across)),
+            text(sm.editable_file_range(in_arg)),
+            end("bar = ONE"),
+            end("\"ab\"_x"),
+        )
+    })
+    .unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    let (whole, across, in_arg, ident, literal) = seen.unwrap();
+    assert_eq!(whole, Some(Some("int bar".to_owned())));
+    assert_eq!(across, None, "a range from inside an expansion to outside it");
+    assert_eq!(in_arg, Some("bar".to_owned()));
+    assert_eq!(ident, Some(3), "an identifier");
+    assert_eq!(literal, Some(6), "a string literal with its suffix");
 }

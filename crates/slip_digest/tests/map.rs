@@ -20,7 +20,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_digest::map::{cause_word, counters, digest_unit, with_input};
 use slip_digest::{Area, Cause, Detail, Options, Output, STACK_SIZE};
-use slip_kiln::parse_observer_with;
+use slip_kiln::{ParseOptions, parse_observer_with};
 use slip_model::digests::{Digests, GroupClass, SCHEME};
 use slip_model::keys::RuleTable;
 use slip_model::{
@@ -92,7 +92,7 @@ fn walk(
 ) -> (Shard, Option<Result<Output, String>>) {
     let rules = rules();
     let options = Options { rules: &rules, detail: Detail::All, names: false };
-    let (shard, walked) = parse_observer_with(o, Phase::Map, 0, |unit| {
+    let (shard, walked) = parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {
         (unit.errors() == 0).then(|| digest_unit(unit, &options, subject))
     })
     .expect("parse_observer_with");
@@ -106,9 +106,10 @@ fn map_shard(o: &Observer) -> Result<Shard, String> {
     let rules = rules();
     let options = Options { rules: &rules, detail: Detail::None, names: false };
     let identity = |p: &[u8]| p.to_vec();
-    let (mut shard, walked) = parse_observer_with(o, Phase::Map, 0, |unit| {
-        (unit.errors() == 0).then(|| digest_unit(unit, &options, &identity))
-    })?;
+    let (mut shard, walked) =
+        parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {
+            (unit.errors() == 0).then(|| digest_unit(unit, &options, &identity))
+        })?;
     if let Some(output) = walked.flatten().transpose()?
         && shard.outcome.status == Status::Ok
     {
@@ -152,7 +153,7 @@ fn s8_5_subject_paths_of_inputs_and_predefines() {
     );
     let o = f.observer(&["c++", "-std=c++17", "-DM=1", "main.cpp"]);
     let identity = |p: &[u8]| p.to_vec();
-    let (shard, seen) = parse_observer_with(&o, Phase::Map, 0, |unit| {
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 0, ParseOptions::default(), |unit| {
         with_input(unit, &identity, |input| {
             let sm = input.sm;
             sm.file_ids()
@@ -227,11 +228,12 @@ fn s8_5_too_little_stack_is_err() {
     f.write("main.cpp", "int x;\n");
     let small = f.observer(&["c++", "-fkiln-stack-size=16M", "main.cpp"]);
     let identity = |p: &[u8]| p.to_vec();
-    let (shard, seen) = parse_observer_with(&small, Phase::Map, 0, |unit| {
-        let left = unit.stack_remaining();
-        (left, with_input(unit, &identity, |_| -> u8 { panic!("f is not called") }))
-    })
-    .unwrap();
+    let (shard, seen) =
+        parse_observer_with(&small, Phase::Map, 0, ParseOptions::default(), |unit| {
+            let left = unit.stack_remaining();
+            (left, with_input(unit, &identity, |_| -> u8 { panic!("f is not called") }))
+        })
+        .unwrap();
     assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
     let (left, result) = seen.unwrap();
     let left = left.expect("the front end's thread has a guard");

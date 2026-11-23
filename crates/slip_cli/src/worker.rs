@@ -14,7 +14,7 @@ use slip_digest::map::{counters, digest_unit};
 use slip_digest::{Detail, Options};
 use slip_exec::store::{Access, Store};
 use slip_exec::worker::{Job, ServeOptions, Task, serve};
-use slip_kiln::parse_observer_with;
+use slip_kiln::{ParseOptions, parse_observer_with};
 use slip_model::keys::RuleTable;
 use slip_model::{Observer, Phase, Shard, Status};
 
@@ -58,6 +58,16 @@ impl Task for MapTask {
                 phase_name(job.phase)
             ));
         }
+        // spec/exec.md §8.4: a job that does not fit its phase is `Err`,
+        // naming the field.
+        if job.post.is_some() {
+            return Err("a map job with a post".to_owned());
+        }
+        if job.transform.is_some() {
+            return Err("a map job with a transform: the map task does not run transforms yet \
+                        (spec/edits.md §8.1, M2)"
+                .to_owned());
+        }
         self.open_store(job)?;
         map_observer(&job.observer, job.round)
     }
@@ -81,9 +91,10 @@ fn map_observer(observer: &Observer, round: u64) -> Result<Shard, String> {
     let rules = RuleTable::empty();
     let options = Options { rules: &rules, detail: Detail::None, names: false };
     let identity = |path: &[u8]| path.to_vec();
-    let (mut shard, walked) = parse_observer_with(observer, Phase::Map, round, |unit| {
-        (unit.errors() == 0).then(|| digest_unit(unit, &options, &identity))
-    })?;
+    let (mut shard, walked) =
+        parse_observer_with(observer, Phase::Map, round, ParseOptions::default(), |unit| {
+            (unit.errors() == 0).then(|| digest_unit(unit, &options, &identity))
+        })?;
     let output = match walked.flatten() {
         Some(Ok(output)) => output,
         Some(Err(e)) => return Err(e),
@@ -205,15 +216,20 @@ mod tests {
         assert!(e.starts_with("the front end's thread has "), "{e}");
     }
 
-    // The map task runs phase `map` only: a job of another phase is `Err`
-    // before anything is opened or parsed.
+    // The map task runs phase `map` only: a job of another phase, and a
+    // map job with a `post` or a `transform` (spec/exec.md §5.5, §8.4),
+    // are `Err` before anything is opened or parsed.
     #[test]
-    fn map_task_refuses_another_phase() {
-        use slip_exec::worker::{Job, Task};
+    fn map_task_refuses_a_job_that_does_not_fit() {
+        use slip_exec::worker::{Job, Post, PostImage, Task};
+        // A store path under a regular file (the test binary): it cannot
+        // be opened, nor created.
+        let exe = std::env::current_exe().unwrap();
+        let store = exe.join("store").into_os_string().into_encoded_bytes();
         let job = Job {
-            store: b"/nonexistent/store".to_vec(),
+            store,
             plan: Digest([1; 32]),
-            phase: slip_model::Phase::Verify,
+            phase: slip_model::Phase::Map,
             round: 0,
             observer: Observer {
                 id: Digest([3; 32]),
@@ -223,8 +239,25 @@ mod tests {
                 cost_hint: 1,
                 origins: vec![Origin { configuration: 0, entry: 0 }],
             },
+            transform: None,
+            post: None,
         };
-        let e = super::MapTask::new().run(&job).unwrap_err();
-        assert_eq!(e, "the map task runs phase map only; the job is of phase verify");
+        let run = |job: &Job| super::MapTask::new().run(job).unwrap_err();
+        let verify = Job { phase: slip_model::Phase::Verify, ..job.clone() };
+        assert_eq!(run(&verify), "the map task runs phase map only; the job is of phase verify");
+        let post = Job {
+            post: Some(Post {
+                pre: 0,
+                declared: Digest([2; 32]),
+                image: PostImage::Tree(Vec::new()),
+            }),
+            ..job.clone()
+        };
+        assert_eq!(run(&post), "a map job with a post");
+        let transform = Job { transform: Some(Digest([4; 32])), ..job.clone() };
+        assert!(run(&transform).starts_with("a map job with a transform"));
+        // The store is opened only after these checks: with neither field,
+        // the job gets as far as opening it, and fails there.
+        assert!(run(&job).starts_with("cannot open the store"), "{}", run(&job));
     }
 }

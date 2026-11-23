@@ -1,0 +1,2 @@
+changed ta::promise_type::get_return_object()
+changed f()

@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod declare;
+
 pub mod args;
 pub mod commands;
 pub mod worker;

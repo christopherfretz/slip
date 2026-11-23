@@ -1,10 +1,10 @@
-#include "side.h"
 // std: c++26
-// §6 ContractSite `file`: the assertion in another presumed file.
+#include "side.h"
+// §6 ContractSite `file`: the presumed file name.
 #ifdef B
-#line 30 "b.cpp"
-void f(int x) pre(x > 0);
+#line 10 "b.cpp"
+void f() { contract_assert(true); }
 #else
-#line 30 "a.cpp"
-void f(int x) pre(x > 0);
+#line 10 "a.cpp"
+void f() { contract_assert(true); }
 #endif
