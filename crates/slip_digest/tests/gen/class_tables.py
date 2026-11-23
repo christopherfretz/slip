@@ -89,6 +89,11 @@ LAYOUT = {
         "`__builtin_source_location()`: the `__impl` object, kiln_sema `builtins.rs:3766`"),
 }
 
+LAYOUT["static-assert-sizeof"] = (
+    "struct S { char c; int i; };",
+    "void y() { static_assert(sizeof(S) == 8); }",
+    "`sizeof` in a constant expression the Oven evaluates (`static_assert`): kiln_oven `compile.rs:4479`")
+
 VIRTUALS = {
     "vtable-use": (
         "struct A { virtual void f() {} int a; }; struct S : A { void f() override {} };",
@@ -100,6 +105,18 @@ VIRTUALS = {
         "int y() { static constexpr S s; constexpr const A &a = s; constexpr int r = a.f(); return r; }",
         "a virtual call in constant evaluation: `final_overrider`, kiln_sema `oven_bridge.rs:174`"),
 }
+
+VIRTUALS["constant-dynamic-cast"] = (
+    "struct A { virtual constexpr int f() const { return 1; } }; struct S : A { };",
+    "bool y() { static constexpr S s; constexpr const A &a = s;"
+    " constexpr bool r = dynamic_cast<const S *>(&a) != nullptr; return r; }",
+    "a `dynamic_cast` in constant evaluation: the subobject graph, kiln_sema `oven_bridge.rs:178`")
+VIRTUALS["constant-member-pointer-call"] = (
+    "struct A { virtual constexpr int f() const { return 1; } };"
+    " struct S : A { constexpr int f() const override { return 2; } };",
+    "int y() { static constexpr S s; constexpr int (A::*p)() const = &A::f;"
+    " constexpr int r = (s.*p)(); return r; }",
+    "a call through a pointer to a virtual member in constant evaluation: kiln_sema `oven_bridge.rs:174`")
 
 CMP = {
     "builtin-int": ("", "auto y() { return 1 <=> 2; }",
@@ -181,6 +198,12 @@ for short, row, c in [
     ("Ast", "cmp_categories", "builtin-pointer"),
 ]:
     demand(short, row, CMP, c)
+
+
+# Constructs no row above needs: `tests/demand/_/<construct>/`.
+demand("_", "layout-static-assert-sizeof", LAYOUT, "static-assert-sizeof")
+demand("_", "virtuals-constant-dynamic-cast", VIRTUALS, "constant-dynamic-cast")
+demand("_", "virtuals-constant-member-pointer-call", VIRTUALS, "constant-member-pointer-call")
 
 
 # Item 1 to 3's pairs: (root, slug, a, b, expect, pre, post, note).
@@ -266,6 +289,10 @@ pair("indeterminate", "layout-typedef-alignment-array", "", "struct S { char c; 
 pair("indeterminate", "layout-typedef-alignment-const-array", "",
      "typedef const L CL;\nstruct S { char c; CL a[2]; };", ["indeterminate S"],
      "an array of a cv-qualified typedef of the typedef.", pre=TDL)
+pair("indeterminate", "layout-typedef-alignment-qualified-array-typedef", "",
+     "typedef L LA[2];\nstruct S { char c; const LA a; };", ["indeterminate S"],
+     "a cv-qualified array typedef (Kiln's `QualifiedArray` sugar, kiln_ast `types/canon.rs:100`)"
+     " whose element is the typedef.", pre=TDL)
 pair("indeterminate", "layout-typedef-alignment-flexible-array", "",
      "struct S { char c; L a[]; };", ["indeterminate S"],
      "a flexible array member of the typedef.", pre=TDL)
@@ -378,8 +405,8 @@ def write():
         d = os.path.join(ROOT, root, short, row)
         os.makedirs(d, exist_ok=True)
         sec = SECTION.get(short, "§10.6")
-        lines = ['#include "side.h"',
-                 f"// {sec} {short} `{row}` (demand, §11.7): {site}; every unit stays equal."]
+        what = f"{sec} {short} `{row}`" if short != "_" else "WP-107 construct"
+        lines = ['#include "side.h"', f"// {what} (demand, §11.7): {site}; every unit stays equal."]
         if kind is CMP:
             lines.append('#include "compare.h"')
             write_file(os.path.join(d, "compare.h"), COMPARE_H)
