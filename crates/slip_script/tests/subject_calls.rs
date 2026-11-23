@@ -2108,6 +2108,11 @@ struct Diff {
     units: u64,
     kiln_errors: u64,
     clang_errors: u64,
+    /// Units whose clang dump is over [`DUMP_LIMIT`], refused unread.
+    dump_skipped: u64,
+    dump_skipped_at: Vec<String>,
+    /// The largest clang dump read, in bytes.
+    largest_dump: usize,
     calls: u64,
     closed_by_macro: u64,
     unmatched: u64,
@@ -2131,6 +2136,9 @@ impl Diff {
         self.units += o.units;
         self.kiln_errors += o.kiln_errors;
         self.clang_errors += o.clang_errors;
+        self.dump_skipped += o.dump_skipped;
+        self.dump_skipped_at.extend(o.dump_skipped_at);
+        self.largest_dump = self.largest_dump.max(o.largest_dump);
         self.calls += o.calls;
         self.closed_by_macro += o.closed_by_macro;
         self.unmatched += o.unmatched;
@@ -2149,25 +2157,68 @@ impl Diff {
     }
 }
 
-/// Clang's dump of a side, or `None` when clang reports an error.
-fn clang_dump(side: &Side, dir: &std::path::Path) -> Option<Vec<u8>> {
+/// The most bytes of clang's JSON dump the differential reads for one
+/// unit (`SLIP_WP086_DUMP_LIMIT` overrides it). Clang's dump of a chain of
+/// typedefs grows with the cube of its length (a chain of 200: 258 MB; the
+/// digest's `indeterminate/_/typedef-alignment-bound`, 4,200: terabytes),
+/// and the reader's tree is several times the dump: a unit over the limit
+/// is refused before it is read whole, counted and named, so that no input
+/// can make the test's memory unbounded.
+const DUMP_LIMIT: u64 = 64 << 20;
+
+fn dump_limit() -> u64 {
+    std::env::var("SLIP_WP086_DUMP_LIMIT")
+        .map_or(DUMP_LIMIT, |v| v.parse().expect("SLIP_WP086_DUMP_LIMIT: a number of bytes"))
+}
+
+/// Clang's dump of a side.
+enum Dumped {
+    Json(Vec<u8>),
+    /// Clang reports an error.
+    Error,
+    /// Over [`dump_limit`]: clang is stopped, the dump is not kept.
+    TooLarge,
+}
+
+/// Clang's dump of a side, read up to [`dump_limit`] bytes.
+fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
+    use std::io::Read as _;
     for (p, t) in &side.files {
         let path = dir.join(p);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, t).unwrap();
     }
     let target = side.target.as_deref().unwrap_or("x86_64-unknown-linux-gnu");
-    let out = std::process::Command::new(CLANG)
+    let mut child = std::process::Command::new(CLANG)
         .current_dir(dir)
         .arg(format!("-std={}", side.std))
         .arg(format!("--target={target}"))
         .args(&side.args)
         .args(["-nostdinc", "-nostdinc++", "-I.", "-w", "-fsyntax-only"])
         .args(["-Xclang", "-ast-dump=json", "main.cpp"])
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .unwrap();
+    let limit = dump_limit();
+    let mut json = Vec::new();
+    child.stdout.take().unwrap().take(limit + 1).read_to_end(&mut json).unwrap();
+    let too_large = json.len() as u64 > limit;
+    if too_large {
+        // The child is ours; its stdout is closed, so it would also stop
+        // at its next write.
+        let _ = child.kill();
+    }
+    let status = child.wait().unwrap();
     std::fs::remove_dir_all(dir).unwrap();
-    out.status.success().then_some(out.stdout)
+    if too_large {
+        Dumped::TooLarge
+    } else if status.success() {
+        Dumped::Json(json)
+    } else {
+        Dumped::Error
+    }
 }
 
 /// The differential of one side.
@@ -2178,10 +2229,22 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Option<Vec<u8>> {
 )]
 fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
     let mut d = Diff { units: 1, ..Diff::default() };
-    let Some(json) = clang_dump(side, dir) else {
-        d.clang_errors = 1;
-        return d;
+    let json = match clang_dump(side, dir) {
+        Dumped::Json(json) => json,
+        Dumped::Error => {
+            d.clang_errors = 1;
+            return d;
+        }
+        Dumped::TooLarge => {
+            d.dump_skipped = 1;
+            d.dump_skipped_at.push(label.to_owned());
+            return d;
+        }
     };
+    d.largest_dump = json.len();
+    if std::env::var_os("SLIP_WP086_TRACE").is_some() {
+        eprintln!("TRACE {} {label}", json.len());
+    }
     let texts: Texts<'_> =
         side.files.iter().map(|(p, t)| (snippet_path(p), t.as_bytes())).collect();
     let mut clang = ClangCalls::new();
@@ -2200,6 +2263,9 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
     let parsed = parse_with_tables(&snippet, &extra, |p| {
         if p.errors > 0 {
             d.kiln_errors = 1;
+            if std::env::var_os("SLIP_WP086_TRACE").is_some() {
+                eprintln!("TRACE kiln-error {label}");
+            }
             return;
         }
         let owned = |_: &[u8]| true;
@@ -2402,6 +2468,57 @@ using AT = A<k(9)>;
     assert_eq!(d.clang_calls, 11, "clang calls");
 }
 
+/// A chain of `n` typedefs and a variable of the last (as the digest's
+/// `indeterminate/_/typedef-alignment-bound`, 4,200 long).
+fn typedef_chain(n: usize) -> String {
+    use std::fmt::Write as _;
+    let mut t = String::from("typedef int T0 __attribute__((aligned(8)));\n");
+    for i in 1..=n {
+        writeln!(t, "typedef T{} T{i};", i - 1).unwrap();
+    }
+    writeln!(t, "T{n} v;").unwrap();
+    t
+}
+
+/// The bound of item 7's memory: clang's JSON dump of a chain of 200
+/// typedefs is 258 MB (it grows with the cube of the length; the digest's
+/// chain of 4,200 took the host's memory before the bound): the
+/// differential refuses it at [`DUMP_LIMIT`] and counts it, without
+/// reading it whole. The subject's own walk of the digest's chain stays
+/// small. Skipped visibly without clang.
+#[test]
+fn review086_differential_refuses_an_oversized_dump() {
+    let src = typedef_chain(4200);
+    let files = [("main.cpp", src.as_str())];
+    let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: "c++20" };
+    let extra = Extra { args: &[], target: None };
+    let calls = parse_with_tables(&snippet, &extra, |p| {
+        assert_eq!(p.errors, 0);
+        let owned = |_: &[u8]| true;
+        let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
+        s.call_sites().len()
+    });
+    assert_eq!(calls, Ok(0));
+    if std::process::Command::new(CLANG).arg("--version").output().is_err() {
+        assert!(std::env::var_os("SLIP_REQUIRE_ALL").is_none_or(|v| v != "1"), "no {CLANG}");
+        eprintln!(
+            "SKIP subject_calls.rs review086_differential_refuses_an_oversized_dump: no {CLANG}"
+        );
+        return;
+    }
+    let side = Side {
+        files: vec![("main.cpp".to_owned(), typedef_chain(200))],
+        std: "c++20".to_owned(),
+        args: Vec::new(),
+        target: None,
+    };
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp086-oversized");
+    let d = differential(&side, &dir, "chain");
+    assert_eq!((d.dump_skipped, d.clang_errors, d.kiln_errors), (1, 0, 0));
+    assert_eq!(d.dump_skipped_at, ["chain"]);
+    assert_eq!(d.largest_dump, 0);
+}
+
 /// Item 7: the extents of calls and arguments against clang 19, over
 /// every pair-test snippet of the digest (both sides) and every test of
 /// Kiln's `tests/codegen` (C++26); with `SLIP_WP086_CONFORMANCE=1`, also
@@ -2507,6 +2624,18 @@ fn item7_differential_against_clang() {
         d.clang_macro,
         d.differences.len()
     );
+    d.dump_skipped_at.sort();
+    eprintln!(
+        "item 7: {} units refused, clang's dump over {} bytes; the largest read: {} bytes; \
+         peak resident memory: {}",
+        d.dump_skipped,
+        dump_limit(),
+        d.largest_dump,
+        peak_resident().map_or_else(|| "unknown".to_owned(), |k| format!("{} MiB", k >> 10))
+    );
+    for u in &d.dump_skipped_at {
+        eprintln!("SKIP item 7 unit (clang's dump over the limit): {u}");
+    }
     for u in d.unmatched_at.iter().take(100) {
         eprintln!("no clang call: {u}");
     }
@@ -2525,6 +2654,21 @@ fn item7_differential_against_clang() {
     }
     assert!(d.compared > 1000, "only {} extents compared", d.compared);
     assert!(d.differences.is_empty(), "{}", d.differences.join("\n"));
+    // Refusing a dump must stay the exception, not hide the corpus.
+    assert!(
+        d.dump_skipped * 100 <= d.units,
+        "{} of {} units refused for clang's dump size",
+        d.dump_skipped,
+        d.units
+    );
+}
+
+/// The peak resident memory of this process in KiB (`VmHWM`), where the
+/// system says it.
+fn peak_resident() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmHWM:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
 }
 
 // ---------------------------------------------------------------------------
