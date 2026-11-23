@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod driver;
 mod effects;
 pub mod fake;
 pub mod host;

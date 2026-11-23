@@ -357,6 +357,9 @@ pub struct RunReport {
 pub struct Session<'a> {
     engine: &'a mut dyn Engine,
     files: Vec<ReadFile>,
+    /// The target's triple and the bytes of the predefines buffer.
+    triple: String,
+    predefines: Vec<u8>,
     /// This session's number, which its entries carry.
     id: u64,
     /// Set while a run is inside Kiln: still set after a run unwound.
@@ -378,6 +381,34 @@ impl Session<'_> {
     /// bytes Kiln read.
     pub fn files(&self) -> &[ReadFile] {
         &self.files
+    }
+
+    /// The target the unit was compiled for (`spec/api.md` §2.1 rule 3):
+    /// its normalised triple, as Kiln writes it
+    /// (`kiln/crates/kiln_abi/src/target.rs`, `Triple`'s `Display`).
+    pub fn triple(&self) -> &str {
+        &self.triple
+    }
+
+    /// The bytes of the unit's predefines buffer, the virtual buffer
+    /// `<built-in>` that Kiln reads before the transform file
+    /// (`kiln/crates/kiln_pp/src/preprocessor.rs:661`): the target's
+    /// predefined macros, then one `#define` or `#undef` line per `-D` or
+    /// `-U`. Not in [`Session::files`], which lists what was read from
+    /// disk. Empty if Kiln made no such buffer.
+    pub fn predefines(&self) -> &[u8] {
+        &self.predefines
+    }
+
+    /// Whether Kiln's stack guard tripped in this unit (its flag
+    /// `Sema::stack_exhausted`, `kiln/crates/kiln_sema/src/stack_guard.rs:184`).
+    /// The flag is sticky: once set, every later run of the session fails,
+    /// and Kiln reports the diagnostic only once
+    /// (`stack_guard.rs:191-193`), so a later run may fail without it. See
+    /// [`Session::run`] for how a run away from the compiling thread can
+    /// set it.
+    pub fn stack_exhausted(&self) -> bool {
+        self.engine.stack_exhausted()
     }
 
     /// Whether a function or function template named `name` is a member
@@ -487,7 +518,9 @@ pub fn with_transform<R>(
                         return f(Err(CompileError::Embed { path, line }));
                     }
                     let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
-                    f(Ok(Session { engine: &mut fe, files, id, in_run: false }))
+                    let triple = fe.session.sema().abi.triple.to_string();
+                    let predefines = predefines(fe.sources);
+                    f(Ok(Session { engine: &mut fe, files, triple, predefines, id, in_run: false }))
                 }
                 Err(SessionRefused::TuHasErrors { errors }) => {
                     f(Err(CompileError::Diagnosed { rendered: buffer.contents(), errors }))
@@ -513,6 +546,16 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
         .map(|s| (*s).to_owned())
         .or_else(|| p.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "a panic without a message".to_owned())
+}
+
+/// The bytes of the first virtual buffer named `<built-in>` (the
+/// predefines, `kiln/crates/kiln_pp/src/preprocessor.rs:661`); empty if
+/// there is none.
+fn predefines(sm: &SourceManager) -> Vec<u8> {
+    sm.file_ids()
+        .find(|&id| sm.file_origin(id) == FileOrigin::Virtual && sm.file_name(id) == "<built-in>")
+        .map(|id| sm.text(id).as_bytes().to_vec())
+        .unwrap_or_default()
 }
 
 /// The buffers read from disk, in the order Kiln created them, and the
@@ -629,6 +672,7 @@ fn embed_line(bytes: &[u8]) -> Option<u32> {
 /// The session with its lifetimes erased, so that [`Session`] has one.
 trait Engine: Send {
     fn declares(&self, name: &str) -> bool;
+    fn stack_exhausted(&self) -> bool;
     fn entry(&self, name: &str) -> Result<KilnEntry, EntryError>;
     fn run(
         &mut self,
@@ -711,6 +755,10 @@ fn is_function(ast: &Ast, d: DeclId) -> bool {
 }
 
 impl Engine for SessionFrontEnd<'_, '_> {
+    fn stack_exhausted(&self) -> bool {
+        self.session.sema().stack_exhausted()
+    }
+
     fn declares(&self, name: &str) -> bool {
         let ast = &self.session.sema().ast;
         global_members(ast, name).into_iter().any(|d| is_function(ast, d))

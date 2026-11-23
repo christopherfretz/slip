@@ -1159,3 +1159,69 @@ fn k2_known_hole_a_kiln_run_instantiating_away_from_the_compiling_thread() {
         assert!(!ok && diagnostics.contains("stack exhausted"), "{at}: {diagnostics}");
     }
 }
+
+// WP-089 (spec/api.md §2.1 rule 3, §2.2 the target term): the session
+// hands out the target's triple and the predefines buffer, which holds
+// the target's predefined macros and then the command line's `-D` and
+// `-U`; it is not among the files read.
+#[test]
+fn wp089_the_target_of_the_unit() {
+    let cmd = command(
+        "target",
+        "#include <slip/meta.h>\nconsteval void transform() {}\n",
+        &["-DWP089=7", "-UWP089_OFF"],
+    );
+    let (triple, predefines, files) =
+        with(&cmd, |s| (s.triple().to_owned(), s.predefines().to_vec(), s.files().to_vec()));
+    assert_eq!(triple, format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
+    let text = String::from_utf8(predefines).unwrap();
+    let arch_macro = match std::env::consts::ARCH {
+        "x86_64" => "#define __x86_64__ 1",
+        "aarch64" => "#define __aarch64__ 1",
+        other => panic!("no Kiln target for {other}"),
+    };
+    assert!(text.contains(arch_macro), "{text}");
+    assert!(text.contains("#define __cplusplus "), "{text}");
+    let define = text.find("#define WP089 7\n").expect("the -D line");
+    let undef = text.find("#undef WP089_OFF\n").expect("the -U line");
+    assert!(text.find(arch_macro).unwrap() < define && define < undef, "{text}");
+    assert!(files.iter().all(|f| f.path != b"<built-in>"), "a virtual buffer is not a file read");
+}
+
+// WP-089 (`Session::stack_exhausted`): Kiln's sticky flag reads false
+// after runs at home and away that reach no stack check. That it reads
+// Kiln's flag and not a constant: the run that sets it cannot be made
+// through an entry at this pin (s1), so the driver's handling of it is
+// tested with the flag injected (`slip_script::driver` unit tests).
+#[test]
+fn wp089_stack_exhausted_reads_false_after_ordinary_runs() {
+    let cmd = transform("wp089_stack", "consteval void transform() { host(1, 1); }");
+    let flags = std::thread::scope(|t| {
+        std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn_scoped(t, || {
+                with_transform(&cmd, STACK - (1 << 20), |opened| {
+                    let s = &mut opened.unwrap();
+                    let before = s.stack_exhausted();
+                    let entry = s.entry("transform").unwrap();
+                    let home = s.run(entry, &mut Counting::default(), BUDGET, &Cancel::new());
+                    let away = std::thread::scope(|t| {
+                        let s = &mut *s;
+                        std::thread::Builder::new()
+                            .stack_size(STACK)
+                            .spawn_scoped(t, move || {
+                                s.run(entry, &mut Counting::default(), BUDGET, &Cancel::new())
+                            })
+                            .unwrap()
+                            .join()
+                            .unwrap()
+                    });
+                    (before, home.result, away.result, s.stack_exhausted())
+                })
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    });
+    assert_eq!(flags, (false, Ok(()), Ok(()), false));
+}
