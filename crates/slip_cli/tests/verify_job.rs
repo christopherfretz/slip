@@ -1767,28 +1767,320 @@ fn f7_absolute_has_include() {
     assert!(tree.truth_differs(&o, &m));
 }
 
-// F4b (re-check): a header added outside both roots after the map phase,
-// in a directory searched before the one the map read it from, with an
-// edit that compensates. O2 compares only files both parses read; the map
-// parse's failed lookups are not kept ("negative inputs", WP-117): §5.1
-// "What remains outside".
-#[test]
-#[ignore = "needs: WP-117 (negative inputs in the map shard)"]
-fn f4b_outside_header_added_after_the_map() {
-    let pre = "#include <cfg.h>\n#if USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
-    let post = "#include <cfg.h>\n#if !USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
-    let tree = Tree::new("f4b", &[("a.cpp", pre)]);
+// ----- N1 (§5.3, work package WP-117): no file has appeared, outside the
+// subject roots, where the map parse looked for one and found none.
+
+const CFG_PRE: &str =
+    "#include <cfg.h>\n#if USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+/// The edit that compensates `USE_NEW` going from 0 to 1.
+const CFG_POST: &str =
+    "#include <cfg.h>\n#if !USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+
+fn appeared(p: &Path) -> String {
+    format!("pre-image: {} appeared since the map phase", p.display())
+}
+
+/// The case of most attacks: `a.cpp` is `pre` in the subject and `post` in
+/// the post tree, compiled from the subject with `-I` each of `dirs`
+/// (under the tree's base); `ext/cfg.h` holds `USE_NEW 0`; the map shard
+/// is published.
+fn cfg_tree(name: &str, pre: &str, post: &str, dirs: &[&str]) -> (Tree, Observer, Shard) {
+    cfg_tree_with(name, pre, post, dirs, |_| {})
+}
+
+/// As [`cfg_tree`], with `setup` run on the tree before the map phase.
+fn cfg_tree_with(
+    name: &str,
+    pre: &str,
+    post: &str,
+    dirs: &[&str],
+    setup: impl Fn(&Tree),
+) -> (Tree, Observer, Shard) {
+    let tree = Tree::new(name, &[("a.cpp", pre)]);
     write(&tree.post.join("a.cpp"), post);
-    std::fs::create_dir_all(tree.base.join("ext2")).unwrap();
     write(&tree.base.join("ext/cfg.h"), "#define USE_NEW 0\n");
-    let o = tree.observer_in(
-        &tree.subject,
-        &[arg("-I", &tree.base.join("ext2")), arg("-I", &tree.base.join("ext"))],
-    );
-    tree.map(&o);
+    setup(&tree);
+    let flags: Vec<String> = dirs.iter().map(|d| arg("-I", &tree.base.join(d))).collect();
+    let o = tree.observer_in(&tree.subject, &flags);
+    let m = tree.map(&o);
+    assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+    (tree, o, m)
+}
+
+// F4b (re-check), item 5: a header added outside both roots after the map
+// phase, in a directory searched before the one the map read it from, with
+// an edit that compensates (the sums agree). Refused by N1, before the
+// sums. The pair: without the drift the edit is seen, mismatch.
+#[test]
+fn f4b_outside_header_added_after_the_map() {
+    let mk = |t: &Tree| std::fs::create_dir_all(t.base.join("ext2")).unwrap();
+    let (tree, o, _) = cfg_tree_with("f4b", CFG_PRE, CFG_POST, &["ext2", "ext"], mk);
     write(&tree.base.join("ext2/cfg.h"), "#define USE_NEW 1\n");
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), appeared(&tree.base.join("ext2/cfg.h")));
+    check_post_shard(&v);
+}
+
+#[test]
+fn f4b_pair_without_the_drift() {
+    let mk = |t: &Tree| std::fs::create_dir_all(t.base.join("ext2")).unwrap();
+    let (tree, o, _) = cfg_tree_with("f4b-pair", CFG_PRE, CFG_POST, &["ext2", "ext"], mk);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+}
+
+// N1 is checked whatever the comparison finds: the same drift with no edit,
+// so that the sums differ, is refused the same way.
+#[test]
+fn n1_checked_when_the_sums_differ() {
+    let (tree, o, _) = cfg_tree("n1-differ", CFG_PRE, CFG_PRE, &["ext2", "ext"]);
+    write(&tree.base.join("ext2/cfg.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), appeared(&tree.base.join("ext2/cfg.h")));
+}
+
+// N1 names the first path in path order, not in the order of the search:
+// `ext-b` is searched first, `ext-a` is named.
+#[test]
+fn n1_first_in_path_order() {
+    let (tree, o, _) = cfg_tree("n1-order", CFG_PRE, CFG_POST, &["ext-b", "ext-a", "ext"]);
+    write(&tree.base.join("ext-b/cfg.h"), "#define USE_NEW 1\n");
+    write(&tree.base.join("ext-a/cfg.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), appeared(&tree.base.join("ext-a/cfg.h")));
+}
+
+// Item 3: a file the transform added under a subject root is the edit, not
+// a drift. The map parse looked for `new.h` beside `a.cpp` (a negative
+// under the subject root); the file now exists there and in the post tree
+// (empty: the sums agree). Not refused: verified.
+#[test]
+fn n1_subject_root_file_is_not_refused() {
+    let main = "#if __has_include(\"new.h\")\n#include \"new.h\"\n#endif\nint f() { return 1; }\n";
+    let tree = Tree::new("n1-subject", &[("a.cpp", main)]);
+    let o = tree.observer();
+    let m = tree.map(&o);
+    let negatives = m.negatives.as_ref().expect("negatives in a map shard");
+    assert!(negatives.contains(&bytes(&tree.subject.join("new.h"))), "{negatives:?}");
+    write(&tree.subject.join("new.h"), "\n");
+    write(&tree.post.join("new.h"), "\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+}
+
+// Item 3, "exists" is Kiln's test: a dangling symbolic link at a negative
+// is no file (Kiln's open fails): not refused; the edit is seen.
+#[test]
+fn n1_dangling_link_is_no_file() {
+    let (tree, o, _) = cfg_tree("n1-dangling", CFG_PRE, CFG_POST, &["ext2", "ext"]);
+    link("nowhere.h", &tree.base.join("ext2/cfg.h"));
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+}
+
+// Item 3: a directory of that name is no file (Kiln refuses to read a
+// directory and searches on): not refused.
+#[test]
+fn n1_directory_is_no_file() {
+    let (tree, o, _) = cfg_tree("n1-dir", CFG_PRE, CFG_POST, &["ext2", "ext"]);
+    std::fs::create_dir_all(tree.base.join("ext2/cfg.h")).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+}
+
+// Item 3: a file that cannot be opened is no file for Kiln, which searches
+// on; one that can is a file. Mode 000 cannot be opened except by root,
+// who can: the test follows whichever this process is.
+#[test]
+fn n1_unreadable_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tree, o, _) = cfg_tree("n1-unreadable", CFG_PRE, CFG_POST, &["ext2", "ext"]);
+    let cfg = tree.base.join("ext2/cfg.h");
+    write(&cfg, "#define USE_NEW 1\n");
+    std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = std::fs::File::open(&cfg).is_ok();
+    let v = tree.verify(&o);
+    std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o644)).unwrap();
+    if readable {
+        assert_eq!(reason(&v), appeared(&cfg));
+    } else {
+        assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+    }
+}
+
+// Item 3: a pre shard without the section, fail closed.
+#[test]
+fn n1_pre_shard_without_negatives() {
+    let (tree, o, m) = cfg_tree("n1-none", CFG_PRE, CFG_PRE, &["ext"]);
+    tree.put_map(&o, &Shard { negatives: None, ..m });
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert_eq!(reason(&v), "pre-image: the map shard has no negative inputs");
+}
+
+// Item 3: the identity image is treated as O2 treats it: N1 does not
+// apply (every change since the map phase is the edit compared). The
+// drift is then seen by the comparison: not verified.
+#[test]
+fn n1_identity_image() {
+    let (tree, o, _) = cfg_tree("n1-identity", CFG_PRE, CFG_PRE, &["ext2", "ext"]);
+    write(&tree.base.join("ext2/cfg.h"), "#define USE_NEW 1\n");
+    let params = Params { image: Image::identity(), ..tree.params(Declared::none()) };
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert!(!reason(&v).contains("appeared"), "{}", reason(&v));
+    assert_ne!(kind(&v), VerdictKind::Verified);
+}
+
+// Item 5: a file added in the includer's directory for a quoted include
+// the map found on the list. The includer `ext/w.h` is outside the roots.
+#[test]
+fn n1_quoted_include_beside_the_includer() {
+    let pre = CFG_PRE.replace("<cfg.h>", "<w.h>");
+    let post = CFG_POST.replace("<cfg.h>", "<w.h>");
+    let (tree, o, _) = cfg_tree_with("n1-beside", &pre, &post, &["wrap", "ext"], |t| {
+        write(&t.base.join("wrap/w.h"), "#include \"cfg.h\"\n");
+    });
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    write(&tree.base.join("wrap/cfg.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), appeared(&tree.base.join("wrap/cfg.h")));
+}
+
+const HAS_PRE: &str = "#if __has_include(<cfg2.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+const HAS_POST: &str = "#if !__has_include(<cfg2.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+
+// Item 5: `__has_include` false at the map phase and true now, with an
+// edit that compensates. The pair: mismatch.
+#[test]
+fn n1_has_include_now_true() {
+    let (tree, o, _) = cfg_tree("n1-has", HAS_PRE, HAS_POST, &["ext"]);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    write(&tree.base.join("ext/cfg2.h"), "\n");
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), appeared(&tree.base.join("ext/cfg2.h")));
+}
+
+// Item 5: `#include_next` with a file added between the includer's
+// directory and the one the map found it in.
+#[test]
+fn n1_include_next_between() {
+    let pre = CFG_PRE.replace("<cfg.h>", "<n.h>");
+    let post = CFG_POST.replace("<cfg.h>", "<n.h>");
+    let (tree, o, _) = cfg_tree_with("n1-next", &pre, &post, &["one", "two", "three"], |t| {
+        write(&t.base.join("one/n.h"), "#include_next <n.h>\n");
+        write(&t.base.join("three/n.h"), "#define USE_NEW 0\n");
+        std::fs::create_dir_all(t.base.join("two")).unwrap();
+    });
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    write(&tree.base.join("two/n.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), appeared(&tree.base.join("two/n.h")));
+}
+
+// Item 5: a search directory that did not exist at the map phase (Kiln
+// left it out of the list) and now exists with the header.
+#[test]
+fn n1_directory_created_since() {
+    let (tree, o, m) = cfg_tree("n1-created", CFG_PRE, CFG_POST, &["later", "ext"]);
+    let negatives = m.negatives.as_ref().unwrap();
+    assert!(negatives.contains(&bytes(&tree.base.join("later/cfg.h"))), "{negatives:?}");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    write(&tree.base.join("later/cfg.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), appeared(&tree.base.join("later/cfg.h")));
+}
+
+// Item 5: a file added and removed again before the job: nothing exists,
+// nothing is refused; the edit is seen.
+#[test]
+fn n1_added_and_removed() {
+    let (tree, o, _) = cfg_tree("n1-gone", CFG_PRE, CFG_POST, &["ext2", "ext"]);
+    let cfg = tree.base.join("ext2/cfg.h");
+    write(&cfg, "#define USE_NEW 1\n");
+    std::fs::remove_file(&cfg).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+}
+
+// Item 5: a name with `..` components, through a directory missing at the
+// map phase: the place keeps them (`ext/sub/../../ext2/cfg.h`), which
+// exists only once `ext/sub` does, as for Kiln.
+#[test]
+fn n1_dot_dot_components() {
+    let (tree, o, m) = cfg_tree("n1-dotdot", CFG_PRE, CFG_POST, &["ext/sub/../../ext2", "ext"]);
+    let place = tree.base.join("ext/sub/../../ext2/cfg.h");
+    assert!(m.negatives.as_ref().unwrap().contains(&bytes(&place)), "{:?}", m.negatives);
+    write(&tree.base.join("ext2/cfg.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair, `ext/sub` missing: {}", reason(&v));
+    std::fs::create_dir_all(tree.base.join("ext/sub")).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), appeared(&place));
+}
+
+// Item 5: two spellings of one directory are one place.
+#[test]
+fn n1_two_spellings_of_one_directory() {
+    let (tree, o, m) = cfg_tree("n1-spellings", CFG_PRE, CFG_POST, &["ext2", "ext2/./", "ext"]);
+    let n = m.negatives.as_ref().unwrap();
+    let place = bytes(&tree.base.join("ext2/cfg.h"));
+    assert_eq!(n.iter().filter(|p| **p == place).count(), 1, "{n:?}");
+    assert!(!n.iter().any(|p| p.ends_with(b"./cfg.h")), "{n:?}");
+    write(&tree.base.join("ext2/cfg.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), appeared(&tree.base.join("ext2/cfg.h")));
+}
+
+// Item 5: a negative under a post root reached by a symbolic link: the
+// place is `lnk/cfg.h` as written; it is not under a subject root
+// (`Resolver::under_subject`: the region of its directory by identity, the
+// nearest root, here the post root), so it is checked.
+#[test]
+fn n1_negative_under_a_post_root_by_a_link() {
+    let (tree, o, _) = {
+        let tree = Tree::new("n1-postlink", &[("a.cpp", CFG_PRE)]);
+        write(&tree.post.join("a.cpp"), CFG_POST);
+        write(&tree.base.join("ext/cfg.h"), "#define USE_NEW 0\n");
+        std::fs::create_dir_all(tree.post.join("inc")).unwrap();
+        link(tree.post.join("inc").to_str().unwrap(), &tree.base.join("lnk"));
+        let flags = [arg("-I", &tree.base.join("lnk")), arg("-I", &tree.base.join("ext"))];
+        let o = tree.observer_in(&tree.subject, &flags);
+        let m = tree.map(&o);
+        (tree, o, m)
+    };
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    write(&tree.post.join("inc/cfg.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), appeared(&tree.base.join("lnk/cfg.h")));
+}
+
+// Item 5: a symbolic link outside the roots retargeted after the map
+// phase: `lnk` led to `ext-a` (no `cfg.h`) and now leads to `ext-b`, which
+// has one. The place is `lnk/cfg.h` as written, followed when N1 looks.
+#[test]
+fn n1_link_retargeted_since() {
+    let tree = Tree::new("n1-retarget", &[("a.cpp", CFG_PRE)]);
+    write(&tree.post.join("a.cpp"), CFG_POST);
+    write(&tree.base.join("ext/cfg.h"), "#define USE_NEW 0\n");
+    std::fs::create_dir_all(tree.base.join("ext-a")).unwrap();
+    write(&tree.base.join("ext-b/cfg.h"), "#define USE_NEW 1\n");
+    link("ext-a", &tree.base.join("lnk"));
+    let flags = [arg("-I", &tree.base.join("lnk")), arg("-I", &tree.base.join("ext"))];
+    let o = tree.observer_in(&tree.subject, &flags);
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    std::fs::remove_file(tree.base.join("lnk")).unwrap();
+    link("ext-b", &tree.base.join("lnk"));
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), appeared(&tree.base.join("lnk/cfg.h")));
 }
 
 // ----- G6 (§5.3): the links along the post parse's routes are the subject's

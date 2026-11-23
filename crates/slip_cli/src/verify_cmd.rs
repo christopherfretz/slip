@@ -339,6 +339,7 @@ mod tests {
             binding: None,
             rule_use: None,
             spellings: None,
+            negatives: None,
         }
         .to_bytes()
     }

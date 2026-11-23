@@ -34,7 +34,7 @@ use slip_verify::compare::{
 };
 
 use crate::image::{Image, Resolver, Side, show_path};
-use crate::locate;
+use crate::{locate, negatives};
 
 /// A verify job's parameters (`spec/verify.md` §5; `spec/exec.md` §8.6).
 /// The worker makes them from `job.post` and its own options, in one
@@ -501,9 +501,10 @@ fn without_units(d: &Digests) -> Digests {
 }
 
 /// Step 2's guards on what the post-image parse read and looked at, in
-/// this order (§5.3): [`post_parse_guards`], then O2 of the tree form (not
-/// with the identity, where every change since the map phase is the edit
-/// compared). The reason of the first that fails.
+/// this order (§5.3): [`post_parse_guards`], then O2 and N1 of the tree
+/// form (not with the identity, where every change since the map phase is
+/// the edit compared). The reason of the first that fails. They run before
+/// the comparison, so whatever it finds.
 fn image_guards(
     params: &Params,
     observer: &Observer,
@@ -521,8 +522,16 @@ fn image_guards(
         return None;
     }
     let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
-    drifted(&mut resolver, post_inputs, pre_inputs)
-        .map(|path| format!("pre-image: {} changed since the map phase", show_path(path)))
+    if let Some(path) = drifted(&mut resolver, post_inputs, pre_inputs) {
+        return Some(format!("pre-image: {} changed since the map phase", show_path(path)));
+    }
+    // N1: no file has appeared, outside the subject roots, where the map
+    // parse looked for one and found none. Without the record, fail closed.
+    let Some(negatives) = pre.shard.negatives.as_deref() else {
+        return Some("pre-image: the map shard has no negative inputs".to_owned());
+    };
+    negatives::appeared(&mut resolver, negatives)
+        .map(|path| format!("pre-image: {} appeared since the map phase", show_path(path)))
 }
 
 /// The guards of §5.3 that need only the post-image parse, in this order:

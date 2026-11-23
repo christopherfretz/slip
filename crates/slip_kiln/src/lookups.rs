@@ -2,12 +2,13 @@
 //! (Kiln `kiln_pp/src/lookups.rs`, Kiln `spec/pp.md` "Lookup log"), in
 //! Slip's own terms: [`Lookups`]. Asked for by
 //! [`crate::ParseOptions::lookups`]; read by the verify task's guard L1
-//! (`spec/verify.md` §5.3, work package WP-052).
+//! (`spec/verify.md` §5.3, work package WP-052) and by the map task for
+//! the shard's negative inputs (`spec/model.md` §8.6, work package WP-117).
 
 use std::collections::HashSet;
 
 use kiln_driver::front_end::FrontEnd;
-use kiln_pp::{Found, LookupForm, LookupLog};
+use kiln_pp::{DirGroup, Found, LookupForm, LookupLog, join_path};
 
 use crate::kiln::source::FileOrigin;
 
@@ -31,6 +32,19 @@ pub struct Lookups {
     /// `.` for `"..."`, then every `--embed-dir` (the log does not say which
     /// of them were tried).
     pub tried: Vec<(String, String)>,
+    /// The **negative inputs** (`spec/model.md` §8.6): each location
+    /// `(directory, name)` where a recorded lookup looked for `name` and
+    /// found nothing, unique, in the order first seen. That is `tried` less
+    /// the place each lookup found its file at, with two differences: an
+    /// `#embed` form lists the places before the one it read (its order is
+    /// the includer's directory, `.`, then each `--embed-dir`), not every
+    /// `--embed-dir`; and a search directory of the command (`-I`,
+    /// `-iquote`, `-isystem`, `-idirafter`, `-cxx-isystem`) that Kiln's
+    /// driver left out of the search list because it was no directory is a
+    /// place for every name a `#include` form looked for in the list
+    /// (except a `<...>` name in an `-iquote` directory): were it created,
+    /// the search would look there, wherever it stands in the list.
+    pub missed: Vec<(String, String)>,
     /// The name of every buffer read from disk and of every consulted path
     /// (each of the shard's `inputs`, as spelled when it was read).
     pub read: Vec<String>,
@@ -41,49 +55,96 @@ pub struct Lookups {
     pub line_names: Vec<String>,
 }
 
+/// What [`Lookups::of`] takes from Kiln's driver: what the lookup log does
+/// not name.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Driver {
+    /// `--embed-dir` directories, in order (`Args::embed_dirs`).
+    pub(crate) embed_dirs: Vec<String>,
+    /// The command's own search directories, in order, as the search list
+    /// names them (`Args::dirs`, `-I=` made sysroot-relative), each with
+    /// whether it is an `-iquote` directory.
+    pub(crate) dirs: Vec<(bool, String)>,
+}
+
+impl Driver {
+    /// From the driver's arguments (`kiln_driver::pp_cmd::Job::search_specs`
+    /// for the command's own directories).
+    pub(crate) fn of(args: &kiln_driver::args::Args) -> Driver {
+        let sysroot = args.isysroot.as_deref().or(args.sysroot.as_deref()).unwrap_or("");
+        let dirs = args
+            .dirs
+            .iter()
+            .map(|(g, d)| {
+                let path = match d.strip_prefix('=') {
+                    Some(rest) if !sysroot.is_empty() => format!("{sysroot}{rest}"),
+                    _ => d.clone(),
+                };
+                (*g == DirGroup::Quoted, path)
+            })
+            .collect();
+        Driver { embed_dirs: args.embed_dirs.clone(), dirs }
+    }
+}
+
+/// A set of `(directory, name)` places, in the order first seen.
+#[derive(Default)]
+struct Places {
+    out: Vec<(String, String)>,
+    seen: HashSet<(String, String)>,
+}
+
+impl Places {
+    fn push(&mut self, d: &str, name: &str) {
+        let key = (d.to_owned(), name.to_owned());
+        if !self.seen.contains(&key) {
+            self.seen.insert(key.clone());
+            self.out.push(key);
+        }
+    }
+}
+
 impl Lookups {
     /// The lookups of `fe`, whose log Kiln recorded (`None` without one).
-    /// `embed_dirs` is called only when the log has an `#embed` form.
-    pub(crate) fn of(
-        fe: &FrontEnd<'_, '_>,
-        embed_dirs: impl FnOnce() -> Vec<String>,
-    ) -> Option<Self> {
+    /// `driver` is called once, for what the log does not name.
+    pub(crate) fn of(fe: &FrontEnd<'_, '_>, driver: impl FnOnce() -> Driver) -> Option<Self> {
         let log = fe.lookups?;
-        let mut out = Lookups {
-            list: log.list.iter().map(|&d| dir(log, d).to_owned()).collect(),
-            ..Lookups::default()
-        };
-        let mut seen: HashSet<(String, String)> = HashSet::new();
-        let mut push = |out: &mut Lookups, d: &str, name: &str| {
-            let key = (d.to_owned(), name.to_owned());
-            if seen.insert(key.clone()) {
-                out.tried.push(key);
-            }
-        };
-        let mut embed_dirs = Some(embed_dirs);
-        let mut embeds: Option<Vec<String>> = None;
+        let driver = driver();
+        let list: Vec<String> = log.list.iter().map(|&d| dir(log, d).to_owned()).collect();
+        // The command's search directories the driver left out because
+        // they are no directory (a duplicate of a listed one is one).
+        let listed: HashSet<&str> = list.iter().map(String::as_str).collect();
+        let absent: Vec<&(bool, String)> = driver
+            .dirs
+            .iter()
+            .filter(|(_, d)| {
+                !listed.contains(d.as_str()) && !std::fs::metadata(d).is_ok_and(|m| m.is_dir())
+            })
+            .collect();
+        let mut tried = Places::default();
+        let mut missed = Places::default();
         for l in &log.lookups {
             // An absolute name is tried where it is, whatever the form
             // (Kiln's log does not record one yet: `spec/verify.md` §5.1,
             // "What remains outside").
             if l.name.starts_with('/') {
-                push(&mut out, "/", &l.name);
-            }
-            if let Some(i) = l.includer {
-                push(&mut out, dir(log, i), &l.name);
-            }
-            if l.form == LookupForm::Embed {
-                if !l.angled {
-                    push(&mut out, ".", &l.name);
-                }
-                let dirs =
-                    embeds.get_or_insert_with(|| embed_dirs.take().map_or_else(Vec::new, |f| f()));
-                for d in dirs.iter() {
-                    push(&mut out, d, &l.name);
+                tried.push("/", &l.name);
+                if matches!(l.found, Found::Missing) {
+                    missed.push("/", &l.name);
                 }
                 continue;
             }
-            if l.found == Found::Includer {
+            if l.form == LookupForm::Embed {
+                embed(l, log, &driver.embed_dirs, &mut tried, &mut missed);
+                continue;
+            }
+            if let Some(i) = l.includer {
+                tried.push(dir(log, i), &l.name);
+                if l.found == Found::Includer {
+                    continue;
+                }
+                missed.push(dir(log, i), &l.name);
+            } else if l.found == Found::Includer {
                 continue;
             }
             let start = match (l.form, l.after) {
@@ -97,17 +158,26 @@ impl Lookups {
                 _ => 0,
             };
             let start = start.min(log.list.len());
-            let end = match l.found {
-                Found::Dir { dir: hit, .. } => log.list[start..]
-                    .iter()
-                    .position(|&d| d == hit)
-                    .map_or(log.list.len(), |p| start + p + 1),
-                _ => log.list.len(),
+            let hit = match l.found {
+                Found::Dir { dir: hit, .. } => {
+                    log.list[start..].iter().position(|&d| d == hit).map(|p| start + p)
+                }
+                _ => None,
             };
+            let end = hit.map_or(log.list.len(), |h| h + 1);
             for &d in &log.list[start..end] {
-                push(&mut out, dir(log, d), &l.name);
+                tried.push(dir(log, d), &l.name);
+            }
+            for &d in &log.list[start..hit.unwrap_or(end)] {
+                missed.push(dir(log, d), &l.name);
+            }
+            for (quoted, d) in &absent {
+                if !(l.angled && *quoted) {
+                    missed.push(d, &l.name);
+                }
             }
         }
+        let mut out = Lookups { list, tried: tried.out, missed: missed.out, ..Lookups::default() };
         for file in fe.sm.file_ids() {
             let read = match fe.sm.file_origin(file) {
                 FileOrigin::Virtual => false,
@@ -123,6 +193,41 @@ impl Lookups {
         }
         out.read.extend(fe.consulted.iter().map(|c| c.path.clone()));
         Some(out)
+    }
+}
+
+/// An `#embed` or `__has_embed` lookup `l`: Kiln tries, in order, the
+/// includer's directory and `.` for `"..."` (the bare name), then every
+/// `--embed-dir` (Kiln `HeaderSearch::lookup_embed`), and reads the first
+/// that is a readable regular file. Every one is `tried` (the log does not
+/// say where the search stopped); the ones before the path it read are
+/// `missed`, all of them when it read none.
+fn embed(
+    l: &kiln_pp::Lookup,
+    log: &LookupLog,
+    embed_dirs: &[String],
+    tried: &mut Places,
+    missed: &mut Places,
+) {
+    let mut tries: Vec<(&str, String)> = Vec::new();
+    if let Some(i) = l.includer {
+        tries.push((dir(log, i), join_path(dir(log, i), &l.name)));
+    }
+    if !l.angled {
+        tries.push((".", l.name.clone()));
+    }
+    tries.extend(embed_dirs.iter().map(|d| (d.as_str(), join_path(d, &l.name))));
+    for (d, _) in &tries {
+        tried.push(d, &l.name);
+    }
+    let read = match &l.found {
+        Found::Embed { path } => tries.iter().position(|(_, p)| p == path),
+        _ => None,
+    };
+    // A path read that is none of the tries cannot be placed: every try is
+    // then missed, which refuses more, never less.
+    for (d, _) in &tries[..read.unwrap_or(tries.len())] {
+        missed.push(d, &l.name);
     }
 }
 
