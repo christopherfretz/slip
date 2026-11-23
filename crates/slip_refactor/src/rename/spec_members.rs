@@ -119,10 +119,12 @@ pub(crate) fn collect(ctx: &mut Ctx<'_, '_, '_>) {
         }
         if follows_a_pattern(ast, d) {
             let e = ctx.keys.entity(d);
-            if let Some(id) = resolve(ctx, &mut memo, &named, e, 0)
-                && ast.decls.get(d).kind() == DeclKind::Using
-            {
-                followers::instantiated_using(ctx, d, id);
+            let id = resolve(ctx, &mut memo, &named, e, 0);
+            if ast.decls.get(d).kind() == DeclKind::Using {
+                match id {
+                    Some(id) => followers::instantiated_using(ctx, d, id),
+                    None => followers::instantiated_unfollowed_using(ctx, d),
+                }
             }
         } else {
             unlinked |= unlinked_member(ast, d);

@@ -1,7 +1,7 @@
 subjects:
   27394c7f seed - rule=yes n::C::f()
   3b98ec8e candidate read_only rule=yes n::D::f()
-  498ae399 follower - rule=yes n::D::f of=599ef791,8e22d4a6
+  498ae399 follower - rule=yes n::D::f of=3b98ec8e,599ef791,8e22d4a6
   599ef791 candidate read_only rule=yes n::B::f()
   8e22d4a6 follower - rule=yes n::D::f of=36cceb9c
 links:

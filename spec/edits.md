@@ -1652,12 +1652,15 @@ it cannot ("Open questions").
 
 An entity that has the target's name and scope and another key kind (a
 class, a field, an enumerator, an alias, a namespace, a concept) is a seed
-with the flag `unsupported`. A using-declaration there is not: it is the
-§9.2 follower of what it names (`docs/wp/WP-120.md` item 3). So is an entity with C language linkage
+with the flag `unsupported`. So is an entity with C language linkage
 that is declared with the target's name in the target's scope: its key
 has the parent `c_linkage` whatever namespace declares it (`digest.md`
 §3), so it never matches, and it is recognised by the scopes that
 enclose its declaration.
+
+A using-declaration with the target's name in the target's scope is no
+seed of either kind: it is the §9.2 follower of what it names
+(`docs/wp/WP-120.md` item 3).
 
 ### 9.2 Subjects
 
@@ -1686,36 +1689,65 @@ enclose its declaration.
     using-declaration's `of` is **every** entity it names, subject or
     not, so that an overload set partly selected is `mixed_follower`
     (§5.2); its name is claimed with it as the subject. **Hidden
-    shadows** (`docs/wp/WP-120.md` item 3): a declaration that a member
-    of the using-declaration's class hides or overrides is not
-    introduced ([namespace.udecl]/14), and the front end records the
-    shadow it still makes for it as hidden (`hidden_shadow`). The
+    shadows** (`docs/wp/WP-120.md` item 3 and its fix round): a
+    declaration that a member of the using-declaration's class hides or
+    overrides is not introduced ([namespace.udecl]/14), and the front
+    end records the shadow it still makes for it as hidden by that
+    member (`hidden_shadow`, which names the **hider**). The
     using-declaration's `of` leaves out the targets of hidden shadows,
-    unless every shadow it makes is hidden (then it is every target);
-    a hidden shadow's `of` is its target **and** the using-declaration.
-    So in `struct D : B { using B::f; void f() override; }` with
-    `B::f()` renamed alone (its family: `B::f()`, `D::f()`), the
-    using-declaration follows `B::f(int)` alone, is unselected, and is
-    kept, which is right: no selected entity is reached through it. The
-    hidden shadow follows `B::f()` and the kept using-declaration: it is
-    `mixed_follower`, and the run refuses, because the digest writes a
-    hidden shadow as a unit (`digest.md` §2.1) and the kept
-    using-declarator would no longer make it (the post-image shows it
-    removed). The rule is decided per class from what each observer
-    records: a shadow hidden in `D` says nothing of a class `E : B` with
-    `using B::f;` and no `f()`, whose shadow of `B::f()` is not hidden
-    and puts `B::f()` in `E`'s using-declaration's `of`
-    (`mixed_follower` there: the using-declaration would have to name
-    both names). A seed at `D::f` reaches the same subjects through the
-    link and is decided the same way. When the overrider is declared
-    before the using-declaration the front end makes no shadow for the
-    hidden declaration, and the rename is accepted and verifies; A
+    unless every shadow it makes is hidden (then it is every target). A
+    hidden shadow is a follower whether or not its target is a subject,
+    with `of` its three parties: its target, its using-declaration and
+    its hider (a party with no key makes it `unsupported`). A
+    using-declaration is looked at when it names a subject or when a
+    subject hides what it names. While the digest writes a hidden shadow
+    as a unit (`digest.md` §2.1), the rename is accepted only when all
+    three parties are renamed or none is; any mix is `mixed_follower`
+    (§5.2). The mixes, each a wrong edit the digest shows:
+    - target and hider renamed, using-declaration kept (`struct D : B {
+      using B::f; void f() override; }`, `B::f()` and `D::f()` renamed,
+      `B::f(int)` not): right in C++, but the kept using-declarator no
+      longer makes the shadow, which the post-image shows removed;
+    - using-declaration renamed, target and hider not (`struct B : A {
+      void f() override; void f(int); }; struct D : B { using B::f; void
+      f(int); }`, `A::f` renamed): the shadow of `B::f(int)` is gone;
+    - hider renamed, target not, or the reverse (`struct D : B { using
+      B::f; void f(); }`, with `D::f()` or with `B::f` renamed, neither
+      virtual): the hidden declaration becomes visible in `D`, a change
+      of the program.
+
+    The rule is decided per class from what each observer records: a
+    shadow hidden in `D` says nothing of a class `E : B` with `using
+    B::f;` and no `f()`, whose shadow of `B::f()` is not hidden and
+    puts `B::f()` in `E`'s using-declaration's `of` (`mixed_follower`
+    there: the using-declaration would have to name both names). A seed
+    at `D::f` reaches the same subjects through the link and is decided
+    the same way. When the overrider is declared before the
+    using-declaration the front end makes no shadow for the hidden
+    declaration, and the rename is accepted and verifies. What the rule
+    becomes once the digest leaves hidden shadows out is in
+    `spec/landed/edits/WP-120.md`, "For the digest". An inheriting
+    constructor's shadows (`using B::B;`) are another name and never
+    followers. A using-declaration that names a class and functions of
+    one name has both in its `of`; the class is a seed of another kind
+    when it is in the target's scope (§9.1).
+
+    A
     using-declaration that has no key (one at block scope is no unit)
     is no follower: its name is claimed for the subjects it names, or
     `refuse(mixed_set)` when it also names an entity that is not one. A
     using-declaration that introduces no shadow of its own (it repeats
     one of its scope) is taken through the declaration it redeclares,
-    and claimed `unresolved` where the front end links none. A reference
+    and claimed `unresolved` where the front end links none. A dependent
+    using-declaration (`using Base<T>::f;`) names nothing in its pattern
+    and its name is claimed `unresolved`; the using-declaration of an
+    instantiated class made from it, when it names a subject, is a
+    follower of what it introduces **and** of the pattern's
+    using-declaration, which this rename does not edit: with a subject
+    selected it is `mixed_follower` (`template <class U> struct Base : X
+    { void f(); }; template <class T> struct F : Base<T> { using
+    Base<T>::f; };` with `F<int>` used and `Base::f` renamed: the kept
+    name would name `X::f(int)`, which `Base<U>::f` hid). A reference
     found through a shadow denotes its referent (§9.3);
   - a member of a class template specialisation instantiated from a
     subject, when its key has the old name (`of`: the member of the
@@ -1940,7 +1972,19 @@ that base, and nothing reports it: a `kept` range is not residue
 differ. Where one observer instantiates the pattern and another does
 not, the first claims `replace` and the second `keep` at the same
 name: `contested` (§5.4), a refusal
-(`wp120_dependent_base_over_two_observers_is_contested`).
+(`wp120_dependent_base_over_two_observers_is_contested_simulated`).
+The same holds of a local class deriving from `T` (§9.2: it is in no
+class pattern) in a function template that no observer instantiates
+with a base in the family (`template <class T> int t() { struct L : T
+{ void f() override {} }; ... }`), and in a member function of a class
+template that is instantiated but whose member function is never
+called with such a base (`template <class T> struct S { int t() {
+struct L : T { ... }; ... } }; S<n::B> s;`: the class is instantiated,
+the member's body is not): `L::f` is kept
+(`s9_5-not-seen-local-class-dependent-base-in-function-template`,
+`-in-member-not-called`), and two observers of which one instantiates
+it are `contested`
+(`wp120_local_class_dependent_base_over_two_observers_is_contested`).
 
 Not refused, and left to verification: a use that would resolve to
 another entity once renamed (the new name hides, or is hidden by, a

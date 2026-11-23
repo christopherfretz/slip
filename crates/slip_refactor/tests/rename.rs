@@ -479,8 +479,16 @@ fn rules_give_the_ids_in_the_post_image() {
             && e.claims
                 .windows(2)
                 .all(|w| (w[0].file, w[0].lo, w[0].hi) != (w[1].file, w[1].lo, w[1].hi));
-        let want: Vec<Digest> =
-            e.subjects.iter().filter(|s| s.rule.is_some() && s.flags == 0).map(|s| s.id).collect();
+        // Reduce's selection (§5.2) over this one observer: a run with a
+        // follower partly selected (`mixed_follower`) is refused, and only
+        // the selected subjects are renamed.
+        let Some(selected) = selection(&e) else { continue };
+        let want: Vec<Digest> = e
+            .subjects
+            .iter()
+            .filter(|s| s.rule.is_some() && s.flags == 0 && selected.contains(&s.id))
+            .map(|s| s.id)
+            .collect();
         if !applicable || want.is_empty() {
             continue;
         }
@@ -539,6 +547,36 @@ fn rules_give_the_ids_in_the_post_image() {
         checked += 1;
     }
     assert!(checked > 0, "no directory was checked");
+}
+
+/// The subjects reduce selects in one observer's `e` (§5.2: the seeds,
+/// closed under the links, and every follower all of whose `of` is
+/// selected), or `None` when a follower is partly selected
+/// (`mixed_follower`).
+fn selection(e: &Edits) -> Option<BTreeSet<Digest>> {
+    let mut selected: BTreeSet<Digest> =
+        e.subjects.iter().filter(|s| s.role == Role::Seed).map(|s| s.id).collect();
+    loop {
+        let before = selected.len();
+        for l in &e.links {
+            if selected.contains(&l.a) || selected.contains(&l.b) {
+                selected.insert(l.a);
+                selected.insert(l.b);
+            }
+        }
+        for s in e.subjects.iter().filter(|s| s.role == Role::Follower) {
+            if !s.of.is_empty() && s.of.iter().all(|o| selected.contains(o)) {
+                selected.insert(s.id);
+            }
+        }
+        if selected.len() == before {
+            break;
+        }
+    }
+    let mixed = e.subjects.iter().filter(|s| s.role == Role::Follower).any(|s| {
+        s.of.iter().any(|o| selected.contains(o)) && !s.of.iter().all(|o| selected.contains(o))
+    });
+    if mixed { None } else { Some(selected) }
 }
 
 /// The wire name of a reason (`spec/edits.md` §4.2).
@@ -1056,11 +1094,16 @@ struct EndToEnd {
 enum Wp119 {
     /// As the shards are: such a follower refuses the run.
     Now,
-    /// As WP-119 will make it: the flag taken off those followers (and
-    /// only where it is their only flag) and their rules left out of the post-image's table, so that
-    /// the instantiated member follows its pattern's rule
+    /// The refusal lifted, no more: the flag taken off those followers
+    /// (only where it is their only flag) and their rules **deleted**
+    /// from the post-image's table, so that the instantiated member
+    /// follows its pattern's rule
     /// (`followers_of_class_template_members_map_with_their_seed` shows
-    /// that this gives each follower's id).
+    /// that this gives each follower's id). This is not WP-119 item 1,
+    /// which keeps those rules and accepts each only when it agrees with
+    /// the pattern's: a test run `Simulated` shows what the rename does
+    /// once the refusal is lifted, and does **not** cover that agreement
+    /// check. The digest's treatment of hidden shadows is not simulated.
     Simulated,
 }
 
@@ -1367,9 +1410,12 @@ fn wp120_using_declaration_in_a_class_template_end_to_end() {
 
 /// Item 1, the dependent base: one observer instantiates `G<B>` (the
 /// pattern's name replaced), one sees the pattern only (kept): reduce sees
-/// the disagreement (`contested`).
+/// the disagreement (`contested`). The exact list holds under
+/// `Wp119::Simulated` only; as the shards are (`Wp119::Now`), the member
+/// of `G<n::B>` adds its WP-073 flag:
+/// `["Contested n::G::f()", "SubjectUnsupported n::G<n::B>::f()"]`.
 #[test]
-fn wp120_dependent_base_over_two_observers_is_contested() {
+fn wp120_dependent_base_over_two_observers_is_contested_simulated() {
     let files: [(&str, &[u8]); 3] = [
         ("g.h", b"namespace n { struct B { virtual void f(); }; template <class T> struct G : T { void f() override; }; }\n"),
         ("use.cpp", b"#include \"g.h\"\nvoid h(n::G<n::B>& x) { x.f(); }\n"),
@@ -1385,6 +1431,113 @@ fn wp120_dependent_base_over_two_observers_is_contested() {
         &right,
     );
     assert_eq!(r.refusals, ["Contested n::G::f()"], "{r:?}");
+    let now = end_to_end(
+        "wp120-g-now",
+        &files,
+        &["use.cpp", "pattern.cpp"],
+        &["n", "B", "f"],
+        "g",
+        Wp119::Now,
+        &right,
+    );
+    assert_eq!(
+        now.refusals,
+        ["Contested n::G::f()", "SubjectUnsupported n::G<n::B>::f()"],
+        "{now:?}"
+    );
+}
+
+/// The refusals of a run as their causes, sorted, without subjects.
+fn causes(r: &EndToEnd) -> Vec<&str> {
+    let mut c: Vec<&str> =
+        r.refusals.iter().map(|x| x.split(' ').next().unwrap_or_default()).collect();
+    c.dedup();
+    c
+}
+
+/// WP-120 fix round, F1 and F2: a hidden shadow follows its target, its
+/// using-declaration and the member that hides it; any mix of the three
+/// renamed is refused (`mixed_follower`), where the shards alone would
+/// otherwise be accepted and the digest would show the shadow removed
+/// (F1) or a hidden declaration made visible (F2).
+#[test]
+fn wp120_hidden_shadow_three_parties_end_to_end() {
+    let f1: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct A { virtual void f(); };\nstruct B : A { void f() override; void f(int); };\nstruct D : B { using B::f; void f(int); };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
+    )];
+    let r = end_to_end("wp120-f1", &f1, &["main.cpp"], &["n", "A", "f"], "g", Wp119::Now, &right);
+    assert_eq!(causes(&r), ["MixedFollower"], "{r:?}");
+    let f2: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct B { void f(); void f(int); };\nstruct D : B { using B::f; void f(); };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
+    )];
+    for (name, target) in
+        [("wp120-f2-derived", ["n", "D", "f"]), ("wp120-f2-base", ["n", "B", "f"])]
+    {
+        let r = end_to_end(name, &f2, &["main.cpp"], &target, "g", Wp119::Now, &right);
+        assert_eq!(causes(&r), ["MixedFollower"], "{name}: {r:?}");
+    }
+}
+
+/// WP-120 fix round, question 3: a dependent using-declaration
+/// instantiated with a base whose `f()` hides `X::f(int)`. Renamed alone,
+/// the kept `using Base<T>::f;` (its name `unresolved`) would name
+/// `X::f(int)`. Refused as `mixed_follower` on the instantiated
+/// using-declaration (it follows the pattern's, which is not renamed),
+/// also with WP-073's flag lifted (`Wp119::Simulated`), where the review
+/// saw it accepted and the digest show the shadow changed.
+#[test]
+fn wp120_dependent_using_partly_selected_end_to_end() {
+    let files: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\nstruct X { void f(int); };\ntemplate <class U> struct Base : X { void f(); };\ntemplate <class T> struct F : Base<T> { using Base<T>::f; };\n}\nvoid h(n::F<int>& x) { x.f(); }\n",
+    )];
+    for wp119 in [Wp119::Now, Wp119::Simulated] {
+        let r =
+            end_to_end("wp120-q3", &files, &["main.cpp"], &["n", "Base", "f"], "g", wp119, &right);
+        assert!(causes(&r).contains(&"MixedFollower"), "{r:?}");
+    }
+}
+
+/// WP-120 fix round, F4: a local class deriving from `T`, in a function
+/// template and in a member function of an instantiated class template,
+/// instantiated with a base in the family in one observer and not in the
+/// other: kept in one, replaced in the other (`contested`).
+#[test]
+fn wp120_local_class_dependent_base_over_two_observers_is_contested() {
+    let ft: [(&str, &[u8]); 3] = [
+        ("t.h", b"namespace n { struct B { virtual void f(); }; }\ntemplate <class T> int t() { struct L : T { void f() override {} }; L l; l.f(); return 0; }\n"),
+        ("use.cpp", b"#include \"t.h\"\nint u = t<n::B>();\n"),
+        ("pattern.cpp", b"#include \"t.h\"\n"),
+    ];
+    let mt: [(&str, &[u8]); 3] = [
+        ("t.h", b"namespace n { struct B { virtual void f(); }; }\ntemplate <class T> struct S { int t() { struct L : T { void f() override {} }; L l; l.f(); return 0; } };\n"),
+        ("use.cpp", b"#include \"t.h\"\nint u = S<n::B>().t();\n"),
+        ("pattern.cpp", b"#include \"t.h\"\nS<n::B> s;\n"),
+    ];
+    for (name, files) in [("wp120-f4-ft", &ft), ("wp120-f4-mt", &mt)] {
+        let r = end_to_end(
+            name,
+            files,
+            &["use.cpp", "pattern.cpp"],
+            &["n", "B", "f"],
+            "g",
+            Wp119::Now,
+            &right,
+        );
+        assert_eq!(causes(&r), ["Contested"], "{name}: {r:?}");
+        let one = end_to_end(
+            &format!("{name}-one"),
+            files,
+            &["pattern.cpp"],
+            &["n", "B", "f"],
+            "g",
+            Wp119::Now,
+            &right,
+        );
+        assert!(one.refusals.is_empty() && one.differences.is_empty(), "{name}: {one:?}");
+    }
 }
 
 /// Item 3, end to end: the unhide idiom renamed from the base verifies,

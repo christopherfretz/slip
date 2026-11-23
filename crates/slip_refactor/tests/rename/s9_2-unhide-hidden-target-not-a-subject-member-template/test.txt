@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 fix round F1: as -hidden-target-not-a-subject, a member template of D hiding one of B
+from: n::A::f
+to: g
+kind: function
