@@ -67,7 +67,8 @@ fn s7_1_bytes_outside_the_edits_pass_through() {
     let a = pre.windows(1).position(|w| w == b"a").unwrap() as u64;
     let out = post(&[("/t/f.cc", pre)], vec![edit(0, a, a + 1, vec![spell(1, b"alpha")])]);
     let mut want = pre.to_vec();
-    want.splice(a as usize..a as usize + 1, b"alpha".iter().copied());
+    let at = a as usize;
+    want.splice(at..=at, b"alpha".iter().copied());
     assert_eq!(out, vec![want]);
     // The last byte, with no newline after it.
     let n = pre.len() as u64;

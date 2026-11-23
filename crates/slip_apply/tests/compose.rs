@@ -4,6 +4,13 @@
 //! buried edit; and a model: the definition's own recursion on generated
 //! sets, compared with `build`.
 
+#![allow(
+    clippy::similar_names,
+    clippy::unused_self,
+    clippy::needless_range_loop,
+    reason = "the model transcribes the definitions index by index"
+)]
+
 mod common;
 
 use std::collections::BTreeSet;

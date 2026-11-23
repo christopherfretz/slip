@@ -198,21 +198,18 @@ fn apply_with(
     }
     let patch_file = dir.join("the.patch");
     std::fs::write(&patch_file, diff).unwrap();
-    let mut cmd = match tool {
-        "patch" => {
-            let mut c = Command::new("patch");
-            c.args([strip, "--batch", "--forward", "--no-backup-if-mismatch", "-s", "-i"])
-                .arg(&patch_file);
-            c
-        }
-        _ => {
-            let mut c = Command::new("git");
-            // Not inside the repository the target directory lies in.
-            c.env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap())
-                .args(["apply", strip])
-                .arg(&patch_file);
-            c
-        }
+    let mut cmd = if tool == "patch" {
+        let mut c = Command::new("patch");
+        c.args([strip, "--batch", "--forward", "--no-backup-if-mismatch", "-s", "-i"])
+            .arg(&patch_file);
+        c
+    } else {
+        let mut c = Command::new("git");
+        // Not inside the repository the target directory lies in.
+        c.env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap())
+            .args(["apply", strip])
+            .arg(&patch_file);
+        c
     };
     if diff.is_empty() {
         cmd = Command::new("true");
@@ -246,14 +243,14 @@ fn random_file(rng: &mut Rng, alphabet: &[u8]) -> Vec<u8> {
 fn mutate(rng: &mut Rng, pre: &[u8], alphabet: &[u8]) -> Vec<u8> {
     let mut lines: Vec<Vec<u8>> =
         pre.split_inclusive(|&b| b == b'\n').map(<[u8]>::to_vec).collect();
-    for _ in 0..1 + rng.below(4) {
+    for _ in 0..=rng.below(4) {
         let at = rng.below(lines.len() as u64 + 1) as usize;
         match rng.below(4) {
             0 if at < lines.len() => {
                 lines.remove(at);
             }
             1 if at < lines.len() => {
-                lines[at] = [rng.bytes_n(1, 3, alphabet), b"\n".to_vec()].concat()
+                lines[at] = [rng.bytes_n(1, 3, alphabet), b"\n".to_vec()].concat();
             }
             2 => lines.insert(at, [rng.bytes_n(0, 3, alphabet), b"\n".to_vec()].concat()),
             _ => {
