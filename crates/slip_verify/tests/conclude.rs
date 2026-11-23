@@ -766,3 +766,73 @@ fn s8_5_property_no_write_from_a_bad_run() {
     // Both sides are exercised.
     assert!(bad_runs > 1000 && good_runs > 100, "{bad_runs} bad, {good_runs} good");
 }
+
+// §8.5 row 4: every category of residue but `mention` is a reason, each
+// alone; a mention beside it changes nothing.
+#[test]
+fn s8_5_each_residue_category() {
+    let b = build(&Row {
+        set: SetFacts::default(),
+        allow_unparsed: false,
+        residue: Res::None,
+        verdict: V,
+    });
+    for (cat, want) in [
+        (Category::Mention, State::Verified),
+        (Category::Dependent, State::VerifiedWithResidue),
+        (Category::NotCompiled, State::VerifiedWithResidue),
+        (Category::NotPlanned, State::VerifiedWithResidue),
+    ] {
+        let residue = vec![residue(cat, 3)];
+        let f = Facts { residue: &residue, ..facts(&b, false) };
+        assert_eq!(state(&f), want, "{cat:?}");
+        let c = conclude(&f, None);
+        let r = result_of(&c, &b.set, false, false, &residue);
+        assert_eq!(permits(&r, &b.set, Allow::default()), want == State::Verified, "{cat:?}");
+        assert_eq!(
+            permits(&r, &b.set, Allow { residue: true, ..Allow::default() }),
+            true,
+            "{cat:?}"
+        );
+    }
+}
+
+// §8.5 tally: `failed_runs` counts the observers of each failure, not the
+// records; `error_reports` counts reports of severity `error` only.
+#[test]
+fn s8_5_tally_counts_observers_and_error_reports_only() {
+    let mut s = set(SetFacts { failed_runs: 3, error_report: true, ..SetFacts::default() });
+    let mut review = s.reports[0].clone();
+    review.report.severity = slip_model::edits::Severity::Review;
+    review.report.message = b"r".to_vec();
+    s.reports.insert(0, review);
+    s.validate().unwrap();
+    let report = report(RunVerdict::Verified);
+    let f =
+        Facts { set: &s, selected: 2, report: Some(&report), allow_unparsed: false, residue: &[] };
+    let t = tally(&f);
+    assert_eq!((t.failed_runs, t.error_reports), (3, 1));
+    assert_eq!(state(&f), State::VerifiedWithResidue);
+    // With only the review report, no reason.
+    let mut s2 = set(SetFacts::default());
+    s2.reports = vec![s.reports[0].clone()];
+    s2.validate().unwrap();
+    let f = Facts { set: &s2, ..f };
+    assert_eq!(tally(&f).error_reports, 0);
+    assert_eq!(state(&f), State::Verified);
+    let c = conclude(&f, None);
+    assert!(permits(&result_of(&c, &s2, false, false, &[]), &s2, Allow::default()));
+}
+
+// §8.5 `permits`: a refused set permits nothing, even with a result that
+// names it and claims `verified`.
+#[test]
+fn s8_5_permits_refuses_a_refused_set() {
+    let (mut r, _) = permitted();
+    let s = set(SetFacts { refused: true, ..SetFacts::default() });
+    r.edits = slip_model::formats::content_id(&s.to_bytes()).unwrap();
+    for st in [State::Verified, State::VerifiedWithResidue] {
+        r.state = st;
+        assert!(!permits(&r, &s, ALL_ALLOWED), "{st:?}");
+    }
+}

@@ -769,3 +769,49 @@ fn s5_3_guard_reasons() {
         "pre-image: /s/é.h changed since the map phase"
     );
 }
+
+// §9.4: a run with a tree image and no rule writes exactly the M1
+// document: its shards without a binding (M1's) and with the run's give
+// the same report, with M1's members only. (M1's own goldens,
+// `tests/golden/run/`, are checked by `tests/run.rs`, unchanged.)
+#[test]
+fn s9_4_m1_run_report_unchanged() {
+    let run = Run::new(vec![], None);
+    let report = |with_binding: bool| {
+        let mut r = run.report();
+        for s in
+            [run.verified(0xa0), run.mismatch(0xa1), run.unparsed(0xa2, Status::Diagnosed, "e")]
+        {
+            let mut s = s;
+            if !with_binding {
+                s.binding = None;
+            }
+            add(&mut r, &s);
+        }
+        r
+    };
+    let (m1, m2) = (report(false), report(true));
+    let j1 = json::write_pretty(&m1.to_json()).unwrap();
+    assert_eq!(j1, json::write_pretty(&m2.to_json()).unwrap());
+    assert_eq!(m1.to_text(), m2.to_text());
+    assert_eq!(m1.error_lines(), m2.error_lines());
+    for member in ["\"overlay\"", "\"agreement\"", "\"spellings\""] {
+        assert!(!j1.contains(member), "{member}");
+    }
+    let t = m1.to_text();
+    assert!(t.contains("image identity\n"));
+    assert!(!t.contains("agreement") && !t.contains("spelling") && !t.contains("image overlay"));
+    assert_eq!(m1.verdict(), RunVerdict::NotVerified);
+}
+
+// §9.3: a run without rules takes no `rule_use`, not even one of the
+// empty table's id with no use.
+#[test]
+fn s9_3_rule_use_without_rules_even_empty() {
+    let run = Run::new(vec![], None);
+    let mut s = run.verified(0xa0);
+    s.rule_use =
+        Some(slip_model::agreement::RuleUse { rules: run.declared.rules().id(), uses: vec![] });
+    s.validate().unwrap();
+    assert_eq!(state_of(&run, &s), State::Failed);
+}
