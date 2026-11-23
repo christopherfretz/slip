@@ -13,7 +13,10 @@ use slip_script::driver::{self, Budgets, LoadError, Loaded, Outcome, RunStats};
 use slip_script::fake::{
     FakeCall, FakeDeclaration, FakeEntity, FakeExpression, FakeReference, FakeSubject,
 };
-use slip_script::subject::{Expression, Subject};
+use slip_script::subject::{
+    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
+};
+use slip_script::wire::Errc;
 
 /// The stack of the thread a transform is compiled on.
 pub const STACK: usize = 64 << 20;
@@ -173,5 +176,126 @@ pub fn subject() -> FakeSubject {
     });
     f.expression(FakeExpression::at(n(&f, "1", 0)));
     f.expression(FakeExpression::at(n(&f, "2", 0)));
+    f
+}
+
+/// The fake subject, but for `lookup` of two names: `lie::lie` answers an
+/// entity that is not live (the host's check of the answer fails: a host
+/// failure, §2.8), and `boom::boom` panics.
+pub struct Liar<'a>(pub &'a FakeSubject);
+
+impl Subject for Liar<'_> {
+    fn is_live(&self, v: Value) -> bool {
+        self.0.is_live(v)
+    }
+    fn file_len(&self, f: File) -> Option<u32> {
+        self.0.file_len(f)
+    }
+    fn kind_bits(&self, v: Value) -> u64 {
+        self.0.kind_bits(v)
+    }
+    fn lookup(&self, global: bool, components: &[&[u8]]) -> Vec<Entity> {
+        match components {
+            [b"lie", b"lie"] => vec![Entity(9999)],
+            [b"boom", b"boom"] => panic!("the subject panics"),
+            _ => self.0.lookup(global, components),
+        }
+    }
+    fn identifier(&self, v: Value) -> Option<Vec<u8>> {
+        self.0.identifier(v)
+    }
+    fn display(&self, v: Value) -> String {
+        self.0.display(v)
+    }
+    fn parent(&self, e: Entity) -> Option<Entity> {
+        self.0.parent(e)
+    }
+    fn parameters(&self, v: Value) -> Option<Vec<Entity>> {
+        self.0.parameters(v)
+    }
+    fn declarations(&self, e: Entity) -> Result<Vec<Declaration>, Errc> {
+        self.0.declarations(e)
+    }
+    fn entity_of(&self, d: Declaration) -> Entity {
+        self.0.entity_of(d)
+    }
+    fn origin(&self, e: Entity) -> Entity {
+        self.0.origin(e)
+    }
+    fn references_to(&self, e: Entity) -> Vec<Reference> {
+        self.0.references_to(e)
+    }
+    fn referent(&self, r: Reference) -> Entity {
+        self.0.referent(r)
+    }
+    fn name_range(&self, v: Value) -> Result<Option<Range>, Errc> {
+        self.0.name_range(v)
+    }
+    fn extent(&self, v: Value) -> Result<Option<Range>, Errc> {
+        self.0.extent(v)
+    }
+    fn text(&self, r: Range) -> &[u8] {
+        self.0.text(r)
+    }
+    fn owned(&self, f: File) -> bool {
+        self.0.owned(f)
+    }
+    fn calls_to(&self, e: Entity) -> Result<Vec<Expression>, Errc> {
+        self.0.calls_to(e)
+    }
+    fn callee(&self, x: Expression) -> Option<Entity> {
+        self.0.callee(x)
+    }
+    fn callee_reference(&self, x: Expression) -> Option<Reference> {
+        self.0.callee_reference(x)
+    }
+    fn arguments(&self, x: Expression) -> Option<Vec<Expression>> {
+        self.0.arguments(x)
+    }
+    fn unresolved_named(&self, identifier: &[u8]) -> Option<u64> {
+        self.0.unresolved_named(identifier)
+    }
+    fn tiers(&self, r: Range) -> Option<[bool; 2]> {
+        self.0.tiers(r)
+    }
+    fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
+        self.0.qualified(e)
+    }
+    fn references_at(&self, r: Range) -> Vec<Reference> {
+        self.0.references_at(r)
+    }
+    fn found_directly(&self, r: Reference) -> bool {
+        self.0.found_directly(r)
+    }
+    fn entity_key(&self, e: Entity) -> Option<Digest> {
+        self.0.entity_key(e)
+    }
+    fn unit_keys(&self, v: Value) -> Result<Vec<Digest>, Errc> {
+        self.0.unit_keys(v)
+    }
+    fn rename_rule(
+        &self,
+        e: Entity,
+        new_identifier: &[u8],
+    ) -> Result<slip_model::keys::Rule, Errc> {
+        self.0.rename_rule(e, new_identifier)
+    }
+    fn place(&self, v: Value) -> PlaceOf {
+        self.0.place(v)
+    }
+    fn file_ref(&self, f: File) -> slip_model::FileRef {
+        self.0.file_ref(f)
+    }
+}
+
+/// `subject()` with a namespace `mode` holding a function named `m`, so
+/// that `lookup("mode::<m>")` finds it: a transform chooses what to do by
+/// the subject it is given.
+pub fn mode(m: &str) -> FakeSubject {
+    let mut f = subject();
+    let ns = f.entity(FakeEntity::namespace("mode", FakeSubject::GLOBAL));
+    let e = f.entity(FakeEntity::function(m, ns, Vec::new()));
+    f.declaration(FakeDeclaration { entity: ns, name: None, definition: true });
+    f.declaration(FakeDeclaration { entity: e, name: None, definition: false });
     f
 }

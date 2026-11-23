@@ -41,9 +41,11 @@ pub const ENTRY: &str = "transform";
 /// The names reserved for entries of later versions (§2.3 rule 3).
 pub const RESERVED: [&str; 3] = ["reduce", "prepare", "repair"];
 
-/// The type of the exception every function of `<slip/meta.h>` throws, as
-/// Kiln names the type of an uncaught exception.
-pub const ERROR_TYPE: &str = "slip::v0::error";
+/// The type of the exception every function of `<slip/meta.h>` throws
+/// (`slip::v0::error`), as Kiln names the type of an uncaught exception at
+/// this pin: as written, unqualified
+/// (`kiln/crates/kiln_oven/src/notes.rs:237`).
+pub const ERROR_TYPE: &str = "error";
 
 /// Why a transform did not load (`spec/api.md` §12). [`LoadError::name`]
 /// is the error's name.
@@ -310,6 +312,17 @@ impl Loaded<'_> {
         self.session.files()
     }
 
+    /// The target's triple, a term of the id (§2.1 rule 3, §2.2).
+    pub fn triple(&self) -> &str {
+        self.session.triple()
+    }
+
+    /// The bytes of the predefines buffer, whose digest is a term of the
+    /// id (§2.2).
+    pub fn predefines(&self) -> &[u8] {
+        self.session.predefines()
+    }
+
     /// Why the use of this transform ended, if it has: a host error, Kiln's
     /// stack guard, or a poisoned session (module documentation). Every
     /// later [`Loaded::run`] is then `Err`.
@@ -544,30 +557,30 @@ fn classify(report: RunReport, handler: Calls<'_>, stack_exhausted: bool) -> Cla
             first_line(&rendered, "the depth limit is reached"),
             rendered,
         )),
-        Err(RunFailure::Uncaught { type_name }) if type_name == ERROR_TYPE => {
-            let refusal = handler.host.last_failure().cloned();
-            let message = match &refusal {
-                Some(f) => format!(
-                    "an uncaught slip::error; the most recent refusal was: {} ({})",
-                    f.message,
-                    status_name(f.errc)
-                ),
-                None => "an uncaught slip::error, and no call of the run was refused".to_owned(),
-            };
-            let place = refusal.as_ref().and_then(|f| f.place);
-            Classified::Outcome(Outcome::Failed {
-                kind: "uncaught",
-                message,
-                place,
-                rendered,
-                refusal,
-            })
+        // Kiln names the type as written, unqualified (`error`), so a
+        // class of the transform's own named `error` has the same name.
+        // The refusal is reported only when the run has one (decision 4 of
+        // the landed file).
+        Err(RunFailure::Uncaught { type_name }) => {
+            match handler.host.last_failure().filter(|_| type_name == ERROR_TYPE) {
+                Some(f) => Classified::Outcome(Outcome::Failed {
+                    kind: "uncaught",
+                    message: format!(
+                        "an uncaught slip::error; the most recent refusal was: {} ({})",
+                        f.message,
+                        status_name(f.errc)
+                    ),
+                    place: f.place,
+                    rendered,
+                    refusal: Some(f.clone()),
+                }),
+                None => Classified::Outcome(failed(
+                    "uncaught",
+                    first_line(&rendered, &format!("an uncaught exception of type '{type_name}'")),
+                    rendered,
+                )),
+            }
         }
-        Err(RunFailure::Uncaught { type_name }) => Classified::Outcome(failed(
-            "uncaught",
-            first_line(&rendered, &format!("an uncaught exception of type '{type_name}'")),
-            rendered,
-        )),
         // §2.5 rule 4: no result at all. The session is usable once the
         // token is reset.
         Err(RunFailure::Cancelled) => Classified::WorkerError(
@@ -603,4 +616,157 @@ fn with_evaluator_counters(mut out: RunOutput, stats: &RunStats) -> RunOutput {
     }
     out.counters.sort();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use slip_kiln::session::{Cancel, Handler, Out, RunFailure, RunReport};
+    use slip_model::Digest;
+
+    use super::{
+        Budgets, Calls, Classified, Loaded, OUTSIDE_A_RUN, Outcome, classify, with_transform,
+    };
+    use crate::fake::FakeSubject;
+    use crate::host::{Host, Limits};
+    use crate::wire;
+
+    struct NoRoom;
+
+    impl Out for NoRoom {
+        fn int_capacity(&self) -> usize {
+            0
+        }
+        fn byte_capacity(&self) -> usize {
+            0
+        }
+        fn write_ints(&mut self, _: &[u64]) {}
+        fn write_bytes(&mut self, _: &[u8]) {}
+    }
+
+    fn calls(s: &FakeSubject) -> Calls<'_> {
+        Calls {
+            host: Host::new(s, Digest([0; 32]), Limits::default()),
+            in_run: false,
+            host_error: None,
+        }
+    }
+
+    fn report(result: Result<(), RunFailure>, rendered: &str) -> RunReport {
+        RunReport { result, steps: 5, host_calls: 1, peak_bytes: 0, rendered: rendered.to_owned() }
+    }
+
+    // WP-089 rule 6: the handler refuses a call while the driver's flag is
+    // clear, without reaching the host; with the flag set the call reaches
+    // it (an operation the host does not have: a failure of the run).
+    #[test]
+    fn rule6_the_handler_refuses_a_call_outside_a_run() {
+        let s = FakeSubject::new();
+        let mut c = calls(&s);
+        assert_eq!(c.call(9999, &[], &[], &mut NoRoom), Err(OUTSIDE_A_RUN.to_owned()));
+        assert_eq!(c.host.failure_count(), 0, "the host was not reached");
+        c.in_run = true;
+        let word = c.call(9999, &[], &[], &mut NoRoom).unwrap();
+        assert_eq!(wire::status(word), wire::STATUS_UNKNOWN_OP);
+        assert_eq!(c.host.failure_count(), 1);
+        assert_eq!(c.host_error, None, "a refusal is not a host error");
+    }
+
+    // WP-089 "Decided since" item 3: when Kiln's stack guard has tripped,
+    // whatever the run's own failure, it is `host-failure` with Kiln's text
+    // and the transform is retired; without the flag the same report is
+    // `not-constant`.
+    #[test]
+    fn decided_3_stack_exhausted_is_host_failure_and_retires() {
+        let s = FakeSubject::new();
+        let text = "t.cpp:1:1: fatal error: kiln: stack exhausted during template instantiation; reduce nesting or raise -fkiln-stack-size\n";
+        let r = classify(report(Err(RunFailure::NotConstant), text), calls(&s), true);
+        let Classified::Retire(Outcome::Failed { kind, message, rendered, .. }, why) = r else {
+            panic!("{r:?}")
+        };
+        assert_eq!(kind, "host-failure");
+        assert!(
+            message.contains("kiln: stack exhausted during template instantiation"),
+            "{message}"
+        );
+        assert_eq!(rendered, text);
+        assert!(why.starts_with("host-failure: "), "{why}");
+        // A run that completed while the flag tripped is not trusted either.
+        let r = classify(report(Ok(()), ""), calls(&s), true);
+        assert!(
+            matches!(r, Classified::Retire(Outcome::Failed { kind: "host-failure", .. }, _)),
+            "{r:?}"
+        );
+        let r = classify(report(Err(RunFailure::NotConstant), text), calls(&s), false);
+        assert!(
+            matches!(r, Classified::Outcome(Outcome::Failed { kind: "not-constant", .. })),
+            "{r:?}"
+        );
+    }
+
+    // The entry is the driver's: `ForeignEntry` cannot come from a run it
+    // makes; were it to, it is an internal error that retires.
+    #[test]
+    fn a_foreign_entry_is_an_internal_error() {
+        let s = FakeSubject::new();
+        let r = classify(report(Err(RunFailure::ForeignEntry), ""), calls(&s), false);
+        assert!(
+            matches!(&r, Classified::WorkerError(m, true) if m.starts_with("internal error:")),
+            "{r:?}"
+        );
+    }
+
+    // WP-089 "Decided since" item 3: after a run that tripped the guard,
+    // the transform is never run again: every later run is `Err` without
+    // reaching Kiln.
+    #[test]
+    fn decided_3_a_retired_transform_is_not_run_again() {
+        let dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(format!("driver-unit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("t.cpp");
+        std::fs::write(
+            &file,
+            "#include <slip/meta.h>\nconsteval void transform() { (void)slip::lookup(\"x\"); }\n",
+        )
+        .unwrap();
+        let resource =
+            std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resource"))
+                .unwrap();
+        let file = std::fs::canonicalize(file).unwrap();
+        let results = std::thread::scope(|t| {
+            std::thread::Builder::new()
+                .stack_size(64 << 20)
+                .spawn_scoped(t, || {
+                    with_transform(&resource, &[], &file, 63 << 20, |l| {
+                        let l: &mut Loaded<'_> = &mut l.unwrap();
+                        let s = FakeSubject::new();
+                        let before = l.run(&s, Budgets::default(), &Cancel::new()).map(|(o, st)| (o, st.host_calls));
+                        let text = "t.cpp:2:1: fatal error: kiln: stack exhausted during constant evaluation\n";
+                        let tripped = l.conclude(report(Err(RunFailure::NotConstant), text), calls(&s), true, 0);
+                        let retired = l.retired().map(str::to_owned);
+                        let after = l.run(&s, Budgets::default(), &Cancel::new());
+                        (before, tripped, retired, after)
+                    })
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        let (before, tripped, retired, after) = results;
+        assert!(matches!(before, Ok((Outcome::Completed(_), 1))), "{before:?}");
+        assert!(
+            matches!(tripped, Ok((Outcome::Failed { kind: "host-failure", .. }, _))),
+            "{tripped:?}"
+        );
+        let retired = retired.expect("retired");
+        assert!(retired.contains("stack exhausted during constant evaluation"), "{retired}");
+        let e = after.expect_err("not run again");
+        assert!(e.contains(&retired), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
