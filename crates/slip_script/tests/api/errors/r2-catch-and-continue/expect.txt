@@ -1,0 +1,6 @@
+transform <id>
+report - note "1 before the failure"
+report - note "2 caught invalid_argument"
+report - note "3 after the failure, x has 1 declaration and identifier x"
+report - note "4 caught wrong_kind"
+report - note "5 the run goes on"

@@ -48,7 +48,7 @@ pub fn section_numbers(text: &str) -> BTreeSet<String> {
 /// Whether `line` looks like a header line (`spec/harness.md` §6.1): `//`,
 /// blanks, a word of ASCII letters and `-` beginning with a letter,
 /// blanks, `:`.
-fn looks_like_header(line: &str) -> bool {
+pub(crate) fn looks_like_header(line: &str) -> bool {
     let Some(rest) = line.strip_prefix("//") else { return false };
     let rest = rest.trim_start();
     let word =
@@ -60,7 +60,7 @@ fn looks_like_header(line: &str) -> bool {
 
 /// The `// spec:` line of a transform's header block: its line number and
 /// value.
-fn spec_line(text: &str) -> Option<(usize, &str)> {
+pub(crate) fn spec_line(text: &str) -> Option<(usize, &str)> {
     text.lines()
         .map(str::trim_end)
         .enumerate()
@@ -70,7 +70,7 @@ fn spec_line(text: &str) -> Option<(usize, &str)> {
 
 /// The section a `// spec:` value names: the number after `§`, before a
 /// space.
-fn named_section(value: &str) -> Option<&str> {
+pub(crate) fn named_section(value: &str) -> Option<&str> {
     let rest = value.strip_prefix('§')?;
     let number = rest.split_once(' ').map_or(rest, |(n, _)| n);
     (!number.is_empty()

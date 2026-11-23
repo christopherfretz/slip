@@ -1,0 +1,9 @@
+transform <id>
+report - note "D::m: 0"
+report - note "E::m: 0"
+report - note "b::B: 0"
+report - note "b::x is not a::x"
+report - note "b::x: 1 ( entity )"
+report - note "c: 1 ( entity )"
+report - note "c::B: 0"
+report - note "c::x: 0"

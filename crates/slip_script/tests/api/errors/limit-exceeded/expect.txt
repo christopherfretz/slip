@@ -1,0 +1,3 @@
+transform <id>
+report - note "lookup(4096 bytes): returned"
+report - note "lookup(4097 bytes): limit_exceeded = 6, a message"

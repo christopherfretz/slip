@@ -1,0 +1,2 @@
+transform <id>
+report - note "entity_of(entity): wrong_kind = 2, a message"

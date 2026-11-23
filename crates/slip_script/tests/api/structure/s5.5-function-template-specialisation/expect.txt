@@ -1,0 +1,5 @@
+transform <id>
+report - note "calls_to(tf): 2"
+report - note "references_to(tf): 2"
+report t.cpp:4:3-4:10 note "not the template, a function, not a template, 0 declarations, the referent of its reference"
+report t.cpp:5:3-5:13 note "not the template, a function, not a template, 0 declarations, the referent of its reference"
