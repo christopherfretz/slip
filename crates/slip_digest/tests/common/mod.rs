@@ -528,6 +528,10 @@ fn read_expect(dir: &Path) -> Result<(BTreeSet<Expect>, bool), String> {
     Ok((out, exact))
 }
 
+/// What [`expect_text`] reads: the lines, whether `exact derived` is
+/// given, and the lines the runner reads itself, with their numbers.
+pub type ExpectText = (BTreeSet<Expect>, bool, Vec<(usize, String)>);
+
 /// The lines of an `expect.txt` text as [`expect`] and [`exact_derived`]
 /// read them, but for the lines `own` accepts, which a runner reads
 /// itself (WP-103: the `use` lines of `tests/rules.rs`) and which are
@@ -535,7 +539,7 @@ fn read_expect(dir: &Path) -> Result<(BTreeSet<Expect>, bool), String> {
 pub fn expect_text(
     text: &str,
     own: impl Fn(&str) -> bool,
-) -> Result<(BTreeSet<Expect>, bool, Vec<(usize, String)>), String> {
+) -> Result<ExpectText, String> {
     let mut out = BTreeSet::new();
     let mut exact = false;
     let mut mine = Vec::new();
