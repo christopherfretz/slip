@@ -386,10 +386,11 @@ fn s3_tu_group_is_compared_with_the_declared_ones() {
     assert_eq!(plain(&pre, &post), none());
     let post = [decl("/a.h", &[u(2, 3)]), tu(&[u(1, 1)])];
     assert_eq!(plain(&pre, &post), only(vec![f(Changed, 2, "", Some(2), Some(3))]));
-    // But a derived unit is not in D: a declared key that became derived.
+    // But a derived unit is not in D: a declared key that became derived
+    // is not equal, it is step 4's `changed`, with `file` from D.
     let post = [deriv("/a.h", &[u(2, 2)]), tu(&[u(1, 1)])];
     let c = plain(&pre, &post);
-    assert_eq!(c.findings, vec![f(Removed, 2, "", Some(2), None)]);
+    assert_eq!(c.findings, vec![f(Changed, 2, "", Some(2), None)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -479,24 +480,171 @@ fn s4_3_derived_indeterminate_on_one_side_only_is_a_finding_not_counted() {
     assert!(c.used.is_empty());
 }
 
-// §4 steps 2 and 3: a key declared in one image and derived in the other
-// is `removed` (or `added`) by step 2, and counted one-sided by step 3.
+// ---------------------------------------------------------------------------
+// §4 step 4: declared in one image, derived in the other
+
+fn counts(findings: Vec<Finding>, only_pre: u64, only_post: u64, used: &[u8]) -> Comparison {
+    Comparison { findings, only_pre, only_post, used: used.iter().map(|&n| key(n)).collect() }
+}
+
+// §4 step 4, both directions: declared before and derived after (an
+// explicit specialisation removed, its uses now instantiating the primary
+// template) is `changed`, not `removed`; derived before and declared after
+// is `changed`, not `added`. §6: `pre`/`post` and `file` from D, where the
+// finding was found. Step 3 does not count the key.
 #[test]
-fn s4_key_declared_in_one_image_and_derived_in_the_other() {
+fn s4_4_declared_on_one_side_derived_on_the_other_is_changed() {
+    // Key 2 beside it, a plain one-sided derived key, is still counted.
+    let d = [decl("/a.h", &[u(1, 1)]), deriv("/t.cpp", &[u(2, 2)])];
+    let v = [deriv("/t.cpp", &[u(1, 5)])];
+    assert_eq!(plain(&d, &v), counts(vec![f(Changed, 1, "/a.h", Some(1), None)], 1, 0, &[]));
+    assert_eq!(plain(&v, &d), counts(vec![f(Changed, 1, "/a.h", None, Some(1))], 0, 1, &[]));
+    // The same digest on both sides changes nothing: the units are not
+    // compared (a written unit against a made one).
+    let v = [deriv("/t.cpp", &[u(1, 1)])];
+    assert_eq!(plain(&d, &v), counts(vec![f(Changed, 1, "/a.h", Some(1), None)], 1, 0, &[]));
+    assert_eq!(plain(&v, &d), counts(vec![f(Changed, 1, "/a.h", None, Some(1))], 0, 1, &[]));
+}
+
+// §4 step 4 and §2.2: only `changed` prevents it, and is then used;
+// `removed` and `created` do not prevent it and are not used by it, so an
+// observer that needed only them reports them unused (§2.2, §9.2).
+#[test]
+fn s4_4_only_changed_prevents_it() {
     let d = [decl("/a.h", &[u(1, 1)])];
     let v = [deriv("/a.h", &[u(1, 1)])];
+    let found = |pre: Option<u8>, post: Option<u8>| vec![f(Changed, 1, "/a.h", pre, post)];
+    for (pre, post, dp, dq) in [(&d, &v, Some(1), None), (&v, &d, None, Some(1))] {
+        assert_eq!(run(pre, post, &ex(&[1], &[], &[])), counts(vec![], 0, 0, &[1]));
+        assert_eq!(run(pre, post, &ex(&[1], &[1], &[1])), counts(vec![], 0, 0, &[1]));
+        for e in [ex(&[], &[], &[1]), ex(&[], &[1], &[]), ex(&[], &[1], &[1]), ex(&[2], &[], &[])] {
+            assert_eq!(run(pre, post, &e), counts(found(dp, dq), 0, 0, &[]), "{e:?}");
+        }
+    }
+}
+
+// §4 step 4 with the derived unit indeterminate: `changed` (prevented by
+// `changed` only) and, beside it, step 3's `derived_indeterminate`, which
+// nothing prevents; not counted.
+#[test]
+fn s4_4_with_the_derived_unit_indeterminate() {
+    let d = [decl("/a.h", &[u(1, 1)])];
+    let v = [deriv("/t.cpp", &[ui(1, 4)])];
     assert_eq!(
         plain(&d, &v),
-        Comparison { findings: vec![f(Removed, 1, "/a.h", Some(1), None)], only_post: 1, ..none() }
+        counts(
+            vec![
+                f(Changed, 1, "/a.h", Some(1), None),
+                f(DerivedIndeterminate, 1, "/t.cpp", None, Some(4)),
+            ],
+            0,
+            0,
+            &[],
+        )
     );
     assert_eq!(
         plain(&v, &d),
-        Comparison { findings: vec![f(Added, 1, "/a.h", None, Some(1))], only_pre: 1, ..none() }
+        counts(
+            vec![
+                f(Changed, 1, "/a.h", None, Some(1)),
+                f(DerivedIndeterminate, 1, "/t.cpp", Some(4), None),
+            ],
+            0,
+            0,
+            &[],
+        )
     );
-    // The exemption prevents the step-2 finding; the count stays.
     assert_eq!(
-        run(&d, &v, &ex(&[], &[], &[1])),
-        Comparison { only_post: 1, used: vec![key(1)], ..none() }
+        run(&d, &v, &ex(&[1], &[1], &[1])),
+        counts(vec![f(DerivedIndeterminate, 1, "/t.cpp", None, Some(4))], 0, 0, &[1])
+    );
+}
+
+// §4 step 4 with a multiplicity: the derived unit in two groups is one
+// finding and no count; two copies of a declared unit against one, with
+// the derived unit beside the one, is still step 2's `removed` turned
+// `changed` (step 2 is stated on the differences).
+#[test]
+fn s4_4_with_a_multiplicity() {
+    let d = [decl("/a.h", &[u(1, 1)])];
+    let v = [deriv("/b.h", &[u(1, 2)]), deriv("/c.h", &[u(1, 2)])];
+    assert_eq!(plain(&d, &v), counts(vec![f(Changed, 1, "/a.h", Some(1), None)], 0, 0, &[]));
+    assert_eq!(plain(&v, &d), counts(vec![f(Changed, 1, "/a.h", None, Some(1))], 0, 0, &[]));
+    let two = [decl("/a.h", &[u(1, 1)]), decl("/b.h", &[u(1, 1)])];
+    let one = [decl("/a.h", &[u(1, 1)]), deriv("/c.h", &[u(1, 2)])];
+    assert_eq!(plain(&two, &one), counts(vec![f(Changed, 1, "/b.h", Some(1), None)], 0, 0, &[]));
+    assert_eq!(plain(&one, &two), counts(vec![f(Changed, 1, "/b.h", None, Some(1))], 0, 0, &[]));
+    // Without the derived unit it is `removed` and `added` as before.
+    let one = [decl("/a.h", &[u(1, 1)])];
+    assert_eq!(plain(&two, &one).findings, vec![f(Removed, 1, "/b.h", Some(1), None)]);
+    assert_eq!(plain(&one, &two).findings, vec![f(Added, 1, "/b.h", None, Some(1))]);
+}
+
+// §4 step 4 with the key under a collision: a collision makes every unit of
+// the key indeterminate (digest.md §3.4, §10). In D, step 1 takes the key:
+// one `indeterminate`, no `changed`, and step 4 does not apply, so step 3
+// counts the derived unit as one-sided. In V, step 4 applies and step 3's
+// `derived_indeterminate` stands beside it.
+#[test]
+fn s4_4_with_the_key_under_a_collision() {
+    let d = [decl("/a.h", &[ui(1, 1), ui(1, 2)])];
+    let v = [deriv("/t.cpp", &[u(1, 3)])];
+    assert_eq!(plain(&d, &v), counts(vec![f(Indeterminate, 1, "/a.h", None, None)], 0, 1, &[]));
+    assert_eq!(
+        run(&v, &d, &ex(&[1], &[1], &[1])),
+        counts(vec![f(Indeterminate, 1, "/a.h", None, None)], 1, 0, &[])
+    );
+    let d = [decl("/a.h", &[u(1, 1)])];
+    let v = [deriv("/t.cpp", &[ui(1, 3), ui(1, 4)])];
+    assert_eq!(
+        plain(&d, &v),
+        counts(
+            vec![
+                f(Changed, 1, "/a.h", Some(1), None),
+                f(DerivedIndeterminate, 1, "/t.cpp", None, None),
+            ],
+            0,
+            0,
+            &[],
+        )
+    );
+}
+
+// §4 step 4 is read on the differences of V, as steps 2 and 3 are (§4.1):
+// a derived unit of the key that both images have equally does not make a
+// `removed` a `changed`; one the post-image has besides does. (Not an input
+// the walk makes: a key with a determinate declared unit has no derived
+// unit in its image.) And a key whose derived units differ both ways is
+// `changed` by step 4 and `derived_changed` by step 3.
+#[test]
+fn s4_4_is_read_on_the_differences_of_v() {
+    let pre = [decl("/a.h", &[u(1, 1)]), deriv("/t.cpp", &[u(1, 5)])];
+    let post = [deriv("/t.cpp", &[u(1, 5)])];
+    assert_eq!(plain(&pre, &post), counts(vec![f(Removed, 1, "/a.h", Some(1), None)], 0, 0, &[]));
+    assert_eq!(plain(&post, &pre), counts(vec![f(Added, 1, "/a.h", None, Some(1))], 0, 0, &[]));
+    let post = [deriv("/t.cpp", &[u(1, 5)]), deriv("/u.cpp", &[u(1, 5)])];
+    assert_eq!(plain(&pre, &post), counts(vec![f(Changed, 1, "/a.h", Some(1), None)], 0, 0, &[]));
+    assert_eq!(plain(&post, &pre), counts(vec![f(Changed, 1, "/a.h", None, Some(1))], 0, 0, &[]));
+    let post = [deriv("/t.cpp", &[u(1, 6)])];
+    assert_eq!(
+        plain(&pre, &post),
+        counts(
+            vec![
+                f(Changed, 1, "/a.h", Some(1), None),
+                f(DerivedChanged, 1, "/t.cpp", Some(5), Some(6)),
+            ],
+            0,
+            0,
+            &[],
+        )
+    );
+    // A `changed` of step 2 is not touched by step 4: the derived unit
+    // beside it is step 3's alone, and counted.
+    let pre = [decl("/a.h", &[u(1, 1)])];
+    let post = [decl("/a.h", &[u(1, 2)]), deriv("/t.cpp", &[u(1, 5)])];
+    assert_eq!(
+        plain(&pre, &post),
+        counts(vec![f(Changed, 1, "/a.h", Some(1), Some(2))], 0, 1, &[])
     );
 }
 
@@ -758,7 +906,7 @@ fn generated(rng: &mut Rng, keys: u8) -> Vec<Group> {
 /// §4 over all units, by key, without groups and without any order of
 /// findings: the `(kind, key)` of every finding, sorted by number. A
 /// reference for what the comparison finds, independent of how it sorts.
-fn reference(pre: &[Group], post: &[Group]) -> Vec<(FindingKind, Digest)> {
+fn reference(pre: &[Group], post: &[Group]) -> (Vec<(FindingKind, Digest)>, u64, u64) {
     use std::collections::BTreeMap;
     // key -> (declared?) -> [pre digests, post digests], and indeterminate.
     type Sides = ([Vec<Digest>; 2], bool);
@@ -788,27 +936,46 @@ fn reference(pre: &[Group], post: &[Group]) -> Vec<(FindingKind, Digest)> {
         (minus(p, q), minus(q, p))
     };
     let mut out = Vec::new();
-    for (k, ([p, q], ind)) in d {
-        if ind {
-            out.push((Indeterminate, k));
+    // Step 4: what V has of the key only in the pre-image, only in the post-image.
+    let v_differs = |k: &Digest| v.get(k).map_or((false, false), |([p, q], _)| differences(p, q));
+    let mut taken = std::collections::BTreeSet::new();
+    for (k, ([p, q], ind)) in &d {
+        if *ind {
+            out.push((Indeterminate, *k));
             continue;
         }
-        match differences(&p, &q) {
-            (true, true) => out.push((Changed, k)),
-            (true, false) => out.push((Removed, k)),
-            (false, true) => out.push((Added, k)),
+        let (only_v_pre, only_v_post) = v_differs(k);
+        match differences(p, q) {
+            (true, true) => out.push((Changed, *k)),
+            (true, false) if only_v_post => {
+                out.push((Changed, *k));
+                taken.insert(*k);
+            }
+            (false, true) if only_v_pre => {
+                out.push((Changed, *k));
+                taken.insert(*k);
+            }
+            (true, false) => out.push((Removed, *k)),
+            (false, true) => out.push((Added, *k)),
             (false, false) => {}
         }
     }
-    for (k, ([p, q], ind)) in v {
-        if ind {
-            out.push((DerivedIndeterminate, k));
-        } else if differences(&p, &q) == (true, true) {
-            out.push((DerivedChanged, k));
+    let (mut only_pre, mut only_post) = (0, 0);
+    for (k, ([p, q], ind)) in &v {
+        if *ind {
+            out.push((DerivedIndeterminate, *k));
+            continue;
+        }
+        match differences(p, q) {
+            (true, true) => out.push((DerivedChanged, *k)),
+            _ if taken.contains(k) => {}
+            (true, false) => only_pre += 1,
+            (false, true) => only_post += 1,
+            (false, false) => {}
         }
     }
     out.sort();
-    out
+    (out, only_pre, only_post)
 }
 
 // §6, the order of findings, over generated images (a fixed seed): the
@@ -820,6 +987,7 @@ fn reference(pre: &[Group], post: &[Group]) -> Vec<(FindingKind, Digest)> {
 fn s6_order_by_rank_is_a_permutation() {
     let mut rng = Rng(0x5eed_0055_0000_0de5);
     let mut ranks_together = 0;
+    let mut step4 = 0;
     for case in 0..2000 {
         let keys = 1 + rng.below(24) as u8;
         let (pre, post) = (generated(&mut rng, keys), generated(&mut rng, keys));
@@ -837,7 +1005,21 @@ fn s6_order_by_rank_is_a_permutation() {
         let mut found: Vec<(FindingKind, Digest)> =
             former.iter().map(|x| (x.kind, x.key.unwrap())).collect();
         found.sort();
-        assert_eq!(found, reference(&pre, &post), "case {case}");
+        let (expected, only_pre, only_post) = reference(&pre, &post);
+        assert_eq!(found, expected, "case {case}");
+        assert_eq!((c.only_pre, c.only_post), (only_pre, only_post), "case {case}: counts");
+        if expected.iter().any(|&(kind, k)| {
+            kind == Changed && expected.binary_search(&(DerivedChanged, k)).is_err() && {
+                let in_d = |g: &[Group]| {
+                    g.iter().any(|x| {
+                        x.class != Derived && x.units.as_ref().unwrap().iter().any(|y| y.key == k)
+                    })
+                };
+                in_d(&pre) != in_d(&post)
+            }
+        }) {
+            step4 += 1;
+        }
         let kinds: Vec<FindingKind> = c.findings.iter().map(|x| x.kind).collect();
         if kinds.contains(&Indeterminate) && kinds.contains(&DerivedChanged) {
             ranks_together += 1;
@@ -845,6 +1027,7 @@ fn s6_order_by_rank_is_a_permutation() {
         check_valid(&verdict(c, dg(100), dg(101), 64));
     }
     assert!(ranks_together >= 100, "too few cases with ranks 3 and 4 together: {ranks_together}");
+    assert!(step4 >= 100, "too few cases of step 4: {step4}");
 }
 
 // ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 
 use slip_model::digests::{Digests, Group, GroupClass, SCHEME, Unit, group_digest, tu_digest};
-use slip_model::verdict::FindingKind;
+use slip_model::verdict::{Finding, FindingKind};
 use slip_model::{Digest, Outcome, Phase, Shard, Status};
 use slip_verify::{AtSums, Comparison, Exemptions, at_sums, comparable, compare_groups, verdict};
 
@@ -124,6 +124,14 @@ struct Coverage {
     /// A `removed` or `added` finding for a key with a unit in both images
     /// (several units of one key, classified by the differences).
     one_sided_kind_on_shared_key: u64,
+    /// A `changed` finding for a key that D has in one image only (§4 step 4).
+    step4: u64,
+    /// A `removed` (`added`) finding for a key with a derived unit in the
+    /// post-image (pre-image): one that both images derive equally, so not
+    /// step 4, which is read on the differences of `V`. A reading of step 4
+    /// as "has a unit in `Vq`" would give `changed` over all groups and
+    /// `removed` through `G`, where that group is not.
+    v_on_both_sides: u64,
 }
 
 fn edit(rng: &mut Rng, img: &mut Image, next_key: &mut u64, cov: &mut Coverage) {
@@ -312,6 +320,18 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
             && has(&dp, &f.key)
             && has(&dq, &f.key)
     }));
+    let step4: Vec<Digest> = full
+        .findings
+        .iter()
+        .filter(|f| f.kind == FindingKind::Changed && has(&dp, &f.key) != has(&dq, &f.key))
+        .filter_map(|f| f.key)
+        .collect();
+    cov.step4 += u64::from(!step4.is_empty());
+    cov.v_on_both_sides += u64::from(full.findings.iter().any(|f| match f.kind {
+        FindingKind::Removed => has(&vq, &f.key),
+        FindingKind::Added => has(&vp, &f.key),
+        _ => false,
+    }));
 
     match at_sums(pre, post) {
         AtSums::Equal => {
@@ -393,7 +413,7 @@ fn s4_1_through_groups_equals_over_all_units() {
         "seed {seed:#x}, {CASES} pairs: edits {:?}, equal {}, equal tu but differing {}, \
          straddling G {}, indeterminate in an unchanged group {}, findings {:?}, used {}, \
          only_pre {}, only_post {}, one-sided derived_indeterminate {}, \
-         removed/added on a key both have {}",
+         removed/added on a key both have {}, step 4 {} (a derived unit of the key on both sides {})",
         cov.edits,
         cov.equal,
         cov.equal_tu_differing,
@@ -405,6 +425,8 @@ fn s4_1_through_groups_equals_over_all_units() {
         cov.only_post,
         cov.derived_indeterminate_one_sided,
         cov.one_sided_kind_on_shared_key,
+        cov.step4,
+        cov.v_on_both_sides,
     );
     eprintln!("groups.rs coverage: {msg}");
     assert!(cov.edits.iter().all(|&n| n > 500), "{msg}");
@@ -414,4 +436,128 @@ fn s4_1_through_groups_equals_over_all_units() {
     assert!(cov.straddling > 200 && cov.indeterminate_unchanged > 200, "{msg}");
     assert!(cov.equal_tu_differing > 20 && cov.derived_indeterminate_one_sided > 20, "{msg}");
     assert!(cov.one_sided_kind_on_shared_key > 20, "{msg}");
+    assert!(cov.step4 > 200 && cov.v_on_both_sides > 20, "{msg}");
+}
+
+// ---------------------------------------------------------------------------
+// §4 step 4 through groups
+
+fn unit(k: u64, d: u64, flags: u64) -> Unit {
+    Unit { key: key(k), digest: dg(d), flags }
+}
+
+/// An image from its units, each with its group.
+fn image(units: &[(GroupClass, &[u8], Unit)]) -> Digests {
+    digests(&units.iter().map(|(c, f, u)| (*c, f.to_vec(), *u)).collect())
+}
+
+/// §4.1 for one pair, through `G` and over all groups: they must be equal;
+/// returns the comparison and `G`.
+fn through_groups(
+    pre: &Digests,
+    post: &Digests,
+    ex: &Exemptions,
+) -> (Comparison, Vec<Id<'static>>) {
+    comparable(pre, post).expect("comparable");
+    let AtSums::Differing(g) = at_sums(pre, post) else { panic!("at_sums: Equal") };
+    let in_g = |gr: &&Group| g.iter().any(|(c, f)| (*c, f.as_slice()) == id(gr));
+    let sel_pre: Vec<&Group> = pre.groups.iter().filter(in_g).collect();
+    let sel_post: Vec<&Group> = post.groups.iter().filter(in_g).collect();
+    let narrow = compare_groups(&sel_pre, &sel_post, ex).expect("well-formed");
+    let all_pre: Vec<&Group> = pre.groups.iter().collect();
+    let all_post: Vec<&Group> = post.groups.iter().collect();
+    let full = compare_groups(&all_pre, &all_post, ex).expect("well-formed");
+    assert_eq!(narrow, full, "§4.1: through G and over all groups");
+    let ids = g
+        .into_iter()
+        .map(|(c, f)| {
+            let f: &'static [u8] =
+                FILES.iter().copied().find(|x| *x == f.as_slice()).unwrap_or(b"");
+            (c, f)
+        })
+        .collect();
+    (narrow, ids)
+}
+
+fn finding(kind: FindingKind, k: u64, file: &[u8], pre: Option<u64>, post: Option<u64>) -> Finding {
+    Finding {
+        kind,
+        key: Some(key(k)),
+        file: file.to_vec(),
+        pre: pre.map(dg),
+        post: post.map(dg),
+        name: String::new(),
+        location: None,
+    }
+}
+
+// §4 step 4 through groups (§4.1): the declared unit of key 1 in a header's
+// group (`a.h`), the derived unit of the same key in the translation
+// unit's (`d.cpp`), in each direction. Both groups are in `G` (each holds a
+// unit of the key that the other image lacks); the groups that are the same
+// in both (`b.h`, the `tu` group) are not, and the comparison through `G` is
+// the full one: `changed`, prevented by `changed` only, not counted.
+#[test]
+fn s4_4_through_groups() {
+    let (a, b, d) = (FILES[0], FILES[1], FILES[3]);
+    let same: [(GroupClass, &[u8], Unit); 3] = [
+        (GroupClass::Declared, b, unit(5, 5, 0)),
+        (GroupClass::Tu, b"", unit(6, 6, 0)),
+        (GroupClass::Derived, d, unit(7, 7, 0)),
+    ];
+    let with = |extra: &[(GroupClass, &[u8], Unit)]| {
+        let mut v = same.to_vec();
+        v.extend_from_slice(extra);
+        image(&v)
+    };
+    let declared = with(&[(GroupClass::Declared, a, unit(1, 1, 0))]);
+    let derived = with(&[(GroupClass::Derived, d, unit(1, 2, 0))]);
+    let g = vec![(GroupClass::Declared, a), (GroupClass::Derived, d)];
+    let none = Exemptions::none();
+    let only_changed = Exemptions::new(vec![key(1)], vec![], vec![]).unwrap();
+    let not_changed = Exemptions::new(vec![], vec![key(1)], vec![key(1)]).unwrap();
+    for (pre, post, dp, dq) in
+        [(&declared, &derived, Some(1), None), (&derived, &declared, None, Some(1))]
+    {
+        let (c, ids) = through_groups(pre, post, &none);
+        assert_eq!(ids, g);
+        let found = Comparison {
+            findings: vec![finding(FindingKind::Changed, 1, a, dp, dq)],
+            only_pre: 0,
+            only_post: 0,
+            used: vec![],
+        };
+        assert_eq!(c, found);
+        assert_eq!(through_groups(pre, post, &not_changed).0, found);
+        let (c, _) = through_groups(pre, post, &only_changed);
+        assert_eq!(c, Comparison { findings: vec![], used: vec![key(1)], ..found.clone() });
+    }
+    // The derived unit indeterminate: its group is in `G` for that reason
+    // too; `derived_indeterminate` beside the `changed`.
+    let derived = with(&[(GroupClass::Derived, d, unit(1, 2, Unit::INDETERMINATE))]);
+    let (c, ids) = through_groups(&declared, &derived, &none);
+    assert_eq!(ids, g);
+    assert_eq!(
+        c.findings,
+        vec![
+            finding(FindingKind::Changed, 1, a, Some(1), None),
+            finding(FindingKind::DerivedIndeterminate, 1, d, None, Some(2)),
+        ]
+    );
+    // A multiplicity: the derived unit in two groups of the post-image, one
+    // of them a header's that the pre-image has unchanged for another key.
+    let declared =
+        with(&[(GroupClass::Declared, a, unit(1, 1, 0)), (GroupClass::Derived, b, unit(8, 8, 0))]);
+    let derived = with(&[
+        (GroupClass::Derived, d, unit(1, 2, 0)),
+        (GroupClass::Derived, b, unit(8, 8, 0)),
+        (GroupClass::Derived, b, unit(1, 2, 0)),
+    ]);
+    let (c, ids) = through_groups(&declared, &derived, &none);
+    assert_eq!(
+        ids,
+        vec![(GroupClass::Declared, a), (GroupClass::Derived, b), (GroupClass::Derived, d)]
+    );
+    assert_eq!(c.findings, vec![finding(FindingKind::Changed, 1, a, Some(1), None)]);
+    assert_eq!((c.only_pre, c.only_post), (0, 0));
 }
