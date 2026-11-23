@@ -16,7 +16,7 @@ use slip_model::{Counter, Digest, FileRef};
 use crate::geometry::{Span, at, cyclic, least_crossing, least_sharing, parents, share_byte};
 use crate::groups::{Ties, not_effective};
 use crate::outcome::{Outcome, site};
-use crate::records::{ClaimVal, FailVal, KPiece, Key, Sample, Site, Val, identity};
+use crate::records::{ClaimVal, Entry, FailVal, KPiece, Key, Sample, Site, Val, identity};
 
 /// A piece with its copy's file by rank.
 #[derive(Clone, Debug)]
@@ -88,7 +88,7 @@ struct SiteRefusal {
 
 type PPlace = (u32, u64, u64);
 type ReportRec = (Option<PPlace>, Severity, Vec<u8>, bool, Sample);
-type Pending = (Site, Vec<(Stance, Vec<KPiece>, ClaimVal)>);
+type Pending = (Site, Vec<(Stance, Vec<KPiece>, ClaimVal)>, Vec<(Vec<Digest>, Sample)>);
 
 /// What the stream leaves in memory: the records of the set, by rank of
 /// path, and the live sites.
@@ -144,14 +144,16 @@ impl Builder {
 
     /// One record of the merged stream, in order.
     pub fn push(&mut self, key: Key, val: Val, cx: &mut Context<'_>) -> Result<(), String> {
-        if let Key::Claim { site: s, stance, pieces } = key {
-            let Val::Claim(v) = val else { return Err(corrupt("a claim without its value")) };
-            match &mut self.pending {
-                Some((cur, claims)) if *cur == s => claims.push((stance, pieces, v)),
-                _ => {
-                    self.flush(cx)?;
-                    self.pending = Some((s, vec![(stance, pieces, v)]));
-                }
+        if let Key::Claim { site: s, entry } = key {
+            if self.pending.as_ref().is_none_or(|p| p.0 != s) {
+                self.flush(cx)?;
+                self.pending = Some((s, Vec::new(), Vec::new()));
+            }
+            let Some((_, claims, observed)) = &mut self.pending else { unreachable!("set above") };
+            match (entry, val) {
+                (Entry::Claim { stance, pieces }, Val::Claim(v)) => claims.push((stance, pieces, v)),
+                (Entry::Observed(variants), Val::Sample(v)) => observed.push((variants, v)),
+                _ => return Err(corrupt("a claim without its value")),
             }
             return Ok(());
         }
@@ -196,9 +198,9 @@ impl Builder {
     /// The site whose claims have all been read: §5.2's treatment and
     /// §5.4's table.
     fn flush(&mut self, cx: &mut Context<'_>) -> Result<(), String> {
-        let Some((s, claims)) = self.pending.take() else { return Ok(()) };
+        let Some((s, claims, observed)) = self.pending.take() else { return Ok(()) };
         let pid = self.pid(&s.path)?;
-        let out = site(claims, cx.selected);
+        let out = site(&s, claims, &observed, cx.selected);
         self.sites += 1;
         let rejected_site = matches!(out.outcome, Outcome::Rejected { .. });
         let mut live_root = None;

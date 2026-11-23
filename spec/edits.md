@@ -609,8 +609,9 @@ base's agreement (`verify.md` §10) and `api.md` §7.6 to say so.
 
 The join is associative and commutative, so the collapsed claims do not
 depend on the order or the grouping in which shards are read. Reports,
-`changed` entries and failures are joined the same way, each by its
-whole record with places by path, to a record with `observers` and
+`changed` entries are joined the same way, each by its whole record with
+places by path, and failures by `(kind, message, place)` (§6; `rendered`
+and `refusal` are the first observer's), to a record with `observers` and
 `first` (§6).
 
 ### 5.4 Outcome of a site
@@ -687,7 +688,9 @@ set shrinks.
 
 The edits of the edit set are the edits that remain. If there are none
 the edit set's `state` is `refused`: with the refusals that explain it,
-or with `no_edit` if no observer claimed a `replace`.
+or with `no_edit` if no `replace` claim remains after §5.2's treatment
+(none was made, or every one was turned into a `keep`;
+`spec/landed/edits/WP-062.md` §4).
 
 ### 5.6 Cost
 
@@ -728,11 +731,13 @@ counters of §6.3.
 ```rust
 pub struct Options { pub fan_in: usize, pub threads: usize, pub scratch: PathBuf }
 
-pub trait Shards {
+pub trait Shards: Sync {
     /// The shard of the observer at `index` of the plan, or `None` (unparsed).
     fn open(&self, index: usize) -> Result<Option<Shard>, String>;
     fn len(&self) -> usize;
     fn observer(&self, index: usize) -> Digest;
+    /// The content id of the stored shard at `index`: the `shard` of its `Basis`.
+    fn shard_id(&self, index: usize) -> Option<Digest>;
 }
 
 pub struct Reduced { pub edits: EditSet, pub declared: Option<Declared> }
@@ -745,6 +750,13 @@ pub enum ReduceError { Input { observer: Digest, message: String }, Io(String) }
 /// §6.2, from an edit set alone: `None` for a refused one.
 pub fn declared(set: &EditSet) -> Result<Option<Declared>, String>;
 ```
+
+`Shards` is `Sync` and gives the content id of each stored shard
+(decoding drops an ignorable section, so re-encoding is not that id);
+`fan_in < 2` and `threads == 0` are the caller's error (a panic). The
+counter `reduce.runs` of an earlier draft of §6.3 is not written: it
+depends on `fan_in`, which by §1 rule 3 the edit set does not
+(`spec/landed/edits/WP-062.md` §1, §8).
 
 `slip_reduce` depends on `slip_model` only. `Shards` is implemented over
 the store by `slip_cli` and over a vector by tests.
@@ -934,7 +946,6 @@ In `EditSet.counters`:
 | `reduce.reports.note`, `.review`, `.error` | joined reports by severity |
 | `reduce.changed`, `reduce.changed.in_force` | joined `changed` entries |
 | `reduce.rules` | rules declared (§6.2) |
-| `reduce.runs` | temporary files written (§5.6) |
 
 Reduce also sums, over the `ok` shards, each shard counter whose name
 starts with `api.` or `edits.`, and writes the sum under the same name;

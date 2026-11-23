@@ -3,6 +3,9 @@
 //! hand: no Kiln.
 
 #![allow(dead_code, reason = "each test binary uses a part of the builders")]
+#![allow(clippy::type_complexity, clippy::too_many_lines, reason = "test builders")]
+
+pub mod model;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;

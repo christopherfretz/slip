@@ -357,12 +357,22 @@ fn run(
     runs::create_basis(&scratch.basis(), n).map_err(ReduceError::Io)?;
     cleanup.levels.push(n_runs);
     let least = Least::new();
-    let parts = pool(options.threads, n_runs, &|r| first_pass_run(&ctx, scratch, fan_in, r, &least))
-        .map_err(ReduceError::Io)?;
-    let mut joined = Joined::default();
-    for p in parts {
-        joined.join(p);
-    }
+    // The runs' states are joined in run order as they finish: only the
+    // runs that finish before an earlier one are held (§5.6).
+    let folding = Mutex::new((0usize, BTreeMap::<usize, Joined>::new(), Joined::default()));
+    pool(options.threads, n_runs, &|r| {
+        let part = first_pass_run(&ctx, scratch, fan_in, r, &least)?;
+        let mut f = folding.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (next, waiting, joined) = &mut *f;
+        waiting.insert(r, part);
+        while let Some(p) = waiting.remove(next) {
+            joined.join(p);
+            *next += 1;
+        }
+        Ok(())
+    })
+    .map_err(ReduceError::Io)?;
+    let mut joined = folding.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).2;
     let mut error = least.take();
     if let Some((c, id)) = joined.rule_conflict() {
         let c = usize::try_from(c).unwrap_or(usize::MAX);

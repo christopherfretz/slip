@@ -33,14 +33,26 @@ pub(crate) enum KPiece {
     Spelled { key: Digest, text: Vec<u8> },
 }
 
+/// One record of a site.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Entry {
+    /// The claims of one stance and pieces (§5.3).
+    Claim { stance: Stance, pieces: Vec<KPiece> },
+    /// The [`variant`]s of the claims one observer made at the site, when
+    /// it made two or more: with [`ClaimVal::single`], what counts each
+    /// observer once over several claims of a site (landed WP-062 §4).
+    Observed(Vec<Digest>),
+}
+
 /// What a record is about; two records with one key are joined.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
     /// A file some shard's `edits.files` names, with the size and content
     /// that shard gave it.
     File { path: Vec<u8>, size: u64, content: Digest },
-    /// A claim: site, stance and pieces (§5.3).
-    Claim { site: Site, stance: Stance, pieces: Vec<KPiece> },
+    /// A claim (§5.3), or what one observer claimed at a site where it made
+    /// more than one claim: by site, so that a site's records are adjacent.
+    Claim { site: Site, entry: Entry },
     /// A report, by its whole record (§5.3); ordered as §4.5 orders reports.
     Report { place: Option<Site>, severity: Severity, message: Vec<u8>, attached: bool },
     /// A `changed` entry, by its whole record.
@@ -121,6 +133,8 @@ pub(crate) struct ClaimVal {
     pub notes: Vec<Vec<u8>>,
     pub votes: u64,
     pub sample: Sample,
+    /// The observers that made this claim and no other at the site.
+    pub single: Sample,
 }
 
 impl ClaimVal {
@@ -132,6 +146,7 @@ impl ClaimVal {
         self.notes = least_union(&self.notes, &other.notes, NOTES_MAX);
         self.votes = self.votes.saturating_add(other.votes);
         self.sample.join(&other.sample);
+        self.single.join(&other.single);
     }
 }
 
@@ -238,10 +253,18 @@ pub(crate) fn encode(key: &Key, val: &Val) -> Vec<u8> {
         Key::File { path, size, content } => {
             e.u8(0).bytes(path).uv(*size).digest(content);
         }
-        Key::Claim { site: s, stance, pieces } => {
+        Key::Claim { site: s, entry: Entry::Observed(variants) } => {
             e.u8(1);
             site(&mut e, s);
-            e.uv(stance_code(*stance)).count(pieces.len());
+            e.u8(1).count(variants.len());
+            for v in variants {
+                e.digest(v);
+            }
+        }
+        Key::Claim { site: s, entry: Entry::Claim { stance, pieces } } => {
+            e.u8(1);
+            site(&mut e, s);
+            e.u8(0).uv(stance_code(*stance)).count(pieces.len());
             for p in pieces {
                 match p {
                     KPiece::Literal(b) => e.u8(0).bytes(b),
@@ -290,6 +313,7 @@ pub(crate) fn encode(key: &Key, val: &Val) -> Vec<u8> {
             }
             e.uv(c.votes);
             sample(&mut e, &c.sample);
+            sample(&mut e, &c.single);
         }
         Val::Sample(s) => sample(&mut e, s),
         Val::Failure(f) => {
@@ -390,6 +414,16 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
         },
         1 => {
             let s = dsite(&mut d)?;
+            if w(d.u8())? == 1 {
+                let n = w(d.count())?;
+                let mut variants = Vec::with_capacity(n);
+                for _ in 0..n {
+                    variants.push(w(d.digest())?);
+                }
+                let val = Val::Sample(dsample(&mut d)?);
+                w(d.finish())?;
+                return Ok((Key::Claim { site: s, entry: Entry::Observed(variants) }, val));
+            }
             let stance = stance_of(w(d.uv())?).ok_or_else(|| bad("a stance"))?;
             let n = w(d.count())?;
             let mut pieces = Vec::with_capacity(n);
@@ -401,7 +435,7 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
                     _ => return Err(bad("a piece tag")),
                 });
             }
-            Key::Claim { site: s, stance, pieces }
+            Key::Claim { site: s, entry: Entry::Claim { stance, pieces } }
         }
         2 => Key::Report {
             place: dopt_site(&mut d)?,
@@ -447,7 +481,8 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
             }
             let votes = w(d.uv())?;
             let sample = dsample(&mut d)?;
-            Val::Claim(ClaimVal { subjects, tiers, macro_site, reason, notes, votes, sample })
+            let single = dsample(&mut d)?;
+            Val::Claim(ClaimVal { subjects, tiers, macro_site, reason, notes, votes, sample, single })
         }
         2 | 3 => Val::Sample(dsample(&mut d)?),
         _ => {
@@ -475,9 +510,15 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
 /// pieces)`, a copy's file by path, as a digest. Group ties are kept by it
 /// (docs/wp/WP-062.md "Group ties in pass 1").
 pub(crate) fn identity(site: &Site, pieces: &[KPiece]) -> Digest {
-    let bytes = encode(
-        &Key::Claim { site: site.clone(), stance: Stance::Replace, pieces: pieces.to_vec() },
-        &Val::File,
-    );
+    let entry = Entry::Claim { stance: Stance::Replace, pieces: pieces.to_vec() };
+    let bytes = encode(&Key::Claim { site: site.clone(), entry }, &Val::File);
     slip_model::hash::tagged_digest("slip.reduce.edit.v1", &bytes)
+}
+
+/// A claim's stance and pieces at a site, as a digest: what
+/// [`Entry::Observed`] lists.
+pub(crate) fn variant(site: &Site, stance: Stance, pieces: &[KPiece]) -> Digest {
+    let entry = Entry::Claim { stance, pieces: pieces.to_vec() };
+    let bytes = encode(&Key::Claim { site: site.clone(), entry }, &Val::File);
+    slip_model::hash::tagged_digest("slip.reduce.claim.v1", &bytes)
 }

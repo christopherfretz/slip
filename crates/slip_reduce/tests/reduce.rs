@@ -813,3 +813,34 @@ fn shard_id_is_the_stored_bytes() {
     assert_eq!(back, s, "the ignorable section is dropped on decoding");
     assert_ne!(content_id(&stored).unwrap(), content_id(&back.to_bytes()).unwrap());
 }
+
+/// §5.3, §6, landed WP-062 §4: an observer that made several claims at a
+/// site is counted once among the observers of a refusal: two different
+/// `replace` claims of one observer (`divergent`), a `keep` and an
+/// `unresolved` of one observer (`contested` by another range).
+#[test]
+fn an_observer_counts_once_at_a_site() {
+    let set = ok(
+        &script(),
+        vec![
+            ShardB::new(0).claim(the_edit(A, 0, 1, "x")).claim(the_edit(A, 0, 1, "y")),
+            ShardB::new(1).claim(the_edit(A, 0, 1, "x")),
+            ShardB::new(2).claim(the_edit(A, 50, 51, "z")),
+        ],
+        "once-divergent",
+    );
+    let r = refusal_at(&set, Cause::Divergent, A, 0, 1);
+    assert_eq!((r.observers, r.first.clone()), (2, vec![observer(0), observer(1)]));
+
+    let set = ok(
+        &script(),
+        vec![
+            ShardB::new(0).claim(keep(A, 2, 6)).claim(unresolved(A, 2, 6)),
+            ShardB::new(1).claim(the_edit(A, 0, 4, "x")).claim(the_edit(A, 50, 51, "z")),
+            ShardB::new(2).candidate(d(9)).claim(the_edit(A, 2, 6, "w").subjects(&[d(9)])).claim(keep(A, 2, 6)),
+        ],
+        "once-contested",
+    );
+    let r = refusal_at(&set, Cause::Contested, A, 0, 4);
+    assert_eq!(r.observers, 2, "observers 0 and 2, each once");
+}

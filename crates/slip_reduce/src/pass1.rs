@@ -12,7 +12,7 @@ use slip_model::{Digest, Phase, Shard, Status};
 
 use crate::Shards;
 use crate::groups::Ties;
-use crate::records::{ClaimVal, FailVal, KPiece, Key, NOTES_MAX, RefusalK, Sample, Site, Val, identity};
+use crate::records::{ClaimVal, Entry, FailVal, KPiece, Key, NOTES_MAX, RefusalK, Sample, Site, Val, identity, variant};
 use crate::runs::BasisEntry;
 use crate::subjects::SubjectJoin;
 
@@ -214,24 +214,41 @@ pub(crate) fn fold(
         let val = Val::Failure(FailVal { sample: Sample::one(index), from: index, rendered: f.rendered.clone(), refusal });
         return put(records, key, val);
     }
-    for c in &edits.claims {
-        joined.stats.claims += 1;
-        joined.stats.by_stance[c.stance as usize] += 1;
-        let key = Key::Claim {
-            site: Site { path: edits.files[c.file as usize].path.clone(), lo: c.lo, hi: c.hi },
-            stance: c.stance,
-            pieces: kpieces(edits, &c.pieces),
-        };
-        let val = Val::Claim(ClaimVal {
-            subjects: c.subjects.clone(),
-            tiers: c.tiers,
-            macro_site: c.macro_site.clone(),
-            reason: c.reason,
-            notes: c.notes.iter().take(NOTES_MAX).cloned().collect(),
-            votes: c.votes,
-            sample: Sample::one(index),
-        });
-        put(records, key, val)?;
+    // Claims are sorted by site first (§4.7): the claims of one site are
+    // adjacent.
+    let mut at = 0;
+    while at < edits.claims.len() {
+        let c0 = &edits.claims[at];
+        let end = at + edits.claims[at..].iter().take_while(|c| (c.file, c.lo, c.hi) == (c0.file, c0.lo, c0.hi)).count();
+        let site = Site { path: edits.files[c0.file as usize].path.clone(), lo: c0.lo, hi: c0.hi };
+        let alone = end - at == 1;
+        let mut variants = Vec::new();
+        for c in &edits.claims[at..end] {
+            joined.stats.claims += 1;
+            joined.stats.by_stance[c.stance as usize] += 1;
+            let pieces = kpieces(edits, &c.pieces);
+            if !alone {
+                variants.push(variant(&site, c.stance, &pieces));
+            }
+            let key = Key::Claim { site: site.clone(), entry: Entry::Claim { stance: c.stance, pieces } };
+            let val = Val::Claim(ClaimVal {
+                subjects: c.subjects.clone(),
+                tiers: c.tiers,
+                macro_site: c.macro_site.clone(),
+                reason: c.reason,
+                notes: c.notes.iter().take(NOTES_MAX).cloned().collect(),
+                votes: c.votes,
+                sample: Sample::one(index),
+                single: if alone { Sample::one(index) } else { Sample::default() },
+            });
+            put(records, key, val)?;
+        }
+        if !alone {
+            variants.sort_unstable();
+            variants.dedup();
+            put(records, Key::Claim { site, entry: Entry::Observed(variants) }, Val::Sample(Sample::one(index)))?;
+        }
+        at = end;
     }
     for r in &edits.reports {
         let key = Key::Report {
