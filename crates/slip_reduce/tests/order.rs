@@ -367,7 +367,11 @@ fn check(seed: u64, tally: &mut Tally) {
     // §6.1: valid, and the same after its binary form.
     base.edits.validate().unwrap_or_else(|e| panic!("reduce made an invalid set: {e}"));
     assert_eq!(EditSet::from_bytes(&base.edits.to_bytes()).unwrap(), base.edits);
-    assert_eq!(slip_reduce::declared(&base.edits).unwrap(), base.declared, "§6.2: one derivation");
+    assert_eq!(
+        slip_reduce::declared(&base.edits, &request.ownership).unwrap(),
+        base.declared,
+        "§6.2: one derivation"
+    );
 
     // Landed WP-062 §6: a missing edit is explained.
     explained(&request, &shards, &base.edits);

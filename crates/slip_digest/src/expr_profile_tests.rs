@@ -114,7 +114,13 @@ fn causes_of(input: &Input<'_>, name: &str) -> Vec<Vec<crate::Cause>> {
     let rules = RuleTable::empty();
     let o = crate::digest(
         input,
-        &crate::Options { rules: &rules, detail: crate::Detail::All, names: true },
+        &crate::Options {
+            rules: &rules,
+            read_only: crate::ReadOnly::NO_FILE,
+            detail: crate::Detail::All,
+            names: true,
+            rule_use: false,
+        },
     );
     o.names
         .iter()
@@ -464,7 +470,13 @@ fn digest_all(src: &str) -> Vec<(slip_model::Digest, String, Vec<crate::Cause>)>
         let rules = RuleTable::empty();
         let o = crate::digest(
             &input,
-            &crate::Options { rules: &rules, detail: crate::Detail::All, names: true },
+            &crate::Options {
+                rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail: crate::Detail::All,
+                names: true,
+                rule_use: false,
+            },
         );
         o.names
             .iter()

@@ -1,0 +1,3 @@
+# Every file owned: the same.
+removed legacy::box<type-parameter-0-0 *>
+removed legacy::box<type-parameter-0-0 *>::get()

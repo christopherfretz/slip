@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. A declaration made by an owned macro invoked in a dependency file: the dependency's (the invocation is in dep.h).
+relocate legacy => :: acme

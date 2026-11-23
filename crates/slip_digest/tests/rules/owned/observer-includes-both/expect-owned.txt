@@ -1,0 +1,4 @@
+# Every file owned: the same.
+collisions 1
+indeterminate acme::Both
+indeterminate legacy::Both

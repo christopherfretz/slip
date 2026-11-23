@@ -1,0 +1,4 @@
+# WP-069: a table with a rule spec/verify.md §2.1 refuses keys nothing: every count is 0, the
+# rule that would match g included.
+relocate f() => :: g
+rule specialisation | post W3 | id W3 | disc-of post W3<A> | post W1 | id W1

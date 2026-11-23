@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. Pitfall row N26, good: a nested class of a dependency template's specialisation with an owned argument.
+relocate legacy => :: acme

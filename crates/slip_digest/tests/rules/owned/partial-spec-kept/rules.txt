@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. An owned partial specialisation of a dependency template, with a member, used with an owned argument.
+relocate legacy => :: acme

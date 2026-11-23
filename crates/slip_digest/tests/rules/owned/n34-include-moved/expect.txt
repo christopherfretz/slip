@@ -1,0 +1,5 @@
+# Pitfall row N34, bad-3: inner.h is a dependency file, so Inner is the
+# dependency's; moved into acme it is a new entity, and legacy::Inner is gone.
+changed user()
+added acme::Inner
+removed legacy::Inner

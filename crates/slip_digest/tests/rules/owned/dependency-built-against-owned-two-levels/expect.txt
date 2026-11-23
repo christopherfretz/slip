@@ -1,0 +1,12 @@
+# user_types.h is read-only here (the chain dep.h -> wrap.h -> user_types.h
+# passes through dep.h): as type-through-dependency-first.
+changed legacy_cfg::data_t
+added acme
+added acme::UserData
+added acme::UserData::v
+added legacy::consume(acme::UserData *)
+added user(acme::UserData *)
+removed legacy::UserData
+removed legacy::UserData::v
+removed legacy::consume(legacy::UserData *)
+removed user(legacy::UserData *)

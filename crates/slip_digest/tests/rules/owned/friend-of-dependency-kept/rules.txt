@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. A function a dependency class befriends, defined by owned code: a dependency entity; kept in legacy.
+relocate legacy => :: acme

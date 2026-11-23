@@ -1,0 +1,1 @@
+# Every file owned (the old behaviour): equal, a wrong `verified`.

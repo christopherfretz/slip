@@ -1,0 +1,2 @@
+# Ownership: every definition is of a dependency entity, kept; acme is
+# opened by dep.h and keeps its key. Equal.
