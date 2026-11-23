@@ -199,7 +199,7 @@ For a transform's run (M2; the files are `spec/edits.md` §10.4):
 ```rust
 pub enum Object { Transform, EditSet, Overlay, Result }      // transforms/*.trfm, edits/*.edts, overlays/*.ovly, results/*.rslt
 impl Store {
-    pub fn publish_object(&self, object: Object, bytes: &[u8]) -> Result<Digest, StoreError>;   // frame-validated; named by content id
+    pub fn publish_object(&self, object: Object, bytes: &[u8]) -> Result<Digest, StoreError>;   // fully validated; named by content id
     pub fn read_object(&self, object: Object, id: &Digest) -> Result<Option<Vec<u8>>, StoreError>;
     pub fn find_object(&self, object: Object, hex_prefix: &str) -> Result<Vec<Digest>, StoreError>;   // as `find_plan`
     pub fn object_path(&self, object: Object, id: &Digest) -> PathBuf;
@@ -216,16 +216,21 @@ impl Store {
 // StoreError gains UnfinishedWrite(PathBuf): an exclusive `open` of a store that holds `write.journal`.
 ```
 
-`publish_object` **frame-validates**: the bytes must be a container of
+`publish_object` **fully validates**: the bytes must be a container of
 the object's kind, version 1, that passes `spec/model.md` §5 rule 5
-(magic, kind, version, length, trailer, section framing); the sections
-are not decoded, since `slip_exec` does not know their types. Anything
-else is `Invalid` and nothing is written. `publish_transform_run` checks
-the frame of a `RUNT` container the same way and decodes its section
-`run` (`spec/edits.md` §10.6) only as far as `started_unix_ns`: `plan`,
-`round` and `started_unix_ns` must be the ones given (`Invalid`
-otherwise); the full check waits for the `RUNT` decoder of
-`docs/wp/WP-061.md`. An object or a blob is named by its content, so
+(magic, kind, version, length, trailer, section framing), and a valid
+file of that kind as its reader decides (`TRFM` `spec/edits.md` §3,
+`EDTS` §6.1, `OVLY` §7.1, `RSLT` §8.5), through
+`slip_model::formats::content_id`, which takes bytes, so `slip_exec`
+names none of their types. Anything else is `Invalid` and nothing is
+written. `publish_transform_run`
+**fully validates**: through `slip_model::formats::transform_run_names`
+it reads the bytes as `TransformRun::from_bytes` does (`spec/edits.md`
+§10.6): the frame of §5 rule 5, no unknown critical section, section
+`run` present and decoded to its last field (`steps`) with no byte
+after it, every encoding of `spec/model.md` §2; and `plan`, `round` and
+`started_unix_ns` must be the ones given. Anything else is `Invalid` and
+nothing is written. An object or a blob is named by its content, so
 its file is left untouched when it already holds that content (a
 regular file with those bytes); anything else at the name (other bytes,
 a symbolic link) is replaced by the publish of §2.1, and a directory
