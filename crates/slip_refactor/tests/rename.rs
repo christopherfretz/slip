@@ -1646,3 +1646,18 @@ fn wp119_friend_over_two_observers_end_to_end() {
     }));
     assert!(failed.is_err(), "the post-image with the call left as `f` compiles");
 }
+
+/// `docs/wp/WP-119.md` item 6 under WP-120's N4: an instantiated
+/// dependent using-declaration is looked at when a subject hides what it
+/// names. `D<int>::f()` (a follower of the seed `n::D::f`) hides the
+/// shadow of `Base<int>::f()`; renaming the hider and not the target would
+/// make `Base<int>::f()` visible in `D<int>`: refused (`mixed_follower`).
+#[test]
+fn wp119_instantiated_using_hidden_by_a_subject_end_to_end() {
+    let files: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n {\ntemplate <class T> struct Base { void f(); void f(int); };\ntemplate <class T> struct D : Base<T> { using Base<T>::f; void f(); };\n}\nvoid h(n::D<int>& d) { d.f(); d.f(1); }\n",
+    )];
+    let r = end_to_end("wp119-n4-inst", &files, &["main.cpp"], &["n", "D", "f"], "g", &right);
+    assert!(causes(&r).contains(&"MixedFollower"), "{r:?}");
+}

@@ -1714,8 +1714,8 @@ seed of either kind: it is the §9.2 follower of what it names
     struct D : B { using B::f; void f(int); }`, `A::f` renamed: `using
     B::g;`, and `B::f(int)` stays hidden by `D::f(int)`). A shadow hidden
     by an implicit member (an assignment operator or a constructor,
-    declared on use) stays a unit of the digest and keeps the
-    using-declaration as a third party: all three or none.
+    declared on use) stays a unit of the digest; it and its hider are
+    names no rename reaches (§9.1), so it is never a follower.
 
     The rule is decided per class from what each observer records: a
     shadow hidden in `D` says nothing of a class `E : B` with `using

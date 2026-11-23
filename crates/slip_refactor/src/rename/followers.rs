@@ -46,8 +46,9 @@
 //!   visible one hidden. So that mix is reduce's `mixed_follower`, and a
 //!   using-declaration is looked at when a subject hides what it names
 //!   too (`spec/edits.md` §9.2). A shadow hidden by an implicit member
-//!   (declared on use) stays a unit of the digest and keeps the
-//!   using-declaration as its third party.
+//!   (declared on use) stays a unit of the digest, but such a shadow and
+//!   its hider are an `operator=` or a constructor, which no rename
+//!   reaches: it is never looked at here.
 //! - **An instantiated dependent using-declaration**
 //!   ([`instantiated_unfollowed_using`]): follows what it introduces and
 //!   the pattern's using-declaration, whose name is `unresolved`.
@@ -66,7 +67,7 @@
 //!   The digest accepts that rule where it gives exactly the key following
 //!   the pattern gives (`docs/wp/WP-119.md` item 1), so it is not flagged.
 
-use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind};
+use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::types::TypeView;
 use slip_kiln::kiln::ast::{Ast, DeclId, QualType};
 use slip_kiln::written::{self, DeclName, DeclNameKind};
@@ -156,9 +157,6 @@ struct Shadow {
     hidden: bool,
     /// The member that hides it, when it is hidden.
     hider: Option<Party>,
-    /// The hider is an implicit member (declared on use): the digest keeps
-    /// such a hidden shadow a unit (`slip_digest`'s `units::hidden_shadow`).
-    implicit_hider: bool,
 }
 
 /// An entity a hidden shadow depends on: its key id (the subject's, or
@@ -184,11 +182,9 @@ fn shadows_named(ctx: &mut Ctx<'_, '_, '_>, shadows: &[DeclId]) -> Vec<Shadow> {
     for &s in shadows {
         let hider = ast.decls.hidden_shadow(s).map(|h| party(ctx, h));
         let hidden = hider.is_some();
-        let implicit_hider =
-            ast.decls.hidden_shadow(s).is_some_and(|h| ast.decls.get(h).has(DeclFlags::IMPLICIT));
         let target = ast.using_target(s).map(|t| party(ctx, t));
         let Party { id, subject } = target.unwrap_or(Party { id: None, subject: false });
-        named.push(Shadow { decl: s, id, subject, hidden, hider, implicit_hider });
+        named.push(Shadow { decl: s, id, subject, hidden, hider });
     }
     named
 }
@@ -215,15 +211,14 @@ fn introduced(named: &[Shadow]) -> Vec<KeyId> {
 /// using-declaration does no longer matters, but the hider must still hide
 /// the target, or a hidden declaration becomes visible (or a visible one
 /// hidden). So the two are renamed together or neither; any mix is
-/// reduce's `mixed_follower`. A shadow hidden by an implicit member stays a
-/// unit of the digest, so it keeps its third party, the using-declaration
-/// `using` (all three or none, as before WP-119). A party with no key
-/// cannot be in `of`: the shadow is `unsupported`.
+/// reduce's `mixed_follower`. (A shadow hidden by an implicit member stays
+/// a unit of the digest, but it and its hider are an `operator=` or a
+/// constructor, which no rename reaches.) A party with no key cannot be in
+/// `of`: the shadow is `unsupported`.
 fn shadow_followers(ctx: &mut Ctx<'_, '_, '_>, named: &[Shadow], using: Option<KeyId>) {
     for n in named {
         if let Some(h) = n.hider {
-            let parties: &[Option<KeyId>] =
-                if n.implicit_hider { &[n.id, using, h.id] } else { &[n.id, h.id] };
+            let parties = [n.id, h.id];
             let of: Vec<KeyId> = parties.iter().flatten().copied().collect();
             let f = ctx.subjects.add(ctx.keys, n.decl, Role::Follower, ctx.new, &of);
             match f {
