@@ -1086,9 +1086,9 @@ fn check_range(
     let outside = |q: &Seq| -> Vec<String> {
         q.text.iter().zip(&q.entry).filter(|(_, e)| e.0 != file).map(|(t, _)| t.clone()).collect()
     };
-    let (b, a) = (outside(before), outside(after));
-    if a != b {
-        return Err(diff("the tokens of other files", &b, &a));
+    let (was, now) = (outside(before), outside(after));
+    if now != was {
+        return Err(diff("the tokens of other files", &was, &now));
     }
     let entry = &before.entry[i];
     if before.entry[j] != *entry {
@@ -1096,8 +1096,8 @@ fn check_range(
     }
     let sel: Vec<usize> = (0..before.text.len()).filter(|&k| before.entry[k] == *entry).collect();
     let toks: Vec<Token> = sel.iter().map(|&k| u.toks[k]).collect();
-    let b: Vec<String> = sel.iter().map(|&k| before.text[k].clone()).collect();
-    let a: Vec<String> = after
+    let was: Vec<String> = sel.iter().map(|&k| before.text[k].clone()).collect();
+    let now: Vec<String> = after
         .text
         .iter()
         .zip(&after.entry)
@@ -1105,7 +1105,7 @@ fn check_range(
         .map(|(t, _)| t.clone())
         .collect();
     let at = |k: usize| sel.binary_search(&k).expect("a token of the entry");
-    check_entry(u, &toks, &b, &a, r, at(i), at(j))
+    check_entry(u, &toks, &was, &now, r, at(i), at(j))
 }
 
 /// [`check_range`] within one entry: `toks` its tokens, `before` and
