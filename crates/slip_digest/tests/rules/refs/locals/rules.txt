@@ -1,0 +1,2 @@
+# Item 8: a local class, a static local, a lambda with a local class inside it, in a relocated function; and instantiations of a relocated template made in an unrelocated function.
+relocate acme => :: legacy

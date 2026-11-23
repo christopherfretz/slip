@@ -1,0 +1,2 @@
+# Item 2: function templates whose signature names a relocated concept, as a type-constraint and in a requires-clause.
+relocate acme => :: legacy

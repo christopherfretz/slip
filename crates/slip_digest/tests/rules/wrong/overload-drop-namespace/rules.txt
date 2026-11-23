@@ -1,0 +1,2 @@
+# Item 9, from disc/overload-renamed-relocated-parameter: the relocation of the namespace dropped: the rename can no longer even be written in mapped terms of acme, its discriminator names legacy::S.
+relocate f(acme::S) => :: g

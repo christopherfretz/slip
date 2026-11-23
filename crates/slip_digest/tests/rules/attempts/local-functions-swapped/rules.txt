@@ -1,0 +1,3 @@
+# Item 9 attempt: two functions with local classes swapped by name, callers following: the locals follow their function. Equal: an isomorphism.
+relocate f() => :: g
+relocate g() => :: f

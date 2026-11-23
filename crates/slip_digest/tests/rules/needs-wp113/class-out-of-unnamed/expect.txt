@@ -1,0 +1,8 @@
+# pending
+# needs: WP-113
+# The class moved out of the unnamed namespace: internal linkage becomes external. clang++-19 -c,
+# nm: `t _ZN12_GLOBAL__N_14Impl1fEv` in a.o, `W _ZN4Impl1fEv` in b.o (Impl::f() is now a weak external
+# symbol, merged with any other translation unit's Impl::f()). Equal today: no unit holds the linkage
+# an entity takes from its enclosing namespaces; WP-113 writes it into the member's unit.
+changed (anonymous namespace)::Impl
+changed (anonymous namespace)::Impl::f()

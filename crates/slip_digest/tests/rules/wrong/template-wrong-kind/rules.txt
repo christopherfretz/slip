@@ -1,0 +1,2 @@
+# Item 9, from kinds/function_template-renamed: the rule given the kind function.
+rule function | root | id g | disc-of post template <class> int g(type-parameter-0-0) | root | id f

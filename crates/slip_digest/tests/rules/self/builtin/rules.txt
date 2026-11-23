@@ -1,0 +1,2 @@
+# Item 6: builtins called from relocated code (parent builtin) map to themselves.
+relocate acme => :: legacy

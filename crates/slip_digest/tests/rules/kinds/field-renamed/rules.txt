@@ -1,0 +1,2 @@
+# digest-kinds §3.1 field, renamed: member access and a pointer to member follow.
+relocate S::a => S :: z

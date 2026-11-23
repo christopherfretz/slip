@@ -1,0 +1,2 @@
+# Fix round 2, F4: a decomposition takes its first binding's mapped name (spec/digest.md §3.4); one rule.
+relocate x => :: z

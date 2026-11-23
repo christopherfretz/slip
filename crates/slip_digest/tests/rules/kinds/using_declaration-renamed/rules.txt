@@ -1,0 +1,4 @@
+# digest-kinds §3.1 using_declaration and using_shadow: renaming the member renames the using-declaration that names it and its shadow, each by its own rule (their names are their own, spelled in the declaration).
+relocate B::f(int) => B :: g
+relocate D::<using B::f> => D :: g
+relocate D::<shadow B::f(int)> => D :: g

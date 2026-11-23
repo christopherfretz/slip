@@ -1,0 +1,3 @@
+# Fix round 3, finding 2: every declaration of the entity's chain is asked for its pattern, not the representative only (spec/digest.md §3.4).
+# The review's B32d: as friend-redeclared-renamed, the namespace-scope declaration after the use.
+relocate S::friend f(S<type-parameter-0-0>) => S :: g
