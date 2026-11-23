@@ -980,6 +980,40 @@ fn f1_embed_is_refused() {
     assert!(with(&cmd, |s| s.entry("transform").is_ok()));
 }
 
+// §2.1 rule 6: a macro of the command line is in no file the scan reads,
+// so a `-D` whose replacement holds `embed` is refused where the options
+// are checked. The macro's name is not looked at, and neither is `-U`.
+#[test]
+fn f1_embed_in_a_macro_option_is_refused() {
+    let new = |author: &[&str]| {
+        let author: Vec<String> = author.iter().map(|&a| a.to_owned()).collect();
+        TransformCommand::new(resource_include(), &author, PathBuf::from("/t.cpp"))
+    };
+    let reason = "the macro's replacement holds `embed`: `#embed` and `__has_embed` are not supported in a transform (spec/api.md §2.1)";
+    for (bad, word) in [
+        (&["-DE=__has_embed"][..], "-DE=__has_embed"),
+        (&["-D", "E=__has_embed"], "E=__has_embed"),
+        (&["-DE(x)=__has_embed(x)"], "-DE(x)=__has_embed(x)"),
+        (&["-DP(a)=a##embed"], "-DP(a)=a##embed"),
+        (&["-DX=1", "-D", "Y=__has_##embed"], "Y=__has_##embed"),
+        (&["-DE=a=embed"], "-DE=a=embed"),
+    ] {
+        let e = new(bad).unwrap_err();
+        assert_eq!((e.word.as_str(), e.reason), (word, reason), "{bad:?}");
+    }
+    for fine in [
+        &["-Dembed"][..],
+        &["-Dembedded=1"],
+        &["-D", "has_embed"],
+        &["-DE=EMBED"],
+        &["-DE=embe d"],
+        &["-Uembed"],
+        &["-U", "__has_embed"],
+    ] {
+        assert!(new(fine).is_ok(), "{fine:?}");
+    }
+}
+
 // WP-080 fix round, S1 (K2): a run is checked against the stack guard of
 // the thread that compiled the unit (`kiln_sema/src/templ/mod.rs:617`), so
 // a run on another thread that reaches a stack check (an instantiation, a
