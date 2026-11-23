@@ -1,0 +1,2 @@
+added f(long)
+changed template <class> decltype(static_cast<const decltype(sizeof (f(T())))>(0) + t) g(type-parameter-0-0)

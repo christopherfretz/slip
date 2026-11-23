@@ -1,0 +1,3 @@
+# pending
+# needs: WP-125 (a name-derived value of a function template prints its parameter types as written; spec/landed/digest-kinds/WP-041.md "After the re-check of round 5")
+changed template <class> unsigned long h(type-parameter-0-0, int)

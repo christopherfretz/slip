@@ -46,7 +46,8 @@
 //! | `Walk::write_type_opt(s, q)` | `type?` |
 //! | `Walk::write_types(s, qs)` | `type*` |
 //! | `Walk::write_exc_spec(s, e)` | `enum ExcSpec` in normal form (§4.5) |
-//! | `Walk::write_nns(s, n)` | `enum Nns`, canonical (§4.6) |
+//! | `Walk::write_canonical_nns(s, n)` | `enum Nns`, canonical (§4.6); only where the canonical form loses nothing (WP-041 "Fix round 4") |
+//! | `Walk::write_written_nns(s, n)` | a qualifier an expression the full walk writes holds: canonical, the written form read (rule 11) |
 //! | `Walk::write_template_name(s, n)` | `enum TemplateName`, canonical |
 //! | `Walk::write_args(s, l)` | `enum ArgView*` of a canonical list |
 //! | `Walk::write_func_proto(s, p, exc)` | `record FuncProto` |
@@ -228,6 +229,7 @@ pub mod map;
 mod names;
 mod order;
 mod other;
+mod own_spelling;
 mod owned;
 pub mod query;
 pub mod records;
@@ -410,11 +412,6 @@ pub enum Area {
     Other,
     /// The order unit (digest §2.1).
     Order,
-    /// A fact a canonical profile leaves out but its first spelling
-    /// holds: the declarations lookup found for an unresolved name in a
-    /// dependent type (digest-kinds §4.4, WP-036). Written by the unit
-    /// stream when the spelling is (WP-041).
-    Spelling,
 }
 
 impl Area {
@@ -430,7 +427,6 @@ impl Area {
             Area::Attrs => "attrs",
             Area::Other => "other",
             Area::Order => "order",
-            Area::Spelling => "spelling",
         }
     }
 }

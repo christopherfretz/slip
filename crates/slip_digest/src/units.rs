@@ -559,6 +559,9 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         let mut s = Stream::new();
         w.decl_stream(&mut s, from, e);
         crate::enclosing::write(w, &mut s, e);
+        // The list comes after the unit stream, whose end is `enclosing`
+        // (digest-kinds §1.7, §4.4 "Spellings" item 6).
+        crate::own_spelling::write_unit_list(w, &mut s);
         w.unit = saved;
         #[cfg(test)]
         tests::count_read(e);

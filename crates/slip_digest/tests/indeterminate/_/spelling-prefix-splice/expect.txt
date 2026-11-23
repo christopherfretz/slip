@@ -1,0 +1,1 @@
+indeterminate template <class> int g(type-parameter-0-0)

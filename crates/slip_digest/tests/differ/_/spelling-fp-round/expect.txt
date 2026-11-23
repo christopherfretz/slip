@@ -1,0 +1,2 @@
+changed template <class> A<(1. / 3.) * sizeof(T)> g(type-parameter-0-0)
+changed template <class> void h(type-parameter-0-0)
