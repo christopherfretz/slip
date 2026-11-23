@@ -343,7 +343,11 @@ The run's files are in subject paths, and ownership is of **real
 paths** (`spec/edits.md` §2.1). The job decides each buffer by the
 subject path of the buffer's real path, its symbolic links resolved, and
 never by the path as the front end spells it: a read-only file reached
-through a symbolic link under an owned root is read-only. `ReadOnlyFiles`
+through a symbolic link under an owned root is read-only. That subject
+path is a real path of the subject (or a created path under its real
+directories) only because guard G6 (§5.3) holds: a post-image whose
+links differ from the subject's along the routes the parse used is
+`unverifiable`. `ReadOnlyFiles`
 decides on the path it is given and normalises nothing
 (`owned.rs`, `read_only_files_needs_the_real_path`).
 
@@ -1095,12 +1099,36 @@ outside every root that both images read is the same bytes in both.* The
 parse then saw exactly what a parse of the subject with the edit applied,
 run with the observer's own command, would see: under the post roots the
 post tree, which is that subject's tree; elsewhere the files the pre-image
-saw. Each half is one guard of §5.3:
+saw. And, by G6, the subject path of every file the post parse read
+under a post root is a real path of the subject, or a created path under
+real directories of it: the links the parse followed under a post root
+are the subject's, by name and target, and none of the subject path's
+existing components is a link. Ownership (§2.1), which is of real paths,
+is therefore decided for a post file as for the subject file it stands
+for (§5.1 defines the post file of `s/x` as `p/x`, which means that only
+where both trees have the same links along the route). The post tree
+stands in the subject's place only for what is inside it: a route that
+leaves a post root (`#include "../ext/k.h"`, a link `inc -> ../ext`, a
+header's `..`) reaches what is beside the post tree, which is not what is
+beside the subject when the two trees are not beside each other. O2 does
+not see it (the file read there need not be in the pre-image's inputs),
+nor G1 or L1 (it is under no subject root). By G6 (iii), every such route
+ends where the same route from the subject ends, by real path, for every
+place the parse looked at, so that what the parse found and what it did
+not find outside the post tree are what the subject's edited tree would
+find. A word of the command that leaves by `..` is rewritten to the
+subject's place (above) and does not leave. The cost: a post tree placed
+elsewhere than beside the subject (at another depth, or under another
+parent) whose files or links reach outside it by a relative step is
+refused; put the post tree beside the subject (`s` and `post` in one
+directory), or reach the outside tree by an absolute path. Each half is
+one guard of §5.3:
 
 | Guard | What it establishes | Pinned by (`crates/slip_cli/tests/`) |
 |---|---|---|
 | G1 | no file the parse read (`inputs`, real paths) is under a subject root, by identity | `verify_job.rs` `g1_*`, `f3_case_insensitive_spelling`; `image.rs` `s5_1_under_subject_by_identity` |
 | L1 | no directory of the search list, no directory that would hold a place a lookup tried (found or not, `#include` and `__has_include` in every form, `#embed` and `__has_embed`, `-include`), and no directory of a file read, as spelled, has its resolution look a name up under a subject root | `verify_job.rs` `l1_*`, `f3_symbolic_link_to_the_subject`; `crates/slip_kiln/tests/lookups.rs` for what the log holds |
+| G6 | the subject path of every file the post parse read under a post root is a real path of the subject or a created path under real directories of it (the links along the routes are the subject's); and every place the parse looked at by a route that leaves a post root is the place the same route reaches from the subject | `verify_job.rs` `g6_*`; `verify.rs` `g6_link_in_subject_directory_in_post_end_to_end`, `g6_route_leaving_the_root_end_to_end` |
 | G4 | no word is a response file, whose words Kiln's driver would read without Slip seeing them | `verify_job.rs` `g4_response_file` |
 | G5 | every spelling of a file the post parse makes is mapped to its spelling in the real post-image: every pair's post prefix is under a post root, the map pairs are consistent, no prefix map of the command's own overlaps them, no `#line` name is mapped | `verify_job.rs` `f6_two_routes_to_one_file`, `f6s_two_routes_through_a_link`, `f6r_two_routes_no_edit`, `g5_command_prefix_map`, `g5_line_name`, `z1_word_leaves_the_subject`, `z2_word_leaves_the_subject_absolute_include`, `z_control_word_stays_in_the_subject`, `z_word_leaves_into_another_root`, `a3_post_directory_becomes_a_link`, `a3_link_deeper_in_the_word`; `image.rs` `s5_1_post_command_resolves`, `g5_command_prefix_maps`, `g5_word_leaves_the_subject`, `g5_missing_prefix_under_a_post_root` |
 | O2 | every file outside every root that both images read has the pre shard's size and digest (an image other than the identity) | `verify_job.rs` `o2_outside_drift_at_the_sums` |
@@ -1218,7 +1246,7 @@ post-image's bytes being a blob in the store.
    (§7), and the job ends. In the same parse, after the walk: the rule
    use of §9.1 when `Declared.rules` is not empty, and the checks of
    §10.2 when the overlay has obligations.
-2. Check, in this order: the pre shard is usable; guards G1, L1, G4, G5
+2. Check, in this order: the pre shard is usable; guards G1, L1, G4, G5, G6
    and, with an image other than the identity, O2 (tree form), or guards O1
    then O2 (overlay form); `comparable` (§3). The first that fails makes
    the verdict `unverifiable` with the reason of §5.3, and the job ends.
@@ -1257,6 +1285,7 @@ only withdraws: guard G3.
 | P3 | step 2: it has a `digests` section | `pre-image: the map shard has no digests` |
 | G1 | step 2, tree form: no entry of the post-image parse's `inputs` is under a subject root (§5.1, by identity) | `post-image: read <path>, a file of the subject` (the first such entry) |
 | L1 | step 2, tree form: the resolution from the post command's `directory` (§5.1) of each directory of the search list, of the directory that would hold each place a lookup tried, and of the directory of each file read as the front end spelled it, looks no name up in a directory under a subject root, except the name of a post root in it | `post-image: searches <dir>: <subject dir> is a directory of the subject`; `post-image: looked for <name> in <dir>: <subject dir> is …`; `post-image: read <name>: <subject dir> is …` (the first, in that order; `<subject dir>` the first directory of the subject the resolution looked in) |
+| G6 | step 2, tree form other than the identity, after G5 and before O2, with or without the run's files: (i) for every file the post-image parse read, resolving the path as the front end spelled it (from the post command's `directory`), every symbolic link followed at a place under a post root (`p/D/n`) is, at `s/D/n` in the subject, a symbolic link with the same target bytes; (ii) for the real path `p/Y` of each file read under a post root, its subject path `s/Y`, resolved in the subject component by component up to the first component that does not exist, has no symbolic link among its existing components; (iii) for every place the parse looked at, as the front end spelled it from the post command's `directory` (each directory of the search list, each location tried, found or not, each file read), whose walk in the file system (component by component, symbolic links followed) is under a post root and then under none (*leaves the post root*), the same route walked from the subject (from the subject's counterpart `s/D` of the first directory `p/D` under a post root the walk was in, with the components it had left there) ends at the same place. A place is the real path the walk reached with the components it could not resolve (from a missing component, or one under a file); the post walk's place is taken to the subject when it is under a post root (a route that leaves and comes back in must come back to the subject's counterpart). A walk that follows more than 40 symbolic links is refused. A link with an absolute target passes (i) only with the same bytes in both trees; with other bytes it is refused, and must be: in place of the subject the post tree's link names what it names now, which is not the subject's | (i) `post-image: <spelled path> follows the link <p/D/n>, which is <a directory, a file, missing, or a link to <target>> in the subject`; (ii) `post-image: <p/Y> stands for <s/Y>, which the subject reaches through the link <s/…>`; (iii) `post-image: <searches <d> \| looks for <name> in <d> \| reads <name>>, which leaves the post root: <place> here, <place> from the subject`, or `…, which leaves the post root: more than 40 symbolic links <here \| from the subject>` (the first; (i) over every file read, then (ii), then (iii) in the order of the places above) |
 | G4 | step 2: no word of the post command after `argv[0]` is a response file (`@` and a name, as Kiln's driver reads one) | `post-image: the command names the response file <word>, whose words slip cannot examine` |
 | G5 | step 2, tree form: the post command's map pairs (§5.1) are consistent: (a) none other than the identity has a post prefix that is empty or holds `=`; (b) when one pair's post prefix is a prefix of another's, the first applied to the second's post prefix gives the second's written prefix; (c) no `-fmacro-prefix-map=` or `-ffile-prefix-map=` of the command's own (alone, after `-Xclang` or `-Xpreprocessor`, in a `-Wp,` list) has an old prefix prefix-related to a post or written prefix of a pair other than the identity; (d) no `#line` name of the post parse begins with the post prefix of such a pair; (e), checked first: the post prefix of each pair other than the identity and the roots' is under a post root, by real paths; (f), checked last: the command's directory, and every path-bearing word with a `..`, walks names of the subject's directories that have the same kind in the post tree, and has no `..` after a component that does not exist | (a) `post-image: <word> is rewritten to <path>, which no -fmacro-prefix-map word can map back`; (b) `post-image: <word> and <word> spell the files under <post prefix> differently (<pair> and <pair>)`; (c) `post-image: <option word> maps <old>, which overlaps <prefix> of <word>; slip does not compose prefix maps`; (d) `post-image: the #line name <name> begins with <post prefix>, which the post command maps`; (e) `post-image: <word> is spelled through the subject and leaves it (<post prefix> is under no post root)`; (f) `post-image: <word, or "the directory <dir>"> walks <path>, which is <kind> in the subject and <kind> in the post tree` or `post-image: <word> has a `..` after <path>, which does not exist; slip cannot tell where it ends` |
 | O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
@@ -1272,9 +1301,9 @@ only withdraws: guard G3.
 they are UTF-8, else with each other byte as `\xNN`. The reason is then
 cut as §6 says.
 
-- **G1, L1, G4, G5 and O2** are the tree form's safety argument (§5.1, "Why
+- **G1, L1, G4, G5, G6 and O2** are the tree form's safety argument (§5.1, "Why
   a wrong `verified` cannot come of it"). With the identity image there
-  is no root: G1, L1 and G5 hold trivially, and O2 is not checked, since
+  is no root: G1, L1, G6 and G5 hold trivially, and O2 is not checked, since
   every change since the map phase is then the edit compared. G4 is
   checked with every image: Kiln's driver reads a response file from the
   disk as it is when the job runs, and nothing records what it read
@@ -1523,18 +1552,25 @@ Trace := key: KeyId, digest: digest
          refs:   list<RefAt>          ascending by offset, not overlapping
 Mark  := offset: uv                   the stream's length when the walk began to write the node
          node:   str                  the node's kind: the variant's name in Kiln's `ExprKind` or
-                                      `StmtKind`; for a unit's first mark, the name of its key kind
-         file:   bytes, line: uv, column: uv      subject path and presumed line and column of the node's
-                                                  location; empty, 0, 0 if it has none
+                                      `StmtKind`; for a unit's first mark, the name of its key kind;
+                                      `declarations` for a declarations mark (below)
+         file:   bytes, line: uv, column: uv      subject path, line and column of the node's location in
+                                                  the physical file (a `#line` directive does not
+                                                  move it); empty, 0, 0 if it has none
 RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) whose value is
          key:   KeyId                 the key of a unit of this image: a reference to it
 ```
 
 - A mark is made where the walk begins a unit (offset 0, at the unit's
   **place**, below) and where it begins a statement or an
-  expression inside one. A declaration's own rows (its type, its
-  specifiers, each redeclaration) have no mark: a difference there is at
-  the unit's mark or at the last expression before it. Types and constant
+  expression inside one, and a **declarations mark** where a
+  declaration's stream (`digest.md` §5.1) ends its `DeclNode` rows and
+  begins the rows merged over its entity's declarations (scope,
+  attributes, template maps, module rows), at that entity's place. A
+  difference in those rows is at the declarations mark: at the entity,
+  not at the redeclaration that differs. The `DeclNode` rows themselves
+  (the declaration's type, its specifiers) have no mark: a difference
+  there is at the unit's mark or at the last expression before it. Types and constant
   values are written as digests (`digest.md` §4.2) and have no mark of
   their own: a difference inside one is at the mark of the node that
   holds it. The same holds for any part of a unit the walk hashes apart
@@ -1546,6 +1582,12 @@ RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) wh
   which is also a defect of the walk to report: a unit's stream must not
   depend on when it is written. The walk that produced the digests is not
   touched by tracing.
+- A panic in the second writing withdraws places and nothing else: the
+  digests, the verdict and every finding stand; the traces made before it
+  are kept; the walk traces nothing more on that image (its state is not
+  trusted after the unwind), so the image's remaining wanted units have no
+  trace and their findings no `where` (counted:
+  `verify.traces.panicked`, §7.2, and not in `verify.traces.unstable`).
 - A content-keyed unit and the order unit have the first mark only.
 - The location of a node inside a macro expansion is that of the outermost
   expansion (as for a group's file, `digest.md` §11).
@@ -1626,7 +1668,7 @@ finding has a name.
 pub struct Mark  { pub offset: u64, pub node: &'static str, pub file: Vec<u8>, pub line: u64, pub column: u64 }
 pub struct RefAt { pub offset: u64, pub len: u64, pub key: Digest }
 pub struct Trace { pub key: Digest, pub digest: Digest, pub stream: Vec<u8>, pub marks: Vec<Mark>, pub refs: Vec<RefAt> }
-pub struct Traced { pub output: Output, pub traces: Vec<Trace> }           // traces sorted by (key, digest)
+pub struct Traced { pub output: Output, pub traces: Vec<Trace>, pub panicked: bool } // traces sorted by (key, digest)
 /// `output` is `digest(input, options)`, byte for byte; `traces` has one
 /// entry per unit whose key is in `keys` (sorted, no duplicates).
 pub fn trace(input: &Input<'_>, options: &Options<'_>, keys: &[Digest]) -> Traced;
@@ -1634,13 +1676,15 @@ pub fn trace(input: &Input<'_>, options: &Options<'_>, keys: &[Digest]) -> Trace
 // slip_cli::locate
 /// What localisation needs from one image, taken while its parse is in memory.
 pub struct Side { /* the `tu` digest; names, causes and traces of the wanted keys */ }
-impl Side { pub fn tu(&self) -> &Digest; }
+impl Side { pub fn tu(&self) -> &Digest; pub fn unstable(&self) -> u64; pub fn panicked(&self) -> bool; }
 /// One walk of `input` under `rules` for the keys of the findings to localise.
 pub fn take(input: &Input<'_>, rules: &RuleTable, keys: &[Digest]) -> Side;
 /// The keys of the first `locate` findings, sorted, no duplicates.
 pub fn wanted(findings: &[Finding], locate: usize) -> Vec<Digest>;
 /// Fills `name` and `location` of the first `locate` findings; changes no other field.
 pub fn fill(findings: &mut [Finding], locate: usize, pre: Option<&Side>, post: &Side);
+/// `verify.traces.unstable` and `verify.traces.panicked` (§7.2) of the two sides.
+pub fn unplaced(pre: Option<&Side>, post: &Side) -> (u64, u64);
 ```
 
 `pre` is `None` when step 4's parse was not reached with a finding to
@@ -1737,7 +1781,10 @@ FindingGroup := { "kind": <FindingKind by name>, "key": <id>, "name": <str>,
 - `not_verified` lists, in plan order, every selected observer that is
   neither `verified` nor `unchanged`: its state; the verdict's `reason`
   (`unverifiable`), the shard's message (`not_parsed`, `never_parsed`,
-  `failed`; empty if there is no shard) or the empty string (`mismatch`);
+  `failed`; empty if there is no shard; for a shard the report refuses
+  as not this run's, §7 and §9.3, the reason it refuses it, never the
+  shard's own message: `spec/landed/verify/WP-121.md` §4) or the empty
+  string (`mismatch`);
   and for a `mismatch` the verdict's `total`, how many of them are
   `indeterminate` or `derived_indeterminate` (from the counters of §7.2)
   and how many the verdict lists; three zeros otherwise. An observer is
@@ -1800,6 +1847,7 @@ Counters of a verify shard, added to those of the parse and of
 | `verify.exemptions.used` | exemptions that prevented a finding |
 | `verify.reparsed` | parses after the first: 0, 1 (the pre-image) or 2 (and the post-image again) |
 | `verify.traces.unstable` | units wanted for localisation whose stream, written again, did not hash to their digest (§6.1); present only when not 0 |
+| `verify.traces.panicked` | images (0, 1 or 2) whose second writing for localisation panicked: places withdrawn there, verdict and findings kept (§6.1); a defect of the walk to report; present only when not 0 |
 
 A shard without a verdict has none of them. The counters by kind are what
 `indeterminate_only` (§7) is computed from: a verdict lists only its first
@@ -2007,7 +2055,9 @@ Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
 is `spellings`, §10.4.)
 
 - `binding` is present in every shard a verify job writes, whatever the
-  parse's outcome, and is taken from `Job.post`. A shard the coordinator
+  parse's outcome, and is taken from `Job.post`. (Until the exception of
+  §9.3 is removed, a job of a tree image writes it only when the rules
+  are not empty: `spec/landed/verify/WP-121.md`.) A shard the coordinator
   wrote for a worker that produced none (status `failed`) has no
   `binding`.
 - `rule_use` is present when the outcome is `ok` and the rule table is
@@ -2097,8 +2147,10 @@ under no rule or naming a rule past the table, and one whose `spellings`
 is absent although the overlay has obligations, present although it has
 none, or refused by the fold (§10.4). A run with a tree image and no
 rule is M1's: its shards need no `binding`, and one that has a binding
-must have the run's (`spec/landed/verify/WP-070.md` §2.1). This
-exception is temporary: a verify job is to write `binding` in every
+must have the run's (`spec/landed/verify/WP-070.md` §2.1). The verify job keeps to
+it: with a tree image it writes `binding` and `rule_use` when the rules
+are not empty and neither when they are (`spec/landed/verify/WP-121.md`).
+This exception is temporary: a verify job is to write `binding` in every
 shard (§9.1), M1's `slip verify` included, after which a package of the
 coordinator's removes it and a shard without a binding is never this
 run's.
@@ -2728,7 +2780,7 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   the report only, and a later `slip verify` with the same round number
   replaces the shards. Proposed: the run record's `run` section gains
   them.
-- **The tree image rewrites commands** (§5.1). G1, L1, G4 and O2 make it
+- **The tree image rewrites commands** (§5.1). G1, L1, G6, G4 and O2 make it
   safe; how often a word it does not resolve costs an `unverifiable` on
   real build trees is to be seen on the corpus. The overlay (KF2)
   rewrites nothing. Kiln could close the two gaps L1 has: record

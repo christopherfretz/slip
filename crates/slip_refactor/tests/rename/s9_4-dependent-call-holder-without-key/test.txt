@@ -1,0 +1,4 @@
+spec: edits.md §9.4 (a replace whose holder has no key to exempt, a static_assert keyed by content: no changed entry), WP-073 part A
+from: n::f
+to: g
+kind: function

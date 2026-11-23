@@ -7,7 +7,6 @@
 use slip_kiln::kiln::ast::names::{DeclNameKind, DeclNameView};
 use slip_kiln::kiln::ast::{Ast, DeclId, QualType};
 use slip_kiln::sites::{Located, Reason};
-use slip_kiln::written;
 use slip_model::edits::subject_flags;
 
 use super::{Ctx, Written};
@@ -45,13 +44,12 @@ pub(crate) fn name_of(ast: &Ast, d: DeclId) -> Option<&[u8]> {
 
 /// Claims every declaration named like the old name that no hook settled.
 pub(crate) fn claim(ctx: &mut Ctx<'_, '_, '_>) {
-    let unit = ctx.unit;
     let names = std::mem::take(&mut ctx.named.old);
     for d in &names {
         if ctx.settled.contains(&d.decl) {
             continue;
         }
-        let o = written::origin(unit, d.decl);
+        let o = super::origin_of(ctx, d.decl);
         let Some(id) = ctx.subjects.of_decl(ctx.keys, o) else {
             ctx.claims.keep(&ctx.sites, d.name);
             continue;

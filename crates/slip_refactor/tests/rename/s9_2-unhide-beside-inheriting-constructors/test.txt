@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 fix round: an inheriting constructor (using B::B, whose shadow of B(int) D(int) hides) is another name: it is no follower and changes nothing for the idiom renamed from the base
+from: n::B::f
+to: g
+kind: function

@@ -1658,6 +1658,10 @@ has the parent `c_linkage` whatever namespace declares it (`digest.md`
 §3), so it never matches, and it is recognised by the scopes that
 enclose its declaration.
 
+A using-declaration with the target's name in the target's scope is no
+seed of either kind: it is the §9.2 follower of what it names
+(`docs/wp/WP-120.md` item 3).
+
 ### 9.2 Subjects
 
 - **Seeds**: §9.1.
@@ -1667,14 +1671,148 @@ enclose its declaration.
   across classes that no single observer need see together; reduce closes
   the seeds under the links (§5.2), so a rename of one virtual function
   renames its whole family and no other.
-- **Followers**, each with `of` the subjects it follows:
+  What a function overrides is read from the front end's record of the
+  functions each one overrides directly, never from names and
+  signatures; the functions looked at are every declaration named like
+  the old identifier and every function of that record so named (a
+  member of an instantiated class included), each taken to its origin
+  (`api.md` §5.5) as a reference to it is. A function of a family that
+  has no key cannot be a subject, so its link cannot be recorded: the
+  function at the other end is `unsupported`, and the family is refused
+  rather than split. A destructor, an operator or a conversion function
+  never arises (overriding keeps the name; a destructor is not named by
+  an identifier); were one reached, the function reaching it would be
+  `unsupported`. A covariant return or `final` changes nothing.
+- **Followers**, each with `of` the entities it follows:
   - a using-declaration that names subjects, and each using-shadow it
-    introduces (`of`: the entities named);
+    introduces whose target is a subject (`of`: the entities named). The
+    using-declaration's `of` is **every** entity it names, subject or
+    not, so that an overload set partly selected is `mixed_follower`
+    (§5.2); its name is claimed with it as the subject. **Hidden
+    shadows** (`docs/wp/WP-120.md` item 3 and its fix round): a
+    declaration that a member of the using-declaration's class hides or
+    overrides is not introduced ([namespace.udecl]/14), and the front
+    end records the shadow it still makes for it as hidden by that
+    member (`hidden_shadow`, which names the **hider**). The
+    using-declaration's `of` leaves out the targets of hidden shadows,
+    unless every shadow it makes is hidden (then it is every target). A
+    hidden shadow is a follower whether or not its target is a subject,
+    with `of` its three parties: its target, its using-declaration and
+    its hider (a party with no key makes it `unsupported`). A
+    using-declaration is looked at when it names a subject or when a
+    subject hides what it names. While the digest writes a hidden shadow
+    as a unit (`digest.md` §2.1), the rename is accepted only when all
+    three parties are renamed or none is; any mix is `mixed_follower`
+    (§5.2). The mixes, each a wrong edit the digest shows:
+    - target and hider renamed, using-declaration kept (`struct D : B {
+      using B::f; void f() override; }`, `B::f()` and `D::f()` renamed,
+      `B::f(int)` not): right in C++, but the kept using-declarator no
+      longer makes the shadow, which the post-image shows removed;
+    - using-declaration renamed, target and hider not (`struct B : A {
+      void f() override; void f(int); }; struct D : B { using B::f; void
+      f(int); }`, `A::f` renamed): the shadow of `B::f(int)` is gone;
+    - hider renamed, target not, or the reverse (`struct D : B { using
+      B::f; void f(); }`, with `D::f()` or with `B::f` renamed, neither
+      virtual): the hidden declaration becomes visible in `D`, a change
+      of the program.
+
+    The rule is decided per class from what each observer records: a
+    shadow hidden in `D` says nothing of a class `E : B` with `using
+    B::f;` and no `f()`, whose shadow of `B::f()` is not hidden and
+    puts `B::f()` in `E`'s using-declaration's `of` (`mixed_follower`
+    there: the using-declaration would have to name both names). A seed
+    at `D::f` reaches the same subjects through the link and is decided
+    the same way. When the overrider is declared before the
+    using-declaration the front end makes no shadow for the hidden
+    declaration, and the rename is accepted and verifies. What the rule
+    becomes once the digest leaves hidden shadows out is in
+    `spec/landed/edits/WP-120.md`, "For the digest". An inheriting
+    constructor's shadows (`using B::B;`) are another name and never
+    followers. A using-declaration that names a class and functions of
+    one name has both in its `of`; the class is a seed of another kind
+    when it is in the target's scope (§9.1).
+
+    A
+    using-declaration that has no key (one at block scope is no unit)
+    is no follower: its name is claimed for the subjects it names, or
+    `refuse(mixed_set)` when it also names an entity that is not one. A
+    using-declaration that introduces no shadow of its own (it repeats
+    one of its scope) is taken through the declaration it redeclares,
+    and claimed `unresolved` where the front end links none. A dependent
+    using-declaration (`using Base<T>::f;`) names nothing in its pattern
+    and its name is claimed `unresolved`; the using-declaration of an
+    instantiated class made from it, when it names a subject, is a
+    follower of what it introduces **and** of the pattern's
+    using-declaration, which this rename does not edit: with a subject
+    selected it is `mixed_follower` (`template <class U> struct Base : X
+    { void f(); }; template <class T> struct F : Base<T> { using
+    Base<T>::f; };` with `F<int>` used and `Base::f` renamed: the kept
+    name would name `X::f(int)`, which `Base<U>::f` hid). A reference
+    found through a shadow denotes its referent (§9.3);
   - a member of a class template specialisation instantiated from a
     subject, when its key has the old name (`of`: the member of the
-    template);
+    template). "Instantiated from" is the link the front end records
+    (`instantiated_from`), asked of every declaration of the member and
+    followed through the whole chain of patterns, as the digest follows
+    it (`digest.md` §3.4); `of` is the subject the member was
+    instantiated from directly. A member of an implicit or explicit
+    instantiation of the class, an explicit specialisation of a member
+    (`template <> void S<int>::f() {}`) included, is one; a member of an
+    explicit or partial specialisation of the class is not: it is
+    declared there and linked to nothing, another entity, and its names
+    are `keep`s. Such a follower's key follows the pattern member's, on
+    which the digest makes a rule indeterminate: it is `unsupported`
+    (§9.5). A name of an explicit specialisation of a member, and a
+    reference to it, are claimed for the seed (the member of the
+    template), for a static data member as for a member function: a
+    redeclaration the front end does not link is taken through its
+    entity, which it does link (`api.md` §5.5). A seed in a pattern is
+    unflagged only when every place the unit shows naming it is claimed,
+    or flags it: a friend of a member of a dependent specialisation,
+    which the front end records with no declaration, makes it
+    `unreachable`, and a member of an instantiated specialisation that
+    the front end links to no pattern makes it `unsupported` (§9.5);
   - an unnamed class or enumeration that the subject names (`digest.md`
-    §3.3, `unnamed_by`).
+    §3.3, `unnamed_by`): the class or enumeration a declaration of the
+    subject declares an object of (through pointers, references and
+    arrays), whose key is named `unnamed_by` the old identifier and has
+    the subject's parent. One whose key `Keys::key` refuses makes the
+    subject `unsupported`: whether the subject names it cannot be told.
+
+  **Templates' patterns** (`docs/wp/WP-120.md` items 1 and 2). A
+  candidate, a seed or a using-declaration declared in the pattern of a
+  class template or of a partial specialisation (as a member of it or of
+  a class nested in it: `families::in_class_pattern`) is a subject like
+  any other, not flagged; its followers are the members of the
+  specialisations instantiated from it, above, which carry those
+  followers' `unsupported` (§9.5) until `docs/wp/WP-119.md`. A family is
+  linked through the pattern: every function a link reaches is taken to
+  its origin, so an overrider of a member of an instantiated
+  specialisation (`struct D : B<int> { void f() override; }`) is linked
+  to the member of the template, and an overrider in a pattern whose
+  base is not dependent is linked by the record of the pattern's member
+  (the front end records it whether or not the template is
+  instantiated). A pattern whose base is dependent (`template <class T>
+  struct G : T { void f() override; }`) has no record until it is
+  instantiated: instantiated in the observer, the instantiation's link
+  counts for the pattern member (its origin); instantiated in no
+  observer, its member is no subject and its name is a `keep` (what the
+  rename does not see, §9.5). The using-declaration of an instantiated
+  class follows the pattern's; its shadows, which the front end does not
+  link to the pattern's, follow their targets with rules of their own.
+
+  A local class is in no class pattern for this purpose, whatever
+  encloses its function (a function template, a generic lambda, a
+  variable template's initialiser, a member function of a class
+  template; item 4): the front end links each instantiated local class's
+  member to the pattern's, its key holds the instantiated function's or
+  variable's key, which maps with the subject (below), and no
+  declaration outside the pattern can name it (an explicit instantiation
+  or specialisation names no local class). So its members need no
+  record, and the rename is right for every instantiation
+  (`wp120_local_classes_of_templates_end_to_end`: a variable template
+  and a function template, each instantiated twice, verify; the local
+  class's member left behind is a difference).
 
   Entities whose keys hold a subject's key as parent or in a
   discriminator (a function template's specialisations, local types,
@@ -1687,8 +1825,10 @@ now: `Keys::rename_rule(entity, new_name)`. For the one follower whose
 key does not hold the identifier as its name (an unnamed class's name is
 `unnamed_by` the variable's), the rule is made from the entity's `Key`
 (`Keys::key`, §9.7) with the inner name replaced: found as the key with
-`unnamed_by(new_name)`, to be called by the name it has now. A follower
-for which `Keys::key` refuses has the flag `unsupported` (§9.5).
+`unnamed_by(new_name)`, with the parent, kind and discriminator the key
+has, to be called by the name it has now. A follower for which
+`Keys::key` refuses has no key and cannot be listed: the subject it
+would follow has the flag `unsupported` instead (§9.5).
 
 ### 9.3 Written references
 
@@ -1766,6 +1906,31 @@ name token, `reason` `dependent name <old name>`. Reduce puts the key in
 key to exempt (it is keyed by content, or its key is indeterminate) gets
 no entry: the edit is claimed, and verification reports the unit.
 
+Read precisely (`docs/wp/WP-073.md`):
+
+- **Which entity a declaration or a resolution is** is decided as for a
+  written reference (§9.3): taken to its origin (`api.md` §5.5) and to
+  the digest's entity, then looked up among the observer's subjects. A
+  member of an instantiated class resolved to in row 2 is therefore the
+  member of the template, and a claim names that subject.
+- **"Every one", "none" and "mixed"** are over what this observer gives:
+  the set `S` in row 1, and in row 2 every instantiation of the pattern
+  the observer made. Two observers that instantiate differently make
+  different claims at one site, and reduce sees the disagreement (§5.4).
+- **`subjects` of the claim**: for a `replace` or a `refuse`, the subjects
+  among the entities of `S` (row 1) or among those resolved to (row 2);
+  none for a `keep` or an `unresolved`.
+- **The holder** is `Keys::unit_of` the entry's enclosing declaration
+  (the front end's innermost declaration whose extent holds the name);
+  its key is `Keys::key_id` of that unit. No entry when the name has no
+  enclosing declaration, no unit holds it, or the unit has no key. A
+  `replace` that `slip_kiln::sites` turns into a `refuse` (a name in a
+  macro body) edits nothing and gets no entry.
+- **At this pin** neither row has what it needs from the front end (the
+  join from a dependent entry to the declarations found at the
+  definition; per-specialisation entries): every dependent name spelled
+  like the old name is `unresolved` (`spec/landed/edits/WP-073.md`).
+
 This is where rename guesses, and where it leans on verification most:
 
 - A `replace` from the first row can be wrong for one instantiation: the
@@ -1791,11 +1956,35 @@ Rename sets a subject's flags (§4.1), which refuse the run (§5.2):
 | Flag | When |
 |---|---|
 | `read_only` | a declaration of the entity is in a read-only file. A function that overrides one of a library is refused this way, through its link |
-| `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a member of a class template, until the package that adds followers of specialisations lands; a follower whose rule cannot be made (§9.2); a subject whose key follows a pattern member (a function defined as a friend in an instantiated class template, `digest.md` §3.4): its rule is kept (§4.1), but a rule on an instantiated member's key makes it indeterminate |
+| `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a function of a virtual family linked to one that has no key (§9.2); a subject whose type is an unnamed class whose key cannot be computed (§9.2); a follower whose rule cannot be made (§9.2); a subject whose key follows a pattern member (a member of an instantiated specialisation of a class template, a follower of §9.2; a function defined as a friend in an instantiated class template; `digest.md` §3.4): its rule is kept (§4.1), but a rule on an instantiated member's key makes it indeterminate (`key/rule-on-instantiated-member`); every subject in a class pattern (§9.2, `families::in_class_pattern`; a candidate and a using-declaration follower included), when the unit has a member named like the old name in an instantiated specialisation of any class template (not an explicit specialisation of the class) that the front end declares and links to no pattern (a member template explicitly specialised as a template, `template <> template <class U> void S<int>::g() {}`: which member it specialises is not recorded at this pin, so neither is its class). Otherwise a subject in a class pattern, a virtual seed or candidate included (`docs/wp/WP-120.md` item 2), is not flagged: in an observer that does not instantiate the class it has no follower and nothing is refused, provided every place the observer shows naming it is claimed or flags it (§9.2) |
 | `name_taken` | a scope the entity's name enters declares an entity named `new_name`, or a macro named `new_name` is defined in the unit (the rename reads the unit's preprocessing record, and `run` refuses a unit parsed without it, §9.7). The scopes a name enters are its semantic scope and, outwards from it, every transparent one: an unscoped enumeration, an anonymous union or struct, a linkage specification, `export`, an inline namespace (in both directions: a name in an inline namespace enters the enclosing one, and an entity declared there is taken for one in the inline namespace). A block-scope `extern` declaration enters its innermost enclosing namespace. For a namespace, every part of it the observer sees; for a class, the class and its bases at any depth, read from each class's definition; and a class derived from the entity's class that declares `new_name` (it hides the renamed member). A template parameter enters no scope: one named `new_name` takes nothing. `name_taken` is what one observer sees; it is set only where the unit sees both. A declaration of `new_name` of the same kind and signature in a unit that does not see the target is caught by verification, not by the rename: the run's rules apply in every observer (`verify.md` §2.1), so there it takes the target's key and the digest shows it removed and added (`crates/slip_digest/tests/rules/verify/name-taken-in-another-unit`). One of another signature, kind or class there is no clash (an overload, or a name no unit sees with the target) and verifies equal (`name-taken-in-another-unit-overload`) |
-| `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator; a dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln) |
+| `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator; a dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln); an explicit instantiation of a member of a class template (`template void S<long>::f();`), whose name the front end records in no table at this pin (no declaration extent; the written reference of role `SpecTarget` is Kiln's stage 3): the follower it instantiates is flagged; one that follows the member's explicit specialisation is recorded nowhere at this pin: **not detected** (refused today by the follower's `unsupported`; `spec/landed/edits/WP-073.md`, fix round F3); a friend whose declarator-id names a member of a dependent specialisation (`template <class T> friend void n::S<T>::f();`), which the front end records as a type with no declaration: its name is claimed `unresolved` and every seed in a pattern is flagged (which class it names is not recorded) |
 
 and claims `refuse` (§4.2) at a reference it found and cannot edit (§2.3).
+
+**What the rename does not see.** An overrider in a class template
+whose base is dependent (`template <class T> struct G : T { void f()
+override; }`) that no observer instantiates with a base in the family
+is linked to nothing: it is no subject, and its name is claimed `keep`
+(§9.2). The rename is then wrong for every later instantiation with
+that base, and nothing reports it: a `kept` range is not residue
+(§8.4, its row), and no observer makes the instantiation that would
+differ. Where one observer instantiates the pattern and another does
+not, the first claims `replace` and the second `keep` at the same
+name: `contested` (§5.4), a refusal
+(`wp120_dependent_base_over_two_observers_is_contested_simulated`).
+The same holds of a local class deriving from `T` (§9.2: it is in no
+class pattern) in a function template that no observer instantiates
+with a base in the family (`template <class T> int t() { struct L : T
+{ void f() override {} }; ... }`), and in a member function of a class
+template that is instantiated but whose member function is never
+called with such a base (`template <class T> struct S { int t() {
+struct L : T { ... }; ... } }; S<n::B> s;`: the class is instantiated,
+the member's body is not): `L::f` is kept
+(`s9_5-not-seen-local-class-dependent-base-in-function-template`,
+`-in-member-not-called`), and two observers of which one instantiates
+it are `contested`
+(`wp120_local_class_dependent_base_over_two_observers_is_contested`).
 
 Not refused, and left to verification: a use that would resolve to
 another entity once renamed (the new name hides, or is hidden by, a

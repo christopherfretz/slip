@@ -1,0 +1,9 @@
+subjects:
+  41110bde candidate - rule=yes n::X::f()
+  599ef791 seed - rule=yes n::B::f()
+links:
+claims:
+  main.cpp:1:30+1 refuse t2 votes=1 macro_body [41110bde] macro=V@90
+  main.cpp:2:39+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:2:74+1 replace "g" t0 votes=1 none [41110bde]
+changed:

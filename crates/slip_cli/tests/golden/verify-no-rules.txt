@@ -1,0 +1,313 @@
+verified
+{
+  "kind": "SHRD",
+  "version": 1,
+  "sections": {
+    "header": {
+      "observer": "<observer>",
+      "phase": "verify",
+      "round": 1
+    },
+    "outcome": {
+      "status": "ok",
+      "errors": 0,
+      "warnings": 0,
+      "message": ""
+    },
+    "inputs": [
+      {
+        "path": "<base>/post-tree/a.cpp",
+        "size": 46,
+        "content": "fcaa5f37f18ba45758798b788b7b560ccc4b0c26449d41f6807d0ee70163334f"
+      }
+    ],
+    "counters": [
+      {
+        "name": "verify.derived.only_post",
+        "value": 0
+      },
+      {
+        "name": "verify.derived.only_pre",
+        "value": 0
+      },
+      {
+        "name": "verify.exemptions.used",
+        "value": 0
+      },
+      {
+        "name": "verify.findings",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.added",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.changed",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_changed",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_indeterminate",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.indeterminate",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.removed",
+        "value": 0
+      },
+      {
+        "name": "verify.groups.differing",
+        "value": 0
+      },
+      {
+        "name": "verify.reparsed",
+        "value": 0
+      }
+    ],
+    "verdict": {
+      "kind": "verified",
+      "pre": "<pre>",
+      "rules": "aedc08386a8631ee3dc1d4a5af74cb0588a9376c2bbd53898eeac79f381f53bf",
+      "reason": "",
+      "only_pre": 0,
+      "only_post": 0,
+      "used": [],
+      "total": 0,
+      "findings": []
+    }
+  }
+}
+
+mismatch
+{
+  "kind": "SHRD",
+  "version": 1,
+  "sections": {
+    "header": {
+      "observer": "<observer>",
+      "phase": "verify",
+      "round": 1
+    },
+    "outcome": {
+      "status": "ok",
+      "errors": 0,
+      "warnings": 0,
+      "message": ""
+    },
+    "inputs": [
+      {
+        "path": "<base>/post-tree/a.cpp",
+        "size": 46,
+        "content": "bc8bc9394daee7323c37106e8135cc256d2beda389cc43101bb0369c25a1b0e5"
+      }
+    ],
+    "counters": [
+      {
+        "name": "verify.derived.only_post",
+        "value": 0
+      },
+      {
+        "name": "verify.derived.only_pre",
+        "value": 0
+      },
+      {
+        "name": "verify.exemptions.used",
+        "value": 0
+      },
+      {
+        "name": "verify.findings",
+        "value": 1
+      },
+      {
+        "name": "verify.findings.added",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.changed",
+        "value": 1
+      },
+      {
+        "name": "verify.findings.derived_changed",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_indeterminate",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.indeterminate",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.removed",
+        "value": 0
+      },
+      {
+        "name": "verify.groups.differing",
+        "value": 1
+      },
+      {
+        "name": "verify.reparsed",
+        "value": 2
+      }
+    ],
+    "verdict": {
+      "kind": "mismatch",
+      "pre": "<pre>",
+      "rules": "aedc08386a8631ee3dc1d4a5af74cb0588a9376c2bbd53898eeac79f381f53bf",
+      "reason": "",
+      "only_pre": 0,
+      "only_post": 0,
+      "used": [],
+      "total": 1,
+      "findings": [
+        {
+          "kind": "changed",
+          "key": "d8a002ad27c3e5003b3b5e4cd4e7531a3f181c2e6a03d631cd893470373aa00e",
+          "file": "<base>/s/a.cpp",
+          "pre": "0b040be6ebd50a3662ecbc616c10ea1449cf07f5435cf3eb6fda6976dff02657",
+          "post": "d6e6247a71f57325e53a159de12723646a57110071dc92869257041c39d6dfcd",
+          "name": "f()",
+          "where": {
+            "pre": {
+              "file": "<base>/s/a.cpp",
+              "line": 1,
+              "column": 18,
+              "node": "IntegerLiteral",
+              "what": ""
+            },
+            "post": {
+              "file": "<base>/s/a.cpp",
+              "line": 1,
+              "column": 18,
+              "node": "IntegerLiteral",
+              "what": ""
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+
+diagnosed
+{
+  "kind": "SHRD",
+  "version": 1,
+  "sections": {
+    "header": {
+      "observer": "<observer>",
+      "phase": "verify",
+      "round": 1
+    },
+    "outcome": {
+      "status": "diagnosed",
+      "errors": 2,
+      "warnings": 0,
+      "message": "<base>/post-tree/a.cpp:1:10: expected expression"
+    },
+    "inputs": [
+      {
+        "path": "<base>/post-tree/a.cpp",
+        "size": 21,
+        "content": "1d2f4f314c9e5b36cd3dae3f19ba0e576ae0152a8c1c7ec763b80f50e1e3ef29"
+      }
+    ],
+    "counters": []
+  }
+}
+
+unverifiable
+{
+  "kind": "SHRD",
+  "version": 1,
+  "sections": {
+    "header": {
+      "observer": "<observer>",
+      "phase": "verify",
+      "round": 1
+    },
+    "outcome": {
+      "status": "ok",
+      "errors": 0,
+      "warnings": 0,
+      "message": ""
+    },
+    "inputs": [
+      {
+        "path": "<base>/post-tree/a.cpp",
+        "size": 46,
+        "content": "fcaa5f37f18ba45758798b788b7b560ccc4b0c26449d41f6807d0ee70163334f"
+      }
+    ],
+    "counters": [
+      {
+        "name": "verify.derived.only_post",
+        "value": 0
+      },
+      {
+        "name": "verify.derived.only_pre",
+        "value": 0
+      },
+      {
+        "name": "verify.exemptions.used",
+        "value": 0
+      },
+      {
+        "name": "verify.findings",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.added",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.changed",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_changed",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_indeterminate",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.indeterminate",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.removed",
+        "value": 0
+      },
+      {
+        "name": "verify.groups.differing",
+        "value": 0
+      },
+      {
+        "name": "verify.reparsed",
+        "value": 0
+      }
+    ],
+    "verdict": {
+      "kind": "unverifiable",
+      "pre": "0000000000000000000000000000000000000000000000000000000000000000",
+      "rules": "aedc08386a8631ee3dc1d4a5af74cb0588a9376c2bbd53898eeac79f381f53bf",
+      "reason": "pre-image: no map shard",
+      "only_pre": 0,
+      "only_post": 0,
+      "used": [],
+      "total": 0,
+      "findings": []
+    }
+  }
+}
+

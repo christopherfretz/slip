@@ -50,6 +50,15 @@ fn stdout_only() -> Io {
     Io { stdin: Stdio::null(), stdout: Stdio::piped(), stderr: Stdio::null() }
 }
 
+/// What `ulimit -v` prints in a child of this test process that nothing
+/// here capped: `unlimited`, or the KiB of a cap the test binary itself was
+/// started under (a harness may cap test binaries).
+fn inherited_cap() -> String {
+    let out = Command::new("/bin/sh").args(["-c", "ulimit -v"]).output().unwrap();
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap()
+}
+
 /// Runs `cmd` to completion and returns its stdout and status.
 fn output(cmd: &Command, limits: &Limits) -> (String, std::process::ExitStatus) {
     let mut c = Child::spawn(cmd, stdout_only(), limits).unwrap();
@@ -228,7 +237,7 @@ fn s4_address_space_cap_wraps_transparently() {
     let canon = std::fs::canonicalize(&*dir).unwrap();
     assert_eq!(out, format!("a b|it's|v=1|{}|0|307200\n", canon.display()));
     let (out, _) = output(&c, &Limits::default());
-    assert!(out.ends_with("|unlimited\n"), "{out}");
+    assert!(out.ends_with(&format!("|{}", inherited_cap())), "{out}");
     // Rounded down to whole KiB.
     let odd = Limits { address_space: Some((300 << 20) + 1023), ..Limits::default() };
     assert!(output(&c, &odd).0.ends_with("|307200\n"));
@@ -271,7 +280,8 @@ fn s4_without_sh_starts_directly() {
     let capped = Limits { address_space: Some(300 << 20), ..Limits::default() };
     let (out, status) = output(&c, &capped);
     assert!(status.success());
-    assert_eq!(out, "unlimited\n");
+    assert_eq!(out, inherited_cap());
+    assert_ne!(out, "307200\n", "the cap was not applied");
 }
 
 /// §4 "Table": a child is in the table from spawn to reap, and dropping an

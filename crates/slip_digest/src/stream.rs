@@ -5,7 +5,23 @@
 //! cannot be trusted (`spec/digest.md` §10). Nested streams (a type inside
 //! a unit) hand their cause to the stream that writes their digest
 //! ([`Stream::absorb`]).
+//!
+//! # The recorder (WP-054)
+//!
+//! A stream can be *traced* (`spec/verify.md` §6.1 "Traces"): it then
+//! keeps, beside its bytes, the offset at which the walk began each
+//! statement and expression ([`Stream::mark`], the hooks of
+//! `expr::write_node` and `stmt::node`) and the offset of each `digest`
+//! field. Only `crate::trace` makes one, after the walk, for the second
+//! writing of a unit: [`Stream::traced`] for a unit it writes itself, and
+//! [`Armed`] for the parts `demand::resolved_units` writes, where each
+//! stream made while no traced stream is open records, and each such
+//! stream hashed as a unit is kept. Every other stream, which is every
+//! stream of the ordinary walk and every sub-stream of a traced one, has
+//! no recorder: a mark is a test of an `Option` that is `None`, and no
+//! byte, no hash and no allocation depends on it.
 
+use slip_kiln::kiln::ast::DeclId;
 use slip_model::Digest;
 use slip_model::hash::tagged_digest;
 use slip_model::wire::Encoder;
@@ -14,6 +30,18 @@ use slip_model::wire::Encoder;
 use crate::Area;
 use crate::Cause;
 use crate::tables::Row;
+use crate::walk::NodeRef;
+
+/// What a mark records (WP-054): a node, or where the rows of a
+/// declaration's own begin (after its `DeclNode` rows), placed at the
+/// entity's place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hook {
+    Node(NodeRef),
+    /// The declarations of entity `e`: their rows merged over the chain
+    /// (scope, attributes, template maps, module rows).
+    Decls(DeclId),
+}
 
 /// `H("slip.unit.v1", stream)`: a unit's digest (`spec/model.md` §3,
 /// `spec/digest.md` §4).
@@ -44,13 +72,78 @@ pub(crate) struct Stream {
     /// The count the next node written first takes, from 0 at the head
     /// of the stream.
     nodes: u64,
+    /// What a traced stream records (WP-054); `None` for every other.
+    /// Never written.
+    rec: Option<Box<Recorder>>,
 }
+
+/// What a traced stream records ("The recorder" above).
+#[derive(Debug, Default)]
+pub(crate) struct Recorder {
+    /// The stream's length where the walk began each node, and the node.
+    marks: Vec<(u64, Hook)>,
+    /// The offset of each `digest` field.
+    digests: Vec<u64>,
+    /// Made by an armed stream module ([`Armed`]): when it ends, the
+    /// module may make the next one.
+    armed: bool,
+}
+
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        #[cfg(test)]
+        LIVE.with(|l| l.set(l.get() - 1));
+        if self.armed {
+            ARMING.with(|a| {
+                if a.get() == BUSY {
+                    a.set(ARMED);
+                }
+            });
+        }
+    }
+}
+
+/// The bytes of a traced stream and what it recorded.
+#[derive(Clone, Debug)]
+pub(crate) struct Recording {
+    pub bytes: Vec<u8>,
+    pub marks: Vec<(u64, Hook)>,
+    pub digests: Vec<u64>,
+}
+
+/// The states of [`ARMING`].
+const OFF: u8 = 0;
+const ARMED: u8 = 1;
+const BUSY: u8 = 2;
 
 thread_local! {
     /// The identity the next stream of this thread takes. A walk runs on
     /// one thread and its memo of back-references lives no longer than
     /// it does, so identities unique per thread are enough.
     static NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// [`OFF`] but while [`Armed`] lives: then [`ARMED`] when the next
+    /// stream made records, [`BUSY`] while the one that does is open.
+    static ARMING: std::cell::Cell<u8> = const { std::cell::Cell::new(OFF) };
+    /// The traced streams an armed module hashed as units, in order.
+    static KEPT: std::cell::RefCell<Vec<Recording>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many recorders this thread has made (`trace::tests`).
+    pub(crate) static RECORDERS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many recorders are open, and the most ever open at once.
+    static LIVE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static MAX_LIVE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether the stream module of this thread is at rest: not armed,
+/// nothing kept, no recorder open (`trace::tests`).
+#[cfg(test)]
+pub(crate) fn at_rest() -> bool {
+    ARMING.with(std::cell::Cell::get) == OFF
+        && KEPT.with(|k| k.borrow().is_empty())
+        && LIVE.with(std::cell::Cell::get) == 0
 }
 
 impl Default for Stream {
@@ -60,7 +153,62 @@ impl Default for Stream {
             n.set(id + 1);
             id
         });
-        Stream { enc: Encoder::default(), cause: None, id, nodes: 0 }
+        let rec = if ARMING.with(std::cell::Cell::get) == ARMED {
+            Some(Box::new(armed_recorder()))
+        } else {
+            None
+        };
+        Stream { enc: Encoder::default(), cause: None, id, nodes: 0, rec }
+    }
+}
+
+/// The recorder of the stream an armed module makes next ([`Armed`]).
+#[cold]
+#[inline(never)]
+fn armed_recorder() -> Recorder {
+    ARMING.with(|a| a.set(BUSY));
+    let mut r = recorder();
+    r.armed = true;
+    r
+}
+
+/// A new recorder.
+fn recorder() -> Recorder {
+    #[cfg(test)]
+    {
+        RECORDERS.with(|c| c.set(c.get() + 1));
+        LIVE.with(|l| l.set(l.get() + 1));
+        let live = LIVE.with(std::cell::Cell::get);
+        MAX_LIVE.with(|m| m.set(m.get().max(live)));
+    }
+    Recorder::default()
+}
+
+/// While it lives, the stream module of this thread is armed: each stream
+/// made while no traced stream is open records, and each such stream
+/// hashed with [`UNIT_TAG`] is kept ([`Armed::take`]). For the second
+/// writing of the units `demand::resolved_units` writes (`trace.rs`).
+pub(crate) struct Armed(());
+
+impl Armed {
+    pub(crate) fn new() -> Armed {
+        KEPT.with(|k| k.borrow_mut().clear());
+        ARMING.with(|a| a.set(ARMED));
+        Armed(())
+    }
+
+    /// The streams kept, in the order they were hashed; disarms.
+    pub(crate) fn take(self) -> Vec<Recording> {
+        let kept = KEPT.with(|k| std::mem::take(&mut *k.borrow_mut()));
+        drop(self);
+        kept
+    }
+}
+
+impl Drop for Armed {
+    fn drop(&mut self) {
+        ARMING.with(|a| a.set(OFF));
+        KEPT.with(|k| k.borrow_mut().clear());
     }
 }
 
@@ -76,6 +224,53 @@ pub(crate) struct Hashed {
 impl Stream {
     pub(crate) fn new() -> Stream {
         Stream::default()
+    }
+
+    /// A stream that records (WP-054, "The recorder" above): for the
+    /// second writing of a unit only.
+    pub(crate) fn traced() -> Stream {
+        let mut s = Stream::default();
+        if s.rec.is_none() {
+            s.rec = Some(Box::new(recorder()));
+        }
+        s
+    }
+
+    /// The hook of a node (WP-054): where the walk begins a statement or
+    /// an expression. Nothing unless the stream is traced.
+    #[inline]
+    pub(crate) fn mark(&mut self, node: NodeRef) {
+        if self.rec.is_some() {
+            self.record_mark(Hook::Node(node));
+        }
+    }
+
+    /// The hook of a declaration's own rows (WP-054): where the walk
+    /// begins the rows merged over the declarations of entity `e`, after
+    /// the `DeclNode` rows. Nothing unless the stream is traced.
+    #[inline]
+    pub(crate) fn mark_decls(&mut self, e: DeclId) {
+        if self.rec.is_some() {
+            self.record_mark(Hook::Decls(e));
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn record_mark(&mut self, node: Hook) {
+        let at = self.enc.as_bytes().len() as u64;
+        if let Some(r) = &mut self.rec {
+            r.marks.push((at, node));
+        }
+    }
+
+    /// The bytes of a traced stream and what it recorded, not hashed.
+    pub(crate) fn into_recording(self) -> Recording {
+        let Stream { enc, rec, .. } = self;
+        let (marks, digests) = rec.map_or_else(Default::default, |mut r| {
+            (std::mem::take(&mut r.marks), std::mem::take(&mut r.digests))
+        });
+        Recording { bytes: enc.into_bytes(), marks, digests }
     }
 
     /// `uv`.
@@ -105,6 +300,9 @@ impl Stream {
 
     /// `digest`.
     pub(crate) fn digest(&mut self, v: &Digest) -> &mut Self {
+        if let Some(r) = &mut self.rec {
+            r.digests.push(self.enc.as_bytes().len() as u64);
+        }
         self.enc.digest(v);
         self
     }
@@ -201,11 +399,28 @@ impl Stream {
         self.enc.as_bytes()
     }
 
-    /// `H(tag, bytes)`.
+    /// `H(tag, bytes)`. A traced stream an armed module made is kept
+    /// when hashed as a unit ([`Armed`]).
     pub(crate) fn finish(self, tag: &str) -> Hashed {
         let bytes = self.enc.as_bytes();
-        Hashed { digest: tagged_digest(tag, bytes), cause: self.cause, bytes: bytes.len() as u64 }
+        let h = Hashed {
+            digest: tagged_digest(tag, bytes),
+            cause: self.cause,
+            bytes: bytes.len() as u64,
+        };
+        if self.rec.as_ref().is_some_and(|r| r.armed) && tag == UNIT_TAG {
+            keep(self);
+        }
+        h
     }
+}
+
+/// Keeps the traced stream `s` an armed module made ([`Armed::take`]).
+#[cold]
+#[inline(never)]
+fn keep(s: Stream) {
+    let r = s.into_recording();
+    KEPT.with(|k| k.borrow_mut().push(r));
 }
 
 /// The `bit` rows of one record, gathered in row order: the first is bit

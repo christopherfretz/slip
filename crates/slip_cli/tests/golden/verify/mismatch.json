@@ -38,7 +38,22 @@
         "file": "<root>/s/u0.cpp",
         "pre": "<id>",
         "post": "<id>",
-        "where": null
+        "where": {
+          "pre": {
+            "file": "<root>/s/u0.cpp",
+            "line": 2,
+            "column": 40,
+            "node": "ImplicitCastExpr",
+            "what": ""
+          },
+          "post": {
+            "file": "<root>/s/u0.cpp",
+            "line": 2,
+            "column": 40,
+            "node": "ImplicitCastExpr",
+            "what": ""
+          }
+        }
       }
     ]
   },

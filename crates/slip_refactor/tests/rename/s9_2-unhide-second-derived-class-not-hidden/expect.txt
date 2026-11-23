@@ -1,0 +1,18 @@
+subjects:
+  3b98ec8e seed - rule=yes n::D::f()
+  498ae399 follower - rule=yes n::D::f of=3b98ec8e,599ef791,8e22d4a6
+  599ef791 candidate - rule=yes n::B::f()
+  8e22d4a6 follower - rule=yes n::D::f of=36cceb9c
+  a92935de follower - rule=yes n::E::f of=599ef791
+  f4bb2203 follower - rule=yes n::E::f of=36cceb9c,599ef791
+links:
+  3b98ec8e 599ef791
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:2:35+1 keep t0 votes=1 none
+  main.cpp:3:25+1 replace "g" t0 votes=1 none [8e22d4a6]
+  main.cpp:3:33+1 replace "g" t0 votes=1 none [3b98ec8e]
+  main.cpp:4:25+1 replace "g" t0 votes=1 none [f4bb2203]
+  main.cpp:6:21+1 replace spell(599ef791, "g") t0 votes=1 none [599ef791]
+  main.cpp:6:28+1 keep t0 votes=1 none
+changed:

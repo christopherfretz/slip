@@ -610,13 +610,11 @@ fn relocation(f: &Fixture, plan: &str, name: &str, to: &str) -> Declared {
 // relocated entities show as removed and added. One callee changed on top
 // of the relocation shows a finding that is not indeterminate.
 //
-// The run's report under rules: every observer is `failed` and the run
-// incomplete (status 4) on this base, because the verify job writes no
-// `binding` and `rule_use` for a tree image under rules, which the report
-// requires (`spec/landed/verify/WP-070.md` §2.1, A3).
-// `docs/wp/WP-074.md` item 3 writes both; then these observers are
-// `verified` and the run's verdict `verified`, and the assertions marked
-// WP-074 change.
+// The run's report under rules (WP-121 writes `binding` and `rule_use`):
+// both observers `verified`, the run `verified`, status 0, and the
+// namespace rule listed `unchecked` (spec/verify.md §9.2 "Unchecked
+// namespace rules": "the report lists it … The report's verdict is not
+// changed by it").
 #[test]
 fn s2_relocation_through_the_whole_path() {
     let f = two_units("relocation");
@@ -638,9 +636,14 @@ fn s2_relocation_through_the_whole_path() {
         assert_eq!(v.kind, VerdictKind::Verified, "{main}: {:?}", v.findings);
         assert_eq!((v.total, v.rules), (0, declared.rules_id()), "{main}");
     }
-    // WP-074: `failed` until the verify job writes `binding` and `rule_use`.
-    assert_verdict(&out, &report, "incomplete");
-    assert_eq!(states(&report), [0, 0, 0, 0, 0, 0, 2]);
+    assert_verdict(&out, &report, "verified");
+    assert_eq!(states(&report), [2, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 0"));
+    assert!(
+        out.stdout.contains("\nnot checked: agreement between observers for namespace rule 0\n"),
+        "{out:?}"
+    );
+    assert_eq!(get(&report, "agreement.unchecked").as_array().unwrap().len(), 1);
 
     // Without it: the same post-image shows the relocated entities changed.
     let (out, report) = f.verify_report(&plan, &img);
@@ -1215,11 +1218,18 @@ fn s8_8_declare_files() {
     assert_eq!(read(&f).files(), None);
     // With a rule, as real paths: `link` is `s`, given twice.
     f.write("t.txt", "changed h(int)\nrelocate old => :: fresh\n");
-    let out =
-        declare(&f, &plan, "t.txt", &["--owned", "link", "--readonly", "link/a.h", "--owned", "s"]);
+    // Given out of order: sorted.
+    let out = declare(
+        &f,
+        &plan,
+        "t.txt",
+        &["--owned", "link", "--readonly", "link/u1.cpp", "--readonly", "s/a.h", "--owned", "s"],
+    );
     assert_eq!(out.code(), Some(0), "{out:?}");
-    let files =
-        Ownership { owned: vec![real_path(&f, "s")], readonly: vec![real_path(&f, "s/a.h")] };
+    let files = Ownership {
+        owned: vec![real_path(&f, "s")],
+        readonly: vec![real_path(&f, "s/a.h"), real_path(&f, "s/u1.cpp")],
+    };
     assert_eq!(read(&f).files(), Some(&files));
 
     let _ = std::fs::remove_file(f.path("d.decl"));
@@ -1239,8 +1249,8 @@ fn s8_8_declare_files() {
 // entity only a read-only file declares. `declare` accepts the line (the
 // `DependencyEntity` error is WP-111's); its rule matches nothing, since
 // the namespace is a dependency entity: every observer mismatches, the
-// relocated entities shown as removed and added; the run reports the rule
-// unused. When WP-111 lands,
+// relocated entities shown as removed and added; the run is not verified
+// and reports the rule unused. When WP-111 lands,
 // `declare` refuses this line and this test changes.
 #[test]
 fn s2_1_rule_naming_a_dependency_entity_matches_nothing() {
@@ -1262,13 +1272,42 @@ fn s2_1_rule_naming_a_dependency_entity_matches_nothing() {
         let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
         assert_eq!(v.kind, VerdictKind::Mismatch, "{main}");
     }
-    // What verify prints on this base: every observer `failed` (WP-074
-    // item 3: no `binding`/`rule_use` under rules), the run incomplete
-    // (status 4), and the rule reported unused by the agreement.
-    assert_verdict(&out, &report, "incomplete");
-    assert_eq!(states(&report), [0, 0, 0, 0, 0, 0, 2]);
+    // The run (WP-121): both observers `mismatch`, status 1, and the rule
+    // unused, since no observer used it (spec/verify.md §9.2).
+    assert_verdict(&out, &report, "not_verified");
+    assert_eq!(states(&report), [0, 0, 2, 0, 0, 0, 0]);
     assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 1"));
     assert_eq!(out.value("unused rule"), Some("0"));
+}
+
+// spec/verify.md §2.3 "created": resolved in the post-images walked under
+// the file's rules WITH the run's files. A function added in the
+// relocated namespace has the mapped key (`old::k()`) only when its file
+// is owned; the exemption then holds at the job and both observers
+// verify. Walked with every file read-only, the key would be
+// `fresh::k()`'s and `u0` would mismatch (an added unit).
+#[test]
+fn s2_2_created_resolved_under_the_rules_and_files() {
+    let f = two_units("created-rules");
+    let plan = f.parse();
+    relocate_in_post(&f);
+    let u0 = U0.replace("old::", "fresh::");
+    f.write("post/u0.cpp", &format!("{u0}namespace fresh {{ int k() {{ return 0; }} }}\n"));
+    f.write("t.txt", "relocate old => :: fresh\ncreated fresh::k()\n");
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(out.value("created"), Some("1"));
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    f.verify(&plan, &with);
+    for (o, main) in &f.observers(&plan) {
+        let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
+        assert_eq!(v.kind, VerdictKind::Verified, "{main}: {:?}", v.findings);
+    }
 }
 
 // spec/verify.md §2.1: ownership is of real paths. The header is reached
@@ -1310,6 +1349,226 @@ fn s2_1_read_only_file_through_a_link_under_the_owned_root() {
             let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
             assert_eq!(v.kind, want, "readonly {readonly}, {main}: {:?}", v.findings);
         }
+    }
+}
+
+// spec/verify.md §5.3 G6 (review F1), through `slip declare` and `slip
+// verify`: the dependency reached through the link `s/inc -> dep`, which
+// the post tree has as a real directory, its namespace relocated too.
+// `declare --owned s --readonly s/inc` writes `dep` read-only; the verify
+// job refuses the image (`unverifiable`, with the reason) instead of
+// taking `post/inc/d.h` for an owned file. A `created` line makes
+// `declare` parse the post-image under the rule: the same guard, an input
+// error.
+#[test]
+fn g6_link_in_subject_directory_in_post_end_to_end() {
+    const DEP: &str = "#pragma once\nnamespace old {\nstruct D { int a; };\n}\n";
+    const MAIN: &str = "#include \"a.h\"\n#include \"inc/d.h\"\nint f0(old::S *s, old::D *d) { return old::g(s) + d->a; }\n";
+    let f = Fixture::new("g6");
+    f.write("s/a.h", HEADER);
+    f.write("s/dep/d.h", DEP);
+    std::os::unix::fs::symlink("dep", f.path("s/inc")).unwrap();
+    f.write("s/u0.cpp", MAIN);
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
+    f.write("post/a.h", &HEADER.replace("namespace old", "namespace fresh"));
+    f.write("post/inc/d.h", &DEP.replace("namespace old", "namespace fresh"));
+    f.write("post/u0.cpp", &MAIN.replace("old::", "fresh::"));
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s", "--readonly", "s/inc"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let d = Declared::from_bytes(&std::fs::read(f.path("d.decl")).unwrap()).unwrap();
+    assert_eq!(d.files().unwrap().readonly, [real_path(&f, "s/dep")]);
+    let reason = format!(
+        "post-image: {} stands for {}, which the subject reaches through the link {}",
+        Fixture::text(&f.path("post/inc/d.h")),
+        Fixture::text(&f.path("s/inc/d.h")),
+        Fixture::text(&f.path("s/inc"))
+    );
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    let (out, report) = f.verify_report(&plan, &with);
+    for (o, main) in &f.observers(&plan) {
+        let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
+        assert_eq!(
+            (v.kind, v.reason.as_str()),
+            (VerdictKind::Unverifiable, reason.as_str()),
+            "{main}"
+        );
+    }
+    assert_eq!(states(&report), [0, 0, 0, 0, 1, 0, 0], "{out:?}");
+
+    f.write("t.txt", "relocate old => :: fresh\ncreated fresh::D\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(3), "{out:?}");
+    assert_eq!(
+        out.stderr,
+        format!("slip: declare: {}: {reason}\n", Fixture::text(&f.path("s/u0.cpp")))
+    );
+}
+
+// G6 (iii) through the executable (the review's G6-F1 and G6-F2): the
+// post tree at `b/post`, a level below the subject `s`; `../ext` from each
+// is another directory, whose `k.h` defines another macro. Through a link
+// `inc -> ../ext` in both trees, then by `#include "../ext/k.h"`: each
+// shard `unverifiable`, the run `incomplete` (status 4), and `slip
+// declare` refuses the post-image it parses for a `created` line (status
+// 3).
+#[test]
+fn g6_route_leaving_the_root_end_to_end() {
+    for (n, include) in [(0, "inc/k.h"), (1, "../ext/k.h")] {
+        let f = Fixture::new(&format!("g6-leave-{n}"));
+        let main = format!("#include \"{include}\"\nnamespace old {{ int f() {{ return K; }} }}\n");
+        f.write("ext/k.h", "#pragma once\n#define K 1\n");
+        f.write("b/ext/k.h", "#pragma once\n#define K 1\n#define K2 1\n");
+        f.write("s/u0.cpp", &main);
+        f.write("b/post/u0.cpp", &main.replace("return K;", "return K2;").replace("old", "fresh"));
+        if n == 0 {
+            std::os::unix::fs::symlink("../ext", f.path("s/inc")).unwrap();
+            std::os::unix::fs::symlink("../ext", f.path("b/post/inc")).unwrap();
+        }
+        f.db(&["u0.cpp"]);
+        let plan = f.parse();
+        let img = ["--root", "s", "--post", "b/post"];
+        let reason = format!(
+            "post-image: looks for {include} in ., which leaves the post root: {} here, {} from \
+             the subject",
+            Fixture::text(&f.path("b/ext/k.h")),
+            Fixture::text(&f.path("ext/k.h"))
+        );
+        let (out, report) = f.verify_report(&plan, &img);
+        assert_eq!(out.code(), Some(4), "{out:?}");
+        assert_eq!(out.last_line(), "verdict incomplete", "{out:?}");
+        assert_eq!(states(&report), [0, 0, 0, 0, 1, 0, 0], "{out:?}");
+        for (o, main) in &f.observers(&plan) {
+            let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
+            assert_eq!(
+                (v.kind, v.reason.as_str()),
+                (VerdictKind::Unverifiable, reason.as_str()),
+                "{main}"
+            );
+        }
+        // A `created` line: the post-image parsed under the rules.
+        f.write("t.txt", "relocate old => :: fresh\ncreated fresh::f\n");
+        let mut extra = img.to_vec();
+        extra.extend(["--owned", "s"]);
+        let out = declare(&f, &plan, "t.txt", &extra);
+        assert_eq!(out.code(), Some(3), "{out:?}");
+        assert_eq!(
+            out.stderr,
+            format!("slip: declare: {}: {reason}\n", Fixture::text(&f.path("s/u0.cpp")))
+        );
+    }
+}
+
+// WP-121 item 5 through the executable: `slip declare` + `slip verify`.
+
+/// A fixture of `files` (the same in both trees), parsed, with `post`
+/// written over the post tree, and the declared file of `text` (`--owned
+/// s`) at `d.decl`: the plan and the image's words.
+fn declared_run(
+    name: &str,
+    files: &[(&str, &str)],
+    post: &[(&str, String)],
+    text: &str,
+) -> (Fixture, String) {
+    let f = Fixture::new(name);
+    for (rel, t) in files {
+        f.both(rel, t);
+    }
+    let mains: Vec<&str> = files
+        .iter()
+        .map(|(r, _)| *r)
+        .filter(|r| Path::new(r).extension() == Some("cpp".as_ref()))
+        .collect();
+    f.db(&mains);
+    let plan = f.parse();
+    for (rel, t) in post {
+        f.write(&format!("post/{rel}"), t);
+    }
+    f.write("t.txt", text);
+    let mut s = Vec::new();
+    let mut extra = image(&f, &mut s);
+    extra.extend(["--owned", "s"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    (f, plan)
+}
+
+/// `slip verify --declared d.decl` over the fixture's image.
+fn verify_declared(f: &Fixture, plan: &str) -> (Out, Value) {
+    let mut s = Vec::new();
+    let mut args = image(f, &mut s);
+    args.extend(["--declared", "d.decl"]);
+    f.verify_report(plan, &args)
+}
+
+// spec/verify.md §9.2, §9.3, spec/exec.md §8.7 (WP-121 item 5): a
+// namespace relocation over two observers sharing a header: both
+// `verified`, the run verified (status 0), the rule listed `unchecked`
+// ("the report lists it … The report's verdict is not changed by it").
+// The wrong edit beside it (one value changed in `u1`): that observer
+// `mismatch`, the run not verified (status 1).
+#[test]
+fn s9_3_relocation_declared_and_verified() {
+    const H: &str = "namespace old { struct S { int x; }; inline int f(S s) { return s.x; } }\n";
+    const U0: &str = "#include \"a.h\"\nint u0() { old::S s{1}; return f(s); }\n";
+    const U1: &str = "#include \"a.h\"\nint u1() { return old::f(old::S{2}); }\n";
+    for wrong in [false, true] {
+        let fresh = |s: &str| s.replace("old", "fresh");
+        let u1 = if wrong { fresh(U1).replace("S{2}", "S{3}") } else { fresh(U1) };
+        let (f, plan) = declared_run(
+            &format!("reloc-{wrong}"),
+            &[("a.h", H), ("u0.cpp", U0), ("u1.cpp", U1)],
+            &[("a.h", fresh(H)), ("u0.cpp", fresh(U0)), ("u1.cpp", u1)],
+            "relocate old => :: fresh\n",
+        );
+        let (out, report) = verify_declared(&f, &plan);
+        if wrong {
+            assert_verdict(&out, &report, "not_verified");
+            assert_eq!(states(&report), [1, 0, 1, 0, 0, 0, 0], "{out:?}");
+        } else {
+            assert_verdict(&out, &report, "verified");
+            assert_eq!(states(&report), [2, 0, 0, 0, 0, 0, 0], "{out:?}");
+        }
+        assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 0"));
+        assert!(
+            out.stdout
+                .contains("\nnot checked: agreement between observers for namespace rule 0\n"),
+            "{out:?}"
+        );
+    }
+}
+
+// spec/verify.md §9.2 (WP-121 item 5): a rename (`relocate S => :: T`, a
+// rule of kind `class`) over two observers, `u1` declaring its own `S`
+// and not edited: each observer `verified`, `u1` stale for the rule
+// ("A stale observer is one finding of the run"), the run not verified
+// (status 1). The wrong edit beside it: `u0` `mismatch`.
+#[test]
+fn s9_2_rename_declared_with_a_stale_observer() {
+    const U0: &str = "#include \"a.h\"\nint u0() { S s{1}; return s.x; }\n";
+    const U1: &str = "struct S { int y; };\nint u1() { S s{2}; return s.y; }\n";
+    for wrong in [false, true] {
+        let u0 = U0.replace("S s", "T s");
+        let u0 = if wrong { u0.replace("{1}", "{3}") } else { u0 };
+        let (f, plan) = declared_run(
+            &format!("rename-{wrong}"),
+            &[("a.h", "struct S { int x; };\n"), ("u0.cpp", U0), ("u1.cpp", U1)],
+            &[("a.h", "struct T { int x; };\n".to_owned()), ("u0.cpp", u0)],
+            "relocate S => :: T\n",
+        );
+        let (out, report) = verify_declared(&f, &plan);
+        assert_verdict(&out, &report, "not_verified");
+        let want = if wrong { [1, 0, 1, 0, 0, 0, 0] } else { [2, 0, 0, 0, 0, 0, 0] };
+        assert_eq!(states(&report), want, "{out:?}");
+        assert_eq!(out.value("agreement"), Some("rules 1 stale 1 unused 0"));
+        let u1 = Fixture::text(&f.path("s/u1.cpp"));
+        assert!(out.stdout.contains(&format!("\nstale rule 0 direct 1 {u1}\n")), "{out:?}");
     }
 }
 

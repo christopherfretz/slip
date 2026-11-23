@@ -1,0 +1,4 @@
+spec: edits.md §9.5 what the rename does not see, WP-120 fix round F4: a local class deriving from T in a function template instantiated nowhere with a base in the family: L::f is no subject, its name is kept
+from: n::B::f
+to: g
+kind: function

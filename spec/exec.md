@@ -1452,11 +1452,39 @@ as a `DECL` container to `--out`.
 - The store is opened shared; no shard is read or written.
 - For each selected observer, in plan order: the pre-image is parsed and
   its unit records taken (`slip_digest::records`), with no rules; if the
-  text has a `relocate` with a parent, or a `created` line, the
-  post-image is parsed with no rules; if it has a `created` line, the
+  text has a `relocate` with a parent, the post-image is parsed with no
+  rules (a `created` line is resolved only in the records under the
+  rules, `spec/verify.md` §2.3); if it has a `created` line, the
   post-image is parsed again with the rules the `relocate` lines gave and
   the run's files, each buffer decided by the subject path of its real
-  path as the verify job decides it (`spec/verify.md` §2.1).
+  path as the verify job decides it (`spec/verify.md` §2.1). Every
+  post-image parse of `declare` and `units --post-image` with an image
+  other than the identity is checked by the guards of the verify job
+  that need only that parse, in its order: G1, L1, G4, G5 and G6
+  (`spec/verify.md` §5.3); a failure is an input error, `slip:
+  <command>: <main file>: <the guard's reason>`.
+  Why these, and why not O2: what the two commands take from the
+  post-image (its names, and the `created` keys, decided by ownership
+  of each file's subject path) is right only if the parse saw what the
+  subject's edited tree would show, which G1, L1, G5 and G6 establish
+  for the verify job (`spec/verify.md` §5.1, "Why a wrong `verified`
+  cannot come of it"). Without them, a post tree that reached into the
+  subject (G1, L1), mapped a spelling wrongly (G5), stood for a subject
+  path through other links (G6 (i), (ii)), or found a file beside itself
+  that is not beside the subject (G6 (iii)) would give the names and
+  keys of another tree. The layout that would mislead `created`: a
+  subject whose `inc` is a link to `dep`, `dep` read-only, and a post
+  tree that copied `inc` as a directory; the post file `post/inc/d.h`
+  stands for `s/inc/d.h`, under no read-only entry, and the entities of
+  `dep`, renamed by the edit, would be written `created`. O2 holds by
+  construction: the two commands parse the pre-image themselves, in the
+  same run and from the same files, with no map phase to drift from.
+  With the identity image no guard is run: G1, L1, G5 and G6 hold
+  trivially there, and G4 concerns a response file read after the map
+  phase, which these commands do not have. A declaration is a claim in
+  any case: `slip verify` runs every guard again on its own parses, so
+  a guard these commands did not run could make a run `incomplete`,
+  never wrongly `verified`.
   An image of an observer that does not parse `ok` contributes no record
   and is a warning: `slip: warning: declare: <main file>: the <pre|post>-image is <status>`.
 - The records of all selected observers together are the sets of

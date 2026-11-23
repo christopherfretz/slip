@@ -7,6 +7,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use slip_digest::records::Record;
+use slip_model::Digest;
 use slip_model::digests::GroupClass;
 use slip_model::keys::RuleTable;
 
@@ -33,26 +34,29 @@ fn units(a: &UnitsArgs, out: &mut dyn Write, err: &mut dyn Write) -> commands::R
             merged.add(records);
         }
     }
-    let mut records: Vec<Record> = merged
+    let records: Vec<Record> = merged
         .records
         .into_iter()
         .filter(|r| {
             a.matches.is_empty() || a.matches.iter().any(|m| contains(r.name.as_bytes(), m))
         })
         .collect();
-    records.sort_by(|x, y| (&x.name, &x.id).cmp(&(&y.name, &y.id)));
-    // One line per record; records of one `KeyId` from several observers
-    // are one line (two records that differ only in what the line does not
-    // show print the same line once).
-    let mut last: Option<String> = None;
-    for r in &records {
-        let line = line(r);
-        if last.as_ref() != Some(&line) {
-            let _ = writeln!(out, "{line}");
-            last = Some(line);
-        }
+    for line in lines(&records) {
+        let _ = writeln!(out, "{line}");
     }
     Ok(status::OK)
+}
+
+/// The lines of `records`, sorted by `(name, key)`, then by the line, so
+/// that equal lines are adjacent: records of one `KeyId` can differ in what
+/// the line shows (an `i` from one observer, `-` from another) and would
+/// otherwise interleave. Each line once.
+fn lines(records: &[Record]) -> Vec<String> {
+    let mut lines: Vec<(&str, Digest, String)> =
+        records.iter().map(|r| (r.name.as_str(), r.id, line(r))).collect();
+    lines.sort();
+    lines.dedup();
+    lines.into_iter().map(|(_, _, line)| line).collect()
 }
 
 /// `<key, 16 hexadecimal digits> <kind> <declared|derived|tu> <flags> <name>`
@@ -71,4 +75,42 @@ fn line(r: &Record) -> String {
     };
     let key = r.id.to_string();
     format!("{} {} {class} {flags} {}", &key[..16], r.kind.name(), escape(r.name.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use slip_model::keys::KeyKind;
+
+    use super::*;
+
+    fn record(id: u8, name: &str, indeterminate: bool) -> Record {
+        Record {
+            id: Digest([id; 32]),
+            key: None,
+            kind: KeyKind::Function,
+            class: GroupClass::Declared,
+            name: name.to_owned(),
+            indeterminate,
+        }
+    }
+
+    // §8.9 (review F4): records of one id with different flags, merged from
+    // several observers in an order that interleaves them under `(name,
+    // id)`: each line is printed once, the equal lines adjacent.
+    #[test]
+    fn s8_9_equal_lines_once() {
+        let records = [
+            record(1, "f()", false),
+            record(1, "f()", true),
+            record(1, "f()", false),
+            record(2, "f()", false),
+            record(1, "f()", true),
+        ];
+        let got = lines(&records);
+        assert_eq!(got.len(), 3, "{got:?}");
+        let mut unique = got.clone();
+        unique.dedup();
+        assert_eq!(unique, got);
+        assert!(got[0].starts_with("0101010101010101 ") && got[2].starts_with("0202020202020202 "));
+    }
 }

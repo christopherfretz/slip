@@ -1,0 +1,5 @@
+spec: edits.md §9.2 followers (a using-declaration at namespace scope and its shadow: followers of the subject)
+spec: edits.md §9.3 row 6 (the using-declaration's name: literal); a call found through the shadow (via_using): spelled for the referent
+from: n::f
+to: g
+kind: function

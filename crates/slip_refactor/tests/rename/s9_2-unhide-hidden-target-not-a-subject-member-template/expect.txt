@@ -1,0 +1,17 @@
+subjects:
+  0c083ef3 seed - rule=yes n::A::f()
+  498ae399 follower - rule=yes n::D::f of=599ef791
+  599ef791 candidate - rule=yes n::B::f()
+  8e22d4a6 follower - rule=yes n::D::f of=599ef791
+  a444fbed follower - rule=yes n::D::f of=8e22d4a6,9e349e96,c85310a7
+links:
+  0c083ef3 599ef791
+claims:
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [0c083ef3]
+  main.cpp:3:21+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:3:59+1 keep t0 votes=1 none
+  main.cpp:4:25+1 replace "g" t0 votes=1 none [8e22d4a6]
+  main.cpp:4:52+1 keep t0 votes=1 none
+  main.cpp:6:21+1 replace spell(599ef791, "g") t0 votes=1 none [599ef791]
+  main.cpp:6:28+1 keep t0 votes=1 none
+changed:

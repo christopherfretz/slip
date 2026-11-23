@@ -1,0 +1,4 @@
+spec: edits.md §9.3 (a namespace-scope redeclaration of a friend the class template defines is claimed for the same subject whether it follows or precedes the instantiation: origin_of takes the entity for variables only), WP-073 fix round F4
+from: n::f
+to: g
+kind: function

@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (an explicit specialisation of the class declares its own f: another entity, linked to nothing: keep), WP-073 part C
+from: n::S::f
+to: g
+kind: function

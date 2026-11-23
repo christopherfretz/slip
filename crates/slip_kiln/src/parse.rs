@@ -80,6 +80,194 @@ impl TokenStarts {
     }
 }
 
+/// The tokens of a unit as Kiln's lexer sees them: [`Unit::token_end`] and
+/// [`Unit::is_token_start`] on a value that is `Sync` ([`Unit::tokens`]).
+/// It borrows the unit; the token starts it lexes are kept in the unit.
+#[derive(Clone, Copy)]
+pub struct Tokens<'u> {
+    sm: &'u SourceManager,
+    interner: &'u Interner,
+    lex: LexOptions,
+    starts: &'u TokenStarts,
+}
+
+impl std::fmt::Debug for Tokens<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens").finish_non_exhaustive()
+    }
+}
+
+impl<'u> Tokens<'u> {
+    /// The unit's source manager.
+    pub fn sm(&self) -> &'u SourceManager {
+        self.sm
+    }
+
+    /// [`Unit::token_end`].
+    pub fn token_end(&self, at: Loc) -> Option<Loc> {
+        crate::kiln::lex::token_end(self.sm, self.interner, at, self.lex)
+    }
+
+    /// [`Unit::is_token_start`].
+    pub fn is_token_start(&self, at: Loc) -> bool {
+        let at = if at.is_macro() { self.sm.spelling_loc(at) } else { at };
+        if !at.is_valid() || at.is_macro() {
+            return false;
+        }
+        let Some((file, pos)) = self.sm.offset_of(at) else { return false };
+        self.starts.of(file, || self.lex_starts(file)).binary_search(&pos).is_ok()
+    }
+
+    /// The kinds of the tokens around bytes `lo..hi` of `file`, as Kiln's
+    /// lexer lexes the buffer from its start (comments skipped): the last
+    /// token that starts before `lo`, and the first that starts at or
+    /// after `hi`. `None` at either end of the buffer.
+    pub fn kinds_around(
+        &self,
+        file: FileId,
+        lo: u32,
+        hi: u32,
+    ) -> (Option<crate::kiln::lex::TokKind>, Option<crate::kiln::lex::TokKind>) {
+        let starts = self.starts.of(file, || self.lex_starts(file));
+        let before = starts.partition_point(|&s| s < lo).checked_sub(1).map(|i| starts[i]);
+        let after = starts.get(starts.partition_point(|&s| s < hi)).copied();
+        (before.map(|s| self.kind_at(file, s)), after.map(|s| self.kind_at(file, s)))
+    }
+
+    /// The kind of the token at `at`, a token's location (a macro
+    /// location is lexed where it is spelled). `None` when `at` is not
+    /// the start of a token Kiln's lexer finds.
+    pub fn kind_of(&self, at: Loc) -> Option<crate::kiln::lex::TokKind> {
+        if !self.is_token_start(at) {
+            return None;
+        }
+        let at = if at.is_macro() { self.sm.spelling_loc(at) } else { at };
+        let (file, pos) = self.sm.offset_of(at)?;
+        Some(self.kind_at(file, pos))
+    }
+
+    /// The kinds of the tokens just before `first` and just after `end`
+    /// (a token's location and a token's exclusive end) in the token
+    /// stream the parser read, after macro expansion: Kiln's expansion
+    /// entries (`SourceManager::expansion_info`) are followed outward
+    /// from a location that begins (or an end that ends) its entry, as
+    /// Kiln's `file_loc_at_macro_start` and `file_loc_at_macro_end` do,
+    /// to the parameter an argument replaced or the invocation a body
+    /// replaced; elsewhere the neighbour is the token beside the spelled
+    /// token. `None` at an end where that cannot be known: a neighbour
+    /// that is a macro parameter's replacement (the spelled neighbour in
+    /// the body is then the parameter's name, an identifier, which no
+    /// caller takes for punctuation), an argument split over several
+    /// entries, an unknown location, a buffer's end.
+    pub fn expanded_kinds_around(
+        &self,
+        first: Loc,
+        end: Loc,
+    ) -> (Option<crate::kiln::lex::TokKind>, Option<crate::kiln::lex::TokKind>) {
+        (self.expanded_before(first), self.expanded_after(end))
+    }
+
+    /// The bound on macro nesting the two walks follow.
+    const EXPANSION_DEPTH: usize = 1024;
+
+    /// [`Tokens::expanded_kinds_around`] before `at`.
+    fn expanded_before(&self, mut at: Loc) -> Option<crate::kiln::lex::TokKind> {
+        use crate::kiln::source::ExpansionKind;
+        for _ in 0..Self::EXPANSION_DEPTH {
+            if !at.is_macro() {
+                let (file, pos) = self.sm.offset_of(at)?;
+                return self.kinds_around(file, pos, pos).0;
+            }
+            let e = self.sm.expansion_info(at)?;
+            if at != e.base {
+                // Inside the entry: the token spelled before it, which the
+                // entry holds too (its spelling is one run).
+                let (file, pos) = self.sm.offset_of(self.sm.spelling_loc(at))?;
+                let lo = pos.checked_sub(at.to_raw() - e.base.to_raw())?;
+                let starts = self.starts.of(file, || self.lex_starts(file));
+                let i = starts.partition_point(|&s| s < pos).checked_sub(1)?;
+                return (starts[i] >= lo).then(|| self.kind_at(file, starts[i]));
+            }
+            if e.kind == ExpansionKind::MacroArg
+                && let Some(prev) = e.base.to_raw().checked_sub(1).map(Loc::from_raw)
+                && self.sm.expansion_info(prev).is_some_and(|p| p.expansion.lo == e.expansion.lo)
+            {
+                // An argument continued from the previous entry.
+                return None;
+            }
+            // The first token of an argument stands where its parameter
+            // was; of a body, where its invocation was.
+            at = e.expansion.lo;
+        }
+        None
+    }
+
+    /// [`Tokens::expanded_kinds_around`] after `end`.
+    fn expanded_after(&self, mut end: Loc) -> Option<crate::kiln::lex::TokKind> {
+        use crate::kiln::source::ExpansionKind;
+        for _ in 0..Self::EXPANSION_DEPTH {
+            if !end.is_macro() {
+                let (file, pos) = self.sm.offset_of(end)?;
+                return self.kinds_around(file, pos, pos).1;
+            }
+            // An exclusive end belongs to the entry of its last byte.
+            let e = self.sm.expansion_info(Loc::from_raw(end.to_raw().checked_sub(1)?))?;
+            let last = e.base.with_offset(e.len);
+            if end != last {
+                let (file, pos) = self.sm.offset_of(self.sm.spelling_loc(end))?;
+                let hi = pos + (last.to_raw() - end.to_raw());
+                let starts = self.starts.of(file, || self.lex_starts(file));
+                let next = *starts.get(starts.partition_point(|&s| s < pos))?;
+                return (next < hi).then(|| self.kind_at(file, next));
+            }
+            if e.kind == ExpansionKind::MacroArg
+                && let Some(next) = last.to_raw().checked_add(1).map(Loc::from_raw)
+                && self.sm.expansion_info(next).is_some_and(|n| n.expansion.lo == e.expansion.lo)
+            {
+                // An argument continued in the next entry.
+                return None;
+            }
+            end = e.expansion.hi;
+        }
+        None
+    }
+
+    /// The kind of the token that starts at byte `at` of `file` (a start
+    /// of [`Tokens::lex_starts`]).
+    fn kind_at(&self, file: FileId, at: u32) -> crate::kiln::lex::TokKind {
+        use crate::kiln::lex::{LexMode, Lexer};
+        let len = u32::try_from(self.sm.text(file).len()).unwrap_or(u32::MAX);
+        let mut o = self.lex;
+        o.keep_comments = false;
+        let mut lx =
+            Lexer::new_in_range(self.sm, self.interner, file, at..len, self.sm.loc(file, 0), o);
+        lx.set_mode(LexMode::Normal);
+        lx.next().kind
+    }
+
+    /// The offsets of the tokens of `file`, lexed from its start.
+    fn lex_starts(&self, file: FileId) -> Vec<u32> {
+        use crate::kiln::lex::{LexMode, Lexer, TokKind};
+        let len = u32::try_from(self.sm.text(file).len()).unwrap_or(u32::MAX);
+        let base = self.sm.loc(file, 0);
+        let mut o = self.lex;
+        o.keep_comments = false;
+        let mut lx = Lexer::new_in_range(self.sm, self.interner, file, 0..len, base, o);
+        lx.set_mode(LexMode::Normal);
+        let mut out = Vec::new();
+        loop {
+            let t = lx.next();
+            if t.kind == TokKind::Eof {
+                break;
+            }
+            if let Some(d) = self.sm.same_entry_distance(base, t.span.lo) {
+                out.push(d);
+            }
+        }
+        out
+    }
+}
+
 /// The finished front end of one observer, as the closure of
 /// [`parse_observer_with`] sees it: valid inside the call only.
 ///
@@ -179,7 +367,17 @@ impl<'r> Unit<'r> {
     /// at `at`, and for a macro location whose token would end outside
     /// its own expansion entry).
     pub fn token_end(&self, at: Loc) -> Option<Loc> {
-        crate::kiln::lex::token_end(self.sm, self.interner, at, self.lex)
+        self.tokens().token_end(at)
+    }
+
+    /// What [`Unit::token_end`] and [`Unit::is_token_start`] read, as a
+    /// value that is `Sync` (a `Unit` is not: its preprocessing record
+    /// holds `Rc`s), for a reader that outlives the closure's borrow of
+    /// the preprocessor but not the unit (`slip_script`'s subject, work
+    /// package WP-086). The same two functions; the token starts it lexes
+    /// are the unit's.
+    pub fn tokens(&self) -> Tokens<'_> {
+        Tokens { sm: self.sm, interner: self.interner, lex: self.lex, starts: &self.token_starts }
     }
 
     /// Whether a token of the buffer starts at `at` as Kiln's lexer lexes
@@ -195,34 +393,7 @@ impl<'r> Unit<'r> {
     /// preprocessor lexes a header name, which normal mode does not.
     /// Each buffer is lexed once per unit, when first asked about.
     pub fn is_token_start(&self, at: Loc) -> bool {
-        let at = if at.is_macro() { self.sm.spelling_loc(at) } else { at };
-        if !at.is_valid() || at.is_macro() {
-            return false;
-        }
-        let Some((file, pos)) = self.sm.offset_of(at) else { return false };
-        self.token_starts.of(file, || self.lex_starts(file)).binary_search(&pos).is_ok()
-    }
-
-    /// The offsets of the tokens of `file`, lexed from its start.
-    fn lex_starts(&self, file: FileId) -> Vec<u32> {
-        use crate::kiln::lex::{LexMode, Lexer, TokKind};
-        let len = u32::try_from(self.sm.text(file).len()).unwrap_or(u32::MAX);
-        let base = self.sm.loc(file, 0);
-        let mut o = self.lex;
-        o.keep_comments = false;
-        let mut lx = Lexer::new_in_range(self.sm, self.interner, file, 0..len, base, o);
-        lx.set_mode(LexMode::Normal);
-        let mut out = Vec::new();
-        loop {
-            let t = lx.next();
-            if t.kind == TokKind::Eof {
-                break;
-            }
-            if let Some(d) = self.sm.same_entry_distance(base, t.span.lo) {
-                out.push(d);
-            }
-        }
-        out
+        self.tokens().is_token_start(at)
     }
 
     /// The main file, once the front end entered it.
