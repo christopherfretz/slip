@@ -696,8 +696,10 @@ mod tests {
         // a statement expression. Each nesting is a closure's stream and
         // its call operator's, at least one level of DEPTH_LIMIT, so at
         // most DEPTH_LIMIT nestings: measured per nesting, below the limit.
-        let lambda_shapes: [(&str, &str, &str); 2] =
-            [("lambda", "[&] { ", "}(); "), ("statement-expression lambda", "({ [&] { ", "}(); }); ")];
+        let lambda_shapes: [(&str, &str, &str); 2] = [
+            ("lambda", "[&] { ", "}(); "),
+            ("statement-expression lambda", "({ [&] { ", "}(); }); "),
+        ];
         let mut worst_lambda = 0;
         for (name, open, close) in lambda_shapes {
             const LDEEP: usize = 40;

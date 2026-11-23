@@ -238,12 +238,14 @@ impl Walk<'_> {
         // A key does not depend on the unit that asks for it: the unit's
         // local state is put aside (`Walk::in_key`).
         let saved = self.take_unit();
+        let types = self.take_types();
         self.in_key += 1;
         // Read from the representative: Kiln's first declaration may be
         // one an instantiation made outside its class, whose template head
         // is the instantiation's (WP-032).
         let computed = self.compute_key(self.representative(e));
         self.in_key -= 1;
+        self.restore_types(types);
         self.unit = saved;
         let res = match computed {
             Ok((key, cause)) => {
@@ -275,9 +277,11 @@ impl Walk<'_> {
             return None;
         }
         let (saved, bytes) = (self.take_unit(), self.bytes);
+        let types = self.take_types();
         self.in_key += 1;
         let computed = self.compute_key(self.representative(e));
         self.in_key -= 1;
+        self.restore_types(types);
         self.unit = saved;
         self.bytes = bytes;
         self.leave();
@@ -699,7 +703,9 @@ impl Walk<'_> {
     fn entity_name(&mut self, e: DeclId) -> Result<(Name, Option<Cause>), Option<Cause>> {
         // A local type is `local(n)`, whatever its name (digest §4.3).
         if crate::local::is_local_type(self, e) {
-            return crate::local::type_number(self, e).map(|n| (Name::Local(n), None)).map_err(Some);
+            return crate::local::type_number(self, e)
+                .map(|n| (Name::Local(n), None))
+                .map_err(Some);
         }
         if let Some(named) = self.plain_name(e).map_err(Some)? {
             return Ok(named);

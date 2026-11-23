@@ -30,7 +30,11 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
         .map(|u| {
             let name = match u.entity {
                 Some(e) => {
-                    let mut name = local_scoped(w, u.read.unwrap_or(e), entity_name(w.ast, u.read.unwrap_or(e), u.kind));
+                    let mut name = local_scoped(
+                        w,
+                        u.read.unwrap_or(e),
+                        entity_name(w.ast, u.read.unwrap_or(e), u.kind),
+                    );
                     // An entity Kiln prints without a name: its ordinal
                     // (digest §3.3) when it has one.
                     if name.is_empty() || name.ends_with("::") {

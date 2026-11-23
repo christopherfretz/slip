@@ -28,7 +28,10 @@ fn chained(n: usize) -> String {
 fn returning(n: usize) -> String {
     let mut s = String::from("auto f0() { return [] { return 0; }; }\n");
     for i in 1..n {
-        s.push_str(&format!("auto f{i}() {{ return [p = f{}()] {{ return p() + 1; }}; }}\n", i - 1));
+        s.push_str(&format!(
+            "auto f{i}() {{ return [p = f{}()] {{ return p() + 1; }}; }}\n",
+            i - 1
+        ));
     }
     s
 }
@@ -123,7 +126,11 @@ fn nested_lambdas_reach_the_depth_limit() {
     // nested closures named from another unit.
     let src = format!("{}auto g() {{ return f(); }}\n", nested(150));
     let (other, _, _) = digest(&src);
-    assert!(hard(&other).iter().all(|c| *c == Cause::Unaccounted("walk/depth")), "{:?}", hard(&other));
+    assert!(
+        hard(&other).iter().all(|c| *c == Cause::Unaccounted("walk/depth")),
+        "{:?}",
+        hard(&other)
+    );
 }
 
 /// `auto f() { return [] { return [] { … return [] {}; }(); }(); }`: `f`
@@ -140,5 +147,8 @@ fn the_innermost_closure_named_from_another_unit() {
     );
     let (out, _, _) = digest(&src);
     let hard = hard(&out);
-    assert!(!hard.is_empty() && hard.iter().all(|c| *c == Cause::Unaccounted("walk/depth")), "{hard:?}");
+    assert!(
+        !hard.is_empty() && hard.iter().all(|c| *c == Cause::Unaccounted("walk/depth")),
+        "{hard:?}"
+    );
 }

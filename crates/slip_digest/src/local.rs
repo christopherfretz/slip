@@ -458,7 +458,11 @@ pub(crate) fn number_all(w: &mut Walk<'_>) {
         if let Ok(o) = owner_of(w, d) {
             let _ = numbering(w, o);
         }
-        let op = ast.decls.record(d).and_then(|r| r.lambda).and_then(|l| ast.exprs.lambdas.get(l).call_op);
+        let op = ast
+            .decls
+            .record(d)
+            .and_then(|r| r.lambda)
+            .and_then(|l| ast.exprs.lambdas.get(l).call_op);
         if let Some(op) = op {
             let e = w.entity(op);
             let _ = numbering(w, e);
@@ -630,7 +634,10 @@ pub(crate) fn ordinal(w: &mut Walk<'_>, d: DeclId) -> u64 {
 /// written: `None` for `Ref::local` (the stream is its unit's, or no
 /// unit's), else `Ref::outer`'s owner key, index and the key's cause
 /// (digest §4.3 "Local objects of another unit").
-pub(crate) fn outer(w: &mut Walk<'_>, d: DeclId) -> Option<Result<(Digest, u64, Option<Cause>), Cause>> {
+pub(crate) fn outer(
+    w: &mut Walk<'_>,
+    d: DeclId,
+) -> Option<Result<(Digest, u64, Option<Cause>), Cause>> {
     let holder = w.unit.local.holder?;
     let u = unit_of(w, d)?;
     if u == w.entity(holder) {
@@ -678,7 +685,7 @@ fn direct_param(w: &Walk<'_>, o: DeclId, d: DeclId) -> Option<u64> {
 ///
 /// A variable, parameter, binding or label writes its ordinal and then
 /// its stream (§5.1); a block-scope variable with linkage a `ref`, and a
-/// block-scope function a `ref` and the default arguments it holds; a
+/// block-scope function a `ref` and what its parameters hold; a
 /// `static_assert`, a `consteval` block, a template parameter and a
 /// lifetime-extended temporary their stream, with no ordinal (§9, §5.2
 /// "parent"); a typedef, alias, using-declaration, using-directive or
@@ -866,10 +873,12 @@ fn unsupported(s: &mut Stream, row: &'static str) {
     s.uv(0).indeterminate(Cause::Unsupported(row));
 }
 
-/// The default arguments a block-scope function declaration `d` holds,
-/// after its `ref`: `count`, then one `child?` per parameter. They are
-/// that declaration's own ([dcl.fct.default]/4), which the entity's unit
-/// leaves out (`spec/landed/digest-kinds/WP-026.md`, an addition to §2.4).
+/// What the parameters of a block-scope function declaration `d` hold,
+/// after its `ref`: `count`, then per parameter one `child?`, its default
+/// argument, and its attributes and annotations (`attrs::own_attrs`).
+/// They are that declaration's own ([dcl.fct.default]/4), which the
+/// entity's unit leaves out (`spec/landed/digest-kinds/WP-026.md` and
+/// `WP-100.md`, additions to §2.4).
 fn block_defaults(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let ast = w.ast;
     let params: Vec<DeclId> = ast
@@ -881,6 +890,9 @@ fn block_defaults(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     for p in params {
         let default = ast.decls.param(p).and_then(|x| x.default_arg);
         crate::expr::child_opt(w, s, default);
+        // Its attributes and annotations, which are not the entity's
+        // either (`spec/landed/digest-kinds/WP-100.md`).
+        crate::attrs::own_attrs(w, s, p);
     }
 }
 
@@ -996,7 +1008,8 @@ mod tests {
 
     // digest-kinds §2.4: a block-scope extern variable writes a `ref`; a
     // block-scope function a `ref`, then a count and one `child?` per
-    // parameter: the defaults that declaration holds (WP-026).
+    // parameter, then its attributes and annotations: what that
+    // declaration holds (WP-026, WP-100).
     #[test]
     fn a_block_scope_entity_with_linkage_is_a_ref() {
         let src = "void h(int, int); extern int v;\n\
@@ -1007,24 +1020,39 @@ mod tests {
             w.write_ref(&mut want, v);
             assert_eq!(write(w, v).as_bytes(), want.as_bytes());
             let h = *named(w, "h", DeclKind::Function).last().expect("the block-scope h");
-            let params: Vec<_> = w
-                .ast
-                .lists
-                .iter::<DeclId>(w.ast.decls.function(h).expect("h").params)
-                .collect();
+            let params: Vec<_> =
+                w.ast.lists.iter::<DeclId>(w.ast.decls.function(h).expect("h").params).collect();
             let second = w.ast.decls.param(params[1]).and_then(|p| p.default_arg);
             assert!(second.is_some());
             let mut want = Stream::new();
             w.write_ref(&mut want, h);
             want.count(2);
             crate::expr::child_opt(w, &mut want, None);
+            crate::attrs::own_attrs(w, &mut want, params[0]);
             crate::expr::child_opt(w, &mut want, second);
+            crate::attrs::own_attrs(w, &mut want, params[1]);
             assert_eq!(write(w, h).as_bytes(), want.as_bytes());
             // The namespace-scope declaration holds no default.
             let outer = named(w, "h", DeclKind::Function)[0];
             assert_ne!(write(w, outer).as_bytes(), want.as_bytes());
             assert_eq!(w.unit.next_local, 0);
         });
+    }
+
+    // digest-kinds §2.4 (WP-100): a block-scope function declaration
+    // writes the attributes on its parameters, which the entity's unit
+    // leaves out (`attrs::tests::s10_1_param_chain_leaves_out_block_scope`).
+    #[test]
+    fn a_block_scope_parameter_writes_its_attributes() {
+        let block = |src: &str| {
+            with_walk(src, |w| {
+                let h = *named(w, "h", DeclKind::Function).last().expect("the block-scope h");
+                write(w, h).as_bytes().to_vec()
+            })
+        };
+        let with = block("void h(int *);\nvoid g() { void h(int *p __attribute__((nonnull))); }");
+        let without = block("void h(int *);\nvoid g() { void h(int *p); }");
+        assert_ne!(with, without);
     }
 
     // digest-kinds §2.4: a typedef, alias, using-declaration or
@@ -1142,7 +1170,10 @@ mod tests {
     }
 
     /// [`run_files`] over one C++26 `main.cpp`; panics on errors.
-    fn run<R: Send>(src: &str, f: impl FnOnce(&mut Walk<'_>, &[Written], &Output) -> R + Send) -> R {
+    fn run<R: Send>(
+        src: &str,
+        f: impl FnOnce(&mut Walk<'_>, &[Written], &Output) -> R + Send,
+    ) -> R {
         run_files(&[("main.cpp", src)], "c++26", f).expect("the snippet parses without errors")
     }
 
@@ -1359,7 +1390,8 @@ mod tests {
                         && got.len() % want.len() == 0
                         && got.chunks(want.len()).all(|c| c == want.as_slice());
                     if !ok && n.cut.is_none() {
-                        problems.push(format!("{}: wrote {got:?}, numbered {want:?}", describe(w, o)));
+                        problems
+                            .push(format!("{}: wrote {got:?}, numbered {want:?}", describe(w, o)));
                     }
                 }
                 // `direct_param` gives the index the numbering gives.
@@ -1370,7 +1402,10 @@ mod tests {
                         if let Some(j) = super::direct_param(w, o, d)
                             && j != i as u64
                         {
-                            problems.push(format!("{}: parameter {d:?} at {i}, direct {j}", describe(w, o)));
+                            problems.push(format!(
+                                "{}: parameter {d:?} at {i}, direct {j}",
+                                describe(w, o)
+                            ));
                         }
                     }
                 }
@@ -1525,7 +1560,10 @@ mod tests {
                 .join()
                 .expect("the walk")
         });
-        assert!(normal.iter().all(|(_, _, c)| !matches!(c, Some(c) if !matches!(c, Cause::Pending(_)))), "{normal:?}");
+        assert!(
+            normal.iter().all(|(_, _, c)| !matches!(c, Some(c) if !matches!(c, Cause::Pending(_)))),
+            "{normal:?}"
+        );
         assert_eq!(normal, forward);
         assert_eq!(normal, backward);
     }
@@ -1561,8 +1599,11 @@ mod tests {
             let ast = w.ast;
             let f = named(w, "f", DeclKind::Function)[0];
             let one = |w: &Walk<'_>, n: &str, k: DeclKind| ast.first(named(w, n, k)[0]);
-            let (p, q, o) =
-                (one(w, "p", DeclKind::ParmVar), one(w, "q", DeclKind::ParmVar), one(w, "o", DeclKind::Var));
+            let (p, q, o) = (
+                one(w, "p", DeclKind::ParmVar),
+                one(w, "q", DeclKind::ParmVar),
+                one(w, "o", DeclKind::Var),
+            );
             let (s, l) = (one(w, "s", DeclKind::Binding), one(w, "l", DeclKind::Var));
             let c = one(w, "c", DeclKind::Var);
             let x = one(w, "x", DeclKind::ParmVar);
@@ -1572,9 +1613,12 @@ mod tests {
             assert_eq!(objects[..3], [p, q, o]);
             assert!(objects.contains(&s) && objects.contains(&l));
             let closure = ast.decls.ids().find(|&d| {
-                super::is_closure(w, d) && ast.decls.record(d).and_then(|r| r.lambda).is_some_and(|li| {
-                    ast.exprs.lambdas.get(li).captures.len() > 1
-                })
+                super::is_closure(w, d)
+                    && ast
+                        .decls
+                        .record(d)
+                        .and_then(|r| r.lambda)
+                        .is_some_and(|li| ast.exprs.lambdas.get(li).captures.len() > 1)
             });
             let closure = closure.expect("the generic closure");
             let op = super::owner_of(w, c).expect("c's owner");
@@ -1664,11 +1708,15 @@ mod tests {
             let ast = w.ast;
             let e = (1..=ast.exprs.len())
                 .filter_map(|i| slip_kiln::kiln::ast::ExprId::try_new(u32::try_from(i).ok()?))
-                .find(|&e| ast.exprs.get(e).kind() == slip_kiln::kiln::ast::expr::ExprKind::LambdaExpr)
+                .find(|&e| {
+                    ast.exprs.get(e).kind() == slip_kiln::kiln::ast::expr::ExprKind::LambdaExpr
+                })
                 .expect("the lambda");
-            for (in_key, in_type, cause) in
-                [(1, 0, super::LAMBDA_IN_KEY), (0, 1, super::LAMBDA_IN_TYPE), (1, 1, super::LAMBDA_IN_KEY)]
-            {
+            for (in_key, in_type, cause) in [
+                (1, 0, super::LAMBDA_IN_KEY),
+                (0, 1, super::LAMBDA_IN_TYPE),
+                (1, 1, super::LAMBDA_IN_KEY),
+            ] {
                 w.in_key = in_key;
                 w.local.in_type = in_type;
                 let mut s = Stream::new();
@@ -1738,8 +1786,12 @@ mod tests {
             }
             (out, found)
         });
-        let got: Vec<(u32, &str, String)> =
-            got.0.iter().zip(&got.1).map(|((l, o), n)| (*l, o.as_str(), format!("{n:?}"))).collect();
+        let got: Vec<(u32, &str, String)> = got
+            .0
+            .iter()
+            .zip(&got.1)
+            .map(|((l, o), n)| (*l, o.as_str(), format!("{n:?}")))
+            .collect();
         let closure_owner = "Unsupported(\"local/closure-owner\")";
         let unnumbered = "Err(\"UndeclaredLocal\")".to_owned();
         let want: Vec<(u32, &str, String)> = vec![
@@ -1758,9 +1810,10 @@ mod tests {
             // the specialisation's, whose stream does not walk it.
             (7, "FunctionTemplate fdi", "Ok(0)".into()),
             (7, "Function fdi spec", unnumbered.clone()),
-            // A default template argument: one closure for the pattern and
-            // one per use, none walked by the template's stream.
-            (9, "FunctionTemplate tf", unnumbered.clone()),
+            // A default template argument: one closure for the pattern,
+            // which the template's stream walks (its head's default, in
+            // full, WP-036), and one per use, which no stream walks.
+            (9, "FunctionTemplate tf", "Ok(0)".into()),
             (9, "FunctionTemplate tf", unnumbered.clone()),
             (9, "FunctionTemplate tf", unnumbered),
             // An init-capture's initialiser and a block-scope
@@ -1789,8 +1842,14 @@ mod tests {
                 .ids()
                 .find(|&d| {
                     ast.decls.get(d).kind() == DeclKind::ParmVar
-                        && ast.decls.get(d).name().as_ident().is_some_and(|s| ast.symbols().as_str(s) == "t")
-                        && super::owner(w, d).is_some_and(|o| ast.decls.get(o).kind() == DeclKind::FunctionTemplate)
+                        && ast
+                            .decls
+                            .get(d)
+                            .name()
+                            .as_ident()
+                            .is_some_and(|s| ast.symbols().as_str(s) == "t")
+                        && super::owner(w, d)
+                            .is_some_and(|o| ast.decls.get(o).kind() == DeclKind::FunctionTemplate)
                 })
                 .expect("the pattern's t");
             let o = super::owner(w, t).expect("an owner");
@@ -1819,14 +1878,52 @@ mod tests {
                     .ids()
                     .find(|&d| {
                         ast.decls.get(d).kind() == DeclKind::ParmVar
-                            && ast.decls.get(d).name().as_ident().is_some_and(|s| ast.symbols().as_str(s) == n)
+                            && ast
+                                .decls
+                                .get(d)
+                                .name()
+                                .as_ident()
+                                .is_some_and(|s| ast.symbols().as_str(s) == n)
                     })
                     .expect("the parameter")
             };
-            let f = ast.decls.ids().find(|&d| ast.decls.get(d).kind() == DeclKind::Function).expect("f");
+            let f = ast
+                .decls
+                .ids()
+                .find(|&d| ast.decls.get(d).kind() == DeclKind::Function)
+                .expect("f");
             let f = w.entity(f);
             [p("a"), p("g"), p("b")].map(|d| super::direct_param(w, f, d))
         });
         assert_eq!(got, [Some(0), Some(1), None]);
+    }
+
+    // WP-036's open point (WP-040 brief): Kiln gives a requires-expression's
+    // parameter in a body the function-scope depth of the function's own
+    // (`kiln_sema/src/decl.rs:643`: both 0 here), so `Ref::param` (depth,
+    // index) of `y` and of `a` would be one; a reference to either from a
+    // profile they are declared outside of must not make two different
+    // bodies one digest.
+    #[test]
+    fn a_requires_parameter_is_not_a_function_parameter() {
+        for shape in [
+            "template <class T> void h(T a) {{ (void)requires(T y) {{ requires requires(T z) {{ z + {r}; }}; }}; }}\n",
+            "template <class T> struct X {{}};\ntemplate <class T> void h(T a) {{ (void)requires(T y) {{ typename X<decltype({r})>; }}; }}\n",
+            "template <class T> void h(T a) {{ (void)requires(T y) {{ {{ {r} + 1 }} noexcept; }}; }}\n",
+            "template <class T> void h(T a) {{ (void)requires(T y) {{ sizeof(decltype({r} + 1)); }}; }}\n",
+            // In the key: a trailing requires-clause (Kiln: `y` at depth 1).
+            "template <class T> void h(T a) requires requires(T y) {{ requires requires(T z) {{ z + {r}; }}; }} {{}}\n",
+        ] {
+            let side = |r: &str| {
+                let src = shape.replace("{r}", r).replace("{{", "{").replace("}}", "}");
+                run(&src, |_, written, _| keys_and_digests(written))
+            };
+            let (a, b) = (side("y"), side("a"));
+            let same: Vec<_> = a.iter().filter(|u| b.contains(u) && u.2.is_none()).collect();
+            assert!(
+                a.len() == b.len() && same.len() < a.len(),
+                "one digest for two bodies: {shape}"
+            );
+        }
     }
 }

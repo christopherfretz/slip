@@ -23,6 +23,10 @@ use crate::walk::{TOO_DEEP, Walk};
 pub(crate) struct TypeRef {
     pub digest: Digest,
     pub cause: Option<Cause>,
+    /// The type's stream left out a fact its first spelling holds (a
+    /// profile's found set, `Walk::left_out`): a key ignores it, a unit
+    /// stream that writes the type is pending (`Area::Spelling`).
+    pub spelling: bool,
 }
 
 /// The cause of a variant or field digest-kinds §4.1 says never appears
@@ -35,7 +39,17 @@ impl Walk<'_> {
     /// `type`: the type digest of `q`.
     pub(crate) fn write_type(&mut self, s: &mut Stream, q: QualType) {
         let t = self.type_digest(q, false);
+        self.absorb_type(s, t);
+    }
+
+    /// Writes type digest `t`: its digest and cause, and, in a unit
+    /// stream (outside any key and type), `Area::Spelling` when it is
+    /// marked.
+    pub(crate) fn absorb_type(&mut self, s: &mut Stream, t: TypeRef) {
         s.digest(&t.digest).absorb(t.cause);
+        if t.spelling && self.type_nesting == 0 && self.in_key == 0 {
+            s.absorb(Some(Cause::Pending(crate::Area::Spelling)));
+        }
     }
 
     /// `type?`.
@@ -66,47 +80,64 @@ impl Walk<'_> {
     pub(crate) fn type_digest(&mut self, q: QualType, no_exc: bool) -> TypeRef {
         // Numbering an owner reads no type (`local.rs`).
         if crate::local::numbering_mode(self) {
-            return TypeRef { digest: Digest([0; 32]), cause: None };
+            return TypeRef { digest: Digest([0; 32]), cause: None, spelling: false };
         }
         let c = self.ast.types.canonical(q);
         let raw = c.to_raw();
         let memo = if no_exc { &self.type_memo_no_exc } else { &self.type_memo };
-        if let Some(t) = memo.get(&raw) {
-            return *t;
+        if let Some(&t) = memo.get(&raw) {
+            self.left_out += u64::from(t.spelling);
+            return t;
         }
         let unit_key = u64::from(raw) | (u64::from(no_exc) << 32);
-        if let Some(t) = self.unit.types.get(&unit_key) {
+        if let Some(&t) = self.unit.types.get(&unit_key) {
             self.unit.local_uses += 1;
-            return *t;
+            self.left_out += u64::from(t.spelling);
+            return t;
+        }
+        if let Some(&(t, local)) = self.abort_memo.get(&(raw, no_exc)) {
+            // Computed below a limit hit within this outermost call: the
+            // same result, the same hit (F4).
+            self.aborts += 1;
+            self.unit.local_uses += u64::from(local);
+            self.left_out += u64::from(t.spelling);
+            return t;
         }
         if !self.enter() {
-            return TypeRef { digest: Digest([0; 32]), cause: Some(TOO_DEEP) };
+            return TypeRef { digest: Digest([0; 32]), cause: Some(TOO_DEEP), spelling: false };
         }
         let aborts = self.aborts;
         let uses = self.unit.local_uses;
+        let left_out = self.left_out;
         let mut s = Stream::new();
         // The expression state is the unit's: a memoised type must not
         // depend on it (`Walk::take_expr_state`).
         let expr = self.take_expr_state();
         // A lambda-expression in a type is the type's cause (digest §4.3).
         self.local.in_type += 1;
+        self.type_nesting += 1;
         self.type_stream(&mut s, c, no_exc);
+        self.type_nesting -= 1;
         self.local.in_type -= 1;
         self.unit.expr = expr;
         self.leave();
         let h = s.finish(TYPE_TAG);
         let h = self.hashed(h);
-        let t = TypeRef { digest: h.digest, cause: h.cause };
+        let t = TypeRef { digest: h.digest, cause: h.cause, spelling: self.left_out != left_out };
+        let local = self.unit.local_uses != uses;
         if self.aborts == aborts {
-            if self.unit.local_uses == uses {
-                if no_exc {
-                    self.type_memo_no_exc.insert(raw, t);
-                } else {
-                    self.type_memo.insert(raw, t);
-                }
-            } else {
+            if local {
                 self.unit.types.insert(unit_key, t);
+            } else if no_exc {
+                self.type_memo_no_exc.insert(raw, t);
+            } else {
+                self.type_memo.insert(raw, t);
             }
+        } else if self.type_nesting > 0 {
+            self.abort_memo.insert((raw, no_exc), (t, local));
+        }
+        if self.type_nesting == 0 {
+            self.abort_memo.clear();
         }
         t
     }
@@ -464,6 +495,13 @@ impl Walk<'_> {
             }
             ExcSpec::BasicNoexcept => {
                 s.tag(exc_spec::BASIC_NOEXCEPT);
+            }
+            // A declaration's own operand, in a unit: walked in full (§7).
+            ExcSpec::NoexceptExpr { expr, value: NoexceptValue::Dependent(_) }
+                if own && self.in_key == 0 =>
+            {
+                s.tag(exc_spec::DEPENDENT_NOEXCEPT);
+                crate::expr::child(self, s, expr);
             }
             ExcSpec::NoexceptExpr { expr: _, value } => match value {
                 NoexceptValue::False => {

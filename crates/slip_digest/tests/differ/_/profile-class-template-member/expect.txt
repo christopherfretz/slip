@@ -1,0 +1,2 @@
+changed S
+added S::f(type-parameter-1-0)

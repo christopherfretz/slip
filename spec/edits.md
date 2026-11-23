@@ -58,12 +58,16 @@ more precisely than verification would report it.
 A transform request carries the **owned set**: the files Slip may edit.
 
 ```
-Ownership := owned:    list<path>     real paths of directories or files; sorted, no two equal
+Ownership := owned:    list<path>     canonical real paths of directories or files; sorted, no two equal
              readonly: list<path>     the same; sorted, no two equal; none also in `owned`
 ```
 
-An entry **covers** a real path `p` if it equals `p` or is a proper prefix
-of `p` ending at a `/` of `p`. A file is **owned** if some entry covers it
+Every entry is a **canonical absolute path**: it starts with `/`, has no
+empty, `.` or `..` component, and has no trailing `/` unless it is `/`
+itself. A reader refuses any other entry (§3). The entry `/` **covers**
+every absolute path; any other entry `e` covers a real path `p` iff `p`
+equals `e` or `p` starts with `e` followed by `/` (so `/a/b` covers
+`/a/b/x` and not `/a/bc/x`). A file is **owned** if some entry covers it
 and the longest entry covering it is in `owned`. Every other file is
 **read-only**: system headers, dependencies, generated files in a build
 tree, and whatever `readonly` carves out of an owned directory.
@@ -184,6 +188,11 @@ Script := id:      digest           the `TransformId` of api.md §2.2
           bytes:   uv
           depth:   uv
 ```
+
+Every entry of `ownership` is a canonical absolute path (§2.1); an entry
+that is not is `Malformed` at that entry, path
+`sections.transform.ownership.owned[i]` or `….readonly[i]`, checked
+before the list's order (`spec/landed/edits/WP-060.md` §3).
 
 For a rename: every component of `target` and `new_name` matches
 `[A-Za-z_][A-Za-z0-9_]*`, is not a keyword of any C++ standard Kiln
@@ -443,7 +452,8 @@ the job.
 | Rule | Offset | JSON path |
 |---|---|---|
 | `scheme` is 1 | the field | `sections.edits.scheme` |
-| with a `failure`: the seven lists are empty and `files` has at most one entry | the first byte of the first list that is not | that list |
+| with a `failure`: the seven lists are empty and `files` has at most one entry | the first byte of the first list that is not, in field order | that list |
+| with a `failure`: `refusal.subject`, if present, is within its file (`file` an index of `files`, `lo <= hi <= size`); `files` is empty unless `refusal.subject` is present | the `subject` field's opt tag; the `files` count | `sections.edits.failure.refusal.subject`; `sections.edits.files` |
 | `files` strictly ascending by path | that `FileRef`'s first byte | `sections.edits.files[i]` |
 | `subjects` strictly ascending by `id` | that subject's first byte | `sections.edits.subjects[i]` |
 | `of` not empty iff role is `follower`; strictly ascending | the `of` field | `sections.edits.subjects[i].of` |
@@ -452,7 +462,7 @@ the job.
 | a claim's `file` is an index of `files`; `lo <= hi <= size`; `lo < hi` for `replace` | the claim's first byte | `sections.edits.claims[i]` |
 | `pieces` empty unless `replace`; no empty literal or spelled text; no two literals adjacent; a copy's place is within its file and not empty | that piece's first byte, or the `pieces` field | `sections.edits.claims[i].pieces[j]` |
 | `reason` is `none` iff the stance is not `refuse` | the `reason` field | `sections.edits.claims[i].reason` |
-| `subjects` and `notes` strictly ascending | the field | `sections.edits.claims[i].subjects` |
+| `subjects` and `notes` strictly ascending | the field | `sections.edits.claims[i].subjects`, `sections.edits.claims[i].notes` |
 | `tiers` not 0, bits above 4 are 0, bits 2 to 4 only for `refuse`; `macro` absent if `tiers` is 1 | the `tiers` field | `sections.edits.claims[i].tiers` |
 | `votes` at least 1 | the `votes` field | `sections.edits.claims[i].votes` |
 | `claims` strictly ascending in the sort key | that claim's first byte | `sections.edits.claims[i]` |
