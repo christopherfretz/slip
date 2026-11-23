@@ -10,7 +10,7 @@
       "edits": "0505050505050505050505050505050505050505050505050505050505050505",
       "declared": "0606060606060606060606060606060606060606060606060606060606060606",
       "overlay": "0707070707070707070707070707070707070707070707070707070707070707",
-      "state": "verified_with_residue",
+      "state": "not_verified",
       "partial": true,
       "allow_unparsed": false,
       "verdict": "not_verified",
@@ -42,6 +42,10 @@
       "unused": [
         1,
         4
+      ],
+      "unchecked": [
+        0,
+        3
       ],
       "spellings": {
         "obligations": 5,
