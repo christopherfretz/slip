@@ -130,8 +130,10 @@ needs no map.
   internal symbols made external or the reverse). Since WP-113 the
   comparison finds every such relocation of a namespace with members
   (each member's row `enclosing` differs); the refusal is kept because it
-  says why when the rule is declared, not after a run, and refuses no
-  correct transform (`spec/landed/digest/WP-113.md`, item 6).
+  says why when the rule is declared, not after a run. The one correct
+  transform it refuses is the rename of a namespace with no member that
+  has a row (`namespace { }` to `namespace foo { }`), which changes no
+  symbol (`spec/landed/digest/WP-113.md`, item 6).
 
 The three are refused in one place, `Rule::refusal`
 (`crates/slip_model/src/keys.rs`), and every table records the first rule
