@@ -116,12 +116,7 @@ fn run(args: &Args, root: &Path) -> Result<bool, String> {
     if args.list {
         for dir in script_test::discover(root)? {
             let name = script_test::case_name(root, &dir);
-            if args.filters.is_empty()
-                || args
-                    .filters
-                    .iter()
-                    .any(|f| if args.exact { name == *f } else { name.contains(f) })
-            {
+            if script_test::selects(&args.filters, args.exact, &name) {
                 say(&format!("{name}: test\n"));
             }
         }

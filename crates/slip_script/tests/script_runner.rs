@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use slip_model::{Counter, Digest, FileRef};
-use slip_script::driver::{Budgets, FailureKind};
+use slip_script::driver::{self, Budgets, Failure, FailureKind, LoadError};
 use slip_script::output::{Changed, Piece, Place, Report, RunOutput, Severity, Tiers};
 use slip_script::script_test::{
     self, Case, GroupRun, Ran, Script, SuiteOptions, Verdict, judge, load_script, subject_header,
@@ -79,6 +79,8 @@ fn s11_rule2_a_line_that_looks_like_a_header_line_and_is_not() {
         ("// Note: a comment\n// spec: §11\n", 1),
         ("// spec: §11\n// std: c++20\n", 2),
         ("// spec: §11\n//  depth: 3\n", 2),
+        ("// spec: §11\n// args:  -DX\n", 2),
+        ("// spec: §11\n// xfail:  why\n", 2),
     ] {
         let e = header_err(text);
         assert!(e.starts_with(&format!("line {line}: ")), "{text:?}: {e}");
@@ -87,6 +89,7 @@ fn s11_rule2_a_line_that_looks_like_a_header_line_and_is_not() {
     for (text, what) in [
         ("// spec: §11\n// steps: 1e3\n", "not a decimal number"),
         ("// spec: §11\n// steps: -1\n", "not a decimal number"),
+        ("// spec: §11\n// steps: +5\n", "not a decimal number"),
         ("// spec: §11\n// depth: 4294967296\n", "not a decimal number"),
         ("// spec: §11\n// bytes: 18446744073709551616\n", "not a decimal number"),
         ("// spec: §11\n// counters: api.edits,\n", "is not a counter's name"),
@@ -544,5 +547,80 @@ fn s11_rule4_load_and_run_one_script() {
         script_test::run_script(&s, &resource()),
         Ok(format!("{RENDERED}counter api.reports 1\n"))
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// A `host-failure`, at load or in a run, is the host's (spec/api.md §2.8,
+// §12): never a rendering, so neither `expect.txt` nor `xfail` can hide it.
+#[test]
+fn wp090_a_host_failure_is_never_rendered() {
+    let host = LoadError::Host { message: "kiln panicked".into(), rendered: String::new() };
+    let Ran::NoResult(why) = script_test::load_failed(&host) else { panic!() };
+    assert!(why.contains("kiln panicked"), "{why}");
+    let compile = LoadError::Compile { rendered: "t.cpp:1: error: x".into() };
+    assert_eq!(
+        script_test::load_failed(&compile),
+        Ran::Rendered("error transform-compile\n".into())
+    );
+    assert_eq!(
+        script_test::load_failed(&LoadError::Entry("entry-missing")),
+        Ran::Rendered("error entry-missing\n".into())
+    );
+    let failure = |kind| Failure {
+        kind,
+        message: "what failed\nmore".into(),
+        place: None,
+        rendered: String::new(),
+        refusal: None,
+    };
+    let Ran::NoResult(why) = script_test::run_failed(&failure(FailureKind::HostFailure)) else {
+        panic!()
+    };
+    assert!(why.contains("host-failure: what failed"), "{why}");
+    assert_eq!(
+        script_test::run_failed(&failure(FailureKind::Uncaught)),
+        Ran::Rendered("failed uncaught \"what failed\"\n".into())
+    );
+}
+
+// Each group's thread has the stack the driver requires (WP-089).
+#[test]
+fn wp090_a_group_thread_has_the_drivers_stack() {
+    assert!(script_test::GROUP_STACK >= driver::STACK);
+}
+
+// libtest's filter rule: in the name, or with --exact the name.
+#[test]
+fn wp090_filters() {
+    let f = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    assert!(script_test::selects(&[], false, "format/xfail"));
+    assert!(script_test::selects(&[], true, "format/xfail"));
+    assert!(script_test::selects(&f(&["xfail"]), false, "format/xfail"));
+    assert!(!script_test::selects(&f(&["xfail"]), true, "format/xfail"));
+    assert!(script_test::selects(&f(&["no", "format/xfail"]), true, "format/xfail"));
+    assert!(!script_test::selects(&f(&["pass"]), true, "xpass"));
+    assert!(script_test::selects(&f(&["pass"]), false, "xpass"));
+}
+
+// The subject is every file of the directory at any depth, but the
+// transform and expect.txt at its top (§11's table).
+#[test]
+fn s11_the_subjects_files() {
+    let root = scratch("files");
+    for f in [
+        "transform.cpp",
+        "expect.txt",
+        "t.cpp",
+        "b.h",
+        "inc/a.h",
+        "inc/expect.txt",
+        "inc/deep/transform.cpp",
+    ] {
+        write(&root, f, f);
+    }
+    let files = script_test::subject_files(&root).unwrap();
+    let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(names, ["b.h", "inc/a.h", "inc/deep/transform.cpp", "inc/expect.txt", "t.cpp"]);
+    assert!(files.iter().all(|(p, t)| p == t));
     let _ = std::fs::remove_dir_all(&root);
 }

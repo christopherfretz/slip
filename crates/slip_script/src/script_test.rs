@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use slip_kiln::session::Cancel;
 use slip_model::Digest;
 
-use crate::driver::{self, Budgets, FailureKind, LoadError, Loaded, Outcome};
+use crate::driver::{self, Budgets, Failure, FailureKind, LoadError, Loaded, Outcome};
 use crate::kiln_subject::KilnSubject;
 use crate::output::{Place, RunOutput, Style};
 
@@ -353,8 +353,9 @@ pub fn run_script(script: &Script, resource: &Path) -> Result<String, String> {
     }
 }
 
-/// What a transform that did not load renders as (§11 rule 3).
-fn load_failed(e: &LoadError) -> Ran {
+/// What a transform that did not load renders as (§11 rule 3):
+/// `error <name>`, except `host-failure`, which is no result.
+pub fn load_failed(e: &LoadError) -> Ran {
     match e {
         LoadError::Host { .. } => {
             Ran::NoResult(format!("the host failed loading the transform: {e}"))
@@ -500,14 +501,22 @@ fn run_one(l: &mut Loaded<'_>, script: &Script) -> Ran {
                 let names = if has_keys(&out) { key_names(p) } else { BTreeMap::new() };
                 Ran::Rendered(render_completed(&out, &files, &names, &script.counters))
             }
-            Ok((Outcome::Failed(f), _)) if f.kind == FailureKind::HostFailure => {
-                Ran::NoResult(format!("the run is a host-failure: {}", f.message))
-            }
-            Ok((Outcome::Failed(f), _)) => Ran::Rendered(render_failed(f.kind, &f.message)),
+            Ok((Outcome::Failed(f), _)) => run_failed(&f),
             Err(e) => Ran::NoResult(format!("the run gave no outcome: {e}")),
         }
     });
     parsed.unwrap_or_else(|e| Ran::Error(format!("the subject cannot be parsed: {e}")))
+}
+
+/// What a failed run renders as (§11 rule 3): [`render_failed`], except
+/// `host-failure`, which is no result: the host's, never the transform's
+/// (§2.8).
+pub fn run_failed(f: &Failure) -> Ran {
+    if f.kind == FailureKind::HostFailure {
+        Ran::NoResult(format!("the run is a host-failure: {}", f.message))
+    } else {
+        Ran::Rendered(render_failed(f.kind, &f.message))
+    }
 }
 
 /// Whether the output names a key anywhere.
@@ -824,6 +833,14 @@ pub fn bless_from(var: Option<&std::ffi::OsStr>) -> Result<bool, String> {
     }
 }
 
+/// Whether the filters select the test `name`: no filter selects every
+/// test; else one filter must be in the name or, with `exact`, be it
+/// (libtest's rule).
+pub fn selects(filters: &[String], exact: bool, name: &str) -> bool {
+    filters.is_empty()
+        || filters.iter().any(|f| if exact { name == f } else { name.contains(f.as_str()) })
+}
+
 /// The name of a test directory under `root`.
 pub fn case_name(root: &Path, dir: &Path) -> String {
     let rel = dir.strip_prefix(root).unwrap_or(dir);
@@ -848,14 +865,7 @@ pub fn run_suite(
 ) -> Result<Vec<Case>, String> {
     let dirs: Vec<PathBuf> = discover(root)?
         .into_iter()
-        .filter(|d| {
-            let name = case_name(root, d);
-            opts.filters.is_empty()
-                || opts
-                    .filters
-                    .iter()
-                    .any(|f| if opts.exact { name == *f } else { name.contains(f) })
-        })
+        .filter(|d| selects(&opts.filters, opts.exact, &case_name(root, d)))
         .collect();
     let mut cases: Vec<Option<Case>> = dirs.iter().map(|_| None).collect();
     let mut keyed = Vec::new();
