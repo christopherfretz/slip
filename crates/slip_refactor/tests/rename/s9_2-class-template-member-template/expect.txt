@@ -1,0 +1,10 @@
+subjects:
+  5be9d2cb seed - rule=yes n::S::f
+  d9a748a1 follower unsupported rule=yes n::S<int>::f of=5be9d2cb
+links:
+claims:
+  main.cpp:1:69+1 replace "g" t0 votes=1 none [5be9d2cb]
+  main.cpp:2:27+1 replace spell(5be9d2cb, "g") t0 votes=1 none [5be9d2cb]
+  main.cpp:2:35+1 replace spell(5be9d2cb, "g") t0 votes=1 none [5be9d2cb]
+  main.cpp:2:58+1 replace spell(5be9d2cb, "g") t0 votes=1 none [5be9d2cb]
+changed:

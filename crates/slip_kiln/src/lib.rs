@@ -78,7 +78,7 @@ pub mod written;
 
 pub use check::KilnCheck;
 pub use lookups::Lookups;
-pub use parse::{ParseOptions, Unit, parse_observer, parse_observer_with};
+pub use parse::{ParseOptions, Tokens, Unit, parse_observer, parse_observer_with};
 
 /// The version of the Kiln front end this build of Slip links
 /// (`MAJOR.MINOR.PATCH[-PRE]`).

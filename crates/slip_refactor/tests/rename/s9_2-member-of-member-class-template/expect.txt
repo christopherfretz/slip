@@ -1,0 +1,8 @@
+subjects:
+  4aee1cae follower unsupported rule=yes n::S<int>::C<long>::f() of=89087e12
+  89087e12 seed - rule=yes n::S::C::f()
+links:
+claims:
+  main.cpp:1:80+1 replace "g" t0 votes=1 none [89087e12]
+  main.cpp:2:36+1 replace spell(89087e12, "g") t0 votes=1 none [89087e12]
+changed:

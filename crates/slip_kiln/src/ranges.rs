@@ -29,8 +29,8 @@
 
 use std::cmp::Ordering;
 
-use crate::Unit;
 use crate::kiln::source::{FileId, FileOrigin, Loc, SourceManager, Span};
+use crate::{Tokens, Unit};
 
 /// The tier of a file range (`spec/api.md` §5.4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -200,14 +200,20 @@ pub fn spelled_range(sm: &SourceManager, span: Span) -> Option<(FileId, u32, u32
 /// it (`B<vt<1>> y;` ends `vt<1>` at the first `>` of `>>`), which
 /// `token_end` cannot know, and the end would be a byte too far.
 pub fn file_range(unit: &Unit<'_>, first: Loc, last: Loc) -> Option<FileRange> {
-    if !unit.is_token_start(first) || !unit.is_token_start(last) {
+    file_range_of_tokens(&unit.tokens(), first, last)
+}
+
+/// [`file_range`] over a unit's [`Tokens`] (the same function, for a
+/// reader that holds the tokens rather than the unit: `Tokens` is `Sync`).
+pub fn file_range_of_tokens(tokens: &Tokens<'_>, first: Loc, last: Loc) -> Option<FileRange> {
+    if !tokens.is_token_start(first) || !tokens.is_token_start(last) {
         return None;
     }
-    let end = unit.token_end(last)?;
-    if may_be_split(unit.sm(), last, end) {
+    let end = tokens.token_end(last)?;
+    if may_be_split(tokens.sm(), last, end) {
         return None;
     }
-    file_range_of_span(unit.sm(), Span::new(first, end))
+    file_range_of_span(tokens.sm(), Span::new(first, end))
 }
 
 /// Whether the token `last..end` is one the parser can split at its

@@ -1,7 +1,0 @@
-subjects:
-  a7a5b14e seed unsupported rule=yes n::A::B::f()
-links:
-claims:
-  main.cpp:1:68+1 replace "g" t0 votes=1 none [a7a5b14e]
-  main.cpp:2:26+1 replace spell(a7a5b14e, "g") t0 votes=1 none [a7a5b14e]
-changed:

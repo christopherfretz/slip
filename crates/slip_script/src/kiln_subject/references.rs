@@ -710,7 +710,6 @@ impl KilnSubject<'_> {
 
     /// The reference of the entry whose name starts at `at`, for the
     /// callee of a call (WP-086).
-    #[allow(dead_code, reason = "for WP-086's callee_reference")]
     pub(super) fn reference_at(&self, at: Loc) -> Option<Reference> {
         self.names().at_loc.get(&at.to_raw()).map(|&i| Reference(i))
     }

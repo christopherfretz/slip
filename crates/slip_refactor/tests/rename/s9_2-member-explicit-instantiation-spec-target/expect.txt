@@ -1,0 +1,12 @@
+# pending
+# needs: Kiln stage 3 (WP-1932): the name of a member's explicit instantiation as a written reference of role SpecTarget (no recording site in the pin: spec/landed/edits/WP-073.md, "Kiln at the pin"); until then the followers are unreachable (s9_5-unreachable-member-explicit-instantiation). unsupported stays until the digest accepts a rule on an instantiated member
+subjects:
+  32ae9afe seed - rule=yes n::S::f()
+  4fafa1b6 follower unsupported rule=yes n::S<long>::f() of=32ae9afe
+  5e9f1f3e follower unsupported rule=yes n::S<char>::f() of=32ae9afe
+links:
+claims:
+  main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]
+  main.cpp:2:24+1 replace spell(32ae9afe, "g") t0 votes=1 none [32ae9afe]
+  main.cpp:3:31+1 replace spell(32ae9afe, "g") t0 votes=1 none [32ae9afe]
+changed:
