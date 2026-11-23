@@ -432,7 +432,7 @@ fn default_immediates(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Ve
         return;
     }
     let d = subject(w, read_of(w, e, owner));
-    let mut found: Vec<(Option<u64>, Vec<ConstValueId>)> = Vec::new();
+    let mut found: Vec<(Option<u64>, (Vec<ConstValueId>, Option<Cause>))> = Vec::new();
     if let Some(f) = ast.decls.function(d) {
         let params: Vec<DeclId> = ast.lists.iter::<DeclId>(f.params).collect();
         for (i, p) in params.into_iter().enumerate() {
@@ -447,26 +447,30 @@ fn default_immediates(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Ve
     {
         found.push((None, immediates(w, x)));
     }
-    for (disc, values) in found {
-        if let Some(u) = immediates_unit(w, e, owner, disc, values) {
+    for (disc, (values, cause)) in found {
+        if let Some(u) = immediates_unit(w, e, owner, disc, values, cause) {
             out.push(u);
         }
     }
 }
 
 /// The resolved unit `default_immediates` with discriminator `disc` under
-/// `owner`, holding `values`; none when there is no value.
+/// `owner`, holding `values`; none when there is no value. `cause` is that
+/// of the walk that found them: a list found by an indeterminate walk may
+/// be incomplete, so the unit takes it.
 fn immediates_unit(
     w: &mut Walk<'_>,
     e: DeclId,
     owner: &Written,
     disc: Option<u64>,
     values: Vec<ConstValueId>,
+    cause: Option<Cause>,
 ) -> Option<Written> {
     if values.is_empty() {
         return None;
     }
     Some(write_resolved(w, e, owner, Property::DefaultImmediates, disc, |w, s| {
+        s.absorb(cause);
         s.count(values.len());
         for v in values {
             crate::value::value(w, s, v);
@@ -476,15 +480,15 @@ fn immediates_unit(
 
 /// The `default_imm` values of the immediate invocations in `x`, in the
 /// order the expression walk meets them: `x` walked again, with a unit
-/// state of its own, into a stream that is dropped.
-fn immediates(w: &mut Walk<'_>, x: ExprId) -> Vec<ConstValueId> {
+/// state of its own, into a stream that is dropped but for its cause.
+fn immediates(w: &mut Walk<'_>, x: ExprId) -> (Vec<ConstValueId>, Option<Cause>) {
     let saved = w.take_unit();
     w.unit.expr.imms = Some(Vec::new());
     let mut scratch = Stream::new();
     crate::expr::child(w, &mut scratch, x);
     let values = w.unit.expr.imms.take().unwrap_or_default();
     w.unit = saved;
-    values
+    (values, scratch.cause())
 }
 
 /// Records the `default_imm` value of `e` for [`immediates`]
@@ -554,7 +558,7 @@ fn default_argument(
         crate::expr::child(w, s, x);
         values = w.unit.expr.imms.take().unwrap_or_default();
     });
-    let imms = immediates_unit(w, e, &u, disc, values);
+    let imms = immediates_unit(w, e, &u, disc, values, u.cause);
     out.push(u);
     out.extend(imms);
 }
@@ -655,13 +659,16 @@ fn instantiated(w: &Walk<'_>, x: DeclId) -> bool {
 /// function template's specialisation, the primary template's pattern
 /// (`SpecInfo` `from` names the template until the definition is
 /// instantiated, so it is not read); else `MemberSpecInfo`
-/// `instantiated_from` or Kiln's map (`Ast::instantiated_from`).
+/// `instantiated_from` or Kiln's map (`Ast::instantiated_from`). The
+/// pattern of a member template's pattern in an instantiated class is
+/// named through the template it was made from: that template's pattern.
 fn pattern_of(w: &Walk<'_>, x: DeclId) -> Option<DeclId> {
     let ast = w.ast;
     if let Some((_, i)) = ast.spec_info(x) {
         return ast.template_info(i.template).and_then(|t| t.pattern);
     }
-    ast.instantiated_from(x).or_else(|| ast.instantiated_from(w.entity(x)))
+    let from = ast.instantiated_from(x).or_else(|| ast.instantiated_from(w.entity(x)))?;
+    Some(ast.template_info(from).and_then(|t| t.pattern).unwrap_or(from))
 }
 
 /// Whether the declaration `d`'s specification is one Kiln defers in an
@@ -696,6 +703,8 @@ mod tests {
 
     use super::{chain_params, inherited_constructor, number_params};
     use crate::stream::{Stream, UNIT_TAG};
+    use slip_kiln::kiln::ast::decl::DeclFlags;
+    use slip_kiln::kiln::ast::types::ExcSpec;
 
     use slip_model::Digest;
     use slip_model::digests::GroupClass;
@@ -764,6 +773,100 @@ mod tests {
         });
     }
 
+    // digest-kinds §11.3: a variable's `value` stream lists the values of
+    // the temporaries it extends in `mangling_index` order.
+    #[test]
+    fn value_lists_temporaries_in_mangling_order() {
+        let src = "struct P { const int &x; const int &y; const int &z; };\n\
+                   constexpr P p{1, 2, 3};\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let v = crate::decl_func::tests::named(w, "p", DeclKind::Var)[0];
+            let mut lets: Vec<(u32, DeclId)> = ast
+                .decls
+                .ids()
+                .filter_map(|d| ast.decls.lifetime_extended(d).map(|l| (l.mangling_index, d)))
+                .collect();
+            assert_eq!(lets.len(), 3);
+            lets.sort_unstable();
+            let owner = crate::units::write(w, v, crate::units::UnitClass::Derived).expect("unit");
+            let mut out = Vec::new();
+            super::value(w, v, &owner, &mut out);
+            assert_eq!(out.len(), 1);
+            let saved = w.take_unit();
+            let mut s = Stream::new();
+            let own = crate::decl_func::var_eval(w, v).state();
+            let slip_kiln::kiln::ast::decl::VarEvalState::Value(c) = own else {
+                panic!("p has a value: {own:?}")
+            };
+            s.opt(true);
+            crate::value::value(w, &mut s, c);
+            for (_, t) in &lets {
+                let c = ast.decls.lifetime_extended(*t).and_then(|l| l.value).expect("a value");
+                s.opt(true);
+                crate::value::value(w, &mut s, c);
+            }
+            w.unit = saved;
+            assert_eq!(out[0].digest, s.finish(UNIT_TAG).digest);
+        });
+    }
+
+    // digest-kinds §11.2 rule 3 (WP-046 review F2): the specialisation of
+    // a member template of a class template's instantiation. Its pattern
+    // is the member template's pattern in the instantiated class
+    // (`SpecInfo`), which Kiln holds `Deferred`; that pattern's own pattern
+    // (through the template Kiln's map names) has a dependent `noexcept`.
+    #[test]
+    fn member_template_specialisation_reads_its_patterns() {
+        let src = "template <class T> struct A { template <class U> void f() noexcept(sizeof(U) > 1); };\n\
+                   void (A<char>::*p)() = &A<char>::f<int>;\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let fs = crate::decl_func::tests::named(w, "f", DeclKind::CXXMethod);
+            // The specialisation A<char>::f<int>, and the member template's
+            // pattern in A<char>, each made by instantiation.
+            let spec = *fs.iter().find(|&&d| ast.spec_info(d).is_some()).expect("f<int>");
+            let member = super::pattern_of(w, spec).expect("its pattern");
+            assert!(super::instantiated(w, member));
+            assert!(fs.contains(&member));
+            let spec_ty = |d: DeclId| {
+                let p = ast.decls.get(d).ty().and_then(|q| ast.types.proto(q)).expect("proto");
+                ast.types.exc_spec(p)
+            };
+            assert!(matches!(spec_ty(member), ExcSpec::Deferred(_)));
+            assert!(super::defers(w, member));
+            let primary = super::pattern_of(w, member).expect("the member's pattern");
+            assert!(!super::instantiated(w, primary));
+            assert!(matches!(spec_ty(primary), ExcSpec::DependentNoexcept(_)));
+            assert!(super::deferrable(w, member));
+            assert!(super::deferrable(w, spec));
+        });
+    }
+
+    // digest-kinds §11.2 rule 2: an inheriting constructor is `IMPLICIT`
+    // on every declaration, so rule 1 already holds it (the
+    // `inheriting_ctor` test is a second reading of the same fact).
+    #[test]
+    fn inheriting_constructor_is_implicit_everywhere() {
+        let src = "struct B0 { B0(int); B0(long) noexcept; };\n\
+                   struct D : B0 { using B0::B0; };\n\
+                   void h() { D a(1); D b(1L); }\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let ctors: Vec<DeclId> =
+                ast.decls.ids().filter(|&d| ast.decls.cold.inheriting_ctor.contains(d)).collect();
+            assert_eq!(ctors.len(), 2);
+            for c in ctors {
+                assert!(
+                    w.redecls(ast.first(c))
+                        .iter()
+                        .all(|&d| ast.decls.get(d).has(DeclFlags::IMPLICIT))
+                );
+                assert!(super::deferrable(w, c));
+            }
+        });
+    }
+
     // digest-kinds §11.1 property 6: the stream is the `ref` of the
     // using-declaration's shadow, then that of the base constructor.
     #[test]
@@ -794,6 +897,41 @@ mod tests {
             w.write_ref(&mut one, base);
             assert_ne!(out[0].digest, one.finish(UNIT_TAG).digest);
         });
+    }
+
+    // digest-kinds §11.1 property 7: the values of a written default are
+    // found by a second walk into a dropped stream; its cause is kept, as
+    // a list an indeterminate walk found may be short (a lambda is
+    // `Pending(Local)` today).
+    #[test]
+    fn immediates_keep_the_walks_cause() {
+        let src = "consteval int id(int x) { return x; }\n\
+                   void f(int a = id(3) + [] { return 0; }());\n\
+                   void h() { f(); }\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let f = crate::decl_func::tests::named(w, "f", DeclKind::Function)[0];
+            let p = ast.lists.iter::<DeclId>(ast.decls.function(f).expect("f").params).next();
+            let (_, x) = crate::decl_func::written_default(w, p.expect("a"));
+            let (values, cause) = super::immediates(w, x.expect("the default"));
+            assert_eq!(values.len(), 1);
+            assert_eq!(cause, Some(crate::Cause::Pending(crate::Area::Local)));
+        });
+    }
+
+    // digest-kinds §11.3: the state is the initialiser holder's
+    // (`decl_func::var_eval`), whichever declaration the unit reads.
+    #[test]
+    fn value_is_read_from_the_initialisers_holder() {
+        for src in [
+            "struct S { static constexpr int x = 1; };\nconstexpr int S::x;\n",
+            "struct S { static const int x; };\nconst int S::x = 1;\n",
+            "extern const int x;\nconstexpr int x = 1;\n",
+        ] {
+            let u = units(src);
+            let name = if src.contains("S::") { "S::x::<value>" } else { "x::<value>" };
+            assert!(u.contains_key(name), "{src}: {:?}", u.keys().collect::<Vec<_>>());
+        }
     }
 
     // digest-kinds §11.1 property 6: the base constructor an inheriting

@@ -3,6 +3,7 @@
 
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, FriendKind};
+use slip_kiln::kiln::ast::types::ExcSpec;
 
 use crate::Cause;
 use crate::keys::info;
@@ -165,10 +166,14 @@ impl Walk<'_> {
 
     /// `DeclNode` `ty-exception-spec` (§5.3, §11.2): `enum ExcSpec?`,
     /// absent for a function of the deferrable class, whose specification
-    /// is the resolved unit `exception_spec` (`demand.rs`).
+    /// is the resolved unit `exception_spec` (`demand.rs`). A member of a
+    /// local class has no key, so no resolved unit can hold it: its stream
+    /// holds the specification as Kiln holds it, indeterminate
+    /// (`Pending(Local)`) only while that is still `Deferred`.
     fn own_exception_spec(&mut self, s: &mut Stream, d: DeclId) {
         let ast = self.ast;
-        if crate::demand::deferrable(self, d) {
+        let local = self.is_local(d);
+        if !local && crate::demand::deferrable(self, d) {
             s.opt(false);
             return;
         }
@@ -176,7 +181,11 @@ impl Walk<'_> {
             Some(p) => {
                 s.opt(true);
                 let e = ast.types.exc_spec(&p);
-                self.write_exc_spec(s, e, true);
+                let deferred = matches!(e, ExcSpec::Deferred(_));
+                self.write_exc_spec(s, e, !local);
+                if local && deferred {
+                    s.indeterminate(Cause::Pending(crate::Area::Local));
+                }
             }
             None => {
                 s.opt(false);
@@ -265,5 +274,64 @@ impl Walk<'_> {
             | DeclKind::ImplicitParam
             | DeclKind::ImplicitConceptSpecialization => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use slip_kiln::kiln::ast::DeclId;
+    use slip_kiln::kiln::ast::decl::DeclKind;
+
+    use crate::decl_func::tests::{of_kind, with_walk};
+    use crate::stream::Stream;
+    use crate::{Area, Cause};
+
+    /// The bytes and cause `own_exception_spec` writes for the only
+    /// declaration of `kind` inside `k` (a member of a local class).
+    fn local_spec(src: &str, kind: DeclKind) -> (Vec<u8>, Option<Cause>) {
+        with_walk(src, |w| {
+            let ds: Vec<DeclId> = of_kind(w, kind).into_iter().filter(|&d| w.is_local(d)).collect();
+            assert_eq!(ds.len(), 1, "{src}");
+            let mut s = Stream::new();
+            w.own_exception_spec(&mut s, ds[0]);
+            (s.as_bytes().to_vec(), s.cause())
+        })
+    }
+
+    // digest-kinds §11.2 (WP-046 review S2): a member of a local class has
+    // no resolved unit; its own stream holds the specification Kiln
+    // resolved or was given, and is indeterminate only while Kiln still
+    // holds it deferred.
+    #[test]
+    fn a_local_class_member_holds_its_specification() {
+        let dtor = |spec: &str| {
+            local_spec(
+                &format!("void k() {{ struct L {{ ~L() {spec} {{}} }}; L l; }}\n"),
+                DeclKind::CXXDestructor,
+            )
+        };
+        let (thrown, c1) = dtor("noexcept(false)");
+        let (none, c2) = dtor("");
+        assert_eq!((c1, c2), (None, None));
+        assert_ne!(thrown, none);
+        let ctor = |spec: &str| {
+            local_spec(
+                &format!(
+                    "struct M {{ M() noexcept(false); }};\n\
+                     void k() {{ struct L {{ M m; L() {spec} = default; }}; L l; }}\n"
+                ),
+                DeclKind::CXXConstructor,
+            )
+        };
+        let (written, c1) = ctor("noexcept");
+        let (computed, c2) = ctor("");
+        assert_eq!((c1, c2), (None, None));
+        assert_ne!(written, computed);
+        // Never used: Kiln still holds it deferred.
+        let (_, cause) = local_spec(
+            "struct M { M() noexcept(false); };\nvoid k() { struct L { M m; L() = default; }; }\n",
+            DeclKind::CXXConstructor,
+        );
+        assert_eq!(cause, Some(Cause::Pending(Area::Local)));
     }
 }
