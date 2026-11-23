@@ -328,6 +328,18 @@ something else is exactly how a dependent name that resolves differently
 shows up ([03](../docs/design/03-equivalence.md) §7 row 6), and no declared
 unit need differ then.
 
+One kind of derived unit exists without a demand: a resolved
+`exception_spec` (`digest-kinds.md` §11.2), which Kiln also resolves when
+it defines the function, so a destructor declared `noexcept(false)` on
+one side and with no specification on the other, never used, has the unit
+on one side only and no declared unit differs. It is safe to skip because
+every construct that reads a specification (a call, `noexcept`, forming
+the function's type or address, a definition) makes
+Kiln resolve it on both sides, so wherever the translation unit observes
+the difference the unit is on both sides and differs
+(`crates/slip_digest/tests/differ/_/resolved-spec-observed-both-sides`,
+`resolved-spec-addr-deferred`, `resolved-spec-addr-deferred-dtor-member`).
+
 This argument assumes the front end's demand is a function of the program.
 The demand-independence test of `digest.md` §14 is what checks it.
 
@@ -816,7 +828,7 @@ form the walk makes (`crates/slip_digest/src/names.rs`):
 | a deduction guide | `<deduction guide for S>` and its parameters as a function: `<deduction guide for S>(char)`; a deduction guide template with its head and return type as a function template |
 | a friend function keyed in the class that befriends it (digest-kinds §3.3 `function`) | the class's name, `::friend `, then the function's: `A<int>::friend k(int)`, `C::friend template <class> void g(type-parameter-0-0)` |
 | a partial specialisation | as a specialisation, with its pattern for the arguments; if its head has a type-constraint or a requires-clause, the head first, which is what tells two partial specialisations of one pattern apart: `S<type-parameter-0-0 *>`, `template <class> requires C2<T> S<type-parameter-0-0 *>` |
-| a specialisation | the template's name and its canonical arguments as Kiln prints them, except that a null pointer argument whose type is not `std::nullptr_t` is written `(T)nullptr`: `ns::S<int>`, `N<(int *)nullptr>` |
+| a specialisation | the template's name and its canonical arguments as Kiln prints them, with every entity an argument names written by its qualified name (`ns::S<ns::T>`, never `ns::S<T>`: two classes `T` of two namespaces are two specialisations), and except that a null pointer argument whose type is not `std::nullptr_t` is written `(T)nullptr`: `ns::S<int>`, `N<(int *)nullptr>` |
 | an unnamed class or enumeration | its scope and `(anonymous K for n)` when it is named by a declarator, typedef or member (digest §3.3), else `(anonymous K N)`, `N` its ordinal among the unnamed types of its scope, else `(anonymous K)`; `K` the class-key or `enum`: `(anonymous struct for P)`, `ns::(anonymous enum 1)`; its members are named under it |
 | the unnamed object of an anonymous class (an anonymous union's member object) | its scope and `(object of ` the class's name `)`: `S::(object of (anonymous union 0))` |
 | any other entity Kiln prints no name for (an unnamed bit-field) | its scope and `(unnamed N)`, `N` its ordinal (digest §3.3), or `(unnamed)` |
@@ -829,6 +841,8 @@ form the walk makes (`crates/slip_digest/src/names.rs`):
 | a using-directive, a using-enum | its scope and `<using_directive n>`, `<using_enum E>` |
 | a `static_assert`, file-scope `asm`, `consteval` block | its scope and `<static_assert>`, `<asm>`, `<consteval_block>`. These are content-keyed (digest §3.3): two of one scope have the same name and cannot be named one by one, only by their scope; a finding on one is told apart by its `where` |
 | a template parameter object | its scope and `<template_param_object>` |
+| a `default_argument` unit (digest-kinds §11.4) | its function's or field's name and `::<default_argument n>`, `n` the parameter's index: `X<int>::f(int)::<default_argument 0>` |
+| a resolved unit (digest-kinds §11.1) | its owner's name and `::<` the property `>`, with its discriminator after a space: `S::<key_function>`, `f(int)::<default_immediates 0>`, `X<int>::f(int)::<default_argument 0>::<default_immediates>` |
 | the order unit | `<order>` |
 
 The plain name of an entity a unit refers to (a shadow's target, what a
@@ -1143,7 +1157,10 @@ impl State { pub const ALL: [State; 7]; pub fn name(self) -> &'static str; }
 /// it is not this run's); `map` the status of its map shard (None: absent).
 pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State;
 
-pub enum RunVerdict { Verified, NotVerified, Incomplete }
+/// Re-exported: `slip_model::result::RunVerdict` (spec/edits.md §8.5), the
+/// one type, `Verified = 0, NotVerified = 1, Incomplete = 2`.
+pub use slip_model::result::RunVerdict;
+impl RunVerdict { pub const ALL: [RunVerdict; 3]; pub fn name(self) -> &'static str; }
 pub fn run_verdict(states: &[State]) -> RunVerdict;
 
 pub struct Header { pub plan: Digest, pub round: u64, pub declared: Digest, pub rules: Digest,
@@ -1704,6 +1721,18 @@ using-declaration). Those are judged by the comparison of digests alone.
 
 ## Open questions
 
+- **Name-derived values that changed** (`digest.md` §9). A relocation
+  changes what `__func__`, `__PRETTY_FUNCTION__`,
+  `std::source_location` and `typeid(T).name()` yield for the entities
+  it renames, and the verdict does not count it. A program that
+  observes such a string (a parsed log, a registry keyed by a type's
+  name, a persisted identifier) should be told. Proposed: an
+  informational section of the report listing each unit that holds such
+  a builtin and whose name, or a name in whose scope it is, a rule
+  changes; no verdict depends on it. The walk would count them per unit
+  (a counter beside `rule_use`, §9.1). Open: whether a run may ask for
+  them to be findings (`--strict-names`), and whether
+  `typeid(T).name()`, whose value is the implementation's, is listed.
 - **Agreement costs a job per observer** (§9, §5): with rules, no
   observer is unchanged. `spec/edits.md` ("Open questions") proposes a
   filter of key ids in the map shard so that an observer that cannot have

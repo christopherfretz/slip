@@ -1,0 +1,3 @@
+resolved A<int>::f(int)::<default_argument 0>
+resolved A<int>::f(int)::<default_argument 0>::<default_immediates 0>
+added h()

@@ -31,7 +31,14 @@
 //!   §3.3 `function`) as `A<int>::friend k(int)`;
 //! - a content-keyed unit as its scope and `<kind>`, with what it names
 //!   for a friend (`<friend C>`), a using-directive and a using-enum
-//!   (`ns::<using_directive n>`); the order unit as `<order>`.
+//!   (`ns::<using_directive n>`);
+//! - a resolved unit as its owner's name and `::<property>`, with its
+//!   discriminator after a space (`S::<key_function>`,
+//!   `f(int)::<default_immediates 0>`); a `default_argument` unit as its
+//!   function's or field's name and `::<default_argument n>`
+//!   (`X<int>::f(int)::<default_argument 0>`), before the property of a
+//!   resolved unit of it;
+//! - the order unit as `<order>`.
 
 use std::collections::BTreeMap;
 
@@ -68,7 +75,24 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
         .iter()
         .map(|u| {
             let name = match u.entity {
-                Some(e) => n.unit(u.read.unwrap_or(e), e, u.kind),
+                Some(e) => {
+                    let mut name = n.unit(u.read.unwrap_or(e), e, u.kind);
+                    if let Some(i) = u.default_argument {
+                        name.push_str("::<default_argument ");
+                        name.push_str(&i.to_string());
+                        name.push('>');
+                    }
+                    if let Some(r) = u.resolved {
+                        name.push_str("::<");
+                        name.push_str(r.property.word());
+                        if let Some(i) = r.disc {
+                            name.push(' ');
+                            name.push_str(&i.to_string());
+                        }
+                        name.push('>');
+                    }
+                    name
+                }
                 None => "<order>".to_owned(),
             };
             (u.key, name)

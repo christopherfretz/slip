@@ -204,8 +204,8 @@ the preprocessor's and not the AST's.
 | The value of an immediate invocation inside a default argument, computed at its first use | `resolved` unit |
 | A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
 | A deduced return type of a template member | part of the instantiation's derived unit |
-| A variable's evaluated constant value (`eval`), default-argument immediate values | `resolved` unit |
-| A class's key function; `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
+| A variable's evaluated constant value (`eval`), default-argument immediate values. At Kiln `913a490bb` `eval` is written when Kiln checks the declaration's initialiser: with the declaration, or, for one made by instantiation, when a use instantiates it (`digest-kinds.md` §11.3) | `resolved` unit |
+| A class's key function; `dtor_delete`, `dtor_delete_this` (set when a virtual destructor is defined, which for an implicit or defaulted one is on use), `inheriting_ctor`, `inherited_ctor` (set when Kiln declares the inheriting constructor, on use) cold maps | `resolved` unit of the class or function |
 | The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |
 | "vtable used" marks | not in the AST: nothing to digest |
 | "A complete definition was required" marks; the lists of classes completed and of function definitions instantiated; the tables that record which specialisations exist and in what order they were made | not digested |
@@ -623,9 +623,29 @@ object is unspecified by the language and is not digested.
 `__func__`, `__PRETTY_FUNCTION__` and the fields of `std::source_location`
 are written **symbolically** (which builtin, not its value), as are literals
 that come from the expansion of `__LINE__`, `__FILE__`, `__COUNTER__`,
-`__DATE__`, `__TIME__` and their relatives. Where such a value determines a
-type or another constant (an array bound from `__LINE__`), that type or
-constant is written by value as always, so a real change is seen.
+`__DATE__`, `__TIME__` and their relatives.
+
+The expression's **own type** and the **constant it stands for** are
+symbolic with it. The array type of `__func__` and its kin (`const
+char[N]`, `N` the length of a name) is written as that builtin's type,
+without the bound. The object that an immediate invocation builds from
+such values and nothing else (`std::source_location::current()`, in a
+default argument as anywhere) is written as the builtins it was built
+from, not as its bytes.
+
+Whatever **consumes** such a value is written by value as always, so a
+real change is seen: an array bound from `__LINE__`, `sizeof(__func__)`,
+the length of a name deduced as a template argument, a variable declared
+with the array's type or a reference to it, a constant computed from the
+characters.
+
+Why the type goes with the value: a declared relocation says that names
+change, and a value that is a function of a name changes by exactly that,
+as a mangled name does. `assert` expands to `__PRETTY_FUNCTION__`; were
+its length a fact, no function that asserts could be relocated and
+verify. A program that observes such a string (a log that is parsed, a
+registry keyed by it) is told by the report, not by the verdict
+(`verify.md` "Open questions").
 
 ## 10. Indeterminate units
 
