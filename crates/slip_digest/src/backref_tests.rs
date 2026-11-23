@@ -241,6 +241,8 @@ fn a_node_written_again_is_a_back_reference() {
         let mut t = Stream::new();
         assert_eq!(appended(w, &mut t, e), first);
         assert_eq!(appended(w, &mut t, e), backref(0));
+        // The first stream's memo is kept while the other is written.
+        assert_eq!(appended(w, &mut s, e), backref(0));
     });
 }
 

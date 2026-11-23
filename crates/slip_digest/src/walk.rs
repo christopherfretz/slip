@@ -93,13 +93,50 @@ pub(crate) enum NodeRef {
     Stmt(slip_kiln::kiln::ast::StmtId),
 }
 
-/// The memo of back-references: a node and the walk state its rows read
-/// (one word), and the identity of the stream it was written in, to the
-/// node's count in that stream.
-pub(crate) type NodeMemo = HashMap<(u64, u64), u64, BuildHasherDefault<NodeHasher>>;
+/// The memo of back-references ([`Walk::back_ref`]): for each stream
+/// that has written a node under this expression state, the nodes it
+/// wrote first and their counts. The stream being written is kept apart
+/// from the rest, so the common case (one stream at a time) is one map
+/// lookup; a stream left for another (an element of a `*sorted` list
+/// written alone, a reference's own stream) keeps its maps until it is
+/// written again or the state is dropped.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct NodeMemo {
+    /// The identity of the stream `maps` belongs to; `None` before any.
+    current: Option<u64>,
+    maps: StateMaps,
+    others: HashMap<u64, StateMaps, BuildHasherDefault<NodeHasher>>,
+}
 
-/// A multiplicative hasher for the memo's keys, which are two words the
-/// walk makes (not input an adversary picks: a node id and a counter).
+/// One stream's first writings: a map from a node's id to its count for
+/// each state a row can read, indexed by `KEY_STMT | KEY_DEPENDENT |
+/// KEY_IN_KEY`. Four bytes of key and four of count per node: the memo
+/// is on the path of every node of every unit (WP-049 decision 7).
+type StateMaps = [HashMap<u32, u32, BuildHasherDefault<NodeHasher>>; 8];
+
+impl NodeMemo {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.current.is_none() && self.others.is_empty()
+    }
+
+    /// The maps of stream `id`, made the current ones.
+    fn maps(&mut self, id: u64) -> &mut StateMaps {
+        if self.current != Some(id) {
+            let maps = self.others.remove(&id).unwrap_or_default();
+            let left = std::mem::replace(&mut self.maps, maps);
+            if let Some(c) = self.current
+                && left.iter().any(|m| !m.is_empty())
+            {
+                self.others.insert(c, left);
+            }
+            self.current = Some(id);
+        }
+        &mut self.maps
+    }
+}
+
+/// A multiplicative hasher for the memo's keys, which are words the walk
+/// makes (not input an adversary picks: a node id and a counter).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct NodeHasher(u64);
 
@@ -114,15 +151,19 @@ impl Hasher for NodeHasher {
         }
     }
 
+    fn write_u32(&mut self, v: u32) {
+        self.write_u64(u64::from(v));
+    }
+
     fn write_u64(&mut self, v: u64) {
         self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
     }
 }
 
-/// The bits of a memo key above the node's id (`Walk::back_ref`).
-const KEY_STMT: u64 = 1 << 32;
-const KEY_DEPENDENT: u64 = 1 << 33;
-const KEY_IN_KEY: u64 = 1 << 34;
+/// The bits of a memo's state index (`Walk::back_ref`).
+const KEY_STMT: usize = 1;
+const KEY_DEPENDENT: usize = 2;
+const KEY_IN_KEY: usize = 4;
 
 impl ExprState {
     /// Nothing numbered and nothing around: the state a type digest
@@ -340,24 +381,30 @@ impl<'a> Walk<'a> {
         if expr.profile.is_some() {
             return None;
         }
-        let mut key = match node {
-            NodeRef::Expr(e) => u64::from(e.raw()),
-            NodeRef::Stmt(st) => KEY_STMT | u64::from(st.raw()),
+        let (id, mut state) = match node {
+            NodeRef::Expr(e) => (e.raw(), 0),
+            NodeRef::Stmt(st) => (st.raw(), KEY_STMT),
         };
         if expr.dependent > 0 {
-            key |= KEY_DEPENDENT;
+            state |= KEY_DEPENDENT;
         }
         if self.in_key > 0 {
-            key |= KEY_IN_KEY;
+            state |= KEY_IN_KEY;
         }
-        match expr.nodes.entry((key, s.id())) {
+        match expr.nodes.maps(s.id())[state].entry(id) {
             std::collections::hash_map::Entry::Occupied(n) => {
                 #[cfg(test)]
                 BACKREFS.with(|c| c.set(c.get() + 1));
-                Some(*n.get())
+                Some(u64::from(*n.get()))
             }
             std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert(s.count_node());
+                // A count past `u32` (never met: a stream would hold four
+                // billion nodes) is counted and not remembered: the node
+                // is written in full if reached again, which is the same
+                // for every writing of the stream.
+                if let Ok(n) = u32::try_from(s.count_node()) {
+                    v.insert(n);
+                }
                 None
             }
         }
