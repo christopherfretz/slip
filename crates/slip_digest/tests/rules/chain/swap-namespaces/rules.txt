@@ -1,0 +1,3 @@
+# Item 4: two namespaces swapped; each rule applies once.
+relocate p => :: q
+relocate q => :: p

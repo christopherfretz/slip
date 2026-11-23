@@ -1,0 +1,2 @@
+# Item 9 attempt: a free function mapped into a class, onto a static member function of one signature and body.
+rule function | root | id f | disc-of post f(S *) | pre S | id f

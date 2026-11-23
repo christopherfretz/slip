@@ -14,6 +14,7 @@
 #![allow(dead_code, reason = "each runner uses a part")]
 
 pub mod pairs;
+pub mod rules;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -265,13 +266,138 @@ pub fn is_pending(dir: &Path) -> bool {
         .is_ok_and(|t| t.lines().any(|l| l.trim() == "# pending"))
 }
 
-/// Parses and digests one side of the test in `dir`.
+/// Parses and digests one side of the test in `dir`: side B under the
+/// rules of the directory's `relocate.txt`, if it has one
+/// ([`relocations`]), side A and every other side under none.
 pub fn digest_side(dir: &Path, side: Side) -> Result<Digested, String> {
-    digest_side_with(dir, side, &RuleTable::empty())
+    match side {
+        Side::A => digest_side_with(dir, side, &RuleTable::empty()),
+        Side::B => {
+            let (rules, renames) = relocations(dir)?;
+            digest_side_renamed(dir, side, rules, &renames)
+        }
+    }
+}
+
+/// An entity of side B renamed back to its side-A name: the record's name
+/// (`spec/verify.md` §6.1) and the identifier it had.
+pub type Rename = (String, slip_model::keys::Name);
+
+/// The rules of a test directory's `relocate.txt` (WP-104,
+/// `spec/landed/digest/WP-104.md`): none without the file. Each line that
+/// is not blank or a `#` comment is one of
+///
+/// - `relocate <a> => :: <b>`, as `declared.txt` writes it
+///   (`spec/verify.md` §2.3): the namespace `<a>` of the global namespace
+///   in side A is the namespace `<b>` of side B. The rule is the one that
+///   undoes the relocation (`spec/verify.md` §2.1), applied to side B:
+///   `<b>` at the root, kind `namespace`, is written as `<a>`;
+/// - `rename <record> => <a>`: the entity side B's record names
+///   `<record>` (under the `relocate` rules) was named `<a>` in side A.
+///   Its rule is made from that record's `Key` (its parent, kind and
+///   discriminator), which only a parse of side B gives: [`Rename`].
+pub fn relocations(dir: &Path) -> Result<(Vec<slip_model::keys::Rule>, Vec<Rename>), String> {
+    use slip_model::keys::{KeyKind, Name, Parent, Rule};
+    let Ok(text) = std::fs::read_to_string(dir.join("relocate.txt")) else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let ident = |s: &str| {
+        let s = s.trim();
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+            .then(|| Name::Identifier(s.as_bytes().to_vec()))
+    };
+    let (mut rules, mut renames) = (Vec::new(), Vec::new());
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let bad = || {
+            format!(
+                "relocate.txt line {}: `{line}` is not `relocate <a> => :: <b>` or `rename <record> => <a>`",
+                i + 1
+            )
+        };
+        if let Some(rest) = line.strip_prefix("rename ") {
+            let (record, from) = rest.rsplit_once(" => ").ok_or_else(bad)?;
+            renames.push((record.trim().to_owned(), ident(from).ok_or_else(bad)?));
+            continue;
+        }
+        let rest = line.strip_prefix("relocate ").ok_or_else(bad)?;
+        let (from, to) = rest.split_once(" => :: ").ok_or_else(bad)?;
+        let (from, to) = (ident(from).ok_or_else(bad)?, ident(to).ok_or_else(bad)?);
+        rules.push(Rule {
+            parent: Parent::Root,
+            kind: KeyKind::Namespace,
+            name: to,
+            disc: None,
+            to_parent: Parent::Root,
+            to_name: from,
+        });
+    }
+    Ok((rules, renames))
+}
+
+/// The rule table of `rules` and of each of `renames`, found among the
+/// records of `input` under `rules`.
+fn rename_rules(
+    input: &Input<'_>,
+    rules: &[slip_model::keys::Rule],
+    renames: &[Rename],
+) -> Result<RuleTable, String> {
+    use slip_model::keys::Rule;
+    let base = RuleTable::new(rules.to_vec()).map_err(|e| format!("relocate.txt: {e}"))?;
+    if renames.is_empty() {
+        return Ok(base);
+    }
+    let records = slip_digest::records::records(input, &base)
+        .map_err(|e| format!("relocate.txt: the records of side B: {e:?}"))?;
+    let mut all = rules.to_vec();
+    for (name, from) in renames {
+        let mut found = records.iter().filter(|r| &r.name == name);
+        let (Some(r), None) = (found.next(), found.next()) else {
+            return Err(format!(
+                "relocate.txt: `rename {name}`: not exactly one record of side B has that name"
+            ));
+        };
+        let Some(key) = r.key.clone() else {
+            return Err(format!("relocate.txt: `rename {name}`: the record has no key"));
+        };
+        all.push(Rule {
+            parent: key.parent,
+            kind: key.kind,
+            name: key.name,
+            disc: key.disc,
+            to_parent: key.parent,
+            to_name: from.clone(),
+        });
+    }
+    RuleTable::new(all).map_err(|e| format!("relocate.txt: {e}"))
 }
 
 /// [`digest_side`] under the rules `rules`.
 pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Digested, String> {
+    digest_side_table(dir, side, &Tables::Given(rules))
+}
+
+/// [`digest_side`] under `rules` and `renames` ([`relocations`]).
+fn digest_side_renamed(
+    dir: &Path,
+    side: Side,
+    rules: Vec<slip_model::keys::Rule>,
+    renames: &[Rename],
+) -> Result<Digested, String> {
+    digest_side_table(dir, side, &Tables::Renamed(rules, renames))
+}
+
+/// The rules a side is digested under.
+enum Tables<'a> {
+    Given(&'a RuleTable),
+    /// Made from the side's own parse ([`rename_rules`]).
+    Renamed(Vec<slip_model::keys::Rule>, &'a [Rename]),
+}
+
+fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Digested, String> {
     let (list, head) = side_files(&files(dir)?, side)?;
     // `// module:` (WP-048): each file is another file of the snippet.
     for (name, file) in &head.modules {
@@ -313,13 +439,22 @@ pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Dig
                 paths.get(f.index()).cloned().unwrap_or_default()
             };
             let input = Input { ast, sm, subject_path: &path };
+            let made;
+            let rules = match tables {
+                Tables::Given(r) => *r,
+                Tables::Renamed(rules, renames) => {
+                    made = rename_rules(&input, rules, renames)?;
+                    &made
+                }
+            };
             let options = Options { rules, detail: Detail::All, names: true };
-            slip_digest::digest(&input, &options)
+            Ok::<_, String>(slip_digest::digest(&input, &options))
         });
         (output, p.errors, p.diagnostics.clone())
     })
     .map_err(|e| format!("side {side:?} (`kiln {}`): {e}", head.line()))?;
     let (output, errors, diagnostics) = out;
+    let output = output?;
     if errors > 0 && !head.errors {
         return Err(format!(
             "side {side:?} (`kiln {}`) has {errors} error(s):\n{diagnostics}",
@@ -346,6 +481,58 @@ pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Dig
         }
     }
     Ok(Digested { output, units, errors, diagnostics })
+}
+
+/// Parses one side of the test in `dir` as [`digest_side_with`] does and
+/// runs `f` on its input, on the walk's stack, so that a runner can walk
+/// one parse several times (WP-103: records, and the post-image under
+/// several tables). An error of the side is an `Err` as there.
+pub fn with_side<R: Send>(
+    dir: &Path,
+    side: Side,
+    f: impl FnOnce(&Input<'_>) -> R + Send,
+) -> Result<R, String> {
+    let (list, head) = side_files(&files(dir)?, side)?;
+    let refs: Vec<(&str, &str)> = list.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let snippet = slip_kiln::snippet::Snippet {
+        files: &refs,
+        main: "main.cpp",
+        include: &[""],
+        std: &head.std,
+    };
+    let args: Vec<&str> = head.args.iter().map(String::as_str).collect();
+    let extra = slip_kiln::snippet::Extra { args: &args, target: head.target.as_deref() };
+    let out = slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+        let paths: Vec<Vec<u8>> =
+            p.sm.file_ids()
+                .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                .collect();
+        let (ast, sm) = (p.ast, p.sm);
+        let r = on_walk_stack(|| {
+            let path = |f: slip_kiln::kiln::source::FileId| {
+                paths.get(f.index()).cloned().unwrap_or_default()
+            };
+            let input = Input { ast, sm, subject_path: &path };
+            f(&input)
+        });
+        (r, p.errors, p.diagnostics.clone())
+    })
+    .map_err(|e| format!("side {side:?} (`kiln {}`): {e}", head.line()))?;
+    let (r, errors, diagnostics) = out;
+    if errors > 0 && !head.errors {
+        return Err(format!(
+            "side {side:?} (`kiln {}`) has {errors} error(s):\n{diagnostics}",
+            head.line()
+        ));
+    }
+    Ok(r)
+}
+
+/// A side as [`digest_side_with`] gives it, from an `Output` a caller of
+/// [`with_side`] made.
+pub fn digested(output: Output) -> Digested {
+    let units = index(&output);
+    Digested { output, units, errors: 0, diagnostics: String::new() }
 }
 
 /// The files of `tests/support/`, by name: files of every snippet whose
@@ -393,7 +580,7 @@ pub fn side_files(
     }
     list.push(("main.cpp".to_owned(), main_text.clone()));
     for (name, text) in all {
-        if !matches!(name.as_str(), "t.cpp" | "a.cpp" | "b.cpp" | "expect.txt") {
+        if !matches!(name.as_str(), "t.cpp" | "a.cpp" | "b.cpp" | "expect.txt" | "relocate.txt") {
             list.push((name.clone(), text.clone()));
         }
     }
@@ -535,6 +722,55 @@ fn read_expect(dir: &Path) -> Result<(BTreeSet<Expect>, bool), String> {
         out.insert(e);
     }
     Ok((out, exact))
+}
+
+/// What [`expect_text`] reads: the lines, whether `exact derived` is
+/// given, and the lines the runner reads itself, with their numbers.
+pub type ExpectText = (BTreeSet<Expect>, bool, Vec<(usize, String)>);
+
+/// The lines of an `expect.txt` text as [`expect`] and [`exact_derived`]
+/// read them, but for the lines `own` accepts, which a runner reads
+/// itself (WP-103: the `use` lines of `tests/rules.rs`) and which are
+/// returned, trimmed, with their numbers.
+pub fn expect_text(text: &str, own: impl Fn(&str) -> bool) -> Result<ExpectText, String> {
+    let mut out = BTreeSet::new();
+    let mut exact = false;
+    let mut mine = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if own(line) {
+            mine.push((i + 1, line.to_owned()));
+            continue;
+        }
+        if line == EXACT_DERIVED {
+            if exact {
+                return Err(format!("expect.txt:{}: a second `{EXACT_DERIVED}`", i + 1));
+            }
+            exact = true;
+            continue;
+        }
+        let (word, name) =
+            line.split_once(' ').ok_or_else(|| format!("expect.txt:{}: no name", i + 1))?;
+        let name = name.trim().to_owned();
+        let e = match word {
+            "changed" => Expect::Changed(name),
+            "added" => Expect::Added(name),
+            "removed" => Expect::Removed(name),
+            "indeterminate" => Expect::Indeterminate(name),
+            "derived-changed" => Expect::DerivedChanged(name),
+            "derived-added" => Expect::DerivedAdded(name),
+            "derived-removed" => Expect::DerivedRemoved(name),
+            _ => return Err(format!("expect.txt:{}: unknown word `{word}`", i + 1)),
+        };
+        if out.contains(&e) {
+            return Err(format!("expect.txt:{}: `{}` a second time", i + 1, e.line()));
+        }
+        out.insert(e);
+    }
+    Ok((out, exact, mine))
 }
 
 /// The lines of `expect.txt` (absent: none); the directive

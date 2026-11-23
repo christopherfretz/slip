@@ -1,0 +1,4 @@
+# Fix round 2, F3: a member instantiated from a pattern member takes the pattern member's mapped name (spec/digest.md §3.4).
+# The review's case: a rule written for the member of the implicit instantiation as well as the pattern's. The stricter reading: no source renames an instantiation's member alone, so a rule that matches one makes its key indeterminate.
+relocate S::f() => S :: g
+relocate S<int>::f() => S<int> :: g

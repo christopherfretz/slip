@@ -1,0 +1,3 @@
+# The table is refused (Rule::refusal, crates/slip_model/src/keys.rs). clang++-19 -c:
+# nm: `d _ZN12_GLOBAL__N_11vE` in a.o, `D _ZN3foo1vE` in b.o: every member's linkage changes.
+refused a rule may not rename the unnamed namespace

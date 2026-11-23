@@ -6,12 +6,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# `cargo xtask` runs `cargo run --package xtask`; `fake-slip` is a test
+# fixture (src/bin/fake-slip.rs).
+default-run = "xtask"
 
 [dependencies]
-# Workspace crates only (spec/harness.md: xtask "may depend on slip_model and
-# slip_exec"): the container formats and JSON, the store and the jobserver.
+# Workspace crates only (spec/harness.md: xtask "may depend on slip_model,
+# slip_exec and slip_verify"): the container formats and JSON, the store and
+# the jobserver, and the rule that a result permits writing
+# (slip_verify::conclude::permits, Kiln-free).
 slip_model.workspace = true
 slip_exec.workspace = true
+slip_verify.workspace = true
 
 [lints]
 workspace = true

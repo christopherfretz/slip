@@ -1,0 +1,7 @@
+removed acme::(anonymous struct for P)
+removed acme::(anonymous struct for P)::a
+added legacy::(anonymous struct for Q)
+added legacy::(anonymous struct for Q)::a
+changed acme::P
+changed acme::make()
+changed use()

@@ -86,7 +86,11 @@ pub(crate) fn static_assert_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(STATIC_ASSERT_MISSING);
         return;
     };
+    // The condition's value is not stored: what it reads of a name is
+    // read by value (digest §9).
+    w.by_value += 1;
     crate::expr::child(w, s, cond);
+    w.by_value -= 1;
     crate::expr::child_opt(w, s, message);
 }
 

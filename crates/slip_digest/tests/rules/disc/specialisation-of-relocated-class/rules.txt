@@ -1,0 +1,2 @@
+# Item 2: specialisations whose argument is a relocated class, explicit and implicit.
+relocate acme => :: legacy

@@ -187,6 +187,38 @@ pub(crate) fn decl_ref(w: &Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &
         template_args
     });
     decl_ref_extra(w, DeclId::try_new(n.a), args, out);
+    out.push(Item::Exec(local_value, e));
+}
+
+/// After a `DeclRefExpr`, where name-derived values are read by value
+/// ([`Walk::by_value`]) and only there: `value?`, the evaluated value of
+/// the block-scope variable it names, by value; nothing for any other
+/// entity. Such a variable's own stream writes its value in the mode of
+/// the function (`decl_func::var_data`), which passes a name on; a
+/// `static_assert` condition, a key or a type that reads the variable
+/// reads its value (digest §9).
+fn local_value(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    if w.by_value == 0 {
+        return;
+    }
+    let ast = w.ast;
+    let Some(var) = DeclId::try_new(ast.exprs.get(e).a()) else { return };
+    let var = ast.strip_shadow(var);
+    if ast.decls.get(var).kind() != slip_kiln::kiln::ast::decl::DeclKind::Var
+        || !w.is_local(var)
+        || w.is_local_extern(var)
+    {
+        return;
+    }
+    match crate::decl_func::var_eval(w, var).state() {
+        slip_kiln::kiln::ast::decl::VarEvalState::Value(eval) => {
+            s.opt(true);
+            crate::value::value(w, s, eval);
+        }
+        _ => {
+            s.opt(false);
+        }
+    }
 }
 
 /// `record DeclRefExtra` (§7.3) of a name of `named`: `template_args`
@@ -419,7 +451,14 @@ pub(crate) fn cast(s: &mut Stream, n: &Node, implicit: bool, out: &mut Vec<Item>
         out.push(Item::Uv(0));
         out.push(Item::Cause(Cause::Unaccounted("ExprNode/cast.aux")));
     }
-    child(out, n.a, Cause::Unaccounted("ExprNode/cast.a"));
+    // The operand of an array-to-pointer conversion passes a name-derived
+    // value through (digest §9, `expr_misc::name_type`).
+    match ExprId::try_new(n.a) {
+        Some(a) if implicit && CastKind::from_u8(n.aux) == Some(CastKind::ArrayToPointerDecay) => {
+            out.push(Item::Decayed(a));
+        }
+        Some(_) | None => child(out, n.a, Cause::Unaccounted("ExprNode/cast.a")),
+    }
     out.push(Item::BasePath(ListId::try_new(n.b)));
 }
 
@@ -468,14 +507,34 @@ pub(crate) fn opaque_value(s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec<It
     out.push(Item::Opaque(e));
 }
 
+/// Raises [`Walk::by_value`] for the operand of a `ConstantExpr` with no
+/// stored value ([`constant`]).
+fn raise_by_value(w: &mut Walk<'_>, _: &mut Stream, _: ExprId) {
+    w.by_value += 1;
+}
+
+/// Lowers what [`raise_by_value`] raised.
+fn lower_by_value(w: &mut Walk<'_>, _: &mut Stream, _: ExprId) {
+    w.by_value -= 1;
+}
+
 /// `ConstantExpr`: the flag word (`aux-elided`, `aux-value-hidden`), `a`,
 /// then `b`: `value?`.
-pub(crate) fn constant(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
+pub(crate) fn constant(s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec<Item>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/ConstantExpr.bits"));
     check_aux(s, n, 3, Cause::Unaccounted("ExprNode/ConstantExpr.aux"));
     out.push(Item::Flags(FlagWord::new().bit(n.aux & 1 != 0).bit(n.aux & 2 != 0)));
-    child(out, n.a, Cause::Unaccounted("ExprNode/ConstantExpr.a"));
     let v = ConstValueId::try_new(n.b);
+    // With no stored value, what the operand reads of a name is read by
+    // value (digest §9); with one, the value is written and the operand
+    // passes names on as anywhere.
+    if v.is_none() {
+        out.push(Item::Exec(raise_by_value, e));
+    }
+    child(out, n.a, Cause::Unaccounted("ExprNode/ConstantExpr.a"));
+    if v.is_none() {
+        out.push(Item::Exec(lower_by_value, e));
+    }
     out.push(Item::Opt(v.is_some()));
     if let Some(v) = v {
         out.push(Item::Value(v));

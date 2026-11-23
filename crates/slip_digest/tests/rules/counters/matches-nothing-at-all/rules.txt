@@ -1,0 +1,3 @@
+# Item 10: a rule whose source and target no entity has: 0 and 0.
+# vacuous
+rule function | root | id nothing | disc-of post f() | root | id gone

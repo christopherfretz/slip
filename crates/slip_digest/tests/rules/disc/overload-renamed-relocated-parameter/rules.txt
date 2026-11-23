@@ -1,0 +1,3 @@
+# Item 2: one of two overloads renamed; they differ in a parameter whose type is a relocated class. The rule matches the discriminator mapped.
+relocate acme => :: legacy
+relocate f(acme::S) => :: g

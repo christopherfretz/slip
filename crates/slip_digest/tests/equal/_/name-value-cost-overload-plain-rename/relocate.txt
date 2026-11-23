@@ -1,0 +1,1 @@
+rename g(int) => f

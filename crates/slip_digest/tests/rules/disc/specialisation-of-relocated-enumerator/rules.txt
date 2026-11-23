@@ -1,0 +1,2 @@
+# Item 2: a specialisation whose argument is an enumerator of a relocated enumeration (its type is the enumeration).
+relocate acme => :: legacy

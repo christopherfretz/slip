@@ -1,0 +1,4 @@
+# Fix round 2, F3: a member instantiated from a pattern member takes the pattern member's mapped name (spec/digest.md §3.4).
+# With its own rule it is equal.
+relocate S::f() => S :: g
+relocate S<int>::f() => S<int> :: g

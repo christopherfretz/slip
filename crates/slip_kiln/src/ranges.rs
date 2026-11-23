@@ -75,25 +75,59 @@ pub struct FileRange {
 /// bytes: `not_a_file`, `file_recoded` and `not_plain` are the callers'
 /// (`spec/edits.md` §2.3).
 pub fn file_range_of_span(sm: &SourceManager, span: Span) -> Option<FileRange> {
+    file_range_or_why(sm, span).ok()
+}
+
+/// Why [`file_range_of_span`] gives no range (`spec/edits.md` §2.3: its
+/// `directive` row is [`NoRange::Directive`]; every other case is
+/// `crossing`'s "Kiln gives no range"). Added by WP-068 so that
+/// `slip_kiln::sites` carries this module's answer instead of finding it
+/// again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NoRange {
+    /// The span is empty: version 0 of the API has no insertion point.
+    Empty,
+    /// Kiln's `editable_file_range` gives none.
+    Kiln,
+    /// Kiln's range is empty or reversed.
+    Reversed,
+    /// Kiln's range is in a `<scratch space>` buffer (`#embed`'s tokens).
+    Scratch,
+    /// INTERIM: the range holds or is in a directive line (decision 10 of
+    /// `spec/landed/api/WP-084.md`; a line of a raw string or a comment
+    /// that begins with `#` counts too, until Kiln records directives).
+    Directive,
+    /// The span is not one token: its range is not the range of the one
+    /// token at its first location ([`token_range_or_why`]; added by the
+    /// WP-068 review, finding F1).
+    NotOneToken,
+}
+
+/// [`file_range_of_span`], with the reason when there is no range.
+///
+/// # Errors
+///
+/// [`NoRange`]: the first of its cases that holds, in its order.
+pub fn file_range_or_why(sm: &SourceManager, span: Span) -> Result<FileRange, NoRange> {
     if span.lo == span.hi {
-        return None;
+        return Err(NoRange::Empty);
     }
-    let (file, lo, hi) = sm.editable_file_range(span)?;
+    let (file, lo, hi) = sm.editable_file_range(span).ok_or(NoRange::Kiln)?;
     // An AST node's end may lie before its begin (a structured binding's
     // member reference begins at its name and ends at the `[`): such a
     // span, or one Kiln maps to an empty or reversed range, is no range.
     if lo >= hi {
-        return None;
+        return Err(NoRange::Reversed);
     }
     // Not a file the unit entered: `#embed`'s tokens, a `##` result.
     if sm.is_written_in_scratch_space(sm.loc(file, lo)) {
-        return None;
+        return Err(NoRange::Scratch);
     }
     // INTERIM (until Kiln records directive lines and skipped groups,
     // `spec/landed/api/WP-084.md` "Until Kiln answers"): a range that holds
     // a directive or part of a skipped group is no range.
     if touches_directive(sm.text(file).as_bytes(), lo as usize, hi as usize) {
-        return None;
+        return Err(NoRange::Directive);
     }
     // Kiln's rules 1 to 3 on the span as given: each end that is a macro
     // location passes its rule (both rules are the identity on a file
@@ -101,7 +135,52 @@ pub fn file_range_of_span(sm: &SourceManager, span: Span) -> Option<FileRange> {
     let whole = sm.file_loc_at_macro_start(span.lo).is_some()
         && sm.file_loc_at_macro_end(span.hi).is_some();
     let tier = if whole { Tier::File } else { Tier::MacroArgument };
-    Some(FileRange { file, lo, hi, tier })
+    Ok(FileRange { file, lo, hi, tier })
+}
+
+/// [`file_range_or_why`] of a span that must be **one token** (a name
+/// token, `slip_kiln::sites`): the range of `span` when it is the range of
+/// the one token at `span.lo` ([`file_range`]`(unit, span.lo, span.lo)`,
+/// Kiln's end of that token), else [`NoRange::NotOneToken`].
+///
+/// A span of several tokens can have a range that is good for each of its
+/// ends (`n::m` with `#define m m`: Kiln's range over two file-location
+/// ends holds the whole invocation `m`), so the tokens between are not
+/// looked at by the range alone. When `span` itself has no range, that
+/// reason is given (a span of several tokens that [`file_range_or_why`]
+/// refuses is refused for that reason).
+///
+/// # Errors
+///
+/// [`NoRange`]: [`file_range_or_why`]'s, or [`NoRange::NotOneToken`].
+pub fn token_range_or_why(unit: &Unit<'_>, span: Span) -> Result<FileRange, NoRange> {
+    let whole = file_range_or_why(unit.sm(), span)?;
+    if file_range(unit, span.lo, span.lo) == Some(whole) {
+        Ok(whole)
+    } else {
+        Err(NoRange::NotOneToken)
+    }
+}
+
+/// Where the characters of `span` are written, for a person to look at:
+/// Kiln's `editable_file_range` of the span's two ends taken to their
+/// spelling (`SourceManager::spelling_loc`), with none of this module's
+/// refusals but an empty, reversed or `<scratch space>` answer. It is
+/// **not** a range that may be edited: it is how `slip_kiln::sites` gives
+/// a `macro_body` refusal the token's bytes in the macro's definition
+/// (`spec/edits.md` §4.2), which lie on a `#define` line that
+/// [`file_range_of_span`] refuses. Added by WP-068. `None` when the two
+/// ends are not spelled in one buffer, in order.
+pub fn spelled_range(sm: &SourceManager, span: Span) -> Option<(FileId, u32, u32)> {
+    let written = Span::new(sm.spelling_loc(span.lo), sm.spelling_loc(span.hi));
+    if !written.lo.is_valid() || !written.hi.is_valid() {
+        return None;
+    }
+    let (file, lo, hi) = sm.editable_file_range(written)?;
+    if lo >= hi || sm.is_written_in_scratch_space(sm.loc(file, lo)) {
+        return None;
+    }
+    Some((file, lo, hi))
 }
 
 /// The file range of the tokens from the one at `first` to the one at

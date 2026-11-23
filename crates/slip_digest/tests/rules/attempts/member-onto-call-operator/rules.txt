@@ -1,0 +1,2 @@
+# Item 9 attempt: a member function mapped onto the name operator().
+rule function | post S | id call | disc-of post S::call(int) | pre S | name-of pre S::operator()(int)
