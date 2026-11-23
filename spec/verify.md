@@ -328,6 +328,18 @@ something else is exactly how a dependent name that resolves differently
 shows up ([03](../docs/design/03-equivalence.md) §7 row 6), and no declared
 unit need differ then.
 
+One kind of derived unit exists without a demand: a resolved
+`exception_spec` (`digest-kinds.md` §11.2), which Kiln also resolves when
+it defines the function, so a destructor declared `noexcept(false)` on
+one side and with no specification on the other, never used, has the unit
+on one side only and no declared unit differs. It is safe to skip because
+every construct that reads a specification (a call, `noexcept`, forming
+the function's type or address, a definition) makes
+Kiln resolve it on both sides, so wherever the translation unit observes
+the difference the unit is on both sides and differs
+(`crates/slip_digest/tests/differ/_/resolved-spec-observed-both-sides`,
+`resolved-spec-addr-deferred`, `resolved-spec-addr-deferred-dtor-member`).
+
 This argument assumes the front end's demand is a function of the program.
 The demand-independence test of `digest.md` §14 is what checks it.
 
@@ -829,6 +841,8 @@ form the walk makes (`crates/slip_digest/src/names.rs`):
 | a using-directive, a using-enum | its scope and `<using_directive n>`, `<using_enum E>` |
 | a `static_assert`, file-scope `asm`, `consteval` block | its scope and `<static_assert>`, `<asm>`, `<consteval_block>`. These are content-keyed (digest §3.3): two of one scope have the same name and cannot be named one by one, only by their scope; a finding on one is told apart by its `where` |
 | a template parameter object | its scope and `<template_param_object>` |
+| a `default_argument` unit (digest-kinds §11.4) | its function's or field's name and `::<default_argument n>`, `n` the parameter's index: `X<int>::f(int)::<default_argument 0>` |
+| a resolved unit (digest-kinds §11.1) | its owner's name and `::<` the property `>`, with its discriminator after a space: `S::<key_function>`, `f(int)::<default_immediates 0>`, `X<int>::f(int)::<default_argument 0>::<default_immediates>` |
 | the order unit | `<order>` |
 
 The plain name of an entity a unit refers to (a shadow's target, what a

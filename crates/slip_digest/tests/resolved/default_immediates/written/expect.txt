@@ -1,0 +1,2 @@
+resolved f(int)::<default_immediates 0>
+added h()

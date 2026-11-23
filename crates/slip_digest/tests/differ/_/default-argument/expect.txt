@@ -1,0 +1,2 @@
+changed A::f(int)
+derived-changed A<int>::f(int)::<default_argument 0>
