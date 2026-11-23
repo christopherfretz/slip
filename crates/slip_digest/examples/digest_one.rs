@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! SLIP_PLAN=<plan file> SLIP_ONLY=<substring of the main file> \
-//!   cargo run -p slip_cli --example digest_one -j 1
+//!   cargo run -p slip_digest --example digest_one -j 1
 //! ```
 //!
 //! Prints, for the first observer whose main file's path contains
@@ -16,6 +16,7 @@
 //! kinds §4.6): the type as Kiln prints it, and each such expression's
 //! kind, dependence and place.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use slip_digest::{Detail, Options};
@@ -161,7 +162,7 @@ fn expr_arg_types(ast: &Ast, sm: &slip_kiln::kiln::source::SourceManager) -> Vec
         );
         let mut line = format!("{form}\t{printed}");
         for e in exprs {
-            line.push_str(&format!("\t[{}]", describe(ast, sm, e)));
+            let _ = write!(line, "\t[{}]", describe(ast, sm, e));
         }
         out.push(line);
     }
