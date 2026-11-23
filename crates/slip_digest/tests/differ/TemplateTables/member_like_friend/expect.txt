@@ -1,4 +1,11 @@
 # the friend is a derived unit (WP-032): keyed in `A<int>` on side B,
-# where it is member-like, and in the namespace on side A
-derived-added A<int>::friend template <class> void g(type-parameter-0-0) requires C<T>
-derived-removed template <class> void g(type-parameter-0-0) requires C<U>
+# where it is member-like, and in the namespace on side A; its trailing
+# requires-clause is in its key (digest-kinds §3.3), so C<T> against C<U>
+# is another key (WP-036)
+added A::friend template <class> void g(type-parameter-1-0) requires C<T>
+removed A::friend template <class> void g(type-parameter-1-0) requires C<U>
+# the friend declaration in A is a unit of A (`A::<friend>`) keyed with the
+# clause as well, and A changes with it
+changed A
+added A::<friend template <class> void g(type-parameter-1-0) requires C<T>>
+removed A::<friend template <class> void g(type-parameter-1-0) requires C<U>>

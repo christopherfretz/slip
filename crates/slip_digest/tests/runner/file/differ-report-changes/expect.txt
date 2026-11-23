@@ -1,1 +1,1 @@
-changed X::~X<T>() requires (sizeof(T) == 4)
+changed c

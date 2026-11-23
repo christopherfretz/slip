@@ -1,1 +1,9 @@
-changed A::friend f(A<type-parameter-0-0>) requires (sizeof(T) > 0)
+# the trailing requires-clause is in the key (digest-kinds §3.3): another
+# constraint is another function (WP-036)
+added A::friend f(A<type-parameter-0-0>) requires (sizeof(T) > 1)
+removed A::friend f(A<type-parameter-0-0>) requires (sizeof(T) > 0)
+# the friend declaration in A is a unit of A (`A::<friend>`) keyed with the
+# clause as well, and A changes with it
+changed A
+added A::<friend f(A<type-parameter-0-0>) requires (sizeof(T) > 1)>
+removed A::<friend f(A<type-parameter-0-0>) requires (sizeof(T) > 0)>

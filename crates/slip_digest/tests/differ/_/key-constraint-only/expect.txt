@@ -1,6 +1,3 @@
-# pending
-# needs: expr
-# A trailing requires-clause is Pending(Expr) (expr_dep::profile_expr), so the
-# two overloads have one key and collide (digest.collisions = 1). The display
-# name leaves the clause out too, so both are named alike (determinism/keys.rs).
+# The trailing requires-clause is in the key (digest-kinds §3.3, WP-036) and
+# in the display name: two overloads, two keys, two names.
 added template <class> void f(type-parameter-0-0) requires C2<T>

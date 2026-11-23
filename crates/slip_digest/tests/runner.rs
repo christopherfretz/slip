@@ -66,7 +66,7 @@ fn wp047_derived_differences() {
     let (a, b) = sides("derived/changes");
     assert_eq!(
         common::derived_differences(&a, &b),
-        set(&[d_changed("X<int>::~X()"), d_changed("X<int>::~X() requires (sizeof(T) == 4)")])
+        set(&[d_changed("X<int>::~X()"), d_changed("X<int>::~X() requires c<T>")])
     );
     let (a, b) = sides("derived/equal");
     assert!(common::derived_differences(&a, &b).is_empty());
@@ -120,10 +120,9 @@ fn wp047_differ_derived_removed() {
 fn wp047_differ_derived_both_sides_changes() {
     let (a, b) = sides("derived/changes");
     let x = "X<int>::~X()";
-    let base = changed("X::~X<T>() requires (sizeof(T) == 4)");
+    let base = changed("c");
     for exact in [false, true] {
-        let both =
-            set(&[base.clone(), d_changed(x), d_changed("X<int>::~X() requires (sizeof(T) == 4)")]);
+        let both = set(&[base.clone(), d_changed(x), d_changed("X<int>::~X() requires c<T>")]);
         assert!(ok(judge_differ(&both, exact, &a, &b)).is_empty());
         for wrong in [d_added(x), d_removed(x)] {
             assert!(judge_differ(&set(&[base.clone(), wrong]), exact, &a, &b).is_err());
@@ -160,12 +159,11 @@ fn wp047_exact_derived_names_the_unnamed() {
         "expected but not seen: []\nseen but not expected: [DerivedRemoved(\"g<int>()\")]"
     );
     let (a, b) = sides("derived/changes");
-    let e =
-        err(judge_differ(&set(&[changed("X::~X<T>() requires (sizeof(T) == 4)")]), true, &a, &b));
+    let e = err(judge_differ(&set(&[changed("c")]), true, &a, &b));
     assert!(
         e.contains(
             "seen but not expected: [DerivedChanged(\"X<int>::~X()\"), \
-             DerivedChanged(\"X<int>::~X() requires (sizeof(T) == 4)\")]"
+             DerivedChanged(\"X<int>::~X() requires c<T>\")]"
         ),
         "{e}"
     );
@@ -186,11 +184,8 @@ fn wp047_derived_changed_as_before() {
     assert!(judge_differ(&set(&[changed("f()"), d_changed(G)]), false, &a, &b).is_ok());
     // Content.
     let (a, b) = sides("derived/changes");
-    let lines = set(&[
-        changed("X::~X<T>() requires (sizeof(T) == 4)"),
-        d_changed("X<int>::~X()"),
-        d_changed("X<int>::~X() requires (sizeof(T) == 4)"),
-    ]);
+    let lines =
+        set(&[changed("c"), d_changed("X<int>::~X()"), d_changed("X<int>::~X() requires c<T>")]);
     assert!(ok(judge_differ(&lines, false, &a, &b)).is_empty());
     // Neither.
     let (a, b) = sides("derived/equal");
@@ -459,7 +454,7 @@ fn wp047_report_mode() {
         text,
         "runner/file/differ-loose: unnamed derived-added g<int>() (written derived-changed)\n\
          runner/file/differ-report-changes: unnamed derived-changed X<int>::~X()\n\
-         runner/file/differ-report-changes: unnamed derived-changed X<int>::~X() requires (sizeof(T) == 4)\n\
+         runner/file/differ-report-changes: unnamed derived-changed X<int>::~X() requires c<T>\n\
          report: 3 run, 0 skipped, 0 failed\n"
     );
     assert_eq!(

@@ -37,46 +37,16 @@ pub const SAME_KEY: &[(&str, &[&str], u64, &str)] = &[
         1,
         "an invalid redeclaration is an entity of its own in Kiln; the test is about it",
     ),
-    // The five below differ only in an expression the key profiles
-    // (§3.4: `function_disc`, `spec_disc`), and the expression area is
-    // pending (`expr_dep::profile_expr`): both entities profile as
-    // Pending(Expr) and get one key, which the walk marks a collision.
-    // Each test is `# pending`, `# needs: expr`.
+    // A lambda in a signature makes each declaration a template of its
+    // own in Kiln ([temp.over.link]/5: never equivalent); the digest
+    // writes one key for both, whose bytes are the lambda's spelling
+    // (digest §4.4 "Kinds walked in full"). The walk marks the collision:
+    // the test is about it.
     (
-        "differ/_/key-constraint-only",
-        &[
-            "template <class> void f(type-parameter-0-0) requires C1<T>",
-            "template <class> void f(type-parameter-0-0) requires C2<T>",
-        ],
+        "indeterminate/_/lambda-in-signature-twice",
+        &["template <int> void foo(const char (*)[(... , N)])"],
         1,
-        "a trailing requires-clause is Pending(Expr)",
-    ),
-    (
-        "differ/_/key-decltype-return-templates",
-        &[
-            "template <class> decltype(t.a) f(type-parameter-0-0)",
-            "template <class> decltype(t.b) f(type-parameter-0-0)",
-        ],
-        1,
-        "a decltype operand is Pending(Expr)",
-    ),
-    (
-        "differ/_/key-dependent-array-bound-templates",
-        &["template <int> void f(int (&)[N + 1])", "template <int> void f(int (&)[N])"],
-        1,
-        "a dependent array bound is Pending(Expr)",
-    ),
-    (
-        "differ/_/key-partial-specs-by-constraint",
-        &["S<type-parameter-0-0 *>"],
-        1,
-        "a requires-clause is Pending(Expr)",
-    ),
-    (
-        "differ/_/key-type-constraint-only",
-        &["template <class> void f(type-parameter-0-0)"],
-        1,
-        "a type-constraint is Pending(Expr)",
+        "a lambda in a signature: two templates, one key; the test is about it",
     ),
 ];
 

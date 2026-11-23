@@ -37,14 +37,18 @@ use std::collections::BTreeMap;
 
 use slip_kiln::kiln::ast::Ast;
 use slip_kiln::kiln::ast::DeclId;
+use slip_kiln::kiln::ast::RawId;
 use slip_kiln::kiln::ast::consts::Scalar;
 use slip_kiln::kiln::ast::decl::{DeclKind, FriendTarget};
 use slip_kiln::kiln::ast::dump::AstNames;
+use slip_kiln::kiln::ast::expr::ExprKind;
 use slip_kiln::kiln::ast::ids::{ArgListId, ConstValueId, ExprId, QualType};
 use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_kiln::kiln::ast::templates::TtpKind;
 use slip_kiln::kiln::ast::types::{BuiltinType, RefQual, TypeNames, TypeView};
-use slip_kiln::kiln::ast::types::{PrintOptions, print_type, write_arg_list, write_nns};
+use slip_kiln::kiln::ast::types::{
+    PrintOptions, print_type, write_arg_list, write_nns, write_template_arg,
+};
 use slip_kiln::kiln::source::symbol::Symbol;
 use slip_model::Digest;
 use slip_model::keys::KeyKind;
@@ -179,12 +183,33 @@ impl<'n, 'w> Names<'n, 'w> {
                     out.push_str("::friend ");
                 }
             }
+            KeyKind::PartialSpecialisation => {
+                // The head is in the key (digest-kinds §3.3); what the
+                // arguments do not show of it is its constraints.
+                if let Some((_, pi)) = ast.partial_spec_info(d)
+                    && self.constrained(pi.params)
+                {
+                    self.head(pi.params, &mut out, 0);
+                    out.push(' ');
+                }
+            }
             _ => {}
         }
         self.qualified(d, &mut out, 0);
         spec_args(ast, d, &mut out);
         self.suffix(d, e, kind, &mut out);
         out
+    }
+
+    /// Whether head `l` has a requires-clause or a constrained parameter.
+    fn constrained(&self, l: slip_kiln::kiln::ast::TemplateParamListId) -> bool {
+        let ast = self.ast;
+        let list = ast.templates.param_list(l);
+        list.requires.is_some()
+            || ast
+                .lists
+                .iter::<DeclId>(list.params)
+                .any(|p| ast.template_parm(p).is_some_and(|x| x.constraint.is_some()))
     }
 
     /// What follows the qualified name of the unit of entity `e`, read from
@@ -324,6 +349,8 @@ impl<'n, 'w> Names<'n, 'w> {
                     Some(TtpKind::Concept) => " concept",
                     Some(TtpKind::Type) | None => " class",
                 });
+            } else if let Some(c) = parm.and_then(|x| x.constraint) {
+                self.type_constraint(c, out);
             } else {
                 out.push_str("class");
             }
@@ -332,6 +359,44 @@ impl<'n, 'w> Names<'n, 'w> {
             }
         }
         out.push('>');
+        if let Some(r) = list.requires {
+            out.push_str(" requires ");
+            ast.write_expr(r, out);
+        }
+    }
+
+    /// A type parameter's type-constraint, from its immediately-declared
+    /// constraint `C<T, A...>` (a fold `(C<T> && ...)` for a pack): the
+    /// concept and the arguments after the first, `C`, `C<int>`, as it is
+    /// written in place of `class`. Anything else is written as Kiln
+    /// writes the expression.
+    fn type_constraint(&self, c: ExprId, out: &mut String) {
+        let ast = self.ast;
+        let mut x = ast.exprs.get(c);
+        if x.kind() == ExprKind::CXXFoldExpr
+            && let Some(inner) = ExprId::from_raw(x.a())
+        {
+            x = ast.exprs.get(inner);
+        }
+        let concept =
+            DeclId::from_raw(x.a()).filter(|_| x.kind() == ExprKind::ConceptSpecializationExpr);
+        let Some(concept) = concept else {
+            ast.write_expr(c, out);
+            return;
+        };
+        self.qualified(concept, out, 0);
+        let Some(args) = ArgListId::from_raw(x.b()) else { return };
+        let all = ast.types.args(args);
+        if all.len() > 1 {
+            out.push('<');
+            for (i, a) in all.iter().skip(1).enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_template_arg(&ast.types, &TypedNull(ast), *a, out);
+            }
+            out.push('>');
+        }
     }
 
     /// The qualified name of `d`, with the unnamed classes and

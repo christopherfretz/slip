@@ -811,9 +811,11 @@ form the walk makes (`crates/slip_digest/src/names.rs`):
 |---|---|
 | a namespace, class, enumeration, variable, alias, template, concept, member | its qualified name: `ns::C::m`, `(anonymous namespace)::x` |
 | a function | its qualified name and its parameter types as Kiln prints canonical types, with `this ` before an explicit object parameter, then ` const`, ` volatile`, ` &` or ` &&` for a member's qualifiers, then ` requires ` and the trailing requires-clause as written: `ns::f(int, char *)`, `ns::C::m() const`, `C::f(this C &)`, `A::f() requires true` |
-| a function template | its template head by the kinds of its parameters, its return type (none for a constructor, destructor or conversion function), then as a function, the parameter types as the pattern's: `template <class, int> void ns::f(type-parameter-0-0)` |
+| a function template | its template head, its return type (none for a constructor, destructor or conversion function), then as a function, the parameter types as the pattern's: `template <class, int> void ns::f(type-parameter-0-0)` |
+| a template head (of a function template, a deduction guide template, a constrained partial specialisation) | `template <`, each parameter by its kind, `>`, then ` requires ` and the head's requires-clause as Kiln writes it if it has one. A type parameter is `class`, or its type-constraint in place of `class`: the concept and the arguments after the first, `C`, `C<int>`; a non-type parameter its type; a template template parameter its own head and ` class`, ` auto` or ` concept`; `...` after a pack: `template <C2> void f(type-parameter-0-0)`, `template <class> requires C<T> void f(type-parameter-0-0)` |
 | a deduction guide | `<deduction guide for S>` and its parameters as a function: `<deduction guide for S>(char)`; a deduction guide template with its head and return type as a function template |
 | a friend function keyed in the class that befriends it (digest-kinds §3.3 `function`) | the class's name, `::friend `, then the function's: `A<int>::friend k(int)`, `C::friend template <class> void g(type-parameter-0-0)` |
+| a partial specialisation | as a specialisation, with its pattern for the arguments; if its head has a type-constraint or a requires-clause, the head first, which is what tells two partial specialisations of one pattern apart: `S<type-parameter-0-0 *>`, `template <class> requires C2<T> S<type-parameter-0-0 *>` |
 | a specialisation | the template's name and its canonical arguments as Kiln prints them, except that a null pointer argument whose type is not `std::nullptr_t` is written `(T)nullptr`: `ns::S<int>`, `N<(int *)nullptr>` |
 | an unnamed class or enumeration | its scope and `(anonymous K for n)` when it is named by a declarator, typedef or member (digest §3.3), else `(anonymous K N)`, `N` its ordinal among the unnamed types of its scope, else `(anonymous K)`; `K` the class-key or `enum`: `(anonymous struct for P)`, `ns::(anonymous enum 1)`; its members are named under it |
 | the unnamed object of an anonymous class (an anonymous union's member object) | its scope and `(object of ` the class's name `)`: `S::(object of (anonymous union 0))` |
@@ -832,6 +834,13 @@ form the walk makes (`crates/slip_digest/src/names.rs`):
 The plain name of an entity a unit refers to (a shadow's target, what a
 friend names) is its qualified name with a specialisation's arguments and
 a function's parameters, or a function template's name as above.
+
+Two units of one image with different keys have different names, except
+the units of one colliding key (digest §10) and the content-keyed kinds
+above: everything a key holds that the parts above would not show (a
+requires-clause, a type-constraint, a null pointer argument's type, an
+explicit object parameter) is printed. `crates/slip_digest/tests/determinism.rs`
+`keys_and_names_are_unique` checks it over every pair test.
 
 A requires-clause is printed as Kiln writes the expression of the
 declaration the name is read from; for a member of an implicit

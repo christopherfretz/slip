@@ -1,4 +1,2 @@
-# pending
-# needs: expr
-# A dependent array bound is Pending(Expr): the two templates have one key and collide.
+# The dependent array bound is profiled (WP-036): two keys.
 added template <int> void f(int (&)[N + 1])

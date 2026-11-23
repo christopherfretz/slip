@@ -1,4 +1,2 @@
-# pending
-# needs: expr
-# A decltype operand is Pending(Expr): the two templates have one key and collide.
+# The decltype operand is profiled (WP-036): two keys.
 added template <class> decltype(t.b) f(type-parameter-0-0)
