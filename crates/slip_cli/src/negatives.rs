@@ -55,12 +55,19 @@ pub fn exists(path: &[u8]) -> bool {
 }
 
 /// Guard N1 (`spec/verify.md` §5.3): the first negative input of the pre
-/// shard, in path order, that is not under a subject root (by identity,
-/// [`Resolver::under_subject`]) and at which a file now exists
-/// ([`exists`]).
+/// shard, in path order, at which a file now exists ([`exists`]) whose
+/// real path (links and `..` resolved now) is not under a subject root
+/// ([`Resolver::under_subject`], by identity). The real path, not the
+/// place as written: a place spelled through a subject root
+/// (`s/../ext/h.h`) can name a file outside it. A file whose real path
+/// cannot be had is taken as outside: refused.
 pub fn appeared<'a>(resolver: &mut Resolver<'_>, negatives: &'a [Vec<u8>]) -> Option<&'a [u8]> {
     negatives
         .iter()
-        .find(|p| exists(p) && !resolver.under_subject(p))
+        .find(|p| {
+            exists(p)
+                && !std::fs::canonicalize(Path::new(OsStr::from_bytes(p)))
+                    .is_ok_and(|real| resolver.under_subject(real.as_os_str().as_bytes()))
+        })
         .map(Vec::as_slice)
 }

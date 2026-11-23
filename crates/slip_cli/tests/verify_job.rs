@@ -1933,19 +1933,24 @@ fn n1_identity_image() {
 }
 
 // Item 5: a file added in the includer's directory for a quoted include
-// the map found on the list. The includer `ext/w.h` is outside the roots.
+// the map found on the list. The includer `wrap/w.h` is outside the roots
+// and its directory is not on the list (`a.cpp` reaches it as
+// `"../wrap/w.h"`), so only the includer's-directory rule records it. Its
+// place, `s/../wrap/cfg.h`, is spelled through the subject root: N1 must
+// decide "under a subject root" from the real path of the file now there,
+// not from the spelling (which once verified this case wrongly).
 #[test]
 fn n1_quoted_include_beside_the_includer() {
-    let pre = CFG_PRE.replace("<cfg.h>", "<w.h>");
-    let post = CFG_POST.replace("<cfg.h>", "<w.h>");
-    let (tree, o, _) = cfg_tree_with("n1-beside", &pre, &post, &["wrap", "ext"], |t| {
+    let pre = CFG_PRE.replace("<cfg.h>", "\"../wrap/w.h\"");
+    let post = CFG_POST.replace("<cfg.h>", "\"../wrap/w.h\"");
+    let (tree, o, _) = cfg_tree_with("n1-beside", &pre, &post, &["ext"], |t| {
         write(&t.base.join("wrap/w.h"), "#include \"cfg.h\"\n");
     });
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
     write(&tree.base.join("wrap/cfg.h"), "#define USE_NEW 1\n");
     let v = tree.verify(&o);
-    assert_eq!(reason(&v), appeared(&tree.base.join("wrap/cfg.h")));
+    assert_eq!(reason(&v), appeared(&tree.subject.join("../wrap/cfg.h")));
 }
 
 const HAS_PRE: &str = "#if __has_include(<cfg2.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
@@ -2081,6 +2086,32 @@ fn n1_link_retargeted_since() {
     link("ext-b", &tree.base.join("lnk"));
     let v = tree.verify(&o);
     assert_eq!(reason(&v), appeared(&tree.base.join("lnk/cfg.h")));
+}
+
+// Beyond N1: a symbolic link outside the roots through which the map
+// parse FOUND `cfg.h`, retargeted after the map phase to a directory with
+// another `cfg.h`. The place was found, so it is no negative; O2 compares
+// the files both parses read by real path, and the post parse reads
+// `ext-b/cfg.h`, which the map parse did not. With an edit that
+// compensates, the verdict is `verified` in a world the map phase never
+// saw. Closing it needs the map shard to keep where each found lookup led
+// (a positive counterpart of the negatives): reported by WP-117.
+#[test]
+#[ignore = "needs: a record of where the map parse's found lookups led (reported by WP-117)"]
+fn o2_link_to_a_found_header_retargeted() {
+    let tree = Tree::new("o2-retarget", &[("a.cpp", CFG_PRE)]);
+    write(&tree.post.join("a.cpp"), CFG_POST);
+    write(&tree.base.join("ext-a/cfg.h"), "#define USE_NEW 0\n");
+    write(&tree.base.join("ext-b/cfg.h"), "#define USE_NEW 1\n");
+    link("ext-a", &tree.base.join("lnk"));
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &tree.base.join("lnk"))]);
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    std::fs::remove_file(tree.base.join("lnk")).unwrap();
+    link("ext-b", &tree.base.join("lnk"));
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
 }
 
 // ----- G6 (§5.3): the links along the post parse's routes are the subject's

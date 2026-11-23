@@ -1176,7 +1176,7 @@ form: `-fprebuilt-module-path` and the standard module's directory
 miss a file the two images spell differently. The command itself is the
 plan's (§8, "The command").
 
-One hole is known and pinned by a test that waits (`#[ignore = "needs:
+Two holes are known and pinned by tests that wait (`#[ignore = "needs:
 …"]`, `crates/slip_cli/tests/verify_job.rs`):
 
 - **An absolute name looked for and not found** (F7 of the re-check):
@@ -1187,6 +1187,14 @@ One hole is known and pinned by a test that waits (`#[ignore = "needs:
   holds it. Test: `f7_absolute_has_include`; the absolute name is then
   also a negative input (`crates/slip_kiln/tests/lookups.rs`
   `missed_absolute_name`, waiting too).
+
+- **A symbolic link outside every root, through which the map parse
+  found a file, retargeted after the map phase** to a directory with
+  another file of that name: the place was found, so it is no negative
+  input, and O2 compares the files both parses read by real path, which
+  the post parse's is not. Closing it needs the map shard to keep where
+  each found lookup led, as it keeps where the missed ones would have.
+  Test: `o2_link_to_a_found_header_retargeted`.
 
 F4b of the re-check (a file outside both roots that appears after the map
 phase and shadows one the map parse read, with an edit that compensates)
@@ -1295,7 +1303,7 @@ only withdraws: guard G3.
 | G5 | step 2, tree form: the post command's map pairs (§5.1) are consistent: (a) none other than the identity has a post prefix that is empty or holds `=`; (b) when one pair's post prefix is a prefix of another's, the first applied to the second's post prefix gives the second's written prefix; (c) no `-fmacro-prefix-map=` or `-ffile-prefix-map=` of the command's own (alone, after `-Xclang` or `-Xpreprocessor`, in a `-Wp,` list) has an old prefix prefix-related to a post or written prefix of a pair other than the identity; (d) no `#line` name of the post parse begins with the post prefix of such a pair; (e), checked first: the post prefix of each pair other than the identity and the roots' is under a post root, by real paths; (f), checked last: the command's directory, and every path-bearing word with a `..`, walks names of the subject's directories that have the same kind in the post tree, and has no `..` after a component that does not exist | (a) `post-image: <word> is rewritten to <path>, which no -fmacro-prefix-map word can map back`; (b) `post-image: <word> and <word> spell the files under <post prefix> differently (<pair> and <pair>)`; (c) `post-image: <option word> maps <old>, which overlaps <prefix> of <word>; slip does not compose prefix maps`; (d) `post-image: the #line name <name> begins with <post prefix>, which the post command maps`; (e) `post-image: <word> is spelled through the subject and leaves it (<post prefix> is under no post root)`; (f) `post-image: <word, or "the directory <dir>"> walks <path>, which is <kind> in the subject and <kind> in the post tree` or `post-image: <word> has a `..` after <path>, which does not exist; slip cannot tell where it ends` |
 | O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
 | O2 | step 2, overlay form, and tree form other than the identity: every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it | `pre-image: <path> changed since the map phase` (the first such path, in path order) |
-| N1 | step 2, tree form other than the identity, after O2, and overlay form: the pre shard has a `negatives` section (`model.md` §8.6), and no path of it at which a file now exists is, in the tree form, under no subject root (`Resolver::under_subject`: the directory, by identity); in the overlay form none may exist. A file exists as Kiln's lookup decides it: the path, links followed now, names a regular file that can be opened (a directory, a dangling link, a device, a file that cannot be opened are none) | `pre-image: the map shard has no negative inputs`; `pre-image: <path> appeared since the map phase` (the first such path, in path order) |
+| N1 | step 2, tree form other than the identity, after O2, and overlay form: the pre shard has a `negatives` section (`model.md` §8.6), and no path of it at which a file now exists is, in the tree form, outside every subject root, judged by the file's real path now (links and `..` resolved; `Resolver::under_subject`, its directory by identity), not by the path as written (`s/../ext/h.h` is outside); in the overlay form none may exist. A file exists as Kiln's lookup decides it: the path, links followed now, names a regular file that can be opened (a directory, a dangling link, a device, a file that cannot be opened are none) | `pre-image: the map shard has no negative inputs`; `pre-image: <path> appeared since the map phase` (the first such path, in path order) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
 | R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
 | G2 | step 4: its `inputs` are the pre shard's `inputs`, entry for entry | `pre-image: <path> changed since the map phase` (the first path, in path order, whose entry is not the same in both lists or is in one only) |
@@ -1968,8 +1976,9 @@ observer `failed`, with an empty message.
   N1 (§5.3) knows the places the map parse looked for a file and found
   none only from Kiln's lookup log and the command's own search
   directories: an absolute name, a toolchain directory Kiln's driver
-  dropped and a module probe are not checked (§5.1, "What remains
-  outside").
+  dropped and a module probe are not checked; nor is a link outside the
+  roots through which a file was found, retargeted since (§5.1, "What
+  remains outside").
 - **Sums are believed.** A group's `count`, `indeterminate` and `digest`
   are checked against its unit list only where there is one. A shard
   whose sums were not computed from its units (a defect of the walk, or a
