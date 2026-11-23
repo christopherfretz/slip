@@ -7,9 +7,11 @@ re-implementable definition of "passes".
 `xtask` is a workspace member run through the alias `cargo xtask`. It is
 `#![forbid(unsafe_code)]`, links none of the crates that link Kiln, and
 reaches `slip` only as a built executable. Its only dependencies are the
-workspace crates `slip_model` and `slip_exec` (path dependencies through
-`[workspace.dependencies]`), and through `slip_exec` `signal-hook`, which
-§3.1 allows.
+workspace crates `slip_model`, `slip_exec` and `slip_verify` (path
+dependencies through `[workspace.dependencies]`; `slip_verify` links no
+Kiln and depends on `slip_model` only, and gives the transform runner the
+one rule of whether a result permits writing, §6.3), and through
+`slip_exec` `signal-hook`, which §3.1 allows.
 
 M0 defines the gate (§2), the lints (§3), the work-package table (§4), the
 jobserver commands (§5), performance records (§7) and corpora (§8).
@@ -25,6 +27,8 @@ tests are specified in `spec/pitfalls.md` §1.
 3. **Nothing is skipped silently.** A test that cannot run for lack of a
    capability (a tool, a corpus) is reported as `SKIP` with the reason, and
    is an `ERROR` when the environment variable `SLIP_REQUIRE_ALL=1` is set.
+   A transform test reports a missing capability as an oracle skipped
+   (§6.4), with the same rule.
 4. **Tight gates on deterministic numbers, loose on time.** Counters are
    compared exactly; time and memory are recorded and reviewed as trends
    (§7).
@@ -158,7 +162,7 @@ in both places.
   these places is not followed.
 - **`dependencies`.** A third-party crate is a `Cargo.lock` package with a
   `source`; a workspace member has none, so `xtask`'s dependencies on
-  `slip_model` and `slip_exec` are not third-party. Allowed: the §3.1
+  `slip_model`, `slip_exec` and `slip_verify` are not third-party. Allowed: the §3.1
   crates at any version, and every package with a `source` in
   `kiln/Cargo.lock` at the same name and version. The Kiln lock is read
   from disk (it is in the submodule); when it cannot be read the message
@@ -280,10 +284,13 @@ The environment is a parameter, so tests never read the host's own.
 A transform test is a directory: an input tree, a transform, and the
 expected result (post-image, report, exit status) as golden files; §6.2
 gives the format. Outcomes follow Kiln's model: `PASS`, `FAIL`, `XFAIL`
-(`xfail: <reason>` required), `XPASS` (fails the gate), `SKIP`, `ERROR`
+(`xfail: <reason>` required), `XPASS` (fails the gate), `ERROR`
 (the test itself is wrong: a bad directive, a pre-image the front end or
-clang rejects), `KILLED` (never masked by `xfail`). Unknown directives are
-errors. Every test names the spec section it covers.
+clang rejects), `KILLED` (a run ended by a signal or its timeout, §6.3;
+fails the gate, never masked by `xfail`). There is no `SKIP` of a whole
+transform test: a test always runs, and what it cannot check for lack of
+a capability is an oracle skipped (§6.4), counted and named. Unknown
+directives are errors. Every test names the spec section it covers.
 
 **Golden files.** A golden is the JSON rendering (`spec/model.md` §10) or the
 exact bytes of an output. `--bless` rewrites goldens and prints each path it
@@ -377,6 +384,8 @@ and lines starting with `#` are skipped:
 | `owned`, `readonly` | paths relative to the tree; may repeat | `owned: .`, and `readonly: dep` if `pre/dep` exists |
 | `allow` | `residue`, `unparsed`, `partial` or `errors`: the run is given `--allow-<value>`; may repeat | none |
 | `oracle` | `no-<oracle> <reason>` turns one oracle of §6.4 off for this test | all on |
+| `post` | `none`: the run may write and writes nothing (below) | absent |
+| `timeout` | the seconds each invocation (of `slip`, and of clang by the clang oracle) may take, 1 to 86400 | 600 |
 | `xfail` | the reason the test is expected to fail | absent |
 
 Without `cdb.json`, each main file has the command
@@ -384,19 +393,30 @@ Without `cdb.json`, each main file has the command
 `@ROOT@`, in the order of `tu`.
 
 The expected post-image is `pre/` with the files of `post/` laid over it.
-A `post/` file equal to its `pre/` file, or with no `pre/` file, is an
-error of the test. A test whose state does not permit writing has no
-`post/`.
+A `post/` file equal to its `pre/` file (bytes and mode), or with no
+`pre/` file, is an error of the test. A test **may write** when its state
+is `verified`, or `verified_with_residue` with `allow: residue` or `allow:
+errors` (a result of either state permits writing only so, `spec/edits.md`
+§8.5). A test that may write has a `post/` holding at least one file, or
+says `post: none` (its run writes nothing, and the expected post-image is
+`pre/`); either is required, and both are an error. A test that may not
+write has no `post/` and no `post: none`. No entry of a test, nor
+anything under `pre/` or `post/`, is a symbolic link (a `post/` that is
+one would lead `--bless` out of the test); each is an error of the test.
 
 ### 6.3 Running
 
 ```
 cargo xtask transform [--only <substring>]… [--bless] [-j <n>] [--no-clang] [--slip <path>]
+        [--verbose]
 ```
 
 `--slip` names the executable under test (default: the workspace's
 `slip`, which the runner builds first); the runner's own tests give it a
-scripted stand-in. `--no-clang` is §6.4's.
+scripted stand-in. `--no-clang` is §6.4's. The tests are the directories
+`tests/transform/<area>/<name>/`; any other entry there (a file, a
+symbolic link) is an error of discovery, and `--only` that selects no
+test is an error.
 
 For each test, in byte order of paths:
 
@@ -405,23 +425,61 @@ For each test, in byte order of paths:
    directory except by `--bless`.
 2. `slip <run> --db <database> --owned … --readonly … --store <store>
    --relative-to <tree> --write -j 2` and the `allow` options. `--write` is
-   always given: a state that does not permit it must leave the tree
-   untouched, and the test checks that.
-3. **Compared**: the exit status; the state; standard output with
+   always given: a result that does not permit it must leave the tree
+   untouched, and the test checks that. Every invocation (this one and
+   the oracles') runs in a process group of its own and has the test's
+   `timeout`: when it ends, the whole group is killed and the test is
+   `KILLED`, also when the invocation itself has ended and a process it
+   started holds its output open. After each invocation the work
+   directory holds only the tree, the stores, the database and the
+   oracles' directories, and the test's directory is byte for byte as it
+   was; anything else is a `FAIL` ("wrote outside its tree", "changed
+   the test's directory").
+3. **The output's structure** is checked first (a `FAIL` before anything
+   is compared or blessed): each of `plan`, `transform`, `round`,
+   `edits`, `declared`, `overlay` and `result` at most once; a `state`
+   line only right after `edits` (`accepted` or `refused`) or right after
+   `result` (a state of `spec/edits.md` §8.5, exactly), the result's the
+   last; a `usage` or `input` run prints no `result` line.
+4. **The store** of a run that ends in a state: the result named by its
+   `result` line is read from `results/<id>.rslt` (`spec/edits.md` §10.4)
+   and must be there and valid; its state must be the printed one, its
+   `edits`, `declared` and `overlay` the printed ids (and its plan, round
+   and transform, where printed); the edit set, the declared changes
+   (`declared/<id>.decl`, `spec/exec.md` §2) and the overlay must be in
+   the store and valid, the overlay of that edit set; no `write.journal`
+   may be left. Any lie is a `FAIL`.
+5. **Compared**: the exit status; the state; standard output with
    `expect.txt`, after replacing every 64-digit id by `<id>` and the
-   tree's path by `@ROOT@`; the tree, file by file, with the expected
-   post-image (a file added, missing or different fails). The first
-   difference of each is printed.
-4. The oracles of §6.4.
+   tree's path by `@ROOT@`; the tree, entry by entry, with the expected
+   post-image (a file or directory added, missing, different in bytes or
+   mode, or of another kind — a symbolic link in place of a file — fails).
+   The first difference of each is printed. **Writing**: whether the run
+   may write is `slip_verify::conclude::permits` over the result record,
+   its edit set and the test's `allow` lines — never the state's name; a
+   tree written when it does not permit is a `FAIL`.
+6. The oracles of §6.4.
 
 The runner takes job tokens as every harness command does (§5). It runs
 tests in parallel, each with `-j 2`, and prints one line per outcome that
 is not `PASS`, then `transform: <n> passed, <n> failed, …` with every
-outcome that occurred. Exit status 1 if the gate would fail.
+outcome that occurred, then `oracles: <n> off, <n> skipped (--verbose
+names them)` when an oracle was turned off by `oracle:` or skipped.
+`--verbose` prints, under each test, `  <area>/<name>: oracle <name>
+off|skipped: <reason>` for each. Exit status 1 if the gate would fail.
 
-`--bless` rewrites `expect.txt` and `post/` from the run, for tests whose
-state and exit status are as `test.txt` says; it never changes
-`test.txt`.
+**`SLIP_REQUIRE_ALL=1`** (§1 principle 3): a test that passes with its
+clang oracle skipped for want of a compiler (not for `--no-clang`) is an
+`ERROR`, "the clang oracle was skipped: no compiler (SLIP_REQUIRE_ALL=1)".
+It is for a host that has every capability and must show it: a release
+candidate's gate.
+
+`--bless` rewrites `expect.txt` and `post/` (contents and modes) from the
+run, for tests whose output's structure and store are sound, whose state
+and exit status are as `test.txt` says, and whose written tree `post/`
+can hold (changed regular files only) and the result permits; a test
+that may write and wrote nothing must say `post: none`, and one that says
+it must not write. It never changes `test.txt`.
 
 ### 6.4 Oracles
 
@@ -432,11 +490,16 @@ themselves.
 
 | Oracle | Runs when | Passes when |
 |---|---|---|
-| `determinism` | always | a second run in a fresh store with `-j 1` gives the same transform, edit set, declared, overlay and result ids, and the same standard output |
-| `verify` | the state is `verified` or `verified_with_residue` | this is corpus invariant (c): the run itself verified the post-image. The oracle adds that `slip check` over the run's own edit set, in the same store, gives the same result id |
+| `determinism` | always | a second run in a fresh store with `-j 1` gives the same exit status, transform, edit set, declared, overlay and result ids, the same standard output, and the same written tree |
+| `verify` | the result record's state is `verified` or `verified_with_residue` | this is corpus invariant (c): the run itself verified the post-image. The oracle adds that `slip check` over the run's own edit set, in the same store, gives the same result id, whose record is the run's, with the printed state the record's |
 | `back` | the tree was written | the inverse transform (for `rename --from a::f --to g`: `rename --from a::g --to f`) on the written tree, with a fresh store, ends in the same state and leaves the tree byte-identical to `pre/` |
-| `clang` | the tree was written, and a clang is available | every command of the test, with the compiler replaced by clang and `-fsyntax-only`, exits 0 on the pre-image (else `ERROR`) and on the written tree |
-| `mutation` | the edit set is accepted | each mutated edit set, given to `slip check`, does **not** verify (below) |
+| `clang` | the tree was written, and a clang is available | every command of the test, with the compiler replaced by clang and `-fsyntax-only`, exits 0 on the pre-image (else `ERROR`) and on the written tree; on the written tree each command also writes the files it read (`-MD -MF`), and a file the run changed that no command read is a `FAIL`, "post-image not compiled: <file>" |
+| `mutation` | the result record's state is `verified` or `verified_with_residue` | each mutated edit set, given to `slip check`, does **not** verify (below) |
+
+An oracle that does not run, for any reason but `oracle: no-<name>`, is
+**skipped**, with its reason ("the tree was not written", "no compiler",
+"the result is not_verified", "the run has no result"), and counted
+(§6.3). No oracle is passed over silently.
 
 **Clang.** The compiler is `$SLIP_CLANG` if set, else `clang++-19`, else
 `clang++` on `PATH`. If there is none the oracle is skipped, the runner
@@ -457,9 +520,18 @@ it makes, one at a time:
 
 Each is published as a new `EDTS` (the harness links `slip_model`) and
 given to `slip check` with the declared changes of the original. The
-outcome must be `not_verified` (for a changed key: by a failed spelling
-obligation, `spec/verify.md` §10.3), or, for a dropped edit only,
-`verified_with_residue` with the dropped range in the residue. `verified`
+oracle runs only when the run's result is `verified` or
+`verified_with_residue` (a result that did not verify has nothing for a
+mutation to break, and one that is `incomplete` would fail every
+mutation); otherwise it is a skip. The check's state is its result
+record's, which must agree with the printed one. The outcome must be
+`not_verified` (for a changed key: by a failed spelling obligation of the
+changed key itself, an obligation of the check's overlay whose key is the
+mutated piece's, `spec/verify.md` §10.3), or, for a dropped edit only,
+`verified_with_residue` with a residue entry that is not a mention, in the
+dropped edit's file, within the dropped range; a dropped edit that leaves
+no edit makes a refused set, which must end `refused`, and only it.
+`verified`
 fails the test: an edit was lost or invented and nothing noticed. That is
 a hole in the trusted base and blocks a release, like a `bad` tree that
 verifies (`spec/pitfalls.md`). A dropped edit that provably changes
@@ -1472,9 +1544,13 @@ pub fn main(repo: &Path, args: &[String]) -> ExitCode;
   unreadable-record errors.
 - `xtask/tests/transform.rs` — §6.2 to §6.4 with a fake `slip`: every
   directive and its default, each malformed-test error, each outcome, the
-  normalisation of ids and paths, `--bless`, the post-image comparison (a
-  file added, missing, different), each oracle passing and failing, the
-  mutation sample for 1, 8 and 100 edits, a skipped clang.
+  normalisation of ids and paths, `--bless` and its refusals, the
+  post-image comparison (a file or directory added, missing, different in
+  bytes or mode, of another kind), the output's structure, each lie of the
+  store's records, a write the result does not permit, writes outside the
+  tree, the timeout, discovery, each oracle passing, failing and skipped,
+  the mutation sample for 1, 8 and 100 edits, a skipped clang and
+  `SLIP_REQUIRE_ALL`.
 - `tests/transform/` — the transform tests themselves, run by the
   `transform` step of the gate.
 - `xtask/tests/corpus_rename.rs` — §6.5 over the local three-file corpus

@@ -2606,6 +2606,10 @@ fn s6_3_the_command() {
     );
     assert!(!work.join("a-pass").exists() && !work.join("c-xfail").exists());
     assert!(work.join("b-fail/tree/a.cpp").is_file());
+    // R19 of the review: a KILLED test alone fails the gate.
+    let (code, out, _) = xtask(&root, &["--slip", FAKE, "--only", "f-killed"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("transform: 0 passed, 0 failed, 1 killed\n"), "{out}");
 
     // --only, and the clang skip alone failing the gate unless --no-clang;
     // --verbose names each oracle that did not run.
