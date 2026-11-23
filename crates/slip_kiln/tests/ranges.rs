@@ -1455,6 +1455,51 @@ fn s5_4_test4_property_on_macro_snippets() {
     );
 }
 
+/// Decision 2: a span Kiln maps to a reversed run (an expansion's first
+/// token to file text before the invocation) has no range.
+#[test]
+fn s5_4_test3_none_a_span_kiln_maps_backwards() {
+    unit("#define P 1 +\nint v = 2 + P 3;\n", &[], |u| {
+        let (one, two) = (u.toks[u.nth("1", 0)].span, u.toks[u.nth("2", 0)].span);
+        assert_eq!(file_range_of_span(u.sm(), Span::new(one.lo, two.hi)), None);
+        // Kiln itself gives none here at the pin: the check after Kiln
+        // is a guard (`spec/landed/api/WP-084.md` decision 2).
+        assert_eq!(u.sm().editable_file_range(Span::new(one.lo, two.hi)), None);
+    });
+}
+
+/// The checker of test 4 compares the preprocessing errors: a range
+/// holding `#if` without its `#endif`, which the marked source turns into
+/// an unmatched `#endif` and the same tokens.
+#[test]
+fn s5_4_test4_checker_catches_new_preprocessing_errors() {
+    let src = Source::new("int v = 1\n#if 1\n+ 2\n#endif\n;\n", &[]);
+    with_unit(&src, |u| {
+        let before = Seq::of(u.sm(), u.toks, |f| u.paths.get(&f).cloned(), u.pp_errors);
+        let (i, j) = (u.nth("1", 0), u.nth("2", 0));
+        let main = u.p.unit().main_file().unwrap();
+        let text = u.sm().text(main);
+        let lo = u32::try_from(text.find("1\n").unwrap()).unwrap();
+        let hi = u32::try_from(text.find("2\n").unwrap() + 1).unwrap();
+        let r = FileRange { file: main, lo, hi, tier: Tier::File };
+        let after = marked(&src, u, r);
+        assert_eq!(
+            after.as_ref().map(|a| a.text.clone()).ok(),
+            Some(vec![
+                "int".to_owned(),
+                "v".into(),
+                "=".into(),
+                "__slip_wp084_marker__".into(),
+                ";".into()
+            ]),
+            "the same tokens"
+        );
+        let e = check_range(u, &before, &after, r, i, j).expect_err("a new error");
+        assert!(e.contains("preprocessing errors"), "{e}");
+    })
+    .unwrap();
+}
+
 /// The checker of test 4 catches a wrong range: replacing one byte too
 /// many, or the wrong tier.
 #[test]
