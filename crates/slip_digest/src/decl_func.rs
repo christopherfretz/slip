@@ -422,13 +422,25 @@ pub(crate) fn param_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 /// `local::write_decl`) and instantiated ones.
 fn merged_default(w: &Walk<'_>, f: DeclId, index: u16) -> Option<slip_kiln::kiln::ast::ExprId> {
     let ast = w.ast;
-    let mut chain = w.redecls(ast.first(f));
-    chain.reverse();
-    chain.iter().filter(|&&x| !w.is_local_extern(x) && !instantiated_decl(w, x)).find_map(|&x| {
+    param_decls(w, f).iter().filter(|&&x| !instantiated_decl(w, x)).find_map(|&x| {
         let data = ast.decls.function(x)?;
         let p = ast.lists.iter::<DeclId>(data.params).nth(usize::from(index))?;
         ast.decls.param(p)?.default_arg
     })
+}
+
+/// The declarations of function `f`'s entity whose parameter i the rules
+/// of a parameter read for parameter i (§5.4 `ParamData`, §10.1): in
+/// chain order, the first declaration first, block-scope declarations
+/// left out ([dcl.fct.default]/4; theirs are written with the
+/// declaration in its block, `local::write_decl`). Default arguments
+/// also leave out instantiated declarations (`merged_default`);
+/// attributes and annotations do not (`attrs::decl_attrs`).
+pub(crate) fn param_decls(w: &Walk<'_>, f: DeclId) -> Vec<DeclId> {
+    let mut chain = w.redecls(w.ast.first(f));
+    chain.reverse();
+    chain.retain(|&x| !w.is_local_extern(x));
+    chain
 }
 
 /// `LetData` (§5.4).

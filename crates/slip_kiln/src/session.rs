@@ -110,6 +110,9 @@ impl TransformCommand {
     ///   NUL byte;
     /// - a value of `-I`, `-isystem` or `-include` that is not an absolute
     ///   path;
+    /// - a `-D` whose replacement (what follows its `=`) holds the letters
+    ///   `embed`: the scan for `#embed` and `__has_embed`
+    ///   ([`CompileError::Embed`]) reads files, and this is in none;
     /// - a `file` or `resource_include` that is not UTF-8, is empty, holds a
     ///   NUL byte, begins with `-` or `@`, or is not absolute.
     ///
@@ -149,6 +152,13 @@ impl TransformCommand {
             }
             if PATH_OPTIONS.contains(&opt) && !Path::new(&value).is_absolute() {
                 return Err(refused("the path is not absolute"));
+            }
+            // A macro of the command line is in no file, so the scan of
+            // the files read (`embed_line`) does not see its replacement.
+            if opt == "-D" && value.split_once('=').is_some_and(|(_, r)| r.contains("embed")) {
+                return Err(refused(
+                    "the macro's replacement holds `embed`: `#embed` and `__has_embed` are not supported in a transform (spec/api.md §2.1)",
+                ));
             }
             checked.push((opt, value));
         }

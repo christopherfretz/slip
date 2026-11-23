@@ -78,7 +78,7 @@
 //! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5), each in its empty form when absent |
 //! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4): pending (`Area::Local`) |
 //! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1) |
-//! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
+//! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, a list per declaration, the definition's apart (a parameter's: parameter i of its function's declarations), then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
 //! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
 //! | `other::module_rows(w, s, d)` | the rows `points` and `explicit_defs` of `ModuleTable` (§10.7), from the first declaration; empty forms when ownership is not tracked |
 //! | `order::write(w, s)` | the order unit's stream (digest §2.1): the keys of the variable definitions at namespace and class scope in order, then the translation unit's imports (§10.7) |
