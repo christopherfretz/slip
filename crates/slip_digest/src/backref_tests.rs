@@ -487,7 +487,7 @@ fn the_content_unit_pair_shares_nodes() {
     let units = |src: &str| {
         let (o, refs) = digest_with(src, "c++20", RuleTable::empty());
         let units: Vec<slip_model::digests::Unit> =
-            o.digests.groups.iter().flat_map(|g| g.units.iter().flatten().cloned()).collect();
+            o.digests.groups.iter().flat_map(|g| g.units.iter().flatten().copied()).collect();
         assert!(refs > 0, "{refs} back-references: {src}");
         assert!(units.iter().all(|u| !u.is_indeterminate()), "{src}");
         units.iter().map(|u| (u.key, u.digest)).collect::<Vec<_>>()
