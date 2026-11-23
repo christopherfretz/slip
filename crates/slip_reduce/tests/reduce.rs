@@ -9,8 +9,8 @@ mod common;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use common::*;
-use slip_model::editset::{Basis, Cause, SetState, basis_id};
 use slip_model::edits::{Reason, Role, Severity, subject_flags, tiers};
+use slip_model::editset::{Basis, Cause, SetState, basis_id};
 use slip_model::{Digest, Phase, Shard, Status};
 use slip_reduce::{Options, ReduceError, Shards, declared, reduce};
 
@@ -73,7 +73,12 @@ fn selection_through_a_diamond_and_a_follower() {
     let set = ok(
         &script(),
         vec![
-            ShardB::new(0).seed(d(1)).candidate(d(2)).candidate(d(3)).link(d(1), d(2)).link(d(1), d(3)),
+            ShardB::new(0)
+                .seed(d(1))
+                .candidate(d(2))
+                .candidate(d(3))
+                .link(d(1), d(2))
+                .link(d(1), d(3)),
             ShardB::new(1)
                 .candidate(d(2))
                 .candidate(d(3))
@@ -100,7 +105,9 @@ fn subjects_join_role_flags_and_display() {
         &script(),
         vec![
             ShardB::new(0).subject(d(1), Role::Candidate, &[], 0, "first"),
-            ShardB::new(1).subject(d(1), Role::Seed, &[], 0, "second").claim(the_edit(A, 0, 1, "x")),
+            ShardB::new(1)
+                .subject(d(1), Role::Seed, &[], 0, "second")
+                .claim(the_edit(A, 0, 1, "x")),
         ],
         "join-subjects",
     );
@@ -120,7 +127,8 @@ fn no_subject() {
     assert_eq!((set.refusals[0].subject, set.refusals[0].observers), (None, 0));
     assert!(set.edits.is_empty());
     // A script needs no seed.
-    let set = ok(&script(), vec![ShardB::new(0).claim(the_edit(A, 0, 1, "g"))], "no-subject-script");
+    let set =
+        ok(&script(), vec![ShardB::new(0).claim(the_edit(A, 0, 1, "g"))], "no-subject-script");
     assert_eq!(set.state, SetState::Accepted);
 }
 
@@ -137,7 +145,10 @@ fn each_flag_of_a_selected_subject() {
         let set = ok(
             &rename(),
             vec![
-                ShardB::new(0).seed(d(1)).flags(d(1), flag).claim(the_edit(A, 0, 1, "g").subjects(&[d(1)])),
+                ShardB::new(0)
+                    .seed(d(1))
+                    .flags(d(1), flag)
+                    .claim(the_edit(A, 0, 1, "g").subjects(&[d(1)])),
                 ShardB::new(1).seed(d(1)).claim(the_edit(A, 0, 1, "g").subjects(&[d(1)])),
                 ShardB::new(2).seed(d(1)).flags(d(1), flag),
                 ShardB::new(3).candidate(d(7)).flags(d(7), flag),
@@ -147,7 +158,10 @@ fn each_flag_of_a_selected_subject() {
         assert_eq!(set.state, SetState::Refused, "{cause:?}");
         assert_eq!(causes(&set), vec![cause]);
         let r = &set.refusals[0];
-        assert_eq!((r.subject, r.observers, r.first.clone()), (Some(d(1)), 2, vec![observer(0), observer(2)]));
+        assert_eq!(
+            (r.subject, r.observers, r.first.clone()),
+            (Some(d(1)), 2, vec![observer(0), observer(2)])
+        );
         assert!(set.edits.is_empty());
     }
 }
@@ -174,12 +188,14 @@ fn mixed_follower() {
 fn mixed_set() {
     let set = ok(
         &script(),
-        vec![ShardB::new(0)
-            .seed(d(1))
-            .candidate(d(2))
-            .claim(the_edit(A, 0, 1, "x").subjects(&[d(1), d(2)]))
-            .claim(refuse(A, 5, 6).subjects(&[d(1), d(2)]))
-            .claim(the_edit(A, 10, 11, "y").subjects(&[d(1)]))],
+        vec![
+            ShardB::new(0)
+                .seed(d(1))
+                .candidate(d(2))
+                .claim(the_edit(A, 0, 1, "x").subjects(&[d(1), d(2)]))
+                .claim(refuse(A, 5, 6).subjects(&[d(1), d(2)]))
+                .claim(the_edit(A, 10, 11, "y").subjects(&[d(1)])),
+        ],
         "mixed-set",
     );
     assert_eq!(causes(&set), vec![Cause::MixedSet, Cause::MixedSet]);
@@ -218,7 +234,10 @@ fn live_identical_claims() {
 fn live_with_unresolved() {
     let set = ok(
         &script(),
-        vec![ShardB::new(0).claim(the_edit(A, 0, 1, "x")), ShardB::new(1).claim(unresolved(A, 0, 1))],
+        vec![
+            ShardB::new(0).claim(the_edit(A, 0, 1, "x")),
+            ShardB::new(1).claim(unresolved(A, 0, 1)),
+        ],
         "live-unresolved",
     );
     assert_eq!(edits(&set), vec![e(A, 0, 1)]);
@@ -340,7 +359,11 @@ fn macro_site_is_the_least() {
 #[test]
 fn at_most_eight_notes() {
     let names: Vec<String> = (0..10).map(|i| format!("n{i}")).collect();
-    let shards = names.iter().enumerate().map(|(i, n)| ShardB::new(i).claim(the_edit(A, 4, 5, "x").notes(&[n]))).collect();
+    let shards = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| ShardB::new(i).claim(the_edit(A, 4, 5, "x").notes(&[n])))
+        .collect();
     let set = ok(&script(), shards, "notes");
     let want: Vec<Vec<u8>> = names[..8].iter().map(|n| n.as_bytes().to_vec()).collect();
     assert_eq!(set.edits[0].notes, want);
@@ -352,7 +375,10 @@ fn at_most_eight_notes() {
 fn contested_by_another_range() {
     let set = ok(
         &script(),
-        vec![ShardB::new(0).claim(the_edit(A, 0, 4, "x")).claim(the_edit(A, 10, 12, "y")), ShardB::new(1).claim(keep(A, 2, 6))],
+        vec![
+            ShardB::new(0).claim(the_edit(A, 0, 4, "x")).claim(the_edit(A, 10, 12, "y")),
+            ShardB::new(1).claim(keep(A, 2, 6)),
+        ],
         "contested-other",
     );
     let r = refusal_at(&set, Cause::Contested, A, 0, 4);
@@ -471,7 +497,10 @@ fn failed_runs() {
     assert_eq!((f.observers, f.first.clone()), (2, vec![observer(0), observer(2)]));
     assert_eq!(f.failure.rendered, format!("rendered by {}", observer(0)), "the first observer's");
     assert_eq!(counter(&set, "reduce.failed_runs"), 2);
-    assert!(set.files.iter().any(|x| x.path == B.as_bytes()), "the refusal's subject names its file");
+    assert!(
+        set.files.iter().any(|x| x.path == B.as_bytes()),
+        "the refusal's subject names its file"
+    );
 
     let set = ok(&script(), vec![ShardB::new(0).failed("boom", None)], "failed-all");
     assert_eq!(set.state, SetState::Refused);
@@ -513,7 +542,10 @@ fn declared_changes() {
             .claim(the_edit(A, 0, 1, "g").subjects(&[d(1)]))
             .changed(d(0x20), A, 0, 3, "the callee")
             .changed(d(0x21), A, 10, 13, "rejected"),
-        ShardB::new(1).seed(d(1)).rule(d(1), function_rule("f", "g")).claim(the_edit(A, 10, 11, "g")),
+        ShardB::new(1)
+            .seed(d(1))
+            .rule(d(1), function_rule("f", "g"))
+            .claim(the_edit(A, 10, 11, "g")),
         ShardB::new(2).claim(keep(A, 10, 11)),
     ]);
     let set = &r.edits;
@@ -557,7 +589,10 @@ fn rule_conflict_both_ways() {
     let set = ok(
         &script(),
         vec![
-            ShardB::new(0).seed(d(1)).rule(d(1), function_rule("f", "g")).claim(the_edit(A, 0, 1, "x")),
+            ShardB::new(0)
+                .seed(d(1))
+                .rule(d(1), function_rule("f", "g"))
+                .claim(the_edit(A, 0, 1, "x")),
             ShardB::new(1).renamed(function_rule("f", "h")),
         ],
         "conflict-subject",
@@ -584,7 +619,12 @@ fn namespaces_may_merge() {
 // ---------------------------------------------------------------------------
 // §5.1, §4.7: Input errors, one each, naming the observer
 
-fn expect_input(shards: Vec<Shard>, request: &slip_model::transform::Transform, at: usize, says: &str) {
+fn expect_input(
+    shards: Vec<Shard>,
+    request: &slip_model::transform::Transform,
+    at: usize,
+    says: &str,
+) {
     let store = Store::new(shards);
     let (obs, message) = input_error(run(request, &store, "input"));
     assert_eq!(obs, store.observers[at], "{message}");
@@ -710,7 +750,11 @@ fn input_replace_not_owned() {
 /// observer is named.
 #[test]
 fn input_one_key_two_rules() {
-    let a = ShardB::new(0).seed(d(1)).rule(d(1), function_rule("f", "g")).claim(the_edit(A, 0, 1, "x")).build();
+    let a = ShardB::new(0)
+        .seed(d(1))
+        .rule(d(1), function_rule("f", "g"))
+        .claim(the_edit(A, 0, 1, "x"))
+        .build();
     let b = ShardB::new(1).candidate(d(9)).build();
     let c = ShardB::new(2).seed(d(1)).rule(d(1), function_rule("f", "h")).build();
     expect_input(vec![a, b, c], &script(), 2, "rule");
@@ -771,7 +815,10 @@ fn input_shard_changed_between_passes() {
             self.inner.shard_id(index)
         }
     }
-    let store = Changing { inner: Store::new(vec![plain(0), plain(1)]), opens: (0..2).map(|_| AtomicU64::new(0)).collect() };
+    let store = Changing {
+        inner: Store::new(vec![plain(0), plain(1)]),
+        opens: (0..2).map(|_| AtomicU64::new(0)).collect(),
+    };
     let o = options("input-changed");
     let (obs, m) = input_error(reduce(&script(), REQUEST, PLAN, 0, &store, &o));
     assert_eq!(obs, observer(1));
@@ -786,8 +833,14 @@ fn reports_are_joined() {
     let set = ok(
         &script(),
         vec![
-            ShardB::new(0).report(Some((A, 0, 1)), Severity::Review, "look").claim(the_edit(A, 5, 6, "x")),
-            ShardB::new(1).report(Some((A, 0, 1)), Severity::Review, "look").report(None, Severity::Note, "n"),
+            ShardB::new(0)
+                .report(Some((A, 0, 1)), Severity::Review, "look")
+                .claim(the_edit(A, 5, 6, "x")),
+            ShardB::new(1).report(Some((A, 0, 1)), Severity::Review, "look").report(
+                None,
+                Severity::Note,
+                "n",
+            ),
         ],
         "reports",
     );
@@ -805,7 +858,11 @@ fn shard_counters_are_summed() {
     let set = ok(
         &script(),
         vec![
-            ShardB::new(0).counter("edits.claims", 2).counter("api.peak_bytes", 10).counter("map.x", 1).claim(the_edit(A, 0, 1, "x")),
+            ShardB::new(0)
+                .counter("edits.claims", 2)
+                .counter("api.peak_bytes", 10)
+                .counter("map.x", 1)
+                .claim(the_edit(A, 0, 1, "x")),
             ShardB::new(1).counter("edits.claims", 3).counter("api.peak_bytes", 30),
         ],
         "counters",
@@ -864,7 +921,10 @@ fn an_observer_counts_once_at_a_site() {
         vec![
             ShardB::new(0).claim(keep(A, 2, 6)).claim(unresolved(A, 2, 6)),
             ShardB::new(1).claim(the_edit(A, 0, 4, "x")).claim(the_edit(A, 50, 51, "z")),
-            ShardB::new(2).candidate(d(9)).claim(the_edit(A, 2, 6, "w").subjects(&[d(9)])).claim(keep(A, 2, 6)),
+            ShardB::new(2)
+                .candidate(d(9))
+                .claim(the_edit(A, 2, 6, "w").subjects(&[d(9)]))
+                .claim(keep(A, 2, 6)),
         ],
         "once-contested",
     );

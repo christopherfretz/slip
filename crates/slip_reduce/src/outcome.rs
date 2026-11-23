@@ -13,11 +13,19 @@ use crate::records::{ClaimVal, KPiece, Sample, Site, least_macro, union, variant
 #[derive(Debug)]
 pub(crate) enum Outcome {
     /// A candidate edit.
-    Live { pieces: Vec<KPiece>, val: ClaimVal },
+    Live {
+        pieces: Vec<KPiece>,
+        val: ClaimVal,
+    },
     Kept,
     Unresolved,
     /// Rejected by the table or by `mixed_set` (§5.2).
-    Rejected { cause: Cause, reason: Reason, macro_site: Option<MacroSite>, sample: Sample },
+    Rejected {
+        cause: Cause,
+        reason: Reason,
+        macro_site: Option<MacroSite>,
+        sample: Sample,
+    },
     /// Every claim was dropped (§5.2: a `refuse` all of whose subjects are
     /// unselected).
     Nothing,
@@ -133,7 +141,12 @@ pub(crate) fn site(
         for v in &mixed {
             m = least_macro(m, v.macro_site.clone());
         }
-        Outcome::Rejected { cause: Cause::MixedSet, reason: Reason::None, macro_site: m, sample: count(&mixed_class) }
+        Outcome::Rejected {
+            cause: Cause::MixedSet,
+            reason: Reason::None,
+            macro_site: m,
+            sample: count(&mixed_class),
+        }
     } else if let Some(r) = refuse {
         Outcome::Rejected {
             cause: Cause::SiteRefused,
@@ -146,7 +159,12 @@ pub(crate) fn site(
         for (_, v) in &replaces {
             m = least_macro(m, v.macro_site.clone());
         }
-        Outcome::Rejected { cause: Cause::Divergent, reason: Reason::None, macro_site: m, sample: count(&replace_class) }
+        Outcome::Rejected {
+            cause: Cause::Divergent,
+            reason: Reason::None,
+            macro_site: m,
+            sample: count(&replace_class),
+        }
     } else if let Some((pieces, val)) = replaces.pop() {
         if keep.is_empty() {
             Outcome::Live { pieces, val }

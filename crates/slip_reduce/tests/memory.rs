@@ -120,7 +120,9 @@ fn one_site_ten_thousand_shards_fan_in_two() {
                 "the peak grows with the shards: {small} KiB for 1000, {large} KiB for 10000"
             );
         }
-        _ => eprintln!("the resident high-water mark cannot be measured here: the bound is not checked"),
+        _ => eprintln!(
+            "the resident high-water mark cannot be measured here: the bound is not checked"
+        ),
     }
 }
 
@@ -150,7 +152,10 @@ fn large_run(n: usize, threads: usize) {
     assert_eq!(set.state, SetState::Accepted);
     assert_eq!(set.edits.len(), 8 + 12 * n);
     assert_eq!(counter(&set, "reduce.edits.shared"), 8);
-    eprintln!("rename-like run, {n} shards, {} claims, {threads} threads: {took:?}, peak growth {g:?} KiB", 20 * n);
+    eprintln!(
+        "rename-like run, {n} shards, {} claims, {threads} threads: {took:?}, peak growth {g:?} KiB",
+        20 * n
+    );
 }
 
 /// §5.6: a generated run of two thousand shards, in every `cargo test`.

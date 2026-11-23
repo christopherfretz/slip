@@ -106,7 +106,9 @@ pub enum ReduceError {
 impl std::fmt::Display for ReduceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ReduceError::Input { observer, message } => write!(f, "the shard of observer {observer}: {message}"),
+            ReduceError::Input { observer, message } => {
+                write!(f, "the shard of observer {observer}: {message}")
+            }
             ReduceError::Io(m) => write!(f, "reduce: {m}"),
         }
     }
@@ -148,7 +150,11 @@ impl Least {
 /// index. Stops handing out work after the first `Err` and returns it.
 /// Nothing is kept per job: a job folds its result into shared state, so
 /// that memory does not grow with the number of runs (§5.6).
-fn pool(threads: usize, count: usize, job: &(dyn Fn(usize) -> Result<(), String> + Sync)) -> Result<(), String> {
+fn pool(
+    threads: usize,
+    count: usize,
+    job: &(dyn Fn(usize) -> Result<(), String> + Sync),
+) -> Result<(), String> {
     let next = AtomicUsize::new(0);
     let failed = Mutex::new(None::<String>);
     let work = || {
@@ -342,7 +348,10 @@ fn run(
 ) -> Result<Reduced, ReduceError> {
     let fan_in = options.fan_in;
     let n = shards.len();
-    let input = |index: usize, message: String| ReduceError::Input { observer: shards.observer(index), message };
+    let input = |index: usize, message: String| ReduceError::Input {
+        observer: shards.observer(index),
+        message,
+    };
 
     // Pass 1.
     let ctx = Ctx { request, request_id, round, shards };
@@ -371,7 +380,10 @@ fn run(
     if let Some((c, id)) = joined.rule_conflict() {
         let c = usize::try_from(c).unwrap_or(usize::MAX);
         if error.as_ref().is_none_or(|(i, _)| c < *i) {
-            error = Some((c, format!("the subject {id} has a rule other than an earlier shard gives it")));
+            error = Some((
+                c,
+                format!("the subject {id} has a rule other than an earlier shard gives it"),
+            ));
         }
     }
     if let Some((i, m)) = error {
@@ -386,7 +398,8 @@ fn run(
         cleanup.levels.push(next);
         let lv = level;
         pool(options.threads, next, &|g| {
-            let inputs: Vec<PathBuf> = (g * fan_in..((g + 1) * fan_in).min(count)).map(|i| scratch.run(lv, i)).collect();
+            let inputs: Vec<PathBuf> =
+                (g * fan_in..((g + 1) * fan_in).min(count)).map(|i| scratch.run(lv, i)).collect();
             runs::merge(&inputs, scratch.run(lv + 1, g))?;
             for p in &inputs {
                 std::fs::remove_file(p).map_err(|e| runs::io(p, &e))?;
@@ -401,15 +414,13 @@ fn run(
     // Selection.
     let rename = request.kind == TransformKind::Rename;
     let selection = subjects::select(&joined.subjects, &joined.links, rename);
-    let refused_subjects: BTreeSet<Digest> = selection.refusals.iter().filter_map(|r| r.subject).collect();
+    let refused_subjects: BTreeSet<Digest> =
+        selection.refusals.iter().filter_map(|r| r.subject).collect();
 
     // The stream.
     let mut builder = Builder::default();
     {
-        let mut cx = Context {
-            selected: &selection.selected,
-            ties: &mut joined.ties,
-        };
+        let mut cx = Context { selected: &selection.selected, ties: &mut joined.ties };
         let mut reader = RunReader::open(scratch.run(level, 0)).map_err(ReduceError::Io)?;
         while let Some((k, v)) = reader.next().map_err(ReduceError::Io)? {
             builder.push(k, v, &mut cx).map_err(ReduceError::Io)?;
@@ -491,7 +502,8 @@ fn run(
         counters,
         observer: &observer,
     });
-    set.validate().map_err(|e| ReduceError::Io(format!("reduce made an edit set its reader refuses: {e}")))?;
+    set.validate()
+        .map_err(|e| ReduceError::Io(format!("reduce made an edit set its reader refuses: {e}")))?;
     let declared = declared(&set).map_err(ReduceError::Io)?;
     Ok(Reduced { edits: set, declared })
 }

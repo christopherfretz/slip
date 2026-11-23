@@ -94,7 +94,8 @@ pub(crate) fn not_effective(spans: &[Span], copies: &[(usize, Span)]) -> Vec<(us
         by_owner.entry(e).or_default().push(r);
     }
     let mut effective: BTreeSet<usize> = BTreeSet::new();
-    let mut queue: Vec<usize> = by_owner.keys().copied().filter(|e| !parent.contains_key(e)).collect();
+    let mut queue: Vec<usize> =
+        by_owner.keys().copied().filter(|e| !parent.contains_key(e)).collect();
     while let Some(e) = queue.pop() {
         for &r in by_owner.get(&e).into_iter().flatten() {
             for (l, h) in properly_inside_of(spans, r) {

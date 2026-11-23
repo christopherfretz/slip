@@ -11,11 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use slip_model::editset::{Cause, EditSet, Refusal};
 use slip_model::edits::{
-    Changed, Claim, Edits, Failure, FailureKind, HostRefusal, Link, MacroSite, Piece, Place, Reason,
-    Report, Role, SCHEME, Severity, SourcePlace, Stance, Subject, tiers,
+    Changed, Claim, Edits, Failure, FailureKind, HostRefusal, Link, MacroSite, Piece, Place,
+    Reason, Report, Role, SCHEME, Severity, SourcePlace, Stance, Subject, tiers,
 };
+use slip_model::editset::{Cause, EditSet, Refusal};
 use slip_model::formats::content_id;
 use slip_model::hash::content_digest;
 use slip_model::keys::{KeyKind, Name, Parent, Rule};
@@ -56,7 +56,14 @@ pub fn script() -> Transform {
         ownership: ownership(),
         indivisible: false,
         rename: None,
-        script: Some(Script { id: d(0x5c), file: b"/s/t.cc".to_vec(), options: Vec::new(), steps: 1 << 30, bytes: 1 << 30, depth: 512 }),
+        script: Some(Script {
+            id: d(0x5c),
+            file: b"/s/t.cc".to_vec(),
+            options: Vec::new(),
+            steps: 1 << 30,
+            bytes: 1 << 30,
+            depth: 512,
+        }),
     }
 }
 
@@ -239,14 +246,19 @@ impl ShardB {
     }
 
     fn touch(&mut self, path: &[u8]) {
-        self.files
-            .entry(path.to_vec())
-            .or_insert_with(|| FileRef { path: path.to_vec(), size: SIZE, content: content(path) });
+        self.files.entry(path.to_vec()).or_insert_with(|| FileRef {
+            path: path.to_vec(),
+            size: SIZE,
+            content: content(path),
+        });
     }
 
     /// Gives `path` a size and content of its own in this shard.
     pub fn file(mut self, path: &str, size: u64, content: Digest) -> ShardB {
-        self.files.insert(path.as_bytes().to_vec(), FileRef { path: path.as_bytes().to_vec(), size, content });
+        self.files.insert(
+            path.as_bytes().to_vec(),
+            FileRef { path: path.as_bytes().to_vec(), size, content },
+        );
         self
     }
 
@@ -262,11 +274,25 @@ impl ShardB {
         self
     }
 
-    pub fn subject(mut self, id: Digest, role: Role, of: &[Digest], flags: u64, display: &str) -> ShardB {
+    pub fn subject(
+        mut self,
+        id: Digest,
+        role: Role,
+        of: &[Digest],
+        flags: u64,
+        display: &str,
+    ) -> ShardB {
         let of: BTreeSet<Digest> = of.iter().copied().collect();
         self.subjects.insert(
             id,
-            Subject { id, rule: None, role, of: of.into_iter().collect(), flags, display: display.to_owned() },
+            Subject {
+                id,
+                rule: None,
+                role,
+                of: of.into_iter().collect(),
+                flags,
+                display: display.to_owned(),
+            },
         );
         self
     }
@@ -309,7 +335,12 @@ impl ShardB {
         self
     }
 
-    pub fn report(mut self, place: Option<(&str, u64, u64)>, severity: Severity, message: &str) -> ShardB {
+    pub fn report(
+        mut self,
+        place: Option<(&str, u64, u64)>,
+        severity: Severity,
+        message: &str,
+    ) -> ShardB {
         self.reports.push((
             place.map(|(p, lo, hi)| (p.as_bytes().to_vec(), lo, hi)),
             severity,
@@ -380,7 +411,8 @@ impl ShardB {
         }
         let files: Vec<FileRef> = self.files.values().cloned().collect();
         let index = |path: &[u8]| files.iter().position(|f| f.path == path).unwrap() as u64;
-        let place = |(path, lo, hi): &(Vec<u8>, u64, u64)| Place { file: index(path), lo: *lo, hi: *hi };
+        let place =
+            |(path, lo, hi): &(Vec<u8>, u64, u64)| Place { file: index(path), lo: *lo, hi: *hi };
 
         let mut claims: Vec<(Claim, usize)> = self
             .claims
@@ -392,7 +424,9 @@ impl ShardB {
                     .iter()
                     .map(|p| match p {
                         P::L(b) => Piece::Literal(b.clone()),
-                        P::C(path, lo, hi) => Piece::Copy(Place { file: index(path), lo: *lo, hi: *hi }),
+                        P::C(path, lo, hi) => {
+                            Piece::Copy(Place { file: index(path), lo: *lo, hi: *hi })
+                        }
                         P::S(key, text) => Piece::Spelled { key: *key, text: text.clone() },
                     })
                     .collect();
@@ -474,7 +508,11 @@ impl ShardB {
             failure,
             files: files.clone(),
             subjects: if failed { Vec::new() } else { self.subjects.values().cloned().collect() },
-            links: if failed { Vec::new() } else { self.links.iter().map(|&(a, b)| Link { a, b }).collect() },
+            links: if failed {
+                Vec::new()
+            } else {
+                self.links.iter().map(|&(a, b)| Link { a, b }).collect()
+            },
             claims: if failed { Vec::new() } else { claims.into_iter().map(|c| c.0).collect() },
             groups: if failed { Vec::new() } else { groups },
             reports: if failed { Vec::new() } else { reports },
@@ -493,9 +531,18 @@ impl ShardB {
             observer: self.observer,
             phase: self.phase,
             round: self.round,
-            outcome: Outcome { status: self.status, errors: 0, warnings: 0, message: String::new() },
+            outcome: Outcome {
+                status: self.status,
+                errors: 0,
+                warnings: 0,
+                message: String::new(),
+            },
             inputs: if ok { inputs } else { None },
-            counters: self.counters.iter().map(|(name, &value)| Counter { name: name.clone(), value }).collect(),
+            counters: self
+                .counters
+                .iter()
+                .map(|(name, &value)| Counter { name: name.clone(), value })
+                .collect(),
             digests: None,
             verdict: None,
             edits: if ok && self.edits { Some(edits) } else { None },
@@ -671,7 +718,9 @@ pub fn refusal_at<'a>(set: &'a EditSet, cause: Cause, path: &str, lo: u64, hi: u
 pub fn edits(set: &EditSet) -> Vec<(String, u64, u64)> {
     set.edits
         .iter()
-        .map(|e| (String::from_utf8_lossy(&set.files[e.file as usize].path).into_owned(), e.lo, e.hi))
+        .map(|e| {
+            (String::from_utf8_lossy(&set.files[e.file as usize].path).into_owned(), e.lo, e.hi)
+        })
         .collect()
 }
 
@@ -680,5 +729,8 @@ pub fn e(path: &str, lo: u64, hi: u64) -> (String, u64, u64) {
 }
 
 pub fn counter(set: &EditSet, name: &str) -> u64 {
-    set.counters.iter().find(|c| c.name == name).map_or_else(|| panic!("no counter {name}"), |c| c.value)
+    set.counters
+        .iter()
+        .find(|c| c.name == name)
+        .map_or_else(|| panic!("no counter {name}"), |c| c.value)
 }

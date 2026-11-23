@@ -39,10 +39,13 @@ pub(crate) fn conflicts(rules: &BTreeSet<Rule>) -> bool {
 /// rules when two of them disagree (landed WP-062 §7).
 pub(crate) fn table_of(rules: &BTreeSet<Rule>) -> Vec<Rule> {
     let list: Vec<&Rule> = rules.iter().collect();
-    let same = |a: &Rule, b: &Rule| (a.parent, a.kind, &a.name, a.disc) == (b.parent, b.kind, &b.name, b.disc);
+    let same = |a: &Rule, b: &Rule| {
+        (a.parent, a.kind, &a.name, a.disc) == (b.parent, b.kind, &b.name, b.disc)
+    };
     let kept: Vec<Rule> = (0..list.len())
         .filter(|&i| {
-            !((i > 0 && same(list[i - 1], list[i])) || (i + 1 < list.len() && same(list[i], list[i + 1])))
+            !((i > 0 && same(list[i - 1], list[i]))
+                || (i + 1 < list.len() && same(list[i], list[i + 1])))
         })
         .map(|i| list[i].clone())
         .collect();

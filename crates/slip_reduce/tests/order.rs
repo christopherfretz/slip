@@ -15,7 +15,12 @@
 //!
 //! The seed is printed on failure; `SLIP_REDUCE_SEED` gives another.
 
-#![allow(clippy::many_single_char_names, clippy::too_many_lines, clippy::manual_assert, clippy::explicit_auto_deref)]
+#![allow(
+    clippy::many_single_char_names,
+    clippy::too_many_lines,
+    clippy::manual_assert,
+    clippy::explicit_auto_deref
+)]
 
 mod common;
 
@@ -23,8 +28,8 @@ use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use common::*;
-use slip_model::editset::EditSet;
 use slip_model::edits::{Reason, Severity, Stance};
+use slip_model::editset::EditSet;
 use slip_model::transform::Transform;
 use slip_model::{Digest, Shard, Status};
 use slip_reduce::{Options, Reduced, reduce};
@@ -123,7 +128,8 @@ fn generate(seed: u64) -> (Transform, Vec<(Digest, Option<Shard>)>) {
             continue;
         }
         if roll < 20 {
-            let (m, subject) = if r.chance(50) { ("boom", Some((FILES[0], 1, 2))) } else { ("bang", None) };
+            let (m, subject) =
+                if r.chance(50) { ("boom", Some((FILES[0], 1, 2))) } else { ("bang", None) };
             out.push((observer(i), Some(b.failed(m, subject).build())));
             continue;
         }
@@ -169,8 +175,13 @@ fn generate(seed: u64) -> (Transform, Vec<(Digest, Option<Shard>)>) {
             }
         }
         // Groups: disjoint sets of two or more replace claims.
-        let replaces: Vec<usize> =
-            b.claims.iter().enumerate().filter(|(_, c)| c.stance == Stance::Replace).map(|(k, _)| k).collect();
+        let replaces: Vec<usize> = b
+            .claims
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.stance == Stance::Replace)
+            .map(|(k, _)| k)
+            .collect();
         if replaces.len() >= 2 && r.chance(40) {
             let mut rest = replaces.clone();
             while rest.len() >= 2 && r.chance(70) {
@@ -208,8 +219,13 @@ fn generate(seed: u64) -> (Transform, Vec<(Digest, Option<Shard>)>) {
         if r.chance(3) {
             // In `inputs` alone if the section names no place in it, else
             // in `files` (§5.1: the two agree within a shard).
-            let named = format!("{:?}{:?}{:?}", b.claims, b.reports, b.changed).contains(&format!("{:?}", FILES[1].as_bytes()));
-            b = if named { b.file(FILES[1], SIZE + 5, d(0xb2)) } else { b.input(FILES[1], SIZE + 5, d(0xb2)) };
+            let named = format!("{:?}{:?}{:?}", b.claims, b.reports, b.changed)
+                .contains(&format!("{:?}", FILES[1].as_bytes()));
+            b = if named {
+                b.file(FILES[1], SIZE + 5, d(0xb2))
+            } else {
+                b.input(FILES[1], SIZE + 5, d(0xb2))
+            };
         }
         let n_claims = b.claims.len() as u64;
         b = b.counter("edits.claims", n_claims).counter("api.peak_bytes", r.below(1000));
@@ -344,8 +360,15 @@ fn check(seed: u64, tally: &mut Tally) {
 /// §1 rule 3, §5.3, §5.6, §6.1 and the model, over generated sets.
 #[test]
 fn generated_sets_are_order_independent_valid_and_agree_with_the_model() {
-    let base: u64 = std::env::var("SLIP_REDUCE_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0x062_5eed);
-    let mut tally = Tally { causes: std::collections::BTreeMap::new(), cases: 0, reduces: 0, accepted: 0, edits: 0 };
+    let base: u64 =
+        std::env::var("SLIP_REDUCE_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0x062_5eed);
+    let mut tally = Tally {
+        causes: std::collections::BTreeMap::new(),
+        cases: 0,
+        reduces: 0,
+        accepted: 0,
+        edits: 0,
+    };
     for case in 0..CASES {
         let seed = base.wrapping_add(case.wrapping_mul(0x9e37_79b9));
         let r = catch_unwind(AssertUnwindSafe(|| check(seed, &mut tally)));
@@ -357,5 +380,9 @@ fn generated_sets_are_order_independent_valid_and_agree_with_the_model() {
         "order: {} cases, {} reductions, {} accepted sets, {} edits; refusals {:?}",
         tally.cases, tally.reduces, tally.accepted, tally.edits, tally.causes
     );
-    assert!(tally.accepted >= CASES / 10, "the generator makes too few accepted sets: {}", tally.accepted);
+    assert!(
+        tally.accepted >= CASES / 10,
+        "the generator makes too few accepted sets: {}",
+        tally.accepted
+    );
 }

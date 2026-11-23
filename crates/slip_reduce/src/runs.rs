@@ -165,7 +165,8 @@ impl RunReader {
                 break;
             }
         }
-        let len = usize::try_from(len).map_err(|_| format!("{}: a record too large", self.path.display()))?;
+        let len = usize::try_from(len)
+            .map_err(|_| format!("{}: a record too large", self.path.display()))?;
         self.buf.clear();
         self.buf.resize(len, 0);
         self.input.read_exact(&mut self.buf).map_err(|e| io(&self.path, &e))?;

@@ -10,7 +10,9 @@ use slip_model::edits::{
     Failure, FailureKind, HostRefusal, MacroSite, Piece, Place, Reason, Report, Severity,
     SourcePlace, Stance,
 };
-use slip_model::editset::{Cause, Edit, EditSet, Exempt, Failed, Refusal, Reported, SCHEME, SetState};
+use slip_model::editset::{
+    Cause, Edit, EditSet, Exempt, Failed, Refusal, Reported, SCHEME, SetState,
+};
 use slip_model::{Counter, Digest, FileRef};
 
 use crate::geometry::{Span, at, cyclic, least_crossing, least_sharing, parents, share_byte};
@@ -151,7 +153,9 @@ impl Builder {
             }
             let Some((_, claims, observed)) = &mut self.pending else { unreachable!("set above") };
             match (entry, val) {
-                (Entry::Claim { stance, pieces }, Val::Claim(v)) => claims.push((stance, pieces, v)),
+                (Entry::Claim { stance, pieces }, Val::Claim(v)) => {
+                    claims.push((stance, pieces, v))
+                }
                 (Entry::Observed(variants), Val::Sample(v)) => observed.push((variants, v)),
                 _ => return Err(corrupt("a claim without its value")),
             }
@@ -257,17 +261,19 @@ impl Builder {
                 self.sites_unresolved += 1;
                 self.unresolved.push((pid, s.lo, s.hi));
             }
-            Outcome::Rejected { cause, reason, macro_site, sample } => self.refusals.push(SiteRefusal {
-                pid,
-                lo: s.lo,
-                hi: s.hi,
-                cause,
-                reason,
-                macro_site,
-                subject: out.least_subject,
-                sample,
-                other: None,
-            }),
+            Outcome::Rejected { cause, reason, macro_site, sample } => {
+                self.refusals.push(SiteRefusal {
+                    pid,
+                    lo: s.lo,
+                    hi: s.hi,
+                    cause,
+                    reason,
+                    macro_site,
+                    subject: out.least_subject,
+                    sample,
+                    other: None,
+                })
+            }
             Outcome::Nothing => {}
         }
         Ok(())
@@ -362,15 +368,18 @@ impl Builder {
     /// `(size, content)` pass 2 found.
     pub fn file_agreement(&mut self, seen: &BTreeMap<u32, BTreeSet<(u64, Digest)>>) {
         let differs = |pid: u32| {
-            let mut all: BTreeSet<(u64, Digest)> = self.versions[pid as usize].iter().copied().collect();
+            let mut all: BTreeSet<(u64, Digest)> =
+                self.versions[pid as usize].iter().copied().collect();
             if let Some(s) = seen.get(&pid) {
                 all.extend(s.iter().copied());
             }
             all.len() > 1
         };
-        let bad: BTreeSet<u32> = self.agreement_files().into_iter().filter(|&p| differs(p)).collect();
+        let bad: BTreeSet<u32> =
+            self.agreement_files().into_iter().filter(|&p| differs(p)).collect();
         for l in self.live.iter_mut().filter(|l| l.alive()) {
-            let copies_bad = l.pieces.iter().any(|p| matches!(p, P2::Copy(pid, _, _) if bad.contains(pid)));
+            let copies_bad =
+                l.pieces.iter().any(|p| matches!(p, P2::Copy(pid, _, _) if bad.contains(pid)));
             if bad.contains(&l.pid) || copies_bad {
                 l.reject(Cause::FileDiffers, None);
             }
@@ -381,7 +390,12 @@ impl Builder {
     /// rejected. `indivisible`: every edit is one group. `refused_subjects`:
     /// the subjects some refusal of §5.2 names; `subject_refusals`: whether
     /// there is any.
-    pub fn groups(&mut self, indivisible: bool, refused_subjects: &BTreeSet<Digest>, subject_refusals: bool) {
+    pub fn groups(
+        &mut self,
+        indivisible: bool,
+        refused_subjects: &BTreeSet<Digest>,
+        subject_refusals: bool,
+    ) {
         self.reject_groups(indivisible, refused_subjects, subject_refusals);
         loop {
             let alive = self.alive();
@@ -413,7 +427,12 @@ impl Builder {
     /// refusal of §5.2 names a subject one of its claims names; under an
     /// `indivisible` request, also if any site was refused (landed WP-062
     /// §5).
-    fn reject_groups(&mut self, indivisible: bool, refused: &BTreeSet<Digest>, subject_refusals: bool) {
+    fn reject_groups(
+        &mut self,
+        indivisible: bool,
+        refused: &BTreeSet<Digest>,
+        subject_refusals: bool,
+    ) {
         if indivisible {
             let any = subject_refusals
                 || !self.refusals.is_empty()
@@ -472,7 +491,8 @@ impl Builder {
     #[allow(clippy::too_many_lines)]
     pub fn assemble(self, mut parts: Parts<'_>) -> EditSet {
         let first = |s: &Sample| s.first.iter().map(|&i| (parts.observer)(i)).collect::<Vec<_>>();
-        let set_refused = !parts.subject_refusals.is_empty() || parts.no_observer || parts.rule_conflict;
+        let set_refused =
+            !parts.subject_refusals.is_empty() || parts.no_observer || parts.rule_conflict;
         let finals: Vec<&Live> = self.live.iter().filter(|l| l.alive()).collect();
         let accepted = !set_refused && !finals.is_empty();
         let finals: Vec<&Live> = if accepted { finals } else { Vec::new() };
@@ -531,7 +551,8 @@ impl Builder {
             // shard gave in the file is within it (landed WP-062 §6).
             let vs = &self.versions[pid as usize];
             let size = vs.iter().map(|v| v.0).max().unwrap_or(0);
-            let content = vs.iter().filter(|v| v.0 == size).map(|v| v.1).min().unwrap_or(Digest([0; 32]));
+            let content =
+                vs.iter().filter(|v| v.0 == size).map(|v| v.1).min().unwrap_or(Digest([0; 32]));
             files.push(FileRef { path: self.paths[pid as usize].clone(), size, content });
         }
         let pl = |p: PPlace| Place { file: index[p.0 as usize], lo: p.1, hi: p.2 };
@@ -549,7 +570,9 @@ impl Builder {
                     .map(|p| match p {
                         P2::Literal(b) => Piece::Literal(b.clone()),
                         P2::Copy(pid, lo, hi) => Piece::Copy(pl((*pid, *lo, *hi))),
-                        P2::Spelled { key, text } => Piece::Spelled { key: *key, text: text.clone() },
+                        P2::Spelled { key, text } => {
+                            Piece::Spelled { key: *key, text: text.clone() }
+                        }
                     })
                     .collect(),
                 subjects: l.val.subjects.clone(),
@@ -652,7 +675,12 @@ impl Builder {
             .reports
             .iter()
             .map(|(place, severity, message, attached, s)| Reported {
-                report: Report { place: place.map(pl), severity: *severity, message: message.clone(), attached: *attached },
+                report: Report {
+                    place: place.map(pl),
+                    severity: *severity,
+                    message: message.clone(),
+                    attached: *attached,
+                },
                 observers: s.observers,
                 first: first(s),
             })
@@ -671,7 +699,8 @@ impl Builder {
                         errc: r.errc.clone(),
                         message: r.message.clone(),
                         subject: r.subject.as_ref().and_then(|s| {
-                            let pid = self.paths.binary_search_by(|p| p.as_slice().cmp(&s.path)).ok()?;
+                            let pid =
+                                self.paths.binary_search_by(|p| p.as_slice().cmp(&s.path)).ok()?;
                             Some(pl((pid as u32, s.lo, s.hi)))
                         }),
                     }),
@@ -709,7 +738,10 @@ impl Builder {
                 self.ungrouped_rejected + live_ungrouped_rejected
             };
             let _ = live_ungrouped;
-            (self.roots.len() as u64 + self.ungrouped, rejected_roots.len() as u64 + ungrouped_rejected)
+            (
+                self.roots.len() as u64 + self.ungrouped,
+                rejected_roots.len() as u64 + ungrouped_rejected,
+            )
         };
         set("reduce.groups", groups_all);
         set("reduce.groups.rejected", groups_rejected);
@@ -718,8 +750,13 @@ impl Builder {
         set("reduce.edits.max_observers", edits.iter().map(|e| e.observers).max().unwrap_or(0));
         set("reduce.edits.nested", parents(&spans).len() as u64);
         set("reduce.files", edits.iter().map(|e| e.file).collect::<BTreeSet<_>>().len() as u64);
-        for (sev, name) in [(Severity::Note, "note"), (Severity::Review, "review"), (Severity::Error, "error")] {
-            set(&format!("reduce.reports.{name}"), reports.iter().filter(|r| r.report.severity == sev).count() as u64);
+        for (sev, name) in
+            [(Severity::Note, "note"), (Severity::Review, "review"), (Severity::Error, "error")]
+        {
+            set(
+                &format!("reduce.reports.{name}"),
+                reports.iter().filter(|r| r.report.severity == sev).count() as u64,
+            );
         }
         set("reduce.changed", changed.len() as u64);
         set("reduce.changed.in_force", changed.iter().filter(|c| c.in_force).count() as u64);

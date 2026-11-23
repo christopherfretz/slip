@@ -168,7 +168,11 @@ pub(crate) fn select(
 
     let mut refusals = Vec::new();
     if rename && !subjects.values().any(|s| s.role == Role::Seed) {
-        refusals.push(SubjectRefusal { cause: Cause::NoSubject, subject: None, sample: Sample::default() });
+        refusals.push(SubjectRefusal {
+            cause: Cause::NoSubject,
+            subject: None,
+            sample: Sample::default(),
+        });
     }
     for id in &selected {
         // A selected id that is a link's end is a subject of that shard,

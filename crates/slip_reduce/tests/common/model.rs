@@ -9,12 +9,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use slip_model::editset::{
-    Basis, Cause, Edit, EditSet, Exempt, FIRST_MAX, Failed, Refusal, Reported, SCHEME, SetState, basis_id,
-    cross, properly_inside, share_byte, within,
-};
 use slip_model::edits::{
-    Failure, HostRefusal, MacroSite, Piece, Place, Reason, Report, Role, Severity, Stance, Subject, subject_flags,
+    Failure, HostRefusal, MacroSite, Piece, Place, Reason, Report, Role, Severity, Stance, Subject,
+    subject_flags,
+};
+use slip_model::editset::{
+    Basis, Cause, Edit, EditSet, Exempt, FIRST_MAX, Failed, Refusal, Reported, SCHEME, SetState,
+    basis_id, cross, properly_inside, share_byte, within,
 };
 use slip_model::keys::{KeyKind, Rule};
 use slip_model::transform::{Transform, TransformKind};
@@ -71,7 +72,10 @@ impl Live {
         self.rejected.is_none() && !self.gone
     }
     fn copies(&self) -> Vec<PP> {
-        self.pieces.iter().filter_map(|p| if let MP::C(c) = p { Some(c.clone()) } else { None }).collect()
+        self.pieces
+            .iter()
+            .filter_map(|p| if let MP::C(c) = p { Some(c.clone()) } else { None })
+            .collect()
     }
 }
 
@@ -127,9 +131,11 @@ fn conflicts(rules: &BTreeSet<Rule>) -> bool {
     let v: Vec<&Rule> = rules.iter().collect();
     for (i, a) in v.iter().enumerate() {
         for b in &v[i + 1..] {
-            let same_match = (a.parent, a.kind, &a.name, a.disc) == (b.parent, b.kind, &b.name, b.disc);
+            let same_match =
+                (a.parent, a.kind, &a.name, a.disc) == (b.parent, b.kind, &b.name, b.disc);
             let same_target = a.kind != KeyKind::Namespace
-                && (a.to_parent, a.kind, &a.to_name, a.disc) == (b.to_parent, b.kind, &b.to_name, b.disc)
+                && (a.to_parent, a.kind, &a.to_name, a.disc)
+                    == (b.to_parent, b.kind, &b.to_name, b.disc)
                 && (a.parent, &a.name) != (b.parent, &b.name);
             if same_match || same_target {
                 return true;
@@ -170,12 +176,16 @@ pub fn reduce(
     let mut links: BTreeSet<(Digest, Digest)> = BTreeSet::new();
     let mut renamed: BTreeSet<Rule> = BTreeSet::new();
     let mut claims: BTreeMap<PP, BTreeMap<(Stance, Vec<MP>), Joined>> = BTreeMap::new();
-    let mut per_observer: BTreeMap<PP, BTreeMap<usize, BTreeSet<(Stance, Vec<MP>)>>> = BTreeMap::new();
-    let mut reports: BTreeMap<(Option<PP>, Severity, Vec<u8>, bool), BTreeSet<usize>> = BTreeMap::new();
+    let mut per_observer: BTreeMap<PP, BTreeMap<usize, BTreeSet<(Stance, Vec<MP>)>>> =
+        BTreeMap::new();
+    let mut reports: BTreeMap<(Option<PP>, Severity, Vec<u8>, bool), BTreeSet<usize>> =
+        BTreeMap::new();
     let mut changed: BTreeMap<(Digest, PP, Vec<u8>), BTreeSet<usize>> = BTreeMap::new();
     #[allow(clippy::type_complexity)]
-    let mut failures: BTreeMap<(u8, String, Option<(Vec<u8>, u64, u64)>), (BTreeSet<usize>, Failure, Option<Option<PP>>)> =
-        BTreeMap::new();
+    let mut failures: BTreeMap<
+        (u8, String, Option<(Vec<u8>, u64, u64)>),
+        (BTreeSet<usize>, Failure, Option<Option<PP>>),
+    > = BTreeMap::new();
     let mut versions: BTreeMap<Vec<u8>, BTreeSet<(u64, Digest)>> = BTreeMap::new();
     let mut all_versions: BTreeMap<Vec<u8>, BTreeSet<(u64, Digest)>> = BTreeMap::new();
     let mut ties: Vec<Vec<(PP, Vec<MP>)>> = Vec::new();
@@ -201,9 +211,15 @@ pub fn reduce(
         let pp = |p: &Place| (e.files[p.file as usize].path.clone(), p.lo, p.hi);
         if let Some(f) = &e.failure {
             failed_runs += 1;
-            let key = (f.kind as u8, f.message.clone(), f.place.as_ref().map(|p| (p.file.clone(), p.line, p.column)));
+            let key = (
+                f.kind as u8,
+                f.message.clone(),
+                f.place.as_ref().map(|p| (p.file.clone(), p.line, p.column)),
+            );
             let subject = f.refusal.as_ref().map(|r| r.subject.as_ref().map(pp));
-            let entry = failures.entry(key).or_insert_with(|| (BTreeSet::new(), f.clone(), subject.clone()));
+            let entry = failures
+                .entry(key)
+                .or_insert_with(|| (BTreeSet::new(), f.clone(), subject.clone()));
             entry.0.insert(i);
             continue;
         }
@@ -217,7 +233,12 @@ pub fn reduce(
             by_stance[c.stance as usize] += 1;
             let site = (e.files[c.file as usize].path.clone(), c.lo, c.hi);
             let pieces: Vec<MP> = c.pieces.iter().map(mp).collect();
-            per_observer.entry(site.clone()).or_default().entry(i).or_default().insert((c.stance, pieces.clone()));
+            per_observer
+                .entry(site.clone())
+                .or_default()
+                .entry(i)
+                .or_default()
+                .insert((c.stance, pieces.clone()));
             let j = claims.entry(site).or_default().entry((c.stance, pieces)).or_default();
             j.subjects.extend(c.subjects.iter().copied());
             j.tiers |= c.tiers;
@@ -234,13 +255,19 @@ pub fn reduce(
                 g.iter()
                     .map(|&m| {
                         let c = &e.claims[m as usize];
-                        ((e.files[c.file as usize].path.clone(), c.lo, c.hi), c.pieces.iter().map(mp).collect())
+                        (
+                            (e.files[c.file as usize].path.clone(), c.lo, c.hi),
+                            c.pieces.iter().map(mp).collect(),
+                        )
                     })
                     .collect(),
             );
         }
         for r in &e.reports {
-            reports.entry((r.place.as_ref().map(pp), r.severity, r.message.clone(), r.attached)).or_default().insert(i);
+            reports
+                .entry((r.place.as_ref().map(pp), r.severity, r.message.clone(), r.attached))
+                .or_default()
+                .insert(i);
         }
         for c in &e.changed {
             changed.entry((c.key, pp(&c.place), c.reason.clone())).or_default().insert(i);
@@ -270,7 +297,8 @@ pub fn reduce(
     }
 
     // §5.2 rule 2: selection by iteration.
-    let mut selected: BTreeSet<Digest> = subjects.iter().filter(|(_, s)| s.role == Role::Seed).map(|(k, _)| *k).collect();
+    let mut selected: BTreeSet<Digest> =
+        subjects.iter().filter(|(_, s)| s.role == Role::Seed).map(|(k, _)| *k).collect();
     loop {
         let before = selected.len();
         for &(a, b) in &links {
@@ -280,7 +308,10 @@ pub fn reduce(
             }
         }
         for (id, s) in &subjects {
-            if s.role == Role::Follower && !s.of.is_empty() && s.of.iter().all(|k| selected.contains(k)) {
+            if s.role == Role::Follower
+                && !s.of.is_empty()
+                && s.of.iter().all(|k| selected.contains(k))
+            {
                 selected.insert(*id);
             }
         }
@@ -350,7 +381,11 @@ pub fn reduce(
     let (mut n_live, mut n_kept, mut n_unres) = (0u64, 0u64, 0u64);
     for (site, keys) in &claims {
         let obs_of = |class: &BTreeSet<(Stance, Vec<MP>)>| -> BTreeSet<usize> {
-            per_observer[site].iter().filter(|(_, mine)| mine.iter().any(|k| class.contains(k))).map(|(i, _)| *i).collect()
+            per_observer[site]
+                .iter()
+                .filter(|(_, mine)| mine.iter().any(|k| class.contains(k)))
+                .map(|(i, _)| *i)
+                .collect()
         };
         let (mut keep, mut unres, mut refuse, mut replace, mut mixed) =
             (BTreeSet::new(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
@@ -406,7 +441,12 @@ pub fn reduce(
             if keep.is_empty() {
                 live = Some(k.clone());
             } else {
-                rejected = Some((Cause::Contested, Reason::None, keys[k].macro_site.clone(), obs_of(&keep)));
+                rejected = Some((
+                    Cause::Contested,
+                    Reason::None,
+                    keys[k].macro_site.clone(),
+                    obs_of(&keep),
+                ));
             }
         }
         for pieces in &edit_keys {
@@ -437,7 +477,15 @@ pub fn reduce(
             }
         }
         if let Some((cause, reason, macro_site, obs)) = rejected {
-            site_refusals.push(SiteRef { site: site.clone(), cause, reason, macro_site, subject: least_subject, obs, other: None });
+            site_refusals.push(SiteRef {
+                site: site.clone(),
+                cause,
+                reason,
+                macro_site,
+                subject: least_subject,
+                obs,
+                other: None,
+            });
         } else if let Some(k) = live {
             n_live += 1;
             let mut j = keys[&k].clone();
@@ -462,7 +510,10 @@ pub fn reduce(
 
     // §5.4 geometry: contested by another range.
     for l in &mut lives {
-        let hit = blocking.iter().filter(|b| b.0 != l.site && same_file_share(&b.0, &l.site)).min_by(|a, b| a.0.cmp(&b.0));
+        let hit = blocking
+            .iter()
+            .filter(|b| b.0 != l.site && same_file_share(&b.0, &l.site))
+            .min_by(|a, b| a.0.cmp(&b.0));
         if let Some(b) = hit {
             l.rejected = Some((Cause::Contested, Some(b.0.clone()), Some(b.1.clone())));
         }
@@ -494,7 +545,8 @@ pub fn reduce(
     }
     // cyclic: the closure of "draws on".
     let alive: Vec<usize> = (0..lives.len()).filter(|&i| lives[i].alive()).collect();
-    let draws = |a: usize, b: usize| lives[a].copies().iter().any(|c| same_file_inside(&lives[b].site, c));
+    let draws =
+        |a: usize, b: usize| lives[a].copies().iter().any(|c| same_file_inside(&lives[b].site, c));
     let mut reach: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for &a in &alive {
         let mut seen = BTreeSet::new();
@@ -521,9 +573,14 @@ pub fn reduce(
 
     // §5.5: groups, then effect, repeated.
     let any_refusal = !subject_refusals.is_empty();
-    let reject_groups = |lives: &mut Vec<Live>, rejected_roots: &mut BTreeSet<(PP, Vec<MP>)>, site_refusals: &Vec<SiteRef>| {
+    let reject_groups = |lives: &mut Vec<Live>,
+                         rejected_roots: &mut BTreeSet<(PP, Vec<MP>)>,
+                         site_refusals: &Vec<SiteRef>| {
         if request.indivisible {
-            if any_refusal || !site_refusals.is_empty() || lives.iter().any(|l| l.rejected.is_some()) {
+            if any_refusal
+                || !site_refusals.is_empty()
+                || lives.iter().any(|l| l.rejected.is_some())
+            {
                 for l in lives.iter_mut() {
                     l.gone = l.rejected.is_none();
                 }
@@ -551,8 +608,10 @@ pub fn reduce(
     reject_groups(&mut lives, &mut rejected_roots, &site_refusals);
     loop {
         let alive: Vec<usize> = (0..lives.len()).filter(|&i| lives[i].alive()).collect();
-        let contains = |y: usize, x: usize| x != y && same_file_within(&lives[x].site, &lives[y].site);
-        let outermost: BTreeSet<usize> = alive.iter().copied().filter(|&x| !alive.iter().any(|&y| contains(y, x))).collect();
+        let contains =
+            |y: usize, x: usize| x != y && same_file_within(&lives[x].site, &lives[y].site);
+        let outermost: BTreeSet<usize> =
+            alive.iter().copied().filter(|&x| !alive.iter().any(|&y| contains(y, x))).collect();
         let mut effective = outermost.clone();
         loop {
             let before = effective.len();
@@ -560,7 +619,9 @@ pub fn reduce(
                 for r in lives[e].copies() {
                     for &x in &alive {
                         if same_file_inside(&lives[x].site, &r)
-                            && !alive.iter().any(|&y| contains(y, x) && same_file_inside(&lives[y].site, &r))
+                            && !alive
+                                .iter()
+                                .any(|&y| contains(y, x) && same_file_inside(&lives[y].site, &r))
                         {
                             effective.insert(x);
                         }
@@ -604,7 +665,12 @@ pub fn reduce(
     let union: BTreeSet<Rule> = renamed
         .iter()
         .cloned()
-        .chain(subjects.iter().filter(|(k, _)| selected.contains(*k)).filter_map(|(_, s)| s.rule.clone()))
+        .chain(
+            subjects
+                .iter()
+                .filter(|(k, _)| selected.contains(*k))
+                .filter_map(|(_, s)| s.rule.clone()),
+        )
         .collect();
     let rule_conflict = conflicts(&union);
     let no_observer = ok.len() == failed_runs;
@@ -728,7 +794,12 @@ pub fn reduce(
         refusals.push(alone(Cause::NoEdit));
     }
     for (cause, subject, obs) in &subject_refusals {
-        refusals.push(Refusal { subject: *subject, observers: obs.len() as u64, first: first(obs, &observers), ..alone(*cause) });
+        refusals.push(Refusal {
+            subject: *subject,
+            observers: obs.len() as u64,
+            first: first(obs, &observers),
+            ..alone(*cause)
+        });
     }
     let mut rejected_sites = BTreeSet::new();
     for r in &site_refusals {
@@ -750,7 +821,12 @@ pub fn reduce(
     let reported: Vec<Reported> = reports
         .iter()
         .map(|((p, severity, message, attached), obs)| Reported {
-            report: Report { place: p.as_ref().map(place), severity: *severity, message: message.clone(), attached: *attached },
+            report: Report {
+                place: p.as_ref().map(place),
+                severity: *severity,
+                message: message.clone(),
+                attached: *attached,
+            },
             observers: obs.len() as u64,
             first: first(obs, &observers),
         })
@@ -806,7 +882,8 @@ pub fn reduce(
         let any = replaces_left > 0;
         (u64::from(any), u64::from(any && (set_refused || edits.is_empty())))
     } else {
-        let live_ungrouped_rejected = lives.iter().filter(|l| uf.root(&l.id).is_none() && !l.alive()).count() as u64;
+        let live_ungrouped_rejected =
+            lives.iter().filter(|l| uf.root(&l.id).is_none() && !l.alive()).count() as u64;
         let rr = if set_refused { roots.len() } else { rejected_roots.len() } as u64;
         let ur = if set_refused { ungrouped } else { ungrouped_rejected + live_ungrouped_rejected };
         (roots.len() as u64 + ungrouped, rr + ur)
@@ -816,11 +893,22 @@ pub fn reduce(
     put("reduce.edits", edits.len() as u64);
     put("reduce.edits.shared", edits.iter().filter(|e| e.observers > 1).count() as u64);
     put("reduce.edits.max_observers", edits.iter().map(|e| e.observers).max().unwrap_or(0));
-    let nested = finals.iter().enumerate().filter(|(i, l)| finals.iter().enumerate().any(|(j, m)| j != *i && same_file_within(&l.site, &m.site))).count();
+    let nested = finals
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| {
+            finals.iter().enumerate().any(|(j, m)| j != *i && same_file_within(&l.site, &m.site))
+        })
+        .count();
     put("reduce.edits.nested", nested as u64);
     put("reduce.files", edits.iter().map(|e| e.file).collect::<BTreeSet<_>>().len() as u64);
-    for (sev, n) in [(Severity::Note, "note"), (Severity::Review, "review"), (Severity::Error, "error")] {
-        put(&format!("reduce.reports.{n}"), reported.iter().filter(|r| r.report.severity == sev).count() as u64);
+    for (sev, n) in
+        [(Severity::Note, "note"), (Severity::Review, "review"), (Severity::Error, "error")]
+    {
+        put(
+            &format!("reduce.reports.{n}"),
+            reported.iter().filter(|r| r.report.severity == sev).count() as u64,
+        );
     }
     put("reduce.changed", exempt.len() as u64);
     put("reduce.changed.in_force", exempt.iter().filter(|c| c.in_force).count() as u64);
@@ -829,7 +917,10 @@ pub fn reduce(
     let rules: Vec<Rule> = renamed
         .iter()
         .filter(|a| {
-            !renamed.iter().any(|b| b != *a && (a.parent, a.kind, &a.name, a.disc) == (b.parent, b.kind, &b.name, b.disc))
+            !renamed.iter().any(|b| {
+                b != *a
+                    && (a.parent, a.kind, &a.name, a.disc) == (b.parent, b.kind, &b.name, b.disc)
+            })
         })
         .cloned()
         .collect();

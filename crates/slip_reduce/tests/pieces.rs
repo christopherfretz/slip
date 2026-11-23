@@ -6,8 +6,8 @@
 mod common;
 
 use common::*;
-use slip_model::editset::{Cause, SetState};
 use slip_model::edits::Piece;
+use slip_model::editset::{Cause, SetState};
 
 const A: &str = "/s/a.cc";
 const B: &str = "/s/b.h";
@@ -77,7 +77,8 @@ fn identity_of_a_copy_is_by_path() {
 /// the other.
 #[test]
 fn crossing_edits() {
-    let set = one(vec![replace(A, 0, 4, vec![lit("x")]), replace(A, 2, 6, vec![lit("y")])], "crossing");
+    let set =
+        one(vec![replace(A, 0, 4, vec![lit("x")]), replace(A, 2, 6, vec![lit("y")])], "crossing");
     let a = refusal_at(&set, Cause::Overlap, A, 0, 4);
     let b = refusal_at(&set, Cause::Overlap, A, 2, 6);
     assert_eq!(a.other.map(|o| (o.lo, o.hi)), Some((2, 6)));
@@ -89,7 +90,10 @@ fn crossing_edits() {
 /// both.
 #[test]
 fn edit_crossing_a_copied_range() {
-    let set = one(vec![replace(A, 0, 1, vec![copy(A, 10, 20)]), replace(A, 15, 25, vec![lit("y")])], "cross-copy");
+    let set = one(
+        vec![replace(A, 0, 1, vec![copy(A, 10, 20)]), replace(A, 15, 25, vec![lit("y")])],
+        "cross-copy",
+    );
     let x = refusal_at(&set, Cause::Overlap, A, 0, 1);
     let y = refusal_at(&set, Cause::Overlap, A, 15, 25);
     assert_eq!(x.other.map(|o| (o.lo, o.hi)), Some((15, 25)));
@@ -108,7 +112,10 @@ fn edit_crossing_its_own_copy() {
 #[test]
 fn edit_within_equal_to_and_around_a_copied_range() {
     for (lo, hi) in [(12, 13), (10, 20), (5, 25)] {
-        let set = one(vec![replace(A, 0, 1, vec![copy(A, 10, 20)]), replace(A, lo, hi, vec![lit("y")])], "copy-ok");
+        let set = one(
+            vec![replace(A, 0, 1, vec![copy(A, 10, 20)]), replace(A, lo, hi, vec![lit("y")])],
+            "copy-ok",
+        );
         assert_eq!(set.state, SetState::Accepted);
         assert_eq!(edits(&set), vec![e(A, 0, 1), e(A, lo, hi), e(A, 900, 901)], "[{lo}, {hi})");
     }
@@ -136,7 +143,10 @@ fn exchange_with_an_edit_inside() {
 #[test]
 fn wrap_with_an_edit_inside() {
     let set = one(
-        vec![replace(A, 10, 20, vec![lit("("), copy(A, 10, 20), lit(")")]), replace(A, 12, 13, vec![lit("z")])],
+        vec![
+            replace(A, 10, 20, vec![lit("("), copy(A, 10, 20), lit(")")]),
+            replace(A, 12, 13, vec![lit("z")]),
+        ],
         "wrap",
     );
     assert_eq!(set.state, SetState::Accepted, "{:?}", set.refusals);
@@ -167,7 +177,8 @@ fn cyclic_two_edits() {
 /// with the edit around it, each naming the other.
 #[test]
 fn buried_alone() {
-    let set = one(vec![replace(A, 0, 10, vec![lit("x")]), replace(A, 2, 3, vec![lit("y")])], "buried");
+    let set =
+        one(vec![replace(A, 0, 10, vec![lit("x")]), replace(A, 2, 3, vec![lit("y")])], "buried");
     let outer = refusal_at(&set, Cause::Buried, A, 0, 10);
     let inner = refusal_at(&set, Cause::Buried, A, 2, 3);
     assert_eq!(outer.other.map(|o| (o.lo, o.hi)), Some((2, 3)));
@@ -197,7 +208,10 @@ fn buried_repeated() {
 /// §5.4: an edit of another file is not crossed by a range of this one.
 #[test]
 fn ranges_of_two_files_do_not_meet() {
-    let set = one(vec![replace(A, 0, 4, vec![lit("x")]), replace(B, 2, 6, vec![copy(A, 0, 3)])], "two-files");
+    let set = one(
+        vec![replace(A, 0, 4, vec![lit("x")]), replace(B, 2, 6, vec![copy(A, 0, 3)])],
+        "two-files",
+    );
     assert_eq!(set.state, SetState::Accepted);
     assert_eq!(set.edits.len(), 3);
 }

@@ -59,7 +59,15 @@ impl MaxTree {
         self.descend(1, 0, self.size, l, r, t)
     }
 
-    fn descend(&self, k: usize, nl: usize, nr: usize, l: usize, r: usize, t: u128) -> Option<usize> {
+    fn descend(
+        &self,
+        k: usize,
+        nl: usize,
+        nr: usize,
+        l: usize,
+        r: usize,
+        t: u128,
+    ) -> Option<usize> {
         if nr <= l || r <= nl || self.t[k] <= t {
             return None;
         }
@@ -364,7 +372,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn below(&mut self, n: u64) -> u64 {
-            self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (self.0 >> 33) % n
         }
     }
@@ -388,8 +399,14 @@ mod tests {
     fn least_crossing_agrees_with_every_pair() {
         let mut r = Lcg(7);
         for _ in 0..300 {
-            let family = { let k = 1 + r.below(30) as usize; spans(&mut r, k, 40) };
-            let queries = { let k = 1 + r.below(30) as usize; spans(&mut r, k, 40) };
+            let family = {
+                let k = 1 + r.below(30) as usize;
+                spans(&mut r, k, 40)
+            };
+            let queries = {
+                let k = 1 + r.below(30) as usize;
+                spans(&mut r, k, 40)
+            };
             let got = least_crossing(&family, &queries);
             for (q, a) in queries.iter().enumerate() {
                 let want = (0..family.len()).find(|&i| crosses(family[i], *a));
@@ -403,12 +420,19 @@ mod tests {
     fn least_sharing_agrees_with_every_pair() {
         let mut r = Lcg(11);
         for _ in 0..300 {
-            let blocking = { let k = r.below(30) as usize; spans(&mut r, k, 40) };
-            let mut queries = { let k = 1 + r.below(10) as usize; spans(&mut r, k, 40) };
+            let blocking = {
+                let k = r.below(30) as usize;
+                spans(&mut r, k, 40)
+            };
+            let mut queries = {
+                let k = 1 + r.below(10) as usize;
+                spans(&mut r, k, 40)
+            };
             queries.extend(blocking.iter().take(3));
             let got = least_sharing(&blocking, &queries);
             for (q, a) in queries.iter().enumerate() {
-                let want = (0..blocking.len()).find(|&i| blocking[i] != *a && share_byte(blocking[i], *a));
+                let want =
+                    (0..blocking.len()).find(|&i| blocking[i] != *a && share_byte(blocking[i], *a));
                 assert_eq!(got[q], want, "blocking {blocking:?} query {a:?}");
             }
         }
@@ -421,7 +445,10 @@ mod tests {
         for _ in 0..300 {
             // A laminar family: drop every range that crosses an earlier one.
             let mut family: Vec<Span> = Vec::new();
-            for s in { let k = 1 + r.below(30) as usize; spans(&mut r, k, 40) } {
+            for s in {
+                let k = 1 + r.below(30) as usize;
+                spans(&mut r, k, 40)
+            } {
                 if family.iter().all(|&f| !crosses(f, s)) {
                     family.push(s);
                 }
@@ -443,7 +470,10 @@ mod tests {
         let mut r = Lcg(17);
         for _ in 0..300 {
             let mut family: Vec<Span> = Vec::new();
-            for s in { let k = 1 + r.below(12) as usize; spans(&mut r, k, 30) } {
+            for s in {
+                let k = 1 + r.below(12) as usize;
+                spans(&mut r, k, 30)
+            } {
                 if family.iter().all(|&f| !crosses(f, s)) {
                     family.push(s);
                 }

@@ -39,7 +39,11 @@ fn whole_and_part_and_a_rejected_member() {
         "whole-part-rejected",
     );
     assert_eq!(edits(&set), vec![e(A, 50, 51)], "the neighbour stays");
-    assert_eq!(causes(&set), vec![Cause::Contested], "the other members have no refusal of their own");
+    assert_eq!(
+        causes(&set),
+        vec![Cause::Contested],
+        "the other members have no refusal of their own"
+    );
     assert!(set.groups.is_empty());
     assert_eq!((counter(&set, "reduce.groups"), counter(&set, "reduce.groups.rejected")), (2, 1));
 }
@@ -88,12 +92,14 @@ fn the_groups_list() {
 fn a_member_turned_keep_leaves_the_group() {
     let set = ok(
         &script(),
-        vec![ShardB::new(0)
-            .candidate(d(9))
-            .claim(x(0).subjects(&[d(9)]))
-            .claim(x(10))
-            .claim(x(20))
-            .group(&[0, 1, 2])],
+        vec![
+            ShardB::new(0)
+                .candidate(d(9))
+                .claim(x(0).subjects(&[d(9)]))
+                .claim(x(10))
+                .claim(x(20))
+                .group(&[0, 1, 2]),
+        ],
         "turned",
     );
     assert_eq!(edits(&set), vec![e(A, 10, 11), e(A, 20, 21)]);
@@ -108,7 +114,10 @@ fn indivisible() {
     let seed = |i| ShardB::new(i).seed(d(1));
     let set = ok(
         &rename(),
-        vec![seed(0).claim(x(0).subjects(&[d(1)])).claim(x(10).subjects(&[d(1)])), seed(1).claim(x(20).subjects(&[d(1)]))],
+        vec![
+            seed(0).claim(x(0).subjects(&[d(1)])).claim(x(10).subjects(&[d(1)])),
+            seed(1).claim(x(20).subjects(&[d(1)])),
+        ],
         "indivisible",
     );
     assert_eq!(set.state, SetState::Accepted);
@@ -137,10 +146,12 @@ fn indivisible() {
 fn indivisible_refused_site() {
     let set = ok(
         &rename(),
-        vec![ShardB::new(0)
-            .seed(d(1))
-            .claim(x(0).subjects(&[d(1)]))
-            .claim(refuse(A, 30, 31).subjects(&[d(1)]))],
+        vec![
+            ShardB::new(0)
+                .seed(d(1))
+                .claim(x(0).subjects(&[d(1)]))
+                .claim(refuse(A, 30, 31).subjects(&[d(1)])),
+        ],
         "indivisible-refuse",
     );
     assert_eq!(set.state, SetState::Refused);

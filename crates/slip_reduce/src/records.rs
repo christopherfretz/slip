@@ -407,11 +407,7 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
     let mut d = Decoder::new(bytes);
     let tag = w(d.u8())?;
     let key = match tag {
-        0 => Key::File {
-            path: w(d.bytes())?.to_vec(),
-            size: w(d.uv())?,
-            content: w(d.digest())?,
-        },
+        0 => Key::File { path: w(d.bytes())?.to_vec(), size: w(d.uv())?, content: w(d.digest())? },
         1 => {
             let s = dsite(&mut d)?;
             if w(d.u8())? == 1 {
@@ -482,7 +478,16 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
             let votes = w(d.uv())?;
             let sample = dsample(&mut d)?;
             let single = dsample(&mut d)?;
-            Val::Claim(ClaimVal { subjects, tiers, macro_site, reason, notes, votes, sample, single })
+            Val::Claim(ClaimVal {
+                subjects,
+                tiers,
+                macro_site,
+                reason,
+                notes,
+                votes,
+                sample,
+                single,
+            })
         }
         2 | 3 => Val::Sample(dsample(&mut d)?),
         _ => {

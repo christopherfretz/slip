@@ -12,7 +12,10 @@ use slip_model::{Digest, Phase, Shard, Status};
 
 use crate::Shards;
 use crate::groups::Ties;
-use crate::records::{ClaimVal, Entry, FailVal, KPiece, Key, NOTES_MAX, RefusalK, Sample, Site, Val, identity, variant};
+use crate::records::{
+    ClaimVal, Entry, FailVal, KPiece, Key, NOTES_MAX, RefusalK, Sample, Site, Val, identity,
+    variant,
+};
 use crate::runs::BasisEntry;
 use crate::subjects::SubjectJoin;
 
@@ -116,7 +119,9 @@ pub(crate) struct Read {
 pub(crate) fn read(ctx: &Ctx<'_>, index: usize) -> Result<Read, String> {
     let observer = ctx.shards.observer(index);
     let unparsed = Read { entry: BasisEntry { observer, shard: None }, shard: None };
-    let Some(shard) = ctx.shards.open(index).map_err(|e| format!("the shard cannot be read: {e}"))? else {
+    let Some(shard) =
+        ctx.shards.open(index).map_err(|e| format!("the shard cannot be read: {e}"))?
+    else {
         return Ok(unparsed);
     };
     shard.validate().map_err(|e| format!("the shard is not valid: {e}"))?;
@@ -166,8 +171,12 @@ pub(crate) fn read(ctx: &Ctx<'_>, index: usize) -> Result<Read, String> {
         if !c.subjects.iter().all(is_subject) {
             return Err(format!("edits.claims[{j}] names a key that is no subject of the shard"));
         }
-        if c.stance == Stance::Replace && !ctx.request.ownership.is_owned(&edits.files[c.file as usize].path) {
-            return Err(format!("edits.claims[{j}] replaces bytes of a file the request does not own"));
+        if c.stance == Stance::Replace
+            && !ctx.request.ownership.is_owned(&edits.files[c.file as usize].path)
+        {
+            return Err(format!(
+                "edits.claims[{j}] replaces bytes of a file the request does not own"
+            ));
         }
     }
     Ok(Read { entry: BasisEntry { observer, shard: Some(id) }, shard: Some(shard) })
@@ -196,7 +205,11 @@ pub(crate) fn fold(
         add_counter(&mut joined.counters, &c.name, c.value);
     }
     for f in &edits.files {
-        put(records, Key::File { path: f.path.clone(), size: f.size, content: f.content }, Val::File)?;
+        put(
+            records,
+            Key::File { path: f.path.clone(), size: f.size, content: f.content },
+            Val::File,
+        )?;
     }
     if let Some(f) = &edits.failure {
         joined.stats.failed_runs += 1;
@@ -211,7 +224,12 @@ pub(crate) fn fold(
             message: r.message.clone(),
             subject: r.subject.as_ref().map(|p| site_of(edits, p)),
         });
-        let val = Val::Failure(FailVal { sample: Sample::one(index), from: index, rendered: f.rendered.clone(), refusal });
+        let val = Val::Failure(FailVal {
+            sample: Sample::one(index),
+            from: index,
+            rendered: f.rendered.clone(),
+            refusal,
+        });
         return put(records, key, val);
     }
     // Claims are sorted by site first (§4.7): the claims of one site are
@@ -219,7 +237,11 @@ pub(crate) fn fold(
     let mut at = 0;
     while at < edits.claims.len() {
         let c0 = &edits.claims[at];
-        let end = at + edits.claims[at..].iter().take_while(|c| (c.file, c.lo, c.hi) == (c0.file, c0.lo, c0.hi)).count();
+        let end = at
+            + edits.claims[at..]
+                .iter()
+                .take_while(|c| (c.file, c.lo, c.hi) == (c0.file, c0.lo, c0.hi))
+                .count();
         let site = Site { path: edits.files[c0.file as usize].path.clone(), lo: c0.lo, hi: c0.hi };
         let alone = end - at == 1;
         let mut variants = Vec::new();
@@ -230,7 +252,8 @@ pub(crate) fn fold(
             if !alone {
                 variants.push(variant(&site, c.stance, &pieces));
             }
-            let key = Key::Claim { site: site.clone(), entry: Entry::Claim { stance: c.stance, pieces } };
+            let key =
+                Key::Claim { site: site.clone(), entry: Entry::Claim { stance: c.stance, pieces } };
             let val = Val::Claim(ClaimVal {
                 subjects: c.subjects.clone(),
                 tiers: c.tiers,
@@ -246,7 +269,11 @@ pub(crate) fn fold(
         if !alone {
             variants.sort_unstable();
             variants.dedup();
-            put(records, Key::Claim { site, entry: Entry::Observed(variants) }, Val::Sample(Sample::one(index)))?;
+            put(
+                records,
+                Key::Claim { site, entry: Entry::Observed(variants) },
+                Val::Sample(Sample::one(index)),
+            )?;
         }
         at = end;
     }
@@ -260,7 +287,8 @@ pub(crate) fn fold(
         put(records, key, Val::Sample(Sample::one(index)))?;
     }
     for c in &edits.changed {
-        let key = Key::Changed { key: c.key, place: site_of(edits, &c.place), reason: c.reason.clone() };
+        let key =
+            Key::Changed { key: c.key, place: site_of(edits, &c.place), reason: c.reason.clone() };
         put(records, key, Val::Sample(Sample::one(index)))?;
     }
     joined.rules.extend(edits.renamed.iter().cloned());
@@ -280,7 +308,11 @@ pub(crate) fn fold(
                 .iter()
                 .map(|&m| {
                     let c = &edits.claims[m as usize];
-                    let site = Site { path: edits.files[c.file as usize].path.clone(), lo: c.lo, hi: c.hi };
+                    let site = Site {
+                        path: edits.files[c.file as usize].path.clone(),
+                        lo: c.lo,
+                        hi: c.hi,
+                    };
                     identity(&site, &kpieces(edits, &c.pieces))
                 })
                 .collect();
