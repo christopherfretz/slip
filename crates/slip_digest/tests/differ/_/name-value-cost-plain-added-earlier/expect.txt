@@ -1,0 +1,6 @@
+# WP-115 item 1 (digest §9): the __builtin_FUNCTION() string "get" is one
+# object per content, shared by a::get() and b::get() on side B; b::get()
+# is its holder's own use, so it is written as b::get()'s plain name on
+# both sides: only the added function and namespace are seen.
+added a
+added a::get()

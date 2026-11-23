@@ -1,6 +1,3 @@
-# pending
-# needs: known-cost
-# Known cost G2 (spec/landed/digest/WP-104.md "Known costs (spurious differences)"): differs today (f(int), f(long)), should be equal.
-# The __builtin_FUNCTION() string "f" is shared by f(int) and f(long) on side A
-# and attributed to the first use, f(int); on side B f(long) holds it alone.
-# Repair: attribute the string to the holder's own use when the holder's name is the bytes.
+# WP-115 item 1 (digest §9): the __builtin_FUNCTION() string "f" is shared
+# by f(int) and f(long) on side A; each holder writes its own use (f(int)
+# as f(int)'s plain name, mapped to g(int) on side B), so neither moves.

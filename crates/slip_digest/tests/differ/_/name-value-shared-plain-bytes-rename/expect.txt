@@ -1,0 +1,8 @@
+# pending
+# needs: kiln-srcloc-origin
+# Named hole (spec/landed/digest/WP-115.md "Named holes"): today the holder is written alike on both sides.
+# Kiln makes one string object per content, so which use a passed-on pointer came from is not known.
+changed other()
+added c::get()
+added c
+changed G

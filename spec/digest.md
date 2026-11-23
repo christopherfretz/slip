@@ -878,7 +878,28 @@ name it points to, written as a `__FILE__` literal's bytes are, so the two
 cannot disagree (its line and column are dropped; its file is not). The
 function a `PredefinedExpr`'s string belongs to is looked up in whole
 definitions: the body, a function-try-block's handlers, a constructor's
-mem-initializers. A string is written so
+mem-initializers, and through the `#include` of a body that comes from
+an included file.
+
+Kiln makes **one source-location string object per content**, so the
+`"get"` of `a::get()` and of `b::get()` is one object. Such a string is
+written as the context of the **holder's own use** (a use in the unit
+being written, or in a local function written in its stream) whose name
+the bytes are; where the holder has none, as the one entity every use
+of the object is in, whose name the bytes are; where the uses are in
+several entities, by its bytes. So an edit to another function of the
+same name does not change the holder. An `__impl` object built **outside
+a function** (a namespace-scope initializer, a default member
+initializer used by an aggregate initialization there, a default
+argument evaluated there, a variable template's specialisation, a
+lambda's init capture) is numbered among the uses of the **declaration
+that holds it** (the variable or field whose initializer holds the use,
+or the function whose parameter's default argument does), in its own
+order, written with that declaration; only a use no such declaration
+holds (an enumerator, a bound) is numbered among every such use of the
+translation unit. A pretty name's identity also holds the names of the
+named local types and block-scope aliases its printed signature
+mentions, which no rule maps. A string is written so
 only where its bytes are what Kiln prints for that entity of that kind;
 anywhere else, and for a file name (which no declared rename changes), its
 bytes are written. A pointer into such a string keeps its offset by value.
