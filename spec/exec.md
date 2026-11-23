@@ -1277,31 +1277,54 @@ pub struct WorkerArgs { pub worker_jobs: u64, pub worker_stack: u64, pub finding
 // image.rs — spec/verify.md §5.1
 pub struct RootMap { pub subject: Vec<u8>, pub post: Vec<u8> }
 pub struct Image { /* root maps, sorted */ }
-pub enum ImageError { NotAbsolute(Vec<u8>), IsRoot, Nested { inner: Vec<u8>, outer: Vec<u8> }, Duplicate(Vec<u8>),
-                      NotUtf8(Vec<u8>), EqualsInPost(Vec<u8>) }
+pub enum ImageError { NotAbsolute(Vec<u8>), IsRoot, NotNormal(Vec<u8>) /* a trailing `/`, an empty, `.` or `..` component */,
+                      Nested { inner: Vec<u8>, outer: Vec<u8> }, Duplicate(Vec<u8>), NotUtf8(Vec<u8>), EqualsInPost(Vec<u8>) }
 impl Image {
     pub fn identity() -> Image;
     pub fn new(maps: Vec<RootMap>) -> Result<Image, ImageError>;     // the checks of §5.1 that need no file system
     pub fn from_args(args: &ImageArgs) -> Result<Image, String>;     // each directory made a real path, then `new`
+    pub fn from_post(store: &Store, post: &PostImage) -> Result<Image, String>;   // a job's image (tree form; the overlay is `Err` until M2)
+    pub fn to_post(&self) -> PostImage;                                           // what the coordinator puts in the job
     pub fn maps(&self) -> &[RootMap];
     pub fn is_identity(&self) -> bool;
-    pub fn command(&self, command: &Command) -> Command;             // the post command
+    pub fn command(&self, command: &Command) -> Command;             // the post command: `post_command(..).command`
+    pub fn post_command(&self, command: &Command) -> PostCommand;    // with the prefix maps and G5's conflict
     pub fn to_subject(&self, real: &[u8]) -> Vec<u8>;                // the subject path of a real path
-    pub fn under_subject(&self, real: &[u8]) -> bool;                // guard G1
+    pub fn under_subject(&self, real: &[u8]) -> bool;                // guard G1 (by identity)
+    pub fn resolver(&self) -> Resolver<'_>;                          // "under a root" by identity, with caches
     /// One parse of an observer's image with the walk's input: `Pre` is the observer's command and
     /// real paths, `Post` the post command and subject paths. `f` runs on the front end's thread when
     /// the unit has no error (`slip_digest::map::with_input`, whose `Err` is this function's). The
     /// shard is the parse task's, with the plan's observer id on either side.
     pub fn parse<R: Send>(&self, observer: &Observer, side: Side, phase: Phase, round: u64,
                           f: impl FnOnce(&slip_digest::Input<'_>) -> R + Send) -> Result<(Shard, Option<R>), String>;
+    /// `parse`, with the unit's `slip_kiln::Lookups` (guard L1) beside `f`'s result.
+    pub fn parse_looking<R: Send>(&self, observer: &Observer, side: Side, phase: Phase, round: u64,
+                                  f: impl FnOnce(&slip_digest::Input<'_>) -> R + Send)
+                                  -> Result<(Shard, Option<(R, slip_kiln::Lookups)>), String>;
 }
 pub enum Side { Pre, Post }
+/// spec/verify.md §5.1: the post command; `maps` the (post prefix, prefix as written) pairs it ends
+/// with as `-fmacro-prefix-map=` words, longest post prefix first; `conflict` G5's reason when the
+/// pairs, or a prefix map of the command's own, cannot give every spelling back (§5.3).
+pub struct PostCommand { pub command: Command, pub maps: Vec<(Vec<u8>, Vec<u8>)>, pub conflict: Option<String> }
+/// spec/verify.md §5.1 "Under a root", one job's checks.
+pub struct Resolver<'i> { /* the roots' identities; caches by directory */ }
+impl Resolver<'_> {
+    pub fn under_subject(&mut self, real: &[u8]) -> bool;                              // G1
+    pub fn under_post(&mut self, real: &[u8]) -> bool;                                 // O2, tree form
+    pub fn looked_in_subject(&mut self, directory: &[u8], lookups: &slip_kiln::Lookups) -> Option<String>;   // L1's reason
+}
+pub fn show_path(path: &[u8]) -> String;                             // a path in a reason (spec/verify.md §5.3)
 
 // worker.rs
 pub struct MapTask;     impl Task for MapTask;                       // spec/model.md §8.5
+pub struct VerifyTask;  impl Task for VerifyTask;                    // spec/verify.md §5; makes the `Params`
 pub struct PhaseTask;   impl Task for PhaseTask;                     // §8.4: by `job.phase`
+impl PhaseTask { pub fn new(limit: u64, locate: u64) -> PhaseTask; } // the worker's `--findings`, `--locate`
 // verify_job.rs
-pub struct Params { pub declared: Declared, pub image: Image, pub limit: usize, pub locate: usize }
+pub struct Params { pub pre: u64 /* Job.post.pre */, pub declared: Declared, pub image: Image, pub limit: usize,
+                    pub locate: usize }
 pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String>;   // spec/verify.md §5.2
 // locate.rs — spec/verify.md §6.1 "Interface"
 // declare.rs — spec/verify.md §2.3 "Interface", and the command:
@@ -1316,8 +1339,9 @@ pub fn main(args: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Exit
 `ParseArgs` becomes `{ source: PlanSource, run: RunArgs }`.
 
 `worker.rs` has one function that makes the `Params` of a verify job,
-from `job.post`, the job's store and the worker's `findings` and
-`locate`. `verify_job::verify` and everything under it take their
+from `job.post` (`pre`, the `Declared` read from the store by its id,
+the image by `Image::from_post`), the job's store and the worker's
+`findings` and `locate`. `verify_job::verify` and everything under it take their
 parameters from `Params` and read neither the job's `post` nor the
 worker's arguments.
 
@@ -1333,8 +1357,6 @@ pub type Blobs = std::sync::Arc<dyn Fn(&Digest) -> std::io::Result<Vec<u8>> + Se
 impl Image {
     pub fn overlay(id: Digest, overlay: slip_model::Overlay, blobs: Blobs) -> Image;
     pub fn overlay_id(&self) -> Option<&Digest>;
-    pub fn from_post(store: &Store, post: &PostImage) -> Result<Image, String>;   // a job's image; a tree goes through `new`
-    pub fn to_post(&self) -> PostImage;                                           // what the coordinator puts in the job
 }
 // worker.rs
 pub struct TransformTask;   impl Task for TransformTask;             // a map job with `transform`; PhaseTask dispatches to it

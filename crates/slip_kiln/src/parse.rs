@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use kiln_driver::args::Args;
 use kiln_driver::front_end::{FrontEnd, FrontEndError, FrontEndOptions, run_front_end};
 use slip_model::formats::clip_message;
 use slip_model::hash::content_digest;
@@ -16,6 +17,7 @@ use crate::kiln::lex::{Interner, LexOptions};
 use crate::kiln::oven::Oven;
 use crate::kiln::pp::PpRecord;
 use crate::kiln::source::{FileId, FileOrigin, Loc, SourceManager};
+use crate::lookups::Lookups;
 
 /// What the front end of [`parse_observer_with`] keeps beyond what the
 /// parse task needs. Every option is off by default, and the shard does not
@@ -36,6 +38,10 @@ pub struct ParseOptions {
     /// [`crate::written`]. How the front end is asked is
     /// [`written_words`]'s to say.
     pub written: bool,
+    /// Record Kiln's lookup log (Kiln `FrontEndOptions::record_lookups`,
+    /// Kiln `spec/pp.md` "Lookup log"), which the closure reads as
+    /// [`Unit::lookups`] (`spec/verify.md` §5.3, guard L1).
+    pub lookups: bool,
 }
 
 /// The words `options` adds to the front end's command line, right after
@@ -273,6 +279,7 @@ pub struct Unit<'r> {
     sm: &'r SourceManager,
     oven: &'r Oven,
     pp_record: Option<&'r PpRecord>,
+    lookups: Option<&'r Lookups>,
     /// The interner of the unit's identifiers and the lexer options of
     /// its preprocessor: what Kiln's lexer needs, read by
     /// [`Unit::token_end`] and [`Unit::is_token_start`] alone
@@ -291,7 +298,7 @@ pub struct Unit<'r> {
 
 impl<'r> Unit<'r> {
     /// The unit of a parsed snippet (`snippet::Parsed::unit`): no
-    /// preprocessing record, no inputs (so [`Unit::real_path`] is `None`
+    /// preprocessing record, no lookups, no inputs (so [`Unit::real_path`] is `None`
     /// for every buffer).
     pub(crate) fn of_snippet(
         ast: &'r Ast,
@@ -307,6 +314,7 @@ impl<'r> Unit<'r> {
             sm,
             oven,
             pp_record: None,
+            lookups: None,
             interner,
             lex,
             token_starts: TokenStarts::default(),
@@ -344,6 +352,13 @@ impl<'r> Unit<'r> {
     /// of the AST's interner ([`Ast::symbols`]).
     pub fn pp_record(&self) -> Option<&'r PpRecord> {
         self.pp_record
+    }
+
+    /// What header search looked at ([`Lookups`]), when
+    /// [`ParseOptions::lookups`] asked for it; `None` otherwise. Names no
+    /// Kiln type: any crate may call it.
+    pub fn lookups(&self) -> Option<&'r Lookups> {
+        self.lookups
     }
 
     /// Kiln's `kiln_lex::token_end` with this unit's interner and lexer
@@ -441,6 +456,42 @@ pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<S
         .map(|(shard, _)| shard)
 }
 
+/// The shard of `observer`'s parse: `parsed` is its inputs and its count
+/// of preprocessed tokens, when it parsed.
+fn new_shard(
+    observer: &Observer,
+    phase: Phase,
+    round: u64,
+    outcome: Outcome,
+    parsed: Option<(Vec<FileRef>, u64)>,
+) -> Shard {
+    let (inputs, counters) = match parsed {
+        Some((files, tokens)) => {
+            let counters = vec![
+                Counter { name: "inputs.bytes".into(), value: files.iter().map(|f| f.size).sum() },
+                Counter { name: "inputs.files".into(), value: files.len() as u64 },
+                Counter { name: "pp.tokens".into(), value: tokens },
+            ];
+            (Some(files), counters)
+        }
+        None => (None, Vec::new()),
+    };
+    Shard {
+        observer: observer.id,
+        phase,
+        round,
+        outcome,
+        inputs,
+        counters,
+        digests: None,
+        verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
+    }
+}
+
 /// Parses `observer`'s command with Kiln's front end in this process;
 /// when a parse happened, calls `f` on the finished unit (with errors or
 /// without) before anything is dropped. Returns the shard for `phase` and
@@ -476,36 +527,7 @@ pub fn parse_observer_with<R: Send>(
     options: ParseOptions,
     f: impl FnOnce(&Unit<'_>) -> R + Send,
 ) -> Result<(Shard, Option<R>), String> {
-    let shard = |outcome, parsed: Option<(Vec<FileRef>, u64)>| {
-        let (inputs, counters) = match parsed {
-            Some((files, tokens)) => {
-                let counters = vec![
-                    Counter {
-                        name: "inputs.bytes".into(),
-                        value: files.iter().map(|f| f.size).sum(),
-                    },
-                    Counter { name: "inputs.files".into(), value: files.len() as u64 },
-                    Counter { name: "pp.tokens".into(), value: tokens },
-                ];
-                (Some(files), counters)
-            }
-            None => (None, Vec::new()),
-        };
-        Shard {
-            observer: observer.id,
-            phase,
-            round,
-            outcome,
-            inputs,
-            counters,
-            digests: None,
-            verdict: None,
-            edits: None,
-            binding: None,
-            rule_use: None,
-            spellings: None,
-        }
-    };
+    let shard = |outcome, parsed| new_shard(observer, phase, round, outcome, parsed);
 
     let (argv0, rest) = match utf8_command(&observer.command) {
         Ok(words) => words,
@@ -523,13 +545,16 @@ pub fn parse_observer_with<R: Send>(
     line.splice(1..1, words.iter().map(|&w| w.to_owned()));
     let program = program(&argv0);
     let dir: &Path = &directory;
+    let (program_ref, line_ref) = (&program, &line);
     let see = move |fe: &FrontEnd<'_, '_>| -> Result<(Vec<FileRef>, u64, R), String> {
         let (inputs, buffers) = collect_inputs(fe, dir)?;
+        let lookups = Lookups::of(fe, || embed_dirs(program_ref, line_ref));
         let unit = Unit {
             ast: fe.ast,
             sm: fe.sm,
             oven: fe.oven,
             pp_record: fe.pp.record(),
+            lookups: lookups.as_ref(),
             interner: fe.interner,
             lex: *fe.pp.lex_options(),
             token_starts: TokenStarts::default(),
@@ -541,9 +566,7 @@ pub fn parse_observer_with<R: Send>(
         let value = f(&unit);
         Ok((inputs, fe.tokens, value))
     };
-    let mut fe_options = FrontEndOptions::default();
-    fe_options.pp_record = options.pp_record;
-    let report = match run_front_end(&program, &line, fe_options, see) {
+    let report = match run_front_end(&program, &line, fe_options(options), see) {
         Ok(report) => report,
         Err(e @ (FrontEndError::NotSyntaxOnly | FrontEndError::NotOneInput)) => {
             return Ok((shard(rejected(&e.to_string()), None), None));
@@ -583,6 +606,21 @@ pub fn parse_observer_with<R: Send>(
         Some((inputs, tokens, value)) => Ok((shard(outcome, Some((inputs, tokens))), Some(value))),
         None => Ok((shard(outcome, None), None)),
     }
+}
+
+/// Kiln's options for `options`.
+fn fe_options(options: ParseOptions) -> FrontEndOptions {
+    let mut fe = FrontEndOptions::default();
+    fe.pp_record = options.pp_record;
+    fe.record_lookups = options.lookups;
+    fe
+}
+
+/// The `--embed-dir` directories of the front end's line as Kiln's driver
+/// parses them (the lookup log does not name them), from the line as
+/// `run_front_end` reads it.
+fn embed_dirs(program: &str, line: &[String]) -> Vec<String> {
+    Args::parse_as(program, &kiln_driver::rsp::expand(line)).embed_dirs
 }
 
 fn rejected(message: &str) -> Outcome {

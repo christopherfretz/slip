@@ -1,0 +1,2 @@
+indeterminate R
+indeterminate S::r

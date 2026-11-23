@@ -44,6 +44,7 @@
 #![forbid(unsafe_code)]
 
 mod check;
+mod lookups;
 mod parse;
 pub mod ranges;
 
@@ -76,6 +77,7 @@ pub mod tree;
 pub mod written;
 
 pub use check::KilnCheck;
+pub use lookups::Lookups;
 pub use parse::{ParseOptions, Tokens, Unit, parse_observer, parse_observer_with};
 
 /// The version of the Kiln front end this build of Slip links

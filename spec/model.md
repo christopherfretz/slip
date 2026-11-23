@@ -694,7 +694,17 @@ pub fn parse_observer_with<R: Send>(
 /// What the front end keeps beyond what the parse task needs. Every option
 /// is off by default, and the shard is the same whatever they are.
 #[non_exhaustive]
-pub struct ParseOptions { pub pp_record: bool }
+pub struct ParseOptions { pub pp_record: bool, pub lookups: bool }
+
+/// What header search looked at (`ParseOptions::lookups`: Kiln's lookup log,
+/// `FrontEndOptions::record_lookups`), as the front end spelled it; a
+/// relative directory is relative to `Command.directory`. Names no Kiln type.
+pub struct Lookups {
+    pub list: Vec<String>,                 // the search list's directories
+    pub tried: Vec<(String, String)>,      // (directory, name): each place a lookup tried, unique
+    pub read: Vec<String>,                 // each input's name as spelled when read
+    pub line_names: Vec<String>,           // each name a `#line` directive gave, as written (guard G5)
+}
 
 pub struct Unit<'r> { /* … */ }        // the finished front end, valid inside the call
 impl<'r> Unit<'r> {
@@ -702,6 +712,7 @@ impl<'r> Unit<'r> {
     pub fn sm(&self) -> &'r kiln::source::SourceManager;
     pub fn oven(&self) -> &'r kiln::oven::Oven;
     pub fn pp_record(&self) -> Option<&'r kiln::pp::PpRecord>;   // when ParseOptions::pp_record asked
+    pub fn lookups(&self) -> Option<&'r Lookups>;                 // when ParseOptions::lookups asked
     pub fn main_file(&self) -> Option<kiln::source::FileId>;
     pub fn real_path(&self, file: kiln::source::FileId) -> Option<&'r [u8]>;
     pub fn errors(&self) -> u32;
@@ -709,6 +720,23 @@ impl<'r> Unit<'r> {
     pub fn token_end(&self, at: kiln::source::Loc) -> Option<kiln::source::Loc>;
 }
 ```
+
+`Lookups::tried` lists, for a `#include` form (`#include`, `#import`,
+`#include_next`, `__has_include`, `__has_include_next`, and `-include`,
+looked up from the predefines buffer), the includer's directory where the
+form tries it, then the search list from where the form starts (`"..."`:
+the start; `<...>`: the angled start) or continues (after the directory
+an `_next` form continues from), through the directory it was found in,
+all of it when it was not; for `#embed` and `__has_embed`, the includer's
+directory and `.` for `"..."`, then every `--embed-dir` directory (Kiln's
+log does not say which were tried; they are taken from Kiln's driver,
+`Args::embed_dirs`). A lookup of an absolute name is not in Kiln's log
+and so not here (`spec/verify.md` §5.1, "What remains outside").
+`Lookups::line_names` lists the file names of the `#line` directives of
+every file the unit read (Kiln's `SourceManager::line_directives`), as
+written: guard G5 of `spec/verify.md` §5.3 refuses one that begins with a
+prefix the post command maps.
+`Lookups` is a function of the unit; the shard does not depend on it.
 
 `token_end(at)` is Kiln's `kiln_lex::token_end` with the unit's interner
 and lexer options (`Preprocessor::lex_options`): the end of the token
