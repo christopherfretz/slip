@@ -1,13 +1,16 @@
 //! [`KilnSubject`]: the [`Subject`] over one parsed unit of Kiln
 //! (`spec/api.md` §5, §6; `docs/wp/WP-083.md`).
 //!
-//! This package answers entities, lookup and structure: `is_live`,
+//! WP-083 answers entities, lookup and structure: `is_live`,
 //! `kind_bits`, `lookup`, `identifier`, `display`, `parent`, `parameters`,
 //! `declarations`, `entity_of`, `origin`, `qualified`, `file_len`, `text`,
-//! `owned`, `file_ref`. Every other method answers "nothing" as the trait
-//! documents it, until WP-085 (references and ranges), WP-086 (calls) and
-//! WP-095 (keys): no reference or expression is live, so the host never
-//! asks the methods that take one.
+//! `owned`, `file_ref`. WP-086 (`calls.rs`) answers calls and the extents
+//! of expressions: `calls_to`, `callee`, `callee_reference`, `arguments`,
+//! and `extent`, `tiers` and `place` of an expression; the live
+//! expressions are the calls and their arguments, and the live references
+//! (until WP-085) the table's entries in a role of §6.5 rule 3. Every
+//! other method answers "nothing" as the trait documents it, until WP-085
+//! (references and ranges) and WP-095 (keys).
 //!
 //! Everything is read from Kiln's declaration arena; what is costly is
 //! built on first use and kept for the life of the subject: the set of
@@ -28,10 +31,12 @@ use crate::subject::{
 };
 use crate::wire::{self, Errc};
 
+mod calls;
 mod entities;
 mod lookup;
 mod order;
 
+pub use calls::{ExtentCensus, NoExtent};
 pub use order::unit_order;
 
 /// A file of the subject: its path and its bytes.
@@ -56,6 +61,16 @@ pub struct KilnSubject<'u> {
     /// lock is held only to read or insert, never while an index is
     /// built: two threads may build one index twice, to the same value.
     scopes: Mutex<HashMap<u32, Arc<lookup::Index>>>,
+    /// The unit's tokens, for the end of a token (`calls.rs`).
+    tokens: slip_kiln::Tokens<'u>,
+    /// The unit's written references, read when the subject is made (the
+    /// unit is not kept); a reference is numbered by its index here, plus
+    /// one (`calls.rs`).
+    refs: Vec<slip_kiln::written::WrittenRef>,
+    /// The calls of the unit (`calls.rs`).
+    calls: OnceLock<calls::Index>,
+    /// The tiers of each extent of a live expression (`calls.rs`).
+    call_tiers: OnceLock<HashMap<Range, [bool; 2]>>,
 }
 
 impl std::fmt::Debug for KilnSubject<'_> {
@@ -72,43 +87,36 @@ impl<'u> KilnSubject<'u> {
     /// The subject keeps the unit's AST, source manager and real paths,
     /// not the unit (which holds the Oven, and is not `Sync`).
     pub fn new(
-        unit: &slip_kiln::Unit<'u>,
+        unit: &'u slip_kiln::Unit<'u>,
         owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
     ) -> KilnSubject<'u> {
-        KilnSubject::from_parts(
-            unit.ast(),
-            unit.sm(),
-            |f| unit.real_path(f).map(Cow::Borrowed),
-            owned,
-        )
+        KilnSubject::from_parts(unit, |f| unit.real_path(f).map(Cow::Borrowed), owned)
     }
 
     /// The subject over a snippet's unit (`slip_kiln::snippet`, for tests):
     /// a snippet's path is its subject path; a buffer the front end made
     /// itself is no file of the subject.
     pub fn from_snippet(
-        p: &slip_kiln::snippet::Parsed<'u>,
+        p: &'u slip_kiln::snippet::Parsed<'u>,
         owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
     ) -> KilnSubject<'u> {
         KilnSubject::from_parts(
-            p.ast,
-            p.sm,
+            p.unit(),
             |id| p.path(id).map(|x| Cow::Owned(x.as_bytes().to_vec())),
             owned,
         )
     }
 
-    /// The subject over an AST, the source manager **of the same unit**,
-    /// and `path`, the subject path of each of that unit's buffers that is
-    /// a file of the subject (asked once per buffer, here). Private so that
-    /// no caller can join the parts of two units: [`Self::new`] and
-    /// [`Self::from_snippet`] take them from one.
+    /// The subject over a unit and `path`, the subject path of each of
+    /// the unit's buffers that is a file of the subject (asked once per
+    /// buffer, here). It keeps the unit's AST, source manager, tokens and
+    /// written references, not the unit.
     fn from_parts(
-        ast: &'u Ast,
-        sm: &'u SourceManager,
+        unit: &'u slip_kiln::Unit<'u>,
         path: impl Fn(FileId) -> Option<Cow<'u, [u8]>>,
         owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
     ) -> KilnSubject<'u> {
+        let (ast, sm) = (unit.ast(), unit.sm());
         KilnSubject {
             ast,
             sm,
@@ -118,6 +126,10 @@ impl<'u> KilnSubject<'u> {
             listed: OnceLock::new(),
             parm_owner: OnceLock::new(),
             scopes: Mutex::new(HashMap::new()),
+            tokens: unit.tokens(),
+            refs: slip_kiln::written::written_refs(unit),
+            calls: OnceLock::new(),
+            call_tiers: OnceLock::new(),
         }
     }
 
@@ -186,7 +198,8 @@ impl Subject for KilnSubject<'_> {
             Value::Declaration(Declaration(n)) => {
                 self.decl(n).is_some_and(|d| self.is_declaration(d))
             }
-            Value::Reference(_) | Value::Expression(_) => false,
+            Value::Reference(Reference(n)) => self.reference_live(n),
+            Value::Expression(Expression(n)) => self.expression_live(n),
         }
     }
 
@@ -205,6 +218,7 @@ impl Subject for KilnSubject<'_> {
                         0
                     }
                 }
+                Value::Expression(Expression(n)) if self.is_call(n) => wire::KIND_CALL,
                 Value::Reference(_) | Value::Expression(_) => 0,
             }
     }
@@ -238,7 +252,7 @@ impl Subject for KilnSubject<'_> {
                 None => format!("declaration {n}"),
             },
             Value::Reference(Reference(n)) => format!("reference {n}"),
-            Value::Expression(Expression(n)) => format!("expression {n}"),
+            Value::Expression(Expression(n)) => self.expression_display(n),
         }
     }
 
@@ -280,17 +294,19 @@ impl Subject for KilnSubject<'_> {
         Vec::new()
     }
 
-    fn referent(&self, _r: Reference) -> Entity {
-        // No reference is live until WP-085: the host never asks.
-        Entity(self.ast.tu.index())
+    fn referent(&self, r: Reference) -> Entity {
+        Entity(self.reference_referent(r.0).unwrap_or(self.ast.tu).index())
     }
 
     fn name_range(&self, _v: Value) -> Result<Option<Range>, Errc> {
         Ok(None)
     }
 
-    fn extent(&self, _v: Value) -> Result<Option<Range>, Errc> {
-        Ok(None)
+    fn extent(&self, v: Value) -> Result<Option<Range>, Errc> {
+        Ok(match v {
+            Value::Expression(Expression(n)) => self.expression_extent(n),
+            Value::Entity(_) | Value::Declaration(_) | Value::Reference(_) => None,
+        })
     }
 
     fn text(&self, r: Range) -> &[u8] {
@@ -312,27 +328,27 @@ impl Subject for KilnSubject<'_> {
         if k & wire::KIND_FUNCTION == 0 && !template_of_function {
             return Err(Errc::WrongKind);
         }
-        Ok(Vec::new())
+        Ok(self.decl(e.0).map_or_else(Vec::new, |d| self.calls_of(self.origin_decl(d))))
     }
 
-    fn callee(&self, _x: Expression) -> Option<Entity> {
-        None
+    fn callee(&self, x: Expression) -> Option<Entity> {
+        self.callee_of(x).map(|d| Entity(d.index()))
     }
 
-    fn callee_reference(&self, _x: Expression) -> Option<Reference> {
-        None
+    fn callee_reference(&self, x: Expression) -> Option<Reference> {
+        self.callee_reference_of(x)
     }
 
-    fn arguments(&self, _x: Expression) -> Option<Vec<Expression>> {
-        None
+    fn arguments(&self, x: Expression) -> Option<Vec<Expression>> {
+        self.arguments_of(x)
     }
 
     fn unresolved_named(&self, _identifier: &[u8]) -> Option<u64> {
         None
     }
 
-    fn tiers(&self, _r: Range) -> Option<[bool; 2]> {
-        None
+    fn tiers(&self, r: Range) -> Option<[bool; 2]> {
+        self.expression_tiers(r)
     }
 
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
@@ -365,7 +381,8 @@ impl Subject for KilnSubject<'_> {
                 Some(d) if self.first_written(d).is_some() => PlaceOf::Unnamed,
                 _ => PlaceOf::Nowhere,
             },
-            Value::Declaration(_) | Value::Reference(_) | Value::Expression(_) => PlaceOf::Unnamed,
+            Value::Expression(Expression(n)) => self.expression_place(n),
+            Value::Declaration(_) | Value::Reference(_) => PlaceOf::Unnamed,
         }
     }
 
