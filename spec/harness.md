@@ -1377,7 +1377,7 @@ header named below is included by most of them.
 |---|---|---|---|
 | `00-control` | nothing: the post-image is a copy | — | `verified` |
 | `01-relocate` | the namespace `llvm::hashing::detail` is renamed `llvm::hashing::impl`: both blocks of `llvm/include/llvm/ADT/Hashing.h`, and every use in `llvm/` (`Hashing.h`, `StableHashing.h`, `lib/IR/StructuralHash.cpp`, `unittests/ADT/HashingTest.cpp`) | `relocate llvm::hashing::detail => llvm::hashing :: impl` | `verified` |
-| `02-default-argument` | `StringRef::find(char C, size_t From = 0)` gets the default `1` | — | `mismatch`: `changed` the member at its line, and `changed` one named caller that relies on the default |
+| `02-default-argument` | `StringRef::find(char C, size_t From = 0)` gets the default `1` | — | `mismatch`: `changed` the member at its line (a caller that relies on the default is not a finding: `pitfalls.md` E10) |
 | `03-overload` | `StringRef` gains `bool starts_with(const char *) const`, which a call with a string literal now prefers to `starts_with(StringRef)` | `created` the new member | `mismatch`: `changed` one named caller in `lib/Support`, at the call |
 | `04-adl` | a function template of the name of an `llvm::sys::path` function, taking `StringRef` exactly, is added to namespace `llvm`; a call in `lib/Support/Path.cpp` that converted a `StringRef` to `const Twine &` now reaches it through argument-dependent lookup | `created` the template | `mismatch`: `changed` the caller in `Path.cpp`, at the call |
 | `05-shadow` | a declaration inserted in a function body of one `lib/Support` file gives a name used later in that body another meaning (the pattern of `spec/pitfalls.md` E12) | — | `mismatch`: `changed` that function, at the use |

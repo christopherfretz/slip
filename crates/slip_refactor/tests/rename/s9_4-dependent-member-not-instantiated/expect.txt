@@ -1,0 +1,13 @@
+subjects:
+  85f5d4ed seed - rule=yes n::S::f()
+  d53c5070 seed - rule=yes n::S::f(int)
+links:
+claims:
+  main.cpp:2:17+1 replace "g" t0 votes=1 none [85f5d4ed]
+  main.cpp:2:34+1 replace "g" t0 votes=1 none [d53c5070]
+  main.cpp:3:17+1 keep t0 votes=1 none
+  main.cpp:3:34+1 keep t0 votes=1 none
+  main.cpp:4:43+1 unresolved t0 votes=1 none
+  main.cpp:4:51+1 unresolved t0 votes=1 none
+  main.cpp:4:59+1 unresolved t0 votes=1 none
+changed:

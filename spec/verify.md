@@ -1751,7 +1751,10 @@ FindingGroup := { "kind": <FindingKind by name>, "key": <id>, "name": <str>,
 - `not_verified` lists, in plan order, every selected observer that is
   neither `verified` nor `unchanged`: its state; the verdict's `reason`
   (`unverifiable`), the shard's message (`not_parsed`, `never_parsed`,
-  `failed`; empty if there is no shard) or the empty string (`mismatch`);
+  `failed`; empty if there is no shard; for a shard the report refuses
+  as not this run's, §7 and §9.3, the reason it refuses it, never the
+  shard's own message: `spec/landed/verify/WP-121.md` §4) or the empty
+  string (`mismatch`);
   and for a `mismatch` the verdict's `total`, how many of them are
   `indeterminate` or `derived_indeterminate` (from the counters of §7.2)
   and how many the verdict lists; three zeros otherwise. An observer is
@@ -2021,7 +2024,9 @@ Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
 is `spellings`, §10.4.)
 
 - `binding` is present in every shard a verify job writes, whatever the
-  parse's outcome, and is taken from `Job.post`. A shard the coordinator
+  parse's outcome, and is taken from `Job.post`. (Until the exception of
+  §9.3 is removed, a job of a tree image writes it only when the rules
+  are not empty: `spec/landed/verify/WP-121.md`.) A shard the coordinator
   wrote for a worker that produced none (status `failed`) has no
   `binding`.
 - `rule_use` is present when the outcome is `ok` and the rule table is
@@ -2111,8 +2116,10 @@ under no rule or naming a rule past the table, and one whose `spellings`
 is absent although the overlay has obligations, present although it has
 none, or refused by the fold (§10.4). A run with a tree image and no
 rule is M1's: its shards need no `binding`, and one that has a binding
-must have the run's (`spec/landed/verify/WP-070.md` §2.1). This
-exception is temporary: a verify job is to write `binding` in every
+must have the run's (`spec/landed/verify/WP-070.md` §2.1). The verify job keeps to
+it: with a tree image it writes `binding` and `rule_use` when the rules
+are not empty and neither when they are (`spec/landed/verify/WP-121.md`).
+This exception is temporary: a verify job is to write `binding` in every
 shard (§9.1), M1's `slip verify` included, after which a package of the
 coordinator's removes it and a shard without a binding is never this
 run's.

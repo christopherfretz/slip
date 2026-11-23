@@ -1,0 +1,4 @@
+spec: edits.md §9.4 (&n::S<T>::f in a template is a dependent name: unresolved), WP-073 fix round F1
+from: n::S::f
+to: g
+kind: function

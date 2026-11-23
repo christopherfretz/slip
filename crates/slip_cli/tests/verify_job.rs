@@ -128,7 +128,13 @@ impl Tree {
     }
 
     fn params(&self, declared: Declared) -> Params {
-        Params { pre: 0, declared, image: self.image(), limit: 64, locate: 16 }
+        // The content id of its container; a value no container can hold
+        // (rules without files, which only tests make) has none.
+        let declared_id = match declared.validate() {
+            Ok(()) => content_id(&declared.to_bytes()).unwrap(),
+            Err(_) => Digest([0; 32]),
+        };
+        Params { pre: 0, declared, declared_id, image: self.image(), limit: 64, locate: 16 }
     }
 
     /// The verify task's shard of `observer`, round 1, validated.
@@ -566,6 +572,31 @@ fn g1_absolute_include() {
     check_post_shard(&v);
 }
 
+/// §9.1: an `ok` shard of a job under a rule table that is not empty has
+/// the job's `binding` and a `rule_use` of the table's `rules_id`.
+fn check_sections_under_rules(v: &Shard, params: &Params) {
+    assert_eq!(v.outcome.status, Status::Ok);
+    let want = slip_model::Binding { overlay: None, declared: params.declared_id, pre: params.pre };
+    assert_eq!(v.binding, Some(want));
+    assert_eq!(v.rule_use.as_ref().map(|u| u.rules), Some(params.declared.rules_id()));
+}
+
+// §5.3 G1 and §9.1 (WP-121, review F2): an image guard's `unverifiable`
+// shard under a rule table that is not empty is an `ok` shard: it has
+// `binding` and `rule_use`.
+#[test]
+fn g1_under_rules_keeps_the_sections() {
+    let tree = Tree::new("g1rules", &[("a.cpp", "#include \"h.h\"\n"), ("h.h", "int a = 1;\n")]);
+    let h = tree.path("h.h");
+    write(&tree.post.join("a.cpp"), &format!("#include \"{h}\"\n"));
+    let o = tree.observer();
+    tree.map(&o);
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &[]));
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(reason(&v), format!("post-image: read {h}, a file of the subject"));
+    check_sections_under_rules(&v, &params);
+}
+
 // §5.3 G1: through an absolute include directory into the subject that
 // does not spell the subject root, in a word the rewrite does not resolve
 // (`-Wp,`), so the post command keeps it.
@@ -727,11 +758,19 @@ fn g3_post_image_changed_during_the_job() {
     for (case, one, two) in
         [("tu", "int a = 1;\n", "int a = 2;\n"), ("inputs", "int a = 1;\n", "int a = 1; \n")]
     {
-        g3_case(case, one, two);
+        g3_case(case, one, two, false);
     }
 }
 
-fn g3_case(case: &str, one: &'static str, two: &'static str) {
+// §5.3 G3 and §9.1 (WP-121, review F2): under a rule table that is not
+// empty, the `unverifiable` shard of G3 is an `ok` shard: it has
+// `binding` and `rule_use` (step 1's, under the table's `rules_id`).
+#[test]
+fn g3_under_rules_keeps_the_sections() {
+    g3_case("rules", "int a = 1;\n", "int a = 2;\n", true);
+}
+
+fn g3_case(case: &str, one: &'static str, two: &'static str, under_rules: bool) {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     let tree = Tree::new(&format!("g3-{case}"), &[("a.cpp", "int a = 0;\nint b = 0;\n")]);
@@ -751,12 +790,20 @@ fn g3_case(case: &str, one: &'static str, two: &'static str) {
             std::thread::sleep(std::time::Duration::from_micros(200));
         }
     });
+    let params = if under_rules {
+        tree.params(declared_of(&tree, rename_ns("fresh", "old"), &[]))
+    } else {
+        tree.params(Declared::none())
+    };
     let mut seen = None;
     for attempt in 0..200 {
-        let v = tree.verify(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
         assert_ne!(kind(&v), VerdictKind::Verified, "{case}");
         if kind(&v) == VerdictKind::Unverifiable {
             assert_eq!(reason(&v), "post-image: changed during the job", "{case}");
+            if under_rules {
+                check_sections_under_rules(&v, &params);
+            }
             assert_eq!(counter(&v, "verify.reparsed"), Some(2));
             check_post_shard(&v);
             seen = Some(attempt);
@@ -832,6 +879,34 @@ fn worker_phase_task() {
     assert_eq!(reason(&task.run(&job).unwrap()), "pre-image: no map shard");
     job.post = Some(Post { image: Image::identity().to_post(), ..post });
     assert_eq!(kind(&task.run(&job).unwrap()), VerdictKind::Verified);
+}
+
+// The worker (`spec/exec.md` §8.4, `spec/verify.md` §9.1; WP-121, review
+// F1): under a `DECL` container with a rule, the shard's `binding` is
+// made from the job's `post`: `declared` its content id, `pre` its round.
+#[test]
+fn worker_binding_from_the_post() {
+    let tree = Tree::new("worker-rules", &[("a.cpp", RELOCATE_PRE)]);
+    write(&tree.post.join("a.cpp"), RELOCATE_POST);
+    let o = tree.observer();
+    let mut task = PhaseTask::new(64, 0);
+    let map = tree.job(&o, Phase::Map, 0);
+    let shard = task.run(&map).unwrap();
+    tree.store.publish_shard(&map.plan, Phase::Map, 0, &o.id, &shard.to_bytes()).unwrap();
+    let declared = declared_of(&tree, rename_ns("fresh", "old"), &[]);
+    let declared_id = tree.store.publish_declared(&declared.to_bytes()).unwrap();
+    let post = Post { pre: 0, declared: declared_id, image: tree.image().to_post() };
+    let mut job = tree.job(&o, Phase::Verify, 1);
+    for pre in [0, 9] {
+        job.post = Some(Post { pre, ..post.clone() });
+        let v = task.run(&job).unwrap();
+        v.validate().unwrap();
+        let want = if pre == 0 { VerdictKind::Verified } else { VerdictKind::Unverifiable };
+        assert_eq!(kind(&v), want, "{}", reason(&v));
+        let binding = slip_model::Binding { overlay: None, declared: declared_id, pre };
+        assert_eq!(v.binding, Some(binding));
+        assert_eq!(v.rule_use.as_ref().map(|u| u.rules), Some(declared.rules_id()));
+    }
 }
 
 // §5.2: `verify` itself refuses a job of phase map and one with a
@@ -1894,4 +1969,360 @@ fn g6_created_file_in_a_created_directory() {
     tree.map(&o);
     let v = tree.verify(&o);
     assert_ne!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+}
+
+// WP-121 with G6: a G6 `unverifiable` shard under rules carries `binding`
+// and `rule_use`, as G1's does (`g1_under_rules_keeps_the_sections`).
+#[test]
+fn g6_under_rules_keeps_the_sections() {
+    let (tree, o) = g6_tree("g6-rules", dep_through_link, dep_as_directory);
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert!(reason(&v).contains(" which the subject reaches through the link "), "{}", reason(&v));
+    check_sections_under_rules(&v, &params);
+}
+
+// ---------------------------------------------------------------------------
+// WP-121: `binding` and `rule_use` under rules (spec/verify.md §9.1, §5.4)
+
+/// A golden of `crates/slip_cli/tests/golden/`; `SLIP_BLESS=1` rewrites it.
+fn golden(name: &str, actual: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden").join(name);
+    if std::env::var_os("SLIP_BLESS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, actual).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}; run with SLIP_BLESS=1 to create", path.display()));
+    assert_eq!(actual, expected, "{name} differs from its golden; SLIP_BLESS=1 rewrites it");
+}
+
+/// The JSON rendering of a verify shard with what does not depend on this
+/// crate taken out: the tree's directory is `<base>`, the map shard's
+/// content id `<pre>`, the observer's id (a hash of a command naming
+/// `<base>`) `<observer>`, the counters those of §7.2 only (the parse's and
+/// the walk's are Kiln's and `slip_digest`'s), and no `digests` (the
+/// walk's). Every section the shard has is in it, by name. A finding's
+/// key and unit digests are the walk's too: a change of the digest scheme
+/// moves them, and is re-blessed with it.
+fn shard_view(tree: &Tree, v: &Shard, pre: Option<Digest>) -> String {
+    let mut s = v.clone();
+    s.counters.retain(|c| c.name.starts_with("verify."));
+    s.digests = None;
+    let mut text = slip_model::json::write_pretty(&s.to_json()).unwrap();
+    text = text.replace(tree.base.to_str().unwrap(), "<base>");
+    text = text.replace(&v.observer.to_string(), "<observer>");
+    if let Some(pre) = pre {
+        text = text.replace(&pre.to_string(), "<pre>");
+    }
+    text
+}
+
+// §5.4, §9.1 (WP-121 item 3): a job whose rule table is empty writes the
+// shard it wrote before WP-121, byte for byte: neither `binding` nor
+// `rule_use`, for each outcome. The golden was blessed on `main` before
+// the package's code changed (spec/landed/verify/WP-121.md §3).
+#[test]
+fn s9_1_no_rules_shard_unchanged() {
+    const PRE: &str = "int f() { return 1; }\nint g() { return f(); }\n";
+    let cases: [(&str, Option<&str>, bool); 4] = [
+        ("verified", None, true),
+        ("mismatch", Some("int f() { return 2; }\nint g() { return f(); }\n"), true),
+        ("diagnosed", Some("int f( { return 1; }\n"), true),
+        ("unverifiable", None, false),
+    ];
+    let mut out = String::new();
+    for (name, post, map) in cases {
+        let tree = Tree::new(&format!("norules-{name}"), &[("a.cpp", PRE)]);
+        if let Some(post) = post {
+            write(&tree.post.join("a.cpp"), post);
+        }
+        let o = tree.observer();
+        let pre = map.then(|| {
+            tree.map(&o);
+            tree.stored_map(&o).1
+        });
+        // `Declared::none()` (no `--declared`) and one with an exemption
+        // and no rule (files need a rule, `spec/verify.md` §2).
+        let exempting = Declared::new(vec![], vec![Digest([1; 32])], vec![], vec![]).unwrap();
+        for declared in [Declared::none(), exempting] {
+            let v = tree.verify_with(&o, &tree.params(declared)).unwrap();
+            assert!(v.binding.is_none() && v.rule_use.is_none(), "{name}");
+        }
+        let v = tree.verify(&o);
+        out.push_str(name);
+        out.push('\n');
+        out.push_str(&shard_view(&tree, &v, pre));
+        out.push('\n');
+    }
+    golden("verify-no-rules.txt", &out);
+}
+
+/// The declared changes of one rule, the subject owned, with
+/// `readonly` files of it read-only.
+fn declared_of(tree: &Tree, rule: Rule, readonly: &[&str]) -> Declared {
+    Declared::new(vec![rule], vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(tree.files(readonly)))
+}
+
+const RELOCATE_PRE: &str =
+    "namespace old { int f() { return 1; } }\nint g() { return old::f(); }\n";
+const RELOCATE_POST: &str =
+    "namespace fresh { int f() { return 1; } }\nint g() { return fresh::f(); }\n";
+
+// §9.1, §5.4 (WP-121 items 1 and 2): under a rule table that is not
+// empty, every shard the job writes has `binding` (no overlay, the
+// declared changes' content id, the pre round), whatever its outcome; an
+// `ok` one has `rule_use` (the rules' id, the walk's counts), a
+// `diagnosed` one has none; a job that fails writes no shard (the
+// coordinator's `failed` shard has no binding).
+#[test]
+fn s9_1_sections_per_outcome() {
+    let rule = rename_ns("fresh", "old");
+    let relocated = |tree: &Tree| declared_of(tree, rule.clone(), &[]);
+    let used = vec![slip_model::agreement::Use { rule: 0, via: 1, direct: 0 }];
+    let check = |tree: &Tree, v: &Shard, params: &Params, rule_use: bool| {
+        let id = content_id(&params.declared.to_bytes()).unwrap();
+        let want = slip_model::Binding { overlay: None, declared: id, pre: params.pre };
+        assert_eq!(v.binding, Some(want), "{:?}", v.outcome);
+        match &v.rule_use {
+            Some(u) if rule_use => {
+                assert_eq!(u.rules, params.declared.rules_id());
+                assert_eq!(u.uses, used, "{}", tree.base.display());
+            }
+            None if !rule_use => {}
+            other => panic!("rule_use {other:?} in {:?}", v.outcome),
+        }
+    };
+
+    // `ok`, verified.
+    let tree = Tree::new("sec-verified", &[("a.cpp", RELOCATE_PRE)]);
+    write(&tree.post.join("a.cpp"), RELOCATE_POST);
+    let o = tree.observer();
+    tree.map(&o);
+    let params = tree.params(relocated(&tree));
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+    check(&tree, &v, &params, true);
+    // `ok`, unverifiable by a guard (P1: no map shard of round 5); the
+    // binding names that round.
+    let params5 = Params { pre: 5, ..params.clone() };
+    let v = tree.verify_with(&o, &params5).unwrap();
+    assert_eq!(reason(&v), "pre-image: no map shard");
+    check(&tree, &v, &params5, true);
+    // A job that fails (the map shard altered): no shard at all.
+    let path = tree.store.shard_path(&Digest([7; 32]), Phase::Map, 0, &o.id);
+    let mut stored = std::fs::read(&path).unwrap();
+    let last = stored.len() - 40;
+    stored[last] ^= 1;
+    std::fs::write(&path, &stored).unwrap();
+    assert!(tree.verify_with(&o, &params).is_err());
+    drop(tree);
+
+    // `ok`, mismatch: the relocation and a changed body.
+    let tree = Tree::new("sec-mismatch", &[("a.cpp", RELOCATE_PRE)]);
+    write(&tree.post.join("a.cpp"), &RELOCATE_POST.replace("return 1", "return 2"));
+    let o = tree.observer();
+    tree.map(&o);
+    let params = tree.params(relocated(&tree));
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Mismatch);
+    check(&tree, &v, &params, true);
+    drop(tree);
+
+    // `diagnosed`: binding, no rule_use, no verdict.
+    let tree = Tree::new("sec-diagnosed", &[("a.cpp", RELOCATE_PRE)]);
+    write(&tree.post.join("a.cpp"), "namespace fresh { int f( { return 1; } }\n");
+    let o = tree.observer();
+    tree.map(&o);
+    let params = tree.params(relocated(&tree));
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(v.outcome.status, Status::Diagnosed);
+    assert!(v.verdict.is_none());
+    check(&tree, &v, &params, false);
+}
+
+/// The exit status of `slip verify` for a run's verdict
+/// (`spec/exec.md` §8.7).
+fn exit_status(v: slip_verify::run::RunVerdict) -> u8 {
+    match v {
+        slip_verify::run::RunVerdict::Verified => 0,
+        slip_verify::run::RunVerdict::NotVerified => 1,
+        slip_verify::run::RunVerdict::Incomplete => 4,
+    }
+}
+
+/// The run's report over the verify shards of `observers` (round 1, pre
+/// round 0), each added with its map shard's status, as `slip verify`
+/// adds them (`spec/exec.md` §8.7): what `slip verify` prints, short of
+/// the executable (WP-053).
+fn run_report(
+    tree: &Tree,
+    params: &Params,
+    shards: &[(Observer, Shard)],
+) -> slip_verify::run::Report {
+    use slip_verify::run::{Header, Report};
+    let header = Header {
+        plan: Digest([7; 32]),
+        round: 1,
+        declared: params.declared_id,
+        rules: params.declared.rules_id(),
+        image: vec![(bytes(&tree.subject), bytes(&tree.post))],
+        limit: params.limit as u64,
+        locate: params.locate as u64,
+        plan_observers: shards.len() as u64,
+        run: b"runs/0001.run".to_vec(),
+    };
+    let mut r = Report::new(header, &params.declared);
+    for (o, v) in shards {
+        let (map, _) = tree.stored_map(o);
+        r.add(&o.id, &o.main.path, Some(v), Some(map.outcome.status));
+    }
+    r
+}
+
+const RELOCATE_HEADER_PRE: &str =
+    "namespace old { struct S { int x; }; inline int f(S s) { return s.x; } }\n";
+const RELOCATE_U0: &str = "#include \"a.h\"\nint u0() { old::S s{1}; return f(s); }\n";
+const RELOCATE_U1: &str = "#include \"a.h\"\nint u1() { return old::f(old::S{2}); }\n";
+
+/// A relocation of `old` to `fresh` over two observers sharing `a.h`;
+/// with `wrong`, `u1`'s edit also changes a value. Each observer's verify
+/// shard, under the rule with `readonly` files of the subject read-only.
+fn relocation(
+    name: &str,
+    wrong: bool,
+    readonly: &[&str],
+) -> (Tree, Params, Vec<(Observer, Shard)>) {
+    let tree = Tree::new(
+        name,
+        &[("a.h", RELOCATE_HEADER_PRE), ("u0.cpp", RELOCATE_U0), ("u1.cpp", RELOCATE_U1)],
+    );
+    let fresh = |s: &str| s.replace("old", "fresh");
+    write(&tree.post.join("a.h"), &fresh(RELOCATE_HEADER_PRE));
+    write(&tree.post.join("u0.cpp"), &fresh(RELOCATE_U0));
+    let u1 = fresh(RELOCATE_U1);
+    write(&tree.post.join("u1.cpp"), &if wrong { u1.replace("S{2}", "S{3}") } else { u1 });
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), readonly));
+    let mut shards = Vec::new();
+    for main in ["u0.cpp", "u1.cpp"] {
+        let o = tree.observer_of(main, &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        shards.push((o, v));
+    }
+    (tree, params, shards)
+}
+
+// WP-121 item 5, §9.2, §9.3, `spec/exec.md` §8.7: a namespace relocation
+// over two observers is `verified` in each, and the run is verified
+// (status 0): the rule is listed `unchecked` (§9.2, until WP-111), which
+// does not change the verdict. Before WP-121 both were `failed` (no
+// `binding`, no `rule_use`) and the run incomplete (status 4). The wrong
+// edit beside it: `mismatch`, not verified (status 1).
+#[test]
+fn s9_3_relocation_verified_over_two_observers() {
+    use slip_verify::run::{RunVerdict, State};
+    let (tree, params, shards) = relocation("reloc-right", false, &[]);
+    for (o, v) in &shards {
+        assert_eq!(kind(v), VerdictKind::Verified, "{}: {}", o.main.path.escape_ascii(), reason(v));
+        assert!(v.rule_use.as_ref().unwrap().uses.iter().all(|u| u.via > 0 && u.direct == 0));
+    }
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.states()[0], 2, "{}", r.error_lines());
+    assert_eq!(r.verdict(), RunVerdict::Verified);
+    assert_eq!(exit_status(r.verdict()), 0);
+    assert_eq!((r.stale(), r.unused(), r.unchecked()), (&[][..], vec![], vec![0]));
+    let text = r.to_text();
+    assert!(text.contains("agreement rules 1 stale 0 unused 0\n"), "{text}");
+    assert!(text.contains("not checked: agreement between observers for namespace rule 0\n"));
+    assert_eq!(r.verdict_line(), "verdict verified");
+    assert_eq!(r.error_lines(), "");
+    drop(tree);
+
+    let (tree, params, shards) = relocation("reloc-wrong", true, &[]);
+    assert_eq!(kind(&shards[0].1), VerdictKind::Verified);
+    assert_eq!(kind(&shards[1].1), VerdictKind::Mismatch);
+    let r = run_report(&tree, &params, &shards);
+    let at = |s: State| r.states()[State::ALL.iter().position(|&x| x == s).unwrap()];
+    assert_eq!((at(State::Verified), at(State::Mismatch)), (1, 1));
+    assert_eq!(r.verdict(), RunVerdict::NotVerified);
+    assert_eq!(exit_status(r.verdict()), 1);
+}
+
+// WP-121 item 5, §2.1, §9.2: the job-level counterpart of WP-053's
+// `s2_1_rule_naming_a_dependency_entity_matches_nothing`. The namespace
+// is declared in a read-only file: no rule reaches a dependency entity,
+// so the relocation is a real change in each observer (`mismatch`), the
+// rule matched nothing (`unused`), and the run is not verified (status
+// 1). Before WP-121 the observers were `failed` and the run incomplete
+// (status 4) for want of `rule_use`, which hid the mismatches.
+#[test]
+fn s2_1_rule_on_a_dependency_entity_not_verified() {
+    use slip_verify::run::{RunVerdict, State};
+    let (tree, params, shards) = relocation("reloc-dep", false, &["a.h"]);
+    for (_, v) in &shards {
+        assert_eq!(kind(v), VerdictKind::Mismatch, "{}", reason(v));
+    }
+    let r = run_report(&tree, &params, &shards);
+    let at = |s: State| r.states()[State::ALL.iter().position(|&x| x == s).unwrap()];
+    assert_eq!((at(State::Mismatch), at(State::Failed)), (2, 0));
+    assert_eq!(r.unused(), [0]);
+    assert!(r.unchecked().is_empty());
+    assert_eq!(r.verdict(), RunVerdict::NotVerified);
+    assert_eq!(exit_status(r.verdict()), 1);
+}
+
+/// The rule renaming the class `from_post` at the root of the post-image
+/// to `to_pre` of the pre-image.
+fn rename_class(from_post: &str, to_pre: &str) -> Rule {
+    Rule { kind: KeyKind::Class, ..rename_ns(from_post, to_pre) }
+}
+
+// WP-121 item 5, §9.2: a rename (a rule of kind `class`) over two
+// observers, one of which still declares the old name itself and was not
+// edited: each observer is `verified`, the second is stale for the rule
+// (its `direct` is 1), and the run is not verified (status 1). The wrong
+// edit beside it: `mismatch`.
+#[test]
+fn s9_2_rename_with_a_stale_observer() {
+    use slip_verify::run::{RunVerdict, Stale, State};
+    for wrong in [false, true] {
+        let u0_pre = "#include \"a.h\"\nint u0() { S s{1}; return s.x; }\n";
+        let u1 = "struct S { int y; };\nint u1() { S s{2}; return s.y; }\n";
+        let tree = Tree::new(
+            &format!("rename-{wrong}"),
+            &[("a.h", "struct S { int x; };\n"), ("u0.cpp", u0_pre), ("u1.cpp", u1)],
+        );
+        write(&tree.post.join("a.h"), "struct T { int x; };\n");
+        let u0_post = u0_pre.replace("S s", "T s");
+        write(
+            &tree.post.join("u0.cpp"),
+            &if wrong { u0_post.replace("{1}", "{3}") } else { u0_post },
+        );
+        let params = tree.params(declared_of(&tree, rename_class("T", "S"), &[]));
+        let mut shards = Vec::new();
+        for main in ["u0.cpp", "u1.cpp"] {
+            let o = tree.observer_of(main, &[]);
+            tree.map(&o);
+            shards.push((o.clone(), tree.verify_with(&o, &params).unwrap()));
+        }
+        let uses = |i: usize| shards[i].1.rule_use.as_ref().unwrap().uses.clone();
+        assert_eq!(uses(0), [slip_model::agreement::Use { rule: 0, via: 1, direct: 0 }]);
+        assert_eq!(uses(1), [slip_model::agreement::Use { rule: 0, via: 0, direct: 1 }]);
+        let want0 = if wrong { VerdictKind::Mismatch } else { VerdictKind::Verified };
+        assert_eq!(kind(&shards[0].1), want0, "{}", reason(&shards[0].1));
+        assert_eq!(kind(&shards[1].1), VerdictKind::Verified, "{}", reason(&shards[1].1));
+        let r = run_report(&tree, &params, &shards);
+        let at = |s: State| r.states()[State::ALL.iter().position(|&x| x == s).unwrap()];
+        assert_eq!(at(State::Mismatch), u64::from(wrong));
+        assert_eq!(r.stale(), [Stale { rule: 0, observer: shards[1].0.id, direct: 1 }]);
+        assert!(r.unused().is_empty() && r.unchecked().is_empty());
+        assert!(r.to_text().contains("agreement rules 1 stale 1 unused 0\n"));
+        assert_eq!(r.verdict(), RunVerdict::NotVerified);
+        assert_eq!(exit_status(r.verdict()), 1);
+    }
 }

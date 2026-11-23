@@ -3,9 +3,12 @@
 //!
 //! WP-083 answers entities, lookup and structure (`entities.rs`,
 //! `lookup.rs`); WP-085 references, ranges, places and the written
-//! declarations (`references.rs`). Every other method answers "nothing"
-//! as the trait documents it, until WP-086 (calls) and WP-095 (keys): no
-//! expression is live, so the host never asks the methods that take one.
+//! declarations (`references.rs`); WP-086 calls and the extents of
+//! expressions (`calls.rs`): `calls_to`, `callee`, `callee_reference`,
+//! `arguments`, and `extent`, `tiers` and `place` of an expression (the
+//! live expressions are the calls and their arguments). Every other
+//! method answers "nothing" as the trait documents it, until WP-095
+//! (keys).
 //!
 //! Entities are read from Kiln's declaration arena, references from its
 //! written-reference and declaration-extent tables (`slip_kiln::written`),
@@ -30,10 +33,12 @@ use crate::subject::{
 };
 use crate::wire::{self, Errc};
 
+mod calls;
 mod entities;
 mod lookup;
 mod references;
 
+pub use calls::{CallSite, ExtentCensus, NoExtent};
 pub use references::name_token;
 
 /// Unit order (§1): `slip_kiln::ranges`' comparator (WP-084), which
@@ -69,6 +74,19 @@ pub struct KilnSubject<'u> {
     scopes: Mutex<HashMap<u32, Arc<lookup::Index>>>,
     /// References, ranges and written declarations (`references.rs`).
     names: references::Names,
+    /// The unit's tokens, for the end of a token (`calls.rs`).
+    tokens: slip_kiln::Tokens<'u>,
+    /// The unit's written references, read when the subject is made (the
+    /// unit is not kept); a reference is numbered by its index here, plus
+    /// one (`calls.rs`).
+    refs: Vec<slip_kiln::written::WrittenRef>,
+    /// The indexes in `refs` of the entries whose name starts at a
+    /// location, by the location (`calls.rs`).
+    ref_names: OnceLock<HashMap<u32, Vec<u32>>>,
+    /// The calls of the unit (`calls.rs`).
+    calls: OnceLock<calls::Index>,
+    /// The tiers of each extent of a live expression (`calls.rs`).
+    call_tiers: OnceLock<HashMap<Range, [bool; 2]>>,
 }
 
 impl std::fmt::Debug for KilnSubject<'_> {
@@ -89,7 +107,7 @@ impl<'u> KilnSubject<'u> {
     /// without Kiln's written-reference and declaration-extent tables
     /// (`ParseOptions::written`): its references cannot be told.
     pub fn new(
-        unit: &slip_kiln::Unit<'u>,
+        unit: &'u slip_kiln::Unit<'u>,
         owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
     ) -> Result<KilnSubject<'u>, String> {
         KilnSubject::from_parts(unit, |f| unit.real_path(f).map(Cow::Borrowed), owned)
@@ -101,7 +119,7 @@ impl<'u> KilnSubject<'u> {
     /// Parsed with `slip_kiln::snippet::parse_with_tables`; `Err` as for
     /// [`Self::new`].
     pub fn from_snippet(
-        p: &slip_kiln::snippet::Parsed<'u>,
+        p: &'u slip_kiln::snippet::Parsed<'u>,
         owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
     ) -> Result<KilnSubject<'u>, String> {
         KilnSubject::from_parts(
@@ -113,9 +131,10 @@ impl<'u> KilnSubject<'u> {
 
     /// The subject over `unit`, with `path`, the subject path of each of
     /// its buffers that is a file of the subject (asked once per buffer,
-    /// here).
+    /// here). It keeps the unit's AST, source manager and tokens, and
+    /// what it reads from the unit's tables, not the unit.
     fn from_parts(
-        unit: &slip_kiln::Unit<'u>,
+        unit: &'u slip_kiln::Unit<'u>,
         path: impl Fn(FileId) -> Option<Cow<'u, [u8]>>,
         owned: &'u (dyn Fn(&[u8]) -> bool + Sync),
     ) -> Result<KilnSubject<'u>, String> {
@@ -133,6 +152,11 @@ impl<'u> KilnSubject<'u> {
             files: (0..sm.file_count()).map(|_| OnceLock::new()).collect(),
             parm_owner: OnceLock::new(),
             scopes: Mutex::new(HashMap::new()),
+            tokens: unit.tokens(),
+            refs: slip_kiln::written::written_refs(unit),
+            ref_names: OnceLock::new(),
+            calls: OnceLock::new(),
+            call_tiers: OnceLock::new(),
             names: references::Names::default(),
         };
         s.names = references::Names::build(&s, unit);
@@ -208,7 +232,7 @@ impl Subject for KilnSubject<'_> {
                 self.decl(n).is_some_and(|d| self.is_declaration(d))
             }
             Value::Reference(r) => self.reference_is_live(r),
-            Value::Expression(_) => false,
+            Value::Expression(Expression(n)) => self.expression_live(n),
         }
     }
 
@@ -227,6 +251,7 @@ impl Subject for KilnSubject<'_> {
                         0
                     }
                 }
+                Value::Expression(Expression(n)) if self.is_call(n) => wire::KIND_CALL,
                 Value::Reference(_) | Value::Expression(_) => 0,
             }
     }
@@ -260,7 +285,7 @@ impl Subject for KilnSubject<'_> {
                 None => format!("declaration {n}"),
             },
             Value::Reference(r) => self.reference_display(r),
-            Value::Expression(Expression(n)) => format!("expression {n}"),
+            Value::Expression(Expression(n)) => self.expression_display(n),
         }
     }
 
@@ -319,7 +344,8 @@ impl Subject for KilnSubject<'_> {
     fn extent(&self, v: Value) -> Result<Option<Range>, Errc> {
         Ok(match v {
             Value::Reference(r) => self.reference_extent(r),
-            Value::Entity(_) | Value::Declaration(_) | Value::Expression(_) => None,
+            Value::Expression(Expression(n)) => self.expression_extent(n),
+            Value::Entity(_) | Value::Declaration(_) => None,
         })
     }
 
@@ -342,19 +368,19 @@ impl Subject for KilnSubject<'_> {
         if k & wire::KIND_FUNCTION == 0 && !template_of_function {
             return Err(Errc::WrongKind);
         }
-        Ok(Vec::new())
+        Ok(self.decl(e.0).map_or_else(Vec::new, |d| self.calls_of(self.origin_decl(d))))
     }
 
-    fn callee(&self, _x: Expression) -> Option<Entity> {
-        None
+    fn callee(&self, x: Expression) -> Option<Entity> {
+        self.callee_of(x).map(|d| Entity(d.index()))
     }
 
-    fn callee_reference(&self, _x: Expression) -> Option<Reference> {
-        None
+    fn callee_reference(&self, x: Expression) -> Option<Reference> {
+        self.callee_reference_of(x)
     }
 
-    fn arguments(&self, _x: Expression) -> Option<Vec<Expression>> {
-        None
+    fn arguments(&self, x: Expression) -> Option<Vec<Expression>> {
+        self.arguments_of(x)
     }
 
     fn unresolved_named(&self, identifier: &[u8]) -> Option<u64> {
@@ -362,7 +388,12 @@ impl Subject for KilnSubject<'_> {
     }
 
     fn tiers(&self, r: Range) -> Option<[bool; 2]> {
-        self.name_tiers(r)
+        // A range is given as a name or reference's, as an expression's, or
+        // both: the tiers at which the unit reaches it, from either.
+        match (self.name_tiers(r), self.expression_tiers(r)) {
+            (Some(a), Some(b)) => Some([a[0] || b[0], a[1] || b[1]]),
+            (a, b) => a.or(b),
+        }
     }
 
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
@@ -401,7 +432,7 @@ impl Subject for KilnSubject<'_> {
                 None => PlaceOf::Unnamed,
             },
             Value::Reference(r) => self.reference_place(r),
-            Value::Expression(_) => PlaceOf::Unnamed,
+            Value::Expression(Expression(n)) => self.expression_place(n),
         }
     }
 

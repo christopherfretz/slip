@@ -1,0 +1,4 @@
+spec: edits.md §9.4 row 2 (T::f, x.f, x->f instantiated with subjects only: replace with a literal piece and a changed entry each), WP-073 part D
+from: n::S::f
+to: g
+kind: function

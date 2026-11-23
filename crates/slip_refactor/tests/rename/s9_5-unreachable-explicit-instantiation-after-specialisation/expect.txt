@@ -1,0 +1,10 @@
+# pending
+# needs: Kiln to record an explicit instantiation of a member that follows the member's explicit specialisation (at the pin it warns sema_explicit_inst_after_spec_ignored and records nothing: no declaration, no extent row, no member-specialisation kind; kiln/crates/kiln_sema/src/templ/funcs.rs:1692-1701, before update_member_spec at :1733; spec/landed/edits/WP-073.md, For Kiln); until then the follower is unsupported only and the token at 3:23 has no claim
+subjects:
+  32ae9afe seed - rule=yes n::S::f()
+  fc2d99d6 follower unsupported|unreachable rule=yes n::S<int>::f() of=32ae9afe
+links:
+claims:
+  main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]
+  main.cpp:2:26+1 replace "g" t0 votes=1 none [32ae9afe]
+changed:

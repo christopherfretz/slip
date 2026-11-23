@@ -24,17 +24,26 @@ argument.
   that begins with a comma (`-opt=,a`) gave the empty first element
   before and does not now. Overload resolution is the same (of
   `find(char, size_t)` and `find(StringRef, size_t)` only the first is
-  viable for a `char`); only the argument differs. The
-  call at line 619 changes the same way; the expected line is the first.
+  viable for a `char`); only the argument differs. The call at line 619
+  changes the same way. **Its unit is not `changed`**: a use of a default
+  argument writes which parameter's default it is, not the expression
+  (`spec/digest.md` §6; `spec/pitfalls.md` E10), so the one finding is on
+  the function whose default it is. Check 4 below shows what the finding
+  stands for.
 
-The other calls in `lib/Support` that leave `From` out change too
-(`CommandLine.cpp:501`, in `CommandLineParser::LookupOption`, and
-`Regex.cpp:174`, in `Regex::sub`), and so does any inline function of a
-header that does (none of `StringRef.h`'s own members does: `contains`
-and `split` take other routes): the report may have more findings than
-the two lines, and `expect.txt` makes no claim about them. The caller
-named is the one whose name has no class of an unnamed namespace and no
-`std` type in it.
+The other calls in `lib/Support` that leave `From` out change in the
+same way (`CommandLine.cpp:501`, in `CommandLineParser::LookupOption`,
+and `Regex.cpp:174`, in `Regex::sub`); none is a finding, for the same
+reason.
+
+## Ruling (supervisor, 2026-11-23)
+
+`expect.txt` first held a second line, `changed` the caller at
+`CommandLine.cpp:610`. The first run on the corpus reported the member
+and not the caller, which is what `spec/pitfalls.md` E10 and
+`spec/digest.md` §6 say (both older than this case): the line was the
+case's mistake, and is removed. Which callers rely on a changed default
+is a question for a query over the calls, not for the verdict.
 
 ## Checks
 

@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (a member defined outside its class template; the follower asked of every declaration), WP-073 part C
+from: n::S::f
+to: g
+kind: function
