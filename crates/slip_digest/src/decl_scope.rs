@@ -100,6 +100,20 @@ pub(crate) fn file_scope_asm(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     }
 }
 
+/// `ColdDeclData` `contracts` of `d`: `child*`, in order (Kiln's
+/// `Ast::function_contracts`).
+pub(crate) fn contracts(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let ast = w.ast;
+    let stmts: Vec<StmtId> = ast
+        .function_contracts(d)
+        .map(|l| ast.lists.iter::<StmtId>(l).collect())
+        .unwrap_or_default();
+    s.count(stmts.len());
+    for st in stmts {
+        crate::stmt::child(w, s, st);
+    }
+}
+
 /// The rows of `ColdDeclData` (§5.7) for the declaration `d` the walk
 /// reads, in table order. An absent entry writes the empty form of the
 /// row's encoding; `out`, `demand` and `keyed` rows write nothing.
@@ -190,14 +204,15 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     } else {
         class_definition(w, s, d);
     }
-    // contracts: child*, in order (Kiln's `Ast::function_contracts`).
-    let stmts: Vec<StmtId> = ast
-        .function_contracts(d)
-        .map(|l| ast.lists.iter::<StmtId>(l).collect())
-        .unwrap_or_default();
-    s.count(stmts.len());
-    for st in stmts {
-        crate::stmt::child(w, s, st);
+    // contracts: child*, in order (Kiln's `Ast::function_contracts`). In
+    // `definition` for the definition class (§11.9): Kiln installs an
+    // instantiation's contracts with its definition
+    // (`install_instantiated_contracts`, `kiln_sema/src/contracts.rs:681`);
+    // their empty form here.
+    if definition_class {
+        s.count(0);
+    } else {
+        contracts(w, s, d);
     }
     // asm_label: string?, on the first declaration.
     match from_chain(asm_label, &chain) {

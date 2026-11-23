@@ -489,7 +489,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         (GroupClass::Tu, Vec::new())
     } else {
         match class {
-            UnitClass::Declared => (GroupClass::Declared, w.file_of(w.representative(e))),
+            UnitClass::Declared => (GroupClass::Declared, declared_file(w, e)),
             UnitClass::Derived | UnitClass::OnDemand => (GroupClass::Derived, origin_file(w, read)),
         }
     };
@@ -595,6 +595,32 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         file: Vec::new(),
         resolved: None,
     }
+}
+
+/// The file whose declared group holds the declared unit of `e`: that of
+/// its first written declaration, except for an instantiated entity (an
+/// effective kind of an instantiation, §11.10) that is a member of a
+/// specialisation or a function: Kiln moves such a function to the
+/// pattern's definition when it instantiates the definition
+/// (`relocate_to_pattern_definition`, `kiln_ast/src/templates.rs:1989`,
+/// called at `kiln_sema/src/templ/class.rs:1597` and `:1700`), so its
+/// file is the file of the declaration it was instantiated from
+/// (`origin_file`), whether or not the definition was instantiated
+/// (digest-kinds §11.1).
+pub(crate) fn declared_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
+    let ast = w.ast;
+    let instantiated = matches!(
+        crate::demand::effective_kind(w, e),
+        Some(
+            SpecKind::ImplicitInstantiation
+                | SpecKind::ExplicitInstantiationDeclaration
+                | SpecKind::ExplicitInstantiationDefinition
+        )
+    );
+    if instantiated && (ast.member_spec_info(e).is_some() || ast.decls.function(e).is_some()) {
+        return origin_file(w, e);
+    }
+    w.file_of(w.representative(e))
 }
 
 /// The file whose derived group holds a derived unit: that of the first

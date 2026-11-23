@@ -559,6 +559,37 @@ fn kind_row(kind: AttrKind) -> Option<&'static KindRow> {
     KINDS.iter().find(|r| r.kind == kind)
 }
 
+/// The attribute kinds Kiln copies onto a function from the pattern's
+/// definition when it instantiates the definition: `weak` from an
+/// out-of-line member definition (`kiln_sema/src/templ/class.rs:1603-1615`),
+/// `#pragma clang section` from any definition (`clone_clang_sections`,
+/// `kiln_sema/src/section.rs:204`, called at `templ/class.rs:2313` and
+/// `templ/funcs.rs:365`). Kiln does not mark the copies, so for the
+/// definition class every node of these kinds is `definition`'s.
+const COPIED_AT_DEFINITION: [AttrKind; 2] = [AttrKind::WEAK, AttrKind::PRAGMA_CLANG_SECTION];
+
+/// The nodes of the kinds of [`COPIED_AT_DEFINITION`] over the chain of
+/// function `e` (every declaration, `definition`'s state), for the
+/// resolved unit `definition` (§11.9): `count`, then each node.
+pub(crate) fn definition_attrs(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
+    let ast = w.ast;
+    let mut chain = w.redecls(e);
+    chain.reverse();
+    let mut nodes: Vec<AttrNode> = Vec::new();
+    for &x in &chain {
+        for a in attr_ids(w, s, ast.attrs.of_decl(x)) {
+            let n = *ast.attrs.get(a);
+            if n.flags & INHERITED == 0 && COPIED_AT_DEFINITION.contains(&n.kind) {
+                nodes.push(n);
+            }
+        }
+    }
+    s.count(nodes.len());
+    for n in &nodes {
+        attr_node(w, s, n);
+    }
+}
+
 /// The row `decl_attrs` of `AttrArena` (`attrs`, §10.1) and the rows of
 /// `AnnotArena` (§10.5) for `d`: the attributes and annotations of every
 /// declaration of `d`'s chain, first to last.
@@ -568,11 +599,17 @@ pub(crate) fn decl_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     chain.reverse();
     // AttrArena `decl_attrs`: the nodes of every declaration, in chain
     // order and stored order, without the `inherited` copies.
+    // For a function of the definition class, the kinds Kiln copies
+    // from the pattern's definition when it instantiates the definition
+    // are `definition`'s (`definition_attrs`, §11.9).
+    let moved = !w.unit.definition
+        && ast.decls.function(d).is_some()
+        && crate::demand::definition_class(w, w.entity(d));
     let mut nodes: Vec<AttrNode> = Vec::new();
     for &x in &chain {
         for a in attr_ids(w, s, ast.attrs.of_decl(x)) {
             let n = *ast.attrs.get(a);
-            if n.flags & INHERITED == 0 {
+            if n.flags & INHERITED == 0 && !(moved && COPIED_AT_DEFINITION.contains(&n.kind)) {
                 nodes.push(n);
             }
         }

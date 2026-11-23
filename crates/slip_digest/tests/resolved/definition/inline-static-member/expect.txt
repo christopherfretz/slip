@@ -1,5 +1,5 @@
-# A<int>::c: its `eval` is pending on use (VarData eval, WP-046).
-changed A<int>::c
+# A<int>::c: its own unit reads no eval state (digest-kinds §11.9), so it
+# does not move with the use.
 present A<int>::<definition>
 resolved A<int>::c::<definition>
 resolved A<int>::s::<definition>

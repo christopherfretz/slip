@@ -5510,7 +5510,51 @@ The numbers are Slip's own and are never reused.
 | 8 | `definition` | an entity of the definition class, or one whose definition an instantiation added outside its class (§11.9) | the rows §11.9 lists, in its order |
 
 A resolved unit `default_immediates` has a discriminator: the index of
-the parameter as `uv`, absent for a field.
+the parameter as `uv`, absent for a field. A discriminator is encoded as
+the digest of a stream holding that `uv` alone, finished with the
+discriminator tag `slip.disc.v1` (`DISC_TAG`), as the discriminator of
+any key (§3.3); no other resolved
+property has one.
+
+How a resolved unit is written (`demand::write_resolved`), for a
+re-implementer:
+
+- **Its stream** starts from a fresh unit state: no local entity is
+  numbered, no expression state carries over from the owner's own
+  stream, and the walk's state is put back afterwards. Local entities
+  met in it (a function's parameters, the body's locals) are numbered in
+  it from zero. Nothing of the owner's stream is replayed into it.
+- **Its key** is `{resolved, Parent::Unit(<owner's key id>),
+  property(<number>), <discriminator>}`, with the rule table's mapping
+  applied as for every key. A unit record computes it again from the
+  owner's key and the property (`demand::part_key`).
+- **Its cause** is the cause of its stream merged with the cause the
+  owner's key carries (an entity whose key is indeterminate makes every
+  resolved unit of it indeterminate), as a key's cause passes to its
+  children.
+- **Its file** is the origin file of the entity the owner's unit is read
+  from (`units::origin_file`: through `SpecInfo` `template` and
+  `MemberSpecInfo` `instantiated_from` to the first declaration of what
+  the entity was instantiated from); a namespace's resolved unit, of the
+  `tu` group, has none. It is a derived unit, whatever the owner's
+  class (digest §2.2).
+
+**A unit's file and instantiation.** The file of the declared unit of
+an entity whose effective kind (§11.10) is an instantiation and which is
+a member of a specialisation or a function is the origin file as above,
+never the file of the location the instantiation holds now: Kiln moves
+such a function to the pattern's definition when it instantiates the
+definition (`relocate_to_pattern_definition`,
+`kiln_ast/src/templates.rs:1989`, called at
+`kiln_sema/src/templ/class.rs:1597` and `:1700`), so the location
+depends on whether the definition was instantiated. A class or variable
+specialisation (with its own `SpecInfo`) keeps the file of its first
+declaration (`units::declared_file`): Kiln moves only an implicit
+instantiation of a class to its pattern's definition when it defines it
+(`relocate_spec`, `kiln_sema/src/templ/class.rs:1311`; an explicit
+instantiation stays at its own template-name), and the unit of an
+implicit instantiation is derived, whose file is the origin file
+already (digest §11).
 
 ### 11.2 Deferred exception specifications
 
@@ -5705,7 +5749,15 @@ from the definition (§2.3 reads the definition otherwise), and its own
 stream reads none of the declarations an instantiation makes out of line
 for a member (`units::instantiated_out_of_line`: the definition Kiln
 makes at namespace scope when a static data member of an instantiation
-is used, `kiln_sema/src/templ/class.rs:1943`). For such a unit the rows
+is used, `kiln_sema/src/templ/class.rs:1943`). Exactly, a declaration
+`d` is instantiated out of line when all of these hold: its semantic
+context is a class; it has a lexical context, which is not its semantic
+context and is not a class (a friend's lexical context is the befriending
+class: a friend is never out of line); and it was made by instantiation
+(`templ::instantiated_declaration`: its `SpecInfo` kind, else its own or
+its entity's `MemberSpecInfo` kind unless that is
+`ExplicitSpecialization`, else the kind governing its lexical context,
+is one of the three instantiation kinds). For such a unit the rows
 below write their empty form in the unit's own stream, without a cause;
 `DeclMisc` `0-definition` is written clear and is in no stream: that
 `definition` exists says it. The rows are written, in the order given,
@@ -5714,8 +5766,8 @@ in the resolved unit `definition` (§11.1):
 | Entity | Rows of `definition`, in order |
 |---|---|
 | every entity with a `SpecInfo` | `SpecInfo` `from`, `from_args` |
-| a function | its parameters (`FunctionData` `params`), as the own unit writes them, so that the body's local entities are numbered in this stream; `FunctionData` `body`; `ColdDeclData` `ctor_inits`; one flag word: `FnSpec` `0-is-coroutine`, `0-escalated`; and, when the pattern's declared return type holds a placeholder, `DeclNode` `ty-type` and one flag word: `FnSpec` `0-return-deduced` |
-| a variable | `VarData` `init`; `VarSpec` `0-init-style`; one flag word: `0-inline`, `0-inline-implied`; and, when the pattern's declared type holds a placeholder, `DeclNode` `ty-type` |
+| a function | its parameters (`FunctionData` `params`), as the own unit writes them, so that the body's local entities are numbered in this stream; `FunctionData` `body`; `ColdDeclData` `ctor_inits`; one flag word: `FnSpec` `0-implicit-inline` (clear if any declaration is `inline`), `0-has-contracts`, `0-is-coroutine`, `0-escalated`; `ColdDeclData` `contracts` of the defining declaration (a count, then each as `child`); the attributes of kinds `WEAK` and `PRAGMA_CLANG_SECTION` over the declarations, last first, not inherited (a count, then each as the own unit writes an attribute); and, when the pattern's declared return type holds a placeholder, `DeclNode` `ty-type` and one flag word: `FnSpec` `0-return-deduced` |
+| a variable | `VarData` `init`; `VarSpec` `0-init-style`; one flag word: `0-inline`, `0-inline-implied`; and, when the pattern's declared type holds a placeholder or the own unit's type (of the earliest written declaration) is an array of unknown bound, `DeclNode` `ty-type` of the defining declaration |
 | a class | `RecordData` `members-fields`, `members-virtual`, `members-other`, `bases`, `defn`; `ColdDeclData` `friends`, `record_pack` |
 | an enumeration | `EnumData` `members`, `int_type`, `promotion_type`; one flag word: `flags-fixed`, `flags-complete` |
 
@@ -5736,8 +5788,14 @@ holds the definition at the end of the translation unit.
   `set_body`, `kiln_ast/src/builder.rs:907`), if that declaration has a
   body. A function deleted on its first declaration is not defined by
   that: `= delete` is a fact of the declaration.
-- A variable: the first declaration, over every declaration Kiln
-  chained, that is a definition (`units::is_var_definition`, Kiln's
+- A variable: none while the pattern (as for the placeholder below) has
+  a declaration with an initialiser and no declaration of the variable
+  holds one: Kiln declares `v<int>` when it is named
+  (`decltype(v<int>)`) and instantiates its initialiser only when it is
+  used (`instantiate_var_spec_init`, `kiln_sema/src/templ/var.rs:229`;
+  `instantiate_static_member_init`, `kiln_sema/src/templ/class.rs:2061`),
+  and only then is the declaration a definition. Otherwise the first
+  declaration, over every declaration Kiln chained, that is a definition (`units::is_var_definition`, Kiln's
   `Sema::is_var_definition`), else the one that holds an initialiser (an
   in-class `static const int x = 1;` of an instantiation, whose
   initialiser Kiln substitutes on use, `subst_static_member_init`).
@@ -5772,6 +5830,66 @@ class variable, are set when the initialiser is checked, with the
 declaration or with the instantiation of the initialiser; `0-nrvo` is
 set when the variable's scope ends, inside the body that holds it. The
 Oven sets no `VarSpec` bit.
+
+**The principle.** For the definition class, the own unit holds only
+what instantiating the *declaration* determines. Everything Kiln writes
+onto a declaration when it instantiates the *definition* is read only by
+`definition`, or by no unit when it is no fact of the program. A row
+whose value Kiln sets both when it instantiates the declaration and when
+it instantiates the definition, without recording which, is read only by
+`definition` for the class, and the own unit writes it clear: that is
+`FnSpec` `0-implicit-inline`, set by `function_decl`
+(`templ/subst/decls.rs:1044`) and by `enter_definition_scopes`. Where
+Kiln copies onto the declaration something a written declaration could
+also carry (an attribute), and does not mark the copy, every node of
+that kind is `definition`'s. The writes, at
+Kiln's pin (`kiln_sema/src/` unless a crate is named):
+
+| Write at definition instantiation | Where | Read by |
+|---|---|---|
+| `SpecInfo` `from` re-pointed to the friend's template definition | `templ/class.rs:1578` | `definition` (`SpecInfo` row) |
+| location and `declarator_end` moved to the pattern's definition | `templ/class.rs:1597`, `:1700`; `kiln_ast/src/templates.rs:1989` | no unit: locations are not hashed, and a unit's file never reads it (§11.1) |
+| `WEAK` copied from the out-of-line definition | `templ/class.rs:1603-1615` | `definition` (attributes); left out of the own unit's list |
+| `PRAGMA_CLANG_SECTION` kinds copied when absent | `section.rs:204`, called at `templ/class.rs:2313`, `templ/funcs.rs:365` | `definition` (attributes) |
+| `MemberSpecInfo` / `SpecInfo` `point_of_instantiation` | `templ/class.rs:1634-1635`, `templ/funcs.rs:359-360` | no unit (a location) |
+| parameters renamed from the pattern's definition | `templ/pack.rs:629`, `templ/funcs.rs:394` | `definition` (parameters, by ordinal: names of locals are not hashed) |
+| `FnSpec` `0-implicit-inline` | `class/members.rs:906`, `:921` (`enter_definition_scopes`) | `definition` |
+| `DeclFlags` `0-invalid` when the definition fails | `templ/class.rs:2377`, `templ/funcs.rs:452` | indeterminate wherever read (§12): the translation unit did not compile |
+| `ColdDeclData` `ctor_inits` | `Substituter::function_def`, `templ/class.rs:2310` | `definition` |
+| `FunctionData` `body`, `Ast::definition` | `act_on_finish_function_def`, `decl.rs:9806`; `kiln_ast/src/builder.rs:907` | `definition` |
+| `ColdDeclData` `contracts`, `FnSpec` `0-has-contracts` | `contracts.rs:681-687` | `definition` |
+| `FnSpec` `0-is-coroutine`, `0-escalated`, `0-return-deduced`, deduced `ty` | `coroutine.rs:202`, `consteval.rs:1617`, `deduce.rs:789` | `definition` |
+| `ColdDeclData` `dtor_delete`, vtable marks | `act_on_finish_function_def` (`check_destructor_delete`) | resolved `dtor_delete` (§11.1); marks are in no unit (§11.8) |
+| `VarData` `init`, `VarSpec` `0-init-style` | `templ/subst/decls.rs:401` (`var_init`), `templ/class.rs:2061` | `definition` |
+| `VarSpec` `0-inline`, `0-inline-implied` | `templ/class.rs:2061` | `definition` |
+| a variable's type deduced or its array bound completed | `var_init` (`act_on_init`) | `definition` (`ty-type`, by the rule of the table) |
+| a variable's `eval` state | `var_init`, and every constant evaluation | no own unit of the class: see below |
+| a static data member's namespace-scope definition | `templ/class.rs:1943` | `definition` only (left out by `instantiated_out_of_line`) |
+| a class's members, bases, `defn`, friends, record pack; `point_of_instantiation` | `instantiate_class_as`, `templ/class.rs:1198`, `:1294-1295`; `DeclFlags` `0-invalid` at `:1229` | `definition`; the location in no unit |
+
+The `FnSpec::LATE` bits (`kiln_ast/src/decl.rs:818`) that are not in
+this table are not definition writes: `0-not-selected` is set when the
+class is completed (`class/prospective.rs:75`, `:143`), `0-deleted`,
+`0-defaulted`, `0-trivial` and `0-constexpr-kind` of an implicit or
+defaulted member when it is declared or its class is completed
+(`class/implicit.rs:877`, `:1584`, `class/special/mod.rs:408-467`,
+`class/deletion.rs:969`, `:984`, `class/inhctor.rs:76`, `:83`,
+`compare/default.rs:104`, `:417`, `:471`), and `0-implicit-inline` at
+`templ/subst/decls.rs:1044` is set when the declaration is instantiated.
+
+**Evaluated values.** `VarData` `eval` writes no row in any unit: its
+states only make a unit pending (`Value`, `NotConstant`, or
+`NotEvaluated` with an initialiser: the value is the resolved unit
+`value`'s, §11.3) or indeterminate (`Evaluating`). The own unit of a
+variable of the class reads no `eval` state at all, and takes neither
+mark from it. This is sound: the value is a function of the initialiser,
+which is `definition`'s, and of the entities the initialiser names,
+which have units of their own, so a difference of the value is a
+difference of one of those units; and the value as a fact is the
+resolved unit `value`, a part of its own, never a row of the own unit.
+Reading `eval` in the own unit would make it depend on whether some use
+had evaluated the initialiser (a constant expression, a `static_assert`,
+a template argument).
 
 A class template specialisation of the class that has no definition
 (the instantiation failed, or it was only named) has a unit and no

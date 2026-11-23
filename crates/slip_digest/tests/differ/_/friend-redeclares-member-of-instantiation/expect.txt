@@ -1,0 +1,7 @@
+exact derived
+derived-changed C<int>::m()
+changed A
+added A::<friend>
+added C::m()
+derived-changed A<int>::<definition>
+derived-added A::<friend>

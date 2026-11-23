@@ -4,6 +4,4 @@
 template <class T> T v = T(2);
 #ifdef B
 int h() { return v<int>; }
-#else
-int h() { return 0; }
 #endif

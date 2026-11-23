@@ -96,6 +96,31 @@ impl Property {
     }
 }
 
+/// The mapped `Key` of the written resolved unit `u`, computed again from
+/// `entity`, the mapped key of its entity, as [`write_resolved`] builds
+/// it; `None` for a unit that is not a resolved one (its key is
+/// `entity`). For unit records (`records.rs`); hashes into no unit.
+/// WP-046 has the same function, which also handles `default_argument`
+/// units: whichever of the two merges second keeps WP-046's.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "WP-046's signature, which consumes `entity`; the second to merge keeps that one"
+)]
+pub(crate) fn part_key(w: &Walk<'_>, entity: Key, u: &Written) -> Option<Key> {
+    let r = u.resolved?;
+    let disc = r.disc.map(|n| {
+        let mut ds = Stream::new();
+        ds.uv(n);
+        ds.finish(DISC_TAG).digest
+    });
+    Some(w.rules.map(Key {
+        kind: KeyKind::Resolved,
+        parent: Parent::Unit(entity.id()),
+        name: Name::Property(u64::from(r.property.number())),
+        disc,
+    }))
+}
+
 /// What makes a written unit a resolved one (`Written::resolved`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Resolved {
@@ -267,9 +292,22 @@ pub(crate) fn defining_declaration(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
             .filter(|&d| !w.is_local_extern(d) && !crate::units::in_templated_body(w, d))
             .collect();
         chain.reverse();
-        return chain.iter().copied().find(|&d| crate::units::is_var_definition(w, d)).or_else(
-            || chain.iter().copied().find(|&d| ast.decls.var(d).is_some_and(|v| v.init.is_some())),
-        );
+        let has_init = |d: DeclId| ast.decls.var(d).is_some_and(|v| v.init.is_some());
+        // A variable whose pattern has an initialiser is defined once Kiln
+        // has instantiated the initialiser, not before: Kiln makes the
+        // declaration of a specialisation or of an inline static member
+        // before its initialiser (`kiln_sema/src/templ/var.rs:229`,
+        // `templ/class.rs:2061`).
+        if pattern_of(w, e).is_some_and(|p| ast.redecls_of(p).any(has_init))
+            && !chain.iter().copied().any(has_init)
+        {
+            return None;
+        }
+        return chain
+            .iter()
+            .copied()
+            .find(|&d| crate::units::is_var_definition(w, d))
+            .or_else(|| chain.iter().copied().find(|&d| has_init(d)));
     }
     if ast.decls.record(rep).is_some() || ast.decls.enumeration(rep).is_some() {
         return ast.definition(rep);
@@ -286,13 +324,21 @@ pub(crate) fn defining_declaration(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
 /// not instantiated from a pattern.
 pub(crate) fn pattern_holds_placeholder(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
+    let Some(p) = pattern_of(w, e) else { return false };
+    ast.redecls_of(p).any(|r| ast.decls.get(r).ty().is_some_and(|q| holds_placeholder(w, q)))
+}
+
+/// The pattern entity `e` is instantiated from: the pattern of its
+/// template for a specialisation (not the partial specialisation or the
+/// definition `SpecInfo` `from` names, which Kiln sets on use), the
+/// member it was instantiated from for a member of a specialisation.
+fn pattern_of(w: &Walk<'_>, e: DeclId) -> Option<DeclId> {
+    let ast = w.ast;
     let e = w.entity(e);
-    let pattern = match ast.spec_info(e) {
+    match ast.spec_info(e) {
         Some((_, i)) => ast.template_info(i.template).and_then(|t| t.pattern),
         None => ast.member_spec_info(e).map(|(_, i)| i.instantiated_from),
-    };
-    let Some(p) = pattern else { return false };
-    ast.redecls_of(p).any(|r| ast.decls.get(r).ty().is_some_and(|q| holds_placeholder(w, q)))
+    }
 }
 
 /// Whether type `q` holds a placeholder, walked as Kiln's

@@ -1,0 +1,4 @@
+# The initialiser of S<N::A>::x is instantiated at the use in h() and
+# is definition's (digest-kinds §11.9); nothing else differs.
+exact derived
+derived-changed S<A>::x::<definition>

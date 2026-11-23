@@ -1,0 +1,4 @@
+# The own unit differs too: it reads every written declaration of f,
+# the friend's in A included (digest §2.2, WP-032 rule 4).
+changed f(int)
+changed f(int)::<definition>

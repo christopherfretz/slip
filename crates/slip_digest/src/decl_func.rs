@@ -113,8 +113,11 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
     let any = |f: fn(FnSpec) -> bool| specs.iter().any(|&x| f(x));
     let inline = any(FnSpec::is_inline);
     // A declaration after an `inline` one is marked implicitly inline by
-    // Kiln: that mark says nothing a written `inline` does not.
-    let implicit_inline = !inline && any(FnSpec::implicit_inline);
+    // Kiln: that mark says nothing a written `inline` does not. For the
+    // definition class, Kiln sets it when it instantiates the definition
+    // (`enter_definition_scopes`, `kiln_sema/src/class/members.rs:902-907`):
+    // `definition`'s, its empty form here (§11.9).
+    let implicit_inline = !inline && any(FnSpec::implicit_inline) && !definition_class;
     let (mut any_constexpr, mut any_consteval) = (false, false);
     for x in &specs {
         match x.constexpr_kind() {
@@ -139,7 +142,7 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
         FnStorage::Static => FnStorage::Static,
         FnStorage::None | FnStorage::Extern => {
             let any_extern = specs.iter().any(|x| x.storage() == FnStorage::Extern);
-            if any_extern && (inline || any(FnSpec::implicit_inline)) {
+            if any_extern && (inline || (!definition_class && any(FnSpec::implicit_inline))) {
                 FnStorage::Extern
             } else {
                 FnStorage::None
@@ -149,7 +152,9 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
     s.tag(fn_storage::row(&storage));
     // In `definition` for the definition class (§11.9), their empty form
     // here: `0-escalated` and `0-is-coroutine`, which the analysis of the
-    // body sets; `0-return-deduced` for an instantiation, whose return
+    // body sets; `0-has-contracts`, which Kiln sets when it instantiates
+    // the definition's contracts (`install_instantiated_contracts`,
+    // `kiln_sema/src/contracts.rs:681-687`); `0-return-deduced` for an instantiation, whose return
     // type is deduced when its body is instantiated (a function defaulted
     // on its first declaration deduces at the class's end).
     let from_body = |v: bool| v && !definition_class;
@@ -165,7 +170,7 @@ fn fn_spec(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, spec: FnSpec, definition
             .bit(any(FnSpec::is_explicit))
             .bit(any(FnSpec::is_trivial))
             .bit(any(FnSpec::immediate_escalating))
-            .bit(any(FnSpec::has_contracts))
+            .bit(from_body(any(FnSpec::has_contracts)))
             .bit(from_body(any(FnSpec::is_coroutine)))
             .bit(from_body(any(FnSpec::escalated)))
             .bit(any(FnSpec::is_variadic))
@@ -248,22 +253,27 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     };
     var_spec(w, s, e, spec, style, definition_class);
     // eval: demand, the resolved unit `value` (§11.3). Only a state that
-    // cannot outlive the translation unit is read here.
-    match eval.state() {
-        VarEvalState::Evaluating => {
-            s.indeterminate(EVALUATING);
-        }
-        // What Kiln found is the resolved unit's, not yet written.
-        VarEvalState::NotConstant | VarEvalState::Value(_) => {
-            s.pending(Area::Demand);
-        }
-        // Not evaluated yet: with an initialiser, the value is still the
-        // resolved unit's, whenever Kiln evaluates it (it evaluates an
-        // out-of-line `const int S::x = 1;` at once, the in-class
-        // `static const int x = 1;` later).
-        VarEvalState::NotEvaluated => {
-            if init.is_some() && !definition_class {
+    // cannot outlive the translation unit is read here. For the
+    // definition class nothing of it is read, not even whether Kiln
+    // evaluated: Kiln evaluates with the instantiated initialiser, on
+    // use (§11.9).
+    if !definition_class {
+        match eval.state() {
+            VarEvalState::Evaluating => {
+                s.indeterminate(EVALUATING);
+            }
+            // What Kiln found is the resolved unit's, not yet written.
+            VarEvalState::NotConstant | VarEvalState::Value(_) => {
                 s.pending(Area::Demand);
+            }
+            // Not evaluated yet: with an initialiser, the value is still the
+            // resolved unit's, whenever Kiln evaluates it (it evaluates an
+            // out-of-line `const int S::x = 1;` at once, the in-class
+            // `static const int x = 1;` later).
+            VarEvalState::NotEvaluated => {
+                if init.is_some() {
+                    s.pending(Area::Demand);
+                }
             }
         }
     }
@@ -500,7 +510,16 @@ pub(crate) fn function_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, d
         specs.push(f.spec);
     }
     let any = |f: fn(FnSpec) -> bool| specs.iter().any(|&x| f(x));
-    s.flags(FlagWord::new().bit(any(FnSpec::is_coroutine)).bit(any(FnSpec::escalated)));
+    let inline = any(FnSpec::is_inline);
+    s.flags(
+        FlagWord::new()
+            .bit(!inline && any(FnSpec::implicit_inline))
+            .bit(any(FnSpec::has_contracts))
+            .bit(any(FnSpec::is_coroutine))
+            .bit(any(FnSpec::escalated)),
+    );
+    crate::decl_scope::contracts(w, s, def);
+    crate::attrs::definition_attrs(w, s, e);
     if crate::demand::pattern_holds_placeholder(w, e) {
         match ast.decls.get(def).ty() {
             Some(ty) => {
@@ -548,7 +567,14 @@ pub(crate) fn var_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: D
     let inline = specs.iter().any(|x| x.is_inline());
     let inline_implied = inline && specs.iter().all(|x| !x.is_inline() || x.is_inline_implied());
     s.flags(FlagWord::new().bit(inline).bit(inline_implied));
-    if crate::demand::pattern_holds_placeholder(w, e) {
+    // The type: when the pattern's declared type holds a placeholder, or
+    // when the own unit's is an array of unknown bound (the in-class
+    // declaration of a static data member, completed by the instantiated
+    // out-of-line definition, which the own unit does not read).
+    let rep_ty = ast.decls.get(w.representative(e)).ty();
+    let incomplete =
+        rep_ty.is_some_and(|q| ast.types.canonical_kind(q) == TypeKind::IncompleteArray);
+    if crate::demand::pattern_holds_placeholder(w, e) || incomplete {
         match var_type(w, def, e) {
             Some(ty) => {
                 s.opt(true);

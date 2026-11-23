@@ -327,6 +327,12 @@ both have and that differs: the same specialisation instantiated to
 something else is exactly how a dependent name that resolves differently
 shows up ([03](../docs/design/03-equivalence.md) §7 row 6), and no declared
 unit need differ then.
+The same holds of what an instantiation's definition adds: the fields,
+bases and other members of an instantiated class, a function's body, a
+variable's initialiser are rows of the entity's resolved unit
+`definition`, a derived unit (`digest.md` §2.2), so a field or base that
+differs shows as a difference of a derived unit both parses have, not
+of the declared unit of the instantiation or of its class.
 
 This argument assumes the front end's demand is a function of the program.
 The demand-independence test of `digest.md` §14 is what checks it.

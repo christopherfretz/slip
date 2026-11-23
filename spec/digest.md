@@ -132,9 +132,11 @@ and **derived** otherwise. Derived units are:
 - a builtin function or type Kiln declares on first use;
 - the object of a class-type constant used as a template argument, keyed
   by its content;
-- a **resolved property** of a declared unit (kind `resolved`, parent the
-  unit it belongs to, name the property): a fact Kiln computes for a
-  declaration only when something needs it. Present only if computed.
+- a **resolved property** of a unit, declared or derived (kind
+  `resolved`, parent the unit it belongs to, its *owner*, name the
+  property): a fact Kiln computes for a declaration only when something
+  needs it. Present only if computed. It is a derived unit whatever its
+  owner is (`digest-kinds.md` §11.1).
   The **definition** of an entity Kiln may define on use is one of these
   (the *definition class*, `digest-kinds.md` §11.9: an implicit
   instantiation, a specialisation named by an explicit instantiation
@@ -146,9 +148,12 @@ and **derived** otherwise. Derived units are:
   (the body, the initialiser, a deduced type, the pattern a class was
   instantiated from, a class's members). Otherwise a use added in one
   function would change the digest of every instantiation it is the
-  first to define, against rule 5 of §1. Its unit is then derived or
-  declared as the entity is: `definition` of a member of an explicit
-  instantiation belongs to a declared unit.
+  first to define, against rule 5 of §1. The entity's own unit is
+  derived or declared as the entity is (the own unit of a member of an
+  explicit instantiation is declared); its `definition` is derived in
+  every case, so a difference in it is reported when both parses have
+  it and differ (`verify.md` §4), and a `definition` on one side only is
+  not a difference by itself.
 
 A declaration is **instantiated outside its class** when its lexical
 context is an implicitly instantiated class specialisation or a member of

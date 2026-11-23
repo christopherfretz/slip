@@ -1,9 +1,6 @@
-# pending
-# needs: demand
-# t<int>'s FnSpec (an inline bit, FnSpec(8) against FnSpec(0)) comes from the definition it is
-# instantiated from (side B: the friend's, defined in its class): a fact of
-# the definition. WP-045's table of digest-kinds §11.9 moves no FnSpec bit
-# but is_coroutine and escalated, so the own unit of t<int> (of the
-# definition class) still differs: reported at WP-045's handback, for a
-# decision on moving FnSpec `inline` (decl_func.rs `fn_spec`).
+# On side B Kiln instantiates t<int>'s definition from the friend's and
+# sets FnSpec `0-implicit-inline` (bit 3, FnSpec(8) against FnSpec(0)) on
+# its declaration (enter_definition_scopes, kiln_sema class/members.rs:906):
+# a write of definition instantiation, which digest-kinds §11.9 reads in
+# `definition` only, so t<int>'s own unit does not move.
 added make()

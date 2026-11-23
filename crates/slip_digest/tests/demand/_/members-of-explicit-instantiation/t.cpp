@@ -7,6 +7,4 @@ template <class T> int X<T>::s = 0;
 template struct X<int>;
 #ifdef B
 void use() { X<int> v; v.f(); (void)X<int>::s; }
-#else
-void use() {}
 #endif
