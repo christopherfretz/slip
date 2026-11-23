@@ -14,6 +14,7 @@
 #![allow(dead_code, reason = "each runner uses a part")]
 
 pub mod pairs;
+pub mod rules;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -286,6 +287,58 @@ pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Dig
     Ok(Digested { output, units, errors, diagnostics })
 }
 
+/// Parses one side of the test in `dir` as [`digest_side_with`] does and
+/// runs `f` on its input, on the walk's stack, so that a runner can walk
+/// one parse several times (WP-103: records, and the post-image under
+/// several tables). An error of the side is an `Err` as there.
+pub fn with_side<R: Send>(
+    dir: &Path,
+    side: Side,
+    f: impl FnOnce(&Input<'_>) -> R + Send,
+) -> Result<R, String> {
+    let (list, head) = side_files(&files(dir)?, side)?;
+    let refs: Vec<(&str, &str)> = list.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let snippet = slip_kiln::snippet::Snippet {
+        files: &refs,
+        main: "main.cpp",
+        include: &[""],
+        std: &head.std,
+    };
+    let args: Vec<&str> = head.args.iter().map(String::as_str).collect();
+    let extra = slip_kiln::snippet::Extra { args: &args, target: head.target.as_deref() };
+    let out = slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+        let paths: Vec<Vec<u8>> =
+            p.sm.file_ids()
+                .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                .collect();
+        let (ast, sm) = (p.ast, p.sm);
+        let r = on_walk_stack(|| {
+            let path = |f: slip_kiln::kiln::source::FileId| {
+                paths.get(f.index()).cloned().unwrap_or_default()
+            };
+            let input = Input { ast, sm, subject_path: &path };
+            f(&input)
+        });
+        (r, p.errors, p.diagnostics.clone())
+    })
+    .map_err(|e| format!("side {side:?} (`kiln {}`): {e}", head.line()))?;
+    let (r, errors, diagnostics) = out;
+    if errors > 0 && !head.errors {
+        return Err(format!(
+            "side {side:?} (`kiln {}`) has {errors} error(s):\n{diagnostics}",
+            head.line()
+        ));
+    }
+    Ok(r)
+}
+
+/// A side as [`digest_side_with`] gives it, from an `Output` a caller of
+/// [`with_side`] made.
+pub fn digested(output: Output) -> Digested {
+    let units = index(&output);
+    Digested { output, units, errors: 0, diagnostics: String::new() }
+}
+
 /// The files of `tests/support/`, by name: files of every snippet whose
 /// directory has no file of that name (the `std::meta` declarations of
 /// `meta.h` for the reflection tests). A file no snippet includes is
@@ -473,6 +526,54 @@ fn read_expect(dir: &Path) -> Result<(BTreeSet<Expect>, bool), String> {
         out.insert(e);
     }
     Ok((out, exact))
+}
+
+/// The lines of an `expect.txt` text as [`expect`] and [`exact_derived`]
+/// read them, but for the lines `own` accepts, which a runner reads
+/// itself (WP-103: the `use` lines of `tests/rules.rs`) and which are
+/// returned, trimmed, with their numbers.
+pub fn expect_text(
+    text: &str,
+    own: impl Fn(&str) -> bool,
+) -> Result<(BTreeSet<Expect>, bool, Vec<(usize, String)>), String> {
+    let mut out = BTreeSet::new();
+    let mut exact = false;
+    let mut mine = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if own(line) {
+            mine.push((i + 1, line.to_owned()));
+            continue;
+        }
+        if line == EXACT_DERIVED {
+            if exact {
+                return Err(format!("expect.txt:{}: a second `{EXACT_DERIVED}`", i + 1));
+            }
+            exact = true;
+            continue;
+        }
+        let (word, name) =
+            line.split_once(' ').ok_or_else(|| format!("expect.txt:{}: no name", i + 1))?;
+        let name = name.trim().to_owned();
+        let e = match word {
+            "changed" => Expect::Changed(name),
+            "added" => Expect::Added(name),
+            "removed" => Expect::Removed(name),
+            "indeterminate" => Expect::Indeterminate(name),
+            "derived-changed" => Expect::DerivedChanged(name),
+            "derived-added" => Expect::DerivedAdded(name),
+            "derived-removed" => Expect::DerivedRemoved(name),
+            _ => return Err(format!("expect.txt:{}: unknown word `{word}`", i + 1)),
+        };
+        if out.contains(&e) {
+            return Err(format!("expect.txt:{}: `{}` a second time", i + 1, e.line()));
+        }
+        out.insert(e);
+    }
+    Ok((out, exact, mine))
 }
 
 /// The lines of `expect.txt` (absent: none); the directive

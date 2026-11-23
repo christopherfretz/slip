@@ -1173,6 +1173,90 @@ impl Walk<'_> {
     }
 }
 
+/// Collisions that the rules make among keys no unit has, or between such
+/// a key and a unit's (`spec/digest.md` §3.4 "Two different entities",
+/// WP-103): after the walk, the entities whose mapped keys the walk
+/// computed are grouped by mapped `KeyId`; entities whose keys under no
+/// rule are equal are one entity (several declarations Kiln does not
+/// join, such as a friend that each class specialisation declares). A
+/// group of two or more entities, not all namespaces (which merge), at
+/// least one of which has no unit under that key, is a collision:
+/// `units::mark_collisions` sees units only, and two references that the
+/// rules make into one would otherwise be equal in silence (a
+/// specialisation only named, a function a block-scope `extern`
+/// declaration in a templated function declares, digest §2.2). Every
+/// unit with the key is marked `Collision`; if none has it, the order
+/// unit is, so that the collision is a finding (§10). Returns how many
+/// keys collide that `mark_collisions` did not already count. With no
+/// rule the mapped and the unmapped keys are equal and nothing is marked.
+pub(crate) fn mark_mapped_collisions(
+    w: &Walk<'_>,
+    input: &crate::Input<'_>,
+    written: &mut [crate::units::Written],
+) -> u64 {
+    if w.rules.is_empty() {
+        return 0;
+    }
+    let mut keyed: Vec<(Digest, DeclId, KeyKind)> = w
+        .keys
+        .iter()
+        .filter_map(|(&e, r)| match *r {
+            KeyRes::Key { id, kind, .. } => Some((id, e, kind)),
+            KeyRes::None(_) => None,
+        })
+        .collect();
+    keyed.sort_by_key(|&(id, e, _)| (id, e.index()));
+    let empty = slip_model::keys::RuleTable::empty();
+    let mut plain = Walk::new(input, &empty);
+    let mut collisions = 0;
+    let mut i = 0;
+    while i < keyed.len() {
+        let id = keyed[i].0;
+        let mut j = i + 1;
+        while j < keyed.len() && keyed[j].0 == id {
+            j += 1;
+        }
+        let group = &keyed[i..j];
+        i = j;
+        if group.len() < 2 || group.iter().all(|g| g.2 == KeyKind::Namespace) {
+            continue;
+        }
+        // The entities of the group, one per key under no rule (`None`: a
+        // key the walk without rules cannot form, an entity of its own),
+        // and whether one of each has a unit under `id`.
+        let mut classes: Vec<(Option<Digest>, bool)> = Vec::new();
+        for &(_, e, _) in group {
+            let unmapped = match plain.key(e) {
+                KeyRes::Key { id: u, .. } => Some(u),
+                KeyRes::None(_) => None,
+            };
+            let has_unit = written.iter().any(|u| u.key == id && u.entity == Some(e));
+            match classes.iter_mut().find(|c| c.0.is_some() && c.0 == unmapped) {
+                Some(c) => c.1 |= has_unit,
+                None => classes.push((unmapped, has_unit)),
+            }
+        }
+        if classes.len() < 2 || classes.iter().all(|c| c.1) {
+            continue;
+        }
+        let already = written.iter().any(|u| u.key == id && u.cause == Some(Cause::Collision));
+        let mut marked = false;
+        for u in written.iter_mut().filter(|u| u.key == id) {
+            u.cause = Some(crate::units::merge(u.cause, Cause::Collision));
+            marked = true;
+        }
+        if !marked
+            && let Some(u) = written.iter_mut().find(|u| u.kind == KeyKind::Order)
+        {
+            u.cause = Some(crate::units::merge(u.cause, Cause::Collision));
+        }
+        if !already {
+            collisions += 1;
+        }
+    }
+    collisions
+}
+
 /// `merge` of two optional causes, as `Stream::indeterminate` keeps them.
 fn merge(a: Option<Cause>, b: Option<Cause>) -> Option<Cause> {
     match (a, b) {

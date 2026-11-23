@@ -1,0 +1,2 @@
+indeterminate f()
+indeterminate g()
