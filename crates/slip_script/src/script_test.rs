@@ -500,8 +500,17 @@ fn run_one(l: &mut Loaded<'_>, script: &Script) -> Ran {
             Err(e) => return Ran::Error(e),
         };
         // The keys of §7.5 from one `Keys` for the run (`docs/wp/WP-095.md`).
-        let ran = subject.with_keys(|subject| l.run(subject, script.budgets, &Cancel::new()));
-        match ran {
+        // A panic of the key server is an internal error of the run (the
+        // review of WP-095, F6): no result, as for a host-failure.
+        let keyed = subject.with_keys(|subject| l.run(subject, script.budgets, &Cancel::new()));
+        if keyed.server_panicked {
+            return Ran::NoResult(
+                "the key server panicked: an internal error of the run (its key questions \
+                 after the panic were answered unsupported)"
+                    .to_owned(),
+            );
+        }
+        match keyed.value {
             Ok((Outcome::Completed(out), _)) => {
                 let names = if has_keys(&out) { key_names(p) } else { BTreeMap::new() };
                 Ran::Rendered(render_completed(&out, &files, &names, &script.counters))

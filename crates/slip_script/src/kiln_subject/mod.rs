@@ -41,7 +41,7 @@ mod lookup;
 mod references;
 
 pub use calls::{CallSite, ExtentCensus, NoExtent};
-pub use keys::Why;
+pub use keys::{Keyed, Why};
 pub use references::name_token;
 
 /// Unit order (§1): `slip_kiln::ranges`' comparator (WP-084), which
@@ -94,6 +94,8 @@ pub struct KilnSubject<'u> {
     keys: Mutex<Option<keys::Link>>,
     /// What the holder of a reference reads of Kiln's tables (`keys.rs`).
     key_tables: OnceLock<keys::Tables>,
+    /// What the subject keeps of its key servers (`keys.rs`).
+    key_state: keys::KeyState,
 }
 
 impl std::fmt::Debug for KilnSubject<'_> {
@@ -166,6 +168,7 @@ impl<'u> KilnSubject<'u> {
             call_tiers: OnceLock::new(),
             keys: Mutex::new(None),
             key_tables: OnceLock::new(),
+            key_state: keys::KeyState::default(),
             names: references::Names::default(),
         };
         s.names = references::Names::build(&s, unit);
@@ -394,6 +397,10 @@ impl Subject for KilnSubject<'_> {
 
     fn unresolved_named(&self, identifier: &[u8]) -> Option<u64> {
         Some(self.unresolved_spelled(identifier))
+    }
+
+    fn one_shot_key_servers(&self) -> u64 {
+        KilnSubject::one_shot_key_servers(self)
     }
 
     fn tiers(&self, r: Range) -> Option<[bool; 2]> {

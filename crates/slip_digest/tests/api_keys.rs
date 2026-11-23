@@ -637,6 +637,9 @@ fn unit_digests(o: &Output) -> BTreeMap<Digest, Digest> {
         .collect()
 }
 
+/// Per case: the keys declared, the names and the units before.
+type Before = (BTreeSet<Digest>, BTreeMap<Digest, String>, BTreeMap<Digest, Digest>);
+
 #[test]
 fn derived_lists_explicit_instantiations() {
     const SRC: &str = "\
@@ -662,21 +665,20 @@ int used = D<long>().m();
         (2, "m", DeclKind::CXXMethod, 0, "C<int>::m()", true),
         (3, "m", DeclKind::CXXMethod, 1, "D<long>::m()", true),
     ];
-    let before: Vec<(BTreeSet<Digest>, BTreeMap<Digest, String>, BTreeMap<Digest, Digest>)> =
-        snippet(SRC, |input| {
-            let ast = input.ast;
-            let out = digest(input, &RuleTable::empty());
-            let mut keys = Keys::new(input);
-            cases
-                .iter()
-                .map(|&(_, name, kind, i, _, _)| {
-                    let e = nth(ast, name, kind, i, if name == "m" { 2 } else { 1 });
-                    let mut declared: BTreeSet<Digest> = keys.derived(e).into_iter().collect();
-                    declared.insert(keys.key_id(e).expect("a key"));
-                    (declared, names(&out), unit_digests(&out))
-                })
-                .collect()
-        });
+    let before: Vec<Before> = snippet(SRC, |input| {
+        let ast = input.ast;
+        let out = digest(input, &RuleTable::empty());
+        let mut keys = Keys::new(input);
+        cases
+            .iter()
+            .map(|&(_, name, kind, i, _, _)| {
+                let e = nth(ast, name, kind, i, if name == "m" { 2 } else { 1 });
+                let mut declared: BTreeSet<Digest> = keys.derived(e).into_iter().collect();
+                declared.insert(keys.key_id(e).expect("a key"));
+                (declared, names(&out), unit_digests(&out))
+            })
+            .collect()
+    });
     for (&(at, name, _, _, inst, must), (declared, names, units)) in cases.iter().zip(&before) {
         // Occurrence `at` of `g(1)` (one per template body) becomes `g(7)`.
         let (offset, _) = SRC.match_indices("g(1)").nth(at).expect("the occurrence");

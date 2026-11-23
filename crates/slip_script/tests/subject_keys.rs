@@ -72,7 +72,7 @@ fn with<R>(src: &str, f: impl FnOnce(&KilnSubject<'_>, &Digested) -> R) -> R {
         let digest = digested(p);
         let owned = |_: &[u8]| true;
         let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
-        s.with_keys(|s| {
+        let keyed = s.with_keys(|s| {
             // Test 5 on every snippet of this file.
             assert_eq!(s.entity_disagreements(), Some(Vec::new()), "WP-083's rule (test 5)");
             // The walk and the table never give one entry two units.
@@ -88,7 +88,10 @@ fn with<R>(src: &str, f: impl FnOnce(&KilnSubject<'_>, &Digested) -> R) -> R {
                 r += 1;
             }
             f(s, &digest)
-        })
+        });
+        assert!(!keyed.server_panicked);
+        assert_eq!(s.one_shot_key_servers(), 0, "every question inside the run's server");
+        keyed.value
     })
     .expect("the snippet parses")
 }
@@ -431,15 +434,19 @@ fn item4_outside_with_keys_the_answer_is_the_same() {
         let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
         let x = calls(&s, "f")[4];
         let outside = s.unit_keys(Value::Expression(x));
+        // One question outside: one server of its own, counted (F7).
+        assert_eq!(s.one_shot_key_servers(), 1);
         let inside = s.with_keys(|s| {
             let a = s.unit_keys(Value::Expression(x));
             // Nested: the one server.
-            let b = s.with_keys(|s| s.unit_keys(Value::Expression(x)));
+            let b = s.with_keys(|s| s.unit_keys(Value::Expression(x))).value;
             assert_eq!(a, b);
             a
         });
+        assert!(!inside.server_panicked);
+        assert_eq!(s.one_shot_key_servers(), 1, "none inside");
         assert!(outside.is_ok());
-        assert_eq!(outside, inside);
+        assert_eq!(outside, inside.value);
     })
     .expect("the snippet parses");
 }
@@ -456,10 +463,13 @@ fn with_files<R>(files: &[(&str, &str)], f: impl FnOnce(&KilnSubject<'_>, &Diges
         let d = digested(p);
         let owned = |_: &[u8]| true;
         let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
-        s.with_keys(|s| {
+        let keyed = s.with_keys(|s| {
             assert_eq!(s.entity_disagreements(), Some(Vec::new()), "WP-083's rule (test 5)");
             f(s, &d)
-        })
+        });
+        assert!(!keyed.server_panicked);
+        assert_eq!(s.one_shot_key_servers(), 0, "every question inside the run's server");
+        keyed.value
     })
     .expect("the snippet parses")
 }

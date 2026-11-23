@@ -44,6 +44,7 @@
 //! units must be one, or the answer is `unsupported`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{MutexGuard, PoisonError};
 
@@ -72,6 +73,9 @@ enum Ask {
     Entities(Vec<DeclId>),
     /// The unit `Keys::unit_of` gives each declaration (for tests).
     Units(Vec<DeclId>),
+    /// Makes the server panic (the tests of the review's F6).
+    #[cfg(test)]
+    Panic,
 }
 
 /// The key server's answer.
@@ -100,6 +104,28 @@ pub enum Why {
     /// The key server could not be asked (its thread did not start, or
     /// stopped).
     NoServer,
+}
+
+/// What [`KilnSubject::with_keys`] gives: `f`'s value, and whether the
+/// key server panicked, in this call or before it on this subject. A
+/// panic of the server is an internal error of the run (the review's F6):
+/// every key question asked after it was answered `unsupported`, so a
+/// run that holds `server_panicked` must be reported as failed by an
+/// internal error, not as its outcome.
+#[must_use]
+#[derive(Debug)]
+pub struct Keyed<R> {
+    pub value: R,
+    pub server_panicked: bool,
+}
+
+/// What the subject keeps of its key servers.
+#[derive(Default)]
+pub(super) struct KeyState {
+    /// A server panicked: every later question is answered `unsupported`.
+    failed: AtomicBool,
+    /// Servers started for one question, outside `with_keys`.
+    one_shot: AtomicU64,
 }
 
 /// The subject's end of a running key server.
@@ -146,52 +172,96 @@ impl KilnSubject<'_> {
     /// answered by one `slip_digest::query::Keys`, built on the first and
     /// kept until `f` returns (module documentation). Nested calls share
     /// the server. A run of a transform over this subject is made inside
-    /// it (`docs/wp/WP-095.md` item 4).
-    pub fn with_keys<R>(&self, f: impl FnOnce(&Self) -> R) -> R {
+    /// it (`docs/wp/WP-095.md` item 4), and its result is reported as an
+    /// internal error when [`Keyed::server_panicked`] holds.
+    ///
+    /// The server's thread is joined here, so a panic in it never reaches
+    /// the caller, and `f`'s value is kept.
+    pub fn with_keys<R>(&self, f: impl FnOnce(&Self) -> R) -> Keyed<R> {
         let mut link = self.link();
         if link.is_some() {
             drop(link);
-            return f(self);
+            let value = f(self);
+            return Keyed { value, server_panicked: self.key_server_failed() };
         }
-        std::thread::scope(|s| {
+        let value = std::thread::scope(|s| {
             let (ask, asked) = channel::<Ask>();
             let (answer, answered) = channel::<Answer>();
-            let started = std::thread::Builder::new()
+            let server = std::thread::Builder::new()
                 .name("slip-keys".to_owned())
                 .stack_size(SERVER_STACK)
-                .spawn_scoped(s, move || self.serve(&asked, &answer));
-            if started.is_ok() {
+                .spawn_scoped(s, move || self.serve(&asked, &answer))
+                .ok();
+            if server.is_some() {
                 *link = Some(Link { ask, answer: answered });
             }
             drop(link);
-            // Ends the server when `f` returns or unwinds: the scope joins
-            // the server's thread, which ends when its channel closes.
-            let _end = EndServer(self);
-            f(self)
-        })
+            let value = {
+                // Ends the server when `f` returns or unwinds: clearing the
+                // link closes its channel.
+                let _end = EndServer(self);
+                f(self)
+            };
+            if let Some(h) = server
+                && h.join().is_err()
+            {
+                self.key_state.failed.store(true, Ordering::Relaxed);
+            }
+            value
+        });
+        Keyed { value, server_panicked: self.key_server_failed() }
+    }
+
+    /// Whether a key server of this subject panicked (the review's F6):
+    /// from then on every key question is answered `unsupported`.
+    pub fn key_server_failed(&self) -> bool {
+        self.key_state.failed.load(Ordering::Relaxed)
+    }
+
+    /// How many key questions were answered by a server started for that
+    /// one question, outside [`KilnSubject::with_keys`] (the review's F7):
+    /// each builds `Keys` and walks the unit again. The host writes it as
+    /// the counter `api.one_shot_key_servers` when it is not 0.
+    pub fn one_shot_key_servers(&self) -> u64 {
+        self.key_state.one_shot.load(Ordering::Relaxed)
     }
 
     fn link(&self) -> MutexGuard<'_, Option<Link>> {
         self.keys.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Asks the running server, or one started for this question.
+    /// Asks the running server, or one started for this question; `None`
+    /// once a server has panicked.
     fn ask(&self, q: Ask) -> Option<Answer> {
+        if self.key_server_failed() {
+            return None;
+        }
         {
             let link = self.link();
             if let Some(l) = link.as_ref() {
                 // The lock is held for the question and its answer, so
                 // answers are never crossed.
-                l.ask.send(q).ok()?;
-                return l.answer.recv().ok();
+                return self.asked(l, q);
             }
         }
+        self.key_state.one_shot.fetch_add(1, Ordering::Relaxed);
         self.with_keys(|s| {
             let link = s.link();
             let l = link.as_ref()?;
-            l.ask.send(q).ok()?;
-            l.answer.recv().ok()
+            s.asked(l, q)
         })
+        .value
+    }
+
+    /// One question to a running server. The server ends its loop only
+    /// when its channel closes, which the link prevents while it is held:
+    /// a closed channel here is the server's panic.
+    fn asked(&self, l: &Link, q: Ask) -> Option<Answer> {
+        let answer = l.ask.send(q).ok().and_then(|()| l.answer.recv().ok());
+        if answer.is_none() {
+            self.key_state.failed.store(true, Ordering::Relaxed);
+        }
+        answer
     }
 
     /// The key server's loop (module documentation).
@@ -207,6 +277,8 @@ impl KilnSubject<'_> {
                 Ask::Rename(e, n) => Answer::Rule(k.rename_rule(e, &n)),
                 Ask::Entities(ds) => Answer::Decls(ds.iter().map(|&d| Some(k.entity(d))).collect()),
                 Ask::Units(ds) => Answer::Decls(ds.iter().map(|&d| k.unit_of(d)).collect()),
+                #[cfg(test)]
+                Ask::Panic => panic!("a panic of the key server, injected by a test"),
             };
             if answer.send(a).is_err() {
                 break;
@@ -546,4 +618,62 @@ fn unit_keys_of(k: &mut Keys<'_>, holders: &[DeclId]) -> Result<Vec<Digest>, Why
     let mut out = vec![own];
     out.extend(k.derived(u).into_iter().filter(|&d| d != own));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use slip_kiln::snippet::{Extra, Snippet, parse_with_tables};
+
+    use super::*;
+    use crate::subject::{Subject, Value};
+
+    /// A subject with one call, and that call.
+    fn subject<R>(f: impl FnOnce(&KilnSubject<'_>, Expression) -> R) -> R {
+        let files = [("main.cpp", "int f(int);\nint g() { return f(1); }\n")];
+        let snippet = Snippet { files: &files, main: "main.cpp", include: &[], std: "c++23" };
+        parse_with_tables(&snippet, &Extra::default(), |p| {
+            let owned = |_: &[u8]| true;
+            let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
+            let e = s.lookup(false, &[b"f".as_slice()])[0];
+            let x = s.calls_to(e).expect("calls")[0];
+            f(&s, x)
+        })
+        .expect("the snippet parses")
+    }
+
+    // F6, inside `with_keys`: the asker gets no answer (`unsupported`),
+    // every later question too, `f`'s value is kept and the panic is
+    // returned beside it, never raised again.
+    #[test]
+    fn a_panic_of_the_server_inside_with_keys() {
+        subject(|s, x| {
+            let keyed = s.with_keys(|s| {
+                assert!(s.unit_keys(Value::Expression(x)).is_ok());
+                assert!(s.ask(Ask::Panic).is_none());
+                assert_eq!(s.unit_keys(Value::Expression(x)), Err(Errc::Unsupported));
+                7
+            });
+            assert_eq!(keyed.value, 7);
+            assert!(keyed.server_panicked);
+            assert_eq!(s.unit_keys(Value::Expression(x)), Err(Errc::Unsupported));
+            assert_eq!(s.entity_key(s.lookup(false, &[b"f".as_slice()])[0]), None);
+            assert_eq!(s.one_shot_key_servers(), 0, "no server started after the panic");
+            assert!(s.with_keys(|_| ()).server_panicked);
+        });
+    }
+
+    // F6, a question outside `with_keys`: `unsupported`, the panic
+    // recorded on the subject, never raised in the asker.
+    #[test]
+    fn a_panic_of_a_one_shot_server() {
+        subject(|s, x| {
+            assert!(!s.key_server_failed());
+            assert!(s.ask(Ask::Panic).is_none());
+            assert!(s.key_server_failed());
+            assert_eq!(s.one_shot_key_servers(), 1);
+            assert_eq!(s.unit_keys(Value::Expression(x)), Err(Errc::Unsupported));
+            assert_eq!(s.one_shot_key_servers(), 1, "no server started after the panic");
+            assert!(s.with_keys(|_| ()).server_panicked);
+        });
+    }
 }

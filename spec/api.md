@@ -1369,7 +1369,10 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
    it requested (§2.8 rule 1).
 6. Counters (`spec/model.md`'s `Counter`): `api.host_calls`,
    `api.steps`, `api.peak_bytes`, `api.edits`, `api.reports`,
-   `api.unresolved_spelling_matches` (§6.5 rule 6), and one
+   `api.unresolved_spelling_matches` (§6.5 rule 6),
+   `api.one_shot_key_servers` when it is not 0 (key questions of §7.5 a
+   subject answered outside the run's own key server, each at the cost
+   of the unit's keys computed again), and one
    `api.op.<name>` per operation that succeeded at least once, counting
    its calls that succeeded. `api.host_calls` counts every call, failed
    ones too: it is the evaluator's number, as `api.steps` and
