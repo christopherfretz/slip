@@ -1,0 +1,2 @@
+resolved A<int>::f(int)::<default_argument 0>
+added h()

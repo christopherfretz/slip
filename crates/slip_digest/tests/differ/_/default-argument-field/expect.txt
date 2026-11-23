@@ -1,0 +1,2 @@
+changed A::m
+derived-changed A<int>::m::<default_argument 0>

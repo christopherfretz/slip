@@ -1,0 +1,2 @@
+changed h(S &)
+derived-changed S::~S()::<exception_spec>

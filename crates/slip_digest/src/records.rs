@@ -64,7 +64,9 @@ fn collect(w: &mut Walk<'_>, written: &[Written], output: &Output) -> Result<Vec
                 // No key at all: the unit was written under a fallback key.
                 KeyRes::None(_) => None,
                 KeyRes::Key { .. } => match key_again(w, e) {
-                    Some(k) => Some(k),
+                    // A resolved or `default_argument` unit is keyed
+                    // under its entity's key (digest-kinds §11.1, §11.4).
+                    Some(k) => Some(crate::demand::part_key(w, k.clone(), u).unwrap_or(k)),
                     None => {
                         return Err(format!(
                             "the unit `{name}` ({} {}) has a key, but computed again it has none",
