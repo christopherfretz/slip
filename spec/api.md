@@ -55,19 +55,34 @@ Two transforms are part of the conformance suite and are referenced from
    where `<resource>` is the resource directory of the running Slip.
 2. The author's options are `-I`, `-isystem`, `-D`, `-U` and `-include`,
    in the order given. Any other option is the error `transform-option`.
-   `-D` is how a transform is given parameters.
+   `-D` is how a transform is given parameters. A value that begins with
+   `@` (Kiln would read a response file, which can bring in any option) or
+   holds a NUL byte is also `transform-option`, as is a transform file or
+   resource directory whose path does. The values of `-I`, `-isystem` and
+   `-include`, the transform file and the resource directory must be
+   absolute paths, or it is `transform-option`: a worker's current
+   directory is not stable.
 3. The target is the one Kiln chooses by default on the machine that runs
    Slip, and the C++ standard library is the one Kiln finds for it. Both
    are inputs of the transform's identity (§2.2). Version 0 requires of
    the library only that `<string>`, `<string_view>` and `<vector>` are
    usable in constant evaluation.
-4. `__DATE__` and `__TIME__` are those of the Unix epoch. `__TIMESTAMP__`
-   must be the same on every compilation of the same file contents
-   ("Open questions").
+4. `__DATE__`, `__TIME__` and `__TIMESTAMP__` are those of the Unix
+   epoch (`Jan  1 1970`, `00:00:00`, `Thu Jan  1 00:00:00 1970`).
 5. A transform unit with an error is the error `transform-compile`. Its
    diagnostics are shown to the author as Kiln renders them. No subject
    unit is parsed for a transform that does not compile.
-6. `<slip/meta.h>` parses under any C++26 implementation. Outside a Slip
+6. A transform unit may not use `#embed` or `__has_embed`, in its file or
+   in any file it includes: the resources they read are not part of its
+   identity (§2.2). It is the error `transform-compile` ("`#embed` is not
+   supported in a transform"), naming the file and the line. A `-D`
+   option whose replacement holds the letters `embed` is refused with the
+   options (rule 2): a macro of the command line is in no file. The check
+   is conservative: it may refuse such a word in a comment or a literal,
+   and it cannot see `__has_embed` built by `##` from parts none of which
+   is `embed` (accepted until Kiln reports the resources a unit consulted,
+   `docs/requests/KS2-amendment-2.md` K3).
+7. `<slip/meta.h>` parses under any C++26 implementation. Outside a Slip
    transform unit the functions of §6 and §7 are declared and cannot be
    evaluated. This is so that an editor or another compiler can check a
    transform; it promises nothing else.
@@ -124,6 +139,13 @@ to one build.
    of later versions. A version 0 host refuses a transform unit that
    declares a function of one of those names in the global namespace
    (error `entry-reserved`).
+4. "In the global namespace" means a member of it as §6.1 rules 3 and 5
+   define members: a declaration in an inline or unnamed namespace of it
+   is one; a name that a using-directive or a using-declaration brings in
+   is not. With `#include <numeric>` and `using namespace std;` the unit
+   does not declare `reduce`; a `transform` reachable only through
+   `using namespace n;` or `using n::transform;` is `entry-missing`. A
+   deleted `transform` is `entry-undefined`.
 
 Rejected: marking entries with an annotation (it needs reflection over the
 transform unit and buys nothing while there is one entry); a registration
@@ -181,6 +203,15 @@ an action entry once per match (§9); nothing here prevents it.
    does not see the host's memory.
 4. Cancellation is only for shutting a worker down. A cancelled run has no
    result at all.
+5. **The thread of a run (hazard accepted for now).** A run may be made on
+   a thread other than the one that compiled the transform unit (a subject
+   unit's front-end thread). Kiln then checks the run's stack against the
+   compiling thread's stack guard. A run that reaches a stack check (an
+   instantiation, a nested constant evaluation) there fails with "stack
+   exhausted", and every later run of the unit fails the same way, on any
+   thread. Kiln request K2 (`docs/wp/WP-080.md`) lifts this. No entry
+   reaches such a check at the Kiln revision of WP-080: the templates an
+   entry's body uses are instantiated when the unit is compiled.
 
 ### 2.6 Where the host may be reached
 
@@ -624,7 +655,7 @@ order of their first declarations.
      component is an identifier (the front end accepts `$` as an
      extension, and which code points an identifier may hold is a table
      the host does not carry): it refuses rather than guess, whether or
-     not the source could spell it ("Open questions" 6).
+     not the source could spell it ("Open questions" 5).
 2. `::` alone names the global namespace.
 3. Matching is by declaration, not by C++ name lookup. The name is walked
    from the global namespace. A component names every entity declared
@@ -1465,9 +1496,7 @@ To be created by the work packages named; none exists yet.
    library Kiln finds on the machine and makes it part of `TransformId`.
    Shipping a pinned library with Slip would make a transform's behaviour
    the same on every machine; it is a packaging and licensing decision.
-2. **`__TIMESTAMP__`** depends on a file's modification time in Kiln
-   today. Asked for in `docs/requests/KS2-amendment-1.md`.
-3. **Units derived from a declared unit.** §7.5 rule 1 has the host list
+2. **Units derived from a declared unit.** §7.5 rule 1 has the host list
    the derived units it can see. An edit can also create or remove derived
    units (a call respelled to a function template instantiates a new
    specialisation). Decided for version 0: such a unit is **not exempt**,
@@ -1475,17 +1504,17 @@ To be created by the work packages named; none exists yet.
    it as it finds it, and a transform cannot declare it. Open: whether a
    later version lets a transform declare created and removed units, or
    has verification derive the exemption.
-4. **Stringised arguments.** A tier 1 edit inside an argument that the
+3. **Stringised arguments.** A tier 1 edit inside an argument that the
    macro also stringises (`assert`) changes a string literal in a unit the
    transform did not declare. Verification reports it. Whether a rename
    should declare such units, and how the host would know, waits for the
    preprocessing record.
-5. **A second entry per unit, chosen on the command line**, would let one
+4. **A second entry per unit, chosen on the command line**, would let one
    file hold several transforms. Kiln's sessions support it; not needed
    yet.
-6. **Identifiers outside the basic character set** in `lookup` and
+5. **Identifiers outside the basic character set** in `lookup` and
    `expect_renamed`: the rule "as the source encodes them" is untested.
-7. **A declaration with no place.** Version 0 refuses `expect_changed`
+6. **A declaration with no place.** Version 0 refuses `expect_changed`
    for an entity or a declaration (§7.5 rule 2), because nothing could
    tie such a declaration to an accepted edit. It is lifted when
    declarations have ranges (request KR3): the place is then the
