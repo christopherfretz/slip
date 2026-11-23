@@ -175,7 +175,22 @@ mismatch
           "pre": "0b040be6ebd50a3662ecbc616c10ea1449cf07f5435cf3eb6fda6976dff02657",
           "post": "d6e6247a71f57325e53a159de12723646a57110071dc92869257041c39d6dfcd",
           "name": "f()",
-          "where": null
+          "where": {
+            "pre": {
+              "file": "<base>/s/a.cpp",
+              "line": 1,
+              "column": 18,
+              "node": "IntegerLiteral",
+              "what": ""
+            },
+            "post": {
+              "file": "<base>/s/a.cpp",
+              "line": 1,
+              "column": 18,
+              "node": "IntegerLiteral",
+              "what": ""
+            }
+          }
         }
       ]
     }

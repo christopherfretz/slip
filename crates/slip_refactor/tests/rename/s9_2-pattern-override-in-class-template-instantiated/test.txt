@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates and followers, WP-120 item 1 (b): an overrider in a class template of a base that is not dependent, instantiated twice: two followers, unsupported until WP-119
+from: n::Base::f
+to: g
+kind: function

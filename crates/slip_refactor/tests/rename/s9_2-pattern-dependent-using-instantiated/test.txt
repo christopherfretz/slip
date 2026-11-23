@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers, WP-120 fix round (question 3): a dependent using-declaration (using Base<T>::f;) instantiated in F<int> introduces Base<int>::f() (which hides X::f(int)); its name is the pattern's, claimed unresolved, so the instantiated using-declaration follows Base::f() and the pattern's using-declaration (mixed_follower in reduce), besides WP-073's flag
+from: n::Base::f
+to: g
+kind: function

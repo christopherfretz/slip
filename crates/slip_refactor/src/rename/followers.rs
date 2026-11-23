@@ -29,10 +29,26 @@
 //!   subject's): a follower of the subject whose rule is made from its key
 //!   with the inner name replaced (§9.2). A subject whose type is such a
 //!   class without a key is `unsupported`.
-//! - A follower declared in a template's pattern (a class template, a
-//!   partial specialisation, a function template) is `unsupported`, as a
-//!   candidate is (`families`): its followers in the specialisations are
-//!   `docs/wp/WP-073.md`'s.
+//! - **A using-declaration in a template's pattern** is a follower as any
+//!   is (`docs/wp/WP-120.md` item 1): the using-declaration of an
+//!   instantiated class is a follower of the pattern's (`spec_members`),
+//!   and its shadows, which Kiln does not link to the pattern's, are
+//!   followers of their targets ([`instantiated_using`]).
+//! - **A hidden shadow** (`docs/wp/WP-120.md` item 3 and its fix round):
+//!   a declaration a member of the using-declaration's class hides or
+//!   overrides is not introduced ([namespace.udecl]/14), so it is left
+//!   out of the using-declaration's `of` (unless every one is). The
+//!   shadow Kiln still makes for it is a follower whatever its target,
+//!   of its three parties: the target, the using-declaration and the
+//!   hider Kiln names (`hidden_shadow`). While the digest writes it as a
+//!   unit, renaming some of the three and not the others is a wrong
+//!   edit: the shadow disappears, or a hidden declaration becomes
+//!   visible. So any mix is reduce's `mixed_follower`, and a
+//!   using-declaration is looked at when a subject hides what it names
+//!   too (`spec/edits.md` §9.2).
+//! - **An instantiated dependent using-declaration**
+//!   ([`instantiated_unfollowed_using`]): follows what it introduces and
+//!   the pattern's using-declaration, whose name is `unresolved`.
 //! - A function or variable that a class template's pattern befriends
 //!   with a declaration that is its own entity (keyed in the template,
 //!   `spec/landed/digest/WP-103.md` finding 2) is a follower of the
@@ -55,7 +71,6 @@ use slip_kiln::written::{self, DeclName, DeclNameKind};
 use slip_model::edits::{KeyId, Reason, Role, subject_flags};
 use slip_model::keys::{Key, Name, Rule};
 
-use super::families::in_pattern;
 use super::{CTX_LIMIT, Ctx, Written, enclosing};
 
 /// Collects what the module documentation says.
@@ -130,52 +145,169 @@ fn using_declaration(ctx: &mut Ctx<'_, '_, '_>, d: &DeclName) {
         ctx.settled.insert(u);
         return;
     }
-    // What each shadow names: its origin's key id, and whether it is a
-    // subject (`None`: no key).
-    let mut named: Vec<(DeclId, Option<KeyId>, bool)> = Vec::new();
-    for &s in &shadows {
-        let Some(t) = ast.using_target(s) else {
-            named.push((s, None, false));
-            continue;
-        };
-        let o = written::origin(unit, t);
-        let subject = ctx.subjects.of_decl(ctx.keys, o);
-        let id = subject.or_else(|| ctx.keys.key_id(ctx.keys.entity(o)).ok());
-        named.push((s, id, subject.is_some()));
-    }
-    if !named.iter().any(|&(_, _, subject)| subject) {
-        // It names no subject: `decls::claim` keeps its name.
+    let named = shadows_named(ctx, &shadows);
+    if !named.iter().any(|n| n.subject || n.hider.is_some_and(|h| h.subject)) {
+        // It names no subject, and no subject hides what it names:
+        // `decls::claim` keeps its name.
         return;
     }
     ctx.settled.insert(u);
-    let complete = named.iter().all(|&(_, id, _)| id.is_some());
-    let mut of: Vec<KeyId> = named.iter().filter_map(|&(_, id, _)| id).collect();
-    of.sort_unstable();
-    of.dedup();
-    let pattern = in_pattern(ctx, u);
+    let complete = named.iter().all(|n| n.id.is_some());
+    let of = introduced(&named);
     if let Some(f) = ctx.subjects.add(ctx.keys, u, Role::Follower, ctx.new, &of) {
-        if !complete || pattern {
+        if !complete {
             ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
         }
         ctx.claims.replace(&ctx.sites, d.name, &[f], Written::Literal);
+        shadow_followers(ctx, &named, Some(f));
     } else {
         // No key: no follower. The name is claimed for what it names.
         let subjects: Vec<KeyId> =
-            named.iter().filter(|&&(_, _, s)| s).filter_map(|&(_, id, _)| id).collect();
-        if named.iter().all(|&(_, _, s)| s) {
+            named.iter().filter(|n| n.subject).filter_map(|n| n.id).collect();
+        if named.iter().all(|n| n.subject) {
             ctx.claims.replace(&ctx.sites, d.name, &subjects, Written::Literal);
         } else {
             ctx.claims.refuse(&ctx.sites, d.name, &subjects, Reason::MixedSet);
         }
+        shadow_followers(ctx, &named, None);
     }
-    for &(s, id, subject) in &named {
-        if let (true, Some(t)) = (subject, id)
-            && let Some(f) = ctx.subjects.add(ctx.keys, s, Role::Follower, ctx.new, &[t])
-            && pattern
-        {
-            ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
+}
+
+/// One shadow of a using-declaration: what it names.
+struct Shadow {
+    decl: DeclId,
+    /// The key id of its target's origin: the subject's, or the entity's
+    /// (`None`: no key).
+    id: Option<KeyId>,
+    /// The target is a subject.
+    subject: bool,
+    /// Kiln records it hidden by a member of the using-declaration's class
+    /// (`hidden_shadow`, [namespace.udecl]/14).
+    hidden: bool,
+    /// The member that hides it, when it is hidden.
+    hider: Option<Party>,
+}
+
+/// An entity a hidden shadow depends on: its key id (the subject's, or
+/// the entity's; `None`: no key) and whether it is a subject.
+#[derive(Clone, Copy)]
+struct Party {
+    id: Option<KeyId>,
+    subject: bool,
+}
+
+/// The party `d` is, taken to its origin as a reference to it is.
+fn party(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> Party {
+    let o = written::origin(ctx.unit, d);
+    let subject = ctx.subjects.of_decl(ctx.keys, o);
+    let id = subject.or_else(|| ctx.keys.key_id(ctx.keys.entity(o)).ok());
+    Party { id, subject: subject.is_some() }
+}
+
+fn shadows_named(ctx: &mut Ctx<'_, '_, '_>, shadows: &[DeclId]) -> Vec<Shadow> {
+    let unit = ctx.unit;
+    let ast = unit.ast();
+    let mut named = Vec::with_capacity(shadows.len());
+    for &s in shadows {
+        let hider = ast.decls.hidden_shadow(s).map(|h| party(ctx, h));
+        let hidden = hider.is_some();
+        let target = ast.using_target(s).map(|t| party(ctx, t));
+        let Party { id, subject } = target.unwrap_or(Party { id: None, subject: false });
+        named.push(Shadow { decl: s, id, subject, hidden, hider });
+    }
+    named
+}
+
+/// §9.2, the using-declaration's `of`: the entities it introduces. A
+/// declaration hidden or overridden by a member of the using-declaration's
+/// class is not introduced ([namespace.udecl]/14), so the name is right
+/// unchanged whatever happens to it: it is left out, unless every one is
+/// hidden (then the name must change exactly when they all do, or the
+/// using-declarator would find nothing).
+fn introduced(named: &[Shadow]) -> Vec<KeyId> {
+    let any_introduced = named.iter().any(|n| !n.hidden);
+    let mut of: Vec<KeyId> =
+        named.iter().filter(|n| !n.hidden || !any_introduced).filter_map(|n| n.id).collect();
+    of.sort_unstable();
+    of.dedup();
+    of
+}
+
+/// Each shadow whose target is a subject is a follower of it. A hidden
+/// shadow is a follower whatever its target, of its three parties: its
+/// target, its using-declaration `using` and the member that hides it
+/// (`spec/edits.md` §9.2). While the digest writes a hidden shadow as a
+/// unit, the shadow is right only when all three are renamed or none is:
+/// the using-declarator must still name the target, and the hider must
+/// still hide it. Any mix is reduce's `mixed_follower`. A party with no
+/// key cannot be in `of`: the shadow is `unsupported`.
+fn shadow_followers(ctx: &mut Ctx<'_, '_, '_>, named: &[Shadow], using: Option<KeyId>) {
+    for n in named {
+        if let Some(h) = n.hider {
+            let parties = [n.id, using, h.id];
+            let of: Vec<KeyId> = parties.iter().flatten().copied().collect();
+            let f = ctx.subjects.add(ctx.keys, n.decl, Role::Follower, ctx.new, &of);
+            match f {
+                Some(f) if of.len() < parties.len() => {
+                    ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
+                }
+                Some(_) => {}
+                // The shadow has no key: nothing can be recorded for it,
+                // and the using-declaration is refused in its place.
+                None => {
+                    if let Some(u) = using {
+                        ctx.subjects.flag(u, subject_flags::UNSUPPORTED);
+                    }
+                }
+            }
+            continue;
         }
+        let (true, Some(t)) = (n.subject, n.id) else { continue };
+        ctx.subjects.add(ctx.keys, n.decl, Role::Follower, ctx.new, &[t]);
     }
+}
+
+/// The shadows of `u`, a using-declaration of an instantiated class that
+/// is follower `id` of its pattern's (`spec_members`): Kiln links the
+/// using-declaration to the pattern's and not its shadows, whose keys
+/// therefore hold their own plain names (`spec/digest.md` §3.4). Each
+/// shadow whose target is a subject is a follower as in the pattern.
+pub(crate) fn instantiated_using(ctx: &mut Ctx<'_, '_, '_>, u: DeclId, id: KeyId) {
+    let shadows: Vec<DeclId> = ctx.unit.ast().using_shadows(u).collect();
+    let named = shadows_named(ctx, &shadows);
+    shadow_followers(ctx, &named, Some(id));
+}
+
+/// `u`, a using-declaration of an instantiated class whose pattern's is no
+/// subject (a dependent one, `using Base<T>::f;`, names nothing until
+/// instantiated, and its name is claimed `unresolved`): what the
+/// instantiation names is read here, as for any using-declaration. When it
+/// names a subject (or a subject hides what it names), it is a follower
+/// with `of` what it introduces **and the pattern's using-declaration**:
+/// its name is the pattern's, which this rename does not edit, so with a
+/// subject selected it is reduce's `mixed_follower` (`docs/wp/WP-120.md`
+/// fix round, question 3: renaming `Base<U>::f` would leave `using
+/// Base<T>::f;` naming another `f`, which `Base<U>::f` hid). A pattern
+/// with no key: `unsupported`. Its key follows the pattern's, so it is
+/// `unsupported` besides, as every member of an instantiated
+/// specialisation is (`spec_members`); its shadows are followers as above.
+pub(crate) fn instantiated_unfollowed_using(ctx: &mut Ctx<'_, '_, '_>, u: DeclId) {
+    let ast = ctx.unit.ast();
+    let shadows: Vec<DeclId> = ast.using_shadows(u).collect();
+    let named = shadows_named(ctx, &shadows);
+    if !named.iter().any(|n| n.subject || n.hider.is_some_and(|h| h.subject)) {
+        return;
+    }
+    let mut of = introduced(&named);
+    let pattern = ast.instantiated_from(u).and_then(|p| ctx.keys.key_id(ctx.keys.entity(p)).ok());
+    of.extend(pattern);
+    of.sort_unstable();
+    of.dedup();
+    let f = ctx.subjects.add(ctx.keys, u, Role::Follower, ctx.new, &of);
+    if let Some(f) = f {
+        ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
+    }
+    shadow_followers(ctx, &named, f);
 }
 
 fn unnamed_types(ctx: &mut Ctx<'_, '_, '_>) {

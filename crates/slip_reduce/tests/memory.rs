@@ -12,6 +12,17 @@
 //! on live heap. The tests of this binary run one at a time (a lock), so
 //! that no other test's pages are counted. Where the counters are not
 //! there, the bound is not checked and the test says so.
+//!
+//! The high-water mark counts file-backed pages too (the binary's own
+//! text, mapped libraries). On a host short of memory the kernel drops
+//! such pages and the call faults them in again, which raises the mark
+//! by hundreds of KiB with no allocation at all (seen 2026-11-23 beside
+//! full builds: 268 to 608 KiB for a call that grows by 0 on a quiet
+//! host). So the growth of the file-backed and shared resident pages
+//! over the call (`RssFile` and `RssShmem`, Linux 4.5 and later) is
+//! taken off: what is left bounds the anonymous memory, which is what
+//! the section's claim is about. Where those two fields are missing
+//! nothing is taken off.
 
 mod common;
 
@@ -25,8 +36,19 @@ use slip_reduce::{Options, Shards, reduce};
 
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
-/// `VmHWM` and `VmRSS` in KiB.
-fn status() -> Option<(u64, u64)> {
+/// What `/proc/self/status` says, in KiB.
+#[derive(Clone, Copy, Debug)]
+struct Status {
+    /// `VmHWM`: the resident high-water mark.
+    hwm: u64,
+    /// `VmRSS`.
+    rss: u64,
+    /// `RssFile` and `RssShmem`: the resident pages that are not
+    /// anonymous (0 where the kernel does not say).
+    file: u64,
+}
+
+fn status() -> Option<Status> {
     let text = std::fs::read_to_string("/proc/self/status").ok()?;
     let field = |name: &str| {
         text.lines()
@@ -34,18 +56,28 @@ fn status() -> Option<(u64, u64)> {
             .and_then(|l| l.split_whitespace().nth(1))
             .and_then(|v| v.parse::<u64>().ok())
     };
-    Some((field("VmHWM:")?, field("VmRSS:")?))
+    Some(Status {
+        hwm: field("VmHWM:")?,
+        rss: field("VmRSS:")?,
+        file: field("RssFile:").unwrap_or(0) + field("RssShmem:").unwrap_or(0),
+    })
 }
 
-/// The growth of the high-water mark over `f`, in KiB, if it can be
-/// measured.
+/// The growth of the high-water mark over `f`, less the growth of the
+/// resident pages that are not anonymous (module documentation), in KiB,
+/// if it can be measured. The two readings are printed, so that a bound
+/// that fails says which kind of page grew.
 fn peak_growth<T>(f: impl FnOnce() -> T) -> (T, Option<u64>) {
     let reset = std::fs::write("/proc/self/clear_refs", "5").is_ok();
     let before = status();
     let out = f();
     let after = status();
     let growth = match (reset, before, after) {
-        (true, Some((_, rss)), Some((hwm, _))) => Some(hwm.saturating_sub(rss)),
+        (true, Some(b), Some(a)) => {
+            eprintln!("resident before {b:?}, after {a:?}");
+            let not_anonymous = a.file.saturating_sub(b.file);
+            Some(a.hwm.saturating_sub(b.rss).saturating_sub(not_anonymous))
+        }
         _ => None,
     };
     (out, growth)

@@ -1,0 +1,10 @@
+subjects:
+  599ef791 seed - rule=yes n::B::f()
+  ed6a45cf candidate - rule=yes (anonymous class)::operator()()::L::f()
+links:
+  599ef791 ed6a45cf
+claims:
+  main.cpp:1:39+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:2:56+1 replace "g" t0 votes=1 none [ed6a45cf]
+  main.cpp:2:82+1 replace spell(ed6a45cf, "g") t0 votes=1 none [ed6a45cf]
+changed:

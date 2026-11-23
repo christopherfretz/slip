@@ -186,6 +186,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         match post_side {
             Some(post_side) if same => {
                 locate::fill(&mut v.findings, locate_n, pre_side.as_ref(), &post_side);
+                (post.unstable, post.panicked) = locate::unplaced(pre_side.as_ref(), &post_side);
             }
             _ => {
                 post.by_kind = [0; 6];
@@ -322,6 +323,11 @@ struct Post {
     reparsed: u64,
     /// The findings of each kind, by [`kind_index`].
     by_kind: [u64; 6],
+    /// `verify.traces.unstable` (§7.2), present only when not 0.
+    unstable: u64,
+    /// `verify.traces.panicked` (§7.2): the images whose second writing
+    /// panicked; present only when not 0.
+    panicked: u64,
 }
 
 impl Post {
@@ -340,6 +346,8 @@ impl Post {
             differing: 0,
             reparsed: 0,
             by_kind: [0; 6],
+            unstable: 0,
+            panicked: 0,
         }
     }
 
@@ -347,7 +355,16 @@ impl Post {
     /// `shard`), its counters and those of §7.2, sorted by name; step 1's
     /// `digests` without unit lists; `v`.
     fn finish(self, shard: &mut Shard, v: Verdict) -> Shard {
-        let Post { mut counters, mut digests, rule_use, differing, reparsed, by_kind } = self;
+        let Post {
+            mut counters,
+            mut digests,
+            rule_use,
+            differing,
+            reparsed,
+            by_kind,
+            unstable,
+            panicked,
+        } = self;
         let by_name = [
             ("verify.groups.differing", differing),
             ("verify.findings", v.total),
@@ -357,6 +374,13 @@ impl Post {
             ("verify.reparsed", reparsed),
         ];
         counters.extend(by_name.iter().map(|&(n, value)| Counter { name: n.to_owned(), value }));
+        for (name, value) in
+            [("verify.traces.unstable", unstable), ("verify.traces.panicked", panicked)]
+        {
+            if value > 0 {
+                counters.push(Counter { name: name.to_owned(), value });
+            }
+        }
         counters.extend(
             KINDS
                 .iter()

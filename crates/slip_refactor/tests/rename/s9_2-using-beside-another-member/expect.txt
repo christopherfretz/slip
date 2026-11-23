@@ -1,0 +1,11 @@
+subjects:
+  152dddff seed - rule=yes n::D::f(double)
+links:
+claims:
+  main.cpp:2:17+1 keep t0 votes=1 none
+  main.cpp:2:27+1 keep t0 votes=1 none
+  main.cpp:3:25+1 keep t0 votes=1 none
+  main.cpp:3:33+1 replace "g" t0 votes=1 none [152dddff]
+  main.cpp:5:21+1 replace spell(152dddff, "g") t0 votes=1 none [152dddff]
+  main.cpp:5:31+1 keep t0 votes=1 none
+changed:

@@ -1,6 +1,5 @@
 # pending
-# needs: known-cost
-# Known cost G2 (spec/landed/digest/WP-104.md "Known costs (spurious differences)"): differs today (f(int), f(long)), should be equal.
-# The __builtin_FUNCTION() string "f" is shared by f(int) and f(long) on side A
-# and attributed to the first use, f(int); on side B f(long) holds it alone.
-# Repair: attribute the string to the holder's own use when the holder's name is the bytes.
+# needs: kiln-srcloc-origin
+# A cost (spec/landed/digest/WP-115.md, item 1): "f" has uses in f(int) and
+# f(long) on side A, so its bytes are written; on side B "g" and "f" are each
+# one entity's: f(int) and f(long) differ under the rename.

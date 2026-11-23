@@ -101,6 +101,12 @@ fn classify(ctx: &mut Ctx<'_, '_, '_>, e: DeclId) -> Class {
     if !matches!(&key.name, Name::Identifier(n) if n.as_slice() == ctx.old) {
         return Class::No;
     }
+    // A using-declaration in the target's scope is no seed (of another
+    // kind): it names the name, and is the follower §9.2 makes of what it
+    // introduces (`docs/wp/WP-120.md` item 3).
+    if key.kind == KeyKind::UsingDeclaration {
+        return Class::No;
+    }
     match key.parent {
         Parent::CLinkage => return Class::CLinkage,
         Parent::Builtin => return Class::No,

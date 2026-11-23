@@ -1,0 +1,4 @@
+spec: edits.md §9.5 what the rename does not see, WP-120 item 1: an overrider in a class template of a dependent base that no unit instantiates is linked to nothing: its name is kept, it is no subject
+from: n::B::f
+to: g
+kind: function

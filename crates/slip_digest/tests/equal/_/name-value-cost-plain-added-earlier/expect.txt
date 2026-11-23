@@ -1,6 +1,0 @@
-# pending
-# needs: known-cost
-# Known cost G2 (spec/landed/digest/WP-104.md "Known costs (spurious differences)"): differs today (b::get()), should be equal.
-# The __builtin_FUNCTION() string "get" is one object per content, written as
-# the first use's context: a::get(), added before, takes it. Repair:
-# attribute the string to the holder's own use when the holder's name is the bytes.
