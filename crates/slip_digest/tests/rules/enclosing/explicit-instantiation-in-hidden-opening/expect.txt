@@ -1,0 +1,3 @@
+# clang++-19: GLOBAL DEFAULT _ZN1n1gIiEEiv (weak) on both sides: an explicit instantiation
+# definition takes its template's opening. Only the namespace's unit differs.
+changed n

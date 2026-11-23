@@ -1,0 +1,5 @@
+# clang++-19: HIDDEN _ZTVN1n1SIiEE in a (a class template's instantiation takes the template's
+# declaration most recent where it is instantiated: the hidden redeclaration), DEFAULT in b.
+# Which declaration that is depends on where the instantiation is: indeterminate.
+indeterminate n::S
+indeterminate n::S<int>

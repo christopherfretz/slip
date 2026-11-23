@@ -1,0 +1,4 @@
+# Pitfall row N44, its bad-2 tree against its pre-image (declared-2.txt): helper() hoisted out of the unnamed
+# namespace and the hoist declared. clang++-19 -c, nm: `t _ZN6legacy12_GLOBAL__N_16helperEv` before,
+# `W _ZN4acme6helperEv` after. Every key is as before; the row enclosing of helper differs (WP-113).
+changed legacy::(anonymous namespace)::helper()

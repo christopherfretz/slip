@@ -105,6 +105,7 @@ pub(crate) mod property {
 /// §1.7 the rows of the walk.
 pub(crate) mod walk_row {
     pub(crate) const BACKREF: u32 = 1537;
+    pub(crate) const ENCLOSING: u32 = 1538;
 }
 
 /// `kiln_ast::types::kinds::Quals`.
@@ -2034,6 +2035,16 @@ pub(crate) mod linkage_lang {
             kiln::ast::decl::LinkageLang::Cxx => CXX,
         }
     }
+}
+
+/// `kiln_ast::linkage::Linkage`.
+pub(crate) mod linkage {
+    use super::{Decision, Row};
+
+    pub(crate) const NONE: Row = Row { tag: 1, decision: Decision::In };
+    pub(crate) const INTERNAL: Row = Row { tag: 2, decision: Decision::In };
+    pub(crate) const MODULE: Row = Row { tag: 3, decision: Decision::In };
+    pub(crate) const EXTERNAL: Row = Row { tag: 4, decision: Decision::In };
 }
 
 /// `kiln_ast::decl::StaticAssertData`.
