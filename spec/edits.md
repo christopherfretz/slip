@@ -1111,10 +1111,13 @@ when there is no journal.
 ## 8. The verify loop
 
 One **run** of a transform over a plan is one **round** `r`: the map phase
-writes `shards/<plan>/map.<r>/`, the verify phase `verify.<r>/`. `r` is the
-least number for which the plan has no shard directory of either phase
-and no transform run record (§10.6; `exec.md` §2). Round 0 is `slip
-parse`'s, and `slip verify` does not take a round of a transform's run
+writes `shards/<plan>/map.<r>/`, the verify phase `verify.<r>/`. `r` is one
+more than the greatest round the plan has taken, and at least 1: a
+round is taken by a shard directory of either phase or a transform run
+record (§10.6; `exec.md` §2 says which names count). Round 0 is never a
+transform's: it is `slip parse`'s, and that of the pre shards of `slip
+verify`. A round number is not reused while anything of a later round
+remains, and `slip verify` does not take a round of a transform's run
 (`exec.md` §8.7). (A round is one application of edits, `verify.md` §3; a
 run that applies edits more than once is M4.)
 
