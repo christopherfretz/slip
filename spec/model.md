@@ -824,6 +824,11 @@ on the finished unit. It is what `slip parse` runs (`spec/exec.md` §8.2).
 
 ```rust
 // slip_digest::map
+/// The map task's walk: `None` when `unit.errors()` is not 0 (the walk is
+/// not run), else `Some(digest_unit(unit, options, subject))`. The worker
+/// calls this and no method of `Unit` (§8.4).
+pub fn map_unit(unit: &slip_kiln::Unit<'_>, options: &Options<'_>,
+                subject: &dyn Fn(&[u8]) -> Vec<u8>) -> Option<Result<Output, String>>;
 /// The walk over a finished unit. `subject` maps the real path of an
 /// input to its subject path (`spec/verify.md` §5.1); the identity for
 /// the map phase.
@@ -842,8 +847,9 @@ pub fn cause_word(text: &str) -> String;
 ```
 
 **The walk** runs inside the closure of `parse_observer_with`, on the
-front end's thread, when `unit.errors()` is 0; with errors it does not
-run and the shard is the parse task's (`diagnosed`, no `digests`). Rules:
+front end's thread, when `unit.errors()` is 0 (`map_unit`); with errors
+it does not run, so neither do its checks, and the shard is the parse
+task's (`diagnosed`, no `digests`). Rules:
 none; detail: `none`; names: not asked for.
 
 - **The stack.** The walk bounds its own recursion and needs
@@ -872,10 +878,15 @@ none; detail: `none`; names: not asked for.
   error when the closure ran (an error the driver reported, a count
   raised by `-Werror` after it), the walk's result is dropped: `digests`
   are for `ok` shards only (§8.2 rule 1).
-- A shard that breaks §8.2 (a declared unit whose file is empty: a
-  declaration without a location) fails the job through the worker's
-  validation (`spec/exec.md` §5.5). It is not repaired by dropping the
-  unit or inventing a file.
+- A shard that breaks §8.2 fails the job through the worker's
+  validation (`spec/exec.md` §5.5). The walk gives no declared unit the
+  empty path for want of a location (`digest.md` §11: the file of the
+  earliest declaration that has one; an entity with none is derived; a
+  declared unit that should still have none is written in the derived
+  group, `Unaccounted("unit/file")`). A declared group with the empty
+  path can still come from a caller's `subject` that answers the empty
+  path for an input; that shard is refused, not repaired by dropping
+  the unit or inventing a file.
 
 **Counters.** Those of the parse task; those of `digest.md` §12; the
 walk's count of indeterminate keys by cause, `digest.indeterminate.<cause>`
@@ -1045,11 +1056,15 @@ form as it has one binary form (§1 rule 1):
   `stack_remaining` inside the closure, and `__DATE__` and `__TIME__`
   fixed with `SOURCE_DATE_EPOCH` set in the test's environment.
 - `crates/slip_digest/tests/map.rs` — §8.5 on observers the test writes
-  to a directory of its own: the walk skipped on a unit with errors;
-  subject paths of inputs, of the predefines, and through a `subject`
+  to a directory of its own: subject paths of inputs, of the predefines, and through a `subject`
   that maps a root; too little stack (`-fkiln-stack-size=`) as `Err`;
   the cause counters and `cause_word` on every cause text of the crate;
-  the same shard bytes from two runs.
+  the same shard bytes from two runs; the group files of the
+  declarations Kiln makes without a location (`digest.md` §11).
+- The unit tests of `crates/slip_cli/src/worker.rs` — the map task: an
+  `ok` shard gets `digests` and counters; the walk skipped on a unit with
+  errors (also with a stack too small for the walk: `diagnosed`, not
+  `Err`); too little stack fails the job; the jobs it refuses.
 - `crates/slip_cli/tests/cli.rs` — §8.5 through the executable: `slip
   parse` gives every `ok` shard a `digests` section and the counters; a
   `diagnosed` shard has neither.

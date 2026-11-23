@@ -358,6 +358,37 @@ fn in_builtin(w: &Walk<'_>, e: DeclId) -> bool {
     false
 }
 
+/// A declaration whose lexical context lies in a class template's
+/// pattern (or a partial specialisation) and whose semantic context is
+/// another: a friend the pattern declares. Kiln chains one to a later
+/// namespace-scope declaration only on its path for the global allocation
+/// functions (`kiln_sema/src/new_delete.rs` `act_on_global_new_delete_decl`
+/// finds it by `lookup_local`; ordinary redeclaration lookup does not),
+/// so such a chain reads, and takes its file from, the other declarations
+/// (`spec/landed/model/WP-050.md`).
+pub(crate) fn pattern_friend(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let lex = ast.decls.lexical_ctx(d);
+    if lex.is_none() || lex == ast.decls.get(d).ctx() {
+        return false;
+    }
+    let mut ctx = lex;
+    for _ in 0..4096 {
+        let Some(x) = ctx else { return false };
+        let kind = ast.decls.get(x).kind();
+        if kind == DeclKind::TranslationUnit || kind == DeclKind::Namespace {
+            return false;
+        }
+        if ast.described_template(x).is_some()
+            || kind == DeclKind::ClassTemplatePartialSpecialization
+        {
+            return true;
+        }
+        ctx = ast.decls.lexical_ctx(x);
+    }
+    false
+}
+
 /// Every declaration of the entity is implicit.
 fn all_implicit(w: &Walk<'_>, e: DeclId) -> bool {
     w.redecls(e).iter().all(|&d| w.ast.decls.get(d).has(DeclFlags::IMPLICIT))
@@ -717,19 +748,41 @@ impl Walk<'_> {
         {
             return chain;
         }
-        chain.into_iter().filter(|&d| !instantiated_outside_class(self, d)).collect()
+        let chain: Vec<DeclId> =
+            chain.into_iter().filter(|&d| !instantiated_outside_class(self, d)).collect();
+        if chain.iter().all(|&d| pattern_friend(self, d)) {
+            return chain;
+        }
+        chain.into_iter().filter(|&d| !pattern_friend(self, d)).collect()
     }
 
     /// The declaration an entity with a written declaration is classified
     /// from: its earliest declaration that is not instantiated outside its
-    /// class; `e` itself for an entity that has none.
+    /// class, not in a templated body, and not a [`pattern_friend`] (that
+    /// last only if another one is left); `e` itself for an entity that
+    /// has none.
     pub(crate) fn representative(&self, e: DeclId) -> DeclId {
         let mut chain = self.chain(e);
         chain.reverse();
-        chain
-            .into_iter()
-            .find(|&d| !instantiated_outside_class(self, d) && !in_templated_body(self, d))
-            .unwrap_or(e)
+        self.first_read(&chain, |_| true).unwrap_or(e)
+    }
+
+    /// The earliest declaration of `chain` (earliest first) that `keep`
+    /// holds of and that a unit is classified from (see
+    /// [`Walk::representative`]).
+    fn first_read(&self, chain: &[DeclId], keep: impl Fn(DeclId) -> bool) -> Option<DeclId> {
+        let read = |d: DeclId| !instantiated_outside_class(self, d) && !in_templated_body(self, d);
+        let pick = |friends: bool| {
+            chain
+                .iter()
+                .copied()
+                .find(|&d| read(d) && (friends || !pattern_friend(self, d)) && keep(d))
+        };
+        if chain.iter().any(|&d| read(d) && !pattern_friend(self, d)) {
+            pick(false)
+        } else {
+            pick(true)
+        }
     }
 
     /// Every declaration of entity `e`, in Kiln's chain order. A template
@@ -786,14 +839,17 @@ impl Walk<'_> {
 
     /// The declaration [`Walk::unit_file`] reads the file of: `d` if it
     /// has a location, else the earliest declaration of its chain that
-    /// has one; `None` if none has.
+    /// has one among those [`Walk::representative`] may pick (so a friend
+    /// of a class template's pattern, or a declaration an instantiation
+    /// made outside its class, is not taken while another is left); `None`
+    /// if none has.
     pub(crate) fn located(&self, d: DeclId) -> Option<DeclId> {
         if self.has_location(d) {
             return Some(d);
         }
         let mut chain = self.chain(d);
         chain.reverse();
-        chain.into_iter().find(|&x| self.has_location(x))
+        self.first_read(&chain, |x| self.has_location(x))
     }
 
     /// The subject path of the file of `d`'s location, or of the

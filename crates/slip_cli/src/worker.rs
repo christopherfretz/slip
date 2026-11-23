@@ -207,6 +207,21 @@ mod tests {
         assert_eq!(names(&shard), ["inputs.bytes", "inputs.files", "pp.tokens"]);
     }
 
+    // §8.5 "The shard": a unit with errors is not walked, so a stack too
+    // small for the walk does not fail its job: the shard is the parse
+    // task's, `diagnosed` (review F2).
+    #[test]
+    fn s8_5_unit_with_errors_and_too_little_stack_is_diagnosed() {
+        let shard = map_in(
+            "diag-stack",
+            &[("a.cpp", "int f() { return nope; }\n")],
+            &["c++", "-fkiln-stack-size=8M", "a.cpp"],
+        )
+        .unwrap();
+        assert_eq!(shard.outcome.status, Status::Diagnosed, "{:?}", shard.outcome);
+        assert!(shard.digests.is_none());
+    }
+
     // §8.5 "The stack": a walk that reports an error fails the job.
     #[test]
     fn s8_5_too_little_stack_fails_the_job() {

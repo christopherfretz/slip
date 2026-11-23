@@ -248,6 +248,10 @@ fn s8_5_too_little_stack_is_err() {
     // frame that measures it).
     let e = map_shard(&small).unwrap_err();
     assert!(e.starts_with(prefix) && e.ends_with(&suffix), "{e}");
+    // A stack between half of `STACK_SIZE` and `STACK_SIZE` is too small
+    // as well (review M02).
+    let e = map_shard(&f.observer(&["c++", "-fkiln-stack-size=48M", "main.cpp"])).unwrap_err();
+    assert!(e.starts_with(prefix) && e.ends_with(&suffix), "{e}");
 
     let (_, walked) = walk(&f.observer(&["c++", "main.cpp"]), &identity);
     assert!(walked.unwrap().is_ok());
@@ -516,4 +520,107 @@ fn s8_5_align_val_t_redeclared() {
         assert_eq!(groups_of(&output, name), vec![(GroupClass::Declared, main.clone())], "{name}");
     }
     assert_eq!(groups_of(&output, "std"), vec![(GroupClass::Tu, Vec::new())]);
+}
+
+/// The units named `name` of the walk of `main.cpp` over `files`, as
+/// `(class, file name, digest, flags)`.
+fn units_named(
+    f: &Fixture,
+    files: &[(&str, &str)],
+    name: &str,
+) -> Vec<(GroupClass, String, Digest, u64)> {
+    let output = valid_and_walked(f, files);
+    let keys: Vec<Digest> =
+        output.names.iter().filter(|(_, n)| n == name).map(|(k, _)| *k).collect();
+    let mut out = Vec::new();
+    for g in &output.digests.groups {
+        for u in g.units.iter().flatten().filter(|u| keys.contains(&u.key)) {
+            let file = String::from_utf8_lossy(&g.file).rsplit('/').next().unwrap_or("").to_owned();
+            out.push((g.class, file, u.digest, u.flags));
+        }
+    }
+    out
+}
+
+const TMPL_H: &str =
+    "template <class T> struct A { friend void *operator new(decltype(sizeof 0)); };\n";
+const NEW_H: &str = "void *operator new(decltype(sizeof 0));\n";
+
+// Review F1 (WP-050 fix round): Kiln chains a friend of a class
+// template's pattern to a later global `operator new` (its allocation
+// path finds the friend by `lookup_local`). The unit is read from, and in
+// the group of, the namespace-scope declaration: `new.h`, unflagged, with
+// one digest whether or not `A<int>` is instantiated after `new.h`
+// (digest §1 rule 5). It is not the digest of a unit without the
+// template: there Kiln declares the implicit `operator new(size_t)`
+// first and the chain reads it (A1), here `find_global_op` finds the
+// friend and Kiln declares no implicit one.
+#[test]
+fn s8_5_pattern_friend_of_operator_new() {
+    let mut seen = Vec::new();
+    for (i, main) in [
+        "#include \"tmpl.h\"\n#include \"new.h\"\n",
+        "#include \"tmpl.h\"\n#include \"new.h\"\nA<int> a;\n",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let units = units_named(
+            &Fixture::new(&format!("f1-{i}")),
+            &[("tmpl.h", TMPL_H), ("new.h", NEW_H), ("main.cpp", main)],
+            "operator new(unsigned long)",
+        );
+        assert_eq!(units.len(), 1, "placement {i}: {units:?}");
+        assert_eq!(
+            (units[0].0, units[0].1.as_str(), units[0].3),
+            (GroupClass::Declared, "new.h", 0)
+        );
+        seen.push(units[0].2);
+    }
+    assert_eq!(seen[0], seen[1], "one digest whether or not A<int> follows");
+}
+
+// The third placement of F1, `A<int>` instantiated between the template
+// and `new.h`: the instantiated friend is left unchained by Kiln (its
+// allocation path chains `new.h`'s declaration to the pattern's friend,
+// not to the instantiated one), so two entities have one key, both
+// flagged `collision`. Kiln's to fix (`spec/landed/model/WP-050.md`); this
+// pins what the walk does with it today: no `failed` shard, the declared
+// unit still in `new.h`.
+#[test]
+fn s8_5_pattern_friend_instantiated_before_the_declaration() {
+    let units = units_named(
+        &Fixture::new("f1-between"),
+        &[
+            ("tmpl.h", TMPL_H),
+            ("new.h", NEW_H),
+            ("main.cpp", "#include \"tmpl.h\"\nA<int> a;\n#include \"new.h\"\n"),
+        ],
+        "operator new(unsigned long)",
+    );
+    let shape: Vec<(GroupClass, &str, u64)> =
+        units.iter().map(|(c, f, _, fl)| (*c, f.as_str(), *fl)).collect();
+    assert_eq!(shape, vec![(GroupClass::Declared, "new.h", 1), (GroupClass::Derived, "tmpl.h", 1)]);
+}
+
+// digest §11 origin file, review F3: Kiln's implicit `operator new` (made
+// by the new-expression), then a redeclaration in `a.h`, then one in
+// `main.cpp`: the unit is in the group of the earliest declaration that
+// has a location, `a.h`, unflagged.
+#[test]
+fn s8_5_earliest_located_redeclaration() {
+    let units = units_named(
+        &Fixture::new("f3-order"),
+        &[
+            ("a.h", "void *operator new(decltype(sizeof 0));\n"),
+            (
+                "main.cpp",
+                "int *p = new int;\n#include \"a.h\"\nvoid *operator new(decltype(sizeof 0));\n",
+            ),
+        ],
+        "operator new(unsigned long)",
+    );
+    let shape: Vec<(GroupClass, &str, u64)> =
+        units.iter().map(|(c, f, _, fl)| (*c, f.as_str(), *fl)).collect();
+    assert_eq!(shape, vec![(GroupClass::Declared, "a.h", 0)]);
 }
