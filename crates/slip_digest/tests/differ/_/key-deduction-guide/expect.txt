@@ -1,2 +1,2 @@
-removed <deduction guide for S>
-added <deduction guide for S>
+added <deduction guide for S>(char)
+removed <deduction guide for S>(int)

@@ -1,0 +1,4 @@
+# N11: entities declared into the nearest enclosing namespace: a friend
+# function (good), an elaborated type specifier (good-2).
+good:   verified
+good-2: verified

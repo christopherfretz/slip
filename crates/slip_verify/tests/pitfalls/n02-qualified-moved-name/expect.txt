@@ -1,0 +1,4 @@
+# N02: a use outside the namespace spells the moved legacy::x::T.
+# Caught only by a failed parse (spec/pitfalls.md §5).
+good: verified
+bad:  not_parsed

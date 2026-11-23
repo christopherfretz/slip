@@ -1,0 +1,2 @@
+changed D
+derived-changed D::~D()::<dtor_delete>

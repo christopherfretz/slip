@@ -1,0 +1,1 @@
+relocate Box::count() const => Box :: size

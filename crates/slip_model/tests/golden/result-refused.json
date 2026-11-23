@@ -1,0 +1,44 @@
+{
+  "kind": "RSLT",
+  "version": 1,
+  "sections": {
+    "result": {
+      "scheme": 1,
+      "plan": "0101010101010101010101010101010101010101010101010101010101010101",
+      "round": 2,
+      "transform": "0202020202020202020202020202020202020202020202020202020202020202",
+      "edits": "0505050505050505050505050505050505050505050505050505050505050505",
+      "declared": null,
+      "overlay": null,
+      "state": "refused",
+      "partial": true,
+      "allow_unparsed": false,
+      "verdict": null,
+      "tally": {
+        "selected": 5,
+        "unparsed": 1,
+        "failed_runs": 1,
+        "error_reports": 2,
+        "verified": 0,
+        "unchanged": 0,
+        "mismatch": 0,
+        "not_parsed": 0,
+        "unverifiable": 0,
+        "never_parsed": 0,
+        "failed": 0
+      },
+      "agreement": [],
+      "unused": [],
+      "spellings": {
+        "obligations": 0,
+        "passed": 0,
+        "failed": []
+      },
+      "residue": [],
+      "exempt": [
+        "2020202020202020202020202020202020202020202020202020202020202020",
+        "2121212121212121212121212121212121212121212121212121212121212121"
+      ]
+    }
+  }
+}

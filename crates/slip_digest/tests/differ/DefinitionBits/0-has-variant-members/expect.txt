@@ -1,2 +1,2 @@
 changed C
-changed C::(anonymous struct)
+changed C::(anonymous struct for a)

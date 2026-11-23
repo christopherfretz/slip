@@ -1,0 +1,4 @@
+# N16: the dependency's macro spells legacy::T for an argument naming the moved Mine.
+# Caught only by a failed parse (spec/pitfalls.md §5).
+good: verified
+bad:  not_parsed

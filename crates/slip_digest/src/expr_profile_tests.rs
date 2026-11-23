@@ -424,7 +424,14 @@ fn the_nets_hold_on_their_own_sources() {
 /// Digests `src` with names; the keys and causes of the units whose name
 /// starts with `name`.
 fn digest_named(src: &str, name: &str) -> Vec<(slip_model::Digest, Vec<crate::Cause>)> {
-    digest_filtered(src, |n| n.starts_with(name))
+    digest_filtered(src, |n| names(n, name))
+}
+
+/// Whether display name `n` is of an entity named `name` (`f(`): it
+/// begins with it, or, for a function template, whose name begins with
+/// its head and return type, holds it after a space.
+fn names(n: &str, name: &str) -> bool {
+    n.starts_with(name) || (n.starts_with("template <") && n.contains(&format!(" {name}")))
 }
 
 /// Digests `src` with names; the keys and causes of the units whose name
@@ -667,7 +674,7 @@ fn lambdas_in_signatures_collide() {
         ),
     ] {
         let all = digest_all(src);
-        let units: Vec<_> = all.iter().filter(|(_, n, _)| n.starts_with(name)).collect();
+        let units: Vec<_> = all.iter().filter(|(_, n, _)| names(n, name)).collect();
         assert_eq!(units.len(), 1, "{all:?}");
         assert_eq!(units[0].2, [crate::Cause::UndeclaredLocal], "{name}");
     }

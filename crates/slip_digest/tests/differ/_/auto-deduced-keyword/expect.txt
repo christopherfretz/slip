@@ -1,2 +1,2 @@
-removed g(type-parameter-0-0)
-added g(type-parameter-0-0)
+added template <class> decltype(auto) g(type-parameter-0-0)
+removed template <class> auto g(type-parameter-0-0)

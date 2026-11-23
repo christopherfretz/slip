@@ -1,0 +1,9 @@
+# E12: a declaration inserted in the inner scope inner, above inner::f. good
+# inserts a fresh name, declared created; bad inserts inner::limit, which
+# hides ::limit from the call in f. The scope is a namespace, not a block:
+# any declaration statement inserted into a block changes its function's
+# unit (spec/digest-kinds.md DeclStmt), so a correct edit there could not
+# verify. The created line is NoUnit in bad and left out there. Also
+# expected in bad: added inner::limit(), the inserted declaration itself.
+good: verified
+bad:  mismatch changed inner::f(int) @ main.cpp:5

@@ -1,3 +1,7 @@
 changed D
 added D::B1(int)
-removed D::D
+removed D::<shadow B1::B1(B1 &&)>
+removed D::<shadow B1::B1(const B1 &)>
+removed D::<shadow B1::B1(int)>
+removed D::<shadow B1::B1(long)>
+removed D::<using B1::B1>

@@ -1,4 +1,9 @@
 changed C
-changed C::C
-added C::C
-removed C::C
+changed C::<shadow A::A(A &&)>
+changed C::<shadow A::A(const A &)>
+changed C::<shadow A::A(int)>
+added C::<using A::A>
+removed C::<shadow B2::B2()>
+removed C::<shadow B2::B2(B2 &&)>
+removed C::<shadow B2::B2(const B2 &)>
+removed C::<using B2::B2>

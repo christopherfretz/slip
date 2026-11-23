@@ -1,0 +1,2 @@
+# The dependent array bound is profiled (WP-036): two keys.
+added template <int> void f(int (&)[N + 1])

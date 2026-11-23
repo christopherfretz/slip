@@ -1,0 +1,5 @@
+# N01: moved code names the staying legacy::Dep unqualified.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch removed legacy::take(legacy::Dep) @ main.cpp:4

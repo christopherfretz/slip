@@ -1,1 +1,1 @@
-added f(char (*)[N + 2])
+added template <int> void f(char (*)[N + 2])

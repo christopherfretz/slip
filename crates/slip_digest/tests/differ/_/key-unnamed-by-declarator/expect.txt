@@ -1,7 +1,7 @@
 removed s
 added t
-removed (anonymous struct)
-added (anonymous struct)
-removed (anonymous struct)::a
-added (anonymous struct)::a
 changed <order>
+added (anonymous struct for t)
+added (anonymous struct for t)::a
+removed (anonymous struct for s)
+removed (anonymous struct for s)::a

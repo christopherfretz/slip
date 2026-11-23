@@ -1,0 +1,3 @@
+resolved A<int>::m::<default_argument 0>
+resolved A<int>::A()::<exception_spec>
+added h()

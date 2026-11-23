@@ -1,0 +1,3 @@
+# The type-constraint is in the key (WP-036); the head in the display name
+# writes it in place of `class`.
+added template <C2> void f(type-parameter-0-0)

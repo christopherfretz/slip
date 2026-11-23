@@ -1,2 +1,2 @@
 # expr_maps is called by the expression area (expr.rs)
-changed f()
+changed template <class> int f()

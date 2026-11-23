@@ -1,4 +1,4 @@
 changed R
-added R::g(int, type-parameter-0-0...)
-removed R::g(type-parameter-0-0...)
+added template <class...> decltype(((ts + Us()) + ...)) R::g(int, type-parameter-0-0...)
+removed template <class...> decltype(((ts + Us()) + ...)) R::g(type-parameter-0-0...)
 changed p

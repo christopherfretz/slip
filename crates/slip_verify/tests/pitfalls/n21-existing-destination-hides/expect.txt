@@ -1,0 +1,3 @@
+# N21: acme exists and has helper(long); the moved caller's helper(1) meant ::helper(int).
+good: verified
+bad:  mismatch changed legacy::caller() @ main.cpp:7
