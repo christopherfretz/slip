@@ -387,13 +387,13 @@ fn scope_owner(w: &Walk<'_>, c: DeclId) -> Result<DeclId, Cause> {
 /// The template whose head declares template parameter `p` (Kiln gives a
 /// template parameter the template's context, not the template), from
 /// the map [`param_templates`] builds.
-fn param_template(w: &Walk<'_>, p: DeclId) -> Option<DeclId> {
+pub(crate) fn param_template(w: &Walk<'_>, p: DeclId) -> Option<DeclId> {
     w.local.param_templates.as_ref().and_then(|m| m.get(&p).copied())
 }
 
 /// Builds the map [`param_template`] reads, once per walk, when the
 /// first closure owned by a template parameter needs it.
-fn param_templates(w: &mut Walk<'_>) {
+pub(crate) fn param_templates(w: &mut Walk<'_>) {
     if w.local.param_templates.is_some() {
         return;
     }
