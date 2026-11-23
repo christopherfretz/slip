@@ -1470,6 +1470,7 @@ The rest of profile mode:
   11. *Qualifiers of unresolved names and of declarations.* A qualifier the
      full walk writes in canonical form (`DependentScopeDeclRefExpr.a`,
      `TemplateTables` `expr_nns` of an unresolved name or a dependent
+     member access, `ColdExprData` `member_overload` of an overloaded
      member access) is, in a unit stream, read as written into the list
      (`Walk::write_written_nns`): each level that names a type by rule 2
      (a `decltype` by its operand, a specialisation by its arguments, an
@@ -1480,9 +1481,32 @@ The rest of profile mode:
      profile mode does for every qualifier with a level that names a
      type (a function of the canonical qualifier). A using-declaration's
      qualifier as written is read the same way into its unit's list (its
-     key writes the canonical one). A `using enum` in a templated context
-     is `spelling/using-enum`: Kiln keeps the enumeration, not the
-     qualifier or alias it was named through.
+     key writes the canonical one). The canonical writer
+     (`Walk::write_canonical_nns`) is called only where the canonical
+     form loses nothing (`spec/landed/digest-kinds/WP-041.md`, the table
+     of its callers).
+
+     *Templated.* A declaration is templated when it, or a declaration
+     on its semantic or its lexical context chain (each step taking
+     either context, so that an out-of-line member is reached through its
+     class and a friend defined in a class through the class it is
+     written in), is a template, a template's pattern or a partial
+     specialisation. Kiln records no template parameter lists on an
+     out-of-line member: its semantic context is what tells it. A stream
+     is templated when its unit is, or while the walk is inside a
+     generic lambda's body (its call operator is a template). A
+     declaration whose chain cannot be followed to its end is
+     templated. Only templated code can hold an instantiation-dependent
+     operand, and there, where Kiln keeps no written form, the unit is
+     indeterminate:
+     - a `using enum` (`spelling/using-enum`): Kiln keeps the
+       enumeration, not the qualifier or alias it was named through;
+     - a qualified pseudo-destructor whose qualifier Kiln did not keep
+       (neither `expr_nns` nor `pseudo_dtor_first`):
+       `spelling/pseudo-destructor-qualifier`;
+     - a destructor named by member access (`q->~X<..>()`): Kiln keeps
+       the destructor, not the name as written: `spelling/destructor-name`.
+     Off unit level each raises the mark instead.
   A key reads no spelling: two declarations are one entity by
   [temp.over.link] whatever their found sets, and a difference in the
   sets is a difference of the units. No hazard of first spellings is
