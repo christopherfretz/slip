@@ -592,6 +592,31 @@ fn g2_header_edited() {
     assert_eq!(reason(&v), expect);
 }
 
+// §5.3 G2: a file in one list only, after every file in both (path
+// order): a header the subject's `__has_include` finds only after the
+// map phase, and one it found then that is gone.
+#[test]
+fn g2_header_added_and_removed() {
+    let main = "#if __has_include(\"zz.h\")\n#include \"zz.h\"\n#endif\nint a = 1;\n";
+    for added in [true, false] {
+        let tree = Tree::new("g2zz", &[("a.cpp", main)]);
+        write(&tree.post.join("a.cpp"), "int a = 2;\n");
+        if !added {
+            write(&tree.subject.join("zz.h"), "int z = 1;\n");
+        }
+        let o = tree.observer();
+        tree.map(&o);
+        if added {
+            write(&tree.subject.join("zz.h"), "int z = 1;\n");
+        } else {
+            std::fs::remove_file(tree.subject.join("zz.h")).unwrap();
+        }
+        let v = tree.verify(&o);
+        let expect = format!("pre-image: {} changed since the map phase", tree.path("zz.h"));
+        assert_eq!(reason(&v), expect, "added {added}");
+    }
+}
+
 // §5.3 G2's note: a subject edited after the map phase without a change
 // of digest is verified at the sums; G2 is not reached.
 #[test]
@@ -632,10 +657,9 @@ fn r2_digests_not_those_of_the_map_shard() {
 // spec/landed/verify/WP-052.md).
 #[test]
 fn g3_post_image_changed_during_the_job() {
-    for (case, one, two) in [
-        ("tu", "int a = 1;\n", "int a = 2;\n"),
-        ("inputs", "int a = 1;\n", "int a = 1; \n"),
-    ] {
+    for (case, one, two) in
+        [("tu", "int a = 1;\n", "int a = 2;\n"), ("inputs", "int a = 1;\n", "int a = 1; \n")]
+    {
         g3_case(case, one, two);
     }
 }

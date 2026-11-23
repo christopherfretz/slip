@@ -152,5 +152,9 @@ mod tests {
         let mut g = vec![finding(Some(d(7)))];
         fill(&mut g, 1, None, &side(&[(7, &long)]));
         assert_eq!(g[0].name, "x".repeat(4095));
+        let exact = "y".repeat(4097);
+        let mut g = vec![finding(Some(d(7)))];
+        fill(&mut g, 1, None, &side(&[(7, &exact)]));
+        assert_eq!(g[0].name, "y".repeat(4096));
     }
 }
