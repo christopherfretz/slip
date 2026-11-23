@@ -19,8 +19,8 @@
 //! run records `runs/<plan id>/transform.<round>.<started_unix_ns>.run` and
 //! `write.journal`. Their directories are made by the first publish into
 //! each, so a store initialised before them is a valid store. Objects and
-//! blobs are named by their content: publishing one that is already there
-//! leaves the file untouched. An exclusive [`Store::open`] of a store that
+//! blobs are named by their content: a file is left untouched when it
+//! already holds that content, and replaced otherwise. An exclusive [`Store::open`] of a store that
 //! holds `write.journal` is refused ([`StoreError::UnfinishedWrite`]);
 //! [`Store::open_for_recovery`] is the one opener that accepts it.
 //!
@@ -671,8 +671,8 @@ impl Store {
     /// Publishes a container of `object`'s kind under its content id, which
     /// is returned. `Invalid` (nothing written) if `bytes` is not a
     /// container of that kind (`spec/model.md` §5: magic, kind, version 1,
-    /// trailer, section framing; the sections are not decoded). Content
-    /// that is already there is left untouched.
+    /// trailer, section framing; the sections are not decoded). The file
+    /// is left untouched when it already holds that content.
     pub fn publish_object(&self, object: Object, bytes: &[u8]) -> Result<Digest> {
         let id = container_id(bytes, object.kind())?;
         self.publish_once(&self.object_path(object, &id), bytes)?;
@@ -696,8 +696,8 @@ impl Store {
     }
 
     /// Publishes a file's bytes under their content digest
-    /// (`spec/model.md` §6), which is returned. A blob that is already
-    /// there is left untouched.
+    /// (`spec/model.md` §6), which is returned. The file is left untouched
+    /// when it already holds that content.
     pub fn publish_blob(&self, bytes: &[u8]) -> Result<Digest> {
         let id = content_digest(bytes);
         self.publish_once(&self.blob_path(&id), bytes)?;
@@ -719,33 +719,37 @@ impl Store {
         Ok(Some(bytes))
     }
 
-    /// The least round for which `plan` has neither `map.<r>` nor
-    /// `verify.<r>` among its shard directories and no
-    /// `transform.<r>.*.run` among its run records (`spec/edits.md` §8,
-    /// `spec/exec.md` §2). Names whose round is not canonical decimal are
-    /// not rounds.
+    /// The round a transform's run of `plan` takes (`spec/edits.md` §8,
+    /// `spec/exec.md` §2): one more than the greatest round the plan has
+    /// taken, and at least 1. A round is taken by a shard directory
+    /// `map.<r>` or `verify.<r>` (a directory: a file of that name takes
+    /// nothing) or a transform run record `transform.<r>.<ns>.run`, with
+    /// `r` and `ns` canonical decimal. `Invalid` if the greatest round
+    /// taken is `u64::MAX`.
     pub fn next_round(&self, plan: &Digest) -> Result<u64> {
-        let mut taken = HashSet::new();
+        let mut greatest: Option<u64> = None;
+        let mut take = |r: u64| greatest = Some(greatest.map_or(r, |g| g.max(r)));
         let shards = self.root().join("shards").join(plan.to_string());
-        for name in list_names(&shards)? {
+        for (name, is_dir) in list_entries(&shards)? {
             let round = [Phase::Map, Phase::Verify].into_iter().find_map(|phase| {
                 name.strip_prefix(phase_name(phase))?.strip_prefix('.').and_then(decimal)
             });
-            if let Some(r) = round {
-                taken.insert(r);
+            if let (Some(r), true) = (round, is_dir) {
+                take(r);
             }
         }
         let runs = self.root().join("runs").join(plan.to_string());
         for name in list_names(&runs)? {
             if let Some((r, _)) = parse_transform_run_name(&name) {
-                taken.insert(r);
+                take(r);
             }
         }
-        let mut round = 0;
-        while taken.contains(&round) {
-            round += 1;
+        match greatest {
+            None => Ok(1),
+            Some(g) => g.checked_add(1).map(|r| r.max(1)).ok_or_else(|| {
+                StoreError::Invalid(format!("plan {plan} has taken the last round, {g}"))
+            }),
         }
-        Ok(round)
     }
 
     /// Whether a transform's run took `round` of `plan`: it has a transform
@@ -788,11 +792,25 @@ impl Store {
         self.root().join("write.journal")
     }
 
-    /// Publishes content-addressed `bytes` at `dest` unless a file is
-    /// already there, which is then left untouched.
+    /// Publishes content-addressed `bytes` at `dest`, leaving `dest`
+    /// untouched when it already holds that content: a regular file (not a
+    /// symbolic link) whose bytes are `bytes`. Anything else at the name (other
+    /// bytes, a symbolic link, dangling or not) is replaced by the publish of
+    /// §2.1; a directory there makes the rename fail (`Io`).
+    ///
+    /// Comparing the bytes is the check of the content's name: for a blob,
+    /// the file hashes to the id; for an object, it passes the frame check
+    /// and its content id is the id (two files with one valid trailer
+    /// differ only by a collision of the digest).
     fn publish_once(&self, dest: &Path, bytes: &[u8]) -> Result<()> {
         match fs::symlink_metadata(dest) {
-            Ok(_) => Ok(()),
+            Ok(m) if m.is_file() => match fs::read(dest) {
+                Ok(have) if have == bytes => Ok(()),
+                Ok(_) => self.inner.publish(dest, bytes),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => self.inner.publish(dest, bytes),
+                Err(e) => Err(StoreError::Io { path: dest.to_path_buf(), error: e }),
+            },
+            Ok(_) => self.inner.publish(dest, bytes),
             Err(e) if e.kind() == io::ErrorKind::NotFound => self.inner.publish(dest, bytes),
             Err(e) => Err(StoreError::Io { path: dest.to_path_buf(), error: e }),
         }
@@ -1045,6 +1063,25 @@ fn parse_run_name(name: &str, phase: Phase) -> Option<(u64, u64)> {
     let rest = name.strip_suffix(".run")?.strip_prefix(phase_name(phase))?.strip_prefix('.')?;
     let (round, started) = rest.split_once('.')?;
     Some((decimal(round)?, decimal(started)?))
+}
+
+/// The UTF-8 names in `dir`, each with whether it is a directory (not
+/// following a symbolic link); none if `dir` does not exist.
+fn list_entries(dir: &Path) -> Result<Vec<(String, bool)>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(StoreError::Io { path: dir.to_path_buf(), error: e }),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(io_err(dir))?;
+        let is_dir = entry.file_type().map_err(io_err(&entry.path()))?.is_dir();
+        if let Ok(name) = entry.file_name().into_string() {
+            out.push((name, is_dir));
+        }
+    }
+    Ok(out)
 }
 
 /// The UTF-8 names in `dir`; none if it does not exist.

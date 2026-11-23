@@ -23,7 +23,7 @@ use slip_exec::jobserver::{self, Pool};
 use slip_exec::pool::{self, JobExtra, Options, PoolError, Summary, WorkerCommand};
 use slip_exec::process::{Sample, Sampler};
 use slip_exec::signals;
-use slip_exec::store::{Access, Store, StoreError};
+use slip_exec::store::{Access, Store};
 use slip_exec::worker::{Post, PostImage};
 use slip_model::formats::content_id;
 use slip_model::{
@@ -535,7 +535,7 @@ fn s5_2_job_extra_reaches_the_worker() {
 
 /// §5.2, §5.7: `run_with` refuses, before any worker is started, a map
 /// phase with a `post`, a verify phase with a `transform`, and a verify
-/// phase without a `post` (so `run` refuses phase `verify`): `Invalid`,
+/// phase without a `post` (so `run` refuses phase `verify`): `Refused`,
 /// no run record, no log, no shard.
 #[test]
 fn s5_2_run_with_refuses_what_the_task_refuses() {
@@ -558,13 +558,16 @@ fn s5_2_run_with_refuses_what_the_task_refuses() {
         let r = run_bounded_with(store, &obs, *phase, extra, &fake_worker(1), &opts, &sampler);
         store = r.store;
         match r.result {
-            Err(PoolError::Store(StoreError::Invalid(m))) => assert!(m.contains(want), "{m}"),
+            Err(e @ PoolError::Refused(m)) => {
+                assert!(m.contains(want), "{m}");
+                assert_eq!(e.to_string(), m, "the text alone");
+            }
             other => panic!("{phase:?} {extra:?}: {other:?}"),
         }
     }
     // `run` is `run_with` with neither field.
     let r = run_bounded_round_phase(store, &obs, Phase::Verify, &opts, &sampler);
-    assert!(matches!(r.result, Err(PoolError::Store(StoreError::Invalid(_)))), "{:?}", r.result);
+    assert!(matches!(r.result, Err(PoolError::Refused(_))), "{:?}", r.result);
     assert_eq!(sampler.pids(), 0, "no worker was started");
     for sub in ["runs", "logs", "shards"] {
         let d = r.store.root().join(sub).join(PLAN.to_string());

@@ -150,6 +150,10 @@ pub struct ObserverOutcome {
 pub enum PoolError {
     Store(StoreError),
     Io(io::Error),
+    /// [`run_with`] was given a phase and a [`JobExtra`] that the task
+    /// refuses (§5.2): a mistake of the caller, not bad input. Nothing was
+    /// started. The text says which combination.
+    Refused(&'static str),
     /// Interrupted by `SIGINT` or `SIGTERM` (§7). The run record with the
     /// remaining jobs `cancelled` was published (best effort).
     Cancelled,
@@ -160,6 +164,7 @@ impl fmt::Display for PoolError {
         match self {
             PoolError::Store(e) => write!(f, "{e}"),
             PoolError::Io(e) => write!(f, "{e}"),
+            PoolError::Refused(what) => f.write_str(what),
             PoolError::Cancelled => write!(f, "interrupted"),
         }
     }
@@ -170,7 +175,7 @@ impl std::error::Error for PoolError {
         match self {
             PoolError::Store(e) => Some(e),
             PoolError::Io(e) => Some(e),
-            PoolError::Cancelled => None,
+            PoolError::Refused(_) | PoolError::Cancelled => None,
         }
     }
 }
@@ -460,8 +465,8 @@ fn refused_extra(phase: Phase, extra: &JobExtra) -> Option<&'static str> {
 /// Runs `phase`, round `round`, of plan `plan_id` over `observers` (in plan
 /// order), every job carrying `extra`, and publishes the run record (§5.3,
 /// §5.4, §6, §7). A combination of `phase` and `extra` that the task
-/// refuses (§5.2) is `PoolError::Store(StoreError::Invalid)` before
-/// anything is started or read. Every observer
+/// refuses (§5.2) is [`PoolError::Refused`] before anything is started or
+/// read. Every observer
 /// ends with a shard in the store, unless the run is cancelled. A
 /// `PoolError::Store` or `Io` is an error of the store's file system (a log
 /// or a coordinator-written shard that cannot be written); the workers are
@@ -481,9 +486,7 @@ pub fn run_with(
     sampler: &dyn Sampler,
 ) -> Result<Summary, PoolError> {
     if let Some(what) = refused_extra(phase, extra) {
-        return Err(PoolError::Store(StoreError::Invalid(format!(
-            "{what} (spec/exec.md §5.2); no worker was started"
-        ))));
+        return Err(PoolError::Refused(what));
     }
     let t0 = Instant::now();
     let started_unix_ns = SystemTime::now()

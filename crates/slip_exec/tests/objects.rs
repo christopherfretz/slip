@@ -105,7 +105,8 @@ fn identity(path: &Path) -> (u64, i64, i64) {
 /// `spec/edits.md` §10.4, `spec/exec.md` §2.2: each object kind is
 /// published under its content id in its directory (made by the first
 /// publish), read back, and found by prefix: none, one, two matches.
-/// Publishing it again leaves the file untouched.
+/// Publishing it again leaves the file untouched when it already holds that
+/// content.
 #[test]
 fn s10_4_objects_published_read_and_found() {
     let dir = scratch("objects");
@@ -248,39 +249,69 @@ fn s10_4_changed_blob_refused() {
 // ---------------------------------------------------------------------------
 // Rounds
 
-/// `spec/exec.md` §2, `spec/edits.md` §8: the next round is the least that
-/// has no shard directory of either phase and no transform run record.
+/// `spec/exec.md` §2, `spec/edits.md` §8: a transform's round is one more
+/// than the greatest round the plan has taken (a shard directory of either
+/// phase, a transform run record), and at least 1.
 #[test]
 fn s2_next_round() {
     let dir = scratch("rounds");
     let store = exclusive(&dir);
+    let shards = |plan: Digest| store.root().join("shards").join(plan.to_string());
+    // A fresh plan: 1, never 0 (round 0 is `slip parse`'s).
     let plan = d(0x50);
-    let shards = store.root().join("shards").join(plan.to_string());
-    // No directory at all.
-    assert_eq!(store.next_round(&plan).unwrap(), 0);
-    fs::create_dir_all(shards.join("map.0")).unwrap();
     assert_eq!(store.next_round(&plan).unwrap(), 1);
-    fs::create_dir_all(shards.join("verify.1")).unwrap();
-    assert_eq!(store.next_round(&plan).unwrap(), 2);
-    // Names that are not rounds are ignored.
-    for name in ["map.02", "verify.x", "other.2", "map2"] {
-        fs::create_dir_all(shards.join(name)).unwrap();
+    // Only `map.0`: 1.
+    fs::create_dir_all(shards(plan).join("map.0")).unwrap();
+    assert_eq!(store.next_round(&plan).unwrap(), 1);
+    // `map.0` and `verify.3`: 4.
+    fs::create_dir_all(shards(plan).join("verify.3")).unwrap();
+    assert_eq!(store.next_round(&plan).unwrap(), 4);
+    // Names that are not rounds, and a plain file named as a shard
+    // directory, take nothing.
+    for name in ["map.07", "verify.x", "other.9", "map9", "verify.+8", "map.-1"] {
+        fs::create_dir_all(shards(plan).join(name)).unwrap();
     }
-    assert_eq!(store.next_round(&plan).unwrap(), 2);
+    fs::write(shards(plan).join("map.9"), b"not a directory").unwrap();
+    assert_eq!(store.next_round(&plan).unwrap(), 4);
+    // A phase's run record takes no round.
+    store.publish_run(&plan, Phase::Map, 7, 11, &phase_run(plan, Phase::Map, 7, 11)).unwrap();
+    assert_eq!(store.next_round(&plan).unwrap(), 4);
     // Another plan's rounds are not this plan's.
-    assert_eq!(store.next_round(&d(0x51)).unwrap(), 0);
-    // A transform run record of round 2, no shard directory of round 2.
-    store.publish_transform_run(&plan, 2, 10, &transform_run(plan, 2, 10)).unwrap();
-    assert_eq!(store.next_round(&plan).unwrap(), 3);
-    // A phase's run record does not take a round: only shard directories
-    // and transform run records do.
-    store.publish_run(&plan, Phase::Map, 3, 11, &phase_run(plan, Phase::Map, 3, 11)).unwrap();
-    assert_eq!(store.next_round(&plan).unwrap(), 3);
+    assert_eq!(store.next_round(&d(0x51)).unwrap(), 1);
 
-    // A transform run record of round 2 alone: the least free round is 0.
+    // Only a transform run record of round 2: 3.
     let other = d(0x52);
     store.publish_transform_run(&other, 2, 10, &transform_run(other, 2, 10)).unwrap();
-    assert_eq!(store.next_round(&other).unwrap(), 0);
+    assert_eq!(store.next_round(&other).unwrap(), 3);
+
+    // A gap (0, 1, 5): 6, not 2.
+    let gap = d(0x53);
+    fs::create_dir_all(shards(gap).join("map.0")).unwrap();
+    fs::create_dir_all(shards(gap).join("verify.1")).unwrap();
+    store.publish_transform_run(&gap, 5, 10, &transform_run(gap, 5, 10)).unwrap();
+    assert_eq!(store.next_round(&gap).unwrap(), 6);
+}
+
+/// `spec/exec.md` §2: a transform run record's name has canonical decimal
+/// `round` and `ns`; other names are not records.
+#[test]
+fn s2_transform_run_names_are_canonical() {
+    let dir = scratch("runt-names");
+    let store = exclusive(&dir);
+    let plan = d(0x54);
+    let runs = store.root().join("runs").join(plan.to_string());
+    fs::create_dir_all(&runs).unwrap();
+    let bytes = transform_run(plan, 1, 5);
+    for name in
+        ["transform.01.5.run", "transform.1.+5.run", "transform.1.05.run", "transform.1.run"]
+    {
+        fs::write(runs.join(name), &bytes).unwrap();
+    }
+    assert!(!store.is_transform_round(&plan, 1).unwrap());
+    assert_eq!(store.next_round(&plan).unwrap(), 1);
+    fs::write(runs.join("transform.1.5.run"), &bytes).unwrap();
+    assert!(store.is_transform_round(&plan, 1).unwrap());
+    assert_eq!(store.next_round(&plan).unwrap(), 2);
 }
 
 /// `spec/exec.md` §2.2: a round is a transform's when it has a transform
@@ -410,4 +441,109 @@ fn s7_3_journal_refuses_exclusive_open() {
     drop(Store::open(&root, Access::Exclusive).unwrap());
     // Without a journal, recovery opens as an exclusive open does.
     drop(Store::open_for_recovery(&root).unwrap());
+}
+
+/// `spec/exec.md` §2.2: an object or a blob is left untouched only when
+/// the file holds that content. A blob changed on disk, an object replaced
+/// by junk and a dangling symbolic link at the name are replaced by the
+/// publish; a directory at the name is an `Io` error.
+#[test]
+fn s2_2_publish_repairs_what_is_not_the_content() {
+    let dir = scratch("repair");
+    let store = exclusive(&dir);
+    // A blob changed on disk.
+    let id = store.publish_blob(b"pre-image").unwrap();
+    fs::write(store.blob_path(&id), b"pre-imagE").unwrap();
+    assert!(store.read_blob(&id).is_err());
+    assert_eq!(store.publish_blob(b"pre-image").unwrap(), id);
+    assert_eq!(store.read_blob(&id).unwrap().as_deref(), Some(&b"pre-image"[..]));
+    // An object replaced by junk.
+    let bytes = container(*b"OVLY", b"overlay");
+    let ov = store.publish_object(Object::Overlay, &bytes).unwrap();
+    let path = store.object_path(Object::Overlay, &ov);
+    fs::write(&path, b"junk").unwrap();
+    assert_eq!(store.publish_object(Object::Overlay, &bytes).unwrap(), ov);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    // A dangling symbolic link at a blob's name, and one to a file that
+    // holds the right bytes: both replaced by a regular file.
+    for target in [dir.join("nowhere"), dir.join("right")] {
+        fs::write(dir.join("right"), b"linked").unwrap();
+        let id = slip_model::hash::content_digest(b"linked");
+        let at = store.blob_path(&id);
+        let _ = fs::remove_file(&at);
+        std::os::unix::fs::symlink(&target, &at).unwrap();
+        assert_eq!(store.publish_blob(b"linked").unwrap(), id);
+        assert!(fs::symlink_metadata(&at).unwrap().is_file(), "{}", target.display());
+        assert_eq!(store.read_blob(&id).unwrap().as_deref(), Some(&b"linked"[..]));
+    }
+    // A directory at the name.
+    let id = slip_model::hash::content_digest(b"dir");
+    fs::create_dir_all(store.blob_path(&id).join("x")).unwrap();
+    assert!(matches!(store.publish_blob(b"dir"), Err(StoreError::Io { .. })));
+    assert_eq!(fs::read_dir(store.root().join("tmp")).unwrap().count(), 0);
+}
+
+/// `spec/exec.md` §2: `write.journal` refuses an exclusive open whatever
+/// kind of entry it is: a symbolic link (dangling or not) or a directory.
+#[test]
+fn s7_3_journal_of_any_kind_refuses() {
+    let dir = scratch("journal-kinds");
+    let root = dir.join("store");
+    let journal = exclusive(&dir).journal_path();
+    fs::write(dir.join("target"), b"j").unwrap();
+    let make: [(&str, Box<dyn Fn()>); 3] = [
+        (
+            "dangling link",
+            Box::new(|| std::os::unix::fs::symlink(dir.join("none"), &journal).unwrap()),
+        ),
+        ("link", Box::new(|| std::os::unix::fs::symlink(dir.join("target"), &journal).unwrap())),
+        ("directory", Box::new(|| fs::create_dir(&journal).unwrap())),
+    ];
+    for (what, make) in &make {
+        make();
+        match Store::open(&root, Access::Exclusive) {
+            Err(StoreError::UnfinishedWrite(p)) => assert_eq!(p, journal, "{what}"),
+            other => panic!("{what}: {other:?}"),
+        }
+        assert!(!root.join("lock").exists(), "{what}");
+        drop(Store::open_for_recovery(&root).unwrap());
+        if fs::symlink_metadata(&journal).unwrap().is_dir() {
+            fs::remove_dir(&journal).unwrap();
+        } else {
+            fs::remove_file(&journal).unwrap();
+        }
+    }
+}
+
+/// `spec/exec.md` §2 "Cleaning": an exclusive open refused for the journal
+/// leaves a dead process's stale `tmp/` entries in place (it refuses before
+/// cleaning); `open_for_recovery` cleans them.
+#[test]
+fn s7_3_refused_open_leaves_stale_entries() {
+    let dir = scratch("journal-stale");
+    let root = dir.join("store");
+    let journal = exclusive(&dir).journal_path();
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let dead = child.id();
+    child.wait().unwrap();
+    let stale = root.join("tmp").join(format!("{dead}.0.tmp"));
+    let stale_dir = root.join("tmp").join(format!("{dead}.d"));
+    fs::write(&stale, b"stale").unwrap();
+    fs::create_dir_all(stale_dir.join("x")).unwrap();
+    fs::write(&journal, b"journal").unwrap();
+    assert!(matches!(Store::open(&root, Access::Exclusive), Err(StoreError::UnfinishedWrite(_))));
+    assert!(stale.exists() && stale_dir.exists(), "the refused open cleaned");
+    drop(Store::open_for_recovery(&root).unwrap());
+    assert!(!stale.exists() && !stale_dir.exists(), "recovery did not clean");
+}
+
+/// `spec/exec.md` §2.2: the text of `UnfinishedWrite`.
+#[test]
+fn s2_2_unfinished_write_display() {
+    let e = StoreError::UnfinishedWrite(PathBuf::from("/s/write.journal"));
+    assert_eq!(
+        e.to_string(),
+        "the store has an unfinished write of the working tree (/s/write.journal); \
+         run `slip apply --recover`"
+    );
 }

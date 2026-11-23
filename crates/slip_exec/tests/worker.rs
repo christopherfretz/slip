@@ -284,7 +284,7 @@ fn s5_2_protocol_2_fields_round_trip() {
 }
 
 /// §5.5: root maps not strictly ascending by `subject` (equal, or
-/// descending) are refused at the first out of order; a `PostImage` tag
+/// descending) are `Malformed` at the first byte of the first out of order; a `PostImage` tag
 /// other than 0 and 1 is refused at the tag; an `opt` tag other than 0 and
 /// 1 is refused at that byte.
 #[test]
@@ -331,6 +331,43 @@ fn s5_5_post_image_rejected() {
         let e = ToWorker::decode(&bytes).unwrap_err();
         assert_eq!((e.kind, e.offset), (ErrorKind::Malformed, at));
     }
+}
+
+/// §5.5, `spec/model.md` §2: the encodings of the protocol 2 fields. A
+/// byte after the last field is `Malformed` at that byte; the `PostImage`
+/// tag is a `uv`, so a non-minimal one (`80 00`) is `Malformed` at its
+/// redundant byte; a root-map count larger than the bytes left is
+/// `TooLarge` at the count.
+#[test]
+fn s5_5_protocol_2_encodings_rejected() {
+    let post = Post { pre: 0, declared: d(1), image: PostImage::Tree(vec![]) };
+    let job = Job {
+        store: b"/s".to_vec(),
+        plan: d(0x44),
+        phase: Phase::Verify,
+        round: 1,
+        observer: observer(&["cc"]),
+        transform: None,
+        post: Some(post),
+    };
+    let bytes = ToWorker::Job(Box::new(job)).encode();
+    // The job ends with: image tag 00, count 00.
+    let (tag_at, count_at) = (bytes.len() - 2, bytes.len() - 1);
+    assert_eq!(&bytes[tag_at..], &[0, 0]);
+    let mut extra = bytes.clone();
+    extra.push(0);
+    let e = ToWorker::decode(&extra).unwrap_err();
+    assert_eq!((e.kind, e.offset), (ErrorKind::Malformed, bytes.len()));
+    // Tag 0 written as 80 00.
+    let mut long = bytes[..tag_at].to_vec();
+    long.extend_from_slice(&[0x80, 0x00, 0x00]);
+    let e = ToWorker::decode(&long).unwrap_err();
+    assert_eq!((e.kind, e.offset), (ErrorKind::Malformed, tag_at + 1));
+    // A count of 5 root maps and nothing after it.
+    let mut many = bytes.clone();
+    many[count_at] = 5;
+    let e = ToWorker::decode(&many).unwrap_err();
+    assert_eq!((e.kind, e.offset), (ErrorKind::TooLarge, count_at));
 }
 
 #[test]
