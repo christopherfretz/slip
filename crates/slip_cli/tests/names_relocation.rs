@@ -87,7 +87,7 @@ fn demo(text: &str) -> Demo {
     for line in text.lines().map(str::trim).filter(|l| !l.starts_with('#')) {
         let Some((k, v)) = line.split_once('=') else { continue };
         match k.trim() {
-            "corpus" => d.corpus = v.trim().trim_matches('"').to_owned(),
+            "corpus" => v.trim().trim_matches('"').clone_into(&mut d.corpus),
             "roots" => d.roots = strings(v),
             "only" => d.only = strings(v),
             _ => {}
@@ -237,6 +237,30 @@ fn declare(text: &str, image: &Image, declarers: &[&Observer]) -> Declared {
     finish(&lines, resolved, &mapped).unwrap_or_else(|e| panic!("declared.txt: {e}"))
 }
 
+/// The case's tree at `tree` (hard links to the roots of `src`, its
+/// base's edits and then its own applied) and the image mapping each root
+/// to it.
+fn case_image(demo_dir: &Path, d: &Demo, case_dir: &Path, src: &Path, tree: &Path) -> Image {
+    for root in &d.roots {
+        link_tree(&src.join(root), &tree.join(root));
+    }
+    let mut chain = vec![case_dir.to_path_buf()];
+    while let Ok(b) = std::fs::read_to_string(chain.last().unwrap().join("base")) {
+        chain.push(demo_dir.join("cases").join(b.trim()));
+    }
+    for dir in chain.iter().rev() {
+        if let Ok(e) = std::fs::read_to_string(dir.join("edit.txt")) {
+            apply_edit(tree, &e);
+        }
+    }
+    let maps = d
+        .roots
+        .iter()
+        .map(|r| RootMap { subject: bytes(&src.join(r)), post: bytes(&tree.join(r)) })
+        .collect();
+    Image::new(maps).unwrap()
+}
+
 /// One case of a demo directory over the corpus at `corpus` (`src/` and
 /// `build/compile_commands.json`), with its work in `work` (removed first).
 fn measure(demo_dir: &Path, case: &str, corpus: &Path, work: &Path) -> Counts {
@@ -271,27 +295,8 @@ fn measure(demo_dir: &Path, case: &str, corpus: &Path, work: &Path) -> Counts {
     }
     c.keys_with_entry = keys.len();
 
-    // The case's tree: its base's edits, then its own.
-    let tree = work.join("tree");
-    for root in &d.roots {
-        link_tree(&src.join(root), &tree.join(root));
-    }
     let case_dir = demo_dir.join("cases").join(case);
-    let mut chain = vec![case_dir.clone()];
-    while let Ok(b) = std::fs::read_to_string(chain.last().unwrap().join("base")) {
-        chain.push(demo_dir.join("cases").join(b.trim()));
-    }
-    for dir in chain.iter().rev() {
-        if let Ok(e) = std::fs::read_to_string(dir.join("edit.txt")) {
-            apply_edit(&tree, &e);
-        }
-    }
-    let maps = d
-        .roots
-        .iter()
-        .map(|r| RootMap { subject: bytes(&src.join(r)), post: bytes(&tree.join(r)) })
-        .collect();
-    let image = Image::new(maps).unwrap();
+    let image = case_image(demo_dir, &d, &case_dir, &src, &work.join("tree"));
 
     // The declared changes, resolved in the case's observers.
     let declared = match std::fs::read_to_string(case_dir.join("declared.txt")) {

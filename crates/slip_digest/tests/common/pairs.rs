@@ -319,9 +319,8 @@ pub fn judge_names(
             Some(y) if x != y => {
                 got.insert(Expect::NamesChanged(a.name(k)));
             }
-            Some(_) => {}
             None if equal => problems.push(format!("names digest only in A: {}", a.name(k))),
-            None => {}
+            Some(_) | None => {}
         }
     }
     if equal {

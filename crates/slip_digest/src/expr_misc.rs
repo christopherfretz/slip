@@ -136,10 +136,10 @@ pub(crate) fn predefined_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     );
     // The names digest (digest §9): the value Kiln evaluated, when it
     // made one (none in a dependent context).
-    if let (Some(k), Some(lit)) = (predefined(n.aux), name_literal(w, &n)) {
+    if let (Some(kind), Some(lit)) = (predefined(n.aux), name_literal(w, &n)) {
         let ast = w.ast;
-        let l = ast.exprs.string_lit(lit);
-        crate::value::feed_predefined(w, k, ast.strings.get(l).1);
+        let text = ast.exprs.string_lit(lit);
+        crate::value::feed_predefined(w, kind, ast.strings.get(text).1);
     }
     crate::local::write_scope_names(w, s);
 }
@@ -200,7 +200,9 @@ fn feed_source_loc_values(w: &mut Walk<'_>, e: ExprId, kind: Option<SourceLocKin
         }
         Some(SourceLocKind::SourceLocStruct) => {
             let Some(location) = v.location else { return };
-            if let Some(pretty) = crate::value::impl_function_name(w, location) {
+            if let crate::value::ImplObject::Impl(pretty) =
+                crate::value::impl_function_name(w, location)
+            {
                 crate::value::feed_impl(w, pretty.map(|l| ast.strings.get(l).1));
             }
         }

@@ -953,12 +953,18 @@ fn feed_const(w: &mut Walk<'_>, cx: &Ctx, c: ConstValueId) {
     }
 }
 
+/// What the pointer of a `std::source_location` reaches (digest §9).
+pub(crate) enum ImplObject {
+    /// Not an `__impl` object a `__builtin_source_location()` use built.
+    Other,
+    /// Such an object, with its function name's literal (`None` for a use
+    /// that built none).
+    Impl(Option<StringLitId>),
+}
+
 /// The `__impl` object a `__builtin_source_location()` use built, and
-/// its function name's literal (`None` for a use that built none).
-pub(crate) fn impl_function_name(
-    w: &mut Walk<'_>,
-    location: ConstValueId,
-) -> Option<Option<StringLitId>> {
+/// its function name's literal.
+pub(crate) fn impl_function_name(w: &mut Walk<'_>, location: ConstValueId) -> ImplObject {
     let Some(Scalar::Pointer {
         ty: _,
         base: PtrBase::Const(obj),
@@ -967,9 +973,12 @@ pub(crate) fn impl_function_name(
         past: _,
     }) = w.ast.consts.scalar(location)
     else {
-        return None;
+        return ImplObject::Other;
     };
-    name_values(w).objects.get(&obj.index()).map(|i| i.pretty)
+    name_values(w)
+        .objects
+        .get(&obj.index())
+        .map_or(ImplObject::Other, |i| ImplObject::Impl(i.pretty))
 }
 
 /// The literal a source-location string value points to.
