@@ -27,6 +27,7 @@ usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j 
                   [--estimate-base <size>] [--estimate-per-byte <n>]
                   [--worker-jobs <n>] [--worker-stack <size>]
        slip declare --plan <id or file> --from <file> --out <file>
+                  [--owned <path>]... [--readonly <path>]...
                   [--root <dir>]... [--post <dir>]... [--store <dir>] [--only <substring>]... [--limit <n>]
        slip units --plan <id or file> [--post-image] [--root <dir>]... [--post <dir>]...
                   [--store <dir>] [--only <substring>]... [--limit <n>] [--match <substring>]...
@@ -167,6 +168,10 @@ pub struct DeclareArgs {
     pub from: PathBuf,
     /// `--out`: the `DECL` container written.
     pub out: PathBuf,
+    /// `--owned` and `--readonly`: the run's files, as given (made real
+    /// paths by the command); `--readonly` only with `--owned`.
+    pub owned: Vec<PathBuf>,
+    pub readonly: Vec<PathBuf>,
     pub image: ImageArgs,
     pub store: PathBuf,
     pub only: Vec<Vec<u8>>,
@@ -594,13 +599,30 @@ fn parse_verify(args: &[OsString]) -> Result<Invocation, UsageError> {
 fn parse_declare(args: &[OsString]) -> Result<Invocation, UsageError> {
     let values = options_only(
         args,
-        &["--plan", "--from", "--out", "--root", "--post", "--store", "--only", "--limit"],
-        &["--only", "--root", "--post"],
+        &[
+            "--plan",
+            "--from",
+            "--out",
+            "--owned",
+            "--readonly",
+            "--root",
+            "--post",
+            "--store",
+            "--only",
+            "--limit",
+        ],
+        &["--only", "--root", "--post", "--owned", "--readonly"],
     )?;
+    let (owned, readonly) = (values.paths("--owned"), values.paths("--readonly"));
+    if owned.is_empty() && !readonly.is_empty() {
+        return usage("`--readonly` needs `--owned`");
+    }
     Ok(Invocation::Declare(DeclareArgs {
         plan: values.plan("declare")?,
         from: values.required_path("declare", "--from")?,
         out: values.required_path("declare", "--out")?,
+        owned,
+        readonly,
         image: values.image()?,
         store: values.store(),
         only: values.bytes("--only"),
