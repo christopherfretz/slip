@@ -74,6 +74,67 @@ impl TokenStarts {
     }
 }
 
+/// The tokens of a unit as Kiln's lexer sees them: [`Unit::token_end`] and
+/// [`Unit::is_token_start`] on a value that is `Sync` ([`Unit::tokens`]).
+/// It borrows the unit; the token starts it lexes are kept in the unit.
+#[derive(Clone, Copy)]
+pub struct Tokens<'u> {
+    sm: &'u SourceManager,
+    interner: &'u Interner,
+    lex: LexOptions,
+    starts: &'u TokenStarts,
+}
+
+impl std::fmt::Debug for Tokens<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens").finish_non_exhaustive()
+    }
+}
+
+impl<'u> Tokens<'u> {
+    /// The unit's source manager.
+    pub fn sm(&self) -> &'u SourceManager {
+        self.sm
+    }
+
+    /// [`Unit::token_end`].
+    pub fn token_end(&self, at: Loc) -> Option<Loc> {
+        crate::kiln::lex::token_end(self.sm, self.interner, at, self.lex)
+    }
+
+    /// [`Unit::is_token_start`].
+    pub fn is_token_start(&self, at: Loc) -> bool {
+        let at = if at.is_macro() { self.sm.spelling_loc(at) } else { at };
+        if !at.is_valid() || at.is_macro() {
+            return false;
+        }
+        let Some((file, pos)) = self.sm.offset_of(at) else { return false };
+        self.starts.of(file, || self.lex_starts(file)).binary_search(&pos).is_ok()
+    }
+
+    /// The offsets of the tokens of `file`, lexed from its start.
+    fn lex_starts(&self, file: FileId) -> Vec<u32> {
+        use crate::kiln::lex::{LexMode, Lexer, TokKind};
+        let len = u32::try_from(self.sm.text(file).len()).unwrap_or(u32::MAX);
+        let base = self.sm.loc(file, 0);
+        let mut o = self.lex;
+        o.keep_comments = false;
+        let mut lx = Lexer::new_in_range(self.sm, self.interner, file, 0..len, base, o);
+        lx.set_mode(LexMode::Normal);
+        let mut out = Vec::new();
+        loop {
+            let t = lx.next();
+            if t.kind == TokKind::Eof {
+                break;
+            }
+            if let Some(d) = self.sm.same_entry_distance(base, t.span.lo) {
+                out.push(d);
+            }
+        }
+        out
+    }
+}
+
 /// The finished front end of one observer, as the closure of
 /// [`parse_observer_with`] sees it: valid inside the call only.
 ///
@@ -164,7 +225,17 @@ impl<'r> Unit<'r> {
     /// at `at`, and for a macro location whose token would end outside
     /// its own expansion entry).
     pub fn token_end(&self, at: Loc) -> Option<Loc> {
-        crate::kiln::lex::token_end(self.sm, self.interner, at, self.lex)
+        self.tokens().token_end(at)
+    }
+
+    /// What [`Unit::token_end`] and [`Unit::is_token_start`] read, as a
+    /// value that is `Sync` (a `Unit` is not: its preprocessing record
+    /// holds `Rc`s), for a reader that outlives the closure's borrow of
+    /// the preprocessor but not the unit (`slip_script`'s subject, work
+    /// package WP-086). The same two functions; the token starts it lexes
+    /// are the unit's.
+    pub fn tokens(&self) -> Tokens<'_> {
+        Tokens { sm: self.sm, interner: self.interner, lex: self.lex, starts: &self.token_starts }
     }
 
     /// Whether a token of the buffer starts at `at` as Kiln's lexer lexes
@@ -180,34 +251,7 @@ impl<'r> Unit<'r> {
     /// preprocessor lexes a header name, which normal mode does not.
     /// Each buffer is lexed once per unit, when first asked about.
     pub fn is_token_start(&self, at: Loc) -> bool {
-        let at = if at.is_macro() { self.sm.spelling_loc(at) } else { at };
-        if !at.is_valid() || at.is_macro() {
-            return false;
-        }
-        let Some((file, pos)) = self.sm.offset_of(at) else { return false };
-        self.token_starts.of(file, || self.lex_starts(file)).binary_search(&pos).is_ok()
-    }
-
-    /// The offsets of the tokens of `file`, lexed from its start.
-    fn lex_starts(&self, file: FileId) -> Vec<u32> {
-        use crate::kiln::lex::{LexMode, Lexer, TokKind};
-        let len = u32::try_from(self.sm.text(file).len()).unwrap_or(u32::MAX);
-        let base = self.sm.loc(file, 0);
-        let mut o = self.lex;
-        o.keep_comments = false;
-        let mut lx = Lexer::new_in_range(self.sm, self.interner, file, 0..len, base, o);
-        lx.set_mode(LexMode::Normal);
-        let mut out = Vec::new();
-        loop {
-            let t = lx.next();
-            if t.kind == TokKind::Eof {
-                break;
-            }
-            if let Some(d) = self.sm.same_entry_distance(base, t.span.lo) {
-                out.push(d);
-            }
-        }
-        out
+        self.tokens().is_token_start(at)
     }
 
     /// The main file, once the front end entered it.
