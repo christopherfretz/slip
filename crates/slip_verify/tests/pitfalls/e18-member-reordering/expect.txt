@@ -1,0 +1,18 @@
+# E18: class members reordered. pre: P's data members x and y swapped;
+# P p{1, 2} initialises the members in declaration order ([dcl.init.aggr]),
+# so first() returns 2. pre-2: B's virtual functions f and g swapped, which
+# reorders B's virtual table (the Itanium ABI lays it out in declaration
+# order): every other translation unit built against the old order calls the
+# wrong function; good-2 swaps the non-virtual h and k, which changes
+# nothing. pre-3: S's a and b swapped; the mem-initializers run in
+# declaration order ([class.base.init]/13), so b(a + 1) reads a before it is
+# initialised; good-3 swaps the written mem-initializers instead, which
+# changes nothing (clang warns).
+good:   none positional aggregate initialisation follows the declaration order: every reorder of x and y changes what p{1, 2} sets
+bad:    mismatch changed P @ main.cpp:1
+good-2: verified
+bad-2:  mismatch changed B @ main.cpp:1
+bad-2:  mismatch derived_changed B::<key_function>
+good-3: verified
+bad-3:  mismatch changed S @ main.cpp:1
+bad-3:  mismatch changed S::S(int) @ main.cpp:4
