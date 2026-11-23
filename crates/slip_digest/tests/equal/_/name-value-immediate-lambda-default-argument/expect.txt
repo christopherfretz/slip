@@ -1,0 +1,5 @@
+# pending
+# needs: known-cost
+# Known cost C1 (spec/landed/digest/WP-115.md "Known costs"): differs today (legacy::f()), should be equal.
+# The immediate invocation has no stored value; its value at the uses (default_imm) is written only by
+# a default_immediates unit, which a local owner has not, so the operand is read by value.
