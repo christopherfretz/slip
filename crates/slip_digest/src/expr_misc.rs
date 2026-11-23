@@ -216,6 +216,205 @@ fn feed_source_loc_values(w: &mut Walk<'_>, e: ExprId, kind: Option<SourceLocKin
     }
 }
 
+/// How a use's default passes on a source-location builtin it reaches
+/// (digest §9 "Defaults at a use").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Reach {
+    /// (a) The operand of no immediate invocation, or (b) the argument of
+    /// `std::source_location::current`: passed on, fed.
+    Passed,
+    /// (c) An operand, through nested defaults, of any other immediate
+    /// invocation: consumed, written by value.
+    Consumed,
+}
+
+/// The bound on the defaults one use reaches through nested defaults and
+/// on the depth of the walk (a default cannot reach itself; the bound
+/// only keeps a malformed tree from looping).
+const REACH_LIMIT: usize = 4096;
+
+/// The source-location builtins of kind `Function` or `SourceLocStruct`
+/// that the default of the use `e` (a `CXXDefaultArgExpr` or
+/// `CXXDefaultInitExpr`) reaches, through nested defaults, in walk order,
+/// each with its [`Reach`]. A `PredefinedExpr` reached is none of them:
+/// Kiln records no value of it at a use, its value is its declaration
+/// context's and is written where the default is (digest §9).
+pub(crate) fn default_reach(w: &Walk<'_>, e: ExprId) -> Vec<(SourceLocKind, Reach)> {
+    let mut out = Vec::new();
+    let mut stack = Vec::new();
+    let mut budget = REACH_LIMIT;
+    if let Some(d) = default_of(w, e) {
+        reach(w, d, &mut stack, &mut out, &mut budget);
+    }
+    out
+}
+
+/// The default a use `e` evaluates: the one rebuilt for it, else the
+/// parameter's default argument or the field's default member
+/// initializer. `None` for another kind.
+fn default_of(w: &Walk<'_>, e: ExprId) -> Option<ExprId> {
+    let x = &w.ast.exprs;
+    let shared = match x.get(e).kind() {
+        ExprKind::CXXDefaultArgExpr => w.ast.decls.param(x.default_arg_param(e))?.default_arg,
+        ExprKind::CXXDefaultInitExpr => w.ast.decls.field(x.default_init_field(e))?.init,
+        _ => return None,
+    };
+    x.default_arg_rewritten(e).or(shared)
+}
+
+/// [`default_reach`] of the expression `e`, under the immediate
+/// invocations `stack` (each: whether it is `std::source_location::current`).
+fn reach(
+    w: &Walk<'_>,
+    e: ExprId,
+    stack: &mut Vec<bool>,
+    out: &mut Vec<(SourceLocKind, Reach)>,
+    budget: &mut usize,
+) {
+    if *budget == 0 {
+        return;
+    }
+    *budget -= 1;
+    let x = &w.ast.exprs;
+    match x.get(e).kind() {
+        ExprKind::SourceLocExpr => {
+            let kind = source_loc(node(w, e).aux);
+            if let Some(k @ (SourceLocKind::Function | SourceLocKind::SourceLocStruct)) = kind {
+                let passed = match stack.as_slice() {
+                    [] | [true] => Reach::Passed,
+                    _ => Reach::Consumed,
+                };
+                out.push((k, passed));
+            }
+            return;
+        }
+        ExprKind::CXXDefaultArgExpr | ExprKind::CXXDefaultInitExpr => {
+            if let Some(d) = default_of(w, e) {
+                reach(w, d, stack, out, budget);
+            }
+            return;
+        }
+        ExprKind::ConstantExpr => {
+            stack.push(is_source_location_current(w, e));
+            reach(w, x.operand(e), stack, out, budget);
+            stack.pop();
+            return;
+        }
+        _ => {}
+    }
+    for c in x.children(e, &w.ast.lists) {
+        reach(w, c, stack, out, budget);
+    }
+}
+
+/// `e`, a `ConstantExpr`, is the immediate invocation of
+/// `std::source_location::current` (digest §9 (b)): the static member
+/// function `current` of the class `source_location` of namespace `std`
+/// (inline namespaces skipped), identified by the entity, with every
+/// argument absent (its default) or itself a source-location builtin.
+fn is_source_location_current(w: &Walk<'_>, e: ExprId) -> bool {
+    let ast = w.ast;
+    let x = &ast.exprs;
+    let mut call = x.operand(e);
+    if x.get(call).kind() == ExprKind::ExprWithCleanups {
+        call = x.operand(call);
+    }
+    if x.get(call).kind() != ExprKind::CallExpr {
+        return false;
+    }
+    let callee = strip_implicit(w, x.callee(call));
+    if x.get(callee).kind() != ExprKind::DeclRefExpr {
+        return false;
+    }
+    let f = x.decl(callee);
+    let decl = ast.decls.get(f);
+    let is_static = ast
+        .decls
+        .function(f)
+        .is_some_and(|d| d.spec.storage() == slip_kiln::kiln::ast::decl::FnStorage::Static);
+    let named = decl.name().as_ident().is_some_and(|s| ast.symbols().as_str(s) == "current");
+    let class = decl.ctx().is_some_and(|r| ast.is_std_named(r, "source_location"));
+    if decl.kind() != slip_kiln::kiln::ast::decl::DeclKind::CXXMethod
+        || !is_static
+        || !named
+        || !class
+    {
+        return false;
+    }
+    ast.lists.iter::<ExprId>(x.call_args(call)).all(|a| {
+        let a = strip_implicit(w, a);
+        matches!(x.get(a).kind(), ExprKind::CXXDefaultArgExpr | ExprKind::SourceLocExpr)
+    })
+}
+
+/// `e` through its parentheses and implicit conversions.
+fn strip_implicit(w: &Walk<'_>, mut e: ExprId) -> ExprId {
+    let x = &w.ast.exprs;
+    for _ in 0..REACH_LIMIT {
+        match x.get(e).kind() {
+            ExprKind::ParenExpr | ExprKind::ImplicitCastExpr => e = x.operand(e),
+            _ => break,
+        }
+    }
+    e
+}
+
+/// The names of the use `e` (a `CXXDefaultArgExpr` or
+/// `CXXDefaultInitExpr`) of a default that reaches a source-location
+/// builtin (digest §9 "Defaults at a use"), after its rows: each builtin
+/// passed on feeds the use's value, as at a [`source_loc_expr`]; each one
+/// consumed writes the use's value by value, cause-free. Nothing where
+/// Kiln recorded no values at the use or the default reaches none, nor
+/// for a use inside a `ConstantExpr` ([`Walk::in_constant`]): the
+/// immediate invocation it is an operand of was evaluated where it is
+/// written (or, in a default, is the outer use's to judge).
+pub(crate) fn default_use_names(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    if w.in_constant > 0 {
+        return;
+    }
+    let ast = w.ast;
+    let Some(&v) = ast.exprs.cold.source_loc.get(e) else { return };
+    let reached = default_reach(w, e);
+    if reached.is_empty() {
+        return;
+    }
+    let consumed = reached.iter().filter(|r| r.1 == Reach::Consumed).count();
+    s.count(consumed);
+    let mut passed = false;
+    for (kind, how) in reached {
+        let pretty = kind == SourceLocKind::SourceLocStruct;
+        // The use's value: the plain name of `__builtin_FUNCTION()`, the
+        // `__impl` object's of `__builtin_source_location()`; `known` is
+        // false where Kiln built neither (nothing is fed, as at a
+        // `SourceLocExpr`).
+        let (known, bytes) = if pretty {
+            match v.location.map(|l| crate::value::impl_function_name(w, l)) {
+                Some(crate::value::ImplObject::Impl(p)) => (true, p.map(|l| ast.strings.get(l).1)),
+                Some(crate::value::ImplObject::Other) | None => (false, None),
+            }
+        } else {
+            let b = crate::value::string_of(w, v.function).map(|l| ast.strings.get(l).1);
+            (b.is_some(), b)
+        };
+        match how {
+            Reach::Passed => {
+                passed = true;
+                match (known, pretty, bytes) {
+                    (true, true, b) => crate::value::feed_impl(w, b),
+                    (true, false, Some(b)) => crate::value::feed_source_loc(w, false, b),
+                    _ => {}
+                }
+            }
+            Reach::Consumed => {
+                s.bool(pretty).opt(bytes.is_some()).bytes(bytes.unwrap_or_default());
+            }
+        }
+    }
+    if passed {
+        crate::local::write_scope_names(w, s);
+    }
+}
+
 /// [`source_loc_expr`] of the words `n`: those of `e`, or changed by a test.
 fn source_loc_expr_of(s: &mut Stream, n: &Node) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/SourceLocExpr.bits"));

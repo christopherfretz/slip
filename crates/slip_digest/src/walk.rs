@@ -294,6 +294,11 @@ pub(crate) struct Walk<'a> {
     /// `static_assert` condition (`value.rs` "Values that come from
     /// names").
     pub by_value: u32,
+    /// The `ConstantExpr`s the walk is inside (digest §9 "Defaults at a
+    /// use"): a use of a default under one is an operand of an immediate
+    /// invocation evaluated where it is written, whose value is written
+    /// as every constant is, and contributes nothing more.
+    pub in_constant: u32,
     /// [`Walk::const_memo`] for the content digests computed with
     /// [`Walk::by_value`] above 0.
     pub const_memo_by_value: HashMap<u32, Hashed>,
@@ -371,6 +376,7 @@ impl<'a> Walk<'a> {
             declared_operators: None,
             name_values: None,
             by_value: 0,
+            in_constant: 0,
             const_memo_by_value: HashMap::new(),
             rule_use: None,
             names: None,

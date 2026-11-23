@@ -5,7 +5,8 @@
 //! (`--store=x`) and directly for `-j` (`-j4`). An option given twice is a
 //! usage error unless it may repeat (`--db`, `--only`, `--root`, `--post`,
 //! `--match`). `--` ends the options. Paths and `--only` values are byte
-//! strings. `--post-image` is the one option without a value.
+//! strings. `--post-image` and `--strict-names` are the options without a
+//! value.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -22,7 +23,7 @@ usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j 
                   [--worker-jobs <n>] [--worker-stack <size>]
        slip verify --plan <id or file> [--round <n>] [--declared <file>]
                   [--root <dir>]... [--post <dir>]... [--findings <n>] [--locate <n>] [--report <file>]
-                  [--store <dir>] [-j <n>] [--only <substring>]... [--limit <n>]
+                  [--strict-names] [--store <dir>] [-j <n>] [--only <substring>]... [--limit <n>]
                   [--memory <size>] [--observer-memory <size>] [--observer-timeout <seconds>]
                   [--estimate-base <size>] [--estimate-per-byte <n>]
                   [--worker-jobs <n>] [--worker-stack <size>]
@@ -157,6 +158,9 @@ pub struct VerifyArgs {
     pub locate: u64,
     /// `--report <file>`: where the JSON report is written.
     pub report: Option<PathBuf>,
+    /// `--strict-names`: the names notes are findings (`spec/verify.md`
+    /// §7.1).
+    pub strict_names: bool,
     pub run: RunArgs,
 }
 
@@ -275,7 +279,7 @@ pub fn parse(args: &[OsString]) -> Result<Invocation, UsageError> {
 // ----- the scanner ------------------------------------------------------------
 
 /// The options of §8 that take no value.
-const FLAGS: &[&str] = &["--post-image"];
+const FLAGS: &[&str] = &["--post-image", "--strict-names"];
 
 /// One element of the command line after the command.
 enum Item<'a> {
@@ -582,6 +586,7 @@ fn parse_verify(args: &[OsString]) -> Result<Invocation, UsageError> {
         "--findings",
         "--locate",
         "--report",
+        "--strict-names",
     ];
     let values = options_only(args, &with_run_options(&own), &["--only", "--root", "--post"])?;
     Ok(Invocation::Verify(VerifyArgs {
@@ -592,6 +597,7 @@ fn parse_verify(args: &[OsString]) -> Result<Invocation, UsageError> {
         findings: values.number("--findings", 0)?.unwrap_or(DEFAULT_FINDINGS),
         locate: values.number("--locate", 0)?.unwrap_or(DEFAULT_LOCATE),
         report: values.one("--report").map(PathBuf::from),
+        strict_names: values.one("--strict-names").is_some(),
         run: values.run()?,
     }))
 }

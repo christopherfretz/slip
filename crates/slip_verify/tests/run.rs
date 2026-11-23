@@ -1181,6 +1181,33 @@ fn s7_1_strict_names_makes_notes_findings() {
     assert_eq!(r.verdict(), RunVerdict::Verified);
 }
 
+// §4.4, model §8.6 row 1: a shard with `digests` and no `names` breaks
+// its format, so `add` never reads a result from it: a `verified` or
+// `mismatch` shard without the section is `failed`, not a shard without
+// notes, with the option or without it (the same holds of any shard with
+// `digests`, `unverifiable` included).
+#[test]
+fn s4_4_compared_shard_without_names_is_failed() {
+    for strict in [false, true] {
+        let mut r = Report::new(header(vec![], 3), &Declared::none());
+        if strict {
+            r.strict_names();
+        }
+        let mut v = verified(1);
+        v.names = None;
+        r.add(&d(1), b"/a.cpp", Some(&v), Some(Status::Ok));
+        let mut m = mismatch(2, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]);
+        m.names = None;
+        r.add(&d(2), b"/b.cpp", Some(&m), Some(Status::Ok));
+        let mut u = unverifiable(3);
+        u.names = None;
+        r.add(&d(3), b"/c.cpp", Some(&u), Some(Status::Ok));
+        assert_eq!(r.states()[at(State::Failed)], 3, "strict {strict}");
+        assert_eq!(r.names_changed(), 0, "strict {strict}");
+        assert_eq!(r.verdict(), RunVerdict::Incomplete, "strict {strict}");
+    }
+}
+
 // §7.1: the option is set before the first `add`.
 #[test]
 #[should_panic(expected = "Report::strict_names after Report::add")]

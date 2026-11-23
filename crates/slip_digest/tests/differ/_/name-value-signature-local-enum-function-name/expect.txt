@@ -1,4 +1,6 @@
 changed G
 derived-changed G::<value>
-# WP-112: the names digest of this unit differs (digest §9).
+# WP-112: the names digest of these units differs (digest §9); f() by the use of current's
+# default argument in L::m, which passes its pretty name on (R1).
 names-changed G
+names-changed f()

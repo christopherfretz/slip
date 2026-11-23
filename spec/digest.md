@@ -973,8 +973,8 @@ so that two strings swapped are seen:
 | Entry | Fed where |
 |---|---|
 | `uv 1`, the `PredefinedKind` (0 `__func__`, 1 `__FUNCTION__`, 2 `__PRETTY_FUNCTION__`), `bytes` | a `PredefinedExpr` written symbolically, or a string a pointer names that is one |
-| `uv 2`, `uv 0` plain or `uv 1` pretty, `bytes` | a source-location function name a pointer names; a `__builtin_FUNCTION()` (plain) |
-| `uv 3`, `bool` has one, `bytes` | the function name an `__impl` object points to (what `function_name()` returns), from a pointer to the object or a `__builtin_source_location()` |
+| `uv 2`, `uv 0` plain or `uv 1` pretty, `bytes` | a source-location function name a pointer names; a `__builtin_FUNCTION()` (plain), also at a use of a default that passes it on (below) |
+| `uv 3`, `bool` has one, `bytes` | the function name an `__impl` object points to (what `function_name()` returns), from a pointer to the object or a `__builtin_source_location()`, also at a use of a default that passes it on (below) |
 | `uv 4`, `digest` | the names digest of a constant a pointer names, where the walk writes the constant by its content digest (the constant's own entries, memoised with it) |
 
 An entry is fed only where the value is written symbolically: never where
@@ -989,14 +989,69 @@ symbolic, so the string is fed too: the unit differs and notes. A
 `std::source_location`'s `function_name()` is fed; its `line()`
 and `column()` are not (any edit above moves them: `verify.md` §8), and its
 `file_name()` is not, because it is written by value (above). A string
-reached twice (a back-reference, §4.3) is fed once, where the digest
-writes it. A unit resolved into another (an inline body, an
+reached twice is fed each time it is written: two uses of one string
+object, or two uses of one default, feed two entries; a back-reference
+(§4.3) writes no string and feeds nothing. A unit resolved into another (an inline body, an
 instantiation's `<definition>`, §6) feeds the entity's unit: the strings
 of an instantiation's body are its key's (`h<int>(int, int)`), each
 instantiation its own; a pattern's dependent string has no bytes (Kiln
 evaluates none) and feeds nothing. `typeid(T).name()` is not a constant
 in Kiln (the call is written as a call): nothing to feed. `__FILE__` and
 its kin are literals written by value.
+
+**Defaults at a use** (WP-112, R2). A default argument or default member
+initializer is written once, with its declaration (§7 "Shared nodes"), but
+the source-location builtins in it are evaluated at each use
+(`CXXDefaultArgExpr`, `CXXDefaultInitExpr`), as the function the use is
+in. The principle: a use contributes the value of the immediate
+invocations evaluated at the use, written as every constant is written.
+Kiln does not evaluate them per use (it holds one value of each, `default_imm`,
+evaluated in the declaration's context, contrary to CWG 2631), so the
+digest does not infer from that value whether the use's inputs are passed
+on. At each use, for each `__builtin_FUNCTION()` and
+`__builtin_source_location()` its default reaches, through nested defaults
+(a default argument inside a default argument or a default member
+initializer, the rebuilt default where Kiln rebuilt one for the use), in
+walk order, after the use's rows:
+
+- (a) one that is the operand of no immediate invocation is passed on: the
+  use's value (Kiln's `source_loc` of the use: the plain function name, or
+  the `__impl` object's function name) is fed, as at a `SourceLocExpr`,
+  and the local scope names are written once after them (as there).
+  Nothing by value.
+- (b) one that is the argument of `std::source_location::current`, and of
+  no other immediate invocation, is passed on, as (a). `current` is
+  identified by the entity: the static member function `current` of the
+  class `source_location` of namespace `std`, inline namespaces skipped,
+  every argument absent (its default) or itself a source-location builtin.
+  Not `std::experimental`'s, nor a derived or wrapping class's, nor a user's
+  `mine::source_location::current`.
+- (c) one that is an operand of any other immediate invocation is
+  consumed: the use's value is written by value in the unit that holds the
+  use (`bool` pretty, `opt`, `bytes`: the plain function name, or the
+  `__impl` object's function name where one is built; never the file, the
+  line or the column), cause-free (the unit stays determinate), and nothing
+  is fed for it. Where the use reaches a builtin of (a), (b) or (c), its
+  rows are followed by `count`, the number of (c), and then theirs. (c)
+  over-approximates: an immediate function that passes the name on (a
+  user's `id(p)`, `mine::source_location::current`) makes the use's unit
+  differ under a rename that changes the name. Those false findings go
+  away when Kiln evaluates the invocations per use (`spec/landed/verify/WP-112.md`
+  "For Kiln").
+- (d) a use whose default reaches none of these, or where Kiln recorded no
+  values at the use, writes nothing more. Nor does a use that is itself
+  inside a `ConstantExpr` (`current()` written in a body, `pick()` an
+  argument of an immediate invocation there): that invocation is evaluated
+  where it is written, its value is written as every constant is (a name
+  it passes on fed with it), and the use's inputs are its operands. A
+  nested use met where the default itself is written, with its
+  declaration, is judged by these rules with the values Kiln recorded for
+  it there (the declaration's context), as a `SourceLocExpr` written there
+  is.
+
+A `__func__` or `__PRETTY_FUNCTION__` in a default is none of these: Kiln
+records no value of it at a use (its value is its declaration context's,
+`""` outside a function), and it is written, and fed, where the default is.
 
 Per key (`model.md` §8.6): a key with one unit that has a names digest has
 it; a key with several has `H("slip.names.key.v1", count, digests)` of

@@ -61,7 +61,7 @@ it was detected:
 | `Malformed` | A rule of this spec is violated (non-minimal `uv`, bad `bool`, unlisted enumeration value, invalid UTF-8 in `str`, wrong order in a sorted list, bytes after the end of a file or payload). |
 | `TooLarge` | A length or count exceeds the bytes remaining. |
 | `BadMagic` | The container magic or kind is not the expected one. |
-| `UnsupportedVersion` | The container version is greater than the reader supports, or zero. |
+| `UnsupportedVersion` | The container version is greater than the reader supports, or zero; for a shard, 1 (§8). |
 | `UnknownSection` | A critical section id the reader does not know (§5). |
 | `Corrupt` | The integrity trailer does not match. |
 
@@ -538,7 +538,11 @@ at the later occurrence.
 
 ## 8. The shard
 
-A shard is what one observer produced in one phase. Kind `SHRD`, version 1.
+A shard is what one observer produced in one phase. Kind `SHRD`, version 2
+(WP-112: version 2 has the `names` section, 27). A reader refuses a
+version-1 shard as `UnsupportedVersion` at byte 12 (JSON path `version`):
+it predates `names`, and a compared shard without it is not one without
+notes (`verify.md` §4.4); a store written before is parsed again.
 Its content is deterministic (§1 rule 2): parsing the same inputs twice gives
 the same bytes.
 

@@ -1,2 +1,4 @@
-# WP-112: the names digest of this unit differs (digest §9).
+# WP-112: the names digest of these units differs (digest §9); legacy::f() by the default argument
+# std::source_location::current() evaluated at its call (R1, R2 (b)).
 names-changed legacy::where()
+names-changed legacy::f()

@@ -95,7 +95,7 @@ fn patch(bytes: &[u8], at: usize, from: u8, to: u8) -> Vec<u8> {
 }
 
 fn sealed(sections: &[(u64, Vec<u8>)]) -> Vec<u8> {
-    let mut w = Writer::new(*b"SHRD", 1);
+    let mut w = Writer::new(*b"SHRD", Shard::VERSION);
     for (id, p) in sections {
         w.section(*id, p);
     }
@@ -366,11 +366,11 @@ fn map_shard() -> Shard {
 const MAP_GROUP: &str = "db3248c61386d5aa2e494aa55c9b780e301275eacc26c569cfd147b39300323d";
 /// `tu_digest` of `map_shard`'s groups.
 const MAP_TU: &str = "8ce2bbe9792bff3bfd8902d2ef50daaf4db1fbac564d05c70e26959a3cf88ec4";
-const MAP_TRAILER: &str = "e0fad6a3116c539dde2906898fa2a16d9c7708d71204f9487765291d1a8e354f";
+const MAP_TRAILER: &str = "83f39b51dfb0d5b2503a379e3b7910e238a65b4fcdf3a3d62dea1c88ccb78967";
 
 fn map_shard_bytes() -> Vec<u8> {
     hex(&[
-        "53 4c 49 50 1a 0a 00 00  53 48 52 44  01 00 00 00", // magic, SHRD, version 1
+        "53 4c 49 50 1a 0a 00 00  53 48 52 44  02 00 00 00", // magic, SHRD, version 2
         "01 22",
         &rep("33", 32),
         "01 00",              // header: observer, map, round 0
@@ -467,11 +467,11 @@ fn verify_shard() -> Shard {
 
 const VERIFY_GROUP: &str = "16616ca8c602bc6c8ebe3c4e0dcd9c1659ee02809421d7d815b05b0176c69cd6";
 const VERIFY_TU: &str = "7caedd7cdd53009ed0e15c4fac970a603d974936dd94351078141828b4ecaadc";
-const VERIFY_TRAILER: &str = "74402f9f6d120085baa7f7c15c2bdf877f7204d3bb2efc046f8d2e553f191ab2";
+const VERIFY_TRAILER: &str = "99e5b3f6579c40d7e217b94e61e42ed6260f5a5c942466aad35560836e452056";
 
 fn verify_shard_bytes() -> Vec<u8> {
     hex(&[
-        "53 4c 49 50 1a 0a 00 00  53 48 52 44  01 00 00 00", // magic, SHRD, version 1
+        "53 4c 49 50 1a 0a 00 00  53 48 52 44  02 00 00 00", // magic, SHRD, version 2
         "01 22",
         &rep("33", 32),
         "02 01",                // header: observer, verify, round 1

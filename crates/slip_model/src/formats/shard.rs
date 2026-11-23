@@ -254,6 +254,15 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     seal(Shard::KIND, Shard::VERSION, &sections, extras)
 }
 
+/// The first version this reader reads (`model.md` §8): a version-1
+/// shard predates the `names` section (WP-112), and one without it is
+/// not "a shard without notes"; a store written before is parsed again.
+const FIRST_READ: u32 = 2;
+
+/// Why a shard older than [`FIRST_READ`] is refused.
+const OLDER: &str = "shard version older than this reader reads (it predates the names \
+                     section; parse again)";
+
 /// The shard, its unknown ignorable sections and its content id.
 #[allow(clippy::too_many_lines, reason = "one block per section of spec/model.md §8")]
 pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
@@ -266,6 +275,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             SPELLINGS, NAMES,
         ],
     )?;
+    if opened.version < FIRST_READ {
+        return Err(crate::wire::Error::new(crate::wire::ErrorKind::UnsupportedVersion, 12, OLDER));
+    }
     let end = opened.end;
     let [
         header,
@@ -495,6 +507,9 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
 /// The shard and the unknown ignorable sections of a JSON rendering.
 pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
     let s = read_container(v, Shard::KIND, Shard::VERSION, &SECTION_NAMES)?;
+    if s.version < FIRST_READ {
+        return Err(At::Root.key("version").error(OLDER));
+    }
     let [
         Some(header),
         Some(outcome),
