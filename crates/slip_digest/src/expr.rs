@@ -33,7 +33,13 @@
 //!   (`walk::UnitState::opaques`) in the order the walk first reaches them.
 //! - Overloaded member access: `MemberExpr.b` is the first candidate, and
 //!   is written like any member.
-//! - Literals from builtin macros: written by value, like any literal.
+//! - Literals from builtin macros: written by value, like any literal
+//!   (`__LINE__` as a value is pitfall row E13's).
+//! - Values that come from names (digest §9): `PredefinedExpr.a` and
+//!   `SourceLocExpr.a` are symbolic; a `PredefinedExpr` reached as the
+//!   operand of an array-to-pointer conversion ([`Item::Decayed`]) writes
+//!   its type without the bound (`expr_misc::name_type`), unless
+//!   `Walk::by_value` is raised.
 //!
 //! # What a kind's function may use
 //!
