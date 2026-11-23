@@ -1,0 +1,4 @@
+added std
+added std::align_val_t
+added operator new(unsigned long, std::align_val_t)
+exact derived

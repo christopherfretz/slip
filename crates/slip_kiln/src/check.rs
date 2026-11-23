@@ -10,11 +10,15 @@ use kiln_driver::args::{Action, ArgError, Args, AsmKind, Input, Lang, ModuleHead
 use slip_cdb::check::{FrontEndCheck, Rejection};
 use slip_model::{Command, Language};
 
-/// The command line the parse task gives Kiln (`spec/cdb.md` §6.1):
-/// `-fsyntax-only`, then the command's arguments.
+/// The command line the parse task gives Kiln and `KilnCheck` checks
+/// (`spec/cdb.md` §6.1): `-fsyntax-only` and `-fkiln-reproducible-time`
+/// (`__DATE__`, `__TIME__` and `__TIMESTAMP__` at the Unix epoch,
+/// `spec/model.md` §8.4), then the command's arguments. Both come first,
+/// where no argument of the command can take either as its value.
 pub(crate) fn front_end_line(rest: &[String]) -> Vec<String> {
-    let mut line = Vec::with_capacity(rest.len() + 1);
+    let mut line = Vec::with_capacity(rest.len() + 2);
     line.push("-fsyntax-only".to_owned());
+    line.push("-fkiln-reproducible-time".to_owned());
     line.extend(rest.iter().cloned());
     line
 }
@@ -220,4 +224,21 @@ fn input_language(args: &Args, input: &Input) -> Result<Language, Rejection> {
         Lang::C => Language::C,
         Lang::Cxx => Language::Cxx,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::front_end_line;
+
+    // spec/cdb.md §6.1: the line is `argv[0] -fsyntax-only
+    // -fkiln-reproducible-time argv[1..]` (after `argv[0]`).
+    #[test]
+    fn s6_1_front_end_line() {
+        let rest: Vec<String> = ["-c", "-o", "a.o", "a.cpp"].map(str::to_owned).to_vec();
+        assert_eq!(
+            front_end_line(&rest),
+            ["-fsyntax-only", "-fkiln-reproducible-time", "-c", "-o", "a.o", "a.cpp"]
+        );
+        assert_eq!(front_end_line(&[]), ["-fsyntax-only", "-fkiln-reproducible-time"]);
+    }
 }
