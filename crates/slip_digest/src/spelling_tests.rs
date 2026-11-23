@@ -226,7 +226,10 @@ fn a_list_changes_only_the_units_that_write_one() {
     // per site a source reaches (the landed file's table).
     let stray: Vec<&String> =
         sites.values().flatten().filter(|u| !u.starts_with("tests/indeterminate/")).collect();
-    assert!(stray.is_empty(), "units Unaccounted(\"spelling/...\") outside indeterminate/: {stray:#?}");
+    assert!(
+        stray.is_empty(),
+        "units Unaccounted(\"spelling/...\") outside indeterminate/: {stray:#?}"
+    );
     for site in REACHED {
         assert!(sites.contains_key(*site), "no pair test reaches {site}");
     }
@@ -387,6 +390,7 @@ const REACHED: &[&str] = &[
     "spelling/profile",
     "spelling/conversion-name",
     "spelling/fold-operator",
+    "spelling/full",
 ];
 
 /// The sources tried for rule 5 through the digest, aimed at a caller
@@ -444,20 +448,23 @@ const RULE_5_TRIED: &[(&str, &[&str])] = &[
     ("template<class T> auto k(T t) { auto x = f(t); return x; }\n", &[]),
     ("template<class T> void k(T t) { auto (*p)(T) = &k<T>; decltype(auto) y = f(t); }\n", &[]),
     ("template<class... T> void k(void (*)(T...[0] [2]), T...);\n", &[]),
-    ("template<class T> void k(T, void (*)(__underlying_type(decltype(f(T()))) [2]));\n", &[]),
+    (
+        "template<class T> void k(T, void (*)(__underlying_type(decltype(f(T()))) [2]));\n",
+        &["spelling/decltype"],
+    ),
     // subst-pack
     (
-        "template<class... T> struct P { template<class U> void m(U, void (*)(T [2]...)); };\n\
+        "template<class... T> struct P { template<class U> void m(U, void (*)(decltype(f(U()) + T())...)); };\n\
          template struct P<int, long>;\n",
         &[],
     ),
     (
-        "template<class... T> struct P { template<class... U> void m(void (*)(decltype(f(U())) [2]...)); };\n\
+        "template<class... T> struct P { template<class... U> void m(void (*)(decltype(f(U())) *...)); };\n\
          template struct P<int>;\n",
         &[],
     ),
     // full
-    ("template<class T> void k(T, void (*)(Z<sizeof(f(T()) + 1_x)> [2]));\n", &[]),
+    ("template<class T> void k(T, void (*)(Z<sizeof(f(T()) + 1_x)> [2]));\n", &["spelling/arg"]),
     ("template<class T> void k(T, void (*)(Z<sizeof([] { return 0; }, f(T()))> [2]));\n", &[]),
 ];
 

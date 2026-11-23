@@ -126,9 +126,8 @@ pub(crate) fn decl_name(w: &mut Walk<'_>, raw: u32) -> Option<(Name, Option<Caus
             // spelling of the type is held, so a marked one is the first
             // spelling's (digest-kinds §4.4 "Spellings", rule 5).
             let t = w.type_digest(q, false);
-            let cause = t
-                .cause
-                .or(t.spelling.then_some(Cause::Unaccounted("spelling/conversion-name")));
+            let cause =
+                t.cause.or(t.spelling.then_some(Cause::Unaccounted("spelling/conversion-name")));
             (Name::Conversion(t.digest), cause)
         }
         DeclNameView::LiteralOperator(sym) => {

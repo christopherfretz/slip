@@ -32,12 +32,12 @@
 
 use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::expr::{Designator, ExprDeps, ExprFlags, ExprKind as K, TypeidOperand};
+use slip_kiln::kiln::ast::fp::FpRound;
 use slip_kiln::kiln::ast::templates::Requirement;
 use slip_kiln::kiln::ast::types::{
     ArgView, ExcSpec, ExprOperand, Nns, NoexceptValue, TemplateArg, TemplateName, TypeFlags,
     TypeOfOperand, TypeView,
 };
-use slip_kiln::kiln::ast::fp::FpRound;
 use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, ListId, NnsId, QualType, TemplateNameId};
 
 use crate::Cause;
@@ -939,7 +939,25 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
         | K::ConvertVectorExpr
         | K::ExtVectorElementExpr
         | K::RecoveryExpr
-        | K::CXXExpansionSelectExpr => no_spelling(w, s, ctx, "spelling/full"),
+        | K::CXXExpansionSelectExpr => full(w, s, e),
+    }
+}
+
+/// A kind profile mode walks in full: its bytes hold its own facts, and
+/// what a type nested in it left out is not read here, so it is
+/// `spelling/full` when its own walk left something out (the mark of the
+/// node, not of the type around it).
+fn full(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    let left_out = w.left_out;
+    let saved = w.take_unit();
+    w.in_key += 1;
+    crate::expr_dep::profile_expr(w, &mut Stream::new(), e);
+    w.in_key -= 1;
+    w.unit = saved;
+    let marked = w.left_out != left_out;
+    w.left_out = left_out;
+    if marked {
+        s.indeterminate(Cause::Unaccounted("spelling/full"));
     }
 }
 

@@ -1108,10 +1108,10 @@ The rest of profile mode:
   counts it (`Walk::left_out`), whatever the first spelling's value: every
   `UnresolvedLookupExpr` (an empty found set too), every expression with an
   `oper_lookups` entry (an empty set too), every `CXXNewExpr` and
-  `CXXDeleteExpr`, a fold over an operator other than `.*` (rule 9), and an
+  `CXXDeleteExpr`, a fold that rule 9 makes indeterminate, and an
   operation that may round (a `BinaryOperator`, `CompoundAssignOperator`,
-  `UnaryOperator` or cast whose node has an `fp_round`, or whose type is
-  floating or dependent: rule 8). The mark is so a function of the
+  `UnaryOperator` or cast whose type is floating or dependent: rule 8;
+  whether the first spelling's node has an `fp_round` does not count). The mark is so a function of the
   profile, not of the spelling Kiln met first. A type digest whose
   stream counted one is marked, and a memo hit of a marked type counts
   again, so every enclosing type is marked too. A key ignores the count
@@ -1138,8 +1138,10 @@ The rest of profile mode:
      read as written (rule 2), an argument list and a qualifier as
      written; a parameter's and a template parameter's type are their
      declarations'. A kind walked in full has its facts in its bytes; a
-     requires-expression without its body, and a kind walked in full, is
-     rule 5's site `spelling/full` when the type around it is marked.
+     requires-expression without its body is rule 5's site `spelling/full`
+     when the type around it is marked, and a kind walked in full is
+     `spelling/full` when its own profile walk counts a fact (the mark of
+     the node, not of the type around it).
   2. *The spellings of a written type*, through sugar, in the order of its
      structure, for a type that is instantiation-dependent: pointee,
      referent, element, pointee and class of a member pointer, the
@@ -1224,7 +1226,10 @@ The rest of profile mode:
      meaning the value does not hold (`sizeof(f(T()))` is `1` whatever `f`
      names). Its profile bytes are a `Profile` entry (taken with the
      spelling reading off, its cause absorbed), then the expression is read
-     as written (rule 1).
+     as written (rule 1). Kiln builds an instantiation-dependent constant
+     bound without its `size_expr` and with the element's flags
+     (`kiln_sema/src/decl.rs`), so nothing reaches such a bound: its pair
+     tests are pending on Kiln (`For Kiln`).
   8. *Rounding.* Each reading of an expression by rule 1 has an ordinal
      in the unit (`UnitState::roots`); the nodes of the reading whose
      `fp_round` is not `FpRound::Dynamic` (Kiln's default) are a `Round`
@@ -1236,7 +1241,13 @@ The rest of profile mode:
      the definition context; Kiln keeps no `oper_lookups` set for it
      (`For Kiln` in `spec/landed/digest-kinds/WP-041.md`). In profile mode
      and in the full walk it is `Unaccounted("spelling/fold-operator")`,
-     and it raises the mark.
+     and it raises the mark, when some declaration in the translation unit
+     that is not a member function (a function template's pattern
+     included) is named for its operator, or for a comparison for any
+     comparison operator (C++20 rewrites them)
+     (`expr_profile::fold_left_out`). With no such declaration the
+     definition context finds nothing in any spelling, and only members
+     of the operands' classes, which the profile holds, can be found.
   A key reads no spelling: two declarations are one entity by
   [temp.over.link] whatever their found sets, and a difference in the
   sets is a difference of the units. No hazard of first spellings is

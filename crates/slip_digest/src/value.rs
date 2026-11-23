@@ -210,10 +210,12 @@ fn write_scalar(w: &mut Walk<'_>, s: &mut Stream, x: Scalar<'_>, cx: &mut Ctx) {
             s.uv(offset);
             // `void *` into a name-derived string designates its array:
             // the bound is the name's, as the base's bytes are (digest §9).
-            match designated.and_then(|d| if named { w.unbounded_array(d) } else { None }) {
-                Some(t) => {
+            match designated
+                .and_then(|d| if named { w.unbounded_array(d).map(|t| (t, d)) } else { None })
+            {
+                Some((array, written)) => {
                     s.opt(true);
-                    w.absorb_type(s, t);
+                    w.absorb_type(s, array, written, None);
                 }
                 None => w.write_type_opt(s, designated),
             }

@@ -154,7 +154,7 @@ pub(crate) fn name_type(w: &mut Walk<'_>, s: &mut Stream, n: &Node, decayed: boo
         None
     };
     match symbolic {
-        Some(t) => w.absorb_type(s, t),
+        Some(t) => w.absorb_type(s, t, n.ty, None),
         None => w.write_type(s, n.ty),
     }
 }

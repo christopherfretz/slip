@@ -1,1 +1,1 @@
-indeterminate zzz-probe
+indeterminate template <class> decltype(__builtin_choose_expr(1, (decltype(f(T())) *)0, 0)) g(type-parameter-0-0)

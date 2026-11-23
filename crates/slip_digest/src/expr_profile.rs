@@ -135,6 +135,7 @@ fn may_round_here(w: &Walk<'_>, e: ExprId) -> bool {
 /// operator in every spelling. A function of the profile within one
 /// translation unit.
 pub(crate) fn fold_left_out(w: &mut Walk<'_>, op: BinaryOp) -> bool {
+    const COMPARISONS: [&str; 7] = ["==", "!=", "<", "<=", ">", ">=", "<=>"];
     if op == BinaryOp::PtrMemD {
         return false;
     }
@@ -160,7 +161,6 @@ pub(crate) fn fold_left_out(w: &mut Walk<'_>, op: BinaryOp) -> bool {
         }
         set
     });
-    const COMPARISONS: [&str; 7] = ["==", "!=", "<", "<=", ">", ">=", "<=>"];
     let spelling = op.spelling();
     if COMPARISONS.contains(&spelling) {
         COMPARISONS.iter().any(|c| declared.contains(c))
