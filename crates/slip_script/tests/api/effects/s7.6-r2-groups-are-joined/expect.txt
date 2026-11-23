@@ -1,0 +1,7 @@
+transform <id>
+edit 0 t.cpp:2:11-2:12 tiers 0 =
+edit 1 t.cpp:2:14-2:15 tiers 0 =
+edit 2 t.cpp:2:17-2:18 tiers 0 =
+edit 3 t.cpp:2:20-2:21 tiers 0 =
+edit 4 t.cpp:2:23-2:24 tiers 0 =
+group 0 1 2

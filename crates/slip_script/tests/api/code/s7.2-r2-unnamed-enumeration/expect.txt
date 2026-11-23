@@ -1,0 +1,2 @@
+transform <id>
+edit 0 t.cpp:5:14-5:15 tiers 0 = spell("n::(anonymous enum 0)::A" "::n::A")

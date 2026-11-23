@@ -1,0 +1,4 @@
+transform <id>
+edit 0 t.cpp:15:6-15:7 tiers 1 = spell("a::g(int)" "::a::g")
+report - note "one extent"
+report - note "references to a::f: 1, to b::f: 1"

@@ -3,7 +3,7 @@ subjects:
   498ae399 follower - rule=yes n::D::f of=599ef791
   599ef791 candidate - rule=yes n::B::f()
   8e22d4a6 follower - rule=yes n::D::f of=599ef791
-  a444fbed follower - rule=yes n::D::f of=8e22d4a6,9e349e96,c85310a7
+  a444fbed follower - rule=yes n::D::f of=9e349e96,c85310a7
 links:
   0c083ef3 599ef791
 claims:

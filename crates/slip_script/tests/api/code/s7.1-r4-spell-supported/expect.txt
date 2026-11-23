@@ -1,0 +1,6 @@
+transform <id>
+edit 0 t.cpp:10:14-10:15 tiers 0 = spell("n::f(int)" "::n::f")
+edit 1 t.cpp:10:17-10:18 tiers 0 = spell("n::C" "::n::C")
+edit 2 t.cpp:10:20-10:21 tiers 0 = spell("n::C::sm" "::n::C::sm")
+edit 3 t.cpp:10:23-10:24 tiers 0 = spell("n::C::E::e1" "::n::C::E::e1")
+edit 4 t.cpp:10:26-10:27 tiers 0 = spell("n" "::n")

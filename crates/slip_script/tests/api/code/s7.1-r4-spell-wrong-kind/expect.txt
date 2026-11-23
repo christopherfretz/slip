@@ -1,0 +1,6 @@
+transform <id>
+report - note "spell(declaration): wrong_kind"
+report - note "spell(entity): returned"
+report - note "spell(expression): wrong_kind"
+report - note "spell(null): invalid_handle"
+report - note "spell(reference): wrong_kind"

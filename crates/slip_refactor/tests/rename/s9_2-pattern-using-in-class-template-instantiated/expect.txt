@@ -1,5 +1,5 @@
 subjects:
-  2d185c42 follower unsupported rule=yes n::F<int>::f of=bf0bb291
+  2d185c42 follower - rule=yes n::F<int>::f of=bf0bb291
   73b90cd7 follower - rule=yes n::F::f of=bceee8a5
   b58b740e follower - rule=yes n::F<int>::f of=bceee8a5
   bceee8a5 seed - rule=yes n::Base::f()

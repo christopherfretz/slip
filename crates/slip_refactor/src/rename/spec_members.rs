@@ -26,16 +26,14 @@
 //!   (§9.2). Members of an explicit or a partial specialisation of the
 //!   class are declared there and linked to nothing: they are other
 //!   entities, and their names are `keep`s (`decls`, `refs`).
-//! - **`unsupported` on every follower.** A follower keeps the rule
+//! - **The follower's rule.** A follower keeps the rule
 //!   `Keys::rename_rule` gives for its key (§4.1: a rule is a function of
-//!   key and request), and its key follows the pattern member's, on which
-//!   the digest makes a rule indeterminate
-//!   (`key/rule-on-instantiated-member`, `digest.md` §3.4). So it is
-//!   flagged, as `followers::followed_patterns` flags a seed whose key
-//!   follows a pattern (`spec/landed/edits/WP-071.md` decision 14). The
-//!   flag goes when the digest accepts a rule on an instantiated member
-//!   that gives the name the followed pattern's rule gives
-//!   (`spec/landed/edits/WP-073.md`, "For the digest").
+//!   key and request). Its key follows the pattern member's
+//!   (`digest.md` §3.4), and the digest accepts a rule on it exactly when
+//!   the rule gives the key following gives (`docs/wp/WP-119.md` item 1):
+//!   the rule renames the plain name to the old one and keeps the parent,
+//!   as the pattern member's rule renames its name. So it is not flagged
+//!   for that (until WP-119 it was `unsupported`).
 //! - **`unreachable` for a member's explicit instantiation** (part B):
 //!   `template void S<long>::f();` marks the follower
 //!   `ExplicitInstantiationDefinition` (or `…Declaration`) and Kiln
@@ -262,9 +260,8 @@ fn resolve(
         return None;
     }
     let id = ctx.subjects.add(ctx.keys, e, Role::Follower, ctx.new, &of)?;
-    // Its key follows the pattern member's: a rule on it is
-    // `key/rule-on-instantiated-member` (module documentation).
-    ctx.subjects.flag(id, subject_flags::UNSUPPORTED);
+    // Its key follows the pattern member's, and its rule agrees with the
+    // pattern's (module documentation): no flag for that.
     if hidden(ctx, named, e) {
         ctx.subjects.flag(id, subject_flags::UNREACHABLE);
     }

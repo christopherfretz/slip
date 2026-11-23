@@ -1,7 +1,7 @@
 subjects:
   36cceb9c seed - rule=yes n::B::f(int)
   3b98ec8e candidate - rule=yes n::D::f()
-  498ae399 follower - rule=yes n::D::f of=3b98ec8e,599ef791,8e22d4a6
+  498ae399 follower - rule=yes n::D::f of=3b98ec8e,599ef791
   599ef791 seed - rule=yes n::B::f()
   780d98a2 follower - rule=yes n::D::f of=36cceb9c
   8e22d4a6 follower - rule=yes n::D::f of=36cceb9c

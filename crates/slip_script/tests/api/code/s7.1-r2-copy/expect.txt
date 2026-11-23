@@ -1,0 +1,6 @@
+transform <id>
+edit 0 t.cpp:4:9-4:10 tiers 0 = copy(t.cpp:4:11-4:12)
+edit 1 t.cpp:4:11-4:12 tiers 0 =
+report - note "copy(a call whose extent is null): invalid_handle"
+report - note "copy(null range): invalid_handle"
+report - note "the extent of the call in CALL is null"

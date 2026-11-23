@@ -1,0 +1,3 @@
+removed D::f()
+added D::<shadow Base::f()>
+changed D
