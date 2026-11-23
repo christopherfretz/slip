@@ -610,3 +610,118 @@ fn rule_bytes() {
     assert_eq!(Rule::decode(&mut dec).unwrap(), r);
     dec.finish().unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// Rule use (verify §9.1, §9.5; WP-069)
+
+/// Every table and key of the rule tests above, with the rule index
+/// `map_traced` must report.
+fn traced_cases() -> Vec<(RuleTable, Key, Option<usize>)> {
+    let mut out = Vec::new();
+    let one = RuleTable::new(vec![f_rule()]).unwrap();
+    out.push((RuleTable::empty(), f_key(), None));
+    out.push((one.clone(), f_key(), Some(0)));
+    out.push((one.clone(), Key { kind: KeyKind::FunctionTemplate, ..f_key() }, None));
+    for parent in [Parent::Unit(d(0xad)), Parent::Root, Parent::CLinkage, Parent::Builtin] {
+        out.push((one.clone(), Key { parent, ..f_key() }, None));
+    }
+    for name in [id("F"), id("ff"), Name::UnnamedBy(Box::new(id("f"))), Name::Operator(1)] {
+        out.push((one.clone(), Key { name, ..f_key() }, None));
+    }
+    for disc in [None, Some(d(0xd2))] {
+        out.push((one.clone(), Key { disc, ..f_key() }, None));
+    }
+    out.push((RuleTable::new(vec![Rule { disc: None, ..f_rule() }]).unwrap(), f_key(), None));
+    // The key a rule produces is not matched by it.
+    out.push((one.clone(), one.map(f_key()), None));
+    let p = Parent::Unit(d(0xac));
+    let swap = RuleTable::new(vec![
+        rule(p, KeyKind::Function, id("f"), None, (p, id("g"))),
+        rule(p, KeyKind::Function, id("g"), None, (p, id("f"))),
+    ])
+    .unwrap();
+    // Sorted by bytes: `f` (0x66) before `g` (0x67).
+    out.push((swap.clone(), key(KeyKind::Function, p, id("f"), None), Some(0)));
+    out.push((swap.clone(), key(KeyKind::Function, p, id("g"), None), Some(1)));
+    let t = RuleTable::new(table_rules()).unwrap();
+    for (i, r) in t.rules().iter().enumerate() {
+        out.push((t.clone(), key(r.kind, r.parent, r.name.clone(), r.disc), Some(i)));
+        // Another rule may match it (`aa` and `b` swap): checked against the rules.
+        out.push((t.clone(), key(r.kind, r.to_parent, r.to_name.clone(), r.disc), None));
+    }
+    out
+}
+
+// verify §9.5: `map_traced` gives `map`'s key in every case of the rule
+// tests, and names the rule that matched the key's own fields.
+#[test]
+fn map_traced_agrees_with_map() {
+    for (t, k, want) in traced_cases() {
+        let (mapped, rule) = t.map_traced(k.clone());
+        assert_eq!(mapped, t.map(k.clone()), "{k:?}");
+        // A key that is a produced key of `table_rules` may also be matched
+        // by another rule of it (`aa` and `b` swap): recompute from the rules.
+        let matched = t.rules().iter().position(|r| {
+            (r.parent, r.kind, &r.name, r.disc) == (k.parent, k.kind, &k.name, k.disc)
+        });
+        assert_eq!(rule, matched, "{k:?}");
+        if want.is_some() {
+            assert_eq!(rule, want, "{k:?}");
+        }
+        match rule {
+            Some(i) => {
+                let r = &t.rules()[i];
+                assert_eq!(mapped, key(r.kind, r.to_parent, r.to_name.clone(), r.disc));
+            }
+            None => assert_eq!(mapped, k),
+        }
+    }
+}
+
+// verify §9.1: `produces` names the rule whose (to_parent, kind, to_name,
+// disc) is the key; `producers` every one, ascending.
+#[test]
+fn produces_and_producers() {
+    let t = RuleTable::new(table_rules()).unwrap();
+    for (i, r) in t.rules().iter().enumerate() {
+        let produced = key(r.kind, r.to_parent, r.to_name.clone(), r.disc);
+        let all: Vec<usize> = t.producers(&produced).collect();
+        let want: Vec<usize> = t
+            .rules()
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| {
+                (x.to_parent, x.kind, &x.to_name, x.disc)
+                    == (produced.parent, produced.kind, &produced.name, produced.disc)
+            })
+            .map(|(j, _)| j)
+            .collect();
+        assert_eq!(all, want);
+        assert!(all.contains(&i));
+        assert_eq!(t.produces(&produced), want.first().copied());
+    }
+    // The matched key is not a produced key unless a rule produces it.
+    assert_eq!(t.produces(&f_key()), None);
+    let one = RuleTable::new(vec![f_rule()]).unwrap();
+    let g = key(KeyKind::Function, Parent::Unit(d(0x1e)), id("g"), Some(d(0xd1)));
+    assert_eq!(one.produces(&g), Some(0));
+    for other in [
+        Key { disc: None, ..g.clone() },
+        Key { kind: KeyKind::Variable, ..g.clone() },
+        Key { parent: Parent::Root, ..g.clone() },
+        Key { name: id("f"), ..g.clone() },
+    ] {
+        assert_eq!(one.produces(&other), None, "{other:?}");
+    }
+    assert_eq!(RuleTable::empty().produces(&g), None);
+    // Two namespaces merged onto a third: both rules produce its key.
+    let ns = |n: &str| key(KeyKind::Namespace, Parent::Root, id(n), None);
+    let merge = RuleTable::new(vec![
+        rule(Parent::Root, KeyKind::Namespace, id("b"), None, (Parent::Root, id("legacy"))),
+        rule(Parent::Root, KeyKind::Namespace, id("a"), None, (Parent::Root, id("legacy"))),
+    ])
+    .unwrap();
+    assert_eq!(merge.producers(&ns("legacy")).collect::<Vec<_>>(), [0, 1]);
+    assert_eq!(merge.produces(&ns("legacy")), Some(0));
+    assert_eq!(merge.producers(&ns("a")).count(), 0);
+}
