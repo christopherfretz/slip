@@ -1250,7 +1250,12 @@ consteval void expect_renamed(info entity, std::string_view new_identifier);
    instantiations), and with each the extent of `x`.
 2. It throws `unsupported` when `x` is an entity or a declaration, when
    the extent of `x` is null, and when the unit is keyed by content
-   (`spec/digest.md` §3.3) or has no key the digest can compute.
+   (`spec/digest.md` §3.3) or has no key the digest can compute. It
+   also throws `unsupported` when the host cannot establish which unit
+   holds `x`: a name in the decl-specifiers shared by two declarators,
+   a name written once in a file entered in two units, a name whose
+   holder the front end does not record. The host never guesses a
+   unit.
 3. `expect_renamed(e, n)` declares that entity `e` is intended to be
    declared with identifier `n` and to be otherwise unchanged, in the same
    scope. The host records the rule of `spec/verify.md` §2.1 that undoes

@@ -476,6 +476,25 @@ int v = TWICE(S::z);
     });
 }
 
+// One written name, expanded into two declarations by a macro: two
+// holders, two units.
+#[test]
+fn s7_5_rule2_a_macro_argument_in_two_holders_has_no_unit() {
+    let src = "\
+int f(int);
+#define TWO(x) int a1 = x(1); int a2 = x(2);
+TWO(f)
+";
+    with_files(&[("main.cpp", src)], |s, d| {
+        let refs = refs_to(s, one(s, "f"));
+        assert_eq!(refs.len(), 1, "one written name: {refs:?}");
+        assert_eq!(keys_of(s, d, Value::Reference(refs[0])), Err(Why::TwoUnits));
+        let held: Vec<Result<Vec<String>, Why>> =
+            calls(s, "f").into_iter().map(|x| keys_of(s, d, Value::Expression(x))).collect();
+        assert_eq!(held, vec![Ok(strs(&["a1"])), Ok(strs(&["a2"]))]);
+    });
+}
+
 #[test]
 fn s7_5_rule2_a_header_entered_in_two_holders_has_no_unit() {
     let files = [
