@@ -23,6 +23,11 @@
 //!   key collides (digest §3.4) is the walk's own marking
 //!   (`units::mark_collisions`, `keys::mark_mapped_collisions`), run on
 //!   the walk's own units.
+//! - **Every recorded name takes part, whatever its role**, and a name
+//!   Kiln records without a referent (dependent, or whose resolution
+//!   failed) answers and fails: the question is what the name denotes,
+//!   and an answer covers the names Kiln records at the range (§10.2
+//!   rules 1 and 5; what it does not record is §10.7's named hole).
 //! - **A reference whose name has no range takes no part**: Kiln gives
 //!   none, `ranges` refuses one (an empty span, a directive line, a
 //!   `<scratch space>` buffer), the file's text is not its bytes (Kiln
@@ -35,9 +40,9 @@ use std::collections::{HashMap, HashSet};
 
 use slip_kiln::Unit;
 use slip_kiln::kiln::ast::DeclId;
-use slip_kiln::kiln::source::{FileId, SourceManager};
+use slip_kiln::kiln::source::{FileId, SourceManager, Span};
 use slip_kiln::ranges;
-use slip_kiln::written::{self, Role, WrittenRef};
+use slip_kiln::written::{self, Role};
 use slip_model::Digest;
 use slip_model::keys::{KeyKind, RuleTable};
 
@@ -66,12 +71,14 @@ pub enum Spelling {
     Holds,
     /// No reference answers.
     NotSeen,
-    /// Some answering reference's origin has another key, or none.
+    /// Some answering reference's origin has another key, or none, or
+    /// some answering name has no referent.
     Fails {
         /// The key, under the rules, of the origin of the first answering
         /// reference in unit order that does not have the obligation's
         /// key; `None` when it has none (it is not a unit, is keyed by
-        /// content, its key is indeterminate or collides).
+        /// content, its key is indeterminate or collides) or the name has
+        /// no referent ([`UNRESOLVED_DEPENDENT`], [`UNRESOLVED_FAILED`]).
         found: Option<Digest>,
         /// That entity as a person would write it (`spec/verify.md`
         /// §6.1): for the report only.
@@ -133,20 +140,33 @@ pub fn check_spellings(
     obligations.iter().map(|ob| check.one(&placed, ob)).collect()
 }
 
-/// A written reference that takes part (§10.2 rules 1 and 2), with its
-/// name range.
+/// `found_name` of a name Kiln records without a referent because it is
+/// dependent (`REF_DEPENDENT`): what it denotes is decided per
+/// instantiation, and Kiln does not say per instantiation.
+pub const UNRESOLVED_DEPENDENT: &str = "<unresolved name: dependent>";
+
+/// `found_name` of a name Kiln records without a referent because its
+/// lookup or overload resolution failed (`REF_UNRESOLVED`).
+pub const UNRESOLVED_FAILED: &str = "<unresolved name: resolution failed>";
+
+/// A recorded name that takes part (§10.2 rules 1 and 2), with its range.
 struct Placed {
     /// The subject path of the range's file.
     path: Vec<u8>,
     lo: u32,
     hi: u32,
-    r: WrittenRef,
+    /// The referent; `None` for a name without one.
+    referent: Option<DeclId>,
+    /// For a name without a referent: resolution failed, rather than
+    /// waiting for an instantiation.
+    unresolved: bool,
 }
 
-/// Whether an entry of role `role` takes part (§10.2 rule 1: the roles of
-/// `spec/api.md` §6.5 rule 3). Every role is listed, so a role Kiln adds
-/// does not compile until it is placed here (§10.2: "a role Kiln adds
-/// later takes part from the day `spec/api.md` announces it").
+/// Whether a name of role `role` takes part (§10.2 rule 1): every role
+/// does, because the check asks what the name denotes, whatever the
+/// syntax around it (`spec/api.md` §6.5's roles are what a transform is
+/// given, another question). Every role is listed, so that a role Kiln
+/// adds does not compile until someone has looked at it here.
 fn takes_part(role: Role) -> bool {
     match role {
         Role::Expr
@@ -155,29 +175,39 @@ fn takes_part(role: Role) -> bool {
         | Role::Type
         | Role::Template
         | Role::Base
-        | Role::MemInit => true,
-        Role::UsingDecl
+        | Role::MemInit
+        | Role::UsingDecl
         | Role::UsingDirective
         | Role::NamespaceAlias
         | Role::Elaborated
         | Role::SpecTarget
         | Role::Concept
-        | Role::Designator => false,
+        | Role::Designator => true,
     }
 }
 
-/// The references of the unit that take part, with their name ranges, in
-/// unit order (`slip_kiln::ranges::unit_order` of their names' starts;
-/// the table's order among equal ones).
+/// The recorded names of the unit that take part, with their ranges, in
+/// unit order (`slip_kiln::ranges::unit_order` of their starts; among
+/// equal ones the references in the table's order, then the names
+/// without a referent in the table's order).
 fn placed_refs(unit: &Unit<'_>, input: &Input<'_>) -> Vec<Placed> {
     let sm = unit.sm();
-    let mut refs: Vec<WrittenRef> =
-        written::written_refs(unit).into_iter().filter(|r| takes_part(r.role)).collect();
-    refs.sort_by(|a, b| ranges::unit_order(sm, a.name.lo, b.name.lo));
+    let mut names: Vec<(Span, Option<DeclId>, bool)> = written::written_refs(unit)
+        .into_iter()
+        .filter(|r| takes_part(r.role))
+        .map(|r| (r.name, Some(r.referent), false))
+        .collect();
+    names.extend(
+        written::dependent_names(unit)
+            .into_iter()
+            .filter(|d| takes_part(d.role))
+            .map(|d| (d.name, None, d.unresolved)),
+    );
+    names.sort_by(|a, b| ranges::unit_order(sm, a.0.lo, b.0.lo));
     let mut paths: HashMap<FileId, Vec<u8>> = HashMap::new();
     let mut out = Vec::new();
-    for r in refs {
-        let Some(fr) = ranges::file_range_of_span(sm, r.name) else { continue };
+    for (name, referent, unresolved) in names {
+        let Some(fr) = ranges::file_range_of_span(sm, name) else { continue };
         if !text_is_bytes(sm, fr.file) {
             continue;
         }
@@ -185,7 +215,7 @@ fn placed_refs(unit: &Unit<'_>, input: &Input<'_>) -> Vec<Placed> {
         if path.is_empty() {
             continue;
         }
-        out.push(Placed { path: path.clone(), lo: fr.lo, hi: fr.hi, r });
+        out.push(Placed { path: path.clone(), lo: fr.lo, hi: fr.hi, referent, unresolved });
     }
     out
 }
@@ -241,23 +271,22 @@ impl Check<'_, '_> {
         if answering.is_empty() {
             return Spelling::NotSeen;
         }
-        // §10.2 rules 4 and 5: every answering reference's origin must
-        // have the key; the first that does not is what was found.
-        let mut first_other: Option<(Option<Digest>, DeclId)> = None;
+        // §10.2 rules 4 and 5: every answering name has a referent whose
+        // origin has the key; the first that does not is what was found.
         for p in &answering {
-            let origin = written::origin(self.unit, p.r.referent);
-            let key = self.key(origin);
-            if key != Some(ob.key) && first_other.is_none() {
-                first_other = Some((key, origin));
-            }
-        }
-        match first_other {
-            None => Spelling::Holds,
-            Some((found, origin)) => {
+            let Some(referent) = p.referent else {
+                let found_name =
+                    if p.unresolved { UNRESOLVED_FAILED } else { UNRESOLVED_DEPENDENT };
+                return Spelling::Fails { found: None, found_name: found_name.to_owned() };
+            };
+            let origin = written::origin(self.unit, referent);
+            let found = self.key(origin);
+            if found != Some(ob.key) {
                 let found_name = self.name(found.as_ref(), origin);
-                Spelling::Fails { found, found_name }
+                return Spelling::Fails { found, found_name };
             }
         }
+        Spelling::Holds
     }
 
     /// The key of `origin` under the rules, or `None` when it has none or
@@ -307,31 +336,43 @@ impl Check<'_, '_> {
 const NAME_LIMIT: usize = 4096;
 
 /// The walk of `input` under `rules`, for which keys collide and the
-/// units' names: the walk's own units, with their causes put aside and
-/// marked again by the walk's two functions, so that a collision is seen
-/// whatever other cause a unit has (a unit keeps the first cause met).
+/// units' names.
+///
+/// A unit in a collision is the walk's own `collided` (WP-045), set
+/// whatever cause the unit keeps first (`units::merge`), by
+/// `units::mark_collisions`, `keys::mark_mapped_collisions` and
+/// `units::mark_part_collisions`. Parts (a resolved or `default_argument`
+/// unit, `owner` set) are left out: a part's key is of kind `Resolved` or
+/// `DefaultArgument` and an origin's never is (`Keys::key_id` keys a
+/// declaration by its own kind), so no obligation can have one; the unit
+/// test `s3_4_part_keys_are_no_origins_keys` shows it.
+///
+/// A collision of a key no unit has marks the order unit's cause only
+/// (it has no `collided`), and the order unit may already keep another
+/// cause; so on a copy of the units the order unit's cause is put aside
+/// and the mapped collisions are marked again (the units' other marks on
+/// the copy are not read).
 fn collisions(input: &Input<'_>, rules: &RuleTable) -> Collisions {
     let options = Options { rules, detail: Detail::None, names: true };
     crate::walk::run_with(input, &options, |w, written, output| {
-        let mut again: Vec<crate::units::Written> = written.to_vec();
-        for u in &mut again {
-            u.cause = None;
-        }
-        crate::units::mark_collisions(&mut again);
-        crate::keys::mark_mapped_collisions(w, input, &mut again);
         let mut keys = HashSet::new();
         let mut with_unit = HashSet::new();
-        let mut unitless = false;
-        for u in &again {
-            if u.kind == KeyKind::Order {
-                unitless |= u.cause == Some(Cause::Collision);
+        for u in written {
+            if u.kind == KeyKind::Order || u.owner.is_some() {
                 continue;
             }
             with_unit.insert(u.key);
-            if u.cause == Some(Cause::Collision) {
+            if u.collided {
                 keys.insert(u.key);
             }
         }
+        let mut again: Vec<crate::units::Written> = written.to_vec();
+        for u in again.iter_mut().filter(|u| u.kind == KeyKind::Order) {
+            u.cause = None;
+        }
+        crate::keys::mark_mapped_collisions(w, input, &mut again);
+        let unitless =
+            again.iter().any(|u| u.kind == KeyKind::Order && u.cause == Some(Cause::Collision));
         let names = output.names.into_iter().collect();
         Collisions { keys, with_unit, unitless, names }
     })
@@ -341,11 +382,10 @@ fn collisions(input: &Input<'_>, rules: &RuleTable) -> Collisions {
 mod tests {
     use super::*;
 
-    // §10.2 rule 1: the seven roles of `spec/api.md` §6.5 rule 3 take
-    // part, the others do not.
+    // §10.2 rule 1: every role takes part.
     #[test]
-    fn s10_2_rule1_roles() {
-        let part = [
+    fn s10_2_rule1_every_role() {
+        let all = [
             Role::Expr,
             Role::Member,
             Role::Nns,
@@ -353,8 +393,6 @@ mod tests {
             Role::Template,
             Role::Base,
             Role::MemInit,
-        ];
-        let other = [
             Role::UsingDecl,
             Role::UsingDirective,
             Role::NamespaceAlias,
@@ -363,7 +401,51 @@ mod tests {
             Role::Concept,
             Role::Designator,
         ];
-        assert!(part.iter().all(|&r| takes_part(r)));
-        assert!(other.iter().all(|&r| !takes_part(r)));
+        assert!(all.iter().all(|&r| takes_part(r)));
+    }
+
+    // Digest §3.4, §12: a part's key (a resolved or `default_argument`
+    // unit) is the key of no declaration, so `collisions` may leave parts
+    // out. Over a unit with default arguments, a default member
+    // initialiser and resolved units, under no rule and under a rename.
+    #[test]
+    fn s3_4_part_keys_are_no_origins_keys() {
+        let src = "namespace n { struct S { int m = 1; int f(int a = 2) { return a; } };\n\
+                   int f(int); template <class T> int t(T x = T()) { return f(x); } }\n\
+                   int u() { n::S s; return s.f() + n::t<int>() + s.m; }\n";
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        slip_kiln::snippet::parse_with(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let path = |_: FileId| b"main.cpp".to_vec();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let none = RuleTable::empty();
+            let mut keys = Keys::new(&input);
+            let f = p
+                .ast
+                .decls
+                .ids()
+                .find(|&d| crate::display_name(p.ast, d) == "n::S::f(int)")
+                .expect("S::f");
+            let rename = keys.rename_rule(f, b"g").expect("a rule");
+            let renamed = RuleTable::new(vec![rename]).expect("a table");
+            for rules in [&none, &renamed] {
+                let mut keys = Keys::with_rules(&input, rules);
+                let origins: HashSet<Digest> =
+                    p.ast.decls.ids().filter_map(|d| keys.key_id(d).ok()).collect();
+                let options = Options { rules, detail: Detail::None, names: false };
+                let parts = crate::walk::run_with(&input, &options, |_, written, _| {
+                    written.iter().filter(|u| u.owner.is_some()).map(|u| u.key).collect::<Vec<_>>()
+                });
+                assert!(parts.len() >= 3, "parts: {}", parts.len());
+                assert!(parts.iter().all(|k| !origins.contains(k)));
+            }
+        })
+        .expect("parses");
     }
 }

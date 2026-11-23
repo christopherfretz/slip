@@ -12,7 +12,9 @@
 
 use slip_digest::Input;
 use slip_digest::query::Keys;
-use slip_digest::spelling::{Obligation, Spelling, check_spellings};
+use slip_digest::spelling::{
+    Obligation, Spelling, UNRESOLVED_DEPENDENT, UNRESOLVED_FAILED, check_spellings,
+};
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::source::FileId;
@@ -191,6 +193,11 @@ fn run_with(c: &Case<'_>, extra: &[Obligation]) -> (Vec<Obligation>, Vec<Spellin
 
 fn run(c: &Case<'_>) -> Vec<Spelling> {
     run_with(c, &[]).1
+}
+
+/// What a name Kiln records without a referent (dependent) fails with.
+fn dependent() -> (Option<Digest>, String) {
+    (None, UNRESOLVED_DEPENDENT.to_owned())
 }
 
 /// `Fails` with `found` absent or present, for asserting.
@@ -450,14 +457,16 @@ fn s10_2_not_seen_in_an_unused_macro_argument() {
 }
 
 // A dependent name: resolved only at instantiation, and the template is
-// never instantiated here.
+// never instantiated here. Kiln records it without a referent: the name
+// at the range denotes nothing Kiln can say, so it fails (§10.2 rule 5;
+// it was `NotSeen` before fix round 1, and either stops the run).
 #[test]
-fn s10_2_not_seen_in_a_dependent_name() {
+fn s10_2_fails_at_a_dependent_name() {
     let post = [(
         "main.cpp",
         "struct A { static int f(); };\ntemplate <class T> int g() { return T::«f»(); }\n",
     )];
-    assert_eq!(run(&case(&post, &[Named("A::f()")])), [NotSeen]);
+    assert_eq!(fails(&run(&case(&post, &[Named("A::f()")]))[0]), Some(dependent()));
 }
 
 // Rule 3 of the package: a unit parsed without the tables.
@@ -641,10 +650,10 @@ fn attack_a_template_id() {
 fn attack_a_dependent_call_two_instantiations() {
     let src = "namespace x { struct A {}; int h(A); }\nnamespace y { struct B {}; int h(B); }\ntemplate <class T> int g(T t) { return «h»(t); }\nint u() { return g(x::A{}) + g(y::B{}); }\n";
     // At this pin Kiln records the dependent name once, without a
-    // referent, and nothing of the instantiations: not seen, for the
+    // referent, and nothing of the instantiations: it fails, for the
     // right key and the wrong one alike.
-    assert_eq!(one(src, &[Named("x::h(x::A)")]), [NotSeen]);
-    assert_eq!(one(src, &[Named("y::h(y::B)")]), [NotSeen]);
+    assert_eq!(fails(&one(src, &[Named("x::h(x::A)")])[0]), Some(dependent()));
+    assert_eq!(fails(&one(src, &[Named("y::h(y::B)")])[0]), Some(dependent()));
 }
 
 // A reference in a default argument used from several places, and in a
@@ -667,15 +676,17 @@ fn attack_unevaluated_operands() {
 }
 
 // A requires-expression: a non-dependent name in it is resolved at the
-// definition; a dependent one is not.
+// definition; a dependent one is not, and fails.
 #[test]
 fn attack_a_requires_expression() {
     let src =
         "int f();\nint k(int);\ntemplate <class T> concept C = requires(T t) { «f»(); «k»(t); };\n";
-    assert_eq!(one(src, &[Named("f()"), Named("k(int)")]), [Holds, NotSeen]);
+    let got = one(src, &[Named("f()"), Named("k(int)")]);
+    assert_eq!(got[0], Holds);
+    assert_eq!(fails(&got[1]), Some(dependent()));
     let wrong = one(src, &[Named("k(int)"), Named("f()")]);
     assert!(fails(&wrong[0]).is_some(), "{wrong:?}");
-    assert_eq!(wrong[1], NotSeen);
+    assert_eq!(fails(&wrong[1]), Some(dependent()));
 }
 
 // Lambda captures: a simple capture names a local (no key: fails for
@@ -893,13 +904,14 @@ fn s10_6_unit_and_input_of_two_parses() {
     });
 }
 
-// Names in the roles outside §10.2 rule 1 (a using-declaration's name,
-// a namespace alias's target, a using-directive's namespace, a concept
-// name, a designator, an explicit instantiation's target) take no part:
-// not seen (`spec/verify.md` §10.7). At this pin Kiln records none of
-// them (its stage 3); the role filter keeps them out when it does.
+// The named hole of §10.7: names Kiln does not record at this pin (a
+// using-declaration's name, a namespace alias's target, a
+// using-directive's namespace, a type-constraint's concept, a designator,
+// an explicit instantiation's target; its stage 3). Alone at a range they
+// are not seen. Every role takes part (§10.2 rule 1), so the day Kiln
+// records one this test fails, and the `s10_7_hole_*` tests below run.
 #[test]
-fn attack_names_in_other_roles() {
+fn s10_7_unrecorded_names_are_not_seen() {
     let src = "namespace a { int f(); struct S { int x; }; template <class T> concept C = true; template <class T> int t(T) { return 0; } }\nnamespace b { using a::«f»; }\nnamespace al = «a»;\nusing namespace «a»;\ntemplate <a::«C» T> int k(T);\na::S s = { .«x» = 1 };\ntemplate int a::«t»<int>(int);\n";
     let got = one(
         src,
