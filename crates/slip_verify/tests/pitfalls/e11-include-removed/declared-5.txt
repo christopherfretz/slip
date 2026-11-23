@@ -1,0 +1,5 @@
+# What tag.h and unused.h declared, as a tool that removes them would
+# declare it; in good-5 the line for tag.h is unused, in bad-5 the one for
+# unused.h.
+removed spare()
+removed tag(Mine)
