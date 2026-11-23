@@ -20,6 +20,7 @@ good/           the same tree after the correct edit           (optional, see be
 bad/            the same tree after the wrong edit; bad-2/, bad-3/ … for more
 pre-2/          optional: the subject that good-2/ and bad-2/ are edits of (pre-3/ … likewise)
 declared.txt    the declared changes, shared by good and every bad
+declared-2.txt  optional: the declared changes of good-2/ and bad-2/ instead (declared-3.txt … likewise)
 expect.txt      what each tree must give
 ```
 
@@ -41,7 +42,10 @@ expect.txt      what each tree must give
   `expect.txt`, or another, changes the standard). All paths are
   relative, so a subject and its trees are parsed with one command up to
   the directory.
-- `declared.txt` is the text of `verify.md` §2.3. It is resolved once per
+- `declared.txt` is the text of `verify.md` §2.3 (`declared-<k>.txt`
+  for the trees numbered `<k>` when the row has that file: a second
+  shape that needs other rules, as one rule per moved entity in place
+  of the namespace's). It is resolved once per
   tree (`slip declare` with the subject as `--root` and the tree as
   `--post`), since a `created` line and the new parent of a `relocate`
   are resolved in the post-image. In a `good` tree every line must
@@ -66,14 +70,19 @@ expect.txt      what each tree must give
   - `mismatch <kind> <entity>`: the state is `mismatch` and the report
     has a finding of that kind whose `name` is `<entity>`. With
     ` @ <file>:<line>` the finding's `where.post` (`where.pre` for
-    `removed`) must be that file, relative to the tree, and that line
-    ("Places" below).
+    `removed`, and for a `changed` of `verify.md` §4 step 4 whose
+    entity the subject declares and the tree derives) must be that
+    file, relative to the tree, and that line ("Places" below).
   - `mismatch` alone: the state is `mismatch` and at least one finding is
     neither `indeterminate` nor `derived_indeterminate`. A tree whose
     findings are all indeterminate has not shown the hazard caught; it
     has shown that the walk gave up. Rows that expect that (N20, R11)
     name it: `mismatch indeterminate <entity>`.
-  - A row without `good/` says so with `good: none <reason>`.
+  - A row without `good/` says so with `good: none <reason>`, and a
+    numbered subject without a correct edit with `good-<k>: none
+    <reason>`. Where no correct edit can be digest-equal by design
+    (the digest writes what is written: a capture default, a
+    functional cast), the reason says that, not that none exists.
   - `xfail <tree>: <reason>` says the tree's line is not met yet and
     why, naming the defect or the package. It changes the outcome as
     below. **It never excuses a `bad` tree that verifies.**
