@@ -93,6 +93,22 @@ pub(super) fn conflict(pairs: &[Pair], argv: &[Vec<u8>]) -> Option<String> {
     None
 }
 
+/// Guard G5's reason (e) of §5.3, checked first: a pair other than the identity
+/// whose post prefix is under no post root (`in_post` false). Its map
+/// would rewrite every spelling under that prefix, whatever route the post
+/// parse took to the file (another word, an absolute `#include`,
+/// `-include`, `#embed`), and only the post roots are spelled by mapped
+/// words alone. Such a pair comes of a word spelled through the subject
+/// whose real path leaves it, to a place under no root.
+pub(super) fn leaves(pairs: &[Pair], mut in_post: impl FnMut(&[u8]) -> bool) -> Option<String> {
+    let p = pairs.iter().filter(|p| !p.identity()).find(|p| !in_post(&p.post))?;
+    Some(format!(
+        "post-image: {} is spelled through the subject and leaves it ({} is under no post root)",
+        show_path(&p.word),
+        show_path(&p.post)
+    ))
+}
+
 /// The old prefixes of the `-fmacro-prefix-map=` and `-ffile-prefix-map=`
 /// options in `word` (itself, or each item of a `-Wp,` list).
 fn user_maps(word: &[u8]) -> Vec<&[u8]> {

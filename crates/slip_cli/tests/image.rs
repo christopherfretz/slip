@@ -423,7 +423,8 @@ fn s5_1_post_command_resolves() {
     );
     // From a directory of the subject: a relative word that stays inside
     // names the same place from the post directory and is kept; one that
-    // leaves the subject by `..` is written, relative, where it ends.
+    // leaves the subject by `..` is written, relative, where it ends, and
+    // its pair's post prefix is under no post root: guard G5 (e).
     let inside = Command {
         directory: bytes(&s.join("build")),
         argv: words(&["c++", "-Iinc", "-I../../ext", "a.cpp"]),
@@ -442,10 +443,104 @@ fn s5_1_post_command_resolves() {
             "-fmacro-prefix-map=../../../ext/=../../ext/",
         ])
     );
-    assert_eq!(post.conflict, None);
+    assert_eq!(
+        post.conflict.as_deref(),
+        Some(
+            "post-image: -I../../ext is spelled through the subject and leaves it \
+             (../../../ext/ is under no post root)"
+        )
+    );
+    // Without that word: no conflict.
+    let kept = Command { argv: words(&["c++", "-Iinc", "a.cpp"]), ..inside.clone() };
+    assert_eq!(image.post_command(&kept).conflict, None);
     // `directory` by identity: through the link.
     let linked = Command { directory: bytes(&dir.0.join("link/build")), ..inside };
     assert_eq!(image.command(&linked).directory, bytes(&p.join("build")));
+}
+
+// §5.3 G5 (e), every way a word makes a pair: a path spelled through the
+// subject that leaves it, by `..`, to a place under no root is refused,
+// naming the word, whether it is an include directory (`-I`, `-isystem`,
+// `-iquote`, `-idirafter`, joined or separate), an included file
+// (`-include`, `-imacros`), the main file, or relative to a `directory`
+// in the subject. `directory` itself makes no pair: spelled through the
+// subject and leaving it, it is rewritten to where it ends and nothing is
+// refused.
+#[test]
+fn g5_word_leaves_the_subject() {
+    let dir = Dir::new("leaves");
+    let (s, p) = (dir.mkdir("s"), dir.mkdir("p"));
+    dir.mkdir("s/build");
+    dir.mkdir("p/build");
+    dir.mkdir("ext/inc");
+    std::fs::write(dir.0.join("ext/inc/x.h"), "").unwrap();
+    std::fs::write(dir.0.join("ext/a.cpp"), "").unwrap();
+    let image = Image::new(vec![RootMap { subject: bytes(&s), post: bytes(&p) }]).unwrap();
+    let (b, sp) = (dir.0.to_str().unwrap(), s.to_str().unwrap());
+    let reason = |word: &str, post: &str| {
+        format!(
+            "post-image: {word} is spelled through the subject and leaves it ({post} is under no \
+             post root)"
+        )
+    };
+    let up = format!("{sp}/../ext");
+    for (flags, word, post) in [
+        (vec![format!("-I{up}/inc")], format!("-I{up}/inc"), format!("{b}/ext/inc/")),
+        (
+            vec!["-isystem".to_owned(), format!("{up}/inc")],
+            format!("{up}/inc"),
+            format!("{b}/ext/inc/"),
+        ),
+        (vec![format!("-iquote{up}/inc")], format!("-iquote{up}/inc"), format!("{b}/ext/inc/")),
+        (
+            vec!["-idirafter".to_owned(), format!("{up}/inc")],
+            format!("{up}/inc"),
+            format!("{b}/ext/inc/"),
+        ),
+        (
+            vec!["-include".to_owned(), format!("{up}/inc/x.h")],
+            format!("{up}/inc/x.h"),
+            format!("{b}/ext/inc/x.h"),
+        ),
+        (
+            vec!["-imacros".to_owned(), format!("{up}/inc/x.h")],
+            format!("{up}/inc/x.h"),
+            format!("{b}/ext/inc/x.h"),
+        ),
+        (vec![format!("{up}/a.cpp")], format!("{up}/a.cpp"), format!("{b}/ext/a.cpp")),
+    ] {
+        let mut argv = vec!["c++".to_owned()];
+        argv.extend(flags);
+        if !word.ends_with("a.cpp") {
+            argv.push(format!("{sp}/a.cpp"));
+        }
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let c = Command { directory: bytes(&s), argv: words(&argv), env: Vec::new() };
+        let got = image.post_command(&c);
+        assert_eq!(got.conflict.as_deref(), Some(&*reason(&word, &post)), "{word}");
+    }
+    // Relative to a `directory` in the subject: here the post directory is
+    // as deep, so the word names the same place from it and is kept as
+    // written (the identity: no pair, nothing to refuse); where it is not,
+    // the word is rewritten and refused (`s5_1_post_command_resolves`,
+    // `-I../../ext`).
+    let c = Command {
+        directory: bytes(&s.join("build")),
+        argv: words(&["c++", "-I../../ext/inc", "../a.cpp"]),
+        env: Vec::new(),
+    };
+    let post = image.post_command(&c);
+    assert_eq!(post.command.argv[1], b"-I../../ext/inc");
+    assert_eq!(post.conflict, None);
+    // `directory` through the subject, leaving it: rewritten, no pair.
+    let c = Command {
+        directory: format!("{sp}/../ext").into_bytes(),
+        argv: words(&["c++", &format!("{sp}/a.cpp")]),
+        env: Vec::new(),
+    };
+    let post = image.post_command(&c);
+    assert_eq!(post.command.directory, format!("{b}/ext").into_bytes());
+    assert_eq!(post.conflict, None);
 }
 
 // §5.3 G5, the command's own prefix maps: one whose old prefix overlaps a

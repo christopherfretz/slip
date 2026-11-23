@@ -339,7 +339,10 @@ impl Image {
                 &word,
             ));
         }
-        let conflict = maps::conflict(&pairs, &argv);
+        // The pairs of the words; the root pairs are the roots themselves.
+        let words = pairs.len() - self.maps.len();
+        let conflict = maps::leaves(&pairs[..words], |post| r.in_post(post, &to))
+            .or_else(|| maps::conflict(&pairs, &argv));
         let maps = maps::emitted(&pairs);
         for (post, written) in &maps {
             argv.push([b"-fmacro-prefix-map=", &post[..], b"=", &written[..]].concat());
@@ -885,6 +888,18 @@ impl Resolver<'_> {
         let r = std::fs::canonicalize(path).ok();
         self.canon.insert(path.to_path_buf(), r.clone());
         r
+    }
+
+    /// Whether the post prefix `post` of a map pair (relative to `to`, the
+    /// post command's directory, when relative) lies under a post root
+    /// (§5.1, the invariant G5 checks): by identity when it exists, else
+    /// by its lexical form as bytes.
+    fn in_post(&mut self, post: &[u8], to: &Path) -> bool {
+        let path = lexical(&to.join(bytes_path(post)));
+        match self.canonical(&path) {
+            Some(real) => matches!(self.place(&real), Region::Post { .. }),
+            None => self.maps.iter().any(|m| at_or_under(&path_bytes(&path), &m.post)),
+        }
     }
 
     /// The region of the real path `real`: its own for a directory, its

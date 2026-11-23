@@ -1015,6 +1015,27 @@ symbolic link or another letter case gets a post prefix another route
 also has (`<p>/` for `-I/link/inc` with `link` a link to `s`, and for the
 main file `s/a.cpp`) with another written prefix, and is refused.
 
+A second invariant makes the first checkable: **every pair emitted has
+its post prefix under a post root.** A prefix map rewrites every spelling
+under its prefix, whatever route reached the file: another word kept as
+written, an absolute `#include`, `-include`, `#embed`. Only a post root's
+files are spelled through mapped words alone; a directory under no root
+can be spelled by any of them. So a word spelled through the subject
+whose path leaves it, by `..`, to a place under no root (`-I/s/../s2/inc`;
+`-I../../ext` from a `directory` in the subject, when the post directory
+is not as deep) gets no pair: the job is `unverifiable` under G5, naming
+the word. This holds for every way a pair is made, since every
+path-bearing word goes through the one rewrite: include directories
+(`-I`, `-isystem`, `-iquote`, `-idirafter`), included files (`-include`,
+`-imacros`), the main file, and a relative word resolved against the
+directory. `directory` makes no pair: spelled through the subject and
+leaving it, it is rewritten to where it ends. A relative word that names
+the same place from the post directory is kept as written and makes no
+pair either (the identity). A word that leaves one subject root into
+another is rewritten into that root's post tree; its pair is then under a
+post root, and it disagrees with that root's pair, so G5 refuses it by
+the consistency check.
+
 The textual rule rewrites what is not resolved: `-DROOT="/s/"` becomes
 `-DROOT="/p/"`, and `-DROOT="/s"` is kept (the root is followed by `"`);
 so is a subject root that happens to occur inside a longer path
@@ -1037,7 +1058,7 @@ saw. Each half is one guard of §5.3:
 | G1 | no file the parse read (`inputs`, real paths) is under a subject root, by identity | `verify_job.rs` `g1_*`, `f3_case_insensitive_spelling`; `image.rs` `s5_1_under_subject_by_identity` |
 | L1 | no directory of the search list, no directory that would hold a place a lookup tried (found or not, `#include` and `__has_include` in every form, `#embed` and `__has_embed`, `-include`), and no directory of a file read, as spelled, has its resolution look a name up under a subject root | `verify_job.rs` `l1_*`, `f3_symbolic_link_to_the_subject`; `crates/slip_kiln/tests/lookups.rs` for what the log holds |
 | G4 | no word is a response file, whose words Kiln's driver would read without Slip seeing them | `verify_job.rs` `g4_response_file` |
-| G5 | every spelling of a file the post parse makes is mapped to its spelling in the real post-image: the map pairs are consistent, no prefix map of the command's own overlaps them, no `#line` name is mapped | `verify_job.rs` `f6_two_routes_to_one_file`, `f6s_two_routes_through_a_link`, `f6r_two_routes_no_edit`, `g5_command_prefix_map`, `g5_line_name`; `image.rs` `s5_1_post_command_resolves`, `g5_command_prefix_maps` |
+| G5 | every spelling of a file the post parse makes is mapped to its spelling in the real post-image: every pair's post prefix is under a post root, the map pairs are consistent, no prefix map of the command's own overlaps them, no `#line` name is mapped | `verify_job.rs` `f6_two_routes_to_one_file`, `f6s_two_routes_through_a_link`, `f6r_two_routes_no_edit`, `g5_command_prefix_map`, `g5_line_name`, `z1_word_leaves_the_subject`, `z2_word_leaves_the_subject_absolute_include`, `z_control_word_stays_in_the_subject`, `z_word_leaves_into_another_root`; `image.rs` `s5_1_post_command_resolves`, `g5_command_prefix_maps`, `g5_word_leaves_the_subject` |
 | O2 | every file outside every root that both images read has the pre shard's size and digest (an image other than the identity) | `verify_job.rs` `o2_outside_drift_at_the_sums` |
 | G2, R2, G3 | the pre-image parsed at step 4 is the map phase's, and the post-image did not change during the job | `verify_job.rs` `g2_*`, `r2_*`, `g3_*` |
 
@@ -1193,7 +1214,7 @@ only withdraws: guard G3.
 | G1 | step 2, tree form: no entry of the post-image parse's `inputs` is under a subject root (§5.1, by identity) | `post-image: read <path>, a file of the subject` (the first such entry) |
 | L1 | step 2, tree form: the resolution from the post command's `directory` (§5.1) of each directory of the search list, of the directory that would hold each place a lookup tried, and of the directory of each file read as the front end spelled it, looks no name up in a directory under a subject root, except the name of a post root in it | `post-image: searches <dir>: <subject dir> is a directory of the subject`; `post-image: looked for <name> in <dir>: <subject dir> is …`; `post-image: read <name>: <subject dir> is …` (the first, in that order; `<subject dir>` the first directory of the subject the resolution looked in) |
 | G4 | step 2: no word of the post command after `argv[0]` is a response file (`@` and a name, as Kiln's driver reads one) | `post-image: the command names the response file <word>, whose words slip cannot examine` |
-| G5 | step 2, tree form: the post command's map pairs (§5.1) are consistent: (a) none other than the identity has a post prefix that is empty or holds `=`; (b) when one pair's post prefix is a prefix of another's, the first applied to the second's post prefix gives the second's written prefix; (c) no `-fmacro-prefix-map=` or `-ffile-prefix-map=` of the command's own (alone, after `-Xclang` or `-Xpreprocessor`, in a `-Wp,` list) has an old prefix prefix-related to a post or written prefix of a pair other than the identity; (d) no `#line` name of the post parse begins with the post prefix of such a pair | (a) `post-image: <word> is rewritten to <path>, which no -fmacro-prefix-map word can map back`; (b) `post-image: <word> and <word> spell the files under <post prefix> differently (<pair> and <pair>)`; (c) `post-image: <option word> maps <old>, which overlaps <prefix> of <word>; slip does not compose prefix maps`; (d) `post-image: the #line name <name> begins with <post prefix>, which the post command maps` |
+| G5 | step 2, tree form: the post command's map pairs (§5.1) are consistent: (a) none other than the identity has a post prefix that is empty or holds `=`; (b) when one pair's post prefix is a prefix of another's, the first applied to the second's post prefix gives the second's written prefix; (c) no `-fmacro-prefix-map=` or `-ffile-prefix-map=` of the command's own (alone, after `-Xclang` or `-Xpreprocessor`, in a `-Wp,` list) has an old prefix prefix-related to a post or written prefix of a pair other than the identity; (d) no `#line` name of the post parse begins with the post prefix of such a pair; (e), checked first: the post prefix of each pair other than the identity and the roots' is under a post root | (a) `post-image: <word> is rewritten to <path>, which no -fmacro-prefix-map word can map back`; (b) `post-image: <word> and <word> spell the files under <post prefix> differently (<pair> and <pair>)`; (c) `post-image: <option word> maps <old>, which overlaps <prefix> of <word>; slip does not compose prefix maps`; (d) `post-image: the #line name <name> begins with <post prefix>, which the post command maps`; (e) `post-image: <word> is spelled through the subject and leaves it (<post prefix> is under no post root)` |
 | O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
 | O2 | step 2, overlay form, and tree form other than the identity: every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it | `pre-image: <path> changed since the map phase` (the first such path, in path order) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
@@ -2518,6 +2539,15 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
 
 ## Open questions
 
+- **Keeping a word that leaves the subject** (if a corpus needs it). G5
+  refuses a word spelled through the subject whose path leaves it to a
+  place under no root (§5.1). Keeping such a word byte for byte in the
+  post command, with no pair, is sound only when every subject directory
+  the word walks through exists, unchanged as a directory (not a link),
+  at the same place in the post tree: the post parse then walks the post
+  tree's copy and reaches the same place, and spells it as the pre parse
+  did. Checking that condition, per word, against both trees is a design
+  of its own; it is the way to lift the refusal.
 - **The tree form as an overlay** (long term; not to be built now). When
   Kiln's overlay is in the pin (`docs/wp/WP-066.md`), an image of the tree
   form can be parsed as an overlay of the post tree's files onto the

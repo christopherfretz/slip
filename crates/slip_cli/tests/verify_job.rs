@@ -1389,6 +1389,124 @@ fn f6s_two_routes_through_a_link() {
     assert!(tree.truth_differs(&o, &m));
 }
 
+// Z1 (re-check of fix round 2), §5.3 G5 (e): a word spelled through the
+// subject that leaves it, by `..`, to a directory under no root. Its pair
+// would map every spelling under that directory, also one reached through
+// another word (`-I<b>/s2`, kept as written): refused, naming the word.
+#[test]
+fn z1_word_leaves_the_subject() {
+    let xh = "inline char where[sizeof(__FILE__)] = {};\n";
+    let tree = Tree::new("z1", &[("a.cpp", "#include <x.h>\nint f() { return sizeof(where); }\n")]);
+    write(&tree.base.join("s2/inc/x.h"), xh);
+    write(&tree.post.join("a.cpp"), "#include <inc/x.h>\nint f() { return sizeof(where); }\n");
+    let up = tree.subject.join("../s2/inc");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &up), arg("-I", &tree.base.join("s2"))]);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert_eq!(reason(&v), leaves(&up, &tree.base));
+    assert!(tree.truth_differs(&o, &m));
+}
+
+// Z2: the same word alone, the post-image naming the header by its
+// absolute path: refused.
+#[test]
+fn z2_word_leaves_the_subject_absolute_include() {
+    let xh = "inline char where[sizeof(__FILE__)] = {};\n";
+    let tree = Tree::new("z2", &[("a.cpp", "#include <x.h>\nint f() { return sizeof(where); }\n")]);
+    let header = tree.base.join("s2/inc/x.h");
+    write(&header, xh);
+    let post = format!("#include \"{}\"\nint f() {{ return sizeof(where); }}\n", header.display());
+    write(&tree.post.join("a.cpp"), &post);
+    let up = tree.subject.join("../s2/inc");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &up)]);
+    let m = tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert_eq!(reason(&v), leaves(&up, &tree.base));
+    assert!(tree.truth_differs(&o, &m));
+}
+
+/// G5's reason (e) for the word `-I<up>`, whose post prefix is `<b>/s2/inc/`.
+fn leaves(up: &Path, b: &Path) -> String {
+    format!(
+        "post-image: -I{} is spelled through the subject and leaves it ({}/s2/inc/ is under no \
+         post root)",
+        up.display(),
+        b.display()
+    )
+}
+
+// Z controls: a word that goes through `..` and stays in the subject.
+// Relative, from the subject: its pair `inc/=inc/../inc/` is under the post
+// root; no edit verifies, an edit is a mismatch. Absolute: its pair
+// `<post>/inc/=<s>/inc/../inc/` disagrees with the root pair `<post>/=<s>/`
+// (a file under `<post>/inc` reached from the main file's directory would
+// be spelled through the word): G5 (b), as before this round.
+#[test]
+fn z_control_word_stays_in_the_subject() {
+    let xh = "inline char where[sizeof(__FILE__)] = {};\n";
+    let main = "#include <x.h>\nint f() { return sizeof(where); }\n";
+    let tree = Tree::new("zc", &[("a.cpp", main), ("inc/x.h", xh)]);
+    let o = tree.observer_in(&tree.subject, &["-Iinc/../inc".to_owned()]);
+    let m = tree.map(&o);
+    assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+    assert_eq!(kind(&tree.verify(&o)), VerdictKind::Verified, "{}", reason(&tree.verify(&o)));
+    write(&tree.post.join("a.cpp"), "#include <x.h>\nint f() { return sizeof(where) + 1; }\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+    let inc = tree.subject.join("inc/../inc");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &inc)]);
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    let (sp, pp) = (tree.subject.display(), tree.post.display());
+    assert!(
+        reason(&v).ends_with(&format!(
+            "spell the files under {pp}/inc/ differently ({pp}/={sp}/ and {pp}/inc/={}/)",
+            inc.display()
+        )),
+        "{}",
+        reason(&v)
+    );
+}
+
+// Z, another root: a word leaving one subject root by `..` into another.
+// It is rewritten to the other root's post tree, and its pair
+// `<post3>/inc/=<s>/../s3/inc/` disagrees with that root's pair
+// `<post3>/=<s3>/` (the files under `<post3>/inc` reached by another route
+// are spelled `<s3>/inc/...` in the real post-image): G5 (b).
+#[test]
+fn z_word_leaves_into_another_root() {
+    let xh = "inline char where[sizeof(__FILE__)] = {};\n";
+    let tree = Tree::new("zr", &[("a.cpp", "#include <x.h>\nint f() { return sizeof(where); }\n")]);
+    let (s3, p3) = (tree.base.join("s3"), tree.base.join("post3"));
+    write(&s3.join("inc/x.h"), xh);
+    write(&p3.join("inc/x.h"), xh);
+    let image = Image::new(vec![
+        RootMap { subject: bytes(&tree.subject), post: bytes(&tree.post) },
+        RootMap { subject: bytes(&s3), post: bytes(&p3) },
+    ])
+    .unwrap();
+    let up = tree.subject.join("../s3/inc");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &up)]);
+    let post = image.post_command(&o.command);
+    assert_eq!(post.command.argv[2], arg("-I", &p3.join("inc")).into_bytes());
+    tree.map(&o);
+    let params = Params { image, ..tree.params(Declared::none()) };
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    let (s3, p3) = (s3.display(), p3.display());
+    assert!(
+        reason(&v).ends_with(&format!(
+            "spell the files under {p3}/inc/ differently ({p3}/={s3}/ and {p3}/inc/={}/)",
+            up.display()
+        )),
+        "{}",
+        reason(&v)
+    );
+}
+
 // F6r (re-check): the two routes with no edit, from outside the roots and
 // from the subject: verified (the back-maps refuse nothing they need not).
 #[test]
