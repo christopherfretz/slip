@@ -1,4 +1,4 @@
-spec: edits.md §9.2 candidates (an override in a partial specialisation's pattern: unsupported until docs/wp/WP-073.md)
+spec: edits.md §9.2 candidates (an override in a partial specialisation's pattern: a candidate, not flagged; the instantiated member follows it, flagged until docs/wp/WP-119.md)
 from: n::B::f
 to: g
 kind: function

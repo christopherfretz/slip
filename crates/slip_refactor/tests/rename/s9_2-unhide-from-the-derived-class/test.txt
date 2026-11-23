@@ -1,0 +1,4 @@
+spec: edits.md §9.1 (a using-declaration is no seed), §9.2 followers, WP-120 item 3: the unhide idiom renamed from the derived class: the using-declaration introduces B::f(int) only and is kept; the shadow of the hidden B::f() follows B::f() and the using-declaration (mixed_follower in reduce: the digest writes it)
+from: n::D::f
+to: g
+kind: function

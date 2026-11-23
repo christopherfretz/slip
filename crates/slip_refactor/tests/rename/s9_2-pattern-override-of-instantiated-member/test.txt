@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates and followers, WP-120 item 1 (a): an overrider of a member of an instantiated class template is linked to the member of the template; the member of B<int> is a follower, unsupported until WP-119
+from: n::D::f
+to: g
+kind: function

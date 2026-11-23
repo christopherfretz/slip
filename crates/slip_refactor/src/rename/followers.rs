@@ -29,10 +29,21 @@
 //!   subject's): a follower of the subject whose rule is made from its key
 //!   with the inner name replaced (§9.2). A subject whose type is such a
 //!   class without a key is `unsupported`.
-//! - A follower declared in a template's pattern (a class template, a
-//!   partial specialisation, a function template) is `unsupported`, as a
-//!   candidate is (`families`): its followers in the specialisations are
-//!   `docs/wp/WP-073.md`'s.
+//! - **A using-declaration in a template's pattern** is a follower as any
+//!   is (`docs/wp/WP-120.md` item 1): the using-declaration of an
+//!   instantiated class is a follower of the pattern's (`spec_members`),
+//!   and its shadows, which Kiln does not link to the pattern's, are
+//!   followers of their targets ([`instantiated_using`]).
+//! - **A hidden shadow** (`docs/wp/WP-120.md` item 3): a declaration a
+//!   member of the using-declaration's class hides or overrides is not
+//!   introduced ([namespace.udecl]/14), so it is left out of the
+//!   using-declaration's `of` (unless every one is), and the shadow Kiln
+//!   still makes for it follows its target **and** its using-declaration.
+//!   So in `struct D : B { using B::f; void f() override; }` with `B::f()`
+//!   renamed alone, the using-declaration is unselected and kept, which is
+//!   right, and the hidden shadow is `mixed_follower`, because the digest
+//!   writes it as a unit and the kept using-declarator no longer makes it
+//!   (`spec/edits.md` §9.2).
 //! - A function or variable that a class template's pattern befriends
 //!   with a declaration that is its own entity (keyed in the template,
 //!   `spec/landed/digest/WP-103.md` finding 2) is a follower of the
@@ -55,7 +66,6 @@ use slip_kiln::written::{self, DeclName, DeclNameKind};
 use slip_model::edits::{KeyId, Reason, Role, subject_flags};
 use slip_model::keys::{Key, Name, Rule};
 
-use super::families::in_pattern;
 use super::{CTX_LIMIT, Ctx, Written, enclosing};
 
 /// Collects what the module documentation says.
@@ -130,52 +140,104 @@ fn using_declaration(ctx: &mut Ctx<'_, '_, '_>, d: &DeclName) {
         ctx.settled.insert(u);
         return;
     }
-    // What each shadow names: its origin's key id, and whether it is a
-    // subject (`None`: no key).
-    let mut named: Vec<(DeclId, Option<KeyId>, bool)> = Vec::new();
-    for &s in &shadows {
+    let named = shadows_named(ctx, &shadows);
+    if !named.iter().any(|n| n.subject) {
+        // It names no subject: `decls::claim` keeps its name.
+        return;
+    }
+    ctx.settled.insert(u);
+    let complete = named.iter().all(|n| n.id.is_some());
+    let of = introduced(&named);
+    if let Some(f) = ctx.subjects.add(ctx.keys, u, Role::Follower, ctx.new, &of) {
+        if !complete {
+            ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
+        }
+        ctx.claims.replace(&ctx.sites, d.name, &[f], Written::Literal);
+        shadow_followers(ctx, &named, Some(f));
+    } else {
+        // No key: no follower. The name is claimed for what it names.
+        let subjects: Vec<KeyId> =
+            named.iter().filter(|n| n.subject).filter_map(|n| n.id).collect();
+        if named.iter().all(|n| n.subject) {
+            ctx.claims.replace(&ctx.sites, d.name, &subjects, Written::Literal);
+        } else {
+            ctx.claims.refuse(&ctx.sites, d.name, &subjects, Reason::MixedSet);
+        }
+        shadow_followers(ctx, &named, None);
+    }
+}
+
+/// One shadow of a using-declaration: what it names.
+struct Shadow {
+    shadow: DeclId,
+    /// The key id of its target's origin: the subject's, or the entity's
+    /// (`None`: no key).
+    id: Option<KeyId>,
+    /// The target is a subject.
+    subject: bool,
+    /// Kiln records it hidden by a member of the using-declaration's class
+    /// (`hidden_shadow`, [namespace.udecl]/14).
+    hidden: bool,
+}
+
+fn shadows_named(ctx: &mut Ctx<'_, '_, '_>, shadows: &[DeclId]) -> Vec<Shadow> {
+    let unit = ctx.unit;
+    let ast = unit.ast();
+    let mut named = Vec::with_capacity(shadows.len());
+    for &s in shadows {
+        let hidden = ast.decls.hidden_shadow(s).is_some();
         let Some(t) = ast.using_target(s) else {
-            named.push((s, None, false));
+            named.push(Shadow { shadow: s, id: None, subject: false, hidden });
             continue;
         };
         let o = written::origin(unit, t);
         let subject = ctx.subjects.of_decl(ctx.keys, o);
         let id = subject.or_else(|| ctx.keys.key_id(ctx.keys.entity(o)).ok());
-        named.push((s, id, subject.is_some()));
+        named.push(Shadow { shadow: s, id, subject: subject.is_some(), hidden });
     }
-    if !named.iter().any(|&(_, _, subject)| subject) {
-        // It names no subject: `decls::claim` keeps its name.
-        return;
-    }
-    ctx.settled.insert(u);
-    let complete = named.iter().all(|&(_, id, _)| id.is_some());
-    let mut of: Vec<KeyId> = named.iter().filter_map(|&(_, id, _)| id).collect();
+    named
+}
+
+/// §9.2, the using-declaration's `of`: the entities it introduces. A
+/// declaration hidden or overridden by a member of the using-declaration's
+/// class is not introduced ([namespace.udecl]/14), so the name is right
+/// unchanged whatever happens to it: it is left out, unless every one is
+/// hidden (then the name must change exactly when they all do, or the
+/// using-declarator would find nothing).
+fn introduced(named: &[Shadow]) -> Vec<KeyId> {
+    let any_introduced = named.iter().any(|n| !n.hidden);
+    let mut of: Vec<KeyId> =
+        named.iter().filter(|n| !n.hidden || !any_introduced).filter_map(|n| n.id).collect();
     of.sort_unstable();
     of.dedup();
-    let pattern = in_pattern(ctx, u);
-    if let Some(f) = ctx.subjects.add(ctx.keys, u, Role::Follower, ctx.new, &of) {
-        if !complete || pattern {
-            ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
+    of
+}
+
+/// Each shadow whose target is a subject is a follower of it; a hidden one
+/// also of its using-declaration `using` (when that has a key): kept
+/// unchanged while its target is renamed, the using-declarator no longer
+/// names the target and the shadow is gone, which the digest sees (it
+/// writes a hidden shadow as a unit, `spec/edits.md` §9.2).
+fn shadow_followers(ctx: &mut Ctx<'_, '_, '_>, named: &[Shadow], using: Option<KeyId>) {
+    for n in named {
+        let (true, Some(t)) = (n.subject, n.id) else { continue };
+        let mut of = vec![t];
+        if let (true, Some(u)) = (n.hidden, using) {
+            of.push(u);
         }
-        ctx.claims.replace(&ctx.sites, d.name, &[f], Written::Literal);
-    } else {
-        // No key: no follower. The name is claimed for what it names.
-        let subjects: Vec<KeyId> =
-            named.iter().filter(|&&(_, _, s)| s).filter_map(|&(_, id, _)| id).collect();
-        if named.iter().all(|&(_, _, s)| s) {
-            ctx.claims.replace(&ctx.sites, d.name, &subjects, Written::Literal);
-        } else {
-            ctx.claims.refuse(&ctx.sites, d.name, &subjects, Reason::MixedSet);
-        }
+        ctx.subjects.add(ctx.keys, n.shadow, Role::Follower, ctx.new, &of);
     }
-    for &(s, id, subject) in &named {
-        if let (true, Some(t)) = (subject, id)
-            && let Some(f) = ctx.subjects.add(ctx.keys, s, Role::Follower, ctx.new, &[t])
-            && pattern
-        {
-            ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
-        }
-    }
+}
+
+/// The shadows of `u`, a using-declaration of an instantiated class that
+/// is follower `id` of its pattern's (`spec_members`): Kiln links the
+/// using-declaration to the pattern's and not its shadows, whose keys
+/// therefore hold their own plain names (`spec/digest.md` §3.4). Each
+/// shadow whose target is a subject is a follower as in the pattern.
+pub(crate) fn instantiated_using(ctx: &mut Ctx<'_, '_, '_>, u: DeclId, id: KeyId) {
+    let shadows: Vec<DeclId> = ctx.unit.ast().using_shadows(u).collect();
+    let named = shadows_named(ctx, &shadows);
+    shadow_followers(ctx, &named, Some(id));
 }
 
 fn unnamed_types(ctx: &mut Ctx<'_, '_, '_>) {

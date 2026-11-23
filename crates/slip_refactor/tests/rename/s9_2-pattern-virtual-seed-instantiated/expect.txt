@@ -1,0 +1,11 @@
+subjects:
+  3b98ec8e candidate - rule=yes n::D::f()
+  5bcd1a5e follower unsupported rule=yes n::B<int>::f() of=fa8fdd44
+  fa8fdd44 seed - rule=yes n::B::f()
+links:
+  3b98ec8e fa8fdd44
+claims:
+  main.cpp:2:44+1 replace "g" t0 votes=1 none [fa8fdd44]
+  main.cpp:3:26+1 replace "g" t0 votes=1 none [3b98ec8e]
+  main.cpp:5:26+1 replace spell(fa8fdd44, "g") t0 votes=1 none [fa8fdd44]
+changed:
