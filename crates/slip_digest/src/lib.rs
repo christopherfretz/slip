@@ -227,6 +227,7 @@ mod other;
 pub mod query;
 pub mod records;
 mod refs;
+pub mod spelling;
 mod stmt;
 mod stream;
 mod templ;
