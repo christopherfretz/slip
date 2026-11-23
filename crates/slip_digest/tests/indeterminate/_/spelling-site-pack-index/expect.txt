@@ -1,0 +1,1 @@
+indeterminate template <class...> void g(type-parameter-0-0..., void (*)(type-parameter-0-0...[sizeof (f(T()...))] *))

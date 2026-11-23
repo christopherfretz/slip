@@ -1,0 +1,1 @@
+indeterminate template <class, class> decltype(p->~T()) f(type-parameter-0-0 *)

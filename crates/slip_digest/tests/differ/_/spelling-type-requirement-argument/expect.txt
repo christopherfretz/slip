@@ -1,0 +1,2 @@
+added f(long)
+changed template <class> W<requires { typename S<decltype(f(T()))>; }> g(type-parameter-0-0)

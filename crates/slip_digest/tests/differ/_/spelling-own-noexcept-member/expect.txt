@@ -1,0 +1,2 @@
+added f(long)
+changed S::k(type-parameter-0-0)

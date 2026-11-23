@@ -1,0 +1,2 @@
+added f(long)
+changed S::R

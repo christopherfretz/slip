@@ -1,0 +1,3 @@
+added f(long)
+changed template <class> decltype(f(t)) g(type-parameter-0-0)
+changed template <class> decltype(f(t)) h(type-parameter-0-0)

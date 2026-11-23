@@ -1,0 +1,2 @@
+indeterminate S
+indeterminate S::<friend Bq<8>::g()>

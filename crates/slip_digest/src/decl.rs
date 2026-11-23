@@ -3,7 +3,7 @@
 
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, FriendKind};
-use slip_kiln::kiln::ast::types::ExcSpec;
+use slip_kiln::kiln::ast::types::{ExcSpec, FuncProto};
 
 use crate::Cause;
 use crate::keys::info;
@@ -65,8 +65,10 @@ impl Walk<'_> {
         // inside, under `local::SELF_KEY`; `content_in_progress` ends a
         // real cycle.
         let keys = std::mem::take(&mut self.keys_in_progress);
+        self.unit.local.content = Some(e);
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);
+        crate::own_spelling::write_unit_list(self, &mut s);
         self.keys_in_progress = keys;
         self.in_key = in_key;
         self.restore_types(types);
@@ -129,7 +131,16 @@ impl Walk<'_> {
             Some(q) => {
                 s.opt(true);
                 let t = self.type_digest(q, function);
-                self.absorb_type(s, t);
+                if kind == DeclKind::ParmVar
+                    && ast.decls.param(d).is_some_and(|p| p.original_ty.is_some())
+                {
+                    // An adjusted parameter type holds the canonical
+                    // element or function type: the type as written is
+                    // `ParamData` `original_ty`, read there.
+                    s.digest(&t.digest).absorb(t.cause);
+                } else {
+                    self.absorb_type(s, t, q, function.then_some(d));
+                }
             }
             None => {
                 s.opt(false);
@@ -139,6 +150,9 @@ impl Walk<'_> {
         if function {
             self.own_exception_spec(s, d);
         }
+        // Arguments written in a template's explicit specialisation
+        // (digest-kinds §4.4 "Spellings", rule 11).
+        crate::own_spelling::explicit_specialisation(self, s, d);
         self.decl_data(s, d, kind);
     }
 
@@ -195,7 +209,7 @@ impl Walk<'_> {
             s.opt(false);
             return;
         }
-        match ast.decls.get(d).ty().and_then(|q| ast.types.proto(q)).copied() {
+        match self.own_proto(d) {
             Some(p) => {
                 s.opt(true);
                 let e = ast.types.exc_spec(&p);
@@ -209,6 +223,37 @@ impl Walk<'_> {
                 s.opt(false);
             }
         }
+    }
+
+    /// The prototype of function declaration `d` that holds its own
+    /// exception specification: before C++17 the one `TypeContext::proto`
+    /// gives (Kiln records the written one apart, `exc_protos`); from
+    /// C++17 on, where `proto` gives the canonical prototype and so the
+    /// first spelling's operand, the first function node of `d`'s type as
+    /// written.
+    pub(crate) fn own_proto(&self, d: DeclId) -> Option<FuncProto> {
+        let types = &self.ast.types;
+        let q = self.ast.decls.get(d).ty()?;
+        let p = types.proto(q).copied();
+        let canonical = types.proto_of(types.canonical(q).ty()).copied();
+        if p != canonical {
+            return p;
+        }
+        let mut cur = q;
+        for _ in 0..256 {
+            if let Some(w) = types.proto_of(cur.ty()) {
+                // A dynamic specification too: canonically `None` from
+                // C++17 on, but Kiln keeps its types and checks an
+                // overrider's against them (`check_override_exc_spec`).
+                return Some(*w);
+            }
+            let next = types.desugar_once(cur);
+            if next.ty() == cur.ty() {
+                break;
+            }
+            cur = next;
+        }
+        p
     }
 
     /// The `data` row of `d`'s kind (§5.3).
@@ -227,13 +272,19 @@ impl Walk<'_> {
                             .indeterminate(Cause::Unaccounted("DeclNode/data-target"));
                     }
                 }
+                if kind == DeclKind::UsingEnum {
+                    crate::own_spelling::using_enum(self, s, d);
+                }
             }
             DeclKind::FileScopeAsm => crate::decl_scope::file_scope_asm(self, s, d),
+            // The qualifier as written: rule 11 (its key writes the
+            // canonical one).
             DeclKind::Using
-            | DeclKind::UsingShadow
-            | DeclKind::ConstructorUsingShadow
             | DeclKind::UnresolvedUsingValue
-            | DeclKind::UnresolvedUsingTypename => {}
+            | DeclKind::UnresolvedUsingTypename => {
+                crate::own_spelling::using_qualifier(self, s, d);
+            }
+            DeclKind::UsingShadow | DeclKind::ConstructorUsingShadow => {}
             DeclKind::Typedef | DeclKind::TypeAlias => crate::decl_class::typedef_data(self, s, d),
             DeclKind::Enum => crate::decl_class::enum_data(self, s, d),
             DeclKind::EnumConstant => crate::decl_class::enumerator_data(self, s, d),
