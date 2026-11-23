@@ -398,6 +398,10 @@ impl Walk<'_> {
             KeyRes::None(c) => return Err(Some(c.unwrap_or(BAD_PARENT))),
         };
         let (name, mut cause) = self.entity_name(self.entity(template))?;
+        // The name is the template's as the rules map it, as the parent
+        // is (`spec/digest.md` §3.4, WP-103): a rule that renames a
+        // template renames its specialisations with it.
+        let name = self.mapped_name(template).unwrap_or(name);
         cause = merge(cause, template_cause);
         let mut s = Stream::new();
         let kind = if let Some(p) = params {
@@ -412,6 +416,18 @@ impl Walk<'_> {
         let h = self.hashed(h);
         cause = merge(cause, h.cause);
         Ok((Key { kind, parent, name, disc: Some(h.digest) }, cause))
+    }
+
+    /// The name of `d`'s entity in its mapped key: `None` under no rule
+    /// (the plain name), and where the key cannot be formed (the caller
+    /// has the error already).
+    fn mapped_name(&mut self, d: DeclId) -> Option<Name> {
+        if self.rules.is_empty() {
+            return None;
+        }
+        let e = self.entity(d);
+        let (key, _) = self.compute_key(self.representative(e)).ok()?;
+        Some(self.rules.map(key).name)
     }
 
     /// The parent of entity `e` (`spec/digest.md` §3), with the cause its

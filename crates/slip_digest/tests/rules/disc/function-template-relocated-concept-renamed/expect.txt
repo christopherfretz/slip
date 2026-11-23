@@ -1,0 +1,5 @@
+# The pre-image calls f(1) on the overload set {f, f}: deduction made a specialisation of the
+# unconstrained template too, which the post-image, calling g(1), does not make (a derived unit
+# only one side has, spec/digest.md §2.2): the edit changed what is demanded, not what is.
+exact derived
+derived-removed f<int>(int)

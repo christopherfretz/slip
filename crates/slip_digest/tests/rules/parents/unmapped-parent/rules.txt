@@ -1,0 +1,3 @@
+# Item 3: the rule for y written with its parent in unmapped terms (the post-image id of x) matches nothing: y keeps its own name under a, and everything under it is another key.
+relocate a => :: x
+rule namespace | post x | id y | none | pre a | id b
