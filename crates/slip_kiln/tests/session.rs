@@ -7,17 +7,20 @@
 //! `parse_observer_with`, which changes the process's current directory;
 //! nothing here depends on it.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use slip_kiln::kiln::ast::Ast;
 use slip_kiln::kiln::oven::{HostCalls, HostError, HostOut};
-use slip_kiln::parse_observer_with;
+use slip_kiln::kiln::source::SourceManager;
 use slip_kiln::session::{
     Budget, Cancel, CompileError, EntryError, Handler, Out, RunFailure, RunReport, Session,
     TransformCommand, with_transform,
 };
 use slip_kiln::snippet::{Snippet, parse};
+use slip_kiln::{ParseOptions, Unit, parse_observer_with};
 use slip_model::hash::content_digest;
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase};
 
@@ -212,7 +215,31 @@ fn t1_handler_borrowing_ast_is_send() {
     fn is_send<T: Send>() {}
     is_host_calls::<Borrowing<'_>>();
     is_handler::<Subject<'_>>();
+    is_handler::<Holding<'_>>();
     is_send::<Session<'_>>();
+    let _ = holding;
+}
+
+/// A handler holding every part of a subject unit that is `Send` at this
+/// Kiln revision (WP-080 fix round, plan (b)): not the `Unit`, whose
+/// `Oven` holds `RefCell`s, `Cell`s and a `dyn HostCalls`.
+struct Holding<'s> {
+    ast: &'s Ast,
+    sm: &'s SourceManager,
+    inputs: &'s [FileRef],
+    filter: &'s (dyn Fn(&[u8]) -> bool + Sync),
+}
+
+/// The parts of `u`, for the unit's lifetime: `Unit` hands them out so.
+fn holding<'r>(u: &Unit<'r>, filter: &'r (dyn Fn(&[u8]) -> bool + Sync)) -> Holding<'r> {
+    Holding { ast: u.ast(), sm: u.sm(), inputs: u.inputs(), filter }
+}
+
+impl Handler for Holding<'_> {
+    fn call(&mut self, _: u32, _: &[u64], bytes: &[u8], _: &mut dyn Out) -> Result<u64, String> {
+        let files = self.sm.file_count() + self.inputs.len();
+        Ok(top_level(self.ast) + u64::from((self.filter)(bytes)) + files as u64)
+    }
 }
 
 /// The subject unit of t1 and t3.
@@ -275,7 +302,8 @@ fn t3_session_on_a_subject_front_end_thread() {
     std::fs::write(dir.join("s.cpp"), SUBJECT).unwrap();
     let o = observer(&dir, &["clang++", "-std=c++20", "-c", "s.cpp"]);
     let (alone_shard, alone) =
-        parse_observer_with(&o, Phase::Map, 1, |u| top_level(u.ast())).unwrap();
+        parse_observer_with(&o, Phase::Map, 1, ParseOptions::default(), |u| top_level(u.ast()))
+            .unwrap();
     let alone = alone.unwrap();
     assert!(alone >= 4, "{alone}");
     let cmd = transform("t3_two", REPORT);
@@ -284,7 +312,7 @@ fn t3_session_on_a_subject_front_end_thread() {
         let mut fixed = Fixed { value: alone, reported: Vec::new() };
         let alone_run = summary(&s.run(entry, &mut fixed, BUDGET, &Cancel::new()));
         let here = std::thread::current().id();
-        let (shard, value) = parse_observer_with(&o, Phase::Map, 1, |u| {
+        let (shard, value) = parse_observer_with(&o, Phase::Map, 1, ParseOptions::default(), |u| {
             assert_ne!(std::thread::current().id(), here, "the front end has its own thread");
             let mut h = Subject { ast: u.ast(), reported: Vec::new() };
             let r = summary(&s.run(entry, &mut h, BUDGET, &Cancel::new()));
@@ -347,7 +375,15 @@ fn t4_entry_errors_and_reserved_names() {
          namespace ns { consteval void fine() {} }
          void reduce();
          template <class T> void prepare(T);
-         int repair;",
+         int repair;
+         namespace n { consteval void directed() {} consteval void declared() {} }
+         using namespace n;
+         using n::declared;
+         inline namespace in { consteval void in_inline() {} }
+         namespace { consteval void in_unnamed() {} }
+         extern \"C++\" { consteval void in_linkage() {} }
+         namespace outer { inline namespace v1 { consteval void nested() {} } }
+         consteval void deleted() = delete;",
     );
     let (entries, declares) = with(&cmd, |s| {
         let entries: Vec<_> = [
@@ -362,14 +398,37 @@ fn t4_entry_errors_and_reserved_names() {
             "undefined",
             "fine",
             "ns::fine",
+            "::fine",
+            " fine ",
+            "fine ",
+            "",
+            "directed",
+            "declared",
+            "in_inline",
+            "in_unnamed",
+            "in_linkage",
+            "nested",
+            "deleted",
         ]
         .iter()
         .map(|n| s.entry(n).map(|_| ()))
         .collect();
-        let declares: Vec<_> = ["reduce", "prepare", "repair", "fine", "nothing"]
-            .iter()
-            .map(|n| s.declares(n))
-            .collect();
+        let declares: Vec<_> = [
+            "reduce",
+            "prepare",
+            "repair",
+            "fine",
+            "nothing",
+            "directed",
+            "declared",
+            "in_inline",
+            "in_unnamed",
+            "nested",
+            " fine",
+        ]
+        .iter()
+        .map(|n| s.declares(n))
+        .collect();
         (entries, declares)
     });
     assert_eq!(
@@ -386,9 +445,39 @@ fn t4_entry_errors_and_reserved_names() {
             Err(EntryError::Undefined),
             Ok(()),
             Err(EntryError::Missing),
+            Err(EntryError::Missing),
+            Err(EntryError::Missing),
+            Err(EntryError::Missing),
+            Err(EntryError::Missing),
+            Err(EntryError::Missing),
+            Err(EntryError::Missing),
+            Ok(()),
+            Ok(()),
+            Ok(()),
+            Err(EntryError::Missing),
+            Err(EntryError::Undefined),
         ]
     );
-    assert_eq!(declares, [true, true, false, true, false]);
+    assert_eq!(declares, [true, true, false, true, false, false, false, true, true, false, false]);
+}
+
+/// Whether the unit of `text` has an entry `transform`, and whether it
+/// declares `reduce`.
+fn entry_and_reduce(name: &str, text: &str) -> (Result<(), EntryError>, bool) {
+    with(&command(name, text, &[]), |s| (s.entry("transform").map(|_| ()), s.declares("reduce")))
+}
+
+// WP-080 fix round, S3 (spec/api.md §6.1 rules 3 and 5): a name reached
+// through a using-directive or a using-declaration is not a member of the
+// global namespace, nor is one of `std` after `using namespace std;`.
+#[test]
+fn t4_using_is_not_followed() {
+    let directive = "namespace n { consteval void transform() {} }\nusing namespace n;\n";
+    let declaration = "namespace n { consteval void transform() {} }\nusing n::transform;\n";
+    let numeric = "#include <numeric>\nusing namespace std;\nconsteval void transform() {}\n";
+    assert_eq!(entry_and_reduce("directive", directive), (Err(EntryError::Missing), false));
+    assert_eq!(entry_and_reduce("declaration", declaration), (Err(EntryError::Missing), false));
+    assert_eq!(entry_and_reduce("numeric", numeric), (Ok(()), false));
 }
 
 // WP-080 test 5 (spec/api.md §2.5, §2.8): each `RunFailure`, its rendered
@@ -502,8 +591,8 @@ fn t6_files_read() {
     at("/vector");
 }
 
-// WP-080 test 7 (spec/api.md §2.1 rule 4): `__DATE__` and `__TIME__` are
-// those of the Unix epoch.
+// WP-080 test 7 (spec/api.md §2.1 rule 4): `__DATE__`, `__TIME__` and
+// `__TIMESTAMP__` are those of the Unix epoch.
 #[test]
 fn t7_date_and_time_are_the_epoch() {
     let cmd = transform(
@@ -517,6 +606,7 @@ fn t7_date_and_time_are_the_epoch() {
          consteval void transform() {
            say(__DATE__, sizeof(__DATE__) - 1);
            say(__TIME__, sizeof(__TIME__) - 1);
+           say(__TIMESTAMP__, sizeof(__TIMESTAMP__) - 1);
          }",
     );
     let (result, said) = with(&cmd, |s| {
@@ -526,11 +616,16 @@ fn t7_date_and_time_are_the_epoch() {
         ((r.result, r.rendered), h.bytes)
     });
     assert_eq!(result.0, Ok(()), "{}", result.1);
-    assert_eq!(said, [b"Jan  1 1970".to_vec(), b"00:00:00".to_vec()]);
+    assert_eq!(
+        said,
+        [b"Jan  1 1970".to_vec(), b"00:00:00".to_vec(), b"Thu Jan  1 00:00:00 1970".to_vec()]
+    );
 }
 
-// WP-080 test 8 (spec/api.md §2.1 rule 2): an author option outside the
-// rule is refused when the command is built, so it never reaches Kiln; the
+// WP-080 test 8 (spec/api.md §2.1 rules 2 and 3): an author option outside
+// the rule is refused when the command is built, so it never reaches Kiln,
+// naming the word and why; so is a value or path beginning with `@` (a
+// response file), holding a NUL byte, or (a path) not absolute. The
 // options of the rule reach Kiln in order, each as two words.
 #[test]
 fn t8_author_options() {
@@ -538,30 +633,74 @@ fn t8_author_options() {
         let author: Vec<String> = author.iter().map(|&a| a.to_owned()).collect();
         TransformCommand::new(resource_include(), &author, PathBuf::from("/t.cpp"))
     };
-    for bad in [
-        &["-O2"][..],
-        &["-fplugin=x.so"],
-        &["-std=c++20"],
-        &["-iquote", "d"],
-        &["-idirafter", "d"],
-        &["--include-directory=d"],
-        &["-include-pch", "x.pch"],
-        &["-isystemd"],
-        &["-includex.h"],
-        &["-I"],
-        &["-D", "-fplugin=x.so"],
-        &["-I", ""],
-        &["t2.cpp"],
-        &["-DX", "-Xclang", "-load"],
+    let only = "only -I, -isystem, -D, -U and -include may be given (spec/api.md §2.1)";
+    let missing = "the option's value is missing";
+    let dash = "the value begins with `-`, which Kiln would read as an option";
+    let at = "the value begins with `@`, which Kiln would read as a response file";
+    let nul = "the value holds a NUL byte";
+    let relative = "the path is not absolute";
+    let joined = "-isystem and -include take their value as the next word";
+    for (bad, word, reason) in [
+        (&["-O2"][..], "-O2", only),
+        (&["-fplugin=x.so"], "-fplugin=x.so", only),
+        (&["-std=c++20"], "-std=c++20", only),
+        (&["-iquote", "/d"], "-iquote", only),
+        (&["-idirafter", "/d"], "-idirafter", only),
+        (&["--include-directory=/d"], "--include-directory=/d", only),
+        (&["-include-pch", "/x.pch"], "-include-pch", joined),
+        (&["-isystem/d"], "-isystem/d", joined),
+        (&["-include/x.h"], "-include/x.h", joined),
+        (&["-I"], "-I", missing),
+        (&["-DX", "-I"], "-I", missing),
+        (&["-D", "-fplugin=x.so"], "-fplugin=x.so", dash),
+        (&["-I", ""], "", "the value is empty"),
+        (&["t2.cpp"], "t2.cpp", only),
+        (&["@opts.rsp"], "@opts.rsp", only),
+        (&["-DX", "-Xclang", "-load"], "-Xclang", only),
+        (&["-D", "@opts.rsp"], "@opts.rsp", at),
+        (&["-D@opts.rsp"], "-D@opts.rsp", at),
+        (&["-U", "@opts.rsp"], "@opts.rsp", at),
+        (&["-I", "@opts.rsp"], "@opts.rsp", at),
+        (&["-I@opts.rsp"], "-I@opts.rsp", at),
+        (&["-isystem", "@opts.rsp"], "@opts.rsp", at),
+        (&["-include", "@opts.rsp"], "@opts.rsp", at),
+        (&["-DX\0Y"], "-DX\0Y", nul),
+        (&["-I", "/a\0b"], "/a\0b", nul),
+        (&["-Ia"], "-Ia", relative),
+        (&["-I", "b"], "b", relative),
+        (&["-I", "./b"], "./b", relative),
+        (&["-isystem", "c"], "c", relative),
+        (&["-include", "h.h"], "h.h", relative),
     ] {
         let e = new(bad).expect_err(&format!("{bad:?} is refused"));
-        assert!(bad.contains(&e.word.as_str()), "{bad:?}: {e:?}");
+        assert_eq!((e.word.as_str(), e.reason), (word, reason), "{bad:?}");
     }
-    assert!(TransformCommand::new(resource_include(), &[], PathBuf::from("-t.cpp")).is_err());
-    let ok =
-        new(&["-Ia", "-I", "b", "-isystem", "c", "-DX=1", "-D", "Y", "-UZ", "-include", "h.h"])
-            .unwrap();
+    let path_refused = |resource: &str, file: &str| {
+        let e = TransformCommand::new(PathBuf::from(resource), &[], PathBuf::from(file))
+            .expect_err(&format!("{resource} {file} is refused"));
+        (e.word, e.reason)
+    };
     let include = resource_include().to_str().unwrap().to_owned();
+    for (file, reason) in [
+        ("-t.cpp", dash),
+        ("@t.cpp", at),
+        ("t.cpp", relative),
+        ("./t.cpp", relative),
+        ("/t\0.cpp", nul),
+        ("", "the value is empty"),
+    ] {
+        assert_eq!(path_refused(&include, file), (file.to_owned(), reason), "file {file:?}");
+    }
+    for (resource, reason) in
+        [("@include", at), ("include", relative), ("-include", dash), ("/in\0clude", nul)]
+    {
+        assert_eq!(path_refused(resource, "/t.cpp"), (resource.to_owned(), reason), "{resource:?}");
+    }
+    let ok = new(&[
+        "-I/a", "-I", "/b", "-isystem", "/c", "-DX=1", "-D", "Y", "-UZ", "-include", "/h.h",
+        "-DW=a@b",
+    ])
+    .unwrap();
     assert_eq!(
         ok.command_line(),
         [
@@ -571,11 +710,11 @@ fn t8_author_options() {
             "-I",
             &include,
             "-I",
-            "a",
+            "/a",
             "-I",
-            "b",
+            "/b",
             "-isystem",
-            "c",
+            "/c",
             "-D",
             "X=1",
             "-D",
@@ -583,10 +722,64 @@ fn t8_author_options() {
             "-U",
             "Z",
             "-include",
-            "h.h",
+            "/h.h",
+            "-D",
+            "W=a@b",
             "/t.cpp",
         ]
     );
+}
+
+// WP-080 fix round, B1: Kiln's driver expands a response file named by a
+// word beginning with `@` (`kiln_driver/src/session.rs:81`), so a word
+// `@opts.rsp` would bring in any option. Given to Kiln directly, the file's
+// `-DSMUGGLED=1` arrives; every way of naming it through `TransformCommand`
+// is refused; the unit built from the options that remain does not see it.
+#[test]
+fn b1_a_response_file_never_reaches_kiln() {
+    let dir = scratch("b1");
+    let rsp = dir.join("opts.rsp");
+    std::fs::write(&rsp, "-DSMUGGLED=1 -std=c++20\n").unwrap();
+    let file = dir.join("b1.cpp");
+    let text = "#ifdef SMUGGLED\n#error smuggled\n#endif\n\
+                static_assert(__cplusplus > 202302L);\nconsteval void transform() {}\n";
+    std::fs::write(&file, text).unwrap();
+    let rsp_word = format!("@{}", rsp.to_str().unwrap());
+    // The hole: Kiln, given the word, reads the file.
+    let mut line =
+        TransformCommand::new(resource_include(), &[], file.clone()).unwrap().command_line();
+    line.insert(line.len() - 1, rsp_word.clone());
+    let raw = std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn_scoped(s, || {
+                kiln_sema::stack_guard::StackGuard::install(STACK - (1 << 20));
+                let buffer = kiln_diag::SharedBuffer::new();
+                let io = kiln_driver::Io {
+                    stdout: Box::new(std::io::sink()),
+                    stderr: kiln_driver::SharedWriter::new(buffer.clone()),
+                    stdin: Box::new(std::io::empty()),
+                };
+                let ok = kiln_driver::session::with_eval_session("kiln", &line, io, |r| r.is_ok());
+                (ok, buffer.contents())
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    });
+    assert!(!raw.0 && raw.1.contains("error: smuggled"), "Kiln expands the file: {}", raw.1);
+    let author =
+        |words: &[&str]| words.iter().map(|&w| w.replace("RSP", &rsp_word)).collect::<Vec<_>>();
+    for words in [&["-D", "RSP"][..], &["-DRSP"], &["-I", "RSP"], &["-IRSP"], &["RSP"]] {
+        let words = author(words);
+        let e = TransformCommand::new(resource_include(), &words, file.clone())
+            .expect_err(&format!("{words:?}"));
+        assert!(e.word.contains(&rsp_word), "{e:?}");
+    }
+    let e = TransformCommand::new(resource_include(), &[], PathBuf::from(&rsp_word)).unwrap_err();
+    assert_eq!(e.word, rsp_word);
+    let cmd = TransformCommand::new(resource_include(), &author(&["-DNOT=RSP"]), file).unwrap();
+    assert!(with(&cmd, |s| s.entry("transform").is_ok()), "SMUGGLED did not arrive");
 }
 
 // spec/api.md §2.1 rule 5 (`transform-compile`): a transform unit with an
@@ -610,5 +803,325 @@ fn s2_1_rule5_a_unit_with_errors_is_diagnosed() {
             assert!(!rendered.contains("not given"), "{rendered}");
         }
         other => panic!("{other:?}"),
+    }
+}
+
+// WP-080 fix round, M12: what a handler writes (`Out::write_ints`,
+// `Out::write_bytes`) is what the transform reads back.
+#[test]
+fn m12_the_transform_reads_what_the_handler_wrote() {
+    let cmd = command(
+        "m12",
+        "using u64 = unsigned long long;
+         consteval void transform() {
+           u64 in[1] = {21};
+           const char bin[1] = {0};
+           u64 out[1] = {0};
+           char bout[1] = {0};
+           u64 r = __builtin_kiln_host_call(1, in, 1, bin, 0, out, 1, bout, 1);
+           if (r != 42) throw 1;
+           if (out[0] != 21) throw 2;
+           if (bout[0] != 'x') throw 3;
+         }",
+        &[],
+    );
+    let r = with(&cmd, |s| {
+        let entry = s.entry("transform").unwrap();
+        s.run(entry, &mut Counting::default(), BUDGET, &Cancel::new())
+    });
+    assert_eq!(r.result, Ok(()), "{}", r.rendered);
+}
+
+/// Panics on every call.
+struct Panicking;
+
+impl Handler for Panicking {
+    fn call(&mut self, _: u32, _: &[u64], _: &[u8], _: &mut dyn Out) -> Result<u64, String> {
+        panic!("the handler panics")
+    }
+}
+
+// WP-080 fix round, S2: a handler's panic goes on out of `run`; the
+// session is then poisoned, and a later run does not reach Kiln.
+#[test]
+fn s2_a_handler_panic_poisons_the_session() {
+    let cmd =
+        transform("s2", "consteval void transform() { host(1, 1); }\nconsteval void fine() {}\n");
+    let (panicked, after, fine) = with(&cmd, |s| {
+        let entry = s.entry("transform").unwrap();
+        let fine = s.entry("fine").unwrap();
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            s.run(entry, &mut Panicking, BUDGET, &Cancel::new());
+        }))
+        .map_err(|p| p.downcast_ref::<&str>().map(|m| (*m).to_owned()));
+        let after = s.run(entry, &mut Counting::default(), BUDGET, &Cancel::new());
+        let fine = s.run(fine, &mut Counting::default(), BUDGET, &Cancel::new());
+        (panicked, after, fine)
+    });
+    assert_eq!(panicked, Err(Some("the handler panics".to_owned())));
+    for r in [after, fine] {
+        assert_eq!(
+            r,
+            RunReport {
+                result: Err(RunFailure::Poisoned),
+                steps: 0,
+                host_calls: 0,
+                peak_bytes: 0,
+                rendered: String::new()
+            }
+        );
+    }
+}
+
+// WP-080 fix round, F7: an entry is refused by any session but the one
+// that gave it, before Kiln.
+#[test]
+fn f7_an_entry_of_another_session_is_refused() {
+    let a = transform("f7_a", "consteval void transform() {}\n");
+    let b = transform("f7_b", "consteval void transform() {}\n");
+    let (own, foreign) = with(&a, |sa| {
+        let ea = sa.entry("transform").unwrap();
+        let foreign = with(&b, |sb| {
+            let eb = sb.entry("transform").unwrap();
+            assert_eq!(sb.run(eb, &mut Failing, BUDGET, &Cancel::new()).result, Ok(()));
+            sb.run(ea, &mut Failing, BUDGET, &Cancel::new())
+        });
+        (sa.run(ea, &mut Failing, BUDGET, &Cancel::new()).result, foreign)
+    });
+    assert_eq!(own, Ok(()));
+    assert_eq!((foreign.result, foreign.steps), (Err(RunFailure::ForeignEntry), 0));
+}
+
+// WP-080 fix round, S5 (spec/api.md §2.5 rule 4): another thread cancels a
+// run under way; a run given the same token is cancelled too; after
+// `Cancel::reset` a run completes.
+#[test]
+fn s5_cancel_from_another_thread() {
+    let cmd = transform(
+        "s5",
+        "consteval void forever() { for (u64 i = 0; i < (1ull << 62); ++i) {} }
+         consteval void fine() {}",
+    );
+    let (during, again, reset) = with(&cmd, |s| {
+        let forever = s.entry("forever").unwrap();
+        let fine = s.entry("fine").unwrap();
+        let cancel = Cancel::new();
+        let budget = Budget { steps: u64::MAX, ..BUDGET };
+        let during = std::thread::scope(|t| {
+            let other = cancel.clone();
+            t.spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                other.cancel();
+            });
+            s.run(forever, &mut Failing, budget, &cancel)
+        });
+        let again = s.run(fine, &mut Failing, BUDGET, &cancel);
+        cancel.reset();
+        let reset = s.run(fine, &mut Failing, BUDGET, &cancel);
+        (during, again, reset)
+    });
+    assert_eq!(during.result, Err(RunFailure::Cancelled), "{}", during.rendered);
+    assert!(during.steps > 1000, "cancelled under way: {} steps", during.steps);
+    assert_eq!(again.result, Err(RunFailure::Cancelled));
+    assert_eq!(reset.result, Ok(()), "{}", reset.rendered);
+}
+
+// WP-080 fix round, F1: a transform that may use `#embed` or `__has_embed`,
+// in its file or a header it includes, is refused, naming the file and the
+// line.
+#[test]
+fn f1_embed_is_refused() {
+    let dir = scratch("f1");
+    std::fs::write(dir.join("d.bin"), b"ab").unwrap();
+    std::fs::write(dir.join("h.h"), "int h;\n#if __has_embed(\"d.bin\")\n#endif\n").unwrap();
+    let cases = [
+        (
+            "embed",
+            "const char d[] = {\n#embed \"d.bin\"\n};\nconsteval void transform() {}\n",
+            "embed.cpp",
+            2,
+        ),
+        (
+            "dead",
+            "#if 0\n#  embed \"d.bin\"\n#endif\nconsteval void transform() {}\n",
+            "dead.cpp",
+            2,
+        ),
+        (
+            "has",
+            "\n#if __has_embed(\"d.bin\")\n#endif\nconsteval void transform() {}\n",
+            "has.cpp",
+            2,
+        ),
+        ("header", "#include \"h.h\"\nconsteval void transform() {}\n", "h.h", 2),
+        (
+            "string",
+            "const char* s = \"__has_embed\";\nconsteval void transform() {}\n",
+            "string.cpp",
+            1,
+        ),
+    ];
+    for (name, text, file, line) in cases {
+        let path = dir.join(format!("{name}.cpp"));
+        std::fs::write(&path, text).unwrap();
+        let cmd = TransformCommand::new(resource_include(), &[], path).unwrap();
+        match compile_error(&cmd) {
+            CompileError::Embed { path, line: at } => {
+                let path = String::from_utf8(path).unwrap();
+                assert!(path.ends_with(&format!("/{file}")), "{name}: {path}");
+                assert_eq!(at, line, "{name}");
+            }
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+    let fine = dir.join("fine.cpp");
+    std::fs::write(&fine, "int embed = 1; // embed\nconsteval void transform() {}\n").unwrap();
+    let cmd = TransformCommand::new(resource_include(), &[], fine).unwrap();
+    assert!(with(&cmd, |s| s.entry("transform").is_ok()));
+}
+
+// WP-080 fix round, S1 (K2): a run is checked against the stack guard of
+// the thread that compiled the unit (`kiln_sema/src/templ/mod.rs:617`), so
+// a run on another thread that reaches a stack check (an instantiation, a
+// nested evaluation) would fail with "stack exhausted", and every later
+// run too. The attempt to reach one from an entry: each template the
+// entry's body uses below (a member of a class template, one with a
+// `static_assert`, a virtual override, a variable template) is
+// instantiated when the unit is compiled, so the runs, away and then at
+// home, reach no check and complete, with a guard (4 MiB) that a thread 64
+// MiB away is far outside. Not reproduced at this Kiln revision; the hazard
+// stands (docs/wp/WP-080.md, K2).
+#[test]
+fn s1_runs_away_from_the_compiling_thread_reach_no_stack_check() {
+    let variants = [
+        (
+            "member",
+            "template <class T> struct W { static consteval int run() { return sizeof(T); } };
+             consteval void transform() { if (W<long>::run() != 8) throw 0; }",
+        ),
+        (
+            "assert",
+            "template <class T> struct W {
+               static consteval int run() { static_assert(sizeof(T) == 8); return 1; }
+             };
+             consteval void transform() { if (W<long>::run() != 1) throw 0; }",
+        ),
+        (
+            "virtual",
+            "struct B { virtual consteval int f() const = 0; };
+             template <class T> struct D : B {
+               consteval int f() const override { return sizeof(T); }
+             };
+             consteval int call(const B& b) { return b.f(); }
+             consteval void transform() { D<long> d; if (call(d) != 8) throw 0; }",
+        ),
+        (
+            "variable",
+            "template <class T> constexpr int size = sizeof(T);
+             consteval void transform() { if (size<long> != 8) throw 0; }",
+        ),
+    ];
+    let thread = |f: &(dyn Fn() -> (RunReport, RunReport) + Sync)| {
+        std::thread::scope(|t| {
+            std::thread::Builder::new()
+                .stack_size(STACK)
+                .spawn_scoped(t, f)
+                .unwrap()
+                .join()
+                .unwrap()
+        })
+    };
+    for (name, body) in variants {
+        let cmd = transform(&format!("s1_{name}"), body);
+        let (away, home) = thread(&|| {
+            with_transform(&cmd, 4 << 20, |opened| {
+                let s = &mut opened.unwrap();
+                let entry = s.entry("transform").unwrap();
+                let away = std::thread::scope(|t| {
+                    let s = &mut *s;
+                    std::thread::Builder::new()
+                        .stack_size(STACK)
+                        .spawn_scoped(t, move || s.run(entry, &mut Failing, BUDGET, &Cancel::new()))
+                        .unwrap()
+                        .join()
+                        .unwrap()
+                });
+                (away, s.run(entry, &mut Failing, BUDGET, &Cancel::new()))
+            })
+        });
+        for (at, r) in [("away", away), ("home", home)] {
+            assert_eq!((r.result, r.rendered), (Ok(()), String::new()), "{name}, {at}");
+        }
+    }
+}
+
+/// A Kiln handler that answers every call with 0.
+struct NoCalls;
+
+impl HostCalls for NoCalls {
+    fn call(&mut self, _: u32, _: &[u64], _: &[u8], _: &mut HostOut<'_>) -> Result<u64, HostError> {
+        Ok(0)
+    }
+}
+
+// WP-080 fix round, K2, at the Kiln level (Slip's entries cannot reach
+// it, see `s1_…`): Kiln's own pattern (`kiln_parse/tests/eval_session.rs`
+// `instantiation_diagnostics_are_reported_by_every_run`), an entry that is
+// an uninstantiated member of a class template, so the first run
+// instantiates it. Compiled under a 4 MiB guard, run first on another
+// thread: the instantiation is checked against the compiling thread's
+// guard and fails with "stack exhausted", and the flag is sticky, so the
+// next run, at home, fails too. A known hole waiting on Kiln: when K2
+// lands, both runs complete and this test is to say so.
+#[test]
+fn k2_known_hole_a_kiln_run_instantiating_away_from_the_compiling_thread() {
+    let dir = scratch("k2");
+    let file = dir.join("k2.cpp");
+    std::fs::write(
+        &file,
+        "template <class T> struct W { static consteval int run() { return sizeof(T); } };\n\
+         static_assert(sizeof(W<int>) > 0);\n\
+         using X = W<int>;\n",
+    )
+    .unwrap();
+    let line: Vec<String> =
+        ["-std=c++26", "-fsyntax-only", file.to_str().unwrap()].map(str::to_owned).into();
+    let budget = kiln_sema::session::RunBudget { steps: 1 << 32, bytes: 256 << 20, depth: 4096 };
+    let shown =
+        |r: &kiln_sema::session::RunReport| (r.result.is_ok(), format!("{:?}", r.diagnostics));
+    let (away, home) = std::thread::scope(|t| {
+        std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn_scoped(t, || {
+                kiln_sema::stack_guard::StackGuard::install(4 << 20);
+                let io = kiln_driver::Io {
+                    stdout: Box::new(std::io::sink()),
+                    stderr: kiln_driver::SharedWriter::new(kiln_diag::SharedBuffer::new()),
+                    stdin: Box::new(std::io::empty()),
+                };
+                kiln_driver::session::with_eval_session("kiln", &line, io, |opened| {
+                    let mut fe = opened.unwrap_or_else(|e| panic!("{e:?}"));
+                    let entry = fe.session.entry_named("X::run").unwrap();
+                    let cancel = kiln_sema::session::CancelToken::new();
+                    let session = &mut fe.session;
+                    let away = std::thread::scope(|t| {
+                        std::thread::Builder::new()
+                            .stack_size(STACK)
+                            .spawn_scoped(t, || {
+                                shown(&session.run(entry, &mut NoCalls, budget, &cancel))
+                            })
+                            .unwrap()
+                            .join()
+                            .unwrap()
+                    });
+                    (away, shown(&fe.session.run(entry, &mut NoCalls, budget, &cancel)))
+                })
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    });
+    for (at, (ok, diagnostics)) in [("away", away), ("home", home)] {
+        assert!(!ok && diagnostics.contains("stack exhausted"), "{at}: {diagnostics}");
     }
 }
