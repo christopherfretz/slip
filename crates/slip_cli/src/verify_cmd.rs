@@ -48,9 +48,6 @@ fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8
     let (plan, plan_id) = commands::load_plan(&store, &a.plan)?;
 
     let (declared_id, declared) = publish_declared(&store, a.declared.as_deref())?;
-    // WP-103 (`RuleTable::refused`): a table holding a rule the tool cannot
-    // honour is an input error here, before any job runs, naming the rule
-    // and the reason. Not on this base; the check belongs in this spot.
 
     let image = Image::from_args(&a.image).map_err(input)?;
 
@@ -151,15 +148,23 @@ fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8
     })
 }
 
-/// The declared changes of `--declared` (or none): read, validated and
+/// The declared changes of `--declared` (or none): read, validated (a
+/// `DECL` container whose rule table holds no rule §2.1 refuses) and
 /// published to the store; their content id and their decoding.
 fn publish_declared(store: &Store, path: Option<&Path>) -> Result<(Digest, Declared)> {
     let bytes = match path {
         Some(path) => {
             let bytes = std::fs::read(path)
                 .map_err(|e| Failure::Input(format!("{}: {e}", path.display())))?;
-            Declared::from_bytes(&bytes)
+            let declared = Declared::from_bytes(&bytes)
                 .map_err(|e| Failure::Input(format!("{}: {e}", path.display())))?;
+            // `spec/verify.md` §2.1 (WP-103): a table that holds a rule
+            // §2.1 refuses keys nothing; it is an input error before any
+            // job is planned, naming the rule (its index in the table)
+            // and why, in the form of the container's own rule errors.
+            if let Some((index, what)) = declared.rules().refused() {
+                return Err(Failure::Input(format!("{}: rule {index}: {what}", path.display())));
+            }
             bytes
         }
         None => Declared::none().to_bytes(),

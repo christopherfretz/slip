@@ -815,6 +815,49 @@ fn s8_7_input_errors() {
     assert_eq!(f.verify(&plan, &["--round", "4"]).code(), Some(0));
 }
 
+// spec/verify.md §2.1 (WP-103): a declared file whose rule table holds a
+// rule §2.1 refuses (here a rule on a specialisation) is an input error
+// of `verify` before any job is planned and before the image is made:
+// status 3, the rule's index and the reason, no run, nothing published.
+#[test]
+fn s2_1_refused_rule_is_an_input_error() {
+    use slip_model::keys::{KeyKind, Name, Parent, RULE_ON_SPECIALISATION, Rule};
+    let f = two_units("refused");
+    let plan = f.parse();
+    let id = |s: &str| Name::Identifier(s.as_bytes().to_vec());
+    let rule = |kind, from: &str, to: &str| Rule {
+        parent: Parent::Root,
+        kind,
+        name: id(from),
+        disc: None,
+        to_parent: Parent::Root,
+        to_name: id(to),
+    };
+    let declared = Declared::new(
+        vec![rule(KeyKind::Namespace, "old", "fresh"), rule(KeyKind::Specialisation, "W", "W2")],
+        vec![],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(declared.rules().refused(), Some((1, RULE_ON_SPECIALISATION)));
+    std::fs::write(f.path("r.decl"), declared.to_bytes()).unwrap();
+    let published =
+        |f: &Fixture| std::fs::read_dir(f.path("store/declared")).map_or(0, Iterator::count);
+    let before = published(&f);
+    for extra in [
+        &["--declared", "r.decl"][..],
+        &["--declared", "r.decl", "--root", "nope", "--post", "post"],
+    ] {
+        let out = f.verify(&plan, extra);
+        assert_eq!(out.code(), Some(3), "{out:?}");
+        assert_eq!(out.stderr, format!("slip: r.decl: rule 1: {RULE_ON_SPECIALISATION}\n"));
+        assert_eq!(out.stdout, "");
+    }
+    assert_eq!(f.verify_runs(&plan), 0, "no job was planned");
+    assert_eq!(published(&f), before, "the refused file is not published");
+}
+
 /// A transform run record of `plan` and `round`, made with `slip_model`
 /// and published with `Store::publish_transform_run`.
 fn publish_transform_run(store: &Path, plan: &str, round: u64) {
@@ -897,9 +940,9 @@ fn s2_3_declare_errors() {
     f.both(
         "a.h",
         "#pragma once\nstruct S { int v; };\nint S_;\nstruct T {};\nint T;\n\
-         struct C { C operator+(C); };\nvoid k(int);\n",
+         struct C { C operator+(C); };\nvoid k(int);\ntemplate <class X> int tt(X) { return 0; }\n",
     );
-    f.both("u0.cpp", "#include \"a.h\"\nint f0() { return 0; }\n");
+    f.both("u0.cpp", "#include \"a.h\"\nint f0() { return tt(1); }\n");
     f.db(&["u0.cpp"]);
     let plan = f.parse();
     assert_eq!(
@@ -933,6 +976,12 @@ fn s2_3_declare_errors() {
         line_error(&f, &plan, "relocate k(int) => :: k2\nrelocate k(int) => :: k2\n", &[]),
         "slip: t.txt:2: duplicate: the rule of `k(int)` matches what the rule of an earlier \
          `relocate` line matches"
+    );
+    // §2.1 (WP-103): a rule on a specialisation.
+    assert_eq!(
+        line_error(&f, &plan, "relocate tt<int>(int) => :: uu\n", &[]),
+        "slip: t.txt:1: refused: the rule of `tt<int>(int)` is refused: a rule may not match a \
+         specialisation: its key follows its template's"
     );
     // `Fallback` has no source that makes it (`slip_digest` records:
     // no walk gives a fallback key today); it is tested over records in
