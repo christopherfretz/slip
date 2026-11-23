@@ -1,0 +1,4 @@
+# N09: namespace L = legacy; names moved and staying entities.
+# Caught only by a failed parse (spec/pitfalls.md §5).
+good: verified
+bad:  not_parsed
