@@ -1,0 +1,73 @@
+{
+  "kind": "SHRD",
+  "version": 1,
+  "sections": {
+    "header": {
+      "observer": "3333333333333333333333333333333333333333333333333333333333333333",
+      "phase": "map",
+      "round": 0
+    },
+    "outcome": {
+      "status": "ok",
+      "errors": 0,
+      "warnings": 0,
+      "message": ""
+    },
+    "inputs": [
+      {
+        "path": "/s/a.cc",
+        "size": 100,
+        "content": "0101010101010101010101010101010101010101010101010101010101010101"
+      },
+      {
+        "path": "/s/a.h",
+        "size": 60,
+        "content": "0202020202020202020202020202020202020202020202020202020202020202"
+      }
+    ],
+    "counters": [
+      {
+        "name": "map.claims",
+        "value": 6
+      }
+    ],
+    "edits": {
+      "scheme": 1,
+      "transform": "4444444444444444444444444444444444444444444444444444444444444444",
+      "failure": {
+        "kind": "uncaught",
+        "message": "uncaught slip::error",
+        "place": {
+          "file": "/t/x.cc",
+          "line": 3,
+          "column": 7
+        },
+        "rendered": "x.cc:3:7: error: uncaught\n  in f()",
+        "refusal": {
+          "function": "slip::replace",
+          "errc": "not_editable",
+          "message": "the range is in a macro body",
+          "subject": {
+            "file": 0,
+            "lo": 1,
+            "hi": 2
+          }
+        }
+      },
+      "files": [
+        {
+          "path": "/s/a.cc",
+          "size": 100,
+          "content": "0101010101010101010101010101010101010101010101010101010101010101"
+        }
+      ],
+      "subjects": [],
+      "links": [],
+      "claims": [],
+      "groups": [],
+      "reports": [],
+      "changed": [],
+      "renamed": []
+    }
+  }
+}

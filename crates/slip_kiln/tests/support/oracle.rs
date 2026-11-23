@@ -92,6 +92,10 @@ pub fn old_shard(
         counters,
         digests: None,
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     })
 }
 
