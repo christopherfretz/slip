@@ -468,7 +468,7 @@ fn s2_2_publish_repairs_what_is_not_the_content() {
     // holds the right bytes: both replaced by a regular file.
     for target in [dir.join("nowhere"), dir.join("right")] {
         fs::write(dir.join("right"), b"linked").unwrap();
-        let id = slip_model::hash::content_digest(b"linked");
+        let id = content_digest(b"linked");
         let at = store.blob_path(&id);
         let _ = fs::remove_file(&at);
         std::os::unix::fs::symlink(&target, &at).unwrap();
@@ -477,7 +477,7 @@ fn s2_2_publish_repairs_what_is_not_the_content() {
         assert_eq!(store.read_blob(&id).unwrap().as_deref(), Some(&b"linked"[..]));
     }
     // A directory at the name.
-    let id = slip_model::hash::content_digest(b"dir");
+    let id = content_digest(b"dir");
     fs::create_dir_all(store.blob_path(&id).join("x")).unwrap();
     assert!(matches!(store.publish_blob(b"dir"), Err(StoreError::Io { .. })));
     assert_eq!(fs::read_dir(store.root().join("tmp")).unwrap().count(), 0);
@@ -491,16 +491,12 @@ fn s7_3_journal_of_any_kind_refuses() {
     let root = dir.join("store");
     let journal = exclusive(&dir).journal_path();
     fs::write(dir.join("target"), b"j").unwrap();
-    let make: [(&str, Box<dyn Fn()>); 3] = [
-        (
-            "dangling link",
-            Box::new(|| std::os::unix::fs::symlink(dir.join("none"), &journal).unwrap()),
-        ),
-        ("link", Box::new(|| std::os::unix::fs::symlink(dir.join("target"), &journal).unwrap())),
-        ("directory", Box::new(|| fs::create_dir(&journal).unwrap())),
-    ];
-    for (what, make) in &make {
-        make();
+    for what in ["dangling link", "link", "directory"] {
+        match what {
+            "dangling link" => std::os::unix::fs::symlink(dir.join("none"), &journal).unwrap(),
+            "link" => std::os::unix::fs::symlink(dir.join("target"), &journal).unwrap(),
+            _ => fs::create_dir(&journal).unwrap(),
+        }
         match Store::open(&root, Access::Exclusive) {
             Err(StoreError::UnfinishedWrite(p)) => assert_eq!(p, journal, "{what}"),
             other => panic!("{what}: {other:?}"),
