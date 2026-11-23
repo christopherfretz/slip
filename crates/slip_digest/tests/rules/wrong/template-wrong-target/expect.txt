@@ -1,0 +1,5 @@
+added g<char>(char)
+added template <class> int g(type-parameter-0-0)
+changed use()
+removed f<char>(char)
+removed template <class> int f(type-parameter-0-0)

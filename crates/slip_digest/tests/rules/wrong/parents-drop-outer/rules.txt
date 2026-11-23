@@ -1,0 +1,2 @@
+# Item 9, from parents/mapped-parent: the outer relocation dropped: y still maps to a::b and everything under it is equal, but x is another key than a.
+relocate a::b => x :: y

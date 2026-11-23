@@ -642,7 +642,19 @@ with token sequence `T(X)` after preprocessing:
    exist. Verification sees the result.
 5. A null range from these two functions means "not in tier 0 or 1" and
    nothing else; it is not an error.
-6. `spec/macros.md` will define tiers for all of Slip. Until it is
+6. `R` runs from the first byte of the first token to the last byte of
+   the last token (or of the invocations that hold them, at tier 0); it
+   holds no space or comment before or after them. When both rows hold
+   (a span that is the whole expansion of an invocation, every token of
+   which one argument produced: `foo` from `ID(foo)` with `#define
+   ID(x) x`) and Kiln's rules see the whole expansion, the range is tier
+   0's, the invocation. Where they do not (an expansion whose first or
+   last token is not one the span can name: `F(, b)`, `F(b, )`, `E()`
+   with `__VA_OPT__`, `_Pragma`), the range is narrower or null, never
+   wider; `spec/landed/api/WP-084.md` decision 3 lists those shapes. This
+   section was silent on both until that file, which also records how the
+   tier is derived from the source manager's rules.
+7. `spec/macros.md` will define tiers for all of Slip. Until it is
    written this section is the definition for the API.
 
 **A range holds no directive.** A run of bytes that contains a

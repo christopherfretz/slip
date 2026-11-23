@@ -1,0 +1,2 @@
+# Item 9 attempt: only half of the swap: g maps onto f while f is still there: a collision, never equal.
+relocate f() => :: g

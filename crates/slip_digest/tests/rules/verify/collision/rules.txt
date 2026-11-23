@@ -1,0 +1,2 @@
+# spec/verify.md "Tests": a collision: f was renamed g, and a new f was added.
+relocate f() => :: g

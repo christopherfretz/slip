@@ -1,0 +1,3 @@
+# Item 9 attempt: the same, with call<S> instantiated: the specialisation must differ.
+relocate S::f() => S :: g
+relocate S::g() => S :: f

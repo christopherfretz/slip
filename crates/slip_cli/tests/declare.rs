@@ -408,6 +408,49 @@ fn not_renamable() {
     assert_eq!(r.rules.rules()[0].to_name, Name::Operator(7));
 }
 
+// §2.3 `Refused`: a `relocate` line whose rule `Rule::refusal` refuses
+// (spec/verify.md §2.1), one per refused kind a `relocate` line can make.
+// A namespace rule across the unnamed namespace cannot be made by one: the
+// unnamed namespace's name is not an identifier, so renaming it is
+// `NotRenamable`, and no identifier names it.
+#[test]
+fn refused_rules() {
+    let w = key(KeyKind::ClassTemplate, Parent::Root, ident("W"), Some(Digest([1; 32])));
+    let f = key(KeyKind::Function, Parent::Root, ident("f"), Some(Digest([2; 32])));
+    let at = |kind, name| key(kind, Parent::Unit(f.id()), name, None);
+    let spec =
+        key(KeyKind::Specialisation, Parent::Unit(w.id()), ident("W"), Some(Digest([3; 32])));
+    let partial = key(
+        KeyKind::PartialSpecialisation,
+        Parent::Unit(w.id()),
+        ident("W"),
+        Some(Digest([4; 32])),
+    );
+    let recs = sorted(vec![
+        rec(&w, "W"),
+        rec(&f, "f()"),
+        rec(&spec, "W<int>"),
+        rec(&partial, "W<T *>"),
+        rec(&at(KeyKind::Resolved, Name::Property(1)), "f()::<resolved>"),
+        rec(&at(KeyKind::DefaultArgument, Name::Parameter(0)), "f()::<default argument 0>"),
+    ]);
+    for (text, what) in [
+        ("relocate W<int> => :: V", "a rule may not match a specialisation"),
+        ("relocate W<T *> => :: =", "a rule may not match a specialisation"),
+        ("relocate f()::<resolved> => :: =", "a rule may not match a resolved"),
+        ("relocate f()::<default argument 0> => :: =", "a rule may not match a resolved"),
+    ] {
+        let e = err(&format!("# x\n{text}"), &recs, &[]);
+        assert_eq!((e.line, e.kind), (2, ErrorKind::Refused), "{text}: {e}");
+        assert!(e.detail.contains(what), "{text}: {e}");
+    }
+    let anon = key(KeyKind::Namespace, Parent::Root, Name::Anonymous, None);
+    let recs = sorted(vec![rec(&anon, "(anonymous namespace)")]);
+    let e = err("relocate (anonymous namespace) => :: n", &recs, &[]);
+    assert_eq!(e.kind, ErrorKind::NotRenamable, "{e}");
+    assert!(resolve(&read("relocate (anonymous namespace) => :: =").unwrap(), &recs, &[]).is_ok());
+}
+
 // §2.3 `Duplicate`: two relocates whose rules match the same; a key twice
 // in one list (at the later line); in two lists is allowed.
 #[test]
@@ -778,4 +821,51 @@ fn a_byte_order_mark_is_skipped() {
     let l = read("\u{feff}# comment\r\nremoved b").unwrap();
     assert_eq!(l, vec![(2, Line::Removed(ent(None, "b")))]);
     assert_eq!(read("changed a\n\u{feff}changed b").unwrap_err().line, 2);
+}
+
+// ---------------------------------------------------------------------------
+// WP-103: `declare` and the resolver of `slip_digest`'s `tests/rules.rs`
+// agree
+
+/// The resolver of the rules suite, a second implementation of the same
+/// names on purpose (`docs/wp/WP-103.md`).
+#[path = "../../slip_digest/tests/common/rules.rs"]
+#[allow(dead_code, reason = "only `read` and `table` are used here")]
+mod digest_rules;
+
+// For cases of `crates/slip_digest/tests/rules/` whose `rules.txt` has
+// only `relocate` lines (both resolvers map a line's new parent under the
+// lines above it, `spec/verify.md` §2.3), the `RuleTable`
+// `declare::resolve` makes from the case's two images is the one the
+// suite's resolver makes, by `id()`; and the table verifies. Among them
+// pitfall row R16's good tree (`pitfalls/r16-good`) and a member of a
+// class template's instantiation (`instantiated/`).
+#[test]
+fn the_rules_suite_resolves_alike() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../slip_digest/tests/rules");
+    for case in [
+        "verify/relocated-namespace",
+        "parents/mapped-parent",
+        "disc/overload-renamed-relocated-parameter",
+        "pitfalls/r16-good",
+        "instantiated/member-of-class-template-renamed",
+    ] {
+        let dir = root.join(case);
+        let file = |f: &str| {
+            std::fs::read_to_string(dir.join(f)).unwrap_or_else(|e| panic!("{case}/{f}: {e}"))
+        };
+        let (a, b, text) = (file("a.cpp"), file("b.cpp"), file("rules.txt"));
+        let empty = RuleTable::empty();
+        let (pre, post) = (records_of(&a, &empty), records_of(&b, &empty));
+        let lines = read(&text).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let declared = resolve(&lines, &pre, &post).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let ours = digest_rules::read(&text).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let suite =
+            digest_rules::table(&ours, &pre, &post).unwrap_or_else(|e| panic!("{case}: {e}"));
+        assert_eq!(declared.rules.rules().len(), suite.table.rules().len(), "{case}");
+        assert_eq!(declared.rules.id(), suite.table.id(), "{case}");
+        let with =
+            findings(&digest_of(&a, &empty), &digest_of(&b, &declared.rules), &Exemptions::none());
+        assert!(!with.iter().copied().any(real), "{case}: {with:?}");
+    }
 }
