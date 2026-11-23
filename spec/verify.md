@@ -1131,7 +1131,7 @@ one guard of §5.3:
 | G6 | the subject path of every file the post parse read under a post root is a real path of the subject or a created path under real directories of it (the links along the routes are the subject's); and every place the parse looked at by a route that leaves a post root is the place the same route reaches from the subject | `verify_job.rs` `g6_*`; `verify.rs` `g6_link_in_subject_directory_in_post_end_to_end`, `g6_route_leaving_the_root_end_to_end` |
 | G4 | no word is a response file, whose words Kiln's driver would read without Slip seeing them | `verify_job.rs` `g4_response_file` |
 | G5 | every spelling of a file the post parse makes is mapped to its spelling in the real post-image: every pair's post prefix is under a post root, the map pairs are consistent, no prefix map of the command's own overlaps them, no `#line` name is mapped | `verify_job.rs` `f6_two_routes_to_one_file`, `f6s_two_routes_through_a_link`, `f6r_two_routes_no_edit`, `g5_command_prefix_map`, `g5_line_name`, `z1_word_leaves_the_subject`, `z2_word_leaves_the_subject_absolute_include`, `z_control_word_stays_in_the_subject`, `z_word_leaves_into_another_root`, `a3_post_directory_becomes_a_link`, `a3_link_deeper_in_the_word`; `image.rs` `s5_1_post_command_resolves`, `g5_command_prefix_maps`, `g5_word_leaves_the_subject`, `g5_missing_prefix_under_a_post_root` |
-| O2 | every file outside every root that both images read has the pre shard's size and digest; and every file the map parse read, under no subject root, that the post parse did not read is still a regular file of that size and digest (an image other than the identity) | `verify_job.rs` `o2_outside_drift_at_the_sums`, `o2_found_outside_header_deleted*`, `o2_has_include_true_then_deleted*`, `o2_unread_input_*` |
+| O2 | every file outside every root that both images read has the pre shard's size and digest; and every file the map parse read, under no subject root, that the post parse did not read is still a regular file at its own real path, of that size and digest (an image other than the identity) | `verify_job.rs` `o2_outside_drift_at_the_sums`, `o2_found_outside_header_deleted*`, `o2_has_include_true_then_deleted*`, `o2_unread_*`, `o2_merged_inputs_pair`, `o2_input_merged_by_symbolic_link` |
 | N1 | no file has appeared, outside every subject root, at a place where the map parse looked for one and found none (its negative inputs, `model.md` §8.6; an image other than the identity) | `verify_job.rs` `f4b_*`, `n1_*`; `crates/slip_kiln/tests/lookups.rs` `missed_*` for the places |
 | G2, R2, G3 | the pre-image parsed at step 4 is the map phase's, and the post-image did not change during the job | `verify_job.rs` `g2_*`, `r2_*`, `g3_*` |
 
@@ -1195,12 +1195,27 @@ Two holes are known and pinned by tests that wait (`#[ignore = "needs:
   is no negative input; the file the map parse read is still there,
   unchanged, so O2's second part passes; and O2's first part compares
   only files both parses read, by real path, which the post parse's new
-  file is not. Every other way for the map parse's files to be no longer
-  the ones a lookup reaches (a file deleted, changed, or shadowed by one
-  that appeared) is refused (O2, N1). Closing it needs the map shard to
-  keep where each found lookup led (the place as written and the real
-  path it reached), checked as N1 checks the negatives. Test:
+  file is not. Closing it needs the map shard to keep where each found
+  lookup led (the place as written and the real path it reached),
+  checked as N1 checks the negatives (work package WP-135). Test:
   `o2_link_to_a_found_header_retargeted`.
+
+- **Two recorded inputs made one file by a hard link**: `ext/a.h`
+  replaced after the map phase by a hard link of `ext/b.h`, of the same
+  bytes (with `#pragma once`, the second include is then skipped). Each
+  path is still its own real path, a regular file of the size and digest
+  recorded, so O2 passes; and two inputs that are one file at the map
+  phase are legitimate (a deduplicated store), so "no two inputs are one
+  file now" would refuse good trees. Closing it needs the map shard to
+  record which inputs were one file (WP-135). Test:
+  `o2_limit_inputs_merged_by_hard_link_wp135`, which records today's
+  answer, `verified`.
+
+  But for these two, every way for the map parse's files to be no longer
+  the ones a lookup reaches is refused: a file deleted, changed, made a
+  link to another (its real path is no longer its own), or shadowed by
+  one that appeared, in a directory that was absent or a duplicate of a
+  listed one (O2, N1).
 
 F4b of the re-check (a file outside both roots that appears after the map
 phase and shadows one the map parse read, with an edit that compensates)
@@ -1313,7 +1328,7 @@ only withdraws: guard G3.
 | G4 | step 2: no word of the post command after `argv[0]` is a response file (`@` and a name, as Kiln's driver reads one) | `post-image: the command names the response file <word>, whose words slip cannot examine` |
 | G5 | step 2, tree form: the post command's map pairs (§5.1) are consistent: (a) none other than the identity has a post prefix that is empty or holds `=`; (b) when one pair's post prefix is a prefix of another's, the first applied to the second's post prefix gives the second's written prefix; (c) no `-fmacro-prefix-map=` or `-ffile-prefix-map=` of the command's own (alone, after `-Xclang` or `-Xpreprocessor`, in a `-Wp,` list) has an old prefix prefix-related to a post or written prefix of a pair other than the identity; (d) no `#line` name of the post parse begins with the post prefix of such a pair; (e), checked first: the post prefix of each pair other than the identity and the roots' is under a post root, by real paths; (f), checked last: the command's directory, and every path-bearing word with a `..`, walks names of the subject's directories that have the same kind in the post tree, and has no `..` after a component that does not exist | (a) `post-image: <word> is rewritten to <path>, which no -fmacro-prefix-map word can map back`; (b) `post-image: <word> and <word> spell the files under <post prefix> differently (<pair> and <pair>)`; (c) `post-image: <option word> maps <old>, which overlaps <prefix> of <word>; slip does not compose prefix maps`; (d) `post-image: the #line name <name> begins with <post prefix>, which the post command maps`; (e) `post-image: <word> is spelled through the subject and leaves it (<post prefix> is under no post root)`; (f) `post-image: <word, or "the directory <dir>"> walks <path>, which is <kind> in the subject and <kind> in the post tree` or `post-image: <word> has a `..` after <path>, which does not exist; slip cannot tell where it ends` |
 | O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
-| O2 | step 2, overlay form, and tree form other than the identity: (i) every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it; (ii), tree form, after (i): every entry of the pre shard's `inputs` that is under no subject root (`Resolver::under_subject`) and whose path the post-image parse's `inputs` do not list (the same identity as (i): the path's bytes; both are real paths) is, now, links followed, a regular file of the size and content digest listed (the overlay form's is O1's and O2's own) | (i) `pre-image: <path> changed since the map phase` (the first such path, in path order); (ii) `pre-image: <path> is gone since the map phase (run `slip parse` again)` when no regular file is there, `pre-image: <path> changed since the map phase (run `slip parse` again)` when its size or content differs or it cannot be read (the first such path, in path order) |
+| O2 | step 2, overlay form, and tree form other than the identity: (i) every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it; (ii), tree form, after (i): every entry of the pre shard's `inputs` that is under no subject root (`Resolver::under_subject`, judged on the path as recorded: when the nearest of the path and its ancestors that exists now is not its own real path, a link made since, the entry is taken as under no root) and whose path the post-image parse's `inputs` do not list (the same identity as (i): the path's bytes; both are real paths) is, now, links followed, a regular file whose real path is the path itself (the map parse recorded real paths) and of the size and content digest listed (the overlay form's is O1's and O2's own) | (i) `pre-image: <path> changed since the map phase` (the first such path, in path order); (ii) `pre-image: <path> is gone since the map phase (run `slip parse` again)` when no regular file is there, `pre-image: <path> now leads to <real path>, not the file the map parse read (run `slip parse` again)` when its real path is now another, `pre-image: <path> changed since the map phase (run `slip parse` again)` when its size or content differs or it cannot be read (the first such path, in path order) |
 | N1 | step 2, tree form other than the identity, after O2, and overlay form: the pre shard has a `negatives` section (`model.md` §8.6), and no path of it at which a file now exists is, in the tree form, outside every subject root, judged by the file's real path now (links and `..` resolved; `Resolver::under_subject`, its directory by identity), not by the path as written (`s/../ext/h.h` is outside); in the overlay form none may exist. A file exists as Kiln's lookup decides it: the path, links followed now, names a regular file that can be opened (a directory, a dangling link, a device, a file that cannot be opened are none) | `pre-image: the map shard has no negative inputs (run `slip parse` again)`; `pre-image: <path> appeared since the map phase` (the first such path, in path order) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
 | R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
@@ -1343,7 +1358,12 @@ cut as §6 says.
   not, because it is gone (the search then ended elsewhere: a header
   deleted with another behind it, a `__has_include` now false) or
   because the edit no longer includes it (then it must be unchanged, or
-  the pre shard no longer describes the pre-image). It reads and hashes
+  the pre shard no longer describes the pre-image). The map parse
+  recorded real paths, so a recorded path whose real path is now another
+  (replaced by a link to another input: two files merged into one) is
+  refused though its bytes are the same; and the subject filter is
+  judged on the path as recorded, so a link made since into a subject
+  root does not hide a recorded input. It reads and hashes
   only those files: none when the post parse reads the headers the map
   parse read.
 - **N1** is O2's counterpart for what the map parse did not read: O2

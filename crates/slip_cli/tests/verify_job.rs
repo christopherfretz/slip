@@ -2208,9 +2208,9 @@ fn n1_link_retargeted_since() {
 // `ext-b/cfg.h`, which the map parse did not. With an edit that
 // compensates, the verdict is `verified` in a world the map phase never
 // saw. Closing it needs the map shard to keep where each found lookup led
-// (a positive counterpart of the negatives): reported by WP-117.
+// (a positive counterpart of the negatives): WP-135.
 #[test]
-#[ignore = "needs: a record of where the map parse's found lookups led (reported by WP-117)"]
+#[ignore = "needs: a record of where the map parse's found lookups led (WP-135)"]
 fn o2_link_to_a_found_header_retargeted() {
     let tree = Tree::new("o2-retarget", &[("a.cpp", CFG_PRE)]);
     write(&tree.post.join("a.cpp"), CFG_POST);
@@ -2947,4 +2947,181 @@ fn s9_2_rename_with_a_stale_observer() {
         assert_eq!(r.verdict(), RunVerdict::NotVerified);
         assert_eq!(exit_status(r.verdict()), 1);
     }
+}
+
+// ----- O2's second part, re-check round of WP-117: a recorded input is
+// still its own real path (R1a), and the subject filter judges the path as
+// recorded (R2).
+
+const MERGE_HDR: &str =
+    "#pragma once\n#ifndef SEEN\n#define SEEN\n#define V 1\n#else\n#undef V\n#define V 2\n#endif\n";
+const MERGE_PRE: &str = "#include <a.h>\n#include <b.h>\n#if V == 2\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+/// The edit that compensates `a.h` and `b.h` becoming one file (the
+/// second include then skipped by `#pragma once`: `V` stays 1).
+const MERGE_POST: &str = "#include <a.h>\n#include <b.h>\n#if V == 1\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+
+/// `ext/a.h` and `ext/b.h` are two files of the same bytes, both read.
+fn merge_tree(name: &str) -> (Tree, Observer, Shard) {
+    cfg_tree_with(name, MERGE_PRE, MERGE_POST, &["ext"], |t| {
+        write(&t.base.join("ext/a.h"), MERGE_HDR);
+        write(&t.base.join("ext/b.h"), MERGE_HDR);
+    })
+}
+
+fn moved(p: &Path, real: &Path) -> String {
+    format!(
+        "pre-image: {} now leads to {}, not the file the map parse read (run `slip parse` again)",
+        p.display(),
+        real.display()
+    )
+}
+
+// R1, the pair: nothing changed since the map phase; the edit is seen.
+#[test]
+fn o2_merged_inputs_pair() {
+    let (tree, o, _) = merge_tree("o2-merge-pair");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+}
+
+// R1a: `ext/a.h` replaced by a symbolic link to the identical `ext/b.h`:
+// same size and bytes, but its real path is now `ext/b.h`.
+#[test]
+fn o2_input_merged_by_symbolic_link() {
+    let (tree, o, _) = merge_tree("o2-merge-symlink");
+    let a = tree.base.join("ext/a.h");
+    std::fs::remove_file(&a).unwrap();
+    link("b.h", &a);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), moved(&a, &tree.base.join("ext/b.h")));
+}
+
+// R1b, the stated limit (spec/verify.md §5.1): `ext/a.h` replaced by a
+// hard link of the identical `ext/b.h`. Its path, size and bytes are as
+// recorded, and two inputs that are one file at the map phase are
+// legitimate (deduplicated stores), so nothing recorded tells this from a
+// good tree: the verdict is `verified` in a world the map phase never saw.
+// Closing it needs the map shard to record which inputs were one file:
+// WP-135. This test records today's answer; WP-135 turns it into a refusal.
+#[test]
+fn o2_limit_inputs_merged_by_hard_link_wp135() {
+    let (tree, o, _) = merge_tree("o2-merge-hardlink");
+    let a = tree.base.join("ext/a.h");
+    std::fs::remove_file(&a).unwrap();
+    std::fs::hard_link(tree.base.join("ext/b.h"), &a).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+}
+
+// R2: the directory of an unread input (named by an `-I` word) replaced by
+// a link to the subject root: G5 refuses the post parse's route.
+#[test]
+fn o2_unread_input_directory_linked_to_the_subject() {
+    let (tree, o, _) = dropped_include("o2-unread-link-subject");
+    let ext = tree.base.join("ext");
+    std::fs::rename(&ext, tree.base.join("ext-old")).unwrap();
+    link(tree.subject.to_str().unwrap(), &ext);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+}
+
+// R2b: as R2, the link to a directory under the subject root.
+#[test]
+fn o2_unread_input_directory_linked_under_the_subject() {
+    let (tree, o, _) = dropped_include("o2-unread-link-subject-dir");
+    std::fs::create_dir_all(tree.subject.join("inc")).unwrap();
+    std::fs::create_dir_all(tree.post.join("inc")).unwrap();
+    let ext = tree.base.join("ext");
+    std::fs::rename(&ext, tree.base.join("ext-old")).unwrap();
+    link(tree.subject.join("inc").to_str().unwrap(), &ext);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+}
+
+// R2's control: the directory removed: `is gone`.
+#[test]
+fn o2_unread_input_directory_removed() {
+    let (tree, o, _) = dropped_include("o2-unread-dir-removed");
+    std::fs::rename(tree.base.join("ext"), tree.base.join("ext-old")).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), left(&tree.base.join("ext/old.h"), "is gone"));
+}
+
+/// `a.cpp` reads `../ext/old.h` by name (no command word); the post
+/// `a.cpp` no longer does.
+const RELATIVE_PRE: &str = "#include \"../ext/old.h\"\nint f() { return 1; }\n";
+
+// R2c: the directory replaced by a link to a directory under the subject
+// root: `is gone` (and the pair, and the same with the link removed).
+#[test]
+fn o2_unread_relative_input_directory_linked_under_the_subject() {
+    let (tree, o, _) =
+        cfg_tree_with("o2-relative-link-subject-dir", RELATIVE_PRE, OLD_POST, &[], |t| {
+            write(&t.base.join("ext/old.h"), "// v1\n");
+            std::fs::create_dir_all(t.subject.join("inc")).unwrap();
+        });
+    std::fs::create_dir_all(tree.post.join("inc")).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "pair: {}", reason(&v));
+    let ext = tree.base.join("ext");
+    let gone = left(&ext.join("old.h"), "is gone");
+    std::fs::rename(&ext, tree.base.join("ext-old")).unwrap();
+    link(tree.subject.join("inc").to_str().unwrap(), &ext);
+    let v = tree.verify(&o);
+    assert_eq!((kind(&v), reason(&v)), (VerdictKind::Unverifiable, gone.as_str()));
+    std::fs::remove_file(&ext).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!((kind(&v), reason(&v)), (VerdictKind::Unverifiable, gone.as_str()));
+}
+
+// R2d: as R2c, the link to the subject root itself. Judged through the
+// link, `ext/old.h` would be under the subject and skipped; it is judged
+// as recorded, under no root, and it is gone.
+#[test]
+fn o2_unread_relative_input_directory_linked_to_the_subject() {
+    let (tree, o, _) =
+        cfg_tree_with("o2-relative-link-subject", RELATIVE_PRE, OLD_POST, &[], |t| {
+            write(&t.base.join("ext/old.h"), "// v1\n");
+        });
+    let ext = tree.base.join("ext");
+    std::fs::rename(&ext, tree.base.join("ext-old")).unwrap();
+    link(tree.subject.to_str().unwrap(), &ext);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), left(&ext.join("old.h"), "is gone"));
+}
+
+// ----- N1, re-check round of WP-117 (R3): a search directory Kiln dropped
+// as a duplicate of a listed one is a place as an absent one is.
+
+/// `-Ia -Ilnk -Iext`, `lnk -> a` at the map phase (Kiln drops `lnk`);
+/// `b/cfg.h` (`USE_NEW 1`) is there for a retarget.
+fn duplicate_tree(name: &str) -> (Tree, Observer, Shard) {
+    cfg_tree_with(name, CFG_PRE, CFG_POST, &["a", "lnk", "ext"], |t| {
+        std::fs::create_dir_all(t.base.join("a")).unwrap();
+        write(&t.base.join("b/cfg.h"), "#define USE_NEW 1\n");
+        link("a", &t.base.join("lnk"));
+    })
+}
+
+#[test]
+fn n1_duplicate_directory_pair() {
+    let (tree, o, m) = duplicate_tree("n1-duplicate-pair");
+    let negatives = m.negatives.as_ref().unwrap();
+    assert!(negatives.contains(&bytes(&tree.base.join("lnk/cfg.h"))), "{negatives:?}");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+}
+
+// R3: `lnk` retargeted to `b` after the map phase: `lnk/cfg.h` appeared.
+#[test]
+fn n1_duplicate_directory_retargeted() {
+    let (tree, o, _) = duplicate_tree("n1-duplicate-retargeted");
+    std::fs::remove_file(tree.base.join("lnk")).unwrap();
+    link("b", &tree.base.join("lnk"));
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), appeared(&tree.base.join("lnk/cfg.h")));
 }

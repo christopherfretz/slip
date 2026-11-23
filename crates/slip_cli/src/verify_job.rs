@@ -17,7 +17,7 @@
 //! post-image does not parse), or the job's `Err`.
 
 use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
 use slip_digest::map::counters as walk_counters;
@@ -531,11 +531,7 @@ fn image_guards(
         return Some(format!("pre-image: {} changed since the map phase", show_path(path)));
     }
     if let Some((path, how)) = left_behind(&mut resolver, post_inputs, pre_inputs) {
-        return Some(format!(
-            "pre-image: {} {} since the map phase (run `slip parse` again)",
-            show_path(path),
-            how.as_str()
-        ));
+        return Some(how.reason(path));
     }
     // N1: no file has appeared, outside the subject roots, where the map
     // parse looked for one and found none. Without the record, fail closed.
@@ -643,32 +639,54 @@ fn drifted<'a>(
 
 /// What became of a file the map parse read and the post-image parse did
 /// not (O2's second part).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Left {
     /// No regular file is at the path now.
     Gone,
+    /// The path leads, through a link made since, to this other real
+    /// path: not the file the map parse read there (two inputs made one by
+    /// a link, or a directory on the way replaced by a link).
+    Moved(Vec<u8>),
     /// The file there has another size or content, or cannot be read.
     Changed,
 }
 
 impl Left {
-    fn as_str(self) -> &'static str {
+    /// The reason of the `unverifiable` verdict for the input at `path`.
+    fn reason(&self, path: &[u8]) -> String {
+        let path = show_path(path);
         match self {
-            Left::Gone => "is gone",
-            Left::Changed => "changed",
+            Left::Gone => {
+                format!("pre-image: {path} is gone since the map phase (run `slip parse` again)")
+            }
+            Left::Moved(real) => format!(
+                "pre-image: {path} now leads to {}, not the file the map parse read (run `slip parse` again)",
+                show_path(real)
+            ),
+            Left::Changed => {
+                format!("pre-image: {path} changed since the map phase (run `slip parse` again)")
+            }
         }
     }
 }
 
 /// Guard O2's second part, of the tree form (§5.3): the first entry of the
-/// pre shard's `inputs`, in path order, that is under no subject root and
-/// whose path the post-image parse's `inputs` do not list (the same path
-/// identity as [`drifted`]: the bytes of the path), at which there is no
-/// longer a regular file of the size and content digest listed. Both
-/// lists are sorted by path. A file the map parse read and the post parse
-/// did not is no file the comparison looks at: gone or changed, the pre
-/// shard no longer describes the pre-image (a header deleted, so that the
-/// search now finds another, the post-image's edit compensating).
+/// pre shard's `inputs`, in path order, whose path the post-image parse's
+/// `inputs` do not list (the same path identity as [`drifted`]: the bytes
+/// of the path), that is not a file of the subject as recorded, and at
+/// which there is no longer the file the map parse read: a regular file
+/// whose real path is the recorded path, of the size and content digest
+/// listed. Both lists are sorted by path. A file the map parse read and
+/// the post parse did not is no file the comparison looks at: gone,
+/// changed or reached elsewhere, the pre shard no longer describes the
+/// pre-image (a header deleted, so that the search now finds another, the
+/// post-image's edit compensating).
+///
+/// "A file of the subject as recorded": under a subject root
+/// (`Resolver::under_subject`) judged on the recorded path only while that
+/// path is still as recorded ([`as_recorded`]); through a link made since
+/// (a directory of the dependency replaced by a link into the subject),
+/// the entry is checked, not skipped.
 fn left_behind<'a>(
     resolver: &mut Resolver<'_>,
     post: &[FileRef],
@@ -676,16 +694,38 @@ fn left_behind<'a>(
 ) -> Option<(&'a [u8], Left)> {
     pre.iter()
         .filter(|p| post.binary_search_by(|f| f.path.cmp(&p.path)).is_err())
-        .filter(|p| !resolver.under_subject(&p.path))
+        .filter(|p| !(as_recorded(&p.path) && resolver.under_subject(&p.path)))
         .find_map(|p| still_there(p).err().map(|how| (p.path.as_slice(), how)))
 }
 
-/// Whether the regular file at `f.path` (links followed now) has `f`'s
+/// Whether `path`, a real path when the map parse recorded it, is still
+/// one: the path, or the nearest ancestor of it that exists, is its own
+/// real path now (no symbolic link has been made on the way since).
+fn as_recorded(path: &[u8]) -> bool {
+    let mut at = Path::new(OsStr::from_bytes(path));
+    loop {
+        if at.symlink_metadata().is_ok() {
+            return std::fs::canonicalize(at).is_ok_and(|real| real == at);
+        }
+        match at.parent() {
+            Some(up) => at = up,
+            None => return true,
+        }
+    }
+}
+
+/// Whether the file the map parse read at `f.path` is still there: a
+/// regular file (links followed now) whose real path is `f.path`, of `f`'s
 /// size and content digest.
 fn still_there(f: &FileRef) -> Result<(), Left> {
     let path = Path::new(OsStr::from_bytes(&f.path));
     match std::fs::metadata(path) {
         Ok(m) if m.is_file() => {
+            match std::fs::canonicalize(path) {
+                Ok(real) if real == path => {}
+                Ok(real) => return Err(Left::Moved(real.into_os_string().into_vec())),
+                Err(_) => return Err(Left::Gone),
+            }
             if m.len() != f.size {
                 return Err(Left::Changed);
             }

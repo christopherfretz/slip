@@ -539,16 +539,108 @@ fn missed_absent_idirafter_position() {
     assert!(missed(&l, "aft", "g.h") && missed(&l, "aft", "z.h"), "{l:?}");
 }
 
-// N-g. A place that cannot be told (`-cxx-isystem`: it depends on the
-// language): a negative of every lookup, as before WP-117's fix round.
+// N-g. `-cxx-isystem` in C++: a system directory, in the order of the
+// words (Kiln's C++ list).
 #[test]
-fn missed_absent_unplaced_is_conservative() {
-    let d = Dir::new("missed-absent-unplaced");
+fn missed_absent_cxx_isystem_placed() {
+    let d = Dir::new("missed-absent-cxx");
+    d.write("a.cpp", "#include <h.h>\n#if __has_include(<z.h>)\n#endif\n");
+    d.write("sb/h.h", "\n");
+    let (status, l) = d.lookups("", &["-isystemsb", "-cxx-isystem", "cx"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(!missed(&l, "cx", "h.h") && missed(&l, "cx", "z.h"), "{l:?}");
+}
+
+// N-g. Kiln's driver accepts no `-c-isystem` word: the unit is
+// `rejected`, so no such directory reaches the placement.
+#[test]
+fn missed_absent_c_isystem_is_not_accepted() {
+    let d = Dir::new("missed-absent-c");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("sb/h.h", "\n");
+    let (status, l) = d.parse("", &["-isystemsb", "-c-isystem", "cs"]);
+    assert_eq!((status, l), (Status::Rejected, None));
+}
+
+// N-g. An `-iquote` directory that is also a toolchain one is listed
+// twice (Kiln deduplicates the `-iquote` part apart): the log's list is
+// then not the command's own with one toolchain block, and no directory
+// is placed (`later`, after the hit, is still a negative).
+#[test]
+fn missed_absent_iquote_toolchain_directory_unplaced() {
+    let d = Dir::new("missed-absent-iquote-tc");
     d.write("a.cpp", "#include <h.h>\n");
     d.write("inc/h.h", "\n");
-    let (status, l) = d.lookups("", &["-Iinc", "-cxx-isystem", "cx"]);
+    let (status, l) = d.lookups("", &["-iquote/usr/include", "-Iinc", "-Ilater"]);
     assert_eq!(status, Status::Ok, "{l:?}");
-    assert!(missed(&l, "cx", "h.h"), "{l:?}");
+    let twice = l.list.iter().filter(|x| *x == "/usr/include").count();
+    assert_eq!(twice, 2, "the host's toolchain lists /usr/include: {l:?}");
+    assert!(missed(&l, "later", "h.h"), "{l:?}");
+}
+
+// N-g. `#include_next`: an absent directory is placed in the window after
+// the includer's directory (`gen`, between `one` and `three`), not before
+// it (`before`).
+#[test]
+fn missed_absent_in_the_include_next_window() {
+    let d = Dir::new("missed-absent-next");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("one/h.h", "#if __has_include_next(<m.h>)\n#endif\n#include_next <h.h>\n");
+    d.write("three/h.h", "\n");
+    d.write("three/m.h", "\n");
+    let (one, three) = (d.at("one"), d.at("three"));
+    let flags =
+        ["-Ibefore".to_owned(), format!("-I{one}"), "-Igen".to_owned(), format!("-I{three}")];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("", &flags);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(missed(&l, "gen", "h.h") && missed(&l, "gen", "m.h"), "{l:?}");
+    assert!(!missed(&l, "before", "m.h"), "{l:?}");
+}
+
+// N-g. One directory named by `-isystem` and `-idirafter`: the list cannot
+// tell which part it would be in (the system part's end and the
+// `-idirafter` part's start are one place in the command's list): both
+// are kept, so a name found in a toolchain directory (between them) is a
+// negative there.
+#[test]
+fn missed_absent_isystem_and_idirafter_one_directory() {
+    let d = Dir::new("missed-absent-both");
+    d.write("a.cpp", "#if __has_include(<cstddef>)\n#endif\n");
+    let (status, l) = d.lookups("", &["-isystemx", "-idirafterx"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(missed(&l, "x", "cstddef"), "{l:?}");
+}
+
+// N-g. A search directory Kiln dropped as a duplicate of a listed one
+// (`lnk -> a`, after `a`): a place as an absent one is, in its window.
+#[test]
+fn missed_duplicate_directory() {
+    let d = Dir::new("missed-duplicate");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("ext/h.h", "\n");
+    std::fs::create_dir_all(d.root.join("a")).unwrap();
+    std::os::unix::fs::symlink("a", d.root.join("lnk")).unwrap();
+    let (status, l) = d.lookups("", &["-Ia", "-Ilnk", "-Iext"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(!l.list.iter().any(|x| x == "lnk"), "{l:?}");
+    assert!(missed(&l, "lnk", "h.h"), "{l:?}");
+}
+
+// N-g. A dropped duplicate before its twin (`-Ilnk -isystem b`, `lnk ->
+// b`: clang drops the user one): its window reaches the twin, where the
+// lookup found the name; that name is a file in it now, so no negative.
+#[test]
+fn missed_duplicate_directory_holding_the_name() {
+    let d = Dir::new("missed-duplicate-holds");
+    d.write("a.cpp", "#include <k.h>\n#if __has_include(<z.h>)\n#endif\n");
+    d.write("b/k.h", "\n");
+    std::os::unix::fs::symlink("b", d.root.join("lnk")).unwrap();
+    let (status, l) = d.lookups("", &["-Ilnk", "-isystemb"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(!l.list.iter().any(|x| x == "lnk"), "{l:?}");
+    assert!(!missed(&l, "lnk", "k.h"), "{l:?}");
+    assert!(missed(&l, "lnk", "z.h"), "{l:?}");
 }
 
 // N-h. An absolute name: Kiln's log does not record it yet (Kiln

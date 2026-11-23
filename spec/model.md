@@ -746,30 +746,36 @@ each form found its file in, with two differences. For `#embed` and
 directory, `.` for `"..."`, then each `--embed-dir`, in Kiln's order), all
 of them when none was. And a search directory of the command's own (`-I`,
 `-iquote`, `-isystem`, `-idirafter`, `-cxx-isystem`; `-I=` under the
-sysroot) that Kiln's driver left out of the list because it was no
-directory, and that is not in the list, is a place of each name a
-`#include` form searched the list for where, created, it would be
-searched: at its place in the list, from where the lookup started (the
-angled start for `<...>`, after the includer's directory for
-`#include_next`) up to and including the place before the directory the
-lookup found the name in (through the end when it found none). Its place
-is found by building the command's own directories into a list as
-Kiln's driver does (Kiln `SearchList::build`), once as they are and once
-with that directory existing; the toolchain's directories, all of a
-system group and after the command's in it, are the one block of the
-log's list that the command's list lacks, at the end of its system part
-(before the `-idirafter` directories). Two cases keep more. An absent
+sysroot) that is not in the list (Kiln's driver left it out because it
+was no directory, or because it was a duplicate of a listed one: another
+spelling of it, or a link to it, which may be retargeted since) is a
+place of each name a `#include` form searched the list for where, were
+it a directory of its own, it would be searched: at its place in the
+list, from where the lookup started (the angled start for `<...>`, after
+the includer's directory for `#include_next`) up to and including the
+place before the directory the lookup found the name in (through the end
+when it found none), unless the name is a regular file in it now (a
+duplicate holds its twin's files, where the lookup found them). Its
+place is found by building the command's own directories into a list as
+Kiln's driver does for C++ (Kiln `SearchList::build`), once as they are
+and once with that directory a directory of a unique identity (which
+changes no other entry: whatever Kiln dropped because of it was itself);
+the toolchain's directories, all of a system group and after the
+command's in it, are the one block of the log's list that the command's
+list lacks, at the end of its system part (before the `-idirafter`
+directories), none of them one of the command's. Two cases keep more. An absent
 `-isystem` or `-idirafter` directory is a place of every lookup that
 ended in an `-I` directory: created as that same directory, it would
 take its place (clang `RemoveDuplicates` drops a user directory that a
 later system one duplicates). And when the place cannot be told, the
 directory is a place of every name searched in the list (not of a
-`<...>` name when only `-iquote` names it): when the command has a
-`-c-isystem` or `-cxx-isystem` word (the list's language decides their
-group, which the log does not give), when the log's list is not the
-command's own list with one toolchain block (a toolchain directory that
-displaced one of the command's), or when building with the directory
-does not give the command's list with it added.
+`<...>` name when only `-iquote` names it): when the log's list is not
+the command's own list with one toolchain block (a toolchain directory
+that displaced one of the command's; an `-iquote` directory that is also
+a toolchain one, listed twice since Kiln deduplicates the quoted part
+apart; a C unit's `-cxx-isystem` directories, which the C++ build lists
+and Kiln's driver leaves out for C). Kiln's driver accepts no
+`-c-isystem` word (the unit is `rejected`).
 `Lookups::line_names` lists the file names of the `#line` directives of
 every file the unit read (Kiln's `SourceManager::line_directives`), as
 written: guard G5 of `spec/verify.md` §5.3 refuses one that begins with a
