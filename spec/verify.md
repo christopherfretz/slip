@@ -409,7 +409,11 @@ opening it is written in or, for one written qualified outside its
 namespace, the latest opening of the namespace written before it; where
 the declarations' visibilities differ, a use's symbol takes that of the
 declaration most recent at the use, which no unit holds, and the unit is
-indeterminate (`visibility_by_use`, `digest.md` §10). A key holds names only (`digest.md` §3), and the
+indeterminate (`visibility_by_use`, `digest.md` §10). Which declarations
+count is clang's: a specialisation of a class or variable template and
+an instantiation take the template's, wherever they are written; an
+explicit specialisation of a function template its own; a class or an
+enumeration its definition (`digest-kinds.md` §1.7 item 5). A key holds names only (`digest.md` §3), and the
 rules rewrite keys only, so the row is written as the post-image has it
 and is not mapped: a relocation that changes either property for any
 entity makes that entity's unit differ, whatever rule table is given. An

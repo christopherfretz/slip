@@ -934,7 +934,7 @@ this spec says:
 - it holds demand-driven state that `digest-kinds.md` could not assign to a
   derived unit;
 - its entity's declarations are given different visibilities by the
-  namespace openings around them (`digest-kinds.md` §1.7 item 4), so a
+  namespace openings around them (`digest-kinds.md` §1.7 items 4-5), so a
   symbol's visibility depends on where each use is
   (`visibility_by_use`, WP-113).
 

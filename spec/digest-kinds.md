@@ -217,8 +217,10 @@ gives each as a constant of `walk_row`.
 | 1538 | `enclosing` | at the end of the stream of a unit at namespace scope (§5.1 item 6): what the entity takes from its enclosing namespaces other than their names (rule below) |
 
 The row `enclosing` is written for the unit (not a declaration walked
-in place, §2.4) of every entity that is not a namespace and not
-content-keyed (digest §3.3) and whose representative's (the
+in place, §2.4) of every entity that is not a namespace, not
+content-keyed (digest §3.3) and not of a key kind a scope may repeat
+(a using-declaration and its shadows, a namespace alias, `using enum`, a
+friend declaration: `units::repeatable`), and whose representative's (the
 declaration the walk writes the unit from, `Walk::representative`)
 semantic context, through linkage
 specifications and `export` declarations, is a namespace or the
@@ -260,15 +262,40 @@ which is keyed in its namespace (§2.4): `tag 1538`, then
    at the semantic context instead (`kiln_codegen/src/visibility.rs`
    `ns_lv`, `parent_ctx`), and reads the first declaration where clang
    reads the most recent (`spec/landed/digest/WP-113.md`, "For Kiln");
-4. the pair is computed for every declaration of the entity's chain
-   (`Ast::redecls_of`), and the pairs must be equal: a symbol's
-   visibility is that of the declaration most recent where it is
-   defined or used (clang++-19: an undefined reference takes the
-   declaration most recent at the use), so when they differ it is a
-   fact of each use's place, which no unit holds, and the unit is
-   indeterminate (`visibility_by_use`, digest §10). The one pair they
-   share is written once: written per declaration it would add only
-   their number, which no symbol depends on.
+4. the pair is computed for each of the declarations of item 5, and
+   the pairs must be equal: a symbol's visibility is that of the
+   declaration most recent where it is defined or used (clang++-19: an
+   undefined reference takes the declaration most recent at the use), so
+   when they differ it is a fact of each use's place, which no unit
+   holds, and the unit is indeterminate (`visibility_by_use`, digest
+   §10). The one pair they share is written once: written per
+   declaration it would add only their number, which no symbol depends
+   on;
+5. the declarations whose pairs are compared and written are those of
+   the chain (`Walk::redecls`) of the entity that governs the symbol's
+   visibility, as clang++-19 gives it (`spec/landed/digest/WP-113.md`,
+   "Specialisations"):
+   - a specialisation of a class template or of a variable template, of
+     any kind (explicit, partial, implicit or explicit instantiation),
+     a member of one, and an instantiation of a function template take
+     the template's: the opening a specialisation is written in does
+     not change its symbols;
+   - of a variable template (its own, or the one a specialisation
+     takes) only the first declaration counts;
+   - an explicit specialisation of a function template takes its own
+     declarations, without the declaration Kiln makes for it from the
+     template (at the location of a declaration of the template or of
+     its pattern);
+   - a class or an enumeration that this translation unit defines takes
+     its definition alone, wherever it is used, before the definition
+     too;
+   - for a function or a variable this translation unit does not define,
+     an absent visibility is read as 0 (default) before the pairs are
+     compared and written: an undefined reference takes an opening's
+     attribute or default, never `-fvisibility`;
+   - a declaration the compiler makes (`IMPLICIT`: `std::type_info`,
+     `std::align_val_t`, `std::terminate`) counts only when the entity
+     has no written declaration.
 
 A namespace's unit has no such row: a namespace has no symbol, its own
 linkage is read by reflection alone (`has_internal_linkage(^^n)`), whose

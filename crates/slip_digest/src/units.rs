@@ -876,7 +876,7 @@ fn collides(written: &[Written], run: &[usize]) -> bool {
 
 /// The declarations a scope may repeat and Kiln does not join
 /// (`spec/digest.md` §3.4).
-fn repeatable(kind: KeyKind) -> bool {
+pub(crate) fn repeatable(kind: KeyKind) -> bool {
     matches!(
         kind,
         KeyKind::UsingDeclaration

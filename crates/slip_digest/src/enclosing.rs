@@ -40,6 +40,7 @@ use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{AttrId, DeclId};
 
 use crate::Cause;
+use crate::keys::Role;
 use crate::stream::Stream;
 use crate::tables::{linkage, walk_row};
 use crate::walk::Walk;
@@ -67,6 +68,23 @@ fn at_namespace_scope(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
     if ast.decls.get(e).kind() == DeclKind::Namespace {
         return false;
+    }
+    // A declaration a scope may repeat (a using-declaration and its
+    // shadows, a namespace alias, `using enum`, a friend declaration) and
+    // a content-keyed unit declare no symbol; repeated in openings of
+    // different visibility (libstdc++'s `<cwchar>` repeats `using
+    // ::mbstate_t;` in plain and attributed openings of `std`) they are
+    // one entity only while their digests are equal (digest §3.4).
+    match crate::keys::info(ast.decls.get(e).kind()).role {
+        Role::Entity(k) if crate::units::repeatable(k) => return false,
+        Role::Content(_) => return false,
+        Role::Entity(_)
+        | Role::Nothing
+        | Role::Transparent
+        | Role::Root
+        | Role::Local
+        | Role::InParent
+        | Role::Unsupported(_) => {}
     }
     let rep = w.representative(e);
     if w.is_local_extern(rep) {
@@ -129,7 +147,28 @@ pub(crate) fn write(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
         Governs::Own(None) if ast.decls.get(e).kind() == DeclKind::VarTemplate => {
             chain_pair(w, s, e, |d| d == ast.first(e))
         }
-        Governs::Own(None) => chain_pair(w, s, e, |_| true),
+        Governs::Own(None) => {
+            let kind = ast.decls.get(e).kind();
+            let definition = crate::units::defining_decl(w, e);
+            match definition {
+                // A class or an enumeration takes its definition's
+                // opening, wherever it is used, even before the definition
+                // (clang++-19: `g<n::S *>()` instantiated before `struct
+                // n::S` is defined takes the definition's opening, as do
+                // `_ZTI`, `_ZTS` and the vtable).
+                Some(def) if is_tag(kind) => chain_pair(w, s, e, |d| d == def),
+                // A function or variable this translation unit does not
+                // define has only undefined references, whose visibility is
+                // an opening's attribute or default: `-fvisibility` is not
+                // applied to them (clang++-19, `-fvisibility=hidden`: `UND
+                // DEFAULT` from a plain opening), so a plain opening and a
+                // `visibility("default")` one give the same.
+                None if crate::keys::info(kind).function || kind == DeclKind::Var => {
+                    chain_pair_with(w, s, e, |_| true, true)
+                }
+                Some(_) | None => chain_pair(w, s, e, |_| true),
+            }
+        }
     };
     visibility(s, pair.0);
     visibility(s, pair.1);
@@ -180,6 +219,29 @@ fn governing_template(w: &Walk<'_>, rep: DeclId) -> Governs {
 /// symbol depends on (`equal/_/var-extern-before-definition`,
 /// `differ/_/key-extern-c-in-two-namespaces`).
 fn chain_pair(w: &Walk<'_>, s: &mut Stream, e: DeclId, keep: impl Fn(DeclId) -> bool) -> Pair {
+    chain_pair_with(w, s, e, keep, false)
+}
+
+/// Whether declarations of kind `kind` declare a class or an enumeration.
+fn is_tag(kind: DeclKind) -> bool {
+    matches!(
+        kind,
+        DeclKind::CXXRecord
+            | DeclKind::Enum
+            | DeclKind::ClassTemplateSpecialization
+            | DeclKind::ClassTemplatePartialSpecialization
+    )
+}
+
+/// [`chain_pair`]; with `undefined`, an absent visibility is read as
+/// default (0) before the pairs are compared and written.
+fn chain_pair_with(
+    w: &Walk<'_>,
+    s: &mut Stream,
+    e: DeclId,
+    keep: impl Fn(DeclId) -> bool,
+    undefined: bool,
+) -> Pair {
     let mut chain = w.redecls(e);
     chain.reverse();
     if chain.iter().any(|&d| keep(d)) {
@@ -192,21 +254,13 @@ fn chain_pair(w: &Walk<'_>, s: &mut Stream, e: DeclId, keep: impl Fn(DeclId) -> 
     if chain.iter().any(|&d| !implicit(d)) {
         chain.retain(|&d| !implicit(d));
     }
-    let pairs: Vec<Pair> = chain.iter().map(|&d| namespace_visibility(w, s, d)).collect();
+    let pairs: Vec<Pair> = chain
+        .iter()
+        .map(|&d| namespace_visibility(w, s, d))
+        .map(|(v, t)| if undefined { (v.or(Some(0)), t.or(Some(0))) } else { (v, t) })
+        .collect();
     let pair = pairs.first().copied().unwrap_or((None, None));
     if pairs.iter().any(|&p| p != pair) {
-        if let Some(path) = std::env::var_os("TMP_VBU_LOG") {
-            use std::io::Write as _;
-            let line = format!(
-                "{}\t{:?}\t{:?}\n",
-                crate::names::display_name(w.ast, e),
-                w.ast.decls.get(e).kind(),
-                pairs
-            );
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-                let _ = f.write_all(line.as_bytes());
-            }
-        }
         s.indeterminate(Cause::VisibilityByUse);
     }
     pair

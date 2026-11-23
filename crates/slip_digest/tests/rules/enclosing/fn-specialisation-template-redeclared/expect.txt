@@ -5,3 +5,4 @@
 # the declaration Kiln instantiated from the template (at the template's first declaration) is
 # left out.
 changed lib::sw<my::T>(my::T &, my::T &)
+changed lib
