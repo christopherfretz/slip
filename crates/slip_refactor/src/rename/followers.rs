@@ -39,13 +39,15 @@
 //!   overrides is not introduced ([namespace.udecl]/14), so it is left
 //!   out of the using-declaration's `of` (unless every one is). The
 //!   shadow Kiln still makes for it is a follower whatever its target,
-//!   of its three parties: the target, the using-declaration and the
-//!   hider Kiln names (`hidden_shadow`). While the digest writes it as a
-//!   unit, renaming some of the three and not the others is a wrong
-//!   edit: the shadow disappears, or a hidden declaration becomes
-//!   visible. So any mix is reduce's `mixed_follower`, and a
+//!   of its target and the hider Kiln names (`hidden_shadow`). The digest
+//!   writes no unit for it (`docs/wp/WP-119.md` item 6), so the
+//!   using-declaration is no party; renaming one of the other two and not
+//!   the other is a wrong edit: a hidden declaration becomes visible, or a
+//!   visible one hidden. So that mix is reduce's `mixed_follower`, and a
 //!   using-declaration is looked at when a subject hides what it names
-//!   too (`spec/edits.md` §9.2).
+//!   too (`spec/edits.md` §9.2). A shadow hidden by an implicit member
+//!   (declared on use) stays a unit of the digest and keeps the
+//!   using-declaration as its third party.
 //! - **An instantiated dependent using-declaration**
 //!   ([`instantiated_unfollowed_using`]): follows what it introduces and
 //!   the pattern's using-declaration, whose name is `unresolved`.
@@ -58,13 +60,13 @@
 //!   (`spec/landed/digest/WP-103.md` finding 2: a function a class
 //!   template's pattern befriends with a definition, the template
 //!   instantiated here) keeps the rule `Keys::rename_rule` gives for its
-//!   key, which the digest does not accept here
-//!   (`key/rule-on-instantiated-member`): it is `unsupported`. Whether a
-//!   subject has a rule is a function of its key and the request, never
-//!   of what else the observer saw (§4.1), so that two observers never
-//!   give one id two rules (reduce §5.2 rule 1).
+//!   key, as everywhere: whether a subject has a rule is a function of its
+//!   key and the request, never of what else the observer saw (§4.1), so
+//!   that two observers never give one id two rules (reduce §5.2 rule 1).
+//!   The digest accepts that rule where it gives exactly the key following
+//!   the pattern gives (`docs/wp/WP-119.md` item 1), so it is not flagged.
 
-use slip_kiln::kiln::ast::decl::{DeclKind, FriendKind, TemplLinkKind};
+use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind};
 use slip_kiln::kiln::ast::types::TypeView;
 use slip_kiln::kiln::ast::{Ast, DeclId, QualType};
 use slip_kiln::written::{self, DeclName, DeclNameKind};
@@ -78,38 +80,6 @@ pub(crate) fn collect(ctx: &mut Ctx<'_, '_, '_>) {
     using_declarations(ctx);
     unnamed_types(ctx);
     friends_in_patterns(ctx);
-    followed_patterns(ctx);
-}
-
-fn followed_patterns(ctx: &mut Ctx<'_, '_, '_>) {
-    let ast = ctx.unit.ast();
-    for (id, e) in ctx.subjects.entities() {
-        let mut patterns: Vec<DeclId> = Vec::new();
-        for d in ast.redecls_of(e) {
-            // As the digest asks (`instantiated_patterns`): a
-            // specialisation's link is to its template, not a pattern.
-            if matches!(
-                ast.templ_link(d).get(),
-                Some((TemplLinkKind::Specialization | TemplLinkKind::PartialSpecialization, _))
-            ) {
-                continue;
-            }
-            let Some(p) = ast.instantiated_from(d).map(|p| ctx.keys.entity(p)) else { continue };
-            if p != e
-                && (ast.decls.get(p).misc().friend() == FriendKind::None
-                    || ast.definition(p).is_some())
-                && !patterns.contains(&p)
-            {
-                patterns.push(p);
-            }
-        }
-        if patterns.is_empty() {
-            continue;
-        }
-        // The rule stays: whether a subject has one is a function of its
-        // key and the request, never of what else this observer saw.
-        ctx.subjects.flag(id, subject_flags::UNSUPPORTED);
-    }
 }
 
 fn using_declarations(ctx: &mut Ctx<'_, '_, '_>) {
@@ -186,6 +156,9 @@ struct Shadow {
     hidden: bool,
     /// The member that hides it, when it is hidden.
     hider: Option<Party>,
+    /// The hider is an implicit member (declared on use): the digest keeps
+    /// such a hidden shadow a unit (`slip_digest`'s `units::hidden_shadow`).
+    implicit_hider: bool,
 }
 
 /// An entity a hidden shadow depends on: its key id (the subject's, or
@@ -211,9 +184,11 @@ fn shadows_named(ctx: &mut Ctx<'_, '_, '_>, shadows: &[DeclId]) -> Vec<Shadow> {
     for &s in shadows {
         let hider = ast.decls.hidden_shadow(s).map(|h| party(ctx, h));
         let hidden = hider.is_some();
+        let implicit_hider =
+            ast.decls.hidden_shadow(s).is_some_and(|h| ast.decls.get(h).has(DeclFlags::IMPLICIT));
         let target = ast.using_target(s).map(|t| party(ctx, t));
         let Party { id, subject } = target.unwrap_or(Party { id: None, subject: false });
-        named.push(Shadow { decl: s, id, subject, hidden, hider });
+        named.push(Shadow { decl: s, id, subject, hidden, hider, implicit_hider });
     }
     named
 }
@@ -234,17 +209,21 @@ fn introduced(named: &[Shadow]) -> Vec<KeyId> {
 }
 
 /// Each shadow whose target is a subject is a follower of it. A hidden
-/// shadow is a follower whatever its target, of its three parties: its
-/// target, its using-declaration `using` and the member that hides it
-/// (`spec/edits.md` §9.2). While the digest writes a hidden shadow as a
-/// unit, the shadow is right only when all three are renamed or none is:
-/// the using-declarator must still name the target, and the hider must
-/// still hide it. Any mix is reduce's `mixed_follower`. A party with no
-/// key cannot be in `of`: the shadow is `unsupported`.
+/// shadow is a follower whatever its target, of its target and the member
+/// that hides it (`spec/edits.md` §9.2): the digest writes no unit for it
+/// (`spec/digest.md` §2.1, `docs/wp/WP-119.md` item 6), so what the
+/// using-declaration does no longer matters, but the hider must still hide
+/// the target, or a hidden declaration becomes visible (or a visible one
+/// hidden). So the two are renamed together or neither; any mix is
+/// reduce's `mixed_follower`. A shadow hidden by an implicit member stays a
+/// unit of the digest, so it keeps its third party, the using-declaration
+/// `using` (all three or none, as before WP-119). A party with no key
+/// cannot be in `of`: the shadow is `unsupported`.
 fn shadow_followers(ctx: &mut Ctx<'_, '_, '_>, named: &[Shadow], using: Option<KeyId>) {
     for n in named {
         if let Some(h) = n.hider {
-            let parties = [n.id, using, h.id];
+            let parties: &[Option<KeyId>] =
+                if n.implicit_hider { &[n.id, using, h.id] } else { &[n.id, h.id] };
             let of: Vec<KeyId> = parties.iter().flatten().copied().collect();
             let f = ctx.subjects.add(ctx.keys, n.decl, Role::Follower, ctx.new, &of);
             match f {
@@ -288,9 +267,11 @@ pub(crate) fn instantiated_using(ctx: &mut Ctx<'_, '_, '_>, u: DeclId, id: KeyId
 /// subject selected it is reduce's `mixed_follower` (`docs/wp/WP-120.md`
 /// fix round, question 3: renaming `Base<U>::f` would leave `using
 /// Base<T>::f;` naming another `f`, which `Base<U>::f` hid). A pattern
-/// with no key: `unsupported`. Its key follows the pattern's, so it is
-/// `unsupported` besides, as every member of an instantiated
-/// specialisation is (`spec_members`); its shadows are followers as above.
+/// with no key: `unsupported`. Its key follows the pattern's; its rule is
+/// accepted where it agrees with the pattern's (`docs/wp/WP-119.md` item
+/// 1), as every member of an instantiated specialisation's is
+/// (`spec_members`), so that is no flag; its shadows are followers as
+/// above.
 pub(crate) fn instantiated_unfollowed_using(ctx: &mut Ctx<'_, '_, '_>, u: DeclId) {
     let ast = ctx.unit.ast();
     let shadows: Vec<DeclId> = ast.using_shadows(u).collect();
@@ -298,13 +279,19 @@ pub(crate) fn instantiated_unfollowed_using(ctx: &mut Ctx<'_, '_, '_>, u: DeclId
     if !named.iter().any(|n| n.subject || n.hider.is_some_and(|h| h.subject)) {
         return;
     }
+    let complete = named.iter().all(|n| n.id.is_some());
     let mut of = introduced(&named);
     let pattern = ast.instantiated_from(u).and_then(|p| ctx.keys.key_id(ctx.keys.entity(p)).ok());
+    let keyed = pattern.is_some();
     of.extend(pattern);
     of.sort_unstable();
     of.dedup();
     let f = ctx.subjects.add(ctx.keys, u, Role::Follower, ctx.new, &of);
-    if let Some(f) = f {
+    // A party with no key cannot be in `of`: refused, as for any
+    // using-declaration follower (`using_declaration`).
+    if let Some(f) = f
+        && !(complete && keyed)
+    {
         ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
     }
     shadow_followers(ctx, &named, f);

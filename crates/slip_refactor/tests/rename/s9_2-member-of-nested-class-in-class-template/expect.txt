@@ -1,5 +1,5 @@
 subjects:
-  222fa3b1 follower unsupported rule=yes n::S<int>::B::f() of=e8be5f5d
+  222fa3b1 follower - rule=yes n::S<int>::B::f() of=e8be5f5d
   e8be5f5d seed - rule=yes n::S::B::f()
 links:
 claims:

@@ -1,0 +1,5 @@
+# WP-119 item 2: two friends swapped, on the patterns and on the instantiated functions. The plain key g(S<int>) (the body that returns 1) maps by g -> f to f(S<int>), which is what following S::friend g (mapped to f) gives: accepted. The rule f -> g also matches that followed key, but a table maps a key once (spec/verify.md §2.1): it is not applied after the first. Likewise for f(S<int>). Equal, both counted in via, no collision.
+relocate S::friend f(S<type-parameter-0-0>) => S :: g
+relocate S::friend g(S<type-parameter-0-0>) => S :: f
+relocate f(S<int>) => :: g
+relocate g(S<int>) => :: f

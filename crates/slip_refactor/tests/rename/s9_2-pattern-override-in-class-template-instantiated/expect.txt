@@ -1,6 +1,6 @@
 subjects:
-  239e8059 follower unsupported rule=yes n::E<int>::f() of=94b9f15e
-  7bd4cffe follower unsupported rule=yes n::E<long>::f() of=94b9f15e
+  239e8059 follower - rule=yes n::E<int>::f() of=94b9f15e
+  7bd4cffe follower - rule=yes n::E<long>::f() of=94b9f15e
   94b9f15e candidate - rule=yes n::E::f()
   bceee8a5 seed - rule=yes n::Base::f()
 links:

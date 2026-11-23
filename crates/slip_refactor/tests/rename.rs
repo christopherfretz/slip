@@ -531,6 +531,17 @@ fn rules_give_the_ids_in_the_post_image() {
                         }
                     }
                 }
+                // The followers no written name stands for: the members
+                // of instantiated specialisations (`docs/wp/WP-119.md`
+                // item 4: no longer flagged, so their rules are asked
+                // here, under which their keys must be determinate and
+                // their ids those of the post-image).
+                for d in ast.decls.ids() {
+                    if named(u, d, &new_name) {
+                        let e = keys.entity(d);
+                        insert(&mut keys, e);
+                    }
+                }
                 ids
             })
             .expect("with_input")
@@ -793,8 +804,8 @@ fn a_friend_that_does_not_define_gives_one_piece() {
 /// a rule is a function of its key and the request, never of what else
 /// the observer saw. The seed has its rule (an equal one) in the unit that
 /// instantiates the class template defining it as a friend and in the one
-/// that does not; where its key follows the pattern member, it is
-/// `unsupported` instead.
+/// that does not. Where its key follows the pattern member it is no longer
+/// `unsupported` (`docs/wp/WP-119.md` item 4): the digest accepts the rule.
 #[test]
 fn a_seed_rule_does_not_depend_on_instantiation() {
     let seed = |e: &Edits| e.subjects.iter().find(|s| s.role == Role::Seed).unwrap().clone();
@@ -803,21 +814,45 @@ fn a_seed_rule_does_not_depend_on_instantiation() {
     assert_eq!(inst.id, not.id);
     assert!(inst.rule.is_some());
     assert_eq!(inst.rule, not.rule);
-    assert_ne!(inst.flags & subject_flags::UNSUPPORTED, 0);
+    assert_eq!(inst.flags, 0);
+    assert_eq!(not.flags, 0);
 }
 
-/// `docs/wp/WP-073.md` part C (`spec/edits.md` §9.2, `spec/digest.md`
-/// §3.4): the followers of a member of a class template are flagged
-/// `unsupported` because of the digest, not because their ids are wrong.
-/// In the post-image of every directory of WP-073 (its `test.txt` names a
-/// part of the package or its fix round) whose only flag is `unsupported`
-/// on followers, the seeds' rules alone give each follower's id to a
-/// declaration named like the new name (the instantiated member takes
-/// the pattern member's name as the rules map it); and with the
-/// followers' own rules added, the follower's key is indeterminate
-/// (`key/rule-on-instantiated-member`), which is why the flag is there.
-/// What the digest must accept for the flag to go is in
-/// `spec/landed/edits/WP-073.md`, "For the digest".
+/// `docs/wp/WP-119.md` item 4, the WP-073 fix round's F3 (`spec/edits.md`
+/// §9.5, `unreachable`): with WP-073's flag lifted, the explicit
+/// instantiation after the member's explicit specialisation (recorded
+/// nowhere by Kiln at the pin) leaves the follower with no flag; the run
+/// is accepted and its post-image keeps `template void S<int>::f();`,
+/// which names no member: the post-image does not compile. The directory
+/// stays `# pending` with the follower `unreachable` as wanted.
+#[test]
+fn f3_post_image_does_not_compile() {
+    let case = cases()
+        .into_iter()
+        .find(|c| c.name == "s9_5-unreachable-explicit-instantiation-after-specialisation")
+        .expect("the F3 directory");
+    let Ran::Edits(e) = run_case(&case) else { panic!("F3 diagnosed") };
+    assert!(e.subjects.iter().all(|s| s.flags == 0), "{:?}", e.subjects);
+    let files = post_image(&case, &e);
+    let main = &files.iter().find(|(p, _)| p == "main.cpp").unwrap().1;
+    assert!(main.ends_with(b"template void S<int>::f(); }\n"), "{}", String::from_utf8_lossy(main));
+    assert!(
+        with_unit("f3-post", &files, &case.args, |_, _, _| ()).is_none(),
+        "the F3 post-image compiles"
+    );
+}
+
+/// `docs/wp/WP-073.md` part C and `docs/wp/WP-119.md` item 4
+/// (`spec/edits.md` §9.2, `spec/digest.md` §3.4): the followers of a member
+/// of a class template carry no flag. In the post-image of every directory
+/// of WP-073 (its `test.txt` names a part of the package or its fix round)
+/// with followers and no flag, the seeds' rules alone give each subject's
+/// id to a declaration named like the new name (the instantiated member
+/// takes the pattern member's name as the rules map it); and with the
+/// followers' own rules added, which the digest now accepts, no key is
+/// indeterminate and every subject's id is still given (until WP-119 those
+/// rules made it `key/rule-on-instantiated-member`, and the followers were
+/// `unsupported` for it).
 #[test]
 fn followers_of_class_template_members_map_with_their_seed() {
     let mut checked = 0;
@@ -830,9 +865,7 @@ fn followers_of_class_template_members_map_with_their_seed() {
         let Ran::Edits(e) = run_case(&case) else { continue };
         let followers: Vec<_> = e.subjects.iter().filter(|s| s.role == Role::Follower).collect();
         let only_this_flag = !followers.is_empty()
-            && e.subjects.iter().all(|s| {
-                s.flags == if s.role == Role::Follower { subject_flags::UNSUPPORTED } else { 0 }
-            })
+            && e.subjects.iter().all(|s| s.flags == 0)
             && e.claims.iter().all(|c| matches!(c.stance, Stance::Replace | Stance::Keep));
         if !only_this_flag {
             continue;
@@ -875,21 +908,38 @@ fn followers_of_class_template_members_map_with_their_seed() {
             })
             .unwrap_or_else(|| panic!("{}: the post-image has errors", case.name))
         };
+        // Where the seed is itself an instantiated member (a friend the
+        // class template defines, redeclared at namespace scope: F4), the
+        // seeds' rules alone put a rule on an instantiated member with none
+        // on its pattern: indeterminate, as it should be, and only for that
+        // cause; the pattern's rule (a follower's) beside it, below, makes
+        // it the key following gives.
         let (ids, causes) = walk(rules(false), "seeds");
+        if causes.is_empty() {
+            for s in &e.subjects {
+                assert!(ids.contains(&s.id), "{}: no declaration has {}", case.name, short(&s.id));
+            }
+        } else {
+            assert!(
+                causes.iter().all(|c| c.contains("rule-on-instantiated-member")),
+                "{}: indeterminate under the seeds' rules: {causes:?}",
+                case.name
+            );
+        }
+        let (ids, causes) = walk(rules(true), "all");
         assert!(
             causes.is_empty(),
-            "{}: indeterminate under the seeds' rules: {causes:?}",
+            "{}: indeterminate under every subject's rule: {causes:?}",
             case.name
         );
         for s in &e.subjects {
-            assert!(ids.contains(&s.id), "{}: no declaration has {}", case.name, short(&s.id));
+            assert!(
+                ids.contains(&s.id),
+                "{}: with every rule, no declaration has {}",
+                case.name,
+                short(&s.id)
+            );
         }
-        let (_, causes) = walk(rules(true), "all");
-        assert!(
-            causes.iter().any(|c| c.contains("rule-on-instantiated-member")),
-            "{}: the followers' rules do not make a key indeterminate: {causes:?}",
-            case.name
-        );
         checked += 1;
     }
     assert!(checked >= 6, "only {checked} directories with followers were checked");
@@ -1086,40 +1136,23 @@ struct EndToEnd {
     differences: Vec<String>,
 }
 
-/// How [`end_to_end`] treats WP-073's flag on the members of instantiated
-/// specialisations (`spec/edits.md` §9.5: a rule on an instantiated
-/// member's key is `key/rule-on-instantiated-member` until
-/// `docs/wp/WP-119.md`).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Wp119 {
-    /// As the shards are: such a follower refuses the run.
-    Now,
-    /// The refusal lifted, no more: the flag taken off those followers
-    /// (only where it is their only flag) and their rules **deleted**
-    /// from the post-image's table, so that the instantiated member
-    /// follows its pattern's rule
-    /// (`followers_of_class_template_members_map_with_their_seed` shows
-    /// that this gives each follower's id). This is not WP-119 item 1,
-    /// which keeps those rules and accepts each only when it agrees with
-    /// the pattern's: a test run `Simulated` shows what the rename does
-    /// once the refusal is lifted, and does **not** cover that agreement
-    /// check. The digest's treatment of hidden shadows is not simulated.
-    Simulated,
-}
-
 /// A tree's files: path and bytes.
 type Image = Vec<(String, Vec<u8>)>;
 
 /// The shards of `mains` over `files`, reduced, applied, and verified;
 /// `wrong` changes the post-image before it is digested (the wrong edit
-/// beside a right one).
+/// beside a right one). Every rule of the run is kept: a rule on a member
+/// of an instantiated specialisation is the digest's to accept
+/// (`docs/wp/WP-119.md` item 1; until then the tests ran with those rules
+/// deleted, `Wp119::Simulated`). Besides the units, each observer's rule
+/// use is checked: a rule whose `direct` is not 0 there makes the
+/// observer stale (`spec/verify.md` §9.2), a difference `stale <name>`.
 fn end_to_end(
     name: &str,
     files: &[(&str, &[u8])],
     mains: &[&str],
     target: &[&str],
     new: &str,
-    wp119: Wp119,
     wrong: &dyn Fn(&mut Image),
 ) -> EndToEnd {
     let request = |root: &str| {
@@ -1134,24 +1167,7 @@ fn end_to_end(
         };
         transform(&c, root)
     };
-    let (t, mut shards) = map_shards(name, files, mains, &request);
-    // The followers WP-073 flags because their key follows a pattern
-    // member: a member of an instantiated specialisation (displayed with
-    // its template arguments).
-    let mut instantiated: BTreeSet<Digest> = BTreeSet::new();
-    if wp119 == Wp119::Simulated {
-        for shard in &mut shards {
-            for s in &mut shard.edits.as_mut().unwrap().subjects {
-                if s.role == Role::Follower
-                    && s.display.contains('<')
-                    && s.flags == subject_flags::UNSUPPORTED
-                {
-                    s.flags = 0;
-                    instantiated.insert(s.id);
-                }
-            }
-        }
-    }
+    let (t, shards) = map_shards(name, files, mains, &request);
     let r = reduced(name, &t, shards);
     let set = &r.edits;
     let display = |id: &Digest| {
@@ -1172,20 +1188,21 @@ fn end_to_end(
     }
     let mut post = applied(name, set, files);
     wrong(&mut post);
-    let rules: Vec<_> = set
-        .subjects
-        .iter()
-        .filter(|s| !instantiated.contains(&s.id))
-        .filter_map(|s| s.rule.clone())
-        .collect();
+    let rules: Vec<_> = set.subjects.iter().filter_map(|s| s.rule.clone()).collect();
     let table = RuleTable::new(rules).expect("a rule table");
     let none = RuleTable::new(Vec::new()).unwrap();
     let pre: Vec<(String, Vec<u8>)> =
         files.iter().map(|(p, b)| ((*p).to_owned(), b.to_vec())).collect();
     let mut differences = Vec::new();
     for main in mains {
-        let a = digest_units(&format!("{name}-pre"), &pre, main, &none);
-        let b = digest_units(&format!("{name}-post"), &post, main, &table);
+        let (a, _) = digest_units(&format!("{name}-pre"), &pre, main, &none);
+        let (b, uses) = digest_units(&format!("{name}-post"), &post, main, &table);
+        for u in uses.iter().filter(|u| u.direct != 0) {
+            let rule = &table.rules()[usize::try_from(u.rule).unwrap()];
+            if rule.kind != slip_model::keys::KeyKind::Namespace {
+                differences.push(format!("{main}: stale {:?}", rule.to_name));
+            }
+        }
         for (key, (digest, indeterminate, n)) in &a {
             match b.get(key) {
                 None => differences.push(format!("{main}: removed {n}")),
@@ -1204,15 +1221,19 @@ fn end_to_end(
     EndToEnd { refusals, differences }
 }
 
+/// The units of an observer: key to digest, whether it is indeterminate,
+/// and its name.
+type Units = std::collections::BTreeMap<Digest, (Digest, bool, String)>;
+
 /// Every unit of observer `main` of the tree `files`, digested under
-/// `rules` (every file owned): key to digest, whether it is
-/// indeterminate, and its name.
+/// `rules` (every file owned), and how each rule was used
+/// (`spec/verify.md` §9.1).
 fn digest_units(
     name: &str,
     files: &[(String, Vec<u8>)],
     main: &str,
     rules: &RuleTable,
-) -> std::collections::BTreeMap<Digest, (Digest, bool, String)> {
+) -> (Units, Vec<slip_model::agreement::Use>) {
     let refs: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
     let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), name, &refs).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
@@ -1230,7 +1251,7 @@ fn digest_units(
                         read_only: slip_digest::ReadOnly::NO_FILE,
                         detail: slip_digest::Detail::All,
                         names: true,
-                        rule_use: false,
+                        rule_use: !rules.is_empty(),
                     },
                 );
                 let names: std::collections::BTreeMap<Digest, String> =
@@ -1242,7 +1263,7 @@ fn digest_units(
                         units.insert(unit.key, (unit.digest, unit.is_indeterminate(), n));
                     }
                 }
-                units
+                (units, out.rule_use)
             })
             .expect("with_input")
         })
@@ -1291,11 +1312,12 @@ fn edit_back(post: &mut [(String, Vec<u8>)], path: &str, from: &str, to: &str) {
 }
 
 /// `docs/wp/WP-120.md` item 1 (a), end to end: `struct D : B<int>` and an
-/// observer that sees the base only. The run is refused by WP-073's flag on
-/// the member of `B<int>` alone; with that flag as WP-119 will make it, the
-/// rename verifies in both observers; and the overrider left behind (the
-/// wrong edit) is a difference: the digest writes what a function
-/// overrides (`spec/digest-kinds.md` `overrides`).
+/// observer that sees the base only. The rename verifies in both observers
+/// with every rule kept, those of the members of `B<int>` and `B<long>`
+/// included (`docs/wp/WP-119.md` item 1: until then WP-073's flag refused
+/// the run, `SubjectUnsupported n::B<int>::f()` and `n::B<long>::f()`); and
+/// the overrider left behind (the wrong edit) is a difference: the digest
+/// writes what a function overrides (`spec/digest-kinds.md` `overrides`).
 #[test]
 fn wp120_override_of_an_instantiated_member_end_to_end() {
     let files: [(&str, &[u8]); 3] = [
@@ -1303,18 +1325,12 @@ fn wp120_override_of_an_instantiated_member_end_to_end() {
         ("d.cpp", b"#include \"b.h\"\nnamespace n { struct D : B<int> { void f() override; }; }\nvoid h(n::D& d, n::B<int>& b) { d.f(); b.f(); }\n"),
         ("base.cpp", b"#include \"b.h\"\nvoid k(n::B<long>* b) { b->f(); }\n"),
     ];
-    let run = |name: &str, wp119, wrong: &dyn Fn(&mut Image)| {
-        end_to_end(name, &files, &["d.cpp", "base.cpp"], &["n", "D", "f"], "g", wp119, wrong)
+    let run = |name: &str, wrong: &dyn Fn(&mut Image)| {
+        end_to_end(name, &files, &["d.cpp", "base.cpp"], &["n", "D", "f"], "g", wrong)
     };
-    let now = run("wp120-a-now", Wp119::Now, &right);
-    assert_eq!(
-        now.refusals,
-        ["SubjectUnsupported n::B<int>::f()", "SubjectUnsupported n::B<long>::f()"],
-        "{now:?}"
-    );
-    let r = run("wp120-a-right", Wp119::Simulated, &right);
+    let r = run("wp120-a-right", &right);
     assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
-    let w = run("wp120-a-wrong", Wp119::Simulated, &|post| {
+    let w = run("wp120-a-wrong", &|post| {
         edit_back(post, "d.cpp", "void g() override;", "void f();");
     });
     assert!(w.differences.iter().any(|d| d.contains("n::D")), "{w:?}");
@@ -1322,7 +1338,9 @@ fn wp120_override_of_an_instantiated_member_end_to_end() {
 
 /// Item 1 (b), end to end: an overrider in a class template with a base
 /// that is not dependent; one observer instantiates it, one sees the base
-/// only. Not instantiated, it verifies as the shards are.
+/// only. Not instantiated, it verifies; instantiated, it verifies too, with
+/// the rule of `E<int>::f` kept (`docs/wp/WP-119.md` item 1: until then
+/// refused, `SubjectUnsupported n::E<int>::f()`).
 #[test]
 fn wp120_override_in_a_class_template_end_to_end() {
     let base: (&str, &[u8]) = ("base.h", b"namespace n { struct Base { virtual void f(); }; }\n");
@@ -1335,47 +1353,21 @@ fn wp120_override_in_a_class_template_end_to_end() {
         ("pattern.cpp", b"#include \"e.h\"\n"),
     ];
     let target = ["n", "Base", "f"];
-    let not = end_to_end(
-        "wp120-b-not",
-        &files,
-        &["pattern.cpp", "only.cpp"],
-        &target,
-        "g",
-        Wp119::Now,
-        &right,
-    );
+    let not = end_to_end("wp120-b-not", &files, &["pattern.cpp", "only.cpp"], &target, "g", &right);
     assert!(not.refusals.is_empty() && not.differences.is_empty(), "{not:?}");
-    let now = end_to_end(
-        "wp120-b-now",
-        &files,
-        &["use.cpp", "only.cpp"],
-        &target,
-        "g",
-        Wp119::Now,
-        &right,
-    );
-    assert_eq!(now.refusals, ["SubjectUnsupported n::E<int>::f()"], "{now:?}");
-    let r = end_to_end(
-        "wp120-b-right",
-        &files,
-        &["use.cpp", "only.cpp"],
-        &target,
-        "g",
-        Wp119::Simulated,
-        &right,
-    );
+    let r = end_to_end("wp120-b-right", &files, &["use.cpp", "only.cpp"], &target, "g", &right);
     assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
-    let w =
-        end_to_end("wp120-b-wrong", &files, &["pattern.cpp"], &target, "g", Wp119::Now, &|post| {
-            edit_back(post, "e.h", "void g() override;", "void f();");
-        });
+    let w = end_to_end("wp120-b-wrong", &files, &["pattern.cpp"], &target, "g", &|post| {
+        edit_back(post, "e.h", "void g() override;", "void f();");
+    });
     assert!(!w.differences.is_empty(), "{w:?}");
 }
 
 /// Item 1 (c), end to end: a using-declaration in a class template's
 /// pattern. Instantiated, the using-declaration of `F<int>` follows the
-/// pattern's (WP-073's flag) and its shadow, not linked by Kiln, has a rule
-/// of its own; the shadow left without one is a difference.
+/// pattern's, with a rule the digest accepts (`docs/wp/WP-119.md` item 1:
+/// until then refused, `SubjectUnsupported n::F<int>::f`), and its shadow,
+/// not linked by Kiln, has a rule of its own. Both observers verify.
 #[test]
 fn wp120_using_declaration_in_a_class_template_end_to_end() {
     let files: [(&str, &[u8]); 3] = [
@@ -1384,67 +1376,27 @@ fn wp120_using_declaration_in_a_class_template_end_to_end() {
         ("pattern.cpp", b"#include \"f.h\"\n"),
     ];
     let target = ["n", "Base", "f"];
-    let not = end_to_end("wp120-c-not", &files, &["pattern.cpp"], &target, "g", Wp119::Now, &right);
+    let not = end_to_end("wp120-c-not", &files, &["pattern.cpp"], &target, "g", &right);
     assert!(not.refusals.is_empty() && not.differences.is_empty(), "{not:?}");
-    let now = end_to_end(
-        "wp120-c-now",
-        &files,
-        &["use.cpp", "pattern.cpp"],
-        &target,
-        "g",
-        Wp119::Now,
-        &right,
-    );
-    assert_eq!(now.refusals, ["SubjectUnsupported n::F<int>::f"], "{now:?}");
-    let r = end_to_end(
-        "wp120-c-right",
-        &files,
-        &["use.cpp", "pattern.cpp"],
-        &target,
-        "g",
-        Wp119::Simulated,
-        &right,
-    );
+    let r = end_to_end("wp120-c-right", &files, &["use.cpp", "pattern.cpp"], &target, "g", &right);
     assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
 }
 
 /// Item 1, the dependent base: one observer instantiates `G<B>` (the
 /// pattern's name replaced), one sees the pattern only (kept): reduce sees
-/// the disagreement (`contested`). The exact list holds under
-/// `Wp119::Simulated` only; as the shards are (`Wp119::Now`), the member
-/// of `G<n::B>` adds its WP-073 flag:
-/// `["Contested n::G::f()", "SubjectUnsupported n::G<n::B>::f()"]`.
+/// the disagreement (`contested`), and nothing else since
+/// `docs/wp/WP-119.md` item 1 (before it the member of `G<n::B>` added
+/// WP-073's flag, `SubjectUnsupported n::G<n::B>::f()`).
 #[test]
-fn wp120_dependent_base_over_two_observers_is_contested_simulated() {
+fn wp120_dependent_base_over_two_observers_is_contested() {
     let files: [(&str, &[u8]); 3] = [
         ("g.h", b"namespace n { struct B { virtual void f(); }; template <class T> struct G : T { void f() override; }; }\n"),
         ("use.cpp", b"#include \"g.h\"\nvoid h(n::G<n::B>& x) { x.f(); }\n"),
         ("pattern.cpp", b"#include \"g.h\"\n"),
     ];
-    let r = end_to_end(
-        "wp120-g",
-        &files,
-        &["use.cpp", "pattern.cpp"],
-        &["n", "B", "f"],
-        "g",
-        Wp119::Simulated,
-        &right,
-    );
+    let r =
+        end_to_end("wp120-g", &files, &["use.cpp", "pattern.cpp"], &["n", "B", "f"], "g", &right);
     assert_eq!(r.refusals, ["Contested n::G::f()"], "{r:?}");
-    let now = end_to_end(
-        "wp120-g-now",
-        &files,
-        &["use.cpp", "pattern.cpp"],
-        &["n", "B", "f"],
-        "g",
-        Wp119::Now,
-        &right,
-    );
-    assert_eq!(
-        now.refusals,
-        ["Contested n::G::f()", "SubjectUnsupported n::G<n::B>::f()"],
-        "{now:?}"
-    );
 }
 
 /// The refusals of a run as their causes, sorted, without subjects.
@@ -1455,19 +1407,21 @@ fn causes(r: &EndToEnd) -> Vec<&str> {
     c
 }
 
-/// WP-120 fix round, F1 and F2: a hidden shadow follows its target, its
-/// using-declaration and the member that hides it; any mix of the three
-/// renamed is refused (`mixed_follower`), where the shards alone would
-/// otherwise be accepted and the digest would show the shadow removed
-/// (F1) or a hidden declaration made visible (F2).
+/// WP-120 fix round, F1 and F2, under `docs/wp/WP-119.md` item 6: a hidden
+/// shadow follows its target and the member that hides it, renamed together
+/// or neither. F1 (the using-declaration renamed, `using B::g;`, target and
+/// hider not) is accepted and verifies (it was `mixed_follower` while the
+/// digest wrote hidden shadows); F2 (the hider renamed and the target not,
+/// or the reverse) stays refused (`mixed_follower`): the hidden declaration
+/// would become visible.
 #[test]
-fn wp120_hidden_shadow_three_parties_end_to_end() {
+fn wp120_hidden_shadow_target_and_hider_end_to_end() {
     let f1: [(&str, &[u8]); 1] = [(
         "main.cpp",
         b"namespace n {\nstruct A { virtual void f(); };\nstruct B : A { void f() override; void f(int); };\nstruct D : B { using B::f; void f(int); };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
     )];
-    let r = end_to_end("wp120-f1", &f1, &["main.cpp"], &["n", "A", "f"], "g", Wp119::Now, &right);
-    assert_eq!(causes(&r), ["MixedFollower"], "{r:?}");
+    let r = end_to_end("wp120-f1", &f1, &["main.cpp"], &["n", "A", "f"], "g", &right);
+    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
     let f2: [(&str, &[u8]); 1] = [(
         "main.cpp",
         b"namespace n {\nstruct B { void f(); void f(int); };\nstruct D : B { using B::f; void f(); };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
@@ -1475,7 +1429,7 @@ fn wp120_hidden_shadow_three_parties_end_to_end() {
     for (name, target) in
         [("wp120-f2-derived", ["n", "D", "f"]), ("wp120-f2-base", ["n", "B", "f"])]
     {
-        let r = end_to_end(name, &f2, &["main.cpp"], &target, "g", Wp119::Now, &right);
+        let r = end_to_end(name, &f2, &["main.cpp"], &target, "g", &right);
         assert_eq!(causes(&r), ["MixedFollower"], "{name}: {r:?}");
     }
 }
@@ -1485,19 +1439,16 @@ fn wp120_hidden_shadow_three_parties_end_to_end() {
 /// the kept `using Base<T>::f;` (its name `unresolved`) would name
 /// `X::f(int)`. Refused as `mixed_follower` on the instantiated
 /// using-declaration (it follows the pattern's, which is not renamed),
-/// also with WP-073's flag lifted (`Wp119::Simulated`), where the review
-/// saw it accepted and the digest show the shadow changed.
+/// with no WP-073 flag since `docs/wp/WP-119.md` item 4 (the review saw it
+/// accepted with that flag lifted, and the digest show the shadow changed).
 #[test]
 fn wp120_dependent_using_partly_selected_end_to_end() {
     let files: [(&str, &[u8]); 1] = [(
         "main.cpp",
         b"namespace n {\nstruct X { void f(int); };\ntemplate <class U> struct Base : X { void f(); };\ntemplate <class T> struct F : Base<T> { using Base<T>::f; };\n}\nvoid h(n::F<int>& x) { x.f(); }\n",
     )];
-    for wp119 in [Wp119::Now, Wp119::Simulated] {
-        let r =
-            end_to_end("wp120-q3", &files, &["main.cpp"], &["n", "Base", "f"], "g", wp119, &right);
-        assert!(causes(&r).contains(&"MixedFollower"), "{r:?}");
-    }
+    let r = end_to_end("wp120-q3", &files, &["main.cpp"], &["n", "Base", "f"], "g", &right);
+    assert!(causes(&r).contains(&"MixedFollower"), "{r:?}");
 }
 
 /// WP-120 fix round, F4: a local class deriving from `T`, in a function
@@ -1517,15 +1468,7 @@ fn wp120_local_class_dependent_base_over_two_observers_is_contested() {
         ("pattern.cpp", b"#include \"t.h\"\nS<n::B> s;\n"),
     ];
     for (name, files) in [("wp120-f4-ft", &ft), ("wp120-f4-mt", &mt)] {
-        let r = end_to_end(
-            name,
-            files,
-            &["use.cpp", "pattern.cpp"],
-            &["n", "B", "f"],
-            "g",
-            Wp119::Now,
-            &right,
-        );
+        let r = end_to_end(name, files, &["use.cpp", "pattern.cpp"], &["n", "B", "f"], "g", &right);
         assert_eq!(causes(&r), ["Contested"], "{name}: {r:?}");
         let one = end_to_end(
             &format!("{name}-one"),
@@ -1533,7 +1476,6 @@ fn wp120_local_class_dependent_base_over_two_observers_is_contested() {
             &["pattern.cpp"],
             &["n", "B", "f"],
             "g",
-            Wp119::Now,
             &right,
         );
         assert!(one.refusals.is_empty() && one.differences.is_empty(), "{name}: {one:?}");
@@ -1542,79 +1484,41 @@ fn wp120_local_class_dependent_base_over_two_observers_is_contested() {
 
 /// Item 3, end to end: the unhide idiom renamed from the base verifies,
 /// and the overrider left behind is a difference; renamed from the derived
-/// class it is refused (the hidden shadow follows `B::f()` and the kept
-/// using-declaration: `mixed_follower`), and, with the override declared
-/// before the using-declaration (no shadow for `B::f()`), it verifies.
+/// class it verifies too since `docs/wp/WP-119.md` item 6 (the hidden
+/// shadow follows `B::f()` and its hider, both renamed; before, the kept
+/// using-declaration made it `mixed_follower`), and, with the override
+/// declared before the using-declaration, it verifies.
 #[test]
 fn wp120_unhide_idiom_end_to_end() {
     let idiom: [(&str, &[u8]); 1] = [(
         "main.cpp",
         b"namespace n {\nstruct B { virtual void f(); void f(int); };\nstruct D : B { using B::f; void f() override; };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
     )];
-    let base = end_to_end(
-        "wp120-u-base",
-        &idiom,
-        &["main.cpp"],
-        &["n", "B", "f"],
-        "g",
-        Wp119::Now,
-        &right,
-    );
+    let base = end_to_end("wp120-u-base", &idiom, &["main.cpp"], &["n", "B", "f"], "g", &right);
     assert!(base.refusals.is_empty() && base.differences.is_empty(), "{base:?}");
-    let wrong = end_to_end(
-        "wp120-u-wrong",
-        &idiom,
-        &["main.cpp"],
-        &["n", "B", "f"],
-        "g",
-        Wp119::Now,
-        &|post| {
+    let wrong =
+        end_to_end("wp120-u-wrong", &idiom, &["main.cpp"], &["n", "B", "f"], "g", &|post| {
             edit_back(post, "main.cpp", "void g() override;", "void f();");
-        },
-    );
+        });
     assert!(!wrong.differences.is_empty(), "{wrong:?}");
-    let derived = end_to_end(
-        "wp120-u-derived",
-        &idiom,
-        &["main.cpp"],
-        &["n", "D", "f"],
-        "g",
-        Wp119::Now,
-        &right,
-    );
-    // The hidden shadow (no subject of the reduced set: shown by its id).
-    assert!(
-        derived.refusals.len() == 1 && derived.refusals[0].starts_with("MixedFollower "),
-        "{derived:?}"
-    );
+    let derived =
+        end_to_end("wp120-u-derived", &idiom, &["main.cpp"], &["n", "D", "f"], "g", &right);
+    // The hidden shadow follows `B::f()` and its hider `D::f()`, both
+    // renamed (`docs/wp/WP-119.md` item 6; it was `mixed_follower` while
+    // the kept using-declaration was a party).
+    assert!(derived.refusals.is_empty() && derived.differences.is_empty(), "{derived:?}");
     let before: [(&str, &[u8]); 1] = [(
         "main.cpp",
         b"namespace n {\nstruct B { virtual void f(); void f(int); };\nstruct D : B { void f() override; using B::f; };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n",
     )];
-    let b = end_to_end(
-        "wp120-u-before",
-        &before,
-        &["main.cpp"],
-        &["n", "D", "f"],
-        "g",
-        Wp119::Now,
-        &right,
-    );
+    let b = end_to_end("wp120-u-before", &before, &["main.cpp"], &["n", "D", "f"], "g", &right);
     assert!(b.refusals.is_empty() && b.differences.is_empty(), "{b:?}");
     // A second derived class in which B::f() is not hidden: refused.
     let second: [(&str, &[u8]); 1] = [(
         "main.cpp",
         b"namespace n {\nstruct B { virtual void f(); void f(int); };\nstruct D : B { void f() override; using B::f; };\nstruct E : B { using B::f; };\n}\nvoid h(n::E& e) { e.f(); e.f(1); }\n",
     )];
-    let s = end_to_end(
-        "wp120-u-second",
-        &second,
-        &["main.cpp"],
-        &["n", "D", "f"],
-        "g",
-        Wp119::Now,
-        &right,
-    );
+    let s = end_to_end("wp120-u-second", &second, &["main.cpp"], &["n", "D", "f"], "g", &right);
     assert!(s.refusals.len() == 1 && s.refusals[0].starts_with("MixedFollower "), "{s:?}");
 }
 
@@ -1639,7 +1543,7 @@ fn wp120_local_classes_of_templates_end_to_end() {
         b"namespace n { struct B { virtual void f(); }; }\ntemplate <class T> struct S { int t() { struct L : n::B { void f() override {} }; L l; l.f(); return 0; } };\nint u = S<int>().t() + S<long>().t();\n",
     )];
     for (name, files) in [("wp120-vt", &vt), ("wp120-ft", &ft), ("wp120-mt", &mt)] {
-        let r = end_to_end(name, files, &["main.cpp"], &["n", "B", "f"], "g", Wp119::Now, &right);
+        let r = end_to_end(name, files, &["main.cpp"], &["n", "B", "f"], "g", &right);
         assert!(r.refusals.is_empty() && r.differences.is_empty(), "{name}: {r:?}");
         let w = end_to_end(
             &format!("{name}-wrong"),
@@ -1647,7 +1551,6 @@ fn wp120_local_classes_of_templates_end_to_end() {
             &["main.cpp"],
             &["n", "B", "f"],
             "g",
-            Wp119::Now,
             &|post| {
                 edit_back(post, "main.cpp", "void g() override {}", "void f() {}");
                 edit_back(post, "main.cpp", "l.g()", "l.f()");
@@ -1655,4 +1558,91 @@ fn wp120_local_classes_of_templates_end_to_end() {
         );
         assert!(!w.differences.is_empty(), "{name}: {w:?}");
     }
+}
+
+/// `docs/wp/WP-119.md` item 4 (b): a namespace-scope redeclaration of a
+/// friend the class template defines, before or after the instantiation
+/// (WP-073 fix round F4). Both orders rename and verify with every rule
+/// kept; the redeclaration left behind is a difference in both.
+#[test]
+fn wp119_friend_redeclared_both_orders_end_to_end() {
+    let after: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n { template <class T> struct S { friend void f(S) {} };\nS<int> s; void f(S<int>); void u() { f(s); } }\n",
+    )];
+    let before: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n { template <class T> struct S { friend void f(S) {} };\nvoid f(S<int>); S<int> s; void u() { f(s); } }\n",
+    )];
+    for (name, files) in [("wp119-f4-after", &after), ("wp119-f4-before", &before)] {
+        let r = end_to_end(name, files, &["main.cpp"], &["n", "f"], "g", &right);
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{name}: {r:?}");
+        let w =
+            end_to_end(&format!("{name}-wrong"), files, &["main.cpp"], &["n", "f"], "g", &|post| {
+                edit_back(post, "main.cpp", "void g(S<int>);", "void f(S<int>);");
+            });
+        assert!(!w.differences.is_empty(), "{name}: {w:?}");
+    }
+}
+
+/// `docs/wp/WP-119.md` item 5, end to end: a friend the class template
+/// defines, redeclared at namespace scope, seen by an observer that does
+/// not instantiate the class (A) and one that does and calls it (B, where
+/// a global template `f` would take the call if it were left behind).
+/// Renamed, both verify; each wrong edit is a difference.
+#[test]
+fn wp119_friend_over_two_observers_end_to_end() {
+    let files: [(&str, &[u8]); 3] = [
+        (
+            "s.h",
+            b"namespace n { template <class T> struct S { friend int f(S) { return 0; } };\nint f(S<int>); }\n",
+        ),
+        ("a.cpp", b"#include \"s.h\"\n"),
+        (
+            "b.cpp",
+            b"#include \"s.h\"\ntemplate <class T> int f(T) { return 1; }\nint u() { n::S<int> s; return f(s); }\n",
+        ),
+    ];
+    let mains = ["a.cpp", "b.cpp"];
+    let r = end_to_end("wp119-i5", &files, &mains, &["n", "f"], "g", &right);
+    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
+    type Wrong = (&'static str, &'static str, &'static str, &'static str);
+    let wrongs: [Wrong; 3] = [
+        ("wp119-i5-namespace-kept", "s.h", "int g(S<int>);", "int f(S<int>);"),
+        ("wp119-i5-friend-kept", "s.h", "friend int g(S)", "friend int f(S)"),
+        ("wp119-i5-call-kept", "b.cpp", "return g(s);", "return f(s);"),
+    ];
+    for (name, path, from, to) in wrongs {
+        let w = end_to_end(name, &files, &mains, &["n", "f"], "g", &|post| {
+            edit_back(post, path, from, to);
+        });
+        let stale_a = w.differences.iter().any(|d| d.starts_with("a.cpp: stale"));
+        let b_differs =
+            w.differences.iter().any(|d| d.starts_with("b.cpp: ") && !d.contains("stale"));
+        match name {
+            // A keeps `f(S<int>)` (or the friend pattern) under the name the
+            // rule says was renamed: stale; B shows the function changed.
+            "wp119-i5-namespace-kept" | "wp119-i5-friend-kept" => {
+                assert!(stale_a && b_differs, "{name}: {w:?}");
+            }
+            // The call finds the global template: `u()` changed in B.
+            _ => assert!(w.differences.iter().any(|d| d == "b.cpp: changed u()"), "{name}: {w:?}"),
+        }
+    }
+    // The call left as `f` where no other `f` is found (ADL finds the
+    // renamed `g` only): the post-image does not compile, which
+    // verification refuses (the parse's errors; here the helper's assert).
+    let alone: [(&str, &[u8]); 3] = [
+        files[0],
+        files[1],
+        ("b.cpp", b"#include \"s.h\"\nint u() { n::S<int> s; return f(s); }\n"),
+    ];
+    let r = end_to_end("wp119-i5-alone", &alone, &mains, &["n", "f"], "g", &right);
+    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        end_to_end("wp119-i5-alone-call-kept", &alone, &mains, &["n", "f"], "g", &|post| {
+            edit_back(post, "b.cpp", "return g(s);", "return f(s);");
+        })
+    }));
+    assert!(failed.is_err(), "the post-image with the call left as `f` compiles");
 }
