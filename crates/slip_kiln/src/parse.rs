@@ -1,7 +1,7 @@
 //! The parse task: one observer through Kiln's front-end library entry
 //! (`kiln_driver::front_end::run_front_end`) to its shard
 //! (`spec/model.md` §8, §8.4, `spec/exec.md` §5.1). Work packages WP-010,
-//! WP-025.
+//! WP-025; the preprocessing record on request, WP-101.
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +13,24 @@ use slip_model::{Counter, Digest, FileRef, Observer, Outcome, Phase, Shard, Stat
 use crate::check::{front_end_line, program, utf8_command};
 use crate::kiln::ast::Ast;
 use crate::kiln::oven::Oven;
+use crate::kiln::pp::PpRecord;
 use crate::kiln::source::{FileId, FileOrigin, SourceManager};
+
+/// What the front end of [`parse_observer_with`] keeps beyond what the
+/// parse task needs. Every option is off by default, and the shard does not
+/// depend on any of them: they only change what the closure can read
+/// (`docs/wp/WP-101.md`, "Nothing is turned on").
+///
+/// `#[non_exhaustive]`: start from `ParseOptions::default()` and set the
+/// fields wanted.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParseOptions {
+    /// Keep Kiln's preprocessing record (Kiln `FrontEndOptions::pp_record`,
+    /// Kiln `spec/pp.md` "Preprocessing record"), which the closure reads
+    /// as [`Unit::pp_record`].
+    pub pp_record: bool,
+}
 
 /// The finished front end of one observer, as the closure of
 /// [`parse_observer_with`] sees it: valid inside the call only.
@@ -25,6 +42,7 @@ pub struct Unit<'r> {
     ast: &'r Ast,
     sm: &'r SourceManager,
     oven: &'r Oven,
+    pp_record: Option<&'r PpRecord>,
     main_file: Option<FileId>,
     /// Each buffer that is one of `inputs`, and the index of its entry.
     buffers: &'r [(FileId, usize)],
@@ -48,6 +66,20 @@ impl<'r> Unit<'r> {
         self.oven
     }
 
+    /// The preprocessing record (each macro definition, each expansion
+    /// with its arguments), when [`ParseOptions::pp_record`] asked for it;
+    /// `None` otherwise.
+    ///
+    /// It is the preprocessor's (Kiln `Preprocessor::record`), lent for the
+    /// call like everything else here: the preprocessor and its record are
+    /// dropped when the closure returns, and the record holds its
+    /// definitions as `Rc`s, so it is neither `Send` nor `Sync`. Its
+    /// locations are this unit's ([`Unit::sm`]) and its names are symbols
+    /// of the AST's interner ([`Ast::symbols`]).
+    pub fn pp_record(&self) -> Option<&'r PpRecord> {
+        self.pp_record
+    }
+
     /// The main file, once the front end entered it.
     pub fn main_file(&self) -> Option<FileId> {
         self.main_file
@@ -61,6 +93,12 @@ impl<'r> Unit<'r> {
         Some(&self.inputs[self.buffers[at].1].path)
     }
 
+    /// The shard's `inputs` (every file read, real path, size, digest),
+    /// for the unit's lifetime, so a handler may hold them.
+    pub fn inputs(&self) -> &'r [FileRef] {
+        self.inputs
+    }
+
     /// Errors reported so far by the job's engine (when the closure is
     /// called: the parse's own, without the driver's).
     pub fn errors(&self) -> u32 {
@@ -72,6 +110,7 @@ impl std::fmt::Debug for Unit<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Unit")
             .field("main_file", &self.main_file)
+            .field("pp_record", &self.pp_record.is_some())
             .field("inputs", &self.inputs.len())
             .field("errors", &self.errors)
             .finish_non_exhaustive()
@@ -81,13 +120,15 @@ impl std::fmt::Debug for Unit<'_> {
 /// Parses `observer`'s command with Kiln's front end in this process and
 /// returns its shard for `phase` and `round` (`spec/model.md` §8.4).
 ///
-/// `parse_observer_with` with a closure that does nothing.
+/// `parse_observer_with` with the default options and a closure that does
+/// nothing.
 ///
 /// # Errors
 ///
 /// As [`parse_observer_with`].
 pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<Shard, String> {
-    parse_observer_with(observer, phase, round, |_| ()).map(|(shard, _)| shard)
+    parse_observer_with(observer, phase, round, ParseOptions::default(), |_| ())
+        .map(|(shard, _)| shard)
 }
 
 /// Parses `observer`'s command with Kiln's front end in this process;
@@ -98,7 +139,8 @@ pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<S
 /// The front end runs `argv[0] -fsyntax-only argv[1..]` (a scanner name
 /// `clang-scan-deps…` as `kiln`) through
 /// `kiln_driver::front_end::run_front_end`, on a thread of its own, with
-/// nothing rendered and nothing written. The inputs are the source
+/// nothing rendered and nothing written, keeping what `options` asks for
+/// and nothing else (the shard is the same whatever they are). The inputs are the source
 /// manager's buffers read from disk and the paths the unit consulted
 /// without entering them (`spec/model.md` §8.4 "Inputs").
 ///
@@ -120,6 +162,7 @@ pub fn parse_observer_with<R: Send>(
     observer: &Observer,
     phase: Phase,
     round: u64,
+    options: ParseOptions,
     f: impl FnOnce(&Unit<'_>) -> R + Send,
 ) -> Result<(Shard, Option<R>), String> {
     let shard = |outcome, parsed: Option<(Vec<FileRef>, u64)>| {
@@ -146,6 +189,10 @@ pub fn parse_observer_with<R: Send>(
             counters,
             digests: None,
             verdict: None,
+            edits: None,
+            binding: None,
+            rule_use: None,
+            spellings: None,
         }
     };
 
@@ -169,6 +216,7 @@ pub fn parse_observer_with<R: Send>(
             ast: fe.ast,
             sm: fe.sm,
             oven: fe.oven,
+            pp_record: fe.pp.record(),
             main_file: fe.main_file,
             buffers: &buffers,
             inputs: &inputs,
@@ -177,7 +225,9 @@ pub fn parse_observer_with<R: Send>(
         let value = f(&unit);
         Ok((inputs, fe.tokens, value))
     };
-    let report = match run_front_end(&program, &line, FrontEndOptions::default(), see) {
+    let mut fe_options = FrontEndOptions::default();
+    fe_options.pp_record = options.pp_record;
+    let report = match run_front_end(&program, &line, fe_options, see) {
         Ok(report) => report,
         Err(e @ (FrontEndError::NotSyntaxOnly | FrontEndError::NotOneInput)) => {
             return Ok((shard(rejected(&e.to_string()), None), None));

@@ -21,7 +21,7 @@ normative. Where the two disagree, the spec wins and the design is corrected.
 | [digest-kinds.md](digest-kinds.md) | The digest's tables: every Kiln AST kind and field, its class and decision, its stream encoding | `slip_digest` | draft |
 | [verify.md](verify.md) | Comparison under declared changes; localisation | `slip_verify` | draft |
 | [pitfalls.md](pitfalls.md) | The catalogue of semantic hazards; one test per row | tests | draft |
-| reduce.md | Reduce as a function from shards to an edit set and report | `slip_reduce` | not written (M2) |
+| [edits.md](edits.md) | Claims (the `edits` section), reduce, the edit set, apply and the overlay, the verify loop and its result, native rename, the transform commands | `slip_model`, `slip_reduce`, `slip_apply`, `slip_refactor`, `slip_cli` | draft |
 | [api.md](api.md) | The transform API, version 0: the transform universe, the intrinsic layer, `<slip/meta.h>`, the run output | `slip_script`, `resource/` | draft |
 | macros.md | Token origin, tiers, coverage states | `slip_kiln`, `slip_reduce` | not written (M4) |
 

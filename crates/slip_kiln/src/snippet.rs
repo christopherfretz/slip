@@ -139,7 +139,7 @@
 //!     `--precompile`, `-fmodules-cache-path=`), the action (`-c`, `-S`,
 //!     `-E`, `-emit-llvm`), `-M*`, `-verify`, `--driver-mode=`, `-ansi`,
 //!     the dumps and reports (`-fdump-*`, `-fkiln-dump-cfg`,
-//!     `-fkiln-memory-report`, `-ftime-trace`, `-fconstexpr-report=`,
+//!     `-fkiln-memory-report`, `-fkiln-pp-record`, `-ftime-trace`, `-fconstexpr-report=`,
 //!     `-fconstexpr-profile*`, `-fkiln-instantiation-report`), the crash
 //!     reproducer's options, `-fkiln-backend=`, the module-file kinds,
 //!     the coverage options, the sanitizer ignore- and coverage lists,
@@ -1027,6 +1027,8 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         dump_written_refs,
         decl_extents,
         dump_decl_extents,
+        pp_record,
+        dump_pp_record,
         host_call_test_handler,
         host_calls_visible,
         env,
@@ -1107,12 +1109,15 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         link,
         asm,
         print_commands,
-        // A dump, a table recorded for a tooling client, Kiln's test
-        // host-call handler; the last three are no command-line option
-        // (`Args::parse_as` leaves them at their defaults).
+        // A dump, a table recorded for a tooling client (the preprocessing
+        // record, `-fkiln-pp-record`, `-fkiln-dump-pp-record`: Kiln WP-2110),
+        // Kiln's test host-call handler; the last three are no command-line
+        // option (`Args::parse_as` leaves them at their defaults).
         dump_written_refs,
         decl_extents,
         dump_decl_extents,
+        pp_record,
+        dump_pp_record,
         host_call_test_handler,
         host_calls_visible,
         env,
@@ -1421,6 +1426,9 @@ mod tests {
         "-fdump-record-layouts",
         "-fkiln-dump-cfg",
         "-fkiln-memory-report",
+        // The preprocessing record (Kiln WP-2110, WP-101).
+        "-fkiln-pp-record",
+        "-fkiln-dump-pp-record",
         "-ftime-trace",
         "-fconstexpr-report=text",
         "-fkiln-instantiation-report=text",

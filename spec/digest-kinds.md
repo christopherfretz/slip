@@ -7,7 +7,8 @@ payload, side record and cold map it says whether the fact enters the
 digest and how. `digest.md` defines everything the tables plug into (units,
 keys, streams, references); section numbers written "digest §N" are
 sections of that file. The Kiln revision described is the one the `kiln`
-submodule pins (`83566cc47`, Kiln's `main`; first written against `4bfd999da`); the facts were first collected in
+submodule pins (`913a490bb`, Kiln's `main`, whose `kiln_ast` and `kiln_abi`
+are those of `83566cc47`; first written against `4bfd999da`); the facts were first collected in
 `research/kiln-ast-inventory.md` of the context repository and then checked
 against the Kiln source, which wins where the two differ (§13).
 
@@ -2454,7 +2455,7 @@ A `ContractAssertStmt` also writes the rows of its `ContractSite`
 | `init` | child | in | child? |  |
 | `cond_var` | entity | in | decl? |  |
 | `cond` | child | in | child? |  |
-| `then` | child | in | child? | absent when discarded in an instantiation |
+| `then` | child | in | child? | always present; a branch discarded in an instantiation is an empty block |
 | `els` | child | in | child? |  |
 
 ### `kiln_ast::stmt::SwitchData`

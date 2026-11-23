@@ -49,7 +49,7 @@ Size: S = within one Kiln work package; M = a few; L = a spec of its own.
 |---|---|---|---|
 | KF1 | **Front-end library entry.** A public function from (compile command, file system, observers) to a finished front-end state (preprocessor record, AST, Sema), with no dependency on code generation or LLVM. Public compilation-database reader. | `syntax_only`, the compile-command-to-preprocessor glue and both database readers (`kiln_driver/src/scan_deps_cdb.rs`) are `pub(crate)`. | S–M |
 | KF2 | **File identity and overlay.** A content hash per file; a virtual file system (overlay) parameter that `#include` resolution goes through, so a TU can be parsed against in-memory replacements. | `SourceManager` has public `text(FileId)`, `file_name(FileId)` and `add_virtual(name, contents)`. There is no overlay that inclusion consults and no content hash; `FileId`/`Loc` are TU-local. | S–M |
-| KF3 | **Location utilities.** Public "this location range as an editable file character range, or none" (the fix-it logic in `kiln_sema/src/macro_fixit.rs`), end-of-token, and enumeration of macro-expansion entries. Preprocessor callbacks accept more than one observer. | Present but private; callbacks are single-observer. | S |
+| KF3 | **Location utilities.** Public "this location range as an editable file character range, or none" (the fix-it logic in `kiln_sema/src/macro_fixit.rs`), end-of-token, and enumeration of macro-expansion entries. Preprocessor callbacks accept more than one observer. | **Delivered by Kiln WP-2150 at `913a490bb`:** `kiln_lex::token_end`; `SourceManager::editable_range` / `editable_file_range` with `file_loc_at_macro_start` / `_end` (clang's `makeFileCharRange` and `canInsert` rules, and one buffer range in order); `expansion_count` / `expansion_entries`; `Preprocessor::add_callbacks`. Kiln's fix-its use the same functions. Slip calls them through `slip_kiln` (`docs/wp/WP-084.md`, `docs/wp/WP-068.md`) once its pin is at or after that commit (the pin move after WP-044, `docs/wp/WP-101.md`), and writes none of them a second time. Slip's own, because Kiln has no function for them: the tier (where a token is written), and the refusal of a file that was recoded on load. A name that is a whole macro expansion (`ID(foo)`) is refused, not given a range by a rule of Slip's. [KF3](../requests/KF3-location-utilities.md) §2 maps what was asked to Kiln's names and says where the rules differ. | S |
 | KF4 | **Bug: ADL flag.** `spec/sema-overload.md:194-196` says calls resolved through argument-dependent lookup are flagged. `set_call_adl` is called only for structured bindings (`struct_bind.rs:984`) and operators (`overload/oper.rs:1160`); ordinary calls are not flagged. | Divergence from spec. | S |
 
 ### The reference and preprocessing record (needed for M4; the core ask)
@@ -162,7 +162,7 @@ consuming observer, which revision 1 could not promise.
 |---|---|---|
 | M0 parse the corpora | — | Private copy of driver glue; replaced by KF1 |
 | M1 digests and verify | KR5 helps; KF2 for the overlay | Hand-written traversal with Slip-side exhaustiveness test; temp-directory post-image |
-| M2 rename of functions and variables | KF3 | Expression-level names have locations today; types do not |
+| M2 rename of functions and variables | KF2 stage 1 (the overlay). KF3 is delivered (Kiln WP-2150, `913a490bb`): what M2 needs of it is Slip's pin at or after that commit | The names come from the written-reference table (stages 1 and 2) and the declaration extents, both on Kiln main; their file ranges are Kiln's `editable_file_range` and `token_end`, called by `slip_kiln::ranges` (`docs/wp/WP-084.md`). Until Kiln's recording switch (KR1 amendment 1 §1, Kiln WP-2320) the table is switched on by Kiln's dump flag and the dump discarded |
 | M3 transform universe | KS1, KS2 | None that is honest. Level A (native) transforms work without it. |
 | M4 namespace migration | **KR1**, KR3, KR4 | None. This is the critical path. |
 
@@ -174,7 +174,7 @@ is the first thing to discuss.
 | Who | Requests |
 |---|---|
 | **Kiln designs and implements** | KF4 (being fixed; it has a Kiln backlog row), KR1, KR3, KR4, KS1, KS2, KM1 (the facade) |
-| **Slip prototypes on a Kiln branch; Kiln reviews and lands it as a work package** | KF1, KF2, KF3, KR5 (a generated or exhaustive visitor, with the test that fails when a field is added), KS3 |
+| **Slip prototypes on a Kiln branch; Kiln reviews and lands it as a work package** | KF1 (landed, Kiln WP-2120), KR5 (a generated or exhaustive visitor, with the test that fails when a field is added), KS3. KF3 and KF2 were in this row: Kiln delivered KF3 itself (WP-2150, `913a490bb`) and implements KF2 itself (its WP-2390), and no branch was cut for either; a branch from outside goes through Kiln's screening, so ask before cutting one |
 | **Later** | KR2, KM2, KS4 |
 
 ## 8. How requests are made

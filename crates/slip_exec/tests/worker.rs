@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use slip_exec::store::{Access, Store};
 use slip_exec::worker::{
-    FRAME_MAX, Job, PROTOCOL, ServeOptions, Task, ToCoordinator, ToWorker, cpu_ns_from_stat,
-    read_frame, serve, write_frame,
+    FRAME_MAX, Job, PROTOCOL, Post, PostImage, ServeOptions, Task, ToCoordinator, ToWorker,
+    cpu_ns_from_stat, read_frame, serve, write_frame,
 };
 use slip_model::wire::ErrorKind;
 use slip_model::{
@@ -88,6 +88,8 @@ fn job(store: &Path, behaviour: &str) -> Job {
         phase: Phase::Map,
         round: 0,
         observer: observer(&["fake", behaviour]),
+        transform: None,
+        post: None,
     }
 }
 
@@ -105,6 +107,8 @@ fn s5_2_messages_hand_written_bytes() {
         phase: Phase::Map,
         round: 0,
         observer: observer(&["cc"]),
+        transform: None,
+        post: None,
     };
     assert_eq!(job.observer.id.to_string(), SMALL_OBSERVER_ID);
     let cases: Vec<(Vec<u8>, Vec<u8>)> = vec![
@@ -121,10 +125,11 @@ fn s5_2_messages_hand_written_bytes() {
                 "02 2f 6d  02",           // main "/m", size 2
                 &rep("22", 32),           // content
                 "03  01 00 00",           // cost 3, origins [(0, 0)]
+                "00 00",                  // transform, post: absent
             ]),
         ),
         (ToWorker::Exit.encode(), hex(&["02"])),
-        (ToCoordinator::Ready { protocol: 1, tool: "t".into() }.encode(), hex(&["01 01 01 74"])),
+        (ToCoordinator::Ready { protocol: 2, tool: "t".into() }.encode(), hex(&["01 02 01 74"])),
         (
             ToCoordinator::Done { observer: d(1), shard: d(2), cpu_ns: 3, peak_rss: 300 }.encode(),
             hex(&["02", &rep("01", 32), &rep("02", 32), "03 ac 02"]),
@@ -152,6 +157,8 @@ fn s5_2_messages_round_trip() {
             phase: Phase::Verify,
             round: u64::MAX,
             observer: observer(&["x", "y", "z"]),
+            transform: None,
+            post: None,
         })),
         ToWorker::Exit,
     ];
@@ -167,6 +174,200 @@ fn s5_2_messages_round_trip() {
     for m in &to_coordinator {
         assert_eq!(&ToCoordinator::decode(&m.encode()).unwrap(), m);
     }
+}
+
+/// §5.2 "Protocol 2": the two last fields of `Job`, by hand-written bytes.
+#[test]
+fn s5_2_protocol_2_fields_hand_written_bytes() {
+    assert_eq!(PROTOCOL, 2);
+    let base = Job {
+        store: b"/s".to_vec(),
+        plan: d(0x44),
+        phase: Phase::Verify,
+        round: 1,
+        observer: observer(&["cc"]),
+        transform: None,
+        post: None,
+    };
+    let head = |phase_round: &str| {
+        hex(&[
+            "01 02 2f 73",
+            &rep("44", 32),
+            phase_round,
+            SMALL_OBSERVER_ID,
+            "01 2f  01 02 63 63  00  01  02 2f 6d  02",
+            &rep("22", 32),
+            "03  01 00 00",
+        ])
+    };
+    let cases: Vec<(Job, Vec<u8>)> = vec![
+        (
+            Job { phase: Phase::Map, round: 0, transform: Some(d(0x31)), ..base.clone() },
+            [head("01 00"), hex(&["01", &rep("31", 32), "00"])].concat(),
+        ),
+        (
+            Job {
+                post: Some(Post {
+                    pre: 0,
+                    declared: d(0x32),
+                    image: PostImage::Tree(vec![
+                        (b"/a".to_vec(), b"/b".to_vec()),
+                        (b"/c".to_vec(), b"/d".to_vec()),
+                    ]),
+                }),
+                ..base.clone()
+            },
+            [
+                head("02 01"),
+                hex(&["00 01  00", &rep("32", 32), "00 02  02 2f 61 02 2f 62  02 2f 63 02 2f 64"]),
+            ]
+            .concat(),
+        ),
+        (
+            Job {
+                post: Some(Post { pre: 3, declared: d(0x32), image: PostImage::Overlay(d(0x33)) }),
+                ..base.clone()
+            },
+            [head("02 01"), hex(&["00 01  03", &rep("32", 32), "01", &rep("33", 32)])].concat(),
+        ),
+    ];
+    for (job, want) in cases {
+        let msg = ToWorker::Job(Box::new(job));
+        assert_eq!(msg.encode(), want);
+        assert_eq!(ToWorker::decode(&want).unwrap(), msg);
+    }
+}
+
+/// §5.2 "Protocol 2": a `Job` with each combination of the two fields, and
+/// each form of image, round trips (including the empty tree, the identity).
+#[test]
+fn s5_2_protocol_2_fields_round_trip() {
+    let posts = [
+        None,
+        Some(Post { pre: 0, declared: d(1), image: PostImage::Tree(vec![]) }),
+        Some(Post {
+            pre: u64::MAX,
+            declared: d(2),
+            image: PostImage::Tree(vec![
+                (b"/a".to_vec(), b"/x/\xff".to_vec()),
+                (b"/a/b".to_vec(), b"/y".to_vec()),
+                (b"/b".to_vec(), Vec::new()),
+            ]),
+        }),
+        Some(Post { pre: 7, declared: d(3), image: PostImage::Overlay(d(4)) }),
+    ];
+    let mut n = 0;
+    for transform in [None, Some(d(9))] {
+        for post in &posts {
+            for phase in [Phase::Map, Phase::Verify] {
+                let job = Job {
+                    store: b"/s".to_vec(),
+                    plan: d(5),
+                    phase,
+                    round: 2,
+                    observer: observer(&["x"]),
+                    transform,
+                    post: post.clone(),
+                };
+                let msg = ToWorker::Job(Box::new(job));
+                let bytes = msg.encode();
+                assert_eq!(ToWorker::decode(&bytes).unwrap(), msg);
+                // Every proper prefix is refused.
+                for k in 1..bytes.len() {
+                    assert!(ToWorker::decode(&bytes[..k]).is_err(), "prefix {k} decoded");
+                }
+                n += 1;
+            }
+        }
+    }
+    assert_eq!(n, 16);
+}
+
+/// §5.5: root maps not strictly ascending by `subject` (equal, or
+/// descending) are `Malformed` at the first byte of the first out of order; a `PostImage` tag
+/// other than 0 and 1 is refused at the tag; an `opt` tag other than 0 and
+/// 1 is refused at that byte.
+#[test]
+fn s5_5_post_image_rejected() {
+    let base = Job {
+        store: b"/s".to_vec(),
+        plan: d(0x44),
+        phase: Phase::Verify,
+        round: 1,
+        observer: observer(&["cc"]),
+        transform: None,
+        post: None,
+    };
+    let none = ToWorker::Job(Box::new(base.clone())).encode();
+    // Offset of the opt tag of `post`: the last byte of a job with neither.
+    let post_at = none.len() - 1;
+    let with = |maps: Vec<(&[u8], &[u8])>| {
+        let maps = maps.into_iter().map(|(a, b)| (a.to_vec(), b.to_vec())).collect();
+        let post = Post { pre: 0, declared: d(1), image: PostImage::Tree(maps) };
+        ToWorker::Job(Box::new(Job { post: Some(post), ..base.clone() })).encode()
+    };
+    // opt tag, pre, declared, image tag, count: the first map starts here.
+    let first_map = post_at + 1 + 1 + 32 + 1 + 1;
+    for maps in
+        [vec![(&b"/b"[..], &b"/x"[..]), (b"/a", b"/y")], vec![(b"/a", b"/x"), (b"/a", b"/y")]]
+    {
+        let bytes = with(maps);
+        let e = ToWorker::decode(&bytes).unwrap_err();
+        assert_eq!((e.kind, e.offset), (ErrorKind::Malformed, first_map + 6), "{e}");
+    }
+    // In order: accepted, a proper prefix of a subject first.
+    assert!(ToWorker::decode(&with(vec![(b"/a", b"/x"), (b"/a/", b"/y")])).is_ok());
+    // An image tag of 2.
+    let mut bytes = with(vec![]);
+    let tag_at = post_at + 1 + 1 + 32;
+    assert_eq!(bytes[tag_at], 0);
+    bytes[tag_at] = 2;
+    let e = ToWorker::decode(&bytes).unwrap_err();
+    assert_eq!((e.kind, e.offset), (ErrorKind::Malformed, tag_at));
+    // An opt tag of 2, in `transform` and in `post`.
+    for at in [post_at - 1, post_at] {
+        let mut bytes = none.clone();
+        bytes[at] = 2;
+        let e = ToWorker::decode(&bytes).unwrap_err();
+        assert_eq!((e.kind, e.offset), (ErrorKind::Malformed, at));
+    }
+}
+
+/// §5.5, `spec/model.md` §2: the encodings of the protocol 2 fields. A
+/// byte after the last field is `Malformed` at that byte; the `PostImage`
+/// tag is a `uv`, so a non-minimal one (`80 00`) is `Malformed` at its
+/// redundant byte; a root-map count larger than the bytes left is
+/// `TooLarge` at the count.
+#[test]
+fn s5_5_protocol_2_encodings_rejected() {
+    let post = Post { pre: 0, declared: d(1), image: PostImage::Tree(vec![]) };
+    let job = Job {
+        store: b"/s".to_vec(),
+        plan: d(0x44),
+        phase: Phase::Verify,
+        round: 1,
+        observer: observer(&["cc"]),
+        transform: None,
+        post: Some(post),
+    };
+    let bytes = ToWorker::Job(Box::new(job)).encode();
+    // The job ends with: image tag 00, count 00.
+    let (tag_at, count_at) = (bytes.len() - 2, bytes.len() - 1);
+    assert_eq!(&bytes[tag_at..], &[0, 0]);
+    let mut extra = bytes.clone();
+    extra.push(0);
+    let e = ToWorker::decode(&extra).unwrap_err();
+    assert_eq!((e.kind, e.offset), (ErrorKind::Malformed, bytes.len()));
+    // Tag 0 written as 80 00.
+    let mut long = bytes[..tag_at].to_vec();
+    long.extend_from_slice(&[0x80, 0x00, 0x00]);
+    let e = ToWorker::decode(&long).unwrap_err();
+    assert_eq!((e.kind, e.offset), (ErrorKind::Malformed, tag_at + 1));
+    // A count of 5 root maps and nothing after it.
+    let mut many = bytes.clone();
+    many[count_at] = 5;
+    let e = ToWorker::decode(&many).unwrap_err();
+    assert_eq!((e.kind, e.offset), (ErrorKind::TooLarge, count_at));
 }
 
 #[test]
@@ -278,6 +479,10 @@ fn ok_shard(job: &Job) -> Shard {
         counters: vec![],
         digests: None,
         verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
     }
 }
 

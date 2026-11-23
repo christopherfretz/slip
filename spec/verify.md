@@ -239,7 +239,8 @@ pub fn finish(lines: &[(u64, Line)], resolved: Resolved, post_mapped: &[Record])
 
 **Shards.** The pre shard is the observer's shard of phase `map`; the post
 shard is its shard of phase `verify`, round `r` (the `r`-th application of
-edits). Both must be `ok` and carry a `digests` section of the same
+edits). Which round the pre shard is of is a parameter of the job (§5.2
+step 0). Both must be `ok` and carry a `digests` section of the same
 `scheme`, the one this build of `slip_verify` implements; and the post
 shard's digests must have been computed with the rule table `rules_id`
 (§5 records it). In each of the two `digests` sections the groups must be
@@ -447,14 +448,19 @@ each image, …), …)`. Every finding therefore has a key.
 One job per observer and round, run by a worker (`spec/exec.md` §5, §8.4),
 given the observer, the round, the **image** (§5.1), `Declared`, and two
 numbers: `limit`, the findings a verdict keeps (default 64), and `locate`,
-the findings that are named and localised (default 16; §6.1).
+the findings that are named and localised (default 16; §6.1). The image,
+the `Declared` and the round of the pre shard travel in the job
+(`Job.post`, `spec/exec.md` §5.2).
 
 ### 5.1 The post-image
 
-In M1 a post-image is a set of directory trees beside the subject. (The
-overlay of [02](../docs/design/02-pipeline.md), which needs Kiln's request
-KF2, is a second form of image and is specified with M2; the steps of
-§5.2 do not change with it.)
+A post-image has one of two forms. The **tree form** (M1) is a set of
+directory trees beside the subject; it is specified first, and what it
+says about roots, the post command and guard G1 is about that form only.
+The **overlay form** (M2; the overlay of
+[02](../docs/design/02-pipeline.md), which needs Kiln's request KF2) is
+specified at the end of this section. The steps of §5.2 are the same for
+both.
 
 ```
 Image   := list<RootMap>              sorted by `subject`
@@ -516,21 +522,67 @@ give a wrong `verified`: guard G1 (§5.3) refuses a post-image parse that
 read any file of the subject, so what was compared is the post-image or
 nothing. They cost a failed parse, a difference or an `unverifiable`.
 
+**The overlay form.** The image is an overlay (`spec/edits.md` §7.1,
+kind `OVLY`): for each file it names, by real path, the size and content
+digest the file has in the pre-image and in the post-image, the
+post-image's bytes being a blob in the store.
+
+- The post-image is the subject with the content of those files
+  replaced. No file is created, removed or moved: the paths of the two
+  images are the same.
+- **The post command is the observer's command**, unchanged. Nothing is
+  rewritten and no word is added, so the paragraph on the textual rule
+  does not apply.
+- **The subject path of a real path is the path itself.**
+- The front end is given the overlay
+  ([KF2](../docs/requests/KF2-overlay-and-file-identity.md)): every read
+  of a file the overlay names, by whatever spelling the file is reached,
+  yields the post-image bytes; every other read goes to the file system.
+  The shard's `inputs` then show, for an overlaid file, the size and
+  digest of the bytes the front end was given.
+- **Loading.** An overlay can name far more files than one observer
+  reads. A job first gives the front end the overlaid files that are in
+  the pre shard's `inputs` (every file of the overlay if the pre shard is
+  not usable). If the parse then read a file the overlay names that was
+  not given (an edit added an `#include`), the job gives those too and
+  parses again, until no such file is left. Step 1 is the last of these
+  parses; each gives strictly more of the overlay than the one before, so
+  their number is bounded by the overlay's files, and the shard does not
+  depend on it. A blob is checked against its digest when it is read; one
+  that is absent or does not hash to its name fails the job
+  (`spec/exec.md` §5.4).
+- **What guards it.** G1 guards the textual rewrite and has no meaning
+  here: there is no subject root, and reading a subject file that the
+  overlay does not name is reading the post-image. In its place are the
+  two guards O1 and O2 of §5.3, over the `inputs` of step 1: an overlaid
+  file was read with the overlay's content, and a file that is not
+  overlaid has the content the map phase saw. A file in only one of the
+  two `inputs` lists is not an error: an edit can change what is
+  included, and the comparison of digests is what judges that.
+
 ### 5.2 Steps
 
-0. Read the **pre shard**: the observer's shard of phase `map`, round 0,
-   from the job's store. It is *usable* if it is there, is `ok` and has a
+0. Read the **pre shard**: the observer's shard of phase `map` and of
+   round `pre`, from the job's store. `pre` is a parameter of the job
+   (`Job.post.pre`, `spec/exec.md` §5.2): 0 for `slip verify`
+   (`spec/exec.md` §8.7), and the run's own round for the verify phase of
+   a transform's run, which maps and verifies in one round
+   (`spec/edits.md` §8). It is *usable* if it is there, is `ok` and has a
    `digests` section.
 1. Parse the post-image: the parse of `spec/model.md` §8.4 with the post
    command, digested as `spec/model.md` §8.5 says with `Declared.rules`,
    the subject paths of §5.1, and detail `differing` from the pre shard's
    group sums (`digest.md` §11; detail `none` if the pre shard is not
-   usable). If the parse is not `ok`, the shard has that outcome, no
-   `digests` and no `verdict`: the observer is `not_parsed` (§7), and the
-   job ends.
-2. Check, in this order: the pre shard is usable; guard G1; `comparable`
-   (§3). The first that fails makes the verdict `unverifiable` with the
-   reason of §5.3, and the job ends.
+   usable). With an image of the overlay form this is the last parse of
+   "Loading" (§5.1). If the parse is not `ok`, the shard has that
+   outcome, no `digests` and no `verdict`: the observer is `not_parsed`
+   (§7), and the job ends. In the same parse, after the walk: the rule
+   use of §9.1 when `Declared.rules` is not empty, and the checks of
+   §10.2 when the overlay has obligations.
+2. Check, in this order: the pre shard is usable; guard G1 (tree form)
+   or guards O1 then O2 (overlay form); `comparable` (§3). The first
+   that fails makes the verdict `unverifiable` with the reason of §5.3,
+   and the job ends.
 3. Compare group sums (`at_sums`, §4.1). If they are equal and no group
    has an indeterminate unit, the verdict is `verified` and the job ends.
 4. Otherwise, with `G` as §4.1 gives it, parse the **pre-image**: the
@@ -562,7 +614,9 @@ only withdraws: guard G3.
 | P1 | step 2: the pre shard is in the store | `pre-image: no map shard` |
 | P2 | step 2: it is `ok` | `pre-image: the map shard is <status>` |
 | P3 | step 2: it has a `digests` section | `pre-image: the map shard has no digests` |
-| G1 | step 2: no entry of the post-image parse's `inputs` is a subject root or lies under one | `post-image: read <path>, a file of the subject` (the first such entry) |
+| G1 | step 2, tree form: no entry of the post-image parse's `inputs` is a subject root or lies under one | `post-image: read <path>, a file of the subject` (the first such entry) |
+| O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
+| O2 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay does not name and the pre shard's `inputs` also list has the size and content digest the pre shard gives it | `pre-image: <path> changed since the map phase` (the first such path, in path order) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
 | R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
 | G2 | step 4: its `inputs` are the pre shard's `inputs`, entry for entry | `pre-image: <path> changed since the map phase` (the first path, in path order, whose entry is not the same in both lists or is in one only) |
@@ -576,6 +630,11 @@ cut as §6 says.
 
 - **G1** is what makes the textual rule of §5.1 safe. With the identity
   image there is no subject root and it holds trivially.
+- **O1 and O2** say that what was parsed is the post-image the overlay
+  describes over the pre-image the map phase saw: the overlay reached
+  the front end for every overlaid file it read, and no other file
+  changed under the run. O2 is checked even when the comparison ends at
+  the sums, where G2 is never reached.
 - **G2 and R2** say that the pre-image parsed in step 4 is the one the map
   phase saw. A subject edited in place after the map phase (the identity
   image used to compare "the tree now" with "the tree as planned") can
@@ -593,7 +652,10 @@ the step 1 parse; the counters of step 1's walk and those of §7; the
 `digests` section of step 1 **without unit lists**; and the `verdict`.
 Unit lists are not stored: while a corpus has indeterminate units every
 group is in `G`, the lists would be the whole translation unit for every
-observer, and nothing reads them.
+observer, and nothing reads them. M2 adds three sections: `binding`
+(§9.1) in every shard a verify job writes, whatever its outcome;
+`rule_use` (§9.1) and `spellings` (§10.4) in an `ok` shard, when there
+are rules and when there are obligations.
 
 Its content is a function of the post-image's inputs, the pre shard,
 `Declared`, the image, `limit` and `locate` (and of the pre-image's
@@ -616,6 +678,19 @@ changes, which an overlay states and a tree does not. In M1 every selected
 observer gets a job and no observer is `unchanged`; the state exists in §7
 for M2. Invariants (a) and (b) are run with the identity image and no
 rules (`spec/harness.md` §9).
+
+**In M2**, with the overlay form, the files the image changes are the
+overlay's, and it creates none: an observer is unchanged when no file of
+the overlay is in the `inputs` of its pre shard. Two things limit that:
+
+- With a rule table that is not empty, "whatever the rules are" holds
+  for the observer's own verdict and not for the run: §9 needs to know
+  that the observer has no entity a rule renames, and nothing in a pre
+  shard says so. In such a run an observer that would be unchanged gets
+  a verify job all the same (`spec/edits.md` §8.2). Its post-image is
+  its pre-image; the job is there for its `rule_use`.
+- An observer whose pre shard is not usable is never unchanged: there is
+  no `inputs` to decide it from.
 
 ## 6. Verdicts and findings
 
@@ -894,6 +969,13 @@ The run has the verdict:
 - **incomplete**: neither of those. A run over no observer is incomplete:
   nothing was checked.
 
+Two conditions over all observers are added to this verdict by M2:
+agreement between observers when there are rules (§9.3), and the spelled
+entities when the image is an overlay with obligations (§10.3). A run
+with no rule and no obligation is judged by the three lines above alone,
+and only in a run whose rules are empty can an observer be `unchanged`
+(§5.5).
+
 A run that was interrupted has no verdict and no report.
 
 A `mismatch` whose findings are all `indeterminate` or
@@ -907,6 +989,9 @@ every unit (`digest.md` §10).
 
 The report is a JSON document (`spec/model.md` §4), written where
 `--report` says; the text on standard output says the same in fewer words.
+The members and lines below are M1's and are all that a run with a tree
+image and no rule has; §9.4 and §10.5 list those M2 adds, each present
+only when it applies.
 
 ```
 {
@@ -1070,17 +1155,10 @@ observer `failed`, with an empty message.
 - **One front end.** Both images are resolved by Kiln. An error Kiln makes
   the same way twice is invisible here; tiers T2 to T4 of
   [03](../docs/design/03-equivalence.md) §8 exist for that.
-- **Agreement between observers.** Each observer is verified against its
-  own pre-image. If one declaration of a relocated entity is edited and
-  another, in a file other observers use, is not, each observer can verify
-  (in one the entity has its new name, in the other its old one and nothing
-  to collide with), and the program no longer links. The condition that
-  rules it out is: an entity's key is reached through a rule in every
-  observer that has it, or in none. Checking it needs, per unit, whether a
-  rule was applied to it or to an enclosing entity, which the `digests`
-  section does not hold yet ("Open questions"). Until it does, this is
-  left to the reducer, which sees every observer's declarations, and to
-  tier T3.
+- **Agreement between observers** is not shown by any one observer's
+  verdict. §9 adds the check that shows it, for the observers of the run.
+  What remains outside is the first point above: a declaration in a file
+  that no observer of the run reads.
 - **Sums are believed.** A group's `count`, `indeterminate` and `digest`
   are checked against its unit list only where there is one. A shard
   whose sums were not computed from its units (a defect of the walk, or a
@@ -1110,6 +1188,381 @@ observer `failed`, with an empty message.
   differently) can show a `changed` that the edit did not cause: a false
   finding, never a false `verified`. The overlay image of M2 moves no
   file.
+
+## 9. Agreement between observers
+
+M2. Each observer is verified against its own pre-image. If one
+declaration of a renamed entity is edited and another, in a file other
+observers use, is not, each observer can verify (in one the entity has
+its new name, in the other its old one and nothing to collide with), and
+the program no longer links. The same happens if the edits never reach
+an observer that declares the entity itself. Per-observer verdicts cannot
+see it. The reducer could, but the reducer is not trusted. So the walk
+reports, and the run checks, how each rule was used.
+
+This section extends §7: §9.3 says what it adds to "this run's shard"
+and to the run's verdict, §9.4 what it adds to the report. It changes no
+state of §7 and no finding of §6; the order of findings by rank is as it
+was.
+
+### 9.1 Rule use and the binding
+
+**Rule use.** A walk with a rule table that is not empty counts, for each
+rule `r` (by its index in `Declared.rules`):
+
+- `via(r)`: the entities whose own `(parent, kind, name, disc)`, parent
+  and discriminator mapped, matched `r`, so that the rule gave them their
+  key;
+- `direct(r)`: the entities whose mapped key is the key `r` produces,
+  `(r.to_parent, r.kind, r.to_name, r.disc)`, and whose own key no rule
+  was applied to.
+
+Entities are counted once each, declared or derived, whatever number of
+declarations they have. An entity counted in `direct(r)` is one that
+still is what `r` says was renamed.
+
+```
+RuleUse := rules: digest            rules_id
+           uses:  list<Use>         sorted by `rule`; only rules with `via` or `direct` not 0
+Use     := rule: uv, via: uv, direct: uv
+
+Binding := overlay:  opt<digest>    content id of the OVLY container, for an image of the overlay form; absent for a tree
+           declared: digest         content id of the DECL container the job was given
+           pre:      uv             the round of the pre shard (§5.2 step 0)
+```
+
+Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
+`binding`** and **25, `rule_use`**. (Ids 22 and 23 are not assigned; 26
+is `spellings`, §10.4.)
+
+- `binding` is present in every shard a verify job writes, whatever the
+  parse's outcome, and is taken from `Job.post`. A shard the coordinator
+  wrote for a worker that produced none (status `failed`) has no
+  `binding`.
+- `rule_use` is present when the outcome is `ok` and the rule table is
+  not empty, and absent otherwise. Invariants: `uses` strictly ascending
+  by `rule`; no `Use` with both counts 0.
+
+With the binding a verify shard says which declared changes, which
+overlay and which pre shards it was made with; M1's shards did not
+("Open questions").
+
+### 9.2 Stale observers and unused rules
+
+**Stale.** An observer is **stale** for a rule `r` whose kind is not
+`namespace` if its `direct(r)` is not 0. (For a namespace, an entity that
+keeps the key a rule maps another onto is the merge of §2.1.) A stale
+observer is one finding of the run, `stale`, with the rule and the
+observer.
+
+**Why this is the condition.** The claim of §1, for a rule, is that the
+entity it names has the new name. Two observers disagree about an entity
+when one reaches its key through the rule and the other has it without.
+`direct(r) = 0` in every observer says no observer has it without: every
+observer that has the entity reached it through the rule, or no observer
+has it at all. In an observer that has the entity both ways the two
+collide and both are indeterminate (§2.1), so that case was already a
+finding; the count catches the observer that has only the old one.
+
+**Unused rules.** A rule with `via` and `direct` 0 in every observer names
+an entity no observer has. It is reported with the run, like an exemption
+no observer needed (§2.2), and changes no verdict.
+
+### 9.3 What is added to the run (§7)
+
+**This run's shard.** To the condition of §7 (its content id is the
+`shard` of the observer's last `Job` entry in the run's record) M2 adds:
+if a worker wrote it (its status is not `failed`), its `binding` is the
+run's (the same `declared`, the same `overlay` or the same absence of
+one, the same `pre`); and if it is `ok` and the run's rules are not
+empty, it has a `rule_use` whose `rules` is the run's `rules_id`. A shard
+that fails either is not this run's: the observer is `failed` (§7), as
+for any shard another run left.
+
+**Which observers.** The check is over every selected observer. With
+rules, no selected observer whose map shard is `ok` is `unchanged`
+(§5.5): each has a job, so each has a `rule_use` or is in a state that
+already keeps the run from being verified.
+
+**The run's verdict**, in full, with the additions in italics:
+
+- **verified**: at least one observer was selected; every selected
+  observer is `verified` or `unchanged`; *no selected observer is stale;
+  and every obligation passed (§10.3)*;
+- **not verified**: some observer is `mismatch` or `not_parsed`; *or
+  some observer is stale; or some obligation failed or was seen by no
+  observer (§10.3)*;
+- **incomplete**: neither of those.
+
+A stale observer and a failed obligation are facts about the post-image,
+like a `mismatch`: they make the run not verified also when other
+observers are `unverifiable` or `failed`. Staleness is read from the
+`rule_use` of this run's `ok` shards only.
+
+### 9.4 What is added to the report (§7.1)
+
+The report keeps its name, `slip.verify.v1`: every member and line of
+§7.1 is unchanged, and a run with a tree image and no rule writes exactly
+the M1 document. Members added, each present only when it applies:
+
+```
+"overlay": <id of the OVLY container>                      for an image of the overlay form; "image" is then []
+"agreement": { "rules": <n>,                               when Declared.rules is not empty
+               "stale": [ { "rule": <index>, "observer": <id>, "main": <path>, "direct": <n> }, … ],
+               "unused": [ <index>, … ] }
+"spellings": …                                             §10.5
+```
+
+`stale` is sorted by `(rule, the observer's position in the plan)` and
+holds every stale pair; `unused` is ascending.
+
+Lines added to the text, after the `exemption` lines and before `wall`:
+
+```
+image overlay <overlay id>                       in place of the `image` lines of §7.1, for the overlay form
+agreement rules <n> stale <n> unused <n>         when there are rules; `stale <n>` counts pairs
+stale rule <index> direct <n> <main file>        at most 100, then `stale: <n> more (see the report)`
+unused rule <index>
+```
+
+Nothing is added to the lines on standard error: those list observers by
+state, and a stale observer's state is whatever its verdict made it.
+
+### 9.5 Interface
+
+The walk's half, in `slip_digest` (trusted base):
+
+```rust
+// Options gains `rule_use: bool`; Output gains `rule_use: Vec<slip_model::Use>`  (empty when off or when there is no rule)
+```
+
+`RuleTable::map` must then say whether a rule was applied; how
+(`map_traced`, a second return value) is the implementation's.
+
+The transforms that must name entities by key (`spec/edits.md` §4.1,
+§9; `spec/api.md` §7.5) and the check of §10 get keys from
+`slip_digest::query::Keys` (`docs/wp/WP-087.md`): one interface, over the
+functions the walk uses, so a key it gives is the key a unit of the map
+shard has. `Keys::with_rules` gives the keys of a post-image in the
+pre-image's key space. A transform that gets a key wrong produces a rule
+that matches nothing: the rule is unused and the entity's unit is
+`removed` and `added`. It cannot produce a wrong `verified`.
+
+The run's half, in `slip_verify::run` (trusted base), added to §7.3:
+
+```rust
+pub struct Stale { pub rule: u64, pub observer: Digest, pub direct: u64 }
+
+/// §9.3: the verdict of the states, with the two conditions over all observers.
+pub fn combine(states: RunVerdict, stale: usize, obligations_not_passed: usize) -> RunVerdict;
+
+impl Report {
+    /// Before the first `add`, for a run whose image is an overlay: `add` then expects
+    /// that overlay in each binding, and folds the overlay's obligations (§10.3).
+    pub fn overlay(&mut self, id: Digest, overlay: &slip_model::Overlay);
+    /// Before the first `add`: the round of the pre shards (default 0).
+    pub fn pre_round(&mut self, pre: u64);
+    pub fn stale(&self) -> &[Stale];                       // sorted by (rule, plan position)
+    pub fn unused(&self) -> Vec<u64>;
+    pub fn spellings(&self) -> &[spelling::Outcome];       // §10.6; one per obligation of the overlay
+}
+```
+
+`Report::add` reads `binding`, `rule_use` and `spellings` from the shard
+it is given and applies "this run's shard" as far as the shard itself
+decides it (the caller still decides it from the run record, §7);
+`Report::verdict` is `combine` of `run_verdict(states)`. `state` and
+`run_verdict` are as in §7.3.
+
+## 10. Spelled entities
+
+M2 and M3. An edit's replacement can hold a **spelled-entity piece**: the
+transform said which entity a name is to denote and Slip, or the
+transform, chose the text (`spec/edits.md` §4.2; `spec/api.md` §7.1,
+§7.2). The native rename writes one at every resolved reference it
+renames (`spec/edits.md` §9.3). A digest cannot check that choice where
+the unit that holds the name is declared `changed` (§2.2), and that is
+where a respelled callee sits. So the choice is checked directly, by the
+trusted base, in the post-image: the name where the piece landed must
+denote the entity the piece records.
+
+The check takes nothing from a transform, the reducer or the applier but
+the obligations, and an obligation can only add a failure: no obligation
+makes anything pass that §4 would not.
+
+### 10.1 Obligations
+
+```
+Obligation := file: uv        index into the overlay's `files`
+              lo:   uv
+              hi:   uv        lo < hi <= the file's post size
+              key:  KeyId     the entity meant, in the key space of the pre-image (§2)
+```
+
+The bytes `[lo, hi)` of the post-image file are the text of one spelled
+piece of one accepted edit, and `key` is the `KeyId` the piece carries.
+Apply derives the range when it composes the post-image
+(`spec/edits.md` §7.1). The obligations of a run are the `spellings`
+list of its overlay, sorted by `(file, lo, hi, key)` with no two equal;
+an obligation is named by its index in that list. An image of the tree
+form has no obligation.
+
+### 10.2 In one observer
+
+In the parse of §5.2 step 1, after the walk, for every obligation whose
+file is in the parse's `inputs`:
+
+1. The **written references** of the unit are the entries of Kiln's
+   written-reference table: the names that were resolved while the unit
+   was parsed, in the roles expression name, member name, qualifier
+   component, type name, template name, base specifier and member
+   initialiser (the roles of `spec/api.md` §6.5 rule 3; a role Kiln adds
+   later takes part from the day `spec/api.md` announces it). Entries
+   equal in role, name range and referent are one reference.
+2. A reference's **name range** is the file range of its name: the bytes
+   of one file that translation turned into exactly the name's tokens,
+   at tier 0 or 1 (`spec/api.md` §5.4; `slip_kiln::ranges`, which is
+   Kiln's `editable_file_range`, `spec/edits.md` §2.2). A reference
+   whose name has no such range takes no part.
+3. A reference **answers** the obligation if its name range is in the
+   obligation's file, ends at `hi` and starts at or after `lo`. (A
+   spelling `::a::b::f` is answered by the reference `f`; `a` and `b`
+   end before `hi`.)
+4. For each answering reference take the **origin** of its referent: the
+   referent itself, or, for a specialisation of a template or a member
+   of an instantiated class, the template or the member of the template
+   it was made from. Take the origin's `KeyId` under the run's rules
+   (`Declared.rules`; mapped keys, `digest.md` §3.4), which is its key in
+   the pre-image's key space.
+5. The obligation, in this observer:
+   - **holds** if at least one reference answers and every answering
+     reference's origin has the obligation's `key`;
+   - **fails** if some answering reference's origin has another key, or
+     no key (it is not a unit, is keyed by content, or its key is
+     indeterminate);
+   - is **not seen** if no reference answers: the bytes are in a
+     conditional group the observer skips, in a macro argument the macro
+     does not use, in a place whose name is resolved only at
+     instantiation, or in a role the table does not record.
+
+A name in a macro argument that is substituted twice gives two
+references with one name range; each must have the key.
+
+A failed obligation does not change the observer's `Verdict` (§6): the
+comparison is of digests and stays what it is. It is recorded beside the
+verdict (§10.4) and judged over the run.
+
+### 10.3 Over the run
+
+For each obligation of the overlay, over this run's `ok` shards (§7,
+§9.3):
+
+| The obligation | Is |
+|---|---|
+| fails in some observer | **failed**, `denotes_other`: with the number of such observers, the first in plan order, and what that observer found |
+| holds in at least one observer and fails in none | **passed**; the observers where it is not seen are counted |
+| holds in no observer and fails in none | **failed**, `unseen`: no observer could check it |
+
+A run with a failed obligation is not verified (§9.3). An obligation is
+`unseen` also when the observers that would have seen it did not parse
+or did not finish; the run is then not verified on that account as well
+as theirs.
+
+`unseen` is the conservative reading, and it is the rule
+(`spec/api.md` §7.2 rule 5): text that no observer resolves was written
+on a transform's word alone.
+
+### 10.4 The `spellings` section
+
+Section **26** of a shard of phase `verify` (`spec/model.md` §8); present
+when the outcome is `ok` and the job's image is an overlay with at least
+one obligation, and absent otherwise.
+
+```
+Spellings := seen:   uv              obligations whose file is in this shard's `inputs`
+             held:   list<Span>      the obligations that hold, as runs of indices; ascending, no two touching
+             failed: list<Failed>    strictly ascending by `index`
+Span   := first: uv, count: uv       count at least 1
+Failed := index: uv
+          found: opt<KeyId>          the key, under the rules, of the origin of the first answering reference
+                                     in unit order that does not have the obligation's key; absent if it has none
+          name:  str                 that entity as a person would write it (§6.1); for the report only
+```
+
+Invariants: no index is in `held` twice or in both lists; the number of
+indices in the two lists is at most `seen`. The obligations not seen are
+the `seen` minus those. The decoder cannot check an index against the
+overlay; the fold (§10.6) refuses an index that is not one of the
+overlay's obligations or whose file the shard's `inputs` do not list, as
+a shard that is not this run's.
+
+Counters of the shard, beside those of §7.2: `verify.spelling.obligations`
+(`seen`), `verify.spelling.holds`, `verify.spelling.fails`,
+`verify.spelling.not_seen`; all four present when the section is.
+
+### 10.5 What is added to the report (§7.1)
+
+```
+"spellings": { "obligations": <n>, "passed": <n>,          when the overlay has obligations
+               "failed": [ { "file": <path>, "lo": <n>, "hi": <n>, "key": <id>,
+                             "why": "denotes_other" | "unseen",
+                             "observers": <n>, "first": <main file, or null for unseen>,
+                             "found": <id or null>, "name": <str> }, … ] }
+```
+
+`failed` is in the obligations' order. `lo` and `hi` are offsets in the
+post-image file. In the text, after the lines of §9.4:
+
+```
+spelling obligations <n> passed <n> failed <n>
+spelling <why> <file>:<lo>-<hi> <key, first 16 digits> observers <n> <name>     at most 100, then `spelling: <n> more (see the report)`
+```
+
+### 10.6 Interface
+
+In one observer, in `slip_digest` (trusted base; `docs/wp/WP-096.md`):
+
+```rust
+// crates/slip_digest/src/spelling.rs
+pub struct Obligation { pub file: Vec<u8> /* subject path */, pub lo: u32, pub hi: u32, pub key: Digest }
+pub enum Spelling { Holds, NotSeen, Fails { found: Option<Digest>, found_name: String } }
+
+/// One observer of the post-image. `obligations` are those whose file the unit read;
+/// the result is parallel to it.
+pub fn check_spellings(input: &Input<'_>, rules: &slip_model::keys::RuleTable,
+                       obligations: &[Obligation]) -> Vec<Spelling>;
+```
+
+It gets keys from `Keys::with_rules` (§9.5), so the key it compares is
+the key the walk of the same parse gave the entity. The verify job
+(`spec/exec.md` §8.6) calls it and writes the section.
+
+Over the run, in `slip_verify` (trusted base), naming no Kiln type:
+
+```rust
+// crates/slip_verify/src/spelling.rs
+pub enum Outcome { Passed { not_seen: u64 },
+                   DenotesOther { observers: u64, first: usize /* plan position */, found: Option<Digest>, name: String },
+                   Unseen }
+pub struct Fold { /* one slot per obligation */ }
+impl Fold {
+    pub fn new(overlay: &slip_model::Overlay) -> Fold;
+    /// One `ok` shard of this run; `Err` if the section names an obligation the overlay
+    /// does not have or a file the shard did not read (§10.4).
+    pub fn add(&mut self, position: usize, inputs: &[FileRef], section: &slip_model::Spellings) -> Result<(), String>;
+    pub fn finish(self) -> Vec<Outcome>;
+}
+```
+
+### 10.7 What it shows
+
+For a name written as a spelled piece: in every observer that resolves
+the name where the piece landed, it denotes the entity whose key the
+piece carries, and at least one observer resolves it. It does not show
+that the edit was right to name that entity, and it shows nothing about
+a literal piece, a copy, or a name the front end does not record a
+reference for (a declaration's own name, a dependent name, a name in a
+using-declaration). Those are judged by the comparison of digests alone.
 
 ## Tests
 
@@ -1180,13 +1633,54 @@ observer `failed`, with an empty message.
   status.
 - `spec/pitfalls.md` and its tests — each catalogued hazard as a correct
   edit that verifies under its rules and a wrong edit that does not.
+- `crates/slip_digest/tests/rule_use.rs` — §9: `via` and `direct` for a
+  renamed function, an overload set with one rule per overload, a member
+  of a specialisation, a declaration left under its old name beside the
+  renamed one (a collision and a `direct`), one left alone in the unit
+  (`direct` only), a merged namespace (not stale); the digests of every
+  pair test are the same with `rule_use` on and off.
+- `crates/slip_digest/tests/api_keys.rs` — §9.5: `Keys`
+  (`docs/wp/WP-087.md` lists the cases).
+- `crates/slip_verify/tests/agreement.rs` — §9.3, §9.4 over shards
+  written by hand: stale and unused rules; a shard without a binding,
+  bound to another overlay, to another `Declared`, to another `pre`; an
+  `ok` shard without `rule_use` and with another `rules_id` (each
+  `failed`); `combine` for every pair of a states' verdict and the two
+  counts; the added members and lines against goldens, and an M1 run's
+  report unchanged byte for byte.
+- `crates/slip_digest/tests/spelling.rs` — §10.2, on post-image snippets
+  with marked obligations: holds (a bare name behind a written
+  qualifier, a fully qualified name, a function template whose referent
+  is a specialisation, one overload among several); fails (another
+  overload, a nearer declaration of the same name, a variable, an origin
+  without a key, a name in a unit declared `changed`); under a rename
+  rule (the post-image's new name has the pre-image's key); not seen (a
+  skipped group, an unused macro argument); twice substituted with one
+  use that fails.
+- `crates/slip_verify/tests/spelling.rs` — §10.3, §10.4: every row of
+  the table; an index the overlay does not have and a file the shard did
+  not read; the invariants of the section.
+- `crates/slip_cli/tests/verify_overlay.rs` — §5.1 "The overlay form"
+  through the task: the post command and subject paths; O1 by a loading
+  loop that a test hook stops before its end, so that an overlaid file
+  is read from disk; O2 by a subject file changed after the map phase;
+  an edit that adds an `#include` of another overlaid file (two parses,
+  one shard); a missing blob and a blob that does not hash to its name
+  (each a failed job);
+  the `binding`, `rule_use` and `spellings` sections; an unchanged
+  observer with and without rules (§5.5).
 
 ## Open questions
 
-- **Agreement between observers** (§8). Proposed: a per-group digest of the
-  keys of the group that were reached through a rule, so that observers
-  sharing a header can be compared group by group without unit lists, and
-  a reduction over distinct groups. To be specified with reduce (M2).
+- **Agreement costs a job per observer** (§9, §5): with rules, no
+  observer is unchanged. `spec/edits.md` ("Open questions") proposes a
+  filter of key ids in the map shard so that an observer that cannot have
+  a renamed entity is shown not to, without a parse.
+- **Agreement for namespaces** (§9). A relocated namespace merges with
+  the one that stays, so `direct` says nothing for it. The members that
+  move have rules of their own only if the transform declares each; how
+  a partial relocation is shown to agree is to be specified with the
+  namespace migration (M4).
 - **Indeterminate units cost a second parse.** Every group with an
   indeterminate unit is in `G` (§4.1), so an observer that has one needs
   unit lists even when nothing changed. Proposed: a map shard stores the
@@ -1200,9 +1694,30 @@ observer `failed`, with an empty message.
   declarations lie inside text the overlay inserted, and `created` becomes
   "marked", with the inserted ranges as the declaration. Needs locations
   in the walk's interface, which is why it is not in M1.
-- **`changed` checks nothing about the unit.** The design asks for the
-  edit's own obligations to be checked instead (the callee at this site is
-  now `K`). Not specified.
+- **`changed` checks little about the unit.** A spelled piece inside an
+  exempt unit is checked (§10); nothing else in it is. The design asks
+  for more of the edit's own obligations to be checked (the callee at
+  this site is now `K`, for a callee the transform did not spell). The
+  native rename exempts a pattern that holds a renamed dependent name
+  (`spec/edits.md` §9.4), and a dependent name has no reference to
+  check; the spelling rule proposed there would remove that use.
+- **An obligation no observer resolves** fails the run (§10.3). Whether
+  it should be a counted residue instead needs the preprocessing record
+  to say why the bytes were not parsed (KR4). `spec/api.md` §7.2 rule
+  5 states the rule as it is.
+- **One key per spelled piece.** A name that different observers resolve
+  to different overloads of a renamed function has one obligation with
+  one key, and fails where the other overload is chosen; reduce already
+  rejects such a site as `divergent`, which is decided
+  (`spec/edits.md` §5.3). An obligation with a set of keys would accept
+  it, and is not proposed while that decision stands.
+- **What a reference found through a using-declaration refers to** in
+  Kiln's table (the using-shadow or its target) decides whether step 4 of
+  §10.2 needs to look through it. To be fixed by the first test of
+  `crates/slip_digest/tests/spelling.rs` that has one.
+- **The written-reference table in the verify parse.** §10.2 needs it
+  for every observer that reads a file with an obligation. Its cost on
+  the corpus is to be measured with the first run that has obligations.
 - **A compatibility declaration that takes the old name** of a relocated
   entity with the same kind and signature (a forwarding function) collides
   with the relocated entity's mapped key. A using-declaration or an alias
@@ -1239,11 +1754,13 @@ observer `failed`, with an empty message.
   cannot tell which exemption list prevented the finding when a key is in
   two (§7.1). A `Verdict` field per list at the next change of the
   section.
-- **A round's parameters are not recorded.** The run record names the
-  plan, phase and round; the image, the `Declared` and `limit` are in the
-  report only. A later run with the same round number replaces the
-  shards. Proposed: the record's `run` section gains the declared id and
-  the image, and rounds are allocated by the store, with M2's apply.
+- **A round's parameters are recorded in part.** Since M2 a verify
+  shard's `binding` names the `Declared`, the overlay and the round of
+  the pre shards (§9.1), and a transform's run takes a round of its own
+  (`spec/exec.md` §2). A tree image's roots, `limit` and `locate` are in
+  the report only, and a later `slip verify` with the same round number
+  replaces the shards. Proposed: the run record's `run` section gains
+  them.
 - **The tree image rewrites text** (§5.1). G1 makes it safe; how often it
   costs an `unverifiable` on real build trees is to be seen on the
   corpus. The overlay (KF2) rewrites nothing.

@@ -42,6 +42,7 @@ verdicts are already there (§8.2, §8.3).
 | `opt<T>` | `u8` 0 (absent), or `u8` 1 followed by `T`. |
 | `list<T>` | `uv` count, then that many `T`. |
 | enumeration | `uv` holding one of the listed values. An unlisted value is `Malformed`. |
+| tagged union | Written `T := a = 0: X \| b = 1 \| c = 2: Y, Z`: a `uv` tag holding one of the listed values, then the fields after that alternative's colon, as a record (nothing for an alternative without a colon). The tag is a `uv` like any other (a non-minimal one is `Malformed`); an unlisted tag is `Malformed`. `Parent` (`digest.md` §3) and `Piece` (`edits.md` §4.2) are tagged unions. |
 | record | Its fields in the order listed, with no padding and no terminator. |
 
 A list described as *sorted* must be in strictly ascending order of the stated
@@ -83,6 +84,7 @@ The offset an error carries is, by error:
 | `Malformed`, bytes left at the end of a payload or after `end` | the first leftover byte |
 | `Malformed`, section id not ascending (§5 rule 1) | the first byte of that section's id |
 | `Malformed`, unlisted enumeration value | the value's first byte |
+| `Malformed`, unlisted tag of a tagged union | the tag's first byte |
 | `Malformed`, `opt` tag other than 0 or 1 | the tag |
 | `TooLarge` | the first byte of the length or count |
 | `BadMagic` | the first byte of magic or kind that differs from the expected one |
@@ -121,6 +123,7 @@ Two ways of using it:
 | `slip.group.v1` | `list<Unit>` | `digest.md` §11 |
 | `slip.tu.v1` | `list<GroupSum>` | `digest.md` §11 |
 | `slip.rules.v1` | `list<Rule>` | `verify.md` §2 |
+| `slip.basis.v1` | `list<Basis>`: the shards an edit set was reduced from | `edits.md` §6 |
 
 `slip_model` implements BLAKE3 itself, in safe Rust, with an incremental
 interface (`new`, `update(&[u8])`, `finalize() -> Digest`) and a one-shot
@@ -271,6 +274,12 @@ its final name.
 | `PLAN` | The plan | yes | §7 |
 | `SHRD` | A shard: one observer's output for one phase | yes | §8 |
 | `RUNR` | A run record: what happened and what it cost | no | §9 |
+| `DECL` | Declared changes | yes | `verify.md` §2 |
+| `TRFM` | A transform request | yes | `edits.md` §3 |
+| `EDTS` | An edit set: what reduce accepted and refused | yes | `edits.md` §6 |
+| `OVLY` | An overlay: the files of a post-image and its spelling obligations | yes | `edits.md` §7.1 |
+| `RSLT` | The result of one run of a transform | yes | `edits.md` §8.5 |
+| `RUNT` | A transform run record | no | `edits.md` §10.6 |
 
 ### 5.2 Interface
 
@@ -316,7 +325,7 @@ whole file. The order of checks is:
 1. The container (§5.3): `BadMagic`, `UnsupportedVersion`, `Truncated`,
    `Corrupt`, section framing.
 2. `UnknownSection` for any critical section id the format does not define
-   (for the shard this includes the reserved ids 16, 17, 18 and 20), before
+   (for the shard this includes the reserved ids 16, 18 and 20), before
    any section is interpreted.
 3. Each defined section in ascending id order: absent and required is
    `Malformed` at the offset of the `end` byte (file length − 33); otherwise
@@ -325,12 +334,15 @@ whole file. The order of checks is:
    each observer of the plan is decoded.
 4. The format's invariants, the first violation in section and element
    order: the plan's (§7.1); the shard's (§8.1), then those of `digests`
-   (§8.2), then those of `verdict` (§8.3). Within `digests` and `verdict`
-   the rules are checked in the order of their tables, **each rule over the
-   whole section, in field and element order, before the next rule**.
+   (§8.2), then those of `verdict` (§8.3), then those of `edits`,
+   `binding`, `rule_use` and `spellings` (§8). Within `digests` and
+   `verdict` the rules are checked in the order of their tables, **each
+   rule over the whole section, in field and element order, before the
+   next rule**; `edits.md` §4.7 states its own order.
 
 `dump` and `content_id` dispatch on bytes 8–11 of the file; a file whose kind
-is none of the three is opened as a plan, which reports `BadMagic` (or
+is none of those `slip_model::formats` reads (`PLAN`, `SHRD`, `RUNR`,
+`DECL`, `TRFM`) is opened as a plan, which reports `BadMagic` (or
 `Truncated` for a short prefix of a valid header). `content_id` returns the
 trailer only once the file has been fully validated as by `from_bytes`.
 
@@ -394,8 +406,13 @@ impl End    { pub const ALL: [End; 5];    pub fn name(self) -> &'static str; }
   returns `<path>: <message>`, with the same path and message as
   `from_json` gives for the same violation.
 - `Shard` has, besides the fields of §8, `digests: Option<Digests>`
-  (`slip_model::digests`) and `verdict: Option<Verdict>`
-  (`slip_model::verdict`); an absent section is `None`.
+  (`slip_model::digests`), `verdict: Option<Verdict>`
+  (`slip_model::verdict`), `edits: Option<Edits>` (`slip_model::edits`),
+  `binding: Option<Binding>` and `rule_use: Option<RuleUse>`
+  (`slip_model::agreement`) and `spellings: Option<Spellings>`
+  (`slip_model::spellings`), in that order; an absent section is `None`.
+- `Transform` (`slip_model::transform`, kind `TRFM`, `edits.md` §3) has
+  the same interface as the three above.
 - `ALL` lists every value of the enumeration once, in code order; `name()`
   is its name in §7–§9, the one the JSON rendering uses (§10).
 
@@ -519,12 +536,15 @@ the same bytes.
 | 2 | outcome | yes | `Outcome` |
 | 3 | inputs | no | `list<FileRef>` sorted by `path`: every file the front end read, the main file included |
 | 4 | counters | yes | `list<Counter>` sorted by `name` |
-| 16 | coverage | — | reserved (M2) |
-| 17 | edits | — | reserved (M2) |
+| 16 | coverage | — | reserved (M4, with the preprocessing record) |
+| 17 | edits | no | `Edits` (`edits.md` §4): what a transform's run over this observer produced (claims, groups, reports, declarations, or its failure); phase `map` |
 | 18 | facts | — | reserved (M3) |
 | 19 | digests | no | `Digests` (`digest.md` §11; §8.2) |
-| 20 | reports | — | reserved (M2) |
+| 20 | reports | — | reserved and not planned: a transform's reports are part of `edits` (17) |
 | 21 | verdict | no | `Verdict` (`verify.md` §6; §8.3) |
+| 24 | binding | no | `Binding` (`verify.md` §9.1): the declared changes, the overlay and the pre round a verify shard was made with; phase `verify` |
+| 25 | rule_use | no | `RuleUse` (`verify.md` §9.1); phase `verify` |
+| 26 | spellings | no | `Spellings` (`verify.md` §10.4): the spelled-entity checks of this observer; phase `verify` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -553,8 +573,19 @@ harness gates on counters exactly (`spec/harness.md`).
 A shard with status `failed` has no `inputs` section and an empty `counters`
 list: nothing about a failed observer is deterministic.
 
-A reserved id (16, 17, 18, 20) is a critical id no reader knows: a file with
-one is `UnknownSection`.
+A reserved id (16, 18, 20) is a critical id no reader knows: a file with
+one is `UnknownSection`. Ids 22 and 23 are not assigned. Sections 17, 24,
+25 and 26 were added by M2 without a change of the shard's version: a
+reader that predates them refuses a shard that has one (the ids are
+critical), and a shard without them reads as before. An `edits` section
+in a shard of phase `verify`, or a `binding`, `rule_use` or `spellings`
+section in a shard of phase `map`, is `Malformed` at the first byte of
+the section's payload, JSON path `sections.<name>`. So are `edits`,
+`rule_use` and `spellings` in a shard whose status is not `ok`, and
+`binding` in one whose status is `failed` (only). The phase is checked
+before the status. Their own invariants are `edits.md` §4.7 and
+`verify.md` §9.1 and §10.4, checked after those of §8.1 to §8.3 in the
+order of the section ids, each section's phase and status first.
 
 ### 8.1 Invariants
 
@@ -644,14 +675,21 @@ closure on the finished unit:
 pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<Shard, String>;
 pub fn parse_observer_with<R: Send>(
     observer: &Observer, phase: Phase, round: u64,
+    options: ParseOptions,
     f: impl FnOnce(&Unit<'_>) -> R + Send,
 ) -> Result<(Shard, Option<R>), String>;
+
+/// What the front end keeps beyond what the parse task needs. Every option
+/// is off by default, and the shard is the same whatever they are.
+#[non_exhaustive]
+pub struct ParseOptions { pub pp_record: bool }
 
 pub struct Unit<'r> { /* … */ }        // the finished front end, valid inside the call
 impl<'r> Unit<'r> {
     pub fn ast(&self) -> &'r kiln::ast::Ast;
     pub fn sm(&self) -> &'r kiln::source::SourceManager;
     pub fn oven(&self) -> &'r kiln::oven::Oven;
+    pub fn pp_record(&self) -> Option<&'r kiln::pp::PpRecord>;   // when ParseOptions::pp_record asked
     pub fn main_file(&self) -> Option<kiln::source::FileId>;
     pub fn real_path(&self, file: kiln::source::FileId) -> Option<&'r [u8]>;
     pub fn errors(&self) -> u32;
