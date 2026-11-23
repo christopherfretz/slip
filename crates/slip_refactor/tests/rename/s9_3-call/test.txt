@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 2 (an id-expression: a call, spelled piece)
+from: n::f
+to: g
+kind: function
