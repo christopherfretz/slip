@@ -1822,13 +1822,51 @@ the canonical form. Template argument lists are written from
 | `TemplateExpansion` | value | in | tag 5 |  |
 | `TemplateExpansion.name` | entity | in | enum TemplateName |  |
 | `TemplateExpansion.num_expansions` | value | in | uv? |  |
-| `Expr` | written | out | - | sugar: the argument as written; a canonical list holds `Profile` |
-| `Expr.expr` | written | out | - | sugar |
-| `Expr.profile` | written | out | - | sugar |
+| `Expr` | value | in | tag 6 | an expression argument Kiln never converted (rule below) |
+| `Expr.expr` | child | in | child | in a unit stream the expression walked in full; inside a type, a key or a profile its canonical operand (`profile`, §4.4); rule below |
+| `Expr.profile` | bookkeeping | out | - | absent wherever the walk reads `ArgView`: it reads canonical lists only, and `canonical_arg` turns an `Expr` with a profile into `Profile` |
 | `Profile` | value | in | tag 7 |  |
 | `Profile.0` | value | in | profile |  |
 | `Pack` | value | in | tag 8 |  |
 | `Pack.0` | value | in | enum ArgView* |  |
+
+`Expr` (WP-123). A canonical list holds `Expr` with no profile where
+Kiln kept the argument as it was written and never converted it to the
+parameter's type: it is not value- or instantiation-dependent, so Kiln
+gives it no profile (`profile_value_args`, `kiln_sema` `templ/actions.rs`,
+profiles only dependent ones), and no template was chosen for it to be
+converted against. The forms are the explicit arguments of a dependent
+name in a template's body (`TemplateTables` `expr_targs`: `get<0>(t)`,
+`this->template f<false>()`), which the unit's stream writes, and the
+arguments of a befriended specialisation in a class template
+(`friend struct It<T, true>;`), which Kiln does not profile and which is
+written inside the type. The expression names entities (`get<n::k>`:
+which `k`), so it is walked, never written by tag alone:
+
+- Written straight into a unit stream (outside a type, a key and a
+  profile; `Walk::write_args` under its own-spelling guard counts as
+  the unit's), it is the unit's own expression, walked in full (`child`,
+  digest §7), as the declaration's own default template argument is
+  (`TemplateTables` `defaults`); the unit's reading of the written list
+  (`own_spelling::left_out_of_args`) is unchanged.
+- Inside a type, a key or a profile, it is written by its canonical
+  operand (`profile`, §4.4): the bytes `Profile` would have if Kiln had
+  profiled it, the form Kiln's own profile gives such an argument
+  (`args each` above); inside a profile, in that profile's frame. A
+  type digest puts the unit's frame aside, but a value-dependent argument
+  of the type begins a profile of its own, so the frame is met inside a
+  type too: a concept-id's list in `X<C<T, n::k>>`, as in
+  `getb<C<T, n::k>>(t)` at the unit level and in `requires C<T, n::k>`
+  in a key (the pairs `differ/_/argview-expr-concept-in-*`).
+  Inside a type or a key the walk puts the unit's local state aside
+  (holder, content, local types, scopes) while it writes, so nothing of
+  the unit that met the type first is read: a rule-11 check then takes
+  the conservative answer (`own_spelling::templated_at` with no holder),
+  a function name a program reads (`__func__`) is
+  `Unsupported("local/detached-scope-names")`, a lambda-expression is
+  `local/lambda-in-type` as anywhere in a type, and a reference to a local
+  object of the unit raises `local_uses`, so the type is memoised for that
+  unit only (digest §4.2).
 
 ### `kiln_ast::types::args::ArgKind`
 

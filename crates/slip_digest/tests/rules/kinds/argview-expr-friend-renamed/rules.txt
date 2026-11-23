@@ -1,0 +1,2 @@
+# digest-kinds §4.6 ArgView `Expr` (WP-123, form B): the constant a befriended specialisation's argument names, renamed.
+relocate n::k => n :: u

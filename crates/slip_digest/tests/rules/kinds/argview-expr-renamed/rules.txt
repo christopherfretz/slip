@@ -1,0 +1,2 @@
+# digest-kinds §4.6 ArgView `Expr` (WP-123, form A): the constant an explicit argument names, renamed.
+relocate n::k => n :: u

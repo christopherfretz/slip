@@ -4,9 +4,6 @@
 # ExprNode/CXXPseudoDestructorExpr.aux-qualified: Kiln keeps no non-dependent
 # qualifier (spec/landed/digest-kinds/WP-041.md, For Kiln 5); remove at the pin move.
 AddrSpace/0
-ArgView/Expr
-ArgView/Expr.expr
-ArgView/Expr.profile
 ArgView/Null
 ArgView/Pack
 ArgView/Pack.0
