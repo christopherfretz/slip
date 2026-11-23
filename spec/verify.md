@@ -1355,7 +1355,14 @@ run's (the same `declared`, the same `overlay` or the same absence of
 one, the same `pre`); and if it is `ok` and the run's rules are not
 empty, it has a `rule_use` whose `rules` is the run's `rules_id`. A shard
 that fails either is not this run's: the observer is `failed` (§7), as
-for any shard another run left.
+for any shard another run left. So is an `ok` shard with a `rule_use`
+under no rule or naming a rule past the table, and one whose `spellings`
+is absent although the overlay has obligations, present although it has
+none, or refused by the fold (§10.4). A run with a tree image and no
+rule is M1's: its shards need no `binding`, and one that has a binding
+must have the run's (`spec/landed/verify/WP-070.md` §2.1, which also
+records that `docs/wp/WP-074.md` item 3, "a tree image writes none of
+the three", contradicts this paragraph for a tree image with rules).
 
 **Which observers.** The check is over every selected observer. With
 rules, no selected observer whose map shard is `ok` is `unchanged`
@@ -1392,7 +1399,11 @@ the M1 document. Members added, each present only when it applies:
 ```
 
 `stale` is sorted by `(rule, the observer's position in the plan)` and
-holds every stale pair; `unused` is ascending.
+holds every stale pair; `unused` is ascending. `"overlay"` follows
+`"image"`; `"agreement"` and then `"spellings"` follow `"exemptions"`
+and precede `"run"`. An `unseen` entry of `spellings` has `observers`
+0, `first` and `found` null and an empty `name`
+(`spec/landed/verify/WP-070.md` §2.6).
 
 Lines added to the text, after the `exemption` lines and before `wall`:
 
@@ -1571,8 +1582,9 @@ Invariants: no index is in `held` twice or in both lists; the number of
 indices in the two lists is at most `seen`. The obligations not seen are
 the `seen` minus those. The decoder cannot check an index against the
 overlay; the fold (§10.6) refuses an index that is not one of the
-overlay's obligations or whose file the shard's `inputs` do not list, as
-a shard that is not this run's.
+overlay's obligations or whose file the shard's `inputs` do not list, and
+a `seen` that is not the number of obligations whose file the `inputs`
+list, as a shard that is not this run's.
 
 Counters of the shard, beside those of §7.2: `verify.spelling.obligations`
 (`seen`), `verify.spelling.holds`, `verify.spelling.fails`,
@@ -1626,7 +1638,8 @@ pub struct Fold { /* one slot per obligation */ }
 impl Fold {
     pub fn new(overlay: &slip_model::Overlay) -> Fold;
     /// One `ok` shard of this run; `Err` if the section names an obligation the overlay
-    /// does not have or a file the shard did not read (§10.4).
+    /// does not have or a file the shard did not read, breaks an invariant of §10.4, or
+    /// has a `seen` its `inputs` do not give (§10.4).
     pub fn add(&mut self, position: usize, inputs: &[FileRef], section: &slip_model::Spellings) -> Result<(), String>;
     pub fn finish(self) -> Vec<Outcome>;
 }

@@ -1353,6 +1353,11 @@ The state is the first that applies:
    was rejected); or `failed_runs` or `error_reports` is not 0.
 5. `verified`.
 
+A report that is not of this run (another plan or round, states that do
+not add up to `selected` less `unparsed`, made over another overlay, or
+with one stale pair twice) is read as none: row 3, no verdict, no state
+counted, every obligation `unseen` (`spec/landed/verify/WP-070.md` §5).
+
 `--write` and `--patch` act only on `verified`, and on
 `verified_with_residue` when every reason for it is permitted:
 `--allow-residue` permits residue and refusals, `--allow-errors` permits
