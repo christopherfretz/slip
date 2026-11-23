@@ -3,8 +3,9 @@
 //!
 //! An option's value is the next argument, or follows `=` for a long option
 //! (`--store=x`) and directly for `-j` (`-j4`). An option given twice is a
-//! usage error unless it may repeat (`--db`, `--only`). `--` ends the
-//! options. Paths and `--only` values are byte strings.
+//! usage error unless it may repeat (`--db`, `--only`, `--root`, `--post`,
+//! `--match`). `--` ends the options. Paths and `--only` values are byte
+//! strings. `--post-image` is the one option without a value.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -19,6 +20,16 @@ usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j 
                   [--memory <size>] [--observer-memory <size>] [--observer-timeout <seconds>]
                   [--estimate-base <size>] [--estimate-per-byte <n>]
                   [--worker-jobs <n>] [--worker-stack <size>]
+       slip verify --plan <id or file> [--round <n>] [--declared <file>]
+                  [--root <dir>]... [--post <dir>]... [--findings <n>] [--locate <n>] [--report <file>]
+                  [--store <dir>] [-j <n>] [--only <substring>]... [--limit <n>]
+                  [--memory <size>] [--observer-memory <size>] [--observer-timeout <seconds>]
+                  [--estimate-base <size>] [--estimate-per-byte <n>]
+                  [--worker-jobs <n>] [--worker-stack <size>]
+       slip declare --plan <id or file> --from <file> --out <file>
+                  [--root <dir>]... [--post <dir>]... [--store <dir>] [--only <substring>]... [--limit <n>]
+       slip units --plan <id or file> [--post-image] [--root <dir>]... [--post <dir>]...
+                  [--store <dir>] [--only <substring>]... [--limit <n>] [--match <substring>]...
        slip dump  <file>
        slip resource --write <dir>
        slip --version
@@ -60,6 +71,12 @@ pub enum Invocation {
     Resource {
         write: PathBuf,
     },
+    /// `slip verify` (§8.7).
+    Verify(VerifyArgs),
+    /// `slip declare` (§8.8).
+    Declare(DeclareArgs),
+    /// `slip units` (§8.9).
+    Units(UnitsArgs),
     /// The hidden `slip __worker` (§8.4).
     Worker(WorkerArgs),
     /// The hidden `slip __panic`: panics on purpose, for the test of exit
@@ -98,6 +115,13 @@ pub enum PlanSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseArgs {
     pub source: PlanSource,
+    pub run: RunArgs,
+}
+
+/// The options `parse` and `verify` share (§8.2, §8.7): the store, the
+/// selection, memory admission, the timeout and the workers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunArgs {
     pub store: PathBuf,
     pub jobs: Option<usize>,
     /// `--only`, in the order given (byte strings).
@@ -114,6 +138,53 @@ pub struct ParseArgs {
     pub worker_jobs: u64,
     /// `--worker-stack`, bytes: at least 1.
     pub worker_stack: u64,
+}
+
+/// `slip verify` (§8.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifyArgs {
+    /// `--plan <id prefix or file>`, as given.
+    pub plan: OsString,
+    /// `--round` (default 0).
+    pub round: u64,
+    /// `--declared <file>`: a `DECL` container.
+    pub declared: Option<PathBuf>,
+    pub image: ImageArgs,
+    /// `--findings` (default [`DEFAULT_FINDINGS`]).
+    pub findings: u64,
+    /// `--locate` (default [`DEFAULT_LOCATE`]).
+    pub locate: u64,
+    /// `--report <file>`: where the JSON report is written.
+    pub report: Option<PathBuf>,
+    pub run: RunArgs,
+}
+
+/// `slip declare` (§8.8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclareArgs {
+    pub plan: OsString,
+    /// `--from`: the text of `spec/verify.md` §2.3.
+    pub from: PathBuf,
+    /// `--out`: the `DECL` container written.
+    pub out: PathBuf,
+    pub image: ImageArgs,
+    pub store: PathBuf,
+    pub only: Vec<Vec<u8>>,
+    pub limit: Option<u64>,
+}
+
+/// `slip units` (§8.9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitsArgs {
+    pub plan: OsString,
+    /// `--post-image`: the post-image's records instead of the pre-image's.
+    pub post_image: bool,
+    pub image: ImageArgs,
+    pub store: PathBuf,
+    pub only: Vec<Vec<u8>>,
+    pub limit: Option<u64>,
+    /// `--match`, in the order given (byte strings).
+    pub matches: Vec<Vec<u8>>,
 }
 
 /// `slip __worker` (§8.4).
@@ -185,6 +256,9 @@ pub fn parse(args: &[OsString]) -> Result<Invocation, UsageError> {
         Some("--help" | "-h") => usage("`--help` takes no arguments"),
         Some("plan") => parse_plan(rest),
         Some("parse") => parse_parse(rest),
+        Some("verify") => parse_verify(rest),
+        Some("declare") => parse_declare(rest),
+        Some("units") => parse_units(rest),
         Some("dump") => parse_dump(rest),
         Some("resource") => parse_resource(rest),
         Some("__worker") => parse_worker(rest),
@@ -195,10 +269,15 @@ pub fn parse(args: &[OsString]) -> Result<Invocation, UsageError> {
 
 // ----- the scanner ------------------------------------------------------------
 
+/// The options of §8 that take no value.
+const FLAGS: &[&str] = &["--post-image"];
+
 /// One element of the command line after the command.
 enum Item<'a> {
-    /// An option and its value (every option of §8 takes one).
+    /// An option and its value (every option of §8 but [`FLAGS`] takes one).
     Option { name: &'static str, value: &'a OsStr, joined: Option<OsString> },
+    /// An option of [`FLAGS`].
+    Flag(&'static str),
     /// An argument that is not an option.
     Positional(&'a OsStr),
 }
@@ -246,7 +325,12 @@ fn scan<'a>(args: &'a [OsString], options: &[&'static str]) -> Result<Vec<Item<'
         else {
             return usage(format!("unknown option `{}`", arg.to_string_lossy()));
         };
-        if joined.is_some() {
+        if FLAGS.contains(&name) {
+            if joined.is_some() {
+                return usage(format!("`{name}` takes no value"));
+            }
+            items.push(Item::Flag(name));
+        } else if joined.is_some() {
             items.push(Item::Option { name, value: arg, joined });
         } else {
             let Some(value) = args.get(i) else { return usage(format!("`{name}` needs a value")) };
@@ -262,6 +346,7 @@ impl Item<'_> {
         match self {
             Item::Option { joined: Some(v), .. } => v.clone(),
             Item::Option { value, .. } | Item::Positional(value) => (*value).to_owned(),
+            Item::Flag(_) => OsString::new(),
         }
     }
 }
@@ -324,6 +409,61 @@ impl Values {
         self.one("--store").map_or_else(|| PathBuf::from(DEFAULT_STORE), PathBuf::from)
     }
 
+    fn paths(&self, name: &str) -> Vec<PathBuf> {
+        self.all(name).map(PathBuf::from).collect()
+    }
+
+    fn bytes(&self, name: &str) -> Vec<Vec<u8>> {
+        self.all(name).map(|v| os_bytes(v).into_owned()).collect()
+    }
+
+    /// `--plan`, which `command` requires.
+    fn plan(&self, command: &str) -> Result<OsString, UsageError> {
+        match self.one("--plan") {
+            Some(p) => Ok(p.clone()),
+            None => usage(format!("`{command}` needs `--plan`")),
+        }
+    }
+
+    /// A path option `command` requires.
+    fn required_path(&self, command: &str, name: &str) -> Result<PathBuf, UsageError> {
+        match self.one(name) {
+            Some(p) => Ok(PathBuf::from(p)),
+            None => usage(format!("`{command}` needs `{name}`")),
+        }
+    }
+
+    /// `--root` and `--post` (§8 "Images"): the k-th of each is one root
+    /// map, so their numbers must be equal.
+    fn image(&self) -> Result<ImageArgs, UsageError> {
+        let image = ImageArgs { roots: self.paths("--root"), posts: self.paths("--post") };
+        if image.roots.len() != image.posts.len() {
+            return usage(format!(
+                "`--root` and `--post` come in pairs: {} `--root` and {} `--post` given",
+                image.roots.len(),
+                image.posts.len()
+            ));
+        }
+        Ok(image)
+    }
+
+    /// The options of [`RunArgs`].
+    fn run(&self) -> Result<RunArgs, UsageError> {
+        Ok(RunArgs {
+            store: self.store(),
+            jobs: self.jobs()?,
+            only: self.bytes("--only"),
+            limit: self.number("--limit", 0)?,
+            memory: self.size("--memory", 0)?,
+            observer_memory: self.size("--observer-memory", 1)?,
+            observer_timeout: self.number("--observer-timeout", 0)?,
+            estimate_base: self.size("--estimate-base", 0)?,
+            estimate_per_byte: self.number("--estimate-per-byte", 0)?,
+            worker_jobs: self.number("--worker-jobs", 1)?.unwrap_or(DEFAULT_WORKER_JOBS),
+            worker_stack: self.size("--worker-stack", 1)?.unwrap_or(DEFAULT_WORKER_STACK),
+        })
+    }
+
     fn dbs(&self) -> Result<Vec<Db>, UsageError> {
         let dbs: Vec<Db> = self.all("--db").map(|v| split_db(v)).collect();
         if dbs.len() > 1 {
@@ -355,7 +495,7 @@ fn options_only(
     let mut values = Values::default();
     for item in scan(args, options)? {
         match &item {
-            Item::Option { name, .. } => {
+            Item::Option { name, .. } | Item::Flag(name) => {
                 values.push(name, item.value(), repeating.contains(name))?;
             }
             Item::Positional(p) => {
@@ -395,9 +535,8 @@ fn parse_plan(args: &[OsString]) -> Result<Invocation, UsageError> {
     Ok(Invocation::Plan(PlanArgs { dbs, store: values.store(), jobs: values.jobs()? }))
 }
 
-const PARSE_OPTIONS: &[&str] = &[
-    "--plan",
-    "--db",
+/// The options of [`RunArgs`].
+const RUN_OPTIONS: &[&str] = &[
     "--store",
     "-j",
     "--only",
@@ -411,8 +550,13 @@ const PARSE_OPTIONS: &[&str] = &[
     "--worker-stack",
 ];
 
+/// `options` followed by [`RUN_OPTIONS`].
+fn with_run_options(options: &[&'static str]) -> Vec<&'static str> {
+    options.iter().chain(RUN_OPTIONS).copied().collect()
+}
+
 fn parse_parse(args: &[OsString]) -> Result<Invocation, UsageError> {
-    let values = options_only(args, PARSE_OPTIONS, &["--db", "--only"])?;
+    let values = options_only(args, &with_run_options(&["--plan", "--db"]), &["--db", "--only"])?;
     let dbs = values.dbs()?;
     let source = match (values.one("--plan"), dbs.is_empty()) {
         (Some(_), false) => return usage("`--plan` and `--db` cannot both be given"),
@@ -420,19 +564,64 @@ fn parse_parse(args: &[OsString]) -> Result<Invocation, UsageError> {
         (Some(plan), true) => PlanSource::Plan(plan.clone()),
         (None, false) => PlanSource::Db(dbs),
     };
-    Ok(Invocation::Parse(ParseArgs {
-        source,
+    Ok(Invocation::Parse(ParseArgs { source, run: values.run()? }))
+}
+
+fn parse_verify(args: &[OsString]) -> Result<Invocation, UsageError> {
+    let own = [
+        "--plan",
+        "--round",
+        "--declared",
+        "--root",
+        "--post",
+        "--findings",
+        "--locate",
+        "--report",
+    ];
+    let values = options_only(args, &with_run_options(&own), &["--only", "--root", "--post"])?;
+    Ok(Invocation::Verify(VerifyArgs {
+        plan: values.plan("verify")?,
+        round: values.number("--round", 0)?.unwrap_or(0),
+        declared: values.one("--declared").map(PathBuf::from),
+        image: values.image()?,
+        findings: values.number("--findings", 0)?.unwrap_or(DEFAULT_FINDINGS),
+        locate: values.number("--locate", 0)?.unwrap_or(DEFAULT_LOCATE),
+        report: values.one("--report").map(PathBuf::from),
+        run: values.run()?,
+    }))
+}
+
+fn parse_declare(args: &[OsString]) -> Result<Invocation, UsageError> {
+    let values = options_only(
+        args,
+        &["--plan", "--from", "--out", "--root", "--post", "--store", "--only", "--limit"],
+        &["--only", "--root", "--post"],
+    )?;
+    Ok(Invocation::Declare(DeclareArgs {
+        plan: values.plan("declare")?,
+        from: values.required_path("declare", "--from")?,
+        out: values.required_path("declare", "--out")?,
+        image: values.image()?,
         store: values.store(),
-        jobs: values.jobs()?,
-        only: values.all("--only").map(|v| os_bytes(v).into_owned()).collect(),
+        only: values.bytes("--only"),
         limit: values.number("--limit", 0)?,
-        memory: values.size("--memory", 0)?,
-        observer_memory: values.size("--observer-memory", 1)?,
-        observer_timeout: values.number("--observer-timeout", 0)?,
-        estimate_base: values.size("--estimate-base", 0)?,
-        estimate_per_byte: values.number("--estimate-per-byte", 0)?,
-        worker_jobs: values.number("--worker-jobs", 1)?.unwrap_or(DEFAULT_WORKER_JOBS),
-        worker_stack: values.size("--worker-stack", 1)?.unwrap_or(DEFAULT_WORKER_STACK),
+    }))
+}
+
+fn parse_units(args: &[OsString]) -> Result<Invocation, UsageError> {
+    let values = options_only(
+        args,
+        &["--plan", "--post-image", "--root", "--post", "--store", "--only", "--limit", "--match"],
+        &["--only", "--root", "--post", "--match"],
+    )?;
+    Ok(Invocation::Units(UnitsArgs {
+        plan: values.plan("units")?,
+        post_image: values.one("--post-image").is_some(),
+        image: values.image()?,
+        store: values.store(),
+        only: values.bytes("--only"),
+        limit: values.number("--limit", 0)?,
+        matches: values.bytes("--match"),
     }))
 }
 
@@ -441,7 +630,7 @@ fn parse_dump(args: &[OsString]) -> Result<Invocation, UsageError> {
     for item in scan(args, &[])? {
         match item {
             Item::Positional(p) => files.push(p),
-            Item::Option { .. } => unreachable!("`dump` accepts no option"),
+            Item::Option { .. } | Item::Flag(_) => unreachable!("`dump` accepts no option"),
         }
     }
     match files.as_slice() {

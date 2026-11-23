@@ -1,18 +1,21 @@
 //! The `slip` command-line tool (`spec/exec.md` §8): `plan`, `parse`,
-//! `dump`, `resource`, `--version`, and the hidden worker. Work package
-//! WP-012 (`resource`: WP-082); the interface is §8.6.
+//! `dump`, `resource`, `verify`, `declare`, `units`, `--version`, and the
+//! hidden worker. Work package WP-012 (`resource`: WP-082; the verify task:
+//! WP-052; `declare`'s resolution: WP-055; the three M1 commands: WP-053);
+//! the interface is §8.6.
 //!
 //! The binary is a thin `main` over [`run`]; [`args`] is pure, so the
 //! command line is tested without starting a process.
 
 #![forbid(unsafe_code)]
 
-pub mod declare;
-
 pub mod args;
 pub mod commands;
+pub mod declare;
 pub mod image;
 pub mod locate;
+pub mod units;
+pub mod verify_cmd;
 pub mod verify_job;
 pub mod worker;
 
@@ -31,6 +34,7 @@ pub mod status {
     pub const FINDINGS: u8 = 1;
     pub const USAGE: u8 = 2;
     pub const INPUT: u8 = 3;
+    pub const INCOMPLETE: u8 = 4;
     pub const INTERNAL: u8 = 70;
 }
 
