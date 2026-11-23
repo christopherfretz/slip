@@ -12,8 +12,8 @@ use super::common::{
     read_list, read_record, read_str, read_uv,
 };
 use super::{
-    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, negatives,
-    open, read_container, render_container, seal, spellings, verdict,
+    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, negatives, open,
+    read_container, render_container, seal, spellings, verdict,
 };
 
 const HEADER: u64 = 1;
@@ -247,8 +247,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         Shard::KIND,
         Shard::VERSION,
         [
-            HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, RULE_USE, SPELLINGS,
-            NEGATIVES,
+            HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, RULE_USE,
+            SPELLINGS, NEGATIVES,
         ],
     )?;
     let end = opened.end;

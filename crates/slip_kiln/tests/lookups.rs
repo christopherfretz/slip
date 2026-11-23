@@ -374,7 +374,8 @@ fn missed_has_include_false_is_all_negatives() {
     let (status, l) = d.lookups("", &flags);
     assert_eq!(status, Status::Ok);
     let root = d.root.to_str().unwrap();
-    for (dir, name) in [(root, "p.h"), (&inc1, "p.h"), (&inc2, "p.h"), (&inc1, "r.h"), (&inc2, "r.h")]
+    for (dir, name) in
+        [(root, "p.h"), (&inc1, "p.h"), (&inc2, "p.h"), (&inc1, "r.h"), (&inc2, "r.h")]
     {
         assert!(missed(&l, dir, name), "{dir}/{name}: {l:?}");
     }
@@ -415,7 +416,8 @@ fn missed_embed_before_the_file_read() {
     for i in [&d1, &d3] {
         std::fs::create_dir_all(i).unwrap();
     }
-    let flags = [format!("--embed-dir={d1}"), format!("--embed-dir={d2}"), format!("--embed-dir={d3}")];
+    let flags =
+        [format!("--embed-dir={d1}"), format!("--embed-dir={d2}"), format!("--embed-dir={d3}")];
     let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
     let (status, l) = d.lookups("build", &flags);
     assert_eq!(status, Status::Ok, "{l:?}");

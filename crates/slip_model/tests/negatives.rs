@@ -161,7 +161,13 @@ fn payload(paths: &[Vec<u8>]) -> Vec<u8> {
 fn negatives_n1_phase_map() {
     let mut s = map_shard(Some(paths()));
     s.phase = Phase::Verify;
-    refused(&s, &payload(&paths()), "sections.negatives", "a negatives section in a shard whose phase is not map", 0);
+    refused(
+        &s,
+        &payload(&paths()),
+        "sections.negatives",
+        "a negatives section in a shard whose phase is not map",
+        0,
+    );
 }
 
 // N-2: only with `inputs` (a `failed` shard has none).
@@ -172,7 +178,13 @@ fn negatives_n2_with_inputs() {
     s.outcome.message = "killed".to_owned();
     s.inputs = None;
     s.counters.clear();
-    refused(&s, &payload(&paths()), "sections.negatives", "a negatives section in a shard without inputs", 0);
+    refused(
+        &s,
+        &payload(&paths()),
+        "sections.negatives",
+        "a negatives section in a shard without inputs",
+        0,
+    );
 }
 
 // N-3: absolute paths. The entry's offset: after the count (1 byte) and
@@ -181,7 +193,13 @@ fn negatives_n2_with_inputs() {
 fn negatives_n3_absolute() {
     let p = vec![b"/b/inc/a.h".to_vec(), b"b/inc/b.h".to_vec()];
     let s = map_shard(Some(p.clone()));
-    refused(&s, &payload(&p), "sections.negatives[1]", "a negative input is not an absolute path", 13);
+    refused(
+        &s,
+        &payload(&p),
+        "sections.negatives[1]",
+        "a negative input is not an absolute path",
+        13,
+    );
 }
 
 // N-4: strictly ascending; a repeated path is refused as well.
@@ -204,7 +222,10 @@ fn negatives_encoding_rules() {
     let long = b"\x02\x00\x03/ab\x04\x01c";
     let bytes = sealed_with(&s, long);
     let e = Shard::from_bytes(&bytes).unwrap_err();
-    assert_eq!((e.kind, e.what), (ErrorKind::Malformed, "a shared prefix longer than the path before"));
+    assert_eq!(
+        (e.kind, e.what),
+        (ErrorKind::Malformed, "a shared prefix longer than the path before")
+    );
     assert_eq!(e.offset, at(&bytes) + 6);
     let short = b"\x02\x00\x03/ab\x01\x02ac";
     let bytes = sealed_with(&s, short);

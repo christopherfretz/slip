@@ -1953,8 +1953,10 @@ fn n1_quoted_include_beside_the_includer() {
     assert_eq!(reason(&v), appeared(&tree.subject.join("../wrap/cfg.h")));
 }
 
-const HAS_PRE: &str = "#if __has_include(<cfg2.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
-const HAS_POST: &str = "#if !__has_include(<cfg2.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+const HAS_PRE: &str =
+    "#if __has_include(<cfg2.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+const HAS_POST: &str =
+    "#if !__has_include(<cfg2.h>)\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
 
 // Item 5: `__has_include` false at the map phase and true now, with an
 // edit that compensates. The pair: mismatch.

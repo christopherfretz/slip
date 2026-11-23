@@ -54,7 +54,10 @@ fn sizes(paths: &[Vec<u8>]) -> (usize, usize, usize) {
         + groups
             .iter()
             .map(|(d, ns)| {
-                uv(d.len()) + d.len() + uv(ns.len()) + ns.iter().map(|n| uv(n.len()) + n.len()).sum::<usize>()
+                uv(d.len())
+                    + d.len()
+                    + uv(ns.len())
+                    + ns.iter().map(|n| uv(n.len()) + n.len()).sum::<usize>()
             })
             .sum::<usize>();
     (flat, front, grouped)
@@ -106,8 +109,7 @@ fn measure_negatives_on_a_unit() {
         inputs,
     );
     if let Some(n) = &shard.negatives {
-        let without =
-            slip_model::Shard { negatives: None, ..shard.clone() }.to_bytes().len();
+        let without = slip_model::Shard { negatives: None, ..shard.clone() }.to_bytes().len();
         let (flat, front, grouped) = sizes(n);
         let dirs = n
             .iter()
