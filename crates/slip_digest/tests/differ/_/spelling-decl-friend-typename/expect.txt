@@ -1,0 +1,4 @@
+added S::<friend Bq<8>::Y>
+added f(long)
+changed S
+removed S::<friend Bq<8>::Y>

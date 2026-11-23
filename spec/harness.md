@@ -112,7 +112,7 @@ line. Nothing is printed when there is none. With any, standard error gets
 | `dependencies` | Every third-party crate in `Cargo.lock` is in the allow list in this spec (§3.1). |
 | `spec-index` | `spec/README.md`'s index: every `spec/*.md` other than `README.md` has a row; every row whose status is not `not written` names an existing file; the status is `not written`, `draft` or `stable`. |
 | `spec-shape` | Every `spec/*.md` other than `README.md` contains the headings `## Tests` and `## Open questions`. |
-| `landed` | Every file under `spec/landed/` is `<spec>/WP-NNN.md` for an existing `spec/<spec>.md`, starts with `# WP-NNN — `, and `docs/wp/WP-NNN.md` exists. |
+| `landed` | Every file under `spec/landed/` is `<spec>/WP-NNN.md` (or `<spec>/WP-NNN-<part>.md`) for an existing `spec/<spec>.md`, starts with `# WP-NNN — `, and `docs/wp/WP-NNN.md` exists. |
 | `wp` | Every `docs/wp/WP-*.md` follows `docs/wp/README.md`: the title line with the same id as the file name; `Status`, `Milestone`, `Track`, `Needs`, `Size` lines with allowed values; `Needs` names existing files. |
 | `local-paths` | No committed text file contains an absolute path into a home directory or this host's workspace (`/home/`, `/Users/`, `/root/`, `/Volumes/`). |
 | `doc-links` | Every relative Markdown link in `docs/`, `spec/` and `README.md` points at an existing file. |
@@ -179,7 +179,10 @@ in both places.
   `spec/README.md`, not files in subdirectories.
 - **`spec-shape`.** The headings must be whole lines outside fenced code.
 - **`landed`.** The title's id must be the file name's id. `spec/README.md`
-  is not a spec a landed file can name.
+  is not a spec a landed file can name. `<part>` names one brief of a
+  package the supervisor split (`WP-091-queries.md`): lower-case ASCII
+  letters, digits and `-`, neither empty nor ending in `-`; the id is the
+  `WP-NNN` before it.
 - **`wp`.** An id is `WP-` and three or more digits. Lines 3 to 7 are
   exactly `- Status:`, `- Milestone:`, `- Track:`, `- Needs:`, `- Size:` in
   that order and line 2 is blank (`docs/wp/README.md`: "The first seven

@@ -1,0 +1,1 @@
+indeterminate template <class, int> void g()

@@ -1,0 +1,6 @@
+transform <id>
+report - note "a declaration: wrong_kind"
+report h.h:1:9-1:13 note "#1"
+report t.cpp:4:9-4:13 note "#0"
+report t.cpp:6:9-6:13 note "#2"
+report t.cpp:6:16-6:20 note "#3"

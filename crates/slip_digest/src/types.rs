@@ -25,8 +25,9 @@ pub(crate) struct TypeRef {
     pub digest: Digest,
     pub cause: Option<Cause>,
     /// The type's stream left out a fact its first spelling holds (a
-    /// profile's found set, `Walk::left_out`): a key ignores it, a unit
-    /// stream that writes the type is pending (`Area::Spelling`).
+    /// profile's found set, `Walk::left_out`): a key ignores it; a unit
+    /// that writes the type and has no spelling of its own for the
+    /// operand is `Unaccounted("spelling/<site>")` (`own_spelling.rs`).
     pub spelling: bool,
 }
 
@@ -40,16 +41,26 @@ impl Walk<'_> {
     /// `type`: the type digest of `q`.
     pub(crate) fn write_type(&mut self, s: &mut Stream, q: QualType) {
         let t = self.type_digest(q, false);
-        self.absorb_type(s, t);
+        self.absorb_type(s, t, q, None);
     }
 
-    /// Writes type digest `t`: its digest and cause, and, in a unit
-    /// stream (outside any key and type), `Area::Spelling` when it is
-    /// marked.
-    pub(crate) fn absorb_type(&mut self, s: &mut Stream, t: TypeRef) {
+    /// Writes type digest `t` of written type `written`: its digest and
+    /// cause, and, in a unit stream (outside any key, type and profile
+    /// written straight into the unit), adds the left-out facts of
+    /// `written` to the unit's list (`own_spelling::left_out_of_type`, digest-
+    /// kinds §4.4 "Spellings"). `own_fn`: `written` is the own type of
+    /// function declaration `d`, digested without its exception
+    /// specification.
+    pub(crate) fn absorb_type(
+        &mut self,
+        s: &mut Stream,
+        t: TypeRef,
+        written: QualType,
+        own_fn: Option<DeclId>,
+    ) {
         s.digest(&t.digest).absorb(t.cause);
-        if t.spelling && self.type_nesting == 0 && self.in_key == 0 {
-            s.absorb(Some(Cause::Pending(crate::Area::Spelling)));
+        if self.unit_level() {
+            crate::own_spelling::left_out_of_type(self, s, written, own_fn);
         }
     }
 
@@ -437,12 +448,15 @@ impl Walk<'_> {
             }
             TypeView::DependentName { keyword, nns, name } => {
                 s.tag(type_view::DEPENDENT_NAME).tag(tag_keyword::row(&keyword));
-                self.write_nns(s, nns);
+                // A canonical type's own row: the written type is read by
+                // rule 2 (`own_spelling::ty`, `DependentName`) or marks.
+                self.write_canonical_nns(s, nns);
                 self.write_sym(s, name);
             }
             TypeView::DependentTemplateSpecialization { keyword, nns, name, args } => {
                 s.tag(type_view::DEPENDENT_TEMPLATE_SPECIALIZATION).tag(tag_keyword::row(&keyword));
-                self.write_nns(s, nns);
+                // As `DependentName`: rule 2 reads the written type.
+                self.write_canonical_nns(s, nns);
                 self.write_sym(s, name);
                 self.write_args(s, args);
             }
@@ -648,8 +662,13 @@ impl Walk<'_> {
         }
     }
 
-    /// `enum Nns`, canonical (digest-kinds §4.6).
-    pub(crate) fn write_nns(&mut self, s: &mut Stream, n: NnsId) {
+    /// `enum Nns`, canonical (digest-kinds §4.6): what the qualifier holds
+    /// beyond its canonical form is NOT written. A qualifier an
+    /// expression the full walk writes holds goes through
+    /// [`Walk::write_written_nns`]; every caller of this one says why the
+    /// canonical form loses nothing there (`spec/landed/digest-kinds/WP-041.md`,
+    /// "Fix round 4", the table of callers).
+    pub(crate) fn write_canonical_nns(&mut self, s: &mut Stream, n: NnsId) {
         if !self.enter() {
             s.uv(0).indeterminate(TOO_DEEP);
             return;
@@ -663,12 +682,14 @@ impl Walk<'_> {
                 let ns = self.ast.resolve_alias(ns);
                 self.write_ref(s, ns);
             }
+            // The prefix of a canonical level is canonical: its caller's
+            // reason covers it.
             Nns::Type { prefix, ty, template_kw: _ } => {
-                self.write_nns_opt(s, prefix);
+                self.write_canonical_nns_opt(s, prefix);
                 self.write_type(s, ty);
             }
             Nns::Identifier { prefix, name } => {
-                self.write_nns_opt(s, prefix);
+                self.write_canonical_nns_opt(s, prefix);
                 self.write_sym(s, name);
             }
             Nns::Splice(_) => {
@@ -678,10 +699,33 @@ impl Walk<'_> {
         self.leave();
     }
 
-    fn write_nns_opt(&mut self, s: &mut Stream, n: Option<NnsId>) {
+    /// `enum Nns` of the canonical form of a qualifier an expression the
+    /// full walk writes holds (digest-kinds §4.4 "Spellings", rule 11).
+    /// Written straight into a unit stream, `n` is the qualifier as the
+    /// unit holds it: its left-out facts are added to the unit's list
+    /// (`own_spelling::left_out_of_nns`). Elsewhere (a key, a type, a
+    /// profile walked in full) they are left out, and the mark is raised
+    /// as profile mode raises it (`own_spelling::nns_left_out`).
+    pub(crate) fn write_written_nns(&mut self, s: &mut Stream, n: NnsId) {
+        // The canonical form, and the written one read into the list or
+        // the mark raised: this is rule 11 itself.
+        if self.unit_level() {
+            self.spelling_off += 1;
+            self.write_canonical_nns(s, n);
+            self.spelling_off -= 1;
+            crate::own_spelling::left_out_of_nns(self, s, n);
+        } else {
+            self.write_canonical_nns(s, n);
+            if crate::own_spelling::nns_left_out(self, n) {
+                self.left_out += 1;
+            }
+        }
+    }
+
+    fn write_canonical_nns_opt(&mut self, s: &mut Stream, n: Option<NnsId>) {
         s.opt(n.is_some());
         if let Some(n) = n {
-            self.write_nns(s, n);
+            self.write_canonical_nns(s, n);
         }
     }
 
@@ -700,7 +744,9 @@ impl Walk<'_> {
                 s.indeterminate(sugar("TemplateName/Qualified"));
             }
             TemplateName::DependentIdentifier { nns, name } => {
-                self.write_nns(s, nns);
+                // A canonical template name inside a type: rule 2 reads
+                // the written one (`DependentTemplateSpecialization`).
+                self.write_canonical_nns(s, nns);
                 self.write_sym(s, name);
             }
             TemplateName::DependentOperator { nns: _, op: _ } => {
@@ -738,8 +784,24 @@ impl Walk<'_> {
     }
 
     /// `enum ArgView*` of the canonical form of list `l` (digest-kinds
-    /// §4.6).
+    /// §4.6). Written straight into a unit stream, `l` is the list as the
+    /// unit holds it: its left-out facts are added to the unit's list
+    /// (`own_spelling::left_out_of_args`), and not those of the canonical
+    /// list's types and profiles.
     pub(crate) fn write_args(&mut self, s: &mut Stream, l: ArgListId) {
+        if self.unit_level() {
+            let left_out = self.left_out;
+            self.spelling_off += 1;
+            self.write_canonical_args(s, l);
+            self.spelling_off -= 1;
+            let marked = self.left_out != left_out;
+            crate::own_spelling::left_out_of_args(self, s, l, marked);
+        } else {
+            self.write_canonical_args(s, l);
+        }
+    }
+
+    fn write_canonical_args(&mut self, s: &mut Stream, l: ArgListId) {
         if !self.enter() {
             s.count(0).indeterminate(TOO_DEEP);
             return;

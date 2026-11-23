@@ -1,0 +1,11 @@
+transform <id>
+report - note "calls_to(N::f): 1"
+report - note "calls_to(N::t): 1"
+report - note "calls_to(N::u): 2"
+report t.cpp:16:10-16:14 note "a call of N::f"
+report t.cpp:22:12-22:17 note "not a call"
+report t.cpp:22:23-22:27 note "not a call"
+report t.cpp:22:33-22:37 note "not a call"
+report t.cpp:22:44-22:49 note "not a call"
+report t.cpp:22:56-22:61 note "not a call"
+report t.cpp:22:68-22:72 note "a call"

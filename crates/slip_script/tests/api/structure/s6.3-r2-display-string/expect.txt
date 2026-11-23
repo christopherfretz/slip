@@ -1,0 +1,7 @@
+transform <id>
+report - note "a call: answered, the same twice"
+report - note "a declaration: answered, the same twice"
+report - note "a parameter: answered, the same twice"
+report - note "a reference: answered, the same twice"
+report - note "an argument: answered, the same twice"
+report - note "an entity: answered, the same twice"

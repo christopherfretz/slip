@@ -1,0 +1,4 @@
+# pending
+# needs: kiln (a constant bound that is instantiation-dependent is built without its expression: kiln_sema/src/decl.rs:1828; spec/landed/digest-kinds/WP-041.md "For Kiln")
+added f(long)
+changed template <class> void g(type-parameter-0-0, char (*)[8])

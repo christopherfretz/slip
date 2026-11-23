@@ -1,0 +1,12 @@
+transform <id>
+report - note "a reference to caf\\u00e9: null"
+report - note "a reference to n::splice: null"
+report - note "a reference to operator+: null"
+report - note "an entity: wrong_kind"
+report - note "an expression: wrong_kind"
+report t.cpp:2:8-2:9 note "the declaration of n::S"
+report t.cpp:3:3-3:4 note "a reference to n::S"
+report t.cpp:3:15-3:16 note "a reference to n::S"
+report t.cpp:9:10-9:11 note "a reference to n::S"
+report t.cpp:10:4-10:5 note "a reference to n::V"
+report t.cpp:12:6-12:7 note "a reference to n::S"

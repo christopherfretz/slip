@@ -1,0 +1,9 @@
+transform <id>
+report - note "n::A is n::E::A"
+report - note "n::A: 1"
+report - note "n::B: 0"
+report - note "n::C: 1"
+report - note "n::D: 0"
+report - note "n::E::A: 1"
+report - note "n::K::D: 1"
+report - note "n::S::B: 1"

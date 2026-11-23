@@ -1,0 +1,1 @@
+changed template <class> decltype(Bq<sizeof (sizeof (f(t)))>::k()) g(type-parameter-0-0)

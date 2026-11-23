@@ -1,0 +1,5 @@
+transform <id>
+report - note "S::a: 1, a variable"
+report - note "S::b: 1, a variable"
+report - note "S::c: 1, a variable"
+report - note "g: 1, a variable"

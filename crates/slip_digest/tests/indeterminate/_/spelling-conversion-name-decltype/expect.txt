@@ -1,0 +1,1 @@
+indeterminate template <class, class> decltype(t.operator decltype(f(U()))()) g(type-parameter-0-0, type-parameter-0-1)

@@ -1,0 +1,4 @@
+transform <id>
+report - note "replace(not editable): not_editable = 4, a message"
+report - note "report(long message): limit_exceeded = 6, a message"
+report - note "report(unknown severity): invalid_argument = 3, a message"

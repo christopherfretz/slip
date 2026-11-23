@@ -541,6 +541,8 @@ fn delete_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<
 /// expressions and their profiles read it.
 pub(crate) fn cxx_pseudo_destructor_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     run(w, s, e, pseudo_destructor_rows);
+    // Rule 11 of §4.4 "Spellings": a qualifier Kiln did not keep.
+    crate::own_spelling::pseudo_destructor(w, s, e);
 }
 
 fn pseudo_destructor_rows(w: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R>) {
@@ -1122,8 +1124,10 @@ mod tests {
             "flags 1; child ImplicitCastExpr; type int",
             Some("flags 0; child ParenExpr; type int"),
         );
-        // `aux-qualified` is written inside a dependent expression only: its
-        // pair test isolates it (the rendering has no enclosing node).
+        // `aux-qualified` is written inside a dependent expression only,
+        // where a qualified pseudo-destructor whose qualifier Kiln did not
+        // keep is indeterminate (rule 11 of §4.4 "Spellings"): its test is
+        // `indeterminate/_/pseudo-destructor-qualified-in-template`.
         check(
             "differ/ExprNode/CXXPseudoDestructorExpr.b",
             K::CXXPseudoDestructorExpr,

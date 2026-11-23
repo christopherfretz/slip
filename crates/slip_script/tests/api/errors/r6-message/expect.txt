@@ -1,0 +1,4 @@
+transform <id>
+report - note "the first has a message: yes"
+report - note "the first's message is the same after the second: yes"
+report - note "the two messages differ: yes"

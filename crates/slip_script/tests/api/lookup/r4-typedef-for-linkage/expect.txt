@@ -1,0 +1,6 @@
+transform <id>
+report - note "T is a type"
+report - note "T: 1"
+report - note "T::m: 1"
+report - note "U::k: 1"
+report - note "V::k: 0"

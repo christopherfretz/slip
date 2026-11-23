@@ -1,0 +1,6 @@
+transform <id>
+report - note "calls_to(S::g): 1"
+report - note "calls_to(tf): 1"
+report t.cpp:16:3-16:5 note "a reference to tf, a specialisation, 1 declarations"
+report t.cpp:17:13-17:14 note "a reference to S::g, a specialisation, 1 declarations"
+report t.cpp:18:10-18:12 note "a reference to vt, a specialisation, 1 declarations"

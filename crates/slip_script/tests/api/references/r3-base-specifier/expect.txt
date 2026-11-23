@@ -1,0 +1,4 @@
+transform <id>
+report t.cpp:3:12-3:13 note "N::B"
+report t.cpp:5:12-5:13 note "N"
+report t.cpp:5:12-5:16 note "N::B"

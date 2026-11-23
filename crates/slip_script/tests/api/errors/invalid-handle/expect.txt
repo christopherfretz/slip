@@ -1,0 +1,4 @@
+transform <id>
+report - note "identifier_of(null info): invalid_handle = 1, a message"
+report - note "source_text_of(forged range): invalid_handle = 1, a message"
+report - note "source_text_of(null range): invalid_handle = 1, a message"

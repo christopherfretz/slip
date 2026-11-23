@@ -122,8 +122,13 @@ pub(crate) fn decl_name(w: &mut Walk<'_>, raw: u32) -> Option<(Name, Option<Caus
         DeclNameView::Constructor(_) => (Name::Constructor, None),
         DeclNameView::Destructor(_) => (Name::Destructor, None),
         DeclNameView::Conversion(q) => {
+            // Kiln interns a conversion name by its canonical type: no
+            // spelling of the type is held, so a marked one is the first
+            // spelling's (digest-kinds §4.4 "Spellings", rule 5).
             let t = w.type_digest(q, false);
-            (Name::Conversion(t.digest), t.cause)
+            let cause =
+                t.cause.or(t.spelling.then_some(Cause::Unaccounted("spelling/conversion-name")));
+            (Name::Conversion(t.digest), cause)
         }
         DeclNameView::LiteralOperator(sym) => {
             (Name::LiteralOperator(ast.symbols().as_str(sym).as_bytes().to_vec()), None)
@@ -168,7 +173,7 @@ pub(crate) fn dependent_scope_decl_ref_expr(w: &mut Walk<'_>, s: &mut Stream, e:
     check_bits(s, &n, 0, row("ExprNode/DependentScopeDeclRefExpr.bits"));
     check_aux(s, &n, 0, row("ExprNode/DependentScopeDeclRefExpr.aux"));
     match NnsId::try_new(n.a) {
-        Some(qualifier) => w.write_nns(s, qualifier),
+        Some(qualifier) => w.write_written_nns(s, qualifier),
         None => {
             s.uv(0).indeterminate(row("ExprNode/DependentScopeDeclRefExpr.a"));
         }
@@ -367,6 +372,13 @@ pub(crate) fn cxx_fold_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     match BinaryOp::from_u8(n.aux) {
         Some(op) => {
             s.tag(binary_op::row(&op));
+            // Kiln records no definition-context operator set for a fold
+            // (`oper_lookups`): what an overloadable operator finds at
+            // instantiation is not in the digest (digest-kinds §4.4
+            // "Spellings", rule 9).
+            if crate::expr_profile::fold_left_out(w, op) {
+                s.indeterminate(Cause::Unaccounted("spelling/fold-operator"));
+            }
         }
         None => {
             s.uv(0).indeterminate(row("ExprNode/CXXFoldExpr.aux"));
@@ -419,9 +431,23 @@ pub(crate) fn integer_pack_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 /// expression (`TypeContext::profile`, `kiln_ast` `types/context.rs:1422`);
 /// only the table's sentinel entry 0, which no `ProfileId` names, has
 /// none.
+///
+/// The expression is the first spelling's, not the unit's: written
+/// straight into a unit stream, a left-out fact in it is
+/// `Unaccounted("spelling/profile")` (digest-kinds §4.4 "Spellings",
+/// rule 5).
 pub(crate) fn profile(w: &mut Walk<'_>, s: &mut Stream, p: ProfileId) {
     match w.ast.types.profile_expr(p) {
-        Some(e) => profile_expr(w, s, e),
+        Some(e) => {
+            let unit = w.unit_level();
+            let left_out = w.left_out;
+            w.spelling_off += 1;
+            profile_expr(w, s, e);
+            w.spelling_off -= 1;
+            if unit && w.left_out != left_out {
+                s.indeterminate(Cause::Unaccounted("spelling/profile"));
+            }
+        }
         None => {
             s.uv(0).indeterminate(Cause::Unaccounted("ProfileEntry/first_expr"));
         }
@@ -439,20 +465,23 @@ pub(crate) fn profile(w: &mut Walk<'_>, s: &mut Stream, p: ProfileId) {
 /// `UnitState::local_uses`, which a nested profile or type digest raises
 /// too, so it carries to every enclosing frame and to the unit (F7).
 /// Whether the profile left out a fact (`Walk::left_out`) is read the same
-/// way: outside a type and a key the unit is `Pending(Area::Spelling)`.
+/// way. Written straight into a unit stream (outside a type, a key and
+/// another profile), `e` is the unit's own spelling: its left-out facts
+/// are added to the unit's list (`own_spelling::left_out_of_expr`).
 pub(crate) fn profile_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    let unit = w.unit_level();
     let saved = w.take_expr_state();
     let uses = w.unit.local_uses;
     let left_out = w.left_out;
     w.unit.expr.profile = Some(Frame::default());
+    w.spelling_off += 1;
     crate::expr_profile::walk(w, s, e);
+    w.spelling_off -= 1;
     let frame = w.unit.expr.profile.take().unwrap_or_default();
     w.unit.expr = saved;
-    if w.left_out != left_out && w.type_nesting == 0 && w.in_key == 0 {
-        // Written straight into a unit stream (a template argument, a
-        // pattern's table row): the left-out fact is the unit's, as for a
-        // marked type (`Walk::absorb_type`).
-        s.absorb(Some(Cause::Pending(crate::Area::Spelling)));
+    if unit {
+        let marked = w.left_out != left_out;
+        crate::own_spelling::left_out_of_expr(w, s, e, marked);
     }
     if w.unit.local_uses != uses && !frame.locals.is_empty() {
         // Two numberings in one stream: an ordinal of the frame and one of

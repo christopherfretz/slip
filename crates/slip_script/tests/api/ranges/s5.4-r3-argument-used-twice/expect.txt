@@ -1,0 +1,7 @@
+transform <id>
+report - note "calls: 2"
+report - note "references: 1"
+report - note "the two calls have one callee reference"
+report t.cpp:3:15-3:16 note "reference #0"
+report t.cpp:3:15-3:19 note "call #0"
+report t.cpp:3:15-3:19 note "call #1"
