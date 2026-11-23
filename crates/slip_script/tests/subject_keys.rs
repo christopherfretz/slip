@@ -686,3 +686,16 @@ fn s7_5_rule2_an_expression_in_shared_decl_specifiers_has_no_holder() {
         assert_eq!(keys_of(s, d, Value::Expression(xs[0])), Ok(strs(&["a"])));
     });
 }
+
+// F3: an explicit instantiation of the holder changes with it, and is
+// among the keys (`Keys::derived` lists it).
+#[test]
+fn s7_5_rule1_an_explicit_instantiation_is_derived() {
+    let src = format!(
+        "{B}template <class T> int t(T) {{ return sizeof(B); }}\ntemplate int t<long>(long);\n"
+    );
+    let (keys, undeclared) = oracle(&src, "B", "B2");
+    let keys = keys.expect("keys");
+    assert!(keys.iter().any(|n| n.starts_with("t<long>(long)")), "{keys:?}");
+    assert!(undeclared.is_empty(), "changed, not declared: {undeclared:?}");
+}
