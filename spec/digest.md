@@ -765,7 +765,12 @@ written alike only if they are the same string, or the same
 name it holds, as any reference to that entity is written (so a rule maps
 it); a function name of the source-location builtins as plain or pretty
 and its context; an `__impl` object as the function of the use that built
-it and that use's ordinal among the function's. A string is written so
+it, that use's ordinal among the function's, and the bytes of the file
+name it points to, written as a `__FILE__` literal's bytes are, so the two
+cannot disagree (its line and column are dropped; its file is not). The
+function a `PredefinedExpr`'s string belongs to is looked up in whole
+definitions: the body, a function-try-block's handlers, a constructor's
+mem-initializers. A string is written so
 only where its bytes are what Kiln prints for that entity of that kind;
 anywhere else, and for a file name (which no declared rename changes), its
 bytes are written. A pointer into such a string keeps its offset by value.

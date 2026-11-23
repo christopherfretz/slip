@@ -1,5 +1,5 @@
-// WP-104 review F7: inline namespaces and unnamed classes in names and arguments (keys_and_names_are_unique); closures as
-// arguments collide by key (known, the local package's) and are left out
+// WP-104 review F7: inline namespaces and unnamed classes in names and arguments (keys_and_names_are_unique); closures at
+// namespace scope as arguments have distinct keys but collide by name (`store<legacy::(lambda)>` twice), so they are left out
 template <class T> struct store { void put(T, int = 0) {} };
 template <class... T> struct many {};
 namespace legacy {

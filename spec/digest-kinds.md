@@ -4183,32 +4183,44 @@ says. The offset into the string is written by value (`Pointer.offset`).
   expression before the `PredefinedExpr` that names it in `a`): `bytes`
   empty, `uv 0` where a string's encoding tag stands (no encoding has tag
   0), `uv 1`, the `PredefinedKind` tag, then `ref` of the function whose
-  name it is: of the functions whose compound body holds the
-  `PredefinedExpr` (expansion locations) and whose name of that kind the
-  bytes are, the innermost; none, or two of one extent that are not one
-  entity, and the bytes are written.
+  name it is: of the functions whose definition holds the
+  `PredefinedExpr` (expansion locations; a definition extends from its
+  first written mem-initializer, or the `try` of a function-try-block,
+  or its body's `{`, to its body's `}` or its last handler's) and whose
+  name of that kind the bytes are, the innermost; none, or two of one
+  extent that are not one entity, and the bytes are written. Then the
+  local scope names around that function (below).
 - `StringLit.lit` of a function name of the source-location builtins
   (`SourceLocValues` `function`, the plain name, or the function name an
   `__impl` object points to, the pretty name; one object per content):
   `bytes` empty, `uv 0`, `uv 2`, `uv 0` (plain) or `uv 1` (pretty), then
   `ref` of the context of the first use (by `ExprId`) that points to it,
-  if the bytes are that context's name of that kind. A string some use
+  if the bytes are that context's name of that kind, then the local
+  scope names around it (below). A string some use
   points to as its file (`file`, `file_name`, an `__impl` object's file)
   is written by its bytes.
 - `Const.0` of an `__impl` object (`SourceLocValues` `location`): the
   digest `H("slip.value.v1", uv 0, uv 3, type)` of its type (a value's
   own stream begins with a `ValueKind` tag, never 0, so no value written
   by content has it), then `ref?` of the function of the use that built
-  it (`Ref::none` outside a function) and `uv` its ordinal among the uses
-  of that function (of every context that is not a function) that build
-  one, in `ExprId` order. Kiln builds one object per use
+  it (`Ref::none` outside a function), the local scope names around that
+  function (`count` 0 outside one), `uv` its ordinal among the uses of
+  that function (of every context that is not a function) that build
+  one, in `ExprId` order, then the file name it points to (the use's
+  `SourceLocValues` `file`): `opt`, and the literal's entry as `string`
+  writes any literal's, bytes then encoding tag, the treatment a
+  `__FILE__` literal's bytes get. Its line and column are not written.
+  Kiln builds one object per use
   (`kiln_sema/src/builtins.rs:3752` `source_location_object`); an object
   no recorded use names (one a deduced return type replaced, `:3660`) is
   written by content.
 
 The local scope names of the entity a `ref` names (WP-040,
 `write_scope_names`) are part of a name string's identity and are
-written in both modes. Where the walk writes such values by value (§4.2
+written in both modes: `count`, then the name of each named local class
+or enumeration around the entity, outermost first (`local.rs`
+`write_names_around`), since a reference to a local entity holds no
+name. Where the walk writes such values by value (§4.2
 rule 8) the rows are written as the table says.
 
 ### `kiln_ast::consts::value::ByteImage`

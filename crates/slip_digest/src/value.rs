@@ -345,10 +345,13 @@ pub(crate) struct NameValues {
     /// The `ConstValueId`s (index) of the `__impl` objects: the function
     /// the use that built it is in (`None` outside a function) and the
     /// use's ordinal among the uses of that function, or of every context
-    /// that is not a function, that build one (`ExprId` order).
-    objects: HashMap<u32, (Option<DeclId>, u64)>,
-    /// Every function with a compound body: its `{` and `}` as file
-    /// locations (raw), sorted.
+    /// that is not a function, that build one (`ExprId` order); and the
+    /// literal of the file name it points to.
+    objects: HashMap<u32, (Option<DeclId>, u64, Option<StringLitId>)>,
+    /// Every function definition's extent, as file locations (raw),
+    /// sorted: the first written mem-initializer, or the `try` of a
+    /// function-try-block, or the body's `{`, to the body's `}` or the
+    /// last handler's.
     bodies: Vec<(u32, u32, DeclId)>,
     /// The entity found for a `PredefinedExpr`'s string, by literal.
     owners: HashMap<u32, Option<DeclId>>,
@@ -388,6 +391,16 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 designated: _,
                 past: _,
             }) => Some(origin),
+            _ => None,
+        };
+        let lit_of = |c: ConstValueId| match ast.consts.scalar(c) {
+            Some(Scalar::Pointer {
+                ty: _,
+                base: PtrBase::StringLit { lit, origin: _ },
+                offset: _,
+                designated: _,
+                past: _,
+            }) => Some(lit),
             _ => None,
         };
         let mut uses: Vec<(ExprId, slip_kiln::kiln::ast::expr::SourceLocValues)> =
@@ -434,7 +447,7 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
             {
                 let group = ast.decls.get(ctx).kind().is_function().then_some(ctx);
                 let n = ordinals.entry(group).or_insert(0);
-                if nv.objects.insert(obj.index(), (group, *n)).is_none() {
+                if nv.objects.insert(obj.index(), (group, *n, lit_of(file))).is_none() {
                     *n += 1;
                 }
                 let file_origin = origin_of(file);
@@ -445,22 +458,56 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 }
             }
         }
-        for d in ast.decls.ids() {
-            let Some(f) = ast.decls.function(d) else { continue };
-            let Some(b) = f.body else { continue };
-            let st = ast.stmts.get(b);
-            if st.kind() != slip_kiln::kiln::ast::stmt::StmtKind::CompoundStmt {
-                continue;
-            }
-            let lo = sm.expansion_loc(st.loc());
-            let hi = sm.expansion_loc(ast.stmts.rbrace(b));
-            if lo.is_file() && hi.is_file() && lo <= hi {
-                nv.bodies.push((lo.to_raw(), hi.to_raw(), d));
-            }
-        }
-        nv.bodies.sort_unstable_by_key(|&(lo, hi, d)| (lo, hi, d.index()));
+        nv.bodies = definition_extents(ast, sm);
         nv
     })
+}
+
+/// Every function definition's extent ([`NameValues`] `bodies`), sorted:
+/// the first written mem-initializer, or the `try` of a function-try-block,
+/// or the body's `{`, to the body's `}` or the last handler's, as file
+/// locations (raw).
+fn definition_extents(
+    ast: &slip_kiln::kiln::ast::Ast,
+    sm: &slip_kiln::kiln::source::SourceManager,
+) -> Vec<(u32, u32, DeclId)> {
+    use slip_kiln::kiln::ast::stmt::StmtKind;
+    let mut out = Vec::new();
+    for d in ast.decls.ids() {
+        let Some(f) = ast.decls.function(d) else { continue };
+        let Some(b) = f.body else { continue };
+        let st = ast.stmts.get(b);
+        let (lo, hi) = match st.kind() {
+            StmtKind::CompoundStmt => (st.loc(), ast.stmts.rbrace(b)),
+            // Kiln's `parse_function_definition`: `try` is the
+            // statement's location, the last handler's `}` ends the
+            // definition.
+            StmtKind::CXXTryStmt => {
+                let last = ast
+                    .lists
+                    .iter::<slip_kiln::kiln::ast::StmtId>(ast.stmts.try_handlers(b))
+                    .last();
+                let Some(h) = last else { continue };
+                (st.loc(), ast.stmts.rbrace(ast.stmts.catch_block(h)))
+            }
+            _ => continue,
+        };
+        let mut lo = sm.expansion_loc(lo);
+        let hi = sm.expansion_loc(hi);
+        // A constructor's written mem-initializers come before its body
+        // (or after `try`): each begins at its mem-initializer-id.
+        for init in ast.ctor_inits(d).filter(|i| i.is_written()) {
+            let at = sm.expansion_loc(init.loc);
+            if at.is_file() && at.to_raw() < lo.to_raw() {
+                lo = at;
+            }
+        }
+        if lo.is_file() && hi.is_file() && lo <= hi {
+            out.push((lo.to_raw(), hi.to_raw(), d));
+        }
+    }
+    out.sort_unstable_by_key(|&(lo, hi, d)| (lo, hi, d.index()));
+    out
 }
 
 /// Kiln's names of function `f` for a `PredefinedExpr` or a
@@ -553,17 +600,21 @@ fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<Nam
 /// encoding tag stands (0 is no tag, so no literal is written so), then
 /// `uv 1`, the `PredefinedKind` tag and the function, for a
 /// `PredefinedExpr`'s value; `uv 2`, `uv 0` (plain) or `uv 1` (pretty)
-/// and the context, for a source-location function name.
+/// and the context, for a source-location function name; then the names
+/// of the named local types around that function
+/// ([`crate::local::write_names_around`]).
 fn write_name_string(w: &mut Walk<'_>, s: &mut Stream, which: NameString) {
     s.bytes(&[]).uv(0);
     match which {
         NameString::Predefined(k, f) => {
             s.uv(1).tag(crate::tables::predefined_kind::row(&k));
             w.write_ref(s, f);
+            crate::local::write_names_around(w, s, f);
         }
         NameString::SourceLoc(role, ctx) => {
             s.uv(2).uv(u64::from(role == Role::Pretty));
             w.write_ref(s, ctx);
+            crate::local::write_names_around(w, s, ctx);
         }
     }
 }
@@ -572,8 +623,12 @@ fn write_name_string(w: &mut Walk<'_>, s: &mut Stream, which: NameString) {
 /// `H("slip.value.v1", uv 0, uv 3, type)` of its type (a value's own
 /// stream begins with a `ValueKind` tag, never 0, so no constant written
 /// by content has this digest), then the context of the use that built
-/// it (`Ref::none` outside a function) and the use's ordinal among
-/// that function's (among every other context's, outside one).
+/// it (`Ref::none` outside a function) and the names of the named local
+/// types around it, the use's ordinal among
+/// that function's (among every other context's, outside one), then the
+/// file name it points to: `opt`, and the literal as `string` writes a
+/// `__FILE__` literal's (§9: the file is not dropped, the line and
+/// column are).
 fn write_location(w: &mut Walk<'_>, s: &mut Stream, obj: ConstValueId) {
     let ty = match w.ast.consts.get(obj) {
         ConstValue::Aggregate(img) => Some(img.ty),
@@ -589,9 +644,24 @@ fn write_location(w: &mut Walk<'_>, s: &mut Stream, obj: ConstValueId) {
     }
     let hashed = w.hashed(inner.finish(VALUE_TAG));
     s.digest(&hashed.digest).absorb(hashed.cause);
-    let (ctx, n) = name_values(w).objects[&obj.index()];
+    let (ctx, n, file) = name_values(w).objects[&obj.index()];
     w.write_ref_opt(s, ctx);
+    match ctx {
+        Some(f) => crate::local::write_names_around(w, s, f),
+        None => {
+            s.count(0);
+        }
+    }
     s.uv(n);
+    match file {
+        Some(lit) => {
+            s.opt(true);
+            string(w, s, lit);
+        }
+        None => {
+            s.opt(false);
+        }
+    }
 }
 
 /// The memo of content digests for the walk's mode: one written with
