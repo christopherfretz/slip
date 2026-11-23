@@ -6,8 +6,13 @@
 //! tokens edits is `SourceManager::editable_file_range` (Kiln
 //! `spec/source.md` "Editable file ranges"), and where a token ends is
 //! `kiln_lex::token_end` (Kiln `spec/lex.md` "End of a token", reached
-//! through [`Unit::token_end`]). This module calls them and lexes
-//! nothing; it has no rule of its own for a range of file characters.
+//! through [`Unit::token_end`]); whether a location starts a token is
+//! Kiln's lexer ([`Unit::is_token_start`]). This module has no rule of its
+//! own for a range of file characters or for what a token is; it only
+//! refuses ranges Kiln gives: empty or reversed ones, ones in a
+//! `<scratch space>` buffer, and two interim refusals until Kiln records
+//! what they guess at (a possibly split `>`, a directive line;
+//! `spec/landed/api/WP-084.md` "Until Kiln answers").
 //!
 //! What is Slip's:
 //!
@@ -59,8 +64,10 @@ pub struct FileRange {
 ///
 /// Kiln's `editable_file_range` of `span`, unchanged, with its tier (the
 /// module documentation). `None` for an empty span (version 0 of the API
-/// has no insertion point, `spec/api.md` §5.4) and wherever Kiln gives
-/// none. A span that is one whole macro invocation is that invocation's
+/// has no insertion point, `spec/api.md` §5.4), wherever Kiln gives none
+/// or an empty or reversed run, in a `<scratch space>` buffer (`#embed`'s
+/// tokens), and (INTERIM) for a range that holds or is in a directive
+/// line. A span that is one whole macro invocation is that invocation's
 /// bytes, at tier 0, also when its one token came from an argument
 /// (`ID(foo)` with `#define ID(x) x`: the seven bytes `ID(foo)`).
 ///

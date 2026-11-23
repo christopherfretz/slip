@@ -716,6 +716,84 @@ fn s1_unit_order_forced_include_comes_before_the_main_file() {
     assert_eq!(wrong, 0, "every forced location before every main location");
 }
 
+/// The literals `#embed` gives in a C23 unit, as `(locations of the
+/// embedded literals, the location of the `9` after them)`, and what
+/// `f` answers for them.
+fn with_embed<R: Send>(
+    f: impl FnOnce(&Unit<'_>, &[slip_kiln::kiln::source::Loc], slip_kiln::kiln::source::Loc) -> R + Send,
+) -> R {
+    use slip_kiln::kiln::ast::ids::ExprId;
+    use slip_kiln::kiln::source::Span;
+    let fx = Fixture::new("embed");
+    fx.write_bytes("d.bin", &[2, 3]);
+    fx.write("main.c", "const unsigned char d[] = {\n#embed \"d.bin\"\n, 9 };\n");
+    let o = fx.observer(".", &["cc", "-std=c23", "main.c"]);
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        let (sm, ast) = (unit.sm(), unit.ast());
+        let firsts: Vec<_> = (1..=ast.exprs.len())
+            .filter_map(|k| ExprId::try_new(u32::try_from(k).ok()?))
+            .map(|e| ast.begin_loc(e))
+            .filter(|l| l.is_valid())
+            .collect();
+        let mut embedded: Vec<_> =
+            firsts.iter().copied().filter(|&l| sm.is_written_in_scratch_space(l)).collect();
+        // A literal and its implicit conversion begin at one location.
+        embedded.sort();
+        embedded.dedup();
+        let nine = firsts
+            .iter()
+            .copied()
+            .find(|&l| unit.token_end(l).and_then(|e| sm.span_text(Span::new(l, e))) == Some("9"))
+            .expect("the 9");
+        f(unit, &embedded, nine)
+    })
+    .unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    seen.expect("the closure ran")
+}
+
+// `spec/landed/api/WP-084.md`: the tokens of `#embed` are file locations
+// in a fresh `<scratch space>` buffer, which the unit did not enter. They
+// get no range, and unit order ranks that buffer as it ranks every root
+// that is neither `<built-in>` nor invalid: by raw order, after the main
+// file. So they come after the `9` that follows them (wrong, and
+// pinned; the right order is the ignored test below).
+#[test]
+fn s1_embed_tokens_have_no_range_and_rank_after_the_main_file() {
+    use slip_kiln::ranges::{file_range, unit_order};
+    use std::cmp::Ordering;
+    let (n, ranges, after_nine, after_main) = with_embed(|unit, embedded, nine| {
+        let sm = unit.sm();
+        let main = unit.main_file().expect("a main file");
+        let len = u32::try_from(sm.text(main).len()).unwrap();
+        let ranges = embedded.iter().filter(|&&l| file_range(unit, l, l).is_some()).count();
+        let after_nine =
+            embedded.iter().filter(|&&l| unit_order(sm, l, nine) == Ordering::Greater).count();
+        let after_main = embedded
+            .iter()
+            .filter(|&&l| (0..=len).all(|o| unit_order(sm, sm.loc(main, o), l) == Ordering::Less))
+            .count();
+        (embedded.len(), ranges, after_nine, after_main)
+    });
+    assert_eq!(n, 2, "two embedded literals");
+    assert_eq!(ranges, 0, "no range for an embedded literal");
+    assert_eq!((after_nine, after_main), (2, 2), "the documented rank: after the main file");
+}
+
+// The right order of `#embed`'s tokens: before the `9` after the
+// directive. Pending a parent location for Kiln's `<scratch space>`
+// buffers of `#embed` (`spec/landed/api/WP-084.md` "Until Kiln answers").
+#[test]
+#[ignore = "pending Kiln: an `#embed` buffer has no parent location (spec/landed/api/WP-084.md)"]
+fn s1_pending_embed_tokens_order_before_what_follows_the_directive() {
+    use slip_kiln::ranges::unit_order;
+    use std::cmp::Ordering;
+    let wrong = with_embed(|unit, embedded, nine| {
+        embedded.iter().filter(|&&l| unit_order(unit.sm(), l, nine) != Ordering::Less).count()
+    });
+    assert_eq!(wrong, 0);
+}
+
 // §8.4 `parse_observer_with`: the closure runs for a `diagnosed` unit and
 // not for a `rejected` one.
 #[test]

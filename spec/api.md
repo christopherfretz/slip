@@ -596,8 +596,12 @@ with token sequence `T(X)` after preprocessing:
    holds no space or comment before or after them. When both rows hold
    (a span that is the whole expansion of an invocation, every token of
    which one argument produced: `foo` from `ID(foo)` with `#define
-   ID(x) x`), the range is tier 0's, the invocation. This section was silent
-   on both until `spec/landed/api/WP-084.md`; that file records how the
+   ID(x) x`) and Kiln's rules see the whole expansion, the range is tier
+   0's, the invocation. Where they do not (an expansion whose first or
+   last token is not one the span can name: `F(, b)`, `F(b, )`, `E()`
+   with `__VA_OPT__`, `_Pragma`), the range is narrower or null, never
+   wider; `spec/landed/api/WP-084.md` decision 3 lists those shapes. This
+   section was silent on both until that file, which also records how the
    tier is derived from the source manager's rules.
 7. `spec/macros.md` will define tiers for all of Slip. Until it is
    written this section is the definition for the API.

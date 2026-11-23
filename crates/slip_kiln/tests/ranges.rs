@@ -142,6 +142,12 @@ fn spelling(sm: &SourceManager, t: &Token) -> String {
     sm.span_text(t.span).unwrap_or("<?>").to_owned()
 }
 
+/// Whether the token `last..end` begins with `>` and is longer than one
+/// byte: `file_range` refuses it (decision 6, interim).
+fn may_be_split(sm: &SourceManager, last: Loc, end: Loc) -> bool {
+    sm.span_text(Span::new(last, end)).is_some_and(|x| x.len() > 1 && x.starts_with('>'))
+}
+
 /// What a test sees: the parsed unit, its token sequence and the snippet
 /// path of each buffer.
 struct Seen<'a, 'r> {
@@ -170,11 +176,17 @@ impl Seen<'_, '_> {
     }
 
     /// `file_range` of tokens `i..=j`, checked against
-    /// `file_range_of_span` of the same tokens (test 6).
+    /// `file_range_of_span` of the same tokens (test 6), or against `None`
+    /// when the last token may be a split `>` ([`may_be_split`]).
     fn range(&self, i: usize, j: usize) -> Option<FileRange> {
         let (first, last) = (self.toks[i].span.lo, self.toks[j].span.lo);
         let r = file_range(self.p.unit(), first, last);
-        let s = file_range_of_span(self.sm(), Span::new(first, self.toks[j].span.hi));
+        let span = Span::new(first, self.toks[j].span.hi);
+        let s = if may_be_split(self.sm(), last, span.hi) {
+            None
+        } else {
+            file_range_of_span(self.sm(), span)
+        };
         assert_eq!(r, s, "test 6: token_end against the token's own end, tokens {i}..={j}");
         r
     }
@@ -418,6 +430,212 @@ fn s5_4_test3_none_two_files_empty_and_not_a_token() {
     });
 }
 
+/// Test 1 where raw location order is not text order: a span from a
+/// macro token to a later file token (`P 2`), and one from an argument's
+/// token to file text after the invocation (`ID(foo)(a)`). The tokens of
+/// an expansion have raw locations above every file location, so an
+/// empty check done on raw locations refuses both.
+#[test]
+fn s5_4_test1_tier0_from_an_expansion_into_file_text() {
+    let src =
+        "#define P 1 +\n#define ID(x) x\nint foo(int); int a;\nint v = P 2;\nint w = ID(foo)(a);\n";
+    unit(src, &[], |u| {
+        let (one, two) = (u.nth("1", 0), u.nth("2", 0));
+        assert!(u.toks[one].span.lo.is_macro() && !u.toks[two].span.lo.is_macro());
+        assert!(u.toks[one].span.lo > u.toks[two].span.lo, "raw order is not text order");
+        assert_eq!(u.edit(one, two), some("P 2", T0));
+        assert_eq!(u.edit_of(("foo", 1), (")", 1)), some("ID(foo)(a)", T0));
+    });
+}
+
+/// The `(kind, begin, end)` of every expression of `u` whose begin is
+/// spelled with `prefix`.
+fn exprs_at(u: &Seen<'_, '_>, prefix: &str) -> Vec<(ExprKind, ExprId, Loc, Loc)> {
+    let ast = u.p.ast;
+    let n = u32::try_from(prefix.len()).unwrap();
+    (1..=ast.exprs.len())
+        .filter_map(|k| ExprId::try_new(u32::try_from(k).ok()?))
+        .map(|e| (ast.exprs.get(e).kind(), e, ast.begin_loc(e), ast.end_loc(e)))
+        .filter(|&(_, _, f, _)| {
+            f.is_valid() && u.sm().span_text(Span::new(f, f.with_offset(n))) == Some(prefix)
+        })
+        .collect()
+}
+
+/// Decision 6 (`spec/landed/api/WP-084.md`): an AST node may begin inside
+/// a token. The call of a user-defined literal, its callee, and an
+/// operator expression it begins, begin at the literal's suffix; they get
+/// no range, and neither does a span ending at a suffix.
+#[test]
+fn s5_4_test3_none_an_end_inside_a_token() {
+    let src = "unsigned long long operator\"\"_k(unsigned long long);\n\
+               const char* operator\"\"_s(const char*, decltype(sizeof 0));\n\
+               auto a = 12_k + 1;\nauto b = \"xy\"_s;\n";
+    unit(src, &[], |u| {
+        let unit = u.p.unit();
+        let mut suffixes = Vec::new();
+        for lit in ["12_k", "\"xy\"_s"] {
+            let t = u.toks[u.nth(lit, 0)].span;
+            let suffix = t.lo.with_offset(u32::try_from(lit.len()).unwrap() - 2);
+            assert!(unit.is_token_start(t.lo) && !unit.is_token_start(suffix), "{lit}");
+            assert_eq!(file_range(unit, suffix, suffix), None, "{lit}: at the suffix");
+            assert_eq!(file_range(unit, t.lo, suffix), None, "{lit}: last at the suffix");
+            suffixes.push(suffix);
+        }
+        let one = u.toks[u.nth("1", 0)].span.lo;
+        assert_eq!(file_range(unit, suffixes[0], one), None, "`_k + 1`");
+        assert_eq!(u.edit_of(("12_k", 0), ("1", 0)), some("12_k + 1", T0), "from the token");
+        let at_suffix = [exprs_at(u, "_k"), exprs_at(u, "_s")].concat();
+        assert!(at_suffix.len() >= 3, "the calls, the callees, `+`: {at_suffix:?}");
+        for (kind, _, f, l) in at_suffix {
+            assert!(!unit.is_token_start(f));
+            assert_eq!(file_range(unit, f, l), None, "{kind:?}");
+        }
+    });
+}
+
+/// Decision 3 (`spec/landed/api/WP-084.md`): shapes that §5.4's table
+/// would give a whole-expansion range, where Kiln's rules do not see the
+/// whole expansion, get less (review F7). Pinned, so that a change in
+/// Kiln's rules shows here.
+#[test]
+fn s5_4_shapes_kiln_gives_less_than_the_table() {
+    let src = "#define F(x, y) x y\n#define E(...) 2 __VA_OPT__(+ __VA_ARGS__)\n\
+               #define PR _Pragma(\"slip_wp084\") a\nint a, b;\n\
+               int v1 = F(, b);\nint v2 = F(b, );\nint v3 = E();\nint v4 = PR;\n";
+    unit(src, &[], |u| {
+        assert_eq!(u.edit_of(("b", 1), ("b", 1)), some("b", T1), "F(, b)");
+        assert_eq!(u.edit_of(("b", 2), ("b", 2)), some("b", T1), "F(b, )");
+        assert_eq!(u.edit_of(("2", 0), ("2", 0)), None, "E()");
+        assert_eq!(u.edit_of(("a", 1), ("a", 1)), None, "PR");
+    });
+}
+
+/// The source of review F1: `B<vt<1>> y;` ends `vt<1>` at the first `>`
+/// of `>>`, which the parser split.
+const SPLIT_GREATER: &str = "template <int N> constexpr int vt = N;\n\
+     template <int N> struct B { static constexpr int c = N; };\n\
+     B<vt<1>> y;\nint z = B<vt<B<1>::c>>::c;\n\
+     struct Q {};\nint operator>>(Q, int);\nint s = operator>>(Q{}, 4 >> 1);\n";
+
+/// Decision 6, interim (`spec/landed/api/WP-084.md` "Until Kiln
+/// answers"): a span whose last token, as `token_end` lexes it, begins
+/// with `>` and is longer than one byte gets no range, whether or not the
+/// parser split it. The loss: a name ending in `>>`, `>=` or `>>=`
+/// (`operator>>`), and a split `>` that ends a template argument list.
+#[test]
+fn s5_4_test3_none_a_possibly_split_greater() {
+    unit(SPLIT_GREATER, &[], |u| {
+        let vt: Vec<_> =
+            exprs_at(u, "vt").into_iter().filter(|e| e.0 == ExprKind::DeclRefExpr).collect();
+        assert_eq!(vt.len(), 2, "{vt:?}");
+        for (_, _, f, l) in vt {
+            assert_eq!(u.sm().span_text(Span::new(l, l.with_offset(2))), Some(">>"));
+            assert_eq!(file_range(u.p.unit(), f, l), None, "split: no range");
+        }
+        assert_eq!(u.edit_of(("vt", 1), (">>", 0)), None, "the tokens as lexed");
+        assert_eq!(
+            u.edit_of(("operator", 1), (">>", 3)),
+            None,
+            "`operator>>` as written: the loss"
+        );
+        assert_eq!(u.edit_of(("4", 0), ("1", 2)), some("4 >> 1", T0), "a `>>` inside the span");
+    });
+}
+
+/// The right answer for review F1, pending Kiln's record of split `>`
+/// tokens: the range of `vt<1>` is `vt<1>`.
+#[test]
+#[ignore = "pending Kiln: no record of a split `>` (spec/landed/api/WP-084.md \"Until Kiln answers\")"]
+fn s5_4_pending_a_split_greater_ends_at_its_first_byte() {
+    unit(SPLIT_GREATER, &[], |u| {
+        let vt: Vec<_> =
+            exprs_at(u, "vt").into_iter().filter(|e| e.0 == ExprKind::DeclRefExpr).collect();
+        let texts: Vec<_> = vt
+            .iter()
+            .map(|&(_, _, f, l)| file_range(u.p.unit(), f, l).map(|r| (u.text(r), r.tier)))
+            .collect();
+        assert_eq!(texts, [some("vt<1>", T0), some("vt<B<1>::c>", T0)]);
+    });
+}
+
+/// Decision 10, interim (`spec/landed/api/WP-084.md` "Until Kiln
+/// answers"): a range that holds a preprocessing directive, or a line of
+/// a skipped group, is no range, at either tier. Review F3's two sources,
+/// `#include`, `#pragma`, `#define`, `%:` and a directive after a comment
+/// inside; a range inside one branch of an `#if`, and one over lines
+/// with no directive, have a range.
+#[test]
+fn s5_4_test3_none_a_range_holding_a_directive() {
+    let skipped = "int f(int, int); int b, c;\nint v = f(1,\n#ifdef X\n b\n#else\n c\n#endif\n);\n";
+    unit(skipped, &[], |u| {
+        assert_eq!(u.edit_of(("f", 1), (")", 1)), None, "the call holds the skipped `b`");
+        assert_eq!(u.edit_of(("1", 0), ("c", 1)), None);
+        assert_eq!(u.edit_of(("c", 1), ("c", 1)), some("c", T0), "inside one branch");
+    });
+    unit("int v = 1\n#if 1\n+ 2\n#endif\n;\n", &[], |u| {
+        assert_eq!(u.edit_of(("1", 0), ("2", 0)), None, "`#if` without its `#endif`");
+        assert_eq!(u.edit_of(("+", 0), ("2", 0)), some("+ 2", T0), "inside the group");
+    });
+    let cases = [
+        ("#include \"e.h\"", "an #include"),
+        ("#pragma slip_wp084", "a #pragma"),
+        ("#define Z 0", "a #define"),
+        ("%:define Y 0", "a digraph directive"),
+        ("  /* c */ # define W 0", "a directive after blanks and a comment"),
+    ];
+    for (line, what) in cases {
+        let src = format!("int v = (1\n{line}\n+ 2);\n");
+        unit(&src, &[("e.h", "// nothing\n")], |u| {
+            assert_eq!(u.edit_of(("(", 0), (")", 0)), None, "{what}");
+            assert_eq!(u.edit_of(("+", 0), ("2", 0)), some("+ 2", T0), "{what}: after it");
+        });
+    }
+    let multi = "#if 1\nint v = (1 +\n  2 *\n  3);\n#endif\n";
+    unit(multi, &[], |u| {
+        assert_eq!(u.edit_of(("(", 0), (")", 0)), some("(1 +\n  2 *\n  3)", T0), "no directive");
+    });
+    // Tier 1: an argument holding a conditional.
+    let arg = "#define F(x) (x)\nint v = F(1\n#if 1\n+ 2\n#endif\n);\n";
+    unit(arg, &[], |u| {
+        assert_eq!(u.edit_of(("1", 0), ("2", 0)), None, "an argument holding `#if`");
+        assert_eq!(u.edit_of(("1", 0), ("1", 0)), some("1", T1));
+    });
+    // The interim check reads bytes: a raw string with a line starting
+    // with `#` is refused too (a loss until Kiln records directives).
+    unit("const char* r = R\"(\n#x)\";\n", &[], |u| {
+        let t = u.nth("R\"(\n#x)\"", 0);
+        assert_eq!(u.edit(t, t), None, "interim: a raw string line beginning with #");
+    });
+}
+
+/// What a consumer gets for an implicit node (review F5): its begin and
+/// end are those of what it stands for, so `file_range` gives that
+/// range. No range for an implicit node is the consumer's rule
+/// (`spec/landed/api/WP-084.md`, "What a consumer must not assume").
+#[test]
+fn s5_4_implicit_nodes_have_the_range_of_what_they_stand_for() {
+    let src = "struct S { int m; int g() { return m; } };\nint arr[2];\n\
+               void h() { for (int x : arr) { (void)x; } }\n";
+    unit(src, &[], |u| {
+        let ast = u.p.ast;
+        let this: Vec<_> = exprs_at(u, "m")
+            .into_iter()
+            .filter(|&(k, e, _, _)| k == ExprKind::CXXThisExpr && ast.exprs.this_is_implicit(e))
+            .collect();
+        assert_eq!(this.len(), 1, "{this:?}");
+        let (_, _, f, l) = this[0];
+        assert_eq!(file_range(u.p.unit(), f, l).map(|r| (u.text(r), r.tier)), some("m", T0));
+        // The range-for's implicit variables and calls begin at `:`.
+        let colon: Vec<_> = exprs_at(u, ":")
+            .into_iter()
+            .filter_map(|(_, _, f, l)| file_range(u.p.unit(), f, l).map(|r| u.text(r)))
+            .collect();
+        assert!(colon.iter().any(|t| t == ":"), "{colon:?}");
+        assert!(colon.iter().any(|t| t == ": arr"), "{colon:?}");
+    });
+}
+
 /// `Unit::token_end` is Kiln's `token_end` with the unit's lexer options
 /// and interner: an identifier, a literal with a suffix, a token spliced
 /// over a line, a macro token measured where it is spelled.
@@ -574,6 +792,49 @@ fn s1_test5_unit_order_predefines_before_the_main_file() {
                 assert_eq!(unit_order(sm, a, b), Ordering::Less, "{a:?} {b:?}");
             }
         }
+    });
+}
+
+/// Test 5: the invalid location comes before every location, and is
+/// equal to itself (`spec/landed/api/WP-084.md`).
+#[test]
+fn s1_test5_unit_order_invalid_first() {
+    unit("#define E 1\nint m = E;\n#include \"h.h\"\n", &[("h.h", "int h;\n")], |u| {
+        let sm = u.sm();
+        assert_eq!(unit_order(sm, Loc::INVALID, Loc::INVALID), Ordering::Equal);
+        let mut all: Vec<Loc> = u.toks.iter().map(|t| t.span.lo).collect();
+        for f in sm.file_ids() {
+            all.push(sm.loc(f, 0));
+        }
+        for l in all {
+            assert_eq!(unit_order(sm, Loc::INVALID, l), Ordering::Less, "{l:?}");
+            assert_eq!(unit_order(sm, l, Loc::INVALID), Ordering::Greater, "{l:?}");
+        }
+    });
+}
+
+/// Test 5 at depth: eight nested includes, and a token that is an
+/// argument of six nested invocations at the bottom; chains longer than
+/// a few links order as the token sequence.
+#[test]
+fn s1_test5_unit_order_deep_nesting() {
+    let mut headers: Vec<(String, String)> = (1..8)
+        .map(|k| (format!("h{k}.h"), format!("int a{k};\n#include \"h{}.h\"\nint b{k};\n", k + 1)))
+        .collect();
+    headers.push((
+        "h8.h".to_owned(),
+        "#define M1(x) (x)\n#define M2(x) M1(x)\n#define M3(x) M2(x)\n#define M4(x) M3(x)\n\
+         #define M5(x) M4(x)\n#define M6(x) M5(x)\nint deep = M6(M6(7) + 1);\n"
+            .to_owned(),
+    ));
+    let h: Vec<(&str, &str)> = headers.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    unit("int m0;\n#include \"h1.h\"\nint m1;\n", &h, |u| {
+        let at = |t: &str| u.toks[u.nth(t, 0)].span.lo;
+        let lt = |a, b| unit_order(u.sm(), a, b) == Ordering::Less;
+        assert!(at("7").is_macro());
+        assert!(lt(at("a7"), at("7")) && lt(at("7"), at("1")) && lt(at("1"), at("b7")));
+        assert!(lt(at("7"), at("m1")) && lt(at("m0"), at("7")));
+        check_total_order(u);
     });
 }
 
@@ -778,7 +1039,7 @@ fn none_reason(u: &Seen<'_, '_>, first: Loc, last: Loc) -> &'static str {
         return "an end inside a token";
     }
     let Some(end) = unit.token_end(last) else { return "no token ends the span" };
-    if u.sm().span_text(Span::new(last, end)).is_some_and(|x| x.len() > 1 && x.starts_with('>')) {
+    if may_be_split(u.sm(), last, end) {
         return "interim: the last token may be a split `>`";
     }
     // Kiln gave a range that `file_range_of_span` refused.
@@ -836,8 +1097,13 @@ fn check_range(
     let sel: Vec<usize> = (0..before.text.len()).filter(|&k| before.entry[k] == *entry).collect();
     let toks: Vec<Token> = sel.iter().map(|&k| u.toks[k]).collect();
     let b: Vec<String> = sel.iter().map(|&k| before.text[k].clone()).collect();
-    let a: Vec<String> =
-        after.text.iter().zip(&after.entry).filter(|(_, e)| *e == entry).map(|(t, _)| t.clone()).collect();
+    let a: Vec<String> = after
+        .text
+        .iter()
+        .zip(&after.entry)
+        .filter(|(_, e)| *e == entry)
+        .map(|(t, _)| t.clone())
+        .collect();
     let at = |k: usize| sel.binary_search(&k).expect("a token of the entry");
     check_entry(u, &toks, &b, &a, r, at(i), at(j))
 }
@@ -1097,7 +1363,7 @@ fn property_of(
                 continue;
             };
             let a = file_range(u.p.unit(), s.lo, last);
-            let split = sm.span_text(Span::new(last, s.hi)).is_some_and(|x| x.len() > 1 && x.starts_with('>'));
+            let split = may_be_split(sm, last, s.hi);
             let b = if split { None } else { file_range_of_span(sm, s) };
             t.refs_split += u64::from(split);
             if a != b {
@@ -1138,6 +1404,13 @@ const PROPERTY_SNIPPETS: &[&str] = &[
      NEG(k)); }\n",
     "#define BODY return a\n#define ARG2(x, y) y\n#define LP (\n#define FN h\n\
      int h(int);\nint q(int a) { int r = FN(a) + ARG2(a, a + 1) + h LP 3); BODY; }\n",
+    // Raw order is not text order: from a macro token into file text.
+    "#define P 1 +\n#define ID(x) x\nint foo(int); int a;\nint v = P 2;\nint w = ID(foo)(a) + P ID(a);\n",
+    // Ends inside a token (decision 6), a possibly split `>`, directives.
+    "unsigned long long operator\"\"_k(unsigned long long);\nauto a = 12_k + 1 + (2_k);\n\
+     template <int N> constexpr int vt = N;\ntemplate <int N> struct B { static constexpr int c = N; };\n\
+     B<vt<1>> y;\nint z = B<vt<B<1>::c>>::c + (4 >> 1);\n\
+     int f(int, int); int b, c;\nint v = f(1,\n#ifdef X\n b\n#else\n c\n#endif\n) + (1\n#if 1\n+ 2\n#endif\n);\n",
 ];
 
 /// Test 4 on the snippets above, with headers and an expansion split by
@@ -1145,12 +1418,32 @@ const PROPERTY_SNIPPETS: &[&str] = &[
 #[test]
 fn s5_4_test4_property_on_macro_snippets() {
     let mut tally = Tally::default();
-    for (k, s) in PROPERTY_SNIPPETS.iter().enumerate() {
-        tally.add(property(&Source::new(s, &[]), &format!("snippet {k}")));
-    }
     let h = "#define HF(x) (x)\ninline int hv(int a) { return HF(a + 1) * 2; }\n";
     let main = "#include \"h.h\"\n#define K 3\nint w = hv(K) + HF(hv(2) + K);\n";
-    tally.add(property(&Source::new(main, &[("h.h", h)]), "with a header"));
+    let sources = PROPERTY_SNIPPETS
+        .iter()
+        .enumerate()
+        .map(|(k, s)| (format!("snippet {k}"), Source::new(s, &[])))
+        .chain([("with a header".to_owned(), Source::new(main, &[("h.h", h)]))]);
+    let mut counts = Vec::new();
+    for (label, src) in sources {
+        let t = property(&src, &label);
+        counts.push([t.ranges[0], t.ranges[1], t.none.values().sum(), t.names]);
+        tally.add(t);
+    }
+    eprintln!("per source [tier 0, tier 1, no range, names]: {counts:?}");
+    // A lost range is a failure: each source's counts are pinned (and the
+    // declaration names of test 6 are seen, so the tables were asked for).
+    let want: [[u64; 4]; 7] = [
+        [20, 29, 6, 7],
+        [7, 5, 5, 5],
+        [6, 24, 30, 6],
+        [8, 2, 2, 4],
+        [7, 0, 3, 4],
+        [21, 0, 12, 15],
+        [8, 8, 0, 3],
+    ];
+    assert_eq!(counts, want, "[tier 0, tier 1, no range, names] per source\n{}", tally.report());
     eprint!("{}", tally.report());
     assert!(tally.failures.is_empty(), "{}\n{}", tally.failures.join("\n"), tally.report());
     assert!(tally.skipped.is_empty(), "{}", tally.report());
@@ -1199,6 +1492,47 @@ fn s5_4_test4_checker_catches_wrong_ranges() {
             check_range(u, &before, &marked(&src, u, plain), plain, k - 1, k).is_err(),
             "more tokens"
         );
+    })
+    .unwrap();
+}
+
+/// Test 4 with a header entered twice, without a guard: the property
+/// holds in each entry (`check_range`); what an edit of the file does
+/// to the other entry is for the votes (`spec/edits.md` §4.3). The range
+/// of a span in either entry is the header's bytes.
+#[test]
+fn s5_4_test4_property_a_header_entered_twice() {
+    let h = "1 + 2\n";
+    let main = "int x = \n#include \"h.h\"\n;\nint y = 3 *\n#include \"h.h\"\n;\n";
+    let src = Source::new(main, &[("h.h", h)]);
+    let t = property(&src, "a header entered twice");
+    assert!(t.failures.is_empty(), "{}\n{}", t.failures.join("\n"), t.report());
+    assert!(t.ranges[0] >= 4, "{}", t.report());
+    with_unit(&src, |u| {
+        let first = u.range(u.nth("1", 0), u.nth("2", 0)).expect("a range");
+        let second = u.range(u.nth("1", 1), u.nth("2", 1)).expect("a range");
+        assert_eq!(first, second);
+        assert_eq!((u.text(first), first.tier), ("h.h:1 + 2".to_owned(), T0));
+    })
+    .unwrap();
+}
+
+/// Test 4 with an X-macro file entered under two definitions of `X`: an
+/// argument written in the file is a tier 1 range in each entry.
+#[test]
+fn s5_4_test4_property_an_x_macro_file() {
+    let def = "X(a, 1)\nX(b, 2)\n";
+    let main = "#define X(n, v) int n = v;\n#include \"x.def\"\n#undef X\n\
+                #define X(n, v) + v\nint s = 0\n#include \"x.def\"\n;\n";
+    let src = Source::new(main, &[("x.def", def)]);
+    let t = property(&src, "an X-macro file");
+    assert!(t.failures.is_empty(), "{}\n{}", t.failures.join("\n"), t.report());
+    assert!(t.ranges[1] >= 2, "{}", t.report());
+    with_unit(&src, |u| {
+        let one = u.range(u.nth("1", 0), u.nth("1", 0)).expect("a range");
+        let again = u.range(u.nth("1", 1), u.nth("1", 1)).expect("a range");
+        assert_eq!(one, again);
+        assert_eq!((u.text(one), one.tier), ("x.def:1".to_owned(), T1));
     })
     .unwrap();
 }
