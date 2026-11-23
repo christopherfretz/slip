@@ -1,5 +1,5 @@
 #include "side.h"
-// §6 AsmOperand `name-swapped`: the names of two operands swapped: the presence bytes are the same.
+// WP-034 (§6): AsmOperand `name`: the names of two operands swapped; the presence bytes are the same.
 #ifdef B
 void f(int x, int y) { asm("%[a] %[b]" : [b] "=r"(x), [a] "=r"(y)); }
 #else

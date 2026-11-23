@@ -1,5 +1,5 @@
 #include "side.h"
-// §6 CoroutineBodyData `return_value-void`: a coroutine returning `void`: no result variable and no return statement, so `return_value` alone names `get_return_object`.
+// WP-034 (§6): CoroutineBodyData `return_stmt`: the return statement converts the result variable, an xvalue, with another conversion function.
 namespace std {
 template <class R, class... A> struct coroutine_traits { using promise_type = typename R::promise_type; };
 template <class P = void> struct coroutine_handle {
@@ -19,26 +19,25 @@ struct suspend_never {
 };
 } // namespace std
 #ifdef B
-namespace std {
-template <> struct coroutine_traits<void> { struct promise_type {
-  template <class = void> void get_return_object() {}
+struct tk;
+struct G { operator tk() const &; };
+struct tk { struct promise_type {
+  G get_return_object() { return {}; }
   std::suspend_never initial_suspend() noexcept { return {}; }
   std::suspend_never final_suspend() noexcept { return {}; }
   void return_void() {}
   void unhandled_exception() {}
 }; };
-} // namespace std
-void f() { co_return; }
+tk f() { co_return; }
 #else
-namespace std {
-template <> struct coroutine_traits<void> { struct promise_type {
-  void get_return_object() {}
-  template <class = void> void get_return_object() {}
+struct tk;
+struct G { operator tk() const &; operator tk() &&; };
+struct tk { struct promise_type {
+  G get_return_object() { return {}; }
   std::suspend_never initial_suspend() noexcept { return {}; }
   std::suspend_never final_suspend() noexcept { return {}; }
   void return_void() {}
   void unhandled_exception() {}
 }; };
-} // namespace std
-void f() { co_return; }
+tk f() { co_return; }
 #endif

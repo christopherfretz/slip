@@ -1,6 +1,6 @@
 // std: c++26
 #include "side.h"
-// §6 ContractSite `comment-pre`: the predicate's spelling, of a precondition.
+// WP-034 (§6): the predicate's spelling, of a precondition (ContractSite).
 #ifdef B
 void f(int x) pre( x > 0 ) {}
 #else

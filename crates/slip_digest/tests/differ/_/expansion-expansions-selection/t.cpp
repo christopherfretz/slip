@@ -1,6 +1,6 @@
 // std: c++26
 #include "side.h"
-// §6 ExpansionData `expansions-selection`: the second expansion selects another `g`; the pattern is the same.
+// WP-034 (§6): ExpansionData `expansions`: the second expansion selects another `g`; the pattern is the same.
 #ifdef B
 struct X {}; struct Y : X {}; void g(X);
 void f() { template for (auto e : {X{}, Y{}}) g(e); }

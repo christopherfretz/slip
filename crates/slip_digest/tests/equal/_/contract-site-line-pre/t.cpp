@@ -1,6 +1,6 @@
 // std: c++26
 #include "side.h"
-// §6 ContractSite `line-pre`: of a precondition.
+// WP-034 (§6): ContractSite, of a precondition.
 #ifdef B
 
 

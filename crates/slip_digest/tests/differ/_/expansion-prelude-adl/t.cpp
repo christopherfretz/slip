@@ -1,6 +1,6 @@
 // std: c++26
 #include "side.h"
-// §6 ExpansionData `prelude-adl`: the iterating form: the prelude's `begin` call selects another function.
+// WP-034 (§6): ExpansionData `prelude`: the iterating form: the prelude's `begin` call selects another function.
 #ifdef B
 struct R { int a[2] = {1, 2}; };
 template <class T> constexpr const int *begin(const T &r) { return r.a; }
