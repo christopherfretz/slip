@@ -720,7 +720,7 @@ fn path_part(word: &[u8], next: &mut Next) -> Option<(usize, PathKind)> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Region {
     Subject { map: usize, depth: usize },
-    Post { depth: usize },
+    Post { map: usize, depth: usize },
     Neither,
 }
 
@@ -796,8 +796,10 @@ impl Resolver<'_> {
         let id = std::fs::metadata(dir).ok().filter(std::fs::Metadata::is_dir);
         let id = id.map(|m| (m.dev(), m.ino()));
         let depth = dir.components().count().saturating_sub(1);
-        let r = if id.is_some() && self.ids.iter().any(|ids| ids.1 == id) {
-            Region::Post { depth }
+        let r = if let Some(map) =
+            id.and_then(|id| self.ids.iter().position(|ids| ids.1 == Some(id)))
+        {
+            Region::Post { map, depth }
         } else if let Some(map) =
             id.and_then(|id| self.ids.iter().position(|ids| ids.0 == Some(id)))
         {
@@ -831,7 +833,7 @@ impl Resolver<'_> {
     /// `dir` is a post root.
     fn is_post_root(&mut self, dir: &Path) -> bool {
         let depth = dir.components().count().saturating_sub(1);
-        self.region(dir) == Region::Post { depth }
+        matches!(self.region(dir), Region::Post { depth: d, .. } if d == depth)
     }
 
     /// The walk of the absolute path `start` (see [`Resolver`]). Stops at
@@ -1169,6 +1171,100 @@ impl Resolver<'_> {
                 .zip(&self.ids)
                 .any(|(m, ids)| ids.1.is_none() && at_or_under(real, &m.post)),
         }
+    }
+
+    /// Guard G6 (§5.3), its first part: the reason when the walk of a
+    /// file the post-image parse read, as the front end spelled it
+    /// (`lookups.read`, from `directory`, the post command's), follows a
+    /// symbolic link at a place under a post root (`p/D/n`) that is not, at
+    /// `s/D/n` in the subject, a symbolic link with the same target bytes;
+    /// `None` when every such link is. A link with an absolute target
+    /// differs as text between a tree and its copy and is refused (§5.3).
+    pub fn link_differs(&mut self, directory: &[u8], lookups: &Lookups) -> Option<String> {
+        let base = bytes_path(directory);
+        for name in &lookups.read {
+            let mut todo = VecDeque::new();
+            components(&base.join(name), &mut todo);
+            let mut cur = PathBuf::from("/");
+            let mut links = 0;
+            while let Some(c) = todo.pop_front() {
+                if c == "." {
+                    continue;
+                }
+                if c == ".." {
+                    cur.pop();
+                    continue;
+                }
+                let next = cur.join(&c);
+                match self.kind(&next) {
+                    Kind::Dir => cur = next,
+                    Kind::Link(target) if links < MAX_LINKS => {
+                        links += 1;
+                        if let Region::Post { map, depth } = self.region(&cur) {
+                            let there = self.subject_counterpart(&next, map, depth);
+                            let theirs = self.kind(&there);
+                            if theirs != Kind::Link(target.clone()) {
+                                return Some(format!(
+                                    "post-image: {name} follows the link {}, which is {} in the \
+                                     subject",
+                                    show_path(&path_bytes(&next)),
+                                    theirs.describe()
+                                ));
+                            }
+                        }
+                        if target.is_absolute() {
+                            cur = PathBuf::from("/");
+                        }
+                        let mut front = VecDeque::new();
+                        components(&target, &mut front);
+                        for t in front.into_iter().rev() {
+                            todo.push_front(t);
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        }
+        None
+    }
+
+    /// Guard G6 (§5.3), its second part: for the real path `p/Y` of a file
+    /// read under a post root, the reason when its subject path `s/Y`,
+    /// resolved in the subject component by component up to the first
+    /// component that does not exist, has a symbolic link among its
+    /// existing components; `None` for a file under no post root.
+    pub fn subject_route_link(&mut self, real: &[u8]) -> Option<String> {
+        let Region::Post { map, depth } = self.region(&file_dir(real)) else {
+            return None;
+        };
+        let real_path = bytes_path(real);
+        let mut cur = bytes_path(&self.maps[map].subject);
+        let subject_path = self.subject_counterpart(&real_path, map, depth);
+        for c in real_path.components().skip(1 + depth) {
+            let next = cur.join(c);
+            match self.kind(&next) {
+                Kind::Dir => cur = next,
+                Kind::Link(_) => {
+                    return Some(format!(
+                        "post-image: {} stands for {}, which the subject reaches through the \
+                         link {}",
+                        show_path(real),
+                        show_path(&path_bytes(&subject_path)),
+                        show_path(&path_bytes(&next))
+                    ));
+                }
+                Kind::File | Kind::Missing => break,
+            }
+        }
+        None
+    }
+
+    /// The same place as the real path `real`, of the post region
+    /// `(map, depth)`, in the subject.
+    fn subject_counterpart(&self, real: &Path, map: usize, depth: usize) -> PathBuf {
+        let mut target = bytes_path(&self.maps[map].subject);
+        target.extend(real.components().skip(1 + depth));
+        target
     }
 
     /// Guard L1 (§5.3): the reason when a place `lookups` names, walked

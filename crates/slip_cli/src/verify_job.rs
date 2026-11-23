@@ -117,7 +117,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
 
-    // Step 2: P1 to P3, G1, L1, G4, O2, C.
+    // Step 2: P1 to P3, G1, L1, G4, G5, G6, O2, C.
     let Some(pre) = pre else {
         return unverifiable_now(post, shard, "pre-image: no map shard");
     };
@@ -430,7 +430,7 @@ fn without_units(d: &Digests) -> Digests {
 }
 
 /// Step 2's guards on what the post-image parse read and looked at, in
-/// this order (§5.3): G1, L1, G4, G5, then O2 of the tree form (not with the
+/// this order (§5.3): G1, L1, G4, G5, then G6 and O2 of the tree form (not with the
 /// identity, where every change since the map phase is the edit
 /// compared). The reason of the first that fails.
 fn image_guards(
@@ -466,9 +466,29 @@ fn image_guards(
     if params.image.is_identity() {
         return None;
     }
+    if let Some(reason) = g6(&mut resolver, &post.command.directory, post_inputs, lookups) {
+        return Some(reason);
+    }
     let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
     drifted(&mut resolver, post_inputs, pre_inputs)
         .map(|path| format!("pre-image: {} changed since the map phase", show_path(path)))
+}
+
+/// Guard G6 (§5.3, tree form): the links the post-image parse followed
+/// under a post root are the subject's (same name, same target bytes), and
+/// the subject path of every file read under a post root is reached in the
+/// subject through no link; so each such subject path is a real path of
+/// the subject, or a created path under real directories, as `Ownership`
+/// and `ReadOnlyFiles` take it. The reason of the first that fails.
+pub(crate) fn g6(
+    resolver: &mut Resolver<'_>,
+    directory: &[u8],
+    inputs: &[FileRef],
+    lookups: &Lookups,
+) -> Option<String> {
+    resolver
+        .link_differs(directory, lookups)
+        .or_else(|| inputs.iter().find_map(|f| resolver.subject_route_link(&f.path)))
 }
 
 /// Guard G5's second part (§5.3): the first `#line` name of the post

@@ -613,16 +613,35 @@ impl InProcess {
     ) -> commands::Result<Option<Vec<Record>>> {
         let main = String::from_utf8_lossy(&o.main.path).into_owned();
         let fail = |e: String| Failure::Input(format!("{command}: {main}: {e}"));
-        let (shard, records) = self
-            .image
-            .parse(o, side, Phase::Map, 0, |input| {
-                if rules.rules().is_empty() {
-                    return slip_digest::records::records(input, rules, ReadOnly::EVERY_FILE);
+        let walk = |input: &slip_digest::Input<'_>| {
+            if rules.rules().is_empty() {
+                return slip_digest::records::records(input, rules, ReadOnly::EVERY_FILE);
+            }
+            let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
+            slip_digest::records::records(input, rules, ReadOnly::files(&read_only))
+        };
+        // Guard G6 (`spec/verify.md` §5.3) on a post-image of the tree
+        // form, as the verify job checks it: without it a file's subject
+        // path need not be a real path, and ownership decided on it can
+        // give a wrong rule parent or a wrong `created` key. A failure is
+        // an input error: no record is guessed.
+        let (shard, records) = if side == Side::Post && !self.image.is_identity() {
+            let (shard, looked) =
+                self.image.parse_looking(o, side, Phase::Map, 0, walk).map_err(fail)?;
+            if let Some((_, lookups)) = &looked {
+                let directory = self.image.post_command(&o.command).command.directory;
+                let inputs = shard.inputs.as_deref().unwrap_or_default();
+                let mut resolver = self.image.resolver();
+                if let Some(reason) =
+                    crate::verify_job::g6(&mut resolver, &directory, inputs, lookups)
+                {
+                    return Err(fail(reason));
                 }
-                let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
-                slip_digest::records::records(input, rules, ReadOnly::files(&read_only))
-            })
-            .map_err(fail)?;
+            }
+            (shard, looked.map(|(records, _)| records))
+        } else {
+            self.image.parse(o, side, Phase::Map, 0, walk).map_err(fail)?
+        };
         match records {
             Some(Ok(records)) => Ok(Some(records)),
             Some(Err(e)) => Err(fail(e)),

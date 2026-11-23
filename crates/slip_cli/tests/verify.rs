@@ -1350,6 +1350,65 @@ fn s2_1_read_only_file_through_a_link_under_the_owned_root() {
     }
 }
 
+// spec/verify.md §5.3 G6 (review F1), through `slip declare` and `slip
+// verify`: the dependency reached through the link `s/inc -> dep`, which
+// the post tree has as a real directory, its namespace relocated too.
+// `declare --owned s --readonly s/inc` writes `dep` read-only; the verify
+// job refuses the image (`unverifiable`, with the reason) instead of
+// taking `post/inc/d.h` for an owned file. A `created` line makes
+// `declare` parse the post-image under the rule: the same guard, an input
+// error.
+#[test]
+fn g6_link_in_subject_directory_in_post_end_to_end() {
+    const DEP: &str = "#pragma once\nnamespace old {\nstruct D { int a; };\n}\n";
+    const MAIN: &str = "#include \"a.h\"\n#include \"inc/d.h\"\nint f0(old::S *s, old::D *d) { return old::g(s) + d->a; }\n";
+    let f = Fixture::new("g6");
+    f.write("s/a.h", HEADER);
+    f.write("s/dep/d.h", DEP);
+    std::os::unix::fs::symlink("dep", f.path("s/inc")).unwrap();
+    f.write("s/u0.cpp", MAIN);
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
+    f.write("post/a.h", &HEADER.replace("namespace old", "namespace fresh"));
+    f.write("post/inc/d.h", &DEP.replace("namespace old", "namespace fresh"));
+    f.write("post/u0.cpp", &MAIN.replace("old::", "fresh::"));
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s", "--readonly", "s/inc"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let d = Declared::from_bytes(&std::fs::read(f.path("d.decl")).unwrap()).unwrap();
+    assert_eq!(d.files().unwrap().readonly, [real_path(&f, "s/dep")]);
+    let reason = format!(
+        "post-image: {} stands for {}, which the subject reaches through the link {}",
+        Fixture::text(&f.path("post/inc/d.h")),
+        Fixture::text(&f.path("s/inc/d.h")),
+        Fixture::text(&f.path("s/inc"))
+    );
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    let (out, report) = f.verify_report(&plan, &with);
+    for (o, main) in &f.observers(&plan) {
+        let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
+        assert_eq!(
+            (v.kind, v.reason.as_str()),
+            (VerdictKind::Unverifiable, reason.as_str()),
+            "{main}"
+        );
+    }
+    assert_eq!(states(&report), [0, 0, 0, 0, 1, 0, 0], "{out:?}");
+
+    f.write("t.txt", "relocate old => :: fresh\ncreated fresh::D\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(3), "{out:?}");
+    assert_eq!(
+        out.stderr,
+        format!("slip: declare: {}: {reason}\n", Fixture::text(&f.path("s/u0.cpp")))
+    );
+}
+
 // ----- units (spec/exec.md §8.9) ------------------------------------------------------
 
 fn units(f: &Fixture, plan: &str, extra: &[&str]) -> Out {

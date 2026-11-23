@@ -1452,11 +1452,17 @@ as a `DECL` container to `--out`.
 - The store is opened shared; no shard is read or written.
 - For each selected observer, in plan order: the pre-image is parsed and
   its unit records taken (`slip_digest::records`), with no rules; if the
-  text has a `relocate` with a parent, or a `created` line, the
-  post-image is parsed with no rules; if it has a `created` line, the
+  text has a `relocate` with a parent, the post-image is parsed with no
+  rules (a `created` line is resolved only in the records under the
+  rules, `spec/verify.md` §2.3); if it has a `created` line, the
   post-image is parsed again with the rules the `relocate` lines gave and
   the run's files, each buffer decided by the subject path of its real
-  path as the verify job decides it (`spec/verify.md` §2.1).
+  path as the verify job decides it (`spec/verify.md` §2.1). Every
+  post-image parse of `declare` and `units --post-image` with an image
+  other than the identity is checked by guard G6 (`spec/verify.md`
+  §5.3), without which that subject path need not be a real path; a
+  failure is an input error, `slip: <command>: <main file>: <G6's
+  reason>`.
   An image of an observer that does not parse `ok` contributes no record
   and is a warning: `slip: warning: declare: <main file>: the <pre|post>-image is <status>`.
 - The records of all selected observers together are the sets of

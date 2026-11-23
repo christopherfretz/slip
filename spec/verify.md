@@ -343,7 +343,11 @@ The run's files are in subject paths, and ownership is of **real
 paths** (`spec/edits.md` §2.1). The job decides each buffer by the
 subject path of the buffer's real path, its symbolic links resolved, and
 never by the path as the front end spells it: a read-only file reached
-through a symbolic link under an owned root is read-only. `ReadOnlyFiles`
+through a symbolic link under an owned root is read-only. That subject
+path is a real path of the subject (or a created path under its real
+directories) only because guard G6 (§5.3) holds: a post-image whose
+links differ from the subject's along the routes the parse used is
+`unverifiable`. `ReadOnlyFiles`
 decides on the path it is given and normalises nothing
 (`owned.rs`, `read_only_files_needs_the_real_path`).
 
@@ -1095,12 +1099,21 @@ outside every root that both images read is the same bytes in both.* The
 parse then saw exactly what a parse of the subject with the edit applied,
 run with the observer's own command, would see: under the post roots the
 post tree, which is that subject's tree; elsewhere the files the pre-image
-saw. Each half is one guard of §5.3:
+saw. And, by G6, the subject path of every file the post parse read
+under a post root is a real path of the subject, or a created path under
+real directories of it: the links the parse followed under a post root
+are the subject's, by name and target, and none of the subject path's
+existing components is a link. Ownership (§2.1), which is of real paths,
+is therefore decided for a post file as for the subject file it stands
+for (§5.1 defines the post file of `s/x` as `p/x`, which means that only
+where both trees have the same links along the route). Each half is one
+guard of §5.3:
 
 | Guard | What it establishes | Pinned by (`crates/slip_cli/tests/`) |
 |---|---|---|
 | G1 | no file the parse read (`inputs`, real paths) is under a subject root, by identity | `verify_job.rs` `g1_*`, `f3_case_insensitive_spelling`; `image.rs` `s5_1_under_subject_by_identity` |
 | L1 | no directory of the search list, no directory that would hold a place a lookup tried (found or not, `#include` and `__has_include` in every form, `#embed` and `__has_embed`, `-include`), and no directory of a file read, as spelled, has its resolution look a name up under a subject root | `verify_job.rs` `l1_*`, `f3_symbolic_link_to_the_subject`; `crates/slip_kiln/tests/lookups.rs` for what the log holds |
+| G6 | the subject path of every file the post parse read under a post root is a real path of the subject or a created path under real directories of it (the links along the routes are the subject's) | `verify_job.rs` `g6_*`; `verify.rs` `g6_link_in_subject_directory_in_post_end_to_end` |
 | G4 | no word is a response file, whose words Kiln's driver would read without Slip seeing them | `verify_job.rs` `g4_response_file` |
 | G5 | every spelling of a file the post parse makes is mapped to its spelling in the real post-image: every pair's post prefix is under a post root, the map pairs are consistent, no prefix map of the command's own overlaps them, no `#line` name is mapped | `verify_job.rs` `f6_two_routes_to_one_file`, `f6s_two_routes_through_a_link`, `f6r_two_routes_no_edit`, `g5_command_prefix_map`, `g5_line_name`, `z1_word_leaves_the_subject`, `z2_word_leaves_the_subject_absolute_include`, `z_control_word_stays_in_the_subject`, `z_word_leaves_into_another_root`, `a3_post_directory_becomes_a_link`, `a3_link_deeper_in_the_word`; `image.rs` `s5_1_post_command_resolves`, `g5_command_prefix_maps`, `g5_word_leaves_the_subject`, `g5_missing_prefix_under_a_post_root` |
 | O2 | every file outside every root that both images read has the pre shard's size and digest (an image other than the identity) | `verify_job.rs` `o2_outside_drift_at_the_sums` |
@@ -1218,7 +1231,7 @@ post-image's bytes being a blob in the store.
    (§7), and the job ends. In the same parse, after the walk: the rule
    use of §9.1 when `Declared.rules` is not empty, and the checks of
    §10.2 when the overlay has obligations.
-2. Check, in this order: the pre shard is usable; guards G1, L1, G4, G5
+2. Check, in this order: the pre shard is usable; guards G1, L1, G4, G5, G6
    and, with an image other than the identity, O2 (tree form), or guards O1
    then O2 (overlay form); `comparable` (§3). The first that fails makes
    the verdict `unverifiable` with the reason of §5.3, and the job ends.
@@ -1257,6 +1270,7 @@ only withdraws: guard G3.
 | P3 | step 2: it has a `digests` section | `pre-image: the map shard has no digests` |
 | G1 | step 2, tree form: no entry of the post-image parse's `inputs` is under a subject root (§5.1, by identity) | `post-image: read <path>, a file of the subject` (the first such entry) |
 | L1 | step 2, tree form: the resolution from the post command's `directory` (§5.1) of each directory of the search list, of the directory that would hold each place a lookup tried, and of the directory of each file read as the front end spelled it, looks no name up in a directory under a subject root, except the name of a post root in it | `post-image: searches <dir>: <subject dir> is a directory of the subject`; `post-image: looked for <name> in <dir>: <subject dir> is …`; `post-image: read <name>: <subject dir> is …` (the first, in that order; `<subject dir>` the first directory of the subject the resolution looked in) |
+| G6 | step 2, tree form other than the identity, after G5 and before O2, with or without the run's files: for every file the post-image parse read, (i) resolving the path as the front end spelled it (from the post command's `directory`), every symbolic link followed at a place under a post root (`p/D/n`) is, at `s/D/n` in the subject, a symbolic link with the same target bytes; (ii) for the real path `p/Y` of each file read under a post root, its subject path `s/Y`, resolved in the subject component by component up to the first component that does not exist, has no symbolic link among its existing components. A link with an absolute target differs as text between a tree and its copy and is refused: an accepted over-refusal, since such a link in a copied tree points into the subject, which G1 refuses anyway | (i) `post-image: <spelled path> follows the link <p/D/n>, which is <a directory, a file, missing, or a link to <target>> in the subject`; (ii) `post-image: <p/Y> stands for <s/Y>, which the subject reaches through the link <s/…>` (the first; (i) over every file read before (ii)) |
 | G4 | step 2: no word of the post command after `argv[0]` is a response file (`@` and a name, as Kiln's driver reads one) | `post-image: the command names the response file <word>, whose words slip cannot examine` |
 | G5 | step 2, tree form: the post command's map pairs (§5.1) are consistent: (a) none other than the identity has a post prefix that is empty or holds `=`; (b) when one pair's post prefix is a prefix of another's, the first applied to the second's post prefix gives the second's written prefix; (c) no `-fmacro-prefix-map=` or `-ffile-prefix-map=` of the command's own (alone, after `-Xclang` or `-Xpreprocessor`, in a `-Wp,` list) has an old prefix prefix-related to a post or written prefix of a pair other than the identity; (d) no `#line` name of the post parse begins with the post prefix of such a pair; (e), checked first: the post prefix of each pair other than the identity and the roots' is under a post root, by real paths; (f), checked last: the command's directory, and every path-bearing word with a `..`, walks names of the subject's directories that have the same kind in the post tree, and has no `..` after a component that does not exist | (a) `post-image: <word> is rewritten to <path>, which no -fmacro-prefix-map word can map back`; (b) `post-image: <word> and <word> spell the files under <post prefix> differently (<pair> and <pair>)`; (c) `post-image: <option word> maps <old>, which overlaps <prefix> of <word>; slip does not compose prefix maps`; (d) `post-image: the #line name <name> begins with <post prefix>, which the post command maps`; (e) `post-image: <word> is spelled through the subject and leaves it (<post prefix> is under no post root)`; (f) `post-image: <word, or "the directory <dir>"> walks <path>, which is <kind> in the subject and <kind> in the post tree` or `post-image: <word> has a `..` after <path>, which does not exist; slip cannot tell where it ends` |
 | O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
@@ -1272,9 +1286,9 @@ only withdraws: guard G3.
 they are UTF-8, else with each other byte as `\xNN`. The reason is then
 cut as §6 says.
 
-- **G1, L1, G4, G5 and O2** are the tree form's safety argument (§5.1, "Why
+- **G1, L1, G4, G5, G6 and O2** are the tree form's safety argument (§5.1, "Why
   a wrong `verified` cannot come of it"). With the identity image there
-  is no root: G1, L1 and G5 hold trivially, and O2 is not checked, since
+  is no root: G1, L1, G6 and G5 hold trivially, and O2 is not checked, since
   every change since the map phase is then the edit compared. G4 is
   checked with every image: Kiln's driver reads a response file from the
   disk as it is when the job runs, and nothing records what it read
@@ -2728,7 +2742,7 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   the report only, and a later `slip verify` with the same round number
   replaces the shards. Proposed: the run record's `run` section gains
   them.
-- **The tree image rewrites commands** (§5.1). G1, L1, G4 and O2 make it
+- **The tree image rewrites commands** (§5.1). G1, L1, G6, G4 and O2 make it
   safe; how often a word it does not resolve costs an `unverifiable` on
   real build trees is to be seen on the corpus. The overlay (KF2)
   rewrites nothing. Kiln could close the two gaps L1 has: record
