@@ -1,4 +1,4 @@
-# pending
-# needs: demand
+# the instantiated initialiser is in rv<X>'s resolved unit `definition` (WP-045)
 changed X
-derived-changed rv<X>
+removed X::operator+(int)
+derived-changed rv<X>::<definition>

@@ -59,6 +59,10 @@ pub(crate) struct UnitState {
     pub types: HashMap<u64, TypeRef>,
     /// The expression walk's state.
     pub expr: ExprState,
+    /// The unit is a resolved unit `definition` (`demand.rs`), whose
+    /// stream reads every declaration of its entity, those an
+    /// instantiation made out of line included (`Walk::redecls`).
+    pub definition: bool,
     /// The stream's holder and the local types it declared
     /// (`local::UnitLocals`).
     pub local: crate::local::UnitLocals,
@@ -538,6 +542,7 @@ pub(crate) fn run_with<R>(
     crate::units::apply_taints(&w, &mut written);
     let collisions = crate::units::mark_collisions(&mut written)
         + crate::keys::mark_mapped_collisions(&w, input, &mut written);
+    let collisions = collisions + crate::units::mark_part_collisions(&mut written);
     let names = if options.names { crate::names::names(&w, &written) } else { Vec::new() };
     let (digests, totals) = crate::groups::build(&written, &options.detail);
     let causes = causes(&written);

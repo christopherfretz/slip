@@ -1,4 +1,3 @@
-# pending
-# needs: demand
+# the instantiated initialiser is in cv<X>'s resolved unit `definition` (WP-045)
 changed X::a
-derived-changed cv<X>
+derived-changed cv<X>::<definition>

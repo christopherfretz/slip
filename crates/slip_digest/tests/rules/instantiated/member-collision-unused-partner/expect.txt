@@ -1,0 +1,6 @@
+indeterminate S::f()
+indeterminate S::g()
+indeterminate S<int>::f()
+indeterminate S<int>::g()
+indeterminate S<int>::g()::<definition>
+collisions 2

@@ -1,0 +1,2 @@
+changed A::s
+changed A<int>::s::<definition>

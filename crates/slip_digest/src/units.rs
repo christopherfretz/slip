@@ -52,6 +52,12 @@ pub(crate) struct Written {
     /// resolved unit of one, the parameter's index (0 for a field); its
     /// `entity` is the function's or field's.
     pub default_argument: Option<u64>,
+    /// For a part (a resolved or `default_argument` unit), the key of the
+    /// unit it is keyed under.
+    pub owner: Option<Digest>,
+    /// Whether the unit's key is in a collision (§3.4), whatever cause
+    /// `cause` keeps first.
+    pub collided: bool,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -148,7 +154,6 @@ fn class_of(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
     // from a declaration an instantiation added first (WP-032 rule 1).
     let e = w.representative(e);
     let n = ast.decls.get(e);
-    let link = ast.templ_link(e).get();
     let kind = n.kind();
     // A using-shadow is declared by its using-declaration, and an indirect
     // field by the anonymous member that holds it, which are written.
@@ -173,57 +178,36 @@ fn class_of(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
     if info(n.kind()).on_demand {
         return Some(UnitClass::OnDemand);
     }
-    match link {
-        Some((TemplLinkKind::Specialization, _)) => {
-            if let Some((_, info)) = ast.spec_info(e) {
-                return spec_class(info.kind);
-            }
-        }
-        Some((TemplLinkKind::MemberOfSpecialization, _)) => {
-            if let Some((_, info)) = ast.member_spec_info(e) {
-                return spec_class(info.kind);
-            }
-        }
-        Some((TemplLinkKind::Pattern | TemplLinkKind::PartialSpecialization, _)) | None => {}
-    }
-    // An explicitly specialised member template is written in source.
-    if specialised_member_template(w, e) {
-        return Some(UnitClass::Declared);
-    }
-    // Every member of an implicit instantiation is derived (digest §2.2),
-    // whether or not Kiln gave it a `MemberSpecInfo`.
-    if in_implicit_instantiation(w, e) {
-        return Some(UnitClass::Derived);
+    // The effective kind (§11.10, `demand::effective_kind`): an
+    // implicit instantiation and its members are derived, an explicit
+    // instantiation (declaration or definition) or specialisation and
+    // their members declared, whatever Kiln instantiated first. An
+    // explicitly specialised member template is an explicit
+    // specialisation there.
+    if let Some(k) = crate::demand::effective_kind(w, e) {
+        return spec_class(k);
     }
     Some(UnitClass::Declared)
 }
 
 /// An enclosing context of `e` is an implicitly instantiated
 /// specialisation, or a member of one, with no explicitly specialised
-/// context in between (whose members are written in source).
+/// context in between (whose members are written in source): the nearest
+/// context with an effective kind (`demand::effective_kind`, §11.10) has
+/// `ImplicitInstantiation`. A local class has none of its own, so the
+/// function that holds it answers.
 pub(crate) fn in_implicit_instantiation(w: &Walk<'_>, e: DeclId) -> bool {
+    implicit_from(w, w.ast.decls.get(e).ctx())
+}
+
+/// The first of `c` and its contexts with an effective kind has
+/// `ImplicitInstantiation`.
+fn implicit_from(w: &Walk<'_>, mut c: Option<DeclId>) -> bool {
     let ast = w.ast;
-    let mut c = ast.decls.get(e).ctx();
     for _ in 0..64 {
         let Some(x) = c else { return false };
-        // The definition of an explicitly specialised member enumeration
-        // has no `MemberSpecInfo` of its own: its first declaration does.
-        // (Only an enumeration: a function's first declaration may be one
-        // an instantiation added: `demand/_/friend-instantiated-then-written`.)
-        let kind = own_spec_kind(w, x).or_else(|| {
-            (ast.decls.get(x).kind() == DeclKind::Enum)
-                .then(|| own_spec_kind(w, ast.first(x)))
-                .flatten()
-        });
-        match kind {
-            Some(SpecKind::ImplicitInstantiation) => return true,
-            Some(
-                SpecKind::ExplicitSpecialization
-                | SpecKind::ExplicitInstantiationDeclaration
-                | SpecKind::ExplicitInstantiationDefinition
-                | SpecKind::Undeclared,
-            ) => return false,
-            None => {}
+        if let Some(k) = crate::demand::effective_kind(w, x) {
+            return k == SpecKind::ImplicitInstantiation;
         }
         if specialised_member_template(w, x) {
             return false;
@@ -261,7 +245,7 @@ fn own_spec_kind(w: &Walk<'_>, x: DeclId) -> Option<SpecKind> {
 
 /// Declaration `d` is *instantiated outside its class* (`spec/digest.md`
 /// §2.2, WP-032): its lexical context is an implicitly instantiated
-/// class specialisation or a member of one (`in_implicit_instantiation`
+/// class specialisation or a member of one (`implicit_from`
 /// applied to the lexical context), and its semantic context is not.
 pub(crate) fn instantiated_outside_class(w: &Walk<'_>, d: DeclId) -> bool {
     let ast = w.ast;
@@ -269,17 +253,28 @@ pub(crate) fn instantiated_outside_class(w: &Walk<'_>, d: DeclId) -> bool {
     if Some(lex) == ast.decls.get(d).ctx() {
         return false;
     }
-    let lexically = match own_spec_kind(w, lex) {
-        Some(SpecKind::ImplicitInstantiation) => true,
-        Some(
-            SpecKind::ExplicitSpecialization
-            | SpecKind::ExplicitInstantiationDeclaration
-            | SpecKind::ExplicitInstantiationDefinition
-            | SpecKind::Undeclared,
-        ) => false,
-        None => in_implicit_instantiation(w, lex),
-    };
+    let lexically = implicit_from(w, Some(lex));
     lexically && !in_implicit_instantiation(w, d)
+}
+
+/// Declaration `d` is one an instantiation made outside its class for a
+/// member of a class specialisation: its semantic context is a class, its
+/// lexical context another, and it was made by instantiation
+/// (`templ::instantiated_declaration`). Kiln makes one when a static data
+/// member of an instantiation is used (`instantiate_static_member_def`,
+/// `kiln_sema/src/templ/class.rs:1943`), in the namespace of the
+/// pattern's out-of-line definition.
+pub(crate) fn instantiated_out_of_line(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let Some(sem) = ast.decls.get(d).ctx() else { return false };
+    if ast.decls.record(sem).is_none() {
+        return false;
+    }
+    // A friend's lexical context is a class: only a namespace-scope
+    // declaration is out of line.
+    let lex = ast.decls.lexical_ctx(d);
+    lex.is_some_and(|l| l != sem && ast.decls.record(l).is_none())
+        && crate::templ::instantiated_declaration(w, d)
 }
 
 /// Declaration `d` names an entity outside the function whose body holds
@@ -437,8 +432,14 @@ fn all_implicit(w: &Walk<'_>, e: DeclId) -> bool {
 /// The declaration a unit's stream is read from (`spec/digest-kinds.md`
 /// §2.3): the definition if there is one, else the first declaration. A
 /// template is read from the template whose pattern is the definition.
+/// An entity of the definition class (§11.9) is read from its first
+/// written declaration (`Walk::representative`): its definition is the
+/// resolved unit `definition`'s, and Kiln may make it on use.
 pub(crate) fn read_decl(w: &Walk<'_>, e: DeclId) -> DeclId {
     let ast = w.ast;
+    if crate::demand::definition_class(w, e) {
+        return w.representative(e);
+    }
     if let Some(pattern) = ast.template_info(e).and_then(|i| i.pattern) {
         return defining_decl(w, pattern)
             .and_then(|def| ast.described_template(def))
@@ -576,18 +577,16 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
     } else {
         match class {
             UnitClass::Declared => {
-                let origin = w.located(w.representative(e));
-                let file = origin.map_or_else(Vec::new, |d| w.file_of(d));
-                if origin.is_none() {
+                if let Some(file) = declared_file(w, e) {
+                    (GroupClass::Declared, file)
+                } else {
                     // `unit_class` makes an entity without a location
                     // on demand, so this is a defect of the walk: the
                     // unit goes to the derived group with the empty
                     // path, indeterminate, instead of making the shard
                     // invalid (`spec/landed/model/WP-050.md`).
                     cause = Some(merge(cause, Cause::Unaccounted("unit/file")));
-                    (GroupClass::Derived, file)
-                } else {
-                    (GroupClass::Declared, file)
+                    (GroupClass::Derived, Vec::new())
                 }
             }
             UnitClass::Derived | UnitClass::OnDemand => (GroupClass::Derived, origin_file(w, read)),
@@ -605,6 +604,8 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         file,
         resolved: None,
         default_argument: None,
+        owner: None,
+        collided: false,
     })
 }
 
@@ -686,6 +687,8 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
     let bytes = key.to_bytes();
     w.bytes += bytes.len() as u64;
     Written {
+        owner: None,
+        collided: false,
         entity: None,
         read: None,
         key: key.id(),
@@ -697,6 +700,33 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         resolved: None,
         default_argument: None,
     }
+}
+
+/// The file whose declared group holds the declared unit of `e`: that of
+/// its first written declaration, except for an instantiated entity (an
+/// effective kind of an instantiation, §11.10) that is a member of a
+/// specialisation or a function: Kiln moves such a function to the
+/// pattern's definition when it instantiates the definition
+/// (`relocate_to_pattern_definition`, `kiln_ast/src/templates.rs:1989`,
+/// called at `kiln_sema/src/templ/class.rs:1597` and `:1700`), so its
+/// file is the file of the declaration it was instantiated from
+/// (`origin_file`), whether or not the definition was instantiated
+/// (digest-kinds §11.1). `None` when no declaration the walk may read
+/// has a location (`Walk::located`).
+pub(crate) fn declared_file(w: &Walk<'_>, e: DeclId) -> Option<Vec<u8>> {
+    let ast = w.ast;
+    let instantiated = matches!(
+        crate::demand::effective_kind(w, e),
+        Some(
+            SpecKind::ImplicitInstantiation
+                | SpecKind::ExplicitInstantiationDeclaration
+                | SpecKind::ExplicitInstantiationDefinition
+        )
+    );
+    if instantiated && (ast.member_spec_info(e).is_some() || ast.decls.function(e).is_some()) {
+        return Some(origin_file(w, e));
+    }
+    w.located(w.representative(e)).map(|d| w.file_of(d))
 }
 
 /// The file whose derived group holds a derived unit: that of the first
@@ -737,27 +767,101 @@ pub(crate) fn origin_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
 /// Marks every unit whose key two different entities share
 /// (`spec/digest.md` §3.4); returns how many keys collide. Namespaces are
 /// merged, and declarations a scope may repeat are one entity when their
-/// digests are equal too.
+/// digests are equal too. A run made only of parts (resolved or
+/// `default_argument` units, keyed under their owner's key) is left to
+/// [`mark_part_collisions`], which runs once every owner is marked.
 pub(crate) fn mark_collisions(written: &mut [Written]) -> u64 {
-    let mut order: Vec<usize> = (0..written.len()).collect();
-    order.sort_by(|&a, &b| written[a].key.cmp(&written[b].key).then(a.cmp(&b)));
     let mut collisions = 0;
-    let mut i = 0;
-    while i < order.len() {
-        let mut j = i + 1;
-        while j < order.len() && written[order[j]].key == written[order[i]].key {
-            j += 1;
-        }
-        let run = &order[i..j];
-        if run.len() > 1 && collides(written, run) {
+    for run in runs(written) {
+        if run.len() > 1
+            && collides(written, &run)
+            && !run.iter().all(|&k| is_part(written[k].kind))
+        {
             collisions += 1;
-            for &k in run {
-                written[k].cause = Some(merge(written[k].cause, Cause::Collision));
+            for &k in &run {
+                collide(&mut written[k]);
             }
         }
-        i = j;
     }
     collisions
+}
+
+/// Marks `u` as in a collision: `collided`, and `Collision` merged into
+/// its cause.
+pub(crate) fn collide(u: &mut Written) {
+    u.collided = true;
+    u.cause = Some(merge(u.cause, Cause::Collision));
+}
+
+/// The parts of colliding owners (`spec/digest.md` §3.4, §12), after
+/// [`mark_collisions`] and the mapped collisions: every part of an owner
+/// marked `Collision` is marked `Collision` (a part follows its owner's
+/// key and key cause), whether or not another part shares its key. A run
+/// of parts sharing a key is counted unless every pair in it is explained
+/// by its owners' collision: the two parts are under one owner key, that
+/// key is marked `Collision`, and their owners are different entities.
+/// Returns how many part keys are counted.
+pub(crate) fn mark_part_collisions(written: &mut [Written]) -> u64 {
+    follow_owners(written);
+    let marked: std::collections::HashSet<Digest> =
+        written.iter().filter(|u| u.collided).map(|u| u.key).collect();
+    let mut collisions = 0;
+    for run in runs(written) {
+        if run.len() < 2
+            || !run.iter().all(|&k| is_part(written[k].kind))
+            || !collides(written, &run)
+        {
+            continue;
+        }
+        let explained = run.iter().enumerate().all(|(i, &a)| {
+            run[i + 1..].iter().all(|&b| {
+                let (a, b) = (&written[a], &written[b]);
+                a.owner.is_some()
+                    && a.owner == b.owner
+                    && a.owner.is_some_and(|o| marked.contains(&o))
+                    && a.entity != b.entity
+            })
+        });
+        if !explained {
+            collisions += 1;
+        }
+        for &k in &run {
+            collide(&mut written[k]);
+        }
+    }
+    follow_owners(written);
+    collisions
+}
+
+/// Marks `Collision` every part whose owner key is marked, to a fixed
+/// point (a part may be keyed under a part).
+fn follow_owners(written: &mut [Written]) {
+    loop {
+        let marked: std::collections::HashSet<Digest> =
+            written.iter().filter(|u| u.collided).map(|u| u.key).collect();
+        let mut changed = false;
+        for u in written.iter_mut() {
+            if !u.collided && u.owner.is_some_and(|o| marked.contains(&o)) {
+                collide(u);
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
+/// The indices of `written` grouped by key, each run in index order.
+fn runs(written: &[Written]) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..written.len()).collect();
+    order.sort_by(|&a, &b| written[a].key.cmp(&written[b].key).then(a.cmp(&b)));
+    order.chunk_by(|&a, &b| written[a].key == written[b].key).map(<[usize]>::to_vec).collect()
+}
+
+/// A unit keyed under another unit's key (digest-kinds §11.1, §11.4).
+fn is_part(kind: KeyKind) -> bool {
+    matches!(kind, KeyKind::Resolved | KeyKind::DefaultArgument)
 }
 
 fn collides(written: &[Written], run: &[usize]) -> bool {
@@ -804,8 +908,15 @@ impl Walk<'_> {
         {
             return chain;
         }
-        let chain: Vec<DeclId> =
-            chain.into_iter().filter(|&d| !instantiated_outside_class(self, d)).collect();
+        // The out-of-line definition an instantiation makes for a static
+        // data member when it is used is the resolved unit `definition`'s
+        // (§11.9): the own unit does not read it.
+        let definition = self.unit.definition;
+        let chain: Vec<DeclId> = chain
+            .into_iter()
+            .filter(|&d| !instantiated_outside_class(self, d))
+            .filter(|&d| definition || !instantiated_out_of_line(self, d))
+            .collect();
         if chain.iter().all(|&d| pattern_friend(self, d)) {
             return chain;
         }
@@ -1083,7 +1194,7 @@ mod tests {
             let inst = *gs.last().expect("A<int>'s g");
             let g = w.entity(inst);
             assert!(outside_only(w, g));
-            assert!(crate::decl_func::definition_class(w, g));
+            assert!(crate::demand::definition_class(w, g));
         });
     }
 
@@ -1135,6 +1246,35 @@ mod tests {
         });
     }
 
+    // WP-045 decision 4: Kiln instantiates a static data member's
+    // out-of-line definition on use as a new redeclaration at namespace
+    // scope. The own unit reads the first written declaration and leaves
+    // that one out of its chain; the `definition` unit keeps it.
+    #[test]
+    fn instantiated_out_of_line_definition_is_left_out() {
+        let src = "template <class T> struct A { static int s; };\n\
+                   template <class T> int A<T>::s = 1;\n\
+                   A<int> a;\n\
+                   int y() { return A<int>::s; }\n";
+        with_walk(src, |w| {
+            let ss = named(w, "s", DeclKind::Var);
+            let out: Vec<DeclId> =
+                ss.iter().copied().filter(|&d| super::instantiated_out_of_line(w, d)).collect();
+            assert_eq!(out.len(), 1, "A<int>'s instantiated definition of s: {ss:?}");
+            let d = out[0];
+            let e = w.entity(d);
+            assert_ne!(e, d);
+            assert!(crate::demand::definition_class(w, e));
+            assert!(!w.redecls(e).contains(&d));
+            assert_eq!(super::read_decl(w, e), w.representative(e));
+            assert_ne!(super::read_decl(w, e), d);
+            w.unit.definition = true;
+            assert!(w.redecls(e).contains(&d));
+            w.unit.definition = false;
+            assert_eq!(crate::demand::defining_declaration(w, e), Some(d));
+        });
+    }
+
     // WP-032 rules 1 and 2: `k` is declared first by an instantiation and
     // then in source: a declared unit, classified from the written
     // declaration. `j` exists only through the instantiations: derived, of
@@ -1154,13 +1294,13 @@ mod tests {
             assert_eq!(w.representative(k), written);
             assert_eq!(w.redecls(k), vec![written]);
             assert_eq!(unit_class(w, k), Some(UnitClass::Declared));
-            assert!(!crate::decl_func::definition_class(w, k));
+            assert!(!crate::demand::definition_class(w, k));
             let js = named(w, "j", DeclKind::Function);
             let j = w.entity(js[1]);
             assert!(outside_only(w, j));
             assert_eq!(w.redecls(j).len(), 2, "both instantiations' declarations");
             assert_eq!(unit_class(w, j), Some(UnitClass::Derived));
-            assert!(crate::decl_func::definition_class(w, j));
+            assert!(crate::demand::definition_class(w, j));
         });
     }
 

@@ -1,6 +1,4 @@
-# pending
-# needs: demand
-# a lazily declared builtin is a derived unit (digest §2.2 table), Pending(Demand):
-# its attributes are not reached yet; the call changes f()
+# a lazily declared builtin is a derived unit (digest §2.2 table), written
+# with its attributes since WP-045; the call changes f()
 changed f()
 derived-changed __builtin_abs(int)

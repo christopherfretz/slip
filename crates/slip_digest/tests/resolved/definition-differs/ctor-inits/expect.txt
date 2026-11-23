@@ -1,0 +1,2 @@
+# The pattern constructor's initialisers are pending (expressions).
+changed A<int>::A()::<definition>

@@ -73,9 +73,11 @@
 //! | `local::stream_source(w, e)` | nothing: the declaration whose stream the unit of `e` writes, which the numbering walks |
 //! | `local::lambda_expr(w, s, e)` | `LambdaExpr.a` (§7): the closure's `decl`, rule 6's causes inside a key or a type |
 //! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each; a function's and a variable's language linkage (§5.6 `ScopeData`) |
-//! | `decl_func::implicit_instantiation(w, e)` | nothing: whether the entity is an implicit instantiation (its own kind, else an enclosing one), the first rule of §11.9 |
-//! | `decl_func::definition_class(w, e)` | nothing: whether the entity is of the §11.9 definition class (defined on use, implicit, or defaulted on its first declaration) |
-//! | `decl_func::instantiated_on_use(w, e)` | nothing: whether a function or variable is an implicit instantiation or named by `extern template` (its own kind, else an enclosing one) |
+//! | `demand::effective_kind(w, e)` | nothing: the one specialisation kind the digest reads for an entity (§11.10), from its own `SpecInfo`, an explicitly specialised member's own kind, or the greater of a member's own kind and its class's |
+//! | `demand::definition_class(w, e)` | nothing: whether the entity is of the §11.9 definition class, whose definition is the resolved unit `definition` |
+//! | `demand::pattern_holds_placeholder(w, e)` | nothing: whether the declared type of the pattern an instantiation comes from holds a placeholder (§11.9: the type is then `definition`'s) |
+//! | `demand::write_resolved(w, e, owner, p, disc, body)` | a resolved unit of `owner` (§11.1): its key, class, file and cause; `body` writes its stream |
+//! | `decl_func::{function_definition, var_definition}(w, s, e, def)`, `decl_class::{record_definition, enum_definition}(w, s, def)`, `templ::spec_definition(w, s, e)` | the rows of the resolved unit `definition` (§11.9) |
 //! | `decl_func::var_type(w, d, e)` | nothing: the type a variable's unit holds, an array of unknown bound completed by another declaration |
 //! | `units::defining_decl(w, e)` | nothing: the defining declaration of a variable ([basic.def]) or Kiln's `definition` of another entity |
 //! | `Walk::linkage_spec(d, all)` (`keys.rs`) | nothing: the innermost `LinkageSpec` around `d` and its language (`None` for an unknown byte), through namespaces only unless `all` |
@@ -365,8 +367,6 @@ pub enum Area {
     Attrs,
     /// The other tables of `Ast` (§10): `other.rs`.
     Other,
-    /// Demand-driven fields and resolved units (§11): `demand.rs`.
-    Demand,
     /// The order unit (digest §2.1).
     Order,
     /// A fact a canonical profile leaves out but its first spelling
@@ -388,7 +388,6 @@ impl Area {
             Area::Templ => "templ",
             Area::Attrs => "attrs",
             Area::Other => "other",
-            Area::Demand => "demand",
             Area::Order => "order",
             Area::Spelling => "spelling",
         }
