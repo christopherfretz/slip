@@ -395,6 +395,45 @@ mod tests {
         assert_eq!(last_shards(&r)[&o], None, "a last attempt without a shard");
     }
 
+    // §7's map shard: one of the observer, phase `map` and round 0, else
+    // none. Through the executable the task refuses such a pre shard first
+    // (the verify shard is then `failed` and no map shard is read), so the
+    // filter is tested here, over a store whose files are put in place.
+    #[test]
+    fn s7_map_shard_of_the_observer_phase_and_round() {
+        let dir = std::env::temp_dir().join(format!("slip-wp053-map-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir, Access::Exclusive).unwrap();
+        let plan = Digest([9; 32]);
+        let (a, b) = (Digest([1; 32]), Digest([2; 32]));
+        let at = |observer: &Digest, bytes: &[u8]| {
+            let path = store.shard_path(&plan, Phase::Map, 0, observer);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        let map = |observer: Digest, phase: Phase, round: u64| {
+            let mut bytes = Shard::from_bytes(&shard(observer, "")).unwrap();
+            bytes.phase = phase;
+            bytes.round = round;
+            bytes.outcome.status = Status::Ok;
+            bytes.to_bytes()
+        };
+        assert_eq!(map_status(&store, &plan, &a).unwrap(), None, "absent");
+        at(&a, &map(a, Phase::Map, 0));
+        assert_eq!(map_status(&store, &plan, &a).unwrap(), Some(Status::Ok));
+        for (wrong, why) in [
+            (map(b, Phase::Map, 0), "another observer's"),
+            (map(a, Phase::Verify, 0), "another phase's"),
+            (map(a, Phase::Map, 1), "another round's"),
+            (b"not a shard".to_vec(), "not a shard"),
+        ] {
+            at(&a, &wrong);
+            assert_eq!(map_status(&store, &plan, &a).unwrap(), None, "{why}");
+        }
+        drop(store);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     // §7.1: the bytes the text escapes.
     #[test]
     fn s7_1_escape() {

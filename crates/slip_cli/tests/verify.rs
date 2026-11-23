@@ -551,6 +551,18 @@ fn s8_7_report_replaced_whole() {
     let names: Vec<_> =
         std::fs::read_dir(f.path("out")).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert_eq!(names, ["r.json"]);
+    // Replaced, not rewritten: the path names a new file afterwards, and a
+    // second name of the old file still names the old one. (Compared by
+    // inode: the contents read back through the host's shared mount can
+    // be stale for a moment after a rename.)
+    use std::os::unix::fs::MetadataExt;
+    let ino = |name: &str| std::fs::metadata(f.path(name)).unwrap().ino();
+    std::fs::hard_link(f.path("out/r.json"), f.path("out/old.json")).unwrap();
+    let before = ino("out/r.json");
+    let second = f.verify(&plan, &["--report", "out/r.json"]);
+    assert_eq!(second.code(), Some(0), "{second:?}");
+    assert_ne!(ino("out/r.json"), before, "a new file was renamed over the path");
+    assert_eq!(ino("out/old.json"), before);
     // Without `--report`, no `report` line.
     let out = f.verify(&plan, &[]);
     assert_eq!(out.value("report"), None);
@@ -660,6 +672,46 @@ fn s2_relocation_through_the_whole_path() {
     assert!(v.findings.iter().any(|x| x.kind == FindingKind::Changed), "{:?}", v.findings);
     let (shard, _) = f.shard(&plan, "verify", 0, &observers[1].0);
     assert_eq!(shard.verdict.unwrap().kind, VerdictKind::Verified);
+}
+
+// spec/verify.md §2.3 `m(P')`: a `relocate` whose parent is named as the
+// post-image has it (`fresh`, which only the post-images declare) is
+// resolved through the post-images' records: the class moved into the
+// relocated namespace under a new name verifies at every job with the
+// file `slip declare` wrote, and does not without that line.
+#[test]
+fn s2_3_relocate_into_a_parent_of_the_post_image() {
+    let f = two_units("parent");
+    let plan = f.parse();
+    let moved = |t: &str| {
+        t.replace("namespace old", "namespace fresh")
+            .replace("struct S", "struct T")
+            .replace("old::S", "fresh::T")
+            .replace("S *s", "T *s")
+            .replace("old::", "fresh::")
+    };
+    f.write("post/a.h", &moved(HEADER));
+    f.write("post/u0.cpp", &moved(U0));
+    f.write("post/u1.cpp", &moved(U1));
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let observers = f.observers(&plan);
+    for (text, verified) in [
+        ("relocate old => :: fresh\nrelocate old::S => fresh :: T\n", true),
+        ("relocate old => :: fresh\n", false),
+    ] {
+        f.write("t.txt", text);
+        let out = declare(&f, &plan, "t.txt", &img);
+        assert_eq!(out.code(), Some(0), "{out:?}");
+        let mut args = img.clone();
+        args.extend(["--declared", "d.decl"]);
+        f.verify(&plan, &args);
+        for (o, main) in &observers {
+            let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
+            let want = if verified { VerdictKind::Verified } else { VerdictKind::Mismatch };
+            assert_eq!(v.kind, want, "{text}{main}: {:?}", v.findings);
+        }
+    }
 }
 
 // spec/verify.md §2.2, §7.1 `exemptions`: a change declared `changed`
