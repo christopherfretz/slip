@@ -1972,13 +1972,17 @@ pub struct Obligation { pub file: Vec<u8> /* subject path */, pub lo: u32, pub h
 pub enum Spelling { Holds, NotSeen, Fails { found: Option<Digest>, found_name: String } }
 
 /// One observer of the post-image. `obligations` are those whose file the unit read;
-/// the result is parallel to it.
-pub fn check_spellings(input: &Input<'_>, rules: &slip_model::keys::RuleTable,
+/// the result is parallel to it. `input` is the digest's view of `unit`.
+pub fn check_spellings(unit: &slip_kiln::Unit<'_>, input: &Input<'_>,
+                       rules: &slip_model::keys::RuleTable,
                        obligations: &[Obligation]) -> Vec<Spelling>;
 ```
 
 It gets keys from `Keys::with_rules` (§9.5), so the key it compares is
-the key the walk of the same parse gave the entity. The verify job
+the key the walk of the same parse gave the entity. It takes the unit
+because the written references and the origin are
+`slip_kiln::written`'s, which read a `Unit`
+(`spec/landed/verify/WP-096.md`). The verify job
 (`spec/exec.md` §8.6) calls it and writes the section.
 
 Over the run, in `slip_verify` (trusted base), naming no Kiln type:
