@@ -137,6 +137,7 @@ fn sample_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        negatives: None,
     }
 }
 
@@ -159,6 +160,7 @@ fn failed_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        negatives: None,
     }
 }
 
@@ -462,6 +464,7 @@ fn small_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        negatives: None,
     }
 }
 
@@ -1119,7 +1122,7 @@ fn unknown_critical_sections() {
     sections.push((5, Vec::new()));
     let e = Plan::from_bytes(&sealed(*b"PLAN", &sections)).unwrap_err();
     assert_eq!(e.kind, ErrorKind::UnknownSection);
-    for id in [5u64, 16, 18, 20, 22, 23, 27, 63] {
+    for id in [5u64, 16, 18, 20, 22, 23, 30, 63] {
         let mut sections = raw_shard_sections(&small_shard());
         sections.push((id, Vec::new()));
         let bytes = sealed(*b"SHRD", &sections);

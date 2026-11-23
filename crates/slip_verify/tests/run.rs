@@ -85,6 +85,7 @@ fn ok_shard(obs: u8, verdict: Verdict, by_kind: Option<[u64; 6]>) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        negatives: None,
     };
     s.validate().expect("a valid shard");
     s
@@ -110,6 +111,7 @@ fn unparsed_shard(obs: u8, status: Status, message: &str) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        negatives: None,
     };
     s.validate().expect("a valid shard");
     s

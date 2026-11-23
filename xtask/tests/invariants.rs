@@ -122,6 +122,7 @@ fn shard(observer: Digest, status: Status, digest: u8) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        negatives: None,
     }
 }
 

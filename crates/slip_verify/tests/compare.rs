@@ -126,6 +126,7 @@ fn check_valid(v: &Verdict) {
         binding: None,
         rule_use: None,
         spellings: None,
+        negatives: None,
     };
     if let Err(e) = shard.validate() {
         panic!("verdict rejected by slip_model: {e}\n{v:?}");
