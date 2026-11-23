@@ -41,18 +41,54 @@ Declared := rules:   list<Rule>      digest.md §3.4; sorted by (parent, kind, n
 
 `kept` and `files` are version 2 of the container (WP-110); a version 1
 `DECL` is read as one with `kept` empty and `files` absent, and a
-version 1 `DECL` with a rule is refused once WP-110 is on main. `kept`
-is sorted and has no duplicate, like the other lists. `files` is part
-of the rule table's identity: `rules_id` is then
-`H("slip.rules.v2", rules, files)`.
+version 1 `DECL` with a rule is refused. `kept` is sorted and has no
+duplicate, like the other lists. `files` is part of the rule table's
+identity: `rules_id` is then `H("slip.rules.v2", rules, files)`.
 
 Each list is sorted and has no duplicate (rules by the bytes of their
 encoded `(parent, kind, name, disc)`, keys by their bytes); a key may be in more than one of
-the three exemption lists. Every `KeyId` is in the key space
+the exemption lists and in `kept`. Every `KeyId` is in the key space
 of the pre-image: for an entity a rule renames, the key it had before. The
-container form is kind `DECL`, version 1, one required section `declared`
-(id 1) holding this record; its JSON rendering follows `spec/model.md` §10.
-`rules_id = H("slip.rules.v1", rules)` names the rule table.
+container form is kind `DECL`, version 2 (a reader also reads version 1),
+one required section `declared` (id 1) holding this record; its JSON
+rendering follows `spec/model.md` §10, with members `rules`, `changed`,
+`created`, `removed`, and in version 2 `kept` and `files` (`null`, or
+`{"owned": [...], "readonly": [...]}`, each path in the form of
+`spec/model.md` §10 for bytes). `files` is encoded as `opt` of the
+record `owned: list<bytes>, readonly: list<bytes>`. A writer writes
+version 2; `dump` and `undump` keep a file's version, so a version 1
+file's rendering has version 1 and the four members.
+`rules_id = H("slip.rules.v1", rules)` names the rule table when `files`
+is absent, and `H("slip.rules.v2", rules, files)` (rules as
+`list<Rule>`, then `owned` and `readonly` as `list<bytes>`) when it is
+present.
+
+**The reader's checks**, in this order, each with its message; a binary
+reader reports `Malformed` at the offset named, a JSON reader at the path
+(`crates/slip_model/tests/declared.rs` has one test per row):
+
+1. The rules are strictly ascending and admissible (WP-022: an invalid
+   name, `two rules with one (parent, kind, name, disc)`,
+   `rules are not strictly ascending`; at the later rule).
+2. `changed`, `created`, `removed`, in that order:
+   `<list> is not strictly ascending`, at the later key.
+3. `kept is not strictly ascending`, at the later key.
+4. `files`, as a transform request's ownership (`spec/edits.md` §2.1,
+   `spec/landed/edits/WP-060.md` §3), with its messages and in its order:
+   `owned is empty` (at `owned`); `not a canonical absolute path`,
+   `owned is not strictly ascending` (at the entry); the same two for
+   `readonly`; `a readonly entry is also in owned` (at the `readonly`
+   entry).
+5. `a version 1 container has a rule`, at the first rule.
+6. `rules without files`, and `files without a rule`, at `files` (its
+   tag byte). `files`
+   is present exactly when the rules are not empty: with no rule nothing
+   is mapped and the files are not read (§2.1), so a second encoding of
+   the empty table, with another `rules_id`, is refused rather than
+   given a meaning.
+
+A value made in memory may hold rules and no files; `validate` refuses
+it (rows 3 to 6), and so does the writer's debug assertion.
 
 With all four lists empty the claim is plain equality. That is the check of
 corpus invariants (a) and (b).

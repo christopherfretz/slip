@@ -1,18 +1,20 @@
 //! Declared changes and their container, kind `DECL` (`spec/verify.md` §2;
 //! `spec/model.md` §2, §5, §10; the encodings, offsets and paths of
-//! `spec/landed/model/WP-022.md`). Work package WP-022. Each test names
-//! the section it covers.
+//! `spec/landed/model/WP-022.md`). Work package WP-022; version 2 (`kept`,
+//! `files`, the reader's checks of `spec/verify.md` §2) is WP-110's. Each
+//! test names the section it covers.
 
 use std::fs;
 use std::path::Path;
 
 use slip_model::Digest;
 use slip_model::container::{HEADER_LEN, TRAILER_LEN, Writer};
-use slip_model::declared::{Declared, DeclaredError};
+use slip_model::declared::{Declared, DeclaredError, RULES_V2_TAG};
 use slip_model::formats::{JsonFormError, content_id, dump, undump};
 use slip_model::hash::tagged_digest;
 use slip_model::json::{self, Value};
 use slip_model::keys::{KeyKind, Name, Parent, RULES_TAG, Rule, RuleError, RuleTable};
+use slip_model::transform::Ownership;
 use slip_model::wire::{Encoder, ErrorKind};
 
 // ---------------------------------------------------------------------------
@@ -78,8 +80,22 @@ fn golden_rules() -> Vec<Rule> {
     ])
 }
 
+/// Files for a value with rules: an owned tree with a read-only subtree.
+fn files() -> Ownership {
+    Ownership { owned: vec![b"/src".to_vec()], readonly: vec![b"/src/dep".to_vec()] }
+}
+
+/// A value with rules is written with its files (verify §2).
+fn with_files(x: Declared) -> Declared {
+    if x.rules().is_empty() { x } else { x.with_files(Some(files())) }
+}
+
 fn golden_declared() -> Declared {
-    Declared::new(golden_rules(), vec![d(1), d(2)], vec![d(2)], vec![d(3), d(4)]).unwrap()
+    Declared::new(golden_rules(), vec![d(1), d(2)], vec![d(2)], vec![d(3), d(4)])
+        .unwrap()
+        .with_kept(vec![d(5), d(6)])
+        .unwrap()
+        .with_files(Some(files()))
 }
 
 fn parse(text: &str) -> Value {
@@ -103,6 +119,62 @@ fn raw_payload(rules: &[Rule], lists: [&[Digest]; 3]) -> Vec<u8> {
     e.into_bytes()
 }
 
+/// Where the version 2 fields start in a payload, payload offsets.
+#[derive(Default)]
+struct At2 {
+    kept_at: Vec<usize>,
+    files: usize,
+    owned: usize,
+    owned_at: Vec<usize>,
+    readonly_at: Vec<usize>,
+}
+
+/// The payload of a version 2 `declared` section, by the test's encoder:
+/// the version 1 fields, `kept`, then `files` as `opt` of two
+/// `list<bytes>`.
+fn raw_payload_v2(
+    rules: &[Rule],
+    lists: [&[Digest]; 3],
+    kept: &[Digest],
+    files: Option<&Ownership>,
+) -> (Vec<u8>, At2) {
+    let mut e = Encoder::new();
+    e.count(rules.len());
+    for r in rules {
+        r.encode(&mut e);
+    }
+    for list in lists {
+        e.count(list.len());
+        for k in list {
+            e.digest(k);
+        }
+    }
+    let mut at = At2::default();
+    e.count(kept.len());
+    for k in kept {
+        at.kept_at.push(e.as_bytes().len());
+        e.digest(k);
+    }
+    at.files = e.as_bytes().len();
+    match files {
+        None => {
+            e.u8(0);
+        }
+        Some(o) => {
+            e.u8(1);
+            at.owned = e.as_bytes().len();
+            for (list, offs) in [(&o.owned, &mut at.owned_at), (&o.readonly, &mut at.readonly_at)] {
+                e.count(list.len());
+                for p in list {
+                    offs.push(e.as_bytes().len());
+                    e.bytes(p);
+                }
+            }
+        }
+    }
+    (e.into_bytes(), at)
+}
+
 fn file(kind: [u8; 4], version: u32, sections: &[(u64, &[u8])]) -> Vec<u8> {
     let mut w = Writer::new(kind, version);
     for (id, p) in sections {
@@ -111,8 +183,14 @@ fn file(kind: [u8; 4], version: u32, sections: &[(u64, &[u8])]) -> Vec<u8> {
     w.finish()
 }
 
+/// A version 1 file.
 fn decl(payload: &[u8]) -> Vec<u8> {
     file(*b"DECL", 1, &[(1, payload)])
+}
+
+/// A version 2 file.
+fn decl2(payload: &[u8]) -> Vec<u8> {
+    file(*b"DECL", 2, &[(1, payload)])
 }
 
 /// The file offset of the payload's first byte, for a payload this long.
@@ -195,8 +273,13 @@ fn golden(name: &str, actual: &[u8]) {
 fn round_trip(x: &Declared) {
     x.validate().unwrap();
     let bytes = x.to_bytes();
-    let payload = raw_payload(x.rules().rules(), [x.changed(), x.created(), x.removed()]);
-    assert_eq!(bytes, decl(&payload), "to_bytes agrees with the test's encoder");
+    let (payload, _) = raw_payload_v2(
+        x.rules().rules(),
+        [x.changed(), x.created(), x.removed()],
+        x.kept(),
+        x.files(),
+    );
+    assert_eq!(bytes, decl2(&payload), "to_bytes agrees with the test's encoder");
     let back = Declared::from_bytes(&bytes).unwrap();
     assert_eq!(&back, x);
     assert_eq!(back.to_bytes(), bytes);
@@ -235,6 +318,12 @@ fn golden_declared_binary_and_json() {
     assert!(text.contains(r#""parent": "c_linkage""#));
     assert!(text.contains(r#""to_parent": "builtin""#));
     assert!(text.contains(r#""unit": "acacacac"#));
+    assert_eq!(get(&v, &["version"]), &Value::Int(2));
+    assert_eq!(
+        get(&v, &["sections", "declared", "files"]),
+        &parse(r#"{"owned": ["/src"], "readonly": ["/src/dep"]}"#)
+    );
+    assert_eq!(get(&v, &["sections", "declared", "kept"]), &json_keys(&[d(5), d(6)]));
 }
 
 // verify §2: every KeyKind round-trips in a rule, in both forms.
@@ -244,7 +333,7 @@ fn every_key_kind_round_trips_in_a_container() {
         .into_iter()
         .map(|kind| rule(Parent::Root, kind, id("x"), None, (Parent::Root, id("y"))))
         .collect();
-    let x = Declared::new(sorted(rules), vec![], vec![], vec![]).unwrap();
+    let x = with_files(Declared::new(sorted(rules), vec![], vec![], vec![]).unwrap());
     round_trip(&x);
     let text = dump(&x.to_bytes()).unwrap();
     for kind in KeyKind::ALL {
@@ -252,18 +341,184 @@ fn every_key_kind_round_trips_in_a_container() {
     }
 }
 
-// verify §2: `none()` is four empty lists, and its rules' id is the id of
-// the empty table.
+// verify §2: `none()` is five empty lists and no files, and its
+// `rules_id` is the id of the empty table.
 #[test]
-fn none_is_four_empty_lists() {
+fn none_is_empty_lists_and_no_files() {
     let x = Declared::none();
     assert!(x.rules().is_empty());
     assert!(x.changed().is_empty() && x.created().is_empty() && x.removed().is_empty());
+    assert!(x.kept().is_empty() && x.files().is_none());
     assert_eq!(x.rules().id(), RuleTable::empty().id());
     assert_eq!(x.rules().id(), tagged_digest(RULES_TAG, &[0]));
+    assert_eq!(x.rules_id(), x.rules().id());
     assert_eq!(Declared::new(vec![], vec![], vec![], vec![]).unwrap(), x);
     round_trip(&x);
-    assert_eq!(x.to_bytes(), decl(&[0, 0, 0, 0]));
+    assert_eq!(x.to_bytes(), decl2(&[0, 0, 0, 0, 0, 0]));
+}
+
+// verify §2: a version 1 file without a rule is read as one with `kept`
+// empty and `files` absent, in both forms.
+#[test]
+fn version_1_without_a_rule_is_read() {
+    let payload = raw_payload(&[], [&[d(1)], &[d(2)], &[d(3)]]);
+    let x = Declared::from_bytes(&decl(&payload)).unwrap();
+    let want = Declared::new(vec![], vec![d(1)], vec![d(2)], vec![d(3)]).unwrap();
+    assert_eq!(x, want);
+    assert!(x.kept().is_empty() && x.files().is_none());
+    let text = dump(&decl(&payload)).unwrap();
+    assert!(text.contains(r#""version": 1"#) && !text.contains("kept"), "{text}");
+    assert_eq!(Declared::from_json(&parse(&text)).unwrap(), want);
+    assert_eq!(undump(&parse(&text)).unwrap(), decl(&payload));
+    // A version 1 JSON rendering with version 2's members is refused.
+    let mut v = want.to_json();
+    set(&mut v, &["version"], Value::Int(1));
+    assert_eq!(Declared::from_json(&v).unwrap_err().path, "sections.declared.kept");
+}
+
+// verify §2 (the reader's checks, row 5): a version 1 file with a rule is
+// refused, at the first rule.
+#[test]
+fn rejects_version_1_with_a_rule() {
+    let (a, b) = two_rules();
+    let payload = raw_payload(&[a.clone(), b.clone()], [&[], &[], &[]]);
+    let mut json = json_with("rules", json_rules(&[a, b]));
+    set(&mut json, &["version"], Value::Int(1));
+    let Value::Object(m) = &mut json else { unreachable!() };
+    let Value::Object(sections) = &mut m[2].1 else { unreachable!() };
+    let Value::Object(fields) = &mut sections[0].1 else { unreachable!() };
+    fields.truncate(4);
+    rejected(&decl(&payload), base(&payload) + 1, &json, "sections.declared.rules[0]");
+    assert_eq!(
+        Declared::from_bytes(&decl(&payload)).unwrap_err().what,
+        "a version 1 container has a rule"
+    );
+}
+
+// verify §2 (row 6): rules without files, and files without a rule, are
+// refused at `files`, in a file and by `validate`.
+#[test]
+fn rejects_files_absent_with_rules_and_present_without() {
+    let (a, _) = two_rules();
+    let (payload, at) = raw_payload_v2(&[a.clone()], [&[], &[], &[]], &[], None);
+    let mut json = json_with("rules", json_rules(&[a.clone()]));
+    set(&mut json, &["sections", "declared", "files"], Value::Null);
+    rejected(&decl2(&payload), base(&payload) + at.files, &json, "sections.declared.files");
+    assert_eq!(Declared::from_bytes(&decl2(&payload)).unwrap_err().what, "rules without files");
+    let x = Declared::new(vec![a], vec![], vec![], vec![]).unwrap();
+    assert!(x.validate().unwrap_err().contains("rules without files"));
+
+    let o = files();
+    let (payload, at) = raw_payload_v2(&[], [&[], &[], &[]], &[], Some(&o));
+    let json = json_with("rules", Value::Array(vec![]));
+    rejected(&decl2(&payload), base(&payload) + at.files, &json, "sections.declared.files");
+    assert_eq!(Declared::from_bytes(&decl2(&payload)).unwrap_err().what, "files without a rule");
+    assert!(Declared::none().with_files(Some(o)).validate().is_err());
+}
+
+// verify §2 (row 3): `kept` not strictly ascending, in a file, by
+// `with_kept`; a key of `kept` may be in an exemption list too.
+#[test]
+fn rejects_kept_unsorted_or_duplicated() {
+    let rules = golden_rules();
+    let o = files();
+    for bad in [[d(1), d(3), d(2)], [d(1), d(2), d(2)]] {
+        let (payload, at) = raw_payload_v2(&rules, [&[], &[], &[]], &bad, Some(&o));
+        let mut json = json_with("kept", json_keys(&bad));
+        for list in ["changed", "created", "removed"] {
+            set(&mut json, &["sections", "declared", list], Value::Array(vec![]));
+        }
+        let offset = base(&payload) + at.kept_at[2];
+        rejected(&decl2(&payload), offset, &json, "sections.declared.kept[2]");
+        assert_eq!(
+            Declared::from_bytes(&decl2(&payload)).unwrap_err().what,
+            "kept is not strictly ascending"
+        );
+        assert_eq!(
+            Declared::none().with_kept(bad.to_vec()),
+            Err(DeclaredError::NotAscending { list: "kept", index: 2 })
+        );
+    }
+    let x = with_files(
+        Declared::new(rules, vec![d(1)], vec![], vec![]).unwrap().with_kept(vec![d(1)]).unwrap(),
+    );
+    round_trip(&x);
+}
+
+// verify §2 (row 4): `files` is checked as a transform request's ownership
+// (edits §2.1), in that order and with those messages.
+#[test]
+fn rejects_each_bad_ownership() {
+    let p = |s: &str| s.as_bytes().to_vec();
+    let rules = golden_rules();
+    // (owned, readonly, message, which: 0 owned list, 1 owned[i], 2 readonly[i], index)
+    let cases: [(Vec<Vec<u8>>, Vec<Vec<u8>>, &str, u8, usize); 8] = [
+        (vec![], vec![], "owned is empty", 0, 0),
+        (vec![p("/a"), p("b")], vec![], "not a canonical absolute path", 1, 1),
+        (vec![p("/a/")], vec![], "not a canonical absolute path", 1, 0),
+        (vec![p("/b"), p("/a")], vec![], "owned is not strictly ascending", 1, 1),
+        (vec![p("/a"), p("/a")], vec![], "owned is not strictly ascending", 1, 1),
+        (vec![p("/a")], vec![p("/a/../b")], "not a canonical absolute path", 2, 0),
+        (vec![p("/a")], vec![p("/c"), p("/b")], "readonly is not strictly ascending", 2, 1),
+        (vec![p("/a"), p("/b")], vec![p("/b")], "a readonly entry is also in owned", 2, 0),
+    ];
+    for (owned, readonly, what, which, i) in cases {
+        let o = Ownership { owned, readonly };
+        let (payload, at) = raw_payload_v2(&rules, [&[], &[], &[]], &[], Some(&o));
+        let mut json = golden_declared().to_json();
+        for list in ["changed", "created", "removed", "kept"] {
+            set(&mut json, &["sections", "declared", list], Value::Array(vec![]));
+        }
+        let paths = |l: &[Vec<u8>]| {
+            Value::Array(
+                l.iter().map(|b| Value::Str(String::from_utf8(b.clone()).unwrap())).collect(),
+            )
+        };
+        set(&mut json, &["sections", "declared", "files", "owned"], paths(&o.owned));
+        set(&mut json, &["sections", "declared", "files", "readonly"], paths(&o.readonly));
+        let (offset, path) = match which {
+            0 => (at.owned, "sections.declared.files.owned".to_owned()),
+            1 => (at.owned_at[i], format!("sections.declared.files.owned[{i}]")),
+            _ => (at.readonly_at[i], format!("sections.declared.files.readonly[{i}]")),
+        };
+        rejected(&decl2(&payload), base(&payload) + offset, &json, &path);
+        assert_eq!(Declared::from_bytes(&decl2(&payload)).unwrap_err().what, what);
+        let x = Declared::new(rules.clone(), vec![], vec![], vec![]).unwrap().with_files(Some(o));
+        assert!(x.validate().is_err(), "{what}");
+    }
+}
+
+// verify §2: `rules_id` is `H("slip.rules.v1", rules)` without files and
+// `H("slip.rules.v2", rules, files)` with them; files that differ give
+// ids that differ.
+#[test]
+fn rules_id_covers_files() {
+    let x = golden_declared();
+    let mut e = Encoder::new();
+    e.count(x.rules().rules().len());
+    for r in x.rules().rules() {
+        r.encode(&mut e);
+    }
+    e.count(1).bytes(b"/src").count(1).bytes(b"/src/dep");
+    assert_eq!(x.rules_id(), tagged_digest(RULES_V2_TAG, e.as_bytes()));
+    assert_ne!(x.rules_id(), x.rules().id());
+    let other = x.clone().with_files(Some(Ownership {
+        owned: vec![b"/src".to_vec()],
+        readonly: vec![b"/src/dep2".to_vec()],
+    }));
+    assert_ne!(other.rules_id(), x.rules_id());
+    let moved = x.clone().with_files(Some(Ownership {
+        owned: vec![b"/src".to_vec(), b"/src/dep".to_vec()],
+        readonly: vec![],
+    }));
+    assert_ne!(moved.rules_id(), x.rules_id());
+    // Only the rules and the files: the exemption lists and `kept` are not
+    // in it.
+    let bare = Declared::new(x.rules().rules().to_vec(), vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(files()));
+    assert_eq!(bare.rules_id(), x.rules_id());
+    assert_eq!(Declared::none().rules_id(), RuleTable::empty().id());
 }
 
 // verify §2: a key may be in more than one exemption list.
@@ -501,7 +756,7 @@ fn rejects_wrong_kind() {
 #[test]
 fn rejects_wrong_version() {
     let payload = raw_payload(&[], [&[], &[], &[]]);
-    for version in [0u32, 2] {
+    for version in [0u32, 3] {
         let mut bytes = file(*b"DECL", 1, &[(1, &payload)]);
         bytes[12..16].copy_from_slice(&version.to_le_bytes());
         let e = Declared::from_bytes(&bytes).unwrap_err();
@@ -517,9 +772,10 @@ fn rejects_wrong_version() {
 fn rejects_other_json_forms() {
     let with_name = |name: &str| {
         parse(&format!(
-            r#"{{"kind": "DECL", "version": 1, "sections": {{"declared": {{"rules": [
+            r#"{{"kind": "DECL", "version": 2, "sections": {{"declared": {{"rules": [
             {{"parent": "root", "kind": "namespace", "name": {name}, "disc": null,
-             "to_parent": "root", "to_name": "order"}}], "changed": [], "created": [], "removed": []}}}}}}"#
+             "to_parent": "root", "to_name": "order"}}], "changed": [], "created": [], "removed": [],
+             "kept": [], "files": {{"owned": ["/"], "readonly": []}}}}}}}}"#
         ))
     };
     let at = "sections.declared.rules[0].name";
