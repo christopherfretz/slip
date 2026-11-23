@@ -504,7 +504,10 @@ impl<'u> KilnSubject<'u> {
     /// The parameters of function declaration `f`, in order.
     pub(super) fn parameters_of(&self, f: DeclId) -> Vec<DeclId> {
         let ast = self.ast;
-        ast.decls.function(f).map(|x| ast.lists.iter::<DeclId>(x.params).collect()).unwrap_or_default()
+        ast.decls
+            .function(f)
+            .map(|x| ast.lists.iter::<DeclId>(x.params).collect())
+            .unwrap_or_default()
     }
 
     /// §5.5: the written entity `e` comes from. A written entity is its own
@@ -551,26 +554,31 @@ impl<'u> KilnSubject<'u> {
     pub(super) fn is_transparent(&self, d: DeclId) -> bool {
         let ast = self.ast;
         match self.kind(d) {
-            DeclKind::Namespace => ast.decls.namespace(d).is_some_and(|n| {
-                n.flags & (NamespaceData::INLINE | NamespaceData::ANONYMOUS) != 0
-            }),
-            DeclKind::Enum => ast.decls.enumeration(d).is_some_and(|x| x.flags & EnumData::SCOPED == 0),
+            DeclKind::Namespace => ast
+                .decls
+                .namespace(d)
+                .is_some_and(|n| n.flags & (NamespaceData::INLINE | NamespaceData::ANONYMOUS) != 0),
+            DeclKind::Enum => {
+                ast.decls.enumeration(d).is_some_and(|x| x.flags & EnumData::SCOPED == 0)
+            }
             DeclKind::CXXRecord => self.is_anonymous_union(d),
             _ => false,
         }
     }
 
     fn is_anonymous_union(&self, d: DeclId) -> bool {
-        self.ast.decls.record(d).is_some_and(|r| {
-            r.tag == TagKind::Union && r.defn.contains(DefinitionBits::ANONYMOUS)
-        })
+        self.ast
+            .decls
+            .record(d)
+            .is_some_and(|r| r.tag == TagKind::Union && r.defn.contains(DefinitionBits::ANONYMOUS))
     }
 
     /// An unnamed class or enumeration, or anything else with no
     /// identifier that is not a namespace (§7.1 rule 4: "declared in an
     /// unnamed class").
     fn is_unnamed_class(&self, d: DeclId) -> bool {
-        matches!(self.kind(d), DeclKind::CXXRecord | DeclKind::Enum) && self.identifier_of(d).is_empty()
+        matches!(self.kind(d), DeclKind::CXXRecord | DeclKind::Enum)
+            && self.identifier_of(d).is_empty()
     }
 
     /// §7.2 rule 2 and §7.1 rule 4: the identifiers from the outermost

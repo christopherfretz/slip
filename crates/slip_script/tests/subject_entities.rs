@@ -111,7 +111,9 @@ fn find(
     p.ast
         .decls
         .ids()
-        .filter(|&d| p.ast.decls.get(d).kind() == kind && name_of(p.ast, d) == name && pred(p.ast, d))
+        .filter(|&d| {
+            p.ast.decls.get(d).kind() == kind && name_of(p.ast, d) == name && pred(p.ast, d)
+        })
         .collect()
 }
 
@@ -551,6 +553,30 @@ fn s6_4_rule1_parents() {
     });
 }
 
+/// §6.4 rule 1 (landed decision 11): a template parameter's parent is its
+/// template, not the scope Kiln gives it as context.
+#[test]
+fn s6_4_rule1_template_parameter_parent() {
+    with(&[("main.cpp", O)], |p, s| {
+        let tf = one(s, "tf");
+        let c = one(s, "C");
+        let ct = one(s, "C::ct");
+        let parent = |name: &str| -> Vec<Option<Entity>> {
+            find(p, DeclKind::TemplateTypeParm, name, |ast, d| {
+                !ast.decls.get(d).has(DeclFlags::IMPLICIT)
+            })
+            .into_iter()
+            .map(|d| s.entity_number(d))
+            .filter(|&e| s.is_live(Value::Entity(e)))
+            .map(|e| s.parent(e))
+            .collect()
+        };
+        let t = parent("T");
+        assert!(t.contains(&Some(tf)) && t.contains(&Some(c)), "{t:?}");
+        assert!(parent("U").contains(&Some(ct)));
+    });
+}
+
 /// §6.4 rules 1 and 3 with a friend declaration: one entity declared in
 /// the class and in the namespace; its parent is the namespace.
 #[test]
@@ -721,9 +747,8 @@ fn s5_5_origin_of_member_template_specialisation() {
 fn s7_2_rule2_qualified() {
     with(&[("main.cpp", L)], |_, s| {
         let q = |name: &str| {
-            s.qualified(one(s, name)).map(|v| {
-                v.into_iter().map(|x| String::from_utf8(x).unwrap()).collect::<Vec<_>>()
-            })
+            s.qualified(one(s, name))
+                .map(|v| v.into_iter().map(|x| String::from_utf8(x).unwrap()).collect::<Vec<_>>())
         };
         assert_eq!(q("ns::v1::g").unwrap(), ["ns", "v1", "g"], "inline namespaces are named");
         assert_eq!(q("ns::h").unwrap(), ["ns", "h"], "unnamed namespaces are skipped");

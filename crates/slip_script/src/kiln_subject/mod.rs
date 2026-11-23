@@ -272,9 +272,9 @@ impl Subject for KilnSubject<'_> {
 
     fn calls_to(&self, e: Entity) -> Result<Vec<Expression>, Errc> {
         let k = self.decl(e.0).map_or(0, |d| self.entity_kinds(d));
-        let template_of_function = self
-            .decl(e.0)
-            .is_some_and(|d| self.kind(d) == slip_kiln::kiln::ast::decl::DeclKind::FunctionTemplate);
+        let template_of_function = self.decl(e.0).is_some_and(|d| {
+            self.kind(d) == slip_kiln::kiln::ast::decl::DeclKind::FunctionTemplate
+        });
         if k & wire::KIND_FUNCTION == 0 && !template_of_function {
             return Err(Errc::WrongKind);
         }
@@ -342,7 +342,11 @@ impl Subject for KilnSubject<'_> {
                 size: bytes.len() as u64,
                 content: slip_model::hash::content_digest(bytes),
             },
-            None => FileRef { path: Vec::new(), size: 0, content: slip_model::hash::content_digest(&[]) },
+            None => FileRef {
+                path: Vec::new(),
+                size: 0,
+                content: slip_model::hash::content_digest(&[]),
+            },
         }
     }
 }
