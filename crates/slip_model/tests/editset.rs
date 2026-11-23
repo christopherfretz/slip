@@ -2015,6 +2015,16 @@ fn set_order() {
     x.validate().unwrap();
     x.failures.swap(1, 2);
     rejected(&x, "sections.set.failures[2]");
+    // The line before the column: (3, 9) before (4, 1).
+    let mut x = sample();
+    let mut f = x.failures[1].clone();
+    f.failure.place = Some(SourcePlace { file: b"/t/x.cc".to_vec(), line: 4, column: 1 });
+    x.failures.push(f);
+    x.failures[1].failure.place =
+        Some(SourcePlace { file: b"/t/x.cc".to_vec(), line: 3, column: 9 });
+    x.validate().unwrap();
+    x.failures.swap(1, 2);
+    rejected(&x, "sections.set.failures[2]");
     // In field order.
     broken(
         |x| {
