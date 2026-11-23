@@ -1222,14 +1222,15 @@ fn s8_9_units() {
     assert_eq!(only.iter().map(|l| l.3.as_str()).collect::<Vec<_>>(), ["f1()"]);
 }
 
-// §8.9 `<flags>`: `i` for an indeterminate unit (the specialisation of a
-// function template is a pending area of the walk until WP-045:
-// `docs/wp/WP-052.md` Handback); the warning of §8.8
-// for an observer that does not parse, status 0.
+// §8.9 `<flags>`: `i` for an indeterminate unit (a function whose body
+// declares a variable-length array, an extension the walk does not digest:
+// `f6(int)` below; any construct the walk leaves indeterminate will do, and
+// this one changes when the walk digests it); `-` for one it determines;
+// the warning of §8.8 for an observer that does not parse, status 0.
 #[test]
 fn s8_9_units_flags_and_warning() {
     let f = Fixture::new("units-flags");
-    f.both("u0.cpp", "template <class T> int t(T) { return 0; }\nint f0() { return t(1); }\n");
+    f.both("u0.cpp", "int f0() { return 1; }\nint f6(int n) { int a[n]; return sizeof(a); }\n");
     f.both("u1.cpp", "int f1() { return +; }\n");
     f.db(&["u0.cpp", "u1.cpp"]);
     let plan = f.parse();
@@ -1237,10 +1238,12 @@ fn s8_9_units_flags_and_warning() {
     let u1 = Fixture::text(&f.path("s/u1.cpp"));
     assert_eq!(out.stderr, format!("slip: warning: units: {u1}: the pre-image is diagnosed\n"));
     let lines = unit_lines(&out);
-    let t = lines.iter().find(|l| l.3 == "t<int>(int)").unwrap_or_else(|| panic!("{lines:?}"));
-    assert_eq!((t.0.as_str(), t.1.as_str(), t.2.as_str()), ("specialisation", "derived", "i"));
-    let f0 = lines.iter().find(|l| l.3 == "f0()").unwrap_or_else(|| panic!("{lines:?}"));
-    assert_eq!((f0.0.as_str(), f0.1.as_str(), f0.2.as_str()), ("function", "declared", "-"));
+    let flags = |name: &str| {
+        let l = lines.iter().find(|l| l.3 == name).unwrap_or_else(|| panic!("{lines:?}"));
+        (l.0.clone(), l.1.clone(), l.2.clone())
+    };
+    assert_eq!(flags("f6(int)"), ("function".into(), "declared".into(), "i".into()));
+    assert_eq!(flags("f0()"), ("function".into(), "declared".into(), "-".into()));
 }
 
 // ----- goldens -------------------------------------------------------------------
