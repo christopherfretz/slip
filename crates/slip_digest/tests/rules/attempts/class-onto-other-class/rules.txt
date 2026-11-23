@@ -1,0 +1,2 @@
+# Item 9 attempt: B mapped onto A while A stays: the classes collide, and through the discriminators so do the overloads of f.
+relocate n::A => n :: B

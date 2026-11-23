@@ -1,0 +1,2 @@
+# Item 6: the global namespace as a rule's target parent: f moved from the global namespace into n, which the pre-image lacks (its unit is added; nothing else differs).
+relocate f() => n :: =

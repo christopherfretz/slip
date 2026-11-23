@@ -1,0 +1,4 @@
+changed u()
+changed S<int>
+added S<int>::g()
+removed S<int>::f()

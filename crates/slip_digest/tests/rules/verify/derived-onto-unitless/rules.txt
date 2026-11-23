@@ -1,0 +1,2 @@
+# Fix round 2, F6: a derived unit (S<int>::f) collides with an entity no unit has (the local extern hidden(), in a template never instantiated): keys::mark_mapped_collisions (M15 dropped it).
+rule function | root | id hidden | disc-of post u() | pre S<int> | id f

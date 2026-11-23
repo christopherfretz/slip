@@ -1,0 +1,3 @@
+indeterminate S<int>::f()
+collisions 1
+added template <class> int t()
