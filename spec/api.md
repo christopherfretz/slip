@@ -75,9 +75,13 @@ Two transforms are part of the conformance suite and are referenced from
 6. A transform unit may not use `#embed` or `__has_embed`, in its file or
    in any file it includes: the resources they read are not part of its
    identity (§2.2). It is the error `transform-compile` ("`#embed` is not
-   supported in a transform"), naming the file and the line. The check is
-   conservative: it may refuse such a word in a comment or a literal, and
-   it cannot see `__has_embed` built by `##`.
+   supported in a transform"), naming the file and the line. A `-D`
+   option whose replacement holds the letters `embed` is refused with the
+   options (rule 2): a macro of the command line is in no file. The check
+   is conservative: it may refuse such a word in a comment or a literal,
+   and it cannot see `__has_embed` built by `##` from parts none of which
+   is `embed` (accepted until Kiln reports the resources a unit consulted,
+   `docs/requests/KS2-amendment-2.md` K3).
 7. `<slip/meta.h>` parses under any C++26 implementation. Outside a Slip
    transform unit the functions of §6 and §7 are declared and cannot be
    evaluated. This is so that an editor or another compiler can check a
