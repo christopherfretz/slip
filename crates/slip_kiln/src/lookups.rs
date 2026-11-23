@@ -6,11 +6,15 @@
 //! the shard's negative inputs (`spec/model.md` §8.6, work package WP-117).
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use kiln_driver::front_end::FrontEnd;
-use kiln_pp::{DirGroup, Found, LookupForm, LookupLog, join_path};
+use kiln_pp::{
+    Characteristic, DirGroup, Found, HeaderFs, LookupForm, LookupLog, RealFs, SearchDirSpec,
+    SearchList, join_path,
+};
 
-use crate::kiln::source::FileOrigin;
+use crate::kiln::source::{FileId, FileOrigin, SourceManager};
 
 /// The places one unit's front end looked at for a file, as the front end
 /// spelled them: a relative one is relative to the command's `directory`.
@@ -41,9 +45,17 @@ pub struct Lookups {
     /// `--embed-dir`; and a search directory of the command (`-I`,
     /// `-iquote`, `-isystem`, `-idirafter`, `-cxx-isystem`) that Kiln's
     /// driver left out of the search list because it was no directory is a
-    /// place for every name a `#include` form looked for in the list
-    /// (except a `<...>` name in an `-iquote` directory): were it created,
-    /// the search would look there, wherever it stands in the list.
+    /// place for each name a `#include` form looked for in the list where
+    /// that directory, were it created, would be searched: at its place in
+    /// the list (the command's list built with it), from where the lookup
+    /// started to the directory it found the name in (through the end when
+    /// it found none). Two exceptions keep more: an `-isystem` or
+    /// `-idirafter` one is a place of every lookup that ended in an `-I`
+    /// directory (created as that directory, it would take its place);
+    /// and when its place cannot be told (`-c-isystem` or `-cxx-isystem`
+    /// words, or a toolchain directory that displaced one of the
+    /// command's), it is a place of every lookup in the list, but for a
+    /// `<...>` name when only `-iquote` names it.
     pub missed: Vec<(String, String)>,
     /// The name of every buffer read from disk and of every consulted path
     /// (each of the shard's `inputs`, as spelled when it was read).
@@ -63,8 +75,8 @@ pub(crate) struct Driver {
     pub(crate) embed_dirs: Vec<String>,
     /// The command's own search directories, in order, as the search list
     /// names them (`Args::dirs`, `-I=` made sysroot-relative), each with
-    /// whether it is an `-iquote` directory.
-    pub(crate) dirs: Vec<(bool, String)>,
+    /// its group.
+    pub(crate) dirs: Vec<(DirGroup, String)>,
 }
 
 impl Driver {
@@ -80,7 +92,7 @@ impl Driver {
                     Some(rest) if !sysroot.is_empty() => format!("{sysroot}{rest}"),
                     _ => d.clone(),
                 };
-                (*g == DirGroup::Quoted, path)
+                (*g, path)
             })
             .collect();
         Driver { embed_dirs: args.embed_dirs.clone(), dirs }
@@ -114,13 +126,16 @@ impl Lookups {
         // The command's search directories the driver left out because
         // they are no directory (a duplicate of a listed one is one).
         let listed: HashSet<&str> = list.iter().map(String::as_str).collect();
-        let absent: Vec<&(bool, String)> = driver
-            .dirs
-            .iter()
-            .filter(|(_, d)| {
-                !listed.contains(d.as_str()) && !std::fs::metadata(d).is_ok_and(|m| m.is_dir())
-            })
-            .collect();
+        let mut absent_paths: Vec<&str> = Vec::new();
+        for (_, d) in &driver.dirs {
+            if !listed.contains(d.as_str())
+                && !std::fs::metadata(d).is_ok_and(|m| m.is_dir())
+                && !absent_paths.contains(&d.as_str())
+            {
+                absent_paths.push(d);
+            }
+        }
+        let absent = place_absent(&list, log.angled_start as usize, &driver.dirs, &absent_paths);
         let mut tried = Places::default();
         let mut missed = Places::default();
         for l in &log.lookups {
@@ -171,9 +186,9 @@ impl Lookups {
             for &d in &log.list[start..hit.unwrap_or(end)] {
                 missed.push(dir(log, d), &l.name);
             }
-            for (quoted, d) in &absent {
-                if !(l.angled && *quoted) {
-                    missed.push(d, &l.name);
+            for a in &absent {
+                if a.searched(l.angled, start, hit) {
+                    missed.push(&a.path, &l.name);
                 }
             }
         }
@@ -193,6 +208,182 @@ impl Lookups {
         }
         out.read.extend(fe.consulted.iter().map(|c| c.path.clone()));
         Some(out)
+    }
+}
+
+/// A search directory of the command that Kiln's driver left out of the
+/// list because it was no directory, and where in the list it would be
+/// searched were it created (`spec/model.md` §8.6, "Absent search
+/// directories").
+struct Absent {
+    /// As the command spells it.
+    path: String,
+    /// Each place in the list it would take, `None` when that cannot be
+    /// told: then it is a negative of every lookup in the list.
+    slots: Option<Vec<Slot>>,
+    /// Every word naming it is `-iquote`.
+    quoted_only: bool,
+    /// A word naming it is of a system group (`-isystem`, `-idirafter`):
+    /// created as an `-I` directory of the list, it would take that
+    /// directory's place (clang `RemoveDuplicates`).
+    system: bool,
+    /// The positions of the `-I` directories in the list.
+    user: Range<usize>,
+}
+
+/// One place an absent directory would take: between the list's entries
+/// `at - 1` and `at`, for an `at` in `lo..=hi` (two when the list cannot
+/// tell its system directories from its `-idirafter` ones).
+struct Slot {
+    lo: usize,
+    hi: usize,
+    /// In the `-iquote` part, which `<...>` lookups do not search.
+    quoted: bool,
+}
+
+impl Absent {
+    /// Whether a lookup in the list, from `start`, that ended at the list's
+    /// entry `hit` (`None`: through the end) would look in this directory.
+    fn searched(&self, angled: bool, start: usize, hit: Option<usize>) -> bool {
+        let Some(slots) = &self.slots else {
+            return !(angled && self.quoted_only);
+        };
+        if self.system && hit.is_some_and(|h| self.user.contains(&h)) {
+            return true;
+        }
+        slots
+            .iter()
+            .any(|s| !(angled && s.quoted) && s.hi >= start && hit.is_none_or(|h| s.lo <= h))
+    }
+}
+
+/// The places of each of `absent` in `list` (the log's search list, whose
+/// `<...>` part starts at `angled_start`), from the command's directories
+/// `dirs` built into a list as Kiln's driver builds it (Kiln
+/// `SearchList::build`). The command's directories come first in each
+/// group and the toolchain's are all system ones, so `list` must be the
+/// command's own list with one block of toolchain directories at the end
+/// of its system part. When it is not (a toolchain directory that
+/// displaced one of the command's), or the command has `-c-isystem` or
+/// `-cxx-isystem` directories (their place depends on the language), no
+/// directory is placed.
+fn place_absent(
+    list: &[String],
+    angled_start: usize,
+    dirs: &[(DirGroup, String)],
+    absent: &[&str],
+) -> Vec<Absent> {
+    let frame = Frame::of(list, angled_start, dirs);
+    absent
+        .iter()
+        .map(|&p| {
+            let groups: Vec<DirGroup> =
+                dirs.iter().filter(|(_, d)| d == p).map(|(g, _)| *g).collect();
+            Absent {
+                path: p.to_owned(),
+                slots: frame.as_ref().and_then(|f| f.slots(p, &groups)),
+                quoted_only: groups.iter().all(|&g| g == DirGroup::Quoted),
+                system: groups.iter().any(|&g| Characteristic::of_group(g).is_system()),
+                user: frame.as_ref().map_or(0..0, |f| f.user.clone()),
+            }
+        })
+        .collect()
+}
+
+/// The command's own search list, and how the log's list extends it.
+struct Frame {
+    specs: Vec<SearchDirSpec>,
+    /// The command's own list.
+    own: Vec<String>,
+    /// How many of `own` are before its `-idirafter` directories.
+    before_after: usize,
+    /// How many toolchain directories the log's list has there.
+    toolchain: usize,
+    /// The positions of the `-I` directories in the log's list.
+    user: Range<usize>,
+}
+
+fn paths(l: &SearchList) -> Vec<String> {
+    l.dirs().iter().map(|d| d.path.clone()).collect()
+}
+
+impl Frame {
+    fn of(list: &[String], angled_start: usize, dirs: &[(DirGroup, String)]) -> Option<Frame> {
+        if dirs.iter().any(|(g, _)| matches!(g, DirGroup::CSystem | DirGroup::CxxSystem)) {
+            return None;
+        }
+        let specs: Vec<SearchDirSpec> =
+            dirs.iter().map(|(g, d)| SearchDirSpec::new(d.clone(), *g)).collect();
+        let full = SearchList::build(&specs, true, &mut RealFs);
+        let own = paths(&full);
+        let no_after: Vec<SearchDirSpec> =
+            specs.iter().filter(|s| s.group != DirGroup::After).cloned().collect();
+        let head = paths(&SearchList::build(&no_after, true, &mut RealFs));
+        let k = head.len();
+        if full.angled_start() != angled_start || k > own.len() || head[..] != own[..k] {
+            return None;
+        }
+        let t = list.len().checked_sub(own.len())?;
+        let mine: HashSet<&str> = own.iter().map(String::as_str).collect();
+        if list[..k] != own[..k]
+            || list[k + t..] != own[k..]
+            || list[k..k + t].iter().any(|d| mine.contains(d.as_str()))
+        {
+            return None;
+        }
+        let user_end = full.dirs().iter().take_while(|d| !d.characteristic.is_system()).count();
+        Some(Frame { specs, own, before_after: k, toolchain: t, user: angled_start..user_end })
+    }
+
+    /// The places `p` (named by words of `groups`) would take in the log's
+    /// list were it a directory, from the command's list built with it.
+    fn slots(&self, p: &str, groups: &[DirGroup]) -> Option<Vec<Slot>> {
+        let with = SearchList::build(&self.specs, true, &mut Pretend { path: p });
+        let names = paths(&with);
+        if !names.iter().filter(|d| *d != p).eq(self.own.iter()) {
+            return None;
+        }
+        let has_after = groups.contains(&DirGroup::After);
+        let only_after = groups.iter().all(|&g| g == DirGroup::After);
+        let (k, t) = (self.before_after, self.toolchain);
+        let mut slots = Vec::new();
+        for (i, d) in names.iter().enumerate() {
+            if d != p {
+                continue;
+            }
+            let at = i - slots.len();
+            let (lo, hi) = match at.cmp(&k) {
+                std::cmp::Ordering::Less => (at, at),
+                std::cmp::Ordering::Greater => (at + t, at + t),
+                std::cmp::Ordering::Equal if !has_after => (at, at),
+                std::cmp::Ordering::Equal if only_after => (at + t, at + t),
+                std::cmp::Ordering::Equal => (at, at + t),
+            };
+            slots.push(Slot { lo, hi, quoted: i < with.angled_start() });
+        }
+        (!slots.is_empty()).then_some(slots)
+    }
+}
+
+/// The disk, with `path` a directory of its own.
+struct Pretend<'a> {
+    path: &'a str,
+}
+
+impl HeaderFs for Pretend<'_> {
+    fn dir_identity(&mut self, path: &str) -> Option<String> {
+        if path == self.path {
+            return Some(format!("\0absent {path}"));
+        }
+        RealFs.dir_identity(path)
+    }
+
+    fn open(&mut self, sm: &SourceManager, path: &str) -> Option<FileId> {
+        RealFs.open(sm, path)
+    }
+
+    fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+        RealFs.read(path)
     }
 }
 

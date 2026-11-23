@@ -1,4 +1,4 @@
-//! The shard's `negatives` section (section 27, `spec/model.md` §8.6; work
+//! The shard's `negatives` section (section 28, `spec/model.md` §8.6; work
 //! package WP-117): its bytes, written out by hand, its JSON form, its
 //! invariants N-1 to N-4 and the encoding's own rules, each at the offset
 //! and JSON path §8.6 gives.
@@ -32,7 +32,7 @@ fn map_shard(negatives: Option<Vec<Vec<u8>>>) -> Shard {
 }
 
 /// The shard's sections other than `negatives`, by an encoder of the
-/// test's own (`spec/model.md` §8), then `payload` as section 27.
+/// test's own (`spec/model.md` §8), then `payload` as section 28.
 fn sealed_with(s: &Shard, payload: &[u8]) -> Vec<u8> {
     let mut header = Encoder::new();
     header.digest(&s.observer).uv(s.phase as u64).uv(s.round);
@@ -59,11 +59,11 @@ fn sealed_with(s: &Shard, payload: &[u8]) -> Vec<u8> {
         counters.str(&c.name).uv(c.value);
     }
     w.section(4, &counters.into_bytes());
-    w.section(27, payload);
+    w.section(28, payload);
     w.finish()
 }
 
-/// Where section 27's payload begins in `bytes`.
+/// Where section 28's payload begins in `bytes`.
 fn payload_at(bytes: &[u8]) -> usize {
     fn uv(bytes: &[u8], at: &mut usize) -> u64 {
         let (mut v, mut shift) = (0u64, 0);
@@ -80,9 +80,9 @@ fn payload_at(bytes: &[u8]) -> usize {
     let mut at = 16;
     loop {
         let id = uv(bytes, &mut at);
-        assert_ne!(id, 0, "no section 27");
+        assert_ne!(id, 0, "no section 28");
         let len = uv(bytes, &mut at) as usize;
-        if id == 27 {
+        if id == 28 {
             return at;
         }
         at += len;
@@ -132,7 +132,7 @@ fn negatives_empty_and_absent() {
 }
 
 /// `s` is refused by every reader with `what` at `path`; the binary reader
-/// at `offset` within section 27's payload.
+/// at `offset` within section 28's payload.
 fn refused(s: &Shard, payload: &[u8], path: &str, what: &str, offset: usize) {
     let bytes = sealed_with(s, payload);
     let e = Shard::from_bytes(&bytes).expect_err("from_bytes accepted an invalid shard");

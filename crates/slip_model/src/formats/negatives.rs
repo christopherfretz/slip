@@ -1,4 +1,4 @@
-//! The `negatives` section, id 27 of a map shard (`spec/model.md` §8.6;
+//! The `negatives` section, id 28 of a map shard (`spec/model.md` §8.6;
 //! work package WP-117): the places the map parse looked for a file and
 //! found none, sorted, each path front-coded against the one before.
 
@@ -10,7 +10,7 @@ use super::At;
 use super::common::{JResult, Result, json_bytes, malformed, read_bytes, read_list};
 
 /// The section id (`spec/model.md` §8).
-pub(super) const ID: u64 = 27;
+pub(super) const ID: u64 = 28;
 
 /// Where an invariant is violated.
 #[derive(Clone, Copy, Debug)]

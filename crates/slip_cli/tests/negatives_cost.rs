@@ -2,6 +2,7 @@
 //! `spec/landed/verify/WP-117.md` "Costs"): not part of the gate.
 
 use std::fmt::Write as _;
+use std::os::unix::ffi::OsStrExt;
 use std::time::Instant;
 
 use slip_cli::worker::map_observer;
@@ -122,6 +123,30 @@ fn measure_negatives_on_a_unit() {
             " negatives={} dirs={dirs} section={} B (in the shard) flat={flat} front={front} grouped={grouped}",
             n.len(),
             total - without,
+        )
+        .expect("a String");
+    }
+    // O2's second part (WP-117's fix round F1) reads and hashes the map
+    // shard's inputs under no subject root that the post parse did not
+    // read: none when it reads the same headers. Its worst case, every
+    // input: `SLIP_WP117_O2=on` times that.
+    if std::env::var("SLIP_WP117_O2").as_deref() == Ok("on") {
+        let t1 = Instant::now();
+        let mut bytes = 0u64;
+        let mut same = 0usize;
+        for f in shard.inputs.as_deref().unwrap_or_default() {
+            let path = std::path::Path::new(std::ffi::OsStr::from_bytes(&f.path));
+            let ok = std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == f.size)
+                && std::fs::read(path).is_ok_and(|b| {
+                    bytes += b.len() as u64;
+                    slip_model::hash::content_digest(&b) == f.content
+                });
+            same += usize::from(ok);
+        }
+        write!(
+            line,
+            " o2-all: files={inputs} unchanged={same} bytes={bytes} wall={:.3}s",
+            t1.elapsed().as_secs_f64()
         )
         .expect("a String");
     }

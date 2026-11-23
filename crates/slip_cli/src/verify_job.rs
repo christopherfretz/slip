@@ -16,6 +16,10 @@
 //! in an `unverifiable` verdict, a shard without a verdict (the
 //! post-image does not parse), or the job's `Err`.
 
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
+
 use slip_digest::map::counters as walk_counters;
 use slip_digest::{Detail, Options, Output, ReadOnly, ReadOnlyFiles, digest};
 use slip_exec::store::Store;
@@ -25,6 +29,7 @@ use slip_model::agreement::{Binding, RuleUse};
 use slip_model::declared::Declared;
 use slip_model::digests::{Digests, Group, GroupClass, GroupSum};
 use slip_model::formats::content_id;
+use slip_model::hash::content_digest;
 use slip_model::keys::RuleTable;
 use slip_model::verdict::{FindingKind, Verdict};
 use slip_model::{Command, Counter, Digest, FileRef, Observer, Phase, Shard, Status};
@@ -501,7 +506,7 @@ fn without_units(d: &Digests) -> Digests {
 }
 
 /// Step 2's guards on what the post-image parse read and looked at, in
-/// this order (§5.3): [`post_parse_guards`], then O2 and N1 of the tree
+/// this order (§5.3): [`post_parse_guards`], then O2 (both parts) and N1 of the tree
 /// form (not with the identity, where every change since the map phase is
 /// the edit compared). The reason of the first that fails. They run before
 /// the comparison, so whatever it finds.
@@ -525,10 +530,19 @@ fn image_guards(
     if let Some(path) = drifted(&mut resolver, post_inputs, pre_inputs) {
         return Some(format!("pre-image: {} changed since the map phase", show_path(path)));
     }
+    if let Some((path, how)) = left_behind(&mut resolver, post_inputs, pre_inputs) {
+        return Some(format!(
+            "pre-image: {} {} since the map phase (run `slip parse` again)",
+            show_path(path),
+            how.as_str()
+        ));
+    }
     // N1: no file has appeared, outside the subject roots, where the map
     // parse looked for one and found none. Without the record, fail closed.
     let Some(negatives) = pre.shard.negatives.as_deref() else {
-        return Some("pre-image: the map shard has no negative inputs".to_owned());
+        return Some(
+            "pre-image: the map shard has no negative inputs (run `slip parse` again)".to_owned(),
+        );
     };
     negatives::appeared(&mut resolver, negatives)
         .map(|path| format!("pre-image: {} appeared since the map phase", show_path(path)))
@@ -625,6 +639,63 @@ fn drifted<'a>(
         })
         .find(|f| !resolver.under_post(&f.path))
         .map(|f| f.path.as_slice())
+}
+
+/// What became of a file the map parse read and the post-image parse did
+/// not (O2's second part).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Left {
+    /// No regular file is at the path now.
+    Gone,
+    /// The file there has another size or content, or cannot be read.
+    Changed,
+}
+
+impl Left {
+    fn as_str(self) -> &'static str {
+        match self {
+            Left::Gone => "is gone",
+            Left::Changed => "changed",
+        }
+    }
+}
+
+/// Guard O2's second part, of the tree form (§5.3): the first entry of the
+/// pre shard's `inputs`, in path order, that is under no subject root and
+/// whose path the post-image parse's `inputs` do not list (the same path
+/// identity as [`drifted`]: the bytes of the path), at which there is no
+/// longer a regular file of the size and content digest listed. Both
+/// lists are sorted by path. A file the map parse read and the post parse
+/// did not is no file the comparison looks at: gone or changed, the pre
+/// shard no longer describes the pre-image (a header deleted, so that the
+/// search now finds another, the post-image's edit compensating).
+fn left_behind<'a>(
+    resolver: &mut Resolver<'_>,
+    post: &[FileRef],
+    pre: &'a [FileRef],
+) -> Option<(&'a [u8], Left)> {
+    pre.iter()
+        .filter(|p| post.binary_search_by(|f| f.path.cmp(&p.path)).is_err())
+        .filter(|p| !resolver.under_subject(&p.path))
+        .find_map(|p| still_there(p).err().map(|how| (p.path.as_slice(), how)))
+}
+
+/// Whether the regular file at `f.path` (links followed now) has `f`'s
+/// size and content digest.
+fn still_there(f: &FileRef) -> Result<(), Left> {
+    let path = Path::new(OsStr::from_bytes(&f.path));
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => {
+            if m.len() != f.size {
+                return Err(Left::Changed);
+            }
+        }
+        _ => return Err(Left::Gone),
+    }
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.len() as u64 == f.size && content_digest(&bytes) == f.content => Ok(()),
+        _ => Err(Left::Changed),
+    }
 }
 
 #[cfg(test)]

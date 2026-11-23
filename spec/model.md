@@ -557,7 +557,7 @@ the same bytes.
 | 24 | binding | no | `Binding` (`verify.md` §9.1): the declared changes, the overlay and the pre round a verify shard was made with; phase `verify` |
 | 25 | rule_use | no | `RuleUse` (`verify.md` §9.1); phase `verify` |
 | 26 | spellings | no | `Spellings` (`verify.md` §10.4): the spelled-entity checks of this observer; phase `verify` |
-| 27 | negatives | no | `list<Negative>` (§8.6): the places the map parse looked for a file and found none, sorted; phase `map` |
+| 28 | negatives | no | `list<Negative>` (§8.6): the places the map parse looked for a file and found none, sorted; phase `map` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -587,8 +587,9 @@ A shard with status `failed` has no `inputs` section and an empty `counters`
 list: nothing about a failed observer is deterministic.
 
 A reserved id (16, 18, 20) is a critical id no reader knows: a file with
-one is `UnknownSection`. Ids 22 and 23 are not assigned. Sections 17, 24,
-25 and 26 were added by M2, and 27 by work package WP-117, without a
+one is `UnknownSection`. Ids 22 and 23 are not assigned; 27 is work package WP-112's (`names`).
+Sections 17, 24, 25 and 26 were added by M2, and 28 by work package
+WP-117, without a
 change of the shard's version: a reader that predates them refuses a
 shard that has one (the ids are critical), and a shard without them reads
 as before (a map shard without `negatives` is then refused by the verify
@@ -746,9 +747,29 @@ directory, `.` for `"..."`, then each `--embed-dir`, in Kiln's order), all
 of them when none was. And a search directory of the command's own (`-I`,
 `-iquote`, `-isystem`, `-idirafter`, `-cxx-isystem`; `-I=` under the
 sysroot) that Kiln's driver left out of the list because it was no
-directory, and that is not in the list, is a place of every name a
-`#include` form searched the list for, except a `<...>` name in an
-`-iquote` directory: created, it would be searched.
+directory, and that is not in the list, is a place of each name a
+`#include` form searched the list for where, created, it would be
+searched: at its place in the list, from where the lookup started (the
+angled start for `<...>`, after the includer's directory for
+`#include_next`) up to and including the place before the directory the
+lookup found the name in (through the end when it found none). Its place
+is found by building the command's own directories into a list as
+Kiln's driver does (Kiln `SearchList::build`), once as they are and once
+with that directory existing; the toolchain's directories, all of a
+system group and after the command's in it, are the one block of the
+log's list that the command's list lacks, at the end of its system part
+(before the `-idirafter` directories). Two cases keep more. An absent
+`-isystem` or `-idirafter` directory is a place of every lookup that
+ended in an `-I` directory: created as that same directory, it would
+take its place (clang `RemoveDuplicates` drops a user directory that a
+later system one duplicates). And when the place cannot be told, the
+directory is a place of every name searched in the list (not of a
+`<...>` name when only `-iquote` names it): when the command has a
+`-c-isystem` or `-cxx-isystem` word (the list's language decides their
+group, which the log does not give), when the log's list is not the
+command's own list with one toolchain block (a toolchain directory that
+displaced one of the command's), or when building with the directory
+does not give the command's list with it added.
 `Lookups::line_names` lists the file names of the `#line` directives of
 every file the unit read (Kiln's `SourceManager::line_directives`), as
 written: guard G5 of `spec/verify.md` §5.3 refuses one that begins with a

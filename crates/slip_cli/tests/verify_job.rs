@@ -1918,7 +1918,10 @@ fn n1_pre_shard_without_negatives() {
     tree.put_map(&o, &Shard { negatives: None, ..m });
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable);
-    assert_eq!(reason(&v), "pre-image: the map shard has no negative inputs");
+    assert_eq!(
+        reason(&v),
+        "pre-image: the map shard has no negative inputs (run `slip parse` again)"
+    );
 }
 
 // Item 3: the identity image is treated as O2 treats it: N1 does not
@@ -2002,6 +2005,112 @@ fn n1_directory_created_since() {
     write(&tree.base.join("later/cfg.h"), "#define USE_NEW 1\n");
     let v = tree.verify(&o);
     assert_eq!(reason(&v), appeared(&tree.base.join("later/cfg.h")));
+}
+
+// Fix round, F2: a search directory missing at the map phase that comes
+// after the directory the lookup found its file in. Created since with the
+// header, it is not searched: no negative, and the verdict is the pair's.
+#[test]
+fn n1_directory_created_after_the_hit() {
+    let (tree, o, m) = cfg_tree("n1-created-after", CFG_PRE, CFG_POST, &["ext", "gen"]);
+    let negatives = m.negatives.as_ref().unwrap();
+    assert!(!negatives.contains(&bytes(&tree.base.join("gen/cfg.h"))), "{negatives:?}");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    write(&tree.base.join("gen/cfg.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+}
+
+// ----- O2's second part (§5.3, WP-117 fix round F1): every input of the
+// map shard under no subject root that the post-image parse did not read
+// is still a regular file of its size and content.
+
+fn left(p: &Path, how: &str) -> String {
+    format!("pre-image: {} {how} since the map phase (run `slip parse` again)", p.display())
+}
+
+/// `-Iext-a -Iext`: the map reads `ext-a/cfg.h` (`USE_NEW 0`); `ext/cfg.h`
+/// (`USE_NEW 1`) is there behind it.
+fn found_first(name: &str) -> (Tree, Observer, Shard) {
+    cfg_tree_with(name, CFG_PRE, CFG_POST, &["ext-a", "ext"], |t| {
+        write(&t.base.join("ext-a/cfg.h"), "#define USE_NEW 0\n");
+        write(&t.base.join("ext/cfg.h"), "#define USE_NEW 1\n");
+    })
+}
+
+// F1 case A: the header the map read is deleted; the search now finds the
+// one behind it, and the edit compensates. The negatives are empty: N1
+// has nothing to check. Refused by O2's second part.
+#[test]
+fn o2_found_outside_header_deleted() {
+    let (tree, o, m) = found_first("o2-deleted");
+    assert_eq!(m.negatives.as_deref(), Some(&[][..]), "{:?}", m.negatives);
+    let cfg = tree.base.join("ext-a/cfg.h");
+    std::fs::remove_file(&cfg).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), left(&cfg, "is gone"));
+}
+
+#[test]
+fn o2_found_outside_header_deleted_pair() {
+    let (tree, o, _) = found_first("o2-deleted-pair");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+}
+
+// F1 case B: `__has_include` true at the map phase (the file is in the pre
+// shard's `inputs`), the file deleted since, the edit compensating.
+#[test]
+fn o2_has_include_true_then_deleted() {
+    let mk = |t: &Tree| write(&t.base.join("ext/cfg2.h"), "\n");
+    let (tree, o, m) = cfg_tree_with("o2-has-gone", HAS_PRE, HAS_POST, &["ext"], mk);
+    let cfg2 = tree.base.join("ext/cfg2.h");
+    let inputs = m.inputs.as_ref().unwrap();
+    assert!(inputs.iter().any(|f| f.path == bytes(&cfg2)), "{inputs:?}");
+    std::fs::remove_file(&cfg2).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!(reason(&v), left(&cfg2, "is gone"));
+}
+
+#[test]
+fn o2_has_include_true_then_deleted_pair() {
+    let mk = |t: &Tree| write(&t.base.join("ext/cfg2.h"), "\n");
+    let (tree, o, _) = cfg_tree_with("o2-has-gone-pair", HAS_PRE, HAS_POST, &["ext"], mk);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+}
+
+/// The pre `a.cpp` includes `<old.h>`, which the post `a.cpp` no longer
+/// does: the post parse does not read `ext/old.h`.
+const OLD_PRE: &str = "#include <old.h>\nint f() { return 1; }\n";
+const OLD_POST: &str = "int f() { return 1; }\n";
+
+fn dropped_include(name: &str) -> (Tree, Observer, Shard) {
+    cfg_tree_with(name, OLD_PRE, OLD_POST, &["ext"], |t| {
+        write(&t.base.join("ext/old.h"), "// v1\n");
+    })
+}
+
+// F1: a file of the map parse's `inputs` that no post parse reads, whose
+// bytes changed since (same size: the digest decides).
+#[test]
+fn o2_unread_input_changed() {
+    let (tree, o, _) = dropped_include("o2-unread-changed");
+    let old = tree.base.join("ext/old.h");
+    write(&old, "// v2\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), left(&old, "changed"));
+}
+
+// F1: unchanged, it is not refused: the verdict is the comparison's.
+#[test]
+fn o2_unread_input_unchanged() {
+    let (tree, o, _) = dropped_include("o2-unread-same");
+    let v = tree.verify(&o);
+    assert_ne!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
 }
 
 // Item 5: a file added and removed again before the job: nothing exists,
