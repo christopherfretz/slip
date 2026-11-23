@@ -1,0 +1,2 @@
+indeterminate S
+indeterminate S::<friend template <class> void A::X::h(type-parameter-1-0)>

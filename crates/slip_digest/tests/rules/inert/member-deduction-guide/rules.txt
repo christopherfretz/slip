@@ -1,2 +1,2 @@
-# WP-131 item 2: a deduction guide of a member class template of a class template
+# WP-131 item 2: a deduction guide of a member class template of a class template (WP-124: the constructor is declared only: one defined in a template is indeterminate, kiln/pattern-mem-initializers, until Kiln WP-3026 and WP-3200)
 relocate a::detail => a :: impl

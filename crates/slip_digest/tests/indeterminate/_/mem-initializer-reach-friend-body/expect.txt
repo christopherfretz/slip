@@ -1,0 +1,1 @@
+indeterminate S::friend h(S<type-parameter-0-0>)
