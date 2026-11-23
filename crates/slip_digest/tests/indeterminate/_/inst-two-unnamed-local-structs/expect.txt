@@ -1,0 +1,4 @@
+# the instantiated body is Pending(Demand): no stream numbers its local types, so what is keyed under one has no number (digest §4.3 "What these rules do not yet show")
+# the two unnamed structs have one key and one name: one unit, indeterminate, never a merge
+indeterminate f<int>()::local(?)::(unnamed struct)()
+indeterminate f<int>()::local(?)::(unnamed struct)()::<exception_spec>

@@ -1,0 +1,4 @@
+# touch stays in legacy on purpose: argument-dependent lookup finds it
+# through the dependency's Dep (spec/verify.md §9.2).
+relocate legacy => :: acme
+kept legacy::touch(legacy::Dep)

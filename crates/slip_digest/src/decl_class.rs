@@ -151,6 +151,13 @@ pub(crate) fn enum_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     for m in members {
         if ast.decls.get(m).kind() == DeclKind::EnumConstant {
             enumerators.push(m);
+        } else if ast.closure_owner(m).is_some() {
+            // The closure of a lambda in an enumerator's initialiser:
+            // its owner is the enumeration, which numbers no closure
+            // (digest-kinds §10.4).
+            s.indeterminate(
+                crate::local::owner_res(w, m).err().unwrap_or(crate::local::CLOSURE_OWNER),
+            );
         } else {
             s.indeterminate(Cause::Unaccounted("EnumData/members"));
         }
@@ -353,6 +360,22 @@ fn members(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
                 w.write_key(s, m);
             }
         }
+    }
+    // members-other of a local class: sorted by key, each written in
+    // place in that order (§2.4, `spec/landed/digest/WP-040.md`), so that
+    // the ordinals its members' streams take do not follow the order of
+    // declaration.
+    if local && !crate::local::numbering_mode(w) {
+        let mut keyed: Vec<(Vec<u8>, usize, DeclId)> = Vec::with_capacity(others.len());
+        for (i, &m) in others.iter().enumerate() {
+            keyed.push((w.key_bytes(m).unwrap_or_default(), i, m));
+        }
+        keyed.sort();
+        s.count(keyed.len());
+        for (_, _, m) in keyed {
+            crate::local::write_decl(w, s, m);
+        }
+        return;
     }
     // members-other: sorted by encoded bytes, duplicates removed.
     let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(others.len());

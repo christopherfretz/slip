@@ -1,0 +1,17 @@
+# E21: includes reordered, where the preprocessor decides. pre: size.h
+# tests WIDE, which config.h defines; bad includes config.h after size.h
+# and num is int, not long. good moves other.h, which no directive tests.
+# pre-2: b.h included after #pragma pack(pop); bad-2 moves it into the
+# packed region, and B is laid out with no padding; good-2 moves it above
+# #pragma pack(push, 1), across the region without entering it: B is the
+# same. pre-3: y.h tests X_H,
+# the include guard of x.h; bad-3 replaces that guard by #pragma once, and
+# X_H is never defined; good-3 does it for z.h, whose guard nothing tests.
+# Distinct from E04: no lookup differs, the tokens do.
+good:   verified
+bad:    mismatch changed num @ size.h:6
+bad:    mismatch changed width() @ main.cpp:5
+good-2: verified
+bad-2:  mismatch changed B @ b.h:1
+good-3: verified
+bad-3:  mismatch changed has_x() @ y.h:6

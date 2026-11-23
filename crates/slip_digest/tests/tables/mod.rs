@@ -27,6 +27,8 @@ pub struct Doc {
     pub names: Vec<Number>,
     /// §11.1, the resolved properties.
     pub properties: Vec<Number>,
+    /// §1.7, the rows of the walk: tags [`WALK_BASE`] plus their position.
+    pub walk: Vec<Number>,
     /// The code spans of "Open questions / Types nothing pins".
     pub nothing_pins: Vec<String>,
     /// Lines that look like part of the grammar and do not parse.
@@ -223,7 +225,7 @@ pub enum Suffix {
     Sorted,
 }
 
-/// A row of §3.1, §3.2 or §11.1: Slip's own numbers.
+/// A row of §1.7, §3.1, §3.2 or §11.1: Slip's own numbers.
 #[derive(Debug, Clone)]
 pub struct Number {
     pub line: usize,
@@ -231,6 +233,10 @@ pub struct Number {
     /// `None` for a retired number.
     pub name: Option<String>,
 }
+
+/// §1.7: the base of the walk's own tags, the next range of 256 after
+/// the node enumerations' (§1.4).
+pub const WALK_BASE: u32 = 1536;
 
 /// The header and separator every type's table has (§1.2).
 pub const HEADER: &str = "| Row | Class | Decision | Encoding | Note |";
@@ -262,6 +268,7 @@ pub fn parse(text: &str) -> Doc {
                 t if level == 3 && t.starts_with("3.1 ") => Some("key_kinds"),
                 t if level == 3 && t.starts_with("3.2 ") => Some("names"),
                 t if level == 3 && t.starts_with("11.1 ") => Some("properties"),
+                t if level == 3 && t.starts_with("1.7 ") => Some("walk"),
                 _ => None,
             };
             in_nothing_pins = level == 3 && title == "Types nothing pins";
@@ -289,6 +296,7 @@ pub fn parse(text: &str) -> Doc {
             match which {
                 "key_kinds" => doc.key_kinds.push(row),
                 "names" => doc.names.push(row),
+                "walk" => doc.walk.push(row),
                 _ => doc.properties.push(row),
             }
         }
@@ -631,8 +639,8 @@ pub fn parse_encoding(cell: &str) -> Result<Encoding, String> {
     Ok(Encoding::Form(base, suffixes))
 }
 
-/// A row of §3.1, §3.2 or §11.1: `| N | `name` | ... |`, or `retired` in
-/// §11.1.
+/// A row of §1.7, §3.1, §3.2 or §11.1: `| N | `name` | ... |`, or
+/// `retired` in §11.1.
 fn parse_number(line: &str, n: usize, which: &str, errors: &mut Vec<String>) -> Option<Number> {
     let c = cells(line)?;
     if c.len() < 2 || c[0].bytes().all(|b| b == b'-') || matches!(c[0], "Tag" | "Number") {

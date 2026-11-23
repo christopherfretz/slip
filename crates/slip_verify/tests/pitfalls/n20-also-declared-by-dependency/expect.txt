@@ -3,3 +3,14 @@
 # one with the smaller digest (spec/verify.md §6.1 "Other findings").
 good: verified
 bad:  mismatch indeterminate legacy::f()
+# pre-2: variables the dependency declares (extern, extern thread_local)
+# and owned code defines. bad-2 moves the definitions: acme::counter and
+# acme::depth are new variables, and the dependency's legacy::counter and
+# legacy::depth are left undefined (a link error elsewhere, nothing here).
+# Under the rule each moved one has the key of the dependency's: two
+# collisions (spec/digest.md §3.4), no place. Each line defeats a verifier
+# that maps a moved definition onto a declaration of its key without asking
+# whether the key now has two entities.
+good-2: verified
+bad-2:  mismatch indeterminate legacy::counter
+bad-2:  mismatch indeterminate legacy::depth

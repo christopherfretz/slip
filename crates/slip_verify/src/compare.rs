@@ -501,6 +501,9 @@ fn indeterminate(kind: FindingKind, key: Digest, p: &[Occ<'_>], q: &[Occ<'_>]) -
 
 /// §4 over the unit lists of the groups given: the groups of `G` from each
 /// image (§4.1 step 2), or all of them; the result is the same (§4.1).
+/// Steps 1 to 4: step 4 (a key declared in one image and derived in the
+/// other) is read on the differences of `V`, as steps 2 and 3 are, so the
+/// restriction to `G` stays exact.
 /// Groups are paired across the images by `(class, file)`. Every group
 /// must have its unit list, consistent with its `count`, `indeterminate`
 /// and `digest`, and no `(class, file)` may be given twice for one image;
@@ -516,7 +519,22 @@ pub fn compare_groups(
     let mut findings = Vec::new();
     let mut used = Vec::new();
 
-    // §4 steps 1 and 2, over D.
+    // The derived multiset by key: each key of `Vp` or `Vq` with its run in
+    // each, ascending by key. Step 4 asks it about keys of `D`, step 3
+    // walks it.
+    let mut derived: Vec<(Digest, &[Occ<'_>], &[Occ<'_>])> = Vec::new();
+    runs(&before.derived, &after.derived, |o| o.key, |key, pk, qk| derived.push((key, pk, qk)));
+    let derived_runs = |key: Digest| -> (&[Occ<'_>], &[Occ<'_>]) {
+        match derived.binary_search_by_key(&key, |&(k, _, _)| k) {
+            Ok(i) => (derived[i].1, derived[i].2),
+            Err(_) => (&[], &[]),
+        }
+    };
+    // The keys step 4 gave `changed` (or that `changed` prevented),
+    // ascending: step 3 does not count them.
+    let mut step4: Vec<Digest> = Vec::new();
+
+    // §4 steps 1, 2 and 4, over D.
     runs(
         &before.declared,
         &after.declared,
@@ -529,12 +547,32 @@ pub fn compare_groups(
             }
             // Step 2, on the differences.
             let (r, a) = differences(pk, qk);
-            let kind = match (r.is_empty(), a.is_empty()) {
+            let mut kind = match (r.is_empty(), a.is_empty()) {
                 (true, true) => return,
                 (false, false) => FindingKind::Changed,
                 (false, true) => FindingKind::Removed,
                 (true, false) => FindingKind::Added,
             };
+            // Step 4: what one image declares and the other derives is in
+            // both images, and not the same. "Has a unit in `Vq`" is read on
+            // the differences of `V` (what `Vq` has of the key that `Vp` has
+            // not), so that it too is unchanged by leaving out the groups
+            // outside `G` (§4.1); on what the walk produces the two readings
+            // are one, since a key with a determinate declared unit has no
+            // derived unit in the same image (digest.md §3.4, §10; the two
+            // runs `collides` does not mark are in spec/verify.md §4 step 4).
+            if kind != FindingKind::Changed {
+                let (vp, vq) = derived_runs(key);
+                let (rv, av) = differences(vp, vq);
+                let other_side_derives = match kind {
+                    FindingKind::Removed => !av.is_empty(),
+                    _ => !rv.is_empty(),
+                };
+                if other_side_derives {
+                    kind = FindingKind::Changed;
+                    step4.push(key);
+                }
+            }
             let exempt = exemptions.list_for(kind).is_some_and(|l| l.binary_search(&key).is_ok());
             if exempt {
                 used.push(key);
@@ -546,27 +584,24 @@ pub fn compare_groups(
 
     // §4 step 3, over V. No exemption applies to a derived key.
     let (mut only_pre, mut only_post) = (0u64, 0u64);
-    runs(
-        &before.derived,
-        &after.derived,
-        |o| o.key,
-        |key, pk, qk| {
-            // An indeterminate unit on either side, also on one side only.
-            if pk.iter().chain(qk).any(|o| o.indeterminate) {
-                findings.push(indeterminate(FindingKind::DerivedIndeterminate, key, pk, qk));
-                return;
+    for &(key, pk, qk) in &derived {
+        // An indeterminate unit on either side, also on one side only.
+        if pk.iter().chain(qk).any(|o| o.indeterminate) {
+            findings.push(indeterminate(FindingKind::DerivedIndeterminate, key, pk, qk));
+            continue;
+        }
+        let (r, a) = differences(pk, qk);
+        match (r.is_empty(), a.is_empty()) {
+            (true, true) => {}
+            (false, false) => {
+                findings.push(difference(FindingKind::DerivedChanged, key, pk, qk));
             }
-            let (r, a) = differences(pk, qk);
-            match (r.is_empty(), a.is_empty()) {
-                (true, true) => {}
-                (false, false) => {
-                    findings.push(difference(FindingKind::DerivedChanged, key, pk, qk));
-                }
-                (false, true) => only_pre += 1,
-                (true, false) => only_post += 1,
-            }
-        },
-    );
+            // Step 4 took the key: it is a difference, not a count.
+            _ if step4.binary_search(&key).is_ok() => {}
+            (false, true) => only_pre += 1,
+            (true, false) => only_post += 1,
+        }
+    }
 
     findings.sort_by(|a, b| (a.kind.rank(), &a.file, a.key).cmp(&(b.kind.rank(), &b.file, b.key)));
     // Each key is visited once in D, so `used` has no two equal; it is in

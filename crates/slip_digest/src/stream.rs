@@ -25,11 +25,38 @@ pub(crate) const TYPE_TAG: &str = "slip.type.v1";
 const PENDING_PLACEHOLDER: u64 = 0;
 
 /// The bytes of one stream and the first cause that makes it
-/// indeterminate.
-#[derive(Debug, Default)]
+/// indeterminate, with what back-references need of it
+/// (`spec/digest.md` §4.3): an identity, and the count of the nodes it
+/// wrote first.
+#[derive(Debug)]
 pub(crate) struct Stream {
     enc: Encoder,
     cause: Option<Cause>,
+    /// Unique among the streams of this thread: a back-reference names a
+    /// node of its own stream only (`walk::Walk::back_ref`). Never
+    /// written.
+    id: u64,
+    /// The count the next node written first takes, from 0 at the head
+    /// of the stream.
+    nodes: u64,
+}
+
+thread_local! {
+    /// The identity the next stream of this thread takes. A walk runs on
+    /// one thread and its memo of back-references lives no longer than
+    /// it does, so identities unique per thread are enough.
+    static NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+impl Default for Stream {
+    fn default() -> Stream {
+        let id = NEXT_ID.with(|n| {
+            let id = n.get();
+            n.set(id + 1);
+            id
+        });
+        Stream { enc: Encoder::default(), cause: None, id, nodes: 0 }
+    }
 }
 
 /// The result of hashing a stream.
@@ -148,6 +175,19 @@ impl Stream {
 
     pub(crate) fn cause(&self) -> Option<Cause> {
         self.cause
+    }
+
+    /// The stream's identity (`walk::Walk::back_ref`).
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Counts a node written first in this stream: its count, from 0
+    /// (`spec/digest.md` §4.3).
+    pub(crate) fn count_node(&mut self) -> u64 {
+        let n = self.nodes;
+        self.nodes += 1;
+        n
     }
 
     /// The bytes written so far.

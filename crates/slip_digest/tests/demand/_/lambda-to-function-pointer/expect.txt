@@ -1,0 +1,3 @@
+added c()
+derived-added mk()::local(0)::operator int (*)()() const
+derived-added mk()::local(0)::__invoke()

@@ -1,0 +1,15 @@
+# R23: f renamed g and a pragma that names f left. The front end resolves
+# the pragma's identifier and attaches the attribute to the declaration it
+# names (clang: WeakAttr, AsmLabelAttr), so this is not the names in strings
+# of spec/verify.md §8: the renamed function's own unit differs.
+# pre: #pragma weak f after a declaration of f: f is a weak definition.
+# Left, it names nothing (clang warns: weak identifier 'f' never declared)
+# and g is a strong definition. pre-2: #pragma redefine_extname f impl_f
+# on an extern "C" function: its symbol is impl_f. Left, g's symbol is g.
+# declared-2.txt renames a function with C language linkage: today no rule
+# can (the rule's parent is the root, the key's c_linkage); spec/verify.md
+# §2.3 is being amended so that slip declare gives the rule that parent.
+good:   verified
+bad:    mismatch changed f() @ main.cpp:1
+good-2: verified
+bad-2:  mismatch changed f(int) @ main.cpp:2

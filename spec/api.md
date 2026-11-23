@@ -606,6 +606,15 @@ with token sequence `T(X)` after preprocessing:
 7. `spec/macros.md` will define tiers for all of Slip. Until it is
    written this section is the definition for the API.
 
+**A range holds no directive.** A run of bytes that contains a
+preprocessing directive, or any part of a group a conditional skipped,
+is not a range, whatever its tier: `f(1,` newline `#ifdef X` … `#endif`
+newline `)` has tokens that a run of file bytes produces, but replacing
+that run deletes the text of the other configuration, and no observer
+of this configuration can see that. `name_range_of` and `extent_of`
+return a null range for it (`spec/edits.md` §2.3, reason `directive`).
+A range inside one group of a conditional is a range.
+
 Version 0 has no operation that builds a range from offsets, widens one
 or splits one. A later operation that builds or splits a range computes
 the tier of the new range; it never inherits the tier of the range it

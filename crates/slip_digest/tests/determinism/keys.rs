@@ -44,9 +44,19 @@ pub const SAME_KEY: &[(&str, &[&str], u64, &str)] = &[
     // the test is about it.
     (
         "indeterminate/_/lambda-in-signature-twice",
-        &["template <int> void foo(const char (*)[(... , N)])"],
+        &[],
         1,
         "a lambda in a signature: two templates, one key; the test is about it",
+    ),
+    // The two unnamed local structs of an instantiation have no number
+    // (its body is `Pending(Demand)`): their implicit constructors, and
+    // those constructors' exception specifications, share a key. The
+    // units are `UndeclaredLocal` first; the test is about it.
+    (
+        "indeterminate/_/inst-two-unnamed-local-structs",
+        &[],
+        2,
+        "two unnamed local structs of an instantiation: one key; the test is about it",
     ),
 ];
 
@@ -61,29 +71,35 @@ pub const SAME_NAME: &[(&str, &str, usize, &str)] = &[];
 /// which cannot check what it cannot see; an entry that digests fails
 /// too, so the list only shrinks.
 pub const UNPARSED: &[(&str, Side, &str)] = &[
-    // Three `# pending` tests of other packages whose sources do not
-    // compile (their runners skip them, so nothing else sees it).
-    (
-        "differ/DefinitionBits/0-lambda-captures",
-        Side::B,
-        "`[x]` captures a namespace-scope variable (WP-027's test)",
-    ),
-    (
-        "differ/_/local-class-of-instantiated-function",
-        Side::A,
-        "`f<int>()` used before `f` is declared (WP-027's test)",
-    ),
-    (
-        "differ/_/local-class-of-instantiated-function",
-        Side::B,
-        "`f<int>()` used before `f` is declared (WP-027's test)",
-    ),
+    // A `# pending` test of another package whose source does not
+    // compile (its runner skips it, so nothing else sees it).
     (
         "demand/_/friend-template-definition-instantiated-on-use",
         Side::B,
         "`use` defined twice on side B (WP-032/033's test)",
     ),
+    // WP-048's `# pending` tests of module units: a side whose header
+    // names one (`// module:`) is refused until the snippet front end can
+    // import a named module from memory (docs/requests/KF5).
+    ("differ/Owner/unit", Side::A, KF5),
+    ("differ/Owner/unit", Side::B, KF5),
+    ("differ/UnitInfo/imports", Side::A, KF5),
+    ("differ/UnitInfo/imports", Side::B, KF5),
+    ("differ/UnitKind/Header", Side::A, KF5),
+    ("differ/UnitKind/Header", Side::B, KF5),
+    ("differ/UnitKind/Implementation", Side::A, KF5),
+    ("differ/UnitKind/Implementation", Side::B, KF5),
+    ("differ/_/module-explicit-def-across-units", Side::A, KF5),
+    ("differ/_/module-explicit-def-across-units", Side::B, KF5),
+    ("differ/_/module-import-added", Side::A, KF5),
+    ("differ/_/module-import-added", Side::B, KF5),
+    ("differ/_/module-imported-unit-as-main", Side::A, KF5),
+    ("equal/_/module-linkage-one-name-two-modules", Side::A, KF5),
+    ("equal/_/module-linkage-one-name-two-modules", Side::B, KF5),
 ];
+
+/// Why WP-048's pending module tests do not digest.
+const KF5: &str = "a module unit from memory needs Kiln (docs/requests/KF5)";
 
 /// The fewest directories a sweep walks: a floor, so that it cannot pass
 /// on nothing (a moved root, a broken directory filter).

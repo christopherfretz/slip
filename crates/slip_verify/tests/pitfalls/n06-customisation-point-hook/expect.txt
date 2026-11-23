@@ -8,3 +8,12 @@ good:   verified
 bad:    not_parsed
 good-2: verified
 bad-2:  mismatch derived_changed legacy::store<legacy::Mine>::put(legacy::Mine &) @ dep/dep.h:4
+# pre-3: the dependency's legacy::probe<T> asks whether hook(t) is
+# well-formed (if constexpr on a requires-expression) and falls back to its
+# own branch: a hook left behind needs no fallback function to compile. In
+# bad-3 Mine moves and hook stays in a namespace legacy block: argument-
+# dependent lookup on acme::Mine no longer finds it, the requirement is
+# false and probe returns 0 instead of 1. The hook's unit and caller() are
+# the same: only the instantiation differs.
+good-3: verified
+bad-3:  mismatch derived_changed legacy::probe<legacy::Mine>(legacy::Mine) @ dep/dep.h:3
