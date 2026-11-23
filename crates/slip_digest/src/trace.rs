@@ -73,10 +73,14 @@ use slip_model::hash::tagged_digest;
 use slip_model::keys::KeyKind;
 
 use crate::keys::{Role, info};
-use crate::stream::{Armed, Recording, Stream, UNIT_TAG};
+use crate::stream::{Armed, Hook, Recording, Stream, UNIT_TAG};
 use crate::units::Written;
 use crate::walk::{NodeRef, Walk};
 use crate::{Input, Options, Output};
+
+/// The `node` of the mark where the rows merged over an entity's
+/// declarations begin (§6.1): neither a node kind nor a key kind.
+pub const DECLARATIONS: &str = "declarations";
 
 /// Where the walk began to write a node of a unit's stream (§6.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,12 +88,13 @@ pub struct Mark {
     /// The stream's length when the walk began to write the node.
     pub offset: u64,
     /// The variant's name in Kiln's `ExprKind` or `StmtKind`; for a unit's
-    /// first mark, the name of its key kind.
+    /// first mark, the name of its key kind; [`DECLARATIONS`] where a
+    /// declaration's own rows begin.
     pub node: &'static str,
     /// The subject path of the node's location (the outermost expansion
     /// of a macro); empty with `line` and `column` 0 if it has none.
     pub file: Vec<u8>,
-    /// Presumed line, 1-based.
+    /// Physical line, 1-based.
     pub line: u64,
     /// Column in bytes, 1-based.
     pub column: u64,
@@ -304,14 +309,15 @@ fn made(
         let mut names = Names::default();
         for &(offset, node) in &rec.marks {
             let (node, loc) = match node {
-                NodeRef::Expr(id) => {
+                Hook::Node(NodeRef::Expr(id)) => {
                     let expr = w.ast.exprs.get(id);
                     (names.expr(expr.kind()), expr.loc())
                 }
-                NodeRef::Stmt(id) => {
+                Hook::Node(NodeRef::Stmt(id)) => {
                     let stmt = w.ast.stmts.get(id);
                     (names.stmt(stmt.kind()), stmt.loc())
                 }
+                Hook::Decls(e) => (DECLARATIONS, entity_place(w, e)),
             };
             let (file, line, column) = located(w, loc);
             marks.push(Mark { offset, node, file, line, column });
@@ -335,7 +341,11 @@ fn made(
 /// not made by an instantiation); else of the first that has a location;
 /// none for the order unit or an entity no declaration of which has one.
 fn place(w: &Walk<'_>, u: &Written) -> Loc {
-    let Some(e) = u.entity else { return Loc::INVALID };
+    u.entity.map_or(Loc::INVALID, |e| entity_place(w, e))
+}
+
+/// The place of entity `e` (§6.1), as [`place`] takes it.
+fn entity_place(w: &Walk<'_>, e: DeclId) -> Loc {
     let ast = w.ast;
     let mut chain = w.chain(e);
     chain.reverse();

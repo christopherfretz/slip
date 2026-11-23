@@ -21,6 +21,7 @@
 //! no recorder: a mark is a test of an `Option` that is `None`, and no
 //! byte, no hash and no allocation depends on it.
 
+use slip_kiln::kiln::ast::DeclId;
 use slip_model::Digest;
 use slip_model::hash::tagged_digest;
 use slip_model::wire::Encoder;
@@ -30,6 +31,17 @@ use crate::Area;
 use crate::Cause;
 use crate::tables::Row;
 use crate::walk::NodeRef;
+
+/// What a mark records (WP-054): a node, or where the rows of a
+/// declaration's own begin (after its `DeclNode` rows), placed at the
+/// entity's place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hook {
+    Node(NodeRef),
+    /// The declarations of entity `e`: their rows merged over the chain
+    /// (scope, attributes, template maps, module rows).
+    Decls(DeclId),
+}
 
 /// `H("slip.unit.v1", stream)`: a unit's digest (`spec/model.md` §3,
 /// `spec/digest.md` §4).
@@ -69,7 +81,7 @@ pub(crate) struct Stream {
 #[derive(Debug, Default)]
 pub(crate) struct Recorder {
     /// The stream's length where the walk began each node, and the node.
-    marks: Vec<(u64, NodeRef)>,
+    marks: Vec<(u64, Hook)>,
     /// The offset of each `digest` field.
     digests: Vec<u64>,
     /// Made by an armed stream module ([`Armed`]): when it ends, the
@@ -95,7 +107,7 @@ impl Drop for Recorder {
 #[derive(Clone, Debug)]
 pub(crate) struct Recording {
     pub bytes: Vec<u8>,
-    pub marks: Vec<(u64, NodeRef)>,
+    pub marks: Vec<(u64, Hook)>,
     pub digests: Vec<u64>,
 }
 
@@ -229,13 +241,23 @@ impl Stream {
     #[inline]
     pub(crate) fn mark(&mut self, node: NodeRef) {
         if self.rec.is_some() {
-            self.record_mark(node);
+            self.record_mark(Hook::Node(node));
+        }
+    }
+
+    /// The hook of a declaration's own rows (WP-054): where the walk
+    /// begins the rows merged over the declarations of entity `e`, after
+    /// the `DeclNode` rows. Nothing unless the stream is traced.
+    #[inline]
+    pub(crate) fn mark_decls(&mut self, e: DeclId) {
+        if self.rec.is_some() {
+            self.record_mark(Hook::Decls(e));
         }
     }
 
     #[cold]
     #[inline(never)]
-    fn record_mark(&mut self, node: NodeRef) {
+    fn record_mark(&mut self, node: Hook) {
         let at = self.enc.as_bytes().len() as u64;
         if let Some(r) = &mut self.rec {
             r.marks.push((at, node));

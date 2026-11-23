@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use common::{Expect, Side};
-use slip_digest::trace::{Trace, trace};
+use slip_digest::trace::{DECLARATIONS, Trace, trace};
 use slip_digest::{Detail, Input, Options, Output, ReadOnly};
 use slip_model::Digest;
 use slip_model::hash::tagged_digest;
@@ -147,6 +147,7 @@ fn pairs_trace_every_unit() {
     for root in ["differ", "equal", "demand", "indeterminate", "resolved"] {
         dirs.extend(common::dirs(root).into_iter().filter(|d| !common::is_pending(d)));
     }
+    eprintln!("pairs traced: {} directories", dirs.len());
     let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));
     let outcome = common::run_dirs("pairs", &dirs, threads, |dir| {
         for side in [Side::A, Side::B] {
@@ -293,7 +294,7 @@ enum Outside {
     /// has none".
     Unplaced,
     /// The site is the unit's first mark: the difference is in the
-    /// declaration's own rows, which have no mark, or before the first node
+    /// declaration's `DeclNode` rows, which have no mark, or before the first node
     /// (§6.1 "Traces", first item), and the declaration is outside the
     /// branch.
     First,
@@ -303,22 +304,25 @@ enum Outside {
     /// declares (a use of a member the branch makes a bit-field, a call
     /// the branch makes immediate): the difference is where it is written.
     Elsewhere,
-    /// The difference is in a declaration's own rows, which the stream
-    /// writes after an expression of the unit (an initializer), so the
-    /// last mark before it is that expression, which did not change: the
-    /// pairs of [`DECLARATION_ROWS`]. A misleading place §6.1 allows until
-    /// declarations have marks of their own (see the handback).
+    /// The site is a `declarations` mark (`trace::DECLARATIONS`): the
+    /// difference is in the rows merged over an entity's declarations
+    /// (its scope, attributes, template maps, module rows), placed at the
+    /// entity's place, and the branch changes a declaration of the chain
+    /// that is not the one the place names. Coarse and true: a mark per
+    /// redeclaration is a follow-up (see the landed file).
     DeclarationRows,
 }
 
-/// The pairs whose sites outside the branch are at an expression written
-/// before the declaration rows that differ ([`Outside::DeclarationRows`]).
+/// The pairs whose difference is only in rows merged over the entity's
+/// declarations, written after an initializer: each side's site must be
+/// the declarations mark (review F2; without it the site was the
+/// initializer, which did not change).
 const DECLARATION_ROWS: &[&str] = &[
-    // An asm label on the first declaration (line 4); the site is the
-    // definition's initializer `1` (line 8).
+    // An asm label on the first declaration (line 4 or 6): the site is
+    // that line, in the branch.
     "differ/ColdDeclData/asm_label",
-    // `weak` on the pattern's member (line 7); the site is the
-    // initializer `1` of the out-of-class definition (line 11).
+    // `weak` on the pattern's member (line 7, side B): the site is the
+    // member's line 9, outside the branch.
     "differ/_/weak-static-member-of-instantiation",
 ];
 
@@ -437,6 +441,12 @@ fn differ_pair(dir: &Path) -> Result<Vec<String>, String> {
             checked += 1;
             for (side, t, other) in [(Side::A, ua, ub), (Side::B, ub, ua)] {
                 let (d, m) = site(t, other);
+                if DECLARATION_ROWS.contains(&rel.as_str()) && m.node != DECLARATIONS {
+                    return Err(format!(
+                        "{name}: side {side:?}: site {} at line {}, not the declarations mark",
+                        m.node, m.line
+                    ));
+                }
                 let at = format!(
                     "{name}: side {side:?}: {} at {}:{}, offset {d}",
                     m.node,
@@ -458,7 +468,7 @@ fn differ_pair(dir: &Path) -> Result<Vec<String>, String> {
                     outside.push((Outside::EmptyBranch, at));
                 } else if m.offset == 0 {
                     outside.push((Outside::First, at));
-                } else if DECLARATION_ROWS.contains(&rel.as_str()) {
+                } else if m.node == DECLARATIONS {
                     outside.push((Outside::DeclarationRows, at));
                 } else {
                     outside.push((Outside::Elsewhere, at));
@@ -628,6 +638,33 @@ fn s6_1_site_of_a_changed_default_argument() {
         s.iter().any(|u| (u.1, u.2, u.3, u.4) == (3, "IntegerLiteral", 3, "IntegerLiteral")),
         "{s:?}"
     );
+}
+
+// A difference in the rows merged over an entity's declarations (an asm
+// label, an attribute on a redeclaration) is at the declarations mark, at
+// the entity's place: not at the initializer written before those rows
+// (review F2). The pairs `differ/ColdDeclData/asm_label` and
+// `differ/_/weak-static-member-of-instantiation`.
+#[test]
+fn s6_1_site_of_a_declaration_row_is_the_entity() {
+    // The place is the first declaration: line 2 on both sides.
+    let asm = |label: &str| format!("int f();\nextern int x{label};\nextern int x;\nint x = 1;\n");
+    let s = sites(&asm(""), &asm(" asm(\"y\")"));
+    assert!(s.contains(&("x".to_owned(), 2, DECLARATIONS, 2, DECLARATIONS)), "{s:?}");
+}
+
+#[test]
+fn s6_1_site_of_an_attribute_on_a_member_is_the_entity() {
+    // `weak` on the pattern's member: the place is the member (line 3),
+    // not the out-of-class definition's initializer (line 5).
+    let weak = |attr: &str| {
+        format!(
+            "template <class T> struct S {{\n  {attr}\n  static int v;\n}};\n\
+             template <class T> int S<T>::v = 1;\nint h() {{ return S<int>::v; }}\n"
+        )
+    };
+    let s = sites(&weak(""), &weak("__attribute__((weak))"));
+    assert!(s.contains(&("S::v".to_owned(), 3, DECLARATIONS, 3, DECLARATIONS)), "{s:?}");
 }
 
 // A changed operand in parentheses: the site is the literal, not the

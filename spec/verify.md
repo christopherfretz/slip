@@ -1512,7 +1512,8 @@ Trace := key: KeyId, digest: digest
          refs:   list<RefAt>          ascending by offset, not overlapping
 Mark  := offset: uv                   the stream's length when the walk began to write the node
          node:   str                  the node's kind: the variant's name in Kiln's `ExprKind` or
-                                      `StmtKind`; for a unit's first mark, the name of its key kind
+                                      `StmtKind`; for a unit's first mark, the name of its key kind;
+                                      `declarations` for a declarations mark (below)
          file:   bytes, line: uv, column: uv      subject path, line and column of the node's location in
                                                   the physical file (a `#line` directive does not
                                                   move it); empty, 0, 0 if it has none
@@ -1522,9 +1523,14 @@ RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) wh
 
 - A mark is made where the walk begins a unit (offset 0, at the unit's
   **place**, below) and where it begins a statement or an
-  expression inside one. A declaration's own rows (its type, its
-  specifiers, each redeclaration) have no mark: a difference there is at
-  the unit's mark or at the last expression before it. Types and constant
+  expression inside one, and a **declarations mark** where a
+  declaration's stream (`digest.md` §5.1) ends its `DeclNode` rows and
+  begins the rows merged over its entity's declarations (scope,
+  attributes, template maps, module rows), at that entity's place. A
+  difference in those rows is at the declarations mark: at the entity,
+  not at the redeclaration that differs. The `DeclNode` rows themselves
+  (the declaration's type, its specifiers) have no mark: a difference
+  there is at the unit's mark or at the last expression before it. Types and constant
   values are written as digests (`digest.md` §4.2) and have no mark of
   their own: a difference inside one is at the mark of the node that
   holds it. The same holds for any part of a unit the walk hashes apart
