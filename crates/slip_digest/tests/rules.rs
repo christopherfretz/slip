@@ -71,9 +71,12 @@ fn expected(dir: &Path) -> Result<Expected, String> {
     for (n, l) in own {
         let w: Vec<&str> = l.split_whitespace().collect();
         let parsed = match w.as_slice() {
-            ["use", line, "via", v, "direct", d] => {
-                line.parse().ok().zip(v.parse().ok()).zip(d.parse().ok()).map(|((a, b), c)| (a, b, c))
-            }
+            ["use", line, "via", v, "direct", d] => line
+                .parse()
+                .ok()
+                .zip(v.parse().ok())
+                .zip(d.parse().ok())
+                .map(|((a, b), c)| (a, b, c)),
             _ => None,
         };
         uses.push(parsed.ok_or_else(|| {
@@ -117,20 +120,13 @@ struct Post {
 }
 
 /// `via` and `direct` of the rule of line `n` (see the head of this file).
-fn rule_use(
-    input: &Input<'_>,
-    t: &Table,
-    n: usize,
-) -> Result<(u64, u64), String> {
+fn rule_use(input: &Input<'_>, t: &Table, n: usize) -> Result<(u64, u64), String> {
     let Some((_, rule)) = t.rules.iter().find(|(l, _)| *l == n) else {
         return Err(format!("`use {n}`: no rule on line {n} of rules.txt"));
     };
     let probe = Rule { to_name: probe_name(n), ..rule.clone() };
-    let probed: Vec<Rule> = t
-        .rules
-        .iter()
-        .map(|(l, r)| if *l == n { probe.clone() } else { r.clone() })
-        .collect();
+    let probed: Vec<Rule> =
+        t.rules.iter().map(|(l, r)| if *l == n { probe.clone() } else { r.clone() }).collect();
     let probed = RuleTable::new(probed).map_err(|e| e.to_string())?;
     let recs = records(input, &probed)?;
     let count = |k: &Key| recs.iter().filter(|r| r.id == k.id()).count() as u64;
@@ -176,7 +172,8 @@ fn post_side(dir: &Path, pre: &[Record], uses: &[(usize, u64, u64)]) -> Result<P
 fn hard(d: &Digested) -> (BTreeSet<String>, BTreeSet<slip_model::Digest>) {
     let (mut names, mut keys) = (BTreeSet::new(), BTreeSet::new());
     for (k, v) in &d.units {
-        if v.iter().any(|u| u.flags & 1 != 0 && !matches!(u.cause, Some(Cause::Pending(_)) | None)) {
+        if v.iter().any(|u| u.flags & 1 != 0 && !matches!(u.cause, Some(Cause::Pending(_)) | None))
+        {
             keys.insert(*k);
             names.extend(d.output.names.iter().filter(|(x, _)| x == k).map(|(_, n)| n.clone()));
         }
@@ -202,7 +199,8 @@ fn judge(e: &Expected, a: &Digested, b: &Digested) -> Result<(), String> {
         }
         let (ia, _) = hard(a);
         let (ib, _) = hard(b);
-        let mut problems: Vec<String> = ia.iter().map(|n| format!("side A: indeterminate {n}")).collect();
+        let mut problems: Vec<String> =
+            ia.iter().map(|n| format!("side A: indeterminate {n}")).collect();
         problems.extend(ib.iter().map(|n| format!("side B: indeterminate {n}")));
         if let Err(p) = common::pairs::judge_equal(a, b) {
             problems.push(p);
@@ -244,9 +242,13 @@ fn judge(e: &Expected, a: &Digested, b: &Digested) -> Result<(), String> {
             let n = line.name().to_owned();
             let holds = match line {
                 Expect::DerivedAdded(_) | Expect::DerivedRemoved(_) => dd.contains(line),
-                _ => [Expect::DerivedAdded(n.clone()), Expect::DerivedRemoved(n.clone()), Expect::DerivedChanged(n)]
-                    .iter()
-                    .any(|x| dd.contains(x)),
+                _ => [
+                    Expect::DerivedAdded(n.clone()),
+                    Expect::DerivedRemoved(n.clone()),
+                    Expect::DerivedChanged(n),
+                ]
+                .iter()
+                .any(|x| dd.contains(x)),
             };
             if holds {
                 got.insert(line.clone());
@@ -287,7 +289,9 @@ fn case(dir: &Path) -> Result<(), String> {
     }
     for (&(n, v, d), &(_, gv, gd)) in e.uses.iter().zip(&post.uses) {
         if (v, d) != (gv, gd) {
-            problems.push(format!("use {n}: expected via {v} direct {d}, counted via {gv} direct {gd}"));
+            problems.push(format!(
+                "use {n}: expected via {v} direct {d}, counted via {gv} direct {gd}"
+            ));
         }
     }
     if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
@@ -298,7 +302,14 @@ fn case(dir: &Path) -> Result<(), String> {
         for (side, d) in [("A", &a), ("B", &post.digested)] {
             for (k, v) in &d.units {
                 for u in v {
-                    eprintln!("  {side} {:?} {} {:?} flags={} {:?}", u.class, u.name, &k.0[..4], u.flags, u.cause);
+                    eprintln!(
+                        "  {side} {:?} {} {:?} flags={} {:?}",
+                        u.class,
+                        u.name,
+                        &k.0[..4],
+                        u.flags,
+                        u.cause
+                    );
                 }
             }
         }
@@ -317,7 +328,8 @@ fn rules() {
 #[test]
 fn rules_txt_forms() {
     use common::rules::{DiscRef, Entity, Image, NameRef, ParentRef};
-    let ent = |k: Option<slip_model::keys::KeyKind>, t: &str| Entity { kind: k, text: t.to_owned() };
+    let ent =
+        |k: Option<slip_model::keys::KeyKind>, t: &str| Entity { kind: k, text: t.to_owned() };
     let text = "# a comment\n\n  relocate acme => :: legacy\nrelocate [function] a::f(int) => b :: =\n\
                 rule function | mapped b | id g | disc-of pre a::f(int) | pre a | name-of pre a::f(int)\n\
                 rule class | root | name-of post (anonymous struct for Q) | none | c_linkage | id P\n";
@@ -325,7 +337,10 @@ fn rules_txt_forms() {
     assert_eq!(got.len(), 4);
     assert_eq!(
         got[0],
-        (3, Line::Relocate { entity: ent(None, "acme"), parent: None, name: Some("legacy".into()) })
+        (
+            3,
+            Line::Relocate { entity: ent(None, "acme"), parent: None, name: Some("legacy".into()) }
+        )
     );
     assert_eq!(
         got[1],

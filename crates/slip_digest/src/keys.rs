@@ -1261,9 +1261,7 @@ pub(crate) fn mark_mapped_collisions(
             u.cause = Some(crate::units::merge(u.cause, Cause::Collision));
             marked = true;
         }
-        if !marked
-            && let Some(u) = written.iter_mut().find(|u| u.kind == KeyKind::Order)
-        {
+        if !marked && let Some(u) = written.iter_mut().find(|u| u.kind == KeyKind::Order) {
             u.cause = Some(crate::units::merge(u.cause, Cause::Collision));
         }
         if !already {

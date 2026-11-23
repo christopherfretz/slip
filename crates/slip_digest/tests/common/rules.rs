@@ -231,7 +231,13 @@ fn disc_ref(s: &str) -> Result<DiscRef, String> {
 fn rule(rest: &str) -> Result<Line, String> {
     let (kind, fields) = rest.split_once(' ').ok_or("no fields")?;
     let kind = kind_named(kind).ok_or_else(|| format!("no key kind `{kind}`"))?;
-    let f: Vec<&str> = fields.trim().strip_prefix('|').ok_or("no `|` after the kind")?.split('|').map(str::trim).collect();
+    let f: Vec<&str> = fields
+        .trim()
+        .strip_prefix('|')
+        .ok_or("no `|` after the kind")?
+        .split('|')
+        .map(str::trim)
+        .collect();
     let [parent, name, disc, to_parent, to_name] = f.as_slice() else {
         return Err(format!("{} fields, not 5", f.len()));
     };
@@ -300,7 +306,12 @@ fn image_records<'r>(i: Image, pre: &'r [Record], post: &'r [Record]) -> &'r [Re
 }
 
 /// The rule of one line under `table` (the previous round's).
-fn rule_of(line: &Line, table: &RuleTable, pre: &[Record], post: &[Record]) -> Result<Rule, String> {
+fn rule_of(
+    line: &Line,
+    table: &RuleTable,
+    pre: &[Record],
+    post: &[Record],
+) -> Result<Rule, String> {
     let parent = |p: &ParentRef| -> Result<Parent, String> {
         Ok(match p {
             ParentRef::Root => Parent::Root,
@@ -363,7 +374,10 @@ pub fn table(lines: &[(usize, Line)], pre: &[Record], post: &[Record]) -> Result
     for _ in 0..=lines.len() + 1 {
         let mut rules = Vec::with_capacity(lines.len());
         for (n, line) in lines {
-            rules.push((*n, rule_of(line, &table, pre, post).map_err(|e| format!("rules.txt:{n}: {e}"))?));
+            rules.push((
+                *n,
+                rule_of(line, &table, pre, post).map_err(|e| format!("rules.txt:{n}: {e}"))?,
+            ));
         }
         table = RuleTable::new(rules.iter().map(|(_, r)| r.clone()).collect())
             .map_err(|e| format!("rules.txt: not a table: {e}"))?;

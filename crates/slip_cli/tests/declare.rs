@@ -814,10 +814,12 @@ fn the_rules_suite_resolves_alike() {
         let lines = read(&text).unwrap_or_else(|e| panic!("{case}: {e}"));
         let declared = resolve(&lines, &pre, &post).unwrap_or_else(|e| panic!("{case}: {e}"));
         let ours = digest_rules::read(&text).unwrap_or_else(|e| panic!("{case}: {e}"));
-        let suite = digest_rules::table(&ours, &pre, &post).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let suite =
+            digest_rules::table(&ours, &pre, &post).unwrap_or_else(|e| panic!("{case}: {e}"));
         assert_eq!(declared.rules.rules().len(), suite.table.rules().len(), "{case}");
         assert_eq!(declared.rules.id(), suite.table.id(), "{case}");
-        let with = findings(&digest_of(&a, &empty), &digest_of(&b, &declared.rules), &Exemptions::none());
+        let with =
+            findings(&digest_of(&a, &empty), &digest_of(&b, &declared.rules), &Exemptions::none());
         assert!(!with.iter().copied().any(real), "{case}: {with:?}");
     }
 }
