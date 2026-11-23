@@ -1,0 +1,6 @@
+transform <id>
+report - note "0: a declaration of f(int) at t.cpp:1:5"
+report - note "1: a declaration of f(int) at f.h:2:5"
+report - note "2: a declaration of f(int) at t.cpp:3:5"
+report - note "3: a declaration of f(int) at t.cpp:4:5"
+report - note "parameter: caf\xc3\xa9"

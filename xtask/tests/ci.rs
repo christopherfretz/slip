@@ -235,6 +235,36 @@ fn s2_missing_cargo_fails_the_step() {
     assert!(out.ends_with("fmt: FAILED\nci: FAILED (fmt)\n"), "{out}");
 }
 
+// WP-090 (spec/landed/api/WP-090.md): `SLIP_BLESS` set, to any value, the
+// empty one too, fails the gate before any step runs: the script tests
+// would write their `expect.txt` and pass whatever the host renders.
+#[test]
+fn wp090_the_gate_never_blesses() {
+    assert_eq!(ci::bless_refusal(None), None);
+    for value in ["1", "", "0"] {
+        let (_f, cargo, log) = fake("bless");
+        let out = Command::new(env!("CARGO_BIN_EXE_xtask"))
+            .args(["ci", "--step", "test"])
+            .env("CARGO", &cargo)
+            .env("FAKE_CARGO_LOG", &log)
+            .env("FAKE_CARGO_FAIL", "")
+            .env("SLIP_BLESS", value)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(out.status.code(), Some(1), "SLIP_BLESS={value:?}: {stdout}");
+        assert_eq!(
+            stdout,
+            format!(
+                "{}\nci: FAILED (SLIP_BLESS is set)\n",
+                ci::bless_refusal(Some(value.as_ref())).unwrap()
+            )
+        );
+        assert!(stdout.starts_with(&format!("ci: SLIP_BLESS={value} is set;")), "{stdout}");
+        assert_eq!(std::fs::read_to_string(&log).unwrap_or_default(), "", "no step ran");
+    }
+}
+
 /// The fake cargo behind a wrapper that sets its log and failure word.
 fn wrapped(f: &Fixture, cargo: &std::path::Path, log: &std::path::Path, fail: &str) -> PathBuf {
     f.write(
