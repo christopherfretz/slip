@@ -1,6 +1,6 @@
-int limit() { return 10; }
+const int limit = 10;
 
 int f(int x) {
 
-  return x + limit();
+  return x + limit;
 }

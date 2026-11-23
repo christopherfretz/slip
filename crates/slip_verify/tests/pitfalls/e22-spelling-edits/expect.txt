@@ -30,3 +30,9 @@ bad-5:  mismatch changed pass(M &) @ main.cpp:8
 good-6: none a scoped enumeration is another type
 bad-6:  mismatch changed Color @ main.cpp:1
 bad-6:  mismatch changed caller() @ main.cpp:5
+# pre-7: the reverse of pre-5, a cast to an rvalue added to return m; of
+# a local: the named return value optimisation ([class.copy.elision]/1.1)
+# applies to the name of a local only, so with the cast M(M &&) runs, and
+# without it clang elides the copy.
+good-7: none the cast is an expression: adding it changes the function
+bad-7:  mismatch changed make() @ main.cpp:10

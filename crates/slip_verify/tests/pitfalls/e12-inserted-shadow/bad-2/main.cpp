@@ -1,6 +1,6 @@
-int limit() { return 10; }
+const int limit = 10;
 
 int f(int x) {
-  auto limit = [] { return 5; };
-  return x + limit();
+  const int limit = 5;
+  return x + limit;
 }

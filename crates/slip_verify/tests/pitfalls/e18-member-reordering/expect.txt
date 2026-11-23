@@ -8,7 +8,7 @@
 # declaration order ([class.base.init]/13), so b(a + 1) reads a before it is
 # initialised; good-3 swaps the written mem-initializers instead, which
 # changes nothing (clang warns).
-good:   none positional aggregate initialisation follows the declaration order: every reorder of x and y changes what p{1, 2} sets
+good:   none the member order is the class itself: every reorder of x and y changes P, whatever its users then write
 bad:    mismatch changed P @ main.cpp:1
 good-2: verified
 bad-2:  mismatch changed B @ main.cpp:1

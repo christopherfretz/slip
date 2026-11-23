@@ -1365,8 +1365,9 @@ observer `failed`, with an empty message.
 - **Names in strings the toolchain resolves.** A name or a mangled name
   that the program spells as a string for the compiler's back end or the
   linker: an `asm` label (`int f() __asm__("_ZN6legacy1gEv");`), the
-  target of an `alias`, `ifunc` or `weakref` attribute, `#pragma weak`,
-  `#pragma redefine_extname`. The string is the same in both images, and
+  target of an `alias`, `ifunc` or `weakref` attribute, a `symver`
+  attribute, the text of a file-scope `asm` (`.symver`, `.globl`, `.set`
+  directives). The string is the same in both images, and
   nothing in the translation unit looks it up (clang resolves an `alias`
   target only when it emits code: `-fsyntax-only` accepts one that names
   nothing), so the unit that holds it is the same too. A rename or a
@@ -1374,8 +1375,10 @@ observer `failed`, with an empty message.
   then fails to link or binds another symbol. No row pins this: a `good`
   tree for such an edit would state that a wrong edit is correct. A name
   the front end does look up is not text and has its row:
-  `__attribute__((cleanup(fn)))` (R14), and the values of `__func__` and
-  `__PRETTY_FUNCTION__` (R12, N18, R21).
+  `__attribute__((cleanup(fn)))` (R14); `#pragma weak` and `#pragma
+  redefine_extname`, whose identifier the front end resolves to the
+  declaration it then gives the attribute (R23); and the values of
+  `__func__` and `__PRETTY_FUNCTION__` (R12, N18, R21).
 - **Other languages and build files.** A name held in a file that is not
   a C++ translation unit of the run: a renamed `extern "C"` function
   called from `.c` files the run does not parse, a linker or version
