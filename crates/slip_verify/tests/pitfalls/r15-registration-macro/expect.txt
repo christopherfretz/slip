@@ -1,0 +1,8 @@
+# R15: f renamed start; REGISTER(f) expands to reg("f", &f), so the program
+# holds the old name as a string (a registry keyed by it). The rename
+# counterpart of N17. bad renames the macro's argument too: the registered
+# name is "start", init() returns 's' instead of 'f'. good keeps the
+# registered name by writing the expansion out with the old string: the
+# digest is of the expanded program, and the string is a value.
+good: verified
+bad:  mismatch changed init() @ main.cpp:5

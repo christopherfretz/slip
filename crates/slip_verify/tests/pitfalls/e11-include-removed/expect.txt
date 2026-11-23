@@ -14,3 +14,11 @@ good:  verified
 bad:   mismatch derived_changed width<Mine>() @ traits.h:4
 bad-2: mismatch changed convert() @ main.cpp:10
 bad-3: mismatch changed pick<int>() @ pick_int.h:1
+
+# pre-4 (WP-109): widget.h replaced by a forward declaration of Widget.
+# delete p on a pointer to an incomplete class type whose destructor is not
+# trivial is undefined ([expr.delete]/5); clang warns, and calls neither
+# ~Widget nor anything but the global operator delete. declared-4.txt
+# declares what the definition of Widget held.
+good-4: none drop deletes through the pointer: every forward declaration makes Widget incomplete there
+bad-4:  mismatch changed drop(Widget *) @ main.cpp:3

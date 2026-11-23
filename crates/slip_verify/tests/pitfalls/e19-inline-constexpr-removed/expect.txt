@@ -1,0 +1,16 @@
+# E19: inline or constexpr removed. pre: constexpr removed from pick, so
+# g = pick() is no longer constant initialisation ([basic.start.static]):
+# it is dynamic, and __builtin_is_constant_evaluated() is false in it: g is
+# 2, not 1. pre-2: inline removed from the header variable counter: every
+# translation unit that includes counter.h now defines it, which the linker
+# rejects ([basic.def.odr]/14); in this one nothing differs but the
+# variable's own declaration.
+# No good tree, by design: a written inline is digested apart from an
+# implied one (spec/digest-kinds.md FunctionSpec 0-inline and
+# 0-implicit-inline, VarSpec 0-inline and 0-inline-implied), because only a
+# written inline is a hint to the optimiser, so removing even the redundant
+# inline of a constexpr function changes it.
+good:   none a written inline or constexpr is digested; removing one changes the declaration, by design
+bad:    mismatch changed pick() @ main.cpp:1
+good-2: none as good
+bad-2:  mismatch changed counter @ counter.h:1

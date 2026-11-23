@@ -1,0 +1,13 @@
+# R18: S's template parameter T renamed. In good to V; in bad to U, the name
+# of a member of the non-dependent base Base, which hides the template
+# parameter in the template's definition ([temp.local]/9): U get() now
+# returns Base::U, long, and width() is 8 instead of 4. A template
+# parameter is not a unit and its name is not digested (it is written by
+# position), so nothing is declared, as for a local (R05). Three findings,
+# each against its own blind verifier: the pattern (one that compares only
+# instantiations), width() (one that compares only templates' texts), and
+# the instantiation (one that compares only written units).
+good: verified
+bad:  mismatch changed S::get() @ main.cpp:5
+bad:  mismatch changed width() @ main.cpp:8
+bad:  mismatch derived_changed S<int>::get() @ main.cpp:5
