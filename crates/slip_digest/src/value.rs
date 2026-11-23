@@ -534,15 +534,12 @@ fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<Nam
         name_values(w).owners.insert(origin.index(), owner);
         return owner.map(|f| NameString::Predefined(kind, f));
     }
-    let first = name_values(w)
-        .origins
-        .get(&origin.index())
-        .and_then(|uses| {
-            if uses.iter().any(|&(r, _, _)| r == Role::File) {
-                return None;
-            }
-            uses.iter().min_by_key(|&&(_, _, e)| e.index()).copied()
-        })?;
+    let first = name_values(w).origins.get(&origin.index()).and_then(|uses| {
+        if uses.iter().any(|&(r, _, _)| r == Role::File) {
+            return None;
+        }
+        uses.iter().min_by_key(|&&(_, _, e)| e.index()).copied()
+    })?;
     let (role, ctx, _) = first;
     is_kiln_name(w, ctx, role == Role::Pretty, bytes).then_some(NameString::SourceLoc(role, ctx))
 }
@@ -578,16 +575,16 @@ fn write_location(w: &mut Walk<'_>, s: &mut Stream, obj: ConstValueId) {
         ConstValue::Aggregate(img) => Some(img.ty),
         ConstValue::Scalar(_) => None,
     };
-    let mut t = Stream::new();
-    t.uv(0).uv(3);
+    let mut inner = Stream::new();
+    inner.uv(0).uv(3);
     match ty {
-        Some(ty) => w.write_type(&mut t, ty),
+        Some(ty) => w.write_type(&mut inner, ty),
         None => {
-            t.indeterminate(Cause::Unaccounted("value/source-location"));
+            inner.indeterminate(Cause::Unaccounted("value/source-location"));
         }
     }
-    let h = w.hashed(t.finish(VALUE_TAG));
-    s.digest(&h.digest).absorb(h.cause);
+    let hashed = w.hashed(inner.finish(VALUE_TAG));
+    s.digest(&hashed.digest).absorb(hashed.cause);
     let (ctx, n) = name_values(w).objects[&obj.index()];
     w.write_ref_opt(s, ctx);
     s.uv(n);

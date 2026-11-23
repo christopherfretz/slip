@@ -202,18 +202,18 @@ fn local_value(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         return;
     }
     let ast = w.ast;
-    let Some(d) = DeclId::try_new(ast.exprs.get(e).a()) else { return };
-    let d = ast.strip_shadow(d);
-    if ast.decls.get(d).kind() != slip_kiln::kiln::ast::decl::DeclKind::Var
-        || !w.is_local(d)
-        || w.is_local_extern(d)
+    let Some(var) = DeclId::try_new(ast.exprs.get(e).a()) else { return };
+    let var = ast.strip_shadow(var);
+    if ast.decls.get(var).kind() != slip_kiln::kiln::ast::decl::DeclKind::Var
+        || !w.is_local(var)
+        || w.is_local_extern(var)
     {
         return;
     }
-    match crate::decl_func::var_eval(w, d).state() {
-        slip_kiln::kiln::ast::decl::VarEvalState::Value(c) => {
+    match crate::decl_func::var_eval(w, var).state() {
+        slip_kiln::kiln::ast::decl::VarEvalState::Value(eval) => {
             s.opt(true);
-            crate::value::value(w, s, c);
+            crate::value::value(w, s, eval);
         }
         _ => {
             s.opt(false);
