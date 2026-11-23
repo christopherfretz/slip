@@ -922,6 +922,27 @@ mod tests {
         });
     }
 
+    // digest-kinds §11.1 property 7: a type digest (and a profile walk)
+    // puts the expression state aside, `imms` with it, and restores it.
+    // Kiln records no `default_imm` entry inside an unevaluated operand
+    // (a `decltype`), so nothing is lost there: the list is `id(1)`'s.
+    #[test]
+    fn immediates_inside_a_type_are_not_listed() {
+        let src = "consteval int id(int x) { return x; }\n\
+                   void f(int a = id(1) + sizeof(decltype(id(2))));\n\
+                   void h() { f(); }\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            assert_eq!(ast.exprs.cold.default_imm.len(), 1);
+            let f = crate::decl_func::tests::named(w, "f", DeclKind::Function)[0];
+            let p = ast.lists.iter::<DeclId>(ast.decls.function(f).expect("f").params).next();
+            let (_, x) = crate::decl_func::written_default(w, p.expect("a"));
+            let (values, cause) = super::immediates(w, x.expect("the default"));
+            assert_eq!((values.len(), cause), (1, None));
+            assert!(w.unit.expr.imms.is_none());
+        });
+    }
+
     // digest-kinds §11.3: the state is the initialiser holder's
     // (`decl_func::var_eval`), whichever declaration the unit reads.
     #[test]

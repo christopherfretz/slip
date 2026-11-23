@@ -559,34 +559,24 @@ fn kind_row(kind: AttrKind) -> Option<&'static KindRow> {
     KINDS.iter().find(|r| r.kind == kind)
 }
 
+/// The position of a parameter that is not where its `ParamData` `index`
+/// says in its function's parameter list.
+const PARAM_INDEX_UNACCOUNTED: Cause = Cause::Unaccounted("ParamData/index");
+/// A parameter of a declaration (not at block scope) that its function's
+/// chain (`decl_func::param_decls`) does not hold.
+const PARAM_CHAIN_UNACCOUNTED: Cause = Cause::Unaccounted("ParamData/chain");
+
 /// The row `decl_attrs` of `AttrArena` (`attrs`, §10.1) and the rows of
-/// `AnnotArena` (§10.5) for `d`: the attributes and annotations of every
-/// declaration of `d`'s chain, first to last.
+/// `AnnotArena` (§10.5) for `d`. A parameter's are [`param_attrs`]; any
+/// other declaration's are [`entity_attrs`] over its chain, first to last.
 pub(crate) fn decl_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let ast = w.ast;
-    let mut chain = w.redecls(d);
-    chain.reverse();
-    // AttrArena `decl_attrs`: the nodes of every declaration, in chain
-    // order and stored order, without the `inherited` copies.
-    let mut nodes: Vec<AttrNode> = Vec::new();
-    for &x in &chain {
-        for a in attr_ids(w, s, ast.attrs.of_decl(x)) {
-            let n = *ast.attrs.get(a);
-            if n.flags & INHERITED == 0 {
-                nodes.push(n);
-            }
-        }
+    if !param_attrs(w, s, d) {
+        let mut chain = w.redecls(d);
+        chain.reverse();
+        let def = defining(w, d, &chain);
+        entity_attrs(w, s, &chain, def);
     }
-    s.count(nodes.len());
-    for n in &nodes {
-        attr_node(w, s, n);
-    }
-    // AnnotArena `of_decl`: one list over the chain.
-    let mut anns: Vec<AnnId> = Vec::new();
-    for &x in &chain {
-        anns.extend(ann_ids(w, s, ast.annots.of_decl(x)));
-    }
-    annotations(w, s, &anns);
     // AnnotArena `of_base`: a list per base-specifier of the definition.
     let bases = match ast.definition(d) {
         Some(def) => ast.decls.bases(def, &ast.lists).count(),
@@ -603,6 +593,154 @@ pub(crate) fn decl_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         };
         annotations(w, s, &anns);
     }
+}
+
+/// The defining declaration of entity `d` the attribute rules read
+/// (§10.1): its definition, if `chain` holds it (a definition
+/// instantiated outside its class is not the declared unit's, WP-032) and
+/// the entity is not of the definition class (§11.9), whose definition
+/// Kiln makes on use. A template's is the template its pattern's
+/// definition describes.
+fn defining(w: &Walk<'_>, d: DeclId, chain: &[DeclId]) -> Option<DeclId> {
+    let ast = w.ast;
+    // A template is not redeclarable itself: its chain is the templates
+    // its pattern's declarations describe (`Walk::chain`), and its
+    // definition the one its pattern's definition describes.
+    let pattern = ast.template_info(d).and_then(|i| i.pattern);
+    let def = match pattern {
+        Some(p) if ast.decls.redecl(d).is_none() && ast.decls.redecl(p).is_some() => {
+            ast.definition(p).and_then(|x| ast.described_template(x))
+        }
+        Some(_) | None => ast.definition(d),
+    };
+    def.filter(|x| chain.contains(x))
+        .filter(|_| !crate::decl_func::definition_class(w, ast.first(d)))
+}
+
+/// The nodes of declaration `x`'s own list, in stored order, without the
+/// `inherited` copies.
+fn own_nodes(w: &Walk<'_>, s: &mut Stream, x: DeclId) -> Vec<AttrNode> {
+    let ast = w.ast;
+    attr_ids(w, s, ast.attrs.of_decl(x))
+        .into_iter()
+        .map(|a| *ast.attrs.get(a))
+        .filter(|n| n.flags & INHERITED == 0)
+        .collect()
+}
+
+/// `count` then `record AttrNode` for each of `nodes`.
+fn node_list(w: &mut Walk<'_>, s: &mut Stream, nodes: &[AttrNode]) {
+    s.count(nodes.len());
+    for n in nodes {
+        attr_node(w, s, n);
+    }
+}
+
+/// `count` then each non-empty list of `lists`, in order, as a
+/// [`node_list`].
+fn groups(w: &mut Walk<'_>, s: &mut Stream, lists: &[Vec<AttrNode>]) {
+    s.count(lists.iter().filter(|l| !l.is_empty()).count());
+    for l in lists.iter().filter(|l| !l.is_empty()) {
+        node_list(w, s, l);
+    }
+}
+
+/// The annotations (`AnnotArena` `of_decl`) of every declaration of
+/// `chain`, in its order, as one list: Kiln's `annotations_of` reads them
+/// so (§10.5).
+fn chain_annotations(w: &mut Walk<'_>, s: &mut Stream, chain: &[DeclId]) {
+    let ast = w.ast;
+    let mut anns: Vec<AnnId> = Vec::new();
+    for &x in chain {
+        anns.extend(ann_ids(w, s, ast.annots.of_decl(x)));
+    }
+    annotations(w, s, &anns);
+}
+
+/// `attrs` of an entity over the declarations `chain`, in its order
+/// (§10.1), `def` its defining declaration: the lists of the declarations
+/// before `def` (all of them when `def` is not in `chain`), empty lists
+/// left out, preceded by their count; `opt`, present when `def` is in
+/// `chain`, with its own list; the lists of the declarations after it as
+/// those before; then the annotations as one list.
+fn entity_attrs(w: &mut Walk<'_>, s: &mut Stream, chain: &[DeclId], def: Option<DeclId>) {
+    let lists: Vec<Vec<AttrNode>> = chain.iter().map(|&x| own_nodes(w, s, x)).collect();
+    let at = def.and_then(|x| chain.iter().position(|&y| y == x));
+    let (before, rest) = lists.split_at(at.unwrap_or(lists.len()));
+    groups(w, s, before);
+    s.opt(at.is_some());
+    let after = match rest.split_first() {
+        Some((own, after)) => {
+            node_list(w, s, own);
+            after
+        }
+        None => rest,
+    };
+    groups(w, s, after);
+    chain_annotations(w, s, chain);
+}
+
+/// `attrs` of parameter `d` of a function (§10.1), or `false` when `d` is
+/// no function's parameter. Over the parameters i of the declarations of
+/// `decl_func::param_decls` of its function: `opt`, present when the
+/// function has a defining declaration among them (and is not of the
+/// definition class, §11.9), with that parameter's own nodes as one
+/// list; then the other parameters' lists, in chain order, empty lists
+/// left out, preceded by their count; then the annotations of all of
+/// them as one list. A parameter of a block-scope declaration thus has
+/// no attributes in the unit: they are written with that declaration in
+/// its block ([`own_attrs`]).
+fn param_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) -> bool {
+    let ast = w.ast;
+    let Some(index) = ast.decls.param(d).map(|p| usize::from(p.index)) else { return false };
+    let Some(f) = ast.decls.get(d).ctx() else { return false };
+    let Some(own) = ast.decls.function(f) else { return false };
+    if ast.lists.iter::<DeclId>(own.params).nth(index) != Some(d) {
+        s.indeterminate(PARAM_INDEX_UNACCOUNTED);
+        s.opt(false);
+        let nodes = own_nodes(w, s, d);
+        groups(w, s, &[nodes]);
+        chain_annotations(w, s, &[d]);
+        return true;
+    }
+    let decls = crate::decl_func::param_decls(w, f);
+    if !decls.contains(&f) && !w.is_local_extern(f) {
+        // The declaration whose parameter is written is not in the chain
+        // read: its own nodes would be lost.
+        s.indeterminate(PARAM_CHAIN_UNACCOUNTED);
+    }
+    let def = defining(w, f, &decls);
+    // Parameter i of each declaration; C++ gives every declaration of a
+    // function the same number of parameters.
+    let params: Vec<(DeclId, DeclId)> = decls
+        .iter()
+        .filter_map(|&x| {
+            let param = ast.lists.iter::<DeclId>(ast.decls.function(x)?.params).nth(index)?;
+            Some((x, param))
+        })
+        .collect();
+    let def_param = params.iter().find(|&&(x, _)| Some(x) == def).map(|&(_, p)| p);
+    s.opt(def_param.is_some());
+    if let Some(p) = def_param {
+        let nodes = own_nodes(w, s, p);
+        node_list(w, s, &nodes);
+    }
+    let others: Vec<Vec<AttrNode>> =
+        params.iter().filter(|&&(x, _)| Some(x) != def).map(|&(_, p)| own_nodes(w, s, p)).collect();
+    groups(w, s, &others);
+    let chain: Vec<DeclId> = params.iter().map(|&(_, p)| p).collect();
+    chain_annotations(w, s, &chain);
+    true
+}
+
+/// The attributes and annotations parameter `d` of a block-scope function
+/// declaration holds itself (`local::write_decl`, §2.4): its own nodes as
+/// one `attrs` list (the `inherited` copies left out), then its
+/// annotations.
+pub(crate) fn own_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let nodes = own_nodes(w, s, d);
+    node_list(w, s, &nodes);
+    chain_annotations(w, s, &[d]);
 }
 
 /// `attrs` of a statement (`AttributedStmt.a`, §10.1): the nodes of the
@@ -1262,9 +1400,29 @@ mod tests {
         s.flags(word);
     }
 
-    /// A declaration's lists after its attributes: no annotation, no base.
+    /// The start of the lists of an entity of one declaration that is not
+    /// a definition, with `n` nodes: one list before the (absent)
+    /// definition.
+    fn declared(s: &mut Stream, n: usize) {
+        s.count(1).count(n);
+    }
+
+    /// The end of the lists of an entity [`declared`]: no definition, no
+    /// list after it, no annotation, no base.
     fn no_annotations(s: &mut Stream) {
-        s.count(0).count(0);
+        s.opt(false).count(0).count(0).count(0);
+    }
+
+    /// The start of the lists of an entity of one declaration that is a
+    /// definition, with `n` nodes: no list before it, then its own.
+    fn defined(s: &mut Stream, n: usize) {
+        s.count(0).opt(true).count(n);
+    }
+
+    /// The end of the lists of an entity [`defined`]: no list after the
+    /// definition, no annotation, no base.
+    fn defined_end(s: &mut Stream) {
+        s.count(0).count(0).count(0);
     }
 
     use attr_syntax::{CXX11, GNU, KEYWORD, PRAGMA};
@@ -1275,7 +1433,7 @@ mod tests {
     fn s10_1_message_is_an_expression_operand() {
         let (got, ops) = decl_ops(r#"[[deprecated("m")]] void f();"#, "c++20", "f");
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::DEPRECATED, CXX11, &[false]);
             s.opt(true).raw(&ops[0]).opt(false);
             no_annotations(s);
@@ -1283,7 +1441,7 @@ mod tests {
         assert_eq!(got.0, want);
         let ((got, _), ops) = decl_ops(r#"[[nodiscard("m")]] int f();"#, "c++20", "f");
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::NODISCARD, CXX11, &[false]);
             s.opt(true).raw(&ops[0]).opt(false);
             no_annotations(s);
@@ -1298,7 +1456,7 @@ mod tests {
         let ((got, _), ops) =
             decl_ops("void *f(int) __attribute__((alloc_size(1)));", "c++20", "f");
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::ALLOC_SIZE, GNU, &[false]);
             s.opt(true).raw(&ops[0]).opt(false);
             no_annotations(s);
@@ -1307,7 +1465,7 @@ mod tests {
         let ((got, _), ops) =
             decl_ops("void *f(int) __attribute__((alloc_align(1)));", "c++20", "f");
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::ALLOC_ALIGN, GNU, &[false]);
             s.opt(true).raw(&ops[0]).opt(false);
             no_annotations(s);
@@ -1316,7 +1474,7 @@ mod tests {
         let src = r#"void f(int x) __attribute__((enable_if(x > 0, "m")));"#;
         let ((got, _), ops) = decl_ops(src, "c++20", "f");
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::ENABLE_IF, GNU, &[false]);
             s.opt(true).raw(&ops[0]).opt(true).raw(&ops[1]);
             no_annotations(s);
@@ -1331,7 +1489,7 @@ mod tests {
         let src = r#"void f(int x) __attribute__((diagnose_if(x < 0, "m", "error")));"#;
         let ((got, _), ops) = decl_ops(src, "c++20", "f");
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::DIAGNOSE_IF, GNU, &[false, true, true, false]);
             s.opt(true).raw(&ops[0]).opt(true).raw(&ops[1]);
             no_annotations(s);
@@ -1345,7 +1503,7 @@ mod tests {
     fn s10_1_annotate() {
         let ((got, _), ops) = decl_ops(r#"[[clang::annotate("x")]] void f();"#, "c++20", "f");
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::ANNOTATE, CXX11, &[false]);
             s.opt(true).raw(&ops[0]).count(0);
             no_annotations(s);
@@ -1360,14 +1518,14 @@ mod tests {
         let src = "template <int N> struct X { __attribute__((constructor(N))) static void c(); };";
         let ((got, _), ops) = decl_ops(src, "c++20", "c");
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::CONSTRUCTOR, GNU, &[false, true]);
             s.opt(false).opt(true).raw(&ops[0]);
             no_annotations(s);
         });
         assert_eq!(got, want);
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::DESTRUCTOR, GNU, &[false, false]);
             s.opt(true).uv(101).opt(false);
             no_annotations(s);
@@ -1381,7 +1539,7 @@ mod tests {
     fn s10_1_string_operands() {
         let one = |src: &str, name: &str, kind: Row, syntax: Row, opt: bool, text: &[u8]| {
             let want = bytes(|s| {
-                s.count(1);
+                declared(s, 1);
                 head(s, kind, syntax, &[false]);
                 if opt {
                     s.opt(true);
@@ -1434,7 +1592,7 @@ mod tests {
     fn s10_1_pragma_clang_section() {
         let src = "#pragma clang section data = \"s\"\nint v = 1;";
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::PRAGMA_CLANG_SECTION, GNU, &[true]);
             s.opt(true).bytes(b"s").tag(string_encoding::ORDINARY).uv(1);
             no_annotations(s);
@@ -1449,8 +1607,9 @@ mod tests {
     fn s10_1_chain_order() {
         let src = "__attribute__((cold)) void f();\n__attribute__((noinline)) void f();";
         let want = bytes(|s| {
-            s.count(2);
+            s.count(2).count(1);
             head(s, attr_kind::COLD, GNU, &[false]);
+            s.count(1);
             head(s, attr_kind::NOINLINE, GNU, &[false]);
             no_annotations(s);
         });
@@ -1554,7 +1713,7 @@ mod tests {
     fn s10_5_annotations() {
         let ((got, _), ops) = decl_ops("[[=1]] void f();", "c++26", "f");
         let start = bytes(|s| {
-            s.count(0).count(1).opt(true).tag(value_kind::INT);
+            s.count(0).opt(false).count(0).count(1).opt(true).tag(value_kind::INT);
         });
         assert!(got.starts_with(&start), "{got:?}");
         let end = bytes(|s| {
@@ -1569,6 +1728,7 @@ mod tests {
         let src = "struct Base {}; struct Base2 {}; struct D : Base, [[=1]] Base2 {};";
         let (got, _) = decl_bytes(src, "c++26", "D");
         let start = bytes(|s| {
+            defined(s, 0);
             s.count(0).count(0).count(2).count(0).count(1).opt(true).tag(value_kind::INT);
         });
         assert!(got.starts_with(&start), "{got:?}");
@@ -1583,7 +1743,7 @@ mod tests {
         let src = "template <int N> struct X { __attribute__((destructor(N))) static void c(); };";
         let ((got, _), ops) = decl_ops(src, "c++20", "c");
         let want = bytes(|s| {
-            s.count(1);
+            declared(s, 1);
             head(s, attr_kind::DESTRUCTOR, GNU, &[false, true]);
             s.opt(false).opt(true).raw(&ops[0]);
             no_annotations(s);
@@ -1592,7 +1752,7 @@ mod tests {
         let src = "template <class T> struct X { T v __attribute__((mode(DI))); };";
         let (got, _) = decl_bytes(src, "c++20", "v");
         let start = bytes(|s| {
-            s.count(1);
+            defined(s, 1);
             head(s, attr_kind::MODE, GNU, &[false, true]);
         });
         assert!(got.starts_with(&start), "{got:?}");
@@ -1601,10 +1761,10 @@ mod tests {
             ("struct [[gsl::Pointer]] S {};", attr_kind::GSL_POINTER),
         ] {
             let want = bytes(|s| {
-                s.count(1);
+                defined(s, 1);
                 head(s, kind, CXX11, &[false, false]);
                 s.opt(false);
-                no_annotations(s);
+                defined_end(s);
             });
             assert_eq!(decl_bytes(src, "c++20", "S"), (want, None), "{src}");
         }
@@ -1614,7 +1774,7 @@ mod tests {
         ] {
             let (got, cause) = decl_bytes(src, "c++20", "S");
             let start = bytes(|s| {
-                s.count(1);
+                defined(s, 1);
                 head(s, kind, CXX11, &[false, true]);
                 s.opt(true);
             });
@@ -1629,7 +1789,7 @@ mod tests {
     fn s10_1_builtin() {
         let src = "int g() { return __builtin_abs(1); }";
         let want = bytes(|s| {
-            s.count(3);
+            declared(s, 3);
             head(s, attr_kind::BUILTIN, GNU, &[true]);
             head(s, attr_kind::NOTHROW, GNU, &[true]);
             head(s, attr_kind::CONST, GNU, &[true]);
@@ -1645,7 +1805,7 @@ mod tests {
     fn s10_1_x86_interrupt() {
         let src = "struct F; __attribute__((interrupt)) void f(F *);";
         let want = bytes(|s| {
-            s.count(2);
+            declared(s, 2);
             head(s, attr_kind::X86_INTERRUPT, GNU, &[false]);
             head(s, attr_kind::USED, GNU, &[true]);
             no_annotations(s);
@@ -1817,5 +1977,149 @@ mod tests {
             s.count(2).bytes(lo.as_bytes()).bytes(hi.as_bytes()).bool(false);
         });
         assert_eq!(set(3, 0), want);
+    }
+
+    /// The parameters named `name`, in the order Kiln made them.
+    fn params_named(w: &Walk<'_>, name: &str) -> Vec<DeclId> {
+        let ast = w.ast;
+        (1..=u32::try_from(ast.decls.len()).expect("few declarations"))
+            .map(DeclId::new)
+            .filter(|&d| {
+                ast.decls.param(d).is_some()
+                    && ast
+                        .decls
+                        .get(d)
+                        .name()
+                        .as_ident()
+                        .is_some_and(|s| ast.symbols().as_str(s) == name)
+            })
+            .collect()
+    }
+
+    /// What `decl_attrs` writes for parameter `name` number `n` of `src`.
+    fn param_bytes(src: &str, std: &str, name: &str, n: usize) -> (Vec<u8>, Option<Cause>) {
+        with_walk(src, std, |w| {
+            let p = params_named(w, name)[n];
+            let mut s = Stream::new();
+            decl_attrs(w, &mut s, p);
+            (s.as_bytes().to_vec(), s.cause())
+        })
+    }
+
+    // §10.1 the encoding `attrs`, for a parameter (WP-100): `opt` and the
+    // definition's own list, then the count of the other declarations'
+    // non-empty lists and each of them, first declaration first, then the
+    // annotations; read from any of the declarations, the same bytes.
+    #[test]
+    fn s10_1_param_chain_order() {
+        let src = "void f(int *p __attribute__((noescape)));\n\
+                   void f(int *p);\n\
+                   void f(int *p __attribute__((unused)) __attribute__((unused)));\n\
+                   void f(int *p __attribute__((noescape))) {}";
+        let want = bytes(|s| {
+            s.opt(true).count(1);
+            head(s, attr_kind::NOESCAPE, GNU, &[false]);
+            s.count(2).count(1);
+            head(s, attr_kind::NOESCAPE, GNU, &[false]);
+            s.count(2);
+            head(s, attr_kind::UNUSED, GNU, &[false]);
+            head(s, attr_kind::UNUSED, GNU, &[false]);
+            no_annotations_of_param(s);
+        });
+        for n in 0..4 {
+            assert_eq!(param_bytes(src, "c++20", "p", n), (want.clone(), None), "parameter {n}");
+        }
+        // No definition: every list is among the others.
+        let src =
+            "void f(int *p __attribute__((unused)));\nvoid f(int *p __attribute__((noescape)));";
+        let want = bytes(|s| {
+            s.opt(false).count(2).count(1);
+            head(s, attr_kind::UNUSED, GNU, &[false]);
+            s.count(1);
+            head(s, attr_kind::NOESCAPE, GNU, &[false]);
+            no_annotations_of_param(s);
+        });
+        assert_eq!(param_bytes(src, "c++20", "p", 1), (want, None));
+    }
+
+    /// A parameter's lists after its attributes: no annotation, no base.
+    fn no_annotations_of_param(s: &mut Stream) {
+        s.count(0).count(0);
+    }
+
+    // §10.1 (WP-100): an entity's lists are kept per declaration: those
+    // before the definition, empty lists left out, then the definition's,
+    // then those after it.
+    #[test]
+    fn s10_1_lists_per_declaration() {
+        let src = "[[clang::annotate(\"a\")]] void f();\n\
+                   void f();\n\
+                   __attribute__((noinline)) void f();\n\
+                   [[clang::annotate(\"a\")]] __attribute__((cold)) void f() {}\n\
+                   __attribute__((noinline)) void f();";
+        let ((got, _), ops) = decl_ops(src, "c++20", "f");
+        let want = bytes(|s| {
+            s.count(2).count(1);
+            head(s, attr_kind::ANNOTATE, CXX11, &[false]);
+            s.opt(true).raw(&ops[0]).count(0);
+            s.count(1);
+            head(s, attr_kind::NOINLINE, GNU, &[false]);
+            s.opt(true).count(2);
+            head(s, attr_kind::ANNOTATE, CXX11, &[false]);
+            s.opt(true).raw(&ops[1]).count(0);
+            head(s, attr_kind::COLD, GNU, &[false]);
+            s.count(1).count(1);
+            head(s, attr_kind::NOINLINE, GNU, &[false]);
+            s.count(0).count(0);
+        });
+        assert_eq!(got, want);
+    }
+
+    // §10.5 (WP-100): a parameter's annotations are one list over its
+    // parameters i, first declaration first, as Kiln's `annotations_of`
+    // reads them.
+    #[test]
+    fn s10_5_param_annotations_over_the_chain() {
+        let src = "void f([[=1]] int x);\nvoid f(int x) {}";
+        let got = param_bytes(src, "c++26", "x", 1);
+        assert_eq!(got, param_bytes("void f(int x);\nvoid f([[=1]] int x) {}", "c++26", "x", 1));
+        assert_ne!(got.0, param_bytes("void f(int x);\nvoid f(int x) {}", "c++26", "x", 1).0);
+        let two = param_bytes("void f([[=1]] int x);\nvoid f([[=2]] int x) {}", "c++26", "x", 1);
+        let swapped =
+            param_bytes("void f([[=2]] int x);\nvoid f([[=1]] int x) {}", "c++26", "x", 1);
+        assert_ne!(two.0, swapped.0, "first declaration first");
+    }
+
+    // §10.1 (WP-100): a block-scope declaration's parameter is left out
+    // of the chain of the entity's parameter; the block writes its own
+    // (`local::tests::a_block_scope_parameter_writes_its_attributes`).
+    #[test]
+    fn s10_1_param_chain_leaves_out_block_scope() {
+        let src = "void f(int *p);\nvoid g() { void f(int *p __attribute__((nonnull))); }";
+        let got = param_bytes(src, "c++20", "p", 0);
+        assert_eq!(got, param_bytes("void f(int *p);", "c++20", "p", 0));
+        let after = "void g() { void f(int *p __attribute__((nonnull))); }\nvoid f(int *p);";
+        assert_eq!(param_bytes(after, "c++20", "p", 1), got);
+    }
+
+    // §10.1 last paragraph (WP-100 decision 4): an instantiated
+    // declaration's attributes are written as found. Kiln gives an
+    // instantiated function's parameters only their Swift ABI attributes
+    // (kiln_sema templ/subst/decls.rs `param_infos`); when this fails,
+    // Kiln instantiates the others, and the explicit instantiation in
+    // `differ/_/param-attr-template-*` changes too.
+    #[test]
+    fn kiln_does_not_instantiate_parameter_attributes() {
+        let src = "template<class T> void f(T *p __attribute__((nonnull)));\n\
+                   template<class T> void f(T *p __attribute__((nonnull))) {}\n\
+                   template void f<int>(int *);";
+        with_walk(src, "c++20", |w| {
+            let ast = w.ast;
+            let ps = params_named(w, "p");
+            assert_eq!(ps.len(), 3, "two patterns' and the instantiation's");
+            let has = |p: DeclId| ast.lists.iter::<AttrId>(ast.attrs.of_decl(p)).count();
+            assert_eq!((has(ps[0]), has(ps[1])), (1, 1));
+            assert_eq!(has(ps[2]), 0, "Kiln now instantiates a parameter's attributes");
+        });
     }
 }

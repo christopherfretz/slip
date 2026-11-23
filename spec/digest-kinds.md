@@ -280,7 +280,13 @@ says so in its note.
   resolved through them;
 - a block-scope declaration of a function or of a variable with linkage
   (`DeclMisc` `misc-local-extern`) is written as a `ref`: the entity is a
-  unit of the namespace it belongs to;
+  unit of the namespace it belongs to. A function's `ref` is followed by a
+  count and, for each parameter, what that declaration's parameter holds
+  that the entity's unit leaves out: its default argument (`child?`), then
+  its attributes, as one `attrs` list (§10.1: the count and the nodes of
+  its own `decl_attrs`, `inherited` copies left out; no `opt`, no
+  parts), and its annotations (§10.5), its own alone
+  (`spec/landed/digest-kinds/WP-026.md`, `WP-100.md`);
 - a local `static_assert` is written as its rows.
 
 ## 3. Keys
@@ -398,7 +404,13 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
 1. **First spellings.** A dependent `TemplateSpecialization`, `decltype`
    or array bound is canonical by profile; `TypeContext::arg_origins` and
    `expr_origins` keep the expressions of the first spelling for mangling
-   and printing. They are `out`: the profile is the fact (§4.4).
+   and printing. They are `out`: the profile is the fact (§4.4), and the
+   bytes of a profile are a function of the profile, not of the spelling
+   Kiln met first. A fact a spelling holds and the profile does not (the
+   declarations lookup found for an unresolved name) is not in the type;
+   a type that left one out is marked, and a unit that writes a marked
+   type is `Pending(Spelling)` until the unit writes its own spellings
+   (§4.4).
 2. **Alias template specialisations** are sugar; `alias_converted` holds
    their converted arguments and is `out`. The type the alias names is what
    is digested.
@@ -425,8 +437,8 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    it in the canonical type and the digest ignores it everywhere.
 7. **Parentheses in `decltype`.** A non-dependent `decltype((x))` has a
    different canonical type from `decltype(x)`, so nothing is needed. In a
-   `DependentDecltype` the operand is walked by §4.4, where a `ParenExpr`
-   that is the whole operand is written (§7, `ExprNode`,
+   `DependentDecltype` the operand is walked in profile mode (§4.4),
+   where every `ParenExpr` is written (§7 "Parentheses", `ExprNode`,
    `ParenExpr.a`).
 
 ### 4.3 The type records
@@ -888,23 +900,209 @@ written like any other builtin.
 
 A `ProfileId` names a canonical expression: Kiln's private word format,
 whose words hold ids local to the parse. The digest does not read the
-words. `profile` is written as the expression `ProfileEntry.first_expr`
-(`TypeContext::profile_expr`), walked by §7, inside the type or key stream
-being written, with these rules:
+words. `profile` is the expression `ProfileEntry.first_expr`
+(`TypeContext::profile_expr`) walked in **profile mode**, inside the type
+or key stream being written. Profile mode is also how every expression
+written into a key is walked (a function's trailing requires-clause,
+§3.3, and a template head's requires-clause, §3.4).
 
+**Profile mode writes a fact iff Kiln's profile distinguishes it**
+(`Ast::profile_node`, `kiln_ast` `types/profile_expr.rs`, [temp.over.link]/5):
+two expressions Kiln profiles alike give the same bytes whichever was met
+first, and two it tells apart give different bytes. The two tables below
+are the whole encoding; the line numbers are those of `profile_expr.rs` at
+the pinned Kiln, and every row is pinned by a sample of
+`slip_digest` `expr_profile_tests::the_bytes_are_pinned` (golden
+`tests/golden/profile_bytes.txt`, `SLIP_BLESS=1` rewrites it; the test
+fails on a row without a sample and on a sample no row names).
+
+**Notation.** `uv`, `bool`, `opt`, `count`, `tag`, `flags` are §2's;
+`flags(a, b)` has `a` in bit 0. `type` is the §4.1 type digest (and its
+mark, below), `type?` is `opt` and `type`, `ref` a §4.3 `Ref`, `sym` an
+identifier, `name` a §3.2 `Name` (of a raw `DeclName`, as a declaration's
+name is written). `tag K` is the row tag of `K` in §7's `ExprKind` table;
+`aux T` is the row tag of the node's `aux` decoded as `T` (§7's tables),
+or `uv 0` and `Unaccounted("profile/<kind>.aux")` when it does not
+decode. `child` is the profile-mode bytes of an operand, `child?` is `opt`
+and `child` when present, `list` is `count` and each `child`. A missing
+operand Kiln's node must have is `uv 0` and `Unaccounted`.
+
+**Order.** A node writes the fields of its row in the order given. A
+`child` is written whole before the next field, with one exception, which
+mirrors Kiln's stack: the per-argument entries of `args each` follow the
+rest of their node's fields that are not children (in
+`CXXDependentScopeMemberExpr`, after `spelled-nns`), and precede its
+children.
+
+#### Forms
+
+| Form | Kiln | Bytes | Sample |
+|---|---|---|---|
+| `decl template-parm` | `:327-344` | `uv 1`, `uv` depth, `uv` index, `bool` pack: a template type or template template parameter | `decl-template-parm` |
+| `decl nttp` | `:327-344` | `uv 2`, `uv` depth, `uv` index, `bool` pack, `nttp-type` | `decl-nttp` |
+| `decl parm` | `:345-362` | `uv 3`, `uv` index, `flags(pack, in-requires)`, `uv` function-scope depth, `type?` of the parameter. In-requires: the parameter's context is a `RequiresExprBody` | `decl-parm`, `decl-parm-requires` |
+| `decl result-name` | `:363` | `uv 5`: a contract's result name | none: in a postcondition, which no profile holds |
+| `decl other` | `:364` | `uv 4`, `ref` of the first declaration (also a template parameter Kiln holds no position for) | `decl-other` |
+| `nttp-type placeholder` | `:375-382` | the canonical type is an undeduced placeholder (`auto`, `decltype(auto)`, its constraint ignored): `uv 1`, `tag` `AutoKeyword`, `bool` pack, `uv` qualifier bits | `nttp-type-placeholder` |
+| `nttp-type type` | `:384` | otherwise: `uv 0`, `type?` | `decl-nttp` |
+| `args none` | `:415` | no explicit arguments: `uv 0` | `decl-other` |
+| `args list` | `:418-420` | the canonical list holds no expression without a profile: `uv 1`, §4.6 `enum ArgView*` of the canonical list | `args-list` |
+| `args each` | `:421-431` | otherwise: `uv 2`, `count`, then per argument `uv 0` and the expression's `child`, or `uv 1` and §4.6 `enum ArgView` | `args-each` |
+| `ref-args` | `:393-406` | `uv 0` when the written list is present, not instantiation-dependent, and the referenced declaration is neither a function template nor a variable template; otherwise `args` of the written list | `ref-args-implied`, `args-list` |
+| `nns?` | `:322` | `opt`, §4.6 qualifier | `DependentScopeDeclRefExpr` |
+| `spelled-nns` | `:190-224` | `count` of levels, then each level outermost first: global `uv 1`; namespace `uv 2`, `decl-name-or-ref` of the namespace; namespace alias `uv 3`, `decl-name-or-ref` of the alias; a type written without `template` whose name is one identifier (a template type parameter, a record, an enum, a typedef or using-declaration, through elaboration without keyword or qualifier; not a specialisation) `uv 4`, `sym`; an identifier `uv 5`, `sym`; any other type, or a splice, `uv 6` and §4.6 qualifier of that level | `spelled-nns`, `spelled-nns-namespace` |
+| `decl-name-or-ref` | `:190-224` | a declaration named by an identifier: `uv 0`, `sym`; otherwise `uv 1`, `ref` | `spelled-nns-namespace` |
+| `ctad` | `:303-312` | `opt`: present when the type is a deduced class template specialisation not yet deduced (or deduced as dependent), then §4.6 template name | `ctad` |
+
+#### Kinds
+
+`in full` is §7's walk of the node (`expr::child`), with the profile's
+frame installed; `transparent` writes nothing of the node and is its
+operand's bytes. These kinds are walked in full: Kiln profiles the first
+group as unique (a word of the expression's own id, `:838-860`), and the
+digest has no profile form yet for the second, whose Kiln form needs
+reflection facts (`:792-837`).
+
+| Kind | Kiln | Bytes | Sample |
+|---|---|---|---|
+| `ImplicitCastExpr` | `:450` | transparent: `child` of `a` | `ImplicitCastExpr` |
+| `ConstantExpr` | `:451` | transparent: `child` of `a` | none: Kiln wraps a constant of a declaration (a bound, an enumerator, a bit-field width), a case label, a `__builtin_choose_expr` condition (walked in full) and an immediate call outside a template (`kiln_sema` `consteval.rs:948-954`), none of them in a profile |
+| `MaterializeTemporaryExpr` | `:452` | transparent: `child` of `a` | `MaterializeTemporaryExpr` |
+| `CXXBindTemporaryExpr` | `:453` | transparent: `child` of `a` | `CXXBindTemporaryExpr` |
+| `ExprWithCleanups` | `:454` | transparent: `child` of `a` | none: built only for a full-expression, which a profile operand is not |
+| `SubstNonTypeTemplateParmExpr` | `:455` | transparent: `child` of the replacement `b` | `SubstNonTypeTemplateParmExpr` |
+| `OpaqueValueExpr` | `:456-461` | `child` of its source; with no source `tag K` | none: Kiln builds it only in non-dependent semantic forms a profile does not reach |
+| `IntegerLiteral` | `:462-468` | `tag K`, `type`, then a value that fits 64 bits `uv 0`, `uv` value, else `uv 1` and §8 value | `IntegerLiteral` |
+| `FloatingLiteral` | `:469-473` | `tag K`, `type`, §8 value | `FloatingLiteral` |
+| `CharacterLiteral` | `:474` | `tag K`, `aux CharKind`, `type`, `uv` code point | `CharacterLiteral` |
+| `StringLiteral` | `:476` | `tag K`, `type`, §8 string | `StringLiteral` |
+| `CXXBoolLiteralExpr` | `:477` | `tag K`, `bool` value | `CXXBoolLiteralExpr` |
+| `AddrLabelExpr` | `:479` | `tag K`, `ref` of the label | none: a label is in a function body |
+| `CXXNullPtrLiteralExpr` | `:480-485` | `tag K`, `type` | `CXXNullPtrLiteralExpr` |
+| `GNUNullExpr` | `:480-485` | `tag K`, `type` | `GNUNullExpr` |
+| `ImplicitValueInitExpr` | `:480-485` | `tag K`, `type` | none: built for an aggregate's omitted members in a non-dependent initialiser after the profile is formed |
+| `CXXScalarValueInitExpr` | `:480-485` | `tag K`, `type` | `CXXScalarValueInitExpr` |
+| `DeclRefExpr` | `:488-497` | `tag K`, `decl`, `ref-args` | `decl-other` |
+| `MemberExpr` | `:498-508` | `tag K`, `bool` arrow, `decl` of the member, `ref-args`, `child?` of the base | `MemberExpr` |
+| `CXXThisExpr` | `:509` | `tag K`, `bool` implicit | `CXXThisExpr` |
+| `PredefinedExpr` | `:510` | `tag K`, `aux PredefinedKind` | none: `__func__` and its kin are in a function body |
+| `SourceLocExpr` | `:510` | `tag K`, `aux SourceLocKind` | `SourceLocExpr` |
+| `UnresolvedLookupExpr` | `:511-523` | `tag K`, `bool` ADL (`aux` bit 0), then: when the first declaration found is a template template parameter (a variable template template parameter's `V<args>`), `uv 1` and its `decl`; otherwise `uv 0` and `name` (the declarations found are left out: "The mark"); then `nns?`, `args` | `UnresolvedLookupExpr`, `UnresolvedLookupExpr-ttp` |
+| `DependentScopeDeclRefExpr` | `:524-527` | `tag K`, `nns?` of `a`, `name` of `b`, `args` | `DependentScopeDeclRefExpr` |
+| `CXXDependentScopeMemberExpr` | `:528-552` | `tag K`, `flags(arrow, spelled)`, `name` of `b`, `nns?` (absent when spelled), `args`, `spelled-nns` when spelled, `child?` of the base. Arrow: a base is present and `aux` bit 0. Spelled: a base is present, is type-dependent, is not an implicit `this`, and a qualifier is present | `CXXDependentScopeMemberExpr`, `spelled-nns` |
+| `SizeOfPackExpr` | `:553-561` | `tag K`, `opt` and `decl` of the pack | `SizeOfPackExpr` |
+| `UnaryOperator` | `:562-566` | `tag K`, `aux UnaryOp`, `child?` | `UnaryOperator` |
+| `ParenExpr` | `:562-566` | `tag K`, `child?` | `ParenExpr` |
+| `PackExpansionExpr` | `:562-566` | `tag K`, `child?` | `PackExpansionExpr` |
+| `CXXNoexceptExpr` | `:562-566` | `tag K`, `child?` | `CXXNoexceptExpr` |
+| `BinaryOperator` | `:567-571` | `tag K`, `aux BinaryOp`, `child?` of `a`, `child?` of `b` | `BinaryOperator` |
+| `ArraySubscriptExpr` | `:567-571` | `tag K`, `child?` of `a`, `child?` of `b` | `ArraySubscriptExpr` |
+| `PackIndexingExpr` | `:567-571` | `tag K`, `child?` of `a`, `child?` of `b` | `PackIndexingExpr` |
+| `CompoundAssignOperator` | `:572-575` | `tag K`, `aux BinaryOp`, `child?` of `a`, `child` of the right operand | `CompoundAssignOperator` |
+| `ConditionalOperator` | `:576-580` | `tag K`, `child?` of the condition, `child` of each arm | `ConditionalOperator` |
+| `CXXFoldExpr` | `:581-584` | `tag K`, `aux BinaryOp`, `child?` of `a`, `child?` of `b` | `CXXFoldExpr` |
+| `CallExpr` | `:585-591` | `tag K`, `child?` of the callee, `list` of the arguments | `CallExpr` |
+| `CXXMemberCallExpr` | `:585-591` | `tag K`, `child?` of the callee, `list` of the arguments | `CXXMemberCallExpr` |
+| `CXXOperatorCallExpr` | `:585-591` | `tag K`, `aux OverloadedOperator`, `child?` of the callee, `list` of the arguments | `CXXOperatorCallExpr` |
+| `PseudoObjectExpr` | `:592` | transparent: `child` of the syntactic form | none: built for properties and subscripts of other languages' objects |
+| `CXXRewrittenBinaryOperator` | `:593-597` | `tag K`, `tag BinaryOp` of the written operator, `list` of the written operands | `CXXRewrittenBinaryOperator` |
+| `BinaryConditionalOperator` | `:598-601` | `tag K`, `list` of `a` | `BinaryConditionalOperator` |
+| `ParenListExpr` | `:598-601` | `tag K`, `list` of `a` | `ParenListExpr` |
+| `InitListExpr` | `:598-601` | `tag K`, `list` of `a` | `InitListExpr` |
+| `DesignatedInitExpr` | `:602-623` | `tag K`, `count` of the designators, each: a field `uv 1`, `sym`; an index `uv 2`, `child`; a range `uv 3`, `child` of each bound; then `child?` of the initialiser | `DesignatedInitExpr` |
+| `CStyleCastExpr` | `:624-636` | `tag K`, `aux CastKind`, `tag ValueCategory`, `type`, `child?` | `CStyleCastExpr` |
+| `CXXFunctionalCastExpr` | `:624-636` | as `CStyleCastExpr` | `CXXFunctionalCastExpr` |
+| `CXXStaticCastExpr` | `:624-636` | as `CStyleCastExpr` | `CXXStaticCastExpr` |
+| `CXXConstCastExpr` | `:624-636` | as `CStyleCastExpr` | `CXXConstCastExpr` |
+| `CXXReinterpretCastExpr` | `:624-636` | as `CStyleCastExpr` | `CXXReinterpretCastExpr` |
+| `CXXDynamicCastExpr` | `:624-636` | as `CStyleCastExpr` | `CXXDynamicCastExpr` |
+| `BuiltinBitCastExpr` | `:624-636` | as `CStyleCastExpr` | `BuiltinBitCastExpr` |
+| `CXXUnresolvedConstructExpr` | `:637-641` | `tag K`, `bool` list-initialisation (`aux` bit 0), `type` written, `ctad`, `list` of `a` | `CXXUnresolvedConstructExpr`, `ctad` |
+| `CXXParenListInitExpr` | `:642-646` | `tag K`, `type`, `list` of `a` | `CXXParenListInitExpr` |
+| `CXXConstructExpr` | `:647-651` | `tag K`, `type`, `decl` of the constructor, `list` of `b` | `CXXConstructExpr` |
+| `CXXTemporaryObjectExpr` | `:647-651` | as `CXXConstructExpr` | `CXXTemporaryObjectExpr` |
+| `CompoundLiteralExpr` | `:652-655` | `tag K`, `type`, `child?` | `CompoundLiteralExpr` |
+| `CXXDefaultArgExpr` | `:656-659` | `tag K`, `decl` of the parameter | `CXXDefaultArgExpr` |
+| `CXXDefaultInitExpr` | `:660-663` | `tag K`, `decl` of the field | none: a default member initialiser's use is in a constructor or an aggregate initialisation after the profile is formed |
+| `ArrayInitLoopExpr` | `:664-667` | `tag K`, `child?` of `a`, `child?` of `b` | none: built for an implicit copy of an array member, never in a profile |
+| `DesignatedInitUpdateExpr` | `:664-667` | `tag K`, `child?` of `a`, `child?` of `b` | none: built for a C designator that overrides an earlier one, not in C++ |
+| `ArrayInitIndexExpr` | `:668` | `tag K` | none: as `ArrayInitLoopExpr` |
+| `NoInitExpr` | `:668` | `tag K` | none: as `DesignatedInitUpdateExpr` |
+| `CXXNewExpr` | `:671-684` | `tag K`, `flags(global, array)`, `tag NewInitStyle`, `type` allocated, `child?` of the array size, `child?` of the initialiser, `list` of the placement arguments (`uv 0` when none) | `CXXNewExpr`, `CXXNewExpr-braces` |
+| `CXXDeleteExpr` | `:685-690` | `tag K`, `flags(global, array)`, `child?` | `CXXDeleteExpr` |
+| `CXXThrowExpr` | `:691-695` | `tag K`, `child?` of the operand | `CXXThrowExpr` |
+| `CXXPseudoDestructorExpr` | `:696-700` | `tag K`, `bool` arrow, `type` destroyed, `child` of the base | `CXXPseudoDestructorExpr` |
+| `CXXTypeidExpr` | `:701-709` | `tag K`, then a type operand `uv 1`, `type`; an expression `uv 0`, `child` | `CXXTypeidExpr`, `CXXTypeidExpr-type` |
+| `UnaryExprOrTypeTraitExpr` | `:710-717` | `tag K`, `aux TraitKind`, then a type argument `uv 1`, `type?`; an expression `uv 0`, `child?` | `UnaryExprOrTypeTraitExpr`, `UnaryExprOrTypeTraitExpr-type` |
+| `TypeTraitExpr` | `:718-724` | `tag K`, `aux TypeTrait`, `count` and `type` of each argument | `TypeTraitExpr` |
+| `ArrayTypeTraitExpr` | `:725-728` | `tag K`, `aux TypeTrait`, `type`, `child?` of the dimension | `ArrayTypeTraitExpr` |
+| `ExpressionTraitExpr` | `:729-732` | `tag K`, `aux TypeTrait`, `child` | `ExpressionTraitExpr` |
+| `IntegerPackExpr` | `:733-736` | `tag K`, `child?` | `IntegerPackExpr` |
+| `RequiresExpr` | `:737-768` | `tag K`, `count` of the parameters and `type?` of each, `count` of the requirements, each: simple `uv 1`, `child`; type `uv 2`, `type`; compound `uv 3`, `uv` 1 when it is `noexcept` else 0, `child`, `child?` of the type-constraint; nested `uv 4`, `child`. A reference to a parameter is its `decl parm`. Without Kiln's `RequiresInfo`, in full | `RequiresExpr`, `RequiresExpr-compound` |
+| `ConceptSpecializationExpr` | `:769-781` | `tag K`, then the concept: absent `uv 0`; a concept template parameter `uv 1`, its `decl`; another `uv 2`, `ref` of its first declaration; then `opt` and §4.6 `enum ArgView*` of the arguments | `ConceptSpecializationExpr`, `ConceptSpecializationExpr-ttp` |
+| `CXXReflectExpr` | `:792-828` | in full (no profile form yet) | none: reflection is off in the pinned samples' language mode |
+| `CXXSpliceExpr` | `:829-837` | in full (no profile form yet) | none: as `CXXReflectExpr` |
+| `UserDefinedLiteral` | `:838` | in full (Kiln: unique) | none: Kiln builds a user-defined literal as a `CallExpr` (`kiln_sema` `literal_op.rs:332-339`) |
+| `ImaginaryLiteral` | `:839` | in full (Kiln: unique) | `ImaginaryLiteral` |
+| `EmbedExpr` | `:840` | in full (Kiln: unique) | none: `#embed` data is in an initialiser, not a profile |
+| `UnresolvedMemberExpr` | `:841` | in full (Kiln: unique) | none: Kiln builds none (`kiln_ast` `builder.rs` has no constructor; a member call on a non-dependent object with dependent arguments is a `CallExpr` of a `MemberExpr`) |
+| `SubstNonTypeTemplateParmPackExpr` | `:842` | in full (Kiln: unique) | none: built in an instantiation, which a profile of a pattern does not hold |
+| `FunctionParmPackExpr` | `:843` | in full (Kiln: unique) | none: as `SubstNonTypeTemplateParmPackExpr` |
+| `CXXInheritedCtorInitExpr` | `:844` | in full (Kiln: unique) | none: in an inheriting constructor's implicit definition |
+| `CXXStdInitializerListExpr` | `:845` | in full (Kiln: unique) | none: needs `std::initializer_list`, which the samples do not declare |
+| `OffsetOfExpr` | `:846` | in full (Kiln: unique) | `OffsetOfExpr` |
+| `LambdaExpr` | `:847` | in full (Kiln: unique) | `LambdaExpr` |
+| `CoawaitExpr` | `:848` | in full (Kiln: unique) | none: in a coroutine body |
+| `DependentCoawaitExpr` | `:849` | in full (Kiln: unique) | none: in a coroutine body |
+| `CoyieldExpr` | `:850` | in full (Kiln: unique) | none: in a coroutine body |
+| `StmtExpr` | `:851` | in full (Kiln: unique) | none: in a function body |
+| `ChooseExpr` | `:852` | in full (Kiln: unique) | `ChooseExpr` |
+| `GenericSelectionExpr` | `:853` | in full (Kiln: unique) | `GenericSelectionExpr` |
+| `VAArgExpr` | `:854` | in full (Kiln: unique) | none: in a variadic function's body |
+| `AtomicExpr` | `:855` | in full (Kiln: unique) | none: an atomic builtin's operand needs a pointer to `_Atomic`, not in C++ profiles |
+| `ShuffleVectorExpr` | `:856` | in full (Kiln: unique) | none: needs vector types |
+| `ConvertVectorExpr` | `:857` | in full (Kiln: unique) | none: needs vector types |
+| `ExtVectorElementExpr` | `:858` | in full (Kiln: unique) | none: needs `ext_vector_type` |
+| `RecoveryExpr` | `:859` | in full (Kiln: unique) | none: built only after an error |
+| `CXXExpansionSelectExpr` | `:860` | in full (Kiln: unique) | none: in an expansion statement |
+
+The rest of profile mode:
+
+- **The mark.** When the walk leaves out a fact a spelling holds (a
+  non-empty found set of an `UnresolvedLookupExpr`), it counts it
+  (`Walk::left_out`). A type digest whose stream counted one is marked,
+  and a memo hit of a marked type counts again, so every enclosing type
+  is marked too. A key ignores the count and the mark. A unit stream is
+  indeterminate with `Pending(Spelling)` when, outside any key and type
+  (`in_key == 0`, `type_nesting == 0`), it writes a marked type, or a
+  profile that counted one is written into it directly (a template
+  argument, a table row), or it is a partial specialisation's whose
+  arguments, which only its key holds, count one (`templ.rs`
+  `partial_spec_info`). A key and a content digest are computed with the
+  type digests' state put aside (`Walk::take_types`): what they count is
+  not the enclosing type's, so a type's mark does not depend on whether a
+  key it names was computed first. The fact belongs to the unit that owns
+  the spelling, which writes it when spellings are written ("Hazards
+  accepted for now").
+- **Kinds Kiln profiles as unique.** Kiln gives such a node a word of its
+  own id, so two declarations whose signatures hold one (a lambda:
+  `template<int N> void foo(const char(*)[([]{}, N)]);` twice) are two
+  templates in Kiln ([temp.over.link]/5, [expr.prim.lambda.closure]/1).
+  The digest walks the node in full, a function of its spelling, so both
+  declarations have one key, and the key is indeterminate with cause
+  `collision` (digest §10): never two entities merged in silence. This
+  stays so when `local` lands (WP-040): the closure types are two types,
+  but the key is written from the spelling, which is the same.
 - If `first_expr` is absent the unit is indeterminate.
-- Entities declared inside the walked expression (the parameters of a
-  requires-expression or of a lambda) are numbered from 0 within the
-  stream being written. A reference to a local entity declared outside it
-  uses the unit's ordinal (digest §4.3); a type digest that contains such a
-  reference is memoised for the unit only.
-- A function parameter named in a signature is `Ref::param`, a template
-  parameter `Ref::template_param`; neither depends on the unit.
-
-Two parses that agree on the program walk the same first spelling, because
-both meet the spellings in the same order. A transformation that changes
-which of two equivalent spellings comes first can change the digest; that
-errs on the side of a reported difference ("Open questions").
+- A reference to a local entity declared outside the walked expression
+  uses the unit's ordinal (digest §4.3) and a type digest that holds one
+  is memoised for the unit only; in a key it is indeterminate. A use
+  inside a nested profile or type counts for every enclosing one.
+- **Owned expressions are not profiles.** The expressions a declaration
+  owns outside its type (its requires-clauses, default arguments,
+  `noexcept` and `explicit` operands, default template arguments) are
+  walked in full by §7 in the declaration's unit; only the key holds
+  their profile.
 
 ### `kiln_ast::types::profile::ProfileEntry`
 
@@ -1821,6 +2019,15 @@ A function's stream also holds its language linkage (`ScopeData`,
 | `flags-static-array` | flag | in | bit |  |
 | `flags-scope-depth` | value | in | uv | high byte: the function-prototype scope depth, the `level` of `Ref::param` |
 
+A parameter has no redeclarations of its own. Its attributes (§10.1) and
+its annotations (§10.5) are read from parameter *i* of each declaration
+of the function's chain as §10.1 defines it (Kiln's `redecls_of`, first
+declaration first, without the declarations in a templated body and,
+unless all are, those instantiated outside their class), leaving out the
+declarations at block scope; §10.1 keeps the defining declaration's
+parameter apart. `default_arg` reads the same declarations, leaving out
+also the instantiated ones (§11.4).
+
 ### `kiln_ast::decl::VarData`
 
 `kind=struct; pin=schema`
@@ -2735,10 +2942,26 @@ Rules the rows refer to:
 - **Conditional rows.** A row whose note begins "when" is written only
   under that condition, which is always a fact an earlier row of the same
   node wrote.
-- **Parentheses.** A `ParenExpr` is not written: the walk writes its
-  operand in its place (digest §6). The one exception is a `ParenExpr`
-  that is the whole expression a `profile` of a `DependentDecltype` walks
-  (§4.2 rule 7): that node is written with its rows.
+- **Parentheses.** A `ParenExpr` around an operand that is not
+  instantiation-dependent is not written outside a canonical operand: the
+  walk writes its operand in its place (digest §6). Every other
+  `ParenExpr` is written with its rows: around a dependent operand, where
+  a parenthesis can change the meaning (`decltype((x))`, `&(T::m)`);
+  everywhere in profile mode (§4.4), as Kiln's profile keeps them; and
+  the outermost one at the root of a walk (the whole expression of a
+  `return`, an initialiser, a template argument: what `expr::child` is
+  given) whose operand, through parentheses only, is an id-expression or
+  a class member access (`DeclRefExpr`, `MemberExpr`,
+  `UnresolvedLookupExpr`, `UnresolvedMemberExpr`,
+  `DependentScopeDeclRefExpr`, `CXXDependentScopeMemberExpr`, or a
+  substituted template parameter, `SubstNonTypeTemplateParmExpr`,
+  `SubstNonTypeTemplateParmPackExpr`, `FunctionParmPackExpr`): that is
+  the one operand whose parenthesis `decltype` reads ([dcl.type.decltype]/1.3
+  against /1.5), and `decltype(auto)` deduces from the whole expression of
+  a `return` or an initialiser ([dcl.type.auto.deduct]/5): `return (x);`
+  against `return x;` is `int&` against `int`. The parentheses inside it
+  are skipped as redundant. Inside an operator a parenthesis around a
+  name is never read, and is skipped.
 - **Shared nodes.** The default argument behind a `CXXDefaultArgExpr` and
   the default member initialiser behind a `CXXDefaultInitExpr` are not
   children: they are written in the unit of the function or field
@@ -4391,14 +4614,82 @@ The encoding `attrs` writes an attribute list: a count, then each node as
 
 - For a statement (`AttributedStmt`) the nodes are those of its list, in
   stored order.
-- For a declaration they are the nodes of `AttrArena` `decl_attrs` for
-  every declaration of the entity's chain, in chain order and within a
-  declaration in stored order, leaving out each node whose `inherited`
-  flag is set: it is a copy from an earlier declaration and says nothing
-  new. Kiln makes such a copy for an `ASM_LABEL` only; for every other
-  kind a later declaration has no node and Kiln reads the chain, as this
-  rule does. The order is kept because Kiln mangles the `enable_if`
-  conditions of a function in it.
+- For a declaration, the lists are read over the entity's **chain**: the
+  declarations of Kiln's `redecls_of` of the entity (for a template, the
+  templates its pattern's declarations describe), first declaration
+  first, leaving out a declaration in a templated body and, unless every
+  declaration is one, a declaration instantiated outside its class
+  (`spec/digest.md` §2.2; `Walk::redecls`). A declaration's **own list**
+  is the count and the nodes of its `AttrArena` `decl_attrs` in stored
+  order, leaving out each node whose `inherited` flag is set: it is a
+  copy from an earlier declaration and says nothing new (Kiln makes such
+  a copy for an `ASM_LABEL` only). The entity's **defining declaration**
+  is its definition (for a template, the template its pattern's
+  definition describes) when the chain holds it and the entity is not of
+  the definition class (§11.9); otherwise there is none.
+- For a declaration other than a parameter, `attrs` is three parts:
+  the own lists of the declarations before the defining one (all of them
+  when there is none), empty lists left out, preceded by their count;
+  `opt`, present when there is a defining declaration, with its own
+  list; the own lists of the declarations after it, as those before.
+  Which declaration holds a node is kept because Kiln's code generation
+  reads it:
+  - `annotate` with its multiplicity: `ann_attrs` (kiln_codegen
+    `annotate.rs:124`) walks the chain from the first declaration to the
+    emitted one (the definition), each declaration inheriting the
+    strings it does not have itself, so `annotate("a")` on each of two
+    declarations is one global annotation and twice on one declaration
+    two (Kiln keeps no `annotate` node on a declaration after the
+    definition, as clang 19, which warns "attribute declaration must
+    precede definition");
+  - `fn_attr` (kiln_codegen `new_delete.rs:169`) reads the first node of
+    a kind on the latest declaration that has one, so of two
+    `patchable_function_entry` nodes it reads the second when they are on
+    two declarations and the first when they are on one;
+  - `target_version` is read on the declarations up to the emitted one
+    (`target_version_so_far`, kiln_codegen `module.rs:2122`).
+
+  Other readers read the chain as a set or as one list
+  (`has_fn_attr`, `module.rs:2132`; `fn_attrs_of`, `class_b.rs:321`,
+  which sorts by location), and the `enable_if` lists of all
+  declarations are the same (differing lists declare overloads,
+  kiln_sema `enable_if.rs:75`); for them the parts say more than Kiln
+  reads, which makes a move between declarations a reported difference.
+  Within a list the order is kept: Kiln mangles the `enable_if`
+  conditions of a function in it (kiln_abi `mangle.rs:1904`).
+- For a parameter of a function, the lists are those of parameter *i*
+  (its `ParamData` `index`) of the declarations of the function's chain
+  except those at block scope (`decl_func::param_decls`), instantiated
+  declarations included: the declarations whose defaults `ParamData`
+  `default_arg` reads (§5.4). A declaration of a function has as many
+  parameters as every other, so each has a parameter *i*. `attrs` is two
+  parts: `opt`, present when the function has a defining declaration,
+  with the own list of its parameter *i*; then the own lists of the
+  other declarations' parameters *i*, in chain order, empty lists left
+  out, preceded by their count. The definition's is apart because Kiln's
+  function prolog reads `nonnull`, `align_value` and the parameter's
+  `annotate` on the definition's own parameter only (kiln_codegen
+  `class_b.rs:715`, `:718`, `annotate.rs:327`), while `noescape` and the
+  `nonnull` of the sanitiser read every declaration's
+  (`redecl_params`, `class_b.rs:591`; `ubsan.rs:2150`): a node moved
+  between two declarations that are not the definition says nothing
+  Kiln reads, and a node moved to or from the definition is a
+  difference. The attributes on a parameter of a block-scope declaration
+  are that declaration's own: they are written with it in its block
+  (§2.4), not in the entity's unit ("Hazards accepted for now"). A
+  parameter that is not at the position its `index` names in its
+  function's list makes the unit `Unaccounted("ParamData/index")`, and a
+  parameter of a declaration (not at block scope) that is not in the
+  function's chain `Unaccounted("ParamData/chain")`.
+
+A function with no defining declaration writes every list among the
+others: a program in which it has a definition differs from one in which
+it has none in `DeclMisc` `0-definition` already. A function
+of the definition class is written as one with none, so its unit does
+not depend on a use; its definition's attributes are the pattern's,
+which the template's unit holds, or an implicit member's, which no one
+writes. A definition instantiated outside its class (a friend's) is the
+class specialisation's (`spec/digest.md` §2.2), not the entity's.
 
 An instantiated declaration carries the attributes Kiln instantiated from
 its pattern; they are written as found.
@@ -5026,7 +5317,12 @@ statement, and its initialiser is the corresponding entry of `inits`.
 ### 10.5 Annotations
 
 A declaration's stream holds the annotations of every declaration of its
-chain, in chain order (`of_decl`). A class's stream then holds one list
+chain (§10.1), in chain order, as one list (`of_decl`); a parameter's are
+those of its parameters *i* (§10.1), as one list, the definition's not
+apart. Reflection reads them so: `annotations_of` reads every
+declaration's, first first, for an entity and for parameter *i* alike
+(kiln_sema `meta/annot.rs:147`), and nothing else reads them. A class's
+stream then holds one list
 for each base specifier of its definition, in order (`of_base`).
 
 ### `kiln_ast::annot::Annotation`
@@ -5952,9 +6248,14 @@ of a reported difference.
 
 ### Hazards accepted for now
 
-- **First spellings** (§4.4). A transformation that changes which of two
-  equivalent dependent spellings Kiln meets first can change a profile's
-  digest. It errs towards a reported difference.
+- **First spellings** (§4.4). A profile's bytes are a function of the
+  profile, so which of two equivalent spellings Kiln meets first does not
+  change them. What a spelling holds beyond its profile (the declarations
+  lookup found for an unresolved name in a dependent type or argument) is
+  in no row yet: a unit that writes a type which left such a fact out, or
+  such a profile directly, or whose key's arguments left one out, is
+  `Pending(Spelling)` until units write their own spellings (WP-041), so
+  the gap is reported, never hidden ("The mark", §4.4).
 - **Literals from builtin macros** (§7) are written by value: moving a
   line that uses `__LINE__` as a value is a reported difference.
 - **Overloaded member access** (§7): of the candidate set only the
@@ -5986,6 +6287,31 @@ of a reported difference.
   value that comes from a name is.
 - **Attribute order** (§10.1) is kept: reordering the attributes of one
   declaration is a reported difference.
+- **Parameter attributes of block-scope declarations** (§10.1, §2.4).
+  The entity's unit leaves out the declarations at block scope and the
+  block writes its own parameters' attributes, but Kiln's code generation
+  reads every redeclaration's, block scope included, for `noescape` and
+  the sanitiser's `nonnull` (kiln_codegen `class_b.rs:591`
+  `redecl_params`, `ubsan.rs:2150`), and reflection reads their
+  annotations (kiln_sema `meta/annot.rs:147`). A block-scope
+  redeclaration that adds `noescape` changes the calls after it and is
+  seen in the block's function only, not in the callers' units. Clang 19
+  rejects `noescape` that differs across declarations; Kiln accepts it.
+  Kiln is told (WP-100, "For Kiln").
+- **Parameters of nested declarators** (§10.1). An attribute on the
+  parameter of a function type that is itself a parameter's type
+  (`void f(void (*cb)(int *q __attribute__((noescape))))`) is kept
+  nowhere by Kiln: clang 19 mangles it into the type
+  (`_Z1fPFvU8noescapePiE`), Kiln's type has no node for it, and the
+  digest cannot see it. `differ/_/param-attr-nested-declarator` waits on
+  Kiln.
+- **A definition the chain leaves out** (§10.1). A function whose
+  definition is instantiated outside its class (a friend's), or of the
+  definition class, is written as having no defining declaration, so
+  the written declarations' lists are all "before". Kiln's `ann_attrs`
+  reads up to the emitted definition wherever the instantiation put it
+  in the chain; an `annotate` on a written declaration after that point
+  is then not emitted and the digest does not tell.
 - **Unchecked attribute nodes** (§10.1): a node without `CHECKED` makes
   its unit indeterminate. Kiln checks every attribute of a declaration's
   list and of an `AttributedStmt` by the end of the translation unit, so

@@ -1,1 +1,2 @@
+changed g(int)
 derived-changed g(int)::<exception_spec>

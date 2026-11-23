@@ -5,7 +5,9 @@
 // made by instantiation through its entity (`templ::instantiated_declaration`),
 // so g is of the deferrable class (an over-inclusion: Kiln resolves the
 // friend's specification at the redeclaration). The specification is in
-// the resolved unit on both sides, and differs there only.
+// the resolved unit on both sides, and differs there; g's own unit is
+// equal. `changed g(int)` is the friend in A's pattern, whose operand
+// names N (written since WP-036).
 #ifdef B
 #define N 0
 #else
