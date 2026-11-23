@@ -1,0 +1,2 @@
+# Item 7: an unnamed class named for linkage by a typedef, inside a relocated namespace: unnamed_by P under the mapped parent.
+relocate acme => :: legacy

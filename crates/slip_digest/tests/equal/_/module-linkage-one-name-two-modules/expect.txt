@@ -1,0 +1,4 @@
+# pending
+# needs: kiln
+# a named module from memory: docs/requests/KF5-module-sources-in-memory.md (WP-048)
+# finding (WP-048 step 6): expected to fail the key sweep, two entities under one key

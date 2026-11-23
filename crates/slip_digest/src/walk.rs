@@ -529,7 +529,8 @@ pub(crate) fn run_with<R>(
     }
     written.push(crate::units::order_unit(&mut w));
     crate::units::apply_taints(&w, &mut written);
-    let collisions = crate::units::mark_collisions(&mut written);
+    let collisions = crate::units::mark_collisions(&mut written)
+        + crate::keys::mark_mapped_collisions(&w, input, &mut written);
     let names = if options.names { crate::names::names(&w, &written) } else { Vec::new() };
     let (digests, totals) = crate::groups::build(&written, &options.detail);
     let causes = causes(&written);

@@ -1,0 +1,3 @@
+# Item 9 attempt: two functions of one content exchanged while the caller changes from f to g. Equal: B renamed by the table is A (an isomorphism).
+relocate f() => :: g
+relocate g() => :: f

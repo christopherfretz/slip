@@ -1,0 +1,3 @@
+removed f()
+added g()
+changed use()

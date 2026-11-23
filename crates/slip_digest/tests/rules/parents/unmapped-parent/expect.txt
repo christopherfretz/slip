@@ -1,0 +1,8 @@
+removed a::b
+removed a::b::c
+removed a::b::f()
+added x::y
+added x::y::c
+added x::y::f()
+changed use()
+changed <order>

@@ -1,0 +1,2 @@
+# Item 5: an unnamed namespace inside a relocated one.
+relocate acme => :: legacy

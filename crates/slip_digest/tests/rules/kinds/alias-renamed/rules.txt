@@ -1,0 +1,2 @@
+# digest-kinds §3.1 alias, renamed: uses of it are canonical and do not mention it.
+relocate T => :: V

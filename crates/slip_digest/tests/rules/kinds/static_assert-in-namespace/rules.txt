@@ -1,0 +1,3 @@
+# digest-kinds §3.1 static_assert: keyed by content; inside the namespace and outside it, mentioning a relocated class.
+# The rule is on the namespace only: every key under it maps through its parent.
+relocate acme => :: legacy
