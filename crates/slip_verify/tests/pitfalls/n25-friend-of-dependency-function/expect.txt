@@ -1,0 +1,10 @@
+# N25: the owned Mine befriends the dependency's legacy::peek by an
+# unqualified name. Moved into acme, the friend declaration first declares a
+# new acme::peek and legacy::peek loses its access: rejected where
+# legacy::peek<Mine> is instantiated (pre), silent where it is not (pre-2).
+# In bad-2 the new acme::peek and the staying legacy::peek have one key under
+# the rule: a collision (spec/digest.md §3.4), no place.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch indeterminate template <class> int legacy::peek(const type-parameter-0-0 &)

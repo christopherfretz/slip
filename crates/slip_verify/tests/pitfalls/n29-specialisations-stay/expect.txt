@@ -1,0 +1,11 @@
+# N29: owned specialisations of the dependency's templates, which must stay
+# in legacy: a partial specialisation on the moved Box (bad), a variable
+# template's explicit specialisation (bad-2), a function template's (bad-3),
+# one in the dependency's nested namespace legacy::lib (bad-4). Each bad tree
+# moves one of them into acme.
+# Caught only by a failed parse (spec/pitfalls.md §5).
+good:  verified
+bad:   not_parsed
+bad-2: not_parsed
+bad-3: not_parsed
+bad-4: not_parsed

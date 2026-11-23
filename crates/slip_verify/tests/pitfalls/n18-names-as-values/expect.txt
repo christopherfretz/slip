@@ -3,3 +3,12 @@
 good:   verified
 good-2: verified
 good-3: verified
+# pre-4, pre-5: the value is consumed at compile time, sizeof as an array
+# bound (pre-4) and the length deduced as a template argument (pre-5). Moved
+# with nothing more declared, the function differs (spec/digest.md §9,
+# "Whatever consumes such a value"); its only correct edit declares it
+# changed, which declared.txt, shared by the row, cannot.
+good-4: none the consumed length changes with the name: the function must be declared changed
+bad-4:  mismatch changed legacy::where() @ main.cpp:5
+good-5: none the consumed length changes with the name: the function must be declared changed
+bad-5:  mismatch changed legacy::where() @ main.cpp:4

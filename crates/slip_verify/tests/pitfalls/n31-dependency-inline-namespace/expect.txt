@@ -1,0 +1,5 @@
+# N31: owned code reopens the dependency's inline namespace legacy::v2.
+# bad moves Mine to plain acme: every use still compiles, but its parent is
+# now legacy, not legacy::v2, which the rule does not map.
+good: verified
+bad:  mismatch removed legacy::v2::Mine @ main.cpp:5

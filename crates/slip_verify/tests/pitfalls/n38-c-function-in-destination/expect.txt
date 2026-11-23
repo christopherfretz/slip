@@ -1,0 +1,4 @@
+# N38: the owned extern "C" c_fn moves into acme, which already declares it
+# with the same type: the two declarations are of one function
+# ([dcl.link]), so the move is no collision. Against false findings.
+good: verified
