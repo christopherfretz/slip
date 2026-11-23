@@ -804,7 +804,8 @@ impl Ctx<'_> {
         let path = latest_map_run(store, &plan)?.ok_or_else(|| {
             format!("{}: `slip parse` left no map run of plan {plan}", store.display())
         })?;
-        if Path::new(&printed) != path {
+        let real = |p: &Path| std::fs::canonicalize(p).ok();
+        if real(Path::new(&printed)).is_none() || real(Path::new(&printed)) != real(&path) {
             return Err(format!(
                 "`slip parse` printed the run {printed}, but the store's latest map run is {}",
                 path.display()
