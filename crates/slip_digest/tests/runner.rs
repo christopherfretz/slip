@@ -117,7 +117,7 @@ fn wp047_differ_derived_removed() {
 fn wp047_differ_derived_both_sides_changes() {
     let (a, b) = sides("derived/changes");
     let x = "X<int>::~X()";
-    let base = changed("X::~X<T>()");
+    let base = changed("c");
     for exact in [false, true] {
         assert!(ok(judge_differ(&set(&[base.clone(), d_changed(x)]), exact, &a, &b)).is_empty());
         for wrong in [d_added(x), d_removed(x)] {
@@ -155,7 +155,7 @@ fn wp047_exact_derived_names_the_unnamed() {
         "expected but not seen: []\nseen but not expected: [DerivedRemoved(\"g<int>()\")]"
     );
     let (a, b) = sides("derived/changes");
-    let e = err(judge_differ(&set(&[changed("X::~X<T>()")]), true, &a, &b));
+    let e = err(judge_differ(&set(&[changed("c")]), true, &a, &b));
     assert!(e.contains("seen but not expected: [DerivedChanged(\"X<int>::~X()\")]"), "{e}");
 }
 
@@ -174,7 +174,7 @@ fn wp047_derived_changed_as_before() {
     assert!(judge_differ(&set(&[changed("f()"), d_changed(G)]), false, &a, &b).is_ok());
     // Content.
     let (a, b) = sides("derived/changes");
-    let lines = set(&[changed("X::~X<T>()"), d_changed("X<int>::~X()")]);
+    let lines = set(&[changed("c"), d_changed("X<int>::~X()")]);
     assert!(ok(judge_differ(&lines, false, &a, &b)).is_empty());
     // Neither.
     let (a, b) = sides("derived/equal");

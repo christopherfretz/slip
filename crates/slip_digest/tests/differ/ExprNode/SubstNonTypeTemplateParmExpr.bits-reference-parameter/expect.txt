@@ -1,0 +1,5 @@
+added A
+removed A
+added A::g(type-parameter-1-0)
+removed A::g(type-parameter-1-0)
+changed p
