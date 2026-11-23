@@ -1,8 +1,8 @@
-#include "side.h"
 // std: c++26
-// §6 ContractSite `comment`: the predicate spelt otherwise.
+#include "side.h"
+// §6 ContractSite `comment`: the predicate's spelling.
 #ifdef B
-void f(int x) pre(x>0);
+void f(int x) { contract_assert( x > 0 ); }
 #else
-void f(int x) pre(x > 0);
+void f(int x) { contract_assert(x>0); }
 #endif

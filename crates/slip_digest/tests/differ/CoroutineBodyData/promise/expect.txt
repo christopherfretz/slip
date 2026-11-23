@@ -1,0 +1,4 @@
+changed ta::promise_type
+added ta::promise_type::promise_type()
+added ta::promise_type::promise_type(int)
+changed f(int)

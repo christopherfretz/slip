@@ -1,10 +1,10 @@
-#include "side.h"
 // std: c++26
-// §6 ContractSite `function`: `__PRETTY_FUNCTION__` prints the parameter's written type.
+#include "side.h"
+// §6 ContractSite `function`: `__PRETTY_FUNCTION__` names the template parameter.
 #ifdef B
-typedef int I;
-void f(I x) pre(x > 0);
+template <class U> void f(U) { contract_assert(true); }
+template void f<int>(int);
 #else
-typedef int I;
-void f(int x) pre(x > 0);
+template <class T> void f(T) { contract_assert(true); }
+template void f<int>(int);
 #endif

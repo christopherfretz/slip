@@ -1,0 +1,3 @@
+changed G
+removed G::operator tk() &&
+changed f()

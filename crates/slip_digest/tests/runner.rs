@@ -77,11 +77,12 @@ fn wp047_derived_differences() {
 #[test]
 fn wp047_differ_derived_added() {
     let (a, b) = sides("derived/appears");
-    let base: [Expect; 0] = [];
+    // `f`'s body names `g<int>` on B only: `f` changes (WP-034).
+    let base = [changed("f()")];
     for exact in [false, true] {
-        assert!(ok(judge_differ(&set(&[d_added(G)]), exact, &a, &b)).is_empty());
+        assert!(ok(judge_differ(&set(&[changed("f()"), d_added(G)]), exact, &a, &b)).is_empty());
         // The wrong way round, or on an instantiation both have.
-        let e = err(judge_differ(&set(&[d_removed(G)]), exact, &a, &b));
+        let e = err(judge_differ(&set(&[changed("f()"), d_removed(G)]), exact, &a, &b));
         assert!(e.contains("DerivedRemoved(\"g<int>()\")"), "{e}");
     }
     let (a2, b2) = sides("derived/equal");
@@ -99,11 +100,14 @@ fn wp047_differ_derived_added() {
 fn wp047_differ_derived_removed() {
     let (a, b) = sides("derived/disappears");
     for exact in [false, true] {
-        assert!(ok(judge_differ(&set(&[d_removed(G)]), exact, &a, &b)).is_empty());
-        let e = err(judge_differ(&set(&[d_added(G)]), exact, &a, &b));
+        assert!(ok(judge_differ(&set(&[changed("f()"), d_removed(G)]), exact, &a, &b)).is_empty());
+        let e = err(judge_differ(&set(&[changed("f()"), d_added(G)]), exact, &a, &b));
         assert!(e.contains("expected but not seen: [DerivedAdded(\"g<int>()\")]"), "{e}");
     }
-    assert_eq!(ok(judge_differ(&set(&[]), false, &a, &b)), ["derived-removed g<int>()"]);
+    assert_eq!(
+        ok(judge_differ(&set(&[changed("f()")]), false, &a, &b)),
+        ["derived-removed g<int>()"]
+    );
 }
 
 /// An instantiation both sides have that changes: `derived-changed`
@@ -142,10 +146,10 @@ fn wp047_differ_derived_both_sides_equal() {
 #[test]
 fn wp047_exact_derived_names_the_unnamed() {
     let (a, b) = sides("derived/appears");
-    let e = err(judge_differ(&set(&[]), true, &a, &b));
+    let e = err(judge_differ(&set(&[changed("f()")]), true, &a, &b));
     assert_eq!(e, "expected but not seen: []\nseen but not expected: [DerivedAdded(\"g<int>()\")]");
     let (a, b) = sides("derived/disappears");
-    let e = err(judge_differ(&set(&[]), true, &a, &b));
+    let e = err(judge_differ(&set(&[changed("f()")]), true, &a, &b));
     assert_eq!(
         e,
         "expected but not seen: []\nseen but not expected: [DerivedRemoved(\"g<int>()\")]"
@@ -163,11 +167,11 @@ fn wp047_derived_changed_as_before() {
     // Presence.
     let (a, b) = sides("derived/appears");
     assert_eq!(
-        ok(judge_differ(&set(&[d_changed(G)]), false, &a, &b)),
+        ok(judge_differ(&set(&[changed("f()"), d_changed(G)]), false, &a, &b)),
         ["derived-added g<int>() (written derived-changed)"]
     );
     let (a, b) = sides("derived/disappears");
-    assert!(judge_differ(&set(&[d_changed(G)]), false, &a, &b).is_ok());
+    assert!(judge_differ(&set(&[changed("f()"), d_changed(G)]), false, &a, &b).is_ok());
     // Content.
     let (a, b) = sides("derived/changes");
     let lines = set(&[changed("X::~X<T>()"), d_changed("X<int>::~X()")]);
@@ -178,7 +182,7 @@ fn wp047_derived_changed_as_before() {
     assert!(e.contains("expected but not seen: [DerivedChanged(\"g<int>()\")]"), "{e}");
     // Under the directive, presence is not `derived-changed`.
     let (a, b) = sides("derived/appears");
-    assert!(judge_differ(&set(&[d_changed(G)]), true, &a, &b).is_err());
+    assert!(judge_differ(&set(&[changed("f()"), d_changed(G)]), true, &a, &b).is_err());
 }
 
 // --- demand ----------------------------------------------------------------
