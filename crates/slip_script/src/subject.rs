@@ -177,13 +177,17 @@ pub trait Subject {
     fn unresolved_named(&self, identifier: &[u8]) -> Option<u64>;
 
     // What the effects need (§7). WP-088 is their only caller.
-    /// §5.4: the tier, 0 or 1, of `r` when `r` is exactly a range that
-    /// `name_range` or `extent` gives for some value of the unit (the only
-    /// queries that return a range, §6.6); `None` for every other range,
-    /// including one that lies inside such a range. `None` makes `replace`
-    /// refuse with `invalid_handle` (§7.3 rule 2, §5.2 rule 2); any other
-    /// number is a host failure.
-    fn tier(&self, r: Range) -> Option<u8>;
+    /// §5.4, §7.6: the tiers at which the unit reaches `r` when `r` is
+    /// exactly a range that `name_range` or `extent` gives for some value
+    /// of the unit (the only queries that return a range, §6.6), as
+    /// `reached[t]` for tier `t`; `None` for every other range, including
+    /// one that lies inside such a range. Both can be true: one range can
+    /// be reached at tier 0 by one value and at tier 1 by another (a
+    /// header included twice, a name that is a macro in one inclusion and
+    /// a function in the other). `None` makes `replace` refuse with
+    /// `invalid_handle` (§7.3 rule 2, §5.2 rule 2); `Some([false, false])`,
+    /// the empty set, is a host failure.
+    fn tiers(&self, r: Range) -> Option<[bool; 2]>;
     /// §7.2 rule 2: the identifiers from the outermost named scope to `e`; None: §7.1 rule 4.
     /// `Some` must hold one identifier or more, none empty, the last
     /// `identifier(e)`; anything else is a host failure.

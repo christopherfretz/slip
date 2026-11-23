@@ -485,8 +485,8 @@ files, the front-end check, and the tool versions.
   entry is excluded as `malformed_entry` (several inputs).
 - Kiln's front-end library entry writes no side output
   (`-ftime-trace`, `-fconstexpr-report=`, `-MD`, …: `spec/model.md` §8.4):
-  its job runs with `no_side_outputs` (Kiln `kiln_driver/src/front_end.rs:537`,
-  `args.rs:740-744`), under which the `std` module cache is only read, a
+  its job runs with `no_side_outputs` (Kiln `kiln_driver/src/front_end.rs:547`,
+  `args.rs:747-751`), under which the `std` module cache is only read, a
   valid entry used and nothing built or pruned. The parse of a unit that
   does `import std` therefore depends on whether a cache entry already
   exists on the host, which is not an input of the shard. `KilnCheck` does

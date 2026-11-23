@@ -51,10 +51,15 @@ working tree, and a command that opens it exclusively refuses to run
 (`spec/edits.md` §7.3).
 
 A run of a transform takes a round of its own for both of its phases
-(`spec/edits.md` §8): the least number for which the plan has no shard
-directory of either phase and no transform run record. Round 0 is
-therefore the round of `slip parse`, and `slip verify` refuses a round
-that a transform's run took (§8.7).
+(`spec/edits.md` §8): one more than the greatest round the plan has
+taken, and at least 1. A round `r` is taken by a shard directory
+`shards/<plan>/map.<r>/` or `verify.<r>/` (a directory: a file of that
+name takes nothing) or a transform run record `transform.<r>.<ns>.run`,
+`r` and `ns` in canonical decimal. Round 0 is therefore never a
+transform's: it is the round of `slip parse`, and of the pre shards of
+`slip verify`. A round number is not reused while anything of a later
+round remains, and `slip verify` refuses a round that a transform's run
+took (§8.7).
 
 - **Publishing.** A file is written under `tmp/` with a name unique to the
   writing process and moved to its final name with one rename. A reader never
@@ -194,14 +199,14 @@ For a transform's run (M2; the files are `spec/edits.md` §10.4):
 ```rust
 pub enum Object { Transform, EditSet, Overlay, Result }      // transforms/*.trfm, edits/*.edts, overlays/*.ovly, results/*.rslt
 impl Store {
-    pub fn publish_object(&self, object: Object, bytes: &[u8]) -> Result<Digest, StoreError>;   // validated; named by content id
+    pub fn publish_object(&self, object: Object, bytes: &[u8]) -> Result<Digest, StoreError>;   // frame-validated; named by content id
     pub fn read_object(&self, object: Object, id: &Digest) -> Result<Option<Vec<u8>>, StoreError>;
     pub fn find_object(&self, object: Object, hex_prefix: &str) -> Result<Vec<Digest>, StoreError>;   // as `find_plan`
     pub fn object_path(&self, object: Object, id: &Digest) -> PathBuf;
     pub fn publish_blob(&self, bytes: &[u8]) -> Result<Digest, StoreError>;                    // blobs/<content digest>
     pub fn read_blob(&self, id: &Digest) -> Result<Option<Vec<u8>>, StoreError>;               // `Invalid` if the bytes do not hash to `id`
     pub fn blob_path(&self, id: &Digest) -> PathBuf;
-    pub fn next_round(&self, plan: &Digest) -> Result<u64, StoreError>;                        // §2, "takes a round of its own"
+    pub fn next_round(&self, plan: &Digest) -> Result<u64, StoreError>;                        // §2: greatest round taken + 1, at least 1
     pub fn is_transform_round(&self, plan: &Digest, round: u64) -> Result<bool, StoreError>;   // the round has a transform run record
     pub fn publish_transform_run(&self, plan: &Digest, round: u64, started_unix_ns: u64, bytes: &[u8]) -> Result<PathBuf, StoreError>;
     pub fn latest_run_of_round(&self, plan: &Digest, phase: Phase, round: u64) -> Result<Option<Vec<u8>>, StoreError>;
@@ -210,6 +215,22 @@ impl Store {
 }
 // StoreError gains UnfinishedWrite(PathBuf): an exclusive `open` of a store that holds `write.journal`.
 ```
+
+`publish_object` **frame-validates**: the bytes must be a container of
+the object's kind, version 1, that passes `spec/model.md` §5 rule 5
+(magic, kind, version, length, trailer, section framing); the sections
+are not decoded, since `slip_exec` does not know their types. Anything
+else is `Invalid` and nothing is written. `publish_transform_run` checks
+the frame of a `RUNT` container the same way and decodes its section
+`run` (`spec/edits.md` §10.6) only as far as `started_unix_ns`: `plan`,
+`round` and `started_unix_ns` must be the ones given (`Invalid`
+otherwise); the full check waits for the `RUNT` decoder of
+`docs/wp/WP-061.md`. An object or a blob is named by its content, so
+its file is left untouched when it already holds that content (a
+regular file with those bytes); anything else at the name (other bytes,
+a symbolic link) is replaced by the publish of §2.1, and a directory
+there is an `Io` error. Pre-image blobs are published just before the
+journal (`spec/edits.md` §7.3), and recovery restores from them.
 
 `latest_run_of_round` is `latest_run` over the names of one round: it is
 how `reduce` and `check`, run as stages, find the observers the round's
@@ -513,8 +534,9 @@ record, with its attempt number.
   `Malformed` at offset 0. The observer is checked by `decode_observer`
   (`spec/model.md` §5.5), the phase by `decode_phase`. A `PostImage` tag
   other than 0 and 1 is `Malformed` at the tag; root maps that are not
-  strictly ascending by `subject` are `Invalid` at the first that is out
-  of order. A byte after the last field is `Malformed` at that byte
+  strictly ascending by `subject` are `Malformed` at the first byte of
+  the first root map out of order (`spec/model.md` §2: a sorted list in
+  another order). A byte after the last field is `Malformed` at that byte
   (`Decoder::finish`).
 - **Frames.** `read_frame` returns `None` only if the input ends before
   the first byte of a length; an end inside the length or the payload is
@@ -700,7 +722,7 @@ impl Options { pub fn new(jobs: usize, admission: admission::Config) -> Options;
 pub struct Summary { pub run: RunRecord, pub run_path: PathBuf, pub statuses: [u64; 4], pub ends: [u64; 5],
                      pub outcomes: Vec<ObserverOutcome> }
 pub struct ObserverOutcome { pub observer: Digest, pub status: Status, pub message: String }
-pub enum PoolError { Store(StoreError), Io(io::Error), Cancelled }   // Display, Error, From<StoreError>, From<io::Error>
+pub enum PoolError { Store(StoreError), Io(io::Error), Refused(&'static str), Cancelled }   // Display, Error, From<StoreError>, From<io::Error>
 pub fn run(store: &Store, plan_id: &Digest, observers: &[Observer], phase: Phase, round: u64,
            worker: &WorkerCommand, options: &Options, tokens: &jobserver::Pool, sampler: &dyn process::Sampler)
            -> Result<Summary, PoolError>;
@@ -711,6 +733,15 @@ pub fn run_with(store: &Store, plan_id: &Digest, observers: &[Observer], phase: 
                 -> Result<Summary, PoolError>;
 pub fn cleanup_on_signal(store: &Store) -> impl FnOnce() + Send + 'static;   // §7.1
 ```
+
+`run_with` refuses, before anything is read or started, the three
+combinations the task refuses (§5.2: a map phase with a `post`, a verify
+phase with a `transform`, a verify phase without a `post`):
+`PoolError::Refused`, whose `Display` is the text naming the combination.
+It is a mistake of the caller, not bad input: a command maps it to the
+internal-error status (§8.5, 70), not to the `Input` status of `Store`
+and `Io`. `run` is `run_with` with neither field, so `run` with phase
+`verify` is refused.
 
 ## 6. Memory admission
 
@@ -1337,7 +1368,7 @@ read, validated and published (`Store::publish_declared`; the container
 of `Declared::none()` when there is no `--declared`); the image is made;
 the store is asked for the plan's latest map run (`Store::latest_run`);
 the selection is made as for `parse`, with the same warning; the phase is
-run (`pool::run`, phase `verify`); the report is made and printed.
+run (`pool::run_with`, phase `verify`, with the `post` of the round); the report is made and printed.
 
 Input errors (status 3), each `slip: verify: <message>` unless a form of
 §8.5 applies:

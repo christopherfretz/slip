@@ -15,7 +15,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use slip_cdb::check::FrontEndCheck;
 use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::source::FileOrigin;
-use slip_kiln::{KilnCheck, Unit, parse_observer, parse_observer_with};
+use slip_kiln::{KilnCheck, ParseOptions, Unit, parse_observer, parse_observer_with};
 use slip_model::hash::content_digest;
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard, Status};
 
@@ -565,7 +565,7 @@ fn s8_4_with_closure_sees_the_unit() {
     let header = f.write("h.h", "int helper(int);\n");
     let main = f.write("main.cpp", "#include \"h.h\"\nint wanted(int x) { return helper(x); }\n");
     let o = f.observer(".", &["c++", "main.cpp"]);
-    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, |unit| {
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
         let ast = unit.ast();
         let found = ast.decls.ids().any(|d| {
             let node = ast.decls.get(d);
@@ -604,13 +604,17 @@ fn s8_4_with_closure_runs_when_a_parse_happened() {
     let f = Fixture::new("with-status");
     f.write("bad.cpp", "int x = nope;\n");
     let o = f.observer(".", &["c++", "bad.cpp"]);
-    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, errors_of).unwrap();
+    let (shard, seen) =
+        parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), errors_of).unwrap();
     assert_eq!(shard.outcome.status, Status::Diagnosed);
     assert_eq!(seen, Some(1));
     for argv in [&["c++", "-std=c++99x", "bad.cpp"][..], &["c++", "-E", "bad.cpp"][..]] {
         let o = f.observer(".", argv);
         let (shard, seen) =
-            parse_observer_with(&o, Phase::Map, 3, |_| -> u8 { panic!("not called") }).unwrap();
+            parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |_| -> u8 {
+                panic!("not called")
+            })
+            .unwrap();
         assert_eq!(shard.outcome.status, Status::Rejected, "{argv:?}");
         assert_eq!(seen, None, "{argv:?}");
     }
@@ -622,9 +626,13 @@ fn s8_4_with_panicking_closure_is_err() {
     let f = Fixture::new("with-panic");
     f.write("main.cpp", "int x;\n");
     let o = f.observer(".", &["c++", "main.cpp"]);
-    let e = parse_observer_with(&o, Phase::Map, 3, |_| -> u8 { panic!("boom {}", 7) }).unwrap_err();
+    let e = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |_| -> u8 {
+        panic!("boom {}", 7)
+    })
+    .unwrap_err();
     assert_eq!(e, "the front end panicked: boom 7");
-    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, errors_of).unwrap();
+    let (shard, seen) =
+        parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), errors_of).unwrap();
     assert_eq!((shard.outcome.status, seen), (Status::Ok, Some(0)));
 }
 
@@ -695,7 +703,7 @@ fn s8_4_run_written_refs_and_decl_extents_are_off() {
          int use(n::A a) { return n::g(a) + a.v; }\n",
     );
     let o = f.observer(".", &["c++", "main.cpp"]);
-    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, |unit| {
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
         let ast = unit.ast();
         (
             ast.written_refs.is_on(),
@@ -707,4 +715,119 @@ fn s8_4_run_written_refs_and_decl_extents_are_off() {
     .unwrap();
     assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
     assert_eq!(seen, Some((false, 0, false, 0)));
+}
+
+/// A source with one object-like and one function-like macro, and a
+/// string literal with a suffix (`docs/wp/WP-101.md`, "Tests").
+const MACROS: &str = "#define ONE 1\n#define F(x) (x)\n\
+                      unsigned long long operator\"\"_x(const char *, decltype(sizeof 0));\n\
+                      int bar = ONE;\nint b = F(bar) + 2;\nauto s = \"ab\"_x;\n";
+
+/// The offset in `MACROS` of the first `needle`.
+fn at(needle: &str) -> u32 {
+    u32::try_from(MACROS.find(needle).unwrap()).unwrap()
+}
+
+// §8.4 the run (WP-101): with `ParseOptions::pp_record` the closure reads
+// Kiln's preprocessing record, which has each expansion of the main file
+// naming its macro; without it there is no record.
+#[test]
+fn s8_4_run_pp_record_on_request() {
+    let f = Fixture::new("pp-record");
+    f.write("main.cpp", MACROS);
+    let o = f.observer(".", &["c++", "-std=c++17", "main.cpp"]);
+    let mut on = ParseOptions::default();
+    on.pp_record = true;
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, on, |unit| {
+        let (sm, ast) = (unit.sm(), unit.ast());
+        let main = unit.main_file().unwrap();
+        let rec = unit.pp_record()?;
+        let names: Vec<(String, String)> = rec
+            .exps()
+            .iter()
+            .filter(|e| sm.offset_of(e.name).is_some_and(|(file, _)| file == main))
+            .map(|e| {
+                let by_def = rec.def(e.def).def.name().as_str(ast.symbols()).to_owned();
+                let (_, lo) = sm.offset_of(e.name).unwrap();
+                let written = sm.text(main)[lo as usize..].split(['(', ';']).next().unwrap();
+                (by_def, written.trim().to_owned())
+            })
+            .collect();
+        Some(names)
+    })
+    .unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    let both = |n: &str| (n.to_owned(), n.to_owned());
+    assert_eq!(seen, Some(Some(vec![both("ONE"), both("F")])));
+
+    let (off, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        unit.pp_record().is_none()
+    })
+    .unwrap();
+    assert_eq!(seen, Some(true), "the record is off by default");
+    assert_eq!(off, shard, "the shard does not depend on the record");
+}
+
+// WP-101 decision 1: Kiln's editable ranges (`SourceManager::
+// editable_file_range`) and `kiln::lex::token_end`, reached through
+// `slip_kiln` and read as Kiln means them. The expected answers are those
+// of Kiln's `kiln_pp/tests/editable_range.rs` (`file_tokens_and_bad_ranges`,
+// `cpp_replace_whole_expansions_only`, `cpp_subst_argument_ranges`) and
+// `kiln_lex/tests/token_end.rs`.
+#[test]
+fn s8_4_run_editable_ranges_and_token_end_through_slip_kiln() {
+    use slip_kiln::kiln::lex::{Interner, LexOptions, Std, token_end};
+    use slip_kiln::kiln::source::{ExpansionKind, Span};
+
+    let f = Fixture::new("editable");
+    f.write("main.cpp", MACROS);
+    let o = f.observer(".", &["c++", "-std=c++17", "main.cpp"]);
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        let sm = unit.sm();
+        let main = unit.main_file().unwrap();
+        let text = |r: Option<(_, u32, u32)>| {
+            r.map(|(file, lo, hi)| {
+                assert_eq!(file, main);
+                sm.text(main)[lo as usize..hi as usize].to_owned()
+            })
+        };
+        // A range wholly in the file is that range.
+        let file_range = Span::new(sm.loc(main, at("int bar")), sm.loc(main, at(" = ONE")));
+        let whole = (sm.editable_range(file_range) == Some(file_range))
+            .then(|| text(sm.editable_file_range(file_range)));
+        // `bar` as `F`'s argument: the macro-argument entry spelled where
+        // the argument is written.
+        let written = sm.loc(main, at("bar) + 2"));
+        let arg = sm
+            .expansion_entries(0)
+            .find(|e| e.info.kind == ExpansionKind::MacroArg && e.info.spelling == written)
+            .expect("the argument's entry")
+            .info
+            .base;
+        // Begins inside `F`'s expansion (after its `(`), ends outside it.
+        let across = Span::new(arg, sm.loc(main, at(";\nauto")));
+        // The argument's tokens: its bytes in the file.
+        let in_arg = Span::new(arg, arg.with_offset(3));
+        let lex = LexOptions::new(Std::Cxx17);
+        let interner = Interner::new();
+        let end = |needle: &str| {
+            let lo = sm.loc(main, at(needle));
+            token_end(sm, &interner, lo, lex).and_then(|e| sm.same_entry_distance(lo, e))
+        };
+        (
+            whole,
+            text(sm.editable_file_range(across)),
+            text(sm.editable_file_range(in_arg)),
+            end("bar = ONE"),
+            end("\"ab\"_x"),
+        )
+    })
+    .unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    let (whole, across, in_arg, ident, literal) = seen.unwrap();
+    assert_eq!(whole, Some(Some("int bar".to_owned())));
+    assert_eq!(across, None, "a range from inside an expansion to outside it");
+    assert_eq!(in_arg, Some("bar".to_owned()));
+    assert_eq!(ident, Some(3), "an identifier");
+    assert_eq!(literal, Some(6), "a string literal with its suffix");
 }
