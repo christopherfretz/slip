@@ -878,7 +878,9 @@ kinds of piece:
 | spelled entity | `spell(e)` | a name that denotes `e` at the place the code is put (§7.2) |
 
 1. `text` accepts any bytes.
-2. `copy(r)` throws `invalid_handle` for a null range. `copy(x)` is
+2. `copy(r)` throws `invalid_handle` for a null range. The copy of an
+   empty range is the empty code, as `text("")` is: the bytes of an empty
+   range are none, so it is no piece. `copy(x)` is
    `copy(extent_of(x))` and so throws `invalid_handle` when the extent is
    null.
 3. **Copy is by reference, not by value.** Two transforms, or two parts of

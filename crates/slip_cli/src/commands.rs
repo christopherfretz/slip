@@ -196,6 +196,9 @@ fn parse(a: &ParseArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8> 
         Err(PoolError::Cancelled) => return Err(Failure::Interrupted),
         Err(PoolError::Store(e)) => return Err(store_failure(store.root(), &e)),
         Err(PoolError::Io(e)) => return Err(Failure::Input(format!("parse: {e}"))),
+        Err(PoolError::Refused(what)) => {
+            unreachable!("parse runs the map phase with neither field of protocol 2: {what}")
+        }
     };
 
     print_summary(&summary, &selected, out);
