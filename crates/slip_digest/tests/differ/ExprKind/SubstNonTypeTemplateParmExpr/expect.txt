@@ -4,3 +4,6 @@
 changed A
 added A::g(type-parameter-1-0)
 removed A::g(type-parameter-1-0)
+# the full walk of the substituted node (in an instantiated initialiser,
+# pending demand in a pair test) is expr_dep_tests::
+# an_instantiated_initialiser_writes_the_substituted_parameter

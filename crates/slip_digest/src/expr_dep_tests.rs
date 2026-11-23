@@ -4,7 +4,7 @@
 
 use slip_kiln::kiln::ast::ExprId;
 use slip_kiln::kiln::ast::decl::DeclKind;
-use slip_kiln::kiln::ast::expr::ExprKind;
+use slip_kiln::kiln::ast::expr::{ExprDeps, ExprKind};
 
 use crate::decl_func::tests::{of_kind, with_walk};
 use crate::stream::{FlagWord, Stream};
@@ -275,4 +275,76 @@ fn param_ref_writes_depth_and_position() {
         assert_ne!(a, b, "depth");
         assert_ne!(a, c, "position");
     });
+}
+
+/// The bytes of the full walk (§7) of every non-dependent
+/// `BinaryOperator` of `src`: the initialisers of an instantiation's
+/// static data member, and of a pattern that names no parameter.
+fn instantiated_sums(src: &str) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    with_walk(src, |w| {
+        for e in of_expr_kind(w, ExprKind::BinaryOperator) {
+            if !w.ast.exprs.get(e).deps().contains(ExprDeps::INSTANTIATION) {
+                let mut s = Stream::new();
+                crate::expr::child(w, &mut s, e);
+                out.push(s.as_bytes().to_vec());
+            }
+        }
+    });
+    out
+}
+
+/// Item 7a (WP-036 round 2): the full walk's `SubstNonTypeTemplateParmExpr`
+/// rows, in an instantiated initialiser (`A<3>::v`, which pair tests
+/// cannot reach while instantiations are pending demand). Its kind: the
+/// substituted `N + 1` is not the literal `3 + 1`; its `a`: the parameter
+/// replaced, `N` against `M` with one replacement.
+#[test]
+fn an_instantiated_initialiser_writes_the_substituted_parameter() {
+    let subst = instantiated_sums(
+        "template<int N> struct A { static constexpr int v = N + 1; };\nint k = A<3>::v;\n",
+    );
+    let literal = instantiated_sums(
+        "template<int N> struct A { static constexpr int v = 3 + 1; };\nint k = A<3>::v;\n",
+    );
+    assert_eq!(subst.len(), 1, "the instantiation's initialiser");
+    assert!(!literal.is_empty(), "the pattern's, shared by the instantiation");
+    assert!(!literal.contains(&subst[0]), "ExprKind/SubstNonTypeTemplateParmExpr");
+    let n = instantiated_sums(
+        "template<int N, int M> struct A { static constexpr int v = N + 1; };\nint k = A<3, 3>::v;\n",
+    );
+    let m = instantiated_sums(
+        "template<int N, int M> struct A { static constexpr int v = M + 1; };\nint k = A<3, 3>::v;\n",
+    );
+    assert_eq!((n.len(), m.len()), (1, 1));
+    assert_ne!(n[0], m[0], "ExprNode/SubstNonTypeTemplateParmExpr.a");
+}
+
+/// Item 7b: `TemplateTables` `size_of_pack_partial` in the full walk (§7,
+/// `templ::expr_maps`): the partly substituted arguments of a `sizeof...`
+/// are written: `int` against `long` before the pack, one sum
+/// `1 + sizeof...(U)`, so only the row tells them apart.
+#[test]
+fn size_of_pack_partial_arguments_are_written() {
+    let walk = |src: &str| {
+        let mut out = Vec::new();
+        with_walk(src, |w| {
+            // Kiln keys the row by the sum it builds (`kiln_sema`
+            // `templ/pack.rs:954`), `1 + sizeof...(U)`.
+            for e in of_expr_kind(w, ExprKind::BinaryOperator) {
+                if w.ast.templates.size_of_pack_partial.contains(e) {
+                    let mut s = Stream::new();
+                    crate::expr::child(w, &mut s, e);
+                    out.push(s.as_bytes().to_vec());
+                }
+            }
+        });
+        out
+    };
+    let head = "template <unsigned long N> struct Z {};\n\
+                template <class... T> using A = Z<sizeof...(T)>;\n";
+    let one = walk(&format!("{head}template <class... U> void g(A<int, U...>);\n"));
+    let two = walk(&format!("{head}template <class... U> void g(A<long, U...>);\n"));
+    assert_eq!((one.len(), two.len()), (1, 1), "one partly substituted sizeof... each");
+    assert_ne!(one[0], two[0]);
 }

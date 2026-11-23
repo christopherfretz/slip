@@ -1,6 +1,2 @@
-# pending
-# needs: spelling
-# Kiln profiles sizeof...(int, U...) and sizeof...(long, U...) alike
-# (partial arguments are not in the profile): one key (WP-036 item 1a);
-# the written alias arguments are a spelling of the unit (WP-041)
-changed g(Z<1UL + sizeof...(U)>)
+added g(Z<2UL + sizeof...(U)>)
+removed g(Z<1UL + sizeof...(U)>)

@@ -356,7 +356,7 @@ fn partial_spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &PartialSpecInfo) {
     w.restore_types(types);
     w.unit = saved;
     if left_out {
-        s.absorb(Some(Cause::Pending(crate::Area::Spelling)));
+        s.absorb(Some(Cause::Pending(Area::Spelling)));
     }
 }
 

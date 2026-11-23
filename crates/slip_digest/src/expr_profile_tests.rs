@@ -25,12 +25,16 @@ use crate::Input;
 use crate::stream::Stream;
 use crate::walk::Walk;
 
-/// Every test directory (one holding `expect.txt`) under `tests/<root>`.
+/// Every test directory (one holding `expect.txt`, `t.cpp` or `a.cpp`)
+/// under `tests/<root>`.
 fn test_dirs(root: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(root) else { return };
     let mut subs: Vec<PathBuf> = rd.filter_map(|d| Some(d.ok()?.path())).collect();
     subs.sort();
-    if subs.iter().any(|p| p.file_name().is_some_and(|n| n == "expect.txt")) {
+    if subs
+        .iter()
+        .any(|p| p.file_name().is_some_and(|n| n == "expect.txt" || n == "t.cpp" || n == "a.cpp"))
+    {
         out.push(root.to_path_buf());
         return;
     }
@@ -509,5 +513,29 @@ fn the_f1_pairs_are_pending_spelling() {
             assert!(h[0].contains(&SPELLING), "{dir} side {sides}: {:?}", h[0]);
         });
         assert_eq!(sides, 2, "{dir}");
+    }
+}
+/// Item 4 (F-E): two declarations whose signatures hold a lambda are two
+/// templates in Kiln (a kind it profiles as unique, `profile_expr.rs:860`)
+/// and one key here, whose bytes are the lambda's spelling (walked in
+/// full): the key is a `collision`, never one entity in silence.
+#[test]
+fn lambdas_in_signatures_collide() {
+    for (src, name) in [
+        (
+            "template<int N> void foo(const char(*)[([]{}, N)]);\n\
+             template<int N> void foo(const char(*)[([]{}, N)]);\n",
+            "foo(",
+        ),
+        (
+            "template<class T> void spam(decltype([]{})(*)[sizeof(T)]);\n\
+             template<class T> void spam(decltype([]{})(*)[sizeof(T)]);\n",
+            "spam(",
+        ),
+    ] {
+        let all = digest_all(src);
+        let units: Vec<_> = all.iter().filter(|(_, n, _)| n.starts_with(name)).collect();
+        assert_eq!(units.len(), 1, "{all:?}");
+        assert_eq!(units[0].2, [crate::Cause::Collision], "{name}");
     }
 }
