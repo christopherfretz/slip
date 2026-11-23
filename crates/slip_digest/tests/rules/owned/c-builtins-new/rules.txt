@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. An extern "C" function declared in the moved namespace, a builtin and the implicit operator new and delete (no location in a file: dependency entities).
+relocate legacy => :: acme

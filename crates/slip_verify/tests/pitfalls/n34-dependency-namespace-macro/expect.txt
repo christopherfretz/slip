@@ -3,9 +3,13 @@
 # moves to acme too; dep/ is byte-identical in every tree.
 # pre (declared.txt, the merged rule) and pre-2 (declared-2.txt, one rule per
 # moved entity) are the same subject. Under the merged rule acme::Dep maps
-# back onto legacy::Dep: nothing in spec/verify.md §2.1 tells a dependency's
-# entity from an owned one, so bad meets its line only once the spec does
-# (docs/wp/WP-105.md, handback).
+# back onto legacy::Dep unless the walk knows dep/ is read-only:
+# spec/verify.md §2.1 "Rules rename owned entities only", built by WP-110
+# (Options::read_only). The walk keeps acme::Dep unmapped once the runner
+# gives Declared.files (dep/ read-only) and the verify job passes
+# ReadOnly::files(&ReadOnlyFiles::new(declared.files(), ...)) to the walk
+# (WP-056); crates/slip_digest/tests/rules/owned/n34-* are the same edits
+# at the walk.
 good:   verified
 bad:    mismatch removed legacy::Dep @ dep/dep.h:3
 good-2: verified

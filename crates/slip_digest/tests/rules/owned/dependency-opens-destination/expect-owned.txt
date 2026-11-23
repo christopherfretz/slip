@@ -1,0 +1,8 @@
+# Every file owned (the old behaviour): the dependency's acme is mapped onto
+# legacy, and its members differ from themselves.
+changed use()
+added acme::Theirs
+added acme::g()
+removed acme
+removed acme::Theirs
+removed acme::g()

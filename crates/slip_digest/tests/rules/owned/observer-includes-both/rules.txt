@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. Observer 1 of 2: an entity the owned file defines and dep.h declares; this observer includes both, so the moved Both is a second entity mapped onto the one dep.h declares.
+relocate legacy => :: acme

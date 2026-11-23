@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round. The review's probe for mutation M1: a namespace only the dependency opens (acme::mid in the post-image) between an owned namespace and its owned member: the member's view is passed up the whole chain.
+relocate legacy => :: acme

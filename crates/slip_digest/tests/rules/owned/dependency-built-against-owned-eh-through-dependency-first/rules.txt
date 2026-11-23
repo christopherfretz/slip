@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round. Review finding F2: a dependency compiled against an owned header; the dependency throws legacy::UserData, which the post-image catches as acme::UserData (clang++-19: caught, then NOT caught). user_types.h is entered first through dep.h: read-only for this translation unit.
+relocate legacy => :: acme
