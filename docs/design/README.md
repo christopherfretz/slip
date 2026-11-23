@@ -22,6 +22,7 @@ corrected by the Kiln agent.
 | [04-macros-and-configurations.md](04-macros-and-configurations.md) | Macro tiers, conditional compilation, coverage accounting, research tracks |
 | [05-kiln-interface.md](05-kiln-interface.md) | The Slip/Kiln boundary and the extensions requested from Kiln |
 | [06-engineering-plan.md](06-engineering-plan.md) | Crates, specs, validation harness, performance tracking, milestones, work breakdown |
+| [07-reference-transforms.md](07-reference-transforms.md) | Design input: the transforms the general API must express (feature-flag removal in three forms), what each demands, how a decision crosses translation units |
 
 ## Goals, in priority order
 
