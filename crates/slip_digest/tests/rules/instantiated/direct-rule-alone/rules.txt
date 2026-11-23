@@ -1,3 +1,4 @@
 # Fix round 2, F3: a member instantiated from a pattern member takes the pattern member's mapped name (spec/digest.md §3.4).
 # A rule for the instantiation's member only: refused by the key as above; the pattern differs as it would under no rule.
 relocate S<int>::f() => S<int> :: g
+# WP-119 item 1: stays indeterminate: the rule on the plain key gives f under S<int>, where following S::g (no rule) gives g: not what the pattern says.

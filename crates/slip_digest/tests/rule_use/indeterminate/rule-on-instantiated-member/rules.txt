@@ -1,3 +1,4 @@
 # WP-069: a rule that matches a member of an instantiation, not its pattern's, leaves the member
 # with no key (key/rule-on-instantiated-member): it is not counted, the rule is unused here.
 relocate S<int>::f() => S<int> :: g
+# WP-119: stays: the rule gives f where following S::g (no rule on the pattern) gives g, so it is not accepted. The accepted form, beside the pattern's rule, is templates/wp119-accepted-rule-on-instantiated-member.

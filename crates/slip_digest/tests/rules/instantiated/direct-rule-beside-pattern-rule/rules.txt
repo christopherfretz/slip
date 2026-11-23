@@ -1,4 +1,5 @@
 # Fix round 2, F3: a member instantiated from a pattern member takes the pattern member's mapped name (spec/digest.md §3.4).
-# The review's case: a rule written for the member of the implicit instantiation as well as the pattern's. The stricter reading: no source renames an instantiation's member alone, so a rule that matches one makes its key indeterminate.
+# The review's case: a rule written for the member of the implicit instantiation as well as the pattern's.
+# WP-119 item 1: the rule on S<int>::g gives f under S<int>, exactly the key following S::g (mapped to f) gives: it says what the pattern says, so it is accepted (it was key/rule-on-instantiated-member) and counted in its via. The rule's parent is the specialisation S<int> as the post-image's rules map it (named by its template); a table holds it (no rule on the specialisation itself).
 relocate S::f() => S :: g
 relocate S<int>::f() => S<int> :: g

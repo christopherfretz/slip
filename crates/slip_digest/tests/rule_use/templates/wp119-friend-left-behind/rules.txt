@@ -1,0 +1,3 @@
+# WP-119 item 5, unit A with the wrong edit: the friend renamed, the namespace-scope declaration not. Unit A has nothing to collide with; the declaration left behind has the key the rule on n::f(S<int>) produces and no rule matched it: direct 1 (a stale observer, spec/verify.md §9.2).
+relocate n::S::friend n::f(n::S<type-parameter-0-0>) => n::S :: g
+relocate n::f(n::S<int>) => n :: g
