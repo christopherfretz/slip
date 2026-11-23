@@ -56,7 +56,7 @@ impl Walk<'_> {
         s: &mut Stream,
         t: TypeRef,
         written: QualType,
-        own_fn: Option<slip_kiln::kiln::ast::DeclId>,
+        own_fn: Option<DeclId>,
     ) {
         s.digest(&t.digest).absorb(t.cause);
         if self.unit_level() {
