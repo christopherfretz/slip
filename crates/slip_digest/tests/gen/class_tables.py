@@ -433,6 +433,11 @@ for slug, first, second in [("8-then-16", RD, R16), ("16-then-8", R16, RD)]:
          "two declarations with different alignments: Kiln's `alignof(R)` reads the declaration"
          " a use names, its layout every one present when the class is first laid out.",
          post=USE_R)
+pair("indeterminate", "typedef-alignment-by-value-third-declaration", "",
+     R16 + "\n" + RD + "\n" + RD, ["indeterminate R", "indeterminate g()", "indeterminate S::r"],
+     "aligned(16), then aligned(8) twice: the two latest declarations agree, the first does not"
+     " (Kiln's `redecls_of` walks from the latest), so every declaration is compared.",
+     post=USE_R)
 pair("differ", "typedef-alignment-same-value", "int v;", "R v;", ["changed v"],
      "every declaration carries aligned(16): the declarations agree, determinate.",
      pre=R16 + "\n" + R16)
