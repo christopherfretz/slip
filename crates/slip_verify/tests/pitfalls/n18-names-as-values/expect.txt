@@ -1,0 +1,5 @@
+# N18: values derived from names in moved code: __PRETTY_FUNCTION__ (good),
+# typeid(T).name() (good-2), std::source_location (good-3).
+good:   verified
+good-2: verified
+good-3: verified

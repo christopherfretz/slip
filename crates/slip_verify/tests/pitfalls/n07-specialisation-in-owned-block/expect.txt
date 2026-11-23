@@ -1,0 +1,4 @@
+# N07: an explicit specialisation of the dependency's legacy::traits in an owned legacy block.
+# Caught only by a failed parse (spec/pitfalls.md §5).
+good: verified
+bad:  not_parsed

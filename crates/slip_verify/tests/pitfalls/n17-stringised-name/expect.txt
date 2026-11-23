@@ -1,0 +1,5 @@
+# N17: #T in the dependency's ENROLL gives the string "legacy::Mine".
+# bad has no compatibility declaration: its created lines fail with NoUnit
+# and are left out for it (spec/pitfalls.md §1).
+good: verified
+bad:  mismatch changed user() @ main.cpp:8
