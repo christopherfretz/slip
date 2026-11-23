@@ -3,7 +3,7 @@
 //! depend on the input tree, and refuses every test that cannot be judged
 //! (each refusal is the `ERROR` outcome of the runner).
 
-use super::tree::{self, Files};
+use super::tree::{self, Entry, Files};
 use std::path::{Path, PathBuf};
 
 /// The expected end of a run (`state` of §6.2).
@@ -54,8 +54,8 @@ impl Expected {
         !matches!(self, Expected::Usage | Expected::Input)
     }
 
-    /// A state that may permit `--write` (`spec/edits.md` §8.5): only these
-    /// tests may have a `post/`.
+    /// A state that may permit `--write` (`spec/edits.md` §8.5); see
+    /// [`Test::may_write`].
     pub fn may_write(self) -> bool {
         matches!(self, Expected::Verified | Expected::VerifiedWithResidue)
     }
@@ -142,7 +142,15 @@ pub struct Test {
     pub cdb: bool,
     /// `expect.txt` exists.
     pub expect: bool,
+    /// `post: none`: the run may write and is expected to write nothing.
+    pub post_none: bool,
+    /// `timeout`: the seconds each invocation of `slip` (and of the clang
+    /// oracle's compiler) may take before its process group is killed.
+    pub timeout: u64,
 }
+
+/// The default `timeout`, in seconds.
+pub const DEFAULT_TIMEOUT: u64 = 600;
 
 impl Test {
     /// `<area>/<name>`.
@@ -157,6 +165,22 @@ impl Test {
 
     pub fn allows(&self, allow: Allow) -> bool {
         self.allow.contains(&allow)
+    }
+
+    /// Whether a result of the expected state can permit `--write` under
+    /// the test's `allow` lines: `verified`, or `verified_with_residue`
+    /// with `allow: residue` or `allow: errors` (a `verified_with_residue`
+    /// has at least one reason, and each needs one of them,
+    /// `spec/edits.md` §8.5). Whether the run's own result permits it is
+    /// `slip_verify::conclude::permits` over its record, after the run.
+    pub fn may_write(&self) -> bool {
+        match self.state {
+            Expected::Verified => true,
+            Expected::VerifiedWithResidue => {
+                self.allows(Allow::Residue) || self.allows(Allow::Errors)
+            }
+            _ => false,
+        }
     }
 }
 
@@ -192,10 +216,10 @@ pub fn parse_test(dir: &Path) -> Result<Test, String> {
     let text = std::fs::read(dir.join("test.txt")).map_err(|e| format!("test.txt: {e}"))?;
     let text = String::from_utf8(text).map_err(|_| "test.txt: not UTF-8".to_owned())?;
     let pre_dir = dir.join("pre");
-    if !pre_dir.is_dir() {
+    if std::fs::symlink_metadata(&pre_dir).is_err() {
         return Err("no pre/ directory".into());
     }
-    let pre = tree::read_tree(&pre_dir).map_err(|e| format!("pre/: {e}"))?;
+    let pre = tree::read_plain_tree(&pre_dir).map_err(|e| format!("pre/: {e}"))?;
 
     let mut d = Directives::default();
     for (i, line) in text.split('\n').enumerate() {
@@ -225,9 +249,13 @@ pub fn parse_test(dir: &Path) -> Result<Test, String> {
     } else {
         // `*.cpp` exactly, as §6.2 writes it: the runner judges bytes.
         let tu: Vec<String> = pre
-            .keys()
-            .filter(|p| p.as_bytes().ends_with(b".cpp") && !p.starts_with("dep/"))
-            .cloned()
+            .iter()
+            .filter(|(p, e)| {
+                matches!(e, Entry::File { .. })
+                    && p.as_bytes().ends_with(b".cpp")
+                    && !p.starts_with("dep/")
+            })
+            .map(|(p, _)| p.clone())
             .collect();
         if tu.is_empty() {
             return Err("pre/ has no *.cpp outside dep/ and `tu` is not given".into());
@@ -241,12 +269,11 @@ pub fn parse_test(dir: &Path) -> Result<Test, String> {
         d.readonly
     };
 
-    check_post(dir, &pre, state)?;
     let mut allow = d.allow;
     allow.sort();
     let mut oracle_off = d.oracle_off;
     oracle_off.sort();
-    Ok(Test {
+    let parsed = Test {
         dir: dir.to_owned(),
         area,
         name,
@@ -264,7 +291,11 @@ pub fn parse_test(dir: &Path) -> Result<Test, String> {
         xfail: d.xfail,
         cdb: dir.join("cdb.json").is_file(),
         expect: dir.join("expect.txt").is_file(),
-    })
+        post_none: d.post_none,
+        timeout: d.timeout.unwrap_or(DEFAULT_TIMEOUT),
+    };
+    check_post(&parsed, &pre)?;
+    Ok(parsed)
 }
 
 fn area_and_name(dir: &Path) -> Result<(String, String), String> {
@@ -301,6 +332,22 @@ fn check_entries(dir: &Path) -> Result<(), String> {
                 n.to_string_lossy()
             ));
         }
+        // No entry is a symbolic link (a `post/` that is one would lead
+        // `--bless` out of the test); `pre/` and `post/` are directories,
+        // the others regular files.
+        let meta = std::fs::symlink_metadata(dir.join(&n))
+            .map_err(|e| format!("{}: {e}", dir.join(&n).display()))?;
+        let want_dir = n == "pre" || n == "post";
+        let shown = n.to_string_lossy();
+        if meta.file_type().is_symlink() {
+            return Err(format!("`{shown}` is a symbolic link"));
+        }
+        if want_dir && !meta.is_dir() {
+            return Err(format!("`{shown}` is not a directory"));
+        }
+        if !want_dir && !meta.is_file() {
+            return Err(format!("`{shown}` is not a regular file"));
+        }
     }
     if !dir.join("test.txt").is_file() {
         return Err("no test.txt".into());
@@ -310,24 +357,54 @@ fn check_entries(dir: &Path) -> Result<(), String> {
 
 /// §6.2: "A `post/` file equal to its `pre/` file, or with no `pre/` file,
 /// is an error of the test. A test whose state does not permit writing has
-/// no `post/`."
-fn check_post(dir: &Path, pre: &Files, state: Expected) -> Result<(), String> {
-    let post_dir = dir.join("post");
-    if !post_dir.exists() {
+/// no `post/`." And a test whose run may write ([`Test::may_write`]) has a
+/// `post/` or says `post: none`.
+fn check_post(test: &Test, pre: &Files) -> Result<(), String> {
+    let post_dir = test.dir.join("post");
+    let state = test.state.name();
+    if std::fs::symlink_metadata(&post_dir).is_err() {
+        if test.may_write() && !test.post_none {
+            return Err(format!(
+                "the run may write (state `{state}`): the test needs a post/, or `post: none` \
+                 if the run writes nothing"
+            ));
+        }
+        if test.post_none && !test.may_write() {
+            return Err(format!(
+                "`post: none` is for a run that may write, and the state `{state}` with these \
+                 `allow` lines cannot"
+            ));
+        }
         return Ok(());
     }
-    if !state.may_write() {
-        return Err(format!(
-            "the state `{}` does not permit writing, and the test has a post/",
-            state.name()
-        ));
+    if test.post_none {
+        return Err("the test has a post/ and says `post: none`".into());
     }
-    let post = tree::read_tree(&post_dir).map_err(|e| format!("post/: {e}"))?;
-    for (path, bytes) in &post {
-        match pre.get(path) {
-            None => return Err(format!("post/{path} has no pre/ file")),
-            Some(p) if p == bytes => return Err(format!("post/{path} is equal to its pre/ file")),
-            Some(_) => {}
+    if !test.may_write() {
+        return Err(if test.state.may_write() {
+            format!(
+                "the state `{state}` permits writing only with `allow: residue` or \
+                 `allow: errors`, and the test has a post/"
+            )
+        } else {
+            format!("the state `{state}` does not permit writing, and the test has a post/")
+        });
+    }
+    let post = tree::read_plain_tree(&post_dir).map_err(|e| format!("post/: {e}"))?;
+    if !post.values().any(|e| matches!(e, Entry::File { .. })) {
+        return Err("post/ holds no file (a run that writes nothing says `post: none`)".into());
+    }
+    for (path, entry) in &post {
+        match (pre.get(path), entry) {
+            (_, Entry::Dir) if matches!(pre.get(path), Some(Entry::Dir)) => {}
+            (None, _) => return Err(format!("post/{path} has no pre/ file")),
+            (Some(p), _) if p == entry => {
+                return Err(format!("post/{path} is equal to its pre/ file"));
+            }
+            (Some(Entry::File { .. }), Entry::File { .. }) => {}
+            (Some(_), _) => {
+                return Err(format!("post/{path} is not of the kind of its pre/ entry"));
+            }
         }
     }
     Ok(())
@@ -347,6 +424,8 @@ struct Directives {
     allow: Vec<Allow>,
     oracle_off: Vec<(Oracle, String)>,
     xfail: Option<String>,
+    post_none: bool,
+    timeout: Option<u64>,
 }
 
 fn once<T>(slot: &mut Option<T>, name: &str, value: T) -> Result<(), String> {
@@ -430,7 +509,7 @@ impl Directives {
                 let w = words(value)?;
                 for (i, p) in w.iter().enumerate() {
                     check_relative(p, false)?;
-                    if !pre.contains_key(p) {
+                    if !matches!(pre.get(p), Some(Entry::File { .. })) {
                         return Err(format!("tu: `{p}` is not a file of pre/"));
                     }
                     if w[..i].contains(p) {
@@ -441,11 +520,7 @@ impl Directives {
             }
             "owned" | "readonly" => {
                 check_relative(value, true)?;
-                let exists = value == "."
-                    || pre.contains_key(value)
-                    || pre
-                        .keys()
-                        .any(|k| k.strip_prefix(value).is_some_and(|r| r.starts_with('/')));
+                let exists = value == "." || pre.contains_key(value);
                 if !exists {
                     return Err(format!("{name}: `{value}` is not a file or directory of pre/"));
                 }
@@ -487,6 +562,27 @@ impl Directives {
                 self.oracle_off.push((oracle, reason.to_owned()));
             }
             "xfail" => once(&mut self.xfail, "xfail", value.to_owned())?,
+            "post" => {
+                if value != "none" {
+                    return Err(format!("post: `{value}` is not `none`"));
+                }
+                if self.post_none {
+                    return Err("`post` given twice".into());
+                }
+                self.post_none = true;
+            }
+            "timeout" => {
+                let n = (value.len() <= 6 && value.bytes().all(|b| b.is_ascii_digit()))
+                    .then(|| value.parse::<u64>().ok())
+                    .flatten()
+                    .filter(|n| (1..=86_400).contains(n));
+                let Some(n) = n else {
+                    return Err(format!(
+                        "timeout: `{value}` is not a number of seconds 1 to 86400"
+                    ));
+                };
+                once(&mut self.timeout, "timeout", n)?;
+            }
             other => return Err(format!("unknown directive `{other}`")),
         }
         Ok(())

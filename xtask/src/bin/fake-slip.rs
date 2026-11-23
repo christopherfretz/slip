@@ -17,7 +17,15 @@
 //! err <text>                    a line on standard error
 //! write <path> <text>           writes the file (relative to the current directory)
 //! remove <path>                 removes the file
-//! publish edits|result <file>   publishes the container into the store (an EDTS or RSLT)
+//! publish edits|result|overlay <file>
+//!                               publishes the container into the store (EDTS, RSLT, OVLY)
+//! publish declared <file>       writes the file as <store>/declared/<content id>.decl
+//! chmod <path> <octal>          sets the file's permission bits
+//! mkdir <path>                  makes the directory (and its parents)
+//! symlink <target> <path>       makes <path> a symbolic link to <target>
+//! sleep <seconds>               sleeps
+//! spawn-sleep <seconds> <file>  starts `sleep <seconds>`, which inherits standard output
+//!                               and error, writes its pid to <file>, and goes on
 //! exit <n>                      ends with status <n> (default 0)
 //! kill                          dies by SIGKILL
 //! ```
@@ -34,6 +42,7 @@
 
 use slip_exec::store::{Access, Object, Store};
 use std::io::Write as _;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -128,42 +137,96 @@ fn run(args: &[String]) -> Result<ExitCode, (u8, String)> {
     };
     let mut status = 0u8;
     for action in actions {
-        let (verb, rest) = action.split_once(' ').unwrap_or((action, ""));
-        match verb {
-            "out" => println!("{}", unescape(rest, &cwd, &store_text)),
-            "err" => eprintln!("{}", unescape(rest, &cwd, &store_text)),
-            "write" => {
-                let (path, text) = rest.split_once(' ').unwrap_or((rest, ""));
-                std::fs::write(path, unescape(text, &cwd, &store_text))
-                    .map_err(|e| (98, format!("write {path}: {e}")))?;
-            }
-            "remove" => {
-                std::fs::remove_file(rest).map_err(|e| (98, format!("remove {rest}: {e}")))?;
-            }
-            "publish" => {
-                let (kind, file) = rest.split_once(' ').unwrap_or((rest, ""));
-                let object = match kind {
-                    "edits" => Object::EditSet,
-                    "result" => Object::Result,
-                    _ => return Err((98, format!("publish: unknown kind `{kind}`"))),
-                };
-                let bytes =
-                    std::fs::read(Path::new(file)).map_err(|e| (98, format!("{file}: {e}")))?;
-                store
-                    .publish_object(object, &bytes)
-                    .map_err(|e| (98, format!("publish {file}: {e}")))?;
-            }
-            "exit" => status = rest.parse().map_err(|_| (98, format!("exit: `{rest}`")))?,
-            "kill" => {
-                let _ = std::io::stdout().flush();
-                let pid = std::process::id().to_string();
-                let _ = std::process::Command::new("kill").args(["-KILL", &pid]).status();
-                std::thread::sleep(std::time::Duration::from_secs(10));
-            }
-            _ => return Err((98, format!("fake.txt: unknown action `{verb}`"))),
-        }
+        act(&store, action, &cwd, &store_text, &mut status)?;
     }
     let _ = std::io::stdout().flush();
     drop(store);
     Ok(ExitCode::from(status))
+}
+
+/// Does one action of a section.
+fn act(
+    store: &Store,
+    action: &str,
+    cwd: &str,
+    store_text: &str,
+    status: &mut u8,
+) -> Result<(), (u8, String)> {
+    let (verb, rest) = action.split_once(' ').unwrap_or((action, ""));
+    match verb {
+        "out" => println!("{}", unescape(rest, cwd, store_text)),
+        "err" => eprintln!("{}", unescape(rest, cwd, store_text)),
+        "write" => {
+            let (path, text) = rest.split_once(' ').unwrap_or((rest, ""));
+            std::fs::write(path, unescape(text, cwd, store_text))
+                .map_err(|e| (98, format!("write {path}: {e}")))?;
+        }
+        "remove" => {
+            std::fs::remove_file(rest).map_err(|e| (98, format!("remove {rest}: {e}")))?;
+        }
+        "publish" => {
+            let (kind, file) = rest.split_once(' ').unwrap_or((rest, ""));
+            let bytes = std::fs::read(Path::new(file)).map_err(|e| (98, format!("{file}: {e}")))?;
+            let object = match kind {
+                "edits" => Object::EditSet,
+                "result" => Object::Result,
+                "overlay" => Object::Overlay,
+                "declared" => {
+                    let id = slip_model::formats::content_id(&bytes)
+                        .map_err(|e| (98, format!("{file}: {e}")))?;
+                    let dir = store.root().join("declared");
+                    std::fs::create_dir_all(&dir).map_err(|e| (98, e.to_string()))?;
+                    std::fs::write(dir.join(format!("{id}.decl")), &bytes)
+                        .map_err(|e| (98, format!("publish {file}: {e}")))?;
+                    return Ok(());
+                }
+                _ => return Err((98, format!("publish: unknown kind `{kind}`"))),
+            };
+            store
+                .publish_object(object, &bytes)
+                .map_err(|e| (98, format!("publish {file}: {e}")))?;
+        }
+        "chmod" => {
+            let (path, mode) = rest.split_once(' ').unwrap_or((rest, ""));
+            let mode =
+                u32::from_str_radix(mode, 8).map_err(|_| (98, format!("chmod: `{mode}`")))?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+                .map_err(|e| (98, format!("chmod {path}: {e}")))?;
+        }
+        "mkdir" => {
+            std::fs::create_dir_all(rest).map_err(|e| (98, format!("mkdir {rest}: {e}")))?;
+        }
+        "symlink" => {
+            let (target, path) = rest.split_once(' ').unwrap_or((rest, ""));
+            std::os::unix::fs::symlink(target, path)
+                .map_err(|e| (98, format!("symlink {path}: {e}")))?;
+        }
+        "sleep" => {
+            let s: u64 = rest.parse().map_err(|_| (98, format!("sleep: `{rest}`")))?;
+            let _ = std::io::stdout().flush();
+            std::thread::sleep(std::time::Duration::from_secs(s));
+        }
+        "spawn-sleep" => {
+            let (secs, file) = rest.split_once(' ').unwrap_or((rest, ""));
+            let child = std::process::Command::new("sleep")
+                .arg(secs)
+                .spawn()
+                .map_err(|e| (98, format!("spawn-sleep: {e}")))?;
+            std::fs::write(file, child.id().to_string())
+                .map_err(|e| (98, format!("spawn-sleep {file}: {e}")))?;
+        }
+        "exit" => *status = rest.parse().map_err(|_| (98, format!("exit: `{rest}`")))?,
+        "kill" => {
+            let _ = std::io::stdout().flush();
+            let pid = std::process::id().to_string();
+            let kill = ["/bin/kill", "/usr/bin/kill"]
+                .into_iter()
+                .find(|p| Path::new(p).is_file())
+                .unwrap_or("kill");
+            let _ = std::process::Command::new(kill).args(["-KILL", &pid]).status();
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
+        _ => return Err((98, format!("fake.txt: unknown action `{verb}`"))),
+    }
+    Ok(())
 }

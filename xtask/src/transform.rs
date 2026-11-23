@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! cargo xtask transform [--only <substring>]… [--bless] [-j <n>] [--no-clang] [--slip <path>]
+//!         [--verbose]
 //! ```
 //!
 //! The runner drives the `slip` executable from outside and judges it by
@@ -39,7 +40,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The outcome of one test (§6). `Fail`, `Error`, `XPass` and `Killed` fail
-/// the gate; `XFail` and `Skip` do not.
+/// the gate; `XFail` does not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Pass,
@@ -51,9 +52,8 @@ pub enum Outcome {
     XPass,
     /// The test could not be judged; never masked by `xfail`, never blessed.
     Error(String),
-    /// Reserved: no condition of §6 skips a whole test today.
-    Skip(String),
-    /// A `slip` was killed by a signal; never masked by `xfail`.
+    /// A `slip` was killed by a signal or by its timeout; never masked by
+    /// `xfail`.
     Killed(String),
 }
 
@@ -66,7 +66,6 @@ impl Outcome {
             Outcome::XFail => "XFAIL",
             Outcome::XPass => "XPASS",
             Outcome::Error(_) => "ERROR",
-            Outcome::Skip(_) => "SKIP",
             Outcome::Killed(_) => "KILLED",
         }
     }
@@ -77,12 +76,22 @@ impl Outcome {
     }
 }
 
-/// A test's outcome and whether its clang oracle was skipped for want of
-/// a compiler (or `--no-clang`).
+/// An oracle that did not run for a test: turned off by `oracle:
+/// no-<name>` (`off`), or skipped, with the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note {
+    pub oracle: Oracle,
+    pub off: bool,
+    pub reason: String,
+}
+
+/// A test's outcome, whether its clang oracle was skipped for want of a
+/// compiler (or `--no-clang`), and every oracle that did not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
     pub outcome: Outcome,
     pub clang_skipped: bool,
+    pub notes: Vec<Note>,
 }
 
 /// Runs `test` with the executable `slip` in the work directory `work`
@@ -112,19 +121,35 @@ pub fn run_test(
 
 /// The test directories under `<root>/tests/transform/`: every directory
 /// `<area>/<name>`, in byte order of paths. None if the directory does
-/// not exist.
+/// not exist. Every entry of `tests/transform/` and of an area must be a
+/// directory (not a symbolic link): anything else is an error, not
+/// ignored.
 pub fn discover(root: &Path) -> Result<Vec<PathBuf>, String> {
     let base = root.join("tests").join("transform");
-    if !base.is_dir() {
-        return Ok(Vec::new());
+    match std::fs::symlink_metadata(&base) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", base.display())),
+        Ok(m) if !m.is_dir() => {
+            return Err(format!("{}: not a directory", base.display()));
+        }
+        Ok(_) => {}
     }
     let dirs = |d: &Path| -> Result<Vec<PathBuf>, String> {
         let mut v = Vec::new();
         for e in std::fs::read_dir(d).map_err(|e| format!("{}: {e}", d.display()))? {
             let e = e.map_err(|e| format!("{}: {e}", d.display()))?;
-            if e.file_type().map_err(|err| format!("{}: {err}", e.path().display()))?.is_dir() {
-                v.push(e.path());
+            let kind = e.file_type().map_err(|err| format!("{}: {err}", e.path().display()))?;
+            let rel = e.path();
+            let rel = rel.strip_prefix(root).unwrap_or(&rel).display().to_string();
+            if kind.is_symlink() {
+                return Err(format!("{rel}: a symbolic link, not a test or an area directory"));
             }
+            if !kind.is_dir() {
+                return Err(format!(
+                    "{rel}: not a directory (tests are tests/transform/<area>/<name>/)"
+                ));
+            }
+            v.push(e.path());
         }
         v.sort();
         Ok(v)
@@ -164,7 +189,7 @@ pub fn target_dir(root: &Path) -> PathBuf {
 }
 
 const USAGE: &str = "usage: cargo xtask transform [--only <substring>]… [--bless] [-j <n>] \
-                     [--no-clang] [--slip <path>]";
+                     [--no-clang] [--slip <path>] [--verbose]";
 
 /// A parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -174,6 +199,8 @@ pub struct Options {
     pub jobs: Option<usize>,
     pub no_clang: bool,
     pub slip: Option<PathBuf>,
+    /// Print, per test, each oracle that did not run and why.
+    pub verbose: bool,
 }
 
 /// Parses the arguments after `transform`; `Err` is the usage error.
@@ -186,6 +213,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             "--only" => o.only.push(value("--only")?),
             "--bless" => o.bless = true,
             "--no-clang" => o.no_clang = true,
+            "--verbose" => o.verbose = true,
             "--slip" => {
                 let v = value("--slip")?;
                 if v.is_empty() || o.slip.is_some() {
@@ -240,6 +268,10 @@ pub fn run_all(root: &Path, opts: &Options) -> bool {
             opts.only.is_empty() || opts.only.iter().any(|o| rel.contains(o.as_str()))
         })
         .collect();
+    if !opts.only.is_empty() && selected.is_empty() {
+        println!("transform: --only {} matches no test", opts.only.join(" --only "));
+        return false;
+    }
     let slip = match (&opts.slip, selected.is_empty()) {
         (Some(s), _) => s.clone(),
         (None, true) => PathBuf::new(),
@@ -288,13 +320,20 @@ fn print_outcomes(
     reports: Vec<Option<Ran>>,
 ) -> bool {
     let require_all = std::env::var_os("SLIP_REQUIRE_ALL").is_some_and(|v| v == "1");
-    let mut counts = [0usize; 7];
+    let mut counts = [0usize; 6];
     let mut clang_skipped = 0;
+    let (mut off, mut skipped) = (0usize, 0usize);
     let mut gate = true;
     for (dir, r) in selected.iter().zip(reports) {
         let Some((mut report, work)) = r else { continue };
-        if require_all && let Outcome::Skip(why) = &report.outcome {
-            report.outcome = Outcome::Error(format!("skipped under SLIP_REQUIRE_ALL=1: {why}"));
+        // spec/harness.md §1 principle 3: a skip for want of a capability
+        // (here the clang oracle's compiler, not `--no-clang`) is an ERROR
+        // under SLIP_REQUIRE_ALL=1.
+        if require_all && report.clang_skipped && !opts.no_clang && report.outcome == Outcome::Pass
+        {
+            report.outcome = Outcome::Error(
+                "the clang oracle was skipped: no compiler (SLIP_REQUIRE_ALL=1)".into(),
+            );
         }
         let id = dir
             .strip_prefix(root.join("tests").join("transform"))
@@ -307,17 +346,14 @@ fn print_outcomes(
             Outcome::Fail(_) => 1,
             Outcome::XFail => 2,
             Outcome::XPass => 3,
-            Outcome::Skip(_) => 4,
-            Outcome::Error(_) => 5,
-            Outcome::Killed(_) => 6,
+            Outcome::Error(_) => 4,
+            Outcome::Killed(_) => 5,
         }] += 1;
         clang_skipped += usize::from(report.clang_skipped);
         gate &= !o.fails_gate();
         let message = match o {
             Outcome::Pass => None,
-            Outcome::Fail(m) | Outcome::Error(m) | Outcome::Skip(m) | Outcome::Killed(m) => {
-                Some(m.clone())
-            }
+            Outcome::Fail(m) | Outcome::Error(m) | Outcome::Killed(m) => Some(m.clone()),
             Outcome::XFail | Outcome::XPass => Some(format!(
                 "xfail: {}",
                 parse_test(dir).ok().and_then(|t| t.xfail).unwrap_or_default()
@@ -325,6 +361,17 @@ fn print_outcomes(
         };
         if let Some(m) = message {
             println!("{} {id}: {m}", o.tag());
+        }
+        for n in &report.notes {
+            if n.off {
+                off += 1;
+            } else {
+                skipped += 1;
+            }
+            if opts.verbose {
+                let what = if n.off { "off" } else { "skipped" };
+                println!("  {id}: oracle {} {what}: {}", n.oracle.name(), n.reason);
+            }
         }
         if let Some(w) = work {
             let keep = !matches!(o, Outcome::Pass | Outcome::XFail);
@@ -335,7 +382,7 @@ fn print_outcomes(
             }
         }
     }
-    let names = ["passed", "failed", "xfail", "xpass", "skipped", "error", "killed"];
+    let names = ["passed", "failed", "xfail", "xpass", "error", "killed"];
     let mut parts = Vec::new();
     for (k, (n, name)) in counts.iter().zip(names).enumerate() {
         if k < 2 || *n > 0 {
@@ -343,6 +390,9 @@ fn print_outcomes(
         }
     }
     println!("transform: {}", parts.join(", "));
+    if off + skipped > 0 {
+        println!("oracles: {off} off, {skipped} skipped (--verbose names them)");
+    }
     if clang_skipped > 0 {
         let why = if opts.no_clang {
             "--no-clang"
@@ -365,7 +415,11 @@ fn one(
 ) -> (Report, Option<PathBuf>) {
     let test = match parse_test(dir) {
         Ok(t) => t,
-        Err(e) => return (Report { outcome: Outcome::Error(e), clang_skipped: false }, None),
+        Err(e) => {
+            let report =
+                Report { outcome: Outcome::Error(e), clang_skipped: false, notes: Vec::new() };
+            return (report, None);
+        }
     };
     let work = target.join("transform").join(&test.area).join(&test.name);
     let report = run::run_test(&test, slip, &work, clang, bless);

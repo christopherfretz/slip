@@ -5,12 +5,21 @@
 
 use super::oracles;
 use super::test_file::{Allow, Expected, Oracle, Test};
-use super::tree::{self, Files};
-use super::{Outcome, Report};
+use super::tree::{self, Entry, Files};
+use super::{Note, Outcome, Report};
+use slip_model::Digest;
+use slip_model::declared::Declared;
+use slip_model::editset::{EditSet, SetState};
+use slip_model::formats;
 use slip_model::json::{self, Value};
+use slip_model::overlay::Overlay;
+use slip_model::result::{State, TransformResult};
+use slip_verify::conclude;
 use std::ffi::OsString;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// The command lines the runner gives `slip`, in one place, so that the
 /// command packages can be checked against them
@@ -135,7 +144,14 @@ pub struct Ctx<'a> {
     /// The commands of the database: (directory, argv).
     pub commands: Vec<(PathBuf, Vec<String>)>,
     pub pre: Files,
+    /// The test's own directory as it was before the first run (and after
+    /// `--bless`): every run must leave it so.
+    pub test_snapshot: Files,
 }
+
+/// The entries a work directory may hold (`spec/landed/harness/WP-077.md`):
+/// any other was written by a run outside its tree.
+pub const WORK_ENTRIES: [&str; 6] = ["back", "cdb.json", "clang", "determinism", "store", "tree"];
 
 impl Ctx<'_> {
     /// A path of `owned`/`readonly` in the tree; `.` is the tree.
@@ -154,27 +170,177 @@ impl Ctx<'_> {
         tree::read_tree(&self.tree).map_err(|e| format!("the tree: {e}"))
     }
 
-    /// Runs `slip` with `args` in the tree.
+    /// The test's timeout.
+    pub fn timeout(&self) -> Duration {
+        Duration::from_secs(self.test.timeout)
+    }
+
+    /// Runs `slip` with `args` in the tree, bounded by the test's timeout;
+    /// then checks that it wrote nothing outside the tree, its store and
+    /// the oracles' directories ([`WORK_ENTRIES`]) and left the test's
+    /// directory as it was.
     pub fn slip(&self, args: &[OsString]) -> Result<Ran, Outcome> {
-        let out = Command::new(self.slip)
-            .args(args)
-            .current_dir(&self.tree)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| Outcome::Error(format!("cannot run `{}`: {e}", self.slip.display())))?;
         let shown = args.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
+        let mut cmd = Command::new(self.slip);
+        cmd.args(args).current_dir(&self.tree);
+        let out = match run_bounded(cmd, self.timeout()) {
+            Ok(o) => o,
+            Err(Bounded::Spawn(e)) => {
+                return Err(Outcome::Error(format!("cannot run `{}`: {e}", self.slip.display())));
+            }
+            Err(Bounded::TimedOut) => {
+                return Err(Outcome::Killed(format!(
+                    "`slip {shown}` did not end within {} s; its process group was killed",
+                    self.test.timeout
+                )));
+            }
+        };
         if out.status.code().is_none() {
             use std::os::unix::process::ExitStatusExt as _;
             let signal = out.status.signal().unwrap_or(0);
             return Err(Outcome::Killed(format!("`slip {shown}` killed by signal {signal}")));
         }
+        self.check_surroundings(&shown)?;
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         Ok(Ran {
             status: out.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            lines: Lines::read(&stdout),
+            stdout,
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            lines: Lines::read(&String::from_utf8_lossy(&out.stdout)),
         })
     }
+
+    /// After a run: the work directory holds only [`WORK_ENTRIES`] (and
+    /// `back/`, `determinism/` only `store`), and the test's directory is
+    /// [`Ctx::test_snapshot`].
+    fn check_surroundings(&self, shown: &str) -> Result<(), Outcome> {
+        let names = |dir: &Path| -> Result<Vec<String>, Outcome> {
+            let mut v = Vec::new();
+            for e in std::fs::read_dir(dir).map_err(|e| error(format!("{}: {e}", dir.display())))? {
+                let e = e.map_err(|e| error(format!("{}: {e}", dir.display())))?;
+                v.push(e.file_name().to_string_lossy().into_owned());
+            }
+            v.sort();
+            Ok(v)
+        };
+        for n in names(&self.work)? {
+            let stray = if WORK_ENTRIES.contains(&n.as_str()) {
+                if n == "back" || n == "determinism" {
+                    names(&self.work.join(&n))?
+                        .into_iter()
+                        .find(|m| m != "store")
+                        .map(|m| format!("{n}/{m}"))
+                } else {
+                    None
+                }
+            } else {
+                Some(n)
+            };
+            if let Some(stray) = stray {
+                return Err(Outcome::Fail(format!(
+                    "`slip {shown}` wrote outside its tree: {}",
+                    self.work.join(stray).display()
+                )));
+            }
+        }
+        let now = tree::read_tree(&self.test.dir).map_err(|e| error(format!("the test: {e}")))?;
+        if let Some(d) = tree::first_difference(&self.test_snapshot, &now) {
+            return Err(Outcome::Fail(format!("`slip {shown}` changed the test's directory: {d}")));
+        }
+        Ok(())
+    }
+}
+
+/// A finished child of [`run_bounded`].
+#[derive(Debug)]
+pub struct Finished {
+    pub status: std::process::ExitStatus,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Why [`run_bounded`] has no [`Finished`].
+#[derive(Debug)]
+pub enum Bounded {
+    Spawn(std::io::Error),
+    /// The child, or a process that kept its standard output or error open,
+    /// was still running at the deadline; the child's process group was
+    /// killed.
+    TimedOut,
+}
+
+/// Runs `cmd` with standard input closed and its output captured, in a
+/// process group of its own. It is done when the child has ended and both
+/// pipes are closed (a grandchild that holds one open holds the run); at
+/// `timeout` the group is killed (`kill -KILL -- -<pgid>`: the standard
+/// library has no call for a group, and `xtask` has no `unsafe`).
+pub fn run_bounded(mut cmd: Command, timeout: Duration) -> Result<Finished, Bounded> {
+    use std::io::Read as _;
+    use std::os::unix::process::CommandExt as _;
+    cmd.process_group(0).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(Bounded::Spawn)?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, Vec<u8>)>();
+    let pipes: [Option<Box<dyn std::io::Read + Send>>; 2] = [
+        child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    ];
+    for (k, pipe) in pipes.into_iter().enumerate() {
+        let tx = tx.clone();
+        if let Some(mut pipe) = pipe {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = pipe.read_to_end(&mut buf);
+                let _ = tx.send((k, buf));
+            });
+        }
+    }
+    drop(tx);
+    let deadline = Instant::now() + timeout;
+    let mut status = None;
+    let mut out: [Option<Vec<u8>>; 2] = [None, None];
+    loop {
+        if status.is_none() {
+            status = child.try_wait().map_err(Bounded::Spawn)?;
+        }
+        if let Some(s) = status
+            && out.iter().all(Option::is_some)
+        {
+            let [stdout, stderr] = out;
+            return Ok(Finished {
+                status: s,
+                stdout: stdout.unwrap_or_default(),
+                stderr: stderr.unwrap_or_default(),
+            });
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            let _ = Command::new(kill_program())
+                .args(["-KILL", "--", &format!("-{pid}")])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if status.is_none() {
+                let _ = child.wait();
+            }
+            return Err(Bounded::TimedOut);
+        }
+        let step = (deadline - now).min(Duration::from_millis(10));
+        match rx.recv_timeout(step) {
+            Ok((k, bytes)) => out[k] = Some(bytes),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            // Both pipes are read: wait for the child itself.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(step),
+        }
+    }
+}
+
+/// The `kill` program: `/bin/kill` or `/usr/bin/kill` when there (the run
+/// may have a `PATH` without it; a shell's built-in `kill` may not take a
+/// process group), else `kill` on `PATH`.
+pub fn kill_program() -> &'static str {
+    ["/bin/kill", "/usr/bin/kill"].into_iter().find(|p| Path::new(p).is_file()).unwrap_or("kill")
 }
 
 /// One finished invocation of `slip`.
@@ -188,7 +354,7 @@ pub struct Ran {
 
 /// The ids and the state a run printed (`spec/edits.md` §10.5, the plan
 /// line of `spec/exec.md` §8.1). Each is the first such line, except
-/// `state`, which is the last.
+/// `state`, which is the last (the result's, by [`check_output`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Lines {
     pub plan: Option<String>,
@@ -240,6 +406,81 @@ impl Lines {
             ("result", &self.result),
         ]
     }
+}
+
+/// The names of the states of `spec/edits.md` §8.5, as a `state` line
+/// after `result` prints them.
+pub const STATES: [&str; 5] =
+    ["verified", "verified_with_residue", "not_verified", "incomplete", "refused"];
+
+/// The structure of a run's output (`spec/edits.md` §10.5), checked before
+/// it is compared or blessed. With `result` (a run that ends in a state):
+/// one `result <id>` line, followed at once by one `state <State>` with a
+/// state of §8.5 exactly; the only other `state` line is the edit set's,
+/// `state accepted` or `state refused` at once after its `edits <id>`; the
+/// result's `state` line is the last. Without (`usage`, `input`): no
+/// `result` line and no `state` line but the edit set's. In both, each of
+/// `plan`, `transform`, `round`, `edits`, `declared`, `overlay` and
+/// `result` at most once.
+pub fn check_output(stdout: &str, result: bool) -> Result<(), String> {
+    let lines: Vec<&str> = stdout.lines().collect();
+    for word in ["plan", "transform", "round", "edits", "declared", "overlay", "result"] {
+        let n = lines.iter().filter(|l| l.split(' ').next() == Some(word)).count();
+        if n > 1 {
+            return Err(format!("the output has {n} `{word}` lines"));
+        }
+    }
+    let has_result = lines.iter().any(|l| l.split(' ').next() == Some("result"));
+    if result && !has_result {
+        // Nothing to check the state lines against: the missing result is
+        // the state's difference (`state_difference`, with standard error).
+        return Ok(());
+    }
+    let (mut result_state, mut last_state) = (None, None);
+    for (i, line) in lines.iter().enumerate() {
+        let Some(value) = line.strip_prefix("state ") else {
+            if *line == "state" {
+                return Err(format!("output line {}: `state` without a value", i + 1));
+            }
+            continue;
+        };
+        last_state = Some(i);
+        let after = |w: &str| i > 0 && lines[i - 1].split(' ').next() == Some(w);
+        if after("edits") {
+            if value != "accepted" && value != "refused" {
+                return Err(format!(
+                    "output line {}: the edit set's state `{value}` is not accepted or refused",
+                    i + 1
+                ));
+            }
+        } else if after("result") && result {
+            if !STATES.contains(&value) {
+                return Err(format!(
+                    "output line {}: `{value}` is not a state of spec/edits.md §8.5",
+                    i + 1
+                ));
+            }
+            result_state = Some(i);
+        } else {
+            return Err(format!(
+                "output line {}: a `state` line that is neither the edit set's nor the result's",
+                i + 1
+            ));
+        }
+    }
+    if !result {
+        if has_result {
+            return Err("the output has a `result` line, and the run ends without a result".into());
+        }
+        return Ok(());
+    }
+    if has_result && result_state.is_none() {
+        return Err("the `result` line is not followed by the result's `state` line".into());
+    }
+    if has_result && result_state != last_state {
+        return Err("the result's `state` line is not the last `state` line".into());
+    }
+    Ok(())
 }
 
 /// §6.3 step 3: every 64-digit id (a maximal run of exactly 64 lower-case
@@ -312,6 +553,177 @@ pub fn first_line_difference(expected: &str, got: &str) -> Option<String> {
     Some(format!("output line {}: the newline at its end differs", e.len()))
 }
 
+// ---------------------------------------------------------------- the store
+
+/// The records of a run in its store (`spec/edits.md` §10.4), read and
+/// checked against what the run printed.
+#[derive(Debug, Clone)]
+pub struct Record {
+    pub id: Digest,
+    pub bytes: Vec<u8>,
+    pub result: TransformResult,
+    pub set_id: Digest,
+    pub set: EditSet,
+    pub declared: Option<Declared>,
+    pub overlay: Option<Overlay>,
+}
+
+/// The path of an object in a store (`spec/edits.md` §10.4, `spec/exec.md`
+/// §2): `<store>/<dir>/<id>.<ext>`.
+pub fn object_path(store: &Path, dir: &str, id: &Digest, ext: &str) -> PathBuf {
+    store.join(dir).join(format!("{id}.{ext}"))
+}
+
+/// Reads the object `<store>/<dir>/<id>.<ext>`, which must exist, be named
+/// by its content id and read as `T` (with every rule of its format).
+pub fn read_object<T>(
+    store: &Path,
+    what: &str,
+    (dir, ext): (&str, &str),
+    id: &Digest,
+    decode: impl Fn(&[u8]) -> Result<T, slip_model::wire::Error>,
+) -> Result<(Vec<u8>, T), String> {
+    let path = object_path(store, dir, id, ext);
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("the store has no {what} {id}"));
+        }
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    match formats::content_id(&bytes) {
+        Ok(got) if got == *id => {}
+        Ok(got) => return Err(format!("the {what} {id} in the store has the content id {got}")),
+        Err(e) => return Err(format!("the {what} {id}: {e}")),
+    }
+    let value = decode(&bytes).map_err(|e| format!("the {what} {id}: {e}"))?;
+    Ok((bytes, value))
+}
+
+/// An id printed by a run.
+pub fn digest(what: &str, id: &str) -> Result<Digest, String> {
+    Digest::from_hex(id).ok_or(format!("the {what} id `{id}` is not 64 hexadecimal digits"))
+}
+
+/// Reads the result `id` of `store`.
+pub fn read_result(store: &Path, id: &str) -> Result<(Vec<u8>, TransformResult), String> {
+    let id = digest("result", id)?;
+    read_object(store, "result", ("results", "rslt"), &id, TransformResult::from_bytes)
+}
+
+/// The run's records (F1 of the review, `spec/landed/harness/WP-077.md`):
+/// the result its `result` line names, whose state is the printed state,
+/// whose edit set, declared changes and overlay are the printed ids and
+/// are in the store, valid; whose plan, round and transform are the
+/// printed ones and the edit set's; and no `write.journal` is left.
+pub fn read_record(ctx: &Ctx<'_>, ran: &Ran) -> Result<Record, String> {
+    let store = &ctx.store;
+    if store.join("write.journal").exists() {
+        return Err("the store holds write.journal: a write was left unfinished".into());
+    }
+    let l = &ran.lines;
+    let Some(rid) = &l.result else { return Err("the run printed no result line".into()) };
+    let (bytes, result) = read_result(store, rid)?;
+    let id = digest("result", rid)?;
+    let printed = l.state.as_deref().unwrap_or("none");
+    if printed != result.state.name() {
+        return Err(format!(
+            "the run printed state {printed}, its result record says {}",
+            result.state.name()
+        ));
+    }
+    let shown = |d: Option<Digest>| d.map_or("none".to_owned(), |d| d.to_string());
+    let lines: [(&str, &Option<String>, Option<Digest>); 3] = [
+        ("edits", &l.edits, Some(result.edits)),
+        ("declared", &l.declared, result.declared),
+        ("overlay", &l.overlay, result.overlay),
+    ];
+    for (name, printed, recorded) in lines {
+        if printed.as_deref() != recorded.map(|d| d.to_string()).as_deref() {
+            return Err(format!(
+                "the run printed {name} {}, its result record says {}",
+                printed.as_deref().unwrap_or("none"),
+                shown(recorded)
+            ));
+        }
+    }
+    for (name, printed, recorded) in [
+        ("plan", &l.plan, result.plan.to_string()),
+        ("transform", &l.transform, result.transform.to_string()),
+        ("round", &l.round, result.round.to_string()),
+    ] {
+        if let Some(p) = printed
+            && *p != recorded
+        {
+            return Err(format!("the run printed {name} {p}, its result record says {recorded}"));
+        }
+    }
+    let (_, set) =
+        read_object(store, "edit set", ("edits", "edts"), &result.edits, EditSet::from_bytes)?;
+    if (set.plan, set.round, set.transform) != (result.plan, result.round, result.transform) {
+        return Err(format!(
+            "the result {rid} and its edit set {} differ in plan, round or transform",
+            result.edits
+        ));
+    }
+    if matches!(result.state, State::Verified | State::VerifiedWithResidue)
+        && set.state != SetState::Accepted
+    {
+        return Err(format!(
+            "the result is {} and its edit set {} is not accepted",
+            result.state.name(),
+            result.edits
+        ));
+    }
+    let declared = match result.declared {
+        Some(d) => Some(
+            read_object(store, "declared changes", ("declared", "decl"), &d, Declared::from_bytes)?
+                .1,
+        ),
+        None => None,
+    };
+    let overlay = match result.overlay {
+        Some(o) => {
+            let (_, ov) =
+                read_object(store, "overlay", ("overlays", "ovly"), &o, Overlay::from_bytes)?;
+            if ov.edits != result.edits {
+                return Err(format!(
+                    "the overlay {o} is of the edit set {}, the result's is {}",
+                    ov.edits, result.edits
+                ));
+            }
+            Some(ov)
+        }
+        None => None,
+    };
+    if result.allow_unparsed != ctx.test.allows(Allow::Unparsed) {
+        return Err(format!(
+            "the result says allow_unparsed {}, and the run was{} given --allow-unparsed",
+            result.allow_unparsed,
+            if ctx.test.allows(Allow::Unparsed) { "" } else { " not" }
+        ));
+    }
+    Ok(Record { id, bytes, result, set_id: set_digest(&set), set, declared, overlay })
+}
+
+fn set_digest(set: &EditSet) -> Digest {
+    formats::content_id(&set.to_bytes()).unwrap_or(Digest([0; 32]))
+}
+
+/// Whether the run's result permits `--write` under the test's `allow`
+/// lines: `slip_verify::conclude::permits` over its records (never the
+/// expected state's name).
+pub fn permitted(test: &Test, record: Option<&Record>) -> bool {
+    let allow = conclude::Allow {
+        residue: test.allows(Allow::Residue),
+        errors: test.allows(Allow::Errors),
+        partial: test.allows(Allow::Partial),
+    };
+    record.is_some_and(|r| conclude::permits(&r.result, &r.set, allow))
+}
+
+// ---------------------------------------------------------------- the test
+
 /// Runs and judges `test` (§6.3, §6.4) in `work`; see [`super::run_one`].
 pub fn run_test(
     test: &Test,
@@ -320,8 +732,11 @@ pub fn run_test(
     clang: Option<&Path>,
     bless: bool,
 ) -> Report {
-    let mut report = Report { outcome: Outcome::Pass, clang_skipped: false };
-    let judged = judge(test, slip, work, clang, bless, &mut report.clang_skipped);
+    let mut report = Report { outcome: Outcome::Pass, clang_skipped: false, notes: Vec::new() };
+    for (oracle, reason) in &test.oracle_off {
+        report.notes.push(Note { oracle: *oracle, off: true, reason: reason.clone() });
+    }
+    let judged = judge(test, slip, work, clang, bless, &mut report);
     report.outcome = match (judged, &test.xfail) {
         (Ok(()), None) => Outcome::Pass,
         (Ok(()), Some(_)) => Outcome::XPass,
@@ -342,20 +757,22 @@ fn judge(
     work: &Path,
     clang: Option<&Path>,
     bless: bool,
-    clang_skipped: &mut bool,
+    report: &mut Report,
 ) -> Result<(), Outcome> {
     tree::check_work_dir(work, &test.area, &test.name, &test.dir).map_err(Outcome::Error)?;
     if !test.expect && !bless {
         return Err(Outcome::Error("no expect.txt (`--bless` writes it)".into()));
     }
     let pre_dir = test.dir.join("pre");
-    let pre = tree::read_tree(&pre_dir).map_err(|e| Outcome::Error(format!("pre/: {e}")))?;
-    let post = if test.dir.join("post").is_dir() {
-        tree::read_tree(&test.dir.join("post"))
+    let pre = tree::read_plain_tree(&pre_dir).map_err(|e| Outcome::Error(format!("pre/: {e}")))?;
+    let post = if std::fs::symlink_metadata(test.dir.join("post")).is_ok() {
+        tree::read_plain_tree(&test.dir.join("post"))
             .map_err(|e| Outcome::Error(format!("post/: {e}")))?
     } else {
         Files::new()
     };
+    let test_snapshot =
+        tree::read_tree(&test.dir).map_err(|e| Outcome::Error(format!("the test: {e}")))?;
     let work = tree::fresh_dir(work).map_err(|e| error(format!("{}: {e}", work.display())))?;
     let tree_dir = work.join("tree");
     let mut ctx = Ctx {
@@ -367,16 +784,17 @@ fn judge(
         work,
         commands: Vec::new(),
         pre: pre.clone(),
+        test_snapshot,
     };
     tree::copy_tree(&pre_dir, &ctx.tree).map_err(|e| error(format!("copying pre/: {e}")))?;
     ctx.commands = write_database(&ctx)?;
 
-    // The clang oracle's pre-image, while the tree is still pre/ (§6.4).
-    let clang_on = test.oracle_on(Oracle::Clang);
-    if clang_on
-        && test.state.may_write()
+    // The clang oracle's pre-image, while the tree is still pre/ (§6.4),
+    // for a test whose run may write.
+    if test.oracle_on(Oracle::Clang)
+        && test.may_write()
         && let Some(clang) = clang
-        && let Err(e) = oracles::clang(&ctx, clang)
+        && let Err(e) = oracles::clang(&ctx, clang, None)
     {
         return Err(Outcome::Error(format!("the pre-image is not accepted by clang: {e}")));
     }
@@ -386,26 +804,68 @@ fn judge(
     let ran = ctx.slip(&args)?;
     let got = ctx.read_tree().map_err(Outcome::Error)?;
 
+    // The output's structure, before anything is compared or blessed.
+    check_output(&ran.stdout, test.state.is_state())
+        .map_err(|e| Outcome::Fail(format!("output: {e}")))?;
+    // The run's records.
+    // (A run with no result line is the state's difference already.)
+    let record = if test.state.is_state() && ran.lines.result.is_some() {
+        Some(read_record(&ctx, &ran))
+    } else {
+        None
+    };
+    let (record, record_error) = match record {
+        Some(Ok(r)) => (Some(r), None),
+        Some(Err(e)) => (None, Some(format!("store: {e}"))),
+        None => (None, None),
+    };
+    let permits = permitted(test, record.as_ref());
+
     // Step 3: the goldens.
     if bless {
-        bless_goldens(&ctx, &ran, &got, &post)?;
+        bless_goldens(&ctx, &ran, &got, &post, record_error.as_deref(), permits)?;
+        ctx.test_snapshot =
+            tree::read_tree(&test.dir).map_err(|e| Outcome::Error(format!("the test: {e}")))?;
     } else {
         let expect = std::fs::read(test.dir.join("expect.txt"))
             .map_err(|e| error(format!("expect.txt: {e}")))?;
         let expect = String::from_utf8_lossy(&expect);
-        let differences = compare(&ctx, &ran, &expect, &tree::overlay(&pre, &post), &got);
+        let mut differences = compare(&ctx, &ran, &expect, &tree::overlay(&pre, &post), &got);
+        differences.splice(0..0, record_error);
+        if let Some(d) = write_difference(&ctx, record.as_ref(), permits, &got) {
+            differences.push(d);
+        }
         if !differences.is_empty() {
             return Err(Outcome::Fail(differences.join("; ")));
         }
     }
 
     // Step 4: the oracles.
-    let failures = oracles::run_all(&ctx, &ran, got != pre, clang, clang_skipped)?;
+    let failures = oracles::run_all(&ctx, &ran, record.as_ref(), &got, clang, report)?;
     if failures.is_empty() { Ok(()) } else { Err(Outcome::Fail(failures.join("; "))) }
 }
 
+/// A write the result does not permit: the tree differs from `pre/` and
+/// [`permitted`] is false.
+fn write_difference(
+    ctx: &Ctx<'_>,
+    record: Option<&Record>,
+    permits: bool,
+    got: &Files,
+) -> Option<String> {
+    let written = tree::first_difference(&ctx.pre, got)?;
+    if permits {
+        return None;
+    }
+    let state = record.map_or("none", |r| r.result.state.name());
+    Some(format!(
+        "the tree was written, and the result (state {state}) does not permit writing \
+         (spec/edits.md §8.5): {written}"
+    ))
+}
+
 /// Step 3's differences: the exit status, the state, the first line of
-/// the output, the first file of the tree.
+/// the output, the first entry of the tree.
 fn compare(
     ctx: &Ctx<'_>,
     ran: &Ran,
@@ -426,14 +886,7 @@ fn compare(
         d.push(s);
     }
     if let Some(s) = tree::first_difference(expected_tree, got) {
-        if !test.state.may_write() && *got != ctx.pre {
-            d.push(format!(
-                "the tree was written, and the state `{}` does not permit writing: {s}",
-                test.state.name()
-            ));
-        } else {
-            d.push(format!("tree: {s}"));
-        }
+        d.push(format!("tree: {s}"));
     }
     d
 }
@@ -455,8 +908,17 @@ pub fn state_difference(expected: Expected, ran: &Ran) -> Option<String> {
 }
 
 /// `--bless` (§6.3): only when the state and the exit status are as
-/// `test.txt` says, and when the written tree is one `post/` can describe.
-fn bless_goldens(ctx: &Ctx<'_>, ran: &Ran, got: &Files, old_post: &Files) -> Result<(), Outcome> {
+/// `test.txt` says, the records are the output's, the result permits what
+/// was written, and the written tree is one `post/` (or `post: none`) can
+/// describe.
+fn bless_goldens(
+    ctx: &Ctx<'_>,
+    ran: &Ran,
+    got: &Files,
+    old_post: &Files,
+    record_error: Option<&str>,
+    permits: bool,
+) -> Result<(), Outcome> {
     let test = ctx.test;
     let mut refuse = Vec::new();
     if ran.status != test.exit {
@@ -465,14 +927,35 @@ fn bless_goldens(ctx: &Ctx<'_>, ran: &Ran, got: &Files, old_post: &Files) -> Res
     if let Some(s) = state_difference(test.state, ran) {
         refuse.push(s);
     }
-    let added = got.keys().find(|k| !ctx.pre.contains_key(*k)).map(|k| format!("file {k} added"));
-    let missing =
-        ctx.pre.keys().find(|k| !got.contains_key(*k)).map(|k| format!("file {k} missing"));
-    if let Some(d) = added.or(missing) {
+    if let Some(e) = record_error {
+        refuse.push(e.to_owned());
+    }
+    // Only changed regular files can be described by post/.
+    let mut shape = Vec::new();
+    for (p, e) in got {
+        match (ctx.pre.get(p), e) {
+            (Some(Entry::File { .. }), Entry::File { .. }) | (Some(Entry::Dir), Entry::Dir) => {}
+            (None, _) => shape.push(format!("{} {p} added", e.kind())),
+            (Some(pe), _) => shape.push(format!("{} {p} is now a {}", pe.kind(), e.kind())),
+        }
+    }
+    for (p, e) in &ctx.pre {
+        if !got.contains_key(p) {
+            shape.push(format!("{} {p} missing", e.kind()));
+        }
+    }
+    if let Some(d) = shape.into_iter().next() {
         refuse.push(format!("post/ cannot hold the written tree: {d}"));
     }
-    if !test.state.may_write() && *got != ctx.pre {
-        refuse.push(format!("the state `{}` does not permit writing", test.state.name()));
+    let written = got != &ctx.pre;
+    if written && !permits {
+        refuse.push("the result does not permit writing (spec/edits.md §8.5)".into());
+    }
+    if written && test.post_none {
+        refuse.push("the test says `post: none`, and the run wrote".into());
+    }
+    if !written && test.may_write() && !test.post_none {
+        refuse.push("the run wrote nothing: say `post: none` in test.txt".into());
     }
     if !refuse.is_empty() {
         return Err(Outcome::Fail(format!("cannot bless: {}", refuse.join("; "))));
@@ -487,20 +970,28 @@ fn bless_goldens(ctx: &Ctx<'_>, ran: &Ran, got: &Files, old_post: &Files) -> Res
     let post_dir = test.dir.join("post");
     let new_post: Files = got
         .iter()
-        .filter(|(k, v)| ctx.pre.get(*k) != Some(v))
+        .filter(|(k, v)| matches!(v, Entry::File { .. }) && ctx.pre.get(*k) != Some(v))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     for (k, v) in &new_post {
-        if old_post.get(k) != Some(v) {
+        if old_post.get(k) != Some(v)
+            && let Entry::File { mode, bytes } = v
+        {
             let p = post_dir.join(k);
             if let Some(parent) = p.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
             }
-            std::fs::write(&p, v).map_err(|e| io(&p, e))?;
+            std::fs::write(&p, bytes).map_err(|e| io(&p, e))?;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(*mode))
+                .map_err(|e| io(&p, e))?;
             println!("bless: {}", p.display());
         }
     }
-    for k in old_post.keys().filter(|k| !new_post.contains_key(*k)) {
+    for k in old_post
+        .iter()
+        .filter(|(k, v)| matches!(v, Entry::File { .. }) && !new_post.contains_key(*k))
+        .map(|(k, _)| k)
+    {
         let p = post_dir.join(k);
         std::fs::remove_file(&p).map_err(|e| io(&p, e))?;
         println!("bless: {} (removed)", p.display());

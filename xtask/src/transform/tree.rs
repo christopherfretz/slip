@@ -1,21 +1,72 @@
 //! Trees of files, judged byte for byte (`spec/harness.md` §6.2, §6.3):
-//! reading one into memory, copying one, comparing two, and making and
-//! removing a test's work directory by explicit path.
+//! reading one into memory (contents, mode bits, directories, and what is
+//! neither), copying one, comparing two, and making and removing a test's
+//! work directory by explicit path.
 
 use std::collections::BTreeMap;
 use std::io;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
 
-/// The regular files of a tree: path relative to its root (components
-/// joined by `/`) to bytes, in byte order of paths.
-pub type Files = BTreeMap<String, Vec<u8>>;
+/// One entry of a tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    /// A regular file: its permission bits (`mode & 0o7777`) and bytes.
+    File { mode: u32, bytes: Vec<u8> },
+    /// A directory (its mode is not compared: a copy's directories are
+    /// made under the process's umask).
+    Dir,
+    /// A symbolic link and its target, which is not followed.
+    Symlink(PathBuf),
+    /// Anything else (a fifo, a socket, a device).
+    Other,
+}
 
-/// Every regular file under `root`. Directories are walked; a symbolic
-/// link, any other kind of file, or a name that is not UTF-8 is an error
-/// (a test's sources are plain files, §6.2).
+impl Entry {
+    /// The bytes of a regular file.
+    pub fn bytes(&self) -> Option<&[u8]> {
+        if let Entry::File { bytes, .. } = self { Some(bytes) } else { None }
+    }
+
+    /// Its kind, as messages name it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Entry::File { .. } => "file",
+            Entry::Dir => "directory",
+            Entry::Symlink(_) => "symbolic link",
+            Entry::Other => "special file",
+        }
+    }
+}
+
+/// The entries of a tree, its root not included: path relative to the
+/// root (components joined by `/`) to the entry, in byte order of paths.
+pub type Files = BTreeMap<String, Entry>;
+
+/// Every entry under `root`, directories walked (a symbolic link is an
+/// entry and is not followed). A name that is not UTF-8 is an error.
 pub fn read_tree(root: &Path) -> Result<Files, String> {
     let mut files = Files::new();
     walk(root, "", &mut files)?;
+    Ok(files)
+}
+
+/// [`read_tree`] of a test's own input (`pre/`, `post/`): regular files
+/// and directories only. A symbolic link or another kind of file is an
+/// error (§6.2: a test's sources are plain files; a link could lead
+/// `--bless` out of the test).
+pub fn read_plain_tree(root: &Path) -> Result<Files, String> {
+    match std::fs::symlink_metadata(root) {
+        Ok(m) if m.is_dir() => {}
+        Ok(m) if m.file_type().is_symlink() => return Err("a symbolic link".into()),
+        Ok(_) => return Err("not a directory".into()),
+        Err(e) => return Err(e.to_string()),
+    }
+    let files = read_tree(root)?;
+    if let Some((p, e)) = files.iter().find(|(_, e)| !matches!(e, Entry::File { .. } | Entry::Dir))
+    {
+        return Err(format!("{p}: a {}, not a regular file or a directory", e.kind()));
+    }
     Ok(files)
 }
 
@@ -33,23 +84,28 @@ fn walk(dir: &Path, prefix: &str, files: &mut Files) -> Result<(), String> {
             return Err(format!("{}: the name is not UTF-8", path.display()));
         };
         let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
-        let kind = std::fs::symlink_metadata(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))?
-            .file_type();
+        let meta =
+            std::fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let kind = meta.file_type();
         if kind.is_dir() {
+            files.insert(rel.clone(), Entry::Dir);
             walk(&path, &rel, files)?;
         } else if kind.is_file() {
             let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            files.insert(rel, bytes);
+            files.insert(rel, Entry::File { mode: meta.permissions().mode() & 0o7777, bytes });
+        } else if kind.is_symlink() {
+            let target =
+                std::fs::read_link(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            files.insert(rel, Entry::Symlink(target));
         } else {
-            return Err(format!("{rel}: not a regular file or a directory"));
+            files.insert(rel, Entry::Other);
         }
     }
     Ok(())
 }
 
 /// Copies the tree `from` to `to` (which must not exist), file modes
-/// included.
+/// included. Only regular files and directories are copied.
 pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::create_dir(to)?;
     let mut list = Vec::new();
@@ -75,8 +131,9 @@ pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// The first difference of `actual` from `expected`, in byte order of
-/// paths: `file <p> differs (first at byte <k>)`, `file <p> added`,
-/// `file <p> missing`. `None` if they are equal.
+/// paths: `file <p> differs (first at byte <k>)`, `file <p> mode <m>,
+/// expected <m>`, `<kind> <p> added`, `<kind> <p> missing`, `<kind> <p> is
+/// now a <kind>`. `None` if they are equal.
 pub fn first_difference(expected: &Files, actual: &Files) -> Option<String> {
     let mut paths: Vec<&String> = expected.keys().chain(actual.keys()).collect();
     paths.sort();
@@ -84,25 +141,51 @@ pub fn first_difference(expected: &Files, actual: &Files) -> Option<String> {
     for p in paths {
         match (expected.get(p), actual.get(p)) {
             (Some(e), Some(a)) if e == a => {}
-            (Some(e), Some(a)) => {
-                let k = e.iter().zip(a.iter()).take_while(|(x, y)| x == y).count();
-                return Some(format!("file {p} differs (first at byte {k})"));
+            (
+                Some(Entry::File { mode: em, bytes: e }),
+                Some(Entry::File { mode: am, bytes: a }),
+            ) => {
+                if e != a {
+                    let k = e.iter().zip(a.iter()).take_while(|(x, y)| x == y).count();
+                    return Some(format!("file {p} differs (first at byte {k})"));
+                }
+                return Some(format!("file {p} mode {am:o}, expected {em:o}"));
             }
-            (None, Some(_)) => return Some(format!("file {p} added")),
-            (Some(_), None) => return Some(format!("file {p} missing")),
+            (Some(Entry::Symlink(e)), Some(Entry::Symlink(a))) => {
+                return Some(format!(
+                    "symbolic link {p} leads to {}, expected {}",
+                    a.display(),
+                    e.display()
+                ));
+            }
+            (Some(e), Some(a)) => {
+                return Some(format!("{} {p} is now a {}", e.kind(), a.kind()));
+            }
+            (None, Some(a)) => return Some(format!("{} {p} added", a.kind())),
+            (Some(e), None) => return Some(format!("{} {p} missing", e.kind())),
             (None, None) => {}
         }
     }
     None
 }
 
-/// `pre` with the files of `post` laid over it (§6.2).
+/// `pre` with the entries of `post` laid over it (§6.2).
 pub fn overlay(pre: &Files, post: &Files) -> Files {
     let mut out = pre.clone();
     for (p, b) in post {
         out.insert(p.clone(), b.clone());
     }
     out
+}
+
+/// The paths of regular files of `after` that are new or whose bytes or
+/// mode differ from `before`.
+pub fn changed_files(before: &Files, after: &Files) -> Vec<String> {
+    after
+        .iter()
+        .filter(|(p, e)| matches!(e, Entry::File { .. }) && before.get(*p) != Some(e))
+        .map(|(p, _)| p.clone())
+        .collect()
 }
 
 /// Checks that `work` is a test's own work directory,

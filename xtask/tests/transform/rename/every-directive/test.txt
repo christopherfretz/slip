@@ -17,4 +17,5 @@ allow: residue
 allow: unparsed
 oracle: no-clang kiln only
 oracle: no-back the inverse is refused
+timeout: 30
 xfail: not yet
