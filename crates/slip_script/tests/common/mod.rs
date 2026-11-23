@@ -237,6 +237,9 @@ impl Subject for Liar<'_> {
             _ => self.0.lookup(global, components),
         }
     }
+    fn lookup_in(&self, scope: Entity, identifier: &[u8]) -> Option<Vec<Entity>> {
+        self.0.lookup_in(scope, identifier)
+    }
     fn identifier(&self, v: Value) -> Option<Vec<u8>> {
         self.0.identifier(v)
     }
@@ -299,6 +302,12 @@ impl Subject for Liar<'_> {
     }
     fn references_at(&self, r: Range) -> Vec<Reference> {
         self.0.references_at(r)
+    }
+    fn references_named_at(&self, r: Range) -> Vec<Reference> {
+        self.0.references_named_at(r)
+    }
+    fn declarations_named_at(&self, r: Range) -> Vec<Declaration> {
+        self.0.declarations_named_at(r)
     }
     fn found_directly(&self, r: Reference) -> bool {
         self.0.found_directly(r)

@@ -423,6 +423,32 @@ impl<'s> Host<'s> {
         }
     }
 
+    /// Text that must be one identifier (§6.1 rule 1, "What version 0
+    /// takes for an identifier"): at most [`Limits::name_bytes`] bytes
+    /// (§7.7), then [`check_identifier`]: `invalid_argument` for what is
+    /// certainly not one, `unsupported` for a `$` or a code point outside
+    /// ASCII. `what` names the argument in the message.
+    pub(crate) fn identifier_arg(&self, text: &[u8], what: &str) -> Step<()> {
+        if text.len() as u64 > self.limits.name_bytes {
+            return refuse(
+                Errc::LimitExceeded,
+                format!(
+                    "{what} of {} bytes: the limit of a run is {} (§7.7)",
+                    text.len(),
+                    self.limits.name_bytes
+                ),
+            );
+        }
+        match check_identifier(text) {
+            Ok(()) => Ok(()),
+            Err(Errc::Unsupported) => refuse(
+                Errc::Unsupported,
+                format!("{what} with `$` or outside the basic character set (§6.1 rule 1)"),
+            ),
+            Err(errc) => refuse(errc, format!("{what}: not one identifier (§6.1 rule 1)")),
+        }
+    }
+
     /// The range of the two integers `file`, `span` (`lo << 32 | hi`):
     /// refused with `invalid_handle` when the file handle is 0 (the null
     /// range) or not one this host issued, or when not `lo <= hi <=` the
@@ -565,6 +591,20 @@ impl<'s> Host<'s> {
                 Value::Declaration(d) => Answer::Info(Some(Value::Entity(s.entity_of(d)))),
                 v => return Err(self.wrong_kind(v, "a declaration")),
             },
+            wire::OP_LOOKUP_IN => {
+                let e = self.entity_arg(ints[0])?;
+                self.identifier_arg(bytes, "an identifier (§6.1)")?;
+                match s.lookup_in(e, bytes) {
+                    Some(found) => Answer::Values(found.into_iter().map(Value::Entity).collect()),
+                    None => {
+                        return Err(self.wrong_kind(
+                            Value::Entity(e),
+                            "a namespace, a class, a class template, a specialisation of one or \
+                             an enumeration",
+                        ));
+                    }
+                }
+            }
             wire::OP_REFERENCES_TO => {
                 let e = self.entity_arg(ints[0])?;
                 Answer::Values(s.references_to(e).into_iter().map(Value::Reference).collect())

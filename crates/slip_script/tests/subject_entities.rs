@@ -246,6 +246,53 @@ fn s6_1_rule6_overloads_in_unit_order() {
     });
 }
 
+/// §6.1 rule 8 (WP-132): `lookup(scope, identifier)` answers as the last
+/// component of a qualified name that reached `scope`: transparency,
+/// overloads in unit order, a class, an enumeration, a class template, an
+/// unnamed namespace, a typedef name for linkage purposes; `None` for an
+/// entity that is no scope; the empty list for an unknown identifier.
+#[test]
+fn s6_1_rule8_lookup_in_a_scope() {
+    let src = "namespace e { typedef struct { int tdm; } TD; typedef int TI; }\n";
+    with(&[("main.cpp", L)], |p, s| {
+        let in_ = |scope: Entity, id: &str| {
+            let found = s.lookup_in(scope, id.as_bytes()).expect("a scope");
+            at(p, s, &found)
+        };
+        let ns = one(s, "ns");
+        assert_eq!(in_(ns, "f"), ["main.cpp:2", "main.cpp:15", "main.cpp:17"]);
+        assert_eq!(in_(ns, "g"), ["main.cpp:3"], "through the inline namespace");
+        assert_eq!(in_(ns, "h"), ["main.cpp:4"], "through the unnamed namespace");
+        assert!(in_(ns, "deep").is_empty(), "a named namespace is not transparent");
+        assert!(in_(ns, "no_such_name").is_empty());
+        let unnamed = s.parent(one(s, "ns::h")).expect("a parent");
+        assert_eq!(in_(unnamed, "h"), ["main.cpp:4"], "a scope with no qualified name");
+        assert_eq!(in_(one(s, "ns::S"), "u1"), ["main.cpp:8"]);
+        assert_eq!(in_(one(s, "ns::E"), "A"), ["main.cpp:5"]);
+        assert_eq!(in_(one(s, "ns::SE"), "K"), ["main.cpp:6"]);
+        assert_eq!(in_(one(s, "ns::C"), "cm"), ["main.cpp:13"]);
+        assert!(in_(one(s, "ns::C"), "spec").is_empty(), "a member of the specialisation");
+        // An explicit specialisation: its own members, not the template's.
+        let explicit = |ast: &Ast, d| spec_kind(ast, d) == Some(SpecKind::ExplicitSpecialization);
+        let mut spec = find(p, DeclKind::ClassTemplateSpecialization, "C", explicit);
+        spec.extend(find(p, DeclKind::CXXRecord, "C", explicit));
+        assert!(!spec.is_empty(), "the explicit specialisation C<int>");
+        let spec = s.entity_number(spec[0]);
+        assert_eq!(in_(spec, "spec"), ["main.cpp:14"]);
+        assert!(in_(spec, "cm").is_empty());
+        let global = s.parent(ns).expect("the global namespace");
+        assert_eq!(in_(global, "ns"), ["main.cpp:1"]);
+        for not_a_scope in [one(s, "ns::v1::g"), look(s, "ns::f")[0], one(s, "ST")] {
+            assert_eq!(s.lookup_in(not_a_scope, b"m"), None, "{not_a_scope:?}");
+        }
+    });
+    with(&[("main.cpp", src)], |p, s| {
+        let td = s.lookup_in(one(s, "e::TD"), b"tdm").expect("a typedef for linkage");
+        assert_eq!(at(p, s, &td), ["main.cpp:1"]);
+        assert_eq!(s.lookup_in(one(s, "e::TI"), b"tdm"), None, "another typedef");
+    });
+}
+
 /// §6.1 head, §1: a name declared in two headers and in the main file is
 /// in the order of inclusion (a header's declarations before and after a
 /// nested include), not in the order of the files' buffers.

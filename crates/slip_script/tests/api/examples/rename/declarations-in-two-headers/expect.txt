@@ -1,5 +1,5 @@
 transform <id>
-edit 0 a.h:2:5-2:13 tiers 0 = "new_name"
-edit 1 b.h:2:5-2:13 tiers 0 = "new_name"
-edit 2 t.cpp:7:5-7:13 tiers 0 = "new_name"
+edit 0 a.h:2:5-2:13 tiers 0 = identifier("new_name")
+edit 1 b.h:2:5-2:13 tiers 0 = identifier("new_name")
+edit 2 t.cpp:7:5-7:13 tiers 0 = identifier("new_name")
 renamed function "lib" "new_name" disc cb62fd8c624024a58df53a3d40209e222718a3038556e7b05e4e50c3346379e3 -> "lib" "old_name"

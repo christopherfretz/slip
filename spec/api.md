@@ -381,6 +381,7 @@ a range: two integers, the file handle and `lo << 32 | hi`.
 | 21 | `parameters_of` | function | | B: integers, entities |
 | 22 | `declarations_of` | entity | | B: integers, declarations |
 | 23 | `entity_of` | declaration | | V: entity |
+| 24 | `lookup_in` | scope | identifier | B: integers, entities |
 | 32 | `references_to` | entity | | B: integers, references |
 | 33 | `referent_of` | reference | | V: entity |
 | 34 | `name_range_of` | declaration or reference | | B: a range (two integers) or nothing |
@@ -395,6 +396,7 @@ a range: two integers, the file handle and `lo << 32 | hi`.
 | 65 | `code_spell` | entity | | V: code |
 | 66 | `code_copy` | `r` | | V: code |
 | 67 | `code_cat` | codes, any number | | V: code |
+| 68 | `code_identifier` | | identifier | V: code |
 | 80 | `replace` | `r`, code, group | note | V: 0 |
 | 81 | `new_group` | | | V: group |
 | 82 | `report` | where-kind, a, b, severity | message | V: 0 |
@@ -713,10 +715,11 @@ says otherwise; that is not repeated.
 
 ```cpp
 consteval std::vector<info> lookup(std::string_view qualified_name);
+consteval std::vector<info> lookup(info scope, std::string_view identifier);
 ```
 
 Returns the entities declared with that name in the subject unit, in unit
-order of their first declarations.
+order of their first declarations. The second form is rule 8.
 
 1. Grammar: `::`, or an optional leading `::` followed by identifiers
    separated by `::`. An identifier is a C++ identifier in the encoding of
@@ -768,6 +771,26 @@ order of their first declarations.
 6. The result holds every entity so named: each function of an overload
    set is one entity, and a function template is one entity.
 7. A name nothing matches returns an empty sequence.
+8. **Lookup in a scope.** `lookup(scope, identifier)` returns the
+   entities that rule 3 finds for `identifier` as a member of `scope`,
+   in the order of the head: what `lookup(q + "::" + identifier)` gives
+   when `q` is a qualified name that reaches `scope` alone, and the same
+   for a scope that no qualified name reaches (an unnamed namespace, an
+   unnamed class). A
+   scope is what rule 4 walks into (a namespace, the global one
+   included, a class, a class template, an enumeration, a typedef name
+   for linkage purposes), and also a specialisation of a class template,
+   whose members are those written in its own definition (rule 5 does not
+   find them by a qualified name; here the scope is given): an explicit
+   specialisation's, and none for an implicit instantiation, whose
+   members have no written declaration. Rules 5 to 7 hold otherwise. The checks, in order: `invalid_handle` for a null or
+   forged `scope`; `wrong_kind` if `scope` is not an entity or is an
+   entity that is no scope; for `identifier`, `limit_exceeded` above
+   §7.7's bytes in one identifier argument, then rule 1 for one
+   component (`invalid_argument`, or `unsupported` for `$` and non-ASCII
+   code points). A transform that has an entity and wants "the same
+   scope, another name" asks `lookup(parent_of(e), n)`; it does not take
+   a qualified name apart.
 
 This is decision D2 of the design: a transform names the subject by
 strings, because the subject's names do not exist in the transform unit.
@@ -1020,18 +1043,20 @@ reduce, apply and verification.
 class code { public: constexpr code() noexcept; };      // the empty text
 
 consteval code text(std::string_view);
+consteval code identifier(std::string_view name);
 consteval code spell(info entity);
 consteval code copy(range);
 consteval code copy(info reference_or_expression);
 template <class... Pieces> consteval code cat(const Pieces&... pieces);
 ```
 
-A `code` is a sequence of **pieces** held by the host. There are three
+A `code` is a sequence of **pieces** held by the host. There are four
 kinds of piece:
 
 | Piece | Made by | Means |
 |---|---|---|
 | literal | `text(s)` | the bytes of `s` |
+| identifier | `identifier(n)` | the identifier `n`, written as a name (rule 7) |
 | copy | `copy(r)` | the text of `r` in the result of the Slip run: the bytes of `r` with every accepted edit that lies properly inside `r` applied |
 | spelled entity | `spell(e)` | a name that denotes `e` at the place the code is put (§7.2) |
 
@@ -1096,6 +1121,16 @@ kinds of piece:
 6. Code values are immutable. Adjacent literal pieces are one piece; an
    empty literal is no piece. Two code values with the same pieces are
    interchangeable.
+7. **An identifier piece.** `identifier(n)` takes `n` as a value, not as
+   code: it must be one identifier as §6.1 rule 1 takes one (one
+   component; `limit_exceeded` above §7.7's bytes in one identifier
+   argument, then `invalid_argument`, or `unsupported` for `$` and
+   non-ASCII code points). Its text is the bytes of `n`. It is never
+   joined with a literal or another identifier beside it: the record
+   says that a name was put there, and which (§7.6). `text(n)` writes the
+   same bytes as a literal and stays the general form; a transform that
+   writes a name writes it with `identifier`. What verification checks
+   of an identifier piece is §7.5 rule 3.
 
 Why code values live in the host: a host call costs about as much as
 eight evaluator steps, and building the same text with `std::string` in
@@ -1121,6 +1156,20 @@ recorded. Version 0 has two spellings.
    If several references have that extent (§5.4 rule 3), the conditions
    must hold for each of them, and their name ranges must be one range.
    The references with one extent are taken, and given, in unit order.
+
+   **At a name range.** If the edit is `replace(n, c)`, `c` holds a
+   spelled-entity piece for `E`, and `n` is no reference's extent but is
+   the name range of references or of declarations (`name_range_of`;
+   `n::f` has the name range `f`), then `c` must be exactly that one
+   piece and each of these must hold: `E` has an identifier; for each
+   reference `R` named at `n`, the last three conditions above; for each
+   declaration `D` named at `n`, `parent_of(E)` equals the parent of
+   `D`'s entity. The recorded edit replaces `n` with the identifier of
+   `E`, as above. Otherwise `replace` throws `invalid_argument`: a name
+   range takes a sibling's identifier, and another entity is spelled at
+   the extent, where its qualifier can be written. Rule 2 is never used
+   at a name range (it would put `::n::g` after the qualifier written,
+   `n::::n::g`).
 2. **Fully qualified.** Otherwise the text is `::` followed by the
    identifiers of `E`'s enclosing scopes and of `E`, separated by `::`.
    Unnamed namespaces and unnamed enumerations are skipped; inline
@@ -1352,6 +1401,7 @@ Piece :=
     literal(bytes)
   | copy(file, lo, hi)
   | spelled(key: KeyId, text: bytes)      the entity meant, and the text chosen (§7.2)
+  | identifier(bytes)                     a name written by `identifier` (§7.1 rule 7)
 
 Report := place: none | (file, lo, hi);  severity;  message;  attached: bool   (§7.4 rule 3)
 
@@ -1409,7 +1459,7 @@ Changed := key: KeyId;  place: (file, lo, hi);  reason: text                    
 | Limit | Value |
 |---|---|
 | code values | 2^22 |
-| bytes of text in pieces, in total: literal bytes and the text of spelled pieces | 2^28 |
+| bytes of text in pieces, in total: literal bytes and the text of spelled and identifier pieces | 2^28 |
 | pieces, in total | 2^22 |
 | pieces in one code value | 2^16 |
 | edits requested | 2^20 |
@@ -1470,6 +1520,8 @@ namespace slip { inline namespace v0 { /* every name of this specification */ } 
 | `__slip_lib_meta_calls` | `202611L` | §6.7 |
 | `__slip_lib_meta_code` | `202611L` | §7.1, §7.2 |
 | `__slip_lib_meta_edits` | `202611L` | §7.3 to §7.5 |
+| `__slip_lib_meta_scope_lookup` | `202611L` | §6.1 rule 8 |
+| `__slip_lib_meta_identifier` | `202611L` | §7.1 rule 7 |
 
 1. A macro is defined by `<slip/meta.h>` exactly when the feature is
    present. Its value is the year and month in which the feature's
@@ -1564,6 +1616,10 @@ reported for review.
 the name is replaced at every declaration and every reference. A place
 that cannot be edited is an `error` report, because a rename that misses a
 place does not compile.
+The new name is written as an identifier piece (§7.1 rule 7), and a
+function already declared with it in the same scope is found by
+`lookup(parent_of(f), RENAME_TO)` (§6.1 rule 8): the example takes no
+string apart and builds none.
 
 ## 11. The script test format
 
@@ -1667,6 +1723,7 @@ To be created by the work packages named; none exists yet.
 | `crates/slip_script/tests/api/values/`, `lookup/`, `structure/`, `references/`, `ranges/`, `calls/`, `code/`, `effects/`, `errors/` | §4 to §7 from C++, through the header: one directory per section, at least one test per numbered rule | WP-091 |
 | `crates/slip_script/tests/api/examples/` | §10: both examples on subjects that exercise every branch | WP-091 |
 | `crates/slip_script/tests/isolation.rs` | §2.4 rule 3, §2.7: N runs in any order give the same outputs and step counts; a failed run leaves the next unaffected | WP-091 |
+| `crates/slip_script/tests/api/lookup/r8-*`, `code/s7.1-r7-*`, `code/s7.2-r1-at-a-*`, `code/s7.2-r1-name-range-not-a-sibling`, `effects/s7.5-r3-identifier-and-expect-renamed`; `tests/examples.rs` | §6.1 rule 8, §7.1 rule 7, §7.2 rule 1 at a name range, §7.5 rule 3; no example writes text | WP-132 |
 | `crates/slip_script/tests/subject_keys.rs` | §7.5 rules 1 to 3 over Kiln: the keys declared are the keys the digest gives | WP-095 |
 | `crates/slip_digest/tests/spelling.rs` | §7.2 rule 5: a spelled piece that denotes the recorded entity; one that denotes another; one nobody parses; inside an exempt unit; under a rename rule | WP-096 |
 | `crates/slip_cli/tests/transform_map.rs` | a transform run through a worker: the run output arrives in the shard; a failing transform fails the observer; one compile per worker | WP-092 |

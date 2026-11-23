@@ -91,3 +91,48 @@ fn s10_1_the_swap_directories_run_the_example() {
 fn s10_2_the_rename_directories_run_the_example() {
     includes_the_example("rename", "rename_function.cpp");
 }
+
+/// WP-132 item 5: no example of `resource/examples/` writes text. Every
+/// file there is run by some directory of `tests/api/examples/`, and every
+/// such directory whose run completes is run again asking for the counter
+/// `api.op.code_text` (`spec/api.md` §7.6 rule 6): it is absent, so `text`
+/// (and `cat` of a string, which is `text`) never succeeded.
+#[test]
+fn wp132_no_example_writes_text() {
+    let root = crate_dir().join("tests/api/examples");
+    let mut covered = BTreeSet::new();
+    let mut ran = 0;
+    for case in script_test::discover(&root).unwrap() {
+        let text = std::fs::read_to_string(case.join(script_test::TRANSFORM)).unwrap();
+        let included = text
+            .lines()
+            .find_map(|l| l.strip_prefix("#include <../examples/")?.strip_suffix('>'))
+            .unwrap_or_else(|| panic!("{}: includes no example", case.display()))
+            .to_owned();
+        let mut script = script_test::load_script(&case).unwrap();
+        script.counters = vec!["api.op.code_text".to_owned()];
+        let rendered = match script_test::run_script(&script, &resource()) {
+            Ok(r) => r,
+            Err(e) => panic!("{}: {e}", case.display()),
+        };
+        if rendered.starts_with("failed ") {
+            continue;
+        }
+        ran += 1;
+        assert!(
+            rendered.contains("counter api.op.code_text absent\n"),
+            "{}: the example {included} wrote text:\n{rendered}",
+            case.display()
+        );
+        covered.insert(included);
+    }
+    assert!(ran > 0);
+    let mut files = BTreeSet::new();
+    for entry in std::fs::read_dir(resource().join("examples")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("cpp")) {
+            files.insert(path.file_name().unwrap().to_str().unwrap().to_owned());
+        }
+    }
+    assert_eq!(covered, files, "every example is run by a directory that completes");
+}

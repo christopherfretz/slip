@@ -1,0 +1,5 @@
+transform <id>
+edit 0 t.cpp:2:5-2:6 tiers 0 = spell("n::g(int)" "g")
+edit 1 t.cpp:8:8-8:9 tiers 0 = spell("n::g(int)" "g")
+report - note "other scope: invalid_argument"
+report - note "sibling: returned"

@@ -1,7 +1,7 @@
 transform <id>
-edit 0 t.cpp:3:5-3:13 tiers 0 = "new_name"
-edit 1 t.cpp:4:5-4:13 tiers 0 = "new_name"
-edit 2 t.cpp:6:25-6:33 tiers 0 = "new_name"
-edit 3 t.cpp:6:44-6:52 tiers 0 = "new_name"
+edit 0 t.cpp:3:5-3:13 tiers 0 = identifier("new_name")
+edit 1 t.cpp:4:5-4:13 tiers 0 = identifier("new_name")
+edit 2 t.cpp:6:25-6:33 tiers 0 = identifier("new_name")
+edit 3 t.cpp:6:44-6:52 tiers 0 = identifier("new_name")
 renamed function "lib" "new_name" disc cb62fd8c624024a58df53a3d40209e222718a3038556e7b05e4e50c3346379e3 -> "lib" "old_name"
 renamed function "lib" "new_name" disc d6233cf5b37d7814757e034c22a2f82234927cc384e4c39217606029bb622cbd -> "lib" "old_name"

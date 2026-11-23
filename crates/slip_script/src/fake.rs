@@ -386,6 +386,22 @@ impl Subject for FakeSubject {
         found
     }
 
+    fn lookup_in(&self, scope: Entity, identifier: &[u8]) -> Option<Vec<Entity>> {
+        if !self.ent(scope).scope {
+            return None;
+        }
+        let mut found: Vec<Entity> = (0..self.entities.len() as u32)
+            .map(Entity)
+            .filter(|&e| {
+                self.ent(e).identifier == identifier && self.findable(e) && self.member_of(e, scope)
+            })
+            .collect();
+        found.sort_by_key(|&e| {
+            self.declarations.iter().position(|d| d.entity == e).unwrap_or(usize::MAX)
+        });
+        Some(found)
+    }
+
     fn identifier(&self, v: Value) -> Option<Vec<u8>> {
         match v {
             Value::Entity(e) => Some(self.ent(e).identifier.clone()),
@@ -545,6 +561,20 @@ impl Subject for FakeSubject {
         (0..self.references.len() as u32)
             .map(Reference)
             .filter(|x| self.references[x.0 as usize].extent == Some(r))
+            .collect()
+    }
+
+    fn references_named_at(&self, r: Range) -> Vec<Reference> {
+        (0..self.references.len() as u32)
+            .map(Reference)
+            .filter(|x| self.references[x.0 as usize].name == Some(r))
+            .collect()
+    }
+
+    fn declarations_named_at(&self, r: Range) -> Vec<Declaration> {
+        (0..self.declarations.len() as u32)
+            .map(Declaration)
+            .filter(|d| self.declarations[d.0 as usize].name == Some(r))
             .collect()
     }
 

@@ -79,6 +79,40 @@ impl KilnSubject<'_> {
         found
     }
 
+    /// `lookup(scope, identifier)` (§6.1, `spec/landed/api/WP-132.md`):
+    /// the entities `identifier` names as members of `scope`, as the last
+    /// component of a qualified name that reached `scope` names them, in
+    /// unit order of their first declarations. A scope is what rule 4
+    /// walks into (a namespace, the global one included, a class, a class
+    /// template, an enumeration), a specialisation of a class template
+    /// (the members written in its definition), or a typedef name for
+    /// linkage purposes (the class it names). `None` for anything else.
+    pub(super) fn lookup_in_scope(&self, scope: DeclId, identifier: &[u8]) -> Option<Vec<DeclId>> {
+        let ast = self.ast();
+        let scope =
+            if self.is_scope(scope) || self.kind(scope) == DeclKind::ClassTemplateSpecialization {
+                scope
+            } else {
+                // Rule 4: the typedef names its unnamed class as a scope; the
+                // index of the scope that declares the typedef knows which.
+                let parent = self.parent_decl(scope)?;
+                let class = self.index(parent).linkage.get(&scope.index()).copied()?;
+                DeclId::new(class)
+            };
+        let Some(sym) = std::str::from_utf8(identifier).ok().and_then(|s| ast.symbols().get(s))
+        else {
+            return Some(Vec::new());
+        };
+        let mut found: Vec<DeclId> = self
+            .index(scope)
+            .names
+            .get(&sym.index())
+            .map(|es| es.iter().map(|&n| DeclId::new(n)).collect())
+            .unwrap_or_default();
+        found.sort_by(|&a, &b| self.entity_order(a, b));
+        Some(found)
+    }
+
     /// The index of `scope`, built on first use.
     fn index(&self, scope: DeclId) -> Arc<Index> {
         let cached = self.scopes().get(&scope.index()).map(Arc::clone);

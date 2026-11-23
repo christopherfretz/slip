@@ -1,0 +1,8 @@
+transform <id>
+report - note "alias: wrong_kind"
+report - note "declaration: wrong_kind"
+report - note "expression: wrong_kind"
+report - note "function: wrong_kind"
+report - note "null: invalid_handle"
+report - note "reference: wrong_kind"
+report - note "variable: wrong_kind"

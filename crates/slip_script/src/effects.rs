@@ -24,7 +24,7 @@ use crate::host::{
     Record, Step, Stop, check_identifier, refuse,
 };
 use crate::output::{Changed, Edit, Piece, Place, Report, Severity, Tiers};
-use crate::subject::{Entity, File, PlaceOf, Range, Reference, Value};
+use crate::subject::{Declaration, Entity, File, PlaceOf, Range, Reference, Value};
 use crate::wire::{self, Errc, Operation};
 
 /// A piece of a code value as the host holds it (§7.1). A spelled piece
@@ -35,6 +35,9 @@ pub(crate) enum HeldPiece {
     /// are one (§7.1 rule 6).
     Literal(Vec<u8>),
     Copy(Range),
+    /// One identifier, checked (§7.1, `identifier`): a name given as data.
+    /// Never merged with a literal or another identifier.
+    Identifier(Vec<u8>),
     Spelled {
         entity: Entity,
         key: Digest,
@@ -49,7 +52,7 @@ impl HeldPiece {
     /// The bytes of text it holds, for the limit of §7.7.
     fn text_len(&self) -> u64 {
         match self {
-            HeldPiece::Literal(b) => b.len() as u64,
+            HeldPiece::Literal(b) | HeldPiece::Identifier(b) => b.len() as u64,
             HeldPiece::Copy(_) => 0,
             HeldPiece::Spelled { qualified, .. } => qualified.len() as u64,
         }
@@ -145,6 +148,10 @@ impl Host<'_> {
                 Effect::Code(Code::new(vec![HeldPiece::Literal(bytes.to_vec())]))
             }
             wire::OP_CODE_SPELL => self.spell(ints[0])?,
+            wire::OP_CODE_IDENTIFIER => {
+                self.identifier_arg(bytes, "the name of an identifier piece")?;
+                self.one_piece(HeldPiece::Identifier(bytes.to_vec()))?
+            }
             wire::OP_CODE_COPY => {
                 let r = self.range_arg(ints[0], ints[1])?;
                 // §7.1 rule 2: the bytes of an empty range are none, so its
@@ -476,6 +483,12 @@ impl Host<'_> {
             }
             _ => None,
         };
+        // §7.2 rule 1 at a name range that is no reference's extent: a
+        // sibling's identifier, or refused (`spec/landed/api/WP-132.md`).
+        let narrowed = match narrowed {
+            Some(n) => Some(n),
+            None => self.at_a_name(r, code)?,
+        };
         // The limits, from the counts: nothing is copied before they pass.
         let (count, bytes) = match narrowed {
             Some((.., text)) => (1, text.len() as u64),
@@ -500,6 +513,7 @@ impl Host<'_> {
         match p {
             HeldPiece::Literal(b) => Piece::Literal(b.clone()),
             HeldPiece::Copy(r) => Piece::Copy(self.place_of(*r)),
+            HeldPiece::Identifier(b) => Piece::Identifier(b.clone()),
             HeldPiece::Spelled { key, qualified, .. } => {
                 Piece::Spelled { key: *key, text: qualified.clone() }
             }
@@ -568,6 +582,117 @@ impl Host<'_> {
             }
         }
         Ok(if holds { name } else { None })
+    }
+
+    /// §7.2 rule 1 at a name range (`spec/landed/api/WP-132.md`): for an
+    /// edit of `r` that is the extent of no reference and whose code holds
+    /// a spelled piece, when `r` is the name range of a reference or of a
+    /// declaration. `None`: `r` is neither, and rule 2 holds. Else the
+    /// code must be exactly one spelled piece for an entity `E` with an
+    /// identifier, and every reference with that name range must meet the
+    /// conditions of the sibling form (`E`'s parent is that of the
+    /// origin of the referent; found directly), and every declaration
+    /// with it must declare an entity whose parent is `E`'s: then the
+    /// edit replaces `r` with `E`'s identifier, as the sibling form
+    /// records it. Otherwise `invalid_argument`: a qualified spelling
+    /// after the qualifier written is never recorded.
+    #[allow(clippy::type_complexity, reason = "the tuple `replace` takes from the sibling rule")]
+    fn at_a_name<'c>(
+        &self,
+        r: Range,
+        code: &'c Code,
+    ) -> Step<Option<(Range, Tiers, Digest, &'c [u8])>> {
+        if !code.pieces.iter().any(|p| matches!(p, HeldPiece::Spelled { .. })) {
+            return Ok(None);
+        }
+        let subject = self.subject;
+        if !subject.references_at(r).is_empty() {
+            return Ok(None);
+        }
+        let refs = subject.references_named_at(r);
+        let decls = subject.declarations_named_at(r);
+        if refs.is_empty() && decls.is_empty() {
+            return Ok(None);
+        }
+        let [HeldPiece::Spelled { entity, key, qualified, identifier_at }] = code.pieces.as_slice()
+        else {
+            return refuse(
+                Errc::InvalidArgument,
+                "a code with a spelled piece and other pieces at a name range: a name range \
+                 takes one spelled piece, a sibling's identifier (§7.2 rule 1)",
+            );
+        };
+        let e = *entity;
+        let parent = subject.parent(e);
+        if let Some(p) = parent {
+            self.subject_value("parent", Value::Entity(p))?;
+        }
+        let mut holds = subject.identifier(Value::Entity(e)).is_some_and(|id| !id.is_empty());
+        let mut seen = BTreeSet::new();
+        for &x in &refs {
+            let v = self.subject_value("references_named_at", Value::Reference(x))?;
+            if !seen.insert(x) {
+                return Err(Stop::Internal(
+                    "Subject::references_named_at gave a reference twice".to_owned(),
+                ));
+            }
+            match subject.name_range(v) {
+                Ok(Some(found)) if found == r => {}
+                Ok(_) => {
+                    return Err(Stop::Internal(
+                        "Subject::references_named_at gave a reference whose name range is not \
+                         the range"
+                            .to_owned(),
+                    ));
+                }
+                Err(errc) => {
+                    return Err(self.subject_status("name_range", v, errc, ALLOWED_NAME_RANGE));
+                }
+            }
+            let origin = self.origin_of(x)?;
+            holds &= subject.parent(origin) == parent;
+            holds &= subject.found_directly(x);
+        }
+        let mut seen: BTreeSet<Declaration> = BTreeSet::new();
+        for &d in &decls {
+            let v = self.subject_value("declarations_named_at", Value::Declaration(d))?;
+            if !seen.insert(d) {
+                return Err(Stop::Internal(
+                    "Subject::declarations_named_at gave a declaration twice".to_owned(),
+                ));
+            }
+            match subject.name_range(v) {
+                Ok(Some(found)) if found == r => {}
+                Ok(_) => {
+                    return Err(Stop::Internal(
+                        "Subject::declarations_named_at gave a declaration whose name range is \
+                         not the range"
+                            .to_owned(),
+                    ));
+                }
+                Err(errc) => {
+                    return Err(self.subject_status("name_range", v, errc, ALLOWED_NAME_RANGE));
+                }
+            }
+            let declared = subject.entity_of(d);
+            self.subject_value("entity_of", Value::Entity(declared))?;
+            holds &= subject.parent(declared) == parent;
+        }
+        if !holds {
+            return refuse(
+                Errc::InvalidArgument,
+                "a spelling at a name range is a sibling's identifier, and this entity is no \
+                 sibling of the name written there: spell it at the reference's extent (§7.2 \
+                 rule 1)",
+            );
+        }
+        let Some(t) = self.tiers(r)? else {
+            return Err(Stop::Internal(
+                "Subject::tiers gave None for a range replace accepted".to_owned(),
+            ));
+        };
+        let text = qualified.get(*identifier_at..).unwrap_or_default();
+        Ok(Some((r, t, *key, text)))
     }
 
     /// The origin (§5.5) of the referent of `x`, both checked live.

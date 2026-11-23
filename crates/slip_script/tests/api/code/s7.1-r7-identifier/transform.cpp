@@ -1,11 +1,9 @@
-// spec: §7.2 rule 1
-// The sibling spelling is for an edit of `extent_of(R)` (spec/api.md §7.2
-// rule 1: "If the edit is `replace(extent_of(R), c)`"). Here each edit
-// replaces `name_range_of(R)`. For `f(2)`, unqualified, the name range is
-// the extent, so the rule applies. For `n::f(1)` the name range `f` is the
-// extent of no reference, so "otherwise" (rule 2) holds: the fully
-// qualified text replaces `f`, after the qualifier written. What that
-// text means there is verification's to check (rule 5).
+// spec: §7.1 rule 7
+// counters: api.op.code_identifier, api.op.code_text
+// `identifier(name)` (spec/api.md §7.1 rule 7) is a piece of its own kind:
+// the edit records it as an identifier, and it is counted as
+// `api.op.code_identifier`, not as text. Here it renames the reference
+// `f` of `f(1)`.
 #include <slip/meta.h>
 
 using namespace slip;
@@ -43,6 +41,6 @@ consteval void note(std::string_view s) { report(severity::note, s); }
 consteval info one(std::string_view name) { return lookup(name)[0]; }
 
 consteval void transform() {
-  info g = one("n::g");
-  for (info r : references_to(one("n::f"))) replace(name_range_of(r), spell(g));
+  info r = callee_reference_of(calls_to(one("f"))[0]);
+  replace(name_range_of(r), identifier("g"));
 }

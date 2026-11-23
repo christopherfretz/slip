@@ -28,8 +28,8 @@ pub struct Place {
 }
 
 /// One piece of a replacement (§7.1, §7.6 `Piece`). The derived order
-/// (literal, then copy, then spelled; then by content) is the order of
-/// edits with the same range.
+/// (literal, then copy, then spelled, then identifier; then by content)
+/// is the order of edits with the same range.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Piece {
     Literal(Vec<u8>),
@@ -39,6 +39,8 @@ pub enum Piece {
         key: Digest,
         text: Vec<u8>,
     },
+    /// One identifier given as data (§7.1 `identifier`); not empty.
+    Identifier(Vec<u8>),
 }
 
 /// The tiers at which the requests that are one edit were made (§7.6
@@ -306,7 +308,8 @@ impl RunOutput {
     /// counter <name> <value>
     /// ```
     ///
-    /// A piece is `"<bytes>"`, `copy(<place>)` or `spell(<key> "<text>")`.
+    /// A piece is `"<bytes>"`, `copy(<place>)`, `spell(<key> "<text>")` or
+    /// `identifier("<name>")`.
     /// A name is its identifier quoted, or the form's name of
     /// `spec/digest-kinds.md` §3.2 with its operand in parentheses
     /// (`operator(3)`, `conversion(<digest>)`, `literal_operator("_km")`,
@@ -340,6 +343,7 @@ impl RunOutput {
                     Piece::Spelled { key, text } => {
                         write!(f, " spell({} {})", Rendered::Key(key, s), Rendered::Quoted(text))?;
                     }
+                    Piece::Identifier(b) => write!(f, " identifier({})", Rendered::Quoted(b))?,
                 }
             }
             for n in &e.notes {
