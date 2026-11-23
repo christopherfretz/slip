@@ -189,6 +189,9 @@ impl Walk<'_> {
             s.count(ds.len());
             for &d in ds.as_ref() {
                 self.write_ref(&mut s, d);
+                if alignment_by_declaration(self.ast, d) {
+                    s.indeterminate(ALIGNMENT_BY_DECLARATION);
+                }
             }
         } else {
             s.count(0).indeterminate(ALIGNED_SUGAR_BOUND);
@@ -800,6 +803,16 @@ impl Walk<'_> {
 /// layout reads in it is not known.
 const ALIGNED_SUGAR_BOUND: Cause = Cause::Unsupported("TypeView/Typedef-aligned-bound");
 
+/// A typedef met by rule 9 whose declarations disagree on carrying an
+/// alignment (digest-kinds §4.2 rule 9, digest §10). Kiln's layout reads
+/// every declaration, its `alignof` only the one the sugar node names
+/// (`Ast::layout_attributed_typedef`), so the answer depends on which
+/// declaration a use names: a fact no unit holds. Goes when Kiln reads
+/// every declaration there too (`spec/landed/digest/WP-107.md`, "For
+/// Kiln").
+pub(crate) const ALIGNMENT_BY_DECLARATION: Cause =
+    Cause::Unsupported("typedef/alignment-by-declaration");
+
 /// The bound of [`aligned_typedefs`]'s walk: more sugar than any source
 /// writes.
 const SUGAR_LIMIT: usize = 1 << 12;
@@ -868,11 +881,29 @@ fn aligned_typedefs(ast: &slip_kiln::kiln::ast::Ast, q: QualType) -> Option<Box<
 /// Whether typedef `d` carries an alignment: an `ALIGNED` attribute or
 /// an `alignment` entry on any of its declarations.
 fn carries_alignment(ast: &slip_kiln::kiln::ast::Ast, d: DeclId) -> bool {
+    ast.redecls_of(d).any(|r| declaration_aligned(ast, r))
+}
+
+/// Whether typedef `d` carries an alignment on some of its declarations
+/// and not on others ([`ALIGNMENT_BY_DECLARATION`]).
+pub(crate) fn alignment_by_declaration(ast: &slip_kiln::kiln::ast::Ast, d: DeclId) -> bool {
+    let (mut with, mut without) = (false, false);
+    for r in ast.redecls_of(d) {
+        if declaration_aligned(ast, r) {
+            with = true;
+        } else {
+            without = true;
+        }
+    }
+    with && without
+}
+
+/// Whether declaration `r` itself has an `ALIGNED` attribute or an
+/// `alignment` entry.
+fn declaration_aligned(ast: &slip_kiln::kiln::ast::Ast, r: DeclId) -> bool {
     use slip_kiln::kiln::ast::attr::AttrKind;
-    ast.redecls_of(d).any(|r| {
-        ast.lists
-            .iter::<slip_kiln::kiln::ast::AttrId>(ast.attrs.of_decl(r))
-            .any(|a| ast.attrs.get(a).kind == AttrKind::ALIGNED)
-            || ast.decls.cold.alignment.get(r).is_some()
-    })
+    ast.lists
+        .iter::<slip_kiln::kiln::ast::AttrId>(ast.attrs.of_decl(r))
+        .any(|a| ast.attrs.get(a).kind == AttrKind::ALIGNED)
+        || ast.decls.cold.alignment.get(r).is_some()
 }

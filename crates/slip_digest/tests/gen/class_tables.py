@@ -318,11 +318,6 @@ pair("differ", "typedef-alignment-qualified-array-typedef", "typedef long LA[2];
 pair("differ", "typedef-alignment-flexible-array", "struct S { char c; long a[]; };",
      "struct S { char c; L a[]; };", ["changed S::a"], "a flexible array member of the typedef.",
      pre=TDL)
-pair("differ", "typedef-alignment-redeclared", "typedef int I2;", "typedef int I2 __attribute__((aligned(8)));",
-     ["changed I2", "changed S::i"],
-     "the field names a later plain redeclaration of a typedef whose first declaration carries"
-     " `aligned` (Kiln's layout reads every redeclaration, kiln_abi `layout/props.rs:85`).",
-     post="typedef int I2;\nstruct S { char c; I2 i; };\nstatic_assert(sizeof(S) == (alignof(S) == 8 ? 16 : 8));")
 pair("equal", "typedef-alignment-template-argument", "X<int> x;", "X<I> x;", [],
      "the typedef as a class template's argument: the specialization is `X<int>` and its layout"
      " reads the canonical argument (`layout_desugar_once`, kiln_ast `layout_sugar.rs:34`; clang 19"
@@ -372,10 +367,6 @@ pair("differ", "typedef-alignment-attribute-first", "typedef int T16;",
      "[[gnu::aligned(16)]] typedef int T16;", ["changed T16", "changed S::i"],
      "the attribute before `typedef` (no `alignas` form applies to a typedef).",
      post="struct S { char c; T16 i; };\nstatic_assert(sizeof(S) == (alignof(S) == 16 ? 32 : 8));")
-pair("differ", "typedef-alignment-attribute-on-later-declaration", "typedef int R2;",
-     "typedef int R2 __attribute__((aligned(8)));", ["changed R2", "changed S::i"],
-     "the attribute on a later redeclaration of the typedef.",
-     pre="typedef int R2;", post="struct S { char c; R2 i; };\nstatic_assert(sizeof(S) == (alignof(S) == 8 ? 16 : 8));")
 pair("differ", "typedef-alignment-reference", "unsigned long f() { return alignof(long &); }",
      "unsigned long f() { return alignof(L &); }", ["changed f()"],
      "`alignof` of a reference to the typedef is the typedef's ([expr.alignof]/3; clang 19: 4;"
@@ -399,6 +390,70 @@ pair("differ", "typedef-alignment-nested", "typedef I J __attribute__((aligned(1
      " typedef met is listed (rule 9), not only the outermost, which decides the alignment.",
      pre="typedef int I __attribute__((aligned(8)));\ntypedef int K __attribute__((aligned(8)));",
      post="J x;")
+# `v` and each typedef from T4194 on: T4194's underlying type `T4193` is
+# 4,095 typedefs (T4193 down to T099) and then `int`, so its walk reaches no
+# canonical type in 4,096 steps.
+BOUND_EXPECT = ["indeterminate v"] + [f"indeterminate T{k}" for k in range(4194, 4300)]
+# F1 of the review: declarations that disagree on carrying an alignment.
+RD = "typedef int R __attribute__((aligned(8)));"
+RP = "typedef int R;"
+USE_R = "unsigned long g() { return alignof(R); }\nstruct S { char c; R r; };"
+pair("indeterminate", "typedef-alignment-by-declaration-aligned-first", "", RD + "\n" + RP,
+     ["indeterminate R", "indeterminate g()", "indeterminate S::r"],
+     "an aligned declaration, then a plain one: Kiln's `alignof(R)` is 4 (it reads the"
+     " declaration the use names), its layout 8; clang 19 gives 8 for both."
+     " `typedef/alignment-by-declaration`.", post=USE_R)
+pair("indeterminate", "typedef-alignment-by-declaration-plain-first", "", RP + "\n" + RD,
+     ["indeterminate R", "indeterminate g()", "indeterminate S::r"],
+     "a plain declaration, then an aligned one: Kiln's `alignof(R)` is 8; clang 19 gives 8.",
+     post=USE_R)
+pair("indeterminate", "typedef-alignment-by-declaration-use-between", "",
+     RD + "\nunsigned long g() { return alignof(R); }\n" + RP,
+     ["indeterminate R", "indeterminate g()"],
+     "a use between an aligned declaration and a plain one: Kiln's `alignof(R)` is 8 there and 4"
+     " after the plain one; clang 19 gives 8 for both.")
+pair("differ", "typedef-alignment-every-declaration", "int v;", "R v;", ["changed v"],
+     "every declaration carries the alignment: determinate.",
+     pre=RD + "\n" + RD)
+pair("equal", "typedef-alignment-no-declaration", "int v;", "R v;", [],
+     "no declaration carries an alignment: transparent and determinate.", pre=RP + "\n" + RP)
+# F2: a function template's specialization keeps its first use's argument
+# sugar in Kiln, but layout reads the argument canonical.
+pair("equal", "typedef-alignment-function-template-argument",
+     "unsigned long a = f<int>();\nunsigned long b = f<I>();",
+     "unsigned long a = f<I>();\nunsigned long b = f<int>();", [],
+     "the first use of a function template names the typedef or `int`: Kiln keeps the first"
+     " use's sugar in the specialization's arguments, but `layout_desugar_once` reads it"
+     " canonical, so `alignof(decltype(x))` is 4 either way (Kiln's"
+     " tests/conformance/expr.alignof/run-aligned-typedef-template-argument.cpp; clang 19: 4).",
+     pre=TD + "\ntemplate <class T> unsigned long f() { T x = 0; return alignof(decltype(x)); }")
+# F3: the bound of the walk, reached by a chain of 4,200 typedefs made by
+# macros (T099, then T100 to T4299).
+TEN = "#define TEN(p, q) typedef T##q##9 T##p##0; " + " ".join(
+    f"typedef T##p##{k - 1} T##p##{k};" for k in range(1, 10))
+HUNDRED = "#define HUNDRED(p, q) TEN(p##0, q##9) " + " ".join(
+    f"TEN(p##{k}, p##{k - 1})" for k in range(1, 10))
+CHAIN = "\n".join([
+    "typedef int T099 __attribute__((aligned(8)));", TEN, HUNDRED,
+    " ".join(f"HUNDRED({k}, {k - 1})" for k in range(1, 43)), "T4299 v;"])
+pair("indeterminate", "typedef-alignment-bound", "", CHAIN,
+     BOUND_EXPECT,
+     "4,200 typedefs in a chain: past 4096 steps the walk stops and the type is"
+     " indeterminate (`TypeView/Typedef-aligned-bound`); it fails closed.")
+# The reviewer's answer 2: an expression's type is written with its sugar in
+# the using unit, so pointers, return types and member pointers need no walk.
+pair("differ", "typedef-alignment-dereference", "int g(int *q) { return *q; }",
+     "int g(UI *q) { return *q; }", ["changed g(int *)"],
+     "a load through a pointer to an under-aligned typedef (clang 19 loads with align 1): the"
+     " pointer is not walked, the parameter's type and `*q`'s type are written with sugar.",
+     pre="typedef int UI __attribute__((aligned(1)));")
+pair("differ", "typedef-alignment-call-type", "int f();", "I f();", ["changed g()"],
+     "`alignof(decltype(f()))` (clang 19: 8 / 4): the return type is not walked; the call's"
+     " type is written in the user.", pre=TD,
+     post="unsigned long g() { return alignof(decltype(f())); }")
+pair("differ", "typedef-alignment-field-decltype", "int *p;", "I *p;", ["changed S::r"],
+     "a field of type `decltype(*p)`: the pointer `p` is not walked, the field's type is.",
+     pre=TD, post="struct S { decltype(*p) r; };")
 pair("differ", "typedef-alignment-value", "typedef int I __attribute__((aligned(8)));",
      "typedef int I __attribute__((aligned(16)));", ["changed I"],
      "another alignment on the typedef: its own unit; a class with a field of it holds the"
