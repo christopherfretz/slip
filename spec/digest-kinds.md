@@ -960,7 +960,7 @@ reflection facts (`:792-837`).
 | Kind | Kiln | Bytes | Sample |
 |---|---|---|---|
 | `ImplicitCastExpr` | `:450` | transparent: `child` of `a` | `ImplicitCastExpr` |
-| `ConstantExpr` | `:451` | transparent: `child` of `a` | `ConstantExpr` |
+| `ConstantExpr` | `:451` | transparent: `child` of `a` | none: Kiln wraps a constant of a declaration (a bound, an enumerator, a bit-field width), a case label, a `__builtin_choose_expr` condition (walked in full) and an immediate call outside a template (`kiln_sema` `consteval.rs:948-954`), none of them in a profile |
 | `MaterializeTemporaryExpr` | `:452` | transparent: `child` of `a` | `MaterializeTemporaryExpr` |
 | `CXXBindTemporaryExpr` | `:453` | transparent: `child` of `a` | `CXXBindTemporaryExpr` |
 | `ExprWithCleanups` | `:454` | transparent: `child` of `a` | none: built only for a full-expression, which a profile operand is not |
@@ -1036,10 +1036,10 @@ reflection facts (`:792-837`).
 | `ConceptSpecializationExpr` | `:769-781` | `tag K`, then the concept: absent `uv 0`; a concept template parameter `uv 1`, its `decl`; another `uv 2`, `ref` of its first declaration; then `opt` and §4.6 `enum ArgView*` of the arguments | `ConceptSpecializationExpr`, `ConceptSpecializationExpr-ttp` |
 | `CXXReflectExpr` | `:792-828` | in full (no profile form yet) | none: reflection is off in the pinned samples' language mode |
 | `CXXSpliceExpr` | `:829-837` | in full (no profile form yet) | none: as `CXXReflectExpr` |
-| `UserDefinedLiteral` | `:838` | in full (Kiln: unique) | `UserDefinedLiteral` |
+| `UserDefinedLiteral` | `:838` | in full (Kiln: unique) | none: Kiln builds a user-defined literal as a `CallExpr` (`kiln_sema` `literal_op.rs:332-339`) |
 | `ImaginaryLiteral` | `:839` | in full (Kiln: unique) | `ImaginaryLiteral` |
 | `EmbedExpr` | `:840` | in full (Kiln: unique) | none: `#embed` data is in an initialiser, not a profile |
-| `UnresolvedMemberExpr` | `:841` | in full (Kiln: unique) | `UnresolvedMemberExpr` |
+| `UnresolvedMemberExpr` | `:841` | in full (Kiln: unique) | none: Kiln builds none (`kiln_ast` `builder.rs` has no constructor; a member call on a non-dependent object with dependent arguments is a `CallExpr` of a `MemberExpr`) |
 | `SubstNonTypeTemplateParmPackExpr` | `:842` | in full (Kiln: unique) | none: built in an instantiation, which a profile of a pattern does not hold |
 | `FunctionParmPackExpr` | `:843` | in full (Kiln: unique) | none: as `SubstNonTypeTemplateParmPackExpr` |
 | `CXXInheritedCtorInitExpr` | `:844` | in full (Kiln: unique) | none: in an inheriting constructor's implicit definition |

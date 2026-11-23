@@ -13,7 +13,7 @@
 //! An expression whose walk met a kind with no equivalence rule (walked
 //! in full, `P::Full`) or carries a cause is left out of both.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -180,10 +180,13 @@ fn one_entity(w: &mut Walk<'_>, a: &[u32], b: &[u32]) -> bool {
         if a[i] == b[i] {
             continue;
         }
-        let (Some(x), Some(y)) = (DeclId::try_new(a[i]), DeclId::try_new(b[i])) else {
+        let (Some(da), Some(db)) = (DeclId::try_new(a[i]), DeclId::try_new(b[i])) else {
             return false;
         };
-        if i == 0 || a[i - 1] != D_DECL || b[i - 1] != D_DECL || ref_bytes(w, x) != ref_bytes(w, y)
+        if i == 0
+            || a[i - 1] != D_DECL
+            || b[i - 1] != D_DECL
+            || ref_bytes(w, da) != ref_bytes(w, db)
         {
             return false;
         }
@@ -347,6 +350,16 @@ const OWN: &[&str] = &[
     "template<class T> auto f(T t) -> decltype(static_cast<int>(t));\n\
      template<class T> auto g(T t) -> decltype((int)t);\n\
      template<class T> auto h(T t) -> decltype(new T(t));\n\
+     struct S2 { S2(int); };\nvoid* operator new(decltype(sizeof 0), void*) noexcept;\n\
+     template<class T> auto n1(T p) -> decltype(new (p) S2(1));\n\
+     template<class T> auto n2(T p) -> decltype(new (p) S2{1});\n\
+     struct S3 { S3(); };\n\
+     template<class T> auto n3(T p) -> decltype(p, new S3);\n\
+     template<class T> auto n4(T p) -> decltype(p, new S3());\n\
+     template<class T> auto n5(T p) -> decltype(p, new S3{});\n\
+     struct I { int a; };\nstruct W { int a[2]; };\nusing IA = I[2];\n\
+     template<class T> auto d1(T t) -> decltype(t, W{.a[0] = 1});\n\
+     template<class T> auto d2(T t) -> decltype(t, IA{[0].a = 1});\n\
      template<class T> auto k(T t) -> decltype(new T{t});\n\
      template<class T> auto l(T t) -> decltype(new T);\n\
      template<class T> struct S { T m;\n\
@@ -669,4 +682,334 @@ fn the_mark_does_not_depend_on_which_key_came_first() {
     }
     assert_eq!(got[0], got[1]);
     assert!(!got[0].spelling, "the key's left-out fact is the specialisation's unit's");
+}
+
+/// What every pinning sample may use.
+const PRELUDE: &str = "template<unsigned long N> struct Z {};\n\
+    struct S { int m; S(); S(int); int f(); int f(int); static int g(); int operator+(int); \
+    bool operator==(const S&) const; };\n\
+    struct D { ~D(); int m; };\n\
+    struct R { const int &r; };\n\
+    int fn(int);\nint fn(long);\nint fd(int = 1);\n\
+    template<class T> constexpr int vt = 0;\ntemplate<int> int ft();\n\
+    template<class T> concept C = true;\n\
+    void *operator new(decltype(sizeof 0), void *) noexcept;\n\
+    namespace N { template<class T> struct A { static int m; }; }\n\
+    namespace NA = N;\n\
+    namespace std { class type_info; }\n";
+
+/// The samples that pin profile mode's bytes (item 3, WP-036 round 2):
+/// each is a source holding a function `f` whose return type holds one
+/// profile (a `decltype` operand, or the first profile argument of a
+/// specialisation), named by the rows of `spec/digest-kinds.md` §4.4
+/// whose sample column names it.
+const SAMPLES: &[(&str, &str)] = &[
+    ("decl-template-parm", "template<class... T> auto f(T... t) -> decltype(sizeof...(T));"),
+    ("decl-nttp", "template<int N, class T> auto f(T t) -> decltype(t + N);"),
+    ("decl-parm", "template<class T> auto f(T t) -> decltype(t);"),
+    ("decl-parm-requires", "template<class T> auto f(T t) -> Z<requires (T u) { u + 1; }>;"),
+    ("decl-other", "template<class T> auto f(T t) -> decltype(t + S::g());"),
+    ("nttp-type-placeholder", "template<auto N, class T> auto f(T t) -> decltype(t + N);"),
+    ("args-list", "template<class T> auto f(T t) -> decltype(t + vt<T>);"),
+    ("args-each", "template<class T> auto f(T t) -> decltype(t.template h<1>());"),
+    ("ref-args-implied", "template<class T> auto f(T t) -> decltype(t + N::A<int>::m);"),
+    ("spelled-nns", "template<class T> auto f(T t) -> decltype(t.S::m);"),
+    ("spelled-nns-namespace", "template<class T> auto f(T t) -> decltype(t.NA::A<int>::m);"),
+    ("ctad", "template<class T> auto f(T t) -> decltype(N::A(t));"),
+    ("ImplicitCastExpr", "template<class T> auto f(T t) -> decltype(t + fn(1L));"),
+    ("MaterializeTemporaryExpr", "template<class T> auto f(T t) -> decltype(t + R{1}.r);"),
+    ("CXXBindTemporaryExpr", "template<class T> auto f(T t) -> decltype(t + D().m);"),
+    (
+        "SubstNonTypeTemplateParmExpr",
+        "template<int N> struct B { template<class U> static auto f(U u) -> decltype(u + N); };\n\
+         auto p = &B<3>::f<int>;",
+    ),
+    ("IntegerLiteral", "template<class T> auto f(T t) -> decltype(t + 1);"),
+    ("FloatingLiteral", "template<class T> auto f(T t) -> decltype(t + 1.5);"),
+    ("CharacterLiteral", "template<class T> auto f(T t) -> decltype(t + u'x');"),
+    ("StringLiteral", "template<class T> auto f(T t) -> decltype(t + \"ab\");"),
+    ("CXXBoolLiteralExpr", "template<class T> auto f(T t) -> decltype(t + true);"),
+    ("CXXNullPtrLiteralExpr", "template<class T> auto f(T t) -> decltype(t + nullptr);"),
+    ("GNUNullExpr", "template<class T> auto f(T t) -> decltype(t + __null);"),
+    ("CXXScalarValueInitExpr", "template<class T> auto f(T t) -> decltype(t + int());"),
+    ("MemberExpr", "template<class T> auto f(T t) -> decltype(t + S().m);"),
+    ("CXXThisExpr", "template<class T> struct B { T m; auto f() -> decltype(this->m); };"),
+    ("SourceLocExpr", "template<class T> auto f(T t) -> decltype(t + __builtin_LINE());"),
+    ("UnresolvedLookupExpr", "template<class T> auto f(T t) -> decltype(fn(t));"),
+    (
+        "UnresolvedLookupExpr-ttp",
+        "template<template<class> auto V, class T> auto f(T t) -> decltype(t + V<T>);",
+    ),
+    ("DependentScopeDeclRefExpr", "template<class T> auto f(T t) -> decltype(T::value + t);"),
+    ("CXXDependentScopeMemberExpr", "template<class T> auto f(T *t) -> decltype(t->m);"),
+    ("SizeOfPackExpr", "template<class... T> auto f(T... t) -> decltype(sizeof...(t));"),
+    ("UnaryOperator", "template<class T> auto f(T t) -> decltype(-t);"),
+    ("ParenExpr", "template<class T> auto f(T t) -> decltype((t));"),
+    ("PackExpansionExpr", "template<class... T> auto f(T... t) -> decltype(fn(t...));"),
+    ("CXXNoexceptExpr", "template<class T> auto f(T t) -> Z<noexcept(t + 1)>;"),
+    ("BinaryOperator", "template<class T> auto f(T t) -> decltype(t * 2);"),
+    ("ArraySubscriptExpr", "template<class T> auto f(T t) -> decltype(t[0]);"),
+    ("PackIndexingExpr", "template<class... T> auto f(T... t) -> decltype(t...[0]);"),
+    ("CompoundAssignOperator", "template<class T> auto f(T t) -> decltype(t += 1);"),
+    ("ConditionalOperator", "template<class T> auto f(T t) -> decltype(t ? 1 : 2);"),
+    ("CXXFoldExpr", "template<class... T> auto f(T... t) -> decltype((t + ...));"),
+    ("CallExpr", "template<class T> auto f(T t) -> decltype(t(1));"),
+    ("CXXMemberCallExpr", "template<class T> auto f(T t) -> decltype(t + S().f(1));"),
+    ("CXXOperatorCallExpr", "template<class T> auto f(T t) -> decltype(t + (S() + 1));"),
+    ("CXXRewrittenBinaryOperator", "template<class T> auto f(T t) -> decltype(t + (S() != S()));"),
+    ("BinaryConditionalOperator", "template<class T> auto f(T t) -> decltype(t ?: 1);"),
+    ("ParenListExpr", "template<class T> auto f(T t) -> decltype(new (t) S());"),
+    ("InitListExpr", "template<class T> auto f(T t) -> decltype(T{t, 1});"),
+    (
+        "DesignatedInitExpr",
+        "struct E { int a[2]; int b; };\n\
+         template<class T> auto f(T t) -> decltype(E{.a[1] = t, .b = 0});",
+    ),
+    ("CStyleCastExpr", "template<class T> auto f(T t) -> decltype((int)t);"),
+    ("CXXFunctionalCastExpr", "template<class T> auto f(T t) -> decltype(t + int(1L));"),
+    ("CXXStaticCastExpr", "template<class T> auto f(T t) -> decltype(static_cast<int>(t));"),
+    ("CXXConstCastExpr", "template<class T> auto f(T *t) -> decltype(const_cast<const T *>(t));"),
+    (
+        "CXXReinterpretCastExpr",
+        "template<class T> auto f(T t) -> decltype(reinterpret_cast<long>(t));",
+    ),
+    ("CXXDynamicCastExpr", "template<class T> auto f(T *t) -> decltype(dynamic_cast<T *>(t));"),
+    (
+        "BuiltinBitCastExpr",
+        "template<class T> auto f(T t) -> decltype(__builtin_bit_cast(int, t));",
+    ),
+    ("CXXUnresolvedConstructExpr", "template<class T> auto f(T t) -> decltype(T(t));"),
+    ("CXXParenListInitExpr", "template<class T> auto f(T t) -> decltype(t + R(1).r);"),
+    ("CXXConstructExpr", "template<class T> auto f(T t) -> decltype(t + S(1).m);"),
+    ("CXXTemporaryObjectExpr", "template<class T> auto f(T t) -> decltype(t + S{}.m);"),
+    ("CompoundLiteralExpr", "template<class T> auto f(T t) -> decltype(t + (int){1});"),
+    ("CXXDefaultArgExpr", "template<class T> auto f(T t) -> decltype(t + fd());"),
+    ("CXXNewExpr", "template<class T> auto f(T *p) -> decltype(new (p) S(1));"),
+    ("CXXNewExpr-braces", "template<class T> auto f(T *p) -> decltype(new (p) S{1});"),
+    ("CXXDeleteExpr", "template<class T> auto f(T *p) -> decltype(delete p);"),
+    ("CXXThrowExpr", "template<class T> auto f(T t) -> decltype(throw t);"),
+    ("CXXPseudoDestructorExpr", "template<class T> auto f(T t) -> decltype(t.~T());"),
+    ("CXXTypeidExpr", "template<class T> auto f(T t) -> decltype(typeid(t));"),
+    ("CXXTypeidExpr-type", "template<class T> auto f(T t) -> decltype(t, typeid(T));"),
+    ("UnaryExprOrTypeTraitExpr", "template<class T> auto f(T t) -> Z<sizeof(t)>;"),
+    ("UnaryExprOrTypeTraitExpr-type", "template<class T> auto f(T t) -> Z<alignof(T)>;"),
+    ("TypeTraitExpr", "template<class T> auto f(T t) -> Z<__is_same(T, int)>;"),
+    ("ArrayTypeTraitExpr", "template<class T> auto f(T t) -> Z<__array_rank(T)>;"),
+    ("ExpressionTraitExpr", "template<class T> auto f(T t) -> Z<__is_lvalue_expr(t)>;"),
+    (
+        "IntegerPackExpr",
+        "template<unsigned long N, class T> auto f(T t) -> decltype((t + ... + __integer_pack(N)));",
+    ),
+    ("RequiresExpr", "template<class T> auto f(T t) -> Z<requires { t + 1; typename T::x; }>;"),
+    (
+        "RequiresExpr-compound",
+        "template<class T> auto f(T t) -> Z<requires { { t } noexcept -> C; requires true; }>;",
+    ),
+    ("ConceptSpecializationExpr", "template<class T> auto f(T t) -> Z<C<T>>;"),
+    (
+        "ConceptSpecializationExpr-ttp",
+        "template<template<class> concept K, class T> auto f(T t) -> Z<K<T>>;",
+    ),
+    ("ImaginaryLiteral", "template<class T> auto f(T t) -> decltype(t + 1i);"),
+    ("OffsetOfExpr", "template<class T> auto f(T t) -> decltype(t + __builtin_offsetof(S, m));"),
+    ("LambdaExpr", "template<class T> auto f(T t) -> decltype(t + [] { return 1; }());"),
+    (
+        "ChooseExpr",
+        "template<class T> auto f(T t) -> decltype(t + __builtin_choose_expr(1, 1, 2));",
+    ),
+    ("GenericSelectionExpr", "template<class T> auto f(T t) -> decltype(t + _Generic(1, int: 2));"),
+];
+
+/// The key-mode bytes of every profile in the return type of a function
+/// named `f` of `src` (the prelude first), in arena order, with the kinds
+/// profile mode visited.
+fn sample_bytes(src: &str) -> Result<(Vec<String>, HashSet<String>), String> {
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    let src = format!("{PRELUDE}{src}\n");
+    let files = [("main.cpp", src.as_str())];
+    let snippet = slip_kiln::snippet::Snippet {
+        files: &files,
+        main: "main.cpp",
+        include: &[""],
+        std: "c++26",
+    };
+    let rules = RuleTable::empty();
+    slip_kiln::snippet::parse(&snippet, |p| {
+        if p.errors != 0 {
+            return Err(p.diagnostics.clone());
+        }
+        let path = |_| Vec::new();
+        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+        let w = &mut Walk::new(&input, &rules);
+        let named = crate::decl_func::tests::named;
+        let mut fs = named(w, "f", DeclKind::Function);
+        fs.extend(named(w, "f", DeclKind::CXXMethod));
+        fs.sort();
+        let mut out = Vec::new();
+        crate::expr_profile::visited_take();
+        for func in fs {
+            if let Some(line) = return_profile_bytes(w, func) {
+                out.push(line);
+            }
+        }
+        let seen =
+            crate::expr_profile::visited_take().into_iter().map(|k| format!("{k:?}")).collect();
+        Ok((out, seen))
+    })
+    .unwrap_or_else(|e| Err(format!("{e:?}")))
+}
+
+/// The key-mode bytes, in hex, of the profile of `func`'s return type (a
+/// `decltype` operand, or the first profile argument of a specialisation),
+/// and the cause if any.
+fn return_profile_bytes(walk: &mut Walk<'_>, func: DeclId) -> Option<String> {
+    use slip_kiln::kiln::ast::types::{ArgView, TypeView};
+    let types = &walk.ast.types;
+    let TypeView::Function(proto) =
+        types.view(types.canonical(walk.ast.decls.get(func).ty()?).ty())
+    else {
+        return None;
+    };
+    let profile = match types.view(types.canonical(proto.ret()).ty()) {
+        TypeView::DependentDecltype(p) => Some(p),
+        TypeView::TemplateSpecialization { args, .. } => {
+            types.args(args).iter().find_map(|arg| match arg.view() {
+                ArgView::Profile(p) => Some(p),
+                _ => None,
+            })
+        }
+        _ => None,
+    };
+    let root = types.profile_expr(profile?)?;
+    walk.in_key += 1;
+    let mut stream = Stream::new();
+    crate::expr_dep::profile_expr(walk, &mut stream, root);
+    walk.in_key -= 1;
+    let mut hex = String::new();
+    for byte in stream.as_bytes() {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    Some(match stream.cause() {
+        Some(c) => format!("{hex} {c:?}"),
+        None => hex,
+    })
+}
+
+/// The rows of the two tables of `spec/digest-kinds.md` §4.4: (table,
+/// first cell, sample cell).
+fn spec_rows() -> Vec<(String, String, String)> {
+    let spec = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/digest-kinds.md"),
+    )
+    .expect("the spec");
+    let start = spec.find("### 4.4 ").expect("§4.4");
+    let end = start + spec[start..].find("### 4.5 ").expect("§4.5");
+    let mut table = String::new();
+    let mut rows = Vec::new();
+    for line in spec[start..end].lines() {
+        if let Some(h) = line.strip_prefix("#### ") {
+            table = h.trim().to_owned();
+        } else if line.starts_with("### ") {
+            table.clear();
+        } else if line.starts_with("| `") && !table.is_empty() {
+            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+            let first = cells[0].trim_matches('`').to_owned();
+            rows.push((table.clone(), first, cells[cells.len() - 1].to_owned()));
+        }
+    }
+    rows
+}
+
+/// Item 3 (F-C, WP-036 round 2): the bytes of profile mode, pinned by one
+/// sample per row of §4.4's tables; `SLIP_BLESS=1` rewrites
+/// `tests/golden/profile_bytes.txt`. A row without a sample (or a reason
+/// none is possible), a sample no row names, a kind row whose samples do
+/// not visit the kind, an `ExprKind` without a row, and a changed byte all
+/// fail.
+#[test]
+fn the_bytes_are_pinned() {
+    let rows = spec_rows();
+    let labels: HashSet<&str> = SAMPLES.iter().map(|(l, _)| *l).collect();
+    let mut named = HashSet::new();
+    let mut bad = Vec::new();
+    let mut seen_by = HashMap::new();
+    let mut golden = String::new();
+    for (label, src) in SAMPLES {
+        let (bytes, seen) = match sample_bytes(src) {
+            Ok(r) => r,
+            Err(e) => {
+                bad.push(format!("sample {label}: {}", e.lines().next().unwrap_or("")));
+                continue;
+            }
+        };
+        if bytes.is_empty() {
+            bad.push(format!("sample {label}: no profile in f's return type"));
+        }
+        for b in &bytes {
+            let _ = writeln!(golden, "{label}: {b}");
+        }
+        seen_by.insert(*label, seen);
+    }
+    for (table, first, cell) in &rows {
+        if let Some(why) = cell.strip_prefix("none:") {
+            if why.trim().is_empty() {
+                bad.push(format!("{table} {first}: none without a reason"));
+            }
+            continue;
+        }
+        let cited: Vec<&str> = cell.split(',').map(|c| c.trim().trim_matches('`')).collect();
+        for c in &cited {
+            if !labels.contains(c) {
+                bad.push(format!("{table} {first}: no sample {c}"));
+            }
+            named.insert(*c);
+        }
+        if table == "Kinds"
+            && !cited.iter().any(|c| seen_by.get(c).is_some_and(|s| s.contains(first)))
+        {
+            bad.push(format!("{table} {first}: no sample of {cited:?} visits it"));
+        }
+    }
+    for l in &labels {
+        if !named.contains(l) {
+            bad.push(format!("sample {l}: no row names it"));
+        }
+    }
+    let kinds: HashSet<&str> =
+        rows.iter().filter(|(t, _, _)| t == "Kinds").map(|(_, f, _)| f.as_str()).collect();
+    let tables = include_str!("tables.rs");
+    let from = tables.find("fn row(v: &kiln::ast::expr::ExprKind)").expect("ExprKind rows");
+    let body = &tables[from..from + tables[from..].find("\n    }\n").expect("end")];
+    for k in body.split("kiln::ast::expr::ExprKind::").skip(1) {
+        let k = k.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("");
+        if !kinds.contains(k) {
+            bad.push(format!("ExprKind {k}: no row in §4.4 Kinds"));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/profile_bytes.txt");
+    let head = "# The key-mode bytes of profile mode per sample (expr_profile_tests.rs\n\
+                # `the_bytes_are_pinned`); SLIP_BLESS=1 rewrites it.\n";
+    let golden = format!("{head}{golden}");
+    if std::env::var_os("SLIP_BLESS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &golden).unwrap();
+        return;
+    }
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    if old != golden {
+        let diff: Vec<String> = old
+            .lines()
+            .zip(golden.lines())
+            .filter(|(a, b)| a != b)
+            .take(10)
+            .map(|(a, b)| format!("- {a}\n+ {b}"))
+            .collect();
+        panic!(
+            "profile bytes changed (SLIP_BLESS=1 to accept): {} lines against {}\n{}",
+            golden.lines().count(),
+            old.lines().count(),
+            diff.join("\n")
+        );
+    }
 }

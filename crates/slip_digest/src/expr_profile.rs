@@ -83,6 +83,14 @@ thread_local! {
     /// How many expressions were walked in full (`P::Full`): the nets
     /// leave those walks out.
     static FULL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The kinds profile mode met (`expr_profile_tests::the_bytes_are_pinned`).
+    static VISITED: std::cell::RefCell<Vec<K>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The kinds met since the last call (tests only).
+#[cfg(test)]
+pub(crate) fn visited_take() -> Vec<K> {
+    VISITED.with(std::cell::RefCell::take)
 }
 
 /// One step of the walk.
@@ -93,6 +101,8 @@ enum P {
     /// `opt`, then the expression when present.
     Opt(Option<ExprId>),
     Uv(u64),
+    /// A symbol (a field designator's name).
+    Sym(slip_kiln::kiln::source::symbol::Symbol),
     Type(QualType),
     /// One template argument of a list written one by one.
     Arg(TemplateArg),
@@ -121,6 +131,7 @@ pub(crate) fn walk(w: &mut Walk<'_>, s: &mut Stream, root: ExprId) {
             P::Uv(v) => {
                 s.uv(v);
             }
+            P::Sym(name) => w.write_sym(s, name),
             P::Type(q) => w.write_type(s, q),
             P::Arg(a) => w.write_arg(s, a.view()),
             P::Full(e) => {
@@ -411,6 +422,8 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
     let x = &ast.exprs;
     let n = *x.get(e);
     let k = n.kind();
+    #[cfg(test)]
+    VISITED.with(|v| v.borrow_mut().push(k));
     let aux = n.aux();
     let id = ExprId::try_new;
     let mark = stack.len();
@@ -665,10 +678,10 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             s.count(ds.len());
             for d in ds {
                 match d {
-                    Designator::Field { name, loc: _ } => {
-                        s.uv(1);
-                        w.write_sym(s, name);
-                    }
+                    // On the stack, as Kiln's `Work::Word`s: written at
+                    // once, a field would come before an earlier index's
+                    // bounds, so `[i].f` and `.f[i]` would be one string.
+                    Designator::Field { name, loc: _ } => stack.extend([P::Uv(1), P::Sym(name)]),
                     Designator::Index { index, .. } => stack.extend([P::Uv(2), P::Expr(index)]),
                     Designator::Range { first, last, .. } => {
                         stack.extend([P::Uv(3), P::Expr(first), P::Expr(last)]);
