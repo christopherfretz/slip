@@ -1,0 +1,2 @@
+changed u()
+# u() calls O<int>::p<int>: its key follows O::p's, which the rules map to O::q's; the pre-image's u() calls O::p's. A true difference.

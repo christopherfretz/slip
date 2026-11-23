@@ -13,9 +13,10 @@ use slip_model::{Counter, Digest, FileRef, Observer, Outcome, Phase, Shard, Stat
 
 use crate::check::{front_end_line, program, utf8_command};
 use crate::kiln::ast::Ast;
+use crate::kiln::lex::{Interner, LexOptions};
 use crate::kiln::oven::Oven;
 use crate::kiln::pp::PpRecord;
-use crate::kiln::source::{FileId, FileOrigin, SourceManager};
+use crate::kiln::source::{FileId, FileOrigin, Loc, SourceManager};
 use crate::lookups::Lookups;
 
 /// What the front end of [`parse_observer_with`] keeps beyond what the
@@ -67,6 +68,18 @@ fn written_words(options: ParseOptions) -> &'static [&'static str] {
     if options.written { &["-fkiln-dump-written-refs", "-fkiln-decl-extents"] } else { &[] }
 }
 
+/// The token starts of the buffers a unit lexed ([`Unit::is_token_start`]).
+#[derive(Default)]
+struct TokenStarts(std::sync::Mutex<std::collections::HashMap<FileId, std::sync::Arc<[u32]>>>);
+
+impl TokenStarts {
+    /// The starts of `file`, made by `lex` the first time.
+    fn of(&self, file: FileId, lex: impl FnOnce() -> Vec<u32>) -> std::sync::Arc<[u32]> {
+        let mut map = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::sync::Arc::clone(map.entry(file).or_insert_with(|| lex().into()))
+    }
+}
+
 /// The finished front end of one observer, as the closure of
 /// [`parse_observer_with`] sees it: valid inside the call only.
 ///
@@ -79,6 +92,15 @@ pub struct Unit<'r> {
     oven: &'r Oven,
     pp_record: Option<&'r PpRecord>,
     lookups: Option<&'r Lookups>,
+    /// The interner of the unit's identifiers and the lexer options of
+    /// its preprocessor: what Kiln's lexer needs, read by
+    /// [`Unit::token_end`] and [`Unit::is_token_start`] alone
+    /// (`docs/wp/WP-084.md`).
+    interner: &'r Interner,
+    lex: LexOptions,
+    /// The token starts of each buffer [`Unit::is_token_start`] lexed, by
+    /// offset, ascending.
+    token_starts: TokenStarts,
     main_file: Option<FileId>,
     /// Each buffer that is one of `inputs`, and the index of its entry.
     buffers: &'r [(FileId, usize)],
@@ -87,6 +109,34 @@ pub struct Unit<'r> {
 }
 
 impl<'r> Unit<'r> {
+    /// The unit of a parsed snippet (`snippet::Parsed::unit`): no
+    /// preprocessing record, no lookups, no inputs (so [`Unit::real_path`] is `None`
+    /// for every buffer).
+    pub(crate) fn of_snippet(
+        ast: &'r Ast,
+        sm: &'r SourceManager,
+        oven: &'r Oven,
+        interner: &'r Interner,
+        lex: LexOptions,
+        main_file: FileId,
+        errors: u32,
+    ) -> Unit<'r> {
+        Unit {
+            ast,
+            sm,
+            oven,
+            pp_record: None,
+            lookups: None,
+            interner,
+            lex,
+            token_starts: TokenStarts::default(),
+            main_file: Some(main_file),
+            buffers: &[],
+            inputs: &[],
+            errors,
+        }
+    }
+
     /// The AST.
     pub fn ast(&self) -> &'r Ast {
         self.ast
@@ -121,6 +171,58 @@ impl<'r> Unit<'r> {
     /// Kiln type: any crate may call it.
     pub fn lookups(&self) -> Option<&'r Lookups> {
         self.lookups
+    }
+
+    /// Kiln's `kiln_lex::token_end` with this unit's interner and lexer
+    /// options: the end of the token that starts at `at`, or `None`
+    /// (Kiln `spec/lex.md` "End of a token": `None` when no token starts
+    /// at `at`, and for a macro location whose token would end outside
+    /// its own expansion entry).
+    pub fn token_end(&self, at: Loc) -> Option<Loc> {
+        crate::kiln::lex::token_end(self.sm, self.interner, at, self.lex)
+    }
+
+    /// Whether a token of the buffer starts at `at` as Kiln's lexer lexes
+    /// the buffer: for a file location, `at`'s offset is the start of a
+    /// token when the buffer is lexed from its start with this unit's
+    /// lexer options in normal mode (comments skipped); for a macro
+    /// location, the same of where it is spelled
+    /// (`SourceManager::spelling_loc`). False for the invalid location.
+    ///
+    /// This is how the preprocessor lexes the buffer outside directive
+    /// lines (Kiln's lexer lexes a skipped group to the same following
+    /// tokens, `Lexer::skip_plain_line_rest`); inside a directive line the
+    /// preprocessor lexes a header name, which normal mode does not.
+    /// Each buffer is lexed once per unit, when first asked about.
+    pub fn is_token_start(&self, at: Loc) -> bool {
+        let at = if at.is_macro() { self.sm.spelling_loc(at) } else { at };
+        if !at.is_valid() || at.is_macro() {
+            return false;
+        }
+        let Some((file, pos)) = self.sm.offset_of(at) else { return false };
+        self.token_starts.of(file, || self.lex_starts(file)).binary_search(&pos).is_ok()
+    }
+
+    /// The offsets of the tokens of `file`, lexed from its start.
+    fn lex_starts(&self, file: FileId) -> Vec<u32> {
+        use crate::kiln::lex::{LexMode, Lexer, TokKind};
+        let len = u32::try_from(self.sm.text(file).len()).unwrap_or(u32::MAX);
+        let base = self.sm.loc(file, 0);
+        let mut o = self.lex;
+        o.keep_comments = false;
+        let mut lx = Lexer::new_in_range(self.sm, self.interner, file, 0..len, base, o);
+        lx.set_mode(LexMode::Normal);
+        let mut out = Vec::new();
+        loop {
+            let t = lx.next();
+            if t.kind == TokKind::Eof {
+                break;
+            }
+            if let Some(d) = self.sm.same_entry_distance(base, t.span.lo) {
+                out.push(d);
+            }
+        }
+        out
     }
 
     /// The main file, once the front end entered it.
@@ -183,6 +285,42 @@ pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<S
         .map(|(shard, _)| shard)
 }
 
+/// The shard of `observer`'s parse: `parsed` is its inputs and its count
+/// of preprocessed tokens, when it parsed.
+fn new_shard(
+    observer: &Observer,
+    phase: Phase,
+    round: u64,
+    outcome: Outcome,
+    parsed: Option<(Vec<FileRef>, u64)>,
+) -> Shard {
+    let (inputs, counters) = match parsed {
+        Some((files, tokens)) => {
+            let counters = vec![
+                Counter { name: "inputs.bytes".into(), value: files.iter().map(|f| f.size).sum() },
+                Counter { name: "inputs.files".into(), value: files.len() as u64 },
+                Counter { name: "pp.tokens".into(), value: tokens },
+            ];
+            (Some(files), counters)
+        }
+        None => (None, Vec::new()),
+    };
+    Shard {
+        observer: observer.id,
+        phase,
+        round,
+        outcome,
+        inputs,
+        counters,
+        digests: None,
+        verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
+    }
+}
+
 /// Parses `observer`'s command with Kiln's front end in this process;
 /// when a parse happened, calls `f` on the finished unit (with errors or
 /// without) before anything is dropped. Returns the shard for `phase` and
@@ -218,36 +356,7 @@ pub fn parse_observer_with<R: Send>(
     options: ParseOptions,
     f: impl FnOnce(&Unit<'_>) -> R + Send,
 ) -> Result<(Shard, Option<R>), String> {
-    let shard = |outcome, parsed: Option<(Vec<FileRef>, u64)>| {
-        let (inputs, counters) = match parsed {
-            Some((files, tokens)) => {
-                let counters = vec![
-                    Counter {
-                        name: "inputs.bytes".into(),
-                        value: files.iter().map(|f| f.size).sum(),
-                    },
-                    Counter { name: "inputs.files".into(), value: files.len() as u64 },
-                    Counter { name: "pp.tokens".into(), value: tokens },
-                ];
-                (Some(files), counters)
-            }
-            None => (None, Vec::new()),
-        };
-        Shard {
-            observer: observer.id,
-            phase,
-            round,
-            outcome,
-            inputs,
-            counters,
-            digests: None,
-            verdict: None,
-            edits: None,
-            binding: None,
-            rule_use: None,
-            spellings: None,
-        }
-    };
+    let shard = |outcome, parsed| new_shard(observer, phase, round, outcome, parsed);
 
     let (argv0, rest) = match utf8_command(&observer.command) {
         Ok(words) => words,
@@ -275,6 +384,9 @@ pub fn parse_observer_with<R: Send>(
             oven: fe.oven,
             pp_record: fe.pp.record(),
             lookups: lookups.as_ref(),
+            interner: fe.interner,
+            lex: *fe.pp.lex_options(),
+            token_starts: TokenStarts::default(),
             main_file: fe.main_file,
             buffers: &buffers,
             inputs: &inputs,

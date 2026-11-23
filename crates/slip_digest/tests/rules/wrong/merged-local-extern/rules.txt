@@ -1,0 +1,4 @@
+# Item 9: acme is the old legacy, which still exists; the template in acme calls acme::hidden,
+# declared only by a block-scope extern declaration in a templated function (no unit,
+# digest §2.2), which the merge gives the key of legacy::hidden.
+relocate legacy => :: acme

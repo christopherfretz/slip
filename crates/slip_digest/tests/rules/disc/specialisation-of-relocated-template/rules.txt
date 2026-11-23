@@ -1,0 +1,2 @@
+# Item 2: a specialisation whose argument is a relocated template (a template template argument).
+relocate acme => :: legacy

@@ -1,0 +1,2 @@
+# digest-kinds §3.1 enumeration, renamed: its enumerators follow.
+relocate E => :: G

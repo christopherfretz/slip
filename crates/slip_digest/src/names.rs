@@ -57,7 +57,7 @@ use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_kiln::kiln::ast::templates::TtpKind;
 use slip_kiln::kiln::ast::types::{BuiltinType, RefQual, TypeNames, TypeView};
 use slip_kiln::kiln::ast::types::{
-    PrintOptions, print_type, write_arg_list, write_nns, write_template_arg,
+    PrintOptions, print_type, write_arg_list_scoped, write_nns, write_template_arg,
 };
 use slip_kiln::kiln::source::symbol::Symbol;
 use slip_model::Digest;
@@ -132,12 +132,13 @@ pub fn display_name(ast: &Ast, e: DeclId) -> String {
 /// qualified form, without what needs the walk (the names of unnamed
 /// classes).
 pub(crate) fn entity_name(ast: &Ast, e: DeclId, kind: KeyKind) -> String {
-    let names = AstNames::new(ast);
+    let names = scoped_names(ast);
     let mut out = String::new();
     names.write_qualified_spec_name(e, &mut out);
-    spec_args(ast, e, &mut out);
+    let printer = TypedNull::plain(ast);
+    spec_args(ast, &printer, e, &mut out);
     if kind != KeyKind::FunctionTemplate && info(ast.decls.get(e).kind()).function {
-        function_suffix(ast, e, &mut out);
+        function_suffix(ast, &printer, e, &mut out);
     }
     out
 }
@@ -156,7 +157,7 @@ impl<'n, 'w> Names<'n, 'w> {
     fn new(w: &'n Walk<'w>) -> Self {
         let ast = w.ast;
         let holding = ast.decls.cold.binding_var.iter().map(|(b, &h)| (h, b)).collect();
-        Names { w, ast, kiln: AstNames::new(ast), holding }
+        Names { w, ast, kiln: scoped_names(ast), holding }
     }
 
     /// The name of the unit of entity `e`, read from declaration `d`.
@@ -244,7 +245,7 @@ impl<'n, 'w> Names<'n, 'w> {
             _ => {}
         }
         self.qualified(d, &mut out, 0);
-        spec_args(ast, d, &mut out);
+        spec_args(ast, &self.printer(), d, &mut out);
         self.suffix(d, e, kind, &mut out);
         out
     }
@@ -268,7 +269,7 @@ impl<'n, 'w> Names<'n, 'w> {
         let node = ast.decls.get(d);
         let kind_of = node.kind();
         if info(kind_of).function || kind_of == DeclKind::CXXDeductionGuide {
-            function_suffix(ast, d, out);
+            function_suffix(ast, &self.printer(), d, out);
         }
         if self.holding.contains_key(&e) || self.holding.contains_key(&d) {
             out.push_str(" (holding variable)");
@@ -314,10 +315,10 @@ impl<'n, 'w> Names<'n, 'w> {
             return out;
         }
         self.qualified(d, &mut out, 0);
-        spec_args(ast, d, &mut out);
+        spec_args(ast, &self.printer(), d, &mut out);
         let k = ast.decls.get(d).kind();
         if info(k).function || k == DeclKind::CXXDeductionGuide {
-            function_suffix(ast, d, &mut out);
+            function_suffix(ast, &self.printer(), d, &mut out);
         }
         out
     }
@@ -361,11 +362,16 @@ impl<'n, 'w> Names<'n, 'w> {
             && let Some(q) = ast.decls.get(f).ty()
             && let Some(p) = ast.types.proto(q)
         {
-            out.push_str(&print_type(&ast.types, ast, p.ret(), PrintOptions::CANONICAL));
+            out.push_str(&print_type(
+                &ast.types,
+                &self.printer(),
+                p.ret(),
+                PrintOptions::CANONICAL,
+            ));
             out.push(' ');
         }
         self.qualified(t, out, 0);
-        function_suffix(ast, f, out);
+        function_suffix(ast, &self.printer(), f, out);
     }
 
     /// `template <class, int, template <class> class>`: a template head
@@ -383,7 +389,12 @@ impl<'n, 'w> Names<'n, 'w> {
             if k == DeclKind::NonTypeTemplateParm {
                 match ast.decls.get(p).ty() {
                     Some(q) => {
-                        out.push_str(&print_type(&ast.types, ast, q, PrintOptions::CANONICAL));
+                        out.push_str(&print_type(
+                            &ast.types,
+                            &self.printer(),
+                            q,
+                            PrintOptions::CANONICAL,
+                        ));
                     }
                     None => out.push_str("auto"),
                 }
@@ -441,54 +452,62 @@ impl<'n, 'w> Names<'n, 'w> {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                write_template_arg(&ast.types, &TypedNull(ast), *a, out);
+                write_template_arg(&ast.types, &self.printer(), *a, out);
             }
             out.push('>');
         }
     }
 
-    /// The qualified name of `d`, with the unnamed classes and
-    /// enumerations among its scopes, and `d` itself if it is one, named
-    /// as their keys name them.
+    /// The argument printer of the walk's names: an entity inside an
+    /// argument or a parameter type is named as [`Self::qualified`]
+    /// names it (inline namespaces, unnamed classes by their keys).
+    fn printer(&self) -> TypedNull<'_> {
+        TypedNull { ast: self.ast, walk: Some(self) }
+    }
+
+    /// The qualified name of `d` (without its own arguments): its scopes
+    /// ([`Self::scope`]) and its own name, an unnamed class or
+    /// enumeration named as its key names it (digest §3.3).
     fn qualified(&self, d: DeclId, out: &mut String, depth: u32) {
+        if depth >= DEPTH {
+            self.kiln.write_qualified_spec_name(d, out);
+            return;
+        }
         let mut kiln = String::new();
         self.kiln.write_qualified_spec_name(d, &mut kiln);
-        if depth < DEPTH
-            && let Some(rest) = self.local_scope(d, &kiln)
-        {
+        if let Some(rest) = self.local_scope(d, &kiln) {
             out.push_str(&rest);
             return;
         }
-        if depth < DEPTH && self.is_unnamed_tag(d) {
-            // Kiln's last component is `(anonymous struct)` or the typedef
-            // name; the scope before it is that of `d`.
-            self.scope(d, out, depth);
+        self.scope(d, out, depth);
+        self.component(d, out);
+    }
+
+    /// One component of a qualified name: an unnamed class or
+    /// enumeration as its key names it, anything else as Kiln names it in
+    /// a scope (`write_component`: `(anonymous namespace)`, a closure).
+    fn component(&self, d: DeclId, out: &mut String) {
+        if self.is_unnamed_tag(d) {
             self.unnamed_tag(d, out);
             return;
         }
-        if depth < DEPTH
-            && let Some(t) = self.unnamed_scope(d)
-        {
-            let mut prefix = String::new();
-            self.kiln.write_qualified_spec_name(t, &mut prefix);
-            prefix.push_str("::");
-            if let Some(rest) = kiln.strip_prefix(&prefix) {
-                self.qualified(t, out, depth + 1);
-                out.push_str("::");
-                out.push_str(rest);
-                return;
-            }
-        }
-        out.push_str(&kiln);
+        let mut full = String::new();
+        self.kiln.write_qualified_name(d, &mut full);
+        let mut prefix = String::new();
+        self.kiln.write_scope_prefix(d, false, &mut prefix);
+        out.push_str(full.strip_prefix(prefix.as_str()).unwrap_or(&full));
     }
 
-    /// The scope of `d` followed by `::` (empty at the top level), as
-    /// [`Self::qualified`] names it.
+    /// The scope of `d` followed by `::` (empty at the top level and in a
+    /// function, as Kiln's `write_scope_prefix`): every enclosing
+    /// namespace, an inline one too (`spec/verify.md` §6.1:
+    /// `legacy::v2::Mine`), every class with its arguments as
+    /// [`spec_args`] prints them; a linkage specification, an `export`
+    /// and an unscoped enumeration are no scope.
     fn scope(&self, d: DeclId, out: &mut String, depth: u32) {
         let ast = self.ast;
         let Some(ctx) = ast.decls.get(d).ctx() else { return };
-        let k = ast.decls.get(ctx).kind();
-        if k == DeclKind::TranslationUnit {
+        if ast.decls.get(ctx).kind().is_function() {
             return;
         }
         if depth < DEPTH && self.local_type_around(d).is_some() {
@@ -500,12 +519,38 @@ impl<'n, 'w> Names<'n, 'w> {
                 return;
             }
         }
-        if depth < DEPTH && (self.is_unnamed_tag(ctx) || self.unnamed_scope(ctx).is_some()) {
-            self.qualified(ctx, out, depth + 1);
-            out.push_str("::");
+        self.chain(ctx, out, depth + 1);
+    }
+
+    /// `ctx` and its parents, each followed by `::` (Kiln's
+    /// `write_scope_chain`, but for inline namespaces and unnamed classes).
+    fn chain(&self, ctx: DeclId, out: &mut String, depth: u32) {
+        let ast = self.ast;
+        let n = ast.decls.get(ctx);
+        let kind = n.kind();
+        if kind == DeclKind::TranslationUnit {
             return;
         }
-        self.kiln.write_scope_prefix(d, true, out);
+        if depth >= DEPTH {
+            out.push_str("...::");
+            return;
+        }
+        if let Some(parent) = n.ctx() {
+            self.chain(parent, out, depth + 1);
+        }
+        let skip = match kind {
+            DeclKind::LinkageSpec | DeclKind::Export => true,
+            DeclKind::Enum => ast.is_transparent(ctx),
+            _ => false,
+        };
+        if skip {
+            return;
+        }
+        self.component(ctx, out);
+        if !self.is_unnamed_tag(ctx) {
+            spec_args(ast, &self.printer(), ctx, out);
+        }
+        out.push_str("::");
     }
 
     /// The nearest local type around `d` (digest §4.3), through the
@@ -581,25 +626,6 @@ impl<'n, 'w> Names<'n, 'w> {
             && ast.decls.record(d).is_none_or(|r| r.lambda.is_none())
     }
 
-    /// The innermost unnamed class around `d` (an unnamed enumeration
-    /// is no scope Kiln prints).
-    fn unnamed_scope(&self, d: DeclId) -> Option<DeclId> {
-        let ast = self.ast;
-        let mut c = ast.decls.get(d).ctx();
-        for _ in 0..DEPTH {
-            let x = c?;
-            let k = ast.decls.get(x).kind();
-            if k == DeclKind::TranslationUnit {
-                return None;
-            }
-            if k == DeclKind::CXXRecord && self.is_unnamed_tag(x) {
-                return Some(x);
-            }
-            c = ast.decls.get(x).ctx();
-        }
-        None
-    }
-
     /// `(anonymous struct for P)`, `(anonymous enum 1)`: unnamed tag `d`
     /// by the rule of digest §3.3 its key follows.
     fn unnamed_tag(&self, d: DeclId, out: &mut String) {
@@ -621,13 +647,25 @@ impl<'n, 'w> Names<'n, 'w> {
     }
 }
 
-/// A specialisation's arguments, or a partial specialisation's pattern.
-fn spec_args(ast: &Ast, d: DeclId, out: &mut String) {
-    let names = TypedNull(ast);
+/// Kiln's names with the arguments of a specialisation in a scope printed
+/// scoped (`legacy::store<legacy::Mine>::m`), as [`spec_args`] prints a
+/// specialisation's own: two entities whose arguments differ only in a
+/// namespace have two names.
+fn scoped_names(ast: &Ast) -> AstNames<'_> {
+    let mut names = AstNames::new(ast);
+    names.scoped_spec_args = true;
+    names
+}
+
+/// A specialisation's arguments, or a partial specialisation's pattern,
+/// every name in them qualified (`legacy::store<legacy::Mine>`, Kiln's
+/// `write_arg_list_scoped`): two specialisations whose arguments differ
+/// only in a namespace have two names.
+fn spec_args(ast: &Ast, names: &TypedNull<'_>, d: DeclId, out: &mut String) {
     if let Some((_, si)) = ast.spec_info(d) {
-        write_arg_list(&ast.types, &names, ast.types.canonical_args(si.args), out);
+        write_arg_list_scoped(&ast.types, names, ast.types.canonical_args(si.args), out);
     } else if let Some((_, pi)) = ast.partial_spec_info(d) {
-        write_arg_list(&ast.types, &names, pi.canonical, out);
+        write_arg_list_scoped(&ast.types, names, pi.canonical, out);
     }
 }
 
@@ -636,20 +674,43 @@ fn spec_args(ast: &Ast, d: DeclId, out: &mut String) {
 /// printer writes every null pointer `nullptr`, and two such arguments of
 /// different types are different specialisations (`N<nullptr>` against
 /// `N<(int *)nullptr>`).
-struct TypedNull<'a>(&'a Ast);
+///
+/// With the walk's names (`walk`), an entity an argument or a type names
+/// is written as [`Names::qualified`] writes it: an inline namespace and
+/// an unnamed class's key are in it (`spec/verify.md` §6.1).
+struct TypedNull<'a> {
+    ast: &'a Ast,
+    walk: Option<&'a dyn Qualify>,
+}
 
-impl TypedNull<'_> {
+/// How the walk's names qualify an entity ([`Names::qualified`]).
+trait Qualify {
+    fn qualify(&self, d: DeclId, out: &mut String);
+}
+
+impl Qualify for Names<'_, '_> {
+    fn qualify(&self, d: DeclId, out: &mut String) {
+        self.qualified(d, out, 0);
+    }
+}
+
+impl<'a> TypedNull<'a> {
+    /// The AST's names alone.
+    fn plain(ast: &'a Ast) -> Self {
+        TypedNull { ast, walk: None }
+    }
+
     /// Writes `value` as a typed null pointer, if it is one whose type is
     /// not `std::nullptr_t`.
     fn typed_null(&self, value: ConstValueId, out: &mut String) -> bool {
-        let ast = self.0;
+        let ast = self.ast;
         let Some(Scalar::Null { ty, kind: _ }) = ast.consts.scalar(value) else { return false };
         let c = ast.types.canonical(ty);
         if let TypeView::Builtin(BuiltinType::NullPtr) = ast.types.view(c.ty()) {
             return false;
         }
         out.push('(');
-        out.push_str(&print_type(&ast.types, ast, c, PrintOptions::CANONICAL));
+        out.push_str(&print_type(&ast.types, self, c, PrintOptions::CANONICAL));
         out.push_str(")nullptr");
         true
     }
@@ -657,73 +718,79 @@ impl TypedNull<'_> {
 
 impl TypeNames for TypedNull<'_> {
     fn write_decl_name(&self, decl: DeclId, scoped: bool, out: &mut String) {
-        self.0.write_decl_name(decl, scoped, out);
+        // A closure type is named as Kiln names it in an argument,
+        // `(lambda)` (WP-040's names; two such collide by key today).
+        let closure = self.ast.decls.record(decl).is_some_and(|r| r.lambda.is_some());
+        match self.walk {
+            Some(q) if scoped && !closure => q.qualify(decl, out),
+            _ => self.ast.write_decl_name(decl, scoped, out),
+        }
     }
     fn specialization_args(&self, decl: DeclId) -> Option<ArgListId> {
-        self.0.specialization_args(decl)
+        self.ast.specialization_args(decl)
     }
     fn args_as_written(&self, decl: DeclId) -> Option<ArgListId> {
-        self.0.args_as_written(decl)
+        self.ast.args_as_written(decl)
     }
     fn converted_args(&self, decl: DeclId) -> Option<ArgListId> {
-        self.0.converted_args(decl)
+        self.ast.converted_args(decl)
     }
     fn write_converted_scope(&self, decl: DeclId, out: &mut String) -> bool {
-        self.0.write_converted_scope(decl, out)
+        self.ast.write_converted_scope(decl, out)
     }
     fn implicit_typedef(&self, decl: DeclId) -> bool {
-        self.0.implicit_typedef(decl)
+        self.ast.implicit_typedef(decl)
     }
     fn preferred_name(&self, decl: DeclId) -> Option<QualType> {
-        self.0.preferred_name(decl)
+        self.ast.preferred_name(decl)
     }
     fn tag_keyword(&self, decl: DeclId) -> &'static str {
-        self.0.tag_keyword(decl)
+        self.ast.tag_keyword(decl)
     }
     fn tag_named_by_typedef(&self, decl: DeclId) -> bool {
-        self.0.tag_named_by_typedef(decl)
+        self.ast.tag_named_by_typedef(decl)
     }
     fn invented_parm(&self, decl: DeclId) -> Option<Option<(DeclId, ArgListId)>> {
-        self.0.invented_parm(decl)
+        self.ast.invented_parm(decl)
     }
     fn write_expr(&self, expr: ExprId, out: &mut String) {
-        self.0.write_expr(expr, out);
+        self.ast.write_expr(expr, out);
     }
     fn write_value(&self, ty: QualType, value: ConstValueId, out: &mut String) {
         if !self.typed_null(value, out) {
-            self.0.write_value(ty, value, out);
+            self.ast.write_value(ty, value, out);
         }
     }
     fn write_value_typed(&self, ty: QualType, value: ConstValueId, out: &mut String) {
         if !self.typed_null(value, out) {
-            self.0.write_value_typed(ty, value, out);
+            self.ast.write_value_typed(ty, value, out);
         }
     }
     fn arg_includes_type(&self, template: DeclId, index: usize) -> bool {
-        self.0.arg_includes_type(template, index)
+        self.ast.arg_includes_type(template, index)
     }
     fn write_symbol(&self, sym: Symbol, out: &mut String) {
-        self.0.write_symbol(sym, out);
+        self.ast.write_symbol(sym, out);
     }
     fn write_template_param(&self, associated: DeclId, index: u32, out: &mut String) {
-        self.0.write_template_param(associated, index, out);
+        self.ast.write_template_param(associated, index, out);
     }
     fn write_operator(&self, op: u8, out: &mut String) {
-        self.0.write_operator(op, out);
+        self.ast.write_operator(op, out);
     }
     fn is_anonymous_namespace(&self, ns: DeclId) -> bool {
-        self.0.is_anonymous_namespace(ns)
+        self.ast.is_anonymous_namespace(ns)
     }
     fn clang_compat(&self) -> u32 {
-        self.0.clang_compat()
+        self.ast.clang_compat()
     }
     fn c_lang(&self) -> Option<bool> {
-        self.0.c_lang()
+        self.ast.c_lang()
     }
 }
 
 /// `(T1, T2)` and the method qualifiers of function `f`.
-fn function_suffix(ast: &Ast, f: DeclId, out: &mut String) {
+fn function_suffix(ast: &Ast, names: &TypedNull<'_>, f: DeclId, out: &mut String) {
     let Some(q) = ast.decls.get(f).ty() else { return };
     let c = ast.types.canonical(q);
     let TypeView::Function(p) = ast.types.view(c.ty()) else { return };
@@ -738,7 +805,7 @@ fn function_suffix(ast: &Ast, f: DeclId, out: &mut String) {
         } else if explicit {
             out.push_str("this ");
         }
-        out.push_str(&print_type(&ast.types, ast, t, PrintOptions::CANONICAL));
+        out.push_str(&print_type(&ast.types, names, t, PrintOptions::CANONICAL));
     }
     if p.info().variadic() {
         if !ast.types.params(&p).is_empty() {
@@ -779,5 +846,117 @@ fn content_word(kind: KeyKind) -> &'static str {
         KeyKind::ConstevalBlock => "consteval_block",
         KeyKind::TemplateParamObject => "template_param_object",
         _ => "content",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use slip_kiln::kiln::ast::decl::DeclKind;
+
+    // WP-104 part 2: a specialisation's arguments, and those of a
+    // specialisation in its scope, print every name qualified, of every
+    // kind of argument.
+    #[test]
+    fn specialisation_arguments_are_qualified() {
+        let src = "namespace legacy {\n\
+            struct Mine {}; enum E { X }; enum class F { Y };\n\
+            void fn(); int var; struct S { int m; void mf(); };\n\
+            template <class T> struct store { void put(); };\n\
+            template <template <class> class TT> struct tt {};\n\
+            template <void (*P)()> struct fp {}; template <int *P> struct vp {};\n\
+            template <E e> struct ep {}; template <F e> struct fq {};\n\
+            template <int S::*P> struct mp {}; template <void (S::*P)()> struct mfp {};\n\
+            template <class... T> struct pack {};\n\
+            inline auto lam = [] {};\n\
+            }\n\
+            namespace other { struct Mine {}; }\n\
+            legacy::store<legacy::Mine> a; legacy::store<other::Mine> b;\n\
+            legacy::store<legacy::store<other::Mine>> c; legacy::tt<legacy::store> d;\n\
+            legacy::fp<&legacy::fn> e; legacy::vp<&legacy::var> f; legacy::ep<legacy::X> g;\n\
+            legacy::fq<legacy::F::Y> h; legacy::mp<&legacy::S::m> i;\n\
+            legacy::mfp<&legacy::S::mf> j;\n\
+            legacy::pack<legacy::Mine, other::Mine, legacy::store<legacy::F>> k;\n\
+            legacy::store<decltype(legacy::lam)> l;\n\
+            void use() { b.put(); }\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let names: BTreeSet<String> = ast
+                .decls
+                .ids()
+                .filter(|&d| {
+                    ast.decls.get(d).kind() == DeclKind::CXXMethod
+                        || (ast.decls.record(d).is_some() && ast.spec_info(d).is_some())
+                })
+                .map(|d| super::display_name(ast, d))
+                .collect();
+            for want in [
+                "legacy::store<legacy::Mine>",
+                "legacy::store<other::Mine>",
+                "legacy::store<legacy::store<other::Mine>>",
+                "legacy::tt<legacy::store>",
+                "legacy::fp<&legacy::fn>",
+                "legacy::vp<&legacy::var>",
+                "legacy::ep<legacy::X>",
+                "legacy::fq<legacy::F::Y>",
+                "legacy::mp<&legacy::S::m>",
+                "legacy::mfp<&legacy::S::mf>",
+                "legacy::pack<legacy::Mine, other::Mine, legacy::store<legacy::F>>",
+                "legacy::store<legacy::(lambda)>",
+                "legacy::store<other::Mine>::put()",
+            ] {
+                assert!(names.contains(want), "{want} not in {names:#?}");
+            }
+        });
+    }
+
+    // WP-104 review F7: the walk's names keep an inline namespace in a
+    // scope and in an argument, and name an unnamed class or enumeration
+    // in an argument by its key (`spec/verify.md` §6.1).
+    #[test]
+    fn walk_names_inline_namespace_and_unnamed_arguments() {
+        let src = "template <class T> struct store {};\n\
+            namespace legacy { struct Mine {}; inline namespace v2 { struct Mine {}; }\n\
+            struct { int a; } u1; enum { A0 } e1; }\n\
+            store<legacy::v2::Mine> a; store<decltype(legacy::u1)> b;\n\
+            store<decltype(legacy::e1)> c;\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let n = super::Names::new(w);
+            let names: BTreeSet<String> = ast
+                .decls
+                .ids()
+                .filter(|&d| ast.decls.record(d).is_some() && !ast.decls.get(d).name().is_empty())
+                .map(|d| n.unit(d, w.entity(d), slip_model::keys::KeyKind::Class))
+                .collect();
+            for want in [
+                "legacy::Mine",
+                "legacy::v2::Mine",
+                "store<legacy::v2::Mine>",
+                "store<legacy::(anonymous struct for u1)>",
+                "store<legacy::(anonymous enum for e1)>",
+            ] {
+                assert!(names.contains(want), "{want} not in {names:#?}");
+            }
+        });
+    }
+
+    // A local class prints without its function (Kiln's scoped printing
+    // names no function scope): `store<Local>`.
+    #[test]
+    fn local_class_argument() {
+        let src = "template <class T> struct store {};\n\
+                   namespace legacy { int g() { struct Local {}; store<Local> l; (void)l; return 0; } }\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let names: Vec<String> = ast
+                .decls
+                .ids()
+                .filter(|&d| ast.decls.record(d).is_some() && ast.spec_info(d).is_some())
+                .map(|d| super::display_name(ast, d))
+                .collect();
+            assert_eq!(names, ["store<Local>"]);
+        });
     }
 }

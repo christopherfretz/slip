@@ -1,0 +1,3 @@
+# Fix round 2, F6 (the review's case, given an instantiation each so that it is not vacuous): two class templates swapped whose only members are constructors; W<int> in the post-image is V<int>'s, taking its template's mapped name once (M8 applied it twice and gave it back its own).
+relocate W => :: V
+relocate V => :: W

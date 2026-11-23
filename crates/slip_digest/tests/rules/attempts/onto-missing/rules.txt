@@ -1,0 +1,2 @@
+# Item 9 attempt: a rule mapping g onto k, which neither image has: g keeps no name of A.
+rule function | root | id g | disc-of post g() | root | id k

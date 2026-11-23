@@ -124,6 +124,7 @@ Two ways of using it:
 | `slip.tu.v1` | `list<GroupSum>` | `digest.md` §11 |
 | `slip.rules.v1` | `list<Rule>` | `verify.md` §2 |
 | `slip.basis.v1` | `list<Basis>`: the shards an edit set was reduced from | `edits.md` §6 |
+| `slip.transform.v0` | a transform's identity: API level, command line, target, files read | `api.md` §2.2 |
 
 `slip_model` implements BLAKE3 itself, in safe Rust, with an incremental
 interface (`new`, `update(&[u8])`, `finalize() -> Digest`) and a one-shot
@@ -715,6 +716,7 @@ impl<'r> Unit<'r> {
     pub fn real_path(&self, file: kiln::source::FileId) -> Option<&'r [u8]>;
     pub fn errors(&self) -> u32;
     pub fn stack_remaining(&self) -> Option<usize>;
+    pub fn token_end(&self, at: kiln::source::Loc) -> Option<kiln::source::Loc>;
 }
 ```
 
@@ -730,6 +732,12 @@ log does not say which were tried; they are taken from Kiln's driver,
 `Args::embed_dirs`). A lookup of an absolute name is not in Kiln's log
 and so not here (`spec/verify.md` §5.1, "What remains outside").
 `Lookups` is a function of the unit; the shard does not depend on it.
+
+`token_end(at)` is Kiln's `kiln_lex::token_end` with the unit's interner
+and lexer options (`Preprocessor::lex_options`): the end of the token
+that starts at `at`, or `None` (Kiln `spec/lex.md` "End of a token").
+It is the only holder in Slip of either; `slip_kiln::ranges` reaches the
+end of a token through it (`spec/landed/api/WP-084.md`).
 
 `stack_remaining()` is the stack left on the calling thread under Kiln's
 stack guard (`kiln_sema::stack_guard::StackGuard::current().remaining()`):

@@ -1,0 +1,2 @@
+# spec/verify.md "Tests": a merged namespace: acme is the old legacy, which still exists.
+relocate legacy => :: acme

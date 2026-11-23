@@ -4,8 +4,8 @@
 //! over a normalised compile command and turns what Kiln produced into
 //! Slip's own model types (`slip_model`).
 //!
-//! **No Kiln type outside [`kiln`], [`Unit`]'s methods, [`snippet`] and
-//! [`written`].**
+//! **No Kiln type outside [`kiln`], [`Unit`]'s methods, [`ranges`],
+//! [`snippet`] and [`written`].**
 //! The public interface is:
 //!
 //! - the parse task (`spec/model.md` §8.4): [`parse_observer`] (an
@@ -20,7 +20,9 @@
 //! - the module [`session`]: the transform unit compiled once and run
 //!   many times (`spec/api.md` §2), whose types name no Kiln type;
 //! - the module [`kiln`] (re-exports of Kiln's crates), which [`Unit`]'s
-//!   methods name, and the module [`snippet`] (an in-memory front end for
+//!   methods name, the module [`ranges`] (the file range of a token span
+//!   and its tier, and unit order: `spec/api.md` §1 and §5.4, over Kiln's
+//!   locations) and the module [`snippet`] (an in-memory front end for
 //!   tests, whose types name Kiln's);
 //! - the module [`written`]: a unit's names as written, from Kiln's
 //!   written-reference and declaration-extent tables (`spec/edits.md`
@@ -38,6 +40,7 @@
 mod check;
 mod lookups;
 mod parse;
+pub mod ranges;
 
 /// Kiln's own crates, for the Slip crates whose subject is Kiln's AST.
 ///

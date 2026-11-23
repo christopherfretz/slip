@@ -1,0 +1,3 @@
+# Item 3 and spec/verify.md §2.3: a relocated to x and, on a later line, b renamed y: the second rule's parent is m(x) under the line above, the id of a. In the other order: mapped-parent-reversed.
+relocate a => :: x
+relocate a::b => x :: y

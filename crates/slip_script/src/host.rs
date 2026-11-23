@@ -159,8 +159,13 @@ pub(crate) enum Answer {
 }
 
 /// The host of one run.
+///
+/// The subject is `Sync`, so that a `Host` is `Send` (`docs/wp/WP-089.md`
+/// "Decided since", item 1): the driver's handler holds the host, and
+/// `slip_kiln::session::Handler` is `Send` because Kiln's `HostCalls` is.
+/// A run's host never leaves the subject unit's thread in practice.
 pub struct Host<'s> {
-    pub(crate) subject: &'s dyn Subject,
+    pub(crate) subject: &'s (dyn Subject + Sync),
     pub(crate) limits: Limits,
     /// Per sort (tag - 1): the subject's number of each index issued.
     issued: [Vec<u32>; 4],
@@ -197,7 +202,7 @@ impl fmt::Debug for Host<'_> {
 }
 
 impl<'s> Host<'s> {
-    pub fn new(subject: &'s dyn Subject, transform: Digest, limits: Limits) -> Host<'s> {
+    pub fn new(subject: &'s (dyn Subject + Sync), transform: Digest, limits: Limits) -> Host<'s> {
         Host {
             subject,
             limits,
