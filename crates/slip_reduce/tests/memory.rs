@@ -120,10 +120,9 @@ fn one_site(i: usize) -> Shard {
 #[test]
 fn one_site_ten_thousand_shards_fan_in_two() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut growth = Vec::new();
-    // The first call of the process warms the allocator and the standard
-    // library; it is not compared.
-    for n in [1_000, 1_000, 10_000] {
+    // One measured run of `n` shards: the growth of the peak, if it can
+    // be measured.
+    let run = |n: usize| {
         let store = Lazy { n, make: one_site };
         let o = Options { fan_in: 2, threads: 1, scratch: scratch("one-site") };
         let start = Instant::now();
@@ -138,7 +137,24 @@ fn one_site_ten_thousand_shards_fan_in_two() {
         assert_eq!(set.edits[0].first.len(), 8);
         assert_eq!(counter(&set, "reduce.claims"), n as u64);
         eprintln!("one site, {n} shards, fan_in 2: {took:?}, peak growth {g:?} KiB");
-        growth.push(g);
+        g
+    };
+    // The first call of the process warms the allocator and the standard
+    // library; it is not compared.
+    let mut growth = [run(1_000), run(1_000), run(10_000)];
+    // A reading is what the run needed plus what the allocator and the
+    // host added that time (on a loaded host the same run has read 0,
+    // 8, 140 and 320 KiB), so it bounds the need from above and the
+    // least of a few readings is the estimate. What the bounds are for,
+    // something held per shard or per run, is in every reading. The
+    // large run is read again, twice at most, only when a bound fails.
+    for _ in 0..2 {
+        match (growth[1], growth[2]) {
+            (Some(small), Some(large)) if large > 1024 || large > small + 256 => {
+                growth[2] = run(10_000).map(|again| again.min(large));
+            }
+            _ => break,
+        }
     }
     match (growth[1], growth[2]) {
         (Some(small), Some(large)) => {

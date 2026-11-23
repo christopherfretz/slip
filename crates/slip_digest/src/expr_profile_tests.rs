@@ -27,7 +27,7 @@ use crate::walk::Walk;
 
 /// Every test directory (one holding `expect.txt`, `t.cpp` or `a.cpp`)
 /// under `tests/<root>`.
-fn test_dirs(root: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn test_dirs(root: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(root) else { return };
     let mut subs: Vec<PathBuf> = rd.filter_map(|d| Some(d.ok()?.path())).collect();
     subs.sort();
@@ -52,7 +52,7 @@ fn header<'t>(main: &'t str, key: &str) -> Option<&'t str> {
 
 /// Runs `f` on each side of the pair test in `dir` that parses
 /// (`side.h`, `// std:`, `// args:`, `// target:`).
-fn each_input(dir: &Path, mut f: impl FnMut(&Input<'_>)) {
+pub(crate) fn each_input(dir: &Path, mut f: impl FnMut(&Input<'_>)) {
     let mut all: Vec<(String, String)> = std::fs::read_dir(dir)
         .expect("the test")
         .filter_map(|d| {
@@ -421,6 +421,14 @@ const PAIR_CEILINGS: &[(&str, usize)] = &[
     ("UndeclaredLocal", 5),
     ("Unsupported(\"local/closure-owner\")", 5),
     ("Unsupported(\"local/lambda-in-type\")", 1),
+    // WP-041's fix round: `indeterminate/_/spelling-conversion-name-*`
+    // and `spelling-fold-operator-*` (a conversion name of a marked type;
+    // a fold over an operator some declaration names).
+    ("Unaccounted(\"spelling/conversion-name\")", 1),
+    ("Unaccounted(\"spelling/fold-operator\")", 1),
+    // WP-041's fix round 3: `indeterminate/_/spelling-prefix-splice` (a
+    // splice qualifier, 2 of 33 314).
+    ("Unsupported(\"Nns/Splice\")", 1),
     ("Unsupported(\"typedef/alignment-by-declaration\")", 1),
 ];
 
@@ -495,8 +503,9 @@ fn digest_all(src: &str) -> Vec<(slip_model::Digest, String, Vec<crate::Cause>)>
 }
 
 /// F1: `h`'s found set is left out of its profile, so its key is the
-/// same whichever `g` lookup found, and its unit, which writes the type,
-/// is pending until spellings are written (WP-041).
+/// same whichever `g` lookup found; its unit, which writes the type
+/// through `absorb_type`, adds its own spelling's set to its list
+/// (WP-041), and a key does not.
 #[test]
 #[allow(clippy::many_single_char_names, reason = "sides a and b, as the review names them")]
 fn a_left_out_found_set_marks_the_unit() {
@@ -509,12 +518,14 @@ fn a_left_out_found_set_marks_the_unit() {
     assert_eq!(ha.len(), 1);
     assert_eq!(hb.len(), 1);
     assert_eq!(ha[0].0, hb[0].0, "the key ignores the mark");
-    // The unit writes h's type through `absorb_type`: marked, it is
-    // pending; in a key it is not.
-    let spelling = Some(crate::Cause::Pending(crate::Area::Spelling));
-    for (src, marked) in
-        [(a, true), (b, true), ("template<class T> auto h(T t) -> decltype(t + 1);\n", false)]
-    {
+    for (src, marked, sets) in [
+        (a, true, 2),
+        (b, true, 1),
+        // An empty operator set raises the mark too: the mark is a
+        // function of the profile.
+        ("template<class T> auto h(T t) -> decltype(t + 1);\n", true, 0),
+        ("template<class T> auto h(T t) -> decltype(t.m);\n", false, 0),
+    ] {
         crate::decl_func::tests::with_walk(src, |w| {
             let h = crate::decl_func::tests::named(
                 w,
@@ -525,13 +536,26 @@ fn a_left_out_found_set_marks_the_unit() {
             let t = w.type_digest(q, false);
             assert_eq!(t.spelling, marked, "{src}");
             let mut s = Stream::new();
-            w.absorb_type(&mut s, t);
-            assert_eq!(s.cause(), if marked { spelling } else { None }, "{src}");
+            w.absorb_type(&mut s, t, q, None);
+            assert_eq!(s.cause(), None, "{src}");
+            assert_eq!(w.unit.facts_due, sets > 0, "{src}");
+            let found: Vec<usize> = w
+                .unit
+                .facts
+                .iter()
+                .filter_map(|f| match f {
+                    crate::own_spelling::Fact::Found(ds) => Some(ds.len()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(found, if sets > 0 { vec![sets] } else { vec![] }, "{src}");
+            w.unit = crate::walk::UnitState::default();
             w.in_key += 1;
             let mut s = Stream::new();
-            w.absorb_type(&mut s, t);
+            w.absorb_type(&mut s, t, q, None);
             w.in_key -= 1;
             assert_eq!(s.cause(), None, "a key ignores the mark");
+            assert!(w.unit.facts.is_empty(), "a key reads no spelling");
             // A memo hit marks the stream around it too.
             let before = w.left_out;
             let again = w.type_digest(q, false);
@@ -603,8 +627,6 @@ fn a_local_use_carries_out_of_nested_profiles() {
     });
 }
 
-const SPELLING: crate::Cause = crate::Cause::Pending(crate::Area::Spelling);
-
 /// The two sides of a pair whose found set differs: `g(T())` finds
 /// `g(long)` alone on side A and both `g` on side B (where `char g(int)`
 /// is declared before the use); for `T = int` side A means 4 and side B 1.
@@ -628,13 +650,14 @@ fn unit_causes(src: &str, name: &str) -> (slip_model::Digest, Vec<crate::Cause>,
     (k, c, list)
 }
 
-/// Item 1 (F-A, F-D): a profile written straight into a unit stream (a
-/// template argument of a call in a member's initialiser, a partial
-/// specialisation's argument) or through a type (an array bound, an
-/// argument type) whose found set was left out makes the unit
-/// `Pending(Spelling)`; the key is the same on both sides.
+/// Item 1 (F-A, F-D), WP-041: a profile written straight into a unit
+/// stream (a template argument of a call in a member's initialiser, a
+/// partial specialisation's argument) or through a type (an array bound,
+/// an argument type) whose found set was left out: the key is the same on
+/// both sides, the unit determinate on both and different (its list holds
+/// its own spelling's set).
 #[test]
-fn a_left_out_found_set_in_a_unit_is_pending() {
+fn a_left_out_found_set_in_a_unit_is_written() {
     let cases = [
         ("template<class T> struct S { static constexpr int v = h<sizeof(g(T()))>(); };\n", "S::v"),
         (
@@ -652,15 +675,54 @@ fn a_left_out_found_set_in_a_unit_is_pending() {
         let (ka, ca, la) = unit_causes(&a, name);
         let (kb, cb, _) = unit_causes(&b, name);
         assert_eq!(ka, kb, "{name}: the key ignores the found set");
-        assert!(ca.contains(&SPELLING), "{name} side A: {ca:?} ({la})");
-        assert!(cb.contains(&SPELLING), "{name} side B: {cb:?}");
+        // `S::v` is `Pending(Demand)` (its initialiser's call), a cause of
+        // its own; none is a spelling's.
+        let spelling = |c: &crate::Cause| matches!(c, crate::Cause::Unaccounted(w) if w.starts_with("spelling/"));
+        assert!(!ca.iter().any(spelling), "{name} side A: {ca:?} ({la})");
+        assert!(!cb.iter().any(spelling), "{name} side B: {cb:?}");
+        assert_ne!(unit_digest(&a, name), unit_digest(&b, name), "{name}: the sets differ");
     }
 }
 
-/// Item 7d: F1's two pair tests, pending until spellings are written,
-/// are `Pending(Spelling)` today on both sides (the unit `h`).
+/// The unit digest of the unit named `name`.
+fn unit_digest(src: &str, name: &str) -> slip_model::Digest {
+    let files = [("main.cpp", src)];
+    let snippet = slip_kiln::snippet::Snippet {
+        files: &files,
+        main: "main.cpp",
+        include: &[""],
+        std: "c++20",
+    };
+    slip_kiln::snippet::parse(&snippet, |p| {
+        let path = |_| Vec::new();
+        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+        let rules = RuleTable::empty();
+        let o = crate::digest(
+            &input,
+            &crate::Options {
+                rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail: crate::Detail::All,
+                names: true,
+                rule_use: false,
+            },
+        );
+        let key = o.names.iter().find(|(_, n)| n == name).map(|(k, _)| *k).expect("the unit");
+        o.digests
+            .groups
+            .iter()
+            .flat_map(|g| g.units.iter().flatten())
+            .find(|u| u.key == key)
+            .map(|u| u.digest)
+            .expect("its digest")
+    })
+    .expect("the snippet parses")
+}
+
+/// Item 7d, WP-041: F1's two pair tests are determinate on both sides
+/// (the unit `h`); their expectations are the pair tests' own.
 #[test]
-fn the_f1_pairs_are_pending_spelling() {
+fn the_f1_pairs_are_determinate() {
     let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/differ/_");
     for dir in ["dependent-decltype-own-lookup-set", "dependent-decltype-earlier-spelling-added"] {
         let mut sides = 0;
@@ -668,7 +730,7 @@ fn the_f1_pairs_are_pending_spelling() {
             sides += 1;
             let h = causes_of(input, "h(type-parameter-0-0)");
             assert_eq!(h.len(), 1, "{dir}");
-            assert!(h[0].contains(&SPELLING), "{dir} side {sides}: {:?}", h[0]);
+            assert!(h[0].is_empty(), "{dir} side {sides}: {:?}", h[0]);
         });
         assert_eq!(sides, 2, "{dir}");
     }

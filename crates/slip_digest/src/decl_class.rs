@@ -306,6 +306,19 @@ pub(crate) fn field_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     s.tag(init_style::row(&style));
 }
 
+/// `ColdDeclData` `ctor_inits` of the function `d`: the count, then each
+/// `record CtorInit`. A constructor defined in a template has none in the
+/// AST (Kiln keeps a template's mem-initializers for instantiation only,
+/// `Sema::act_on_mem_initializers`): `differ/_/mem-initializer-in-template`
+/// is pending on Kiln (`spec/landed/digest-kinds/WP-041.md`, For Kiln 10).
+pub(crate) fn ctor_inits(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let inits: Vec<_> = w.ast.ctor_inits(d).copied().collect();
+    s.count(inits.len());
+    for init in &inits {
+        ctor_init(w, s, init);
+    }
+}
+
 /// `record CtorInit` (§5.5): one constructor initialiser, for
 /// `ColdDeclData` `ctor_inits` (the cold-map package calls it). The rows
 /// without a kind prefix first (`kind`, `init`), then the `target` row of
@@ -474,6 +487,10 @@ fn local_member(w: &Walk<'_>, e: DeclId) -> bool {
         | Role::Local
         | Role::InParent
         | Role::Unsupported(_) => return false,
+    }
+    // A hidden using-shadow is no member a class lists (WP-119 item 6).
+    if crate::units::hidden_shadow(w, e) {
+        return false;
     }
     let written_by_another = kind == DeclKind::UsingShadow
         || kind == DeclKind::ConstructorUsingShadow

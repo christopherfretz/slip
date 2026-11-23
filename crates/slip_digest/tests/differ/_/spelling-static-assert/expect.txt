@@ -1,0 +1,5 @@
+# the static_assert is keyed by its content: its list moves its key, and S, which holds that key, changes
+added f(long)
+added S::<static_assert>
+removed S::<static_assert>
+changed S

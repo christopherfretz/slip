@@ -1,0 +1,3 @@
+# equal: the instantiated member's rule agrees with the chain of patterns (WP-119 item 1)
+use 5 via 1 direct 0
+use 6 via 1 direct 0

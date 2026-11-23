@@ -404,9 +404,12 @@ says so in its note.
   Implicit members and the specialisations of member templates are not
   written here: one that is used is a derived unit. A closure met a
   second time writes `n` alone;
-- a local typedef or alias, a using-declaration, a using-directive and an
-  empty declaration write nothing: their effect is in the references
-  resolved through them;
+- a local typedef or alias is written as its rows (its aliased type with
+  the list that type's spelling holds, §4.4 "Spellings", rule 4): it has no
+  unit of its own, and what lookup found in its aliased type is the
+  function's meaning even when nothing uses the alias;
+- a using-declaration, a using-directive and an empty declaration write
+  nothing: their effect is in the references resolved through them;
 - a block-scope declaration of a function or of a variable with linkage
   (`DeclMisc` `misc-local-extern`) is written as a `ref`: the entity is a
   unit of the namespace it belongs to. A function's `ref` is followed by a
@@ -539,10 +542,10 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    and printing. They are `out`: the profile is the fact (§4.4), and the
    bytes of a profile are a function of the profile, not of the spelling
    Kiln met first. A fact a spelling holds and the profile does not (the
-   declarations lookup found for an unresolved name) is not in the type;
-   a type that left one out is marked, and a unit that writes a marked
-   type is `Pending(Spelling)` until the unit writes its own spellings
-   (§4.4).
+   declarations lookup found for an unresolved name or a dependent
+   operator, the functions a resolved `new` or `delete` chose) is not in
+   the type: the unit that writes the type writes it, read from its own
+   spelling, in the list at the end of its stream (§4.4 "Spellings").
 2. **Alias template specialisations** are sugar; `alias_converted` holds
    their converted arguments and is `out`. The type the alias names is what
    is digested.
@@ -552,10 +555,16 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    non-canonical function node. A type digest is taken from the canonical
    type in every language mode. The exception specification of a
    *function declaration* is a field of the function's unit (§5.3,
-   `DeclNode`, `ty-exception-spec`), read from the declared type with
-   `TypeContext::proto` and `exc_spec`, which answer with the written
-   specification in every language mode, so it is compared whether or not
-   the type holds it.
+   `DeclNode`, `ty-exception-spec`), read from the declaration's own
+   written function node (`Walk::own_proto`): before C++17
+   `TypeContext::proto` of the declared type answers with that node's
+   written specification; from C++17 on it answers with the canonical
+   prototype, whose dependent `noexcept` is the profile of the first
+   spelling (`ExcSpec::DependentNoexcept`), so `own_proto` takes the first
+   function node met along the declared type's sugar
+   (`TypeContext::proto_of`, `desugar_once`), which holds the operand as
+   written (`ExcSpec::NoexceptExpr`). The specification is compared in
+   every language mode, whether or not the type holds it.
 4. **Deferred exception specifications.** `ExcSpec::Deferred(d)` is
    canonical and distinct per declaration, and Kiln re-points the
    declaration's type when the specification is resolved. Whether it has
@@ -1297,22 +1306,231 @@ reflection facts (`:792-837`).
 
 The rest of profile mode:
 
-- **The mark.** When the walk leaves out a fact a spelling holds (a
-  non-empty found set of an `UnresolvedLookupExpr`), it counts it
-  (`Walk::left_out`). A type digest whose stream counted one is marked,
-  and a memo hit of a marked type counts again, so every enclosing type
-  is marked too. A key ignores the count and the mark. A unit stream is
-  indeterminate with `Pending(Spelling)` when, outside any key and type
-  (`in_key == 0`, `type_nesting == 0`), it writes a marked type, or a
-  profile that counted one is written into it directly (a template
-  argument, a table row), or it is a partial specialisation's whose
-  arguments, which only its key holds, count one (`templ.rs`
-  `partial_spec_info`). A key and a content digest are computed with the
-  type digests' state put aside (`Walk::take_types`): what they count is
-  not the enclosing type's, so a type's mark does not depend on whether a
-  key it names was computed first. The fact belongs to the unit that owns
-  the spelling, which writes it when spellings are written ("Hazards
-  accepted for now").
+- **The mark.** When the walk leaves out a fact a spelling may hold, it
+  counts it (`Walk::left_out`), whatever the first spelling's value: every
+  `UnresolvedLookupExpr` (an empty found set too), every expression with an
+  `oper_lookups` entry (an empty set too), every `CXXNewExpr` and
+  `CXXDeleteExpr`, a fold that rule 9 makes indeterminate, a resolved
+  `DeclRefExpr` or `MemberExpr` whose referent is a member of a class or
+  enumeration or a specialisation (rule 10: it may have been named through
+  a qualifier or arguments that hold more), a qualifier with a level that
+  names a type (rule 11), and an
+  operation that may round (a `BinaryOperator`, `CompoundAssignOperator`,
+  `UnaryOperator` or cast whose type is floating or dependent: rule 8;
+  whether the first spelling's node has an `fp_round` does not count). The mark is so a function of the
+  profile, not of the spelling Kiln met first. A type digest whose
+  stream counted one is marked, and a memo hit of a marked type counts
+  again, so every enclosing type is marked too. A key ignores the count
+  and the mark. A key and a content digest are computed with the type
+  digests' state put aside (`Walk::take_types`): what they count is not
+  the enclosing type's, so a type's mark does not depend on whether a key
+  it names was computed first. It decides three things: a unit that holds
+  a canonical operand and no spelling of its own is
+  `Unaccounted("spelling/<site>")` when the operand's type is marked
+  ("Spellings", rule 5); so is a profile written by `ProfileId` into a
+  unit stream (`spelling/profile`); and a conversion function's name whose
+  type is marked is `spelling/conversion-name` (Kiln interns the name by
+  the canonical type, so the name holds the first spelling only).
+- **Spellings** (WP-041). What a profile leaves out is written by the
+  unit that owns the spelling, from that spelling, not from the type's
+  first one (`own_spelling.rs`):
+  1. *The left-out facts of an expression*, in the order of profile
+     mode's walk of it (pre-order, children in the order of the table
+     above): per `UnresolvedLookupExpr` (not a template template
+     parameter's `V<args>`) a `Found` entry, the set of declarations
+     found (possibly empty); per expression with an `oper_lookups` set an
+     `Oper` entry (possibly empty); per resolved `CXXNewExpr` or
+     `CXXDeleteExpr` a `Chosen` entry. Types inside the expression are
+     read as written (rule 2), an argument list and a qualifier as
+     written; a parameter's and a template parameter's type are their
+     declarations'. A kind walked in full has its facts in its bytes; a
+     requires-expression without its body is rule 5's site `spelling/full`
+     when the type around it is marked, and a kind walked in full is
+     `spelling/full` when its own profile walk counts a fact (the mark of
+     the node, not of the type around it).
+  2. *The spellings of a written type*, through sugar, in the order of its
+     structure, for a type that is instantiation-dependent: pointee,
+     referent, element, pointee and class of a member pointer, the
+     pattern of a pack expansion, a substituted parameter's replacement,
+     an attributed type's modified type; a dependent array or vector
+     bound, an address space and a pack index (each as written, `Profile`
+     operands are rule 5: `spelling/array-bound`, `vector-size`,
+     `addr-space`, `pack-index`); a constant array's bound as written
+     (`ConstArray::size_expr`, rule 7); a function type's return type,
+     parameter types and exception specification (`noexcept(e)`,
+     `throw(T...)`; `spelling/noexcept` when canonical; a resolved
+     `noexcept(e)` by rule 7). For a function declaration's own type the
+     exception specification is not read (its unit walks it in full, read
+     from the written node: §4.2 rule 3), and the declared parameters are
+     not read from the type: each `ParmVarDecl`'s unit writes its type as
+     written (`ParamData::original_ty`), since an adjusted parameter type
+     holds the canonical element type; a `decltype`'s and a `typeof`'s
+     operand (`spelling/decltype`, `spelling/typeof` when canonical); the
+     template name and written argument lists of a `TemplateSpecialization`
+     (with or without `underlying`), a dependent template specialisation
+     and a placeholder's constraint; the types of a qualifier and of a
+     template name's qualifier. A deduced type, a resolved pack index, a
+     computed unary transform and a substituted parameter pack are
+     `spelling/deduced` or `spelling/subst-pack`; a dependent `_BitInt`
+     (whose width Kiln keeps only from the first spelling) is
+     `spelling/bit-int`. A type that is instantiation-dependent and not
+     dependent through an operand Kiln computed and does not keep as
+     written (a `_BitInt` width, a constant array bound with no
+     `size_expr`) is `Unaccounted("spelling/bit-int-width")` or
+     `spelling/array-size`, marked or not.
+  3. *Where a unit reads them.* (a) `Walk::absorb_type` in a unit stream
+     (`in_key == 0`, `type_nesting == 0`, not inside a profile written
+     into the unit), from the written type its caller holds;
+     (b) `expr_dep::profile_expr` written straight into a unit stream
+     (a template argument, a table row), from that very expression;
+     `expr_dep::profile` of a `ProfileId` in a unit stream has only the
+     first spelling, and is `spelling/profile` when it counted a fact;
+     `Walk::write_args` in a unit stream, from the list as the unit holds
+     it, and a default template argument, from the argument as written;
+     (c) `templ::partial_spec_info`, from the partial specialisation's
+     arguments as written (`PartialSpecInfo::args`). A canonical argument
+     with no spelling is `spelling/arg`.
+  4. *Sugar that names another unit stops the walk.* A typedef or alias
+     (a `Typedef` type, a `Using` type naming one) and an alias template
+     specialisation are an `Alias` entry with the `Ref` of the
+     typedef-name, or of the alias template's pattern, when that one's own
+     aliased type as written holds a non-empty fact (or a cause); its
+     unit writes the facts. The walk does not descend into what it
+     aliases; an alias template specialisation's own arguments are the
+     unit's and are walked. A block-scope typedef or alias has no unit of
+     its own: its declaration writes its aliased type, profile and list,
+     into the enclosing unit (`local::write_decl`), and a use descends
+     into the aliased type as written instead of an `Alias` entry.
+  5. *What stays indeterminate.* A canonical operand where the unit has no
+     spelling of its own, whose type is marked, is
+     `Unaccounted("spelling/<site>")` with the sites named above
+     (`spec/landed/digest-kinds/WP-041.md` lists them, a pair test for
+     each site a source reaches, and the attempts at the others).
+  6. *The list.* The unit's facts are collected in walk order and
+     written once, after the unit stream (`UnitState::facts`,
+     `units::write`, `Walk::content_hash`): `count`, then per entry
+     `uv` kind (`1` `Found`, `2` `Oper`, `3` `Alias`, `4` `Chosen`,
+     `5` `Profile`, `6` `Round`) and its payload: `ref*sorted` (sorted by
+     the `Ref`'s bytes, duplicates removed, a using-shadow written as its
+     target, as the full walk writes an `UnresolvedLookupExpr`) for `Found`
+     and `Oper`, `ref` for `Alias`, `count` and `ref?` each (allocation
+     then deallocation function) for `Chosen`, `bytes` for `Profile`, and
+     for `Round` `uv` the reading's ordinal in the unit, `count`, then per
+     node `uv` its pre-order ordinal in the reading and `tag` its
+     `FpRound`. The list is written only when an entry is due: a non-empty
+     set, a chosen function, an alias, a profile, a rounding. A unit with no
+     such entry writes nothing more, so its bytes are those it had before
+     spellings were written. The trigger is the unit's own spelling, not
+     the mark: a unit whose own spelling found declarations where the
+     profile's first spelling found none writes its list too (the mark
+     alone would have hidden it, a wrong `equal`).
+  7. *Instantiation-dependent values.* An expression a written type holds
+     where the canonical type holds only its value (a constant array's
+     `size_expr`, an argument of a `TemplateSpecialization` with
+     `underlying`, a resolved `noexcept(e)`) that is
+     instantiation-dependent and neither type- nor value-dependent has
+     meaning the value does not hold (`sizeof(f(T()))` is `1` whatever `f`
+     names). Its profile bytes are a `Profile` entry (taken with the
+     spelling reading off, its cause absorbed), then the expression is read
+     as written (rule 1). Kiln builds an instantiation-dependent constant
+     bound without its `size_expr` and with the element's flags
+     (`kiln_sema/src/decl.rs`), so nothing reaches such a bound: its pair
+     tests are pending on Kiln (`For Kiln`).
+  8. *Rounding.* Each reading of an expression by rule 1 has an ordinal
+     in the unit (`UnitState::roots`); the nodes of the reading whose
+     `fp_round` is not `FpRound::Dynamic` (Kiln's default) are a `Round`
+     entry, by pre-order position. Every node of an expression in a unit is
+     either in its bytes (walked in full) or read by rule 1, so every
+     rounding mode a unit's spellings were written under is in its digest.
+  9. *Folds.* A `CXXFoldExpr` over an operator other than `.*` finds its
+     operator's candidates at instantiation, from the operands' types and
+     the definition context; Kiln keeps no `oper_lookups` set for it
+     (`For Kiln` in `spec/landed/digest-kinds/WP-041.md`). In profile mode
+     and in the full walk it is `Unaccounted("spelling/fold-operator")`,
+     and it raises the mark, when some declaration in the translation unit
+     that is not a member function (a function template's pattern
+     included) is named for its operator, or for a comparison for any
+     comparison operator (C++20 rewrites them)
+     (`expr_profile::fold_left_out`). With no such declaration the
+     definition context finds nothing in any spelling, and only members
+     of the operands' classes, which the profile holds, can be found.
+  10. *Prefixes and arguments of a resolved name.* A resolved name's
+     qualifier as written (`DeclRefExtra` `qualifier`) and its own
+     arguments when the referent is a specialisation (`template_args`)
+     are read as written, in rule 1 (after the name, the qualifier
+     outermost first, then the arguments) and in the full walk (§7
+     `DeclRefExtra`, `own_spelling::name_parts`, outside a unit stream
+     raising the mark instead): each type level by rule 2, each argument
+     by rule 7 or rule 1. Their parts are read whatever Kiln's flags say;
+     only what they hold beyond the referent reaches the list (a found set,
+     an instantiation-dependent operand's profile), so requalifying a name
+     that keeps its referent changes no digest. Profile mode raises the
+     mark at every reference whose referent could have been named so (the
+     mark above), a function of the referent and so of the profile.
+  11. *Qualifiers of unresolved names and of declarations.* A qualifier the
+     full walk writes in canonical form (`DependentScopeDeclRefExpr.a`,
+     `TemplateTables` `expr_nns` of an unresolved name or a dependent
+     member access, `ColdExprData` `member_overload` of an overloaded
+     member access) is, in a unit stream, read as written into the list
+     (`Walk::write_written_nns`): each level that names a type by rule 2
+     (a `decltype` by its operand, a specialisation by its arguments, an
+     alias by rule 4); a namespace, a namespace alias, `::` and a
+     dependent identifier hold nothing beyond the canonical level; a
+     level the reading does not know (a splice) is indeterminate,
+     `spelling/nns-splice`. Outside a unit stream it raises the mark, as
+     profile mode does for every qualifier with a level that names a
+     type (a function of the canonical qualifier). A using-declaration's
+     qualifier as written is read the same way into its unit's list (its
+     key writes the canonical one). The canonical writer
+     (`Walk::write_canonical_nns`) is called only where the canonical
+     form loses nothing (`spec/landed/digest-kinds/WP-041.md`, the table
+     of its callers).
+
+     *Templated.* A declaration is templated when it, or a declaration
+     on its semantic or its lexical context chain (each step taking
+     either context, so that an out-of-line member is reached through its
+     class and a friend defined in a class through the class it is
+     written in), is a template, a template's pattern or a partial
+     specialisation. Kiln records no template parameter lists on an
+     out-of-line member: its semantic context is what tells it. A stream
+     is templated when its unit (a content digest: its content entity)
+     is, or while the walk is inside a generic lambda's body (its call
+     operator is a template); a stream with neither is templated. A
+     declaration whose chain cannot be followed to its end is
+     templated. A form is in templated code when its stream is
+     templated or, for a declaration's form, the declaration is: one
+     question (`own_spelling::templated_at`), asked by every check
+     below; no check asks either half alone (a lambda's or a local
+     class's chain ends at the namespace its closure lives in, while its
+     stream is the variable template's, the default argument's or the
+     concept's). Only templated code can hold an instantiation-dependent
+     operand, and there, where Kiln keeps no written form, the unit is
+     indeterminate:
+     - a `using enum` (`spelling/using-enum`): Kiln keeps the
+       enumeration, not the qualifier or alias it was named through;
+     - a qualified pseudo-destructor whose qualifier Kiln did not keep
+       (neither `expr_nns` nor `pseudo_dtor_first`):
+       `spelling/pseudo-destructor-qualifier`;
+     - a destructor named by member access (`q->~X<..>()`): Kiln keeps
+       the destructor, not the name as written: `spelling/destructor-name`,
+       in the full walk and in rule 1's reading;
+     - a friend whose befriended declaration, or unsugared class or
+       enumeration type, is a class member or a template
+       specialisation, or whose target is a function type (Kiln's form
+       of `friend void h<..>();`): Kiln keeps no qualifier and no
+       arguments: `spelling/friend-name`;
+     - an explicit specialisation declared in a template (a member of a
+       pattern): Kiln keeps its converted arguments, not the expressions
+       written: `spelling/specialisation-arguments`.
+     Off unit level each raises the mark instead.
+  A key reads no spelling: two declarations are one entity by
+  [temp.over.link] whatever their found sets, and a difference in the
+  sets is a difference of the units. No hazard of first spellings is
+  accepted: where a unit's meaning depends on a fact its digest does not
+  hold, the unit is indeterminate with a named cause (rule 5, rule 7's
+  `spelling/array-size` and `spelling/bit-int-width`, rule 9,
+  `spelling/profile`, `spelling/conversion-name`), and the mark that
+  decides rule 5 is a function of the profile.
 - **Kinds Kiln profiles as unique.** Kiln gives such a node a word of its
   own id, so two declarations whose signatures hold one (a lambda:
   `template<int N> void foo(const char(*)[([]{}, N)]);` twice) are two
@@ -4075,8 +4293,8 @@ reads the list itself (`ExprNode`, `CoawaitExpr.a`).
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `qualifier` | written | out | - | how the name was qualified: the entity found is the fact, and each thing Kiln reads the qualifier for is written elsewhere (rule below) |
-| `template_args` | written | in | enum ArgView*? | written only when the entity named is a template, where the arguments select what the name means; for a specialisation the entity is the fact |
+| `qualifier` | written | out | - | how the name was qualified: the entity found is the fact, and each thing Kiln reads the qualifier for is written elsewhere (rule below); what its types hold beyond the referent (an instantiation-dependent operand of a template argument, with the found sets in it) is the unit's list (§4.4 "Spellings", rule 10) |
+| `template_args` | written | in | enum ArgView*? | written only when the entity named is a template, where the arguments select what the name means; for a specialisation the entity is the fact, and what the arguments hold beyond it is the unit's list (rule 10) |
 | `found_decl` | entity | out | - | the using-declaration the name was found through: a reference names the entity (digest §4.1). Only the dump and the module image read it |
 
 Once a name is resolved Kiln reads `qualifier` for four things, and
@@ -4088,7 +4306,13 @@ expression to the class the qualifier names (an implicit cast node and
 its base path); and a qualifier that is itself dependent (`ColdExprData`
 `expr_nns`). Adding, removing or respelling a qualifier that leaves all
 four alone changes no digest, inside a template as well: the tests of
-the row hold both cases.
+the row hold both cases (and `equal/_/spelling-requalified-name*`). What
+a qualifier's types and a specialisation's arguments hold beyond the
+referent is not a property of the qualifier: `Bq<sizeof(sizeof(f(t)))>::value`
+names `Bq<8>::value` whatever `f` finds, while what `f` finds decides
+whether the program is well-formed at instantiation. The full walk reads
+those parts as written into the unit's list, as profile mode's units do
+(§4.4 "Spellings", rule 10).
 
 ### `kiln_ast::expr::CompoundAssignExtra`
 
@@ -6871,14 +7095,6 @@ of a reported difference.
   class's vtable and its virtual functions are no longer required at the
   explicit instantiation (code generation, not the digest, sees it), and
   that Kiln does not instantiate its members again there.
-- **First spellings** (§4.4). A profile's bytes are a function of the
-  profile, so which of two equivalent spellings Kiln meets first does not
-  change them. What a spelling holds beyond its profile (the declarations
-  lookup found for an unresolved name in a dependent type or argument) is
-  in no row yet: a unit that writes a type which left such a fact out, or
-  such a profile directly, or whose key's arguments left one out, is
-  `Pending(Spelling)` until units write their own spellings (WP-041), so
-  the gap is reported, never hidden ("The mark", §4.4).
 - **Literals from builtin macros** (§7) are written by value: moving a
   line that uses `__LINE__` as a value is a reported difference.
 - **Overloaded member access** (§7): of the candidate set only the

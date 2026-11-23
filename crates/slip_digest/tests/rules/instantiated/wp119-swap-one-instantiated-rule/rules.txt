@@ -1,0 +1,4 @@
+# WP-119 item 2: the swap, with a rule on one instantiated function only. g(S<int>) (the body that returns 1) has a rule on its plain key that gives what following gives: accepted. f(S<int>) has no rule on its plain key; its followed key g(S<int>) (S::friend f maps to g) is matched by the other function's rule: a rule on the followed key alone, kept indeterminate (key/rule-on-instantiated-member).
+relocate S::friend f(S<type-parameter-0-0>) => S :: g
+relocate S::friend g(S<type-parameter-0-0>) => S :: f
+relocate f(S<int>) => :: g

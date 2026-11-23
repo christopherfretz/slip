@@ -1,0 +1,4 @@
+# WP-119 item 3, unit A: S<int> is not instantiated, n::g(S<int>) has no pattern and its own key; the rule on it is counted in its via.
+# unit B (wp119-friend-rule-unit-b) gives that rule the same use.
+relocate n::S::friend n::f(n::S<type-parameter-0-0>) => n::S :: g
+relocate n::f(n::S<int>) => n :: g

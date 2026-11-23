@@ -54,6 +54,7 @@ pub(crate) fn friend_target(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         FriendTarget::Decl(x) => w.write_ref(s, x),
         FriendTarget::Type { ty, owned_tag: _ } => w.write_type(s, ty),
     }
+    crate::own_spelling::friend_name(w, s, d, target);
 }
 
 /// `NamespaceData` of the namespace `d`: `flags-inline` as one bit, set
@@ -188,11 +189,7 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     if definition_class {
         s.count(0);
     } else {
-        let inits: Vec<_> = ast.ctor_inits(d).copied().collect();
-        s.count(inits.len());
-        for init in &inits {
-            crate::decl_class::ctor_init(w, s, init);
-        }
+        crate::decl_class::ctor_inits(w, s, d);
     }
     // overrides: ref*sorted, from the first declaration.
     let list = overrides.get(ast.first(d)).copied();

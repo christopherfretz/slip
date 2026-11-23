@@ -1,3 +1,4 @@
-# acme exists already (acme.h): one rule per moved entity.
+# acme exists already (acme.h): one rule per moved entity. The correct edit
+# moves Mine only (f stays in legacy), so f has no rule: a rule for it would
+# leave good stale (spec/verify.md §9.2). bad moves f anyway, undeclared.
 relocate legacy::Mine => acme :: =
-relocate legacy::f(int) => acme :: =

@@ -522,9 +522,14 @@ impl Walk<'_> {
     /// class templates, each with a definition, are not one program: one
     /// definition is the rule) whose mapped names differ leave no name to take:
     /// the key is indeterminate (`key/patterns-disagree`). A rule that
-    /// matches the member itself, under either name, is not one the source
-    /// can carry out (an instantiation's member is renamed only by renaming
-    /// the pattern's): the key is indeterminate.
+    /// matches the member's plain key is accepted only when it produces
+    /// exactly the followed key (it says what the pattern says: WP-119
+    /// item 1); then the plain key is returned, for the caller's one
+    /// mapping to give the followed key through that rule. Any other rule
+    /// on the plain key, and a rule on the followed key when none matches
+    /// the plain key, is not one the source can carry out (an
+    /// instantiation's member is renamed only by renaming the pattern's):
+    /// the key is indeterminate (`key/rule-on-instantiated-member`).
     ///
     /// Under ownership (WP-110) the name is the pattern's as its own
     /// ownership maps it (`mapped_name`), and the check of a rule on the
@@ -550,12 +555,31 @@ impl Walk<'_> {
             return Ok((key, cause));
         };
         let followed = Key { name, ..key.clone() };
-        if self.rule_applies(e, None)
-            && (self.rules.map(key.clone()) != key || self.rules.map(followed.clone()) != followed)
-        {
-            return Err(Some(RULE_ON_INSTANTIATED_MEMBER));
+        if !self.rule_applies(e, None) {
+            return Ok((followed, cause));
         }
-        Ok((followed, cause))
+        match self.rules.map_traced(key.clone()) {
+            // A rule on the plain key that gives exactly the followed key
+            // (parent, kind, name and discriminator: a rule keeps kind and
+            // discriminator, so parent and name) says what the pattern says
+            // (WP-119 item 1). The plain key is returned: the one mapping
+            // the caller applies (`Walk::key_in`, `mapped_name`, `key_bytes`)
+            // gives the followed key through that rule, which counts the
+            // member in its `via` (`spec/verify.md` §9.1), and a rule on
+            // the followed key is not applied after it (a table maps a key
+            // once, `spec/verify.md` §2.1: the swap of item 2).
+            (mapped, Some(_)) if mapped == followed => Ok((key, cause)),
+            // Any other rule on the plain key: another name, or the
+            // pattern's name under another parent.
+            (_, Some(_)) => Err(Some(RULE_ON_INSTANTIATED_MEMBER)),
+            // No rule on the plain key: a rule on the followed key alone is
+            // a second step after the pattern's, which no source can carry
+            // out apart from the pattern (WP-119 item 2).
+            (_, None) if self.rules.map_traced(followed.clone()).1.is_some() => {
+                Err(Some(RULE_ON_INSTANTIATED_MEMBER))
+            }
+            (_, None) => Ok((followed, cause)),
+        }
     }
 
     /// The key of a specialisation (`params` absent) or of a partial
@@ -1252,7 +1276,9 @@ impl Walk<'_> {
                 let q = ast.using_qualifier(e);
                 s.opt(q.is_some());
                 if let Some(q) = q {
-                    self.write_nns(&mut s, q);
+                    // A key reads no spelling; the unit's stream reads
+                    // the written qualifier (`own_spelling::using_qualifier`).
+                    self.write_canonical_nns(&mut s, q);
                 }
             }
             KeyKind::UsingShadow => {

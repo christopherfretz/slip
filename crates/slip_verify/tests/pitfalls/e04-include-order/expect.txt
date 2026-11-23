@@ -12,5 +12,5 @@ bad:  mismatch changed template <class> int run(type-parameter-0-0) @ run.h:1
 # primary's instantiation (v is 1). No place: the pattern is in ptr.h in
 # one image and tr.h in the other.
 good-2: none ptr.h must come before every use of Tr<int *>; no other order of the three headers is well-formed and different
-bad-2:  mismatch derived_changed Tr<int *>
+bad-2:  mismatch derived_changed Tr<int *>::<definition>
 bad-2:  mismatch derived_changed Tr<int *>::v

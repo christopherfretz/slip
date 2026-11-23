@@ -1,6 +1,8 @@
 # Rows whose test (spec/digest-kinds.md §1.5) does not exist yet: the ratchet of
 # WP-023. One `<short name>/<row>` per line, sorted. SLIP_BLESS=1 removes a name
 # once its directory holds a file and never adds one; M1 does not close with a line here.
+# ExprNode/CXXPseudoDestructorExpr.aux-qualified: Kiln keeps no non-dependent
+# qualifier (spec/landed/digest-kinds/WP-041.md, For Kiln 5); remove at the pin move.
 AddrSpace/0
 ArgView/Expr
 ArgView/Expr.expr
@@ -60,6 +62,7 @@ ExcSpec/Dynamic.0
 ExprNode/BuiltinBitCastExpr.b
 ExprNode/CXXConstCastExpr.b
 ExprNode/CXXDependentScopeMemberExpr.aux-template-keyword
+ExprNode/CXXPseudoDestructorExpr.aux-qualified
 ExprNode/CXXReinterpretCastExpr.b
 ExprNode/CXXRewrittenBinaryOperator.b
 ExprNode/DeclRefExpr.b

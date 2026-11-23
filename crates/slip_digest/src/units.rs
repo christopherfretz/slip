@@ -119,6 +119,29 @@ pub(crate) fn unit_class(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
     }
 }
 
+/// A using-shadow that the using-declaration does not introduce: a member
+/// of its class hides or overrides the declaration it names
+/// ([namespace.udecl]/14). Kiln still makes the shadow, marked
+/// `hidden_shadow` with the member, when the member is declared after the
+/// using-declaration, and makes none when it is declared before; so such a
+/// shadow is no unit and no member its class lists (`spec/digest.md` §2.1;
+/// WP-119 item 6), and the two orders digest alike. Only a hider written in
+/// source counts: an implicit member (a copy or move assignment operator,
+/// a constructor) is declared on use, and the mark it sets would make the
+/// unit depend on what the translation unit used (§1 rule 5), so a shadow
+/// it hides stays a unit, as before. Every declaration of the entity must
+/// be so marked.
+pub(crate) fn hidden_shadow(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    if !matches!(ast.decls.get(e).kind(), DeclKind::UsingShadow | DeclKind::ConstructorUsingShadow)
+    {
+        return false;
+    }
+    w.chain(e).iter().all(|&d| {
+        ast.decls.hidden_shadow(d).is_some_and(|h| !ast.decls.get(h).has(DeclFlags::IMPLICIT))
+    })
+}
+
 /// [`unit_class`] before the rule for entities without a location.
 fn class_of(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
     let ast = w.ast;
@@ -138,6 +161,9 @@ fn class_of(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
         return None;
     }
     if let Some((TemplLinkKind::Pattern, _)) = ast.templ_link(e).get() {
+        return None;
+    }
+    if hidden_shadow(w, e) {
         return None;
     }
     // Declared only in the bodies of templated functions and of their
@@ -555,6 +581,9 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         let mut s = Stream::new();
         w.decl_stream(&mut s, from, e);
         crate::enclosing::write(w, &mut s, e);
+        // The list comes after the unit stream, whose end is `enclosing`
+        // (digest-kinds §1.7, §4.4 "Spellings" item 6).
+        crate::own_spelling::write_unit_list(w, &mut s);
         w.unit = saved;
         #[cfg(test)]
         tests::count_read(e);

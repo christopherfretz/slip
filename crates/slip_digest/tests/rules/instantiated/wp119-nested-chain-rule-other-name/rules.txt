@@ -1,0 +1,4 @@
+# WP-119 item 1, the chain of patterns: the rule on the last instantiated member gives h where
+# following gives f: not what the pattern says, key/rule-on-instantiated-member.
+relocate O::I::f() => O::I :: g
+rule function | mapped O<int>::I<char> | id g | disc-of post O<int>::I<char>::g() | pre O<int>::I<char> | id h

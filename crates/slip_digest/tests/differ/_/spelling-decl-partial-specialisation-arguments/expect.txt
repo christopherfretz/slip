@@ -1,0 +1,2 @@
+added f(long)
+changed S::Z<type-parameter-1-0, sizeof (sizeof (f(T())))>

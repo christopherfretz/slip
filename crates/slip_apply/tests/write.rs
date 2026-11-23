@@ -1416,7 +1416,7 @@ mod disk {
         let d = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("wp063-write-{name}-{}", std::process::id()));
         if d.exists() {
-            std::fs::remove_dir_all(&d).unwrap();
+            common::remove_tree(&d);
         }
         std::fs::create_dir_all(d.join("tree/sub")).unwrap();
         std::fs::create_dir_all(d.join("store")).unwrap();
@@ -1526,7 +1526,7 @@ mod disk {
         let store = Store(r.join("store"));
         let h = Hooked::new(None);
         assert_eq!(write(&o, id, &own(&r), &h, &store, &store), Ok(3));
-        std::fs::remove_dir_all(&r).unwrap();
+        common::remove_tree(&r);
         h
     }
 }
@@ -1555,7 +1555,7 @@ fn s7_3_disk_write() {
     assert_eq!(names.len(), 4, "{names:?}");
     assert!(!r.join("store/write.journal").exists());
     assert_eq!(recover(&disk::own(&r), &slip_apply::fs::DiskTree, &store, &store), Ok(None));
-    std::fs::remove_dir_all(&r).unwrap();
+    common::remove_tree(&r);
 }
 
 // §7.3 over the disk: a write that loses power after each of its first
@@ -1568,7 +1568,7 @@ fn s7_3_disk_interrupted_write_and_recover() {
     let flaky = disk::Flaky(RefCell::new((0, None)));
     write(&o, id, &disk::own(&probe), &flaky, &store, &store).unwrap();
     let n = flaky.0.borrow().0;
-    std::fs::remove_dir_all(&probe).unwrap();
+    common::remove_tree(&probe);
     let mut journals = 0;
     for at in 0..n {
         let r = disk::root(&format!("cut{at}"));
@@ -1589,7 +1589,7 @@ fn s7_3_disk_interrupted_write_and_recover() {
         }
         assert_eq!(std::fs::read_dir(r.join("tree")).unwrap().count(), 3, "cut at {at}");
         assert_eq!(std::fs::read_dir(r.join("tree/sub")).unwrap().count(), 1, "cut at {at}");
-        std::fs::remove_dir_all(&r).unwrap();
+        common::remove_tree(&r);
     }
     assert!(journals > 10, "{journals} of {n}");
 }
@@ -1636,7 +1636,7 @@ fn s7_3_disk_refusals() {
     // between step 4 and the renames: with nanosecond times the re-check
     // does not count that as a change (§7.3 step 5).
     assert_eq!(try_write(), Ok(3));
-    std::fs::remove_dir_all(&r).unwrap();
+    common::remove_tree(&r);
 }
 
 // §7.3 step 3 on disk: the staged name of /tree/a.cc appears between
@@ -1686,7 +1686,7 @@ fn s7_3_disk_staged_name_appears_before_the_create() {
             assert_eq!(disk::mode(&r.join(p)), mode);
         }
         assert!(!r.join("store/write.journal").exists());
-        std::fs::remove_dir_all(&r).unwrap();
+        common::remove_tree(&r);
     }
 }
 
@@ -1723,7 +1723,7 @@ fn s7_3_disk_save_in_place_before_the_rename() {
     let again =
         recover(&disk::own(&r), &slip_apply::fs::DiskTree, &store, &store).unwrap().unwrap();
     assert_eq!(again.reported, vec![disk::bytes(&second)]);
-    std::fs::remove_dir_all(&r).unwrap();
+    common::remove_tree(&r);
 }
 
 // §7.3 on disk: `DiskTree::create` with its staged name swapped for a link
@@ -1775,5 +1775,5 @@ fn s7_3_disk_create_does_not_follow_a_swapped_name() {
     eprintln!(
         "race: {caught} swaps caught, {failed} creates failed (the name taken), {swapped} swaps after a create"
     );
-    std::fs::remove_dir_all(&r).unwrap();
+    common::remove_tree(&r);
 }

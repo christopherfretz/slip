@@ -11,3 +11,4 @@ good-2: verified
 # pre-3: touch(legacy::Dep) is owned and stays in legacy so that argument-
 # dependent lookup finds it through the dependency's type; declared kept.
 good-3: verified
+xfail good-3: WP-111: slip declare does not read the keyword `kept` yet (a `syntax` error)

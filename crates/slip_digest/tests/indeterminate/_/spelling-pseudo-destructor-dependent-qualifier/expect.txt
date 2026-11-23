@@ -1,0 +1,1 @@
+indeterminate template <class> decltype(p->~T::template Bq<sizeof (sizeof (f(T())))>() , 0) g(type-parameter-0-0 *)
