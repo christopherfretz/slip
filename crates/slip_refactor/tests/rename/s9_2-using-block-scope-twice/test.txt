@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (a block-scope using-declaration repeated: each name claimed for the subject)
+from: n::f
+to: g
+kind: function

@@ -1,0 +1,9 @@
+subjects:
+  17666653 candidate read_only rule=yes lib::B::f()
+  3b98ec8e seed - rule=yes n::D::f()
+links:
+  17666653 3b98ec8e
+claims:
+  main.cpp:3:26+1 replace "g" t0 votes=1 none [3b98ec8e]
+  main.cpp:5:21+1 replace spell(3b98ec8e, "g") t0 votes=1 none [3b98ec8e]
+changed:

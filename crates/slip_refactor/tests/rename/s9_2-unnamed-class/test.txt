@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (an unnamed class a subject variable names: a follower with the rule made from its key)
+from: n::v
+to: w
+kind: variable

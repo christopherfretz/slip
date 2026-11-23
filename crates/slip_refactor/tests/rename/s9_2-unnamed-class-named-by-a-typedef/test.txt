@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (an unnamed class named by a typedef is no follower of a variable of its type; WP-071 review, R11)
+from: n::v
+to: w
+kind: variable

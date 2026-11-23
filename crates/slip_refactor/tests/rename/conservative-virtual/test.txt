@@ -1,4 +1,0 @@
-spec: docs/wp/WP-071.md conservative rows (families.rs: a virtual member function is unsupported until WP-072)
-from: n::C::f
-to: g
-kind: function

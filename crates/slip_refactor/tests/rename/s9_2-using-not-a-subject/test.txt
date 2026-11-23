@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (a using-declaration named like the old name that names no subject: no follower, keep)
+from: n::f
+to: g
+kind: function

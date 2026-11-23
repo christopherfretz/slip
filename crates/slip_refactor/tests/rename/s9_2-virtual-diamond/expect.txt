@@ -1,0 +1,17 @@
+subjects:
+  32046803 candidate - rule=yes n::L::f()
+  3b98ec8e candidate - rule=yes n::D::f()
+  599ef791 seed - rule=yes n::B::f()
+  bf6686ac candidate - rule=yes n::R::f()
+links:
+  32046803 3b98ec8e
+  32046803 599ef791
+  3b98ec8e bf6686ac
+  599ef791 bf6686ac
+claims:
+  main.cpp:2:24+1 replace "g" t0 votes=1 none [599ef791]
+  main.cpp:3:28+1 replace "g" t0 votes=1 none [32046803]
+  main.cpp:4:28+1 replace "g" t0 votes=1 none [bf6686ac]
+  main.cpp:5:23+1 replace "g" t0 votes=1 none [3b98ec8e]
+  main.cpp:7:27+1 replace spell(3b98ec8e, "g") t0 votes=1 none [3b98ec8e]
+changed:

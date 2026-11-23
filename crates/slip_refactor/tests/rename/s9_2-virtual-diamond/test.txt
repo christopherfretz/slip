@@ -1,0 +1,4 @@
+spec: edits.md §9.2 candidates (a diamond: the final overrider is linked to both functions it overrides)
+from: n::B::f
+to: g
+kind: function

@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (a using-declaration at block scope that names a subject and an entity that is not one: refuse mixed_set)
+from: n::f
+to: g
+kind: function

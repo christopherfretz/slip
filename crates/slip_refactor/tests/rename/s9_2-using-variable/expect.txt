@@ -1,0 +1,10 @@
+subjects:
+  371a3421 follower - rule=yes m::v of=6368f0f9
+  6368f0f9 seed - rule=yes n::v
+  aa7a315f follower - rule=yes m::v of=6368f0f9
+links:
+claims:
+  main.cpp:1:19+1 replace "w" t0 votes=1 none [6368f0f9]
+  main.cpp:2:24+1 replace "w" t0 votes=1 none [371a3421]
+  main.cpp:3:21+1 replace spell(6368f0f9, "w") t0 votes=1 none [6368f0f9]
+changed:

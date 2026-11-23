@@ -1,0 +1,4 @@
+spec: edits.md §9.2 followers (an unnamed class is named by its first declarator: the second is no leader, so no follower)
+from: n::w
+to: x
+kind: variable
