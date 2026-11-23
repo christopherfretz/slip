@@ -1,0 +1,2 @@
+rename n2() => n1
+rename n1() => n2

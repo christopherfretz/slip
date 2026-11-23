@@ -1,0 +1,4 @@
+transform <id>
+report - note "after two failed calls: lib::f(int)"
+report - note "lib:: is invalid_argument"
+report - note "still the same entity"

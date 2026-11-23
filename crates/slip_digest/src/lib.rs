@@ -224,6 +224,7 @@ pub mod map;
 mod names;
 mod order;
 mod other;
+pub mod query;
 pub mod records;
 mod refs;
 mod rule_use;
