@@ -1,0 +1,7 @@
+# E09: first and second are initialised in the order of their definitions
+# ([basic.start.dynamic]): exchanged, first is 2 and second 1. Each
+# variable's own unit is the same; the order unit is not (spec/digest.md
+# §2.1). No place: the order unit has no location. good exchanges two
+# function definitions, which no unit orders.
+good: verified
+bad:  mismatch changed <order>

@@ -1,0 +1,7 @@
+# E10: the default argument of take changed on its first declaration. The
+# caller that relies on it is unchanged: a use of a default argument writes
+# only the parameter's position, the argument is in the function's unit
+# (spec/digest-kinds.md §7 "Shared nodes", CXXDefaultArgExpr.a; the
+# supervisor's ruling on WP-057, as N23).
+good: none a changed default argument changes every call that uses it; there is no correct edit of this shape
+bad:  mismatch changed take(int) @ main.cpp:1
