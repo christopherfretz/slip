@@ -1037,14 +1037,19 @@ overlay and the pre-image bytes:
   their context touches or overlaps.
 - `<path>` is the real path, or, under `--relative-to <dir>`, the path
   relative to that directory's real path (an overlay file outside it is a
-  usage error). Paths are written as their bytes.
+  usage error). Paths are written as their bytes; a name with a space
+  is ended by a tab, and one with a tab, `\r` or `\n`, or starting with
+  `"`, cannot be written and is refused before anything is
+  (`spec/landed/edits/WP-063.md` §3).
 - A line ends at `\n`. A `\r` before it is part of the line. A last line
   without `\n` is followed by `\ No newline at end of file`. Bytes are
   copied as they are.
 
 `patch -p0` applied to the pre-image must give the post-image byte for
 byte, for every file whose lines `patch` can represent; the test of
-"Tests" is that property.
+"Tests" is that property. (For relative names; absolute names apply
+with `-p1` from `/`, since `patch` and `git apply` refuse absolute
+names.)
 
 ### 7.3 Writing the tree
 
@@ -1057,8 +1062,9 @@ The **staged name** of an overlay file is, in the file's own directory,
    (the others take no part in the write): it is owned (§2.1), it is a regular
    file with one hard link, its directory is writable, no file has its
    staged name, and its bytes have the `pre` size and digest. Any failure
-   refuses the write (`not_owned`, `hard_linked`, `not_writable`,
-   `stale_file`) and nothing is touched.
+   refuses the write (`not_owned`, `not_regular`, `hard_linked`,
+   `not_writable`, `staged_exists`, `stale_file`) and nothing is touched.
+   A store with an unfinished write is refused first.
 2. **Journal.** The pre-image bytes of every file are published as blobs.
    Then `<store>/write.journal` is published:
 
@@ -1072,8 +1078,9 @@ The **staged name** of an overlay file is, in the file's own directory,
 3. **Stage.** For every file, in path order: the post-image blob is
    copied to the staged name (created exclusively, with the original's
    permission bits) and synced.
-4. **Check again** as in step 1, except that the staged files exist. A
-   failure removes the staged files and the journal; nothing was
+4. **Check again** as in step 1, except that the staged files exist and
+   must be what step 3 wrote (else `stale_file` naming the staged file).
+   A failure removes the staged files and the journal; nothing was
    replaced.
 5. **Commit.** Each staged file is renamed over its original, in path
    order, and the directories are synced. Then the journal is removed.
@@ -1141,8 +1148,10 @@ pub trait JournalStore {
     fn read(&self) -> std::io::Result<Option<Vec<u8>>>;
     fn remove(&self) -> std::io::Result<()>;
 }
-pub enum Refused { NotOwned(Vec<u8>), HardLinked(Vec<u8>), NotWritable(Vec<u8>), StaleFile(Vec<u8>) }
-pub enum WriteError { Refused(Refused), Io { path: Vec<u8>, message: String, journal_left: bool }, Journal(String) }
+pub enum Refused { NotOwned(Vec<u8>), HardLinked(Vec<u8>), NotWritable(Vec<u8>), StaleFile(Vec<u8>),
+                   NotRegular(Vec<u8>), StagedExists(Vec<u8>) }
+pub enum WriteError { Refused(Refused), Io { path: Vec<u8>, message: String, journal_left: bool }, Journal(String),
+                      Invalid(String) }   // the overlay is malformed or not the one its id names
 pub struct Recovered { pub restored: Vec<Vec<u8>>, pub left: Vec<Vec<u8>>, pub reported: Vec<Vec<u8>> }
 
 pub fn write(overlay: &Overlay, overlay_id: Digest, ownership: &Ownership,
@@ -1151,7 +1160,9 @@ pub fn recover(tree: &dyn Tree, blobs: &dyn Blobs, journal: &dyn JournalStore) -
 ```
 
 `write` returns the number of files replaced; `recover` returns `None`
-when there is no journal.
+when there is no journal. The order of operations, what an interruption
+at each leaves, and what depends on the file system are
+`spec/landed/edits/WP-063.md` §5.
 
 ## 8. The verify loop
 

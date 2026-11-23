@@ -373,4 +373,12 @@ fn s7_2_large_files() {
     changed.splice(3000..3000, b"y\n".iter().copied());
     let d = diff(&[(b"/w/rep", &same, &changed)], None).unwrap();
     assert!(d.len() < 100, "{}", text(&d));
+    // No line unique on either side, and the ends differ: only Myers
+    // finds the five common lines (one line out, one in).
+    let a: &[u8] = b"p\nq\np\nq\np\nq\n";
+    let b: &[u8] = b"q\np\nq\np\nq\np\n";
+    let d = text(&diff(&[(b"/w/pq", a, b)], None).unwrap());
+    let body: Vec<&str> = d.lines().skip(3).collect();
+    assert_eq!(body.iter().filter(|l| l.starts_with('-')).count(), 1, "{d}");
+    assert_eq!(body.iter().filter(|l| l.starts_with('+')).count(), 1, "{d}");
 }

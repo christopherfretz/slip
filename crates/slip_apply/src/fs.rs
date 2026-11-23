@@ -45,11 +45,16 @@ impl Tree for DiskTree {
         fs::read(path(p))
     }
 
-    /// Opened with `create_new` when `exclusive`, written, given exactly
-    /// `mode` (not masked by the umask), then `sync_all`.
+    /// Opened with `create_new` when `exclusive`, written and synced;
+    /// then opened again for reading and given exactly `mode` (not masked
+    /// by the umask), synced, and the bits read back: a file system that
+    /// does not keep them fails the create. The bits are set through a
+    /// handle not open for writing because some file systems clear setuid
+    /// and setgid on a change made through a writable one.
     fn create(&self, p: &[u8], mode: u32, bytes: &[u8], exclusive: bool) -> io::Result<()> {
+        let mode = mode & 0o7777;
         let mut o = OpenOptions::new();
-        o.write(true).mode(mode & 0o7777);
+        o.write(true).mode(mode & 0o777);
         if exclusive {
             o.create_new(true);
         } else {
@@ -57,8 +62,18 @@ impl Tree for DiskTree {
         }
         let mut f = o.open(path(p))?;
         f.write_all(bytes)?;
-        f.set_permissions(Permissions::from_mode(mode & 0o7777))?;
-        f.sync_all()
+        f.sync_all()?;
+        drop(f);
+        let f = File::open(path(p))?;
+        f.set_permissions(Permissions::from_mode(mode))?;
+        f.sync_all()?;
+        let kept = f.metadata()?.mode() & 0o7777;
+        if kept != mode {
+            return Err(io::Error::other(format!(
+                "the file system kept permission bits {kept:o} of {mode:o}"
+            )));
+        }
+        Ok(())
     }
 
     fn rename(&self, from: &[u8], to: &[u8]) -> io::Result<()> {

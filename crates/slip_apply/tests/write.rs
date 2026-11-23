@@ -67,6 +67,8 @@ struct State {
     log: Vec<(&'static str, Vec<u8>)>,
     /// Run just before the operation of this index.
     hook: Option<(u64, Hook)>,
+    /// `put` names its bytes by a wrong digest.
+    lying_put: bool,
 }
 
 #[derive(Clone)]
@@ -194,7 +196,7 @@ impl Blobs for World {
         self.op("put", b"", |s| {
             let d = content_digest(bytes);
             s.blobs.insert(d, bytes.to_vec());
-            Ok(d)
+            Ok(if s.lying_put { Digest([0; 32]) } else { d })
         })
     }
 }
@@ -612,6 +614,114 @@ fn s7_3_file_changed_after_the_commit_is_reported_and_left() {
     assert_eq!(recover(&w, &w, &w).unwrap().unwrap().reported, vec![b"/w/b.h".to_vec()]);
 }
 
+/// The index of the `nth` operation named `op` in a run without failures.
+fn op_index(c: &Case, op: &str, nth: usize) -> u64 {
+    let clean = c.world.healthy();
+    run_write(c, &clean).unwrap();
+    let log = &clean.0.borrow().log;
+    log.iter().enumerate().filter(|(_, (o, _))| *o == op).nth(nth).unwrap().0 as u64
+}
+
+/// A write with `hook` run before operation `at`.
+fn hooked(c: &Case, at: u64, hook: impl Fn(&mut State) + 'static) -> World {
+    let w = c.world.healthy();
+    w.0.borrow_mut().hook = Some((at, Rc::new(hook)));
+    w
+}
+
+// §7.3 step 4: a staged file of the right bytes that has become a hard
+// link, or is no longer a regular file, is not what step 3 wrote.
+#[test]
+fn s7_3_staged_file_linked_or_replaced() {
+    let c = case();
+    let after = op_index(&c, "create", 2) + 1;
+    let staged = staged_name(b"/w/b.h", c.id);
+    for links in [true, false] {
+        let st = staged.clone();
+        let w = hooked(&c, after, move |s: &mut State| {
+            let n = s.files.get_mut(&st).unwrap();
+            if links { n.links = 2 } else { n.regular = false }
+        });
+        assert_eq!(run_write(&c, &w), Err(WriteError::Refused(Refused::StaleFile(staged.clone()))));
+        assert!(w.0.borrow().journal.is_none());
+    }
+}
+
+// §7.3 step 2: the bytes are read again before they are journaled; a
+// change after step 1 is refused before the journal exists.
+#[test]
+fn s7_3_file_changed_before_the_journal() {
+    let c = case();
+    let at = op_index(&c, "put", 1) - 1; // the read of step 2 for /w/b.h
+    let w = hooked(&c, at, |s: &mut State| {
+        s.files.get_mut(b"/w/b.h".as_slice()).unwrap().bytes = b"changed".to_vec();
+    });
+    assert_eq!(run_write(&c, &w), Err(WriteError::Refused(Refused::StaleFile(b"/w/b.h".to_vec()))));
+    let s = w.0.borrow();
+    assert!(s.journal.is_none());
+    assert!(s.log.iter().all(|(op, _)| !matches!(*op, "publish" | "create" | "rename")));
+}
+
+// §7.3 step 2: a blob store that names the pre-image by another digest
+// stops the write before the journal.
+#[test]
+fn s7_3_blob_store_with_a_wrong_digest() {
+    let c = case();
+    let w = c.world.healthy();
+    w.0.borrow_mut().lying_put = true;
+    assert!(matches!(run_write(&c, &w), Err(WriteError::Io { journal_left: false, .. })));
+    assert!(w.0.borrow().journal.is_none());
+    assert!(!image(&c, &w));
+}
+
+// §7.3 step 3: a staged name that appears (someone else's file) between
+// the check and the exclusive create is not removed by the undo.
+#[test]
+fn s7_3_staged_name_taken_by_someone_else() {
+    let c = case();
+    let at = op_index(&c, "create", 1);
+    let staged = staged_name(b"/w/b.h", c.id);
+    let st = staged.clone();
+    let w = hooked(&c, at, move |s: &mut State| {
+        s.files.insert(
+            st.clone(),
+            Node { bytes: b"theirs".to_vec(), mode: 0o644, links: 1, regular: true },
+        );
+    });
+    assert!(matches!(run_write(&c, &w), Err(WriteError::Io { journal_left: false, .. })));
+    assert_eq!(w.bytes(&staged).unwrap(), b"theirs");
+    assert!(w.bytes(&staged_name(b"/w/a.cc", c.id)).is_none());
+    assert!(w.0.borrow().journal.is_none());
+}
+
+// §7.3 step 5 and recovery: every directory is synced after the last
+// rename and before the journal is removed (the in-memory tree cannot
+// lose a rename, so the order is what is checked).
+#[test]
+fn s7_3_directories_synced_before_the_journal_is_removed() {
+    let synced = |log: &[(&'static str, Vec<u8>)]| {
+        let last_rename = log.iter().rposition(|(o, _)| *o == "rename").unwrap();
+        let gone = log.iter().rposition(|(o, _)| *o == "unjournal").unwrap();
+        let dirs: BTreeSet<Vec<u8>> = log[last_rename..gone]
+            .iter()
+            .filter(|(o, _)| *o == "sync_dir")
+            .map(|(_, p)| p.clone())
+            .collect();
+        assert_eq!(dirs, BTreeSet::from([b"/w".to_vec(), b"/w/sub".to_vec()]), "{log:?}");
+    };
+    let c = case();
+    let w = c.world.healthy();
+    run_write(&c, &w).unwrap();
+    synced(&w.0.borrow().log);
+    // Recovery from a finished commit whose journal remained.
+    let last = op_index(&c, "unjournal", 0);
+    let w = c.world.with_fault(last, Mode::Lose);
+    let _ = run_write(&c, &w);
+    let r = w.healthy();
+    recover(&r, &r, &r).unwrap().unwrap();
+    synced(&r.0.borrow().log);
+}
+
 // §7.3: an unfinished write blocks another; a malformed overlay or a wrong
 // id is refused; an overlay with no change does nothing at all.
 #[test]
@@ -680,6 +790,7 @@ fn s7_3_journal_record() {
     bad(&|x| x.files.reverse(), "ascending");
     bad(&|x| x.files[0].staged = b"/etc/passwd".to_vec(), "staged name");
     bad(&|x| x.files[0].post = x.files[0].pre, "pre and post");
+    bad(&|x| x.files[1] = x.files[0].clone(), "ascending");
     // Untrusted bytes: every prefix and every byte changed, never a panic;
     // a change is either refused or read as a journal that writes back to
     // the same bytes.
@@ -797,8 +908,10 @@ mod disk {
     }
 
     pub const FILES: [(&str, &[u8], &[u8], u32); 3] = [
-        ("tree/a.cc", b"int a;\r\nint b;", b"int alpha;\r\nint b;", 0o640),
-        ("tree/run.sh", b"#!/bin/sh\necho a\n", b"#!/bin/sh\necho alpha\n", 0o755),
+        // 0o666: wider than the umask lets a create make it.
+        ("tree/a.cc", b"int a;\r\nint b;", b"int alpha;\r\nint b;", 0o666),
+        // The setuid bit, beyond the nine permission bits.
+        ("tree/run.sh", b"#!/bin/sh\necho a\n", b"#!/bin/sh\necho alpha\n", 0o4755),
         ("tree/sub/c.h", b"\xff\xfe a", b"\xff\xfe alpha", 0o600),
     ];
 
