@@ -1,4 +1,5 @@
 resolved B0<long>::B0(int, int)::<default_argument 1>
 resolved D::B0(int, int)::<exception_spec>
 resolved D::B0(int, int)::<inherited_constructor>
+resolved D::B0(int, int)::<definition>
 added h()

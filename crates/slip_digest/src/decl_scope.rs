@@ -20,11 +20,11 @@ use slip_kiln::kiln::ast::fp::FpOverride;
 use slip_kiln::kiln::ast::slot::ColdMap;
 use slip_kiln::kiln::ast::{DeclId, StmtId};
 
+use crate::Cause;
 use crate::keys::{Role, info};
 use crate::stream::{FlagWord, Stream};
 use crate::tables::friend_target;
 use crate::walk::Walk;
-use crate::{Area, Cause};
 
 /// `NamespaceData` `flags` holds a bit no row names.
 const NAMESPACE_FLAGS: Cause = Cause::Unaccounted("NamespaceData/flags");
@@ -104,6 +104,20 @@ pub(crate) fn file_scope_asm(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     }
 }
 
+/// `ColdDeclData` `contracts` of `d`: `child*`, in order (Kiln's
+/// `Ast::function_contracts`).
+pub(crate) fn contracts(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let ast = w.ast;
+    let stmts: Vec<StmtId> = ast
+        .function_contracts(d)
+        .map(|l| ast.lists.iter::<StmtId>(l).collect())
+        .unwrap_or_default();
+    s.count(stmts.len());
+    for st in stmts {
+        crate::stmt::child(w, s, st);
+    }
+}
+
 /// The rows of `ColdDeclData` (§5.7) for the declaration `d` the walk
 /// reads, in table order. An absent entry writes the empty form of the
 /// row's encoding; `out`, `demand` and `keyed` rows write nothing.
@@ -119,13 +133,13 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         begin_loc: _,
         delete_message,
         explicit_expr,
-        ctor_inits,
+        ctor_inits: _,
         overrides,
-        friends,
+        friends: _,
         key_function: _,
         dtor_delete: _,
         dtor_delete_this: _,
-        record_pack,
+        record_pack: _,
         contracts: _,
         asm_label,
         alignment,
@@ -169,18 +183,10 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let x = from_chain(explicit_expr, &chain);
     crate::expr::child_opt(w, s, x);
     // ctor_inits: record CtorInit*, on the definition; in `definition`
-    // for the definition class (§11.9).
-    // The empty form carries `Pending(Demand)` for every constructor and
-    // class of the class, whether Kiln made the definition or not: what
-    // the unit leaves out is not yet anywhere.
-    let definition_class = crate::decl_func::definition_class(w, e);
-    let ctor = ast.decls.get(d).kind() == DeclKind::CXXConstructor;
-    let class = ast.decls.record(d).is_some();
+    // for the definition class (§11.9), its empty form here.
+    let definition_class = crate::demand::definition_class(w, e);
     if definition_class {
         s.count(0);
-        if ctor || ctor_inits.contains(d) {
-            s.pending(Area::Demand);
-        }
     } else {
         let inits: Vec<_> = ast.ctor_inits(d).copied().collect();
         s.count(inits.len());
@@ -192,45 +198,25 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let list = overrides.get(ast.first(d)).copied();
     let ids: Vec<DeclId> = list.map(|l| ast.lists.iter::<DeclId>(l).collect()).unwrap_or_default();
     w.write_refs_sorted(s, &ids);
-    // friends: key*sorted, of the class definition; in `definition` for
-    // the definition class (§11.9).
+    // friends: key*sorted, of the class definition; key_function,
+    // dtor_delete, dtor_delete_this: demand; record_pack: uv?, of the
+    // class definition. `friends` and `record_pack` are in `definition`
+    // for the definition class (§11.9), their empty forms here.
     if definition_class {
         s.count(0);
-        if class || friends.contains(d) {
-            s.pending(Area::Demand);
-        }
-    } else {
-        let list = friends.get(d).copied();
-        let ids: Vec<DeclId> =
-            list.map(|l| ast.lists.iter::<DeclId>(l).collect()).unwrap_or_default();
-        write_keys_sorted(w, s, &ids);
-    }
-    // key_function, dtor_delete, dtor_delete_this: demand.
-    // record_pack: uv?, of the class definition; in `definition` for the
-    // definition class (§11.9).
-    if definition_class {
         s.opt(false);
-        if class || record_pack.contains(d) {
-            s.pending(Area::Demand);
-        }
     } else {
-        match record_pack.get(d) {
-            Some(&n) => {
-                s.opt(true).uv(u64::from(n));
-            }
-            None => {
-                s.opt(false);
-            }
-        }
+        class_definition(w, s, d);
     }
-    // contracts: child*, in order (Kiln's `Ast::function_contracts`).
-    let stmts: Vec<StmtId> = ast
-        .function_contracts(d)
-        .map(|l| ast.lists.iter::<StmtId>(l).collect())
-        .unwrap_or_default();
-    s.count(stmts.len());
-    for st in stmts {
-        crate::stmt::child(w, s, st);
+    // contracts: child*, in order (Kiln's `Ast::function_contracts`). In
+    // `definition` for the definition class (§11.9): Kiln installs an
+    // instantiation's contracts with its definition
+    // (`install_instantiated_contracts`, `kiln_sema/src/contracts.rs:681`);
+    // their empty form here.
+    if definition_class {
+        s.count(0);
+    } else {
+        contracts(w, s, d);
     }
     // asm_label: string?, on the first declaration.
     match from_chain(asm_label, &chain) {
@@ -311,6 +297,26 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 
 /// The value of the first declaration of `chain` that has an entry in
 /// `map`.
+/// `ColdDeclData` `friends` (key*sorted) and `record_pack` (uv?) of the
+/// class definition `d`: in the own unit, or, for the definition class
+/// (§11.9), in the resolved unit `definition`
+/// (`decl_class::record_definition`).
+pub(crate) fn class_definition(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let ast = w.ast;
+    let cold = &ast.decls.cold;
+    let list = cold.friends.get(d).copied();
+    let ids: Vec<DeclId> = list.map(|l| ast.lists.iter::<DeclId>(l).collect()).unwrap_or_default();
+    write_keys_sorted(w, s, &ids);
+    match cold.record_pack.get(d) {
+        Some(&n) => {
+            s.opt(true).uv(u64::from(n));
+        }
+        None => {
+            s.opt(false);
+        }
+    }
+}
+
 fn from_chain<V: Copy>(map: &ColdMap<DeclId, V>, chain: &[DeclId]) -> Option<V> {
     chain.iter().find_map(|&x| map.get(x).copied())
 }
@@ -352,7 +358,7 @@ fn lexical(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let ast = w.ast;
     let first = ast.first(d);
     let definition = crate::units::defining_decl(w, first);
-    let decls = if crate::decl_func::definition_class(w, w.entity(d)) {
+    let decls = if crate::demand::definition_class(w, w.entity(d)) {
         // Defined only on use (§11.9): a definition that is not the first
         // declaration is the instantiation the use made (Kiln puts a
         // static data member's at namespace scope); the row reads the
@@ -465,10 +471,10 @@ mod tests {
     use slip_kiln::kiln::ast::DeclId;
     use slip_kiln::kiln::ast::decl::DeclKind;
 
+    use crate::Cause;
     use crate::decl_func::tests::{named, of_kind, with_walk};
     use crate::stream::Stream;
     use crate::walk::Walk;
-    use crate::{Area, Cause};
 
     fn written(
         w: &mut Walk<'_>,
@@ -558,7 +564,7 @@ mod tests {
             with_walk(src, |w| {
                 let d = named(w, "s", DeclKind::Var)
                     .into_iter()
-                    .find(|&d| crate::decl_func::definition_class(w, w.entity(d)))
+                    .find(|&d| crate::demand::definition_class(w, w.entity(d)))
                     .expect("A<int>::s");
                 let read = crate::units::read_decl(w, w.ast.first(d));
                 written(w, |w, s| super::lexical(w, s, read)).0
@@ -632,19 +638,28 @@ mod tests {
     }
 
     // §11.9: `ctor_inits` of a constructor of the definition class is in
-    // `definition`, whether or not Kiln made it.
+    // `definition`, whether or not Kiln made it: the own unit writes the
+    // empty form without a cause, and `definition` the initialisers.
     #[test]
-    fn ctor_inits_of_an_instantiation_is_pending_demand() {
+    fn ctor_inits_of_an_instantiation_is_in_definition() {
         let src = "template <class T> struct A { int a; A() : a(1) {} };\nA<int> x;\n";
         with_walk(src, |w| {
             let inst: Vec<DeclId> = of_kind(w, DeclKind::CXXConstructor)
                 .into_iter()
-                .filter(|&c| crate::decl_func::implicit_instantiation(w, w.entity(c)))
+                .filter(|&c| {
+                    w.ast.member_spec_info(w.entity(c)).is_some()
+                        && crate::demand::definition_class(w, w.entity(c))
+                })
                 .collect();
             assert!(!inst.is_empty());
             for c in inst {
                 let (_, cause) = written(w, |w, s| super::cold(w, s, c));
-                assert_eq!(cause, Some(Cause::Pending(Area::Demand)));
+                assert!(!matches!(cause, Some(Cause::Pending(_))), "{cause:?}");
+                let e = w.entity(c);
+                let def = crate::demand::defining_declaration(w, e).expect("A<int>::A() defined");
+                let (rows, _) =
+                    written(w, |w, s| crate::decl_func::function_definition(w, s, e, def));
+                assert!(!rows.is_empty());
             }
         });
     }

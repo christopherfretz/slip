@@ -1,13 +1,14 @@
 #include "side.h"
 // digest-kinds §11.2 rule 3: g's first declaration is the friend A<char>
 // instantiates, whose pattern's `noexcept` is value-dependent; the
-// namespace-scope redeclaration is g's representative, and it is judged
-// made by instantiation through its entity (`templ::instantiated_declaration`),
-// so g is of the deferrable class (an over-inclusion: Kiln resolves the
-// friend's specification at the redeclaration). The specification is in
-// the resolved unit on both sides, and differs there; g's own unit is
-// equal. `changed A::friend g(int)` is the friend in A's pattern, whose operand
-// names N (written since WP-036).
+// namespace-scope redeclaration is g's representative. It is written in
+// source, not made by instantiation (`templ::made_by_instantiation`, the
+// test `demand::instantiated` reads since WP-045), and Kiln resolves the
+// friend's specification at it: g is not of the deferrable class, and the
+// specification is in g's own unit, which differs (WP-046 judged the
+// redeclaration through its entity, an over-inclusion that put it in the
+// resolved unit). `changed A::friend g(int)` is the friend in A's
+// pattern, whose operand names N (written since WP-036).
 #ifdef B
 #define N 0
 #else

@@ -1,0 +1,9 @@
+exact derived
+added S::g()
+removed S::f()
+changed S
+changed u()
+derived-added S<int>::g()
+derived-added S<int>::g()::<definition>
+derived-removed S<int>::f()
+derived-removed S<int>::f()::<definition>

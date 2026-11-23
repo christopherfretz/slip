@@ -1,6 +1,6 @@
 [package]
 name = "slip_reduce"
-description = "Reduce: facts, guards, unanimity, geometry, atomic groups (spec/reduce.md)."
+description = "Reduce: the shards of a transform run joined into one edit set (spec/edits.md §5)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
