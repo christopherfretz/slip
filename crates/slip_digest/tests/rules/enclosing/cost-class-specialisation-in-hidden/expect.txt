@@ -1,2 +1,0 @@
-# pending
-# Known cost: clang++-19 gives DEFAULT _ZTVN1n1SIiEE and members on both sides (an explicit specialisation of a class template takes its template's opening). Slip differs.

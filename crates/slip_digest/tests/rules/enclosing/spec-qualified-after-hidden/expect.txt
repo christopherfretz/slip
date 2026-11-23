@@ -1,2 +1,4 @@
-indeterminate d::g<int>()
+# clang++-19: GLOBAL HIDDEN _ZN1d1gIiEEiv in a (the latest opening of d before the definition is
+# hidden), DEFAULT in b.
+changed d::g<int>()
 changed d

@@ -1,0 +1,4 @@
+# clang++-19: DEFAULT _ZTVN1n1SIiEE, _ZTIN1n1SIiEE and the members on both sides: an explicit
+# specialisation of a class template takes its template's opening, not its own. Only the
+# namespace's unit (its attribute) differs.
+changed n

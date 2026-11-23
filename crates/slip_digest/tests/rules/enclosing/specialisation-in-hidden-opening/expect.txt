@@ -1,4 +1,5 @@
-# clang++-19: GLOBAL HIDDEN _ZN1d1gIiEEiv in a, DEFAULT in b. Kiln chains the explicit specialisation
-# to a declaration in the template's (plain) opening, so a's pairs differ: indeterminate (known cost 4,
-# spec/landed/digest/WP-113.md).
-indeterminate d::g<int>()
+# clang++-19: GLOBAL HIDDEN _ZN1d1gIiEEiv in a, DEFAULT in b: an explicit specialisation of a
+# function template takes the opening it is written in, not its template's. Kiln's chain also holds
+# a declaration it instantiated from the template (at the template's location), which the row
+# leaves out (spec/landed/digest/WP-113.md, "Specialisations").
+changed d::g<int>()

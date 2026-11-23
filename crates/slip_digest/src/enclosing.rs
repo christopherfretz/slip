@@ -34,8 +34,9 @@
 //! unit holds this row, and does not get it.
 
 use slip_kiln::kiln::ast::attr::{AttrKind, AttrNode};
-use slip_kiln::kiln::ast::decl::DeclKind;
+use slip_kiln::kiln::ast::decl::{DeclKind, TemplLinkKind};
 use slip_kiln::kiln::ast::linkage::Linkage;
+use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{AttrId, DeclId};
 
 use crate::Cause;
@@ -96,24 +97,102 @@ pub(crate) fn write(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
     };
     s.tag(row);
     s.bool(ast.in_anonymous_namespace(rep));
-    // The visibility pair of every declaration the unit reads. A use's
-    // symbol takes the pair of the declaration most recent at the use
-    // (clang), so pairs that differ make the symbol's visibility a fact
-    // of each use's place, which no unit holds: the unit is
-    // indeterminate (`VisibilityByUse`, digest §10). Otherwise the one
-    // pair they share is written, once: written per declaration it would
-    // add only their number, which no symbol depends on
-    // (`equal/_/var-extern-before-definition`,
-    // `differ/_/key-extern-c-in-two-namespaces`).
+    // The visibility pair. A specialisation takes it from its template,
+    // except an explicit specialisation of a function template, which
+    // takes it from its own declarations ([`governing_template`]).
+    let pair = match governing_template(w, rep) {
+        // A variable template gives its first declaration's (clang++-19:
+        // `template <class T> extern int v;` in a hidden opening, defined in
+        // a plain one, gives `HIDDEN _ZN1n1vIiEE`, and the reverse
+        // `DEFAULT`); a class or function template the declaration most
+        // recent where it is instantiated, which no unit holds when its
+        // declarations differ.
+        Governs::Template(t) if ast.decls.get(t).kind() == DeclKind::VarTemplate => {
+            chain_pair(w, s, t, |d| d == ast.first(t))
+        }
+        Governs::Template(t) => chain_pair(w, s, t, |_| true),
+        Governs::Own(Some(t)) => {
+            // Kiln's chain of a function template's explicit
+            // specialisation holds the declaration it instantiated from
+            // the template, at the template's location: not one written
+            // for the specialisation, and clang has no such declaration.
+            let made: Vec<_> = ast.redecls_of(t).map(|d| ast.decls.get(d).loc()).collect();
+            chain_pair(w, s, e, |d| !made.contains(&ast.decls.get(d).loc()))
+        }
+        // A variable template itself: what its specialisations take.
+        Governs::Own(None) if ast.decls.get(e).kind() == DeclKind::VarTemplate => {
+            chain_pair(w, s, e, |d| d == ast.first(e))
+        }
+        Governs::Own(None) => chain_pair(w, s, e, |_| true),
+    };
+    visibility(s, pair.0);
+    visibility(s, pair.1);
+}
+
+/// Whose declarations give entity `rep` its visibility (clang++-19,
+/// `spec/landed/digest/WP-113.md`, "Specialisations"): a specialisation
+/// of a class or variable template, of any kind, a partial
+/// specialisation, and an instantiation (implicit or explicit) of a
+/// function template take their template's, whatever opening they are
+/// written in; an explicit specialisation of a function template takes
+/// its own (with the template, whose declarations Kiln's chain holds);
+/// anything else its own.
+enum Governs {
+    Template(DeclId),
+    Own(Option<DeclId>),
+}
+
+fn governing_template(w: &Walk<'_>, rep: DeclId) -> Governs {
+    let ast = w.ast;
+    let first = ast.first(rep);
+    if let Some((_, i)) = ast.spec_info(first) {
+        let function = ast.decls.function(first).is_some();
+        return match i.kind {
+            SpecKind::ExplicitSpecialization if function => Governs::Own(Some(i.template)),
+            SpecKind::ExplicitSpecialization
+            | SpecKind::ImplicitInstantiation
+            | SpecKind::ExplicitInstantiationDeclaration
+            | SpecKind::ExplicitInstantiationDefinition
+            | SpecKind::Undeclared => Governs::Template(i.template),
+        };
+    }
+    if let Some((TemplLinkKind::PartialSpecialization, i)) = ast.templ_link(first).get()
+        && let Some(p) = ast.templates.partial(i)
+    {
+        return Governs::Template(p.template);
+    }
+    Governs::Own(None)
+}
+
+/// The visibility pair of the declarations of entity `e` that `keep`
+/// holds of (all of them if it holds of none), each from [`opening`]. A
+/// use's symbol takes the pair of the declaration most recent at the use
+/// (clang), so pairs that differ make the symbol's visibility a fact of
+/// each use's place, which no unit holds: the unit is indeterminate
+/// (`VisibilityByUse`, digest §10). Otherwise the one pair they share:
+/// written per declaration it would add only their number, which no
+/// symbol depends on (`equal/_/var-extern-before-definition`,
+/// `differ/_/key-extern-c-in-two-namespaces`).
+fn chain_pair(w: &Walk<'_>, s: &mut Stream, e: DeclId, keep: impl Fn(DeclId) -> bool) -> Pair {
     let mut chain = w.redecls(e);
     chain.reverse();
+    if chain.iter().any(|&d| keep(d)) {
+        chain.retain(|&d| keep(d));
+    }
     let pairs: Vec<Pair> = chain.iter().map(|&d| namespace_visibility(w, s, d)).collect();
     let pair = pairs.first().copied().unwrap_or((None, None));
     if pairs.iter().any(|&p| p != pair) {
+        if std::env::var_os("TMP_VBU").is_some() {
+            eprintln!(
+                "TMP_VBU {} {:?} {:?}",
+                crate::names::display_name(w.ast, e),
+                w.ast.decls.get(e).kind(),
+                pairs
+            );
+        }
         s.indeterminate(Cause::VisibilityByUse);
     }
-    visibility(s, pair.0);
-    visibility(s, pair.1);
+    pair
 }
 
 /// A value visibility and a type visibility.

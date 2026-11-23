@@ -1,2 +1,0 @@
-# pending
-# Known cost (spec/landed/digest/WP-113.md): clang++-19 gives GLOBAL DEFAULT _ZN1n1gIiEEiv (weak) on both sides; an explicit instantiation definition takes nothing from its opening. Slip differs.
