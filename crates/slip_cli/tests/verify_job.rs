@@ -128,7 +128,12 @@ impl Tree {
     }
 
     fn params(&self, declared: Declared) -> Params {
-        let declared_id = content_id(&declared.to_bytes()).unwrap();
+        // The content id of its container; a value no container can hold
+        // (rules without files, which only tests make) has none.
+        let declared_id = match declared.validate() {
+            Ok(()) => content_id(&declared.to_bytes()).unwrap(),
+            Err(_) => Digest([0; 32]),
+        };
         Params { pre: 0, declared, declared_id, image: self.image(), limit: 64, locate: 16 }
     }
 
@@ -1779,7 +1784,10 @@ fn s9_1_no_rules_shard_unchanged() {
             assert!(v.binding.is_none() && v.rule_use.is_none(), "{name}");
         }
         let v = tree.verify(&o);
-        out.push_str(&format!("{name}\n{}\n", shard_view(&tree, &v, pre)));
+        out.push_str(name);
+        out.push('\n');
+        out.push_str(&shard_view(&tree, &v, pre));
+        out.push('\n');
     }
     golden("verify-no-rules.txt", &out);
 }

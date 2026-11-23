@@ -110,13 +110,6 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         pre_digests.map(|d| d.groups.iter().map(Group::sum).collect()).unwrap_or_default();
     let detail = if pre_digests.is_some() { Detail::Differing(&sums) } else { Detail::None };
     let (mut shard, output) = post_walk(params, observer, job.round, detail)?;
-    // §9.1: `binding` in every shard the job writes under a rule table that
-    // is not empty, whatever the parse's outcome (a `failed` one is the
-    // coordinator's, and has none). With an empty table the shard is M1's
-    // (§9.3's temporary exception), byte for byte.
-    if !rules.is_empty() && shard.outcome.status != Status::Failed {
-        shard.binding = Some(binding(params));
-    }
     if shard.outcome.status != Status::Ok {
         // `not_parsed`: the parse task's shard, no digests, no verdict.
         return Ok(shard);
@@ -124,21 +117,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     let Some((output, lookups)) = output else {
         return Err("the post-image parsed without error and the walk did not run".to_owned());
     };
-    let mut counters = std::mem::take(&mut shard.counters);
-    counters.extend(walk_counters(&output));
-    // §9.1: `rule_use` in every `ok` shard under a rule table that is not
-    // empty, from step 1's walk (the only walk that counts; step 6's
-    // second parse is tied to it by G3).
-    let rule_use =
-        (!rules.is_empty()).then(|| RuleUse { rules: rules_id, uses: output.rule_use.clone() });
-    let mut post = Post {
-        counters,
-        digests: output.digests,
-        rule_use,
-        differing: 0,
-        reparsed: 0,
-        by_kind: [0; 6],
-    };
+    let mut post = Post::new(&mut shard, output, rules_id, !rules.is_empty());
     let unverifiable_now = |post: Post, mut shard: Shard, reason: &str| -> Result<Shard, String> {
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
@@ -221,6 +200,12 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
 /// rules, with the read-only files decided from each buffer's real path
 /// (`Input::subject_path` maps the real path, never the path as the front
 /// end spells it; `spec/verify.md` §2.1), and the lookups for L1.
+///
+/// §9.1: under a rule table that is not empty the shard has `binding`,
+/// whatever the parse's outcome (a `failed` one would be the
+/// coordinator's, which has none), and the walk counts the rule use. With
+/// an empty table the shard is M1's (§9.3's temporary exception), byte
+/// for byte.
 fn post_walk(
     params: &Params,
     observer: &Observer,
@@ -228,17 +213,25 @@ fn post_walk(
     detail: Detail<'_>,
 ) -> Result<(Shard, Option<(Output, Lookups)>), String> {
     let (rules, files) = (params.declared.rules(), params.declared.files());
-    params.image.parse_looking(observer, Side::Post, Phase::Verify, round, |input| {
-        let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
-        let options = Options {
-            rules,
-            read_only: ReadOnly::files(&read_only),
-            detail,
-            names: false,
-            rule_use: !rules.is_empty(),
-        };
-        digest(input, &options)
-    })
+    params
+        .image
+        .parse_looking(observer, Side::Post, Phase::Verify, round, |input| {
+            let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
+            let options = Options {
+                rules,
+                read_only: ReadOnly::files(&read_only),
+                detail,
+                names: false,
+                rule_use: !rules.is_empty(),
+            };
+            digest(input, &options)
+        })
+        .map(|(mut shard, output)| {
+            if !rules.is_empty() && shard.outcome.status != Status::Failed {
+                shard.binding = Some(binding(params));
+            }
+            (shard, output)
+        })
 }
 
 /// The `binding` of the job's shards (`spec/verify.md` §9.1), from its
@@ -332,6 +325,24 @@ struct Post {
 }
 
 impl Post {
+    /// After step 1: the parse's counters (taken from `shard`) and the
+    /// walk's, its `digests`, and its rule use. §9.1: `rule_use` in every
+    /// `ok` shard under a rule table that is not empty (`counted`: the
+    /// walk counted only then), from step 1's walk, the only walk that counts (step
+    /// 6's second parse is tied to it by G3).
+    fn new(shard: &mut Shard, output: Output, rules_id: Digest, counted: bool) -> Post {
+        let mut counters = std::mem::take(&mut shard.counters);
+        counters.extend(walk_counters(&output));
+        Post {
+            counters,
+            rule_use: counted.then_some(RuleUse { rules: rules_id, uses: output.rule_use }),
+            digests: output.digests,
+            differing: 0,
+            reparsed: 0,
+            by_kind: [0; 6],
+        }
+    }
+
     /// The post shard of §5.4: step 1's outcome and inputs (already in
     /// `shard`), its counters and those of §7.2, sorted by name; step 1's
     /// `digests` without unit lists; `v`.
