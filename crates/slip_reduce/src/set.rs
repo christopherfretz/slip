@@ -163,6 +163,7 @@ impl Builder {
         }
         self.flush(cx)?;
         match (key, val) {
+            (Key::Observer(_), _) => return Err(corrupt("an observer record after the first")),
             (Key::File { path, size, content }, Val::File) => {
                 if self.paths.last() != Some(&path) {
                     self.paths.push(path);

@@ -242,10 +242,7 @@ fn store_of(shards: &[(Digest, Option<Shard>)]) -> Store {
         store.observers.push(*o);
         store.entries.push(match s {
             None => Entry::Missing,
-            Some(s) => {
-                let id = id_of(s);
-                Entry::Shard(Box::new(s.clone()), Some(id))
-            }
+            Some(s) => Entry::Bytes(s.to_bytes()),
         });
     }
     store

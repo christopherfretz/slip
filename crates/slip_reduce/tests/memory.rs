@@ -20,7 +20,6 @@ use std::time::Instant;
 
 use common::*;
 use slip_model::editset::SetState;
-use slip_model::formats::content_id;
 use slip_model::{Digest, Shard};
 use slip_reduce::{Options, Shards, reduce};
 
@@ -60,17 +59,14 @@ struct Lazy {
 }
 
 impl Shards for Lazy {
-    fn open(&self, index: usize) -> Result<Option<Shard>, String> {
-        Ok(Some((self.make)(index)))
+    fn open(&self, index: usize) -> Result<Option<Vec<u8>>, String> {
+        Ok(Some((self.make)(index).to_bytes()))
     }
     fn len(&self) -> usize {
         self.n
     }
     fn observer(&self, index: usize) -> Digest {
         observer(index)
-    }
-    fn shard_id(&self, index: usize) -> Option<Digest> {
-        content_id(&(self.make)(index).to_bytes()).ok()
     }
 }
 

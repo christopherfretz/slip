@@ -114,17 +114,30 @@ pub(crate) struct Read {
     pub shard: Option<Shard>,
 }
 
+/// Decodes the bytes a store gave for a shard, and their content id: the
+/// trailer, the digest of every byte before it, which the container's
+/// reader has checked (`spec/core.md` §5). One read gives both, so the
+/// id is of the very bytes decoded (landed WP-062 §1).
+pub(crate) fn decode(bytes: &[u8]) -> Result<(Shard, Digest), String> {
+    let shard = Shard::from_bytes(bytes).map_err(|e| format!("the shard is not valid: {e}"))?;
+    let mut id = [0u8; 32];
+    // A file the reader accepts ends in its 32-byte trailer.
+    id.copy_from_slice(&bytes[bytes.len() - 32..]);
+    Ok((shard, Digest(id)))
+}
+
 /// Opens and checks the shard at `index` (§5.1). `Err` is the message of
 /// an `Input` error naming the shard's observer.
 pub(crate) fn read(ctx: &Ctx<'_>, index: usize) -> Result<Read, String> {
     let observer = ctx.shards.observer(index);
     let unparsed = Read { entry: BasisEntry { observer, shard: None }, shard: None };
-    let Some(shard) =
+    let Some(bytes) =
         ctx.shards.open(index).map_err(|e| format!("the shard cannot be read: {e}"))?
     else {
         return Ok(unparsed);
     };
-    shard.validate().map_err(|e| format!("the shard is not valid: {e}"))?;
+    let (shard, id) = decode(&bytes)?;
+    drop(bytes);
     if shard.observer != observer {
         return Err("the shard is of another observer".into());
     }
@@ -137,17 +150,19 @@ pub(crate) fn read(ctx: &Ctx<'_>, index: usize) -> Result<Read, String> {
     if shard.outcome.status != Status::Ok {
         return Ok(unparsed);
     }
-    let Some(id) = ctx.shards.shard_id(index) else {
-        return Err("the store gives no content id for an ok shard".into());
-    };
     let Some(edits) = &shard.edits else {
         return Err("an ok shard has no edits section".into());
     };
-    if edits.scheme != slip_model::edits::SCHEME {
-        return Err(format!("the edits section's scheme is {}, not 1", edits.scheme));
-    }
     if edits.transform != ctx.request_id {
         return Err("the edits section is of another transform request".into());
+    }
+    // The shard's reader checks that `inputs` is sorted, not that its paths
+    // are canonical (landed WP-062 §2): reduce checks them, as it checks
+    // `edits.files`, before comparing the two.
+    for (j, f) in shard.inputs.iter().flatten().enumerate() {
+        if !is_file_path(&f.path) {
+            return Err(format!("inputs[{j}] is not a canonical absolute path of a file"));
+        }
     }
     for (j, f) in edits.files.iter().enumerate() {
         if !is_file_path(&f.path) {

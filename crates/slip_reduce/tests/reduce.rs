@@ -645,12 +645,19 @@ fn input_open_fails() {
     assert!(m.contains("disk"));
 }
 
-/// §4.7: a shard that does not validate.
+/// §4.7: bytes the shard reader refuses: a trailer that is not the digest
+/// of the bytes before it, and a required section removed.
 #[test]
 fn input_invalid_shard() {
-    let mut s = plain(1);
-    s.edits.as_mut().unwrap().claims[0].votes = 0;
-    expect_input(vec![plain(0), s], &script(), 1, "not valid");
+    let mut bad = plain(1).to_bytes();
+    *bad.last_mut().unwrap() ^= 1;
+    let header = rewrite(&plain(1).to_bytes(), 1, |_| None);
+    for bytes in [bad, header] {
+        let store = Store::new(vec![plain(0)]).bytes(observer(1), bytes);
+        let (obs, m) = input_error(run(&script(), &store, "input-invalid"));
+        assert_eq!(obs, observer(1));
+        assert!(m.contains("not valid"), "{m}");
+    }
 }
 
 /// §5.1: a shard of another observer, phase or round.
@@ -681,12 +688,20 @@ fn input_no_edits_section() {
     expect_input(vec![plain(0), s], &script(), 1, "no edits section");
 }
 
-/// §5.1: an `edits` section of another scheme.
+/// §5.1: an `edits` section of another scheme. The shard reader refuses
+/// it (`spec/edits.md` §4.7), so reduce does not check it again.
 #[test]
 fn input_other_scheme() {
-    let mut s = plain(1);
-    s.edits.as_mut().unwrap().scheme = 2;
-    expect_input(vec![plain(0), s], &script(), 1, "scheme");
+    let bytes = rewrite(&plain(1).to_bytes(), 17, |p| {
+        assert_eq!(p[0], 1, "the payload opens with uv(scheme)");
+        let mut p = p.to_vec();
+        p[0] = 2;
+        Some(p)
+    });
+    let store = Store::new(vec![plain(0)]).bytes(observer(1), bytes);
+    let (obs, m) = input_error(run(&script(), &store, "input-scheme"));
+    assert_eq!(obs, observer(1));
+    assert!(m.contains("not valid") && m.contains("scheme"), "{m}");
 }
 
 /// §5.1: an `edits` section of another request.
@@ -706,6 +721,77 @@ fn input_non_canonical_path() {
         let store = Store::new(vec![plain(0), s]);
         let (obs, m) = input_error(run(&script(), &store, "input-path"));
         assert_eq!(obs, observer(1), "{m}");
+    }
+}
+
+/// §2.1, §5.1, landed WP-062 §2: an `inputs` path that is not canonical.
+/// The shard reader checks only that `inputs` ascends, so reduce checks it.
+#[test]
+fn input_non_canonical_inputs_path() {
+    for bad in [&b"/s//a.cc"[..], b"/s/./a.cc", b"/s/../a.cc", b"/", b"s/a.cc"] {
+        let mut s = ShardB::new(1).claim(keep(A, 0, 1)).build();
+        s.inputs.as_mut().unwrap()[0].path = bad.to_vec();
+        s.validate().expect("the shard reader does not check inputs paths");
+        let store = Store::new(vec![plain(0), s]);
+        let (obs, m) = input_error(run(&script(), &store, "input-inputs-path"));
+        assert_eq!(obs, observer(1), "{m}");
+        assert!(m.contains("inputs[0] is not a canonical"), "{m}");
+    }
+}
+
+/// §5.7, landed WP-062 §2: a plan that names one observer twice is an
+/// `Input` error at the second index that names it, whether the shards
+/// there are read or not, and the least index of every error is named.
+#[test]
+fn input_one_observer_twice() {
+    for fan_in in [2, 3, 64] {
+        for threads in [1, 4] {
+            let o = |name| Options { fan_in, threads, scratch: scratch(name) };
+            // Twice, both read.
+            let store = Store::new(vec![plain(0), plain(1), plain(2)])
+                .bytes(observer(1), plain(1).to_bytes());
+            let opts = o("input-twice");
+            let (obs, m) = input_error(reduce(&script(), REQUEST, PLAN, 0, &store, &opts));
+            assert_eq!(obs, observer(1), "{m}");
+            assert!(m.contains("at index 1 and again"), "{m}");
+            assert_clean(&opts.scratch);
+            // Twice, unparsed both times: still an error.
+            let store = Store::new(vec![plain(0)]).missing(5).missing(5);
+            let (_, m) = input_error(reduce(&script(), REQUEST, PLAN, 0, &store, &o("i2")));
+            assert!(m.contains("at index 1 and again"), "{m}");
+            // An earlier error of the first pass is named first; a later one
+            // is not.
+            let mut early = plain(1);
+            early.edits.as_mut().unwrap().transform = d(0x45);
+            let store = Store::new(vec![plain(0), early, plain(2), plain(3)])
+                .bytes(observer(2), plain(2).to_bytes());
+            let (obs, m) = input_error(reduce(&script(), REQUEST, PLAN, 0, &store, &o("i3")));
+            assert_eq!(obs, observer(1), "{m}");
+            assert!(m.contains("another transform"), "{m}");
+            let mut late = plain(5);
+            late.edits.as_mut().unwrap().transform = d(0x45);
+            let store = Store::new(vec![plain(0), plain(1), plain(2)])
+                .bytes(observer(0), plain(0).to_bytes())
+                .bytes(observer(5), late.to_bytes());
+            let (obs, m) = input_error(reduce(&script(), REQUEST, PLAN, 0, &store, &o("i4")));
+            assert_eq!(obs, observer(0), "{m}");
+            assert!(m.contains("at index 0 and again"), "{m}");
+        }
+    }
+}
+
+/// §5.7: `fan_in` below 2 and `threads` 0 are errors, not panics, and
+/// make no temporary file.
+#[test]
+fn options_out_of_range() {
+    let store = Store::new(vec![plain(0)]);
+    for (fan_in, threads) in [(1, 1), (0, 1), (2, 0)] {
+        let o = Options { fan_in, threads, scratch: scratch("options") };
+        match reduce(&script(), REQUEST, PLAN, 0, &store, &o) {
+            Err(ReduceError::Options(m)) => assert!(!m.is_empty()),
+            other => panic!("fan_in {fan_in}, threads {threads}: {other:?}"),
+        }
+        assert_clean(&o.scratch);
     }
 }
 
@@ -760,17 +846,6 @@ fn input_one_key_two_rules() {
     expect_input(vec![a, b, c], &script(), 2, "rule");
 }
 
-/// §5.1: the store gives no content id for an `ok` shard.
-#[test]
-fn input_no_content_id() {
-    let mut store = Store::new(vec![plain(0), plain(1)]);
-    if let Entry::Shard(_, id) = &mut store.entries[1] {
-        *id = None;
-    }
-    let (obs, _) = input_error(run(&script(), &store, "input-id"));
-    assert_eq!(obs, observer(1));
-}
-
 /// §5.1: the error named is the least observer index's, whatever the
 /// threads and `fan_in`.
 #[test]
@@ -791,19 +866,22 @@ fn input_least_observer_index() {
     }
 }
 
-/// §5.1, landed WP-062 §2: a shard that is not the one the first pass
-/// read, at the second.
+/// §5.1, landed WP-062 §1, §2: a shard that is not the one the first pass
+/// read, at the second: gone, bytes that no longer read, or other bytes
+/// (here a counter more: the same claims, the same files). The id compared
+/// is of the bytes each pass read; the store is not asked for one.
 #[test]
 fn input_shard_changed_between_passes() {
     struct Changing {
         inner: Store,
+        later: Option<Vec<u8>>,
         opens: Vec<AtomicU64>,
     }
     impl Shards for Changing {
-        fn open(&self, index: usize) -> Result<Option<Shard>, String> {
+        fn open(&self, index: usize) -> Result<Option<Vec<u8>>, String> {
             let n = self.opens[index].fetch_add(1, Ordering::Relaxed);
             let s = self.inner.open(index)?;
-            Ok(if index == 1 && n > 0 { None } else { s })
+            Ok(if index == 1 && n > 0 { self.later.clone() } else { s })
         }
         fn len(&self) -> usize {
             self.inner.len()
@@ -811,19 +889,23 @@ fn input_shard_changed_between_passes() {
         fn observer(&self, index: usize) -> Digest {
             self.inner.observer(index)
         }
-        fn shard_id(&self, index: usize) -> Option<Digest> {
-            self.inner.shard_id(index)
-        }
     }
-    let store = Changing {
-        inner: Store::new(vec![plain(0), plain(1)]),
-        opens: (0..2).map(|_| AtomicU64::new(0)).collect(),
-    };
-    let o = options("input-changed");
-    let (obs, m) = input_error(reduce(&script(), REQUEST, PLAN, 0, &store, &o));
-    assert_eq!(obs, observer(1));
-    assert!(m.contains("changed"), "{m}");
-    assert_clean(&o.scratch);
+    let mut torn = plain(1).to_bytes();
+    torn.truncate(torn.len() - 1);
+    let other = ShardB::new(1).claim(the_edit(A, 0, 1, "x")).counter("api.calls", 1).build();
+    for later in [None, Some(torn), Some(other.to_bytes())] {
+        let store = Changing {
+            inner: Store::new(vec![plain(0), plain(1)]),
+            later,
+            opens: (0..2).map(|_| AtomicU64::new(0)).collect(),
+        };
+        let o = options("input-changed");
+        let (obs, m) = input_error(reduce(&script(), REQUEST, PLAN, 0, &store, &o));
+        assert_eq!(obs, observer(1));
+        assert!(m.contains("changed"), "{m}");
+        assert_clean(&o.scratch);
+        assert_eq!(store.opens[1].load(Ordering::Relaxed), 2, "one open a pass");
+    }
 }
 
 /// §5.6: reports, `changed` entries and failures are joined by record,
@@ -875,11 +957,11 @@ fn shard_counters_are_summed() {
     assert_eq!(counter(&set, "reduce.claims.replace"), 1);
 }
 
-/// §6, landed WP-062 §1: the content id of a stored shard is not that of
-/// its re-encoding when the stored bytes hold an ignorable section, so the
-/// store gives it (`Shards::shard_id`).
+/// §6, landed WP-062 §1: the basis names the content id of the bytes
+/// reduce read, which is not that of the decoded shard's re-encoding when
+/// the stored bytes hold an ignorable section.
 #[test]
-fn shard_id_is_the_stored_bytes() {
+fn basis_is_of_the_bytes_read() {
     use slip_model::formats::{content_id, dump, undump};
     use slip_model::json;
     let s = plain(0);
@@ -896,6 +978,10 @@ fn shard_id_is_the_stored_bytes() {
     let back = Shard::from_bytes(&stored).unwrap();
     assert_eq!(back, s, "the ignorable section is dropped on decoding");
     assert_ne!(content_id(&stored).unwrap(), content_id(&back.to_bytes()).unwrap());
+    let store = Store::new(Vec::new()).bytes(observer(0), stored.clone());
+    let set = run(&script(), &store, "basis-bytes").unwrap().edits;
+    let basis = vec![Basis { observer: observer(0), shard: Some(content_id(&stored).unwrap()) }];
+    assert_eq!(set.basis, basis_id(&basis));
 }
 
 /// §5.3, §6, landed WP-062 §4: an observer that made several claims at a

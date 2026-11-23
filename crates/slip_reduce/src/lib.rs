@@ -30,18 +30,18 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use slip_model::Digest;
 use slip_model::declared::Declared;
 use slip_model::editset::EditSet;
 use slip_model::hash::{BASIS_TAG, Hasher};
 use slip_model::keys::Rule;
 use slip_model::transform::{Transform, TransformKind};
 use slip_model::wire::Encoder;
-use slip_model::{Digest, Shard};
 
 pub use crate::declared::declared;
 
 use crate::pass1::{Ctx, Joined};
-use crate::records::{Key, Val};
+use crate::records::{Key, Sample, Val};
 use crate::runs::{BasisEntry, BasisReader, Cleanup, RunReader, Scratch};
 use crate::set::{Builder, Context, Parts};
 
@@ -70,18 +70,16 @@ impl Options {
 /// the second read shards from several threads (landed WP-062 §1).
 #[allow(clippy::len_without_is_empty)]
 pub trait Shards: Sync {
-    /// The shard of the observer at `index` of the plan, or `None`
-    /// (unparsed). An `Err` is an `Input` error naming the observer.
-    fn open(&self, index: usize) -> Result<Option<Shard>, String>;
+    /// The bytes of the stored shard of the observer at `index` of the
+    /// plan, or `None` (unparsed). An `Err` is an `Input` error naming the
+    /// observer. Reduce decodes them, and their trailer is the `shard` of
+    /// the `Basis` (§6): the id is of the bytes read, never asked for apart
+    /// from them.
+    fn open(&self, index: usize) -> Result<Option<Vec<u8>>, String>;
     /// The number of observers of the plan.
     fn len(&self) -> usize;
     /// The observer at `index` of the plan.
     fn observer(&self, index: usize) -> Digest;
-    /// The content id of the stored shard at `index`, if there is one: the
-    /// `shard` of its `Basis` (§6). Re-encoding the decoded shard is not
-    /// that id when the stored bytes hold an ignorable section (landed
-    /// WP-062 §1), so the store says it.
-    fn shard_id(&self, index: usize) -> Option<Digest>;
 }
 
 /// What reduce made: the edit set, and its declared changes if it was
@@ -101,6 +99,8 @@ pub enum ReduceError {
     /// The temporary files could not be written or read, or reduce made a
     /// set its own reader refuses.
     Io(String),
+    /// The [`Options`] are not usable: `fan_in` below 2 or `threads` 0.
+    Options(String),
 }
 
 impl std::fmt::Display for ReduceError {
@@ -110,6 +110,7 @@ impl std::fmt::Display for ReduceError {
                 write!(f, "the shard of observer {observer}: {message}")
             }
             ReduceError::Io(m) => write!(f, "reduce: {m}"),
+            ReduceError::Options(m) => write!(f, "reduce: the options: {m}"),
         }
     }
 }
@@ -205,6 +206,15 @@ fn first_pass_run(
     let mut joined = Joined::default();
     let mut entries = Vec::with_capacity(end - start);
     for index in start..end {
+        // Every index, read or not: the merge counts the indices of each
+        // observer (§5.7: one observer once in a plan).
+        let one = Val::Sample(Sample::one(index as u64));
+        match records.entry(Key::Observer(ctx.shards.observer(index))) {
+            std::collections::btree_map::Entry::Occupied(mut e) => e.get_mut().join(&one)?,
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert(one);
+            }
+        }
         if least.beaten(index) {
             entries.push(BasisEntry { observer: ctx.shards.observer(index), shard: None });
             continue;
@@ -252,9 +262,17 @@ fn second_pass_run(
             continue;
         }
         let changed = "the shard changed between the two passes of reduce";
+        // The id of what this pass read against the id of what the first
+        // pass read: bytes that no longer decode changed too.
         let shard = match shards.open(index) {
-            Ok(Some(s)) if shards.shard_id(index) == Some(id) => s,
-            Ok(_) => {
+            Ok(Some(bytes)) => match pass1::decode(&bytes) {
+                Ok((s, again)) if again == id => s,
+                _ => {
+                    least.offer(index, changed.into());
+                    continue;
+                }
+            },
+            Ok(None) => {
                 least.offer(index, changed.into());
                 continue;
             }
@@ -309,15 +327,13 @@ fn basis_of(scratch: &Scratch, n: usize) -> Result<(Digest, Vec<Digest>), String
 /// Reduces the shards of round `round` of plan `plan` for the transform
 /// `request` (its id `request_id`) to one edit set (§5, §6).
 ///
-/// # Panics
-///
-/// If `options.fan_in` is less than 2 or `options.threads` is 0.
-///
 /// # Errors
 ///
-/// [`ReduceError::Input`] for a shard that breaks §5.1 or §4.7, naming the
-/// least observer index that shows an error; [`ReduceError::Io`] if the
-/// temporary files fail.
+/// [`ReduceError::Input`] for a shard that breaks §5.1 or §4.7, or a plan
+/// that names one observer twice, naming the least observer index that
+/// shows an error; [`ReduceError::Io`] if the temporary files fail;
+/// [`ReduceError::Options`] if `options.fan_in` is less than 2 or
+/// `options.threads` is 0.
 pub fn reduce(
     request: &Transform,
     request_id: Digest,
@@ -326,8 +342,12 @@ pub fn reduce(
     shards: &dyn Shards,
     options: &Options,
 ) -> Result<Reduced, ReduceError> {
-    assert!(options.fan_in >= 2, "reduce: fan_in must be at least 2");
-    assert!(options.threads >= 1, "reduce: threads must be at least 1");
+    if options.fan_in < 2 {
+        return Err(ReduceError::Options(format!("fan_in is {}, not at least 2", options.fan_in)));
+    }
+    if options.threads == 0 {
+        return Err(ReduceError::Options("threads is 0, not at least 1".into()));
+    }
     let scratch = Scratch::new(&options.scratch);
     let mut cleanup = Cleanup::new(&scratch);
     let r = run(request, request_id, plan, round, shards, options, &scratch, &mut cleanup);
@@ -376,20 +396,6 @@ fn run(
     })
     .map_err(ReduceError::Io)?;
     let mut joined = folding.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).2;
-    let mut error = least.take();
-    if let Some((c, id)) = joined.rule_conflict() {
-        let c = usize::try_from(c).unwrap_or(usize::MAX);
-        if error.as_ref().is_none_or(|(i, _)| c < *i) {
-            error = Some((
-                c,
-                format!("the subject {id} has a rule other than an earlier shard gives it"),
-            ));
-        }
-    }
-    if let Some((i, m)) = error {
-        return Err(input(i, m));
-    }
-
     // Merge.
     let mut level = 0;
     let mut count = n_runs;
@@ -411,6 +417,41 @@ fn run(
         count = next;
     }
 
+    let mut error = least.take();
+    if let Some((c, id)) = joined.rule_conflict() {
+        let c = usize::try_from(c).unwrap_or(usize::MAX);
+        if error.as_ref().is_none_or(|(i, _)| c < *i) {
+            error = Some((
+                c,
+                format!("the subject {id} has a rule other than an earlier shard gives it"),
+            ));
+        }
+    }
+
+    // The merged stream opens with the observer records (they sort first):
+    // a plan that names one observer twice is an error at the second index
+    // that names it, the least with every error of the first pass (§5.7).
+    let mut reader = RunReader::open(scratch.run(level, 0)).map_err(ReduceError::Io)?;
+    let mut first = None;
+    while let Some((k, v)) = reader.next().map_err(ReduceError::Io)? {
+        let (Key::Observer(o), Val::Sample(s)) = (&k, &v) else {
+            first = Some((k, v));
+            break;
+        };
+        if let [a, b, ..] = s.first[..] {
+            let i = usize::try_from(b).unwrap_or(usize::MAX);
+            if error.as_ref().is_none_or(|(e, _)| i < *e) {
+                error = Some((
+                    i,
+                    format!("the plan names the observer {o} at index {a} and again here"),
+                ));
+            }
+        }
+    }
+    if let Some((i, m)) = error {
+        return Err(input(i, m));
+    }
+
     // Selection.
     let rename = request.kind == TransformKind::Rename;
     let selection = subjects::select(&joined.subjects, &joined.links, rename);
@@ -421,9 +462,11 @@ fn run(
     let mut builder = Builder::default();
     {
         let mut cx = Context { selected: &selection.selected, ties: &mut joined.ties };
-        let mut reader = RunReader::open(scratch.run(level, 0)).map_err(ReduceError::Io)?;
-        while let Some((k, v)) = reader.next().map_err(ReduceError::Io)? {
+        if let Some((k, v)) = first {
             builder.push(k, v, &mut cx).map_err(ReduceError::Io)?;
+            while let Some((k, v)) = reader.next().map_err(ReduceError::Io)? {
+                builder.push(k, v, &mut cx).map_err(ReduceError::Io)?;
+            }
         }
         builder.finish(&mut cx).map_err(ReduceError::Io)?;
     }

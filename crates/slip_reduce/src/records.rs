@@ -47,6 +47,11 @@ pub(crate) enum Entry {
 /// What a record is about; two records with one key are joined.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
+    /// An observer of the plan, with a sample of the indices that name it:
+    /// first in the order, so that the merged stream opens with them and a
+    /// plan that names one observer twice is seen before any claim
+    /// (landed WP-062 §2).
+    Observer(Digest),
     /// A file some shard's `edits.files` names, with the size and content
     /// that shard gave it.
     File { path: Vec<u8>, size: u64, content: Digest },
@@ -250,6 +255,9 @@ fn stance_code(s: Stance) -> u64 {
 pub(crate) fn encode(key: &Key, val: &Val) -> Vec<u8> {
     let mut e = Encoder::new();
     match key {
+        Key::Observer(o) => {
+            e.u8(5).digest(o);
+        }
         Key::File { path, size, content } => {
             e.u8(0).bytes(path).uv(*size).digest(content);
         }
@@ -454,6 +462,7 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
                 _ => return Err(bad("an option tag")),
             },
         },
+        5 => Key::Observer(w(d.digest())?),
         _ => return Err(bad("a record tag")),
     };
     let val = match tag {
@@ -490,7 +499,7 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
                 single,
             })
         }
-        2 | 3 => Val::Sample(dsample(&mut d)?),
+        2 | 3 | 5 => Val::Sample(dsample(&mut d)?),
         _ => {
             let sample = dsample(&mut d)?;
             let from = w(d.uv())?;

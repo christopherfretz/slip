@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use slip_model::container::{Reader, Writer};
 use slip_model::edits::{
     Changed, Claim, Edits, Failure, FailureKind, HostRefusal, Link, MacroSite, Piece, Place,
     Reason, Report, Role, SCHEME, Severity, SourcePlace, Stance, Subject, tiers,
@@ -560,8 +561,8 @@ pub enum Entry {
     Missing,
     /// `open` fails.
     Broken(String),
-    /// A shard and its content id.
-    Shard(Box<Shard>, Option<Digest>),
+    /// The bytes of a stored shard: valid or not, reduce decodes them.
+    Bytes(Vec<u8>),
 }
 
 /// `Shards` over a vector, in plan order.
@@ -579,23 +580,44 @@ pub fn id_of(s: &Shard) -> Digest {
     content_id(&s.to_bytes()).expect("a shard's bytes have a content id")
 }
 
+/// The bytes of a shard with section `id`'s payload replaced by what
+/// `f` makes of it (`None`: the section removed): bytes `Shard::to_bytes`
+/// cannot write, for the tests of what reduce refuses.
+pub fn rewrite(bytes: &[u8], id: u64, f: impl FnOnce(&[u8]) -> Option<Vec<u8>>) -> Vec<u8> {
+    let r = Reader::open(bytes, Shard::KIND, Shard::VERSION).expect("the shard reads");
+    let ids: Vec<u64> = r.ids().collect();
+    let mut f = Some(f);
+    let mut w = Writer::new(Shard::KIND, Shard::VERSION);
+    for i in ids {
+        let payload = r.section(i).expect("a listed section").to_vec();
+        if i == id {
+            if let Some(p) = (f.take().expect("one section of an id"))(&payload) {
+                w.section(i, &p);
+            }
+        } else {
+            w.section(i, &payload);
+        }
+    }
+    w.finish()
+}
+
 impl Store {
     /// The shards at plan indices `0..`; each shard's observer is its own.
     pub fn new(shards: Vec<Shard>) -> Store {
         let observers = shards.iter().map(|s| s.observer).collect();
-        let entries = shards
-            .into_iter()
-            .map(|s| {
-                // A shard that does not validate has no bytes; any id will do.
-                let id = if s.validate().is_ok() { id_of(&s) } else { d(0xee) };
-                Entry::Shard(Box::new(s), Some(id))
-            })
-            .collect();
+        let entries = shards.into_iter().map(|s| Entry::Bytes(s.to_bytes())).collect();
         Store { observers, entries, delay: None, opens: AtomicU64::new(0) }
     }
 
     pub fn of(shards: Vec<ShardB>) -> Store {
         Store::new(shards.into_iter().map(ShardB::build).collect())
+    }
+
+    /// Adds an observer at the end whose stored shard is `bytes`.
+    pub fn bytes(mut self, observer: Digest, bytes: Vec<u8>) -> Store {
+        self.observers.push(observer);
+        self.entries.push(Entry::Bytes(bytes));
+        self
     }
 
     /// Adds an observer at the end with no shard.
@@ -631,7 +653,7 @@ impl Rng {
 }
 
 impl Shards for Store {
-    fn open(&self, index: usize) -> Result<Option<Shard>, String> {
+    fn open(&self, index: usize) -> Result<Option<Vec<u8>>, String> {
         self.opens.fetch_add(1, Ordering::Relaxed);
         if let Some(seed) = self.delay {
             let mut r = Rng(seed ^ (index as u64).wrapping_mul(0x2545_f491_4f6c_dd1d));
@@ -640,7 +662,7 @@ impl Shards for Store {
         match &self.entries[index] {
             Entry::Missing => Ok(None),
             Entry::Broken(m) => Err(m.clone()),
-            Entry::Shard(s, _) => Ok(Some((**s).clone())),
+            Entry::Bytes(b) => Ok(Some(b.clone())),
         }
     }
 
@@ -650,13 +672,6 @@ impl Shards for Store {
 
     fn observer(&self, index: usize) -> Digest {
         self.observers[index]
-    }
-
-    fn shard_id(&self, index: usize) -> Option<Digest> {
-        match &self.entries[index] {
-            Entry::Shard(_, id) => *id,
-            _ => None,
-        }
     }
 }
 
