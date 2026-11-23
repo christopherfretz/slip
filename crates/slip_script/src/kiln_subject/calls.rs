@@ -25,13 +25,14 @@
 
 use std::collections::HashMap;
 
+use slip_kiln::kiln::ast::attr::{AttrKind, AttrNode};
 use slip_kiln::kiln::ast::decl::{DeclKind, Defaulted, FriendTarget};
 use slip_kiln::kiln::ast::expr::ExprKind;
 use slip_kiln::kiln::ast::names::OverloadedOperator as Op;
 use slip_kiln::kiln::ast::stmt::StmtKind;
 use slip_kiln::kiln::ast::templates::Requirement;
-use slip_kiln::kiln::ast::types::{Nns, TypeKind};
-use slip_kiln::kiln::ast::{DeclId, ExprId, StmtId};
+use slip_kiln::kiln::ast::types::{Nns, TypeKind, TypeView};
+use slip_kiln::kiln::ast::{AttrId, DeclId, ExprId, NnsId, QualType, StmtId};
 use slip_kiln::kiln::source::{Loc, Span};
 use slip_kiln::ranges::{self, Tier};
 use slip_kiln::written::{Role, WrittenRef};
@@ -69,6 +70,10 @@ pub(super) struct Index {
     /// the written-reference table: not calls (`docs/wp/WP-086.md` item
     /// 2). The counter `api.calls_without_reference`.
     without_reference: u64,
+    /// Expressions of rule 1's shape whose stored closing token is not a
+    /// `)` (or is the callee's own token): calls Kiln makes (a conversion
+    /// function's) and user-defined literals, not written calls.
+    not_written: u64,
     /// Expression index of every argument of a call.
     arguments: std::collections::HashSet<u32>,
 }
@@ -120,6 +125,13 @@ pub struct ExtentCensus {
     pub arguments_null: std::collections::BTreeMap<NoExtent, u64>,
     /// Expressions of rule 1's shape not made calls: no table entry.
     pub without_reference: u64,
+    /// Expressions of rule 1's shape not made calls: not written as
+    /// `callee ( arguments )` (Kiln's own calls, user-defined literals).
+    pub not_written: u64,
+    /// Every expression of rule 1's shape the walk visited: the calls,
+    /// plus `without_reference`, plus `not_written` (§6.7: nothing is
+    /// dropped otherwise).
+    pub visited: u64,
 }
 
 /// One item of the walk's stack: a node and the declaration that holds it
@@ -129,6 +141,9 @@ enum Item {
     Decl(DeclId, Option<DeclId>),
     Stmt(StmtId, DeclId),
     Expr(ExprId, DeclId),
+    /// A type as written: the expressions it holds (an array bound, a
+    /// `decltype`, a template argument, a `noexcept` operand).
+    Type(QualType, DeclId),
 }
 
 /// A set of arena indexes.
@@ -164,9 +179,11 @@ impl KilnSubject<'_> {
         let mut seen_decl = Bits::new(ast.decls.len());
         let mut seen_expr = Bits::new(ast.exprs.len());
         let mut seen_stmt = Bits::new(ast.stmts.len());
+        let mut seen_type = Bits::new(ast.types.len());
         let mut stack = vec![Item::Decl(ast.tu, None)];
         let mut found: Vec<(Call, DeclId)> = Vec::new();
         let mut without_reference = 0u64;
+        let mut not_written = 0u64;
         while let Some(item) = stack.pop() {
             match item {
                 Item::Decl(d, holder) => {
@@ -183,14 +200,20 @@ impl KilnSubject<'_> {
                         self.push_stmt(s, holder, &mut stack);
                     }
                 }
+                Item::Type(q, holder) => {
+                    if seen_type.insert(q.ty().index()) {
+                        self.push_type(q, holder, &mut stack);
+                    }
+                }
                 Item::Expr(e, holder) => {
                     if !seen_expr.insert(e.index()) {
                         continue;
                     }
                     match self.call_of(e) {
-                        Ok(Some(c)) => found.push((c, holder)),
-                        Ok(None) => {}
-                        Err(()) => without_reference += 1,
+                        Shape::Call(c) => found.push((c, holder)),
+                        Shape::Other => {}
+                        Shape::NoReference => without_reference += 1,
+                        Shape::NotWritten => not_written += 1,
                     }
                     self.push_expr(e, holder, &mut stack);
                 }
@@ -207,7 +230,7 @@ impl KilnSubject<'_> {
         keyed.sort_by(|(ka, a, _), (kb, b, _)| {
             self.order(ka.0, kb.0).then_with(|| self.order(ka.1, kb.1)).then(a.expr.cmp(&b.expr))
         });
-        let mut index = Index { without_reference, ..Index::default() };
+        let mut index = Index { without_reference, not_written, ..Index::default() };
         for (_, c, h) in keyed {
             let i = index.calls.len() as u32;
             index.by_expr.insert(c.expr.index(), i);
@@ -234,8 +257,47 @@ impl KilnSubject<'_> {
                 stack.push(Item::Expr(e, h));
             }
         };
+        // The declared type as written (an alias's target: the type of an
+        // alias declaration is its own typedef type); `alignas`, written
+        // as an attribute or made by `define_aggregate`.
+        if let Some(q) = decls.get(d).ty() {
+            stack.push(Item::Type(q, h));
+            if let TypeView::Typedef { decl, underlying } = ast.types.view(q.ty())
+                && decl == d
+            {
+                stack.push(Item::Type(underlying, h));
+            }
+        }
+        expr(decls.cold.alignment.get(d).copied(), stack);
+        expr(decls.cold.explicit_expr.get(d).copied(), stack);
+        // A fixed underlying type as written (`enum E : decltype(f(1))`).
+        if let Some(q) = decls.enumeration(d).and_then(|x| x.int_type.filter(|_| x.is_fixed())) {
+            stack.push(Item::Type(q, h));
+        }
+        for a in ast.lists.iter::<AttrId>(ast.attrs.of_decl(d)) {
+            let a = ast.attrs.get(a);
+            if a.kind != AttrKind::ALIGNED || a.flags & AttrNode::IMPLICIT != 0 {
+                continue;
+            }
+            // `alignas(T)` holds its type in `b`; otherwise `a` is the
+            // expression, if any (Kiln's `requested_align`).
+            match QualType::from_raw(a.b) {
+                Some(q) => stack.push(Item::Type(q, h)),
+                None => expr(ExprId::try_new(a.a), stack),
+            }
+        }
         if let Some(t) = ast.template_info(d) {
-            expr(ast.templates.param_list(t.params).requires, stack);
+            let list = ast.templates.param_list(t.params);
+            expr(list.requires, stack);
+            // Each parameter's type and default argument.
+            for p in ast.lists.iter::<DeclId>(list.params) {
+                if let Some(q) = decls.get(p).ty() {
+                    stack.push(Item::Type(q, h));
+                }
+                if let Some(a) = ast.templates.defaults.get(p) {
+                    self.push_arg(a.view(), h, stack);
+                }
+            }
             // A concept's definition is its constraint expression.
             if kind == DeclKind::Concept {
                 expr(t.constraint, stack);
@@ -265,6 +327,9 @@ impl KilnSubject<'_> {
             expr(Some(s.cond), stack);
             expr(s.message, stack);
         } else if decls.member_list(d).is_some() {
+            for b in decls.bases(d, &ast.lists) {
+                stack.push(Item::Type(b.ty, h));
+            }
             // A namespace, a class, an enumeration, a linkage
             // specification: each member holds its own (a member of a
             // local class is held by the holder of the class).
@@ -401,6 +466,137 @@ impl KilnSubject<'_> {
         stack.extend(items.into_iter().rev());
     }
 
+    /// The parts of type `q` as written that hold expressions or other
+    /// types as written. Not what a name stands for (a typedef's or an
+    /// alias template's underlying type, a deduced type, a substituted
+    /// one, an instantiation): those were written elsewhere, or not at
+    /// all.
+    fn push_type(&self, q: QualType, h: DeclId, stack: &mut Vec<Item>) {
+        use slip_kiln::kiln::ast::types::{ExcSpec, ExprOperand, TypeOfOperand, TypeView as V};
+        let types = &self.ast.types;
+        let mut items: Vec<Item> = Vec::new();
+        let ty = |q: QualType, items: &mut Vec<Item>| items.push(Item::Type(q, h));
+        let ex = |e: ExprId, items: &mut Vec<Item>| items.push(Item::Expr(e, h));
+        let op = |o: ExprOperand, items: &mut Vec<Item>| {
+            if let ExprOperand::Expr(e) = o {
+                items.push(Item::Expr(e, h));
+            }
+        };
+        match types.view(q.ty()) {
+            V::Pointer(t)
+            | V::LValueRef(t)
+            | V::RValueRef(t)
+            | V::IncompleteArray(t)
+            | V::Paren(t)
+            | V::Complex(t)
+            | V::Atomic(t)
+            | V::Vector { elem: t, .. }
+            | V::ExtQual { base: t, .. } => ty(t, &mut items),
+            V::MemberPointer { pointee, class } => {
+                ty(QualType::unqual(class), &mut items);
+                ty(pointee, &mut items);
+            }
+            V::ConstantArray(a) => {
+                ty(a.elem, &mut items);
+                if let Some(e) = a.size_expr {
+                    ex(e, &mut items);
+                }
+            }
+            V::VariableArray { elem, size } => {
+                ty(elem, &mut items);
+                ex(size, &mut items);
+            }
+            V::DependentSizedArray { elem, size } | V::DependentVector { elem, size, .. } => {
+                ty(elem, &mut items);
+                op(size, &mut items);
+            }
+            V::DependentAddrSpace { pointee, space } => {
+                ty(pointee, &mut items);
+                op(space, &mut items);
+            }
+            V::QualifiedArray { base, .. } => ty(QualType::unqual(base), &mut items),
+            V::Function(p) => {
+                ty(p.ret(), &mut items);
+                for &t in types.params(&p) {
+                    ty(t, &mut items);
+                }
+                if let ExcSpec::NoexceptExpr { expr, .. } = types.exc_spec(&p) {
+                    ex(expr, &mut items);
+                }
+            }
+            V::Elaborated { nns, named, .. } => {
+                self.push_nns(nns, h, &mut items);
+                ty(named, &mut items);
+            }
+            V::DependentName { nns, .. } => self.push_nns(Some(nns), h, &mut items),
+            V::DependentTemplateSpecialization { nns, args, .. } => {
+                self.push_nns(Some(nns), h, &mut items);
+                for a in types.args(args) {
+                    self.push_arg(a.view(), h, &mut items);
+                }
+            }
+            V::TemplateSpecialization { args, .. } | V::Auto { args: Some(args), .. } => {
+                for a in types.args(args) {
+                    self.push_arg(a.view(), h, &mut items);
+                }
+            }
+            V::PackExpansion { pattern, .. } => ty(pattern, &mut items),
+            V::PackIndexing { pattern, index, .. } => {
+                ty(pattern, &mut items);
+                op(index, &mut items);
+            }
+            V::Decltype { expr, .. } => ex(expr, &mut items),
+            V::TypeOf { operand, .. } => match operand {
+                TypeOfOperand::Expr(e) => ex(e, &mut items),
+                TypeOfOperand::Type(t) => ty(t, &mut items),
+                TypeOfOperand::Profile(_) => {}
+            },
+            V::UnaryTransform { base, .. } => ty(base, &mut items),
+            V::Attributed { modified, .. } => ty(modified, &mut items),
+            V::Splice { operand, .. } => op(operand, &mut items),
+            _ => {}
+        }
+        stack.extend(items.into_iter().rev());
+    }
+
+    /// The types of qualifier `nns` as written (`decltype(f(1))::x`).
+    fn push_nns(&self, nns: Option<NnsId>, h: DeclId, items: &mut Vec<Item>) {
+        use slip_kiln::kiln::ast::types::Nns;
+        let mut at = nns;
+        for _ in 0..self.chain_bound() {
+            let Some(n) = at else { return };
+            at = match self.ast.types.nns_view(n) {
+                Nns::Type { prefix, ty, .. } => {
+                    items.push(Item::Type(ty, h));
+                    prefix
+                }
+                Nns::Splice(e) => {
+                    items.push(Item::Expr(e, h));
+                    None
+                }
+                Nns::Namespace { prefix, .. }
+                | Nns::NamespaceAlias { prefix, .. }
+                | Nns::Identifier { prefix, .. } => prefix,
+                Nns::Global => None,
+            };
+        }
+    }
+
+    /// A template argument as written: its expression or its type.
+    fn push_arg(&self, a: slip_kiln::kiln::ast::types::ArgView, h: DeclId, items: &mut Vec<Item>) {
+        use slip_kiln::kiln::ast::types::ArgView;
+        match a {
+            ArgView::Expr { expr, .. } => items.push(Item::Expr(expr, h)),
+            ArgView::Type(t) => items.push(Item::Type(t, h)),
+            ArgView::Pack(l) => {
+                for a in self.ast.types.args(l) {
+                    self.push_arg(a.view(), h, items);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// The subexpressions of `e` that are written: Kiln's children, and
     /// what an expression holds outside them (a lambda's body, a statement
     /// expression's statements, a requires-expression's requirements); not
@@ -437,7 +633,7 @@ impl KilnSubject<'_> {
                             Requirement::Simple(x)
                             | Requirement::Nested(x)
                             | Requirement::Compound { expr: x, .. } => items.push(Item::Expr(x, h)),
-                            Requirement::Type(..) => {}
+                            Requirement::Type(t, _) => items.push(Item::Type(t, h)),
                         }
                     }
                 }
@@ -447,55 +643,104 @@ impl KilnSubject<'_> {
             }
             _ => items.extend(exprs.children(e, &ast.lists).into_iter().map(|c| Item::Expr(c, h))),
         }
+        // The types the expression writes: a cast's, `sizeof`'s and
+        // `alignof`'s operand, a name's qualifier and template arguments,
+        // a lambda's call operator's.
+        match n.kind() {
+            ExprKind::CStyleCastExpr
+            | ExprKind::CXXStaticCastExpr
+            | ExprKind::CXXConstCastExpr
+            | ExprKind::CXXReinterpretCastExpr
+            | ExprKind::CXXDynamicCastExpr
+            | ExprKind::CXXFunctionalCastExpr => {
+                items.push(Item::Type(exprs.cast_written_type(e).unwrap_or(n.ty()), h));
+            }
+            ExprKind::UnaryExprOrTypeTraitExpr => {
+                items.extend(exprs.trait_type_arg(e).map(|q| Item::Type(q, h)));
+            }
+            // `T(x)`, `T()`, `T{x}`: the type written is the expression's.
+            ExprKind::CXXTemporaryObjectExpr | ExprKind::CXXScalarValueInitExpr => {
+                items.push(Item::Type(n.ty(), h));
+            }
+            ExprKind::CXXUnresolvedConstructExpr => {
+                items.push(Item::Type(exprs.unresolved_construct_type(e), h));
+            }
+            ExprKind::CXXNewExpr => items.push(Item::Type(exprs.new_extra(e).allocated_ty, h)),
+            ExprKind::DeclRefExpr | ExprKind::MemberExpr => {
+                if let Some(x) = exprs.decl_ref_extra(e) {
+                    self.push_nns(x.qualifier, h, &mut items);
+                    for a in x.template_args.iter().flat_map(|&l| ast.types.args(l)) {
+                        self.push_arg(a.view(), h, &mut items);
+                    }
+                }
+            }
+            ExprKind::LambdaExpr => {
+                let op = exprs.lambda(e).call_op;
+                let op = op.map(|op| ast.template_info(op).and_then(|t| t.pattern).unwrap_or(op));
+                items.extend(op.and_then(|op| ast.decls.get(op).ty()).map(|q| Item::Type(q, h)));
+            }
+            _ => {}
+        }
         stack.extend(items.into_iter().rev());
     }
 
     // ---- what a call is (§6.7 rules 1, 2, 5) ---------------------------------
 
-    /// The call `e` is, `Ok(None)` when it is none, `Err(())` when it has
-    /// rule 1's shape but its callee's name is in no table entry.
-    fn call_of(&self, e: ExprId) -> Result<Option<Call>, ()> {
+    /// What `e` is for §6.7 rule 1: a call, an expression of rule 1's
+    /// shape that is not one (and why), or another expression. No test of
+    /// position decides it: every expression of the shape is a call or is
+    /// counted.
+    fn call_of(&self, e: ExprId) -> Shape {
         let ast = self.ast;
         let exprs = &ast.exprs;
         let n = exprs.get(e);
-        // Rule 1: a written postfix call (`postfix`).
         let callee = match n.kind() {
             ExprKind::CallExpr | ExprKind::CXXMemberCallExpr => self.strip_parens(exprs.callee(e)),
-            _ => return Ok(None),
+            _ => return Shape::Other,
         };
         let c = exprs.get(callee);
-        if !matches!(c.kind(), ExprKind::DeclRefExpr | ExprKind::MemberExpr)
-            || !self.postfix(e, callee)
-        {
-            return Ok(None);
+        if !matches!(c.kind(), ExprKind::DeclRefExpr | ExprKind::MemberExpr) {
+            return Shape::Other;
         }
         let decl = exprs.decl(callee);
         if !function_kind(self.kind(decl)) {
-            return Ok(None);
+            return Shape::Other;
         }
-        let Some(reference) = self.reference_index(callee) else { return Err(()) };
+        // Rule 1: written `callee ( arguments )` (`postfix`).
+        if !self.postfix(e, callee) {
+            return Shape::NotWritten;
+        }
+        let Some(reference) = self.reference_index(callee) else { return Shape::NoReference };
         let mut args: Vec<ExprId> = ast
             .lists
             .iter::<ExprId>(exprs.call_args(e))
             .filter(|&a| exprs.get(a).kind() != ExprKind::CXXDefaultArgExpr)
             .map(|a| self.as_written_expr(a))
             .collect();
-        // `s.f(2)` with an explicit object parameter: Kiln's first argument
-        // is the object (rule 5: not an argument).
-        if self.explicit_object(e) && !args.is_empty() {
+        // A function with an explicit object parameter called through
+        // member syntax (`s.f(2)`) or with an implicit object (`f(2)` in a
+        // member): Kiln's first argument is the object (rule 5: not an
+        // argument).
+        if self.explicit_object(e).is_some() && !args.is_empty() {
             args.remove(0);
         }
-        Ok(Some(Call { expr: e, callee: decl, reference, args }))
+        Shape::Call(Call { expr: e, callee: decl, reference, args })
     }
 
     /// Whether call `e` with callee `callee` (without its parentheses)
-    /// is written `callee ( arguments )`: Kiln stores its `)`, after the
-    /// callee's location. A call Kiln makes has none (a conversion
-    /// function's), or one at the callee (the same); a user-defined
-    /// literal's has the literal, before the callee (its suffix).
+    /// is written `callee ( arguments )`: the closing token Kiln stores
+    /// for it is a `)`, and not the callee's own token. A call Kiln makes
+    /// has none (a conversion function's) or one at the callee; a
+    /// user-defined literal's is the literal. Decided by the token, never
+    /// by the order of locations (inside a macro expansion, Kiln numbers
+    /// an argument's tokens after the body's).
     fn postfix(&self, e: ExprId, callee: ExprId) -> bool {
+        use slip_kiln::kiln::lex::{Punct, TokKind};
         let exprs = &self.ast.exprs;
-        exprs.end_loc(e).is_some_and(|close| self.order(exprs.get(callee).loc(), close).is_lt())
+        exprs.end_loc(e).is_some_and(|close| {
+            close != exprs.get(callee).loc()
+                && self.tokens.kind_of(close) == Some(TokKind::Punct(Punct::RParen))
+        })
     }
 
     /// The table entries whose name starts at `at`.
@@ -513,12 +758,16 @@ impl KilnSubject<'_> {
     /// The table entry of the name of `x` (a `DeclRefExpr` or a
     /// `MemberExpr`), as an index in `refs`: the entry whose name starts
     /// at the expression's location, in the role of an expression or
-    /// member name, that denotes the expression's declaration.
+    /// member name, or of a template name (a member named after
+    /// `template`: `d.template t<int>`), that denotes the expression's
+    /// declaration.
     fn reference_index(&self, x: ExprId) -> Option<u32> {
         let exprs = &self.ast.exprs;
         let decl = exprs.decl(x);
         self.refs_named_at(exprs.get(x).loc())
-            .find(|(_, r)| matches!(r.role, Role::Expr | Role::Member) && r.referent == decl)
+            .find(|(_, r)| {
+                matches!(r.role, Role::Expr | Role::Member | Role::Template) && r.referent == decl
+            })
             .map(|(i, _)| i)
     }
 
@@ -527,17 +776,59 @@ impl KilnSubject<'_> {
         self.reference_index(x).map(|i| &self.refs[i as usize])
     }
 
-    /// Whether call `e` names a function with an explicit object
-    /// parameter through member syntax (`s.f(2)`): a `CallExpr` whose
-    /// callee is a name in the role of a member name.
-    fn explicit_object(&self, e: ExprId) -> bool {
-        let exprs = &self.ast.exprs;
+    /// How call `e` passes the object of a function with an explicit
+    /// object parameter, when it does: written before the callee (`s.f(2)`,
+    /// `p->f(2)`: a `CallExpr` whose callee is a name in the role of a
+    /// member name), or implicit (`f(2)` in a member: Kiln's first argument
+    /// is made from the implicit `this`). `S::f(s, 2)` writes the object as
+    /// an argument: neither.
+    fn explicit_object(&self, e: ExprId) -> Option<Object> {
+        let ast = self.ast;
+        let exprs = &ast.exprs;
         if exprs.get(e).kind() != ExprKind::CallExpr {
-            return false;
+            return None;
         }
         let c = self.strip_parens(exprs.callee(e));
-        exprs.get(c).kind() == ExprKind::DeclRefExpr
-            && self.reference_at(c).is_some_and(|r| r.role == Role::Member)
+        if exprs.get(c).kind() != ExprKind::DeclRefExpr {
+            return None;
+        }
+        if self.reference_at(c).is_some_and(|r| r.role == Role::Member) {
+            return Some(Object::Before);
+        }
+        let xobj = ast.decls.function(exprs.decl(c)).is_some_and(|f| f.spec.has_explicit_object());
+        let first = ast.lists.at::<ExprId>(exprs.call_args(e), 0);
+        (xobj && first.is_some_and(|a| self.is_implicit_object(a))).then_some(Object::Implicit)
+    }
+
+    /// Whether `e` is an object Kiln makes from the implicit `this`: the
+    /// implicit `this`, through its dereference, a conversion, a
+    /// temporary, a copy.
+    fn is_implicit_object(&self, mut e: ExprId) -> bool {
+        use slip_kiln::kiln::ast::expr::UnaryOp;
+        let ast = self.ast;
+        let exprs = &ast.exprs;
+        for _ in 0..self.chain_bound() {
+            e = match exprs.get(e).kind() {
+                ExprKind::CXXThisExpr => return exprs.this_is_implicit(e),
+                ExprKind::UnaryOperator if exprs.unary_op(e) == UnaryOp::Deref => exprs.operand(e),
+                ExprKind::ImplicitCastExpr
+                | ExprKind::MaterializeTemporaryExpr
+                | ExprKind::CXXBindTemporaryExpr
+                | ExprKind::ConstantExpr
+                | ExprKind::ExprWithCleanups => match exprs.first_child(e, &ast.lists) {
+                    Some(c) => c,
+                    None => return false,
+                },
+                ExprKind::CXXConstructExpr if exprs.end_loc(e).is_none() => {
+                    match ast.lists.at::<ExprId>(exprs.construct_args(e), 0) {
+                        Some(c) => c,
+                        None => return false,
+                    }
+                }
+                _ => return false,
+            };
+        }
+        false
     }
 
     /// `e` without the parentheses and implicit conversions around it.
@@ -656,7 +947,7 @@ impl KilnSubject<'_> {
                     if !self.postfix(e, self.strip_parens(exprs.callee(e))) {
                         return Err(NoExtent::new(kind, "not a postfix call"));
                     }
-                    if self.explicit_object(e) {
+                    if self.explicit_object(e) == Some(Object::Before) {
                         let first = ast.lists.at::<ExprId>(exprs.call_args(e), 0);
                         first.ok_or(NoExtent::new(kind, "no object"))?
                     } else {
@@ -810,7 +1101,7 @@ impl KilnSubject<'_> {
     /// Whether every component of qualifier `q` is one the table links
     /// (a namespace, or a type named by a name): a `decltype` or a splice
     /// ends the table's chain, so its first would be too late.
-    fn qualifier_linked(&self, q: slip_kiln::kiln::ast::NnsId) -> bool {
+    fn qualifier_linked(&self, q: NnsId) -> bool {
         let types = &self.ast.types;
         let mut at = Some(q);
         for _ in 0..self.chain_bound() {
@@ -882,11 +1173,15 @@ impl KilnSubject<'_> {
         self.expr_range_tier(e).map(|(r, _)| r)
     }
 
-    /// The range of `e`'s tokens and its tier, or why there is none. The
-    /// range of an argument must be all that is written between a `(` or
-    /// `,` and a `,` or `)`: Kiln leaves no node for some written tokens
-    /// of an argument (the braces of `f({x})` when `x` alone initialises
-    /// the parameter), and a range inside them is too short.
+    /// The range of `e`'s tokens and its tier, or why there is none. An
+    /// argument's tokens must be all of the argument: in the token stream
+    /// the parser read (after macro expansion), the token before the
+    /// first is a `(` or `,` and the token after the last a `,` or `)`.
+    /// Kiln leaves no node for some written tokens of an argument (the
+    /// braces of `f({x})` when `x` alone initialises the parameter), also
+    /// when a macro's body writes them (`#define M(a) f({a})`), so a range
+    /// of the node is then too short. Never the tokens beside the file
+    /// range: at tier 1 they are the invocation's.
     fn expr_range_tier(&self, e: ExprId) -> Result<(Range, Tier), NoExtent> {
         use slip_kiln::kiln::lex::{Punct, TokKind};
         let kind = self.ast.exprs.get(e).kind();
@@ -898,7 +1193,8 @@ impl KilnSubject<'_> {
             .subject_range(r.file, r.lo, r.hi)
             .ok_or(NoExtent::new(kind, "not a file of the subject"))?;
         if self.call_index().arguments.contains(&e.index()) {
-            let (before, after) = self.tokens.kinds_around(r.file, r.lo, r.hi);
+            let end = self.tokens.token_end(last).ok_or(NoExtent::new(kind, "no token end"))?;
+            let (before, after) = self.tokens.expanded_kinds_around(first, end);
             let opens = matches!(before, Some(TokKind::Punct(Punct::LParen | Punct::Comma)));
             let closes = matches!(after, Some(TokKind::Punct(Punct::Comma | Punct::RParen)));
             if !(opens && closes) {
@@ -1050,6 +1346,29 @@ impl KilnSubject<'_> {
     }
 }
 
+/// What an expression is for §6.7 rule 1 ([`KilnSubject::call_of`]).
+enum Shape {
+    /// A call.
+    Call(Call),
+    /// Of rule 1's shape, but its callee's name has no entry in the
+    /// written-reference table.
+    NoReference,
+    /// Of rule 1's shape, but not written `callee ( arguments )`.
+    NotWritten,
+    /// Not of rule 1's shape.
+    Other,
+}
+
+/// Where a call passes the object of a function with an explicit object
+/// parameter ([`KilnSubject::explicit_object`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Object {
+    /// Written before the callee: `s.f(2)`.
+    Before,
+    /// Implicit: `f(2)` in a member function.
+    Implicit,
+}
+
 /// The forms of an overloaded operator written as an operator.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OpForm {
@@ -1087,8 +1406,12 @@ impl KilnSubject<'_> {
     /// Why each call and each argument of a call has no extent.
     pub fn extent_census(&self) -> ExtentCensus {
         let index = self.call_index();
-        let mut c =
-            ExtentCensus { without_reference: index.without_reference, ..Default::default() };
+        let mut c = ExtentCensus {
+            without_reference: index.without_reference,
+            not_written: index.not_written,
+            visited: index.calls.len() as u64 + index.without_reference + index.not_written,
+            ..Default::default()
+        };
         for call in &index.calls {
             c.calls += 1;
             if let Err(w) = self.expr_range(call.expr) {

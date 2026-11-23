@@ -717,6 +717,354 @@ int g(S s) { return k(1 == s) + k(s == 1) + k(s != 1); }
 }
 
 // ---------------------------------------------------------------------------
+// Review of WP-086: arguments through macros (F1), callees from macro
+// arguments (F2), the implicit object (F3), calls held by types (F4), the
+// guards (F5), `template` and destructors (F6).
+
+/// Every reason an argument has none, in order.
+fn arg_reasons(s: &KilnSubject<'_>, x: Expression) -> Vec<Option<&'static str>> {
+    s.arguments(x).unwrap().into_iter().map(|a| s.no_extent(a).map(|w| w.reason)).collect()
+}
+
+/// Rule 4, "all of the argument", is decided in the token stream the
+/// parser read: the call's `(`, `,` and `)` around the argument, wherever
+/// they were written. A macro body that writes braces or parentheses
+/// around a macro argument (`#define M(a) f({a})`) makes the argument
+/// longer than the node; at tier 1 the tokens beside the file range are
+/// the invocation's, not the call's.
+#[test]
+fn s6_6_rule4_an_argument_through_a_macro_is_all_of_the_expanded_argument() {
+    let src = "\
+struct O { bool a = false; long b = 0; };
+int f(const O&);
+int g(O);
+int h(int);
+#define M(a) f({a})
+#define N(a) g({a})
+#define P(a) h((a))
+#define Q(a) h(a + 1)
+#define R(a) h(a)
+#define R2(a) R(a)
+int use(O x, int a) { return M(x) + N(x) + g({x}) + P(a) + Q(a) + R(a) + R2(a) + h((a)); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let f = calls_of(s, one(s, "f"));
+        assert_eq!(f.iter().map(|&x| args(s, x)).collect::<Vec<_>>(), vec![vec![None]]);
+        assert_eq!(arg_reasons(s, f[0]), [Some("not all of the argument")]);
+        let g: Vec<_> = calls_of(s, one(s, "g")).into_iter().map(|x| args(s, x)).collect();
+        assert_eq!(g, vec![vec![None], vec![None]]);
+        let h: Vec<_> = calls_of(s, one(s, "h")).into_iter().map(|x| args(s, x)).collect();
+        // `P(a)`: the parentheses are the body's; `Q(a)`: `a` is part of
+        // the argument; `R(a)` and `R2(a)` (forwarded through two
+        // macros): the argument is `a`, at tier 1.
+        let want = vec![vec![None], vec![None], some(&["a"]), some(&["a"]), some(&["(a)"])];
+        assert_eq!(h, want);
+        for x in &calls_of(s, one(s, "h"))[2..4] {
+            let a = s.arguments(*x).unwrap()[0];
+            assert_eq!(s.tiers(range(s, a).unwrap()), Some([false, true]));
+        }
+    });
+}
+
+/// Rule 1 with the callee's name from a macro argument or a `##` paste and
+/// the `)` from the body: each is a call (Kiln numbers an argument's
+/// tokens after the body's, so no order of locations decides it). The
+/// call's extent is the invocation (tier 0) or null.
+#[test]
+fn s6_7_rule1_a_callee_from_a_macro_argument() {
+    let src = "\
+int f(int);
+int handle_a();
+struct O { int mm(int); };
+#define CALL1(fn) fn(1)
+#define CALL(fn, x) fn(x)
+#define ID(x) x
+#define X(n) handle_##n()
+#define MEM(o, m) o.m(3)
+int use(O o) { return CALL1(f) + CALL(f, 2) + CALL(ID(f), 9) + X(a) + MEM(o, mm); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        assert_eq!(calls(s, "f"), some(&["CALL1(f)", "CALL(f, 2)", "CALL(ID(f), 9)"]));
+        let a: Vec<_> = calls_of(s, one(s, "f")).into_iter().map(|x| args(s, x)).collect();
+        assert_eq!(a, vec![vec![None], some(&["2"]), some(&["9"])]);
+        assert_eq!(calls(s, "handle_a"), some(&["X(a)"]));
+        assert_eq!(calls(s, "O::mm"), some(&["MEM(o, mm)"]));
+        let c = s.extent_census();
+        assert_eq!((c.calls, c.without_reference, c.not_written, c.visited), (5, 0, 0, 5));
+    });
+}
+
+/// §6.7: every call expression the walk visits is returned or counted;
+/// no test of position drops one. A user-defined literal and the call of
+/// a conversion function Kiln makes are not written `callee ( … )`
+/// (counted as not written); a destructor called by name has no table
+/// entry naming its callee (counted without a reference; decided in
+/// `spec/landed/api/WP-086.md`).
+#[test]
+fn s6_7_every_call_visited_is_returned_or_counted() {
+    let src = "\
+int f(int);
+struct T { operator int() const; };
+struct D { ~D(); };
+unsigned long long operator\"\"_k(unsigned long long);
+int use(T t, D* p) { int a = t; p->~D(); return f(a) + int(1_k); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let c = s.extent_census();
+        assert_eq!(calls(s, "f"), some(&["f(a)"]));
+        assert_eq!((c.calls, c.not_written, c.without_reference), (1, 2, 1));
+        assert_eq!(c.visited, c.calls + c.not_written + c.without_reference);
+        assert_eq!(s.calls_without_reference(), 1);
+    });
+}
+
+/// Rule 5: a function with an explicit object parameter called with the
+/// implicit object (`f(2)` in a member) has Kiln's object as its first
+/// argument: it is not written, so it is no argument.
+#[test]
+fn s6_7_rule5_an_implicit_object_is_no_argument() {
+    let src = "\
+struct S { int f(this S self, int); int g(this const S&, int, int); int h() const; };
+int S::h() const { return f(2) + g(3, 4); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let f = calls_of(s, one(s, "S::f"));
+        assert_eq!(ext(s, f[0]).as_deref(), Some("f(2)"));
+        assert_eq!(args(s, f[0]), some(&["2"]));
+        let g = calls_of(s, one(s, "S::g"));
+        assert_eq!(args(s, g[0]), some(&["3", "4"]));
+    });
+}
+
+/// §6.7 rule 3 in types: a call in an expression a type holds is a call
+/// of the unit. Each form, and how the walk reaches it.
+macro_rules! call_in_type {
+    ($name:ident, $how:literal, $src:literal) => {
+        #[doc = $how]
+        #[test]
+        fn $name() {
+            let src = concat!(
+                "constexpr int f(int x) { return x; }\n",
+                "template <int N> struct A { static constexpr int v = N; };\n",
+                $src,
+                "\n"
+            );
+            with(&[("main.cpp", src)], |_, s| {
+                assert_eq!(calls(s, "f"), some(&["f(1)"]));
+                let c = s.extent_census();
+                assert_eq!((c.calls, c.visited), (1, 1));
+            });
+        }
+    };
+}
+
+call_in_type!(
+    s6_7_rule3_in_a_non_type_parameter_default,
+    "The template head's parameters: their defaults.",
+    "template <int N = f(1)> struct T {};"
+);
+call_in_type!(
+    s6_7_rule3_in_a_type_parameter_default,
+    "A type parameter's default is a type: its template arguments.",
+    "template <class T = A<f(1)>> struct T2 {};"
+);
+call_in_type!(
+    s6_7_rule3_in_decltype,
+    "The declared type: `decltype`'s expression.",
+    "decltype(f(1)) d = 0;"
+);
+call_in_type!(
+    s6_7_rule3_in_a_template_argument,
+    "The declared type: a specialisation's arguments.",
+    "A<f(1)> av;"
+);
+call_in_type!(
+    s6_7_rule3_in_a_parameter_type,
+    "The function's type: its parameters' types.",
+    "void k(A<f(1)>);"
+);
+call_in_type!(
+    s6_7_rule3_in_noexcept,
+    "The function's type: its exception specification.",
+    "void h() noexcept(f(1) == 1);"
+);
+call_in_type!(
+    s6_7_rule3_in_alignas_of_a_class,
+    "The declaration's `alignas` attribute: its expression.",
+    "struct alignas(f(1)) Q {};"
+);
+call_in_type!(
+    s6_7_rule3_in_alignas_of_a_type,
+    "The declaration's `alignas` attribute: its type.",
+    "alignas(A<f(1)>) char c;"
+);
+call_in_type!(
+    s6_7_rule3_in_a_base_specifier,
+    "The class's bases: each base's type.",
+    "struct B : A<f(1)> {};"
+);
+call_in_type!(
+    s6_7_rule3_in_an_alias_target,
+    "An alias's type is its own typedef type: its underlying type.",
+    "using AT = A<f(1)>;"
+);
+call_in_type!(
+    s6_7_rule3_in_an_alias_template_target,
+    "An alias template's pattern, then its underlying type.",
+    "template <class T> using AA = A<f(1) + sizeof(T)>;"
+);
+call_in_type!(
+    s6_7_rule3_in_a_typedef,
+    "A typedef's type is its own typedef type: its underlying type.",
+    "typedef A<f(1)> TT;"
+);
+call_in_type!(
+    s6_7_rule3_in_an_enum_base,
+    "A fixed underlying type as written.",
+    "enum E : decltype(f(1)) { e0 };"
+);
+call_in_type!(
+    s6_7_rule3_in_explicit,
+    "`explicit(…)`: Kiln's record of the expression.",
+    "struct C { explicit(f(1) == 1) C(int); };"
+);
+call_in_type!(
+    s6_7_rule3_in_a_conversion_type,
+    "A conversion function's type: its return type.",
+    "struct C { operator A<f(1)>() const; };"
+);
+call_in_type!(
+    s6_7_rule3_in_a_type_requirement,
+    "A requires-expression's type requirement.",
+    "template <class T> concept K = requires { typename A<f(1)>; };"
+);
+call_in_type!(s6_7_rule3_in_new, "A `new`'s allocated type.", "void g() { delete new A<f(1)>; }");
+call_in_type!(
+    s6_7_rule3_in_a_temporary_type,
+    "`T()`: the expression's type.",
+    "int g() { return decltype(A<f(1)>())::v; }"
+);
+call_in_type!(
+    s6_7_rule3_in_a_local_decltype,
+    "A local variable's declared type.",
+    "int g() { decltype(f(1)) b = 0; return b; }"
+);
+call_in_type!(
+    s6_7_rule3_in_sizeof_a_type,
+    "`sizeof`'s type operand.",
+    "int g() { return sizeof(A<f(1)>); }"
+);
+call_in_type!(
+    s6_7_rule3_in_a_cast_type,
+    "A cast's written type.",
+    "int g() { return static_cast<A<f(1)>*>(nullptr) != nullptr; }"
+);
+call_in_type!(
+    s6_7_rule3_in_a_qualifier,
+    "A name's qualifier: its type.",
+    "int g() { return A<f(1)>::v; }"
+);
+call_in_type!(
+    s6_7_rule3_in_a_name_template_argument,
+    "A name's template arguments.",
+    "template <int N> constexpr int vt = N;\nint g() { return vt<f(1)>; }"
+);
+call_in_type!(
+    s6_7_rule3_in_a_lambda_return_type,
+    "A lambda's call operator's type.",
+    "auto lam = []() -> decltype(f(1)) { return 0; };"
+);
+
+/// §6.7 rule 3, a hole of version 0: an array bound written in a
+/// declarator. Kiln keeps the value of a constant bound but not the
+/// expression (`size_expr` is `None`), so the call is not in the tree.
+#[test]
+#[ignore = "pending Kiln: no expression for a constant array bound (docs/wp/WP-086.md \"For Kiln\")"]
+fn s6_7_rule3_pending_in_an_array_bound() {
+    // The reviewer's lines.
+    let src = "\
+constexpr int f(int x) { return x; }
+int arr[f(2)];
+int body() { int a[f(11)]; return sizeof(int[f(13)]) + a[0]; }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        assert_eq!(calls(s, "f"), some(&["f(2)", "f(11)", "f(13)"]));
+    });
+}
+
+/// §6.6 rule 3 with the guard on a qualified name's first token: Kiln's
+/// begin of `Q::f` is `f` when a member calls a static overload through
+/// its class (`For Kiln` 1), so the first token is not known and the
+/// call has no extent; never `f(*this, 1)`.
+#[test]
+fn s6_6_rule3_a_qualified_name_whose_begin_is_its_name() {
+    let src = "\
+struct Q;
+int f(const Q&, int);
+struct Q {
+  static int f(const Q&, int);
+  int f(int) const;
+  int g() const { return Q::f(*this, 1) + ::Q::f(*this, 2) + ::f(*this, 3); }
+};
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let c = s.extent_census();
+        assert_eq!(c.calls, 3);
+        let why: Vec<_> = c.calls_null.iter().map(|(w, n)| (w.reason, *n)).collect();
+        assert_eq!(why, [("qualifier", 2)]);
+        assert_eq!(calls(s, "::f"), some(&["::f(*this, 3)"]));
+    });
+}
+
+/// §6.6 rule 3 for `T<…>(x)`: the type's name is a template's, written
+/// first; `::T<…>(x)` begins at `::`, where no entry starts: null.
+#[test]
+fn s6_6_rule3_a_construction_named_by_a_template() {
+    let src = "\
+template <class T> struct W { W(T); };
+int k(W<int>);
+int use() { return k(W<int>(1)) + k(::W<int>(2)) + k(W<int>{3}); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let a: Vec<_> = calls_of(s, one(s, "k")).into_iter().flat_map(|x| args(s, x)).collect();
+        assert_eq!(a, vec![Some("W<int>(1)".to_owned()), None, Some("W<int>{3}".to_owned())]);
+    });
+}
+
+/// Rule 1 with a member named after `template`, with and without a
+/// qualifier: calls, found through the table's template-name entry.
+#[test]
+fn s6_7_rule1_a_member_named_after_template() {
+    let src = "\
+struct D { template <class T> int t(); };
+struct E : D {};
+int use(D d, E* p) { return d.template t<int>() + p->D::template t<long>() + d.t<char>(); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let want = ["d.template t<int>()", "p->D::template t<long>()", "d.t<char>()"];
+        assert_eq!(calls(s, "D::t"), some(&want));
+        assert_eq!(s.calls_without_reference(), 0);
+    });
+}
+
+/// Rule 1 and a destructor called by name (`p->~D()`): Kiln's table
+/// names `D`, not the callee's location, so it is no call of version 0
+/// and is counted without a reference. A pseudo-destructor call
+/// (`ip->~I()`, `I` a scalar type) calls no function: neither.
+#[test]
+fn s6_7_rule1_a_destructor_call_is_counted() {
+    let src = "\
+struct D { ~D(); };
+using I = int;
+void use(D* p, I* ip) { p->~D(); ip->~I(); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let c = s.extent_census();
+        assert_eq!((c.calls, c.without_reference, c.not_written, c.visited), (0, 1, 0, 1));
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Depth: the walk and the extent rule keep their own stacks.
 
 /// A 10,000-deep `a + a + … + a` as an argument: its extent is the whole
