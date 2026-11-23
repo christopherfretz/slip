@@ -1,0 +1,7 @@
+# f() and g() are not changed: the reference has one key (A3).
+added operator new(unsigned long)
+exact derived
+derived-removed operator new(unsigned long)
+# The implicit one is of the deferrable class by over-inclusion (every
+# declaration implicit, digest-kinds §11.2), the redeclared one is not.
+derived-removed operator new(unsigned long)::<exception_spec>

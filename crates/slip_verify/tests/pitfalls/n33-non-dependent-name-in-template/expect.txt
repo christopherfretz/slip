@@ -1,0 +1,10 @@
+# N33: helper() in the owned template Mine<T> is not dependent and binds at
+# the definition to the staying legacy::helper, never to the dependent
+# base's member. bad: left (not_parsed); bad-2 (on pre-2): left, with a
+# global ::helper; bad-3 (on pre): this->helper(), which compiles and now
+# means B::helper.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed legacy::Mine::get() @ main.cpp:5
+bad-3:  mismatch changed legacy::Mine::get() @ main.cpp:5

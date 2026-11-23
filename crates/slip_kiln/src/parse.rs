@@ -133,6 +133,15 @@ impl<'r> Unit<'r> {
     pub fn errors(&self) -> u32 {
         self.errors
     }
+
+    /// The stack left on the calling thread under Kiln's stack guard
+    /// (`kiln_sema::stack_guard::StackGuard::current().remaining()`), in
+    /// bytes; `None` where no guard is installed (`spec/model.md` §8.4).
+    /// Inside the closure of [`parse_observer_with`] the calling thread is
+    /// the front end's, which has the guard.
+    pub fn stack_remaining(&self) -> Option<usize> {
+        kiln_sema::stack_guard::StackGuard::current().remaining()
+    }
 }
 
 impl std::fmt::Debug for Unit<'_> {
@@ -165,7 +174,8 @@ pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<S
 /// without) before anything is dropped. Returns the shard for `phase` and
 /// `round` and `f`'s result (`None`: no parse happened).
 ///
-/// The front end runs `argv[0] -fsyntax-only argv[1..]` (a scanner name
+/// The front end runs `argv[0] -fsyntax-only -fkiln-reproducible-time
+/// argv[1..]` (`spec/cdb.md` §6.1; a scanner name
 /// `clang-scan-deps…` as `kiln`) through
 /// `kiln_driver::front_end::run_front_end`, on a thread of its own, with
 /// nothing rendered and nothing written, keeping what `options` asks for

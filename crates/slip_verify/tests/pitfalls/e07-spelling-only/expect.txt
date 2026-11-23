@@ -1,0 +1,7 @@
+# E07: four edits of spelling only. good: class for struct on the forward
+# declaration; good-2: override added; good-3: the parameter renamed;
+# good-4: a redundant this->.
+good:   verified
+good-2: verified
+good-3: verified
+good-4: verified

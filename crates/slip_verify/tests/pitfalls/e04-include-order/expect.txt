@@ -1,0 +1,5 @@
+# E04: hook(1) in run is not dependent and is bound where run is defined:
+# to hook(int) when int.h comes before run.h, to hook(long) when it comes
+# after. good swaps the two hook headers, both still before run.h.
+good: verified
+bad:  mismatch changed template <class> int run(type-parameter-0-0) @ run.h:1
