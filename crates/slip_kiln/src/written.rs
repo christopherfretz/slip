@@ -13,9 +13,10 @@
 //! token, end of the last)`, macro provenance intact); a consumer maps one
 //! to bytes of a file with `slip_kiln::ranges` (WP-084), and this module
 //! does not. Nothing that is not in either table is invented here: a name
-//! the front end records nowhere (an attribute argument, a designator, a
-//! using-declaration's name as a reference) is absent, and is the rename's
-//! `unreachable` (`spec/edits.md` §9.5).
+//! the front end records nowhere (a designator, an overloaded operator
+//! used as an operator, a using-declaration's name as a reference) is
+//! absent, and is the rename's `unreachable` (`spec/edits.md` §9.5); the
+//! exact list is `spec/landed/edits/WP-067.md`.
 //!
 //! **Order.** "Unit order" is `slip_kiln::ranges::unit_order` (WP-084)
 //! once that package is on `main`; until then it is the table's own order
@@ -23,22 +24,34 @@
 //! table's declaration-id order). The order is the one argument [`ORDER`]
 //! of the functions that build the lists, so WP-084 changes one line.
 //!
-//! **Repeated entries.** Kiln records a name of a default member
-//! initialiser or a default argument again when it parses it again
-//! (`docs/design/notes/kiln-landed-2026-11.md` §5.3): entries equal in
-//! role, range and referent are one reference, the first kept.
+//! **Repeated entries.** Entries equal in role, range and referent are
+//! one reference, the first kept (`docs/design/notes/kiln-landed-2026-11.md`
+//! §5.3 expected Kiln to repeat the names of a default member initialiser
+//! or a default argument; at this pin it records them once, so the
+//! joining does not fire).
+//!
+//! **Dependent entries with a referent.** An entry flagged `REF_DEPENDENT`
+//! that has an entity is a reference. At this pin there is none: Kiln
+//! clears the flag when it patches an entity in
+//! (`kiln_ast/src/written_refs.rs:270-277`). The rule is kept for when
+//! Kiln records one.
+//!
+//! **Destructors** are declaration names (the identifier after `~`); the
+//! **origin** of a template's pattern is the template ([`origin`]).
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use crate::Unit;
 use crate::kiln::ast::decl::DeclKind;
+use crate::kiln::ast::ids::TemplateNameId;
 use crate::kiln::ast::names::{DeclNameKind as NameKind, DeclNameView};
 use crate::kiln::ast::templates::SpecKind;
-use crate::kiln::ast::types::Nns;
+use crate::kiln::ast::types::{Nns, TemplateName, TypeView};
 use crate::kiln::ast::written_refs::{QualLink, REF_UNRESOLVED, WrittenRef as Entry, WrittenRefs};
 use crate::kiln::ast::{Ast, DeclId, QualType};
 use crate::kiln::lex::{LexOptions, token_end};
+use crate::kiln::source::symbol::Symbol;
 use crate::kiln::source::{Loc, Span};
 
 /// The syntactic role of a written name: Kiln's `RefRole`
@@ -66,8 +79,12 @@ pub struct WrittenRef {
     pub referent: DeclId,
     /// The written name starts with `::`.
     pub global: bool,
-    /// Lookup found a using-shadow (the table's `found`) whose target is
-    /// the referent.
+    /// Lookup found a using-shadow (the table's `found` is a `UsingShadow`
+    /// or a `ConstructorUsingShadow`). The shadow's target is not checked
+    /// against the referent (Kiln records `found` only when it differs
+    /// from the referent). A shadow comes from a using-declaration
+    /// (`using a::f;`) **or** a using-enum-declaration: an enumerator
+    /// named after `using enum E;` is `via_using`.
     pub via_using: bool,
 }
 
@@ -75,6 +92,14 @@ pub struct WrittenRef {
 /// pattern (`REF_DEPENDENT`, Kiln `kiln_ast/src/written_refs.rs:138`) or
 /// a name whose lookup or overload resolution failed (`REF_UNRESOLVED`,
 /// `:140`).
+///
+/// The declarations found for it at the template's definition (the
+/// overload set of an unqualified dependent call, `spec/edits.md` §9.4
+/// row 1) are **not** available at this pin: Kiln's entry has no entity
+/// and links no overload set, whether one overload is visible or several,
+/// and in the current instantiation too (`this->a(t)`, `C::a(t)`). WP-073
+/// needs that set from Kiln: a finding for Kiln (the found set of each
+/// dependent entry).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DependentName {
     /// The syntactic role.
@@ -104,6 +129,12 @@ pub enum DeclNameKind {
     /// An explicit instantiation, a definition or a declaration
     /// (`template void f<int>(int);`, `extern template …`).
     ExplicitInstantiation,
+    /// A using-directive (`using namespace n;`): its row's name is the
+    /// namespace it nominates, not a name it declares. Only from [`row`].
+    UsingDirective,
+    /// A using-enum-declaration (`using enum E;`): its row's name is the
+    /// enumeration it names, not a name it declares. Only from [`row`].
+    UsingEnum,
 }
 
 /// The name of one declaration as written at it.
@@ -115,7 +146,11 @@ pub struct DeclName {
     /// The identifier token of its declarator-id or declared name: for a
     /// qualified name the last component (`void N::C::f() {}`: `f`); for a
     /// specialisation written as a template-id, the template's name
-    /// without its arguments.
+    /// without its arguments; for a destructor (`~C();`, `S::~S() {}`) the
+    /// identifier after `~` (as [`WrittenRef::name`] is for `~T`): a
+    /// rename of the class edits it, as it edits a constructor's name; for
+    /// an inheriting constructor's using-declaration the last component
+    /// as written (`using AT::AT;`: the second `AT`).
     pub name: Span,
     /// What kind of declaration it is.
     pub kind: DeclNameKind,
@@ -208,15 +243,27 @@ fn dependents_of(table: &WrittenRefs) -> Vec<DependentName> {
 }
 
 /// The name of every declaration that has an extent and a name written
-/// as one identifier token, in unit order. A declaration without one
-/// (unnamed, an operator, a conversion function, a destructor, a literal
-/// operator) is absent; so are the rows that name another declaration
+/// as one identifier token (a destructor's is the identifier after `~`),
+/// in unit order. A declaration without one (unnamed, an operator, a
+/// conversion function, a literal operator) is absent; so are the rows that name another declaration
 /// rather than declare a name (a using-directive's namespace, the enum of
 /// `using enum`), a friend declaration's own row (the function or class
 /// it declares has the same one), and the pattern of a template (it
 /// shares the template's row).
 pub fn decl_names(unit: &Unit<'_>) -> Vec<DeclName> {
     decl_names_in(unit, ORDER)
+}
+
+/// Whether declaration `d` has a row in the declaration-extent table, and
+/// of which kind: read from the table for every row, those
+/// [`decl_names`] leaves out included (a template's pattern, a friend
+/// declaration's own row, an unnamed declaration, an operator, a
+/// conversion function, a using-directive, a `using enum`). `None` when
+/// `d` has no row (or the unit was parsed without `written`).
+pub fn row(unit: &Unit<'_>, d: DeclId) -> Option<DeclNameKind> {
+    let ast = unit.ast();
+    ast.decl_extents.get(d)?;
+    Some(decl_name_kind(ast, d, ast.decls.get(d).kind()))
 }
 
 fn decl_names_in(unit: &Unit<'_>, order: Order) -> Vec<DeclName> {
@@ -247,35 +294,44 @@ fn decl_names_in(unit: &Unit<'_>, order: Order) -> Vec<DeclName> {
             continue;
         }
         let Some(ident) = identifier(unit, d) else { continue };
-        let Some(name) = identifier_span(unit, e.name, ident) else { continue };
+        let destructor = node.name().kind() == NameKind::Destructor;
+        let Some(name) = identifier_span(unit, e.name, ident, destructor) else { continue };
         out.push(DeclName { decl: d, name, kind: decl_name_kind(ast, d, kind) });
     }
     out.sort_by(|a, b| order(unit, a.name, b.name));
     out
 }
 
-/// The identifier a declaration's name is written as: its own, a
-/// constructor's class name (for an inheriting constructor's
-/// using-declaration, the base its qualifier names), a deduction
-/// guide's template name. `None`
+/// The identifier a declaration's name is written as: its own; a
+/// constructor's or a destructor's class name; for an inheriting
+/// constructor's using-declaration, the name its qualifier's last
+/// component is written with; a deduction guide's template name. `None`
 /// for an unnamed declaration and for a name that is not one identifier.
 fn identifier<'r>(unit: &Unit<'r>, d: DeclId) -> Option<&'r str> {
     let ast = unit.ast();
     let name = ast.decls.get(d).name();
     let sym = match name.kind() {
         NameKind::Identifier => name.as_ident()?,
-        // An inheriting constructor's using-declaration (`using A::A;`):
-        // Kiln names it as a constructor of the class that declares it;
-        // what is written is the base's name, the class the qualifier's
-        // last component names (`identifier_span` checks the text).
-        NameKind::Constructor if ast.decls.get(d).kind() == DeclKind::Using => {
+        // An inheriting constructor's using-declaration (`using A::A;`,
+        // `using AT::AT;`, `using B<T>::B;`): Kiln names it as a
+        // constructor of the class that declares it; what is written is
+        // the name of the qualifier's last component as written (a
+        // typedef's, an alias's, a template's), not the record it
+        // resolves to.
+        NameKind::Constructor
+            if matches!(
+                ast.decls.get(d).kind(),
+                DeclKind::Using
+                    | DeclKind::UnresolvedUsingValue
+                    | DeclKind::UnresolvedUsingTypename
+            ) =>
+        {
             let nns = ast.using_qualifier(d)?;
             let Nns::Type { ty, .. } = ast.types.nns_view(nns) else { return None };
-            let base = ast.types.as_record(ty)?;
-            ast.decls.get(base).name().as_ident()?
+            written_type_name(ast, ty)?
         }
-        NameKind::Constructor => match ast.names.view(name) {
-            DeclNameView::Constructor(class) => {
+        NameKind::Constructor | NameKind::Destructor => match ast.names.view(name) {
+            DeclNameView::Constructor(class) | DeclNameView::Destructor(class) => {
                 let class = ast.types.as_record(QualType::unqual(class))?;
                 ast.decls.get(class).name().as_ident()?
             }
@@ -285,32 +341,80 @@ fn identifier<'r>(unit: &Unit<'r>, d: DeclId) -> Option<&'r str> {
             DeclNameView::DeductionGuide(template) => ast.decls.get(template).name().as_ident()?,
             _ => return None,
         },
-        NameKind::Operator
-        | NameKind::Destructor
-        | NameKind::Conversion
-        | NameKind::LiteralOperator => return None,
+        NameKind::Operator | NameKind::Conversion | NameKind::LiteralOperator => return None,
     };
     let text = ast.symbols().as_str(sym);
     (!text.is_empty()).then_some(text)
 }
 
-/// The span of the identifier `ident` at the start of `name` (a
-/// declaration's `DeclExtent::name`): `name` itself when it is the
-/// identifier, else (a specialisation's template-id, `S<int>`) its first
-/// token as Kiln's `token_end` ends it, when that token's text is `ident`
-/// byte for byte. `None` otherwise: nothing is guessed.
-fn identifier_span(unit: &Unit<'_>, name: Span, ident: &str) -> Option<Span> {
+/// The identifier type `ty` is written with, read from its sugar: a
+/// typedef's or alias's name, the template's name of a template-id, a
+/// class's or enumeration's name, a dependent name's identifier. `None`
+/// for a type that is not written as one name.
+fn written_type_name(ast: &Ast, ty: QualType) -> Option<Symbol> {
+    let named = |d: DeclId| ast.decls.get(d).name().as_ident();
+    match ast.types.view(ty.ty()) {
+        TypeView::Typedef { decl, .. } => named(decl),
+        TypeView::Using { shadow, .. } => named(shadow),
+        TypeView::Record(d) | TypeView::Enum(d) | TypeView::TemplateTypeParm(d) => named(d),
+        TypeView::InjectedClassName { pattern, .. } => named(pattern),
+        TypeView::Elaborated { named: inner, .. } | TypeView::Paren(inner) => {
+            written_type_name(ast, inner)
+        }
+        TypeView::TemplateSpecialization { name, .. } => written_template_name(ast, name),
+        TypeView::DependentName { name, .. }
+        | TypeView::DependentTemplateSpecialization { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
+/// The identifier template name `n` is written with.
+fn written_template_name(ast: &Ast, n: TemplateNameId) -> Option<Symbol> {
+    match ast.types.template_name_view(n) {
+        TemplateName::Template(d) | TemplateName::TemplateTemplateParm { decl: d, .. } => {
+            ast.decls.get(d).name().as_ident()
+        }
+        TemplateName::Qualified { underlying, .. } => written_template_name(ast, underlying),
+        TemplateName::DependentIdentifier { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
+/// The span of the identifier `ident` in `name` (a declaration's
+/// `DeclExtent::name`): `name` itself when it is the identifier; for a
+/// destructor (`~T`, `~ T`), its last `ident.len()` bytes when the text is
+/// `~`, blanks and `ident`, and Kiln's `token_end` ends the token there;
+/// else (a specialisation's template-id, `S<int>`) its first token as
+/// `token_end` ends it, when that token's text is `ident` byte for byte.
+/// `None` otherwise: nothing is guessed.
+fn identifier_span(unit: &Unit<'_>, name: Span, ident: &str, destructor: bool) -> Option<Span> {
     let sm = unit.sm();
-    if sm.span_text(name) == Some(ident) {
+    let symbols = unit.ast().symbols();
+    let text = sm.span_text(name)?;
+    if destructor {
+        let rest = text.strip_prefix('~')?.trim_start();
+        let len = u32::try_from(ident.len()).ok()?;
+        let lo = Loc::from_raw(name.hi.to_raw().checked_sub(len)?);
+        let ok = rest == ident
+            && sm.same_entry_distance(lo, name.hi) == Some(len)
+            && token_end(sm, symbols, lo, LexOptions::default()) == Some(name.hi);
+        return ok.then(|| Span::new(lo, name.hi));
+    }
+    if text == ident {
         return Some(name);
     }
-    let end = token_end(sm, unit.ast().symbols(), name.lo, LexOptions::default())?;
+    let end = token_end(sm, symbols, name.lo, LexOptions::default())?;
     let first = Span::new(name.lo, end);
     (end.to_raw() < name.hi.to_raw() && sm.span_text(first) == Some(ident)).then_some(first)
 }
 
 /// What kind of declaration `d` is, as far as a rename must tell.
 fn decl_name_kind(ast: &Ast, d: DeclId, kind: DeclKind) -> DeclNameKind {
+    match kind {
+        DeclKind::UsingDirective => return DeclNameKind::UsingDirective,
+        DeclKind::UsingEnum => return DeclNameKind::UsingEnum,
+        _ => {}
+    }
     if matches!(
         kind,
         DeclKind::Using
@@ -340,18 +444,22 @@ fn decl_name_kind(ast: &Ast, d: DeclId, kind: DeclKind) -> DeclNameKind {
 /// a template (implicit, explicit, or explicitly instantiated) the
 /// template; for a member of an instantiated class (a member function, a
 /// field, an enumerator, a member template, …) the member of the
-/// template it was instantiated from; repeated until neither applies, so
-/// that a specialisation of a member template of an instantiated class
-/// has the member template of the class template as its origin. Anything
-/// else is its own origin. One function, so that the rename, the host and
-/// the check cannot disagree about it.
+/// template it was instantiated from; for the pattern of a template (a
+/// class, function, variable or alias template: the injected-class-name
+/// `W` inside `template <class T> struct W`, a function template's call
+/// to itself) the template, so that `W` and `W<T>` there have one origin.
+/// Repeated until none applies, so that a specialisation of a member
+/// template of an instantiated class has the member template of the
+/// class template as its origin. Anything else is its own origin. One
+/// function, so that the rename, the host and the check cannot disagree
+/// about it.
 pub fn origin(unit: &Unit<'_>, referent: DeclId) -> DeclId {
     let ast = unit.ast();
     let mut d = referent;
     for _ in 0..ORIGIN_LIMIT {
         let next = match ast.spec_info(d) {
             Some((_, s)) => Some(s.template),
-            None => ast.instantiated_from(d),
+            None => ast.described_template(d).or_else(|| ast.instantiated_from(d)),
         };
         match next {
             Some(n) if n != d => d = n,

@@ -24,10 +24,12 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::names::{DeclNameKind as NameKind, DeclNameView};
+use slip_kiln::kiln::ast::templates::SpecKind;
+use slip_kiln::kiln::ast::written_refs::RefRole;
 use slip_kiln::kiln::ast::{DeclId, QualType};
 use slip_kiln::kiln::source::{Loc, Span};
 use slip_kiln::written::{
-    DeclName, DeclNameKind, Role, decl_names, dependent_names, origin, recorded, written_refs,
+    DeclName, DeclNameKind, Role, decl_names, dependent_names, origin, recorded, row, written_refs,
 };
 use slip_kiln::{ParseOptions, Unit, parse_observer_with};
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Status};
@@ -140,10 +142,26 @@ fn refs_of(u: &Unit<'_>, role: Role) -> Vec<((usize, usize), DeclId)> {
 fn ident_of(u: &Unit<'_>, d: DeclId) -> Option<String> {
     let ast = u.ast();
     let name = ast.decls.get(d).name();
-    // `using A::A;`: the base, by the constructor its first shadow names.
-    if ast.decls.get(d).kind() == DeclKind::Using && name.kind() == NameKind::Constructor {
-        let shadow = ast.using_shadows(d).next()?;
-        return ident_of(u, ast.using_target(shadow)?);
+    // An inheriting constructor's using-declaration (`using A::A;`,
+    // `using AT::AT;`, `using B<T>::B;`): the name written is that of the
+    // qualifier's last component, which the written-reference table
+    // records as a qualifier entry: the last one inside the declaration
+    // before its name, and its referent's identifier.
+    if name.kind() == NameKind::Constructor
+        && matches!(
+            ast.decls.get(d).kind(),
+            DeclKind::Using | DeclKind::UnresolvedUsingValue | DeclKind::UnresolvedUsingTypename
+        )
+    {
+        let e = ast.decl_extents.get(d)?;
+        let inside =
+            |s: Span| s.lo.to_raw() >= e.full.lo.to_raw() && s.hi.to_raw() <= e.name.lo.to_raw();
+        let (_, q) = ast
+            .written_refs
+            .iter()
+            .filter(|(_, r)| r.role == RefRole::Nns && inside(r.range))
+            .last()?;
+        return ident_of(u, q.entity?);
     }
     match ast.names.view(name) {
         DeclNameView::Identifier(s) => Some(ast.symbols().as_str(s).to_owned()),
@@ -607,14 +625,18 @@ fn s9_3_decl_names() {
             .map(|n| (n.kind, u.ast().decls.get(n.decl).kind()))
             .collect();
         assert_eq!(got, using);
-        // A destructor, a conversion function and an operator: absent.
+        // A destructor: the identifier after `~`. A conversion function and
+        // an operator: absent.
+        assert_eq!(names_at(u, s, "~C()", "C"), [(decl, DeclKind::CXXDestructor)]);
         let all = decl_names(u);
         let kinds: Vec<DeclKind> = all.iter().map(|n| u.ast().decls.get(n.decl).kind()).collect();
-        assert!(!kinds.contains(&DeclKind::CXXDestructor), "{kinds:?}");
         assert!(!kinds.contains(&DeclKind::CXXConversion), "{kinds:?}");
         assert!(!kinds.contains(&DeclKind::Friend), "{kinds:?}");
         assert!(names_at(u, s, "operator==(const", "operator").is_empty());
-        assert!(names_at(u, s, "~C()", "C").is_empty());
+        // `row` agrees with every name given.
+        for n in &all {
+            assert_eq!(row(u, n.decl), Some(n.kind), "{n:?}");
+        }
         // Every name is its declaration's identifier, byte for byte.
         for n in &all {
             let (lo, hi) = bytes(u, n.name);
@@ -633,30 +655,50 @@ fn kiln_hole_explicit_instantiation_of_function_and_variable_has_no_extent() {
     let src = "\
 template <class T> void t(T) {}
 template <class T> T vt = T();
+template <class T> struct S2 { void m() {} };
 template void t<double>(double);
 extern template void t<long>(long);
 template long vt<long>;
+template void S2<long>::m();
+template void t(short);
 ";
     with_unit("inst-hole", src, |u| {
         for (ctx, word) in [
             ("template void t<double>", "t"),
             ("extern template void t<long>", "t"),
             ("template long vt<long>", "vt"),
+            ("template void S2<long>::m()", "m"),
+            ("template void t(short)", "t"),
         ] {
             assert!(
                 names_at(u, src, ctx, word).is_empty(),
                 "`{ctx}` has a row: turn this test around"
             );
         }
-        let rows: Vec<DeclKind> =
-            u.ast().decl_extents.iter().map(|(d, _)| u.ast().decls.get(d).kind()).collect();
-        assert_eq!(
-            rows.iter()
-                .filter(|k| !matches!(k, DeclKind::ParmVar | DeclKind::TemplateTypeParm))
-                .count(),
-            4,
-            "the two templates and their patterns only: {rows:?}"
-        );
+        // No row of the unit is an explicit instantiation's, and none of
+        // the five specialisations has one.
+        let ast = u.ast();
+        for (d, _) in ast.decl_extents.iter() {
+            assert_ne!(row(u, d), Some(DeclNameKind::ExplicitInstantiation), "{d:?}");
+        }
+        let instantiated: Vec<DeclId> = ast
+            .decls
+            .ids()
+            .filter(|&d| {
+                ast.spec_info(d)
+                    .map(|(_, s)| s.kind)
+                    .or(ast.member_spec_info(d).map(|(_, m)| m.kind))
+                    .is_some_and(|k| {
+                        matches!(
+                            k,
+                            SpecKind::ExplicitInstantiationDefinition
+                                | SpecKind::ExplicitInstantiationDeclaration
+                        )
+                    })
+            })
+            .collect();
+        assert_eq!(instantiated.len(), 5, "{instantiated:?}");
+        assert!(instantiated.iter().all(|&d| row(u, d).is_none()));
     });
 }
 
@@ -804,6 +846,8 @@ struct Tally {
     decl_names: usize,
     decl_rows_named: usize,
     decl_checked: usize,
+    /// Entries whose `found` is a `ConstructorUsingShadow`.
+    ctor_shadow_found: usize,
 }
 
 impl Tally {
@@ -820,6 +864,7 @@ impl Tally {
         self.decl_names += other.decl_names;
         self.decl_rows_named += other.decl_rows_named;
         self.decl_checked += other.decl_checked;
+        self.ctor_shadow_found += other.ctor_shadow_found;
     }
 
     fn except(&mut self, class: &'static str, example: String) {
@@ -960,8 +1005,26 @@ fn sweep_one(line: &[String], root: &Path, label: &str) -> Tally {
         let names = decl_names(u);
         for n in &names {
             let kind = u.ast().decls.get(n.decl).kind();
-            if matches!(kind, DeclKind::Friend | DeclKind::FriendTemplate) {
+            if matches!(
+                kind,
+                DeclKind::Friend
+                    | DeclKind::FriendTemplate
+                    | DeclKind::UsingDirective
+                    | DeclKind::UsingEnum
+            ) {
                 t.failures.push(format!("{label}: a {kind:?} row is a declaration name"));
+            }
+            if row(u, n.decl) != Some(n.kind) {
+                t.failures.push(format!("{label}: `row` disagrees with {n:?}"));
+            }
+        }
+        // No recorded name is found as a constructor's using-shadow
+        // (`via_using` counts one anyway: `crates/slip_kiln/src/written.rs`).
+        for (_, e) in u.ast().written_refs.iter() {
+            if e.found
+                .is_some_and(|f| u.ast().decls.get(f).kind() == DeclKind::ConstructorUsingShadow)
+            {
+                t.ctor_shadow_found += 1;
             }
         }
         let ast = u.ast();
@@ -982,9 +1045,7 @@ fn sweep_one(line: &[String], root: &Path, label: &str) -> Tally {
                 "row left out: a friend declaration"
             } else if matches!(kind, DeclKind::UsingDirective | DeclKind::UsingEnum) {
                 "row left out: names another declaration"
-            } else if ident_of(u, d).is_none()
-                || matches!(kind, DeclKind::CXXDestructor | DeclKind::CXXConversion)
-            {
+            } else if ident_of(u, d).is_none() || matches!(kind, DeclKind::CXXConversion) {
                 "row left out: not an identifier"
             } else {
                 t.failures.push(format!(
@@ -1048,6 +1109,18 @@ fn wp085_9_every_reference_of_every_pair_test_names_its_referent() {
             }
         }
     }
+    // The shapes of the package's tests that the pair tests lack.
+    for (i, src) in SHAPES.iter().enumerate() {
+        let out = root.join(jobs.len().to_string());
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("main.cpp"), src).unwrap();
+        let line = vec![
+            "clang++".to_owned(),
+            "-std=c++20".to_owned(),
+            out.join("main.cpp").display().to_string(),
+        ];
+        jobs.push((line, format!("shape {i}")));
+    }
     // Every command has the one directory `root`, so the threads set one
     // current directory.
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -1085,13 +1158,553 @@ fn wp085_9_every_reference_of_every_pair_test_names_its_referent() {
     for (class, (n, example)) in &total.except {
         eprintln!("  exception {class}: {n} (first: {example})");
     }
+    eprintln!("  entries found as a constructor's using-shadow: {}", total.ctor_shadow_found);
     let _ = std::fs::remove_dir_all(&root);
     assert!(total.sides > 3000, "the sweep found the pair tests");
     assert!(total.checked > 10_000, "the sweep checked references");
+    assert_eq!(total.unparsed, 0, "every side and shape parsed");
+    assert_eq!(total.ctor_shadow_found, 0, "a name found as a constructor shadow: turn M11 around");
     assert!(
         total.failures.is_empty(),
         "{} failures:\n{}",
         total.failures.len(),
         total.failures.join("\n")
     );
+}
+
+// ---------------------------------------------------------------------
+// Fix round 1 (the independent review of WP-067).
+
+/// Shapes the sweep also runs (the pair tests do not have them): every
+/// reference, declaration name and row of each is checked like a pair
+/// test's.
+const SHAPES: &[&str] = &[
+    INHERITING,
+    DESTRUCTORS,
+    "template <class T> struct SM { void m() {} };\ntemplate <> void SM<long>::m() {}\n\
+     template <class T> struct V : T { using typename T::type; using T::f; };\n",
+];
+
+const INHERITING: &str = "\
+struct A { A(int); };
+typedef A AT;
+using AU = A;
+struct X : A { using AT::AT; };
+struct Z : A { using AU::AU; };
+template <class T> struct B { B(int); };
+template <class T> struct D : B<T> { using B<T>::B; };
+X x(1); Z z(2); D<int> d(3);
+";
+
+// Review F1: an inheriting constructor's using-declaration written
+// through a typedef, an alias or a template-id: its name is the last
+// component as written (`AT`, `AU`, `B`), not the record it resolves to.
+#[test]
+fn s9_3_inheriting_constructor_named_as_written() {
+    with_unit("inheriting", INHERITING, |u| {
+        let s = INHERITING;
+        let using = DeclNameKind::UsingDeclaration;
+        assert_eq!(names_at(u, s, "::AT;", "AT"), [(using, DeclKind::Using)]);
+        assert_eq!(names_at(u, s, "::AU;", "AU"), [(using, DeclKind::Using)]);
+        assert_eq!(names_at(u, s, "<T>::B;", "B"), [(using, DeclKind::UnresolvedUsingValue)]);
+        // The qualifiers are references to the typedef, the alias and the
+        // class template.
+        let roles = |ctx: &str, word: &str| -> Vec<Role> {
+            written_refs(u)
+                .iter()
+                .filter(|r| bytes(u, r.name) == at(s, ctx, word))
+                .map(|r| r.role)
+                .collect()
+        };
+        assert_eq!(roles("using AT::", "AT"), [Role::Nns]);
+        assert_eq!(roles("using AU::", "AU"), [Role::Nns]);
+        assert_eq!(roles("using B<T>::", "B"), [Role::Nns]);
+    });
+}
+
+const DESTRUCTORS: &str = "\
+struct C { ~C(); };
+struct S { ~ S(); };
+S::~S() {}
+template <class T> struct W { ~W(); };
+struct K { operator int(); int operator+(int); };
+int operator\"\"_k(unsigned long long);
+void use(S* p) { p->~S(); }
+";
+
+// Review item 2: a destructor's name is the identifier after `~`, cut from
+// Kiln's `~T` with the byte check; a rename of the class edits it. An
+// operator, a conversion function and a literal operator stay absent.
+#[test]
+fn s9_3_destructor_names() {
+    with_unit("destructors", DESTRUCTORS, |u| {
+        let s = DESTRUCTORS;
+        let dtor = [(DeclNameKind::Declaration, DeclKind::CXXDestructor)];
+        assert_eq!(names_at(u, s, "~C();", "C"), dtor);
+        assert_eq!(names_at(u, s, "~ S();", "S"), dtor);
+        assert_eq!(names_at(u, s, "~S() {}", "S"), dtor);
+        assert_eq!(names_at(u, s, "~W();", "W"), dtor);
+        for n in decl_names(u) {
+            let text = u.sm().span_text(n.name).unwrap();
+            assert!(!text.starts_with("operator") && !text.starts_with('~'), "{text}");
+            assert_ne!(u.ast().decls.get(n.decl).kind(), DeclKind::CXXConversion);
+        }
+        // The reference `p->~S()` names the destructor by `S`.
+        let d = decl_at(u, at(s, "~S() {}", "S").0);
+        let r = written_refs(u);
+        let call = r.iter().find(|x| bytes(u, x.name) == at(s, "p->~S()", "S")).unwrap();
+        assert_eq!(u.ast().decls.get(call.referent).kind(), DeclKind::CXXDestructor);
+        assert_eq!(origin(u, call.referent), origin(u, d));
+    });
+}
+
+// Review item 3: the origin of a template's pattern is the template, for
+// class, function, variable and alias templates: the injected-class-name
+// `W` and `W<T>` have one origin.
+#[test]
+fn s5_5_origin_of_a_pattern_is_its_template() {
+    let src = "\
+template <class T> struct W { W* self; W<T>* other; template <class U> struct M { M* m; }; };
+template <class T> int rec(T t) { return t ? 0 : rec(0); }
+template <class T> T var = T();
+template <class T> using Al = T*;
+W<int> w;
+";
+    with_unit("origin-pattern", src, |u| {
+        let r = written_refs(u);
+        let referent = |ctx: &str, word: &str| {
+            r.iter().find(|x| bytes(u, x.name) == at(src, ctx, word)).expect(ctx).referent
+        };
+        let w = decl_at(u, at(src, "struct W {", "W").0);
+        let injected = referent("W* self", "W");
+        assert_ne!(injected, w, "the injected-class-name names the pattern");
+        assert_eq!(origin(u, injected), w);
+        assert_eq!(referent("W<T>* other", "W"), w);
+        let m = decl_at(u, at(src, "struct M {", "M").0);
+        assert_eq!(origin(u, referent("M* m", "M")), m);
+        let rec = decl_at(u, at(src, "int rec(T t)", "rec").0);
+        assert_eq!(origin(u, referent("rec(0)", "rec")), rec);
+        for (ctx, word) in [
+            ("struct W {", "W"),
+            ("int rec(T t)", "rec"),
+            ("T var =", "var"),
+            ("using Al =", "Al"),
+            ("struct M {", "M"),
+        ] {
+            let t = decl_at(u, at(src, ctx, word).0);
+            let pattern = u.ast().template_info(t).and_then(|i| i.pattern).expect(ctx);
+            assert_ne!(pattern, t);
+            assert_eq!(origin(u, pattern), t, "`{ctx}`");
+        }
+    });
+}
+
+// Review item 4: `row` reads the table for every row, those `decl_names`
+// leaves out included.
+#[test]
+fn s9_3_row_of_every_row() {
+    let src = "\
+namespace n { int v; enum class E { e }; }
+using namespace n;
+using enum n::E;
+template <class T> void t(T) {}
+template <class T> struct S { void m() {} };
+template <> void t<int>(int) {}
+template struct S<char>;
+template void t<long>(long);
+struct C { ~C(); operator int(); int operator+(int); friend void fr(int); C(int); };
+void use(int) { int k = 1; auto l = [&k2 = k]() { return k2; }; (void)l; }
+";
+    with_unit("row", src, |u| {
+        let ast = u.ast();
+        let decl = Some(DeclNameKind::Declaration);
+        for n in decl_names(u) {
+            assert_eq!(row(u, n.decl), Some(n.kind), "{n:?}");
+        }
+        let rows_of = |kind: DeclKind| -> Vec<DeclId> {
+            ast.decl_extents
+                .iter()
+                .map(|(d, _)| d)
+                .filter(|&d| ast.decls.get(d).kind() == kind)
+                .collect()
+        };
+        assert_eq!(
+            rows_of(DeclKind::UsingDirective).iter().map(|&d| row(u, d)).collect::<Vec<_>>(),
+            [Some(DeclNameKind::UsingDirective)]
+        );
+        assert_eq!(
+            rows_of(DeclKind::UsingEnum).iter().map(|&d| row(u, d)).collect::<Vec<_>>(),
+            [Some(DeclNameKind::UsingEnum)]
+        );
+        assert_eq!(
+            rows_of(DeclKind::Friend).iter().map(|&d| row(u, d)).collect::<Vec<_>>(),
+            [decl]
+        );
+        for kind in [DeclKind::CXXDestructor, DeclKind::CXXConversion] {
+            assert_eq!(
+                rows_of(kind).iter().map(|&d| row(u, d)).collect::<Vec<_>>(),
+                [decl],
+                "{kind:?}"
+            );
+        }
+        assert!(names_at(u, src, "using namespace n;", "n").is_empty());
+        assert!(names_at(u, src, "using enum n::E;", "E").is_empty());
+        // The operator, the unnamed parameter, the template's pattern.
+        let op = names_at(u, src, "int operator+(int)", "operator");
+        assert!(op.is_empty());
+        let unnamed: Vec<DeclId> = rows_of(DeclKind::ParmVar)
+            .into_iter()
+            .filter(|&d| !ast.decl_extents.get(d).unwrap().name.lo.is_valid())
+            .collect();
+        assert!(!unnamed.is_empty() && unnamed.iter().all(|&d| row(u, d) == decl));
+        let t = decl_at(u, at(src, "void t(T) {}", "t").0);
+        let pattern = ast.template_info(t).and_then(|i| i.pattern).unwrap();
+        assert_eq!(row(u, pattern), decl);
+        assert_eq!(row(u, t), decl);
+        // The specialisations: explicit, instantiated (a class template's
+        // has a row; a function template's has none, Kiln finding K1).
+        assert_eq!(
+            row(u, decl_at(u, at(src, "void t<int>", "t").0)),
+            Some(DeclNameKind::ExplicitSpecialisation)
+        );
+        assert_eq!(
+            row(u, decl_at(u, at(src, "template struct S<char>", "S").0)),
+            Some(DeclNameKind::ExplicitInstantiation)
+        );
+        let long = ast
+            .decls
+            .ids()
+            .find(|&d| {
+                ast.spec_info(d)
+                    .is_some_and(|(_, s)| s.kind == SpecKind::ExplicitInstantiationDefinition)
+                    && ast.decls.get(d).kind() == DeclKind::Function
+            })
+            .expect("t<long>");
+        assert_eq!(row(u, long), None);
+        // An init-capture's declared name has no row.
+        let r = written_refs(u);
+        let k2 =
+            r.iter().find(|x| bytes(u, x.name) == at(src, "return k2", "k2")).unwrap().referent;
+        assert_eq!(row(u, k2), None);
+    });
+}
+
+// Review item 8 (surviving mutants M07, M08, M13): a member of a class
+// template specialisation explicitly specialised is an explicit
+// specialisation (by its `MemberSpecInfo`); a dependent using-declaration
+// is a using-declaration; a using-directive and a `using enum` are not
+// declaration names.
+#[test]
+fn s9_3_member_specialisation_and_dependent_using() {
+    let src = SHAPES[2];
+    with_unit("member-spec", src, |u| {
+        assert_eq!(
+            names_at(u, src, "SM<long>::m()", "m"),
+            [(DeclNameKind::ExplicitSpecialisation, DeclKind::CXXMethod)]
+        );
+        let using = DeclNameKind::UsingDeclaration;
+        assert_eq!(
+            names_at(u, src, "T::type;", "type"),
+            [(using, DeclKind::UnresolvedUsingTypename)]
+        );
+        assert_eq!(names_at(u, src, "T::f;", "f"), [(using, DeclKind::UnresolvedUsingValue)]);
+    });
+}
+
+// Review item 7: `via_using` is also true for an enumerator named after
+// `using enum` (its `found` is that declaration's shadow), not only after
+// a using-declaration.
+#[test]
+fn s9_3_via_using_through_using_enum() {
+    let src = "\
+enum class E { x, y };
+void k() { using enum E; (void)x; (void)E::y; }
+";
+    with_unit("using-enum", src, |u| {
+        let r = written_refs(u);
+        let find = |ctx: &str, word: &str| {
+            *r.iter().find(|x| bytes(u, x.name) == at(src, ctx, word)).expect(ctx)
+        };
+        let x = find("(void)x", "x");
+        assert!(x.via_using);
+        assert_eq!(x.referent, decl_at(u, at(src, "{ x, y }", "x").0));
+        assert!(!find("E::y", "y").via_using);
+    });
+}
+
+// The rows of the landed file's list that the review corrected: an
+// elaborated type specifier and an attribute argument that is an
+// expression are references.
+#[test]
+fn s9_3_elaborated_type_and_attribute_expression_are_references() {
+    let src = "\
+void fn(int*);
+constexpr int N = 8;
+struct S {};
+namespace n { struct E {}; }
+struct alignas(N) AN {};
+void k() {
+  struct S* p = nullptr;
+  struct n::E* q = nullptr;
+  int v __attribute__((cleanup(fn))) = 0;
+  [[gnu::cleanup(fn)]] int w = 0;
+  (void)p; (void)q; (void)v; (void)w;
+}
+";
+    with_unit("elaborated-attr", src, |u| {
+        let s = decl_at(u, at(src, "struct S {}", "S").0);
+        let e = decl_at(u, at(src, "struct E {}", "E").0);
+        let f = decl_at(u, at(src, "void fn(int*)", "fn").0);
+        let n = decl_at(u, at(src, "int N = 8", "N").0);
+        let types = refs_of(u, Role::Type);
+        assert!(types.contains(&(at(src, "struct S* p", "S"), s)));
+        assert!(types.contains(&(at(src, "n::E* q", "E"), e)));
+        let exprs = refs_of(u, Role::Expr);
+        assert!(exprs.contains(&(at(src, "alignas(N)", "N"), n)));
+        assert!(exprs.contains(&(at(src, "((cleanup(fn)", "fn"), f)));
+        assert!(exprs.contains(&(at(src, "[[gnu::cleanup(fn)", "fn"), f)));
+    });
+}
+
+/// Neither a reference nor a dependent name at `word` of `ctx`.
+fn nothing_at(u: &Unit<'_>, src: &str, ctx: &str, word: &str) {
+    let want = at(src, ctx, word);
+    let refs: Vec<_> = written_refs(u).into_iter().filter(|r| bytes(u, r.name) == want).collect();
+    assert!(refs.is_empty(), "`{word}` of `{ctx}` is recorded: turn this test around: {refs:?}");
+    let deps: Vec<_> =
+        dependent_names(u).into_iter().filter(|d| bytes(u, d.name) == want).collect();
+    assert!(deps.is_empty(), "`{word}` of `{ctx}` is a dependent name: {deps:?}");
+}
+
+// The rows neither table serves (`spec/landed/edits/WP-067.md`, the
+// rename's `unreachable`), each pinned: a test fails, and is turned
+// around, the day Kiln records the name.
+
+#[test]
+fn unreachable_overloaded_operator_used_as_an_operator() {
+    let src = "struct S { S operator+(S) const; };\nS k(S s) { return s + s; }\n";
+    with_unit("unreach-op", src, |u| {
+        nothing_at(u, src, "s + s", "+");
+        for r in written_refs(u) {
+            assert_ne!(u.ast().decls.get(r.referent).name().kind(), NameKind::Operator, "{r:?}");
+        }
+    });
+}
+
+#[test]
+fn unreachable_offsetof_member_designator() {
+    let src = "struct S { int m; };\nint o = __builtin_offsetof(S, m);\n";
+    with_unit("unreach-offsetof", src, |u| {
+        nothing_at(u, src, "S, m)", "m");
+        let s = decl_at(u, at(src, "struct S {", "S").0);
+        assert!(refs_of(u, Role::Type).contains(&(at(src, "(S, m)", "S"), s)));
+    });
+}
+
+#[test]
+fn unreachable_init_capture_declared_name() {
+    let src = "void k() { int k1 = 1; auto l = [&k2 = k1]() { return k2; }; (void)l; }\n";
+    with_unit("unreach-capture", src, |u| {
+        assert!(names_at(u, src, "&k2 =", "k2").is_empty());
+        let r = written_refs(u);
+        let k2 =
+            r.iter().find(|x| bytes(u, x.name) == at(src, "return k2", "k2")).unwrap().referent;
+        assert_eq!(row(u, k2), None, "the init-capture has a row: turn this test around");
+    });
+}
+
+#[test]
+fn unreachable_designator() {
+    let src = "struct P { int x; };\nP p{.x = 1};\n";
+    with_unit("unreach-designator", src, |u| nothing_at(u, src, ".x = 1", "x"));
+}
+
+#[test]
+fn unreachable_name_in_a_string_attribute_argument() {
+    let src = "extern \"C\" void f() {}\nextern \"C\" void g() __attribute__((alias(\"f\")));\n";
+    with_unit("unreach-alias", src, |u| nothing_at(u, src, "alias(\"f\")", "f"));
+}
+
+#[test]
+fn unreachable_using_declaration_directive_and_alias_names() {
+    let src = "\
+namespace n { int v; }
+using n::v;
+using namespace n;
+namespace na = n;
+";
+    with_unit("unreach-using", src, |u| {
+        nothing_at(u, src, "using n::v", "v");
+        nothing_at(u, src, "using namespace n", "n");
+        nothing_at(u, src, "na = n", "n");
+        let n = decl_at(u, at(src, "namespace n {", "n").0);
+        assert!(
+            refs_of(u, Role::Nns).contains(&(at(src, "using n::v", "n"), n)),
+            "the qualifier is"
+        );
+    });
+}
+
+#[test]
+fn unreachable_friend_elaborated_reference() {
+    let src = "struct S2 {};\nstruct T { friend struct S2; };\n";
+    with_unit("unreach-friend", src, |u| nothing_at(u, src, "friend struct S2", "S2"));
+}
+
+#[test]
+fn unreachable_specialisation_target_as_a_reference() {
+    let src = "\
+template <class T> void t(T) {}
+template <> void t<int>(int) {}
+template <class T> struct H {};
+template struct H<int>;
+";
+    with_unit("unreach-target", src, |u| {
+        nothing_at(u, src, "void t<int>", "t");
+        nothing_at(u, src, "struct H<int>;", "H");
+    });
+}
+
+#[test]
+fn unreachable_concept_in_a_type_constraint() {
+    let src = "\
+template <class T> concept Co = true;
+template <Co T> void tc(T) {}
+void ac(Co auto x) { (void)x; }
+";
+    with_unit("unreach-concept", src, |u| {
+        nothing_at(u, src, "<Co T>", "Co");
+        nothing_at(u, src, "(Co auto", "Co");
+    });
+}
+
+#[test]
+fn unreachable_dependent_name_per_specialisation() {
+    let src = "void f(int);\ntemplate <class T> void g(T x) { f(x); }\nvoid k() { g(1); }\n";
+    with_unit("unreach-dependent", src, |u| {
+        let want = at(src, "f(x)", "f");
+        assert!(
+            written_refs(u).iter().all(|r| bytes(u, r.name) != want),
+            "a referent per specialisation"
+        );
+        assert_eq!(dependent_names(u).iter().filter(|d| bytes(u, d.name) == want).count(), 1);
+    });
+}
+
+// Kiln finding K3: a later construct that Kiln resolves to an existing
+// declaration overwrites that declaration's row (`kiln_parse/src/extents.rs`
+// get-or-create by declaration, `DeclExtents::set` overwrites), against
+// Kiln `spec/ast.md` §19.1. The module gives a correct token (of the later
+// construct) for the earlier declaration, and the earlier name is lost.
+#[test]
+fn kiln_hole_a_later_construct_overwrites_a_declarations_row() {
+    let src = "\
+struct S;
+struct T { friend struct S; };
+class K; class K;
+struct U { friend class K; };
+template <class X> struct Q;
+template <> struct Q<int>;
+template <> struct Q<int> {};
+";
+    with_unit("k3", src, |u| {
+        let decl_loc = |ctx: &str, word: &str| -> usize {
+            let names: Vec<DeclName> = decl_names(u)
+                .into_iter()
+                .filter(|n| bytes(u, n.name) == at(src, ctx, word))
+                .collect();
+            assert_eq!(names.len(), 1, "`{ctx}`: {names:?}");
+            off(u, u.ast().decls.get(names[0].decl).loc())
+        };
+        let lost = |ctx: &str, word: &str| {
+            assert!(
+                names_at(u, src, ctx, word).is_empty(),
+                "`{ctx}` has its row: turn this test around"
+            );
+        };
+        lost("struct S;\n", "S");
+        assert_eq!(decl_loc("friend struct S", "S"), at(src, "struct S;\n", "S").0);
+        lost("; class K;\nstruct U", "K");
+        assert_eq!(decl_loc("friend class K", "K"), at(src, "; class K;\nstruct U", "K").0);
+        lost("template <> struct Q<int>;", "Q");
+        assert_eq!(
+            decl_loc("template <> struct Q<int> {}", "Q"),
+            at(src, "template <> struct Q<int>;", "Q").0
+        );
+    });
+}
+
+// Review item 8: `written` changes nothing the digest reads, on a unit
+// with standard headers, macros, templates, default arguments and an
+// inheriting constructor: the declaration arena and the shard are the
+// same (`crates/slip_digest/tests/written_on_off.rs` compares the digest).
+#[test]
+fn s8_4_written_changes_nothing_the_digest_reads() {
+    let _l = lock();
+    let dir = tree("on-off-std");
+    std::fs::write(dir.join("h.h"), ON_OFF_HEADER).unwrap();
+    std::fs::write(dir.join("main.cpp"), ON_OFF_MAIN).unwrap();
+    let argv: Vec<String> =
+        ["clang++", "-std=c++20", "main.cpp"].iter().map(|s| (*s).to_owned()).collect();
+    let o = observer(&dir, &argv);
+    let look = |u: &Unit<'_>| (u.ast().decls.len(), u.ast().types.len(), recorded(u));
+    let (off_shard, off) = parse_observer_with(&o, Phase::Map, 1, options(false), look).unwrap();
+    let (on_shard, on) = parse_observer_with(&o, Phase::Map, 1, options(true), look).unwrap();
+    assert_eq!(off_shard.outcome.status, Status::Ok, "{:?}", off_shard.outcome);
+    let (off, on) = (off.unwrap(), on.unwrap());
+    assert!(!off.2 && on.2);
+    assert_eq!((off.0, off.1), (on.0, on.1), "declaration and type arenas");
+    assert!(off.0 > 10_000, "the standard headers were parsed: {}", off.0);
+    assert_eq!(on_shard.to_bytes(), off_shard.to_bytes());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const ON_OFF_HEADER: &str = "\
+#pragma once
+#define M(x) x + 1
+template <class T> struct B { T t; int dm = 3; B() {} B(int) {} void m(int y = 2) {} };
+struct Base { Base(int); };
+struct Der : Base { using Base::Base; int k = M(2); };
+";
+const ON_OFF_MAIN: &str = "\
+#include \"h.h\"
+#include <vector>
+#include <string>
+namespace n { struct S { int a; }; void f(S); }
+template <class T> void g(T x) { f(x); }
+int main() { B<int> b; b.m(); B<long> c(1); n::S s{1}; g(s); std::vector<std::string> v; \
+v.push_back(\"x\"); Der d(1); return M(b.t); }
+";
+
+// Review item 8: a command that already carries the words. The front end
+// takes a word twice; with `written` off the command's own words still
+// record (they are the command's), and the lists are the same.
+#[test]
+fn s8_4_command_already_carrying_the_words() {
+    let _l = lock();
+    let dir = tree("carrying");
+    std::fs::write(dir.join("main.cpp"), CALLS).unwrap();
+    let run = |extra: &[&str], written: bool| {
+        let mut argv: Vec<String> = vec!["clang++".into(), "-std=c++20".into()];
+        argv.extend(extra.iter().map(|s| (*s).to_owned()));
+        argv.push("main.cpp".into());
+        let look = |u: &Unit<'_>| (recorded(u), written_refs(u), decl_names(u).len());
+        let (shard, got) =
+            parse_observer_with(&observer(&dir, &argv), Phase::Map, 1, options(written), look)
+                .unwrap();
+        assert_eq!(shard.outcome.status, Status::Ok, "{extra:?}: {:?}", shard.outcome);
+        let (rec, refs, names) = got.unwrap();
+        (rec, refs.len(), names)
+    };
+    let plain = run(&[], true);
+    assert!(plain.0 && plain.1 > 0 && plain.2 > 0);
+    let both = ["-fkiln-dump-written-refs", "-fkiln-decl-extents"];
+    assert_eq!(run(&both, true), plain);
+    assert_eq!(run(&both, false), plain);
+    assert_eq!(run(&both[..1], true), plain);
+    assert_eq!(run(&both[1..], true), plain);
+    // One word only, `written` off: one table only, so not `recorded`.
+    let refs_only = run(&both[..1], false);
+    assert_eq!(refs_only, (false, plain.1, 0));
+    let _ = std::fs::remove_dir_all(&dir);
 }
