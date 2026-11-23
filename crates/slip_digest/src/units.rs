@@ -553,6 +553,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         w.unit.local.holder = Some(e);
         let mut s = Stream::new();
         w.decl_stream(&mut s, from, e);
+        crate::enclosing::write(w, &mut s, e);
         w.unit = saved;
         #[cfg(test)]
         tests::count_read(e);

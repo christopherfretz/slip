@@ -1,0 +1,2 @@
+changed (anonymous namespace)::S
+changed (anonymous namespace)::f((anonymous namespace)::S)

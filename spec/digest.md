@@ -237,6 +237,16 @@ A **key** identifies an entity independently of the parse, of source
 positions and of the translation unit. It is structural: an entity's key
 contains the key of the entity it is a member of.
 
+A key holds names only. That an entity's parent chain passes through an
+unnamed namespace, or through a namespace opening with a `visibility`
+attribute, is in the key as a name and nothing else: a rule rewrites the
+chain (§3.4), and what the chain gives the entity besides names (the
+linkage of its name, internal under an unnamed namespace; the visibility
+a namespace opening gives its symbol) is written in the entity's own unit,
+as the post-image has it, by the row `enclosing` (`digest-kinds.md` §1.7,
+WP-113). A rule therefore moves an entity's name and never its linkage or
+its visibility.
+
 ```
 Key    := kind:   KeyKind
           parent: Parent
@@ -688,7 +698,13 @@ rules common to all:
   with dependent constructs by structure (§8).
 - Access, linkage, storage class, `inline`, `constexpr`/`consteval`,
   `virtual`, `final`, deleted and defaulted, the module a declaration
-  belongs to, and every attribute Kiln stores are included.
+  belongs to, and every attribute Kiln stores are included. Linkage is
+  the linkage of the name, not only the storage class written: for an
+  entity at namespace scope it, whether an unnamed namespace encloses it,
+  and the visibility its enclosing namespace openings give each of its
+  declarations are the row `enclosing` (`digest-kinds.md` §1.7); an
+  entity in a class or a function takes them from that class or function,
+  whose unit holds the row.
 
 ## 6. Statements and expressions
 
@@ -907,7 +923,7 @@ Digests are produced only for an observer whose shard is `ok`.
 Section 19 of the shard (`spec/model.md` §8).
 
 ```
-Digests := scheme: uv              1; changes whenever any stream, key or table of this spec changes (rule below)
+Digests := scheme: uv              2; changes whenever any stream, key or table of this spec changes (rule below)
            tu:     digest          H("slip.tu.v1", list<GroupSum>), groups in the order below
            groups: list<Group>     sorted by (class, file)
 
@@ -929,7 +945,10 @@ a key or a table of this spec, without exception. Before that release no
 shard outlives the build that wrote it (shards are stored by plan, and
 the cache keys of `spec/exec.md` that will replace the plan name the
 tool's version), so no shard of one scheme meets a reader of another, and
-`scheme` stays 1 until then.
+`scheme` changes before then only when a change makes units differ that
+compared equal under some rule table (a wrong equal closed): a recorded
+baseline of the earlier scheme must then be recorded again. It is 2 since
+WP-113 (the row `enclosing`, `spec/digest-kinds.md` §1.7).
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit that has a location (below). A derived unit belongs to the

@@ -88,6 +88,7 @@
 //! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1) |
 //! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, a list per declaration, the definition's apart (a parameter's: parameter i of its function's declarations), then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
 //! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
+//! | `enclosing::write(w, s, e)` | the walk's row `enclosing` (§1.7) at the end of the unit of `e` when it is at namespace scope: its linkage, whether an unnamed namespace encloses it, and the visibility each declaration takes from its namespaces (WP-113) |
 //! | `other::module_rows(w, s, d)` | the rows `points` and `explicit_defs` of `ModuleTable` (§10.7), from the first declaration; empty forms when ownership is not tracked |
 //! | `order::write(w, s)` | the order unit's stream (digest §2.1): the keys of the variable definitions at namespace and class scope in order, then the translation unit's imports (§10.7) |
 //! | `templ::decl_maps(w, s, d)` | the `in` rows of `TemplateTables` keyed by `DeclId` (§9.5), each in its empty form when absent |
@@ -210,6 +211,7 @@ mod decl_class;
 mod decl_func;
 mod decl_scope;
 mod demand;
+mod enclosing;
 mod expr;
 mod expr_core;
 mod expr_dep;
