@@ -252,30 +252,80 @@ fn s6_5_rule3_base_specifier_and_member_initialiser() {
 // ---------------------------------------------------------------------------
 // Test 2: §6.5 rule 4, not returned.
 
-#[test]
-fn s6_5_rule4_declarative_names_are_not_references() {
-    let src = "namespace a { namespace b {
-struct T { void f(); static int s; };
-template <class U> void tf(U) {}
-struct S2; } }
-void a::b::T::f() {}
-int a::b::T::s = 1;
-using a::b::T;
-using namespace a::b;
-namespace Y = a::b;
-template <> void a::b::tf<int>(int) {}
+/// Rule 4 rows over one prelude: `none` names the entities of which no
+/// reference may be returned.
+fn not_returned(rest: &str, none: &[&str]) {
+    let src = format!(
+        "namespace a {{ namespace b {{
+struct T {{ void f(); static int s; }};
+template <class U> void tf(U) {{}}
+struct S2; }} }}
 template <class C> concept Co = true;
-static_assert(Co<int>);
-struct P { int x; }; P pp = { .x = 1 };
-struct W { friend struct a::b::S2; };
-";
-    main_only(src, |_, s| {
-        for n in ["a", "a::b", "a::b::T", "a::b::tf", "Co", "P::x", "a::b::S2"] {
-            assert_eq!(refs(s, one(s, n)), Vec::<String>::new(), "{n}");
+struct P {{ int x; }};
+{rest}"
+    );
+    main_only(&src, |_, s| {
+        for n in none {
+            assert_eq!(refs(s, one(s, n)), Vec::<String>::new(), "{n} in {rest}");
         }
-        // `P` of `P pp` is a type name.
-        assert_eq!(refs(s, one(s, "P")), ["main.cpp:P | main.cpp:P"]);
     });
+}
+
+#[test]
+fn s6_5_rule4_using_declaration() {
+    not_returned("using a::b::T;\n", &["a", "a::b", "a::b::T"]);
+}
+
+#[test]
+fn s6_5_rule4_using_directive() {
+    not_returned("using namespace a::b;\n", &["a", "a::b"]);
+}
+
+#[test]
+fn s6_5_rule4_namespace_alias_target() {
+    not_returned("namespace Y = a::b;\n", &["a", "a::b"]);
+}
+
+#[test]
+fn s6_5_rule4_declarator_qualifier() {
+    not_returned("void a::b::T::f() {}\nint a::b::T::s = 1;\n", &["a", "a::b", "a::b::T"]);
+}
+
+#[test]
+fn s6_5_rule4_friend_reference() {
+    not_returned("struct W { friend struct a::b::S2; };\n", &["a", "a::b", "a::b::S2"]);
+}
+
+#[test]
+fn s6_5_rule4_elaborated_declaration() {
+    not_returned(
+        "namespace a { namespace b { struct S2; } }\nclass Fwd;\nclass Fwd;\n",
+        &["a::b::S2", "Fwd"],
+    );
+}
+
+#[test]
+fn s6_5_rule4_explicit_specialisation_target() {
+    not_returned("template <> void a::b::tf<int>(int) {}\n", &["a", "a::b", "a::b::tf"]);
+}
+
+#[test]
+fn s6_5_rule4_concept_name() {
+    not_returned("static_assert(Co<int>);\n", &["Co"]);
+}
+
+#[test]
+fn s6_5_rule4_designator() {
+    not_returned("P pp = { .x = 1 };\n", &["P::x"]);
+}
+
+/// §6.5 rule 4 row 2: a name resolved only at instantiation.
+#[test]
+fn s6_5_rule4_dependent_name() {
+    not_returned(
+        "template <class X> void h(X t) { t.f(); a::b::tf(t); }\nvoid g() { h(a::b::T()); }\n",
+        &["a::b::T::f"],
+    );
 }
 
 /// §6.5 rule 4 "an elaborated reference" is Kiln's elaborated role (a
@@ -552,6 +602,10 @@ fn s5_4_interim_embed_tokens_are_no_name() {
 
 /// Parses `argv` in `dir` (a real parse, with the tables) and calls `f`
 /// with the subject.
+/// One parse at a time: the front end resolves the command's paths
+/// against the process's working directory.
+static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn on_disk<R: Send>(dir: &Path, argv: &[&str], f: impl FnOnce(&KilnSubject<'_>) -> R + Send) -> R {
     use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase};
     let observer = Observer {
@@ -566,6 +620,7 @@ fn on_disk<R: Send>(dir: &Path, argv: &[&str], f: impl FnOnce(&KilnSubject<'_>) 
         cost_hint: 1,
         origins: vec![Origin { configuration: 0, entry: 0 }],
     };
+    let _one = ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut options = slip_kiln::ParseOptions::default();
     options.written = true;
     let report = slip_kiln::parse_observer_with(&observer, Phase::Map, 0, options, |unit| {
@@ -921,6 +976,153 @@ fn s6_3_rule1_identifier_of_a_reference() {
         assert!(ids.contains(&Vec::new()));
         assert!(ids.contains(&b"T".to_vec()));
     });
+}
+
+// ---------------------------------------------------------------------------
+// Rules no test above isolates (the mutations of
+// `spec/landed/api/WP-085.md`).
+
+/// §6.6 rule 1: an object-like macro named like the entity it expands to
+/// (`#define c c`): the invocation is spelled like the name, but it is not
+/// the name's token, so no name range.
+#[test]
+fn s6_6_rule1_a_macro_named_like_its_expansion() {
+    let src = "int c;\n#define c c\nint u = c;\n";
+    main_only(src, |_, s| {
+        let r = s.references_to(one(s, "c"));
+        assert_eq!(r.len(), 1);
+        assert_eq!(show(s, name(s, r[0])), "-");
+        assert_eq!(show(s, extent(s, r[0])), "main.cpp:c");
+    });
+}
+
+/// §6.6 rule 1: a name written with a line splice is not the identifier's
+/// bytes, so no name range; its extent is its token.
+#[test]
+fn s6_6_rule1_a_name_with_a_line_splice() {
+    let src = "int foo;\nint u = fo\\\no;\n";
+    main_only(src, |_, s| {
+        let r = s.references_to(one(s, "foo"));
+        assert_eq!(r.len(), 1);
+        assert_eq!(show(s, name(s, r[0])), "-");
+        assert_eq!(show(s, extent(s, r[0])), "main.cpp:fo\\\no");
+    });
+}
+
+/// `docs/wp/WP-085.md` item 5: a leading `::` before a qualifier that a
+/// macro produces is the token before the invocation.
+#[test]
+fn s6_6_rule2_leading_global_before_a_macro_qualifier() {
+    let src = "namespace a { int c; }\n#define NS a\nint u = ::NS::c;\n";
+    main_only(src, |_, s| {
+        assert_eq!(refs(s, one(s, "a::c")), ["main.cpp:c | main.cpp:::NS::c"]);
+    });
+}
+
+/// `docs/wp/WP-085.md` item 5: a `::` not found on the line of the first
+/// component gives no extent; the place is then the rest of the name.
+#[test]
+fn s7_4_rule3_global_not_found_then_the_written_rest() {
+    let src = "namespace a { int c; }\nint u = ::\na::c;\n";
+    main_only(src, |_, s| {
+        let r = s.references_to(one(s, "a::c"));
+        assert_eq!(r.len(), 1);
+        assert_eq!(extent(s, r[0]), None);
+        assert_eq!(show(s, name(s, r[0])), "main.cpp:c");
+        assert_eq!(place(s, Value::Reference(r[0])), "nearest main.cpp:a::c");
+    });
+}
+
+/// §6.5 rule 1: one written name that resolves to two entities in two
+/// entries of a header is one reference to each.
+#[test]
+fn s6_5_rule1_a_header_resolving_differently_in_two_entries() {
+    let files = [
+        (
+            "main.cpp",
+            "namespace A { int c; }\nnamespace B { int c; }\nnamespace A {\n#include \"h.h\"\n}\nnamespace B {\n#include \"h.h\"\n}\n",
+        ),
+        ("h.h", "int u = c;\n"),
+    ];
+    with(&files, |_, s| {
+        assert_eq!(refs(s, one(s, "A::c")), ["h.h:c | h.h:c"]);
+        assert_eq!(refs(s, one(s, "B::c")), ["h.h:c | h.h:c"]);
+    });
+}
+
+/// §5.4, §7.3 rule 2: one range reached at tier 0 by one reference and at
+/// tier 1 by another (a header in which a name is a macro in one entry
+/// and a function in the other).
+#[test]
+fn s5_4_one_range_at_two_tiers() {
+    let files = [
+        (
+            "main.cpp",
+            "int c;\n#define F(x) (x)\n#define N u1\n#include \"h.h\"\n#undef F\n#undef N\nint F(int);\n#define N u2\n#include \"h.h\"\n",
+        ),
+        ("h.h", "int N = F(c);\n"),
+    ];
+    with(&files, |_, s| {
+        let r = s.references_to(one(s, "c"));
+        assert_eq!(r.len(), 2, "{:?}", refs(s, one(s, "c")));
+        let n = name(s, r[0]).unwrap();
+        assert_eq!(name(s, r[1]), Some(n));
+        assert_eq!(s.tiers(n), Some([true, true]));
+    });
+}
+
+/// §6.5 rule 1 "outermost first": two references to one entity at one
+/// first token (`T::T`, the injected class name), the longer first.
+#[test]
+fn s6_5_rule1_outermost_first_at_one_token() {
+    let src = "struct T { static int m; };\nint u = T::T::m;\n";
+    main_only(src, |_, s| {
+        assert_eq!(refs(s, one(s, "T")), ["main.cpp:T | main.cpp:T::T", "main.cpp:T | main.cpp:T"]);
+    });
+}
+
+/// §6.5 rule 4: a declarator's qualifier that a macro produces is still a
+/// declarator's.
+#[test]
+fn s6_5_rule4_a_declarator_qualifier_from_a_macro() {
+    let src = "namespace a { struct T { void f(); }; }\n#define Q a::T\nvoid Q::f() {}\n";
+    main_only(src, |_, s| {
+        assert_eq!(refs(s, one(s, "a")), Vec::<String>::new());
+        assert_eq!(refs(s, one(s, "a::T")), Vec::<String>::new());
+    });
+}
+
+/// §6.5 rule 4: the names of a using-directive and a namespace alias are
+/// not returned, whatever their rows' qualifiers.
+#[test]
+fn s6_5_rule4_using_directive_and_alias_whole() {
+    let src = "namespace a { namespace b { int c; } }\nusing namespace a::b;\nnamespace Y = a::b;\nusing a::b::c;\n";
+    main_only(src, |_, s| {
+        for n in ["a", "a::b", "a::b::c"] {
+            assert_eq!(refs(s, one(s, n)), Vec::<String>::new(), "{n}");
+        }
+    });
+}
+
+/// `spec/edits.md` §2.3 `file_recoded`: a file holding invalid UTF-8,
+/// which Kiln replaces on loading, gives no range: Kiln's offsets are not
+/// the file's bytes'. A snippet's files are text, so this parses files
+/// written under the test's temporary directory.
+#[test]
+fn s5_4_a_recoded_file_gives_no_range() {
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp085-recoded");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("bad.h"), b"// \xFF\xFE\nint u = c;\n").unwrap();
+    std::fs::write(root.join("main.cpp"), "int c;\n#include \"bad.h\"\nint v = c;\n").unwrap();
+    let got = on_disk(&root, &["clang++", "-std=c++20", "-c", "main.cpp"], |s| {
+        s.references_to(one(s, "c"))
+            .into_iter()
+            .map(|r| (show(s, name(s, r)), show(s, extent(s, r)), place(s, Value::Reference(r))))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!((got[0].0.as_str(), got[0].1.as_str(), got[0].2.as_str()), ("-", "-", "unnamed"));
+    assert!(got[1].0.ends_with("main.cpp:c"), "{got:?}");
 }
 
 // ---------------------------------------------------------------------------

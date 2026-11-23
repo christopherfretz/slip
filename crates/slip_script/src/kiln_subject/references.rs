@@ -274,8 +274,34 @@ fn unresolved_counts(unit: &Unit<'_>) -> HashMap<Vec<u8>, u64> {
 struct Declarative {
     /// Spans within one entry, as raw `[lo, hi)`, sorted and joined.
     raw: Vec<(u32, u32)>,
-    /// Spans whose ends are in different entries, compared by unit order.
+    /// Spans whose ends are in different entries (a qualifier from a
+    /// macro, a declaration holding an invocation), as the file offsets
+    /// `[lo, hi)` of their ends' outermost file locations, per file,
+    /// sorted and joined. A name is in one when its own outermost file
+    /// location is.
+    by_file: HashMap<FileId, Vec<(u32, u32)>>,
+    /// Spans whose ends are in different files, compared by unit order:
+    /// none was seen.
     other: Vec<Span>,
+}
+
+/// `spans` sorted and joined.
+fn joined(mut spans: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    spans.sort_unstable();
+    let mut out: Vec<(u32, u32)> = Vec::with_capacity(spans.len());
+    for (lo, hi) in spans {
+        match out.last_mut() {
+            Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
+            _ => out.push((lo, hi)),
+        }
+    }
+    out
+}
+
+/// Whether `at` is in one of the joined spans `spans`.
+fn in_joined(spans: &[(u32, u32)], at: u32) -> bool {
+    let k = spans.partition_point(|&(lo, _)| lo <= at);
+    k > 0 && at < spans[k - 1].1
 }
 
 impl Declarative {
@@ -302,22 +328,24 @@ impl Declarative {
             }
         }
         let mut raw = Vec::new();
+        let mut by_file: HashMap<FileId, Vec<(u32, u32)>> = HashMap::new();
         let mut other = Vec::new();
         for s in spans {
-            match sm.same_entry_distance(s.lo, s.hi) {
-                Some(_) => raw.push((s.lo.to_raw(), s.hi.to_raw())),
-                None => other.push(s),
+            if sm.same_entry_distance(s.lo, s.hi).is_some() {
+                raw.push((s.lo.to_raw(), s.hi.to_raw()));
+                continue;
+            }
+            let lo = sm.offset_of(sm.expansion_loc(s.lo));
+            let hi = sm.offset_of(sm.expansion_loc(s.hi));
+            match (lo, hi) {
+                (Some((f, lo)), Some((g, hi))) if f == g && lo <= hi => {
+                    by_file.entry(f).or_default().push((lo, hi));
+                }
+                _ => other.push(s),
             }
         }
-        raw.sort_unstable();
-        let mut joined: Vec<(u32, u32)> = Vec::with_capacity(raw.len());
-        for (lo, hi) in raw {
-            match joined.last_mut() {
-                Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
-                _ => joined.push((lo, hi)),
-            }
-        }
-        Declarative { raw: joined, other }
+        let by_file = by_file.into_iter().map(|(f, v)| (f, joined(v))).collect();
+        Declarative { raw: joined(raw), by_file, other }
     }
 
     /// Whether the name of `r` is in one of the spans: its first token,
@@ -326,12 +354,13 @@ impl Declarative {
         let sm = unit.sm();
         let at = r.name.lo;
         let outer = sm.expansion_loc(at);
-        let in_raw = |l: Loc| {
-            let raw = l.to_raw();
-            let k = self.raw.partition_point(|&(lo, _)| lo <= raw);
-            k > 0 && raw < self.raw[k - 1].1
-        };
+        let in_raw = |l: Loc| in_joined(&self.raw, l.to_raw());
         if in_raw(at) || (outer != at && in_raw(outer)) {
+            return true;
+        }
+        if let Some((f, off)) = sm.offset_of(outer)
+            && self.by_file.get(&f).is_some_and(|v| in_joined(v, off))
+        {
             return true;
         }
         self.other.iter().any(|s| {
@@ -639,4 +668,3 @@ fn place(own: Option<Range>, nearest: Option<Range>) -> PlaceOf {
         (None, None) => PlaceOf::Unnamed,
     }
 }
-
