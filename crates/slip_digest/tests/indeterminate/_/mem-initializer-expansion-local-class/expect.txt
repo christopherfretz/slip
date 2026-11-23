@@ -1,3 +1,1 @@
-# pending
-# needs: slip (expansion-statement local classes collide under a rule table: spec/landed/digest/WP-124.md)
 indeterminate h()
