@@ -321,6 +321,51 @@ impl Claim {
     }
 }
 
+/// §4.4: `groups` through `moved` (old claim index to new), joined where
+/// they share a member, groups of fewer than two members dropped, sorted.
+fn join_groups(groups: &[Vec<u64>], moved: &[u64]) -> Vec<Vec<u64>> {
+    let mut parent: BTreeMap<u64, u64> = BTreeMap::new();
+    for g in groups {
+        let members: Vec<u64> = g
+            .iter()
+            .map(|&m| usize::try_from(m).ok().and_then(|i| moved.get(i)).copied().unwrap_or(m))
+            .collect();
+        for &m in &members {
+            parent.entry(m).or_insert(m);
+        }
+        if let Some((&first, rest)) = members.split_first() {
+            for &m in rest {
+                let (a, b) = (root(&mut parent, first), root(&mut parent, m));
+                if a != b {
+                    parent.insert(a.max(b), a.min(b));
+                }
+            }
+        }
+    }
+    let mut sets: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    let members: Vec<u64> = parent.keys().copied().collect();
+    for m in members {
+        let r = root(&mut parent, m);
+        sets.entry(r).or_default().push(m);
+    }
+    let mut groups: Vec<Vec<u64>> = sets.into_values().filter(|g| g.len() >= 2).collect();
+    groups.sort();
+    groups
+}
+
+/// The root of `x`'s set, compressing `x`'s own link.
+fn root(parent: &mut BTreeMap<u64, u64>, x: u64) -> u64 {
+    let mut r = x;
+    while let Some(&p) = parent.get(&r) {
+        if p == r {
+            break;
+        }
+        r = p;
+    }
+    parent.insert(x, r);
+    r
+}
+
 fn sort_unique<T: Ord>(v: &mut Vec<T>) {
     v.sort();
     v.dedup();
@@ -430,45 +475,7 @@ impl Edits {
 
         // Groups (§4.4): through the new indices, joined where they share
         // a member, groups of one dropped.
-        let groups = std::mem::take(&mut self.groups);
-        let mut parent: BTreeMap<u64, u64> = BTreeMap::new();
-        fn root(parent: &mut BTreeMap<u64, u64>, x: u64) -> u64 {
-            let mut r = x;
-            while let Some(&p) = parent.get(&r) {
-                if p == r {
-                    break;
-                }
-                r = p;
-            }
-            parent.insert(x, r);
-            r
-        }
-        for g in &groups {
-            let members: Vec<u64> = g
-                .iter()
-                .map(|&m| usize::try_from(m).ok().and_then(|i| moved.get(i)).copied().unwrap_or(m))
-                .collect();
-            for &m in &members {
-                parent.entry(m).or_insert(m);
-            }
-            if let Some((&first, rest)) = members.split_first() {
-                for &m in rest {
-                    let (a, b) = (root(&mut parent, first), root(&mut parent, m));
-                    if a != b {
-                        parent.insert(a.max(b), a.min(b));
-                    }
-                }
-            }
-        }
-        let mut sets: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
-        let members: Vec<u64> = parent.keys().copied().collect();
-        for m in members {
-            let r = root(&mut parent, m);
-            sets.entry(r).or_default().push(m);
-        }
-        let mut groups: Vec<Vec<u64>> = sets.into_values().filter(|g| g.len() >= 2).collect();
-        groups.sort();
-        self.groups = groups;
+        self.groups = join_groups(&std::mem::take(&mut self.groups), &moved);
 
         // Reports, declarations, rules.
         sort_unique(&mut self.reports);

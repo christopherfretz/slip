@@ -240,7 +240,7 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
     out
 }
 
-/// The payload of a rule_use section, and the offset in it of each use.
+/// The payload of a `rule_use` section, and the offset in it of each use.
 fn raw_rule_use(r: &RuleUse) -> (Vec<u8>, Vec<usize>) {
     let mut e = Encoder::new();
     e.digest(&r.rules).count(r.uses.len());

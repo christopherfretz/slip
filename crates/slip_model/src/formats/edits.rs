@@ -191,6 +191,7 @@ fn rule_names(r: &Rule) -> std::result::Result<(), &'static str> {
 /// The first violation of the section's invariants, in the order of
 /// `spec/edits.md` §4.7: each rule over its whole list before the next,
 /// except the claim rules, which are checked for each claim in turn.
+#[allow(clippy::too_many_lines, reason = "one block per row of spec/edits.md §4.7")]
 pub(super) fn violation(e: &Edits, cx: Context) -> Option<(Loc, &'static str)> {
     // What a reader rejects while decoding, for a value built in memory.
     for (i, s) in e.subjects.iter().enumerate() {
@@ -563,6 +564,7 @@ fn dec_piece(d: &mut Decoder<'_>) -> Result<Piece> {
 }
 
 /// The section's payload, without checking the invariants (`violation`).
+#[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §4")]
 pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Edits, Offsets)> {
     let mut o = Offsets { section: d.offset(), ..Offsets::default() };
     let scheme = d.uv()?;
@@ -592,14 +594,14 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Edits, Offsets)> {
         let start = d.offset();
         let id = d.digest()?;
         let rule_at = d.offset();
-        let rule = dec_opt(d, Rule::decode)?;
+        let subject_rule = dec_opt(d, Rule::decode)?;
         let role = dec_enum(d)?;
         let of_at = d.offset();
         let of = dec_list(d, None, Decoder::digest)?;
         let flags_at = d.offset();
         let flags = d.uv()?;
         o.subject.push([start, rule_at, of_at, flags_at]);
-        Ok(Subject { id, rule, role, of, flags, display: d.str()?.to_owned() })
+        Ok(Subject { id, rule: subject_rule, role, of, flags, display: d.str()?.to_owned() })
     })?;
     o.lists[List::Links as usize] = d.offset();
     let links = dec_list(d, Some(&mut o.link), |d| Ok(Link { a: d.digest()?, b: d.digest()? }))?;
@@ -725,6 +727,7 @@ fn json_piece(p: &Piece) -> Value {
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "one member per field of spec/edits.md §4")]
 pub(super) fn render(x: &Edits) -> Value {
     let failure = json_opt(x.failure.as_ref(), |f| {
         record(
@@ -870,6 +873,7 @@ fn read_piece(v: &Value, at: &At<'_>) -> JResult<Piece> {
 }
 
 /// The section's JSON, without checking the invariants (`violation`).
+#[allow(clippy::too_many_lines, reason = "one member per field of spec/edits.md §4")]
 pub(super) fn read(v: &Value, at: &At<'_>) -> JResult<Edits> {
     let [
         scheme,
@@ -917,10 +921,10 @@ pub(super) fn read(v: &Value, at: &At<'_>) -> JResult<Edits> {
         failure,
         files: read_list(files, &at.key("files"), read_file_ref)?,
         subjects: read_list(subjects, &at.key("subjects"), |v, at| {
-            let [id, rule, role, of, flags, display] = read_record(v, at, SUBJECT)?;
+            let [id, subject_rule, role, of, flags, display] = read_record(v, at, SUBJECT)?;
             Ok(Subject {
                 id: read_digest(id, &at.key("id"))?,
-                rule: read_opt(rule, &at.key("rule"), read_rule)?,
+                rule: read_opt(subject_rule, &at.key("rule"), read_rule)?,
                 role: read_enum(role, &at.key("role"))?,
                 of: read_list(of, &at.key("of"), read_digest)?,
                 flags: read_uv(flags, &at.key("flags"))?,

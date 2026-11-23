@@ -165,6 +165,7 @@ impl Raw {
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §4")]
 fn raw_edits(x: &Edits) -> Raw {
     const S: &str = "sections.edits";
     let mut r = Raw::new();
@@ -367,6 +368,7 @@ fn literal(b: &[u8]) -> Piece {
     Piece::Literal(b.to_vec())
 }
 
+#[allow(clippy::unnecessary_wraps, reason = "the value of the opt field `macro`")]
 fn macro_site(name_start: u64, name: &[u8]) -> Option<MacroSite> {
     Some(MacroSite { name_start, name: name.to_vec() })
 }
@@ -703,7 +705,7 @@ fn piece_json() {
     let base = ["sections", "edits", "claims", "0", "pieces", "0"];
     for (new, path) in [
         (r#""g""#, "sections.edits.claims[0].pieces[0]"),
-        (r#"{}"#, "sections.edits.claims[0].pieces[0]"),
+        ("{}", "sections.edits.claims[0].pieces[0]"),
         (
             r#"{"literal": "g", "copy": {"file": 0, "lo": 0, "hi": 1}}"#,
             "sections.edits.claims[0].pieces[0]",
@@ -725,6 +727,7 @@ fn piece_json() {
 // spec/model.md §10, spec/landed/edits/WP-060.md §2: members named and
 // ordered as the fields (`macro_site` is `macro`); enumerations by name.
 #[test]
+#[allow(clippy::many_single_char_names, reason = "one record each: e, c, s, r, v")]
 fn edits_json_members() {
     let v = map_shard(sample()).to_json();
     let names = |v: &Value| -> Vec<String> {
@@ -1350,6 +1353,7 @@ fn replace(lo: u64, hi: u64, text: &[u8]) -> Claim {
 // summed, tiers or-ed, the least macro, the least reason other than none,
 // subjects and notes united.
 #[test]
+#[allow(clippy::many_single_char_names, reason = "derivations a, b, c and their makers")]
 fn normalise_joins_agreeing_derivations() {
     let a = Claim {
         subjects: vec![d(2)],

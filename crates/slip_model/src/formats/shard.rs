@@ -223,6 +223,7 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
 }
 
 /// The shard, its unknown ignorable sections and its content id.
+#[allow(clippy::too_many_lines, reason = "one block per section of spec/model.md §8")]
 pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
     let opened = open(
         bytes,
