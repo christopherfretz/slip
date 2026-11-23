@@ -1,2 +1,3 @@
 resolved A<int>::v::<value>
+resolved A<int>::v::<definition>
 added h()

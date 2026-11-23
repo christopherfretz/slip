@@ -1,9 +1,10 @@
 # The declared unit of side A and the derived unit of side B are under one
 # key: user() and the order unit, which refer to it, are not changed.
 # spec/verify.md §4 step 4 makes this `changed pick<int>()`, which a
-# declared `removed` does not prevent. Side B's instantiation is
-# indeterminate (pending: the definition of an instantiated function,
-# digest-kinds §11.9) until its area is written.
+# declared `removed` does not prevent. Side B's instantiation has its body
+# in its resolved unit `definition` (digest-kinds §11.9, WP-045), which
+# side A's explicit specialisation, written in source, does not have.
 removed pick<int>()
 exact derived
 derived-added pick<int>()
+derived-added pick<int>()::<definition>

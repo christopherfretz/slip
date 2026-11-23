@@ -1,0 +1,3 @@
+changed X::E
+changed X<int>::E::<definition>
+added X::e1

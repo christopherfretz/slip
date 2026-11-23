@@ -1,0 +1,3 @@
+present A<int>::<definition>
+resolved A<int>::s::<definition>
+added h()

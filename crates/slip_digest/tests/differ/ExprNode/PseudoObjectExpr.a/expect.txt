@@ -1,5 +1,3 @@
-# pending
-# needs: demand
-# the defaulted operator<=> is defined on use: its body is Pending(Demand)
+# the defaulted operator<=> is defined by the use; its body is in its resolved unit `definition` (WP-045)
 changed X
-changed X::operator<=>(const X &) const
+derived-changed X::operator<=>(const X &) const::<definition>

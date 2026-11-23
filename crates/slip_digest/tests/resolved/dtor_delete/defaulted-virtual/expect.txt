@@ -2,4 +2,6 @@ resolved S::S()::<exception_spec>
 resolved S::~S()::<exception_spec>
 resolved S::~S()::<dtor_delete>
 resolved operator delete(void *, unsigned long)::<exception_spec>
+resolved S::S()::<definition>
+resolved S::~S()::<definition>
 added h()

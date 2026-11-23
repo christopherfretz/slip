@@ -1,0 +1,5 @@
+# The field is instantiated from the partial specialisation's member.
+changed X<int *>::<definition>
+changed X<int *>::a
+added X<type-parameter-0-0 *>
+added X<type-parameter-0-0 *>::a
