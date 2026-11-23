@@ -1,3 +1,4 @@
 # the friend is a derived unit (WP-032): keyed in `A<int>` on side B,
 # where it is member-like, and in the namespace on side A
-derived-changed template <class> void g(type-parameter-0-0)
+derived-added A<int>::friend template <class> void g(type-parameter-0-0) requires C<T>
+derived-removed template <class> void g(type-parameter-0-0) requires C<U>

@@ -1,1 +1,1 @@
-added N<nullptr>
+added N<(int *)nullptr>

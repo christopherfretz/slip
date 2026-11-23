@@ -1,2 +1,2 @@
 changed S
-added S::f(S &, int)
+added S::f(this S &, int)

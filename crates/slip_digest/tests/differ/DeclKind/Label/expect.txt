@@ -1,4 +1,1 @@
-# pending
-# needs: stmt
-# a function body is Pending(Stmt)
 changed f()

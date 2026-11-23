@@ -169,8 +169,7 @@ kind("TemplateParamObject", "template <> struct N<V{1, 2}> {};",
 kind("StaticAssert", "", "static_assert(true);", ["added <static_assert>"],
      "added", std="c++17")
 kind("Label", "void f() { }", "void f() { l:; }", ["changed f()"],
-     "through the function that holds it", needs="stmt",
-     why="a function body is Pending(Stmt)")
+     "through the function that holds it")
 equal("DeclKind", "Empty", "int v;", "int v;;", note="`Empty`: declares nothing.")
 equal("DeclKind", "AccessSpec", "struct S { int a; };", "struct S { public: int a; };",
       note="`AccessSpec`: access is written by each member.")

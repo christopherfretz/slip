@@ -2,13 +2,16 @@
 //! (`verify.md` §6 `name`). For messages and the pair tests only: never
 //! hashed.
 //!
-//! The forms (`spec/landed/digest/WP-039.md` "Display names"):
+//! The forms (every one is a row of `spec/verify.md` §6.1):
 //!
 //! - a qualified name (`ns::C::m`, `(anonymous namespace)::x`), with a
-//!   specialisation's arguments (`ns::S<int>`);
+//!   specialisation's arguments (`ns::S<int>`), a null pointer argument
+//!   of a type other than `std::nullptr_t` as `(T)nullptr`;
 //! - a function with its parameter types, as Kiln prints canonical types
-//!   (`ns::f(int, char *)`), and ` const`, ` volatile`, ` &`, ` &&` after
-//!   them for a method's qualifiers; a deduction guide likewise;
+//!   (`ns::f(int, char *)`), `this ` before an explicit object parameter,
+//!   and ` const`, ` volatile`, ` &`, ` &&` after them for a method's
+//!   qualifiers, then ` requires ` and a trailing requires-clause; a
+//!   deduction guide likewise;
 //! - a function template with its head and, but for a constructor, a
 //!   destructor and a conversion function, its return type before the
 //!   name (`template <class, int> void ns::f(type-parameter-0-0)`): both
@@ -16,8 +19,11 @@
 //! - an unnamed class or enumeration as the name that keys it (digest
 //!   §3.3): `(anonymous struct for P)`, `(anonymous enum 1)` for the
 //!   second of its scope named by ordinal; its members under that name;
+//! - a name-independent member with its ordinal, `S::_ (name-independent 1)`;
+//! - an unnamed bit-field as `(unnamed N)`, the unnamed object of an
+//!   anonymous class as `(object of (anonymous union 0))`;
 //! - the variable of a structured binding declaration as its bindings,
-//!   `[a, b]`, and the holding variable of a tuple-like binding `a` as
+//!   `[a, b]` (its key is named by `a` alone), and the holding variable of a tuple-like binding `a` as
 //!   `a (holding variable)`;
 //! - a using-declaration as `<using Q::n>` and a using-shadow as
 //!   `<shadow T>` (`T` the name of its target), under their scope;
@@ -31,12 +37,15 @@ use std::collections::BTreeMap;
 
 use slip_kiln::kiln::ast::Ast;
 use slip_kiln::kiln::ast::DeclId;
+use slip_kiln::kiln::ast::consts::Scalar;
 use slip_kiln::kiln::ast::decl::{DeclKind, FriendTarget};
 use slip_kiln::kiln::ast::dump::AstNames;
+use slip_kiln::kiln::ast::ids::{ArgListId, ConstValueId, ExprId, QualType};
 use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_kiln::kiln::ast::templates::TtpKind;
+use slip_kiln::kiln::ast::types::{BuiltinType, RefQual, TypeNames, TypeView};
 use slip_kiln::kiln::ast::types::{PrintOptions, print_type, write_arg_list, write_nns};
-use slip_kiln::kiln::ast::types::{RefQual, TypeView};
+use slip_kiln::kiln::source::symbol::Symbol;
 use slip_model::Digest;
 use slip_model::keys::KeyKind;
 
@@ -422,10 +431,102 @@ impl<'n, 'w> Names<'n, 'w> {
 
 /// A specialisation's arguments, or a partial specialisation's pattern.
 fn spec_args(ast: &Ast, d: DeclId, out: &mut String) {
+    let names = TypedNull(ast);
     if let Some((_, si)) = ast.spec_info(d) {
-        write_arg_list(&ast.types, ast, ast.types.canonical_args(si.args), out);
+        write_arg_list(&ast.types, &names, ast.types.canonical_args(si.args), out);
     } else if let Some((_, pi)) = ast.partial_spec_info(d) {
-        write_arg_list(&ast.types, ast, pi.canonical, out);
+        write_arg_list(&ast.types, &names, pi.canonical, out);
+    }
+}
+
+/// The AST's names, except that a null pointer argument whose type is not
+/// `std::nullptr_t` prints with it (`(int *)nullptr`): Kiln's argument
+/// printer writes every null pointer `nullptr`, and two such arguments of
+/// different types are different specialisations (`N<nullptr>` against
+/// `N<(int *)nullptr>`).
+struct TypedNull<'a>(&'a Ast);
+
+impl TypedNull<'_> {
+    /// Writes `value` as a typed null pointer, if it is one whose type is
+    /// not `std::nullptr_t`.
+    fn typed_null(&self, value: ConstValueId, out: &mut String) -> bool {
+        let ast = self.0;
+        let Some(Scalar::Null { ty, kind: _ }) = ast.consts.scalar(value) else { return false };
+        let c = ast.types.canonical(ty);
+        if let TypeView::Builtin(BuiltinType::NullPtr) = ast.types.view(c.ty()) {
+            return false;
+        }
+        out.push('(');
+        out.push_str(&print_type(&ast.types, ast, c, PrintOptions::CANONICAL));
+        out.push_str(")nullptr");
+        true
+    }
+}
+
+impl TypeNames for TypedNull<'_> {
+    fn write_decl_name(&self, decl: DeclId, scoped: bool, out: &mut String) {
+        self.0.write_decl_name(decl, scoped, out);
+    }
+    fn specialization_args(&self, decl: DeclId) -> Option<ArgListId> {
+        self.0.specialization_args(decl)
+    }
+    fn args_as_written(&self, decl: DeclId) -> Option<ArgListId> {
+        self.0.args_as_written(decl)
+    }
+    fn converted_args(&self, decl: DeclId) -> Option<ArgListId> {
+        self.0.converted_args(decl)
+    }
+    fn write_converted_scope(&self, decl: DeclId, out: &mut String) -> bool {
+        self.0.write_converted_scope(decl, out)
+    }
+    fn implicit_typedef(&self, decl: DeclId) -> bool {
+        self.0.implicit_typedef(decl)
+    }
+    fn preferred_name(&self, decl: DeclId) -> Option<QualType> {
+        self.0.preferred_name(decl)
+    }
+    fn tag_keyword(&self, decl: DeclId) -> &'static str {
+        self.0.tag_keyword(decl)
+    }
+    fn tag_named_by_typedef(&self, decl: DeclId) -> bool {
+        self.0.tag_named_by_typedef(decl)
+    }
+    fn invented_parm(&self, decl: DeclId) -> Option<Option<(DeclId, ArgListId)>> {
+        self.0.invented_parm(decl)
+    }
+    fn write_expr(&self, expr: ExprId, out: &mut String) {
+        self.0.write_expr(expr, out);
+    }
+    fn write_value(&self, ty: QualType, value: ConstValueId, out: &mut String) {
+        if !self.typed_null(value, out) {
+            self.0.write_value(ty, value, out);
+        }
+    }
+    fn write_value_typed(&self, ty: QualType, value: ConstValueId, out: &mut String) {
+        if !self.typed_null(value, out) {
+            self.0.write_value_typed(ty, value, out);
+        }
+    }
+    fn arg_includes_type(&self, template: DeclId, index: usize) -> bool {
+        self.0.arg_includes_type(template, index)
+    }
+    fn write_symbol(&self, sym: Symbol, out: &mut String) {
+        self.0.write_symbol(sym, out);
+    }
+    fn write_template_param(&self, associated: DeclId, index: u32, out: &mut String) {
+        self.0.write_template_param(associated, index, out);
+    }
+    fn write_operator(&self, op: u8, out: &mut String) {
+        self.0.write_operator(op, out);
+    }
+    fn is_anonymous_namespace(&self, ns: DeclId) -> bool {
+        self.0.is_anonymous_namespace(ns)
+    }
+    fn clang_compat(&self) -> u32 {
+        self.0.clang_compat()
+    }
+    fn c_lang(&self) -> Option<bool> {
+        self.0.c_lang()
     }
 }
 
@@ -466,6 +567,12 @@ fn function_suffix(ast: &Ast, f: DeclId, out: &mut String) {
         RefQual::None => {}
         RefQual::LValue => out.push_str(" &"),
         RefQual::RValue => out.push_str(" &&"),
+    }
+    // The trailing requires-clause, which the key holds (digest-kinds §3.3
+    // `function`): two functions that differ in it alone are two units.
+    if let Some(&r) = ast.templates.trailing_requires.get(f) {
+        out.push_str(" requires ");
+        ast.write_expr(r, out);
     }
 }
 

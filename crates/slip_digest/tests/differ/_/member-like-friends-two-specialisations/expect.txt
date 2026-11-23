@@ -1,7 +1,7 @@
 # N's pattern holds the changed friend: its FriendTarget (WP-033) is a ref to the new template
 changed N
-derived-changed N<int>::friend template <class> void m(type-parameter-0-0 *)
-added N::<friend template <class> void m(type-parameter-1-0 *)>
-added N::friend template <class> void m(type-parameter-1-0 *)
-removed N::<friend template <class> void m(type-parameter-1-0)>
-removed N::friend template <class> void m(type-parameter-1-0)
+derived-changed N<int>::friend template <class> void m(type-parameter-0-0 *) requires C<T>
+added N::<friend template <class> void m(type-parameter-1-0 *) requires C<T>>
+added N::friend template <class> void m(type-parameter-1-0 *) requires C<T>
+removed N::<friend template <class> void m(type-parameter-1-0) requires C<T>>
+removed N::friend template <class> void m(type-parameter-1-0) requires C<T>

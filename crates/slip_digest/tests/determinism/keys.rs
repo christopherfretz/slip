@@ -44,7 +44,10 @@ pub const SAME_KEY: &[(&str, &[&str], u64, &str)] = &[
     // Each test is `# pending`, `# needs: expr`.
     (
         "differ/_/key-constraint-only",
-        &["template <class> void f(type-parameter-0-0)"],
+        &[
+            "template <class> void f(type-parameter-0-0) requires C1<T>",
+            "template <class> void f(type-parameter-0-0) requires C2<T>",
+        ],
         1,
         "a trailing requires-clause is Pending(Expr)",
     ),
@@ -78,28 +81,10 @@ pub const SAME_KEY: &[(&str, &[&str], u64, &str)] = &[
 ];
 
 /// Display names two different units of one output are known to share:
-/// (directory, name, how many keys share it, reason).
-pub const SAME_NAME: &[(&str, &str, usize, &str)] = &[
-    // Names leave a requires-clause out (it is an expression, and names
-    // print no expressions): two members that differ in it alone, or
-    // whose instantiated signatures meet, share a name.
-    ("differ/FnSpec/0-not-selected", "X::~X<T>()", 2, "prospective destructors differ in requires"),
-    (
-        "differ/FnSpec/0-not-selected",
-        "X<int>::~X()",
-        2,
-        "prospective destructors differ in requires",
-    ),
-    (
-        "differ/_/key-member-of-template-overloads",
-        "A<int>::f(int)",
-        2,
-        "f(T) requires C<T> and f(int) at T = int",
-    ),
-    // Kiln's argument printer (`write_arg_list`) writes a null pointer
-    // argument as `nullptr` whatever its type.
-    ("differ/_/key-null-pointer-typed", "N<nullptr>", 2, "N<nullptr> against N<(int *)nullptr>"),
-];
+/// (directory, name, how many keys share it, reason). Empty: names print
+/// a trailing requires-clause and a typed null pointer argument's type
+/// (`spec/verify.md` §6.1), which separated the last shared names.
+pub const SAME_NAME: &[(&str, &str, usize, &str)] = &[];
 
 /// Sides of the pair tests that are known not to digest: (directory,
 /// side, reason). Any other side that does not digest fails the sweep,
