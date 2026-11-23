@@ -101,7 +101,7 @@ pub(crate) fn write(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
     let at_first = namespace_visibility(w, s, first);
     // None for the definition class (§11.9), whose definition Kiln makes
     // on use.
-    let def = if crate::decl_func::definition_class(w, e) {
+    let def = if crate::demand::definition_class(w, e) {
         None
     } else {
         crate::units::defining_decl(w, e)
