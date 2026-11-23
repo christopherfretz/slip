@@ -12,8 +12,8 @@
 use std::cmp::Ordering;
 
 use slip_kiln::kiln::ast::decl::{
-    DeclFlags, DeclKind, DefinitionBits, EnumData, FriendTarget, NamespaceData,
-    TemplLinkKind, VarStorage,
+    DeclFlags, DeclKind, DefinitionBits, EnumData, FriendTarget, NamespaceData, TemplLinkKind,
+    VarStorage,
 };
 use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_kiln::kiln::ast::templates::SpecKind;
@@ -21,7 +21,6 @@ use slip_kiln::kiln::ast::{Ast, DeclId};
 
 use super::KilnSubject;
 use crate::wire;
-
 
 /// Whether a declaration of this kind is a value of the subject: an entity
 /// (§5.1, "a namespace, type, function, variable, template, parameter, or
@@ -211,7 +210,8 @@ impl<'u> KilnSubject<'u> {
                         | DeclKind::Var
                         | DeclKind::Field
                 );
-            let local_class = matches!(uk, DeclKind::CXXRecord | DeclKind::Enum) && !self.listed(up);
+            let local_class =
+                matches!(uk, DeclKind::CXXRecord | DeclKind::Enum) && !self.listed(up);
             if !block && !local_class {
                 return false;
             }

@@ -878,7 +878,8 @@ fn review_f1_explicit_instantiations_are_not_written() {
         let c = one(s, "C");
         let cm = one(s, "C::m");
         let cd = one(s, "C::d");
-        for kind in [SpecKind::ExplicitInstantiationDefinition, SpecKind::ExplicitInstantiationDeclaration]
+        for kind in
+            [SpecKind::ExplicitInstantiationDefinition, SpecKind::ExplicitInstantiationDeclaration]
         {
             let ci = find(p, DeclKind::CXXRecord, "C", |ast, d| spec_kind(ast, d) == Some(kind));
             assert!(!ci.is_empty(), "{kind:?}");
@@ -1023,9 +1024,8 @@ struct H { enum { HA }; };
 ";
     with(&[("main.cpp", src)], |_, s| {
         let q = |name: &str| {
-            s.qualified(one(s, name)).map(|v| {
-                v.into_iter().map(|x| String::from_utf8(x).unwrap()).collect::<Vec<_>>()
-            })
+            s.qualified(one(s, name))
+                .map(|v| v.into_iter().map(|x| String::from_utf8(x).unwrap()).collect::<Vec<_>>())
         };
         assert_eq!(q("n::hf"), None, "a hidden friend");
         assert_eq!(q("n::FS"), None, "a class only a friend declaration declares");
@@ -1106,7 +1106,8 @@ fn review_f8_builtin_record_members() {
 /// class template defined after a forward declaration).
 #[test]
 fn review_lookup_scopes() {
-    let src = "namespace t1 { inline namespace a { namespace { inline namespace b { int deep; } } } }
+    let src =
+        "namespace t1 { inline namespace a { namespace { inline namespace b { int deep; } } } }
 namespace t3 { void f(int); inline namespace v { void f(char); } }
 template <class T> struct FT;
 template <class T> struct FT { int m4; };
@@ -1136,7 +1137,10 @@ template <> void MS<int>::cm() {}
 ";
     with(&[("main.cpp", src)], |p, s| {
         let t = find(p, DeclKind::TemplateTypeParm, "T", |ast, d| {
-            ast.decls.get(d).ctx().is_some_and(|c| ast.decls.get(c).kind() == DeclKind::TranslationUnit)
+            ast.decls
+                .get(d)
+                .ctx()
+                .is_some_and(|c| ast.decls.get(c).kind() == DeclKind::TranslationUnit)
                 && !ast.decls.get(d).has(DeclFlags::IMPLICIT)
         });
         assert!(!t.is_empty());
@@ -1153,7 +1157,11 @@ template <> void MS<int>::cm() {}
         }
         let ind = find(p, DeclKind::IndirectField, "u1", |_, _| true);
         assert!(!ind.is_empty());
-        assert_eq!(kinds(s, s.entity_number(ind[0])), wire::KIND_ENTITY | wire::KIND_VARIABLE, "M11");
+        assert_eq!(
+            kinds(s, s.entity_number(ind[0])),
+            wire::KIND_ENTITY | wire::KIND_VARIABLE,
+            "M11"
+        );
         assert_eq!(found_at(p, s, "MS::cm"), ["main.cpp:4"], "M20");
     });
 }
@@ -1170,6 +1178,29 @@ fn review_origin_of_specialisation_of_undefined_template() {
         let e = s.entity_number(ds[0]);
         assert_eq!(s.declarations(e), Ok(vec![]));
         assert_eq!(s.origin(e), one(s, "td"));
+    });
+}
+
+/// F9 (landed decision 19): a closure's call operator has no written
+/// declaration; the lambda-expression is the written thing.
+#[test]
+fn review_f9_closure_call_operator() {
+    let src = "void lam() { auto l = [](int a) { int z = a; return z; }; (void)l(1); }\n";
+    with(&[("main.cpp", src)], |p, s| {
+        let ops = find(p, DeclKind::CXXMethod, "", |ast, d| {
+            ast.decls.get(d).ctx().is_some_and(|c| ast.decls.get(c).has(DeclFlags::IMPLICIT))
+        });
+        assert!(!ops.is_empty(), "the closure's call operator");
+        for d in ops {
+            assert_eq!(s.declarations(s.entity_number(d)), Ok(vec![]));
+        }
+        let z = find(p, DeclKind::Var, "z", |_, _| true);
+        assert_eq!(z.len(), 1);
+        // Known gap of the structural rule (landed decision 19): `z` is
+        // written, but its context chain is the implicit call operator, so
+        // it has no declaration until WP-085 reads the extent table. Then
+        // this becomes `["main.cpp:1"]`.
+        assert_eq!(decls_at(p, s, s.entity_number(z[0])), Vec::<String>::new());
     });
 }
 
@@ -1232,11 +1263,18 @@ fn measure_lookup_absent() {
         |unit| {
             let owned = |_: &[u8]| false;
             let s = KilnSubject::new(unit, &owned);
-            let names: [&[&[u8]]; 4] = [
+            // The last component of the first four is interned nowhere in
+            // the unit, so the walk stops at the symbol table; that of the
+            // last three is interned (`errs`, `size`) and absent from the
+            // scopes reached, so each costs its probes.
+            let names: [&[&[u8]]; 7] = [
                 &[b"absent_name_wp083"],
                 &[b"llvm", b"absent_name_wp083"],
                 &[b"std", b"absent_name_wp083"],
                 &[b"llvm", b"SmallVector", b"absent_name_wp083"],
+                &[b"llvm", b"SmallVector", b"errs"],
+                &[b"std", b"errs"],
+                &[b"llvm", b"errs", b"size"],
             ];
             let mut lines = vec![format!("declarations {}", unit.ast().decls.len())];
             for n in names {
@@ -1249,8 +1287,9 @@ fn measure_lookup_absent() {
                     assert_eq!(s.lookup(true, n), first);
                 }
                 let warm = t1.elapsed() / reps;
-                let shown: Vec<String> = n.iter().map(|c| String::from_utf8_lossy(c).into_owned()).collect();
-            lines.push(format!("{}: first {cold:?}, then {warm:?} per call", shown.join("::")));
+                let shown: Vec<String> =
+                    n.iter().map(|c| String::from_utf8_lossy(c).into_owned()).collect();
+                lines.push(format!("{}: first {cold:?}, then {warm:?} per call", shown.join("::")));
             }
             let t2 = Instant::now();
             let fs = s.lookup(true, &[b"llvm", b"errs"]);

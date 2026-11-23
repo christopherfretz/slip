@@ -141,7 +141,8 @@ impl KilnSubject<'_> {
             if let DeclNameView::Identifier(s) = ast.names.view(ast.decls.get(w).name()) {
                 index.names.entry(s.index()).or_default().push(e.index());
             }
-            if let Some(td) = ast.decls.typedef_for_anon(w).or_else(|| ast.decls.typedef_for_anon(e))
+            if let Some(td) =
+                ast.decls.typedef_for_anon(w).or_else(|| ast.decls.typedef_for_anon(e))
             {
                 index.linkage.insert(self.entity(td).index(), e.index());
             }
