@@ -10,8 +10,10 @@ use slip_model::Digest;
 use slip_model::hash::tagged_digest;
 use slip_model::wire::Encoder;
 
+#[cfg(test)]
+use crate::Area;
+use crate::Cause;
 use crate::tables::Row;
-use crate::{Area, Cause};
 
 /// `H("slip.unit.v1", stream)`: a unit's digest (`spec/model.md` §3,
 /// `spec/digest.md` §4).
@@ -21,15 +23,45 @@ pub(crate) const TYPE_TAG: &str = "slip.type.v1";
 
 /// What a pending area writes in place of its rows (WP-024): a `uv` 0,
 /// which no tag is (`spec/digest-kinds.md` §1.4), so the placeholder is
-/// fixed and the stream stays well formed.
+/// fixed and the stream stays well formed. No area is pending since
+/// WP-045 removed `Area::Demand`, so only the tests below write it; a
+/// package that adds a pending area removes the `cfg`.
+#[cfg(test)]
 const PENDING_PLACEHOLDER: u64 = 0;
 
 /// The bytes of one stream and the first cause that makes it
-/// indeterminate.
-#[derive(Debug, Default)]
+/// indeterminate, with what back-references need of it
+/// (`spec/digest.md` §4.3): an identity, and the count of the nodes it
+/// wrote first.
+#[derive(Debug)]
 pub(crate) struct Stream {
     enc: Encoder,
     cause: Option<Cause>,
+    /// Unique among the streams of this thread: a back-reference names a
+    /// node of its own stream only (`walk::Walk::back_ref`). Never
+    /// written.
+    id: u64,
+    /// The count the next node written first takes, from 0 at the head
+    /// of the stream.
+    nodes: u64,
+}
+
+thread_local! {
+    /// The identity the next stream of this thread takes. A walk runs on
+    /// one thread and its memo of back-references lives no longer than
+    /// it does, so identities unique per thread are enough.
+    static NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+impl Default for Stream {
+    fn default() -> Stream {
+        let id = NEXT_ID.with(|n| {
+            let id = n.get();
+            n.set(id + 1);
+            id
+        });
+        Stream { enc: Encoder::default(), cause: None, id, nodes: 0 }
+    }
 }
 
 /// The result of hashing a stream.
@@ -141,6 +173,7 @@ impl Stream {
 
     /// An area of the walk that is not written yet (WP-024): a fixed
     /// placeholder, and the stream is indeterminate with `Pending(area)`.
+    #[cfg(test)]
     pub(crate) fn pending(&mut self, area: Area) -> &mut Self {
         self.enc.uv(PENDING_PLACEHOLDER);
         self.indeterminate(Cause::Pending(area))
@@ -148,6 +181,19 @@ impl Stream {
 
     pub(crate) fn cause(&self) -> Option<Cause> {
         self.cause
+    }
+
+    /// The stream's identity (`walk::Walk::back_ref`).
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Counts a node written first in this stream: its count, from 0
+    /// (`spec/digest.md` §4.3).
+    pub(crate) fn count_node(&mut self) -> u64 {
+        let n = self.nodes;
+        self.nodes += 1;
+        n
     }
 
     /// The bytes written so far.

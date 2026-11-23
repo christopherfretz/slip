@@ -1534,11 +1534,17 @@ mod tests {
     }
 
     /// A designated list in a template keeps its written form
-    /// (`ColdExprData` `syntactic_list`, written by `expr::cold`), whose
-    /// `DesignatedInitExpr`s hold the very initialisers of the semantic
-    /// form (`kiln_sema` init.rs:2114): measures the bytes by nesting.
+    /// (`ColdExprData` `syntactic_list`, written by `expr::cold`). Kiln
+    /// records one for every level of a nested list, each built afresh
+    /// (`kiln_sema` templ/actions.rs:2092, from init.rs:2114): only the
+    /// innermost initialiser is a node of two levels, so back-references
+    /// (digest §4.3, WP-049) leave the bytes quadratic in the nesting.
+    /// The measure, and the count of lists that makes it so: `n` levels
+    /// are `n + 1` semantic lists and `(n + 1)(n + 2) / 2` written ones.
+    /// When Kiln shares a level's written form with the level around it
+    /// (`docs/wp/WP-049.md` Handback, "For Kiln") the count fails, and
+    /// this test asserts linear growth instead.
     #[test]
-    #[ignore = "a measure: --ignored --nocapture"]
     fn nested_designated_lists() {
         let nested = |n: usize| {
             let mut lines = vec!["struct N0 { int x; };".to_owned()];
@@ -1553,18 +1559,23 @@ mod tests {
         for n in [1, 2, 3, 4, 8, 12] {
             let src = nested(n);
             let files = [("main.cpp", src.as_str())];
-            let (roots, bytes) = with_walk(&files, "c++20", |w| {
-                let roots: Vec<ExprId> = exprs(w)
+            let (lists, bytes) = with_walk(&files, "c++20", |w| {
+                let all = exprs(w);
+                let lists = all
+                    .iter()
+                    .filter(|&&e| w.ast.exprs.get(e).kind() == ExprKind::InitListExpr)
+                    .count();
+                let root = all
                     .into_iter()
                     .filter(|&e| w.ast.exprs.syntactic_list(e).is_some())
-                    .collect();
+                    .max()
+                    .expect("a list with a written form");
                 let mut s = Stream::new();
-                if let Some(&r) = roots.last() {
-                    child(w, &mut s, r);
-                }
-                (roots.len(), s.as_bytes().len())
+                child(w, &mut s, root);
+                (lists, s.as_bytes().len())
             });
-            println!("{n} nested: {roots} lists with a written form; outermost {bytes} bytes");
+            println!("{n} nested: {lists} lists; outermost {bytes} bytes");
+            assert_eq!(lists, n + 1 + (n + 1) * (n + 2) / 2, "{n} nested");
         }
     }
 

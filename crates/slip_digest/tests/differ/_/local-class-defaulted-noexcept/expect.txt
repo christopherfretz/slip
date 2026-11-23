@@ -1,6 +1,1 @@
-# pending
-# needs: local
-# WP-040 writes local classes; then the member's own stream holds the
-# specification (decl.rs own_exception_spec) and k() differs. Today k()
-# is indeterminate, Pending(Local), on both sides.
 changed k()

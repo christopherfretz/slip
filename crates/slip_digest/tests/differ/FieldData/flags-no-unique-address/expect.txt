@@ -1,2 +1,5 @@
+# pending
+# needs: expr
+# the consteval block's closure is the block's (WP-040), but its `^^S` is Unsupported("ExprKind/CXXReflectExpr")
 changed S
 changed S::e

@@ -8,8 +8,8 @@
 // and exists for nothing else.
 
 //! The digest's tables (`spec/digest-kinds.md`) as Rust: every tag and
-//! decision, Slip's own numbers of §3.1, §3.2 and §11.1, and the schema
-//! pins (`spec/digest.md` §13 obligation 3).
+//! decision, Slip's own numbers of §1.7, §3.1, §3.2 and §11.1, and the
+//! schema pins (`spec/digest.md` §13 obligation 3).
 
 #![allow(dead_code, clippy::too_many_lines, clippy::trivially_copy_pass_by_ref)]
 
@@ -100,6 +100,11 @@ pub(crate) mod property {
     pub(crate) const INHERITED_CONSTRUCTOR: u32 = 6;
     pub(crate) const DEFAULT_IMMEDIATES: u32 = 7;
     pub(crate) const DEFINITION: u32 = 8;
+}
+
+/// §1.7 the rows of the walk.
+pub(crate) mod walk_row {
+    pub(crate) const BACKREF: u32 = 1537;
 }
 
 /// `kiln_ast::types::kinds::Quals`.

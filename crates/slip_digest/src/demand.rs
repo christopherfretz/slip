@@ -283,24 +283,65 @@ fn key_function(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Writ
 /// present when Kiln holds the definition ([`defining_declaration`]).
 fn definition(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
     let Some(def) = defining_declaration(w, e) else { return };
-    let ast = w.ast;
     let u = write_resolved(w, e, owner, Property::Definition, None, |w, s| {
-        // Every declaration of the entity is read, an out-of-line one an
-        // instantiation made included (`Walk::redecls`).
-        w.unit.definition = true;
-        crate::templ::spec_definition(w, s, e);
-        if ast.decls.function(def).is_some() {
-            crate::decl_func::function_definition(w, s, e, def);
-        } else if ast.decls.var(def).is_some() {
-            crate::decl_func::var_definition(w, s, e, def);
-        } else if ast.decls.record(def).is_some() {
-            crate::decl_class::record_definition(w, s, def);
-            crate::attrs::definition_attrs(w, s, e);
-        } else if ast.decls.enumeration(def).is_some() {
-            crate::decl_class::enum_definition(w, s, def);
-        }
+        definition_stream(w, s, e, def);
     });
     out.push(u);
+}
+
+/// What the numbering of owner `e` walks after `e`'s own stream
+/// (`local::compute`, digest §4.3 "Numbering an owner"), into the sink
+/// `s`: the streams of the units of `e` that hold what its own stream
+/// leaves out, each with a fresh unit state, as they are written. The
+/// resolved unit `definition` (§11.9), which holds the body or
+/// initialiser of an entity of the definition class: what the own stream
+/// declared is met again there first, in the same order (the
+/// parameters), and recorded once. Then, for a field an instantiation
+/// made, its `default_argument` unit (§11.4), whose initialiser the own
+/// stream writes empty.
+pub(crate) fn number_parts(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
+    let ast = w.ast;
+    if let Some(def) = defining_declaration(w, e) {
+        drop(w.take_unit());
+        definition_stream(w, s, e, def);
+    }
+    let d = crate::units::read_decl(w, e);
+    if let Some(f) = ast.decls.field(d)
+        && let Some(x) = f.init
+        && crate::decl_class::instantiated_field(w, d)
+    {
+        drop(w.take_unit());
+        w.unit.local.holder = Some(e);
+        crate::expr::child(w, s, x);
+    }
+}
+
+/// The stream of the resolved unit `definition` of entity `e`, read from
+/// its defining declaration `def` (`defining_declaration`), into `s`,
+/// whose unit state is fresh: what `definition` writes, and what the
+/// numbering of `e` walks after `e`'s own stream (`local::compute`), since
+/// the local types and objects of a body `definition` holds are `e`'s
+/// (digest §4.3 "Numbering an owner").
+pub(crate) fn definition_stream(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: DeclId) {
+    let ast = w.ast;
+    // Every declaration of the entity is read, an out-of-line one an
+    // instantiation made included (`Walk::redecls`).
+    w.unit.definition = true;
+    // The stream is `e`'s: its local objects are referred to as its own,
+    // and the names around a unit under a local type are written
+    // (`local::outer`, `local::write_scope_names`).
+    w.unit.local.holder = Some(e);
+    crate::templ::spec_definition(w, s, e);
+    if ast.decls.function(def).is_some() {
+        crate::decl_func::function_definition(w, s, e, def);
+    } else if ast.decls.var(def).is_some() {
+        crate::decl_func::var_definition(w, s, e, def);
+    } else if ast.decls.record(def).is_some() {
+        crate::decl_class::record_definition(w, s, def);
+        crate::attrs::definition_attrs(w, s, e);
+    } else if ast.decls.enumeration(def).is_some() {
+        crate::decl_class::enum_definition(w, s, def);
+    }
 }
 
 /// The declaration the resolved unit `definition` of entity `e` is read
@@ -652,7 +693,16 @@ fn value(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
     if ast.decls.var(v).is_none() {
         return;
     }
-    let own = match crate::decl_func::var_eval(w, v).state() {
+    // The evaluation is read over every declaration of the variable, the
+    // out-of-line definition an instantiation made for a static data
+    // member included, as `definition` reads its initialiser: Kiln
+    // records the evaluation on the declaration that holds the
+    // initialiser (`decl_func::var_eval`), which the own unit's chain
+    // leaves out (`Walk::redecls`).
+    let in_definition = std::mem::replace(&mut w.unit.definition, true);
+    let eval = crate::decl_func::var_eval(w, v);
+    w.unit.definition = in_definition;
+    let own = match eval.state() {
         VarEvalState::Value(c) => Some(c),
         VarEvalState::NotConstant => None,
         VarEvalState::NotEvaluated | VarEvalState::Evaluating => return,
@@ -971,15 +1021,17 @@ fn deferrable_at(w: &Walk<'_>, f: DeclId, depth: u32) -> bool {
         || deferrable_at(w, pattern, depth + 1)
 }
 
-/// Whether the declaration `x` was made by instantiation, of any form: the
-/// one call to switch to WP-045's effective kind when it lands. Kiln
-/// defers the specification under every form
-/// (`kiln_sema/src/templ/subst/decls.rs:766-770`, `:1170-1195`) and
+/// Whether the declaration `x` was made by instantiation, of any form
+/// (`templ::made_by_instantiation`, WP-045's test): Kiln defers the
+/// specification of the declarations it makes, under every form
+/// (`kiln_sema/src/templ/subst/decls.rs:766-770`, `:1170-1195`), and
 /// resolves it when it defines the function
 /// (`kiln_sema/src/decl.rs:9670-9676`), so an explicit instantiation
-/// definition resolves it only for the members it defines.
+/// definition resolves it only for the members it defines. A friend
+/// written in source that redeclares a member of an instantiation was
+/// not made by one, and its specification is not deferred.
 fn instantiated(w: &Walk<'_>, x: DeclId) -> bool {
-    crate::decl_func::instantiated_decl(w, x)
+    crate::templ::made_by_instantiation(w, x)
 }
 
 /// The pattern the instantiated declaration `x` was made from: for a
@@ -1228,12 +1280,13 @@ mod tests {
 
     // digest-kinds §11.1 property 7: the values of a written default are
     // found by a second walk into a dropped stream; its cause is kept, as
-    // a list an indeterminate walk found may be short (a lambda is
-    // `Pending(Local)` today).
+    // a list an indeterminate walk found may be short (a local class
+    // that `struct Q *` declares with no declaration statement is
+    // `UndeclaredLocal`, digest §4.3).
     #[test]
     fn immediates_keep_the_walks_cause() {
         let src = "consteval int id(int x) { return x; }\n\
-                   void f(int a = id(3) + [] { return 0; }());\n\
+                   void f(int a = id(3) + [] { struct Q *p = nullptr; return p ? 1 : 0; }());\n\
                    void h() { f(); }\n";
         crate::decl_func::tests::with_walk(src, |w| {
             let ast = w.ast;
@@ -1242,7 +1295,7 @@ mod tests {
             let (_, x) = crate::decl_func::written_default(w, p.expect("a"));
             let (values, cause) = super::immediates(w, x.expect("the default"));
             assert_eq!(values.len(), 1);
-            assert_eq!(cause, Some(crate::Cause::Pending(crate::Area::Local)));
+            assert_eq!(cause, Some(crate::Cause::UndeclaredLocal));
         });
     }
 

@@ -44,7 +44,7 @@ pub const SAME_KEY: &[(&str, &[&str], u64, &str)] = &[
     // the test is about it.
     (
         "indeterminate/_/lambda-in-signature-twice",
-        &["template <int> void foo(const char (*)[(... , N)])"],
+        &[],
         1,
         "a lambda in a signature: two templates, one key; the test is about it",
     ),
@@ -60,25 +60,7 @@ pub const SAME_NAME: &[(&str, &str, usize, &str)] = &[];
 /// side, reason). Any other side that does not digest fails the sweep,
 /// which cannot check what it cannot see; an entry that digests fails
 /// too, so the list only shrinks.
-pub const UNPARSED: &[(&str, Side, &str)] = &[
-    // Two `# pending` tests of other packages whose sources do not
-    // compile (their runners skip them, so nothing else sees it).
-    (
-        "differ/DefinitionBits/0-lambda-captures",
-        Side::B,
-        "`[x]` captures a namespace-scope variable (WP-027's test)",
-    ),
-    (
-        "differ/_/local-class-of-instantiated-function",
-        Side::A,
-        "`f<int>()` used before `f` is declared (WP-027's test)",
-    ),
-    (
-        "differ/_/local-class-of-instantiated-function",
-        Side::B,
-        "`f<int>()` used before `f` is declared (WP-027's test)",
-    ),
-];
+pub const UNPARSED: &[(&str, Side, &str)] = &[];
 
 /// The fewest directories a sweep walks: a floor, so that it cannot pass
 /// on nothing (a moved root, a broken directory filter).

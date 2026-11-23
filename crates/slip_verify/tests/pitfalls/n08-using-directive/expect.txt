@@ -3,3 +3,13 @@ good:   verified
 bad:    not_parsed
 good-2: verified
 bad-2:  mismatch changed user() @ main.cpp:11
+# pre-3, pre-4: the directive is owned and the user is the dependency's
+# client::use() in dep/client.h, included after it: the use cannot be
+# edited, so the correct edit adds using namespace acme; beside the owned
+# directive. pre-4 adds the global make(long), which the directive's names
+# meet as if declared in the global namespace ([namespace.udir]/2). Against
+# a verifier that compares owned units only: client::use() is unchanged text.
+good-3: verified
+bad-3:  not_parsed
+good-4: verified
+bad-4:  mismatch changed client::use() @ dep/client.h:2

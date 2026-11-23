@@ -19,3 +19,19 @@ bad-3:  mismatch changed legacy::Box::n @ main.cpp:4
 good-4: verified
 bad-4:  mismatch changed template <class> type-parameter-0-0 legacy::take(type-parameter-0-0) @ main.cpp:4
 bad-4:  mismatch derived_changed legacy::take<int>(int)::<default_argument 0> @ main.cpp:4
+# pre-5: a default template argument (template <int N = limit>), written in
+# the template's unit; the caller names the specialisation the default
+# gave, legacy::take<8> against legacy::take<4>, so it changes too. Both
+# lines: the template's against a verifier that compares only
+# instantiations, the caller's against one that leaves default template
+# arguments out of what a call names.
+good-5: verified
+bad-5:  mismatch changed template <int> int legacy::take() @ main.cpp:4
+bad-5:  mismatch changed caller() @ main.cpp:7
+# pre-6: a requires-clause that names limit. The clause is in the
+# template's key (its discriminator), so the moved template is another
+# entity: removed (and added), not changed; with ::limit (4) the constraint
+# fails and caller() takes the fallback take(...).
+good-6: verified
+bad-6:  mismatch removed template <class> requires (limit > 5) int legacy::take(type-parameter-0-0) @ main.cpp:5
+bad-6:  mismatch changed caller() @ main.cpp:8

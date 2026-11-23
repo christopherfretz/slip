@@ -1,0 +1,14 @@
+# R19: f renamed LOG, the name of a function-like macro. Every LOG( is
+# expanded: in bad the declaration becomes int log_impl("int") and the
+# parse fails. In pre-2 the macro forwards its argument, so the declaration
+# becomes int log_impl(int), an overload of the existing log_impl(long):
+# caller() still returns 1, but other()'s log_impl(1) now takes the new
+# overload (1 instead of 2). Both lines are required: removed f(int) (no
+# entity is named LOG: the rule renames nothing) against a verifier that
+# applies the rename to the text before preprocessing; changed other()
+# against one that checks only the renamed entity and its uses.
+good:   none the new name is a function-like macro's: every use of it is expanded
+bad:    not_parsed
+good-2: none as good
+bad-2:  mismatch removed f(int) @ main.cpp:3
+bad-2:  mismatch changed other() @ main.cpp:6
