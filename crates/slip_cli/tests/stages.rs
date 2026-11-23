@@ -11,6 +11,7 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +31,9 @@ use slip_model::overlay::{Content, Overlay, OverlayFile};
 use slip_model::result::{Category, Residue, RunVerdict, Spellings, State, Tally, TransformResult};
 use slip_model::transform::{Ownership, Rename, Script, TargetKind, Transform, TransformKind};
 use slip_model::transform_run::TransformRun;
+
+/// A report of a test shard: its place (file, offset), severity and text.
+type ShardReport = (Option<(&'static str, u64)>, Severity, Vec<u8>);
 use slip_model::{
     Command as Cmd, Configuration, Digest, End, FileRef, Job, Language, Observer, Origin, Outcome,
     Phase, Plan, Run, RunRecord, Shard, Status,
@@ -183,7 +187,7 @@ fn keep(path: &'static str, lo: u64) -> C {
 #[derive(Clone)]
 struct S {
     claims: Vec<C>,
-    reports: Vec<(Option<(&'static str, u64)>, Severity, Vec<u8>)>,
+    reports: Vec<ShardReport>,
     failed: bool,
     transform: Option<Digest>,
     edits: bool,
@@ -371,7 +375,7 @@ impl Fx {
                 notes: vec![],
             })
             .collect();
-        claims.sort_by(|a, b| a.cmp_key(b));
+        claims.sort_by(Claim::cmp_key);
         let mut reports: Vec<Report> = s
             .reports
             .iter()
@@ -914,6 +918,7 @@ fn s7_2_apply_verified_patch() {
 /// patch file; permitted means written (status 1 for a result with
 /// residue, §10.5).
 #[test]
+#[allow(clippy::too_many_lines, reason = "one table of cases")]
 fn s8_5_apply_permits_table() {
     // (what, request, shards, how the result is made, options that are
     // not enough, options that are).
@@ -1055,7 +1060,7 @@ fn s8_5_apply_permits_table() {
             assert!(!patch.exists(), "{}", case.what);
         }
         if let Some(enough) = case.enough {
-            let code = if case.state == State::Verified { 0 } else { 1 };
+            let code = i32::from(case.state != State::Verified);
             let out = apply_patch(&fx, &id, &patch, enough);
             out.expect(code);
             assert!(patch.exists(), "{}", case.what);
@@ -1132,7 +1137,6 @@ fn s7_1_apply_not_owned_and_unchanged_entries() {
     out.expect(0);
     assert!(out.lines().contains(&"written 2 file(s)"), "{out:#?}");
     let after = fs::metadata(fx.src("b.cc")).unwrap();
-    use std::os::unix::fs::MetadataExt;
     assert_eq!(
         (before.ino(), before.mtime_nsec()),
         (after.ino(), after.mtime_nsec()),
