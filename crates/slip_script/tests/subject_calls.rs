@@ -607,16 +607,18 @@ fn s6_6_rule4_null_where_the_last_token_is_unknown() {
     let src = "\
 template <class T> int k(T);
 template <class T> int t(T);
-struct S { int operator+(int) const; static int sx; int x; int m(); S(int); };
+struct B { int z; };
+struct S : B { int operator+(int) const; static int sx; int x; int m(); S(int); };
 int g(S s) { return k(t<int>) + t<long>(1) + k(&S::operator+) + s.operator+(1); }
-int S::m() { S o(1); return k(decltype(o)::x) + k(decltype(o)::sx) + k(::S(1)) + k(decltype(x)(2)); }
+int S::m() { S o(1); return k(decltype(o)::x) + k(decltype(o)::sx) + k(::S(1)) + k(decltype(x)(2))
+  + k(decltype(o)::B::z); }
 ";
     with(&[("main.cpp", src)], |_, s| {
         // A `decltype` qualifier ends the table's chain; `::S(1)` begins
         // with a `::` the table does not place; a type named by
         // `decltype` is not named by an entry.
         let m: Vec<_> = calls_of(s, one(s, "k"))[2..].iter().flat_map(|&x| args(s, x)).collect();
-        assert_eq!(m, vec![None, None, None, None]);
+        assert_eq!(m, vec![None, None, None, None, None]);
         let xs = calls_of(s, one(s, "k"));
         assert_eq!(args(s, xs[0]), vec![None]);
         assert_eq!(calls(s, "t"), some(&["t<long>(1)"]));

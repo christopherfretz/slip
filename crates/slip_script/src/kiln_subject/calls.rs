@@ -1120,14 +1120,14 @@ mod tests {
     use crate::subject::Expression;
 
     /// `holder`: the namespace- or class-scope declaration as written that
-    /// holds each call; a local class's, a lambda's and a local
-    /// variable's calls are their enclosing function's.
+    /// holds each call; a local class's, a lambda's, a local variable's
+    /// and a condition variable's calls are their enclosing function's.
     #[test]
     fn holder_of_each_call() {
         let src = "\
 int f(int);
 int a = f(1);
-struct S { int m() { struct L { int n() { return f(2); } }; int v = f(3); return [] { return f(4); }(); } int k = f(5); };
+struct S { int m() { struct L { int n() { return f(2); } }; int v = f(3); if (int c = f(7)) {} return [] { return f(4); }(); } int k = f(5); };
 namespace N { template <class T> int t() { return f(6); } }
 ";
         let files = [("main.cpp", src)];
@@ -1150,6 +1150,7 @@ namespace N { template <class T> int t() { return f(6); } }
                 .collect();
             let want = [
                 ("Var", "a"),
+                ("CXXMethod", "m"),
                 ("CXXMethod", "m"),
                 ("CXXMethod", "m"),
                 ("CXXMethod", "m"),
