@@ -115,6 +115,10 @@ needs no map.
   member of a class template's implicit instantiation is the same: its
   key follows the pattern member's, and a rule that matches the member
   itself makes its key indeterminate (`tests/rules/instantiated/`).
+  And a part of a unit: a rule of kind `resolved` or `default_argument`
+  is refused (`RULE_ON_PART`): its key's parent is its owner's mapped
+  key, and its name a property or a parameter index, which no edit
+  renames apart from the owner.
 - **No rule moves an entity into or out of the unnamed namespace by
   renaming a namespace.** A rule of kind `namespace` whose `name` is the
   unnamed namespace's and whose `to_name` is not, or the reverse, is
@@ -125,7 +129,7 @@ needs no map.
   `named-namespace-merged-onto-unnamed`: before, all equal, with
   internal symbols made external or the reverse).
 
-`Rule::validate` refuses both, so every table does, whichever way it is
+`Rule::validate` refuses all three, so every table does, whichever way it is
 made: `RuleTable::new` and the reader of the declared container
 (`RuleTable::from_sorted`) call it on every rule (`RuleError::InvalidName`,
 `SortError::Invalid`).
