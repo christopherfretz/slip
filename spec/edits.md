@@ -1106,8 +1106,9 @@ The **staged name** of an overlay file is, in the file's own directory,
    order, each just after a re-check of its two names, and the
    directories are synced. Then the journal is removed. The re-check
    `lstat`s the file and its staged file (and checks the directory's
-   real path) and compares device, inode, size, modification and change
-   time (with nanoseconds) with what step 4 saw; any difference refuses
+   real path) and compares device, size, modification and change time
+   (with nanoseconds) and inode with what step 4 saw; any difference
+   refuses
    the write, which is rolled back as for any failure of this step, and
    the refusal names the file. It catches a save by replace-and-rename
    and any in-place write that changes the size or advances the times
@@ -1118,10 +1119,14 @@ The **staged name** of an overlay file is, in the file's own directory,
    the times. A file changed so before the rollback's re-check of it is
    reported by the rollback and kept, with the journal (the rollback is
    the restore of `recover`, below).
-   On a volume whose inode numbers change without a replacement (some
-   FUSE-backed host mounts renumber the files under a renamed
-   directory) it can refuse a write nobody touched; that refusal is
-   rolled back like any other and running the write again succeeds.
+   One exception: when step 4's times both have a nanosecond part, a
+   different inode number alone is not a difference. Some volumes
+   (FUSE-backed host mounts) give a file a new inode number on a later
+   lookup after it or its directory was renamed; a replacement of the
+   same size with the same modification and change time to the
+   nanosecond is not realistic (the change time cannot be set). With
+   coarse times (a zero nanosecond part) the inode is compared, as it is
+   then the one field that tells a same-size replacement.
 
    **Decided (2026-11-23): the window before each rename stays a
    documented limit.** `write` checks a path and then renames by path;

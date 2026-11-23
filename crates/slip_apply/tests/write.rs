@@ -982,6 +982,46 @@ fn s7_3_recover_creates_the_staged_name_exclusively() {
     assert!(w.0.borrow().journal.is_some());
 }
 
+/// Every file of `w` given times with a nanosecond part.
+fn fine_times(w: &World) {
+    for n in w.0.borrow_mut().files.values_mut() {
+        (n.mtime, n.ctime) = ((1, 5), (1, 7));
+    }
+}
+
+// §7.3 step 5: with times that have a nanosecond part, a new inode number
+// alone (a volume that renumbers files after a rename) is not a change,
+// before the commit's renames and before the restore's; with coarse times
+// (the other tests: a zero nanosecond part) it is.
+#[test]
+fn s7_3_a_renumbered_inode_with_fine_times() {
+    let c = case();
+    let at = op_index(&c, "rename", 0) + 1;
+    let w = hooked(&c, at, |s: &mut State| s.files.get_mut(b"/w/b.h".as_slice()).unwrap().ino += 1);
+    fine_times(&w);
+    assert_eq!(run_write(&c, &w), Ok(3));
+    assert!(image(&c, &w));
+    let start = after_commit(&c);
+    fine_times(&start);
+    let at = index_in(&start, "rename", 0, |w| {
+        recover(&own_w(), w, w, w).unwrap().unwrap();
+    }) - 1;
+    let w = start.healthy();
+    w.0.borrow_mut().hook = Some((
+        at,
+        Rc::new(|s: &mut State| s.files.get_mut(b"/w/a.cc".as_slice()).unwrap().ino += 1),
+    ));
+    let got = recover(&own_w(), &w, &w, &w).unwrap().unwrap();
+    assert!(got.reported.is_empty());
+    assert!(got.restored.contains(&b"/w/a.cc".to_vec()));
+    assert!(w.0.borrow().journal.is_none());
+    // The same with a zero nanosecond part: refused.
+    let w = hooked(&c, op_index(&c, "rename", 0) + 1, |s: &mut State| {
+        s.files.get_mut(b"/w/b.h".as_slice()).unwrap().ino += 1;
+    });
+    assert_eq!(run_write(&c, &w), Err(WriteError::Refused(Refused::StaleFile(b"/w/b.h".to_vec()))));
+}
+
 /// A save of /w/a.cc: other bytes, newer times.
 fn save_a(s: &mut State) {
     let n = s.files.get_mut(b"/w/a.cc".as_slice()).unwrap();
@@ -1584,21 +1624,11 @@ fn s7_3_disk_refusals() {
         assert_eq!(std::fs::read(r.join(p)).unwrap(), pre);
     }
     assert!(!r.join("store/write.journal").exists());
-    // On a volume that numbers files by path (Docker Desktop's host mounts),
-    // the directory renames above give the files under it new inode numbers,
-    // possibly between step 4 and the renames: the re-check then refuses a
-    // write nobody touched (§7.3 step 5), rolled back, and the next succeeds.
-    match try_write() {
-        Ok(n) => assert_eq!(n, 3),
-        Err(WriteError::Refused(Refused::StaleFile(p))) => {
-            eprintln!("inode numbers changed under {}", String::from_utf8_lossy(&p));
-            for (p, pre, _, _) in disk::FILES {
-                assert_eq!(std::fs::read(r.join(p)).unwrap(), pre);
-            }
-            assert_eq!(try_write(), Ok(3));
-        }
-        Err(e) => panic!("{e:?}"),
-    }
+    // The directory renames above give the files under them new inode
+    // numbers on this host's volume (a FUSE-backed host mount), possibly
+    // between step 4 and the renames: with nanosecond times the re-check
+    // does not count that as a change (§7.3 step 5).
+    assert_eq!(try_write(), Ok(3));
     std::fs::remove_dir_all(&r).unwrap();
 }
 

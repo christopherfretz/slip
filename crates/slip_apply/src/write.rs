@@ -41,10 +41,19 @@ pub struct Stat {
 }
 
 impl Stat {
-    /// What the re-check before a rename compares: which file, its size
-    /// and its times.
-    fn identity(&self) -> (u64, u64, u64, (i64, i64), (i64, i64)) {
-        (self.dev, self.ino, self.size, self.mtime, self.ctime)
+    /// What the re-check before a rename compares (§7.3 step 5): the
+    /// same device, size, modification and change time, and the same
+    /// inode unless the times have a nanosecond part. Some volumes
+    /// (FUSE-backed host mounts) give a file a new inode number on a later
+    /// lookup after it, or its directory, was renamed; with times that
+    /// fine, a different file of the same size and both times is not a
+    /// realistic replacement (the change time cannot be set), so the
+    /// inode is then not needed to tell. With coarse times (a zero
+    /// nanosecond part) it is the one field that does.
+    fn same_file(&self, now: &Stat) -> bool {
+        let fine = self.mtime.1 != 0 && self.ctime.1 != 0;
+        (self.dev, self.size, self.mtime, self.ctime) == (now.dev, now.size, now.mtime, now.ctime)
+            && (self.ino == now.ino || fine)
     }
 }
 
@@ -261,11 +270,11 @@ fn check(
 /// bytes are read.
 fn recheck(f: &JournalEntry, seen: &(Stat, Stat), tree: &dyn Tree) -> Result<(), Fail> {
     let now = file_ok(&f.path, tree.stat(&f.path).map_err(io_at(&f.path))?)?;
-    if now.identity() != seen.0.identity() {
+    if !seen.0.same_file(&now) {
         return Err(Refused::StaleFile(f.path.clone()).into());
     }
     let now = staged_ok(f, tree.stat(&f.staged).map_err(io_at(&f.staged))?)?;
-    if now.identity() != seen.1.identity() {
+    if !seen.1.same_file(&now) {
         return Err(Refused::StaleFile(f.staged.clone()).into());
     }
     Ok(())
@@ -556,7 +565,7 @@ fn restore(
             }
             tree.create(&f.staged, st.mode, &pre).map_err(at(&f.staged))?;
             match tree.stat(&f.path).map_err(at(&f.path))? {
-                Some(now) if now.regular && now.identity() == st.identity() => {}
+                Some(now) if now.regular && st.same_file(&now) => {}
                 _ => {
                     out.reported.push(f.path.clone());
                     continue;
