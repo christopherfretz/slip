@@ -1,0 +1,13 @@
+# N36: argument-dependent lookup with no call written: a range-based for
+# over Mine whose begin and end are owned free functions (pre, pre-2), a
+# structured binding through an owned get<I> (pre-3, pre-4). The generic
+# hooks of pre-2 and pre-4 are in legacy::util, associated through Mine's
+# base legacy::util::Tag.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed sum(legacy::Mine &) @ main.cpp:12
+good-3: verified
+bad-3:  not_parsed
+good-4: verified
+bad-4:  mismatch changed user(legacy::Mine &) @ main.cpp:12

@@ -3,7 +3,7 @@
 
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, FriendKind};
-use slip_kiln::kiln::ast::types::ExcSpec;
+use slip_kiln::kiln::ast::types::{ExcSpec, FuncProto};
 
 use crate::Cause;
 use crate::keys::info;
@@ -59,9 +59,15 @@ impl Walk<'_> {
         let saved = self.take_unit();
         let types = self.take_types();
         let in_key = std::mem::take(&mut self.in_key);
+        // Nor inside the keys being computed: a key under `e` (its
+        // closure's call operator, asked for first) is computed again
+        // inside, under `local::SELF_KEY`; `content_in_progress` ends a
+        // real cycle.
+        let keys = std::mem::take(&mut self.keys_in_progress);
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);
         crate::spelling::write_unit_list(self, &mut s);
+        self.keys_in_progress = keys;
         self.in_key = in_key;
         self.restore_types(types);
         self.unit = saved;
@@ -115,7 +121,16 @@ impl Walk<'_> {
             Some(q) => {
                 s.opt(true);
                 let t = self.type_digest(q, function);
-                self.absorb_type(s, t, q, function);
+                if kind == DeclKind::ParmVar
+                    && ast.decls.param(d).is_some_and(|p| p.original_ty.is_some())
+                {
+                    // An adjusted parameter type holds the canonical
+                    // element or function type: the type as written is
+                    // `ParamData` `original_ty`, read there.
+                    s.digest(&t.digest).absorb(t.cause);
+                } else {
+                    self.absorb_type(s, t, q, function.then_some(d));
+                }
             }
             None => {
                 s.opt(false);
@@ -172,7 +187,8 @@ impl Walk<'_> {
     /// is the resolved unit `exception_spec` (`demand.rs`). A member of a
     /// local class has no key, so no resolved unit can hold it: its stream
     /// holds the specification as Kiln holds it, indeterminate
-    /// (`Pending(Local)`) only while that is still `Deferred`.
+    /// (`local::DEFERRED_EXCEPTION_SPEC`) only while that is still
+    /// `Deferred`.
     fn own_exception_spec(&mut self, s: &mut Stream, d: DeclId) {
         let ast = self.ast;
         let local = self.is_local(d);
@@ -180,20 +196,54 @@ impl Walk<'_> {
             s.opt(false);
             return;
         }
-        match ast.decls.get(d).ty().and_then(|q| ast.types.proto(q)).copied() {
+        match self.own_proto(d) {
             Some(p) => {
                 s.opt(true);
                 let e = ast.types.exc_spec(&p);
                 let deferred = matches!(e, ExcSpec::Deferred(_));
                 self.write_exc_spec(s, e, !local);
                 if local && deferred {
-                    s.indeterminate(Cause::Pending(crate::Area::Local));
+                    s.indeterminate(crate::local::DEFERRED_EXCEPTION_SPEC);
                 }
             }
             None => {
                 s.opt(false);
             }
         }
+    }
+
+    /// The prototype of function declaration `d` that holds its own
+    /// exception specification: before C++17 the one `TypeContext::proto`
+    /// gives (Kiln records the written one apart, `exc_protos`); from
+    /// C++17 on, where `proto` gives the canonical prototype and so the
+    /// first spelling's operand, the first function node of `d`'s type as
+    /// written (a dynamic specification excepted: the canonical one).
+    pub(crate) fn own_proto(&self, d: DeclId) -> Option<FuncProto> {
+        let types = &self.ast.types;
+        let q = self.ast.decls.get(d).ty()?;
+        let p = types.proto(q).copied();
+        let canonical = types.proto_of(types.canonical(q).ty()).copied();
+        if p != canonical {
+            return p;
+        }
+        let mut cur = q;
+        for _ in 0..256 {
+            if let Some(w) = types.proto_of(cur.ty()) {
+                // A dynamic specification is canonically `None` from
+                // C++17 on: `throw(int)` is `noexcept(false)`
+                // ([except.spec]/1), and its types are not its meaning.
+                if matches!(types.exc_spec(w), ExcSpec::Dynamic(_)) {
+                    return p;
+                }
+                return Some(*w);
+            }
+            let next = types.desugar_once(cur);
+            if next.ty() == cur.ty() {
+                break;
+            }
+            cur = next;
+        }
+        p
     }
 
     /// The `data` row of `d`'s kind (§5.3).
@@ -287,11 +337,11 @@ mod tests {
     use slip_kiln::kiln::ast::DeclId;
     use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind};
 
+    use crate::Cause;
     use crate::decl_func::tests::{named, of_kind, with_walk};
     use crate::stream::{FlagWord, Stream};
     use crate::tables::{Decision, Row, decl_kind};
     use crate::walk::Walk;
-    use crate::{Area, Cause};
 
     /// The bytes and cause `own_exception_spec` writes for the only
     /// declaration of `kind` inside `k` (a member of a local class).
@@ -339,7 +389,7 @@ mod tests {
             "struct M { M() noexcept(false); };\nvoid k() { struct L { M m; L() = default; }; }\n",
             DeclKind::CXXConstructor,
         );
-        assert_eq!(cause, Some(Cause::Pending(Area::Local)));
+        assert_eq!(cause, Some(crate::local::DEFERRED_EXCEPTION_SPEC));
     }
 
     /// The tag `spec/digest-kinds.md` §5.3 gives a declaration of kind

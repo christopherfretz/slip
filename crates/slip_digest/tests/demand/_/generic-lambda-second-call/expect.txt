@@ -1,0 +1,2 @@
+added b()
+derived-added mk()::local(0)::operator()<long>(long) const

@@ -1,0 +1,7 @@
+# E23: the base classes of D reordered. Bases are initialised in the order
+# of the base-specifier-list ([class.base.init]/13.2) and laid out in it
+# (Itanium ABI): A's initialiser reads order first, so d.a is 10; reordered,
+# B's runs first and d.a is 20. Name lookup does not depend on the order
+# ([class.member.lookup]: an ambiguity is one in either order).
+good: none the base order is the class itself: every reorder changes D
+bad:  mismatch changed D @ main.cpp:8

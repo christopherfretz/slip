@@ -101,7 +101,7 @@ fn valid(kind: [u8; 4], n: u8) -> Vec<u8> {
                  \"tally\": {{\"selected\": 1, \"unparsed\": 1, \"failed_runs\": 0, \
                  \"error_reports\": 0, \"verified\": 0, \"unchanged\": 0, \"mismatch\": 0, \
                  \"not_parsed\": 0, \"unverifiable\": 0, \"never_parsed\": 0, \"failed\": 0}}, \
-                 \"agreement\": [], \"unused\": [], \
+                 \"agreement\": [], \"unused\": [], \"unchecked\": [], \
                  \"spellings\": {{\"obligations\": 0, \"passed\": 0, \"failed\": []}}, \
                  \"residue\": [], \"exempt\": []}}",
                 h(1),

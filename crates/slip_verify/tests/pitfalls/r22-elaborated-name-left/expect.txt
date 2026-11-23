@@ -1,0 +1,18 @@
+# R22: Old renamed New, and an elaborated-type-specifier naming Old left
+# behind. Old is then not found, so the specifier declares a new class:
+# in pre, struct Old * in the parameter of the namespace-scope take
+# declares ::Old in the namespace ([basic.scope.pdecl]/7), take(struct Old *)
+# no longer accepts &o, and caller() takes take(void *): 2 instead of 1.
+# In pre-2, friend struct Old; in Safe declares ::Old ([namespace.memdef]/3)
+# and befriends it, so New loses the access its member template probed
+# for: decltype(s.secret, 1) fails in substitution and peek() returns 0.
+# The class analogue of R11's left friend. Both trees have two lines: the
+# stale class and the renamed one map to one key (a collision, no place),
+# against a verifier that checks only the uses it renamed; and the user,
+# against one that reports a collision but not what it changed.
+good:   verified
+bad:    mismatch changed caller() @ main.cpp:9
+bad:    mismatch indeterminate Old
+good-2: verified
+bad-2:  mismatch changed Old::peek() @ main.cpp:9
+bad-2:  mismatch indeterminate Old

@@ -1,0 +1,7 @@
+# N26: advance(it), it a legacy::list<Mine>::iterator, finds the owned hook
+# only through legacy, the namespace of the class the iterator is a member
+# of; the enclosing class's template arguments associate nothing.
+good:   verified
+bad:    not_parsed
+good-2: verified
+bad-2:  mismatch changed caller() @ main.cpp:10

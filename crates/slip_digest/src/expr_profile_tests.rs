@@ -395,11 +395,23 @@ const OWN: &[&str] = &[
 /// statement tests of WP-034: 31, 192 and 1 of 21 672 expressions; raise
 /// one only with the reason the new ones are left out). `full`: a kind
 /// walked in full (§4.4); `key/local-ref`: a function body's reference to
-/// a local entity, which a key cannot name; `Pending(Local)`: a lambda's
-/// closure. The own sources leave nothing out (`OWN_CEILINGS`), which is
+/// a local entity, which a key cannot name; `UndeclaredLocal` (was
+/// `Pending(Local)` before WP-040): a lambda's closure that no numbering
+/// of its owner finds, a lambda in a signature (16 of 22 565 at the
+/// merge of WP-040); `local/closure-owner`: a lambda whose closure a
+/// namespace or a class owns, which has no key (4); `local/lambda-in-type`:
+/// an expression whose type is a closure, profiled in a key as these nets
+/// profile every expression (8 of 24 202 at the WP-040 fix round, the
+/// call of a `consteval` block's closure among them, which no key holds).
+/// The own sources leave nothing out (`OWN_CEILINGS`), which is
 /// the exact guard; this one bounds the drift of the pair tests.
-const PAIR_CEILINGS: &[(&str, usize)] =
-    &[("full", 50), ("Unaccounted(\"key/local-ref\")", 250), ("Pending(Local)", 5)];
+const PAIR_CEILINGS: &[(&str, usize)] = &[
+    ("full", 50),
+    ("Unaccounted(\"key/local-ref\")", 250),
+    ("UndeclaredLocal", 5),
+    ("Unsupported(\"local/closure-owner\")", 5),
+    ("Unsupported(\"local/lambda-in-type\")", 1),
+];
 
 /// The same for `OWN`.
 const OWN_CEILINGS: &[(&str, usize)] = &[];
@@ -693,6 +705,10 @@ fn the_f1_pairs_are_determinate() {
 /// templates in Kiln (a kind it profiles as unique, `profile_expr.rs:860`)
 /// and one key here, whose bytes are the lambda's spelling (walked in
 /// full): the key is a `collision`, never one entity in silence.
+/// Since WP-040 the closure the signature names (its type) has no number:
+/// its owner's numbering reads no key or type (digest §4.3), so the key is
+/// indeterminate (`UndeclaredLocal`) before a collision can show; either
+/// way never one entity in silence.
 #[test]
 fn lambdas_in_signatures_collide() {
     for (src, name) in [
@@ -710,7 +726,7 @@ fn lambdas_in_signatures_collide() {
         let all = digest_all(src);
         let units: Vec<_> = all.iter().filter(|(_, n, _)| names(n, name)).collect();
         assert_eq!(units.len(), 1, "{all:?}");
-        assert_eq!(units[0].2, [crate::Cause::Collision], "{name}");
+        assert_eq!(units[0].2, [crate::Cause::UndeclaredLocal], "{name}");
     }
 }
 
