@@ -1,7 +1,7 @@
 namespace a { namespace detail { int k = 3; } int use() { return detail::k; } }
 template <class T> struct W {
   T v;
-  W(T x) : v(x) {}
+  W(T x);
   ~W() {}
   W &operator=(const W &o) { v = o.v; return *this; }
   bool operator==(const W &o) const { return v == o.v; }

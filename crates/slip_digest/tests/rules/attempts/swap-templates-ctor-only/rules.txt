@@ -1,3 +1,3 @@
-# Fix round 2, F6 (the review's case, given an instantiation each so that it is not vacuous): two class templates swapped whose only members are constructors; W<int> in the post-image is V<int>'s, taking its template's mapped name once (M8 applied it twice and gave it back its own).
+# Fix round 2, F6 (the review's case, given an instantiation each so that it is not vacuous): two class templates swapped whose only members are constructors; W<int> in the post-image is V<int>'s, taking its template's mapped name once (M8 applied it twice and gave it back its own). WP-124: the two constructors are told apart by a default argument, not by a body: a constructor defined in a template is indeterminate (kiln/pattern-mem-initializers) until Kiln WP-3026.
 relocate W => :: V
 relocate V => :: W
