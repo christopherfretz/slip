@@ -60,6 +60,10 @@ pub(crate) const LAMBDA_IN_TYPE: Cause = Cause::Unsupported("local/lambda-in-typ
 /// An entity a requires-expression's parameter scope declares: the
 /// profile package's (WP-036), not an owner's.
 pub(crate) const REQUIRES_SCOPE: Cause = Cause::Unsupported("local/requires-scope");
+/// A function name a program reads (`__func__`) met while the stream's
+/// local state is put aside ([`detached`]): the names around it are the
+/// holder's, which a type memoised across units must not read.
+pub(crate) const DETACHED_SCOPE_NAMES: Cause = Cause::Unsupported("local/detached-scope-names");
 /// A numbering asked for after [`number_all`] (never, the pair tests
 /// check).
 pub(crate) const LATE: Cause = Cause::Unaccounted("local/late-numbering");
@@ -1007,11 +1011,6 @@ pub(crate) fn detached<R>(w: &mut Walk<'_>, f: impl FnOnce(&mut Walk<'_>) -> R) 
     w.unit.local = saved;
     r
 }
-
-/// A function name a program reads (`__func__`) met while the stream's
-/// local state is put aside ([`detached`]): the names around it are the
-/// holder's, which a type memoised across units must not read.
-pub(crate) const DETACHED_SCOPE_NAMES: Cause = Cause::Unsupported("ArgView/Expr-scope-names");
 
 /// The names of the named local types around the code being written,
 /// outermost first: those around the unit's entity (a unit under a local

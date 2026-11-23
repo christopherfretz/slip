@@ -864,14 +864,26 @@ impl Walk<'_> {
     }
 
     /// The expression of an `ArgView::Expr` argument (digest-kinds §4.6
-    /// `Expr`, WP-123): in a unit stream (outside a type, a key and a
-    /// profile) the unit's own expression, walked in full (digest §7);
-    /// inside a profile, walked in the profile's frame, as Kiln's own
-    /// profile writes such an argument (`expr_profile` `args each`);
-    /// inside a type or a key, its canonical operand (`profile`). Inside a
-    /// type or a key the unit's local state is put aside
+    /// `Expr`, WP-123), in four cases:
+    /// - in a unit stream (outside a type, a key and a profile), the
+    ///   unit's own expression, walked in full (digest §7): `get<n::k>(t)`;
+    /// - inside a profile the unit stream began, walked in that profile's
+    ///   frame, as Kiln's own profile writes such an argument
+    ///   (`expr_profile` `args each`): the list of a concept-id in a
+    ///   profiled argument, `getb<C<T, n::k>>(t)`;
+    /// - inside a type or a key, in a profile begun there (a type digest
+    ///   puts the unit's frame aside, `take_expr_state`, but a
+    ///   value-dependent argument of the type begins its own): the same,
+    ///   `X<C<T, n::k>>` as a member's type, or `requires C<T, n::k>`;
+    /// - inside a type or a key outside any profile, its canonical operand
+    ///   (`profile`): a befriended `It<T, n::k>`.
+    ///
+    /// Inside a type or a key the unit's local state is put aside
     /// (`local::detached`): a type is memoised across units, and its
-    /// bytes must not depend on the unit that met it first.
+    /// bytes must not depend on the unit that met it first. The pairs
+    /// `differ/ArgView/Expr`, `differ/_/argview-expr-concept-in-profile`,
+    /// `-concept-in-type`, `-concept-in-key` and `differ/_/argview-expr-friend`
+    /// reach the four.
     fn written_arg(&mut self, s: &mut Stream, e: ExprId) {
         let shared = self.type_nesting > 0 || self.in_key > 0;
         if !shared && self.unit.expr.profile.is_none() {

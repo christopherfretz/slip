@@ -1852,13 +1852,18 @@ which `k`), so it is walked, never written by tag alone:
 - Inside a type, a key or a profile, it is written by its canonical
   operand (`profile`, §4.4): the bytes `Profile` would have if Kiln had
   profiled it, the form Kiln's own profile gives such an argument
-  (`args each` above); inside a profile, in that profile's frame.
+  (`args each` above); inside a profile, in that profile's frame. A
+  type digest puts the unit's frame aside, but a value-dependent argument
+  of the type begins a profile of its own, so the frame is met inside a
+  type too: a concept-id's list in `X<C<T, n::k>>`, as in
+  `getb<C<T, n::k>>(t)` at the unit level and in `requires C<T, n::k>`
+  in a key (the pairs `differ/_/argview-expr-concept-in-*`).
   Inside a type or a key the walk puts the unit's local state aside
   (holder, content, local types, scopes) while it writes, so nothing of
   the unit that met the type first is read: a rule-11 check then takes
   the conservative answer (`own_spelling::templated_at` with no holder),
   a function name a program reads (`__func__`) is
-  `Unsupported("ArgView/Expr-scope-names")`, a lambda-expression is
+  `Unsupported("local/detached-scope-names")`, a lambda-expression is
   `local/lambda-in-type` as anywhere in a type, and a reference to a local
   object of the unit raises `local_uses`, so the type is memoised for that
   unit only (digest §4.2).
