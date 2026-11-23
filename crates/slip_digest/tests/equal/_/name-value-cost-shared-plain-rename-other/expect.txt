@@ -1,0 +1,4 @@
+# pending
+# needs: kiln-srcloc-origin
+# A cost (spec/landed/digest/WP-115.md, item 1): a function whose plain name is shared with
+# another function differs when it is renamed (and so does the other here); a relocation is not affected.

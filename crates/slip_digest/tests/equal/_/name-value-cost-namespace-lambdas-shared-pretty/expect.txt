@@ -1,0 +1,3 @@
+# pending
+# needs: kiln-srcloc-origin
+# A cost (spec/landed/digest/WP-115.md, item 1): the bytes are written, so G, H (and legacy) differ under the relocation.

@@ -1,0 +1,5 @@
+# pending
+# needs: kiln-srcloc-origin
+# A cost (spec/landed/digest/WP-115.md, item 1): the pretty name is one object
+# used in two lambdas (two entities), so its bytes are written and change
+# under the relocation: legacy::f() differs.
