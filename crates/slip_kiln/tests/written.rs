@@ -441,24 +441,24 @@ fn s9_3_global_and_first() {
         let s = CALLS;
         let r = written_refs(u);
         let find = |ctx: &str| *r.iter().find(|r| bytes(u, r.name) == at(s, ctx, "f")).unwrap();
-        let g = find("::f(2)");
-        assert!(g.global);
-        assert_eq!(off(u, g.first), at(s, "::f(2)", "f").0, "`first` is after the `::`");
+        let global_f = find("::f(2)");
+        assert!(global_f.global);
+        assert_eq!(off(u, global_f.first), at(s, "::f(2)", "f").0, "`first` is after the `::`");
         let ga = find("::a::f(3)");
         assert!(ga.global);
         assert_eq!(off(u, ga.first), at(s, "::a::f(3)", "a").0);
-        let q = find("a::f(1.0)");
-        assert!(!q.global);
-        assert_eq!(off(u, q.first), at(s, "a::f(1.0)", "a").0);
+        let qualified = find("a::f(1.0)");
+        assert!(!qualified.global);
+        assert_eq!(off(u, qualified.first), at(s, "a::f(1.0)", "a").0);
         let plain = find("f(4)");
         assert!(!plain.global);
         assert_eq!(off(u, plain.first), at(s, "f(4)", "f").0);
         assert_eq!(off(u, plain.first), bytes(u, plain.name).0);
         // The qualifier `a` of `::a::f` is global too, and its own first.
-        let a = *r.iter().find(|r| bytes(u, r.name) == at(s, "::a::f(3)", "a")).unwrap();
-        assert!(a.global);
-        assert_eq!(a.role, Role::Nns);
-        assert_eq!(off(u, a.first), at(s, "::a::f(3)", "a").0);
+        let qual_a = *r.iter().find(|r| bytes(u, r.name) == at(s, "::a::f(3)", "a")).unwrap();
+        assert!(qual_a.global);
+        assert_eq!(qual_a.role, Role::Nns);
+        assert_eq!(off(u, qual_a.first), at(s, "::a::f(3)", "a").0);
     });
 }
 
@@ -837,7 +837,7 @@ fn header(main: &str) -> (String, Vec<String>, Option<String>) {
         match key {
             "std" => value.trim().clone_into(&mut std),
             "args" => {
-                args = value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect()
+                args = value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect();
             }
             "target" => target = Some(value.trim().to_owned()),
             "errors" => {}
@@ -945,7 +945,7 @@ fn sweep_one(line: &[String], root: &Path, label: &str) -> Tally {
             match classify(u, r.role, text, r.referent) {
                 Ok(()) => t.checked += 1,
                 Err(class) if EXPLAINED.contains(&class) => {
-                    t.except(class, format!("{label}: `{text}`"))
+                    t.except(class, format!("{label}: `{text}`"));
                 }
                 Err(class) => {
                     t.except(class, format!("{label}: `{text}` {:?}", r.role));
@@ -1000,7 +1000,7 @@ fn sweep_one(line: &[String], root: &Path, label: &str) -> Tally {
             match (sm.span_text(n.name), ident_of(u, n.decl)) {
                 (Some(a), Some(b)) if a == b => t.decl_checked += 1,
                 (Some(a), Some(b)) if b.is_empty() => {
-                    t.except("deduction guide name", format!("{label}: `{a}`"))
+                    t.except("deduction guide name", format!("{label}: `{a}`"));
                 }
                 (a, b) => t.failures.push(format!("{label}: decl name {a:?} is not {b:?}")),
             }
