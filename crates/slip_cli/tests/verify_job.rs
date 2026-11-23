@@ -679,7 +679,7 @@ fn g3_case(case: &str, one: &'static str, two: &'static str) {
         while !flag.load(Ordering::SeqCst) {
             n += 1;
             let tmp = dir.join("f.h.tmp");
-            std::fs::write(&tmp, if n % 2 == 0 { one } else { two }).unwrap();
+            std::fs::write(&tmp, if n.is_multiple_of(2) { one } else { two }).unwrap();
             std::fs::rename(&tmp, &target).unwrap();
             std::thread::sleep(std::time::Duration::from_micros(200));
         }
