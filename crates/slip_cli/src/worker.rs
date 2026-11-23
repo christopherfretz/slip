@@ -121,6 +121,14 @@ fn map_observer(observer: &Observer, round: u64) -> Result<Shard, String> {
         shard.counters.extend(counters(&output));
         shard.counters.sort_by(|a, b| a.name.cmp(&b.name));
         shard.digests = Some(output.digests);
+        shard.names = Some(slip_model::names::Names {
+            units: output
+                .name_strings
+                .iter()
+                .map(|n| slip_model::names::NamesEntry { key: n.key, names: n.names })
+                .collect(),
+            notes: Vec::new(),
+        });
     }
     Ok(shard)
 }

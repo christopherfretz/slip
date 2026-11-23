@@ -33,5 +33,5 @@ pub mod spelling;
 
 pub use compare::{
     AtSums, CompareError, Comparison, Exemptions, at_sums, comparable, compare_groups,
-    unverifiable, verdict, verified,
+    names_changed, unverifiable, verdict, verified,
 };

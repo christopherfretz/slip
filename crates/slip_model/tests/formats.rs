@@ -1115,14 +1115,14 @@ fn required_sections() {
 
 // spec/model.md §5 rule 2, §8: an unknown critical section, including the
 // reserved shard sections 16, 18 and 20, is UnknownSection (19 and 21 are
-// WP-015's, 17, 24, 25 and 26 WP-060's, `tests/sections.rs`).
+// WP-015's, 17, 24, 25 and 26 WP-060's, 27 WP-112's, `tests/sections.rs`).
 #[test]
 fn unknown_critical_sections() {
     let mut sections = raw_plan_sections(&small_plan());
     sections.push((5, Vec::new()));
     let e = Plan::from_bytes(&sealed(*b"PLAN", &sections)).unwrap_err();
     assert_eq!(e.kind, ErrorKind::UnknownSection);
-    for id in [5u64, 16, 18, 20, 22, 23, 27, 63] {
+    for id in [5u64, 16, 18, 20, 22, 23, 28, 63] {
         let mut sections = raw_shard_sections(&small_shard());
         sections.push((id, Vec::new()));
         let bytes = sealed(*b"SHRD", &sections);

@@ -1,5 +1,5 @@
 # the specialisation's body is in its resolved unit `definition` (WP-045), which writes the names around its entity (`write_scope_names`, mutation N4)
 changed f()
 derived-changed f()::local(0)::g()::local(0)::operator()<int>(int) const::<definition>
-# The names digest (WP-112): the strings this unit passes on changed.
+# WP-112: the names digest of this unit differs (digest §9).
 names-changed f()::local(0)::g()::local(0)::operator()<int>(int) const

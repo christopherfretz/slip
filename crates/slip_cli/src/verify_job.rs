@@ -17,7 +17,7 @@
 //! post-image does not parse), or the job's `Err`.
 
 use slip_digest::map::counters as walk_counters;
-use slip_digest::{Detail, Options, Output, ReadOnly, ReadOnlyFiles, digest};
+use slip_digest::{Detail, NamesUnit, Options, Output, ReadOnly, ReadOnlyFiles, digest};
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_kiln::Lookups;
@@ -26,11 +26,12 @@ use slip_model::declared::Declared;
 use slip_model::digests::{Digests, Group, GroupClass, GroupSum};
 use slip_model::formats::content_id;
 use slip_model::keys::RuleTable;
-use slip_model::verdict::{FindingKind, Verdict};
+use slip_model::names::{NameNote, Names, NamesEntry};
+use slip_model::verdict::{FindingKind, Verdict, VerdictKind};
 use slip_model::{Command, Counter, Digest, FileRef, Observer, Phase, Shard, Status};
 use slip_verify::compare::{
     AtSums, CompareError, Comparison, Exemptions, at_sums, comparable, compare_groups,
-    unverifiable, verdict, verified,
+    names_changed, unverifiable, verdict, verified,
 };
 
 use crate::image::{Image, Resolver, Side, show_path};
@@ -142,6 +143,15 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     if let Some(reason) = not_comparable(pre_digests, &post.digests) {
         return unverifiable_now(post, shard, &reason);
     }
+    // §4.4 (WP-112): the notes, on both paths that compare (a declared
+    // rename leaves the sums equal). A map shard with digests has names
+    // (`spec/model.md` §8.6), so this guard cannot fire on a shard the
+    // store gave back; it is kept so that no note is ever "none" by default.
+    let Some(pre_names) = pre.shard.names.as_ref() else {
+        return unverifiable_now(post, shard, "pre-image: the map shard has no names section");
+    };
+    let notes = names_changed(&pre_names.units, &post.names.units);
+    post.note(&notes);
 
     // Step 3: the sums.
     let g = match at_sums(pre_digests, &post.digests) {
@@ -165,7 +175,8 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     };
 
     // Step 5: the verdict from the comparison.
-    let comparison = compared(comparison, observer)?;
+    let mut comparison = compared(comparison, observer)?;
+    comparison.notes = notes;
     for f in &comparison.findings {
         post.by_kind[kind_index(f.kind)] += 1;
     }
@@ -322,6 +333,10 @@ struct Post {
     reparsed: u64,
     /// The findings of each kind, by [`kind_index`].
     by_kind: [u64; 6],
+    /// Step 1's names digests, and from step 2 the notes (§4.4, WP-112).
+    names: Names,
+    /// Step 1's names digests with each key's file and name, by key.
+    name_strings: Vec<NamesUnit>,
 }
 
 impl Post {
@@ -340,14 +355,46 @@ impl Post {
             differing: 0,
             reparsed: 0,
             by_kind: [0; 6],
+            names: Names {
+                units: output
+                    .name_strings
+                    .iter()
+                    .map(|n| NamesEntry { key: n.key, names: n.names })
+                    .collect(),
+                notes: Vec::new(),
+            },
+            name_strings: output.name_strings,
         }
+    }
+
+    /// The notes of `keys` (ascending, each with a names digest in step
+    /// 1), with the file and name of the key's unit (§4.4).
+    fn note(&mut self, keys: &[Digest]) {
+        let strings = &self.name_strings;
+        self.names.notes = keys
+            .iter()
+            .filter_map(|k| {
+                let i = strings.binary_search_by(|n| n.key.cmp(k)).ok()?;
+                let n = &strings[i];
+                Some(NameNote { key: n.key, file: n.file.clone(), name: n.name.clone() })
+            })
+            .collect();
     }
 
     /// The post shard of §5.4: step 1's outcome and inputs (already in
     /// `shard`), its counters and those of §7.2, sorted by name; step 1's
     /// `digests` without unit lists; `v`.
     fn finish(self, shard: &mut Shard, v: Verdict) -> Shard {
-        let Post { mut counters, mut digests, rule_use, differing, reparsed, by_kind } = self;
+        let Post {
+            mut counters,
+            mut digests,
+            rule_use,
+            differing,
+            reparsed,
+            by_kind,
+            mut names,
+            name_strings: _,
+        } = self;
         let by_name = [
             ("verify.groups.differing", differing),
             ("verify.findings", v.total),
@@ -370,6 +417,11 @@ impl Post {
         let mut out = shard.clone();
         out.counters = counters;
         out.digests = Some(digests);
+        // Notes only beside a comparison (`spec/model.md` §8.6).
+        if !matches!(v.kind, VerdictKind::Verified | VerdictKind::Mismatch) {
+            names.notes.clear();
+        }
+        out.names = Some(names);
         out.verdict = Some(v);
         out.rule_use = rule_use;
         out

@@ -861,8 +861,9 @@ enclosing function's parameter and return types as written, an alias, an
 elaborated keyword, a qualifier as written, template parameters' names;
 Kiln's `kiln_ast/src/dump/pretty.rs` `pretty_function`): that is content,
 and equal in the unit digest by this rule. A second, informational digest
-of the bytes of every name-derived string a unit holds is compared by the
-verifier and reported (WP-112). `__func__`, `__FUNCTION__` and
+of the bytes of every name-derived string a unit holds symbolically is
+compared by the verifier and reported ("The names digest", below).
+`__func__`, `__FUNCTION__` and
 `__builtin_FUNCTION()` hold the unqualified name only; a conversion
 function's names its canonical type.
 
@@ -948,7 +949,50 @@ as a mangled name does. `assert` expands to `__PRETTY_FUNCTION__`; were
 its length a fact, no function that asserts could be relocated and
 verify. A program that observes such a string (a log that is parsed, a
 registry keyed by it) is told by the report, not by the verdict
-(`verify.md` "Open questions", WP-112).
+(`verify.md` §4.4, §7.1).
+
+**The names digest** (WP-112). Beside its digest, a unit has a **names
+digest**: `H("slip.names.v1", entries)` of the bytes of the name-derived
+strings it writes symbolically, as Kiln evaluated them, in the order the
+walk writes them. A unit that writes none has no names digest (not the
+digest of nothing). The entries, each after what the symbolic form holds,
+so that two strings swapped are seen:
+
+| Entry | Fed where |
+|---|---|
+| `uv 1`, the `PredefinedKind` (0 `__func__`, 1 `__FUNCTION__`, 2 `__PRETTY_FUNCTION__`), `bytes` | a `PredefinedExpr` written symbolically, or a string a pointer names that is one |
+| `uv 2`, `uv 0` plain or `uv 1` pretty, `bytes` | a source-location function name a pointer names; a `__builtin_FUNCTION()` (plain) |
+| `uv 3`, `bool` has one, `bytes` | the function name an `__impl` object points to (what `function_name()` returns), from a pointer to the object or a `__builtin_source_location()` |
+| `uv 4`, `digest` | the names digest of a constant a pointer names, where the walk writes the constant by its content digest (the constant's own entries, memoised with it) |
+
+An entry is fed only where the value is written symbolically: never where
+it is written by value (`by_value` raised: a key, a type, a
+`static_assert` condition, a template argument, a constant computed and
+read), since the unit's digest already holds those bytes; never while an
+owner is being numbered (§11's numbering streams are not the unit's) nor
+for a candidate stream of `canonical_decl` (the chosen one is written
+again). An operator that reads only the array's type (`sizeof(__func__)`,
+`alignof`, `decltype`) writes the length by value and leaves the string
+symbolic, so the string is fed too: the unit differs and notes. A
+`std::source_location`'s `function_name()` is fed; its `line()`
+and `column()` are not (any edit above moves them: `verify.md` §8), and its
+`file_name()` is not, because it is written by value (above). A string
+reached twice (a back-reference, §4.3) is fed once, where the digest
+writes it. A unit resolved into another (an inline body, an
+instantiation's `<definition>`, §6) feeds the entity's unit: the strings
+of an instantiation's body are its key's (`h<int>(int, int)`), each
+instantiation its own; a pattern's dependent string has no bytes (Kiln
+evaluates none) and feeds nothing. `typeid(T).name()` is not a constant
+in Kiln (the call is written as a call): nothing to feed. `__FILE__` and
+its kin are literals written by value.
+
+Per key (`model.md` §8.6): a key with one unit that has a names digest has
+it; a key with several has `H("slip.names.key.v1", count, digests)` of
+them in its units' order. Its file and name are its first such unit's.
+
+The names digest is never part of a unit's digest, a group's or `tu`:
+no unit digest changes by it. Its mutations and the cases that pin each
+decision are in `spec/landed/verify/WP-112.md`.
 
 ## 10. Indeterminate units
 
@@ -1215,6 +1259,7 @@ A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
 | `derived-removed <name>` | the other way round |
 | `derived-changed <name>` | the derived units under a key of the name differ in any way, presence included; under `exact derived`, both sides have one and they differ |
 | `exact derived` | a directive, not a line: the derived keys that differ between the sides are exactly the keys the `derived-*` lines name, each in the way its line says |
+| `names-changed <name>` | both sides give a key of the name a names digest (§9 "The names digest"), and they differ |
 
 1. Any other line is an error of the test, as is a line written twice
    and a second `exact derived`. The directive is exactly the text
@@ -1234,10 +1279,19 @@ A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
    `derived-added` line holds, and under the directive the derived
    differences are exactly those lines, so that an unnamed instantiation
    only B has, or any derived unit only A has, fails.
-5. **`equal`** reads no line and no directive: every unit both sides have
+5. **`equal`** reads no line but `names-changed` (rule 6) and no
+   directive: every unit both sides have
    is equal already, and a unit only one side has, declared or derived,
    fails the test (the derived groups are part of the `Digests`
    compared). **`indeterminate`** reads `indeterminate` lines only.
+6. **Names** (WP-112). `differ`, `equal` and the rule suite
+   (`tests/rules.rs`) read `names-changed` lines: the keys both sides
+   give a names digest whose names digests differ are exactly those
+   lines, so a names change no line names fails, and so does a line that
+   does not hold. In `equal` a key with a names digest on one side only
+   fails the test too, since its units are equal. A pair whose units are
+   equal and whose strings changed is therefore an `equal` pair with
+   `names-changed` lines.
 
 ## Tests
 
@@ -1249,9 +1303,13 @@ A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
 - `crates/slip_digest/tests/runner.rs` — §14.1, the runners' reading of
   `expect.txt`, over the fixtures of `tests/runner/`.
 - `crates/slip_digest/tests/records.rs`, `trace.rs` — §4.4.
+- `crates/slip_digest/tests/names.rs` and the `names-changed` lines of
+  the pairs — §9 "The names digest" (WP-112).
 - `frames_fit_the_stack` in `crates/slip_digest/src/expr.rs` and the
   tests each area adds to it — §12.1.
-- `crates/slip_model/tests/formats.rs` — §11, the section's encoding.
+- `crates/slip_model/tests/formats.rs` — §11, the section's encoding;
+  `crates/slip_model/tests/sections.rs` — the `names` section
+  (`model.md` §8.6).
 - `spec/pitfalls.md` and its tests — the mutation catalogue.
 
 ## Open questions

@@ -557,6 +557,7 @@ the same bytes.
 | 24 | binding | no | `Binding` (`verify.md` §9.1): the declared changes, the overlay and the pre round a verify shard was made with; phase `verify` |
 | 25 | rule_use | no | `RuleUse` (`verify.md` §9.1); phase `verify` |
 | 26 | spellings | no | `Spellings` (`verify.md` §10.4): the spelled-entity checks of this observer; phase `verify` |
+| 27 | names | with `digests` | `Names` (§8.6): the names digest of each key that has one, and the notes of a verify shard (`verify.md` §4.4); phases `map` and `verify` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -598,6 +599,12 @@ the section's payload, JSON path `sections.<name>`. So are `edits`,
 before the status. Their own invariants are `edits.md` §4.7 and
 `verify.md` §9.1 and §10.4, checked after those of §8.1 to §8.3 in the
 order of the section ids, each section's phase and status first.
+
+Section 27 (`names`, WP-112) is added the same way. It is present
+**exactly when** `digests` is: a shard with `digests` and without
+`names` is `Malformed` at the first byte of the `digests` payload, JSON
+path `sections.names` (a pre shard of an older build fails closed, not as
+"no note"); its own rows (§8.6) are checked after those of `spellings`.
 
 ### 8.1 Invariants
 
@@ -960,6 +967,42 @@ number of keys cut off by the walk's depth bound.
 written before this section (or by the parse task alone); verification
 treats it as an unusable pre shard (`spec/verify.md` §5.3, P3). The
 format still does not require the section ("Open questions").
+
+### 8.6 The `names` section
+
+What a unit's names digest is: `digest.md` §9 "The names digest". The map
+task writes one entry per key that has one, from the walk of the map
+(`names` empty when no unit writes a name-derived string symbolically);
+the verify task writes its post-image's entries and its notes.
+
+```
+Names     := units: list<NamesEntry>, notes: list<NameNote>
+NamesEntry:= key: digest, names: digest
+NameNote  := key: digest, file: bytes, name: str
+```
+
+`names` of an entry is the key's names digest: its one unit's, or for a
+key with several units that have one `H("slip.names.key.v1", count,
+digests)` in the units' order. A note is a key whose names digest differs
+between the pre shard and the post-image (`verify.md` §4.4), with the
+file and name of the post-image's first unit of the key that has one.
+JSON: `{"units": [{"key", "names"}], "notes": [{"key", "file", "name"}]}`
+(digests as hex, `file` as `bytes` in §2's JSON form).
+
+| Row | Rule | Offset | JSON path |
+|---|---|---|---|
+| 1 | present exactly when `digests` is | absent: the first byte of the `digests` payload; present without `digests`: the first byte of the section's payload, checked after row 2 | `sections.names` |
+| 2 | status `ok` | the first byte of the section's payload | `sections.names` |
+| 3 | `units` strictly ascending by `key` | that entry's first byte | `sections.names.units[i]` |
+| 4 | no note in a shard of phase `map`, nor in one whose verdict is not `verified` or `mismatch` | the first note's first byte | `sections.names.notes[0]` |
+| 5 | `notes` strictly ascending by `key` | that note's first byte | `sections.names.notes[i]` |
+| 6 | every note's `key` has an entry in `units` | that note's first byte | `sections.names.notes[i]` |
+| 7 | every note's `name` at most 4096 bytes | the `name` field's first byte | `sections.names.notes[i].name` |
+
+Checked in this order, each over its whole list before the next. Row 1 is
+the shard's (it names `digests`); rows 2 to 7 the section's. Tests:
+`crates/slip_model/tests/sections.rs` `names_1_*` to `names_7_*` and
+`names_rules_in_order`.
 
 ## 9. The run record
 

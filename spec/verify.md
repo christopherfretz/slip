@@ -868,7 +868,7 @@ pub enum AtSums { Equal, Differing(Vec<(GroupClass, Vec<u8>)>) }
 pub fn at_sums(pre: &Digests, post: &Digests) -> AtSums;                    // §4.1
 
 pub struct Comparison { pub findings: Vec<Finding>, pub only_pre: u64, pub only_post: u64,
-                        pub used: Vec<Digest> }
+                        pub used: Vec<Digest>, pub notes: Vec<Digest> }   // notes: §4.4
 pub enum CompareError {   // every variant: { class: GroupClass, file: Vec<u8>, post: bool }
     MissingUnits, UnitsNotAscending, BadFlags, CountMismatch, IndeterminateMismatch,
     DigestMismatch, DuplicateGroup,
@@ -876,6 +876,7 @@ pub enum CompareError {   // every variant: { class: GroupClass, file: Vec<u8>, 
 pub fn compare_groups(pre: &[&Group], post: &[&Group], exemptions: &Exemptions)
     -> Result<Comparison, CompareError>;                                   // §4, §4.2
 
+pub fn names_changed(pre: &[NamesEntry], post: &[NamesEntry]) -> Vec<Digest>;      // §4.4
 pub fn verdict(comparison: Comparison, pre_shard: Digest, rules: Digest, limit: usize) -> Verdict;
 pub fn verified(pre_shard: Digest, rules: Digest) -> Verdict;
 pub fn unverifiable(reason: &str, pre_shard: Digest, rules: Digest) -> Verdict;
@@ -891,6 +892,31 @@ which are sorted by digest.
 The verify job (§5) uses them as: `comparable`; then `at_sums`; `Equal` is
 `verified(…)`; `Differing(G)` is `verdict(compare_groups(groups of G from
 each image, …), …)`. Every finding therefore has a key.
+
+### 4.4 Notes: name-derived strings that changed
+
+A unit's names digest (`digest.md` §9 "The names digest") is of the bytes
+of the name-derived strings it passes on, which its digest holds only
+symbolically. The map shard and the verify shard carry one per key
+(`model.md` §8.6, section `names`). For every key with an entry in both
+the pre shard and the post-image whose names digests differ, the
+comparison has a **note** `names_changed`: `names_changed(pre, post)`, a
+merge of the two lists by key, in key order. A key with an entry on one
+side only gives no note: the key was added or removed, or its unit's
+digest differs (a string cannot appear in a unit whose digest is equal),
+and the findings say so.
+
+Notes are not findings. They do not enter `total`, `findings`, `used`,
+the counters of §7.2 or the verdict's kind: `verdict` ignores
+`Comparison.notes`, and no exemption applies to one. The verify job
+computes them from the whole lists before step 3 (so a verdict made at
+the sums has them too), sets `Comparison.notes` where it compares, and
+writes them to the post shard's `names` section, with the post-image's
+file and name of the key, only when the verdict is `verified` or
+`mismatch` (an `unverifiable` shard has none). A pre shard with `digests`
+and without `names` is refused by the shard's decoder (`model.md` §8.6
+row 1): a shard of another build is not "no note". Under the run's
+`--strict-names` (§7.1) each note is a finding of kind `names_changed`.
 
 ## 5. The verify job
 
@@ -1384,7 +1410,12 @@ bytes, and `rank` from the kind:
   writer.
 - No two findings are equal in all three, so the first `limit` are
   determined.
-- The report's groups (§7.1) use the same rank.
+- The report's groups (§7.1) use the same rank. `names_changed` is not a
+  `FindingKind` and is never in a verdict: a note (§4.4) is in the
+  shard's `names` section, with the key, the file and the name a finding
+  of that key would have (the post-image's first unit of the key, named
+  as §6.1 names it). Only the report makes a note a finding, under
+  `--strict-names` (§7.1), ranked after every kind of this table.
 
 `pre`, `post` and `file` are defined on what §4 looked at, so that they too
 are the same whether or not the comparison was restricted to `G`:
@@ -1705,6 +1736,7 @@ only when it applies.
   "not_verified": [ { "observer": <id>, "main": <path>, "state": <state>, "message": <str>,
                       "findings": <n>, "indeterminate": <n>, "listed": <n> }, … ],
   "exemptions": [ { "list": "changed" | "created" | "removed", "key": <id>, "observers": <n> }, … ],
+  "names_changed": { "total": <n>, "listed": [ <NameNote>, … ] },     only with a note
   "run": <path of the run record>
 }
 
@@ -1712,6 +1744,9 @@ FindingGroup := { "kind": <FindingKind by name>, "key": <id>, "name": <str>,
                   "observers": <n>, "first": <main file of the first of them in plan order>,
                   "file": <path>, "pre": <id or null>, "post": <id or null>,
                   "where": <Where of spec/model.md §10, or null> }
+
+NameNote     := { "key": <id>, "name": <str>, "file": <path>, "observers": <n>,
+                  "first": <main file of the first of them in plan order> }
 ```
 
 - Ids are 64 hexadecimal digits; paths and names are rendered as
@@ -1740,6 +1775,20 @@ FindingGroup := { "kind": <FindingKind by name>, "key": <id>, "name": <str>,
   `used` does not say which list a key was used from, so a key in two
   lists has the same number in both entries ("Open questions"). An entry
   with 0 observers is an exemption no observer needed.
+- `names_changed` (WP-112, §4.4): present only when an observer's
+  shard has a note. `total` is the number of distinct keys noted by the
+  `verified` and `mismatch` shards of the run (a key noted by ten
+  observers is one); `listed` the first 100 by `(name, key)`, each with
+  the name and file of the first observer in plan order that noted it
+  and the number of observers that did. A run with no note has no member
+  and no line: its report is M1's.
+- `--strict-names` (WP-112): each note of a `verified` or `mismatch`
+  shard is a finding of kind `names_changed`, which no exemption
+  prevents. The observer is `mismatch` (so the run is `not_verified`),
+  its `findings` and `listed` in `not_verified` count the notes, and
+  each noted key is a group of kind `names_changed` after every other
+  kind (its `pre`, `post` and `where` are `null`). Without the option
+  nothing a note says reaches a state, a count or the verdict.
 
 The text, on standard output:
 
@@ -1752,11 +1801,15 @@ selected <n> of <observers of the plan>
 observer <state> <n>                             one line per state in the order of the table, zeros included
 mismatch indeterminate_only <n>
 finding <kind> <key, first 16 digits> observers <n> <name>          at most 100 groups, in report order
+                                                 (under --strict-names, `finding names_changed …`
+                                                 and its `first` line, after the other groups)
   first <main file>
   pre  <file>:<line>:<column> <node> <what>      the two `where` lines only if it has one;
   post <file>:<line>:<column> <node> <what>      a site with an empty file prints `-`
 findings <total> total, <listed> listed, <groups> group(s)
 exemption <list> <key, first 16 digits> observers <n>
+note: name-derived string changed: <name> @ <file>   per noted key, at most 100, in report order
+note: <n> more (see the report)                  when more than 100
 wall <seconds, three decimals>
 peak_rss <bytes> <main file>                     as `parse` prints it (spec/exec.md §8.2)
 run <path of the run record>
@@ -1912,6 +1965,18 @@ observer `failed`, with an empty message.
   redefine_extname`, whose identifier the front end resolves to the
   declaration it then gives the attribute (R23); and the values of
   `__func__` and `__PRETTY_FUNCTION__` (R12, N18, R21).
+- **Name-derived strings passed on** (WP-112, §4.4). Where a unit only
+  passes on `__func__`, `__PRETTY_FUNCTION__` or a
+  `std::source_location`'s `function_name()`, its digest holds which
+  string of which entity, not the bytes (`digest.md` §9). A change of the
+  bytes (the declared rename; and anything else that changes what Kiln
+  prints: a parameter type requalified, an alias respelled, a template
+  parameter renamed) does not change the verdict; it is a note in the
+  report, a finding only under `--strict-names`. A note does not say
+  whether the rules account for the change (§4.4; "Open questions").
+  The `line()` and `column()` of a passed-on `source_location` are
+  neither verified nor noted: any edit above them moves them. Strings
+  read at compile time are verified by value.
 - **Other languages and build files.** A name held in a file that is not
   a C++ translation unit of the run: a renamed `extern "C"` function
   called from `.c` files the run does not parse, a linker or version
@@ -2616,18 +2681,22 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   §2.1. Not urgent: such a rename is reported today, never silent
   (`spec/landed/pitfalls/WP-109.md`).
 
-- **Name-derived values that changed** (`digest.md` §9). A relocation
-  changes what `__func__`, `__PRETTY_FUNCTION__`,
-  `std::source_location` and `typeid(T).name()` yield for the entities
-  it renames, and the verdict does not count it. A program that
-  observes such a string (a parsed log, a registry keyed by a type's
-  name, a persisted identifier) should be told. Proposed: an
-  informational section of the report listing each unit that holds such
-  a builtin and whose name, or a name in whose scope it is, a rule
-  changes; no verdict depends on it. The walk would count them per unit
-  (a counter beside `rule_use`, §9.1). Open: whether a run may ask for
-  them to be findings (`--strict-names`), and whether
-  `typeid(T).name()`, whose value is the implementation's, is listed.
+- **Name-derived values that changed** (`digest.md` §9, §4.4). WP-112
+  answers the first part: a unit's names digest is compared and each
+  change is a note, listed by the report and a finding under
+  `--strict-names`. What remains open: (1) a note does not tell a change
+  the declared rules account for (`legacy::f` printed as `acme::f`) from
+  another (a parameter type requalified, an alias respelled), so a
+  relocation notes every function of the moved namespace that holds an
+  `assert`. A second names digest, computed with the strings' names
+  mapped back by the rules, equal exactly when the rules account for the
+  whole change, would separate them; its cost is a parse of Kiln's
+  printed signatures or a second print with the rules applied
+  (`spec/landed/verify/WP-112.md`, item 6). (2) `typeid(T).name()` is not
+  a constant in Kiln and is neither verified by value nor noted. (3) A
+  note is per key: the strings of a template's instantiations are noted
+  per instantiation, and a pattern no translation unit instantiates has
+  no string to note.
 - **Agreement costs a job per observer** (§9, §5): with rules, no
   observer is unchanged. `spec/edits.md` ("Open questions") proposes a
   filter of key ids in the map shard so that an observer that cannot have

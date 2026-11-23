@@ -1,4 +1,4 @@
 exact derived
 derived-changed h<int>(int, int)::<definition>
-# The names digest (WP-112): the strings this unit passes on changed.
+# WP-112: the names digest of this unit differs (digest §9).
 names-changed h<int>(int, int)
