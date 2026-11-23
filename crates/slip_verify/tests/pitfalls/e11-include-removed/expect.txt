@@ -1,0 +1,11 @@
+# E11: an #include removed. good: unused.h, which nothing uses. bad: spec.h,
+# whose explicit specialisation traits<Mine> width<Mine> instantiates with:
+# without it the primary's type is int and the instantiated body of
+# width<Mine> differs, a derived unit, while mine_width() is the same. bad-2:
+# better.h, whose conv(int) the call conv(1) chose over conv(long).
+# declared.txt declares the removal of what each removed header declared;
+# in good the lines for spec.h and better.h are unused, in bad and bad-2 the
+# line for unused.h is.
+good:  verified
+bad:   mismatch derived_changed width<Mine>() @ traits.h:4
+bad-2: mismatch changed convert() @ main.cpp:8

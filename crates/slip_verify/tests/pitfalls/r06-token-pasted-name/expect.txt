@@ -1,0 +1,5 @@
+# R06: the call to audio_init is made by pasting the macro argument audio to
+# _init. bad renames the definition and leaves the argument.
+# Caught only by a failed parse (spec/pitfalls.md §5).
+good: verified
+bad:  not_parsed

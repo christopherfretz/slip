@@ -1,0 +1,5 @@
+# E01: a qualified call to a virtual function is not dispatched virtually
+# (spec/digest.md §6: "a qualified member call's suppression of virtual
+# dispatch is written"). The callee is Base::f in all three trees.
+good: verified
+bad:  mismatch changed Base::run() @ main.cpp:3

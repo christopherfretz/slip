@@ -1,0 +1,6 @@
+# R03: B::f renamed g with one override, D2::f, left. D2::f no longer
+# overrides: the functions a member overrides are a row of its own unit
+# (spec/digest-kinds.md ColdDeclData `overrides`, §11.5), so the finding is
+# on the function, not on D2. The rule for D2::f is unused in bad.
+good: verified
+bad:  mismatch changed D2::f() @ main.cpp:8
