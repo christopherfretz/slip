@@ -8,3 +8,24 @@ good:   verified
 bad:    not_parsed
 good-2: verified
 bad-2:  mismatch indeterminate template <class> int legacy::peek(const type-parameter-0-0 &)
+# pre-3: a non-template friend, int peek(const Probe &), the dependency's
+# legacy::peek. In bad-3 the unqualified friend in acme declares a new
+# acme::peek(const legacy::Probe &), which under the rule has the key of
+# the dependency's: a collision, no place. Against a verifier that compares
+# the moved class's members and not what its friend declarations declare.
+good-3: verified
+bad-3:  mismatch indeterminate legacy::peek(const legacy::Probe &)
+# pre-4: access in SFINAE. The dependency's peek(const T &t) ->
+# decltype(t.secret) has a fallback peek(...). In bad-4 the friend is
+# acme::peek, the access check in legacy::peek's return type fails, and
+# user() silently takes peek(...): it returns 0, not 1. Both findings are
+# required: the changed caller, against a verifier that only looks for
+# collisions; the collision of the friend template with legacy::peek,
+# against one that compares only bodies.
+good-4: verified
+bad-4:  mismatch changed user() @ main.cpp:10
+bad-4:  mismatch indeterminate template <class> decltype(t.secret) legacy::peek(const type-parameter-0-0 &)
+# pre-5: friend struct Dep, the dependency's class. In acme it declares a
+# new acme::Dep, and legacy::Dep::get<acme::Mine> loses its access.
+good-5: verified
+bad-5:  not_parsed
