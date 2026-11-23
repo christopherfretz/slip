@@ -1,0 +1,2 @@
+# pending
+# Known cost: clang++-19 gives DEFAULT _ZN1n1vIiEE (weak) on both sides. Slip makes n::v indeterminate (declarations of different visibility).

@@ -910,7 +910,7 @@ none; detail: `none`; names: not asked for.
 **Counters.** Those of the parse task; those of `digest.md` §12; the
 walk's count of indeterminate keys by cause, `digest.indeterminate.<cause>`
 (`error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`,
-and while the walk has areas not yet written `pending` and
+`visibility_by_use`, and while the walk has areas not yet written `pending` and
 `digest.indeterminate.pending.<area>`), each present only when not 0; and
 for the causes that carry a text (`unsupported`, `unaccounted`):
 

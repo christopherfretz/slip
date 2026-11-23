@@ -267,9 +267,14 @@ does not declare:
 unit.** Every entity whose semantic context is a namespace (and every
 block-scope `extern` declaration, keyed in its namespace) has in its unit
 the row `enclosing` (`digest-kinds.md` §1.7, WP-113): the linkage of its
-name, whether an unnamed namespace encloses it, and, per declaration, the
-visibility its enclosing openings give it, all computed on the parse the
-unit is written from. A key holds names only (`digest.md` §3), and the
+name, whether an unnamed namespace encloses it, and the visibility its
+enclosing openings give its declarations, all computed on the parse the
+unit is written from. The visibility is found per declaration, from the
+opening it is written in or, for one written qualified outside its
+namespace, the latest opening of the namespace written before it; where
+the declarations' visibilities differ, a use's symbol takes that of the
+declaration most recent at the use, which no unit holds, and the unit is
+indeterminate (`visibility_by_use`, `digest.md` §10). A key holds names only (`digest.md` §3), and the
 rules rewrite keys only, so the row is written as the post-image has it
 and is not mapped: a relocation that changes either property for any
 entity makes that entity's unit differ, whatever rule table is given. An

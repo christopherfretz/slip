@@ -1,1 +1,3 @@
-changed h::f()
+# Fix round (ruling 3): b declares h::f in a hidden opening and defines it in a plain one
+# (clang++-19: GLOBAL DEFAULT _ZN1h1fEv; a: HIDDEN): pairs that differ make b's unit indeterminate.
+indeterminate h::f()

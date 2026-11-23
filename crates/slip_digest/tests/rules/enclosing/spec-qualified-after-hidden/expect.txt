@@ -1,0 +1,2 @@
+indeterminate d::g<int>()
+changed d

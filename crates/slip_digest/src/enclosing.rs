@@ -17,14 +17,17 @@
 //!   linkage (`kiln_abi::mangle::has_internal_linkage`) where it differs
 //!   from `Ast::linkage` (a block-scope `extern` declaration in a function
 //!   of an unnamed namespace);
-//! - for the first declaration and the definition, the visibility that the nearest enclosing
-//!   namespace with a `visibility` (or, for a type's visibility, a
-//!   `type_visibility`) attribute gives it, found as Kiln's code
-//!   generation finds it (`kiln_codegen/src/visibility.rs`, `ns_lv` and
-//!   `parent_ctx`): from the declaration's context, through each
-//!   namespace's lexical context (the opening it is written in). The
-//!   attribute is the opening's own, not the namespace's: one opening
-//!   with it and one without give their members different visibility.
+//! - the visibility that the nearest enclosing namespace opening with a
+//!   `visibility` (or, for a type's visibility, a `type_visibility`)
+//!   attribute gives each declaration, found as clang finds it: from the
+//!   opening the declaration is written in, or, for one written qualified
+//!   outside its namespace, the latest opening of the namespace written
+//!   before it ([`opening`]), then through each opening's lexical context
+//!   (the opening it is written in). The attribute is the opening's own,
+//!   not the namespace's: one opening with it and one without give their
+//!   members different visibility. Declarations whose pairs differ make
+//!   the unit indeterminate (`Cause::VisibilityByUse`): a use's symbol
+//!   takes the pair of the declaration most recent at the use.
 //!
 //! An entity inside a class or a function takes all of these from that
 //! class or function (`spec/landed/digest/WP-113.md`, "The chain"), whose
@@ -42,6 +45,9 @@ use crate::walk::Walk;
 
 /// A visibility word that is not 0, 1 or 2 (`AttrNode` `VISIBILITY.a`).
 const BAD_VISIBILITY: Cause = Cause::Unaccounted("enclosing/visibility");
+/// A declaration of a namespace's entity written before every opening of
+/// the namespace (not in a valid program).
+const NO_OPENING: Cause = Cause::Unaccounted("enclosing/opening");
 /// A chain of contexts longer than any AST has.
 const CHAIN_LIMIT: Cause = Cause::Unaccounted("enclosing/chain");
 /// How far a chain of contexts is followed.
@@ -90,36 +96,28 @@ pub(crate) fn write(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
     };
     s.tag(row);
     s.bool(ast.in_anonymous_namespace(rep));
-    // Code generation reads the visibility of the first declaration for
-    // some symbols and of the definition for others (`decl_visibility`
-    // with `first` or the definition), so the first's is written, and the
-    // definition's where it is another: a redeclaration that is neither
-    // changes no symbol (`differ/_/key-extern-c-in-two-namespaces`), and a
-    // definition whose openings give what the first's give says nothing
-    // more (`equal/_/var-extern-before-definition`).
-    let first = ast.first(rep);
-    let at_first = namespace_visibility(w, s, first);
-    // None for the definition class (§11.9), whose definition Kiln makes
-    // on use.
-    let def = if crate::demand::definition_class(w, e) {
-        None
-    } else {
-        crate::units::defining_decl(w, e)
-    };
-    let at_def = def.map(|x| namespace_visibility(w, s, x));
-    visibility(s, at_first.0);
-    visibility(s, at_first.1);
-    match at_def {
-        Some(v) if v != at_first => {
-            s.opt(true);
-            visibility(s, v.0);
-            visibility(s, v.1);
-        }
-        Some(_) | None => {
-            s.opt(false);
-        }
+    // The visibility pair of every declaration the unit reads. A use's
+    // symbol takes the pair of the declaration most recent at the use
+    // (clang), so pairs that differ make the symbol's visibility a fact
+    // of each use's place, which no unit holds: the unit is
+    // indeterminate (`VisibilityByUse`, digest §10). Otherwise the one
+    // pair they share is written, once: written per declaration it would
+    // add only their number, which no symbol depends on
+    // (`equal/_/var-extern-before-definition`,
+    // `differ/_/key-extern-c-in-two-namespaces`).
+    let mut chain = w.redecls(e);
+    chain.reverse();
+    let pairs: Vec<Pair> = chain.iter().map(|&d| namespace_visibility(w, s, d)).collect();
+    let pair = pairs.first().copied().unwrap_or((None, None));
+    if pairs.iter().any(|&p| p != pair) {
+        s.indeterminate(Cause::VisibilityByUse);
     }
+    visibility(s, pair.0);
+    visibility(s, pair.1);
 }
+
+/// A value visibility and a type visibility.
+type Pair = (Option<u32>, Option<u32>);
 
 /// `opt<uv>`: a visibility, 0 default, 1 hidden, 2 protected.
 fn visibility(s: &mut Stream, v: Option<u32>) {
@@ -140,22 +138,58 @@ fn visibility(s: &mut Stream, v: Option<u32>) {
 /// The visibility the nearest enclosing namespace opening of declaration
 /// `d` with a `visibility` attribute gives it, and the type visibility
 /// the nearest one with a `type_visibility` or `visibility` attribute
-/// gives it (Kiln's `vis_of` on a namespace: `type_visibility` first).
+/// gives it (Kiln's `vis_of` on a namespace: `type_visibility` first),
+/// from the opening [`opening`] gives, outward through each opening's
+/// lexical context.
+fn namespace_visibility(w: &Walk<'_>, s: &mut Stream, d: DeclId) -> Pair {
+    if let Ok(start) = opening(w, d) {
+        walk(w, s, start).unwrap_or((None, None))
+    } else {
+        s.indeterminate(NO_OPENING);
+        (None, None)
+    }
+}
+
+/// Where the walk of declaration `d` starts: clang's semantic context.
 ///
-/// The walk starts at the opening `d` is written in (its lexical
-/// context), as clang's does: an explicit specialisation written in a
-/// hidden opening of a namespace whose first opening is plain is hidden
-/// (`spec/landed/digest/WP-113.md`, "For Kiln"; Kiln's `ns_lv` starts at
-/// the semantic context). Where no namespace is on the lexical path (a
-/// qualified definition written at file scope), it starts at the semantic
+/// For `d` whose semantic parent is a namespace, that is an opening of
+/// the namespace: the one `d` is written in (through linkage
+/// specifications and `export`), else, for a declaration written
+/// qualified outside it (`int n::f() {}`, `struct n::S {…};`, a friend
+/// `int n::f(S) {}`, `int a::b::f() {}` in an opening of `a`), the latest
+/// opening of the namespace written before `d` (clang++-19: `namespace n
+/// { int f(); } namespace [[hidden]] n { } int n::f() {}` is hidden, the
+/// attributes the other way round default). Openings are compared by
+/// `DeclId`, which Kiln gives in the order declarations are written. No
+/// such opening: `Err`. An entity at file scope has none (`Ok(None)`);
+/// one in a function (a block-scope `extern`) starts at its lexical
 /// context.
-fn namespace_visibility(w: &Walk<'_>, s: &mut Stream, d: DeclId) -> (Option<u32>, Option<u32>) {
+fn opening(w: &Walk<'_>, d: DeclId) -> Result<Option<DeclId>, ()> {
     let ast = w.ast;
     let node = ast.decls.get(d);
-    if let Some(found) = walk(w, s, ast.decls.lexical_ctx(d).or_else(|| node.ctx())) {
-        return found;
+    let Some(sem) = ast.semantic_parent(d) else { return Ok(None) };
+    match ast.decls.get(sem).kind() {
+        DeclKind::TranslationUnit => Ok(None),
+        DeclKind::Namespace => {
+            let mut l = ast.decls.lexical_ctx(d);
+            for _ in 0..CTX_LIMIT {
+                match l.map(|x| ast.decls.get(x).kind()) {
+                    Some(DeclKind::LinkageSpec | DeclKind::Export) => {
+                        l = l.and_then(|x| ast.decls.lexical_ctx(x));
+                    }
+                    _ => break,
+                }
+            }
+            if let Some(x) = l
+                && ast.decls.get(x).kind() == DeclKind::Namespace
+                && ast.first(x) == ast.first(sem)
+            {
+                return Ok(Some(x));
+            }
+            ast.redecls_of(sem).filter(|&o| o < d).max().map(Some).ok_or(())
+        }
+        _ => Ok(ast.decls.lexical_ctx(d).or_else(|| node.ctx())),
     }
-    walk(w, s, node.ctx()).unwrap_or((None, None))
 }
 
 /// The two visibilities from context `c` outwards; `None` when the chain

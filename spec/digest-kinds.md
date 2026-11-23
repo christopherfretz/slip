@@ -218,35 +218,57 @@ gives each as a constant of `walk_row`.
 
 The row `enclosing` is written for the unit (not a declaration walked
 in place, §2.4) of every entity that is not a namespace and not
-content-keyed (digest §3.3) and whose first declaration's semantic
-context, through linkage
+content-keyed (digest §3.3) and whose representative's (the
+declaration the walk writes the unit from, `Walk::representative`)
+semantic context, through linkage
 specifications and `export` declarations, is a namespace or the
 translation unit, and for a block-scope `extern` declaration's entity,
 which is keyed in its namespace (§2.4): `tag 1538`, then
 
 1. `enum Linkage`: the linkage of the entity's name, Kiln's
-   `Ast::linkage` of its first declaration ([basic.link]/3-4);
+   `Ast::linkage` of the representative ([basic.link]/3-4);
 2. `bool`: an unnamed namespace encloses the entity, at any depth
-   (`Ast::in_anonymous_namespace`);
-3. for the entity's first declaration, two `opt<uv>`: the `VISIBILITY.a` of the nearest namespace around the
-   declaration that has a `visibility` attribute, and the `a` of the
-   nearest that has a `type_visibility` or a `visibility` attribute (the
-   first if it has both); 0 default, 1 hidden, 2 protected, another value
-   indeterminate. "Around" is the walk Kiln's code generation makes
-   (`kiln_codegen/src/visibility.rs` `ns_lv`, `parent_ctx`), a
-   namespace's next being the opening it is written in (its lexical
-   context), except that it starts at the opening the declaration is
-   written in (its lexical context; its semantic context where no
-   namespace is on that path), as clang's does, where Kiln starts at the
-   semantic context (`spec/landed/digest/WP-113.md`, "For Kiln"); the attribute
-   is the opening's own (the declaration of the namespace that the walk
-   meets), not one of another opening of the same namespace;
-4. `opt`: present when the entity has a defining declaration (§2.3),
-   is not of the definition class (§11.9), and the two values of 3
-   computed for that declaration differ from the first's; then those
-   two `opt<uv>`. Code generation reads the first declaration for some
-   symbols and the definition for others (`decl_visibility`), and no
-   other declaration: a redeclaration that is neither writes nothing.
+   (`Ast::in_anonymous_namespace` of the representative);
+3. two `opt<uv>`, the visibility pair that every declaration of the
+   entity shares (item 4): the `VISIBILITY.a` of the nearest namespace
+   opening around the declaration that has a `visibility` attribute, and
+   the `a` of the nearest that has a `type_visibility` or a `visibility`
+   attribute (the first if it has both); 0 default, 1 hidden,
+   2 protected, another value indeterminate. Absent when no namespace
+   is around the declaration, or none around it has the attribute.
+   "Around" is the walk clang makes for the declaration's semantic
+   context: it starts at an opening of the declaration's namespace,
+   which is
+   - the opening the declaration is written in (its lexical context,
+     through linkage specifications and `export`), when that is an
+     opening of its semantic namespace;
+   - otherwise (a declaration written qualified outside its namespace:
+     `int n::f() {}`, `struct n::S {…};`, a friend `int n::f(S) {}`, an
+     explicit specialisation `template<> int d::g<int>() {}`, or
+     `int a::b::f() {}` written in an opening of `a`), the latest opening
+     of the namespace written before the declaration (by `DeclId`, which
+     Kiln gives in the order declarations are written); where there is
+     none the unit is indeterminate (`enclosing/opening`);
+   - for a block-scope `extern` declaration, the function it is written
+     in;
+
+   and goes outward, a namespace opening's next being the opening it is
+   written in (its lexical context), any other context's next its
+   semantic context. The attribute is the opening's own (the
+   declaration of the namespace that the walk meets), not one of
+   another opening of the same namespace. Kiln's code generation starts
+   at the semantic context instead (`kiln_codegen/src/visibility.rs`
+   `ns_lv`, `parent_ctx`), and reads the first declaration where clang
+   reads the most recent (`spec/landed/digest/WP-113.md`, "For Kiln");
+4. the pair is computed for every declaration of the entity's chain
+   (`Ast::redecls_of`), and the pairs must be equal: a symbol's
+   visibility is that of the declaration most recent where it is
+   defined or used (clang++-19: an undefined reference takes the
+   declaration most recent at the use), so when they differ it is a
+   fact of each use's place, which no unit holds, and the unit is
+   indeterminate (`visibility_by_use`, digest §10). The one pair they
+   share is written once: written per declaration it would add only
+   their number, which no symbol depends on.
 
 A namespace's unit has no such row: a namespace has no symbol, its own
 linkage is read by reflection alone (`has_internal_linkage(^^n)`), whose

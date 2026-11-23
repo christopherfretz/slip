@@ -315,6 +315,10 @@ pub enum Cause {
     Collision,
     /// A local type no unit's walk declares (digest §4.3).
     UndeclaredLocal,
+    /// An entity at namespace scope whose declarations take different
+    /// visibilities from their namespace openings: which one a use's
+    /// symbol takes depends on where the use is (digest §10, WP-113).
+    VisibilityByUse,
     /// An area of the walk that is not written yet. Removed from this
     /// enumeration, with `Area`, when the last area lands.
     Pending(Area),
@@ -329,6 +333,7 @@ impl Cause {
             Cause::Unaccounted(_) => "unaccounted",
             Cause::Collision => "collision",
             Cause::UndeclaredLocal => "undeclared_local",
+            Cause::VisibilityByUse => "visibility_by_use",
             Cause::Pending(_) => "pending",
         }
     }
@@ -341,7 +346,9 @@ impl std::fmt::Display for Cause {
                 write!(f, "{} {what}", self.name())
             }
             Cause::Pending(area) => write!(f, "pending {}", area.name()),
-            Cause::Error | Cause::Collision | Cause::UndeclaredLocal => f.write_str(self.name()),
+            Cause::Error | Cause::Collision | Cause::UndeclaredLocal | Cause::VisibilityByUse => {
+                f.write_str(self.name())
+            }
         }
     }
 }

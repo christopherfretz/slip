@@ -921,7 +921,11 @@ this spec says:
 - it contains a kind or a value that `digest-kinds.md` marks `unsupported`;
 - its key collides with another entity's (§3.4);
 - it holds demand-driven state that `digest-kinds.md` could not assign to a
-  derived unit.
+  derived unit;
+- its entity's declarations are given different visibilities by the
+  namespace openings around them (`digest-kinds.md` §1.7 item 4), so a
+  symbol's visibility depends on where each use is
+  (`visibility_by_use`, WP-113).
 
 **No unit vanishes.** An entity that §2.1 makes a unit and whose key
 cannot be formed (an unexpected parent or name, a cycle, a kind whose key
@@ -1047,7 +1051,7 @@ comparison of unit sets (`verify.md`).
 | `digest.indeterminate` | indeterminate units |
 | `digest.collisions` | keys shared by different entities; a key shared only by parts is counted unless every two of its parts are parts of two different owners whose shared key collides (§3.4) |
 | `digest.bytes` | bytes of unit, type and key streams hashed |
-| `digest.indeterminate.<cause>` | indeterminate keys whose first cause is of this kind: `error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`, and `pending` while the walk has areas not yet written. Present only when not 0 |
+| `digest.indeterminate.<cause>` | indeterminate keys whose first cause is of this kind: `error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`, `visibility_by_use`, and `pending` while the walk has areas not yet written. Present only when not 0 |
 | `digest.indeterminate.pending.<area>` | of the `pending` ones, by area. Goes with `Cause::Pending` |
 | `digest.cause.<cause>.<word>` | for the causes that carry a text (`unsupported`, `unaccounted`): indeterminate keys whose first cause has this text. The word's form and the function that makes it (`slip_digest::map::cause_word`) are `spec/model.md` §8.5 |
 
