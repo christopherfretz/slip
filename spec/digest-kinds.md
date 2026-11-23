@@ -441,6 +441,19 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    `DependentDecltype` the operand is walked in profile mode (§4.4),
    where every `ParenExpr` is written (§7 "Parentheses", `ExprNode`,
    `ParenExpr.a`).
+8. **Name-derived arrays** (digest §9). The `ty` of a `PredefinedExpr`
+   that holds its value (`a` present) is `const char[N]`, `N` the length
+   of a name plus one. As the operand of an implicit `ArrayToPointerDecay`
+   it is written as the type `const char[]`: the stream `Quals`, tag
+   `IncompleteArray`, the element type, which is the digest that type
+   has, so no program can tell the two apart and none needs to (an array
+   of unknown bound is never a `PredefinedExpr`'s type). A pointer value
+   into such a string designates the array the same way (`Scalar`
+   `Pointer.designated`, `PtrBase` below). Anywhere else, and where the
+   walk writes name-derived values by value (digest §9: a key, a type, a
+   block-scope variable's value, a `static_assert` condition, the operand
+   of a `ConstantExpr` with no stored value), the type is written by
+   value.
 
 ### 4.3 The type records
 
@@ -2038,7 +2051,7 @@ also the instantiated ones (§11.4).
 | `redecl` | bookkeeping | out | - |  |
 | `init` | child | in | child? |  |
 | `spec` | flag | in | record VarSpec |  |
-| `eval` | value | demand | - | §11.3: the `resolved` unit `value` |
+| `eval` | value | demand | - | §11.3: the `resolved` unit `value`; a block-scope variable's in place |
 | `templ` | entity | in | record TemplLink |  |
 
 A variable's stream also holds its language linkage (`ScopeData`,
@@ -3132,7 +3145,7 @@ Rules the rows refer to:
 | `MemberExpr.b` | entity | in | ref | the member; for an overloaded access the first candidate (rule above) |
 | `CXXThisExpr.aux-implicit` | flag | in | bit | bit 0, written only for an instantiation-dependent node: Kiln's template substitution, its mangling of dependent expressions and its profiles read it; elsewhere nothing but diagnostics does (pitfalls E07) |
 | `PredefinedExpr.aux` | flag | in | enum PredefinedKind |  |
-| `PredefinedExpr.a` | value | symbolic | - | the string literal holding the enclosing function's name; absent in a dependent context |
+| `PredefinedExpr.a` | value | symbolic | - | the string literal holding the enclosing function's name; absent in a dependent context. The node's `ty` is written as §4.2 rule 8 says |
 | `SourceLocExpr.aux` | flag | in | enum SourceLocKind |  |
 | `SourceLocExpr.a` | entity | symbolic | - | the declaration the builtin is evaluated in, which follows from where the expression is |
 | `UnresolvedLookupExpr.aux` | flag | in | bool | the name is subject to argument-dependent lookup at instantiation (digest §8) |
@@ -4131,6 +4144,19 @@ value (digest §7): a temporary can hold a pointer to itself, and its value
 is already written, with its `LetData`, at the `MaterializeTemporaryExpr`
 in the unit of the declaration that extends it. The pair written here
 names the temporary within that declaration.
+
+A name-derived object (digest §9) is written as which builtin made it.
+`StringLit.lit` of a string a `PredefinedExpr` holds (its literal, the
+expression before the `PredefinedExpr` that names it in `a`) is written
+`bytes` empty, `uv 0` where a string's encoding tag stands (no encoding
+has tag 0), then `uv 1` and the `PredefinedKind` tag; of a string of the
+source-location builtins (`SourceLocValues` `file`, `file_name`,
+`function`, and those an `__impl` object points to) `bytes` empty, `uv 0`,
+`uv 2`. `Const.0` of an `__impl` object (`SourceLocValues` `location`) is
+the digest `H("slip.value.v1", uv 0, uv 3, type)` of its type alone; a
+value's own stream begins with a `ValueKind` tag, never 0, so no value
+written by content has it. Where the walk writes such values by value
+(§4.2 rule 8) the rows are written as the table says.
 
 ### `kiln_ast::consts::value::ByteImage`
 
@@ -5926,6 +5952,13 @@ the unit appear, as for any resolved unit
 the declaration and a later use does not make the unit appear. An in-class `static const int x = 1;` is never evaluated, used or not, so
 it has no `value` unit, while the same constant initialised on its
 out-of-line definition has one ("Open questions").
+
+A block-scope variable (not a block-scope `extern`) has no unit, and its
+uses read its value without writing it (`DeclRefExpr` `non_odr_use_constant`).
+Kiln evaluates it with its declaration, so its stream holds the value in
+place, after `spec`: `value?`, present in state `Value`, written with
+name-derived values by value (digest §9: `constexpr auto n =
+len(__func__)` is the number).
 
 ### 11.4 Default arguments and default member initialisers
 

@@ -419,7 +419,14 @@ pub(crate) fn cast(s: &mut Stream, n: &Node, implicit: bool, out: &mut Vec<Item>
         out.push(Item::Uv(0));
         out.push(Item::Cause(Cause::Unaccounted("ExprNode/cast.aux")));
     }
-    child(out, n.a, Cause::Unaccounted("ExprNode/cast.a"));
+    // The operand of an array-to-pointer conversion passes a name-derived
+    // value through (digest §9, `expr_misc::name_type`).
+    match ExprId::try_new(n.a) {
+        Some(a) if implicit && CastKind::from_u8(n.aux) == Some(CastKind::ArrayToPointerDecay) => {
+            out.push(Item::Decayed(a));
+        }
+        Some(_) | None => child(out, n.a, Cause::Unaccounted("ExprNode/cast.a")),
+    }
     out.push(Item::BasePath(ListId::try_new(n.b)));
 }
 
@@ -468,14 +475,34 @@ pub(crate) fn opaque_value(s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec<It
     out.push(Item::Opaque(e));
 }
 
+/// Raises [`Walk::by_value`] for the operand of a `ConstantExpr` with no
+/// stored value ([`constant`]).
+fn raise_by_value(w: &mut Walk<'_>, _: &mut Stream, _: ExprId) {
+    w.by_value += 1;
+}
+
+/// Lowers what [`raise_by_value`] raised.
+fn lower_by_value(w: &mut Walk<'_>, _: &mut Stream, _: ExprId) {
+    w.by_value -= 1;
+}
+
 /// `ConstantExpr`: the flag word (`aux-elided`, `aux-value-hidden`), `a`,
 /// then `b`: `value?`.
-pub(crate) fn constant(s: &mut Stream, n: &Node, out: &mut Vec<Item>) {
+pub(crate) fn constant(s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec<Item>) {
     check_bits(s, n, 0, Cause::Unaccounted("ExprNode/ConstantExpr.bits"));
     check_aux(s, n, 3, Cause::Unaccounted("ExprNode/ConstantExpr.aux"));
     out.push(Item::Flags(FlagWord::new().bit(n.aux & 1 != 0).bit(n.aux & 2 != 0)));
-    child(out, n.a, Cause::Unaccounted("ExprNode/ConstantExpr.a"));
     let v = ConstValueId::try_new(n.b);
+    // With no stored value, what the operand reads of a name is read by
+    // value (digest §9); with one, the value is written and the operand
+    // passes names on as anywhere.
+    if v.is_none() {
+        out.push(Item::Exec(raise_by_value, e));
+    }
+    child(out, n.a, Cause::Unaccounted("ExprNode/ConstantExpr.a"));
+    if v.is_none() {
+        out.push(Item::Exec(lower_by_value, e));
+    }
     out.push(Item::Opt(v.is_some()));
     if let Some(v) = v {
         out.push(Item::Value(v));

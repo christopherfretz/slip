@@ -626,18 +626,32 @@ that come from the expansion of `__LINE__`, `__FILE__`, `__COUNTER__`,
 `__DATE__`, `__TIME__` and their relatives.
 
 The expression's **own type** and the **constant it stands for** are
-symbolic with it. The array type of `__func__` and its kin (`const
-char[N]`, `N` the length of a name) is written as that builtin's type,
-without the bound. The object that an immediate invocation builds from
+symbolic with it where the value is passed on. The array type of
+`__func__` and its kin (`const char[N]`, `N` the length of a name) is
+written as that builtin's type, without the bound, where the array is
+converted to a pointer, which passes the value on and nothing of its
+length; anywhere else the array itself is read and its type is written by
+value. A constant that points to such a string is written as which
+builtin made it, and the object that an immediate invocation builds from
 such values and nothing else (`std::source_location::current()`, in a
-default argument as anywhere) is written as the builtins it was built
-from, not as its bytes.
+default argument as anywhere) as the builtins it was built from, not as
+its bytes (`digest-kinds.md` §4.2 rule 8, `PtrBase`).
 
 Whatever **consumes** such a value is written by value as always, so a
-real change is seen: an array bound from `__LINE__`, `sizeof(__func__)`,
-the length of a name deduced as a template argument, a variable declared
-with the array's type or a reference to it, a constant computed from the
-characters.
+real change is seen: an array bound from `__LINE__`, `sizeof(__func__)`
+and every other operator that reads the array's type (`alignof`,
+`decltype`, `typeid`, a type trait, a range-`for` over it), the length of
+a name deduced as a template argument, a variable declared with the
+array's type or a reference to it, a constant computed from the
+characters. A constant computed from such a value is written by value
+where it is written: as a template argument, an array bound, an
+enumerator, a variable's value, a `constexpr` function's result used as
+any of these. Where a constant is computed but not stored, what it reads
+is written by value: in a `static_assert` condition and in the operand of
+a constant expression whose value is not stored. So it is in a key and in
+a type, which name one entity of the parse whoever asks, and in the value
+of a block-scope variable, which has no `value` unit and which the
+function's uses read without writing (`digest-kinds.md` §11.3).
 
 Why the type goes with the value: a declared relocation says that names
 change, and a value that is a function of a name changes by exactly that,
@@ -646,6 +660,17 @@ its length a fact, no function that asserts could be relocated and
 verify. A program that observes such a string (a log that is parsed, a
 registry keyed by it) is told by the report, not by the verdict
 (`verify.md` "Open questions").
+
+`__PRETTY_FUNCTION__` and `std::source_location::function_name()` hold
+more than names: the enclosing function's parameter and return types as
+written, sugar included (Kiln's `kiln_ast/src/dump/pretty.rs`
+`pretty_function`). A respelling through an alias, which the digest calls
+spelling, changes them by more than a declared rename. Their symbolic
+form must hold those spellings, with the entities by key; until a unit
+writes its own spellings (`docs/wp/WP-041.md`) such a respelling is
+equal, a known wrong equal (`spec/landed/digest/WP-104.md`). `__func__`,
+`__FUNCTION__` and `__builtin_FUNCTION()` hold the unqualified name only;
+a conversion function's names its canonical type.
 
 ## 10. Indeterminate units
 

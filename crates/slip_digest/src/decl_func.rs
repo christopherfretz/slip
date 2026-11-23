@@ -255,6 +255,27 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     if var_eval(w, d).state() == VarEvalState::Evaluating {
         s.indeterminate(EVALUATING);
     }
+    // A block-scope variable has no `value` unit; Kiln evaluates it with
+    // its declaration (§11.3), and a use reads the value without writing
+    // it (`non_odr_use_constant`). The value is written here, `value?`,
+    // by value: a constant computed from a name (`len(__func__)`) is
+    // what the function's code holds (digest §9).
+    if ast.decls.get(d).kind() == slip_kiln::kiln::ast::decl::DeclKind::Var
+        && w.is_local(d)
+        && !w.is_local_extern(d)
+    {
+        match var_eval(w, d).state() {
+            VarEvalState::Value(c) => {
+                s.opt(true);
+                w.by_value += 1;
+                crate::value::value(w, s, c);
+                w.by_value -= 1;
+            }
+            VarEvalState::NotConstant | VarEvalState::NotEvaluated | VarEvalState::Evaluating => {
+                s.opt(false);
+            }
+        }
+    }
     // templ: record TemplLink.
     crate::templ::templ_link(w, s, templ);
     linkage(w, s, e);

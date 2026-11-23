@@ -54,7 +54,7 @@ use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_kiln::kiln::ast::templates::TtpKind;
 use slip_kiln::kiln::ast::types::{BuiltinType, RefQual, TypeNames, TypeView};
 use slip_kiln::kiln::ast::types::{
-    PrintOptions, print_type, write_arg_list, write_nns, write_template_arg,
+    PrintOptions, print_type, write_arg_list_scoped, write_nns, write_template_arg,
 };
 use slip_kiln::kiln::source::symbol::Symbol;
 use slip_model::Digest;
@@ -129,7 +129,7 @@ pub fn display_name(ast: &Ast, e: DeclId) -> String {
 /// qualified form, without what needs the walk (the names of unnamed
 /// classes).
 pub(crate) fn entity_name(ast: &Ast, e: DeclId, kind: KeyKind) -> String {
-    let names = AstNames::new(ast);
+    let names = scoped_names(ast);
     let mut out = String::new();
     names.write_qualified_spec_name(e, &mut out);
     spec_args(ast, e, &mut out);
@@ -153,7 +153,7 @@ impl<'n, 'w> Names<'n, 'w> {
     fn new(w: &'n Walk<'w>) -> Self {
         let ast = w.ast;
         let holding = ast.decls.cold.binding_var.iter().map(|(b, &h)| (h, b)).collect();
-        Names { w, ast, kiln: AstNames::new(ast), holding }
+        Names { w, ast, kiln: scoped_names(ast), holding }
     }
 
     /// The name of the unit of entity `e`, read from declaration `d`.
@@ -539,13 +539,26 @@ impl<'n, 'w> Names<'n, 'w> {
     }
 }
 
-/// A specialisation's arguments, or a partial specialisation's pattern.
+/// Kiln's names with the arguments of a specialisation in a scope printed
+/// scoped (`legacy::store<legacy::Mine>::m`), as [`spec_args`] prints a
+/// specialisation's own: two entities whose arguments differ only in a
+/// namespace have two names.
+fn scoped_names(ast: &Ast) -> AstNames<'_> {
+    let mut names = AstNames::new(ast);
+    names.scoped_spec_args = true;
+    names
+}
+
+/// A specialisation's arguments, or a partial specialisation's pattern,
+/// every name in them qualified (`legacy::store<legacy::Mine>`, Kiln's
+/// `write_arg_list_scoped`): two specialisations whose arguments differ
+/// only in a namespace have two names.
 fn spec_args(ast: &Ast, d: DeclId, out: &mut String) {
     let names = TypedNull(ast);
     if let Some((_, si)) = ast.spec_info(d) {
-        write_arg_list(&ast.types, &names, ast.types.canonical_args(si.args), out);
+        write_arg_list_scoped(&ast.types, &names, ast.types.canonical_args(si.args), out);
     } else if let Some((_, pi)) = ast.partial_spec_info(d) {
-        write_arg_list(&ast.types, &names, pi.canonical, out);
+        write_arg_list_scoped(&ast.types, &names, pi.canonical, out);
     }
 }
 
@@ -697,5 +710,86 @@ fn content_word(kind: KeyKind) -> &'static str {
         KeyKind::ConstevalBlock => "consteval_block",
         KeyKind::TemplateParamObject => "template_param_object",
         _ => "content",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use slip_kiln::kiln::ast::decl::DeclKind;
+
+    // WP-104 part 2: a specialisation's arguments, and those of a
+    // specialisation in its scope, print every name qualified, of every
+    // kind of argument.
+    #[test]
+    fn specialisation_arguments_are_qualified() {
+        let src = "namespace legacy {\n\
+            struct Mine {}; enum E { X }; enum class F { Y };\n\
+            void fn(); int var; struct S { int m; void mf(); };\n\
+            template <class T> struct store { void put(); };\n\
+            template <template <class> class TT> struct tt {};\n\
+            template <void (*P)()> struct fp {}; template <int *P> struct vp {};\n\
+            template <E e> struct ep {}; template <F e> struct fq {};\n\
+            template <int S::*P> struct mp {}; template <void (S::*P)()> struct mfp {};\n\
+            template <class... T> struct pack {};\n\
+            inline auto lam = [] {};\n\
+            }\n\
+            namespace other { struct Mine {}; }\n\
+            legacy::store<legacy::Mine> a; legacy::store<other::Mine> b;\n\
+            legacy::store<legacy::store<other::Mine>> c; legacy::tt<legacy::store> d;\n\
+            legacy::fp<&legacy::fn> e; legacy::vp<&legacy::var> f; legacy::ep<legacy::X> g;\n\
+            legacy::fq<legacy::F::Y> h; legacy::mp<&legacy::S::m> i;\n\
+            legacy::mfp<&legacy::S::mf> j;\n\
+            legacy::pack<legacy::Mine, other::Mine, legacy::store<legacy::F>> k;\n\
+            legacy::store<decltype(legacy::lam)> l;\n\
+            void use() { b.put(); }\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let names: BTreeSet<String> = ast
+                .decls
+                .ids()
+                .filter(|&d| {
+                    ast.decls.get(d).kind() == DeclKind::CXXMethod
+                        || (ast.decls.record(d).is_some() && ast.spec_info(d).is_some())
+                })
+                .map(|d| super::display_name(ast, d))
+                .collect();
+            for want in [
+                "legacy::store<legacy::Mine>",
+                "legacy::store<other::Mine>",
+                "legacy::store<legacy::store<other::Mine>>",
+                "legacy::tt<legacy::store>",
+                "legacy::fp<&legacy::fn>",
+                "legacy::vp<&legacy::var>",
+                "legacy::ep<legacy::X>",
+                "legacy::fq<legacy::F::Y>",
+                "legacy::mp<&legacy::S::m>",
+                "legacy::mfp<&legacy::S::mf>",
+                "legacy::pack<legacy::Mine, other::Mine, legacy::store<legacy::F>>",
+                "legacy::store<legacy::(lambda)>",
+                "legacy::store<other::Mine>::put()",
+            ] {
+                assert!(names.contains(want), "{want} not in {names:#?}");
+            }
+        });
+    }
+
+    // A local class prints without its function (Kiln's scoped printing
+    // names no function scope): `store<Local>`.
+    #[test]
+    fn local_class_argument() {
+        let src = "template <class T> struct store {};\n\
+                   namespace legacy { int g() { struct Local {}; store<Local> l; (void)l; return 0; } }\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let names: Vec<String> = ast
+                .decls
+                .ids()
+                .filter(|&d| ast.decls.record(d).is_some() && ast.spec_info(d).is_some())
+                .map(|d| super::display_name(ast, d))
+                .collect();
+            assert_eq!(names, ["store<Local>"]);
+        });
     }
 }

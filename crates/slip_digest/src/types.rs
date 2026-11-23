@@ -110,7 +110,11 @@ impl Walk<'_> {
         // depend on it (`Walk::take_expr_state`).
         let expr = self.take_expr_state();
         self.type_nesting += 1;
+        // A type is memoised per parse and names what it holds by value
+        // (a template argument), whoever asks (digest §9).
+        self.by_value += 1;
         self.type_stream(&mut s, c, no_exc);
+        self.by_value -= 1;
         self.type_nesting -= 1;
         self.unit.expr = expr;
         self.leave();
@@ -133,6 +137,52 @@ impl Walk<'_> {
             self.abort_memo.clear();
         }
         t
+    }
+
+    /// The type digest of a name-derived array (`spec/digest.md` §9,
+    /// digest-kinds §4.2 rule 8): for `q` whose canonical form is a
+    /// constant array `cv T[N]` (no size expression), the digest of the
+    /// array without its bound, `cv T[]`: the stream `Quals`, then
+    /// `IncompleteArray` and `T`'s digest, as [`Walk::type_digest`] would
+    /// write that type. `None` for any other type, which the caller
+    /// writes by value.
+    pub(crate) fn unbounded_array(&mut self, q: QualType) -> Option<TypeRef> {
+        let c = self.ast.types.canonical(q);
+        let TypeView::ConstantArray(slip_kiln::kiln::ast::types::ConstArray {
+            elem,
+            size: _,
+            size_expr: None,
+        }) = self.ast.types.view(c.ty())
+        else {
+            return None;
+        };
+        if !self.enter() {
+            return Some(TypeRef {
+                digest: Digest([0; 32]),
+                cause: Some(TOO_DEEP),
+                spelling: false,
+            });
+        }
+        let left_out = self.left_out;
+        let mut s = Stream::new();
+        let expr = self.take_expr_state();
+        self.type_nesting += 1;
+        if self.ast.types.flags(c.ty()).contains(TypeFlags::CONTAINS_ERROR) {
+            s.indeterminate(Cause::Error);
+        }
+        let q = Quals::from_bits(c.quals_bits());
+        s.flags(FlagWord::new().bit(q.is_const()).bit(q.is_volatile()).bit(q.is_restrict()));
+        s.tag(type_view::INCOMPLETE_ARRAY);
+        self.write_type(&mut s, elem);
+        self.type_nesting -= 1;
+        self.unit.expr = expr;
+        self.leave();
+        let h = s.finish(TYPE_TAG);
+        let h = self.hashed(h);
+        if self.type_nesting == 0 {
+            self.abort_memo.clear();
+        }
+        Some(TypeRef { digest: h.digest, cause: h.cause, spelling: self.left_out != left_out })
     }
 
     /// The stream of canonical type `c`: `Quals`, then `enum TypeView`.

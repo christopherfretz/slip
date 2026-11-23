@@ -202,9 +202,17 @@ fn write_scalar(w: &mut Walk<'_>, s: &mut Stream, x: Scalar<'_>, cx: &mut Ctx) {
         Scalar::Pointer { ty, base, offset, designated, past } => {
             variant(s, value_kind::POINTER, "ValueKind/Pointer");
             w.write_type(s, ty);
-            write_base(w, s, base, cx);
+            let named = write_base(w, s, base, cx);
             s.uv(offset);
-            w.write_type_opt(s, designated);
+            // `void *` into a name-derived string designates its array:
+            // the bound is the name's, as the base's bytes are (digest §9).
+            match designated.and_then(|d| if named { w.unbounded_array(d) } else { None }) {
+                Some(t) => {
+                    s.opt(true);
+                    w.absorb_type(s, t);
+                }
+                None => w.write_type_opt(s, designated),
+            }
             s.bool(past);
         }
         Scalar::MemberPtr { ty, member, kind, derived, path } => {
@@ -268,13 +276,26 @@ fn base_name(b: &PtrBase) -> &'static str {
     }
 }
 
-/// `enum PtrBase`.
-fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, cx: &mut Ctx) {
+/// `enum PtrBase`; `true` when the base is a name-derived object written
+/// symbolically (digest §9, [`NameValues`]).
+fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, cx: &mut Ctx) -> bool {
     variant(s, ptr_base::row(&base), base_name(&base));
     match base {
         PtrBase::Decl(d) | PtrBase::Function(d) => w.write_ref(s, d),
         PtrBase::Temporary(d) => write_temporary(w, s, d),
+        PtrBase::StringLit { lit, origin } if w.by_value == 0 => match name_string(w, origin) {
+            Some(which) => {
+                write_name_string(s, which);
+                return true;
+            }
+            None => string(w, s, lit),
+        },
         PtrBase::StringLit { lit, origin: _ } => string(w, s, lit),
+        PtrBase::Const(c) if w.by_value == 0 && name_values(w).objects.contains(&c.index()) => {
+            let h = location_digest(w, c);
+            s.digest(&h.digest).absorb(h.cause);
+            return true;
+        }
         PtrBase::Const(c) => {
             let h = const_digest(w, cx, c);
             s.digest(&h.digest).absorb(h.cause);
@@ -288,6 +309,163 @@ fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, cx: &mut Ctx) {
             s.uv(u64::from(size));
         }
     }
+    false
+}
+
+// ---------------------------------------------------------------------
+// Values that come from names and positions (digest §9, WP-104).
+
+/// The objects of the constant store that hold the values of the
+/// source-location builtins (`kiln_sema/src/builtins.rs` `record_source_loc`,
+/// `srcloc_string`, `source_location_object`): Kiln makes one string
+/// object per content, whose `StringLiteral` has no parent
+/// (`frozen_string`), and one `std::source_location::__impl` object per
+/// value. They are found from the values Kiln records for every use
+/// (`ExprArena` `cold.source_loc`), once per walk.
+#[derive(Debug, Default)]
+pub(crate) struct NameValues {
+    /// The `ExprId`s (index) of the string objects' literals.
+    origins: HashSet<u32>,
+    /// The `ConstValueId`s (index) of the `__impl` objects.
+    objects: HashSet<u32>,
+}
+
+/// Which name-derived string a `PtrBase::StringLit` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NameString {
+    /// The value of a `PredefinedExpr` of this kind.
+    Predefined(slip_kiln::kiln::ast::expr::PredefinedKind),
+    /// A string of the source-location builtins (`file`, `file_name`,
+    /// `function`, or an `__impl` object's).
+    SourceLoc,
+}
+
+/// The [`NameValues`] of the walk, built on first use.
+fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w NameValues {
+    let ast = w.ast;
+    w.name_values.get_or_insert_with(|| {
+        let mut nv = NameValues::default();
+        let string = |nv: &mut NameValues, c: ConstValueId| {
+            if let Some(Scalar::Pointer {
+                ty: _,
+                base: PtrBase::StringLit { lit: _, origin },
+                offset: _,
+                designated: _,
+                past: _,
+            }) = ast.consts.scalar(c)
+            {
+                nv.origins.insert(origin.index());
+            }
+        };
+        for (_, v) in ast.exprs.cold.source_loc.iter() {
+            let &slip_kiln::kiln::ast::expr::SourceLocValues {
+                file,
+                file_name,
+                function,
+                line: _,
+                column: _,
+                location,
+                at: _,
+                ctx: _,
+            } = v;
+            string(&mut nv, file);
+            string(&mut nv, file_name);
+            string(&mut nv, function);
+            let Some(l) = location else { continue };
+            let Some(Scalar::Pointer {
+                ty: _,
+                base: PtrBase::Const(obj),
+                offset: _,
+                designated: _,
+                past: _,
+            }) = ast.consts.scalar(l)
+            else {
+                continue;
+            };
+            if let ConstValue::Aggregate(ByteImage {
+                ty: _,
+                bytes: _,
+                relocs,
+                padding: _,
+                unions: _,
+            }) = ast.consts.get(obj)
+            {
+                nv.objects.insert(obj.index());
+                for &Reloc { at: _, value } in relocs {
+                    string(&mut nv, value);
+                }
+            }
+        }
+        nv
+    })
+}
+
+/// Whether string object `origin` holds a name-derived value: the
+/// literal of a `PredefinedExpr` (Kiln builds it immediately before its
+/// `PredefinedExpr`, `kiln_sema/src/predefined.rs:36-41`, and reads it so,
+/// `kiln_sema/src/templ/args.rs:2022`; the `PredefinedExpr`'s `a` names
+/// it, which is checked), or a source-location string.
+fn name_string(w: &mut Walk<'_>, origin: ExprId) -> Option<NameString> {
+    use slip_kiln::kiln::ast::RawId;
+    let ast = w.ast;
+    let next = origin.raw().checked_add(1).and_then(ExprId::from_raw);
+    if let Some(next) = next
+        && (next.raw() as usize) <= ast.exprs.len()
+        && ast.exprs.get(next).kind() == ExprKind::PredefinedExpr
+        && ast.exprs.predefined_name(next) == Some(origin)
+    {
+        return Some(NameString::Predefined(ast.exprs.predefined_kind(next)));
+    }
+    name_values(w).origins.contains(&origin.index()).then_some(NameString::SourceLoc)
+}
+
+/// `PtrBase` `StringLit.lit` of a name-derived string (digest-kinds §8,
+/// the rule under `PtrBase`): `bytes` empty, `uv 0` where a literal's
+/// encoding tag stands (0 is no tag, so no literal is written so), then
+/// `uv 1` and the `PredefinedKind` tag for a `PredefinedExpr`'s value, or
+/// `uv 2` for a source-location string.
+fn write_name_string(s: &mut Stream, which: NameString) {
+    s.bytes(&[]).uv(0);
+    match which {
+        NameString::Predefined(k) => {
+            s.uv(1).tag(crate::tables::predefined_kind::row(&k));
+        }
+        NameString::SourceLoc => {
+            s.uv(2);
+        }
+    }
+}
+
+/// `PtrBase` `Const.0` of a source-location `__impl` object: the digest
+/// `H("slip.value.v1", uv 0, uv 3, type)` of its type alone. A value's
+/// own stream begins with a `ValueKind` tag, never 0, so no constant
+/// written by content has this digest.
+fn location_digest(w: &mut Walk<'_>, obj: ConstValueId) -> Hashed {
+    let ty = match w.ast.consts.get(obj) {
+        ConstValue::Aggregate(img) => Some(img.ty),
+        ConstValue::Scalar(_) => None,
+    };
+    let mut s = Stream::new();
+    s.uv(0).uv(3);
+    match ty {
+        Some(t) => w.write_type(&mut s, t),
+        None => {
+            s.indeterminate(Cause::Unaccounted("value/source-location"));
+        }
+    }
+    w.hashed(s.finish(VALUE_TAG))
+}
+
+/// The memo of content digests for the walk's mode: one written with
+/// name-derived values by value ([`Walk::by_value`]) differs from one
+/// written with them symbolically.
+fn memo<'w>(w: &'w Walk<'_>) -> &'w HashMap<u32, Hashed> {
+    if w.by_value > 0 { &w.const_memo_by_value } else { &w.const_memo }
+}
+
+/// [`memo`], to insert into.
+fn memo_mut<'w>(w: &'w mut Walk<'_>) -> &'w mut HashMap<u32, Hashed> {
+    if w.by_value > 0 { &mut w.const_memo_by_value } else { &mut w.const_memo }
 }
 
 /// The content digest of constant `c` (`PtrBase/Const.0`): from the
@@ -295,7 +473,7 @@ fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, cx: &mut Ctx) {
 /// reaches ([`compute`]).
 fn const_digest(w: &mut Walk<'_>, cx: &mut Ctx, c: ConstValueId) -> Hashed {
     let i = c.index();
-    if let Some(&h) = w.const_memo.get(&i) {
+    if let Some(&h) = memo(w).get(&i) {
         return h;
     }
     if let Some(&h) = cx.local.get(&i) {
@@ -311,7 +489,7 @@ fn const_digest(w: &mut Walk<'_>, cx: &mut Ctx, c: ConstValueId) -> Hashed {
         cx.tainted = true;
         return Hashed { digest: Digest([0; 32]), cause: Some(TOO_DEEP), bytes: 0 };
     }
-    if let Some(&h) = w.const_memo.get(&i) {
+    if let Some(&h) = memo(w).get(&i) {
         return h;
     }
     if let Some(&h) = cx.local.get(&i) {
@@ -335,7 +513,7 @@ fn compute(w: &mut Walk<'_>, cx: &mut Ctx, root: ConstValueId) -> bool {
     let mut stack = vec![root];
     while let Some(v) = stack.pop() {
         let i = v.index();
-        if w.const_memo.contains_key(&i) || cx.local.contains_key(&i) || !seen.insert(i) {
+        if memo(w).contains_key(&i) || cx.local.contains_key(&i) || !seen.insert(i) {
             continue;
         }
         todo.push(v);
@@ -356,7 +534,7 @@ fn compute(w: &mut Walk<'_>, cx: &mut Ctx, root: ConstValueId) -> bool {
         if cx.tainted || w.aborts != aborts {
             cx.local.insert(v.index(), h);
         } else {
-            w.const_memo.insert(v.index(), h);
+            memo_mut(w).insert(v.index(), h);
         }
     }
     cx.computing = false;
