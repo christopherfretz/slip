@@ -259,7 +259,7 @@ impl Walk<'_> {
         let res = match computed {
             Ok((key, cause)) => {
                 let kind = key.kind;
-                let key = self.rules.map(key);
+                let key = crate::rule_use::map(self, e, key);
                 self.bytes += key.to_bytes().len() as u64;
                 KeyRes::Key { id: key.id(), kind, cause }
             }

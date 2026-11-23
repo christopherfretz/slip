@@ -314,7 +314,7 @@ pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Dig
                 paths.get(f.index()).cloned().unwrap_or_default()
             };
             let input = Input { ast, sm, subject_path: &path };
-            let options = Options { rules, detail: Detail::All, names: true };
+            let options = Options { rules, detail: Detail::All, names: true, rule_use: false };
             slip_digest::digest(&input, &options)
         });
         (output, p.errors, p.diagnostics.clone())

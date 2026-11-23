@@ -1411,7 +1411,7 @@ mod tests {
                         let path = |_| Vec::new();
                         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
                         let rules = RuleTable::empty();
-                        let options = Options { rules: &rules, detail: Detail::None, names: true };
+                        let options = Options { rules: &rules, detail: Detail::None, names: true, rule_use: false };
                         Some(crate::walk::run_with(&input, &options, |w, u, o| f(w, u, &o)))
                     })
                     .ok()
@@ -1783,7 +1783,7 @@ mod tests {
                         let path = |_| Vec::new();
                         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
                         let rules = RuleTable::empty();
-                        let options = Options { rules: &rules, detail: Detail::None, names: false };
+                        let options = Options { rules: &rules, detail: Detail::None, names: false, rule_use: false };
                         let normal =
                             crate::walk::run_with(&input, &options, |_, u, _| keys_and_digests(u));
                         let mut w = Walk::new(&input, &rules);
