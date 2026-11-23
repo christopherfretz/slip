@@ -939,7 +939,7 @@ Two holes are known and pinned by tests that wait (`#[ignore = "needs:
   of the lookups that failed. Closing it needs the pre shard to hold its
   parse's **negative inputs**: each place a lookup tried and did not find
   (directory and name, as L1 lists them), so that a file now present at
-  one of them is a drift (a package of its own). Test:
+  one of them is a drift (`docs/wp/WP-117.md`). Test:
   `f4b_outside_header_added_after_the_map`.
 
 **The overlay form.** The image is an overlay (`spec/edits.md` §7.1,

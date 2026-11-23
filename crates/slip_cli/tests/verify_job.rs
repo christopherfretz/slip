@@ -1448,10 +1448,10 @@ fn f7_absolute_has_include() {
 // F4b (re-check): a header added outside both roots after the map phase,
 // in a directory searched before the one the map read it from, with an
 // edit that compensates. O2 compares only files both parses read; the map
-// parse's failed lookups are not kept ("negative inputs", a package to
-// come): §5.1 "What remains outside".
+// parse's failed lookups are not kept ("negative inputs", WP-117): §5.1
+// "What remains outside".
 #[test]
-#[ignore = "needs: negative inputs in the map shard (a package to come)"]
+#[ignore = "needs: WP-117 (negative inputs in the map shard)"]
 fn f4b_outside_header_added_after_the_map() {
     let pre = "#include <cfg.h>\n#if USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
     let post = "#include <cfg.h>\n#if !USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
