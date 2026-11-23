@@ -2113,6 +2113,11 @@ struct Diff {
     dump_skipped_at: Vec<String>,
     /// The largest clang dump read, in bytes.
     largest_dump: usize,
+    /// Units whose parse did not run to a diagnosis: the front end's
+    /// thread could not start (an environment error, such as an
+    /// address-space limit) or the front end panicked. A test failure,
+    /// never a skip.
+    not_parsed: Vec<String>,
     calls: u64,
     closed_by_macro: u64,
     unmatched: u64,
@@ -2139,6 +2144,7 @@ impl Diff {
         self.dump_skipped += o.dump_skipped;
         self.dump_skipped_at.extend(o.dump_skipped_at);
         self.largest_dump = self.largest_dump.max(o.largest_dump);
+        self.not_parsed.extend(o.not_parsed);
         self.calls += o.calls;
         self.closed_by_macro += o.closed_by_macro;
         self.unmatched += o.unmatched;
@@ -2374,8 +2380,19 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
             }
         }
     });
-    if parsed.is_err() {
-        d.kiln_errors = 1;
+    if let Err(e) = parsed {
+        // `parse_with_tables`' own errors (`slip_kiln::snippet`): a thread
+        // that cannot start or a panic is not a diagnosis of the source.
+        if e.starts_with("cannot start the front end's thread")
+            || e.starts_with("the front end panicked")
+        {
+            d.not_parsed.push(format!("{label}: {e}"));
+        } else {
+            d.kiln_errors = 1;
+            if std::env::var_os("SLIP_WP086_TRACE").is_some() {
+                eprintln!("TRACE kiln-error {label}: {e}");
+            }
+        }
     }
     d
 }
@@ -2461,6 +2478,7 @@ using AT = A<k(9)>;
     };
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp086-review");
     let d = differential(&side, &dir, "review");
+    assert!(d.not_parsed.is_empty(), "{:?}", d.not_parsed);
     assert_eq!((d.kiln_errors, d.clang_errors), (0, 0));
     assert!(d.differences.is_empty(), "{}", d.differences.join("\n"));
     assert!(d.missing.is_empty(), "{:?}\n{}", d.missing, d.missing_at.join("\n"));
@@ -2514,6 +2532,7 @@ fn review086_differential_refuses_an_oversized_dump() {
     };
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp086-oversized");
     let d = differential(&side, &dir, "chain");
+    assert!(d.not_parsed.is_empty(), "{:?}", d.not_parsed);
     assert_eq!((d.dump_skipped, d.clang_errors, d.kiln_errors), (1, 0, 0));
     assert_eq!(d.dump_skipped_at, ["chain"]);
     assert_eq!(d.largest_dump, 0);
@@ -2652,6 +2671,13 @@ fn item7_differential_against_clang() {
     for u in d.missing_at.iter().filter(|u| !u.contains(" in an ")).take(shown) {
         eprintln!("no subject call: {u}");
     }
+    d.not_parsed.sort();
+    assert!(
+        d.not_parsed.is_empty(),
+        "{} units not parsed (not a diagnosis of the source):\n{}",
+        d.not_parsed.len(),
+        d.not_parsed.join("\n")
+    );
     assert!(d.compared > 1000, "only {} extents compared", d.compared);
     assert!(d.differences.is_empty(), "{}", d.differences.join("\n"));
     // Refusing a dump must stay the exception, not hide the corpus.
