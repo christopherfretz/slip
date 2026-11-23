@@ -551,6 +551,8 @@ fn key_names(p: &slip_kiln::snippet::Parsed<'_>) -> BTreeMap<Digest, String> {
                 let input = slip_digest::Input { ast, sm, subject_path: &path };
                 let options = slip_digest::Options {
                     rules: &rules,
+                    // The empty table reads no ownership (verify.md §2.1).
+                    read_only: slip_digest::ReadOnly::EVERY_FILE,
                     detail: slip_digest::Detail::None,
                     names: true,
                 };

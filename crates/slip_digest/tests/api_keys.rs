@@ -61,7 +61,10 @@ fn snippet<R: Send>(source: &str, f: impl FnOnce(&Input<'_>) -> R + Send) -> R {
 }
 
 fn digest(input: &Input<'_>, rules: &RuleTable) -> Output {
-    slip_digest::digest(input, &Options { rules, read_only: ReadOnly::NO_FILE, detail: Detail::All, names: true })
+    slip_digest::digest(
+        input,
+        &Options { rules, read_only: ReadOnly::NO_FILE, detail: Detail::All, names: true },
+    )
 }
 
 /// The identifier `d` is declared with, if it has one.
@@ -747,9 +750,11 @@ fn check_rename(r: &Rename) -> Result<(), String> {
         // matches nothing, and the entity keeps its post-image key.
         let unmapped = Keys::with_rules(input, &table, ReadOnly::EVERY_FILE).key_id(e);
         let plain = Keys::new(input).key_id(e);
-        if unmapped != plain || unmapped == Ok(pre.id) {
-            panic!("{}: test 7 (WP-110): with_rules under EVERY_FILE maps the renamed entity", r.what);
-        }
+        assert!(
+            unmapped == plain && unmapped != Ok(pre.id),
+            "{}: test 7 (WP-110): with_rules under EVERY_FILE maps the renamed entity",
+            r.what
+        );
         (same, differs, k.key_id(e), (k.key(e), k.derived(e)))
     });
     let (key, derived) = key;

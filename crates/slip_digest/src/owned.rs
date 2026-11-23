@@ -443,15 +443,17 @@ mod tests {
     fn read_only_files_needs_the_real_path() {
         let files = Ownership { owned: vec![p("/subject")], readonly: vec![p("/subject/dep")] };
         let (sm, ids) = buffers(&["/post/dep/d.h", "/post/src/vendor/d.h", "/post/src/a.h"]);
-        let spelled = |f: FileId| -> Vec<u8> {
-            p(&sm.file_name(f).replacen("/post/", "/subject/", 1))
-        };
+        let spelled =
+            |f: FileId| -> Vec<u8> { p(&sm.file_name(f).replacen("/post/", "/subject/", 1)) };
         let real = |f: FileId| -> Vec<u8> {
             let name = sm.file_name(f).replacen("/post/src/vendor/", "/post/dep/", 1);
             p(&name.replacen("/post/", "/subject/", 1))
         };
         let by_real = ReadOnlyFiles::new(Some(&files), &sm, &real);
-        assert_eq!(ids.iter().map(|&f| by_real.read_only(f)).collect::<Vec<_>>(), [true, true, false]);
+        assert_eq!(
+            ids.iter().map(|&f| by_real.read_only(f)).collect::<Vec<_>>(),
+            [true, true, false]
+        );
         // The spelling as the subject path: the same file, two answers.
         let by_spelling = ReadOnlyFiles::new(Some(&files), &sm, &spelled);
         assert_eq!(

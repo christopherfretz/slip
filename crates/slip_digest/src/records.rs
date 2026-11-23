@@ -97,13 +97,6 @@ pub fn key_agreement(
         views.sort_by_key(|&(n, b, _)| (n.index(), b));
         (memo, views)
     });
-    fn fresh<'a>(input: &Input<'a>, ro: crate::ReadOnly<'a>, table: &'a RuleTable) -> Walk<'a> {
-        let mut w = Walk::new(input, table);
-        w.read_only = ro;
-        crate::units::collect(&mut w);
-        crate::local::number_all(&mut w);
-        w
-    }
     let name = |e: DeclId| crate::names::entity_name(input.ast, e, KeyKind::Class);
     let mut w = fresh(input, read_only, rules);
     for &(e, r) in memo.iter().rev() {
@@ -141,6 +134,16 @@ pub fn key_agreement(
         }
     }
     Ok(memo.len() + views.len())
+}
+
+/// A walk of `input` under `table` and `ro`, its units collected and
+/// its locals numbered, as `key_agreement` recomputes keys in.
+fn fresh<'a>(input: &Input<'a>, ro: crate::ReadOnly<'a>, table: &'a RuleTable) -> Walk<'a> {
+    let mut w = Walk::new(input, table);
+    w.read_only = ro;
+    crate::units::collect(&mut w);
+    crate::local::number_all(&mut w);
+    w
 }
 
 fn collect(w: &mut Walk<'_>, written: &[Written], output: &Output) -> Result<Vec<Record>, String> {

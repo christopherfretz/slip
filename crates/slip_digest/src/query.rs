@@ -141,15 +141,7 @@ impl<'a> Keys<'a> {
     ) -> Keys<'a> {
         let mut w = Walk::new(input, rules);
         w.read_only = read_only;
-        Keys {
-            input,
-            rules,
-            read_only,
-            w,
-            units: HashMap::new(),
-            origins: None,
-            written: None,
-        }
+        Keys { input, rules, read_only, w, units: HashMap::new(), origins: None, written: None }
     }
 
     /// The declaration the digest treats as the entity of `d`
