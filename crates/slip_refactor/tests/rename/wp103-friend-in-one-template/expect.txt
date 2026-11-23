@@ -6,5 +6,5 @@ claims:
   main.cpp:2:6+1 replace "g" t0 votes=1 none [9f28e21c]
   main.cpp:3:42+1 replace "g" t0 votes=1 none [2a0d4b3e]
   main.cpp:4:6+1 replace "g" t0 votes=1 none [9f28e21c]
-  main.cpp:7:15+1 replace spell(2a0d4b3e, "g") t0 votes=1 none [2a0d4b3e]
+  main.cpp:7:15+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
 changed:

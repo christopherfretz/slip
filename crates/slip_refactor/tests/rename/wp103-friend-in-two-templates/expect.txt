@@ -8,5 +8,5 @@ claims:
   main.cpp:3:42+1 replace "g" t0 votes=1 none [2a0d4b3e]
   main.cpp:4:42+1 replace "g" t0 votes=1 none [d465635d]
   main.cpp:5:6+1 replace "g" t0 votes=1 none [9f28e21c]
-  main.cpp:9:15+1 replace spell(d465635d, "g") t0 votes=1 none [d465635d]
+  main.cpp:9:15+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
 changed:

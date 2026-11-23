@@ -134,6 +134,7 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
 fn written_options() -> ParseOptions {
     let mut o = ParseOptions::default();
     o.written = true;
+    o.pp_record = true;
     o
 }
 
@@ -395,10 +396,32 @@ fn directories() {
     let mut failed = Vec::new();
     let all = cases();
     assert!(!all.is_empty());
+    let mut pending = Vec::new();
     for case in &all {
         let got = render(case, &run_case(case));
         let path = case.dir.join("expect.txt");
-        let want = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        // `# pending` (as `crates/slip_digest/tests` mark them): the
+        // lines that are not comments are what the rename should give once
+        // the hole named in the comments is closed. It is run, not
+        // compared, and never blessed; giving it already is a failure, so
+        // that the mark is taken off when the hole closes.
+        if is_pending(case) {
+            let mut want = String::new();
+            for l in text.lines().filter(|l| !l.starts_with('#')) {
+                want.push_str(l);
+                want.push('\n');
+            }
+            if got == want {
+                failed.push(format!(
+                    "--- {}: marked # pending, and gives what it expects",
+                    case.name
+                ));
+            }
+            pending.push(case.name.clone());
+            continue;
+        }
+        let want = text;
         if got != want {
             if bless {
                 std::fs::write(&path, &got).unwrap();
@@ -406,6 +429,9 @@ fn directories() {
                 failed.push(format!("--- {}\n{}\n+++ got\n{}", case.name, want, got));
             }
         }
+    }
+    if !pending.is_empty() {
+        eprintln!("pending ({}): {}", pending.len(), pending.join(", "));
     }
     assert!(
         failed.is_empty(),
@@ -434,19 +460,25 @@ fn run_is_a_function_of_the_unit() {
 /// `docs/wp/WP-071.md` "Tests", the last paragraph: for every directory,
 /// each subject's rule, applied by a walk of the post-image (the tree
 /// with every `replace` claim spliced in), gives the subject's id. Asked
-/// of each subject that has a rule and no flag, in a directory whose
-/// claims are all `replace` or `keep` and agree at every range (anything
-/// else is not a run that would be applied).
+/// of each subject that has a rule, in a directory with no flagged
+/// subject, no `# pending` mark, and claims that are all `replace` or
+/// `keep` and agree at every range: anything else is not a run that
+/// would be applied (a flagged subject refuses the run, §5.2).
 #[test]
 fn rules_give_the_ids_in_the_post_image() {
     let mut checked = 0;
     for case in cases() {
+        if is_pending(&case) {
+            continue;
+        }
         let Ran::Edits(e) = run_case(&case) else { continue };
-        let applicable =
-            e.claims.iter().all(|c| matches!(c.stance, Stance::Replace | Stance::Keep))
-                && e.claims
-                    .windows(2)
-                    .all(|w| (w[0].file, w[0].lo, w[0].hi) != (w[1].file, w[1].lo, w[1].hi));
+        // A run with a flagged subject is refused (§5.2): nothing of it is
+        // applied, so there is no post-image to ask.
+        let applicable = e.subjects.iter().all(|s| s.flags == 0)
+            && e.claims.iter().all(|c| matches!(c.stance, Stance::Replace | Stance::Keep))
+            && e.claims
+                .windows(2)
+                .all(|w| (w[0].file, w[0].lo, w[0].hi) != (w[1].file, w[1].lo, w[1].hi));
         let want: Vec<Digest> =
             e.subjects.iter().filter(|s| s.rule.is_some() && s.flags == 0).map(|s| s.id).collect();
         if !applicable || want.is_empty() {
@@ -510,6 +542,12 @@ fn reason_name(r: Reason) -> &'static str {
         Reason::MixedInstances => "mixed_instances",
         Reason::Directive => "directive",
     }
+}
+
+/// Whether the directory's `expect.txt` is marked `# pending`.
+fn is_pending(case: &Case) -> bool {
+    std::fs::read_to_string(case.dir.join("expect.txt"))
+        .is_ok_and(|t| t.lines().any(|l| l.trim() == "# pending"))
 }
 
 /// Whether the AST names `d` (an identifier) `name`.
@@ -640,4 +678,49 @@ fn a_rule_maps_the_new_name_to_the_old() {
     let rule = e.subjects[0].rule.as_ref().expect("a rule");
     assert_eq!(rule.name, Name::Identifier(case.new_name.clone()));
     assert_eq!(rule.to_name, Name::Identifier(case.target.last().unwrap().clone()));
+}
+
+fn edits_of(dir: &str) -> Edits {
+    let case = read_case(&cases_dir().join(dir));
+    let Ran::Edits(e) = run_case(&case) else { panic!("{dir}: diagnosed") };
+    *e
+}
+
+/// Review of WP-071, A4 (`spec/digest.md` §3.4): a friend declaration that
+/// does not define the function is not followed by `origin`, so a header's
+/// use spells the same key in a unit that instantiates the template before
+/// the header and in one that instantiates it after. Two observers giving
+/// two pieces at one range would make the reduce divergent.
+#[test]
+fn a_friend_that_does_not_define_gives_one_piece() {
+    let at = |e: &Edits| {
+        let c = e
+            .claims
+            .iter()
+            .find(|c| e.files[c.file as usize].path == b"use.h")
+            .expect("a claim in use.h");
+        (c.lo, c.hi, c.stance, c.pieces.clone(), c.subjects.clone())
+    };
+    let before = edits_of("wp103-friend-not-defining-instantiated-before-use");
+    let after = edits_of("wp103-friend-not-defining-instantiated-after-use");
+    assert_eq!(at(&before), at(&after));
+    let seed = before.subjects.iter().find(|s| s.role == Role::Seed).unwrap().id;
+    assert!(matches!(&at(&before).3[..], [Piece::Spelled { key, .. }] if *key == seed));
+}
+
+/// Review of WP-071, A5 (`spec/edits.md` §9.2): whether a subject carries
+/// a rule is a function of its key and the request, never of what else
+/// the observer saw. The seed has its rule (an equal one) in the unit that
+/// instantiates the class template defining it as a friend and in the one
+/// that does not; where its key follows the pattern member, it is
+/// `unsupported` instead.
+#[test]
+fn a_seed_rule_does_not_depend_on_instantiation() {
+    let seed = |e: &Edits| e.subjects.iter().find(|s| s.role == Role::Seed).unwrap().clone();
+    let inst = seed(&edits_of("wp103-friend-defining-instantiated"));
+    let not = seed(&edits_of("wp103-friend-defining-not-instantiated"));
+    assert_eq!(inst.id, not.id);
+    assert!(inst.rule.is_some());
+    assert_eq!(inst.rule, not.rule);
+    assert_ne!(inst.flags & subject_flags::UNSUPPORTED, 0);
 }

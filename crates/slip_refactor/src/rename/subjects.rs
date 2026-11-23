@@ -5,13 +5,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use slip_digest::query::Keys;
+use slip_kiln::kiln::ast::decl::{DeclKind, DefinitionBits, NamespaceData, VarStorage};
 use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{Ast, DeclId};
 use slip_kiln::written::{self, DeclNameKind};
 use slip_model::edits::{KeyId, Link, Role, Subject, subject_flags};
 use slip_model::keys::Rule;
 
-use super::{CTX_LIMIT, Ctx, enclosing};
+use super::{CTX_LIMIT, Ctx};
 
 /// One subject.
 #[derive(Debug)]
@@ -80,14 +81,6 @@ impl Subjects {
     pub fn flag(&mut self, id: KeyId, flags: u64) {
         if let Some(e) = self.entries.get_mut(&id) {
             e.flags |= flags;
-        }
-    }
-
-    /// Subject `id` changes by another subject's rule (its key follows
-    /// that one's) and carries none of its own.
-    pub fn drop_rule(&mut self, id: KeyId) {
-        if let Some(e) = self.entries.get_mut(&id) {
-            e.rule = None;
         }
     }
 
@@ -180,28 +173,122 @@ pub(crate) fn flag_unreachable(ctx: &mut Ctx<'_, '_, '_>) {
     }
 }
 
-/// `name_taken` (§9.5): the scope that declares a subject declares an
-/// entity named like the new name: for a namespace, any part of it this
-/// observer sees (all parts have one entity); for a class, the class and
-/// its bases. Decided from the declarations `decl_names` gives.
+/// `name_taken` (§9.5): the scope a subject's name enters declares an
+/// entity named like the new name, or a macro of that name is defined in
+/// the unit. Decided from what this observer shows:
+///
+/// - the scopes a name enters ([`entered`]): its semantic scope, and
+///   outwards through every transparent one (an unscoped enumeration, an
+///   anonymous union or struct, a linkage specification, `export`, an
+///   inline namespace); a block-scope `extern` declaration enters its
+///   namespace. A template parameter enters none: it is no member of the
+///   scope its template is in;
+/// - for a class, its bases at any depth: the subject's name is taken
+///   when one of its scopes, or a base of one, is a scope the new name
+///   enters; and when one of its scopes is a base of a class that declares
+///   the new name (a class derived from the subject's, which this observer
+///   sees, hides the renamed member);
+/// - a macro named like the new name, defined anywhere in the unit
+///   (`Unit::pp_record`, when the unit was parsed with it): every
+///   subject.
+///
+/// A local or a template parameter named like the new name in a function
+/// that uses the subject is not `name_taken`: the spelled-entity check of
+/// the verifier is the guard there (§9.5).
 pub(crate) fn flag_name_taken(ctx: &mut Ctx<'_, '_, '_>) {
+    let ast = ctx.unit.ast();
+    if macro_named(ctx.unit, ctx.new) {
+        for (id, _) in ctx.subjects.entities() {
+            ctx.subjects.flag(id, subject_flags::NAME_TAKEN);
+        }
+        return;
+    }
     if ctx.named.new.is_empty() {
         return;
     }
-    let ast = ctx.unit.ast();
+    // The scopes the new name enters, and those with their bases.
     let mut taken: HashSet<DeclId> = HashSet::new();
+    let mut taken_bases: HashSet<DeclId> = HashSet::new();
     for d in &ctx.named.new {
-        if let Some(s) = enclosing(ast, d.decl) {
-            taken.insert(ctx.keys.entity(s));
+        for s in entered(ast, ctx.keys, d.decl) {
+            taken.insert(s);
+            taken_bases.extend(with_bases(ast, ctx.keys, s));
         }
     }
     for (id, e) in ctx.subjects.entities() {
-        let Some(s) = enclosing(ast, e) else { continue };
-        let scopes = with_bases(ast, ctx.keys, ctx.keys.entity(s));
-        if scopes.iter().any(|x| taken.contains(x)) {
+        let scopes = entered(ast, ctx.keys, e);
+        let hit = scopes.iter().any(|&s| {
+            taken_bases.contains(&s)
+                || with_bases(ast, ctx.keys, s).iter().any(|x| taken.contains(x))
+        });
+        if hit {
             ctx.subjects.flag(id, subject_flags::NAME_TAKEN);
         }
     }
+}
+
+/// Whether the preprocessing record of `unit` has a definition of a macro
+/// named `name` (any definition, in effect at the end or not).
+fn macro_named(unit: &slip_kiln::Unit<'_>, name: &[u8]) -> bool {
+    let Some(record) = unit.pp_record() else { return false };
+    let symbols = unit.ast().symbols();
+    record.defs().iter().any(|d| symbols.as_str(d.def.name()).as_bytes() == name)
+}
+
+/// The scopes the name of declaration `d` enters, each as its entity
+/// (`Keys::entity`), innermost first.
+fn entered(ast: &Ast, keys: &Keys<'_>, d: DeclId) -> Vec<DeclId> {
+    let node = ast.decls.get(d);
+    if matches!(
+        node.kind(),
+        DeclKind::TemplateTypeParm | DeclKind::NonTypeTemplateParm | DeclKind::TemplateTemplateParm
+    ) {
+        return Vec::new();
+    }
+    let Some(mut s) = node.ctx() else { return Vec::new() };
+    if is_local_extern(ast, d) {
+        // Its entity is a member of the innermost enclosing namespace.
+        for _ in 0..CTX_LIMIT {
+            if matches!(ast.decls.get(s).kind(), DeclKind::Namespace | DeclKind::TranslationUnit) {
+                break;
+            }
+            let Some(up) = ast.decls.get(s).ctx() else { break };
+            s = up;
+        }
+    }
+    let mut out = Vec::new();
+    for _ in 0..CTX_LIMIT {
+        out.push(keys.entity(s));
+        let transparent = match ast.decls.get(s).kind() {
+            DeclKind::LinkageSpec | DeclKind::Export => true,
+            DeclKind::Enum => ast.decls.enumeration(s).is_some_and(|e| !e.is_scoped()),
+            DeclKind::Namespace => ast.decls.namespace(s).is_some_and(NamespaceData::is_inline),
+            _ => ast.decls.record(s).is_some_and(|r| r.defn.contains(DefinitionBits::ANONYMOUS)),
+        };
+        if !transparent {
+            break;
+        }
+        let Some(up) = ast.decls.get(s).ctx() else { break };
+        s = up;
+    }
+    out
+}
+
+/// A function, or a variable declared `extern`, declared at block scope
+/// (as the digest tells one, `Walk::is_local_extern`).
+fn is_local_extern(ast: &Ast, d: DeclId) -> bool {
+    let n = ast.decls.get(d);
+    if n.misc().local_extern() {
+        return true;
+    }
+    let candidate = n.kind() == DeclKind::Function
+        || (n.kind() == DeclKind::Var
+            && ast.decls.var(d).is_some_and(|v| v.spec.storage() == VarStorage::Extern));
+    candidate
+        && n.ctx().is_some_and(|c| {
+            matches!(ast.decls.get(c).kind(), DeclKind::Function | DeclKind::CXXMethod)
+                || ast.decls.function(c).is_some()
+        })
 }
 
 /// `scope`, and when it is a class every base class of it at any depth,
@@ -228,4 +315,55 @@ fn with_bases(ast: &Ast, keys: &Keys<'_>, scope: DeclId) -> Vec<DeclId> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use slip_digest::query::Keys;
+    use slip_kiln::ParseOptions;
+    use slip_kiln::tree::Tree;
+    use slip_kiln::written;
+    use slip_model::edits::{Role, subject_flags};
+
+    use super::Subjects;
+
+    /// §9.5: an entity `Keys::rename_rule` gives no rule for (here an
+    /// explicit specialisation, which no rule matches, `spec/verify.md`
+    /// §2.1) is a subject without a rule and `unsupported`. A run never
+    /// adds such an entity at this pin (`origin` takes a specialisation to
+    /// its template), so the contract of `add` is asked directly.
+    #[test]
+    fn an_entity_without_a_rule_is_unsupported() {
+        let src =
+            b"namespace n { template <class T> void f(T) {} template <> void f<int>(int) {} }\n";
+        // Under the target directory, beside the test binary (a unit test
+        // has no `CARGO_TARGET_TMPDIR`).
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.parent().unwrap();
+        let tree = Tree::new(dir, "subjects-no-rule", &[("main.cpp", &src[..])]).unwrap();
+        let obs = tree.observer("main.cpp", "c++20", &[]);
+        let mut o = ParseOptions::default();
+        o.written = true;
+        let (_, r) = tree
+            .parse(&obs, &o, |u| {
+                let ast = u.ast();
+                let spec = written::decl_names(u)
+                    .into_iter()
+                    .map(|d| d.decl)
+                    .find(|&d| ast.spec_info(d).is_some())
+                    .expect("the explicit specialisation");
+                let subject = |p: &[u8]| p.to_vec();
+                slip_digest::map::with_input(u, &subject, |input| {
+                    let mut keys = Keys::new(input);
+                    let mut s = Subjects::default();
+                    let id = s.add(&mut keys, spec, Role::Seed, b"g", &[]).expect("a key");
+                    let e = &s.entries[&id];
+                    (e.rule.is_none(), e.flags)
+                })
+            })
+            .unwrap();
+        let (no_rule, flags) = r.unwrap().unwrap();
+        assert!(no_rule);
+        assert_eq!(flags, subject_flags::UNSUPPORTED);
+    }
 }

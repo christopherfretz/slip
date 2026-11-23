@@ -1,0 +1,4 @@
+spec: edits.md §9.5 name_taken (a derived class this observer sees declares the new name, hiding the renamed member; WP-071 review)
+from: n::B::f
+to: g
+kind: function

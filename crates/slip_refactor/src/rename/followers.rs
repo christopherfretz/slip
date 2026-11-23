@@ -14,12 +14,15 @@
 //!   `spec/landed/digest/WP-103.md` finding 2) is a follower of the
 //!   subject it declares, with its own rule: same name, same
 //!   kind, declared in the subject's scope.
-//! - A subject whose key follows a pattern (`spec/landed/digest/WP-103.md`
-//!   finding 2: a function a class template's pattern befriends with a
-//!   definition) changes by the pattern's rule, and a rule of its own
-//!   would make its key indeterminate (`key/rule-on-instantiated-member`):
-//!   its `rule` is absent when every pattern it follows is a subject, and
-//!   it is `unsupported` when one is not.
+//! - A subject whose key follows a pattern in this observer
+//!   (`spec/landed/digest/WP-103.md` finding 2: a function a class
+//!   template's pattern befriends with a definition, the template
+//!   instantiated here) keeps the rule `Keys::rename_rule` gives for its
+//!   key, which the digest does not accept here
+//!   (`key/rule-on-instantiated-member`): it is `unsupported`. Whether a
+//!   subject has a rule is a function of its key and the request, never
+//!   of what else the observer saw (§4.1), so that two observers never
+//!   give one id two rules (reduce §5.2 rule 1).
 
 use slip_kiln::kiln::ast::decl::{DeclKind, FriendKind, TemplLinkKind};
 use slip_kiln::kiln::ast::{Ast, DeclId};
@@ -62,11 +65,9 @@ fn followed_patterns(ctx: &mut Ctx<'_, '_, '_>) {
         if patterns.is_empty() {
             continue;
         }
-        if patterns.iter().all(|&p| ctx.subjects.of_decl(ctx.keys, p).is_some()) {
-            ctx.subjects.drop_rule(id);
-        } else {
-            ctx.subjects.flag(id, subject_flags::UNSUPPORTED);
-        }
+        // The rule stays: whether a subject has one is a function of its
+        // key and the request, never of what else this observer saw.
+        ctx.subjects.flag(id, subject_flags::UNSUPPORTED);
     }
 }
 
@@ -172,6 +173,7 @@ fn is_friend_in_pattern(ast: &Ast, d: DeclId) -> bool {
     for _ in 0..CTX_LIMIT {
         let Some(x) = at else { return false };
         if ast.described_template(x).is_some()
+            || ast.partial_spec_info(x).is_some()
             || ast.decls.get(x).kind() == DeclKind::ClassTemplatePartialSpecialization
         {
             return true;

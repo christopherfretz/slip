@@ -250,3 +250,49 @@ impl Claims {
         Ok((refs, claims))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use slip_kiln::ParseOptions;
+    use slip_kiln::sites::Sites;
+    use slip_kiln::tree::Tree;
+    use slip_kiln::written;
+    use slip_model::edits::{Reason, Stance};
+    use slip_model::transform::Ownership;
+
+    use super::Claims;
+
+    /// §4.2: two refusals of one span with different reasons are one
+    /// claim whose reason is the least number. At this pin every refusal
+    /// of a run comes from `Sites::name_token`, a function of the span, so
+    /// a run cannot give one span two reasons; `refuse` (for
+    /// `docs/wp/WP-073.md`) can, and the join is asked directly.
+    #[test]
+    fn two_reasons_of_one_span_join_to_the_least() {
+        let exe = std::env::current_exe().unwrap();
+        let tree = Tree::new(
+            exe.parent().unwrap(),
+            "claims-two-reasons",
+            &[("main.cpp", &b"void f();\n"[..])],
+        )
+        .unwrap();
+        let root = tree.root().to_str().unwrap().as_bytes().to_vec();
+        let ownership = Ownership { owned: vec![root], readonly: Vec::new() };
+        let obs = tree.observer("main.cpp", "c++20", &[]);
+        let mut o = ParseOptions::default();
+        o.written = true;
+        let (_, r) = tree
+            .parse(&obs, &o, |u| {
+                let sites = Sites::new(u, &ownership);
+                let name = written::decl_names(u)[0].name;
+                let mut c = Claims::new(b"f", b"g");
+                c.refuse(&sites, name, &[], Reason::MixedInstances);
+                c.refuse(&sites, name, &[], Reason::MixedSet);
+                c.refuse(&sites, name, &[], Reason::MixedInstances);
+                let (_, claims) = c.finish(&|f| sites.file_ref(f), u.main_file().unwrap()).unwrap();
+                claims.iter().map(|c| (c.stance, c.reason)).collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(r.unwrap(), [(Stance::Refuse, Reason::MixedSet)]);
+    }
+}

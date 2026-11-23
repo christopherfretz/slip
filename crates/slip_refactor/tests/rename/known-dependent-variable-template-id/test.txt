@@ -1,0 +1,4 @@
+spec: edits.md §9.4 (n::v<T> with a non-dependent template name: Kiln gives the entry no referent, so unresolved; a known over-refusal, WP-071 review B2)
+from: n::v
+to: w
+kind: variable

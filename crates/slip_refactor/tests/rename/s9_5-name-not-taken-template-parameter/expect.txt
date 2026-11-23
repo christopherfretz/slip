@@ -1,0 +1,7 @@
+subjects:
+  a5d0924f seed - rule=yes n::f()
+links:
+claims:
+  main.cpp:1:19+1 replace "g" t0 votes=1 none [a5d0924f]
+  main.cpp:1:73+1 replace spell(a5d0924f, "g") t0 votes=1 none [a5d0924f]
+changed:

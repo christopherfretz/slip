@@ -303,6 +303,13 @@ The producer gets `id` and `rule` from `slip_digest::query::Keys`
 (`verify.md` §9.5): they are the key the walk gives the entity and the
 rule the walk will match, not a second computation of either.
 
+Whether a subject has a `rule`, and which, is a function of its key and
+the request, never of what else the observer saw: two observers that
+give one id give it the same rule or both none (reduce §5.2 rule 1 holds
+them to it). Where an observer shows something that makes the rule
+unsafe to use (a key that follows a pattern member, §9.5), the subject
+keeps its rule and carries a flag instead.
+
 ### 4.2 Claims
 
 ```
@@ -1688,7 +1695,7 @@ replacement is:
 
 | Reference | Found from | Piece |
 |---|---|---|
-| Every declaration and the definition of the entity: its declarator-id's last name. Redeclarations in other files, friend declarations, block-scope `extern` declarations, out-of-line definitions (`void N::f() {}`: `f` only), a template's declarations, explicit specialisations and instantiations | Kiln's declaration extents (`kiln/spec/ast.md` §19) | literal |
+| Every declaration and the definition of the entity: its declarator-id's last name. Redeclarations in other files, friend declarations, block-scope `extern` declarations, out-of-line definitions (`void N::f() {}`: `f` only), a template's declarations, explicit specialisations and instantiations, partial specialisations of a variable template (`v<T*>`, whose key's parent is the template's, `digest.md` §3.4) | Kiln's declaration extents (`kiln/spec/ast.md` §19) | literal |
 | An id-expression: a call, `&f`, `&C::f`, a use of a variable; in evaluated and unevaluated operands, default arguments, default member initialisers, template arguments. The function overload resolution selected is the subject; a name that selects a non-subject overload of another scope is a `keep` | the written-reference table, role expression name | spelled |
 | A class member access `a.f`, `p->f`, `a.C::f` | role member name | spelled |
 | A qualified name: only the last component is the name. Qualifiers are not edited: a rename moves nothing | the same entries | spelled |
@@ -1781,16 +1788,18 @@ Rename sets a subject's flags (§4.1), which refuse the run (§5.2):
 | Flag | When |
 |---|---|
 | `read_only` | a declaration of the entity is in a read-only file. A function that overrides one of a library is refused this way, through its link |
-| `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a member of a class template, until the package that adds followers of specialisations lands; a follower whose rule cannot be made (§9.2) |
-| `name_taken` | the scope that declares the entity (for a namespace, every part of it the observer sees; for a class, the class and its bases) declares an entity named `new_name` |
-| `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator |
+| `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a member of a class template, until the package that adds followers of specialisations lands; a follower whose rule cannot be made (§9.2); a subject whose key follows a pattern member (a function defined as a friend in an instantiated class template, `digest.md` §3.4): its rule is kept (§4.1), but a rule on an instantiated member's key makes it indeterminate |
+| `name_taken` | a scope the entity's name enters declares an entity named `new_name`, or a macro named `new_name` is defined in the unit. The scopes a name enters are its semantic scope and, outwards from it, every transparent one: an unscoped enumeration, an anonymous union or struct, a linkage specification, `export`, an inline namespace (in both directions: a name in an inline namespace enters the enclosing one, and an entity declared there is taken for one in the inline namespace). A block-scope `extern` declaration enters its innermost enclosing namespace. For a namespace, every part of it the observer sees; for a class, the class and its bases at any depth, read from each class's definition; and a class derived from the entity's class that declares `new_name` (it hides the renamed member). A template parameter enters no scope: one named `new_name` takes nothing |
+| `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator; a dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln) |
 
 and claims `refuse` (§4.2) at a reference it found and cannot edit (§2.3).
 
 Not refused, and left to verification: a use that would resolve to
 another entity once renamed (the new name hides, or is hidden by, a
-declaration in another scope), which a spelled piece reports as
-`denotes_other` and a digest as a difference; a reference without a token
+declaration in another scope, or a local or a template parameter named
+`new_name` in a function that uses the subject), which a spelled piece
+reports as `denotes_other` (the verifier's spelled-entity check,
+`docs/wp/WP-096.md`) and a digest as a difference; a reference without a token
 (§9.3); a string that names the entity for the linker (`alias`, `ifunc`:
 "Open questions").
 
