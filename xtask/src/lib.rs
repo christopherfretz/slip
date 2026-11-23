@@ -7,7 +7,8 @@
 //! - [`ci`]: `cargo xtask ci [--quick] [--step <name>]… [--keep-going]` (§2),
 //! - [`corpus`]: `cargo xtask corpus list|fetch|configure|status|path` (§8),
 //! - [`jobserver`]: `cargo xtask jobserver status|refill` (§5),
-//! - [`perf`]: `cargo xtask perf summarize|record|check` (§7).
+//! - [`perf`]: `cargo xtask perf summarize|record|check` (§7),
+//! - [`transform`]: `cargo xtask transform` (§6.2 to §6.4).
 //!
 //! Every command takes the repository root as a parameter so the tests can
 //! point it at fixture trees; [`repo_root`] is the root of the checkout this
@@ -21,6 +22,7 @@ pub mod jobserver;
 pub mod lint;
 pub mod perf;
 pub mod repo;
+pub mod transform;
 pub mod wp;
 
 use std::path::PathBuf;
