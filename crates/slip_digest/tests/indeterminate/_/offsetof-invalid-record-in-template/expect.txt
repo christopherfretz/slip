@@ -1,3 +1,4 @@
 indeterminate G::w
+indeterminate G<int>::w::<default_argument 0>
 indeterminate S
 indeterminate S::u

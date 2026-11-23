@@ -1,0 +1,4 @@
+changed S
+changed S::a
+added S::(anonymous union for a)
+added S::(anonymous union for a)::a

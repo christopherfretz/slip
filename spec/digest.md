@@ -126,6 +126,11 @@ and **derived** otherwise. Derived units are:
 - an entity every declaration of which an instantiation made outside its
   class (below), such as a friend declared only by a class template;
 - a builtin function or type Kiln declares on first use;
+- an entity that would be declared but **no declaration of which has a
+  location** (Kiln's implicit global allocation and deallocation
+  functions while no source redeclares them, `__int128_t`, an implicit
+  `std::align_val_t`), whatever flags its declarations carry: a unit
+  only if referenced, as a builtin (`spec/landed/model/WP-050.md`);
 - the object of a class-type constant used as a template argument, keyed
   by its content;
 - a **resolved property** of a declared unit (kind `resolved`, parent the
@@ -204,8 +209,8 @@ the preprocessor's and not the AST's.
 | The value of an immediate invocation inside a default argument, computed at its first use | `resolved` unit |
 | A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
 | A deduced return type of a template member | part of the instantiation's derived unit |
-| A variable's evaluated constant value (`eval`), default-argument immediate values | `resolved` unit |
-| A class's key function; `dtor_delete`, `dtor_delete_this`, `inheriting_ctor`, `inherited_ctor` cold maps | `resolved` unit of the class or function |
+| A variable's evaluated constant value (`eval`), default-argument immediate values. At Kiln `913a490bb` `eval` is written when Kiln checks the declaration's initialiser: with the declaration, or, for one made by instantiation, when a use instantiates it (`digest-kinds.md` §11.3) | `resolved` unit |
+| A class's key function; `dtor_delete`, `dtor_delete_this` (set when a virtual destructor is defined, which for an implicit or defaulted one is on use), `inheriting_ctor`, `inherited_ctor` (set when Kiln declares the inheriting constructor, on use) cold maps | `resolved` unit of the class or function |
 | The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |
 | "vtable used" marks | not in the AST: nothing to digest |
 | "A complete definition was required" marks; the lists of classes completed and of function definitions instantiated; the tables that record which specialisations exist and in what order they were made | not digested |
@@ -289,7 +294,10 @@ with everything else.
   the first name its declaration introduces: the typedef name it is given
   for linkage, else its first declarator, else its first enumerator, else
   (an anonymous union) its first member. Failing all of those it is named
-  by its ordinal among the unnamed types of its scope.
+  by its ordinal among the unnamed types of its scope. A name-independent
+  declarator or member (`struct { int a; } _;`, `union { int _; };`,
+  P2169) names nothing, since a scope may hold several: it is skipped, and
+  the rules after it apply.
 - A declaration that introduces no name at all (§2.1) is **keyed by
   content**: `name` is `content` and `disc` is the unit's own digest. Two
   identical `static_assert`s in one scope are one unit. Adding or removing
@@ -658,9 +666,29 @@ object is unspecified by the language and is not digested.
 `__func__`, `__PRETTY_FUNCTION__` and the fields of `std::source_location`
 are written **symbolically** (which builtin, not its value), as are literals
 that come from the expansion of `__LINE__`, `__FILE__`, `__COUNTER__`,
-`__DATE__`, `__TIME__` and their relatives. Where such a value determines a
-type or another constant (an array bound from `__LINE__`), that type or
-constant is written by value as always, so a real change is seen.
+`__DATE__`, `__TIME__` and their relatives.
+
+The expression's **own type** and the **constant it stands for** are
+symbolic with it. The array type of `__func__` and its kin (`const
+char[N]`, `N` the length of a name) is written as that builtin's type,
+without the bound. The object that an immediate invocation builds from
+such values and nothing else (`std::source_location::current()`, in a
+default argument as anywhere) is written as the builtins it was built
+from, not as its bytes.
+
+Whatever **consumes** such a value is written by value as always, so a
+real change is seen: an array bound from `__LINE__`, `sizeof(__func__)`,
+the length of a name deduced as a template argument, a variable declared
+with the array's type or a reference to it, a constant computed from the
+characters.
+
+Why the type goes with the value: a declared relocation says that names
+change, and a value that is a function of a name changes by exactly that,
+as a mangled name does. `assert` expands to `__PRETTY_FUNCTION__`; were
+its length a fact, no function that asserts could be relocated and
+verify. A program that observes such a string (a log that is parsed, a
+registry keyed by it) is told by the report, not by the verdict
+(`verify.md` "Open questions").
 
 ## 10. Indeterminate units
 
@@ -684,6 +712,17 @@ the nearest enclosing entity indeterminate, the order unit at the top
 level. A key built from an indeterminate key (its parent's, its
 template's, one in its discriminator) is indeterminate for the same
 cause.
+
+**A collision does not travel.** Collisions are found after the walk,
+when the keys of the whole translation unit are known: the mark is put
+on the units that share the key, and only on them. A unit that refers to
+one of them wrote the shared key in its stream during the walk and stays
+determinate. This is sound because a collision is never silent: each
+colliding key is an `indeterminate` finding (`verify.md` §4 rule 1, or
+`derived_indeterminate` for derived units), so an observer with a
+collision is never `verified`. The per-unit "unchanged" of a referrer is
+then one line of a report that already fails; it is not a claim Slip
+makes on its own.
 
 Its digest is still computed and recorded, with the `indeterminate` flag.
 Verification treats an indeterminate unit as different from every unit.
@@ -723,7 +762,7 @@ tool's version), so no shard of one scheme meets a reader of another, and
 `scheme` stays 1 until then.
 
 - A declared unit belongs to the group of the file that holds the entity's
-  first declaration in the translation unit. A derived unit belongs to the
+  first declaration in the translation unit that has a location (below). A derived unit belongs to the
   derived group of the file that holds the first declaration of what it
   derives from (the template, the class, the function). The single `tu`
   group holds the order unit and every namespace: a namespace is reopened
@@ -742,14 +781,20 @@ tool's version), so no shard of one scheme meets a reader of another, and
   manager and refuses any other buffer that is not one of the shard's
   inputs (`spec/model.md` §8.5 "Subject paths"); the snippet runner of
   the tests gives the snippet's path.
-- A declared unit whose first declaration has **no location** (the walk
-  finds no file for it) is written with the empty path. The walk does not
-  invent a file and does not drop the unit; a shard that holds such a
-  group breaks `spec/model.md` §8.2 and is refused where it is written
-  (`spec/model.md` §8.5). An entity that Kiln declares without a
-  location and that §2.1 makes a declared unit is therefore a defect of
-  the tables to be decided (derived, as builtins are, or `tu`), not a
-  case this section covers: none is known.
+- A declaration Kiln makes with **no location** (an implicit global
+  `operator new`, `__int128_t`, an implicit `std::align_val_t`) has no
+  file. The **origin file** of a unit is the file of its origin
+  declaration if that has a location, else of the first declaration of
+  its chain, in chain order (earliest first), that has one: a
+  redeclaration in source (`<new>`'s `operator new`) puts the entity in
+  that file's group. The declaration without a location stays in the
+  chain and is read like any other; only the file is taken elsewhere.
+  An entity no declaration of which has a location is derived (§2.2), so
+  no declared unit has the empty path. Should the walk find none all the
+  same, the unit is written in the derived group with the empty path and
+  is indeterminate, `Unaccounted("unit/file")`; a shard holding a
+  declared group with the empty path still breaks `spec/model.md` §8.2
+  and is refused where it is written (`spec/model.md` §8.5).
 - Two units of one group with the same key and digest are one unit.
 - **Detail** is a parameter of the walk: `none` (no `units` lists), `all`,
   a list of groups by `(class, file)`, or `differing` from a list of

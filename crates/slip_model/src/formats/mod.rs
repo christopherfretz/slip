@@ -4,12 +4,15 @@
 //! package WP-015, and of declared changes (`spec/verify.md` §2), work
 //! package WP-022, and of the transform request (`spec/edits.md` §3) and
 //! the shard's sections `edits`, `binding`, `rule_use` and `spellings`
-//! (`spec/edits.md` §4, `spec/verify.md` §9.1, §10.4), work package WP-060.
+//! (`spec/edits.md` §4, `spec/verify.md` §9.1, §10.4), work package WP-060,
+//! and of the edit set, overlay, result and transform run record
+//! (`spec/edits.md` §6, §7.1, §8.5, §10.6), work package WP-061.
 //!
-//! Each of [`Plan`], [`Shard`], [`RunRecord`], [`Declared`] and
-//! [`Transform`] has `KIND`, `VERSION`, `to_bytes`, `from_bytes`,
+//! Each of [`Plan`], [`Shard`], [`RunRecord`], [`Declared`],
+//! [`Transform`], [`EditSet`], [`Overlay`], [`TransformResult`] and
+//! [`TransformRun`] has `KIND`, `VERSION`, `to_bytes`, `from_bytes`,
 //! `to_json`, `from_json` and `validate`.
-//! [`dump`] renders any of the five as pretty JSON and [`undump`] turns
+//! [`dump`] renders any of the nine as pretty JSON and [`undump`] turns
 //! such a rendering back into the file's bytes, unknown ignorable sections
 //! included; [`content_id`] validates a file and returns its trailer.
 //!
@@ -22,8 +25,12 @@ use std::fmt::{self, Write as _};
 
 use crate::container::{FIRST_IGNORABLE, Reader, TRAILER_LEN, Writer};
 use crate::declared::Declared;
+use crate::editset::EditSet;
 use crate::json::{self, Value};
+use crate::overlay::Overlay;
+use crate::result::TransformResult;
 use crate::transform::Transform;
+use crate::transform_run::TransformRun;
 use crate::wire::{Decoder, Encoder, Error, ErrorKind};
 use crate::{Digest, Observer, Phase, Plan, RunRecord, Shard};
 
@@ -32,11 +39,15 @@ mod common;
 mod declared;
 mod digests;
 mod edits;
+mod editset;
+mod overlay;
 mod plan;
+mod result;
 mod run;
 mod shard;
 mod spellings;
 mod transform;
+mod transform_run;
 mod verdict;
 
 use common::{JResult, Result, read_hex, read_record, read_str, read_uv};
@@ -301,7 +312,8 @@ macro_rules! format_impl {
             pub const VERSION: u32 = 1;
 
             /// The file. The value must satisfy [`Self::validate`]; that is
-            /// checked by a debug assertion.
+            /// only debug-asserted, and a release build writes an invalid
+            /// value as it is: a producer calls `validate()` first.
             pub fn to_bytes(&self) -> Vec<u8> {
                 debug_assert!(
                     self.validate().is_ok(),
@@ -344,16 +356,31 @@ format_impl!(Shard, shard, b"SHRD");
 format_impl!(RunRecord, run, b"RUNR");
 format_impl!(Declared, declared, b"DECL");
 format_impl!(Transform, transform, b"TRFM");
+format_impl!(EditSet, editset, b"EDTS");
+format_impl!(Overlay, overlay, b"OVLY");
+format_impl!(TransformResult, result, b"RSLT");
+format_impl!(TransformRun, transform_run, b"RUNT");
 
-/// The kind of a file, if its header names one of the five formats.
+/// The kinds [`dump`], [`undump`] and [`content_id`] know.
+const KINDS: [[u8; 4]; 9] = [
+    Plan::KIND,
+    Shard::KIND,
+    RunRecord::KIND,
+    Declared::KIND,
+    Transform::KIND,
+    EditSet::KIND,
+    Overlay::KIND,
+    TransformResult::KIND,
+    TransformRun::KIND,
+];
+
+/// The kind of a file, if its header names one of the nine formats.
 fn kind_of(bytes: &[u8]) -> Option<[u8; 4]> {
     let kind: [u8; 4] = bytes.get(8..12)?.try_into().ok()?;
-    [Plan::KIND, Shard::KIND, RunRecord::KIND, Declared::KIND, Transform::KIND]
-        .contains(&kind)
-        .then_some(kind)
+    KINDS.contains(&kind).then_some(kind)
 }
 
-/// Renders a plan, shard, run record, declared changes or transform request as pretty JSON (§10), for
+/// Renders a file of one of the nine kinds as pretty JSON (§10), for
 /// `slip dump`. The file is validated as by `from_bytes`; unknown ignorable
 /// sections are rendered as `"#<id>"`.
 pub fn dump(bytes: &[u8]) -> std::result::Result<String, Error> {
@@ -374,7 +401,23 @@ pub fn dump(bytes: &[u8]) -> std::result::Result<String, Error> {
             let (t, extras, _) = transform::decode(bytes)?;
             transform::render(&t, &extras)
         }
-        // A plan, or a file that is not one of the five: opening it as a
+        Some(k) if k == EditSet::KIND => {
+            let (x, extras, _) = editset::decode(bytes)?;
+            editset::render(&x, &extras)
+        }
+        Some(k) if k == Overlay::KIND => {
+            let (x, extras, _) = overlay::decode(bytes)?;
+            overlay::render(&x, &extras)
+        }
+        Some(k) if k == TransformResult::KIND => {
+            let (x, extras, _) = result::decode(bytes)?;
+            result::render(&x, &extras)
+        }
+        Some(k) if k == TransformRun::KIND => {
+            let (x, extras, _) = transform_run::decode(bytes)?;
+            transform_run::render(&x, &extras)
+        }
+        // A plan, or a file that is not one of the nine: opening it as a
         // plan reports `BadMagic` (or `Truncated`) for the latter.
         _ => {
             let (p, extras, _) = plan::decode(bytes)?;
@@ -411,13 +454,30 @@ pub fn undump(value: &Value) -> std::result::Result<Vec<u8>, JsonFormError> {
             let (t, extras) = transform::read(value)?;
             Ok(transform::encode(&t, &extras_ref(&extras)))
         }
-        _ => Err(root
-            .key("kind")
-            .error("expected one of \"PLAN\", \"SHRD\", \"RUNR\", \"DECL\", \"TRFM\"")),
+        "EDTS" => {
+            let (x, extras) = editset::read(value)?;
+            Ok(editset::encode(&x, &extras_ref(&extras)))
+        }
+        "OVLY" => {
+            let (x, extras) = overlay::read(value)?;
+            Ok(overlay::encode(&x, &extras_ref(&extras)))
+        }
+        "RSLT" => {
+            let (x, extras) = result::read(value)?;
+            Ok(result::encode(&x, &extras_ref(&extras)))
+        }
+        "RUNT" => {
+            let (x, extras) = transform_run::read(value)?;
+            Ok(transform_run::encode(&x, &extras_ref(&extras)))
+        }
+        _ => Err(root.key("kind").error(
+            "expected one of \"PLAN\", \"SHRD\", \"RUNR\", \"DECL\", \"TRFM\", \"EDTS\", \
+             \"OVLY\", \"RSLT\", \"RUNT\"",
+        )),
     }
 }
 
-/// The content id (§5) of a plan, shard, run record, declared changes or transform request: its trailer digest,
+/// The content id (§5) of a file of one of the nine kinds: its trailer digest,
 /// returned only once the whole file has been validated as by `from_bytes`.
 pub fn content_id(bytes: &[u8]) -> std::result::Result<Digest, Error> {
     Ok(match kind_of(bytes) {
@@ -425,8 +485,20 @@ pub fn content_id(bytes: &[u8]) -> std::result::Result<Digest, Error> {
         Some(k) if k == RunRecord::KIND => run::decode(bytes)?.2,
         Some(k) if k == Declared::KIND => declared::decode(bytes)?.2,
         Some(k) if k == Transform::KIND => transform::decode(bytes)?.2,
+        Some(k) if k == EditSet::KIND => editset::decode(bytes)?.2,
+        Some(k) if k == Overlay::KIND => overlay::decode(bytes)?.2,
+        Some(k) if k == TransformResult::KIND => result::decode(bytes)?.2,
+        Some(k) if k == TransformRun::KIND => transform_run::decode(bytes)?.2,
         _ => plan::decode(bytes)?.2,
     })
+}
+
+/// `(plan, round, started_unix_ns)` of a transform run record
+/// (`spec/edits.md` §10.6), for the store's path of it (`spec/exec.md`
+/// §2.2): the whole record is validated as by `TransformRun::from_bytes`
+/// first, so a record that does not read is refused whatever its prefix.
+pub fn transform_run_names(bytes: &[u8]) -> std::result::Result<(Digest, u64, u64), Error> {
+    transform_run::names(bytes)
 }
 
 // ---------------------------------------------------------------------------

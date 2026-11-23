@@ -30,6 +30,35 @@ pub struct ParseOptions {
     /// Kiln `spec/pp.md` "Preprocessing record"), which the closure reads
     /// as [`Unit::pp_record`].
     pub pp_record: bool,
+    /// Record Kiln's written-reference table (Kiln `spec/ast.md` §18) and
+    /// its declaration-extent table (§19), which the closure reads through
+    /// [`crate::written`]. How the front end is asked is
+    /// [`written_words`]'s to say.
+    pub written: bool,
+}
+
+/// The words `options` adds to the front end's command line, right after
+/// `-fsyntax-only` (so before any `--` of the command's own). They are
+/// words of the line the front end is given, never of the plan: the
+/// observer and its id do not change, and neither does the shard.
+///
+/// At Kiln `913a490bb` [`ParseOptions::written`] is two driver flags:
+///
+/// - `-fkiln-decl-extents`, which records the declaration extents and
+///   prints nothing (Kiln `kiln_driver/src/args.rs:2057`);
+/// - `-fkiln-dump-written-refs`, the only switch of the written-reference
+///   table (`args.rs:2056`; Kiln's `FrontEndOptions` has none until
+///   Kiln WP-2320, `docs/requests/KR1-amendment-1.md` §1). Through the
+///   front-end library entry it records the table and formats no dump:
+///   the entry returns before any dump is made
+///   (`kiln_driver/src/syntax_cmd.rs:692-696`; Kiln `spec/driver.md`
+///   "Front-end library entry": "no dumps"). So at this pin it is in
+///   effect a recording-only switch, spelled as the dump flag.
+///
+/// When Kiln gives the entry a recording switch, this function is the one
+/// place that changes.
+fn written_words(options: ParseOptions) -> &'static [&'static str] {
+    if options.written { &["-fkiln-dump-written-refs", "-fkiln-decl-extents"] } else { &[] }
 }
 
 /// The finished front end of one observer, as the closure of
@@ -104,6 +133,15 @@ impl<'r> Unit<'r> {
     pub fn errors(&self) -> u32 {
         self.errors
     }
+
+    /// The stack left on the calling thread under Kiln's stack guard
+    /// (`kiln_sema::stack_guard::StackGuard::current().remaining()`), in
+    /// bytes; `None` where no guard is installed (`spec/model.md` §8.4).
+    /// Inside the closure of [`parse_observer_with`] the calling thread is
+    /// the front end's, which has the guard.
+    pub fn stack_remaining(&self) -> Option<usize> {
+        kiln_sema::stack_guard::StackGuard::current().remaining()
+    }
 }
 
 impl std::fmt::Debug for Unit<'_> {
@@ -136,7 +174,8 @@ pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<S
 /// without) before anything is dropped. Returns the shard for `phase` and
 /// `round` and `f`'s result (`None`: no parse happened).
 ///
-/// The front end runs `argv[0] -fsyntax-only argv[1..]` (a scanner name
+/// The front end runs `argv[0] -fsyntax-only -fkiln-reproducible-time
+/// argv[1..]` (`spec/cdb.md` §6.1; a scanner name
 /// `clang-scan-deps…` as `kiln`) through
 /// `kiln_driver::front_end::run_front_end`, on a thread of its own, with
 /// nothing rendered and nothing written, keeping what `options` asks for
@@ -207,7 +246,9 @@ pub fn parse_observer_with<R: Send>(
     std::env::set_current_dir(&directory)
         .map_err(|e| format!("cannot enter {}: {e}", directory.display()))?;
 
-    let line = front_end_line(&rest);
+    let mut line = front_end_line(&rest);
+    let words = written_words(options);
+    line.splice(1..1, words.iter().map(|&w| w.to_owned()));
     let program = program(&argv0);
     let dir: &Path = &directory;
     let see = move |fe: &FrontEnd<'_, '_>| -> Result<(Vec<FileRef>, u64, R), String> {

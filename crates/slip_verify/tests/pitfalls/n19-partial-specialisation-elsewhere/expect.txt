@@ -1,0 +1,5 @@
+# N19: the moved class template legacy::box and its owned partial
+# specialisation in another header.
+# Caught only by a failed parse (spec/pitfalls.md §5).
+good: verified
+bad:  not_parsed

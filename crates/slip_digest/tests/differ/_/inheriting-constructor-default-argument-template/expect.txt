@@ -1,0 +1,2 @@
+changed Base::Base<T>(int, int)
+derived-changed Base<long>::Base(int, int)::<default_argument 1>

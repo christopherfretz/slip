@@ -1,0 +1,2 @@
+changed S
+added template <class> void S::f(this type-parameter-0-0 &&)

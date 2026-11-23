@@ -770,3 +770,75 @@ fn s7_interrupted_parse() {
     assert_eq!(record.jobs[0].end, End::Cancelled);
     assert_eq!(record.jobs[0].shard, None);
 }
+
+// ----- the map task (spec/model.md §8.5) ----------------------------------------
+
+/// The shard of every observer of the plan `id` in round 0 of `map`.
+fn map_shards(store: &Path, id: &str) -> Vec<Shard> {
+    let plan = plan_in_store(store, id);
+    plan.observers
+        .iter()
+        .map(|o| {
+            let p = store.join("shards").join(id).join("map.0").join(format!("{}.shard", o.id));
+            Shard::from_bytes(&std::fs::read(&p).unwrap()).expect("a valid shard")
+        })
+        .collect()
+}
+
+// spec/model.md §8.5 "The shard": `slip parse` gives every `ok` shard a
+// `digests` section and the walk's counters (`digest.md` §12), and
+// `dump` renders the section.
+#[test]
+fn model_s8_5_parse_ok_shard_has_digests() {
+    let f = Fixture::new("map-ok");
+    f.clean_project(2);
+    let out = f.slip(&["parse", "--db", "cdb.json", "--store", "store"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let id = out.plan_id();
+    let shards = map_shards(&f.store(), &id);
+    assert_eq!(shards.len(), 2);
+    for s in &shards {
+        assert_eq!(s.outcome.status, Status::Ok, "{:?}", s.outcome);
+        let digests = s.digests.as_ref().expect("an `ok` shard has `digests`");
+        assert!(!digests.groups.is_empty());
+        let names: Vec<&str> = s.counters.iter().map(|c| c.name.as_str()).collect();
+        for n in [
+            "digest.bytes",
+            "digest.collisions",
+            "digest.groups",
+            "digest.indeterminate",
+            "digest.units",
+            "digest.units.derived",
+            "inputs.bytes",
+            "inputs.files",
+            "pp.tokens",
+        ] {
+            assert!(names.contains(&n), "{n} in {names:?}");
+        }
+        let units = s.counters.iter().find(|c| c.name == "digest.units").unwrap().value;
+        assert!(units >= 2, "`common` and `f<i>`: {units}");
+    }
+    let file = f.store().join("shards").join(&id).join("map.0");
+    let one = std::fs::read_dir(&file).unwrap().flatten().next().unwrap().path();
+    let dumped = f.slip(&["dump", one.to_str().unwrap()]);
+    assert_eq!(dumped.code(), Some(0), "{dumped:?}");
+    assert!(dumped.stdout.contains("\"digests\""), "{}", dumped.stdout);
+}
+
+// spec/model.md §8.5 "The walk": a `diagnosed` shard has neither `digests`
+// nor a digest counter.
+#[test]
+fn model_s8_5_parse_diagnosed_shard_has_no_digests() {
+    let f = Fixture::new("map-diag");
+    f.write("src/bad.cpp", "int bad() { return undeclared_name; }\n");
+    f.db("cdb.json", &[("src/bad.cpp", "clang++ -c src/bad.cpp")]);
+    let out = f.slip(&["parse", "--db", "cdb.json", "--store", "store"]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    let shards = map_shards(&f.store(), &out.plan_id());
+    assert_eq!(shards.len(), 1);
+    let s = &shards[0];
+    assert_eq!(s.outcome.status, Status::Diagnosed, "{:?}", s.outcome);
+    assert!(s.digests.is_none());
+    let names: Vec<&str> = s.counters.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["inputs.bytes", "inputs.files", "pp.tokens"]);
+}

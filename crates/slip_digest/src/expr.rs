@@ -796,7 +796,11 @@ fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
     if array_trait {
         out.push(Item::Exec(crate::expr_misc::array_trait_extra, e));
     }
-    // source_loc (symbolic) and default_imm (demand) write nothing.
+    // source_loc (symbolic) and default_imm (demand) write nothing; a
+    // `default_immediates` unit records the second (`demand.rs`).
+    if maps.default_imm.contains(e) {
+        out.push(Item::Exec(crate::demand::record_immediate, e));
+    }
     // union_field.
     out.push(Item::RefOpt(maps.union_field.get(e).copied()));
     // cast_written-unresolved-construct, cast_written-cast.

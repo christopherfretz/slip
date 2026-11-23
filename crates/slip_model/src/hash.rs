@@ -289,6 +289,10 @@ impl Hasher {
     }
 }
 
+/// The tag of an edit set's basis: `H("slip.basis.v1", list<Basis>)`, the
+/// shards an edit set was reduced from (§3, `spec/edits.md` §6).
+pub const BASIS_TAG: &str = "slip.basis.v1";
+
 /// The content digest of a byte string: `BLAKE3(bytes)` (§3).
 pub fn content_digest(bytes: &[u8]) -> Digest {
     Hasher::new().update(bytes).finalize()
