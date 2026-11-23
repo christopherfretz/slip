@@ -1,0 +1,22 @@
+plan 0101010101010101010101010101010101010101010101010101010101010101
+round 3
+declared 0202020202020202020202020202020202020202020202020202020202020202 rules d30f3cc57cbb31bb47189ccd09e416927646ae0c4c63f34696f914a95bdaf6b6
+image overlay 0707070707070707070707070707070707070707070707070707070707070707
+selected 3 of 10
+observer verified 3
+observer unchanged 0
+observer mismatch 0
+observer not_parsed 0
+observer unverifiable 0
+observer never_parsed 0
+observer failed 0
+mismatch indeterminate_only 0
+findings 0 total, 0 listed, 0 group(s)
+agreement rules 3 stale 2 unused 1
+stale rule 1 direct 2 /m/a0.cc
+stale rule 1 direct 1 /m/a1.cc
+unused rule 2
+spelling obligations 3 passed 1 failed 2
+spelling denotes_other /s/a.h:5-9 1041000000000000 observers 2 other119
+spelling unseen /s/b.h:0-3 1042000000000000 observers 0
+verdict not verified
