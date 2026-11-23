@@ -1,3 +1,4 @@
 present S::<key_function>
 added h()
+resolved S::S()::<definition>
 resolved S::S()::<exception_spec>

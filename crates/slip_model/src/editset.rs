@@ -124,11 +124,15 @@ pub enum Cause {
     Buried = 14,
     RuleConflict = 15,
     NoEdit = 16,
+    /// The site's edit was rejected with its group (§5.5): `other` is the
+    /// site of the member whose rejection took the group down, absent when
+    /// a refusal of a subject did.
+    WithGroup = 17,
 }
 
 impl Cause {
     /// Every value, in code order.
-    pub const ALL: [Cause; 17] = [
+    pub const ALL: [Cause; 18] = [
         Cause::NoObserver,
         Cause::NoSubject,
         Cause::SubjectReadOnly,
@@ -146,11 +150,13 @@ impl Cause {
         Cause::Buried,
         Cause::RuleConflict,
         Cause::NoEdit,
+        Cause::WithGroup,
     ];
 
     /// A refusal of a site (§5.2, §5.4, §5.5): `mixed_set`, `site_refused`,
     /// `contested`, `divergent`, `overlap`, `file_differs`, `cyclic`,
-    /// `buried`. Its `file` is present; every other cause's is absent (§6).
+    /// `buried`, `with_group`. Its `file` is present; every other cause's is
+    /// absent (§6).
     pub fn is_of_site(self) -> bool {
         matches!(
             self,
@@ -162,6 +168,7 @@ impl Cause {
                 | Cause::FileDiffers
                 | Cause::Cyclic
                 | Cause::Buried
+                | Cause::WithGroup
         )
     }
 
@@ -196,7 +203,8 @@ pub struct Refusal {
     /// `macro` in the spec.
     pub macro_site: Option<MacroSite>,
     /// For `contested` by another range, `overlap` and `buried`: the least
-    /// other range involved.
+    /// other range involved. For `with_group`: the site of the member that
+    /// took the group down.
     pub other: Option<Place>,
     pub observers: u64,
     pub first: Vec<Digest>,

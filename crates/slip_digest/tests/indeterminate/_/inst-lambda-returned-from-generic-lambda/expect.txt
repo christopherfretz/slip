@@ -1,3 +1,0 @@
-# the closure the specialisation of the generic call operator returns is in an instantiated body: no number
-indeterminate g::local(0)::operator()<int>(int) const
-indeterminate x

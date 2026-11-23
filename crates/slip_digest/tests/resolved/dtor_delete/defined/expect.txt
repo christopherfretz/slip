@@ -1,4 +1,5 @@
 present S::~S()::<dtor_delete>
 present S::~S()::<exception_spec>
 resolved S::S()::<exception_spec>
+resolved S::S()::<definition>
 added h()

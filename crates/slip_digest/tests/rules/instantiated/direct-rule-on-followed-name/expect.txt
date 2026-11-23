@@ -1,2 +1,3 @@
 indeterminate u()
 indeterminate S<int>::g()
+indeterminate S<int>::g()::<definition>

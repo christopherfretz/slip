@@ -1,0 +1,2 @@
+changed X
+changed X<int>::<definition>

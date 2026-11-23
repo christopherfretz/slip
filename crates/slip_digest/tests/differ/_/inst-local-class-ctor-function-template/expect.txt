@@ -1,0 +1,4 @@
+# WP-040's indeterminate test, determinate since WP-045: L is local(0) of f<int>()
+changed template <class> int f()
+exact derived
+derived-changed f<int>()::<definition>

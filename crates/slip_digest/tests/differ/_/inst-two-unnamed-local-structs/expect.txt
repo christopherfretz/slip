@@ -1,0 +1,5 @@
+# WP-040's indeterminate test, determinate since WP-045: the two structs are
+# local(0) and local(1) of f<int>(), two keys (no collision)
+changed template <class> int f()
+exact derived
+derived-changed f<int>()::<definition>
