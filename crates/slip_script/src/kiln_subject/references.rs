@@ -345,7 +345,10 @@ fn identifier_at(unit: &Unit<'_>, at: Loc) -> Option<Vec<u8>> {
 /// qualifier chain, and every component of a chain has the chain's first
 /// token as its `first` (`slip_kiln::written`), so a context is that first
 /// token: the row's `qual` (a using-enum-declaration's `name` when it has
-/// none), and the `first` of an entry in a role of rule 4. A name inside
+/// none). Kiln records no entry yet in the roles of rule 4 that would
+/// give one (stage 3: using-declarations, -directives, namespace aliases,
+/// elaborated specifiers, specialisation targets); a row gives each of
+/// those chains' first token today. A name inside
 /// the chain that is not a component of it (a template argument,
 /// `n::W<n::A>::k`'s `n::A`) has a `first` of its own, and is returned.
 /// A namespace alias's target has no row `qual` and no entry of its own
@@ -398,18 +401,6 @@ impl Declarative {
                 starts.insert(row.qual.to_raw());
             } else if kind == DeclKind::UsingEnum && row.name.lo.is_valid() {
                 starts.insert(row.name.lo.to_raw());
-            }
-        }
-        for r in written::written_refs(unit) {
-            if matches!(
-                r.role,
-                Role::UsingDecl
-                    | Role::UsingDirective
-                    | Role::NamespaceAlias
-                    | Role::Elaborated
-                    | Role::SpecTarget
-            ) {
-                starts.insert(r.first.to_raw());
             }
         }
         whole.sort_unstable();
