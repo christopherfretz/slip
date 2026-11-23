@@ -1115,7 +1115,9 @@ The **staged name** of an overlay file is, in the file's own directory,
    file): without it, the rename would overwrite the save. It cannot
    catch a write within the times' granularity of step 4's `lstat` (on
    common file systems, under a millisecond), nor a writer that restores
-   the times. A file changed so is reported by the rollback and kept.
+   the times. A file changed so before the rollback's re-check of it is
+   reported by the rollback and kept, with the journal (the rollback is
+   the restore of `recover`, below).
    On a volume whose inode numbers change without a replacement (some
    FUSE-backed host mounts renumber the files under a renamed
    directory) it can refuse a write nobody touched; that refusal is
@@ -1141,12 +1143,19 @@ exclusively finds it and refuses to run (`Input`: the store has an
 unfinished write). `slip apply --recover` finishes it. It is given the
 ownership the write was given; a journal naming a path that ownership
 does not own (outside it, or under a `readonly` entry) is refused
-(`journal_not_owned`) before anything is touched, and kept. Otherwise:
-staged files are removed; every file whose bytes have the `pre` digest
-is left; every file with the `post` digest is restored from its
-pre-image blob (written to the staged name and renamed over the file);
-any other content, and anything that is not a regular file, is reported
-and left; the journal is removed if no file was reported. So a file is
+(`journal_not_owned`) before anything is touched, and kept. Otherwise,
+for each file, first its `lstat` and the real path of its directory: a
+file that is missing, not a regular file, or under a directory that is
+a link is reported, and nothing is removed under it. Then its bytes: a
+file with the `pre` digest is left (its staged name removed); a file
+with the `post` digest is restored from its pre-image blob, written to
+the staged name and renamed over the file just after a re-check of the
+file as in step 5 (device, inode, size, modification and change time,
+against the `lstat` before the read); a file that changed since is
+reported and kept, its staged file (the pre-image) left beside it; any
+other content is reported and left. The journal is removed if no file
+was reported. A change between that re-check and the rename is the
+window of step 5. So a file is
 at every moment wholly the pre-image or wholly the post-image, and an
 interrupted write returns to the pre-image.
 

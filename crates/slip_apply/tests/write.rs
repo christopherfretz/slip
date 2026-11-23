@@ -73,6 +73,8 @@ struct State {
     log: Vec<(&'static str, Vec<u8>)>,
     /// Run just before the operation of this index.
     hook: Option<(u64, Hook)>,
+    /// A second one, for a test that needs two.
+    later: Option<(u64, Hook)>,
     /// `put` names its bytes by a wrong digest.
     lying_put: bool,
     /// The owner and group a create gives.
@@ -112,6 +114,11 @@ impl World {
         {
             hook(&mut s);
         }
+        if let Some((at, hook)) = s.later.clone()
+            && at == n
+        {
+            hook(&mut s);
+        }
         match s.fault {
             Some((at, mode)) if at == n => {
                 if matches!(mode, Mode::FailAfter | Mode::LoseAfter) {
@@ -131,6 +138,7 @@ impl World {
         s.dead = false;
         s.fault = None;
         s.hook = None;
+        s.later = None;
         s.ops = 0;
         s.log.clear();
         World(Rc::new(RefCell::new(s)))
@@ -972,6 +980,106 @@ fn s7_3_recover_creates_the_staged_name_exclusively() {
     assert_eq!(w.bytes(&st).unwrap(), b"theirs");
     assert_eq!(w.bytes(b"/w/a.cc").unwrap(), c.post[0].1);
     assert!(w.0.borrow().journal.is_some());
+}
+
+/// A save of /w/a.cc: other bytes, newer times.
+fn save_a(s: &mut State) {
+    let n = s.files.get_mut(b"/w/a.cc".as_slice()).unwrap();
+    n.bytes = b"USER SAVED THIS".to_vec();
+    n.mtime.0 += 1;
+    n.ctime.0 += 1;
+}
+
+/// The index of the `nth` operation named `op` in `run` over a healthy copy
+/// of `w`.
+fn index_in(w: &World, op: &str, nth: usize, run: impl Fn(&World)) -> u64 {
+    let probe = w.healthy();
+    run(&probe);
+    let log = &probe.0.borrow().log;
+    log.iter().enumerate().filter(|(_, (o, _))| *o == op).nth(nth).unwrap().0 as u64
+}
+
+// §7.3 recovery: a file holding the post-image that changes after
+// `restore` read it (just before its rename) is reported and kept, not
+// overwritten; the journal is kept. Every field of the identity counts,
+// not only the bytes.
+#[test]
+fn s7_3_recover_keeps_a_save_made_before_its_rename() {
+    let c = case();
+    let start = after_commit(&c);
+    // Just before the rename and the re-check (`stat`) that precedes it.
+    let at = index_in(&start, "rename", 0, |w| {
+        recover(&own_w(), w, w, w).unwrap().unwrap();
+    }) - 1;
+    let changes: [(&str, fn(&mut State)); 7] = [
+        ("save", save_a),
+        ("dev", |s| s.files.get_mut(b"/w/a.cc".as_slice()).unwrap().dev += 1),
+        ("ino", |s| s.files.get_mut(b"/w/a.cc".as_slice()).unwrap().ino += 1),
+        ("mtime", |s| s.files.get_mut(b"/w/a.cc".as_slice()).unwrap().mtime.0 += 1),
+        ("mtime ns", |s| s.files.get_mut(b"/w/a.cc".as_slice()).unwrap().mtime.1 += 1),
+        ("ctime", |s| s.files.get_mut(b"/w/a.cc".as_slice()).unwrap().ctime.0 += 1),
+        ("ctime ns", |s| s.files.get_mut(b"/w/a.cc".as_slice()).unwrap().ctime.1 += 1),
+    ];
+    for (what, change) in changes {
+        let w = start.healthy();
+        w.0.borrow_mut().hook = Some((at, Rc::new(change)));
+        let got = recover(&own_w(), &w, &w, &w).unwrap().unwrap();
+        assert_eq!(got.reported, vec![b"/w/a.cc".to_vec()], "{what}");
+        assert!(!got.restored.contains(&b"/w/a.cc".to_vec()), "{what}");
+        assert!(w.0.borrow().journal.is_some(), "{what}");
+        let want = if what == "save" { &b"USER SAVED THIS"[..] } else { &c.post[0].1[..] };
+        assert_eq!(w.bytes(b"/w/a.cc").unwrap(), want, "{what}");
+        // The other files are restored; the pre-image is left beside it.
+        assert_eq!(w.bytes(b"/w/b.h").unwrap(), c.pre[1].1, "{what}");
+        assert_eq!(w.bytes(&staged_name(b"/w/a.cc", c.id)).unwrap(), c.pre[0].1, "{what}");
+    }
+}
+
+// §7.3 step 5: the rollback after a commit refusal is the same restore: a
+// save of a renamed file made just before the rollback's rename is kept,
+// reported, and the journal left.
+#[test]
+fn s7_3_rollback_keeps_a_save_made_before_its_rename() {
+    let c = case();
+    // The refusal: the staged file of /w/b.h touched before its re-check.
+    let refuse_at = op_index(&c, "rename", 0) + 1;
+    let sb = staged_name(b"/w/b.h", c.id);
+    let touch: Hook = Rc::new(move |s: &mut State| s.files.get_mut(&sb).unwrap().mtime.1 += 1);
+    let refused = c.world.healthy();
+    refused.0.borrow_mut().hook = Some((refuse_at, touch.clone()));
+    // Before the rollback's rename of /w/a.cc (the second rename of that
+    // run) and the re-check that precedes it.
+    let at = index_in(&refused, "rename", 1, |w| {
+        w.0.borrow_mut().hook = Some((refuse_at, touch.clone()));
+        let got = run_write(&c, w);
+        assert_eq!(got, Err(WriteError::Refused(Refused::StaleFile(staged_name(b"/w/b.h", c.id)))));
+    }) - 1;
+    let w = c.world.healthy();
+    w.0.borrow_mut().hook = Some((refuse_at, touch));
+    w.0.borrow_mut().later = Some((at, Rc::new(save_a)));
+    assert!(matches!(run_write(&c, &w), Err(WriteError::Io { journal_left: true, .. })));
+    assert!(w.0.borrow().journal.is_some());
+    assert_eq!(w.bytes(b"/w/a.cc").unwrap(), b"USER SAVED THIS");
+    assert_eq!(w.bytes(b"/w/b.h").unwrap(), c.pre[1].1);
+}
+
+// §7.3 recovery: a file that is reported by its `stat` (here: under a
+// directory that is a link, which `DiskTree` gives as not regular) has
+// nothing removed under it, its staged name included.
+#[test]
+fn s7_3_recover_removes_nothing_under_a_reported_path() {
+    let c = case();
+    // Interrupted before the first rename: every staged file exists.
+    let w = c.world.with_fault(op_index(&c, "rename", 0), Mode::Lose);
+    let _ = run_write(&c, &w);
+    let w = w.healthy();
+    w.0.borrow_mut().files.get_mut(b"/w/sub/c.sh".as_slice()).unwrap().regular = false;
+    let got = recover(&own_w(), &w, &w, &w).unwrap().unwrap();
+    assert_eq!(got.reported, vec![b"/w/sub/c.sh".to_vec()]);
+    let sc = staged_name(b"/w/sub/c.sh", c.id);
+    assert!(w.0.borrow().log.iter().all(|(op, p)| *op != "remove" || *p != sc));
+    assert!(w.bytes(&sc).is_some());
+    assert!(w.bytes(&staged_name(b"/w/a.cc", c.id)).is_none());
 }
 
 // §7.3 step 5: a rollback that reports a file (changed by someone after

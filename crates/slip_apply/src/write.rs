@@ -506,11 +506,17 @@ fn rolled_back(
     }
 }
 
-/// The last paragraph of §7.3 for a journal: for each file, its staged
-/// file removed; then the file left (the `pre` image), restored (the
-/// `post` image: the pre-image blob written to the staged name and renamed
-/// over it) or reported (anything else, or not a regular file); the
-/// directories synced; the journal removed if nothing was reported.
+/// The last paragraph of §7.3 for a journal, for each file: `stat` first
+/// (a missing file, one not regular, or one under a directory that is a
+/// link is reported, and nothing is removed under it); then its bytes: the
+/// `pre` image is left, anything but the two images reported (its staged
+/// name untouched), and the `post` image restored: its staged name
+/// cleared, the pre-image blob created there, the file re-checked (the
+/// same identity as the commit's re-check, against the `stat` taken before
+/// the read) and the staged file renamed over it. A file that changed
+/// since that `stat` is reported and kept, with the staged file (the
+/// pre-image) left beside it. Then the directories are synced and the
+/// journal removed if nothing was reported.
 fn restore(
     j: &Journal,
     tree: &dyn Tree,
@@ -523,10 +529,10 @@ fn restore(
             let p = p.to_vec();
             move |e| (p, e)
         };
-        match tree.remove(&f.staged) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err((f.staged.clone(), e)),
-            _ => {}
-        }
+        let clear_staged = || match tree.remove(&f.staged) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err((f.staged.clone(), e)),
+            _ => Ok(()),
+        };
         let st = match tree.stat(&f.path).map_err(at(&f.path))? {
             Some(st) if st.regular => st,
             _ => {
@@ -536,9 +542,11 @@ fn restore(
         };
         let bytes = tree.read(&f.path).map_err(at(&f.path))?;
         if is_image(&bytes, &f.pre) {
+            clear_staged()?;
             out.left.push(f.path.clone());
         } else if is_image(&bytes, &f.post) {
             drop(bytes);
+            clear_staged()?;
             let pre = blobs.get(f.pre.content).map_err(at(&f.path))?;
             if !is_image(&pre, &f.pre) {
                 return Err((
@@ -547,6 +555,13 @@ fn restore(
                 ));
             }
             tree.create(&f.staged, st.mode, &pre).map_err(at(&f.staged))?;
+            match tree.stat(&f.path).map_err(at(&f.path))? {
+                Some(now) if now.regular && now.identity() == st.identity() => {}
+                _ => {
+                    out.reported.push(f.path.clone());
+                    continue;
+                }
+            }
             tree.rename(&f.staged, &f.path).map_err(at(&f.path))?;
             out.restored.push(f.path.clone());
         } else {
