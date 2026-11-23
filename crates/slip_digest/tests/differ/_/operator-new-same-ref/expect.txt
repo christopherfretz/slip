@@ -1,0 +1,4 @@
+# f() and g() are not changed: the reference has one key (A3).
+added operator new(unsigned long)
+exact derived
+derived-removed operator new(unsigned long)
