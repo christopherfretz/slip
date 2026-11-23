@@ -425,6 +425,10 @@ fn param_templates(w: &mut Walk<'_>) {
 /// closure `r` is, when Kiln gives it the block's scope as its owner:
 /// both of the lambda's brackets are at the block's `consteval`
 /// (`Sema::consteval_block_closure`), and the block is in scope `o`.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the names of digest-kinds: s stream, d declaration, e entity, n number, o owner, t type"
+)]
 fn consteval_block(w: &Walk<'_>, r: DeclId, o: DeclId) -> Option<DeclId> {
     let ast = w.ast;
     let l = ast.decls.record(r)?.lambda?;
@@ -941,6 +945,10 @@ pub(crate) fn write_scope_names(w: &mut Walk<'_>, s: &mut Stream) {
 /// each with the named local types around it, outermost first, in the
 /// order met: what `typeid(q).name()` prints of them (digest §4.3 "Names
 /// a program reads").
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the names of digest-kinds: s stream, d declaration, e entity, n number, o owner, t type"
+)]
 pub(crate) fn write_type_names(w: &mut Walk<'_>, s: &mut Stream, q: QualType) {
     let ast = w.ast;
     let mut found: Vec<DeclId> = Vec::new();
@@ -1874,8 +1882,8 @@ mod tests {
             assert!(super::derived_under_local(w, spec));
             assert!(crate::units::unit_class(w, spec).is_some());
             let key = |w: &mut Walk<'_>, d: DeclId| match w.key(d) {
-                crate::keys::KeyRes::Key { id, .. } => id,
-                crate::keys::KeyRes::None(c) => panic!("no key: {c:?}"),
+                KeyRes::Key { id, .. } => id,
+                KeyRes::None(c) => panic!("no key: {c:?}"),
             };
             let (kf, kop) = (key(w, f), key(w, op));
             // From the specialisation's stream: outer.

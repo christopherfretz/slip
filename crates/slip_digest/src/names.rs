@@ -531,6 +531,10 @@ impl<'n, 'w> Names<'n, 'w> {
     /// owner's name and `local(n)` (`?` for a number not known), then the
     /// classes between it and `d` and `d`'s own component as Kiln prints
     /// them. `None` outside a local type.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "the names of digest-kinds: s stream, d declaration, e entity, n number, o owner, t type"
+    )]
     fn local_scope(&self, d: DeclId, kiln: &str) -> Option<String> {
         let ast = self.ast;
         let t = self.local_type_around(d)?;
