@@ -8,10 +8,14 @@ good-3: verified
 good-4: verified
 bad:    mismatch changed take(lib::Item *) @ main.cpp:16
 
-# pre-5 (WP-109): __PRETTY_FUNCTION__ prints the parameter types as written
-# (clang prints the sugar): the parameter of name respelled from Int to
-# int, the same length, changes the string name returns from
-# "const char *name(Int)" to "const char *name(int)". good-5 respells
-# plain's parameter, which nothing prints.
+# pre-5 (WP-109; corrected by WP-056): __PRETTY_FUNCTION__ prints the
+# parameter types as written (clang prints the sugar). good-5 respells
+# plain's parameter, which nothing prints, and name's, whose string name
+# returns changes from "const char *name(Int)" to "const char *name(int)":
+# a name-derived string only passed on is equal in the unit digest whatever
+# changes its content (spec/digest.md §9); the names report (WP-112) tells
+# the user. bad-5 respells width's parameter, Integer to int, where the
+# function consumes the string, sizeof(__PRETTY_FUNCTION__): 19, then 15
+# (clang 19, run), written by value.
 good-5: verified
-bad-5:  mismatch changed name(int) @ main.cpp:4
+bad-5:  mismatch changed width(int) @ main.cpp:5

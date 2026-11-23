@@ -10,4 +10,4 @@ bad:  mismatch changed caller() @ main.cpp:12
 # declared unit differs (caller() calls the same specialisation): only the
 # instantiated body of measure<Box>.
 good-2: none the probe tests for the old name; any rename of size makes it false
-bad-2:  mismatch derived_changed measure<Box>(const Box &) @ main.cpp:2
+bad-2:  mismatch derived_changed measure<Box>(const Box &)::<definition> @ main.cpp:2
