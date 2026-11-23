@@ -10,7 +10,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use slip_digest::map::{counters, digest_unit};
+use slip_digest::map::{counters, map_unit};
 use slip_digest::{Detail, Options};
 use slip_exec::store::{Access, Store};
 use slip_exec::worker::{Job, ServeOptions, Task, serve};
@@ -93,7 +93,7 @@ fn map_observer(observer: &Observer, round: u64) -> Result<Shard, String> {
     let identity = |path: &[u8]| path.to_vec();
     let (mut shard, walked) =
         parse_observer_with(observer, Phase::Map, round, ParseOptions::default(), |unit| {
-            (unit.errors() == 0).then(|| digest_unit(unit, &options, &identity))
+            map_unit(unit, &options, &identity)
         })?;
     let output = match walked.flatten() {
         Some(Ok(output)) => output,

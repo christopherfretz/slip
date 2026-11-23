@@ -6,11 +6,11 @@
 //! The parse changes the process's current directory, so every test that
 //! parses holds [`LOCK`] and uses absolute paths only.
 //!
-//! "The walk skipped on a unit with errors" is the worker's rule (the
-//! closure does not call `digest_unit` when `unit.errors()` is not 0):
-//! `crates/slip_cli/src/worker.rs` tests it, and `crates/slip_cli/tests/
-//! cli.rs` through the executable. [`map_shard`] here composes the shard
-//! the same way, so that the digest's part is tested on its own.
+//! "The walk skipped on a unit with errors" is `map_unit`'s (`None` when
+//! `unit.errors()` is not 0): `crates/slip_cli/src/worker.rs` tests it
+//! through the worker, and `crates/slip_cli/tests/cli.rs` through the
+//! executable. [`map_shard`] here composes the shard as the worker does,
+//! so that the digest's part is tested on its own.
 
 mod common;
 
@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use slip_digest::map::{cause_word, counters, digest_unit, with_input};
+use slip_digest::map::{cause_word, counters, map_unit, with_input};
 use slip_digest::{Area, Cause, Detail, Options, Output, STACK_SIZE};
 use slip_kiln::{ParseOptions, parse_observer_with};
 use slip_model::digests::{Digests, GroupClass, SCHEME};
@@ -84,16 +84,16 @@ fn rules() -> RuleTable {
     RuleTable::empty()
 }
 
-/// The walk of `o`'s unit with detail `all`, through `subject`; `None`
+/// The walk of `o`'s unit with detail `all` and names, through `subject`; `None`
 /// when the unit had errors (the walk not run).
 fn walk(
     o: &Observer,
     subject: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
 ) -> (Shard, Option<Result<Output, String>>) {
     let rules = rules();
-    let options = Options { rules: &rules, detail: Detail::All, names: false };
+    let options = Options { rules: &rules, detail: Detail::All, names: true };
     let (shard, walked) = parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {
-        (unit.errors() == 0).then(|| digest_unit(unit, &options, subject))
+        map_unit(unit, &options, subject)
     })
     .expect("parse_observer_with");
     (shard, walked.flatten())
@@ -108,7 +108,7 @@ fn map_shard(o: &Observer) -> Result<Shard, String> {
     let identity = |p: &[u8]| p.to_vec();
     let (mut shard, walked) =
         parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {
-            (unit.errors() == 0).then(|| digest_unit(unit, &options, &identity))
+            map_unit(unit, &options, &identity)
         })?;
     if let Some(output) = walked.flatten().transpose()?
         && shard.outcome.status == Status::Ok
@@ -418,4 +418,102 @@ fn s8_5_cause_word_on_every_cause_text() {
     }
     assert!(!texts.is_empty(), "the pair tests reach causes with a text");
     eprintln!("cause texts reached by the pair tests: {texts:?}");
+}
+
+/// The `(class, file)` of the group of every unit named `name`.
+fn groups_of(output: &Output, name: &str) -> Vec<(GroupClass, Vec<u8>)> {
+    let keys: Vec<Digest> =
+        output.names.iter().filter(|(_, n)| n == name).map(|(k, _)| *k).collect();
+    output
+        .digests
+        .groups
+        .iter()
+        .flat_map(|g| {
+            g.units
+                .iter()
+                .flatten()
+                .filter(|u| keys.contains(&u.key))
+                .map(|_| (g.class, g.file.clone()))
+        })
+        .collect()
+}
+
+/// The map shard of `main.cpp` (and `files`) is valid and `ok`, and the
+/// walk with detail `all`.
+fn valid_and_walked(f: &Fixture, files: &[(&str, &str)]) -> Output {
+    for (rel, text) in files {
+        f.write(rel, text);
+    }
+    let o = f.observer(&["c++", "-std=c++20", "main.cpp"]);
+    let shard = map_shard(&o).expect("the map shard");
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    shard.validate().expect("a valid shard");
+    let identity = |p: &[u8]| p.to_vec();
+    let (_, walked) = walk(&o, &identity);
+    walked.unwrap().unwrap()
+}
+
+// digest §11 "origin file" (WP-050 fix round, A1): Kiln declares the
+// global allocation functions without a location before a source's first
+// declaration of one; the declared unit's file is that of the first
+// declaration that has one, so the shard is valid (it was `failed`, "a
+// declared group has an empty file", on 3975 files of LLVM).
+#[test]
+fn s8_5_operator_new_redeclared_is_in_its_file() {
+    let f = Fixture::new("opnew");
+    let output = valid_and_walked(&f, &[("main.cpp", "void *operator new(decltype(sizeof 0));\n")]);
+    let main = bytes(&f.root.join("main.cpp"));
+    assert_eq!(
+        groups_of(&output, "operator new(unsigned long)"),
+        vec![(GroupClass::Declared, main)]
+    );
+    assert!(
+        output.digests.groups.iter().all(|g| g.class != GroupClass::Declared || !g.file.is_empty()),
+        "no declared group has the empty path"
+    );
+    // The other implicit allocation functions, and the implicit
+    // `std::align_val_t`, are no unit: nothing refers to them (A2).
+    assert_eq!(output.names.len(), 2, "{:?}", output.names);
+}
+
+// The same, the redeclaration written in a header: the unit is in the
+// header's group.
+#[test]
+fn s8_5_operator_new_redeclared_in_a_header() {
+    let f = Fixture::new("opnew-h");
+    let output = valid_and_walked(
+        &f,
+        &[
+            ("new.h", "#pragma once\nvoid operator delete(void *) noexcept;\n"),
+            ("main.cpp", "#include \"new.h\"\nint *p = new int;\n"),
+        ],
+    );
+    let header = bytes(&f.root.join("new.h"));
+    assert_eq!(groups_of(&output, "operator delete(void *)"), vec![(GroupClass::Declared, header)]);
+    // `operator new(unsigned long)`, which the new-expression refers to
+    // and no source declares, is derived (A2), with the empty path.
+    assert_eq!(
+        groups_of(&output, "operator new(unsigned long)"),
+        vec![(GroupClass::Derived, Vec::new())]
+    );
+}
+
+// `<new>`'s shape (A6 iv): `std::align_val_t` declared in source after
+// Kiln's implicit one, and an aligned allocation function.
+#[test]
+fn s8_5_align_val_t_redeclared() {
+    let f = Fixture::new("align");
+    let output = valid_and_walked(
+        &f,
+        &[(
+            "main.cpp",
+            "namespace std { enum class align_val_t : decltype(sizeof 0) {}; }\n\
+             void *operator new(decltype(sizeof 0), std::align_val_t);\n",
+        )],
+    );
+    let main = bytes(&f.root.join("main.cpp"));
+    for name in ["std::align_val_t", "operator new(unsigned long, std::align_val_t)"] {
+        assert_eq!(groups_of(&output, name), vec![(GroupClass::Declared, main.clone())], "{name}");
+    }
+    assert_eq!(groups_of(&output, "std"), vec![(GroupClass::Tu, Vec::new())]);
 }

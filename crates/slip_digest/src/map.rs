@@ -46,6 +46,19 @@ pub fn digest_unit(
     with_input(unit, subject, |input| digest(input, options))
 }
 
+/// The map task's walk over a finished unit (`spec/model.md` §8.5 "The
+/// shard"): `None` when the unit has errors (the walk's precondition,
+/// `digest.md` §1; the shard is then the parse task's), else
+/// [`digest_unit`]. The one place the decision is made, so that the
+/// worker calls no method of [`Unit`] (`spec/model.md` §8.4).
+pub fn map_unit(
+    unit: &Unit<'_>,
+    options: &Options<'_>,
+    subject: &dyn Fn(&[u8]) -> Vec<u8>,
+) -> Option<Result<Output, String>> {
+    (unit.errors() == 0).then(|| digest_unit(unit, options, subject))
+}
+
 /// Calls `f` on the [`Input`] of a finished unit, after the checks of
 /// `spec/model.md` §8.5 "The stack", for any use of the walk on it
 /// (`spec/verify.md` §2.3 records, §6.1 traces); `subject` as for
