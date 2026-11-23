@@ -59,6 +59,26 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
     out
 }
 
+/// The name of the entity `e` (a declaration that is its entity, as
+/// `Walk::entity` gives it) as `Output::names` renders it, for a person:
+/// the host's `display_string_of` (`spec/api.md` §6.3 rule 2,
+/// `docs/wp/WP-083.md`). Never hashed. An entity Kiln prints without a
+/// name ends in `(unnamed)` here, since the ordinal of digest §3.3 is the
+/// walk's.
+pub fn display_name(ast: &Ast, e: DeclId) -> String {
+    let kind = match info(ast.decls.get(e).kind()).role {
+        Role::Entity(k) | Role::Content(k) => k,
+        // Any kind other than `FunctionTemplate` names it the same way:
+        // `entity_name` reads `kind` only to tell a function template.
+        _ => KeyKind::Variable,
+    };
+    let mut name = entity_name(ast, e, kind);
+    if name.is_empty() || name.ends_with("::") {
+        name.push_str("(unnamed)");
+    }
+    name
+}
+
 /// The name of entity `e` of key kind `kind`.
 pub(crate) fn entity_name(ast: &Ast, e: DeclId, kind: KeyKind) -> String {
     let names = AstNames::new(ast);

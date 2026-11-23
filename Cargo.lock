@@ -261,6 +261,7 @@ dependencies = [
 name = "slip_script"
 version = "0.0.0"
 dependencies = [
+ "slip_digest",
  "slip_kiln",
  "slip_model",
 ]
