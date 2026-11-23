@@ -299,6 +299,7 @@ enum E { e = sizeof(S) };
 template <class T = S> void t() {}
 struct C { using I = S; };
 S a, b;
+namespace m { using J = S; }
 ";
     with(src, |s, d| {
         for r in refs_to(s, one(s, "S")) {
