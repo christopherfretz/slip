@@ -132,6 +132,7 @@ fn required_expr(w: &mut Walk<'_>, s: &mut Stream, raw: u32, cause: Cause) {
 )]
 fn node(w: &mut Walk<'_>, s: &mut Stream, st: StmtId) -> Option<StmtId> {
     crate::walk::stack_probe();
+    s.mark(NodeRef::Stmt(st));
     // A statement this stream wrote already in this state: a
     // back-reference (§6, `Walk::back_ref`), and no tail.
     if let Some(count) = w.back_ref(s, NodeRef::Stmt(st)) {

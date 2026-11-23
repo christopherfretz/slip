@@ -1512,18 +1512,25 @@ Trace := key: KeyId, digest: digest
          refs:   list<RefAt>          ascending by offset, not overlapping
 Mark  := offset: uv                   the stream's length when the walk began to write the node
          node:   str                  the node's kind: the variant's name in Kiln's `ExprKind` or
-                                      `StmtKind`; for a unit's first mark, the name of its key kind
-         file:   bytes, line: uv, column: uv      subject path and presumed line and column of the node's
-                                                  location; empty, 0, 0 if it has none
+                                      `StmtKind`; for a unit's first mark, the name of its key kind;
+                                      `declarations` for a declarations mark (below)
+         file:   bytes, line: uv, column: uv      subject path, line and column of the node's location in
+                                                  the physical file (a `#line` directive does not
+                                                  move it); empty, 0, 0 if it has none
 RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) whose value is
          key:   KeyId                 the key of a unit of this image: a reference to it
 ```
 
 - A mark is made where the walk begins a unit (offset 0, at the unit's
   **place**, below) and where it begins a statement or an
-  expression inside one. A declaration's own rows (its type, its
-  specifiers, each redeclaration) have no mark: a difference there is at
-  the unit's mark or at the last expression before it. Types and constant
+  expression inside one, and a **declarations mark** where a
+  declaration's stream (`digest.md` §5.1) ends its `DeclNode` rows and
+  begins the rows merged over its entity's declarations (scope,
+  attributes, template maps, module rows), at that entity's place. A
+  difference in those rows is at the declarations mark: at the entity,
+  not at the redeclaration that differs. The `DeclNode` rows themselves
+  (the declaration's type, its specifiers) have no mark: a difference
+  there is at the unit's mark or at the last expression before it. Types and constant
   values are written as digests (`digest.md` §4.2) and have no mark of
   their own: a difference inside one is at the mark of the node that
   holds it. The same holds for any part of a unit the walk hashes apart
@@ -1535,6 +1542,12 @@ RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) wh
   which is also a defect of the walk to report: a unit's stream must not
   depend on when it is written. The walk that produced the digests is not
   touched by tracing.
+- A panic in the second writing withdraws places and nothing else: the
+  digests, the verdict and every finding stand; the traces made before it
+  are kept; the walk traces nothing more on that image (its state is not
+  trusted after the unwind), so the image's remaining wanted units have no
+  trace and their findings no `where` (counted:
+  `verify.traces.panicked`, §7.2, and not in `verify.traces.unstable`).
 - A content-keyed unit and the order unit have the first mark only.
 - The location of a node inside a macro expansion is that of the outermost
   expansion (as for a group's file, `digest.md` §11).
@@ -1615,7 +1628,7 @@ finding has a name.
 pub struct Mark  { pub offset: u64, pub node: &'static str, pub file: Vec<u8>, pub line: u64, pub column: u64 }
 pub struct RefAt { pub offset: u64, pub len: u64, pub key: Digest }
 pub struct Trace { pub key: Digest, pub digest: Digest, pub stream: Vec<u8>, pub marks: Vec<Mark>, pub refs: Vec<RefAt> }
-pub struct Traced { pub output: Output, pub traces: Vec<Trace> }           // traces sorted by (key, digest)
+pub struct Traced { pub output: Output, pub traces: Vec<Trace>, pub panicked: bool } // traces sorted by (key, digest)
 /// `output` is `digest(input, options)`, byte for byte; `traces` has one
 /// entry per unit whose key is in `keys` (sorted, no duplicates).
 pub fn trace(input: &Input<'_>, options: &Options<'_>, keys: &[Digest]) -> Traced;
@@ -1623,13 +1636,15 @@ pub fn trace(input: &Input<'_>, options: &Options<'_>, keys: &[Digest]) -> Trace
 // slip_cli::locate
 /// What localisation needs from one image, taken while its parse is in memory.
 pub struct Side { /* the `tu` digest; names, causes and traces of the wanted keys */ }
-impl Side { pub fn tu(&self) -> &Digest; }
+impl Side { pub fn tu(&self) -> &Digest; pub fn unstable(&self) -> u64; pub fn panicked(&self) -> bool; }
 /// One walk of `input` under `rules` for the keys of the findings to localise.
 pub fn take(input: &Input<'_>, rules: &RuleTable, keys: &[Digest]) -> Side;
 /// The keys of the first `locate` findings, sorted, no duplicates.
 pub fn wanted(findings: &[Finding], locate: usize) -> Vec<Digest>;
 /// Fills `name` and `location` of the first `locate` findings; changes no other field.
 pub fn fill(findings: &mut [Finding], locate: usize, pre: Option<&Side>, post: &Side);
+/// `verify.traces.unstable` and `verify.traces.panicked` (§7.2) of the two sides.
+pub fn unplaced(pre: Option<&Side>, post: &Side) -> (u64, u64);
 ```
 
 `pre` is `None` when step 4's parse was not reached with a finding to
@@ -1792,6 +1807,7 @@ Counters of a verify shard, added to those of the parse and of
 | `verify.exemptions.used` | exemptions that prevented a finding |
 | `verify.reparsed` | parses after the first: 0, 1 (the pre-image) or 2 (and the post-image again) |
 | `verify.traces.unstable` | units wanted for localisation whose stream, written again, did not hash to their digest (§6.1); present only when not 0 |
+| `verify.traces.panicked` | images (0, 1 or 2) whose second writing for localisation panicked: places withdrawn there, verdict and findings kept (§6.1); a defect of the walk to report; present only when not 0 |
 
 A shard without a verdict has none of them. The counters by kind are what
 `indeterminate_only` (§7) is computed from: a verdict lists only its first
