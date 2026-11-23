@@ -78,6 +78,9 @@ pub(crate) struct ExprState {
     /// expression walk is writing, itself included
     /// (`expr_core::this`).
     pub dependent: u32,
+    /// Where the walk records the `default_imm` values it meets, when a
+    /// `default_immediates` unit asks (`demand::immediates`).
+    pub imms: Option<Vec<slip_kiln::kiln::ast::ConstValueId>>,
     /// The numbering of the profile being walked (`expr_dep::profile_expr`,
     /// digest-kinds §4.4); `None` outside one.
     pub profile: Option<crate::expr_dep::Frame>,
@@ -163,6 +166,9 @@ pub(crate) struct Walk<'a> {
     /// being walked (`expr_dep::profile_expr`): their facts are read by
     /// that site, not by `absorb_type` for the types inside them.
     pub spelling_off: u32,
+    /// The temporaries each variable extends, by its first declaration,
+    /// built when a `value` unit first needs it (`demand.rs`).
+    pub lets: Option<HashMap<DeclId, Vec<(u32, DeclId)>>>,
 }
 
 /// What [`Walk::take_types`] puts aside.
@@ -209,6 +215,7 @@ impl<'a> Walk<'a> {
             bytes: 0,
             alias_due: HashMap::new(),
             spelling_off: 0,
+            lets: None,
         }
     }
 
@@ -348,7 +355,11 @@ pub(crate) fn run_with<R>(
         let (e, class) = w.queue[i];
         i += 1;
         if let Some(u) = crate::units::write(&mut w, e, class) {
+            // Its resolved units (`demand.rs`), after it.
+            let mut resolved = Vec::new();
+            crate::demand::resolved_units(&mut w, e, &u, &mut resolved);
             written.push(u);
+            written.append(&mut resolved);
         }
     }
     written.push(crate::units::order_unit(&mut w));

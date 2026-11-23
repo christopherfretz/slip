@@ -1,2 +1,2 @@
-added f(type-parameter-0-0)
-removed f(type-parameter-0-0)
+added template <class> decltype(&(T::m)) f(type-parameter-0-0)
+removed template <class> decltype(&T::m) f(type-parameter-0-0)

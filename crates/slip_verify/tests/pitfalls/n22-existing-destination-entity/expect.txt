@@ -1,0 +1,5 @@
+# N22: acme already has an entity of the moved name and signature.
+# bad: both defined; bad-2 (on pre-2): the existing acme::g() is only declared.
+good:  none the destination already has acme::g(): the move is refused, there is no correct edit
+bad:   not_parsed
+bad-2: mismatch removed acme::g() @ acme.h:2

@@ -362,6 +362,7 @@ parent key and nothing else.
 |---|---|
 | `deduction_guide` | the `Ref` of the template deduced, then as `function` |
 | `function` | parameter types in order (`type*`), variadic, cv- and ref-qualifiers, explicit-object flag, trailing requires-clause (`profile?`); then, only for a friend whose parent is the class that befriends it (a member-like friend, or a friend every declaration of which is in a templated class), `uv` 1, so that it never has the key of a member of that class with the same name and signature; absent for a function with C language linkage |
+| `field` | for a name-independent member (P2169: Kiln's `DeclMisc` `name_independent`, a member named `_` in C++26), `uv` its ordinal: the number of members before it, in member order (`Ast::members`), that have its `DeclKind`, its name and the name-independent bit. The members are those of the definition of the record it is a member of (for a member of a class template that is the pattern, for an instantiation's member the instantiation's own members), else, when it is not among them, those of the definition of that record's entity. An `IndirectField` counts only among `IndirectField`s and a `Field` only among `Field`s. If it is in neither list (no case is known; it would be an AST whose member is not in its parent's members) the ordinal is `uv` 2^64−1 and the unit is indeterminate, cause `Unaccounted("key/name-independent")`. Absent for any other member |
 | `function_template` | the template head (§9, `TemplateParamList`), then the function's discriminator, then its return type |
 | `class_template`, `variable_template`, `alias_template`, `concept` | the template head |
 | `specialisation` | the canonical template arguments (`enum ArgView*`) |
@@ -5858,12 +5859,12 @@ The numbers are Slip's own and are never reused.
 | Number | Property | Belongs to | Stream |
 |---|---|---|---|
 | 1 | `exception_spec` | a function of the deferrable class (§11.2) | `enum ExcSpec`, in normal form |
-| 2 | `value` | a variable | `value?` (§11.3) |
+| 2 | `value` | a variable | `value?`, then `value?` per extended temporary (§11.3) |
 | 3 | retired | | was `overrides`, now a row of the function's own unit (§11.5) |
 | 4 | `key_function` | a class | `ref` |
 | 5 | `dtor_delete` | a virtual destructor | `ref`: `ColdDeclData` `dtor_delete`; then `child?`: `dtor_delete_this` |
 | 6 | `inherited_constructor` | an inheriting constructor | `ref`: `inheriting_ctor`; then `ref`: `inherited_ctor` |
-| 7 | `default_immediates` | a function, a field or a `default_argument` unit | `value*` (§11.4) |
+| 7 | `default_immediates` | a function, a field or a `default_argument` unit | `count`, then `value` for each (§11.4) |
 | 8 | `definition` | an implicit instantiation or an implicitly declared member (§11.9) | the rows §11.9 lists, in table order |
 
 A resolved unit `default_immediates` has a discriminator: the index of
@@ -5876,18 +5877,40 @@ needs the specification, and then re-points the declaration's type. A
 function is of the **deferrable class** if Kiln can do that to it:
 
 1. it is an implicitly declared special member function or comparison
-   operator, or is explicitly defaulted on its first declaration without
-   an exception specification of its own;
-2. it is an inheriting constructor;
-3. it is an implicit instantiation (`SpecKind` `ImplicitInstantiation`
-   in its `SpecInfo` or `MemberSpecInfo`) whose pattern has a
-   value-dependent `noexcept` operand or a dynamic specification that
-   names a dependent type, or whose pattern is itself of the deferrable
-   class;
+   operator (every declaration of the entity is `IMPLICIT`), or is
+   explicitly defaulted on the entity's representative declaration
+   (`Defaulted` `Explicit` or `Implicit` there). Kiln defers one written
+   without a specification and, once it resolves it, re-points every
+   declaration's type, so `Ast` does not say whether a specification was
+   written: every function explicitly defaulted on that declaration is of
+   the class, and a written specification is in its resolved unit;
+2. it is an inheriting constructor (by rule 1, or by its
+   `ColdDeclData` `inheriting_ctor` entry);
+3. its representative declaration was made by instantiation, of any form
+   (an implicit instantiation, or a member of an explicit instantiation
+   declaration or definition), and its pattern has a value-dependent
+   `noexcept` operand, a dependent `noexcept` without an operand, a
+   dynamic specification that names a dependent type, or a `Deferred`
+   specification on any of its declarations, or is itself of the
+   deferrable class. The pattern of a function template's specialisation
+   is the primary template's pattern (`SpecInfo` `template`; `from` names
+   the template until the definition is instantiated); of any other
+   instantiated declaration, `MemberSpecInfo` `instantiated_from` or
+   Kiln's map (`Ast::instantiated_from`); with no pattern found, or
+   patterns deeper than 64, the function is of the class. Kiln defers the
+   specification under every form of instantiation and resolves it when
+   it defines the function, so an explicit instantiation definition
+   resolves the members it defines and leaves the others deferred;
 4. it is a destructor. Kiln defers one written without a specification,
    and once the specification is resolved `Ast` does not say whether it
    was written (`implicit_exc_dtors` is in Kiln's semantic analysis), so
    every destructor is of the class.
+
+Every rule reads the entity's representative declaration
+(`spec/digest.md` §2.1), not Kiln's first. The class over-includes: a
+function in it whose specification Kiln never defers has its resolved
+unit in every parse, which is safe; leaving out a function Kiln can defer
+would not be.
 
 The predicate reads only stored facts that do not change when the
 specification is resolved. For a function of the class:
@@ -5897,6 +5920,14 @@ specification is resolved. For a function of the class:
 - if the specification is resolved (its type no longer holds `Deferred`),
   the resolved unit `exception_spec` holds it; if not, there is no such
   unit.
+
+A member of a local class is the exception: it has no key, so no
+resolved unit can hold its specification. Its own stream (in the stream
+of the local class, inside its enclosing unit) writes the specification
+as Kiln holds it whenever Kiln holds a written or resolved one, and is
+indeterminate (`Pending(Local)`) only while Kiln still holds it
+`Deferred` (`tests/differ/_/local-class-destructor-noexcept`,
+`local-class-defaulted-noexcept`).
 
 A type digest that meets `Deferred(d)` writes the tag of `Deferred` and
 the `Ref` of `d`. A declaration outside the class whose type holds
@@ -5912,6 +5943,17 @@ survives resolution marks such a function, so it is outside the class:
 resolved, its own unit writes the specification; still deferred, its
 unit is indeterminate by the rule above ("Open questions" has what
 would bring it into the class).
+
+Kiln resolves a specification when something reads it and when it
+defines the function, so a resolved `exception_spec` unit can exist on
+one side only with no demand behind it (a destructor declared
+`noexcept(false)` against one declared without, neither used). That is
+safe: whatever reads the specification (a call, `noexcept`, the
+function's type or address, a definition) resolves it on both sides, so
+where the translation unit observes the difference both sides have the
+unit and it differs (`tests/differ/_/resolved-spec-observed-both-sides`,
+`resolved-spec-addr-deferred`, `resolved-spec-addr-deferred-dtor-member`,
+`resolved-spec-addr-deferred-differs`; `spec/verify.md` §4).
 
 A specification is not always resolved before a type that holds it is
 formed: naming a function leaves a late `noexcept` that is not parsed
@@ -5929,17 +5971,37 @@ variable's value. The resolved unit `value` exists if the state is
 state `Evaluating` cannot be met after the translation unit ends; a walk
 that meets it makes the variable's unit indeterminate.
 
+The state read is that of the declaration that holds the initialiser
+(as `VarData` `init` is read, §2.3), else that of the declaration read.
+The variable's own unit never says whether it was evaluated. A variable
+whose initialiser is in the resolved unit `definition` (§11.9) has its
+`value` under the variable as any other; nothing is under `definition`.
+
 After the variable's own value the stream holds one `value?` for each
 temporary whose lifetime the variable extends (each `LetData` whose
-`extending` names it), in `mangling_index` order: `LetData` `value`.
-Kiln writes that value once, in any strict evaluation whose result
-points at a temporary the variable being initialised extends; a lax
-evaluation leaves it unset, and so do the two other writers Kiln has
-(the code generator's fold prepass, which a Slip parse does not run, and
-the module importer). So a variable in state `Value` can have a
-temporary without a value: the `value?` is then absent, and a
+`extending` names a declaration of it), in `mangling_index` order:
+`LetData` `value`. Kiln writes that value once, in any strict evaluation
+whose result points at a temporary the variable being initialised
+extends; a lax evaluation leaves it unset, and so do the two other
+writers Kiln has (the code generator's fold prepass, which a Slip parse
+does not run, and the module importer). So a variable in state `Value`
+can have a temporary without a value: the `value?` is then absent, and a
 transformation that changes which evaluation reaches the initialiser
 first is a reported difference in this unit, never an unreported one.
+
+At the pin Kiln writes `eval` when it checks a declaration's initialiser
+(a `constexpr` variable, a `const` variable of integral or enumeration
+type initialised where it is declared, a static data member initialised
+out of line). For a declaration made by instantiation (a static data
+member of a class template's instantiation, initialised in class or out
+of line, and a variable template's specialisation) that check runs when
+Kiln instantiates the initialiser, which a use causes: there a use makes
+the unit appear, as for any resolved unit
+(`tests/resolved/value/instantiated-static-member`, `variable-template`,
+`instantiated-out-of-line`). For any other variable the check runs with
+the declaration and a later use does not make the unit appear. An in-class `static const int x = 1;` is never evaluated, used or not, so
+it has no `value` unit, while the same constant initialised on its
+out-of-line definition has one ("Open questions").
 
 ### 11.4 Default arguments and default member initialisers
 
@@ -5948,15 +6010,33 @@ default member initialiser of a class that is not one, is parsed with its
 declaration and is written in the function's or field's unit
 (`ParamData` `default_arg`, `FieldData` `init`).
 
-In an implicit instantiation Kiln instantiates each only when a call or
-an initialisation uses it (`ParamData` `flags-default-arg-pending`).
-There the rows `default_arg` and `init` write an absent child whatever
-Kiln holds, and an instantiated one is a derived unit of kind
-`default_argument` whose parent is the function or field and whose name
-is `parameter` with the parameter's index (0 for a field). That the
-parameter has a default argument at all is a fact of the pattern, which
-the instantiation names (`SpecInfo` `from`, `MemberSpecInfo`
-`instantiated_from`).
+In a declaration made by instantiation Kiln instantiates each only when
+a call or an initialisation uses it (`ParamData`
+`flags-default-arg-pending`). There the rows `default_arg` and `init`
+write an absent child whatever Kiln holds, and an instantiated one is a
+derived unit of kind `default_argument` whose parent is the function or
+field and whose name is `parameter` with the parameter's index (0 for a
+field). That the parameter has a default argument at all is a fact of the
+pattern, which the instantiation names (`SpecInfo` `from`,
+`MemberSpecInfo` `instantiated_from`).
+
+A parameter's default argument is instantiated when the parameter of an
+instantiated declaration of the function holds an expression
+(`ParamData` `default_arg`); `flags-default-arg-pending` stays set once
+it is, so it is not the mark. The unit is that of the first such
+declaration of the chain, first declaration first. It is written
+whenever its function's or field's unit is (it does not wait for a
+`Ref`), and its stream is the expression, walked as an initialiser is,
+with a unit state of its own: parameter j of the function (that of every
+declaration of the chain) is the local entity of ordinal j, as the
+function's own stream numbers its parameters, and the locals the
+expression declares are numbered from the parameter count on. So a
+default argument that names an earlier parameter (`sizeof(p)`) holds the
+same bytes whichever use instantiated it.
+
+An inheriting constructor has no `default_argument` unit: a call to it
+uses the base constructor's parameters and their default arguments, which
+are the base constructor's units.
 
 For a field the same holds under every form of instantiation: a field's
 default member initialiser is absent for every field instantiated from a
@@ -5971,9 +6051,15 @@ class of any function) is written with its initialiser.
 `ColdExprData` `default_imm` holds the value of an immediate invocation
 inside a default argument or default member initialiser, computed at the
 first use that has no source-location values. The resolved unit
-`default_immediates` of the unit that holds the default argument lists
-the values of the argument's immediate invocations that have an entry, in
-walk order.
+`default_immediates` of the unit that holds the default argument (the
+function or field for one written in source, the `default_argument` unit
+for an instantiated one) lists the values of the argument's immediate
+invocations that have an entry, in the order the expression walk meets
+them, as `count` and then `value` for each; it exists when at least one
+has an entry. Its discriminator is the parameter's index, absent for a
+field. A walk that meets a `default_imm` entry inside a type (a
+`decltype` operand) does not list it: type digests are written with an
+expression state of their own.
 
 ### 11.5 Facts of classes and virtual functions
 
@@ -6220,6 +6306,13 @@ below. What they left open:
   functions left `Deferred` in numbers, the fix is a stored mark from
   Kiln, or widening the class to every member function and every friend
   defined in a class, at the cost of a resolved unit for each.
+- **Evaluation of in-class static constants** (§11.3). Kiln records
+  `eval` for `const int S::x = 1;` at its declaration and never for the
+  in-class `static const int x = 1;`, so the two ways of writing one
+  constant differ by the resolved unit `value`
+  (`tests/equal/_/var-init-in-class-or-out-of-line`, pending). The fix is
+  Kiln evaluating both alike, or a rule that writes no `value` for a
+  constant whose value the variable's own unit already determines.
 
 ### Defaults inside a template template parameter's head
 

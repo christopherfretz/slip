@@ -1,6 +1,6 @@
 # a parameter's depth is the nesting of its list, which is the key's parent
 # chain: depth changes only together with the key (no edit isolates the
 # row; landed WP-029)
-removed g(type-parameter-0-0)
-added A::g(type-parameter-1-0)
 changed A
+added template <class> void A::g(type-parameter-1-0)
+removed template <class> void g(type-parameter-0-0)

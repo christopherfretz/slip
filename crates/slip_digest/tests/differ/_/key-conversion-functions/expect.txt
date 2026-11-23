@@ -1,0 +1,4 @@
+added S2
+added S2::operator int()
+added S3
+added S3::operator long()

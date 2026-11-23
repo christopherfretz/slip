@@ -2,8 +2,8 @@
 # parameter is its replacement (Kiln profile_expr.rs, WP-036 item 1a), so
 # A<3>::g has one key and p does not change
 changed A
-added A::g(type-parameter-1-0)
-removed A::g(type-parameter-1-0)
+added template <class> decltype(u + M) A::g(type-parameter-1-0)
+removed template <class> decltype(u + N) A::g(type-parameter-1-0)
 # the full walk of the substituted node (in an instantiated initialiser,
 # pending demand in a pair test) is expr_dep_tests::
 # an_instantiated_initialiser_writes_the_substituted_parameter

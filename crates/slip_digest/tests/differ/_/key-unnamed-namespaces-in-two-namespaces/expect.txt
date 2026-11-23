@@ -1,0 +1,4 @@
+changed <order>
+added b
+added b::(anonymous namespace)
+added b::(anonymous namespace)::x

@@ -1,0 +1,5 @@
+# N20: legacy::f is defined by owned code and declared by the dependency.
+# No place: the post-image has two units of the key, and the site is the
+# one with the smaller digest (spec/verify.md §6.1 "Other findings").
+good: verified
+bad:  mismatch indeterminate legacy::f()

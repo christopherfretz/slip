@@ -1,0 +1,2 @@
+changed S
+added template <class> S::operator const type-parameter-0-0()

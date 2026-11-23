@@ -1,2 +1,2 @@
-added f(type-parameter-0-0)
-removed f(type-parameter-0-0)
+added template <class> requires requires (T x, T y) { y + 1; } void f(type-parameter-0-0)
+removed template <class> requires requires (T x, T y) { x + 1; } void f(type-parameter-0-0)

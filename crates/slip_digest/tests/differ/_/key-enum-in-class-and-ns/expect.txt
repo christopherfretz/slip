@@ -1,0 +1,2 @@
+added (anonymous enum for A2)
+added A2

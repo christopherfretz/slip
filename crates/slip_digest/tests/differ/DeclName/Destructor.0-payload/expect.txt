@@ -1,0 +1,4 @@
+removed S
+removed S::~S()
+added T
+added T::~T()
