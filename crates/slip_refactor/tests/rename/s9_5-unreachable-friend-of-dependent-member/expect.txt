@@ -1,0 +1,8 @@
+subjects:
+  c3e6f89d seed unreachable rule=yes n::S::f(type-parameter-0-0 &)
+links:
+claims:
+  main.cpp:1:50+1 replace "g" t0 votes=1 none [c3e6f89d]
+  main.cpp:2:58+1 unresolved t0 votes=1 none
+  main.cpp:3:34+1 replace "g" t0 votes=1 none [c3e6f89d]
+changed:

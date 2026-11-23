@@ -1,0 +1,4 @@
+spec: edits.md §9.4 row 1 and its first caveat (the set at the definition is all subjects: replace, though the instantiation with q::Q selects q::f by argument-dependent lookup; verification, not the rename, refuses it: docs/wp/WP-078.md), WP-073 part A
+from: n::f
+to: g
+kind: function

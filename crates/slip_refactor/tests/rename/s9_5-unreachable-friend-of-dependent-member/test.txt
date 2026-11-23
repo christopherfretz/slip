@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (unreachable: a friend naming a member of a dependent specialisation of the seed's class is recorded as a type, with no declaration; its name is claimed unresolved), WP-073 fix round F1
+from: n::S::f
+to: g
+kind: function

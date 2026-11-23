@@ -1,0 +1,4 @@
+spec: edits.md §9.4 (s.f() and &n::S<T>::f in a requires-expression are dependent names: unresolved), WP-073 fix round F1
+from: n::S::f
+to: g
+kind: function

@@ -768,6 +768,111 @@ fn a_seed_rule_does_not_depend_on_instantiation() {
     assert_ne!(inst.flags & subject_flags::UNSUPPORTED, 0);
 }
 
+/// `docs/wp/WP-073.md` part C (`spec/edits.md` §9.2, `spec/digest.md`
+/// §3.4): the followers of a member of a class template are flagged
+/// `unsupported` because of the digest, not because their ids are wrong.
+/// In the post-image of every directory of WP-073 (its `test.txt` names a
+/// part of the package or its fix round) whose only flag is `unsupported`
+/// on followers, the seeds' rules alone give each follower's id to a
+/// declaration named like the new name (the instantiated member takes
+/// the pattern member's name as the rules map it); and with the
+/// followers' own rules added, the follower's key is indeterminate
+/// (`key/rule-on-instantiated-member`), which is why the flag is there.
+/// What the digest must accept for the flag to go is in
+/// `spec/landed/edits/WP-073.md`, "For the digest".
+#[test]
+fn followers_of_class_template_members_map_with_their_seed() {
+    let mut checked = 0;
+    for case in cases() {
+        let request = std::fs::read_to_string(case.dir.join("test.txt")).unwrap();
+        if is_pending(&case) || !(request.contains("WP-073 part") || request.contains("WP-073 fix"))
+        {
+            continue;
+        }
+        let Ran::Edits(e) = run_case(&case) else { continue };
+        let followers: Vec<_> = e.subjects.iter().filter(|s| s.role == Role::Follower).collect();
+        let only_this_flag = !followers.is_empty()
+            && e.subjects.iter().all(|s| {
+                s.flags == if s.role == Role::Follower { subject_flags::UNSUPPORTED } else { 0 }
+            })
+            && e.claims.iter().all(|c| matches!(c.stance, Stance::Replace | Stance::Keep));
+        if !only_this_flag {
+            continue;
+        }
+        let rules = |with_followers: bool| {
+            let r: Vec<_> = e
+                .subjects
+                .iter()
+                .filter(|s| with_followers || s.role != Role::Follower)
+                .filter_map(|s| s.rule.clone())
+                .collect();
+            RuleTable::new(r).expect("a rule table")
+        };
+        let files = post_image(&case, &e);
+        let new_name = case.new_name.clone();
+        let walk = |table: RuleTable, tag: &str| {
+            let name = format!("{}-{tag}", case.name);
+            with_unit(&name, &files, &case.args, |u, _, root| {
+                let prefix = format!("{root}/");
+                let subject = |p: &[u8]| p.strip_prefix(prefix.as_bytes()).unwrap_or(p).to_vec();
+                slip_digest::map::with_input(u, &subject, |input| {
+                    let mut keys = Keys::with_rules(input, &table, slip_digest::ReadOnly::NO_FILE);
+                    let mut ids = BTreeSet::new();
+                    let mut causes = Vec::new();
+                    for d in u.ast().decls.ids() {
+                        if !named(u, d, &new_name) {
+                            continue;
+                        }
+                        match keys.key_id(keys.entity(d)) {
+                            Ok(id) => {
+                                ids.insert(id);
+                            }
+                            Err(NoKey::Indeterminate(c)) => causes.push(format!("{c:?}")),
+                            Err(_) => {}
+                        }
+                    }
+                    (ids, causes)
+                })
+                .expect("with_input")
+            })
+            .unwrap_or_else(|| panic!("{}: the post-image has errors", case.name))
+        };
+        let (ids, causes) = walk(rules(false), "seeds");
+        assert!(
+            causes.is_empty(),
+            "{}: indeterminate under the seeds' rules: {causes:?}",
+            case.name
+        );
+        for s in &e.subjects {
+            assert!(ids.contains(&s.id), "{}: no declaration has {}", case.name, short(&s.id));
+        }
+        let (_, causes) = walk(rules(true), "all");
+        assert!(
+            causes.iter().any(|c| c.contains("rule-on-instantiated-member")),
+            "{}: the followers' rules do not make a key indeterminate: {causes:?}",
+            case.name
+        );
+        checked += 1;
+    }
+    assert!(checked >= 6, "only {checked} directories with followers were checked");
+}
+
+/// `docs/wp/WP-073.md` part C, with §4.1: a seed that is a member of a
+/// class template has one rule and no flag whether or not the observer
+/// instantiates the class; the followers come only where it does.
+#[test]
+fn a_class_template_member_seed_does_not_depend_on_instantiation() {
+    let inst = edits_of("s9_2-class-template-member-function");
+    let not = edits_of("s9_2-class-template-member-not-instantiated");
+    let seed = |e: &Edits| e.subjects.iter().find(|s| s.role == Role::Seed).unwrap().clone();
+    let (a, b) = (seed(&inst), seed(&not));
+    assert_eq!((a.id, &a.rule, a.flags), (b.id, &b.rule, b.flags));
+    assert!(a.rule.is_some() && a.flags == 0);
+    let followers = |e: &Edits| e.subjects.iter().filter(|s| s.role == Role::Follower).count();
+    assert_eq!((followers(&inst), followers(&not)), (1, 0));
+    assert!(inst.subjects.iter().all(|s| s.role != Role::Follower || s.of == [a.id]));
+}
+
 // ---------------------------------------------------------------------
 // Families across observers (`docs/wp/WP-072.md` "Tests", the last
 // paragraph): two observers' sections reduced (`slip_reduce`, §5.2).

@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (a member of a class template is a seed; the member of an instantiated specialisation is a follower, of the template's member, unsupported: key/rule-on-instantiated-member), WP-073 part C
+from: n::S::f
+to: g
+kind: function

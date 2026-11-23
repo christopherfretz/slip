@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (a member of a class template, the class not instantiated: a seed, no follower, no flag), WP-073 part C
+from: n::S::f
+to: g
+kind: function

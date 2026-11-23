@@ -7,14 +7,14 @@
 //! anything else is a `keep` (§4.2). `via_using` is `followers`'
 //! business: here the name denotes the referent.
 
-use slip_kiln::written::{self, WrittenRef};
+use slip_kiln::written::WrittenRef;
 
 use super::{Ctx, Written};
 
 /// Claims `hits`, the references `target::seeds` kept.
 pub(crate) fn claim(ctx: &mut Ctx<'_, '_, '_>, hits: &[WrittenRef]) {
     for r in hits {
-        let o = written::origin(ctx.unit, r.referent);
+        let o = super::origin_of(ctx, r.referent);
         match ctx.subjects.of_decl(ctx.keys, o) {
             Some(id) => ctx.claims.replace(&ctx.sites, r.name, &[id], Written::Spelled(id)),
             None => ctx.claims.keep(&ctx.sites, r.name),
