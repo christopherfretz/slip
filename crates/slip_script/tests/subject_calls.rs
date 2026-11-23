@@ -289,6 +289,13 @@ int g(S s, T t, short c) {
         // `h({3})`: a construction at `{` from `3`; the braces are in no
         // node, so the argument is the construction, which has no extent.
         assert_eq!(a, vec![some(&["1"]), some(&["s"]), vec![None]]);
+        // The construction is skipped only where it begins at its operand.
+        let kind = |x| {
+            let a = s.arguments(x).unwrap()[0];
+            format!("{:?}", p.ast.exprs.get(slip_kiln::kiln::ast::ExprId::new(a.0)).kind())
+        };
+        let kinds: Vec<String> = calls_of(s, one(s, "h")).into_iter().map(kind).collect();
+        assert_eq!(kinds, ["IntegerLiteral", "DeclRefExpr", "CXXConstructExpr"]);
         let b: Vec<_> = calls_of(s, one(s, "i")).into_iter().map(|x| args(s, x)).collect();
         // `t.operator int()` is written: the call, not the object `t`.
         assert_eq!(b, vec![some(&["t"]), some(&["c"]), some(&["t.operator int()"])]);
@@ -628,6 +635,27 @@ int S::m() { S o(1); return k(decltype(o)::x) + k(decltype(o)::sx) + k(::S(1)) +
     });
 }
 
+/// Rule 3 for a callee named after a `decltype` qualifier: the table's
+/// chain ends at `decltype`, so the call has no first token (null, not
+/// `B::sz(1)`). And a conversion of `(t)` is no written call: its stored
+/// last token is the `)` of the parentheses, not one after a callee.
+#[test]
+fn s6_6_rule3_a_callee_after_decltype_and_a_conversion_in_parentheses() {
+    let src = "\
+struct T { operator int() const; };
+struct B { static int sz(int); };
+struct S : B { int m(); S(int); };
+int i(int);
+int S::m() { S o(1); T t; return i((t)) + i(t) + decltype(o)::B::sz(1) + decltype(o)::sz(2); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let c = s.extent_census();
+        assert_eq!((c.calls, c.not_written, c.visited), (4, 2, 6));
+        assert_eq!(calls(s, "i"), some(&["i((t))", "i(t)"]));
+        assert_eq!(calls(s, "B::sz"), vec![None, None]);
+    });
+}
+
 /// An overloaded `->`: the member call through it begins at the object
 /// (the operator call's first operand) and has its extent; a member
 /// access through it ends at the member name, so `p->x` has one too.
@@ -765,6 +793,19 @@ int use(O x, int a) { return M(x) + N(x) + g({x}) + P(a) + Q(a) + R(a) + R2(a) +
             let a = s.arguments(*x).unwrap()[0];
             assert_eq!(s.tiers(range(s, a).unwrap()), Some([false, true]));
         }
+    });
+    // An argument split over entries (`y` then the expansion of `COMMA`):
+    // its neighbour there is not known, so neither argument has a range.
+    let src = "\
+#define COMMA ,
+#define M(x) g(x)
+int k(int, int);
+int g(int);
+int use(int y) { return M(k(y COMMA 2)) + M(k(2 COMMA y)); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        let k: Vec<_> = calls_of(s, one(s, "k")).into_iter().map(|x| args(s, x)).collect();
+        assert_eq!(k, vec![vec![None, None], vec![None, None]]);
     });
 }
 
@@ -2018,6 +2059,8 @@ struct Diff {
     compared: u64,
     compared_through_macro: u64,
     null: u64,
+    /// Of `null`, those of calls whose `)` comes from a macro.
+    null_through_macro: u64,
     clang_macro: u64,
     differences: Vec<String>,
     unmatched_at: Vec<String>,
@@ -2039,6 +2082,7 @@ impl Diff {
         self.compared += o.compared;
         self.compared_through_macro += o.compared_through_macro;
         self.null += o.null;
+        self.null_through_macro += o.null_through_macro;
         self.clang_macro += o.clang_macro;
         self.differences.extend(o.differences);
         self.unmatched_at.extend(o.unmatched_at);
@@ -2122,6 +2166,7 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
                     continue;
                 }
             };
+            let through_macro = matches!(key, Close::Macro(..));
             ours_closed.insert(key.clone());
             let Some(cands) = clang.get(&key) else {
                 d.unmatched += 1;
@@ -2148,6 +2193,7 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
                              what: &str| {
                 let Some((f, lo, hi, [t0, t1])) = mine else {
                     d.null += 1;
+                    d.null_through_macro += u64::from(through_macro);
                     return;
                 };
                 let m = Some((f.clone(), lo, hi));
@@ -2371,7 +2417,7 @@ fn item7_differential_against_clang() {
     eprintln!(
         "item 7 against {}: {} tests, {} units ({} with a Kiln error, {} with a clang \
          error); {} calls ({} closed by a macro's `)`, {} with no clang call); extents: {} equal, \
-         {} equal through a macro, {} null, {} clang's through a macro not comparable, {} different",
+         {} equal through a macro, {} null ({} of calls closed by a macro), {} clang's through a macro not comparable, {} different",
         version.lines().next().unwrap_or(CLANG),
         jobs.len(),
         d.units,
@@ -2383,6 +2429,7 @@ fn item7_differential_against_clang() {
         d.compared,
         d.compared_through_macro,
         d.null,
+        d.null_through_macro,
         d.clang_macro,
         d.differences.len()
     );

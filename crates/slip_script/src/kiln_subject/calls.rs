@@ -810,8 +810,9 @@ impl KilnSubject<'_> {
     /// object parameter, when it does: written before the callee (`s.f(2)`,
     /// `p->f(2)`: a `CallExpr` whose callee is a name in the role of a
     /// member name), or implicit (`f(2)` in a member: Kiln's first argument
-    /// is made from the implicit `this`). `S::f(s, 2)` writes the object as
-    /// an argument: neither.
+    /// is made from the implicit `this`). No other call names such a
+    /// function without its object (`S::f(s, 2)` is ill-formed): the test
+    /// of the first argument is a guard.
     fn explicit_object(&self, e: ExprId) -> Option<Object> {
         let ast = self.ast;
         let exprs = &ast.exprs;
