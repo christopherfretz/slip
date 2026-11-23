@@ -1,0 +1,2 @@
+# WP-131 item 2: constructors, a destructor, operators and a friend literal operator of a class template
+relocate a::detail => a :: impl

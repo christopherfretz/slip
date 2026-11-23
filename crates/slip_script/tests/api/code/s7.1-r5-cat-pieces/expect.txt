@@ -1,0 +1,2 @@
+transform <id>
+edit 0 t.cpp:3:9-3:16 tiers 0 = "<" copy(t.cpp:3:14-3:15) "|" copy(t.cpp:3:11-3:12) ">" spell("g(int)" "::g")

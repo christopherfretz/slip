@@ -1,0 +1,2 @@
+# WP-131 item 2: an unnamed class whose declarator is name-independent (P2169) is named by its first member, a conversion function: UnnamedBy of a conversion name
+relocate a::detail => a :: impl

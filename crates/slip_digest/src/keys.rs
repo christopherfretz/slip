@@ -469,7 +469,7 @@ impl Walk<'_> {
             None => None,
         };
         let key = Key { kind, parent, name, disc };
-        if !decomposition && !self.rules.is_empty() {
+        if !decomposition && !self.rules.is_empty() && follows_pattern(&key.name) {
             let patterns = self.instantiated_patterns(e);
             if !patterns.is_empty() {
                 return self.follow_patterns(e, &patterns, key, cause);
@@ -1520,6 +1520,42 @@ pub(crate) fn mark_mapped_collisions(
     collisions
 }
 
+/// Whether a member instantiated from a pattern member whose own name is
+/// `name` takes the pattern's mapped name (`spec/digest.md` §3.4, WP-131):
+/// only where the two names are equal by construction under no rule, so
+/// that a rule that matches nothing changes no key. An identifier, an
+/// operator, `constructor`, `destructor`, a literal operator's suffix and
+/// `deduction_guide` are written in the pattern and not substituted; so is
+/// `unnamed_by` of one of them. A conversion name is the type converted
+/// to, which is the instantiation's (`operator bool` of `W<bool>`, where
+/// the pattern has `operator T`), and so is `unnamed_by` of one (a class
+/// named by its first member, a conversion function, P2169); a `local`
+/// number counts the instantiation's own local types (a discarded
+/// `if constexpr` branch declares none), and an `unnamed_ordinal` the
+/// scope's own unnamed types: those keep their own name, and no declared
+/// change renames them apart from what they are made of (a rule on the
+/// type converted to reaches the conversion's name, which is a type
+/// digest in mapped terms). The other forms name no instantiated member.
+fn follows_pattern(name: &Name) -> bool {
+    match name {
+        Name::Identifier(_)
+        | Name::Operator(_)
+        | Name::Constructor
+        | Name::Destructor
+        | Name::LiteralOperator(_)
+        | Name::DeductionGuide => true,
+        Name::UnnamedBy(inner) => follows_pattern(inner),
+        Name::Conversion(_)
+        | Name::Local(_)
+        | Name::UnnamedOrdinal(_)
+        | Name::Anonymous
+        | Name::Content
+        | Name::Property(_)
+        | Name::Order
+        | Name::Parameter(_) => false,
+    }
+}
+
 /// `merge` of two optional causes, as `Stream::indeterminate` keeps them.
 fn merge(a: Option<Cause>, b: Option<Cause>) -> Option<Cause> {
     match (a, b) {
@@ -1594,5 +1630,37 @@ mod tests {
         let every: BTreeSet<u8> =
             (1..=u8::MAX).filter_map(OverloadedOperator::from_u8).map(|op| op as u8).collect();
         assert_eq!(seen, every, "every row is declared");
+    }
+
+    /// `spec/digest.md` §3.4 (WP-131): the name forms that follow their
+    /// pattern. `unnamed_by` follows as the name it wraps; with today's
+    /// Kiln an instantiated unnamed class has no pattern link, so
+    /// `unnamed_by(conversion)` reaches no walk's following branch and is
+    /// pinned here.
+    #[test]
+    fn wp131_names_that_follow_their_pattern() {
+        use super::follows_pattern;
+        use slip_model::Digest;
+        let conversion = || Name::Conversion(Digest([7; 32]));
+        let by = |n: Name| Name::UnnamedBy(Box::new(n));
+        for n in [
+            Name::Identifier(b"f".to_vec()),
+            Name::Constructor,
+            Name::Destructor,
+            Name::DeductionGuide,
+            Name::LiteralOperator(b"_w".to_vec()),
+            by(Name::Identifier(b"x".to_vec())),
+        ] {
+            assert!(follows_pattern(&n), "{n:?} follows");
+        }
+        for n in [
+            conversion(),
+            by(conversion()),
+            by(by(conversion())),
+            Name::Local(0),
+            Name::UnnamedOrdinal(0),
+        ] {
+            assert!(!follows_pattern(&n), "{n:?} keeps its own name");
+        }
     }
 }

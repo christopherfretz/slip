@@ -1,0 +1,5 @@
+transform <id>
+edit 0 t.cpp:4:9-4:19 tiers 0 = copy(t.cpp:4:17-4:18)
+edit 1 t.cpp:4:11-4:12 tiers 0 = spell("h(int)" "h")
+edit 2 t.cpp:5:9-5:19 tiers 0 = copy(t.cpp:5:11-5:15)
+edit 3 t.cpp:5:11-5:12 tiers 0 = spell("h(int)" "h")
