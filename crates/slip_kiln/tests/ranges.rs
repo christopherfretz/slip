@@ -195,6 +195,7 @@ fn unit<R>(main: &str, headers: &[(&str, &str)], f: impl FnOnce(&Seen<'_, '_>) -
     with_unit(&Source::new(main, headers), f).unwrap_or_else(|e| panic!("{e}"))
 }
 
+#[allow(clippy::unnecessary_wraps, reason = "compared with `edit_of`'s `Option`")]
 fn some(text: &str, tier: Tier) -> Option<(String, Tier)> {
     Some((text.to_owned(), tier))
 }
@@ -731,6 +732,11 @@ fn none_reason(u: &Seen<'_, '_>, first: Loc, last: Loc) -> &'static str {
 
 /// Checks the property of test 4 for one range `r` of tokens `i..=j` of
 /// `u`, whose source is `src`; `Err` says how it fails.
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "one oracle, tier by tier; `i..=j` the span, `(f, a, b)` its invocation"
+)]
 fn check_range(
     u: &Seen<'_, '_>,
     before: &[String],
@@ -752,7 +758,7 @@ fn check_range(
             want.push(name.clone());
             want.extend_from_slice(&before[j + 1..]);
             if after != want.as_slice() {
-                return Err(diff("tier 0", &want, &after));
+                return Err(diff("tier 0", &want, after));
             }
             // Outside every argument: no invocation holds part of it.
             for t in u.toks {
@@ -870,6 +876,7 @@ fn property(src: &Source, label: &str) -> Tally {
 
 /// [`property`] over the expressions of the kinds `only` accepts when
 /// given, else every expression.
+#[allow(clippy::too_many_lines, reason = "one pass over a unit: tests 4 and 6")]
 fn property_of(
     src: &Source,
     label: &str,
@@ -1165,9 +1172,10 @@ fn pair_sides(dir: &Path, support: &[(String, String)]) -> Vec<Source> {
                 break;
             };
             match key {
-                "std" => s.std = value.to_owned(),
+                "std" => value.clone_into(&mut s.std),
                 "args" => {
-                    s.args = value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect()
+                    s.args =
+                        value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect();
                 }
                 "target" => s.target = Some(value.to_owned()),
                 "errors" => {}

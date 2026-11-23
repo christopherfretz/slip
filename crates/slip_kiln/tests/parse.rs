@@ -668,8 +668,8 @@ fn s1_unit_order_forced_include_comes_before_the_main_file() {
                 .filter(|&l| sm.offset_of(l).is_some_and(|(g, _)| g == f))
                 .collect()
         };
-        let (p, q, mut m) = (in_file(pre), in_file(pre2), in_file(main));
-        m.extend(firsts.iter().copied().filter(|l| l.is_macro()));
+        let (forced, nested, mut written) = (in_file(pre), in_file(pre2), in_file(main));
+        written.extend(firsts.iter().copied().filter(|l| l.is_macro()));
         // Every byte of each inclusion range of a forced header, every
         // byte of <built-in> (the `#include` line), and those tokens;
         // against every byte of the main file and its tokens, `E`'s
@@ -685,9 +685,9 @@ fn s1_unit_order_forced_include_comes_before_the_main_file() {
             (0..=len).map(move |o| sm.loc(f, o))
         };
         let mut before: Vec<_> = bytes(builtin).collect();
-        before.extend(range_of(p[0]).chain(range_of(q[0])));
-        before.push(sm.include_loc(p[0]));
-        let after: Vec<_> = bytes(main).chain(m.iter().copied()).collect();
+        before.extend(range_of(forced[0]).chain(range_of(nested[0])));
+        before.push(sm.include_loc(forced[0]));
+        let after: Vec<_> = bytes(main).chain(written.iter().copied()).collect();
         let mut wrong = 0;
         for &a in &before {
             for &b in &after {
@@ -696,12 +696,12 @@ fn s1_unit_order_forced_include_comes_before_the_main_file() {
             }
         }
         // Translation order: 11, 21, 12, 30, 31.
-        let order = [p[0], q[0], p[1], m[0], m[1]];
-        assert!(m[1].is_macro(), "31 comes from `E`");
+        let order = [forced[0], nested[0], forced[1], written[0], written[1]];
+        assert!(written[1].is_macro(), "31 comes from `E`");
         for w in order.windows(2) {
             wrong += usize::from(unit_order(sm, w[0], w[1]) != Ordering::Less);
         }
-        (wrong, (p.len(), q.len(), m.len()), unit.errors())
+        (wrong, (forced.len(), nested.len(), written.len()), unit.errors())
     })
     .unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
