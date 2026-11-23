@@ -233,7 +233,8 @@ fn kiln_modules(repo: &Repo) -> Vec<Violation> {
 /// one. Comments and
 /// literals are not code.
 fn kiln_module_paths(text: &str) -> Vec<(&'static str, usize)> {
-    let module = |t: &str| ["kiln", "snippet", "ranges", "sites", "written"].into_iter().find(|&m| m == t);
+    let module =
+        |t: &str| ["kiln", "snippet", "ranges", "sites", "written"].into_iter().find(|&m| m == t);
     let toks = super::rust_tokens::tokens(text);
     let mut out = Vec::new();
     for (i, t) in toks.iter().enumerate() {

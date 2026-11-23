@@ -270,12 +270,18 @@ fn s8_4_ud_suffix() {
 #[test]
 fn s8_4_header_name_only_on_its_line() {
     assert_eq!(hits(b"import\n<foo> x;", "foo"), vec![id("foo", 2, 2)]);
-    assert_eq!(hits(b"#include\n\"foo\" foo\n", "foo"), vec![mention("foo", 2, 2), id("foo", 2, 7)]);
+    assert_eq!(
+        hits(b"#include\n\"foo\" foo\n", "foo"),
+        vec![mention("foo", 2, 2), id("foo", 2, 7)]
+    );
     assert_eq!(hits(b"#include // c\n<foo>\n", "foo"), vec![id("foo", 2, 2)]);
     assert_eq!(hits(b"export import\n<foo>;", "foo"), vec![id("foo", 2, 2)]);
     assert_eq!(hits(b"__has_include(\n<foo>)", "foo"), vec![id("foo", 2, 2)]);
     // On its line, after a comment that spans lines, it is a header name.
-    assert_eq!(hits(b"#include /* foo\n */ <foo> foo\n", "foo"), vec![mention("foo", 1, 13), id("foo", 2, 11)]);
+    assert_eq!(
+        hits(b"#include /* foo\n */ <foo> foo\n", "foo"),
+        vec![mention("foo", 1, 13), id("foo", 2, 11)]
+    );
 }
 
 // F5 of the review: a mention that overlaps an occurrence which is not a
@@ -330,10 +336,20 @@ fn s8_4_mentions_are_every_word_and_escapes_remove_none() {
         let text: Vec<u8> = (0..len).map(|_| b"na _$"[r.below(5)]).collect();
         let name = ["n", "nn", "na", "an", "a_n"][r.below(5)];
         let want = words(&text, name.as_bytes());
-        assert_eq!(mention_starts(&text, name), want, "{:?} {name}", String::from_utf8_lossy(&text));
-        // An escape `\x` at `p`: every mention starting at or after `p`
-        // is one at its place plus two.
-        let p = r.below(len + 1);
+        assert_eq!(
+            mention_starts(&text, name),
+            want,
+            "{:?} {name}",
+            String::from_utf8_lossy(&text)
+        );
+        // An escape `\x` at `p` (half the time right before a mention):
+        // every mention starting at or after `p` is one at its place plus
+        // two.
+        let p = if want.is_empty() || r.below(2) == 0 {
+            r.below(len + 1)
+        } else {
+            want[r.below(want.len())]
+        };
         let mut escaped = text[..p].to_vec();
         escaped.extend_from_slice(&[b'\\', b"nat0"[r.below(4)]]);
         escaped.extend_from_slice(&text[p..]);

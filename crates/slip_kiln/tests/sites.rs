@@ -386,7 +386,10 @@ fn s2_2_tierx_qualifier_and_name_from_different_expansions() {
             })
             .expect("the reference to m");
         assert_ne!(r.first, r.name.lo, "qualified");
-        (describe(u, s, root, Span::new(r.first, r.name.hi), "n::m"), describe(u, s, root, r.name, "m"))
+        (
+            describe(u, s, root, Span::new(r.first, r.name.hi), "n::m"),
+            describe(u, s, root, r.name, "m"),
+        )
     });
     assert_eq!(got.0, refused(Reason::Crossing, X, Some(("main.cpp", lo, "F")), Some((lo, "F"))));
     assert_eq!(got.1, at("main.cpp", lo + 5, "m", T1, Some((lo, "F"))));
@@ -402,7 +405,9 @@ fn qualified(name: &str, src: &str, ctx: &str, word: &str, spelling: &str) -> Ve
         let sm = u.sm();
         written_refs(u)
             .into_iter()
-            .filter(|r| sm.offset_of(sm.expansion_loc(r.first)).is_some_and(|(_, o)| o as usize == lo))
+            .filter(|r| {
+                sm.offset_of(sm.expansion_loc(r.first)).is_some_and(|(_, o)| o as usize == lo)
+            })
             .filter(|r| r.first != r.name.lo)
             .map(|r| describe(u, s, root, Span::new(r.first, r.name.hi), spelling))
             .collect()
@@ -424,14 +429,21 @@ fn s2_3_crossing_a_qualified_name_ending_in_a_macro() {
         let names: Vec<Span> = written_refs(u)
             .iter()
             .map(|r| r.name)
-            .filter(|n| sm.offset_of(sm.expansion_loc(n.lo)).is_some_and(|(_, o)| o as usize == use_))
+            .filter(|n| {
+                sm.offset_of(sm.expansion_loc(n.lo)).is_some_and(|(_, o)| o as usize == use_)
+            })
             .collect();
         names.into_iter().map(|n| describe(u, s, root, n, "m")).collect::<Vec<_>>()
     });
     let got = one(got);
     assert_eq!(
         got,
-        refused(Reason::MacroBody, T2, Some(("main.cpp", off(src, "m m", "m") + 2, "m")), Some((use_, "m")))
+        refused(
+            Reason::MacroBody,
+            T2,
+            Some(("main.cpp", off(src, "m m", "m") + 2, "m")),
+            Some((use_, "m"))
+        )
     );
 }
 
@@ -449,10 +461,12 @@ fn s2_3_crossing_a_qualified_name_through_a_macro() {
 // What `slip_kiln::written` gives as the name of each form of name
 // (`spec/landed/edits/WP-068.md`, "Name forms"), and the answer for it.
 
+/// Names, each with its span's text and the answer for that text.
+type Named = Vec<(String, Got)>;
+
 /// The declarations and the references of `main.cpp` whose name's span
-/// starts at the word `word` of `ctx`: the span's text and the answer
-/// for that text.
-fn forms(name: &str, src: &str, ctx: &str, word: &str) -> (Vec<(String, Got)>, Vec<(String, Got)>) {
+/// starts at the word `word` of `ctx`.
+fn forms(name: &str, src: &str, ctx: &str, word: &str) -> (Named, Named) {
     let lo = off(src, ctx, word);
     with_tree(name, &[("main.cpp", src.as_bytes())], &[], |u, s, root| {
         let sm = u.sm();
@@ -1048,4 +1062,3 @@ fn s2_2_kf3_edge_rows() {
         )
     );
 }
-
