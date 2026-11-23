@@ -914,6 +914,11 @@ this spec says:
 - it contains an invalid declaration, an error-recovery expression or a
   type that contains an error;
 - it contains a kind or a value that `digest-kinds.md` marks `unsupported`;
+- it holds a type whose sugar meets a typedef whose declarations disagree
+  on carrying an alignment, or it is that typedef
+  (`Unsupported("typedef/alignment-by-declaration")`, `digest-kinds.md`
+  §4.2 rule 9: Kiln's `alignof` and its layout read different
+  declarations);
 - its key collides with another entity's (§3.4);
 - it holds demand-driven state that `digest-kinds.md` could not assign to a
   derived unit.

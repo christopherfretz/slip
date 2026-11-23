@@ -499,6 +499,17 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    After 4096 steps the walk stops, and the type is indeterminate:
    `Unsupported("TypeView/Typedef-aligned-bound")`.
 
+   A listed typedef whose declarations disagree (some carry an
+   alignment, some do not) makes the type indeterminate:
+   `Unsupported("typedef/alignment-by-declaration")`. The typedef's own
+   unit is indeterminate for the same cause. Kiln's layout reads every
+   declaration, but its `alignof` (`Ast::layout_attributed_typedef`,
+   `kiln_ast/src/layout_sugar.rs:58`, asked by the Oven and by codegen)
+   reads only the declaration the sugar node names, so the answer
+   depends on which declaration a use names, a fact no unit holds. The
+   digest does not try to say which. The cause goes when Kiln reads
+   every declaration there too.
+
    What is written depends on the sugar a typedef `I` carrying an
    alignment is reached through.
 
@@ -513,11 +524,19 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    - a cv-qualified type or an array of `I`, or an array typedef of `I`.
 
    Nothing is written in these cases:
-   - A class, function or variable template's argument (`X<I>`, and `T`
-     inside it) is canonical: `layout_desugar_once` drops it, as clang
-     does.
+   - A class, function or variable template's substituted argument
+     (`T` inside `X<I>` or `f<I>`): `layout_desugar_once` makes it
+     canonical, as clang instantiates from canonical arguments. A class
+     template's arguments are stored canonical; a function template
+     specialization keeps its first use's sugar in Kiln, which layout
+     does not read.
    - A pointer, a member pointer, a function type and a vector are not
-     walked: their layout reads no typedef's alignment.
+     walked: their layout reads no typedef's alignment. Where a use reads
+     the pointee's or the result's alignment (`*p`, `decltype(f())`,
+     `p->*mp`), the expression's type, with the sugar Kiln gives it, is
+     written in the using unit, so the pointer and the function need not
+     be. (Kiln gives `.*` and `->*` the canonical pointee:
+     `spec/landed/digest/WP-107.md`, "For Kiln".)
 
    Only the outermost listed typedef whose alignment is not 0 decides.
    Listing the others is a false difference, never a wrong equal.
