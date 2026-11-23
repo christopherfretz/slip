@@ -376,11 +376,8 @@ const OWN: &[&str] = &[
 /// `full`: a kind walked in full (§4.4); `key/local-ref`: a function
 /// body's reference to a local entity, which a key cannot name;
 /// `Pending(Local)`: a lambda's closure.
-const PAIR_CEILINGS: &[(&str, usize)] = &[
-    ("full", 443),
-    ("Unaccounted(\"key/local-ref\")", 1056),
-    ("Pending(Local)", 20),
-];
+const PAIR_CEILINGS: &[(&str, usize)] =
+    &[("full", 443), ("Unaccounted(\"key/local-ref\")", 1056), ("Pending(Local)", 20)];
 
 /// The same for `OWN`.
 const OWN_CEILINGS: &[(&str, usize)] = &[];
@@ -641,4 +638,35 @@ fn lambdas_in_signatures_collide() {
         assert_eq!(units.len(), 1, "{all:?}");
         assert_eq!(units[0].2, [crate::Cause::Collision], "{name}");
     }
+}
+
+/// Item 6 (F-G): a key computed inside a type digest does not raise the
+/// type's mark, so whether a type is marked does not depend on whether
+/// the key was computed first. `Y*` names the partial specialisation,
+/// whose key holds a profile with a left-out found set.
+#[test]
+fn the_mark_does_not_depend_on_which_key_came_first() {
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    let src = "int g(long);\ntemplate<class T, unsigned long N> struct Y;\n\
+               template<class T> struct Y<T, sizeof(g(T()))> { Y* p; };\nchar g(int);\n";
+    let mut got = Vec::new();
+    for key_first in [false, true] {
+        crate::decl_func::tests::with_walk(src, |w| {
+            let of = crate::decl_func::tests::of_kind;
+            let spec = w
+                .ast
+                .decls
+                .ids()
+                .find(|&d| w.ast.partial_spec_info(d).is_some())
+                .expect("Y<T, ..>");
+            let field = of(w, DeclKind::Field)[0];
+            if key_first {
+                let _ = w.key(spec);
+            }
+            let q = w.ast.decls.get(field).ty().expect("a type");
+            got.push(w.type_digest(q, false));
+        });
+    }
+    assert_eq!(got[0], got[1]);
+    assert!(!got[0].spelling, "the key's left-out fact is the specialisation's unit's");
 }
