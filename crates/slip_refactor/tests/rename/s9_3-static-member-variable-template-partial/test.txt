@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 1 (a partial specialisation of a static member variable template: literal; WP-071 review A1)
+from: n::C::v
+to: w
+kind: variable

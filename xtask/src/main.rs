@@ -20,7 +20,9 @@ commands:
   perf summarize <run record>…                 performance records (§7)
   perf record|check <corpus> <run record>      the corpus baseline (§7.3)
   transform [--only <s>]… [--bless] [-j <n>] [--no-clang] [--slip <path>]
-                                               the transform tests (§6)";
+                                               the transform tests (§6)
+  invariants a|b <corpus> [--slip <path>] [--only <substring>]… [--limit <n>] [-j <n>]
+                                               the corpus invariants (§9)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,6 +36,7 @@ fn main() -> ExitCode {
         Some("jobserver") => xtask::jobserver::main(rest, &|name| std::env::var_os(name)),
         Some("perf") => xtask::perf::main(&root, rest),
         Some("transform") => xtask::transform::main(&root, rest),
+        Some("invariants") => xtask::invariants::main(&root, rest),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
             ExitCode::SUCCESS

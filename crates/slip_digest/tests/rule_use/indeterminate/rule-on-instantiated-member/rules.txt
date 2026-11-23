@@ -1,0 +1,3 @@
+# WP-069: a rule that matches a member of an instantiation, not its pattern's, leaves the member
+# with no key (key/rule-on-instantiated-member): it is not counted, the rule is unused here.
+relocate S<int>::f() => S<int> :: g

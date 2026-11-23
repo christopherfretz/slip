@@ -1,0 +1,7 @@
+subjects:
+  2f10eb58 seed - rule=yes n::C::f(int)
+links:
+claims:
+  main.cpp:1:61+1 replace "U" t0 votes=1 none [2f10eb58]
+  main.cpp:2:22+1 replace spell(2f10eb58, "U") t0 votes=1 none [2f10eb58]
+changed:

@@ -1,0 +1,8 @@
+# spec/edits.md §9.5, a name taken in another unit (WP-071 review): the
+# rename of n::f(int) to g runs in a unit that sees f and not g; this unit
+# sees g(int) and not f, so no observer sets name_taken. The run's rule
+# applies here too (spec/verify.md §2.1), g(int) takes f(int)'s key, and
+# verification sees the pair removed + added: caught. The rule is the one
+# Keys::rename_rule gives for n::f(int) (the discriminator of a function
+# does not depend on its name, so g(int)'s stands for f(int)'s).
+rule function | post n | id g | disc-of pre n::g(int) | pre n | id f

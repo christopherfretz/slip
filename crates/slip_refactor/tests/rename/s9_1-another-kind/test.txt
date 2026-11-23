@@ -1,0 +1,4 @@
+spec: edits.md §9.1 (an entity with the target's name and scope and another key kind: a seed with unsupported)
+from: n::f
+to: g
+kind: function

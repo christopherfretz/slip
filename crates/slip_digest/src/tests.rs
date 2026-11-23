@@ -7,7 +7,7 @@ use slip_model::Digest;
 use slip_model::digests::{GroupClass, GroupSum};
 use slip_model::keys::{Key, KeyKind, Name, Parent, Rule, RuleTable};
 
-use crate::units::{Written, mark_collisions};
+use crate::units::{Written, mark_collisions, mark_part_collisions};
 use crate::{Cause, Detail, Input, Options, Output, tables};
 
 /// Digests `files` (the first is the main file) under `rules` with
@@ -19,7 +19,16 @@ fn walk_with(files: &[(&str, &str)], rules: &RuleTable, detail: Detail<'_>) -> O
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-        crate::digest(&input, &Options { rules, detail, names: true })
+        crate::digest(
+            &input,
+            &Options {
+                rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail,
+                names: true,
+                rule_use: false,
+            },
+        )
     })
     .expect("the snippet parses")
 }
@@ -214,7 +223,52 @@ fn written(key: u8, digest: u8, kind: KeyKind) -> Written {
         file: b"f".to_vec(),
         resolved: None,
         default_argument: None,
+        owner: None,
+        collided: false,
     }
+}
+
+/// A part (`KeyKind::Resolved`) of the unit keyed `owner`, of entity `e`.
+fn part(key: u8, digest: u8, owner: u8, e: u32) -> Written {
+    let mut u = written(key, digest, KeyKind::Resolved);
+    u.owner = Some(Digest([owner; 32]));
+    u.entity = <slip_kiln::kiln::ast::DeclId as slip_kiln::kiln::ast::RawId>::from_raw(e);
+    u
+}
+
+// spec/digest.md §3.4, §12 (WP-045 third look): every part of a colliding
+// owner is marked, partner or not; a run of parts is counted unless every
+// two of its parts are of two different owners whose shared key collides.
+#[test]
+fn part_collisions() {
+    let mut w = vec![
+        // Owners 1 (entities 1 and 2) collide.
+        written(1, 1, KeyKind::Function),
+        written(1, 2, KeyKind::Function),
+        // Their parts share key 10: the owners' collision, not counted.
+        part(10, 1, 1, 1),
+        part(10, 2, 1, 2),
+        // A part of owner 1 with no partner: marked all the same.
+        part(11, 3, 1, 2),
+        // A part of that part: marked too.
+        part(12, 4, 11, 2),
+        // Owner 2 does not collide; two of its parts hash alike: counted.
+        written(2, 5, KeyKind::Function),
+        part(20, 6, 2, 3),
+        part(20, 7, 2, 3),
+        // Two parts of one colliding owner's entity hash alike: counted.
+        part(13, 8, 1, 1),
+        part(13, 9, 1, 1),
+        // A part of a non-colliding owner, alone: not marked.
+        part(21, 10, 2, 3),
+    ];
+    assert_eq!(mark_collisions(&mut w), 1);
+    assert_eq!(mark_part_collisions(&mut w), 2);
+    let marked: Vec<bool> = w.iter().map(|u| u.cause == Some(Cause::Collision)).collect();
+    assert_eq!(
+        marked,
+        vec![true, true, true, true, true, true, false, true, true, true, true, false]
+    );
 }
 
 // spec/digest.md §3.4: two entities of one key are both indeterminate
@@ -510,7 +564,16 @@ fn a_key_keeps_its_parents_cause() {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-        crate::digest(&input, &Options { rules: &rules, detail: Detail::All, names: true })
+        crate::digest(
+            &input,
+            &Options {
+                rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail: Detail::All,
+                names: true,
+                rule_use: false,
+            },
+        )
     })
     .expect("the snippet parses");
     let g: Vec<_> = o.names.iter().filter(|(_, n)| n.starts_with("g(")).collect();

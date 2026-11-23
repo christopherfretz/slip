@@ -1,0 +1,4 @@
+spec: spec/edits.md §9.1 (a literal operator's key name is not identifier(old): `operator""_x` is not the function `_x`; the request cannot name an operator, a conversion or a literal operator, `operator` being a keyword)
+from: n::_x
+to: _y
+kind: function

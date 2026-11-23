@@ -1,0 +1,2 @@
+relocate (anonymous namespace)::S => :: =
+relocate (anonymous namespace)::f((anonymous namespace)::S) => :: =

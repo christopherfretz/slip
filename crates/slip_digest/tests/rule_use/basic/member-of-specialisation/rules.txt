@@ -1,0 +1,3 @@
+# spec/verify.md §9.1 "Tests": a member of an explicit specialisation, renamed by its own rule: via 1.
+# The member of the pattern and the member of the implicit instantiation S<long> are not renamed.
+relocate S<int>::f() => S<int> :: g

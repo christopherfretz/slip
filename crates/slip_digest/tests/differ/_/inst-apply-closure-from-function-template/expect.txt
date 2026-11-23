@@ -1,0 +1,5 @@
+# WP-040's indeterminate test, determinate since WP-045: f<int>'s body is walked
+# by its resolved unit `definition`, which numbers the closure
+changed template <class> int f()
+exact derived
+derived-changed f<int>()::<definition>

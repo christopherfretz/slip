@@ -1,0 +1,4 @@
+spec: edits.md §9.1 (an inline namespace named by the request: its members are seeds; a call through the enclosing namespace is a reference)
+from: n::v1::f
+to: g
+kind: function

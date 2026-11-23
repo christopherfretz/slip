@@ -47,8 +47,10 @@ struct Call {
     expr: ExprId,
     /// The function called, as resolved (the callee's declaration).
     callee: DeclId,
-    /// Index of the callee's reference in `KilnSubject::refs`.
-    reference: u32,
+    /// Index of the callee's entry in `KilnSubject::refs`.
+    index: u32,
+    /// The callee's reference (§6.7 rule 1).
+    reference: Reference,
     /// The arguments as written (rule 5).
     args: Vec<ExprId>,
 }
@@ -236,7 +238,7 @@ impl KilnSubject<'_> {
         // arena (two calls at one place: none on a well-formed AST).
         let key = |c: &Call| {
             let first = self.first_token(c.expr).unwrap_or_else(|_| ast.begin_loc(c.expr));
-            (first, self.refs[c.reference as usize].name.lo)
+            (first, self.refs[c.index as usize].name.lo)
         };
         let mut keyed: Vec<((Loc, Loc), Call, DeclId)> =
             found.into_iter().map(|(c, h)| (key(&c), c, h)).collect();
@@ -310,6 +312,12 @@ impl KilnSubject<'_> {
                 stack.push(Item::Decl(p, holder));
             }
         }
+        // A partial specialization's arguments as written (`X<T*>`).
+        if let Some((_, p)) = ast.partial_spec_info(d) {
+            for a in ast.types.args(p.args) {
+                self.push_arg(a.view(), h, stack);
+            }
+        }
         if kind == DeclKind::Friend {
             match decls.friend_target(d) {
                 FriendTarget::Decl(x) | FriendTarget::Type { owned_tag: Some(x), .. } => {
@@ -369,6 +377,89 @@ impl KilnSubject<'_> {
             items.push(Item::Stmt(b, h));
         }
         stack.extend(items.into_iter().rev());
+    }
+
+    /// The types expression `e` writes: a cast's, `sizeof`'s and
+    /// `alignof`'s operand, a type trait's, a name's qualifier and
+    /// template arguments, a lambda's call operator's.
+    fn push_written_types(&self, e: ExprId, h: DeclId, items: &mut Vec<Item>) {
+        let ast = self.ast;
+        let exprs = &ast.exprs;
+        let n = exprs.get(e);
+        // The types the expression writes: a cast's, `sizeof`'s and
+        // `alignof`'s operand, a name's qualifier and template arguments,
+        // a lambda's call operator's.
+        match n.kind() {
+            ExprKind::CStyleCastExpr
+            | ExprKind::CXXStaticCastExpr
+            | ExprKind::CXXConstCastExpr
+            | ExprKind::CXXReinterpretCastExpr
+            | ExprKind::CXXDynamicCastExpr
+            | ExprKind::BuiltinBitCastExpr
+            | ExprKind::CXXFunctionalCastExpr => {
+                items.push(Item::Type(exprs.cast_written_type(e).unwrap_or(n.ty()), h));
+            }
+            ExprKind::UnaryExprOrTypeTraitExpr => {
+                items.extend(exprs.trait_type_arg(e).map(|q| Item::Type(q, h)));
+            }
+            ExprKind::TypeTraitExpr => {
+                let args = self.ast.lists.iter::<QualType>(exprs.type_trait_args(e));
+                items.extend(args.map(|q| Item::Type(q, h)));
+            }
+            // A concept-id's template arguments (`C<decltype(f(1))>`).
+            ExprKind::ConceptSpecializationExpr => {
+                let args = slip_kiln::kiln::ast::ArgListId::try_new(n.b());
+                for a in args.iter().flat_map(|&l| ast.types.args(l)) {
+                    self.push_arg(a.view(), h, items);
+                }
+            }
+            ExprKind::ArrayTypeTraitExpr => items.push(Item::Type(exprs.array_trait_type(e), h)),
+            ExprKind::CXXTypeidExpr => {
+                if let slip_kiln::kiln::ast::expr::TypeidOperand::Type(q) = exprs.typeid_operand(e)
+                {
+                    items.push(Item::Type(q, h));
+                }
+            }
+            ExprKind::VAArgExpr => items.push(Item::Type(exprs.va_arg(e).1, h)),
+            // `T(x)`, `T()`, `T{x}`: the type written is the expression's.
+            ExprKind::CXXTemporaryObjectExpr | ExprKind::CXXScalarValueInitExpr => {
+                items.push(Item::Type(n.ty(), h));
+            }
+            ExprKind::CXXUnresolvedConstructExpr => {
+                items.push(Item::Type(exprs.unresolved_construct_type(e), h));
+            }
+            ExprKind::CXXNewExpr => items.push(Item::Type(exprs.new_extra(e).allocated_ty, h)),
+            // A name's qualifier and template arguments: a resolved name's,
+            // an overloaded member's, an unresolved or dependent name's.
+            ExprKind::DeclRefExpr
+            | ExprKind::MemberExpr
+            | ExprKind::UnresolvedLookupExpr
+            | ExprKind::DependentScopeDeclRefExpr
+            | ExprKind::CXXDependentScopeMemberExpr => {
+                let (qualifier, targs) = match n.kind() {
+                    ExprKind::DeclRefExpr => exprs
+                        .decl_ref_extra(e)
+                        .map_or((None, None), |x| (x.qualifier, x.template_args)),
+                    ExprKind::MemberExpr => ast
+                        .member_access_name(e)
+                        .map_or((None, None), |x| (x.qualifier, x.template_args)),
+                    _ => (
+                        ast.templates.expr_nns.get(e).copied(),
+                        ast.templates.expr_targs.get(e).copied(),
+                    ),
+                };
+                self.push_nns(qualifier, h, items);
+                for a in targs.iter().flat_map(|&l| ast.types.args(l)) {
+                    self.push_arg(a.view(), h, items);
+                }
+            }
+            ExprKind::LambdaExpr => {
+                let op = exprs.lambda(e).call_op;
+                let op = op.map(|op| ast.template_info(op).and_then(|t| t.pattern).unwrap_or(op));
+                items.extend(op.and_then(|op| ast.decls.get(op).ty()).map(|q| Item::Type(q, h)));
+            }
+            _ => {}
+        }
     }
 
     /// The parts of statement `s` that are written.
@@ -673,44 +764,7 @@ impl KilnSubject<'_> {
             }
             _ => items.extend(exprs.children(e, &ast.lists).into_iter().map(|c| Item::Expr(c, h))),
         }
-        // The types the expression writes: a cast's, `sizeof`'s and
-        // `alignof`'s operand, a name's qualifier and template arguments,
-        // a lambda's call operator's.
-        match n.kind() {
-            ExprKind::CStyleCastExpr
-            | ExprKind::CXXStaticCastExpr
-            | ExprKind::CXXConstCastExpr
-            | ExprKind::CXXReinterpretCastExpr
-            | ExprKind::CXXDynamicCastExpr
-            | ExprKind::CXXFunctionalCastExpr => {
-                items.push(Item::Type(exprs.cast_written_type(e).unwrap_or(n.ty()), h));
-            }
-            ExprKind::UnaryExprOrTypeTraitExpr => {
-                items.extend(exprs.trait_type_arg(e).map(|q| Item::Type(q, h)));
-            }
-            // `T(x)`, `T()`, `T{x}`: the type written is the expression's.
-            ExprKind::CXXTemporaryObjectExpr | ExprKind::CXXScalarValueInitExpr => {
-                items.push(Item::Type(n.ty(), h));
-            }
-            ExprKind::CXXUnresolvedConstructExpr => {
-                items.push(Item::Type(exprs.unresolved_construct_type(e), h));
-            }
-            ExprKind::CXXNewExpr => items.push(Item::Type(exprs.new_extra(e).allocated_ty, h)),
-            ExprKind::DeclRefExpr | ExprKind::MemberExpr => {
-                if let Some(x) = exprs.decl_ref_extra(e) {
-                    self.push_nns(x.qualifier, h, &mut items);
-                    for a in x.template_args.iter().flat_map(|&l| ast.types.args(l)) {
-                        self.push_arg(a.view(), h, &mut items);
-                    }
-                }
-            }
-            ExprKind::LambdaExpr => {
-                let op = exprs.lambda(e).call_op;
-                let op = op.map(|op| ast.template_info(op).and_then(|t| t.pattern).unwrap_or(op));
-                items.extend(op.and_then(|op| ast.decls.get(op).ty()).map(|q| Item::Type(q, h)));
-            }
-            _ => {}
-        }
+        self.push_written_types(e, h, &mut items);
         stack.extend(items.into_iter().rev());
     }
 
@@ -740,7 +794,13 @@ impl KilnSubject<'_> {
         if !self.postfix(e, callee) {
             return Shape::NotWritten;
         }
-        let Some(reference) = self.reference_index(callee) else { return Shape::NoReference };
+        // The reference (WP-085) of the callee's table entry: the table
+        // entry decides the role and the referent; the reference is the
+        // one `references_to` gives for that written name.
+        let Some(index) = self.reference_index(callee) else { return Shape::NoReference };
+        let Some(reference) = self.reference_at(self.refs[index as usize].name.lo) else {
+            return Shape::NoReference;
+        };
         let mut args: Vec<ExprId> = ast
             .lists
             .iter::<ExprId>(exprs.call_args(e))
@@ -754,7 +814,7 @@ impl KilnSubject<'_> {
         if self.explicit_object(e).is_some() && !args.is_empty() {
             args.remove(0);
         }
-        Shape::Call(Call { expr: e, callee: decl, reference, args })
+        Shape::Call(Call { expr: e, callee: decl, index, reference, args })
     }
 
     /// Whether call `e` with callee `callee` (without its parentheses)
@@ -802,7 +862,7 @@ impl KilnSubject<'_> {
     }
 
     /// The table entry of the name of `x`.
-    fn reference_at(&self, x: ExprId) -> Option<&WrittenRef> {
+    fn written_ref_of(&self, x: ExprId) -> Option<&WrittenRef> {
         self.reference_index(x).map(|i| &self.refs[i as usize])
     }
 
@@ -823,7 +883,7 @@ impl KilnSubject<'_> {
         if exprs.get(c).kind() != ExprKind::DeclRefExpr {
             return None;
         }
-        if self.reference_at(c).is_some_and(|r| r.role == Role::Member) {
+        if self.written_ref_of(c).is_some_and(|r| r.role == Role::Member) {
             return Some(Object::Before);
         }
         let xobj = ast.decls.function(exprs.decl(c)).is_some_and(|f| f.spec.has_explicit_object());
@@ -1099,7 +1159,7 @@ impl KilnSubject<'_> {
     /// table and Kiln's begin agree on it.
     fn name_first(&self, e: ExprId) -> Result<Loc, NoExtent> {
         let kind = ExprKind::DeclRefExpr;
-        let r = self.reference_at(e).ok_or(NoExtent::new(kind, "no reference"))?;
+        let r = self.written_ref_of(e).ok_or(NoExtent::new(kind, "no reference"))?;
         let begin = self.ast.begin_loc(e);
         let qualified = self.ast.exprs.decl_ref_extra(e).and_then(|x| x.qualifier);
         match qualified {
@@ -1120,7 +1180,7 @@ impl KilnSubject<'_> {
     /// qualifier, or its name. Kiln's begin of such a node is the name.
     fn implicit_member_first(&self, e: ExprId) -> Result<Loc, NoExtent> {
         let kind = ExprKind::MemberExpr;
-        let r = self.reference_at(e).ok_or(NoExtent::new(kind, "no reference"))?;
+        let r = self.written_ref_of(e).ok_or(NoExtent::new(kind, "no reference"))?;
         let qualified = self.ast.exprs.decl_ref_extra(e).and_then(|x| x.qualifier);
         match qualified {
             None if !r.global && r.first == r.name.lo => Ok(r.name.lo),
@@ -1173,7 +1233,7 @@ impl KilnSubject<'_> {
         if self.ast.spec_info(self.ast.exprs.decl(e)).is_some() {
             return Err(NoExtent::new(kind, "specialisation"));
         }
-        let r = self.reference_at(e).ok_or(NoExtent::new(kind, "no reference"))?;
+        let r = self.written_ref_of(e).ok_or(NoExtent::new(kind, "no reference"))?;
         if self.tokens.token_end(r.name.lo) != Some(r.name.hi) {
             return Err(NoExtent::new(kind, "name of several tokens"));
         }
@@ -1285,7 +1345,7 @@ impl KilnSubject<'_> {
 
     /// §6.7 rule 4: the callee's reference.
     pub(super) fn callee_reference_of(&self, x: Expression) -> Option<Reference> {
-        self.call(x).map(|c| Reference(c.reference + 1))
+        self.call(x).map(|c| c.reference)
     }
 
     /// §6.7 rule 5.
@@ -1348,32 +1408,6 @@ impl KilnSubject<'_> {
     /// The `ExprId` numbered `n`.
     fn expr(&self, n: u32) -> Option<ExprId> {
         (n >= 1 && n as usize <= self.ast.exprs.len()).then(|| ExprId::new(n))
-    }
-
-    /// Whether reference `n` is live: an entry of the table in a role of
-    /// §6.5 rule 3 whose referent is a live entity. INTERIM: WP-085 owns
-    /// references and replaces this with its own rule; the numbering
-    /// (index in `refs`, plus one) is the one this package gives out.
-    pub(super) fn reference_live(&self, n: u32) -> bool {
-        let Some(r) = (n as usize).checked_sub(1).and_then(|i| self.refs.get(i)) else {
-            return false;
-        };
-        matches!(
-            r.role,
-            Role::Expr
-                | Role::Member
-                | Role::Type
-                | Role::Template
-                | Role::Nns
-                | Role::Base
-                | Role::MemInit
-        ) && self.is_entity(self.entity(r.referent))
-    }
-
-    /// The referent of live reference `n` (§6.5 rule 2).
-    pub(super) fn reference_referent(&self, n: u32) -> Option<DeclId> {
-        let r = (n as usize).checked_sub(1).and_then(|i| self.refs.get(i))?;
-        Some(self.entity(r.referent))
     }
 }
 
@@ -1521,7 +1555,7 @@ namespace N { template <class T> int t() { return f(6); } }
         parse_with_tables(&snippet, &Extra::default(), |p| {
             assert_eq!(p.errors, 0, "{}", p.diagnostics);
             let owned = |_: &[u8]| true;
-            let s = KilnSubject::from_snippet(p, &owned);
+            let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
             let index = s.call_index();
             let name = |d: DeclId| String::from_utf8(s.identifier_of(d)).unwrap();
             let holders: Vec<(String, String)> = index

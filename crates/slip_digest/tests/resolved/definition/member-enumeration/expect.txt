@@ -1,0 +1,3 @@
+present X<int>::<definition>
+present X<int>::E::<definition>
+added h()

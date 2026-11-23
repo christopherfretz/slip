@@ -195,7 +195,7 @@ fn s2_full_gate_order() {
             "ci: ok",
         ]
     );
-    let k = "-p slip_kiln -p slip_digest -p slip_script -p slip_cli";
+    let k = "-p slip_kiln -p slip_digest -p slip_script -p slip_refactor -p slip_cli";
     assert_eq!(
         std::fs::read_to_string(&log).unwrap(),
         format!(

@@ -1,0 +1,4 @@
+spec: edits.md §2.2, §2.3, §9.3 rows 1, 10 and 11 (a declaration at tiers 0, 1 and 2: through a macro argument, through a macro body)
+from: n::f
+to: g
+kind: function

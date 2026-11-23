@@ -1,0 +1,4 @@
+# Fix round 2: a class takes its definition's opening (clang++-19, also for uses before the
+# definition): a's definition is written after the hidden reopening of n (HIDDEN _ZTVN1n1SE),
+# b's in plain m (DEFAULT).
+changed n::S

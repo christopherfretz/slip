@@ -1,0 +1,8 @@
+# pending
+# needs: Kiln to record the name of a dependent friend specialisation (friend void f<>(T)) in a table: today a Friend with a function type only, its name in Sema's friend_specs (spec/landed/edits/WP-071.md, For Kiln)
+subjects:
+  95010aba seed unreachable rule=yes n::f
+links:
+claims:
+  main.cpp:1:39+1 replace "g" t0 votes=1 none [95010aba]
+changed:

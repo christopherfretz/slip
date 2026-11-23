@@ -10,6 +10,7 @@
 //! hashed into no unit. A `Key` computed again is checked against the
 //! unit's `KeyId`: a record is never guessed.
 
+use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::ids::DeclId;
 use slip_model::Digest;
 use slip_model::digests::GroupClass;
@@ -43,9 +44,106 @@ pub struct Record {
 /// two equal namespaces merged by a rule) are one record; units of one key
 /// with different names or kinds (a collision) are a record each, sorted
 /// further by class, kind, the flag and the `Key`.
-pub fn records(input: &Input<'_>, rules: &RuleTable) -> Result<Vec<Record>, String> {
-    let options = Options { rules, detail: Detail::None, names: true };
+///
+/// `read_only` is the walk's ([`Options::read_only`]): under a non-empty
+/// table the records are the units of the walk that has it.
+pub fn records(
+    input: &Input<'_>,
+    rules: &RuleTable,
+    read_only: crate::ReadOnly<'_>,
+) -> Result<Vec<Record>, String> {
+    let options = Options { rules, read_only, detail: Detail::None, names: true, rule_use: false };
     walk::run_with(input, &options, |w, written, output| collect(w, written, &output))
+}
+
+/// A property of the walk under ownership (WP-110, `spec/verify.md`
+/// §2.1 rule 2), in two parts. `Ok` is the number of keys compared.
+///
+/// 1. **Order independence.** Every key the walk memoised (each written
+///    by some stream that refers to the entity, or by the entity's own
+///    unit) is computed again in a fresh walk, set up as `walk::run_with`
+///    sets it up, in the reverse order of entities: a key that depended
+///    on which reference asked first would differ.
+/// 2. **The namespace views against an oracle.** A namespace keyed in
+///    the owned view (`true`) is the key a walk with every file owned
+///    (`ReadOnly::NO_FILE`) gives it, rules applied along the whole
+///    chain; in the dependency view (`false`), the key of the empty
+///    table, no rule anywhere on the chain. Checked for every view the
+///    walk memoised and for every namespace's own key, by its own
+///    ownership. A namespace the oracle does not own (a declaration in a
+///    buffer that is no file: read-only under every ownership) is not
+///    checked in the owned view. Under a table that holds a refused rule
+///    only part 1 runs.
+pub fn key_agreement(
+    input: &Input<'_>,
+    rules: &RuleTable,
+    read_only: crate::ReadOnly<'_>,
+) -> Result<usize, String> {
+    let options = Options { rules, read_only, detail: Detail::None, names: false, rule_use: false };
+    let (memo, views) = walk::run_with(input, &options, |w, _, _| {
+        let mut memo: Vec<(DeclId, KeyRes)> = w.keys.iter().map(|(&e, &r)| (e, r)).collect();
+        memo.sort_by_key(|&(e, _)| e.index());
+        // Every namespace's own key, in the view of its own ownership.
+        let mut views: Vec<(DeclId, bool, KeyRes)> = Vec::new();
+        if !w.rules.is_empty() {
+            for &(e, r) in &memo {
+                if w.ast.decls.get(e).kind() == DeclKind::Namespace {
+                    let o = w.owned(e);
+                    views.push((e, o, r));
+                }
+            }
+        }
+        views.extend(w.owned_state.views.iter().map(|(&(n, b), &r)| (n, b, r)));
+        views.sort_by_key(|&(n, b, _)| (n.index(), b));
+        (memo, views)
+    });
+    let name = |e: DeclId| crate::names::entity_name(input.ast, e, KeyKind::Class);
+    let mut w = fresh(input, read_only, rules);
+    for &(e, r) in memo.iter().rev() {
+        let again = w.key(e);
+        if again != r {
+            return Err(format!(
+                "the key of {} ({e:?}) is {r:?} in the walk and {again:?} alone",
+                name(e)
+            ));
+        }
+    }
+    // Under a table that holds a refused rule nothing is keyed
+    // (`RuleTable::refused`): the oracle's walks would key.
+    if rules.refused().is_some() {
+        return Ok(memo.len());
+    }
+    let empty = RuleTable::empty();
+    let mut all = fresh(input, crate::ReadOnly::NO_FILE, rules);
+    let mut none = fresh(input, crate::ReadOnly::EVERY_FILE, &empty);
+    for &(n, b, r) in &views {
+        let expected = if b {
+            if !all.owned(n) {
+                continue;
+            }
+            all.key(n)
+        } else {
+            none.key(n)
+        };
+        if expected != r {
+            let view = if b { "owned" } else { "dependency" };
+            return Err(format!(
+                "the namespace {} ({n:?}) in the {view} view is {r:?} in the walk and {expected:?} by the oracle",
+                name(n)
+            ));
+        }
+    }
+    Ok(memo.len() + views.len())
+}
+
+/// A walk of `input` under `table` and `ro`, its units collected and
+/// its locals numbered, as `key_agreement` recomputes keys in.
+fn fresh<'a>(input: &Input<'a>, ro: crate::ReadOnly<'a>, table: &'a RuleTable) -> Walk<'a> {
+    let mut w = Walk::new(input, table);
+    w.read_only = ro;
+    crate::units::collect(&mut w);
+    crate::local::number_all(&mut w);
+    w
 }
 
 fn collect(w: &mut Walk<'_>, written: &[Written], output: &Output) -> Result<Vec<Record>, String> {
@@ -151,7 +249,7 @@ fn key_again(w: &mut Walk<'_>, d: DeclId) -> Option<Key> {
         w.keys_in_progress.remove(&e);
     }
     w.leave();
-    computed.ok().map(|(key, _)| w.rules.map(key))
+    computed.ok().map(|(key, _)| w.map_key(e, None, key))
 }
 
 #[cfg(test)]
@@ -215,6 +313,7 @@ mod tests {
             counters: Vec::new(),
             causes: Vec::new(),
             names,
+            rule_use: Vec::new(),
         }
     }
 
@@ -277,6 +376,7 @@ mod tests {
                 counters: Vec::new(),
                 causes: Vec::new(),
                 names,
+                rule_use: Vec::new(),
             };
             let recs = collect(&mut w, &written, &output).expect("records");
             assert_eq!(recs.len(), 2, "{recs:#?}");

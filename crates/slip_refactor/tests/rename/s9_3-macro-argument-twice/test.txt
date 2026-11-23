@@ -1,0 +1,4 @@
+spec: edits.md §4.3 (an argument substituted twice: two votes, one origin, spelled)
+from: n::f
+to: g
+kind: function

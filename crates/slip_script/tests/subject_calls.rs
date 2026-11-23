@@ -31,7 +31,7 @@ fn with_args<R>(
     parse_with_tables(&snippet, &extra, |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let owned = |_: &[u8]| true;
-        let s = KilnSubject::from_snippet(p, &owned);
+        let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
         f(p, &s)
     })
     .expect("the snippet parses")
@@ -917,6 +917,31 @@ call_in_type!(
     "decltype(f(1)) d = 0;"
 );
 call_in_type!(
+    s6_7_rule3_in_a_type_trait,
+    "A type trait's type arguments (`__is_same`).",
+    "static_assert(__is_same(decltype(f(1)), int));"
+);
+call_in_type!(
+    s6_7_rule3_in_a_concept_id,
+    "A concept-id's template arguments.",
+    "template <class T> concept C = true;\nstatic_assert(C<decltype(f(1))>);"
+);
+call_in_type!(
+    s6_7_rule3_in_a_partial_specialization,
+    "A partial specialization's template arguments as written.",
+    "template <class T, class U> struct P {};\ntemplate <class T> struct P<T, A<f(1)>> {};"
+);
+call_in_type!(
+    s6_7_rule3_in_an_unresolved_name,
+    "The template arguments of a name resolved only at instantiation.",
+    "template <int M> int h(int);\ntemplate <class T> int u(T t) { return h<f(1)>(t); }"
+);
+call_in_type!(
+    s6_7_rule3_in_a_dependent_member_name,
+    "The template arguments of a dependent member's name.",
+    "template <class T> int u(T t) { return t.template m<f(1)>(); }"
+);
+call_in_type!(
     s6_7_rule3_in_a_template_argument,
     "The declared type: a specialisation's arguments.",
     "A<f(1)> av;"
@@ -1042,6 +1067,23 @@ int body() { int a[f(11)]; return sizeof(int[f(13)]) + a[0]; }
 ";
     with(&[("main.cpp", src)], |_, s| {
         assert_eq!(calls(s, "f"), some(&["f(2)", "f(11)", "f(13)"]));
+    });
+}
+
+/// §6.7 rule 3, a hole of version 0: a call in a non-type argument of a
+/// partial specialization. Kiln keeps the argument's value, not its
+/// expression, in the partial's arguments (a type argument keeps its
+/// expressions: `s6_7_rule3_in_a_partial_specialization`).
+#[test]
+#[ignore = "pending Kiln: no expression for a partial specialization's non-type argument (docs/wp/WP-086.md \"For Kiln\")"]
+fn s6_7_rule3_pending_in_a_partial_specialization_value() {
+    let src = "\
+constexpr int f(int x) { return x; }
+template <class T, int N> struct P {};
+template <class T> struct P<T, f(1)> {};
+";
+    with(&[("main.cpp", src)], |_, s| {
+        assert_eq!(calls(s, "f"), some(&["f(1)"]));
     });
 }
 
@@ -1287,7 +1329,7 @@ fn on_disk<R: Send>(
     options.written = true;
     slip_kiln::parse_observer_with(&observer, Phase::Map, 0, options, |unit| {
         let owned = |_: &[u8]| true;
-        f(&KilnSubject::new(unit, &owned))
+        f(&KilnSubject::new(unit, &owned).expect("a unit with tables"))
     })
     .expect("the tree parses")
     .1
@@ -1857,11 +1899,17 @@ fn begin_explicit_object_calls(n: &mut Node) {
         callee = &callee.inner[0];
     }
     let object = first_at(&n.inner[1]).clone();
-    if let (At::File(f, at, _), At::File(g, lo, _)) = (&callee.begin, &object)
-        && f == g
-        && lo < at
-        && matches!(callee.kind.as_str(), "DeclRefExpr" | "MemberExpr")
-    {
+    let before = match (&callee.begin, &object) {
+        (At::File(f, at, _), At::File(g, lo, _)) => f == g && lo < at,
+        // Both in one invocation's arguments (see `object` in
+        // `clang_calls`).
+        (
+            At::Macro(Some((f, at, _)), Some((fo, oat, _))),
+            At::Macro(Some((g, lo, _)), Some((go, olo, _))),
+        ) => f == g && fo == go && oat == olo && g == go && lo >= olo && lo < at,
+        _ => false,
+    };
+    if before && matches!(callee.kind.as_str(), "DeclRefExpr" | "MemberExpr") {
         n.begin = object;
     }
 }
@@ -1973,6 +2021,7 @@ type Texts<'a> = std::collections::HashMap<String, &'a [u8]>;
 /// function (the places §6.7 rule 2 leaves out). `converted`: `n` is the
 /// operand of a user-defined conversion (the conversion function's call
 /// is Kiln's and clang's, not written).
+#[allow(clippy::many_single_char_names, reason = "file and offset pairs of clang's locations")]
 fn clang_calls(
     n: &Node,
     within: &'static str,
@@ -1995,11 +2044,17 @@ fn clang_calls(
             _ => None,
         };
         if let Some(key) = key {
-            // An explicit object argument precedes the callee in a file
-            // (spellings through a macro have no order); an implicit one
-            // (made from an implicit `this`) has no place.
+            // An explicit object argument precedes the callee in a file,
+            // or in the same invocation's arguments (a body's spelling,
+            // in a definition before the invocation, has no order with
+            // them); an implicit one (made from an implicit `this`) has
+            // no place.
             let object = |a: &&Node| match (first_at(a), &callee.begin) {
                 (At::File(g, lo, _), At::File(h, at, _)) => g == h && lo < at,
+                (
+                    At::Macro(Some((g, lo, _)), Some((go, olo, _))),
+                    At::Macro(Some((h, at, _)), Some((ho, oat, _))),
+                ) => g == h && go == ho && olo == oat && g == go && lo >= olo && lo < at,
                 (At::None, _) => true,
                 _ => false,
             };
@@ -2116,6 +2171,11 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Option<Vec<u8>> {
 }
 
 /// The differential of one side.
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "one pass over the subject's calls, then clang's"
+)]
 fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
     let mut d = Diff { units: 1, ..Diff::default() };
     let Some(json) = clang_dump(side, dir) else {
@@ -2143,7 +2203,7 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
             return;
         }
         let owned = |_: &[u8]| true;
-        let s = KilnSubject::from_snippet(p, &owned);
+        let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
         let ours = |r: Option<Range>| {
             r.map(|r| {
                 let path = String::from_utf8_lossy(s.file_path(r.file).unwrap()).into_owned();
@@ -2213,6 +2273,19 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
                 if spelled || outer {
                     d.compared_through_macro += 1;
                 } else if theirs.iter().all(|t| t.spelled.is_none() && t.outer.is_none()) {
+                    d.clang_macro += 1;
+                } else if t1
+                    && theirs.iter().all(|t| {
+                        t.spelled
+                            .as_ref()
+                            .zip(t.outer.as_ref())
+                            .is_some_and(|(s, o)| s.0 != o.0 || s.1 < o.1)
+                    })
+                {
+                    // Clang's tokens are spelled in a macro's definition
+                    // (`LEVEL` in `BUMP(LEVEL)`): our range is the
+                    // invocation written in the argument, which clang's
+                    // JSON does not give.
                     d.clang_macro += 1;
                 } else {
                     d.differences.push(format!(
@@ -2335,6 +2408,7 @@ using AT = A<k(9)>;
 /// every test of Kiln's `tests/conformance`. A missing clang is a
 /// visible skip, and an error under `SLIP_REQUIRE_ALL=1`.
 #[test]
+#[allow(clippy::too_many_lines, reason = "the run, then the report of both directions")]
 fn item7_differential_against_clang() {
     let version = std::process::Command::new(CLANG).arg("--version").output();
     let Ok(version) = version.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()) else {
@@ -2505,7 +2579,7 @@ fn measure_llvm_null_extents() {
         let t0 = std::time::Instant::now();
         let (shard, run) = slip_kiln::parse_observer_with(&observer, Phase::Map, 0, options, |u| {
             let owned = |_: &[u8]| true;
-            let s = KilnSubject::new(u, &owned);
+            let s = KilnSubject::new(u, &owned).expect("a unit with tables");
             let started = std::time::Instant::now();
             let census = s.extent_census();
             let elapsed = started.elapsed();

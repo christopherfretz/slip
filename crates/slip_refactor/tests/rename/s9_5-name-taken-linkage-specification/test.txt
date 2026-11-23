@@ -1,0 +1,4 @@
+spec: edits.md §9.5 name_taken (a linkage specification is transparent: a function declared in extern "C++" { } in the scope takes the new name; WP-071 fix round, N05)
+from: n::f
+to: g
+kind: function

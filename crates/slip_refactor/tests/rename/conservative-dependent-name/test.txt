@@ -1,0 +1,4 @@
+spec: docs/wp/WP-071.md conservative rows (dependent.rs: a dependent name spelled like the old name is unresolved), edits.md §9.4
+from: n::f
+to: g
+kind: function

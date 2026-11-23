@@ -1,5 +1,3 @@
-# pending
-# needs: WP-113
 # An inline function moved out of the unnamed namespace: clang++-19 -c, nm: `t _ZN12_GLOBAL__N_16helperEv`
 # in a.o, `W _Z6helperv` in b.o (one definition for the whole program, [basic.def.odr]). Equal today.
 changed (anonymous namespace)::helper()

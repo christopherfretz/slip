@@ -1,0 +1,11 @@
+# n::h (and the function template n::fd) is declared in a plain opening and, as a friend, in a class template written in a hidden
+# opening (a) or a plain one (b), instantiated before the use. clang++-19 (with and without
+# -fvisibility=hidden): GLOBAL DEFAULT UND _ZN1n1hEi and _ZN1n2fdIiEEiT_ on both sides; with the plain declaration in a
+# hidden opening and the class in a plain one, UND HIDDEN: the instantiated friend declaration does
+# not count beside a declaration at namespace scope. n::h's unit is determinate and equal; the class
+# template, its instantiation, its friend declaration and the namespace (its attribute) differ.
+changed n
+changed n::S
+changed n::S<int>
+changed n::S::friend n::h(int)
+changed n::S::friend template <class> int n::fd(type-parameter-1-0)
