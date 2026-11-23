@@ -407,6 +407,11 @@ rules give one key are a collision even if one of them, or neither, has a
 unit; if no unit has the key, the order unit is marked, so that the
 collision is a finding. Entities whose keys are equal under no rule are
 one entity, not a collision (WP-103).
+A part of a unit (a resolved or `default_argument` unit, `digest-kinds.md`
+§11.1, §11.4) is keyed under its owner's key, so its key collides exactly
+when its owners' keys do: its units are indeterminate with them, and the
+collision is the owners', counted once (§12), whichever of them uses made
+the parts.
 Declarations that the language lets a scope repeat and that Kiln does not
 join into one entity (a using-declaration and its using-shadows, a
 namespace alias, and every declaration keyed by content) are the same
@@ -968,7 +973,7 @@ comparison of unit sets (`verify.md`).
 | `digest.units.derived` | derived units |
 | `digest.groups` | groups |
 | `digest.indeterminate` | indeterminate units |
-| `digest.collisions` | keys shared by different entities |
+| `digest.collisions` | keys shared by different entities (an owners' collision once, not again under each part's key, §3.4) |
 | `digest.bytes` | bytes of unit, type and key streams hashed |
 | `digest.indeterminate.<cause>` | indeterminate keys whose first cause is of this kind: `error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`, and `pending` while the walk has areas not yet written. Present only when not 0 |
 | `digest.indeterminate.pending.<area>` | of the `pending` ones, by area. Goes with `Cause::Pending` |

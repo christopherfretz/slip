@@ -757,7 +757,11 @@ pub(crate) fn origin_file(w: &Walk<'_>, e: DeclId) -> Vec<u8> {
 /// Marks every unit whose key two different entities share
 /// (`spec/digest.md` §3.4); returns how many keys collide. Namespaces are
 /// merged, and declarations a scope may repeat are one entity when their
-/// digests are equal too.
+/// digests are equal too. A part of a unit (a resolved or
+/// `default_argument` unit, keyed under its owner's key) collides exactly
+/// when its owners do: its units are marked, and the collision is its
+/// owners', counted once under their key, so that the count does not
+/// depend on which uses made the parts (§12, `digest.collisions`).
 pub(crate) fn mark_collisions(written: &mut [Written]) -> u64 {
     let mut order: Vec<usize> = (0..written.len()).collect();
     order.sort_by(|&a, &b| written[a].key.cmp(&written[b].key).then(a.cmp(&b)));
@@ -770,7 +774,9 @@ pub(crate) fn mark_collisions(written: &mut [Written]) -> u64 {
         }
         let run = &order[i..j];
         if run.len() > 1 && collides(written, run) {
-            collisions += 1;
+            if !run.iter().all(|&k| is_part(written[k].kind)) {
+                collisions += 1;
+            }
             for &k in run {
                 written[k].cause = Some(merge(written[k].cause, Cause::Collision));
             }
@@ -778,6 +784,11 @@ pub(crate) fn mark_collisions(written: &mut [Written]) -> u64 {
         i = j;
     }
     collisions
+}
+
+/// A unit keyed under another unit's key (digest-kinds §11.1, §11.4).
+fn is_part(kind: KeyKind) -> bool {
+    matches!(kind, KeyKind::Resolved | KeyKind::DefaultArgument)
 }
 
 fn collides(written: &[Written], run: &[usize]) -> bool {

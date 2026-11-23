@@ -1,0 +1,3 @@
+# WP-045 with WP-103: an instantiated member's resolved unit is keyed under its owner's mapped key, so under a wrong rule it moves with its owner and differs.
+# Pattern rule: member-of-class-template-renamed (equal). Rule on the instantiated member: direct-rule-alone (indeterminate).
+rule function | post S | id g | disc-of post S::g() | pre S | id k
