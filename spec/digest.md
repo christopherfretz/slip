@@ -428,7 +428,11 @@ key of that translation unit (a rule's `(parent, kind, name, disc)` is no
 entity's, its parent and discriminator mapped) gives the units, keys,
 digests, flags, causes, names and counters of the walk under the empty
 table, whichever files are read-only, and no rule a use (`via` and
-`direct` 0, `verify.md` §9.1). Every route the walk takes only under a
+`direct` 0, `verify.md` §9.1). The exception is `digest.bytes` (§12),
+which measures work: a walk under a non-empty table keys a namespace in
+the view of a member of the other ownership and computes a pattern's key
+again for its mapped name, and counts those bytes, whether or not a rule
+matches; it is never smaller. Every route the walk takes only under a
 non-empty table (following a pattern, a mapped name, a namespace keyed in
 a member's view, the collisions among mapped keys, the ownership of an
 entity) must therefore give the answer of the empty table when no rule

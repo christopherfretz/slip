@@ -19,7 +19,14 @@
 //!   file read-only, so that the ownership branches (`owned.rs`, the
 //!   namespace views of `keys.rs`) are taken where a source has headers.
 //!
-//! Nothing is excluded from the comparison. The records (`records.rs`)
+//! One counter is excluded from the equality: `digest.bytes` (`spec/digest.md`
+//! §12, the bytes of the streams hashed) measures the walk's work, not
+//! what it found, and a walk under a non-empty table does work the walk
+//! under the empty one does not, whether or not a rule matches: a
+//! namespace keyed in the view of a member of the other ownership
+//! (`namespace_parent`, whenever a file is read-only), and a pattern's or
+//! a template's key computed again for its mapped name (`mapped_name`).
+//! It must not be smaller. Every other counter is compared. The records (`records.rs`)
 //! are not walked again: a record is a unit of the walk (its id, kind,
 //! class, name and flag are in the `Output` compared) and its `Key`, which
 //! `records` checks against the id, is the preimage of that id.
@@ -86,16 +93,28 @@ fn walk(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Output
     )
 }
 
+/// The one counter compared as "no smaller" rather than "equal".
+const BYTES: &str = "digest.bytes";
+
 /// The subject root the read-only files are named under.
 const ROOT: &str = "/inert";
 
 /// What differs between `got` and `want`, the walk under the empty table,
 /// as lines naming units; empty when the two are equal.
 fn differences(got: &Output, want: &Output) -> Vec<String> {
-    if got == want {
-        return Vec::new();
-    }
     let mut out = Vec::new();
+    let bytes = |o: &Output| o.counters.iter().find(|c| c.name == BYTES).map(|c| c.value);
+    if bytes(got) < bytes(want) {
+        out.push(format!("{BYTES}: {:?} (without rules {:?})", bytes(got), bytes(want)));
+    }
+    let strip = |o: &Output| Output {
+        counters: o.counters.iter().filter(|c| c.name != BYTES).cloned().collect(),
+        ..o.clone()
+    };
+    let (got, want) = (&strip(got), &strip(want));
+    if got == want {
+        return out;
+    }
     let (g, w) = (common::index(got), common::index(want));
     let name = |o: &Output, k: &Digest| {
         o.names.iter().find(|(x, _)| x == k).map_or_else(|| format!("{k:?}"), |(_, n)| n.clone())

@@ -619,26 +619,12 @@ impl Walk<'_> {
     /// (the plain name), and where the key cannot be formed (the caller
     /// has the error already). Mapped as the entity's own key is
     /// (`map_key`): a dependency entity's name is its plain name.
-    ///
-    /// The entity's key is asked for first, as any key is (`key_in`:
-    /// computed once, its bytes counted once), and its `Key` computed again
-    /// for the name with the bytes of that second computation not counted,
-    /// as [`Walk::key_bytes`] does: under no rule the name is not asked for,
-    /// so counting them would make `digest.bytes` depend on a table that
-    /// matches nothing (WP-131). `None` when the entity has no key, which
-    /// is what the caller does under no rule.
     fn mapped_name(&mut self, d: DeclId) -> Option<Name> {
         if self.rules.is_empty() {
             return None;
         }
         let e = self.entity(d);
-        if !matches!(self.key(e), KeyRes::Key { .. }) {
-            return None;
-        }
-        let bytes = self.bytes;
-        let computed = self.compute_key(self.representative(e));
-        self.bytes = bytes;
-        let (key, _) = computed.ok()?;
+        let (key, _) = self.compute_key(self.representative(e)).ok()?;
         Some(self.map_key(e, None, key).name)
     }
 
