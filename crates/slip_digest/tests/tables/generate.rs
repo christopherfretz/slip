@@ -130,8 +130,8 @@ pub fn tables_rs(
     let mut errors = vec![];
     o.push_str(
         "\n//! The digest's tables (`spec/digest-kinds.md`) as Rust: every tag and\n\
-         //! decision, Slip's own numbers of §3.1, §3.2 and §11.1, and the schema\n\
-         //! pins (`spec/digest.md` §13 obligation 3).\n\n\
+         //! decision, Slip's own numbers of §1.7, §3.1, §3.2 and §11.1, and the\n\
+         //! schema pins (`spec/digest.md` §13 obligation 3).\n\n\
          #![allow(dead_code, clippy::too_many_lines, clippy::trivially_copy_pass_by_ref)]\n\n\
          use slip_kiln::kiln;\n\
          #[cfg(not(feature = \"unpinned\"))]\n\
@@ -148,6 +148,7 @@ pub fn tables_rs(
         ("key_kind", "§3.1 `KeyKind`", &doc.key_kinds),
         ("name", "§3.2 `Name`", &doc.names),
         ("property", "§11.1 the resolved properties", &doc.properties),
+        ("walk_row", "§1.7 the rows of the walk", &doc.walk),
     ] {
         modules.insert(m.to_owned());
         numbers(&mut o, m, title, list, &mut errors);

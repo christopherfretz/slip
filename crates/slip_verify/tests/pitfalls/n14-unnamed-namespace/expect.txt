@@ -1,3 +1,6 @@
 # N14: the unnamed namespace inside legacy, hoisted out of it by the wrong edit.
 good: verified
 bad:  mismatch removed legacy::(anonymous namespace)::helper() @ main.cpp:5
+# bad-2: the unnamed namespace's braces removed inside acme; helper gets
+# external linkage. It differs from good only in the unnamed namespace.
+bad-2: mismatch removed legacy::(anonymous namespace)::helper() @ main.cpp:5

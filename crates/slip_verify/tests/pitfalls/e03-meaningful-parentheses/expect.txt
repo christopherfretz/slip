@@ -1,0 +1,7 @@
+# E03: good and good-2 add only redundant parentheses. bad: decltype((x)) is
+# int &, so y aliases x. bad-2: (show)(v) is not subject to
+# argument-dependent lookup and calls ::show<app::Val> instead of app::show.
+good:   verified
+good-2: verified
+bad:    mismatch changed caller(app::Val, int) @ main.cpp:8
+bad-2:  mismatch changed caller(app::Val, int) @ main.cpp:10

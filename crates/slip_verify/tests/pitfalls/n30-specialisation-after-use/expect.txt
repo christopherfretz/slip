@@ -1,0 +1,5 @@
+# N30: the split puts the explicit specialisation legacy::traits<acme::Mine>
+# after acme::use, which already instantiates it.
+# Caught only by a failed parse (spec/pitfalls.md §5).
+good: verified
+bad:  not_parsed

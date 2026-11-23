@@ -1,0 +1,4 @@
+# R09: the enumerator green renamed lime, used as a template argument and in
+# a case label. A constant is written by value (tag<(Color)1>, the case
+# value), a reference to the enumerator by its key.
+good: verified

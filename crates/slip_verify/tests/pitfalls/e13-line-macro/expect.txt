@@ -1,0 +1,7 @@
+# E13 pins today's behaviour: a literal that came from __LINE__ is written by
+# value until the walk can recognise it, which needs Kiln's public location
+# query (spec/digest.md "Open questions", KF3; §9 says such a literal is
+# symbolic). When that question closes, bad verifies and this row is
+# rewritten.
+good: none every line inserted above the use changes the value of __LINE__ as the walk writes it today
+bad:  mismatch changed where() @ main.cpp:2
