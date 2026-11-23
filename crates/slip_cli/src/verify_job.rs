@@ -122,7 +122,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
 
-    // Step 2: P1 to P3, G1, L1, G4, G5, G6, O2, C.
+    // Step 2: P1 to P3, G1, L1, G4, G5, G6, O2, N1, C.
     let Some(pre) = pre else {
         return unverifiable_now(post, shard, "pre-image: no map shard");
     };
