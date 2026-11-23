@@ -1,4 +1,5 @@
-# pre-4 is pre. good-4 removes pick_int.h, as bad-3 does, and declares what
-# a tool that removes the explicit specialisation on purpose declares: the
-# entity is in both programs and not the same (spec/verify.md §4 step 4).
-changed pick<int>()
+# pre-4: widget.h replaced by struct Widget;: Widget is declared, no longer
+# defined, and its members are gone.
+changed Widget
+removed Widget::~Widget()
+removed Widget::n

@@ -1,7 +1,12 @@
 #include "traits.h"
 #include "mine.h"
 #include "spec.h"
-#include "tag.h"
+#include "conv.h"
+#include "better.h"
 #include "unused.h"
+#include "pick.h"
+#include "pick_int.h"
 
-void mine_use() { box<Mine> b; (void)b; }
+int mine_width() { return width<Mine>(); }
+int convert() { return conv(1); }
+int user() { return pick<int>(); }

@@ -1,0 +1,9 @@
+# E20: the address of o taken one way respelled the other. Odd overloads
+# operator&, which returns the address of spare; addr is a row-local
+# addressof (__builtin_addressof, [specialized.addressof]). bad respells
+# addr(o) as &o, which calls Odd::operator& ([over.match.oper]): read
+# returns spare.v. pre-2 and bad-2 are the reverse.
+good:   none &o and addr(o) are different expressions: no respelling is digest-equal
+bad:    mismatch changed read(Odd &) @ main.cpp:9
+good-2: none as good
+bad-2:  mismatch changed read(Odd &) @ main.cpp:9

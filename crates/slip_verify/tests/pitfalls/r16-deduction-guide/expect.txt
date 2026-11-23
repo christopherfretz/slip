@@ -1,0 +1,12 @@
+# R16: the class template Box renamed Crate. Its user deduction guide
+# Box(int) -> Box<long> and the alias template Alias, through which
+# caller() deduces Box<long> (class template argument deduction for an
+# alias template, [over.match.class.deduct]/3), are renamed with it in
+# good: the guide is keyed by the template it deduces (spec/digest.md §3.2),
+# and the specialisation by its template's key, so both map. bad leaves the
+# guide, which then names nothing. Caught only by a failed parse
+# (spec/pitfalls.md §5); good is against false findings: a verifier that
+# keys a guide or a specialisation by the template's spelled name reports
+# the guide, Crate<long> and caller().
+good: verified
+bad:  not_parsed

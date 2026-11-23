@@ -1,0 +1,9 @@
+# N39: the reverse of N21. acme exists (acme.h); its g(), defined after the
+# owned block, calls f(1), which selects acme::f(long). The owned f(int) moves into acme: g() now
+# selects it, a call in code the edit did not touch. good leaves f in a
+# namespace legacy block (its rule is then unused); bad moves it.
+# Against a verifier that checks only the moved code and its uses
+# (user() is the same in bad: legacy::f(int) is mapped). N38 bad-3 is the
+# same capture by a C function.
+good: verified
+bad:  mismatch changed acme::g() @ main.cpp:10

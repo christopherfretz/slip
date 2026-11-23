@@ -1408,6 +1408,32 @@ observer `failed`, with an empty message.
   The walk that writes sums is as much trusted base as the comparison.
 - **Text.** Strings, comments and anything else that spells a name without
   referring to it ([03](../docs/design/03-equivalence.md) §7 rows 14, 15).
+- **Names in strings the toolchain resolves.** A name or a mangled name
+  that the program spells as a string for the compiler's back end or the
+  linker: an `asm` label (`int f() __asm__("_ZN6legacy1gEv");`), the
+  target of an `alias`, `ifunc` or `weakref` attribute, a `symver`
+  attribute, the text of a file-scope `asm` (`.symver`, `.globl`, `.set`
+  directives). The string is the same in both images, and
+  nothing in the translation unit looks it up (clang resolves an `alias`
+  target only when it emits code: `-fsyntax-only` accepts one that names
+  nothing), so the unit that holds it is the same too. A rename or a
+  relocation of the entity the string names verifies, and the program
+  then fails to link or binds another symbol. No row pins this: a `good`
+  tree for such an edit would state that a wrong edit is correct. A name
+  the front end does look up is not text and has its row:
+  `__attribute__((cleanup(fn)))` (R14); `#pragma weak` and `#pragma
+  redefine_extname`, whose identifier the front end resolves to the
+  declaration it then gives the attribute (R23); and the values of
+  `__func__` and `__PRETTY_FUNCTION__` (R12, N18, R21).
+- **Other languages and build files.** A name held in a file that is not
+  a C++ translation unit of the run: a renamed `extern "C"` function
+  called from `.c` files the run does not parse, a linker or version
+  script, a `.def` export list, a symbol list in a build rule,
+  `dlsym("f")` or `GetProcAddress` with the name as a string. These are
+  outside both images. The rename verifies, and the binary no longer
+  links, exports the name or finds it at run time. A transform that
+  renames an entity with C language linkage, or one a binary exports,
+  owes its user the list of such files to edit; Slip reads none of them.
 - **Derived inputs.** A file the build generated from the subject (a
   table, a configuration header, a module file) lies in the build tree,
   outside every subject root, and is the same file in both images: the
@@ -2119,7 +2145,7 @@ using-declaration). Those are judged by the comparison of digests alone.
   that cannot verify a wrong program. Two ways out are rejected. A
   declared `changed K` must not exempt a derived finding of `K` (step
   3): exemptions are per run, so a `changed box<Mine>::found` would make
-  row E11 `bad-5` verify and hide an argument-dependent lookup that
+  row E11 `bad-6` verify and hide an argument-dependent lookup that
   resolves otherwise in that specialisation in every observer.
   Dropping the pattern's identity from an instantiation's unit needs an
   audit of `digest-kinds.md` §11.4 first: that reference carries the

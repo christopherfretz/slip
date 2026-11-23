@@ -1,5 +1,4 @@
-# What tag.h and unused.h declared, as a tool that removes them would
-# declare it; in good-5 the line for tag.h is unused, in bad-5 the one for
-# unused.h.
-removed spare()
-removed tag(Mine)
+# pre-5 is pre. good-5 removes pick_int.h, as bad-3 does, and declares what
+# a tool that removes the explicit specialisation on purpose declares: the
+# entity is in both programs and not the same (spec/verify.md §4 step 4).
+changed pick<int>()
