@@ -1,0 +1,2 @@
+indeterminate S
+indeterminate S::<friend Bx::g(int)>

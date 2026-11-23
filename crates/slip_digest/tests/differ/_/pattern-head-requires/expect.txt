@@ -1,0 +1,2 @@
+added template <class> requires (sizeof(T) == 2) void f()
+removed template <class> requires (sizeof(T) == 1) void f()

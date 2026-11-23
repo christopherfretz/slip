@@ -5,7 +5,12 @@
 // Oven dispatches by qualified name and signature, and the class types
 // they read or return have the layout it matches (spec/reflection.md
 // §3.5 in Kiln). Nothing here is a template whose return type is
-// deduced, so no unit of this file is indeterminate.
+// deduced. The four constructors defined in a template (initializer_list's
+// and optional's default constructors, vector's move constructor and
+// optional's converting one) are indeterminate,
+// kiln/pattern-mem-initializers, until Kiln's WP-3026 puts their
+// mem-initializers on the AST (spec/landed/digest/WP-124.md): every
+// indeterminate test that includes this file lists them.
 #pragma once
 
 namespace std {

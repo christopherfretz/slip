@@ -1,2 +1,7 @@
 indeterminate r
 indeterminate r::<value>
+# needs: kiln (Kiln WP-3026): support/meta.h's four pattern constructors, kiln/pattern-mem-initializers (spec/landed/digest/WP-124.md); the four lines go when Kiln's record lands.
+indeterminate std::initializer_list::initializer_list<E>()
+indeterminate std::optional::optional<T>()
+indeterminate std::vector::vector<T, A>(std::vector<type-parameter-0-0, type-parameter-0-1> &&)
+indeterminate template <class> requires (!__is_same(__remove_cvref(U), optional<T>)) std::optional::optional<T>(type-parameter-1-0 &&)

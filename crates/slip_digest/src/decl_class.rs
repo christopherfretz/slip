@@ -306,12 +306,41 @@ pub(crate) fn field_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     s.tag(init_style::row(&style));
 }
 
+/// A constructor definition whose mem-initializers the AST does not hold
+/// (`spec/digest.md` §10, `spec/landed/digest/WP-124.md`).
+pub(crate) const PATTERN_MEM_INITS: Cause = Cause::Unsupported("kiln/pattern-mem-initializers");
+
+/// Whether `d` is a constructor definition whose mem-initializers Kiln
+/// keeps outside the AST (WP-124 item 2). `Sema::act_on_mem_initializers`
+/// stores a definition's list in `ctor_inits` only when
+/// `check_mem_inits_of` holds: the constructor is not `INVALID`, its class
+/// is not `DEPENDENT_CTX`, and no template head is open
+/// (`Sema::in_template`). The last is read from the definition's own
+/// `DEPENDENT_CTX`, which Kiln's builder sets on a declaration made while
+/// a head is open (`TemplateTables::dependent_head`); the definition is
+/// made by its declarator, inside the heads its body is in. The AST keeps
+/// no mark of whether a ctor-initializer was written, so every such
+/// definition is tested, with one or without.
+pub(crate) fn mem_inits_outside_ast(w: &Walk<'_>, d: DeclId) -> bool {
+    let decls = &w.ast.decls;
+    let n = decls.get(d);
+    if n.kind() != DeclKind::CXXConstructor || decls.function(d).is_none_or(|f| f.body.is_none()) {
+        return false;
+    }
+    let dependent = |x: DeclId| decls.get(x).has(DeclFlags::DEPENDENT_CTX);
+    n.has(DeclFlags::INVALID) || dependent(d) || n.ctx().is_some_and(dependent)
+}
+
 /// `ColdDeclData` `ctor_inits` of the function `d`: the count, then each
-/// `record CtorInit`. A constructor defined in a template has none in the
-/// AST (Kiln keeps a template's mem-initializers for instantiation only,
-/// `Sema::act_on_mem_initializers`): `differ/_/mem-initializer-in-template`
-/// is pending on Kiln (`spec/landed/digest-kinds/WP-041.md`, For Kiln 10).
+/// `record CtorInit`. A constructor definition Kiln did not check
+/// ([`mem_inits_outside_ast`]) has none in the AST (Kiln keeps a
+/// template's mem-initializers for instantiation only, in
+/// `InstState::pattern_mem_inits`): the stream is indeterminate
+/// [`PATTERN_MEM_INITS`] until Kiln's WP-3026 puts them on the AST.
 pub(crate) fn ctor_inits(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    if mem_inits_outside_ast(w, d) {
+        s.indeterminate(PATTERN_MEM_INITS);
+    }
     let inits: Vec<_> = w.ast.ctor_inits(d).copied().collect();
     s.count(inits.len());
     for init in &inits {

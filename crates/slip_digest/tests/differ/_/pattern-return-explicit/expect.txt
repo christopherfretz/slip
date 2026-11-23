@@ -1,0 +1,2 @@
+added template <class> type-parameter-0-0 f(type-parameter-0-0)
+removed template <class> auto f(type-parameter-0-0)

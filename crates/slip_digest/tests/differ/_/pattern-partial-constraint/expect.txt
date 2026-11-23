@@ -1,0 +1,4 @@
+changed template <class> requires C<T> P<type-parameter-0-0, int *>
+added template <class> requires (!C<T>) P<type-parameter-0-0, int *>
+added P<type-parameter-0-0, int *>::m
+removed P<type-parameter-0-0, int *>::m

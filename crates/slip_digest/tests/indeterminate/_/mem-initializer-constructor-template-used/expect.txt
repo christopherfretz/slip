@@ -1,0 +1,1 @@
+indeterminate template <class> P::P(type-parameter-0-0)
