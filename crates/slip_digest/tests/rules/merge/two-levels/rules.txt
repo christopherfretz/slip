@@ -1,0 +1,2 @@
+# Item 5: nested namespaces merged at two levels: acme by its rule, acme::detail because its parent is.
+relocate legacy => :: acme

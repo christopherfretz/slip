@@ -1,0 +1,4 @@
+indeterminate f()
+indeterminate g()
+removed g()
+collisions 1

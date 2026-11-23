@@ -1,0 +1,5 @@
+resolved l::local(0)::operator int (*)(int)() const::<definition>
+resolved l::local(0)::operator int (*)(int)() const::<exception_spec>
+resolved l::local(0)::__invoke(int)::<definition>
+resolved l::local(0)::__invoke(int)::<exception_spec>
+added h()

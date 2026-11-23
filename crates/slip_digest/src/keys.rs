@@ -147,12 +147,23 @@ pub(crate) enum KeyRes {
 
 /// The cause of an entity that refers to itself through its own key.
 const KEY_CYCLE: Cause = Cause::Unaccounted("key/cycle");
+/// A rule that matches a member of an instantiation, not its pattern's
+/// (`spec/digest.md` §3.4).
+const RULE_ON_INSTANTIATED_MEMBER: Cause = Cause::Unaccounted("key/rule-on-instantiated-member");
+/// A key under a table that holds a refused rule (`spec/verify.md` §2.1).
+const REFUSED_TABLE: Cause = Cause::Unaccounted("key/refused-rule");
+/// A member instantiated from two patterns whose mapped names differ
+/// (`spec/digest.md` §3.4).
+const PATTERNS_DISAGREE: Cause = Cause::Unaccounted("key/patterns-disagree");
 /// A scope no row of §5.2 says can hold an entity.
 const BAD_PARENT: Cause = Cause::Unaccounted("key/parent");
 /// A name form no rule of §3.2 or digest §3.3 gives.
 const BAD_NAME: Cause = Cause::Unaccounted("key/name");
 /// How far a chain of contexts is followed (an AST is far shallower).
 const CTX_LIMIT: u32 = 4096;
+/// A local entity that is not a local type (a block-scope typedef or
+/// using-declaration, a local variable asked for its key): it has none.
+const LOCAL_ENTITY: Cause = Cause::Unaccounted("key/local");
 
 impl Walk<'_> {
     /// The entity a declaration is a declaration of: its first
@@ -213,6 +224,10 @@ impl Walk<'_> {
 
     /// The key of `d`'s entity, mapped (`spec/digest.md` §3.4).
     pub(crate) fn key(&mut self, d: DeclId) -> KeyRes {
+        // Numbering an owner reads no key (`local.rs`).
+        if crate::local::numbering_mode(self) {
+            return KeyRes::None(Some(crate::local::IN_NUMBERING));
+        }
         let e = self.entity(d);
         if let Some(k) = self.keys.get(&e) {
             return *k;
@@ -227,6 +242,7 @@ impl Walk<'_> {
             return KeyRes::None(Some(TOO_DEEP));
         }
         let aborts = self.aborts;
+        let rooted = self.local.self_rooted;
         self.keys_in_progress.insert(e);
         // A key does not depend on the unit that asks for it: the unit's
         // local state is put aside (`Walk::in_key`).
@@ -251,7 +267,7 @@ impl Walk<'_> {
         };
         self.keys_in_progress.remove(&e);
         self.leave();
-        if self.aborts == aborts {
+        if self.aborts == aborts && self.local.self_rooted == rooted {
             self.keys.insert(e, res);
         }
         res
@@ -320,9 +336,27 @@ impl Walk<'_> {
     /// The key of entity `e` before mapping, with the cause its
     /// discriminator carries; `Err` when it has none.
     pub(crate) fn compute_key(&mut self, e: DeclId) -> Result<(Key, Option<Cause>), Option<Cause>> {
+        // A key names one entity of the parse: a name-derived value in it
+        // (a `std::source_location` template argument) is its bytes, or
+        // two specializations would have one key (digest §9).
+        self.by_value += 1;
+        let r = self.compute_key_by_value(e);
+        self.by_value -= 1;
+        r
+    }
+
+    /// [`Walk::compute_key`], with [`Walk::by_value`] raised.
+    fn compute_key_by_value(&mut self, e: DeclId) -> Result<(Key, Option<Cause>), Option<Cause>> {
         let ast = self.ast;
         let n = ast.decls.get(e);
         let kind_info = info(n.kind());
+        // A table with a rule `spec/verify.md` §2.1 refuses keys nothing
+        // (`RuleTable::refused`): every unit is indeterminate under it.
+        if self.rules.refused().is_some()
+            && matches!(kind_info.role, Role::Entity(_) | Role::Content(_))
+        {
+            return Err(Some(REFUSED_TABLE));
+        }
         match ast.templ_link(e).get() {
             Some((TemplLinkKind::Specialization, _)) => {
                 if let Some((_, si)) = ast.spec_info(e) {
@@ -358,12 +392,15 @@ impl Walk<'_> {
         let name = if decomposition {
             let first =
                 ast.decls.decomp_bindings(e).and_then(|l| ast.lists.iter::<DeclId>(l).next());
-            match first.map(|b| self.plain_name(b)) {
-                Some(Ok(Some((name, c)))) => {
+            match first.map(|b| (b, self.plain_name(b))) {
+                // The first binding's name as the rules map it (`spec/digest.md`
+                // §3.4, WP-103): a rule that renames the binding renames the
+                // decomposition with it.
+                Some((b, Ok(Some((name, c))))) => {
                     cause = c;
-                    name
+                    self.mapped_name(b).unwrap_or(name)
                 }
-                Some(Ok(None) | Err(_)) | None => return Err(Some(BAD_NAME)),
+                Some((_, Ok(None) | Err(_))) | None => return Err(Some(BAD_NAME)),
             }
         } else {
             let (name, c) = self.entity_name(e)?;
@@ -382,7 +419,86 @@ impl Walk<'_> {
             }
             None => None,
         };
-        Ok((Key { kind, parent, name, disc }, cause))
+        let key = Key { kind, parent, name, disc };
+        if !decomposition && !self.rules.is_empty() {
+            let patterns = self.instantiated_patterns(e);
+            if !patterns.is_empty() {
+                return self.follow_patterns(&patterns, key, cause);
+            }
+        }
+        Ok((key, cause))
+    }
+
+    /// The members of patterns that `e`'s entity was instantiated from,
+    /// through Kiln's member link or its sparse map (`instantiated_from`),
+    /// as entities, each once: `e` is a member of a specialisation, or of
+    /// an instantiated member template. Every declaration of the entity's
+    /// chain is asked, not the representative only: a friend defined in a
+    /// class template and declared again at namespace scope has the
+    /// namespace-scope declaration as its representative, which no
+    /// instantiation made (WP-103 round 3). A friend pattern with no
+    /// definition (a friend declaration of a function defined elsewhere)
+    /// is not followed: the function it names is defined by its own declaration,
+    /// and a rule renames it directly
+    /// (`kinds/function-first-declared-as-friend`). A specialisation's own
+    /// link is `spec_key`'s.
+    fn instantiated_patterns(&self, e: DeclId) -> Vec<DeclId> {
+        let ast = self.ast;
+        let own = self.entity(e);
+        let mut out: Vec<DeclId> = Vec::new();
+        for d in self.chain(own) {
+            let from = match ast.templ_link(d).get() {
+                Some((TemplLinkKind::Specialization | TemplLinkKind::PartialSpecialization, _)) => {
+                    None
+                }
+                Some((TemplLinkKind::Pattern | TemplLinkKind::MemberOfSpecialization, _))
+                | None => ast.instantiated_from(d),
+            };
+            if let Some(p) = from.map(|p| self.entity(p)).filter(|&p| p != own)
+                && (ast.decls.get(p).misc().friend() == FriendKind::None
+                    || ast.definition(p).is_some())
+                && !out.contains(&p)
+            {
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    /// The key of a member instantiated from `patterns` (`spec/digest.md`
+    /// §3.4, WP-103): its name is the pattern member's as the rules map it,
+    /// through the whole chain of patterns, so that a rule on a member of a
+    /// class template reaches the members of its instantiations. Two
+    /// patterns (a function befriended, and defined or declared, by two
+    /// class templates, each with a definition, are not one program: one
+    /// definition is the rule) whose mapped names differ leave no name to take:
+    /// the key is indeterminate (`key/patterns-disagree`). A rule that
+    /// matches the member itself, under either name, is not one the source
+    /// can carry out (an instantiation's member is renamed only by renaming
+    /// the pattern's): the key is indeterminate.
+    fn follow_patterns(
+        &mut self,
+        patterns: &[DeclId],
+        key: Key,
+        cause: Option<Cause>,
+    ) -> Result<(Key, Option<Cause>), Option<Cause>> {
+        let mut name: Option<Name> = None;
+        for &p in patterns {
+            let Some(n) = self.mapped_name(p) else { continue };
+            match &name {
+                Some(prev) if *prev != n => return Err(Some(PATTERNS_DISAGREE)),
+                Some(_) => {}
+                None => name = Some(n),
+            }
+        }
+        let Some(name) = name else {
+            return Ok((key, cause));
+        };
+        let followed = Key { name, ..key.clone() };
+        if self.rules.map(key.clone()) != key || self.rules.map(followed.clone()) != followed {
+            return Err(Some(RULE_ON_INSTANTIATED_MEMBER));
+        }
+        Ok((followed, cause))
     }
 
     /// The key of a specialisation (`params` absent) or of a partial
@@ -398,6 +514,10 @@ impl Walk<'_> {
             KeyRes::None(c) => return Err(Some(c.unwrap_or(BAD_PARENT))),
         };
         let (name, mut cause) = self.entity_name(self.entity(template))?;
+        // The name is the template's as the rules map it, as the parent
+        // is (`spec/digest.md` §3.4, WP-103): a rule that renames a
+        // template renames its specialisations with it.
+        let name = self.mapped_name(template).unwrap_or(name);
         cause = merge(cause, template_cause);
         let mut s = Stream::new();
         let kind = if let Some(p) = params {
@@ -414,6 +534,18 @@ impl Walk<'_> {
         Ok((Key { kind, parent, name, disc: Some(h.digest) }, cause))
     }
 
+    /// The name of `d`'s entity in its mapped key: `None` under no rule
+    /// (the plain name), and where the key cannot be formed (the caller
+    /// has the error already).
+    fn mapped_name(&mut self, d: DeclId) -> Option<Name> {
+        if self.rules.is_empty() {
+            return None;
+        }
+        let e = self.entity(d);
+        let (key, _) = self.compute_key(self.representative(e)).ok()?;
+        Some(self.rules.map(key).name)
+    }
+
     /// The parent of entity `e` (`spec/digest.md` §3), with the cause its
     /// key carries: `Err` for a local entity, whose key is `local(n)` and
     /// needs the statement walk.
@@ -427,7 +559,8 @@ impl Walk<'_> {
             return Ok((Parent::Builtin, None));
         }
         if ast.decls.record(e).is_some_and(|r| r.lambda.is_some()) {
-            return Err(Some(Cause::Pending(crate::Area::Local)));
+            // A closure type: `local(n)` under its owner (digest §4.3).
+            return crate::local::local_parent(self, e);
         }
         if let Some(class) = self.friend_class(e) {
             return self.unit_parent(class);
@@ -464,7 +597,16 @@ impl Walk<'_> {
                     c = xn.ctx();
                     continue;
                 }
-                return Err(Some(Cause::Pending(crate::Area::Local)));
+                // A member of a closure type is keyed under it; a local
+                // class or enumeration under its owner; any other local
+                // entity has no key (digest §4.3).
+                if ast.decls.record(x).is_some_and(|r| r.lambda.is_some()) {
+                    return self.unit_parent(x);
+                }
+                if crate::local::is_local_type(self, e) {
+                    return crate::local::local_parent(self, e);
+                }
+                return Err(Some(LOCAL_ENTITY));
             }
             match xi.role {
                 Role::Root => return Ok((Parent::Root, None)),
@@ -684,6 +826,12 @@ impl Walk<'_> {
     /// A named entity's name, or for one without a name the forms of
     /// digest §3.3 (`Err` when none applies).
     fn entity_name(&mut self, e: DeclId) -> Result<(Name, Option<Cause>), Option<Cause>> {
+        // A local type is `local(n)`, whatever its name (digest §4.3).
+        if crate::local::is_local_type(self, e) {
+            return crate::local::type_number(self, e)
+                .map(|n| (Name::Local(n), None))
+                .map_err(Some);
+        }
         if let Some(named) = self.plain_name(e).map_err(Some)? {
             return Ok(named);
         }
@@ -1171,6 +1319,88 @@ impl Walk<'_> {
             s.uv(1);
         }
     }
+}
+
+/// Collisions that the rules make among keys no unit has, or between such
+/// a key and a unit's (`spec/digest.md` §3.4 "Two different entities",
+/// WP-103): after the walk, the entities whose mapped keys the walk
+/// computed are grouped by mapped `KeyId`; entities whose keys under no
+/// rule are equal are one entity (several declarations Kiln does not
+/// join, such as a friend that each class specialisation declares). A
+/// group of two or more entities, not all namespaces (which merge), at
+/// least one of which has no unit under that key, is a collision:
+/// `units::mark_collisions` sees units only, and two references that the
+/// rules make into one would otherwise be equal in silence (a
+/// specialisation only named, a function a block-scope `extern`
+/// declaration in a templated function declares, digest §2.2). Every
+/// unit with the key is marked `Collision`; if none has it, the order
+/// unit is, so that the collision is a finding (§10). Returns how many
+/// keys collide that `mark_collisions` did not already count. With no
+/// rule the mapped and the unmapped keys are equal and nothing is marked.
+pub(crate) fn mark_mapped_collisions(
+    w: &Walk<'_>,
+    input: &crate::Input<'_>,
+    written: &mut [crate::units::Written],
+) -> u64 {
+    if w.rules.is_empty() {
+        return 0;
+    }
+    let mut keyed: Vec<(Digest, DeclId, KeyKind)> = w
+        .keys
+        .iter()
+        .filter_map(|(&e, r)| match *r {
+            KeyRes::Key { id, kind, .. } => Some((id, e, kind)),
+            KeyRes::None(_) => None,
+        })
+        .collect();
+    keyed.sort_by_key(|&(id, e, _)| (id, e.index()));
+    let empty = slip_model::keys::RuleTable::empty();
+    let mut plain = Walk::new(input, &empty);
+    let mut collisions = 0;
+    let mut i = 0;
+    while i < keyed.len() {
+        let id = keyed[i].0;
+        let mut j = i + 1;
+        while j < keyed.len() && keyed[j].0 == id {
+            j += 1;
+        }
+        let group = &keyed[i..j];
+        i = j;
+        if group.len() < 2 || group.iter().all(|g| g.2 == KeyKind::Namespace) {
+            continue;
+        }
+        // The entities of the group, one per key under no rule (`None`: a
+        // key the walk without rules cannot form, an entity of its own),
+        // and whether one of each has a unit under `id`.
+        let mut classes: Vec<(Option<Digest>, bool)> = Vec::new();
+        for &(_, e, _) in group {
+            let unmapped = match plain.key(e) {
+                KeyRes::Key { id: u, .. } => Some(u),
+                KeyRes::None(_) => None,
+            };
+            let has_unit = written.iter().any(|u| u.key == id && u.entity == Some(e));
+            match classes.iter_mut().find(|c| c.0.is_some() && c.0 == unmapped) {
+                Some(c) => c.1 |= has_unit,
+                None => classes.push((unmapped, has_unit)),
+            }
+        }
+        if classes.len() < 2 || classes.iter().all(|c| c.1) {
+            continue;
+        }
+        let already = written.iter().any(|u| u.key == id && u.cause == Some(Cause::Collision));
+        let mut marked = false;
+        for u in written.iter_mut().filter(|u| u.key == id) {
+            crate::units::collide(u);
+            marked = true;
+        }
+        if !marked && let Some(u) = written.iter_mut().find(|u| u.kind == KeyKind::Order) {
+            u.cause = Some(crate::units::merge(u.cause, Cause::Collision));
+        }
+        if !already {
+            collisions += 1;
+        }
+    }
+    collisions
 }
 
 /// `merge` of two optional causes, as `Stream::indeterminate` keeps them.

@@ -1,0 +1,4 @@
+# WP-040's indeterminate test, determinate since WP-045: the closure is local(0) of v<int>
+changed v
+exact derived
+derived-changed v<int>::<definition>

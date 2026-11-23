@@ -1,7 +1,7 @@
-# pending
-# needs: demand
-# WP-045 (F3 of the WP-046 review): A<int>::v is of the definition class;
-# its own unit holds its init under Pending(Demand) and changes when the
-# use instantiates the definition.
+# WP-045 (F3 of the WP-046 review): A<int>::v is of the definition class.
+# The use instantiates its out-of-line definition, which holds the
+# initialiser (read by `definition`) and the evaluation (read by `value`
+# over every declaration, that one included).
 resolved A<int>::v::<value>
+resolved A<int>::v::<definition>
 added h()

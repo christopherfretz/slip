@@ -1,0 +1,2 @@
+# Item 2: partial specialisations whose pattern names a relocated class.
+relocate acme => :: legacy

@@ -1,0 +1,1 @@
+# Item 9, from verify/renamed-member: the only rule dropped.

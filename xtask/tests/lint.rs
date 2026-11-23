@@ -101,8 +101,8 @@ fn s3_kiln_boundary_dependents() {
 }
 
 // §3 `kiln-boundary`, third rule (spec/landed/harness/WP-021.md): the
-// paths `slip_kiln::kiln` and `slip_kiln::snippet`, in the path form and
-// in a `use` group, outside the files that may name them; comments and
+// paths `slip_kiln::kiln`, `slip_kiln::snippet` and `slip_kiln::ranges`
+// (spec/landed/api/WP-084.md), in the path form and in a `use` group, outside the files that may name them; comments and
 // literals are not code.
 #[test]
 fn s3_kiln_boundary_kiln_modules() {
@@ -110,7 +110,8 @@ fn s3_kiln_boundary_kiln_modules() {
     // Allowed: slip_digest and slip_script name both; slip_kiln itself.
     f.write(
         "crates/slip_digest/src/walk.rs",
-        "use slip_kiln::kiln::ast::Ast;\nuse slip_kiln::{kiln, snippet};\n",
+        "use slip_kiln::kiln::ast::Ast;\nuse slip_kiln::{kiln, snippet};\n\
+         use slip_kiln::ranges::unit_order;\n",
     );
     f.write(
         "crates/slip_script/src/lib.rs",
@@ -130,6 +131,13 @@ fn s3_kiln_boundary_kiln_modules() {
          use ::slip_kiln::{\n    KilnCheck,\n    snippet::parse,\n    kiln as k,\n    x::{kiln},\n};\n",
     );
     f.write("crates/slip_cli/tests/t.rs", "use slip_kiln::kiln::ast;\n");
+    // `ranges`, which takes Kiln's types without naming `kiln`.
+    f.write(
+        "crates/slip_cli/src/c.rs",
+        "fn f(u: &slip_kiln::Unit<'_>) {\n    let _ = slip_kiln::ranges::unit_order;\n}\n\
+         use slip_kiln::{ranges::file_range, ParseOptions};\nuse slip_kiln::sites::Sites;\n\
+         use slip_kiln::written::decl_names;\n",
+    );
     // Ignored: in comments and literals, and other paths.
     f.write(
         "crates/slip_cli/src/b.rs",
@@ -149,6 +157,14 @@ fn s3_kiln_boundary_kiln_modules() {
              crates/slip_digest/, crates/slip_script/ and the tests/ of slip_kiln, slip_digest, \
              slip_script and slip_cli may",
             "crates/slip_cli/src/a.rs:8: kiln-boundary: names `slip_kiln::kiln`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+            "crates/slip_cli/src/c.rs:2: kiln-boundary: names `slip_kiln::ranges`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+            "crates/slip_cli/src/c.rs:4: kiln-boundary: names `slip_kiln::ranges`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+            "crates/slip_cli/src/c.rs:5: kiln-boundary: names `slip_kiln::sites`; only \
+             crates/slip_digest/ and crates/slip_script/ may",
+            "crates/slip_cli/src/c.rs:6: kiln-boundary: names `slip_kiln::written`; only \
              crates/slip_digest/ and crates/slip_script/ may",
             "crates/slip_cli/tests/t.rs:1: kiln-boundary: names `slip_kiln::kiln`; only \
              crates/slip_digest/ and crates/slip_script/ may",
@@ -418,4 +434,91 @@ fn s3_reads_tracked_files_in_a_checkout() {
     f.write("tracked.txt", home);
     git(f.root(), &["add", "tracked.txt"]);
     assert_eq!(lint(&f), [format!("tracked.txt:1: local-paths: absolute local path `{home}`")]);
+}
+
+// WP-090 `api-tests` (spec/landed/api/WP-090.md): every script test
+// directory under crates/slip_script/tests/api/ (one with a transform.cpp)
+// has t.cpp and expect.txt; every file there is in one; none is inside
+// another; the `// spec:` header line names a heading of spec/api.md.
+#[test]
+fn wp090_api_tests() {
+    let f = Fixture::new("api");
+    let api = "crates/slip_script/tests/api";
+    f.write("spec/api.md", "# api\n\n## 2. U\n\n### 2.1 Unit\n\n## Tests\n\n## Open questions\n");
+    f.write(
+        "spec/README.md",
+        &common::BASE
+            .iter()
+            .find(|(p, _)| *p == "spec/README.md")
+            .unwrap()
+            .1
+            .replace("| digest.md |", "| [api.md](api.md) | The API | draft |\n| digest.md |"),
+    );
+    let good = |dir: &str, spec: &str| {
+        f.write(&format!("{api}/{dir}/transform.cpp"), &format!("// args: -DX\n{spec}\nint x;\n"));
+        f.write(&format!("{api}/{dir}/t.cpp"), "int y;\n");
+        f.write(&format!("{api}/{dir}/expect.txt"), "transform <id>\n");
+    };
+    good("format/a", "// spec: §2.1 rule 3");
+    good("format/b", "// spec: §2");
+    f.write(&format!("{api}/format/b/inc/lib.h"), "int z;\n");
+    assert_eq!(lint(&f), none());
+
+    good("format/no-heading", "// spec: §2.2");
+    good("format/no-form", "// spec: 2.1");
+    good("format/no-spec", "// xfail: why");
+    f.write(&format!("{api}/format/after/transform.cpp"), "int x;\n// spec: §2\n");
+    f.write(&format!("{api}/format/after/t.cpp"), "");
+    f.write(&format!("{api}/format/after/expect.txt"), "");
+    f.write(&format!("{api}/format/missing/transform.cpp"), "// spec: §2\n");
+    good("format/a/nested", "// spec: §2");
+    f.write(&format!("{api}/format/stray.txt"), "");
+    f.write(&format!("{api}/values/t.cpp"), "");
+    assert_eq!(
+        lint(&f),
+        [
+            format!(
+                "{api}/format/a/nested/transform.cpp: api-tests: a script test inside the directory of the script test {api}/format/a"
+            ),
+            format!("{api}/format/after/transform.cpp: api-tests: has no `// spec:` header line"),
+            format!("{api}/format/missing: api-tests: has no t.cpp"),
+            format!("{api}/format/missing: api-tests: has no expect.txt"),
+            format!(
+                "{api}/format/no-form/transform.cpp:2: api-tests: `// spec: 2.1` does not name a section as `§N` or `§N.M`"
+            ),
+            format!(
+                "{api}/format/no-heading/transform.cpp:2: api-tests: `// spec: §2.2`: spec/api.md has no heading §2.2"
+            ),
+            format!("{api}/format/no-spec/transform.cpp: api-tests: has no `// spec:` header line"),
+            format!(
+                "{api}/format/stray.txt: api-tests: is in no script test directory (one with a transform.cpp)"
+            ),
+            format!(
+                "{api}/values/t.cpp: api-tests: is in no script test directory (one with a transform.cpp)"
+            ),
+        ]
+    );
+    f.remove("spec/api.md");
+    let unread: Vec<String> =
+        lint(&f).into_iter().filter(|l| l.contains("cannot be read")).collect();
+    assert_eq!(
+        unread,
+        [
+            format!(
+                "{api}/format/a/nested/transform.cpp:2: api-tests: `// spec: §2`: spec/api.md cannot be read"
+            ),
+            format!(
+                "{api}/format/a/transform.cpp:2: api-tests: `// spec: §2.1 rule 3`: spec/api.md cannot be read"
+            ),
+            format!(
+                "{api}/format/b/transform.cpp:2: api-tests: `// spec: §2`: spec/api.md cannot be read"
+            ),
+            format!(
+                "{api}/format/missing/transform.cpp:1: api-tests: `// spec: §2`: spec/api.md cannot be read"
+            ),
+            format!(
+                "{api}/format/no-heading/transform.cpp:2: api-tests: `// spec: §2.2`: spec/api.md cannot be read"
+            ),
+        ]
+    );
 }

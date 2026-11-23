@@ -12,5 +12,25 @@ slip_model.workspace = true
 slip_kiln.workspace = true
 slip_digest.workspace = true
 
+[features]
+# The script test format and its runner (`src/script_test.rs`, spec/api.md
+# §11, WP-090): for the tests of this crate (enabled below) and for the
+# pipeline's transform tests, never for the product.
+testing = []
+
+[dev-dependencies]
+# Itself with `testing`, so that `cargo test -p slip_script` builds the
+# script tests without a feature flag the gate would have to remember.
+slip_script = { path = ".", features = ["testing"] }
+# The jobserver the script test groups run under (tests/api.rs).
+slip_exec.workspace = true
+
+# The script tests (spec/api.md §11): one case per directory of tests/api/,
+# run by the binary's own `main` (no test framework).
+[[test]]
+name = "api"
+path = "tests/api.rs"
+harness = false
+
 [lints]
 workspace = true

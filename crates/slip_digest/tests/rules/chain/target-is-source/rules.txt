@@ -1,0 +1,3 @@
+# Item 4: a rule whose target is its own source maps f to f, once: equal, and it counts f via the rule.
+# vacuous
+rule function | root | id f | disc-of pre f() | root | id f

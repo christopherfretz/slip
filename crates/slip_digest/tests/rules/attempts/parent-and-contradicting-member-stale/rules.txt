@@ -1,0 +1,3 @@
+# Item 9 attempt: the same, without b in B: f maps into a namespace B lacks, and the namespace unit of b is missing.
+relocate a => :: x
+rule function | mapped x | id f | disc-of post x::f() | pre b | id f

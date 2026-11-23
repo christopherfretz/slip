@@ -1,0 +1,2 @@
+# Item 9, from chain/rename-chain: the second rule dropped.
+relocate f() => :: g

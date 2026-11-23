@@ -59,6 +59,13 @@ pub(crate) struct UnitState {
     pub types: HashMap<u64, TypeRef>,
     /// The expression walk's state.
     pub expr: ExprState,
+    /// The unit is a resolved unit `definition` (`demand.rs`), whose
+    /// stream reads every declaration of its entity, those an
+    /// instantiation made out of line included (`Walk::redecls`).
+    pub definition: bool,
+    /// The stream's holder and the local types it declared
+    /// (`local::UnitLocals`).
+    pub local: crate::local::UnitLocals,
 }
 
 /// The state of the expression walk in a unit (`expr.rs`): put aside with
@@ -242,9 +249,25 @@ pub(crate) struct Walk<'a> {
     pub abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
     /// `digest.bytes` (`spec/digest.md` §12).
     pub bytes: u64,
+    /// Numberings of owners and the numbering mode (`local.rs`).
+    pub local: crate::local::LocalState,
     /// The temporaries each variable extends, by its first declaration,
     /// built when a `value` unit first needs it (`demand.rs`).
     pub lets: Option<HashMap<DeclId, Vec<(u32, DeclId)>>>,
+    /// The objects of the store that hold values of digest §9 (the
+    /// source-location strings and objects), built when a constant first
+    /// needs it (`value.rs`, WP-104).
+    pub name_values: Option<crate::value::NameValues>,
+    /// Above 0, a name-derived value is written by value, not
+    /// symbolically (digest §9: where what is written is read as a
+    /// constant whose result the walk does not see): in a key, in a type
+    /// digest, in a block-scope variable's evaluated value and in a
+    /// `static_assert` condition (`value.rs` "Values that come from
+    /// names").
+    pub by_value: u32,
+    /// [`Walk::const_memo`] for the content digests computed with
+    /// [`Walk::by_value`] above 0.
+    pub const_memo_by_value: HashMap<u32, Hashed>,
 }
 
 /// What [`Walk::take_types`] puts aside.
@@ -288,7 +311,11 @@ impl<'a> Walk<'a> {
             type_nesting: 0,
             abort_memo: HashMap::new(),
             bytes: 0,
+            local: crate::local::LocalState::default(),
             lets: None,
+            name_values: None,
+            by_value: 0,
+            const_memo_by_value: HashMap::new(),
         }
     }
 
@@ -490,6 +517,7 @@ pub(crate) fn run_with<R>(
 ) -> R {
     let mut w = Walk::new(input, options.rules);
     crate::units::collect(&mut w);
+    crate::local::number_all(&mut w);
     let mut written: Vec<Written> = Vec::new();
     let mut i = 0;
     while i < w.queue.len() {
@@ -505,7 +533,9 @@ pub(crate) fn run_with<R>(
     }
     written.push(crate::units::order_unit(&mut w));
     crate::units::apply_taints(&w, &mut written);
-    let collisions = crate::units::mark_collisions(&mut written);
+    let collisions = crate::units::mark_collisions(&mut written)
+        + crate::keys::mark_mapped_collisions(&w, input, &mut written);
+    let collisions = collisions + crate::units::mark_part_collisions(&mut written);
     let names = if options.names { crate::names::names(&w, &written) } else { Vec::new() };
     let (digests, totals) = crate::groups::build(&written, &options.detail);
     let causes = causes(&written);

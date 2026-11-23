@@ -421,6 +421,7 @@ fn raw_result(x: &TransformResult) -> Raw {
     r.opt_digest(x.declared.as_ref());
     r.mark(format!("{S}.overlay"));
     r.opt_digest(x.overlay.as_ref());
+    r.mark(format!("{S}.state"));
     r.e.uv(x.state as u64).bool(x.partial).bool(x.allow_unparsed);
     r.mark(format!("{S}.verdict"));
     r.opt(x.verdict.as_ref(), |r, &v| {
@@ -440,12 +441,21 @@ fn raw_result(x: &TransformResult) -> Raw {
         r.mark(format!("{S}.unused[{i}]"));
         r.e.uv(u);
     }
+    r.e.count(x.unchecked.len());
+    for (i, &u) in x.unchecked.iter().enumerate() {
+        r.mark(format!("{S}.unchecked[{i}]"));
+        r.e.uv(u);
+    }
     r.mark(format!("{S}.spellings.obligations"));
     r.e.uv(x.spellings.obligations).uv(x.spellings.passed).count(x.spellings.failed.len());
     for (i, f) in x.spellings.failed.iter().enumerate() {
         r.mark(format!("{S}.spellings.failed[{i}]"));
-        r.e.uv(f.obligation).uv(f.why as u64).uv(f.observers);
+        r.e.uv(f.obligation).uv(f.why as u64);
+        r.mark(format!("{S}.spellings.failed[{i}].observers"));
+        r.e.uv(f.observers);
+        r.mark(format!("{S}.spellings.failed[{i}].first"));
         r.opt_digest(f.first.as_ref());
+        r.mark(format!("{S}.spellings.failed[{i}].found"));
         r.opt_digest(f.found.as_ref());
         r.e.str(&f.name);
     }
@@ -454,7 +464,13 @@ fn raw_result(x: &TransformResult) -> Raw {
         r.mark(format!("{S}.residue[{i}]"));
         r.e.uv(e.category as u64);
         r.mark(format!("{S}.residue[{i}].file"));
-        r.e.bytes(&e.file).uv(e.lo).uv(e.hi).uv(e.line).uv(e.column);
+        r.e.bytes(&e.file);
+        r.mark(format!("{S}.residue[{i}].lo"));
+        r.e.uv(e.lo).uv(e.hi);
+        r.mark(format!("{S}.residue[{i}].line"));
+        r.e.uv(e.line);
+        r.mark(format!("{S}.residue[{i}].column"));
+        r.e.uv(e.column);
     }
     r.e.count(x.exempt.len());
     for (i, k) in x.exempt.iter().enumerate() {
@@ -818,7 +834,8 @@ fn overlay() -> Overlay {
 }
 
 /// A result with every record: a verdict, the tally, stale rules, unused
-/// rules, failed spellings of both kinds, residue of every category.
+/// and unchecked rules, failed spellings of both kinds, residue of every
+/// category.
 fn result() -> TransformResult {
     TransformResult {
         scheme: 1,
@@ -828,7 +845,7 @@ fn result() -> TransformResult {
         edits: d(0x05),
         declared: Some(d(0x06)),
         overlay: Some(d(0x07)),
-        state: State::VerifiedWithResidue,
+        state: State::NotVerified,
         partial: true,
         allow_unparsed: false,
         verdict: Some(RunVerdict::NotVerified),
@@ -850,6 +867,7 @@ fn result() -> TransformResult {
             Stale { rule: 1, observer: d(0xa0), direct: 1 },
         ],
         unused: vec![1, 4],
+        unchecked: vec![0, 3],
         spellings: Spellings {
             obligations: 5,
             passed: 3,
@@ -927,10 +945,36 @@ fn refused_result() -> TransformResult {
         },
         agreement: Vec::new(),
         unused: Vec::new(),
+        unchecked: Vec::new(),
         spellings: Spellings::default(),
         residue: Vec::new(),
         ..result()
     }
+}
+
+/// [`result`] made consistent with the state `s` (rows 16 and 17 of
+/// `spec/landed/verify/WP-070.md` §1).
+fn result_in(s: State) -> TransformResult {
+    let mut x = result();
+    x.state = s;
+    match s {
+        State::Verified | State::VerifiedWithResidue => {
+            x.verdict = Some(RunVerdict::Verified);
+            x.agreement.clear();
+            x.unchecked.clear();
+            x.spellings = Spellings { obligations: 5, passed: 5, failed: Vec::new() };
+            x.allow_unparsed = true;
+            if s == State::Verified {
+                x.residue.retain(|r| r.category == Category::Mention);
+                x.tally.failed_runs = 0;
+                x.tally.error_reports = 0;
+            }
+        }
+        State::Incomplete => x.verdict = Some(RunVerdict::Incomplete),
+        State::NotVerified => {}
+        State::Refused => return refused_result(),
+    }
+    x
 }
 
 /// A run record with every step name and both forms of each opt.
@@ -1077,6 +1121,7 @@ fn small_result() -> TransformResult {
         tally: Tally { selected: 2, unparsed: 1, ..Tally::default() },
         agreement: Vec::new(),
         unused: Vec::new(),
+        unchecked: Vec::new(),
         spellings: Spellings::default(),
         residue: Vec::new(),
         exempt: Vec::new(),
@@ -1086,7 +1131,7 @@ fn small_result() -> TransformResult {
 fn small_result_bytes() -> Vec<u8> {
     reseal(hex(&[
         HEADER_RSLT,
-        "01 7a",                            // section result, 122 bytes
+        "01 7b",                            // section result, 123 bytes
         "01",                               //   scheme 1                          @18
         &rep("11", 32),                     //   plan
         "00",                               //   round 0
@@ -1097,7 +1142,7 @@ fn small_result_bytes() -> Vec<u8> {
         "00 00",                            //   partial false, allow_unparsed false
         "00",                               //   no verdict                        @121
         "02 01 00 00 00 00 00 00 00 00 00", // tally: selected 2, unparsed 1, the rest 0
-        "00 00",                            //   agreement [], unused []
+        "00 00 00",                         //   agreement [], unused [], unchecked []
         "00 00 00",                         //   spellings: 0 obligations, 0 passed, failed []
         "00 00",                            //   residue [], exempt []
         "00",                               // end
@@ -1160,7 +1205,7 @@ fn bytes_exact() {
     assert_eq!(Overlay::from_bytes(&ov).unwrap(), small_overlay());
 
     let res = small_result_bytes();
-    assert_eq!(res.len(), 16 + 2 + 122 + 1 + 32);
+    assert_eq!(res.len(), 16 + 2 + 123 + 1 + 32);
     assert_eq!(small_result().to_bytes(), res);
     assert_eq!(raw_file(&small_result()), res);
     assert_eq!(TransformResult::from_bytes(&res).unwrap(), small_result());
@@ -1195,16 +1240,18 @@ fn round_trips() {
     }
     for (i, s) in State::ALL.into_iter().enumerate() {
         assert_eq!(s as usize, i);
-        let x = if s == State::Refused {
-            refused_result()
-        } else {
-            TransformResult { state: s, ..result() }
-        };
-        round_trip(&x);
+        round_trip(&result_in(s));
     }
     for (i, v) in RunVerdict::ALL.into_iter().enumerate() {
         assert_eq!(v as usize, i);
-        round_trip(&TransformResult { verdict: Some(v), ..result() });
+        let s = match v {
+            RunVerdict::Verified => State::VerifiedWithResidue,
+            RunVerdict::NotVerified => State::NotVerified,
+            RunVerdict::Incomplete => State::Incomplete,
+        };
+        let x = result_in(s);
+        assert_eq!(x.verdict, Some(v));
+        round_trip(&x);
     }
     for (i, c) in Category::ALL.into_iter().enumerate() {
         assert_eq!(c as usize, i);
@@ -1214,8 +1261,14 @@ fn round_trips() {
     }
     for (i, w) in Why::ALL.into_iter().enumerate() {
         assert_eq!(w as usize, i);
+        // failed[1] is unseen: its observers, first and found are those
+        // §8.5 row 6a asks of either kind.
         let mut x = result();
-        x.spellings.failed[0].why = w;
+        x.spellings.failed[1] = FailedSpelling { why: w, ..x.spellings.failed[1].clone() };
+        if w == Why::DenotesOther {
+            x.spellings.failed[1].observers = 1;
+            x.spellings.failed[1].first = Some(d(0xa1));
+        }
         round_trip(&x);
     }
     for (i, s) in SetState::ALL.into_iter().enumerate() {
@@ -1337,7 +1390,7 @@ fn unlisted_values() {
     let bytes = raw_file(&x);
     let off = at(&x, "sections.set.refusals[0]");
     assert_eq!(
-        error(EditSet::from_bytes(&patch(&bytes, off, 0x00, 17))),
+        error(EditSet::from_bytes(&patch(&bytes, off, 0x00, 18))),
         (ErrorKind::Malformed, off)
     );
     let x = result();
@@ -1504,6 +1557,7 @@ fn json_members() {
             "tally",
             "agreement",
             "unused",
+            "unchecked",
             "spellings",
             "residue",
             "exempt"
@@ -1524,7 +1578,7 @@ fn json_members() {
         keys(&r.get("residue").unwrap().as_array().unwrap()[0]),
         ["category", "file", "lo", "hi", "line", "column"]
     );
-    assert_eq!(r.get("state").unwrap(), &Value::Str("verified_with_residue".to_owned()));
+    assert_eq!(r.get("state").unwrap(), &Value::Str("not_verified".to_owned()));
     assert_eq!(r.get("verdict").unwrap(), &Value::Str("not_verified".to_owned()));
 
     let v = run().to_json();
@@ -2276,16 +2330,16 @@ fn set_refusal_fields() {
             assert_eq!(what, "a refusal that is not of a site has a macro");
         }
     }
-    // `other` only for contested, overlap and buried.
+    // `other` only for contested, overlap, buried and with_group.
     for c in Cause::ALL {
         let x = one(Refusal { other: Some(place(0, 5, 6)), ..valid(c) });
-        if matches!(c, Cause::Contested | Cause::Overlap | Cause::Buried) {
+        if matches!(c, Cause::Contested | Cause::Overlap | Cause::Buried | Cause::WithGroup) {
             x.validate().unwrap();
         } else {
             let what = rejected(&x, "sections.set.refusals[0].other");
             assert_eq!(
                 what,
-                "other is present for a cause other than contested, overlap or buried"
+                "other is present for a cause other than contested, overlap, buried or with_group"
             );
         }
     }
@@ -2311,7 +2365,11 @@ fn set_refusal_fields() {
         broken(|x| x.refusals.push(refusal(Cause::NoEdit, None, 0, 0)), "sections.set.refusals[3]");
     assert_eq!(what, "a no_edit refusal is in a set with an edit");
     for c in Cause::ALL.into_iter().filter(|&c| c != Cause::NoEdit) {
-        let x = EditSet { refusals: vec![valid(c), valid(Cause::NoEdit)], ..refused() };
+        // In cause order: with_group (17) sorts after no_edit (16).
+        let mut refusals = vec![valid(c), valid(Cause::NoEdit)];
+        refusals.sort_by_key(|r| r.cause as u8);
+        let at = refusals.iter().position(|r| r.cause == Cause::NoEdit).unwrap();
+        let x = EditSet { refusals, ..refused() };
         if matches!(
             c,
             Cause::Contested
@@ -2320,11 +2378,12 @@ fn set_refusal_fields() {
                 | Cause::FileDiffers
                 | Cause::Cyclic
                 | Cause::Buried
+                | Cause::WithGroup
         ) {
-            let what = rejected(&x, "sections.set.refusals[1]");
+            let what = rejected(&x, &format!("sections.set.refusals[{at}]"));
             assert_eq!(
                 what,
-                "a no_edit refusal is beside a contested, divergent, overlap, file_differs, cyclic or buried refusal",
+                "a no_edit refusal is beside a contested, divergent, overlap, file_differs, cyclic, buried or with_group refusal",
                 "{c:?}"
             );
         } else {
@@ -2671,9 +2730,18 @@ fn result_invariants() {
         |x| x.agreement[1] = Stale { direct: 9, ..x.agreement[0] },
         "sections.result.agreement[1]",
     );
+    // Row 15: a stale pair has `direct` not 0 (verify.md §9.2).
+    let what = broken_result(
+        |x| x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct: 0 },
+        "sections.result.agreement[1]",
+    );
+    assert_eq!(what, "a stale pair has direct 0");
     let mut x = result();
-    x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct: 0 };
+    x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct: 1 };
     x.validate().unwrap();
+    let what = broken_result(|x| x.unchecked = vec![3, 0], "sections.result.unchecked[1]");
+    assert_eq!(what, "unchecked is not strictly ascending");
+    broken_result(|x| x.unchecked = vec![3, 3], "sections.result.unchecked[1]");
     let what = broken_result(|x| x.unused = vec![4, 1], "sections.result.unused[1]");
     assert_eq!(what, "unused is not strictly ascending");
     broken_result(|x| x.unused = vec![1, 1], "sections.result.unused[1]");
@@ -2745,19 +2813,286 @@ fn result_invariants() {
         let what = rejected(&x, &format!("sections.result.tally.{name}"));
         assert_eq!(what, "a refused result has a count of observers verified");
     }
-    // Not checked: the tally's sum, first for unseen, line and column,
-    // which state applies.
-    let mut x = result();
-    x.tally.verified = 1000;
-    x.spellings.failed[1].first = Some(d(1));
-    x.residue[0].line = 0;
-    x.residue[0].hi = 0;
-    x.state = State::Verified;
+    // Not checked: a residue's range against its file (that needs the
+    // file), and whether a verified_with_residue has a reason (a refusal
+    // is in the edit set).
+    let mut x = result_in(State::VerifiedWithResidue);
+    x.residue.retain(|r| r.category == Category::Mention);
+    x.residue[0].hi = 1_000_000;
+    x.tally.failed_runs = 0;
+    x.tally.error_reports = 0;
     x.validate().unwrap();
     let mut x = refused_result();
     x.residue = result().residue;
     x.agreement = result().agreement;
     x.validate().unwrap();
+}
+
+// spec/edits.md §8.5 row 6a (spec/landed/verify/WP-070.md §1): what `why`
+// decides of a failed spelling, each field alone, for each kind.
+#[test]
+fn result_failed_spelling_against_why() {
+    const OBS: &str = "observers is not 0 for unseen or is 0 for denotes_other";
+    const FIRST: &str = "first is present for unseen or absent for denotes_other";
+    const FOUND: &str = "found is present for unseen";
+    let p = |i: usize, f: &str| format!("sections.result.spellings.failed[{i}].{f}");
+    // [0] is denotes_other, [1] unseen.
+    assert_eq!(broken_result(|x| x.spellings.failed[0].observers = 0, &p(0, "observers")), OBS);
+    assert_eq!(broken_result(|x| x.spellings.failed[1].observers = 1, &p(1, "observers")), OBS);
+    assert_eq!(broken_result(|x| x.spellings.failed[0].first = None, &p(0, "first")), FIRST);
+    assert_eq!(broken_result(|x| x.spellings.failed[1].first = Some(d(1)), &p(1, "first")), FIRST);
+    assert_eq!(broken_result(|x| x.spellings.failed[1].found = Some(d(1)), &p(1, "found")), FOUND);
+    // A denotes_other may have no found key (the origin has none); any
+    // name is read, for either kind.
+    let mut x = result();
+    x.spellings.failed[0].found = None;
+    x.spellings.failed[0].name = String::new();
+    x.spellings.failed[1].name = String::new();
+    x.validate().unwrap();
+    // In field order within an entry: observers, first, found.
+    broken_result(
+        |x| {
+            x.spellings.failed[1].observers = 1;
+            x.spellings.failed[1].first = Some(d(1));
+            x.spellings.failed[1].found = Some(d(1));
+        },
+        &p(1, "observers"),
+    );
+    broken_result(
+        |x| {
+            x.spellings.failed[1].first = Some(d(1));
+            x.spellings.failed[1].found = Some(d(1));
+        },
+        &p(1, "first"),
+    );
+}
+
+// spec/edits.md §8.4, §8.5 row 8a: a residue entry is not empty, its line
+// and column 1-based.
+#[test]
+fn result_residue_range_line_column() {
+    let p = |i: usize, f: &str| format!("sections.result.residue[{i}].{f}");
+    let what = broken_result(|x| x.residue[2].hi = x.residue[2].lo, &p(2, "lo"));
+    assert_eq!(what, "a residue's range is empty");
+    broken_result(|x| x.residue[2].hi = 0, &p(2, "lo"));
+    let what = broken_result(|x| x.residue[1].line = 0, &p(1, "line"));
+    assert_eq!(what, "a residue's line is 0: lines are 1-based");
+    let what = broken_result(|x| x.residue[3].column = 0, &p(3, "column"));
+    assert_eq!(what, "a residue's column is 0: columns are 1-based");
+    // Within an entry: range, line, column; across entries, in order.
+    broken_result(
+        |x| {
+            x.residue[0].line = 0;
+            x.residue[0].column = 0;
+        },
+        &p(0, "line"),
+    );
+    broken_result(
+        |x| {
+            x.residue[1].column = 0;
+            x.residue[2].hi = 0;
+        },
+        &p(1, "column"),
+    );
+    // Line 1, column 1 is the least.
+    let mut x = result();
+    x.residue[0].line = 1;
+    x.residue[0].column = 1;
+    x.validate().unwrap();
+}
+
+// spec/edits.md §8.5 rows 13 and 14: the tally adds up.
+#[test]
+fn result_tally_adds_up() {
+    const SUM: &str = "the states of the tally do not add up to selected less unparsed";
+    // result(): selected 12, unparsed 1, the seven states 11.
+    for i in 4..11 {
+        let mut x = result();
+        let mut t = tally_values(&x.tally);
+        t[i] += 1;
+        x.tally = tally_from(t);
+        assert_eq!(rejected(&x, "sections.result.tally.verified"), SUM, "{}", TALLY[i]);
+        let mut x = result();
+        let mut t = tally_values(&x.tally);
+        t[i] -= 1;
+        x.tally = tally_from(t);
+        assert_eq!(rejected(&x, "sections.result.tally.verified"), SUM, "{}", TALLY[i]);
+    }
+    // Selected and unparsed move the target.
+    broken_result(|x| x.tally.selected = 13, "sections.result.tally.verified");
+    broken_result(|x| x.tally.unparsed = 0, "sections.result.tally.verified");
+    let mut x = result();
+    x.tally.selected = 13;
+    x.tally.unparsed = 2;
+    x.validate().unwrap();
+    // failed_runs and error_reports are not states.
+    let mut x = result();
+    x.tally.failed_runs = 100;
+    x.tally.error_reports = 100;
+    x.validate().unwrap();
+    // unparsed above selected, also for a refused result.
+    let what = broken_result(|x| x.tally.unparsed = 13, "sections.result.tally.unparsed");
+    assert_eq!(what, "unparsed is more than selected");
+    let mut x = refused_result();
+    x.tally.unparsed = x.tally.selected + 1;
+    rejected(&x, "sections.result.tally.unparsed");
+    // A sum that would overflow does not wrap.
+    broken_result(
+        |x| {
+            x.tally.verified = u64::MAX;
+            x.tally.failed = 2;
+        },
+        "sections.result.tally.verified",
+    );
+    // At the boundary: a sum of u64::MAX + 1 is refused, not saturated to
+    // a selected of u64::MAX; a sum of u64::MAX is accepted.
+    let mut x = result();
+    x.tally = Tally { selected: u64::MAX, verified: u64::MAX, failed: 1, ..Tally::default() };
+    rejected(&x, "sections.result.tally.verified");
+    x.tally.verified = u64::MAX - 1;
+    x.validate().unwrap();
+    // No verdict (the verify phase did not finish): no state is counted.
+    let what = broken_result(|x| x.verdict = None, "sections.result.tally.verified");
+    assert_eq!(what, "a result without a verdict has a count of observers verified");
+    for (i, name) in TALLY.iter().enumerate().skip(4) {
+        let mut x = result();
+        x.verdict = None;
+        let mut t = tally_values(&x.tally);
+        t[4..].fill(0);
+        t[i] = 1;
+        x.tally = tally_from(t);
+        let what = rejected(&x, &format!("sections.result.tally.{name}"));
+        assert_eq!(what, "a result without a verdict has a count of observers verified");
+    }
+    let mut x = result();
+    x.verdict = None;
+    x.state = State::Incomplete;
+    x.unchecked.clear();
+    x.tally = Tally { selected: 12, unparsed: 1, failed_runs: 2, ..Tally::default() };
+    x.validate().unwrap();
+    // A run over no observer: 0 of 0.
+    let mut x = result();
+    x.tally = Tally { selected: 3, unparsed: 3, ..Tally::default() };
+    x.validate().unwrap();
+}
+
+// Rows 15 to 17 (spec/landed/verify/WP-070.md §1): what the file alone
+// decides of the verdict and the state, rows 2 to 5 of §8.5.
+#[test]
+fn result_state_against_verdict() {
+    use RunVerdict::{Incomplete, NotVerified, Verified};
+    const STATE: &str = "the state is not the one the verdict and the tally give";
+    const REASON: &str = "a verified result has residue, a failed run or an error";
+    let at = "sections.result.state";
+    // Every state with every verdict and with none, nothing else barring
+    // it: exactly the pairs of rows 2 to 5 validate.
+    for s in State::ALL.into_iter().filter(|&s| s != State::Refused) {
+        for v in [None, Some(Verified), Some(NotVerified), Some(Incomplete)] {
+            let mut x = result_in(s);
+            x.verdict = v;
+            match v {
+                None => {
+                    x.tally = Tally { selected: 12, unparsed: 1, ..Tally::default() };
+                    x.unchecked.clear();
+                }
+                Some(Verified) => {
+                    x.agreement.clear();
+                    x.unchecked.clear();
+                    x.spellings = Spellings { obligations: 5, passed: 5, failed: Vec::new() };
+                    x.allow_unparsed = true;
+                }
+                Some(NotVerified | Incomplete) => {}
+            }
+            let fits = match s {
+                State::Verified | State::VerifiedWithResidue => v == Some(Verified),
+                State::NotVerified => v == Some(NotVerified),
+                State::Incomplete => v.is_none() || v == Some(Incomplete),
+                State::Refused => unreachable!(),
+            };
+            if fits {
+                x.validate().unwrap_or_else(|e| panic!("{s:?} {v:?}: {e}"));
+            } else {
+                assert_eq!(rejected(&x, at), STATE, "{s:?} {v:?}");
+            }
+        }
+    }
+    // Row 16: a verified verdict has no stale pair, no failed spelling.
+    let mut x = result_in(State::Incomplete);
+    x.verdict = Some(Verified);
+    x.unchecked.clear();
+    x.spellings = Spellings { obligations: 5, passed: 5, failed: Vec::new() };
+    let what = rejected(&x, "sections.result.agreement[0]");
+    assert_eq!(what, "a verified verdict has a stale pair");
+    let mut x = result_in(State::Verified);
+    x.spellings = result().spellings;
+    let what = rejected(&x, "sections.result.spellings.failed[0]");
+    assert_eq!(what, "a verified verdict has a failed spelling");
+    // Without a verdict, no rule is unchecked.
+    let mut x = result_in(State::Incomplete);
+    x.verdict = None;
+    x.tally = Tally { selected: 12, unparsed: 1, ..Tally::default() };
+    let what = rejected(&x, "sections.result.unchecked[0]");
+    assert_eq!(what, "a result without a verdict has an unchecked rule");
+    // Row 17: an unchecked rule, or unparsed observers without
+    // --allow-unparsed, bar both verified states and give incomplete.
+    for s in [State::Verified, State::VerifiedWithResidue, State::Incomplete] {
+        let mut by_rule = result_in(State::Verified);
+        by_rule.state = s;
+        by_rule.unchecked = vec![2];
+        let mut by_unparsed = result_in(State::Verified);
+        by_unparsed.state = s;
+        by_unparsed.allow_unparsed = false;
+        for x in [by_rule, by_unparsed] {
+            if s == State::Incomplete {
+                x.validate().unwrap();
+            } else {
+                assert_eq!(rejected(&x, at), STATE, "{s:?}");
+            }
+        }
+        // With nothing barring: incomplete contradicts a verified verdict.
+        let mut x = result_in(State::Verified);
+        x.state = s;
+        if s == State::Incomplete {
+            assert_eq!(rejected(&x, at), STATE);
+        } else {
+            x.validate().unwrap();
+        }
+    }
+    // unparsed 0 does not bar without --allow-unparsed.
+    let mut x = result_in(State::Verified);
+    x.allow_unparsed = false;
+    x.tally.selected = 11;
+    x.tally.unparsed = 0;
+    x.validate().unwrap();
+    // A verified result has none of the reasons the file shows; a
+    // verified_with_residue may.
+    for f in [
+        (|x: &mut TransformResult| x.residue = result().residue) as fn(&mut TransformResult),
+        |x| x.tally.failed_runs = 1,
+        |x| x.tally.error_reports = 1,
+    ] {
+        let mut x = result_in(State::Verified);
+        f(&mut x);
+        assert_eq!(rejected(&x, at), REASON);
+        x.state = State::VerifiedWithResidue;
+        x.validate().unwrap();
+    }
+}
+
+fn tally_from(t: [u64; 11]) -> Tally {
+    Tally {
+        selected: t[0],
+        unparsed: t[1],
+        failed_runs: t[2],
+        error_reports: t[3],
+        verified: t[4],
+        unchanged: t[5],
+        mismatch: t[6],
+        not_parsed: t[7],
+        unverifiable: t[8],
+        never_parsed: t[9],
+        failed: t[10],
+    }
 }
 
 #[test]
@@ -2766,13 +3101,19 @@ fn result_order_of_checks() {
         (|x| x.scheme = 2, "sections.result.scheme"),
         (|x| x.agreement.swap(0, 1), "sections.result.agreement[1]"),
         (|x| x.unused = vec![4, 1], "sections.result.unused[1]"),
+        (|x| x.unchecked = vec![3, 0], "sections.result.unchecked[1]"),
         (|x| x.exempt.swap(0, 1), "sections.result.exempt[1]"),
         (|x| x.spellings.failed.swap(0, 1), "sections.result.spellings.failed[1]"),
         (|x| x.spellings.passed = 2, "sections.result.spellings.obligations"),
+        (|x| x.spellings.failed[0].first = None, "sections.result.spellings.failed[0].first"),
         (|x| x.residue[3].file = b"/s/z/".to_vec(), "sections.result.residue[3].file"),
         (|x| x.residue.swap(0, 1), "sections.result.residue[1]"),
+        (|x| x.residue[2].line = 0, "sections.result.residue[2].line"),
         (|x| x.state = State::Refused, "sections.result.overlay"),
         (|x| x.declared = None, "sections.result.declared"),
+        (|x| x.tally.verified += 1, "sections.result.tally.verified"),
+        (|x| x.agreement[0].direct = 0, "sections.result.agreement[0]"),
+        (|x| x.state = State::Incomplete, "sections.result.state"),
     ];
     for (i, (f, path)) in rows.iter().enumerate() {
         broken_result(f, path);

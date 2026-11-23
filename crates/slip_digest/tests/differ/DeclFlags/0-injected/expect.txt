@@ -1,2 +1,5 @@
+# pending
+# needs: expr
+# the consteval block's `^^S` is Unsupported("ExprKind/CXXReflectExpr"); its closure's Pending(Local) hid it until WP-040 numbered the closure
 changed S::e
 added <consteval_block>

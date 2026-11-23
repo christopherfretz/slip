@@ -121,7 +121,7 @@ fn render(w: &Walk<'_>, items: &[Item]) -> Vec<String> {
     items
         .iter()
         .map(|i| match *i {
-            Item::Node(..) => "child".to_owned(),
+            Item::Node(..) | Item::Decayed(_) => "child".to_owned(),
             Item::Uv(v) => format!("uv {v}"),
             Item::Bool(v) => format!("bool {v}"),
             Item::Tag(r) => format!("tag {}", r.tag),
@@ -176,7 +176,7 @@ fn cold_rows(w: &mut Walk<'_>, e: ExprId) -> Vec<String> {
 fn common_bytes(w: &mut Walk<'_>, e: ExprId) -> Vec<u8> {
     let mut s = Stream::new();
     let mut items = Vec::new();
-    write_node(w, &mut s, e, true, &mut items);
+    write_node(w, &mut s, e, true, false, &mut items);
     w.unit.expr = ExprState::default();
     s.as_bytes().to_vec()
 }

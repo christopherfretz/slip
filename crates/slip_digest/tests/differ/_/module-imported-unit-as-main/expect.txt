@@ -1,0 +1,5 @@
+# pending
+# needs: kiln
+# a named module from memory: docs/requests/KF5-module-sources-in-memory.md (WP-048)
+# not run: whether the group of a declaration of `m` (subject path `m.cppm` on side A, `main.cpp` on side B) is part of what is compared
+changed <order>

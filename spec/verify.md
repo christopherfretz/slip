@@ -66,9 +66,16 @@ A relocation "the entity with key `K = (parent, kind, name, disc)` is now
 Rule { parent: map(parent'), kind, name: name', disc,  to_parent: parent, to_name: name }
 ```
 
-where `map(parent')` is the new parent as the walk maps it under the same
-rule table (`parent'` itself if no rule reaches it; `root`, `c_linkage` and
-`builtin` map to themselves). Both parents of a rule are `Parent`s
+where `map(parent')` is the new parent as the walk maps it under the rules
+that undo the relocations made before this one (`parent'` itself if no
+rule reaches it; `root`, `c_linkage` and `builtin` map to themselves). The
+walk applies each rule to a key whose parent is already mapped, so a rule
+for a member of a relocated parent names the parent as the parent's own
+rule maps it; `slip declare` makes it so by mapping a `relocate` line's new
+parent under the lines above it (§2.3): a line whose new parent another
+line relocates comes after that line
+(`crates/slip_digest/tests/rules/parents/mapped-parent`, and
+`mapped-parent-reversed`, whose lines in the other order give differences). Both parents of a rule are `Parent`s
 (`digest.md` §3.4). The walk of the
 post-image applies the rules bottom-up (`digest.md` §3.4), so the relocated
 entity, its members, and every type and signature that mentions it are
@@ -89,6 +96,48 @@ needs no map.
   renames a relocated member to a name that a staying member of the old
   namespace has therefore collides, and is reported, although the edit may
   be correct ("Open questions").
+- **An unnamed class is named by the plain name.** An unnamed class or
+  enumeration named for linkage by a typedef, or by its first declarator
+  (`digest.md` §3.3), has `unnamed_by` the name as written in the
+  post-image, not as a rule maps it: a rule that renames the typedef does
+  not rename the class, which needs a rule of its own, from `unnamed_by`
+  the new name to `unnamed_by` the old one
+  (`crates/slip_digest/tests/rules/unnamed/typedef-renamed-no-class-rule`,
+  `typedef-renamed-with-class-rule`; native rename makes that rule,
+  `edits.md` §9.2).
+- **No rule matches a specialisation.** A rule of kind `specialisation`
+  or `partial_specialisation` is refused (`RULE_ON_SPECIALISATION`): a
+  specialisation's key follows its template's (`digest.md` §3.4), and the
+  rule would key it apart from its template, saying that a use of one
+  template's specialisation is a use of another's
+  (`tests/rules/wrong/named-only-spec-reparented-defined-templates`,
+  `named-only-spec-reparented-relocate-form`: before, both equal). A
+  member of a class template's implicit instantiation is the same: its
+  key follows the pattern member's, and a rule that matches the member
+  itself makes its key indeterminate (`tests/rules/instantiated/`).
+  And a part of a unit: a rule of kind `resolved` or `default_argument`
+  is refused (`RULE_ON_PART`): its key's parent is its owner's mapped
+  key, and its name a property or a parameter index, which no edit
+  renames apart from the owner.
+- **No rule moves an entity into or out of the unnamed namespace by
+  renaming a namespace.** A rule of kind `namespace` whose `name` is the
+  unnamed namespace's and whose `to_name` is not, or the reverse, is
+  refused (`RULE_UNNAMED_NAMESPACE`): the namespace's members change
+  linkage, which no digest in the member's unit holds (below)
+  (`tests/rules/wrong/unnamed-namespace-renamed-to-named`,
+  `named-namespace-renamed-to-unnamed`,
+  `named-namespace-merged-onto-unnamed`: before, all equal, with
+  internal symbols made external or the reverse).
+
+The three are refused in one place, `Rule::refusal`
+(`crates/slip_model/src/keys.rs`), and every table records the first rule
+it refuses when it is made (`RuleTable::refused`), whichever way: by
+`RuleTable::new` or by the reader of the declared container. The
+container's encoding still admits such a rule (it is a well-formed
+`Rule`); what refuses it is the use: a resolver (`slip declare`, §2.3)
+must not make a table that holds one, and the walk keys nothing under
+such a table, so every unit of the post-image is indeterminate
+(`key/refused-rule`) and nothing verifies.
 
 **Rules rename owned entities only.** A run has files it may edit and
 files it may not (`spec/edits.md` §2.1; `Declared.files`). A rule that
@@ -169,16 +218,71 @@ indeterminate, `φ` is injective except on merged namespaces. Equal unit
 sets then say that `φ` is a bijection between the entities of `B` and those
 of `A` (namespaces aside) under which every unit's content is the same,
 every reference inside a unit included, because references are written as
-mapped keys. That is an isomorphism of the two resolved programs; the rules
-only choose which isomorphism is tried. A wrong or missing rule cannot make
-two different programs compare equal: it changes which keys the post-image
-gets, and any key that then fails to line up is a reported difference.
+mapped keys. That is an isomorphism of the two resolved programs, as far
+as the units hold them (not the linkage and visibility an entity takes
+from its namespaces, below; nor what §8 lists); the rules only choose
+which isomorphism is tried. Within that, a wrong or missing rule cannot
+make two different programs compare equal: it changes which keys the
+post-image gets, and any key that then fails to line up is a reported
+difference.
+
+`φ` is over every entity the walk gives a key, not over units only: an
+entity with no unit is still written into the references to it by its
+mapped key, so if it shares that key with another entity, a reference to
+one reads as a reference to the other. The collision of `digest.md` §3.4
+is therefore counted over keys, whether or not a unit has them
+(`crates/slip_digest/tests/rules/wrong/named-only-specialisations`,
+`merged-local-extern`: before WP-103 both compared equal). A dependent
+name in a template's definition is written as a name, which no rule maps:
+the definition is compared by its names, and what such a name resolves to
+is compared in the instantiations, derived units both images have (§4);
+a template nothing instantiates is outside what is shown (§8;
+`tests/rules/attempts/dependent-name-unused-template` compares equal
+though the programs differ).
 
 Two namespaces sharing a key is the one place `φ` is not injective. A
 namespace's unit holds only what the namespace itself is (`digest.md` §5),
-its members are units of their own with keys that do collide if two of
-them coincide, and no generated code depends on which namespace an entity
-is in except through names, which is what a relocation declares.
+and its members are units of their own with keys that do collide if two
+of them coincide. Generated code depends on which namespace an entity is
+in through names, which is what a relocation declares, and **through two
+properties the member takes from its enclosing namespaces**, which it
+does not declare:
+
+- **linkage**: a member of the unnamed namespace, or of a namespace
+  within it, has internal linkage ([basic.link]/4); moved out, it has
+  the linkage its declaration gives it (an inline function or a class's
+  member functions become weak external symbols, a variable a global
+  one), and moved in, internal;
+- **visibility**: `__attribute__((visibility(…)))` on a namespace sets
+  the default visibility of the symbols of its members.
+
+Today's digest holds neither in the member's unit: the member's unit
+does not record the linkage or visibility it takes from its namespaces,
+and a namespace's unit is not part of its members'. So a relocation of a
+member between two namespaces that differ in either is compared equal
+although the object code differs (`tests/rules/needs-wp113/`, pending,
+with the symbols each case changes). The refusal above
+(`RULE_UNNAMED_NAMESPACE`) closes one form only: a rule of kind
+`namespace` whose own name changes between the unnamed namespace's and
+another (the unnamed namespace renamed to a named one, a named one renamed
+to it, a named one merged onto it). It sees the rule's two names and
+nothing else, so these stay open until WP-113 writes the effective linkage
+and visibility into each member's unit:
+
+- an entity of any other kind relocated out of the unnamed namespace,
+  into it, or between namespaces of different visibility;
+- a named namespace relocated, under its own name or another, to or from
+  a parent within the unnamed namespace (`relocate (anonymous
+  namespace)::n => :: =`, `relocate n => (anonymous namespace) :: =`, a
+  namespace moved from under `o::(anonymous namespace)` into `p`): its
+  members change linkage although neither of the rule's names is the
+  unnamed namespace's (`tests/rules/needs-wp113/namespace-*`);
+- a namespace relocated between parents of different visibility.
+
+No second guard in the walk covers these: WP-113 closes them all at
+once. Until then the argument of this section holds for the post-image
+only where no relocated entity changes either property, and `slip
+verify` does not show that it does not.
 
 The argument is about one translation unit. The ownership rule above is
 what makes the declared isomorphism one that the rest of the program
@@ -310,6 +414,7 @@ they need the rules the file gives:
 | `Fallback` | the unit has a fallback key: there is no `Key` to make a rule from, and no stable key to exempt |
 | `NotRenamable` | `relocate` with an identifier for an entity whose `Name` is not an identifier |
 | `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)` (one entity relocated twice to one place, or two entities of one kind and discriminator relocated to one place; two overloads to one name have two discriminators and are not); two lines of one exemption list give one key. Reported at the later line |
+| `Refused` | `relocate` whose rule §2.1 refuses (`Rule::refusal`): of kind `specialisation` or `partial_specialisation` (rename the template), or `resolved` or `default_argument` (a part follows its owner). A namespace rule across the unnamed namespace, the third form §2.1 refuses, is never made by a line: the unnamed namespace's name is not an identifier (`NotRenamable`), and no identifier names it. The walk keys nothing under a table that holds such a rule, however it was made; this error is where its reason is given |
 
 A file with no line gives `Declared::none()`.
 
@@ -337,7 +442,7 @@ pub fn records(input: &Input<'_>, rules: &RuleTable) -> Result<Vec<Record>, Stri
 pub struct Entity { pub kind: Option<KeyKind>, pub text: String }
 pub enum Line { Relocate { entity: Entity, parent: Option<Entity>, name: Option<String> },   // None: the global namespace; `=`
                 Changed(Entity), Created(Entity), Removed(Entity) }
-pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate }
+pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate, Refused }
 pub struct LineError { pub line: u64, pub kind: ErrorKind, pub detail: String }
 pub fn read(text: &str) -> Result<Vec<(u64, Line)>, LineError>;            // line numbers from 1
 pub struct Needs { pub post: bool, pub post_mapped: bool }                 // which post-image parses the table asks for
@@ -415,10 +520,33 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    key that has a unit in `Vp`, the finding is `changed` instead, unless
    `k` is in `changed`. `removed` and `created` do not prevent it and
    are not used by it, and step 3 does not count the key in `only_post`
-   or `only_pre` (a `derived_indeterminate` of step 3 stands beside
-   it). The two units are not compared: one is what was written and the
-   other what the front end made, and their streams differ by
-   construction.
+   or `only_pre` (a `derived_indeterminate` or `derived_changed` of
+   step 3 stands beside it). The two units are not compared: one is
+   what was written and the other what the front end made, and their
+   streams differ by construction. "Has a unit in `Vq`" is read on the
+   differences, as steps 2 and 3 are: `Vq(k) − Vp(k)` is not empty (for
+   `added`, `Vp(k) − Vq(k)`), with `Vp(k)` and `Vq(k)` the multisets of
+   digests of the key in `Vp` and `Vq`, so that §4.1 holds for it. On
+   what the walk produces the two readings are one: a key with a
+   determinate declared unit has no derived unit in the same image,
+   since a second entity of one key is a collision (`digest.md` §3.4),
+   so `Vp(k)` is empty where step 2 gives `removed`. The walk does not
+   mark two runs as a collision (`crates/slip_digest/src/units.rs`
+   `collides`), and neither breaks this: a run made only of namespace
+   units, since a namespace is always in the `tu` group (`digest.md`
+   §11), so a namespace key is never in `V`; and a run of the kinds a
+   scope may repeat (a using-declaration, a `static_assert`, a friend
+   and the others of §3.4) whose digests are all equal, since such a
+   unit is keyed by its content under its parent, and a derived one has
+   an implicit instantiation for its parent, which no declared unit has
+   (an explicit specialisation makes its members declared). Were such a
+   key in `D` and `V` of one image all the same, the reading on the
+   differences is still the one that holds through groups, and a unit
+   of `V` that both images have equally is no difference to report. (WP-108: read as
+   "`Vq` has a unit of the key", step 4 gives `changed` over all groups
+   and `removed` through `G` for a key whose derived unit is the same in
+   a group outside `G`.) `pre`, `post` and `file` are those of §6 for a
+   finding about `D`: one of `pre` and `post` is present.
 
 Steps 1 and 2 are over `D` and step 3 over `V`, independently: a key set
 aside in one is not thereby set aside in the other. (A key is in both
@@ -462,6 +590,12 @@ both have and that differs: the same specialisation instantiated to
 something else is exactly how a dependent name that resolves differently
 shows up ([03](../docs/design/03-equivalence.md) §7 row 6), and no declared
 unit need differ then.
+The same holds of what an instantiation's definition adds: the fields,
+bases and other members of an instantiated class, a function's body, a
+variable's initialiser are rows of the entity's resolved unit
+`definition`, a derived unit (`digest.md` §2.2), so a field or base that
+differs shows as a difference of a derived unit both parses have, not
+of the declared unit of the instantiation or of its class.
 
 One kind of derived unit exists without a demand: a resolved
 `exception_spec` (`digest-kinds.md` §11.2), which Kiln also resolves when
@@ -512,6 +646,13 @@ all units.
   other key, leaving those groups out removes the same multiset `X` from
   `P(k)` and from `Q(k)`, and `(P − X) − (Q − X) = P − Q`: `R(k)` and
   `A(k)` do not change, and they are all that steps 2 and 3 look at.
+- Step 4 looks at `R(k)` and `A(k)` of `D` and of `V`, which do not
+  change either. The group shortcut cannot skip such a key: step 2 has a
+  finding for it, so a declared or `tu` group holding it differs and is
+  in `G`; and since the other image's `V` has a unit of it that this
+  image's has not, a derived group holding that unit differs too and is
+  in `G`. The derived groups of `G` are opened (their unit lists given)
+  for this as for step 3: to tell `removed` from `changed`.
 
 The second point is why §4 is stated on differences. A rule that asked
 "does the post-image have the key at all" would give a different answer
@@ -1027,8 +1168,8 @@ RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) wh
          key:   KeyId                 the key of a unit of this image: a reference to it
 ```
 
-- A mark is made where the walk begins a unit (offset 0, the location of
-  the unit's first declaration) and where it begins a statement or an
+- A mark is made where the walk begins a unit (offset 0, at the unit's
+  **place**, below) and where it begins a statement or an
   expression inside one. A declaration's own rows (its type, its
   specifiers, each redeclaration) have no mark: a difference there is at
   the unit's mark or at the last expression before it. Types and constant
@@ -1091,6 +1232,22 @@ The empty site is an empty `file`, line and column 0, an empty `node` and
 an empty `what`. A unit's first mark is the mark at offset 0. Where an
 image has several units of the key, the one with the smallest digest is
 taken.
+
+A unit's **place**, the location of its first mark, is that of the first
+declaration of its chain, in chain order, that the source wrote. A
+declaration the front end made, by instantiation or implicitly, has no
+place of its own and is skipped, also when it comes first in the chain:
+an explicit specialisation `template <> int pick<int>()` in `pick_int.h`
+whose chain begins with the declaration Kiln instantiated from the
+template in `pick.h` has its place in `pick_int.h`. When no declaration
+of the chain is written (a derived unit, an implicit member), the place
+is that of the first declaration of the chain that has a location, which
+for an instantiation is where its pattern is (the row for step 4 above).
+This is not the finding's `file` (§6): that is the unit's group, the file
+of the entity's first declaration including one Kiln made
+(`digest.md` §11), and the two differ for such a specialisation
+(`file` `pick.h`, place `pick_int.h:1`). Localisation reads the place
+from the chain and not from `file`.
 
 **When they are made.** The pre-image's names, traces and causes are taken
 while the parse of step 4 is in memory, after the comparison (which needs
@@ -1311,8 +1468,15 @@ pub struct Header { pub plan: Digest, pub round: u64, pub declared: Digest, pub 
 pub struct Report { /* … */ }
 impl Report {
     pub fn new(header: Header, declared: &Declared) -> Report;
-    /// One call per selected observer, in plan order.
+    /// `add_at` at the next position (the number of calls so far): for a caller
+    /// that adds every selected observer in plan order (M1's `slip verify`).
     pub fn add(&mut self, observer: &Digest, main: &[u8], verify: Option<&Shard>, map: Option<Status>);
+    /// One call per selected observer, `position` its index in the plan, in any
+    /// order: nothing the report holds depends on the order of the calls. Panics if
+    /// `position` is not below `plan_observers`, or it or the observer was added
+    /// before: a defect of the caller, which would let one observer stand for another.
+    pub fn add_at(&mut self, position: u64, observer: &Digest, main: &[u8],
+                  verify: Option<&Shard>, map: Option<Status>);
     pub fn verdict(&self) -> RunVerdict;
     pub fn states(&self) -> [u64; 7];
     pub fn to_json(&self) -> slip_model::json::Value;
@@ -1362,6 +1526,32 @@ observer `failed`, with an empty message.
   The walk that writes sums is as much trusted base as the comparison.
 - **Text.** Strings, comments and anything else that spells a name without
   referring to it ([03](../docs/design/03-equivalence.md) §7 rows 14, 15).
+- **Names in strings the toolchain resolves.** A name or a mangled name
+  that the program spells as a string for the compiler's back end or the
+  linker: an `asm` label (`int f() __asm__("_ZN6legacy1gEv");`), the
+  target of an `alias`, `ifunc` or `weakref` attribute, a `symver`
+  attribute, the text of a file-scope `asm` (`.symver`, `.globl`, `.set`
+  directives). The string is the same in both images, and
+  nothing in the translation unit looks it up (clang resolves an `alias`
+  target only when it emits code: `-fsyntax-only` accepts one that names
+  nothing), so the unit that holds it is the same too. A rename or a
+  relocation of the entity the string names verifies, and the program
+  then fails to link or binds another symbol. No row pins this: a `good`
+  tree for such an edit would state that a wrong edit is correct. A name
+  the front end does look up is not text and has its row:
+  `__attribute__((cleanup(fn)))` (R14); `#pragma weak` and `#pragma
+  redefine_extname`, whose identifier the front end resolves to the
+  declaration it then gives the attribute (R23); and the values of
+  `__func__` and `__PRETTY_FUNCTION__` (R12, N18, R21).
+- **Other languages and build files.** A name held in a file that is not
+  a C++ translation unit of the run: a renamed `extern "C"` function
+  called from `.c` files the run does not parse, a linker or version
+  script, a `.def` export list, a symbol list in a build rule,
+  `dlsym("f")` or `GetProcAddress` with the name as a string. These are
+  outside both images. The rename verifies, and the binary no longer
+  links, exports the name or finds it at run time. A transform that
+  renames an entity with C language linkage, or one a binary exports,
+  owes its user the list of such files to edit; Slip reads none of them.
 - **Derived inputs.** A file the build generated from the subject (a
   table, a configuration header, a module file) lies in the build tree,
   outside every subject root, and is the same file in both images: the
@@ -1451,6 +1641,16 @@ keeps the key a rule maps another onto is the merge of §2.1.) A stale
 observer is one finding of the run, `stale`, with the rule and the
 observer.
 
+**Unchecked namespace rules (temporary, until WP-111).** Until the counts
+below are implemented a namespace rule has no stale check. So that the
+hole cannot pass for agreement, a run in which an observer used a rule of
+kind `namespace` (a `Use` of it with `via` or `direct` not 0, in a shard
+whose `rule_use` is read, §9.3) records the rule as **unchecked**: the
+report lists it (§9.4) and conclude permits no write for the run
+(`spec/edits.md` §8.5: state `incomplete` unless a worse one applies).
+The report's verdict is not changed by it. WP-111 removes this paragraph
+and the `unchecked` member, line and field with it.
+
 **Stale for a namespace rule** (WP-111; until it is on main a namespace
 rule has no stale check, which is the hole this closes). The namespace
 itself merges, but its members do not: if one observer sees an owned
@@ -1507,7 +1707,16 @@ run's (the same `declared`, the same `overlay` or the same absence of
 one, the same `pre`); and if it is `ok` and the run's rules are not
 empty, it has a `rule_use` whose `rules` is the run's `rules_id`. A shard
 that fails either is not this run's: the observer is `failed` (§7), as
-for any shard another run left.
+for any shard another run left. So is an `ok` shard with a `rule_use`
+under no rule or naming a rule past the table, and one whose `spellings`
+is absent although the overlay has obligations, present although it has
+none, or refused by the fold (§10.4). A run with a tree image and no
+rule is M1's: its shards need no `binding`, and one that has a binding
+must have the run's (`spec/landed/verify/WP-070.md` §2.1). This
+exception is temporary: a verify job is to write `binding` in every
+shard (§9.1), M1's `slip verify` included, after which a package of the
+coordinator's removes it and a shard without a binding is never this
+run's.
 
 **Which observers.** The check is over every selected observer. With
 rules, no selected observer whose map shard is `ok` is `unchanged`
@@ -1539,12 +1748,19 @@ the M1 document. Members added, each present only when it applies:
 "overlay": <id of the OVLY container>                      for an image of the overlay form; "image" is then []
 "agreement": { "rules": <n>,                               when Declared.rules is not empty
                "stale": [ { "rule": <index>, "observer": <id>, "main": <path>, "direct": <n> }, … ],
-               "unused": [ <index>, … ] }
+               "unused": [ <index>, … ],
+               "unchecked": [ <index>, … ] }                 until WP-111 (§9.2)
 "spellings": …                                             §10.5
 ```
 
 `stale` is sorted by `(rule, the observer's position in the plan)` and
-holds every stale pair; `unused` is ascending.
+holds every stale pair; `unused` and `unchecked` are ascending.
+`unchecked` lists the namespace rules an observer used (§9.2; temporary,
+removed by WP-111). `"overlay"` follows
+`"image"`; `"agreement"` and then `"spellings"` follow `"exemptions"`
+and precede `"run"`. An `unseen` entry of `spellings` has `observers`
+0, `first` and `found` null and an empty `name`
+(`spec/landed/verify/WP-070.md` §2.6).
 
 Lines added to the text, after the `exemption` lines and before `wall`:
 
@@ -1553,6 +1769,7 @@ image overlay <overlay id>                       in place of the `image` lines o
 agreement rules <n> stale <n> unused <n>         when there are rules; `stale <n>` counts pairs
 stale rule <index> direct <n> <main file>        at most 100, then `stale: <n> more (see the report)`
 unused rule <index>
+not checked: agreement between observers for namespace rule <index>     until WP-111 (§9.2)
 ```
 
 Nothing is added to the lines on standard error: those list observers by
@@ -1594,6 +1811,8 @@ impl Report {
     pub fn pre_round(&mut self, pre: u64);
     pub fn stale(&self) -> &[Stale];                       // sorted by (rule, plan position)
     pub fn unused(&self) -> Vec<u64>;
+    /// §9.2, until WP-111: the namespace rules an observer used, ascending.
+    pub fn unchecked(&self) -> Vec<u64>;
     pub fn spellings(&self) -> &[spelling::Outcome];       // §10.6; one per obligation of the overlay
 }
 ```
@@ -1684,8 +1903,8 @@ verdict (§10.4) and judged over the run.
 
 ### 10.3 Over the run
 
-For each obligation of the overlay, over this run's `ok` shards (§7,
-§9.3):
+For each obligation of the overlay, over this run's `ok` shards whose
+state is `verified` or `mismatch` (§7, §9.3):
 
 | The obligation | Is |
 |---|---|
@@ -1723,8 +1942,9 @@ Invariants: no index is in `held` twice or in both lists; the number of
 indices in the two lists is at most `seen`. The obligations not seen are
 the `seen` minus those. The decoder cannot check an index against the
 overlay; the fold (§10.6) refuses an index that is not one of the
-overlay's obligations or whose file the shard's `inputs` do not list, as
-a shard that is not this run's.
+overlay's obligations or whose file the shard's `inputs` do not list, and
+a `seen` that is not the number of obligations whose file the `inputs`
+list, as a shard that is not this run's.
 
 Counters of the shard, beside those of §7.2: `verify.spelling.obligations`
 (`seen`), `verify.spelling.holds`, `verify.spelling.fails`,
@@ -1778,11 +1998,24 @@ pub struct Fold { /* one slot per obligation */ }
 impl Fold {
     pub fn new(overlay: &slip_model::Overlay) -> Fold;
     /// One `ok` shard of this run; `Err` if the section names an obligation the overlay
-    /// does not have or a file the shard did not read (§10.4).
+    /// does not have or a file the shard did not read, breaks an invariant of §10.4, or
+    /// has a `seen` its `inputs` do not give (§10.4).
     pub fn add(&mut self, position: usize, inputs: &[FileRef], section: &slip_model::Spellings) -> Result<(), String>;
     pub fn finish(self) -> Vec<Outcome>;
 }
 ```
+
+`position` is the observer's position in the plan (the `position` of
+`Report::add_at`, §9.5), never the order of the calls, so the outcome
+does not depend on it. `Report::add_at` folds the section of a
+`verified` or `mismatch` shard only. That of an `unverifiable` one is
+checked as `add` checks it, and a section it refuses makes the observer
+`failed` as for any other, but it is not folded: its observer's
+post-image is not the run's (a guard of §5.3 failed, or the parse found
+something it could not compare), so neither what it held nor what it
+failed is of the image the obligations are about. The observer already
+keeps the run from being verified; folding its `held` could only let an
+obligation pass on its word.
 
 ### 10.7 What it shows
 
@@ -2059,3 +2292,26 @@ using-declaration). Those are judged by the comparison of digests alone.
   units of one derived key in one image are a collision and so
   indeterminate (`digest.md` §3.4), which is a finding; the case left is a
   content-keyed derived unit, of which `digest-kinds.md` has none yet.
+- **A partial specialisation equal to the primary, removed or added**
+  (WP-108, item 3, attempts 3b and 3c). Removing
+  `template <class T> struct S<T *> { int a; };` where the primary also
+  has `int a` leaves the program the same, and the members of `S<int *>`
+  differ: each writes the pattern it was instantiated from, `S<T *>::a`
+  on one side and `S<T>::a` on the other (`crates/slip_digest/src/templ.rs`
+  `decl_maps`, `instantiated_from`, `:557-562`, for a field and an
+  enumerator; `member_spec_info`, `MemberSpecInfo.instantiated_from`,
+  `:330-333`, for a member enumeration). The finding is
+  `derived_changed`, which nothing can declare: a correct edit the
+  verifier rejects. It is kept for now: the verifier errs on the side
+  that cannot verify a wrong program. Two ways out are rejected. A
+  declared `changed K` must not exempt a derived finding of `K` (step
+  3): exemptions are per run, so a `changed box<Mine>::found` would make
+  row E11 `bad-6` verify and hide an argument-dependent lookup that
+  resolves otherwise in that specialisation in every observer.
+  Dropping the pattern's identity from an instantiation's unit needs an
+  audit of `digest-kinds.md` §11.4 first: that reference carries the
+  facts the instantiated declaration leaves out on purpose (whether a
+  default argument exists, initialisers still pending, definitions not
+  instantiated), and it is safe to drop only where each such fact, when
+  it matters, shows in a derived unit made on use. That would be a
+  package of the digest with that audit as its obligation.

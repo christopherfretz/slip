@@ -3,3 +3,14 @@
 # with one key (spec/digest.md §3.4). No place: a collision has two sites.
 good: verified
 bad:  mismatch indeterminate f(int)
+# pre-2, pre-3: helper renamed assist, and the friend declaration in X
+# left: it declares a new ::helper(X &) ([namespace.memdef]/3), so assist
+# loses the access it had. pre-2: assist reads the private s and the parse
+# fails. pre-3: the friend is the definition and the namespace-scope
+# declaration is renamed: assist is declared, never defined (the program
+# does not link), and the friend's helper and the renamed assist are two
+# entities with one key.
+good-2: verified
+bad-2:  not_parsed
+good-3: verified
+bad-3:  mismatch indeterminate helper(X &)

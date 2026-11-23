@@ -1,0 +1,3 @@
+# Fix round 2, F2 (the review's case): a rule of kind specialisation is refused (spec/verify.md §2.1).
+# A content-keyed unit (the static_assert, which refers to no entity, so that it is not indeterminate through W1) is among the units the refused table must leave indeterminate (round 3, X6).
+rule specialisation | post W2 | id W2 | disc-of post W3<A> | post W1 | id W1

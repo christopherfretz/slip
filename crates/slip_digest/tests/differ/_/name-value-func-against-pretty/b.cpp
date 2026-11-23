@@ -1,0 +1,2 @@
+// WP-104 (digest §9), __func__ against __PRETTY_FUNCTION__
+const char *f() { return __PRETTY_FUNCTION__; }

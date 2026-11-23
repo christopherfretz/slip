@@ -8,6 +8,7 @@
 //! - [`corpus`]: `cargo xtask corpus list|fetch|configure|status|path` (§8),
 //! - [`jobserver`]: `cargo xtask jobserver status|refill` (§5),
 //! - [`perf`]: `cargo xtask perf summarize|record|check` (§7),
+//! - [`transform`]: `cargo xtask transform` (§6.2 to §6.4),
 //! - [`invariants`]: `cargo xtask invariants a|b <corpus>` (§9), running
 //!   `slip` through [`slip_run`].
 //!
@@ -25,6 +26,7 @@ pub mod lint;
 pub mod perf;
 pub mod repo;
 pub mod slip_run;
+pub mod transform;
 pub mod wp;
 
 use std::path::PathBuf;

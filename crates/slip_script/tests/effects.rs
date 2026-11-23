@@ -9,7 +9,7 @@
 )]
 
 use slip_model::keys::{KeyKind, Name, Parent, Rule};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use slip_model::{Digest, FileRef};
 use slip_script::fake::{
@@ -261,11 +261,11 @@ struct Run<'w, 's> {
 }
 
 impl<'w, 's> Run<'w, 's> {
-    fn new(w: &'w World, s: &'s dyn Subject) -> Run<'w, 's> {
+    fn new(w: &'w World, s: &'s (dyn Subject + Sync)) -> Run<'w, 's> {
         Run::with_limits(w, s, Limits::default())
     }
 
-    fn with_limits(w: &'w World, s: &'s dyn Subject, limits: Limits) -> Run<'w, 's> {
+    fn with_limits(w: &'w World, s: &'s (dyn Subject + Sync), limits: Limits) -> Run<'w, 's> {
         Run { w, h: Host::new(s, Digest([1; 32]), limits) }
     }
 
@@ -1173,7 +1173,7 @@ enum Lie {
     /// For a range the fake gives out: these answers, one per question, in
     /// turn (one range reached at tier 0 by one request and at tier 1 by
     /// another).
-    TiersInTurn(std::cell::RefCell<Vec<[bool; 2]>>),
+    TiersInTurn(Arc<Mutex<Vec<[bool; 2]>>>),
     Place(PlaceOf),
     ReferencesAt(Vec<Reference>),
 }
@@ -1254,7 +1254,7 @@ impl Subject for Liar<'_> {
     fn tiers(&self, r: Range) -> Option<[bool; 2]> {
         match &self.lie {
             Lie::Tiers(t) => *t,
-            Lie::TiersInTurn(turns) => self.fake.tiers(r).map(|_| turns.borrow_mut().remove(0)),
+            Lie::TiersInTurn(turns) => self.fake.tiers(r).map(|_| turns.lock().unwrap().remove(0)),
             _ => self.fake.tiers(r),
         }
     }
@@ -1442,7 +1442,8 @@ fn s7_6_rule_1_tiers_are_joined_by_union() {
     let w = world();
     let e = range(&w, "lib::foo", 0);
     for turns in [[[true, false], [false, true]], [[false, true], [true, false]]] {
-        let liar = Liar { fake: &w.fake, lie: Lie::TiersInTurn(turns.to_vec().into()) };
+        let liar =
+            Liar { fake: &w.fake, lie: Lie::TiersInTurn(Arc::new(Mutex::new(turns.to_vec()))) };
         let mut run = Run::new(&w, &liar);
         let r = run.extent(Value::Reference(w.r1));
         let x = run.text("x");
@@ -1456,7 +1457,8 @@ fn s7_6_rule_1_tiers_are_joined_by_union() {
     }
     // Requests all at tier 1: tiers 1 (`s7_2_two_references_with_one_extent`
     // through the sibling rule; here a literal at the extent).
-    let liar = Liar { fake: &w.fake, lie: Lie::TiersInTurn(vec![[false, true]; 2].into()) };
+    let liar =
+        Liar { fake: &w.fake, lie: Lie::TiersInTurn(Arc::new(Mutex::new(vec![[false, true]; 2]))) };
     let mut run = Run::new(&w, &liar);
     let r = run.extent(Value::Reference(w.r1));
     let x = run.text("x");

@@ -1,0 +1,2 @@
+# Item 5: acme mapped onto legacy, which still exists; acme is inline and legacy is not: two digests under one key.
+relocate legacy => :: acme

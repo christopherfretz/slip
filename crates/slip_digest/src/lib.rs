@@ -65,11 +65,19 @@
 //! | `expr_dep::decl_name(w, raw)` | nothing: the `Name` (§3.2) of a raw `DeclName` word, as `Walk::plain_name` names a declaration, with its cause |
 //! | `stmt::child(w, s, st)`, `stmt::child_opt` (`stmt.rs`) | `child`: one statement, its rows in table order (§6), one level of `walk::NODE_LIMIT` for a chain of tails (`stmt.rs` "The walk") |
 //! | `value::value(w, s, v)`, `value::string(w, s, l)` (`value.rs`) | `value`: a constant in place by structure, a constant it points to by content digest (§8); `string`: a string literal by content (§10.3) |
-//! | `local::write_decl(w, s, d)` | `decl` (§2.4): a local entity's ordinal and stream, a block-scope variable with linkage a `ref`, a block-scope function a `ref` and its own default arguments; a local type pending (`Area::Local`) |
+//! | `local::write_decl(w, s, d)` | `decl` (§2.4): a local entity's ordinal and stream, a block-scope variable with linkage a `ref`, a block-scope function a `ref` and its own default arguments; a local type its number, then its stream and its members' the first time (§4.3) |
+//! | `local::owner(w, d)` | nothing: the owner of a local entity (§4.3), `None` when no stream numbers it |
+//! | `local::numbering(w, o)` | nothing: owner `o`'s local types and objects by declaration (§4.3 "Numbering an owner"), memoised; `local::number_all(w)` numbers every owner before the first unit and seals the memo |
+//! | `local::type_number(w, t)`, `local::known_number(w, t)` | nothing: a local type's `n` (the second reads the memo only, for `names.rs`) |
+//! | `local::unit_of(w, d)`, `local::outer(w, d)` | nothing: the unit whose stream holds a local declaration; the owner's key and index a `Ref::outer` writes (§4.1) |
+//! | `local::stream_source(w, e)` | nothing: the declaration whose stream the unit of `e` writes, which the numbering walks |
+//! | `local::lambda_expr(w, s, e)` | `LambdaExpr.a` (§7): the closure's `decl`, rule 6's causes inside a key or a type |
 //! | `decl_func::{function_data, var_data, param_data, let_data}(w, s, d)` | one `record T` of §5.4 each; a function's and a variable's language linkage (§5.6 `ScopeData`) |
-//! | `decl_func::implicit_instantiation(w, e)` | nothing: whether the entity is an implicit instantiation (its own kind, else an enclosing one), the first rule of §11.9 |
-//! | `decl_func::definition_class(w, e)` | nothing: whether the entity is of the §11.9 definition class (defined on use, implicit, or defaulted on its first declaration) |
-//! | `decl_func::instantiated_on_use(w, e)` | nothing: whether a function or variable is an implicit instantiation or named by `extern template` (its own kind, else an enclosing one) |
+//! | `demand::effective_kind(w, e)` | nothing: the one specialisation kind the digest reads for an entity (§11.10), from its own `SpecInfo`, an explicitly specialised member's own kind, or the greater of a member's own kind and its class's |
+//! | `demand::definition_class(w, e)` | nothing: whether the entity is of the §11.9 definition class, whose definition is the resolved unit `definition` |
+//! | `demand::pattern_holds_placeholder(w, e)` | nothing: whether the declared type of the pattern an instantiation comes from holds a placeholder (§11.9: the type is then `definition`'s) |
+//! | `demand::write_resolved(w, e, owner, p, disc, body)` | a resolved unit of `owner` (§11.1): its key, class, file and cause; `body` writes its stream |
+//! | `decl_func::{function_definition, var_definition}(w, s, e, def)`, `decl_class::{record_definition, enum_definition}(w, s, def)`, `templ::spec_definition(w, s, e)` | the rows of the resolved unit `definition` (§11.9) |
 //! | `decl_func::var_type(w, d, e)` | nothing: the type a variable's unit holds, an array of unknown bound completed by another declaration |
 //! | `units::defining_decl(w, e)` | nothing: the defining declaration of a variable ([basic.def]) or Kiln's `definition` of another entity |
 //! | `Walk::linkage_spec(d, all)` (`keys.rs`) | nothing: the innermost `LinkageSpec` around `d` and its language (`None` for an unknown byte), through namespaces only unless `all` |
@@ -78,7 +86,7 @@
 //! | `decl_scope::{friend_target, namespace_data, static_assert_data, file_scope_asm, cold}(w, s, d)` | one `record T` of §5.6 each, and the rows of `ColdDeclData` (§5.7), each map read from the declaration Kiln keys it by |
 //! | `templ::templ_link(w, s, l)` | `record TemplLink` (§9.1), which brings in `SpecInfo`, `MemberSpecInfo` or `PartialSpecInfo` (§9.4) |
 //! | `templ::expr_maps(w, s, e)` | the `in` rows of `TemplateTables` keyed by `ExprId` (§9.5), each in its empty form when absent |
-//! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4): pending (`Area::Local`) |
+//! | `local::lambda_data(w, s, l)` | `record LambdaData` (§10.4) with its captures (`LambdaCapture`, `CaptureKind`, `LambdaMangling`) |
 //! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1) |
 //! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, a list per declaration, the definition's apart (a parameter's: parameter i of its function's declarations), then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
 //! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
@@ -127,6 +135,18 @@
 //! need about 9.0 MB; `STACK_SIZE` is more than four times that, which
 //! the test asserts. A package whose recursion through `enter_node` has
 //! larger frames (a statement's walk) adds its path to that test.
+//!
+//! A lambda-expression is a `DEPTH_LIMIT` level (the closure's `decl`),
+//! not a node level: `stmt::tests::frames_fit_the_stack` measures a
+//! nesting of lambdas (about 7.2 KB each, 9.7 KB through a statement
+//! expression) and asserts `NODE_LIMIT` statement levels plus
+//! `DEPTH_LIMIT` lambda nestings fit in a quarter of `STACK_SIZE`
+//! (`tests/local_chains.rs`: 150 nestings are `walk/depth`). Numbering an
+//! owner (`local.rs`) walks the owner's stream in a mode of the same walk;
+//! `local::number_all` numbers every owner before the first unit, so a
+//! numbering never runs on top of a unit's walk and the stack holds one
+//! walk at a time (a numbering asked for later is `local/late-numbering`,
+//! which the pair tests check never happens).
 //!
 //! These are frames of the test profile only. The worker package must
 //! measure the release profile, on the corpus, before `STACK_SIZE` (and
@@ -206,6 +226,7 @@ pub mod map;
 mod names;
 mod order;
 mod other;
+pub mod query;
 pub mod records;
 mod refs;
 mod stmt;
@@ -339,8 +360,6 @@ pub enum Area {
     Attrs,
     /// The other tables of `Ast` (§10): `other.rs`.
     Other,
-    /// Demand-driven fields and resolved units (§11): `demand.rs`.
-    Demand,
     /// The order unit (digest §2.1).
     Order,
     /// A fact a canonical profile leaves out but its first spelling
@@ -362,7 +381,6 @@ impl Area {
             Area::Templ => "templ",
             Area::Attrs => "attrs",
             Area::Other => "other",
-            Area::Demand => "demand",
             Area::Order => "order",
             Area::Spelling => "spelling",
         }

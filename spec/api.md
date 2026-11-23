@@ -48,11 +48,14 @@ Two transforms are part of the conformance suite and are referenced from
 1. A transform is one source file. Slip compiles it as Kiln would compile
 
    ```
-   kiln -std=c++26 -fsyntax-only -fkiln-reproducible-time
+   kiln -std=c++26 -fsyntax-only -fkiln-reproducible-time -ftemplate-depth=512
         -I <resource>/include  <author's options>  <transform file>
    ```
 
-   where `<resource>` is the resource directory of the running Slip.
+   where `<resource>` is the resource directory of the running Slip. The
+   template depth is half Kiln's default so that every recursion a run
+   can drive reaches a limit of Kiln's before the host's stack (§2.5
+   rule 5).
 2. The author's options are `-I`, `-isystem`, `-D`, `-U` and `-include`,
    in the order given. Any other option is the error `transform-option`.
    `-D` is how a transform is given parameters. A value that begins with
@@ -92,12 +95,37 @@ Two transforms are part of the conformance suite and are referenced from
 ```
 TransformId = H("slip.transform.v0",
                 api level (§8.2, the value of __slip_lib_meta),
+                the host: the versions of Slip and of its Kiln,
                 the command line of §2.1 with <resource> and every path as given,
+                the target (§2.1 rule 3): its triple, the digest of the predefines,
                 for each file the unit read, in the order first read:
                     its path as given, the digest of its content)
 ```
 
-`H` is the hash of `spec/model.md` §3. A run of Slip has one `TransformId`.
+`H` is the hash of `spec/model.md` §3, over the record (`spec/model.md`
+§2)
+
+```
+api_level:     uv
+host:          str             `slip --version`'s line: "slip <version> (kiln <version>)"
+command_line:  list<str>       the words given to Kiln after the program name
+triple:        str             the target's normalised triple, as Kiln writes it
+predefines:    digest          content digest of the unit's predefines buffer
+files:         list<File>      File := path: bytes, content: digest
+```
+
+The predefines buffer is what Kiln reads before the transform file and
+from no file: the target's predefined macros, then a `#define` or
+`#undef` line for each `-D` or `-U`. Its digest covers what the target
+makes visible to the preprocessor, and the triple what it makes visible
+to constant evaluation (sizes, alignments, endianness). The C++ standard
+library of rule 3 is in `files`. `host` stands for the host's own
+behaviour (how it runs and classifies, its operations), which the
+headers' digests do not cover: a cache keyed by the id (`spec/exec.md`)
+does not outlive a release of Slip or Kiln. It does not tell two
+development builds of one version apart; a cache that must is keyed on
+the build as well (`spec/landed/api/WP-089.md`). A change of this record
+is a new tag. A run of Slip has one `TransformId`.
 It is held by the run's transform request (`spec/edits.md` §3), whose
 content id is the **request id**. Every result of the map phase carries
 the request id, and reduce refuses to combine results that carry
@@ -121,14 +149,15 @@ to one build.
    consteval void transform();
    ```
 
-2. It must be declared exactly once as a function, be `consteval`, take no
-   parameter, return `void` and be defined. Each violation is its own
+2. The name must designate exactly one function (redeclarations of it are
+   allowed), which is `consteval`, takes no parameter, returns `void` and
+   is defined. Each violation is its own
    error, checked before any subject unit is parsed:
 
    | Error | Condition |
    |---|---|
    | `entry-missing` | no declaration named `transform` in the global namespace |
-   | `entry-overloaded` | more than one function of that name |
+   | `entry-overloaded` | the name designates more than one function |
    | `entry-not-function` | the name is something else |
    | `entry-not-consteval` | not an immediate function |
    | `entry-parameters` | it has a parameter |
@@ -191,7 +220,7 @@ an action entry once per match (§9); nothing here prevents it.
 
    | Budget | Default | Counts |
    |---|---|---|
-   | steps | 2^32 | evaluator steps, including the steps a host call is charged (Kiln `spec/host-calls.md` §2) |
+   | steps | 2^32 | evaluator steps, including the steps a host call is charged (Kiln `spec/host-calls.md` §2); in a debug build, minutes of evaluation (a plain loop runs about 7 million steps a second, so 2^32 take about 10 minutes; the review of WP-089 measured about 100 s on heavier steps) |
    | bytes | 256 MiB | storage the evaluation allocates |
    | depth | 4096 | nested calls |
 
@@ -203,15 +232,28 @@ an action entry once per match (§9); nothing here prevents it.
    does not see the host's memory.
 4. Cancellation is only for shutting a worker down. A cancelled run has no
    result at all.
-5. **The thread of a run (hazard accepted for now).** A run may be made on
-   a thread other than the one that compiled the transform unit (a subject
-   unit's front-end thread). Kiln then checks the run's stack against the
-   compiling thread's stack guard. A run that reaches a stack check (an
-   instantiation, a nested constant evaluation) there fails with "stack
-   exhausted", and every later run of the unit fails the same way, on any
-   thread. Kiln request K2 (`docs/wp/WP-080.md`) lifts this. No entry
-   reaches such a check at the Kiln revision of WP-080: the templates an
-   entry's body uses are instantiated when the unit is compiled.
+5. **The thread and the stack of a run.** A compiled transform is run
+   only on the thread that compiled it. At this Kiln revision a run on
+   another thread is checked against the compiling thread's stack guard:
+   a run that instantiates (reflection's `substitute` and what reads its
+   result, at any depth) fails there with "stack exhausted" by the
+   history of the threads, and the flag is sticky, so every later run of
+   the unit fails too. The host therefore refuses a run on another thread
+   before it reaches Kiln, as an error of the worker that ends nothing;
+   Kiln WP-2410 lifts this. The compiling thread has a stack of 256 MiB:
+   with the template depth of §2.1 rule 1, each recursion a run can drive
+   (constexpr calls, which the evaluator keeps off the native stack and
+   the depth budget bounds; class, variable, function and alias template
+   instantiation, substitution into constraints, deduction, lambdas) then
+   reaches Kiln's own limit (`not-constant`) or a budget before the
+   stack, in a debug build, with a margin of at least four. Kiln's stack
+   guard tripping during a run is then a defect of the host, never the
+   transform's: the run is `host-failure` and the compiled unit is not
+   run again. Expression nesting within one declaration is bounded by no
+   limit of Kiln's; a transform that nests so deep that it trips the
+   guard gets `host-failure` too. A trip while the transform unit is
+   compiled is the host's limit, `host-failure` (§12), not
+   `transform-compile`.
 
 ### 2.6 Where the host may be reached
 
@@ -272,7 +314,7 @@ A run **completes** or **fails**.
 | `uncaught` | an exception left `transform()`; for a `slip::error`, the failure it reports (§4) is part of the diagnostic |
 | `not-constant` | the evaluation did something that is not a constant expression (a null dereference, an out-of-bounds read, a failed instantiation, §2.6 rule 3) |
 | `step-budget`, `memory-budget`, `depth-limit` | §2.5 |
-| `host-failure` | the host could not continue (an internal error). Never caused by a transform |
+| `host-failure` | the host could not continue (an internal error: the host's own error, a panic, Kiln's stack guard, a failure Kiln reports that the host does not know). Never caused by a transform. The compiled unit is not run again |
 
 1. A failed run has no effects: every edit, report and declared change it
    requested is discarded. What is recorded for the subject unit is the
@@ -285,6 +327,15 @@ A run **completes** or **fails**.
    refused, its `errc`, its message, and the place in the subject that the
    offending value denotes, if it denotes one. The same failure in many
    subject units is shown once with a count and one example unit.
+   **The refusal reported** is the run's most recent, when the type of
+   the uncaught exception is named `error`: Kiln gives the type of an
+   uncaught exception as written, unqualified, and not which object was
+   thrown. This is wrong in three cases, until Kiln WP-2480: a transform
+   that rethrows an older `slip::error` after a newer refusal (the newer
+   is reported); a class of the transform's named `error` in any scope,
+   thrown after a refusal (reported as a `slip::error` with that
+   refusal); a class derived from `slip::error` (reported with no
+   refusal). The message is never parsed out of Kiln's rendering.
 4. A subject unit whose run failed has not been examined. Slip must not
    apply the edits of a Slip run in which a run failed unless told to.
    Such a Slip run is at best `verified_with_residue`
@@ -479,8 +530,11 @@ class error {
 5. `error` is not derived from `std::exception`, so that the header needs
    nothing of the library's exception support in constant evaluation.
 6. `message()` is a host function (§2.6). Its text is for a person.
-7. The predicates of §6.2 accept every `info`, null included, and never
-   throw `wrong_kind`.
+7. The predicates of §6.2 accept every `info` the host gave, of any
+   kind, and the null `info`, and never throw `wrong_kind`; a forged
+   `info` is `invalid_handle`, as for every other function (§5.2 rule 2):
+   a forged handle is a programming error of the transform, and a silent
+   `false` would hide it.
 
 Rejected: returning `std::expected` from every query (every call site pays
 for an error that correct transforms never see, and absence already has a
@@ -591,7 +645,19 @@ with token sequence `T(X)` after preprocessing:
    exist. Verification sees the result.
 5. A null range from these two functions means "not in tier 0 or 1" and
    nothing else; it is not an error.
-6. `spec/macros.md` will define tiers for all of Slip. Until it is
+6. `R` runs from the first byte of the first token to the last byte of
+   the last token (or of the invocations that hold them, at tier 0); it
+   holds no space or comment before or after them. When both rows hold
+   (a span that is the whole expansion of an invocation, every token of
+   which one argument produced: `foo` from `ID(foo)` with `#define
+   ID(x) x`) and Kiln's rules see the whole expansion, the range is tier
+   0's, the invocation. Where they do not (an expansion whose first or
+   last token is not one the span can name: `F(, b)`, `F(b, )`, `E()`
+   with `__VA_OPT__`, `_Pragma`), the range is narrower or null, never
+   wider; `spec/landed/api/WP-084.md` decision 3 lists those shapes. This
+   section was silent on both until that file, which also records how the
+   tier is derived from the source manager's rules.
+7. `spec/macros.md` will define tiers for all of Slip. Until it is
    written this section is the definition for the API.
 
 **A range holds no directive.** A run of bytes that contains a
@@ -1441,19 +1507,33 @@ unit and one transform. It is a directory:
    | `// spec: §N.M` | required: the section the test covers |
    | `// args: ...` | author's options (§2.1 rule 2) |
    | `// steps: N`, `// bytes: N`, `// depth: N` | budgets (§2.5) |
-   | `// owned: no` | no file of the subject is editable |
+   | `// owned: no` | no file of the subject is editable (`no` is the only value) |
    | `// xfail: reason` | as `spec/harness.md` §6 |
+   | `// counters: a, b` | the counters rendered (rule 3) |
 
 3. `expect.txt` is the rendering of the result: for a completed run, the
-   run output of §7.6, one item per line, places as `file:line:col`,
-   keys as the names `spec/verify.md` §6 gives them, counters omitted
-   except those the test lists with `// counters: a, b`; for a failed
+   run output of §7.6, one item per line, places as
+   `file:line:col-line:col` (the end exclusive, columns in bytes), keys
+   as the names `spec/verify.md` §6 gives them, counters omitted except
+   those the test lists with `// counters: a, b`; for a failed
    run, the failure kind and the diagnostic's first line; for a transform
    that does not compile, the error name. The exact grammar is fixed by
-   the work package that builds it and recorded under `spec/landed/api/`.
+   the work package that builds it and recorded under `spec/landed/api/`
+   (`WP-090.md`). The rendering is compared with `expect.txt` byte for
+   byte: no normalisation of line ends, trailing blanks or a final
+   newline.
 4. A transform test of `spec/harness.md` §6, which runs the whole
    pipeline, names a programmable transform as a `.cpp` file with the same
    header lines.
+5. A test whose subject has errors, or whose transform reads a file of the
+   test's directory, is an error of the test. A `host-failure` is never a
+   rendering: it fails the test whatever `xfail` says.
+6. The subject is every file of the directory at any depth, except
+   `transform.cpp` and `expect.txt` at its top.
+7. `SLIP_BLESS=1` writes `expect.txt` from the rendering; `1` is its only
+   value, and a test that says `// xfail:` is not blessed (its
+   `expect.txt` is written by hand). A blessed file is reviewed like
+   code. `cargo xtask ci` refuses to run while `SLIP_BLESS` is set.
 
 ## 12. Errors
 
@@ -1461,9 +1541,10 @@ Errors of the tool, as opposed to `slip::error` in a transform (§4).
 
 | Error | Raised when | Section |
 |---|---|---|
-| `transform-option` | an option the transform command line may not have | §2.1 |
-| `transform-compile` | the transform unit has an error | §2.1 |
+| `transform-option` | an option the transform command line may not have; a value, transform file or resource directory that begins with `@` or holds a NUL byte; a path that is not absolute; a `-D` whose replacement holds `embed` | §2.1 rules 2 and 6 |
+| `transform-compile` | the transform unit has an error; it may use `#embed` or `__has_embed`; Kiln stopped before compiling it (a transform file that cannot be read) | §2.1 rules 5 and 6 |
 | `transform-header` | the unit did not read this build's `<slip/meta.h>` | §2.2 |
+| `host-failure` | not the transform's fault: Kiln panicked compiling it; Kiln's stack guard tripped compiling it (the host's limit); the host gave the compiling thread less than the stack of §2.5 rule 5 | §2.5 rule 5 |
 | `entry-missing`, `entry-overloaded`, `entry-not-function`, `entry-not-consteval`, `entry-parameters`, `entry-type`, `entry-undefined` | the condition in the table of §2.3 rule 2 | §2.3 |
 | `entry-reserved` | a function with a reserved entry name | §2.3 |
 

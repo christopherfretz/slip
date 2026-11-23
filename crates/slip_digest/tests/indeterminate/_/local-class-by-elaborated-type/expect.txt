@@ -1,0 +1,2 @@
+# `struct Q *p` declares Q with no declaration statement: f's numbering does not find it
+indeterminate f()
