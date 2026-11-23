@@ -122,6 +122,12 @@ impl<'r> Unit<'r> {
         Some(&self.inputs[self.buffers[at].1].path)
     }
 
+    /// The shard's `inputs` (every file read, real path, size, digest),
+    /// for the unit's lifetime, so a handler may hold them.
+    pub fn inputs(&self) -> &'r [FileRef] {
+        self.inputs
+    }
+
     /// Errors reported so far by the job's engine (when the closure is
     /// called: the parse's own, without the driver's).
     pub fn errors(&self) -> u32 {
@@ -212,6 +218,10 @@ pub fn parse_observer_with<R: Send>(
             counters,
             digests: None,
             verdict: None,
+            edits: None,
+            binding: None,
+            rule_use: None,
+            spellings: None,
         }
     };
 

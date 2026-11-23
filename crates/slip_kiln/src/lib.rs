@@ -17,6 +17,8 @@
 //!   request (the preprocessing record, the written-reference and
 //!   declaration-extent tables);
 //! - [`KilnCheck`] (`spec/cdb.md` §6) and [`kiln_version`];
+//! - the module [`session`]: the transform unit compiled once and run
+//!   many times (`spec/api.md` §2), whose types name no Kiln type;
 //! - the module [`kiln`] (re-exports of Kiln's crates), which [`Unit`]'s
 //!   methods name, and the module [`snippet`] (an in-memory front end for
 //!   tests, whose types name Kiln's);
@@ -57,6 +59,7 @@ pub mod kiln {
     pub use kiln_source as source;
 }
 
+pub mod session;
 pub mod snippet;
 pub mod written;
 
