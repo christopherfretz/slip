@@ -871,6 +871,8 @@ const SWEEP: &[(&str, &str, &str, &str)] = &[
     ("adl", ADL, "h(2)", "h(3)"),
     ("adl", ADL, "return h(x)", "return ::h(x)"),
     ("adl", ADL, "return h(x)", "return a::h(x)"),
+    ("adl", ADL, "+ r(x)", "+ a::r(x)"),
+    ("adl", ADL, "+ q(y)", "+ ::q(y)"),
     ("struct", STRUCT, "use(S s)", "use(::S s)"),
     ("adl", ADL, "struct X {}", "struct X { int q; }"),
     ("adl", ADL, "int h(long)", "int h(int)"),
@@ -889,27 +891,49 @@ const STRUCT: &str = "struct S { int a = 1; short b; int m() const { return a; }
 int use(S s) { return s.m() + s.b; }\n";
 const TEMPLATES: &str = "template <class T> T id(T t) { return t; }\n\
 template <class T> struct B { T t; };\nint f() { return id(1); }\n";
-const ADL: &str = "namespace a { struct X {}; int h(X); }\nint h(a::X, long);\nint h(long);\n\
-int f() { a::X x; return h(x) + h(2); }\n";
+const ADL: &str = "namespace a { struct X {}; int h(X); template <class T> int r(T);\n\
+struct Y { operator long() const { return 0; } }; int q(Y); }\n\
+int h(a::X, long);\nint h(long);\nint r(a::X);\nint q(long);\n\
+int f() { a::X x; a::Y y; return h(x) + h(2) + r(x) + q(y); }\n";
 const CONSTANTS: &str = "enum E { e0, e1 };\nconstexpr int k = 3;\nunsigned char c = 200;\n\
 int f() { return k + e1; }\n";
 const MACROS: &str = "#define V 1\n#define W(x) x\nint f() { return W(V); }\n";
 
 /// The edits of the sweep that verify, each argued from the standard.
 ///
+/// - `h(x)` to `a::h(x)`: the unqualified call finds `::h(a::X, long)`
+///   and `::h(long)` by ordinary lookup and `a::h(X)` by argument-dependent
+///   lookup ([basic.lookup.argdep]); only `a::h(X)` is viable (one
+///   argument, and no conversion from `a::X` to `long`), so it is called
+///   ([over.match.viable]). `a::h` is looked up in `a`
+///   ([basic.lookup.qual.general]) and finds `a::h(X)` alone. The same
+///   function, the same argument and the same initialisation of its
+///   parameter: only the written form of the callee differs (its
+///   qualifier, `DeclRefExtra.qualifier`, and the call's `adl` bit,
+///   `CallExpr.bits-adl`, both `out`). Every unit of the two images is
+///   equal. Before WP-045 it was a mismatch for another reason: the
+///   implicit constructors of `a::X` were indeterminate (`pending.demand`)
+///   on both sides, with or without an edit; no unit differed then either.
 /// - `use(S s)` to `use(::S s)`: `::S` is looked up in the global
 ///   namespace ([basic.lookup.qual.general]) and names the class `S` that
 ///   `S` names; the parameter type, and so the function's type
 ///   ([dcl.fct]), and its body are the same. Nothing that resolves
 ///   through the declaration changes.
 ///
-/// Edits that keep the meaning and are a mismatch (conservative, not a
-/// wrong `verified`): `h(x)` to `a::h(x)` (the same function, but a
-/// qualified name suppresses argument-dependent lookup,
-/// [basic.lookup.argdep] p1, so the call is not the same expression). The
-/// `templates` tree is a mismatch for every edit, and is with no edit at all:
-/// its units are indeterminate until WP-045.
-const SWEEP_VERIFIES: &[(&str, &str)] = &[("struct", "use(S s)")];
+/// Requalifications that change the meaning, and are a mismatch: `n::g(1)`
+/// (another function); `a::r(x)` (the qualified name finds only the
+/// template `a::r`, where the unqualified call chose the non-template
+/// `::r(a::X)`, [over.match.best] p2.4); `::q(y)` (qualifying suppresses
+/// argument-dependent lookup, [basic.lookup.argdep] p1, and with it the
+/// better `a::q(Y)`: `::q(long)` through a user-defined conversion is
+/// called instead). `h(x)` to `::h(x)` does not parse (no `::h` is
+/// viable).
+const SWEEP_VERIFIES: &[(&str, &str)] = &[("adl", "return h(x)"), ("struct", "use(S s)")];
+
+/// The requalifications above that change the meaning: each must be a
+/// mismatch (`(tree, to)`).
+const SWEEP_MISMATCHES: &[(&str, &str)] =
+    &[("calls", "return n::g(1)"), ("adl", "+ a::r(x)"), ("adl", "+ ::q(y)")];
 
 #[test]
 fn sweep_no_wrong_verified() {
@@ -929,6 +953,9 @@ fn sweep_no_wrong_verified() {
         let v = tree.verify(&o);
         let got = v.verdict.as_ref().map(|v| (v.kind, v.reason.clone()));
         eprintln!("SWEEP {name} {from:?} -> {to:?}: {:?} {got:?}", v.outcome.status);
+        if SWEEP_MISMATCHES.contains(&(name, to)) {
+            assert_eq!(got.as_ref().map(|g| g.0), Some(VerdictKind::Mismatch), "{name}: {to:?}");
+        }
         if got.as_ref().is_some_and(|(k, _)| *k == VerdictKind::Verified) {
             verified.push((name, from));
         }
