@@ -657,14 +657,23 @@ order of their first declarations.
    from the global namespace. A component names every entity declared
    with that identifier as a member of a scope reached so far, where the
    members of a scope include the members of the scopes it contains
-   transparently: its inline namespaces, its unnamed namespaces, its
-   unscoped enumerations, its anonymous unions.
+   transparently, at any depth: its inline namespaces, its unnamed
+   namespaces, its unscoped enumerations, its anonymous unions and
+   anonymous structs. A function or class first declared by a friend
+   declaration is a member of the innermost enclosing namespace
+   ([namespace.memdef]/3), wherever the befriending class is defined.
 4. Scopes are namespaces, classes, enumerations, and class templates (the
-   members of the primary template's definition).
+   members of the primary template's definition). A typedef name for
+   linkage purposes ([dcl.typedef]/9: `typedef struct { int m; } T;`)
+   names its unnamed class as a scope: `T::m` is found, and `T` itself is
+   the typedef.
 5. Not followed: using-declarations, using-directives, namespace aliases,
-   type aliases as scopes, base classes. Not found: specialisations,
-   template parameters, entities declared in a function body, entities
-   with no written declaration.
+   type aliases as scopes (other than rule 4's), base classes. A
+   using-declaration and a namespace alias are found as themselves, under
+   their own name, and satisfy no kind predicate of §6.2 but `is_entity`.
+   Not found: specialisations (explicit, partial, and instantiations
+   explicit or implicit) and their members, template parameters, entities
+   declared in a function body, entities with no written declaration.
 6. The result holds every entity so named: each function of an overload
    set is one entity, and a function template is one entity.
 7. A name nothing matches returns an empty sequence.
@@ -953,7 +962,10 @@ kinds of piece:
    `unsupported` if `e` cannot be named by a qualified name without
    template arguments: a specialisation or a member of one, a member of a
    class template, a parameter, an entity with no identifier, an entity
-   declared in an unnamed class. Likewise if the digest has no key for
+   declared in an unnamed class (an unnamed enumeration is not a class:
+   rule 2 of §7.2 skips it), an entity whose only declarations are friend
+   declarations (qualified lookup does not find it, [namespace.memdef]/3).
+   Likewise if the digest has no key for
    `e` (an entity declared in a function body): a spelling that could not
    be checked (§7.2 rule 5) is not given.
 5. `cat` concatenates. A piece is a `code`, a `range` (as by `copy`) or a
@@ -988,7 +1000,8 @@ recorded. Version 0 has two spellings.
    must hold for each of them, and their name ranges must be one range.
 2. **Fully qualified.** Otherwise the text is `::` followed by the
    identifiers of `E`'s enclosing scopes and of `E`, separated by `::`.
-   Unnamed namespaces are skipped; inline namespaces are named.
+   Unnamed namespaces and unnamed enumerations are skipped; inline
+   namespaces are named.
 3. The rule depends only on the subject unit at the place of the edit, so
    every subject unit that sees the same place records the same edit.
 4. The API promises that the text is the host's best spelling of `E` and

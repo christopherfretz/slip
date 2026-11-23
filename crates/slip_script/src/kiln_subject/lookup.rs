@@ -152,13 +152,11 @@ impl KilnSubject<'_> {
         let mut contexts = bodies;
         while let Some(c) = contexts.pop() {
             for m in ast.decls.members(c) {
+                // A friend declaration is in a class's member list, never
+                // in a namespace's, and declares no member of the class:
+                // its wrapper is no value kind, so `consider` skips it.
                 match self.kind(m) {
                     DeclKind::LinkageSpec | DeclKind::Export => contexts.push(m),
-                    DeclKind::Friend => {
-                        if let Some(x) = self.befriended(m) {
-                            consider(x, &mut classes);
-                        }
-                    }
                     _ => consider(m, &mut classes),
                 }
             }

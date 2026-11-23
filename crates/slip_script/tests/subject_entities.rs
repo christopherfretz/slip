@@ -1158,6 +1158,21 @@ template <> void MS<int>::cm() {}
     });
 }
 
+/// The surviving mutant M18 (§5.5): the specialisation of a template that
+/// is declared and never defined comes from the template although nothing
+/// was instantiated.
+#[test]
+fn review_origin_of_specialisation_of_undefined_template() {
+    let src = "template <class T> void td(T);\nvoid use() { td(1); }\n";
+    with(&[("main.cpp", src)], |p, s| {
+        let ds = find(p, DeclKind::Function, "td", |ast, d| ast.spec_info(d).is_some());
+        assert!(!ds.is_empty(), "td<int>");
+        let e = s.entity_number(ds[0]);
+        assert_eq!(s.declarations(e), Ok(vec![]));
+        assert_eq!(s.origin(e), one(s, "td"));
+    });
+}
+
 /// The surviving mutant M10: `export` is seen through.
 #[test]
 fn review_export_is_seen_through() {
