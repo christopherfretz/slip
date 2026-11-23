@@ -93,11 +93,28 @@ Two transforms are part of the conformance suite and are referenced from
 TransformId = H("slip.transform.v0",
                 api level (§8.2, the value of __slip_lib_meta),
                 the command line of §2.1 with <resource> and every path as given,
+                the target (§2.1 rule 3): its triple, the digest of the predefines,
                 for each file the unit read, in the order first read:
                     its path as given, the digest of its content)
 ```
 
-`H` is the hash of `spec/model.md` §3. A run of Slip has one `TransformId`.
+`H` is the hash of `spec/model.md` §3, over the record (`spec/model.md`
+§2)
+
+```
+api_level:     uv
+command_line:  list<str>       the words given to Kiln after the program name
+triple:        str             the target's normalised triple, as Kiln writes it
+predefines:    digest          content digest of the unit's predefines buffer
+files:         list<File>      File := path: bytes, content: digest
+```
+
+The predefines buffer is what Kiln reads before the transform file and
+from no file: the target's predefined macros, then a `#define` or
+`#undef` line for each `-D` or `-U`. Its digest covers what the target
+makes visible to the preprocessor, and the triple what it makes visible
+to constant evaluation (sizes, alignments, endianness). The C++ standard
+library of rule 3 is in `files`. A change of this record is a new tag. A run of Slip has one `TransformId`.
 It is held by the run's transform request (`spec/edits.md` §3), whose
 content id is the **request id**. Every result of the map phase carries
 the request id, and reduce refuses to combine results that carry
@@ -1439,8 +1456,8 @@ Errors of the tool, as opposed to `slip::error` in a transform (§4).
 
 | Error | Raised when | Section |
 |---|---|---|
-| `transform-option` | an option the transform command line may not have | §2.1 |
-| `transform-compile` | the transform unit has an error | §2.1 |
+| `transform-option` | an option the transform command line may not have; a value, transform file or resource directory that begins with `@` or holds a NUL byte; a path that is not absolute; a `-D` whose replacement holds `embed` | §2.1 rules 2 and 6 |
+| `transform-compile` | the transform unit has an error; it may use `#embed` or `__has_embed`; Kiln stopped before compiling it (a transform file that cannot be read) | §2.1 rules 5 and 6 |
 | `transform-header` | the unit did not read this build's `<slip/meta.h>` | §2.2 |
 | `entry-missing`, `entry-overloaded`, `entry-not-function`, `entry-not-consteval`, `entry-parameters`, `entry-type`, `entry-undefined` | the condition in the table of §2.3 rule 2 | §2.3 |
 | `entry-reserved` | a function with a reserved entry name | §2.3 |

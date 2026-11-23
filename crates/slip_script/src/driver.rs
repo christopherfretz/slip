@@ -657,6 +657,19 @@ mod tests {
         RunReport { result, steps: 5, host_calls: 1, peak_bytes: 0, rendered: rendered.to_owned() }
     }
 
+    // WP-089 "Decided since" item 1: a `Host` over a `Sync` subject is
+    // `Send` (so the driver's handler satisfies `slip_kiln::session::
+    // Handler: Send`), and so is a loaded transform, which a worker hands
+    // to a subject unit's front-end thread by `&mut`. Checked when this
+    // compiles.
+    #[test]
+    fn decided_1_host_and_loaded_are_send() {
+        fn send<T: Send>() {}
+        send::<Host<'static>>();
+        send::<Calls<'static>>();
+        send::<Loaded<'static>>();
+    }
+
     // WP-089 rule 6: the handler refuses a call while the driver's flag is
     // clear, without reaching the host; with the flag set the call reaches
     // it (an operation the host does not have: a failure of the run).
