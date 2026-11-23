@@ -430,3 +430,90 @@ fn s3_reads_tracked_files_in_a_checkout() {
     git(f.root(), &["add", "tracked.txt"]);
     assert_eq!(lint(&f), [format!("tracked.txt:1: local-paths: absolute local path `{home}`")]);
 }
+
+// WP-090 `api-tests` (spec/landed/api/WP-090.md): every script test
+// directory under crates/slip_script/tests/api/ (one with a transform.cpp)
+// has t.cpp and expect.txt; every file there is in one; none is inside
+// another; the `// spec:` header line names a heading of spec/api.md.
+#[test]
+fn wp090_api_tests() {
+    let f = Fixture::new("api");
+    let api = "crates/slip_script/tests/api";
+    f.write("spec/api.md", "# api\n\n## 2. U\n\n### 2.1 Unit\n\n## Tests\n\n## Open questions\n");
+    f.write(
+        "spec/README.md",
+        &common::BASE
+            .iter()
+            .find(|(p, _)| *p == "spec/README.md")
+            .unwrap()
+            .1
+            .replace("| digest.md |", "| [api.md](api.md) | The API | draft |\n| digest.md |"),
+    );
+    let good = |dir: &str, spec: &str| {
+        f.write(&format!("{api}/{dir}/transform.cpp"), &format!("// args: -DX\n{spec}\nint x;\n"));
+        f.write(&format!("{api}/{dir}/t.cpp"), "int y;\n");
+        f.write(&format!("{api}/{dir}/expect.txt"), "transform <id>\n");
+    };
+    good("format/a", "// spec: §2.1 rule 3");
+    good("format/b", "// spec: §2");
+    f.write(&format!("{api}/format/b/inc/lib.h"), "int z;\n");
+    assert_eq!(lint(&f), none());
+
+    good("format/no-heading", "// spec: §2.2");
+    good("format/no-form", "// spec: 2.1");
+    good("format/no-spec", "// xfail: why");
+    f.write(&format!("{api}/format/after/transform.cpp"), "int x;\n// spec: §2\n");
+    f.write(&format!("{api}/format/after/t.cpp"), "");
+    f.write(&format!("{api}/format/after/expect.txt"), "");
+    f.write(&format!("{api}/format/missing/transform.cpp"), "// spec: §2\n");
+    good("format/a/nested", "// spec: §2");
+    f.write(&format!("{api}/format/stray.txt"), "");
+    f.write(&format!("{api}/values/t.cpp"), "");
+    assert_eq!(
+        lint(&f),
+        [
+            format!(
+                "{api}/format/a/nested/transform.cpp: api-tests: a script test inside the directory of the script test {api}/format/a"
+            ),
+            format!("{api}/format/after/transform.cpp: api-tests: has no `// spec:` header line"),
+            format!("{api}/format/missing: api-tests: has no t.cpp"),
+            format!("{api}/format/missing: api-tests: has no expect.txt"),
+            format!(
+                "{api}/format/no-form/transform.cpp:2: api-tests: `// spec: 2.1` does not name a section as `§N` or `§N.M`"
+            ),
+            format!(
+                "{api}/format/no-heading/transform.cpp:2: api-tests: `// spec: §2.2`: spec/api.md has no heading §2.2"
+            ),
+            format!("{api}/format/no-spec/transform.cpp: api-tests: has no `// spec:` header line"),
+            format!(
+                "{api}/format/stray.txt: api-tests: is in no script test directory (one with a transform.cpp)"
+            ),
+            format!(
+                "{api}/values/t.cpp: api-tests: is in no script test directory (one with a transform.cpp)"
+            ),
+        ]
+    );
+    f.remove("spec/api.md");
+    let unread: Vec<String> =
+        lint(&f).into_iter().filter(|l| l.contains("cannot be read")).collect();
+    assert_eq!(
+        unread,
+        [
+            format!(
+                "{api}/format/a/nested/transform.cpp:2: api-tests: `// spec: §2`: spec/api.md cannot be read"
+            ),
+            format!(
+                "{api}/format/a/transform.cpp:2: api-tests: `// spec: §2.1 rule 3`: spec/api.md cannot be read"
+            ),
+            format!(
+                "{api}/format/b/transform.cpp:2: api-tests: `// spec: §2`: spec/api.md cannot be read"
+            ),
+            format!(
+                "{api}/format/missing/transform.cpp:1: api-tests: `// spec: §2`: spec/api.md cannot be read"
+            ),
+            format!(
+                "{api}/format/no-heading/transform.cpp:2: api-tests: `// spec: §2.2`: spec/api.md cannot be read"
+            ),
+        ]
+    );
+}
