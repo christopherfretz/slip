@@ -1,15 +1,17 @@
 //! `Walk`, the context of one walk, and `run`, which drives it.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 
 use slip_kiln::kiln::ast::Ast;
+use slip_kiln::kiln::ast::RawId;
 use slip_kiln::kiln::ast::ids::DeclId;
 use slip_kiln::kiln::source::SourceManager;
 use slip_model::Digest;
 use slip_model::keys::RuleTable;
 
 use crate::keys::KeyRes;
-use crate::stream::Hashed;
+use crate::stream::{Hashed, Stream};
 use crate::types::TypeRef;
 use crate::units::{UnitClass, Written};
 use crate::{Cause, Input, Options, Output};
@@ -77,7 +79,50 @@ pub(crate) struct ExprState {
     /// The numbering of the profile being walked (`expr_dep::profile_expr`,
     /// digest-kinds §4.4); `None` outside one.
     pub profile: Option<crate::expr_dep::Frame>,
+    /// The nodes written first, with the state they were written in and
+    /// their stream, and each one's count (`spec/digest.md` §4.3
+    /// "Back-references", [`Walk::back_ref`]).
+    pub nodes: NodeMemo,
 }
+
+/// A statement or expression node, as the memo of back-references knows
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NodeRef {
+    Expr(slip_kiln::kiln::ast::ExprId),
+    Stmt(slip_kiln::kiln::ast::StmtId),
+}
+
+/// The memo of back-references: a node and the walk state its rows read
+/// (one word), and the identity of the stream it was written in, to the
+/// node's count in that stream.
+pub(crate) type NodeMemo = HashMap<(u64, u64), u64, BuildHasherDefault<NodeHasher>>;
+
+/// A multiplicative hasher for the memo's keys, which are two words the
+/// walk makes (not input an adversary picks: a node id and a counter).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct NodeHasher(u64);
+
+impl Hasher for NodeHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(u64::from(b));
+        }
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+/// The bits of a memo key above the node's id (`Walk::back_ref`).
+const KEY_STMT: u64 = 1 << 32;
+const KEY_DEPENDENT: u64 = 1 << 33;
+const KEY_IN_KEY: u64 = 1 << 34;
 
 impl ExprState {
     /// Nothing numbered and nothing around: the state a type digest
@@ -87,6 +132,7 @@ impl ExprState {
             && self.next_opaque == 0
             && self.dependent == 0
             && self.profile.is_none()
+            && self.nodes.is_empty()
     }
 }
 
@@ -269,6 +315,54 @@ impl<'a> Walk<'a> {
         std::mem::take(&mut self.unit.expr)
     }
 
+    /// `spec/digest.md` §4.3 "Back-references": the count of `node` when
+    /// stream `s` has written it already in the state the walk is in now,
+    /// which the caller then writes as `tag BACKREF`, `uv` the count, in
+    /// place of the node. Otherwise `None`, and `node` is counted as a
+    /// first writing of `s` in this state, unless a profile is being
+    /// walked (outside the memo: neither counted nor referred to).
+    ///
+    /// The state is what any row reads of the walk besides the node
+    /// (`spec/landed/digest-kinds/WP-049.md` "The state"): whether an
+    /// instantiation-dependent expression encloses the node and whether a
+    /// key is being computed. The memo lives in [`ExprState`], so it is
+    /// put aside and fresh with it for a type digest, a profile, a key, a
+    /// content digest and a unit; the stream's identity keeps a
+    /// back-reference inside the stream that wrote the node, so a stream
+    /// written alone (an element of a `*sorted` list, a discriminator)
+    /// neither names nor is named by another.
+    pub(crate) fn back_ref(&mut self, s: &mut Stream, node: NodeRef) -> Option<u64> {
+        #[cfg(test)]
+        if NO_BACKREFS.with(std::cell::Cell::get) {
+            return None;
+        }
+        let expr = &mut self.unit.expr;
+        if expr.profile.is_some() {
+            return None;
+        }
+        let mut key = match node {
+            NodeRef::Expr(e) => u64::from(e.raw()),
+            NodeRef::Stmt(st) => KEY_STMT | u64::from(st.raw()),
+        };
+        if expr.dependent > 0 {
+            key |= KEY_DEPENDENT;
+        }
+        if self.in_key > 0 {
+            key |= KEY_IN_KEY;
+        }
+        match expr.nodes.entry((key, s.id())) {
+            std::collections::hash_map::Entry::Occupied(n) => {
+                #[cfg(test)]
+                BACKREFS.with(|c| c.set(c.get() + 1));
+                Some(*n.get())
+            }
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(s.count_node());
+                None
+            }
+        }
+    }
+
     /// Counts the bytes of a hashed stream.
     pub(crate) fn hashed(&mut self, h: Hashed) -> Hashed {
         self.bytes += h.bytes;
@@ -281,6 +375,29 @@ impl<'a> Walk<'a> {
             self.queue.push((e, class));
         }
     }
+}
+
+#[cfg(test)]
+#[path = "backref_tests.rs"]
+mod backref_tests;
+
+#[cfg(test)]
+thread_local! {
+    /// How many back-references [`Walk::back_ref`] gave on this thread
+    /// (`backref_tests`).
+    pub(crate) static BACKREFS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Set: [`Walk::back_ref`] gives none and counts nothing, for a test
+    /// that measures an encoding as it would be without back-references.
+    static NO_BACKREFS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` with back-references off on this thread (`NO_BACKREFS`).
+#[cfg(test)]
+pub(crate) fn without_back_refs<T>(f: impl FnOnce() -> T) -> T {
+    NO_BACKREFS.with(|c| c.set(true));
+    let t = f();
+    NO_BACKREFS.with(|c| c.set(false));
+    t
 }
 
 #[cfg(test)]

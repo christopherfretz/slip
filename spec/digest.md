@@ -471,6 +471,43 @@ indeterminate.
   own: the first use writes the number and the expression, later uses
   the number.
 
+**Back-references.** Kiln's AST is a graph in places: one statement or
+expression node is the child of two parents, or is reached through the
+semantic form and again through the form as written. In one stream the
+statement and expression nodes are counted in the order they are first
+written, in one sequence for both, from 0 at the head of the stream. A
+node that the walk reaches again in the same stream and **in the same
+state** is written as `backref` (`digest-kinds.md` §1.7): its tag and
+`uv` the count of its first writing; its rows and children are not
+written again. The state is every fact of the walk other than the node
+that a row reads: whether an instantiation-dependent expression encloses
+the node, and whether a key is being computed
+(`spec/landed/digest-kinds/WP-049.md` "The state" lists the rows that
+read each); a node reached in another state is written in full and
+counted again. A first writing carries no number, so the stream of a
+unit in which no node is reached twice is what it is without the rule.
+
+- Opaque values come first: an `OpaqueValueExpr`, and a node numbered as
+  an opaque value's source when the walk reaches it, are written by the
+  rule above, are not counted, and are never written as `backref`.
+- Nodes walked while a canonical operand is written (profile mode,
+  `digest-kinds.md` §4.4) are not counted and never written as
+  `backref`.
+- A back-reference names a node of its own stream only. A type digest, a
+  key, a discriminator, a content digest, a unit and each element of a
+  `*sorted` list (encoded alone before the list is sorted) is a stream
+  of its own, enclosing or enclosed: none names a node another wrote.
+
+Why it cannot hide a difference: two streams are equal only if every
+first writing is equal and every back-reference names the same count,
+that is, the same node shared at the same places in the same state, so
+the node means at its second place what its first writing says. Sharing
+is a fact of the AST that Kiln builds deterministically from the
+translation unit: a change that turns a shared node into two equal nodes,
+or the reverse, changes the stream, a difference where the code
+generated is the same (allowed, §1 rule 6), which the shapes the tests
+hold do not show when only names change.
+
 ### 4.4 A stream does not depend on when it is written
 
 **A unit's stream is a function of the translation unit and the unit
@@ -484,7 +521,8 @@ must keep:
   back-references to a node already written in the same stream) starts
   from nothing at the head of the unit's stream, and is saved and
   restored around a stream written inside another (a type digest, a
-  key);
+  key); a back-reference, besides, never names a node of another
+  stream (§4.3 "Back-references");
 - a memo holds only values that are functions of their key (a type's
   digest, an entity's key), never a position in some unit's numbering;
 - nothing a stream writes is read from state that writing another

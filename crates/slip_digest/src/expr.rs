@@ -31,6 +31,10 @@
 //!   writes.
 //! - Opaque values: [`Item::Opaque`] numbers sources per unit
 //!   (`walk::UnitState::opaques`) in the order the walk first reaches them.
+//! - Nodes reached twice: [`write_node`] writes a node the stream wrote
+//!   already in the same state as a back-reference (`Walk::back_ref`),
+//!   after the parentheses are skipped and before anything else, so the
+//!   kinds' rows never know whether they are a first writing.
 //! - Overloaded member access: `MemberExpr.b` is the first candidate, and
 //!   is written like any member.
 //! - Literals from builtin macros: written by value, like any literal.
@@ -50,8 +54,8 @@ use slip_kiln::kiln::ast::{
 
 use crate::Cause;
 use crate::stream::{FlagWord, Stream};
-use crate::tables::{Row, expr_kind, fp_round, object_kind, value_category};
-use crate::walk::{TOO_DEEP, Walk};
+use crate::tables::{Row, expr_kind, fp_round, object_kind, value_category, walk_row};
+use crate::walk::{NodeRef, TOO_DEEP, Walk};
 
 /// The function that writes the rows of one kind (`expr_init.rs`,
 /// `expr_dep.rs`, `expr_misc.rs`): the rows of that kind only, in table
@@ -392,6 +396,10 @@ fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out
     };
     let ast = w.ast;
     let words = ast.exprs.get(e);
+    if let Some(count) = written_before(w, s, e, words.kind()) {
+        s.uv(u64::from(walk_row::BACKREF)).uv(count);
+        return;
+    }
     let n = node(w, e);
     let row = expr_kind::row(&n.kind);
     s.tag(row);
@@ -421,6 +429,24 @@ fn write_node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, keep_paren: bool, out
     if dependent {
         out.push(Item::LeaveDependent);
     }
+}
+
+/// The count of `e` when this stream has written it already in the
+/// walk's state (§7 "Nodes reached twice", `Walk::back_ref`); otherwise
+/// `None`, `e` counted as a first writing. An opaque value, and a source
+/// numbered as one, are written as `OpaqueValueExpr.a` says and are not
+/// counted: the opaque rule first.
+fn written_before(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, kind: ExprKind) -> Option<u64> {
+    #[cfg(test)]
+    if tests::NEST.with(std::cell::Cell::get) {
+        // The frame test walks one node inside itself on purpose.
+        return None;
+    }
+    let opaques = &w.unit.expr.opaques;
+    if kind == ExprKind::OpaqueValueExpr || (!opaques.is_empty() && opaques.contains_key(&e)) {
+        return None;
+    }
+    w.back_ref(s, NodeRef::Expr(e))
 }
 
 /// `e` with its redundant parentheses skipped (§7 "Parentheses"): a
