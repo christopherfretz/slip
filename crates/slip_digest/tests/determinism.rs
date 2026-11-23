@@ -60,7 +60,6 @@ struct First {
     pending: bool,
     texts: Vec<String>,
     findings: Vec<keys::Finding>,
-    unparsed: Vec<String>,
 }
 
 fn first() -> &'static [First] {
@@ -77,14 +76,13 @@ fn first() -> &'static [First] {
                 pending: common::is_pending(dir),
                 texts: Vec::new(),
                 findings: Vec::new(),
-                unparsed: Vec::new(),
                 rel: rel.clone(),
             };
             for side in [Side::A, Side::B] {
                 let r = common::digest_side(dir, side);
                 match &r {
                     Ok(d) => f.findings.extend(keys::check(&rel, side, d)),
-                    Err(_) => f.unparsed.push(format!("{rel} side {side:?}")),
+                    Err(e) => f.findings.push(keys::unparsed(&rel, side, e)),
                 }
                 f.texts.push(text(&r));
             }
@@ -97,8 +95,10 @@ fn first() -> &'static [First] {
                     rel: common::rel(dir),
                     pending: common::is_pending(dir),
                     texts: vec![format!("panicked: {p}")],
-                    findings: Vec::new(),
-                    unparsed: vec![format!("{}: panicked: {p}", common::rel(dir))],
+                    findings: vec![keys::Finding::Problem(format!(
+                        "{}: panicked: {p}",
+                        common::rel(dir)
+                    ))],
                 })
             })
             .collect()
@@ -195,15 +195,17 @@ fn determinism() {
 fn keys_and_names_are_unique() {
     let all = first();
     let problems = keys::problems(all.iter().flat_map(|f| &f.findings));
-    let unparsed: Vec<&String> = all.iter().flat_map(|f| &f.unparsed).collect();
     eprintln!(
-        "keys: {} directories ({} pending), {} sides not parsed (their runner reports them)",
+        "keys: {} directories ({} pending), {} sides listed as not digesting",
         all.len(),
         all.iter().filter(|f| f.pending).count(),
-        unparsed.len()
+        keys::UNPARSED.len()
     );
-    for u in &unparsed {
-        eprintln!("  not parsed: {u}");
-    }
+    assert!(
+        all.len() >= keys::MIN_DIRS,
+        "the sweep walked {} directories, fewer than {}",
+        all.len(),
+        keys::MIN_DIRS
+    );
     assert!(problems.is_empty(), "{} problems:\n{}", problems.len(), problems.join("\n"));
 }
