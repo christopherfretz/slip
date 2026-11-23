@@ -1,0 +1,3 @@
+# WP-069: the members of two implicit instantiations take the pattern member's mapped name
+# (follow_patterns); only the pattern member is counted: theirs were not matched by the rule.
+relocate S::f() => S :: g

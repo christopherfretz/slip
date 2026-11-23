@@ -1,0 +1,4 @@
+spec: edits.md §9.1 (a target of three components; a nested namespace of the same name elsewhere is no match)
+from: a::b::f
+to: g
+kind: function

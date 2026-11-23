@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. Owned definitions of a function, a static data member, a nested class and a member function the dependency declares, and of a function the dependency declares in the destination acme: all dependency entities (a declaration lies in dep.h), kept where they are.
+relocate legacy => :: acme

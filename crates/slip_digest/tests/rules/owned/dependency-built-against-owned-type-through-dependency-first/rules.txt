@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 fix round. Review finding F2: the dependency's legacy::consume(legacy::UserData*) is defined in its binary; the post-image calls consume(acme::UserData*), a link failure. user_types.h is entered first through dep.h: read-only for this translation unit.
+relocate legacy => :: acme

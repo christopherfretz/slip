@@ -1,0 +1,7 @@
+subjects:
+  9f28e21c seed unreachable rule=yes n::f(int)
+links:
+claims:
+  main.cpp:1:20+1 replace "g" t0 votes=1 none [9f28e21c]
+  main.cpp:3:15+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
+changed:

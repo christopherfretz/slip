@@ -1,0 +1,4 @@
+spec: edits.md §9.5 name_taken (the new name declared in another scope does not set it)
+from: n::f
+to: g
+kind: function

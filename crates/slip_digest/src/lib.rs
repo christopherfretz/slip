@@ -90,6 +90,7 @@
 //! | `fp::fp_override(s, o)` | `record FpOverride` (§6.1) |
 //! | `attrs::decl_attrs(w, s, d)` | `attrs` of a declaration over its chain, a list per declaration, the definition's apart (a parameter's: parameter i of its function's declarations), then `AnnotArena` `of_decl` and `of_base` (§10.1, §10.5) |
 //! | `attrs::stmt_attrs(w, s, l)` | `attrs` of a statement (`AttributedStmt.a`): the nodes of list `l` in stored order (§10.1) |
+//! | `enclosing::write(w, s, e)` | the walk's row `enclosing` (§1.7) at the end of the unit of `e` when it is at namespace scope: its linkage, whether an unnamed namespace encloses it, and the visibility each declaration takes from its namespaces (WP-113) |
 //! | `other::module_rows(w, s, d)` | the rows `points` and `explicit_defs` of `ModuleTable` (§10.7), from the first declaration; empty forms when ownership is not tracked |
 //! | `order::write(w, s)` | the order unit's stream (digest §2.1): the keys of the variable definitions at namespace and class scope in order, then the translation unit's imports (§10.7) |
 //! | `templ::decl_maps(w, s, d)` | the `in` rows of `TemplateTables` keyed by `DeclId` (§9.5), each in its empty form when absent |
@@ -212,6 +213,7 @@ mod decl_class;
 mod decl_func;
 mod decl_scope;
 mod demand;
+mod enclosing;
 mod expr;
 mod expr_core;
 mod expr_dep;
@@ -226,9 +228,12 @@ pub mod map;
 mod names;
 mod order;
 mod other;
+mod owned;
 pub mod query;
 pub mod records;
 mod refs;
+mod rule_use;
+pub mod spelling;
 mod stmt;
 mod stream;
 mod templ;
@@ -241,6 +246,7 @@ mod walk;
 mod tests;
 
 pub use names::display_name;
+pub use owned::{ReadOnly, ReadOnlyFiles};
 pub use walk::STACK_SIZE;
 
 /// A finished translation unit (`spec/digest.md` §1 rule 4).
@@ -273,9 +279,19 @@ pub enum Detail<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct Options<'a> {
     pub rules: &'a slip_model::keys::RuleTable,
+    /// Which files of the image are read-only (`spec/verify.md` §2.1):
+    /// under a non-empty `rules`, a rule matches an entity none of whose
+    /// declarations lies in one, and the namespaces around a member are
+    /// mapped from the member's point of view (`owned.rs`). Not read when
+    /// `rules` is empty. [`ReadOnly::EVERY_FILE`] where the run's files
+    /// are not known; [`ReadOnly::files`] of [`ReadOnlyFiles`] for the verify
+    /// job.
+    pub read_only: ReadOnly<'a>,
     pub detail: Detail<'a>,
     /// Fill `Output::names`.
     pub names: bool,
+    /// Fill `Output::rule_use` (`spec/verify.md` §9.1, §9.5).
+    pub rule_use: bool,
 }
 
 /// What a walk produces.
@@ -290,6 +306,10 @@ pub struct Output {
     /// For every unit, the entity as a person would write it
     /// (`verify.md` §6 `name`); sorted by key; empty unless asked.
     pub names: Vec<(Digest, String)>,
+    /// How each rule was used (`spec/verify.md` §9.1): sorted by rule,
+    /// only rules with `via` or `direct` not 0; empty unless asked for
+    /// under a table that is not empty (`rule_use.rs`).
+    pub rule_use: Vec<slip_model::agreement::Use>,
 }
 
 /// Why a unit is indeterminate (`spec/digest.md` §10).
@@ -306,6 +326,10 @@ pub enum Cause {
     Collision,
     /// A local type no unit's walk declares (digest §4.3).
     UndeclaredLocal,
+    /// An entity at namespace scope whose declarations take different
+    /// visibilities from their namespace openings: which one a use's
+    /// symbol takes depends on where the use is (digest §10, WP-113).
+    VisibilityByUse,
     /// An area of the walk that is not written yet. Removed from this
     /// enumeration, with `Area`, when the last area lands.
     Pending(Area),
@@ -320,6 +344,7 @@ impl Cause {
             Cause::Unaccounted(_) => "unaccounted",
             Cause::Collision => "collision",
             Cause::UndeclaredLocal => "undeclared_local",
+            Cause::VisibilityByUse => "visibility_by_use",
             Cause::Pending(_) => "pending",
         }
     }
@@ -332,7 +357,9 @@ impl std::fmt::Display for Cause {
                 write!(f, "{} {what}", self.name())
             }
             Cause::Pending(area) => write!(f, "pending {}", area.name()),
-            Cause::Error | Cause::Collision | Cause::UndeclaredLocal => f.write_str(self.name()),
+            Cause::Error | Cause::Collision | Cause::UndeclaredLocal | Cause::VisibilityByUse => {
+                f.write_str(self.name())
+            }
         }
     }
 }

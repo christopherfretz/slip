@@ -6,9 +6,10 @@
 //! Outside the trusted base: no verdict depends on a name (§5.2). The one
 //! thing a verdict takes from here is [`Side::tu`], for guard G3.
 
-use slip_digest::{Detail, Input, Options, digest};
+use slip_digest::{Detail, Input, Options, ReadOnly, ReadOnlyFiles, digest};
 use slip_model::Digest;
 use slip_model::keys::RuleTable;
+use slip_model::transform::Ownership;
 use slip_model::verdict::Finding;
 
 /// Longest `Finding::name`, in bytes (§6.1).
@@ -36,11 +37,25 @@ impl Side {
     }
 }
 
-/// One walk of `input` under `rules` (detail `none`, names asked for),
-/// keeping the names of the units whose key is in `keys` (sorted, no
-/// duplicates).
-pub fn take(input: &Input<'_>, rules: &RuleTable, keys: &[Digest]) -> Side {
-    let output = digest(input, &Options { rules, detail: Detail::None, names: true });
+/// One walk of `input` under `rules` and the run's `files` (detail
+/// `none`, names asked for; read-only files as the verify job's walk of
+/// the same image decides them), keeping the names of the units whose key
+/// is in `keys` (sorted, no duplicates).
+pub fn take(
+    input: &Input<'_>,
+    rules: &RuleTable,
+    files: Option<&Ownership>,
+    keys: &[Digest],
+) -> Side {
+    let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
+    let options = Options {
+        rules,
+        read_only: ReadOnly::files(&read_only),
+        detail: Detail::None,
+        names: true,
+        rule_use: false,
+    };
+    let output = digest(input, &options);
     let mut names: Vec<(Digest, String)> =
         output.names.into_iter().filter(|(k, _)| keys.binary_search(k).is_ok()).collect();
     names.sort();

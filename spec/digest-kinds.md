@@ -214,6 +214,122 @@ gives each as a constant of `walk_row`.
 | Tag | Row | Written |
 |---|---|---|
 | 1537 | `backref` | in place of a statement or expression node that the stream has written already in the same state: `tag 1537`, then `uv` the node's count (digest §4.3 "Back-references"); the node's rows and children are not written again |
+| 1538 | `enclosing` | at the end of the stream of a unit at namespace scope (§5.1 item 6): what the entity takes from its enclosing namespaces other than their names (rule below) |
+
+The row `enclosing` is written for the unit (not a declaration walked
+in place, §2.4) of every entity that is not a namespace, not
+content-keyed (digest §3.3) and not of a key kind a scope may repeat
+(a using-declaration and its shadows, a namespace alias, `using enum`, a
+friend declaration: `units::repeatable`), and whose representative's (the
+declaration the walk writes the unit from, `Walk::representative`)
+semantic context, through linkage
+specifications and `export` declarations, is a namespace or the
+translation unit, and for a block-scope `extern` declaration's entity,
+which is keyed in its namespace (§2.4): `tag 1538`, then
+
+1. `enum Linkage`: the linkage of the entity's name, Kiln's
+   `Ast::linkage` of the representative ([basic.link]/3-4);
+2. `bool`: an unnamed namespace encloses the entity, at any depth
+   (`Ast::in_anonymous_namespace` of the representative);
+3. two `opt<uv>`, the visibility pair that every declaration of the
+   entity shares (item 4): the `VISIBILITY.a` of the nearest namespace
+   opening around the declaration that has a `visibility` attribute, and
+   the `a` of the nearest that has a `type_visibility` or a `visibility`
+   attribute (the first if it has both); 0 default, 1 hidden,
+   2 protected, another value indeterminate. Absent when no namespace
+   is around the declaration, or none around it has the attribute.
+   "Around" is the walk clang makes for the declaration's semantic
+   context: it starts at an opening of the declaration's namespace,
+   which is, for a declaration instantiated from a pattern (a friend
+   defined or declared in a class template, a friend function template:
+   `Ast::instantiated_from`, through every level, for a template its
+   pattern's), that of the pattern, never one found by the position of
+   the instantiation (clang++-19 gives such a friend the opening its
+   class template is written in, whatever openings of the namespace come
+   between; `enclosing/friend-instantiated-after-plain-reopening`), and
+   for any other declaration
+   - the opening the declaration is written in (its lexical context,
+     through linkage specifications and `export`), when that is an
+     opening of its semantic namespace;
+   - otherwise (a declaration written qualified outside its namespace:
+     `int n::f() {}`, `struct n::S {…};`, a friend `int n::f(S) {}`, an
+     explicit specialisation `template<> int d::g<int>() {}`, or
+     `int a::b::f() {}` written in an opening of `a`), the latest opening
+     of the namespace written before the declaration (by `DeclId`, which
+     Kiln gives in the order declarations are written); where there is
+     none the unit is indeterminate (`enclosing/opening`);
+   - for a block-scope `extern` declaration, the function it is written
+     in;
+
+   and goes outward, a namespace opening's next being the opening it is
+   written in (its lexical context), any other context's next its
+   semantic context. The attribute is the opening's own (the
+   declaration of the namespace that the walk meets), not one of
+   another opening of the same namespace. Kiln's code generation starts
+   at the semantic context instead (`kiln_codegen/src/visibility.rs`
+   `ns_lv`, `parent_ctx`), and reads the first declaration where clang
+   reads the most recent (`spec/landed/digest/WP-113.md`, "For Kiln");
+4. the pair is computed for each of the declarations of item 5, and
+   the pairs must be equal: a symbol's visibility is that of the
+   declaration most recent where it is defined or used (clang++-19: an
+   undefined reference takes the declaration most recent at the use), so
+   when they differ it is a fact of each use's place, which no unit
+   holds, and the unit is indeterminate (`visibility_by_use`, digest
+   §10). The one pair they share is written once: written per
+   declaration it would add only their number, which no symbol depends
+   on;
+5. the declarations whose pairs are compared and written are those of
+   the chain (`Walk::redecls`) of the entity that governs the symbol's
+   visibility, as clang++-19 gives it (`spec/landed/digest/WP-113.md`,
+   "Specialisations"), each filter below applied only when it keeps at
+   least one declaration (when it would keep none, all the declarations
+   it was given count: a chain made only of declarations a filter drops,
+   such as an explicit specialisation known only through the declaration
+   Kiln made for it, or an entity declared only as an instantiated
+   friend):
+   - a specialisation of a class template or of a variable template, of
+     any kind (explicit, partial, implicit or explicit instantiation),
+     a member of one, and an instantiation of a function template take
+     the template's: the opening a specialisation is written in does
+     not change its symbols;
+   - of a variable template (its own, or the one a specialisation
+     takes) only the first declaration counts;
+   - an explicit specialisation of a function template takes its own
+     declarations, without the declaration Kiln makes for it from the
+     template (at the location of a declaration of the template or of
+     its pattern);
+   - a class or an enumeration that this translation unit defines takes
+     its definition alone, wherever it is used, before the definition
+     too;
+   - for a function or a variable this translation unit does not define,
+     an absent visibility is read as 0 (default) before the pairs are
+     compared and written: an undefined reference takes an opening's
+     attribute or default, never `-fvisibility`;
+   - a declaration instantiated from a pattern (above) that is not the
+     entity's definition (a friend declared in a class template) counts
+     only when the entity has no other declaration (clang++-19: `int
+     h(int);` in a plain opening and `friend int h(int);` in an
+     instantiated class template of a hidden one give `UND DEFAULT`;
+     `enclosing/friend-declared-beside-namespace-declaration`).
+     A declaration the compiler makes (`IMPLICIT`) counts as any other:
+     Kiln makes none at namespace scope that is chained with a written
+     one in an opening of another pair (the global allocation functions
+     are at file scope; `enclosing/implicit-align-val-t-beside-written`),
+     and one would make the unit indeterminate, never a wrong equal.
+
+A namespace's unit has no such row: a namespace has no symbol, its own
+linkage is read by reflection alone (`has_internal_linkage(^^n)`), whose
+result is a value of the unit that asks, and its unit is one for every
+namespace a rule merges onto it (`spec/verify.md` §2.1). A
+content-keyed unit (a `static_assert`, a using-directive, file-scope
+`asm`, a `consteval` block) declares no entity with linkage or a
+symbol.
+
+Every name a key holds is rewritten by a rule; what this row holds is
+not, so a relocation that changes it changes the unit
+(`spec/landed/digest/WP-113.md`). An entity inside a class or a
+function takes all of it from that class or function, whose unit holds
+the row.
 
 ## 2. Reading a table as a stream
 
@@ -396,7 +512,9 @@ digests, so it maps under relocation with everything else (digest §3.4).
 The type digest of a `QualType` `q` is `H("slip.type.v1", stream)` where
 the stream is, for `c = TypeContext::canonical(q)`: the rows of `Quals` for
 `c`'s qualifiers, then `enum TypeView` for `TypeContext::canonical_view(c)`.
-A bare `TypeId` is digested as the unqualified `QualType` of it.
+A bare `TypeId` is digested as the unqualified `QualType` of it. §4.2
+rule 9 is the one exception: a type through whose sugar layout reads a
+typedef carrying an alignment.
 
 The walk reads types only through `TypeView`, `FuncProto`'s accessors,
 `ArgView`, `Nns` and `TemplateName`: the decoded forms. The stored records
@@ -467,6 +585,90 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    `static_assert` condition and a block-scope variable's value read
    there, the operand of a `ConstantExpr` with no stored value), the type
    is written by value.
+9. **Typedefs carrying an alignment** (`spec/landed/digest/WP-107.md`).
+   Kiln's layout and `alignof` read the alignment of a typedef that
+   carries one (`Layouter::type_info`, `kiln_abi/src/layout/mod.rs:365`,
+   its `Typedef` arm), which the canonical type has lost. A typedef
+   *carries an alignment* when any of its declarations has an `ALIGNED`
+   attribute or an entry in `DeclArena::cold.alignment`
+   (`max_align_attr`, `kiln_abi/src/layout/props.rs:78`).
+
+   The typedefs of `q` that layout reads are found by `type_info`'s walk
+   from `q`:
+   - from a `Typedef`, its `underlying`;
+   - from a `QualifiedArray` or an `ExtQual`, the base;
+   - from an array of any of the four kinds, or a `Complex`, the element;
+   - from an `Atomic`, the value type;
+   - from an `LValueRef` or `RValueRef`, the referee. `alignof(T&)` is
+     `alignof(T)` ([expr.alignof]/3); Kiln reads the canonical referee
+     there, so this writes one fact more;
+   - from any other view, one step of `Ast::layout_desugar_once`.
+
+   The walk stops at a canonical type, whose parts are canonical, or when
+   a step returns its argument. Every typedef met that carries an
+   alignment is listed, in the walk's order. When the list is empty,
+   `q`'s digest is §4.1's. Otherwise the stream is:
+   1. the tag of `Typedef`;
+   2. the list, as `ref*`;
+   3. the digest of `TypeContext::canonical(q)` (`digest`).
+
+   After 4096 steps the walk stops, and the type is indeterminate:
+   `Unsupported("TypeView/Typedef-aligned-bound")`.
+
+   A listed typedef whose declarations do not all carry the same
+   alignment makes the type indeterminate:
+   `Unsupported("typedef/alignment-by-declaration")`. The typedef's own
+   unit is indeterminate for the same cause. The declarations disagree
+   when one carries an alignment and another none, or their requests
+   (each `ALIGNED` attribute's value, the target's biggest alignment
+   for one with no argument, the canonical type of `alignas(type-id)`,
+   and the `cold.alignment` value) differ as sets, or a request's value
+   is not a constant the AST holds (read as Kiln's layout reads it). A
+   single declaration agrees. Kiln's `alignof`
+   (`Ast::layout_attributed_typedef`, `kiln_ast/src/layout_sugar.rs:58`,
+   asked by the Oven and by codegen) reads only the declaration the
+   sugar node names, and its layout reads every declaration present
+   when a class is first laid out, then caches the layout. So the answer
+   depends on which declaration a use names and where a layout is first
+   asked for, facts no unit holds. The digest does not try to say which.
+   The cause goes when Kiln reads the declarations as clang does.
+
+   What is written depends on the sugar a typedef `I` carrying an
+   alignment is reached through.
+
+   The list holds `I` when `I` is reached through:
+   - a typedef or alias-declaration naming `I`;
+   - `decltype` of an entity of type `I`;
+   - an elaborated name, or `using`;
+   - a deduced type (`auto x = i;`, whose type keeps `I` in Kiln and in
+     clang);
+   - an alias template's argument (`A<I>`). Kiln keeps it, as clang 22
+     does; clang 19 makes it canonical;
+   - a cv-qualified type or an array of `I`, or an array typedef of `I`.
+
+   Nothing is written in these cases:
+   - A class, function or variable template's substituted argument
+     (`T` inside `X<I>` or `f<I>`): `layout_desugar_once` makes it
+     canonical, as clang instantiates from canonical arguments. A class
+     template's arguments are stored canonical; a function template
+     specialization keeps its first use's sugar in Kiln, which layout
+     does not read.
+   - A pointer, a member pointer, a function type and a vector are not
+     walked: their layout reads no typedef's alignment. Where a use reads
+     the pointee's or the result's alignment (`*p`, `decltype(f())`,
+     `p->*mp`), the expression's type, with the sugar Kiln gives it, is
+     written in the using unit, so the pointer and the function need not
+     be. (Kiln gives `.*` and `->*` the canonical pointee:
+     `spec/landed/digest/WP-107.md`, "For Kiln".)
+
+   Only the outermost listed typedef whose alignment is not 0 decides.
+   Listing the others is a false difference, never a wrong equal.
+
+   A typedef is written as its entity, so a rule maps it like any other
+   reference. The alignment it carries is a fact of its own unit (the
+   typedef's attributes). A class whose field is of type `I` holds `I`'s
+   `Ref`, and its layout follows from `I`'s unit, as from a field's class
+   type.
 
 ### 4.3 The type records
 
@@ -617,9 +819,9 @@ Derived from a node's operands by Kiln when the node is built.
 | `DependentAddrSpace` | type | in | tag 1047 |  |
 | `DependentAddrSpace.pointee` | type | in | type |  |
 | `DependentAddrSpace.space` | value | in | enum ExprOperand |  |
-| `Typedef` | written | out | - | sugar: the alias a type was reached through (digest §1 rule 2) |
-| `Typedef.decl` | written | out | - | sugar |
-| `Typedef.underlying` | written | out | - | sugar |
+| `Typedef` | type | in | tag 1048 | §4.2 rule 9 only: a type through whose sugar layout reads a typedef carrying an alignment; elsewhere sugar, the alias a type was reached through (digest §1 rule 2), not written |
+| `Typedef.decl` | entity | in | ref* | §4.2 rule 9: every typedef carrying an alignment that the walk meets, in its order |
+| `Typedef.underlying` | type | in | type | §4.2 rule 9: the canonical type of the whole type, not this field |
 | `Using` | written | out | - | sugar: the using-declaration a type was reached through |
 | `Using.shadow` | written | out | - | sugar |
 | `Using.underlying` | written | out | - | sugar |
@@ -1608,7 +1810,9 @@ written as:
    (§10.5);
 4. the `in` rows of `TemplateTables` whose map is keyed by `DeclId`
    (§9.5);
-5. the rows `points` and `explicit_defs` of `ModuleTable` (§10.7).
+5. the rows `points` and `explicit_defs` of `ModuleTable` (§10.7);
+6. for a unit at namespace scope, and not for a declaration walked in
+   place, the walk's row `enclosing` (§1.7).
 
 For a unit the entity is read as §2.3 says. A row encoded `keyed` writes
 nothing here.
@@ -2376,7 +2580,7 @@ initialisation order.
 |---|---|---|---|---|
 | `members` | bookkeeping | out | - | a transparent scope: its members are members of the enclosing context |
 | `aux-lang` | flag | in | enum LinkageLang | low byte, `LinkageSpec` only; written in the stream of each function and variable whose first declaration is lexically inside (rule below) |
-| `aux-braceless` | written | out | - | bit 8: `extern "C" int x;` without braces, which makes the declaration `extern` ([dcl.link]/8). For a function it means nothing; for a variable its effect is whether the declaration is a definition, which the variable's unit holds already (`DeclMisc` `definition`, §2.3), and its linkage, which its key holds (`spec/landed/digest-kinds/WP-033.md`) |
+| `aux-braceless` | written | out | - | bit 8: `extern "C" int x;` without braces, which makes the declaration `extern` ([dcl.link]/8). For a function it means nothing; for a variable its effect is whether the declaration is a definition, which the variable's unit holds already (`DeclMisc` `definition`, §2.3), and its linkage, which the row `enclosing` of its unit holds (§1.7; `spec/landed/digest-kinds/WP-033.md`, `spec/landed/digest/WP-113.md`) |
 
 Every function and variable stream holds one `enum LinkageLang?`: the
 language of the innermost `LinkageSpec` that lexically encloses the
@@ -2394,6 +2598,19 @@ rule of §5.2.
 |---|---|---|---|---|
 | `C` | flag | in | tag 1 |  |
 | `Cxx` | flag | in | tag 2 |  |
+
+### `kiln_ast::linkage::Linkage`
+
+`kind=enum; pin=none`
+
+The value `Ast::linkage` returns, written in the row `enclosing` of §1.7.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `None` | flag | in | tag 1 |  |
+| `Internal` | flag | in | tag 2 |  |
+| `Module` | flag | in | tag 3 |  |
+| `External` | flag | in | tag 4 |  |
 
 ### `kiln_ast::decl::StaticAssertData`
 
@@ -6600,7 +6817,9 @@ Slip's.
 
 `TypeView`, `ArgView`, `ParamAbi`, `AddrSpace`, `ConstValue`, `Scalar` and
 `ByteImage` are decoded forms without a schema descriptor (`pin=none`),
-and `DeclNameView`, through which `DeclName` is read, is another. A
+and `DeclNameView`, through which `DeclName` is read, is another;
+`Linkage` is the value of a query (`Ast::linkage`), which no descriptor
+describes either. A
 variant added to one of them is caught by obligation 2 (the walk does not
 compile) and by nothing else. `AttrKind` is a newtype: a new constant is
 caught only when a walk meets it.

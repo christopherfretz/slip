@@ -1739,3 +1739,66 @@ fn s8_4_command_already_carrying_the_words() {
     assert_eq!(refs_only, (false, plain.1, 0));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// WP-071 review, A1: a partial specialisation of a class or variable
+// template (in its namespace or out of line) has the template as its
+// origin: its name token spells the template.
+#[test]
+fn s5_5_origin_of_a_partial_specialisation_is_its_template() {
+    let src = "\
+namespace n {
+template <class T> struct S {};
+template <class T> struct S<T*> {};
+template <class T> constexpr int v = 1;
+template <class T> constexpr int v<T*> = 2;
+}
+template <class T> constexpr int n::v<T&> = 4;
+";
+    with_unit("origin-partial", src, |u| {
+        let s = decl_at(u, at(src, "struct S {}", "S").0);
+        let v = decl_at(u, at(src, "int v = 1", "v").0);
+        for (ctx, word, want) in
+            [("struct S<T*>", "S", s), ("int v<T*>", "v", v), ("int n::v<T&>", "v", v)]
+        {
+            let d = decl_at(u, at(src, ctx, word).0);
+            assert_ne!(d, want, "`{ctx}` is a declaration of its own");
+            assert_eq!(origin(u, d), want, "`{ctx}`");
+        }
+    });
+}
+
+// WP-071 review, A4: a friend declaration that does not define the
+// function is not followed to the pattern's (`spec/digest.md` §3.4), so a
+// call's origin is the function's, instantiated or not; a friend defined
+// in the template is followed.
+#[test]
+fn s5_5_origin_does_not_follow_a_friend_that_does_not_define() {
+    for (name, instantiate) in [("origin-friend-a", "n::A<int> a;\n"), ("origin-friend-b", "")] {
+        let src = format!(
+            "namespace n {{\nvoid f(int);\ntemplate <class T> struct A {{ friend void f(int); T x{{}}; }};\nvoid f(int) {{}}\n}}\n{instantiate}void h() {{ n::f(1); }}\n"
+        );
+        with_unit(name, &src, |u| {
+            let r = written_refs(u);
+            let call =
+                r.iter().find(|x| bytes(u, x.name) == at(&src, "n::f(1)", "f")).expect("the call");
+            let f = decl_at(u, at(&src, "void f(int);\ntemplate", "f").0);
+            let o = origin(u, call.referent);
+            assert_eq!(u.ast().first(o), u.ast().first(f), "{name}: the origin is the function's");
+        });
+    }
+    let src = "\
+namespace n {
+void f(int);
+template <class T> struct A { friend void f(int) {} T x{}; };
+}
+n::A<int> a;
+void h() { n::f(1); }
+";
+    with_unit("origin-friend-defined", src, |u| {
+        let r = written_refs(u);
+        let call =
+            r.iter().find(|x| bytes(u, x.name) == at(src, "n::f(1)", "f")).expect("the call");
+        let friend = decl_at(u, at(src, "friend void f(int) {}", "f").0);
+        assert_eq!(origin(u, call.referent), friend, "the defined friend is followed");
+    });
+}

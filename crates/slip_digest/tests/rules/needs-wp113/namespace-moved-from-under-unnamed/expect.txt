@@ -1,5 +1,3 @@
-# pending
-# needs: WP-113
 # n moved from o's unnamed namespace into p: v becomes an external symbol. clang++-19 -std=c++20 -c, nm: `d _ZN1o12_GLOBAL__N_11n1vE` in a.o, `D _ZN1p1n1vE` in b.o.
 # Equal today: Rule::refusal sees a namespace rule's two names only, and neither is the unnamed namespace's; no
 # unit holds the linkage a member takes from its enclosing namespaces. WP-113 writes it into the

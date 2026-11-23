@@ -254,6 +254,16 @@ A **key** identifies an entity independently of the parse, of source
 positions and of the translation unit. It is structural: an entity's key
 contains the key of the entity it is a member of.
 
+A key holds names only. That an entity's parent chain passes through an
+unnamed namespace, or through a namespace opening with a `visibility`
+attribute, is in the key as a name and nothing else: a rule rewrites the
+chain (§3.4), and what the chain gives the entity besides names (the
+linkage of its name, internal under an unnamed namespace; the visibility
+a namespace opening gives its symbol) is written in the entity's own unit,
+as the post-image has it, by the row `enclosing` (`digest-kinds.md` §1.7,
+WP-113). A rule therefore moves an entity's name and never its linkage or
+its visibility.
+
 ```
 Key    := kind:   KeyKind
           parent: Parent
@@ -385,17 +395,28 @@ rules also counts how each rule was used, so that a run can check that no
 observer still has a renamed entity under its old name (`verify.md` §9).
 
 **Ownership.** With rules the walk is also given which files are
-read-only (`verify.md` §2, `Declared.files`). A rule matches only an
+read-only (`verify.md` §2, `Declared.files`; `Options::read_only`, a
+predicate over the image's files that the caller makes: every file
+read-only when the caller has none, so that every key is the key of the
+empty table). A rule matches only an
 **owned** entity, and the namespaces that enclose a namespace member are
 mapped only when the member is owned; a dependency entity (one with a
-declaration in a read-only file, by its expansion location; a
+declaration in a read-only file, by its expansion location or its name
+token's spelling location, a file read-only per inclusion when its
+include chain passes through a read-only file; a
 specialisation of such a template; an implicit member of such a class)
 keeps its own name and its namespaces theirs, with only what its
 discriminators mention mapped. The definition and the reason are
 `verify.md` §2.1 "Rules rename owned entities only". "Map its parent"
 above is therefore: a parent that is not a namespace has its own key; a
 namespace parent is mapped from the point of view of the entity being
-keyed. With `R` empty none of this is consulted.
+keyed: the same namespace can have two keys in one walk, one for its
+owned members and one for its dependency members, and its own unit has
+the key of its own ownership. Every site that writes a key (a unit's
+own, a reference from another unit's stream, a parent, a
+specialisation's template name) takes it through the one mapping, so an
+entity and every reference to it agree (WP-110). With `R` empty none of
+this is consulted.
 
 Two different entities of one translation unit with the same mapped `KeyId`
 are a **key collision**: every unit with that key is indeterminate (§10).
@@ -723,7 +744,13 @@ rules common to all:
   with dependent constructs by structure (§8).
 - Access, linkage, storage class, `inline`, `constexpr`/`consteval`,
   `virtual`, `final`, deleted and defaulted, the module a declaration
-  belongs to, and every attribute Kiln stores are included.
+  belongs to, and every attribute Kiln stores are included. Linkage is
+  the linkage of the name, not only the storage class written: for an
+  entity at namespace scope it, whether an unnamed namespace encloses it,
+  and the visibility its enclosing namespace openings give each of its
+  declarations are the row `enclosing` (`digest-kinds.md` §1.7); an
+  entity in a class or a function takes them from that class or function,
+  whose unit holds the row.
 
 ## 6. Statements and expressions
 
@@ -903,9 +930,18 @@ this spec says:
 - it contains an invalid declaration, an error-recovery expression or a
   type that contains an error;
 - it contains a kind or a value that `digest-kinds.md` marks `unsupported`;
+- it holds a type whose sugar meets a typedef whose declarations do not
+  all carry the same alignment, or it is that typedef
+  (`Unsupported("typedef/alignment-by-declaration")`, `digest-kinds.md`
+  §4.2 rule 9: Kiln's `alignof` and its cached layout read different
+  declarations);
 - its key collides with another entity's (§3.4);
 - it holds demand-driven state that `digest-kinds.md` could not assign to a
-  derived unit.
+  derived unit;
+- its entity's declarations are given different visibilities by the
+  namespace openings around them (`digest-kinds.md` §1.7 items 4-5), so a
+  symbol's visibility depends on where each use is
+  (`visibility_by_use`, WP-113).
 
 **No unit vanishes.** An entity that §2.1 makes a unit and whose key
 cannot be formed (an unexpected parent or name, a cycle, a kind whose key
@@ -942,7 +978,7 @@ Digests are produced only for an observer whose shard is `ok`.
 Section 19 of the shard (`spec/model.md` §8).
 
 ```
-Digests := scheme: uv              1; changes whenever any stream, key or table of this spec changes (rule below)
+Digests := scheme: uv              2; changes whenever any stream, key or table of this spec changes (rule below)
            tu:     digest          H("slip.tu.v1", list<GroupSum>), groups in the order below
            groups: list<Group>     sorted by (class, file)
 
@@ -964,7 +1000,15 @@ a key or a table of this spec, without exception. Before that release no
 shard outlives the build that wrote it (shards are stored by plan, and
 the cache keys of `spec/exec.md` that will replace the plan name the
 tool's version), so no shard of one scheme meets a reader of another, and
-`scheme` stays 1 until then.
+`scheme` changes before then only when a change makes units differ that
+compared equal under some rule table (a wrong equal closed): a recorded
+baseline of the earlier scheme must then be recorded again. Such changes
+that land before any baseline of the current scheme is recorded share its
+number: the number exists to void recorded baselines, and there is none
+to void. It is 2 since WP-113 (the row `enclosing`, `spec/digest-kinds.md`
+§1.7); WP-107's rule 9 (an aligned typedef is written as sugar,
+`spec/digest-kinds.md` §4.2) landed in it the same day, before a baseline
+of scheme 2 was recorded.
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit that has a location (below). A derived unit belongs to the
@@ -1028,7 +1072,7 @@ comparison of unit sets (`verify.md`).
 | `digest.indeterminate` | indeterminate units |
 | `digest.collisions` | keys shared by different entities; a key shared only by parts is counted unless every two of its parts are parts of two different owners whose shared key collides (§3.4) |
 | `digest.bytes` | bytes of unit, type and key streams hashed |
-| `digest.indeterminate.<cause>` | indeterminate keys whose first cause is of this kind: `error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`, and `pending` while the walk has areas not yet written. Present only when not 0 |
+| `digest.indeterminate.<cause>` | indeterminate keys whose first cause is of this kind: `error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`, `visibility_by_use`, and `pending` while the walk has areas not yet written. Present only when not 0 |
 | `digest.indeterminate.pending.<area>` | of the `pending` ones, by area. Goes with `Cause::Pending` |
 | `digest.cause.<cause>.<word>` | for the causes that carry a text (`unsupported`, `unaccounted`): indeterminate keys whose first cause has this text. The word's form and the function that makes it (`slip_digest::map::cause_word`) are `spec/model.md` §8.5 |
 

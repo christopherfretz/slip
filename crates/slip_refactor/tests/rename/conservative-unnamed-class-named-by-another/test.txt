@@ -1,0 +1,4 @@
+spec: docs/wp/WP-071.md conservative rows (followers.rs: only an unnamed class named by the old name makes the variable unsupported; one named by a typedef is not; WP-071 review, R11)
+from: n::v
+to: w
+kind: variable

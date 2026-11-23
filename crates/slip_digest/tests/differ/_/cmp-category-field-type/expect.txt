@@ -1,0 +1,4 @@
+changed std::strong_ordering::v
+changed std::strong_ordering::less
+changed std::strong_ordering::equal
+changed std::strong_ordering::greater

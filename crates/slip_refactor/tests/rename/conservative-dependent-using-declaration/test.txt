@@ -1,0 +1,4 @@
+spec: docs/wp/WP-071.md, the conservative rows (a dependent using-declaration names nothing until instantiated: unresolved)
+from: n::f
+to: g
+kind: function

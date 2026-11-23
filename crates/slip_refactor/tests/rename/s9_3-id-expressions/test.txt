@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 2 (&f, &C::f, a variable, unevaluated operands, a default argument, a default member initialiser, a template argument)
+from: n::f
+to: g
+kind: function

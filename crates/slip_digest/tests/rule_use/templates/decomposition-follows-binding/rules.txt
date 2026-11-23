@@ -1,0 +1,3 @@
+# WP-069: a decomposition takes its first binding's mapped name (spec/digest.md §3.4): the binding is
+# counted, via 1; the decomposition, whose own key no rule matched, is not.
+relocate x => :: z

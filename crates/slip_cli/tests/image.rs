@@ -100,9 +100,14 @@ fn s5_1_refused_roots() {
             "/p is a root of the image twice",
         ),
         (
-            vec![map("/s", "/s/p")],
+            vec![map("/s/p", "/s")],
             ImageError::Nested { inner: b"/s/p".to_vec(), outer: b"/s".to_vec() },
             "/s/p lies under /s",
+        ),
+        (
+            vec![map("/s", "/p"), map("/t", "/p/q")],
+            ImageError::Nested { inner: b"/p/q".to_vec(), outer: b"/p".to_vec() },
+            "/p/q lies under /p",
         ),
         (
             vec![map("/a/b", "/p"), map("/a", "/q")],
@@ -119,6 +124,9 @@ fn s5_1_refused_roots() {
     assert!(Image::new(vec![map("/s=t", "/p")]).is_ok());
     assert!(Image::new(vec![map("/a", "/p"), map("/ab", "/q")]).is_ok());
     assert!(Image::new(vec![map("/a/bc", "/a/b")]).is_ok());
+    // A post root may lie under a subject root, its own or another's.
+    assert!(Image::new(vec![map("/s", "/s/p")]).is_ok());
+    assert!(Image::new(vec![map("/a", "/p"), map("/b", "/a/q")]).is_ok());
 }
 
 // §5.1: the maps sorted by `subject`; no map is the identity.
@@ -171,11 +179,19 @@ fn s5_1_post_command() {
             "/p/a.cpp:/q/b.cpp",
             "/s:/p/b",
             "-fmacro-prefix-map=/p/=/x/",
-            "-fmacro-prefix-map=/p/=/s/",
             "-fmacro-prefix-map=/q/=/t/",
+            "-fmacro-prefix-map=/p/=/s/",
         ])
     );
     assert_eq!(post.env, command.env);
+    // The command's own prefix map overlaps a root map's: guard G5.
+    assert_eq!(
+        image.post_command(&command).conflict.as_deref(),
+        Some(
+            "post-image: -fmacro-prefix-map=/p/=/x/ maps /p/, which overlaps /p/ of \
+             -fmacro-prefix-map=/p/=/s/; slip does not compose prefix maps"
+        )
+    );
     // The directory: the root itself is rewritten, `/sx` is not.
     for (dir, want) in [("/s", "/p"), ("/sx", "/sx"), ("/u/s", "/u/s")] {
         let c = Command { directory: dir.as_bytes().to_vec(), ..command.clone() };
@@ -330,4 +346,308 @@ fn s5_1_file_spelling_in_a_post_root() {
     let (shard, value) =
         Image::identity().parse(&own, Side::Post, Phase::Verify, 1, |_| 1).unwrap();
     assert_eq!((shard.outcome.status, value), (Status::Diagnosed, None));
+}
+
+// §5.1 "Path-bearing words": resolved against `directory` by identity;
+// the leading part that reaches the subject is replaced by the same place
+// in the post tree, relative for a relative word, and the rest kept byte for
+// byte, so two spellings of one directory stay two (`../s/inc` and
+// `../s/./inc`); one `-fmacro-prefix-map=` word per pair, longest post
+// prefix first. Values of other options and words that are not paths keep
+// the textual rule.
+#[test]
+fn s5_1_post_command_resolves() {
+    let dir = Dir::new("resolve");
+    let (s, p) = (dir.mkdir("s"), dir.mkdir("x/post-tree"));
+    dir.mkdir("s/inc");
+    dir.mkdir("s/build");
+    dir.mkdir("x/post-tree/build");
+    dir.mkdir("build");
+    dir.mkdir("ext");
+    std::os::unix::fs::symlink(&s, dir.0.join("link")).unwrap();
+    let image = Image::new(vec![RootMap { subject: bytes(&s), post: bytes(&p) }]).unwrap();
+    let (b, sp, pp) = (dir.0.to_str().unwrap(), s.to_str().unwrap(), p.to_str().unwrap());
+    let outside = Command {
+        directory: bytes(&dir.0.join("build")),
+        argv: words(&[
+            "c++",
+            "-I../s/inc",
+            "-I../s/./inc",
+            "-isystem",
+            "../s/sys",
+            "-I../ext",
+            "-D",
+            "../s/inc",
+            "-o",
+            "../s/a.o",
+            "-Wp,-I../s/inc",
+            &format!("{sp}/a.cpp"),
+        ]),
+        env: Vec::new(),
+    };
+    let post = image.post_command(&outside);
+    assert_eq!(post.command.directory, outside.directory);
+    assert_eq!(
+        post.command.argv,
+        words(&[
+            "c++",
+            "-I../x/post-tree/inc",
+            "-I../x/post-tree/./inc",
+            "-isystem",
+            "../x/post-tree/sys",
+            "-I../ext",
+            "-D",
+            "../s/inc",
+            "-o",
+            "../s/a.o",
+            "-Wp,-I../s/inc",
+            &format!("{pp}/a.cpp"),
+            &format!("-fmacro-prefix-map={pp}/={sp}/"),
+            "-fmacro-prefix-map=../x/post-tree/=../s/",
+        ])
+    );
+    assert_eq!(post.conflict, None);
+    // A symbolic link to the subject: its spelling and the subject root's
+    // reach the same post prefix, `<post>/`, by two written ones; guard G5.
+    let linked_word = format!("-I{b}/link/inc");
+    let linked =
+        Command { argv: words(&["c++", &linked_word, &format!("{sp}/a.cpp")]), ..outside.clone() };
+    let post = image.post_command(&linked);
+    assert_eq!(post.command.argv[1], format!("-I{pp}/inc").into_bytes());
+    assert_eq!(
+        post.conflict.as_deref(),
+        Some(&*format!(
+            "post-image: {linked_word} and {sp}/a.cpp spell the files under {pp}/ differently \
+             ({pp}/={b}/link/ and {pp}/={sp}/)"
+        ))
+    );
+    // From a directory of the subject: a relative word that stays inside
+    // names the same place from the post directory and is kept; one that
+    // leaves the subject by `..` is written, relative, where it ends, and
+    // its pair's post prefix is under no post root: guard G5 (e).
+    let inside = Command {
+        directory: bytes(&s.join("build")),
+        argv: words(&["c++", "-Iinc", "-I../../ext", "a.cpp"]),
+        env: Vec::new(),
+    };
+    let post = image.post_command(&inside);
+    assert_eq!(post.command.directory, bytes(&p.join("build")));
+    assert_eq!(
+        post.command.argv,
+        words(&[
+            "c++",
+            "-Iinc",
+            "-I../../../ext",
+            "a.cpp",
+            &format!("-fmacro-prefix-map={pp}/={sp}/"),
+            "-fmacro-prefix-map=../../../ext/=../../ext/",
+        ])
+    );
+    assert_eq!(
+        post.conflict.as_deref(),
+        Some(
+            "post-image: -I../../ext is spelled through the subject and leaves it \
+             (../../../ext/ is under no post root)"
+        )
+    );
+    // Without that word: no conflict.
+    let kept = Command { argv: words(&["c++", "-Iinc", "a.cpp"]), ..inside.clone() };
+    assert_eq!(image.post_command(&kept).conflict, None);
+    // `directory` by identity: through the link.
+    let linked = Command { directory: bytes(&dir.0.join("link/build")), ..inside };
+    assert_eq!(image.command(&linked).directory, bytes(&p.join("build")));
+}
+
+// §5.3 G5 (e), every way a word makes a pair: a path spelled through the
+// subject that leaves it, by `..`, to a place under no root is refused,
+// naming the word, whether it is an include directory (`-I`, `-isystem`,
+// `-iquote`, `-idirafter`, joined or separate), an included file
+// (`-include`, `-imacros`), the main file, or relative to a `directory`
+// in the subject. `directory` itself makes no pair: spelled through the
+// subject and leaving it, it is rewritten to where it ends and nothing is
+// refused.
+#[test]
+fn g5_word_leaves_the_subject() {
+    let dir = Dir::new("leaves");
+    let (s, p) = (dir.mkdir("s"), dir.mkdir("p"));
+    dir.mkdir("s/build");
+    dir.mkdir("p/build");
+    dir.mkdir("ext/inc");
+    std::fs::write(dir.0.join("ext/inc/x.h"), "").unwrap();
+    std::fs::write(dir.0.join("ext/a.cpp"), "").unwrap();
+    let image = Image::new(vec![RootMap { subject: bytes(&s), post: bytes(&p) }]).unwrap();
+    let (b, sp) = (dir.0.to_str().unwrap(), s.to_str().unwrap());
+    let reason = |word: &str, post: &str| {
+        format!(
+            "post-image: {word} is spelled through the subject and leaves it ({post} is under no \
+             post root)"
+        )
+    };
+    let up = format!("{sp}/../ext");
+    for (flags, word, post) in [
+        (vec![format!("-I{up}/inc")], format!("-I{up}/inc"), format!("{b}/ext/inc/")),
+        (
+            vec!["-isystem".to_owned(), format!("{up}/inc")],
+            format!("{up}/inc"),
+            format!("{b}/ext/inc/"),
+        ),
+        (vec![format!("-iquote{up}/inc")], format!("-iquote{up}/inc"), format!("{b}/ext/inc/")),
+        (
+            vec!["-idirafter".to_owned(), format!("{up}/inc")],
+            format!("{up}/inc"),
+            format!("{b}/ext/inc/"),
+        ),
+        (
+            vec!["-include".to_owned(), format!("{up}/inc/x.h")],
+            format!("{up}/inc/x.h"),
+            format!("{b}/ext/inc/x.h"),
+        ),
+        (
+            vec!["-imacros".to_owned(), format!("{up}/inc/x.h")],
+            format!("{up}/inc/x.h"),
+            format!("{b}/ext/inc/x.h"),
+        ),
+        (vec![format!("{up}/a.cpp")], format!("{up}/a.cpp"), format!("{b}/ext/a.cpp")),
+    ] {
+        let mut argv = vec!["c++".to_owned()];
+        argv.extend(flags);
+        if !word.ends_with("a.cpp") {
+            argv.push(format!("{sp}/a.cpp"));
+        }
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let c = Command { directory: bytes(&s), argv: words(&argv), env: Vec::new() };
+        let got = image.post_command(&c);
+        assert_eq!(got.conflict.as_deref(), Some(&*reason(&word, &post)), "{word}");
+    }
+    // Relative to a `directory` in the subject: here the post directory is
+    // as deep, so the word names the same place from it and is kept as
+    // written (the identity: no pair, nothing to refuse); where it is not,
+    // the word is rewritten and refused (`s5_1_post_command_resolves`,
+    // `-I../../ext`).
+    let c = Command {
+        directory: bytes(&s.join("build")),
+        argv: words(&["c++", "-I../../ext/inc", "../a.cpp"]),
+        env: Vec::new(),
+    };
+    let post = image.post_command(&c);
+    assert_eq!(post.command.argv[1], b"-I../../ext/inc");
+    assert_eq!(post.conflict, None);
+    // `directory` through the subject, leaving it: rewritten, no pair.
+    let c = Command {
+        directory: format!("{sp}/../ext").into_bytes(),
+        argv: words(&["c++", &format!("{sp}/a.cpp")]),
+        env: Vec::new(),
+    };
+    let post = image.post_command(&c);
+    assert_eq!(post.command.directory, format!("{b}/ext").into_bytes());
+    assert_eq!(post.conflict, None);
+}
+
+// §5.3 G5 (e), by real paths: a pair whose post prefix does not exist,
+// under a post root once resolved, with no `..` after the part that
+// exists, is accepted (not an over-refusal). `-Ib/../gone/inc` from
+// `<s>/a` is written `gone/inc` from `<p>/a`; `gone` exists in neither
+// tree. A `..` after a component that does not exist is refused (G5 (f)):
+// where it ends cannot be decided.
+#[test]
+fn g5_missing_prefix_under_a_post_root() {
+    let dir = Dir::new("missing");
+    let (s, p) = (dir.mkdir("s"), dir.mkdir("p"));
+    dir.mkdir("s/a/b");
+    dir.mkdir("p/a/b");
+    let image = Image::new(vec![RootMap { subject: bytes(&s), post: bytes(&p) }]).unwrap();
+    let sp = s.to_str().unwrap();
+    let c = Command {
+        directory: bytes(&s.join("a")),
+        argv: words(&["c++", "-Ib/../gone/inc", &format!("{sp}/a.cpp")]),
+        env: Vec::new(),
+    };
+    let post = image.post_command(&c);
+    assert_eq!(post.command.argv[1], b"-Igone/inc");
+    assert!(post.maps.contains(&(b"gone/inc/".to_vec(), b"b/../gone/inc/".to_vec())));
+    assert_eq!(post.conflict, None);
+    let c = Command { argv: words(&["c++", "-Igone/../inc", &format!("{sp}/a.cpp")]), ..c };
+    let post = image.post_command(&c);
+    assert_eq!(post.command.argv[1], b"-Igone/../inc");
+    assert_eq!(
+        post.conflict.as_deref(),
+        Some(&*format!(
+            "post-image: -Igone/../inc has a `..` after {sp}/a/gone, which does not exist; slip \
+             cannot tell where it ends"
+        ))
+    );
+}
+
+// §5.3 G5, the command's own prefix maps: one whose old prefix overlaps a
+// prefix the rewrite maps is refused, before or after the word it
+// overlaps, alone, after `-Xclang` or in a `-Wp,` list; one that overlaps
+// none is kept.
+#[test]
+fn g5_command_prefix_maps() {
+    let dir = Dir::new("g5");
+    let s = dir.mkdir("s");
+    let p = dir.mkdir("p");
+    dir.mkdir("s/inc");
+    dir.mkdir("build");
+    let image = Image::new(vec![RootMap { subject: bytes(&s), post: bytes(&p) }]).unwrap();
+    let sp = s.to_str().unwrap();
+    let main = format!("{sp}/a.cpp");
+    let refused = "-fmacro-prefix-map=../s/=SRC/";
+    for argv in [
+        vec!["c++", refused, "-I../s/inc", &main],
+        vec!["c++", "-I../s/inc", refused, &main],
+        vec!["c++", "-I../s/inc", "-Xclang", refused, &main],
+    ] {
+        let c =
+            Command { directory: bytes(&dir.0.join("build")), argv: words(&argv), env: Vec::new() };
+        assert_eq!(
+            image.post_command(&c).conflict.as_deref(),
+            Some(&*format!(
+                "post-image: {refused} maps ../s/, which overlaps ../s/ of -I../s/inc; \
+                 slip does not compose prefix maps"
+            )),
+            "{argv:?}"
+        );
+    }
+    let wp = "-Wp,-DX,-ffile-prefix-map=../=UP/";
+    let c = Command {
+        directory: bytes(&dir.0.join("build")),
+        argv: words(&["c++", "-I../s/inc", wp, &main]),
+        env: Vec::new(),
+    };
+    assert_eq!(
+        image.post_command(&c).conflict.as_deref(),
+        Some(
+            "post-image: -Wp,-DX,-ffile-prefix-map=../=UP/ maps ../, which overlaps ../p/ of -I../s/inc; slip does not compose prefix maps"
+        )
+    );
+    let c = Command {
+        directory: bytes(&dir.0.join("build")),
+        argv: words(&["c++", "-I../s/inc", "-fmacro-prefix-map=/usr/=SYS/", &main]),
+        env: Vec::new(),
+    };
+    assert_eq!(image.post_command(&c).conflict, None);
+}
+
+// §5.1, guard G1's test by identity: a post root under its subject root
+// is not under the subject; another spelling of the subject root is.
+#[test]
+fn s5_1_under_subject_by_identity() {
+    let dir = Dir::new("identity");
+    let s = dir.mkdir("s");
+    let p = dir.mkdir("s/post");
+    dir.mkdir("s/inc");
+    let image = Image::new(vec![RootMap { subject: bytes(&s), post: bytes(&p) }]).unwrap();
+    assert!(image.under_subject(&bytes(&s.join("inc/h.h"))));
+    assert!(image.under_subject(&bytes(&s.join("gone/h.h"))));
+    assert!(!image.under_subject(&bytes(&p.join("h.h"))));
+    assert!(!image.under_subject(&bytes(&dir.0.join("h.h"))));
+    let upper = dir.0.join("S");
+    if std::fs::metadata(&upper).is_ok() {
+        assert!(image.under_subject(&bytes(&upper.join("inc/h.h"))));
+    } else {
+        eprintln!(
+            "s5_1_under_subject_by_identity: case: SKIPPED, the file system is case-sensitive"
+        );
+    }
 }

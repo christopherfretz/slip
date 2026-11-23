@@ -1,0 +1,1 @@
+# F3 kept: dep_get takes the owned class's mapped key; equal (verified).

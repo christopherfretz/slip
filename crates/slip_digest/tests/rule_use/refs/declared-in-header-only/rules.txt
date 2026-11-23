@@ -1,0 +1,3 @@
+# WP-069 "Tests": an entity reached only through a reference, never declared in the main file
+# (its one declaration is in a header the unit includes): counted once, via 1.
+relocate f() => :: g

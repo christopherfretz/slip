@@ -1,0 +1,7 @@
+subjects:
+  fc7182de seed unsupported rule=yes n::f(int)
+links:
+claims:
+  main.cpp:1:31+1 replace "g" t0 votes=1 none [fc7182de]
+  main.cpp:2:15+1 replace spell(fc7182de, "g") t0 votes=1 none [fc7182de]
+changed:

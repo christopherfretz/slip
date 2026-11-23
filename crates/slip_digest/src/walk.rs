@@ -194,11 +194,20 @@ pub(crate) struct Walk<'a> {
     pub sm: &'a SourceManager,
     pub subject_path: &'a dyn Fn(slip_kiln::kiln::source::FileId) -> Vec<u8>,
     pub rules: &'a RuleTable,
+    /// Which files are read-only, read under a non-empty table only
+    /// (`owned.rs`, WP-110).
+    pub read_only: crate::ReadOnly<'a>,
+    /// Ownership of entities and namespace views (`owned.rs`).
+    pub owned_state: crate::owned::OwnedState,
     /// Type digests by the raw canonical `QualType`.
     pub type_memo: HashMap<u32, TypeRef>,
     /// Digests of function types written without their exception
     /// specification (`DeclNode` `ty-type`), by raw canonical `QualType`.
     pub type_memo_no_exc: HashMap<u32, TypeRef>,
+    /// The typedefs carrying an alignment that layout reads through a
+    /// sugared type (digest-kinds §4.2 rule 9), by raw `QualType`;
+    /// `None` past the bound of the walk.
+    pub aligned_sugar: HashMap<u32, Option<Box<[DeclId]>>>,
     /// Keys by entity (its first declaration).
     pub keys: HashMap<DeclId, KeyRes>,
     /// Entities whose key is being computed: a cycle is `Unaccounted`.
@@ -268,6 +277,9 @@ pub(crate) struct Walk<'a> {
     /// [`Walk::const_memo`] for the content digests computed with
     /// [`Walk::by_value`] above 0.
     pub const_memo_by_value: HashMap<u32, Hashed>,
+    /// How each rule was used (`rule_use.rs`): `None` unless asked for
+    /// under a table that is not empty.
+    pub rule_use: Option<crate::rule_use::Counting>,
 }
 
 /// What [`Walk::take_types`] puts aside.
@@ -290,8 +302,11 @@ impl<'a> Walk<'a> {
             sm: input.sm,
             subject_path: input.subject_path,
             rules,
+            read_only: crate::ReadOnly::EVERY_FILE,
+            owned_state: crate::owned::OwnedState::default(),
             type_memo: HashMap::new(),
             type_memo_no_exc: HashMap::new(),
+            aligned_sugar: HashMap::new(),
             keys: HashMap::new(),
             keys_in_progress: HashSet::new(),
             content: HashMap::new(),
@@ -316,6 +331,7 @@ impl<'a> Walk<'a> {
             name_values: None,
             by_value: 0,
             const_memo_by_value: HashMap::new(),
+            rule_use: None,
         }
     }
 
@@ -516,6 +532,10 @@ pub(crate) fn run_with<R>(
     f: impl FnOnce(&mut Walk<'_>, &[Written], Output) -> R,
 ) -> R {
     let mut w = Walk::new(input, options.rules);
+    w.read_only = options.read_only;
+    if options.rule_use && !options.rules.is_empty() {
+        w.rule_use = Some(crate::rule_use::Counting::default());
+    }
     crate::units::collect(&mut w);
     crate::local::number_all(&mut w);
     let mut written: Vec<Written> = Vec::new();
@@ -540,7 +560,8 @@ pub(crate) fn run_with<R>(
     let (digests, totals) = crate::groups::build(&written, &options.detail);
     let causes = causes(&written);
     let counters = crate::groups::counters(&totals, collisions, w.bytes, &causes);
-    f(&mut w, &written, Output { digests, counters, causes, names })
+    let rule_use = crate::rule_use::finish(w.rule_use.take());
+    f(&mut w, &written, Output { digests, counters, causes, names, rule_use })
 }
 
 /// One cause per indeterminate key: of the unit first in `(key, digest)`

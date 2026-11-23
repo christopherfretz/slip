@@ -1,5 +1,4 @@
 // spec: §11
-// xfail: WP-085: the subject gives no ranges yet, so name_range_of answers a null range and the run fails with invalid_handle
 // Places in the rendering (spec/api.md §11 rule 3): `file:line:col-line:col`,
 // columns in bytes from 1, the end being the position of the byte after the
 // range (spec/landed/api/WP-090.md). The name ranges of two declarations,

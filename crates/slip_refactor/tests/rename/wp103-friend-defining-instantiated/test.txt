@@ -1,0 +1,4 @@
+spec: spec/edits.md §9.2 (a rule is a function of the key and the request: the seed whose key follows a pattern member keeps its rule and is unsupported; paired with wp103-friend-defining-not-instantiated, rename.rs a_seed_rule_does_not_depend_on_instantiation)
+from: n::f
+to: g
+kind: function

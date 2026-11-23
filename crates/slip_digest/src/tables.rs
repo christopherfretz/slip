@@ -105,6 +105,7 @@ pub(crate) mod property {
 /// §1.7 the rows of the walk.
 pub(crate) mod walk_row {
     pub(crate) const BACKREF: u32 = 1537;
+    pub(crate) const ENCLOSING: u32 = 1538;
 }
 
 /// `kiln_ast::types::kinds::Quals`.
@@ -269,7 +270,7 @@ pub(crate) mod type_view {
     pub(crate) const DEPENDENT_VECTOR: Row = Row { tag: 1045, decision: Decision::In };
     pub(crate) const EXT_QUAL: Row = Row { tag: 1046, decision: Decision::In };
     pub(crate) const DEPENDENT_ADDR_SPACE: Row = Row { tag: 1047, decision: Decision::In };
-    pub(crate) const TYPEDEF: Row = Row { tag: 1048, decision: Decision::Out };
+    pub(crate) const TYPEDEF: Row = Row { tag: 1048, decision: Decision::In };
     pub(crate) const USING: Row = Row { tag: 1049, decision: Decision::Out };
     pub(crate) const ELABORATED: Row = Row { tag: 1050, decision: Decision::Out };
     pub(crate) const QUALIFIED_ARRAY: Row = Row { tag: 1051, decision: Decision::Out };
@@ -2034,6 +2035,16 @@ pub(crate) mod linkage_lang {
             kiln::ast::decl::LinkageLang::Cxx => CXX,
         }
     }
+}
+
+/// `kiln_ast::linkage::Linkage`.
+pub(crate) mod linkage {
+    use super::{Decision, Row};
+
+    pub(crate) const NONE: Row = Row { tag: 1, decision: Decision::In };
+    pub(crate) const INTERNAL: Row = Row { tag: 2, decision: Decision::In };
+    pub(crate) const MODULE: Row = Row { tag: 3, decision: Decision::In };
+    pub(crate) const EXTERNAL: Row = Row { tag: 4, decision: Decision::In };
 }
 
 /// `kiln_ast::decl::StaticAssertData`.

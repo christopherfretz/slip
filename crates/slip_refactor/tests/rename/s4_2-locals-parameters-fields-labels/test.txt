@@ -1,0 +1,4 @@
+spec: edits.md §4.2 (keep: a local variable, a parameter, a field and a label spelled like the old name; nothing where no token is located)
+from: n::f
+to: g
+kind: function

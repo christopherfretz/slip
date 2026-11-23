@@ -1,0 +1,4 @@
+spec: edits.md §9.3 row 2 (an unqualified call through a using-directive)
+from: n::f
+to: g
+kind: function

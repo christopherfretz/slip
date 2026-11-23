@@ -1,0 +1,2 @@
+# spec/verify.md §9.1: a renamed function, declared twice and used twice: one entity, via 1.
+relocate f() => :: g

@@ -1,0 +1,4 @@
+spec: docs/wp/WP-071.md (a declaration written with a line splice is given by decl_names and refused not_plain by sites)
+from: n::foo
+to: bar
+kind: function

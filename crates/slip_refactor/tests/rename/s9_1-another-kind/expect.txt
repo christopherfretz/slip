@@ -1,0 +1,8 @@
+subjects:
+  d68d0377 seed unsupported rule=yes n::f
+links:
+claims:
+  main.cpp:1:22+1 replace "g" t0 votes=1 none [d68d0377]
+  main.cpp:2:4+1 replace spell(d68d0377, "g") t0 votes=1 none [d68d0377]
+  main.cpp:2:22+1 replace spell(d68d0377, "g") t0 votes=1 none [d68d0377]
+changed:

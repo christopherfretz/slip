@@ -554,6 +554,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         w.unit.local.holder = Some(e);
         let mut s = Stream::new();
         w.decl_stream(&mut s, from, e);
+        crate::enclosing::write(w, &mut s, e);
         w.unit = saved;
         #[cfg(test)]
         tests::count_read(e);
@@ -649,7 +650,7 @@ fn fallback_key(
         }
         c = ast.decls.get(x).ctx();
     }
-    let key = w.rules.map(Key { kind, parent, name: Name::Content, disc: Some(digest) });
+    let key = w.map_key(e, None, Key { kind, parent, name: Name::Content, disc: Some(digest) });
     w.bytes += key.to_bytes().len() as u64;
     Some((key.id(), kind, parent_cause))
 }
@@ -875,7 +876,7 @@ fn collides(written: &[Written], run: &[usize]) -> bool {
 
 /// The declarations a scope may repeat and Kiln does not join
 /// (`spec/digest.md` §3.4).
-fn repeatable(kind: KeyKind) -> bool {
+pub(crate) fn repeatable(kind: KeyKind) -> bool {
     matches!(
         kind,
         KeyKind::UsingDeclaration
@@ -1323,7 +1324,13 @@ mod tests {
             assert_eq!(p.errors, 0, "{}", p.diagnostics);
             let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
             let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let options = crate::Options { rules: &rules, detail: crate::Detail::All, names: true };
+            let options = crate::Options {
+                rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail: crate::Detail::All,
+                names: true,
+                rule_use: false,
+            };
             let t = std::time::Instant::now();
             let o = crate::digest(&input, &options);
             let took = t.elapsed();

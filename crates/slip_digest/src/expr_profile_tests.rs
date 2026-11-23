@@ -114,7 +114,13 @@ fn causes_of(input: &Input<'_>, name: &str) -> Vec<Vec<crate::Cause>> {
     let rules = RuleTable::empty();
     let o = crate::digest(
         input,
-        &crate::Options { rules: &rules, detail: crate::Detail::All, names: true },
+        &crate::Options {
+            rules: &rules,
+            read_only: crate::ReadOnly::NO_FILE,
+            detail: crate::Detail::All,
+            names: true,
+            rule_use: false,
+        },
     );
     o.names
         .iter()
@@ -402,7 +408,11 @@ const OWN: &[&str] = &[
 /// namespace or a class owns, which has no key (4); `local/lambda-in-type`:
 /// an expression whose type is a closure, profiled in a key as these nets
 /// profile every expression (8 of 24 202 at the WP-040 fix round, the
-/// call of a `consteval` block's closure among them, which no key holds).
+/// call of a `consteval` block's closure among them, which no key holds);
+/// `typedef/alignment-by-declaration`: an expression whose type meets a
+/// typedef whose declarations disagree on its alignment (digest-kinds
+/// §4.2 rule 9; 12 of 33 491 at WP-107's re-check, its own
+/// indeterminate tests).
 /// The own sources leave nothing out (`OWN_CEILINGS`), which is
 /// the exact guard; this one bounds the drift of the pair tests.
 const PAIR_CEILINGS: &[(&str, usize)] = &[
@@ -411,6 +421,7 @@ const PAIR_CEILINGS: &[(&str, usize)] = &[
     ("UndeclaredLocal", 5),
     ("Unsupported(\"local/closure-owner\")", 5),
     ("Unsupported(\"local/lambda-in-type\")", 1),
+    ("Unsupported(\"typedef/alignment-by-declaration\")", 1),
 ];
 
 /// The same for `OWN`.
@@ -464,7 +475,13 @@ fn digest_all(src: &str) -> Vec<(slip_model::Digest, String, Vec<crate::Cause>)>
         let rules = RuleTable::empty();
         let o = crate::digest(
             &input,
-            &crate::Options { rules: &rules, detail: crate::Detail::All, names: true },
+            &crate::Options {
+                rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
+                detail: crate::Detail::All,
+                names: true,
+                rule_use: false,
+            },
         );
         o.names
             .iter()

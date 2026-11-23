@@ -1,0 +1,4 @@
+spec: edits.md §9.5 (a class template parameter: not name_taken; WP-071 review B1)
+from: n::f
+to: T
+kind: function

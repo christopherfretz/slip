@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. N34 bad: the owned file redefines the dependency's LEGACY_BEGIN before dep.h, so the dependency's Dep is declared in acme; the opening of acme in dep.h is by a macro invoked there (its expansion location).
+relocate legacy => :: acme
