@@ -644,29 +644,6 @@ pub(crate) fn unit_of(w: &mut Walk<'_>, d: DeclId) -> Option<DeclId> {
     u
 }
 
-/// The unit whose stream holds the local function `f` (a lambda's call
-/// operator, a member of a local class): `f` itself when it is a unit
-/// (`units::unit_class`), else [`unit_of`] of the innermost enclosing
-/// local declaration that has one (the closure type, the local class).
-/// `None` where `f` is no local declaration or no unit holds it.
-pub(crate) fn unit_holding(w: &mut Walk<'_>, f: DeclId) -> Option<DeclId> {
-    let ast = w.ast;
-    let mut x = w.entity(f);
-    for _ in 0..CHAIN_LIMIT {
-        if crate::units::unit_class(w, x).is_some() {
-            return Some(x);
-        }
-        if !w.is_local(x) {
-            return None;
-        }
-        if let Some(u) = unit_of(w, x) {
-            return Some(u);
-        }
-        x = w.entity(ast.decls.get(x).ctx()?);
-    }
-    None
-}
-
 fn find_unit(w: &mut Walk<'_>, d: DeclId) -> Option<DeclId> {
     let ast = w.ast;
     let mut x = owner_of(w, d).ok()?;

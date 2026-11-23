@@ -1,4 +1,4 @@
-// WP-104 (digest §9), known cost G2: a shared __builtin_FUNCTION() string is attributed to its first use
+// WP-115 item 1 (digest §9): the shared __builtin_FUNCTION() string "f" has uses in two entities, so its bytes are written: a cost under the rename
 void take(const char *);
 void g(int) { constexpr const char *p = __builtin_FUNCTION(); take(p); }
 void f(long) { constexpr const char *p = __builtin_FUNCTION(); take(p); }

@@ -1,6 +1,8 @@
-# WP-115 item 1 (digest §9): the __builtin_FUNCTION() string "get" is one
-# object per content, shared by a::get() and b::get() on side B; b::get()
-# is its holder's own use, so it is written as b::get()'s plain name on
-# both sides: only the added function and namespace are seen.
+# pending
+# needs: kiln-srcloc-origin
+# A cost (spec/landed/digest/WP-115.md, item 1): side B adds a::get(), a second
+# entity using the one "get" object, so b::get()'s string is written by its
+# bytes on side B and as b::get()'s plain name on side A: b::get() differs.
+# With the use kept on the pointer only the added units are seen.
 added a
 added a::get()

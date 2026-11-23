@@ -358,18 +358,22 @@ pub(crate) struct NameValues {
     /// The entity found for a `PredefinedExpr`'s string, by literal.
     owners: HashMap<u32, Option<DeclId>>,
     /// What a source-location string object is (by its literal's
-    /// `ExprId` index) in the stream of a holder (by entity).
-    sourced: HashMap<(u32, Option<DeclId>), Option<NameString>>,
+    /// `ExprId` index).
+    sourced: HashMap<u32, Option<NameString>>,
 }
 
 /// What identifies an `__impl` object (digest §9, WP-115 item 2).
 #[derive(Clone, Copy, Debug)]
 struct Impl {
-    /// Where the use that built it is numbered.
+    /// Where its first use is numbered.
     group: Group,
-    /// The use's ordinal among the uses of its group that build one, in
-    /// `ExprId` order (the holder's own order: Kiln numbers a holder's
-    /// expressions as it builds them).
+    /// That use's ordinal among the uses of its group that build an
+    /// `__impl` object, in `ExprId` order (the holder's own order: Kiln
+    /// numbers a holder's expressions as it builds them). Every use is
+    /// counted, also one whose object an earlier use built (Kiln shares
+    /// one object between uses of one file, function, line and column),
+    /// so an object's ordinal does not depend on the layout the digest
+    /// drops (WP-115 fix round, F1).
     n: u64,
     /// The literal of the file name it points to (always one: below,
     /// [`impl_file`]).
@@ -485,13 +489,14 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 } else {
                     Group::Holder(held.get(&e.index()).copied())
                 };
-                if let std::collections::hash_map::Entry::Vacant(slot) =
-                    nv.objects.entry(obj.index())
-                {
-                    let n = ordinals.entry(group).or_insert(0);
-                    slot.insert(Impl { group, n: *n, file: lit_of(file) });
-                    *n += 1;
-                }
+                let n = ordinals.entry(group).or_insert(0);
+                let this = *n;
+                *n += 1;
+                nv.objects.entry(obj.index()).or_insert(Impl {
+                    group,
+                    n: this,
+                    file: lit_of(file),
+                });
                 let file_origin = origin_of(file);
                 for &Reloc { at: _, value } in relocs {
                     let role =
@@ -665,13 +670,11 @@ fn is_kiln_name(w: &Walk<'_>, f: DeclId, pretty: bool, bytes: &[u8]) -> bool {
 /// `PredefinedExpr`'s `a` names it, which is checked), in the innermost
 /// function whose body holds the expression and whose name the bytes
 /// are; or a source-location function name (Kiln makes one object per
-/// content, shared by every use that has these bytes): of the holder's
-/// own use (the unit being written, or a local function in its stream),
-/// whose name the bytes are; else of the one entity every use of the
-/// object is in, whose name the bytes are (WP-115 item 1). `None` (the
-/// bytes are written) for a file name, where the uses are in several
-/// entities and none is the holder's, and wherever no such entity is
-/// found.
+/// content, shared by every use that has these bytes): of the one entity
+/// every use of the object in the translation unit is in, whose name the
+/// bytes are (WP-115 item 1). `None` (the bytes are written) for a file
+/// name, where the uses are in several entities, and wherever no such
+/// entity is found.
 fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<NameString> {
     use slip_kiln::kiln::ast::RawId;
     let ast = w.ast;
@@ -726,42 +729,31 @@ fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<Nam
         name_values(w).owners.insert(origin.index(), owner);
         return owner.map(|f| NameString::Predefined(kind, f));
     }
-    let holder = w.unit.local.holder.map(|h| w.entity(h));
-    if let Some(&found) = name_values(w).sourced.get(&(origin.index(), holder)) {
+    if let Some(&found) = name_values(w).sourced.get(&origin.index()) {
         return found;
     }
-    let found = sourced(w, bytes, origin, holder);
-    name_values(w).sourced.insert((origin.index(), holder), found);
+    let found = sourced(w, bytes, origin);
+    name_values(w).sourced.insert(origin.index(), found);
     found
 }
 
 /// [`name_string`] for a source-location string object `origin` holding
-/// `bytes`, written in the stream of `holder` (an entity).
-fn sourced(
-    w: &mut Walk<'_>,
-    bytes: &[u8],
-    origin: ExprId,
-    holder: Option<DeclId>,
-) -> Option<NameString> {
-    let mut uses = name_values(w).origins.get(&origin.index())?.clone();
-    if uses.iter().any(|&(r, _, _)| r == Role::File) {
+/// `bytes`: the context of its uses where every use of the object in the
+/// translation unit is of one role and one entity (the function itself:
+/// a use in a lambda or a local class of it is another entity's) and the
+/// bytes are that entity's name of the role; else `None`, the bytes. A
+/// pointer to the object can only have been made by one of these uses
+/// (Kiln's `srcloc_string`; but see the landed file's named hole for
+/// reflection strings), so where they are all of one entity the string is
+/// certainly that entity's name.
+fn sourced(w: &mut Walk<'_>, bytes: &[u8], origin: ExprId) -> Option<NameString> {
+    let nv = name_values(w);
+    let uses = nv.origins.get(&origin.index())?;
+    let &(role, ctx, _) = uses.iter().min_by_key(|&&(_, _, e)| e.index())?;
+    if role == Role::File {
         return None;
     }
-    uses.sort_unstable_by_key(|&(_, _, e)| e.index());
-    // The holder's own use (WP-115 item 1): a use whose context is the
-    // unit being written, or a local function written in its stream.
-    if let Some(h) = holder {
-        for &(role, ctx, _) in &uses {
-            let own = w.entity(ctx) == h
-                || (w.is_local(ctx) && crate::local::unit_holding(w, ctx) == Some(h));
-            if own && is_kiln_name(w, ctx, role == Role::Pretty, bytes) {
-                return Some(NameString::SourceLoc(role, ctx));
-            }
-        }
-    }
-    // Elsewhere, the one entity every use is of, whose name the bytes
-    // are; where several are, the bytes.
-    let &(role, ctx, _) = uses.first()?;
+    let uses = uses.clone();
     let one = w.entity(ctx);
     if uses.iter().any(|&(r, c, _)| r != role || w.entity(c) != one) {
         return None;

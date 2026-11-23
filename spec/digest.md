@@ -872,8 +872,10 @@ written alike only if they are the same string, or the same
 `PredefinedExpr` is written as its `PredefinedKind` and the function whose
 name it holds, as any reference to that entity is written (so a rule maps
 it); a function name of the source-location builtins as plain or pretty
-and its context; an `__impl` object as the function of the use that built
-it, that use's ordinal among the function's, and the bytes of the file
+and its context; an `__impl` object as the function of the first use that
+built it, that use's ordinal among the function's uses that build one (every
+use counted, also one whose object an earlier use of the same file,
+function, line and column built), and the bytes of the file
 name it points to, written as a `__FILE__` literal's bytes are, so the two
 cannot disagree (its line and column are dropped; its file is not). The
 function a `PredefinedExpr`'s string belongs to is looked up in whole
@@ -883,21 +885,26 @@ an included file.
 
 Kiln makes **one source-location string object per content**, so the
 `"get"` of `a::get()` and of `b::get()` is one object. Such a string is
-written as the context of the **holder's own use** (a use in the unit
-being written, or in a local function written in its stream) whose name
-the bytes are; where the holder has none, as the one entity every use
-of the object is in, whose name the bytes are; where the uses are in
-several entities, by its bytes. So an edit to another function of the
-same name does not change the holder. An `__impl` object built **outside
+written as the context of its uses only where **every use** of the object
+in the translation unit is of one kind and in **one entity** (a lambda or
+a local class of a function is another entity) whose name of that kind
+the bytes are; otherwise by its bytes. **What equal means for a name
+string**: two are equal when their bytes are equal, or when their bytes
+differ exactly as a rule says the name of one certain entity changed; the
+symbolic form is the permission to follow a rename, written only where
+the string is certainly that entity's. So a function of the same name
+gaining or losing a use of the string moves every holder of it between
+the entity's form and the bytes: a cost
+(`spec/landed/digest/WP-115.md`, item 1). An `__impl` object built **outside
 a function** (a namespace-scope initializer, a default member
 initializer used by an aggregate initialization there, a default
 argument evaluated there, a variable template's specialisation, a
-lambda's init capture) is numbered among the uses of the **declaration
-that holds it** (the variable or field whose initializer holds the use,
-or the function whose parameter's default argument does), in its own
-order, written with that declaration; only a use no such declaration
-holds (an enumerator, a bound) is numbered among every such use of the
-translation unit. A pretty name's identity also holds the names of the
+lambda's init capture) is numbered, by its first use, among the uses of
+the **declaration that holds it** (the variable or field whose
+initializer holds the use, or the function whose parameter's default
+argument does), in its own order, every use counted, written with that
+declaration; only a use no such declaration holds (an enumerator, a
+bound) is numbered among every such use of the translation unit. A pretty name's identity also holds the names of the
 named local types and block-scope aliases its printed signature
 mentions, which no rule maps. A string is written so
 only where its bytes are what Kiln prints for that entity of that kind;

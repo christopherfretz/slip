@@ -1,3 +1,5 @@
-# WP-115 item 1 (digest §9): the __builtin_FUNCTION() string "f" is shared
-# by f(int) and f(long) on side A; each holder writes its own use (f(int)
-# as f(int)'s plain name, mapped to g(int) on side B), so neither moves.
+# pending
+# needs: kiln-srcloc-origin
+# A cost (spec/landed/digest/WP-115.md, item 1): "f" has uses in f(int) and
+# f(long) on side A, so its bytes are written; on side B "g" and "f" are each
+# one entity's: f(int) and f(long) differ under the rename.

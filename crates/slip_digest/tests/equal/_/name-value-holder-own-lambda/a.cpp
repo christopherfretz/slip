@@ -1,4 +1,4 @@
-// WP-115 item 1 (digest §9): two lambdas in f() print one pretty name; f() holds its lambdas' uses (local functions written in its stream), so the relocation is equal
+// WP-115 item 1 (digest §9): two lambdas in f() print one pretty name; the string has uses in two entities (the two call operators), so its bytes are written: a cost under the relocation
 #include "srcloc.h"
 void take(const char *);
 namespace legacy {
