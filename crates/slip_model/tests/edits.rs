@@ -2160,3 +2160,17 @@ fn transform_structural() {
     set(&mut v, &["kind"], parse("\"DECL\""));
     assert_eq!(Transform::from_json(&v).unwrap_err().path, "kind");
 }
+
+// spec/edits.md §10.5: the names the output prints are the JSON names
+// (WP-075 added `name` to the three enumerations).
+#[test]
+fn s10_5_enumeration_names() {
+    assert_eq!(Reason::None.name(), "none");
+    assert_eq!(Reason::MacroBody.name(), "macro_body");
+    assert_eq!(Reason::Directive.name(), "directive");
+    assert_eq!(Severity::Note.name(), "note");
+    assert_eq!(Severity::Review.name(), "review");
+    assert_eq!(Severity::Error.name(), "error");
+    assert_eq!(FailureKind::Uncaught.name(), "uncaught");
+    assert_eq!(FailureKind::HostFailure.name(), "host_failure");
+}

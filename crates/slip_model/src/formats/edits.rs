@@ -92,6 +92,30 @@ impl Enumeration for FailureKind {
          \"step_budget\", \"memory_budget\", \"depth_limit\", \"host_failure\"";
 }
 
+// The names of the output (spec/edits.md §10.5), as in JSON. Added by
+// WP-075 for the `refusal`, `report` and `failed run` lines.
+
+impl Reason {
+    /// The name of §2.3 (`macro_body`, …).
+    pub fn name(self) -> &'static str {
+        Enumeration::name(self)
+    }
+}
+
+impl Severity {
+    /// The name of §4.5 (`note`, `review`, `error`).
+    pub fn name(self) -> &'static str {
+        Enumeration::name(self)
+    }
+}
+
+impl FailureKind {
+    /// The name of §4.6 (`uncaught`, …).
+    pub fn name(self) -> &'static str {
+        Enumeration::name(self)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Invariants (spec/edits.md §4.7, in the table's order)
 

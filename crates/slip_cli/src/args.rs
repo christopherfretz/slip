@@ -31,6 +31,10 @@ usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j 
                   [--root <dir>]... [--post <dir>]... [--store <dir>] [--only <substring>]... [--limit <n>]
        slip units --plan <id or file> [--post-image] [--root <dir>]... [--post <dir>]...
                   [--store <dir>] [--only <substring>]... [--limit <n>] [--match <substring>]...
+       slip reduce --plan <id or file> --round <n> [--store <dir>] [-j <n>]
+       slip apply --result <id> (--write | --patch <file>) [--relative-to <dir>]
+                  [--allow-residue] [--allow-partial] [--allow-errors] [--store <dir>]
+       slip apply --recover [--store <dir>]
        slip dump  <file>
        slip resource --write <dir>
        slip --version
@@ -78,6 +82,10 @@ pub enum Invocation {
     Declare(DeclareArgs),
     /// `slip units` (§8.9).
     Units(UnitsArgs),
+    /// `slip reduce` (§8.12).
+    Reduce(ReduceArgs),
+    /// `slip apply` (§8.14).
+    Apply(ApplyArgs),
     /// The hidden `slip __worker` (§8.4).
     Worker(WorkerArgs),
     /// The hidden `slip __panic`: panics on purpose, for the test of exit
@@ -192,6 +200,71 @@ pub struct UnitsArgs {
     pub matches: Vec<Vec<u8>>,
 }
 
+/// `slip reduce` (§8.12, `spec/edits.md` §10.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReduceArgs {
+    /// `--plan <id prefix or file>`: always [`PlanSource::Plan`].
+    pub plan: PlanSource,
+    /// `--round`, required.
+    pub round: u64,
+    /// `--store`; `None`: [`DEFAULT_STORE`].
+    pub store: Option<PathBuf>,
+    /// `-j`: at least 1.
+    pub jobs: Option<usize>,
+}
+
+/// What `slip apply` does (§8.14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyAction {
+    /// `--write`: the working tree (`spec/edits.md` §7.3).
+    Write,
+    /// `--patch <file>`: the unified patch (§7.2).
+    Patch(PathBuf),
+    /// `--recover`: finishes an unfinished write (§7.3).
+    Recover,
+}
+
+/// `slip apply` (§8.14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyArgs {
+    /// `--result <id>`: 4 to 64 hexadecimal digits, lower-cased; `None`
+    /// exactly for [`ApplyAction::Recover`].
+    pub result: Option<String>,
+    pub action: ApplyAction,
+    pub relative_to: Option<PathBuf>,
+    pub allow_residue: bool,
+    pub allow_partial: bool,
+    pub allow_errors: bool,
+    /// `--store`; `None`: [`DEFAULT_STORE`].
+    pub store: Option<PathBuf>,
+}
+
+/// The options the commands of a transform share (§8, `spec/edits.md`
+/// §10), parsed in one place: `apply` uses some, and `map`, `rename` and
+/// `check` (`docs/wp/WP-076.md`) the others. Each is as given; what a
+/// command does not accept its parser refuses before this is made.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[allow(clippy::struct_excessive_bools, reason = "one per option of the command line")]
+pub struct TransformOptions {
+    /// `--owned`, `--readonly`, as given (made real paths by the command).
+    pub owned: Vec<PathBuf>,
+    pub readonly: Vec<PathBuf>,
+    pub allow_residue: bool,
+    pub allow_unparsed: bool,
+    pub allow_partial: bool,
+    pub allow_errors: bool,
+    pub relative_to: Option<PathBuf>,
+    /// `--residue-ext <list>`: split at commas, no entry empty.
+    pub residue_ext: Option<Vec<Vec<u8>>>,
+    /// `--round` (may be 0).
+    pub round: Option<u64>,
+    /// `--edits <id or file>`, `--declared <id or file>`, as given.
+    pub edits: Option<OsString>,
+    pub declared: Option<OsString>,
+    /// `--result <id>`: 4 to 64 hexadecimal digits, lower-cased.
+    pub result: Option<String>,
+}
+
 /// `slip __worker` (§8.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerArgs {
@@ -264,6 +337,8 @@ pub fn parse(args: &[OsString]) -> Result<Invocation, UsageError> {
         Some("verify") => parse_verify(rest),
         Some("declare") => parse_declare(rest),
         Some("units") => parse_units(rest),
+        Some("reduce") => parse_reduce(rest),
+        Some("apply") => parse_apply(rest),
         Some("dump") => parse_dump(rest),
         Some("resource") => parse_resource(rest),
         Some("__worker") => parse_worker(rest),
@@ -276,6 +351,17 @@ pub fn parse(args: &[OsString]) -> Result<Invocation, UsageError> {
 
 /// The options of §8 that take no value.
 const FLAGS: &[&str] = &["--post-image"];
+
+/// The options of the commands of a transform that take no value (§8):
+/// `--write` is one here, where `resource --write` takes a directory.
+const TRANSFORM_FLAGS: &[&str] = &[
+    "--write",
+    "--recover",
+    "--allow-residue",
+    "--allow-unparsed",
+    "--allow-partial",
+    "--allow-errors",
+];
 
 /// One element of the command line after the command.
 enum Item<'a> {
@@ -291,6 +377,15 @@ enum Item<'a> {
 /// `options` are the names this command accepts (`-j` included where it
 /// is accepted).
 fn scan<'a>(args: &'a [OsString], options: &[&'static str]) -> Result<Vec<Item<'a>>, UsageError> {
+    scan_with(args, options, FLAGS)
+}
+
+/// [`scan`], with `flags` the options that take no value.
+fn scan_with<'a>(
+    args: &'a [OsString],
+    options: &[&'static str],
+    flags: &[&str],
+) -> Result<Vec<Item<'a>>, UsageError> {
     let mut items = Vec::new();
     let mut i = 0;
     let mut options_ended = false;
@@ -330,7 +425,7 @@ fn scan<'a>(args: &'a [OsString], options: &[&'static str]) -> Result<Vec<Item<'
         else {
             return usage(format!("unknown option `{}`", arg.to_string_lossy()));
         };
-        if FLAGS.contains(&name) {
+        if flags.contains(&name) {
             if joined.is_some() {
                 return usage(format!("`{name}` takes no value"));
             }
@@ -497,8 +592,18 @@ fn options_only(
     options: &[&'static str],
     repeating: &[&str],
 ) -> Result<Values, UsageError> {
+    options_only_with(args, options, FLAGS, repeating)
+}
+
+/// [`options_only`], with `flags` the options that take no value.
+fn options_only_with(
+    args: &[OsString],
+    options: &[&'static str],
+    flags: &[&str],
+    repeating: &[&str],
+) -> Result<Values, UsageError> {
     let mut values = Values::default();
-    for item in scan(args, options)? {
+    for item in scan_with(args, options, flags)? {
         match &item {
             Item::Option { name, .. } | Item::Flag(name) => {
                 values.push(name, item.value(), repeating.contains(name))?;
@@ -644,6 +749,141 @@ fn parse_units(args: &[OsString]) -> Result<Invocation, UsageError> {
         only: values.bytes("--only"),
         limit: values.number("--limit", 0)?,
         matches: values.bytes("--match"),
+    }))
+}
+
+impl Values {
+    fn flag(&self, name: &str) -> bool {
+        self.one(name).is_some()
+    }
+
+    /// The options of [`TransformOptions`] among those given.
+    fn transform_options(&self) -> Result<TransformOptions, UsageError> {
+        let (owned, readonly) = (self.paths("--owned"), self.paths("--readonly"));
+        if owned.is_empty() && !readonly.is_empty() {
+            return usage("`--readonly` needs `--owned`");
+        }
+        let residue_ext = self
+            .one("--residue-ext")
+            .map(|v| {
+                let list: Vec<Vec<u8>> =
+                    os_bytes(v).split(|&b| b == b',').map(<[u8]>::to_vec).collect();
+                if list.iter().any(Vec::is_empty) {
+                    return usage(format!(
+                        "`--residue-ext`: `{}` has an empty entry",
+                        v.to_string_lossy()
+                    ));
+                }
+                Ok(list)
+            })
+            .transpose()?;
+        let result = self
+            .one("--result")
+            .map(|v| match v.to_str() {
+                Some(t)
+                    if (4..=64).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_hexdigit()) =>
+                {
+                    Ok(t.to_ascii_lowercase())
+                }
+                _ => usage(format!(
+                    "`--result`: `{}` is not an id (4 to 64 hexadecimal digits)",
+                    v.to_string_lossy()
+                )),
+            })
+            .transpose()?;
+        Ok(TransformOptions {
+            owned,
+            readonly,
+            allow_residue: self.flag("--allow-residue"),
+            allow_unparsed: self.flag("--allow-unparsed"),
+            allow_partial: self.flag("--allow-partial"),
+            allow_errors: self.flag("--allow-errors"),
+            relative_to: self.one("--relative-to").map(PathBuf::from),
+            residue_ext,
+            round: self.number("--round", 0)?,
+            edits: self.one("--edits").cloned(),
+            declared: self.one("--declared").cloned(),
+            result,
+        })
+    }
+}
+
+fn parse_reduce(args: &[OsString]) -> Result<Invocation, UsageError> {
+    let values =
+        options_only_with(args, &["--plan", "--round", "--store", "-j"], TRANSFORM_FLAGS, &[])?;
+    let plan = PlanSource::Plan(values.plan("reduce")?);
+    let Some(round) = values.transform_options()?.round else {
+        return usage("`reduce` needs `--round`");
+    };
+    Ok(Invocation::Reduce(ReduceArgs {
+        plan,
+        round,
+        store: values.one("--store").map(PathBuf::from),
+        jobs: values.jobs()?,
+    }))
+}
+
+fn parse_apply(args: &[OsString]) -> Result<Invocation, UsageError> {
+    let values = options_only_with(
+        args,
+        &[
+            "--result",
+            "--write",
+            "--patch",
+            "--recover",
+            "--relative-to",
+            "--allow-residue",
+            "--allow-partial",
+            "--allow-errors",
+            "--store",
+        ],
+        TRANSFORM_FLAGS,
+        &[],
+    )?;
+    let t = values.transform_options()?;
+    let store = values.one("--store").map(PathBuf::from);
+    if values.flag("--recover") {
+        if let Some(other) = [
+            "--result",
+            "--write",
+            "--patch",
+            "--relative-to",
+            "--allow-residue",
+            "--allow-partial",
+            "--allow-errors",
+        ]
+        .into_iter()
+        .find(|o| values.one(o).is_some())
+        {
+            return usage(format!("`--recover` cannot be given with `{other}`"));
+        }
+        return Ok(Invocation::Apply(ApplyArgs {
+            result: None,
+            action: ApplyAction::Recover,
+            relative_to: None,
+            allow_residue: false,
+            allow_partial: false,
+            allow_errors: false,
+            store,
+        }));
+    }
+    let Some(result) = t.result else {
+        return usage("`apply` needs `--result` or `--recover`");
+    };
+    let action = match (values.flag("--write"), values.one("--patch")) {
+        (true, Some(_)) => return usage("`--write` and `--patch` cannot both be given"),
+        (true, None) => ApplyAction::Write,
+        (false, Some(file)) => ApplyAction::Patch(PathBuf::from(file)),
+        (false, None) => return usage("`apply --result` needs `--write` or `--patch`"),
+    };
+    Ok(Invocation::Apply(ApplyArgs {
+        result: Some(result),
+        action,
+        relative_to: t.relative_to,
+        allow_residue: t.allow_residue,
+        allow_partial: t.allow_partial,
+        allow_errors: t.allow_errors,
+        store,
     }))
 }
 
