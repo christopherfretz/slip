@@ -1,12 +1,10 @@
 //! Groups (`spec/edits.md` §5.5): the ties of every shard, joined by a
-//! union-find over the identities of the grouped edits, and the effect of
-//! the edits that remain.
+//! union-find over the identities of the grouped edits. The effect is
+//! [`crate::geometry::effect`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use slip_model::Digest;
-
-use crate::geometry::{Span, parents, properly_inside, properly_inside_of};
 
 /// A union-find over edit identities: one entry per distinct grouped edit
 /// (docs/wp/WP-062.md "Group ties in pass 1").
@@ -72,45 +70,4 @@ impl Ties {
             }
         }
     }
-}
-
-/// One round of §5.5's effect over the edits that remain (`spans`, sorted
-/// by `(lo, hi)`, no two crossing and none crossing a copied range;
-/// `copies` the copied ranges of each, by index): every edit that is not
-/// effective, with the innermost remaining edit that contains it.
-///
-/// An edit is outermost if it is within no other; effective if outermost
-/// or carried by an effective edit's copy in which it is maximal (no other
-/// remaining edit properly inside the copied range contains it). Only the
-/// edits that are within another are looked at; a run of a native rename
-/// has none and returns at once.
-pub(crate) fn not_effective(spans: &[Span], copies: &[(usize, Span)]) -> Vec<(usize, usize)> {
-    let parent = parents(spans);
-    if parent.is_empty() {
-        return Vec::new();
-    }
-    let mut by_owner: BTreeMap<usize, Vec<Span>> = BTreeMap::new();
-    for &(e, r) in copies {
-        by_owner.entry(e).or_default().push(r);
-    }
-    let mut effective: BTreeSet<usize> = BTreeSet::new();
-    let mut queue: Vec<usize> =
-        by_owner.keys().copied().filter(|e| !parent.contains_key(e)).collect();
-    while let Some(e) = queue.pop() {
-        for &r in by_owner.get(&e).into_iter().flatten() {
-            for (l, h) in properly_inside_of(spans, r) {
-                for x in l..h {
-                    let Some(&p) = parent.get(&x) else { continue };
-                    if properly_inside(spans[p], r) || effective.contains(&x) {
-                        continue;
-                    }
-                    effective.insert(x);
-                    if by_owner.contains_key(&x) {
-                        queue.push(x);
-                    }
-                }
-            }
-        }
-    }
-    parent.iter().filter(|(x, _)| !effective.contains(x)).map(|(&x, &p)| (x, p)).collect()
 }

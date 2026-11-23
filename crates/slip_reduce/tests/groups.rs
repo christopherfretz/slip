@@ -39,10 +39,21 @@ fn whole_and_part_and_a_rejected_member() {
         "whole-part-rejected",
     );
     assert_eq!(edits(&set), vec![e(A, 50, 51)], "the neighbour stays");
+    // Landed WP-062 §6: each member taken down with the group is named by
+    // a `with_group` refusal of its own, whose `other` is the least member
+    // with a refusal of its own; its observers are its claim's.
+    let got: Vec<_> = set
+        .refusals
+        .iter()
+        .map(|r| (r.cause, r.lo, r.hi, r.other.map(|o| (o.lo, o.hi)), r.observers))
+        .collect();
     assert_eq!(
-        causes(&set),
-        vec![Cause::Contested],
-        "the other members have no refusal of their own"
+        got,
+        vec![
+            (Cause::Contested, 20, 21, None, 1),
+            (Cause::WithGroup, 0, 1, Some((20, 21)), 2),
+            (Cause::WithGroup, 10, 11, Some((20, 21)), 2),
+        ]
     );
     assert!(set.groups.is_empty());
     assert_eq!((counter(&set, "reduce.groups"), counter(&set, "reduce.groups.rejected")), (2, 1));
@@ -68,7 +79,17 @@ fn two_groups_joined_by_a_third() {
     let joined = ok(&script(), shards(true), "joined");
     assert_eq!(joined.state, SetState::Refused);
     assert!(joined.edits.is_empty());
-    assert_eq!(causes(&joined), vec![Cause::Contested]);
+    assert_eq!(
+        causes(&joined),
+        vec![Cause::Contested, Cause::WithGroup, Cause::WithGroup, Cause::WithGroup]
+    );
+    assert!(
+        joined
+            .refusals
+            .iter()
+            .filter(|r| r.cause == Cause::WithGroup)
+            .all(|r| r.other.is_some_and(|o| (o.lo, o.hi) == (30, 31)))
+    );
 }
 
 /// §5.5: the `groups` list holds every group of two or more, sorted.

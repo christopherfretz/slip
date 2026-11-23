@@ -352,21 +352,48 @@ fn macro_site_is_the_least() {
     );
     let m = set.edits[0].macro_site.as_ref().expect("a macro site");
     assert_eq!((m.name_start, m.name.as_slice()), (2, b"ID".as_slice()));
+    // A tie on `name_start` is broken by the name (§4.3), whatever the
+    // order of the shards and of the runs (mutation M36).
+    for names in [["M", "ID", "Z"], ["Z", "M", "ID"]] {
+        for fan_in in [2, 3, 64] {
+            let store = Store::of(
+                names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| ShardB::new(i).claim(the_edit(A, 4, 5, "x").in_macro(2, n)))
+                    .collect(),
+            );
+            let o = Options { fan_in, threads: 1, scratch: scratch("macro-tie") };
+            let set = reduce(&script(), REQUEST, PLAN, 0, &store, &o).unwrap().edits;
+            let m = set.edits[0].macro_site.as_ref().expect("a macro site");
+            assert_eq!((m.name_start, m.name.as_slice()), (2, b"ID".as_slice()), "{names:?}");
+        }
+    }
 }
 
 /// §5.3: a claim's notes are the union of the observers', at most eight,
-/// the least eight kept.
+/// the least eight kept, whatever the order of the shards and of the runs
+/// (mutation M35).
 #[test]
 fn at_most_eight_notes() {
     let names: Vec<String> = (0..10).map(|i| format!("n{i}")).collect();
-    let shards = names
-        .iter()
-        .enumerate()
-        .map(|(i, n)| ShardB::new(i).claim(the_edit(A, 4, 5, "x").notes(&[n])))
-        .collect();
-    let set = ok(&script(), shards, "notes");
     let want: Vec<Vec<u8>> = names[..8].iter().map(|n| n.as_bytes().to_vec()).collect();
-    assert_eq!(set.edits[0].notes, want);
+    for reversed in [false, true] {
+        for fan_in in [2, 3, 64] {
+            let mut order: Vec<&String> = names.iter().collect();
+            if reversed {
+                order.reverse();
+            }
+            let shards = order
+                .iter()
+                .enumerate()
+                .map(|(i, n)| ShardB::new(i).claim(the_edit(A, 4, 5, "x").notes(&[n.as_str()])))
+                .collect();
+            let o = Options { fan_in, threads: 1, scratch: scratch("notes") };
+            let set = reduce(&script(), REQUEST, PLAN, 0, &Store::of(shards), &o).unwrap().edits;
+            assert_eq!(set.edits[0].notes, want, "reversed {reversed}, fan_in {fan_in}");
+        }
+    }
 }
 
 /// §5.4 first geometry row: a kept range of another site that shares a
@@ -1016,4 +1043,43 @@ fn an_observer_counts_once_at_a_site() {
     );
     let r = refusal_at(&set, Cause::Contested, A, 0, 4);
     assert_eq!(r.observers, 2, "observers 0 and 2, each once");
+}
+
+/// §5.4's table (mutation M22): `replace`, `keep` and `unresolved` at one
+/// site is `contested`, counting the observers of the `keep`.
+#[test]
+fn replace_keep_and_unresolved_at_one_site() {
+    let set = ok(
+        &script(),
+        vec![
+            ShardB::new(0).claim(the_edit(A, 0, 1, "x")).claim(the_edit(A, 50, 51, "q")),
+            ShardB::new(1).claim(keep(A, 0, 1)),
+            ShardB::new(2).claim(unresolved(A, 0, 1)),
+        ],
+        "replace-keep-unresolved",
+    );
+    let r = refusal_at(&set, Cause::Contested, A, 0, 1);
+    assert_eq!((r.observers, r.first.clone()), (1, vec![observer(1)]));
+    assert_eq!(edits(&set), vec![e(A, 50, 51)]);
+}
+
+/// §5.2, §5.3 (mutation M38): a claim's `subjects` is the union over its
+/// observers, so one observer that names a selected subject and another
+/// that names an unselected one for the same edit make `mixed_set`.
+#[test]
+fn mixed_set_across_observers() {
+    let set = ok(
+        &script(),
+        vec![
+            ShardB::new(0)
+                .seed(d(1))
+                .claim(the_edit(A, 0, 1, "x").subjects(&[d(1)]))
+                .claim(the_edit(A, 50, 51, "q")),
+            ShardB::new(1).candidate(d(2)).claim(the_edit(A, 0, 1, "x").subjects(&[d(2)])),
+        ],
+        "mixed-across",
+    );
+    let r = refusal_at(&set, Cause::MixedSet, A, 0, 1);
+    assert_eq!(r.observers, 2);
+    assert_eq!(edits(&set), vec![e(A, 50, 51)]);
 }

@@ -26,6 +26,7 @@ pub(crate) fn within(a: Span, b: Span) -> bool {
     a.0 < a.1 && b.0 <= a.0 && a.1 <= b.1
 }
 
+#[cfg(test)]
 pub(crate) fn properly_inside(a: Span, b: Span) -> bool {
     within(a, b) && a != b
 }
@@ -76,6 +77,23 @@ impl MaxTree {
         }
         let mid = nl.midpoint(nr);
         self.descend(2 * k, nl, mid, l, r, t).or_else(|| self.descend(2 * k + 1, mid, nr, l, r, t))
+    }
+
+    /// The greatest index `i` in `[0, r)` with `value[i] > t`.
+    fn last_above(&self, r: usize, t: u128) -> Option<usize> {
+        self.descend_last(1, 0, self.size, r, t)
+    }
+
+    fn descend_last(&self, k: usize, nl: usize, nr: usize, r: usize, t: u128) -> Option<usize> {
+        if r <= nl || self.t[k] <= t {
+            return None;
+        }
+        if nr - nl == 1 {
+            return Some(nl);
+        }
+        let mid = nl.midpoint(nr);
+        self.descend_last(2 * k + 1, mid, nr, r, t)
+            .or_else(|| self.descend_last(2 * k, nl, mid, r, t))
     }
 }
 
@@ -185,9 +203,10 @@ pub(crate) fn least_sharing(blocking: &[Span], queries: &[Span]) -> Vec<Option<u
 }
 
 /// The indices of `[lo, hi)` within `sorted` (by `(lo, hi)`) of the ranges
-/// properly inside `r`, given that none crosses `r`: two intervals, the
-/// ranges that start at `r.lo` and are shorter than `r`, and those that
-/// start after `r.lo` and before `r.hi`.
+/// properly inside `r` and of those that cross it from inside: two
+/// intervals, the ranges that start at `r.lo` and are shorter than `r`
+/// (all properly inside), and those that start after `r.lo` and before
+/// `r.hi` (inside unless they end after `r.hi`).
 #[allow(clippy::many_single_char_names)]
 pub(crate) fn properly_inside_of(sorted: &[Span], r: Span) -> [(usize, usize); 2] {
     let a = sorted.partition_point(|x| x.0 < r.0);
@@ -223,8 +242,10 @@ pub(crate) fn parents(sorted: &[Span]) -> BTreeMap<usize, usize> {
 }
 
 /// `cyclic` (§5.4): the edits (indices into `edits`, sorted by `(lo, hi)`,
-/// no two crossing and none crossing a copied range) on a cycle of "draws
-/// on": `e` draws on `x` when `x` is properly inside a range `e` copies.
+/// no two equal) on a cycle of "draws on": `e` draws on `x` when `x` is
+/// properly inside a range `e` copies. The family may cross itself and the
+/// copied ranges (the sites of every `replace` claim, landed WP-062 §5): a
+/// range that crosses a copied range is not inside it, and is skipped.
 ///
 /// The graph has a node per edit within some copied range (the only ones
 /// drawn on) and per copying edit, and a segment tree over the former, so
@@ -253,6 +274,7 @@ pub(crate) fn cyclic(edits: &[Span], copies: &[(usize, Span)]) -> Vec<usize> {
         })
         .collect();
     let target_spans: Vec<Span> = targets.iter().map(|&i| edits[i]).collect();
+    let target_his = MaxTree::new(target_spans.iter().map(|t| t.1));
 
     // Nodes: edits first (targets and copying edits), then the tree.
     let mut node_of: BTreeMap<usize, usize> = BTreeMap::new();
@@ -277,7 +299,18 @@ pub(crate) fn cyclic(edits: &[Span], copies: &[(usize, Span)]) -> Vec<usize> {
     }
     for &(e, r) in copies {
         let from = node_of[&e];
-        for (l, h) in properly_inside_of(&target_spans, r) {
+        let [first, (start, end)] = properly_inside_of(&target_spans, r);
+        // The second interval without the ranges that end past `r.hi`: each
+        // one skipped splits it. A crossing is a disagreement, so there are
+        // few.
+        let mut blocks = vec![first];
+        let mut next = start;
+        while let Some(k) = target_his.first_above(next, end, r.1) {
+            blocks.push((next, k));
+            next = k + 1;
+        }
+        blocks.push((next.min(end), end));
+        for (l, h) in blocks {
             let (mut l, mut h) = (l + size, h + size);
             while l < h {
                 if l & 1 == 1 {
@@ -302,6 +335,81 @@ pub(crate) fn cyclic(edits: &[Span], copies: &[(usize, Span)]) -> Vec<usize> {
         node_of.iter().filter(|&(_, &n)| size_of[&component[n]] > 1).map(|(&i, _)| i).collect();
     on_cycle.sort_unstable();
     on_cycle
+}
+
+/// One round of §5.5's effect over `members` (the site of every `replace`
+/// claim, sorted by `(lo, hi)`, no two equal; they may cross), with
+/// `carriers` the copied ranges of the edits that carry (the live sites
+/// that remain), by member index: every member that is not effective,
+/// with its innermost container (landed WP-062 §5).
+///
+/// A member is outermost if no member contains it, and effective if it is
+/// outermost or is properly inside a range an effective carrier copies
+/// and no member properly inside that range contains it. Its innermost
+/// container: of the members that properly contain it, the one that
+/// starts last, and of those the shortest (in a family without crossings,
+/// the innermost). Only the members within another are looked at: the
+/// sites of a native rename, which never nest, return at once.
+pub(crate) fn effect(members: &[Span], carriers: &[(usize, Span)]) -> Vec<(usize, usize)> {
+    // Containment order: by `lo`, then the longest first, so that every
+    // container of a member is before it.
+    let mut ord: Vec<usize> = (0..members.len()).collect();
+    ord.sort_unstable_by_key(|&i| (members[i].0, std::cmp::Reverse(members[i].1)));
+    let span = |p: usize| members[ord[p]];
+    let his = MaxTree::new((0..ord.len()).map(|p| span(p).1));
+    // `hi - 1`: a member has a byte, and a container ends at or after it.
+    let container: Vec<Option<usize>> =
+        (0..ord.len()).map(|p| his.last_above(p, span(p).1 - 1).map(|q| ord[q])).collect();
+    if container.iter().all(Option::is_none) {
+        return Vec::new();
+    }
+    let mut by_owner: BTreeMap<usize, Vec<Span>> = BTreeMap::new();
+    for &(e, r) in carriers {
+        by_owner.entry(e).or_default().push(r);
+    }
+    let mut effective = vec![false; members.len()];
+    let mut queue: Vec<usize> = Vec::new();
+    for p in 0..ord.len() {
+        if container[p].is_none() {
+            effective[ord[p]] = true;
+            if by_owner.contains_key(&ord[p]) {
+                queue.push(ord[p]);
+            }
+        }
+    }
+    while let Some(e) = queue.pop() {
+        for &r in by_owner.get(&e).into_iter().flatten() {
+            // The members at `r.lo` that are not shorter than `r`, then
+            // every member that starts before `r.hi`: those inside `r`, in
+            // containment order, less those that end past it.
+            let from = ord.partition_point(|&i| {
+                let m = members[i];
+                m.0 < r.0 || (m.0 == r.0 && m.1 >= r.1)
+            });
+            let to = ord.partition_point(|&i| members[i].0 < r.1);
+            let mut reach = 0u128;
+            for &x in &ord[from..to] {
+                let m = members[x];
+                if m.1 > r.1 {
+                    continue;
+                }
+                // Maximal: no member inside `r` before it reaches its end.
+                if m.1 > reach && !effective[x] {
+                    effective[x] = true;
+                    if by_owner.contains_key(&x) {
+                        queue.push(x);
+                    }
+                }
+                reach = reach.max(m.1);
+            }
+        }
+    }
+    (0..ord.len())
+        .filter_map(|p| {
+            let x = ord[p];
+            (!effective[x]).then(|| (x, container[p].expect("a non-outermost member")))
+        })
+        .collect()
 }
 
 /// Tarjan's strongly connected components, without recursion: the
@@ -464,17 +572,20 @@ mod tests {
         }
     }
 
-    // edits.md §5.4 `cyclic`, against a closure over every pair.
+    // edits.md §5.4 `cyclic`, against a closure over every pair: in a
+    // laminar family, and in one that crosses itself and the copies (landed
+    // WP-062 §5).
     #[test]
     fn cyclic_agrees_with_a_closure() {
         let mut r = Lcg(17);
-        for _ in 0..300 {
+        for case in 0..600 {
+            let laminar = case % 2 == 0;
             let mut family: Vec<Span> = Vec::new();
             for s in {
                 let k = 1 + r.below(12) as usize;
                 spans(&mut r, k, 30)
             } {
-                if family.iter().all(|&f| !crosses(f, s)) {
+                if !laminar || family.iter().all(|&f| !crosses(f, s)) {
                     family.push(s);
                 }
             }
@@ -483,7 +594,7 @@ mod tests {
             for _ in 0..r.below(6) {
                 let e = r.below(family.len() as u64) as usize;
                 let c = spans(&mut r, 1, 30)[0];
-                if family.iter().all(|&f| !crosses(f, c)) {
+                if !laminar || family.iter().all(|&f| !crosses(f, c)) {
                     copies.push((e, c));
                 }
             }
@@ -507,6 +618,66 @@ mod tests {
             }
             let want: Vec<usize> = (0..n).filter(|&i| reach[i][i]).collect();
             assert_eq!(cyclic(&family, &copies), want, "{family:?} {copies:?}");
+        }
+    }
+
+    // edits.md §5.5, landed WP-062 §5: the effect over a family that may
+    // cross itself, against a fixpoint over every pair.
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn effect_agrees_with_a_fixpoint() {
+        let mut r = Lcg(19);
+        for _ in 0..600 {
+            let family = {
+                let k = 1 + r.below(14) as usize;
+                spans(&mut r, k, 30)
+            };
+            let n = family.len();
+            let mut carriers: Vec<(usize, Span)> = Vec::new();
+            for _ in 0..r.below(8) {
+                let e = r.below(n as u64) as usize;
+                if r.below(3) > 0 {
+                    carriers.push((e, spans(&mut r, 1, 30)[0]));
+                }
+            }
+            let contains = |y: usize, x: usize| properly_inside(family[x], family[y]);
+            let mut effective: Vec<bool> =
+                (0..n).map(|x| !(0..n).any(|y| contains(y, x))).collect();
+            loop {
+                let mut more = false;
+                for &(e, c) in &carriers {
+                    if !effective[e] {
+                        continue;
+                    }
+                    for x in 0..n {
+                        let inside = |x: usize| properly_inside(family[x], c);
+                        if inside(x)
+                            && !effective[x]
+                            && !(0..n).any(|y| inside(y) && contains(y, x))
+                        {
+                            effective[x] = true;
+                            more = true;
+                        }
+                    }
+                }
+                if !more {
+                    break;
+                }
+            }
+            let mut want: Vec<(usize, usize)> = (0..n)
+                .filter(|&x| !effective[x])
+                .map(|x| {
+                    let p = (0..n)
+                        .filter(|&y| contains(y, x))
+                        .max_by_key(|&y| (family[y].0, std::cmp::Reverse(family[y].1)))
+                        .unwrap();
+                    (x, p)
+                })
+                .collect();
+            want.sort_unstable();
+            let mut got = effect(&family, &carriers);
+            got.sort_unstable();
+            assert_eq!(got, want, "{family:?} {carriers:?}");
         }
     }
 }

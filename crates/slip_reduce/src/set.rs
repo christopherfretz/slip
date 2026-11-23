@@ -15,8 +15,10 @@ use slip_model::editset::{
 };
 use slip_model::{Counter, Digest, FileRef};
 
-use crate::geometry::{Span, at, cyclic, least_crossing, least_sharing, parents, share_byte};
-use crate::groups::{Ties, not_effective};
+use crate::geometry::{
+    Span, at, cyclic, effect, least_crossing, least_sharing, parents, share_byte,
+};
+use crate::groups::Ties;
 use crate::outcome::{Outcome, site};
 use crate::records::{ClaimVal, Entry, FailVal, KPiece, Key, Sample, Site, Val, identity};
 
@@ -49,8 +51,20 @@ pub(crate) struct Live {
     pub least_subject: Option<Digest>,
     pub root: Option<Digest>,
     pub rejected: Option<Rejection>,
-    /// Rejected with its group (§5.5), without a refusal of its own.
+    /// Rejected with its group (§5.5): a `with_group` refusal.
     pub gone: bool,
+}
+
+/// A site at which some `replace` claim remains after §5.2, live or not
+/// (landed WP-062 §5): it blocks the live sites that cross it, cross what
+/// it copies, or nest in it, as it would if it were live.
+#[derive(Clone, Debug)]
+pub(crate) struct Member {
+    pub span: Span,
+    /// The ranges its `replace` claims copy, every claim's, ascending.
+    pub copies: Vec<Span>,
+    /// Its index in `live`, if it is live.
+    pub live: Option<usize>,
 }
 
 impl Live {
@@ -101,11 +115,16 @@ pub(crate) struct Builder {
     /// The `(size, content)` each path was given, ascending.
     pub versions: Vec<Vec<(u64, Digest)>>,
     pub live: Vec<Live>,
+    /// Every site with a `replace` claim, ascending.
+    members: Vec<Member>,
     blocking: Vec<(Span, Sample)>,
     kept: Vec<PPlace>,
     unresolved: Vec<PPlace>,
     refusals: Vec<SiteRefusal>,
-    rejected_roots: BTreeSet<Digest>,
+    /// The rejected groups, by root, with the least site of a member with
+    /// a refusal of its own: absent if a refusal of §5.2 alone took the
+    /// group down.
+    rejected_roots: BTreeMap<Digest, Option<Span>>,
     roots: BTreeSet<Digest>,
     /// Edits with no tie, and how many of them the table rejected.
     ungrouped: u64,
@@ -120,6 +139,16 @@ pub(crate) struct Builder {
     sites_live: u64,
     sites_kept: u64,
     sites_unresolved: u64,
+}
+
+/// Records that the group of root `r` is rejected, by a member at `site`
+/// (with a refusal of its own) or by a refusal of §5.2 (`None`).
+fn note_root(roots: &mut BTreeMap<Digest, Option<Span>>, r: Digest, site: Option<Span>) {
+    let e = roots.entry(r).or_insert(site);
+    *e = match (*e, site) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
 }
 
 fn corrupt(what: &str) -> String {
@@ -208,14 +237,22 @@ impl Builder {
         let out = site(&s, claims, &observed, cx.selected);
         self.sites += 1;
         let rejected_site = matches!(out.outcome, Outcome::Rejected { .. });
+        let span = (at(pid, s.lo), at(pid, s.hi));
         let mut live_root = None;
+        let mut copies = Vec::new();
         for (pieces, _) in &out.edits {
             self.replaces += 1;
+            for p in pieces {
+                if let KPiece::Copy(c) = p {
+                    let cp = self.pid(&c.path)?;
+                    copies.push((at(cp, c.lo), at(cp, c.hi)));
+                }
+            }
             let root = cx.ties.find(&identity(&s, pieces));
             if let Some(r) = root {
                 self.roots.insert(r);
                 if rejected_site {
-                    self.rejected_roots.insert(r);
+                    note_root(&mut self.rejected_roots, r, Some(span));
                 }
             } else {
                 self.ungrouped += 1;
@@ -225,7 +262,12 @@ impl Builder {
             }
             live_root = root;
         }
-        let span = (at(pid, s.lo), at(pid, s.hi));
+        if !out.edits.is_empty() {
+            copies.sort_unstable();
+            copies.dedup();
+            let live = matches!(out.outcome, Outcome::Live { .. }).then_some(self.live.len());
+            self.members.push(Member { span, copies, live });
+        }
         if let Some(b) = out.blocking
             && s.lo < s.hi
         {
@@ -300,36 +342,44 @@ impl Builder {
             }
         }
 
-        // overlap: every pair over one set, then applied together.
+        // overlap, against every member (landed WP-062 §5): a live site
+        // that crosses a member or a range a member copies, and a live site
+        // whose copy a member crosses. Every pair over one set, then applied
+        // together.
         let alive = self.alive();
         let s: Vec<Span> = alive.iter().map(|&i| self.live[i].span()).collect();
+        let g: Vec<Span> = self.members.iter().map(|m| m.span).collect();
+        let mut gc: Vec<Span> =
+            self.members.iter().flat_map(|m| m.copies.iter().copied()).collect();
+        gc.sort_unstable();
+        gc.dedup();
         let mut copies: Vec<(Span, usize)> =
             alive.iter().flat_map(|&i| self.live[i].copies().map(move |c| (c, i))).collect();
         copies.sort_unstable();
         let mut c: Vec<Span> = copies.iter().map(|x| x.0).collect();
         c.dedup();
-        let site_site = least_crossing(&s, &s);
-        let site_copy = least_crossing(&c, &s);
-        let copy_site = least_crossing(&s, &c);
+        let site_member = least_crossing(&g, &s);
+        let site_copy = least_crossing(&gc, &s);
+        let copy_member = least_crossing(&g, &c);
         let mut hit: BTreeMap<usize, Span> = BTreeMap::new();
         let mut note = |i: usize, other: Span| {
             let e = hit.entry(i).or_insert(other);
             *e = (*e).min(other);
         };
         for (k, &i) in alive.iter().enumerate() {
-            if let Some(x) = site_site[k] {
-                note(i, s[x]);
+            if let Some(x) = site_member[k] {
+                note(i, g[x]);
             }
             if let Some(x) = site_copy[k] {
-                note(i, c[x]);
+                note(i, gc[x]);
             }
         }
-        for (ci, x) in copy_site.iter().enumerate() {
+        for (ci, x) in copy_member.iter().enumerate() {
             if let Some(x) = x {
                 let lo = copies.partition_point(|y| y.0 < c[ci]);
                 let hi = copies.partition_point(|y| y.0 <= c[ci]);
                 for y in &copies[lo..hi] {
-                    note(y.1, s[*x]);
+                    note(y.1, g[*x]);
                 }
             }
         }
@@ -337,16 +387,19 @@ impl Builder {
             self.live[i].reject(Cause::Overlap, Some(other));
         }
 
-        // cyclic
-        let alive = self.alive();
-        let s: Vec<Span> = alive.iter().map(|&i| self.live[i].span()).collect();
-        let copies: Vec<(usize, Span)> = alive
+        // cyclic, over every member: a live site left on a cycle.
+        let member_copies: Vec<(usize, Span)> = self
+            .members
             .iter()
             .enumerate()
-            .flat_map(|(k, &i)| self.live[i].copies().map(move |c| (k, c)))
+            .flat_map(|(k, m)| m.copies.iter().map(move |&c| (k, c)))
             .collect();
-        for k in cyclic(&s, &copies) {
-            self.live[alive[k]].reject(Cause::Cyclic, None);
+        for k in cyclic(&g, &member_copies) {
+            if let Some(i) = self.members[k].live
+                && self.live[i].alive()
+            {
+                self.live[i].reject(Cause::Cyclic, None);
+            }
         }
     }
 
@@ -398,24 +451,30 @@ impl Builder {
         subject_refusals: bool,
     ) {
         self.reject_groups(indivisible, refused_subjects, subject_refusals);
+        let g: Vec<Span> = self.members.iter().map(|m| m.span).collect();
         loop {
-            let alive = self.alive();
-            let s: Vec<Span> = alive.iter().map(|&i| self.live[i].span()).collect();
-            let copies: Vec<(usize, Span)> = alive
+            // The carriers: the live sites that remain. Every member is a
+            // container, whatever became of it (landed WP-062 §5).
+            let carriers: Vec<(usize, Span)> = self
+                .members
                 .iter()
                 .enumerate()
-                .flat_map(|(k, &i)| self.live[i].copies().map(move |c| (k, c)))
+                .filter(|(_, m)| m.live.is_some_and(|i| self.live[i].alive()))
+                .flat_map(|(k, m)| m.copies.iter().map(move |&c| (k, c)))
                 .collect();
-            let buried = not_effective(&s, &copies);
-            if buried.is_empty() {
-                break;
-            }
             let mut other: BTreeMap<usize, Span> = BTreeMap::new();
-            for &(x, p) in &buried {
+            for (x, p) in effect(&g, &carriers) {
                 for (a, b) in [(x, p), (p, x)] {
-                    let e = other.entry(alive[a]).or_insert(s[b]);
-                    *e = (*e).min(s[b]);
+                    if let Some(i) = self.members[a].live
+                        && self.live[i].alive()
+                    {
+                        let e = other.entry(i).or_insert(g[b]);
+                        *e = (*e).min(g[b]);
+                    }
                 }
+            }
+            if other.is_empty() {
+                break;
             }
             for (i, o) in other {
                 self.live[i].reject(Cause::Buried, Some(o));
@@ -447,19 +506,18 @@ impl Builder {
         }
         for l in &mut self.live {
             let named = l.val.subjects.iter().any(|k| refused.contains(k));
-            let bad = l.rejected.is_some() || (named && !l.gone);
-            if bad {
-                match l.root {
-                    Some(r) => {
-                        self.rejected_roots.insert(r);
-                    }
-                    None if l.rejected.is_none() => l.gone = true,
-                    None => {}
+            let span = l.span();
+            match l.root {
+                Some(r) if l.rejected.is_some() => {
+                    note_root(&mut self.rejected_roots, r, Some(span));
                 }
+                Some(r) if named && !l.gone => note_root(&mut self.rejected_roots, r, None),
+                None if l.rejected.is_none() && named => l.gone = true,
+                _ => {}
             }
         }
         for l in &mut self.live {
-            if l.alive() && l.root.is_some_and(|r| self.rejected_roots.contains(&r)) {
+            if l.alive() && l.root.is_some_and(|r| self.rejected_roots.contains_key(&r)) {
                 l.gone = true;
             }
         }
@@ -512,6 +570,22 @@ impl Builder {
                     subject: l.least_subject,
                     sample: r.sample.clone().unwrap_or_else(|| l.val.sample.clone()),
                     other: r.other,
+                });
+            } else if l.gone && !parts.indivisible {
+                // Taken down with its group (§5.5): named by a refusal of
+                // its own, with the least member that has one (landed
+                // WP-062 §6). Under an `indivisible` request the refused
+                // state says it.
+                site_refusals.push(SiteRefusal {
+                    pid: l.pid,
+                    lo: l.lo,
+                    hi: l.hi,
+                    cause: Cause::WithGroup,
+                    reason: Reason::None,
+                    macro_site: l.val.macro_site.clone(),
+                    subject: l.least_subject,
+                    sample: l.val.sample.clone(),
+                    other: l.root.and_then(|r| self.rejected_roots.get(&r).copied().flatten()),
                 });
             }
         }
@@ -729,7 +803,8 @@ impl Builder {
             let live_ungrouped = self.live.iter().filter(|l| l.root.is_none()).count() as u64;
             let live_ungrouped_rejected =
                 self.live.iter().filter(|l| l.root.is_none() && !l.alive()).count() as u64;
-            let mut rejected_roots = self.rejected_roots.clone();
+            let mut rejected_roots: BTreeSet<Digest> =
+                self.rejected_roots.keys().copied().collect();
             if set_refused {
                 rejected_roots.clone_from(&self.roots);
             }

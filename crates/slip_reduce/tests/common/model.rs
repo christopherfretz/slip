@@ -5,7 +5,7 @@
 //! compares it with `slip_reduce::reduce` on every generated set. It reads
 //! shards that are valid (§4.7) and raise no `Input` error.
 
-#![allow(clippy::single_match_else)]
+#![allow(clippy::single_match_else, clippy::many_single_char_names)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -100,6 +100,15 @@ struct SiteRef {
     subject: Option<Digest>,
     obs: BTreeSet<usize>,
     other: Option<PP>,
+}
+
+fn note_root(roots: &mut BTreeMap<(PP, Vec<MP>), Option<PP>>, r: (PP, Vec<MP>), site: Option<PP>) {
+    let e = roots.entry(r).or_insert_with(|| site.clone());
+    if let Some(s) = site
+        && e.as_ref().is_none_or(|x| s < *x)
+    {
+        *e = Some(s);
+    }
 }
 
 /// Union-find by plain maps, least root.
@@ -376,7 +385,12 @@ pub fn reduce(
     let mut site_refusals: Vec<SiteRef> = Vec::new();
     let mut replaces_left = 0u64;
     let mut roots: BTreeSet<(PP, Vec<MP>)> = BTreeSet::new();
-    let mut rejected_roots: BTreeSet<(PP, Vec<MP>)> = BTreeSet::new();
+    // A rejected group's root, with the least site of a member with a
+    // refusal of its own (absent: a refusal of §5.2 alone).
+    let mut rejected_roots: BTreeMap<(PP, Vec<MP>), Option<PP>> = BTreeMap::new();
+    // Every site with a replace claim left: its site, everything its
+    // replace claims copy, and its index in `lives` if it is live.
+    let mut members: Vec<(PP, Vec<PP>, Option<usize>)> = Vec::new();
     let (mut ungrouped, mut ungrouped_rejected) = (0u64, 0u64);
     let (mut n_live, mut n_kept, mut n_unres) = (0u64, 0u64, 0u64);
     for (site, keys) in &claims {
@@ -455,7 +469,7 @@ pub fn reduce(
                 Some(r) => {
                     roots.insert(r.clone());
                     if rejected.is_some() {
-                        rejected_roots.insert(r);
+                        note_root(&mut rejected_roots, r, Some(site.clone()));
                     }
                 }
                 None => {
@@ -465,6 +479,15 @@ pub fn reduce(
                     }
                 }
             }
+        }
+        if !edit_keys.is_empty() {
+            let copies: Vec<PP> = edit_keys
+                .iter()
+                .flatten()
+                .filter_map(|p| if let MP::C(c) = p { Some(c.clone()) } else { None })
+                .collect();
+            let live_index = (rejected.is_none() && live.is_some()).then_some(lives.len());
+            members.push((site.clone(), copies, live_index));
         }
         let both: BTreeSet<_> = keep.union(&unres).cloned().collect();
         if site.1 < site.2 {
@@ -518,7 +541,8 @@ pub fn reduce(
             l.rejected = Some((Cause::Contested, Some(b.0.clone()), Some(b.1.clone())));
         }
     }
-    // overlap, all pairs over one set.
+    // overlap, all pairs over one set, against every member (landed
+    // WP-062 §5).
     let alive: Vec<usize> = (0..lives.len()).filter(|&i| lives[i].alive()).collect();
     let mut other: BTreeMap<usize, PP> = BTreeMap::new();
     let mut note = |i: usize, o: &PP| {
@@ -528,14 +552,20 @@ pub fn reduce(
         }
     };
     for &i in &alive {
-        for &j in &alive {
-            if same_file_cross(&lives[i].site, &lives[j].site) {
-                note(i, &lives[j].site);
+        for (m, copies, _) in &members {
+            if same_file_cross(&lives[i].site, m) {
+                note(i, m);
             }
-            for c in lives[j].copies() {
-                if same_file_cross(&lives[i].site, &c) {
-                    note(i, &c);
-                    note(j, &lives[i].site);
+            for c in copies {
+                if same_file_cross(&lives[i].site, c) {
+                    note(i, c);
+                }
+            }
+        }
+        for c in lives[i].copies() {
+            for (m, _, _) in &members {
+                if same_file_cross(m, &c) {
+                    note(i, m);
                 }
             }
         }
@@ -543,24 +573,23 @@ pub fn reduce(
     for (i, o) in other {
         lives[i].rejected = Some((Cause::Overlap, Some(o), None));
     }
-    // cyclic: the closure of "draws on".
-    let alive: Vec<usize> = (0..lives.len()).filter(|&i| lives[i].alive()).collect();
+    // cyclic: the closure of "draws on", over every member.
     let draws =
-        |a: usize, b: usize| lives[a].copies().iter().any(|c| same_file_inside(&lives[b].site, c));
-    let mut reach: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    for &a in &alive {
+        |a: usize, b: usize| members[a].1.iter().any(|c| same_file_inside(&members[b].0, c));
+    for a in 0..members.len() {
+        let Some(i) = members[a].2 else { continue };
+        if !lives[i].alive() {
+            continue;
+        }
         let mut seen = BTreeSet::new();
-        let mut stack: Vec<usize> = alive.iter().copied().filter(|&b| draws(a, b)).collect();
+        let mut stack: Vec<usize> = (0..members.len()).filter(|&b| draws(a, b)).collect();
         while let Some(x) = stack.pop() {
             if seen.insert(x) {
-                stack.extend(alive.iter().copied().filter(|&b| draws(x, b)));
+                stack.extend((0..members.len()).filter(|&b| draws(x, b)));
             }
         }
-        reach.insert(a, seen);
-    }
-    for &a in &alive {
-        if reach[&a].contains(&a) {
-            lives[a].rejected = Some((Cause::Cyclic, None, None));
+        if seen.contains(&a) {
+            lives[i].rejected = Some((Cause::Cyclic, None, None));
         }
     }
     // file agreement.
@@ -574,7 +603,7 @@ pub fn reduce(
     // §5.5: groups, then effect, repeated.
     let any_refusal = !subject_refusals.is_empty();
     let reject_groups = |lives: &mut Vec<Live>,
-                         rejected_roots: &mut BTreeSet<(PP, Vec<MP>)>,
+                         rejected_roots: &mut BTreeMap<(PP, Vec<MP>), Option<PP>>,
                          site_refusals: &Vec<SiteRef>| {
         if request.indivisible {
             if any_refusal
@@ -592,7 +621,8 @@ pub fn reduce(
             if l.rejected.is_some() || (named && !l.gone) {
                 match uf.root(&l.id) {
                     Some(r) => {
-                        rejected_roots.insert(r);
+                        let at = l.rejected.is_some().then(|| l.site.clone());
+                        note_root(rejected_roots, r, at);
                     }
                     None if l.rejected.is_none() => l.gone = true,
                     None => {}
@@ -600,29 +630,30 @@ pub fn reduce(
             }
         }
         for l in lives.iter_mut() {
-            if l.alive() && uf.root(&l.id).is_some_and(|r| rejected_roots.contains(&r)) {
+            if l.alive() && uf.root(&l.id).is_some_and(|r| rejected_roots.contains_key(&r)) {
                 l.gone = true;
             }
         }
     };
     reject_groups(&mut lives, &mut rejected_roots, &site_refusals);
+    // Effect: every member a container, the live sites that remain the
+    // carriers (landed WP-062 §5).
+    let contains = |y: usize, x: usize| x != y && same_file_within(&members[x].0, &members[y].0);
     loop {
-        let alive: Vec<usize> = (0..lives.len()).filter(|&i| lives[i].alive()).collect();
-        let contains =
-            |y: usize, x: usize| x != y && same_file_within(&lives[x].site, &lives[y].site);
-        let outermost: BTreeSet<usize> =
-            alive.iter().copied().filter(|&x| !alive.iter().any(|&y| contains(y, x))).collect();
-        let mut effective = outermost.clone();
+        let carrier = |e: usize| members[e].2.is_some_and(|i| lives[i].alive());
+        let n = members.len();
+        let mut effective: BTreeSet<usize> =
+            (0..n).filter(|&x| !(0..n).any(|y| contains(y, x))).collect();
         loop {
             let before = effective.len();
             for &e in &effective.clone() {
-                for r in lives[e].copies() {
-                    for &x in &alive {
-                        if same_file_inside(&lives[x].site, &r)
-                            && !alive
-                                .iter()
-                                .any(|&y| contains(y, x) && same_file_inside(&lives[y].site, &r))
-                        {
+                if !carrier(e) {
+                    continue;
+                }
+                for r in &members[e].1 {
+                    let inside = |x: usize| same_file_inside(&members[x].0, r);
+                    for x in 0..n {
+                        if inside(x) && !(0..n).any(|y| inside(y) && contains(y, x)) {
                             effective.insert(x);
                         }
                     }
@@ -633,20 +664,23 @@ pub fn reduce(
             }
         }
         let mut buried: BTreeMap<usize, PP> = BTreeMap::new();
-        for &x in &alive {
+        for x in 0..n {
             if effective.contains(&x) {
                 continue;
             }
-            // The innermost remaining edit that contains x.
-            let p = alive
-                .iter()
-                .copied()
+            // The innermost container: of those that contain x, the one
+            // that starts last, then the shortest.
+            let p = (0..n)
                 .filter(|&y| contains(y, x))
-                .min_by_key(|&y| lives[y].site.2 - lives[y].site.1)
+                .max_by_key(|&y| (members[y].0.1, std::cmp::Reverse(members[y].0.2)))
                 .unwrap();
             for (a, b) in [(x, p), (p, x)] {
-                let o = lives[b].site.clone();
-                let e = buried.entry(a).or_insert_with(|| o.clone());
+                let Some(i) = members[a].2 else { continue };
+                if !lives[i].alive() {
+                    continue;
+                }
+                let o = members[b].0.clone();
+                let e = buried.entry(i).or_insert_with(|| o.clone());
                 if o < *e {
                     *e = o;
                 }
@@ -689,6 +723,16 @@ pub fn reduce(
                 subject: l.least_subject,
                 obs: obs.clone().unwrap_or_else(|| l.j.obs.clone()),
                 other: other.clone(),
+            });
+        } else if l.gone && !request.indivisible {
+            site_refusals.push(SiteRef {
+                site: l.site.clone(),
+                cause: Cause::WithGroup,
+                reason: Reason::None,
+                macro_site: l.j.macro_site.clone(),
+                subject: l.least_subject,
+                obs: l.j.obs.clone(),
+                other: uf.root(&l.id).and_then(|r| rejected_roots[&r].clone()),
             });
         }
     }

@@ -87,10 +87,41 @@ fn pool_claim(r: &mut Rng) -> C {
     if r.chance(15) {
         c = c.in_macro(lo.saturating_sub(1), *pick(r, &["M", "ID"]));
     }
-    if r.chance(20) {
-        c = c.notes(&[*pick(r, &["n1", "n2", "n3"])]);
+    if r.chance(30) {
+        c = c.notes(&some_notes(r));
     }
     c.votes = 1 + r.below(2);
+    c
+}
+
+/// One to three of twelve notes: a claim joined over observers has more
+/// than eight (§5.3: the least eight are kept, whatever the order).
+fn some_notes(r: &mut Rng) -> Vec<&'static str> {
+    const NOTES: [&str; 12] =
+        ["n00", "n01", "n02", "n03", "n04", "n05", "n06", "n07", "n08", "n09", "n10", "n11"];
+    (0..=r.below(3)).map(|_| *pick(r, &NOTES)).collect()
+}
+
+/// What one observer makes of a pool claim: the same site, stance and
+/// pieces (the same collapsed claim), with subjects, notes and a macro
+/// name of its own at times. The subjects then join by union (§5.3, and
+/// `mixed_set` may follow), the notes keep the least eight, the macro the
+/// least (§4.3: a tie on `name_start` broken by the name).
+fn as_seen(r: &mut Rng, c: &C) -> C {
+    let mut c = c.clone();
+    if r.chance(20) {
+        let n = r.below(3);
+        let s: Vec<Digest> = (0..n).map(|_| d(1 + r.below(6) as u8)).collect();
+        c = c.subjects(&s);
+    }
+    if r.chance(35) {
+        c = c.notes(&some_notes(r));
+    }
+    if let Some(m) = c.macro_site.clone()
+        && r.chance(40)
+    {
+        c = c.in_macro(m.name_start, *pick(r, &["M", "ID", "A", "Z"]));
+    }
     c
 }
 
@@ -141,8 +172,9 @@ fn generate(seed: u64) -> (Transform, Vec<(Digest, Option<Shard>)>) {
             }
             let key = format!("{:?}{}{}{:?}{:?}", c.path, c.lo, c.hi, c.stance, c.pieces);
             if keys.insert(key) {
+                let c = as_seen(&mut r, c);
                 subjects.extend(c.subjects.iter().copied());
-                b = b.claim(c.clone());
+                b = b.claim(c);
             }
         }
         for id in 1..=6u8 {
@@ -320,6 +352,9 @@ fn check(seed: u64, tally: &mut Tally) {
     assert_eq!(EditSet::from_bytes(&base.edits.to_bytes()).unwrap(), base.edits);
     assert_eq!(slip_reduce::declared(&base.edits).unwrap(), base.declared, "§6.2: one derivation");
 
+    // Landed WP-062 §6: a missing edit is explained.
+    explained(&request, &shards, &base.edits);
+
     // The model.
     let with_ids: Vec<(Digest, Option<Shard>, Option<Digest>)> =
         shards.iter().map(|(o, s)| (*o, s.clone(), s.as_ref().map(id_of))).collect();
@@ -352,6 +387,173 @@ fn check(seed: u64, tally: &mut Tally) {
             panic!("a permutation of the plan changes the set\npermuted: {a:#?}\nbase: {b:#?}");
         }
     }
+}
+
+type SiteP = (Vec<u8>, u64, u64);
+
+/// Landed WP-062 §6: every site at which an input shard claims a `replace`
+/// is an edit of the set, the site of a refusal (`with_group` for one
+/// taken down with its group), or `kept` (§5.2 made the claim a `keep`);
+/// or the set is refused as a whole: under an `indivisible` request, or
+/// with a refusal of no site.
+fn explained(request: &Transform, shards: &[(Digest, Option<Shard>)], set: &EditSet) {
+    let path = |f: u64| set.files[f as usize].path.clone();
+    let whole = set.state == slip_model::editset::SetState::Refused
+        && (request.indivisible || set.refusals.iter().any(|r| r.file.is_none()));
+    if whole {
+        return;
+    }
+    let mut known: BTreeSet<SiteP> = BTreeSet::new();
+    known.extend(set.edits.iter().map(|e| (path(e.file), e.lo, e.hi)));
+    known.extend(set.refusals.iter().filter_map(|r| r.file.map(|f| (path(f), r.lo, r.hi))));
+    known.extend(set.kept.iter().map(|k| (path(k.file), k.lo, k.hi)));
+    for (_, s) in shards {
+        let Some(s) = s else { continue };
+        let Some(edits) = s.edits.as_ref().filter(|e| e.failure.is_none()) else { continue };
+        if s.outcome.status != Status::Ok {
+            continue;
+        }
+        for c in edits.claims.iter().filter(|c| c.stance == Stance::Replace) {
+            let site = (edits.files[c.file as usize].path.clone(), c.lo, c.hi);
+            assert!(known.contains(&site), "the replace site {site:?} is not explained: {set:#?}");
+        }
+    }
+}
+
+/// The site refusals of a set, by site, with their causes.
+fn refused_sites(set: &EditSet) -> std::collections::BTreeMap<SiteP, Vec<String>> {
+    let mut out: std::collections::BTreeMap<SiteP, Vec<String>> = std::collections::BTreeMap::new();
+    for r in &set.refusals {
+        if let Some(f) = r.file {
+            let site = (set.files[f as usize].path.clone(), r.lo, r.hi);
+            out.entry(site).or_default().push(format!("{:?}", r.cause));
+        }
+    }
+    out
+}
+
+/// What §5.2 made of a set: the selected subjects, the refusals of no
+/// site, the kept sites and the `mixed_set` sites.
+fn selection_of(set: &EditSet) -> (Vec<Digest>, Vec<String>, Vec<SiteP>) {
+    let path = |f: u64| set.files[f as usize].path.clone();
+    let mut sites: Vec<SiteP> = set.kept.iter().map(|k| (path(k.file), k.lo, k.hi)).collect();
+    sites.extend(
+        set.refusals
+            .iter()
+            .filter(|r| r.cause == slip_model::editset::Cause::MixedSet)
+            .filter_map(|r| r.file.map(|f| (path(f), r.lo, r.hi))),
+    );
+    let alone = set
+        .refusals
+        .iter()
+        .filter(|r| r.file.is_none())
+        .map(|r| format!("{:?} {:?}", r.cause, r.subject))
+        .collect();
+    (set.subjects.iter().map(|x| x.id).collect(), alone, sites)
+}
+
+/// An edit `reduce(S)` refuses that `reduce(S ∪ {s})` accepts: `s` the
+/// shard at `k` of the case, the site, its causes in `reduce(S)`, and
+/// whether §5.2 made something else of the two (`selection_of`).
+type Exception = (usize, SiteP, Vec<String>, bool);
+
+/// Monotone refusal (landed WP-062 §5): for the shards `S` of a case less
+/// one, `s`, every edit `reduce(S)` refuses is refused or absent in
+/// `reduce(S ∪ {s})`. The cases where it does not hold.
+fn monotone(
+    request: &Transform,
+    shards: &[(Digest, Option<Shard>)],
+    whole: &EditSet,
+) -> Vec<Exception> {
+    let path = |f: u64| whole.files[f as usize].path.clone();
+    let accepted: BTreeSet<SiteP> =
+        whole.edits.iter().map(|e| (path(e.file), e.lo, e.hi)).collect();
+    let mut out = Vec::new();
+    for k in 0..shards.len() {
+        if shards[k].1.is_none() {
+            continue;
+        }
+        let mut less = shards.to_vec();
+        less.remove(k);
+        let part = reduce_with(request, &store_of(&less), 64, 1);
+        let selection = selection_of(&part.edits) != selection_of(whole);
+        for (site, causes) in refused_sites(&part.edits) {
+            if accepted.contains(&site) {
+                out.push((k, site, causes, selection));
+            }
+        }
+    }
+    out
+}
+
+/// The case with no claim naming a subject: §5.2 then touches no claim
+/// (a claim with no subject is not touched by selection), so that what
+/// one more shard changes is disagreement alone.
+fn without_subjects(shards: &[(Digest, Option<Shard>)]) -> Vec<(Digest, Option<Shard>)> {
+    let mut v = shards.to_vec();
+    for (_, s) in &mut v {
+        if let Some(e) = s.as_mut().and_then(|s| s.edits.as_mut()) {
+            for c in &mut e.claims {
+                c.subjects.clear();
+            }
+        }
+        if let Some(s) = s {
+            s.validate().unwrap_or_else(|e| panic!("a claim without subjects: {e}"));
+        }
+    }
+    v
+}
+
+/// Monotone refusal over generated sets: more disagreement never accepts
+/// more (landed WP-062 §5).
+///
+/// - With no claim naming a subject, an exception is only of the kind
+///   landed §5 names: an edit `buried` in `S` that `s`'s copy carries.
+/// - As generated, an exception is that, or one where `s` changes what
+///   §5.2 makes of the claims: it names a seed, a link or a subject that
+///   selects or deselects, so that a `replace` becomes a `keep` (whose
+///   pieces are gone) or a `mixed_set` an edit. Selection is of all the
+///   shards; it is not disagreement.
+///
+/// Every exception is printed.
+#[test]
+fn more_shards_refuse_no_less() {
+    let base: u64 =
+        std::env::var("SLIP_REDUCE_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0x062_5eed);
+    let show = |what: &str, seed: u64, (k, site, causes, selection): &Exception| {
+        eprintln!(
+            "monotone {what}: seed {seed}: without shard {k}, {} [{}, {}) is {causes:?}; \
+             accepted with it{}",
+            String::from_utf8_lossy(&site.0),
+            site.1,
+            site.2,
+            if *selection { " (§5.2 differs)" } else { "" }
+        );
+    };
+    let (mut effect, mut selection, mut reductions) = (0, 0, 0);
+    for case in 0..CASES {
+        let seed = base.wrapping_add(case.wrapping_mul(0x9e37_79b9));
+        let (request, shards) = generate(seed);
+        for (what, shards) in [("plain", without_subjects(&shards)), ("as generated", shards)] {
+            let whole = reduce_with(&request, &store_of(&shards), 64, 1);
+            reductions += shards.len();
+            for x in monotone(&request, &shards, &whole.edits) {
+                show(what, seed, &x);
+                let buried = x.2.iter().any(|c| c == "Buried");
+                if buried {
+                    effect += 1;
+                } else if x.3 && what == "as generated" {
+                    selection += 1;
+                } else {
+                    panic!("seed {seed}: more disagreement accepts more: {x:?}");
+                }
+            }
+        }
+    }
+    eprintln!(
+        "monotone: {CASES} cases, {reductions} reductions less one; exceptions: {effect} of the \
+         effect, {selection} of §5.2"
+    );
 }
 
 /// §1 rule 3, §5.3, §5.6, §6.1 and the model, over generated sets.
