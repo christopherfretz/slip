@@ -1,0 +1,1363 @@
+//! `spec/exec.md` §8.12, §8.14 and `spec/edits.md` §7.2, §7.3, §10.2 and
+//! §10.5 through the built executable: `slip reduce` and `slip apply`
+//! (`docs/wp/WP-075.md` "Tests") over a store each test fills by hand with
+//! a plan, a request, map shards and results made with `slip_model`. No
+//! Kiln: nothing here parses.
+//!
+//! Each test has its own directory (a small tree `src/` and a store),
+//! under the target directory, removed on drop. Every wait on a child is
+//! bounded.
+
+use std::fs;
+use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use slip_apply::journal::{Journal, JournalEntry, staged_name};
+use slip_exec::store::{Access, Object, Store};
+use slip_model::declared::Declared;
+use slip_model::edits::{
+    Claim, Edits, Failure, FailureKind, Piece, Place, Reason, Report, Role, SCHEME, Severity,
+    SourcePlace, Stance, Subject, tiers,
+};
+use slip_model::editset::EditSet;
+use slip_model::formats::content_id;
+use slip_model::hash::content_digest;
+use slip_model::overlay::{Content, Overlay, OverlayFile};
+use slip_model::result::{Category, Residue, RunVerdict, Spellings, State, Tally, TransformResult};
+use slip_model::transform::{Ownership, Rename, Script, TargetKind, Transform, TransformKind};
+use slip_model::transform_run::TransformRun;
+use slip_model::{
+    Command as Cmd, Configuration, Digest, End, FileRef, Job, Language, Observer, Origin, Outcome,
+    Phase, Plan, Run, RunRecord, Shard, Status,
+};
+
+const SLIP: &str = env!("CARGO_BIN_EXE_slip");
+
+/// The bound on one `slip` command.
+const BOUND: Duration = Duration::from_mins(2);
+
+/// The tree every test starts from: a header both observers read, and
+/// each observer's main file. The name `f` is at the offsets below.
+const H: &str = "int f();\n";
+const A: &str = "#include \"h.h\"\nint x = f();\n";
+const B: &str = "#include \"h.h\"\nint y = f() + f();\n";
+/// `f` in `h.h`, `a.cc` (line 2, column 9) and `b.cc` (twice).
+const F_H: u64 = 4;
+const F_A: u64 = 23;
+const F_B: [u64; 2] = [23, 29];
+
+/// The subject every shard names.
+const K: Digest = Digest([0x4b; 32]);
+
+const ROUND: u64 = 1;
+
+// ---------------------------------------------------------------------------
+// The fixture
+
+struct Fx {
+    root: PathBuf,
+}
+
+impl Drop for Fx {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+/// What a finished `slip` did.
+#[derive(Debug)]
+struct Out {
+    status: ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
+impl Out {
+    fn code(&self) -> Option<i32> {
+        self.status.code()
+    }
+
+    fn lines(&self) -> Vec<&str> {
+        self.stdout.lines().collect()
+    }
+
+    /// The value of the stdout line `<key> <value>`.
+    fn value(&self, key: &str) -> Option<&str> {
+        self.stdout.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix(' '))
+    }
+
+    fn digest(&self, key: &str) -> Digest {
+        let hex = self.value(key).unwrap_or_else(|| panic!("no `{key}` line: {self:?}"));
+        let hex = hex.split(':').next().unwrap();
+        Digest::from_hex(hex).unwrap_or_else(|| panic!("`{key}` {hex} is not a digest"))
+    }
+
+    #[track_caller]
+    fn expect(&self, code: i32) -> &Out {
+        assert_eq!(self.code(), Some(code), "{self:#?}");
+        self
+    }
+}
+
+fn run_bounded(mut cmd: Command) -> Out {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("start slip");
+    let stdout = reader(child.stdout.take().unwrap());
+    let stderr = reader(child.stderr.take().unwrap());
+    let status = wait_bounded(&mut child);
+    Out { status, stdout: stdout.join().unwrap(), stderr: stderr.join().unwrap() }
+}
+
+fn reader(mut r: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = r.read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
+}
+
+fn wait_bounded(child: &mut Child) -> ExitStatus {
+    let deadline = Instant::now() + BOUND;
+    let mut pause = Duration::from_millis(1);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("slip did not finish within {BOUND:?}");
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(25));
+    }
+}
+
+/// `slip <args>` outside any fixture (usage errors, `--help`).
+fn slip(args: &[&str]) -> Out {
+    let mut cmd = Command::new(SLIP);
+    cmd.args(args);
+    run_bounded(cmd)
+}
+
+fn file_ref(path: &[u8], bytes: &[u8]) -> FileRef {
+    FileRef { path: path.to_vec(), size: bytes.len() as u64, content: content_digest(bytes) }
+}
+
+fn content(bytes: &[u8]) -> Content {
+    Content { size: bytes.len() as u64, content: content_digest(bytes) }
+}
+
+/// The pre-image on disk, for `slip_apply::build`.
+struct Disk;
+
+impl slip_apply::Files for Disk {
+    fn read(&self, path: &[u8]) -> std::io::Result<Vec<u8>> {
+        fs::read(std::ffi::OsStr::from_bytes(path))
+    }
+}
+
+/// A claim of one observer: `path`, `[lo, lo + 1)`, its stance, the
+/// replacement `text`.
+#[derive(Clone)]
+struct C {
+    path: &'static str,
+    lo: u64,
+    stance: Stance,
+    text: &'static str,
+}
+
+fn put(path: &'static str, lo: u64, text: &'static str) -> C {
+    C { path, lo, stance: Stance::Replace, text }
+}
+
+fn keep(path: &'static str, lo: u64) -> C {
+    C { path, lo, stance: Stance::Keep, text: "" }
+}
+
+/// One observer's map shard, by path.
+#[derive(Clone)]
+struct S {
+    claims: Vec<C>,
+    reports: Vec<(Option<(&'static str, u64)>, Severity, Vec<u8>)>,
+    failed: bool,
+    transform: Option<Digest>,
+    edits: bool,
+}
+
+impl S {
+    fn new(claims: Vec<C>) -> S {
+        S { claims, reports: Vec::new(), failed: false, transform: None, edits: true }
+    }
+}
+
+impl Fx {
+    fn new(name: &str) -> Fx {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("wp075-{name}-{}-{n}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        // Real paths: the store, the shards and the overlay name them.
+        let fx = Fx { root: fs::canonicalize(&root).unwrap() };
+        fx.reset_tree();
+        fx
+    }
+
+    /// Writes the tree of [`H`], [`A`], [`B`].
+    fn reset_tree(&self) {
+        for (name, text) in [("h.h", H), ("a.cc", A), ("b.cc", B)] {
+            fs::write(self.src(name), text).unwrap();
+        }
+    }
+
+    fn src(&self, name: &str) -> PathBuf {
+        self.root.join("src").join(name)
+    }
+
+    fn real(&self, name: &str) -> Vec<u8> {
+        self.src(name).as_os_str().as_bytes().to_vec()
+    }
+
+    fn read(&self, name: &str) -> String {
+        fs::read_to_string(self.src(name)).unwrap()
+    }
+
+    fn store_dir(&self) -> PathBuf {
+        self.root.join("store")
+    }
+
+    /// The store, opened shared (no lock, no journal check).
+    fn store(&self) -> Store {
+        Store::open(&self.store_dir(), Access::Shared).unwrap()
+    }
+
+    /// `slip <args> --store <store>`, run in the fixture's directory.
+    fn slip(&self, args: &[&str]) -> Out {
+        let mut cmd = Command::new(SLIP);
+        cmd.args(args).arg("--store").arg(self.store_dir()).current_dir(&self.root);
+        run_bounded(cmd)
+    }
+
+    fn owned(&self) -> Ownership {
+        Ownership {
+            owned: vec![self.root.join("src").as_os_str().as_bytes().to_vec()],
+            readonly: vec![],
+        }
+    }
+
+    /// A rename's request (indivisible) owning `src/`.
+    fn rename(&self) -> Transform {
+        Transform {
+            kind: TransformKind::Rename,
+            ownership: self.owned(),
+            indivisible: true,
+            rename: Some(Rename {
+                target: vec![b"f".to_vec()],
+                kind: TargetKind::Any,
+                new_name: b"g".to_vec(),
+            }),
+            script: None,
+        }
+    }
+
+    /// A programmable transform's request (divisible) owning `src/`.
+    fn script(&self) -> Transform {
+        Transform {
+            kind: TransformKind::Script,
+            ownership: self.owned(),
+            indivisible: false,
+            rename: None,
+            script: Some(Script {
+                id: Digest([0x5c; 32]),
+                file: self.root.join("t.cc").as_os_str().as_bytes().to_vec(),
+                options: Vec::new(),
+                steps: 1 << 30,
+                bytes: 1 << 30,
+                depth: 512,
+            }),
+        }
+    }
+
+    /// The plan: one observer per main file, `a.cc` then `b.cc`.
+    fn plan(&self) -> (Plan, Digest) {
+        let mut observers: Vec<Observer> = [("a.cc", A, 0), ("b.cc", B, 1)]
+            .into_iter()
+            .map(|(name, text, entry)| {
+                let command = Cmd {
+                    directory: self.root.as_os_str().as_bytes().to_vec(),
+                    argv: vec![b"c++".to_vec(), b"-c".to_vec(), self.real(name)],
+                    env: vec![],
+                };
+                Observer {
+                    id: command.observer_id(),
+                    command,
+                    language: Language::Cxx,
+                    main: file_ref(&self.real(name), text.as_bytes()),
+                    cost_hint: 1,
+                    origins: vec![Origin { configuration: 0, entry }],
+                }
+            })
+            .collect();
+        observers.sort_by_key(|o| o.id);
+        let plan = Plan {
+            tool_slip: "s".into(),
+            tool_kiln: "k".into(),
+            configurations: vec![Configuration {
+                name: "default".into(),
+                database: FileRef {
+                    path: b"/cdb.json".to_vec(),
+                    size: 1,
+                    content: Digest([1; 32]),
+                },
+            }],
+            observers,
+            excluded: vec![],
+        };
+        let id = self.store().publish_plan(&plan.to_bytes()).unwrap();
+        (plan, id)
+    }
+
+    /// The observer whose main file is `name`.
+    fn observer(plan: &Plan, name: &str) -> Digest {
+        plan.observers
+            .iter()
+            .find(|o| o.main.path.ends_with(format!("/{name}").as_bytes()))
+            .unwrap()
+            .id
+    }
+
+    /// The shard of `observer` for round `round` of the request `request`.
+    fn shard(&self, observer: Digest, round: u64, request: Digest, s: &S) -> Shard {
+        let mut names: Vec<&str> = s.claims.iter().map(|c| c.path).collect();
+        names.extend(s.reports.iter().filter_map(|r| r.0.map(|p| p.0)));
+        names.sort_unstable();
+        names.dedup();
+        if s.failed {
+            names.clear();
+        }
+        let text = |n: &str| match n {
+            "h.h" => H,
+            "a.cc" => A,
+            "b.cc" => B,
+            _ => unreachable!(),
+        };
+        let files: Vec<FileRef> =
+            names.iter().map(|n| file_ref(&self.real(n), text(n).as_bytes())).collect();
+        let index = |n: &str| names.iter().position(|m| *m == n).unwrap() as u64;
+        let mut claims: Vec<Claim> = s
+            .claims
+            .iter()
+            .map(|c| Claim {
+                file: index(c.path),
+                lo: c.lo,
+                hi: c.lo + 1,
+                stance: c.stance,
+                pieces: if c.stance == Stance::Replace {
+                    vec![Piece::Literal(c.text.as_bytes().to_vec())]
+                } else {
+                    vec![]
+                },
+                subjects: vec![K],
+                reason: Reason::None,
+                tiers: tiers::T0,
+                macro_site: None,
+                votes: 1,
+                notes: vec![],
+            })
+            .collect();
+        claims.sort_by(|a, b| a.cmp_key(b));
+        let mut reports: Vec<Report> = s
+            .reports
+            .iter()
+            .map(|(place, severity, message)| Report {
+                place: place.map(|(n, lo)| Place { file: index(n), lo, hi: lo + 1 }),
+                severity: *severity,
+                message: message.clone(),
+                attached: false,
+            })
+            .collect();
+        reports.sort();
+        let failure = s.failed.then(|| Failure {
+            kind: FailureKind::Uncaught,
+            message: "the transform threw".to_owned(),
+            place: Some(SourcePlace { file: b"/t.cc".to_vec(), line: 1, column: 1 }),
+            rendered: "the transform threw".to_owned(),
+            refusal: None,
+        });
+        let edits = Edits {
+            scheme: SCHEME,
+            transform: s.transform.unwrap_or(request),
+            failure,
+            files,
+            subjects: if s.failed {
+                vec![]
+            } else {
+                vec![Subject {
+                    id: K,
+                    rule: None,
+                    role: Role::Seed,
+                    of: vec![],
+                    flags: 0,
+                    display: "f".to_owned(),
+                }]
+            },
+            links: vec![],
+            claims: if s.failed { vec![] } else { claims },
+            groups: vec![],
+            reports: if s.failed { vec![] } else { reports },
+            changed: vec![],
+            renamed: vec![],
+        };
+        let mut inputs: Vec<FileRef> = ["h.h", "a.cc", "b.cc"]
+            .into_iter()
+            .map(|n| file_ref(&self.real(n), text(n).as_bytes()))
+            .collect();
+        inputs.sort_by(|a, b| a.path.cmp(&b.path));
+        Shard {
+            observer,
+            phase: Phase::Map,
+            round,
+            outcome: Outcome { status: Status::Ok, errors: 0, warnings: 0, message: String::new() },
+            inputs: Some(inputs),
+            counters: vec![],
+            digests: None,
+            verdict: None,
+            edits: s.edits.then_some(edits),
+            binding: None,
+            rule_use: None,
+            spellings: None,
+        }
+    }
+
+    /// Publishes round `round` of the plan: the request (unless round 0),
+    /// one map shard per `(main file, shard)`, the map run record naming
+    /// those observers and, for a transform's round, the transform run
+    /// record. Returns the request id.
+    fn round(
+        &self,
+        plan: &(Plan, Digest),
+        round: u64,
+        request: &Transform,
+        shards: &[(&str, S)],
+    ) -> Digest {
+        let store = self.store();
+        let request_id = store.publish_object(Object::Transform, &request.to_bytes()).unwrap();
+        let mut jobs = Vec::new();
+        for (name, s) in shards {
+            let o = Fx::observer(&plan.0, name);
+            let shard = self.shard(o, round, request_id, s);
+            store.publish_shard(&plan.1, Phase::Map, round, &o, &shard.to_bytes()).unwrap();
+            jobs.push(Job {
+                observer: o,
+                attempt: 1,
+                end: End::Completed,
+                shard: None,
+                queued_ns: 0,
+                wall_ns: 0,
+                cpu_ns: 0,
+                peak_rss: 0,
+                estimate: 0,
+            });
+        }
+        let started = 1_000 + round;
+        let record = RunRecord {
+            run: Run {
+                tool_slip: "s".into(),
+                tool_kiln: "k".into(),
+                plan: plan.1,
+                phase: Phase::Map,
+                round,
+                started_unix_ns: started,
+                wall_ns: 1,
+                cores: 1,
+                workers_max: 1,
+                memory_budget: 0,
+                peak_rss_sum: 0,
+            },
+            jobs,
+        };
+        store.publish_run(&plan.1, Phase::Map, round, started, &record.to_bytes()).unwrap();
+        if round != 0 {
+            let runt = TransformRun {
+                tool_slip: "s".into(),
+                tool_kiln: "k".into(),
+                plan: plan.1,
+                round,
+                transform: request_id,
+                edits: None,
+                declared: None,
+                overlay: None,
+                result: None,
+                started_unix_ns: started,
+                wall_ns: 1,
+                steps: vec![],
+            };
+            store.publish_transform_run(&plan.1, round, started, &runt.to_bytes()).unwrap();
+        }
+        request_id
+    }
+
+    fn reduce(&self, plan: Digest, round: u64, extra: &[&str]) -> Out {
+        let (p, r) = (plan.to_string(), round.to_string());
+        let mut args = vec!["reduce", "--plan", &p, "--round", &r];
+        args.extend_from_slice(extra);
+        self.slip(&args)
+    }
+
+    fn edit_set(&self, id: Digest) -> EditSet {
+        EditSet::from_bytes(&fs::read(self.store().object_path(Object::EditSet, &id)).unwrap())
+            .unwrap()
+    }
+
+    /// The overlay of edit set `id` (§7.1), published with its blobs and
+    /// the pre-image's.
+    fn overlay(&self, set_id: Digest) -> (Digest, Overlay) {
+        let set = self.edit_set(set_id);
+        let built = slip_apply::build(&set, set_id, &Disk).unwrap();
+        let store = self.store();
+        for (_, bytes) in &built.blobs {
+            store.publish_blob(bytes).unwrap();
+        }
+        let id = store.publish_object(Object::Overlay, &built.overlay.to_bytes()).unwrap();
+        (id, built.overlay)
+    }
+
+    /// A result of `state` for edit set `set_id` and its overlay, made as
+    /// conclude would make it: every selected observer verified, the
+    /// tally's map counts the set's.
+    fn result(&self, set_id: Digest, overlay: Option<Digest>, state: State) -> TransformResult {
+        let set = self.edit_set(set_id);
+        let declared = Declared::none();
+        let decl = self.store().publish_declared(&declared.to_bytes()).unwrap();
+        let unparsed = set.unparsed.len() as u64;
+        let refused = state == State::Refused;
+        let verdict = match state {
+            State::Verified | State::VerifiedWithResidue => Some(RunVerdict::Verified),
+            State::NotVerified => Some(RunVerdict::NotVerified),
+            State::Incomplete | State::Refused => None,
+        };
+        let parsed = 2 - unparsed;
+        let tally = Tally {
+            selected: 2,
+            unparsed,
+            failed_runs: set.failures.iter().map(|f| f.observers).sum(),
+            error_reports: set
+                .reports
+                .iter()
+                .filter(|r| r.report.severity == Severity::Error)
+                .count() as u64,
+            verified: match verdict {
+                Some(RunVerdict::Verified) => parsed,
+                Some(_) => parsed - 1,
+                None => 0,
+            },
+            mismatch: u64::from(verdict == Some(RunVerdict::NotVerified)),
+            ..Tally::default()
+        };
+        TransformResult {
+            scheme: slip_model::result::SCHEME,
+            plan: set.plan,
+            round: set.round,
+            transform: set.transform,
+            edits: set_id,
+            declared: (!refused).then_some(decl),
+            overlay: if refused { None } else { overlay },
+            state,
+            partial: false,
+            allow_unparsed: false,
+            verdict,
+            tally,
+            agreement: vec![],
+            unused: vec![],
+            unchecked: vec![],
+            spellings: Spellings::default(),
+            residue: vec![],
+            exempt: vec![],
+        }
+    }
+
+    fn publish_result(&self, r: &TransformResult) -> String {
+        r.validate().unwrap();
+        self.store().publish_object(Object::Result, &r.to_bytes()).unwrap().to_string()
+    }
+
+    /// Publishes the plan and round 1 of `request` over `shards`, runs
+    /// `reduce`, and returns the plan id, the edit set id and the output.
+    fn reduced(&self, request: &Transform, shards: &[(&str, S)]) -> (Digest, Digest, Out) {
+        let plan = self.plan();
+        self.round(&plan, ROUND, request, shards);
+        let out = self.reduce(plan.1, ROUND, &[]);
+        let set = out.digest("edits");
+        (plan.1, set, out)
+    }
+
+    /// The post-image of the agreed rename: every `f` is `g`.
+    fn post(text: &str) -> String {
+        text.replace("f()", "g()").replace("int f", "int g")
+    }
+
+    fn tree_is_pre(&self) -> bool {
+        self.read("h.h") == H && self.read("a.cc") == A && self.read("b.cc") == B
+    }
+
+    fn tree_is_post(&self) -> bool {
+        self.read("h.h") == Fx::post(H)
+            && self.read("a.cc") == Fx::post(A)
+            && self.read("b.cc") == Fx::post(B)
+    }
+
+    fn put_journal(&self, bytes: &[u8]) {
+        fs::write(self.store().journal_path(), bytes).unwrap();
+    }
+}
+
+/// The shards of two observers that agree on every `f`: both edit the
+/// header, each its main file.
+fn agreeing() -> Vec<(&'static str, S)> {
+    vec![
+        ("a.cc", S::new(vec![put("h.h", F_H, "g"), put("a.cc", F_A, "g")])),
+        (
+            "b.cc",
+            S::new(vec![put("h.h", F_H, "g"), put("b.cc", F_B[0], "g"), put("b.cc", F_B[1], "g")]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// reduce (§10.2, §10.5)
+
+/// §10.5: two observers that agree: the summary lines, the edit set and
+/// its declared changes published, status 0.
+#[test]
+fn s10_5_reduce_two_observers_agree() {
+    let fx = Fx::new("agree");
+    let (_, set_id, out) = fx.reduced(&fx.rename(), &agreeing());
+    out.expect(0);
+    let decl = fx.store().read_declared(&out.digest("declared")).unwrap().expect("DECL published");
+    let decl_id = content_id(&decl).unwrap();
+    assert_eq!(
+        out.lines(),
+        vec![
+            format!("edits {set_id}"),
+            "state accepted".to_owned(),
+            "edit 4 in 3 file(s); shared 1; most observers 2; nested 0".to_owned(),
+            "kept 0; unresolved 0".to_owned(),
+            format!("declared {decl_id}: rules 0, exempt 0"),
+        ],
+        "{out:#?}"
+    );
+    let set = fx.edit_set(set_id);
+    assert_eq!(set.edits.len(), 4);
+    assert!(out.stderr.is_empty(), "{out:#?}");
+}
+
+/// §10.5: a divisible request prints the `groups` line.
+#[test]
+fn s10_5_reduce_groups_line_of_a_divisible_request() {
+    let fx = Fx::new("groups");
+    let (_, _, out) = fx.reduced(&fx.script(), &agreeing());
+    out.expect(0);
+    assert!(out.lines().contains(&"groups 4, rejected 0"), "{out:#?}");
+}
+
+/// §10.5: a contested site under an indivisible request: the set is
+/// refused (status 1), the `refused` count and the `refusal` line with
+/// its line and column computed from the file on disk.
+#[test]
+fn s10_5_reduce_contested_site() {
+    let fx = Fx::new("contested");
+    let shards = vec![
+        ("a.cc", S::new(vec![put("h.h", F_H, "g"), put("a.cc", F_A, "g")])),
+        ("b.cc", S::new(vec![keep("h.h", F_H), put("b.cc", F_B[0], "g")])),
+    ];
+    let (plan, _, out) = fx.reduced(&fx.rename(), &shards);
+    out.expect(1);
+    assert_eq!(out.value("state"), Some("refused"));
+    assert!(out.lines().contains(&"refused contested 1"), "{out:#?}");
+    assert!(out.value("declared").is_none(), "no declared changes for a refused set");
+    let store = fx.store();
+    let plan = Plan::from_bytes(&store.read_plan(&plan).unwrap().unwrap()).unwrap();
+    // The refusal counts the observers of the claim that refuses (the
+    // `keep` of `b.cc`'s observer), as reduce records it.
+    let set = fx.edit_set(out.digest("edits"));
+    assert_eq!(set.refusals.len(), 1);
+    assert_eq!(set.refusals[0].first, vec![Fx::observer(&plan, "b.cc")]);
+    let (h, b) = (fx.src("h.h"), fx.src("b.cc"));
+    let want =
+        format!("refusal contested: {}:1:5: f (1 observer(s), first {})", h.display(), b.display());
+    assert!(out.lines().contains(&want.as_str()), "want {want:?}: {out:#?}");
+}
+
+/// §10.5: a file changed since the shards were made: the detail line
+/// carries the byte offset instead of a line and column.
+#[test]
+fn s10_5_reduce_offset_when_the_file_changed() {
+    let fx = Fx::new("offset");
+    let shards = vec![
+        ("a.cc", S::new(vec![put("h.h", F_H, "g")])),
+        ("b.cc", S::new(vec![keep("h.h", F_H)])),
+    ];
+    let plan = fx.plan();
+    fx.round(&plan, ROUND, &fx.rename(), &shards);
+    fs::write(fx.src("h.h"), "changed").unwrap();
+    let out = fx.reduce(plan.1, ROUND, &[]);
+    out.expect(1);
+    let want = format!(":@{F_H}: f (1 observer(s)");
+    assert!(
+        out.lines().iter().any(|l| l.starts_with("refusal contested: ") && l.contains(&want)),
+        "{out:#?}"
+    );
+}
+
+/// §5.7, §10.5: a shard of another request is an input error (status 3)
+/// and nothing is published.
+#[test]
+fn s10_5_reduce_shard_of_another_request() {
+    let fx = Fx::new("other-request");
+    let plan = fx.plan();
+    // The second shard in plan order names another request: the first
+    // names the round's.
+    let second = plan.0.observers[1].id;
+    let mut shards = agreeing();
+    for (name, s) in &mut shards {
+        if Fx::observer(&plan.0, name) == second {
+            s.transform = Some(Digest([0x77; 32]));
+        }
+    }
+    fx.round(&plan, ROUND, &fx.rename(), &shards);
+    let out = fx.reduce(plan.1, ROUND, &[]);
+    out.expect(3);
+    assert!(out.stdout.is_empty(), "{out:#?}");
+    assert!(
+        out.stderr.starts_with("slip: ") && out.stderr.contains("map shard of observer"),
+        "{out:#?}"
+    );
+    assert!(fx.store().find_object(Object::EditSet, "").unwrap().is_empty());
+}
+
+/// §10.2: round 0 is `parse`'s, not a transform's: status 3.
+#[test]
+fn s10_2_reduce_round_of_parse() {
+    let fx = Fx::new("parse-round");
+    let mut shards = agreeing();
+    for s in &mut shards {
+        s.1.edits = false;
+    }
+    let plan = fx.plan();
+    fx.round(&plan, 0, &fx.rename(), &shards);
+    let out = fx.reduce(plan.1, 0, &[]);
+    out.expect(3);
+    assert!(out.stderr.contains("not a transform's round"), "{out:#?}");
+    // A round with no map run record at all.
+    let out = fx.reduce(plan.1, 7, &[]);
+    out.expect(3);
+    assert!(out.stderr.contains("no map run record"), "{out:#?}");
+}
+
+/// §5.3, §5.6: the edit set depends on neither `-j` nor the run: two runs,
+/// with `-j 1` and `-j 4`, give the same ids and the same bytes on
+/// standard output.
+#[test]
+fn s5_3_reduce_is_deterministic_across_j() {
+    let fx = Fx::new("determinism");
+    let plan = fx.plan();
+    let mut shards = agreeing();
+    shards[0].1.reports.push((Some(("a.cc", F_A)), Severity::Note, b"a note".to_vec()));
+    fx.round(&plan, ROUND, &fx.script(), &shards);
+    let one = fx.reduce(plan.1, ROUND, &["-j", "1"]);
+    let four = fx.reduce(plan.1, ROUND, &["-j4"]);
+    one.expect(0);
+    four.expect(0);
+    assert_eq!(one.stdout, four.stdout);
+    assert_eq!(one.digest("edits"), four.digest("edits"));
+}
+
+/// §10.5: a report's message is printed with control characters as
+/// spaces, at its line and column; at most 200 lines of a kind, then
+/// `<kind>: <n> more (slip dump <file>)`.
+#[test]
+fn s10_5_reduce_report_lines_and_the_cut() {
+    let fx = Fx::new("reports");
+    let mut shards = agreeing();
+    shards[0].1.reports.push((Some(("a.cc", F_A)), Severity::Error, b"bad\x01thing".to_vec()));
+    // After it in the record's order (by place: `a.cc` before `h.h`).
+    for i in 0..201 {
+        shards[1].1.reports.push((
+            Some(("h.h", F_H)),
+            Severity::Note,
+            format!("note {i:03}").into_bytes(),
+        ));
+    }
+    let (_, set_id, out) = fx.reduced(&fx.script(), &shards);
+    out.expect(0);
+    assert!(out.lines().contains(&"reports: note 201, review 0, error 1"), "{out:#?}");
+    let reports: Vec<&str> = out.lines().into_iter().filter(|l| l.starts_with("report ")).collect();
+    assert_eq!(reports.len(), 200);
+    let a = fx.src("a.cc");
+    let want = format!(
+        "report error: {}:2:9: bad thing (1 observer(s), first {})",
+        a.display(),
+        a.display()
+    );
+    assert!(reports.contains(&want.as_str()), "want {want:?}: {reports:#?}");
+    let record = fx.store().object_path(Object::EditSet, &set_id);
+    assert_eq!(
+        out.lines().last().copied(),
+        Some(format!("report: 2 more (slip dump {})", record.display()).as_str())
+    );
+}
+
+// ---------------------------------------------------------------------------
+// apply --result (§7.2, §7.3, §8.5 permits, §10.5)
+
+/// A fixture with the agreed rename reduced, its overlay published.
+fn agreed(name: &str, request: fn(&Fx) -> Transform) -> (Fx, Digest, Digest) {
+    let fx = Fx::new(name);
+    let (_, set_id, out) = fx.reduced(&request(&fx), &agreeing());
+    out.expect(0);
+    let (overlay, _) = fx.overlay(set_id);
+    (fx, set_id, overlay)
+}
+
+fn apply_write(fx: &Fx, result: &str, allow: &[&str]) -> Out {
+    let mut args = vec!["apply", "--result", result, "--write"];
+    args.extend_from_slice(allow);
+    fx.slip(&args)
+}
+
+fn apply_patch(fx: &Fx, result: &str, patch: &Path, allow: &[&str]) -> Out {
+    let p = patch.to_str().unwrap();
+    let mut args = vec!["apply", "--result", result, "--patch", p];
+    args.extend_from_slice(allow);
+    fx.slip(&args)
+}
+
+/// §7.3, §10.5: a verified result written: the tree is the post-image,
+/// `written 3 file(s)`, status 0.
+#[test]
+fn s7_3_apply_verified_write() {
+    let (fx, _, overlay) = agreed("write", Fx::rename);
+    let r = fx.publish_result(&fx.result(fx.edit_set_id(), Some(overlay), State::Verified));
+    let out = apply_write(&fx, &r[..12], &[]);
+    out.expect(0);
+    assert_eq!(
+        out.lines(),
+        vec![format!("result {r}"), "state verified".to_owned(), "written 3 file(s)".to_owned()]
+    );
+    assert!(fx.tree_is_post());
+    assert!(!fx.store().journal_path().exists());
+}
+
+impl Fx {
+    /// The one edit set of the store.
+    fn edit_set_id(&self) -> Digest {
+        let ids = self.store().find_object(Object::EditSet, "").unwrap();
+        assert_eq!(ids.len(), 1);
+        ids[0]
+    }
+}
+
+/// §7.2: the patch of a verified result applies with `patch -p0` to a
+/// copy of the pre-image and gives the post-image; `--relative-to`
+/// names the files relative to it; the tree is untouched.
+#[test]
+fn s7_2_apply_verified_patch() {
+    let (fx, set, overlay) = agreed("patch", Fx::rename);
+    let r = fx.publish_result(&fx.result(set, Some(overlay), State::Verified));
+    let patch = fx.root.join("out.patch");
+    let root = fx.root.to_str().unwrap().to_owned();
+    let out = apply_patch(&fx, &r, &patch, &["--relative-to", &root]);
+    out.expect(0);
+    assert_eq!(out.value("patch"), Some(patch.to_str().unwrap()));
+    assert!(fx.tree_is_pre(), "a patch does not touch the tree");
+    let text = fs::read_to_string(&patch).unwrap();
+    assert!(text.starts_with("--- src/a.cc\n+++ src/a.cc\n"), "{text}");
+    // `patch -p0` from a copy of the tree.
+    let copy = fx.root.join("copy");
+    fs::create_dir_all(copy.join("src")).unwrap();
+    for (n, t) in [("h.h", H), ("a.cc", A), ("b.cc", B)] {
+        fs::write(copy.join("src").join(n), t).unwrap();
+    }
+    let status = Command::new("patch")
+        .args(["-p0", "-s", "-i"])
+        .arg(&patch)
+        .current_dir(&copy)
+        .status()
+        .expect("run patch");
+    assert!(status.success());
+    for (n, t) in [("h.h", H), ("a.cc", A), ("b.cc", B)] {
+        assert_eq!(fs::read_to_string(copy.join("src").join(n)).unwrap(), Fx::post(t), "{n}");
+    }
+    // Without `--relative-to`: real paths.
+    let out = apply_patch(&fx, &r, &patch, &[]);
+    out.expect(0);
+    let text = fs::read_to_string(&patch).unwrap();
+    let a = fx.src("a.cc");
+    assert!(text.contains(&format!("--- {}\n", a.display())), "{text}");
+    // §7.2: an overlay file outside `--relative-to` is a usage error.
+    let elsewhere = fx.root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let out = apply_patch(&fx, &r, &patch, &["--relative-to", elsewhere.to_str().unwrap()]);
+    out.expect(2);
+    assert!(out.stderr.contains("not inside `--relative-to`"), "{out:#?}");
+}
+
+/// §8.5 through `apply`: each reason of a `verified_with_residue` needs
+/// its own option; a `partial` result needs `--allow-partial`; no option
+/// permits another state. Refused means status 1, nothing written, no
+/// patch file; permitted means written (status 1 for a result with
+/// residue, §10.5).
+#[test]
+fn s8_5_apply_permits_table() {
+    // (what, request, shards, how the result is made, options that are
+    // not enough, options that are).
+    type Shape = fn(&mut TransformResult, &Fx);
+    struct Case {
+        what: &'static str,
+        request: fn(&Fx) -> Transform,
+        shards: fn() -> Vec<(&'static str, S)>,
+        state: State,
+        shape: Shape,
+        short: &'static [&'static str],
+        enough: Option<&'static [&'static str]>,
+    }
+    fn none(_: &mut TransformResult, _: &Fx) {}
+    fn residue(r: &mut TransformResult, fx: &Fx) {
+        let file = fx.real("a.cc");
+        r.residue.push(Residue {
+            category: Category::Dependent,
+            file,
+            lo: 0,
+            hi: 1,
+            line: 1,
+            column: 1,
+        });
+    }
+    fn partial(r: &mut TransformResult, _: &Fx) {
+        r.partial = true;
+    }
+    fn rejected_group() -> Vec<(&'static str, S)> {
+        // Divisible: the contested edit in `b.cc` is a group of its own,
+        // rejected; the others stand.
+        let mut s = agreeing();
+        s[0].1.claims.push(keep("b.cc", F_B[1]));
+        s
+    }
+    fn failed_run() -> Vec<(&'static str, S)> {
+        let mut s = agreeing();
+        s[1].1.failed = true;
+        s[1].1.claims.clear();
+        s
+    }
+    fn error_report() -> Vec<(&'static str, S)> {
+        let mut s = agreeing();
+        s[0].1.reports.push((Some(("a.cc", F_A)), Severity::Error, b"an error".to_vec()));
+        s
+    }
+    let all: &[&str] = &["--allow-residue", "--allow-errors", "--allow-partial"];
+    let cases = [
+        Case {
+            what: "residue",
+            request: Fx::rename,
+            shards: agreeing,
+            state: State::VerifiedWithResidue,
+            shape: residue,
+            short: &["--allow-errors", "--allow-partial"],
+            enough: Some(&["--allow-residue"]),
+        },
+        Case {
+            what: "rejected group",
+            request: Fx::script,
+            shards: rejected_group,
+            state: State::VerifiedWithResidue,
+            shape: none,
+            short: &["--allow-errors"],
+            enough: Some(&["--allow-residue"]),
+        },
+        Case {
+            what: "failed run",
+            request: Fx::script,
+            shards: failed_run,
+            state: State::VerifiedWithResidue,
+            shape: none,
+            short: &["--allow-residue", "--allow-partial"],
+            enough: Some(&["--allow-errors"]),
+        },
+        Case {
+            what: "error report",
+            request: Fx::script,
+            shards: error_report,
+            state: State::VerifiedWithResidue,
+            shape: none,
+            short: &["--allow-residue"],
+            enough: Some(&["--allow-errors"]),
+        },
+        Case {
+            what: "partial",
+            request: Fx::rename,
+            shards: agreeing,
+            state: State::Verified,
+            shape: partial,
+            short: &["--allow-residue", "--allow-errors"],
+            enough: Some(&["--allow-partial"]),
+        },
+        Case {
+            what: "not verified",
+            request: Fx::rename,
+            shards: agreeing,
+            state: State::NotVerified,
+            shape: none,
+            short: all,
+            enough: None,
+        },
+        Case {
+            what: "incomplete",
+            request: Fx::rename,
+            shards: agreeing,
+            state: State::Incomplete,
+            shape: none,
+            short: all,
+            enough: None,
+        },
+        Case {
+            what: "refused",
+            request: Fx::rename,
+            shards: agreeing,
+            state: State::Refused,
+            shape: none,
+            short: all,
+            enough: None,
+        },
+    ];
+    for case in cases {
+        let fx = Fx::new("permits");
+        let (_, set, out) = fx.reduced(&(case.request)(&fx), &(case.shards)());
+        out.expect(0);
+        let (overlay, _) = fx.overlay(set);
+        let mut r = fx.result(set, Some(overlay), case.state);
+        (case.shape)(&mut r, &fx);
+        let id = fx.publish_result(&r);
+        let patch = fx.root.join("p.patch");
+        for refused in [&[][..], case.short] {
+            let out = apply_write(&fx, &id, refused);
+            out.expect(1);
+            assert!(out.stderr.contains("does not permit `--write`"), "{}: {out:#?}", case.what);
+            assert_eq!(out.value("state"), Some(case.state.name()), "{}", case.what);
+            assert!(fx.tree_is_pre(), "{}", case.what);
+            let out = apply_patch(&fx, &id, &patch, refused);
+            out.expect(1);
+            assert!(!patch.exists(), "{}", case.what);
+        }
+        if let Some(enough) = case.enough {
+            let code = if case.state == State::Verified { 0 } else { 1 };
+            let out = apply_patch(&fx, &id, &patch, enough);
+            out.expect(code);
+            assert!(patch.exists(), "{}", case.what);
+            let out = apply_write(&fx, &id, enough);
+            out.expect(code);
+            assert!(out.value("written").is_some(), "{}: {out:#?}", case.what);
+            assert!(!fx.tree_is_pre(), "{}", case.what);
+        }
+    }
+}
+
+/// §7.3 step 1, §10.5: a file changed since the result: the write is
+/// refused (`stale_file`, status 1) and the tree is left as it is.
+#[test]
+fn s7_3_apply_stale_file_refused() {
+    let (fx, set, overlay) = agreed("stale", Fx::rename);
+    let r = fx.publish_result(&fx.result(set, Some(overlay), State::Verified));
+    fs::write(fx.src("b.cc"), "changed\n").unwrap();
+    let out = apply_write(&fx, &r, &[]);
+    out.expect(1);
+    assert!(out.stderr.contains("refused stale_file: "), "{out:#?}");
+    assert_eq!((fx.read("h.h").as_str(), fx.read("a.cc").as_str()), (H, A), "nothing replaced");
+    assert_eq!(fx.read("b.cc"), "changed\n");
+    assert!(!fx.store().journal_path().exists());
+    // §10.5: for `--patch` a stale file is an input error.
+    let patch = fx.root.join("p.patch");
+    apply_patch(&fx, &r, &patch, &[]).expect(3);
+    assert!(!patch.exists());
+}
+
+/// A result made by hand whose overlay has a file outside the request's
+/// ownership, and one whose `post` is its `pre`: the write is refused
+/// (`not_owned`) with nothing replaced; without the foreign file the
+/// unchanged entry is neither written nor in the patch (§7.1).
+#[test]
+fn s7_1_apply_not_owned_and_unchanged_entries() {
+    let (fx, set, _) = agreed("hand-made", Fx::rename);
+    let store = fx.store();
+    let built = slip_apply::build(&fx.edit_set(set), set, &Disk).unwrap();
+    let mut overlay = built.overlay.clone();
+    // `t.cc` beside `src/`: not owned. Its post-image is published.
+    let outside = fx.root.join("t.cc");
+    fs::write(&outside, "int t;\n").unwrap();
+    let post = store.publish_blob(b"int u;\n").unwrap();
+    let pre_t = content(b"int t;\n");
+    let mut foreign = overlay.clone();
+    foreign.files.push(OverlayFile {
+        path: outside.as_os_str().as_bytes().to_vec(),
+        pre: pre_t,
+        post: Content { size: 7, content: post },
+    });
+    foreign.files.sort_by(|a, b| a.path.cmp(&b.path));
+    let id = store.publish_object(Object::Overlay, &foreign.to_bytes()).unwrap();
+    let r = fx.publish_result(&fx.result(set, Some(id), State::Verified));
+    let out = apply_write(&fx, &r, &[]);
+    out.expect(1);
+    assert!(out.stderr.contains(&format!("refused not_owned: {}", outside.display())), "{out:#?}");
+    assert!(fx.tree_is_pre());
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "int t;\n");
+
+    // An entry whose post is its pre (`b.cc` is dropped from the edits'
+    // files by giving it its own pre as post).
+    let b = overlay.files.iter_mut().find(|f| f.path == fx.real("b.cc")).unwrap();
+    b.post = b.pre;
+    let id = store.publish_object(Object::Overlay, &overlay.to_bytes()).unwrap();
+    let r = fx.publish_result(&fx.result(set, Some(id), State::Verified));
+    let patch = fx.root.join("p.patch");
+    apply_patch(&fx, &r, &patch, &[]).expect(0);
+    let text = fs::read_to_string(&patch).unwrap();
+    assert!(!text.contains("b.cc"), "{text}");
+    assert!(text.contains("a.cc") && text.contains("h.h"), "{text}");
+    let before = fs::metadata(fx.src("b.cc")).unwrap();
+    let out = apply_write(&fx, &r, &[]);
+    out.expect(0);
+    assert!(out.lines().contains(&"written 2 file(s)"), "{out:#?}");
+    let after = fs::metadata(fx.src("b.cc")).unwrap();
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(
+        (before.ino(), before.mtime_nsec()),
+        (after.ino(), after.mtime_nsec()),
+        "b.cc not rewritten"
+    );
+    assert_eq!(fx.read("b.cc"), B);
+    assert_eq!(fx.read("a.cc"), Fx::post(A));
+}
+
+/// §10.5: an id prefix that names no result, and one that is not hex.
+#[test]
+fn s10_5_apply_unknown_result() {
+    let fx = Fx::new("unknown");
+    fx.plan();
+    let out = fx.slip(&["apply", "--result", "abcd", "--write"]);
+    out.expect(3);
+    assert!(out.stderr.contains("no result in the store"), "{out:#?}");
+    slip(&["apply", "--result", "xyz1", "--write"]).expect(2);
+}
+
+// ---------------------------------------------------------------------------
+// The journal (§7.3, §10.5)
+
+/// §10.5: a store with a journal is refused with status 3 by `reduce` and
+/// `apply --result`, with the message of `StoreError::UnfinishedWrite`.
+#[test]
+fn s10_5_journal_refused_by_reduce_and_apply() {
+    let (fx, set, overlay) = agreed("journal-refused", Fx::rename);
+    let r = fx.publish_result(&fx.result(set, Some(overlay), State::Verified));
+    fx.put_journal(b"anything");
+    let plan = fx.store().find_plan("").unwrap()[0];
+    for out in [
+        fx.reduce(plan, ROUND, &[]),
+        apply_write(&fx, &r, &[]),
+        apply_patch(&fx, &r, &fx.root.join("p"), &[]),
+    ] {
+        out.expect(3);
+        assert!(out.stderr.contains("unfinished write of the working tree"), "{out:#?}");
+        assert!(out.stderr.contains("run `slip apply --recover`"), "{out:#?}");
+    }
+    assert!(fx.tree_is_pre());
+}
+
+/// The journal of a write of the agreed overlay, and the post-image
+/// blobs, as `write` publishes them before it stages anything.
+fn journal_of(fx: &Fx, overlay_id: Digest, overlay: &Overlay) -> Journal {
+    let store = fx.store();
+    for f in &overlay.files {
+        store.publish_blob(&fs::read(std::ffi::OsStr::from_bytes(&f.path)).unwrap()).unwrap();
+    }
+    Journal {
+        overlay: overlay_id,
+        files: overlay
+            .files
+            .iter()
+            .filter(|f| f.pre != f.post)
+            .map(|f| JournalEntry {
+                path: f.path.clone(),
+                staged: staged_name(&f.path, overlay_id),
+                pre: f.pre,
+                post: f.post,
+            })
+            .collect(),
+    }
+}
+
+/// §7.3: a tree left half written (one file replaced, one staged, one
+/// untouched) is restored by `apply --recover`, which exits 0 and removes
+/// the journal; a second run finds nothing to do.
+#[test]
+fn s7_3_recover_restores_a_half_written_tree() {
+    let (fx, set, overlay_id) = agreed("recover", Fx::rename);
+    let overlay = fx.store().read_object(Object::Overlay, &overlay_id).unwrap().unwrap();
+    let overlay = Overlay::from_bytes(&overlay).unwrap();
+    let j = journal_of(&fx, overlay_id, &overlay);
+    fx.put_journal(&j.to_bytes());
+    let _ = set;
+    // `a.cc` replaced by its post-image, `b.cc`'s post-image staged.
+    fs::write(fx.src("a.cc"), Fx::post(A)).unwrap();
+    let staged_b = staged_name(&fx.real("b.cc"), overlay_id);
+    fs::write(std::ffi::OsStr::from_bytes(&staged_b), Fx::post(B)).unwrap();
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(0);
+    assert_eq!(out.lines(), vec!["recovered: restored 1, left 2, reported 0"], "{out:#?}");
+    assert!(fx.tree_is_pre());
+    assert!(!Path::new(std::ffi::OsStr::from_bytes(&staged_b)).exists());
+    assert!(!fx.store().journal_path().exists());
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(0);
+    assert_eq!(out.lines(), vec!["recovered: no unfinished write"]);
+}
+
+/// §7.3, §10.5: a file that is neither image is reported: status 3, the
+/// file left as it is, the journal kept (and the store still refused).
+#[test]
+fn s7_3_recover_reports_and_keeps_the_journal() {
+    let (fx, _, overlay_id) = agreed("recover-report", Fx::rename);
+    let overlay = Overlay::from_bytes(
+        &fx.store().read_object(Object::Overlay, &overlay_id).unwrap().unwrap(),
+    )
+    .unwrap();
+    let j = journal_of(&fx, overlay_id, &overlay);
+    fx.put_journal(&j.to_bytes());
+    fs::write(fx.src("a.cc"), "someone else's save\n").unwrap();
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(3);
+    assert_eq!(out.lines(), vec!["recovered: restored 0, left 2, reported 1"], "{out:#?}");
+    assert!(
+        out.stderr.contains(&format!("slip: {}: neither", fx.src("a.cc").display())),
+        "{out:#?}"
+    );
+    assert_eq!(fx.read("a.cc"), "someone else's save\n");
+    assert!(fx.store().journal_path().exists());
+    let plan = fx.store().find_plan("").unwrap()[0];
+    fx.reduce(plan, ROUND, &[]).expect(3);
+}
+
+/// §7.3, landed WP-063 §7: the ownership `--recover` checks is the one of
+/// the request the journal's overlay leads to; a journal that names a file
+/// it does not own is refused (status 3) with nothing changed.
+#[test]
+fn s7_3_recover_refuses_a_journal_not_owned() {
+    let (fx, _, overlay_id) = agreed("recover-not-owned", Fx::rename);
+    let outside = fx.root.join("t.cc");
+    fs::write(&outside, "int t;\n").unwrap();
+    let pre = content(b"int t;\n");
+    let post = content(b"int u;\n");
+    let path = outside.as_os_str().as_bytes().to_vec();
+    let j = Journal {
+        overlay: overlay_id,
+        files: vec![JournalEntry { staged: staged_name(&path, overlay_id), path, pre, post }],
+    };
+    fx.put_journal(&j.to_bytes());
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(3);
+    assert!(out.stderr.contains("journal_not_owned"), "{out:#?}");
+    assert!(fx.store().journal_path().exists());
+    // A journal whose overlay the store does not have: the ownership
+    // cannot be found, the journal is kept.
+    let j = Journal {
+        overlay: Digest([9; 32]),
+        ..journal_of(
+            &fx,
+            overlay_id,
+            &Overlay::from_bytes(
+                &fx.store().read_object(Object::Overlay, &overlay_id).unwrap().unwrap(),
+            )
+            .unwrap(),
+        )
+    };
+    let j = Journal {
+        files: j
+            .files
+            .iter()
+            .map(|f| JournalEntry { staged: staged_name(&f.path, j.overlay), ..f.clone() })
+            .collect(),
+        ..j.clone()
+    };
+    fx.put_journal(&j.to_bytes());
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(3);
+    assert!(out.stderr.contains("the journal is kept"), "{out:#?}");
+    assert!(fx.tree_is_pre());
+}
+
+// ---------------------------------------------------------------------------
+// Usage (spec/exec.md §8, §8.5 status 2)
+
+/// §8: each option without its value, `--write` with `--patch`,
+/// `--recover` with `--result`, and the other combinations that are not
+/// commands: status 2, one line and the usage text.
+#[test]
+fn s8_usage_errors() {
+    for (args, message) in [
+        (&["reduce", "--plan"][..], "`--plan` needs a value"),
+        (&["reduce", "--plan", "abcd", "--round"], "`--round` needs a value"),
+        (&["reduce", "--plan", "abcd", "--round", "1", "--store"], "`--store` needs a value"),
+        (&["reduce", "--plan", "abcd", "--round", "1", "-j"], "`-j` needs a value"),
+        (&["reduce", "--plan", "abcd"], "`reduce` needs `--round`"),
+        (&["reduce", "--round", "1"], "`reduce` needs `--plan`"),
+        (&["reduce", "--plan", "abcd", "--round", "1", "-j", "0"], "`-j` must be at least 1"),
+        (&["apply", "--result"], "`--result` needs a value"),
+        (&["apply", "--result", "abcd", "--patch"], "`--patch` needs a value"),
+        (
+            &["apply", "--result", "abcd", "--write", "--relative-to"],
+            "`--relative-to` needs a value",
+        ),
+        (&["apply", "--recover", "--store"], "`--store` needs a value"),
+        (
+            &["apply", "--result", "abcd", "--write", "--patch", "p"],
+            "`--write` and `--patch` cannot both be given",
+        ),
+        (
+            &["apply", "--recover", "--result", "abcd"],
+            "`--recover` cannot be given with `--result`",
+        ),
+        (&["apply", "--recover", "--write"], "`--recover` cannot be given with `--write`"),
+        (&["apply", "--result", "abcd"], "`apply --result` needs `--write` or `--patch`"),
+        (&["apply", "--write"], "`apply` needs `--result` or `--recover`"),
+        (&["apply", "--result", "abc", "--write"], "`--result`: `abc` is not an id"),
+        (&["apply", "--result", "abcd", "--write=1"], "`--write` takes no value"),
+        (
+            &["apply", "--result", "abcd", "--write", "--allow-unparsed"],
+            "unknown option `--allow-unparsed`",
+        ),
+    ] {
+        let out = slip(args);
+        out.expect(2);
+        let first = out.stderr.lines().next().unwrap_or("");
+        assert!(first.starts_with("slip: ") && first.contains(message), "{args:?}: {out:#?}");
+        assert!(out.stderr.contains("usage: slip plan"), "{args:?}");
+    }
+}
+
+/// §8: `--help` lists the commands with the usage lines of §8.
+#[test]
+fn s8_help_lists_reduce_and_apply() {
+    let out = slip(&["--help"]);
+    out.expect(0);
+    for line in [
+        "slip reduce --plan <id or file> --round <n> [--store <dir>] [-j <n>]",
+        "slip apply --result <id> (--write | --patch <file>) [--relative-to <dir>]",
+        "[--allow-residue] [--allow-partial] [--allow-errors] [--store <dir>]",
+        "slip apply --recover [--store <dir>]",
+    ] {
+        assert!(out.stdout.contains(line), "{line}");
+    }
+}
