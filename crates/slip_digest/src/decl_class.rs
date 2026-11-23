@@ -155,7 +155,9 @@ pub(crate) fn enum_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
             // The closure of a lambda in an enumerator's initialiser:
             // its owner is the enumeration, which numbers no closure
             // (digest-kinds §10.4).
-            s.indeterminate(crate::local::owner_res(w, m).err().unwrap_or(crate::local::CLOSURE_OWNER));
+            s.indeterminate(
+                crate::local::owner_res(w, m).err().unwrap_or(crate::local::CLOSURE_OWNER),
+            );
         } else {
             s.indeterminate(Cause::Unaccounted("EnumData/members"));
         }

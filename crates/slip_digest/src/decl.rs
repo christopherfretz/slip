@@ -293,11 +293,11 @@ mod tests {
     use slip_kiln::kiln::ast::DeclId;
     use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind};
 
+    use crate::Cause;
     use crate::decl_func::tests::{named, of_kind, with_walk};
     use crate::stream::{FlagWord, Stream};
     use crate::tables::{Decision, Row, decl_kind};
     use crate::walk::Walk;
-    use crate::Cause;
 
     /// The bytes and cause `own_exception_spec` writes for the only
     /// declaration of `kind` inside `k` (a member of a local class).
