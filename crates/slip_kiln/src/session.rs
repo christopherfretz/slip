@@ -35,7 +35,15 @@ use slip_model::hash::content_digest;
 
 /// The options of the command line before the author's (`spec/api.md`
 /// §2.1 rule 1), after the program name.
-const FIXED: [&str; 3] = ["-std=c++26", "-fsyntax-only", "-fkiln-reproducible-time"];
+const FIXED: [&str; 4] =
+    ["-std=c++26", "-fsyntax-only", "-fkiln-reproducible-time", "-ftemplate-depth=512"];
+
+/// The template-instantiation depth of a transform unit (the last word of
+/// [`FIXED`]), half of Kiln's default: with it, every recursion a run can
+/// drive at run time reaches a limit of Kiln's before Kiln's stack guard
+/// on a thread of `slip_script::driver::STACK` bytes, in a debug build
+/// (`spec/landed/api/WP-089.md`, the stack).
+pub const TEMPLATE_DEPTH: u32 = 512;
 
 /// The author's options (§2.1 rule 2). Each takes one value, joined
 /// (`-DX=1`) or as the next word (`-D X=1`).
@@ -215,6 +223,16 @@ pub enum CompileError {
     /// end stopped for another reason (`docs/requests/KS2-amendment-1.md`
     /// §1). What Kiln wrote to standard error.
     CommandLine(String),
+    /// Kiln's stack guard tripped while compiling the unit (its fatal
+    /// diagnostic `sema_stack_exhausted` is among Kiln's): the stack of the
+    /// thread was too small for the unit, which is the host's limit and
+    /// not the author's error. The diagnostics as Kiln renders them.
+    ///
+    /// Recognised in the rendering, by a line whose message is that
+    /// diagnostic's (`<place>: fatal error: kiln: stack exhausted during
+    /// <phase>; reduce nesting or raise -fkiln-stack-size`): Kiln gives no
+    /// structured diagnostics of a unit that failed to compile.
+    StackExhausted { rendered: String },
     /// Kiln panicked while compiling; the panic's message.
     Panicked(String),
     /// A file of the unit may use `#embed` or `__has_embed`, which a
@@ -336,6 +354,10 @@ pub enum RunFailure {
     /// The entry was given by another session; this run did not reach
     /// Kiln.
     ForeignEntry,
+    /// A kind of failure this crate does not know (Kiln's `RunError` is
+    /// `#[non_exhaustive]`), as Kiln debug-prints it: the host cannot say
+    /// what it means.
+    Unknown(String),
 }
 
 /// What one run produced.
@@ -348,11 +370,49 @@ pub struct RunReport {
     /// The run's diagnostics, notes and call stack included, as Kiln's text
     /// sink renders them (empty for a run that completed without one).
     pub rendered: String,
+    /// The same diagnostics as Kiln gives them, in order.
+    pub diagnostics: Vec<RunDiagnostic>,
+}
+
+/// One diagnostic of a run with its notes, as Kiln gives it
+/// (`kiln_diag::Diagnostic`), its place resolved in the transform unit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunDiagnostic {
+    /// Kiln's name of the diagnostic (`DiagId::name`, as `sema_stack_exhausted`);
+    /// `None` for a note of free text.
+    pub id: Option<&'static str>,
+    pub severity: Severity,
+    /// The message, without place or option.
+    pub message: String,
+    /// Where its caret is, if it has a place in a file.
+    pub place: Option<SourcePlace>,
+    /// Its notes, in order.
+    pub notes: Vec<RunDiagnostic>,
+}
+
+/// The level of a [`RunDiagnostic`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Severity {
+    Note,
+    Remark,
+    Warning,
+    Error,
+    Fatal,
+}
+
+/// A place in a file of the transform unit: the file's path as Kiln
+/// names it (as in [`ReadFile`]: the path as given), the physical line
+/// and column (from 1, the column in bytes). `#line` does not move it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourcePlace {
+    pub file: Vec<u8>,
+    pub line: u32,
+    pub column: u32,
 }
 
 /// The compiled transform unit (§2.4 rule 5). `Send`, so that a run may
-/// be called from another thread (a subject unit's front end) while the
-/// thread of [`with_transform`] waits; see [`Session::run`] for the hazard
+/// be called from another thread while the thread of [`with_transform`]
+/// waits; see [`Session::run`] for why `slip_script` does not, and the hazard
 /// of doing so at this Kiln revision.
 pub struct Session<'a> {
     engine: &'a mut dyn Engine,
@@ -447,11 +507,13 @@ impl Session<'_> {
     /// thread that called [`with_transform`], copied when the unit was
     /// compiled (`kiln/crates/kiln_sema/src/templ/mod.rs:617`), not against
     /// the calling thread's. On another thread that guard can read as
-    /// exhausted. A run that reaches a stack check (an instantiation, a
-    /// nested constant evaluation) then fails with "stack exhausted", and
-    /// the flag is sticky: every later run of the session fails the same
-    /// way. A run that reaches no check is not affected. Kiln is asked to
-    /// lift this (K2, `docs/wp/WP-080.md`).
+    /// exhausted. A run that reaches a stack check (an instantiation made
+    /// at run time through reflection, at any depth) then fails with
+    /// "stack exhausted", and the flag is sticky: every later run of the
+    /// session fails the same way (KN1 of WP-089, `tests/session.rs`
+    /// `kn1_…`). So `slip_script::driver` runs a session only on the
+    /// thread that compiled it (`spec/api.md` §2.5 rule 5), until Kiln
+    /// WP-2410.
     pub fn run(
         &mut self,
         entry: Entry,
@@ -465,6 +527,7 @@ impl Session<'_> {
             host_calls: 0,
             peak_bytes: 0,
             rendered: String::new(),
+            diagnostics: Vec::new(),
         };
         if entry.session != self.id {
             return refused(RunFailure::ForeignEntry);
@@ -523,7 +586,12 @@ pub fn with_transform<R>(
                     f(Ok(Session { engine: &mut fe, files, triple, predefines, id, in_run: false }))
                 }
                 Err(SessionRefused::TuHasErrors { errors }) => {
-                    f(Err(CompileError::Diagnosed { rendered: buffer.contents(), errors }))
+                    let rendered = buffer.contents();
+                    if stack_exhausted_in(&rendered) {
+                        f(Err(CompileError::StackExhausted { rendered }))
+                    } else {
+                        f(Err(CompileError::Diagnosed { rendered, errors }))
+                    }
                 }
                 // `CommandLine`, and any reason Kiln adds (`#[non_exhaustive]`).
                 Err(_) => f(Err(CompileError::CommandLine(buffer.contents()))),
@@ -541,7 +609,39 @@ pub fn with_transform<R>(
     }
 }
 
-fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
+/// Whether `rendered` holds Kiln's fatal "stack exhausted" diagnostic: a
+/// line `<file>:<line>:<column>: fatal error: kiln: stack exhausted during
+/// <phase>; reduce nesting or raise -fkiln-stack-size`, with one of
+/// Kiln's three phases (`kiln/crates/kiln_diag/src/ids/sema_s_z.rs:97`).
+/// No other diagnostic Kiln writes is a fatal error with this message: a
+/// transform's own text reaches a fatal error's message only quoted (a
+/// file not found).
+fn stack_exhausted_in(rendered: &str) -> bool {
+    const SUFFIX: &str = "; reduce nesting or raise -fkiln-stack-size";
+    rendered.lines().any(|l| {
+        ["parsing", "template instantiation", "constant evaluation"].iter().any(|phase| {
+            l.strip_suffix(SUFFIX).is_some_and(|l| {
+                l.strip_suffix(phase).is_some_and(|l| {
+                    l.strip_suffix(": fatal error: kiln: stack exhausted during ").is_some_and(
+                        |place| {
+                            let mut parts = place.rsplitn(3, ':');
+                            let col = parts.next().unwrap_or("");
+                            let line = parts.next().unwrap_or("");
+                            !col.is_empty()
+                                && !line.is_empty()
+                                && col.bytes().all(|b| b.is_ascii_digit())
+                                && line.bytes().all(|b| b.is_ascii_digit())
+                                && parts.next().is_some()
+                        },
+                    )
+                })
+            })
+        })
+    })
+}
+
+/// The message of a panic's payload.
+pub fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
     p.downcast_ref::<&str>()
         .map(|s| (*s).to_owned())
         .or_else(|| p.downcast_ref::<String>().cloned())
@@ -818,7 +918,7 @@ impl Engine for SessionFrontEnd<'_, '_> {
                 RunError::Uncaught { type_name, .. } => RunFailure::Uncaught { type_name },
                 // A kind Kiln adds (`#[non_exhaustive]`): the host cannot
                 // say what it means.
-                other => RunFailure::Host(format!("an unknown failure of Kiln: {other:?}")),
+                other => RunFailure::Unknown(format!("{other:?}")),
             }),
         };
         RunReport {
@@ -827,7 +927,30 @@ impl Engine for SessionFrontEnd<'_, '_> {
             host_calls: report.host_calls,
             peak_bytes: report.peak_heap,
             rendered: render(self.sources, &report.diagnostics),
+            diagnostics: report.diagnostics.iter().map(|d| diagnostic(self.sources, d)).collect(),
         }
+    }
+}
+
+/// `d` with its place resolved in `sm`.
+fn diagnostic(sm: &SourceManager, d: &kiln_diag::Diagnostic) -> RunDiagnostic {
+    let place = sm.line_col(d.span.lo).map(|lc| SourcePlace {
+        file: sm.file_name(lc.file).as_bytes().to_vec(),
+        line: lc.line,
+        column: lc.col,
+    });
+    RunDiagnostic {
+        id: d.id.map(kiln_diag::DiagId::name),
+        severity: match d.level {
+            kiln_diag::Level::Note => Severity::Note,
+            kiln_diag::Level::Remark => Severity::Remark,
+            kiln_diag::Level::Warning => Severity::Warning,
+            kiln_diag::Level::Error => Severity::Error,
+            kiln_diag::Level::Fatal => Severity::Fatal,
+        },
+        message: d.message.clone(),
+        place,
+        notes: d.notes.iter().map(|n| diagnostic(sm, n)).collect(),
     }
 }
 

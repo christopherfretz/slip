@@ -232,3 +232,74 @@ fn rule6_a_call_from_a_nested_evaluation_does_not_reach_the_host() {
         "{rendered}"
     );
 }
+
+/// KN2 of WP-089 (M5 of its review): a host call in a requires-expression
+/// of a template the entry instantiates.
+const KN2: &str = "template <unsigned long N> struct K {};\n\
+                   template <class T> consteval bool has() {\n\
+                     return requires { typename K<slip::lookup(\"lib::foo\").size() + sizeof(T)>; };\n\
+                   }\n\
+                   consteval void transform() {\n\
+                     slip::report(slip::severity::note, has<int>() ? \"yes\" : \"no\");\n\
+                   }";
+
+/// The text of a completed run's one report.
+fn report_text(o: &Outcome) -> String {
+    match o {
+        Outcome::Completed(out) => out
+            .reports
+            .iter()
+            .map(|r| String::from_utf8_lossy(&r.message).into_owned())
+            .collect::<Vec<_>>()
+            .join(","),
+        Outcome::Failed(f) => panic!("failed: {}", f.message),
+    }
+}
+
+// KN2, confirmed: §2.6 rule 3's context "a constraint" includes a
+// requires-expression, and there the host call is not diagnosed: the
+// requirement is silently unsatisfied, `has<int>()` is false, the
+// transform loads and the run completes. Not a diagnosed failure, which
+// §2.6 promises (Kiln finding KN2).
+#[test]
+fn kn2_a_host_call_in_a_requires_expression_is_silently_false() {
+    with("kn2", &with_meta(KN2), &[], |l| {
+        let (o, _) = run(l, &subject()).unwrap();
+        assert_eq!(report_text(&o), "no");
+    });
+}
+
+// The outcome KN2 waits for: a diagnosed failure, `transform-compile` (the
+// entry is not a template, so `has<int>` is instantiated when the unit is
+// compiled, as for the other contexts).
+#[test]
+#[ignore = "needs: Kiln KN2 (a host call in a requires-expression is diagnosed)"]
+fn kn2_pending_a_host_call_in_a_requires_expression_is_diagnosed() {
+    let e = load("kn2_pending", &with_meta(KN2), &[]).unwrap_err();
+    assert_eq!(e.name(), "transform-compile", "{e}");
+}
+
+// §2.6 rule 3 in a template instantiated at run time, through reflection
+// (`substitute`, then `extract`): the host call in its template argument
+// fails the run that instantiates it, `not-constant`, the same in each of
+// three runs; the transform is not retired.
+#[test]
+fn s2_6_rule3_a_template_instantiated_at_run_time() {
+    let body = "#include \"kiln_meta.h\"\n\
+                template <unsigned long N> struct K { static constexpr unsigned long v = N; };\n\
+                template <class T> struct W { static constexpr unsigned long v = K<slip::lookup(\"lib::foo\").size() + sizeof(T)>::v; };\n\
+                consteval void transform() {\n\
+                  auto w = std::meta::substitute(^^W, {^^int});\n\
+                  auto m = std::meta::static_data_members_of(w, std::meta::access_context::unchecked())[0];\n\
+                  (void)std::meta::extract<unsigned long>(m);\n\
+                }";
+    let support = common::kiln_support();
+    with("run_time", &with_meta(body), &["-I", &support], |l| {
+        let s = subject();
+        let outs: Vec<Outcome> = (0..3).map(|_| run(l, &s).unwrap().0).collect();
+        let Outcome::Failed(f) = &outs[0] else { panic!("{:?}", outs[0]) };
+        assert_eq!(f.kind.name(), "not-constant", "{}", f.rendered);
+        assert!(outs.iter().all(|o| *o == outs[0]));
+        assert_eq!(l.retired(), None);
+    });
+}

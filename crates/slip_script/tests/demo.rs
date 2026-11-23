@@ -1,13 +1,9 @@
 //! The demo transform of `docs/demos/demo-3.md` part A
 //! (`resource/examples/swap_arguments.cpp`, `spec/api.md` §10.1) through
-//! the driver, run on the compiling thread and away from it, as a worker
-//! runs it from a subject unit's front-end thread (`docs/wp/WP-092.md`
-//! rule 2): whether a run reaches the stack-guard hazard of
-//! `spec/api.md` §2.5 rule 5 (`docs/wp/WP-089.md` "Decided since" item 3).
+//! the driver, and the thread a loaded transform runs on (`spec/api.md`
+//! §2.5 rule 5): only the loading thread.
 
 mod common;
-
-use std::path::Path;
 
 use common::{STACK, resource, subject};
 use slip_kiln::session::Cancel;
@@ -24,44 +20,41 @@ fn edits(r: &Result<(Outcome, RunStats), String>) -> usize {
     }
 }
 
-// §2.5 rule 5: compiled under a 4 MiB guard (as WP-080's s1), the demo's
-// run on another thread, then at home, then away again: each completes
-// with the three edits of the one call, and Kiln's guard never trips.
+// §2.5 rule 5: on the loading thread the demo's run completes with the
+// three edits of the one call, twice alike. A run on another thread is
+// refused with the rule's text, does not reach Kiln (no host call, no
+// counters) and retires nothing: the next run at home completes again.
 #[test]
-fn s2_5_rule5_the_demo_runs_away_from_the_compiling_thread() {
+fn s2_5_rule5_a_run_away_from_the_loading_thread_is_refused() {
     let s = subject();
     let file = example();
     let res = resource();
-    let (runs, retired) = std::thread::scope(|t| {
+    let (home, away, again, retired) = std::thread::scope(|t| {
         std::thread::Builder::new()
             .stack_size(STACK)
             .spawn_scoped(t, || {
-                driver::with_transform(&res, &[], &file, 4 << 20, |l| {
+                driver::with_transform(&res, &[], &file, driver::STACK, |l| {
                     let l = &mut l.unwrap_or_else(|e| panic!("{e}"));
-                    let away = |l: &mut driver::Loaded<'_>| {
-                        std::thread::scope(|t| {
-                            std::thread::Builder::new()
-                                .stack_size(STACK)
-                                .spawn_scoped(t, || l.run(&s, Budgets::default(), &Cancel::new()))
-                                .unwrap()
-                                .join()
-                                .unwrap()
-                        })
-                    };
-                    let first = away(l);
                     let home = l.run(&s, Budgets::default(), &Cancel::new());
-                    let again = away(l);
-                    ([first, home, again], l.retired().map(str::to_owned))
+                    let away = std::thread::scope(|t| {
+                        std::thread::Builder::new()
+                            .stack_size(STACK)
+                            .spawn_scoped(t, || l.run(&s, Budgets::default(), &Cancel::new()))
+                            .unwrap()
+                            .join()
+                            .unwrap()
+                    });
+                    let again = l.run(&s, Budgets::default(), &Cancel::new());
+                    (home, away, again, l.retired().map(str::to_owned))
                 })
             })
             .unwrap()
             .join()
             .unwrap()
     });
-    for r in &runs {
-        assert_eq!(edits(r), 3, "{r:?}");
-    }
-    assert_eq!(runs[0].as_ref().unwrap().0, runs[1].as_ref().unwrap().0);
+    assert_eq!(edits(&home), 3, "{home:?}");
+    assert_eq!(away, Err(driver::OTHER_THREAD.to_owned()));
+    assert_eq!(edits(&again), 3, "{again:?}");
+    assert_eq!(home.unwrap().0, again.unwrap().0);
     assert_eq!(retired, None);
-    assert!(Path::new(&file).is_absolute());
 }

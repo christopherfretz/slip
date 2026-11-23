@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use slip_kiln::session::Cancel;
 use slip_model::Digest;
-use slip_script::driver::{self, Budgets, LoadError, Loaded, Outcome, RunStats};
+use slip_script::driver::{self, Budgets, Failure, LoadError, Loaded, Outcome, RunStats};
 use slip_script::fake::{
     FakeCall, FakeDeclaration, FakeEntity, FakeExpression, FakeReference, FakeSubject,
 };
@@ -18,8 +18,9 @@ use slip_script::subject::{
 };
 use slip_script::wire::Errc;
 
-/// The stack of the thread a transform is compiled on.
-pub const STACK: usize = 64 << 20;
+/// The stack of the thread a transform is compiled on: what the driver
+/// requires, and a MiB for the test's own frames above the call.
+pub const STACK: usize = driver::STACK + (1 << 20);
 
 /// The repository's resource directory (`spec/api.md` §2.1 rule 1).
 pub fn resource() -> PathBuf {
@@ -59,9 +60,7 @@ pub fn loading<R: Send>(
     std::thread::scope(|s| {
         std::thread::Builder::new()
             .stack_size(STACK)
-            .spawn_scoped(s, || {
-                driver::with_transform(resource, author, file, STACK - (1 << 20), f)
-            })
+            .spawn_scoped(s, || driver::with_transform(resource, author, file, driver::STACK, f))
             .unwrap()
             .join()
             .unwrap()
@@ -106,7 +105,7 @@ pub fn run(l: &mut Loaded<'_>, s: &(dyn Subject + Sync)) -> Result<(Outcome, Run
 pub fn kind(o: &Outcome) -> &'static str {
     match o {
         Outcome::Completed(_) => "completed",
-        Outcome::Failed { kind, .. } => kind,
+        Outcome::Failed(f) => f.kind.name(),
     }
 }
 
@@ -114,8 +113,45 @@ pub fn kind(o: &Outcome) -> &'static str {
 pub fn rendered(o: &Outcome) -> &str {
     match o {
         Outcome::Completed(_) => "",
-        Outcome::Failed { rendered, .. } => rendered,
+        Outcome::Failed(f) => &f.rendered,
     }
+}
+
+/// The failure of a failed outcome.
+pub fn failure(o: &Outcome) -> &Failure {
+    match o {
+        Outcome::Completed(_) => panic!("the run completed"),
+        Outcome::Failed(f) => f,
+    }
+}
+
+/// `driver::with_transform_on_stack` with the guard `guard`, on a thread of
+/// `driver::STACK` bytes (so that only the guard limits the transform).
+pub fn loading_on<R: Send>(
+    resource: &Path,
+    author: &[String],
+    file: &Path,
+    guard: usize,
+    f: impl FnOnce(Result<Loaded<'_>, LoadError>) -> R + Send,
+) -> R {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn_scoped(s, || driver::with_transform_on_stack(resource, author, file, guard, f))
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+}
+
+/// Kiln's own reflection header (`std::meta` beyond `<slip/meta.h>`), for
+/// `-I`.
+pub fn kiln_support() -> String {
+    std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kiln/tests/support"))
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned()
 }
 
 /// `#include <slip/meta.h>` and `body`.

@@ -707,6 +707,7 @@ fn t8_author_options() {
             "-std=c++26",
             "-fsyntax-only",
             "-fkiln-reproducible-time",
+            "-ftemplate-depth=512",
             "-I",
             &include,
             "-I",
@@ -867,7 +868,8 @@ fn s2_a_handler_panic_poisons_the_session() {
                 steps: 0,
                 host_calls: 0,
                 peak_bytes: 0,
-                rendered: String::new()
+                rendered: String::new(),
+                diagnostics: Vec::new(),
             }
         );
     }
@@ -1190,9 +1192,7 @@ fn wp089_the_target_of_the_unit() {
 
 // WP-089 (`Session::stack_exhausted`): Kiln's sticky flag reads false
 // after runs at home and away that reach no stack check. That it reads
-// Kiln's flag and not a constant: the run that sets it cannot be made
-// through an entry at this pin (s1), so the driver's handling of it is
-// tested with the flag injected (`slip_script::driver` unit tests).
+// Kiln's flag and not a constant: `kn1_…` below, where a run sets it.
 #[test]
 fn wp089_stack_exhausted_reads_false_after_ordinary_runs() {
     let cmd = transform("wp089_stack", "consteval void transform() { host(1, 1); }");
@@ -1224,4 +1224,89 @@ fn wp089_stack_exhausted_reads_false_after_ordinary_runs() {
             .unwrap()
     });
     assert_eq!(flags, (false, Ok(()), Ok(()), false));
+}
+
+/// KN1 of WP-089: the smallest transform that instantiates at run time,
+/// through reflection (`std::meta::substitute`, then `size_of`).
+const KN1: &str = "#include \"kiln_meta.h\"\n\
+                   template <class T> struct box { T v; };\n\
+                   consteval void transform() {\n\
+                     (void)std::meta::size_of(std::meta::substitute(^^box, {^^long}));\n\
+                   }\n";
+
+fn kiln_support() -> String {
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kiln/tests/support");
+    std::fs::canonicalize(p).unwrap().to_str().unwrap().to_owned()
+}
+
+/// KN1's runs on a thread of `STACK` bytes whose guard is `guard`: first
+/// on another thread (or at home, if `away` is false), then at home; each
+/// run's result, whether its diagnostics say "stack exhausted", and the
+/// flag after both.
+fn kn1(away: bool, guard: usize) -> ((bool, bool), (bool, bool), bool) {
+    let support = kiln_support();
+    let cmd = command(&format!("kn1_{away}_{guard}"), KN1, &["-I", &support]);
+    let shown = |r: &RunReport| (r.result.is_ok(), r.rendered.contains("stack exhausted"));
+    std::thread::scope(|t| {
+        std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn_scoped(t, || {
+                with_transform(&cmd, guard, |opened| {
+                    let s = &mut opened.unwrap_or_else(|e| panic!("{e:?}"));
+                    let entry = s.entry("transform").unwrap();
+                    let first = if away {
+                        std::thread::scope(|t| {
+                            let s = &mut *s;
+                            std::thread::Builder::new()
+                                .stack_size(STACK)
+                                .spawn_scoped(t, move || {
+                                    shown(&s.run(entry, &mut NoCalls2, BUDGET, &Cancel::new()))
+                                })
+                                .unwrap()
+                                .join()
+                                .unwrap()
+                        })
+                    } else {
+                        shown(&s.run(entry, &mut NoCalls2, BUDGET, &Cancel::new()))
+                    };
+                    let home = shown(&s.run(entry, &mut NoCalls2, BUDGET, &Cancel::new()));
+                    (first, home, s.stack_exhausted())
+                })
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+}
+
+/// A handler that answers every call with 0.
+struct NoCalls2;
+
+impl Handler for NoCalls2 {
+    fn call(&mut self, _: u32, _: &[u64], _: &[u8], _: &mut dyn Out) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+// KN1 of WP-089 (H1 a of its review), confirmed: an instantiation made at
+// run time through reflection, on another thread than the compiling one,
+// is checked against the compiling thread's guard and trips it, whatever
+// the guard's size (here 63 MiB, KN1's one level of `box<long>`); the flag
+// is sticky, so the next run at home fails too, "stack exhausted" again. At home alone both runs
+// complete. Hence `slip_script::driver`'s rule: a transform is run only on
+// the thread that loaded it (spec/api.md §2.5 rule 5).
+#[test]
+fn kn1_an_instantiation_at_run_time_away_trips_the_guard_and_sticks() {
+    let guard = STACK - (1 << 20);
+    assert_eq!(kn1(false, guard), ((true, false), (true, false), false), "at home");
+    assert_eq!(kn1(true, guard), ((false, true), (false, true), true), "away, then home");
+}
+
+// The behaviour KN1 waits for (Kiln WP-2410: the guard of the running
+// thread): away from the compiling thread, then at home, both runs
+// complete and the flag stays clear.
+#[test]
+#[ignore = "needs: Kiln WP-2410"]
+fn kn1_pending_a_run_away_from_the_compiling_thread_completes() {
+    assert_eq!(kn1(true, STACK - (1 << 20)), ((true, false), (true, false), false));
 }

@@ -149,6 +149,11 @@ fn s12_entry_errors() {
         "namespace n { void reduce(); } using namespace n; consteval void transform() {}",
     );
     assert!(load("usingreduce", &used, &[]).is_ok());
+    // §2.3 rule 2 (L3 of the review): the name designates one function, so
+    // a declaration followed by its definition loads.
+    let redeclared = with_meta("consteval void transform();\nconsteval void transform() {}");
+    let id = load("redeclared", &redeclared, &[]);
+    assert!(id.is_ok(), "{id:?}");
 }
 
 // WP-089 rule 1: the first check that fails is the error. Each transform

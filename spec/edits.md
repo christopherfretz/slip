@@ -430,8 +430,8 @@ of any map shard. `failure` records the run:
 
 ```
 Failure := kind:     FailureKind
-           message:  str                  the diagnostic's first line
-           place:    opt<SourcePlace>     where in the transform's source it arose
+           message:  str                  the cause, for a person (below); no place or path in it
+           place:    opt<SourcePlace>     where in the transform's source it arose (below)
            rendered: str                  the diagnostics as Kiln renders them, the call stack included
            refusal:  opt<HostRefusal>     for `uncaught` with a `slip::error`
 
@@ -441,6 +441,25 @@ FailureKind := uncaught = 0 | not_constant = 1 | step_budget = 2 | memory_budget
 SourcePlace := file: path, line: uv, column: uv
 HostRefusal := function: str, errc: str, message: str, subject: opt<Place>
 ```
+
+`message` is the cause of the failure, taken from Kiln's structured
+diagnostics, never cut out of the rendered text: for an `uncaught`
+`slip::error` with a refusal, the refusal ("an uncaught slip::error; the
+most recent refusal was: <message> (<errc>)", `api.md` §2.8 rule 3);
+when the run's first error is Kiln's "call to consteval function
+'transform' is not a constant expression", that error's first note of
+free text (the evaluator's account of what went wrong: "dereferencing a
+null pointer is not allowed …", "unhandled exception of type 'mine' …",
+the budget reached); otherwise the first error's own message (a limit of
+Kiln's reached in an instantiation made at run time); for
+`host_failure`, what failed in the host. `place` is the place of that
+cause in the transform's source, as Kiln names the file (the path as
+given, never made absolute by Slip), the physical line and the column
+(from 1, in bytes); when the cause lies in a header of the resource
+directory (`<slip/meta.h>` throws every `slip::error`), the first frame
+of the call stack outside them, else the first error's own place. The
+place in the *subject* that a refused value denotes is
+`refusal.subject`, never `place`.
 
 `errc` is the enumerator's name (`api.md` §4). A failed run hands over
 nothing else (`api.md` §7.6 rule 5): `subjects`, `links`, `claims`,
