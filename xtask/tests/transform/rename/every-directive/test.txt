@@ -1,0 +1,20 @@
+# Every directive of spec/harness.md §6.2 (read by xtask/tests/transform.rs).
+spec: edits §9.3
+spec: harness §6.2
+
+run: rename --from a::f --to g --kind function
+state: verified_with_residue
+exit: 1
+std: c++26
+args: -DX=1 -fno-exceptions
+tu: b.cpp a.cpp
+owned: a.cpp
+owned: inc
+readonly: dep
+allow: errors
+allow: partial
+allow: residue
+allow: unparsed
+oracle: no-clang kiln only
+oracle: no-back the inverse is refused
+xfail: not yet

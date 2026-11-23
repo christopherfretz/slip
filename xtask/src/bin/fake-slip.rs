@@ -138,7 +138,7 @@ fn run(args: &[String]) -> Result<ExitCode, (u8, String)> {
                     .map_err(|e| (98, format!("write {path}: {e}")))?;
             }
             "remove" => {
-                std::fs::remove_file(rest).map_err(|e| (98, format!("remove {rest}: {e}")))?
+                std::fs::remove_file(rest).map_err(|e| (98, format!("remove {rest}: {e}")))?;
             }
             "publish" => {
                 let (kind, file) = rest.split_once(' ').unwrap_or((rest, ""));

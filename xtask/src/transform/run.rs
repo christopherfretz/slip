@@ -292,10 +292,13 @@ pub fn first_line_difference(expected: &str, got: &str) -> Option<String> {
     if expected == got {
         return None;
     }
-    let (e, g): (Vec<&str>, Vec<&str>) =
-        (expected.split('\n').collect(), got.split('\n').collect());
+    let lines = |s: &str| -> Vec<String> {
+        let body = s.strip_suffix('\n').unwrap_or(s);
+        if s.is_empty() { Vec::new() } else { body.split('\n').map(str::to_owned).collect() }
+    };
+    let (e, g) = (lines(expected), lines(got));
+    let shown = |l: Option<&String>| l.map_or("the end".to_owned(), |l| format!("`{l}`"));
     for i in 0..e.len().max(g.len()) {
-        let shown = |l: Option<&&str>| l.map_or("the end".to_owned(), |l| format!("`{l}`"));
         if e.get(i) != g.get(i) {
             return Some(format!(
                 "output line {}: expected {}, got {}",
@@ -305,7 +308,8 @@ pub fn first_line_difference(expected: &str, got: &str) -> Option<String> {
             ));
         }
     }
-    unreachable!("two different strings differ in a line")
+    // The same lines: one of the two ends without a newline.
+    Some(format!("output line {}: the newline at its end differs", e.len()))
 }
 
 /// Runs and judges `test` (§6.3, §6.4) in `work`; see [`super::run_one`].
@@ -461,10 +465,10 @@ fn bless_goldens(ctx: &Ctx<'_>, ran: &Ran, got: &Files, old_post: &Files) -> Res
     if let Some(s) = state_difference(test.state, ran) {
         refuse.push(s);
     }
-    let added_or_missing = ctx.pre.keys().any(|k| !got.contains_key(k))
-        || got.keys().any(|k| !ctx.pre.contains_key(k));
-    if added_or_missing {
-        let d = tree::first_difference(&ctx.pre, got).unwrap_or_default();
+    let added = got.keys().find(|k| !ctx.pre.contains_key(*k)).map(|k| format!("file {k} added"));
+    let missing =
+        ctx.pre.keys().find(|k| !got.contains_key(*k)).map(|k| format!("file {k} missing"));
+    if let Some(d) = added.or(missing) {
         refuse.push(format!("post/ cannot hold the written tree: {d}"));
     }
     if !test.state.may_write() && *got != ctx.pre {
