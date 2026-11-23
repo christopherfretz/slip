@@ -14,7 +14,7 @@
 //! post-image does not parse), or the job's `Err`.
 
 use slip_digest::map::counters as walk_counters;
-use slip_digest::{Detail, Options, digest};
+use slip_digest::{Detail, Options, ReadOnly, ReadOnlyFiles, digest};
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_kiln::Lookups;
@@ -84,7 +84,8 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         return Err("a verify job with a transform".to_owned());
     }
     let rules = params.declared.rules();
-    let rules_id = rules.id();
+    let files = params.declared.files();
+    let rules_id = params.declared.rules_id();
     let observer = &job.observer;
 
     // Step 0: the pre shard.
@@ -100,9 +101,19 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     let sums: Vec<GroupSum> =
         pre_digests.map(|d| d.groups.iter().map(Group::sum).collect()).unwrap_or_default();
     let detail = if pre_digests.is_some() { Detail::Differing(&sums) } else { Detail::None };
-    let options = Options { rules, detail, names: false };
+    // The read-only files are decided from each buffer's real path
+    // (`Input::subject_path` maps the real path, never the path as the
+    // front end spells it; `spec/verify.md` §2.1).
     let (mut shard, output) =
         params.image.parse_looking(observer, Side::Post, Phase::Verify, job.round, |input| {
+            let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
+            let options = Options {
+                rules,
+                read_only: ReadOnly::files(&read_only),
+                detail,
+                names: false,
+                rule_use: false,
+            };
             digest(input, &options)
         })?;
     if shard.outcome.status != Status::Ok {
@@ -174,7 +185,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     if v.total > 0 && locate_n > 0 {
         let keys = locate::wanted(&v.findings, locate_n);
         let again = params.image.parse(observer, Side::Post, Phase::Verify, job.round, |input| {
-            locate::take(input, rules, &keys)
+            locate::take(input, rules, files, &keys)
         });
         post.reparsed += 1;
         let (again_shard, post_side) = again?;
@@ -214,7 +225,13 @@ fn pre_image(
     let exemptions = Exemptions::from_declared(&params.declared);
     let (limit, locate_n) = (params.limit, params.locate);
     let no_rules = RuleTable::empty();
-    let options = Options { rules: &no_rules, detail: Detail::Groups(g), names: false };
+    let options = Options {
+        rules: &no_rules,
+        read_only: ReadOnly::EVERY_FILE,
+        detail: Detail::Groups(g),
+        names: false,
+        rule_use: false,
+    };
     let (pre_shard, parsed): (Shard, Option<PreParse>) =
         params.image.parse(observer, Side::Pre, Phase::Map, params.pre, |input| {
             let out = digest(input, &options);
@@ -223,7 +240,7 @@ fn pre_image(
             let side = match &comparison {
                 Ok(c) if !c.findings.is_empty() && locate_n > 0 => {
                     let keys = locate::wanted(&c.findings[..c.findings.len().min(limit)], locate_n);
-                    Some(locate::take(input, &no_rules, &keys))
+                    Some(locate::take(input, &no_rules, None, &keys))
                 }
                 _ => None,
             };

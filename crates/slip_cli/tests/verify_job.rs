@@ -19,6 +19,7 @@ use slip_model::declared::Declared;
 use slip_model::digests::tu_digest;
 use slip_model::formats::content_id;
 use slip_model::keys::{KeyKind, Name, Parent, Rule, RuleTable};
+use slip_model::transform::Ownership;
 use slip_model::verdict::{FindingKind, VerdictKind};
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard, Status};
 
@@ -117,6 +118,13 @@ impl Tree {
     fn image(&self) -> Image {
         Image::new(vec![RootMap { subject: bytes(&self.subject), post: bytes(&self.post) }])
             .unwrap()
+    }
+
+    /// The run's files (`spec/edits.md` §2.1): the subject owned, nothing
+    /// read-only; or, with `readonly`, these files of it read-only.
+    fn files(&self, readonly: &[&str]) -> Ownership {
+        let readonly = readonly.iter().map(|r| bytes(&self.subject.join(r))).collect();
+        Ownership { owned: vec![bytes(&self.subject)], readonly }
     }
 
     fn params(&self, declared: Declared) -> Params {
@@ -939,10 +947,21 @@ fn s5_2_rules_applied_to_the_post_image() {
     let o = tree.observer();
     tree.map(&o);
     let declared = Declared::new(vec![rename_ns("fresh", "old")], vec![], vec![], vec![]).unwrap();
+    let declared = declared.with_files(Some(tree.files(&[])));
     let with = tree.verify_with(&o, &tree.params(declared.clone())).unwrap();
     assert_eq!(kind(&with), VerdictKind::Verified);
-    assert_eq!(with.verdict.as_ref().unwrap().rules, declared.rules().id());
+    assert_eq!(with.verdict.as_ref().unwrap().rules, declared.rules_id());
+    assert_ne!(declared.rules_id(), declared.rules().id());
     assert_eq!(kind(&tree.verify(&o)), VerdictKind::Mismatch);
+    // WP-110: the post walk takes the run's files. With `a.cpp` read-only
+    // the namespace is a dependency entity, no rule maps it: mismatch.
+    // Without files every file is read-only (knowing less never accepts
+    // more): mismatch.
+    let read_only = declared.clone().with_files(Some(tree.files(&["a.cpp"])));
+    let v = tree.verify_with(&o, &tree.params(read_only)).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
+    let v = tree.verify_with(&o, &tree.params(declared.with_files(None))).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
 }
 
 // §5.2 step 4 (B6): the pre-image is digested with no rules. Two
@@ -960,6 +979,7 @@ fn s5_2_pre_image_without_rules_at_step_4() {
     tree.map(&o);
     let rules = RuleTable::new(vec![rename_ns("bb", "aa"), rename_ns("aa", "bb")]).unwrap();
     let declared = Declared::new(rules.rules().to_vec(), vec![], vec![], vec![]).unwrap();
+    let declared = declared.with_files(Some(tree.files(&[])));
     let v = tree.verify_with(&o, &tree.params(declared)).unwrap();
     assert_eq!(kind(&v), VerdictKind::Mismatch, "{}", reason(&v));
     assert_eq!(v.verdict.as_ref().unwrap().total, 1);
@@ -1346,8 +1366,12 @@ fn f6s_two_routes_through_a_link() {
 // from the subject: verified (the back-maps refuse nothing they need not).
 #[test]
 fn f6r_two_routes_no_edit() {
-    let xh = "inline char where[sizeof(__FILE__)] = {};\n";
-    let main = "#include <x.h>\n#include \"inc/x.h\"\nint f() { return sizeof(where); }\n";
+    // One variable per inclusion: the file has no guard, and is included
+    // twice.
+    let xh = "#define CAT(a, b) a##b\n#define NAME(n) CAT(where, n)\n\
+              inline char NAME(__COUNTER__)[sizeof(__FILE__)] = {};\n#undef CAT\n#undef NAME\n";
+    let main = "#include <x.h>\n#include \"inc/x.h\"\n\
+                int f() { return sizeof(where0) + sizeof(where1); }\n";
     let tree = Tree::new("f6r", &[("a.cpp", main), ("inc/x.h", xh)]);
     for (dir, flag) in [
         (tree.base.join("build"), "-I../s/inc".to_owned()),
@@ -1355,8 +1379,10 @@ fn f6r_two_routes_no_edit() {
         (tree.subject.clone(), arg("-I", &tree.subject.join("inc"))),
     ] {
         let o = tree.observer_in(&dir, std::slice::from_ref(&flag));
-        tree.map(&o);
+        let m = tree.map(&o);
+        assert_eq!(m.outcome.status, Status::Ok, "{flag}: {:?}", m.outcome);
         let v = tree.verify(&o);
+        assert_eq!(v.outcome.status, Status::Ok, "{flag}: {:?}", v.outcome);
         assert_eq!(kind(&v), VerdictKind::Verified, "{flag}: {}", reason(&v));
     }
 }
@@ -1408,6 +1434,8 @@ fn g5_line_name() {
          command maps"
     );
     assert!(tree.truth_differs(&o, &m));
+    // A name the post command does not map: no refusal.
+    drop(tree);
     let tree = Tree::new("g5-line2", &[("a.cpp", &main("z.h")), ("inc/h.h", "\n")]);
     write(&tree.post.join("a.cpp"), &main("zz.h"));
     let o = tree.observer_in(&tree.base.join("build"), &["-I../s/inc".to_owned()]);
