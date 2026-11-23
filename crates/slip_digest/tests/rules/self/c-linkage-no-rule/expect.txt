@@ -1,0 +1,4 @@
+# Item 6: no rules.txt. A C-linkage function moved between namespaces keeps its key (parent c_linkage):
+# only the namespaces differ, and use() is equal.
+removed acme
+added legacy

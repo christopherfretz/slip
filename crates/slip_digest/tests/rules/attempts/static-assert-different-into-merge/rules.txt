@@ -1,0 +1,2 @@
+# Item 9 attempt: the same with another assertion: two digests of a repeatable kind, so another entity.
+relocate legacy => :: acme

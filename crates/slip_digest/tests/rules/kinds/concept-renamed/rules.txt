@@ -1,0 +1,2 @@
+# digest-kinds §3.1 concept, renamed: a function template constrained by it keeps its key, the constraint being in its discriminator as a reference.
+relocate C => :: D

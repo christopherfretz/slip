@@ -1,0 +1,2 @@
+# Before: equal, g(W2<A>*) given the key of g(W1<A>*) although W1 and W2 are different templates.
+refused a rule may not match a specialisation

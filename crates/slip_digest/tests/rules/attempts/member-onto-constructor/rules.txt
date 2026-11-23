@@ -1,0 +1,2 @@
+# Item 9 attempt: a member function g mapped onto the name of the constructor (a name no identifier spells).
+rule function | post S | id g | disc-of post S::g() | pre S | name-of pre S::S()

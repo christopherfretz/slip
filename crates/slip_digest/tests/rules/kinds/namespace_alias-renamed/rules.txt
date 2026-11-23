@@ -1,0 +1,2 @@
+# digest-kinds §3.1 namespace_alias, renamed.
+relocate in => :: im
