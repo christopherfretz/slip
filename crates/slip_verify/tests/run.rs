@@ -85,6 +85,7 @@ fn ok_shard(obs: u8, verdict: Verdict, by_kind: Option<[u64; 6]>) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: Some(slip_model::names::Names::default()),
     };
     s.validate().expect("a valid shard");
     s
@@ -110,6 +111,7 @@ fn unparsed_shard(obs: u8, status: Status, message: &str) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
     };
     s.validate().expect("a valid shard");
     s
@@ -271,6 +273,7 @@ fn s7_state_of_a_shard_that_cannot_be_believed_is_failed() {
     // A verdict in a shard without digests (rule 1).
     let mut s = verified(1);
     s.digests = None;
+    s.names = None;
     assert_eq!(ok(&s), State::Failed);
     // A diagnosed shard with a verdict.
     let mut s = verified(1);

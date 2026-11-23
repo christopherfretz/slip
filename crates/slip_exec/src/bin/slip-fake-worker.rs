@@ -100,6 +100,7 @@ fn ok_shard(job: &Job) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
     }
 }
 

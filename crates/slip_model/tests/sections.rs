@@ -330,6 +330,7 @@ fn map_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: Some(slip_model::names::Names::default()),
     }
 }
 
@@ -431,6 +432,7 @@ fn verify_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: Some(slip_model::names::Names::default()),
     }
 }
 
@@ -659,6 +661,7 @@ fn sample_map_shard(digests: Digests) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: Some(slip_model::names::Names::default()),
     }
 }
 
@@ -1091,10 +1094,12 @@ fn verdict_1_where_it_may_be() {
     assert_eq!(rejected(&s, "sections.verdict"), 206);
     let mut s = verify_shard();
     s.digests = None;
+    s.names = None;
     // Without the 142 bytes of the digests section.
     assert_eq!(rejected(&s, "sections.verdict"), 206 - 142);
     let mut s = verify_shard();
     s.digests = None;
+    s.names = None;
     s.outcome.status = Status::Rejected;
     let offset = rejected(&s, "sections.verdict");
     assert_eq!(

@@ -137,6 +137,7 @@ fn sample_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
     }
 }
 
@@ -159,6 +160,7 @@ fn failed_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
     }
 }
 
@@ -462,6 +464,7 @@ fn small_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
     }
 }
 

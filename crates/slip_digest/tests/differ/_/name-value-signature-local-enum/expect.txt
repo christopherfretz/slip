@@ -1,2 +1,5 @@
 changed G
 derived-changed G::<value>
+# The names digest (WP-112): the strings these units pass on changed.
+names-changed G
+names-changed f()

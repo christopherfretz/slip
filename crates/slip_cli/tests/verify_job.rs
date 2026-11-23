@@ -512,6 +512,7 @@ fn p3_map_shard_without_digests() {
     let o = tree.observer();
     let mut m = tree.map(&o);
     m.digests = None;
+    m.names = None;
     let id = tree.put_map(&o, &m);
     let v = tree.verify(&o);
     assert_eq!(reason(&v), "pre-image: the map shard has no digests");
@@ -1812,6 +1813,7 @@ fn shard_view(tree: &Tree, v: &Shard, pre: Option<Digest>) -> String {
     let mut s = v.clone();
     s.counters.retain(|c| c.name.starts_with("verify."));
     s.digests = None;
+    s.names = None;
     let mut text = slip_model::json::write_pretty(&s.to_json()).unwrap();
     text = text.replace(tree.base.to_str().unwrap(), "<base>");
     text = text.replace(&v.observer.to_string(), "<observer>");

@@ -1,1 +1,3 @@
 changed f(int)
+# The names digest (WP-112): the strings this unit passes on changed.
+names-changed f(int)

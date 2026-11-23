@@ -134,6 +134,13 @@ pub(crate) fn predefined_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         predefined(n.aux).map(|k| predefined_kind::row(&k)),
         Cause::Unaccounted("ExprNode/PredefinedExpr.aux"),
     );
+    // The names digest (digest §9): the value Kiln evaluated, when it
+    // made one (none in a dependent context).
+    if let (Some(k), Some(lit)) = (predefined(n.aux), name_literal(w, &n)) {
+        let ast = w.ast;
+        let l = ast.exprs.string_lit(lit);
+        crate::value::feed_predefined(w, k, ast.strings.get(l).1);
+    }
     crate::local::write_scope_names(w, s);
 }
 
@@ -172,7 +179,38 @@ pub(crate) fn source_loc_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     let n = node(w, e);
     source_loc_expr_of(s, &n);
     if matches!(source_loc(n.aux), Some(SourceLocKind::Function | SourceLocKind::SourceLocStruct)) {
+        feed_source_loc_values(w, e, source_loc(n.aux));
         crate::local::write_scope_names(w, s);
+    }
+}
+
+/// The names digest (digest §9) of a source-location builtin's node `e`
+/// of kind `kind`: the function name Kiln recorded for it, plain for
+/// `__builtin_FUNCTION()`, the `__impl` object's for
+/// `__builtin_source_location()`. Nothing for the other kinds (the file,
+/// the line and the column are not fed) nor where Kiln recorded no value.
+fn feed_source_loc_values(w: &mut Walk<'_>, e: ExprId, kind: Option<SourceLocKind>) {
+    let ast = w.ast;
+    let Some(&v) = ast.exprs.cold.source_loc.get(e) else { return };
+    match kind {
+        Some(SourceLocKind::Function) => {
+            if let Some(l) = crate::value::string_of(w, v.function) {
+                crate::value::feed_source_loc(w, false, ast.strings.get(l).1);
+            }
+        }
+        Some(SourceLocKind::SourceLocStruct) => {
+            let Some(location) = v.location else { return };
+            if let Some(pretty) = crate::value::impl_function_name(w, location) {
+                crate::value::feed_impl(w, pretty.map(|l| ast.strings.get(l).1));
+            }
+        }
+        Some(
+            SourceLocKind::File
+            | SourceLocKind::FileName
+            | SourceLocKind::Line
+            | SourceLocKind::Column,
+        )
+        | None => {}
     }
 }
 

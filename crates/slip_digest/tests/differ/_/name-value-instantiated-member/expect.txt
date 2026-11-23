@@ -1,3 +1,5 @@
 exact derived
 changed S::m()
 derived-changed S<int>::m()::<definition>
+# The names digest (WP-112): the strings this unit passes on changed.
+names-changed S<int>::m()

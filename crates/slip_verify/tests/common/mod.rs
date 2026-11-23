@@ -224,6 +224,7 @@ impl Run {
             binding: if status == Status::Failed { None } else { Some(self.binding()) },
             rule_use: None,
             spellings: None,
+            names: None,
         }
     }
 
@@ -239,6 +240,7 @@ impl Run {
         let mut s = self.base(obs, Status::Ok, "");
         s.counters = counters(by_kind);
         s.digests = Some(Digests { scheme: SCHEME, tu: tu_digest(&[]), groups: vec![] });
+        s.names = Some(slip_model::names::Names::default());
         s.verdict = Some(verdict);
         let mut inputs = s.inputs.take().unwrap();
         if let Some(o) = &self.overlay {

@@ -314,6 +314,7 @@ mod tests {
             causes: Vec::new(),
             names,
             rule_use: Vec::new(),
+            name_strings: Vec::new(),
         }
     }
 
@@ -377,6 +378,7 @@ mod tests {
                 causes: Vec::new(),
                 names,
                 rule_use: Vec::new(),
+                name_strings: Vec::new(),
             };
             let recs = collect(&mut w, &written, &output).expect("records");
             assert_eq!(recs.len(), 2, "{recs:#?}");

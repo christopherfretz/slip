@@ -550,6 +550,7 @@ impl ShardB {
             binding: None,
             rule_use: None,
             spellings: None,
+            names: None,
         }
     }
 }

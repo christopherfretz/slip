@@ -98,11 +98,20 @@ struct Ctx {
     tainted: bool,
     /// Content digests are being computed ([`compute`]).
     computing: bool,
+    /// The names digests of the constants of `local` that have one
+    /// ([`Walk::const_names`] for those not memoised).
+    local_names: HashMap<u32, Digest>,
 }
 
 impl Ctx {
     fn new() -> Ctx {
-        Ctx { budget: VALUE_BUDGET, local: HashMap::new(), tainted: false, computing: false }
+        Ctx {
+            budget: VALUE_BUDGET,
+            local: HashMap::new(),
+            tainted: false,
+            computing: false,
+            local_names: HashMap::new(),
+        }
     }
 }
 
@@ -290,6 +299,7 @@ fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, cx: &mut Ctx) -> 
         PtrBase::StringLit { lit, origin } if w.by_value == 0 => {
             match name_string(w, lit, origin) {
                 Some(which) => {
+                    feed_name_string(w, which, lit);
                     write_name_string(w, s, which);
                     return true;
                 }
@@ -304,6 +314,7 @@ fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, cx: &mut Ctx) -> 
         PtrBase::Const(c) => {
             let h = const_digest(w, cx, c);
             s.digest(&h.digest).absorb(h.cause);
+            feed_const(w, cx, c);
         }
         PtrBase::TypeInfo(q) => w.write_type(s, q),
         PtrBase::Label { label, origin: _ } => w.write_ref(s, label),
@@ -378,6 +389,10 @@ struct Impl {
     /// The literal of the file name it points to (always one: below,
     /// [`impl_file`]).
     file: Option<StringLitId>,
+    /// The literal of the function name it points to: the relocation
+    /// whose string is not the file's (role [`Role::Pretty`]); what its
+    /// `function_name()` returns, fed to the names digest (WP-112).
+    pretty: Option<StringLitId>,
 }
 
 /// The group an `__impl` object's use is numbered in.
@@ -492,12 +507,17 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 let n = ordinals.entry(group).or_insert(0);
                 let this = *n;
                 *n += 1;
+                let file_origin = origin_of(file);
+                let pretty = relocs
+                    .iter()
+                    .find(|r| origin_of(r.value) != file_origin)
+                    .and_then(|r| lit_of(r.value));
                 nv.objects.entry(obj.index()).or_insert(Impl {
                     group,
                     n: this,
                     file: lit_of(file),
+                    pretty,
                 });
-                let file_origin = origin_of(file);
                 for &Reloc { at: _, value } in relocs {
                     let role =
                         if origin_of(value) == file_origin { Role::File } else { Role::Pretty };
@@ -827,7 +847,9 @@ fn write_location(w: &mut Walk<'_>, s: &mut Stream, obj: ConstValueId) {
     }
     let hashed = w.hashed(inner.finish(VALUE_TAG));
     s.digest(&hashed.digest).absorb(hashed.cause);
-    let Impl { group, n, file } = name_values(w).objects[&obj.index()];
+    let Impl { group, n, file, pretty } = name_values(w).objects[&obj.index()];
+    let ast = w.ast;
+    feed_impl(w, pretty.map(|lit| ast.strings.get(lit).1));
     match group {
         Group::Function(f) => {
             w.write_ref(s, f);
@@ -854,6 +876,111 @@ fn write_location(w: &mut Walk<'_>, s: &mut Stream, obj: ConstValueId) {
         None => {
             s.opt(false);
         }
+    }
+}
+
+// ---------------------------------------------------------------------
+// The names digest (digest §9 "The names digest", WP-112): where a
+// name-derived string is written symbolically, its bytes as Kiln
+// evaluated them are fed, after what the symbolic form holds. One entry:
+//
+// - `uv 1`, the `PredefinedKind` ([`predefined_number`]), `bytes`: the
+//   value of a `PredefinedExpr` (as a node, or a string a pointer names);
+// - `uv 2`, `uv 0` (plain) or `uv 1` (pretty), `bytes`: a
+//   source-location function name a pointer names, or the value of a
+//   `__builtin_FUNCTION()` node (plain);
+// - `uv 3`, `opt`, `bytes`: the function name of an `__impl` object
+//   (what `function_name()` returns), from a pointer to the object or a
+//   `__builtin_source_location()` node;
+// - `uv 4`, `digest`: the names digest of a constant a pointer names,
+//   written by content digest (that constant's own entries, memoised
+//   with its content digest).
+
+/// The number of a `PredefinedKind` in an entry: its place in Kiln's
+/// `PredefinedKind::ALL`.
+pub(crate) fn predefined_number(k: PredefinedKind) -> u64 {
+    match k {
+        PredefinedKind::Func => 0,
+        PredefinedKind::Function => 1,
+        PredefinedKind::PrettyFunction => 2,
+    }
+}
+
+/// Feeds the value of a `PredefinedExpr` of kind `k`.
+pub(crate) fn feed_predefined(w: &mut Walk<'_>, k: PredefinedKind, bytes: &[u8]) {
+    if let Some(e) = w.feed() {
+        e.uv(1).uv(predefined_number(k)).bytes(bytes);
+    }
+}
+
+/// Feeds a source-location function name, plain or pretty.
+pub(crate) fn feed_source_loc(w: &mut Walk<'_>, pretty: bool, bytes: &[u8]) {
+    if let Some(e) = w.feed() {
+        e.uv(2).uv(u64::from(pretty)).bytes(bytes);
+    }
+}
+
+/// Feeds the function name of an `__impl` object (`None`: it has none).
+pub(crate) fn feed_impl(w: &mut Walk<'_>, bytes: Option<&[u8]>) {
+    if let Some(e) = w.feed() {
+        e.uv(3).bool(bytes.is_some()).bytes(bytes.unwrap_or_default());
+    }
+}
+
+/// Feeds the name-derived string `which`, the literal `lit`, written
+/// symbolically.
+fn feed_name_string(w: &mut Walk<'_>, which: NameString, lit: StringLitId) {
+    let ast = w.ast;
+    let bytes = ast.strings.get(lit).1;
+    match which {
+        NameString::Predefined(k, _) => feed_predefined(w, k, bytes),
+        NameString::SourceLoc(role, _) => feed_source_loc(w, role == Role::Pretty, bytes),
+    }
+}
+
+/// Feeds the names digest of constant `c`, written by its content digest,
+/// if it has one: from the walk's memo or from this call's.
+fn feed_const(w: &mut Walk<'_>, cx: &Ctx, c: ConstValueId) {
+    if w.by_value > 0 {
+        return;
+    }
+    let i = c.index();
+    let Some(&d) = w.const_names.get(&i).or_else(|| cx.local_names.get(&i)) else { return };
+    if let Some(e) = w.feed() {
+        e.uv(4).digest(&d);
+    }
+}
+
+/// The `__impl` object a `__builtin_source_location()` use built, and
+/// its function name's literal (`None` for a use that built none).
+pub(crate) fn impl_function_name(
+    w: &mut Walk<'_>,
+    location: ConstValueId,
+) -> Option<Option<StringLitId>> {
+    let Some(Scalar::Pointer {
+        ty: _,
+        base: PtrBase::Const(obj),
+        offset: _,
+        designated: _,
+        past: _,
+    }) = w.ast.consts.scalar(location)
+    else {
+        return None;
+    };
+    name_values(w).objects.get(&obj.index()).map(|i| i.pretty)
+}
+
+/// The literal a source-location string value points to.
+pub(crate) fn string_of(w: &Walk<'_>, v: ConstValueId) -> Option<StringLitId> {
+    match w.ast.consts.scalar(v) {
+        Some(Scalar::Pointer {
+            ty: _,
+            base: PtrBase::StringLit { lit, origin: _ },
+            offset: _,
+            designated: _,
+            past: _,
+        }) => Some(lit),
+        _ => None,
     }
 }
 
@@ -925,17 +1052,29 @@ fn compute(w: &mut Walk<'_>, cx: &mut Ctx, root: ConstValueId) -> bool {
     w.in_key += 1;
     let (budget, tainted) = (cx.budget, cx.tainted);
     cx.computing = true;
+    // Each constant's names digest is its own (digest §9 "The names
+    // digest"): collected whatever the unit around collects, since the
+    // memo serves every unit after.
+    let symbolic = w.by_value == 0;
     for v in todo {
         cx.budget = VALUE_BUDGET;
         cx.tainted = false;
         let (aborts, rooted) = (w.aborts, w.local.self_rooted);
+        let outer = symbolic.then(|| w.names_start());
         let mut s = Stream::new();
         write_value(w, &mut s, v, cx);
+        let names = outer.and_then(|o| w.names_end(o));
         let h = w.hashed(s.finish(VALUE_TAG));
         if cx.tainted || w.aborts != aborts || w.local.self_rooted != rooted {
             cx.local.insert(v.index(), h);
+            if let Some(d) = names {
+                cx.local_names.insert(v.index(), d);
+            }
         } else {
             memo_mut(w).insert(v.index(), h);
+            if let Some(d) = names {
+                w.const_names.insert(v.index(), d);
+            }
         }
     }
     cx.computing = false;

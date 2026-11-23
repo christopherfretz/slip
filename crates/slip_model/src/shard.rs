@@ -6,6 +6,7 @@
 use crate::agreement::{Binding, RuleUse};
 use crate::digests::Digests;
 use crate::edits::Edits;
+use crate::names::Names;
 use crate::spellings::Spellings;
 use crate::verdict::Verdict;
 use crate::{Digest, FileRef};
@@ -76,4 +77,8 @@ pub struct Shard {
     /// Section 26: the spelled-entity checks (`spec/verify.md` §10.4); only
     /// for phase `Verify` and status `Ok`.
     pub spellings: Option<Spellings>,
+    /// Section 27: the names digests (`spec/model.md` §8.6), and in a
+    /// verify shard the notes (`spec/verify.md` §4.4); present exactly
+    /// when `digests` is.
+    pub names: Option<Names>,
 }

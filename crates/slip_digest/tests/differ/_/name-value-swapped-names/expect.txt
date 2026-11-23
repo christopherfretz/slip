@@ -1,2 +1,5 @@
 changed f()
 changed g()
+# The names digest (WP-112): the strings these units pass on changed.
+names-changed n1()
+names-changed n2()

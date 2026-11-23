@@ -2,3 +2,5 @@ changed f(int)
 added h::q()
 added h
 changed f(long)
+# The names digest (WP-112): the strings this unit passes on changed.
+names-changed f(long)

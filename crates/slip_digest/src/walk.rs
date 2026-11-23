@@ -8,13 +8,15 @@ use slip_kiln::kiln::ast::RawId;
 use slip_kiln::kiln::ast::ids::DeclId;
 use slip_kiln::kiln::source::SourceManager;
 use slip_model::Digest;
+use slip_model::hash::tagged_digest;
 use slip_model::keys::RuleTable;
+use slip_model::wire::Encoder;
 
 use crate::keys::KeyRes;
 use crate::stream::{Hashed, Stream};
 use crate::types::TypeRef;
 use crate::units::{UnitClass, Written};
-use crate::{Cause, Input, Options, Output};
+use crate::{Cause, Input, NamesUnit, Options, Output};
 
 /// How deep types, keys and declarations walked in place may nest before
 /// the unit is indeterminate (`Cause::Unaccounted("walk/depth")`). The
@@ -280,7 +282,24 @@ pub(crate) struct Walk<'a> {
     /// How each rule was used (`rule_use.rs`): `None` unless asked for
     /// under a table that is not empty.
     pub rule_use: Option<crate::rule_use::Counting>,
+    /// The names digest being fed (digest §9 "The names digest", WP-112):
+    /// the entries of the unit (or constant) being written, `None` where
+    /// nothing is collected ([`Walk::feed`]).
+    pub names: Option<Encoder>,
+    /// The names digests of the constants a pointer names, by
+    /// `ConstValueId` index, for the content digests of
+    /// [`Walk::const_memo`] (computed with [`Walk::by_value`] at 0); a
+    /// constant with no entry has none (`value::const_names`).
+    pub const_names: HashMap<u32, Digest>,
 }
+
+/// `H("slip.names.v1", entries)`: the names digest of a unit or a constant
+/// (digest §9 "The names digest").
+pub(crate) const NAMES_TAG: &str = "slip.names.v1";
+
+/// `H("slip.names.key.v1", count, digests)`: the names digest of a key
+/// with several units that have one (`spec/model.md` §8.6).
+pub(crate) const NAMES_KEY_TAG: &str = "slip.names.key.v1";
 
 /// What [`Walk::take_types`] puts aside.
 pub(crate) struct TypeState {
@@ -332,7 +351,44 @@ impl<'a> Walk<'a> {
             by_value: 0,
             const_memo_by_value: HashMap::new(),
             rule_use: None,
+            names: None,
+            const_names: HashMap::new(),
         }
+    }
+
+    /// Where an entry of the names digest is written (digest §9 "The names
+    /// digest"): the encoder of the unit or constant being written, when
+    /// one is collecting, name-derived values are written symbolically
+    /// ([`Walk::by_value`] at 0) and no owner is being numbered; else
+    /// `None`, and nothing is fed. A key and a type digest raise
+    /// `by_value`, so nothing they write is fed: they are memoised
+    /// across units.
+    pub(crate) fn feed(&mut self) -> Option<&mut Encoder> {
+        if self.by_value > 0 || crate::local::numbering_mode(self) {
+            return None;
+        }
+        self.names.as_mut()
+    }
+
+    /// Starts collecting a names digest, and returns what was being
+    /// collected, which [`Walk::names_end`] puts back.
+    pub(crate) fn names_start(&mut self) -> Option<Encoder> {
+        self.names.replace(Encoder::default())
+    }
+
+    /// Stops collecting (for a stream whose strings are not the unit's:
+    /// a candidate stream); [`Walk::names_end`] puts back what was being
+    /// collected.
+    pub(crate) fn names_off(&mut self) -> Option<Encoder> {
+        self.names.take()
+    }
+
+    /// Ends what [`Walk::names_start`] or [`Walk::names_off`] began,
+    /// putting `saved` back: the names digest collected meanwhile, `None`
+    /// when nothing was fed.
+    pub(crate) fn names_end(&mut self, saved: Option<Encoder>) -> Option<Digest> {
+        let mine = std::mem::replace(&mut self.names, saved)?;
+        (!mine.as_bytes().is_empty()).then(|| tagged_digest(NAMES_TAG, mine.as_bytes()))
     }
 
     /// Enters one level of nesting; `false` (and the level is not
@@ -539,16 +595,26 @@ pub(crate) fn run_with<R>(
     crate::units::collect(&mut w);
     crate::local::number_all(&mut w);
     let mut written: Vec<Written> = Vec::new();
+    // The names digests (digest §9 "The names digest"): by the index in
+    // `written` of the entity's unit, which its resolved units' strings
+    // are fed to as well.
+    let mut fed: Vec<(usize, Digest)> = Vec::new();
     let mut i = 0;
     while i < w.queue.len() {
         let (e, class) = w.queue[i];
         i += 1;
+        let saved = w.names_start();
         if let Some(u) = crate::units::write(&mut w, e, class) {
             // Its resolved units (`demand.rs`), after it.
             let mut resolved = Vec::new();
             crate::demand::resolved_units(&mut w, e, &u, &mut resolved);
+            if let Some(d) = w.names_end(saved) {
+                fed.push((written.len(), d));
+            }
             written.push(u);
             written.append(&mut resolved);
+        } else {
+            w.names_end(saved);
         }
     }
     written.push(crate::units::order_unit(&mut w));
@@ -561,7 +627,53 @@ pub(crate) fn run_with<R>(
     let causes = causes(&written);
     let counters = crate::groups::counters(&totals, collisions, w.bytes, &causes);
     let rule_use = crate::rule_use::finish(w.rule_use.take());
-    f(&mut w, &written, Output { digests, counters, causes, names, rule_use })
+    let name_strings = name_strings(&w, &written, &fed);
+    f(&mut w, &written, Output { digests, counters, causes, names, rule_use, name_strings })
+}
+
+/// `Output::name_strings` from the names digests `fed` (by index in
+/// `written`): one entry per key, sorted by key. A key whose units have
+/// one names digest has it; a key with several has
+/// `H("slip.names.key.v1", count, digests)` of them in the order of its
+/// units, by `(digest, names digest)` (`spec/model.md` §8.6). Its file and
+/// name are those of the first of these units.
+fn name_strings(w: &Walk<'_>, written: &[Written], fed: &[(usize, Digest)]) -> Vec<NamesUnit> {
+    if fed.is_empty() {
+        return Vec::new();
+    }
+    let mut by_key: Vec<(Digest, Digest, Digest, usize)> =
+        fed.iter().map(|&(i, d)| (written[i].key, written[i].digest, d, i)).collect();
+    by_key.sort_unstable();
+    let firsts: Vec<Written> = by_key
+        .iter()
+        .enumerate()
+        .filter(|&(j, x)| j == 0 || by_key[j - 1].0 != x.0)
+        .map(|(_, x)| written[x.3].clone())
+        .collect();
+    let shown = crate::names::names(w, &firsts);
+    let mut out: Vec<NamesUnit> = Vec::with_capacity(firsts.len());
+    let mut j = 0;
+    while j < by_key.len() {
+        let key = by_key[j].0;
+        let run = by_key[j..].iter().take_while(|x| x.0 == key).count();
+        let names = if run == 1 {
+            by_key[j].2
+        } else {
+            let mut e = Encoder::default();
+            e.count(run);
+            for x in &by_key[j..j + run] {
+                e.digest(&x.2);
+            }
+            tagged_digest(NAMES_KEY_TAG, e.as_bytes())
+        };
+        let first = &written[by_key[j].3];
+        let name = shown
+            .binary_search_by(|(k, _)| k.cmp(&key))
+            .map_or_else(|_| String::new(), |at| shown[at].1.clone());
+        out.push(NamesUnit { key, names, file: first.file.clone(), name });
+        j += run;
+    }
+    out
 }
 
 /// One cause per indeterminate key: of the unit first in `(key, digest)`

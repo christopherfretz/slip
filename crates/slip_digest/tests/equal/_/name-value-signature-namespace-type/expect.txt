@@ -1,0 +1,3 @@
+# The names digest (WP-112): the strings these units pass on changed.
+names-changed legacy::G
+names-changed legacy::f()

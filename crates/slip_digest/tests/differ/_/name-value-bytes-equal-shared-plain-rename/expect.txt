@@ -1,3 +1,5 @@
 changed other()
 added c::get()
 added c
+# The names digest (WP-112): the strings this unit passes on changed.
+names-changed a::get()
