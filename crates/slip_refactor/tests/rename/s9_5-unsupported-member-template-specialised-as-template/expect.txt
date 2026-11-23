@@ -1,5 +1,5 @@
 subjects:
-  6c4b12e5 follower unsupported rule=yes n::S<char>::g of=cfa0d1f5
+  6c4b12e5 follower - rule=yes n::S<char>::g of=cfa0d1f5
   cfa0d1f5 seed unsupported rule=yes n::S::g
 links:
 claims:

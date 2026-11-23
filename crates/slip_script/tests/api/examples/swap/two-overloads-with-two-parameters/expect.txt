@@ -1,0 +1,2 @@
+transform <id>
+report - error "more than one function with two parameters is named 'lib::foo'"

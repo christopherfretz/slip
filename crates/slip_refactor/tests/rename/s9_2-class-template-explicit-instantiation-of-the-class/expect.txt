@@ -1,5 +1,5 @@
 subjects:
-  017413ba follower unsupported rule=yes n::S<short>::f() of=32ae9afe
+  017413ba follower - rule=yes n::S<short>::f() of=32ae9afe
   32ae9afe seed - rule=yes n::S::f()
 links:
 claims:

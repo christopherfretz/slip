@@ -372,10 +372,46 @@ Three kinds of key take another entity's name as the rules map it
   mapped names, the key is indeterminate (`key/patterns-disagree`).
   A member of an explicit specialisation of the class is declared in that
   specialisation, has no such link, and keeps its own name: it needs its
-  own rule. A rule that matches an instantiated member itself, under its
-  plain or its followed name, makes its key indeterminate
-  (`key/rule-on-instantiated-member`): no source renames an
-  instantiation's member apart from its pattern's;
+  own rule. No source renames an instantiation's member apart from its
+  pattern's, so a rule on an instantiated member is accepted only where
+  it says what the pattern says (WP-119): a rule that matches the
+  member's **plain** key (its own name, parent and discriminator mapped)
+  and produces exactly the key following gives (the patterns' mapped
+  name, with the plain key's parent, kind and discriminator) gives the
+  member that key, and the member is counted in that rule's `via`
+  (`verify.md` §9.1); a rule on the followed key is then not applied
+  after it (a table maps a key once). Any other rule on the plain key
+  (another name, or the pattern's name under another parent), and a rule
+  that matches the followed key when none matches the plain key, makes
+  the key indeterminate (`key/rule-on-instantiated-member`). Such a rule
+  is how a function defined as a friend in a class template and declared
+  at namespace scope is renamed: a unit that does not instantiate the
+  class keys the function by its own declaration, which needs the rule,
+  and a unit that does accepts the same rule.
+  A member follows its patterns only where its own name is the
+  pattern's by construction, so that following gives the member its own
+  key under every table that renames nothing of the pattern (WP-131): an
+  identifier, an operator, `constructor`, `destructor`, a literal
+  operator, `deduction_guide`, and `unnamed_by` of one of those, are
+  written in the pattern and not substituted. A member whose name is a
+  **conversion** name does not take its pattern's name: the name is the
+  type converted to, which is the instantiation's (`W<bool>::operator
+  bool()`, instantiated from `W::operator T()`), so the pattern's name is
+  another name. No rule renames a conversion function apart from its
+  type, and the type digest in the member's own name is already in mapped
+  terms: a rule on the type it converts to reaches it there. The same
+  holds of `unnamed_by` of a conversion name (a class whose declarator is
+  name-independent, named by its first member, a conversion function,
+  P2169), of a `local` number (it counts the instantiation's own local
+  types: a discarded `if constexpr` branch of the instantiation declares
+  none, and one expansion statement instantiates its local class once
+  per element, each a distinct entity) and of an `unnamed_ordinal` (it counts the scope's own unnamed
+  types). Such a member is keyed as an entity that follows no pattern:
+  a rule that matches its plain key applies to it as to any key, and the
+  checks above are not made. A rule whose name is a conversion name comes
+  from one declared change, a `relocate` of a conversion function with
+  `=` (`slip declare` gives a new name only to an identifier): it moves
+  that conversion function, and matches its key, as for any entity;
 - a decomposition is named by its first binding (digest-kinds §5.2),
   as the rules map the binding.
 
@@ -386,6 +422,26 @@ or variable named by its anonymous class, and a using-shadow, which has
 the name it is written with (its discriminator, the key of the entity it
 stands for, is mapped as any key is).
 With `R` empty this is the identity, which is what the map phase uses.
+
+**A rule that matches nothing changes nothing** (WP-131). For every
+translation unit, the walk under a table none of whose rules matches a
+key of that translation unit (a rule's `(parent, kind, name, disc)` is no
+entity's, its parent and discriminator mapped) gives the units, keys,
+digests, flags, causes, names and counters of the walk under the empty
+table, whichever files are read-only; and, when no rule produces a key
+of that translation unit either (`verify.md` §9.1: an entity whose key
+is the key a rule produces counts `direct` for it, matched or not), no
+rule has a use (`via` and `direct` 0). The exception is `digest.bytes` (§12),
+which measures work: a walk under a non-empty table keys a namespace in
+the view of a member of the other ownership and computes a pattern's key
+again for its mapped name, and counts those bytes, whether or not a rule
+matches; it is never smaller. Every route the walk takes only under a
+non-empty table (following a pattern, a mapped name, a namespace keyed in
+a member's view, the collisions among mapped keys, the ownership of an
+entity) must therefore give the answer of the empty table when no rule
+applies. A table is no reason for a key to differ; only a rule that
+matches is. `crates/slip_digest/tests/inert.rs` holds it over every
+source of the crate's pair and rule tests.
 Verification digests the post-image with the rules that undo the declared
 relocations, so that a relocated entity, every member of it, every type
 that mentions it and every signature that contains it get the keys they had
@@ -563,7 +619,13 @@ variable), whose parameters the own stream met first; then the
 owner of the variable of each expanded expansion statement is numbered
 too: Kiln keeps the statement's pattern parts in an instantiated body,
 so a specialisation's `definition` names its pattern's variable, by
-`Ref::outer`. So the numbers cannot depend on
+`Ref::outer`. So is the owner of the variable a lifetime-extended
+temporary extends, when that owner is a template's pattern or a member
+of one: Kiln shares a non-dependent temporary of a pattern's body with
+its instantiations (a range-`for` over a prvalue: the temporary's
+`LetData` `extending` is the pattern's `__range` variable), so the
+specialisation's `definition` names that variable by `Ref::outer` too
+(WP-123). So the numbers cannot depend on
 the order units are written in, and each owner is numbered once. A
 local type that the numbering of its owner does not find (a
 lambda-expression that only a type holds, an owner that is a namespace
@@ -824,7 +886,11 @@ object is unspecified by the language and is not digested.
   dependent name's identifier and nested-name structure; for an unresolved
   call, the set of declarations found at the definition (as sorted `Ref`s)
   and whether the name is subject to argument-dependent lookup at
-  instantiation.
+  instantiation. Its explicit template arguments are written too, and an
+  expression among them that no template was chosen to convert it for
+  (`get<n::k>(t)`) is the pattern's own expression, walked in full as
+  every other (§6; `digest-kinds.md` §4.6 `ArgView` `Expr`, WP-123), so
+  what it names is compared under the rules.
 - Template parameters are `Ref::template_param`; their names are not
   digested.
 - Each specialisation that exists in the translation unit is a unit: an
@@ -963,6 +1029,20 @@ this spec says:
   (`Unsupported("typedef/alignment-by-declaration")`, `digest-kinds.md`
   §4.2 rule 9: Kiln's `alignof` and its cached layout read different
   declarations);
+- it holds a constructor definition whose mem-initializers the AST does
+  not hold: one Kiln did not check because its class or the definition
+  itself is in a template (`DEPENDENT_CTX`) or it is invalid, with a
+  ctor-initializer or without, since the AST does not say which
+  (`Unsupported("kiln/pattern-mem-initializers")`,
+  `spec/landed/digest/WP-124.md`); an instantiation's constructor holds
+  its own list and is not one. A local class is in the unit of what
+  holds it, so the unit is the constructor's own only for a class
+  member; for a local class it is the holder's: a function or member
+  function (its body, or a lambda in it), a friend's body, a data
+  member (a lambda in its default member initialiser), a member function
+  (a lambda in a default argument), a class template (a lambda in a
+  default template argument), a concept, a variable template, and a
+  function that is not a template whose expansion statement holds one;
 - its key collides with another entity's (§3.4);
 - it holds demand-driven state that `digest-kinds.md` could not assign to a
   derived unit;
@@ -1192,6 +1272,9 @@ true by mechanism, not by review alone.
   be equal. One pair at least per `demand` row.
 - **Indeterminate** (`tests/indeterminate/`): a source holding a construct
   decided `unsupported`; the unit that holds it must have the flag.
+- **Inert rules** (§3.4, `tests/inert.rs`): every source of every pair
+  test and of every rule case, walked under tables of rules that match
+  nothing of it, gives the walk under the empty table, compared in full.
 - **Mutation**: the catalogue of `spec/pitfalls.md`, each row a correct edit
   that must compare equal under its relocations and a wrong edit that must
   be caught.
@@ -1222,8 +1305,14 @@ A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
 2. A name is the name of the key's first unit, from side A when A has
    the key. Lines are compared by name: a line names every key of its
    name, and two keys of one name that differ the same way are one line.
-3. **`differ`** reads every line but `indeterminate`, and needs one
-   besides the directive. Over declared and `tu` units, the keys that
+3. **`differ`** reads every line, and needs one besides the directive
+   and the `indeterminate` lines. An `indeterminate` line there is
+   `indeterminate <name>` or `indeterminate <name> (<cause>)`, the cause
+   as §10 writes it: the units flagged for a cause other than `Pending`
+   are, on each side, exactly those the lines name, and their keys are
+   left out of what follows (WP-124: a pattern indeterminate while its
+   instantiation shows the change). Over the other declared and `tu`
+   units, the keys that
    differ are exactly the `changed`, `added` and `removed` lines, whatever
    the `derived-*` lines are. A `derived-added` or `derived-removed` line
    that does not hold fails the test, with or without the directive.

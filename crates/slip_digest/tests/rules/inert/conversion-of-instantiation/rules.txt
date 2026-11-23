@@ -1,0 +1,2 @@
+# WP-131 item 1 (Demo 1's failure): the rule matches nothing of W; the conversion function of W<bool> keeps its own name (spec/digest.md §3.4).
+relocate a::detail => a :: impl

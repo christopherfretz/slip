@@ -1,0 +1,2 @@
+added template <class> S<long> <deduction guide for S>(type-parameter-0-0)
+removed template <class> S<int> <deduction guide for S>(type-parameter-0-0)

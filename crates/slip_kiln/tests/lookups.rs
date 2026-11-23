@@ -294,3 +294,364 @@ fn toolchain_directories_in_the_list() {
     assert!(!l.list.is_empty(), "{l:?}");
     assert!(l.read.iter().any(|r| r.ends_with("stddef.h")), "{l:?}");
 }
+
+// ---------------------------------------------------------------------------
+// `Lookups::missed`, the negative inputs (work package WP-117,
+// `spec/model.md` §8.6): one test per form of `spec/landed/verify/WP-117.md`
+// item 1's table.
+
+fn missed(l: &Lookups, dir: &str, name: &str) -> bool {
+    l.missed.iter().any(|(d, n)| d == dir && n == name)
+}
+
+// N-a. `#include "..."` found on the list: the includer's directory, then
+// the list before the directory it was found in; not that one, not after.
+#[test]
+fn missed_quoted_include_before_the_hit() {
+    let d = Dir::new("missed-quoted");
+    d.write("a.cpp", "#include \"h.h\"\n");
+    d.write("inc2/h.h", "\n");
+    let (inc1, inc2, inc3) = (d.at("inc1"), d.at("inc2"), d.at("inc3"));
+    for i in [&inc1, &inc3] {
+        std::fs::create_dir_all(i).unwrap();
+    }
+    let flags = [format!("-I{inc1}"), format!("-I{inc2}"), format!("-I{inc3}")];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("", &flags);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    let root = d.root.to_str().unwrap();
+    assert!(missed(&l, root, "h.h") && missed(&l, &inc1, "h.h"), "{l:?}");
+    assert!(!missed(&l, &inc2, "h.h") && !missed(&l, &inc3, "h.h"), "{l:?}");
+}
+
+// N-a. `#include "..."` found in the includer's directory: no negative.
+#[test]
+fn missed_none_when_found_beside_the_includer() {
+    let d = Dir::new("missed-beside");
+    d.write("a.cpp", "#include \"h.h\"\n");
+    d.write("h.h", "\n");
+    let inc = d.at("inc");
+    std::fs::create_dir_all(&inc).unwrap();
+    let flag = format!("-I{inc}");
+    let (status, l) = d.lookups("", &[&flag]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(!l.missed.iter().any(|(_, n)| n == "h.h"), "{l:?}");
+}
+
+// N-b. `#include <...>`: the list from the angled start (not the
+// `-iquote` directories, not the includer's) to the hit.
+#[test]
+fn missed_angled_include_from_the_angled_start() {
+    let d = Dir::new("missed-angled");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("inc2/h.h", "\n");
+    let (q, inc1, inc2) = (d.at("q"), d.at("inc1"), d.at("inc2"));
+    for i in [&q, &inc1] {
+        std::fs::create_dir_all(i).unwrap();
+    }
+    let flags = [format!("-iquote{q}"), format!("-I{inc1}"), format!("-I{inc2}")];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("", &flags);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    let root = d.root.to_str().unwrap();
+    assert!(missed(&l, &inc1, "h.h"), "{l:?}");
+    assert!(!missed(&l, &q, "h.h") && !missed(&l, root, "h.h"), "{l:?}");
+    assert!(!missed(&l, &inc2, "h.h"), "{l:?}");
+}
+
+// N-c. `__has_include` and `__has_include_next` answering false: every
+// place they tried is a negative.
+#[test]
+fn missed_has_include_false_is_all_negatives() {
+    let d = Dir::new("missed-has");
+    d.write("a.cpp", "#if __has_include(\"p.h\") || __has_include(<r.h>)\n#endif\n");
+    let (inc1, inc2) = (d.at("inc1"), d.at("inc2"));
+    for i in [&inc1, &inc2] {
+        std::fs::create_dir_all(i).unwrap();
+    }
+    let flags = [format!("-I{inc1}"), format!("-I{inc2}")];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("", &flags);
+    assert_eq!(status, Status::Ok);
+    let root = d.root.to_str().unwrap();
+    for (dir, name) in
+        [(root, "p.h"), (&inc1, "p.h"), (&inc2, "p.h"), (&inc1, "r.h"), (&inc2, "r.h")]
+    {
+        assert!(missed(&l, dir, name), "{dir}/{name}: {l:?}");
+    }
+    assert!(!missed(&l, root, "r.h"), "{l:?}");
+}
+
+// N-d. `#include_next` and `__has_include_next`: the directories after the
+// includer's, up to the hit (all of them for a false answer).
+#[test]
+fn missed_include_next_between_the_two() {
+    let d = Dir::new("missed-next");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("one/h.h", "#if __has_include_next(<m.h>)\n#endif\n#include_next <h.h>\n");
+    d.write("three/h.h", "\n");
+    let (one, two, three) = (d.at("one"), d.at("two"), d.at("three"));
+    std::fs::create_dir_all(&two).unwrap();
+    let flags = [format!("-I{one}"), format!("-I{two}"), format!("-I{three}")];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("", &flags);
+    assert_eq!(status, Status::Ok);
+    assert!(missed(&l, &two, "h.h") && !missed(&l, &three, "h.h"), "{l:?}");
+    assert!(missed(&l, &two, "m.h") && missed(&l, &three, "m.h"), "{l:?}");
+    assert!(!missed(&l, &one, "m.h"), "{l:?}");
+}
+
+// N-e. `#embed` and `__has_embed`: the tries before the file read (the
+// includer's directory, `.` for `"..."`, then each `--embed-dir`); every
+// try for a false answer.
+#[test]
+fn missed_embed_before_the_file_read() {
+    let d = Dir::new("missed-embed");
+    d.write(
+        "a.cpp",
+        "#if __has_embed(<f.bin>)\n#endif\nconst char k[] = {\n#embed \"g.bin\"\n};\n",
+    );
+    d.write("d2/g.bin", "x");
+    let (d1, d2, d3) = (d.at("d1"), d.at("d2"), d.at("d3"));
+    for i in [&d1, &d3] {
+        std::fs::create_dir_all(i).unwrap();
+    }
+    let flags =
+        [format!("--embed-dir={d1}"), format!("--embed-dir={d2}"), format!("--embed-dir={d3}")];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("build", &flags);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    let root = d.root.to_str().unwrap();
+    assert!(missed(&l, root, "g.bin") && missed(&l, ".", "g.bin") && missed(&l, &d1, "g.bin"));
+    assert!(!missed(&l, &d2, "g.bin") && !missed(&l, &d3, "g.bin"), "{l:?}");
+    for dir in [&d1, &d2, &d3] {
+        assert!(missed(&l, dir, "f.bin"), "{dir}: {l:?}");
+    }
+}
+
+// N-f. `-include`: a `"..."` lookup from the predefines buffer, whose
+// includer's directory is `.`; found on the list.
+#[test]
+fn missed_dash_include() {
+    let d = Dir::new("missed-dash-include");
+    d.write("a.cpp", "int x;\n");
+    d.write("inc/pre.h", "\n");
+    let inc = d.at("inc");
+    let flag = format!("-I{inc}");
+    let (status, l) = d.lookups("build", &[&flag, "-include", "pre.h"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(missed(&l, ".", "pre.h") && !missed(&l, &inc, "pre.h"), "{l:?}");
+}
+
+// N-g. A search directory of the command that does not exist (Kiln's
+// driver leaves it out of the list): a negative of each name the list was
+// searched for where it would be searched were it created, by its place
+// in the list. After the hit: none; through the end for a name not found;
+// an `-iquote` one only for `"..."`. Spelled as the command spells it
+// (here relative).
+#[test]
+fn missed_absent_search_directories() {
+    let d = Dir::new("missed-absent");
+    d.write("a.cpp", "#include <h.h>\n#include \"k.h\"\n#if __has_include(<z.h>)\n#endif\n");
+    d.write("inc/h.h", "\n");
+    d.write("inc/k.h", "\n");
+    let inc = d.at("inc");
+    let flags = [format!("-I{inc}"), "-Ilater".to_owned(), "-iquotequote".to_owned()];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("", &flags);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(!l.list.iter().any(|x| x.ends_with("later")), "{l:?}");
+    assert!(!missed(&l, "later", "h.h") && !missed(&l, "later", "k.h"), "{l:?}");
+    assert!(missed(&l, "later", "z.h"), "{l:?}");
+    assert!(missed(&l, "quote", "k.h") && !missed(&l, "quote", "h.h"), "{l:?}");
+    assert!(!missed(&l, "quote", "z.h"), "{l:?}");
+}
+
+// N-g. Before the hit: a negative.
+#[test]
+fn missed_absent_before_the_hit() {
+    let d = Dir::new("missed-absent-before");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("inc/h.h", "\n");
+    let (status, l) = d.lookups("", &["-Igen", "-Iinc"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(missed(&l, "gen", "h.h"), "{l:?}");
+}
+
+// N-g. `-iquote`: by its place among the `-iquote` directories, and never
+// for `<...>`.
+#[test]
+fn missed_absent_iquote_position() {
+    let d = Dir::new("missed-absent-iquote");
+    d.write("a.cpp", "#include \"k.h\"\n#include \"m.h\"\n");
+    d.write("q1/k.h", "\n");
+    d.write("q3/m.h", "\n");
+    let (status, l) = d.lookups("build", &["-iquote../q1", "-iquote../q2", "-iquote../q3"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(!missed(&l, "../q2", "k.h"), "{l:?}");
+    assert!(missed(&l, "../q2", "m.h"), "{l:?}");
+}
+
+// N-g. `-isystem`: by its place among the system directories (after
+// every `-I`, the command's before the toolchain's).
+#[test]
+fn missed_absent_isystem_position() {
+    let d = Dir::new("missed-absent-isystem");
+    d.write("a.cpp", "#include <h.h>\n#include <g.h>\n");
+    d.write("sb/h.h", "\n");
+    d.write("sd/g.h", "\n");
+    let (status, l) = d.lookups("", &["-isystemsa", "-isystemsb", "-isystemsc", "-isystemsd"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(missed(&l, "sa", "h.h") && !missed(&l, "sc", "h.h"), "{l:?}");
+    assert!(missed(&l, "sa", "g.h") && missed(&l, "sc", "g.h"), "{l:?}");
+}
+
+// N-g. `-isystem` and a hit in an `-I` directory: created as that
+// directory, the system one would take its place (clang
+// `RemoveDuplicates`), so it is a negative although it comes after.
+#[test]
+fn missed_absent_isystem_after_a_user_hit() {
+    let d = Dir::new("missed-absent-displace");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("inc/h.h", "\n");
+    let (status, l) = d.lookups("", &["-Iinc", "-isystemsys", "-Ilater"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(missed(&l, "sys", "h.h") && !missed(&l, "later", "h.h"), "{l:?}");
+}
+
+// N-g. `-idirafter`: after the toolchain's directories; before a later
+// `-idirafter` one.
+#[test]
+fn missed_absent_idirafter_position() {
+    let d = Dir::new("missed-absent-after");
+    d.write(
+        "a.cpp",
+        "#include <h.h>\n#include <g.h>\n#if __has_include(<cstddef>)\n#endif\n#if __has_include(<z.h>)\n#endif\n",
+    );
+    d.write("sb/h.h", "\n");
+    d.write("a2/g.h", "\n");
+    let (status, l) = d.lookups("", &["-isystemsb", "-idirafteraft", "-idirafter", "a2"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(!missed(&l, "aft", "h.h"), "{l:?}");
+    // Found in a toolchain directory (libstdc++'s), which comes before
+    // every `-idirafter` one.
+    assert!(!missed(&l, "aft", "cstddef"), "{l:?}");
+    assert!(missed(&l, "aft", "g.h") && missed(&l, "aft", "z.h"), "{l:?}");
+}
+
+// N-g. `-cxx-isystem` in C++: a system directory, in the order of the
+// words (Kiln's C++ list).
+#[test]
+fn missed_absent_cxx_isystem_placed() {
+    let d = Dir::new("missed-absent-cxx");
+    d.write("a.cpp", "#include <h.h>\n#if __has_include(<z.h>)\n#endif\n");
+    d.write("sb/h.h", "\n");
+    let (status, l) = d.lookups("", &["-isystemsb", "-cxx-isystem", "cx"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(!missed(&l, "cx", "h.h") && missed(&l, "cx", "z.h"), "{l:?}");
+}
+
+// N-g. Kiln's driver accepts no `-c-isystem` word: the unit is
+// `rejected`, so no such directory reaches the placement.
+#[test]
+fn missed_absent_c_isystem_is_not_accepted() {
+    let d = Dir::new("missed-absent-c");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("sb/h.h", "\n");
+    let (status, l) = d.parse("", &["-isystemsb", "-c-isystem", "cs"]);
+    assert_eq!((status, l), (Status::Rejected, None));
+}
+
+// N-g. An `-iquote` directory that is also a toolchain one is listed
+// twice (Kiln deduplicates the `-iquote` part apart): the log's list is
+// then not the command's own with one toolchain block, and no directory
+// is placed (`later`, after the hit, is still a negative).
+#[test]
+fn missed_absent_iquote_toolchain_directory_unplaced() {
+    let d = Dir::new("missed-absent-iquote-tc");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("inc/h.h", "\n");
+    let (status, l) = d.lookups("", &["-iquote/usr/include", "-Iinc", "-Ilater"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    let twice = l.list.iter().filter(|x| *x == "/usr/include").count();
+    assert_eq!(twice, 2, "the host's toolchain lists /usr/include: {l:?}");
+    assert!(missed(&l, "later", "h.h"), "{l:?}");
+}
+
+// N-g. `#include_next`: an absent directory is placed in the window after
+// the includer's directory (`gen`, between `one` and `three`), not before
+// it (`before`).
+#[test]
+fn missed_absent_in_the_include_next_window() {
+    let d = Dir::new("missed-absent-next");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("one/h.h", "#if __has_include_next(<m.h>)\n#endif\n#include_next <h.h>\n");
+    d.write("three/h.h", "\n");
+    d.write("three/m.h", "\n");
+    let (one, three) = (d.at("one"), d.at("three"));
+    let flags =
+        ["-Ibefore".to_owned(), format!("-I{one}"), "-Igen".to_owned(), format!("-I{three}")];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("", &flags);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(missed(&l, "gen", "h.h") && missed(&l, "gen", "m.h"), "{l:?}");
+    assert!(!missed(&l, "before", "m.h"), "{l:?}");
+}
+
+// N-g. One directory named by `-isystem` and `-idirafter`: the list cannot
+// tell which part it would be in (the system part's end and the
+// `-idirafter` part's start are one place in the command's list): both
+// are kept, so a name found in a toolchain directory (between them) is a
+// negative there.
+#[test]
+fn missed_absent_isystem_and_idirafter_one_directory() {
+    let d = Dir::new("missed-absent-both");
+    d.write("a.cpp", "#if __has_include(<cstddef>)\n#endif\n");
+    let (status, l) = d.lookups("", &["-isystemx", "-idirafterx"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(missed(&l, "x", "cstddef"), "{l:?}");
+}
+
+// N-g. A search directory Kiln dropped as a duplicate of a listed one
+// (`lnk -> a`, after `a`): a place as an absent one is, in its window.
+#[test]
+fn missed_duplicate_directory() {
+    let d = Dir::new("missed-duplicate");
+    d.write("a.cpp", "#include <h.h>\n");
+    d.write("ext/h.h", "\n");
+    std::fs::create_dir_all(d.root.join("a")).unwrap();
+    std::os::unix::fs::symlink("a", d.root.join("lnk")).unwrap();
+    let (status, l) = d.lookups("", &["-Ia", "-Ilnk", "-Iext"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(!l.list.iter().any(|x| x == "lnk"), "{l:?}");
+    assert!(missed(&l, "lnk", "h.h"), "{l:?}");
+}
+
+// N-g. A dropped duplicate before its twin (`-Ilnk -isystem b`, `lnk ->
+// b`: clang drops the user one): its window reaches the twin, where the
+// lookup found the name; that name is a file in it now, so no negative.
+#[test]
+fn missed_duplicate_directory_holding_the_name() {
+    let d = Dir::new("missed-duplicate-holds");
+    d.write("a.cpp", "#include <k.h>\n#if __has_include(<z.h>)\n#endif\n");
+    d.write("b/k.h", "\n");
+    std::os::unix::fs::symlink("b", d.root.join("lnk")).unwrap();
+    let (status, l) = d.lookups("", &["-Ilnk", "-isystemb"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(!l.list.iter().any(|x| x == "lnk"), "{l:?}");
+    assert!(!missed(&l, "lnk", "k.h"), "{l:?}");
+    assert!(missed(&l, "lnk", "z.h"), "{l:?}");
+}
+
+// N-h. An absolute name: Kiln's log does not record it yet (Kiln
+// WP-2620): when it does, its own path is the negative of a false answer.
+#[test]
+#[ignore = "needs: kiln (WP-2620: absolute names in the lookup log)"]
+fn missed_absolute_name() {
+    let d = Dir::new("missed-absolute");
+    let gone = d.at("gone.h");
+    d.write("a.cpp", &format!("#if __has_include(\"{gone}\")\n#endif\n"));
+    let (status, l) = d.lookups("", &[]);
+    assert_eq!(status, Status::Ok);
+    assert!(missed(&l, "/", &gone), "{l:?}");
+}

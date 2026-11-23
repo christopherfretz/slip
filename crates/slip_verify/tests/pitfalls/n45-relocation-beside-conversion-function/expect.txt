@@ -1,0 +1,20 @@
+# N45: a relocation beside a conversion function of a class template
+# (WP-131; Demo 1's failure on LLVM: std::atomic<int>::operator int,
+# basic_string::operator basic_string_view). A conversion function's name is
+# the type it converts to: W<bool>::operator bool() is instantiated from
+# W::operator T(), and keyed under its own name, not the pattern's, under
+# any rule table, so that a rule that matches nothing of W (the relocation
+# of a::detail) changes no key of it. pre: the three lines; pre-2: a
+# conversion function template beside it; pre-3: the class template in a
+# dependency header; pre-4: conversions to a type the relocation moves
+# (W<a::detail::X>, and operator a::detail::X() in a template), which the
+# rule reaches through the type digest the name holds. bad: the conversion's
+# result type changed in the same edit (operator long: if (s) converts
+# through it). bad-2: operator T made explicit, so that return s; in f
+# resolves to the template operator U<int> instead.
+good:   verified
+bad:    mismatch changed f(W<bool>) @ main.cpp:3
+good-2: verified
+bad-2:  mismatch changed f(W<int>) @ main.cpp:3
+good-3: verified
+good-4: verified

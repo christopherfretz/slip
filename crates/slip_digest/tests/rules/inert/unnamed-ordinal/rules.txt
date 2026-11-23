@@ -1,0 +1,2 @@
+# WP-131 item 2: unnamed enumerations of a class template named by their ordinal
+relocate a::detail => a :: impl

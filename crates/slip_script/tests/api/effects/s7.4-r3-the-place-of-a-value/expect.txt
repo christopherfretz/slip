@@ -1,0 +1,8 @@
+transform <id>
+report - note "no written declaration"
+report t.cpp:4:5-4:6 note "declaration"
+report t.cpp:4:5-4:6 note "entity"
+report t.cpp:5:9-5:10 note "reference"
+report t.cpp:5:9-5:13 note "expression"
+report t.cpp:6:9-6:14 note "whole expansion"
+report t.cpp:7:9-7:15 note "replacement list" attached

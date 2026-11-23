@@ -472,7 +472,7 @@ impl Walk<'_> {
             None => None,
         };
         let key = Key { kind, parent, name, disc };
-        if !decomposition && !self.rules.is_empty() {
+        if !decomposition && !self.rules.is_empty() && follows_pattern(&key.name) {
             let patterns = self.instantiated_patterns(e);
             if !patterns.is_empty() {
                 return self.follow_patterns(e, &patterns, key, cause);
@@ -525,9 +525,14 @@ impl Walk<'_> {
     /// class templates, each with a definition, are not one program: one
     /// definition is the rule) whose mapped names differ leave no name to take:
     /// the key is indeterminate (`key/patterns-disagree`). A rule that
-    /// matches the member itself, under either name, is not one the source
-    /// can carry out (an instantiation's member is renamed only by renaming
-    /// the pattern's): the key is indeterminate.
+    /// matches the member's plain key is accepted only when it produces
+    /// exactly the followed key (it says what the pattern says: WP-119
+    /// item 1); then the plain key is returned, for the caller's one
+    /// mapping to give the followed key through that rule. Any other rule
+    /// on the plain key, and a rule on the followed key when none matches
+    /// the plain key, is not one the source can carry out (an
+    /// instantiation's member is renamed only by renaming the pattern's):
+    /// the key is indeterminate (`key/rule-on-instantiated-member`).
     ///
     /// Under ownership (WP-110) the name is the pattern's as its own
     /// ownership maps it (`mapped_name`), and the check of a rule on the
@@ -553,12 +558,31 @@ impl Walk<'_> {
             return Ok((key, cause));
         };
         let followed = Key { name, ..key.clone() };
-        if self.rule_applies(e, None)
-            && (self.rules.map(key.clone()) != key || self.rules.map(followed.clone()) != followed)
-        {
-            return Err(Some(RULE_ON_INSTANTIATED_MEMBER));
+        if !self.rule_applies(e, None) {
+            return Ok((followed, cause));
         }
-        Ok((followed, cause))
+        match self.rules.map_traced(key.clone()) {
+            // A rule on the plain key that gives exactly the followed key
+            // (parent, kind, name and discriminator: a rule keeps kind and
+            // discriminator, so parent and name) says what the pattern says
+            // (WP-119 item 1). The plain key is returned: the one mapping
+            // the caller applies (`Walk::key_in`, `mapped_name`, `key_bytes`)
+            // gives the followed key through that rule, which counts the
+            // member in its `via` (`spec/verify.md` §9.1), and a rule on
+            // the followed key is not applied after it (a table maps a key
+            // once, `spec/verify.md` §2.1: the swap of item 2).
+            (mapped, Some(_)) if mapped == followed => Ok((key, cause)),
+            // Any other rule on the plain key: another name, or the
+            // pattern's name under another parent.
+            (_, Some(_)) => Err(Some(RULE_ON_INSTANTIATED_MEMBER)),
+            // No rule on the plain key: a rule on the followed key alone is
+            // a second step after the pattern's, which no source can carry
+            // out apart from the pattern (WP-119 item 2).
+            (_, None) if self.rules.map_traced(followed.clone()).1.is_some() => {
+                Err(Some(RULE_ON_INSTANTIATED_MEMBER))
+            }
+            (_, None) => Ok((followed, cause)),
+        }
     }
 
     /// The key of a specialisation (`params` absent) or of a partial
@@ -1507,6 +1531,42 @@ pub(crate) fn mark_mapped_collisions(
     collisions
 }
 
+/// Whether a member instantiated from a pattern member whose own name is
+/// `name` takes the pattern's mapped name (`spec/digest.md` §3.4, WP-131):
+/// only where the two names are equal by construction under no rule, so
+/// that a rule that matches nothing changes no key. An identifier, an
+/// operator, `constructor`, `destructor`, a literal operator's suffix and
+/// `deduction_guide` are written in the pattern and not substituted; so is
+/// `unnamed_by` of one of them. A conversion name is the type converted
+/// to, which is the instantiation's (`operator bool` of `W<bool>`, where
+/// the pattern has `operator T`), and so is `unnamed_by` of one (a class
+/// named by its first member, a conversion function, P2169); a `local`
+/// number counts the instantiation's own local types (a discarded
+/// `if constexpr` branch declares none), and an `unnamed_ordinal` the
+/// scope's own unnamed types: those keep their own name, and no declared
+/// change renames them apart from what they are made of (a rule on the
+/// type converted to reaches the conversion's name, which is a type
+/// digest in mapped terms). The other forms name no instantiated member.
+fn follows_pattern(name: &Name) -> bool {
+    match name {
+        Name::Identifier(_)
+        | Name::Operator(_)
+        | Name::Constructor
+        | Name::Destructor
+        | Name::LiteralOperator(_)
+        | Name::DeductionGuide => true,
+        Name::UnnamedBy(inner) => follows_pattern(inner),
+        Name::Conversion(_)
+        | Name::Local(_)
+        | Name::UnnamedOrdinal(_)
+        | Name::Anonymous
+        | Name::Content
+        | Name::Property(_)
+        | Name::Order
+        | Name::Parameter(_) => false,
+    }
+}
+
 /// `merge` of two optional causes, as `Stream::indeterminate` keeps them.
 fn merge(a: Option<Cause>, b: Option<Cause>) -> Option<Cause> {
     match (a, b) {
@@ -1581,5 +1641,37 @@ mod tests {
         let every: BTreeSet<u8> =
             (1..=u8::MAX).filter_map(OverloadedOperator::from_u8).map(|op| op as u8).collect();
         assert_eq!(seen, every, "every row is declared");
+    }
+
+    /// `spec/digest.md` §3.4 (WP-131): the name forms that follow their
+    /// pattern. `unnamed_by` follows as the name it wraps; with today's
+    /// Kiln an instantiated unnamed class has no pattern link, so
+    /// `unnamed_by(conversion)` reaches no walk's following branch and is
+    /// pinned here.
+    #[test]
+    fn wp131_names_that_follow_their_pattern() {
+        use super::follows_pattern;
+        use slip_model::Digest;
+        let conversion = || Name::Conversion(Digest([7; 32]));
+        let by = |n: Name| Name::UnnamedBy(Box::new(n));
+        for n in [
+            Name::Identifier(b"f".to_vec()),
+            Name::Constructor,
+            Name::Destructor,
+            Name::DeductionGuide,
+            Name::LiteralOperator(b"_w".to_vec()),
+            by(Name::Identifier(b"x".to_vec())),
+        ] {
+            assert!(follows_pattern(&n), "{n:?} follows");
+        }
+        for n in [
+            conversion(),
+            by(conversion()),
+            by(by(conversion())),
+            Name::Local(0),
+            Name::UnnamedOrdinal(0),
+        ] {
+            assert!(!follows_pattern(&n), "{n:?} keeps its own name");
+        }
     }
 }

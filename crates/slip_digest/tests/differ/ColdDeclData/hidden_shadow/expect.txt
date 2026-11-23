@@ -1,4 +1,6 @@
+# WP-119 item 6: a shadow its class hides is no unit (digest §2.1), so the
+# shadow of A::f() that D::f() hides on side b is gone, and D lists one member less
 added D::f()
 removed D::f(int)
 changed D
-changed D::<shadow A::f()>
+removed D::<shadow A::f()>

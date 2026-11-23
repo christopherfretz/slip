@@ -1,8 +1,8 @@
 # pending
-# needs: Kiln to record an explicit instantiation of a member that follows the member's explicit specialisation (at the pin it warns sema_explicit_inst_after_spec_ignored and records nothing: no declaration, no extent row, no member-specialisation kind; kiln/crates/kiln_sema/src/templ/funcs.rs:1692-1701, before update_member_spec at :1733; spec/landed/edits/WP-073.md, For Kiln); until then the follower is unsupported only and the token at 3:23 has no claim
+# needs: Kiln to record an explicit instantiation of a member that follows the member's explicit specialisation (at the pin it warns sema_explicit_inst_after_spec_ignored and records nothing: no declaration, no extent row, no member-specialisation kind; kiln/crates/kiln_sema/src/templ/funcs.rs:1692-1701, before update_member_spec at :1733; spec/landed/edits/WP-073.md, For Kiln); until then the follower carries no flag (WP-119 lifted its unsupported), the token at 3:23 has no claim, the run is accepted and its post-image does not compile (rename.rs, f3_post_image_does_not_compile)
 subjects:
   32ae9afe seed - rule=yes n::S::f()
-  fc2d99d6 follower unsupported|unreachable rule=yes n::S<int>::f() of=32ae9afe
+  fc2d99d6 follower unreachable rule=yes n::S<int>::f() of=32ae9afe
 links:
 claims:
   main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]

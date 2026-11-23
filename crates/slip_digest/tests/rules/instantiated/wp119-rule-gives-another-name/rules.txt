@@ -1,0 +1,4 @@
+# WP-119 item 1 (spec/digest.md §3.4): a rule on the instantiated member's plain key that gives
+# another name than the pattern's (h, where S::g maps to f): key/rule-on-instantiated-member.
+relocate S::f() => S :: g
+rule function | mapped S<int> | id g | disc-of post S<int>::g() | pre S<int> | id h

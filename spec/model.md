@@ -557,6 +557,7 @@ the same bytes.
 | 24 | binding | no | `Binding` (`verify.md` §9.1): the declared changes, the overlay and the pre round a verify shard was made with; phase `verify` |
 | 25 | — | — | retired (WP-111): `rule_use` before `kept_via` and `kept`; no writer writes it |
 | 26 | spellings | no | `Spellings` (`verify.md` §10.4): the spelled-entity checks of this observer; phase `verify` |
+| 28 | negatives | no | `list<Negative>` (§8.6): the places the map parse looked for a file and found none, sorted; phase `map` |
 | 29 | rule_use | no | `RuleUse` (`verify.md` §9.1), with `kept_via` and `kept` (WP-111); phase `verify` |
 
 ```
@@ -588,12 +589,15 @@ list: nothing about a failed observer is deterministic.
 
 A reserved id (16, 18, 20) or a retired one (25) is a critical id no
 reader knows: a file with one is `UnknownSection`. Ids 22 and 23 are not
-assigned. Sections 17, 24, 25 and 26 were added by M2, and 29 by WP-111,
-without a change of the shard's version: a reader that predates one
-refuses a shard that has it (the ids are critical), and a shard without
-them reads as before. A section whose payload changes takes a new id and
-the old one is retired, so that a reader never meets a payload it does
-not know under an id it knows (WP-111: 25 to 29). An `edits` section
+assigned; 27 is work package WP-112's (`names`). Sections 17, 24, 25 and
+26 were added by M2, 28 by work package WP-117 and 29 by WP-111, without
+a change of the shard's version: a reader that predates one refuses a
+shard that has it (the ids are critical), and a shard without them reads
+as before (a map shard without `negatives` is then refused by the verify
+task's guard N1, `verify.md` §5.3: it is made again by `slip parse`). A
+section whose payload changes takes a new id and the old one is retired,
+so that a reader never meets a payload it does not know under an id it
+knows (WP-111: 25 to 29). An `edits` section
 in a shard of phase `verify`, or a `binding`, `rule_use` or `spellings`
 section in a shard of phase `map`, is `Malformed` at the first byte of
 the section's payload, JSON path `sections.<name>`. So are `edits`,
@@ -602,6 +606,7 @@ the section's payload, JSON path `sections.<name>`. So are `edits`,
 before the status. Their own invariants are `edits.md` §4.7 and
 `verify.md` §9.1 and §10.4, checked after those of §8.1 to §8.3 in the
 order of the section ids, each section's phase and status first.
+`negatives`'s own are §8.6's, last.
 
 ### 8.1 Invariants
 
@@ -706,6 +711,7 @@ pub struct ParseOptions { pub pp_record: bool, pub lookups: bool }
 pub struct Lookups {
     pub list: Vec<String>,                 // the search list's directories
     pub tried: Vec<(String, String)>,      // (directory, name): each place a lookup tried, unique
+    pub missed: Vec<(String, String)>,     // (directory, name): each place it found nothing (§8.6)
     pub read: Vec<String>,                 // each input's name as spelled when read
     pub line_names: Vec<String>,           // each name a `#line` directive gave, as written (guard G5)
 }
@@ -736,6 +742,44 @@ directory and `.` for `"..."`, then every `--embed-dir` directory (Kiln's
 log does not say which were tried; they are taken from Kiln's driver,
 `Args::embed_dirs`). A lookup of an absolute name is not in Kiln's log
 and so not here (`spec/verify.md` §5.1, "What remains outside").
+`Lookups::missed` lists the places where a lookup looked for its name and
+found nothing, unique, in the order first seen (the negative inputs, §8.6,
+item by item in `spec/landed/verify/WP-117.md`): `tried` less the place
+each form found its file in, with two differences. For `#embed` and
+`__has_embed` it lists the tries before the path read (the includer's
+directory, `.` for `"..."`, then each `--embed-dir`, in Kiln's order), all
+of them when none was. And a search directory of the command's own (`-I`,
+`-iquote`, `-isystem`, `-idirafter`, `-cxx-isystem`; `-I=` under the
+sysroot) that is not in the list (Kiln's driver left it out because it
+was no directory, or because it was a duplicate of a listed one: another
+spelling of it, or a link to it, which may be retargeted since) is a
+place of each name a `#include` form searched the list for where, were
+it a directory of its own, it would be searched: at its place in the
+list, from where the lookup started (the angled start for `<...>`, after
+the includer's directory for `#include_next`) up to and including the
+place before the directory the lookup found the name in (through the end
+when it found none), unless the name is a regular file in it now (a
+duplicate holds its twin's files, where the lookup found them). Its
+place is found by building the command's own directories into a list as
+Kiln's driver does for C++ (Kiln `SearchList::build`), once as they are
+and once with that directory a directory of a unique identity (which
+changes no other entry: whatever Kiln dropped because of it was itself);
+the toolchain's directories, all of a system group and after the
+command's in it, are the one block of the log's list that the command's
+list lacks, at the end of its system part (before the `-idirafter`
+directories), none of them one of the command's. Two cases keep more. An absent
+`-isystem` or `-idirafter` directory is a place of every lookup that
+ended in an `-I` directory: created as that same directory, it would
+take its place (clang `RemoveDuplicates` drops a user directory that a
+later system one duplicates). And when the place cannot be told, the
+directory is a place of every name searched in the list (not of a
+`<...>` name when only `-iquote` names it): when the log's list is not
+the command's own list with one toolchain block (a toolchain directory
+that displaced one of the command's; an `-iquote` directory that is also
+a toolchain one, listed twice since Kiln deduplicates the quoted part
+apart; a C unit's `-cxx-isystem` directories, which the C++ build lists
+and Kiln's driver leaves out for C). Kiln's driver accepts no
+`-c-isystem` word (the unit is `rejected`).
 `Lookups::line_names` lists the file names of the `#line` directives of
 every file the unit read (Kiln's `SourceManager::line_directives`), as
 written: guard G5 of `spec/verify.md` §5.3 refuses one that begins with a
@@ -964,6 +1008,78 @@ number of keys cut off by the walk's depth bound.
 written before this section (or by the parse task alone); verification
 treats it as an unusable pre shard (`spec/verify.md` §5.3, P3). The
 format still does not require the section ("Open questions").
+
+**Negative inputs.** The map task parses with `ParseOptions::lookups` on,
+and a shard that has `inputs` gets the section `negatives` (§8.6) from
+the unit's `Lookups::missed`, whatever its status. `slip parse` (through
+the map task) is the only command that writes it; the verify task, `slip
+declare` and `slip units` write no map shard.
+
+### 8.6 The `negatives` section
+
+The **negative inputs** of a map shard: each place the map parse looked
+for a file and found none, so that the verify task can tell that none has
+appeared there since (guard N1, `verify.md` §5.3; work package WP-117).
+What a place is, form by form, is `Lookups::missed` (§8.4); what Kiln's
+log does not show is not one (`verify.md` §5.1, "What remains outside").
+
+```
+negatives := list<Negative>
+Negative  := shared: uv        bytes in common with the path before (none for the first)
+             rest:   bytes     the path's bytes after them
+```
+
+Each path is the first `shared` bytes of the one before, then `rest`;
+`shared` is the length of the two paths' longest common prefix (one list
+has one encoding). The JSON form (§10) is the list of whole paths.
+
+**The path of a place.** A place `(d, n)` is the path
+`Command.directory/d/n` (an absolute `d` or `n` replaces what is before
+it) as written, with its `.` components and repeated `/` dropped: nothing
+is resolved, no symbolic link is followed, `..` is kept. Paths are bytes,
+absolute, as `inputs` writes them (§3). Guard N1 asks the kernel about the
+path when it looks, so it reaches what the front end would reach then,
+wherever the links on the way lead by then.
+
+So two hosts with the same tree at the same paths write the same bytes:
+the path is text of the command and of the source, and the tree decides
+only which places there are (where a lookup found its file). In
+particular:
+
+- **A directory that does not exist** is written as any other:
+  `-I/b/later` writes `/b/later/h.h`; `-I/b/x/../y` writes
+  `/b/x/../y/h.h`, which exists only once `/b/x` does, as for the front
+  end (the kernel takes `..` from the directory reached).
+- **A directory reached through a symbolic link** is written as spelled,
+  not as the link's target: `-I/b/lnk` with `lnk -> inc` writes
+  `/b/lnk/h.h`. A link retargeted after the map phase is then followed
+  to its new target when N1 looks, as the post parse follows it. Two
+  spellings that differ only by `.` or `/` are one place; others
+  (`/b/inc`, `/b/lnk`) are two.
+
+The real path is not used: it would depend on the links' targets at the
+map phase only, and a link retargeted since would move the place the post
+parse looks at away from the one recorded.
+
+**Invariants**, checked after the other sections' (§8), at the section's
+first byte for the first two and at the entry's for the rest; JSON path
+`sections.negatives` or `sections.negatives[<i>]`:
+
+| Rule | Text |
+|---|---|
+| N-1 | the shard's phase is `map`: "a negatives section in a shard whose phase is not map" |
+| N-2 | the shard has `inputs` (and so its status is not `failed`): "a negatives section in a shard without inputs" |
+| N-3 | each path starts with `/`: "a negative input is not an absolute path" |
+| N-4 | the paths are strictly ascending by bytes: "negatives are not strictly ascending" |
+
+The encoding's own rules are `Malformed` at the entry's `shared` field
+while decoding: "a shared prefix longer than the path before", "a shared
+prefix that is not the longest".
+
+**Determinism.** The section is a function of the tree and the command,
+as `inputs` is: the parse's lookups are, and a place's path is text. A
+place is written once whatever the number of lookups that missed it, in
+path order.
 
 ## 9. The run record
 

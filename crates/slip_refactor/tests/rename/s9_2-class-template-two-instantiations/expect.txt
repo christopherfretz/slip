@@ -1,7 +1,7 @@
 subjects:
   32ae9afe seed - rule=yes n::S::f()
-  4fafa1b6 follower unsupported rule=yes n::S<long>::f() of=32ae9afe
-  fc2d99d6 follower unsupported rule=yes n::S<int>::f() of=32ae9afe
+  4fafa1b6 follower - rule=yes n::S<long>::f() of=32ae9afe
+  fc2d99d6 follower - rule=yes n::S<int>::f() of=32ae9afe
 links:
 claims:
   main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]

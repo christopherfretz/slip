@@ -1,0 +1,3 @@
+transform <id>
+report t.cpp:7:20-7:31 review "not rewritten: the call does not have two written arguments"
+report t.cpp:7:34-7:51 review "not rewritten: the call does not have two written arguments"
