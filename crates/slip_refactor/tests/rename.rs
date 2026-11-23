@@ -1029,53 +1029,6 @@ fn an_unrelated_family_is_not_selected_and_kept() {
     assert_eq!(rules, Some(3), "the three functions of the family, and no other");
 }
 
-// PROBE (temporary, removed before handback).
-#[test]
-fn probe_dump() {
-    let Some(dir) = std::env::var_os("SLIP_PROBE") else { return };
-    let dir = PathBuf::from(dir);
-    let mut files = Vec::new();
-    collect_files(&dir, &dir, &mut files);
-    files.retain(|(p, _)| p != "test.txt" && p != "expect.txt");
-    let old = std::env::var("SLIP_PROBE_NAME").unwrap_or_else(|_| "f".into());
-    let out = with_unit("probe", &files, &[], |u, keys, _| {
-        let ast = u.ast();
-        let mut s = String::new();
-        let disp = |d: DeclId| slip_digest::display_name(ast, d);
-        for d in ast.decls.ids() {
-            let n = ast.decls.get(d);
-            let shadows: Vec<DeclId> = ast.using_shadows(d).collect();
-            let named = named(u, d, old.as_bytes());
-            if !named && shadows.is_empty() && n.kind() != slip_kiln::kiln::ast::decl::DeclKind::UsingShadow {
-                continue;
-            }
-            let ov: Vec<String> = {
-                let l = ast.decls.cold.overrides.get(ast.first(d)).copied();
-                l.map(|l| ast.lists.iter::<DeclId>(l).map(|m| format!("{m:?}={}", disp(m))).collect())
-                    .unwrap_or_default()
-            };
-            let key = keys.key_id(keys.entity(d)).map(|k| short(&k)).unwrap_or_else(|e| format!("{e:?}"));
-            let _ = writeln!(
-                s,
-                "{d:?} {:?} [{}] ctx={:?} first={:?} entity={:?} key={key} inst_from={:?} templ_link={:?} origin={:?} overrides={ov:?} hidden={:?} shadows={:?} target={:?}",
-                n.kind(),
-                disp(d),
-                n.ctx().map(disp),
-                ast.first(d),
-                keys.entity(d),
-                ast.instantiated_from(d),
-                ast.templ_link(d).get().map(|(k, _)| k),
-                written::origin(u, d),
-                ast.decls.hidden_shadow(d),
-                shadows,
-                ast.using_target(d).map(|t| format!("{t:?}={}", disp(t))),
-            );
-        }
-        s
-    });
-    eprintln!("{}", out.unwrap_or_else(|| "diagnosed".into()));
-}
-
 // ---------------------------------------------------------------------
 // End to end (`docs/wp/WP-120.md` "Tests"): the shards of every observer
 // reduced, the accepted edits applied, and each observer's pre-image
@@ -1276,31 +1229,6 @@ fn digest_units(
     r.expect("parsed")
 }
 
-// PROBE (temporary).
-#[test]
-fn probe_idiom_digest() {
-    if std::env::var_os("SLIP_PROBE_IDIOM").is_none() {
-        return;
-    }
-    let pre: &[u8] = b"namespace n {\nstruct B { virtual void f(); void f(int); };\nstruct D : B { using B::f; void f() override; };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n";
-    let post: &[u8] = b"namespace n {\nstruct B { virtual void g(); void f(int); };\nstruct D : B { using B::f; void g() override; };\n}\nvoid h(n::D& d) { d.g(); d.f(1); }\n";
-    let post2: &[u8] = b"namespace n {\nstruct B { virtual void g(); void f(int); };\nstruct D : B { using B::f; using B::g; void g() override; };\n}\nvoid h(n::D& d) { d.g(); d.f(1); }\n";
-    let files = vec![("main.cpp".to_owned(), pre.to_vec())];
-    let c = Case { name: "pi".into(), dir: PathBuf::new(), target: vec![b"n".to_vec(), b"D".to_vec(), b"f".to_vec()], kind: TargetKind::Function, new_name: b"g".to_vec(), args: vec![], files: files.clone() };
-    let Ran::Edits(e) = run_case(&c) else { panic!() };
-    for s in &e.subjects { eprintln!("{} {} {:?}", short(&s.id), s.display, s.role); }
-    let none = RuleTable::new(Vec::new()).unwrap();
-    let a = digest_units("pi-pre", &files, "main.cpp", &none);
-    for (which, p, ids) in [("kept", post, &["3b98ec8e", "599ef791", "498ae399"][..]), ("kept-no-shadow-rule", post, &["3b98ec8e", "599ef791"][..]), ("added-using", post2, &["3b98ec8e", "599ef791", "498ae399"][..]), ("added-using-and-using-rule", post2, &["3b98ec8e", "599ef791", "498ae399", "8e22d4a6"][..])] {
-        let rules: Vec<_> = e.subjects.iter().filter(|s| ids.contains(&short(&s.id).as_str())).filter_map(|s| s.rule.clone()).collect();
-        let t = RuleTable::new(rules).unwrap();
-        let b = digest_units(&format!("pi-{which}"), &[("main.cpp".to_owned(), p.to_vec())], "main.cpp", &t);
-        for (k, (d, i, n)) in &a { match b.get(k) { None => eprintln!("{which}: removed {n}"), Some((d2, i2, _)) if d2 != d || *i || *i2 => eprintln!("{which}: changed {n} {i} {i2}"), _ => {} } }
-        for (k, (_, _, n)) in &b { if !a.contains_key(k) { eprintln!("{which}: added {n}"); } }
-        eprintln!("{which}: done");
-    }
-}
-
 /// No change to the post-image.
 fn right(_: &mut Vec<(String, Vec<u8>)>) {}
 
@@ -1442,8 +1370,8 @@ fn wp120_unhide_idiom_end_to_end() {
 }
 
 /// Item 4, the pair under the digest: a local class of a variable
-/// template's initialiser, and one of a function template, each
-/// instantiated twice, are renamed with the pattern's candidate alone and
+/// template's initialiser, one of a function template and one of a
+/// member function of a class template, each instantiated twice, are renamed with the pattern's candidate alone and
 /// verify (the instantiated local classes' members follow the pattern
 /// member, `spec/digest.md` §3.4); leaving the local class's name behind is
 /// a difference.
@@ -1457,7 +1385,11 @@ fn wp120_local_classes_of_templates_end_to_end() {
         "main.cpp",
         b"namespace n { struct B { virtual void f(); }; }\ntemplate <class T> int t() { struct L : n::B { void f() override {} }; L l; l.f(); return 0; }\nint u = t<int>() + t<long>();\n",
     )];
-    for (name, files) in [("wp120-vt", &vt), ("wp120-ft", &ft)] {
+    let mt: [(&str, &[u8]); 1] = [(
+        "main.cpp",
+        b"namespace n { struct B { virtual void f(); }; }\ntemplate <class T> struct S { int t() { struct L : n::B { void f() override {} }; L l; l.f(); return 0; } };\nint u = S<int>().t() + S<long>().t();\n",
+    )];
+    for (name, files) in [("wp120-vt", &vt), ("wp120-ft", &ft), ("wp120-mt", &mt)] {
         let r = end_to_end(name, files, &["main.cpp"], &["n", "B", "f"], "g", Wp119::Now, &right);
         assert!(r.refusals.is_empty() && r.differences.is_empty(), "{name}: {r:?}");
         let w = end_to_end(&format!("{name}-wrong"), files, &["main.cpp"], &["n", "B", "f"], "g", Wp119::Now, &|post| {
