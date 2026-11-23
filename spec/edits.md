@@ -431,8 +431,8 @@ of any map shard. `failure` records the run:
 
 ```
 Failure := kind:     FailureKind
-           message:  str                  the diagnostic's first line
-           place:    opt<SourcePlace>     where in the transform's source it arose
+           message:  str                  the cause, for a person (below); no place or path in it
+           place:    opt<SourcePlace>     where in the transform's source it arose (below)
            rendered: str                  the diagnostics as Kiln renders them, the call stack included
            refusal:  opt<HostRefusal>     for `uncaught` with a `slip::error`
 
@@ -442,6 +442,25 @@ FailureKind := uncaught = 0 | not_constant = 1 | step_budget = 2 | memory_budget
 SourcePlace := file: path, line: uv, column: uv
 HostRefusal := function: str, errc: str, message: str, subject: opt<Place>
 ```
+
+`message` is the cause of the failure, taken from Kiln's structured
+diagnostics, never cut out of the rendered text: for an `uncaught`
+`slip::error` with a refusal, the refusal ("an uncaught slip::error; the
+most recent refusal was: <message> (<errc>)", `api.md` §2.8 rule 3);
+when the run's first error is Kiln's "call to consteval function
+'transform' is not a constant expression", that error's first note of
+free text (the evaluator's account of what went wrong: "dereferencing a
+null pointer is not allowed …", "unhandled exception of type 'mine' …",
+the budget reached); otherwise the first error's own message (a limit of
+Kiln's reached in an instantiation made at run time); for
+`host_failure`, what failed in the host. `place` is the place of that
+cause in the transform's source, as Kiln names the file (the path as
+given, never made absolute by Slip), the physical line and the column
+(from 1, in bytes); when the cause lies in a header of the resource
+directory (`<slip/meta.h>` throws every `slip::error`), the first frame
+of the call stack outside them, else the first error's own place. The
+place in the *subject* that a refused value denotes is
+`refusal.subject`, never `place`.
 
 `errc` is the enumerator's name (`api.md` §4). A failed run hands over
 nothing else (`api.md` §7.6 rule 5): `subjects`, `links`, `claims`,
@@ -1288,6 +1307,7 @@ Result := scheme:    uv               1
           tally:     Tally
           agreement: list<Stale>      verify.md §9.2; sorted by (rule, observer)
           unused:    list<uv>         indices of rules no observer reached an entity through
+          unchecked: list<uv>         namespace rules an observer used (verify.md §9.2); until WP-111
           spellings: Spellings        verify.md §10.3
           residue:   list<Residue>
           exempt:    list<KeyId>      Declared.changed, repeated here for the report
@@ -1316,21 +1336,40 @@ The seven states of `Tally` are those of `verify.md` §7, over the
 observers the verify phase selected (§8.2); they add up to `selected`
 less `unparsed`. `failed_runs` and `error_reports` are the counts of
 `ok` shards with a failure and of joined reports of severity `error`
-(§6). `verdict`, `agreement`, `unused` and `spellings` are what the
-trusted run report computed (`slip_verify::run::Report`, `verify.md`
+(§6). `verdict`, `agreement`, `unused`, `unchecked` and `spellings` are
+what the trusted run report computed (`slip_verify::run::Report`, `verify.md`
 §9.5, §10.6); conclude copies them and decides none.
 
 Invariants, checked in this order: `scheme` is 1; `agreement` strictly
 ascending by `(rule, observer)`;
-`unused` and `exempt` strictly ascending; `spellings.failed` strictly
+`unused`, `unchecked` and `exempt` strictly ascending; `spellings.failed` strictly
 ascending by `obligation`, and `passed` plus its length is `obligations`;
-every `residue` file canonical, then `residue` strictly ascending by
-`(file, lo)`; `overlay`, then `declared`, absent iff
-`state` is `refused`, and a `refused` result has no `verdict` and a tally
-of 0 in every field but `selected`, `unparsed`, `failed_runs` and
-`error_reports`. The format checks nothing else: not that the tally adds
-up, that `first` is absent for `unseen`, nor a residue's line, column or
-range, nor which state applies, which is conclude's (below).
+for each failed spelling, `observers` is 0 and `first` and `found` are
+absent if it is `unseen`, and `observers` is not 0 and `first` is
+present if it is `denotes_other`; every `residue` file canonical, then
+`residue` strictly ascending by `(file, lo)`, then each entry's `lo <
+hi`, `line` and `column` at least 1; `overlay`, then `declared`, absent
+iff `state` is `refused`, and a `refused` result has no `verdict` and a
+tally of 0 in every field but `selected`, `unparsed`, `failed_runs` and
+`error_reports`; `unparsed` at most `selected`; with a `verdict`, the
+seven states add up to `selected` less `unparsed`, and without one each
+of them is 0 (no verify phase finished, so no observer has a state);
+every `agreement` entry's `direct` not 0 (a stale pair, `verify.md`
+§9.2); with the verdict `verified`, `agreement` and `spellings.failed`
+empty (`verify.md` §9.3), and without a verdict `unchecked` empty; the
+state the one rows 2 to 5 below give as far as the file decides them:
+`verified` and `verified_with_residue` only with the verdict `verified`,
+`unchecked` empty and `unparsed` 0 or `allow_unparsed`; `not_verified`
+only with the verdict `not_verified`; `incomplete` never with it, and
+with the verdict `verified` only when `unchecked` is not empty or
+`unparsed` is not 0 without `allow_unparsed`; and a `verified` result
+with no residue entry that is not a `mention` and `failed_runs` and
+`error_reports` 0. The format checks nothing else: not a residue's range
+against its file, nor whether a `verified_with_residue` has a reason (a
+refusal is in the edit set), which is conclude's (below). (The rows on
+failed spellings, on a residue's range, line and column, on the tally,
+and on the verdict and the state are `spec/landed/verify/WP-070.md`
+§1.)
 
 The state is the first that applies:
 
@@ -1340,12 +1379,24 @@ The state is the first that applies:
    obligation failed or was seen by no observer (`verify.md` §9.3).
 3. `incomplete`: the verdict is `incomplete` or absent (the run was
    cancelled); or `unparsed` is not 0 and the run was not given
-   `--allow-unparsed`.
+   `--allow-unparsed`; or (temporary, until WP-111 removes it) the run
+   has an unchecked namespace rule (`unchecked` not empty, `verify.md`
+   §9.2), whatever `--allow-*` is given.
 4. `verified_with_residue`: everything that was applied is verified, and
    something that was asked or found was not done: the residue has an
    entry that is not a `mention`; or the edit set has a refusal (a group
    was rejected); or `failed_runs` or `error_reports` is not 0.
 5. `verified`.
+
+A report that is not of this run is read as none: another plan or
+round; states that do not add up to `selected` less `unparsed`; not of
+the overlay form, or over an overlay whose `edits` is not this set's id
+(an accepted set is verified through its own overlay, §8.1: a tree
+report compared nothing the set changed, and another transform's
+overlay and report verify nothing of this set); or made over an overlay
+other than the run's, or with no overlay given to conclude. It gives
+row 3, no verdict, no state counted, every obligation `unseen`
+(`spec/landed/verify/WP-070.md` §5).
 
 `--write` and `--patch` act only on `verified`, and on
 `verified_with_residue` when every reason for it is permitted:
@@ -1354,7 +1405,11 @@ failed runs and `error` reports (`api.md` §2.8 rule 4, §7.4 rule 2).
 Neither is implied by the other or by anything else: by default a run
 with a failed run or an `error` report writes nothing, however good its
 verification. They
-never act on a `partial` result unless `--allow-partial` is given. Under
+never act on a `partial` result unless `--allow-partial` is given, nor
+on a result its edit set contradicts: its `edits`, `plan`, `round` and
+`transform` must be the set's, its verdict `verified` with no stale
+pair, failed spelling or unchecked rule, and its counts the set's
+(`slip_verify::conclude::permits`, `spec/landed/verify/WP-070.md` §5). Under
 `--allow-unparsed` the main file of every unparsed observer is scanned as
 a file no observer read.
 

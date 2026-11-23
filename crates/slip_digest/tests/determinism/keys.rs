@@ -60,7 +60,29 @@ pub const SAME_NAME: &[(&str, &str, usize, &str)] = &[];
 /// side, reason). Any other side that does not digest fails the sweep,
 /// which cannot check what it cannot see; an entry that digests fails
 /// too, so the list only shrinks.
-pub const UNPARSED: &[(&str, Side, &str)] = &[];
+pub const UNPARSED: &[(&str, Side, &str)] = &[
+    // WP-048's `# pending` tests of module units: a side whose header
+    // names one (`// module:`) is refused until the snippet front end can
+    // import a named module from memory (docs/requests/KF5).
+    ("differ/Owner/unit", Side::A, KF5),
+    ("differ/Owner/unit", Side::B, KF5),
+    ("differ/UnitInfo/imports", Side::A, KF5),
+    ("differ/UnitInfo/imports", Side::B, KF5),
+    ("differ/UnitKind/Header", Side::A, KF5),
+    ("differ/UnitKind/Header", Side::B, KF5),
+    ("differ/UnitKind/Implementation", Side::A, KF5),
+    ("differ/UnitKind/Implementation", Side::B, KF5),
+    ("differ/_/module-explicit-def-across-units", Side::A, KF5),
+    ("differ/_/module-explicit-def-across-units", Side::B, KF5),
+    ("differ/_/module-import-added", Side::A, KF5),
+    ("differ/_/module-import-added", Side::B, KF5),
+    ("differ/_/module-imported-unit-as-main", Side::A, KF5),
+    ("equal/_/module-linkage-one-name-two-modules", Side::A, KF5),
+    ("equal/_/module-linkage-one-name-two-modules", Side::B, KF5),
+];
+
+/// Why WP-048's pending module tests do not digest.
+const KF5: &str = "a module unit from memory needs Kiln (docs/requests/KF5)";
 
 /// The fewest directories a sweep walks: a floor, so that it cannot pass
 /// on nothing (a moved root, a broken directory filter).

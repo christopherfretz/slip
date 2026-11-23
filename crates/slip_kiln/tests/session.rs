@@ -707,6 +707,7 @@ fn t8_author_options() {
             "-std=c++26",
             "-fsyntax-only",
             "-fkiln-reproducible-time",
+            "-ftemplate-depth=512",
             "-I",
             &include,
             "-I",
@@ -867,7 +868,8 @@ fn s2_a_handler_panic_poisons_the_session() {
                 steps: 0,
                 host_calls: 0,
                 peak_bytes: 0,
-                rendered: String::new()
+                rendered: String::new(),
+                diagnostics: Vec::new(),
             }
         );
     }
@@ -1158,4 +1160,153 @@ fn k2_known_hole_a_kiln_run_instantiating_away_from_the_compiling_thread() {
     for (at, (ok, diagnostics)) in [("away", away), ("home", home)] {
         assert!(!ok && diagnostics.contains("stack exhausted"), "{at}: {diagnostics}");
     }
+}
+
+// WP-089 (spec/api.md §2.1 rule 3, §2.2 the target term): the session
+// hands out the target's triple and the predefines buffer, which holds
+// the target's predefined macros and then the command line's `-D` and
+// `-U`; it is not among the files read.
+#[test]
+fn wp089_the_target_of_the_unit() {
+    let cmd = command(
+        "target",
+        "#include <slip/meta.h>\nconsteval void transform() {}\n",
+        &["-DWP089=7", "-UWP089_OFF"],
+    );
+    let (triple, predefines, files) =
+        with(&cmd, |s| (s.triple().to_owned(), s.predefines().to_vec(), s.files().to_vec()));
+    assert_eq!(triple, format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
+    let text = String::from_utf8(predefines).unwrap();
+    let arch_macro = match std::env::consts::ARCH {
+        "x86_64" => "#define __x86_64__ 1",
+        "aarch64" => "#define __aarch64__ 1",
+        other => panic!("no Kiln target for {other}"),
+    };
+    assert!(text.contains(arch_macro), "{text}");
+    assert!(text.contains("#define __cplusplus "), "{text}");
+    let define = text.find("#define WP089 7\n").expect("the -D line");
+    let undef = text.find("#undef WP089_OFF\n").expect("the -U line");
+    assert!(text.find(arch_macro).unwrap() < define && define < undef, "{text}");
+    assert!(files.iter().all(|f| f.path != b"<built-in>"), "a virtual buffer is not a file read");
+}
+
+// WP-089 (`Session::stack_exhausted`): Kiln's sticky flag reads false
+// after runs at home and away that reach no stack check. That it reads
+// Kiln's flag and not a constant: `kn1_…` below, where a run sets it.
+#[test]
+fn wp089_stack_exhausted_reads_false_after_ordinary_runs() {
+    let cmd = transform("wp089_stack", "consteval void transform() { host(1, 1); }");
+    let flags = std::thread::scope(|t| {
+        std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn_scoped(t, || {
+                with_transform(&cmd, STACK - (1 << 20), |opened| {
+                    let s = &mut opened.unwrap();
+                    let before = s.stack_exhausted();
+                    let entry = s.entry("transform").unwrap();
+                    let home = s.run(entry, &mut Counting::default(), BUDGET, &Cancel::new());
+                    let away = std::thread::scope(|t| {
+                        let s = &mut *s;
+                        std::thread::Builder::new()
+                            .stack_size(STACK)
+                            .spawn_scoped(t, move || {
+                                s.run(entry, &mut Counting::default(), BUDGET, &Cancel::new())
+                            })
+                            .unwrap()
+                            .join()
+                            .unwrap()
+                    });
+                    (before, home.result, away.result, s.stack_exhausted())
+                })
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    });
+    assert_eq!(flags, (false, Ok(()), Ok(()), false));
+}
+
+/// KN1 of WP-089: the smallest transform that instantiates at run time,
+/// through reflection (`std::meta::substitute`, then `size_of`).
+const KN1: &str = "#include \"kiln_meta.h\"\n\
+                   template <class T> struct box { T v; };\n\
+                   consteval void transform() {\n\
+                     (void)std::meta::size_of(std::meta::substitute(^^box, {^^long}));\n\
+                   }\n";
+
+fn kiln_support() -> String {
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kiln/tests/support");
+    std::fs::canonicalize(p).unwrap().to_str().unwrap().to_owned()
+}
+
+/// KN1's runs on a thread of `STACK` bytes whose guard is `guard`: first
+/// on another thread (or at home, if `away` is false), then at home; each
+/// run's result, whether its diagnostics say "stack exhausted", and the
+/// flag after both.
+fn kn1(away: bool, guard: usize) -> ((bool, bool), (bool, bool), bool) {
+    let support = kiln_support();
+    let cmd = command(&format!("kn1_{away}_{guard}"), KN1, &["-I", &support]);
+    let shown = |r: &RunReport| (r.result.is_ok(), r.rendered.contains("stack exhausted"));
+    std::thread::scope(|t| {
+        std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn_scoped(t, || {
+                with_transform(&cmd, guard, |opened| {
+                    let s = &mut opened.unwrap_or_else(|e| panic!("{e:?}"));
+                    let entry = s.entry("transform").unwrap();
+                    let first = if away {
+                        std::thread::scope(|t| {
+                            let s = &mut *s;
+                            std::thread::Builder::new()
+                                .stack_size(STACK)
+                                .spawn_scoped(t, move || {
+                                    shown(&s.run(entry, &mut NoCalls2, BUDGET, &Cancel::new()))
+                                })
+                                .unwrap()
+                                .join()
+                                .unwrap()
+                        })
+                    } else {
+                        shown(&s.run(entry, &mut NoCalls2, BUDGET, &Cancel::new()))
+                    };
+                    let home = shown(&s.run(entry, &mut NoCalls2, BUDGET, &Cancel::new()));
+                    (first, home, s.stack_exhausted())
+                })
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+}
+
+/// A handler that answers every call with 0.
+struct NoCalls2;
+
+impl Handler for NoCalls2 {
+    fn call(&mut self, _: u32, _: &[u64], _: &[u8], _: &mut dyn Out) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+// KN1 of WP-089 (H1 a of its review), confirmed: an instantiation made at
+// run time through reflection, on another thread than the compiling one,
+// is checked against the compiling thread's guard and trips it, whatever
+// the guard's size (here 63 MiB, KN1's one level of `box<long>`); the flag
+// is sticky, so the next run at home fails too, "stack exhausted" again. At home alone both runs
+// complete. Hence `slip_script::driver`'s rule: a transform is run only on
+// the thread that loaded it (spec/api.md §2.5 rule 5).
+#[test]
+fn kn1_an_instantiation_at_run_time_away_trips_the_guard_and_sticks() {
+    let guard = STACK - (1 << 20);
+    assert_eq!(kn1(false, guard), ((true, false), (true, false), false), "at home");
+    assert_eq!(kn1(true, guard), ((false, true), (false, true), true), "away, then home");
+}
+
+// The behaviour KN1 waits for (Kiln WP-2410: the guard of the running
+// thread): away from the compiling thread, then at home, both runs
+// complete and the flag stays clear.
+#[test]
+#[ignore = "needs: Kiln WP-2410"]
+fn kn1_pending_a_run_away_from_the_compiling_thread_completes() {
+    assert_eq!(kn1(true, STACK - (1 << 20)), ((true, false), (true, false), false));
 }
