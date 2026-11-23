@@ -1,0 +1,2 @@
+changed X
+derived-changed X<int>::<definition>
