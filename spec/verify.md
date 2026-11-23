@@ -280,7 +280,7 @@ rule that does not match, which verification then reports as differences.
 So a line whose new parent another line relocates comes after that line.
 
 **An entity with C language linkage.** Its key's parent is `c_linkage`
-whatever namespace declares it (`digest.md` §3.2), so moving it between
+whatever namespace declares it (`digest.md` §3), so moving it between
 namespaces changes no key and needs no line. Renaming it does: for an
 `<entity>` whose `Key` has the parent `c_linkage`, the line's `<parent>`
 is resolved and checked like any other (it says where the declaration
