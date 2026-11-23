@@ -472,6 +472,56 @@ for row, member, spec, expect in [
            pre=f"{SPEC_PRE} {member} }};")
 
 
+# digest §3.3, WP-039 fix round item 2: a name-independent declarator
+# names no unnamed class, so the two classes are named by their first
+# members, and swapping their bodies changes the members `_` only.
+differ("_", "unnamed-class-of-name-independent-swap",
+       "struct { int a; } _; struct { int b; } _;",
+       "struct { int b; } _; struct { int a; } _;",
+       ["changed S::_ (name-independent 0)", "changed S::_ (name-independent 1)"],
+       note="§3.3: two classes declared by name-independent members `_`, their bodies swapped.",
+       pre="struct S {", post="};\nint use = sizeof(S);", std="c++26")
+differ("_", "unnamed-class-of-name-independent-members",
+       "struct { int _; } _; struct { long _; } _;",
+       "struct { long _; } _; struct { int _; } _;",
+       ["changed S::(anonymous struct 0)::_ (name-independent 0)",
+        "changed S::(anonymous struct 1)::_ (name-independent 0)"],
+       note="§3.3: a name-independent member names no unnamed class either; the ordinal does.",
+       pre="struct S {", post="};", std="c++26")
+
+# WP-039 fix round item 3: the name-independent ordinal of a member of a
+# class template is counted over the pattern's members.
+differ("_", "name-independent-in-class-template", "T _; int _;", "T _; long _;",
+       ["changed S::_ (name-independent 1)"],
+       note="§3.3 `field`: two `_` members of a class template, distinct and determinate.",
+       pre="template <class T> struct S {", post="};", std="c++26")
+differ("_", "name-independent-in-instantiation", "T _; int _;", "T _; long _;",
+       ["changed S::_ (name-independent 1)", "derived-changed S<char>::_ (name-independent 1)"],
+       note="§3.3 `field`: the same members in an instantiation.",
+       pre="template <class T> struct S {", post="};\nS<char> s;", std="c++26")
+
+# Item 4: an explicit object parameter is in the display name, and both
+# functions are in one translation unit so that the sweep sees the key.
+differ("_", "explicit-object-and-first-parameter", "void f(S&);", "void f(this S&); void f(S&);",
+       ["changed S", "added S::f(this S &)"], note="§3.3 `function`: `f(this S&)` against `f(S&)`.",
+       pre="struct S {", post="};", std="c++26")
+differ("_", "explicit-object-and-first-parameter-templates", "template <class T> void f(T&&);",
+       "template <class T> void f(this T&&); template <class T> void f(T&&);",
+       ["changed S", "added template <class> void S::f(this type-parameter-0-0 &&)"], note="§3.3 `function`: `f(this T&&)` against `f(T&&)`, templates.",
+       pre="struct S {", post="};", std="c++26")
+
+# Item 5d: two conversion functions of one class in one translation unit
+# (the conversion's type is the name's payload, K12).
+differ("_", "two-conversion-functions", "operator int();", "operator int(); operator long();",
+       ["changed S", "added S::operator long()"], note="§3.2: two conversion functions of one class.",
+       pre="struct S {", post="};")
+differ("_", "two-conversion-function-templates",
+       "template <class T> operator T*(); template <class T> operator T();",
+       "template <class T> operator T*(); template <class T> operator T(); "
+       "template <class T> operator const T();",
+       ["changed S", "added template <class> S::operator const type-parameter-0-0()"], note="§3.2: three conversion function templates of one class.",
+       pre="struct S {", post="};")
+
 def write():
     names = set()
     for root, short, row, a, b, expect, opts in TESTS:

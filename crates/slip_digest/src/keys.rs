@@ -744,15 +744,19 @@ impl Walk<'_> {
     }
 
     /// The declaration whose name names unnamed tag `e`, by the first
-    /// three rules of digest §3.3.
+    /// three rules of digest §3.3; a name-independent declarator or
+    /// member is skipped.
     pub(crate) fn unnamed_tag_by(&self, e: DeclId) -> Option<DeclId> {
         let ast = self.ast;
         if let Some(td) = ast.decls.typedef_for_anon(e) {
             return Some(td);
         }
         let named = |d: DeclId| !ast.decls.get(d).name().is_empty();
+        // A name-independent declarator (`struct { int a; } _;`, P2169)
+        // or member names nothing: the next rule applies (WP-039).
         if let Some(next) = ast.decls.get(e).next()
             && named(next)
+            && !ast.decls.get(next).misc().name_independent()
             && let Some(q) = ast.decls.get(next).ty()
             && self.declarator_of(q) == Some(e)
         {
@@ -770,7 +774,7 @@ impl Walk<'_> {
                 | Role::InParent
                 | Role::Unsupported(_) => false,
             };
-            member && named(m)
+            member && named(m) && !ast.decls.get(m).misc().name_independent()
         })
     }
 
@@ -1056,25 +1060,31 @@ impl Walk<'_> {
     /// `_` in C++26, [basic.scope.scope]/5) among the name-independent
     /// members of its kind and name in its class, in member order: two
     /// of them in one class are two entities of one name, so the ordinal
-    /// is the discriminator that tells them apart
-    /// (`spec/landed/digest/WP-039.md`). `None` if `e` is not found
-    /// among its class's members.
+    /// is the discriminator that tells them apart (`spec/digest-kinds.md`
+    /// §3.3 `field`). The members are those of the definition of the
+    /// record `e` is a member of (the pattern's for a member of a class
+    /// template, whose entity is the template), else of the definition of
+    /// that record's entity. `None` if `e` is in neither.
     pub(crate) fn name_independent_ordinal(&self, e: DeclId) -> Option<u64> {
         let ast = self.ast;
         let n = ast.decls.get(e);
-        let scope = self.entity(n.ctx()?);
-        let holder = ast.definition(scope).unwrap_or(scope);
-        let mut ordinal = 0u64;
-        for m in ast.members(holder) {
-            if m == e {
-                return Some(ordinal);
+        let ctx = n.ctx()?;
+        let entity = self.entity(ctx);
+        let holders =
+            [ast.definition(ctx).unwrap_or(ctx), ast.definition(entity).unwrap_or(entity)];
+        holders.into_iter().find_map(|holder| {
+            let mut ordinal = 0u64;
+            for m in ast.members(holder) {
+                if m == e {
+                    return Some(ordinal);
+                }
+                let mn = ast.decls.get(m);
+                if mn.kind() == n.kind() && mn.name() == n.name() && mn.misc().name_independent() {
+                    ordinal += 1;
+                }
             }
-            let mn = ast.decls.get(m);
-            if mn.kind() == n.kind() && mn.name() == n.name() && mn.misc().name_independent() {
-                ordinal += 1;
-            }
-        }
-        None
+            None
+        })
     }
 
     /// The function discriminator of digest-kinds §3.3, written into `s`:

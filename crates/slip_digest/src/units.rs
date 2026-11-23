@@ -183,7 +183,13 @@ pub(crate) fn in_implicit_instantiation(w: &Walk<'_>, e: DeclId) -> bool {
         let Some(x) = c else { return false };
         // The definition of an explicitly specialised member enumeration
         // has no `MemberSpecInfo` of its own: its first declaration does.
-        let kind = own_spec_kind(w, x).or_else(|| own_spec_kind(w, ast.first(x)));
+        // (Only an enumeration: a function's first declaration may be one
+        // an instantiation added: `demand/_/friend-instantiated-then-written`.)
+        let kind = own_spec_kind(w, x).or_else(|| {
+            (ast.decls.get(x).kind() == DeclKind::Enum)
+                .then(|| own_spec_kind(w, ast.first(x)))
+                .flatten()
+        });
         match kind {
             Some(SpecKind::ImplicitInstantiation) => return true,
             Some(

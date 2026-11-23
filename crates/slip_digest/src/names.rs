@@ -435,9 +435,15 @@ fn function_suffix(ast: &Ast, f: DeclId, out: &mut String) {
     let c = ast.types.canonical(q);
     let TypeView::Function(p) = ast.types.view(c.ty()) else { return };
     out.push('(');
+    // The explicit object parameter (P0847), which the type alone does not
+    // tell from an ordinary first parameter (the key's explicit-object
+    // flag, digest-kinds §3.3 `function`).
+    let explicit = ast.decls.function(f).is_some_and(|d| d.spec.has_explicit_object());
     for (i, &t) in ast.types.params(&p).iter().enumerate() {
         if i > 0 {
             out.push_str(", ");
+        } else if explicit {
+            out.push_str("this ");
         }
         out.push_str(&print_type(&ast.types, ast, t, PrintOptions::CANONICAL));
     }

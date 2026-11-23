@@ -287,7 +287,10 @@ with everything else.
   the first name its declaration introduces: the typedef name it is given
   for linkage, else its first declarator, else its first enumerator, else
   (an anonymous union) its first member. Failing all of those it is named
-  by its ordinal among the unnamed types of its scope.
+  by its ordinal among the unnamed types of its scope. A name-independent
+  declarator or member (`struct { int a; } _;`, `union { int _; };`,
+  P2169) names nothing, since a scope may hold several: it is skipped, and
+  the rules after it apply.
 - A declaration that introduces no name at all (§2.1) is **keyed by
   content**: `name` is `content` and `disc` is the unit's own digest. Two
   identical `static_assert`s in one scope are one unit. Adding or removing
@@ -641,6 +644,17 @@ the nearest enclosing entity indeterminate, the order unit at the top
 level. A key built from an indeterminate key (its parent's, its
 template's, one in its discriminator) is indeterminate for the same
 cause.
+
+**A collision does not travel.** Collisions are found after the walk,
+when the keys of the whole translation unit are known: the mark is put
+on the units that share the key, and only on them. A unit that refers to
+one of them wrote the shared key in its stream during the walk and stays
+determinate. This is sound because a collision is never silent: each
+colliding key is an `indeterminate` finding (`verify.md` §4 rule 1, or
+`derived_indeterminate` for derived units), so an observer with a
+collision is never `verified`. The per-unit "unchanged" of a referrer is
+then one line of a report that already fails; it is not a claim Slip
+makes on its own.
 
 Its digest is still computed and recorded, with the `indeterminate` flag.
 Verification treats an indeterminate unit as different from every unit.

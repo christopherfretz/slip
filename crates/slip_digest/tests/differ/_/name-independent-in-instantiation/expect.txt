@@ -1,0 +1,2 @@
+changed S::_ (name-independent 1)
+derived-changed S<char>::_ (name-independent 1)
