@@ -1,0 +1,4 @@
+# The pattern is indeterminate; the instantiation P::P<int>(int) is determinate on both sides and the same, its definition differs.
+exact derived
+indeterminate template <class> P::P(type-parameter-0-0) (unsupported kiln/pattern-mem-initializers)
+derived-changed P::P<int>(int)::<definition>

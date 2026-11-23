@@ -10,3 +10,7 @@
 # the guide, Crate<long> and caller().
 good: verified
 bad:  not_parsed
+xfail good: WP-124: the constructor Box(T x) : v(x) {} is indeterminate (unsupported kiln/pattern-mem-initializers) until Kiln WP-3026 and WP-3200 put a pattern's mem-initializers on the AST
+# pre-2, good-2: pre and good with the constructor declared only, so that the
+# check against false findings stays live while good is xfail (WP-124).
+good-2: verified

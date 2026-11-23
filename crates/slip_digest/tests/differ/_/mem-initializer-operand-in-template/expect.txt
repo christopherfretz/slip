@@ -1,4 +1,4 @@
 # pending
-# needs: kiln (as differ/_/mem-initializer-in-template)
+# needs: kiln (Kiln WP-3026, as differ/_/mem-initializer-in-template; until then indeterminate/_/mem-initializer-operand-in-template)
 added f(long)
 changed S::S<T>()

@@ -1,0 +1,9 @@
+#include "side.h"
+// WP-124 item 4 (Kiln WP-3027 A7): changed in a template nothing instantiates; the AST holds it.
+template<class T> void f(T x) {
+#ifdef B
+  const auto a = x, b = x;
+#else
+  auto a = x, b = x;
+#endif
+}

@@ -296,7 +296,10 @@ fn wp047_differ_reads_the_directive() {
     assert!(e.contains("seen but not expected: [DerivedAdded(\"g<int>()\")]"), "{e}");
     assert!(common::pairs::differ(&fixture("file/differ-exact-ok")).unwrap().is_empty());
     let e = common::pairs::differ(&fixture("file/differ-only-directive")).unwrap_err();
-    assert_eq!(e, "a differ test needs at least one line in expect.txt besides `exact derived`");
+    assert_eq!(
+        e,
+        "a differ test needs at least one line in expect.txt besides `exact derived` and `indeterminate`"
+    );
 }
 
 /// A `differ` test with only `derived-*` lines is still held to its

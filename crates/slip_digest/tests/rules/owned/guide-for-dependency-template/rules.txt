@@ -1,2 +1,2 @@
-# spec/verify.md §2.1, WP-110 item 5. A deduction guide written by owned code for a dependency template (it must stay in the template's namespace), and the implicit guides of the dependency template.
+# spec/verify.md §2.1, WP-110 item 5. A deduction guide written by owned code for a dependency template (it must stay in the template's namespace), and the implicit guides of the dependency template. WP-124: the constructor is declared only: one defined in a template is indeterminate (kiln/pattern-mem-initializers) until Kiln WP-3026.
 relocate legacy => :: acme
