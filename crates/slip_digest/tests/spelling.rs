@@ -64,7 +64,7 @@ fn unmark(text: &str) -> (String, Vec<(u32, u32)>) {
         }
     }
     assert!(open.is_empty(), "a « without »");
-    marks.sort();
+    marks.sort_unstable();
     (out, marks)
 }
 
@@ -167,14 +167,14 @@ fn run_with(c: &Case<'_>, extra: &[Obligation]) -> (Vec<Obligation>, Vec<Spellin
     let pre = c.pre.unwrap_or(&post);
     let names: Vec<&str> =
         c.wants.iter().filter_map(|w| if let Named(n) = w { Some(*n) } else { None }).collect();
-    let (named, rules) = pre_keys(pre, c.std, &names, c.renames);
-    let mut named = named.into_iter();
+    let (keyed, rules) = pre_keys(pre, c.std, &names, c.renames);
+    let mut keyed = keyed.into_iter();
     let mut obligations: Vec<Obligation> = marks
         .into_iter()
         .zip(c.wants)
         .map(|((file, lo, hi), w)| {
             let key = match w {
-                Named(_) => named.next().expect("a key per name"),
+                Named(_) => keyed.next().expect("a key per name"),
                 Want::Key(k) => *k,
             };
             Obligation { file, lo, hi, key }
@@ -884,9 +884,10 @@ fn s10_6_unit_and_input_of_two_parses() {
                 check_spellings(unit, other, &RuleTable::empty(), &ob)
             }));
             // A debug build asserts; a release build answers `NotSeen`.
+            let debug = cfg!(debug_assertions);
             match got {
                 Ok(got) => assert_eq!(got, [NotSeen]),
-                Err(_) => assert!(cfg!(debug_assertions), "only a debug build asserts"),
+                Err(_) => assert!(debug, "only a debug build asserts"),
             }
         });
     });
