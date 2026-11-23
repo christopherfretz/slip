@@ -1,0 +1,5 @@
+# N13: inline namespace v1 inside legacy. bad: inline dropped, uses left
+# as acme::Mine; bad-2: inline dropped, uses spelled acme::v1::Mine.
+good:  verified
+bad:   not_parsed
+bad-2: mismatch changed legacy::v1 @ main.cpp:4
