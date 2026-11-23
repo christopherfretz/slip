@@ -49,6 +49,15 @@
 //!   (declared on use) stays a unit of the digest, but such a shadow and
 //!   its hider are an `operator=` or a constructor, which no rename
 //!   reaches: it is never looked at here.
+//! - **What a using-declaration names** (`docs/wp/WP-127.md` item 1) is
+//!   read from its declarator ([`named_set`]), not from its shadows
+//!   alone: a member declared before the using-declaration that hides or
+//!   overrides a named declaration leaves it with no shadow at all. Such
+//!   a declaration counts as a hidden shadow would, its hider the member
+//!   that overrides it or, when none does, every member of the class
+//!   named like it (all in the using-declaration's `of`, [`of_using`]).
+//!   A set that cannot be told makes the follower `unsupported` when the
+//!   rename is near it.
 //! - **An instantiated dependent using-declaration**
 //!   ([`instantiated_unfollowed_using`]): follows what it introduces and
 //!   the pattern's using-declaration, whose name is `unresolved`.
@@ -68,7 +77,7 @@
 //!   the pattern gives (`docs/wp/WP-119.md` item 1), so it is not flagged.
 
 use slip_kiln::kiln::ast::decl::DeclKind;
-use slip_kiln::kiln::ast::types::TypeView;
+use slip_kiln::kiln::ast::types::{Nns, TypeView};
 use slip_kiln::kiln::ast::{Ast, DeclId, QualType};
 use slip_kiln::written::{self, DeclName, DeclNameKind};
 use slip_model::edits::{KeyId, Reason, Role, subject_flags};
@@ -111,20 +120,25 @@ fn using_declaration(ctx: &mut Ctx<'_, '_, '_>, d: &DeclName) {
     if shadows.is_empty() {
         shadows = ast.redecls_of(u).flat_map(|x| ast.using_shadows(x)).collect();
     }
-    if shadows.is_empty() {
+    let (named, known) = named_set(ctx, u, &shadows);
+    if named.is_empty() && known {
         ctx.claims.unresolved(&ctx.sites, d.name);
         ctx.settled.insert(u);
         return;
     }
-    let named = shadows_named(ctx, &shadows);
-    if !named.iter().any(|n| n.subject || n.hider.is_some_and(|h| h.subject)) {
+    if !named.iter().any(Shadow::relevant) && known {
         // It names no subject, and no subject hides what it names:
         // `decls::claim` keeps its name.
         return;
     }
+    if !known && !named.iter().any(Shadow::relevant) && !class_member_subject(ctx, u) {
+        // What it names cannot be told, and nothing of the rename is near
+        // it: `decls::claim` keeps its name.
+        return;
+    }
     ctx.settled.insert(u);
-    let complete = named.iter().all(|n| n.id.is_some());
-    let of = introduced(&named);
+    let complete = known && named.iter().all(Shadow::keyed);
+    let of = of_using(&named);
     if let Some(f) = ctx.subjects.add(ctx.keys, u, Role::Follower, ctx.new, &of) {
         if !complete {
             ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
@@ -144,19 +158,45 @@ fn using_declaration(ctx: &mut Ctx<'_, '_, '_>, d: &DeclName) {
     }
 }
 
-/// One shadow of a using-declaration: what it names.
+/// One declaration a using-declarator names: through the shadow Kiln
+/// made for it, or (`decl` `None`) one Kiln made no shadow for because a
+/// member of the class declared before the using-declaration hides or
+/// overrides it ([`named_set`]).
 struct Shadow {
-    decl: DeclId,
+    decl: Option<DeclId>,
     /// The key id of its target's origin: the subject's, or the entity's
     /// (`None`: no key).
     id: Option<KeyId>,
     /// The target is a subject.
     subject: bool,
-    /// Kiln records it hidden by a member of the using-declaration's class
-    /// (`hidden_shadow`, [namespace.udecl]/14).
+    /// Not introduced: hidden or overridden by a member of the
+    /// using-declaration's class ([namespace.udecl]/14). For a shadow,
+    /// Kiln's `hidden_shadow`; for a declaration without one, always.
     hidden: bool,
-    /// The member that hides it, when it is hidden.
+    /// The member that hides it, when it is known: Kiln's `hidden_shadow`,
+    /// or the member that overrides it (`overrides`).
     hider: Option<Party>,
+    /// A declaration without a shadow that no member overrides (a
+    /// non-virtual function hidden by a member with its parameter-type
+    /// list): every member of the class named like it, one of which hides
+    /// it ([`named_set`]). It and they are renamed together or not at all.
+    hiders: Vec<Party>,
+}
+
+impl Shadow {
+    /// It names a subject, or a subject hides what it names.
+    fn relevant(&self) -> bool {
+        self.subject
+            || self.hider.is_some_and(|h| h.subject)
+            || self.hiders.iter().any(|h| h.subject)
+    }
+
+    /// Every party it depends on has a key.
+    fn keyed(&self) -> bool {
+        self.id.is_some()
+            && self.hider.is_none_or(|h| h.id.is_some())
+            && self.hiders.iter().all(|h| h.id.is_some())
+    }
 }
 
 /// An entity a hidden shadow depends on: its key id (the subject's, or
@@ -184,9 +224,165 @@ fn shadows_named(ctx: &mut Ctx<'_, '_, '_>, shadows: &[DeclId]) -> Vec<Shadow> {
         let hidden = hider.is_some();
         let target = ast.using_target(s).map(|t| party(ctx, t));
         let Party { id, subject } = target.unwrap_or(Party { id: None, subject: false });
-        named.push(Shadow { decl: s, id, subject, hidden, hider });
+        named.push(Shadow { decl: Some(s), id, subject, hidden, hider, hiders: Vec::new() });
     }
     named
+}
+
+/// What the using-declarator of `u` names (`docs/wp/WP-127.md` item 1):
+/// the declarations of its shadows (`shadows`) and, at class scope, those
+/// Kiln made no shadow for. The second boolean is `false` when the set
+/// cannot be told; the first is then the shadows alone.
+///
+/// Kiln makes no shadow for a declaration that a member of the class
+/// declared **before** the using-declaration hides or overrides
+/// ([namespace.udecl]/14; `kiln_sema` `introduce_shadow`), and a hidden
+/// one for a member declared after it. So the shadows depend on the order
+/// of the members, and the set is read instead from what the declarator
+/// names, which does not: the members of the nominated class named like
+/// it, from the class's lookup table (`Ast::lookup_local`: what the class
+/// declares; a using-shadow of the class is its target, one the class
+/// hides is no member), or, when it declares none, the one set its bases
+/// give ([class.member.lookup]); bases that give different sets are not
+/// resolved here (the set cannot be told). A shadow whose target is not in
+/// the set also makes it unknown: the reading and the front end disagree.
+///
+/// Each declaration of the set without a shadow is hidden. Its hider is
+/// the member of the class that overrides it (Kiln's `overrides`): the two
+/// are of one virtual family, renamed together or not at all. One that no
+/// member overrides is hidden by a member with its parameter-type list,
+/// which Kiln does not name: every member of the class named like it
+/// stands in (`Shadow::hiders`), a conservative superset. A declaration
+/// without a shadow that no member named like it could hide (an earlier
+/// using-declarator of the class introduced it) is introduced.
+fn named_set(ctx: &mut Ctx<'_, '_, '_>, u: DeclId, shadows: &[DeclId]) -> (Vec<Shadow>, bool) {
+    let mut named = shadows_named(ctx, shadows);
+    let ast = ctx.unit.ast();
+    let Some(class) = ast.decls.get(u).ctx().filter(|&c| ast.decls.record(c).is_some()) else {
+        return (named, true);
+    };
+    let Some(Nns::Type { ty, .. }) = ast.using_qualifier(u).map(|q| ast.types.nns_view(q)) else {
+        return (named, true);
+    };
+    let Some(nominated) = ast.types.as_record(ast.types.canonical(ty)) else {
+        return (named, true);
+    };
+    let name = ast.decls.get(u).name();
+    let Some(found) = member_lookup(ast, nominated, name, 0) else { return (named, false) };
+    let targets: Vec<DeclId> =
+        shadows.iter().filter_map(|&s| ast.using_target(s)).map(|t| ast.first(t)).collect();
+    if targets.iter().any(|t| !found.contains(t)) {
+        return (named, false);
+    }
+    // The members of the class named like the declarator, shadows and
+    // using-declarations left out: those that can hide.
+    let members: Vec<DeclId> = ast
+        .lookup_local(class, name)
+        .iter()
+        .filter(|&m| {
+            !matches!(
+                ast.decls.get(m).kind(),
+                DeclKind::UsingShadow
+                    | DeclKind::ConstructorUsingShadow
+                    | DeclKind::Using
+                    | DeclKind::UnresolvedUsingValue
+                    | DeclKind::UnresolvedUsingTypename
+                    | DeclKind::UnresolvedUsingIfExists
+            )
+        })
+        .collect();
+    for x in found.into_iter().filter(|x| !targets.contains(x)) {
+        let Party { id, subject } = party(ctx, x);
+        let overrider = members.iter().copied().find(|&m| {
+            let list = ast.decls.cold.overrides.get(ast.first(m)).copied();
+            let list = list.unwrap_or(slip_kiln::kiln::ast::ListId::EMPTY);
+            ast.lists.iter::<DeclId>(list).any(|o| ast.first(o) == x)
+        });
+        let entry = match overrider {
+            Some(m) => Shadow {
+                decl: None,
+                id,
+                subject,
+                hidden: true,
+                hider: Some(party(ctx, m)),
+                hiders: Vec::new(),
+            },
+            None if members.is_empty() => {
+                Shadow { decl: None, id, subject, hidden: false, hider: None, hiders: Vec::new() }
+            }
+            None => {
+                let hiders = members.iter().map(|&m| party(ctx, m)).collect();
+                Shadow { decl: None, id, subject, hidden: true, hider: None, hiders }
+            }
+        };
+        named.push(entry);
+    }
+    (named, true)
+}
+
+/// [class.member.lookup] of `name` in class `c`, as far as this reading
+/// goes (`named_set`): the first declarations of what `c` declares named
+/// so (a using-shadow taken to its target, one `c` hides left out), or,
+/// when it declares none, the one set every base that gives one gives.
+/// `None` when bases give different sets, or the chain is too deep.
+fn member_lookup(
+    ast: &Ast,
+    c: DeclId,
+    name: slip_kiln::kiln::ast::names::DeclName,
+    depth: u32,
+) -> Option<Vec<DeclId>> {
+    if depth >= 64 {
+        return None;
+    }
+    let mut own = Vec::new();
+    for d in ast.lookup_local(c, name).iter() {
+        let t = match ast.decls.get(d).kind() {
+            DeclKind::UsingShadow | DeclKind::ConstructorUsingShadow => {
+                if ast.decls.hidden_shadow(d).is_some() {
+                    continue;
+                }
+                ast.using_target(d)?
+            }
+            DeclKind::Using
+            | DeclKind::UnresolvedUsingValue
+            | DeclKind::UnresolvedUsingTypename
+            | DeclKind::UnresolvedUsingIfExists => continue,
+            _ => d,
+        };
+        let t = ast.first(t);
+        if !own.contains(&t) {
+            own.push(t);
+        }
+    }
+    if !own.is_empty() {
+        return Some(own);
+    }
+    let def = ast.definition(c).unwrap_or(c);
+    let mut got: Option<Vec<DeclId>> = None;
+    for b in ast.decls.bases(def, &ast.lists) {
+        let Some(base) = ast.types.as_record(ast.types.canonical(b.ty)) else { return None };
+        let mut set = member_lookup(ast, base, name, depth + 1)?;
+        if set.is_empty() {
+            continue;
+        }
+        set.sort_unstable();
+        match &got {
+            None => got = Some(set),
+            Some(g) if *g == set => {}
+            Some(_) => return None,
+        }
+    }
+    Some(got.unwrap_or_default())
+}
+
+/// A member of `u`'s class named like the using-declarator is a subject:
+/// what decides whether a using-declaration whose named set cannot be
+/// told is refused.
+fn class_member_subject(ctx: &mut Ctx<'_, '_, '_>, u: DeclId) -> bool {
+    let ast = ctx.unit.ast();
+    let Some(class) = ast.decls.get(u).ctx() else { return false };
+    let members: Vec<DeclId> = ast.lookup_local(class, ast.decls.get(u).name()).iter().collect();
+    members.into_iter().any(|m| party(ctx, m).subject)
 }
 
 /// §9.2, the using-declaration's `of`: the entities it introduces. A
@@ -199,6 +395,30 @@ fn introduced(named: &[Shadow]) -> Vec<KeyId> {
     let any_introduced = named.iter().any(|n| !n.hidden);
     let mut of: Vec<KeyId> =
         named.iter().filter(|n| !n.hidden || !any_introduced).filter_map(|n| n.id).collect();
+    of.sort_unstable();
+    of.dedup();
+    of
+}
+
+/// The using-declaration's `of` (`docs/wp/WP-127.md` item 1): what it
+/// introduces, and, for each declaration it names that is hidden without
+/// a shadow and overridden by no member (`Shadow::hiders`), that
+/// declaration and its possible hiders. With a shadow, a hidden
+/// declaration's pair is the shadow's follower (`shadow_followers`);
+/// without one nothing else can carry it. The pair must be renamed
+/// together: the hider renamed alone unhides the declaration, which the
+/// kept name then introduces; the declaration renamed alone with the
+/// name is introduced unhidden. Both are a change of the program, and the
+/// using-declaration follows them so that the mix is `mixed_follower`.
+/// The target and the hider are in one scope each, and every overload of
+/// the name in the target's scope is a seed (§9.1), so the declarations
+/// introduced beside it are renamed with it.
+fn of_using(named: &[Shadow]) -> Vec<KeyId> {
+    let mut of = introduced(named);
+    for n in named.iter().filter(|n| n.decl.is_none() && !n.hiders.is_empty()) {
+        of.extend(n.id);
+        of.extend(n.hiders.iter().filter_map(|h| h.id));
+    }
     of.sort_unstable();
     of.dedup();
     of
@@ -217,10 +437,13 @@ fn introduced(named: &[Shadow]) -> Vec<KeyId> {
 /// `of`: the shadow is `unsupported`.
 fn shadow_followers(ctx: &mut Ctx<'_, '_, '_>, named: &[Shadow], using: Option<KeyId>) {
     for n in named {
+        // A declaration without a shadow has nothing to record: its pair is
+        // in the using-declaration's `of` (`of_using`), or of one family.
+        let Some(decl) = n.decl else { continue };
         if let Some(h) = n.hider {
             let parties = [n.id, h.id];
             let of: Vec<KeyId> = parties.iter().flatten().copied().collect();
-            let f = ctx.subjects.add(ctx.keys, n.decl, Role::Follower, ctx.new, &of);
+            let f = ctx.subjects.add(ctx.keys, decl, Role::Follower, ctx.new, &of);
             match f {
                 Some(f) if of.len() < parties.len() => {
                     ctx.subjects.flag(f, subject_flags::UNSUPPORTED);
@@ -237,7 +460,7 @@ fn shadow_followers(ctx: &mut Ctx<'_, '_, '_>, named: &[Shadow], using: Option<K
             continue;
         }
         let (true, Some(t)) = (n.subject, n.id) else { continue };
-        ctx.subjects.add(ctx.keys, n.decl, Role::Follower, ctx.new, &[t]);
+        ctx.subjects.add(ctx.keys, decl, Role::Follower, ctx.new, &[t]);
     }
 }
 
@@ -270,12 +493,13 @@ pub(crate) fn instantiated_using(ctx: &mut Ctx<'_, '_, '_>, u: DeclId, id: KeyId
 pub(crate) fn instantiated_unfollowed_using(ctx: &mut Ctx<'_, '_, '_>, u: DeclId) {
     let ast = ctx.unit.ast();
     let shadows: Vec<DeclId> = ast.using_shadows(u).collect();
-    let named = shadows_named(ctx, &shadows);
-    if !named.iter().any(|n| n.subject || n.hider.is_some_and(|h| h.subject)) {
+    let (named, known) = named_set(ctx, u, &shadows);
+    let relevant = named.iter().any(Shadow::relevant);
+    if !relevant && (known || !class_member_subject(ctx, u)) {
         return;
     }
-    let complete = named.iter().all(|n| n.id.is_some());
-    let mut of = introduced(&named);
+    let complete = known && named.iter().all(Shadow::keyed);
+    let mut of = of_using(&named);
     let pattern = ast.instantiated_from(u).and_then(|p| ctx.keys.key_id(ctx.keys.entity(p)).ok());
     let keyed = pattern.is_some();
     of.extend(pattern);
