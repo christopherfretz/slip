@@ -89,7 +89,7 @@ fn phase_name(phase: Phase) -> &'static str {
 /// fails.
 fn map_observer(observer: &Observer, round: u64) -> Result<Shard, String> {
     let rules = RuleTable::empty();
-    let options = Options { rules: &rules, detail: Detail::None, names: false };
+    let options = Options { rules: &rules, detail: Detail::None, names: false, rule_use: false };
     let identity = |path: &[u8]| path.to_vec();
     let (mut shard, walked) =
         parse_observer_with(observer, Phase::Map, round, ParseOptions::default(), |unit| {

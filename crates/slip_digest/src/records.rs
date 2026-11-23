@@ -44,7 +44,7 @@ pub struct Record {
 /// with different names or kinds (a collision) are a record each, sorted
 /// further by class, kind, the flag and the `Key`.
 pub fn records(input: &Input<'_>, rules: &RuleTable) -> Result<Vec<Record>, String> {
-    let options = Options { rules, detail: Detail::None, names: true };
+    let options = Options { rules, detail: Detail::None, names: true, rule_use: false };
     walk::run_with(input, &options, |w, written, output| collect(w, written, &output))
 }
 
@@ -215,6 +215,7 @@ mod tests {
             counters: Vec::new(),
             causes: Vec::new(),
             names,
+            rule_use: Vec::new(),
         }
     }
 
@@ -277,6 +278,7 @@ mod tests {
                 counters: Vec::new(),
                 causes: Vec::new(),
                 names,
+                rule_use: Vec::new(),
             };
             let recs = collect(&mut w, &written, &output).expect("records");
             assert_eq!(recs.len(), 2, "{recs:#?}");

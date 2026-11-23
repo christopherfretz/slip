@@ -34,7 +34,7 @@ fn digest_with(src: &str, std: &str, rules: RuleTable) -> (Output, u64) {
                 let before = BACKREFS.with(std::cell::Cell::get);
                 let o = crate::digest(
                     &input,
-                    &Options { rules: &rules, detail: Detail::All, names: true },
+                    &Options { rules: &rules, detail: Detail::All, names: true, rule_use: false },
                 );
                 (o, BACKREFS.with(std::cell::Cell::get) - before)
             })

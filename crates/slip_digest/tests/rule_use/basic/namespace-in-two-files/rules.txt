@@ -1,0 +1,3 @@
+# WP-069, after the review of WP-103: acme opened in a header and in the main file has a unit in
+# each file's group; it is one entity, counted once.
+relocate legacy => :: acme

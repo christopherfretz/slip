@@ -1,0 +1,5 @@
+# WP-069: two rules produce one key, h (both say h was renamed). f2 is renamed by the first; h is
+# left, direct for both rules, and counted once for each; f2, which the first rule maps onto h, is
+# not direct for the second (the review of WP-103: the suite counted 2 for 1).
+relocate h() => :: f2
+relocate h() => :: g2

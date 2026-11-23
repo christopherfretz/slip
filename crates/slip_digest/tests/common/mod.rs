@@ -447,7 +447,7 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
                     &made
                 }
             };
-            let options = Options { rules, detail: Detail::All, names: true };
+            let options = Options { rules, detail: Detail::All, names: true, rule_use: false };
             Ok::<_, String>(slip_digest::digest(&input, &options))
         });
         (output, p.errors, p.diagnostics.clone())
