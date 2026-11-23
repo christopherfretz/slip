@@ -1,0 +1,1 @@
+relocate template <unsigned long> int app::Pair::get() const => app::Pair :: fetch

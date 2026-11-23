@@ -1,0 +1,38 @@
+# E22: spellings a tool treats as equivalent that are not. One subject each.
+# pre: S() {} respelled S() = default;: the constructor is no longer
+# user-provided ([dcl.fct.def.default]/5), S becomes trivially
+# constructible, and value-initialisation zero-initialises v.
+# pre-2: 0 respelled nullptr: pick(0) chose pick(int), an exact match;
+# nullptr converts only to the pointer ([conv.ptr]) and picks pick(char *).
+# pre-3: push_back(5) respelled emplace_back(5): copy-initialisation of
+# const Elem & from 5 does not consider the explicit Elem(int)
+# ([over.match.copy]) and takes Elem(long); emplace_back's T(a...) is
+# direct-initialisation and takes Elem(int).
+# pre-4: for (auto x : a) respelled for (auto &x : a): the body's write
+# reaches the array.
+# pre-5: a cast to an rvalue removed from a return: return m; of an lvalue
+# reference parameter is not implicitly moved ([class.copy.elision]/3), so
+# M(const M &) runs, not M(M &&).
+# pre-6: enum respelled enum class, its uses qualified: a scoped
+# enumerator does not convert to int ([conv.prom]/4 is for unscoped
+# enumerations only), and pick(Color::red) takes pick(...).
+good:   none a defaulted constructor is not user-provided: triviality and value-initialisation differ, by design
+bad:    mismatch changed S @ main.cpp:1
+bad:    mismatch changed trivial() @ main.cpp:6
+good-2: none 0 and nullptr are different expressions: no respelling is digest-equal
+bad-2:  mismatch changed caller() @ main.cpp:4
+good-3: none push_back and emplace_back are different members: no respelling is digest-equal
+bad-3:  mismatch changed fill() @ main.cpp:12
+good-4: none the loop variable's type is written: no respelling is digest-equal
+bad-4:  mismatch changed zero_first() @ main.cpp:3
+good-5: none the cast is an expression: removing it changes the function
+bad-5:  mismatch changed pass(M &) @ main.cpp:8
+good-6: none a scoped enumeration is another type
+bad-6:  mismatch changed Color @ main.cpp:1
+bad-6:  mismatch changed caller() @ main.cpp:5
+# pre-7: the reverse of pre-5, a cast to an rvalue added to return m; of
+# a local: the named return value optimisation ([class.copy.elision]/1.1)
+# applies to the name of a local only, so with the cast M(M &&) runs, and
+# without it clang elides the copy.
+good-7: none the cast is an expression: adding it changes the function
+bad-7:  mismatch changed make() @ main.cpp:10
