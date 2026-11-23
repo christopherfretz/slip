@@ -750,7 +750,7 @@ fn rule_sets() -> Vec<Vec<Rule>> {
     ]
 }
 
-/// The rules of `t` whose (to_parent, kind, to_name, disc) is `k`'s, by a
+/// The rules of `t` whose `(to_parent, kind, to_name, disc)` is `k`'s, by a
 /// scan: what `producers` must give.
 fn producers_by_scan(t: &RuleTable, k: &Key) -> Vec<usize> {
     t.rules()
