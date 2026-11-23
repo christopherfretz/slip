@@ -332,7 +332,7 @@ fn rename_rules(
 
 /// [`digest_side`] under the rules `rules`.
 pub fn digest_side_with(dir: &Path, side: Side, rules: &RuleTable) -> Result<Digested, String> {
-    digest_side_table(dir, side, Tables::Given(rules))
+    digest_side_table(dir, side, &Tables::Given(rules))
 }
 
 /// [`digest_side`] under `rules` and `renames` ([`relocations`]).
@@ -342,7 +342,7 @@ fn digest_side_renamed(
     rules: Vec<slip_model::keys::Rule>,
     renames: &[Rename],
 ) -> Result<Digested, String> {
-    digest_side_table(dir, side, Tables::Renamed(rules, renames))
+    digest_side_table(dir, side, &Tables::Renamed(rules, renames))
 }
 
 /// The rules a side is digested under.
@@ -352,7 +352,7 @@ enum Tables<'a> {
     Renamed(Vec<slip_model::keys::Rule>, &'a [Rename]),
 }
 
-fn digest_side_table(dir: &Path, side: Side, tables: Tables<'_>) -> Result<Digested, String> {
+fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Digested, String> {
     let (list, head) = side_files(&files(dir)?, side)?;
     let refs: Vec<(&str, &str)> = list.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let snippet = slip_kiln::snippet::Snippet {
@@ -377,7 +377,7 @@ fn digest_side_table(dir: &Path, side: Side, tables: Tables<'_>) -> Result<Diges
             };
             let input = Input { ast, sm, subject_path: &path };
             let made;
-            let rules = match &tables {
+            let rules = match tables {
                 Tables::Given(r) => *r,
                 Tables::Renamed(rules, renames) => {
                     made = rename_rules(&input, rules, renames)?;

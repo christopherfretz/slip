@@ -265,10 +265,10 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         && !w.is_local_extern(d)
     {
         match var_eval(w, d).state() {
-            VarEvalState::Value(c) => {
+            VarEvalState::Value(eval) => {
                 s.opt(true);
                 w.by_value += 1;
-                crate::value::value(w, s, c);
+                crate::value::value(w, s, eval);
                 w.by_value -= 1;
             }
             VarEvalState::NotConstant | VarEvalState::NotEvaluated | VarEvalState::Evaluating => {
