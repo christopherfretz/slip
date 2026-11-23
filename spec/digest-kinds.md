@@ -1852,7 +1852,8 @@ which `k`), so it is walked, never written by tag alone:
 - Inside a type, a key or a profile, it is written by its canonical
   operand (`profile`, §4.4): the bytes `Profile` would have if Kiln had
   profiled it, the form Kiln's own profile gives such an argument
-  (`args each` above). The walk puts the unit's local state aside
+  (`args each` above); inside a profile, in that profile's frame.
+  Inside a type or a key the walk puts the unit's local state aside
   (holder, content, local types, scopes) while it writes, so nothing of
   the unit that met the type first is read: a rule-11 check then takes
   the conservative answer (`own_spelling::templated_at` with no holder),
