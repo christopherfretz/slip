@@ -1,0 +1,6 @@
+transform <id>
+report - note "its identifier: f"
+report - note "yes: declarations_of(forged) throws invalid_handle"
+report - note "yes: identifier_of(forged) throws invalid_handle"
+report - note "yes: the bits of a live value are that value"
+report - note "yes: the forged value is not null"
