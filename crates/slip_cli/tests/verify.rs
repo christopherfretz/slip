@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use slip_model::declared::Declared;
 use slip_model::formats::content_id;
 use slip_model::json::{self, Value};
+use slip_model::transform::Ownership;
 use slip_model::verdict::{FindingKind, VerdictKind};
 use slip_model::{Digest, Plan, RunRecord, Shard, Status};
 
@@ -570,10 +571,41 @@ fn s8_7_report_replaced_whole() {
 
 // ----- verify: declared changes ---------------------------------------------------
 
+/// `slip declare --owned s` over `relocate old => :: <to>` (a namespace
+/// rule from the global namespace to the global namespace), written to
+/// `name`: the run's files are the subject tree (`spec/verify.md` §2,
+/// §2.1, §2.3).
+fn relocation(f: &Fixture, plan: &str, name: &str, to: &str) -> Declared {
+    f.write("reloc.txt", &format!("relocate old => :: {to}\n"));
+    let mut s = Vec::new();
+    let mut args = vec![
+        "declare",
+        "--plan",
+        plan,
+        "--store",
+        "store",
+        "--from",
+        "reloc.txt",
+        "--out",
+        name,
+        "--owned",
+        "s",
+    ];
+    args.extend(image(f, &mut s));
+    let out = f.slip(&args);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let declared = Declared::from_bytes(&std::fs::read(f.path(name)).unwrap()).unwrap();
+    assert_eq!(declared.rules().rules().len(), 1);
+    declared
+}
+
 // spec/verify.md §2.1, §5.2 step 1: the post-image is digested WITH the
 // declared rules. A relocation through the whole path (`slip parse`, an
-// edited copy of the tree, `slip declare`, `slip verify --root --post
-// --declared`): with the rule every observer's verdict is `verified`
+// edited copy of the tree, the declared file, `slip verify --root --post
+// --declared`). The file is made here (`relocation`), as `slip declare`
+// makes it from `relocate old => :: fresh` once it gives the run's files
+// (WP-111; until then it cannot write a rule: a version 2 `DECL` with
+// rules must have `files`). With the rule every observer's verdict is `verified`
 // with no finding at all; without `--declared`, or with a wrong rule, the
 // relocated entities show as removed and added. One callee changed on top
 // of the relocation shows a finding that is not indeterminate.
@@ -590,39 +622,21 @@ fn s2_relocation_through_the_whole_path() {
     let f = two_units("relocation");
     let plan = f.parse();
     relocate_in_post(&f);
-    f.write("rules.txt", "# the root namespace moves\nrelocate old => :: fresh\n");
     let mut s = Vec::new();
     let img = image(&f, &mut s);
-    let mut args = vec![
-        "declare",
-        "--plan",
-        &plan,
-        "--store",
-        "store",
-        "--from",
-        "rules.txt",
-        "--out",
-        "d.decl",
-    ];
-    args.extend(&img);
-    let out = f.slip(&args);
-    assert_eq!(out.code(), Some(0), "{out:?}");
-    let bytes = std::fs::read(f.path("d.decl")).unwrap();
-    let declared = Declared::from_bytes(&bytes).unwrap();
-    assert_eq!(declared.rules().rules().len(), 1);
-    assert_eq!(out.value("declared"), Some(content_id(&bytes).unwrap().to_string().as_str()));
+    let declared = relocation(&f, &plan, "d.decl", "fresh");
     let observers = f.observers(&plan);
 
     // With the rule.
     let mut with = img.clone();
     with.extend(["--declared", "d.decl"]);
     let (out, report) = f.verify_report(&plan, &with);
-    assert_eq!(str_at(&report, "rules"), declared.rules().id().to_string());
+    assert_eq!(str_at(&report, "rules"), declared.rules_id().to_string());
     for (o, main) in &observers {
         let (shard, _) = f.shard(&plan, "verify", 0, o);
         let v = shard.verdict.as_ref().unwrap();
         assert_eq!(v.kind, VerdictKind::Verified, "{main}: {:?}", v.findings);
-        assert_eq!((v.total, v.rules), (0, declared.rules().id()), "{main}");
+        assert_eq!((v.total, v.rules), (0, declared.rules_id()), "{main}");
     }
     // WP-074: `failed` until the verify job writes `binding` and `rule_use`.
     assert_verdict(&out, &report, "incomplete");
@@ -638,20 +652,7 @@ fn s2_relocation_through_the_whole_path() {
 
     // A wrong rule (the namespace moved to another name): not verified at
     // the job.
-    f.write("wrong.txt", "relocate old => :: other\n");
-    let mut args = vec![
-        "declare",
-        "--plan",
-        &plan,
-        "--store",
-        "store",
-        "--from",
-        "wrong.txt",
-        "--out",
-        "w.decl",
-    ];
-    args.extend(&img);
-    assert_eq!(f.slip(&args).code(), Some(0));
+    relocation(&f, &plan, "w.decl", "other");
     let mut wrong = img.clone();
     wrong.extend(["--declared", "w.decl"]);
     f.verify(&plan, &wrong);
@@ -701,7 +702,9 @@ fn s2_3_relocate_into_a_parent_of_the_post_image() {
         ("relocate old => :: fresh\n", false),
     ] {
         f.write("t.txt", text);
-        let out = declare(&f, &plan, "t.txt", &img);
+        let mut extra = img.clone();
+        extra.extend(["--owned", "s"]);
+        let out = declare(&f, &plan, "t.txt", &extra);
         assert_eq!(out.code(), Some(0), "{out:?}");
         let mut args = img.clone();
         args.extend(["--declared", "d.decl"]);
@@ -814,9 +817,12 @@ fn s8_7_input_errors() {
         f.verify(&plan, &["--root", "s", "--post", "a-file"]),
         "slip: verify: image: a-file: not a directory".into(),
     );
+    // A subject root under another subject root (a post root under a
+    // subject root is an image: WP-052's G5 decides what it may hold).
     std::fs::create_dir_all(f.path("s/inner")).unwrap();
+    std::fs::create_dir_all(f.path("a-dir")).unwrap();
     expect(
-        f.verify(&plan, &["--root", "s", "--post", "s/inner"]),
+        f.verify(&plan, &["--root", "s", "--post", "post", "--root", "s/inner", "--post", "a-dir"]),
         format!("slip: verify: image: {s}/inner lies under {s}"),
     );
     expect(
@@ -891,7 +897,11 @@ fn s2_1_refused_rule_is_an_input_error() {
         vec![],
         vec![],
     )
-    .unwrap();
+    .unwrap()
+    .with_files(Some(Ownership {
+        owned: vec![f.root.to_str().unwrap().as_bytes().to_vec()],
+        readonly: vec![],
+    }));
     assert_eq!(declared.rules().refused(), Some((1, RULE_ON_SPECIALISATION)));
     std::fs::write(f.path("r.decl"), declared.to_bytes()).unwrap();
     let published =
@@ -955,7 +965,9 @@ fn s8_8_declare_output() {
         "relocate old => :: fresh\nchanged h(int)\nremoved [function] h(char)\ncreated fresh::g(fresh::S *)\n",
     );
     let mut s = Vec::new();
-    let out = declare(&f, &plan, "t.txt", &image(&f, &mut s));
+    let mut extra = image(&f, &mut s);
+    extra.extend(["--owned", "s"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
     assert_eq!(out.code(), Some(0), "{out:?}");
     assert_eq!(out.stderr, "");
     let bytes = std::fs::read(f.path("d.decl")).unwrap();
@@ -965,9 +977,10 @@ fn s8_8_declare_output() {
         format!(
             "declared {}\nrules {} 1\nchanged 1\ncreated 1\nremoved 1\n",
             content_id(&bytes).unwrap(),
-            d.rules().id()
+            d.rules_id()
         )
     );
+    assert_eq!(d.files(), Some(&Ownership { owned: vec![real_path(&f, "s")], readonly: vec![] }));
 }
 
 /// The one line of an error of §2.3: `slip: <text file>:<line>: <error>:
@@ -1020,18 +1033,23 @@ fn s2_3_declare_errors() {
         "slip: t.txt:3: duplicate: a second `changed` line for `T`"
     );
     assert_eq!(
-        line_error(&f, &plan, "relocate C::operator+(C) => C :: plus\n", &[]),
+        line_error(&f, &plan, "relocate C::operator+(C) => C :: plus\n", &["--owned", "s"]),
         "slip: t.txt:1: not renamable: `C::operator+(C)` has a name of the form `operator`, not \
          an identifier: it can be relocated with `=` only"
     );
     assert_eq!(
-        line_error(&f, &plan, "relocate k(int) => :: k2\nrelocate k(int) => :: k2\n", &[]),
+        line_error(
+            &f,
+            &plan,
+            "relocate k(int) => :: k2\nrelocate k(int) => :: k2\n",
+            &["--owned", "s"]
+        ),
         "slip: t.txt:2: duplicate: the rule of `k(int)` matches what the rule of an earlier \
          `relocate` line matches"
     );
     // §2.1 (WP-103): a rule on a specialisation.
     assert_eq!(
-        line_error(&f, &plan, "relocate tt<int>(int) => :: uu\n", &[]),
+        line_error(&f, &plan, "relocate tt<int>(int) => :: uu\n", &["--owned", "s"]),
         "slip: t.txt:1: refused: the rule of `tt<int>(int)` is refused: a rule may not match a \
          specialisation: its key follows its template's"
     );
@@ -1139,7 +1157,9 @@ fn s8_8_declare_warning_for_an_image_that_does_not_parse() {
     f.write("post/u1.cpp", U1);
     f.write("t.txt", "relocate old::S => old :: S2\ncreated h(int)\n");
     let mut s = Vec::new();
-    let out = declare(&f, &plan, "t.txt", &image(&f, &mut s));
+    let mut extra = image(&f, &mut s);
+    extra.extend(["--owned", "s"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
     let u0 = Fixture::text(&f.path("s/u0.cpp"));
     assert_eq!(
         out.stderr_lines().iter().filter(|l| l.starts_with("slip: warning: ")).collect::<Vec<_>>(),
@@ -1154,6 +1174,143 @@ fn s8_8_declare_warning_for_an_image_that_does_not_parse() {
         (out.value("created"), out.value("rules").map(|r| &r[65..])),
         (Some("1"), Some("1"))
     );
+}
+
+/// The real path of `rel` in the fixture, as `Ownership` holds it.
+fn real_path(f: &Fixture, rel: &str) -> Vec<u8> {
+    std::fs::canonicalize(f.path(rel)).unwrap().to_str().unwrap().as_bytes().to_vec()
+}
+
+// §8.8, spec/verify.md §2.1, §2.3: the run's files. A `relocate` line
+// without `--owned` is a usage error before anything is read but the text
+// (a plan that does not exist is not looked at); without a `relocate`
+// line the options are optional and, when given, carried; entries are
+// made real paths (a symbolic link resolved), and one that does not
+// exist, or that is both owned and read-only, is an input error.
+#[test]
+fn s8_8_declare_files() {
+    let f = two_units("declare-files");
+    let plan = f.parse();
+    f.write("t.txt", "changed h(int)\nrelocate old => :: fresh\n");
+    for p in [plan.as_str(), "no-such-plan"] {
+        let out = declare(&f, p, "t.txt", &[]);
+        assert_eq!(out.code(), Some(2), "{out:?}");
+        assert_eq!(out.stderr_lines()[0], "slip: a relocate line needs the run's files: --owned");
+        assert!(!f.path("d.decl").exists());
+    }
+    // A syntax error in the text is reported first: it is the text's.
+    f.write("t.txt", "relocate old => fresh\n");
+    assert_eq!(declare(&f, &plan, "t.txt", &[]).code(), Some(1));
+
+    // No rule: the options are checked, and not written (`spec/verify.md`
+    // §2 rule 6: `files` is present exactly when there is a rule).
+    f.write("t.txt", "changed h(int)\n");
+    let read =
+        |f: &Fixture| Declared::from_bytes(&std::fs::read(f.path("d.decl")).unwrap()).unwrap();
+    assert_eq!(declare(&f, &plan, "t.txt", &[]).code(), Some(0));
+    assert_eq!(read(&f).files(), None);
+    std::os::unix::fs::symlink("s", f.path("link")).unwrap();
+    let out = declare(&f, &plan, "t.txt", &["--owned", "link"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(read(&f).files(), None);
+    // With a rule, as real paths: `link` is `s`, given twice.
+    f.write("t.txt", "changed h(int)\nrelocate old => :: fresh\n");
+    let out =
+        declare(&f, &plan, "t.txt", &["--owned", "link", "--readonly", "link/a.h", "--owned", "s"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let files =
+        Ownership { owned: vec![real_path(&f, "s")], readonly: vec![real_path(&f, "s/a.h")] };
+    assert_eq!(read(&f).files(), Some(&files));
+
+    let _ = std::fs::remove_file(f.path("d.decl"));
+    let out = declare(&f, &plan, "t.txt", &["--owned", "nope"]);
+    assert_eq!(out.code(), Some(3), "{out:?}");
+    assert_eq!(out.stderr, "slip: nope: No such file or directory (os error 2)\n");
+    let out = declare(&f, &plan, "t.txt", &["--owned", "s", "--readonly", "link"]);
+    assert_eq!(out.code(), Some(3), "{out:?}");
+    assert_eq!(
+        out.stderr,
+        format!("slip: {}: given as --owned and as --readonly\n", Fixture::text(&f.path("s")))
+    );
+    assert!(!f.path("d.decl").exists());
+}
+
+// spec/verify.md §2.1, §2.3 (WP-111 not landed): `relocate` naming an
+// entity only a read-only file declares. `declare` accepts the line (the
+// `DependencyEntity` error is WP-111's); its rule matches nothing, since
+// the namespace is a dependency entity: every observer mismatches, the
+// relocated entities shown as removed and added; the run reports the rule
+// unused. When WP-111 lands,
+// `declare` refuses this line and this test changes.
+#[test]
+fn s2_1_rule_naming_a_dependency_entity_matches_nothing() {
+    let f = two_units("dependency-entity");
+    let plan = f.parse();
+    relocate_in_post(&f);
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s", "--readonly", "s/a.h"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(out.value("rules").map(|r| &r[65..]), Some("1"));
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    let (out, report) = f.verify_report(&plan, &with);
+    for (o, main) in &f.observers(&plan) {
+        let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
+        assert_eq!(v.kind, VerdictKind::Mismatch, "{main}");
+    }
+    // What verify prints on this base: every observer `failed` (WP-074
+    // item 3: no `binding`/`rule_use` under rules), the run incomplete
+    // (status 4), and the rule reported unused by the agreement.
+    assert_verdict(&out, &report, "incomplete");
+    assert_eq!(states(&report), [0, 0, 0, 0, 0, 0, 2]);
+    assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 1"));
+    assert_eq!(out.value("unused rule"), Some("0"));
+}
+
+// spec/verify.md §2.1: ownership is of real paths. The header is reached
+// through `inc`, a symbolic link under the owned root to `dep`, which is
+// read-only: the header is read-only (decided by its real path, not by the
+// path the front end spells), the rule matches nothing there, and the
+// observers mismatch; with `dep` owned, verified.
+#[test]
+fn s2_1_read_only_file_through_a_link_under_the_owned_root() {
+    let f = Fixture::new("link-readonly");
+    f.both("dep/a.h", HEADER);
+    for tree in ["s", "post"] {
+        std::os::unix::fs::symlink("dep", f.path(&format!("{tree}/inc"))).unwrap();
+    }
+    let unit = |t: &str| t.replace("\"a.h\"", "\"inc/a.h\"");
+    f.both("u0.cpp", &unit(U0));
+    f.both("u1.cpp", &unit(U1));
+    f.db(&["u0.cpp", "u1.cpp"]);
+    let plan = f.parse();
+    f.write("post/dep/a.h", &HEADER.replace("namespace old", "namespace fresh"));
+    f.write("post/u0.cpp", &unit(U0).replace("old::", "fresh::"));
+    f.write("post/u1.cpp", &unit(U1).replace("old::", "fresh::"));
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let observers = f.observers(&plan);
+    for (readonly, want) in [(true, VerdictKind::Mismatch), (false, VerdictKind::Verified)] {
+        let mut extra = img.clone();
+        extra.extend(["--owned", "s"]);
+        if readonly {
+            extra.extend(["--readonly", "s/dep"]);
+        }
+        let out = declare(&f, &plan, "t.txt", &extra);
+        assert_eq!(out.code(), Some(0), "{out:?}");
+        let mut with = img.clone();
+        with.extend(["--declared", "d.decl"]);
+        f.verify(&plan, &with);
+        for (o, main) in &observers {
+            let v = f.shard(&plan, "verify", 0, o).0.verdict.unwrap();
+            assert_eq!(v.kind, want, "readonly {readonly}, {main}: {:?}", v.findings);
+        }
+    }
 }
 
 // ----- units (spec/exec.md §8.9) ------------------------------------------------------

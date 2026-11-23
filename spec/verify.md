@@ -577,6 +577,17 @@ they need the rules the file gives:
 
 A file with no line gives `Declared::none()`.
 
+**The run's files.** A rule renames owned entities only (§2.1), so the
+container `slip declare` writes carries the run's files, from its
+`--owned` and `--readonly` (`spec/exec.md` §8.8): real paths, which are
+subject paths. A `relocate` line needs them: a text with one and no
+`--owned` is a usage error, with no default (knowing less never accepts
+more, and "the roots" by default would make a dependency's entity
+renamable by accident). The `created` lines are resolved in records
+walked with these files. Until `docs/wp/WP-111.md` lands, a `relocate`
+line whose entity is a dependency entity is accepted, and its rule
+matches nothing.
+
 **Interface.** The records come from the walk (`slip_digest::records`,
 which is trusted base only in that it must not disturb the walk); the
 text and its resolution are `slip_cli::declare`, pure functions over

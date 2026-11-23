@@ -1421,8 +1421,9 @@ end and the reports stay):
      `edit.txt` is applied, each edited file **written as a new file**
      (the link removed first), never opened for writing in place;
    - if `declared.txt` has a line: `slip declare --plan <id> --from
-     declared.txt --out demo1/<case>.decl --root <src>/<root> --post
-     <tree>` with the case's `observers`;
+     declared.txt --out demo1/<case>.decl --owned <src>/<root> --root
+     <src>/<root> --post <tree>` (one `--owned` for every root of the
+     demo) with the case's `observers`;
    - `slip verify --plan <id> --round <k> --root … --post … [--declared
      …] --findings 100000 --locate 1024 --report demo1/<case>.json`, with
      the selection;

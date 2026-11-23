@@ -29,7 +29,7 @@ fn units(a: &UnitsArgs, out: &mut dyn Write, err: &mut dyn Write) -> commands::R
     let none = RuleTable::empty();
     let mut merged = Merged::default();
     for o in &run.observers {
-        if let Some(records) = run.records("units", o, side, &none, err)? {
+        if let Some(records) = run.records("units", o, side, &none, None, err)? {
             merged.add(records);
         }
     }

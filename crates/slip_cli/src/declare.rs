@@ -18,10 +18,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use slip_digest::records::Record;
+use slip_digest::{ReadOnly, ReadOnlyFiles};
 use slip_exec::store::{Access, Store};
 use slip_model::declared::Declared;
 use slip_model::formats::content_id;
 use slip_model::keys::{Key, KeyKind, Name, Parent, Rule, RuleTable};
+use slip_model::transform::Ownership;
 use slip_model::{Digest, Observer, Phase};
 
 use crate::args::{DeclareArgs, ImageArgs};
@@ -593,9 +595,12 @@ impl InProcess {
     }
 
     /// The unit records (`slip_digest::records`) of `side` of `o` under
-    /// `rules`; `None`, after the warning of §8.8 on `err`, when that image
-    /// does not parse `ok`. A failure of the parse itself, or of the
-    /// records, is an input error naming the main file: no record is
+    /// `rules`, with the run's files `files` (`spec/verify.md` §2.1: each
+    /// buffer decided by the subject path of its real path, as the verify
+    /// job decides it; `None` makes every file read-only; not read when
+    /// `rules` is empty); `None`, after the warning of §8.8 on `err`, when
+    /// that image does not parse `ok`. A failure of the parse itself, or of
+    /// the records, is an input error naming the main file: no record is
     /// guessed, and none is left out silently.
     pub(crate) fn records(
         &self,
@@ -603,13 +608,20 @@ impl InProcess {
         o: &Observer,
         side: Side,
         rules: &RuleTable,
+        files: Option<&Ownership>,
         err: &mut dyn Write,
     ) -> commands::Result<Option<Vec<Record>>> {
         let main = String::from_utf8_lossy(&o.main.path).into_owned();
         let fail = |e: String| Failure::Input(format!("{command}: {main}: {e}"));
         let (shard, records) = self
             .image
-            .parse(o, side, Phase::Map, 0, |input| slip_digest::records::records(input, rules))
+            .parse(o, side, Phase::Map, 0, |input| {
+                if rules.rules().is_empty() {
+                    return slip_digest::records::records(input, rules, ReadOnly::EVERY_FILE);
+                }
+                let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
+                slip_digest::records::records(input, rules, ReadOnly::files(&read_only))
+            })
             .map_err(fail)?;
         match records {
             Some(Ok(records)) => Ok(Some(records)),
@@ -661,8 +673,6 @@ pub fn main(args: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> Exi
 fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> commands::Result<u8> {
     let from = absolute(&a.from)?;
     let target = absolute(&a.out)?;
-    let run = InProcess::open("declare", &a.plan, &a.image, &a.store, &a.only, a.limit)?;
-
     let bytes =
         std::fs::read(&from).map_err(|e| Failure::Input(format!("{}: {e}", a.from.display())))?;
     let text = std::str::from_utf8(&bytes).map_err(|e| {
@@ -677,6 +687,16 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
         Ok(lines) => lines,
         Err(e) => return Ok(line_error(&e, err)),
     };
+    // The run's files (`spec/verify.md` §2.1, §2.3): a rule renames owned
+    // entities only, so a `relocate` line needs them, and there is no
+    // default (knowing less never accepts more; "the roots" by default
+    // would make a dependency's entity renamable by accident). Checked
+    // before anything is parsed.
+    if a.owned.is_empty() && lines.iter().any(|(_, l)| matches!(l, Line::Relocate { .. })) {
+        return Err(Failure::Usage("a relocate line needs the run's files: --owned".to_owned()));
+    }
+    let files = commands::ownership(&a.owned, &a.readonly)?;
+    let run = InProcess::open("declare", &a.plan, &a.image, &a.store, &a.only, a.limit)?;
     let need = needs(&lines);
 
     // The images with no rules: every pre-image; the post-images when a
@@ -685,11 +705,11 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
     let (mut pre, mut post) = (Merged::default(), Merged::default());
     let mut post_ok = vec![false; run.observers.len()];
     for (i, o) in run.observers.iter().enumerate() {
-        if let Some(r) = run.records("declare", o, Side::Pre, &none, err)? {
+        if let Some(r) = run.records("declare", o, Side::Pre, &none, None, err)? {
             pre.add(r);
         }
         if need.post
-            && let Some(r) = run.records("declare", o, Side::Post, &none, err)?
+            && let Some(r) = run.records("declare", o, Side::Post, &none, None, err)?
         {
             post.add(r);
             post_ok[i] = true;
@@ -708,7 +728,9 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
             if need.post && !post_ok[i] {
                 continue;
             }
-            if let Some(r) = run.records("declare", o, Side::Post, &resolved.rules, err)? {
+            if let Some(r) =
+                run.records("declare", o, Side::Post, &resolved.rules, files.as_ref(), err)?
+            {
                 mapped.add(r);
             }
         }
@@ -718,13 +740,18 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
         Err(e) => return Ok(line_error(&e, err)),
     };
 
+    // `files` is present exactly when there is a rule (`spec/verify.md`
+    // §2 rule 6: a second encoding of the empty table is refused). Without
+    // a rule the options were checked above and are not written.
+    let files = if declared.rules().rules().is_empty() { None } else { files };
+    let declared = declared.with_files(files);
     let bytes = declared.to_bytes();
     let id = content_id(&bytes)
         .unwrap_or_else(|e| unreachable!("a Declared encodes as a valid DECL: {e}"));
     write_beside(&target, &bytes)
         .map_err(|e| Failure::Input(format!("{}: {e}", a.out.display())))?;
     let _ = writeln!(out, "declared {id}");
-    let _ = writeln!(out, "rules {} {}", declared.rules().id(), declared.rules().rules().len());
+    let _ = writeln!(out, "rules {} {}", declared.rules_id(), declared.rules().rules().len());
     let _ = writeln!(out, "changed {}", declared.changed().len());
     let _ = writeln!(out, "created {}", declared.created().len());
     let _ = writeln!(out, "removed {}", declared.removed().len());

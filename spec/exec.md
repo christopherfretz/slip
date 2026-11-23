@@ -968,6 +968,7 @@ slip verify --plan <id or file> [--round <n>] [--declared <file>]
            [--estimate-base <size>] [--estimate-per-byte <n>]
            [--worker-jobs <n>] [--worker-stack <size>]
 slip declare --plan <id or file> --from <file> --out <file>
+           [--owned <path>]… [--readonly <path>]…
            [--root <dir>]… [--post <dir>]… [--store <dir>] [--only <substring>]… [--limit <n>]
 slip units --plan <id or file> [--post-image] [--root <dir>]… [--post <dir>]…
            [--store <dir>] [--only <substring>]… [--limit <n>] [--match <substring>]…
@@ -1435,12 +1436,27 @@ as a `DECL` container to `--out`.
   selection must keep at least one observer and at most 64 (an input
   error otherwise, naming the number): every selected observer is parsed
   here, in this process, one after another.
+- `--owned` and `--readonly` (each repeats) are the run's files
+  (`spec/verify.md` §2.1, `spec/edits.md` §2.1): each entry is made a
+  real path (its symbolic links resolved) and the lists are sorted with
+  no two equal, as `map` and `rename` make them (§10.1 step 2 of
+  `edits.md`); they are subject paths. A text with a `relocate` line and
+  no `--owned` is a usage error, `slip: a relocate line needs the run's
+  files: --owned`, given after the text is read and before anything else
+  (the store, the plan, a parse); there is no default. `--readonly`
+  without `--owned` is a usage error. An entry that does not exist, and
+  one that is both owned and read-only once resolved, are input errors.
+  Without a `relocate` line the options may be left out; given, they are
+  checked and not written. The container's `files` are these lists when
+  it has a rule, and none otherwise (`spec/verify.md` §2, rule 6).
 - The store is opened shared; no shard is read or written.
 - For each selected observer, in plan order: the pre-image is parsed and
   its unit records taken (`slip_digest::records`), with no rules; if the
   text has a `relocate` with a parent, or a `created` line, the
   post-image is parsed with no rules; if it has a `created` line, the
-  post-image is parsed again with the rules the `relocate` lines gave.
+  post-image is parsed again with the rules the `relocate` lines gave and
+  the run's files, each buffer decided by the subject path of its real
+  path as the verify job decides it (`spec/verify.md` §2.1).
   An image of an observer that does not parse `ok` contributes no record
   and is a warning: `slip: warning: declare: <main file>: the <pre|post>-image is <status>`.
 - The records of all selected observers together are the sets of

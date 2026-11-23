@@ -388,6 +388,45 @@ pub(crate) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     needle.is_empty() || haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// The run's files from `--owned` and `--readonly` (`spec/edits.md` §2.1,
+/// §10.1 step 2: "made real paths"; `spec/verify.md` §2.1: ownership is
+/// of real paths, which are the subject paths). Each entry is made a real
+/// path (`std::fs::canonicalize`, so a symbolic link is resolved and the
+/// result is canonical); an entry that does not exist, or one that is
+/// both owned and read-only once resolved, is an input error. Sorted, no
+/// two equal. `None` when neither option is given; the caller has
+/// refused `--readonly` without `--owned` (a usage error).
+pub(crate) fn ownership(
+    owned: &[PathBuf],
+    readonly: &[PathBuf],
+) -> Result<Option<slip_model::transform::Ownership>> {
+    use std::os::unix::ffi::OsStrExt;
+    if owned.is_empty() {
+        return Ok(None);
+    }
+    let real = |list: &[PathBuf]| -> Result<Vec<Vec<u8>>> {
+        let mut v = list
+            .iter()
+            .map(|p| {
+                std::fs::canonicalize(p)
+                    .map(|r| r.as_os_str().as_bytes().to_vec())
+                    .map_err(|e| Failure::Input(format!("{}: {e}", p.display())))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        v.sort();
+        v.dedup();
+        Ok(v)
+    };
+    let (owned, readonly) = (real(owned)?, real(readonly)?);
+    if let Some(both) = readonly.iter().find(|r| owned.binary_search(r).is_ok()) {
+        return Err(Failure::Input(format!(
+            "{}: given as --owned and as --readonly",
+            String::from_utf8_lossy(both)
+        )));
+    }
+    Ok(Some(slip_model::transform::Ownership { owned, readonly }))
+}
+
 /// The worker command (§8.2): this executable, `__worker` with the same
 /// `--worker-jobs` the pool is given and `--worker-stack`, without the
 /// coordinator's `KILN_*` variables. `verify` appends its own two options

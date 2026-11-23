@@ -109,7 +109,7 @@ fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8
         plan: plan_id,
         round: a.round,
         declared: declared_id,
-        rules: declared.rules().id(),
+        rules: declared.rules_id(),
         image: image.maps().iter().map(|m| (m.subject.clone(), m.post.clone())).collect(),
         limit: a.findings,
         locate: a.locate,

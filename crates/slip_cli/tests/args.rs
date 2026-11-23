@@ -622,6 +622,11 @@ fn s8_8_declare_options() {
             "--from",
             "t.txt",
             "--out=d.decl",
+            "--owned",
+            "/s/a",
+            "--readonly=/s/a/dep",
+            "--owned",
+            "/s/b",
             "--root",
             "/s",
             "--post",
@@ -639,6 +644,8 @@ fn s8_8_declare_options() {
             plan: "abcd".into(),
             from: "t.txt".into(),
             out: "d.decl".into(),
+            owned: vec!["/s/a".into(), "/s/b".into()],
+            readonly: vec!["/s/a/dep".into()],
             image: image(&[("/s", "/p")]),
             store: "s".into(),
             only: vec![b"a".to_vec(), b"b".to_vec()],
@@ -649,6 +656,12 @@ fn s8_8_declare_options() {
     assert_eq!(
         (d.store, d.image, d.limit),
         (PathBuf::from(DEFAULT_STORE), ImageArgs::default(), None)
+    );
+    assert!(d.owned.is_empty() && d.readonly.is_empty());
+    // `--readonly` carves out of what `--owned` gives (`spec/edits.md` §2.1).
+    assert_eq!(
+        usage_error(&["declare", "--plan", "p", "--from", "t", "--out", "o", "--readonly", "/d"]),
+        "`--readonly` needs `--owned`"
     );
     assert_eq!(usage_error(&["declare", "--from", "t", "--out", "o"]), "`declare` needs `--plan`");
     assert_eq!(usage_error(&["declare", "--plan", "p", "--out", "o"]), "`declare` needs `--from`");
