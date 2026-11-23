@@ -1459,6 +1459,7 @@ mod tests {
                         let rules = RuleTable::empty();
                         let options = Options {
                             rules: &rules,
+                            read_only: crate::ReadOnly::NO_FILE,
                             detail: Detail::None,
                             names: true,
                             rule_use: false,
@@ -1840,6 +1841,7 @@ mod tests {
                         let rules = RuleTable::empty();
                         let options = Options {
                             rules: &rules,
+                            read_only: crate::ReadOnly::NO_FILE,
                             detail: Detail::None,
                             names: false,
                             rule_use: false,

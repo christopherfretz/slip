@@ -1107,6 +1107,7 @@ mod tests {
             let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
             let options = crate::Options {
                 rules: &rules,
+                read_only: crate::ReadOnly::NO_FILE,
                 detail: crate::Detail::All,
                 names: true,
                 rule_use: false,

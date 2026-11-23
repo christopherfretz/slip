@@ -91,7 +91,13 @@ fn walk(
     subject: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
 ) -> (Shard, Option<Result<Output, String>>) {
     let rules = rules();
-    let options = Options { rules: &rules, detail: Detail::All, names: true, rule_use: false };
+    let options = Options {
+        rules: &rules,
+        read_only: slip_digest::ReadOnly::NO_FILE,
+        detail: Detail::All,
+        names: true,
+        rule_use: false,
+    };
     let (shard, walked) = parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {
         map_unit(unit, &options, subject)
     })
@@ -104,7 +110,13 @@ fn walk(
 /// an `ok` shard gets its `digests` and counters.
 fn map_shard(o: &Observer) -> Result<Shard, String> {
     let rules = rules();
-    let options = Options { rules: &rules, detail: Detail::None, names: false, rule_use: false };
+    let options = Options {
+        rules: &rules,
+        read_only: slip_digest::ReadOnly::NO_FILE,
+        detail: Detail::None,
+        names: false,
+        rule_use: false,
+    };
     let identity = |p: &[u8]| p.to_vec();
     let (mut shard, walked) =
         parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {
@@ -638,7 +650,11 @@ fn s9_5_map_unit_passes_rule_use_through() {
     let (_, walked) = parse_observer_with(&o, Phase::Map, 0, ParseOptions::default(), |unit| {
         // The rule that undoes `f` renamed to `g`: its discriminator is g's.
         let recs = with_input(unit, &identity, |input| {
-            slip_digest::records::records(input, &RuleTable::empty())
+            slip_digest::records::records(
+                input,
+                &RuleTable::empty(),
+                slip_digest::ReadOnly::EVERY_FILE,
+            )
         })
         .unwrap()
         .unwrap();
@@ -653,7 +669,14 @@ fn s9_5_map_unit_passes_rule_use_through() {
             to_name: slip_model::keys::Name::Identifier(b"f".to_vec()),
         }])
         .unwrap();
-        let on = Options { rules: &rules, detail: Detail::None, names: false, rule_use: true };
+        // Every file owned (WP-110): the rule applies to g.
+        let on = Options {
+            rules: &rules,
+            read_only: slip_digest::ReadOnly::NO_FILE,
+            detail: Detail::None,
+            names: false,
+            rule_use: true,
+        };
         let off = Options { rule_use: false, ..on };
         (map_unit(unit, &on, &identity), map_unit(unit, &off, &identity))
     })

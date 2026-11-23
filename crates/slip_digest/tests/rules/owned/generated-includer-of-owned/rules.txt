@@ -1,0 +1,2 @@
+# spec/verify.md §2.1 (the cost of the include-chain rule), WP-110 re-check Q4b. A read-only file the build generates that includes owned code (CMake's cmake_pch.hxx, here pch.h) makes that code read-only for the observer: Mine and f are dependency entities, keep their keys, and the correct migration differs. The safe direction, kept; the answer is a third class of file, not edited and rebuilt from source (WP-118).
+relocate legacy => :: acme

@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. N34 good-3: the block is split and the include stays in legacy.
+relocate legacy => :: acme

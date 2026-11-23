@@ -70,6 +70,7 @@ fn wp067_written_changes_no_digest() {
                         let input = Input { ast, sm, subject_path: &path };
                         let options = Options {
                             rules: &rules,
+                            read_only: slip_digest::ReadOnly::NO_FILE,
                             detail: Detail::All,
                             names: true,
                             rule_use: false,

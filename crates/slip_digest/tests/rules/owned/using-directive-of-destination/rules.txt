@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. An owned using-directive that names the moved namespace: a reference to the namespace, keyed as the namespace's own key.
+relocate legacy => :: acme

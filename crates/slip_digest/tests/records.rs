@@ -53,10 +53,16 @@ fn with_input<R: Send>(
 /// `all` under the same rules.
 fn snippet(source: &str, rules: &RuleTable) -> (Vec<Record>, Output) {
     let ((recs, out), errors) = with_input(&[("main.cpp", source)], "c++20", &[], |input| {
-        let recs = records(input, rules);
+        let recs = records(input, rules, slip_digest::ReadOnly::NO_FILE);
         let out = slip_digest::digest(
             input,
-            &Options { rules, detail: Detail::All, names: true, rule_use: false },
+            &Options {
+                rules,
+                read_only: slip_digest::ReadOnly::NO_FILE,
+                detail: Detail::All,
+                names: true,
+                rule_use: false,
+            },
         );
         (recs, out)
     })
@@ -292,10 +298,16 @@ fn sweep_side(dir: &Path, side: Side, t: &mut Tally) {
             };
             let input = Input { ast, sm, subject_path: &path };
             let empty = RuleTable::empty();
-            let recs = records(&input, &empty);
+            let recs = records(&input, &empty, slip_digest::ReadOnly::EVERY_FILE);
             let out = slip_digest::digest(
                 &input,
-                &Options { rules: &empty, detail: Detail::All, names: true, rule_use: false },
+                &Options {
+                    rules: &empty,
+                    read_only: slip_digest::ReadOnly::NO_FILE,
+                    detail: Detail::All,
+                    names: true,
+                    rule_use: false,
+                },
             );
             (recs, out)
         })

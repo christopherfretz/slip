@@ -584,7 +584,9 @@ fn declared_changes() {
     let rules: Vec<_> = decl.rules().rules().to_vec();
     assert_eq!(rules.len(), 2);
     assert_eq!(set.rules, vec![function_rule("h", "i")], "the set's rules are the renamed rules");
-    assert_eq!(declared(set).unwrap(), Some(decl), "one derivation");
+    // WP-110: a `Declared` with rules holds the run's files, the request's.
+    assert_eq!(decl.files(), Some(&script().ownership));
+    assert_eq!(declared(set, &script().ownership).unwrap(), Some(decl), "one derivation");
     assert_eq!(counter(set, "reduce.rules"), 2);
     assert_eq!(counter(set, "reduce.changed.in_force"), 1);
 }
@@ -630,7 +632,7 @@ fn rule_conflict_both_ways() {
         );
         assert_eq!(set.state, SetState::Refused, "{name}");
         assert_eq!(causes(&set), vec![Cause::RuleConflict], "{name}");
-        assert!(declared(&set).unwrap().is_none());
+        assert!(declared(&set, &script().ownership).unwrap().is_none());
     }
     let set = ok(
         &script(),
