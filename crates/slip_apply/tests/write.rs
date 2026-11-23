@@ -1015,11 +1015,18 @@ fn s7_3_a_renumbered_inode_with_fine_times() {
     assert!(got.reported.is_empty());
     assert!(got.restored.contains(&b"/w/a.cc".to_vec()));
     assert!(w.0.borrow().journal.is_none());
-    // The same with a zero nanosecond part: refused.
-    let w = hooked(&c, op_index(&c, "rename", 0) + 1, |s: &mut State| {
-        s.files.get_mut(b"/w/b.h".as_slice()).unwrap().ino += 1;
-    });
-    assert_eq!(run_write(&c, &w), Err(WriteError::Refused(Refused::StaleFile(b"/w/b.h".to_vec()))));
+    // The same with a zero nanosecond part in both times, or in one of
+    // them: refused.
+    for (m, ct) in [(0, 0), (5, 0), (0, 7)] {
+        let w = hooked(&c, op_index(&c, "rename", 0) + 1, |s: &mut State| {
+            s.files.get_mut(b"/w/b.h".as_slice()).unwrap().ino += 1;
+        });
+        for n in w.0.borrow_mut().files.values_mut() {
+            (n.mtime, n.ctime) = ((1, m), (1, ct));
+        }
+        let want = Err(WriteError::Refused(Refused::StaleFile(b"/w/b.h".to_vec())));
+        assert_eq!(run_write(&c, &w), want, "{m} {ct}");
+    }
 }
 
 /// A save of /w/a.cc: other bytes, newer times.
