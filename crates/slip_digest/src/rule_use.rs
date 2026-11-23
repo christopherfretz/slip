@@ -67,12 +67,11 @@ pub(crate) fn map(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
         return rules.map(key);
     };
     let (mapped, via) = rules.map_traced(key);
-    let trace = match via {
-        Some(r) => Some(Trace::Via(r)),
-        None => {
-            let direct: Vec<usize> = rules.producers(&mapped).collect();
-            (!direct.is_empty()).then_some(Trace::Direct(direct))
-        }
+    let trace = if let Some(r) = via {
+        Some(Trace::Via(r))
+    } else {
+        let direct: Vec<usize> = rules.producers(&mapped).collect();
+        (!direct.is_empty()).then_some(Trace::Direct(direct))
     };
     match trace {
         Some(t) => {

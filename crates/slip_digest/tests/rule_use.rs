@@ -71,32 +71,33 @@ struct Expected {
 fn expected(dir: &Path) -> Result<Expected, String> {
     let text =
         std::fs::read_to_string(dir.join("expect.txt")).map_err(|e| format!("expect.txt: {e}"))?;
-    let mut e = Expected::default();
-    for (i, l) in text.lines().enumerate() {
-        let l = l.trim();
-        if l.is_empty() || l.starts_with('#') {
+    let mut out = Expected::default();
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if let Some(name) = l.strip_prefix("indeterminate ") {
-            e.indeterminate.push(name.trim().to_owned());
+        if let Some(name) = line.strip_prefix("indeterminate ") {
+            out.indeterminate.push(name.trim().to_owned());
             continue;
         }
-        let w: Vec<&str> = l.split_whitespace().collect();
-        let bad = || format!("expect.txt:{}: `{l}` is not a line of tests/rule_use.rs", i + 1);
-        match w.as_slice() {
-            ["use", n, "via", v, "direct", d] => {
-                let n = n.parse().map_err(|_| bad())?;
-                let v = v.parse().map_err(|_| bad())?;
-                let d = d.parse().map_err(|_| bad())?;
-                e.uses.push((n, v, d));
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let bad =
+            || format!("expect.txt:{}: `{line}` is not a line of tests/rule_use.rs", number + 1);
+        match words.as_slice() {
+            ["use", rule, "via", via, "direct", direct] => {
+                let rule = rule.parse().map_err(|_| bad())?;
+                let via = via.parse().map_err(|_| bad())?;
+                let direct = direct.parse().map_err(|_| bad())?;
+                out.uses.push((rule, via, direct));
             }
-            ["collisions", n] => e.collisions = n.parse().map_err(|_| bad())?,
-            ["refused"] => e.refused = true,
+            ["collisions", count] => out.collisions = count.parse().map_err(|_| bad())?,
+            ["refused"] => out.refused = true,
             _ => return Err(bad()),
         }
     }
-    e.indeterminate.sort();
-    Ok(e)
+    out.indeterminate.sort();
+    Ok(out)
 }
 
 /// §9.1's invariants of `uses` under a table of `n` rules.
@@ -137,7 +138,7 @@ fn case(dir: &Path) -> Result<(), String> {
         let plain = records(input, &RuleTable::empty())?;
         if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
             for (side, recs) in [("A", &pre), ("B", &plain)] {
-                for r in recs.iter() {
+                for r in recs {
                     eprintln!("--- {} {side}: {:?} {}", common::rel(dir), r.kind, r.name);
                 }
             }
@@ -232,10 +233,9 @@ fn pair_tests_on_and_off() {
                 let empty = RuleTable::empty();
                 same_but_rule_use(&walk(input, &empty, true), &walk(input, &empty, false))
             });
-            match r {
-                Ok(r) => r.map_err(|e| format!("side {side:?}: {e}"))?,
-                // A side that does not parse is the pair runner's to report.
-                Err(_) => {}
+            // A side that does not parse is the pair runner's to report.
+            if let Ok(r) = r {
+                r.map_err(|e| format!("side {side:?}: {e}"))?;
             }
         }
         Ok(Vec::new())
