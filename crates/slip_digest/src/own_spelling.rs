@@ -644,10 +644,106 @@ fn nns(w: &mut Walk<'_>, s: &mut Stream, n: NnsId) {
         };
     }
     for &n in levels.iter().rev() {
-        if let Nns::Type { prefix: _, ty: t, template_kw: _ } = w.ast.types.nns_view(n) {
-            ty(w, s, t, None);
+        match w.ast.types.nns_view(n) {
+            // A namespace (through an alias or not) and `::` hold nothing
+            // beyond the entity, which the canonical qualifier writes; an
+            // identifier's name is the canonical qualifier's too (its
+            // prefix is a level of its own).
+            Nns::Global
+            | Nns::Namespace { prefix: _, ns: _ }
+            | Nns::NamespaceAlias { prefix: _, alias: _, ns: _ }
+            | Nns::Identifier { prefix: _, name: _ } => {}
+            // A type as written (rule 2: a class, an enumeration, an
+            // alias, a specialisation, `T`, `T::X`, `T::template X<..>`,
+            // `decltype(e)`, `Ts...[i]`).
+            Nns::Type { prefix: _, ty: t, template_kw: _ } => ty(w, s, t, None),
+            // A level the reading does not know: never skipped.
+            Nns::Splice(_) => {
+                s.indeterminate(Cause::Unaccounted("spelling/nns-splice"));
+            }
         }
     }
+}
+
+/// The left-out facts of a qualifier written in an expression the full
+/// walk writes (`Walk::write_written_nns`: an unresolved name's,
+/// `DependentScopeDeclRefExpr`'s, a dependent member access's), read as
+/// written into the unit's list (rule 11).
+pub(crate) fn left_out_of_nns(w: &mut Walk<'_>, s: &mut Stream, n: NnsId) {
+    nns(w, s, n);
+}
+
+/// A using-declaration's qualifier as written (rule 11): its key writes
+/// the canonical qualifier (`KeyKind::UsingDeclaration`), its stream
+/// nothing more, so what the written one holds is read into the list.
+pub(crate) fn using_qualifier(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    if !w.unit_level() {
+        return;
+    }
+    if let Some(q) = w.ast.using_qualifier(d) {
+        nns(w, s, q);
+    }
+}
+
+/// A `using enum` in a templated context (rule 11): Kiln keeps the
+/// enumeration and not the qualifier or alias it was named through
+/// (`Sema::act_on_using_enum`, `kiln_sema/src/using.rs`), which can hold
+/// an instantiation-dependent operand only there, so the unit is
+/// indeterminate rather than equal.
+pub(crate) fn using_enum(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    if w.unit_level() && templated_context(w, d) {
+        s.indeterminate(Cause::Unaccounted("spelling/using-enum"));
+    }
+}
+
+/// `d` is lexically inside a template's pattern or a partial
+/// specialisation, up to the nearest namespace.
+fn templated_context(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let mut c = ast.decls.lexical_ctx(d);
+    for _ in 0..4096 {
+        let Some(x) = c else { return false };
+        let kind = ast.decls.get(x).kind();
+        if matches!(kind, DeclKind::TranslationUnit | DeclKind::Namespace) {
+            return false;
+        }
+        if matches!(
+            kind,
+            DeclKind::ClassTemplatePartialSpecialization
+                | DeclKind::VarTemplatePartialSpecialization
+        ) || ast.described_template(x).is_some()
+        {
+            return true;
+        }
+        c = ast.decls.lexical_ctx(x);
+    }
+    true
+}
+
+/// Whether a qualifier in a profile may hold more than its canonical form
+/// (rule 11): a level that names a type, whose written form can be an
+/// alias, a specialisation or a `decltype` with any operand, or a level
+/// the reading does not know. A function of the canonical qualifier, so
+/// of the profile: every written level has a canonical level of the same
+/// kind (a type's is a type).
+pub(crate) fn nns_left_out(w: &Walk<'_>, n: NnsId) -> bool {
+    let types = &w.ast.types;
+    let mut cur = Some(types.canonical_nns(n));
+    let mut depth = 0usize;
+    while let Some(n) = cur {
+        depth += 1;
+        if depth > 4096 {
+            return true;
+        }
+        cur = match types.nns_view(n) {
+            Nns::Type { prefix: _, ty: _, template_kw: _ } | Nns::Splice(_) => return true,
+            Nns::Namespace { prefix, ns: _ }
+            | Nns::NamespaceAlias { prefix, alias: _, ns: _ }
+            | Nns::Identifier { prefix, name: _ } => prefix,
+            Nns::Global => None,
+        };
+    }
+    false
 }
 
 /// A template name as written: its qualifier.

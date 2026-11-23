@@ -267,13 +267,19 @@ impl Walk<'_> {
                             .indeterminate(Cause::Unaccounted("DeclNode/data-target"));
                     }
                 }
+                if kind == DeclKind::UsingEnum {
+                    crate::own_spelling::using_enum(self, s, d);
+                }
             }
             DeclKind::FileScopeAsm => crate::decl_scope::file_scope_asm(self, s, d),
+            // The qualifier as written: rule 11 (its key writes the
+            // canonical one).
             DeclKind::Using
-            | DeclKind::UsingShadow
-            | DeclKind::ConstructorUsingShadow
             | DeclKind::UnresolvedUsingValue
-            | DeclKind::UnresolvedUsingTypename => {}
+            | DeclKind::UnresolvedUsingTypename => {
+                crate::own_spelling::using_qualifier(self, s, d);
+            }
+            DeclKind::UsingShadow | DeclKind::ConstructorUsingShadow => {}
             DeclKind::Typedef | DeclKind::TypeAlias => crate::decl_class::typedef_data(self, s, d),
             DeclKind::Enum => crate::decl_class::enum_data(self, s, d),
             DeclKind::EnumConstant => crate::decl_class::enumerator_data(self, s, d),

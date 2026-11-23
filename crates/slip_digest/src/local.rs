@@ -800,14 +800,16 @@ pub(crate) fn write_decl(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         // profile (digest-kinds §4.4 "Spellings", rule 4): an unused
         // alias's lookup is still the function's.
         DeclKind::Typedef | DeclKind::TypeAlias => w.decl_stream(s, d, d),
+        // What a qualifier or an enumeration's name holds as written
+        // (digest-kinds §4.4 "Spellings", rule 11).
+        DeclKind::Using | DeclKind::UnresolvedUsingValue | DeclKind::UnresolvedUsingTypename => {
+            crate::own_spelling::using_qualifier(w, s, d);
+        }
+        DeclKind::UsingEnum => crate::own_spelling::using_enum(w, s, d),
         DeclKind::NamespaceAlias
-        | DeclKind::Using
         | DeclKind::UsingShadow
         | DeclKind::ConstructorUsingShadow
-        | DeclKind::UnresolvedUsingValue
-        | DeclKind::UnresolvedUsingTypename
         | DeclKind::UnresolvedUsingIfExists
-        | DeclKind::UsingEnum
         | DeclKind::UsingDirective
         | DeclKind::Empty
         | DeclKind::AccessSpec => {}

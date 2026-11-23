@@ -422,6 +422,9 @@ const PAIR_CEILINGS: &[(&str, usize)] = &[
     // a fold over an operator some declaration names).
     ("Unaccounted(\"spelling/conversion-name\")", 1),
     ("Unaccounted(\"spelling/fold-operator\")", 1),
+    // WP-041's fix round 3: `indeterminate/_/spelling-prefix-splice` (a
+    // splice qualifier, 2 of 33 314).
+    ("Unsupported(\"Nns/Splice\")", 1),
 ];
 
 /// The same for `OWN`.

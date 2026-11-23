@@ -428,6 +428,7 @@ const REACHED: &[&str] = &[
     "spelling/conversion-name",
     "spelling/fold-operator",
     "spelling/full",
+    "spelling/using-enum",
 ];
 
 /// The sources tried for rule 5 through the digest, aimed at a caller

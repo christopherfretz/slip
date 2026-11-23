@@ -477,7 +477,7 @@ pub(crate) fn expr_maps(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     let nns = tables.expr_nns.get(e).copied();
     s.opt(nns.is_some());
     if let Some(n) = nns {
-        w.write_nns(s, n);
+        w.write_written_nns(s, n);
     }
     // oper_lookups: record OperLookups, whose one `in` row `by_expr` is
     // `ref*sorted?`: the declarations of the candidates (`decl`; `found`

@@ -173,7 +173,7 @@ pub(crate) fn dependent_scope_decl_ref_expr(w: &mut Walk<'_>, s: &mut Stream, e:
     check_bits(s, &n, 0, row("ExprNode/DependentScopeDeclRefExpr.bits"));
     check_aux(s, &n, 0, row("ExprNode/DependentScopeDeclRefExpr.aux"));
     match NnsId::try_new(n.a) {
-        Some(qualifier) => w.write_nns(s, qualifier),
+        Some(qualifier) => w.write_written_nns(s, qualifier),
         None => {
             s.uv(0).indeterminate(row("ExprNode/DependentScopeDeclRefExpr.a"));
         }

@@ -626,6 +626,27 @@ impl Walk<'_> {
         self.leave();
     }
 
+    /// `enum Nns` of the canonical form of a qualifier an expression the
+    /// full walk writes holds (digest-kinds §4.4 "Spellings", rule 11).
+    /// Written straight into a unit stream, `n` is the qualifier as the
+    /// unit holds it: its left-out facts are added to the unit's list
+    /// (`own_spelling::left_out_of_nns`). Elsewhere (a key, a type, a
+    /// profile walked in full) they are left out, and the mark is raised
+    /// as profile mode raises it (`own_spelling::nns_left_out`).
+    pub(crate) fn write_written_nns(&mut self, s: &mut Stream, n: NnsId) {
+        if self.unit_level() {
+            self.spelling_off += 1;
+            self.write_nns(s, n);
+            self.spelling_off -= 1;
+            crate::own_spelling::left_out_of_nns(self, s, n);
+        } else {
+            self.write_nns(s, n);
+            if crate::own_spelling::nns_left_out(self, n) {
+                self.left_out += 1;
+            }
+        }
+    }
+
     fn write_nns_opt(&mut self, s: &mut Stream, n: Option<NnsId>) {
         s.opt(n.is_some());
         if let Some(n) = n {

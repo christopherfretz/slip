@@ -1111,7 +1111,8 @@ The rest of profile mode:
   `CXXDeleteExpr`, a fold that rule 9 makes indeterminate, a resolved
   `DeclRefExpr` or `MemberExpr` whose referent is a member of a class or
   enumeration or a specialisation (rule 10: it may have been named through
-  a qualifier or arguments that hold more), and an
+  a qualifier or arguments that hold more), a qualifier with a level that
+  names a type (rule 11), and an
   operation that may round (a `BinaryOperator`, `CompoundAssignOperator`,
   `UnaryOperator` or cast whose type is floating or dependent: rule 8;
   whether the first spelling's node has an `fp_round` does not count). The mark is so a function of the
@@ -1264,6 +1265,22 @@ The rest of profile mode:
      that keeps its referent changes no digest. Profile mode raises the
      mark at every reference whose referent could have been named so (the
      mark above), a function of the referent and so of the profile.
+  11. *Qualifiers of unresolved names and of declarations.* A qualifier the
+     full walk writes in canonical form (`DependentScopeDeclRefExpr.a`,
+     `TemplateTables` `expr_nns` of an unresolved name or a dependent
+     member access) is, in a unit stream, read as written into the list
+     (`Walk::write_written_nns`): each level that names a type by rule 2
+     (a `decltype` by its operand, a specialisation by its arguments, an
+     alias by rule 4); a namespace, a namespace alias, `::` and a
+     dependent identifier hold nothing beyond the canonical level; a
+     level the reading does not know (a splice) is indeterminate,
+     `spelling/nns-splice`. Outside a unit stream it raises the mark, as
+     profile mode does for every qualifier with a level that names a
+     type (a function of the canonical qualifier). A using-declaration's
+     qualifier as written is read the same way into its unit's list (its
+     key writes the canonical one). A `using enum` in a templated context
+     is `spelling/using-enum`: Kiln keeps the enumeration, not the
+     qualifier or alias it was named through.
   A key reads no spelling: two declarations are one entity by
   [temp.over.link] whatever their found sets, and a difference in the
   sets is a difference of the units. No hazard of first spellings is

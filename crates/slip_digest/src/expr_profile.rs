@@ -252,11 +252,16 @@ fn push_list_raw(w: &Walk<'_>, raw: u32, stack: &mut Vec<P>) {
     }
 }
 
-/// The canonical qualifier, or absent (Kiln's `nns_word`).
+/// The canonical qualifier, or absent (Kiln's `nns_word`). A qualifier
+/// with a level that names a type raises the mark: its written form can
+/// hold more than the canonical one (rule 11, `own_spelling::nns_left_out`).
 fn nns_opt(w: &mut Walk<'_>, s: &mut Stream, n: Option<NnsId>) {
     s.opt(n.is_some());
     if let Some(n) = n {
         w.write_nns(s, n);
+        if crate::own_spelling::nns_left_out(w, n) {
+            raise_unlisted(w);
+        }
     }
 }
 
@@ -375,6 +380,11 @@ fn push_args(w: &mut Walk<'_>, s: &mut Stream, l: Option<ArgListId>, stack: &mut
 /// The qualifier of a member access on an object of dependent type, each
 /// level by name (Kiln's `spelled_nns_words`).
 fn spelled_nns(w: &mut Walk<'_>, s: &mut Stream, nns: NnsId) {
+    // A type named by its alias holds what the alias's spelling holds
+    // (rule 11, as `nns_opt`).
+    if crate::own_spelling::nns_left_out(w, nns) {
+        raise_unlisted(w);
+    }
     let ast = w.ast;
     let types = &ast.types;
     let mut chain = Vec::new();
