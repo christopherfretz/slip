@@ -36,7 +36,7 @@ mod entities;
 mod lookup;
 mod order;
 
-pub use calls::{ExtentCensus, NoExtent};
+pub use calls::{CallSite, ExtentCensus, NoExtent};
 pub use order::unit_order;
 
 /// A file of the subject: its path and its bytes.

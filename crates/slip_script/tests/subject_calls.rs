@@ -371,9 +371,8 @@ struct E { int k; E() : k(f(7)) {} };
 int w = [x = f(9)](int y = f(10)) { return x + y; }();
 ";
     with(&[("main.cpp", src)], |_, s| {
-        let want = [
-            "f(1)", "f(2)", "f(8)", "f(3)", "f(4)", "f(5)", "f(6)", "f(7)", "f(9)", "f(10)",
-        ];
+        let want =
+            ["f(1)", "f(2)", "f(8)", "f(3)", "f(4)", "f(5)", "f(6)", "f(7)", "f(9)", "f(10)"];
         assert_eq!(calls(s, "f"), some(&want));
     });
 }
@@ -471,11 +470,44 @@ fn s6_6_rule3_the_extent_of_every_kind_of_the_table() {
         let got: Vec<Option<String>> =
             calls_of(s, one(s, "k")).into_iter().flat_map(|x| args(s, x)).collect();
         let want: Vec<Option<String>> = [
-            "1", "1.5", "'c'", "\"s\" \"t\"", "true", "nullptr", "__null", "this", "v", "N::v",
-            "::v", "o.x", "p->x", "x", "S::sx", "(v)", "[] { return 1; }",
-            "static_cast<long>(v)", "sizeof(int)", "sizeof v", "int(2)", "S(1)", "S{1}",
-            "(long)v", "f(1)", "o.f(2)", "w[1]", "-v", "!v", "v++", "v + 1", "v += 1",
-            "v ? 1 : 2", "o + t", "-o", "o++", "o(3)", "o[4]",
+            "1",
+            "1.5",
+            "'c'",
+            "\"s\" \"t\"",
+            "true",
+            "nullptr",
+            "__null",
+            "this",
+            "v",
+            "N::v",
+            "::v",
+            "o.x",
+            "p->x",
+            "x",
+            "S::sx",
+            "(v)",
+            "[] { return 1; }",
+            "static_cast<long>(v)",
+            "sizeof(int)",
+            "sizeof v",
+            "int(2)",
+            "S(1)",
+            "S{1}",
+            "(long)v",
+            "f(1)",
+            "o.f(2)",
+            "w[1]",
+            "-v",
+            "!v",
+            "v++",
+            "v + 1",
+            "v += 1",
+            "v ? 1 : 2",
+            "o + t",
+            "-o",
+            "o++",
+            "o(3)",
+            "o[4]",
         ]
         .iter()
         .map(|t| Some((*t).to_owned()))
@@ -522,6 +554,24 @@ int g(S s) { return k(t<int>) + t<long>(1) + k(&S::operator+) + s.operator+(1); 
         assert_eq!(args(s, xs[0]), vec![None]);
         assert_eq!(calls(s, "t"), some(&["t<long>(1)"]));
         assert_eq!(args(s, xs[1]), vec![None]);
+    });
+}
+
+/// An overloaded `->`: the member call through it begins at the object
+/// (the operator call's first operand) and has its extent; a member
+/// access through it ends at the member name, so `p->x` has one too.
+#[test]
+fn s6_6_rule3_a_call_through_an_overloaded_arrow() {
+    let src = "\
+struct S { int f(int); int x; };
+struct P { S* operator->(); };
+int k(int);
+int g(P p) { return p->f(1) + k(p->x); }
+";
+    with(&[("main.cpp", src)], |_, s| {
+        assert_eq!(calls(s, "S::f"), some(&["p->f(1)"]));
+        let x = calls_of(s, one(s, "k"))[0];
+        assert_eq!(args(s, x), some(&["p->x"]));
     });
 }
 
@@ -605,7 +655,8 @@ int g(T t, R r) { for (int x : r) i(x); return i(t); }
 #[test]
 fn wp084_point2_a_header_entered_twice() {
     let h = "int y = f(1);\n";
-    let main = "int f(int);\nnamespace a {\n#include \"h.h\"\n}\nnamespace b {\n#include \"h.h\"\n}\n";
+    let main =
+        "int f(int);\nnamespace a {\n#include \"h.h\"\n}\nnamespace b {\n#include \"h.h\"\n}\n";
     with(&[("main.cpp", main), ("h.h", h)], |_, s| {
         let xs = calls_of(s, one(s, "f"));
         assert_eq!(xs.len(), 2);
@@ -787,4 +838,757 @@ fn s5_1_only_calls_and_arguments_are_live() {
         assert_eq!(s.callee_reference(a), None);
         assert_eq!(s.kind_bits(Value::Expression(a)), wire::KIND_EXPRESSION);
     });
+}
+
+// ---------------------------------------------------------------------------
+// Item 7: the differential against clang 19's `-ast-dump=json`.
+//
+// Every snippet of the digest's pair tests, both sides, is parsed by Kiln
+// (through the subject) and by clang 19. A call is keyed by the file and
+// offset of its `)`: the one Kiln stores, and the end of the range of
+// clang's `CallExpr` or `CXXMemberCallExpr` whose callee (after implicit
+// casts and parentheses) is a `DeclRefExpr` or a `MemberExpr`. A call
+// clang has not is counted and printed, not an error: clang 19 skips the
+// code under `__has_builtin` of a clang 22 builtin Kiln has, and its dump
+// leaves out the elements of an initializer list with an array filler.
+// Every non-null extent
+// of a call and of each of its arguments must be the range clang gives
+// the same node. A range clang gives through a macro is not compared.
+
+/// The digest's pair-test roots (`crates/slip_digest/tests/`).
+const PAIR_ROOTS: &[&str] = &["differ", "equal", "demand", "indeterminate"];
+
+/// The clang the differential runs.
+const CLANG: &str = "clang++-19";
+
+/// One side of a pair test (as `crates/slip_kiln/tests/ranges.rs`).
+#[derive(Clone, Debug)]
+struct Side {
+    files: Vec<(String, String)>,
+    std: String,
+    args: Vec<String>,
+    target: Option<String>,
+}
+
+/// Every directory under `root` holding a `t.cpp`, an `a.cpp` or a
+/// `b.cpp`, sorted.
+fn pair_dirs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let mut mains = false;
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if matches!(e.file_name().to_str(), Some("t.cpp" | "a.cpp" | "b.cpp")) {
+                mains = true;
+            }
+        }
+        if mains {
+            out.push(d);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The two sides of a pair test as the digest's runner builds them
+/// (`crates/slip_digest/tests/common/mod.rs`): `side.h` for a `t.cpp`,
+/// every other file of the directory, the support files it lacks, and the
+/// header lines of the main file. The main file is `main.cpp`.
+fn pair_sides(dir: &std::path::Path, support: &[(String, String)]) -> Vec<Side> {
+    use std::collections::BTreeMap;
+    let mut all: BTreeMap<String, String> = BTreeMap::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if e.path().is_file()
+            && let (Some(n), Ok(t)) =
+                (e.file_name().to_str().map(str::to_owned), std::fs::read_to_string(e.path()))
+        {
+            all.insert(n, t);
+        }
+    }
+    let mut sides = Vec::new();
+    for side in ["a", "b"] {
+        let mut files = Vec::new();
+        let main = if let Some(t) = all.get("t.cpp") {
+            t.clone()
+        } else if let Some(m) = all.get(&format!("{side}.cpp")) {
+            m.clone()
+        } else {
+            continue;
+        };
+        files.push(("main.cpp".to_owned(), main.clone()));
+        if all.contains_key("t.cpp") {
+            files
+                .push(("side.h".to_owned(), if side == "a" { "" } else { "#define B 1\n" }.into()));
+        }
+        for (n, t) in &all {
+            if !matches!(n.as_str(), "t.cpp" | "a.cpp" | "b.cpp" | "expect.txt") {
+                files.push((n.clone(), t.clone()));
+            }
+        }
+        for (n, t) in support {
+            if !all.contains_key(n) {
+                files.push((n.clone(), t.clone()));
+            }
+        }
+        let mut s = Side { files, std: "c++20".to_owned(), args: Vec::new(), target: None };
+        for line in main.lines() {
+            let line = line.trim_end();
+            if line == "#include \"side.h\"" {
+                continue;
+            }
+            let Some((key, value)) = line.strip_prefix("// ").and_then(|r| r.split_once(": "))
+            else {
+                break;
+            };
+            match key {
+                "std" => value.clone_into(&mut s.std),
+                "args" => {
+                    s.args =
+                        value.split(' ').filter(|a| !a.is_empty()).map(str::to_owned).collect();
+                }
+                "target" => s.target = Some(value.to_owned()),
+                "errors" => {}
+                _ => break,
+            }
+        }
+        sides.push(s);
+    }
+    sides
+}
+
+/// The number of threads: `SLIP_TEST_THREADS`, else at most 4.
+fn test_threads() -> usize {
+    match std::env::var("SLIP_TEST_THREADS") {
+        Ok(v) => v.parse::<usize>().expect("SLIP_TEST_THREADS: a positive number").max(1),
+        Err(_) => std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(4),
+    }
+}
+
+/// A JSON value, objects in document order.
+enum J {
+    Obj(Vec<(String, J)>),
+    Arr(Vec<J>),
+    Str(String),
+    Num(i64),
+    Other,
+}
+
+impl J {
+    fn get(&self, key: &str) -> Option<&J> {
+        match self {
+            J::Obj(kv) => kv.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+}
+
+/// A JSON reader for clang's dump (recursive: run on a thread of
+/// `slip_digest::STACK_SIZE`).
+struct Reader<'a> {
+    b: &'a [u8],
+    i: usize,
+}
+
+impl Reader<'_> {
+    fn ws(&mut self) {
+        while self.b.get(self.i).is_some_and(u8::is_ascii_whitespace) {
+            self.i += 1;
+        }
+    }
+
+    fn value(&mut self) -> J {
+        self.ws();
+        match self.b[self.i] {
+            b'{' => {
+                self.i += 1;
+                let mut kv = Vec::new();
+                loop {
+                    self.ws();
+                    if self.b[self.i] == b'}' {
+                        self.i += 1;
+                        break;
+                    }
+                    if self.b[self.i] == b',' {
+                        self.i += 1;
+                        self.ws();
+                    }
+                    let k = self.string();
+                    self.ws();
+                    assert_eq!(self.b[self.i], b':');
+                    self.i += 1;
+                    kv.push((k, self.value()));
+                }
+                J::Obj(kv)
+            }
+            b'[' => {
+                self.i += 1;
+                let mut v = Vec::new();
+                loop {
+                    self.ws();
+                    match self.b[self.i] {
+                        b']' => {
+                            self.i += 1;
+                            break;
+                        }
+                        b',' => self.i += 1,
+                        _ => v.push(self.value()),
+                    }
+                }
+                J::Arr(v)
+            }
+            b'"' => J::Str(self.string()),
+            _ => {
+                let start = self.i;
+                while !matches!(self.b[self.i], b',' | b'}' | b']')
+                    && !self.b[self.i].is_ascii_whitespace()
+                {
+                    self.i += 1;
+                }
+                std::str::from_utf8(&self.b[start..self.i])
+                    .ok()
+                    .and_then(|t| t.parse().ok())
+                    .map_or(J::Other, J::Num)
+            }
+        }
+    }
+
+    fn string(&mut self) -> String {
+        assert_eq!(self.b[self.i], b'"');
+        self.i += 1;
+        let mut out = Vec::new();
+        loop {
+            match self.b[self.i] {
+                b'"' => {
+                    self.i += 1;
+                    break;
+                }
+                b'\\' => {
+                    let c = self.b[self.i + 1];
+                    self.i += 2;
+                    match c {
+                        b'n' => out.push(b'\n'),
+                        b't' => out.push(b'\t'),
+                        b'r' => out.push(b'\r'),
+                        b'b' => out.push(8),
+                        b'f' => out.push(12),
+                        b'u' => {
+                            let h = std::str::from_utf8(&self.b[self.i..self.i + 4]).unwrap();
+                            let c = char::from_u32(u32::from_str_radix(h, 16).unwrap())
+                                .unwrap_or('\u{fffd}');
+                            out.extend_from_slice(c.to_string().as_bytes());
+                            self.i += 4;
+                        }
+                        c => out.push(c),
+                    }
+                }
+                c => {
+                    out.push(c);
+                    self.i += 1;
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+}
+
+/// A location of clang's dump: a file, a byte offset and the length of
+/// the token there; or one through a macro; or none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum At {
+    File(String, u32, u32),
+    Macro,
+    None,
+}
+
+/// A node of clang's dump: its kind, range and children.
+struct Node {
+    kind: String,
+    begin: At,
+    end: At,
+    inner: Vec<Node>,
+}
+
+/// A path as a snippet path: `.` and `..` resolved by their spelling.
+fn snippet_path(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for c in path.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            c => parts.push(c),
+        }
+    }
+    parts.join("/")
+}
+
+/// The dump prints a location's file only when it differs from the last
+/// one printed, in document order (`JSONNodeDumper::writeBareSourceLocation`;
+/// `includedFrom` is not a location and does not count).
+struct Dump {
+    file: Option<String>,
+}
+
+impl Dump {
+    fn bare(&mut self, j: &J) -> At {
+        let J::Obj(kv) = j else { return At::None };
+        if j.get("spellingLoc").is_some() || j.get("expansionLoc").is_some() {
+            for (k, v) in kv {
+                if k == "spellingLoc" || k == "expansionLoc" {
+                    self.bare(v);
+                }
+            }
+            return At::Macro;
+        }
+        let (mut off, mut len) = (None, None);
+        for (k, v) in kv {
+            match (k.as_str(), v) {
+                ("offset", J::Num(n)) => off = u32::try_from(*n).ok(),
+                ("tokLen", J::Num(n)) => len = u32::try_from(*n).ok(),
+                ("file", J::Str(f)) => self.file = Some(snippet_path(f)),
+                _ => {}
+            }
+        }
+        match (off, len, &self.file) {
+            (Some(o), Some(l), Some(f)) => At::File(f.clone(), o, l),
+            _ => At::None,
+        }
+    }
+
+    /// Every location under `j` that is not a node's, for the file state.
+    fn scan(&mut self, j: &J) {
+        match j {
+            J::Obj(_) if j.get("offset").is_some() || j.get("spellingLoc").is_some() => {
+                self.bare(j);
+            }
+            J::Obj(kv) => kv.iter().for_each(|(_, v)| self.scan(v)),
+            J::Arr(v) => v.iter().for_each(|v| self.scan(v)),
+            _ => {}
+        }
+    }
+
+    fn node(&mut self, j: &J) -> Node {
+        let mut n = Node { kind: String::new(), begin: At::None, end: At::None, inner: Vec::new() };
+        let J::Obj(kv) = j else { return n };
+        for (k, v) in kv {
+            match (k.as_str(), v) {
+                ("kind", J::Str(s)) => n.kind.clone_from(s),
+                ("range", J::Obj(r)) => {
+                    for (k, v) in r {
+                        match k.as_str() {
+                            "begin" => n.begin = self.bare(v),
+                            "end" => n.end = self.bare(v),
+                            _ => self.scan(v),
+                        }
+                    }
+                }
+                ("inner", J::Arr(v)) => n.inner = v.iter().map(|c| self.node(c)).collect(),
+                _ => self.scan(v),
+            }
+        }
+        n
+    }
+}
+
+/// A range as (file, first byte, one past the last), when its two ends
+/// are in one file.
+type ClangRange = Option<(String, u32, u32)>;
+
+fn clang_range(n: &Node) -> ClangRange {
+    match (&n.begin, &n.end) {
+        (At::File(f, lo, _), At::File(g, e, len)) if f == g => Some((f.clone(), *lo, e + len)),
+        _ => None,
+    }
+}
+
+/// Clang's calls of a unit by (file, offset of the `)`): the call's
+/// range and its arguments' ranges.
+type ClangCalls = std::collections::HashMap<(String, u32), Vec<(ClangRange, Vec<ClangRange>)>>;
+
+fn clang_calls(n: &Node, out: &mut ClangCalls) {
+    if matches!(n.kind.as_str(), "CallExpr" | "CXXMemberCallExpr") && !n.inner.is_empty() {
+        let mut callee = &n.inner[0];
+        while matches!(callee.kind.as_str(), "ImplicitCastExpr" | "ParenExpr")
+            && callee.inner.len() == 1
+        {
+            callee = &callee.inner[0];
+        }
+        if matches!(callee.kind.as_str(), "DeclRefExpr" | "MemberExpr")
+            && let At::File(f, close, _) = &n.end
+        {
+            // An explicit object argument precedes the callee.
+            let object = |a: &&Node| {
+                matches!((&a.begin, &callee.begin), (At::File(g, lo, _), At::File(h, at, _))
+                    if g == f && h == f && lo < at)
+            };
+            let written: Vec<&Node> =
+                n.inner[1..].iter().filter(|a| a.kind != "CXXDefaultArgExpr").collect();
+            let mut call = clang_range(n);
+            // Clang 19 begins a call with an explicit object at the
+            // callee (`CallExpr::getBeginLoc`; clang 20 begins it at the
+            // object): the call's first token is the object's.
+            if let (Some(o), Some((_, lo, _))) =
+                (written.first().filter(|o| object(o)), call.as_mut())
+                && let At::File(_, at, _) = &o.begin
+            {
+                *lo = *at;
+            }
+            let args = written.into_iter().filter(|a| !object(a)).map(clang_range).collect();
+            out.entry((f.clone(), *close)).or_default().push((call, args));
+        }
+    }
+    for c in &n.inner {
+        clang_calls(c, out);
+    }
+}
+
+/// What the differential counted.
+#[derive(Default)]
+struct Diff {
+    units: u64,
+    kiln_errors: u64,
+    clang_errors: u64,
+    calls: u64,
+    closed_by_macro: u64,
+    unmatched: u64,
+    compared: u64,
+    null: u64,
+    clang_macro: u64,
+    differences: Vec<String>,
+    unmatched_at: Vec<String>,
+}
+
+impl Diff {
+    fn add(&mut self, o: Diff) {
+        self.units += o.units;
+        self.kiln_errors += o.kiln_errors;
+        self.clang_errors += o.clang_errors;
+        self.calls += o.calls;
+        self.closed_by_macro += o.closed_by_macro;
+        self.unmatched += o.unmatched;
+        self.compared += o.compared;
+        self.null += o.null;
+        self.clang_macro += o.clang_macro;
+        self.differences.extend(o.differences);
+        self.unmatched_at.extend(o.unmatched_at);
+    }
+}
+
+/// Clang's dump of a side, or `None` when clang reports an error.
+fn clang_dump(side: &Side, dir: &std::path::Path) -> Option<Vec<u8>> {
+    for (p, t) in &side.files {
+        let path = dir.join(p);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, t).unwrap();
+    }
+    let target = side.target.as_deref().unwrap_or("x86_64-unknown-linux-gnu");
+    let out = std::process::Command::new(CLANG)
+        .current_dir(dir)
+        .arg(format!("-std={}", side.std))
+        .arg(format!("--target={target}"))
+        .args(&side.args)
+        .args(["-nostdinc", "-nostdinc++", "-I.", "-w", "-fsyntax-only"])
+        .args(["-Xclang", "-ast-dump=json", "main.cpp"])
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    out.status.success().then_some(out.stdout)
+}
+
+/// The differential of one side.
+fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
+    let mut d = Diff { units: 1, ..Diff::default() };
+    let Some(json) = clang_dump(side, dir) else {
+        d.clang_errors = 1;
+        return d;
+    };
+    let mut clang = ClangCalls::new();
+    let root = Reader { b: &json, i: 0 }.value();
+    clang_calls(&Dump { file: None }.node(&root), &mut clang);
+    let files: Vec<(&str, &str)> =
+        side.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: &side.std };
+    let args: Vec<&str> = side.args.iter().map(String::as_str).collect();
+    let extra = Extra { args: &args, target: side.target.as_deref() };
+    let parsed = parse_with_tables(&snippet, &extra, |p| {
+        if p.errors > 0 {
+            d.kiln_errors = 1;
+            return;
+        }
+        let owned = |_: &[u8]| true;
+        let s = KilnSubject::from_snippet(p, &owned);
+        let ours = |r: Option<Range>| {
+            r.map(|r| {
+                let path = String::from_utf8_lossy(s.file_path(r.file).unwrap()).into_owned();
+                (path, r.lo, r.hi)
+            })
+        };
+        for (x, named) in s.call_sites() {
+            d.calls += 1;
+            let Some((path, at)) = named else {
+                d.closed_by_macro += 1;
+                continue;
+            };
+            let key = (String::from_utf8_lossy(path).into_owned(), at);
+            let Some(cands) = clang.get(&key) else {
+                d.unmatched += 1;
+                d.unmatched_at.push(format!("{label}: {}:{at}", key.0));
+                continue;
+            };
+            let args = s.arguments(x).unwrap();
+            if !cands.iter().any(|(_, a)| a.len() == args.len()) {
+                d.differences.push(format!(
+                    "{label}: {}:{at}: {} arguments, clang {:?}",
+                    key.0,
+                    args.len(),
+                    cands.iter().map(|(_, a)| a.len()).collect::<Vec<_>>()
+                ));
+                continue;
+            }
+            let mut check = |mine: ClangRange, theirs: Vec<&ClangRange>, what: &str| {
+                let Some(m) = mine else {
+                    d.null += 1;
+                    return;
+                };
+                if theirs.iter().any(|t| t.as_ref() == Some(&m)) {
+                    d.compared += 1;
+                } else if theirs.iter().all(|t| t.is_none()) {
+                    d.clang_macro += 1;
+                } else {
+                    d.differences.push(format!("{label}: {what} {m:?}, clang {theirs:?}"));
+                }
+            };
+            check(ours(range(&s, x)), cands.iter().map(|(c, _)| c).collect(), "call");
+            for (i, &a) in args.iter().enumerate() {
+                let theirs = cands.iter().filter_map(|(_, v)| v.get(i)).collect();
+                check(ours(range(&s, a)), theirs, &format!("argument {i} of {}:{at}", key.0));
+            }
+        }
+    });
+    if parsed.is_err() {
+        d.kiln_errors = 1;
+    }
+    d
+}
+
+/// Kiln's own C++ tests as sides: every `*.cpp` directly under `dir`, as
+/// `main.cpp`, under `std`, with the headers of `dir/Inputs`.
+fn kiln_sides(dir: &std::path::Path, std: &str) -> Vec<(String, Vec<Side>)> {
+    let read = |d: &std::path::Path, ext: &str| -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = std::fs::read_dir(d)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == ext))
+            .filter_map(|e| {
+                Some((e.file_name().to_str()?.to_owned(), std::fs::read_to_string(e.path()).ok()?))
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let inputs: Vec<(String, String)> = read(&dir.join("Inputs"), "h")
+        .into_iter()
+        .map(|(n, t)| (format!("Inputs/{n}"), t))
+        .collect();
+    read(dir, "cpp")
+        .into_iter()
+        .map(|(n, t)| {
+            let mut files = vec![("main.cpp".to_owned(), t)];
+            files.extend(inputs.iter().cloned());
+            let side = Side { files, std: std.to_owned(), args: Vec::new(), target: None };
+            (format!("{}/{n}", dir.display()), vec![side])
+        })
+        .collect()
+}
+
+/// Item 7: the extents of calls and arguments against clang 19, over
+/// every pair-test snippet of the digest (both sides) and every test of
+/// Kiln's `tests/codegen` (C++26); with `SLIP_WP086_CONFORMANCE=1`, also
+/// every test of Kiln's `tests/conformance`. A missing clang is a
+/// visible skip, and an error under `SLIP_REQUIRE_ALL=1`.
+#[test]
+fn item7_differential_against_clang() {
+    let version = std::process::Command::new(CLANG).arg("--version").output();
+    let Ok(version) = version.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()) else {
+        let reason = format!("no {CLANG} on PATH");
+        assert!(
+            std::env::var_os("SLIP_REQUIRE_ALL").is_none_or(|v| v != "1"),
+            "SLIP_REQUIRE_ALL=1 and {reason}"
+        );
+        eprintln!("SKIP subject_calls.rs item7_differential_against_clang: {reason}");
+        return;
+    };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tests = root.join("../slip_digest/tests");
+    let mut support: Vec<(String, String)> = Vec::new();
+    for e in std::fs::read_dir(tests.join("support")).into_iter().flatten().flatten() {
+        if let (Some(n), Ok(t)) =
+            (e.file_name().to_str().map(str::to_owned), std::fs::read_to_string(e.path()))
+        {
+            support.push((n, t));
+        }
+    }
+    support.sort();
+    let dirs: Vec<_> = PAIR_ROOTS.iter().flat_map(|r| pair_dirs(&tests.join(r))).collect();
+    assert!(dirs.len() > 1000, "found only {} pair-test directories", dirs.len());
+    let mut jobs: Vec<(String, Vec<Side>)> = dirs
+        .iter()
+        .map(|d| {
+            let label = d.strip_prefix(&tests).unwrap_or(d).display().to_string();
+            (label, pair_sides(d, &support))
+        })
+        .collect();
+    let kiln = root.join("../../kiln/tests");
+    let codegen = kiln_sides(&kiln.join("codegen"), "c++26");
+    assert!(codegen.len() > 500, "found only {} tests in Kiln's tests/codegen", codegen.len());
+    jobs.extend(codegen);
+    if std::env::var_os("SLIP_WP086_CONFORMANCE").is_some_and(|v| v == "1") {
+        let mut sub: Vec<_> = std::fs::read_dir(kiln.join("conformance"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        sub.sort();
+        for d in sub {
+            jobs.extend(kiln_sides(&d, "c++26"));
+        }
+    }
+    let scratch = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp086-differential");
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let diffs: Vec<Diff> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..test_threads())
+            .map(|w| {
+                let (jobs, scratch, next) = (&jobs, &scratch, &next);
+                std::thread::Builder::new()
+                    .stack_size(slip_digest::STACK_SIZE)
+                    .spawn_scoped(scope, move || {
+                        let mut d = Diff::default();
+                        loop {
+                            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((label, sides)) = jobs.get(k) else { break };
+                            for (n, side) in sides.iter().enumerate() {
+                                let at = scratch.join(format!("{w}"));
+                                d.add(differential(side, &at, &format!("{label} side {n}")));
+                            }
+                        }
+                        d
+                    })
+                    .unwrap()
+            })
+            .collect();
+        workers.into_iter().map(|w| w.join().unwrap()).collect()
+    });
+    let mut d = Diff::default();
+    for x in diffs {
+        d.add(x);
+    }
+    d.differences.sort();
+    d.unmatched_at.sort();
+    eprintln!(
+        "item 7 against {}: {} tests, {} units ({} with a Kiln error, {} with a clang \
+         error); {} calls ({} closed by a macro's `)`, {} with no clang call); extents: {} equal, {} \
+         null, {} clang's through a macro, {} different",
+        version.lines().next().unwrap_or(CLANG),
+        jobs.len(),
+        d.units,
+        d.kiln_errors,
+        d.clang_errors,
+        d.calls,
+        d.closed_by_macro,
+        d.unmatched,
+        d.compared,
+        d.null,
+        d.clang_macro,
+        d.differences.len()
+    );
+    for u in d.unmatched_at.iter().take(40) {
+        eprintln!("no clang call: {u}");
+    }
+    assert!(d.compared > 1000, "only {} extents compared", d.compared);
+    assert!(d.differences.is_empty(), "{}", d.differences.join("\n"));
+}
+
+// ---------------------------------------------------------------------------
+// Measurement (`docs/wp/WP-086.md`): null extents on three LLVM units, by
+// the kind of expression where the rule stopped. Not part of the gate.
+
+/// The census of `$SLIP_CORPUS_DIR/llvm` units `SLIP_WP086_UNITS` (paths
+/// under `src/`, separated by `,`; by default a small, a typical and a
+/// large one). Prints the numbers.
+#[test]
+#[ignore = "a measurement: run by hand on the corpus"]
+fn measure_llvm_null_extents() {
+    use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase};
+    let corpus =
+        std::path::PathBuf::from(std::env::var("SLIP_CORPUS_DIR").expect("SLIP_CORPUS_DIR"))
+            .join("llvm");
+    let db = std::fs::read(corpus.join("build/compile_commands.json")).expect("the database");
+    let db = slip_model::json::parse(&db).expect("the database is JSON");
+    let units = std::env::var("SLIP_WP086_UNITS").unwrap_or_else(|_| {
+        "llvm/lib/Support/StringRef.cpp,llvm/lib/IR/Instructions.cpp,clang/lib/Sema/SemaExpr.cpp"
+            .to_owned()
+    });
+    for unit in units.split(',') {
+        let file = corpus.join("src").join(unit);
+        let entry = db
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e.get("file").and_then(|f| f.as_str()) == file.to_str())
+            .unwrap_or_else(|| panic!("{unit}: not in the database"));
+        let command = entry.get("command").and_then(|c| c.as_str()).expect("a command");
+        assert!(!command.contains(['"', '\'', '\\']), "{unit}: a command needing a shell");
+        let observer = Observer {
+            id: Digest([9; 32]),
+            command: Command {
+                directory: entry
+                    .get("directory")
+                    .and_then(|d| d.as_str())
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec(),
+                argv: command.split_ascii_whitespace().map(|a| a.as_bytes().to_vec()).collect(),
+                env: Vec::new(),
+            },
+            language: Language::Cxx,
+            main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
+            cost_hint: 1,
+            origins: vec![Origin { configuration: 0, entry: 0 }],
+        };
+        let mut options = slip_kiln::ParseOptions::default();
+        options.written = true;
+        let t0 = std::time::Instant::now();
+        let (shard, run) = slip_kiln::parse_observer_with(&observer, Phase::Map, 0, options, |u| {
+            let owned = |_: &[u8]| true;
+            let s = KilnSubject::new(u, &owned);
+            let t = std::time::Instant::now();
+            let c = s.extent_census();
+            (c, t.elapsed())
+        })
+        .expect("the unit parses");
+        println!("{unit}: outcome {:?}", shard.outcome);
+        let (census, census_time) = run.expect("the closure ran");
+        println!(
+            "{unit}: {} calls, {} null; {} arguments, {} null; {} without a reference; \
+             census {census_time:?}, all {:?}",
+            census.calls,
+            census.calls_null.values().sum::<u64>(),
+            census.arguments,
+            census.arguments_null.values().sum::<u64>(),
+            census.without_reference,
+            t0.elapsed()
+        );
+        for (what, map) in [("call", &census.calls_null), ("argument", &census.arguments_null)] {
+            for (w, n) in map {
+                println!("  {what}: {:?} {}: {n}", w.kind, w.reason);
+            }
+        }
+    }
 }

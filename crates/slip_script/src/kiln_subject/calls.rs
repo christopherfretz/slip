@@ -99,6 +99,10 @@ impl Ord for NoExtent {
     }
 }
 
+/// A call and where its `)` is: the subject path and byte offset
+/// ([`KilnSubject::call_sites`]).
+pub type CallSite<'a> = (Expression, Option<(&'a [u8], u32)>);
+
 /// The census of extents over the live expressions of a subject
 /// ([`KilnSubject::extent_census`]): for tests, and for the hand-back's
 /// counts on real units.
@@ -301,14 +305,17 @@ impl KilnSubject<'_> {
         let stmts = &ast.stmts;
         let lists = &ast.lists;
         let mut items: Vec<Item> = Vec::new();
-        let st = |s: Option<StmtId>, items: &mut Vec<Item>| items.extend(s.map(|s| Item::Stmt(s, h)));
-        let ex = |e: Option<ExprId>, items: &mut Vec<Item>| items.extend(e.map(|e| Item::Expr(e, h)));
+        let st =
+            |s: Option<StmtId>, items: &mut Vec<Item>| items.extend(s.map(|s| Item::Stmt(s, h)));
+        let ex =
+            |e: Option<ExprId>, items: &mut Vec<Item>| items.extend(e.map(|e| Item::Expr(e, h)));
         let var = |d: Option<DeclId>, items: &mut Vec<Item>| {
             items.extend(d.map(|d| Item::Decl(d, Some(h))));
         };
         match stmts.get(s).kind() {
             StmtKind::CompoundStmt => {
-                items.extend(lists.iter::<StmtId>(stmts.compound_body(s)).map(|c| Item::Stmt(c, h)));
+                items
+                    .extend(lists.iter::<StmtId>(stmts.compound_body(s)).map(|c| Item::Stmt(c, h)));
             }
             StmtKind::DeclStmt => {
                 items.extend(
@@ -727,7 +734,9 @@ impl KilnSubject<'_> {
                         Some(OpForm::Binary) => arg(1)?,
                         Some(OpForm::Postfix) => return Ok(n.loc()),
                         Some(OpForm::Closed) => return stored(),
-                        None => return Err(NoExtent::new(kind, "operator form")),
+                        Some(OpForm::Arrow) | None => {
+                            return Err(NoExtent::new(kind, "operator form"));
+                        }
                     }
                 }
                 _ => return Err(NoExtent::new(kind, "kind outside the table")),
@@ -735,14 +744,13 @@ impl KilnSubject<'_> {
         }
     }
 
-    /// The form of an overloaded operator written as an operator; `None`
-    /// for `->` (whose last token is the member's, not the node's).
+    /// The form of an overloaded operator written as an operator.
     fn operator_form(&self, e: ExprId) -> Option<OpForm> {
         let exprs = &self.ast.exprs;
         let op = exprs.operator_call_op(e);
         let n = self.ast.lists.get(exprs.call_args(e)).len();
         match op {
-            Op::Arrow => None,
+            Op::Arrow => Some(OpForm::Arrow),
             Op::Call | Op::Subscript => Some(OpForm::Closed),
             Op::PlusPlus | Op::MinusMinus if n == 2 => Some(OpForm::Postfix),
             _ if n == 1 => Some(OpForm::Prefix),
@@ -848,19 +856,16 @@ impl KilnSubject<'_> {
         let ast = self.ast;
         let n = ast.exprs.get(e);
         let at = n.loc();
-        let named = self.refs.iter().any(|r| {
-            r.first == at && !r.global && matches!(r.role, Role::Type | Role::Template)
-        });
+        let named = self
+            .refs
+            .iter()
+            .any(|r| r.first == at && !r.global && matches!(r.role, Role::Type | Role::Template));
         // A type written with keywords (`int(2)`, `unsigned(3)`): the
         // node's type is the builtin type itself, no sugar (a typedef, a
         // `decltype` keeps its sugar on the node).
         let keyword = n.kind() == ExprKind::CXXFunctionalCastExpr
             && ast.types.kind(n.ty().ty()) == TypeKind::Builtin;
-        if named || keyword {
-            Ok(at)
-        } else {
-            Err(NoExtent::new(n.kind(), "type not named"))
-        }
+        if named || keyword { Ok(at) } else { Err(NoExtent::new(n.kind(), "type not named")) }
     }
 
     /// The range of `e`'s tokens, or why there is none.
@@ -870,12 +875,18 @@ impl KilnSubject<'_> {
         let last = self.last_token(e)?;
         let r = ranges::file_range_of_tokens(&self.tokens, first, last)
             .ok_or(NoExtent::new(kind, "no range of tier 0 or 1"))?;
-        self.subject_range(r.file, r.lo, r.hi).ok_or(NoExtent::new(kind, "not a file of the subject"))
+        self.subject_range(r.file, r.lo, r.hi)
+            .ok_or(NoExtent::new(kind, "not a file of the subject"))
     }
 
     /// The range of a file range, when its file is a file of the subject
     /// whose bytes are Kiln's text (WP-084 point 6).
-    fn subject_range(&self, file: slip_kiln::kiln::source::FileId, lo: u32, hi: u32) -> Option<Range> {
+    fn subject_range(
+        &self,
+        file: slip_kiln::kiln::source::FileId,
+        lo: u32,
+        hi: u32,
+    ) -> Option<Range> {
         let f = File(file.index() as u32 + 1);
         let (_, bytes) = self.file(f)?;
         matches!(bytes, std::borrow::Cow::Borrowed(_)).then_some(Range { file: f, lo, hi })
@@ -1024,6 +1035,9 @@ enum OpForm {
     Binary,
     /// `a(x)`, `a[i]`: the operand, then a closing token Kiln stores.
     Closed,
+    /// `a->m`: the operand, then `->`; the member's name, the last token
+    /// of the member access, is not the operator call's.
+    Arrow,
 }
 
 impl KilnSubject<'_> {
@@ -1047,7 +1061,8 @@ impl KilnSubject<'_> {
     /// Why each call and each argument of a call has no extent.
     pub fn extent_census(&self) -> ExtentCensus {
         let index = self.call_index();
-        let mut c = ExtentCensus { without_reference: index.without_reference, ..Default::default() };
+        let mut c =
+            ExtentCensus { without_reference: index.without_reference, ..Default::default() };
         for call in &index.calls {
             c.calls += 1;
             if let Err(w) = self.expr_range(call.expr) {
@@ -1061,6 +1076,29 @@ impl KilnSubject<'_> {
             }
         }
         c
+    }
+
+    /// Every call in unit order, with the subject path and byte offset of
+    /// the `)` Kiln stores for it when that token was spelled in a file
+    /// rather than produced by a macro. For tests: the differential
+    /// against another front end keys calls by their `)`.
+    pub fn call_sites(&self) -> Vec<CallSite<'_>> {
+        self.call_index()
+            .calls
+            .iter()
+            .map(|c| {
+                let close = self.ast.exprs.end_loc(c.expr).filter(|l| !l.is_macro());
+                let at = close
+                    .and_then(|l| self.sm.offset_of(l))
+                    .and_then(|(f, o)| Some((self.path(f)?, o)));
+                (Expression(c.expr.index()), at)
+            })
+            .collect()
+    }
+
+    /// The subject path of file `f`. For tests.
+    pub fn file_path(&self, f: File) -> Option<&[u8]> {
+        self.file(f).map(|(p, _)| &p[..])
     }
 
     /// Why expression `x` has no extent (`None` when it has one, or is
