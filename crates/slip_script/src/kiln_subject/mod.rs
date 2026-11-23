@@ -6,9 +6,10 @@
 //! declarations (`references.rs`); WP-086 calls and the extents of
 //! expressions (`calls.rs`): `calls_to`, `callee`, `callee_reference`,
 //! `arguments`, and `extent`, `tiers` and `place` of an expression (the
-//! live expressions are the calls and their arguments). Every other
-//! method answers "nothing" as the trait documents it, until WP-095
-//! (keys).
+//! live expressions are the calls and their arguments); WP-095 the keys
+//! (`keys.rs`): `unit_keys`, `rename_rule`, `entity_key`, answered by
+//! `slip_digest::query::Keys` on a thread of its own while
+//! [`KilnSubject::with_keys`] runs.
 //!
 //! Entities are read from Kiln's declaration arena, references from its
 //! written-reference and declaration-extent tables (`slip_kiln::written`),
@@ -35,10 +36,12 @@ use crate::wire::{self, Errc};
 
 mod calls;
 mod entities;
+mod keys;
 mod lookup;
 mod references;
 
 pub use calls::{CallSite, ExtentCensus, NoExtent};
+pub use keys::{Keyed, Why};
 pub use references::name_token;
 
 /// Unit order (§1): `slip_kiln::ranges`' comparator (WP-084), which
@@ -87,6 +90,12 @@ pub struct KilnSubject<'u> {
     calls: OnceLock<calls::Index>,
     /// The tiers of each extent of a live expression (`calls.rs`).
     call_tiers: OnceLock<HashMap<Range, [bool; 2]>>,
+    /// The running key server, inside `with_keys` (`keys.rs`).
+    keys: Mutex<Option<keys::Link>>,
+    /// What the holder of a reference reads of Kiln's tables (`keys.rs`).
+    key_tables: OnceLock<keys::Tables>,
+    /// What the subject keeps of its key servers (`keys.rs`).
+    key_state: keys::KeyState,
 }
 
 impl std::fmt::Debug for KilnSubject<'_> {
@@ -157,6 +166,9 @@ impl<'u> KilnSubject<'u> {
             ref_names: OnceLock::new(),
             calls: OnceLock::new(),
             call_tiers: OnceLock::new(),
+            keys: Mutex::new(None),
+            key_tables: OnceLock::new(),
+            key_state: keys::KeyState::default(),
             names: references::Names::default(),
         };
         s.names = references::Names::build(&s, unit);
@@ -387,6 +399,10 @@ impl Subject for KilnSubject<'_> {
         Some(self.unresolved_spelled(identifier))
     }
 
+    fn one_shot_key_servers(&self) -> u64 {
+        KilnSubject::one_shot_key_servers(self)
+    }
+
     fn tiers(&self, r: Range) -> Option<[bool; 2]> {
         // A range is given as a name or reference's, as an expression's, or
         // both: the tiers at which the unit reaches it, from either.
@@ -408,16 +424,25 @@ impl Subject for KilnSubject<'_> {
         self.reference_found_directly(r)
     }
 
-    fn entity_key(&self, _e: Entity) -> Option<slip_model::Digest> {
-        None
+    fn entity_key(&self, e: Entity) -> Option<slip_model::Digest> {
+        let d = self.decl(e.0).filter(|&d| self.is_entity(d))?;
+        self.entity_key_of(d)
     }
 
-    fn unit_keys(&self, _v: Value) -> Result<Vec<slip_model::Digest>, Errc> {
-        Err(Errc::Unsupported)
+    fn unit_keys(&self, v: Value) -> Result<Vec<slip_model::Digest>, Errc> {
+        let keys = match v {
+            Value::Reference(r) if self.reference_is_live(r) => self.reference_unit_keys(r),
+            Value::Expression(x) if self.expression_live(x.0) => self.expression_unit_keys(x),
+            _ => Err(Why::NotHeld),
+        };
+        keys.map_err(|_| Errc::Unsupported)
     }
 
-    fn rename_rule(&self, _e: Entity, _new_identifier: &[u8]) -> Result<Rule, Errc> {
-        Err(Errc::Unsupported)
+    fn rename_rule(&self, e: Entity, new_identifier: &[u8]) -> Result<Rule, Errc> {
+        match self.decl(e.0).filter(|&d| self.is_entity(d)) {
+            Some(d) => self.rename_rule_of(d, new_identifier),
+            None => Err(Errc::Unsupported),
+        }
     }
 
     fn place(&self, v: Value) -> PlaceOf {

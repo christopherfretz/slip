@@ -624,3 +624,27 @@ fn s11_the_subjects_files() {
     assert!(files.iter().all(|(p, t)| p == t));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// The review of WP-095, F7: the script-test path (`run_one`) runs the
+// transform inside the subject's key server, so no key question starts
+// a server of its own (the counter `api.one_shot_key_servers` is absent).
+#[test]
+fn wp095_a_script_run_asks_every_key_of_its_own_server() {
+    let root = scratch("keys");
+    write(
+        &root,
+        "transform.cpp",
+        "// spec: §7.5\n// counters: api.one_shot_key_servers\n#include <slip/meta.h>\n\
+         using namespace slip;\n\
+         consteval void transform() {\n\
+           for (info e : lookup(\"g\"))\n\
+             for (info c : calls_to(e)) expect_changed(c, \"why\");\n\
+         }\n",
+    );
+    write(&root, "t.cpp", "int g(int);\nint h() { return g(1); }\n");
+    let s = load_script(&root).unwrap();
+    let out = script_test::run_script(&s, &resource()).expect("a result");
+    assert!(out.contains("changed"), "{out}");
+    assert!(out.contains("counter api.one_shot_key_servers absent"), "{out}");
+    let _ = std::fs::remove_dir_all(&root);
+}

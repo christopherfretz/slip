@@ -310,7 +310,8 @@ impl<'s> Host<'s> {
 
     /// The run output in canonical form (§7.6), with the counters the host
     /// keeps (§7.6 rule 6): `api.edits`, `api.reports`,
-    /// `api.unresolved_spelling_matches` (§6.5 rule 6) and one
+    /// `api.unresolved_spelling_matches` (§6.5 rule 6),
+    /// `api.one_shot_key_servers` when not 0, and one
     /// `api.op.<name>` per operation that succeeded at least once, counting
     /// its successful calls. `api.host_calls`, `api.steps` and
     /// `api.peak_bytes` are the evaluator's and are added by the driver.
@@ -343,6 +344,10 @@ impl<'s> Host<'s> {
         }
         if let Some(value) = unresolved {
             counters.push(Counter { name: "api.unresolved_spelling_matches".to_owned(), value });
+        }
+        let one_shot = self.subject.one_shot_key_servers();
+        if one_shot > 0 {
+            counters.push(Counter { name: "api.one_shot_key_servers".to_owned(), value: one_shot });
         }
         counters.sort();
         out.counters = counters;

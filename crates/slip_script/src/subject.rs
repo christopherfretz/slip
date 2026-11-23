@@ -175,6 +175,13 @@ pub trait Subject {
     fn arguments(&self, x: Expression) -> Option<Vec<Expression>>;
     /// §6.5 rule 6: how many unresolved names of the unit have this identifier; None: the subject cannot tell.
     fn unresolved_named(&self, identifier: &[u8]) -> Option<u64>;
+    /// How many key questions (§7.5) the subject answered outside the
+    /// run's own key server, each at the cost of the unit's keys built
+    /// again (`spec/landed/api/WP-095.md`): the counter
+    /// `api.one_shot_key_servers`, written when not 0.
+    fn one_shot_key_servers(&self) -> u64 {
+        0
+    }
 
     // What the effects need (§7). WP-088 is their only caller.
     /// §5.4, §7.6: the tiers at which the unit reaches `r` when `r` is
