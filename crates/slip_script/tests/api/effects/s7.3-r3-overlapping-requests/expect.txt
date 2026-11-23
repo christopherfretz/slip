@@ -1,0 +1,5 @@
+transform <id>
+edit 0 t.cpp:5:9-5:25 tiers 0 = copy(t.cpp:5:23-5:24)
+edit 1 t.cpp:5:14-5:18 tiers 0 = copy(t.cpp:5:23-5:24)
+edit 2 t.cpp:5:14-5:21 tiers 0 = copy(t.cpp:5:19-5:20)
+edit 3 t.cpp:5:17-5:18 tiers 0 =

@@ -1,0 +1,2 @@
+transform <id>
+edit 0 t.cpp:2:11-2:12 tiers 0 = "\x00\x01\"\\\n\t\xff z"

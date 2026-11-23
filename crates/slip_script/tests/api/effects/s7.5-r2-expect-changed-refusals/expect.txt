@@ -1,0 +1,12 @@
+transform <id>
+report - note "4 references to S"
+report - note "block-scope extern: unsupported"
+report - note "declaration: unsupported"
+report - note "entity: unsupported"
+report - note "friend: unsupported"
+report - note "k: returned"
+report - note "null extent: unsupported"
+report - note "null: invalid_handle"
+report - note "static_assert: unsupported"
+report - note "two declarators: unsupported"
+changed "k" t.cpp:11:9-11:13 "w"
