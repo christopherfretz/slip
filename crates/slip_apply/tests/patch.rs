@@ -167,7 +167,7 @@ fn scratch(name: &str) -> PathBuf {
     let d = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("wp063-patch-{name}-{}", std::process::id()));
     if d.exists() {
-        std::fs::remove_dir_all(&d).unwrap();
+        common::remove_tree(&d);
     }
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -304,10 +304,10 @@ fn round_trip(tool: &str, alphabet: &[u8], cases: usize, seed: u64) -> usize {
             }
             checked += 1;
         }
-        std::fs::remove_dir_all(dir.join(format!("c{case}"))).unwrap();
-        std::fs::remove_dir_all(dir.join("w")).unwrap();
+        common::remove_tree(dir.join(format!("c{case}")));
+        common::remove_tree(dir.join("w"));
     }
-    std::fs::remove_dir_all(&dir).unwrap();
+    common::remove_tree(&dir);
     checked
 }
 
@@ -351,7 +351,7 @@ fn s7_2_nul_and_invalid_utf8() {
         let dir = scratch(&format!("bin-{tool}"));
         let got = apply_with(tool, &dir, "-p0", &[(b"bin".to_vec(), pre.to_vec())], &d);
         assert_eq!(got, Ok(vec![post.to_vec()]), "{tool}");
-        std::fs::remove_dir_all(&dir).unwrap();
+        common::remove_tree(&dir);
     }
 }
 

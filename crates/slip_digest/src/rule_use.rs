@@ -27,12 +27,18 @@
 //! are not a rule's use. A specialisation (its name is its template's,
 //! mapped, `spec_key`) and a member of an instantiation (its name is its
 //! pattern member's, mapped, `follow_patterns`) are counted by their own
-//! mapped key only. No rule matches it (a rule of kind `specialisation`
-//! is refused; one on an instantiated member is
-//! `key/rule-on-instantiated-member`), and it is in `direct(r)` only if
-//! `r` produces that key: never for a member of a class's instantiation,
-//! whose parent is a specialisation, which is no rule's `to_parent`, but
-//! possibly for an instantiated friend, whose parent is a namespace. An
+//! mapped key only. No rule matches a specialisation (a rule of kind
+//! `specialisation` is refused). A rule matches an instantiated member's
+//! own (plain) key only where it produces exactly the key following its
+//! pattern gives (WP-119 item 1): `follow_patterns` then returns the plain
+//! key, and the one mapping here gives the followed key through that rule,
+//! so the member is in `via(r)`, as it is in a unit that does not
+//! instantiate its class, and in no rule's `direct`; every other rule on it
+//! is `key/rule-on-instantiated-member`. A member no rule matches is in
+//! `direct(r)` only if `r` produces its key: for a member of a class's
+//! instantiation only a rule whose `to_parent` is that specialisation
+//! (one written for the member itself), possibly for an instantiated
+//! friend, whose parent is a namespace. An
 //! entity with no key (its key is indeterminate with no key formed: under
 //! a refused table, a cycle, `key/rule-on-instantiated-member`) is not
 //! counted; one whose key is formed and carries a cause is.

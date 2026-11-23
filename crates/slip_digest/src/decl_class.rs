@@ -488,6 +488,10 @@ fn local_member(w: &Walk<'_>, e: DeclId) -> bool {
         | Role::InParent
         | Role::Unsupported(_) => return false,
     }
+    // A hidden using-shadow is no member a class lists (WP-119 item 6).
+    if crate::units::hidden_shadow(w, e) {
+        return false;
+    }
     let written_by_another = kind == DeclKind::UsingShadow
         || kind == DeclKind::ConstructorUsingShadow
         || kind == DeclKind::IndirectField;

@@ -33,6 +33,9 @@ bad-6:  mismatch changed caller() @ main.cpp:5
 # pre-7: the reverse of pre-5, a cast to an rvalue added to return m; of
 # a local: the named return value optimisation ([class.copy.elision]/1.1)
 # applies to the name of a local only, so with the cast M(M &&) runs, and
-# without it clang elides the copy.
+# without it clang elides the copy. The place is line 9: the declaration
+# M m(0) is the one whose meaning changes (with the cast m is no longer the
+# returned object), and the walk writes that after m's initialiser, whose
+# literal is the last mark before the difference (spec/verify.md §6.1).
 good-7: none the cast is an expression: adding it changes the function
-bad-7:  mismatch changed make() @ main.cpp:10
+bad-7:  mismatch changed make() @ main.cpp:9

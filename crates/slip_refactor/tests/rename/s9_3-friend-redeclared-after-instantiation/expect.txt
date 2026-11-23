@@ -1,6 +1,6 @@
 subjects:
   9357b9db follower - rule=yes n::f(n::S<type-parameter-0-0>) of=cd11b972
-  cd11b972 seed unsupported rule=yes n::f(n::S<int>)
+  cd11b972 seed - rule=yes n::f(n::S<int>)
 links:
 claims:
   main.cpp:1:57+1 replace "g" t0 votes=1 none [9357b9db]

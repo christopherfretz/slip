@@ -7,4 +7,6 @@
 # acme::helper(). The key holds names only; the row `enclosing` of helper's
 # unit holds its linkage (WP-113; before, bad-2 verified).
 good:  verified
+# pre-2 is pre: the second shape, whose trees use declared-2.txt.
+good-2: none the hoist gives helper() external linkage, which no declaration can make the same
 bad-2: mismatch changed legacy::(anonymous namespace)::helper() @ main.cpp:7

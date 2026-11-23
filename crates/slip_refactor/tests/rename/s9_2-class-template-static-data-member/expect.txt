@@ -1,6 +1,6 @@
 subjects:
   622d051c seed - rule=yes n::S::v
-  e84a2c77 follower unsupported rule=yes n::S<int>::v of=622d051c
+  e84a2c77 follower - rule=yes n::S<int>::v of=622d051c
 links:
 claims:
   main.cpp:1:56+1 replace "w" t0 votes=1 none [622d051c]

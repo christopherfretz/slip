@@ -2100,7 +2100,12 @@ Entities are counted once each, declared or derived, whatever number of
 declarations they have. An entity counted in `direct(r)` is one that
 still is what `r` says was renamed. An entity whose name follows another
 entity's mapped name (a specialisation, a member of an instantiation, a
-decomposition) is counted by its own key only. An entity with no key is
+decomposition) is counted by its own key only. A member of an
+instantiation whose own key a rule `r` matches and maps to exactly the
+key following its pattern gives (`digest.md` §3.4, WP-119) is in
+`via(r)`, as the same entity is in a unit that does not instantiate its
+class, and in no rule's `direct` (a rule was applied to its key); it is
+not counted for the pattern member's rule. An entity with no key is
 counted for no rule; an entity whose key is formed but carries a cause is
 counted. Where two rules produce one key, an entity with that key that no
 rule matched counts in `direct` of each.

@@ -1,0 +1,3 @@
+indeterminate u()
+indeterminate O<int>::I<char>::g()
+indeterminate O<int>::I<char>::g()::<definition>

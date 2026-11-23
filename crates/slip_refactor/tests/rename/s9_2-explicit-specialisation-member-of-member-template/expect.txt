@@ -1,6 +1,6 @@
 subjects:
   01b142ac seed - rule=yes n::S::M::f()
-  9b904ff1 follower unsupported rule=yes n::S<int>::M<long>::f() of=01b142ac
+  9b904ff1 follower - rule=yes n::S<int>::M<long>::f() of=01b142ac
 links:
 claims:
   main.cpp:1:80+1 replace "g" t0 votes=1 none [01b142ac]
