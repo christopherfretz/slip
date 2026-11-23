@@ -9,7 +9,7 @@
 //!   each `open` pseudo-randomly so that runs finish in different orders;
 //! - under a permutation of the plan's order the set differs only in
 //!   `basis`, `unparsed`, `first`, `display`, and a failure's `rendered`
-//!   (landed WP-062 §8: it is the first observer's too);
+//!   (landed WP-062 §4: it is the first observer's too);
 //! - every set validates (§6.1) and survives its binary form;
 //! - the naive model of `common/model.rs` makes the same set.
 //!

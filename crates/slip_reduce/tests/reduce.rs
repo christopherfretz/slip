@@ -747,7 +747,7 @@ fn input_least_observer_index() {
     }
 }
 
-/// §5.1, landed WP-062 §1: a shard that is not the one the first pass
+/// §5.1, landed WP-062 §2: a shard that is not the one the first pass
 /// read, at the second.
 #[test]
 fn input_shard_changed_between_passes() {
