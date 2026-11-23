@@ -41,18 +41,54 @@ Declared := rules:   list<Rule>      digest.md §3.4; sorted by (parent, kind, n
 
 `kept` and `files` are version 2 of the container (WP-110); a version 1
 `DECL` is read as one with `kept` empty and `files` absent, and a
-version 1 `DECL` with a rule is refused once WP-110 is on main. `kept`
-is sorted and has no duplicate, like the other lists. `files` is part
-of the rule table's identity: `rules_id` is then
-`H("slip.rules.v2", rules, files)`.
+version 1 `DECL` with a rule is refused. `kept` is sorted and has no
+duplicate, like the other lists. `files` is part of the rule table's
+identity: `rules_id` is then `H("slip.rules.v2", rules, files)`.
 
 Each list is sorted and has no duplicate (rules by the bytes of their
 encoded `(parent, kind, name, disc)`, keys by their bytes); a key may be in more than one of
-the three exemption lists. Every `KeyId` is in the key space
+the exemption lists and in `kept`. Every `KeyId` is in the key space
 of the pre-image: for an entity a rule renames, the key it had before. The
-container form is kind `DECL`, version 1, one required section `declared`
-(id 1) holding this record; its JSON rendering follows `spec/model.md` §10.
-`rules_id = H("slip.rules.v1", rules)` names the rule table.
+container form is kind `DECL`, version 2 (a reader also reads version 1),
+one required section `declared` (id 1) holding this record; its JSON
+rendering follows `spec/model.md` §10, with members `rules`, `changed`,
+`created`, `removed`, and in version 2 `kept` and `files` (`null`, or
+`{"owned": [...], "readonly": [...]}`, each path in the form of
+`spec/model.md` §10 for bytes). `files` is encoded as `opt` of the
+record `owned: list<bytes>, readonly: list<bytes>`. A writer writes
+version 2; `dump` and `undump` keep a file's version, so a version 1
+file's rendering has version 1 and the four members.
+`rules_id = H("slip.rules.v1", rules)` names the rule table when `files`
+is absent, and `H("slip.rules.v2", rules, files)` (rules as
+`list<Rule>`, then `owned` and `readonly` as `list<bytes>`) when it is
+present.
+
+**The reader's checks**, in this order, each with its message; a binary
+reader reports `Malformed` at the offset named, a JSON reader at the path
+(`crates/slip_model/tests/declared.rs` has one test per row):
+
+1. The rules are strictly ascending and admissible (WP-022: an invalid
+   name, `two rules with one (parent, kind, name, disc)`,
+   `rules are not strictly ascending`; at the later rule).
+2. `changed`, `created`, `removed`, in that order:
+   `<list> is not strictly ascending`, at the later key.
+3. `kept is not strictly ascending`, at the later key.
+4. `files`, as a transform request's ownership (`spec/edits.md` §2.1,
+   `spec/landed/edits/WP-060.md` §3), with its messages and in its order:
+   `owned is empty` (at `owned`); `not a canonical absolute path`,
+   `owned is not strictly ascending` (at the entry); the same two for
+   `readonly`; `a readonly entry is also in owned` (at the `readonly`
+   entry).
+5. `a version 1 container has a rule`, at the first rule.
+6. `rules without files`, and `files without a rule`, at `files` (its
+   tag byte). `files`
+   is present exactly when the rules are not empty: with no rule nothing
+   is mapped and the files are not read (§2.1), so a second encoding of
+   the empty table, with another `rules_id`, is refused rather than
+   given a meaning.
+
+A value made in memory may hold rules and no files; `validate` refuses
+it (rows 3 to 6), and so does the writer's debug assertion.
 
 With all four lists empty the claim is plain equality. That is the check of
 corpus invariants (a) and (b).
@@ -149,9 +185,36 @@ post-image is a **dependency entity** if
 - one of its declarations lies in a read-only file. A declaration lies
   in the file of its **expansion location**: the file it is written in,
   and for a declaration that a macro expansion produces, wholly or in
-  part, the file that holds the outermost invocation. A declaration with
+  part, the file that holds the outermost invocation. It also lies in a
+  read-only file if its **name token** (the token that spells its name;
+  an implicit declaration and one with no name have none) is spelled in
+  a read-only file: a dependency macro's body that spells the name. A
+  name token spelled in no file (made by `##`, in scratch space) is
+  decided by the expansion location alone. A declaration with
   no location in a file (a builtin, an implicitly declared function)
-  lies in a read-only file;
+  lies in a read-only file; so does one whose expansion location is in
+  a buffer that is not a file (`<built-in>`, the command line, a
+  buffer whose name begins with `<`, scratch space), in a file the
+  image cannot map to a subject path (§5.1), or in a file read after
+  the walk was given its files. This holds under every ownership, a
+  walk with every file owned included: such a declaration is never
+  owned (`tests/rules/owned/builtin-declarations-read-only`). An entity
+  with more declarations than
+  the walk follows (`digest.md` §2, the redeclaration limit) is a
+  dependency entity: an unread declaration might be in a read-only
+  file;
+- where a file is read-only, it is so **per inclusion**: a file entered
+  through an include chain that passes through a read-only file (it, or
+  a file that includes it, or one further up, is read-only) is
+  read-only for that inclusion in that translation unit, whatever the
+  run's files say of it. The dependency was compiled against what it
+  includes, so its binary bakes in the types, typedefs, exception types
+  and RTTI of an owned header it includes: moving them breaks it
+  (`tests/rules/owned/dependency-built-against-owned-*`). Kiln has one
+  buffer per file and one location range per inclusion, so each
+  inclusion is decided on its own; an includer that is no file (the
+  command line) does not make a file read-only. An owned file that
+  includes a read-only one stays owned;
 - or it is a specialisation of a template, implicit, explicit or
   partial, or a deduction guide made from a template's constructors, and
   the template is a dependency entity. A specialisation is keyed by its
@@ -159,7 +222,10 @@ post-image is a **dependency entity** if
   the one an instantiation makes (§4 step 4 depends on it);
 - or it is an implicitly declared member and its class is one.
 
-Every other entity is **owned**. The walk maps a key bottom-up as above,
+Every other entity is **owned**. Ownership is decided once per entity,
+from all its declarations in the translation unit: not by its first
+declaration, nor by its definition (an owned definition of a function a
+dependency header declares is the dependency's). The walk maps a key bottom-up as above,
 with two changes:
 
 1. **A rule matches an entity only if the entity is owned.**
@@ -191,10 +257,19 @@ came from, and nothing about the rest:
 - A dependency that itself opens `acme`, before and after, has the same
   keys in both images, and the owned members of `acme` are still mapped.
 - An owned declaration made through a dependency's macro
-  (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: the
-  expansion location decides, not the spelling location, or every owned
-  declaration behind a namespace macro of the dependency would be the
-  dependency's.
+  (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: its
+  expansion location is owned, and its name `Mine` is spelled in the
+  owned file, as an argument. The name token's spelling decides, not the
+  spelling of the whole declaration, or every owned declaration behind a
+  namespace macro of the dependency would be the dependency's. A
+  dependency macro whose body spells the name (`#define LEGACY_API_DECLS
+  void legacy_init(); int legacy_count();`) declares dependency
+  entities wherever it is invoked: the dependency fixes those names, and
+  its binary may define them (`dependency-macro-fixed-functions`,
+  `dependency-macro-declares-fixed-name`). So does a name spelled in a
+  dependency's body and passed on through an owned macro's argument
+  (`dependency-macro-name-through-owned-macro`): the token is still the
+  dependency's text.
 - An owned explicit specialisation of a dependency template, an owned
   definition of a function the dependency declares, a function a
   dependency class befriends: dependency entities. They cannot move, and
@@ -206,11 +281,71 @@ not include is owned here; an observer that includes both sees the
 entity declared in two namespaces and reports it; if no observer
 includes both, nothing shows it (§8).
 
+Three holes remain where ownership reads as owned what the dependency's
+binary fixes. Each verifies wrongly today; each is pinned by a pending
+case beside the case it is the pair of, and the planned answer for all
+three is the run-level check of WP-116: an entity a rule renames is
+defined in an owned file by some observer.
+
+- **Two observers.** As above: the owned declaration and the
+  dependency's are never in one translation unit
+  (`observer-includes-owned-only`, equal; its pair
+  `observer-includes-both`, a finding).
+- **A pasted name.** A name made by `##` from tokens of a dependency's
+  body (`#define DECL_INIT() void legacy_##init();`) is spelled in
+  scratch space and decided by its expansion location: owned
+  (`dependency-macro-name-pasted`, pending; its pair
+  `dependency-macro-fixed-functions`). At this pin Kiln does not say
+  which operands of `##` came from an argument, and a pasted name made
+  from an owned argument (`TEST(Suite, Name)`) must stay renamable.
+- **A guard-skipped inclusion.** A file entered first directly, then
+  included by a read-only file whose `#include` the include guard or
+  `#pragma once` skips, is owned for its only inclusion: the skipped one
+  makes no location range, and nothing the walk reads at this pin
+  records it (`dependency-built-against-owned-eh-direct-first`,
+  `dependency-built-against-owned-type-direct-first`, pending; their
+  pairs, the `-through-dependency-first` cases). Kiln's WP-2111
+  (every inclusion directive recorded, skipped ones included) would let
+  the walk close it per translation unit.
+
+**The cost of the include-chain rule.** It errs in the safe direction
+in one common shape: a read-only file that the build generates and that
+includes owned code. A CMake precompiled-header file (`cmake_pch.hxx`,
+in the build tree, itself entered by `-include`) and a unity-build main
+file (`unity_0_cxx.cxx`, which `#include`s owned `.cpp` files) are
+read-only, since they lie outside every subject root, so every owned
+entity behind them is a dependency entity for that observer: no rule
+renames it, and a correct migration is reported as a difference in every
+such observer (`tests/rules/owned/generated-includer-of-owned`, a
+read-only `pch.h` including an owned `src.h`;
+`main-file-read-only`, a read-only main file). That stays: knowing
+less never accepts more. The answer is a third class of file, **not
+edited, and rebuilt from source**, whose names no binary outside the run
+holds; it is an open question below and a package of its own
+(`docs/wp/WP-118.md`).
+
 `slip declare` (§2.3) refuses a `relocate` line whose entity is a
 dependency entity and not a namespace (`DependencyEntity`).
 
 With an empty rule table nothing is mapped and ownership is not
-consulted: a digest of the map phase does not depend on `files`.
+consulted: a digest of the map phase does not depend on `files`. A walk under
+rules that is not given the run's files treats every file as read-only:
+every key is then the key of the empty table (knowing less never
+accepts more).
+
+The run's files are in subject paths, and ownership is of **real
+paths** (`spec/edits.md` §2.1). The job decides each buffer by the
+subject path of the buffer's real path, its symbolic links resolved, and
+never by the path as the front end spells it: a read-only file reached
+through a symbolic link under an owned root is read-only. `ReadOnlyFiles`
+decides on the path it is given and normalises nothing
+(`owned.rs`, `read_only_files_needs_the_real_path`).
+
+Two kinds of key are not an entity's and are not decided by ownership:
+the key of a `resolved` or `default_argument` unit has its entity's
+mapped key as its parent, and a rule of either kind is refused (above);
+the order unit's key is a constant. What the rules do to such a unit
+follows from its entity's key.
 
 **Why applying rules to the post-image is sound.** Let `φ` be the function
 from the entities of `B` to keys that the walk computes. If no unit is
@@ -286,9 +421,18 @@ verify` does not show that it does not.
 
 The argument is about one translation unit. The ownership rule above is
 what makes the declared isomorphism one that the rest of the program
-(code that was not edited and is not an observer) can be party to: it
-fixes every dependency entity's key, so the isomorphism is the identity
-on everything the run does not own.
+(code that was not edited and is not an observer) can be party to. It
+fixes the key of every dependency entity whose parents are namespaces,
+or dependency entities themselves, so the isomorphism is the identity on
+those. It does not fix the key of a dependency member of an owned class
+(a read-only file included inside the class body): the class has one
+key, its own, and it is mapped, so the member's key is mapped with it
+(`tests/rules/owned/dependency-members-in-owned-class`, equal). That is
+harmless unless the dependency's binary defines the member under the
+class's old name, which needs the dependency compiled against the owned
+class: the include-chain rule above makes such a class read-only where
+an observer sees the dependency include it, and otherwise it is the
+guard-skipped or two-observer hole.
 
 A pre-existing entity that a rule would capture is caught by the same
 comparison: if the pre-image already had an entity with the key a rule
@@ -436,7 +580,9 @@ pub struct Record {
 /// One record per unit that `digest(input, …)` has under `rules`, sorted by
 /// `(id, name)`. `Err`, naming the unit, if a unit that has no fallback key
 /// gets a `Key` whose id is not the unit's `KeyId`: no record is guessed.
-pub fn records(input: &Input<'_>, rules: &RuleTable) -> Result<Vec<Record>, String>;
+/// `read_only` is the run's read-only files, as `Options::read_only`
+/// (`digest.md` §11); not read when `rules` is empty.
+pub fn records(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Result<Vec<Record>, String>;
 
 // slip_cli::declare
 pub struct Entity { pub kind: Option<KeyKind>, pub text: String }
@@ -1518,7 +1664,22 @@ observer `failed`, with an empty message.
   read from the declarations an observer has (§2.1). An owned
   declaration of an entity that the dependency also declares, in a
   header that no observer includes together with the owned one, is
-  moved as owned, and the dependency's binary keeps the old name.
+  moved as owned, and the dependency's binary keeps the old name. Two
+  more forms of the same thing (§2.1, the three holes): a name a
+  dependency macro makes by `##` (`#define DECL_INIT() void
+  legacy_##init();`, invoked in owned code), which is owned; and an
+  owned header that a read-only file includes, where every observer
+  enters it directly first and the read-only file's `#include` is
+  skipped by its guard, which is owned there although the dependency was
+  compiled against it (a moved exception type is no longer caught, a
+  function taking a moved type no longer links). WP-116's run-level
+  check is to close all three.
+- **What a generated includer hides** (the safe direction). A read-only
+  file the build generates that includes owned code (a precompiled
+  header, a unity-build main file) makes that code read-only for the
+  observer (§2.1): a correct migration is reported as a difference there,
+  not shown correct. The third class of file of "Open questions"
+  (WP-118) is to answer it.
 - **Sums are believed.** A group's `count`, `indeterminate` and `digest`
   are checked against its unit list only where there is one. A shard
   whose sums were not computed from its units (a defect of the walk, or a
@@ -1605,7 +1766,12 @@ rule `r` (by its index in `Declared.rules`):
 
 Entities are counted once each, declared or derived, whatever number of
 declarations they have. An entity counted in `direct(r)` is one that
-still is what `r` says was renamed.
+still is what `r` says was renamed. An entity whose name follows another
+entity's mapped name (a specialisation, a member of an instantiation, a
+decomposition) is counted by its own key only. An entity with no key is
+counted for no rule; an entity whose key is formed but carries a cause is
+counted. Where two rules produce one key, an entity with that key that no
+rule matched counts in `direct` of each.
 
 ```
 RuleUse := rules: digest            rules_id
@@ -1862,37 +2028,64 @@ In the parse of §5.2 step 1, after the walk, for every obligation whose
 file is in the parse's `inputs`:
 
 1. The **written references** of the unit are the entries of Kiln's
-   written-reference table: the names that were resolved while the unit
-   was parsed, in the roles expression name, member name, qualifier
-   component, type name, template name, base specifier and member
-   initialiser (the roles of `spec/api.md` §6.5 rule 3; a role Kiln adds
-   later takes part from the day `spec/api.md` announces it). Entries
-   equal in role, name range and referent are one reference.
-2. A reference's **name range** is the file range of its name: the bytes
+   written-reference table that have a referent: the names that were
+   resolved while the unit was parsed, **in every role Kiln records**
+   (at this pin expression name, member name, qualifier component, type
+   name, template name, base specifier, member initialiser and concept
+   name; a role Kiln adds takes part the day it records it). The check
+   asks what a name denotes, and a name denotes something whatever the
+   syntax around it: a concept name in one use of a macro argument
+   vetoes the argument as surely as an expression name in another.
+   (`spec/api.md` §6.5 rule 3 lists the roles a transform is given as
+   references, which is another question.) Entries equal in role, name
+   range and referent are one reference. The table's entries **without a
+   referent** (a dependent name, a name whose resolution failed) are
+   **unresolved names**; they have name ranges as references do.
+2. A reference's (or unresolved name's) **name range** is the file range
+   of its name: the bytes
    of one file that translation turned into exactly the name's tokens,
    at tier 0 or 1 (`spec/api.md` §5.4; `slip_kiln::ranges`, which is
    Kiln's `editable_file_range`, `spec/edits.md` §2.2). A reference
-   whose name has no such range takes no part.
-3. A reference **answers** the obligation if its name range is in the
-   obligation's file, ends at `hi` and starts at or after `lo`. (A
+   whose name has no such range takes no part. Neither does one whose
+   range lies in a file Kiln re-encoded when it loaded it (invalid
+   UTF-8, `spec/edits.md` §2.3 `file_recoded`: its offsets are not the
+   post-image's bytes), or in a buffer with no subject path (no file):
+   an obligation there is answered by nothing, so it is not seen, never
+   held.
+3. A reference or an unresolved name **answers** the obligation if its
+   name range is in the obligation's file, ends at `hi` and starts at or
+   after `lo`. (A
    spelling `::a::b::f` is answered by the reference `f`; `a` and `b`
    end before `hi`.)
 4. For each answering reference take the **origin** of its referent: the
    referent itself, or, for a specialisation of a template or a member
    of an instantiated class, the template or the member of the template
    it was made from. Take the origin's `KeyId` under the run's rules
-   (`Declared.rules`; mapped keys, `digest.md` §3.4), which is its key in
-   the pre-image's key space.
+   (`Declared.rules`; mapped keys, `digest.md` §3.4) **and the run's
+   ownership**: the read-only files the verify job decides from the
+   declared container's `files` (§2, §2.1 "Rules rename owned entities
+   only"), the same `ReadOnly` the walk of the same parse is given. That
+   is its key in the pre-image's key space. A name that denotes a
+   dependency entity is compared under the dependency's own key, never a
+   mapped one; whether a key collides (rule 5) is marked under the same
+   ownership.
 5. The obligation, in this observer:
-   - **holds** if at least one reference answers and every answering
-     reference's origin has the obligation's `key`;
+   - **holds** if at least one reference answers, no unresolved name
+     answers, and every answering reference's origin has the
+     obligation's `key`;
    - **fails** if some answering reference's origin has another key, or
      no key (it is not a unit, is keyed by content, or its key is
-     indeterminate);
-   - is **not seen** if no reference answers: the bytes are in a
-     conditional group the observer skips, in a macro argument the macro
-     does not use, in a place whose name is resolved only at
-     instantiation, or in a role the table does not record.
+     indeterminate or collides), or an unresolved name answers (`found`
+     is absent; what a dependent name denotes is decided per
+     instantiation, and the table does not say per instantiation);
+   - is **not seen** if nothing answers: the bytes are in a conditional
+     group the observer skips, in a macro argument the macro does not
+     use, or in a name the table does not record.
+
+   An answer covers the names the table records at the range, and no
+   other: a use of the same bytes that Kiln does not record, or records
+   with no name range, cannot make the obligation fail (§10.7, the named
+   hole).
 
 A name in a macro argument that is substituted twice gives two
 references with one name range; each must have the key.
@@ -1934,8 +2127,11 @@ Spellings := seen:   uv              obligations whose file is in this shard's `
 Span   := first: uv, count: uv       count at least 1
 Failed := index: uv
           found: opt<KeyId>          the key, under the rules, of the origin of the first answering reference
-                                     in unit order that does not have the obligation's key; absent if it has none
-          name:  str                 that entity as a person would write it (§6.1); for the report only
+                                     in unit order that does not have the obligation's key; absent if it has none,
+                                     or if the first that fails is an unresolved name (§10.2 rule 1)
+          name:  str                 that entity as a person would write it (§6.1), or, for an unresolved name,
+                                     `<unresolved name: dependent>` or `<unresolved name: resolution failed>`;
+                                     for the report only
 ```
 
 Invariants: no index is in `held` twice or in both lists; the number of
@@ -1978,13 +2174,19 @@ pub struct Obligation { pub file: Vec<u8> /* subject path */, pub lo: u32, pub h
 pub enum Spelling { Holds, NotSeen, Fails { found: Option<Digest>, found_name: String } }
 
 /// One observer of the post-image. `obligations` are those whose file the unit read;
-/// the result is parallel to it.
-pub fn check_spellings(input: &Input<'_>, rules: &slip_model::keys::RuleTable,
+/// the result is parallel to it. `input` is the digest's view of `unit`.
+pub fn check_spellings(unit: &slip_kiln::Unit<'_>, input: &Input<'_>,
+                       rules: &slip_model::keys::RuleTable,
+                       read_only: ReadOnly<'_>,           // the walk's `Options::read_only`
                        obligations: &[Obligation]) -> Vec<Spelling>;
 ```
 
-It gets keys from `Keys::with_rules` (§9.5), so the key it compares is
-the key the walk of the same parse gave the entity. The verify job
+It gets keys from `Keys::with_rules` (§9.5) under the same rules and
+read-only files as the walk of the same parse, so the key it compares is
+the key that walk gave the entity. It takes the unit
+because the written references and the origin are
+`slip_kiln::written`'s, which read a `Unit`
+(`spec/landed/verify/WP-096.md`). The verify job
 (`spec/exec.md` §8.6) calls it and writes the section.
 
 Over the run, in `slip_verify` (trusted base), naming no Kiln type:
@@ -2024,8 +2226,23 @@ the name where the piece landed, it denotes the entity whose key the
 piece carries, and at least one observer resolves it. It does not show
 that the edit was right to name that entity, and it shows nothing about
 a literal piece, a copy, or a name the front end does not record a
-reference for (a declaration's own name, a dependent name, a name in a
-using-declaration). Those are judged by the comparison of digests alone.
+reference for (a declaration's own name). Those are judged by the
+comparison of digests alone.
+
+**The named hole.** `Holds` covers the uses of the piece's bytes that the
+written-reference table records with a name range (§10.2 rule 5). A use
+of the same bytes elsewhere — the same macro argument substituted twice,
+or the same header entered twice — that the table does not record, or
+records without a range, cannot veto. At this pin those are: a
+designator (`.x = 1`); a using-declaration's name (`using a::x;`); a
+type-constraint's concept (`template <a::C T>`); a friend's elaborated
+name (`friend struct a::x;`); an explicit instantiation's or
+specialisation's target (`template int a::t<int>(int);`); and a use made
+by token pasting (`x##_`), which has no name range. (A plain elaborated
+name, `struct x s;`, is recorded as a type name and takes part.) Each
+shape has a pending test in `crates/slip_digest/tests/spelling.rs`
+(`s10_7_hole_*`); the hole closes as Kiln records them
+(`spec/landed/verify/WP-096.md`, "For Kiln").
 
 ## Tests
 
@@ -2134,6 +2351,15 @@ using-declaration). Those are judged by the comparison of digests alone.
   observer with and without rules (§5.5).
 
 ## Open questions
+
+- **A third class of file: not edited, and rebuilt from source.**
+  `spec/edits.md` §2.1 has owned and read-only files; a file the build
+  writes and compiles with the rest (a precompiled header, a unity-build
+  main file, a generator's `.inc` or `config.h`) is not edited by Slip,
+  but no binary outside the run holds its names. Read-only today, it
+  costs false differences (§2.1, "The cost of the include-chain rule").
+  The class `rebuilt`, the user's statement about a path, is
+  `docs/wp/WP-118.md`.
 
 - **A literal operator as a rule's new name.** `relocate` moves a literal
   operator with `=` and cannot rename its suffix (`NotRenamable`: `<name>`

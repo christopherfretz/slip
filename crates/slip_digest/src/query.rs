@@ -97,6 +97,7 @@ static NO_RULES: LazyLock<RuleTable> = LazyLock::new(RuleTable::empty);
 pub struct Keys<'a> {
     input: &'a Input<'a>,
     rules: &'a RuleTable,
+    read_only: crate::ReadOnly<'a>,
     w: Walk<'a>,
     units: HashMap<DeclId, Option<DeclId>>,
     /// The edges [`Keys::derived`] follows, built on first use.
@@ -116,26 +117,31 @@ impl<'a> Keys<'a> {
     /// The keys of `input`, with no rules: the pre-image's key space.
     /// Runs nothing.
     pub fn new(input: &'a Input<'a>) -> Keys<'a> {
-        Keys::with_rules(input, &NO_RULES)
+        Keys::with_rules(input, &NO_RULES, crate::ReadOnly::EVERY_FILE)
     }
 
     /// The same over a post-image, with the Slip run's rules: the keys
     /// are then mapped, in the pre-image's key space (`spec/verify.md`
     /// §2.1). Runs nothing.
     ///
+    /// `read_only` is the run's read-only files, as `Options::read_only`
+    /// (`spec/verify.md` §2.1, "Rules rename owned entities only"): a
+    /// rule renames owned entities only, so these keys are the verify
+    /// job's only when given the job's files. `ReadOnly::NO_FILE` maps as
+    /// "every file owned"; `ReadOnly::EVERY_FILE` maps nothing.
+    ///
     /// A table that holds a rule §2.1 refuses (`RuleTable::refused`) is
     /// taken as the walk takes it: nothing is keyed under it. Every
     /// `key_id`, `key` and `rename_rule` of an entity with a key kind is
     /// `Indeterminate` with the walk's cause, and `derived` is empty.
-    pub fn with_rules(input: &'a Input<'a>, rules: &'a RuleTable) -> Keys<'a> {
-        Keys {
-            input,
-            rules,
-            w: Walk::new(input, rules),
-            units: HashMap::new(),
-            origins: None,
-            written: None,
-        }
+    pub fn with_rules(
+        input: &'a Input<'a>,
+        rules: &'a RuleTable,
+        read_only: crate::ReadOnly<'a>,
+    ) -> Keys<'a> {
+        let mut w = Walk::new(input, rules);
+        w.read_only = read_only;
+        Keys { input, rules, read_only, w, units: HashMap::new(), origins: None, written: None }
     }
 
     /// The declaration the digest treats as the entity of `d`
@@ -288,10 +294,10 @@ impl<'a> Keys<'a> {
                 }
             }
         }
-        let (input, rules) = (self.input, self.rules);
+        let (input, rules, read_only) = (self.input, self.rules, self.read_only);
         let written = self.written.get_or_insert_with(|| {
             let mut by: HashMap<DeclId, Vec<WalkUnit>> = HashMap::new();
-            for u in walk_units(input, rules) {
+            for u in walk_units(input, rules, read_only) {
                 by.entry(u.entity).or_default().push(u);
             }
             by
@@ -435,8 +441,18 @@ pub struct WalkUnit {
 /// `Written` records, which are not public otherwise. Runs the whole
 /// walk; changes no digest.
 #[doc(hidden)]
-pub fn walk_units(input: &Input<'_>, rules: &RuleTable) -> Vec<WalkUnit> {
-    let options = crate::Options { rules, detail: crate::Detail::None, names: false };
+pub fn walk_units(
+    input: &Input<'_>,
+    rules: &RuleTable,
+    read_only: crate::ReadOnly<'_>,
+) -> Vec<WalkUnit> {
+    let options = crate::Options {
+        rules,
+        read_only,
+        detail: crate::Detail::None,
+        names: false,
+        rule_use: false,
+    };
     crate::walk::run_with(input, &options, |w, written, _| {
         written
             .iter()

@@ -1,0 +1,5 @@
+# The owned partial specialisation removed: a declared removal of the
+# partial specialisation and its member; box<Mine *> is now derived from
+# the primary template under the same key.
+removed legacy::box<type-parameter-0-0 *>
+removed legacy::box<type-parameter-0-0 *>::get()

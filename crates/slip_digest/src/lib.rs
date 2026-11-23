@@ -226,9 +226,12 @@ pub mod map;
 mod names;
 mod order;
 mod other;
+mod owned;
 pub mod query;
 pub mod records;
 mod refs;
+mod rule_use;
+pub mod spelling;
 mod stmt;
 mod stream;
 mod templ;
@@ -241,6 +244,7 @@ mod walk;
 mod tests;
 
 pub use names::display_name;
+pub use owned::{ReadOnly, ReadOnlyFiles};
 pub use walk::STACK_SIZE;
 
 /// A finished translation unit (`spec/digest.md` §1 rule 4).
@@ -273,9 +277,19 @@ pub enum Detail<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct Options<'a> {
     pub rules: &'a slip_model::keys::RuleTable,
+    /// Which files of the image are read-only (`spec/verify.md` §2.1):
+    /// under a non-empty `rules`, a rule matches an entity none of whose
+    /// declarations lies in one, and the namespaces around a member are
+    /// mapped from the member's point of view (`owned.rs`). Not read when
+    /// `rules` is empty. [`ReadOnly::EVERY_FILE`] where the run's files
+    /// are not known; [`ReadOnly::files`] of [`ReadOnlyFiles`] for the verify
+    /// job.
+    pub read_only: ReadOnly<'a>,
     pub detail: Detail<'a>,
     /// Fill `Output::names`.
     pub names: bool,
+    /// Fill `Output::rule_use` (`spec/verify.md` §9.1, §9.5).
+    pub rule_use: bool,
 }
 
 /// What a walk produces.
@@ -290,6 +304,10 @@ pub struct Output {
     /// For every unit, the entity as a person would write it
     /// (`verify.md` §6 `name`); sorted by key; empty unless asked.
     pub names: Vec<(Digest, String)>,
+    /// How each rule was used (`spec/verify.md` §9.1): sorted by rule,
+    /// only rules with `via` or `direct` not 0; empty unless asked for
+    /// under a table that is not empty (`rule_use.rs`).
+    pub rule_use: Vec<slip_model::agreement::Use>,
 }
 
 /// Why a unit is indeterminate (`spec/digest.md` §10).

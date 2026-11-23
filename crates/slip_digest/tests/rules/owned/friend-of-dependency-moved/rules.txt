@@ -1,0 +1,2 @@
+# spec/verify.md §2.1, WP-110 item 5. The same moved into acme: a new owned acme::touch, mapped onto the legacy::touch the dependency befriends.
+relocate legacy => :: acme
