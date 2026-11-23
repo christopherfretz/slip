@@ -301,10 +301,39 @@ mod tests {
             observer,
             phase: Phase::Verify,
             round: 0,
-            outcome: Outcome { status: Status::Failed, errors: 0, message: message.to_owned() },
-            ..Shard::default()
+            outcome: Outcome {
+                status: Status::Failed,
+                errors: 0,
+                warnings: 0,
+                message: message.to_owned(),
+            },
+            inputs: None,
+            counters: vec![],
+            digests: None,
+            verdict: None,
+            edits: None,
+            binding: None,
+            rule_use: None,
+            spellings: None,
         }
         .to_bytes()
+    }
+
+    fn record(jobs: Vec<slip_model::Job>) -> RunRecord {
+        let run = Run {
+            tool_slip: String::new(),
+            tool_kiln: String::new(),
+            plan: Digest([0; 32]),
+            phase: Phase::Verify,
+            round: 0,
+            started_unix_ns: 0,
+            wall_ns: 0,
+            cores: 1,
+            workers_max: 1,
+            memory_budget: 0,
+            peak_rss_sum: 0,
+        };
+        RunRecord { run, jobs }
     }
 
     fn job(observer: Digest, shard: Option<Digest>) -> slip_model::Job {
@@ -336,14 +365,10 @@ mod tests {
         assert!(ours(b"not a shard", &mine_id).is_none());
 
         // The last entry decides: a retry's shard replaces the first's.
-        let record = RunRecord {
-            run: Run::default(),
-            jobs: vec![job(o, Some(other_id)), job(o, Some(mine_id))],
-        };
-        assert_eq!(last_shards(&record)[&o], Some(mine_id));
-        let record =
-            RunRecord { run: Run::default(), jobs: vec![job(o, Some(mine_id)), job(o, None)] };
-        assert_eq!(last_shards(&record)[&o], None, "a last attempt without a shard");
+        let r = record(vec![job(o, Some(other_id)), job(o, Some(mine_id))]);
+        assert_eq!(last_shards(&r)[&o], Some(mine_id));
+        let r = record(vec![job(o, Some(mine_id)), job(o, None)]);
+        assert_eq!(last_shards(&r)[&o], None, "a last attempt without a shard");
     }
 
     // §7.1: the bytes the text escapes.
