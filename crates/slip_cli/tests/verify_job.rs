@@ -1958,6 +1958,20 @@ fn g6_link_on_the_main_route() {
     assert!(r.contains(&show(&tree.subject.join("src"))), "{r}");
 }
 
+// A link outside both roots (an include directory reached through a link,
+// as system and build trees have them) is not G6's: the post parse follows
+// it as the pre parse did, and the image verifies.
+#[test]
+fn g6_link_outside_the_roots() {
+    let tree = Tree::new("g6-outside", &[("a.cpp", "#include <e.h>\nint f() { return E; }\n")]);
+    write(&tree.base.join("ext-real/e.h"), "#define E 1\n");
+    link("ext-real", &tree.base.join("ext"));
+    let o = tree.observer_of("a.cpp", &[&arg("-I", &tree.base.join("ext"))]);
+    tree.map(&o);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+}
+
 // A created file in a created directory: no refusal (its subject path does
 // not exist, under real directories).
 #[test]
