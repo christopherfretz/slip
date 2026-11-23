@@ -237,11 +237,14 @@ pub(crate) fn file_diff(
     if all.is_empty() {
         return Ok(());
     }
-    out.write_all(b"--- ")?;
-    out.write_all(name)?;
-    out.write_all(b"\n+++ ")?;
-    out.write_all(name)?;
-    out.write_all(b"\n")?;
+    // A name with a space ends at a tab, as diff(1) ends one before its
+    // timestamp: patch(1) would otherwise end it at the space.
+    let end: &[u8] = if name.contains(&b' ') { b"\t\n" } else { b"\n" };
+    for mark in [&b"--- "[..], b"+++ "] {
+        out.write_all(mark)?;
+        out.write_all(name)?;
+        out.write_all(end)?;
+    }
     let mut k = 0;
     while k < all.len() {
         // The changes of one hunk: while the context of the next touches or
@@ -282,8 +285,9 @@ pub(crate) fn file_diff(
 
 /// The name a file section gives a path: the path, or under `relative_to`
 /// the rest of it after that directory. `Invalid` for a path outside the
-/// directory, and for a path with a tab, a carriage return or a newline,
-/// which a unified diff's header cannot carry.
+/// directory, and for a name with a tab, a carriage return or a newline,
+/// or that starts with `"` (which both tools read as a quoted name): a
+/// unified diff's header cannot carry them.
 fn name_of<'p>(path: &'p [u8], relative_to: Option<&[u8]>) -> Result<&'p [u8], ApplyError> {
     let name = match relative_to {
         None => path,
@@ -298,9 +302,10 @@ fn name_of<'p>(path: &'p [u8], relative_to: Option<&[u8]>) -> Result<&'p [u8], A
             }
         },
     };
-    if name.iter().any(|b| matches!(b, b'\t' | b'\r' | b'\n')) {
+    if name.iter().any(|b| matches!(b, b'\t' | b'\r' | b'\n')) || name.first() == Some(&b'"') {
         return Err(ApplyError::Invalid(format!(
-            "{:?}: a path with a tab, a carriage return or a newline cannot be named in a patch",
+            "{:?}: a name with a tab, a carriage return or a newline, or that starts with a \
+             quote, cannot be written in a patch's header",
             String::from_utf8_lossy(path)
         )));
     }
