@@ -1357,8 +1357,15 @@ pub struct Header { pub plan: Digest, pub round: u64, pub declared: Digest, pub 
 pub struct Report { /* … */ }
 impl Report {
     pub fn new(header: Header, declared: &Declared) -> Report;
-    /// One call per selected observer, in plan order.
+    /// `add_at` at the next position (the number of calls so far): for a caller
+    /// that adds every selected observer in plan order (M1's `slip verify`).
     pub fn add(&mut self, observer: &Digest, main: &[u8], verify: Option<&Shard>, map: Option<Status>);
+    /// One call per selected observer, `position` its index in the plan, in any
+    /// order: nothing the report holds depends on the order of the calls. Panics if
+    /// `position` is not below `plan_observers`, or it or the observer was added
+    /// before: a defect of the caller, which would let one observer stand for another.
+    pub fn add_at(&mut self, position: u64, observer: &Digest, main: &[u8],
+                  verify: Option<&Shard>, map: Option<Status>);
     pub fn verdict(&self) -> RunVerdict;
     pub fn states(&self) -> [u64; 7];
     pub fn to_json(&self) -> slip_model::json::Value;
@@ -1523,6 +1530,16 @@ keeps the key a rule maps another onto is the merge of §2.1.) A stale
 observer is one finding of the run, `stale`, with the rule and the
 observer.
 
+**Unchecked namespace rules (temporary, until WP-111).** Until the counts
+below are implemented a namespace rule has no stale check. So that the
+hole cannot pass for agreement, a run in which an observer used a rule of
+kind `namespace` (a `Use` of it with `via` or `direct` not 0, in a shard
+whose `rule_use` is read, §9.3) records the rule as **unchecked**: the
+report lists it (§9.4) and conclude permits no write for the run
+(`spec/edits.md` §8.5: state `incomplete` unless a worse one applies).
+The report's verdict is not changed by it. WP-111 removes this paragraph
+and the `unchecked` member, line and field with it.
+
 **Stale for a namespace rule** (WP-111; until it is on main a namespace
 rule has no stale check, which is the hole this closes). The namespace
 itself merges, but its members do not: if one observer sees an owned
@@ -1579,7 +1596,16 @@ run's (the same `declared`, the same `overlay` or the same absence of
 one, the same `pre`); and if it is `ok` and the run's rules are not
 empty, it has a `rule_use` whose `rules` is the run's `rules_id`. A shard
 that fails either is not this run's: the observer is `failed` (§7), as
-for any shard another run left.
+for any shard another run left. So is an `ok` shard with a `rule_use`
+under no rule or naming a rule past the table, and one whose `spellings`
+is absent although the overlay has obligations, present although it has
+none, or refused by the fold (§10.4). A run with a tree image and no
+rule is M1's: its shards need no `binding`, and one that has a binding
+must have the run's (`spec/landed/verify/WP-070.md` §2.1). This
+exception is temporary: a verify job is to write `binding` in every
+shard (§9.1), M1's `slip verify` included, after which a package of the
+coordinator's removes it and a shard without a binding is never this
+run's.
 
 **Which observers.** The check is over every selected observer. With
 rules, no selected observer whose map shard is `ok` is `unchanged`
@@ -1611,12 +1637,19 @@ the M1 document. Members added, each present only when it applies:
 "overlay": <id of the OVLY container>                      for an image of the overlay form; "image" is then []
 "agreement": { "rules": <n>,                               when Declared.rules is not empty
                "stale": [ { "rule": <index>, "observer": <id>, "main": <path>, "direct": <n> }, … ],
-               "unused": [ <index>, … ] }
+               "unused": [ <index>, … ],
+               "unchecked": [ <index>, … ] }                 until WP-111 (§9.2)
 "spellings": …                                             §10.5
 ```
 
 `stale` is sorted by `(rule, the observer's position in the plan)` and
-holds every stale pair; `unused` is ascending.
+holds every stale pair; `unused` and `unchecked` are ascending.
+`unchecked` lists the namespace rules an observer used (§9.2; temporary,
+removed by WP-111). `"overlay"` follows
+`"image"`; `"agreement"` and then `"spellings"` follow `"exemptions"`
+and precede `"run"`. An `unseen` entry of `spellings` has `observers`
+0, `first` and `found` null and an empty `name`
+(`spec/landed/verify/WP-070.md` §2.6).
 
 Lines added to the text, after the `exemption` lines and before `wall`:
 
@@ -1625,6 +1658,7 @@ image overlay <overlay id>                       in place of the `image` lines o
 agreement rules <n> stale <n> unused <n>         when there are rules; `stale <n>` counts pairs
 stale rule <index> direct <n> <main file>        at most 100, then `stale: <n> more (see the report)`
 unused rule <index>
+not checked: agreement between observers for namespace rule <index>     until WP-111 (§9.2)
 ```
 
 Nothing is added to the lines on standard error: those list observers by
@@ -1666,6 +1700,8 @@ impl Report {
     pub fn pre_round(&mut self, pre: u64);
     pub fn stale(&self) -> &[Stale];                       // sorted by (rule, plan position)
     pub fn unused(&self) -> Vec<u64>;
+    /// §9.2, until WP-111: the namespace rules an observer used, ascending.
+    pub fn unchecked(&self) -> Vec<u64>;
     pub fn spellings(&self) -> &[spelling::Outcome];       // §10.6; one per obligation of the overlay
 }
 ```
@@ -1756,8 +1792,8 @@ verdict (§10.4) and judged over the run.
 
 ### 10.3 Over the run
 
-For each obligation of the overlay, over this run's `ok` shards (§7,
-§9.3):
+For each obligation of the overlay, over this run's `ok` shards whose
+state is `verified` or `mismatch` (§7, §9.3):
 
 | The obligation | Is |
 |---|---|
@@ -1795,8 +1831,9 @@ Invariants: no index is in `held` twice or in both lists; the number of
 indices in the two lists is at most `seen`. The obligations not seen are
 the `seen` minus those. The decoder cannot check an index against the
 overlay; the fold (§10.6) refuses an index that is not one of the
-overlay's obligations or whose file the shard's `inputs` do not list, as
-a shard that is not this run's.
+overlay's obligations or whose file the shard's `inputs` do not list, and
+a `seen` that is not the number of obligations whose file the `inputs`
+list, as a shard that is not this run's.
 
 Counters of the shard, beside those of §7.2: `verify.spelling.obligations`
 (`seen`), `verify.spelling.holds`, `verify.spelling.fails`,
@@ -1850,11 +1887,24 @@ pub struct Fold { /* one slot per obligation */ }
 impl Fold {
     pub fn new(overlay: &slip_model::Overlay) -> Fold;
     /// One `ok` shard of this run; `Err` if the section names an obligation the overlay
-    /// does not have or a file the shard did not read (§10.4).
+    /// does not have or a file the shard did not read, breaks an invariant of §10.4, or
+    /// has a `seen` its `inputs` do not give (§10.4).
     pub fn add(&mut self, position: usize, inputs: &[FileRef], section: &slip_model::Spellings) -> Result<(), String>;
     pub fn finish(self) -> Vec<Outcome>;
 }
 ```
+
+`position` is the observer's position in the plan (the `position` of
+`Report::add_at`, §9.5), never the order of the calls, so the outcome
+does not depend on it. `Report::add_at` folds the section of a
+`verified` or `mismatch` shard only. That of an `unverifiable` one is
+checked as `add` checks it, and a section it refuses makes the observer
+`failed` as for any other, but it is not folded: its observer's
+post-image is not the run's (a guard of §5.3 failed, or the parse found
+something it could not compare), so neither what it held nor what it
+failed is of the image the obligations are about. The observer already
+keeps the run from being verified; folding its `held` could only let an
+obligation pass on its word.
 
 ### 10.7 What it shows
 
