@@ -132,7 +132,7 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
     }
 }
 
-fn written_options() -> ParseOptions {
+fn written_options() -> ParseOptions<'static> {
     let mut o = ParseOptions::default();
     o.written = true;
     o.pp_record = true;
@@ -826,26 +826,25 @@ fn a_seed_rule_does_not_depend_on_instantiation() {
 }
 
 /// `docs/wp/WP-119.md` item 4, the WP-073 fix round's F3 (`spec/edits.md`
-/// §9.5, `unreachable`): with WP-073's flag lifted, the explicit
-/// instantiation after the member's explicit specialisation (recorded
-/// nowhere by Kiln at the pin) leaves the follower with no flag; the run
-/// is accepted and its post-image keeps `template void S<int>::f();`,
-/// which names no member: the post-image does not compile. The directory
-/// stays `# pending` with the follower `unreachable` as wanted.
+/// §9.5, `unreachable`): the explicit instantiation after the member's
+/// explicit specialisation was recorded nowhere by Kiln, and the post-image
+/// kept `template void S<int>::f();`, which named no member. Since Kiln
+/// WP-2470 (in the pin since WP-066) it has its declaration row: the name
+/// is claimed and renamed, and the post-image compiles. The directory
+/// stays `# pending` (its follower `unreachable`, what it expects).
 #[test]
-fn f3_post_image_does_not_compile() {
+fn f3_post_image_compiles() {
     let case = cases()
         .into_iter()
         .find(|c| c.name == "s9_5-unreachable-explicit-instantiation-after-specialisation")
         .expect("the F3 directory");
     let Ran::Edits(e) = run_case(&case) else { panic!("F3 diagnosed") };
-    assert!(e.subjects.iter().all(|s| s.flags == 0), "{:?}", e.subjects);
     let files = post_image(&case, &e);
     let main = &files.iter().find(|(p, _)| p == "main.cpp").unwrap().1;
-    assert!(main.ends_with(b"template void S<int>::f(); }\n"), "{}", String::from_utf8_lossy(main));
+    assert!(main.ends_with(b"template void S<int>::g(); }\n"), "{}", String::from_utf8_lossy(main));
     assert!(
-        with_unit("f3-post", &files, &case.args, |_, _, _| ()).is_none(),
-        "the F3 post-image compiles"
+        with_unit("f3-post", &files, &case.args, |_, _, _| ()).is_some(),
+        "the F3 post-image does not compile"
     );
 }
 

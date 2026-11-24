@@ -1,6 +1,6 @@
 subjects:
-  fa8fdd44 seed - rule=yes n::B::f()
+  27503f17 seed - rule=yes n::B::f()
 links:
 claims:
-  main.cpp:2:44+1 replace "g" t0 votes=1 none [fa8fdd44]
+  main.cpp:2:44+1 replace "g" t0 votes=1 none [27503f17]
 changed:

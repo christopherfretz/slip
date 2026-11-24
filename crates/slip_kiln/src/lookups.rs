@@ -152,8 +152,8 @@ impl Lookups {
         let mut found = Places::default();
         for l in &log.lookups {
             // An absolute name is tried where it is, whatever the form
-            // (Kiln's log does not record one yet: `spec/verify.md` §5.1,
-            // "What remains outside").
+            // (Kiln's log records one since WP-2620: `Found::Absolute`, or
+            // `Found::Embed` with the name as its path, when it is found).
             if l.name.starts_with('/') {
                 tried.push("/", &l.name);
                 if matches!(l.found, Found::Missing) {
@@ -224,7 +224,7 @@ impl Lookups {
         for file in fe.sm.file_ids() {
             let read = match fe.sm.file_origin(file) {
                 FileOrigin::Virtual => false,
-                FileOrigin::Disk => true,
+                FileOrigin::Disk | FileOrigin::Overlay => true,
                 FileOrigin::Lazy => fe.sm.original_bytes(file).is_some(),
             };
             if read {
@@ -360,11 +360,11 @@ impl Frame {
     fn of(list: &[String], angled_start: usize, dirs: &[(DirGroup, String)]) -> Option<Frame> {
         let specs: Vec<SearchDirSpec> =
             dirs.iter().map(|(g, d)| SearchDirSpec::new(d.clone(), *g)).collect();
-        let full = SearchList::build(&specs, true, &mut RealFs);
+        let full = SearchList::build(&specs, true, &mut RealFs::new());
         let own = paths(&full);
         let no_after: Vec<SearchDirSpec> =
             specs.iter().filter(|s| s.group != DirGroup::After).cloned().collect();
-        let head = paths(&SearchList::build(&no_after, true, &mut RealFs));
+        let head = paths(&SearchList::build(&no_after, true, &mut RealFs::new()));
         let k = head.len();
         if full.angled_start() != angled_start || k > own.len() || head[..] != own[..k] {
             return None;
@@ -418,15 +418,15 @@ impl HeaderFs for Pretend<'_> {
         if path == self.path {
             return Some(format!("\0absent {path}"));
         }
-        RealFs.dir_identity(path)
+        RealFs::new().dir_identity(path)
     }
 
     fn open(&mut self, sm: &SourceManager, path: &str) -> Option<FileId> {
-        RealFs.open(sm, path)
+        RealFs::new().open(sm, path)
     }
 
     fn read(&mut self, path: &str) -> Option<Vec<u8>> {
-        RealFs.read(path)
+        RealFs::new().read(path)
     }
 }
 

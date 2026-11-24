@@ -3,6 +3,11 @@
 # once its directory holds a file and never adds one; M1 does not close with a line here.
 # ExprNode/CXXPseudoDestructorExpr.aux-qualified: Kiln keeps no non-dependent
 # qualifier (spec/landed/digest-kinds/WP-041.md, For Kiln 5); remove at the pin move.
+# OffsetofNode/Field, OffsetofNode/Index: tags no pair flips alone; a node's kind
+# follows from its payload (a base class, a field, an index expression) and the
+# operand type, so two designators of one type differing in one node's kind alone
+# are not valid C++ (WP-066). OffsetofNode/Index.position: the n-th index node
+# reads the n-th index expression, so no pair moves it alone (WP-066).
 AddrSpace/0
 ArgView/Null
 ArgView/Pack
@@ -74,11 +79,6 @@ FuncInfo/0-no-proto
 FuncInfo/0-regparm
 FuncInfo/0-sme
 FuncProto/abis
-ModuleOwnership/ModulePrivate
-ModuleOwnership/ReachableWhenImported
-ModuleOwnership/Unowned
-ModuleOwnership/Visible
-ModuleOwnership/VisibleWhenImported
 Nns/Global
 Nns/Identifier
 Nns/Identifier.name
@@ -97,6 +97,9 @@ Nns/Type.prefix
 Nns/Type.template_kw
 Nns/Type.ty
 NonOdrUse/Discarded
+OffsetofNode/Field
+OffsetofNode/Index
+OffsetofNode/Index.position
 ParamData/flags-static-array
 ProfileEntry/first_expr
 PtrBase/Absolute

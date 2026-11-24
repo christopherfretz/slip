@@ -566,6 +566,7 @@ fn cold_entry(w: &Walk<'_>, e: ExprId) -> bool {
         || c.cast_written.contains(e)
         || c.offsetof_pattern.contains(e)
         || c.offsetof_layout.contains(e)
+        || c.offsetof_designator.contains(e)
         || c.splice_args.contains(e)
         || c.default_arg_rewritten.contains(e)
         || c.fp_round.contains(e)
@@ -867,6 +868,14 @@ fn cold(w: &Walk<'_>, e: ExprId, n: &Node, tail: Tail, out: &mut Vec<Item>) {
     if maps.offsetof_layout.contains(e) {
         out.push(Item::Exec(crate::expr_misc::offsetof_layout, e));
     } else {
+        out.push(Item::Count(0));
+    }
+    // offsetof_designator-type, offsetof_designator-nodes (Kiln WP-2360).
+    if let Some((ty, _)) = maps.offsetof_designator.get(e) {
+        out.push(Item::TypeOpt(Some(*ty)));
+        out.push(Item::Exec(crate::expr_misc::offsetof_nodes, e));
+    } else {
+        out.push(Item::TypeOpt(None));
         out.push(Item::Count(0));
     }
     // splice_args: unsupported.

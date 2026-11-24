@@ -207,7 +207,7 @@ member).
 
 Kiln's account of what in the AST exists only because the translation unit
 used it (Kiln `62afe3289`), and where each goes. At the pinned
-`913a490bb` (WP-101; its `kiln_ast` is that of `83566cc47`, WP-044) it
+`4a83f6e3c` (WP-066) it
 still holds: what Kiln added since (the definition-context operator sets,
 the names of an overloaded member access, the shadows of a
 using-declaration, the owner of a closure, the checked mark of an
@@ -226,7 +226,7 @@ the preprocessor's and not the AST's.
 | The value of an immediate invocation inside a default argument, computed at its first use | `resolved` unit |
 | A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
 | A deduced return type of a template member | `resolved` unit `definition` of the instantiation |
-| A variable's evaluated constant value (`eval`), default-argument immediate values. At Kiln `913a490bb` `eval` is written when Kiln checks the declaration's initialiser: with the declaration, or, for one made by instantiation, when a use instantiates it (`digest-kinds.md` §11.3) | `resolved` unit |
+| A variable's evaluated constant value (`eval`), default-argument immediate values. At Kiln `4a83f6e3c` `eval` is written when Kiln checks the declaration's initialiser: with the declaration, or, for one made by instantiation, when a use instantiates it (`digest-kinds.md` §11.3) | `resolved` unit |
 | A class's key function; `dtor_delete`, `dtor_delete_this` (set when a virtual destructor is defined, which for an implicit or defaulted one is on use), `inheriting_ctor`, `inherited_ctor` (set when Kiln declares the inheriting constructor, on use) cold maps | `resolved` unit of the class or function |
 | The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |
 | "vtable used" marks | not in the AST: nothing to digest |

@@ -1,4 +1,0 @@
-# pending
-# needs: kiln
-# Kiln sets no module ownership: `DeclMisc::with_module_ownership` has no caller (kiln_ast/src/decl.rs:512), so every declaration is `Unowned`
-changed x

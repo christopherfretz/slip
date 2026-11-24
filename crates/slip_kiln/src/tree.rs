@@ -159,7 +159,7 @@ impl Tree {
     pub fn parse<R: Send>(
         &self,
         observer: &Observer,
-        options: &ParseOptions,
+        options: &ParseOptions<'_>,
         f: impl FnOnce(&Unit<'_>) -> R + Send,
     ) -> Result<(Shard, Option<R>), String> {
         let _held = PARSE.lock().unwrap_or_else(PoisonError::into_inner);

@@ -172,8 +172,8 @@ mismatch
           "kind": "changed",
           "key": "d8a002ad27c3e5003b3b5e4cd4e7531a3f181c2e6a03d631cd893470373aa00e",
           "file": "<base>/s/a.cpp",
-          "pre": "0b040be6ebd50a3662ecbc616c10ea1449cf07f5435cf3eb6fda6976dff02657",
-          "post": "d6e6247a71f57325e53a159de12723646a57110071dc92869257041c39d6dfcd",
+          "pre": "f3401434ca6f56414797bc125c84469fe75adae0685d196af5ca9b948191e1d7",
+          "post": "bf9d51e4c69d260f7562deef2b635ccf16e5c4b436f458ceaf11cf370d851670",
           "name": "f()",
           "where": {
             "pre": {

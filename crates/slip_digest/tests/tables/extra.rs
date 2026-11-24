@@ -34,7 +34,6 @@ pub fn register(s: &mut Schema) {
     <kiln::ast::types::TemplateName as Snap>::schema(s);
     <kiln::ast::types::DeclSet as Snap>::schema(s);
     <kiln::ast::decl::FriendKind as Snap>::schema(s);
-    <kiln::ast::decl::ModuleOwnership as Snap>::schema(s);
     <kiln::ast::decl::PayloadClass as Snap>::schema(s);
     <kiln::ast::decl::Payload as Snap>::schema(s);
     <kiln::ast::decl::FnStorage as Snap>::schema(s);

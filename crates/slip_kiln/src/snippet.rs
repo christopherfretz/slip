@@ -1202,6 +1202,11 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         host_calls_visible,
         env,
         no_side_outputs,
+        written_refs,
+        dump_expr_extents,
+        dump_pp_record_source_order,
+        working_directory,
+        work_dir,
     } = a;
     macro_rules! io {
         ($($field:ident),* $(,)?) => {
@@ -1291,6 +1296,18 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         host_calls_visible,
         env,
         no_side_outputs,
+        // The written-reference table recorded without a dump
+        // (`-fkiln-written-refs`, Kiln WP-2320), two dumps
+        // (`-fkiln-dump-expr-extents`, Kiln WP-2327;
+        // `-fkiln-dump-pp-record=source-order`, Kiln WP-2112), and the
+        // directory relative paths open against (`-working-directory`,
+        // Kiln WP-2121; `work_dir` is no command-line option, it is
+        // `-working-directory` resolved).
+        written_refs,
+        dump_expr_extents,
+        dump_pp_record_source_order,
+        working_directory,
+        work_dir,
     );
     // The parts of three option groups that are files or reports; their
     // limits and the sanitizer set are the language's.
@@ -1608,6 +1625,11 @@ mod tests {
         // The preprocessing record (Kiln WP-2110, WP-101).
         "-fkiln-pp-record",
         "-fkiln-dump-pp-record",
+        // Kiln WP-2320, WP-2327, WP-2112, WP-2121 (WP-066).
+        "-fkiln-written-refs",
+        "-fkiln-dump-expr-extents",
+        "-fkiln-dump-pp-record=source-order",
+        "-working-directory=/",
         "-ftime-trace",
         "-fconstexpr-report=text",
         "-fkiln-instantiation-report=text",

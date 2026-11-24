@@ -18,7 +18,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use kiln_ast::decl::DeclKind;
+use kiln_ast::decl::{ConstexprKind, DeclKind};
 use kiln_ast::types::TypeView;
 use kiln_ast::{Ast, DeclId};
 use kiln_diag::{DiagOptions, DiagSink, SharedBuffer, TextSink};
@@ -424,6 +424,10 @@ pub struct Session<'a> {
     id: u64,
     /// Set while a run is inside Kiln: still set after a run unwound.
     in_run: bool,
+    /// Set once a run ended in Kiln's `RunError::StackExhausted`: since
+    /// Kiln WP-2410 the guard's flag is put back after each run, and the
+    /// host keeps it set (`Session::stack_exhausted`).
+    tripped: bool,
 }
 
 /// The number of the next session in this process.
@@ -460,15 +464,16 @@ impl Session<'_> {
         &self.predefines
     }
 
-    /// Whether Kiln's stack guard tripped in this unit (its flag
-    /// `Sema::stack_exhausted`, `kiln/crates/kiln_sema/src/stack_guard.rs:184`).
-    /// The flag is sticky: once set, every later run of the session fails,
-    /// and Kiln reports the diagnostic only once
-    /// (`stack_guard.rs:191-193`), so a later run may fail without it. See
-    /// [`Session::run`] for how a run away from the compiling thread can
-    /// set it.
+    /// Whether Kiln's stack guard tripped in this unit: its flag
+    /// `Sema::stack_exhausted` (`kiln/crates/kiln_sema/src/stack_guard.rs:213`),
+    /// set by compiling, or a run of this session that ended in Kiln's
+    /// `RunError::StackExhausted`. Kiln reports the diagnostic only once
+    /// (`stack_guard.rs:220-222`). Since Kiln WP-2410 the flag is put back
+    /// after each run (`Sema::guard_leave_thread`), so a run's exhaustion
+    /// no longer stays in it; this keeps it set, and the session is not
+    /// run again (`slip_script::driver`, `spec/api.md` §2.8).
     pub fn stack_exhausted(&self) -> bool {
-        self.engine.stack_exhausted()
+        self.tripped || self.engine.stack_exhausted()
     }
 
     /// Whether a function or function template named `name` is a member
@@ -503,17 +508,15 @@ impl Session<'_> {
     /// then unusable: every later run is [`RunFailure::Poisoned`] (Kiln
     /// has not put its state back). A worker ends.
     ///
-    /// **The stack guard.** Kiln checks the stack against the guard of the
-    /// thread that called [`with_transform`], copied when the unit was
-    /// compiled (`kiln/crates/kiln_sema/src/templ/mod.rs:617`), not against
-    /// the calling thread's. On another thread that guard can read as
-    /// exhausted. A run that reaches a stack check (an instantiation made
-    /// at run time through reflection, at any depth) then fails with
-    /// "stack exhausted", and the flag is sticky: every later run of the
-    /// session fails the same way (KN1 of WP-089, `tests/session.rs`
-    /// `kn1_…`). So `slip_script::driver` runs a session only on the
-    /// thread that compiled it (`spec/api.md` §2.5 rule 5), until Kiln
-    /// WP-2410.
+    /// **The stack guard.** Before Kiln WP-2410, Kiln checked the stack
+    /// against the guard of the thread that called [`with_transform`],
+    /// copied when the unit was compiled, so on another thread a run that
+    /// reached a stack check (an instantiation made at run time through
+    /// reflection) failed with "stack exhausted", sticky for every later
+    /// run. Since WP-2410 it checks the running thread's guard and such a
+    /// run completes (KN1 of WP-089, `tests/session.rs` `kn1_…`).
+    /// `slip_script::driver` still runs a session only on the thread that
+    /// compiled it (`spec/api.md` §2.5 rule 5).
     pub fn run(
         &mut self,
         entry: Entry,
@@ -536,8 +539,9 @@ impl Session<'_> {
             return refused(RunFailure::Poisoned);
         }
         self.in_run = true;
-        let report = self.engine.run(entry.entry, handler, budget, &cancel.0);
+        let (report, tripped) = self.engine.run(entry.entry, handler, budget, &cancel.0);
         self.in_run = false;
+        self.tripped |= tripped;
         report
     }
 }
@@ -583,16 +587,40 @@ pub fn with_transform<R>(
                     let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
                     let triple = fe.session.sema().abi.triple.to_string();
                     let predefines = predefines(fe.sources);
-                    f(Ok(Session { engine: &mut fe, files, triple, predefines, id, in_run: false }))
+                    f(Ok(Session {
+                        engine: &mut fe,
+                        files,
+                        triple,
+                        predefines,
+                        id,
+                        in_run: false,
+                        tripped: false,
+                    }))
                 }
-                Err(SessionRefused::TuHasErrors { errors }) => {
-                    let rendered = buffer.contents();
-                    if stack_exhausted_in(&rendered) {
-                        f(Err(CompileError::StackExhausted { rendered }))
-                    } else {
-                        f(Err(CompileError::Diagnosed { rendered, errors }))
+                Err(SessionRefused::TuHasErrors { errors, .. }) => {
+                    f(Err(diagnosed(buffer.contents(), errors)))
+                }
+                // A fatal error other than the error limit's, or no tree
+                // (Kiln WP-2322). Before it Kiln reported a unit that
+                // stopped with errors as `TuHasErrors` and one with no
+                // tree as `CommandLine`: the errors among the unit's
+                // diagnostics tell the two apart, as they did
+                // (`spec/landed/digest-kinds/WP-066.md`).
+                Err(SessionRefused::Stopped { diagnostics, .. }) => {
+                    let errors = diagnostics
+                        .iter()
+                        .filter(|d| {
+                            matches!(d.level, kiln_diag::Level::Error | kiln_diag::Level::Fatal)
+                        })
+                        .count();
+                    match u32::try_from(errors).unwrap_or(u32::MAX) {
+                        0 => f(Err(CompileError::CommandLine(buffer.contents()))),
+                        errors => f(Err(diagnosed(buffer.contents(), errors))),
                     }
                 }
+                // Kiln catches a panic of the front end since its WP-2322;
+                // before, `catch_unwind` below caught it.
+                Err(SessionRefused::Panicked(message)) => f(Err(CompileError::Panicked(message))),
                 // `CommandLine`, and any reason Kiln adds (`#[non_exhaustive]`).
                 Err(_) => f(Err(CompileError::CommandLine(buffer.contents()))),
             }
@@ -606,6 +634,17 @@ pub fn with_transform<R>(
             Some(f) => f(Err(CompileError::Panicked(panic_message(panic.as_ref())))),
             None => resume_unwind(panic),
         },
+    }
+}
+
+/// The refusal of a unit that reported `errors` errors, `rendered` as Kiln
+/// wrote them: [`CompileError::StackExhausted`] when Kiln's stack guard
+/// tripped, else [`CompileError::Diagnosed`].
+fn diagnosed(rendered: String, errors: u32) -> CompileError {
+    if stack_exhausted_in(&rendered) {
+        CompileError::StackExhausted { rendered }
+    } else {
+        CompileError::Diagnosed { rendered, errors }
     }
 }
 
@@ -673,10 +712,12 @@ fn read_files(sm: &SourceManager) -> (Vec<ReadFile>, Option<(Vec<u8>, u32)>) {
             FileOrigin::Virtual => continue,
             // A transform unit reads no module file or snapshot (the
             // options are refused); listed when read, as for a subject.
-            FileOrigin::Disk | FileOrigin::Lazy => match sm.original_bytes(id) {
-                Some(b) => b,
-                None => continue,
-            },
+            FileOrigin::Disk | FileOrigin::Lazy | FileOrigin::Overlay => {
+                match sm.original_bytes(id) {
+                    Some(b) => b,
+                    None => continue,
+                }
+            }
         };
         let path = sm.file_name(id).as_bytes().to_vec();
         if embed.is_none()
@@ -780,7 +821,7 @@ trait Engine: Send {
         handler: &mut dyn Handler,
         budget: Budget,
         cancel: &CancelToken,
-    ) -> RunReport;
+    ) -> (RunReport, bool);
 }
 
 /// Whether `name` is exactly an identifier of the basic character set
@@ -875,13 +916,23 @@ impl Engine for SessionFrontEnd<'_, '_> {
             _ => return Err(EntryError::NotFunction),
         };
         let void = returns_void(ast, d);
+        // `entry-not-consteval` (`spec/api.md` §2.3): a function declared
+        // `consteval`, as Kiln's own check was until its WP-2072, which
+        // accepts a `constexpr` entry too and checks it after the kind.
+        if ast
+            .decls
+            .function(ast.latest(d))
+            .is_some_and(|f| f.spec.constexpr_kind() != ConstexprKind::Consteval)
+        {
+            return Err(EntryError::NotConsteval);
+        }
         match self.session.entry(d) {
             Ok(_) if void == Some(false) => Err(EntryError::Type),
             Ok(e) => Ok(e),
             Err(e) => Err(match e {
                 KilnEntryError::NotFound { .. } => EntryError::Missing,
                 KilnEntryError::Overloaded { .. } => EntryError::Overloaded,
-                KilnEntryError::NotConsteval => EntryError::NotConsteval,
+                KilnEntryError::NotConstexpr => EntryError::NotConsteval,
                 KilnEntryError::HasParameters => EntryError::Parameters,
                 KilnEntryError::WrongReturnType => EntryError::Type,
                 // §2.3 puts `entry-type` before `entry-undefined`; Kiln
@@ -901,34 +952,57 @@ impl Engine for SessionFrontEnd<'_, '_> {
         handler: &mut dyn Handler,
         budget: Budget,
         cancel: &CancelToken,
-    ) -> RunReport {
-        let budget = RunBudget { steps: budget.steps, bytes: budget.bytes, depth: budget.depth };
+    ) -> (RunReport, bool) {
+        // `result_bytes` (Kiln WP-2502) bounds a result's tree and an
+        // uncaught exception's value, neither of which Slip reads: Kiln's
+        // program profile.
+        let budget = RunBudget {
+            steps: budget.steps,
+            bytes: budget.bytes,
+            depth: budget.depth,
+            ..RunBudget::PROGRAM
+        };
         let mut calls = Calls { handler };
         let report = self.session.run(entry, &mut calls, budget, cancel);
+        let tripped = matches!(report.result, Err(RunError::StackExhausted));
         let result = match report.result {
             Ok(RunValue::Void) => Ok(()),
             Ok(v) => unreachable!("an entry returns void (Session::entry), and returned {v:?}"),
             Err(e) => Err(match e {
-                RunError::Failed => RunFailure::NotConstant,
+                // Kiln WP-2500 says a stack exhausted apart; before, a run
+                // that exhausted the stack failed as not constant with the
+                // fatal `sema_stack_exhausted` among its diagnostics. The
+                // host keeps the session's flag set (`tripped`), which
+                // `slip_script::driver` reads before the result.
+                RunError::Failed | RunError::StackExhausted => RunFailure::NotConstant,
                 RunError::StepBudget => RunFailure::StepBudget,
                 RunError::MemoryBudget => RunFailure::MemoryBudget,
                 RunError::DepthLimit => RunFailure::DepthLimit,
                 RunError::Cancelled => RunFailure::Cancelled,
-                RunError::Host { message } => RunFailure::Host(message),
-                RunError::Uncaught { type_name, .. } => RunFailure::Uncaught { type_name },
+                // Kiln's note on a call whose arguments failed its
+                // checks, apart from the handler's error since Kiln WP-2480.
+                RunError::Host { message } | RunError::HostArgument { message } => {
+                    RunFailure::Host(message)
+                }
+                // The type as `display_string_of` spells it, qualified
+                // (Kiln WP-2480; written and unqualified before).
+                RunError::Uncaught { ty, .. } => {
+                    RunFailure::Uncaught { type_name: ty.display.to_string() }
+                }
                 // A kind Kiln adds (`#[non_exhaustive]`): the host cannot
                 // say what it means.
                 other => RunFailure::Unknown(format!("{other:?}")),
             }),
         };
-        RunReport {
+        let report = RunReport {
             result,
             steps: report.steps,
             host_calls: report.host_calls,
             peak_bytes: report.peak_heap,
             rendered: render(self.sources, &report.diagnostics),
             diagnostics: report.diagnostics.iter().map(|d| diagnostic(self.sources, d)).collect(),
-        }
+        };
+        (report, tripped)
     }
 }
 
