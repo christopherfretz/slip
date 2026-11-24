@@ -1,0 +1,9 @@
+subjects:
+  32ae9afe seed - rule=yes n::S::f()
+  fc2d99d6 follower - rule=yes n::S<int>::f() of=32ae9afe
+links:
+claims:
+  main.cpp:2:19+1 keep t0 votes=1 none
+  main.cpp:3:42+1 replace "g" t0 votes=1 none [32ae9afe]
+  main.cpp:5:45+1 refuse t0 votes=1 mixed_instances [32ae9afe]
+changed:

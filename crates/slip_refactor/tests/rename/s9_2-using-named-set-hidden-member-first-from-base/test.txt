@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (as s9_2-using-named-set-hidden-member-first, the hidden declaration renamed and the hider not: mixed_follower), WP-127 item 1
+from: n::B::f
+to: g
+kind: function

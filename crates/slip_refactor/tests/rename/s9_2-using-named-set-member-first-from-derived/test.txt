@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (as s9_2-using-named-set-member-first, the seed the overrider), WP-127 item 1
+from: n::D::f
+to: g
+kind: function
