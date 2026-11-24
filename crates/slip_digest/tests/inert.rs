@@ -8,16 +8,27 @@
 //! files of every group), the counters, the causes, the names, and the
 //! rule use (which is empty: no rule is used, `via` and `direct` 0).
 //!
-//! Each source is parsed once and walked three times on that parse
-//! (`common::with_side`), on the runners' pool:
+//! Each source is parsed once and walked on that parse
+//! (`common::with_side`), on the runners' pool, first under the empty
+//! table, every file owned (the walk every other is compared with), then
+//! under each of three tables:
 //!
-//! - under the empty table, every file owned;
-//! - under [`namespace_table`] (one namespace rule), every file owned;
-//! - under [`every_kind_table`] (a rule of each kind `tests/common/rules.rs`
-//!   writes: namespace, class, function, member, variable, and a member
-//!   conversion function), with every file of the source but its main
-//!   file read-only, so that the ownership branches (`owned.rs`, the
-//!   namespace views of `keys.rs`) are taken where a source has headers.
+//! - [`namespace_table`]: one namespace rule at the global namespace;
+//! - [`every_kind_table`]: a rule of each kind `tests/common/rules.rs`
+//!   writes (namespace, class, function, member, variable, and a member
+//!   conversion function), under a parent no source declares;
+//! - [`declared_parent_table`] (WP-134): the same kinds, each under every
+//!   parent the source declares (every unit of the walk under the empty
+//!   table), with a name no source declares, so that the rule index is
+//!   asked with parents it holds.
+//!
+//! Each table is walked with every file owned. Where the source has a
+//! file besides its main file and the runner's `side.h` (a header of the
+//! directory, or a support file it includes), each table is walked again
+//! with every file but the main file read-only (`side.h` with them), so
+//! that the ownership branches (`owned.rs`, the namespace views of
+//! `keys.rs`) are taken under every table (WP-134 item 2). A source with
+//! no such file has nothing to make read-only that declares anything.
 //!
 //! One counter is excluded from the equality: `digest.bytes` (`spec/digest.md`
 //! §12, the bytes of the streams hashed) measures the walk's work, not
@@ -98,6 +109,34 @@ fn every_kind_table() -> RuleTable {
         rule(Parent::Root, KeyKind::Variable, id("var"), None, "var_old"),
     ])
     .expect("a table")
+}
+
+/// [`every_kind_table`]'s kinds under every parent `base` (the walk
+/// under the empty table) has a unit for, each with a name no source
+/// declares: a parent the source declares, a name it does not
+/// (WP-134 item 2).
+fn declared_parent_table(base: &Output) -> RuleTable {
+    let mut parents: Vec<Digest> =
+        base.digests.groups.iter().flat_map(|g| g.units.iter().flatten()).map(|u| u.key).collect();
+    parents.sort();
+    parents.dedup();
+    let mut rules = Vec::with_capacity(parents.len() * 6);
+    for p in parents {
+        let p = Parent::Unit(p);
+        rules.push(rule(p, KeyKind::Namespace, id("ns"), None, "ns_old"));
+        rules.push(rule(p, KeyKind::Class, id("class"), None, "class_old"));
+        rules.push(rule(p, KeyKind::Function, id("fn"), None, "fn_old"));
+        rules.push(rule(p, KeyKind::Function, id("fn"), Some(ABSENT_DISC), "fn_old"));
+        rules.push(rule(
+            p,
+            KeyKind::Function,
+            Name::Conversion(ABSENT_DISC),
+            Some(ABSENT_DISC),
+            "conv_old",
+        ));
+        rules.push(rule(p, KeyKind::Variable, id("var"), None, "var_old"));
+    }
+    RuleTable::new(rules).expect("a table")
 }
 
 fn walk(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Output {
@@ -184,6 +223,16 @@ fn headers_read_only(input: &Input<'_>) -> ReadOnlyFiles {
     ReadOnlyFiles::new(Some(&o), input.sm, &subject)
 }
 
+/// Whether `input` has a file besides its main file and the runner's
+/// `side.h`: one whose declarations read-only files change the view of.
+fn has_headers(input: &Input<'_>) -> bool {
+    input
+        .sm
+        .file_ids()
+        .map(|f| (input.subject_path)(f))
+        .any(|p| !p.is_empty() && p.as_slice() != b"main.cpp" && p.as_slice() != b"side.h")
+}
+
 /// Both sides of `dir`: the differences of each walk under rules from the
 /// walk under none, as lines.
 fn one(dir: &Path, tables: &[(&str, RuleTable)]) -> Result<(), String> {
@@ -191,12 +240,24 @@ fn one(dir: &Path, tables: &[(&str, RuleTable)]) -> Result<(), String> {
     for side in [Side::A, Side::B] {
         let found = common::with_side(dir, side, |input| {
             let base = walk(input, &RuleTable::empty(), ReadOnly::NO_FILE);
+            let declared = declared_parent_table(&base);
             let files = headers_read_only(input);
+            let headers = has_headers(input);
             let mut lines = Vec::new();
-            for (i, (label, t)) in tables.iter().enumerate() {
-                let ro = if i == 0 { ReadOnly::NO_FILE } else { ReadOnly::files(&files) };
-                let got = walk(input, t, ro);
-                lines.extend(differences(&got, &base).into_iter().map(|l| format!("{label}: {l}")));
+            let all = tables.iter().map(|(l, t)| (*l, t)).chain([("declared parent", &declared)]);
+            for (label, t) in all {
+                let mut views = vec![("every file owned", ReadOnly::NO_FILE)];
+                if headers {
+                    views.push(("headers read-only", ReadOnly::files(&files)));
+                }
+                for (view, ro) in views {
+                    let got = walk(input, t, ro);
+                    lines.extend(
+                        differences(&got, &base)
+                            .into_iter()
+                            .map(|l| format!("{label}, {view}: {l}")),
+                    );
+                }
             }
             lines
         });
@@ -229,7 +290,8 @@ fn all_dirs() -> Vec<PathBuf> {
     v
 }
 
-/// `spec/digest.md` §3.4 "Inert rules": every source, both tables.
+/// `spec/digest.md` §3.4 "Inert rules": every source, every table, both
+/// ownerships where the source has headers.
 #[test]
 fn a_rule_that_matches_nothing_changes_nothing() {
     let tables =

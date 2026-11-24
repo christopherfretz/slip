@@ -1,0 +1,2 @@
+# WP-134 item 3 (the review of WP-131): a rename of a member class of a class template (W::In to W::Inner) that is the target of conversion functions (to the class and to a pointer to it): the instantiation's conversions keep their own names, which the type digest maps
+relocate W::In => W :: Inner
