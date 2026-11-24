@@ -70,22 +70,22 @@ impl<'a> Cleanup<'a> {
     }
 }
 
+/// The number of files of each merge level, level 0 first, for `runs`
+/// runs of the first pass: level `l + 1` has `ceil(count / fan_in)` files
+/// while level `l` has more than one, as the merge makes them. Empty for
+/// no runs.
+pub(crate) fn level_counts(runs: usize, fan_in: usize) -> impl Iterator<Item = usize> {
+    let fan_in = fan_in.max(2);
+    std::iter::successors((runs > 0).then_some(runs), move |&c| (c > 1).then(|| c.div_ceil(fan_in)))
+}
+
 impl Drop for Cleanup<'_> {
     fn drop(&mut self) {
-        // Level `l + 1` has `ceil(count / fan_in)` files while level `l`
-        // has more than one, as the merge makes them; a file a failed call
-        // did not make is not there to remove.
-        let mut count = self.runs;
-        let mut level = 0;
-        while count > 0 {
+        // A file a failed call did not make is not there to remove.
+        for (level, count) in level_counts(self.runs, self.fan_in).enumerate() {
             for index in 0..count {
                 let _ = std::fs::remove_file(self.scratch.run(level, index));
             }
-            if count == 1 {
-                break;
-            }
-            count = count.div_ceil(self.fan_in.max(2));
-            level += 1;
         }
         if self.basis {
             let _ = std::fs::remove_file(self.scratch.basis());
@@ -323,5 +323,37 @@ impl<'m> BasisReader<'m> {
         let mut b = [0u8; 65];
         self.input.read_exact(&mut b).map_err(|e| io(&self.path, &e))?;
         entry_of(&b)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::level_counts;
+
+    /// The levels as `reduce` makes them: the first pass's runs, then each
+    /// merge level until one file remains (the list `Cleanup` kept before
+    /// landed WP-142, from the second review's probe).
+    fn made(n: usize, fan_in: usize) -> Vec<usize> {
+        let mut count = n.div_ceil(fan_in).max(1);
+        let mut levels = vec![count];
+        while count > 1 {
+            count = count.div_ceil(fan_in);
+            levels.push(count);
+        }
+        levels
+    }
+
+    /// Landed WP-142 §1: the computed levels are the levels made, for
+    /// every `n` up to 5,000 and `fan_in` 2 to 65.
+    #[test]
+    fn the_levels_computed_are_the_levels_made() {
+        assert_eq!(level_counts(0, 2).count(), 0);
+        for fan_in in 2..=65usize {
+            for n in 0..=5000usize {
+                let runs = n.div_ceil(fan_in).max(1);
+                let got: Vec<usize> = level_counts(runs, fan_in).collect();
+                assert_eq!(got, made(n, fan_in), "n {n} fan_in {fan_in}");
+            }
+        }
     }
 }

@@ -26,7 +26,9 @@ mod runs;
 mod set;
 mod subjects;
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -157,29 +159,42 @@ impl Least {
     }
 }
 
+/// A panic's payload, kept to be resumed in the caller.
+type Payload = Box<dyn Any + Send + 'static>;
+
 /// Runs `job(0..count)` on up to `threads` threads, each taking the next
-/// index. Stops handing out work after the first `Err` and returns it.
-/// Nothing is kept per job: a job folds its result into shared state, so
-/// that memory does not grow with the number of runs (§5.6).
+/// index; the threads spawned are at most `count` (one with one job or
+/// one thread, on the caller's thread). Stops handing out work after the
+/// first `Err` and returns it. A job that panics stops the hand-out too,
+/// and its panic, the first one's payload, is resumed in the caller once
+/// every thread has returned. Nothing is kept per job: a job folds its
+/// result into shared state, so that memory does not grow with the number
+/// of runs (§5.6).
 fn pool(
     threads: usize,
     count: usize,
     job: &(dyn Fn(usize) -> Result<(), String> + Sync),
 ) -> Result<(), String> {
     let next = AtomicUsize::new(0);
-    let failed = Mutex::new(None::<String>);
+    let failed = Mutex::new((None::<String>, None::<Payload>));
     let work = || {
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             if i >= count {
                 break;
             }
-            match job(i) {
-                Ok(()) => {}
-                Err(e) => {
+            match catch_unwind(AssertUnwindSafe(|| job(i))) {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
                     next.store(count, Ordering::Relaxed);
                     let mut f = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    f.get_or_insert(e);
+                    f.0.get_or_insert(e);
+                    break;
+                }
+                Err(payload) => {
+                    next.store(count, Ordering::Relaxed);
+                    let mut f = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    f.1.get_or_insert(payload);
                     break;
                 }
             }
@@ -196,8 +211,9 @@ fn pool(
         });
     }
     match failed.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
-        Some(e) => Err(e),
-        None => Ok(()),
+        (_, Some(payload)) => resume_unwind(payload),
+        (Some(e), None) => Err(e),
+        (None, None) => Ok(()),
     }
 }
 
@@ -214,15 +230,20 @@ struct Fold {
     /// No more runs are handed out: a run failed, or a worker panicked.
     stop: bool,
     failed: Option<String>,
+    /// The payload of the first run that panicked, resumed in the caller.
+    panic: Option<Payload>,
 }
 
 fn lock(m: &Mutex<Fold>) -> MutexGuard<'_, Fold> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Stops the first pass and wakes every worker when a worker unwinds, so
-/// that no worker waits for a run that the panicking one will never fold;
-/// `std::thread::scope` then joins the workers and resumes the panic.
+/// Stops the first pass and wakes every worker when a worker unwinds
+/// outside a run (a run's own panic is caught, see [`first_pass`]), so
+/// that no worker waits for a run that the panicking one will never fold.
+/// Such a panic is not caught: with one thread it reaches the caller as it
+/// is; with several, `std::thread::scope` joins the workers and raises its
+/// own panic ("a scoped thread panicked"), the original's payload lost.
 struct WakeOnPanic<'a> {
     state: &'a Mutex<Fold>,
     wake: &'a Condvar,
@@ -238,10 +259,13 @@ impl Drop for WakeOnPanic<'_> {
 }
 
 /// The first pass over `count` runs on up to `threads` threads: `job(r)`
-/// is run `r`'s joined state, folded into one in run order (§5.6).
+/// is run `r`'s joined state, folded into one in run order (§5.6). The
+/// threads spawned are at most `count` (one with one run or one thread,
+/// on the caller's thread), whatever `threads` is.
 ///
 /// **Back-pressure.** A worker starts run `r` only if `r < folded +
-/// window`, `window = WINDOW_PER_THREAD × threads`, `folded` the earliest
+/// window`, `window = WINDOW_PER_THREAD × threads` (both saturating, so
+/// that no `threads` makes it wrap to 0), `folded` the earliest
 /// run not yet folded; otherwise it waits on `wake`. So every run in
 /// `waiting` is in `folded + 1 .. folded + window`: at most `window - 1`
 /// states wait, `window` with the run just finished before it is folded
@@ -258,8 +282,12 @@ impl Drop for WakeOnPanic<'_> {
 /// condition is false), so the earliest unfolded run can always be started.
 /// A failed run stops the hand-out and wakes everyone: each worker
 /// finishes the run it holds and returns, and the first error is the
-/// result, as before the window. A worker that panics does the same by
-/// [`WakeOnPanic`], and the panic is resumed when the scope joins.
+/// result, as before the window. A run that panics is caught: the worker
+/// stops the hand-out, keeps the first payload under the lock, wakes
+/// everyone and returns; once every worker has returned, the caller
+/// resumes that payload (`resume_unwind`), so the run's own panic reaches
+/// the caller with any number of threads. A panic of a worker outside a
+/// run (in the fold) is [`WakeOnPanic`]'s.
 ///
 /// With one thread the condition is never true (each run is folded before
 /// the next is started) and the runs are run in order on the caller's
@@ -270,7 +298,7 @@ fn first_pass(
     meter: &Meter,
     job: &(dyn Fn(usize) -> Result<Joined, String> + Sync),
 ) -> Result<Joined, String> {
-    let window = WINDOW_PER_THREAD * threads.max(1);
+    let window = WINDOW_PER_THREAD.saturating_mul(threads.max(1));
     let state = Mutex::new(Fold {
         started: 0,
         folded: 0,
@@ -278,6 +306,7 @@ fn first_pass(
         joined: Joined::default(),
         stop: false,
         failed: None,
+        panic: None,
     });
     let wake = Condvar::new();
     let work = || {
@@ -287,18 +316,18 @@ fn first_pass(
             if s.stop || s.started >= count {
                 break;
             }
-            if s.started >= s.folded + window {
+            if s.started >= s.folded.saturating_add(window) {
                 s = wake.wait(s).unwrap_or_else(std::sync::PoisonError::into_inner);
                 continue;
             }
             let r = s.started;
             s.started += 1;
             drop(s);
-            let out = job(r);
+            let out = catch_unwind(AssertUnwindSafe(|| job(r)));
             s = lock(&state);
             let f = &mut *s;
             match out {
-                Ok(part) => {
+                Ok(Ok(part)) => {
                     f.waiting.insert(r, part);
                     meter.waiting.at(f.waiting.len());
                     let before = f.folded;
@@ -310,9 +339,14 @@ fn first_pass(
                         wake.notify_all();
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     f.stop = true;
                     f.failed.get_or_insert(e);
+                    wake.notify_all();
+                }
+                Err(payload) => {
+                    f.stop = true;
+                    f.panic.get_or_insert(payload);
                     wake.notify_all();
                 }
             }
@@ -329,6 +363,9 @@ fn first_pass(
         });
     }
     let f = state.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(payload) = f.panic {
+        resume_unwind(payload);
+    }
     match f.failed {
         Some(e) => Err(e),
         None => Ok(f.joined),
