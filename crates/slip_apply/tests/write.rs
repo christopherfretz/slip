@@ -223,6 +223,21 @@ impl Tree for World {
     fn sync_dir(&self, d: &[u8]) -> io::Result<()> {
         self.op("sync_dir", d, |_| Ok(()))
     }
+    /// Not an operation of the sweep: a listing changes nothing, and
+    /// this world spells every name one way. The directories are those
+    /// on the paths of its files.
+    fn names(&self, d: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+        let s = self.0.borrow();
+        let prefix: Vec<u8> = if d == b"/" { b"/".to_vec() } else { [d, b"/"].concat() };
+        let mut names = BTreeSet::new();
+        for p in s.files.keys() {
+            if let Some(rest) = p.strip_prefix(prefix.as_slice()) {
+                let end = rest.iter().position(|&b| b == b'/').unwrap_or(rest.len());
+                names.insert(rest[..end].to_vec());
+            }
+        }
+        Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
+    }
 }
 
 impl Blobs for World {
@@ -1410,6 +1425,9 @@ mod disk {
             self.go()?;
             DiskTree.sync_dir(d)
         }
+        fn names(&self, d: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+            DiskTree.names(d)
+        }
     }
 
     pub fn root(name: &str) -> PathBuf {
@@ -1516,6 +1534,9 @@ mod disk {
         fn sync_dir(&self, d: &[u8]) -> io::Result<()> {
             self.go("sync_dir");
             DiskTree.sync_dir(d)
+        }
+        fn names(&self, d: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+            DiskTree.names(d)
         }
     }
 
@@ -1776,4 +1797,207 @@ fn s7_3_disk_create_does_not_follow_a_swapped_name() {
         "race: {caught} swaps caught, {failed} creates failed (the name taken), {swapped} swaps after a create"
     );
     common::remove_tree(&r);
+}
+
+// ---------------------------------------------------------------------------
+// One spelling (§2.1): a path is written only under the spelling its
+// directories list.
+
+/// A tree that finds a name in any case, as a case-insensitive volume does:
+/// `stat` and `read` look a path up with its case folded, `names` lists
+/// the names as they were made. It only answers questions; a write
+/// through it fails.
+struct Folding(BTreeMap<Vec<u8>, (Vec<u8>, Vec<u8>)>);
+
+impl Folding {
+    fn new(files: &[(&str, &[u8])]) -> Folding {
+        Folding(
+            files
+                .iter()
+                .map(|(p, b)| (p.to_lowercase().into_bytes(), (p.as_bytes().to_vec(), b.to_vec())))
+                .collect(),
+        )
+    }
+    fn get(&self, p: &[u8]) -> Option<&(Vec<u8>, Vec<u8>)> {
+        self.0.get(&p.to_ascii_lowercase())
+    }
+}
+
+impl Tree for Folding {
+    fn stat(&self, p: &[u8]) -> io::Result<Option<Stat>> {
+        Ok(self.get(p).map(|(_, b)| Stat {
+            regular: true,
+            links: 1,
+            mode: 0o644,
+            dir_writable: true,
+            uid: 0,
+            gid: 0,
+            dev: 1,
+            ino: 1,
+            size: b.len() as u64,
+            mtime: (1, 1),
+            ctime: (1, 1),
+        }))
+    }
+    fn read(&self, p: &[u8]) -> io::Result<Vec<u8>> {
+        self.get(p).map(|(_, b)| b.clone()).ok_or_else(|| err(io::ErrorKind::NotFound, "none"))
+    }
+    fn create(&self, _: &[u8], _: u32, _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn rename(&self, _: &[u8], _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn remove(&self, _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn sync_dir(&self, _: &[u8]) -> io::Result<()> {
+        Ok(())
+    }
+    fn names(&self, d: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+        let prefix = if d == b"/" { b"/".to_vec() } else { [d, b"/"].concat() };
+        let mut names = BTreeSet::new();
+        for (p, _) in self.0.values() {
+            if p.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+                let rest = &p[prefix.len()..];
+                let end = rest.iter().position(|&b| b == b'/').unwrap_or(rest.len());
+                names.insert(rest[..end].to_vec());
+            }
+        }
+        Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
+    }
+}
+
+fn one_file(path: &str, pre: &[u8], post: &[u8]) -> (Overlay, Digest) {
+    let o = Overlay {
+        edits: Digest([1; 32]),
+        files: vec![OverlayFile { path: path.as_bytes().to_vec(), pre: c(pre), post: c(post) }],
+        spellings: vec![],
+    };
+    let id = formats::content_id(&o.to_bytes()).unwrap();
+    (o, id)
+}
+
+fn c(b: &[u8]) -> Content {
+    Content { size: b.len() as u64, content: content_digest(b) }
+}
+
+fn vendor_ownership() -> Ownership {
+    Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/vendor".to_vec()] }
+}
+
+/// The reviewer's case: `/w` owned, `/w/vendor` read-only, the overlay
+/// names `/w/Vendor/x.h`: `write`, `check_owned` and `recover` refuse it,
+/// `NotCanonical`, naming the spelling on disk, before any ownership
+/// decision; the exact spelling is `NotOwned`.
+#[test]
+fn s2_1_another_case_is_not_canonical() {
+    let tree = Folding::new(&[("/w/vendor/x.h", b"int v;\n"), ("/w/a.cc", b"a")]);
+    let w = World(Rc::new(RefCell::new(State::default())));
+    let want = Refused::NotCanonical {
+        path: b"/w/Vendor/x.h".to_vec(),
+        on_disk: Some(b"/w/vendor/x.h".to_vec()),
+    };
+    let (o, id) = one_file("/w/Vendor/x.h", b"int v;\n", b"int w;\n");
+    assert_eq!(
+        write(&o, id, &vendor_ownership(), &tree, &w, &w),
+        Err(WriteError::Refused(want.clone()))
+    );
+    assert_eq!(
+        slip_apply::check_owned(&o, &vendor_ownership(), &tree),
+        Err(WriteError::Refused(want.clone()))
+    );
+    assert_eq!(w.0.borrow().journal, None, "nothing journaled");
+    let (o, id) = one_file("/w/vendor/x.h", b"int v;\n", b"int w;\n");
+    assert_eq!(
+        write(&o, id, &vendor_ownership(), &tree, &w, &w),
+        Err(WriteError::Refused(Refused::NotOwned(b"/w/vendor/x.h".to_vec())))
+    );
+    // A file name in another case.
+    let (o, id) = one_file("/w/A.cc", b"a", b"b");
+    assert_eq!(
+        write(&o, id, &vendor_ownership(), &tree, &w, &w),
+        Err(WriteError::Refused(Refused::NotCanonical {
+            path: b"/w/A.cc".to_vec(),
+            on_disk: Some(b"/w/a.cc".to_vec())
+        }))
+    );
+    // Before any ownership decision: the owned root in another case is
+    // not `NotOwned` (bytes) but `NotCanonical`.
+    let (o2, id2) = one_file("/W/a.cc", b"a", b"b");
+    assert_eq!(
+        write(&o2, id2, &vendor_ownership(), &tree, &w, &w),
+        Err(WriteError::Refused(Refused::NotCanonical {
+            path: b"/W/a.cc".to_vec(),
+            on_disk: Some(b"/w/a.cc".to_vec())
+        }))
+    );
+    // `recover` checks every path of its journal first, and keeps it.
+    let j = Journal::of_write(&o, id);
+    w.0.borrow_mut().journal = Some(j.to_bytes());
+    assert!(matches!(
+        recover(&vendor_ownership(), &tree, &w, &w),
+        Err(WriteError::Refused(Refused::NotCanonical { .. }))
+    ));
+    assert!(w.0.borrow().journal.is_some());
+}
+
+/// A path that finds nothing is not a spelling question: the checks
+/// after the spelling find it missing (`StaleFile`).
+#[test]
+fn s2_1_a_missing_path_is_left_to_the_checks_after() {
+    let tree = Folding::new(&[("/w/a.cc", b"a")]);
+    let w = World(Rc::new(RefCell::new(State::default())));
+    let (o, id) = one_file("/w/sub/b.cc", b"a", b"b");
+    assert!(matches!(
+        write(&o, id, &vendor_ownership(), &tree, &w, &w),
+        Err(WriteError::Io { .. } | WriteError::Refused(Refused::StaleFile(_)))
+    ));
+    let (o, id) = one_file("/w/b.cc", b"a", b"b");
+    assert_eq!(
+        write(&o, id, &vendor_ownership(), &tree, &w, &w),
+        Err(WriteError::Refused(Refused::StaleFile(b"/w/b.cc".to_vec())))
+    );
+}
+
+/// On disk: when the directory's volume finds names in any case (this
+/// workspace's host mount), a directory in another case is refused;
+/// on a case-sensitive volume the other case finds nothing, and the
+/// write is `StaleFile`. Either way nothing is written.
+#[test]
+fn s2_1_disk_another_case() {
+    let r = disk::root("case");
+    std::fs::create_dir_all(r.join("tree/vendor")).unwrap();
+    std::fs::write(r.join("tree/vendor/x.h"), "int v;\n").unwrap();
+    let insensitive = r.join("tree/VENDOR/x.h").exists();
+    let other = disk::bytes(&r.join("tree/Vendor/x.h"));
+    let mut o = Overlay {
+        edits: Digest([1; 32]),
+        files: vec![OverlayFile { path: other.clone(), pre: c(b"int v;\n"), post: c(b"int w;\n") }],
+        spellings: vec![],
+    };
+    o.files.sort_by(|a, b| a.path.cmp(&b.path));
+    let id = formats::content_id(&o.to_bytes()).unwrap();
+    let own = Ownership {
+        owned: vec![disk::bytes(&r.join("tree"))],
+        readonly: vec![disk::bytes(&r.join("tree/vendor"))],
+    };
+    let store = disk::Store(r.join("store"));
+    let got = write(&o, id, &own, &slip_apply::fs::DiskTree, &store, &store);
+    if insensitive {
+        assert_eq!(
+            got,
+            Err(WriteError::Refused(Refused::NotCanonical {
+                path: other,
+                on_disk: Some(disk::bytes(&r.join("tree/vendor/x.h")))
+            }))
+        );
+    } else {
+        eprintln!(
+            "s2_1_disk_another_case: {} is case-sensitive: the other case finds nothing",
+            r.display()
+        );
+        assert_eq!(got, Err(WriteError::Refused(Refused::StaleFile(other))));
+    }
+    assert_eq!(std::fs::read(r.join("tree/vendor/x.h")).unwrap(), b"int v;\n");
 }
