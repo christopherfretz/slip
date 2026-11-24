@@ -196,16 +196,15 @@ fn walk(path: &[u8]) -> Vec<u8> {
 /// an outside one O2's).
 ///
 /// (ii) Two inputs are one file now exactly when they were one class at
-/// the map phase, compared twice, each time over the pairs both of whose
-/// members can be read there:
-/// - at the recorded paths, every pair: the pre-image now (would a map
-///   parse now read them as the map parse did? `#pragma once` and the
-///   buffers follow identity, which no content check sees);
-/// - where the post parse reads them, each pair with a member outside the
-///   subject roots (as `left_behind` decides it), an input of the subject
-///   taken at its post tree's counterpart: does the post parse identify the
-///   shared file as the map parse did? A pair of two subject inputs is the
-///   post tree's own to give there.
+/// the map phase, every pair, compared twice, each time over the pairs
+/// both of whose members can be read there: at the recorded paths (would a
+/// map parse now read them as the map parse did? `#pragma once` and the
+/// buffers follow identity, which no content check sees), and where the
+/// post parse reads them, an input of the subject (as `left_behind`
+/// decides it) at its post tree's counterpart (is the partition the post
+/// parse sees the recorded one? The post tree as verified must be the post
+/// tree as delivered, and a delivery that copies bytes makes two files of
+/// one again).
 pub fn found_moved(
     resolver: &mut Resolver<'_>,
     found: &Found,
@@ -240,16 +239,15 @@ pub fn found_moved(
             }
         }
     }
-    // Each input's identity at its recorded path (the pre-image now) and,
-    // for a subject input, at its post counterpart (what the post parse
-    // reads); an outside input is the same file in both.
-    let mut outside = Vec::with_capacity(inputs.len());
+    // Each input's identity at its recorded path (the subject as the map
+    // phase read it, the outside now) and where the post parse reads it
+    // (a subject input at its post counterpart; an outside input is the
+    // same file in both).
     let mut at_pre = Vec::with_capacity(inputs.len());
     let mut at_post = Vec::with_capacity(inputs.len());
     for f in inputs {
         let out = !(crate::verify_job::as_recorded(&f.path) && resolver.under_subject(&f.path));
         let id = identity(&f.path);
-        outside.push(out);
         at_pre.push(id);
         at_post.push(if out {
             id
@@ -264,11 +262,10 @@ pub fn found_moved(
             first = Some((a, b, merged));
         }
     };
-    // The pre-image now: every pair (is the map shard still what a map
-    // parse would give?). The post: pairs with an outside member (does the
-    // post parse identify the shared file as the map parse did?).
-    for (ids, every) in [(&at_pre, true), (&at_post, false)] {
-        let counts = |a: usize, b: usize| every || outside[a] || outside[b];
+    // Every pair, in both: is the map shard what a map parse would give
+    // now? And is the post tree as verified the post tree as delivered (a
+    // delivery that copies bytes makes two files of one again)?
+    for ids in [&at_pre, &at_post] {
         // One class then, two files now.
         for c in &found.classes {
             let c: Vec<usize> = c.iter().filter_map(|&x| usize::try_from(x).ok()).collect();
@@ -277,7 +274,7 @@ pub fn found_moved(
                     let (Some(Some(ia)), Some(Some(ib))) = (ids.get(a), ids.get(b)) else {
                         continue;
                     };
-                    if counts(a, b) && ia != ib {
+                    if ia != ib {
                         consider(a, b, false);
                     }
                 }
@@ -293,7 +290,7 @@ pub fn found_moved(
         for group in now.values() {
             for (k, &a) in group.iter().enumerate() {
                 for &b in &group[k + 1..] {
-                    if counts(a, b) && (class_of[a].is_none() || class_of[a] != class_of[b]) {
+                    if class_of[a].is_none() || class_of[a] != class_of[b] {
                         consider(a, b, true);
                     }
                 }
