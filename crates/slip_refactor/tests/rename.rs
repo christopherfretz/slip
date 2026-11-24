@@ -2105,12 +2105,11 @@ fn s2_1_rename_of_a_dependency_by_its_spelling() {
     assert_eq!(read_only_edited(&root, &r), Vec::<String>::new(), "{:?}", r.edits.refusals);
 }
 
-/// `spec/edits.md` §2.1 (row R1): the same with `#include "Dep/x.h"`. Today
+/// `spec/edits.md` §2.1 (row R1): the same with `#include "Dep/x.h"`. Before WP-147
 /// the rename claims `f` in `<root>/Dep/x.h` as owned (its real path is
 /// not under `<root>/dep`), reduce accepts the edit set, and it edits the
 /// dependency's header; only apply refuses it (`not_canonical`).
 #[test]
-#[ignore = "WP-147 item 2: the map phase and reduce see the read-only header as read-only under any spelling"]
 fn s2_1_rename_of_a_dependency_through_another_case() {
     if !volume_folds("another-case") {
         return;
@@ -2120,13 +2119,12 @@ fn s2_1_rename_of_a_dependency_through_another_case() {
 }
 
 /// `spec/edits.md` §5.1 (row R2): one owned header reached by two
-/// observers under two spellings is one file of the edit set. Today it is
+/// observers under two spellings is one file of the edit set. Before WP-147 it was
 /// two (`<root>/h.h` and `<root>/H.h`, the same edits in each): reduce
 /// compares bytes, so the two are never checked against each other, the
 /// overlay holds one file twice (Kiln refuses such an overlay: two
 /// entries of one file), and apply refuses the second spelling.
 #[test]
-#[ignore = "WP-147 item 2: inputs have the spelling on disk, so reduce sees one file"]
 fn s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set() {
     if !volume_folds("two-spellings") {
         return;

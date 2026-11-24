@@ -1688,11 +1688,10 @@ fn s8_help_lists_reduce_and_apply() {
 
 /// §7.2 (`spec/landed/edits/WP-147.md`, row L2): `--relative-to` given in
 /// another case than on disk names the same directory: the patch is
-/// written, its names relative to it. Today the directory's real path
-/// keeps the spelling asked (`<root>/SRC`), no overlay file is inside it
-/// by bytes, and `apply` exits 2 ("not inside `--relative-to`").
+/// written, its names relative to it. Before WP-147 the directory's real path
+/// kept the spelling asked (`<root>/SRC`), no overlay file was inside it
+/// by bytes, and `apply` exited 2 ("not inside `--relative-to`").
 #[test]
-#[ignore = "WP-147 item 2: --relative-to is given its on-disk spelling"]
 fn s7_2_relative_to_in_another_case() {
     let (fx, set, overlay) = agreed("relative-case", Fx::rename);
     if skip_unless_case_insensitive(&fx, "s7_2_relative_to_in_another_case") {

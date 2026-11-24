@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 slip_model.workspace = true
+slip_spelling.workspace = true
 slip_kiln.workspace = true
 slip_digest.workspace = true
 

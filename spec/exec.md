@@ -1080,7 +1080,9 @@ observers of a plan: each `ok` shard carries the observer's `digests`.
 - `--db …`: the plan is built and published as by `plan`, with the same
   output, and then parsed. Exactly one of `--plan` and `--db` is given.
 - `--only` keeps the observers whose main file path contains the substring
-  (any of them, if repeated); `--limit` then keeps the first `n` in plan
+  (any of them, if repeated), bytes against bytes: the path is the real
+  path spelled on disk (`edits.md` §2.1, "One spelling"), so the filter
+  matches what `ls` shows, case and all (so does `units --match`); `--limit` then keeps the first `n` in plan
   order. If a non-empty plan is left with no observer, a warning is printed
   and the phase runs over nothing:
   `slip: warning: the selection keeps none of the plan's <n> observer(s); the phase runs over nothing`.

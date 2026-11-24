@@ -209,10 +209,13 @@ decides.
 3. The input, resolved against `directory`, must exist (`missing_file`
    otherwise). Any failure to resolve its real path is `missing_file`, with
    a detail saying "does not exist" when the file is not found and giving
-   the OS error otherwise.
+   the OS error otherwise. The real path is spelled as its directories
+   list it (`edits.md` §2.1, "One spelling"), whatever case `directory`
+   and the input are written in.
 4. Its real path must equal the real path of `file` resolved against
    `directory` (`malformed_entry`, "file does not match the command",
-   otherwise). A `file` whose real path cannot be resolved does not match.
+   otherwise), both spelled on disk. A `file` whose real path cannot be
+   resolved does not match.
 
 **Result.** `Command.directory` is the entry's `directory` as given;
 `Command.argv` is `argv[0]` followed by the kept arguments in their original
@@ -404,7 +407,8 @@ may use threads. The result must not depend on how many.
   <os error>`, `its real path cannot be resolved: <os error>`), as are the
   two §2 errors (their detail unchanged). The error carries the database
   path as given. The first failing database, in the order given, is
-  reported. The configuration's `FileRef` is the real path, the number of
+  reported. The configuration's `FileRef` is the real path (spelled on
+  disk, `edits.md` §2.1), the number of
   bytes read and the content digest of those bytes.
 - **Merging.** Entries are keyed by `ObserverId`. The first entry's
   normalised main path and language are kept for the observer.

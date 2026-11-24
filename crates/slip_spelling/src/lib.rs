@@ -91,31 +91,56 @@ fn lossy(b: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(b)
 }
 
-impl fmt::Display for SpellingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl SpellingError {
+    /// The path asked.
+    pub fn path(&self) -> &[u8] {
         match self {
-            SpellingError::NotAPath(p) => write!(f, "{}: not a canonical absolute path", lossy(p)),
-            SpellingError::Missing { path, at } => {
-                write!(f, "{}: no such file or directory ({})", lossy(path), lossy(at))
+            SpellingError::NotAPath(path)
+            | SpellingError::Missing { path, .. }
+            | SpellingError::Unlistable { path, .. }
+            | SpellingError::NoName { path, .. }
+            | SpellingError::Io { path, .. } => path,
+        }
+    }
+
+    /// Nothing is there (the walk found nothing, or `canonicalize` said
+    /// `NotFound`).
+    pub fn is_not_found(&self) -> bool {
+        match self {
+            SpellingError::Missing { .. } => true,
+            SpellingError::Io { error, .. } => error.kind() == io::ErrorKind::NotFound,
+            _ => false,
+        }
+    }
+
+    /// What went wrong, without the path asked (for a message that names
+    /// it already).
+    pub fn detail(&self) -> String {
+        match self {
+            SpellingError::NotAPath(_) => "not a canonical absolute path".to_owned(),
+            SpellingError::Missing { at, .. } => {
+                format!("no such file or directory ({})", lossy(at))
             }
-            SpellingError::Unlistable { path, dir, error } => write!(
-                f,
-                "{}: the directory {} cannot be listed to find its spelling on disk: {error}",
-                lossy(path),
+            SpellingError::Unlistable { dir, error, .. } => format!(
+                "the directory {} cannot be listed to find its spelling on disk: {error}",
                 lossy(dir)
             ),
-            SpellingError::NoName { path, dir, names } => {
+            SpellingError::NoName { dir, names, .. } => {
                 let names: Vec<_> = names.iter().map(|n| lossy(n).into_owned()).collect();
-                write!(
-                    f,
-                    "{}: no one name of the directory {} is this file ({})",
-                    lossy(path),
+                format!(
+                    "no one name of the directory {} is this file ({})",
                     lossy(dir),
                     if names.is_empty() { "none".to_owned() } else { names.join(", ") }
                 )
             }
-            SpellingError::Io { path, error } => write!(f, "{}: {error}", lossy(path)),
+            SpellingError::Io { error, .. } => error.to_string(),
         }
+    }
+}
+
+impl fmt::Display for SpellingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", lossy(self.path()), self.detail())
     }
 }
 
@@ -384,16 +409,28 @@ pub fn disk() -> &'static Spelling<Disk> {
 /// `std::fs::canonicalize`, then [`Spelling::on_disk`] through [`disk`]:
 /// what every place a path enters Slip calls instead of `canonicalize`
 /// (`spec/edits.md` §2.1). The cache's lock is not held over the
-/// `canonicalize`. A path that is not there is `Missing`.
+/// `canonicalize`, whose failure is `Io` with its own error.
 pub fn real_path(path: &Path) -> Result<PathBuf, SpellingError> {
-    let bytes = || path.as_os_str().as_bytes().to_vec();
-    let c = std::fs::canonicalize(path).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            SpellingError::Missing { path: bytes(), at: bytes() }
-        } else {
-            SpellingError::Io { path: bytes(), error }
-        }
+    let c = std::fs::canonicalize(path).map_err(|error| SpellingError::Io {
+        path: path.as_os_str().as_bytes().to_vec(),
+        error,
     })?;
     let spelled = disk().on_disk(c.as_os_str().as_bytes())?;
     Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&spelled)))
+}
+
+/// `path` as given, respelled ([`Spelling::on_disk`] through [`disk`])
+/// when it is its own real path (absolute, no `.` or `..`, no link on it:
+/// `canonicalize` gives it back); otherwise, or when it cannot be
+/// respelled, as given. For the records that keep a path as given (the
+/// files a transform unit read, `spec/api.md` §2.2): the identity on a
+/// volume that does not fold.
+pub fn respelled(path: &[u8]) -> Vec<u8> {
+    let p = Path::new(std::ffi::OsStr::from_bytes(path));
+    match std::fs::canonicalize(p) {
+        Ok(c) if c.as_os_str().as_bytes() == path => {
+            disk().on_disk(path).unwrap_or_else(|_| path.to_vec())
+        }
+        _ => path.to_vec(),
+    }
 }

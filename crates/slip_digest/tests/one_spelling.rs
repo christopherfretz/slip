@@ -64,11 +64,10 @@ fn s2_1_readonly_header_by_its_spelling_is_read_only() {
 }
 
 /// `spec/verify.md` §2.1: included as `Vendor/x.h`, it is read-only all
-/// the same. Today it is not (`read_only` false): its subject path is
+/// the same. Before WP-147 it was not (`read_only` false): its subject path is
 /// `<root>/src/Vendor/x.h`, which `src/vendor` does not cover, so a rule
 /// of the run matches a dependency's entity.
 #[test]
-#[ignore = "WP-147 item 2: the walk's subject paths have the spelling on disk"]
 fn s2_1_readonly_header_through_another_case_is_read_only() {
     let Some(got) = header_read_only("Vendor/x.h") else { return };
     assert_eq!(got.len(), 1, "{got:?}");

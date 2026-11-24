@@ -8,9 +8,8 @@
 //! the workspace's volume, which finds a name in any case (and in either
 //! Unicode normalisation) and keeps the spelling it was asked with. Each
 //! test skips, saying so, on a volume that does not. The tests of Kiln's
-//! behaviour pass; a test that shows a defect WP-147 item 2 fixes asserts
-//! the right result and is ignored until then (the inventory states what
-//! it gives today).
+//! behaviour pass; the tests of the defects WP-147 item 2 fixed assert
+//! the right result (the inventory states what they gave before).
 
 use std::path::Path;
 
@@ -98,6 +97,9 @@ fn kiln_include_in_another_case() {
         &[("inc/foo.h", "int foo_v;\n"), ("main.cpp", "#include \"inc/foo.h\"\nint m = foo_v;\n")],
     );
     let (control, _) = parse(&c, "main.cpp");
+    // The ruling's Q2: no counter where nothing was respelled, so that the
+    // shard is what it was before WP-147.
+    assert_eq!(respelled(&control), None, "{:?}", control.counters);
     assert_eq!(
         shard.outcome.warnings, control.outcome.warnings,
         "no diagnostic of its own: {:?} against {:?}",
@@ -147,11 +149,10 @@ fn kiln_one_header_under_two_spellings() {
 }
 
 /// `spec/model.md` §8.4 "Inputs" (row K3): an input reached through
-/// another case is named by its spelling on disk. Today the input (and
+/// another case is named by its spelling on disk. Before WP-147 the input (and
 /// `Unit::real_path`) is `<root>/inc/Foo.h`: `std::fs::canonicalize`
 /// keeps the case it was asked with.
 #[test]
-#[ignore = "WP-147 item 2: slip_kiln's inputs have the spelling on disk"]
 fn s8_4_input_has_the_spelling_on_disk() {
     let t = tree(
         "one-spelling-input-case",
@@ -165,16 +166,22 @@ fn s8_4_input_has_the_spelling_on_disk() {
     assert!(inputs(&shard).contains(&want), "{:?}", inputs(&shard));
     let real: Vec<&str> = b.iter().filter_map(|b| b.real.as_deref()).collect();
     assert!(real.contains(&want.as_str()), "Unit::real_path: {real:?}");
+    // The ruling's Q2: the shard counts the input respelled.
+    assert_eq!(respelled(&shard), Some(1), "{:?}", shard.counters);
+}
+
+/// `inputs.respelled`, when the shard has it.
+fn respelled(shard: &Shard) -> Option<u64> {
+    shard.counters.iter().find(|c| c.name == "inputs.respelled").map(|c| c.value)
 }
 
 /// The same with another Unicode normalisation (row K4): the file is
 /// written `café.h` in NFC (`c3 a9`), included in NFD (`65 cc 81`). The
 /// volume finds it (macOS, and this host's mount of a macOS volume,
 /// fold normalisation as they fold case), and a byte comparison against
-/// the directory's listing tells the two apart. Today the input is the
+/// the directory's listing tells the two apart. Before WP-147 the input was the
 /// NFD spelling.
 #[test]
-#[ignore = "WP-147 item 2: slip_kiln's inputs have the spelling on disk"]
 fn s8_4_input_in_another_normalisation_has_the_spelling_on_disk() {
     let (nfc, nfd) = ("caf\u{e9}.h", "cafe\u{301}.h");
     let main = format!("#include \"{nfd}\"\nint m = cafe_v;\n");
@@ -234,11 +241,10 @@ fn s2_1_sites_readonly_header_by_its_spelling() {
 }
 
 /// `spec/edits.md` §2.1 (row K5): the read-only header included as
-/// `Vendor/x.h` is still read-only. Today `Sites::is_owned` is true: its
+/// `Vendor/x.h` is still read-only. Before WP-147 `Sites::is_owned` was true: its
 /// real path is `<root>/src/Vendor/x.h`, which `src/vendor` does not
 /// cover, so a rename edits it.
 #[test]
-#[ignore = "WP-147 item 2: Sites::is_owned decides on the spelling on disk"]
 fn s2_1_sites_readonly_header_through_another_case() {
     let Some((_t, got)) = header_owned("Vendor/x.h") else { return };
     assert_eq!(got.len(), 1, "{got:?}");

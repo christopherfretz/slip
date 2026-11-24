@@ -1949,12 +1949,11 @@ fn golden(name: &str, actual: &str) {
 /// row L1): `--readonly` given in another case than the file's directory
 /// entry (`s/A.h` for `s/a.h`) on a volume that finds a name in any case
 /// makes the same file read-only as its own spelling does: `S`, declared
-/// there, is a dependency entity and no rule renames it. Today
-/// `commands::ownership` keeps the spelling asked (`<root>/s/A.h`), which
-/// covers no path the pre-images read, and `slip declare` writes the rule
+/// there, is a dependency entity and no rule renames it. Before WP-147
+/// `commands::ownership` kept the spelling asked (`<root>/s/A.h`), which
+/// covered no path the pre-images read, and `slip declare` wrote the rule
 /// (status 0): a read-only file's entity mapped by rule.
 #[test]
-#[ignore = "WP-147 item 2: --owned and --readonly are given their on-disk spelling"]
 fn s2_1_readonly_in_another_case_is_read_only() {
     let f = Fixture::new("declare-readonly-case");
     f.both("a.h", "#pragma once\nstruct S { int v; };\n");
@@ -1975,7 +1974,7 @@ fn s2_1_readonly_in_another_case_is_read_only() {
 /// case than on disk name the same trees: an unchanged copy verifies, as
 /// with the spellings on disk. (`Image`'s regions are decided by the
 /// directories' identity; the subject path of a post-image file is built
-/// from the root's bytes.) This passes today: the regions are by
+/// from the root's bytes.) This passed before WP-147 too: the regions are by
 /// identity and the subject paths agree with the pre-image's, so WP-147
 /// found no defect here; item 2's normalisation must keep it passing.
 #[test]

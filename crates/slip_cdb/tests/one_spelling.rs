@@ -6,9 +6,8 @@
 //! The trees are written under `CARGO_TARGET_TMPDIR` (the target
 //! directory, on the workspace's volume; `std::env::temp_dir()` is the
 //! container's own, case-sensitive one). Each test skips, saying so, on a
-//! case-sensitive volume, where another case names no file. A test that
-//! shows a defect WP-147 item 2 fixes asserts the right result and is
-//! ignored until then; the inventory states what it gives today.
+//! case-sensitive volume, where another case names no file. Each asserts
+//! what WP-147 item 2 built; the inventory states what they gave before.
 
 use std::path::{Path, PathBuf};
 
@@ -73,10 +72,9 @@ fn strings(words: &[&str]) -> Vec<String> {
 
 /// `spec/cdb.md` §5 step 5.3 (WP-147 inventory row C1): the main file's
 /// real path is the spelling on disk, whatever case the entry's
-/// `directory` and input are written in. Today `main` is
-/// `<root>/PROJ/src/A.cc`, the spelling asked.
+/// `directory` and input are written in. Before WP-147 `main`
+/// was `<root>/PROJ/src/A.cc`, the spelling asked.
 #[test]
-#[ignore = "WP-147 item 2: slip_cdb::normalise gives the main file its on-disk spelling"]
 fn s5_main_file_has_the_spelling_on_disk() {
     let d = Dir::new("main");
     d.write("proj/src/a.cc", "int a;\n");
@@ -90,10 +88,9 @@ fn s5_main_file_has_the_spelling_on_disk() {
 
 /// `spec/cdb.md` §5 step 5.4 (row C2): an entry whose `file` names the
 /// input in another case than the command line is one file, not
-/// `malformed_entry`. Today it is excluded, "file does not match the
+/// `malformed_entry`. Before WP-147 it was excluded, "file does not match the
 /// command", because the two real paths keep the two spellings.
 #[test]
-#[ignore = "WP-147 item 2: slip_cdb::normalise compares the on-disk spellings"]
 fn s5_file_in_another_case_matches_the_input() {
     let d = Dir::new("match");
     d.write("proj/a.cc", "int a;\n");
@@ -109,11 +106,10 @@ fn s5_file_in_another_case_matches_the_input() {
 /// `FileRef` and each observer's main file name the file by its
 /// spelling on disk. Two entries whose `directory` differs only in case
 /// are two commands (the command is replayed as written), and so two
-/// observers, but of one main file under one name. Today the database
-/// is `<root>/DB.json` and the mains are `<root>/proj/a.cc` and
+/// observers, but of one main file under one name. Before WP-147 the
+/// database was `<root>/DB.json` and the mains were `<root>/proj/a.cc` and
 /// `<root>/PROJ/a.cc`: one file under two names, hashed twice.
 #[test]
-#[ignore = "WP-147 item 2: slip_cdb::plan gives the database and the mains their on-disk spelling"]
 fn s7_plan_names_each_file_once() {
     let d = Dir::new("plan");
     d.write("proj/a.cc", "int a;\n");
