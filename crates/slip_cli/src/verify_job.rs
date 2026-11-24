@@ -21,7 +21,9 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
 use slip_digest::map::counters as walk_counters;
-use slip_digest::{Detail, NamesUnit, Options, Output, ReadOnly, ReadOnlyFiles, digest, digest_kept};
+use slip_digest::{
+    Detail, NamesUnit, Options, Output, ReadOnly, ReadOnlyFiles, digest, digest_kept,
+};
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_kiln::Lookups;

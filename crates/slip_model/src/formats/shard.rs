@@ -288,8 +288,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         Shard::KIND,
         Shard::VERSION,
         [
-            HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, SPELLINGS,
-            NAMES, NEGATIVES, RULE_USE,
+            HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, SPELLINGS, NAMES,
+            NEGATIVES, RULE_USE,
         ],
     )?;
     if opened.version < FIRST_READ {
