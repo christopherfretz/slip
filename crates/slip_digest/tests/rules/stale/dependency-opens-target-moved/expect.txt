@@ -1,3 +1,4 @@
-# Today's answer (WP-140): removed legacy, and the rule used by no level.
-removed legacy
-use 5 via 0 direct 0
+# WP-140: acme, opened by read-only dep.h and by owned code, has a unit in the
+# owned view (keyed legacy, the namespace's one digest): the pre-image's legacy
+# has its partner, and the rule is used by that view (via 1). Equal.
+use 5 via 1 direct 0

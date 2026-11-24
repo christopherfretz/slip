@@ -1,0 +1,6 @@
+# An owned using-directive redirected from legacy to acme, which dep.h opens (row N08's edit).
+# WP-140: acme's unit in the owned view partners legacy; the directive, keyed by its content,
+# writes acme's own key (spec/verify.md "Open questions"): fails closed.
+added <using_directive acme>
+removed <using_directive legacy>
+use 1 via 1 direct 0

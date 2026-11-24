@@ -1,0 +1,6 @@
+# Every file owned: no two views.
+added acme::(anonymous namespace)::D
+removed acme
+removed acme::(anonymous namespace)
+removed acme::(anonymous namespace)::D
+use 1 via 1 direct 0

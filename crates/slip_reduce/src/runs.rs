@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use slip_model::Digest;
 
+use crate::meter::{Held, Meter};
 use crate::records::{Key, Val, decode, encode};
 
 /// Distinguishes the calls of one process.
@@ -49,27 +50,40 @@ impl Scratch {
     }
 }
 
-/// Removes every temporary file of a call when dropped. It knows how many
-/// files each level may have, not their names, so its memory does not grow
-/// with the number of runs.
+/// Removes every temporary file of a call when dropped. It knows the
+/// number of runs of the first pass and `fan_in`, from which the files of
+/// every merge level follow, not their names: its memory does not grow
+/// with the number of runs or of levels (landed WP-142 §1).
 #[derive(Debug)]
 pub(crate) struct Cleanup<'a> {
     scratch: &'a Scratch,
-    /// `levels[l]`: the number of files level `l` may have created.
-    pub levels: Vec<usize>,
+    /// The runs of the first pass (the files of level 0), 0 before it
+    /// starts.
+    pub runs: usize,
+    pub fan_in: usize,
     pub basis: bool,
 }
 
 impl<'a> Cleanup<'a> {
-    pub fn new(scratch: &'a Scratch) -> Cleanup<'a> {
-        Cleanup { scratch, levels: Vec::new(), basis: false }
+    pub fn new(scratch: &'a Scratch, fan_in: usize) -> Cleanup<'a> {
+        Cleanup { scratch, runs: 0, fan_in, basis: false }
     }
+}
+
+/// The number of files of each merge level, level 0 first, for `runs`
+/// runs of the first pass: level `l + 1` has `ceil(count / fan_in)` files
+/// while level `l` has more than one, as the merge makes them. Empty for
+/// no runs.
+pub(crate) fn level_counts(runs: usize, fan_in: usize) -> impl Iterator<Item = usize> {
+    let fan_in = fan_in.max(2);
+    std::iter::successors((runs > 0).then_some(runs), move |&c| (c > 1).then(|| c.div_ceil(fan_in)))
 }
 
 impl Drop for Cleanup<'_> {
     fn drop(&mut self) {
-        for (level, &n) in self.levels.iter().enumerate() {
-            for index in 0..n {
+        // A file a failed call did not make is not there to remove.
+        for (level, count) in level_counts(self.runs, self.fan_in).enumerate() {
+            for index in 0..count {
                 let _ = std::fs::remove_file(self.scratch.run(level, index));
             }
         }
@@ -84,19 +98,20 @@ pub(crate) fn io(path: &Path, e: &std::io::Error) -> String {
 }
 
 /// Writes records in key order.
-pub(crate) struct RunWriter {
+pub(crate) struct RunWriter<'m> {
     path: PathBuf,
     out: BufWriter<File>,
+    _open: Held<'m>,
 }
 
-impl RunWriter {
-    pub fn create(path: PathBuf) -> Result<RunWriter, String> {
+impl<'m> RunWriter<'m> {
+    pub fn create(path: PathBuf, meter: &'m Meter) -> Result<RunWriter<'m>, String> {
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
             .map_err(|e| io(&path, &e))?;
-        Ok(RunWriter { path, out: BufWriter::new(file) })
+        Ok(RunWriter { path, out: BufWriter::new(file), _open: meter.files.hold() })
     }
 
     pub fn write(&mut self, key: &Key, val: &Val) -> Result<(), String> {
@@ -122,8 +137,12 @@ impl RunWriter {
 }
 
 /// Writes a run of collapsed records.
-pub(crate) fn write_run(path: PathBuf, records: &BTreeMap<Key, Val>) -> Result<(), String> {
-    let mut w = RunWriter::create(path)?;
+pub(crate) fn write_run(
+    path: PathBuf,
+    records: &BTreeMap<Key, Val>,
+    meter: &Meter,
+) -> Result<(), String> {
+    let mut w = RunWriter::create(path, meter)?;
     for (k, v) in records {
         w.write(k, v)?;
     }
@@ -131,16 +150,22 @@ pub(crate) fn write_run(path: PathBuf, records: &BTreeMap<Key, Val>) -> Result<(
 }
 
 /// Reads records back.
-pub(crate) struct RunReader {
+pub(crate) struct RunReader<'m> {
     path: PathBuf,
     input: BufReader<File>,
     buf: Vec<u8>,
+    _open: Held<'m>,
 }
 
-impl RunReader {
-    pub fn open(path: PathBuf) -> Result<RunReader, String> {
+impl<'m> RunReader<'m> {
+    pub fn open(path: PathBuf, meter: &'m Meter) -> Result<RunReader<'m>, String> {
         let file = File::open(&path).map_err(|e| io(&path, &e))?;
-        Ok(RunReader { path, input: BufReader::new(file), buf: Vec::new() })
+        Ok(RunReader {
+            path,
+            input: BufReader::new(file),
+            buf: Vec::new(),
+            _open: meter.files.hold(),
+        })
     }
 
     /// The next record, or `None` at the end.
@@ -174,11 +199,12 @@ impl RunReader {
     }
 }
 
-/// Merges sorted run files into one, joining records of one key.
-pub(crate) fn merge(inputs: &[PathBuf], out: PathBuf) -> Result<(), String> {
+/// Merges sorted run files into one, joining records of one key. It holds
+/// one record per input and the one being joined (`reduce.peak.records`).
+pub(crate) fn merge(inputs: &[PathBuf], out: PathBuf, meter: &Meter) -> Result<(), String> {
     let mut readers = Vec::with_capacity(inputs.len());
     for p in inputs {
-        readers.push(RunReader::open(p.clone())?);
+        readers.push(RunReader::open(p.clone(), meter)?);
     }
     let mut vals: Vec<Option<Val>> = vec![None; readers.len()];
     let mut heap: BinaryHeap<Reverse<(Key, usize)>> = BinaryHeap::new();
@@ -188,10 +214,12 @@ pub(crate) fn merge(inputs: &[PathBuf], out: PathBuf) -> Result<(), String> {
             heap.push(Reverse((k, i)));
         }
     }
-    let mut w = RunWriter::create(out)?;
+    let mut w = RunWriter::create(out, meter)?;
     while let Some(Reverse((key, i))) = heap.pop() {
         let mut val = vals[i].take().ok_or_else(|| "merge: a value is missing".to_string())?;
         advance(&mut readers, &mut vals, &mut heap, i)?;
+        // The inputs' records (one per input still open) and `val`.
+        meter.records.at(heap.len() + 1);
         while heap.peek().is_some_and(|Reverse((k, _))| *k == key) {
             let Some(Reverse((_, j))) = heap.pop() else { break };
             let other = vals[j].take().ok_or_else(|| "merge: a value is missing".to_string())?;
@@ -204,7 +232,7 @@ pub(crate) fn merge(inputs: &[PathBuf], out: PathBuf) -> Result<(), String> {
 }
 
 fn advance(
-    readers: &mut [RunReader],
+    readers: &mut [RunReader<'_>],
     vals: &mut [Option<Val>],
     heap: &mut BinaryHeap<Reverse<(Key, usize)>>,
     i: usize,
@@ -253,14 +281,21 @@ fn entry_of(b: &[u8; 65]) -> Result<BasisEntry, String> {
 }
 
 /// Creates the basis file for `n` observers.
-pub(crate) fn create_basis(path: &Path, n: usize) -> Result<(), String> {
+pub(crate) fn create_basis(path: &Path, n: usize, meter: &Meter) -> Result<(), String> {
     let f = OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| io(path, &e))?;
+    let _open = meter.files.hold();
     f.set_len(n as u64 * BASIS_ENTRY).map_err(|e| io(path, &e))
 }
 
 /// Writes the entries of observers `start..start + entries.len()`.
-pub(crate) fn write_basis(path: &Path, start: usize, entries: &[BasisEntry]) -> Result<(), String> {
+pub(crate) fn write_basis(
+    path: &Path,
+    start: usize,
+    entries: &[BasisEntry],
+    meter: &Meter,
+) -> Result<(), String> {
     let mut f = OpenOptions::new().write(true).open(path).map_err(|e| io(path, &e))?;
+    let _open = meter.files.hold();
     f.seek(SeekFrom::Start(start as u64 * BASIS_ENTRY)).map_err(|e| io(path, &e))?;
     let mut out = BufWriter::new(f);
     for e in entries {
@@ -270,21 +305,55 @@ pub(crate) fn write_basis(path: &Path, start: usize, entries: &[BasisEntry]) -> 
 }
 
 /// Reads entries `start..` of the basis file in order.
-pub(crate) struct BasisReader {
+pub(crate) struct BasisReader<'m> {
     path: PathBuf,
     input: BufReader<File>,
+    _open: Held<'m>,
 }
 
-impl BasisReader {
-    pub fn open(path: &Path, start: usize) -> Result<BasisReader, String> {
+impl<'m> BasisReader<'m> {
+    pub fn open(path: &Path, start: usize, meter: &'m Meter) -> Result<BasisReader<'m>, String> {
         let mut f = File::open(path).map_err(|e| io(path, &e))?;
+        let open = meter.files.hold();
         f.seek(SeekFrom::Start(start as u64 * BASIS_ENTRY)).map_err(|e| io(path, &e))?;
-        Ok(BasisReader { path: path.to_path_buf(), input: BufReader::new(f) })
+        Ok(BasisReader { path: path.to_path_buf(), input: BufReader::new(f), _open: open })
     }
 
     pub fn next(&mut self) -> Result<BasisEntry, String> {
         let mut b = [0u8; 65];
         self.input.read_exact(&mut b).map_err(|e| io(&self.path, &e))?;
         entry_of(&b)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::level_counts;
+
+    /// The levels as `reduce` makes them: the first pass's runs, then each
+    /// merge level until one file remains (the list `Cleanup` kept before
+    /// landed WP-142, from the second review's probe).
+    fn made(n: usize, fan_in: usize) -> Vec<usize> {
+        let mut count = n.div_ceil(fan_in).max(1);
+        let mut levels = vec![count];
+        while count > 1 {
+            count = count.div_ceil(fan_in);
+            levels.push(count);
+        }
+        levels
+    }
+
+    /// Landed WP-142 §1: the computed levels are the levels made, for
+    /// every `n` up to 5,000 and `fan_in` 2 to 65.
+    #[test]
+    fn the_levels_computed_are_the_levels_made() {
+        assert_eq!(level_counts(0, 2).count(), 0);
+        for fan_in in 2..=65usize {
+            for n in 0..=5000usize {
+                let runs = n.div_ceil(fan_in).max(1);
+                let got: Vec<usize> = level_counts(runs, fan_in).collect();
+                assert_eq!(got, made(n, fan_in), "n {n} fan_in {fan_in}");
+            }
+        }
     }
 }

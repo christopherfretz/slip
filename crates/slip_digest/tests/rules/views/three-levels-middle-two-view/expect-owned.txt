@@ -1,0 +1,5 @@
+# Every file owned: top::acme is owned and mapped; dep.h's Dep moves units.
+added top::acme::Dep
+removed top::acme
+removed top::acme::Dep
+use 1 via 1 direct 0

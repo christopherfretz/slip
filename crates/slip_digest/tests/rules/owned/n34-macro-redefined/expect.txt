@@ -1,8 +1,9 @@
 # Pitfall row N34, bad: the opening of acme in dep.h is the dependency's (the
 # macro is invoked there), so acme is read-only and keeps its key; Dep is the
-# dependency's and is now in acme.
+# dependency's and is now in acme. WP-140: acme has an owned opening, so its
+# unit in the owned view (legacy) is the pre-image's legacy's partner: no
+# `removed legacy`; the rest still differs.
 changed user()
 added acme
 added acme::Dep
-removed legacy
 removed legacy::Dep
