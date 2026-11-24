@@ -1,0 +1,6 @@
+# Every file owned: acme is the owned namespace, so legacy's unit has its partner; the
+# dependency's acme::Dep moves units.
+removed acme
+removed acme::Dep
+added acme::Dep
+use 5 via 1 direct 0

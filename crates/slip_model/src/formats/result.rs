@@ -9,7 +9,7 @@ use crate::result::{
     TransformResult, Why,
 };
 use crate::transform::is_file_path;
-use crate::wire::{Decoder, Encoder};
+use crate::wire::{Decoder, Encoder, Error, ErrorKind};
 
 use super::common::{
     Enumeration, JResult, Result, dec_enum, dec_list, dec_opt, enc_enum, json_bytes, json_digest,
@@ -129,7 +129,6 @@ enum Loc {
     Tally(usize),
     Agreement(usize),
     Unused(usize),
-    Unchecked(usize),
     Obligations,
     Failed(usize),
     FailedObservers(usize),
@@ -188,7 +187,6 @@ impl Loc {
             Loc::Tally(i) => format!("{S}.tally.{}", TALLY[i]),
             Loc::Agreement(i) => format!("{S}.agreement[{i}]"),
             Loc::Unused(i) => format!("{S}.unused[{i}]"),
-            Loc::Unchecked(i) => format!("{S}.unchecked[{i}]"),
             Loc::Obligations => format!("{S}.spellings.obligations"),
             Loc::Failed(i) => format!("{S}.spellings.failed[{i}]"),
             Loc::FailedObservers(i) => format!("{S}.spellings.failed[{i}].observers"),
@@ -223,9 +221,6 @@ fn violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
     }
     if let Some(i) = ascending(&x.unused) {
         return Some((Loc::Unused(i), "unused is not strictly ascending"));
-    }
-    if let Some(i) = ascending(&x.unchecked) {
-        return Some((Loc::Unchecked(i), "unchecked is not strictly ascending"));
     }
     if let Some(i) = ascending(&x.exempt) {
         return Some((Loc::Exempt(i), "exempt is not strictly ascending"));
@@ -332,29 +327,24 @@ fn violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
 /// Rows 15 to 17 (`spec/landed/verify/WP-070.md` §1): what the file alone
 /// decides of the verdict and the state (§8.5, `verify.md` §9.2, §9.3).
 fn verdict_violation(x: &TransformResult) -> Option<(Loc, &'static str)> {
-    // Row 15: a stale pair is one with `direct` not 0 (verify.md §9.2).
-    if let Some(i) = x.agreement.iter().position(|s| s.direct == 0) {
-        return Some((Loc::Agreement(i), "a stale pair has direct 0"));
+    // Row 15: a stale pair is one with `direct` or `kept_via` not 0
+    // (verify.md §9.2).
+    if let Some(i) = x.agreement.iter().position(|s| s.direct == 0 && s.kept_via == 0) {
+        return Some((Loc::Agreement(i), "a stale pair has direct and kept_via both 0"));
     }
     // Row 16: the verdict `verified` has no stale pair and no failed
-    // obligation (verify.md §9.3); without a verdict no rule is unchecked.
-    match x.verdict {
-        Some(RunVerdict::Verified) => {
-            if !x.agreement.is_empty() {
-                return Some((Loc::Agreement(0), "a verified verdict has a stale pair"));
-            }
-            if !x.spellings.failed.is_empty() {
-                return Some((Loc::Failed(0), "a verified verdict has a failed spelling"));
-            }
+    // obligation (verify.md §9.3).
+    if x.verdict == Some(RunVerdict::Verified) {
+        if !x.agreement.is_empty() {
+            return Some((Loc::Agreement(0), "a verified verdict has a stale pair"));
         }
-        None if !x.unchecked.is_empty() => {
-            return Some((Loc::Unchecked(0), "a result without a verdict has an unchecked rule"));
+        if !x.spellings.failed.is_empty() {
+            return Some((Loc::Failed(0), "a verified verdict has a failed spelling"));
         }
-        _ => {}
     }
     // Row 17: the state against the verdict (rows 2 to 5 of §8.5).
     let unparsed_bars = x.tally.unparsed != 0 && !x.allow_unparsed;
-    let barred = unparsed_bars || !x.unchecked.is_empty();
+    let barred = unparsed_bars;
     let verified = x.verdict == Some(RunVerdict::Verified);
     let contradicts = match x.state {
         State::Verified | State::VerifiedWithResidue => !verified || barred,
@@ -398,14 +388,10 @@ pub(super) fn encode(x: &TransformResult, extras: &[Extra<'_>]) -> Vec<u8> {
     }
     e.count(x.agreement.len());
     for s in &x.agreement {
-        e.uv(s.rule).digest(&s.observer).uv(s.direct);
+        e.uv(s.rule).digest(&s.observer).uv(s.direct).uv(s.kept_via);
     }
     e.count(x.unused.len());
     for &u in &x.unused {
-        e.uv(u);
-    }
-    e.count(x.unchecked.len());
-    for &u in &x.unchecked {
         e.uv(u);
     }
     let s = &x.spellings;
@@ -444,7 +430,6 @@ struct Offsets {
     tally: Vec<usize>,
     agreement: Vec<usize>,
     unused: Vec<usize>,
-    unchecked: Vec<usize>,
     obligations: usize,
     failed: Vec<usize>,
     /// Per failed spelling: `observers`, `first`, `found`.
@@ -465,7 +450,6 @@ impl Offsets {
             Loc::Tally(i) => self.tally[i],
             Loc::Agreement(i) => self.agreement[i],
             Loc::Unused(i) => self.unused[i],
-            Loc::Unchecked(i) => self.unchecked[i],
             Loc::Obligations => self.obligations,
             Loc::Failed(i) => self.failed[i],
             Loc::FailedObservers(i) => self.failed_fields[i][0],
@@ -485,10 +469,21 @@ fn dec_opt_digest(d: &mut Decoder<'_>) -> Result<Option<Digest>> {
     dec_opt(d, Decoder::digest)
 }
 
+/// The first version read: version 2 (WP-111) added `kept_via` to a
+/// stale pair and dropped `unchecked`, and no reader of version 1 is kept
+/// before a release (`spec/edits.md` §8.5).
+const SINCE: u32 = 2;
+
+/// The message of a version this reader no longer reads.
+const OLD_VERSION: &str = "container version older than supported";
+
 /// The result, its unknown ignorable sections and its content id.
 #[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §8.5")]
 pub(super) fn decode(bytes: &[u8]) -> Result<(TransformResult, Vec<Extra<'_>>, Digest)> {
     let opened = open(bytes, TransformResult::KIND, TransformResult::VERSION, [RESULT])?;
+    if opened.version < SINCE {
+        return Err(Error::new(ErrorKind::UnsupportedVersion, 12, OLD_VERSION));
+    }
     let [section] = opened.sections;
     let mut section = super::required(section, opened.end, "result has no result section")?;
     let d = &mut section;
@@ -540,10 +535,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(TransformResult, Vec<Extra<'_>>, D
         failed,
     };
     let agreement = dec_list(d, Some(&mut o.agreement), |d| {
-        Ok(Stale { rule: d.uv()?, observer: d.digest()?, direct: d.uv()? })
+        Ok(Stale { rule: d.uv()?, observer: d.digest()?, direct: d.uv()?, kept_via: d.uv()? })
     })?;
     let unused = dec_list(d, Some(&mut o.unused), Decoder::uv)?;
-    let unchecked = dec_list(d, Some(&mut o.unchecked), Decoder::uv)?;
     o.obligations = d.offset();
     let obligations = d.uv()?;
     let passed = d.uv()?;
@@ -593,7 +587,6 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(TransformResult, Vec<Extra<'_>>, D
         tally,
         agreement,
         unused,
-        unchecked,
         spellings: Spellings { obligations, passed, failed },
         residue,
         exempt,
@@ -609,7 +602,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(TransformResult, Vec<Extra<'_>>, D
 
 const NAMES: [SectionName; 1] = [SectionName { id: RESULT, name: "result", required: true }];
 
-const FIELDS: [&str; 18] = [
+const FIELDS: [&str; 17] = [
     "scheme",
     "plan",
     "round",
@@ -624,12 +617,11 @@ const FIELDS: [&str; 18] = [
     "tally",
     "agreement",
     "unused",
-    "unchecked",
     "spellings",
     "residue",
     "exempt",
 ];
-const STALE: [&str; 3] = ["rule", "observer", "direct"];
+const STALE: [&str; 4] = ["rule", "observer", "direct", "kept_via"];
 const SPELLINGS: [&str; 3] = ["obligations", "passed", "failed"];
 const FAILED: [&str; 6] = ["obligation", "why", "observers", "first", "found", "name"];
 const RESIDUE: [&str; 6] = ["category", "file", "lo", "hi", "line", "column"];
@@ -674,13 +666,17 @@ pub(super) fn render(x: &TransformResult, extras: &[Extra<'_>]) -> Value {
                     .map(|a| {
                         record(
                             STALE,
-                            [json_uv(a.rule), json_digest(&a.observer), json_uv(a.direct)],
+                            [
+                                json_uv(a.rule),
+                                json_digest(&a.observer),
+                                json_uv(a.direct),
+                                json_uv(a.kept_via),
+                            ],
                         )
                     })
                     .collect(),
             ),
             Value::Array(x.unused.iter().map(|&u| json_uv(u)).collect()),
-            Value::Array(x.unchecked.iter().map(|&u| json_uv(u)).collect()),
             record(SPELLINGS, [json_uv(s.obligations), json_uv(s.passed), Value::Array(failed)]),
             Value::Array(
                 x.residue
@@ -715,6 +711,13 @@ pub(super) fn render(x: &TransformResult, extras: &[Extra<'_>]) -> Value {
 #[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §8.5")]
 pub(super) fn read(v: &Value) -> JResult<(TransformResult, OwnedExtras)> {
     let s = read_container(v, TransformResult::KIND, TransformResult::VERSION, &NAMES)?;
+    if s.version < SINCE {
+        let have = s.version;
+        return Err(At::Root.key("version").error(format!(
+            "unsupported version {have}; this reader supports {SINCE} to {}",
+            TransformResult::VERSION
+        )));
+    }
     let [Some(section)] = s.known else {
         unreachable!("read_container returns every required section")
     };
@@ -736,7 +739,6 @@ pub(super) fn read(v: &Value) -> JResult<(TransformResult, OwnedExtras)> {
         tally,
         agreement,
         unused,
-        unchecked,
         spellings,
         residue,
         exempt,
@@ -788,15 +790,15 @@ pub(super) fn read(v: &Value) -> JResult<(TransformResult, OwnedExtras)> {
             failed,
         },
         agreement: read_list(agreement, &at.key("agreement"), |v, at| {
-            let [rule, observer, direct] = read_record(v, at, STALE)?;
+            let [rule, observer, direct, kept_via] = read_record(v, at, STALE)?;
             Ok(Stale {
                 rule: read_uv(rule, &at.key("rule"))?,
                 observer: read_digest(observer, &at.key("observer"))?,
                 direct: read_uv(direct, &at.key("direct"))?,
+                kept_via: read_uv(kept_via, &at.key("kept_via"))?,
             })
         })?,
         unused: read_list(unused, &at.key("unused"), read_uv)?,
-        unchecked: read_list(unchecked, &at.key("unchecked"), read_uv)?,
         spellings: Spellings {
             obligations: read_uv(obligations, &sp_at.key("obligations"))?,
             passed: read_uv(passed, &sp_at.key("passed"))?,

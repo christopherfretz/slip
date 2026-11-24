@@ -1,0 +1,2 @@
+# WP-111 item 5: as overload-kept, not listed in kept: direct 1, stale.
+relocate legacy => :: acme

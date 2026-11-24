@@ -4,13 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use slip_model::declared::Declared;
 use slip_model::editset::{EditSet, SetState};
-use slip_model::keys::{KeyKind, Rule, RuleTable};
+use slip_model::keys::{Rule, RuleTable};
 use slip_model::transform::Ownership;
 
 /// §6.2's `rule_conflict`: two rules with one `(parent, kind, name, disc)`
-/// and different targets, or two rules of a kind other than `namespace`
+/// and different targets, or two rules of any kind, namespaces included,
 /// with one target `(to_parent, kind, to_name, disc)` and different
-/// `(parent, name)`. `rules` holds no two equal rules.
+/// `(parent, name)` (`spec/verify.md` §2.1, "One way to each key").
+/// `rules` holds no two equal rules.
 pub(crate) fn conflicts(rules: &BTreeSet<Rule>) -> bool {
     // The derived order compares `(parent, kind, name, disc)` first, so
     // rules with one match are adjacent; being different, they conflict.
@@ -24,7 +25,7 @@ pub(crate) fn conflicts(rules: &BTreeSet<Rule>) -> bool {
         prev = Some(r);
     }
     let mut targets = BTreeMap::new();
-    for r in rules.iter().filter(|r| r.kind != KeyKind::Namespace) {
+    for r in rules {
         let from = (r.parent, &r.name);
         if let Some(other) = targets.insert((r.to_parent, r.kind, &r.to_name, r.disc), from)
             && other != from
@@ -35,25 +36,31 @@ pub(crate) fn conflicts(rules: &BTreeSet<Rule>) -> bool {
     false
 }
 
-/// The rules of `rules` whose match no other rule of `rules` has: what an
-/// edit set's `rules` (a rule table) can hold of the shards' `renamed`
-/// rules when two of them disagree (landed WP-062 §7).
+/// The rules of `rules` whose match no other rule of `rules` has and
+/// whose target no other rule of `rules` has: what an edit set's `rules`
+/// (a rule table) can hold of the shards' `renamed` rules when two of them
+/// disagree (landed WP-062 §7; `spec/verify.md` §2.1, "One way to each
+/// key"). Such a set is refused with `rule_conflict` ([`conflicts`]).
 pub(crate) fn table_of(rules: &BTreeSet<Rule>) -> Vec<Rule> {
-    let list: Vec<&Rule> = rules.iter().collect();
-    let same = |a: &Rule, b: &Rule| {
-        (a.parent, a.kind, &a.name, a.disc) == (b.parent, b.kind, &b.name, b.disc)
-    };
-    let kept: Vec<Rule> = (0..list.len())
-        .filter(|&i| {
-            !((i > 0 && same(list[i - 1], list[i]))
-                || (i + 1 < list.len() && same(list[i], list[i + 1])))
-        })
-        .map(|i| list[i].clone())
-        .collect();
-    match RuleTable::new(kept) {
-        Ok(t) => t.rules().to_vec(),
-        Err(e) => unreachable!("rules with distinct matches make a table: {e}"),
+    let mut matches: BTreeMap<_, usize> = BTreeMap::new();
+    let mut targets: BTreeMap<_, usize> = BTreeMap::new();
+    for r in rules {
+        *matches.entry((r.parent, r.kind, &r.name, r.disc)).or_default() += 1;
+        *targets.entry((r.to_parent, r.kind, &r.to_name, r.disc)).or_default() += 1;
     }
+    let kept: Vec<Rule> = rules
+        .iter()
+        .filter(|r| {
+            matches[&(r.parent, r.kind, &r.name, r.disc)] == 1
+                && targets[&(r.to_parent, r.kind, &r.to_name, r.disc)] == 1
+        })
+        .cloned()
+        .collect();
+    // One rule per match and per target, each with names the shard's
+    // reader accepted: `RuleTable::new` has nothing to refuse. Were it to
+    // refuse, the set keeps no rule rather than panic, and [`declared`]
+    // makes the table of the whole union again and fails with the error.
+    RuleTable::new(kept).map(|t| t.rules().to_vec()).unwrap_or_default()
 }
 
 /// The union of §6.2: the set's `rules` and the `rule` of every subject of

@@ -1,0 +1,2 @@
+# Every file owned: the template is owned and left behind: direct 1; the specialisation still not counted.
+use 2 via 1 direct 1

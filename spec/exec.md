@@ -1454,7 +1454,7 @@ as a `DECL` container to `--out`.
   its unit records taken (`slip_digest::records`), with no rules; if the
   text has a `relocate` with a parent, the post-image is parsed with no
   rules (a `created` line is resolved only in the records under the
-  rules, `spec/verify.md` §2.3); if it has a `created` line, the
+  rules, `spec/verify.md` §2.3); if it has a `created` or `kept` line, the
   post-image is parsed again with the rules the `relocate` lines gave and
   the run's files, each buffer decided by the subject path of its real
   path as the verify job decides it (`spec/verify.md` §2.1). Every
@@ -1487,6 +1487,13 @@ as a `DECL` container to `--out`.
   never wrongly `verified`.
   An image of an observer that does not parse `ok` contributes no record
   and is a warning: `slip: warning: declare: <main file>: the <pre|post>-image is <status>`.
+- With a `relocate` line, the pre-image's walk also gives its `Facts`
+  under the run's files (`spec/verify.md` §2.3: `DependencyEntity`, the
+  rules of undefined friends), each buffer decided by the subject path
+  of its real path. An `--owned` entry that covers no file a selected
+  pre-image read (WP-053 review F2: `--owned <post tree>`) is a warning,
+  the status unchanged: `slip: warning: declare: --owned <real path>
+  covers no file the selected observers' pre-images read`.
 - The records of all selected observers together are the sets of
   `spec/verify.md` §2.3. Records of one `KeyId` from several observers
   are one record.
@@ -1499,7 +1506,16 @@ rules <rules_id> <n>
 changed <n>
 created <n>
 removed <n>
+kept <n>
 ```
+
+A `relocate` line that writes no rule (`spec/verify.md` §2.3: an entity
+with C language linkage moved without a new name) is said on standard
+error, one line per such `relocate` line in file order, before the
+standard output, the status unchanged: `slip: note: <text file>:<line>:
+the entity has C language linkage and keeps its name: the move changes
+no key, and the line writes no rule`. It adds nothing to the count
+`rules`.
 
 An error of §2.3 is `slip: <text file>:<line>: <error>: <detail>` on
 standard error, status 1, and nothing is written. An unreadable text

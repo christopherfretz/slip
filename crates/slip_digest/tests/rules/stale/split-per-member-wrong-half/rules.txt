@@ -1,0 +1,3 @@
+# WP-111 review F1: split-per-member with the halves swapped (a to acme2, b to acme): a finding.
+relocate legacy::a => acme :: =
+relocate legacy::b => acme2 :: =

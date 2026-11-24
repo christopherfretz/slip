@@ -611,10 +611,11 @@ fn relocation(f: &Fixture, plan: &str, name: &str, to: &str) -> Declared {
 // of the relocation shows a finding that is not indeterminate.
 //
 // The run's report under rules (WP-121 writes `binding` and `rule_use`):
-// both observers `verified`, the run `verified`, status 0, and the
-// namespace rule listed `unchecked` (spec/verify.md §9.2 "Unchecked
-// namespace rules": "the report lists it … The report's verdict is not
-// changed by it").
+// both observers `verified`, the run `verified`, status 0. WP-111: no
+// observer is stale for the namespace rule (spec/verify.md §9.2 "Stale for
+// a namespace rule": nothing owned is left in `old`, nothing is kept),
+// and the report no longer has the `unchecked` member or line (until
+// WP-111 it listed the rule there, the verdict unchanged).
 #[test]
 fn s2_relocation_through_the_whole_path() {
     let f = two_units("relocation");
@@ -639,11 +640,10 @@ fn s2_relocation_through_the_whole_path() {
     assert_verdict(&out, &report, "verified");
     assert_eq!(states(&report), [2, 0, 0, 0, 0, 0, 0]);
     assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 0"));
-    assert!(
-        out.stdout.contains("\nnot checked: agreement between observers for namespace rule 0\n"),
-        "{out:?}"
-    );
-    assert_eq!(get(&report, "agreement.unchecked").as_array().unwrap().len(), 1);
+    assert!(!out.stdout.contains("not checked"), "{out:?}");
+    let agreement = get(&report, "agreement").as_object().unwrap();
+    let members: Vec<&str> = agreement.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(members, ["rules", "stale", "unused"]);
 
     // Without it: the same post-image shows the relocated entities changed.
     let (out, report) = f.verify_report(&plan, &img);
@@ -965,7 +965,7 @@ fn s8_8_declare_output() {
     relocate_in_post(&f);
     f.write(
         "t.txt",
-        "relocate old => :: fresh\nchanged h(int)\nremoved [function] h(char)\ncreated fresh::g(fresh::S *)\n",
+        "relocate old => :: fresh\nchanged h(int)\nremoved [function] h(char)\ncreated fresh::g(fresh::S *)\nkept h(int)\n",
     );
     let mut s = Vec::new();
     let mut extra = image(&f, &mut s);
@@ -978,7 +978,7 @@ fn s8_8_declare_output() {
     assert_eq!(
         out.stdout,
         format!(
-            "declared {}\nrules {} 1\nchanged 1\ncreated 1\nremoved 1\n",
+            "declared {}\nrules {} 1\nchanged 1\ncreated 1\nremoved 1\nkept 1\n",
             content_id(&bytes).unwrap(),
             d.rules_id()
         )
@@ -1008,7 +1008,8 @@ fn s2_3_declare_errors() {
     f.both(
         "a.h",
         "#pragma once\nstruct S { int v; };\nint S_;\nstruct T {};\nint T;\n\
-         struct C { C operator+(C); };\nvoid k(int);\ntemplate <class X> int tt(X) { return 0; }\n",
+         struct C { C operator+(C); };\nvoid k(int);\ntemplate <class X> int tt(X) { return 0; }\n\
+         extern \"C\" int cfn(int);\n",
     );
     f.both("u0.cpp", "#include \"a.h\"\nint f0() { return tt(1); }\n");
     f.db(&["u0.cpp"]);
@@ -1056,9 +1057,86 @@ fn s2_3_declare_errors() {
         "slip: t.txt:1: refused: the rule of `tt<int>(int)` is refused: a rule may not match a \
          specialisation: its key follows its template's"
     );
+    // WP-111: a dependency entity (the header read-only), and a line that
+    // relocates the new parent of a line above it.
+    assert_eq!(
+        line_error(&f, &plan, "relocate S => :: S2\n", &["--owned", "s", "--readonly", "s/a.h"]),
+        "slip: t.txt:1: dependency entity: `S` is a dependency entity (a declaration of it is in \
+         a read-only file, or it is a specialisation or an implicit member of one): no rule \
+         renames it"
+    );
+    // §2.3: an entity with C language linkage is renamed with the parent
+    // `c_linkage`; a parent that resolves to nothing is still an error.
+    assert_eq!(
+        line_error(
+            &f,
+            &plan,
+            "changed k(int)\nrelocate cfn(int) => nowhere :: cfn2\n",
+            &["--owned", "s"]
+        ),
+        "slip: t.txt:2: no unit: no unit of the post-images is named `nowhere`, and no unit's \
+         name contains `nowhere`"
+    );
+    assert_eq!(
+        line_error(
+            &f,
+            &plan,
+            "relocate k(int) => C :: k2\nrelocate S => :: C\n",
+            &["--owned", "s"]
+        ),
+        "slip: t.txt:2: order: the rule of `S` relocates `C`, or a namespace or class around it, \
+         which line 1 resolved as a new parent without it: this line must come before line 1"
+    );
     // `Fallback` has no source that makes it (`slip_digest` records:
     // no walk gives a fallback key today); it is tested over records in
     // `tests/declare.rs`.
+}
+
+// §2.3 "Errors", WP-111 review F1: the errors and the note of "One way to
+// each key" (`spec/verify.md` §2.1), over `s2_3_declare_errors`'s files.
+#[test]
+fn s2_3_declare_one_way_to_each_key() {
+    let f = Fixture::new("declare-one-way");
+    f.both(
+        "a.h",
+        "#pragma once\nstruct S { int v; };\nint S_;\nstruct T {};\nint T;\n\
+         struct C { C operator+(C); };\nvoid k(int);\ntemplate <class X> int tt(X) { return 0; }\n\
+         extern \"C\" int cfn(int);\n",
+    );
+    f.both("u0.cpp", "#include \"a.h\"\nint f0() { return tt(1); }\n");
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
+    // WP-111 review F1: two lines whose rules produce one key, the
+    // message naming the earlier line; an identity rule, refused.
+    assert_eq!(
+        line_error(
+            &f,
+            &plan,
+            "relocate k(int) => :: k2\nchanged S\nrelocate k(int) => :: k3\n",
+            &["--owned", "s"]
+        ),
+        "slip: t.txt:3: duplicate: the rule of `k(int)` produces the key the rule of line 1 \
+         produces: two entities of the post-image cannot both be this one of the pre-image (a \
+         namespace split in two is declared per member or per nested namespace)"
+    );
+    assert_eq!(
+        line_error(&f, &plan, "relocate S => :: =\n", &["--owned", "s"]),
+        "slip: t.txt:1: refused: the rule of `S` is refused: a rule may not produce the key it \
+         matches: it changes nothing"
+    );
+    // §2.3, §8.8: a C function moved without a new name writes no rule,
+    // and a note says so; the status is 0.
+    f.write("t.txt", "changed k(int)\nrelocate cfn(int) => :: =\n");
+    let _ = std::fs::remove_file(f.path("d.decl"));
+    let out = declare(&f, &plan, "t.txt", &["--owned", "s"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(
+        out.stderr,
+        "slip: note: t.txt:2: the entity has C language linkage and keeps its name: the move \
+         changes no key, and the line writes no rule\n"
+    );
+    assert!(out.stdout.contains("\nchanged 1\n"), "{out:?}");
+    assert!(out.stdout.lines().nth(1).is_some_and(|l| l.ends_with(" 0")), "{out:?}");
 }
 
 // §8.8: input errors (status 3, nothing written): an unreadable text, a
@@ -1245,13 +1323,13 @@ fn s8_8_declare_files() {
     assert!(!f.path("d.decl").exists());
 }
 
-// spec/verify.md §2.1, §2.3 (WP-111 not landed): `relocate` naming an
-// entity only a read-only file declares. `declare` accepts the line (the
-// `DependencyEntity` error is WP-111's); its rule matches nothing, since
+// spec/verify.md §2.1, §2.3: `relocate` naming a namespace only a
+// read-only file declares. `declare` accepts the line (`DependencyEntity`
+// is for an entity that is not a namespace: a namespace's rule applies in
+// the owned view, WP-111); its rule matches nothing, since every member of
 // the namespace is a dependency entity: every observer mismatches, the
 // relocated entities shown as removed and added; the run is not verified
-// and reports the rule unused. When WP-111 lands,
-// `declare` refuses this line and this test changes.
+// and reports the rule unused. A member of it, relocated, is refused.
 #[test]
 fn s2_1_rule_naming_a_dependency_entity_matches_nothing() {
     let f = two_units("dependency-entity");
@@ -1278,6 +1356,78 @@ fn s2_1_rule_naming_a_dependency_entity_matches_nothing() {
     assert_eq!(states(&report), [0, 0, 2, 0, 0, 0, 0]);
     assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 1"));
     assert_eq!(out.value("unused rule"), Some("0"));
+    f.write("t.txt", "relocate old::S => old :: S2\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(
+        out.stderr.starts_with("slip: t.txt:1: dependency entity: `old::S` is a dependency entity"),
+        "{out:?}"
+    );
+}
+
+// WP-111 (WP-053 review F2): an `--owned` entry that covers no file a
+// selected pre-image read (here the post tree) is a warning, the status
+// unchanged; one that covers a file is not.
+#[test]
+fn s8_8_declare_owned_entry_that_covers_nothing() {
+    let f = two_units("owned-nothing");
+    let plan = f.parse();
+    relocate_in_post(&f);
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "post"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(
+        out.stderr,
+        format!(
+            "slip: warning: declare: --owned {} covers no file the selected observers' pre-images read\n",
+            Fixture::text(&f.path("post"))
+        )
+    );
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s", "--owned", "post"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.stderr_lines().len(), 1, "{out:?}");
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s"]);
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!((out.code(), out.stderr.as_str()), (Some(0), ""), "{out:?}");
+}
+
+// WP-111, "Added after the reviews of WP-069 and WP-110": `declare` decides
+// a dependency entity by the real path of its file. The header is in
+// `dep`, reached through the link `s/inc -> dep`: read-only given by its
+// real path (`--readonly s/dep`) and given through the link (`--readonly
+// s/inc`, made the real path), `relocate` of a struct in it is
+// `DependencyEntity`; with no `--readonly`, accepted.
+#[test]
+fn s2_3_dependency_entity_through_a_link_each_way() {
+    let f = Fixture::new("dep-link");
+    f.both("dep/a.h", HEADER);
+    std::os::unix::fs::symlink("dep", f.path("s/inc")).unwrap();
+    let unit = |t: &str| t.replace("\"a.h\"", "\"inc/a.h\"");
+    f.both("u0.cpp", &unit(U0));
+    f.both("u1.cpp", &unit(U1));
+    f.db(&["u0.cpp", "u1.cpp"]);
+    let plan = f.parse();
+    f.write("t.txt", "relocate old::S => old :: S2\n");
+    for readonly in ["s/dep", "s/inc"] {
+        let line = line_error(
+            &f,
+            &plan,
+            "relocate old::S => old :: S2\n",
+            &["--owned", "s", "--readonly", readonly],
+        );
+        assert!(
+            line.starts_with("slip: t.txt:1: dependency entity: `old::S`"),
+            "{readonly}: {line}"
+        );
+    }
+    let out = declare(&f, &plan, "t.txt", &["--owned", "s"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
 }
 
 // spec/verify.md §2.3 "created": resolved in the post-images walked under
@@ -1509,8 +1659,10 @@ fn verify_declared(f: &Fixture, plan: &str) -> (Out, Value) {
 
 // spec/verify.md §9.2, §9.3, spec/exec.md §8.7 (WP-121 item 5): a
 // namespace relocation over two observers sharing a header: both
-// `verified`, the run verified (status 0), the rule listed `unchecked`
-// ("the report lists it … The report's verdict is not changed by it").
+// `verified`, the run verified (status 0). WP-111: neither observer is
+// stale for the rule (§9.2 "Stale for a namespace rule": every owned
+// member of `old` moved, none is kept) and no line says it is not checked
+// (until WP-111 the rule was listed `unchecked`, the verdict unchanged).
 // The wrong edit beside it (one value changed in `u1`): that observer
 // `mismatch`, the run not verified (status 1).
 #[test]
@@ -1536,11 +1688,7 @@ fn s9_3_relocation_declared_and_verified() {
             assert_eq!(states(&report), [2, 0, 0, 0, 0, 0, 0], "{out:?}");
         }
         assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 0"));
-        assert!(
-            out.stdout
-                .contains("\nnot checked: agreement between observers for namespace rule 0\n"),
-            "{out:?}"
-        );
+        assert!(!out.stdout.contains("not checked"), "{out:?}");
     }
 }
 
@@ -1568,7 +1716,10 @@ fn s9_2_rename_declared_with_a_stale_observer() {
         assert_eq!(states(&report), want, "{out:?}");
         assert_eq!(out.value("agreement"), Some("rules 1 stale 1 unused 0"));
         let u1 = Fixture::text(&f.path("s/u1.cpp"));
-        assert!(out.stdout.contains(&format!("\nstale rule 0 direct 1 {u1}\n")), "{out:?}");
+        assert!(
+            out.stdout.contains(&format!("\nstale rule 0 direct 1 kept_via 0 {u1}\n")),
+            "{out:?}"
+        );
     }
 }
 

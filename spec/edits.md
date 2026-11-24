@@ -547,8 +547,10 @@ the job.
 Checked in this order, the claim rules for each claim in turn. That a
 subject of a claim or a link names a subject of the shard, that a
 subject's `id` and `rule` belong together, that `files` agrees with
-`inputs`, and that a `replace` is in an owned file, are checked by reduce
-(§5.1), which reports them as `Input` errors naming the shard.
+`inputs`, that a `replace` is in an owned file, and that no rule of
+`renamed` or of a subject is one that no rule table may hold, are
+checked by reduce (§5.1), which reports them as `Input` errors naming
+the shard.
 
 ### 4.8 From a run output
 
@@ -596,7 +598,11 @@ an observer is its position in the plan.
 - Every `ok` shard must have an `edits` section with `scheme` 1 and
   `transform` the request's id. Otherwise reduce fails with an `Input`
   error naming the shard. A shard that breaks a rule of §4.7's last
-  paragraph fails the same way.
+  paragraph fails the same way, and so does one whose `renamed`, or the
+  `rule` of one of its subjects, holds a rule that no rule table may hold
+  (`verify.md` §2.1: an identity rule, a rule on a specialisation or a
+  part, a namespace rule between a named and an unnamed namespace;
+  `Rule::refusal`).
 - An `ok` shard with a `failure` is a **failed run**. Reduce records the
   failure (§6) and takes nothing else from the shard.
 - If no shard is `ok` and without a failure, the edit set is refused with
@@ -1021,11 +1027,16 @@ refused one has none.
     which are also the set's `rules`; and
   - the `rule` of every selected subject and follower that has one.
 
-  Two rules with one `(parent, kind, name, disc)` and different targets,
-  or two rules of a kind other than `namespace` with one target
-  `(to_parent, kind, to_name, disc)` and different `(parent, name)`,
+  Two rules with one `(parent, kind, name, disc)` and different targets
   refuse the edit set with `rule_conflict`: two observers disagree about
-  what an entity is renamed to. (Namespaces may merge, `verify.md` §2.1.)
+  what an entity is called in the pre-image. So do two rules, of any
+  kind, with one target `(to_parent, kind, to_name, disc)` and different
+  `(parent, name)`: two entities of the post-image are called one key of
+  the pre-image, which no rule table holds (`verify.md` §2.1, "One way to
+  each key"). What `verify.md` §2.1 calls "Namespaces merge" is one rule
+  whose target is also the key of a namespace that the post-image still
+  has unmapped, never two rules; a namespace split in two is declared per
+  member or per nested namespace (`verify.md` §2.3).
 - **`changed`**: the keys of the `changed` entries that are in force: an
   edit of the set shares a byte with the entry's place.
 - **`created`, `removed`**: empty.
@@ -1510,8 +1521,11 @@ rule 6), which the edit set sums (§6.3).
 
 ### 8.5 The result
 
-Kind `RSLT`, version 1, deterministic. One required section `result`
-(id 1). The **result id** is the content id.
+Kind `RSLT`, version 2, deterministic. One required section `result`
+(id 1). The **result id** is the content id. Version 2 (WP-111) added
+`kept_via` to a stale pair and dropped `unchecked`; version 1 is refused,
+`UnsupportedVersion` at offset 12 (JSON: `version`), as a version newer
+than the reader's is: no reader of version 1 is kept before a release.
 
 ```
 Result := scheme:    uv               1
@@ -1529,7 +1543,6 @@ Result := scheme:    uv               1
           tally:     Tally
           agreement: list<Stale>      verify.md §9.2; sorted by (rule, observer)
           unused:    list<uv>         indices of rules no observer reached an entity through
-          unchecked: list<uv>         namespace rules an observer used (verify.md §9.2); until WP-111
           spellings: Spellings        verify.md §10.3
           residue:   list<Residue>
           exempt:    list<KeyId>      Declared.changed, repeated here for the report
@@ -1540,7 +1553,7 @@ Tally := selected: uv, unparsed: uv, failed_runs: uv, error_reports: uv,
 
 RunVerdict := verified = 0 | not_verified = 1 | incomplete = 2
 
-Stale := rule: uv, observer: digest, direct: uv
+Stale := rule: uv, observer: digest, direct: uv, kept_via: uv     kept_via: WP-111 (verify.md §9.2)
 
 Spellings := obligations: uv, passed: uv
              failed: list<FailedSpelling>     in the obligations' order
@@ -1558,13 +1571,13 @@ The seven states of `Tally` are those of `verify.md` §7, over the
 observers the verify phase selected (§8.2); they add up to `selected`
 less `unparsed`. `failed_runs` and `error_reports` are the counts of
 `ok` shards with a failure and of joined reports of severity `error`
-(§6). `verdict`, `agreement`, `unused`, `unchecked` and `spellings` are
+(§6). `verdict`, `agreement`, `unused` and `spellings` are
 what the trusted run report computed (`slip_verify::run::Report`, `verify.md`
 §9.5, §10.6); conclude copies them and decides none.
 
 Invariants, checked in this order: `scheme` is 1; `agreement` strictly
 ascending by `(rule, observer)`;
-`unused`, `unchecked` and `exempt` strictly ascending; `spellings.failed` strictly
+`unused` and `exempt` strictly ascending; `spellings.failed` strictly
 ascending by `obligation`, and `passed` plus its length is `obligations`;
 for each failed spelling, `observers` is 0 and `first` and `found` are
 absent if it is `unseen`, and `observers` is not 0 and `first` is
@@ -1576,15 +1589,15 @@ tally of 0 in every field but `selected`, `unparsed`, `failed_runs` and
 `error_reports`; `unparsed` at most `selected`; with a `verdict`, the
 seven states add up to `selected` less `unparsed`, and without one each
 of them is 0 (no verify phase finished, so no observer has a state);
-every `agreement` entry's `direct` not 0 (a stale pair, `verify.md`
-§9.2); with the verdict `verified`, `agreement` and `spellings.failed`
-empty (`verify.md` §9.3), and without a verdict `unchecked` empty; the
+every `agreement` entry's `direct` or `kept_via` not 0 (a stale pair,
+`verify.md` §9.2); with the verdict `verified`, `agreement` and
+`spellings.failed` empty (`verify.md` §9.3); the
 state the one rows 2 to 5 below give as far as the file decides them:
-`verified` and `verified_with_residue` only with the verdict `verified`,
-`unchecked` empty and `unparsed` 0 or `allow_unparsed`; `not_verified`
-only with the verdict `not_verified`; `incomplete` never with it, and
-with the verdict `verified` only when `unchecked` is not empty or
-`unparsed` is not 0 without `allow_unparsed`; and a `verified` result
+`verified` and `verified_with_residue` only with the verdict `verified`
+and `unparsed` 0 or `allow_unparsed`; `not_verified` only with the
+verdict `not_verified`; `incomplete` never with it, and with the verdict
+`verified` only when `unparsed` is not 0 without `allow_unparsed`; and a
+`verified` result
 with no residue entry that is not a `mention` and `failed_runs` and
 `error_reports` 0. The format checks nothing else: not a residue's range
 against its file, nor whether a `verified_with_residue` has a reason (a
@@ -1601,9 +1614,9 @@ The state is the first that applies:
    obligation failed or was seen by no observer (`verify.md` §9.3).
 3. `incomplete`: the verdict is `incomplete` or absent (the run was
    cancelled); or `unparsed` is not 0 and the run was not given
-   `--allow-unparsed`; or (temporary, until WP-111 removes it) the run
-   has an unchecked namespace rule (`unchecked` not empty, `verify.md`
-   §9.2), whatever `--allow-*` is given.
+   `--allow-unparsed`. (The temporary condition on unchecked namespace
+   rules was removed by WP-111: a namespace rule is checked by §9.2's
+   counts.)
 4. `verified_with_residue`: everything that was applied is verified, and
    something that was asked or found was not done: the residue has an
    entry that is not a `mention`; or the edit set has a refusal (a group
@@ -1630,7 +1643,7 @@ verification. They
 never act on a `partial` result unless `--allow-partial` is given, nor
 on a result its edit set contradicts: its `edits`, `plan`, `round` and
 `transform` must be the set's, its verdict `verified` with no stale
-pair, failed spelling or unchecked rule, and its counts the set's
+pair or failed spelling, and its counts the set's
 (`slip_verify::conclude::permits`, `spec/landed/verify/WP-070.md` §5). Under
 `--allow-unparsed` the main file of every unparsed observer is scanned as
 a file no observer read.
@@ -2281,7 +2294,8 @@ and nothing under it.
   disagreement in `files`, in `inputs` and in a copied file; unparsed
   observers; a failed run; the declared changes of §6.2, with a `changed`
   entry in force and one whose edit was rejected; `rule_conflict` both
-  ways and the namespace exception; `no_edit`.
+  ways, for namespaces too (two namespace rules of one target refused,
+  one accepted); an identity rule as an `Input` error; `no_edit`.
 - `crates/slip_reduce/tests/pieces.rs` — §5.3, §5.4, §5.5: strict
   identity (the same text as a literal, as a spelled piece, with another
   key: `divergent`); crossing edits; an edit crossing a copied range; an

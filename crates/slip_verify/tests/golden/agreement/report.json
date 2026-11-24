@@ -27,28 +27,45 @@
     "groups": []
   },
   "not_verified": [],
-  "exemptions": [],
+  "exemptions": [
+    {
+      "list": "kept",
+      "key": "1005000000000000000000000000000000000000000000000000000000000000",
+      "observers": 1
+    },
+    {
+      "list": "kept",
+      "key": "1006000000000000000000000000000000000000000000000000000000000000",
+      "observers": 0
+    }
+  ],
   "agreement": {
     "rules": 3,
     "stale": [
       {
+        "rule": 0,
+        "observer": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+        "main": "/m/a0.cc",
+        "direct": 0,
+        "kept_via": 1
+      },
+      {
         "rule": 1,
         "observer": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
         "main": "/m/a0.cc",
-        "direct": 2
+        "direct": 2,
+        "kept_via": 0
       },
       {
         "rule": 1,
         "observer": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "main": "/m/a1.cc",
-        "direct": 1
+        "direct": 1,
+        "kept_via": 0
       }
     ],
     "unused": [
       2
-    ],
-    "unchecked": [
-      0
     ]
   },
   "spellings": {

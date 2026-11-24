@@ -1,0 +1,4 @@
+# The using-declaration and its shadow are added (the run exempts them through created, spec/verify.md §2.2).
+added legacy::<using acme::f>
+added legacy::<shadow acme::f(int)>
+use 2 via 1 direct 0 kept_via 0

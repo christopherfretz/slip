@@ -1,0 +1,2 @@
+# WP-111 (pitfall N29 good-5): an owned deduction guide for a dependency template, left in legacy, which [temp.deduct.guide] requires: not counted. Mine moved: via 1.
+relocate legacy => :: acme
