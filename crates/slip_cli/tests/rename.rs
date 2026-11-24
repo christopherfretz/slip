@@ -1218,13 +1218,15 @@ fn unchanged_by_identity(name: &str, spelled: &str, link: bool) -> Option<Transf
     let r = TransformResult::from_bytes(&bytes).unwrap();
     assert_eq!(r.tally.unchanged, 0, "b.cpp read the overlay's h.h: {out:?}");
     // `check` gave it a job (by identity), rather than leaving the report
-    // to refuse `unchanged` (`failed`): the job's verdict is not
-    // `verified`. (On this branch the job says `unverifiable`, "pre-image:
-    // <spelling> changed since the map phase": its O2 matches the
-    // overlay by path; reported to the coordinator.)
+    // to refuse `unchanged` (`failed`): the job (WP-074's O2) says
+    // `unverifiable`, the file being another name of the overlay's.
     assert_eq!(r.tally.failed, 0, "{out:?}");
     assert_eq!(r.tally.verified, 1, "a.cpp only: {out:?}");
-    assert_eq!(r.tally.mismatch + r.tally.unverifiable, 1, "{out:?}");
+    assert_eq!(r.tally.unverifiable, 1, "{out:?}");
+    assert!(
+        out.stderr.contains(&format!("{spelled} is another name of the overlay's ")),
+        "{out:?}"
+    );
     assert!(
         !matches!(r.state, State::Verified | State::VerifiedWithResidue),
         "{:?}: {out:?}",
@@ -1593,4 +1595,115 @@ fn s8_4_the_scan_refuses_a_file_changed_since_the_map_phase() {
         ),
         "{e}"
     );
+}
+
+// ----- one file under two spellings (WP-076 fix round, B3) ------------------
+
+/// Whether the tree's volume makes `src/H.h` the file `src/h.h` (case-
+/// insensitive); the tests below need it, and say when they skip.
+fn case_insensitive(t: &Tree) -> bool {
+    let yes = t.path("src/H.h").exists();
+    if !yes {
+        eprintln!("skipped: the volume is case-sensitive (`H.h` is not `h.h`)");
+    }
+    yes
+}
+
+// §8.2, B3: the reviewer's probe. `b.cpp` reaches the overlay's `h.h` as
+// `H.h`, and its post-image changes (`k()` returns 2), in a run without
+// rules: not `unchanged`, the result not `verified`, and `apply --write`
+// writes nothing.
+#[test]
+fn s8_2_case_spelling_is_not_unchanged() {
+    let t = Tree::new("case-spelling");
+    let h = "#pragma once\nint f(int);\n#ifdef B_SIDE\ninline int k() { return 1; }\n#endif\n";
+    t.write("src/h.h", h);
+    if !case_insensitive(&t) {
+        return;
+    }
+    t.write("src/a.cpp", "#include \"h.h\"\nint f(int x) { return x + 1; }\n");
+    t.write("src/b.cpp", "#define B_SIDE\n#include \"H.h\"\nint g() { return k(); }\n");
+    t.db(&["src/a.cpp", "src/b.cpp"]);
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    let mut set = edit_set(&t, "store", &out.id("edits"));
+    let hf = file_of(&set, &t, "src/h.h");
+    for e in &mut set.edits {
+        e.pieces = vec![Piece::Literal(b"f".to_vec())];
+    }
+    let mut extra = set.edits.iter().find(|e| e.file == hf).unwrap().clone();
+    let at = h.find("return 1").unwrap() as u64 + 7;
+    extra.lo = at;
+    extra.hi = at + 1;
+    extra.pieces = vec![Piece::Literal(b"2".to_vec())];
+    set.edits.push(extra);
+    set.edits.sort_by_key(|e| (e.file, e.lo));
+    set.validate().unwrap();
+    std::fs::write(t.path("none.decl"), Declared::none().to_bytes()).unwrap();
+    std::fs::write(t.path("k.edts"), set.to_bytes()).unwrap();
+    let before = t.snapshot();
+    let out = t.slip(&[
+        "check",
+        "--plan",
+        &plan,
+        "--round",
+        "1",
+        "--edits",
+        "k.edts",
+        "--declared",
+        "none.decl",
+        "--store",
+        "store",
+    ]);
+    let id = out.id("result");
+    let bytes = std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
+    let r = TransformResult::from_bytes(&bytes).unwrap();
+    assert_eq!(r.tally.unchanged, 0, "{out:?}");
+    assert!(!matches!(r.state, State::Verified | State::VerifiedWithResidue), "{out:?}");
+    let apply = t.slip(&["apply", "--result", &id, "--write", "--store", "store"]);
+    assert_ne!(apply.code(), Some(0), "{apply:?}");
+    assert_eq!(t.snapshot(), before);
+}
+
+// §8.1, B3: a plain rename where `b.cpp` spells the header `H.h`: the
+// edit set names the one file twice; the overlay's two entries are one
+// file, every verify job fails on it, and the result is not `verified`:
+// neither `--write` nor `--patch` writes anything. (The refusal where the
+// set is built is WP-151's.)
+#[test]
+fn s8_1_one_file_under_two_spellings_in_the_set() {
+    let t = Tree::new("case-two-spellings");
+    t.write("src/h.h", "#pragma once\nint f(int);\n");
+    if !case_insensitive(&t) {
+        return;
+    }
+    t.write("src/a.cpp", "#include \"h.h\"\nint f(int x) { return x + 1; }\n");
+    t.write("src/b.cpp", "#include \"H.h\"\nint g() { return f(2); }\n");
+    t.db(&["src/a.cpp", "src/b.cpp"]);
+    let plan = t.plan("store");
+    let before = t.snapshot();
+    let set_files = |out: &Out| {
+        let set = edit_set(&t, "store", &out.id("edits"));
+        set.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()
+    };
+    let path = |rel: &str| t.path(rel).to_str().unwrap().as_bytes().to_vec();
+    for (asked, extra) in [("--write", &["--write"][..]), ("--patch", &["--patch", "p.diff"][..])] {
+        let out = rename(&t, &plan, extra);
+        let files = set_files(&out);
+        assert!(files.contains(&path("src/h.h")) && files.contains(&path("src/H.h")), "{out:?}");
+        assert_eq!(out.code(), Some(1), "{asked}: {out:?}");
+        assert!(out.stderr.contains("names one file twice"), "{asked}: {out:?}");
+        assert_eq!(
+            out.value("verify:"),
+            Some(
+                "verified 0, unchanged 0, mismatch 0, not_parsed 0, unverifiable 0, never_parsed 0, failed 2"
+            ),
+            "{asked}: {out:?}"
+        );
+        assert_eq!(out.stdout.lines().last().map(|l| l.starts_with("spelling ")), Some(true));
+        assert!(out.stdout.lines().any(|l| l == "state not_verified"), "{asked}: {out:?}");
+        assert!(out.stderr.contains(&format!("does not permit `{asked}`")), "{out:?}");
+        assert_eq!(t.snapshot(), before, "{asked}: {out:?}");
+        assert!(!t.path("p.diff").exists(), "{asked}: {out:?}");
+    }
 }
