@@ -14,7 +14,7 @@ use slip_script::fake::{
     FakeCall, FakeDeclaration, FakeEntity, FakeExpression, FakeReference, FakeSubject,
 };
 use slip_script::subject::{
-    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
+    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Unqualified, Value,
 };
 use slip_script::wire::Errc;
 
@@ -299,6 +299,9 @@ impl Subject for Liar<'_> {
     }
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
         self.0.qualified(e)
+    }
+    fn unqualified(&self, e: Entity) -> Option<Unqualified> {
+        self.0.unqualified(e)
     }
     fn references_at(&self, r: Range) -> Vec<Reference> {
         self.0.references_at(r)

@@ -80,6 +80,8 @@ directories are in `spec/landed/api/WP-091-queries.md`.
 | §7.1 rule 3 | `code/s7.1-r3a-two-edits-of-one-range` |  |
 | §7.1 rule 3 | `code/s7.1-r3b-an-edit-that-draws-on-itself` |  |
 | §7.1 rule 3 | `code/s7.1-r3c-a-nested-edit` |  |
+| §7.1 rule 4 | `code/s7.1-r4-refused-where-it-lands` |  |
+| §7.1 rule 4 | `code/s7.1-r4-spell-no-qualified-name` |  |
 | §7.1 rule 4 | `code/s7.1-r4-spell-supported` |  |
 | §7.1 rule 4 | `code/s7.1-r4-spell-unsupported` |  |
 | §7.1 rule 4 | `code/s7.1-r4-spell-wrong-kind` |  |
@@ -88,12 +90,14 @@ directories are in `spec/landed/api/WP-091-queries.md`.
 | §7.1 rule 6 | `code/s7.1-r6-immutable-and-merged` |  |
 | §7.1 rule 7 | `code/s7.1-r7-identifier` |  |
 | §7.1 rule 7 | `code/s7.1-r7-identifier-refusals` |  |
+| §7.2 rule 1 | `code/s7.2-r1-a-specialisation-at-a-name` |  |
 | §7.2 rule 1 | `code/s7.2-r1-another-scope` |  |
 | §7.2 rule 1 | `code/s7.2-r1-at-a-declaration-name` |  |
 | §7.2 rule 1 | `code/s7.2-r1-at-a-qualified-name-range` |  |
 | §7.2 rule 1 | `code/s7.2-r1-exactly-one-spelled-piece` |  |
 | §7.2 rule 1 | `code/s7.2-r1-name-range-not-a-sibling` |  |
 | §7.2 rule 1 | `code/s7.2-r1-no-name-range` |  |
+| §7.2 rule 1 | `code/s7.2-r1-no-qualified-name-at-a-name-range` |  |
 | §7.2 rule 1 | `code/s7.2-r1-several-references-one-extent` |  |
 | §7.2 rule 1 | `code/s7.2-r1-sibling` |  |
 | §7.2 rule 1 | `code/s7.2-r1-through-a-using-declaration` |  |
@@ -147,7 +151,7 @@ directories are in `spec/landed/api/WP-091-queries.md`.
 | §10.2 | `examples/rename/use-through-a-using-declaration` |  |
 | §10.2 | `examples/rename/variable-of-the-same-name` |  |
 
-72 directories, 1 xfail.
+76 directories, 1 xfail.
 <!-- /api-table -->
 
 `effects/s5.4-r4-an-edit-of-a-tier-1-range` is in the §5.4 table of

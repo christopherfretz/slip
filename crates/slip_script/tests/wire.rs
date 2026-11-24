@@ -19,7 +19,7 @@ use slip_script::fake::{
 use slip_script::host::{Host, KEYWORDS, Limits, check_identifier, parse_qualified_name};
 use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity, Tiers};
 use slip_script::subject::{
-    Declaration, Entity, Expression, File, Range, Reference, Subject, Value,
+    Declaration, Entity, Expression, File, Range, Reference, Subject, Unqualified, Value,
 };
 use slip_script::wire::{self, Arity, Convention, Errc};
 
@@ -1603,6 +1603,9 @@ impl Subject for Liar<'_> {
     }
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
         self.fake.qualified(e)
+    }
+    fn unqualified(&self, e: Entity) -> Option<Unqualified> {
+        self.fake.unqualified(e)
     }
     fn references_at(&self, r: Range) -> Vec<Reference> {
         self.fake.references_at(r)
