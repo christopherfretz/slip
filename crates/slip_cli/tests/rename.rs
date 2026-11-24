@@ -1,0 +1,950 @@
+//! `slip map`, `check` and `rename` through the executable
+//! (`spec/edits.md` §8, §10; `spec/exec.md` §8.11, §8.13), over small
+//! trees written by the tests. Work package WP-076, "Tests".
+//!
+//! Every tree is under the target's temporary directory; paths are spelled
+//! as the directory entries are.
+
+#![cfg(target_os = "linux")]
+
+use std::collections::BTreeMap;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use slip_exec::store::{Access, Store};
+use slip_model::declared::Declared;
+use slip_model::edits::Piece;
+use slip_model::editset::EditSet;
+use slip_model::formats::content_id;
+use slip_model::result::{State, TransformResult};
+use slip_model::transform_run::{StepName, TransformRun};
+use slip_model::{Digest, Plan};
+
+const SLIP: &str = env!("CARGO_BIN_EXE_slip");
+const BOUND: Duration = Duration::from_mins(3);
+
+struct Tree {
+    root: PathBuf,
+}
+
+impl Tree {
+    fn new(name: &str) -> Tree {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("wp076-{}-{n}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        Tree { root: std::fs::canonicalize(&root).unwrap() }
+    }
+
+    fn path(&self, rel: &str) -> PathBuf {
+        self.root.join(rel)
+    }
+
+    fn write(&self, rel: &str, text: &str) {
+        let p = self.path(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    fn read(&self, rel: &str) -> String {
+        std::fs::read_to_string(self.path(rel)).unwrap()
+    }
+
+    /// `cdb.json` compiling each of `units` (relative paths) as C++17.
+    fn db(&self, units: &[&str]) {
+        let dir = self.root.to_str().unwrap();
+        let items: Vec<String> = units
+            .iter()
+            .map(|u| {
+                format!(
+                    "{{\"directory\": \"{dir}\", \"file\": \"{u}\", \"command\": \"clang++ \
+                     -std=c++17 -c {u}\"}}"
+                )
+            })
+            .collect();
+        self.write("cdb.json", &format!("[\n{}\n]\n", items.join(",\n")));
+    }
+
+    /// The three-file example: `f` declared in a header, defined in one
+    /// source file, called in another (the README's).
+    fn three_files(name: &str) -> Tree {
+        let t = Tree::new(name);
+        t.write("src/h.h", "#pragma once\nint f(int);\n");
+        t.write("src/a.cpp", "#include \"h.h\"\nint f(int x) { return x + 1; }\n");
+        t.write("src/b.cpp", "#include \"h.h\"\nint g() { return f(2); }\n");
+        t.db(&["src/a.cpp", "src/b.cpp"]);
+        t
+    }
+
+    /// Every file under `src/`, by relative path.
+    fn snapshot(&self) -> BTreeMap<String, String> {
+        let mut m = BTreeMap::new();
+        let mut dirs = vec![self.path("src")];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if e.file_type().unwrap().is_dir() {
+                    dirs.push(p);
+                } else if e.file_type().unwrap().is_file() {
+                    let rel = p.strip_prefix(&self.root).unwrap().to_str().unwrap().to_owned();
+                    m.insert(rel, std::fs::read_to_string(&p).unwrap_or_default());
+                }
+            }
+        }
+        m
+    }
+
+    /// The entries of the tree's root but the store.
+    fn top(&self) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(&self.root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with("store"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn slip(&self, args: &[&str]) -> Out {
+        let mut cmd = Command::new(SLIP);
+        cmd.args(args).current_dir(&self.root);
+        run_bounded(cmd)
+    }
+
+    /// A plan of `cdb.json` in `store`; its id.
+    fn plan(&self, store: &str) -> String {
+        let out = self.slip(&["plan", "--db", "cdb.json", "--store", store]);
+        assert_eq!(out.code(), Some(0), "{out:?}");
+        out.value("plan").unwrap().to_owned()
+    }
+
+    fn store(&self, name: &str) -> Store {
+        Store::open(&self.path(name), Access::Shared).unwrap()
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[derive(Debug)]
+struct Out {
+    status: ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
+impl Out {
+    fn code(&self) -> Option<i32> {
+        self.status.code()
+    }
+
+    fn value(&self, key: &str) -> Option<&str> {
+        self.stdout.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix(' '))
+    }
+
+    /// The id of the line `<key> <id>` or `<key> <id>: …`.
+    fn id(&self, key: &str) -> String {
+        let v = self.value(key).unwrap_or_else(|| panic!("no `{key}` line: {self:?}"));
+        v.split(':').next().unwrap().to_owned()
+    }
+
+    fn has_line(&self, prefix: &str) -> bool {
+        self.stdout.lines().any(|l| l.starts_with(prefix))
+    }
+
+    /// Standard output with every 64-digit id as `<id>`.
+    fn forms(&self) -> Vec<String> {
+        self.stdout.lines().map(ids_masked).collect()
+    }
+}
+
+fn ids_masked(line: &str) -> String {
+    let b = line.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        let hex = b[i..].iter().take_while(|c| c.is_ascii_hexdigit()).count();
+        if hex == 64 {
+            out.push_str("<id>");
+            i += 64;
+        } else {
+            out.push(b[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn run_bounded(mut cmd: Command) -> Out {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("start slip");
+    let stdout = reader(child.stdout.take().unwrap());
+    let stderr = reader(child.stderr.take().unwrap());
+    let status = wait_bounded(&mut child, BOUND);
+    Out { status, stdout: stdout.join().unwrap(), stderr: stderr.join().unwrap() }
+}
+
+fn reader(mut r: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = r.read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
+}
+
+fn wait_bounded(child: &mut Child, bound: Duration) -> ExitStatus {
+    let deadline = Instant::now() + bound;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("slip did not finish within {bound:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn rename(t: &Tree, plan: &str, extra: &[&str]) -> Out {
+    let mut args = vec![
+        "rename", "--plan", plan, "--from", "f", "--to", "renamed", "--owned", "src", "--store",
+        "store", "-j", "2",
+    ];
+    args.extend_from_slice(extra);
+    t.slip(&args)
+}
+
+const POST_A: &str = "#include \"h.h\"\nint renamed(int x) { return x + 1; }\n";
+const POST_B: &str = "#include \"h.h\"\nint g() { return renamed(2); }\n";
+const POST_H: &str = "#pragma once\nint renamed(int);\n";
+
+fn summary(written: &str) -> Vec<String> {
+    let mut v: Vec<String> = [
+        "transform <id>",
+        "round 1",
+        "map: selected 2, ok 2, not ok 0, failed runs 0",
+        "edits <id>",
+        "state accepted",
+        "edit 3 in 3 file(s); shared 1; most observers 2; nested 0",
+        "kept 0; unresolved 0",
+        "declared <id>: rules 1, exempt 0",
+        "overlay <id>: files 3, spellings 1",
+        "verify: verified 2, unchanged 0, mismatch 0, not_parsed 0, unverifiable 0, \
+         never_parsed 0, failed 0",
+        "agreement: stale 0, unused rules 0",
+        "spellings: passed 1, failed 0",
+        "residue: dependent 0, not_compiled 0, not_planned 0; mentions 0",
+        "result <id>",
+        "state verified",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    if !written.is_empty() {
+        v.push(written.to_owned());
+    }
+    v
+}
+
+// §10.1, §10.5: the three-file example. `--write` leaves the post-image,
+// status 0; the output is §10.5's forms, line by line.
+#[test]
+fn s10_rename_write() {
+    let t = Tree::three_files("write");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &["--write"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(out.forms(), summary("written 3 file(s)"), "{out:?}");
+    assert_eq!(t.read("src/a.cpp"), POST_A);
+    assert_eq!(t.read("src/b.cpp"), POST_B);
+    assert_eq!(t.read("src/h.h"), POST_H);
+}
+
+// §10.5: with `--db`, the plan lines of `parse` come first.
+#[test]
+fn s10_5_rename_with_db_prints_the_plan_lines_first() {
+    let t = Tree::three_files("db");
+    let out = t.slip(&[
+        "rename", "--db", "cdb.json", "--from", "::f", "--to", "renamed", "--owned", "src",
+        "--store", "store",
+    ]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let forms = out.forms();
+    assert_eq!(forms[0], "plan <id>");
+    assert_eq!(forms[1], "observers 2");
+    assert_eq!(forms[8..], summary("")[..], "{out:?}");
+}
+
+// §7.2: `--patch` writes the patch and leaves the tree.
+#[test]
+fn s10_rename_patch() {
+    let t = Tree::three_files("patch");
+    let plan = t.plan("store");
+    let before = t.snapshot();
+    let out = rename(&t, &plan, &["--patch", "out.patch", "--relative-to", "."]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(out.forms(), summary("patch out.patch"), "{out:?}");
+    assert_eq!(t.snapshot(), before);
+    let patch = t.read("out.patch");
+    assert!(patch.contains("+int renamed(int);"), "{patch}");
+    assert!(patch.contains("--- a/src/h.h") || patch.contains("src/h.h"), "{patch}");
+}
+
+// §10.1: without `--write` or `--patch` nothing changes outside the store.
+#[test]
+fn s10_rename_changes_nothing_but_the_store() {
+    let t = Tree::three_files("dry");
+    let plan = t.plan("store");
+    let (before, top) = (t.snapshot(), t.top());
+    let out = rename(&t, &plan, &[]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(out.forms(), summary(""), "{out:?}");
+    assert_eq!(t.snapshot(), before);
+    assert_eq!(t.top(), top);
+}
+
+// §8.1, §10.5: a use in a macro body is refused: status 1, a `refusal`
+// line, no `overlay` line, state `refused`; nothing written.
+#[test]
+fn s8_1_a_refused_run() {
+    let t = Tree::three_files("refused");
+    t.write("src/b.cpp", "#include \"h.h\"\n#define CALL(x) f(x)\nint g() { return CALL(2); }\n");
+    let plan = t.plan("store");
+    let before = t.snapshot();
+    let out = rename(&t, &plan, &["--write"]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert_eq!(out.value("state"), Some("refused"), "{out:?}");
+    assert!(out.has_line("refusal "), "{out:?}");
+    assert!(!out.has_line("overlay "), "{out:?}");
+    assert!(!out.has_line("verify:"), "{out:?}");
+    assert!(out.stdout.lines().any(|l| l == "state refused"));
+    assert_eq!(t.snapshot(), before);
+    assert!(out.stderr.contains("does not permit `--write`"), "{out:?}");
+}
+
+// §5.4: a name that one observer resolves to the target and another to
+// something else in one shared header is contested: refused.
+#[test]
+fn s5_4_a_contested_name() {
+    let t = Tree::new("contested");
+    t.write("src/h.h", "#pragma once\nint f();\n");
+    t.write("src/n.h", "#pragma once\nnamespace n { int f(); }\nusing n::f;\n");
+    t.write("src/use.h", "inline int u() { return f(); }\n");
+    t.write("src/a.cpp", "#include \"h.h\"\n#include \"use.h\"\nint f() { return 1; }\n");
+    t.write("src/b.cpp", "#include \"n.h\"\n#include \"use.h\"\nint b() { return u(); }\n");
+    t.db(&["src/a.cpp", "src/b.cpp"]);
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(out.has_line("refused contested "), "{out:?}");
+    assert!(out.has_line("refusal contested"), "{out:?}");
+}
+
+// §8.5: `--only` selects fewer observers than the plan has: a partial
+// result, not written without `--allow-partial`, written with it.
+#[test]
+fn s8_5_a_partial_result() {
+    let t = Tree::three_files("partial");
+    t.write("src/c.cpp", "int c() { return 3; }\n");
+    t.db(&["src/a.cpp", "src/b.cpp", "src/c.cpp"]);
+    let plan = t.plan("store");
+    let only = ["--only", "a.cpp", "--only", "b.cpp"];
+    let before = t.snapshot();
+    let out = rename(&t, &plan, &[&only[..], &["--write"]].concat());
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert_eq!(out.value("map:"), Some("selected 2, ok 2, not ok 0, failed runs 0"));
+    assert!(out.stdout.lines().any(|l| l == "state verified"), "{out:?}");
+    assert!(out.stderr.contains("does not permit `--write`"), "{out:?}");
+    assert_eq!(t.snapshot(), before);
+    let out = rename(&t, &plan, &[&only[..], &["--write", "--allow-partial"]].concat());
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(t.read("src/h.h"), POST_H);
+}
+
+// §8.2, §8.5: an observer that does not parse. Without `--allow-unparsed`
+// the result is `incomplete` (status 4); with it, the state the others give.
+#[test]
+fn s8_5_an_observer_that_does_not_parse() {
+    let t = Tree::three_files("unparsed");
+    t.write("src/c.cpp", "int broken( {\n");
+    t.db(&["src/a.cpp", "src/b.cpp", "src/c.cpp"]);
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &["--write"]);
+    assert_eq!(out.code(), Some(4), "{out:?}");
+    assert_eq!(out.value("map:"), Some("selected 3, ok 2, not ok 1, failed runs 0"));
+    assert!(out.stdout.lines().any(|l| l == "state incomplete"), "{out:?}");
+    assert_eq!(t.read("src/h.h"), "#pragma once\nint f(int);\n");
+    assert!(out.stderr.contains("c.cpp"), "the observer's line: {out:?}");
+    let out = rename(&t, &plan, &["--write", "--allow-unparsed"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert!(out.stdout.lines().any(|l| l == "state verified"), "{out:?}");
+    assert_eq!(t.read("src/h.h"), POST_H);
+}
+
+// §8.4: residue in a file no observer compiles: `verified_with_residue`,
+// status 1 with and without `--allow-residue`; written only with it.
+#[test]
+fn s8_4_residue_in_a_file_no_observer_compiles() {
+    let t = Tree::three_files("residue");
+    t.write("src/unused.cpp", "int f(int);\nint z = f(1);\n");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &["--write"]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(out.stdout.lines().any(|l| l == "state verified_with_residue"), "{out:?}");
+    assert_eq!(
+        out.value("residue:"),
+        Some("dependent 0, not_compiled 0, not_planned 2; mentions 0"),
+        "{out:?}"
+    );
+    let unused = t.path("src/unused.cpp");
+    let line = format!("residue not_planned: {}:2:9", unused.display());
+    assert!(out.stdout.lines().any(|l| l == line), "{line}: {out:?}");
+    assert_eq!(t.read("src/h.h"), "#pragma once\nint f(int);\n");
+    let out = rename(&t, &plan, &["--write", "--allow-residue", "--relative-to", "src"]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(out.has_line("written 3 file(s)"), "{out:?}");
+    assert!(out.stdout.lines().any(|l| l == "residue not_planned: unused.cpp:1:5"), "{out:?}");
+    assert_eq!(t.read("src/h.h"), POST_H);
+    assert_eq!(t.read("src/unused.cpp"), "int f(int);\nint z = f(1);\n");
+}
+
+// §8.4: a mention is listed and changes no state.
+#[test]
+fn s8_4_a_mention() {
+    let t = Tree::three_files("mention");
+    t.write("src/b.cpp", "#include \"h.h\"\nint g() { return f(2); } // calls f\n");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &["--relative-to", "."]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert_eq!(
+        out.value("residue:"),
+        Some("dependent 0, not_compiled 0, not_planned 0; mentions 1")
+    );
+    assert!(out.stdout.lines().any(|l| l == "residue mention: src/b.cpp:2:35"), "{out:?}");
+    assert!(out.stdout.lines().any(|l| l == "state verified"), "{out:?}");
+}
+
+// §3, §10.1, exec.md §8.5: the usage errors, status 2, before the store
+// is opened.
+#[test]
+fn s10_usage_errors() {
+    let t = Tree::three_files("usage");
+    let base = ["rename", "--plan", "abcd", "--owned", "src", "--store", "store"];
+    let cases: &[(&[&str], &str)] = &[
+        (&["--to", "g"], "`rename` needs `--from`"),
+        (&["--from", "f"], "`rename` needs `--to`"),
+        (&["--from", "f", "--to", "int"], "`--to`: `int`: a keyword of C++"),
+        (&["--from", "f", "--to", "f"], "`--to`: `f`: the new name is the target's last"),
+        (&["--from", "a::", "--to", "g"], "`--from`: `a::`: not an identifier"),
+        (&["--from", "a b", "--to", "g"], "`--from`: `a b`: not an identifier"),
+        (&["--from", "f", "--to", "g", "--kind", "type"], "`--kind`: `type`"),
+        (&["--from", "f", "--to", "g", "--write", "--patch", "p"], "cannot both be given"),
+    ];
+    for (extra, message) in cases {
+        let args = [&base[..], extra].concat();
+        let out = t.slip(&args);
+        assert_eq!(out.code(), Some(2), "{args:?}: {out:?}");
+        assert!(out.stderr.starts_with("slip: "), "{out:?}");
+        assert!(out.stderr.contains(message), "{args:?}: {message}: {out:?}");
+        assert!(out.stderr.contains("usage:"), "{out:?}");
+    }
+    let out = t.slip(&["rename", "--plan", "abcd", "--from", "f", "--to", "g"]);
+    assert_eq!(out.code(), Some(2), "{out:?}");
+    assert!(out.stderr.contains("needs `--owned`"), "{out:?}");
+    assert!(!t.path("store").exists(), "no store was made");
+    let out = t.slip(&["map", "--plan", "abcd", "--transform", "x.cpp", "--owned", "src"]);
+    assert_eq!(out.code(), Some(2), "{out:?}");
+    assert!(
+        out.stderr.starts_with("slip: map: --transform needs a slip built with slip_script\n"),
+        "{out:?}"
+    );
+    assert!(!t.path("store").exists(), "no store was made");
+}
+
+// §10.1, §10.5: `map`'s three lines and its status with an observer that
+// does not parse; `slip verify` on the round of a `map` is refused
+// (exec.md §8.7); `next_round` after a `map` gives the next number.
+#[test]
+fn s10_1_map_alone() {
+    let t = Tree::three_files("map");
+    t.write("src/c.cpp", "int broken( {\n");
+    t.db(&["src/a.cpp", "src/b.cpp", "src/c.cpp"]);
+    let plan = t.plan("store");
+    let out = t.slip(&[
+        "map", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src", "--store",
+        "store",
+    ]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert_eq!(
+        out.forms(),
+        ["transform <id>", "round 1", "map: selected 3, ok 2, not ok 1, failed runs 0"]
+    );
+    assert!(out.stderr.contains("c.cpp"), "{out:?}");
+    let store = t.store("store");
+    let plan_id = Digest::from_hex(&plan).unwrap();
+    assert_eq!(store.next_round(&plan_id).unwrap(), 2);
+    let records = transform_runs(&t, "store", &plan);
+    assert_eq!(records.len(), 1);
+    assert_eq!(steps(&records[0]), [StepName::Map]);
+    drop(store);
+    let out = t.slip(&["verify", "--plan", &plan, "--round", "1", "--store", "store"]);
+    assert_eq!(out.code(), Some(3), "{out:?}");
+    assert!(out.stderr.contains("is the round of a transform's run"), "{out:?}");
+}
+
+/// The transform run records of `plan` in `store`, in name order.
+fn transform_runs(t: &Tree, store: &str, plan: &str) -> Vec<TransformRun> {
+    let dir = t.path(store).join("runs").join(plan);
+    let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().unwrap().to_str().unwrap().starts_with("transform."))
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .map(|p| TransformRun::from_bytes(&std::fs::read(p).unwrap()).unwrap())
+        .collect()
+}
+
+fn steps(r: &TransformRun) -> Vec<StepName> {
+    r.steps.iter().map(|s| s.name).collect()
+}
+
+/// Every phase run record of `plan` in `store` by content id.
+fn phase_runs(t: &Tree, store: &str, plan: &str) -> Vec<Digest> {
+    std::fs::read_dir(t.path(store).join("runs").join(plan))
+        .unwrap()
+        .flatten()
+        .filter(|e| !e.file_name().to_str().unwrap().starts_with("transform."))
+        .map(|e| content_id(&std::fs::read(e.path()).unwrap()).unwrap())
+        .collect()
+}
+
+// §10.6: one `RUNT` per invocation of `map`, `rename` and `check`, its
+// steps in order, the phase records it names in the store.
+#[test]
+fn s10_6_the_run_records() {
+    let t = Tree::three_files("runt");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &["--write"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let records = transform_runs(&t, "store", &plan);
+    assert_eq!(records.len(), 1);
+    let r = &records[0];
+    use StepName::*;
+    assert_eq!(steps(r), [Map, Reduce, Apply, Verify, Scan, Conclude, Write]);
+    assert_eq!(r.round, 1);
+    assert_eq!(r.result.map(|d| d.to_string()), Some(out.id("result")));
+    assert_eq!(r.edits.map(|d| d.to_string()), Some(out.id("edits")));
+    assert_eq!(r.declared.map(|d| d.to_string()), Some(out.id("declared")));
+    assert_eq!(r.overlay.map(|d| d.to_string()), Some(out.id("overlay")));
+    let phases = phase_runs(&t, "store", &plan);
+    for s in &r.steps {
+        assert_eq!(s.run.is_some(), matches!(s.name, Map | Verify), "{s:?}");
+        if let Some(id) = s.run {
+            assert!(phases.contains(&id), "{s:?} names a record in the store");
+        }
+    }
+    assert!(r.wall_ns >= r.steps.iter().map(|s| s.wall_ns).sum::<u64>());
+
+    // `check` on the round: a second record of round 1.
+    let out = t.slip(&[
+        "check", "--plan", &plan, "--round", "1", "--edits", &r.edits.unwrap().to_string()[..8],
+        "--store", "store",
+    ]);
+    // The tree is the post-image now: the edit set's files are stale.
+    assert_eq!(out.code(), Some(3), "{out:?}");
+    let records = transform_runs(&t, "store", &plan);
+    assert_eq!(records.len(), 2, "a check that fails still publishes its record");
+}
+
+// §10.2: the stages one after another give the ids and the tree
+// `rename --write` gives in a fresh store; `check` given the run's own
+// edit set gives the same result id.
+#[test]
+fn s10_2_the_stages_give_renames_ids() {
+    let t = Tree::three_files("stages");
+    let before = t.snapshot();
+    let plan_a = t.plan("store-a");
+    let whole = t.slip(&[
+        "rename", "--plan", &plan_a, "--from", "f", "--to", "renamed", "--owned", "src",
+        "--store", "store-a", "--write",
+    ]);
+    assert_eq!(whole.code(), Some(0), "{whole:?}");
+    let after = t.snapshot();
+    for (rel, text) in &before {
+        t.write(rel, text);
+    }
+
+    let plan = t.plan("store-b");
+    assert_eq!(plan, plan_a);
+    let map = t.slip(&[
+        "map", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src", "--store",
+        "store-b",
+    ]);
+    assert_eq!(map.code(), Some(0), "{map:?}");
+    assert_eq!(map.id("transform"), whole.id("transform"));
+    let reduce = t.slip(&["reduce", "--plan", &plan, "--round", "1", "--store", "store-b"]);
+    assert_eq!(reduce.code(), Some(0), "{reduce:?}");
+    assert_eq!(reduce.id("edits"), whole.id("edits"));
+    assert_eq!(reduce.id("declared"), whole.id("declared"));
+    let edits = reduce.id("edits");
+    let check = t.slip(&[
+        "check", "--plan", &plan, "--round", "1", "--edits", &edits, "--store", "store-b",
+    ]);
+    assert_eq!(check.code(), Some(0), "{check:?}");
+    for key in ["transform", "edits", "declared", "overlay", "result"] {
+        assert_eq!(check.id(key), whole.id(key), "{key}");
+    }
+    // Again: the same result.
+    let again = t.slip(&[
+        "check", "--plan", &plan, "--round", "1", "--edits", &edits[..6], "--declared",
+        &reduce.id("declared")[..6], "--store", "store-b",
+    ]);
+    assert_eq!(again.id("result"), whole.id("result"), "{again:?}");
+    let apply = t.slip(&[
+        "apply", "--result", &check.id("result"), "--write", "--store", "store-b",
+    ]);
+    assert_eq!(apply.code(), Some(0), "{apply:?}");
+    assert_eq!(t.snapshot(), after);
+    let steps_b: Vec<Vec<StepName>> =
+        transform_runs(&t, "store-b", &plan).iter().map(steps).collect();
+    use StepName::*;
+    assert!(steps_b.contains(&vec![Map]), "{steps_b:?}");
+    assert!(steps_b.contains(&vec![Apply, Verify, Scan, Conclude]), "{steps_b:?}");
+}
+
+/// The edit set `id` of `store`.
+fn edit_set(t: &Tree, store: &str, id: &str) -> EditSet {
+    let p = t.path(store).join("edits").join(format!("{id}.edts"));
+    EditSet::from_bytes(&std::fs::read(p).unwrap()).unwrap()
+}
+
+/// `set` written to `name` in the tree; `check` of round 1 with it.
+fn check_with(t: &Tree, plan: &str, set: &EditSet, name: &str) -> Out {
+    set.validate().unwrap();
+    std::fs::write(t.path(name), set.to_bytes()).unwrap();
+    t.slip(&["check", "--plan", plan, "--round", "1", "--edits", name, "--store", "store"])
+}
+
+fn file_of(set: &EditSet, t: &Tree, rel: &str) -> u64 {
+    set.file_index(t.path(rel).to_str().unwrap().as_bytes()).unwrap()
+}
+
+// §10.2: an edit set that is wrong on purpose. Without the definition's
+// edit, `a.cpp` still declares `f` under its old name: `not_verified`
+// with a `stale` line naming it.
+#[test]
+fn s10_2_check_without_an_edit_is_stale() {
+    let t = Tree::three_files("missing-edit");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let mut set = edit_set(&t, "store", &out.id("edits"));
+    let a = file_of(&set, &t, "src/a.cpp");
+    // The set names only files some record names: a.cpp goes, the files
+    // after it move down by one.
+    assert!(set.kept.is_empty() && set.unresolved.is_empty() && set.refusals.is_empty());
+    assert!(set.changed.is_empty() && set.reports.is_empty() && set.failures.is_empty());
+    set.edits.retain(|e| e.file != a);
+    set.files.remove(a as usize);
+    for e in &mut set.edits {
+        if e.file > a {
+            e.file -= 1;
+        }
+        assert!(e.pieces.iter().all(|p| !matches!(p, Piece::Copy(_))));
+    }
+    let out = check_with(&t, &plan, &set, "less.edts");
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(out.stdout.lines().any(|l| l == "state not_verified"), "{out:?}");
+    let suffix =
+        format!(": still declared under its old name in {}", t.path("src/a.cpp").display());
+    assert!(
+        out.stdout.lines().any(|l| l.starts_with("stale ") && l.ends_with(&suffix)),
+        "{suffix}: {out:?}"
+    );
+}
+
+// §10.2: an edit added at a `kept` range (a name another observer
+// resolved to something else): `not_verified`.
+#[test]
+fn s10_2_check_with_an_edit_at_a_kept_range() {
+    let t = Tree::three_files("kept");
+    t.write("src/n.h", "#pragma once\nnamespace n { int f(int); }\n");
+    t.write("src/c.cpp", "#include \"n.h\"\nint c() { return n::f(3); }\n");
+    t.db(&["src/a.cpp", "src/b.cpp", "src/c.cpp"]);
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    // `n::f` at its declaration in n.h and at its use in c.cpp.
+    assert_eq!(out.value("kept"), Some("2; unresolved 0"), "{out:?}");
+    let mut set = edit_set(&t, "store", &out.id("edits"));
+    let kept = set.kept[0];
+    let mut edit = set.edits[0].clone();
+    edit.file = kept.file;
+    edit.lo = kept.lo;
+    edit.hi = kept.hi;
+    edit.pieces = vec![Piece::Literal(b"renamed".to_vec())];
+    set.kept.remove(0);
+    set.edits.push(edit);
+    set.edits.sort_by_key(|e| (e.file, e.lo));
+    let out = check_with(&t, &plan, &set, "more.edts");
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(out.stdout.lines().any(|l| l == "state not_verified"), "{out:?}");
+}
+
+// §10.2, verify.md §10: a spelled piece whose key is replaced by another
+// entity's: `not_verified` with a `spelling denotes_other` line.
+#[test]
+fn s10_2_check_with_a_spelling_of_another_entity() {
+    let t = Tree::three_files("spelling");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    // `g`'s key: the subject of a rename of `g` in another store.
+    let plan_g = t.plan("store-g");
+    let g = t.slip(&[
+        "rename", "--plan", &plan_g, "--from", "g", "--to", "gg", "--owned", "src", "--store",
+        "store-g",
+    ]);
+    let g_key = edit_set(&t, "store-g", &g.id("edits")).subjects[0].id;
+    let mut set = edit_set(&t, "store", &out.id("edits"));
+    let mut replaced = 0;
+    for e in &mut set.edits {
+        for p in &mut e.pieces {
+            if let Piece::Spelled { key, .. } = p {
+                *key = g_key;
+                replaced += 1;
+            }
+        }
+    }
+    assert_eq!(replaced, 1);
+    let out = check_with(&t, &plan, &set, "other.edts");
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(out.stdout.lines().any(|l| l == "state not_verified"), "{out:?}");
+    let prefix = format!("spelling denotes_other: {}:2:18: meant ", t.path("src/b.cpp").display());
+    assert!(out.stdout.lines().any(|l| l.starts_with(&prefix)), "{prefix}: {out:?}");
+}
+
+// WP-076 "Tests": a second declaration of a variable in another source
+// file that the rename is made to miss: the `stale` line names the
+// observer.
+#[test]
+fn s9_2_a_second_declaration_missed() {
+    let t = Tree::new("variable");
+    t.write("src/h.h", "#pragma once\nextern int v;\n");
+    t.write("src/a.cpp", "#include \"h.h\"\nint v = 1;\n");
+    t.write("src/b.cpp", "#include \"h.h\"\nextern int v;\nint g() { return v; }\n");
+    t.db(&["src/a.cpp", "src/b.cpp"]);
+    let plan = t.plan("store");
+    let out = t.slip(&[
+        "rename", "--plan", &plan, "--from", "v", "--to", "w", "--kind", "variable", "--owned",
+        "src", "--store", "store",
+    ]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let mut set = edit_set(&t, "store", &out.id("edits"));
+    let b = file_of(&set, &t, "src/b.cpp");
+    let n = set.edits.len();
+    // The redeclaration on line 2 of b.cpp, not the use on line 3.
+    let second_line = "#include \"h.h\"\n".len() as u64;
+    set.edits.retain(|e| !(e.file == b && e.lo < second_line + 14));
+    assert_eq!(set.edits.len(), n - 1);
+    let out = check_with(&t, &plan, &set, "missed.edts");
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    let line = format!(
+        "stale w: still declared under its old name in {}",
+        t.path("src/b.cpp").display()
+    );
+    assert!(
+        out.stdout.lines().any(|l| l.starts_with("stale ") && l.ends_with("src/b.cpp")),
+        "{line}: {out:?}"
+    );
+}
+
+// §10.2: the edit set's plan, round and transform must be the round's.
+#[test]
+fn s10_2_check_refuses_another_rounds_set() {
+    let t = Tree::three_files("other-round");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    let mut set = edit_set(&t, "store", &out.id("edits"));
+    set.round = 2;
+    let out = check_with(&t, &plan, &set, "round2.edts");
+    assert_eq!(out.code(), Some(3), "{out:?}");
+    assert!(out.stderr.contains("its round is not the round's"), "{out:?}");
+}
+
+// §1 rule 3: `-j 1` and `-j 4` in fresh stores give the same five ids and
+// the same standard output.
+#[test]
+fn s1_determinism_of_the_threads() {
+    let t = Tree::three_files("threads");
+    t.write("src/c.cpp", "#include \"h.h\"\nint c() { return f(3) + f(4); } // f\n");
+    t.write("src/unused.h", "int f(int);\n");
+    t.db(&["src/a.cpp", "src/b.cpp", "src/c.cpp"]);
+    let mut outs = Vec::new();
+    for (store, j) in [("store-1", "1"), ("store-4", "4")] {
+        let plan = t.plan(store);
+        let out = t.slip(&[
+            "rename", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src",
+            "--store", store, "-j", j,
+        ]);
+        assert_eq!(out.code(), Some(1), "{out:?}");
+        outs.push(out);
+    }
+    for key in ["transform", "edits", "declared", "overlay", "result"] {
+        assert_eq!(outs[0].id(key), outs[1].id(key), "{key}");
+    }
+    assert_eq!(outs[0].stdout, outs[1].stdout.replace("store-4", "store-1"));
+}
+
+// §8.5: the result decoded from the store is the one printed.
+#[test]
+fn s8_5_the_published_result() {
+    let t = Tree::three_files("result");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    let id = out.id("result");
+    let bytes = std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
+    let r = TransformResult::from_bytes(&bytes).unwrap();
+    assert_eq!(r.state, State::Verified);
+    assert!(!r.partial);
+    assert_eq!(r.tally.verified, 2);
+    let decl = t.path("store").join("declared").join(format!("{}.decl", out.id("declared")));
+    let d = Declared::from_bytes(&std::fs::read(decl).unwrap()).unwrap();
+    assert_eq!(d.rules().rules().len(), 1);
+    let plan_bytes = std::fs::read(t.path("store").join("plans").join(format!("{plan}.plan")));
+    assert_eq!(Plan::from_bytes(&plan_bytes.unwrap()).unwrap().observers.len(), 2);
+}
+
+// ----- interruption (exec.md §7, §10.6) ----------------------------------------
+
+/// The pids of `pid`'s children whose command line contains `arg`.
+fn children_with(pid: u32, arg: &str) -> Vec<u32> {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return Vec::new() };
+    dir.flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|p| {
+            let stat = std::fs::read_to_string(format!("/proc/{p}/stat")).unwrap_or_default();
+            let ppid = stat.rsplit_once(')').and_then(|(_, r)| r.split_whitespace().nth(1));
+            ppid == Some(&pid.to_string())
+                && std::fs::read(format!("/proc/{p}/cmdline"))
+                    .is_ok_and(|c| String::from_utf8_lossy(&c).contains(arg))
+        })
+        .collect()
+}
+
+/// Starts `slip args` in the tree, waits for a worker, interrupts it with
+/// `SIGINT` and returns its output.
+fn interrupted(t: &Tree, args: &[&str]) -> Out {
+    let mut cmd = Command::new(SLIP);
+    cmd.args(args)
+        .current_dir(&t.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let stdout = reader(child.stdout.take().unwrap());
+    let stderr = reader(child.stderr.take().unwrap());
+    let pid = child.id();
+    let deadline = Instant::now() + Duration::from_mins(1);
+    while children_with(pid, "__worker").is_empty() {
+        assert!(Instant::now() < deadline, "no worker started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The worker blocks on the pipe; give it the time to get there.
+    std::thread::sleep(Duration::from_millis(300));
+    let sent = Command::new("kill").args(["-INT", &pid.to_string()]).status().unwrap();
+    assert!(sent.success());
+    let status = wait_bounded(&mut child, Duration::from_secs(60));
+    Out { status, stdout: stdout.join().unwrap(), stderr: stderr.join().unwrap() }
+}
+
+fn mkfifo(t: &Tree, rel: &str) {
+    let made = Command::new("mkfifo").arg(t.path(rel)).status().expect("mkfifo");
+    assert!(made.success());
+}
+
+// §10.6, exec.md §7: `rename` interrupted during its map phase: killed by
+// the signal, a transform run record of the round, no result, the tree
+// untouched.
+#[test]
+fn s10_6_rename_interrupted_in_map() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let t = Tree::three_files("sigint-map");
+    t.write("src/b.cpp", "#include \"h.h\"\n#include \"pipe.h\"\nint g() { return f(2); }\n");
+    let plan = t.plan("store");
+    mkfifo(&t, "src/pipe.h");
+    let out = interrupted(
+        &t,
+        &[
+            "rename", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src",
+            "--store", "store", "--write", "-j", "2",
+        ],
+    );
+    assert_eq!(out.status.signal(), Some(2), "{out:?}");
+    let records = transform_runs(&t, "store", &plan);
+    assert_eq!(records.len(), 1, "{out:?}");
+    assert_eq!(steps(&records[0]), [StepName::Map]);
+    assert_eq!(records[0].result, None);
+    let results = t.path("store").join("results");
+    assert!(!results.exists() || std::fs::read_dir(&results).unwrap().next().is_none());
+    assert_eq!(t.read("src/h.h"), "#pragma once\nint f(int);\n");
+    assert!(!t.path("store").join("lock").exists());
+}
+
+// §10.6, WP-076 "Cancellation": `check` interrupted during its verify
+// phase still concludes and publishes an `incomplete` result, with its
+// record; killed by the signal.
+#[test]
+fn s10_6_check_interrupted_in_verify() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let t = Tree::three_files("sigint-verify");
+    t.write("src/other.h", "inline int other() { return 0; }\n");
+    t.write("src/b.cpp", "#include \"h.h\"\n#include \"other.h\"\nint g() { return f(2); }\n");
+    let plan = t.plan("store");
+    let map = t.slip(&[
+        "map", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src", "--store",
+        "store",
+    ]);
+    assert_eq!(map.code(), Some(0), "{map:?}");
+    let reduce = t.slip(&["reduce", "--plan", &plan, "--round", "1", "--store", "store"]);
+    assert_eq!(reduce.code(), Some(0), "{reduce:?}");
+    // `other.h` is no file of the overlay: the verify job of `b.cpp`
+    // reads it from disk, and blocks.
+    std::fs::remove_file(t.path("src/other.h")).unwrap();
+    mkfifo(&t, "src/other.h");
+    let out = interrupted(
+        &t,
+        &[
+            "check", "--plan", &plan, "--round", "1", "--edits", &reduce.id("edits"), "--store",
+            "store", "-j", "2",
+        ],
+    );
+    assert_eq!(out.status.signal(), Some(2), "{out:?}");
+    let records = transform_runs(&t, "store", &plan);
+    assert_eq!(records.len(), 2, "{out:?}");
+    let r = &records[1];
+    assert_eq!(steps(r), [StepName::Apply, StepName::Verify, StepName::Conclude], "{r:?}");
+    let id = r.result.expect("a result");
+    let bytes =
+        std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
+    let result = TransformResult::from_bytes(&bytes).unwrap();
+    assert_eq!(result.state, State::Incomplete);
+    assert_eq!(result.verdict, None);
+    assert!(out.stdout.lines().any(|l| l == "state incomplete"), "{out:?}");
+    assert!(!t.path("store").join("lock").exists());
+}
