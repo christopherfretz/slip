@@ -195,11 +195,17 @@ fn walk(path: &[u8]) -> Vec<u8> {
 /// content are not judged here (a subject file is the post tree's to give;
 /// an outside one O2's).
 ///
-/// (ii) For each two inputs of which at least one is outside the subject
-/// roots (as `left_behind` decides it), each taken where the post parse
-/// would read it now (an input of the subject at its post tree's
-/// counterpart), and both of which can be read: they are one file now
-/// exactly when they were one class at the map phase.
+/// (ii) Two inputs are one file now exactly when they were one class at
+/// the map phase, compared twice, each time over the pairs both of whose
+/// members can be read there:
+/// - at the recorded paths, every pair: the pre-image now (would a map
+///   parse now read them as the map parse did? `#pragma once` and the
+///   buffers follow identity, which no content check sees);
+/// - where the post parse reads them, each pair with a member outside the
+///   subject roots (as `left_behind` decides it), an input of the subject
+///   taken at its post tree's counterpart: does the post parse identify the
+///   shared file as the map parse did? A pair of two subject inputs is the
+///   post tree's own to give there.
 pub fn found_moved(
     resolver: &mut Resolver<'_>,
     found: &Found,
@@ -234,19 +240,23 @@ pub fn found_moved(
             }
         }
     }
-    let seen: Vec<(bool, Option<(u64, u64)>)> = inputs
-        .iter()
-        .map(|f| {
-            let outside =
-                !(crate::verify_job::as_recorded(&f.path) && resolver.under_subject(&f.path));
-            if outside {
-                (true, identity(&f.path))
-            } else {
-                let at = resolver.post_counterpart(&f.path).unwrap_or_else(|| f.path.clone());
-                (false, identity(&at))
-            }
-        })
-        .collect();
+    // Each input's identity at its recorded path (the pre-image now) and,
+    // for a subject input, at its post counterpart (what the post parse
+    // reads); an outside input is the same file in both.
+    let mut outside = Vec::with_capacity(inputs.len());
+    let mut at_pre = Vec::with_capacity(inputs.len());
+    let mut at_post = Vec::with_capacity(inputs.len());
+    for f in inputs {
+        let out = !(crate::verify_job::as_recorded(&f.path) && resolver.under_subject(&f.path));
+        let id = identity(&f.path);
+        outside.push(out);
+        at_pre.push(id);
+        at_post.push(if out {
+            id
+        } else {
+            resolver.post_counterpart(&f.path).and_then(|at| identity(&at))
+        });
+    }
     let mut first: Option<(usize, usize, bool)> = None;
     let mut consider = |a: usize, b: usize, merged: bool| {
         let (a, b) = (a.min(b), a.max(b));
@@ -254,34 +264,38 @@ pub fn found_moved(
             first = Some((a, b, merged));
         }
     };
-    // One class then, two files now.
-    for c in &found.classes {
-        let c: Vec<usize> = c.iter().filter_map(|&x| usize::try_from(x).ok()).collect();
-        for (k, &a) in c.iter().enumerate() {
-            for &b in &c[k + 1..] {
-                let (Some((oa, Some(ia))), Some((ob, Some(ib)))) = (seen.get(a), seen.get(b))
-                else {
-                    continue;
-                };
-                if (*oa || *ob) && ia != ib {
-                    consider(a, b, false);
+    // The pre-image now: every pair (is the map shard still what a map
+    // parse would give?). The post: pairs with an outside member (does the
+    // post parse identify the shared file as the map parse did?).
+    for (ids, every) in [(&at_pre, true), (&at_post, false)] {
+        let counts = |a: usize, b: usize| every || outside[a] || outside[b];
+        // One class then, two files now.
+        for c in &found.classes {
+            let c: Vec<usize> = c.iter().filter_map(|&x| usize::try_from(x).ok()).collect();
+            for (k, &a) in c.iter().enumerate() {
+                for &b in &c[k + 1..] {
+                    let (Some(Some(ia)), Some(Some(ib))) = (ids.get(a), ids.get(b)) else {
+                        continue;
+                    };
+                    if counts(a, b) && ia != ib {
+                        consider(a, b, false);
+                    }
                 }
             }
         }
-    }
-    // One file now, two then.
-    let mut now: HashMap<(u64, u64), Vec<usize>> = HashMap::new();
-    for (i, (_, id)) in seen.iter().enumerate() {
-        if let Some(id) = id {
-            now.entry(*id).or_default().push(i);
+        // One file now, two then.
+        let mut now: HashMap<(u64, u64), Vec<usize>> = HashMap::new();
+        for (i, id) in ids.iter().enumerate() {
+            if let Some(id) = id {
+                now.entry(*id).or_default().push(i);
+            }
         }
-    }
-    for group in now.values() {
-        for (k, &a) in group.iter().enumerate() {
-            for &b in &group[k + 1..] {
-                if (seen[a].0 || seen[b].0) && (class_of[a].is_none() || class_of[a] != class_of[b])
-                {
-                    consider(a, b, true);
+        for group in now.values() {
+            for (k, &a) in group.iter().enumerate() {
+                for &b in &group[k + 1..] {
+                    if counts(a, b) && (class_of[a].is_none() || class_of[a] != class_of[b]) {
+                        consider(a, b, true);
+                    }
                 }
             }
         }
