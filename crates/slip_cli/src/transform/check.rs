@@ -131,19 +131,16 @@ struct Pass {
 }
 
 /// The observer's map shard of the round, if it is one: present, decoded,
-/// of this observer, phase and round.
+/// of this observer, phase and round (`verify_cmd::read_map_shard`).
 fn map_shard(
     store: &Store,
     plan_id: &Digest,
     round: u64,
     observer: &Digest,
 ) -> Result<Option<Shard>, CommandError> {
-    let bytes = store
-        .read_shard(plan_id, Phase::Map, round, observer)
-        .map_err(|e| store_error(store, &e))?;
-    Ok(bytes
-        .and_then(|b| Shard::from_bytes(&b).ok())
-        .filter(|s| s.observer == *observer && s.phase == Phase::Map && s.round == round))
+    let read =
+        verify_cmd::read_map_shard(store, plan_id, round, observer).map_err(command_error)?;
+    Ok(read.flatten().map(|(s, _)| s))
 }
 
 fn map_pass(input: &CheckInput<'_>, overlay: &Overlay) -> Result<Pass, CommandError> {
@@ -251,11 +248,16 @@ fn verify(
         if jobbed[k] {
             let shard = verify_cmd::this_runs_shard(store, &input.plan_id, input.round, o, &last)
                 .map_err(command_error)?;
-            report.add_at(position, &o.id, &o.main.path, shard.as_ref(), Some(Status::Ok));
+            // The map shard as the store has it now, read again after the
+            // phase: a verdict is believed only against the one whose
+            // content id it names as its `pre` (verify.md §9.3, WP-114).
+            let map = verify_cmd::map_status(store, &input.plan_id, input.round, &o.id)
+                .map_err(command_error)?;
+            report.add_at(position, &o.id, &o.main.path, shard.as_ref(), map);
         } else {
             match map_shard(store, &input.plan_id, input.round, &o.id)? {
                 Some(map) => report.add_unchanged_at(position, &o.id, &o.main.path, &map),
-                None => report.add_at(position, &o.id, &o.main.path, None, Some(Status::Ok)),
+                None => report.add_at(position, &o.id, &o.main.path, None, None),
             }
         }
     }

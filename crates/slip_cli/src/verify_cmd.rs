@@ -131,7 +131,7 @@ fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8
             // `mismatch` need it as well, `state` taking either as
             // `failed` without an `ok` one.)
             Some(Status::Ok | Status::Diagnosed | Status::Rejected) => {
-                map_status(&store, &plan_id, &o.id)?
+                map_status(&store, &plan_id, 0, &o.id)?
             }
             Some(Status::Failed) | None => None,
         };
@@ -245,20 +245,42 @@ fn ours(bytes: &[u8], expected: &Digest) -> Option<Shard> {
     }
 }
 
-/// The observer's map shard of round 0 as the run reads it: its status and
-/// content id, from one decode (`None`: absent; `MapShard::Unusable`: bytes
-/// that are not a valid shard of phase `map`, round 0 and this observer).
-/// The id is what a `verified` or `mismatch` verdict must name as its `pre`
-/// (`spec/verify.md` §9.3, WP-114).
-fn map_status(store: &Store, plan: &Digest, observer: &Digest) -> Result<Option<MapShard>> {
+/// The observer's map shard of `round` as read from the store, from one
+/// decode: `None` absent; `Some(None)` bytes that are not a valid shard of
+/// phase `map`, round `round` and this observer; else the shard and its
+/// content id. Shared by `slip verify` (round 0) and `slip check` (the
+/// transform's round, WP-076).
+pub(crate) fn read_map_shard(
+    store: &Store,
+    plan: &Digest,
+    round: u64,
+    observer: &Digest,
+) -> Result<Option<Option<(Shard, Digest)>>> {
     let bytes = store
-        .read_shard(plan, Phase::Map, 0, observer)
+        .read_shard(plan, Phase::Map, round, observer)
         .map_err(|e| commands::store_failure(store.root(), &e))?;
     Ok(bytes.map(|b| match Shard::from_bytes_with_id(&b) {
-        Ok((s, id)) if s.observer == *observer && s.phase == Phase::Map && s.round == 0 => {
-            MapShard::Read { status: s.outcome.status, id }
+        Ok((s, id)) if s.observer == *observer && s.phase == Phase::Map && s.round == round => {
+            Some((s, id))
         }
-        _ => MapShard::Unusable,
+        _ => None,
+    }))
+}
+
+/// The observer's map shard of `round` as the run reads it: its status and
+/// content id (`None`: absent; `MapShard::Unusable`: bytes that are not a
+/// valid shard of phase `map`, that round and this observer). The id is
+/// what a `verified` or `mismatch` verdict must name as its `pre`
+/// (`spec/verify.md` §9.3, WP-114).
+pub(crate) fn map_status(
+    store: &Store,
+    plan: &Digest,
+    round: u64,
+    observer: &Digest,
+) -> Result<Option<MapShard>> {
+    Ok(read_map_shard(store, plan, round, observer)?.map(|r| match r {
+        Some((s, id)) => MapShard::Read { status: s.outcome.status, id },
+        None => MapShard::Unusable,
     }))
 }
 
@@ -430,11 +452,11 @@ mod tests {
             bytes.outcome.status = Status::Ok;
             bytes.to_bytes()
         };
-        assert_eq!(map_status(&store, &plan, &a).unwrap(), None, "absent");
+        assert_eq!(map_status(&store, &plan, 0, &a).unwrap(), None, "absent");
         let ok = map(a, Phase::Map, 0);
         at(&a, &ok);
         let want = MapShard::Read { status: Status::Ok, id: content_id(&ok).unwrap() };
-        assert_eq!(map_status(&store, &plan, &a).unwrap(), Some(want));
+        assert_eq!(map_status(&store, &plan, 0, &a).unwrap(), Some(want));
         for (wrong, why) in [
             (map(b, Phase::Map, 0), "another observer's"),
             (map(a, Phase::Verify, 0), "another phase's"),
@@ -442,7 +464,11 @@ mod tests {
             (b"not a shard".to_vec(), "not a shard"),
         ] {
             at(&a, &wrong);
-            assert_eq!(map_status(&store, &plan, &a).unwrap(), Some(MapShard::Unusable), "{why}");
+            assert_eq!(
+                map_status(&store, &plan, 0, &a).unwrap(),
+                Some(MapShard::Unusable),
+                "{why}"
+            );
         }
         drop(store);
         std::fs::remove_dir_all(&dir).unwrap();

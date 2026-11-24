@@ -513,10 +513,7 @@ fn transform_runs(t: &Tree, store: &str, plan: &str) -> Vec<TransformRun> {
         .filter(|p| p.file_name().unwrap().to_str().unwrap().starts_with("transform."))
         .collect();
     names.sort();
-    names
-        .iter()
-        .map(|p| TransformRun::from_bytes(&std::fs::read(p).unwrap()).unwrap())
-        .collect()
+    names.iter().map(|p| TransformRun::from_bytes(&std::fs::read(p).unwrap()).unwrap()).collect()
 }
 
 fn steps(r: &TransformRun) -> Vec<StepName> {
@@ -562,8 +559,15 @@ fn s10_6_the_run_records() {
 
     // `check` on the round: a second record of round 1.
     let out = t.slip(&[
-        "check", "--plan", &plan, "--round", "1", "--edits", &r.edits.unwrap().to_string()[..8],
-        "--store", "store",
+        "check",
+        "--plan",
+        &plan,
+        "--round",
+        "1",
+        "--edits",
+        &r.edits.unwrap().to_string()[..8],
+        "--store",
+        "store",
     ]);
     // The tree is the post-image now: the edit set's files are stale.
     assert_eq!(out.code(), Some(3), "{out:?}");
@@ -580,8 +584,8 @@ fn s10_2_the_stages_give_renames_ids() {
     let before = t.snapshot();
     let plan_a = t.plan("store-a");
     let whole = t.slip(&[
-        "rename", "--plan", &plan_a, "--from", "f", "--to", "renamed", "--owned", "src",
-        "--store", "store-a", "--write",
+        "rename", "--plan", &plan_a, "--from", "f", "--to", "renamed", "--owned", "src", "--store",
+        "store-a", "--write",
     ]);
     assert_eq!(whole.code(), Some(0), "{whole:?}");
     let after = t.snapshot();
@@ -602,22 +606,29 @@ fn s10_2_the_stages_give_renames_ids() {
     assert_eq!(reduce.id("edits"), whole.id("edits"));
     assert_eq!(reduce.id("declared"), whole.id("declared"));
     let edits = reduce.id("edits");
-    let check = t.slip(&[
-        "check", "--plan", &plan, "--round", "1", "--edits", &edits, "--store", "store-b",
-    ]);
+    let check = t
+        .slip(&["check", "--plan", &plan, "--round", "1", "--edits", &edits, "--store", "store-b"]);
     assert_eq!(check.code(), Some(0), "{check:?}");
     for key in ["transform", "edits", "declared", "overlay", "result"] {
         assert_eq!(check.id(key), whole.id(key), "{key}");
     }
     // Again: the same result.
     let again = t.slip(&[
-        "check", "--plan", &plan, "--round", "1", "--edits", &edits[..6], "--declared",
-        &reduce.id("declared")[..6], "--store", "store-b",
+        "check",
+        "--plan",
+        &plan,
+        "--round",
+        "1",
+        "--edits",
+        &edits[..6],
+        "--declared",
+        &reduce.id("declared")[..6],
+        "--store",
+        "store-b",
     ]);
     assert_eq!(again.id("result"), whole.id("result"), "{again:?}");
-    let apply = t.slip(&[
-        "apply", "--result", &check.id("result"), "--write", "--store", "store-b",
-    ]);
+    let apply =
+        t.slip(&["apply", "--result", &check.id("result"), "--write", "--store", "store-b"]);
     assert_eq!(apply.code(), Some(0), "{apply:?}");
     assert_eq!(t.snapshot(), after);
     let steps_b: Vec<Vec<StepName>> =
@@ -764,10 +775,8 @@ fn s9_2_a_second_declaration_missed() {
     assert_eq!(set.edits.len(), n - 1);
     let out = check_with(&t, &plan, &set, "missed.edts");
     assert_eq!(out.code(), Some(1), "{out:?}");
-    let line = format!(
-        "stale w: still declared under its old name in {}",
-        t.path("src/b.cpp").display()
-    );
+    let line =
+        format!("stale w: still declared under its old name in {}", t.path("src/b.cpp").display());
     assert!(
         out.stdout.lines().any(|l| l.starts_with("stale ") && l.ends_with("src/b.cpp")),
         "{line}: {out:?}"
@@ -930,8 +939,17 @@ fn s10_6_check_interrupted_in_verify() {
     let out = interrupted(
         &t,
         &[
-            "check", "--plan", &plan, "--round", "1", "--edits", &reduce.id("edits"), "--store",
-            "store", "-j", "2",
+            "check",
+            "--plan",
+            &plan,
+            "--round",
+            "1",
+            "--edits",
+            &reduce.id("edits"),
+            "--store",
+            "store",
+            "-j",
+            "2",
         ],
     );
     assert_eq!(out.status.signal(), Some(2), "{out:?}");
@@ -940,8 +958,7 @@ fn s10_6_check_interrupted_in_verify() {
     let r = &records[1];
     assert_eq!(steps(r), [StepName::Apply, StepName::Verify, StepName::Conclude], "{r:?}");
     let id = r.result.expect("a result");
-    let bytes =
-        std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
+    let bytes = std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
     let result = TransformResult::from_bytes(&bytes).unwrap();
     assert_eq!(result.state, State::Incomplete);
     assert_eq!(result.verdict, None);
