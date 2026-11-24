@@ -107,9 +107,14 @@ fn units_of_f(out: &Output) -> Vec<(Digest, Digest)> {
     f
 }
 
-/// The keys of the units named `acme`.
+/// The keys of the units of `acme`: its own (`acme`) and its view unit's
+/// (named as a part of it, WP-140 review F4).
 fn keys_of_acme(out: &Output) -> Vec<Digest> {
-    names(out).into_iter().filter(|(_, n)| n == "acme").map(|(k, _)| k).collect()
+    names(out)
+        .into_iter()
+        .filter(|(_, n)| n == "acme" || n.ends_with("part of acme)"))
+        .map(|(k, _)| k)
+        .collect()
 }
 
 fn counter(o: &Output, name: &str) -> u64 {

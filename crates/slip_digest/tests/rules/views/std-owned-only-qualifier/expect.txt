@@ -1,4 +1,9 @@
 # WP-141 ruling (compiler-made members): the same with a dependent std::h(t) (two overloads,
 # R1) and a new-expression, so Kiln makes the implicit std::align_val_t (lazily, on the first
-# new-expression; no location) in the post-image's owned std and the pre-image's hidden std
-# alike: the pre- and post-image agree about the compiler's members.
+# new-expression; no location, IMPLICIT). In the post-image it is a member of the source's
+# owned std, so std has a dependency part and its unit is written (the dependency's part of
+# std, keyed std). The pre-image's std is Kiln's hidden namespace alone, which has no unit.
+# So the two images agree about the compiler's member (a unit in neither) but not about the
+# namespace that holds it: one unit only in B. A finding (fails closed). It was equal under
+# WP-140's predicate (the enum was never keyed).
+added std (the dependency's part of std)

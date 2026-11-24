@@ -707,17 +707,14 @@ fn fallback_key(
 ///
 /// A namespace `N` is owned iff none of its openings lies in a read-only
 /// file (`Walk::owned`); its own unit is keyed in that view. It has a unit
-/// in the other view too when it **holds something** there: an entity
-/// that is not a namespace keyed with `N` as its namespace parent in that
-/// view (`OwnedState::member_views`: a function, a class, a variable, and
-/// the content-keyed using-directive, alias, using-declaration or
-/// `static_assert` written in an opening), or a nested namespace keyed
-/// under `N` in that view that itself holds something there
-/// (`OwnedState::nested_views`, transitively). An opening alone is not
-/// enough: an empty owned opening, or one that holds only an explicit
-/// specialisation (keyed under its template, not under `N`), holds
-/// nothing (WP-140 review F3; the same definition as `docs/wp/WP-141.md`
-/// Addendum A4). The unit is written when its key differs from `N`'s own
+/// in the other view too when that view exists (`Walk::ns_holds`, the one
+/// predicate, decided from the declarations of the image: a member of
+/// that ownership, an entity whose semantic parent is `N`, declared by the
+/// source or made by the compiler; a written content-keyed declaration;
+/// or a nested namespace, named, inline or unnamed, whose view of that
+/// ownership exists; `spec/verify.md` §2.1, WP-141's ruling after WP-140
+/// review F3). An opening alone holds nothing. The unit is written when
+/// its key differs from `N`'s own
 /// key (equal keys would be one unit; the dedup of `groups::build` is not
 /// relied on). Its digest is `N`'s own unit's, made of every opening (the
 /// inline bit and the attributes of the whole chain): the digest is not
@@ -746,36 +743,11 @@ pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
         let Some(e) = u.entity else { continue };
         views.push((i, e));
     }
-    let mut nested: std::collections::HashMap<(DeclId, bool), Vec<DeclId>> =
-        std::collections::HashMap::new();
-    for &(n, b, m) in &w.owned_state.nested_views {
-        nested.entry((n, b)).or_default().push(m);
-    }
-    // TEMPORARY (WP-141): `Walk::ns_holds` against this function's
-    // `holds`, for every namespace and both views, where 140's sets are
-    // complete. A line per comparison to `$WP141_CMP`.
-    if let Some(path) = std::env::var_os("WP141_CMP") {
-        use std::io::Write as _;
-        let mut out = String::new();
-        for n in w.ns_all_tmp() {
-            for v in [false, true] {
-                let a = w.ns_holds(n, v);
-                let b = holds(&w.owned_state.member_views, &nested, n, v);
-                let own = w.owned(n);
-                let tag = if a == b { "same" } else { "DISAGREE" };
-                let why = if a == b { String::new() } else { w.ns_members_tmp(n, v) };
-                out.push_str(&format!("{tag} ns {n:?} own {own} view {v} ns_holds {a} units {b} {why}\n"));
-            }
-        }
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = f.write_all(out.as_bytes());
-        }
-    }
     let first_view = written.len();
     for (i, e) in views {
         let KeyRes::Key { id: own, .. } = w.key(e) else { continue };
         let view = !w.owned(e);
-        if !holds(&w.owned_state.member_views, &nested, e, view) {
+        if !w.ns_holds(e, view) {
             continue;
         }
         match w.view_key(e, view) {
@@ -865,33 +837,6 @@ fn denoted(
     };
     memo.insert(id, name.clone());
     name
-}
-
-/// Whether the namespace `n` holds something in `view` (`view_units`):
-/// an entity that is not a namespace keyed under it in that view, or a
-/// nested namespace that does, at any depth (the namespaces of a
-/// translation unit nest without a cycle; `seen` bounds the search all
-/// the same).
-fn holds(
-    members: &std::collections::HashSet<(DeclId, bool)>,
-    nested: &std::collections::HashMap<(DeclId, bool), Vec<DeclId>>,
-    n: DeclId,
-    view: bool,
-) -> bool {
-    let mut stack = vec![n];
-    let mut seen = std::collections::HashSet::new();
-    while let Some(x) = stack.pop() {
-        if !seen.insert(x) {
-            continue;
-        }
-        if members.contains(&(x, view)) {
-            return true;
-        }
-        if let Some(children) = nested.get(&(x, view)) {
-            stack.extend(children.iter().copied());
-        }
-    }
-    false
 }
 
 /// Makes the unit around each declaration of a kind without a key kind

@@ -1,4 +1,5 @@
-# Every file owned: std is owned and mapped (to legacy); the dependency's Dep moves.
+# Every file owned: std is owned and mapped (to legacy); the dependency's Dep moves. The
+# compiler's std::align_val_t gives the owned std a dependency part (keyed std), which
+# matches the pre-image's std (WP-141 ruling; under WP-140's predicate: removed std).
 added std::Dep
-removed std
 removed std::Dep

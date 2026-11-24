@@ -649,52 +649,11 @@ impl Walk<'_> {
     /// F3). Made from every declaration of the AST (`ns_table`), so it
     /// does not depend on the order the walk keys entities in. The one
     /// predicate of a view's existence: `E(k)`, R1's and R2's view keys,
-    /// and (after WP-140's fix round) `units::view_units`.
+    /// and `units::view_units`.
     pub(crate) fn ns_holds(&mut self, n: DeclId, view: bool) -> bool {
         let n = self.entity(n);
         let table = self.ns_table();
         table.info.get(&n).is_some_and(|i| i.holds[usize::from(view)])
-    }
-
-    /// TEMPORARY (WP-141, the one-predicate check): every namespace
-    /// entity of the table.
-    pub(crate) fn ns_all_tmp(&mut self) -> Vec<DeclId> {
-        self.ns_table().order.clone()
-    }
-
-    /// TEMPORARY (WP-141): what `ns_table` counted for `n` in `view`.
-    pub(crate) fn ns_members_tmp(&mut self, n: DeclId, view: bool) -> String {
-        let ast = self.ast;
-        let mut out = String::new();
-        let mut seen = HashSet::new();
-        for d in ast.decls.ids() {
-            let kind = ast.decls.get(d).kind();
-            if kind == DeclKind::Namespace {
-                continue;
-            }
-            if !matches!(info(kind).role, Role::Entity(_) | Role::Content(_)) {
-                continue;
-            }
-            let e = self.entity(d);
-            if !seen.insert(e) || self.key_namespace(e) != Some(n) || self.owned(e) != view {
-                continue;
-            }
-            let loc = self.sm.expansion_loc(ast.decls.get(d).loc());
-            let (file, text) = match self.sm.offset_of(loc) {
-                Some((f, at)) => {
-                    let t = self.sm.text(f);
-                    let at = (at as usize).min(t.len());
-                    let end = t[at..].find('\n').map_or(t.len(), |i| at + i).min(at + 50);
-                    (self.sm.file_name(f).to_string(), t.get(at..end).unwrap_or("").to_string())
-                }
-                None => (String::from("?"), String::new()),
-            };
-            out.push_str(&format!("[{kind:?} {e:?} {file}: {text}] "));
-        }
-        if out.is_empty() {
-            out.push_str("(nested only)");
-        }
-        out
     }
 
     /// R2's guard (Addendum 2): whether some namespace of the image has

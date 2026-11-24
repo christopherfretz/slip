@@ -902,15 +902,6 @@ impl Walk<'_> {
             let (e, n) = (self.entity(member), self.entity(ns));
             crate::rule_use::namespace_parent(self, e, n);
         }
-        // What the namespace holds in view `b` (`units::view_units`,
-        // WP-140): an entity that is not a namespace, or a nested namespace
-        // that itself holds something in `b`.
-        let (n, m) = (self.entity(ns), self.entity(member));
-        if matches!(info(self.ast.decls.get(m).kind()).role, Role::Entity(KeyKind::Namespace)) {
-            self.owned_state.nested_views.insert((n, b, m));
-        } else {
-            self.owned_state.member_views.insert((n, b));
-        }
         let res = if b == self.owned(ns) { self.key(ns) } else { self.key_in(ns, Some(b)) };
         match res {
             KeyRes::Key { id, cause, .. } => Ok((Parent::Unit(id), cause)),
