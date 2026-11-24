@@ -328,23 +328,22 @@ pub fn plan_edit(from: &Path, entries: &[Entry]) -> Result<Vec<Written>, String>
         let at = out.iter().position(|w| w.path == Path::new(shown));
         match e {
             Entry::Replace { all, old, new, .. } => {
-                let i = match at {
-                    Some(i) => i,
-                    None => {
-                        let m = std::fs::symlink_metadata(&path)
-                            .map_err(|_| format!("line {n}: `{shown}` does not exist"))?;
-                        if !m.is_file() {
-                            return Err(format!("line {n}: `{shown}` is not a regular file"));
-                        }
-                        let bytes = std::fs::read(&path)
-                            .map_err(|err| format!("line {n}: `{shown}`: cannot read: {err}"))?;
-                        out.push(Written {
-                            path: PathBuf::from(shown),
-                            content: bytes,
-                            mode: Some(m.permissions().mode()),
-                        });
-                        out.len() - 1
+                let i = if let Some(i) = at {
+                    i
+                } else {
+                    let m = std::fs::symlink_metadata(&path)
+                        .map_err(|_| format!("line {n}: `{shown}` does not exist"))?;
+                    if !m.is_file() {
+                        return Err(format!("line {n}: `{shown}` is not a regular file"));
                     }
+                    let bytes = std::fs::read(&path)
+                        .map_err(|err| format!("line {n}: `{shown}`: cannot read: {err}"))?;
+                    out.push(Written {
+                        path: PathBuf::from(shown),
+                        content: bytes,
+                        mode: Some(m.permissions().mode()),
+                    });
+                    out.len() - 1
                 };
                 let content = &mut out[i].content;
                 let found = occurrences(content, old);

@@ -229,10 +229,10 @@ pub fn line(o: &Outcome) -> String {
 pub fn run_row(dir: &Path, row: Row, rounds: u64, read: Reader<'_>) -> Result<Outcome, String> {
     let base = dir.join(format!("fscheck.{}.{}", std::process::id(), row.name));
     if fs::symlink_metadata(&base).is_ok() {
-        fs::remove_dir_all(&base).map_err(|e| at(&base, e))?;
+        fs::remove_dir_all(&base).map_err(|e| at(&base, &e))?;
     }
     for sub in ["src", "tree", "tmp"] {
-        fs::create_dir_all(base.join(sub)).map_err(|e| at(&base, e))?;
+        fs::create_dir_all(base.join(sub)).map_err(|e| at(&base, &e))?;
     }
     let mut probe = Probe { read, wrong: 0, first: None };
     let t0 = Instant::now();
@@ -245,7 +245,7 @@ pub fn run_row(dir: &Path, row: Row, rounds: u64, read: Reader<'_>) -> Result<Ou
         }
     }
     let seconds = t0.elapsed().as_secs_f64();
-    fs::remove_dir_all(&base).map_err(|e| at(&base, e))?;
+    fs::remove_dir_all(&base).map_err(|e| at(&base, &e))?;
     Ok(Outcome { row, rounds, wrong: probe.wrong, first: probe.first, seconds })
 }
 
@@ -277,7 +277,7 @@ impl Probe<'_> {
     }
 }
 
-fn at(path: &Path, e: io::Error) -> String {
+fn at(path: &Path, e: &io::Error) -> String {
     format!("{}: {e}", path.display())
 }
 
@@ -286,15 +286,15 @@ fn unlink(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(at(path, e)),
+        Err(e) => Err(at(path, &e)),
     }
 }
 
 /// Creates `path`, which must not exist, with `bytes`.
 fn create(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut f =
-        fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| at(path, e))?;
-    f.write_all(bytes).map_err(|e| at(path, e))
+        fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| at(path, &e))?;
+    f.write_all(bytes).map_err(|e| at(path, &e))
 }
 
 fn link(from: &Path, to: &Path) -> Result<(), String> {
@@ -308,6 +308,7 @@ fn rename(from: &Path, to: &Path) -> Result<(), String> {
 /// One round of `row`. Names are reused every seven rounds, as a tree that
 /// is removed and made again reuses its names; each round's contents are
 /// its own.
+#[allow(clippy::many_single_char_names, reason = "A, B, T, L, D as §11.2 names them")]
 fn round(base: &Path, row: &str, i: u64, p: &mut Probe<'_>) -> Result<(), String> {
     let k = i % 7;
     let (src, tree, tmp) = (base.join("src"), base.join("tree"), base.join("tmp"));
@@ -330,7 +331,7 @@ fn round(base: &Path, row: &str, i: u64, p: &mut Probe<'_>) -> Result<(), String
             if row.starts_with("link") {
                 link(&a, &b)?;
             } else {
-                fs::copy(&a, &b).map_err(|e| at(&b, e))?;
+                fs::copy(&a, &b).map_err(|e| at(&b, &e))?;
             }
             unlink(&b)?;
             create(&b, &post)?;
@@ -343,7 +344,7 @@ fn round(base: &Path, row: &str, i: u64, p: &mut Probe<'_>) -> Result<(), String
             if row.starts_with("link") {
                 link(&a, &b)?;
             } else {
-                fs::copy(&a, &b).map_err(|e| at(&b, e))?;
+                fs::copy(&a, &b).map_err(|e| at(&b, &e))?;
             }
             let t = tree.join(format!("a{k}.cpp.new"));
             create(&t, &post)?;

@@ -270,8 +270,8 @@ fn s11_3_build_tree() {
     // A tree from another tree (a `base`): the base's edit is kept, and
     // the new tree's edit leaves the base's file alone.
     let next = f.path("trees/02");
-    let more = read_edit(b"file lib/a.h\nreplace\nint z;\nwith\nint w;\nend\n").unwrap();
-    let w2 = demo::plan_edit(&tree, &more).unwrap();
+    let second = read_edit(b"file lib/a.h\nreplace\nint z;\nwith\nint w;\nend\n").unwrap();
+    let w2 = demo::plan_edit(&tree, &second).unwrap();
     demo::build_tree(&mut demo::Disk, &tree, &next, &roots(), &w2, demo::Make::Link).unwrap();
     assert_eq!(read(next.join("lib/a.h")), "long x;\n  g();\nint w;\n  g();\n");
     assert_eq!(read(tree.join("lib/a.h")), "long x;\n  g();\nint z;\n  g();\n");
