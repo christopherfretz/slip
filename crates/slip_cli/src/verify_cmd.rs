@@ -245,25 +245,32 @@ fn ours(bytes: &[u8], expected: &Digest) -> Option<Shard> {
     }
 }
 
+/// What is at the address of an observer's map shard of a round.
+pub(crate) enum MapRead {
+    /// A valid shard of phase `map`, that round and the observer, and its
+    /// content id.
+    Shard(Box<Shard>, Digest),
+    /// Bytes that are not that.
+    Unusable,
+}
+
 /// The observer's map shard of `round` as read from the store, from one
-/// decode: `None` absent; `Some(None)` bytes that are not a valid shard of
-/// phase `map`, round `round` and this observer; else the shard and its
-/// content id. Shared by `slip verify` (round 0) and `slip check` (the
+/// decode (`None`: absent). Shared by `slip verify` (round 0) and `slip check` (the
 /// transform's round, WP-076).
 pub(crate) fn read_map_shard(
     store: &Store,
     plan: &Digest,
     round: u64,
     observer: &Digest,
-) -> Result<Option<Option<(Shard, Digest)>>> {
+) -> Result<Option<MapRead>> {
     let bytes = store
         .read_shard(plan, Phase::Map, round, observer)
         .map_err(|e| commands::store_failure(store.root(), &e))?;
     Ok(bytes.map(|b| match Shard::from_bytes_with_id(&b) {
         Ok((s, id)) if s.observer == *observer && s.phase == Phase::Map && s.round == round => {
-            Some((s, id))
+            MapRead::Shard(Box::new(s), id)
         }
-        _ => None,
+        _ => MapRead::Unusable,
     }))
 }
 
@@ -279,8 +286,8 @@ pub(crate) fn map_status(
     observer: &Digest,
 ) -> Result<Option<MapShard>> {
     Ok(read_map_shard(store, plan, round, observer)?.map(|r| match r {
-        Some((s, id)) => MapShard::Read { status: s.outcome.status, id },
-        None => MapShard::Unusable,
+        MapRead::Shard(s, id) => MapShard::Read { status: s.outcome.status, id },
+        MapRead::Unusable => MapShard::Unusable,
     }))
 }
 

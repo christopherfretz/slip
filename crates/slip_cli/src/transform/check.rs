@@ -140,7 +140,10 @@ fn map_shard(
 ) -> Result<Option<Shard>, CommandError> {
     let read =
         verify_cmd::read_map_shard(store, plan_id, round, observer).map_err(command_error)?;
-    Ok(read.flatten().map(|(s, _)| s))
+    Ok(match read {
+        Some(verify_cmd::MapRead::Shard(s, _)) => Some(*s),
+        _ => None,
+    })
 }
 
 fn map_pass(input: &CheckInput<'_>, overlay: &Overlay) -> Result<Pass, CommandError> {
@@ -409,13 +412,16 @@ pub fn status_of(state: State, wrote: bool) -> u8 {
 /// prefix of 4 to 64 hexadecimal digits, which must match exactly one
 /// file of its kind in the store, or else a file, which is read, checked
 /// and published.
+/// Reads a file given for an object, checks and publishes it.
+type FromFile<'a, T> = dyn Fn(&[u8]) -> Result<(Digest, T), String> + 'a;
+
 fn id_or_file<T>(
     store: &Store,
     x: &OsString,
     what: &str,
     find: &dyn Fn(&str) -> Result<Vec<Digest>, CommandError>,
     by_id: &dyn Fn(&Digest) -> Result<T, CommandError>,
-    by_file: &dyn Fn(&[u8]) -> Result<(Digest, T), String>,
+    by_file: &FromFile<'_, T>,
 ) -> Result<(Digest, T), CommandError> {
     if let Some(prefix) = x
         .to_str()

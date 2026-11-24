@@ -31,6 +31,10 @@ pub fn may_write(asked: bool, interrupted: bool) -> bool {
 }
 
 /// `slip rename` (§10.1, §10.5).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sequence of steps over a dozen locals: map, reduce, check, write, the lines"
+)]
 pub(crate) fn main(
     a: &RenameArgs,
     out: &mut dyn Write,

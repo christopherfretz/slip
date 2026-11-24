@@ -20,6 +20,7 @@ use slip_model::edits::Piece;
 use slip_model::editset::EditSet;
 use slip_model::formats::content_id;
 use slip_model::result::{State, TransformResult};
+use slip_model::transform_run::StepName::{Apply, Conclude, Map, Reduce, Scan, Verify, Write};
 use slip_model::transform_run::{StepName, TransformRun};
 use slip_model::{Digest, Plan};
 
@@ -496,7 +497,7 @@ fn s10_1_map_alone() {
     assert_eq!(store.next_round(&plan_id).unwrap(), 2);
     let records = transform_runs(&t, "store", &plan);
     assert_eq!(records.len(), 1);
-    assert_eq!(steps(&records[0]), [StepName::Map]);
+    assert_eq!(steps(&records[0]), [Map]);
     drop(store);
     let out = t.slip(&["verify", "--plan", &plan, "--round", "1", "--store", "store"]);
     assert_eq!(out.code(), Some(3), "{out:?}");
@@ -541,7 +542,6 @@ fn s10_6_the_run_records() {
     let records = transform_runs(&t, "store", &plan);
     assert_eq!(records.len(), 1);
     let r = &records[0];
-    use StepName::*;
     assert_eq!(steps(r), [Map, Reduce, Apply, Verify, Scan, Conclude, Write]);
     assert_eq!(r.round, 1);
     assert_eq!(r.result.map(|d| d.to_string()), Some(out.id("result")));
@@ -633,7 +633,6 @@ fn s10_2_the_stages_give_renames_ids() {
     assert_eq!(t.snapshot(), after);
     let steps_b: Vec<Vec<StepName>> =
         transform_runs(&t, "store-b", &plan).iter().map(steps).collect();
-    use StepName::*;
     assert!(steps_b.contains(&vec![Map]), "{steps_b:?}");
     assert!(steps_b.contains(&vec![Apply, Verify, Scan, Conclude]), "{steps_b:?}");
 }
@@ -783,17 +782,30 @@ fn s9_2_a_second_declaration_missed() {
     );
 }
 
+/// A change made to an edit set.
+type Change = fn(&mut EditSet, Digest);
+
 // §10.2: the edit set's plan, round and transform must be the round's.
 #[test]
 fn s10_2_check_refuses_another_rounds_set() {
     let t = Tree::three_files("other-round");
     let plan = t.plan("store");
     let out = rename(&t, &plan, &[]);
-    let mut set = edit_set(&t, "store", &out.id("edits"));
-    set.round = 2;
-    let out = check_with(&t, &plan, &set, "round2.edts");
-    assert_eq!(out.code(), Some(3), "{out:?}");
-    assert!(out.stderr.contains("its round is not the round's"), "{out:?}");
+    let set = edit_set(&t, "store", &out.id("edits"));
+    let other = Digest([0x5a; 32]);
+    let changes: [(&str, Change); 3] = [
+        ("plan", |s, d| s.plan = d),
+        ("round", |s, _| s.round = 2),
+        ("transform", |s, d| s.transform = d),
+    ];
+    for (field, change) in changes {
+        let mut wrong = set.clone();
+        change(&mut wrong, other);
+        let out = check_with(&t, &plan, &wrong, &format!("{field}.edts"));
+        assert_eq!(out.code(), Some(3), "{field}: {out:?}");
+        let why = format!("its {field} is not the round's");
+        assert!(out.stderr.contains(&why), "{why}: {out:?}");
+    }
 }
 
 // §1 rule 3: `-j 1` and `-j 4` in fresh stores give the same five ids and
@@ -848,8 +860,8 @@ fn children_with(pid: u32, arg: &str) -> Vec<u32> {
         .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
         .filter(|p| {
             let stat = std::fs::read_to_string(format!("/proc/{p}/stat")).unwrap_or_default();
-            let ppid = stat.rsplit_once(')').and_then(|(_, r)| r.split_whitespace().nth(1));
-            ppid == Some(&pid.to_string())
+            let parent = stat.rsplit_once(')').and_then(|(_, r)| r.split_whitespace().nth(1));
+            parent == Some(&pid.to_string())
                 && std::fs::read(format!("/proc/{p}/cmdline"))
                     .is_ok_and(|c| String::from_utf8_lossy(&c).contains(arg))
         })
@@ -878,7 +890,7 @@ fn interrupted(t: &Tree, args: &[&str]) -> Out {
     std::thread::sleep(Duration::from_millis(300));
     let sent = Command::new("kill").args(["-INT", &pid.to_string()]).status().unwrap();
     assert!(sent.success());
-    let status = wait_bounded(&mut child, Duration::from_secs(60));
+    let status = wait_bounded(&mut child, Duration::from_mins(1));
     Out { status, stdout: stdout.join().unwrap(), stderr: stderr.join().unwrap() }
 }
 
@@ -907,7 +919,7 @@ fn s10_6_rename_interrupted_in_map() {
     assert_eq!(out.status.signal(), Some(2), "{out:?}");
     let records = transform_runs(&t, "store", &plan);
     assert_eq!(records.len(), 1, "{out:?}");
-    assert_eq!(steps(&records[0]), [StepName::Map]);
+    assert_eq!(steps(&records[0]), [Map]);
     assert_eq!(records[0].result, None);
     let results = t.path("store").join("results");
     assert!(!results.exists() || std::fs::read_dir(&results).unwrap().next().is_none());
@@ -956,7 +968,7 @@ fn s10_6_check_interrupted_in_verify() {
     let records = transform_runs(&t, "store", &plan);
     assert_eq!(records.len(), 2, "{out:?}");
     let r = &records[1];
-    assert_eq!(steps(r), [StepName::Apply, StepName::Verify, StepName::Conclude], "{r:?}");
+    assert_eq!(steps(r), [Apply, Verify, Conclude], "{r:?}");
     let id = r.result.expect("a result");
     let bytes = std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
     let result = TransformResult::from_bytes(&bytes).unwrap();

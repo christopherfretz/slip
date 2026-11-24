@@ -11,8 +11,8 @@ use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use slip_model::editset::EditSet;
 use slip_model::hash::content_digest;
@@ -93,8 +93,8 @@ fn walk(
     found: &mut BTreeSet<Vec<u8>>,
 ) -> io::Result<()> {
     let path = Path::new(std::ffi::OsStr::from_bytes(entry));
-    let named = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()));
-    let meta = fs::symlink_metadata(path).map_err(named)?;
+    let with_path = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()));
+    let meta = fs::symlink_metadata(path).map_err(with_path)?;
     if meta.is_file() {
         if has_extension(entry, extensions) && ownership.is_owned(entry) {
             found.insert(entry.to_vec());
@@ -105,10 +105,10 @@ fn walk(
         return Ok(());
     }
     let mut names: Vec<Vec<u8>> = fs::read_dir(path)
-        .map_err(named)?
+        .map_err(with_path)?
         .map(|d| d.map(|d| d.file_name().as_bytes().to_vec()))
         .collect::<io::Result<_>>()
-        .map_err(named)?;
+        .map_err(with_path)?;
     names.sort();
     for name in names {
         let mut child = entry.to_vec();
@@ -164,11 +164,6 @@ pub fn residue(
         })
         .collect();
 
-    let next = AtomicUsize::new(0);
-    let found: Mutex<Vec<Residue>> = Mutex::new(Vec::new());
-    // The first error by file order, so that which is reported does not
-    // depend on the threads.
-    let failed: Mutex<Option<(usize, io::Error)>> = Mutex::new(None);
     let scan_one = |i: usize| -> io::Result<Vec<Residue>> {
         let path = &files[i];
         let shown = String::from_utf8_lossy(path);
@@ -215,24 +210,37 @@ pub fn residue(
         }
         Ok(out)
     };
+    let mut found = in_file_order(files.len(), threads, scan_one)?;
+    found.sort_by(|a, b| (&a.file, a.lo).cmp(&(&b.file, b.lo)));
+    found.dedup_by(|a, b| a.file == b.file && a.lo == b.lo);
+    Ok(found)
+}
+
+/// `scan(i)` for every `i < n` on at most `threads` threads, the results
+/// concatenated; the error of the least `i` that failed, so that which is
+/// reported does not depend on the threads.
+fn in_file_order<T: Send>(
+    n: usize,
+    threads: usize,
+    scan: impl Fn(usize) -> io::Result<Vec<T>> + Sync,
+) -> io::Result<Vec<T>> {
+    let next = AtomicUsize::new(0);
+    let found: Mutex<Vec<T>> = Mutex::new(Vec::new());
+    let failed: Mutex<Option<(usize, io::Error)>> = Mutex::new(None);
     std::thread::scope(|s| {
-        for _ in 0..threads.clamp(1, files.len().max(1)) {
+        for _ in 0..threads.clamp(1, n.max(1)) {
             s.spawn(|| {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= files.len() {
+                    if i >= n {
                         break;
                     }
-                    match scan_one(i) {
+                    match scan(i) {
                         Ok(mut v) => {
-                            found
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .append(&mut v);
+                            found.lock().unwrap_or_else(PoisonError::into_inner).append(&mut v);
                         }
                         Err(e) => {
-                            let mut f =
-                                failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let mut f = failed.lock().unwrap_or_else(PoisonError::into_inner);
                             if f.as_ref().is_none_or(|(j, _)| i < *j) {
                                 *f = Some((i, e));
                             }
@@ -242,13 +250,10 @@ pub fn residue(
             });
         }
     });
-    if let Some((_, e)) = failed.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
+    if let Some((_, e)) = failed.into_inner().unwrap_or_else(PoisonError::into_inner) {
         return Err(e);
     }
-    let mut found = found.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
-    found.sort_by(|a, b| (&a.file, a.lo).cmp(&(&b.file, b.lo)));
-    found.dedup_by(|a, b| a.file == b.file && a.lo == b.lo);
-    Ok(found)
+    Ok(found.into_inner().unwrap_or_else(PoisonError::into_inner))
 }
 
 #[cfg(test)]
