@@ -1,0 +1,6 @@
+changed S
+changed S::(anonymous union for _)
+added S::(anonymous union for _)::b
+added S::b
+removed S::(anonymous union for _)::a
+removed S::a

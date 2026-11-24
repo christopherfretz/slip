@@ -5499,7 +5499,8 @@ translation unit is done, and an implicit one is built checked; a node
 the walk reaches without the bit makes its unit indeterminate
 (`Unaccounted`). An argument that depends on a template parameter keeps
 its deferred form under its own per-kind bit (`flags-priority-dependent`,
-`MODE.flags-deferred`) on a checked node.
+`MODE.flags-deferred`, `ALIGN_VALUE.flags-value-dependent`) on a checked
+node.
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
@@ -5517,6 +5518,7 @@ its deferred form under its own per-kind bit (`flags-priority-dependent`,
 | `CONSTRUCTOR.flags-priority-dependent` | flag | in | bit | bit 2: the priority is value-dependent |
 | `DESTRUCTOR.flags-priority-dependent` | flag | in | bit | bit 2: the priority is value-dependent |
 | `MODE.flags-deferred` | flag | in | bit | bit 2: applies at instantiation |
+| `ALIGN_VALUE.flags-value-dependent` | flag | in | bit | bit 2: the alignment is value-dependent (Kiln WP-2476, `kiln_ast/src/attr.rs:884-888`), so `a` is the expression |
 | `GSL_OWNER.flags-has-type` | flag | in | bit | bit 2: a type argument was written |
 | `GSL_POINTER.flags-has-type` | flag | in | bit | bit 2: a type argument was written |
 | `DIAGNOSE_IF.flags-error` | flag | in | bit | bit 2: the diagnostic is an error, not a warning |
@@ -5589,7 +5591,8 @@ its deferred form under its own per-kind bit (`flags-priority-dependent`,
 | `FUNCTION_RETURN.a` | flag | in | uv | 1 thunk-extern, 0 keep |
 | `ASSUME_ALIGNED.a` | value | in | uv | the alignment, folded |
 | `ASSUME_ALIGNED.b` | value | in | uv | the offset, folded |
-| `ALIGN_VALUE.a` | value | in | uv |  |
+| `ALIGN_VALUE.a-alignment` | value | in | uv? | when `flags-value-dependent` is clear: the alignment |
+| `ALIGN_VALUE.a-expression` | child | in | child? | when it is set: the expression |
 | `CODE_ALIGN.a` | value | in | uv |  |
 | `ARM_LOCALLY_STREAMING.b` | location | out | - | the keyword's index and offsets of its strings from `loc` |
 | `ARM_NEW.a` | flag | in | uv | bit 0 ZA, bit 1 ZT0 |

@@ -256,6 +256,7 @@ const KINDS: &[KindRow] = {
     };
     use Word::{A, B};
     const PRIO: u8 = AttrNode::PRIORITY_DEPENDENT;
+    const AV_DEP: u8 = AttrNode::ALIGN_VALUE_DEPENDENT;
     const GSL: u8 = AttrNode::GSL_HAS_TYPE;
     const ZCUR: u32 = ZERO_CALL_USED_REGS_KINDS.len() as u32 - 1;
     const PCS: u32 = CLANG_SECTION_KINDS.len() as u32 - 1;
@@ -492,7 +493,9 @@ const KINDS: &[KindRow] = {
             op("AttrNode/ASSUME_ALIGNED.b", Uv(B)),
         ]),
         k(AttrKind::ALIGN_VALUE, attr_kind::ALIGN_VALUE, "AttrKind/ALIGN_VALUE", &[
-            op("AttrNode/ALIGN_VALUE.a", Uv(A)),
+            op("AttrNode/ALIGN_VALUE.flags-value-dependent", Bit(AV_DEP)),
+            op("AttrNode/ALIGN_VALUE.a-alignment", UvUnlessFlag(A, AV_DEP)),
+            op("AttrNode/ALIGN_VALUE.a-expression", ChildIfFlag(A, AV_DEP)),
         ]),
         k(AttrKind::CALLBACK, attr_kind::CALLBACK, "AttrKind/CALLBACK", &[
             op("AttrNode/CALLBACK.a", Uvs(A)),
