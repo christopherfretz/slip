@@ -12,6 +12,7 @@ use slip_model::{Digest, Phase, Shard, Status};
 
 use crate::Shards;
 use crate::groups::Ties;
+use crate::meter::{Held, Meter};
 use crate::records::{
     ClaimVal, Entry, FailVal, KPiece, Key, NOTES_MAX, RefusalK, Sample, Site, Val, identity,
     variant,
@@ -25,6 +26,7 @@ pub(crate) struct Ctx<'a> {
     pub request_id: Digest,
     pub round: u64,
     pub shards: &'a dyn Shards,
+    pub meter: &'a Meter,
 }
 
 /// Counts of the first pass (§6.3).
@@ -109,10 +111,12 @@ fn kpieces(edits: &Edits, pieces: &[Piece]) -> Vec<KPiece> {
         .collect()
 }
 
-/// A shard read and checked: its basis entry, and the shard if it is `ok`.
-pub(crate) struct Read {
+/// A shard read and checked: its basis entry, and the shard if it is `ok`,
+/// counted as held (`reduce.peak.sections`) while it is.
+pub(crate) struct Read<'a> {
     pub entry: BasisEntry,
     pub shard: Option<Shard>,
+    pub _held: Option<Held<'a>>,
 }
 
 /// Decodes the bytes a store gave for a shard, and their content id: the
@@ -129,15 +133,16 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<(Shard, Digest), String> {
 
 /// Opens and checks the shard at `index` (§5.1). `Err` is the message of
 /// an `Input` error naming the shard's observer.
-pub(crate) fn read(ctx: &Ctx<'_>, index: usize) -> Result<Read, String> {
+pub(crate) fn read<'a>(ctx: &Ctx<'a>, index: usize) -> Result<Read<'a>, String> {
     let observer = ctx.shards.observer(index);
-    let unparsed = Read { entry: BasisEntry { observer, shard: None }, shard: None };
+    let unparsed = Read { entry: BasisEntry { observer, shard: None }, shard: None, _held: None };
     let Some(bytes) =
         ctx.shards.open(index).map_err(|e| format!("the shard cannot be read: {e}"))?
     else {
         return Ok(unparsed);
     };
     let (shard, id) = decode(&bytes)?;
+    let held = ctx.meter.sections.hold();
     drop(bytes);
     if shard.observer != observer {
         return Err("the shard is of another observer".into());
@@ -207,7 +212,7 @@ pub(crate) fn read(ctx: &Ctx<'_>, index: usize) -> Result<Read, String> {
             ));
         }
     }
-    Ok(Read { entry: BasisEntry { observer, shard: Some(id) }, shard: Some(shard) })
+    Ok(Read { entry: BasisEntry { observer, shard: Some(id) }, shard: Some(shard), _held: Some(held) })
 }
 
 fn put(records: &mut BTreeMap<Key, Val>, key: Key, val: Val) -> Result<(), String> {

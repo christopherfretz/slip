@@ -812,7 +812,10 @@ or with `no_edit` if no `replace` claim remains after §5.2's treatment
 ### 5.6 Cost
 
 Reduce must run in memory that does not grow with the number of
-observers or of claims:
+observers or of claims, with one exception: the edit set lists the
+unparsed observers (§6), 32 bytes each, and that list is the one thing
+reduce holds that grows with the observers (a million unparsed observers
+are 32 MiB). Otherwise:
 
 - Shards are read in runs of at most `fan_in` (default 64) in plan order.
   Each run is merged by site into a temporary file of collapsed claims
@@ -828,18 +831,36 @@ observers or of claims:
 - File agreement reads each shard's `inputs` once, in a second pass over
   the shards, keeping only the paths of live sites and of copied files.
 - The first level may run on several threads (one run of shards each).
-  By §5.3 the result is the same.
+  By §5.3 the result is the same. The runs' joined states are folded in
+  run order; a run is started only while it is fewer than `W` runs ahead
+  of the earliest run not yet folded, `W = WINDOW_PER_THREAD × threads`
+  with `WINDOW_PER_THREAD` 4, so at most `W` runs' joined states wait to
+  be folded, and the earliest run not yet folded can always be started.
 
-Three things grow with the transform and not with the observers, and are
-held in memory, one record of bounded size each: each distinct edit that
-is a member of a group, unless the request is `indivisible` (§5.5); each
-copy piece of a live edit; and each live edit that lies within another
-live edit or within a copied range (§5.4, §5.5). A native rename has none
-of the three.
+What grows with the transform and not with the observers is held in
+memory, one record of bounded size apart from its pieces for each: the
+paths some shard's `files` names, with the distinct `(size, content)` the
+shards give each; the live sites (§5.4); the claimed sites, with the
+ranges they copy; the sites with a kept or unresolved range; the
+refusals of sites; the joined reports, `changed` entries and failures;
+the distinct edits that are members of a group, unless the request is
+`indivisible` (§5.5); and the edit set made of them. This is a statement
+of what is held, not a bound beyond the transform's size.
 
 Work is `O(C log C)` in the total number of claims `C` in the worst case
 and `O(C)` when the collapsed claims fit in one run. Reduce registers the
 counters of §6.3.
+
+Reduce also counts exactly the most it held at once, as the counters
+`reduce.peak.*` of `Reduced::peak` (§5.7): `sections`, the shards'
+decoded `edits` sections (at most one per thread); `files`, the open
+temporary files (at most `fan_in + 1` per thread); `records`, the
+collapsed records of one run or one merge; `waiting_runs`, the runs'
+joined states waiting, the run just finished included (at most `W`); and
+`unparsed`, the observers the set lists as unparsed. They depend on
+`fan_in` and `threads`, which the edit set does not (§1 rule 3), so they
+are returned beside it, never in its `counters`: they are informational
+and no part of its identity.
 
 ### 5.7 Interface
 
@@ -856,7 +877,14 @@ pub trait Shards: Sync {
     fn observer(&self, index: usize) -> Digest;
 }
 
-pub struct Reduced { pub edits: EditSet, pub declared: Option<Declared> }
+pub struct Reduced { pub edits: EditSet, pub declared: Option<Declared>, pub peak: Peak }
+
+/// §5.6: the most reduce held at once; `Peak::counters` names them
+/// `reduce.peak.files`, `.records`, `.sections`, `.unparsed`, `.waiting_runs`.
+pub struct Peak { pub sections: u64, pub files: u64, pub records: u64,
+                  pub waiting_runs: u64, pub unparsed: u64 }
+
+pub const WINDOW_PER_THREAD: usize = 4;
 
 pub fn reduce(request: &Transform, request_id: Digest, plan: Digest, round: u64,
               shards: &dyn Shards, options: &Options) -> Result<Reduced, ReduceError>;
