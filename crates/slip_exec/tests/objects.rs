@@ -63,7 +63,8 @@ fn valid(kind: [u8; 4], n: u8) -> Vec<u8> {
             format!(
                 "\"transform\": {{\"kind\": \"rename\", \"ownership\": {{\"owned\": [\"/s\"], \
                  \"readonly\": []}}, \"indivisible\": true, \"rename\": {{\"target\": [\"f\"], \
-                 \"kind\": \"function\", \"new_name\": \"g{n}\"}}, \"script\": null}}"
+                 \"kind\": \"function\", \"new_name\": \"g{n}\", \"dependent\": \"offer\"}}, \
+                 \"script\": null}}"
             ),
         ),
         b"EDTS" => (
@@ -75,7 +76,7 @@ fn valid(kind: [u8; 4], n: u8) -> Vec<u8> {
                  \"unresolved\": [], \"refusals\": [{{\"cause\": \"no_observer\", \"file\": null, \
                  \"lo\": 0, \"hi\": 0, \"reason\": \"none\", \"subject\": null, \"macro\": null, \
                  \"other\": null, \"observers\": 0, \"first\": []}}], \"reports\": [], \
-                 \"failures\": [], \"unparsed\": [], \"counters\": []}}",
+                 \"failures\": [], \"unparsed\": [], \"counters\": [], \"instances\": []}}",
                 h(1),
                 h(2),
                 h(3)
@@ -111,8 +112,8 @@ fn valid(kind: [u8; 4], n: u8) -> Vec<u8> {
         ),
         _ => panic!("no object of this kind"),
     };
-    // RSLT is at version 2 (WP-111), every other kind at 1.
-    let version = if kind == *b"RSLT" { 2 } else { 1 };
+    // RSLT is at version 2 (WP-111), TRFM and EDTS at 2 (WP-139), OVLY at 1.
+    let version = if kind == *b"OVLY" { 1 } else { 2 };
     let text =
         format!("{{\"kind\": \"{k}\", \"version\": {version}, \"sections\": {{{section}}}}}");
     undump(&json::parse(text.as_bytes()).unwrap()).unwrap()
