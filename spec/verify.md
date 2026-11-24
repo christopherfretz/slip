@@ -2038,6 +2038,10 @@ selected observer ends in one **state**:
 | `never_parsed` | its shard is `diagnosed` or `rejected`, and its map shard is absent or not `ok`: nothing is known to have changed |
 | `failed` | anything else: a shard of status `failed`, no shard, an `ok` shard without a verdict, a shard that is not this run's; a `verified` or `mismatch` verdict whose map shard is absent or not `ok` (the pre shard it compared against is not the one the store has now); a shard of another observer or round, or a verdict under rules other than the run's (`Report::add`, §7.3) |
 
+A `verified` or `mismatch` verdict is believed only against the map shard
+whose content id it names as its `pre`: "its map shard" in the rows above
+is that shard, compared by id (§9.3).
+
 **This run's shard.** The shard of an observer is read from the store and
 is this run's if its content id is the `shard` of the observer's last
 `Job` entry in the run's record (`spec/model.md` §9). A shard another run
@@ -2607,9 +2611,13 @@ has, which counts in that rule's `direct`; with no rule the moved one is
 a difference). Pinned by `tests/rules/stale/tu-local-left`,
 `tu-local-moved-kept` and `unnamed-member-left`; "Open questions".
 
-**Unused rules.** A rule with every count 0 in every observer names
-an entity no observer has. It is reported with the run, like an exemption
-no observer needed (§2.2), and changes no verdict.
+**Unused rules.** A rule with every count 0 in every observer whose
+`rule_use` is folded (§9.3: those `verified` or `mismatch`) names an
+entity no such observer has. It is reported with the run, like an
+exemption no observer needed (§2.2), and changes no verdict. A rule used
+only in `unverifiable` observers is listed unused; when any observer is
+`unverifiable` the text says over how many observers the fold ran (§9.4).
+So is a `kept` key seen only there listed with 0 observers.
 
 ### 9.3 What is added to the run (§7)
 
@@ -2658,8 +2666,24 @@ already keeps the run from being verified.
 
 A stale observer and a failed obligation are facts about the post-image,
 like a `mismatch`: they make the run not verified also when other
-observers are `unverifiable` or `failed`. Staleness is read from the
-`rule_use` of this run's `ok` shards only.
+observers are `unverifiable` or `failed`.
+
+**Which `rule_use` is folded** (WP-114, as §10.6 does for `spellings`).
+Stale pairs, used rules and seen `kept` keys are read from the
+`rule_use` of this run's `verified` and `mismatch` shards only. That of
+an `unverifiable` shard is checked as above (present exactly when the
+run has rules, the run's `rules_id`, no index past the table or past
+`Declared.kept`; a shard that fails is not this run's) and not folded:
+the fold says what the run's post-image did with the rules, and an
+`unverifiable` observer's post-image may not be the run's (a guard of
+§5.3 refused it, or it changed during the job). Such an observer is
+`unverifiable` whatever its counts, so the run is `incomplete` (status 4)
+on its account, never `not verified` by a stale pair of it. *The cost,
+accepted*: an observer `unverifiable` only for a reason of its pre-image,
+whose post-image is the run's, has real counts, and a stale pair there is
+not reported until the observer verifies; the run is not verified
+meanwhile. A shard that fails before its verdict (`failed`, `diagnosed`,
+`rejected`) has no `rule_use` to fold.
 
 ### 9.4 What is added to the report (§7.1)
 
@@ -2689,7 +2713,13 @@ image overlay <overlay id>                       in place of the `image` lines o
 agreement rules <n> stale <n> unused <n>         when there are rules; `stale <n>` counts pairs
 stale rule <index> direct <n> kept_via <n> <main file>    at most 100, then `stale: <n> more (see the report)`
 unused rule <index>
+agreement read <n> of <m> observers: rule use of <k> unverifiable not read    when there are rules and k > 0
 ```
+
+`agreement read` follows the `unused rule` lines: `n` observers'
+`rule_use` was folded (those `verified` or `mismatch`), of the `m`
+selected, `k` of them `unverifiable` (§9.3). The JSON document needs no
+member for it: its `observers` counts by state give the same numbers.
 
 Nothing is added to the lines on standard error: those list observers by
 state, and a stale observer's state is whatever its verdict made it.

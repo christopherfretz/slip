@@ -414,8 +414,11 @@ pub struct Report {
     header: Header,
     /// The number of rules of `Declared.rules`.
     rules: usize,
-    /// Per rule: whether some `ok` shard of this run used it (§9.2).
+    /// Per rule: whether some folded shard of this run used it (§9.2).
     used_rules: Vec<bool>,
+    /// How many observers' `rule_use` was folded: those `verified` or
+    /// `mismatch` (§9.3; an `unverifiable` shard's is checked only).
+    rule_use_folded: u64,
     /// `Declared.kept`, and per key the observers whose read `rule_use`
     /// says some entity has it (§9.2: a kept key no observer has is
     /// reported like an exemption no observer needed).
@@ -478,6 +481,7 @@ impl Report {
             header,
             rules,
             used_rules: vec![false; rules],
+            rule_use_folded: 0,
             kept: declared.kept().to_vec(),
             kept_seen: vec![0; declared.kept().len()],
             pre: 0,
@@ -811,8 +815,9 @@ impl Report {
     /// The `spellings` and `rule_use` of an `ok` shard the state table
     /// accepted as `state`, of the observer at plan position `index`; the
     /// reason if the fold refuses the section (the shard is then not this
-    /// run's, and nothing of it is read). An unverifiable shard's post-image is
-    /// not the run's (§10.6): its section is checked, not folded.
+    /// run's, and nothing of it is read). An unverifiable shard's post-image
+    /// may not be the run's (§9.3, §10.6): its sections are checked (by
+    /// `ours` and the overlay's fold), not folded.
     fn read_sections(
         &mut self,
         index: u64,
@@ -839,7 +844,8 @@ impl Report {
                 return Err(refused_spellings(&e));
             }
         }
-        if let Some(u) = &s.rule_use {
+        if let (true, Some(u)) = (fold, &s.rule_use) {
+            self.rule_use_folded += 1;
             for x in &u.uses {
                 let r = usize::try_from(x.rule).unwrap_or(usize::MAX);
                 if x.via != 0 || x.direct != 0 || x.kept_via != 0 {
@@ -1370,6 +1376,14 @@ impl Report {
             }
             for r in unused {
                 let _ = writeln!(out, "unused rule {r}");
+            }
+            let unverifiable = self.states[State::Unverifiable.index()];
+            if unverifiable > 0 {
+                let _ = writeln!(
+                    out,
+                    "agreement read {} of {} observers: rule use of {unverifiable} unverifiable not read",
+                    self.rule_use_folded, self.selected
+                );
             }
         }
     }
