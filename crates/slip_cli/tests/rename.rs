@@ -977,3 +977,68 @@ fn s10_6_check_interrupted_in_verify() {
     assert!(out.stdout.lines().any(|l| l == "state incomplete"), "{out:?}");
     assert!(!t.path("store").join("lock").exists());
 }
+
+// §1 rule 3, §8.4: the scan step's residue does not depend on the threads:
+// one thread and eight over many files give the residue the result holds.
+#[test]
+fn s8_4_residue_does_not_depend_on_the_threads() {
+    use slip_cli::transform::residue::{extensions, residue};
+    let t = Tree::three_files("residue-threads");
+    for i in 0..24 {
+        t.write(&format!("src/extra/e{i:02}.h"), "int f(int); // f\nint g(int f);\n");
+    }
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    let set = edit_set(&t, "store", &out.id("edits"));
+    let trfm = t.path("store").join("transforms").join(format!("{}.trfm", out.id("transform")));
+    let transform = slip_model::Transform::from_bytes(&std::fs::read(trfm).unwrap()).unwrap();
+    let result = t.path("store").join("results").join(format!("{}.rslt", out.id("result")));
+    let result = TransformResult::from_bytes(&std::fs::read(result).unwrap()).unwrap();
+    assert_eq!(result.residue.len(), 24 * 3, "two not_planned and a mention a file");
+    // The files the observers read, as the run gives them: the residue of
+    // these files is the result's.
+    let mut read: Vec<Vec<u8>> = ["src/a.cpp", "src/b.cpp", "src/h.h"]
+        .iter()
+        .map(|r| t.path(r).to_str().unwrap().as_bytes().to_vec())
+        .collect();
+    read.sort();
+    let ext = extensions(None);
+    let one = residue(&transform, &set, &read, &[], &ext, 1).unwrap();
+    let eight = residue(&transform, &set, &read, &[], &ext, 8).unwrap();
+    assert_eq!(one, eight);
+    assert_eq!(one, result.residue);
+}
+
+// §10.2, WP-076 "Decisions" 7: a refused set given to `check` with
+// `--declared` concludes `refused`: no overlay is built, no verify phase
+// runs, the declared changes are not read.
+#[test]
+fn s10_2_check_of_a_refused_set_with_declared() {
+    let t = Tree::three_files("refused-declared");
+    t.write("src/b.cpp", "#include \"h.h\"\n#define CALL(x) f(x)\nint g() { return CALL(2); }\n");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    assert_eq!(out.value("state"), Some("refused"), "{out:?}");
+    std::fs::write(t.path("none.decl"), Declared::none().to_bytes()).unwrap();
+    let out = t.slip(&[
+        "check",
+        "--plan",
+        &plan,
+        "--round",
+        "1",
+        "--edits",
+        &out.id("edits"),
+        "--declared",
+        "none.decl",
+        "--store",
+        "store",
+    ]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(!out.has_line("overlay "), "{out:?}");
+    assert!(!out.has_line("declared "), "{out:?}");
+    assert!(!out.has_line("verify:"), "{out:?}");
+    assert!(out.stdout.lines().any(|l| l == "state refused"), "{out:?}");
+    let records = transform_runs(&t, "store", &plan);
+    assert_eq!(steps(records.last().unwrap()), [Conclude]);
+}
