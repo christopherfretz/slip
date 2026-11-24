@@ -38,6 +38,7 @@ fn map_shard(edits: Edits) -> Shard {
         rule_use: None,
         spellings: None,
         names: None,
+        negatives: None,
     }
 }
 

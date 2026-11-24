@@ -1,5 +1,6 @@
 //! The shard, kind `SHRD` (`spec/model.md` §8), with the sections of M2
-//! (`edits`, `binding`, `rule_use`, `spellings`; work package WP-060).
+//! (`edits`, `binding`, `rule_use`, `spellings`; work package WP-060) and
+//! `negatives` (work package WP-117).
 
 use crate::json::Value;
 use crate::verdict::VerdictKind;
@@ -12,8 +13,8 @@ use super::common::{
     read_list, read_record, read_str, read_uv,
 };
 use super::{
-    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, names, open,
-    read_container, render_container, seal, spellings, verdict,
+    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, names,
+    negatives, open, read_container, render_container, seal, spellings, verdict,
 };
 
 const HEADER: u64 = 1;
@@ -27,6 +28,7 @@ const BINDING: u64 = agreement::BINDING;
 const RULE_USE: u64 = agreement::RULE_USE;
 const SPELLINGS: u64 = spellings::ID;
 const NAMES: u64 = names::ID;
+const NEGATIVES: u64 = negatives::ID;
 
 use super::MESSAGE_MAX;
 
@@ -48,6 +50,7 @@ enum Loc {
     Names(names::Loc),
     /// A shard with `digests` and no `names`: at the `digests` payload.
     NoNames,
+    Negatives(negatives::Loc),
 }
 
 impl Loc {
@@ -65,6 +68,7 @@ impl Loc {
             Loc::Spellings(l) => l.path(),
             Loc::Names(l) => l.path(),
             Loc::NoNames => "sections.names".to_owned(),
+            Loc::Negatives(l) => l.path(),
         }
     }
 }
@@ -142,7 +146,7 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
     {
         return Some((Loc::Spellings(l), what));
     }
-    // spec/model.md §8.6: `names` with `digests`, and only with it.
+    // spec/model.md §8.7: `names` with `digests`, and only with it.
     match &s.names {
         None if s.digests.is_some() => {
             return Some((Loc::NoNames, "a shard with a digests section has no names section"));
@@ -158,6 +162,11 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
                 return Some((Loc::Names(l), what));
             }
         }
+    }
+    if let Some(n) = &s.negatives
+        && let Some((l, what)) = negatives::violation(n, phase, s.inputs.is_some())
+    {
+        return Some((Loc::Negatives(l), what));
     }
     None
 }
@@ -251,6 +260,14 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     if let Some(names) = &names {
         sections.push((NAMES, names));
     }
+    let negatives = s.negatives.as_ref().map(|x| {
+        let mut e = Encoder::new();
+        negatives::encode(&mut e, x);
+        e.into_bytes()
+    });
+    if let Some(negatives) = &negatives {
+        sections.push((NEGATIVES, negatives));
+    }
     seal(Shard::KIND, Shard::VERSION, &sections, extras)
 }
 
@@ -272,7 +289,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         Shard::VERSION,
         [
             HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, RULE_USE,
-            SPELLINGS, NAMES,
+            SPELLINGS, NAMES, NEGATIVES,
         ],
     )?;
     if opened.version < FIRST_READ {
@@ -291,6 +308,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         rule_use,
         spellings,
         names,
+        negatives,
     ] = opened.sections;
 
     let mut d = super::required(header, end, "shard has no header section")?;
@@ -382,6 +400,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             (Some(v), Some(at))
         }
     };
+    let (negatives, negatives_at) = match negatives {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = negatives::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
 
     let shard = Shard {
         observer,
@@ -397,6 +423,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         rule_use,
         spellings,
         names,
+        negatives,
     };
     if let Some((l, what)) = violation(&shard) {
         let at = match l {
@@ -428,6 +455,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
                 || unreachable!("no names section without digests"),
                 |o| o.of(digests::Loc::Section),
             ),
+            Loc::Negatives(l) => negatives_at.as_ref().map_or_else(
+                || unreachable!("a negatives violation without negatives"),
+                |o| o.of(l),
+            ),
         };
         return Err(malformed(at, what));
     }
@@ -437,7 +468,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
 // ---------------------------------------------------------------------------
 // JSON
 
-const SECTION_NAMES: [SectionName; 11] = [
+const SECTION_NAMES: [SectionName; 12] = [
     SectionName { id: HEADER, name: "header", required: true },
     SectionName { id: OUTCOME, name: "outcome", required: true },
     SectionName { id: INPUTS, name: "inputs", required: false },
@@ -449,6 +480,7 @@ const SECTION_NAMES: [SectionName; 11] = [
     SectionName { id: RULE_USE, name: "rule_use", required: false },
     SectionName { id: SPELLINGS, name: "spellings", required: false },
     SectionName { id: NAMES, name: "names", required: false },
+    SectionName { id: NEGATIVES, name: "negatives", required: false },
 ];
 
 pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
@@ -501,6 +533,9 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
     if let Some(x) = &s.names {
         sections.push(("names", names::render(x)));
     }
+    if let Some(x) = &s.negatives {
+        sections.push(("negatives", negatives::render(x)));
+    }
     render_container(Shard::KIND, Shard::VERSION, sections, extras)
 }
 
@@ -522,6 +557,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         rule_use,
         spellings,
         names,
+        negatives,
     ] = s.known
     else {
         unreachable!("read_container returns every required section")
@@ -565,6 +601,8 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
     let spellings =
         spellings.map(|v| spellings::read(v, &sections.key("spellings"))).transpose()?;
     let names = names.map(|v| names::read(v, &sections.key("names"))).transpose()?;
+    let negatives =
+        negatives.map(|v| negatives::read(v, &sections.key("negatives"))).transpose()?;
 
     let shard = Shard {
         observer,
@@ -580,6 +618,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         rule_use,
         spellings,
         names,
+        negatives,
     };
     if let Some((l, what)) = violation(&shard) {
         return Err(JsonFormError { path: l.path(), message: what.to_owned() });

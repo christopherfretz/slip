@@ -1,0 +1,3 @@
+changed template <class> int f(type-parameter-0-0)
+changed f<int>(int)
+exact derived

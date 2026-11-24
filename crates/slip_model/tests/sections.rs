@@ -248,7 +248,7 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
     out
 }
 
-/// The payload of a names section (WP-112, `spec/model.md` §8.6), and the
+/// The payload of a names section (WP-112, `spec/model.md` §8.7), and the
 /// offsets in it of each unit, each note and each note's name.
 fn raw_names(x: &Names) -> (Vec<u8>, Vec<usize>, Vec<usize>, Vec<usize>) {
     let mut e = Encoder::new();
@@ -359,6 +359,7 @@ fn map_shard() -> Shard {
         rule_use: None,
         spellings: None,
         names: Some(Names::default()),
+        negatives: None,
     }
 }
 
@@ -462,6 +463,7 @@ fn verify_shard() -> Shard {
         rule_use: None,
         spellings: None,
         names: Some(Names::default()),
+        negatives: None,
     }
 }
 
@@ -692,6 +694,7 @@ fn sample_map_shard(digests: Digests) -> Shard {
         rule_use: None,
         spellings: None,
         names: Some(Names::default()),
+        negatives: None,
     }
 }
 
@@ -1891,7 +1894,7 @@ fn spellings_invariants() {
 }
 
 // ---------------------------------------------------------------------------
-// The names section (section 27; WP-112, spec/model.md §8.6). Each row
+// The names section (section 27; WP-112, spec/model.md §8.7). Each row
 // refused, at the offset and path the spec names.
 
 /// A names section of keys `units` (each with names digest `key + 0x80`)
@@ -1920,7 +1923,7 @@ fn noted(names: Names) -> Shard {
     Shard { names: Some(names), ..verify_shard() }
 }
 
-// names rule 1 (spec/model.md §8.6): a shard with digests has names, and
+// names rule 1 (spec/model.md §8.7): a shard with digests has names, and
 // one without has none; refused at the digests payload, path
 // `sections.names`, in either direction.
 #[test]

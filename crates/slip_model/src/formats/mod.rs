@@ -41,6 +41,7 @@ mod digests;
 mod edits;
 mod editset;
 mod names;
+mod negatives;
 mod overlay;
 mod plan;
 mod result;

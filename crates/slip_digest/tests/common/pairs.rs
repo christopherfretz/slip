@@ -60,12 +60,56 @@ fn hard(a: &Digested, b: &Digested) -> Vec<String> {
     problems
 }
 
+/// The `indeterminate` lines of a `differ` test (`spec/digest.md` §14.1
+/// rule 3, WP-124): every unit of either side flagged for a cause other
+/// than `Pending` must be named by one, as `<name>` or as `<name>
+/// (<cause>)`, and every line must name such a unit on both sides. The
+/// keys of the units the lines name are left out of the comparison (an
+/// indeterminate unit equals nothing). Returns the problems and those keys.
+fn held_indeterminate(
+    expect: &BTreeSet<Expect>,
+    a: &Digested,
+    b: &Digested,
+) -> (Vec<String>, BTreeSet<Digest>) {
+    let lines: BTreeSet<&str> = expect
+        .iter()
+        .filter_map(|e| if let Expect::Indeterminate(n) = e { Some(n.as_str()) } else { None })
+        .collect();
+    let mut problems = Vec::new();
+    let mut held = BTreeSet::new();
+    for (side, d) in [("A", a), ("B", b)] {
+        let mut named = BTreeSet::new();
+        for (k, v) in &d.units {
+            for u in v {
+                if u.flags & 1 == 0 || matches!(u.cause, Some(Cause::Pending(_)) | None) {
+                    continue;
+                }
+                let with =
+                    format!("{} ({})", u.name, u.cause.map(|c| c.to_string()).unwrap_or_default());
+                match lines.iter().find(|l| **l == u.name || **l == with) {
+                    Some(l) => {
+                        named.insert(*l);
+                        held.insert(*k);
+                    }
+                    None => problems.push(format!("side {side}: indeterminate {with}")),
+                }
+            }
+        }
+        for l in lines.difference(&named) {
+            problems.push(format!("side {side}: `indeterminate {l}` names no unit flagged"));
+        }
+    }
+    (problems, held)
+}
+
 /// A must-differ test (`tests/differ.rs`): over declared and `tu` units,
 /// the keys whose units differ are exactly the `changed`, `added` and
 /// `removed` lines; every `derived-added` / `derived-removed` line holds;
 /// a `derived-changed` line holds when a key of its name differs in any
 /// way; with `exact derived` the derived differences are exactly the
-/// `derived-*` lines, `derived-changed` meaning both sides have it.
+/// `derived-*` lines, `derived-changed` meaning both sides have it. The
+/// `indeterminate` lines name the units that may be flagged, each on both
+/// sides ([`held_indeterminate`]); any other flagged unit fails the test.
 ///
 /// `Ok` holds the derived differences no line names, each as the line
 /// that would name it (for `SLIP_DIGEST_DERIVED=report`); one a
@@ -74,19 +118,12 @@ fn hard(a: &Digested, b: &Digested) -> Vec<String> {
 pub fn differ(dir: &Path) -> Result<Vec<String>, String> {
     let expect = expect(dir)?;
     let exact = exact_derived(dir)?;
-    if expect.is_empty() {
+    if expect.iter().all(|e| matches!(e, Expect::Indeterminate(_))) {
         return Err(if exact {
-            "a differ test needs at least one line in expect.txt besides `exact derived`".into()
+            "a differ test needs at least one line in expect.txt besides `exact derived` and `indeterminate`".into()
         } else {
-            "a differ test needs at least one line in expect.txt".into()
+            "a differ test needs at least one line in expect.txt besides `indeterminate`".into()
         });
-    }
-    if let Some(Expect::Indeterminate(n)) =
-        expect.iter().find(|e| matches!(e, Expect::Indeterminate(_)))
-    {
-        return Err(format!(
-            "`indeterminate {n}`: a differ test asserts no indeterminate unit; it belongs under tests/indeterminate"
-        ));
     }
     let a = digest_side(dir, Side::A)?;
     let b = digest_side(dir, Side::B)?;
@@ -100,12 +137,12 @@ pub fn judge_differ(
     a: &Digested,
     b: &Digested,
 ) -> Result<Vec<String>, String> {
-    let mut problems = hard(a, b);
-    problems.extend(judge_names(all, a, b, false));
     let expect = &without_names(all);
+    let (mut problems, held) = held_indeterminate(expect, a, b);
+    problems.extend(judge_names(all, a, b, false));
     let keys: BTreeSet<_> = a.units.keys().chain(b.units.keys()).copied().collect();
     let mut got = BTreeSet::new();
-    for k in &keys {
+    for k in keys.iter().filter(|k| !held.contains(*k)) {
         let (da, db) = (declared(a, k), declared(b, k));
         let name = if a.units.contains_key(k) { a.name(k) } else { b.name(k) };
         match (da.is_empty(), db.is_empty()) {
@@ -129,9 +166,11 @@ pub fn judge_differ(
     } else {
         got.extend(expect.iter().filter(|e| holds_loosely(e, &dd)).cloned());
     }
-    if got != *expect {
-        let missing: Vec<_> = expect.difference(&got).collect();
-        let extra: Vec<_> = got.difference(expect).collect();
+    let want: BTreeSet<Expect> =
+        expect.iter().filter(|e| !matches!(e, Expect::Indeterminate(_))).cloned().collect();
+    if got != want {
+        let missing: Vec<_> = want.difference(&got).collect();
+        let extra: Vec<_> = got.difference(&want).collect();
         problems
             .push(format!("expected but not seen: {missing:?}\nseen but not expected: {extra:?}"));
     }

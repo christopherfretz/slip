@@ -970,7 +970,7 @@ pub(crate) mod arg_view {
     pub(crate) const VALUE: Row = Row { tag: 3, decision: Decision::In };
     pub(crate) const TEMPLATE: Row = Row { tag: 4, decision: Decision::In };
     pub(crate) const TEMPLATE_EXPANSION: Row = Row { tag: 5, decision: Decision::In };
-    pub(crate) const EXPR: Row = Row { tag: 6, decision: Decision::Out };
+    pub(crate) const EXPR: Row = Row { tag: 6, decision: Decision::In };
     pub(crate) const PROFILE: Row = Row { tag: 7, decision: Decision::In };
     pub(crate) const PACK: Row = Row { tag: 8, decision: Decision::In };
 }

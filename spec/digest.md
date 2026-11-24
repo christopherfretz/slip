@@ -619,7 +619,13 @@ variable), whose parameters the own stream met first; then the
 owner of the variable of each expanded expansion statement is numbered
 too: Kiln keeps the statement's pattern parts in an instantiated body,
 so a specialisation's `definition` names its pattern's variable, by
-`Ref::outer`. So the numbers cannot depend on
+`Ref::outer`. So is the owner of the variable a lifetime-extended
+temporary extends, when that owner is a template's pattern or a member
+of one: Kiln shares a non-dependent temporary of a pattern's body with
+its instantiations (a range-`for` over a prvalue: the temporary's
+`LetData` `extending` is the pattern's `__range` variable), so the
+specialisation's `definition` names that variable by `Ref::outer` too
+(WP-123). So the numbers cannot depend on
 the order units are written in, and each owner is numbered once. A
 local type that the numbering of its owner does not find (a
 lambda-expression that only a type holds, an owner that is a namespace
@@ -880,7 +886,11 @@ object is unspecified by the language and is not digested.
   dependent name's identifier and nested-name structure; for an unresolved
   call, the set of declarations found at the definition (as sorted `Ref`s)
   and whether the name is subject to argument-dependent lookup at
-  instantiation.
+  instantiation. Its explicit template arguments are written too, and an
+  expression among them that no template was chosen to convert it for
+  (`get<n::k>(t)`) is the pattern's own expression, walked in full as
+  every other (§6; `digest-kinds.md` §4.6 `ArgView` `Expr`, WP-123), so
+  what it names is compared under the rules.
 - Template parameters are `Ref::template_param`; their names are not
   digested.
 - Each specialisation that exists in the translation unit is a unit: an
@@ -1126,7 +1136,7 @@ A `__func__` or `__PRETTY_FUNCTION__` in a default is none of these: Kiln
 records no value of it at a use (its value is its declaration context's,
 `""` outside a function), and it is written, and fed, where the default is.
 
-Per key (`model.md` §8.6): a key with one unit that has a names digest has
+Per key (`model.md` §8.7): a key with one unit that has a names digest has
 it; a key with several has `H("slip.names.key.v1", count, digests)` of
 them in its units' order. Its file and name are its first such unit's.
 
@@ -1147,6 +1157,20 @@ this spec says:
   (`Unsupported("typedef/alignment-by-declaration")`, `digest-kinds.md`
   §4.2 rule 9: Kiln's `alignof` and its cached layout read different
   declarations);
+- it holds a constructor definition whose mem-initializers the AST does
+  not hold: one Kiln did not check because its class or the definition
+  itself is in a template (`DEPENDENT_CTX`) or it is invalid, with a
+  ctor-initializer or without, since the AST does not say which
+  (`Unsupported("kiln/pattern-mem-initializers")`,
+  `spec/landed/digest/WP-124.md`); an instantiation's constructor holds
+  its own list and is not one. A local class is in the unit of what
+  holds it, so the unit is the constructor's own only for a class
+  member; for a local class it is the holder's: a function or member
+  function (its body, or a lambda in it), a friend's body, a data
+  member (a lambda in its default member initialiser), a member function
+  (a lambda in a default argument), a class template (a lambda in a
+  default template argument), a concept, a variable template, and a
+  function that is not a template whose expansion statement holds one;
 - its key collides with another entity's (§3.4);
 - it holds demand-driven state that `digest-kinds.md` could not assign to a
   derived unit;
@@ -1412,8 +1436,14 @@ A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
 2. A name is the name of the key's first unit, from side A when A has
    the key. Lines are compared by name: a line names every key of its
    name, and two keys of one name that differ the same way are one line.
-3. **`differ`** reads every line but `indeterminate`, and needs one
-   besides the directive. Over declared and `tu` units, the keys that
+3. **`differ`** reads every line, and needs one besides the directive
+   and the `indeterminate` lines. An `indeterminate` line there is
+   `indeterminate <name>` or `indeterminate <name> (<cause>)`, the cause
+   as §10 writes it: the units flagged for a cause other than `Pending`
+   are, on each side, exactly those the lines name, and their keys are
+   left out of what follows (WP-124: a pattern indeterminate while its
+   instantiation shows the change). Over the other declared and `tu`
+   units, the keys that
    differ are exactly the `changed`, `added` and `removed` lines, whatever
    the `derived-*` lines are. A `derived-added` or `derived-removed` line
    that does not hold fails the test, with or without the directive.
@@ -1454,7 +1484,7 @@ A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
   tests each area adds to it — §12.1.
 - `crates/slip_model/tests/formats.rs` — §11, the section's encoding;
   `crates/slip_model/tests/sections.rs` — the `names` section
-  (`model.md` §8.6).
+  (`model.md` §8.7).
 - `spec/pitfalls.md` and its tests — the mutation catalogue.
 
 ## Open questions

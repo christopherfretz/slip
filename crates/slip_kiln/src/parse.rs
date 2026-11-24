@@ -17,7 +17,7 @@ use crate::kiln::lex::{Interner, LexOptions};
 use crate::kiln::oven::Oven;
 use crate::kiln::pp::PpRecord;
 use crate::kiln::source::{FileId, FileOrigin, Loc, SourceManager};
-use crate::lookups::Lookups;
+use crate::lookups::{Driver, Lookups};
 
 /// What the front end of [`parse_observer_with`] keeps beyond what the
 /// parse task needs. Every option is off by default, and the shard does not
@@ -490,6 +490,7 @@ fn new_shard(
         rule_use: None,
         spellings: None,
         names: None,
+        negatives: None,
     }
 }
 
@@ -549,7 +550,7 @@ pub fn parse_observer_with<R: Send>(
     let (program_ref, line_ref) = (&program, &line);
     let see = move |fe: &FrontEnd<'_, '_>| -> Result<(Vec<FileRef>, u64, R), String> {
         let (inputs, buffers) = collect_inputs(fe, dir)?;
-        let lookups = Lookups::of(fe, || embed_dirs(program_ref, line_ref));
+        let lookups = Lookups::of(fe, || driver(program_ref, line_ref));
         let unit = Unit {
             ast: fe.ast,
             sm: fe.sm,
@@ -617,11 +618,11 @@ fn fe_options(options: ParseOptions) -> FrontEndOptions {
     fe
 }
 
-/// The `--embed-dir` directories of the front end's line as Kiln's driver
-/// parses them (the lookup log does not name them), from the line as
-/// `run_front_end` reads it.
-fn embed_dirs(program: &str, line: &[String]) -> Vec<String> {
-    Args::parse_as(program, &kiln_driver::rsp::expand(line)).embed_dirs
+/// What the lookup log does not name (the `--embed-dir` directories, the
+/// command's own search directories), from the front end's line as Kiln's
+/// driver parses it, as `run_front_end` reads it.
+fn driver(program: &str, line: &[String]) -> Driver {
+    Driver::of(&Args::parse_as(program, &kiln_driver::rsp::expand(line)))
 }
 
 fn rejected(message: &str) -> Outcome {

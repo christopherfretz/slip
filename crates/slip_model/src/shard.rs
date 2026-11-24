@@ -77,8 +77,13 @@ pub struct Shard {
     /// Section 26: the spelled-entity checks (`spec/verify.md` §10.4); only
     /// for phase `Verify` and status `Ok`.
     pub spellings: Option<Spellings>,
-    /// Section 27: the names digests (`spec/model.md` §8.6), and in a
+    /// Section 27: the names digests (`spec/model.md` §8.7), and in a
     /// verify shard the notes (`spec/verify.md` §4.4); present exactly
     /// when `digests` is.
     pub names: Option<Names>,
+    /// Section 28: the negative inputs (`spec/model.md` §8.6), each place
+    /// the map parse looked for a file and found none, as a path, sorted
+    /// and unique; only for phase `Map` and with `inputs`. Absent: the
+    /// parse that wrote the shard did not record them.
+    pub negatives: Option<Vec<Vec<u8>>>,
 }

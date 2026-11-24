@@ -620,7 +620,7 @@ pub fn compare_groups(
 /// §4.4 (WP-112): the keys that have a names digest in both images and
 /// whose names digests differ, ascending. A key with a names digest in one
 /// image only gives nothing. `pre` and `post` are a `names` section's
-/// `units`: strictly ascending by key (`spec/model.md` §8.6).
+/// `units`: strictly ascending by key (`spec/model.md` §8.7).
 pub fn names_changed(pre: &[NamesEntry], post: &[NamesEntry]) -> Vec<Digest> {
     let mut out = Vec::new();
     let (mut i, mut j) = (0, 0);

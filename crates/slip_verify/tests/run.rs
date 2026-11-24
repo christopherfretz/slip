@@ -87,6 +87,7 @@ fn ok_shard(obs: u8, verdict: Verdict, by_kind: Option<[u64; 6]>) -> Shard {
         rule_use: None,
         spellings: None,
         names: Some(Names::default()),
+        negatives: None,
     };
     s.validate().expect("a valid shard");
     s
@@ -113,6 +114,7 @@ fn unparsed_shard(obs: u8, status: Status, message: &str) -> Shard {
         rule_use: None,
         spellings: None,
         names: None,
+        negatives: None,
     };
     s.validate().expect("a valid shard");
     s
@@ -1181,7 +1183,7 @@ fn s7_1_strict_names_makes_notes_findings() {
     assert_eq!(r.verdict(), RunVerdict::Verified);
 }
 
-// §4.4, model §8.6 row 1: a shard with `digests` and no `names` breaks
+// §4.4, model §8.7 row 1: a shard with `digests` and no `names` breaks
 // its format, so `add` never reads a result from it: a `verified` or
 // `mismatch` shard without the section is `failed`, not a shard without
 // notes, with the option or without it (the same holds of any shard with

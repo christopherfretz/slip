@@ -1,5 +1,5 @@
 //! The `names` section, id 27 of a shard of phase `map` or `verify`
-//! (`spec/model.md` §8.6). Work package WP-112; the order of checks,
+//! (`spec/model.md` §8.7). Work package WP-112; the order of checks,
 //! offsets and paths are `spec/landed/verify/WP-112.md` §2.
 
 use crate::json::Value;
@@ -50,7 +50,7 @@ pub(super) struct Context {
 }
 
 /// The first violation, each rule over its whole list before the next
-/// (`spec/model.md` §8.6, rows 2 to 7; row 1, the section's presence, is
+/// (`spec/model.md` §8.7, rows 2 to 7; row 1, the section's presence, is
 /// the shard's): status `ok`; a `digests` section; `units` strictly
 /// ascending by key; no note in a shard of phase `map`, nor in one whose
 /// verdict is not `verified` or `mismatch`; `notes` strictly ascending by

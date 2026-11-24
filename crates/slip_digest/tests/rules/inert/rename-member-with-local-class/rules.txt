@@ -1,0 +1,3 @@
+# WP-134 item 3 (the review of WP-131): a rename of a member function and of a member function template of a class template, each holding a local class with a conversion function: the instantiations' members follow their patterns' new names, the local classes keep their own numbers
+relocate W::m() const => W :: n
+relocate template <class> int W::mt(type-parameter-1-0) const => W :: nt

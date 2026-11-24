@@ -42,4 +42,3 @@ bad-4:  mismatch changed drop(Widget *) @ main.cpp:3
 good-5: verified
 good-6: verified
 bad-6:  mismatch derived_changed box<Mine>::found @ traits.h:7
-xfail bad-3: place, WP-128: the pre side of changed pick<int>() is placed at pick.h:1 (the primary's line), not at the explicit specialisation in pick_int.h:1 (spec/verify.md §6.1)

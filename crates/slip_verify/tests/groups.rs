@@ -314,6 +314,7 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
         rule_use: None,
         spellings: None,
         names: Some(slip_model::names::Names::default()),
+        negatives: None,
     };
     shard.validate()?;
     cov.used += u64::from(!full.used.is_empty());

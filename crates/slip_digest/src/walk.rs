@@ -327,7 +327,7 @@ pub(crate) struct Walk<'a> {
 pub(crate) const NAMES_TAG: &str = "slip.names.v1";
 
 /// `H("slip.names.key.v1", count, digests)`: the names digest of a key
-/// with several units that have one (`spec/model.md` §8.6).
+/// with several units that have one (`spec/model.md` §8.7).
 pub(crate) const NAMES_KEY_TAG: &str = "slip.names.key.v1";
 
 /// What [`Walk::take_types`] puts aside.
@@ -679,7 +679,7 @@ pub(crate) fn run_with<R>(
 /// `written`): one entry per key, sorted by key. A key whose units have
 /// one names digest has it; a key with several has
 /// `H("slip.names.key.v1", count, digests)` of them in the order of its
-/// units, by `(digest, names digest)` (`spec/model.md` §8.6). Its file and
+/// units, by `(digest, names digest)` (`spec/model.md` §8.7). Its file and
 /// name are those of the first of these units.
 fn name_strings(w: &Walk<'_>, written: &[Written], fed: &[(usize, Digest)]) -> Vec<NamesUnit> {
     if fed.is_empty() {

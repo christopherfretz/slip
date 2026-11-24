@@ -1,5 +1,5 @@
 //! Section 27, `names`, of a shard of phase `map` or `verify`
-//! (`spec/model.md` §8.6): the names digest of each key whose units hold a
+//! (`spec/model.md` §8.7): the names digest of each key whose units hold a
 //! name-derived string written symbolically (`spec/digest.md` §9 "The
 //! names digest"), and, in a verify shard, the keys whose names digest
 //! differs from the pre shard's (`spec/verify.md` §4.4). Work package
@@ -16,7 +16,7 @@ pub struct NamesEntry {
     /// The mapped key.
     pub key: Digest,
     /// Its names digest: of its one unit that has one, or of its units'
-    /// (`spec/model.md` §8.6).
+    /// (`spec/model.md` §8.7).
     pub names: Digest,
 }
 
@@ -32,7 +32,7 @@ pub struct NameNote {
     pub name: String,
 }
 
-/// Section 27 (`spec/model.md` §8.6).
+/// Section 27 (`spec/model.md` §8.7).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Names {
     /// Strictly ascending by key.

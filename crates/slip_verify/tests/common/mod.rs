@@ -225,6 +225,7 @@ impl Run {
             rule_use: None,
             spellings: None,
             names: None,
+            negatives: None,
         }
     }
 
