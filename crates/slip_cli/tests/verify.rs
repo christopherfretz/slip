@@ -715,6 +715,41 @@ fn s7_1_strict_names_on_the_command_line() {
     assert_eq!(g[0].get("kind").unwrap().as_str(), Some("names_changed"), "{report:?}");
 }
 
+// spec/verify.md §4.4, spec/digest.md §9 "The names digest" (WP-125 item
+// 2): a function template passes its `__PRETTY_FUNCTION__` on, and the
+// post-image respells its parameter type (`decltype(ns::S::value)` to
+// `decltype(::ns::S::value)`, which the instantiation's string prints).
+// Nothing is declared and every unit's digest is equal, so the run is
+// `verified`; the report notes the one instantiation, by its key's name.
+#[test]
+fn s4_4_names_note_for_a_respelled_template_parameter() {
+    let f = Fixture::new("respelled-template");
+    let pre = "namespace ns { struct S { static int value; }; }\n\
+               void take(const char *);\n\
+               template <class T> void h(T, decltype(ns::S::value)) { take(__PRETTY_FUNCTION__); }\n\
+               void u() { h(1, 1); }\n";
+    f.write("s/u0.cpp", pre);
+    f.write("post/u0.cpp", &pre.replace("decltype(ns::", "decltype(::ns::"));
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let (out, report) = f.verify_report(&plan, &img);
+    assert_verdict(&out, &report, "verified");
+    assert_eq!(u64_at(&report, "names_changed.total"), 1, "{report:?}");
+    let notes: Vec<&str> = out
+        .stdout
+        .lines()
+        .filter(|l| l.starts_with("note: name-derived string changed: "))
+        .collect();
+    assert_eq!(notes.len(), 1, "{out:?}");
+    assert!(
+        notes[0].starts_with("note: name-derived string changed: h<int>(int, int) @ "),
+        "{out:?}"
+    );
+    assert_eq!(get(&report, "findings.groups").as_array().unwrap().len(), 0, "{report:?}");
+}
+
 // spec/verify.md §2.3 `m(P')`: a `relocate` whose parent is named as the
 // post-image has it (`fresh`, which only the post-images declare) is
 // resolved through the post-images' records: the class moved into the
@@ -1451,6 +1486,104 @@ fn wp140_redirected_references_declared() {
     let (out, report) = f.verify_report(&plan, &with);
     assert_verdict(&out, &report, "verified");
     assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 0"), "{out:?}");
+}
+
+// WP-140 review F4: a namespace's unit in the owned view is reported under
+// the name its key denotes and the namespace it is a part of. u1 is
+// untouched and writes a using-directive in the dependency's `fresh`, so
+// `fresh` holds something owned there and has a unit keyed `old`, with no
+// partner in u1's pre-image: `added old (the owned part of fresh)`. The
+// name is what `slip declare` takes: `created` of it, and the directive
+// moved under it declared, verifies; `kept` of it is accepted and exempts
+// nothing.
+#[test]
+fn wp140_a_view_unit_is_named_by_its_key_and_its_namespace() {
+    let f = Fixture::new("wp140-view-name");
+    f.both("dep/d.h", "namespace fresh { struct D {}; }\nnamespace other { int o(); }\n");
+    let u0 = "#include \"dep/d.h\"\nnamespace old { int f(int x) { return x; } }\nint u0() { return old::f(1); }\n";
+    f.write("s/u0.cpp", u0);
+    f.write("post/u0.cpp", &u0.replace("old", "fresh"));
+    f.both(
+        "u1.cpp",
+        "#include \"dep/d.h\"\nnamespace fresh { using namespace other; }\nint u1() { return 1; }\n",
+    );
+    f.db(&["u0.cpp", "u1.cpp"]);
+    let plan = f.parse();
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s", "--readonly", "s/dep"]);
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "not_verified");
+    let mut found = groups(&report);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("added".to_owned(), "fresh::<using_directive other>".to_owned()),
+            ("added".to_owned(), "old (the owned part of fresh)".to_owned()),
+            ("removed".to_owned(), "fresh::<using_directive other>".to_owned()),
+        ],
+        "{out:?}"
+    );
+    f.write(
+        "t.txt",
+        "relocate old => :: fresh\ncreated old (the owned part of fresh)\nremoved fresh::<using_directive other>\ncreated fresh::<using_directive other>\n",
+    );
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert!(out.stdout.contains("created 2\nremoved 1\n"), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "verified");
+    assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 0"), "{out:?}");
+    f.write("t.txt", "relocate old => :: fresh\nkept old (the owned part of fresh)\n");
+    // `kept` takes the name too (its key is the view unit's), and exempts
+    // nothing: it says an entity stays in the old namespace (§9.2), which
+    // the stale check reads; the three findings stay.
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert!(out.stdout.contains("kept 1\n"), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "not_verified");
+    assert_eq!(groups(&report).len(), 3, "{out:?}");
+}
+
+// WP-140 review F3: an empty owned `namespace old {}` moved to `namespace
+// fresh {}`, which the dependency opens, holds nothing: `fresh` has no
+// owned view, and the pre-image's `old` has no partner (`removed old`, a
+// stated limit, `spec/verify.md` "Open questions"). It is declared as a
+// removal, which verifies.
+#[test]
+fn wp140_empty_opening_moved_is_a_declared_removal() {
+    let f = Fixture::new("wp140-empty-opening");
+    f.both("dep/d.h", "namespace fresh { struct D {}; }\n");
+    let pre = "#include \"dep/d.h\"\nnamespace old { }\nint u0() { return sizeof(fresh::D); }\n";
+    f.write("s/u0.cpp", pre);
+    f.write("post/u0.cpp", &pre.replace("namespace old", "namespace fresh"));
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s", "--readonly", "s/dep"]);
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "not_verified");
+    assert_eq!(groups(&report), [("removed".to_owned(), "old".to_owned())], "{out:?}");
+    f.write("t.txt", "relocate old => :: fresh\nremoved old\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "verified");
 }
 
 // WP-111 (WP-053 review F2): an `--owned` entry that covers no file a

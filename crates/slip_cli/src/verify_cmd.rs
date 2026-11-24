@@ -345,6 +345,7 @@ mod tests {
             spellings: None,
             names: None,
             negatives: None,
+            found: None,
         }
         .to_bytes()
     }

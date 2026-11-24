@@ -308,7 +308,7 @@ fn name_of(w: &Walk<'_>, u: &Written, output: &Output) -> Result<String, String>
 /// A namespace's unit in a view that is not its own (`view`,
 /// `units::view_units`, WP-140) has the key of that view, computed again
 /// the same way.
-fn key_again(w: &mut Walk<'_>, d: DeclId, view: Option<bool>) -> Option<Key> {
+pub(crate) fn key_again(w: &mut Walk<'_>, d: DeclId, view: Option<bool>) -> Option<Key> {
     let e = w.entity(d);
     if !w.enter() {
         return None;

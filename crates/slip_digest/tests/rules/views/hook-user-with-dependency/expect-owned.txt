@@ -1,0 +1,7 @@
+# Every file owned: dep.h's acme is owned and mapped; hook, owned, is left in legacy: direct 1.
+added acme::Dep
+added acme::call()
+removed acme
+removed acme::Dep
+removed acme::call()
+use 1 via 1 direct 1

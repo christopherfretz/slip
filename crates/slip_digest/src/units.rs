@@ -62,6 +62,12 @@ pub(crate) struct Written {
     /// ([`view_units`], WP-140), that view (`true`: owned); `None` for
     /// every other unit.
     pub view: Option<bool>,
+    /// For a view unit, the name its key denotes (`legacy` for the owned
+    /// view of a dependency's `acme` under `relocate legacy => :: acme`),
+    /// read from the key; `None` for every other unit, and when the key's
+    /// name is not one a namespace has. `names::names` reports a view unit
+    /// as `<denotes> (the owned part of <namespace>)` (WP-140 review F4).
+    pub denotes: Option<String>,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -645,6 +651,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         owner: None,
         collided: false,
         view: None,
+        denotes: None,
     })
 }
 
@@ -764,6 +771,7 @@ pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
             let _ = f.write_all(out.as_bytes());
         }
     }
+    let first_view = written.len();
     for (i, e) in views {
         let KeyRes::Key { id: own, .. } = w.key(e) else { continue };
         let view = !w.owned(e);
@@ -778,6 +786,12 @@ pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
                 let mut u = written[i].clone();
                 u.key = id;
                 u.view = Some(view);
+                // A guard (WP-140 review F5): a namespace key's cause is made
+                // of its name's (an identifier or the unnamed namespace:
+                // none) and its parents', which are the same namespaces'
+                // in either view, so the view key's cause is the own key's,
+                // which the own unit already holds (`write`). No source
+                // makes the two differ.
                 if let Some(c) = cause {
                     u.cause = Some(merge(u.cause, c));
                 }
@@ -786,12 +800,71 @@ pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
                 }
                 written.push(u);
             }
+            // A guard (WP-140 review F5): an error of a namespace key
+            // (a refused table, a bad name) is the same in either view and
+            // would have left the own key without one (`continue` above);
+            // an abort (depth, cycle) cannot happen here, at depth 0 with
+            // the enclosing namespaces' keys in this view asked, and
+            // memoised, before their members' (`written` is in arena
+            // order). No source reaches this arm.
             KeyRes::None(cause) => {
                 let c = cause.unwrap_or(Cause::Unaccounted("key/view"));
                 written[i].cause = Some(merge(written[i].cause, c));
             }
         }
     }
+    if first_view == written.len() {
+        return;
+    }
+    // The name each view unit's key denotes, from its key and the names its
+    // parents' keys denote (a parent is a namespace's own or view unit).
+    let mut by_key = std::collections::HashMap::new();
+    for (j, u) in written.iter().enumerate() {
+        if u.kind == KeyKind::Namespace && u.resolved.is_none() && u.default_argument.is_none() {
+            by_key.entry(u.key).or_insert(j);
+        }
+    }
+    let mut memo = std::collections::HashMap::new();
+    for i in first_view..written.len() {
+        let id = written[i].key;
+        written[i].denotes = denoted(w, written, &by_key, &mut memo, id, 0);
+    }
+}
+
+/// The qualified name the namespace key `id` denotes (`Written::denotes`):
+/// its key's identifier (or the unnamed namespace) under the name its
+/// parent's key denotes. `None` when a part has another form, or a parent
+/// is no namespace unit here.
+fn denoted(
+    w: &mut Walk<'_>,
+    written: &[Written],
+    by_key: &std::collections::HashMap<Digest, usize>,
+    memo: &mut std::collections::HashMap<Digest, Option<String>>,
+    id: Digest,
+    depth: u32,
+) -> Option<String> {
+    if let Some(n) = memo.get(&id) {
+        return n.clone();
+    }
+    if depth > 64 {
+        return None;
+    }
+    let u = &written[*by_key.get(&id)?];
+    let key = crate::records::key_again(w, u.entity?, u.view)?;
+    let leaf = match &key.name {
+        Name::Identifier(s) => String::from_utf8_lossy(s).into_owned(),
+        Name::Anonymous => "(anonymous namespace)".to_owned(),
+        _ => return None,
+    };
+    let name = match key.parent {
+        Parent::Root => Some(leaf),
+        Parent::Unit(p) => {
+            denoted(w, written, by_key, memo, p, depth + 1).map(|p| format!("{p}::{leaf}"))
+        }
+        Parent::CLinkage | Parent::Builtin => None,
+    };
+    memo.insert(id, name.clone());
+    name
 }
 
 /// Whether the namespace `n` holds something in `view` (`view_units`):
@@ -867,6 +940,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         resolved: None,
         default_argument: None,
         view: None,
+        denotes: None,
     }
 }
 

@@ -475,33 +475,52 @@ keyed: the same namespace can have two keys in one walk, one for its
 owned members and one for its dependency members, and its own unit has
 the key of its own ownership.
 
-**A namespace's unit in each view** (WP-140). A namespace has a unit
-under the key of each view in which it has an opening or a member: the
-**owned view** (the rules applied along its chain) if one of its
-declarations lies in an owned file (bullet 1 of `verify.md` §2.1, per
-declaration) or an owned entity is keyed with it as its namespace
-parent; the **dependency view** (no rule) if one of its declarations
-does not, or a dependency entity is keyed under it. Its own ownership's
-view is its own unit. A unit in the other view is written only when that
-view exists and its key differs from the namespace's own key, so that a
-table that maps nothing adds none (and the dedup below is not relied
-on). Every such unit has the namespace's **one digest**, the digest of
-its own unit (every opening: the `inline` bit and the attributes of the
-whole chain), and the own unit's cause, merged with the view key's; a
-view whose key cannot be formed makes the own unit indeterminate. The
-digest is not per view: a fact that one view's openings hold (an
-`inline` written only by the dependency, a `[[deprecated]]` added by an
-owned opening) changes what the other view's members mean
-(`spec/landed/digest/WP-140.md`, why option A, a digest per view,
-was rejected; fixtures
-`tests/rules/views/inline-reopened-plain`, `deprecated-owned-opening`,
-`deprecated-dependency-opening`). Its cost: an attribute that applies
-only to the declarations of its own opening (`visibility`) changes both
-views' units, and fails closed (`views/visibility-owned-opening`). So a
-move into a namespace that a dependency also opens compares the owned
-view's unit with the pre-image's namespace (`verify.md` §2.1). Units are
-added, never changed: no key or digest of a member moves, and no
-pre-image (digested under the empty table) has a unit in a view.
+**A namespace's unit in each view** (WP-140). A namespace is owned iff
+none of its openings lies in a read-only file (`verify.md` §2.1); its
+own unit is keyed in that view. It has a unit in the **other** view too
+when that view exists. **A view of a namespace exists iff a member of
+that ownership exists in it**, where a member is (a) an entity whose
+semantic parent is the namespace, declared by the source or made by the
+compiler (`std::__va_list`, the implicit `std::align_val_t`), (b) a
+written content-keyed declaration (using-directive, namespace alias,
+using-declaration, `static_assert`), or (c) a nested namespace, named,
+inline or unnamed, one of whose views of that ownership exists. An
+opening alone is nothing; a declaration the compiler makes that is no
+entity (the using-directive an unnamed namespace implies) is nothing.
+The predicate is decided from the declarations of the image, never from
+what the walk keyed (`Walk::ns_holds`, one function for this unit and
+for `E(k)` below; WP-141). The **owned view** applies the rules along the chain; the
+**dependency view** applies none. So an empty owned opening, one that holds only empty nested namespaces, or one
+that holds only an explicit specialisation (keyed under its template, not
+under the namespace) holds nothing (WP-140 review F3, the definition of
+`docs/wp/WP-141.md` Addendum A4; fixtures `tests/rules/views/untouched-*`).
+The unit in the other view is written only when its key differs from the
+namespace's own key, so that a table that maps nothing adds none (and the
+dedup below is not relied on). It has the namespace's **one digest**, the
+digest of its own unit (every opening: the `inline` bit and the
+attributes of the whole chain), and the own unit's cause. The digest is
+not per view: a fact that one view's openings hold (an `inline` written
+only by the dependency, a `[[deprecated]]` added by an owned opening)
+changes what the other view's members mean
+(`spec/landed/digest/WP-140.md`, why option A, a digest per view, was
+rejected; fixtures `tests/rules/views/inline-reopened-plain`,
+`deprecated-owned-opening`, `deprecated-dependency-opening`). Its cost:
+an attribute that applies only to the declarations of its own opening
+(`visibility`) changes both views' units, and fails closed
+(`views/visibility-owned-opening`). So a move into a namespace that a
+dependency also opens compares the owned view's unit with the pre-image's
+namespace (`verify.md` §2.1). A view unit is **named** by the name its
+key denotes and the namespace it is a part of: `legacy (the owned part of
+acme)`, `acme (the dependency's part of acme)` (review F4), in findings,
+record errors and `slip units`, and `slip declare` takes that name.
+**Units are only added**: no key, digest or cause of another unit moves
+(no member's key, and not the own unit's), and no pre-image (digested
+under the empty table) has a unit in a view. The view key's cause and a
+view key that cannot be formed are guards: a namespace key's cause and
+errors are made of its names' and its parents', the same namespaces' in
+either view, so the view key's are the own key's, which the own unit
+already has (`units::view_units`). A **reference** to a namespace is
+written as the next paragraph says (WP-141).
 
 **A reference to a namespace** (WP-141, build A). A namespace is
 referred to by a view key. With one view key there is nothing to
@@ -538,12 +557,8 @@ nominates, and the target of a namespace alias. In a read-only file
 with its key in the dependency view (its one view key if it has no
 dependency part), never `Ref::part`. In an owned file it has a
 **reading** for each of its view keys `k`. A namespace **holds
-something under `k`** if, in a view of it whose key is `k`, it has a
-read-only opening, or an entity that is not a namespace keyed under it
-(a using-directive, an alias, a using-declaration and a `static_assert`
-in an owned opening count), or a nested namespace that itself holds
-something in that view; an owned opening that is empty, or holds only
-empty nested namespaces, holds nothing. `E(k)` is the set of namespaces
+something under `k`** if a view of it whose key is `k` exists, by the
+definition of the paragraph above (the same predicate). `E(k)` is the set of namespaces
 of the image that hold something under `k`. The reference is **whole
 for `k`** if every namespace of `E(k)` is named: by this alias; or, for
 a using-directive, by the using-directives of the same enclosing
@@ -1354,10 +1369,20 @@ to void. It is 2 since WP-113 (the row `enclosing`, `spec/digest-kinds.md`
 §1.7); WP-107's rule 9 (an aligned typedef is written as sugar,
 `spec/digest-kinds.md` §4.2) landed in it the same day, before a baseline
 of scheme 2 was recorded. WP-140 (a namespace's unit in each view,
-§3.4) changes no stream, key or table row: it adds namespace units to a
-post-image digested under a table that maps a chain with openings or
-members of both ownerships, which opens equalities and closes no wrong
-equal; no baseline of scheme 2 is recorded, so it shares the number.
+§3.4) changes no stream, key or table row and no existing unit: it adds,
+to a post-image digested under a table that maps a namespace's chain, a
+unit for each namespace that holds something in its other view. Which
+comparisons that can change, and how: the pre-image's namespace unit
+that had no partner (`removed legacy`) gets one, so that difference
+becomes equal when the digests agree, or `changed` when they do not (an
+attribute or `inline` of the namespace's openings); a view unit with no
+partner is `added`, which happens only in an observer that already
+differs (an owned entity keyed under it has no partner either: a
+pre-image entity under `legacy` implies a unit `legacy`); a view unit
+whose key is another unit's with a different digest is a collision,
+indeterminate (fails closed). No comparison goes from a difference of a
+member to equal. No baseline of scheme 2 is recorded, so it shares the
+number.
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit that has a location (below). A derived unit belongs to the

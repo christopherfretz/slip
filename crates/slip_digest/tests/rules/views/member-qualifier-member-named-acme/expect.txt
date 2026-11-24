@@ -1,0 +1,8 @@
+# pending
+# needs: kiln (WP-140 review F2, sent to Kiln by the coordinator): in b.cpp, t.acme::B::f() with
+# T = W, which has a member class acme, looks acme up in W first ([basic.lookup.qual.general]):
+# clang 19 calls WB::f, where a.cpp's t.legacy::B::f() calls legacy::B::f. Kiln's instantiation
+# keeps the namespace acme, so today the two sides are equal: a wrong equal of the member-qualifier
+# row (views/member-qualifier-spelled), which holds only when no object class has a member named
+# like the new root. Once Kiln instantiates it as clang does, the instantiation differs.
+derived-changed f<W>(W)::<definition>

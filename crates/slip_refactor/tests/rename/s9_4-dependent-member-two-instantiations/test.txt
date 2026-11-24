@@ -1,0 +1,4 @@
+spec: edits.md §9.4 (two instantiations, one binding the name to a subject and one elsewhere: refuse mixed_instances), WP-127 item 2
+from: n::S::f
+to: g
+kind: function

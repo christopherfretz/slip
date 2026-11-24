@@ -20,6 +20,7 @@ use slip_kiln::kiln::ast::templates::SpecKind;
 use slip_kiln::kiln::ast::{Ast, DeclId};
 
 use super::KilnSubject;
+use crate::subject::Unqualified;
 use crate::wire;
 
 /// Whether a declaration of this kind is a value of the subject: an entity
@@ -489,10 +490,29 @@ impl<'u> KilnSubject<'u> {
     /// named scope to `e`, or `None` when `e` cannot be named by a
     /// qualified name without template arguments.
     pub(super) fn qualified_decl(&self, e: DeclId) -> Option<Vec<Vec<u8>>> {
+        self.spelling_of(e).ok()
+    }
+
+    /// §7.1 rule 4: why `e`, which has no qualified name, is spelled all
+    /// the same (by its identifier where it lands, §7.2 rule 1); `None`
+    /// when it has a qualified name or is never spelled.
+    pub(super) fn unqualified_decl(&self, e: DeclId) -> Option<Unqualified> {
+        self.spelling_of(e).err().flatten()
+    }
+
+    /// The qualified name of `e` (§7.2 rule 2), or why it has none:
+    /// `Err(Some(why))` for an entity `spell` makes all the same (§7.1
+    /// rule 4: a specialisation or a member of one, a member of a class
+    /// template, an entity declared in an unnamed class, an entity whose
+    /// only declarations are friend declarations), `Err(None)` for one it
+    /// never spells. A reason that refuses the spelling outright wins over
+    /// one that only takes the qualified name away, wherever in the chain
+    /// of parents it is found.
+    fn spelling_of(&self, e: DeclId) -> Result<Vec<Vec<u8>>, Option<Unqualified>> {
         let ast = self.ast;
         let k = self.kind(e);
         let id = self.identifier_of(e);
-        let not_nameable = id.is_empty()
+        let never = id.is_empty()
             || k == DeclKind::ParmVar
             || template_parm_kind(k)
             || matches!(
@@ -503,45 +523,75 @@ impl<'u> KilnSubject<'u> {
                     | DeclKind::CXXDeductionGuide
                     | DeclKind::Binding
             )
-            || ast.spec_info(e).is_some()
-            || ast.partial_spec_info(e).is_some()
-            || self.first_written(e).is_none()
-            // A hidden friend, or a class only a friend declaration
-            // declares, is not found by qualified lookup until a
-            // declaration at namespace scope exists ([namespace.memdef]/3).
-            || self.written_declarations(e).iter().all(|&d| self.is_friend_declaration(d));
-        if not_nameable {
-            return None;
+            // No written declaration, and made from no written entity (an
+            // implicit member): nothing written names it. An entity made
+            // by instantiation has its origin's (§5.5).
+            || (self.first_written(e).is_none() && self.origin_decl(e) == e);
+        if never {
+            return Err(None);
+        }
+        let mut why = None;
+        if ast.spec_info(e).is_some() || ast.partial_spec_info(e).is_some() {
+            why = Some(Unqualified::Specialisation);
         }
         let mut names = vec![id];
-        let mut p = self.parent_decl(e)?;
+        let mut p = self.parent_decl(e).ok_or(None)?;
+        let mut reached = false;
         for _ in 0..self.chain_bound() {
             let pk = self.kind(p);
             if pk == DeclKind::TranslationUnit {
-                names.reverse();
-                return Some(names);
+                reached = true;
+                break;
             }
-            let local_or_templated = function_kind(pk)
-                || template_kind(pk)
-                || ast.spec_info(p).is_some()
+            // A declaration in a function body: never spelled (and the
+            // digest has no key for it).
+            if function_kind(pk) {
+                return Err(None);
+            }
+            let found = if template_kind(pk) {
+                Some(Unqualified::MemberOfClassTemplate)
+            } else if ast.spec_info(p).is_some()
                 || ast.partial_spec_info(p).is_some()
                 || ast.member_spec_info(p).is_some()
-                || self.first_written(p).is_none()
-                || self.is_unnamed_class(p);
-            if local_or_templated {
-                return None;
+            {
+                Some(Unqualified::MemberOfSpecialisation)
+            } else if self.first_written(p).is_none() {
+                return Err(None);
+            } else if self.is_unnamed_class(p) {
+                Some(Unqualified::InUnnamedClass)
+            } else {
+                None
+            };
+            if found.is_some() {
+                why = why.or(found);
+            } else {
+                let pid = self.identifier_of(p);
+                match (pid.is_empty(), matches!(pk, DeclKind::Namespace | DeclKind::Enum)) {
+                    // An unnamed namespace is skipped, and so is an unnamed
+                    // enumeration (always unscoped).
+                    (true, true) => {}
+                    (true, false) => why = why.or(Some(Unqualified::InUnnamedClass)),
+                    (false, _) => names.push(pid),
+                }
             }
-            let pid = self.identifier_of(p);
-            match (pid.is_empty(), matches!(pk, DeclKind::Namespace | DeclKind::Enum)) {
-                // An unnamed namespace is skipped, and so is an unnamed
-                // enumeration (always unscoped).
-                (true, true) => {}
-                (true, false) => return None,
-                (false, _) => names.push(pid),
-            }
-            p = self.parent_decl(p)?;
+            p = self.parent_decl(p).ok_or(None)?;
         }
-        None
+        if !reached {
+            return Err(None);
+        }
+        // A hidden friend, or a class only a friend declaration declares,
+        // is not found by qualified lookup until a declaration at
+        // namespace scope exists ([namespace.memdef]/3).
+        if why.is_none()
+            && self.written_declarations(e).iter().all(|&d| self.is_friend_declaration(d))
+        {
+            why = Some(Unqualified::OnlyFriends);
+        }
+        if why.is_some() {
+            return Err(why);
+        }
+        names.reverse();
+        Ok(names)
     }
 
     /// The declaration of a friend's wrapper or of a member, as the value

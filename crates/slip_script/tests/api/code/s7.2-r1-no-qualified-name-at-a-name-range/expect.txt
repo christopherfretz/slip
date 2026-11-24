@@ -1,0 +1,20 @@
+transform <id>
+edit 0 t.cpp:25:5-25:6 tiers 0 = spell("W::g()" "g")
+edit 1 t.cpp:26:5-26:6 tiers 0 = spell("W::g()" "g")
+edit 2 t.cpp:27:10-27:11 tiers 0 = spell("W<char>::g()" "g")
+edit 3 t.cpp:29:5-29:6 tiers 0 = spell("A::(anonymous union for u)::v" "v")
+edit 4 t.cpp:30:3-30:14 tiers 0 = spell("other_friend(Fr)" "other_friend")
+edit 5 t.cpp:31:11-31:12 tiers 0 = spell("W::h()" "h")
+report - note "A::v at a.u: returned"
+report - note "A::v at the name of W<int>::k(): invalid_argument"
+report - note "W::g at c.f(): unsupported"
+report - note "W::g at l.f(): returned"
+report - note "W::g at w.f(): returned"
+report - note "W::h at the name of W<int>::k(): returned"
+report - note "W<char>::g at c.f(): returned"
+report - note "W<char>::g at w.f(): unsupported"
+report - note "W<int>::g at l.f(): unsupported"
+report - note "W<int>::g at the name of W<int>::k(): invalid_argument"
+report - note "W<int>::g at w.f(): unsupported"
+report - note "W<int>::g at w.g(): unsupported"
+report - note "other_friend at only_friend(fr): returned"

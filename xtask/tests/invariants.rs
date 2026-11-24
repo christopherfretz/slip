@@ -124,6 +124,7 @@ fn shard(observer: Digest, status: Status, digest: u8) -> Shard {
         spellings: None,
         names: (status == Status::Ok).then(slip_model::names::Names::default),
         negatives: None,
+        found: None,
     }
 }
 
