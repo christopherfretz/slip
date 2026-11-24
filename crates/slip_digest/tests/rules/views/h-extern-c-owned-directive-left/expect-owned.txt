@@ -1,0 +1,5 @@
+# Every file owned.
+# Second review F1 (p16): the owned part of legacy holds only an extern "C" function, which
+# moves; the directive is left: C3's answer.
+added <using_directive legacy (the part the rule moves)>
+removed <using_directive legacy>

@@ -534,6 +534,17 @@ impl Walk<'_> {
                 .insert(e, NsInfo { owned, inline, parent, member: [false; 2], holds: [false; 2] });
             order.push(e);
         }
+        // Addendum A4: a read-only opening holds, even when empty (an
+        // empty owned opening is what a transform leaves behind, and holds
+        // nothing).
+        for &d in &ids {
+            if ast.decls.get(d).kind() == DeclKind::Namespace && self.read_only_by_path(d) {
+                let e = self.entity(d);
+                if let Some(i) = info_of.get_mut(&e) {
+                    i.member[0] = true;
+                }
+            }
+        }
         for &d in &ids {
             let kind = ast.decls.get(d).kind();
             if kind == DeclKind::UsingDirective
@@ -570,6 +581,24 @@ impl Walk<'_> {
                 | Role::InParent => continue,
             }
             let e = self.entity(d);
+            // F1 of the second review: a C-linkage function or variable is
+            // keyed under `c_linkage`, but lookup finds it as a member of
+            // every namespace a declaration of it is in ([dcl.link],
+            // [namespace.udir]). Counted there, per declaration, in the
+            // ownership of the declaration's file: the entity may be the
+            // dependency's (it declares it too, `owned/c-function-dependency-declares`)
+            // while an owned opening is what makes it a member here.
+            if info(kind).c_linkage && self.in_c_linkage(e) {
+                if let Some(n) = self.enclosing_namespace(d)
+                    && info_of.contains_key(&n)
+                {
+                    let b = self.in_owned_file(d);
+                    if let Some(i) = info_of.get_mut(&n) {
+                        i.member[usize::from(b)] = true;
+                    }
+                }
+                continue;
+            }
             if !seen.insert(e) {
                 continue;
             }

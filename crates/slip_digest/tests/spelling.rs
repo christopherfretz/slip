@@ -1566,6 +1566,19 @@ fn wp141_a5_nested_target_two_pieces() {
     assert_eq!(got, vec![Holds, Holds, Holds, Holds]);
 }
 
+// F3 of the second review: the piece is a prefix of a qualifier whose
+// last name is unresolved (`«acme»::inner::h(t)` in a template). The edit
+// is correct; the piece names `acme`, whose key is the obligation's.
+#[test]
+fn wp141_a5_prefix_of_an_unresolved_qualifier() {
+    let got = a5_case_alone(
+        "namespace legacy { namespace inner { int h(int); int h(long); } }\ntemplate <class T> int f(T t) { return legacy::inner::h(t); }\n",
+        "namespace acme { namespace inner { int h(int); int h(long); } }\ntemplate <class T> int f(T t) { return «acme»::inner::h(t); }\n",
+        &[Named("legacy")],
+    );
+    assert_eq!(got, vec![Holds]);
+}
+
 // A using-declaration's scope (row 3): the shadow's entity is a member
 // of the owned part: R1 writes `legacy`: holds.
 #[test]

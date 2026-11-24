@@ -1,0 +1,5 @@
+# Every file owned.
+# Second review F1 (p01): the dependency's part of legacy holds only an extern "C" function.
+# The post-image directive drops it: C2's answer.
+added <using_directive acme (the part the rule moves)>
+removed <using_directive legacy>

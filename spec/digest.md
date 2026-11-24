@@ -481,12 +481,17 @@ own unit is keyed in that view. It has a unit in the **other** view too
 when that view exists. **A view of a namespace exists iff a member of
 that ownership exists in it**, where a member is (a) an entity whose
 semantic parent is the namespace, declared by the source or made by the
-compiler (`std::__va_list`, the implicit `std::align_val_t`), (b) a
+compiler (`std::__va_list`, the implicit `std::align_val_t`); an entity
+with C language linkage, which is keyed under `c_linkage`, is a member
+of every namespace one of its declarations is in, through linkage
+specifications, as lookup finds it there (WP-141 second review F1), (b) a
 written content-keyed declaration (using-directive, namespace alias,
 using-declaration, `static_assert`), or (c) a nested namespace, named,
-inline or unnamed, one of whose views of that ownership exists. An
-opening alone is nothing; a declaration the compiler makes that is no
-entity (the using-directive an unnamed namespace implies) is nothing.
+inline or unnamed, one of whose views of that ownership exists. A
+read-only opening holds in the dependency view even when it is empty
+(Addendum A4: what a dependency opens, lookup finds); an empty owned
+opening is nothing (what a transform leaves behind); a declaration the
+compiler makes that is no entity (the using-directive an unnamed namespace implies) is nothing.
 The predicate is decided from the declarations of the image, never from
 what the walk keyed (`Walk::ns_holds`, one function for this unit and
 for `E(k)` below; WP-141). The **owned view** applies the rules along the chain; the
@@ -571,11 +576,16 @@ directive or an alias at block scope is written as before. *(The other
 readings, the alternates of `verify.md` §4 step 1a, are WP-143's and
 not built: a unit has no alternate, and §11 has no `tu_alt`.)*
 
-The guard: with one view key everywhere (the empty table, a table that
-maps no namespace of the chain, an image with no namespace that has two
-view keys) every namespace has one reading and every reference is
-`Ref::unit` of the own key, written exactly as before WP-141: no digest
-moves. The table of namespaces (`E(k)`, the inline sets, the
+The guard: R1 asks the route only when the named namespace has two view
+keys; R2 writes a reference plain iff the named namespace has one view
+key `k` and `E(k)` is that namespace alone (Addendum 3). Under the empty
+table or a table that maps no namespace of the chain, no namespace has
+two view keys and no key is held by two namespace entities, so every
+reference is `Ref::unit` of the own key, written exactly as before
+WP-141: no digest moves. One exception fails closed: `E(k)` carries a
+cause for the whole image when any namespace's view key cannot be formed
+(a depth or a cycle, which no source reaches today), and then every R2
+reference carries it where the empty table gives none (second review F4). The table of namespaces (`E(k)`, the inline sets, the
 directives written in each) is made in one pass over the image before
 the walk reads it, so nothing depends on the order units are written in.
 `Ref::views` and `Ref::part` are never written for a pre-image.

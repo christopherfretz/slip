@@ -309,11 +309,14 @@ came from, and nothing about the rest:
   (`views/visibility-owned-opening`). **A view of a namespace exists iff
   a member of that ownership exists in it**, where a member is (a) an
   entity whose semantic parent is the namespace, declared by the source
-  or made by the compiler, (b) a written content-keyed declaration
+  or made by the compiler (an entity with C language linkage counts in
+  every namespace one of its declarations is in, through linkage
+  specifications, though it is keyed under `c_linkage`), (b) a written content-keyed declaration
   (using-directive, namespace alias, using-declaration, `static_assert`),
   or (c) a nested namespace, named, inline or unnamed, one of whose
-  views of that ownership exists. An opening alone is nothing; a
-  declaration the compiler makes that is no entity (the using-directive
+  views of that ownership exists. A read-only opening holds in the
+  dependency view even when empty (Addendum A4); an empty owned opening
+  is nothing; a declaration the compiler makes that is no entity (the using-directive
   an unnamed namespace implies) is nothing. It is decided from the
   declarations, never from what the walk keyed (WP-141 ruling, after
   WP-140 review F3). So an observer the edit did not touch that opens the dependency's

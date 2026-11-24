@@ -920,7 +920,7 @@ impl Walk<'_> {
     /// is no class member, and its name has external linkage
     /// (digest-kinds §5.2, [dcl.link]/1). A block-scope declaration looks
     /// through the functions around it.
-    fn in_c_linkage(&self, e: DeclId) -> bool {
+    pub(crate) fn in_c_linkage(&self, e: DeclId) -> bool {
         let ast = self.ast;
         if ast.decls.get(e).ctx().is_some_and(|c| ast.decls.record(c).is_some()) {
             return false;
