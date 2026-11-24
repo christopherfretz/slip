@@ -275,6 +275,51 @@ fn overlay_path_that_does_not_exist_is_err() {
 }
 
 #[test]
+fn relative_entry_is_err() {
+    // Second review F7: a relative entry would resolve against the
+    // process's directory, not the command's, and could overlay a decoy.
+    let t = Tree::new("relative");
+    t.write("main.cpp", "int m;\n");
+    let entries: Vec<(&[u8], Arc<[u8]>)> = vec![(b"main.cpp", Arc::from(&b"int x;\n"[..]))];
+    let e = parse(&t.a(), &["clang++", "-c", "main.cpp"], &entries).unwrap_err();
+    assert!(e.contains("main.cpp") && e.contains("not an absolute path"), "{e}");
+}
+
+#[test]
+fn an_input_reached_by_another_case_is_overlaid() {
+    // Second review F8: Kiln matches an entry to a file by identity, and
+    // the shard's input keeps the spelling the unit reached it by, so on
+    // a case-insensitive volume the input `h.h` is the entry `H.h`'s; it
+    // is `Unit::overlaid` that says so, never the path's text.
+    let t = Tree::new("case");
+    t.write("H.h", "extern int disk;\n");
+    t.write("main.cpp", "#include \"h.h\"\nint m = post;\n");
+    if std::fs::metadata(t.a().join("h.h")).is_err() {
+        eprintln!("skipped: the volume is case-sensitive, so `h.h` names no file");
+        return;
+    }
+    let mut entries = vec![t.entry("H.h", "extern int post;\n")];
+    let overlay = sorted(&mut entries);
+    let (shard, seen) = parse_with(&t.a(), &["clang++", "-c", "main.cpp"], &overlay, false, |u| {
+        let sm = u.sm();
+        sm.file_ids()
+            .filter_map(|f| u.real_path(f).map(|p| (p.to_vec(), u.overlaid(f))))
+            .collect::<Vec<_>>()
+    })
+    .expect("the parse");
+    assert_eq!(shard.outcome.status, Status::Ok, "the overlay's bytes were read: {shard:?}");
+    let header = t.a().join("h.h");
+    let header = header.as_os_str().as_bytes();
+    let seen = seen.expect("a unit");
+    assert!(
+        seen.iter().any(|(p, overlaid)| p.eq_ignore_ascii_case(header) && *overlaid),
+        "the header's buffer is the overlay's: {seen:?}"
+    );
+    let input = shard.inputs.as_ref().unwrap().iter().find(|f| f.path.eq_ignore_ascii_case(header));
+    assert_eq!(of(input.expect("the header is an input")), content("extern int post;\n"));
+}
+
+#[test]
 fn two_entries_of_one_file_are_err() {
     let t = Tree::new("twice");
     t.write("main.cpp", "#include \"h.h\"\n");

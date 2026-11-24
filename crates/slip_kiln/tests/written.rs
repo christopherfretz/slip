@@ -1611,11 +1611,35 @@ template <class T> struct H {};
 template struct H<int>;
 ";
     with_unit("unreach-target", src, |u| {
-        let t = refs_at(u, src, "void t<int>", "t");
-        let h = refs_at(u, src, "struct H<int>;", "H");
-        println!("t {t:?}, H {h:?}");
-        assert!(!t.is_empty() && t.iter().all(|&(r, _)| r == Role::SpecTarget), "{t:?}");
-        assert!(!h.is_empty() && h.iter().all(|&(r, _)| r == Role::SpecTarget), "{h:?}");
+        // One reference each, at the name of the explicit specialisation
+        // or instantiation, unqualified (it begins at its name), whose
+        // referent is the template declared on the line before.
+        let ast = u.ast();
+        let sm = u.sm();
+        for (ctx, word, decl, kind) in [
+            ("void t<int>", "t", "template <class T> void t", DeclKind::FunctionTemplate),
+            ("struct H<int>;", "H", "template <class T> struct H", DeclKind::ClassTemplate),
+        ] {
+            let want = at(src, ctx, word);
+            let found: Vec<_> =
+                written_refs(u).into_iter().filter(|r| bytes(u, r.name) == want).collect();
+            assert_eq!(found.len(), 1, "{word}: {found:?}");
+            let r = &found[0];
+            assert_eq!(r.role, Role::SpecTarget, "{word}");
+            assert_eq!(
+                sm.offset_of(sm.spelling_loc(r.first)).map(|(_, o)| o as usize),
+                Some(want.0)
+            );
+            assert!(!r.global, "{word}");
+            let n = ast.decls.get(r.referent);
+            assert_eq!(n.kind(), kind, "{word}");
+            let (_, lo) = sm.offset_of(sm.spelling_loc(n.loc())).expect("the template's place");
+            let line = src.find(decl).expect("the template's line");
+            assert!(
+                (line..line + decl.len()).contains(&(lo as usize)),
+                "{word}: the referent is the template at {lo}"
+            );
+        }
     });
 }
 

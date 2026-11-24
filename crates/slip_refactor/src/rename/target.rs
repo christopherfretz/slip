@@ -64,24 +64,33 @@ pub(crate) fn seeds(ctx: &mut Ctx<'_, '_, '_>) -> (Vec<WrittenRef>, u64) {
     (hits, looked)
 }
 
-/// The roles the rename's rows read (§9.3): those Kiln recorded before
-/// its written-reference table stage 3 (WP-1932, in the pin since WP-066).
-/// The names stage 3 records (a using-declarator, a using-directive's or
-/// namespace alias's namespace, an elaborated or friend reference, a
-/// specialisation target, a concept name, a designator, a redeclaration's
-/// qualified name) are reached as before: through `decl_names`, the
-/// followers, or `unreachable`. Serving them from the table is WP-138's
-/// (`spec/landed/edits/WP-066.md`, "For WP-138").
+/// The roles the rename's rows read (§9.3): those Kiln recorded at
+/// `913a490bb`, before its written-reference table stage 3 (WP-1932, in
+/// the pin since WP-066): stages 1 and 2, and `Concept`, which Kiln
+/// already recorded then. The names stage 3 added (a using-declarator, a
+/// using-directive's or namespace alias's namespace, an elaborated or
+/// friend reference, a specialisation target, a designator, a
+/// redeclaration's qualified name) are reached as before: through
+/// `decl_names`, the followers, or `unreachable`. This is safe only while
+/// §9.1 allows Function and Variable targets; serving those names from
+/// the table is WP-138's (`spec/landed/digest-kinds/WP-066.md`, "For
+/// WP-138").
 fn rename_role(role: written::Role) -> bool {
     use written::Role as R;
     match role {
-        R::Expr | R::Member | R::Type | R::Template | R::Nns | R::Base | R::MemInit => true,
+        R::Expr
+        | R::Member
+        | R::Type
+        | R::Template
+        | R::Nns
+        | R::Base
+        | R::MemInit
+        | R::Concept => true,
         R::UsingDecl
         | R::UsingDirective
         | R::NamespaceAlias
         | R::Elaborated
         | R::SpecTarget
-        | R::Concept
         | R::Designator
         | R::Redecl => false,
     }

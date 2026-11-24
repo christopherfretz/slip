@@ -1164,8 +1164,16 @@ it. The patch and the write skip such a file.
 files and blobs ([KF2](../docs/requests/KF2-overlay-and-file-identity.md)).
 Every read of a file the overlay names yields the post-image bytes, by
 whatever spelling the file is reached; every other read goes to the file
-system. The post-image has the pre-image's paths, so a subject path
-(`digest.md` §11) is the file's real path in both images. The verify job
+system. An overlay's paths are absolute only: a relative one is refused
+(it would resolve against the process's directory, not the command's).
+An entry is matched to the file a unit reads by the file's identity, not
+by its path text, and a shard records an input under the spelling the
+unit reached it by (on a case-insensitive volume, `#include "h.h"`
+reaching the entry `…/H.h`); so a consumer never matches an input to an
+entry by path, and asks the parse which of its files were overlaid
+(`slip_kiln::Unit::overlaid`). The post-image has the pre-image's paths,
+so a subject path (`digest.md` §11) is the file's real path in both
+images. The verify job
 through an overlay is `verify.md` §5.1, "The overlay form".
 
 ### 7.2 The patch

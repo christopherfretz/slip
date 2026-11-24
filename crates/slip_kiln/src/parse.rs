@@ -46,8 +46,11 @@ pub struct ParseOptions<'a> {
     /// Replacement contents, by real path (`spec/edits.md` §7.1): the
     /// unit reads each file named here as these bytes, never as the
     /// disk's (Kiln's overlay, `kiln_source::Overlay`, given to the front
-    /// end as `FrontEndOptions::overlay`). The paths must exist. Sorted by
-    /// path, no two equal. Empty (the default): the parse is the parse
+    /// end as `FrontEndOptions::overlay`). The paths must be absolute
+    /// and exist. Sorted by path, no two equal. An entry is matched to
+    /// the file the unit reads by file identity, not by its text: a
+    /// consumer never matches an input to an entry by path, it asks
+    /// [`Unit::overlaid`]. Empty (the default): the parse is the parse
     /// without one. The shard's `inputs` give an overlaid file's size and
     /// digest from these bytes; [`Unit::overlaid`] says which buffers are
     /// the overlay's.
@@ -429,6 +432,13 @@ impl<'r> Unit<'r> {
     /// Whether the unit read `file` from the overlay of
     /// [`ParseOptions::overlay`] (Kiln's `FileOrigin::Overlay`): its bytes
     /// are the overlay's, and so are the offsets of every location in it.
+    ///
+    /// Kiln matches an entry to a file by its identity, and the shard's
+    /// input keeps the path the unit reached the file by, which need not
+    /// be the entry's text (`#include "h.h"` reaching an entry `…/H.h` on
+    /// a case-insensitive volume). So this is the only test of whether an
+    /// input is overlaid: a consumer never compares an input's path with
+    /// an entry's (`spec/edits.md` §7.1).
     pub fn overlaid(&self, file: FileId) -> bool {
         self.sm.file_origin(file) == FileOrigin::Overlay
     }
@@ -669,6 +679,12 @@ fn overlay(entries: &[(&[u8], Arc<[u8]>)]) -> Result<Option<Arc<Overlay>>, Strin
             ));
         }
         let at = bytes_path(path)?;
+        // A relative entry would be resolved against the process's
+        // directory, not the command's, and could overlay a file the unit
+        // never reads under that name (second review F7).
+        if !at.is_absolute() {
+            return Err(format!("overlay: {shown} is not an absolute path"));
+        }
         overlay
             .replace(&at, Arc::clone(bytes))
             .map_err(|e| format!("overlay: cannot replace {shown}: {e}"))?;

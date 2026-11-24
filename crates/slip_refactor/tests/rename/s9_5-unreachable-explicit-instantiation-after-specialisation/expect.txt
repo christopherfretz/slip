@@ -1,10 +1,10 @@
 # pending
-# needs: Kiln to record an explicit instantiation of a member that follows the member's explicit specialisation (at the pin it warns sema_explicit_inst_after_spec_ignored and records nothing: no declaration, no extent row, no member-specialisation kind; kiln/crates/kiln_sema/src/templ/funcs.rs:1692-1701, before update_member_spec at :1733; spec/landed/edits/WP-073.md, For Kiln); until then the follower carries no flag (WP-119 lifted its unsupported), the token at 3:23 has no claim, the run is accepted and its post-image does not compile (rename.rs, f3_post_image_does_not_compile)
+# needs: a decision on what this directory asks for. It was written (WP-073 fix round F3, WP-119) for a pin at which Kiln recorded nothing for an explicit instantiation of a member that follows the member's explicit specialisation, and asks for the fail-closed answer: the follower `unreachable`, the token at 3:23 unclaimed. Since WP-066 (Kiln 4a83f6e3c, WP-2470) Kiln writes that instantiation's declaration row: the token at 3:23 is claimed and renamed, the follower carries no flag, the run is accepted and its post-image compiles (rename.rs, f3_post_image_compiles). The lines below are the old answer with this pin's ids; if the new answer is right, the mark comes off and the directory is blessed (spec/landed/digest-kinds/WP-066.md, review fix round F4)
 subjects:
-  32ae9afe seed - rule=yes n::S::f()
-  fc2d99d6 follower unreachable rule=yes n::S<int>::f() of=32ae9afe
+  089ac656 seed - rule=yes n::S::f()
+  fb97e1db follower unreachable rule=yes n::S<int>::f() of=089ac656
 links:
 claims:
-  main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]
-  main.cpp:2:26+1 replace "g" t0 votes=1 none [32ae9afe]
+  main.cpp:1:50+1 replace "g" t0 votes=1 none [089ac656]
+  main.cpp:2:26+1 replace "g" t0 votes=1 none [089ac656]
 changed:
