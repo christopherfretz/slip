@@ -1,0 +1,5 @@
+# The same without `allow: residue`: nothing is written, exit status 1.
+spec: edits §8.4
+spec: edits §8.5
+run: rename --from a::f --to g
+state: verified_with_residue

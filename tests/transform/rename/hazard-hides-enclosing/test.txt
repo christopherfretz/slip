@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R20. The new name hides a function of an enclosing namespace that the target's namespace calls unqualified, in a body and in a default argument: `g(1)` found `::g(int)`, then finds `a::g(long)`. Not verified.
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::f --to g
+state: not_verified

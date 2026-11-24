@@ -1,0 +1,5 @@
+# A declaration of the new name with the same signature in a unit that does not see the target: no observer sees both, so `name_taken` is not set; the rule applies in every observer and the other unit's `a::g(int)` takes the target's key. Verification must say no (edits §9.5, `name_taken`).
+spec: edits §9.5
+spec: verify §9
+run: rename --from a::f --to g
+state: not_verified

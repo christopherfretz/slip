@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R14. The function is named in an attribute argument (`cleanup`). edits §9.5 lists an attribute argument under `unreachable` (no name token recorded); at this pin the front end records this one, the rename edits it and the run verifies (a finding against edits §9.5, see the handback of docs/wp/WP-078.md).
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::f --to g
+state: verified

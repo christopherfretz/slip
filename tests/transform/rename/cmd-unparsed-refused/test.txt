@@ -1,0 +1,5 @@
+# An observer that does not parse, without `allow: unparsed`: `incomplete`, exit status 4, nothing written.
+spec: edits §8.5
+spec: edits §10.5
+run: rename --from a::f --to g
+state: incomplete

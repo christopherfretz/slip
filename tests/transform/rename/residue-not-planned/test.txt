@@ -1,0 +1,6 @@
+# A source file that no command compiles and a header that no observer reads, both under the owned directory: residue `not_planned`, not edited. A use of the new name in the same place gives the inverse rename (the back oracle) residue of its own.
+spec: edits §8.4
+run: rename --from a::f --to g
+state: verified_with_residue
+tu: a.cpp
+allow: residue

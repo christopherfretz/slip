@@ -1,0 +1,5 @@
+# An argument that is also stringised (the shape of `EXPECT_EQ`; docs/demos/demo-2.md §2.4): the argument is edited, the string changes with it, the unit that holds the string is `changed`. Not verified in M2, the finding at the string literal's invocation.
+spec: edits §2.2
+spec: pitfalls §3
+run: rename --from a::f --to g
+state: not_verified

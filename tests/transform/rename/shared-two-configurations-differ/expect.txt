@@ -1,0 +1,19 @@
+plan <id>
+observers 2
+excluded not_a_compile 0
+excluded unsupported_language 0
+excluded unsupported_flag 0
+excluded missing_file 0
+excluded malformed_entry 0
+excluded unsupported_compiler 0
+transform <id>
+round 1
+map: selected 2, ok 2, not ok 0, failed runs 0
+edits <id>
+state refused
+edit 0 in 0 file(s); shared 0; most observers 0; nested 0
+kept 0; unresolved 0
+refused divergent 1
+result <id>
+state refused
+refusal divergent: h.h:11:38: a::f(long) (2 observer(s), first a.cpp)

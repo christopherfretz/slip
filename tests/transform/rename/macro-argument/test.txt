@@ -1,0 +1,5 @@
+# The name in macro arguments (tier 1): substituted once, and substituted twice into calls that select the one subject (one edit, two votes).
+spec: edits §2.2
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R12. A renamed function that reads the length of its own `__func__`: the value changes with the name. Not verified.
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::f --to longer
+state: not_verified

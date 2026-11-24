@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R19. The new name is a function-like macro defined in the unit: `name_taken`.
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::f --to LOG
+state: refused

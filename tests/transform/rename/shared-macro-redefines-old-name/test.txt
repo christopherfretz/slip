@@ -1,0 +1,5 @@
+# One observer reads the header with the old name defined as a macro (`#define f other`), so the header's `f` is no reference there and declares `a::other`; the other observer claims the edit. After it, the first observer declares `a::g` instead of `a::other`. Not verified.
+spec: edits §2.2
+spec: verify §9
+run: rename --from a::f --to g
+state: not_verified

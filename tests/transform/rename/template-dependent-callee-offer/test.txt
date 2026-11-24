@@ -1,0 +1,5 @@
+# The same under `--dependent offer`: every instantiation binds the name to the subject, so it is edited (a literal piece, no exemption, the `instances:` lines). Its holder `call` differs, and the run is accepted and not verified until dependent names are compared mapped (edits §9.4; docs/wp/WP-154.md).
+spec: edits §9.4
+spec: edits §10.5
+run: rename --from a::f --to g --dependent offer
+state: not_verified

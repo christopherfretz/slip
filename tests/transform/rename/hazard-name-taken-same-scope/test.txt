@@ -1,0 +1,5 @@
+# The target's namespace declares the new name already (R01 within one scope): `name_taken`, refused.
+spec: edits §9.5
+spec: edits §5.2
+run: rename --from a::f --to g
+state: refused

@@ -1,0 +1,5 @@
+# A header that two configurations of one file read with different meanings of one call: overload resolution selects `a::f(int)` in one and `a::f(long)` in the other. The spelled pieces carry different keys: `divergent` (edits §5.3, 'Identity is strict'), refused.
+spec: edits §5.4
+spec: edits §5.3
+run: rename --from a::f --to g
+state: refused
